@@ -284,6 +284,7 @@ def test_adk_runner_declares_native_session_continuity_without_checkpoint_resume
     assert capabilities["ResumeRun"]["ResumeMode"] == "forward_only"
     assert "ResumabilityConfig not enabled" in capabilities["ResumeRun"]["Reason"]
 
+
 def test_adk_runner_does_not_advertise_in_memory_resume(tmp_path):
     from ksadk.runners.adk_runner import ADKRunner
 
@@ -422,6 +423,7 @@ def test_adk_runner_checkpoint_metadata_includes_backend_info(tmp_path):
 
     # Create a mock event with function calls
     from types import SimpleNamespace
+
     mock_event = SimpleNamespace(
         id="evt-1",
         author="agent",
@@ -496,15 +498,23 @@ async def test_adk_runner_checkpoint_writes_latest_boundary(tmp_path, monkeypatc
 
     written_events = []
 
-    async def fake_append(*, session_id, author, run_id, checkpoint_id,
-                          framework, framework_ref, phase, invocation_id,
-                          metadata, **kw):
+    async def fake_append(
+        *,
+        session_id,
+        author,
+        run_id,
+        checkpoint_id,
+        framework,
+        framework_ref,
+        phase,
+        invocation_id,
+        metadata,
+        **kw,
+    ):
         written_events.append({"metadata": metadata, "checkpoint_id": checkpoint_id})
         return SimpleNamespace(id="evt")
 
-    monkeypatch.setattr(
-        "ksadk.conversations.runtime.append_run_checkpoint_event", fake_append
-    )
+    monkeypatch.setattr("ksadk.conversations.runtime.append_run_checkpoint_event", fake_append)
 
     def make_event(tool_name):
         ev = SimpleNamespace(
@@ -561,18 +571,15 @@ async def test_adk_runner_checkpoint_seq_continues_on_resume(tmp_path, monkeypat
     existing_events = [
         SimpleNamespace(
             event_type="run_checkpoint",
-            metadata={"run_id": "run-1", "framework": "adk",
-                       "checkpoint_id": "adk-ckpt-1"},
+            metadata={"run_id": "run-1", "framework": "adk", "checkpoint_id": "adk-ckpt-1"},
         ),
         SimpleNamespace(
             event_type="run_checkpoint",
-            metadata={"run_id": "run-1", "framework": "adk",
-                       "checkpoint_id": "adk-ckpt-2"},
+            metadata={"run_id": "run-1", "framework": "adk", "checkpoint_id": "adk-ckpt-2"},
         ),
         SimpleNamespace(
             event_type="run_checkpoint",
-            metadata={"run_id": "run-1", "framework": "adk",
-                       "checkpoint_id": "adk-ckpt-3"},
+            metadata={"run_id": "run-1", "framework": "adk", "checkpoint_id": "adk-ckpt-3"},
         ),
     ]
 
@@ -586,15 +593,23 @@ async def test_adk_runner_checkpoint_seq_continues_on_resume(tmp_path, monkeypat
 
     written_events = []
 
-    async def fake_append(*, session_id, author, run_id, checkpoint_id,
-                          framework, framework_ref, phase, invocation_id,
-                          metadata, **kw):
+    async def fake_append(
+        *,
+        session_id,
+        author,
+        run_id,
+        checkpoint_id,
+        framework,
+        framework_ref,
+        phase,
+        invocation_id,
+        metadata,
+        **kw,
+    ):
         written_events.append({"checkpoint_id": checkpoint_id})
         return SimpleNamespace(id="evt")
 
-    monkeypatch.setattr(
-        "ksadk.conversations.runtime.append_run_checkpoint_event", fake_append
-    )
+    monkeypatch.setattr("ksadk.conversations.runtime.append_run_checkpoint_event", fake_append)
 
     def make_event(tool_name):
         ev = SimpleNamespace(
@@ -604,9 +619,7 @@ async def test_adk_runner_checkpoint_seq_continues_on_resume(tmp_path, monkeypat
             content=SimpleNamespace(parts=[]),
             actions=None,
         )
-        ev.get_function_calls = lambda: [
-            SimpleNamespace(name=tool_name, id=f"tc-{tool_name}")
-        ]
+        ev.get_function_calls = lambda: [SimpleNamespace(name=tool_name, id=f"tc-{tool_name}")]
         return ev
 
     async def fake_events():
@@ -739,9 +752,7 @@ async def test_adk_runner_resume_does_not_write_duplicate_audit(tmp_path, monkey
     async def fake_append_resume(*args, **kwargs):
         resume_calls.append(kwargs)
 
-    monkeypatch.setattr(
-        "ksadk.conversations.runtime.append_run_resume_event", fake_append_resume
-    )
+    monkeypatch.setattr("ksadk.conversations.runtime.append_run_resume_event", fake_append_resume)
 
     # Simulate events with invocation_id — checkpoint writing is fine,
     # but resume audit must NOT be written by the runner.
@@ -761,9 +772,7 @@ async def test_adk_runner_resume_does_not_write_duplicate_audit(tmp_path, monkey
     async def fake_checkpoint(**kw):
         pass
 
-    monkeypatch.setattr(
-        "ksadk.conversations.runtime.append_run_checkpoint_event", fake_checkpoint
-    )
+    monkeypatch.setattr("ksadk.conversations.runtime.append_run_checkpoint_event", fake_checkpoint)
 
     wrapped = runner._collect_adk_invocation_id(
         fake_events(),
@@ -810,6 +819,7 @@ async def test_adk_runner_invocation_map_lock_prevents_lost_update(tmp_path):
     monkeypatch_local.setattr(continuity_mod, "ConversationSessionCore", fake_core_factory)
 
     import ksadk.sessions as sessions_mod
+
     monkeypatch_local.setattr(sessions_mod, "resolve_session_service", fake_resolve_service)
 
     # Run two concurrent persist calls — without the lock, the second would
@@ -853,6 +863,25 @@ def test_langgraph_runner_declares_time_travel_resume_mode(monkeypatch):
     assert capabilities["ResumeRun"]["Supported"] is True
     assert capabilities["ResumeRun"]["ResumeMode"] == "time_travel"
     assert capabilities["ResumeRun"]["Reason"] == ""
+
+
+def test_langgraph_runner_reports_actual_memory_checkpointer_over_backend_env(monkeypatch):
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    from ksadk.runners.langgraph_runner import LangGraphRunner
+
+    detection = _write_detection(FrameworkType.LANGGRAPH)
+    runner = LangGraphRunner(detection, "/workspace/demo")
+    runner._agent = SimpleNamespace(checkpointer=InMemorySaver())
+    monkeypatch.setenv("KSADK_CHECKPOINT_BACKEND", "postgres")
+
+    capability = runner.describe_checkpoint_capability()
+
+    assert capability["Supported"] is True
+    assert capability["Backend"] == "memory"
+    assert capability["Scope"] == "process_local"
+    assert capability["Durable"] is False
+    assert capability["SharedAcrossPods"] is False
 
 
 def test_create_runner_uses_custom_runner_class(monkeypatch, tmp_path):
@@ -950,33 +979,49 @@ async def test_adk_runner_close_continues_after_toolset_failure(tmp_path, caplog
     assert "Failed to close runtime toolset" in caplog.text
 
 
-def test_langchain_runner_prepare_for_request_reloads_agent_when_model_changes(
-    monkeypatch,
-    tmp_path,
-):
-    import ksadk.runners.langchain_runner as langchain_runner_module
+def test_langchain_runner_is_langgraph_thin_shell():
+    """LangChainRunner 是 LangGraphRunner 薄壳(deepagents 同款复用)。"""
+    from ksadk.runners.langchain_runner import LangChainRunner
+    from ksadk.runners.langgraph_runner import LangGraphRunner
 
-    loaded_models: list[tuple[str | None, bool]] = []
+    assert issubclass(LangChainRunner, LangGraphRunner)
 
-    def fake_load_agent_module(
-        project_dir: str, entry_point: str, agent_variable: str, *,
-        force_reload: bool = False,
-    ):
-        loaded_models.append((os.getenv("OPENAI_MODEL_NAME"), force_reload))
-        return SimpleNamespace(invoke=lambda *args, **kwargs: None), ModuleType("demo.agent")
 
-    monkeypatch.setattr(langchain_runner_module, "load_agent_module", fake_load_agent_module)
-    monkeypatch.setenv("OPENAI_MODEL_NAME", "glm-5.1")
-    monkeypatch.setenv("MODEL_NAME", "glm-5.1")
+def test_langchain_runner_load_agent_accepts_langgraph(monkeypatch, tmp_path):
+    """新 LangChain(create_agent → LangGraph 图,有 get_state)被薄壳正常加载。"""
+    import ksadk.runners.langgraph_runner as langgraph_runner_module
+    from ksadk.runners.langchain_runner import LangChainRunner
 
-    runner = langchain_runner_module.LangChainRunner(
-        _write_detection(FrameworkType.LANGCHAIN),
-        str(tmp_path),
+    graph = SimpleNamespace(invoke=lambda *a, **k: None, get_state=lambda *a, **k: None)
+    monkeypatch.setattr(
+        langgraph_runner_module,
+        "load_agent_module",
+        lambda *a, **k: (graph, ModuleType("demo.agent")),
     )
-    runner.load_agent()
-    runner.prepare_for_request("gpt-4o")
+    monkeypatch.setenv("OPENAI_MODEL_NAME", "glm-5.1")
 
-    assert loaded_models == [("glm-5.1", False), ("gpt-4o", True)]
+    runner = LangChainRunner(_write_detection(FrameworkType.LANGCHAIN), str(tmp_path))
+    runner.load_agent()
+
+    assert runner._agent is graph
+
+
+def test_langchain_runner_load_agent_rejects_legacy_chain(monkeypatch, tmp_path):
+    """legacy LCEL 链(有 invoke、无 get_state)被薄壳拒绝并给迁移指引。"""
+    import ksadk.runners.langgraph_runner as langgraph_runner_module
+    from ksadk.runners.langchain_runner import LangChainRunner
+
+    legacy_chain = SimpleNamespace(invoke=lambda *a, **k: None)  # 无 get_state
+    monkeypatch.setattr(
+        langgraph_runner_module,
+        "load_agent_module",
+        lambda *a, **k: (legacy_chain, ModuleType("demo.agent")),
+    )
+    monkeypatch.setenv("OPENAI_MODEL_NAME", "glm-5.1")
+
+    runner = LangChainRunner(_write_detection(FrameworkType.LANGCHAIN), str(tmp_path))
+    with pytest.raises(ValueError, match="legacy LangChain"):
+        runner.load_agent()
 
 
 def test_langgraph_runner_prepare_for_request_reloads_agent_when_model_changes(
@@ -988,7 +1033,10 @@ def test_langgraph_runner_prepare_for_request_reloads_agent_when_model_changes(
     loaded_models: list[tuple[str | None, bool]] = []
 
     def fake_load_agent_module(
-        project_dir: str, entry_point: str, agent_variable: str, *,
+        project_dir: str,
+        entry_point: str,
+        agent_variable: str,
+        *,
         force_reload: bool = False,
     ):
         loaded_models.append((os.getenv("OPENAI_MODEL_NAME"), force_reload))
@@ -1075,16 +1123,20 @@ def test_base_runner_run_server_registers_runner(monkeypatch):
     class _DemoRunner(_StubRunner):
         pass
 
-    fake_server_module = ModuleType("ksadk.server")
-    fake_server_module.app = object()
-    fake_server_module.set_runner = lambda runner: recorded.setdefault("runner", runner)
-
     fake_uvicorn_module = ModuleType("uvicorn")
     fake_uvicorn_module.run = lambda app, host, port: recorded.update(
         {"app": app, "host": host, "port": port}
     )
 
-    monkeypatch.setitem(__import__("sys").modules, "ksadk.server", fake_server_module)
+    # run_server 现经 create_runtime_app(RuntimeAppConfig(runner=self)) 装配(goal-16,
+    # 不再走 ksadk.server.app + set_runner 全局态)。monkeypatch factory 捕获注入的 runner。
+    def _fake_create_runtime_app(config, configure=None):
+        recorded["config_runner"] = config.runner
+        recorded["agui_config"] = config.agui
+        return "fake-app"
+
+    monkeypatch.setattr("ksadk.agui.config.agui_dependencies_available", lambda: True)
+    monkeypatch.setattr("ksadk.server.factory.create_runtime_app", _fake_create_runtime_app)
     monkeypatch.setitem(__import__("sys").modules, "uvicorn", fake_uvicorn_module)
 
     detection = DetectionResult(
@@ -1097,8 +1149,11 @@ def test_base_runner_run_server_registers_runner(monkeypatch):
 
     runner.run_server(port=9000)
 
-    assert recorded["runner"] is runner
-    assert recorded["app"] is fake_server_module.app
+    assert recorded["config_runner"] is runner
+    assert recorded["agui_config"].enabled is True
+    assert recorded["agui_config"].runtime_type == "langgraph"
+    assert recorded["agui_config"].agent_name == "demo-agent"
+    assert recorded["app"] == "fake-app"
     assert recorded["host"] == "0.0.0.0"
     assert recorded["port"] == 9000
 
@@ -1143,9 +1198,7 @@ def test_adk_runner_load_agent_does_not_inject_legacy_sandbox_tools_by_default(
     assert len(FakeRunner.instances) == 1
 
 
-def test_adk_runner_load_agent_injects_builtin_tools_when_enabled(
-    monkeypatch, tmp_path
-):
+def test_adk_runner_load_agent_injects_builtin_tools_when_enabled(monkeypatch, tmp_path):
     import google.adk.runners as adk_runners
 
     from ksadk.runners.adk_runner import ADKRunner
@@ -1270,9 +1323,7 @@ def test_adk_runner_load_agent_deduplicates_existing_execute_skills(monkeypatch,
     assert "keep_tool" in tool_names
 
 
-def test_adk_runner_load_agent_skips_skill_runtime_when_not_in_sandbox_mode(
-    monkeypatch, tmp_path
-):
+def test_adk_runner_load_agent_skips_skill_runtime_when_not_in_sandbox_mode(monkeypatch, tmp_path):
     import google.adk.runners as adk_runners
 
     from ksadk.runners.adk_runner import ADKRunner
@@ -1308,7 +1359,8 @@ def test_adk_runner_load_agent_skips_skill_runtime_when_not_in_sandbox_mode(
 
 
 def test_adk_runner_build_adk_content_supports_inline_and_reference_attachments(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     from ksadk.runners.adk_runner import ADKRunner
 
@@ -1426,8 +1478,13 @@ async def test_adk_runner_invoke_forwards_attachment_results_via_state_delta(tmp
 
     class _FakeRunner:
         async def run_async(
-            self, *, session_id, user_id, new_message,
-            state_delta=None, run_config=None,
+            self,
+            *,
+            session_id,
+            user_id,
+            new_message,
+            state_delta=None,
+            run_config=None,
         ):
             captured["session_id"] = session_id
             captured["user_id"] = user_id
@@ -1440,7 +1497,8 @@ async def test_adk_runner_invoke_forwards_attachment_results_via_state_delta(tmp
 
     monkeypatch.setattr(runner, "_ensure_session", _fake_ensure_session)
     monkeypatch.setattr(
-        runner, "_prepare_trace_metadata",
+        runner,
+        "_prepare_trace_metadata",
         lambda session_id: ("", [], "", "demo-agent"),
     )
     runner._runner = _FakeRunner()
@@ -1486,8 +1544,13 @@ async def test_adk_runner_invoke_extracts_usage_from_final_event(tmp_path, monke
 
     class _FakeRunner:
         async def run_async(
-            self, *, session_id, user_id, new_message,
-            state_delta=None, run_config=None,
+            self,
+            *,
+            session_id,
+            user_id,
+            new_message,
+            state_delta=None,
+            run_config=None,
         ):
             del session_id, user_id, new_message, state_delta, run_config
             yield SimpleNamespace(
@@ -1507,7 +1570,8 @@ async def test_adk_runner_invoke_extracts_usage_from_final_event(tmp_path, monke
 
     monkeypatch.setattr(runner, "_ensure_session", _fake_ensure_session)
     monkeypatch.setattr(
-        runner, "_prepare_trace_metadata",
+        runner,
+        "_prepare_trace_metadata",
         lambda session_id: ("", [], "", "demo-agent"),
     )
     runner._runner = _FakeRunner()
@@ -1534,15 +1598,22 @@ async def test_adk_runner_invoke_accumulates_usage_across_events(tmp_path, monke
     from ksadk.runners.adk_runner import ADKRunner
 
     detection = SimpleNamespace(
-        entry_point="agent.py", agent_variable="root_agent", name="demo-agent",
+        entry_point="agent.py",
+        agent_variable="root_agent",
+        name="demo-agent",
     )
     runner = ADKRunner(detection, str(tmp_path))
     runner._agent = SimpleNamespace(name="demo-agent")
 
     class _FakeRunner:
         async def run_async(
-            self, *, session_id, user_id, new_message,
-            state_delta=None, run_config=None,
+            self,
+            *,
+            session_id,
+            user_id,
+            new_message,
+            state_delta=None,
+            run_config=None,
         ):
             del session_id, user_id, new_message, state_delta, run_config
             # 两次 LLM 调用(tool loop):第一次 input=4000,第二次 input=5000(含历史)
@@ -1551,8 +1622,12 @@ async def test_adk_runner_invoke_accumulates_usage_across_events(tmp_path, monke
                 content=SimpleNamespace(parts=[]),
             )
             yield SimpleNamespace(
-                usage_metadata={"input_tokens": 5000, "output_tokens": 800, "total_tokens": 5800,
-                                "input_token_details": {"cached": 4500}},
+                usage_metadata={
+                    "input_tokens": 5000,
+                    "output_tokens": 800,
+                    "total_tokens": 5800,
+                    "input_token_details": {"cached": 4500},
+                },
                 content=SimpleNamespace(parts=[types.Part(text="final")]),
             )
 
@@ -1561,7 +1636,8 @@ async def test_adk_runner_invoke_accumulates_usage_across_events(tmp_path, monke
 
     monkeypatch.setattr(runner, "_ensure_session", _fake_ensure_session)
     monkeypatch.setattr(
-        runner, "_prepare_trace_metadata",
+        runner,
+        "_prepare_trace_metadata",
         lambda session_id: ("", [], "", "demo-agent"),
     )
     runner._runner = _FakeRunner()
@@ -1594,8 +1670,13 @@ async def test_adk_runner_stream_extracts_usage_details_from_final_event(tmp_pat
 
     class _FakeRunner:
         async def run_async(
-            self, *, session_id, user_id, new_message,
-            state_delta=None, run_config=None,
+            self,
+            *,
+            session_id,
+            user_id,
+            new_message,
+            state_delta=None,
+            run_config=None,
         ):
             del session_id, user_id, new_message, state_delta, run_config
             yield SimpleNamespace(
@@ -1620,16 +1701,14 @@ async def test_adk_runner_stream_extracts_usage_details_from_final_event(tmp_pat
 
     monkeypatch.setattr(runner, "_ensure_session", _fake_ensure_session)
     monkeypatch.setattr(
-        runner, "_prepare_trace_metadata",
+        runner,
+        "_prepare_trace_metadata",
         lambda session_id: ("", [], "", "demo-agent"),
     )
     runner._runner = _FakeRunner()
 
     chunks = [
-        chunk
-        async for chunk in runner.stream(
-            {"session_id": "external-session", "input": "hello"}
-        )
+        chunk async for chunk in runner.stream({"session_id": "external-session", "input": "hello"})
     ]
 
     final = chunks[-1]

@@ -6,6 +6,7 @@ import importlib
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
+
 from ksadk.detection import DetectionResult, FrameworkType
 from ksadk.runners.base_runner import BaseRunner
 
@@ -15,11 +16,11 @@ if TYPE_CHECKING:
 
 def create_runner(detection_result: DetectionResult, project_dir: str) -> BaseRunner:
     """根据检测结果创建对应的 Runner
-    
+
     Args:
         detection_result: 框架检测结果
         project_dir: 项目目录
-    
+
     Returns:
         对应框架的 Runner 实例
     """
@@ -55,19 +56,25 @@ def create_runner(detection_result: DetectionResult, project_dir: str) -> BaseRu
 
     if detection_result.type == FrameworkType.ADK:
         from ksadk.runners.adk_runner import ADKRunner
+
         return ADKRunner(detection_result, project_dir)
-    
+
     elif detection_result.type == FrameworkType.LANGGRAPH:
         from ksadk.runners.langgraph_runner import LangGraphRunner
+
         return LangGraphRunner(detection_result, project_dir)
-    
+
     elif detection_result.type == FrameworkType.LANGCHAIN:
+        # 新 LangChain(create_agent)= LangGraph 图,经 LangChainRunner 薄壳复用
+        # LangGraphRunner(deepagents 同款);legacy 链在 load_agent 时被薄壳拒绝并给迁移指引。
         from ksadk.runners.langchain_runner import LangChainRunner
+
         return LangChainRunner(detection_result, project_dir)
 
     elif detection_result.type == FrameworkType.DEEPAGENTS:
         from ksadk.runners.deepagents_runner import DeepAgentsRunner
+
         return DeepAgentsRunner(detection_result, project_dir)
-    
+
     else:
         raise ValueError(f"不支持的框架类型: {detection_result.type}")

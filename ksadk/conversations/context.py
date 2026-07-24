@@ -34,9 +34,7 @@ TRANSCRIPT_EVENT_TYPES = {
     "context_checkpoint",
 }
 
-DATA_URL_RE = re.compile(
-    r"data:(?P<mime>[A-Za-z0-9.+-]+/[A-Za-z0-9.+-]+);base64,[A-Za-z0-9+/=_-]+"
-)
+DATA_URL_RE = re.compile(r"data:(?P<mime>[A-Za-z0-9.+-]+/[A-Za-z0-9.+-]+);base64,[A-Za-z0-9+/=_-]+")
 BASE64_FIELD_RE = re.compile(
     r"(?P<prefix>['\"](?P<field>file_data|data|bytes|base64)['\"]\s*:\s*['\"])(?P<value>[A-Za-z0-9+/=_-]{512,})(?P<suffix>['\"])",
     re.IGNORECASE,
@@ -80,7 +78,9 @@ def extract_event_text(event: SessionEvent) -> str:
     if text:
         return sanitize_event_text_for_context(text)
 
-    return sanitize_event_text_for_context(extract_text_from_event_parts(content.get("parts") or []))
+    return sanitize_event_text_for_context(
+        extract_text_from_event_parts(content.get("parts") or [])
+    )
 
 
 def canonical_event_type(
@@ -110,7 +110,11 @@ def canonical_event_type(
         return "run_checkpoint"
     if raw in {"run_resume", "runtime_resume"}:
         return "run_resume"
-    if raw in {"assistant", "model"} or role in {"assistant", "model"} or author in {"assistant", "model"}:
+    if (
+        raw in {"assistant", "model"}
+        or role in {"assistant", "model"}
+        or author in {"assistant", "model"}
+    ):
         return "assistant_message"
     return "user_message"
 
@@ -158,7 +162,9 @@ def build_request_history(messages: Iterable[Dict[str, Any]]) -> List[Dict[str, 
 
 def compacted_until_seq_id(events: List[SessionEvent]) -> int:
     """读取最新 checkpoint 覆盖到哪一个 seq_id。"""
-    checkpoints = [event for event in events if canonical_event_type(event.event_type) == "context_checkpoint"]
+    checkpoints = [
+        event for event in events if canonical_event_type(event.event_type) == "context_checkpoint"
+    ]
     if not checkpoints:
         return 0
     latest = checkpoints[-1]
@@ -460,17 +466,13 @@ def project_responses_history(events: List[SessionEvent]) -> List[dict[str, Any]
                 projected.append(item)
                 projected_call_ids.add(str(item["call_id"]))
                 continue
-            message = _responses_message(
-                "assistant", f"[tool_call] {extract_event_text(event)}"
-            )
+            message = _responses_message("assistant", f"[tool_call] {extract_event_text(event)}")
         elif event_type == "tool_result":
             item = _response_tool_output_item(event)
             if item and str(item["call_id"]) in projected_call_ids:
                 projected.append(item)
                 continue
-            message = _responses_message(
-                "user", f"[tool_result] {extract_event_text(event)}"
-            )
+            message = _responses_message("user", f"[tool_result] {extract_event_text(event)}")
         elif event_type == "assistant_message":
             message = _responses_message("assistant", extract_event_text(event))
         elif event_type == "approval_request":
@@ -478,13 +480,9 @@ def project_responses_history(events: List[SessionEvent]) -> List[dict[str, Any]
                 "assistant", f"[approval_request] {extract_event_text(event)}"
             )
         elif event_type == "approval_response":
-            message = _responses_message(
-                "user", f"[approval_response] {extract_event_text(event)}"
-            )
+            message = _responses_message("user", f"[approval_response] {extract_event_text(event)}")
         elif event_type == "attachment_ref":
-            message = _responses_message(
-                "user", f"[attachment] {extract_event_text(event)}"
-            )
+            message = _responses_message("user", f"[attachment] {extract_event_text(event)}")
         else:
             message = _responses_message("user", extract_event_text(event))
         if message:

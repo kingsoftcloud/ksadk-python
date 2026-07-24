@@ -7,7 +7,6 @@ from typing import Any
 
 import yaml
 
-
 STATE_FILE_NAME = ".agentengine.state"
 
 

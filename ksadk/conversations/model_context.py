@@ -79,12 +79,12 @@ def _coerce_token_limit(value: Any, *, assume_k_for_plain_values: bool = False) 
         text = text[:-1]
 
     try:
-        parsed = float(text)
+        parsed_number = float(text)
     except (TypeError, ValueError):
         return None
-    if parsed <= 0:
+    if parsed_number <= 0:
         return None
-    resolved = int(parsed * multiplier)
+    resolved = int(parsed_number * multiplier)
     if multiplier == 1 and assume_k_for_plain_values and text.isdigit() and 0 < resolved <= 1000:
         return resolved * 1000
     return resolved
@@ -189,7 +189,9 @@ def get_context_window_tokens(model_metadata: Mapping[str, Any] | None = None) -
         if model_metadata.get("context_window_tokens"):
             limits["context_window_tokens"] = model_metadata["context_window_tokens"]
 
-    return _coerce_positive_int(limits.get("context_window_tokens")) or DEFAULT_CONTEXT_WINDOW_TOKENS
+    return (
+        _coerce_positive_int(limits.get("context_window_tokens")) or DEFAULT_CONTEXT_WINDOW_TOKENS
+    )
 
 
 def get_effective_context_window_tokens(model_metadata: Mapping[str, Any] | None = None) -> int:
@@ -202,7 +204,9 @@ def get_effective_context_window_tokens(model_metadata: Mapping[str, Any] | None
             limits["max_output_tokens"] = model_metadata["max_output_tokens"]
 
     context_window = get_context_window_tokens(model_metadata)
-    max_output_tokens = _coerce_positive_int(limits.get("max_output_tokens")) or DEFAULT_MAX_OUTPUT_TOKENS
+    max_output_tokens = (
+        _coerce_positive_int(limits.get("max_output_tokens")) or DEFAULT_MAX_OUTPUT_TOKENS
+    )
     reserved_tokens = min(max_output_tokens, AUTOCOMPACT_SUMMARY_RESERVE_TOKENS)
     return max(1, context_window - reserved_tokens)
 
@@ -366,5 +370,7 @@ def normalize_model_metadata(raw_model: Mapping[str, Any] | str | None) -> dict[
         "pricing": pricing,
     }
     normalized["auto_compact_threshold_tokens"] = get_auto_compact_threshold_tokens(normalized)
-    normalized["auto_compact_threshold_percentage"] = get_auto_compact_threshold_percentage(normalized)
+    normalized["auto_compact_threshold_percentage"] = get_auto_compact_threshold_percentage(
+        normalized
+    )
     return normalized

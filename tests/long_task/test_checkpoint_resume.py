@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from ksadk.conversations.context import build_history_from_events
 from ksadk.conversations.runtime import (
     append_run_checkpoint_event,
@@ -9,8 +11,6 @@ from ksadk.conversations.runtime import (
 )
 from ksadk.sessions.base import SessionEvent
 from ksadk.sessions.in_memory import InMemorySessionService
-
-import pytest
 
 
 class _CheckpointResumeRunner:

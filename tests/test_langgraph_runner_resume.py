@@ -1,8 +1,8 @@
+import base64
 from types import SimpleNamespace
 
 import pytest
 from langgraph.types import Command
-import base64
 
 from ksadk.runners.langgraph_runner import LangGraphRunner
 
@@ -210,7 +210,9 @@ class _DroppedFinalStateUsageStreamingAgent(_DummyAgent):
 
     def get_state(self, config):
         del config
-        return SimpleNamespace(values={"messages": [SimpleNamespace(content="final without usage")]})
+        return SimpleNamespace(
+            values={"messages": [SimpleNamespace(content="final without usage")]}
+        )
 
     async def astream_events(self, state, version="v2", config=None):
         self.last_astream_state = state
@@ -245,7 +247,9 @@ class _DroppedFinalStateUsageStreamingAgent(_DummyAgent):
 class _MultipleModelUsageStreamingAgent(_DummyAgent):
     def get_state(self, config):
         del config
-        return SimpleNamespace(values={"messages": [SimpleNamespace(content="final without usage")]})
+        return SimpleNamespace(
+            values={"messages": [SimpleNamespace(content="final without usage")]}
+        )
 
     async def astream_events(self, state, version="v2", config=None):
         self.last_astream_state = state
@@ -427,6 +431,7 @@ class _CheckpointResumeLatestStateAgent(_CheckpointResumeUpdatesAgent):
             next=(),
         )
 
+
 def _make_runner(module=None) -> LangGraphRunner:
     detection = SimpleNamespace(entry_point="src/agent.py", agent_variable="root_agent")
     runner = LangGraphRunner(detection, ".")
@@ -547,7 +552,7 @@ async def test_invoke_simplified_input_preserves_extra_state():
 
 
 @pytest.mark.asyncio
-async def test_invoke_simplified_input_does_not_duplicate_current_user_message_when_history_contains_it():
+async def test_invoke_simplified_input_deduplicates_user_message_from_history():
     runner = _make_runner()
 
     await runner.invoke(
@@ -1054,7 +1059,10 @@ async def test_stream_checkpoint_resume_prefers_astream_updates_over_events():
     assert {"type": "final", "output": "resumed via updates"} in chunks
     checkpoint = chunks[-1]
     assert checkpoint["type"] == "checkpoint"
-    assert checkpoint["metadata"]["agentengine"]["framework_ref"]["langgraph"]["checkpoint_id"] == "ckpt-after"
+    assert (
+        checkpoint["metadata"]["agentengine"]["framework_ref"]["langgraph"]["checkpoint_id"]
+        == "ckpt-after"
+    )
     assert checkpoint["metadata"]["agentengine"]["next_node"] == "report"
 
 
@@ -1139,7 +1147,9 @@ async def test_stream_does_not_mix_reasoning_into_final_text():
         {"delta": "这是最终回复。", "type": "text"},
     ]
     assert chunks[-1] == {"output": "这是最终回复。", "type": "final"}
-    assert all("先分析需求。" not in chunk.get("delta", "") for chunk in chunks if chunk["type"] == "text")
+    assert all(
+        "先分析需求。" not in chunk.get("delta", "") for chunk in chunks if chunk["type"] == "text"
+    )
 
 
 @pytest.mark.asyncio
@@ -1281,13 +1291,17 @@ async def test_invoke_with_binary_attachment_does_not_convert_reference_to_image
 
     content = runner._agent.last_ainvoke_state["messages"][-1].content
     if isinstance(content, list):
-        assert not any(item.get("type") == "image_url" for item in content if isinstance(item, dict))
+        assert not any(
+            item.get("type") == "image_url" for item in content if isinstance(item, dict)
+        )
     else:
         assert content == "分析压缩包"
 
 
 @pytest.mark.asyncio
-async def test_invoke_with_image_attachment_converts_to_multimodal_human_message(tmp_path, monkeypatch):
+async def test_invoke_with_image_attachment_converts_to_multimodal_human_message(
+    tmp_path, monkeypatch
+):
     monkeypatch.setenv("AGENTENGINE_UI_DIR", str(tmp_path / ".agentengine" / "ui"))
     runner = _make_runner()
     image_path = tmp_path / ".agentengine" / "ui" / "files" / "img123.png"
@@ -1525,6 +1539,29 @@ async def test_invoke_uses_ksadk_prepare_state_hook():
 
 
 @pytest.mark.asyncio
+async def test_prepare_state_hook_preserves_agui_and_copilotkit_protocol_state():
+    def ksadk_prepare_state(payload, session_context):
+        return {"query": payload["input"], "session_id": session_context["session_id"]}
+
+    runner = _make_runner(module=SimpleNamespace(ksadk_prepare_state=ksadk_prepare_state))
+    await runner.invoke(
+        {
+            "session_id": "s1",
+            "input": "show status card",
+            "ag-ui": {"inject_a2ui_tool": True, "a2ui_schema": "{}"},
+            "copilotkit": {"actions": [{"name": "frontend_action"}]},
+        }
+    )
+
+    assert runner._agent.last_ainvoke_state == {
+        "query": "show status card",
+        "session_id": "s1",
+        "ag-ui": {"inject_a2ui_tool": True, "a2ui_schema": "{}"},
+        "copilotkit": {"actions": [{"name": "frontend_action"}]},
+    }
+
+
+@pytest.mark.asyncio
 async def test_invoke_prepare_state_hook_receives_kb_and_memory_context():
     captured = []
 
@@ -1533,17 +1570,19 @@ async def test_invoke_prepare_state_hook_receives_kb_and_memory_context():
         return {"query": payload["input"]}
 
     runner = _make_runner(module=SimpleNamespace(ksadk_prepare_state=ksadk_prepare_state))
-    await runner.invoke({
-        "session_id": "s1",
-        "input": "search",
-        "kb_context": {"formatted_text": "KB facts"},
-        "memory_context": {"formatted_text": "Memory facts"},
-        "platform_context": {
-            "agent_id": "a1",
-            "user_id": "u1",
-            "metadata": {"tenant": "acme", "biz": {"order_id": "o-9"}},
-        },
-    })
+    await runner.invoke(
+        {
+            "session_id": "s1",
+            "input": "search",
+            "kb_context": {"formatted_text": "KB facts"},
+            "memory_context": {"formatted_text": "Memory facts"},
+            "platform_context": {
+                "agent_id": "a1",
+                "user_id": "u1",
+                "metadata": {"tenant": "acme", "biz": {"order_id": "o-9"}},
+            },
+        }
+    )
 
     payload, session_context = captured[0]
     assert payload == {"input": "search"}
@@ -1602,11 +1641,13 @@ async def test_invoke_resume_with_prepare_state_hook():
         }
 
     runner = _make_runner(module=SimpleNamespace(ksadk_prepare_state=ksadk_prepare_state))
-    await runner.invoke({
-        "session_id": "s1",
-        "resume": True,
-        "input": {"approved": True, "comment": "looks good"},
-    })
+    await runner.invoke(
+        {
+            "session_id": "s1",
+            "resume": True,
+            "input": {"approved": True, "comment": "looks good"},
+        }
+    )
 
     state = runner._agent.last_ainvoke_state
     assert isinstance(state, Command)

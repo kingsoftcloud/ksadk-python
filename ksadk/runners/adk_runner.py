@@ -15,11 +15,11 @@ from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict, Mapping, Optional
+from typing import Any, AsyncIterator, Dict, Mapping, Optional, cast
 
-from google.genai import types
 from opentelemetry import trace
 
+from ksadk.compat.adk_compat import genai_types as types
 from ksadk.conversations.attachments import classify_attachment_kind, read_attachment_uri_bytes
 from ksadk.conversations.model_context import supports_native_image_input
 from ksadk.runners.base_runner import BaseRunner
@@ -36,17 +36,17 @@ class ADKRunner(BaseRunner):
 
     def __init__(self, detection_result: Any, project_dir: str):
         super().__init__(detection_result, project_dir)
-        self._runner = None
-        self._session_service = None
+        self._runner: Any = None
+        self._session_service: Any = None
         # Map external session_ids (e.g. from run_interactive or web) to ADK internal session IDs
         self._session_map: Dict[str, str] = {}
         # Fallback default session
         self._default_session_id: Optional[str] = None
         # Memory integration
-        self._short_term_memory = None
-        self._long_term_memory = None
+        self._short_term_memory: Any = None
+        self._long_term_memory: Any = None
         # Knowledge base integration
-        self._knowledge_base = None
+        self._knowledge_base: Any = None
         # Keep runtime toolsets alive for the lifetime of the runner.
         self._runtime_toolsets: list[Any] = []
         # ADK resumability state
@@ -55,7 +55,7 @@ class ADKRunner(BaseRunner):
         # P1.1 sub-issue: guard invocation_map read-modify-write so concurrent
         # invocations on the same session don't lose each other's mappings.
         self._invocation_map_lock = asyncio.Lock()
-        self._module = None
+        self._module: Any = None
         self._adk_resume_min_version = os.environ.get(
             "GOOGLE_ADK_RESUME_MIN_VERSION", "1.16.0"
         ).strip()
@@ -98,7 +98,9 @@ class ADKRunner(BaseRunner):
             import inspect as _inspect
             import json as _stdlib_json
 
-            import google.adk.models.lite_llm as adk_lite_llm
+            from ksadk.compat.adk_compat import lite_llm_module
+
+            adk_lite_llm = lite_llm_module()
 
             _original_fn = adk_lite_llm._message_to_generate_content_response
             if getattr(_original_fn, "__ksadk_json_patch__", False):
@@ -106,9 +108,7 @@ class ADKRunner(BaseRunner):
             # Determine which kwargs the original function actually accepts,
             # so the patch is compatible across ADK versions that may have
             # added or removed `model_version` / `thought_parts`.
-            _orig_params = set(
-                _inspect.signature(_original_fn).parameters.keys()
-            )
+            _orig_params = set(_inspect.signature(_original_fn).parameters.keys())
 
             def _patched_message_to_generate_content_response(
                 message, *, is_partial=False, model_version=None, thought_parts=None
@@ -129,8 +129,8 @@ class ADKRunner(BaseRunner):
                         "ADKRunner: caught JSONDecodeError in args parsing, "
                         "returning empty response"
                     )
-                    from google.adk.models import LlmResponse
-                    from google.genai import types as _genai_types
+                    from ksadk.compat.adk_compat import LlmResponse
+                    from ksadk.compat.adk_compat import genai_types as _genai_types
 
                     return LlmResponse(
                         content=_genai_types.Content(role="model", parts=[]),
@@ -149,15 +149,11 @@ class ADKRunner(BaseRunner):
                     for i, part in enumerate(result.content.parts):
                         if part.function_call and part.function_call.args is None:
                             part.function_call.args = {}
-                        if (
-                            part.function_call
-                            and not (part.function_call.name or "").strip()
-                        ):
+                        if part.function_call and not (part.function_call.name or "").strip():
                             phantom_indices.add(i)
                 if phantom_indices:
                     result.content.parts = [
-                        p for i, p in enumerate(result.content.parts)
-                        if i not in phantom_indices
+                        p for i, p in enumerate(result.content.parts) if i not in phantom_indices
                     ]
                 return result
 
@@ -180,7 +176,6 @@ class ADKRunner(BaseRunner):
         except Exception:
             pass
 
-
     def _apply_mcp_result_patch(self):
         """Patch ADK McpTool to convert CallToolResult to dict.
 
@@ -192,17 +187,17 @@ class ADKRunner(BaseRunner):
         for the old version.
         """
         try:
-            from google.adk.tools.mcp_tool.mcp_tool import McpTool
+            from ksadk.compat.adk_compat import McpTool
 
             _original_run_async = McpTool._run_async_impl
             if getattr(_original_run_async, "__ksadk_mcp_result_patch__", False):
                 return
 
-            async def _patched_run_async_impl(
-                self, *, args, tool_context, credential
-            ):
+            async def _patched_run_async_impl(self, *, args, tool_context, credential):
                 response = await _original_run_async(
-                    self, args=args, tool_context=tool_context,
+                    self,
+                    args=args,
+                    tool_context=tool_context,
                     credential=credential,
                 )
                 # If response is a Pydantic model (e.g. CallToolResult),
@@ -223,7 +218,6 @@ class ADKRunner(BaseRunner):
             pass  # ADK or MCP not installed
         except Exception as exc:
             logger.debug("ADKRunner: MCP result patch failed: %s", exc)
-
 
     def _init_short_term_memory(self):
         """从环境变量初始化短期记忆
@@ -268,8 +262,7 @@ class ADKRunner(BaseRunner):
     def describe_checkpoint_capability(self) -> dict[str, Any]:
         resumable = getattr(self, "_resumable", False)
         stm_backend = (
-            getattr(self._short_term_memory, "backend", None)
-            if self._short_term_memory else None
+            getattr(self._short_term_memory, "backend", None) if self._short_term_memory else None
         )
         if resumable:
             backend = "adk_invocation"
@@ -312,8 +305,7 @@ class ADKRunner(BaseRunner):
         capabilities = super().get_runtime_capabilities()
         resumable = getattr(self, "_resumable", False)
         stm_backend = (
-            getattr(self._short_term_memory, "backend", None)
-            if self._short_term_memory else None
+            getattr(self._short_term_memory, "backend", None) if self._short_term_memory else None
         )
         is_durable = stm_backend is not None and stm_backend != "local"
         if resumable:
@@ -352,9 +344,11 @@ class ADKRunner(BaseRunner):
                 "Supported": True,
                 "Type": "native_session" if has_native_session else "semantic_replay",
                 "Level": "semantic",
-                "Reason": "ADK native session can continue conversation context"
-                if has_native_session
-                else "conversation transcript can be replayed",
+                "Reason": (
+                    "ADK native session can continue conversation context"
+                    if has_native_session
+                    else "conversation transcript can be replayed"
+                ),
             }
         capabilities["ResumeRun"]["Reason"] = capabilities["Checkpoint"]["Reason"]
         return capabilities
@@ -362,8 +356,8 @@ class ADKRunner(BaseRunner):
     @dataclass
     class _ResolvabilityResult:
         enabled: bool
-        source: str          # "agent_module" | "env" | "auto_persistent_session" | "default"
-        app: Any             # User module exported App object (if any)
+        source: str  # "agent_module" | "env" | "auto_persistent_session" | "default"
+        app: Any  # User module exported App object (if any)
 
     def _resolve_resumability(self) -> "_ResolvabilityResult":
         """从环境变量或 agent 模块推断是否启用 ADK 可恢复性。"""
@@ -371,13 +365,15 @@ class ADKRunner(BaseRunner):
         module = getattr(self, "_module", None)
         if module is not None:
             try:
-                from google.adk.apps import App
+                from ksadk.compat.adk_compat import App
+
                 for attr_name in ("app", "application"):
                     candidate = getattr(module, attr_name, None)
                     if isinstance(candidate, App) and candidate.resumability_config:
                         if candidate.resumability_config.is_resumable:
                             return self._ResolvabilityResult(
-                                enabled=True, source="agent_module", app=candidate)
+                                enabled=True, source="agent_module", app=candidate
+                            )
             except ImportError:
                 pass
 
@@ -388,12 +384,12 @@ class ADKRunner(BaseRunner):
 
         # Priority 3: persistent session backend auto-enable
         stm_backend = (
-            getattr(self._short_term_memory, "backend", None)
-            if self._short_term_memory else None
+            getattr(self._short_term_memory, "backend", None) if self._short_term_memory else None
         )
         if stm_backend and stm_backend != "local":
             return self._ResolvabilityResult(
-                enabled=True, source="auto_persistent_session", app=None)
+                enabled=True, source="auto_persistent_session", app=None
+            )
 
         return self._ResolvabilityResult(enabled=False, source="default", app=None)
 
@@ -417,6 +413,7 @@ class ADKRunner(BaseRunner):
             return False, "google-adk version unknown, cannot guarantee invocation_id support"
         try:
             from packaging.version import Version
+
             if Version(adk_ver) < Version(self._adk_resume_min_version):
                 return (
                     False,
@@ -430,7 +427,7 @@ class ADKRunner(BaseRunner):
 
     def _build_runner(self) -> None:
         """构造 ADK Runner，优先使用 App 对象以启用 ResumabilityConfig。"""
-        from google.adk.runners import Runner
+        from ksadk.compat.adk_compat import Runner
 
         resumable = self._resolve_resumability()
         resumability_enabled = resumable.enabled
@@ -438,9 +435,7 @@ class ADKRunner(BaseRunner):
         # 版本兼容性检查：低于最低版本时强制关闭恢复
         resume_compatible, resume_reason = self._check_adk_resume_compatibility()
         if not resume_compatible and resumable.enabled:
-            logger.warning(
-                "ADKRunner: resumability disabled — %s", resume_reason
-            )
+            logger.warning("ADKRunner: resumability disabled — %s", resume_reason)
             resumable = self._ResolvabilityResult(enabled=False, source="version_check", app=None)
             resumability_enabled = False
             self._resume_disabled_reason = resume_reason
@@ -452,7 +447,8 @@ class ADKRunner(BaseRunner):
             )
         elif resumable.enabled:
             try:
-                from google.adk.apps import App, ResumabilityConfig
+                from ksadk.compat.adk_compat import App, ResumabilityConfig
+
                 app = App(
                     name=self._agent.name,
                     root_agent=self._agent,
@@ -491,7 +487,8 @@ class ADKRunner(BaseRunner):
         if resumability_enabled:
             stm_backend = (
                 getattr(self._short_term_memory, "backend", None)
-                if self._short_term_memory else None
+                if self._short_term_memory
+                else None
             )
             logger.info(
                 "ADKRunner: resumability enabled (source=%s, backend=%s)",
@@ -519,10 +516,7 @@ class ADKRunner(BaseRunner):
 
             agent_name = self._agent.name if self._agent else "default"
             ltm = LongTermMemory.from_env(app_name=agent_name)
-            logger.info(
-                f"LongTermMemory initialized: backend={backend}, "
-                f"app_name={agent_name}"
-            )
+            logger.info(f"LongTermMemory initialized: backend={backend}, " f"app_name={agent_name}")
             return ltm
         except Exception as e:
             logger.warning(f"Failed to init LongTermMemory: {e}.")
@@ -546,8 +540,7 @@ class ADKRunner(BaseRunner):
 
             kb = KnowledgeBaseClient.from_env()
             logger.info(
-                f"KnowledgeBase initialized: dataset_id={kb.dataset_id}, "
-                f"region={kb.region}"
+                f"KnowledgeBase initialized: dataset_id={kb.dataset_id}, " f"region={kb.region}"
             )
             return kb
         except ImportError:
@@ -582,7 +575,7 @@ class ADKRunner(BaseRunner):
     def _inject_load_memory_tool(self):
         """自动注入 load_memory 工具到 Agent"""
         try:
-            from google.adk.tools import load_memory
+            from ksadk.compat.adk_compat import load_memory
 
             added = self._append_tools_by_name([load_memory])
             if added:
@@ -810,7 +803,7 @@ class ADKRunner(BaseRunner):
 
     @staticmethod
     def _tool_name(tool: Any) -> str:
-        return getattr(tool, "name", None) or getattr(tool, "__name__", "")
+        return str(getattr(tool, "name", None) or getattr(tool, "__name__", ""))
 
     def _append_tools_by_name(self, tools: list[Any]) -> list[str]:
         if not hasattr(self._agent, "tools"):
@@ -821,9 +814,7 @@ class ADKRunner(BaseRunner):
             self._agent.tools = []
 
         existing_names = {
-            self._tool_name(tool)
-            for tool in self._agent.tools
-            if self._tool_name(tool)
+            self._tool_name(tool) for tool in self._agent.tools if self._tool_name(tool)
         }
         added_names: list[str] = []
         for tool in tools:
@@ -845,9 +836,7 @@ class ADKRunner(BaseRunner):
             self._agent.tools = []
 
         existing_keys = {
-            getattr(tool, key_attr)
-            for tool in self._agent.tools
-            if getattr(tool, key_attr, None)
+            getattr(tool, key_attr) for tool in self._agent.tools if getattr(tool, key_attr, None)
         }
         added_keys: list[str] = []
         for toolset in toolsets:
@@ -879,11 +868,13 @@ class ADKRunner(BaseRunner):
             name = detail.get("input")
             if location not in (("name",), ["name"]) or not isinstance(name, str):
                 continue
-            if "valid identifier" not in message.lower():
+            # adk 1.34 报 "...valid identifier";adk 2.x 报 "...valid Python identifier"。
+            # 放宽匹配以同时覆盖两种措辞,保证两版都给出 actionable hint。
+            msg_lower = message.lower()
+            if "identifier" not in msg_lower or "valid" not in msg_lower:
                 continue
             safe_name = "".join(
-                char if char.isascii() and (char.isalnum() or char == "_") else "_"
-                for char in name
+                char if char.isascii() and (char.isalnum() or char == "_") else "_" for char in name
             )
             if not safe_name or safe_name[0].isdigit():
                 safe_name = f"agent_{safe_name}"
@@ -960,7 +951,7 @@ class ADKRunner(BaseRunner):
             self._inject_search_knowledge_tool()
 
         # 初始化 SessionService
-        from google.adk.sessions import InMemorySessionService
+        from ksadk.compat.adk_compat import InMemorySessionService
 
         if self._short_term_memory:
             self._session_service = self._short_term_memory.session_service
@@ -983,10 +974,7 @@ class ADKRunner(BaseRunner):
             os.getenv("OPENAI_MODEL_NAME") or os.getenv("MODEL_NAME")
         )
         self._default_model_reference = self._discover_model_reference(self._agent)
-        self._active_model_name = (
-            self._default_model_reference
-            or self._default_model_name
-        )
+        self._active_model_name = self._default_model_reference or self._default_model_name
 
     def _discover_model_reference(self, agent: Any) -> Optional[str]:
         visited: set[int] = set()
@@ -1058,18 +1046,14 @@ class ADKRunner(BaseRunner):
     def prepare_for_request(self, model: str | None) -> None:
         normalized = self.sync_process_model_env(model)
         if normalized is None:
-            default_model_name = (
-                getattr(self, "_default_model_name", None)
-                or self.normalize_requested_model(
-                    os.getenv("OPENAI_MODEL_NAME") or os.getenv("MODEL_NAME")
-                )
+            default_model_name = getattr(
+                self, "_default_model_name", None
+            ) or self.normalize_requested_model(
+                os.getenv("OPENAI_MODEL_NAME") or os.getenv("MODEL_NAME")
             )
             if default_model_name:
                 self.sync_process_model_env(default_model_name)
-            target_reference = (
-                getattr(self, "_default_model_reference", None)
-                or default_model_name
-            )
+            target_reference = getattr(self, "_default_model_reference", None) or default_model_name
             if target_reference and self._agent is not None:
                 current_reference = self._discover_model_reference(self._agent)
                 if current_reference != target_reference:
@@ -1095,14 +1079,13 @@ class ADKRunner(BaseRunner):
             return
         self._active_model_name = target_reference
 
-    def _prepare_trace_metadata(self, session_id: str):
+    def _prepare_trace_metadata(self, session_id: Optional[str]):
         """准备 Trace 元数据 (Tags, UserID, etc.)"""
         from ksadk.tracing.span_utils import prepare_trace_metadata
-        return prepare_trace_metadata(
-            detection_result=getattr(self, "detection_result", None)
-        )
 
-    async def _ensure_session(self, external_session_id: str = None) -> str:
+        return prepare_trace_metadata(detection_result=getattr(self, "detection_result", None))
+
+    async def _ensure_session(self, external_session_id: Optional[str] = None) -> str:
         """Get or create ADK session ID based on external ID
 
         When ShortTermMemory is configured, uses its create_session method
@@ -1121,11 +1104,13 @@ class ADKRunner(BaseRunner):
                     session_id=external_session_id,
                 )
             else:
+                if self._session_service is None:
+                    raise RuntimeError("ADK session service is not initialized")
                 session = await self._session_service.create_session(
                     app_name=self._agent.name, user_id="ksadk_user"
                 )
             self._session_map[external_session_id] = session.id
-            return session.id
+            return str(session.id)
 
         # Case 2: No external ID (use default singleton)
         if self._default_session_id is None:
@@ -1135,11 +1120,13 @@ class ADKRunner(BaseRunner):
                     user_id="ksadk_user",
                 )
             else:
+                if self._session_service is None:
+                    raise RuntimeError("ADK session service is not initialized")
                 session = await self._session_service.create_session(
                     app_name=self._agent.name, user_id="ksadk_user"
                 )
             self._default_session_id = session.id
-        return self._default_session_id
+        return str(self._default_session_id)
 
     async def save_session_to_long_term_memory(
         self, session_id: str, user_id: str = "ksadk_user"
@@ -1323,8 +1310,11 @@ class ADKRunner(BaseRunner):
             usage_metadata.get("total_token_count") or (input_tokens + output_tokens)
         )
         if not (
-            input_tokens or output_tokens or total_tokens
-            or input_token_details or output_token_details
+            input_tokens
+            or output_tokens
+            or total_tokens
+            or input_token_details
+            or output_token_details
         ):
             return {}
         return {
@@ -1338,7 +1328,6 @@ class ADKRunner(BaseRunner):
     @classmethod
     def _extract_event_usage(cls, event: Any) -> dict[str, Any]:
         return cls._normalize_usage_metadata(getattr(event, "usage_metadata", None))
-
 
     # --- ADK invocation_id & checkpoint helpers ---
 
@@ -1380,9 +1369,9 @@ class ADKRunner(BaseRunner):
             return max_seq
         except Exception as exc:
             logger.warning(
-                "ADKRunner: failed to query max checkpoint_seq "
-                "for run_id=%s: %s",
-                run_id, exc,
+                "ADKRunner: failed to query max checkpoint_seq " "for run_id=%s: %s",
+                run_id,
+                exc,
             )
             return 0
 
@@ -1406,7 +1395,8 @@ class ADKRunner(BaseRunner):
         captured_adk_invocation_id = ""
         # 从已有 checkpoint 的最大 seq 继续，避免恢复模式下 ID 碰撞被去重丢弃
         checkpoint_seq = await self._get_max_checkpoint_seq_for_run(
-            session_id=session_id, run_id=effective_run_id,
+            session_id=session_id,
+            run_id=effective_run_id,
         )
         async for event in events_async:
             if not first_event_captured and hasattr(event, "invocation_id") and event.invocation_id:
@@ -1513,7 +1503,6 @@ class ADKRunner(BaseRunner):
         except Exception:
             return None
 
-
     def _is_resumable_boundary(self, event: Any) -> bool:
         """判断 ADK event 是否为可恢复边界。"""
         # 工具调用请求
@@ -1526,6 +1515,83 @@ class ADKRunner(BaseRunner):
             if getattr(event.actions, "end_of_agent", False):
                 return True
         return False
+
+    def _extract_approval_signals(self, event: Any) -> list[dict[str, Any]]:
+        """从 ADK event 提取原生审批信号,翻译成统一 interrupt_info(供 runtime:4645 消费)。
+
+        覆盖 ADK 两套原生 HITL 机制,经 ``adk_compat`` 能力探测,兼容 1.34.x → 2.x:
+
+        1. **tool-confirmation**(``actions.requested_tool_confirmations``):工具执行前
+           yes/no 审批,1.34+ 均有。→ ``kind="tool"``。
+        2. **workflow HITL**(v2.0+):``event.interrupted=True`` + ``RequestInput`` 信号
+           (message/payload/response_schema)。→ ``kind="input"``。
+
+        命中任一即返回 ``[{"approval_request_id","tool_name","args","kind","message"}, ...]``,
+        否则返回 ``[]``。不引入对 v2.0 API 的硬依赖——字段缺失时跳过,不报错。
+        """
+        signals: list[dict[str, Any]] = []
+        actions = getattr(event, "actions", None)
+
+        # 1) tool-confirmation:requested_tool_confirmations(1.34+,经 getattr 容错)
+        if actions is not None:
+            confirmations = getattr(actions, "requested_tool_confirmations", None)
+            if confirmations:
+                for conf in confirmations:
+                    if conf is None:
+                        continue
+                    conf_id = str(
+                        getattr(conf, "id", "") or getattr(conf, "approval_request_id", "") or ""
+                    )
+                    if not conf_id:
+                        continue
+                    signals.append(
+                        {
+                            "approval_request_id": conf_id,
+                            "tool_name": str(
+                                getattr(conf, "tool_name", "")
+                                or getattr(conf, "name", "")
+                                or "tool"
+                            ),
+                            "args": dict(getattr(conf, "args", None) or {}),
+                            "kind": "tool",
+                            "message": str(
+                                getattr(conf, "message", "") or getattr(conf, "hint", "") or ""
+                            ),
+                        }
+                    )
+
+        # 2) workflow HITL(v2.0+):event.interrupted + RequestInput 信号
+        #    仅当 adk_compat 探测到 v2.0+ 时检查,避免在 1.34 上访问不存在字段。
+        try:
+            from ksadk.compat.adk_compat import adk_version_at_least
+
+            if adk_version_at_least("2.0.0") and getattr(event, "interrupted", False):
+                # RequestInput 信号可能挂在 actions 或 event 上(字段名跨小版本未冻结,
+                # 用 getattr 容错,缺失即视为纯 interrupt 无 payload)。
+                req_input = None
+                if actions is not None:
+                    req_input = getattr(actions, "requested_input", None) or getattr(
+                        actions, "request_input", None
+                    )
+                if req_input is None:
+                    req_input = getattr(event, "requested_input", None)
+                interrupt_id = "adk-hitl-" + str(getattr(event, "invocation_id", "") or "unknown")
+                signals.append(
+                    {
+                        "approval_request_id": interrupt_id,
+                        "tool_name": "RequestInput",
+                        "args": dict(getattr(req_input, "payload", None) or {}),
+                        "kind": "input",
+                        "message": str(
+                            getattr(req_input, "message", "") or "ADK workflow 请求人工输入"
+                        ),
+                    }
+                )
+        except Exception:
+            # 能力探测失败时不阻塞主流(审批 surface 是 best-effort,不降级为报错)。
+            pass
+
+        return signals
 
     async def _maybe_write_checkpoint(
         self,
@@ -1573,9 +1639,10 @@ class ADKRunner(BaseRunner):
             metadata=metadata,
         )
         logger.debug(
-            "ADKRunner: wrote checkpoint adk-ckpt-%d at boundary "
-            "(session=%s, invocation_id=%s)",
-            checkpoint_seq, session_id, adk_invocation_id,
+            "ADKRunner: wrote checkpoint adk-ckpt-%d at boundary " "(session=%s, invocation_id=%s)",
+            checkpoint_seq,
+            session_id,
+            adk_invocation_id,
         )
 
     def _extract_checkpoint_metadata(self, event: Any) -> dict[str, Any]:
@@ -1602,8 +1669,7 @@ class ADKRunner(BaseRunner):
 
         # 是否可恢复
         stm_backend = (
-            getattr(self._short_term_memory, "backend", None)
-            if self._short_term_memory else None
+            getattr(self._short_term_memory, "backend", None) if self._short_term_memory else None
         )
         shared_across_pods = stm_backend == "database"
         platform_resumable = self._resumable and shared_across_pods
@@ -1655,9 +1721,9 @@ class ADKRunner(BaseRunner):
             )
         if not adk_invocation_id:
             logger.error(
-                "Resume requested but ADK invocation_id not found for "
-                "session=%s ksadk_inv=%s",
-                session_id, ksadk_invocation_id,
+                "Resume requested but ADK invocation_id not found for " "session=%s ksadk_inv=%s",
+                session_id,
+                ksadk_invocation_id,
             )
             raise ValueError(
                 f"checkpoint_not_resumable: ADK invocation_id not found for "
@@ -1665,7 +1731,7 @@ class ADKRunner(BaseRunner):
                 f"The checkpoint data may have been lost or the invocation was "
                 f"never persisted."
             )
-        return adk_invocation_id
+        return str(adk_invocation_id)
 
     async def _prepare_run_events(
         self,
@@ -1691,9 +1757,7 @@ class ADKRunner(BaseRunner):
         else:
             new_message = None
 
-        ksadk_invocation_id = str(
-            input_data.get("invocation_id") or input_data.get("run_id") or ""
-        )
+        ksadk_invocation_id = str(input_data.get("invocation_id") or input_data.get("run_id") or "")
 
         checkpoint_run_id = (
             str(input_data.get("run_id") or "").strip()
@@ -1725,6 +1789,8 @@ class ADKRunner(BaseRunner):
             run_kwargs["new_message"] = new_message
             run_kwargs["state_delta"] = self._build_state_delta(input_data) or None
 
+        if self._runner is None:
+            raise RuntimeError("ADK runner is not initialized")
         events_async = self._runner.run_async(**run_kwargs)
 
         if ksadk_invocation_id and self._resumable:
@@ -1740,7 +1806,7 @@ class ADKRunner(BaseRunner):
                 session_id=session_id,
                 ksadk_invocation_id=ksadk_invocation_id,
             )
-        return wrapped_async
+        return cast(AsyncIterator[Any], wrapped_async)
 
     async def invoke(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """调用 ADK Agent"""
@@ -1764,9 +1830,7 @@ class ADKRunner(BaseRunner):
             # Set input.value for Langfuse top-level input display
             span.set_attribute("input.value", user_input)
             truncated_input = (
-                user_input[:200]
-                if isinstance(user_input, str)
-                else str(user_input)[:200]
+                user_input[:200] if isinstance(user_input, str) else str(user_input)[:200]
             )
             span.set_attribute("user.input", truncated_input)
 
@@ -1819,7 +1883,7 @@ class ADKRunner(BaseRunner):
             # final_response may hold only intermediate fragments.
             last_event_text = ""
             if last_event is not None and hasattr(last_event, "content") and last_event.content:
-                for part in (last_event.content.parts or []):
+                for part in last_event.content.parts or []:
                     is_thought = getattr(part, "thought", False)
                     if hasattr(part, "text") and part.text and not is_thought:
                         last_event_text += part.text
@@ -1835,7 +1899,10 @@ class ADKRunner(BaseRunner):
             # Set output.value for Langfuse top-level output display
             span.set_attribute("output.value", final_response[:5000] if final_response else "")
             span.set_attribute("agent.output", final_response[:500] if final_response else "")
-            result = {"output": final_response, "events": events_list}
+            result: dict[str, Any] = {
+                "output": final_response,
+                "events": events_list,
+            }
             if usage:
                 result["usage"] = usage
                 # last_usage = 最后一次 LLM 调用快照(input_tokens = 当前上下文窗口占用)
@@ -1847,7 +1914,7 @@ class ADKRunner(BaseRunner):
 
         使用 StreamingMode.SSE 启用真正的流式 token 输出
         """
-        from google.adk.agents.run_config import RunConfig, StreamingMode
+        from ksadk.compat.adk_compat import RunConfig, StreamingMode
 
         # 判断是否为恢复调用 — 提前判断以避免将 resume_input dict 当作 string 处理
         is_resume = bool(input_data.get("checkpoint_resume"))
@@ -1868,9 +1935,7 @@ class ADKRunner(BaseRunner):
             # Set input.value for Langfuse top-level input display
             span.set_attribute("input.value", user_input)
             truncated_input = (
-                user_input[:200]
-                if isinstance(user_input, str)
-                else str(user_input)[:200]
+                user_input[:200] if isinstance(user_input, str) else str(user_input)[:200]
             )
             span.set_attribute("user.input", truncated_input)
 
@@ -1935,6 +2000,7 @@ class ADKRunner(BaseRunner):
                         if not isinstance(fc_args, dict):
                             try:
                                 import json as _json
+
                                 fc_args = _json.loads(fc_args) if isinstance(fc_args, str) else {}
                             except Exception:
                                 fc_args = {}
@@ -1958,6 +2024,21 @@ class ADKRunner(BaseRunner):
                                 "tool_args": getattr(tool_call, "input", {}),
                             }
 
+                # ADK 原生审批 surface(tool-confirmation + v2.0 workflow HITL):
+                # 翻译成统一 interrupt chunk,经 runtime:4645 既有 approval_request 通道
+                # 消费 → 审批卡。能力探测兼容 1.34.x→2.x,缺字段则跳过。
+                emitted_approval_ids: set[str] = set()
+                for signal in self._extract_approval_signals(event):
+                    aid = signal.get("approval_request_id", "")
+                    if not aid or aid in emitted_approval_ids:
+                        continue
+                    emitted_approval_ids.add(aid)
+                    yield {
+                        "type": "interrupt",
+                        "interrupt_info": signal,
+                        "session_id": session_id,
+                    }
+
                 # 处理工具返回结果 — ADK 通过 event.content.parts[].function_response
                 # 发出工具执行结果。当工具执行完毕后 ADK 会产生一个包含
                 # function_response 的事件，此处将其转为 tool_result 语义事件，
@@ -1971,6 +2052,7 @@ class ADKRunner(BaseRunner):
                             if not isinstance(fr_output, dict):
                                 try:
                                     import json as _json2
+
                                     if isinstance(fr_output, str):
                                         fr_output = _json2.loads(fr_output)
                                     else:

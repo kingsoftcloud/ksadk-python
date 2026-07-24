@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from ksadk.detection import FrameworkDetector, FrameworkType, DetectionResult
+from ksadk.detection import DetectionResult, FrameworkDetector, FrameworkType
 from ksadk.runners.factory import create_runner
 from ksadk.runners.utils.loader import load_agent_module
 
@@ -21,7 +21,7 @@ def _write_deepagents_project(project_dir: Path) -> None:
     )
 
     (package_dir / "agent.py").write_text(
-        '''from collections.abc import Callable, Sequence
+        """from collections.abc import Callable, Sequence
 from typing import Any
 
 from deepagents import create_deep_agent
@@ -84,7 +84,7 @@ fake_model = FixedGenericFakeChatModel(
 )
 
 root_agent = create_deep_agent(model=fake_model)
-''',
+""",
         encoding="utf-8",
     )
 
@@ -150,8 +150,7 @@ def test_detector_ignores_config_when_agent_variable_missing_and_finds_src_agent
     package_dir = tmp_path / "src" / "demo_agent"
     package_dir.mkdir(parents=True)
     (package_dir / "main.py").write_text(
-        "from fastapi import FastAPI\n"
-        "app = FastAPI()\n",
+        "from fastapi import FastAPI\n" "app = FastAPI()\n",
         encoding="utf-8",
     )
     (package_dir / "agent.py").write_text(
@@ -161,7 +160,8 @@ def test_detector_ignores_config_when_agent_variable_missing_and_finds_src_agent
         encoding="utf-8",
     )
     (tmp_path / "agentengine.yaml").write_text(
-        "name: demo-agent\nframework: langchain\nentry_point: src/demo_agent/main.py\nagent_variable: root_agent\n",
+        "name: demo-agent\nframework: langchain\n"
+        "entry_point: src/demo_agent/main.py\nagent_variable: root_agent\n",
         encoding="utf-8",
     )
 
@@ -176,12 +176,12 @@ def test_detector_reads_valid_langgraph_json_when_config_is_stale(tmp_path: Path
     package_dir = tmp_path / "src" / "demo_agent"
     package_dir.mkdir(parents=True)
     (package_dir / "graph.py").write_text(
-        "from langgraph.graph import StateGraph\n"
-        "graph = StateGraph(dict).compile()\n",
+        "from langgraph.graph import StateGraph\n" "graph = StateGraph(dict).compile()\n",
         encoding="utf-8",
     )
     (tmp_path / "agentengine.yaml").write_text(
-        "name: demo-agent\nframework: langgraph\nentry_point: src/demo_agent/main.py\nagent_variable: root_agent\n",
+        "name: demo-agent\nframework: langgraph\n"
+        "entry_point: src/demo_agent/main.py\nagent_variable: root_agent\n",
         encoding="utf-8",
     )
     (tmp_path / "langgraph.json").write_text(
@@ -213,7 +213,8 @@ def test_detector_supports_bom_encoded_agent_file(tmp_path: Path):
     nested_project = tmp_path / "deep" / "deep"
     nested_project.mkdir(parents=True, exist_ok=True)
     (nested_project / "agent.py").write_text(
-        "\ufefffrom deepagents import create_deep_agent\nroot_agent = create_deep_agent(model=None)\n",
+        "\ufefffrom deepagents import create_deep_agent\n"
+        "root_agent = create_deep_agent(model=None)\n",
         encoding="utf-8",
     )
 
@@ -230,8 +231,7 @@ def test_loader_supports_src_layout_imports(tmp_path: Path):
     (package_dir / "__init__.py").write_text("", encoding="utf-8")
     (package_dir / "helper.py").write_text("VALUE = 'src import ok'\n", encoding="utf-8")
     (package_dir / "agent.py").write_text(
-        "from src_demo.helper import VALUE\n"
-        "root_agent = VALUE\n",
+        "from src_demo.helper import VALUE\n" "root_agent = VALUE\n",
         encoding="utf-8",
     )
 

@@ -14,14 +14,16 @@ from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 
-from ksadk.conversations.context import build_history_from_events
-from ksadk.conversations.context import canonical_event_type
-from ksadk.conversations.model_options import normalize_model_options
+from ksadk.conversations.context import build_history_from_events, canonical_event_type
 from ksadk.conversations.model_context import estimate_text_tokens
+from ksadk.conversations.model_options import normalize_model_options
 from ksadk.conversations.runtime import (
     PreparedConversationTurn,
-    _build_runner_request_payload,
     _build_runner_ambient_contexts,
+    _build_runner_request_payload,
+    _execute_approved_builtin_tool_resume,
+    _refresh_history,
+    _set_conversation_usage_attributes,
     append_context_checkpoint_event,
     append_run_checkpoint_event,
     append_run_resume_event,
@@ -33,18 +35,15 @@ from ksadk.conversations.runtime import (
     extract_responses_resume_input,
     invoke_conversation_once,
     preview_auto_compaction,
-    _set_conversation_usage_attributes,
-    _refresh_history,
     stream_conversation_turn,
     stream_responses_conversation_turn,
-    _execute_approved_builtin_tool_resume,
 )
 from ksadk.runtime_context import (
     PlatformInvocationContext,
-    get_current_tool_execution_context_or_default,
-    get_current_invocation_context_or_default,
     get_current_account_id,
     get_current_invocation_context,
+    get_current_invocation_context_or_default,
+    get_current_tool_execution_context_or_default,
     get_current_user_id,
     platform_invocation_scope,
     tool_execution_scope,
@@ -1752,7 +1751,9 @@ async def test_invoke_conversation_once_sets_langfuse_trace_io_attributes(
     exported_trace = in_memory_trace_exporter.get_trace(result["metadata"]["trace_id"])
     assert exported_trace is not None
     root_span = next(
-        span for span in exported_trace["spans"] if span["span_id"] == result["metadata"]["root_span_id"]
+        span
+        for span in exported_trace["spans"]
+        if span["span_id"] == result["metadata"]["root_span_id"]
     )
     assert root_span["name"] == "demo-agent"
     assert root_span["status"]["code"] != "StatusCode.ERROR"
@@ -2158,16 +2159,18 @@ async def test_invoke_conversation_once_treats_accepted_memory_save_as_completed
     monkeypatch.setattr(
         "ksadk.conversations.runtime._builtin_tool_callable",
         lambda name: (
-            lambda **kwargs: {
-                "ok": False,
-                "status": "accepted_not_extracted",
-                "message": "记忆保存请求已被后端受理，但尚未抽取成可检索记忆。",
-                "session_state": 0,
-                "session_id": "sess-memory-accepted",
-            }
-        )
-        if name == "save_memory"
-        else None,
+            (
+                lambda **kwargs: {
+                    "ok": False,
+                    "status": "accepted_not_extracted",
+                    "message": "记忆保存请求已被后端受理，但尚未抽取成可检索记忆。",
+                    "session_state": 0,
+                    "session_id": "sess-memory-accepted",
+                }
+            )
+            if name == "save_memory"
+            else None
+        ),
     )
     await service.create_session(
         agent_id="demo-agent", user_id="user-1", session_id="sess-memory-accepted"
@@ -2278,7 +2281,9 @@ async def test_invoke_conversation_once_replays_existing_tool_receipt_without_si
         prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
     )
 
-    assert (workspace_ui / "workspace" / "notes.txt").read_text(encoding="utf-8") == "changed-by-user"
+    assert (workspace_ui / "workspace" / "notes.txt").read_text(
+        encoding="utf-8"
+    ) == "changed-by-user"
     assert runner.calls[-1]["input"]["type"] == "function_call_output"
     assert runner.calls[-1]["input"]["output"]["ok"] is True
     assert runner.calls[-1]["input"]["output"]["replayed"] is True
@@ -2921,7 +2926,9 @@ async def test_stream_conversation_turn_emits_final_text_after_tool_events(monke
         )
     ]
 
-    assert any("response.completed" in chunk and '"output_text": "done"' in chunk for chunk in chunks)
+    assert any(
+        "response.completed" in chunk and '"output_text": "done"' in chunk for chunk in chunks
+    )
     completed_payload = _extract_sse_payload(chunks, "response.completed")
     session_id = completed_payload["session_id"]
     events = await service.get_events(session_id)
@@ -3027,17 +3034,15 @@ async def test_stream_responses_conversation_turn_emits_cancelled_terminal(monke
     await task
 
     events = await service.get_events("sess-cancel-stream")
-    statuses = [
-        event.content.get("status")
-        for event in events
-        if event.event_type == "run_status"
-    ]
+    statuses = [event.content.get("status") for event in events if event.event_type == "run_status"]
     assert statuses == ["in_progress", "cancelled"]
     assert any(chunk.startswith("event: response.cancelled\n") for chunk in chunks)
 
 
 @pytest.mark.asyncio
-async def test_stream_responses_conversation_turn_promotes_gateway_approval_result_to_interrupt(monkeypatch):
+async def test_stream_responses_conversation_turn_promotes_gateway_approval_result_to_interrupt(
+    monkeypatch,
+):
     service = InMemorySessionService()
     monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
     runner = _ApprovalToolResultStreamingRunner()
@@ -3180,7 +3185,9 @@ async def test_stream_responses_persists_remote_call_id_for_structured_history(m
 
 
 @pytest.mark.asyncio
-async def test_stream_responses_conversation_turn_records_deferred_tools_from_tool_search(monkeypatch):
+async def test_stream_responses_conversation_turn_records_deferred_tools_from_tool_search(
+    monkeypatch,
+):
     service = InMemorySessionService()
     monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
     runner = _ToolSearchResultStreamingRunner()
@@ -3341,7 +3348,9 @@ async def test_stream_responses_prompt_too_long_compaction_failure_trips_governa
     async def _broken_compaction(**_kwargs):
         raise RuntimeError("compact backend down")
 
-    monkeypatch.setattr("ksadk.conversations.runtime.compact_conversation_history", _broken_compaction)
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.compact_conversation_history", _broken_compaction
+    )
     runner = _PromptTooLongStreamingRunner()
 
     chunks = [
@@ -3408,7 +3417,9 @@ async def test_stream_responses_conversation_turn_preserves_tool_call_display_me
 
 
 @pytest.mark.asyncio
-async def test_stream_responses_conversation_turn_persists_stage_activity_without_receipt(monkeypatch):
+async def test_stream_responses_conversation_turn_persists_stage_activity_without_receipt(
+    monkeypatch,
+):
     service = InMemorySessionService()
     monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
     runner = _StageActivityStreamingRunner()
@@ -3619,11 +3630,7 @@ async def test_stream_responses_keeps_trace_metadata_internal_to_session_events(
     trace_id = assistant_event.metadata["trace_id"]
     root_span_id = assistant_event.metadata["root_span_id"]
     exported_trace = in_memory_trace_exporter.get_trace(trace_id)
-    root_span = next(
-        span
-        for span in exported_trace["spans"]
-        if span["span_id"] == root_span_id
-    )
+    root_span = next(span for span in exported_trace["spans"] if span["span_id"] == root_span_id)
     assert root_span["name"] == "demo-agent"
     assert root_span["attributes"]["langfuse.trace.input"] == "hello"
     assert root_span["attributes"]["langfuse.trace.output"] == "hello"
@@ -4307,7 +4314,9 @@ async def test_invoke_conversation_once_failure_does_not_write_completed_or_assi
 
     events = await service.get_events("sess-fail")
     assert [event.event_type for event in events] == ["user_message", "run_status", "run_status"]
-    assert [event.content.get("status") for event in events if event.event_type == "run_status"] == [
+    assert [
+        event.content.get("status") for event in events if event.event_type == "run_status"
+    ] == [
         "in_progress",
         "failed",
     ]
@@ -4382,8 +4391,13 @@ async def test_invoke_conversation_once_records_runner_checkpoint_metadata(monke
     assert len(checkpoint_events) == 1
     assert checkpoint_events[0].metadata["run_id"] == "run-1"
     assert checkpoint_events[0].metadata["checkpoint_id"] == "ckpt-1"
-    assert checkpoint_events[0].metadata["framework_ref"]["langgraph"]["thread_id"] == "tenant:agent:sess-1"
-    assert result["metadata"]["agentengine"]["framework_ref"]["langgraph"]["checkpoint_id"] == "ckpt-1"
+    assert (
+        checkpoint_events[0].metadata["framework_ref"]["langgraph"]["thread_id"]
+        == "tenant:agent:sess-1"
+    )
+    assert (
+        result["metadata"]["agentengine"]["framework_ref"]["langgraph"]["checkpoint_id"] == "ckpt-1"
+    )
 
 
 @pytest.mark.asyncio
@@ -4560,7 +4574,9 @@ def test_build_responses_payload_uses_real_usage_from_metadata():
 @pytest.mark.asyncio
 async def test_stream_conversation_turn_preserves_final_chunk_usage(monkeypatch):
     service = InMemorySessionService()
-    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-stream-usage")
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-stream-usage"
+    )
     monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
 
     runner = _UsageStreamingRunner()
@@ -4686,9 +4702,7 @@ async def test_stream_conversation_turn_preserves_checkpoint_phase(monkeypatch):
     assert any("response.error" in chunk for chunk in chunks)
     assert not any("response.completed" in chunk for chunk in chunks)
     run_statuses = [
-        event.content.get("status")
-        for event in events
-        if event.event_type == "run_status"
+        event.content.get("status") for event in events if event.event_type == "run_status"
     ]
     assert run_statuses == ["in_progress", "failed"]
 
@@ -4735,9 +4749,7 @@ async def test_stream_checkpoint_resume_falls_back_to_original_run_id(monkeypatc
     assert any("response.error" in chunk for chunk in chunks)
     assert not any("response.completed" in chunk for chunk in chunks)
     run_statuses = [
-        event.content.get("status")
-        for event in events
-        if event.event_type == "run_status"
+        event.content.get("status") for event in events if event.event_type == "run_status"
     ]
     # checkpoint resume 失败现在写 resume_failed（独立终态），而非 failed。
     # 状态序列：resuming（build_run_input 补写）→ in_progress → resume_failed（失败改写）。
@@ -4863,7 +4875,9 @@ async def test_build_run_input_auto_compacts_old_rounds_into_checkpoint(monkeypa
 async def test_auto_compaction_ignores_inline_image_base64_for_context_estimation(monkeypatch):
     model_context_module = importlib.import_module("ksadk.conversations.model_context")
     service = InMemorySessionService()
-    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-image-compact")
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-image-compact"
+    )
     large_image_data = "A" * 260_000
 
     for turn in range(3):

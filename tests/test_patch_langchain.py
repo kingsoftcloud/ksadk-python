@@ -3,8 +3,8 @@ from __future__ import annotations
 from langchain_core.messages import HumanMessage
 from langchain_openai import ChatOpenAI
 
-from ksadk.runtime_context import PlatformInvocationContext, platform_invocation_scope
 from ksadk.runners.patch_langchain import apply_patch
+from ksadk.runtime_context import PlatformInvocationContext, platform_invocation_scope
 
 
 def _context() -> PlatformInvocationContext:
