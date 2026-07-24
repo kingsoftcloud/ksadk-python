@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 
 import click
 from click.testing import CliRunner
@@ -34,6 +35,26 @@ def test_failed_command_registration_is_explicit_not_silent():
     # 调用 stub 报显式错误(非静默)
     result = CliRunner().invoke(group, ["ghost"])
     assert "不可用" in result.output
+
+
+def test_attribute_error_during_optional_command_import_is_explicit(monkeypatch, capsys):
+    """An incompatible optional SDK must not prevent the top-level CLI from starting."""
+
+    group = click.Group("t")
+
+    def _raise_incompatible_sdk(_: str):
+        raise AttributeError("TaskState has no expected member")
+
+    monkeypatch.setattr(importlib, "import_module", _raise_incompatible_sdk)
+    _register_optional_command(group, "ksadk.cli.cmd_a2a", "a2a")
+
+    assert "a2a" in group.commands
+    result = CliRunner().invoke(group, ["a2a"])
+    assert result.exit_code != 0
+    assert "TaskState has no expected member" in result.output
+    warning = capsys.readouterr().err
+    assert "a2a-sdk>=1.1.0" in warning
+    assert 'python -m pip install --upgrade "ksadk[a2a]"' in warning
 
 
 def test_no_try_except_importerror_pass_residue():

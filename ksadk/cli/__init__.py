@@ -280,13 +280,35 @@ def _unavailable_command_stub(cmd_name: str, module_path: str, exc: Exception) -
     return _stub
 
 
+def _warn_unavailable_optional_command(
+    cmd_names: tuple[str, ...], module_path: str, exc: Exception
+) -> None:
+    """Print actionable startup guidance while retaining the explicit command stub."""
+    command_list = ", ".join(repr(name) for name in cmd_names)
+    message = (
+        f"WARNING: optional command {command_list} is unavailable because {module_path} "
+        f"could not load: {exc}. The remaining ksadk commands are still available."
+    )
+    if "a2a" in cmd_names:
+        message += (
+            " KsADK 0.8 requires a2a-sdk>=1.1.0; activate the intended virtual environment and "
+            'run `python -m pip install --upgrade "ksadk[a2a]"`. A2A 0.3 projects must use a '
+            "separate environment."
+        )
+    click.echo(message, err=True)
+
+
 def _register_optional_command(cli: click.Group, module_path: str, *cmd_names: str) -> None:
-    """注册可选命令组;ImportError 时注册显式降级 stub(不静默吞)。"""
+    """注册可选命令组;导入或依赖 API 不兼容时注册显式降级 stub(不静默吞)。"""
     import importlib
 
     try:
         module = importlib.import_module(module_path)
-    except ImportError as exc:
+    # Optional command imports can fail before an ImportError is raised when an installed
+    # optional SDK exposes an incompatible API. Keep the top-level CLI usable and make the
+    # unavailable command report the original reason instead of masking it as a CLI crash.
+    except (ImportError, AttributeError) as exc:
+        _warn_unavailable_optional_command(cmd_names, module_path, exc)
         for cmd_name in cmd_names:
             _add_command_once(cli, _unavailable_command_stub(cmd_name, module_path, exc))
         return

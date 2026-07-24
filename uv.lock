@@ -2155,8 +2155,8 @@ tracing = [
 
 [package.metadata]
 requires-dist = [
-    { name = "a2a-sdk", extras = ["fastapi", "postgresql"], specifier = "==1.1.0" },
-    { name = "a2a-sdk", extras = ["fastapi", "postgresql"], marker = "extra == 'a2a'", specifier = "==1.1.0" },
+    { name = "a2a-sdk", extras = ["fastapi", "postgresql"], specifier = ">=1.1.0" },
+    { name = "a2a-sdk", extras = ["fastapi", "postgresql"], marker = "extra == 'a2a'", specifier = ">=1.1.0" },
     { name = "a2ui-core", specifier = "==0.1.1" },
     { name = "ag-ui-langgraph", extras = ["fastapi"], marker = "extra == 'agui'", specifier = "==0.0.42" },
     { name = "ag-ui-protocol", marker = "extra == 'agui'", specifier = "==0.1.19" },
