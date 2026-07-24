@@ -18,6 +18,7 @@ def test_langgraph_projects_can_bind_agentengine_toolsets_before_graph_compile(m
     assert _tool_names(tools) == [
         "custom_tool",
         "list_skills",
+        "list_skill_spaces",
         "search_skills",
         "load_skill",
         "execute_skills",

@@ -3,34 +3,36 @@ from __future__ import annotations
 import json
 import os
 import re
-from collections.abc import Iterable
-from collections.abc import Mapping
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
-from ksadk.toolsets.platform import get_platform_tools
-from ksadk.toolsets.platform import component_status
-from ksadk.toolsets.sandbox import get_sandbox_tools
+from ksadk.tools.gateway import ToolPolicy, tool_policy_requires_approval
+from ksadk.toolsets._langchain import as_tool
+from ksadk.toolsets.platform import component_status, get_platform_tools
 from ksadk.toolsets.sandbox import (
     _SANDBOX_TOOL_POLICIES,
+    get_sandbox_tools,
     run_code,
     run_command,
     sandbox_backend_name,
     sandbox_status,
 )
-from ksadk.toolsets.skills import get_skill_tools
 from ksadk.toolsets.skills import (
     _SKILL_TOOL_POLICIES,
     _skill_execution_backend,
     execute_skills,
+    get_skill_tools,
+    list_skill_spaces,
     list_skills,
     load_skill,
     search_skills,
 )
-from ksadk.toolsets.workspace import get_workspace_tools
+from ksadk.toolsets.web import _WEB_TOOL_POLICIES, get_web_tools, web_fetch, web_search
 from ksadk.toolsets.workspace import (
     _WORKSPACE_TOOL_POLICIES,
     delete_workspace_file,
     edit_workspace_file,
+    get_workspace_tools,
     lint_workspace_file,
     list_workspace_files,
     multi_edit_workspace_file,
@@ -40,10 +42,6 @@ from ksadk.toolsets.workspace import (
     write_workspace_file,
     write_workspace_files,
 )
-from ksadk.toolsets.web import get_web_tools
-from ksadk.toolsets.web import web_fetch, web_search, _WEB_TOOL_POLICIES
-from ksadk.tools.gateway import ToolPolicy, tool_policy_requires_approval
-from ksadk.toolsets._langchain import as_tool
 
 _DEFAULT_GROUPS = ("skill", "workspace", "platform", "sandbox", "web")
 _DISPATCHER_TOOL_NAME = "tool_dispatcher"
@@ -79,9 +77,12 @@ _TOOLSET_FACTORIES = {
     "web": get_web_tools,
 }
 
-_TOOLSET_DESCRIPTORS = {
+_TOOLSET_DESCRIPTORS: dict[
+    str, tuple[tuple[Callable[..., Any], ToolPolicy, dict[str, Any]], ...]
+] = {
     "skill": (
         (list_skills, _SKILL_TOOL_POLICIES["list_skills"], {}),
+        (list_skill_spaces, _SKILL_TOOL_POLICIES["list_skill_spaces"], {}),
         (search_skills, _SKILL_TOOL_POLICIES["search_skills"], {}),
         (load_skill, _SKILL_TOOL_POLICIES["load_skill"], {}),
         (
@@ -95,20 +96,58 @@ _TOOLSET_DESCRIPTORS = {
         ),
     ),
     "workspace": (
-        (workspace_status, _WORKSPACE_TOOL_POLICIES["workspace_status"], {"boundary": "workspace_root"}),
-        (list_workspace_files, _WORKSPACE_TOOL_POLICIES["list_workspace_files"], {"boundary": "workspace_root"}),
-        (read_workspace_file, _WORKSPACE_TOOL_POLICIES["read_workspace_file"], {"boundary": "workspace_root"}),
-        (write_workspace_file, _WORKSPACE_TOOL_POLICIES["write_workspace_file"], {"boundary": "workspace_root"}),
-        (write_workspace_files, _WORKSPACE_TOOL_POLICIES["write_workspace_files"], {"boundary": "workspace_root"}),
-        (edit_workspace_file, _WORKSPACE_TOOL_POLICIES["edit_workspace_file"], {"boundary": "workspace_root"}),
-        (multi_edit_workspace_file, _WORKSPACE_TOOL_POLICIES["multi_edit_workspace_file"], {"boundary": "workspace_root"}),
-        (lint_workspace_file, _WORKSPACE_TOOL_POLICIES["lint_workspace_file"], {"boundary": "workspace_root"}),
-        (search_workspace_files, _WORKSPACE_TOOL_POLICIES["search_workspace_files"], {"boundary": "workspace_root"}),
-        (delete_workspace_file, _WORKSPACE_TOOL_POLICIES["delete_workspace_file"], {"boundary": "workspace_root"}),
+        (
+            workspace_status,
+            _WORKSPACE_TOOL_POLICIES["workspace_status"],
+            {"boundary": "workspace_root"},
+        ),
+        (
+            list_workspace_files,
+            _WORKSPACE_TOOL_POLICIES["list_workspace_files"],
+            {"boundary": "workspace_root"},
+        ),
+        (
+            read_workspace_file,
+            _WORKSPACE_TOOL_POLICIES["read_workspace_file"],
+            {"boundary": "workspace_root"},
+        ),
+        (
+            write_workspace_file,
+            _WORKSPACE_TOOL_POLICIES["write_workspace_file"],
+            {"boundary": "workspace_root"},
+        ),
+        (
+            write_workspace_files,
+            _WORKSPACE_TOOL_POLICIES["write_workspace_files"],
+            {"boundary": "workspace_root"},
+        ),
+        (
+            edit_workspace_file,
+            _WORKSPACE_TOOL_POLICIES["edit_workspace_file"],
+            {"boundary": "workspace_root"},
+        ),
+        (
+            multi_edit_workspace_file,
+            _WORKSPACE_TOOL_POLICIES["multi_edit_workspace_file"],
+            {"boundary": "workspace_root"},
+        ),
+        (
+            lint_workspace_file,
+            _WORKSPACE_TOOL_POLICIES["lint_workspace_file"],
+            {"boundary": "workspace_root"},
+        ),
+        (
+            search_workspace_files,
+            _WORKSPACE_TOOL_POLICIES["search_workspace_files"],
+            {"boundary": "workspace_root"},
+        ),
+        (
+            delete_workspace_file,
+            _WORKSPACE_TOOL_POLICIES["delete_workspace_file"],
+            {"boundary": "workspace_root"},
+        ),
     ),
-    "platform": (
-        (component_status, ToolPolicy(risk_level="low"), {}),
-    ),
+    "platform": ((component_status, ToolPolicy(risk_level="low"), {}),),
     "sandbox": (
         (
             sandbox_status,
@@ -231,17 +270,25 @@ def tool_dispatcher(
                 include_dispatcher=False,
             )
         except ValueError:
-            return _unknown_tool_error(", ".join(requested_include) if requested_include else str(include or ""))
+            return _unknown_tool_error(
+                ", ".join(requested_include) if requested_include else str(include or "")
+            )
         return {"ok": True, "tools": specs, "tool_count": len(specs)}
 
     if normalized_action == "describe":
         target_name = _normalize_tool_name(tool_name)
         if not target_name:
-            return {"ok": False, "error_type": "missing_tool_name", "error_message": "tool_name is required"}
+            return {
+                "ok": False,
+                "error_type": "missing_tool_name",
+                "error_message": "tool_name is required",
+            }
         if target_name in {_DISPATCHER_TOOL_NAME, _LEGACY_DISPATCHER_TOOL_NAME}:
             return _dispatcher_self_call_error()
         try:
-            _, specs = _select_agentengine_tools(include=[target_name], profile=profile, include_dispatcher=False)
+            _, specs = _select_agentengine_tools(
+                include=[target_name], profile=profile, include_dispatcher=False
+            )
         except ValueError:
             return _unknown_tool_error(target_name)
         return {"ok": True, "tool": specs[0]}
@@ -249,15 +296,26 @@ def tool_dispatcher(
     if normalized_action == "call":
         target_name = _normalize_tool_name(tool_name)
         if not target_name:
-            return {"ok": False, "error_type": "missing_tool_name", "error_message": "tool_name is required"}
+            return {
+                "ok": False,
+                "error_type": "missing_tool_name",
+                "error_message": "tool_name is required",
+            }
         if target_name in {_DISPATCHER_TOOL_NAME, _LEGACY_DISPATCHER_TOOL_NAME}:
             return _dispatcher_self_call_error()
         try:
-            tools, specs = _select_agentengine_tools(include=[target_name], profile=profile, include_dispatcher=False)
+            tools, specs = _select_agentengine_tools(
+                include=[target_name], profile=profile, include_dispatcher=False
+            )
         except ValueError:
             return _unknown_tool_error(target_name)
         if specs and specs[0].get("enabled") is False:
-            return {"ok": False, "error_type": "tool_disabled", "error_message": f"Tool is disabled: {target_name}", "tool_name": target_name}
+            return {
+                "ok": False,
+                "error_type": "tool_disabled",
+                "error_message": f"Tool is disabled: {target_name}",
+                "tool_name": target_name,
+            }
         tool_arguments, arguments_error = _normalize_tool_arguments(arguments)
         if arguments_error:
             return arguments_error
@@ -429,7 +487,9 @@ def _expand_requested_names(requested: list[str], tool_registry: Mapping[str, An
     return names
 
 
-def _expand_requested_descriptor_names(requested: list[str], descriptor_registry: Mapping[str, Any]) -> list[str]:
+def _expand_requested_descriptor_names(
+    requested: list[str], descriptor_registry: Mapping[str, Any]
+) -> list[str]:
     names: list[str] = []
     for name in requested:
         canonical_name = _canonical_toolset_group(name)
@@ -560,7 +620,9 @@ def _normalize_tool_name(tool_name: str | None) -> str:
     return str(tool_name or "").strip()
 
 
-def _normalize_tool_arguments(arguments: dict[str, Any] | str | None) -> tuple[dict[str, Any], dict[str, Any] | None]:
+def _normalize_tool_arguments(
+    arguments: dict[str, Any] | str | None,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
     if arguments is None:
         return {}, None
     if isinstance(arguments, dict):
@@ -594,7 +656,9 @@ def _normalize_tool_arguments(arguments: dict[str, Any] | str | None) -> tuple[d
     }
 
 
-def _normalize_dispatched_tool_arguments(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+def _normalize_dispatched_tool_arguments(
+    tool_name: str, arguments: dict[str, Any]
+) -> dict[str, Any]:
     if tool_name == "save_memory" and "content" not in arguments:
         if "key" in arguments and "value" in arguments:
             return {"content": f"{arguments['key']}: {_stringify_memory_value(arguments['value'])}"}
@@ -825,7 +889,10 @@ def _tool_spec(
         spec[key] = value() if callable(value) else value
     enabled = bool(spec.get("enabled", True))
     if name == "web_search":
-        enabled = bool(os.environ.get("KSADK_WEB_SEARCH_PROVIDER") or os.environ.get("OPENCLAW_WEB_SEARCH_PROVIDER"))
+        enabled = bool(
+            os.environ.get("KSADK_WEB_SEARCH_PROVIDER")
+            or os.environ.get("OPENCLAW_WEB_SEARCH_PROVIDER")
+        )
     if name in {"run_command", "run_code", "sandbox_status"}:
         enabled = enabled and _enabled_backend(sandbox_backend_name())
     spec["enabled"] = enabled
