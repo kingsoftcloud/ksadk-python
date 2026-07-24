@@ -286,7 +286,27 @@ def test_code_builder_uses_validated_adk_dependency_window(tmp_path):
 
     assert "fastapi>=0.100.0,<1.0.0" in deps
     assert "google-adk>=1.34.0,<2.0.0" in deps
+    assert "greenlet>=1.0.0" in deps
     assert "google-adk>=1.0.0" not in deps
+
+
+def test_container_builder_includes_adk_greenlet_dependency(tmp_path):
+    builder = ContainerBuilder(tmp_path)
+
+    deps = builder._generate_requirements(
+        _detection_result("adk"),
+        tmp_path,
+    ).splitlines()
+
+    assert "greenlet>=1.0.0" in deps
+
+
+def test_k8s_deployer_includes_adk_greenlet_dependency():
+    deployer = K8sDeployer()
+
+    deps = deployer._generate_requirements(_detection_result("adk")).splitlines()
+
+    assert "greenlet>=1.0.0" in deps
 
 
 def test_container_builder_bundles_attachment_runtime_requirements_without_optional_backends(tmp_path):

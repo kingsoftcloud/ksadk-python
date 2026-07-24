@@ -9,6 +9,7 @@ FASTAPI_REQUIREMENT = "fastapi>=0.100.0,<1.0.0"
 
 ADK_REQUIREMENTS = (
     "google-adk>=1.34.0,<2.0.0",
+    "greenlet>=1.0.0",
     "litellm>=1.0.0",
 )
 
