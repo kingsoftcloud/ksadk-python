@@ -1964,6 +1964,11 @@ class ADKRunner(BaseRunner):
             accumulated_text = ""
             usage: dict[str, Any] = {}
             last_usage: dict[str, Any] = {}
+            # handoff/sub-agent(如 RemoteA2aAgent)回复事件 partial=None,不进上面
+            # partial 分支;且远端 agent 经 A2A 流式返回时,ADK 会产出多个"累积快照"
+            # 事件(后一个含前一个内容)。按 author 记录已输出快照,只补发增量去重。
+            sub_agent_snapshots: dict[str, str] = {}
+            top_agent_name = getattr(self._agent, "name", None)
 
             async for event in wrapped_async:
                 event_usage = self._extract_event_usage(event)
@@ -1976,12 +1981,39 @@ class ADKRunner(BaseRunner):
                         for part in event.content.parts:
                             if hasattr(part, "text") and part.text:
                                 is_thought = getattr(part, "thought", False)
-                                accumulated_text += part.text
+                                # 思考内容只作为 thinking delta 流出,不计入最终输出,
+                                # 否则最终回复会把思考过程再重复一遍(与 invoke() 语义对齐)。
+                                if not is_thought:
+                                    accumulated_text += part.text
                                 # 标记思考内容，前端可以选择是否展示
                                 yield {
                                     "delta": part.text,
                                     "type": "thinking" if is_thought else "text",
                                 }
+                # handoff/sub-agent 回复:partial 为 None/False,上面分支跳过,这里补上。
+                elif hasattr(event, "content") and event.content:
+                    author = getattr(event, "author", None)
+                    if (
+                        author
+                        and top_agent_name
+                        and author != top_agent_name
+                        and hasattr(event.content, "parts")
+                    ):
+                        snapshot = ""
+                        for part in event.content.parts:
+                            if hasattr(part, "text") and part.text and not getattr(
+                                part, "thought", False
+                            ):
+                                snapshot += part.text
+                        if snapshot:
+                            prev = sub_agent_snapshots.get(author, "")
+                            delta = (
+                                snapshot[len(prev) :] if snapshot.startswith(prev) else snapshot
+                            )
+                            sub_agent_snapshots[author] = snapshot
+                            if delta:
+                                accumulated_text += delta
+                                yield {"delta": delta, "type": "text"}
 
                 # 处理工具调用事件 — ADK 通过 event.content.parts[].function_call
                 # 发出工具调用（即 event.get_function_calls()），而非

@@ -233,6 +233,10 @@ class A2ARuntimeExecutor(AgentExecutor):
             text = self._coerce_text(chunk)
             if not text:
                 continue
+            # 思考内容不进入 A2A 响应(与 invoke 语义对齐):orchestrator
+            # 只需要最终答复,sub-agent 的 reasoning 不应透传给上游。
+            if chunk_type == "thinking":
+                continue
             output_text += text
             emitted_chunks += 1
             await updater.add_artifact(
@@ -347,8 +351,29 @@ class A2ARuntimeExecutor(AgentExecutor):
                 EventType.REASONING_COMPLETED,
             }:
                 continue
+            # 思考内容不进入 A2A 响应(与 invoke 语义对齐)。
+            if event.event_type in {EventType.REASONING_DELTA, EventType.REASONING_COMPLETED}:
+                continue
             text = self._coerce_text(event.payload.get("text"))
             if not text:
+                continue
+            # TEXT_COMPLETED 的 text 是最终完整正文(累计),不是增量:
+            # 只补发 delta 未覆盖的部分,避免正文重复。suffix 缓冲到 pending,
+            # 由循环末尾以 last_chunk=True 发出(保留 A2A 末块语义)。
+            if event.event_type == EventType.TEXT_COMPLETED:
+                if pending_text is not None:
+                    await emit_text(pending_text, last_chunk=False)
+                    pending_text = None
+                if not output_text:
+                    suffix = text
+                    output_text = text
+                elif text.startswith(output_text):
+                    suffix = text[len(output_text) :]
+                    output_text = text
+                else:
+                    suffix = text
+                    output_text += text
+                pending_text = suffix
                 continue
             if pending_text is not None:
                 await emit_text(pending_text, last_chunk=False)

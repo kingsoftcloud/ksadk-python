@@ -248,6 +248,9 @@ def web(agent_dir: str, port: int, model: str, no_open: bool):
     command_args = ["web", str(agent_path), "--port", str(port)]
     if model:
         command_args.extend(["--model", model])
+    if no_open:
+        # re-exec 进项目 venv 时透传 --no-open,否则子进程仍会打开浏览器
+        command_args.append("--no-open")
     reexec_with_project_venv_if_needed(agent_path, command_args)
     project_dotenv = _project_dotenv_values(agent_path)
     explicit_session_env_names = _explicit_env_names_excluding_project_dotenv(

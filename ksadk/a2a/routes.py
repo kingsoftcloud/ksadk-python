@@ -42,7 +42,7 @@ class A2AConfig:
     skills: Sequence[str] = field(default_factory=tuple)
     streaming: bool = True
     prefer_stream: bool = True
-    # durable task store:dsn(如 sqlite+aiosqlite:///.ksadk_a2a_tasks.db 或
+    # durable task store:dsn(如 sqlite+aiosqlite:///.agentengine/a2a_tasks.db 或
     # postgresql+asyncpg://...)或外部传入 engine/task_store。
     task_store_dsn: Optional[str] = None
     task_table: str = A2A_TASK_TABLE

@@ -36,7 +36,23 @@ from ksadk.runtime.framework_adapters import ADKRuntimeAdapter, LangGraphRuntime
 from ksadk.runtime.runner_adapter import RunnerRuntimeAdapter
 
 _HELP = dict(help_option_names=["-h", "--help"])
-_DEFAULT_TASK_STORE_DSN = "sqlite+aiosqlite:///.ksadk_a2a_tasks.db"
+_DEFAULT_TASK_STORE_DSN = "sqlite+aiosqlite:///.agentengine/a2a_tasks.db"
+
+
+def _resolve_task_store_dsn(task_store_dsn: str, agent_path: Path) -> str:
+    """相对路径的 sqlite DSN 锚定到 agent_path(而非 cwd),并确保父目录存在。
+
+    绝对 DSN(postgresql:// 等)原样返回。
+    """
+    prefix = "sqlite+aiosqlite:///"
+    if not task_store_dsn.startswith(prefix):
+        return task_store_dsn
+    raw_path = task_store_dsn[len(prefix) :]
+    if raw_path.startswith("/") or not raw_path:
+        return task_store_dsn
+    resolved = (agent_path / raw_path).resolve()
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    return f"{prefix}{resolved}"
 
 
 @click.group("a2a", context_settings=CONTEXT_SETTINGS, help="A2A 协议服务与本地试调")
@@ -93,6 +109,7 @@ def serve(
     if no_trace:
         command_args.append("--no-trace")
     reexec_with_project_venv_if_needed(agent_path, command_args)
+    task_store_dsn = _resolve_task_store_dsn(task_store_dsn, agent_path)
     detection_result, runner = _load_runner(agent_path, no_trace=no_trace)
     from fastapi import FastAPI
 
