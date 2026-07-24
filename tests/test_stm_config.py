@@ -5,7 +5,11 @@ from types import SimpleNamespace
 import pytest
 
 from ksadk.runners.adk_runner import ADKRunner
-from ksadk.sessions import create_session_service, describe_session_backend, register_session_backend
+from ksadk.sessions import (
+    create_session_service,
+    describe_session_backend,
+    register_session_backend,
+)
 from ksadk.sessions.in_memory import InMemorySessionService
 from ksadk.sessions.local_service import LocalSessionService
 

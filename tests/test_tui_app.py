@@ -4,6 +4,7 @@ Inline scrollback + HSplit(transcript FormattedTextControl+ANSI 滚动 /
 输入框 / footer)。这些测试覆盖 session/命令分派/app 结构/颜色保留/表格/
 footer context/落定/排队 等维度。
 """
+
 import asyncio
 import json
 import os
@@ -148,10 +149,7 @@ def test_working_elapsed_time_refreshes_without_stream_events():
                     await asyncio.sleep(0.7)
                     screen = app.renderer._last_screen
                     rendered = "\n".join(
-                        "".join(
-                            screen.data_buffer[y][x].char or " "
-                            for x in range(100)
-                        )
+                        "".join(screen.data_buffer[y][x].char or " " for x in range(100))
                         for y in range(30)
                     )
                     assert "Working (3s" in rendered
@@ -391,10 +389,10 @@ def test_shell_matches_codex_content_first_layout():
                         i for i, line in enumerate(lines) if "Ask KsADK to do anything" in line
                     )
                     assert placeholder_row < 20
-                    assert not any(
-                        line.strip() and set(line.strip()) == {"─"} for line in lines
+                    assert not any(line.strip() and set(line.strip()) == {"─"} for line in lines)
+                    footer = next(
+                        line for line in lines if "glm-test" in line and "/tmp/project" in line
                     )
-                    footer = next(line for line in lines if "glm-test" in line and "/tmp/project" in line)
                     assert "session" not in footer
                 finally:
                     app.exit()
@@ -471,10 +469,20 @@ def test_render_entry_role_prefixes_are_subtle_claude_style():
     def _plain(s):
         return re.sub(r"\x1b\[[0-9;?]*[a-zA-Z]", "", s)
 
-    user = _plain(_render_entry_ansi(TranscriptEntry(role="user", content="好的"), show_thinking=False))
-    asst = _plain(_render_entry_ansi(TranscriptEntry(role="assistant", content="收到"), show_thinking=False))
-    tool = _plain(_render_entry_ansi(TranscriptEntry(role="tool", content="search [running]"), show_thinking=False))
-    err = _plain(_render_entry_ansi(TranscriptEntry(role="error", content="boom"), show_thinking=False))
+    user = _plain(
+        _render_entry_ansi(TranscriptEntry(role="user", content="好的"), show_thinking=False)
+    )
+    asst = _plain(
+        _render_entry_ansi(TranscriptEntry(role="assistant", content="收到"), show_thinking=False)
+    )
+    tool = _plain(
+        _render_entry_ansi(
+            TranscriptEntry(role="tool", content="search [running]"), show_thinking=False
+        )
+    )
+    err = _plain(
+        _render_entry_ansi(TranscriptEntry(role="error", content="boom"), show_thinking=False)
+    )
 
     assert "› 好的" in user
     assert "•" in asst and "收到" in asst
@@ -560,7 +568,9 @@ def test_clear_terminal_sequence_purges_scrollback():
 
 def test_welcome_block_has_rounded_border_and_help():
     """启动屏圆角框（对标 Codex session.rs）含 model/session，下方帮助列表。"""
-    block = _welcome_block("abc123", "glm-5.1", __import__("pathlib").Path("/tmp/proj"), show_help=True)
+    block = _welcome_block(
+        "abc123", "glm-5.1", __import__("pathlib").Path("/tmp/proj"), show_help=True
+    )
     assert "╭" in block and "╮" in block  # 顶圆角
     assert "╰" in block and "╯" in block  # 底圆角
     assert "glm-5.1" in block
@@ -571,7 +581,13 @@ def test_welcome_block_has_rounded_border_and_help():
 def test_welcome_block_border_edges_have_equal_visible_width():
     from prompt_toolkit.utils import get_cwidth
 
-    lines = [line for line in _welcome_block("abc123", "glm-5.1", __import__("pathlib").Path("/tmp/proj"), show_help=True).splitlines() if line]
+    lines = [
+        line
+        for line in _welcome_block(
+            "abc123", "glm-5.1", __import__("pathlib").Path("/tmp/proj"), show_help=True
+        ).splitlines()
+        if line
+    ]
     assert get_cwidth(lines[0]) == get_cwidth(lines[1])
     assert get_cwidth(lines[0]) == get_cwidth(lines[-2])
 
@@ -606,7 +622,9 @@ def test_streaming_entry_shown_in_transcript():
     runner = _Runner(session_id="sess-demo")
     loop = InteractionLoop(runner, project_dir=".")
     loop._build_application()
-    loop._streaming_entry = TranscriptEntry(role="assistant", content="正在生成", status="streaming")
+    loop._streaming_entry = TranscriptEntry(
+        role="assistant", content="正在生成", status="streaming"
+    )
     loop._refresh_transcript()
 
     assert "正在生成" in loop._transcript_ansi

@@ -19,13 +19,22 @@ def test_service_client_lists_skills_and_downloads_archive_with_mock_transport()
                     "RequestId": "req-list",
                     "Data": {
                         "Skills": [
-                            {"SkillId": "sk-1", "VersionId": "sv-1", "Version": "v1", "Name": "demo", "Status": "Active"}
+                            {
+                                "SkillId": "sk-1",
+                                "VersionId": "sv-1",
+                                "Version": "v1",
+                                "Name": "demo",
+                                "Status": "Active",
+                            }
                         ],
                     },
                 },
             )
         if request.url.path.endswith("/GetSkillDownloadUrl"):
-            return httpx.Response(200, json={"Code": 200, "Data": {"DownloadUrl": "https://download.example/skill.zip"}})
+            return httpx.Response(
+                200,
+                json={"Code": 200, "Data": {"DownloadUrl": "https://download.example/skill.zip"}},
+            )
         if str(request.url) == "https://download.example/skill.zip":
             return httpx.Response(200, content=b"zip-bytes")
         return httpx.Response(404)
@@ -175,12 +184,18 @@ def test_service_client_sends_account_header_for_direct_rest_service():
 def test_service_client_supports_custom_action_paths():
     client = SkillServiceClient(base_url="https://skill.example/root/")
 
-    assert client.action_url("ListSkillsBySpaceId") == "https://skill.example/root/ListSkillsBySpaceId"
+    assert (
+        client.action_url("ListSkillsBySpaceId") == "https://skill.example/root/ListSkillsBySpaceId"
+    )
 
 
 def test_service_client_normalizes_docs_and_openapi_urls():
-    docs_client = SkillServiceClient(base_url="https://skill.example/agentengine/skill/docs#/SkillSpace")
-    openapi_client = SkillServiceClient(base_url="https://skill.example/agentengine/skill/api/v1/openapi.json")
+    docs_client = SkillServiceClient(
+        base_url="https://skill.example/agentengine/skill/docs#/SkillSpace"
+    )
+    openapi_client = SkillServiceClient(
+        base_url="https://skill.example/agentengine/skill/api/v1/openapi.json"
+    )
 
     assert (
         docs_client.action_url("ListSkillsBySpaceId")
@@ -195,7 +210,10 @@ def test_service_client_normalizes_docs_and_openapi_urls():
 def test_service_client_lists_skill_spaces_with_real_query_contract():
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "GET"
-        assert str(request.url) == "https://skill.example/api/v1/ListSkillSpaces?PageNumber=1&PageSize=20"
+        assert (
+            str(request.url)
+            == "https://skill.example/api/v1/ListSkillSpaces?PageNumber=1&PageSize=20"
+        )
         return httpx.Response(
             200,
             json={
@@ -376,8 +394,7 @@ def test_service_client_uses_registered_kop_action_for_available_premade_skills(
     method, url, headers = requests[0]
     assert method == "GET"
     assert url == (
-        "http://aicp.inner.api.ksyun.com/"
-        "?Action=ListAvailablePremadeSkills&Version=2024-06-12"
+        "http://aicp.inner.api.ksyun.com/" "?Action=ListAvailablePremadeSkills&Version=2024-06-12"
     )
     assert headers["x-action"] == "ListAvailablePremadeSkills"
     assert headers["x-version"] == "2024-06-12"

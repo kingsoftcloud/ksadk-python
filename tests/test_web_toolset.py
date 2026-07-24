@@ -73,7 +73,9 @@ def test_web_fetch_strips_html_and_budgets_large_content(monkeypatch, tmp_path):
         return httpx.Response(
             200,
             headers={"content-type": "text/html"},
-            text="<html><script>bad()</script><body><h1>Hello</h1><p>" + ("world " * 20) + "</p></body></html>",
+            text="<html><script>bad()</script><body><h1>Hello</h1><p>"
+            + ("world " * 20)
+            + "</p></body></html>",
             request=httpx.Request("GET", url),
         )
 

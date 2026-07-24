@@ -30,7 +30,9 @@ def _ref(digest: str) -> SkillRef:
 
 
 def test_package_store_verifies_hash_and_extracts_skill_root(tmp_path: Path):
-    payload = _make_zip({"web-artifacts-builder/SKILL.md": "---\nname: web-artifacts-builder\n---\n# Skill\n"})
+    payload = _make_zip(
+        {"web-artifacts-builder/SKILL.md": "---\nname: web-artifacts-builder\n---\n# Skill\n"}
+    )
     digest = hashlib.sha256(payload).hexdigest()
     store = PackageStore(cache_dir=tmp_path)
 

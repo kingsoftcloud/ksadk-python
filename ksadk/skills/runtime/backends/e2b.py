@@ -7,8 +7,10 @@ from typing import Any
 
 from ksadk.sandbox import (
     E2BSandboxBackend,
-    SandboxInputFile as RuntimeSandboxInputFile,
     SandboxSpec,
+)
+from ksadk.sandbox import (
+    SandboxInputFile as RuntimeSandboxInputFile,
 )
 from ksadk.skills.runtime.base import (
     SandboxInputFile,
@@ -75,7 +77,7 @@ class E2BSkillRuntimeBackend:
     @classmethod
     def from_env(cls) -> "E2BSkillRuntimeBackend":
         try:
-            from e2b import Sandbox
+            from e2b import Sandbox  # type: ignore[import-untyped]
         except ImportError as exc:
             raise SkillRuntimeError(
                 "e2b>=2.15.3,<2.25.0 is required for KSADK_SKILL_RUNTIME_BACKEND=e2b"
@@ -87,7 +89,11 @@ class E2BSkillRuntimeBackend:
                 or os.environ.get("KSADK_SKILL_RUNTIME_TEMPLATE_ID")
                 or ""
             ),
-            timeout=int(os.environ.get("KSADK_SANDBOX_TIMEOUT") or os.environ.get("KSADK_SKILL_RUNTIME_TIMEOUT") or "900"),
+            timeout=int(
+                os.environ.get("KSADK_SANDBOX_TIMEOUT")
+                or os.environ.get("KSADK_SKILL_RUNTIME_TIMEOUT")
+                or "900"
+            ),
             allow_internet_access=_bool_env(
                 "KSADK_SANDBOX_ALLOW_INTERNET_ACCESS",
                 _bool_env("KSADK_SKILL_RUNTIME_ALLOW_INTERNET_ACCESS", True),

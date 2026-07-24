@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import os
 import hashlib
 import json
+import os
 import shlex
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -108,7 +108,9 @@ def tool_policy_requires_approval(
     *,
     approval_mode: str | None = None,
 ) -> bool:
-    mode = (approval_mode or os.environ.get("KSADK_TOOL_APPROVAL_MODE", "")).strip().lower() or "off"
+    mode = (
+        approval_mode or os.environ.get("KSADK_TOOL_APPROVAL_MODE", "")
+    ).strip().lower() or "off"
     if policy.requires_approval is not None:
         return policy.requires_approval and mode != "off"
     if mode != "strict":
@@ -119,13 +121,28 @@ def tool_policy_requires_approval(
 def check_command_policy(command: str) -> dict[str, Any]:
     text = str(command or "").strip()
     if not text:
-        return {"ok": False, "decision": "reject", "error_type": "command_required", "error_message": "command is required"}
+        return {
+            "ok": False,
+            "decision": "reject",
+            "error_type": "command_required",
+            "error_message": "command is required",
+        }
     try:
         tokens = shlex.split(text)
     except ValueError as exc:
-        return {"ok": False, "decision": "reject", "error_type": "invalid_command", "error_message": str(exc)}
+        return {
+            "ok": False,
+            "decision": "reject",
+            "error_type": "invalid_command",
+            "error_message": str(exc),
+        }
     if not tokens:
-        return {"ok": False, "decision": "reject", "error_type": "command_required", "error_message": "command is required"}
+        return {
+            "ok": False,
+            "decision": "reject",
+            "error_type": "command_required",
+            "error_message": "command is required",
+        }
     if _contains_recursive_rm(tokens):
         return _command_rejected("recursive rm is not allowed without explicit approval")
     if any(token in _DANGEROUS_COMMAND_TOKENS for token in tokens):
@@ -137,12 +154,19 @@ def check_command_policy(command: str) -> dict[str, Any]:
         if subcommand in _DANGEROUS_GIT_COMMANDS:
             return _command_rejected(f"git {subcommand} is not allowed without explicit approval")
     if _references_metadata_endpoint(tokens):
-        return _command_rejected("metadata/private endpoint access is not allowed by default policy")
+        return _command_rejected(
+            "metadata/private endpoint access is not allowed by default policy"
+        )
     return {"ok": True, "decision": "allow", "reason": "default_allow"}
 
 
 def _command_rejected(message: str) -> dict[str, Any]:
-    return {"ok": False, "decision": "reject", "error_type": "command_rejected", "error_message": message}
+    return {
+        "ok": False,
+        "decision": "reject",
+        "error_type": "command_rejected",
+        "error_message": message,
+    }
 
 
 def _contains_recursive_rm(tokens: Sequence[str]) -> bool:
@@ -162,7 +186,9 @@ def _references_metadata_endpoint(tokens: Sequence[str]) -> bool:
 
 def _canonical_tool_args(tool_args: Any) -> str:
     try:
-        return json.dumps(tool_args or {}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return json.dumps(
+            tool_args or {}, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
     except TypeError:
         return json.dumps(str(tool_args), ensure_ascii=False, separators=(",", ":"))
 
@@ -185,7 +211,9 @@ def build_tool_receipt_idempotency_key(
         "tool_args": _canonical_tool_args(tool_args),
     }
     digest = hashlib.sha256(
-        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
     ).hexdigest()
     return f"tool_receipt:{digest}"
 
@@ -222,8 +250,12 @@ def approval_interrupt_info_from_result(
             or {}
         ),
         "risk_level": str(approval_request.get("risk_level") or result.get("risk_level") or ""),
-        "side_effects": list(approval_request.get("side_effects") or result.get("side_effects") or []),
-        "server_label": str(approval_request.get("server_label") or result.get("server_label") or "ksadk"),
+        "side_effects": list(
+            approval_request.get("side_effects") or result.get("side_effects") or []
+        ),
+        "server_label": str(
+            approval_request.get("server_label") or result.get("server_label") or "ksadk"
+        ),
     }
     if run_id:
         interrupt["run_id"] = str(run_id)

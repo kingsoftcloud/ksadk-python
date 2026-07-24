@@ -54,7 +54,9 @@ async def test_build_pilot_report_includes_resume_cancel_and_acceptance_metrics(
         }
 
     monkeypatch.setattr(validate_long_task_pilot, "run_validation", fake_run_validation)
-    monkeypatch.setattr(validate_long_task_pilot, "run_cancel_validation", fake_run_cancel_validation)
+    monkeypatch.setattr(
+        validate_long_task_pilot, "run_cancel_validation", fake_run_cancel_validation
+    )
     monkeypatch.setattr(
         validate_long_task_pilot,
         "run_cancel_then_resume_validation",
@@ -118,7 +120,9 @@ async def test_build_pilot_report_marks_failed_cancel_boundary(monkeypatch):
         }
 
     monkeypatch.setattr(validate_long_task_pilot, "run_validation", fake_run_validation)
-    monkeypatch.setattr(validate_long_task_pilot, "run_cancel_validation", fake_run_cancel_validation)
+    monkeypatch.setattr(
+        validate_long_task_pilot, "run_cancel_validation", fake_run_cancel_validation
+    )
     monkeypatch.setattr(
         validate_long_task_pilot,
         "run_cancel_then_resume_validation",
@@ -190,7 +194,9 @@ async def test_build_pilot_report_aggregates_multiple_iterations(monkeypatch):
         }
 
     monkeypatch.setattr(validate_long_task_pilot, "run_validation", fake_run_validation)
-    monkeypatch.setattr(validate_long_task_pilot, "run_cancel_validation", fake_run_cancel_validation)
+    monkeypatch.setattr(
+        validate_long_task_pilot, "run_cancel_validation", fake_run_cancel_validation
+    )
     monkeypatch.setattr(
         validate_long_task_pilot,
         "run_cancel_then_resume_validation",

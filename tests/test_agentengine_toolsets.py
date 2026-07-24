@@ -1,18 +1,22 @@
-from ksadk.toolsets import agentengine_tool_dispatcher
-from ksadk.toolsets import get_agentengine_tools
+from ksadk.runtime_context import (
+    PlatformInvocationContext,
+    platform_invocation_scope,
+    tool_execution_scope,
+)
 from ksadk.toolsets import (
+    agentengine_tool_dispatcher,
     clear_external_tools,
-    read_workspace_file,
     edit_workspace_file,
+    get_agentengine_tools,
     list_workspace_files,
+    multi_edit_workspace_file,
+    read_workspace_file,
     register_external_tools,
     search_workspace_files,
     tool_dispatcher,
     tool_search,
-    multi_edit_workspace_file,
 )
 from ksadk.toolsets.workspace_state import clear_read_state
-from ksadk.runtime_context import PlatformInvocationContext, platform_invocation_scope, tool_execution_scope
 
 
 class _FakeMemoryService:
@@ -111,7 +115,9 @@ def test_tool_search_discovers_registered_framework_mcp_tools():
 
 def test_coding_profile_exposes_focused_direct_tools_and_deferred_mode_exposes_search_dispatcher():
     coding_names = {tool.name for tool in get_agentengine_tools(profile="coding", mode="direct")}
-    deferred_names = {tool.name for tool in get_agentengine_tools(profile="coding", mode="deferred")}
+    deferred_names = {
+        tool.name for tool in get_agentengine_tools(profile="coding", mode="deferred")
+    }
 
     assert {
         "read_workspace_file",
@@ -362,7 +368,9 @@ def test_workspace_edit_supports_quote_normalization_and_replace_all(monkeypatch
     assert target.read_text(encoding="utf-8") == "value\nvalue\n"
 
 
-def test_workspace_edit_returns_match_diagnostics_for_not_found_and_ambiguous(monkeypatch, tmp_path):
+def test_workspace_edit_returns_match_diagnostics_for_not_found_and_ambiguous(
+    monkeypatch, tmp_path
+):
     clear_read_state()
     monkeypatch.setattr("ksadk.toolsets.workspace.resolve_local_session_dir", lambda: tmp_path)
     workspace = tmp_path / "workspace"
@@ -426,7 +434,9 @@ def test_workspace_search_supports_regex_glob_context_and_max_results(monkeypatc
     (workspace / "a.py").write_text("alpha\nneedle_123\nomega\n", encoding="utf-8")
     (workspace / "b.txt").write_text("needle_456\n", encoding="utf-8")
 
-    result = search_workspace_files(r"needle_\d+", glob="*.py", is_regex=True, context_lines=1, max_results=1)
+    result = search_workspace_files(
+        r"needle_\d+", glob="*.py", is_regex=True, context_lines=1, max_results=1
+    )
 
     assert result["ok"] is True
     assert len(result["results"]) == 1
@@ -465,7 +475,9 @@ def test_workspace_list_supports_glob_sort_and_include_dirs(monkeypatch, tmp_pat
     (workspace / "a.py").write_text("aaaa", encoding="utf-8")
     (workspace / "pkg" / "c.txt").write_text("c", encoding="utf-8")
 
-    result = list_workspace_files(".", glob="*.py", recursive=True, include_dirs=False, sort_by="size")
+    result = list_workspace_files(
+        ".", glob="*.py", recursive=True, include_dirs=False, sort_by="size"
+    )
 
     assert result["ok"] is True
     assert [entry["path"] for entry in result["entries"]] == ["b.py", "a.py"]

@@ -87,7 +87,10 @@ def test_project_model_messages_projects_persisted_tool_result_preview():
     assert projected == [
         {
             "role": "user",
-            "content": "[tool_result] short preview\n[persisted-output] sessions/sess-1/tool-results/call.stdout.txt (text/plain)",
+            "content": (
+                "[tool_result] short preview\n[persisted-output] "
+                "sessions/sess-1/tool-results/call.stdout.txt (text/plain)"
+            ),
         }
     ]
 

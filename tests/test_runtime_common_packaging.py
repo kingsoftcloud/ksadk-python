@@ -1,7 +1,16 @@
-from pathlib import Path
+import importlib
+import sys
 import zipfile
-import tomllib
+from pathlib import Path
 
+if sys.version_info >= (3, 11):
+    tomllib = importlib.import_module("tomllib")
+else:
+    tomllib = importlib.import_module("tomli")
+
+from ksadk.builders.code_builder import CodeBuilder
+from ksadk.builders.container_builder import ContainerBuilder
+from ksadk.detection import DetectionResult, FrameworkType
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -14,9 +23,9 @@ def test_pyproject_uses_in_repo_runtime_common_source_package():
 
 
 def test_runtime_common_workspace_router_is_python310_compatible(tmp_path: Path):
-    router_source = (REPO_ROOT / "ksadk_runtime_common" / "workspace_files" / "router.py").read_text(
-        encoding="utf-8"
-    )
+    router_source = (
+        REPO_ROOT / "ksadk_runtime_common" / "workspace_files" / "router.py"
+    ).read_text(encoding="utf-8")
     assert "from datetime import UTC" not in router_source
     assert "datetime.UTC" not in router_source
 
@@ -74,11 +83,7 @@ def test_built_wheel_excludes_legacy_web_ui_sources_and_build_outputs():
     assert wheels, "请先运行 uv build 生成 dist/ksadk-*.whl"
 
     with zipfile.ZipFile(wheels[-1]) as archive:
-        leaked = [
-            name
-            for name in archive.namelist()
-            if name.startswith("ksadk/server/web-ui/")
-        ]
+        leaked = [name for name in archive.namelist() if name.startswith("ksadk/server/web-ui/")]
 
     assert leaked == []
 
@@ -132,10 +137,12 @@ def test_pyproject_declares_validated_framework_dependency_windows():
     pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
     assert "fastapi>=0.100.0,<1.0.0" in pyproject
-    assert "google-adk>=1.34.0,<2.0.0" in pyproject
-    assert "langchain>=1.3.0,<2.0.0" in pyproject
-    assert "langchain-core>=1.4.0,<2.0.0" in pyproject
-    assert "langchain-openai>=1.2.0,<2.0.0" in pyproject
+    # goal-00: ADK 窗口放宽为 1.34.x 至 <3.0(支持 1.x 与 2.x)
+    assert "google-adk>=1.34.0,<3.0.0" in pyproject
+    # LangChain 生态下限锚定本地已验证版本(不降级,<2.0 守 1.x 稳定线)
+    assert "langchain>=1.3.14,<2.0.0" in pyproject
+    assert "langchain-core>=1.5.0,<2.0.0" in pyproject
+    assert "langchain-openai>=1.4.0,<2.0.0" in pyproject
     assert "langgraph>=1.2.0,<1.3.0" in pyproject
     assert "deepagents>=0.6.2,<1.0.0" in pyproject
     assert "fastapi>=0.100.0,<0.124.0" not in pyproject
@@ -152,14 +159,27 @@ def test_makefile_delegates_runtime_image_builds_to_agentengine_images_repo():
     makefile = (REPO_ROOT / "Makefile").read_text(encoding="utf-8")
 
     assert "AGENTENGINE_IMAGES_DIR ?= ../agentengine-images" in makefile
-    assert "$(MAKE) -C \"$(AGENTENGINE_IMAGES_DIR)\" $@" in makefile
+    assert '$(MAKE) -C "$(AGENTENGINE_IMAGES_DIR)" $@' in makefile
     assert "-f deploy/openclaw/Dockerfile" not in makefile
     assert "-f deploy/hermes/Dockerfile" not in makefile
 
 
-def test_runtime_templates_initialize_tracing_for_otlp_envs():
-    for rel_path in ["ksadk/builders/code_builder.py", "ksadk/builders/container_builder.py"]:
-        source = (REPO_ROOT / rel_path).read_text(encoding="utf-8")
+def test_runtime_templates_initialize_tracing_for_otlp_envs(tmp_path: Path):
+    detection_result = DetectionResult(
+        type=FrameworkType.LANGGRAPH,
+        name="demo_agent",
+        entry_point="demo_agent/agent.py",
+        package_path=str(tmp_path / "demo_agent"),
+        agent_variable="root_agent",
+    )
+    templates = [
+        CodeBuilder(tmp_path)._generate_entrypoint(detection_result),
+        ContainerBuilder(tmp_path)._generate_entrypoint(detection_result, "demo_agent"),
+    ]
+
+    for source in templates:
+        compile(source, "entrypoint.py", "exec")
+        normalized_source = " ".join(source.split())
 
         assert "OTEL_EXPORTER_OTLP_ENDPOINT" in source
         assert "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT" in source
@@ -169,5 +189,8 @@ def test_runtime_templates_initialize_tracing_for_otlp_envs():
         assert "CLOUD_MONITOR_LANGFUSE_PUBLIC_KEY" in source
         assert "CLOUD_MONITOR_LANGFUSE_SECRET_KEY" in source
         assert "CLOUD_MONITOR_LANGFUSE_HOST" in source
-        assert 'os.environ.get("LANGFUSE_PUBLIC_KEY") or has_otlp' in source
-        assert "or has_cloud_monitor_otlp or has_cloud_monitor_langfuse" in source
+        assert (
+            'os.environ.get("LANGFUSE_PUBLIC_KEY") or has_otlp '
+            "or has_cloud_monitor_otlp or has_cloud_monitor_langfuse"
+        ) in normalized_source
+        assert "setup_tracing(use_callback_only=use_callback_only)" in source

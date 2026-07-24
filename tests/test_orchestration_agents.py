@@ -123,9 +123,7 @@ async def test_parallel_agent_reraises_branch_failures():
             events.append(event)
 
     assert any(
-        event.agent_name == "boom"
-        and event.event_type == EventType.ERROR
-        and event.data == "boom"
+        event.agent_name == "boom" and event.event_type == EventType.ERROR and event.data == "boom"
         for event in events
     )
     assert any(
@@ -148,11 +146,11 @@ async def test_loop_agent_exits_on_max_iterations():
     events = await _collect_events(agent, context)
 
     assert context.state["count"] == 3
-    assert [
-        event.metadata["iteration"]
-        for event in events
-        if "iteration" in event.metadata
-    ] == [0, 1, 2]
+    assert [event.metadata["iteration"] for event in events if "iteration" in event.metadata] == [
+        0,
+        1,
+        2,
+    ]
 
 
 @pytest.mark.asyncio
@@ -277,9 +275,10 @@ async def test_runner_adapter_supports_invoke_and_stream_modes():
     assert context.state["runner_mode"] == "invoke"
     assert context.state["invoke_runner_output"] == "invoke:hi"
     assert context.state["streaming_runner_output"] == "hello world"
-    assert [
-        event.data for event in events if event.agent_name == "streaming_runner"
-    ] == ["hello", " world"]
+    assert [event.data for event in events if event.agent_name == "streaming_runner"] == [
+        "hello",
+        " world",
+    ]
 
 
 @pytest.mark.asyncio

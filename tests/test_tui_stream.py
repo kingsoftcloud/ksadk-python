@@ -4,6 +4,7 @@
 （-m 单次）共用。Textual 专属测试（AgentTUI/AssistantMessage/去硬编码颜色）已随 Textual
 移除废弃，由 test_tui_loop.py 的 render_stream 测试替代。
 """
+
 import os
 
 os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///./test.db")
@@ -27,13 +28,17 @@ def test_extract_stream_delta_final_chunk_does_not_return_output_as_delta():
 
 
 def test_extract_stream_delta_responses_output_chunk_does_not_return_list_as_delta():
-    """responses 路径 response.completed 的 responses_output 带 output=list，不能当 delta append。"""
-    delta, usage, is_terminal = extract_stream_delta({
-        "type": "responses_output",
-        "output": [{"type": "message", "content": [{"text": "回复"}]}],
-        "usage": {"input_tokens": 20, "output_tokens": 5},
-        "response_id": "resp_1",
-    })
+    """responses 路径 response.completed 的 responses_output 带 output=list，
+    不能当 delta append。
+    """
+    delta, usage, is_terminal = extract_stream_delta(
+        {
+            "type": "responses_output",
+            "output": [{"type": "message", "content": [{"text": "回复"}]}],
+            "usage": {"input_tokens": 20, "output_tokens": 5},
+            "response_id": "resp_1",
+        }
+    )
     assert delta == ""
     assert usage == {"input_tokens": 20, "output_tokens": 5}
     assert is_terminal is True
@@ -54,8 +59,13 @@ def test_extract_stream_delta_unknown_type_falls_back_to_delta():
 
 def test_format_usage_handles_both_field_naming_conventions():
     """兼容 input_tokens/output_tokens 与 prompt_tokens/completion_tokens。"""
-    assert format_usage({"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}) == "↑10 ↓5 ⌀15"
-    assert format_usage({"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}) == "↑10 ↓5 ⌀15"
+    assert (
+        format_usage({"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}) == "↑10 ↓5 ⌀15"
+    )
+    assert (
+        format_usage({"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15})
+        == "↑10 ↓5 ⌀15"
+    )
 
 
 def test_format_usage_empty_or_none_returns_empty():

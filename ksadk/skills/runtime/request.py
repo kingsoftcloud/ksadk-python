@@ -28,7 +28,9 @@ def parse_workflow_request(argv: list[str]) -> SkillWorkflowRequest:
     if has_request_file:
         return _request_from_json_file(_option_value(args, "--request-file"))
     if has_prompt_file:
-        return SkillWorkflowRequest(workflow_prompt=Path(_option_value(args, "--prompt-file")).read_text(encoding="utf-8"))
+        return SkillWorkflowRequest(
+            workflow_prompt=Path(_option_value(args, "--prompt-file")).read_text(encoding="utf-8")
+        )
     if not args:
         return SkillWorkflowRequest()
     return SkillWorkflowRequest(workflow_prompt=args[0])

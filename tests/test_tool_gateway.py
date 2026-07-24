@@ -27,7 +27,9 @@ def test_tool_policy_requires_approval_only_in_strict_mode():
 
 def test_tool_gateway_returns_approval_request_in_strict_mode(monkeypatch):
     monkeypatch.setenv("KSADK_TOOL_APPROVAL_MODE", "strict")
-    gateway = ToolGateway({"write_file": ToolPolicy(risk_level="medium", side_effects=("workspace_write",))})
+    gateway = ToolGateway(
+        {"write_file": ToolPolicy(risk_level="medium", side_effects=("workspace_write",))}
+    )
 
     result = gateway.invoke("write_file", lambda: {"ok": True})
 
@@ -42,7 +44,9 @@ def test_tool_gateway_runs_approved_call_in_strict_mode(monkeypatch):
     monkeypatch.setenv("KSADK_TOOL_APPROVAL_MODE", "strict")
     gateway = ToolGateway({"write_file": ToolPolicy(risk_level="medium")})
 
-    assert gateway.invoke("write_file", lambda value: {"ok": True, "value": value}, 3, approval={"approved": True}) == {
+    assert gateway.invoke(
+        "write_file", lambda value: {"ok": True, "value": value}, 3, approval={"approved": True}
+    ) == {
         "ok": True,
         "value": 3,
     }
@@ -82,7 +86,9 @@ def test_approval_interrupt_info_from_result_normalizes_payload():
         },
     }
 
-    interrupt = approval_interrupt_info_from_result(result, fallback_tool_name="fallback", run_id="run_1")
+    interrupt = approval_interrupt_info_from_result(
+        result, fallback_tool_name="fallback", run_id="run_1"
+    )
 
     assert interrupt == {
         "id": "appr_123",

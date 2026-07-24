@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from ksadk.runtime_context import tool_execution_scope
 from ksadk.sandbox import (
     E2BSandboxBackend,
     LocalProcessSandboxBackend,
@@ -14,7 +15,6 @@ from ksadk.sandbox import (
     SandboxType,
     create_sandbox_backend,
 )
-from ksadk.runtime_context import tool_execution_scope
 from ksadk.sandbox.registry import GLOBAL_SANDBOX_REGISTRY, SandboxRegistry
 from ksadk.toolsets.sandbox import run_code, run_command, sandbox_status
 
@@ -220,6 +220,7 @@ def test_e2b_sandbox_backend_waits_for_startup_command_readiness(monkeypatch):
 
     class FakeSandbox:
         sandbox_id = "sbx-123"
+
         def __init__(self):
             self.commands = FakeCommands()
             self.files = FakeFiles()
@@ -267,6 +268,7 @@ def test_e2b_sandbox_backend_waits_for_startup_filesystem_readiness(monkeypatch)
 
     class FakeSandbox:
         sandbox_id = "sbx-123"
+
         def __init__(self):
             self.commands = FakeCommands()
             self.files = FakeFiles()
@@ -327,7 +329,10 @@ def test_local_process_backend_kills_process_group_on_timeout(tmp_path):
     backend = LocalProcessSandboxBackend(workspace_root=tmp_path)
     session = backend.create_session(session_id="sess-1")
 
-    result = session.run_command("python -c 'import subprocess, time; subprocess.Popen([\"sleep\", \"5\"]); time.sleep(5)'", timeout=1)
+    result = session.run_command(
+        'python -c \'import subprocess, time; subprocess.Popen(["sleep", "5"]); time.sleep(5)\'',
+        timeout=1,
+    )
 
     assert result.exit_code == 124
     assert "command timed out" in result.stderr
@@ -390,9 +395,33 @@ def test_sandbox_registry_quota_reclaims_oldest_entry():
             return FakeSession(session_id)
 
     registry = SandboxRegistry()
-    registry.get_or_create(key="old", backend_name="fake", backend=FakeBackend(), ttl_seconds=100, isolated=True, now=100.0, max_sessions=2)
-    registry.get_or_create(key="middle", backend_name="fake", backend=FakeBackend(), ttl_seconds=100, isolated=True, now=101.0, max_sessions=2)
-    registry.get_or_create(key="new", backend_name="fake", backend=FakeBackend(), ttl_seconds=100, isolated=True, now=102.0, max_sessions=2)
+    registry.get_or_create(
+        key="old",
+        backend_name="fake",
+        backend=FakeBackend(),
+        ttl_seconds=100,
+        isolated=True,
+        now=100.0,
+        max_sessions=2,
+    )
+    registry.get_or_create(
+        key="middle",
+        backend_name="fake",
+        backend=FakeBackend(),
+        ttl_seconds=100,
+        isolated=True,
+        now=101.0,
+        max_sessions=2,
+    )
+    registry.get_or_create(
+        key="new",
+        backend_name="fake",
+        backend=FakeBackend(),
+        ttl_seconds=100,
+        isolated=True,
+        now=102.0,
+        max_sessions=2,
+    )
 
     assert killed == ["old"]
     assert {entry.key for entry in registry.entries()} == {"middle", "new"}
@@ -689,6 +718,7 @@ def test_shutdown_runner_resources_clears_sandbox_registry(monkeypatch):
     import sys
 
     import ksadk.server.app  # noqa: F401  触发模块注册到 sys.modules
+
     app_module = sys.modules["ksadk.server.app"]
 
     # 用一个带空 close() 的 mock runner,触发完整 shutdown 路径(含 sandbox clear)。
@@ -696,14 +726,12 @@ def test_shutdown_runner_resources_clears_sandbox_registry(monkeypatch):
         async def close(self):
             return None
 
-    monkeypatch.setattr(app_module, "runner", FakeRunner())
+    # goal-01: runner 迁至 per-app state;shutdown 需显式传 state。
+    state = app_module.app.state.runtime
+    monkeypatch.setattr(state, "runner", FakeRunner())
     calls: list[bool] = []
-    monkeypatch.setattr(
-        GLOBAL_SANDBOX_REGISTRY,
-        "clear",
-        lambda: calls.append(True),
-    )
+    monkeypatch.setattr(state.sandbox_registry, "close", lambda: calls.append(True))
 
-    asyncio.run(app_module._shutdown_runner_resources())
+    asyncio.run(app_module._shutdown_runner_resources(state))
 
     assert calls == [True]

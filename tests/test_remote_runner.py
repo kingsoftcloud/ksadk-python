@@ -529,12 +529,17 @@ async def test_remote_runner_responses_stream_parses_native_tool_items(monkeypat
     chunks = [chunk async for chunk in runner.stream({"input": "hi"})]
 
     assert chunks == [
-        {"type": "tool_call", "tool_name": "search", "tool_args": "", "status": "running", "call_id": "fc_1"},
-        {"type": "tool_call", "tool_name": "search", "tool_args": '{"q":', "status": "running", "call_id": "fc_1"},
         {
             "type": "tool_call",
             "tool_name": "search",
-            "tool_args": '{"q":"openclaw"}',
+            "tool_args": "",
+            "status": "running",
+            "call_id": "fc_1",
+        },
+        {
+            "type": "tool_call",
+            "tool_name": "search",
+            "tool_args": '{"q":',
             "status": "running",
             "call_id": "fc_1",
         },
@@ -545,7 +550,19 @@ async def test_remote_runner_responses_stream_parses_native_tool_items(monkeypat
             "status": "running",
             "call_id": "fc_1",
         },
-        {"type": "tool_result", "tool_name": "search", "tool_output": '{\n  "ok": true\n}', "call_id": "fc_1"},
+        {
+            "type": "tool_call",
+            "tool_name": "search",
+            "tool_args": '{"q":"openclaw"}',
+            "status": "running",
+            "call_id": "fc_1",
+        },
+        {
+            "type": "tool_result",
+            "tool_name": "search",
+            "tool_output": '{\n  "ok": true\n}',
+            "call_id": "fc_1",
+        },
         {
             "type": "responses_output",
             "output": [
@@ -741,7 +758,7 @@ async def test_remote_runner_responses_stream_preserves_completed_usage(monkeypa
                 "output_tokens": 4,
                 "total_tokens": 13,
             },
-        }
+        },
     ]
 
 
@@ -778,7 +795,12 @@ async def test_remote_runner_responses_completed_output_projects_tool_items(monk
             "status": "completed",
             "call_id": "fc_1",
         },
-        {"type": "tool_result", "tool_name": "search", "tool_output": '{\n  "ok": true\n}', "call_id": "fc_1"},
+        {
+            "type": "tool_result",
+            "tool_name": "search",
+            "tool_output": '{\n  "ok": true\n}',
+            "call_id": "fc_1",
+        },
     ]
     assert chunks[-1]["type"] == "responses_output"
     assert chunks[-1]["usage"]["total_tokens"] == 13
@@ -953,7 +975,7 @@ async def test_remote_runner_responses_stream_preserves_completed_usage_metadata
                 "total_tokens": 13,
             },
             "metadata": {"last_usage": {"input_tokens": 9000}},
-        }
+        },
     ]
 
 
@@ -1014,4 +1036,6 @@ async def test_remote_runner_chat_stream_parses_top_level_delta(monkeypatch):
 
     text_chunks = [c["delta"] for c in chunks if c.get("type") == "text"]
     assert text_chunks == ["你", "好"]
-    assert any(c.get("type") == "final" and c.get("usage", {}).get("total_tokens") == 7 for c in chunks)
+    assert any(
+        c.get("type") == "final" and c.get("usage", {}).get("total_tokens") == 7 for c in chunks
+    )

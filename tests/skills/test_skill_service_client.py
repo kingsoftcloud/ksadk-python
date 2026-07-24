@@ -20,7 +20,10 @@ def test_parse_list_skills_by_space_id_preserves_progressive_disclosure_fields()
                         "Name": "web-artifacts-builder",
                         "Description": "Build web artifacts",
                         "Status": "Active",
-                        "ContentHash": "sha256:b95f0735357fcf879bd53ed85cb242679ec74438e3bc8e85b1f27193169b6ecf",
+                        "ContentHash": (
+                            "sha256:b95f0735357fcf879bd53ed85cb242679"
+                            "ec74438e3bc8e85b1f27193169b6ecf"
+                        ),
                         "ArchiveUri": "ks3://agentengine-skills/skills/sk-web/v1/web-artifacts-builder.zip",
                     }
                 ],
@@ -34,7 +37,10 @@ def test_parse_list_skills_by_space_id_preserves_progressive_disclosure_fields()
     assert response.skills[0].version_id == "sv-web-v1"
     assert response.skills[0].version == "v1"
     assert response.skills[0].content_hash.algorithm == "sha256"
-    assert response.skills[0].archive_uri == "ks3://agentengine-skills/skills/sk-web/v1/web-artifacts-builder.zip"
+    assert (
+        response.skills[0].archive_uri
+        == "ks3://agentengine-skills/skills/sk-web/v1/web-artifacts-builder.zip"
+    )
 
 
 def test_parse_list_skills_preserves_discovery_metadata():
@@ -73,7 +79,13 @@ def test_parse_list_skills_filters_inactive_by_default():
             "Data": {
                 "SkillSpaceId": "ss-abc",
                 "Skills": [
-                    {"SkillId": "sk-active", "VersionId": "v1", "Version": "1", "Name": "active", "Status": "Active"},
+                    {
+                        "SkillId": "sk-active",
+                        "VersionId": "v1",
+                        "Version": "1",
+                        "Name": "active",
+                        "Status": "Active",
+                    },
                     {
                         "SkillId": "sk-available",
                         "VersionId": "v1",
@@ -81,7 +93,13 @@ def test_parse_list_skills_filters_inactive_by_default():
                         "Name": "available",
                         "Status": "AVAILABLE",
                     },
-                    {"SkillId": "sk-disabled", "VersionId": "v2", "Version": "2", "Name": "disabled", "Status": "Disabled"},
+                    {
+                        "SkillId": "sk-disabled",
+                        "VersionId": "v2",
+                        "Version": "2",
+                        "Name": "disabled",
+                        "Status": "Disabled",
+                    },
                 ],
             }
         }

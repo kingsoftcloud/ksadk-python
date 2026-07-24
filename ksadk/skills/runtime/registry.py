@@ -7,8 +7,14 @@ from ksadk.skills.models import SkillRef
 from ksadk.skills.runtime.base import normalize_skill_names
 from ksadk.skills.service_env import (
     parse_skill_space_ids,
+)
+from ksadk.skills.service_env import (
     public_skill_space_ids as configured_public_skill_space_ids,
+)
+from ksadk.skills.service_env import (
     skill_space_ids as configured_skill_space_ids,
+)
+from ksadk.skills.service_env import (
     user_skill_space_ids as configured_user_skill_space_ids,
 )
 
@@ -44,14 +50,13 @@ def dedupe_skill_refs(skill_refs: list[SkillRef], *, seen_names: set[str]) -> li
 
 
 def select_public_skill_refs(skill_refs: list[SkillRef]) -> list[SkillRef]:
-    allowlist = {name.lower() for name in normalize_skill_names(os.environ.get("KSADK_PUBLIC_SKILL_ALLOWLIST", ""))}
+    allowlist = {
+        name.lower()
+        for name in normalize_skill_names(os.environ.get("KSADK_PUBLIC_SKILL_ALLOWLIST", ""))
+    }
     if not allowlist:
         return [skill for skill in skill_refs if skill.name]
-    return [
-        skill
-        for skill in skill_refs
-        if skill.name and skill.name.lower() in allowlist
-    ]
+    return [skill for skill in skill_refs if skill.name and skill.name.lower() in allowlist]
 
 
 def select_remote_skill_refs(
@@ -118,7 +123,9 @@ def match_skill_refs(
     return matches
 
 
-def _metadata_score(skill: SkillRef, normalized_prompt: str, prompt_tokens: set[str]) -> tuple[int, str]:
+def _metadata_score(
+    skill: SkillRef, normalized_prompt: str, prompt_tokens: set[str]
+) -> tuple[int, str]:
     if skill.name and skill.name.lower() in normalized_prompt:
         return 90, "name"
     for alias in skill.aliases:
@@ -144,7 +151,5 @@ def _metadata_score(skill: SkillRef, normalized_prompt: str, prompt_tokens: set[
 
 def _tokens(value: str) -> set[str]:
     return {
-        token
-        for token in re.split(r"[^0-9a-zA-Z\u4e00-\u9fff]+", value.lower())
-        if len(token) >= 2
+        token for token in re.split(r"[^0-9a-zA-Z\u4e00-\u9fff]+", value.lower()) if len(token) >= 2
     }

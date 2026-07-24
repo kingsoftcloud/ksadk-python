@@ -19,8 +19,7 @@
 
 import json
 import os
-import time
-from unittest.mock import MagicMock, patch, AsyncMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -34,6 +33,7 @@ class TestInMemoryLTMBackendExtended:
 
     def _make_backend(self, index="test_app"):
         from ksadk.memory.adk.backends.inmemory_ltm_backend import InMemoryLTMBackend
+
         return InMemoryLTMBackend(index=index)
 
     def test_index_property(self):
@@ -101,18 +101,19 @@ class TestInMemoryLTMBackendExtended:
             # 不应搜到其他用户的精确数据
             for j in range(5):
                 if j != i:
-                    other_results = backend.search_memory(
-                        f"user_{i}", f"secret_data_for_user_{j}"
-                    )
+                    other_results = backend.search_memory(f"user_{i}", f"secret_data_for_user_{j}")
                     assert not any(f"user_{j}" in r for r in other_results)
 
     def test_full_match_scores_higher(self):
         """完整匹配得分 (+10) 高于部分关键词匹配 (+1)"""
         backend = self._make_backend()
-        backend.save_memory("u1", [
-            "I love Python programming",      # 完整匹配 "Python programming"
-            "Python is good",                  # 仅部分匹配 "Python"
-        ])
+        backend.save_memory(
+            "u1",
+            [
+                "I love Python programming",  # 完整匹配 "Python programming"
+                "Python is good",  # 仅部分匹配 "Python"
+            ],
+        )
         results = backend.search_memory("u1", "Python programming", top_k=2)
         assert len(results) == 2
         # 完整匹配的应该排在前面
@@ -129,6 +130,7 @@ class TestHttpLTMBackend:
 
     def _make_backend(self, base_url="http://test.local", token="test-token"):
         from ksadk.memory.adk.backends.http_ltm_backend import HttpLTMBackend
+
         return HttpLTMBackend(index="test", base_url=base_url, token=token)
 
     def test_empty_base_url_save_returns_false(self):
@@ -157,6 +159,7 @@ class TestHttpLTMBackend:
 
     def test_save_memory_http_error(self):
         import httpx
+
         backend = self._make_backend()
         mock_client = MagicMock()
         mock_response = MagicMock()
@@ -183,6 +186,7 @@ class TestHttpLTMBackend:
 
     def test_search_memory_http_error(self):
         import httpx
+
         backend = self._make_backend()
         mock_client = MagicMock()
         mock_response = MagicMock()
@@ -227,6 +231,7 @@ class TestSdkLTMBackend:
 
     def _make_backend(self, **kwargs):
         from ksadk.memory.adk.backends.sdk_ltm_backend import SdkLTMBackend
+
         defaults = {
             "index": "test_idx",
             "access_key": "test_ak",
@@ -238,9 +243,11 @@ class TestSdkLTMBackend:
 
     def test_init_no_credentials_warning(self, caplog):
         import logging
+
         with caplog.at_level(logging.WARNING):
             from ksadk.memory.adk.backends.sdk_ltm_backend import SdkLTMBackend
-            backend = SdkLTMBackend(index="test", access_key="", secret_key="")
+
+            SdkLTMBackend(index="test", access_key="", secret_key="")
         assert "AK/SK not provided" in caplog.text
 
     def test_save_empty_events_returns_true(self):
@@ -252,7 +259,7 @@ class TestSdkLTMBackend:
         mock_client = MagicMock()
         mock_client.call.return_value = '{"RequestId": "123"}'
 
-        with patch.object(backend, '_get_client', return_value=mock_client):
+        with patch.object(backend, "_get_client", return_value=mock_client):
             event = json.dumps(
                 {"role": "user", "parts": [{"text": "hello"}]},
                 ensure_ascii=False,
@@ -283,7 +290,7 @@ class TestSdkLTMBackend:
         mock_client = MagicMock()
         mock_client.call.return_value = "{}"
 
-        with patch.object(backend, '_get_client', return_value=mock_client):
+        with patch.object(backend, "_get_client", return_value=mock_client):
             event = json.dumps(
                 {"role": "user", "parts": [{"text": "test msg"}]},
                 ensure_ascii=False,
@@ -302,7 +309,7 @@ class TestSdkLTMBackend:
         mock_client = MagicMock()
         mock_client.call.return_value = "{}"
 
-        with patch.object(backend, '_get_client', return_value=mock_client):
+        with patch.object(backend, "_get_client", return_value=mock_client):
             event = json.dumps(
                 {"role": "user", "parts": [{"text": "hello world"}]},
                 ensure_ascii=False,
@@ -323,7 +330,7 @@ class TestSdkLTMBackend:
         mock_client = MagicMock()
         mock_client.call.return_value = "{}"
 
-        with patch.object(backend, '_get_client', return_value=mock_client):
+        with patch.object(backend, "_get_client", return_value=mock_client):
             events = [
                 json.dumps({"role": "user", "parts": [{"text": "msg_1"}]}),
                 json.dumps({"role": "user", "parts": [{"text": "msg_2"}]}),
@@ -342,7 +349,7 @@ class TestSdkLTMBackend:
         mock_client = MagicMock()
         mock_client.call.return_value = "{}"
 
-        with patch.object(backend, '_get_client', return_value=mock_client):
+        with patch.object(backend, "_get_client", return_value=mock_client):
             backend.save_memory("u1", ["plain text message"])
 
         params = mock_client.call.call_args[0][1]
@@ -355,7 +362,7 @@ class TestSdkLTMBackend:
         mock_client = MagicMock()
         mock_client.call.side_effect = Exception("SDK error")
 
-        with patch.object(backend, '_get_client', return_value=mock_client):
+        with patch.object(backend, "_get_client", return_value=mock_client):
             assert backend.save_memory("u1", ["event"]) is False
 
     def test_search_calls_query_memory_sdk(self):
@@ -363,7 +370,7 @@ class TestSdkLTMBackend:
         mock_client = MagicMock()
         mock_client.call.return_value = json.dumps({"Memories": ["result1"]})
 
-        with patch.object(backend, '_get_client', return_value=mock_client):
+        with patch.object(backend, "_get_client", return_value=mock_client):
             results = backend.search_memory("u1", "query", top_k=3)
 
         assert results == ["result1"]
@@ -383,24 +390,26 @@ class TestSdkLTMBackend:
         mock_client = MagicMock()
         mock_client.call.side_effect = Exception("SDK error")
 
-        with patch.object(backend, '_get_client', return_value=mock_client):
+        with patch.object(backend, "_get_client", return_value=mock_client):
             assert backend.search_memory("u1", "query") == []
 
     def test_get_session_status_calls_list_sessions(self):
         backend = self._make_backend()
         mock_client = MagicMock()
-        mock_client.call.return_value = json.dumps({
-            "Code": 200,
-            "Message": "success",
-            "Data": {
-                "Total": 1,
-                "Items": [
-                    {"SessionId": "sess-1", "State": 0, "DataType": "conversation"},
-                ],
-            },
-        })
+        mock_client.call.return_value = json.dumps(
+            {
+                "Code": 200,
+                "Message": "success",
+                "Data": {
+                    "Total": 1,
+                    "Items": [
+                        {"SessionId": "sess-1", "State": 0, "DataType": "conversation"},
+                    ],
+                },
+            }
+        )
 
-        with patch.object(backend, '_get_client', return_value=mock_client):
+        with patch.object(backend, "_get_client", return_value=mock_client):
             status = backend.get_session_status(user_id="u1", session_id="sess-1")
 
         assert status == {"SessionId": "sess-1", "State": 0, "DataType": "conversation"}
@@ -418,7 +427,7 @@ class TestSdkLTMBackend:
         mock_client = MagicMock()
         mock_client.call.return_value = json.dumps({"Memories": []})
 
-        with patch.object(backend, '_get_client', return_value=mock_client):
+        with patch.object(backend, "_get_client", return_value=mock_client):
             backend.search_memory("u1", "query")
 
         params = mock_client.call.call_args[0][1]
@@ -429,9 +438,10 @@ class TestSdkLTMBackend:
         mock_client = MagicMock()
         mock_client.call.return_value = json.dumps({"Memories": []})
 
-        with patch.object(backend, '_get_client', return_value=mock_client):
+        with patch.object(backend, "_get_client", return_value=mock_client):
             backend.search_memory(
-                "u1", "query",
+                "u1",
+                "query",
                 occurred_after=1000,
                 occurred_before=2000,
                 mode="semantic",
@@ -452,59 +462,64 @@ class TestSdkLTMBackend:
 
     def test_parse_response_data_dict_format(self):
         backend = self._make_backend()
-        result = backend._parse_query_response({
-            "Data": [{"Content": "content_1"}, {"Text": "text_1"}]
-        })
+        result = backend._parse_query_response(
+            {"Data": [{"Content": "content_1"}, {"Text": "text_1"}]}
+        )
         assert result == ["content_1", "text_1"]
 
     def test_parse_response_data_nested_empty_memories_is_empty(self):
         backend = self._make_backend()
-        result = backend._parse_query_response({
-            "Code": 200,
-            "Message": "success",
-            "Data": [{"Memories": []}],
-        })
+        result = backend._parse_query_response(
+            {
+                "Code": 200,
+                "Message": "success",
+                "Data": [{"Memories": []}],
+            }
+        )
         assert result == []
 
     def test_parse_response_data_nested_aicp_memory_field(self):
         backend = self._make_backend()
-        result = backend._parse_query_response({
-            "Code": 200,
-            "Message": "success",
-            "Data": [{
-                "Memories": [
+        result = backend._parse_query_response(
+            {
+                "Code": 200,
+                "Message": "success",
+                "Data": [
                     {
-                        "MemoryId": "mem-1",
-                        "Memory": "用户张三喜欢喝桃汁。",
-                        "Score": 0.99,
-                    },
-                    {
-                        "MemoryId": "mem-2",
-                        "Memory": "用户张三不喜欢喝咖啡。",
-                        "Score": 0.98,
-                    },
+                        "Memories": [
+                            {
+                                "MemoryId": "mem-1",
+                                "Memory": "用户张三喜欢喝桃汁。",
+                                "Score": 0.99,
+                            },
+                            {
+                                "MemoryId": "mem-2",
+                                "Memory": "用户张三不喜欢喝咖啡。",
+                                "Score": 0.98,
+                            },
+                        ],
+                    }
                 ],
-            }],
-        })
+            }
+        )
         assert result == ["用户张三喜欢喝桃汁。", "用户张三不喜欢喝咖啡。"]
 
     def test_parse_response_results_format(self):
         backend = self._make_backend()
-        result = backend._parse_query_response({
-            "Results": [{"Text": "r1"}, {"Content": "r2"}]
-        })
+        result = backend._parse_query_response({"Results": [{"Text": "r1"}, {"Content": "r2"}]})
         assert result == ["r1", "r2"]
 
     def test_parse_response_content_priority(self):
         """Content 字段优先于 Text 和 Data"""
         backend = self._make_backend()
-        result = backend._parse_query_response({
-            "Memories": [{"Content": "preferred", "Text": "fallback", "Data": "last"}]
-        })
+        result = backend._parse_query_response(
+            {"Memories": [{"Content": "preferred", "Text": "fallback", "Data": "last"}]}
+        )
         assert result == ["preferred"]
 
     def test_parse_response_unknown_format(self, caplog):
         import logging
+
         backend = self._make_backend()
         with caplog.at_level(logging.WARNING):
             result = backend._parse_query_response({"UnknownKey": "value"})
@@ -526,15 +541,15 @@ class TestLongTermMemoryInit:
     """LongTermMemory 构造和 from_env() 工厂方法"""
 
     def test_init_local_string(self):
-        from ksadk.memory.adk.long_term_memory import LongTermMemory
         from ksadk.memory.adk.backends.inmemory_ltm_backend import InMemoryLTMBackend
+        from ksadk.memory.adk.long_term_memory import LongTermMemory
 
         ltm = LongTermMemory(backend="local", app_name="test_app")
         assert isinstance(ltm._backend, InMemoryLTMBackend)
 
     def test_init_backend_instance(self):
-        from ksadk.memory.adk.long_term_memory import LongTermMemory
         from ksadk.memory.adk.backends.inmemory_ltm_backend import InMemoryLTMBackend
+        from ksadk.memory.adk.long_term_memory import LongTermMemory
 
         custom_backend = InMemoryLTMBackend(index="custom_index")
         ltm = LongTermMemory(backend=custom_backend)
@@ -564,8 +579,9 @@ class TestLongTermMemoryInit:
         assert ltm.index == "my_app"
 
     def test_init_invalid_backend_raises(self):
-        from ksadk.memory.adk.long_term_memory import LongTermMemory
         from pydantic import ValidationError
+
+        from ksadk.memory.adk.long_term_memory import LongTermMemory
 
         with pytest.raises(ValidationError):
             LongTermMemory(backend="unknown_backend", app_name="test")
@@ -621,9 +637,7 @@ class TestLongTermMemoryInit:
         assert ltm.backend_config["access_key"] == "fallback_ak"
         assert ltm.backend_config["secret_key"] == "fallback_sk"
 
-    def test_from_env_sdk_prefers_explicit_region_over_ksyun_region(
-        self, monkeypatch
-    ):
+    def test_from_env_sdk_prefers_explicit_region_over_ksyun_region(self, monkeypatch):
         from ksadk.memory.adk.long_term_memory import LongTermMemory
 
         monkeypatch.setenv("KSADK_LTM_BACKEND", "sdk")
@@ -643,9 +657,7 @@ class TestLongTermMemoryInit:
         ltm = LongTermMemory.from_env()
         assert ltm.backend_config["region"] == "pre-online"
 
-    def test_from_env_sdk_uses_http_for_inner_endpoint_when_scheme_unset(
-        self, monkeypatch
-    ):
+    def test_from_env_sdk_uses_http_for_inner_endpoint_when_scheme_unset(self, monkeypatch):
         from ksadk.memory.adk.long_term_memory import LongTermMemory
 
         monkeypatch.setenv("KSADK_LTM_BACKEND", "sdk")
@@ -673,6 +685,7 @@ class TestLongTermMemoryEventFiltering:
 
     def _make_ltm(self):
         from ksadk.memory.adk.long_term_memory import LongTermMemory
+
         return LongTermMemory(backend="local", app_name="filter_test")
 
     def _make_event(self, author="user", text=None, function_call=None):
@@ -700,6 +713,7 @@ class TestLongTermMemoryEventFiltering:
 
     def test_function_call_filtered(self):
         from google.genai import types
+
         ltm = self._make_ltm()
         events = [
             self._make_event(
@@ -712,6 +726,7 @@ class TestLongTermMemoryEventFiltering:
 
     def test_empty_content_filtered(self):
         from google.adk.events.event import Event
+
         ltm = self._make_ltm()
         event = Event(invocation_id="inv1", author="user", content=None)
         result = ltm._filter_and_convert_events([event])
@@ -720,6 +735,7 @@ class TestLongTermMemoryEventFiltering:
     def test_empty_parts_filtered(self):
         from google.adk.events.event import Event
         from google.genai import types
+
         ltm = self._make_ltm()
         event = Event(
             invocation_id="inv1",
@@ -742,6 +758,7 @@ class TestLongTermMemoryEventFiltering:
 
     async def test_empty_session_no_save(self):
         from google.adk.sessions import InMemorySessionService
+
         ltm = self._make_ltm()
 
         svc = InMemorySessionService()
@@ -752,6 +769,7 @@ class TestLongTermMemoryEventFiltering:
 
     async def test_all_filtered_no_save(self):
         from google.adk.sessions import InMemorySessionService
+
         ltm = self._make_ltm()
 
         svc = InMemorySessionService()
@@ -763,6 +781,7 @@ class TestLongTermMemoryEventFiltering:
 
     def test_mixed_events_only_user_text_saved(self):
         from google.genai import types
+
         ltm = self._make_ltm()
         events = [
             self._make_event(author="user", text="keep this"),
@@ -789,26 +808,24 @@ class TestLongTermMemorySearchMemory:
 
     def _make_ltm(self):
         from ksadk.memory.adk.long_term_memory import LongTermMemory
+
         return LongTermMemory(backend="local", app_name="search_test")
 
     async def test_returns_search_memory_response(self):
         from google.adk.memory.base_memory_service import SearchMemoryResponse
+
         ltm = self._make_ltm()
-        result = await ltm.search_memory(
-            app_name="search_test", user_id="u1", query="anything"
-        )
+        result = await ltm.search_memory(app_name="search_test", user_id="u1", query="anything")
         assert isinstance(result, SearchMemoryResponse)
 
     async def test_memory_entry_structure(self):
         ltm = self._make_ltm()
         # Pre-populate backend
-        ltm._backend.save_memory("u1", [
-            json.dumps({"role": "user", "parts": [{"text": "test memory"}]})
-        ])
-
-        result = await ltm.search_memory(
-            app_name="search_test", user_id="u1", query="test"
+        ltm._backend.save_memory(
+            "u1", [json.dumps({"role": "user", "parts": [{"text": "test memory"}]})]
         )
+
+        result = await ltm.search_memory(app_name="search_test", user_id="u1", query="test")
         assert len(result.memories) == 1
         entry = result.memories[0]
         assert hasattr(entry, "author")
@@ -817,13 +834,11 @@ class TestLongTermMemorySearchMemory:
 
     async def test_json_format_parsing(self):
         ltm = self._make_ltm()
-        ltm._backend.save_memory("u1", [
-            json.dumps({"role": "user", "parts": [{"text": "parsed correctly"}]})
-        ])
-
-        result = await ltm.search_memory(
-            app_name="test", user_id="u1", query="parsed"
+        ltm._backend.save_memory(
+            "u1", [json.dumps({"role": "user", "parts": [{"text": "parsed correctly"}]})]
         )
+
+        result = await ltm.search_memory(app_name="test", user_id="u1", query="parsed")
         assert len(result.memories) == 1
         assert result.memories[0].content.parts[0].text == "parsed correctly"
         assert result.memories[0].content.role == "user"
@@ -832,31 +847,24 @@ class TestLongTermMemorySearchMemory:
         ltm = self._make_ltm()
         ltm._backend.save_memory("u1", ["just plain text, not json"])
 
-        result = await ltm.search_memory(
-            app_name="test", user_id="u1", query="plain text"
-        )
+        result = await ltm.search_memory(app_name="test", user_id="u1", query="plain text")
         assert len(result.memories) == 1
         assert result.memories[0].content.parts[0].text == "just plain text, not json"
         assert result.memories[0].content.role == "user"
 
     async def test_non_standard_json_skipped(self):
         ltm = self._make_ltm()
-        ltm._backend.save_memory("u1", [
-            json.dumps({"invalid": "no parts key"})
-        ])
+        ltm._backend.save_memory("u1", [json.dumps({"invalid": "no parts key"})])
 
-        result = await ltm.search_memory(
-            app_name="test", user_id="u1", query="invalid"
-        )
+        result = await ltm.search_memory(app_name="test", user_id="u1", query="invalid")
         # Non-standard format is skipped
         assert len(result.memories) == 0
 
     async def test_empty_results(self):
         from google.adk.memory.base_memory_service import SearchMemoryResponse
+
         ltm = self._make_ltm()
-        result = await ltm.search_memory(
-            app_name="test", user_id="nonexistent", query="anything"
-        )
+        result = await ltm.search_memory(app_name="test", user_id="nonexistent", query="anything")
         assert isinstance(result, SearchMemoryResponse)
         assert len(result.memories) == 0
 
@@ -865,11 +873,9 @@ class TestLongTermMemorySearchMemory:
         # Replace the private _backend with a mock after construction
         mock_backend = MagicMock()
         mock_backend.search_memory.side_effect = Exception("boom")
-        object.__setattr__(ltm, '_backend', mock_backend)
+        object.__setattr__(ltm, "_backend", mock_backend)
 
-        result = await ltm.search_memory(
-            app_name="test", user_id="u1", query="query"
-        )
+        result = await ltm.search_memory(app_name="test", user_id="u1", query="query")
         assert len(result.memories) == 0
 
     async def test_top_k_passed_to_backend(self):
@@ -877,12 +883,10 @@ class TestLongTermMemorySearchMemory:
         ltm.top_k = 3
         mock_backend = MagicMock()
         mock_backend.search_memory.return_value = []
-        object.__setattr__(ltm, '_backend', mock_backend)
+        object.__setattr__(ltm, "_backend", mock_backend)
 
         await ltm.search_memory(app_name="test", user_id="u1", query="q")
-        mock_backend.search_memory.assert_called_once_with(
-            query="q", top_k=3, user_id="u1"
-        )
+        mock_backend.search_memory.assert_called_once_with(query="q", top_k=3, user_id="u1")
 
 
 # ============================================================
@@ -894,8 +898,9 @@ class TestShortTermMemory:
     """ShortTermMemory 会话管理测试"""
 
     def test_init_local(self):
-        from ksadk.memory.adk.short_term_memory import ShortTermMemory
         from google.adk.sessions import InMemorySessionService
+
+        from ksadk.memory.adk.short_term_memory import ShortTermMemory
 
         stm = ShortTermMemory(backend="local")
         assert isinstance(stm.session_service, InMemorySessionService)
@@ -908,15 +913,17 @@ class TestShortTermMemory:
 
     def test_init_unknown_backend_raises(self):
         """Pydantic Literal validation rejects unknown backends"""
-        from ksadk.memory.adk.short_term_memory import ShortTermMemory
         from pydantic import ValidationError
+
+        from ksadk.memory.adk.short_term_memory import ShortTermMemory
 
         with pytest.raises(ValidationError):
             ShortTermMemory(backend="xyz_unknown")
 
     def test_session_service_property(self):
-        from ksadk.memory.adk.short_term_memory import ShortTermMemory
         from google.adk.sessions import BaseSessionService
+
+        from ksadk.memory.adk.short_term_memory import ShortTermMemory
 
         stm = ShortTermMemory(backend="local")
         assert isinstance(stm.session_service, BaseSessionService)
@@ -943,12 +950,8 @@ class TestShortTermMemory:
         from ksadk.memory.adk.short_term_memory import ShortTermMemory
 
         stm = ShortTermMemory(backend="local")
-        s1 = await stm.create_session(
-            app_name="app", user_id="u1", session_id="shared_id"
-        )
-        s2 = await stm.create_session(
-            app_name="app", user_id="u1", session_id="shared_id"
-        )
+        s1 = await stm.create_session(app_name="app", user_id="u1", session_id="shared_id")
+        s2 = await stm.create_session(app_name="app", user_id="u1", session_id="shared_id")
         assert s1.id == s2.id
 
     def test_from_env_default(self, monkeypatch):
@@ -1077,8 +1080,7 @@ class TestADKRunnerMemoryIntegration:
 
         runner._inject_load_memory_tool()
         tool_names = [
-            getattr(t, "name", None) or getattr(t, "__name__", "")
-            for t in runner._agent.tools
+            getattr(t, "name", None) or getattr(t, "__name__", "") for t in runner._agent.tools
         ]
         assert "load_memory" in tool_names
 
@@ -1108,8 +1110,7 @@ class TestADKRunnerMemoryIntegration:
 
         runner._inject_save_memory_tool()
         tool_names = [
-            getattr(t, "name", None) or getattr(t, "__name__", "")
-            for t in runner._agent.tools
+            getattr(t, "name", None) or getattr(t, "__name__", "") for t in runner._agent.tools
         ]
         assert "save_memory" in tool_names
 

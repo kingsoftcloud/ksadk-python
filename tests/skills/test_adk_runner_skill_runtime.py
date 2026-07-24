@@ -203,7 +203,9 @@ def test_execute_skills_passes_public_skill_spaces_through_env(monkeypatch):
     assert calls[0][1]["env"]["KSADK_PUBLIC_SKILL_SPACE_IDS"] == "ss-public-a, ss-public-b"
 
 
-def test_adk_runner_auto_mode_prefers_configured_runtime_backend_over_cache_dir(monkeypatch, tmp_path):
+def test_adk_runner_auto_mode_prefers_configured_runtime_backend_over_cache_dir(
+    monkeypatch, tmp_path
+):
     ADKRunner = _patch_runner(monkeypatch)
     cache_dir = tmp_path / "cache"
     cache_dir.mkdir()

@@ -18,13 +18,13 @@ from ksadk.skills.service_env import (
     user_skill_space_ids,
 )
 from ksadk.skills.tool_defs import (
-    build_execute_skills_tool as build_runtime_execute_skills_tool,
-)
-from ksadk.skills.tool_defs import (
+    _skill_manifest_item,
     load_remote_skill_manifests,
     resolve_skill_space_ids,
 )
-from ksadk.skills.tool_defs import _skill_manifest_item
+from ksadk.skills.tool_defs import (
+    build_execute_skills_tool as build_runtime_execute_skills_tool,
+)
 from ksadk.tools.gateway import ToolPolicy, default_tool_gateway
 from ksadk.toolsets._langchain import as_tool
 
@@ -211,9 +211,7 @@ def load_skill(skill_name: str, space_id: str | None = None) -> dict[str, Any]:
         return {"ok": False, "error_type": type(exc).__name__, "error_message": str(exc)}
 
 
-def search_skills(
-    query: str, max_results: int = 10, space_id: str | None = None
-) -> dict[str, Any]:
+def search_skills(query: str, max_results: int = 10, space_id: str | None = None) -> dict[str, Any]:
     """Search skills by name, aliases, tags, description, and examples.
 
     ``space_id`` 指定时只在该 space 内搜索;缺省聚合全部已配置 space。结果带 ``space_id``,

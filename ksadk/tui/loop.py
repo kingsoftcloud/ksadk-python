@@ -3,6 +3,7 @@
 Transcript 使用 ANSI 保留 rich 颜色和 Markdown 落定格式，composer 紧跟内容，
 终端原生 scrollback 保留。支持键盘滚动、流式跟底和输入排队。
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -105,7 +106,11 @@ def _codex_surface_rgb(
     # so 4% black on a light terminal is visually imperceptible; 8% gives the
     # input surface a stable edge without introducing a border.
     alpha = 0.08 if is_light and composer else 0.04 if is_light else 0.12
-    return tuple(int(top[i] * alpha + background[i] * (1.0 - alpha)) for i in range(3))
+    return (
+        int(top[0] * alpha + background[0] * (1.0 - alpha)),
+        int(top[1] * alpha + background[1] * (1.0 - alpha)),
+        int(top[2] * alpha + background[2] * (1.0 - alpha)),
+    )
 
 
 def _codex_surface_style(background: tuple[int, int, int] | None) -> str:
@@ -319,12 +324,16 @@ class SlashCommandCompleter(Completer):
             return
         # /model <prefix> → 补全可选模型 id
         if prefix.startswith("/model ") and self.runner is not None:
-            model_prefix = prefix[len("/model "):].strip()
+            model_prefix = prefix[len("/model ") :].strip()
             available = getattr(self.runner, "available_models", None) or []
             for m in available:
                 mid = str(m.get("id") or m.get("name") or "")
                 if mid and mid.startswith(model_prefix):
-                    yield Completion(mid, start_position=-len(model_prefix), display_meta=m.get("display_name") or "")
+                    yield Completion(
+                        mid,
+                        start_position=-len(model_prefix),
+                        display_meta=m.get("display_name") or "",
+                    )
             return
         for command, meta in self._COMMANDS.items():
             if command.startswith(prefix):
@@ -372,7 +381,7 @@ class RichLiveRenderer:
             self.assistant_entry.content = full_text
             self.assistant_entry.status = "streaming"
             if full_text.startswith(self._last_full_text):
-                delta = full_text[len(self._last_full_text):]
+                delta = full_text[len(self._last_full_text) :]
             else:
                 # A final/snapshot event can replace the cumulative text. Preserve
                 # ordering when possible; without tools it is safe to replace the
@@ -398,7 +407,9 @@ class RichLiveRenderer:
             self.assistant_entry.thinking = full_thinking
             # thinking 不进动态区，落定时随 assistant 一起渲染（show_thinking）
 
-    async def on_tool_call(self, tool_name: str, status: str, args: Any = None, call_id: str = "") -> None:
+    async def on_tool_call(
+        self, tool_name: str, status: str, args: Any = None, call_id: str = ""
+    ) -> None:
         if self.loop is None:
             return
         content = f"{tool_name} [{status}]"
@@ -441,7 +452,7 @@ class RichLiveRenderer:
     def final_entries(self, response: str) -> list[TranscriptEntry]:
         """Return finalized display cells in the original stream event order."""
         if response and response.startswith(self._last_full_text):
-            delta = response[len(self._last_full_text):]
+            delta = response[len(self._last_full_text) :]
             if delta:
                 if self._active_text_entry is None:
                     self._active_text_entry = TranscriptEntry(role="assistant")
@@ -507,7 +518,9 @@ class InteractionLoop:
         self._pin_to_bottom = True
         self._last_max_scroll = 0
         self._history_pager_active = False
-        self._entry_ansi_cache: dict[int, str] = {}  # 历史 entries ANSI 缓存（避免 streaming 全量重渲）
+        self._entry_ansi_cache: dict[int, str] = (
+            {}
+        )  # 历史 entries ANSI 缓存（避免 streaming 全量重渲）
         self._last_usage: dict[str, Any] | None = None
         self._showed_help = False  # 首次运行显示帮助列表
         self._welcome_ansi: str | None = None
@@ -600,6 +613,7 @@ class InteractionLoop:
             multiline=True,
             history=InMemoryHistory(),
         )
+        input_buffer = self._input_buffer
 
         # Codex uses an inline, content-first viewport: short transcripts keep
         # the composer directly below the content and a filler absorbs the rest
@@ -771,13 +785,13 @@ class InteractionLoop:
 
         @bindings.add("enter")
         def _submit(event) -> None:
-            text = self._input_buffer.text
-            self._input_buffer.reset(append_to_history=bool(text.strip()))
+            text = input_buffer.text
+            input_buffer.reset(append_to_history=bool(text.strip()))
             self._submit_text(text)
 
         @bindings.add("escape", "enter")
         def _newline(event) -> None:
-            self._input_buffer.insert_text("\n")
+            input_buffer.insert_text("\n")
 
         @bindings.add("c-c")
         def _interrupt_or_exit(event) -> None:
@@ -796,7 +810,7 @@ class InteractionLoop:
 
         @bindings.add("c-d")
         def _exit_on_empty(event) -> None:
-            if not self._input_buffer.text:
+            if not input_buffer.text:
                 event.app.exit()
 
         @bindings.add("pageup")
@@ -835,14 +849,18 @@ class InteractionLoop:
         @bindings.add("up", filter=self._picker_condition)
         def _picker_up(event) -> None:
             if self._model_picker_models:
-                self._model_picker_index = (self._model_picker_index - 1) % len(self._model_picker_models)
+                self._model_picker_index = (self._model_picker_index - 1) % len(
+                    self._model_picker_models
+                )
                 self._scroll_picker_to_selected()
                 event.app.invalidate()
 
         @bindings.add("down", filter=self._picker_condition)
         def _picker_down(event) -> None:
             if self._model_picker_models:
-                self._model_picker_index = (self._model_picker_index + 1) % len(self._model_picker_models)
+                self._model_picker_index = (self._model_picker_index + 1) % len(
+                    self._model_picker_models
+                )
                 self._scroll_picker_to_selected()
                 event.app.invalidate()
 
@@ -850,7 +868,11 @@ class InteractionLoop:
         def _picker_select(event) -> None:
             models = self._model_picker_models
             if models and 0 <= self._model_picker_index < len(models):
-                mid = str(models[self._model_picker_index].get("id") or models[self._model_picker_index].get("name") or "")
+                mid = str(
+                    models[self._model_picker_index].get("id")
+                    or models[self._model_picker_index].get("name")
+                    or ""
+                )
                 if mid:
                     self._apply_model_switch(mid)
                     self._close_model_picker()
@@ -980,7 +1002,9 @@ class InteractionLoop:
             for entry in renderer.final_entries(renderer._last_full_text):
                 await self._commit_entry(entry)
             if is_resume:
-                await self._commit_entry(TranscriptEntry(role="system", content="该 runtime 暂不支持审批续跑，已取消"))
+                await self._commit_entry(
+                    TranscriptEntry(role="system", content="该 runtime 暂不支持审批续跑，已取消")
+                )
                 self._clear_current_task()
                 self._drain_queue()
             else:
@@ -992,7 +1016,9 @@ class InteractionLoop:
             assistant_entry.status = ""
             for entry in renderer.final_entries(renderer._last_full_text):
                 await self._commit_entry(entry)
-            await self._commit_entry(TranscriptEntry(role="system", content="已取消（保留已产生内容）"))
+            await self._commit_entry(
+                TranscriptEntry(role="system", content="已取消（保留已产生内容）")
+            )
             self._clear_current_task()
             self._drain_queue()
             return
@@ -1018,7 +1044,9 @@ class InteractionLoop:
 
         async def _prompt():
             await self._commit_entry(
-                TranscriptEntry(role="system", content=f"确认执行 {tool_name}? 输入 y 确认，其他内容取消")
+                TranscriptEntry(
+                    role="system", content=f"确认执行 {tool_name}? 输入 y 确认，其他内容取消"
+                )
             )
 
         self._create_background_task(_prompt())
@@ -1032,7 +1060,9 @@ class InteractionLoop:
         if user_input.lower() in {"y", "yes"}:
 
             async def _resume():
-                await self._commit_entry(TranscriptEntry(role="system", content="已确认，尝试续跑..."))
+                await self._commit_entry(
+                    TranscriptEntry(role="system", content="已确认，尝试续跑...")
+                )
                 self._start_turn(
                     "",
                     input_data={**input_data, "resume": True},
@@ -1049,7 +1079,11 @@ class InteractionLoop:
             self._create_background_task(_cancel())
 
     def _drain_queue(self) -> None:
-        if self._pending_interrupt is not None or self._has_active_turn() or not self._queued_inputs:
+        if (
+            self._pending_interrupt is not None
+            or self._has_active_turn()
+            or not self._queued_inputs
+        ):
             return
         item = self._queued_inputs.pop(0)
         self._start_turn(item.text, user_entry=item.entry)
@@ -1167,7 +1201,7 @@ class InteractionLoop:
 
     def _handle_model_command(self, user_input: str) -> None:
         """/model:弹出交互式选择器(↑↓ Enter Esc)；/model <name>:直接切换(runnable 级,下轮生效)。"""
-        arg = user_input[len("/model"):].strip()
+        arg = user_input[len("/model") :].strip()
         if arg:
             # 直接切换：改 runner.model，下轮请求带新 model
             self._apply_model_switch(arg)
@@ -1192,7 +1226,9 @@ class InteractionLoop:
         """
         self.runner.model = model_id
         available = getattr(self.runner, "available_models", None) or []
-        matched = next((m for m in available if str(m.get("id") or m.get("name") or "") == model_id), None)
+        matched = next(
+            (m for m in available if str(m.get("id") or m.get("name") or "") == model_id), None
+        )
         if matched:
             self.runner.model_metadata = matched
         # 清旧观察名，让 _current_model_name 用新 runner.model
@@ -1263,8 +1299,8 @@ class InteractionLoop:
         frags: list[tuple[str, str]] = []
         for i, m in enumerate(self._model_picker_models):
             mid = str(m.get("id") or m.get("name") or "")
-            is_cur_model = (mid == current)
-            is_selected = (i == self._model_picker_index)
+            is_cur_model = mid == current
+            is_selected = i == self._model_picker_index
             marker = "›" if is_selected else " "
             line = f"{marker} {i + 1}. {mid}"
             if is_cur_model:
@@ -1276,7 +1312,7 @@ class InteractionLoop:
     # ---- streaming / transcript 渲染 ----
 
     def _set_streaming(self, full_text: str) -> None:
-        """streaming 文本更新到当前 streaming entry（动态区 = transcript 末尾的 streaming entry）。"""
+        """更新 transcript 末尾的 streaming entry。"""
         if self._streaming_entry is not None:
             self._streaming_entry.content = full_text
             self._streaming_entry.status = "streaming"
@@ -1365,6 +1401,7 @@ class InteractionLoop:
         height = int(getattr(ri, "window_height", 0) or 0)
         if height <= 0:
             import shutil
+
             height = max(10, (shutil.get_terminal_size(fallback=(80, 24)).lines or 24) - 6)
         line_count = self._transcript_line_count()
         return max(0, line_count - height)
@@ -1522,18 +1559,22 @@ def _resolve_model_name(runner) -> str:
         return str(meta["id"])
     observed = getattr(runner, "_observed_model", None)
     if observed:
-        return observed
-    return getattr(runner, "model", None) or os.getenv("MODEL_NAME") or "unknown"
+        return str(observed)
+    return str(getattr(runner, "model", None) or os.getenv("MODEL_NAME") or "unknown")
 
 
 def _help_text() -> str:
-    return "命令: /new 新会话 · /clear 清屏 · /session 查看 · /tools 展开工具 · exit 退出 · Ctrl-C 中断/退出"
+    return (
+        "命令: /new 新会话 · /clear 清屏 · /session 查看 · /tools 展开工具 "
+        "· exit 退出 · Ctrl-C 中断/退出"
+    )
 
 
 def _welcome_block(session_id: str, model_name: str, project_dir: Path, *, show_help: bool) -> str:
     """Render the compact Codex-style session card and one-line tip."""
     try:
         from ksadk.version import VERSION
+
         version = VERSION
     except Exception:
         version = ""
@@ -1552,6 +1593,7 @@ def _welcome_block(session_id: str, model_name: str, project_dir: Path, *, show_
     # 按终端宽度算框宽，留 transcript 左缩进 2 + 右 margin 2，上限 56（Codex 同款）。
     try:
         import shutil
+
         cols = shutil.get_terminal_size(fallback=(80, 24)).columns
     except Exception:
         cols = 80
@@ -1698,7 +1740,9 @@ def _render_entry_ansi(
             else:
                 console.print(Markdown(_normalize_markdown(f"{body}{suffix}")))
         else:
-            console.print(Text(suffix.lstrip(), style="dim") if suffix else Text("...", style="dim"))
+            console.print(
+                Text(suffix.lstrip(), style="dim") if suffix else Text("...", style="dim")
+            )
         return _strip_ansi_backgrounds(console.export_text(styles=True)).rstrip() + "\n"
 
     if entry.role == "tool":
@@ -1718,6 +1762,7 @@ def _render_entry_ansi(
             display_output = output
             try:
                 import json as _json
+
                 parsed = _json.loads(output)
                 # Tool adapters often JSON-encode an already serialized result.
                 # Unwrap that second layer so structured output folds by fields
@@ -1729,7 +1774,7 @@ def _render_entry_ansi(
                     if nested.startswith("content="):
                         import ast as _ast
 
-                        quote = nested[len("content="):len("content=") + 1]
+                        quote = nested[len("content=") : len("content=") + 1]
                         if quote in {"'", '"'}:
                             body_start = len("content=") + 1
                             body_end = body_start
@@ -1756,6 +1801,7 @@ def _render_entry_ansi(
                 pass
             # 估算显示行数：每行按 console width 折算（长字符串占多行）
             import shutil as _su
+
             cw = max(40, (_su.get_terminal_size(fallback=(80, 24)).columns or 80) - 6)
             logical_lines = display_output.split("\n")
             # 估算显示行数：按显示宽度（CJK 占 2）折算，非 len
@@ -1864,7 +1910,9 @@ def _strip_ansi_backgrounds(text: str) -> str:
     return re.sub(r"\x1b\[([0-9;]*)m", _clean, text)
 
 
-def run_tui(runner, *, show_thinking: bool = False, project_dir: str = ".", no_alt_screen: bool = False) -> None:
+def run_tui(
+    runner, *, show_thinking: bool = False, project_dir: str = ".", no_alt_screen: bool = False
+) -> None:
     """TUI 入口：被 cmd_invoke._invoke_tui / cmd_run._run_custom 调用。
 
     ``no_alt_screen`` 作为兼容参数保留；TUI 现在默认使用 Codex-style inline viewport。

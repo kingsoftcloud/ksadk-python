@@ -12,11 +12,12 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-from fastapi.testclient import TestClient
 from click.testing import CliRunner
+from fastapi.testclient import TestClient
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 
+from ksadk.events.runtime_event import EventType
 from ksadk.runners.base_runner import BaseRunner
 from ksadk.sessions.base import SessionEvent
 from ksadk.sessions.in_memory import InMemorySessionService
@@ -105,6 +106,74 @@ class _KeyboardInterruptServerRunner(_UiRunner):
         raise KeyboardInterrupt
 
 
+def test_cmd_run_binds_local_persistence_to_the_agent_project(monkeypatch, tmp_path):
+    runner = CliRunner()
+    fake_runner = _UiRunner()
+    project_dir = tmp_path / "demo-langgraph-agent"
+    project_dir.mkdir()
+    captured: dict[str, str | None] = {}
+
+    class _Detector:
+        def __init__(self, path: str):
+            self.path = path
+
+        def detect(self):
+            return SimpleNamespace(
+                type=SimpleNamespace(value="langgraph"),
+                name="demo-agent",
+                entry_point="agent.py",
+            )
+
+    import ksadk.cli.cmd_run as cmd_run_module
+    import ksadk.detection as detection_module
+
+    for name in (
+        "KSADK_STM_BACKEND",
+        "KSADK_STM_PATH",
+        "KSADK_STM_DB_PATH",
+        "KSADK_STM_URL",
+        "KSADK_STM_DB_URL",
+        "KSADK_SESSION_BACKEND",
+        "KSADK_SESSION_PATH",
+        "KSADK_SESSION_DSN",
+        "KSADK_CHECKPOINT_BACKEND",
+        "KSADK_CHECKPOINT_PATH",
+        "KSADK_LANGGRAPH_CHECKPOINT_DSN",
+        "AGENTENGINE_UI_DIR",
+        "KSADK_PROJECT_DIR",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(cmd_run_module, "reexec_with_project_venv_if_needed", lambda *_args: None)
+    monkeypatch.setattr(detection_module, "FrameworkDetector", _Detector)
+    monkeypatch.setattr("ksadk.configs.setup_environment", lambda _path: None)
+
+    def create_runner(_result, _project_dir):
+        captured.update(
+            {
+                "project_dir": os.getenv("KSADK_PROJECT_DIR"),
+                "ui_dir": os.getenv("AGENTENGINE_UI_DIR"),
+                "session_path": os.getenv("KSADK_SESSION_PATH"),
+                "checkpoint_path": os.getenv("KSADK_CHECKPOINT_PATH"),
+            }
+        )
+        return fake_runner
+
+    monkeypatch.setattr("ksadk.runners.factory.create_runner", create_runner)
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cmd_run_module.run, [str(project_dir), "--port", "8899", "--no-trace"])
+
+    expected_ui_dir = str(project_dir / ".agentengine" / "ui")
+    assert result.exit_code == 0, result.output
+    assert fake_runner.run_server_calls == [8899]
+    assert captured == {
+        "project_dir": str(project_dir),
+        "ui_dir": expected_ui_dir,
+        "session_path": str(project_dir / ".agentengine" / "ui" / "sessions.sqlite"),
+        "checkpoint_path": str(project_dir / ".agentengine" / "ui" / "checkpoints.sqlite"),
+    }
+
+
 @pytest.fixture(autouse=True)
 def _block_real_browser_open(monkeypatch):
     import ksadk.cli.cmd_web as cmd_web_module
@@ -180,6 +249,7 @@ async def test_get_agent_ui_bootstrap_matches_local_shape_parity(monkeypatch):
         "SessionId",
         "SessionBackend",
         "HostedRuntime",
+        "HostedChat",
         "Model",
         "CustomUI",
     }
@@ -234,15 +304,19 @@ async def test_get_agent_ui_bootstrap_matches_local_shape_parity(monkeypatch):
         "run_command",
         "run_code",
     }
-    assert builtin_tools["execute_skills"] | {
-        "name": "execute_skills",
-        "group": "skill",
-        "risk_level": "high",
-        "requires_approval": False,
-        "enabled": False,
-        "backend": "disabled",
-        "boundary": "isolated_skill_runtime",
-    } == builtin_tools["execute_skills"]
+    assert (
+        builtin_tools["execute_skills"]
+        | {
+            "name": "execute_skills",
+            "group": "skill",
+            "risk_level": "high",
+            "requires_approval": False,
+            "enabled": False,
+            "backend": "disabled",
+            "boundary": "isolated_skill_runtime",
+        }
+        == builtin_tools["execute_skills"]
+    )
     assert builtin_tools["search_knowledge_base"]["args"]["query"]["type"] == "string"
     assert builtin_tools["load_memory"]["args"]["query"]["type"] == "string"
     assert builtin_tools["save_memory"]["args"]["content"]["type"] == "string"
@@ -265,9 +339,15 @@ async def test_get_agent_ui_bootstrap_matches_local_shape_parity(monkeypatch):
     assert payload["Data"]["Stream"] is True
     assert payload["Data"]["SessionId"] == "sess-bootstrap"
     assert payload["Data"]["HostedRuntime"] is None
+    assert payload["Data"]["HostedChat"]["PreferredTransport"] == "ag-ui"
+    assert [item["Protocol"] for item in payload["Data"]["HostedChat"]["Transports"]] == [
+        "ag-ui",
+        "responses",
+    ]
+    assert payload["Data"]["HostedChat"]["Transports"][0]["Endpoint"] == ("/agentengine/agui")
     assert payload["Data"]["Model"]["id"] == "glm-5.1"
     assert payload["Data"]["Model"]["source"] == "OPENAI_MODEL_NAME"
-    assert runner.load_agent_calls == 0
+    assert runner.load_agent_calls == 1
 
 
 @pytest.mark.asyncio
@@ -318,7 +398,9 @@ async def test_get_agent_ui_bootstrap_disables_tui_for_generic_frameworks(monkey
 
 
 @pytest.mark.asyncio
-async def test_list_agent_models_action_uses_real_current_model_without_gemini_fallback(monkeypatch):
+async def test_list_agent_models_action_uses_real_current_model_without_gemini_fallback(
+    monkeypatch,
+):
     monkeypatch.setenv("OPENAI_MODEL_NAME", "glm-5.1")
     monkeypatch.delenv("MODEL_NAME", raising=False)
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
@@ -401,9 +483,14 @@ async def test_run_agent_action_forwards_model_metadata_to_conversation_runtime(
 
     async def _fake_invoke_conversation_once(**kwargs):
         captured.update(kwargs)
-        return "sess-model-metadata", {"output_text": "assistant says hi", "model": kwargs.get("model")}
+        return "sess-model-metadata", {
+            "output_text": "assistant says hi",
+            "model": kwargs.get("model"),
+        }
 
-    monkeypatch.setattr(server_app_module.conversation, "invoke_conversation_once", _fake_invoke_conversation_once)
+    monkeypatch.setattr(
+        server_app_module.conversation, "invoke_conversation_once", _fake_invoke_conversation_once
+    )
 
     async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
         response = await client.post(
@@ -650,7 +737,9 @@ async def test_upload_file_action_returns_server_handle_and_stores_file(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_run_agent_action_normalizes_uploaded_file_handle_and_persists_compact_metadata(monkeypatch, tmp_path):
+async def test_run_agent_action_normalizes_uploaded_file_handle_and_persists_compact_metadata(
+    monkeypatch, tmp_path
+):
     monkeypatch.setenv("AGENTENGINE_UI_DIR", str(tmp_path / ".agentengine" / "ui"))
     _, runner, service, transport = _build_transport(monkeypatch)
     attachment_bytes = "候选人简历内容".encode("utf-8")
@@ -815,7 +904,13 @@ async def test_run_agent_action_long_history_generates_semantic_checkpoint(monke
             assert timeout_ms > 0
             assert any("当前用户目标" in item["content"] for item in messages)
             return (
-                "<analysis>draft</analysis><summary>当前用户目标\n- 继续处理默认 UI 长会话\n\n关键约束与偏好\n- 摘要质量优先\n\n已完成进展\n- 已为较早轮次生成 checkpoint\n\n重要决策/代码上下文\n- 仍然保留 append-only transcript\n\n未完成事项\n- 继续回答用户追问\n\n下一步工作位置\n- /agentengine/api/v1/RunAgent</summary>",
+                "<analysis>draft</analysis><summary>当前用户目标\n"
+                "- 继续处理默认 UI 长会话\n\n关键约束与偏好\n"
+                "- 摘要质量优先\n\n已完成进展\n"
+                "- 已为较早轮次生成 checkpoint\n\n重要决策/代码上下文\n"
+                "- 仍然保留 append-only transcript\n\n未完成事项\n"
+                "- 继续回答用户追问\n\n下一步工作位置\n"
+                "- /agentengine/api/v1/RunAgent</summary>",
                 {"prompt_tokens": 88, "completion_tokens": 22, "total_tokens": 110},
             )
 
@@ -983,6 +1078,82 @@ async def test_local_list_session_messages_restores_chat_history(monkeypatch):
     assert data["LatestSeqId"] > 0
     assert data["HasMore"] is False
     assert data["NextCursor"] is None
+
+
+@pytest.mark.asyncio
+async def test_local_list_session_messages_replays_nested_agui_approval_decision(monkeypatch):
+    _, _, service, transport = _build_transport(monkeypatch)
+    session = await service.create_session(
+        agent_id="demo-agent",
+        user_id="user",
+        session_id="sess-agui-nested-approval",
+    )
+    runtime_events = [
+        (
+            EventType.RUN_STARTED,
+            {"status": "in_progress", "input": "run pwd", "source": "ag-ui"},
+        ),
+        (
+            EventType.APPROVAL_REQUESTED,
+            {
+                "approval_id": "approval-1",
+                "call_id": "approval-1",
+                "kind": "tool",
+                "detail": {"tool_name": "run_command", "arguments": {"command": "pwd"}},
+                "protocol": "ag-ui",
+            },
+        ),
+        (
+            EventType.APPROVAL_RESOLVED,
+            {
+                "approval_id": "approval-1",
+                "call_id": "approval-1",
+                "decision": {"decision": "approve"},
+                "protocol": "ag-ui",
+            },
+        ),
+        (EventType.TEXT_COMPLETED, {"text": "done"}),
+    ]
+    for event_type, payload in runtime_events:
+        await service.append_event(
+            session.id,
+            SessionEvent(
+                author="demo-agent",
+                event_type=str(event_type),
+                content={"phase": None, "payload": payload},
+                invocation_id="agui-run-1",
+                metadata={"ksadk_runtime_event": True, "schema_version": 1},
+            ),
+        )
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/ListSessionMessages",
+            json={
+                "AgentId": "demo-agent",
+                "UserId": "user",
+                "SessionId": session.id,
+                "IncludeToolEvents": True,
+            },
+        )
+
+    assert response.status_code == 200
+    tool_events = [
+        event
+        for message in response.json()["Data"]["Messages"]
+        for event in message.get("ToolEvents", [])
+    ]
+    assert tool_events == [
+        {
+            "SeqId": 2,
+            "Type": "approval",
+            "Name": "run_command",
+            "Status": "approved",
+            "ApprovalRequestId": "approval-1",
+            "Protocol": "ag-ui",
+            "Args": {"command": "pwd"},
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -1417,7 +1588,9 @@ async def test_local_list_session_messages_restores_snapshot_without_final_messa
 
 
 @pytest.mark.asyncio
-async def test_local_list_session_messages_pages_large_increment_from_oldest_unseen_event(monkeypatch):
+async def test_local_list_session_messages_pages_large_increment_from_oldest_unseen_event(
+    monkeypatch,
+):
     _, _, service, transport = _build_transport(monkeypatch)
     session = await service.create_session(
         agent_id="demo-agent",
@@ -1485,7 +1658,7 @@ async def test_responses_endpoint_streams_thinking_and_text_events(monkeypatch):
     current_event = ""
     for line in response.text.splitlines():
         if line.startswith("event: "):
-                current_event = line.removeprefix("event: ")
+            current_event = line.removeprefix("event: ")
         elif line.startswith("data: ") and current_event == "response.output_item.added":
             added_indexes.append(json.loads(line.removeprefix("data: "))["output_index"])
     assert added_indexes == [0, 1, 2]
@@ -1587,15 +1760,17 @@ async def test_responses_endpoint_streaming_interrupt_returns_incomplete(monkeyp
     assert "event: response.incomplete" in lines
     assert "event: response.completed" not in lines
 
-    data_lines = [line.removeprefix("data: ") for line in response.text.splitlines() if line.startswith("data: ")]
+    data_lines = [
+        line.removeprefix("data: ")
+        for line in response.text.splitlines()
+        if line.startswith("data: ")
+    ]
     assert any(
         json.loads(line).get("item", {}).get("type") == "mcp_approval_request"
         for line in data_lines
     )
     incomplete_payload = next(
-        json.loads(line)
-        for line in data_lines
-        if json.loads(line).get("status") == "incomplete"
+        json.loads(line) for line in data_lines if json.loads(line).get("status") == "incomplete"
     )
     assert incomplete_payload["incomplete_details"]["reason"] == "approval_required"
     events = await service.get_events(incomplete_payload["session_id"])
@@ -1742,9 +1917,10 @@ async def test_responses_endpoint_streams_mcp_approval_response_resume(monkeypat
             "size": 5,
         },
     }
-    assert Path(runner.invocations[-1]["input"]["output"]["absolute_path"]).read_text(
-        encoding="utf-8"
-    ) == "hello"
+    assert (
+        Path(runner.invocations[-1]["input"]["output"]["absolute_path"]).read_text(encoding="utf-8")
+        == "hello"
+    )
 
 
 @pytest.mark.asyncio
@@ -1970,7 +2146,9 @@ def test_cmd_web_launches_unified_local_server(monkeypatch, tmp_path):
         lambda result, project_dir: fake_runner,
         raising=False,
     )
-    monkeypatch.setattr(cmd_web_module.webbrowser, "open", lambda url: opened.setdefault("url", url))
+    monkeypatch.setattr(
+        cmd_web_module.webbrowser, "open", lambda url: opened.setdefault("url", url)
+    )
     monkeypatch.chdir(project_dir)
 
     result = runner.invoke(cmd_web_module.web, [str(project_dir), "--port", "8899"])
@@ -2008,7 +2186,9 @@ def test_cmd_web_can_skip_browser_open(monkeypatch, tmp_path):
         lambda result, project_dir: fake_runner,
         raising=False,
     )
-    monkeypatch.setattr(cmd_web_module.webbrowser, "open", lambda url: opened.setdefault("url", url))
+    monkeypatch.setattr(
+        cmd_web_module.webbrowser, "open", lambda url: opened.setdefault("url", url)
+    )
     monkeypatch.chdir(project_dir)
 
     result = runner.invoke(cmd_web_module.web, [str(project_dir), "--port", "8899", "--no-open"])
@@ -2171,9 +2351,7 @@ def test_cmd_web_defaults_supported_framework_stm_to_persistent_sqlite(
         )
 
 
-def test_cmd_web_overrides_project_dotenv_postgres_session_for_local_debug(
-    monkeypatch, tmp_path
-):
+def test_cmd_web_overrides_project_dotenv_postgres_session_for_local_debug(monkeypatch, tmp_path):
     runner = CliRunner()
     fake_runner = _UiRunner()
     project_dir = tmp_path / "demo-langgraph-agent"
@@ -2207,7 +2385,9 @@ def test_cmd_web_overrides_project_dotenv_postgres_session_for_local_debug(
         os.environ["KSADK_SESSION_BACKEND"] = "postgres"
         os.environ["KSADK_SESSION_DSN"] = "postgresql://ksadk:secret@db.example.test/session"
         os.environ["KSADK_CHECKPOINT_BACKEND"] = "postgres"
-        os.environ["KSADK_LANGGRAPH_CHECKPOINT_DSN"] = "postgresql://ksadk:secret@db.example.test/checkpoints"
+        os.environ["KSADK_LANGGRAPH_CHECKPOINT_DSN"] = (
+            "postgresql://ksadk:secret@db.example.test/checkpoints"
+        )
 
     monkeypatch.setattr(cmd_web_module, "FrameworkDetector", _Detector, raising=False)
     monkeypatch.setattr(cmd_web_module, "setup_environment", fake_setup_environment, raising=False)
@@ -2263,7 +2443,9 @@ def test_cmd_web_overrides_dotenv_loaded_before_web_command(monkeypatch, tmp_pat
 
     monkeypatch.setenv("KSADK_SESSION_BACKEND", "postgres")
     monkeypatch.setenv("KSADK_SESSION_DSN", "postgresql://ksadk:secret@db.example.test/session")
-    monkeypatch.setenv("KSADK_LANGGRAPH_CHECKPOINT_DSN", "postgresql://ksadk:secret@db.example.test/checkpoints")
+    monkeypatch.setenv(
+        "KSADK_LANGGRAPH_CHECKPOINT_DSN", "postgresql://ksadk:secret@db.example.test/checkpoints"
+    )
     monkeypatch.delenv("KSADK_SESSION_PATH", raising=False)
     monkeypatch.delenv("KSADK_CHECKPOINT_BACKEND", raising=False)
     monkeypatch.delenv("KSADK_CHECKPOINT_PATH", raising=False)
@@ -2420,7 +2602,9 @@ def test_cmd_web_exports_custom_ui_config_and_opens_custom_path(monkeypatch, tmp
         lambda result, project_dir: fake_runner,
         raising=False,
     )
-    monkeypatch.setattr(cmd_web_module.webbrowser, "open", lambda url: opened.setdefault("url", url))
+    monkeypatch.setattr(
+        cmd_web_module.webbrowser, "open", lambda url: opened.setdefault("url", url)
+    )
     monkeypatch.chdir(project_dir)
 
     result = runner.invoke(cmd_web_module.web, [str(project_dir), "--port", "8899"])
@@ -2523,7 +2707,9 @@ def test_cmd_web_preserves_explicit_stm_configuration(monkeypatch, tmp_path):
     monkeypatch.setenv("KSADK_SESSION_BACKEND", "postgres")
     monkeypatch.setenv("KSADK_SESSION_DSN", "postgresql://ksadk:secret@db.example.test/session")
     monkeypatch.setenv("KSADK_CHECKPOINT_BACKEND", "postgres")
-    monkeypatch.setenv("KSADK_LANGGRAPH_CHECKPOINT_DSN", "postgresql://ksadk:secret@db.example.test/checkpoints")
+    monkeypatch.setenv(
+        "KSADK_LANGGRAPH_CHECKPOINT_DSN", "postgresql://ksadk:secret@db.example.test/checkpoints"
+    )
     monkeypatch.delenv("AGENTENGINE_UI_DIR", raising=False)
     monkeypatch.delenv("KSADK_PROJECT_DIR", raising=False)
     monkeypatch.setattr(cmd_web_module, "FrameworkDetector", _Detector, raising=False)
@@ -2544,7 +2730,10 @@ def test_cmd_web_preserves_explicit_stm_configuration(monkeypatch, tmp_path):
     assert os.environ["KSADK_SESSION_BACKEND"] == "postgres"
     assert os.environ["KSADK_SESSION_DSN"] == "postgresql://ksadk:secret@db.example.test/session"
     assert os.environ["KSADK_CHECKPOINT_BACKEND"] == "postgres"
-    assert os.environ["KSADK_LANGGRAPH_CHECKPOINT_DSN"] == "postgresql://ksadk:secret@db.example.test/checkpoints"
+    assert (
+        os.environ["KSADK_LANGGRAPH_CHECKPOINT_DSN"]
+        == "postgresql://ksadk:secret@db.example.test/checkpoints"
+    )
 
 
 def test_cmd_web_treats_explicit_local_checkpoint_backend_as_sqlite(monkeypatch, tmp_path):
@@ -2588,9 +2777,7 @@ def test_cmd_web_treats_explicit_local_checkpoint_backend_as_sqlite(monkeypatch,
     )
 
 
-def test_cmd_web_errors_when_langgraph_sqlite_checkpoint_package_missing(
-    monkeypatch, tmp_path
-):
+def test_cmd_web_errors_when_langgraph_sqlite_checkpoint_package_missing(monkeypatch, tmp_path):
     runner = CliRunner()
     fake_runner = _UiRunner()
     project_dir = tmp_path / "demo-langgraph-agent"
@@ -2608,6 +2795,7 @@ def test_cmd_web_errors_when_langgraph_sqlite_checkpoint_package_missing(
             )
 
     import builtins
+
     import ksadk.cli.cmd_web as cmd_web_module
 
     original_import = builtins.__import__
@@ -2740,9 +2928,8 @@ async def test_static_routes_serve_unified_agent_ui_shell(monkeypatch):
     assert 'rel="stylesheet" crossorigin href="./assets/index-' in root_response.text
     assert "/agentengine/api/v1" in js_response.text
     for action_name in (
-        "AttachmentContent",
         "UploadFile",
-        "ListSessionEvents",
+        "ListSessionMessages",
         "ListAgentModels",
         "RunAgent",
         "ListWorkspaceFiles",
