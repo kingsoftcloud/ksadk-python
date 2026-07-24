@@ -46,7 +46,7 @@ agentengine web . --no-open
 `0.8.0` 是正在评审的候选分支，不是已发布的 PyPI/npm 版本。它把 RuntimeEvent、AG-UI/A2UI、A2A、Harness 和 CodexRuntime 统一到同一运行时边界，同时保持 `/v1/responses` 和 `/v1/chat/completions` 兼容入口可用。
 
 - **Hosted UI**：AG-UI/A2UI 通过能力协商启用；不能协商时继续使用既有 Responses transport。
-- **事件诊断**：`ksadk replay <session-id>` 只读回放新 RuntimeEvent 历史，可用 cursor 缩小排查窗口，不会再次执行模型、工具或审批副作用。
+- **事件诊断**：`ksadk replay <session-id>` 只读回放新 RuntimeEvent 历史，可用事件序号（`seq_id`）窗口缩小排查范围，不会再次执行模型、工具或审批副作用。
 - **框架迁移**：新接入优先使用 LangGraph、Google ADK 或 `RuntimeAdapter`。旧 LangChain 连续性 / HITL 路径不属于 `0.8` 兼容性承诺。
 
 详见[Hosted UI 与事件回放指南](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/hosted-ui-events/)和 [0.8.0 更新日志](CHANGELOG.md)。

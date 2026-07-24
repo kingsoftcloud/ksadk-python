@@ -15,7 +15,7 @@
 
 ### 亮点
 
-- **统一 Runtime 基座**：冻结 `RuntimeEvent v1` 信封和六动词 `RuntimeAdapter`，补齐事件存储、cursor 订阅、共享 parser 与历史回放。ADK、LangGraph、A2A、Harness 和 Codex 新集成均以这一契约交换运行状态，而不是各自定义一套 SSE 语义。
+- **统一 Runtime 基座**：冻结 `RuntimeEvent v1` 信封和六动词 `RuntimeAdapter`，补齐事件存储、按会话事件序号（`seq_id`）续订的订阅、共享 parser 与历史回放。ADK、LangGraph、A2A、Harness 和 Codex 新集成均以这一契约交换运行状态，而不是各自定义一套 SSE 语义。
 - **Hosted UI 进入 AG-UI + A2UI 轨道**：在不改变 OpenAI Responses 既有请求/响应语义的前提下，增加 capability 协商后的 AG-UI transport 和 A2UI activity 投影；无法协商时仍走 Responses fallback。
 - **可诊断的会话连续性**：runtime storage 成为会话状态的权威来源，补全结构化 Responses 历史投影、请求 metadata 透传、run 订阅心跳与 idle SSE 保活，刷新、续订、审批和恢复都能基于已持久化事件排查。
 - **可组合的运行形态**：加入 A2A wire 1.0 runtime、HarnessApp、CodexRuntime 和 Skill Space 路由；这些能力均保留本地/契约测试，生产环境互操作和真实凭证仍需按部署环境验收。
