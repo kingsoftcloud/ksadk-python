@@ -43,7 +43,7 @@ OIDC Trusted Publishing 上传到 PyPI。
 workflow 执行步骤如下：
 
 1. **同步前端静态资源**：`make sync-ksadk-web-static`，默认从
-   `@kingsoftcloud/ksadk-web@latest` 拉取 `dist-ksadk` 解包到打包目录；
+   `@kingsoftcloud/ksadk-web` 的已发布固定版本拉取 `dist-ksadk` 解包到打包目录；
    通过 `workflow_dispatch` 触发时可传 `ksadk_web_version` 输入指定版本
    （如 `1.2.3`）。
 2. **发布前预检**：`make public-preflight`，串起 `public-audit`、

@@ -35,7 +35,7 @@ repository.
 `@kingsoftcloud/ksadk-web` npm package into `ksadk/server/static`:
 
 ```bash
-# Default: pull npm latest
+# Default: pull the verified npm version
 make sync-ksadk-web-static
 
 # Pin a concrete version for a release candidate (0.6.7 maps to 0.2.15)
@@ -69,7 +69,7 @@ If the static assets are already synced and you want to skip sync, use
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `KSADK_WEB_VERSION` | `latest` | npm package version; pin to a concrete version for release candidates, e.g. `0.2.15` |
+| `KSADK_WEB_VERSION` | `0.2.19` | published npm package version; release candidates must pin a concrete version, e.g. `0.3.0` |
 | `KSADK_WEB_PACKAGE` | `@kingsoftcloud/ksadk-web` | npm package name |
 | `KSADK_WEB_TARBALL_NAME` | `kingsoftcloud-ksadk-web-<version>.tgz` | Tarball filename, derived from the version |
 | `KSADK_WEB_RELEASE_URL` | empty | Explicit tarball URL fallback; takes precedence over `npm pack` |
@@ -95,4 +95,3 @@ Each `ksadk-python` release note should record:
 - sync: `make sync-ksadk-web-static KSADK_WEB_VERSION=0.2.15`
 - audit: `make public-build-check` passed, `twine check dist/*` passed
 </Callout>
-

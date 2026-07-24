@@ -546,7 +546,12 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "KSADK_WEB_SSRF_POLICY_JSON", "web", "JSON policy overrides for web_fetch SSRF checks."
     ),
     EnvVarSpec("KSADK_WEB_TARBALL_NAME", "web", "KsADK Web fallback tarball file name."),
-    EnvVarSpec("KSADK_WEB_VERSION", "web", "KsADK Web npm dist-tag or version.", "latest"),
+    EnvVarSpec(
+        "KSADK_WEB_VERSION",
+        "web",
+        "Published KsADK Web npm version used for a reproducible wheel build.",
+        "0.2.19",
+    ),
     EnvVarSpec(
         "KSADK_WORKING_SET_MAX_FILES",
         "runtime",

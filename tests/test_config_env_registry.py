@@ -35,10 +35,10 @@ def test_env_registry_docs_cover_registered_names():
         assert item.name in doc_text
 
 
-def test_env_registry_defaults_ksadk_web_static_sync_to_latest_npm_release():
+def test_env_registry_pins_ksadk_web_static_sync_to_a_published_npm_release():
     specs = {item.name: item for item in ENV_VAR_REGISTRY}
 
-    assert specs["KSADK_WEB_VERSION"].default == "latest"
+    assert specs["KSADK_WEB_VERSION"].default == "0.2.19"
     assert specs["KSADK_WEB_PACKAGE"].default == "@kingsoftcloud/ksadk-web"
     assert specs["KSADK_WEB_RELEASE_URL"].default == ""
 

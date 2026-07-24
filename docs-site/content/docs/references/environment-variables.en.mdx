@@ -262,7 +262,7 @@ KSADK_MCP_SERVERS='[{"name":"docs","url":"http://127.0.0.1:9000/mcp"}]'
 
 | Variable | Purpose |
 | --- | --- |
-| `KSADK_WEB_VERSION` | `@kingsoftcloud/ksadk-web` npm dist-tag or version used by `make sync-ksadk-web-static`; default `latest` |
+| `KSADK_WEB_VERSION` | published `@kingsoftcloud/ksadk-web` npm version used by `make sync-ksadk-web-static`; default `0.2.19`. Publish and verify a new version before using it in a wheel build. |
 | `KSADK_WEB_PACKAGE` | npm package name used for local UI static sync; default `@kingsoftcloud/ksadk-web` |
 | `KSADK_WEB_TARBALL_NAME` | saved filename when `KSADK_WEB_RELEASE_URL` is set; npm pack mode uses the real tarball filename returned by npm |
 | `KSADK_WEB_RELEASE_URL` | optional fallback; when set, skips npm pack and downloads from this tarball URL |

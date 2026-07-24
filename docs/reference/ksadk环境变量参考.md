@@ -343,7 +343,7 @@
 | `KSADK_UI_PATH` | 本地 Web UI / Runtime bootstrap | 否 | `/` | 无 | 否 | 开发者 / 平台 | 否 | 自定义 UI 挂载路径，例如 `/research`。 |
 | `KSADK_UI_URL` | Runtime bootstrap | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 外部自定义 UI URL。 |
 | `KSADK_UI_BUNDLE_PATH` | Runtime bootstrap | 否 | 自动探测 `research-ui/dist` | 无 | 否 | 开发者 / 平台 | 否 | 自定义 UI 静态 bundle 相对项目路径。 |
-| `KSADK_WEB_VERSION` | Hosted Web UI static sync | 否 | `latest` | 可显式设置 `0.2.7` / `v0.2.7` | 否 | 构建环境 / 开发者 | 否 | `make sync-ksadk-web-static` 使用的 `@kingsoftcloud/ksadk-web` npm dist-tag 或版本，默认消费最新 release。 |
+| `KSADK_WEB_VERSION` | Hosted Web UI static sync | 否 | `0.2.19` | 可显式设置已发布版本，如 `0.3.0` | 否 | 构建环境 / 发版负责人 | 否 | `make sync-ksadk-web-static` 使用的 `@kingsoftcloud/ksadk-web` npm 版本。wheel 构建必须固定一个已发布版本；升级此值前先发布并验证对应的 npm 包。 |
 | `KSADK_WEB_PACKAGE` | Hosted Web UI static sync | 否 | `@kingsoftcloud/ksadk-web` | 无 | 否 | 构建环境 / 开发者 | 否 | 本地 UI static 同步使用的 npm 包名。 |
 | `KSADK_WEB_TARBALL_NAME` | Hosted Web UI static sync | 否 | 根据 `KSADK_WEB_VERSION` 派生 | 无 | 否 | 构建环境 | 否 | 仅在设置 `KSADK_WEB_RELEASE_URL` 时作为下载保存文件名；npm pack 模式会使用 npm 返回的真实 tarball 文件名。 |
 | `KSADK_WEB_RELEASE_URL` | Hosted Web UI static sync | 否 | 未设置 | 无 | 否 | 构建环境 / 开发者 | 否 | 可选兼容兜底。设置后跳过 npm pack，改从该 tarball URL 下载。 |
