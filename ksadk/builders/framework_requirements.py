@@ -4,24 +4,22 @@ from __future__ import annotations
 
 from typing import Iterable
 
-
 FASTAPI_REQUIREMENT = "fastapi>=0.100.0,<1.0.0"
 
 ADK_REQUIREMENTS = (
-    "google-adk>=1.34.0,<2.0.0",
+    # goal-00: 与 ksadk 自身 adk extra 对齐,允许 1.34.x 与 2.x
+    "google-adk>=1.34.0,<3.0.0",
     "litellm>=1.0.0",
 )
 
 LANGCHAIN_ECOSYSTEM_REQUIREMENTS = (
-    "langchain>=1.3.0,<2.0.0",
-    "langchain-openai>=1.2.0,<2.0.0",
-    "langchain-core>=1.4.0,<2.0.0",
+    "langchain>=1.3.14,<2.0.0",
+    "langchain-openai>=1.4.0,<2.0.0",
+    "langchain-core>=1.5.0,<2.0.0",
     "langgraph>=1.2.0,<1.3.0",
 )
 
-DEEPAGENTS_REQUIREMENTS = (
-    "deepagents>=0.6.2,<1.0.0",
-)
+DEEPAGENTS_REQUIREMENTS = ("deepagents>=0.6.2,<1.0.0",)
 
 
 def requirements_for_framework(framework: str) -> list[str]:
@@ -43,9 +41,9 @@ def minimal_requirements_for_framework(framework: str) -> list[str]:
         return list(ADK_REQUIREMENTS)
     if normalized in {"langchain", "langgraph", "deepagents"}:
         requirements = [
-            "langchain>=1.3.0,<2.0.0",
-            "langchain-openai>=1.2.0,<2.0.0",
-            "langchain-core>=1.4.0,<2.0.0",
+            "langchain>=1.3.14,<2.0.0",
+            "langchain-openai>=1.4.0,<2.0.0",
+            "langchain-core>=1.5.0,<2.0.0",
         ]
         if normalized in {"langgraph", "deepagents"}:
             requirements.append("langgraph>=1.2.0,<1.3.0")

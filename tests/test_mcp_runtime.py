@@ -110,9 +110,7 @@ def test_load_mcp_server_configs_rejects_invalid_payloads():
         load_mcp_server_configs("{}")
 
     with pytest.raises(ValueError, match="/mcp"):
-        load_mcp_server_configs(
-            json.dumps([{"name": "weather", "url": "https://example.com/api"}])
-        )
+        load_mcp_server_configs(json.dumps([{"name": "weather", "url": "https://example.com/api"}]))
 
 
 def test_build_connection_params_includes_bearer_auth_header():
@@ -364,8 +362,7 @@ def test_adk_runner_load_agent_skips_mcp_toolsets_when_disabled(monkeypatch, tmp
     runner.load_agent()
 
     assert all(
-        getattr(tool, "_ksadk_mcp_toolset_key", None) is None
-        for tool in runner._agent.tools
+        getattr(tool, "_ksadk_mcp_toolset_key", None) is None for tool in runner._agent.tools
     )
 
 
@@ -405,9 +402,7 @@ async def test_adk_runner_invoke_roundtrip_with_remote_mcp_tools(
             state_delta=None,
             run_config=None,
         ):
-            toolsets = [
-                tool for tool in self.agent.tools if hasattr(tool, "get_tools_with_prefix")
-            ]
+            toolsets = [tool for tool in self.agent.tools if hasattr(tool, "get_tools_with_prefix")]
             assert toolsets
             tools = await toolsets[0].get_tools_with_prefix()
             payload = await tools[0]._run_async_impl(
@@ -417,9 +412,7 @@ async def test_adk_runner_invoke_roundtrip_with_remote_mcp_tools(
             )
             text = payload["content"][0]["text"]
             yield SimpleNamespace(
-                content=SimpleNamespace(
-                    parts=[SimpleNamespace(text=text, thought=False)]
-                )
+                content=SimpleNamespace(parts=[SimpleNamespace(text=text, thought=False)])
             )
 
     monkeypatch.delenv("KSADK_ENABLE_MCP_TOOLS", raising=False)
@@ -449,10 +442,7 @@ async def test_adk_runner_invoke_roundtrip_with_remote_mcp_tools(
     result = await runner.invoke({"input": "beijing"})
 
     assert result["output"] == "forecast:beijing"
-    assert any(
-        getattr(tool, "_ksadk_mcp_toolset_key", None)
-        for tool in runner._agent.tools
-    )
+    assert any(getattr(tool, "_ksadk_mcp_toolset_key", None) for tool in runner._agent.tools)
 
     for toolset in runner._runtime_toolsets:
         close = getattr(toolset, "close", None)

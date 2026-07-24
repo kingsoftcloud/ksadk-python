@@ -20,7 +20,9 @@ def _isolate_identity_env(monkeypatch):
     yield
 
 
-def _make_client_with_creds(monkeypatch, *, access_key="AKLTtest", secret_key="SKtest", dry_run=False):
+def _make_client_with_creds(
+    monkeypatch, *, access_key="AKLTtest", secret_key="SKtest", dry_run=False
+):
     """构造带凭证的 client，绕过真实 AK/SK env 依赖。"""
     client = AgentEngineClient(region="cn-beijing-6", dry_run=dry_run)
     # 注入凭证到 _auth
@@ -64,7 +66,9 @@ def test_build_headers_extra_headers_override_user_uuid(monkeypatch):
     """extra_headers 显式覆盖 user uuid。"""
     client = _make_client_with_creds(monkeypatch)
     client.extra_headers = {"X-Ksc-User-uuid": "custom-uuid", "X-Ksc-Account-Id": "custom-acct"}
-    monkeypatch.setattr("ksadk.identity.resolve_identity", lambda **kw: MagicMock(user_uuid="should-not-use"))
+    monkeypatch.setattr(
+        "ksadk.identity.resolve_identity", lambda **kw: MagicMock(user_uuid="should-not-use")
+    )
 
     headers = client._build_headers(action="Test")
 
@@ -77,7 +81,9 @@ def test_build_headers_lowercase_extra_headers_normalized(monkeypatch):
     """extra_headers 用小写 key 时归一为 Title-Case，避免重复 header。"""
     client = _make_client_with_creds(monkeypatch)
     client.extra_headers = {"x-ksc-user-uuid": "custom", "x-ksc-account-id": "custom-acct"}
-    monkeypatch.setattr("ksadk.identity.resolve_identity", lambda **kw: MagicMock(user_uuid="should-not-use"))
+    monkeypatch.setattr(
+        "ksadk.identity.resolve_identity", lambda **kw: MagicMock(user_uuid="should-not-use")
+    )
 
     headers = client._build_headers(action="Test")
 
@@ -146,7 +152,11 @@ def test_account_id_env_overrides_resolve(monkeypatch):
     monkeypatch.setenv("KSYUN_ACCOUNT_ID", "env-acct")
     client = _make_client_with_creds(monkeypatch)
     fake = ResolvedIdentity(
-        user_uuid="uuid-x", main_account_id="resolved-acct", user_name="u", krn=None, ak_fingerprint="abc"
+        user_uuid="uuid-x",
+        main_account_id="resolved-acct",
+        user_name="u",
+        krn=None,
+        ak_fingerprint="abc",
     )
     monkeypatch.setattr("ksadk.identity.resolve_identity", lambda **kw: fake)
 
@@ -159,7 +169,11 @@ def test_account_id_falls_back_to_resolved_main_account(monkeypatch):
     """无 env 时 X-Ksc-Account-Id 从反查 main_account_id 拿。"""
     client = _make_client_with_creds(monkeypatch)
     fake = ResolvedIdentity(
-        user_uuid="uuid-x", main_account_id="2000003485", user_name="u", krn=None, ak_fingerprint="abc"
+        user_uuid="uuid-x",
+        main_account_id="2000003485",
+        user_name="u",
+        krn=None,
+        ak_fingerprint="abc",
     )
     monkeypatch.setattr("ksadk.identity.resolve_identity", lambda **kw: fake)
 

@@ -4,17 +4,17 @@ AgentEngine Server API 客户端
 支持 AWS V4 签名认证，用于通过 KOP 网关访问 AgentEngine Server。
 """
 
-import os
-import re
 import json
-import uuid
-import socket
 import logging
 import mimetypes
+import os
+import re
+import socket
+import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Dict, Any, Sequence, Callable, Iterator
+from typing import Any, Callable, Dict, Iterator, Optional, Sequence
 from urllib.parse import quote, unquote, urlparse, urlsplit
 
 import requests
@@ -38,7 +38,9 @@ class AttachmentContent:
 class DryRunExit(Exception):
     """DryRun 模式退出异常。"""
 
-    def __init__(self, message: str = "Dry Run finished.", *, payload: Optional[Dict[str, Any]] = None):
+    def __init__(
+        self, message: str = "Dry Run finished.", *, payload: Optional[Dict[str, Any]] = None
+    ):
         self.payload = payload or {}
         super().__init__(message)
 
@@ -54,6 +56,7 @@ class AgentEngineAPIError(Exception):
         details: Optional[Dict[str, Any]] = None,
     ):
         self.raw_code = code
+        self.code: Optional[int]
         try:
             self.code = int(code)
         except (TypeError, ValueError):
@@ -69,9 +72,9 @@ class AgentEngineAPIError(Exception):
 
 class AgentEngineClient:
     """AgentEngine Server API 客户端
-    
+
     使用 AWS V4 签名认证访问 KOP 网关后的 AgentEngine Server。
-    
+
     凭证来源 (优先级从高到低):
     1. 构造函数参数
     2. 环境变量 KSYUN_ACCESS_KEY / KSYUN_SECRET_KEY
@@ -85,8 +88,8 @@ class AgentEngineClient:
     _permission_probe_cache: dict[tuple[str, str, str], bool] = {}
 
     def __init__(
-        self, 
-        base_url: Optional[str] = None, 
+        self,
+        base_url: Optional[str] = None,
         access_key: Optional[str] = None,
         secret_key: Optional[str] = None,
         region: str = "cn-beijing-6",
@@ -95,13 +98,9 @@ class AgentEngineClient:
         dry_run: bool = False,
         extra_headers: Optional[Dict[str, str]] = None,
     ):
-        self.base_url = (
-            base_url 
-            or os.getenv("AGENTENGINE_SERVER_URL")
-        )
-        if not self.base_url:
-            self.base_url = self._detect_default_base_url()
-        
+        resolved_base_url = base_url or os.getenv("AGENTENGINE_SERVER_URL")
+        self.base_url: str = resolved_base_url or self._detect_default_base_url()
+
         # 本地调试覆盖 (如果需要)
         # self.base_url = "http://localhost:8081"
         self.timeout = timeout
@@ -111,8 +110,8 @@ class AgentEngineClient:
         self.dry_run = bool(dry_run or self._is_global_dry_run_enabled())
         self.extra_headers = extra_headers or {}
         # 签名 service 可通过环境变量覆盖（例如 aicp）
-        self.service = service or os.getenv("AGENTENGINE_SIGN_SERVICE", "aicp")
-        
+        self.service: str = service or os.getenv("AGENTENGINE_SIGN_SERVICE") or "aicp"
+
         # AWS V4 签名
         self._auth = AWSV4Auth(
             access_key_id=access_key or "",
@@ -120,12 +119,12 @@ class AgentEngineClient:
             region=self.region,
             service=self.service,
         )
-        
+
         if self._auth.is_enabled:
             logger.debug(f"AgentEngineClient initialized with V4Auth: {self.base_url}")
         else:
             logger.debug("AgentEngineClient: No credentials, signing disabled")
-            
+
         self._session: Optional[requests.Session] = None
         self._http_error_log_suppressors: list[HttpErrorLogSuppressor] = []
         # 反查身份的实例缓存（避免同会话重复调 IAM）；None=未尝试，ResolvedIdentity|None=已反查
@@ -135,10 +134,10 @@ class AgentEngineClient:
     @staticmethod
     def _ssl_verify_enabled() -> bool:
         insecure = (
-            os.getenv("AGENTENGINE_SSL_INSECURE")
-            or os.getenv("CURL_SSL_INSECURE")
-            or ""
-        ).strip().lower()
+            (os.getenv("AGENTENGINE_SSL_INSECURE") or os.getenv("CURL_SSL_INSECURE") or "")
+            .strip()
+            .lower()
+        )
         if insecure in {"1", "true", "yes", "on"}:
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
             return False
@@ -303,7 +302,9 @@ class AgentEngineClient:
     @staticmethod
     def _is_auth_related_error_details(details: Dict[str, Any]) -> bool:
         remote_code = str(details.get("remote_error_code") or "").strip().lower()
-        remote_message = str(details.get("remote_error_message") or details.get("message") or "").strip().lower()
+        remote_message = (
+            str(details.get("remote_error_message") or details.get("message") or "").strip().lower()
+        )
         if remote_code in {
             "missingaccesskey",
             "missingsecretkey",
@@ -336,7 +337,9 @@ class AgentEngineClient:
     @staticmethod
     def _is_inner_account_intranet_error(details: Dict[str, Any]) -> bool:
         remote_code = str(details.get("remote_error_code") or "").strip().lower()
-        remote_message = str(details.get("remote_error_message") or details.get("message") or "").strip().lower()
+        remote_message = (
+            str(details.get("remote_error_message") or details.get("message") or "").strip().lower()
+        )
         return (
             remote_code == "inneraccountcanonlyaccessthroughintranet"
             or "inner account can only access through intranet" in remote_message
@@ -356,7 +359,9 @@ class AgentEngineClient:
         )
         self.base_url = self._INNER_AICP_BASE_URL
 
-    def _build_action_request_target(self, path: str, action: str) -> tuple[bool, Dict[str, str], str]:
+    def _build_action_request_target(
+        self, path: str, action: str
+    ) -> tuple[bool, Dict[str, str], str]:
         kop_mode = self._is_kop_mode()
         headers = self._build_headers(action=action, kop_mode=kop_mode)
         if kop_mode:
@@ -366,14 +371,17 @@ class AgentEngineClient:
             full_url = f"{self.base_url}{path}"
         return kop_mode, headers, full_url
 
-    def _build_raw_action_request_target(self, action: str, accept: str, has_files: bool) -> tuple[bool, Dict[str, str], str]:
+    def _build_raw_action_request_target(
+        self, action: str, accept: str, has_files: bool
+    ) -> tuple[bool, Dict[str, str], str]:
         kop_mode = self._is_kop_mode()
         headers = self._build_headers(action=action, kop_mode=kop_mode)
         headers["Accept"] = accept
         if has_files:
             headers.pop("Content-Type", None)
+        version = os.getenv("AGENTENGINE_API_VERSION", "2024-06-12")
         full_url = (
-            f"{self.base_url.rstrip('/')}/?Action={action}&Version={os.getenv('AGENTENGINE_API_VERSION', '2024-06-12')}"
+            f"{self.base_url.rstrip('/')}/?Action={action}&Version={version}"
             if kop_mode
             else f"{self.base_url}/agentengine/api/v1/{action}"
         )
@@ -394,7 +402,9 @@ class AgentEngineClient:
             if self._http_error_log_suppressors:
                 self._http_error_log_suppressors.pop()
 
-    def _log_http_error(self, *, method: str, full_url: str, status_code: int, details: Dict[str, Any]) -> None:
+    def _log_http_error(
+        self, *, method: str, full_url: str, status_code: int, details: Dict[str, Any]
+    ) -> None:
         for suppressor in reversed(self._http_error_log_suppressors):
             try:
                 if suppressor(
@@ -433,7 +443,9 @@ class AgentEngineClient:
         message = " ".join(message.split())[:200]
         return f"{code}: {message}" if code else message
 
-    def _build_headers(self, request_id: str = "", action: str = "", kop_mode: bool = False) -> Dict[str, str]:
+    def _build_headers(
+        self, request_id: str = "", action: str = "", kop_mode: bool = False
+    ) -> Dict[str, str]:
         if not request_id:
             request_id = str(uuid.uuid4())
         headers = {
@@ -508,9 +520,7 @@ class AgentEngineClient:
                 # dry-run 不联网，只读缓存
                 self._resolved_identity = get_cached_identity(ak)
             else:
-                self._resolved_identity = resolve_identity(
-                    access_key=ak, secret_key=sk
-                )
+                self._resolved_identity = resolve_identity(access_key=ak, secret_key=sk)
         except Exception as e:
             logger.warning("反查子账号身份失败: %s", e)
             self._resolved_identity = None
@@ -536,9 +546,7 @@ class AgentEngineClient:
             access = params.get("Access") if isinstance(params, dict) else None
             if isinstance(access, dict):
                 explicit_role = (
-                    access.get("IamRole")
-                    or access.get("iamRole")
-                    or access.get("iam_role")
+                    access.get("IamRole") or access.get("iamRole") or access.get("iam_role")
                 )
                 if str(explicit_role or "").strip():
                     return str(explicit_role).strip()
@@ -597,9 +605,9 @@ class AgentEngineClient:
         self._permission_probe_cache[cache_key] = True
 
     def _request(
-        self, 
+        self,
         method: str,
-        path: str, 
+        path: str,
         body: Optional[Dict[str, Any]] = None,
         *,
         ignore_dry_run: bool = False,
@@ -608,7 +616,7 @@ class AgentEngineClient:
         action = path.rstrip("/").split("/")[-1] if path else ""
         _kop_mode, headers, full_url = self._build_action_request_target(path, action)
         body_str = json.dumps(body, ensure_ascii=False) if body else ""
-        
+
         # DryRun 模式
         if self.dry_run and not ignore_dry_run:
             signed_headers = headers
@@ -622,9 +630,9 @@ class AgentEngineClient:
                 )
 
             # 生成 Curl 命令
-            curl_cmd = f"curl -X {method} \"{full_url}\" \\\n"
+            curl_cmd = f'curl -X {method} "{full_url}" \\\n'
             for k, v in signed_headers.items():
-                curl_cmd += f"  -H \"{k}: {v}\" \\\n"
+                curl_cmd += f'  -H "{k}: {v}" \\\n'
             if body_str:
                 curl_cmd += f"  -d '{body_str}'"
 
@@ -639,7 +647,7 @@ class AgentEngineClient:
                     "curl": curl_cmd,
                 },
             )
-            
+
         session = self._get_session()
 
         retried_inner_endpoint = False
@@ -685,33 +693,36 @@ class AgentEngineClient:
 
         if response.text:
             try:
-                return response.json()
+                payload = response.json()
             except Exception as e:
                 raise Exception(f"Invalid JSON response from {full_url}: {response.text}") from e
+            if not isinstance(payload, dict):
+                raise Exception(f"Invalid JSON response from {full_url}: expected an object")
+            return payload
         return {}
-    
+
     # Async 包装 (保持兼容性)
     async def close(self):
         if self._session:
             self._session.close()
             self._session = None
-        
+
     async def __aenter__(self):
         return self
-        
+
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.close()
 
     # ===== Action API (推荐使用) =====
-    
+
     @staticmethod
     def _pascal_key(key: str) -> str:
         """PascalCase/camelCase 键名转 snake_case"""
         # "MCPs" -> "mcps", "AgentId" -> "agent_id", "QuickAccess" -> "quick_access"
         if re.fullmatch(r"[A-Z]+s", key):
             return key.lower()
-        s1 = re.sub('([A-Z]+)([A-Z][a-z])', r'\1_\2', key)
-        s2 = re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1)
+        s1 = re.sub("([A-Z]+)([A-Z][a-z])", r"\1_\2", key)
+        s2 = re.sub("([a-z0-9])([A-Z])", r"\1_\2", s1)
         return s2.lower()
 
     @classmethod
@@ -749,7 +760,7 @@ class AgentEngineClient:
         image = raw
         for prefix in ("http://", "https://"):
             if image.startswith(prefix):
-                image = image[len(prefix):]
+                image = image[len(prefix) :]
                 break
 
         image_no_tag = image
@@ -800,9 +811,8 @@ class AgentEngineClient:
         img_ns, img_repo, img_ver = cls._parse_container_image_ref(artifact)
 
         inferred_enterprise_instance = cls._enterprise_instance_from_image_ref(artifact)
-        image_type = (
-            container.get("image_type")
-            or ("Enterprise" if inferred_enterprise_instance else "Personal")
+        image_type = container.get("image_type") or (
+            "Enterprise" if inferred_enterprise_instance else "Personal"
         )
         params: Dict[str, Any] = {
             "ImageType": image_type,
@@ -862,14 +872,13 @@ class AgentEngineClient:
         if not isinstance(detail, dict):
             return {}
 
-        basic = detail.get("basic") if isinstance(detail.get("basic"), dict) else {}
-        quick = detail.get("quick_access") if isinstance(detail.get("quick_access"), dict) else {}
-        deployment = detail.get("deployment") if isinstance(detail.get("deployment"), dict) else {}
-        framework = (
-            deployment.get("framework")
-            or basic.get("framework")
-            or detail.get("framework")
-        )
+        basic_value = detail.get("basic")
+        quick_value = detail.get("quick_access")
+        deployment_value = detail.get("deployment")
+        basic: Dict[str, Any] = basic_value if isinstance(basic_value, dict) else {}
+        quick: Dict[str, Any] = quick_value if isinstance(quick_value, dict) else {}
+        deployment: Dict[str, Any] = deployment_value if isinstance(deployment_value, dict) else {}
+        framework = deployment.get("framework") or basic.get("framework") or detail.get("framework")
         return {
             "agent_id": basic.get("agent_id") or detail.get("agent_id"),
             "name": basic.get("name") or detail.get("name"),
@@ -898,18 +907,13 @@ class AgentEngineClient:
             payload = None
         if isinstance(payload, dict):
             message = (
-                str(payload.get("detail") or payload.get("Message") or message).strip()
-                or message
+                str(payload.get("detail") or payload.get("Message") or message).strip() or message
             )
         return AgentEngineAPIError(response.status_code, message)
 
     @staticmethod
     def _compact_params(params: Dict[str, Any] | None) -> Dict[str, Any]:
-        return {
-            key: value
-            for key, value in (params or {}).items()
-            if value is not None
-        }
+        return {key: value for key, value in (params or {}).items() if value is not None}
 
     @staticmethod
     def _workspace_prefers_action_proxy(detail: Dict[str, Any] | None) -> bool:
@@ -940,13 +944,15 @@ class AgentEngineClient:
                 },
             }
 
-        detail = await self.get_agent(agent_id=agent_id, name=name, include_api_key=True)
+        detail = await self.get_agent(
+            agent_id=agent_id,
+            name=name,
+            include_api_key=True,
+        )
         access = self._extract_runtime_access(detail)
         resolved_agent_id = str(access.get("agent_id") or agent_id or "").strip() or None
         resolved_name = str(access.get("name") or name or "").strip() or None
-        resolved_api_key = api_key_value or (
-            str(access.get("api_key") or "").strip() or None
-        )
+        resolved_api_key = api_key_value or (str(access.get("api_key") or "").strip() or None)
         if self._workspace_prefers_action_proxy(detail):
             return {
                 "mode": "action",
@@ -1041,8 +1047,13 @@ class AgentEngineClient:
             api_key=api_key,
         )
         if transport["mode"] != "runtime":
-            raise AgentEngineAPIError(400, "Workspace runtime direct access is unavailable for this agent")
-        return transport["access"]
+            raise AgentEngineAPIError(
+                400, "Workspace runtime direct access is unavailable for this agent"
+            )
+        access = transport.get("access")
+        if not isinstance(access, dict):
+            raise AgentEngineAPIError(502, "Workspace runtime access payload is invalid")
+        return access
 
     def _workspace_runtime_request(
         self,
@@ -1077,8 +1088,7 @@ class AgentEngineClient:
             payload = response.json()
         except Exception as exc:
             url = str(
-                getattr(response, "_ksadk_workspace_url", "")
-                or getattr(response, "url", "")
+                getattr(response, "_ksadk_workspace_url", "") or getattr(response, "url", "")
             ).strip()
             body = (response.text or "").strip()
             body_preview = body[:200] if body else "<empty response body>"
@@ -1095,10 +1105,15 @@ class AgentEngineClient:
                     "workspace_runtime_body_preview": body_preview,
                 },
             ) from exc
-        return self._to_snake_case(payload)
+        normalized = self._to_snake_case(payload)
+        if not isinstance(normalized, dict):
+            raise AgentEngineAPIError(502, "workspace runtime returned a non-object JSON payload")
+        return normalized
 
     @staticmethod
-    def _annotate_workspace_payload(payload: Dict[str, Any], *, transport_mode: str) -> Dict[str, Any]:
+    def _annotate_workspace_payload(
+        payload: Dict[str, Any], *, transport_mode: str
+    ) -> Dict[str, Any]:
         annotated = dict(payload or {})
         annotated["transport_mode"] = transport_mode
         return annotated
@@ -1119,7 +1134,7 @@ class AgentEngineClient:
     def _action(
         self,
         action: str,
-        params: Dict[str, Any] = None,
+        params: Optional[Dict[str, Any]] = None,
         *,
         ignore_dry_run: bool = False,
     ) -> Dict[str, Any]:
@@ -1128,7 +1143,7 @@ class AgentEngineClient:
         self._maybe_precheck_permission(action, body)
         request_kwargs = {"ignore_dry_run": True} if ignore_dry_run else {}
         result = self._request("POST", f"/agentengine/api/v1/{action}", body, **request_kwargs)
-        
+
         # 检查错误 (统一返回格式 {"Code": 0, ...})
         code = result.get("Code", 0)
         if code != 0:
@@ -1139,18 +1154,20 @@ class AgentEngineClient:
             if result.get("Action"):
                 details["action"] = str(result["Action"])
             raise AgentEngineAPIError(code=code, message=msg, details=details)
-            
+
         if result.get("Error"):
             raise Exception(result["Error"].get("Message", "Unknown error"))
-        
+
         # 提取 Data 并统一转换为 snake_case
         data = result.get("Data") if result.get("Data") is not None else result
         data = self._to_snake_case(data)
-        
+
         # 预发环境 endpoint 协议归一化: https -> http
         if self.logical_region and self.logical_region.strip().lower() == "pre-online":
             data = self._fix_endpoints_protocol(data)
-        
+
+        if not isinstance(data, dict):
+            raise AgentEngineAPIError(502, "Action API returned a non-object payload")
         return data
 
     def download_attachment_content(self, file_uri: str) -> AttachmentContent:
@@ -1189,7 +1206,12 @@ class AgentEngineClient:
 
         payload: Dict[str, Any] = {
             "EnablePublicAccess": bool(
-                _pick("enable_public_access", "enablePublicAccess", "EnablePublicAccess", default=False)
+                _pick(
+                    "enable_public_access",
+                    "enablePublicAccess",
+                    "EnablePublicAccess",
+                    default=False,
+                )
             ),
             "EnableVpcAccess": bool(
                 _pick("enable_vpc_access", "enableVpcAccess", "EnableVpcAccess", default=False)
@@ -1210,7 +1232,9 @@ class AgentEngineClient:
         return payload
 
     @staticmethod
-    def _normalize_ui_config_payload(ui_config: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    def _normalize_ui_config_payload(
+        ui_config: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
         if not isinstance(ui_config, dict):
             return None
 
@@ -1241,10 +1265,7 @@ class AgentEngineClient:
             return None
 
         mount_path = str(
-            storage.get("mount_path")
-            or storage.get("mountPath")
-            or storage.get("MountPath")
-            or ""
+            storage.get("mount_path") or storage.get("mountPath") or storage.get("MountPath") or ""
         ).strip()
         size_gi = storage.get("size_gi", storage.get("sizeGi", storage.get("SizeGi")))
         if not mount_path and size_gi is None:
@@ -1258,14 +1279,14 @@ class AgentEngineClient:
         return payload
 
     @staticmethod
-    def _normalize_memory_config_payload(memory_config: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    def _normalize_memory_config_payload(
+        memory_config: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
         if not isinstance(memory_config, dict):
             return None
 
         memory_system = str(
-            memory_config.get("memory_system")
-            or memory_config.get("MemorySystem")
-            or ""
+            memory_config.get("memory_system") or memory_config.get("MemorySystem") or ""
         ).strip()
         if not memory_system:
             return None
@@ -1275,17 +1296,12 @@ class AgentEngineClient:
         }
         field_mapping = {
             "Mem0InstanceId": (
-                memory_config.get("mem0_instance_id")
-                or memory_config.get("Mem0InstanceId")
+                memory_config.get("mem0_instance_id") or memory_config.get("Mem0InstanceId")
             ),
             "Mem0InstanceName": (
-                memory_config.get("mem0_instance_name")
-                or memory_config.get("Mem0InstanceName")
+                memory_config.get("mem0_instance_name") or memory_config.get("Mem0InstanceName")
             ),
-            "Mem0Region": (
-                memory_config.get("mem0_region")
-                or memory_config.get("Mem0Region")
-            ),
+            "Mem0Region": (memory_config.get("mem0_region") or memory_config.get("Mem0Region")),
         }
         for key, value in field_mapping.items():
             text = str(value or "").strip()
@@ -1304,7 +1320,9 @@ class AgentEngineClient:
             "Region": self._normalize_payload_region(data.get("region", "cn-beijing-6")),
             "Resource": {
                 "Cpu": int(float(data.get("resources", {}).get("cpu", 2))),
-                "Memory": int(str(data.get("resources", {}).get("memory", "4Gi")).replace("Gi", ""))
+                "Memory": int(
+                    str(data.get("resources", {}).get("memory", "4Gi")).replace("Gi", "")
+                ),
             },
             "Scaling": {
                 "MinReplicas": int(data.get("scaling", {}).get("min_replicas", 1)),
@@ -1378,7 +1396,12 @@ class AgentEngineClient:
 
         return self._action("CreateAgentProduct", params)
 
-    async def get_agent(self, agent_id: str = None, name: str = None, include_api_key: bool = False) -> Dict[str, Any]:
+    async def get_agent(
+        self,
+        agent_id: Optional[str] = None,
+        name: Optional[str] = None,
+        include_api_key: bool = False,
+    ) -> Dict[str, Any]:
         """获取 Agent 详情（支持 AgentId 或 Name 查询）"""
         if agent_id:
             params: Dict[str, Any] = {"AgentId": agent_id}
@@ -1389,7 +1412,7 @@ class AgentEngineClient:
             except Exception as e:
                 # 兼容旧控制面：极少数版本仍使用 Id 字段
                 if self._should_fallback_get_agent_with_legacy_id(e):
-                    fallback = {"Id": agent_id}
+                    fallback: Dict[str, Any] = {"Id": agent_id}
                     if include_api_key:
                         fallback["IncludeApiKey"] = True
                     return self._action("GetAgent", fallback)
@@ -1519,7 +1542,7 @@ class AgentEngineClient:
     async def delete_dashboard_access_link(self, *, link_id: str) -> Dict[str, Any]:
         """删除 Dashboard 短链接。"""
         return self._action("DeleteDashboardAccessLink", {"LinkId": link_id})
-        
+
     async def list_agents(
         self,
         region: Optional[str] = None,
@@ -1602,14 +1625,12 @@ class AgentEngineClient:
         self._action("DeleteAgent", {"AgentId": agent_id})
         return True
 
-
-
     async def update_agent(self, agent_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
         """更新 Agent (热更新)"""
-        params = {"AgentId": agent_id}
+        params: Dict[str, Any] = {"AgentId": agent_id}
         if data.get("description"):
             params["Description"] = data["description"]
-            
+
         if data.get("artifact_path"):
             artifact = (data.get("artifact_path", "") or "").strip()
             if (data.get("artifact_type") or "").lower() == "container":
@@ -1627,20 +1648,20 @@ class AgentEngineClient:
                     "Region": self._normalize_payload_region(ks3.get("region", "cn-beijing-6")),
                     "Bucket": ks3.get("bucket"),
                 }
-            
+
         if data.get("resources"):
             params["Resource"] = {
                 "Cpu": int(float(data["resources"].get("cpu", 2))),
-                "Memory": int(str(data["resources"].get("memory", "4Gi")).replace("Gi", ""))
+                "Memory": int(str(data["resources"].get("memory", "4Gi")).replace("Gi", "")),
             }
-            
+
         if data.get("scaling"):
             params["Scaling"] = {
                 "MinReplicas": int(data["scaling"].get("min_replicas", 1)),
                 "MaxReplicas": int(data["scaling"].get("max_replicas", 10)),
                 "Concurrency": int(data["scaling"].get("concurrency", 20)),
             }
-            
+
         envs = data.get("env_vars") or data.get("environment_variables")
         if envs:
             env_vars = []
@@ -1690,27 +1711,27 @@ class AgentEngineClient:
             advanced["ProjectId"] = project_id
         if advanced:
             params["Advanced"] = advanced
-            
+
         return self._action("UpdateAgent", params)
 
     # ===== Session Actions =====
-    
-    async def create_session(self, agent_id: str, user_id: Optional[str] = None, expires_hours: int = 24) -> Dict[str, Any]:
+
+    async def create_session(
+        self, agent_id: str, user_id: Optional[str] = None, expires_hours: int = 24
+    ) -> Dict[str, Any]:
         """创建会话"""
-        return self._action("CreateSession", {
-            "AgentId": agent_id,
-            "UserId": user_id,
-            "ExpiresHours": expires_hours
-        })
-    
+        return self._action(
+            "CreateSession", {"AgentId": agent_id, "UserId": user_id, "ExpiresHours": expires_hours}
+        )
+
     async def get_session(self, session_id: str) -> Dict[str, Any]:
         """获取会话详情"""
         return self._action("GetSession", {"Id": session_id})
-    
+
     async def list_sessions(self, agent_id: str, page: int = 1, size: int = 20) -> Dict[str, Any]:
         """列出会话"""
         return self._action("ListSessions", {"AgentId": agent_id, "Page": page, "PageSize": size})
-    
+
     async def delete_session(self, session_id: str) -> bool:
         """删除会话"""
         try:
@@ -1873,14 +1894,14 @@ class AgentEngineClient:
                 },
                 accept="application/octet-stream",
             )
-            return response.content
+            return bytes(response.content)
         access = transport["access"]
         response = self._workspace_runtime_request(
             access=access,
             method="GET",
             path=f"files/{self._encode_workspace_runtime_path(remote_path)}",
         )
-        return response.content
+        return bytes(response.content)
 
     async def delete_workspace_file(
         self,
@@ -1951,13 +1972,17 @@ class AgentEngineClient:
         return int(float(raw))
 
     @staticmethod
-    def _normalize_mcp_deployment_type(value: Optional[str], default: Optional[str] = None) -> Optional[str]:
+    def _normalize_mcp_deployment_type(
+        value: Optional[str], default: Optional[str] = None
+    ) -> Optional[str]:
         raw = str(value or default or "").strip()
         if not raw:
             return None
         return "Container" if raw.lower() == "container" else "Code"
 
-    def _infer_mcp_deployment_type(self, data: Dict[str, Any], default: Optional[str] = None) -> Optional[str]:
+    def _infer_mcp_deployment_type(
+        self, data: Dict[str, Any], default: Optional[str] = None
+    ) -> Optional[str]:
         explicit = self._normalize_mcp_deployment_type(
             data.get("deployment_type") or data.get("artifact_type"),
             default=default,
@@ -2025,11 +2050,14 @@ class AgentEngineClient:
     async def create_mcp(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """创建 MCP"""
         if self._looks_like_nested_mcp_payload(data):
-            params = dict(data)
-            params["Region"] = self._normalize_payload_region(
-                params.get("Region") or data.get("region") or self.logical_region or "cn-beijing-6"
+            nested_params = dict(data)
+            nested_params["Region"] = self._normalize_payload_region(
+                nested_params.get("Region")
+                or data.get("region")
+                or self.logical_region
+                or "cn-beijing-6"
             )
-            return self._action("CreateMCP", params)
+            return self._action("CreateMCP", nested_params)
 
         deployment_type = self._infer_mcp_deployment_type(data, default="Code") or "Code"
         params: Dict[str, Any] = {
@@ -2050,11 +2078,11 @@ class AgentEngineClient:
         if network_payload:
             params["Network"] = network_payload
         return self._action("CreateMCP", params)
-    
+
     async def get_mcp(self, mcp_id: str) -> Dict[str, Any]:
         """获取 MCP 详情"""
         return self._action("GetMCP", {"Id": mcp_id})
-    
+
     async def list_mcps(
         self,
         region: Optional[str] = None,
@@ -2062,23 +2090,23 @@ class AgentEngineClient:
         page_size: int = 20,
     ) -> Dict[str, Any]:
         """列出 MCP (注册中心)"""
-        params = {"Page": int(page), "PageSize": int(page_size)}
+        params: Dict[str, Any] = {"Page": int(page), "PageSize": int(page_size)}
         if region:
             params["Region"] = self._normalize_payload_region(region)
         result = self._action("ListMCPs", params)
         # _action 已统一转 snake_case: MCPs -> mcps, Total -> total
         return {"mcps": result.get("mcps", []), "total": result.get("total", 0)}
-    
+
     async def update_mcp(self, mcp_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
         """更新 MCP (热更新)"""
         if self._looks_like_nested_mcp_payload(data):
-            params = dict(data)
-            params.setdefault("Id", mcp_id)
-            if "Region" in params or data.get("region") or self.logical_region:
-                params["Region"] = self._normalize_payload_region(
-                    params.get("Region") or data.get("region") or self.logical_region
+            nested_params = dict(data)
+            nested_params.setdefault("Id", mcp_id)
+            if "Region" in nested_params or data.get("region") or self.logical_region:
+                nested_params["Region"] = self._normalize_payload_region(
+                    nested_params.get("Region") or data.get("region") or self.logical_region
                 )
-            return self._action("UpdateMCP", params)
+            return self._action("UpdateMCP", nested_params)
 
         params: Dict[str, Any] = {"Id": mcp_id}
         deployment_type = self._infer_mcp_deployment_type(data)
@@ -2102,7 +2130,9 @@ class AgentEngineClient:
             }
 
         scaling = data.get("scaling", {}) or {}
-        if any(scaling.get(key) is not None for key in ("min_replicas", "max_replicas", "concurrency")):
+        if any(
+            scaling.get(key) is not None for key in ("min_replicas", "max_replicas", "concurrency")
+        ):
             params["Scaling"] = {
                 "MinReplicas": int(scaling.get("min_replicas", 1)),
                 "MaxReplicas": int(scaling.get("max_replicas", 5)),
@@ -2125,13 +2155,15 @@ class AgentEngineClient:
         if data.get("region") is not None:
             params["Region"] = self._normalize_payload_region(data.get("region"))
         return self._action("UpdateMCP", params)
-    
+
     async def delete_mcp(self, mcp_id: str) -> bool:
         """删除 MCP"""
         result = self._action("DeleteMCP", {"Id": mcp_id})
         return bool(result.get("deleted"))
-    
-    async def get_mcp_by_name(self, name: str, region: Optional[str] = None) -> Optional[Dict[str, Any]]:
+
+    async def get_mcp_by_name(
+        self, name: str, region: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
         """按名称查询 MCP"""
         # 使用 ListMCPs 然后过滤 (Action API 暂不支持 by-name)
         try:
@@ -2141,7 +2173,7 @@ class AgentEngineClient:
                 result = await self.list_mcps(region=region, page=page, page_size=page_size)
                 mcps = result.get("mcps", [])
                 for mcp in mcps:
-                    if mcp.get("name") == name:
+                    if isinstance(mcp, dict) and mcp.get("name") == name:
                         return mcp
                 if len(mcps) < page_size:
                     break
@@ -2151,39 +2183,38 @@ class AgentEngineClient:
             return None
 
     # ===== Upload Actions =====
-    
+
     async def get_presigned_url(self, filename: str) -> Dict[str, Any]:
         """获取 KS3 预签名上传 URL"""
         return self._action("GetPresignedUrl", {"Filename": filename})
 
     # ===== Chat Actions =====
-    
-    async def chat(self, agent_id: str, message: str, session_id: Optional[str] = None) -> Dict[str, Any]:
+
+    async def chat(
+        self, agent_id: str, message: str, session_id: Optional[str] = None
+    ) -> Dict[str, Any]:
         """调用 Agent"""
         params = {
             "AgentId": agent_id,
             "Messages": [{"role": "user", "content": message}],
-            "Stream": False
+            "Stream": False,
         }
         if session_id:
             params["SessionId"] = session_id
         return self._action("RunAgent", params)
 
     # ===== Version Actions =====
-    
+
     async def release_version(
-        self, 
-        agent_id: str, 
-        tag: Optional[str] = None, 
-        description: Optional[str] = None
+        self, agent_id: str, tag: Optional[str] = None, description: Optional[str] = None
     ) -> Dict[str, Any]:
         """发布新版本
-        
+
         Args:
             agent_id: Agent ID
             tag: 版本标签，不填则自动生成
             description: 版本描述
-            
+
         Returns:
             版本信息
         """
@@ -2193,46 +2224,37 @@ class AgentEngineClient:
         if description:
             params["Description"] = description
         return self._action("CreateVersion", params)
-    
-    async def list_versions(
-        self, 
-        agent_id: str, 
-        page: int = 1, 
-        size: int = 10
-    ) -> Dict[str, Any]:
+
+    async def list_versions(self, agent_id: str, page: int = 1, size: int = 10) -> Dict[str, Any]:
         """列出版本历史
-        
+
         Args:
             agent_id: Agent ID
             page: 页码
             size: 每页数量
-            
+
         Returns:
             版本列表和分页信息
         """
-        return self._action("ListVersions", {
-            "AgentId": agent_id,
-            "Page": page,
-            "PageSize": size
-        })
-    
+        return self._action("ListVersions", {"AgentId": agent_id, "Page": page, "PageSize": size})
+
     async def rollback_version(
-        self, 
-        agent_id: str, 
+        self,
+        agent_id: str,
         target_version_id: Optional[str] = None,
         target_tag: Optional[str] = None,
         ks3_access_key: Optional[str] = None,
         ks3_secret_key: Optional[str] = None,
     ) -> Dict[str, Any]:
         """回滚到指定版本
-        
+
         Args:
             agent_id: Agent ID
             target_version_id: 目标版本 ID（与 target_tag 二选一）
             target_tag: 目标版本标签（与 target_version_id 二选一）
             ks3_access_key: KS3 Access Key (可选)
             ks3_secret_key: KS3 Secret Key (可选)
-            
+
         Returns:
             回滚结果
         """
@@ -2245,5 +2267,5 @@ class AgentEngineClient:
             params["KS3AccessKey"] = ks3_access_key
         if ks3_secret_key:
             params["KS3SecretKey"] = ks3_secret_key
-            
+
         return self._action("RollbackVersion", params)

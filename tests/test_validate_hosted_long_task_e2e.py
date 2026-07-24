@@ -10,9 +10,7 @@ class FlakyCheckpointClient:
     def action(self, name, payload):
         self.calls += 1
         if name == "ListSessionCheckpoints" and self.calls == 1:
-            raise HostedE2EError(
-                "ListSessionCheckpoints returned Code=404: {'Code': 404}"
-            )
+            raise HostedE2EError("ListSessionCheckpoints returned Code=404: {'Code': 404}")
         if name == "ListSessionCheckpoints":
             return {
                 "Data": {

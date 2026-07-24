@@ -4,7 +4,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import ksadk
-
 from ksadk.builders.code_builder import CodeBuilder
 
 
@@ -34,7 +33,9 @@ def _fake_package_zip(zip_path: Path, _detection_result):
 
 def test_code_builder_skips_rebuild_when_only_mtime_changes(tmp_path: Path, monkeypatch):
     (tmp_path / "agent.py").write_text("print('ok')\n", encoding="utf-8")
-    (tmp_path / "agentengine.yaml").write_text("name: demo-agent\nframework: langgraph\n", encoding="utf-8")
+    (tmp_path / "agentengine.yaml").write_text(
+        "name: demo-agent\nframework: langgraph\n", encoding="utf-8"
+    )
 
     package_calls = []
 
@@ -43,7 +44,10 @@ def test_code_builder_skips_rebuild_when_only_mtime_changes(tmp_path: Path, monk
     monkeypatch.setattr(
         CodeBuilder,
         "_package_zip",
-        lambda self, zip_path, detection_result: (package_calls.append(zip_path), _fake_package_zip(zip_path, detection_result)),
+        lambda self, zip_path, detection_result: (
+            package_calls.append(zip_path),
+            _fake_package_zip(zip_path, detection_result),
+        ),
     )
 
     builder = CodeBuilder(tmp_path)
@@ -63,7 +67,9 @@ def test_code_builder_skips_rebuild_when_only_mtime_changes(tmp_path: Path, monk
 
 def test_code_builder_rebuilds_when_file_content_changes(tmp_path: Path, monkeypatch):
     (tmp_path / "agent.py").write_text("print('ok')\n", encoding="utf-8")
-    (tmp_path / "agentengine.yaml").write_text("name: demo-agent\nframework: langgraph\n", encoding="utf-8")
+    (tmp_path / "agentengine.yaml").write_text(
+        "name: demo-agent\nframework: langgraph\n", encoding="utf-8"
+    )
 
     package_calls = []
 
@@ -72,7 +78,10 @@ def test_code_builder_rebuilds_when_file_content_changes(tmp_path: Path, monkeyp
     monkeypatch.setattr(
         CodeBuilder,
         "_package_zip",
-        lambda self, zip_path, detection_result: (package_calls.append(zip_path), _fake_package_zip(zip_path, detection_result)),
+        lambda self, zip_path, detection_result: (
+            package_calls.append(zip_path),
+            _fake_package_zip(zip_path, detection_result),
+        ),
     )
 
     builder = CodeBuilder(tmp_path)
@@ -90,7 +99,9 @@ def test_code_builder_rebuilds_when_file_content_changes(tmp_path: Path, monkeyp
 
 def test_code_builder_rebuilds_when_ksadk_source_changes(tmp_path: Path, monkeypatch):
     (tmp_path / "agent.py").write_text("print('ok')\n", encoding="utf-8")
-    (tmp_path / "agentengine.yaml").write_text("name: demo-agent\nframework: langgraph\n", encoding="utf-8")
+    (tmp_path / "agentengine.yaml").write_text(
+        "name: demo-agent\nframework: langgraph\n", encoding="utf-8"
+    )
 
     fake_ksadk_root = tmp_path.parent / f"{tmp_path.name}_fake_ksadk" / "ksadk"
     (fake_ksadk_root / "configs").mkdir(parents=True, exist_ok=True)
@@ -105,7 +116,10 @@ def test_code_builder_rebuilds_when_ksadk_source_changes(tmp_path: Path, monkeyp
     monkeypatch.setattr(
         CodeBuilder,
         "_package_zip",
-        lambda self, zip_path, detection_result: (package_calls.append(zip_path), _fake_package_zip(zip_path, detection_result)),
+        lambda self, zip_path, detection_result: (
+            package_calls.append(zip_path),
+            _fake_package_zip(zip_path, detection_result),
+        ),
     )
     monkeypatch.setattr(ksadk, "__file__", str(fake_ksadk_root / "__init__.py"))
 
@@ -126,7 +140,9 @@ def test_code_builder_no_cache_reinstalls_dependencies_when_requirements_unchang
     monkeypatch,
 ):
     (tmp_path / "agent.py").write_text("print('ok')\n", encoding="utf-8")
-    (tmp_path / "agentengine.yaml").write_text("name: demo-agent\nframework: langgraph\n", encoding="utf-8")
+    (tmp_path / "agentengine.yaml").write_text(
+        "name: demo-agent\nframework: langgraph\n", encoding="utf-8"
+    )
     (tmp_path / "requirements.txt").write_text("httpx==0.28.1\n", encoding="utf-8")
 
     install_calls = []
@@ -144,7 +160,10 @@ def test_code_builder_no_cache_reinstalls_dependencies_when_requirements_unchang
     monkeypatch.setattr(
         CodeBuilder,
         "_package_zip",
-        lambda self, zip_path, detection_result: (package_calls.append(zip_path), _fake_package_zip(zip_path, detection_result)),
+        lambda self, zip_path, detection_result: (
+            package_calls.append(zip_path),
+            _fake_package_zip(zip_path, detection_result),
+        ),
     )
 
     builder = CodeBuilder(tmp_path, config={"no_cache": True})
@@ -162,7 +181,9 @@ def test_code_builder_no_cache_reinstalls_dependencies_when_requirements_change(
     monkeypatch,
 ):
     (tmp_path / "agent.py").write_text("print('ok')\n", encoding="utf-8")
-    (tmp_path / "agentengine.yaml").write_text("name: demo-agent\nframework: langgraph\n", encoding="utf-8")
+    (tmp_path / "agentengine.yaml").write_text(
+        "name: demo-agent\nframework: langgraph\n", encoding="utf-8"
+    )
     requirements = tmp_path / "requirements.txt"
     requirements.write_text("httpx==0.28.1\n", encoding="utf-8")
 
@@ -199,7 +220,9 @@ def test_code_builder_repackage_reuses_dependencies_but_rebuilds_zip(
     monkeypatch,
 ):
     (tmp_path / "agent.py").write_text("print('ok')\n", encoding="utf-8")
-    (tmp_path / "agentengine.yaml").write_text("name: demo-agent\nframework: langgraph\n", encoding="utf-8")
+    (tmp_path / "agentengine.yaml").write_text(
+        "name: demo-agent\nframework: langgraph\n", encoding="utf-8"
+    )
     (tmp_path / "requirements.txt").write_text("httpx==0.28.1\n", encoding="utf-8")
 
     install_calls = []
@@ -217,7 +240,10 @@ def test_code_builder_repackage_reuses_dependencies_but_rebuilds_zip(
     monkeypatch.setattr(
         CodeBuilder,
         "_package_zip",
-        lambda self, zip_path, detection_result: (package_calls.append(zip_path), _fake_package_zip(zip_path, detection_result)),
+        lambda self, zip_path, detection_result: (
+            package_calls.append(zip_path),
+            _fake_package_zip(zip_path, detection_result),
+        ),
     )
 
     initial = CodeBuilder(tmp_path).build()
@@ -288,7 +314,9 @@ def test_code_builder_reports_rebuild_reason_for_runtime_source_changes(
     capsys,
 ):
     (tmp_path / "agent.py").write_text("print('ok')\n", encoding="utf-8")
-    (tmp_path / "agentengine.yaml").write_text("name: demo-agent\nframework: langgraph\n", encoding="utf-8")
+    (tmp_path / "agentengine.yaml").write_text(
+        "name: demo-agent\nframework: langgraph\n", encoding="utf-8"
+    )
 
     fake_ksadk_root = tmp_path.parent / f"{tmp_path.name}_fake_ksadk_reason" / "ksadk"
     (fake_ksadk_root / "configs").mkdir(parents=True, exist_ok=True)
@@ -298,7 +326,11 @@ def test_code_builder_reports_rebuild_reason_for_runtime_source_changes(
 
     monkeypatch.setattr("ksadk.detection.FrameworkDetector", _FakeFrameworkDetector)
     monkeypatch.setattr(CodeBuilder, "_install_dependencies", lambda self, _req: True)
-    monkeypatch.setattr(CodeBuilder, "_package_zip", lambda self, zip_path, detection_result: _fake_package_zip(zip_path, detection_result))
+    monkeypatch.setattr(
+        CodeBuilder,
+        "_package_zip",
+        lambda self, zip_path, detection_result: _fake_package_zip(zip_path, detection_result),
+    )
     monkeypatch.setattr(ksadk, "__file__", str(fake_ksadk_root / "__init__.py"))
 
     first = CodeBuilder(tmp_path).build()

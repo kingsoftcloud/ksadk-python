@@ -158,7 +158,9 @@ def test_replace_platform_binaries_respects_explicit_pip_index(tmp_path, monkeyp
     builder.build_dir.mkdir(parents=True, exist_ok=True)
     builder.deps_dir.mkdir(parents=True, exist_ok=True)
     (builder.deps_dir / "tiktoken").mkdir(parents=True, exist_ok=True)
-    (builder.deps_dir / "tiktoken" / "_tiktoken.cpython-314-darwin.so").write_text("", encoding="utf-8")
+    (builder.deps_dir / "tiktoken" / "_tiktoken.cpython-314-darwin.so").write_text(
+        "", encoding="utf-8"
+    )
     (builder.deps_dir / "tiktoken-0.9.0.dist-info").mkdir(parents=True, exist_ok=True)
 
     calls = []
@@ -239,8 +241,7 @@ def test_install_dependencies_aggregates_repeated_download_updates(
 
     calls = []
     download_lines = [
-        f"Using cached https://mirror.example/simple/demo-{index}.whl\n"
-        for index in range(1, 13)
+        f"Using cached https://mirror.example/simple/demo-{index}.whl\n" for index in range(1, 13)
     ]
 
     def fake_popen(cmd, **kwargs):
@@ -277,10 +278,7 @@ def test_install_dependencies_advances_download_progress_with_wheel_activity(
     requirements_path.write_text("demo==1.0\n", encoding="utf-8")
 
     calls = []
-    download_lines = [
-        f"Downloading demo-{index}.0-py3-none-any.whl\n"
-        for index in range(1, 26)
-    ]
+    download_lines = [f"Downloading demo-{index}.0-py3-none-any.whl\n" for index in range(1, 26)]
 
     def fake_popen(cmd, **kwargs):
         return _FakePopen(
@@ -324,8 +322,7 @@ def test_install_dependencies_does_not_pin_long_downloads_at_68_percent(
 
     calls = []
     download_lines = [
-        f"Using cached https://mirror.example/simple/demo-{index}.whl\n"
-        for index in range(1, 71)
+        f"Using cached https://mirror.example/simple/demo-{index}.whl\n" for index in range(1, 71)
     ]
 
     def fake_popen(cmd, **kwargs):
@@ -502,7 +499,9 @@ def test_package_zip_reports_milestone_progress_for_large_dependency_tree(
     builder = CodeBuilder(tmp_path)
     builder.deps_dir.mkdir(parents=True, exist_ok=True)
     (tmp_path / "agent.py").write_text("print('ok')\n", encoding="utf-8")
-    (tmp_path / "agentengine.yaml").write_text("name: demo-agent\nframework: langgraph\n", encoding="utf-8")
+    (tmp_path / "agentengine.yaml").write_text(
+        "name: demo-agent\nframework: langgraph\n", encoding="utf-8"
+    )
     for index in range(1, 1002):
         (builder.deps_dir / f"dep_{index}.py").write_text("# dep\n", encoding="utf-8")
 

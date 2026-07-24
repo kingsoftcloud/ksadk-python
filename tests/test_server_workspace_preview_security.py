@@ -1,26 +1,29 @@
 from __future__ import annotations
 
-import io
 import importlib
+import io
 import zipfile
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 appmod = importlib.import_module("ksadk.server.app")
+route_common = importlib.import_module("ksadk.server.routes.common")
 
 
 def _client_with_workspace(monkeypatch, tmp_path: Path) -> tuple[TestClient, Path]:
     session_dir = tmp_path / "session"
     workspace = session_dir / "workspace"
     workspace.mkdir(parents=True)
-    monkeypatch.setattr(appmod, "resolve_local_session_dir", lambda: session_dir)
+    monkeypatch.setattr(route_common, "resolve_local_session_dir", lambda: session_dir)
     return TestClient(appmod.app), workspace
 
 
 def test_workspace_html_route_applies_sandbox_csp(monkeypatch, tmp_path: Path):
     client, workspace = _client_with_workspace(monkeypatch, tmp_path)
-    (workspace / "index.html").write_text("<html><head></head><body>ok</body></html>", encoding="utf-8")
+    (workspace / "index.html").write_text(
+        "<html><head></head><body>ok</body></html>", encoding="utf-8"
+    )
 
     response = client.get("/agentengine/api/v1/ws/agent-1/index.html")
 

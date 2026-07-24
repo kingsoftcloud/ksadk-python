@@ -149,7 +149,9 @@ def test_large_upload_uses_resumable_multipart_task(tmp_path, monkeypatch):
     assert uploader._upload_via_host(artifact, "agents/demo/code.zip", "ks3.example.com") is True
     assert captured["task"]["src_file"] == str(artifact)
     assert captured["task"]["resumable"] is True
-    assert captured["task"]["resumable_filename"].endswith(".agentengine/ks3_resume/agents_demo_code.zip.ks3resume")
+    assert captured["task"]["resumable_filename"].endswith(
+        ".agentengine/ks3_resume/agents_demo_code.zip.ks3resume"
+    )
 
 
 def test_ks3_resumable_upload_skips_already_uploaded_parts(tmp_path, monkeypatch):
@@ -205,7 +207,9 @@ def test_ks3_resumable_upload_skips_already_uploaded_parts(tmp_path, monkeypatch
             etag="etag",
         )
 
-    monkeypatch.setattr(MultiPartUpload, "upload_part_from_file", _fake_upload_part_from_file, raising=False)
+    monkeypatch.setattr(
+        MultiPartUpload, "upload_part_from_file", _fake_upload_part_from_file, raising=False
+    )
     monkeypatch.setattr(MultiPartUpload, "complete_upload", _fake_complete_upload, raising=False)
 
     task = UploadTask(

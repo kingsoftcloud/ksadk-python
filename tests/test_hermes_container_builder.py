@@ -13,7 +13,9 @@ def test_container_builder_preserves_hermes_template_dockerfile(tmp_path: Path):
     (project / "runtime").mkdir()
     (project / "runtime" / "app.py").write_text("app = object()\n", encoding="utf-8")
     (project / "entrypoint.sh").write_text("#!/usr/bin/env bash\nexec true\n", encoding="utf-8")
-    (project / "Dockerfile").write_text("FROM python:3.12-slim\nCMD [\"/app/entrypoint.sh\"]\n", encoding="utf-8")
+    (project / "Dockerfile").write_text(
+        'FROM python:3.12-slim\nCMD ["/app/entrypoint.sh"]\n', encoding="utf-8"
+    )
     (project / "agentengine.yaml").write_text(
         "name: demo_hermes\nframework: hermes\nartifact_type: Container\n",
         encoding="utf-8",
@@ -26,7 +28,9 @@ def test_container_builder_preserves_hermes_template_dockerfile(tmp_path: Path):
     package = ContainerBuilder(project)._package(detection)
 
     build_dir = Path(package.build_dir)
-    assert (build_dir / "Dockerfile").read_text(encoding="utf-8") == "FROM python:3.12-slim\nCMD [\"/app/entrypoint.sh\"]\n"
+    assert (build_dir / "Dockerfile").read_text(
+        encoding="utf-8"
+    ) == 'FROM python:3.12-slim\nCMD ["/app/entrypoint.sh"]\n'
     assert (build_dir / "entrypoint.sh").exists()
     assert not (build_dir / "entrypoint.py").exists()
 
@@ -82,10 +86,14 @@ def test_container_builder_packages_project_custom_ui_dist_without_node_modules(
     (package_dir / "agent.py").write_text("root_agent = object()\n", encoding="utf-8")
     custom_dist = project / "research-ui" / "dist" / "assets"
     custom_dist.mkdir(parents=True)
-    (project / "research-ui" / "dist" / "index.html").write_text("<title>Custom UI</title>", encoding="utf-8")
+    (project / "research-ui" / "dist" / "index.html").write_text(
+        "<title>Custom UI</title>", encoding="utf-8"
+    )
     (custom_dist / "index.js").write_text("console.log('custom ui')\n", encoding="utf-8")
     (project / "research-ui" / "node_modules").mkdir(parents=True)
-    (project / "research-ui" / "node_modules" / "ignored.js").write_text("ignored\n", encoding="utf-8")
+    (project / "research-ui" / "node_modules" / "ignored.js").write_text(
+        "ignored\n", encoding="utf-8"
+    )
 
     detection = DetectionResult(
         type=FrameworkType.LANGGRAPH,
@@ -102,7 +110,9 @@ def test_container_builder_packages_project_custom_ui_dist_without_node_modules(
     assert (build_dir / "research-ui" / "dist" / "index.html").exists()
     assert (build_dir / "research-ui" / "dist" / "assets" / "index.js").exists()
     assert not (build_dir / "research-ui" / "node_modules" / "ignored.js").exists()
-    assert 'from ksadk.server import app, set_runner' in (build_dir / "entrypoint.py").read_text(encoding="utf-8")
+    assert "from ksadk.server import app, set_runner" in (build_dir / "entrypoint.py").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_container_builder_excludes_real_dotenv_files_but_keeps_example(tmp_path: Path):

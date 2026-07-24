@@ -4,8 +4,6 @@ import base64
 import io
 import zipfile
 
-import pytest
-
 from ksadk.conversations.normalize import normalize_parts_content
 from ksadk.server.api_models import InlineData, Part
 
@@ -22,7 +20,11 @@ def _inline_part(*, name: str, mime_type: str, raw: bytes) -> Part:
 
 def test_normalize_parts_content_returns_attachment_results_for_inline_text_file():
     payload = normalize_parts_content(
-        [_inline_part(name="resume.txt", mime_type="text/plain", raw="张三\n8年经验".encode("utf-8"))]
+        [
+            _inline_part(
+                name="resume.txt", mime_type="text/plain", raw="张三\n8年经验".encode("utf-8")
+            )
+        ]
     )
 
     assert payload["attachments"][0]["display_name"] == "resume.txt"
@@ -92,7 +94,11 @@ def test_normalize_parts_content_safely_enumerates_zip_and_blocks_nested_archive
         archive.writestr("../escape.txt", "blocked")
 
     payload = normalize_parts_content(
-        [_inline_part(name="bundle.zip", mime_type="application/zip", raw=archive_stream.getvalue())]
+        [
+            _inline_part(
+                name="bundle.zip", mime_type="application/zip", raw=archive_stream.getvalue()
+            )
+        ]
     )
 
     result = payload["attachment_results"][0]

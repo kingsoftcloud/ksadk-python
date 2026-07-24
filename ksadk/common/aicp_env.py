@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import socket
 
-
 DEFAULT_AICP_REGION = "cn-beijing-6"
 DEFAULT_AICP_ENDPOINT = "aicp.api.ksyun.com"
 INTERNAL_AICP_ENDPOINT = "aicp.internal.api.ksyun.com"

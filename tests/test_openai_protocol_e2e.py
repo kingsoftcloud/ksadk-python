@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import base64
 import asyncio
+import base64
 import importlib
 import json
 import os
-import socket
 import shutil
+import socket
 import subprocess
 import tempfile
 import threading
@@ -91,12 +91,14 @@ def _find_chromium_executable() -> str | None:
     for cache_root in cache_roots:
         candidates.extend(
             cache_root.glob(
-                "chromium-*/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
+                "chromium-*/chrome-mac-arm64/Google Chrome for Testing.app/"
+                "Contents/MacOS/Google Chrome for Testing"
             )
         )
         candidates.extend(
             cache_root.glob(
-                "chromium-*/chrome-mac/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
+                "chromium-*/chrome-mac/Google Chrome for Testing.app/"
+                "Contents/MacOS/Google Chrome for Testing"
             )
         )
         candidates.extend(cache_root.glob("chromium-*/chrome-linux/chrome"))
@@ -224,8 +226,7 @@ class _CdpBrowser:
         )
         page = _CdpPage(self, attached["sessionId"])
         await page.enable()
-        await page.add_script_to_evaluate_on_new_document(
-            """
+        await page.add_script_to_evaluate_on_new_document("""
             (() => {
               const originalFetch = window.fetch.bind(window);
               window.__ksadkE2E = { runAgentBodies: [] };
@@ -242,8 +243,7 @@ class _CdpBrowser:
                 return originalFetch(...args);
               };
             })();
-            """
-        )
+            """)
         await page.navigate(url)
         return page
 
@@ -377,7 +377,9 @@ async def test_real_http_responses_image_and_file_reach_runner_canonical_fields(
 @pytest.mark.asyncio
 async def test_real_http_responses_approval_resume_executes_builtin_tool(real_http_runtime):
     base_url, runner, service = real_http_runtime
-    await service.create_session(agent_id="demo-agent", user_id="user", session_id="sess-e2e-approval")
+    await service.create_session(
+        agent_id="demo-agent", user_id="user", session_id="sess-e2e-approval"
+    )
     await service.append_event(
         "sess-e2e-approval",
         SessionEvent(
@@ -639,17 +641,14 @@ async def test_real_browser_hosted_ui_file_upload_sends_responses_input_to_runne
 
     async with _CdpBrowser(chromium) as browser:
         page = await browser.new_page(f"{base_url}/chat")
-        await page.wait_for(
-            """
+        await page.wait_for("""
             Boolean(
               document.querySelector('textarea') &&
               document.querySelector('input[type="file"]') &&
               document.querySelector('button[type="submit"]')
             )
-            """
-        )
-        await page.evaluate(
-            """
+            """)
+        await page.evaluate("""
             (async () => {
               const fileInput = document.querySelector('input[type="file"]');
               const textarea = document.querySelector('textarea');
@@ -677,8 +676,7 @@ async def test_real_browser_hosted_ui_file_upload_sends_responses_input_to_runne
               textarea.form.requestSubmit();
               return true;
             })()
-            """
-        )
+            """)
 
         deadline = time.time() + 10
         while time.time() < deadline and not runner.calls:
@@ -719,17 +717,14 @@ async def test_real_browser_hosted_ui_image_upload_sends_input_image_to_runner(
 
     async with _CdpBrowser(chromium) as browser:
         page = await browser.new_page(f"{base_url}/chat")
-        await page.wait_for(
-            """
+        await page.wait_for("""
             Boolean(
               document.querySelector('textarea') &&
               document.querySelector('input[type="file"]') &&
               document.querySelector('button[type="submit"]')
             )
-            """
-        )
-        await page.evaluate(
-            """
+            """)
+        await page.evaluate("""
             (async () => {
               const fileInput = document.querySelector('input[type="file"]');
               const textarea = document.querySelector('textarea');
@@ -757,8 +752,7 @@ async def test_real_browser_hosted_ui_image_upload_sends_input_image_to_runner(
               textarea.form.requestSubmit();
               return true;
             })()
-            """
-        )
+            """)
 
         deadline = time.time() + 10
         while time.time() < deadline and not runner.calls:
@@ -778,9 +772,7 @@ async def test_real_browser_hosted_ui_image_upload_sends_input_image_to_runner(
     assert image_part["type"] == "input_image"
     assert image_part["image_url"].startswith("data:image/png;base64,")
     assert "UploadFile" not in [
-        body.get("Action")
-        for body in run_agent_bodies
-        if isinstance(body, dict)
+        body.get("Action") for body in run_agent_bodies if isinstance(body, dict)
     ]
 
     runner_payload = runner.calls[-1]

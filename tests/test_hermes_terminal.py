@@ -34,7 +34,10 @@ def test_build_terminal_ws_url_uses_terminal_path_and_ws_scheme():
         build_terminal_ws_url("https://agent.example.com/runtime/")
         == "wss://agent.example.com/runtime/_ksadk/terminal/ws"
     )
-    assert build_terminal_ws_url("http://agent.example.com") == "ws://agent.example.com/_ksadk/terminal/ws"
+    assert (
+        build_terminal_ws_url("http://agent.example.com")
+        == "ws://agent.example.com/_ksadk/terminal/ws"
+    )
 
 
 def test_build_start_frame_encodes_protocol_contract():
@@ -64,7 +67,9 @@ def test_build_start_frame_supports_connect_mode():
 
 
 def test_build_start_frame_supports_workspace_cwd():
-    payload = json.loads(build_start_frame(mode="tui", argv=[], cols=120, rows=40, cwd="demo-workspace"))
+    payload = json.loads(
+        build_start_frame(mode="tui", argv=[], cols=120, rows=40, cwd="demo-workspace")
+    )
 
     assert payload["mode"] == "tui"
     assert payload["cwd"] == "demo-workspace"
@@ -176,7 +181,9 @@ def test_validate_terminal_exec_argv_defaults_to_common_commands(monkeypatch):
         "--short",
     ]
     with pytest.raises(ValueError):
-        hermes_terminal.validate_terminal_exec_argv(["openclaw", "config", "set", "memory.provider", "hindsight"])
+        hermes_terminal.validate_terminal_exec_argv(
+            ["openclaw", "config", "set", "memory.provider", "hindsight"]
+        )
 
 
 def test_validate_terminal_exec_argv_rejection_mentions_allowlist_env(monkeypatch):
@@ -344,7 +351,9 @@ class _FakeWindowsStdin:
 
 @pytest.mark.asyncio
 async def test_recv_loop_writes_binary_output_and_returns_exit_code():
-    ws = _FakeReceiveWebSocket([b"hello", json.dumps({"type": "ready"}), json.dumps({"type": "exit", "code": 7})])
+    ws = _FakeReceiveWebSocket(
+        [b"hello", json.dumps({"type": "ready"}), json.dumps({"type": "exit", "code": 7})]
+    )
     stdout = io.BytesIO()
 
     exit_code = await _recv_loop(ws, stdout)
@@ -468,7 +477,9 @@ async def test_hermes_terminal_session_uses_windows_raw_terminal_on_windows(monk
     monkeypatch.setattr("ksadk.hermes_terminal._connect_websocket", _fake_connect)
     monkeypatch.setattr(hermes_terminal.sys, "platform", "win32")
     monkeypatch.setattr(hermes_terminal, "_windows_raw_terminal", _fake_windows_raw_terminal)
-    monkeypatch.setattr(hermes_terminal, "_read_stdin_chunk", lambda _fd: asyncio.sleep(0, result=b""))
+    monkeypatch.setattr(
+        hermes_terminal, "_read_stdin_chunk", lambda _fd: asyncio.sleep(0, result=b"")
+    )
 
     exit_code = await run_hermes_terminal_session(
         endpoint="https://agent.example.com",

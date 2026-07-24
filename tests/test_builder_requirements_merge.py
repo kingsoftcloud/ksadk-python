@@ -107,6 +107,21 @@ def test_code_builder_omits_bundled_ksadk_package_from_runtime_requirements(tmp_
     assert "requests-aws4auth>=1.2.0" in deps
 
 
+def test_code_builder_preserves_agui_extra_dependencies_for_bundled_ksadk(tmp_path):
+    (tmp_path / "requirements.txt").write_text(
+        "ksadk[langgraph,skills,agui]==0.7.0\n",
+        encoding="utf-8",
+    )
+    builder = CodeBuilder(tmp_path)
+
+    deps = builder._build_requirements_list(_detection_result("langgraph"))
+
+    assert all(not dep.startswith("ksadk") for dep in deps)
+    assert "ag-ui-protocol==0.1.19" in deps
+    assert "ag-ui-langgraph[fastapi]==0.0.42" in deps
+    assert "copilotkit==0.1.94" in deps
+
+
 def test_container_builder_omits_bundled_ksadk_package_from_runtime_requirements(tmp_path):
     (tmp_path / "requirements.txt").write_text(
         "fastapi==0.121.2\nksadk==0.4.0\n",
@@ -124,6 +139,24 @@ def test_container_builder_omits_bundled_ksadk_package_from_runtime_requirements
     assert all(not dep.startswith("ksadk") for dep in deps)
     assert "a2a-sdk>=0.3.22" in deps
     assert "requests-aws4auth>=1.2.0" in deps
+
+
+def test_container_builder_preserves_agui_extra_dependencies_for_bundled_ksadk(tmp_path):
+    (tmp_path / "requirements.txt").write_text(
+        "ksadk[langgraph,skills,agui]==0.7.0\n",
+        encoding="utf-8",
+    )
+    builder = ContainerBuilder(tmp_path)
+
+    deps = builder._generate_requirements(
+        _detection_result("langgraph"),
+        tmp_path,
+    ).splitlines()
+
+    assert all(not dep.startswith("ksadk") for dep in deps)
+    assert "ag-ui-protocol==0.1.19" in deps
+    assert "ag-ui-langgraph[fastapi]==0.0.42" in deps
+    assert "copilotkit==0.1.94" in deps
 
 
 def test_code_builder_bundles_attachment_runtime_requirements_without_optional_backends(tmp_path):
@@ -162,7 +195,9 @@ def test_code_builder_includes_mcp_runtime_when_project_uses_langchain_mcp_adapt
 
 
 def test_code_builder_includes_mcp_runtime_when_env_declares_mcp_servers(tmp_path):
-    (tmp_path / ".env").write_text('KSADK_MCP_SERVERS=[{"name":"demo","url":"http://mcp"}]\n', encoding="utf-8")
+    (tmp_path / ".env").write_text(
+        'KSADK_MCP_SERVERS=[{"name":"demo","url":"http://mcp"}]\n', encoding="utf-8"
+    )
     builder = CodeBuilder(tmp_path)
 
     deps = builder._build_requirements_list(_detection_result("langgraph"))
@@ -271,9 +306,9 @@ def test_code_builder_uses_validated_langgraph_ecosystem_dependency_window(tmp_p
     deps = builder._build_requirements_list(_detection_result("deepagents"))
 
     assert "fastapi>=0.100.0,<1.0.0" in deps
-    assert "langchain>=1.3.0,<2.0.0" in deps
-    assert "langchain-core>=1.4.0,<2.0.0" in deps
-    assert "langchain-openai>=1.2.0,<2.0.0" in deps
+    assert "langchain>=1.3.14,<2.0.0" in deps
+    assert "langchain-core>=1.5.0,<2.0.0" in deps
+    assert "langchain-openai>=1.4.0,<2.0.0" in deps
     assert "langgraph>=1.2.0,<1.3.0" in deps
     assert "deepagents>=0.6.2,<1.0.0" in deps
     assert "langgraph>=0.1.0" not in deps
@@ -285,11 +320,14 @@ def test_code_builder_uses_validated_adk_dependency_window(tmp_path):
     deps = builder._build_requirements_list(_detection_result("adk"))
 
     assert "fastapi>=0.100.0,<1.0.0" in deps
-    assert "google-adk>=1.34.0,<2.0.0" in deps
+    # goal-00: ADK 窗口放宽为 1.34.x 至 <3.0(支持 1.x 与 2.x)
+    assert "google-adk>=1.34.0,<3.0.0" in deps
     assert "google-adk>=1.0.0" not in deps
 
 
-def test_container_builder_bundles_attachment_runtime_requirements_without_optional_backends(tmp_path):
+def test_container_builder_bundles_attachment_runtime_requirements_without_optional_backends(
+    tmp_path,
+):
     builder = ContainerBuilder(tmp_path)
 
     deps = builder._generate_requirements(
@@ -316,7 +354,6 @@ def test_container_builder_includes_attachment_ocr_runtime_when_enabled(tmp_path
     assert "rapidocr-onnxruntime>=1.2.0" in deps
 
 
-
 def test_container_builder_uses_same_framework_dependency_windows(tmp_path):
     builder = ContainerBuilder(tmp_path)
 
@@ -326,9 +363,9 @@ def test_container_builder_uses_same_framework_dependency_windows(tmp_path):
     ).splitlines()
 
     assert "fastapi>=0.100.0,<1.0.0" in deps
-    assert "langchain>=1.3.0,<2.0.0" in deps
-    assert "langchain-core>=1.4.0,<2.0.0" in deps
-    assert "langchain-openai>=1.2.0,<2.0.0" in deps
+    assert "langchain>=1.3.14,<2.0.0" in deps
+    assert "langchain-core>=1.5.0,<2.0.0" in deps
+    assert "langchain-openai>=1.4.0,<2.0.0" in deps
     assert "langgraph>=1.2.0,<1.3.0" in deps
     assert "deepagents>=0.6.2,<1.0.0" in deps
 
@@ -339,9 +376,9 @@ def test_k8s_deployer_uses_same_framework_dependency_windows():
     deps = deployer._generate_requirements(_detection_result("deepagents")).splitlines()
 
     assert "fastapi>=0.100.0,<1.0.0" in deps
-    assert "langchain>=1.3.0,<2.0.0" in deps
-    assert "langchain-core>=1.4.0,<2.0.0" in deps
-    assert "langchain-openai>=1.2.0,<2.0.0" in deps
+    assert "langchain>=1.3.14,<2.0.0" in deps
+    assert "langchain-core>=1.5.0,<2.0.0" in deps
+    assert "langchain-openai>=1.4.0,<2.0.0" in deps
     assert "langgraph>=1.2.0,<1.3.0" in deps
     assert "deepagents>=0.6.2,<1.0.0" in deps
     assert "boto3==1.40.61" not in deps

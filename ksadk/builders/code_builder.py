@@ -7,17 +7,17 @@ Code Builder - zip 打包模式构建
 3. 打包 zip (用户代码 + 依赖 + ksadk 源码 + entrypoint)
 """
 
+import ast
+import hashlib
+import json
 import os
-import sys
+import re
 import shutil
 import subprocess
+import sys
 import threading
 import time
 import zipfile
-import re
-import json
-import hashlib
-import ast
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Optional, Set
@@ -25,6 +25,7 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 import click
+from packaging.requirements import InvalidRequirement, Requirement
 
 from ksadk.builders.base import BaseBuilder, BuildResult
 from ksadk.builders.framework_requirements import (
@@ -85,28 +86,28 @@ class CodeBuilder(BaseBuilder):
     }
     IGNORED_FILE_NAMES = {".DS_Store"}
     KSADK_ALLOWED_SUFFIXES = {
-        '.py',
-        '.yaml',
-        '.yml',
-        '.json',
-        '.jinja2',
-        '.j2',
-        '.txt',
-        '.md',
-        '.html',
-        '.js',
-        '.css',
-        '.svg',
-        '.ico',
-        '.png',
-        '.jpg',
-        '.jpeg',
-        '.gif',
-        '.webp',
-        '.woff',
-        '.woff2',
-        '.ttf',
-        '.map',
+        ".py",
+        ".yaml",
+        ".yml",
+        ".json",
+        ".jinja2",
+        ".j2",
+        ".txt",
+        ".md",
+        ".html",
+        ".js",
+        ".css",
+        ".svg",
+        ".ico",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".webp",
+        ".woff",
+        ".woff2",
+        ".ttf",
+        ".map",
     }
     BUNDLED_KSADK_CORE_RUNTIME_REQUIREMENTS = (
         "a2a-sdk>=0.3.22",
@@ -124,15 +125,16 @@ class CodeBuilder(BaseBuilder):
         "mcp>=1.1.0",
         "langchain-mcp-adapters>=0.0.1",
     )
-    BUNDLED_KSADK_POSTGRES_SESSION_REQUIREMENTS = (
-        "asyncpg>=0.30.0,<1.0.0",
-    )
+    BUNDLED_KSADK_POSTGRES_SESSION_REQUIREMENTS = ("asyncpg>=0.30.0,<1.0.0",)
     BUNDLED_KSADK_ATTACHMENT_RUNTIME_REQUIREMENTS = (
         "pypdf>=6.0.0",
         "beautifulsoup4>=4.12.0",
     )
-    BUNDLED_KSADK_ATTACHMENT_OCR_RUNTIME_REQUIREMENTS = (
-        "rapidocr-onnxruntime>=1.2.0",
+    BUNDLED_KSADK_ATTACHMENT_OCR_RUNTIME_REQUIREMENTS = ("rapidocr-onnxruntime>=1.2.0",)
+    BUNDLED_AGUI_RUNTIME_REQUIREMENTS = (
+        "ag-ui-protocol==0.1.19",
+        "ag-ui-langgraph[fastapi]==0.0.42",
+        "copilotkit==0.1.94",
     )
     BUNDLED_KSADK_RUNTIME_REQUIREMENTS = (
         *BUNDLED_KSADK_CORE_RUNTIME_REQUIREMENTS,
@@ -149,8 +151,8 @@ class CodeBuilder(BaseBuilder):
     PIP_INSTALL_TIMEOUT_SECONDS = 45 * 60
     CONTAINER_SUGGESTION_RAW_THRESHOLD_BYTES = 500 * 1024 * 1024
     CONTAINER_SUGGESTION_ZIP_THRESHOLD_BYTES = 300 * 1024 * 1024
-    
-    def __init__(self, project_dir: Path, config: dict = None):
+
+    def __init__(self, project_dir: Path, config: Optional[dict] = None):
         super().__init__(project_dir, config)
         self.build_dir = self.project_dir / ".agentengine" / "code_build"
         self.deps_dir = self.build_dir / "linux_deps"
@@ -168,33 +170,30 @@ class CodeBuilder(BaseBuilder):
         self._package_progress_logged_milestone_by_label: dict[str, int] = {}
         self._pip_index_candidates_cache: Optional[list[Optional[str]]] = None
         self._pip_index_selection_summary = ""
-    
+
     def build(self) -> BuildResult:
         """执行 Code 模式构建"""
         from ksadk.detection import FrameworkDetector
-        
+
         self._load_dotenv()
         config = self._load_config()
-        
+
         # 检测框架
         detector = FrameworkDetector(str(self.project_dir))
         detection_result = detector.detect()
-        
+
         if detection_result.type.value == "unknown":
-            return BuildResult(
-                success=False,
-                error_message="未检测到支持的框架"
-            )
-        
+            return BuildResult(success=False, error_message="未检测到支持的框架")
+
         click.echo(f"📦 框架: {click.style(detection_result.type.value, fg='green')}")
         click.echo(f"🤖 Agent: {click.style(detection_result.name, fg='blue')}")
-        
-        agent_name = config.get('name', self.project_dir.name).replace('-', '_').replace('.', '_')
-        
+
+        agent_name = config.get("name", self.project_dir.name).replace("-", "_").replace(".", "_")
+
         # 创建构建目录
         self.build_dir.mkdir(parents=True, exist_ok=True)
         zip_path = self.build_dir / f"{agent_name}.zip"
-        
+
         # 检查是否需要重新构建
         no_cache = self.config.get("no_cache", False) if self.config else False
         repackage = self.config.get("repackage", False) if self.config else False
@@ -207,31 +206,33 @@ class CodeBuilder(BaseBuilder):
         if zip_path.exists() and not rebuild_needed:
             incompatibles = self._scan_incompatible_binaries_in_zip(zip_path)
             if incompatibles:
-                click.secho("\n⚠️ 检测到缓存构建包含非 Linux 兼容关键二进制，自动重建...", fg='yellow')
+                click.secho(
+                    "\n⚠️ 检测到缓存构建包含非 Linux 兼容关键二进制，自动重建...", fg="yellow"
+                )
                 for item in incompatibles[:5]:
                     click.echo(f"   - {item}")
                 rebuild_reason = "缓存 zip 存在 Linux 兼容性问题"
             else:
                 self._save_input_fingerprint(zip_path, detection_result)
                 zip_size = zip_path.stat().st_size / (1024 * 1024)
-                click.secho(f"\n✅ 使用已有构建: {zip_path.name} ({zip_size:.2f} MB)", fg='green')
-                click.echo("   (如需只重新打包当前代码/runtime，请使用 --repackage；如需重装依赖，请使用 --no-cache)")
+                click.secho(f"\n✅ 使用已有构建: {zip_path.name} ({zip_size:.2f} MB)", fg="green")
+                click.echo(
+                    "   (如需只重新打包当前代码/runtime，请使用 --repackage；"
+                    "如需重装依赖，请使用 --no-cache)"
+                )
                 return BuildResult(
                     success=True,
                     artifact_path=zip_path,
                     artifact_size=zip_path.stat().st_size,
-                    metadata={
-                        "agent_name": agent_name,
-                        "framework": detection_result.type.value
-                    }
+                    metadata={"agent_name": agent_name, "framework": detection_result.type.value},
                 )
         elif rebuild_reason:
             click.echo(f"   重新打包原因: {rebuild_reason}")
-        
+
         # Step 1: 准备依赖
         click.echo("\n📋 Step 1/3: 准备依赖清单...")
         requirements_path = self._prepare_requirements(detection_result)
-        
+
         # Step 2: 安装依赖
         click.echo("\n📦 Step 2/3: 安装依赖...")
         reuse_dependencies, reuse_reason = self._can_reuse_dependency_cache(
@@ -241,7 +242,8 @@ class CodeBuilder(BaseBuilder):
         if reuse_dependencies:
             stats = self._current_dependency_stats()
             click.secho(
-                f"   ✓ 复用 Linux 依赖缓存: {stats['file_count']} 个文件, {stats['size_mb']:.1f} MB",
+                f"   ✓ 复用 Linux 依赖缓存: {stats['file_count']} 个文件, "
+                f"{stats['size_mb']:.1f} MB",
                 fg="green",
             )
             click.echo(f"   {reuse_reason}")
@@ -250,25 +252,22 @@ class CodeBuilder(BaseBuilder):
                 click.echo(f"   {reuse_reason}")
             self._clear_dependency_cache()
             self.deps_dir.mkdir(parents=True, exist_ok=True)
-            
+
             if not self._install_dependencies(requirements_path):
-                return BuildResult(
-                    success=False,
-                    error_message="依赖安装失败"
-                )
+                return BuildResult(success=False, error_message="依赖安装失败")
             self._save_dependency_fingerprint(requirements_path)
-        
+
         # Step 3: 打包 zip
         click.echo("\n📦 Step 3/3: 打包 zip...")
         package_started_at = time.monotonic()
         self._package_zip(zip_path, detection_result)
         click.echo(f"   ✓ 打包耗时: {self._format_elapsed(package_started_at)}")
         self._save_input_fingerprint(zip_path, detection_result)
-        
+
         zip_size = zip_path.stat().st_size
         click.echo(f"   zip 文件: {zip_path}")
         click.echo(f"   大小: {zip_size / (1024 * 1024):.2f} MB")
-        
+
         return BuildResult(
             success=True,
             artifact_path=zip_path,
@@ -276,8 +275,8 @@ class CodeBuilder(BaseBuilder):
             metadata={
                 "agent_name": agent_name,
                 "framework": detection_result.type.value,
-                "deps_dir": str(self.deps_dir)
-            }
+                "deps_dir": str(self.deps_dir),
+            },
         )
 
     def _rebuild_decision(
@@ -321,26 +320,32 @@ class CodeBuilder(BaseBuilder):
         if changed:
             return "业务代码或项目文件变更"
         return "构建输入指纹变化"
-    
+
     def _need_rebuild(self, zip_path: Path, detection_result) -> bool:
         """检查是否需要重新构建。优先使用输入内容指纹，缺失时回退到 mtime。"""
         manifest = self._load_input_fingerprint(zip_path)
         if manifest:
             current_fingerprint = self._build_input_fingerprint(detection_result)
-            return manifest.get("fingerprint") != current_fingerprint["fingerprint"]
+            return bool(manifest.get("fingerprint") != current_fingerprint["fingerprint"])
         return self._need_rebuild_from_mtime(zip_path)
 
     def _need_rebuild_from_mtime(self, zip_path: Path) -> bool:
         """兼容旧缓存：当没有指纹文件时，回退到 mtime 判断。"""
         zip_mtime = zip_path.stat().st_mtime
-        
+
         for item in self.project_dir.iterdir():
-            if item.name.startswith('.') or item.name in ('__pycache__', 'node_modules', '.git', '.venv', 'venv'):
+            if item.name.startswith(".") or item.name in (
+                "__pycache__",
+                "node_modules",
+                ".git",
+                ".venv",
+                "venv",
+            ):
                 continue
             if item.is_file() and item.stat().st_mtime > zip_mtime:
                 return True
             if item.is_dir():
-                for file_path in item.rglob('*.py'):
+                for file_path in item.rglob("*.py"):
                     if file_path.stat().st_mtime > zip_mtime:
                         return True
         return False
@@ -360,7 +365,7 @@ class CodeBuilder(BaseBuilder):
                 data = json.load(f)
             if data.get("version") != self.INPUT_FINGERPRINT_VERSION:
                 return None
-            return data
+            return data if isinstance(data, dict) else None
         except Exception:
             return None
 
@@ -380,7 +385,7 @@ class CodeBuilder(BaseBuilder):
                 data = json.load(f)
             if data.get("version") != self.DEPENDENCY_FINGERPRINT_VERSION:
                 return None
-            return data
+            return data if isinstance(data, dict) else None
         except Exception:
             return None
 
@@ -429,7 +434,12 @@ class CodeBuilder(BaseBuilder):
             return True
         if self._project_env_has_configured_value("KSADK_MCP_SERVERS"):
             return True
-        if self._project_env_value("KSADK_ENABLE_MCP_TOOLS").strip().lower() in {"1", "true", "yes", "on"}:
+        if self._project_env_value("KSADK_ENABLE_MCP_TOOLS").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }:
             return True
         return self._project_imports_any({"mcp", "langchain_mcp_adapters"})
 
@@ -515,13 +525,17 @@ class CodeBuilder(BaseBuilder):
         digest = hashlib.sha256()
         requirements_text = requirements_path.read_text(encoding="utf-8")
 
-        digest.update(f"deps-fingerprint-version:{self.DEPENDENCY_FINGERPRINT_VERSION}\n".encode("utf-8"))
+        digest.update(
+            f"deps-fingerprint-version:{self.DEPENDENCY_FINGERPRINT_VERSION}\n".encode("utf-8")
+        )
         digest.update(f"builder-platform:{sys.platform}\n".encode("utf-8"))
         digest.update(
             f"builder-python:{sys.version_info.major}.{sys.version_info.minor}\n".encode("utf-8")
         )
         digest.update(f"target-python:{self.TARGET_PYTHON_VERSION}\n".encode("utf-8"))
-        digest.update(f"target-platforms:{','.join(self.TARGET_INSTALL_PLATFORMS)}\n".encode("utf-8"))
+        digest.update(
+            f"target-platforms:{','.join(self.TARGET_INSTALL_PLATFORMS)}\n".encode("utf-8")
+        )
         digest.update(requirements_text.encode("utf-8"))
 
         requirements = [line for line in requirements_text.splitlines() if line.strip()]
@@ -641,13 +655,13 @@ class CodeBuilder(BaseBuilder):
         )
 
     def _iter_bundled_source_package(self, package_name: str, package_root: Path):
-        for file_path in sorted(package_root.rglob('*')):
+        for file_path in sorted(package_root.rglob("*")):
             if not file_path.is_file():
                 continue
             relative_path = file_path.relative_to(package_root)
             if package_name == "ksadk" and self._should_skip_ksadk_relative_path(relative_path):
                 continue
-            if '__pycache__' in file_path.parts:
+            if "__pycache__" in file_path.parts:
                 continue
             suffix = file_path.suffix.lower()
             if suffix not in self.KSADK_ALLOWED_SUFFIXES:
@@ -709,26 +723,26 @@ class CodeBuilder(BaseBuilder):
             file_name.startswith(".env.")
             and file_name not in {".env.example", ".env.sample", ".env.template"}
         )
-    
+
     def _prepare_requirements(self, detection_result) -> Path:
         """准备 requirements.txt"""
         final_deps = self._build_requirements_list(detection_result)
 
         if (self.project_dir / "requirements.txt").exists():
-            click.echo(f"   发现 requirements.txt，正在合并...")
+            click.echo("   发现 requirements.txt，正在合并...")
         else:
-            click.echo(f"   自动生成依赖清单")
-        
+            click.echo("   自动生成依赖清单")
+
         # 写入构建目录
         requirements_path = self.build_dir / "requirements.txt"
         requirements_path.write_text("\n".join(final_deps))
-        
+
         click.echo(f"   共 {len(final_deps)} 个依赖包:")
         for dep in final_deps[:5]:
             click.echo(f"      • {dep}")
         if len(final_deps) > 5:
             click.echo(f"      ... 及其他 {len(final_deps) - 5} 个")
-        
+
         return requirements_path
 
     def _build_requirements_list(self, detection_result) -> List[str]:
@@ -740,14 +754,35 @@ class CodeBuilder(BaseBuilder):
         user_requirements = self.project_dir / "requirements.txt"
         if user_requirements.exists():
             user_content = user_requirements.read_text(encoding="utf-8")
+            parsed_user_requirements = parse_requirements_text(user_content)
+            final_deps = merge_requirement_lists(
+                final_deps,
+                self._bundled_ksadk_extra_requirements(parsed_user_requirements),
+            )
             user_deps = exclude_requirement_names(
-                parse_requirements_text(user_content),
+                parsed_user_requirements,
                 excluded_names={"ksadk"},
             )
             final_deps = merge_requirement_lists(final_deps, user_deps)
 
         return final_deps
-    
+
+    def _bundled_ksadk_extra_requirements(self, requirements: List[str]) -> tuple[str, ...]:
+        extras: set[str] = set()
+        for raw_requirement in requirements:
+            try:
+                parsed = Requirement(raw_requirement)
+            except InvalidRequirement:
+                continue
+            if parsed.name.lower().replace("_", "-") != "ksadk":
+                continue
+            extras.update(extra.lower() for extra in parsed.extras)
+
+        bundled: list[str] = []
+        if "agui" in extras:
+            bundled.extend(self.BUNDLED_AGUI_RUNTIME_REQUIREMENTS)
+        return tuple(bundled)
+
     def _get_base_requirements(self, detection_result) -> List[str]:
         """获取基础依赖列表"""
         deps = [
@@ -765,12 +800,12 @@ class CodeBuilder(BaseBuilder):
             "openinference-instrumentation-langchain>=0.1.0",
             "langfuse>=2.0.0",
         ]
-        
+
         framework = detection_result.type.value
         deps += requirements_for_framework(framework)
-        
+
         return deps
-    
+
     # 目标 Python 版本 (必须与容器运行时一致)
     TARGET_PYTHON_VERSION = "312"  # 容器中为 Python 3.12
 
@@ -875,9 +910,7 @@ class CodeBuilder(BaseBuilder):
     def _result_error_summary(self, result: subprocess.CompletedProcess[str] | None) -> str:
         if result is None:
             return "unknown"
-        combined = "\n".join(
-            part for part in (result.stderr or "", result.stdout or "") if part
-        )
+        combined = "\n".join(part for part in (result.stderr or "", result.stdout or "") if part)
         for line in reversed(combined.splitlines()):
             normalized = line.strip()
             if normalized:
@@ -887,9 +920,7 @@ class CodeBuilder(BaseBuilder):
     def _pip_missing_from_result(self, result: subprocess.CompletedProcess[str] | None) -> bool:
         if result is None:
             return False
-        combined = "\n".join(
-            part for part in (result.stderr or "", result.stdout or "") if part
-        )
+        combined = "\n".join(part for part in (result.stderr or "", result.stdout or "") if part)
         return "No module named pip" in combined
 
     def _bootstrap_pip_if_missing(self, result: subprocess.CompletedProcess[str] | None) -> bool:
@@ -952,7 +983,9 @@ class CodeBuilder(BaseBuilder):
         if not normalized:
             return None
 
-        force_emit = percent > self._install_progress_percent or stage != self._install_progress_stage_name
+        force_emit = (
+            percent > self._install_progress_percent or stage != self._install_progress_stage_name
+        )
         count = self._install_progress_event_counts.get(stage, 0) + 1
         self._install_progress_event_counts[stage] = count
 
@@ -960,7 +993,7 @@ class CodeBuilder(BaseBuilder):
             return self._truncate_progress_summary(normalized)
 
         if stage == "解析依赖":
-            detail = normalized[len("Collecting "):].split(" (from ", 1)[0]
+            detail = normalized[len("Collecting ") :].split(" (from ", 1)[0]
             summary = f"已解析 {count} 个依赖，最近: {detail}"
             if force_emit or count in self.INSTALL_PROGRESS_EVENT_MILESTONES or count % 10 == 0:
                 return summary
@@ -973,35 +1006,36 @@ class CodeBuilder(BaseBuilder):
 
         if stage == "下载依赖":
             if normalized.startswith("Using cached "):
-                payload = normalized[len("Using cached "):]
+                payload = normalized[len("Using cached ") :]
             elif normalized.startswith("Downloading "):
-                payload = normalized[len("Downloading "):]
+                payload = normalized[len("Downloading ") :]
             else:
                 payload = normalized
             target = self._extract_pip_artifact_name(payload)
-            summary = f"已处理 {count} 个 wheel，耗时 {self._format_elapsed(self._install_progress_started_at)}，最近: {target}"
+            elapsed = self._format_elapsed(self._install_progress_started_at)
+            summary = f"已处理 {count} 个 wheel，耗时 {elapsed}，最近: {target}"
             if force_emit or count in self.INSTALL_PROGRESS_EVENT_MILESTONES or count % 5 == 0:
                 return summary
             return None
 
         if stage == "构建 wheel":
-            detail = normalized[len("Building wheel for "):].split(" ", 1)[0]
+            detail = normalized[len("Building wheel for ") :].split(" ", 1)[0]
             if force_emit or count == 1 or count % 5 == 0:
                 return f"构建 wheel: {detail}"
             return None
 
         if stage == "安装依赖":
-            detail = normalized[len("Installing collected packages:"):].strip()
+            detail = normalized[len("Installing collected packages:") :].strip()
             return f"安装包: {self._truncate_progress_summary(detail, max_length=60)}"
 
         if stage == "复用已安装依赖":
-            detail = normalized[len("Requirement already satisfied:"):].split(" in ", 1)[0].strip()
+            detail = normalized[len("Requirement already satisfied:") :].split(" in ", 1)[0].strip()
             if force_emit or count in self.INSTALL_PROGRESS_EVENT_MILESTONES or count % 10 == 0:
                 return f"复用依赖: {detail}"
             return None
 
         if stage == "安装完成":
-            detail = normalized[len("Successfully installed "):].strip()
+            detail = normalized[len("Successfully installed ") :].strip()
             return f"最近结果: {self._truncate_progress_summary(detail, max_length=60)}"
 
         return self._truncate_progress_summary(normalized)
@@ -1094,8 +1128,7 @@ class CodeBuilder(BaseBuilder):
         timings: dict[str, Optional[float]] = {}
         with ThreadPoolExecutor(max_workers=min(4, len(urls))) as executor:
             future_to_url = {
-                executor.submit(self._probe_pip_index_latency, url): url
-                for url in urls
+                executor.submit(self._probe_pip_index_latency, url): url for url in urls
             }
             for future in as_completed(future_to_url):
                 url = future_to_url[future]
@@ -1116,7 +1149,7 @@ class CodeBuilder(BaseBuilder):
         best = ordered[0]
         best_ms = round((timings[best] or 0.0) * 1000)
         return ordered, f"测速优先 {self._short_pip_index_label(best)} ({best_ms} ms)"
-    
+
     def _install_dependencies(self, requirements_path: Path) -> bool:
         """安装依赖到 deps_dir"""
         current_python = f"{sys.version_info.major}.{sys.version_info.minor}"
@@ -1128,9 +1161,8 @@ class CodeBuilder(BaseBuilder):
             )
 
         try:
-            need_binary_replacement = (
-                sys.platform in ("darwin", "win32")
-                or (sys.platform.startswith("linux") and current_python != target_python)
+            need_binary_replacement = sys.platform in ("darwin", "win32") or (
+                sys.platform.startswith("linux") and current_python != target_python
             )
             used_target_runtime_wheels = False
             result = None
@@ -1167,16 +1199,18 @@ class CodeBuilder(BaseBuilder):
                     requirements_path,
                     target_runtime_wheels=False,
                 )
-            
+
             if result.returncode != 0:
                 self._finish_install_progress()
-                click.secho("   ✗ 安装失败", fg='red')
+                click.secho("   ✗ 安装失败", fg="red")
                 if result.stderr:
-                    error_lines = [l for l in result.stderr.split('\n') if 'ERROR' in l.upper()][:3]
+                    error_lines = [
+                        line for line in result.stderr.split("\n") if "ERROR" in line.upper()
+                    ][:3]
                     for line in error_lines:
                         click.echo(f"   {line}")
                 return False
-            
+
             # 替换非 Linux 平台二进制，或 Linux 下非目标 Python ABI 的二进制
             if need_binary_replacement and not used_target_runtime_wheels:
                 self._emit_install_progress(
@@ -1185,7 +1219,7 @@ class CodeBuilder(BaseBuilder):
                     "检测并替换平台相关二进制",
                 )
                 self._replace_platform_binaries()
-            
+
             # 二进制兼容性校验（避免把不可运行的包部署到 Linux Runtime）
             self._emit_install_progress(
                 96,
@@ -1195,7 +1229,7 @@ class CodeBuilder(BaseBuilder):
             incompatibles = self._scan_incompatible_binaries_in_deps()
             if incompatibles:
                 self._finish_install_progress()
-                click.secho("   ✗ 检测到与 Linux Runtime 不兼容的关键二进制，构建终止", fg='red')
+                click.secho("   ✗ 检测到与 Linux Runtime 不兼容的关键二进制，构建终止", fg="red")
                 for item in incompatibles[:10]:
                     click.echo(f"      - {item}")
                 if any(i.startswith("python-abi-mismatch:") for i in incompatibles):
@@ -1204,213 +1238,243 @@ class CodeBuilder(BaseBuilder):
                         f"请使用 Python {target_python} 构建，或改用 Container 模式部署"
                     )
                 if any("tiktoken" in i for i in incompatibles):
-                    click.echo("   提示: tiktoken 为 langchain-openai 必需；若替换失败可重试或检查网络/镜像")
+                    click.echo(
+                        "   提示: tiktoken 为 langchain-openai 必需；"
+                        "若替换失败可重试或检查网络/镜像"
+                    )
                 click.echo("   建议: 删除 .agentengine/*_build 后重新构建，或在 Linux 环境重新打包")
                 return False
-            
-            deps_count = sum(1 for _ in self.deps_dir.rglob('*') if _.is_file())
-            deps_size = sum(f.stat().st_size for f in self.deps_dir.rglob('*') if f.is_file()) / (1024 * 1024)
+
+            deps_count = sum(1 for _ in self.deps_dir.rglob("*") if _.is_file())
+            deps_size = sum(f.stat().st_size for f in self.deps_dir.rglob("*") if f.is_file()) / (
+                1024 * 1024
+            )
             self._emit_install_progress(
                 100,
                 "依赖安装完成",
                 f"{deps_count} 个文件, {deps_size:.1f} MB",
             )
             self._finish_install_progress()
-            
+
             return True
-            
+
         except subprocess.TimeoutExpired:
             self._finish_install_progress()
             timeout_minutes = max(1, round(self._pip_install_timeout_seconds() / 60))
-            click.secho(f"   ✗ 安装超时 ({timeout_minutes}分钟)", fg='red')
+            click.secho(f"   ✗ 安装超时 ({timeout_minutes}分钟)", fg="red")
             return False
         except Exception as e:
             self._finish_install_progress()
-            click.secho(f"   ✗ 依赖安装失败: {e}", fg='red')
+            click.secho(f"   ✗ 依赖安装失败: {e}", fg="red")
             return False
-    
+
     def _replace_platform_binaries(self) -> None:
         """替换非目标运行时平台/ABI 的 C 扩展为 Linux 目标版本。"""
         # 模块名到 pip 包名的映射
         MODULE_TO_PACKAGE = {
-            '_cffi_backend': 'cffi',
-            'yaml': 'pyyaml',
-            '_yaml': 'pyyaml',
-            'rpds': 'rpds-py',
-            'PIL': 'pillow',
-            'cv2': 'opencv-python',
-            'sklearn': 'scikit-learn',
-            '_watchdog_fsevents': 'watchdog',
-            'google': None,  # 跳过命名空间包
-            'grpc': 'grpcio',
-            '_grpc': 'grpcio',
-            'uuid_utils': 'uuid-utils',
-            'pydantic_core': 'pydantic-core',
-            '_pydantic_core': 'pydantic-core',
+            "_cffi_backend": "cffi",
+            "yaml": "pyyaml",
+            "_yaml": "pyyaml",
+            "rpds": "rpds-py",
+            "PIL": "pillow",
+            "cv2": "opencv-python",
+            "sklearn": "scikit-learn",
+            "_watchdog_fsevents": "watchdog",
+            "google": None,  # 跳过命名空间包
+            "grpc": "grpcio",
+            "_grpc": "grpcio",
+            "uuid_utils": "uuid-utils",
+            "pydantic_core": "pydantic-core",
+            "_pydantic_core": "pydantic-core",
             # tiktoken: langchain-openai 核心依赖, Rust 编译的 C 扩展
-            'tiktoken': 'tiktoken',
-            '_tiktoken': 'tiktoken',
+            "tiktoken": "tiktoken",
+            "_tiktoken": "tiktoken",
             # 其他常见原生扩展
-            'regex': 'regex',
-            '_regex': 'regex',
-            'multidict': 'multidict',
-            'yarl': 'yarl',
-            'aiohttp': 'aiohttp',
-            'frozenlist': 'frozenlist',
-            'charset_normalizer': 'charset-normalizer',
-            'msgpack': 'msgpack',
+            "regex": "regex",
+            "_regex": "regex",
+            "multidict": "multidict",
+            "yarl": "yarl",
+            "aiohttp": "aiohttp",
+            "frozenlist": "frozenlist",
+            "charset_normalizer": "charset-normalizer",
+            "msgpack": "msgpack",
             # Windows 特有
-            'win32': 'pywin32',
-            'win32com': 'pywin32',
+            "win32": "pywin32",
+            "win32com": "pywin32",
         }
-        
+
         # 找到所有二进制文件
         binary_files = []
-        if sys.platform == 'darwin':
-            binary_files = list(self.deps_dir.rglob('*.so')) + list(self.deps_dir.rglob('*.dylib'))
-        elif sys.platform == 'win32':
-            binary_files = list(self.deps_dir.rglob('*.pyd')) + list(self.deps_dir.rglob('*.dll'))
-        elif sys.platform.startswith('linux'):
-            binary_files = list(self.deps_dir.rglob('*.so'))
-        
+        if sys.platform == "darwin":
+            binary_files = list(self.deps_dir.rglob("*.so")) + list(self.deps_dir.rglob("*.dylib"))
+        elif sys.platform == "win32":
+            binary_files = list(self.deps_dir.rglob("*.pyd")) + list(self.deps_dir.rglob("*.dll"))
+        elif sys.platform.startswith("linux"):
+            binary_files = list(self.deps_dir.rglob("*.so"))
+
         if not binary_files:
             return
-        
+
         # 提取需要替换的包名
         packages_to_replace: Set[str] = set()
         for bin_file in binary_files:
             rel_path = bin_file.relative_to(self.deps_dir)
             parts = rel_path.parts
-            
+
             # 忽略 bin 目录下的 dll (通常是 runtime)
-            if 'bin' in parts:
+            if "bin" in parts:
                 continue
-                
+
             if len(parts) > 1:
                 detected_name = parts[0]
             else:
-                detected_name = bin_file.name.split('.')[0]
-            
+                detected_name = bin_file.name.split(".")[0]
+
             # 跳过特定文件夹
-            if detected_name in ('__pycache__', 'bin', 'include', 'lib', 'Scripts'):
+            if detected_name in ("__pycache__", "bin", "include", "lib", "Scripts"):
                 continue
-            
+
             if detected_name in MODULE_TO_PACKAGE:
                 pkg_name = MODULE_TO_PACKAGE[detected_name]
                 if pkg_name:
                     packages_to_replace.add(pkg_name)
             else:
                 packages_to_replace.add(detected_name)
-        
+
         if not packages_to_replace:
             return
-        
-        click.echo(f"\r   检测到 {len(binary_files)} 个二进制文件 ({sys.platform}), 替换 {len(packages_to_replace)} 个包为 Linux 版本")
-        
+
+        click.echo(
+            f"\r   检测到 {len(binary_files)} 个二进制文件 ({sys.platform}), "
+            f"替换 {len(packages_to_replace)} 个包为 Linux 版本"
+        )
+
         # 下载 Linux wheels
         wheels_dir = self.build_dir / "linux_wheels"
         if wheels_dir.exists():
             shutil.rmtree(wheels_dir)
         wheels_dir.mkdir(parents=True)
-        
+
         replaced_count = 0
         total_packages = len(packages_to_replace)
         for index, pkg_name in enumerate(sorted(packages_to_replace), start=1):
             # 提取确切的版本号以避免不兼容问题 (如 pydantic-core)
             target_version = ""
-            search_name = pkg_name.replace('-', '_').lower()
+            search_name = pkg_name.replace("-", "_").lower()
             for info_dir in self.deps_dir.glob(f"{search_name}-*.dist-info"):
-                version_str = info_dir.name[len(search_name)+1:-10]  # remove search_name + '-' and '.dist-info'
+                version_str = info_dir.name[
+                    len(search_name) + 1 : -10
+                ]  # remove search_name + '-' and '.dist-info'
                 target_version = f"=={version_str}"
                 break
-                
+
             pkg_with_version = f"{pkg_name}{target_version}"
             self._emit_install_progress(
                 88 + min(6, round((index / max(total_packages, 1)) * 6)),
                 "替换 Linux wheels",
                 f"{index}/{total_packages} {pkg_with_version}",
             )
-            
+
             try:
                 downloaded = False
                 for index_url in self._pip_index_candidates():
                     download_cmd = [
-                        sys.executable, "-m", "pip", "download",
+                        sys.executable,
+                        "-m",
+                        "pip",
+                        "download",
                         pkg_with_version,
-                        "-d", str(wheels_dir),
-                        "--platform", "manylinux2014_x86_64",
-                        "--platform", "manylinux_2_17_x86_64",
-                        "--platform", "manylinux_2_28_x86_64",
-                        "--platform", "musllinux_1_2_x86_64",
-                        "--platform", "linux_x86_64",
-                        "--python-version", self.TARGET_PYTHON_VERSION,
+                        "-d",
+                        str(wheels_dir),
+                        "--platform",
+                        "manylinux2014_x86_64",
+                        "--platform",
+                        "manylinux_2_17_x86_64",
+                        "--platform",
+                        "manylinux_2_28_x86_64",
+                        "--platform",
+                        "musllinux_1_2_x86_64",
+                        "--platform",
+                        "linux_x86_64",
+                        "--python-version",
+                        self.TARGET_PYTHON_VERSION,
                         "--only-binary=:all:",
-                        "--implementation", "cp",
+                        "--implementation",
+                        "cp",
                         "--no-deps",
                         "--quiet",
                         "--disable-pip-version-check",
-                        "--retries", "2",
-                        "--timeout", "30",
-                        "--cache-dir", str(self.pip_cache_dir),
+                        "--retries",
+                        "2",
+                        "--timeout",
+                        "30",
+                        "--cache-dir",
+                        str(self.pip_cache_dir),
                     ]
                     if index_url:
                         download_cmd += ["-i", index_url]
-                    result = subprocess.run(download_cmd, capture_output=True, text=True, timeout=90)
+                    result = subprocess.run(
+                        download_cmd, capture_output=True, text=True, timeout=90
+                    )
                     if result.returncode == 0:
                         downloaded = True
                         break
                 if downloaded:
                     replaced_count += 1
                 else:
-                    failed_msg = result.stderr.strip().split('\n')[-1] if result and result.stderr else 'unknown'
-                    click.secho(f"   ⚠ 替换失败: {pkg_with_version} ({failed_msg})", fg='yellow')
+                    failed_msg = (
+                        result.stderr.strip().split("\n")[-1]
+                        if result and result.stderr
+                        else "unknown"
+                    )
+                    click.secho(f"   ⚠ 替换失败: {pkg_with_version} ({failed_msg})", fg="yellow")
             except Exception as e:
-                click.secho(f"   ⚠ 替换异常: {pkg_name} ({e})", fg='yellow')
-        
+                click.secho(f"   ⚠ 替换异常: {pkg_name} ({e})", fg="yellow")
+
         # 解压 wheel 覆盖到 deps_dir
         for wheel_file in wheels_dir.glob("*.whl"):
             try:
-                wheel_name = wheel_file.name.split('-')[0].lower().replace('_', '-')
-                
+                wheel_name = wheel_file.name.split("-")[0].lower().replace("_", "-")
+
                 # 删除旧的包目录
                 for old_dir in self.deps_dir.iterdir():
-                    if old_dir.is_dir() and old_dir.name.lower().replace('_', '-') == wheel_name:
+                    if old_dir.is_dir() and old_dir.name.lower().replace("_", "-") == wheel_name:
                         shutil.rmtree(old_dir)
-                        # 不要 break，可能由多个目录 (e.g. pydantic_core, pydantic_core-2.x.dist-info)
-                
+                        # 不要 break：一个包可能有多个目录，例如 dist-info。
+
                 # 删除根目录下的二进制文件
-                for ext in ('*.so', '*.dylib', '*.pyd', '*.dll'):
+                for ext in ("*.so", "*.dylib", "*.pyd", "*.dll"):
                     for bin_file in self.deps_dir.glob(f"{wheel_name}*{ext[1:]}"):
                         try:
                             bin_file.unlink()
-                        except:
+                        except OSError:
                             pass
                     for bin_file in self.deps_dir.glob(f"{wheel_name.replace('-', '_')}*{ext[1:]}"):
                         try:
                             bin_file.unlink()
-                        except:
+                        except OSError:
                             pass
-                
+
                 # 解压新的 wheel
-                with zipfile.ZipFile(wheel_file, 'r') as zf:
+                with zipfile.ZipFile(wheel_file, "r") as zf:
                     zf.extractall(self.deps_dir)
             except Exception:
                 pass
-        
+
         shutil.rmtree(wheels_dir, ignore_errors=True)
-        
+
         # 清理所有残留的非 Linux 平台二进制文件
         # (wheel 解压后可能有旧的 darwin/win .so 文件未被覆盖)
         cleaned_count = 0
-        for so_file in list(self.deps_dir.rglob('*.so')):
+        for so_file in list(self.deps_dir.rglob("*.so")):
             name = so_file.name.lower()
-            if 'darwin' in name or 'win' in name:
+            if "darwin" in name or "win" in name:
                 try:
                     so_file.unlink()
                     cleaned_count += 1
                 except Exception:
                     pass
-        for dylib_file in list(self.deps_dir.rglob('*.dylib')):
+        for dylib_file in list(self.deps_dir.rglob("*.dylib")):
             try:
                 dylib_file.unlink()
                 cleaned_count += 1
@@ -1418,7 +1482,7 @@ class CodeBuilder(BaseBuilder):
                 pass
         if cleaned_count > 0:
             click.echo(f"   ✓ 清理 {cleaned_count} 个残留平台二进制文件")
-        
+
         click.echo(f"   ✓ 成功替换 {replaced_count}/{len(packages_to_replace)} 个包")
 
     def _is_linux_so(self, name: str) -> bool:
@@ -1463,7 +1527,7 @@ class CodeBuilder(BaseBuilder):
 
     def _detect_critical_binary_issues(self, names: List[str]) -> List[str]:
         issues: List[str] = []
-        
+
         # 定义需要检查的关键原生扩展模块
         # 格式: (描述, 正则模式)
         critical_modules = [
@@ -1474,7 +1538,7 @@ class CodeBuilder(BaseBuilder):
             # tiktoken/_tiktoken: langchain-openai 核心依赖 (Rust 编译)
             ("tiktoken/_tiktoken", r"tiktoken/_tiktoken.*\.(so|pyd)$"),
         ]
-        
+
         for module_name, pattern in critical_modules:
             matched_bins = [n for n in names if re.search(pattern, n)]
             if matched_bins:
@@ -1487,19 +1551,21 @@ class CodeBuilder(BaseBuilder):
                         f"python-abi-mismatch:{module_name}:"
                         f"expected-cpython-{self.TARGET_PYTHON_VERSION}-or-abi3"
                     )
-        
+
         # 通用检查: 所有 .so 文件中不应包含 darwin/win 平台标识
-        all_so_files = [n for n in names if n.endswith('.so')]
-        darwin_so_count = sum(1 for n in all_so_files if 'darwin' in n.lower())
+        all_so_files = [n for n in names if n.endswith(".so")]
+        darwin_so_count = sum(1 for n in all_so_files if "darwin" in n.lower())
         if darwin_so_count > 0:
             issues.append(f"warning:found-{darwin_so_count}-darwin-so-files")
-        
+
         return issues
-    
+
     def _package_zip(self, zip_path: Path, detection_result) -> None:
         """打包 zip 文件"""
         project_files = list(self._iter_project_files())
-        dependency_files = [file_path for file_path in self.deps_dir.rglob("*") if file_path.is_file()]
+        dependency_files = [
+            file_path for file_path in self.deps_dir.rglob("*") if file_path.is_file()
+        ]
         bundled_source_files = list(self._iter_bundled_source_files())
         dependency_size = sum(file_path.stat().st_size for file_path in dependency_files)
         if dependency_files:
@@ -1509,12 +1575,12 @@ class CodeBuilder(BaseBuilder):
                 f"{len(bundled_source_files)} 个 runtime 文件"
             )
 
-        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
             # 添加项目文件
             for file_path in project_files:
                 arcname = file_path.relative_to(self.project_dir).as_posix()
                 zf.write(file_path, arcname)
-            
+
             # 添加依赖
             deps_count = 0
             for file_path in dependency_files:
@@ -1523,7 +1589,7 @@ class CodeBuilder(BaseBuilder):
                 deps_count += 1
                 self._emit_package_progress("打包依赖", deps_count, len(dependency_files))
             self._finish_package_progress()
-            
+
             # 添加随运行时下发的 ksadk 源码
             bundled_source_count = 0
             for package_name, relative, file_path in bundled_source_files:
@@ -1536,13 +1602,13 @@ class CodeBuilder(BaseBuilder):
                     len(bundled_source_files),
                 )
             self._finish_package_progress()
-            
+
             click.echo(f"   ✓ 打包运行时源码: {bundled_source_count} 个文件")
-            
+
             # 添加 entrypoint
             entrypoint_content = self._generate_entrypoint(detection_result)
             zf.writestr("entrypoint.py", entrypoint_content)
-        
+
         click.echo(f"   ✓ 打包完成: {len(project_files)} 个项目文件 + {deps_count} 个依赖文件")
         self._emit_package_size_report(zip_path)
 
@@ -1586,10 +1652,7 @@ class CodeBuilder(BaseBuilder):
         )
         if by_top_level:
             top_items = sorted(by_top_level.items(), key=lambda item: item[1], reverse=True)[:limit]
-            summary = ", ".join(
-                f"{name} {size / (1024 * 1024):.1f} MB"
-                for name, size in top_items
-            )
+            summary = ", ".join(f"{name} {size / (1024 * 1024):.1f} MB" for name, size in top_items)
             click.echo(f"   体积 Top{len(top_items)}: {summary}")
         if (
             raw_total > self.CONTAINER_SUGGESTION_RAW_THRESHOLD_BYTES
@@ -1660,7 +1723,7 @@ class CodeBuilder(BaseBuilder):
         self._package_progress_last_line = ""
         self._package_progress_last_percent_by_label = {}
         self._package_progress_logged_milestone_by_label = {}
-    
+
     def _generate_entrypoint(self, detection_result) -> str:
         """生成 entrypoint.py"""
         package_name = Path(detection_result.package_path).name
@@ -1787,7 +1850,10 @@ logger.info(f"框架: {{detection_result.name}}")
 logger.info(f"入口: {{detection_result.entry_point}}")
 
 # 初始化 Tracing (如果配置了 Langfuse、标准 OTLP HTTP 或 CloudMonitor OTLP)
-has_otlp = bool(os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT") or os.environ.get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"))
+has_otlp = bool(
+    os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
+    or os.environ.get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
+)
 has_cloud_monitor_otlp = bool(
     os.environ.get("CLOUD_MONITOR_APP_KEY")
     or os.environ.get("CLOUD_MONITOR_OTLP_ENDPOINT")
@@ -1798,11 +1864,19 @@ has_cloud_monitor_langfuse = bool(
     or os.environ.get("CLOUD_MONITOR_LANGFUSE_SECRET_KEY")
     or os.environ.get("CLOUD_MONITOR_LANGFUSE_HOST")
 )
-if os.environ.get("LANGFUSE_PUBLIC_KEY") or has_otlp or has_cloud_monitor_otlp or has_cloud_monitor_langfuse:
+if (
+    os.environ.get("LANGFUSE_PUBLIC_KEY")
+    or has_otlp
+    or has_cloud_monitor_otlp
+    or has_cloud_monitor_langfuse
+):
     try:
         from ksadk.tracing import setup_tracing
-        
-        use_callback_only = os.environ.get("LANGFUSE_USE_CALLBACK", "").strip().lower() in ("1", "true", "yes", "on")
+
+        use_callback_only = (
+            os.environ.get("LANGFUSE_USE_CALLBACK", "").strip().lower()
+            in ("1", "true", "yes", "on")
+        )
 
         setup_tracing(use_callback_only=use_callback_only)
         logger.info(
@@ -1818,7 +1892,7 @@ if os.environ.get("LANGFUSE_PUBLIC_KEY") or has_otlp or has_cloud_monitor_otlp o
 logger.info("正在加载 Agent...")
 runner = create_runner(detection_result, CODE_ROOT)
 runner.load_agent()
-set_runner(runner)
+set_runner(runner, loaded=True)
 logger.info("Agent 加载成功!")
 
 if __name__ == "__main__":
@@ -1848,13 +1922,13 @@ if __name__ == "__main__":
             self._pip_index_candidates_cache = candidates
             return list(candidates)
 
-        seen: Set[str] = set()
+        fallback_seen: Set[str] = set()
         urls: list[str] = []
         for candidate in self.PIP_INDEX_FALLBACKS:
             normalized = self._normalize_pip_index_url(candidate)
-            if normalized in seen:
+            if normalized in fallback_seen:
                 continue
-            seen.add(normalized)
+            fallback_seen.add(normalized)
             urls.append(normalized)
 
         ordered, summary = self._rank_pip_index_urls(urls)

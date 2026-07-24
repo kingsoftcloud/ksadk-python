@@ -4,7 +4,6 @@ import importlib.util
 import sys
 from pathlib import Path
 
-
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "prepare_ksadk_python_export.py"
 
 

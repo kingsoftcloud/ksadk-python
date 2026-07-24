@@ -206,7 +206,10 @@ async def test_upload_download_and_delete_workspace_file_use_runtime_data_plane(
     assert delete_payload["deleted"] is True
     assert delete_payload["transport_mode"] == "runtime_direct"
     assert session.calls[0]["method"] == "POST"
-    assert session.calls[0]["url"] == "https://agent.example.com/_ksadk/workspace/v1/files/reports/report.txt"
+    assert (
+        session.calls[0]["url"]
+        == "https://agent.example.com/_ksadk/workspace/v1/files/reports/report.txt"
+    )
     assert session.calls[0]["headers"] == {"Authorization": "Bearer ak-demo"}
     assert session.calls[0]["files"] is not None
     assert session.calls[1] == {
@@ -293,7 +296,9 @@ async def test_list_workspace_files_uses_action_proxy_for_openclaw_without_runti
     monkeypatch.setattr(
         client,
         "_workspace_runtime_request",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("runtime direct path must not be used")),
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("runtime direct path must not be used")
+        ),
     )
 
     payload = await client.list_workspace_files(agent_id="ar-openclaw", path="docs", recursive=True)
@@ -343,7 +348,9 @@ async def test_list_workspace_files_uses_action_proxy_for_openclaw_even_with_api
     monkeypatch.setattr(
         client,
         "_workspace_runtime_request",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("runtime direct path must not be used")),
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("runtime direct path must not be used")
+        ),
     )
 
     payload = await client.list_workspace_files(agent_id="ar-openclaw")
@@ -384,7 +391,9 @@ async def test_workspace_file_data_plane_uses_action_proxy_for_openclaw_without_
             return {"deleted": True}
         raise AssertionError(f"unexpected json action {action}")
 
-    def _fake_action_raw_request(method, action, *, params=None, data=None, files=None, accept="application/json"):
+    def _fake_action_raw_request(
+        method, action, *, params=None, data=None, files=None, accept="application/json"
+    ):
         recorded.append(
             {
                 "method": method,
@@ -422,7 +431,9 @@ async def test_workspace_file_data_plane_uses_action_proxy_for_openclaw_without_
     monkeypatch.setattr(
         client,
         "_workspace_runtime_request",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("runtime direct path must not be used")),
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("runtime direct path must not be used")
+        ),
     )
 
     upload_payload = await client.upload_workspace_file(
