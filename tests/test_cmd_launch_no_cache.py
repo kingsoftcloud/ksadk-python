@@ -60,11 +60,20 @@ def test_launch_no_cache_triggers_build_and_clears_metadata(tmp_path: Path, monk
     provider = _FakeProvider()
     metadata_dir = tmp_path / ".agentengine"
     metadata_dir.mkdir(parents=True, exist_ok=True)
-    (metadata_dir / "build-metadata.json").write_text('{"metadata":{"ks3_path":"ks3://old/path.zip"}}', encoding="utf-8")
+    (metadata_dir / "build-metadata.json").write_text(
+        '{"metadata":{"ks3_path":"ks3://old/path.zip"}}', encoding="utf-8"
+    )
 
-    monkeypatch.setattr("ksadk.detection.FrameworkDetector", lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})())
-    monkeypatch.setattr("ksadk.cli.cmd_launch._load_config", lambda *_args, **_kwargs: {"name": "demo-agent"})
-    monkeypatch.setattr("ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider)
+    monkeypatch.setattr(
+        "ksadk.detection.FrameworkDetector",
+        lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})(),
+    )
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_launch._load_config", lambda *_args, **_kwargs: {"name": "demo-agent"}
+    )
+    monkeypatch.setattr(
+        "ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider
+    )
 
     asyncio.run(
         cmd_launch._launch_async(
@@ -95,12 +104,21 @@ def test_launch_no_cache_triggers_build_and_clears_metadata(tmp_path: Path, monk
     assert provider.calls == ["validate", "package", "build", "deploy"]
 
 
-def test_launch_no_cache_warns_when_explicit_ks3_path_is_supplied(tmp_path: Path, monkeypatch, capsys):
+def test_launch_no_cache_warns_when_explicit_ks3_path_is_supplied(
+    tmp_path: Path, monkeypatch, capsys
+):
     provider = _FakeProvider()
 
-    monkeypatch.setattr("ksadk.detection.FrameworkDetector", lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})())
-    monkeypatch.setattr("ksadk.cli.cmd_launch._load_config", lambda *_args, **_kwargs: {"name": "demo-agent"})
-    monkeypatch.setattr("ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider)
+    monkeypatch.setattr(
+        "ksadk.detection.FrameworkDetector",
+        lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})(),
+    )
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_launch._load_config", lambda *_args, **_kwargs: {"name": "demo-agent"}
+    )
+    monkeypatch.setattr(
+        "ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider
+    )
 
     asyncio.run(
         cmd_launch._launch_async(
@@ -136,9 +154,16 @@ def test_launch_cli_network_options_apply_to_deploy_target(tmp_path: Path, monke
     provider = _FakeProvider()
     runner = CliRunner()
 
-    monkeypatch.setattr("ksadk.detection.FrameworkDetector", lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})())
-    monkeypatch.setattr("ksadk.cli.cmd_launch._load_config", lambda *_args, **_kwargs: {"name": "demo-agent"})
-    monkeypatch.setattr("ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider)
+    monkeypatch.setattr(
+        "ksadk.detection.FrameworkDetector",
+        lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})(),
+    )
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_launch._load_config", lambda *_args, **_kwargs: {"name": "demo-agent"}
+    )
+    monkeypatch.setattr(
+        "ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider
+    )
 
     result = runner.invoke(
         cmd_launch.launch,
@@ -174,9 +199,16 @@ def test_launch_network_ids_imply_vpc_access(tmp_path: Path, monkeypatch):
     provider = _FakeProvider()
     runner = CliRunner()
 
-    monkeypatch.setattr("ksadk.detection.FrameworkDetector", lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})())
-    monkeypatch.setattr("ksadk.cli.cmd_launch._load_config", lambda *_args, **_kwargs: {"name": "demo-agent"})
-    monkeypatch.setattr("ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider)
+    monkeypatch.setattr(
+        "ksadk.detection.FrameworkDetector",
+        lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})(),
+    )
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_launch._load_config", lambda *_args, **_kwargs: {"name": "demo-agent"}
+    )
+    monkeypatch.setattr(
+        "ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider
+    )
 
     result = runner.invoke(
         cmd_launch.launch,
@@ -208,9 +240,16 @@ def test_launch_cli_forwards_explicit_env_and_env_file(tmp_path: Path, monkeypat
         encoding="utf-8",
     )
 
-    monkeypatch.setattr("ksadk.detection.FrameworkDetector", lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})())
-    monkeypatch.setattr("ksadk.cli.cmd_launch._load_config", lambda *_args, **_kwargs: {"name": "demo-agent"})
-    monkeypatch.setattr("ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider)
+    monkeypatch.setattr(
+        "ksadk.detection.FrameworkDetector",
+        lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})(),
+    )
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_launch._load_config", lambda *_args, **_kwargs: {"name": "demo-agent"}
+    )
+    monkeypatch.setattr(
+        "ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider
+    )
 
     result = runner.invoke(
         cmd_launch.launch,
@@ -241,7 +280,10 @@ def test_launch_cli_forwards_explicit_env_and_env_file(tmp_path: Path, monkeypat
 def test_launch_reads_ui_config_from_agentengine_yaml_when_cli_not_set(tmp_path: Path, monkeypatch):
     provider = _FakeProvider()
 
-    monkeypatch.setattr("ksadk.detection.FrameworkDetector", lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})())
+    monkeypatch.setattr(
+        "ksadk.detection.FrameworkDetector",
+        lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})(),
+    )
     monkeypatch.setattr(
         "ksadk.cli.cmd_launch._load_config",
         lambda *_args, **_kwargs: {
@@ -253,7 +295,9 @@ def test_launch_reads_ui_config_from_agentengine_yaml_when_cli_not_set(tmp_path:
             },
         },
     )
-    monkeypatch.setattr("ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider)
+    monkeypatch.setattr(
+        "ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider
+    )
 
     asyncio.run(
         cmd_launch._launch_async(

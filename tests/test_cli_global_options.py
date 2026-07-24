@@ -29,9 +29,36 @@ def test_global_options_are_accepted_at_root_group_and_command_positions(monkeyp
     monkeypatch.setattr("ksadk.cli.cmd_agent.run_status_command", fake_run_status_command)
 
     cases = [
-        ["--output", "json", "--dry-run", "--no-color", "agent", "list", "--account-id", "2000003485"],
-        ["agent", "--output", "json", "--dry-run", "--no-color", "list", "--account-id", "2000003485"],
-        ["agent", "list", "--output", "json", "--dry-run", "--no-color", "--account-id", "2000003485"],
+        [
+            "--output",
+            "json",
+            "--dry-run",
+            "--no-color",
+            "agent",
+            "list",
+            "--account-id",
+            "2000003485",
+        ],
+        [
+            "agent",
+            "--output",
+            "json",
+            "--dry-run",
+            "--no-color",
+            "list",
+            "--account-id",
+            "2000003485",
+        ],
+        [
+            "agent",
+            "list",
+            "--output",
+            "json",
+            "--dry-run",
+            "--no-color",
+            "--account-id",
+            "2000003485",
+        ],
     ]
 
     for argv in cases:

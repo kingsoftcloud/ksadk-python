@@ -52,7 +52,9 @@ class _FakeKS3Uploader:
         return f"https://internal.example.com/{object_key.lstrip('/')}"
 
 
-def test_build_push_prints_object_key_urls_and_never_prints_code_zip(tmp_path: Path, monkeypatch, capsys):
+def test_build_push_prints_object_key_urls_and_never_prints_code_zip(
+    tmp_path: Path, monkeypatch, capsys
+):
     import ksadk.builders as builders_module
 
     monkeypatch.setattr(builders_module, "CodeBuilder", _FakeCodeBuilder)

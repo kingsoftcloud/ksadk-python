@@ -6,7 +6,7 @@ AgentEngine CLI
 的本地运行与云端部署。
 
 工作流命令:
-  agentengine a2a        暴露 A2A 服务与 Agent Card
+  agentengine a2a        A2A 协议服务与本地试调
   agentengine agent      Agent 资源管理
   agentengine build      构建部署制品
   agentengine completion Shell 补全管理
@@ -37,40 +37,47 @@ AgentEngine CLI
 === a2a_help ===
 Usage: cli a2a [OPTIONS] COMMAND [ARGS]...
 
-  A2A 协议服务与 Agent Card
+  A2A 协议服务与本地试调
 
 Options:
   -h, --help  Show this message and exit.
 
 Commands:
-  card   输出 Agent Card JSON。
-  serve  启动 A2A 协议服务。
+  call      向 Space 中某 Agent 发送消息,返回首个 Task。
+  cancel    取消某 A2A Task。
+  card      打印该 agent 的 wire 1.0 AgentCard(supportedInterfaces)。
+  discover  发现 Space 中 hosted/external Agent 的 latest AgentCard。
+  register  构造并打印用于 Space 注册的 AgentCard(本地试调;server 侧 KOP 注册见产品化文档)。
+  serve     把本地 agent 暴露为 A2A 协议服务(JSONRPC + REST + AgentCard)。
+  status    查询某 A2A Task 的状态。
 
 === a2a_serve_help ===
-Usage: cli a2a serve [OPTIONS] [AGENT_DIR]
+Usage: cli a2a serve [OPTIONS] [AGENT_PATH]
 
-  启动 A2A 协议服务。
+  把本地 agent 暴露为 A2A 协议服务(JSONRPC + REST + AgentCard)。
 
 Options:
-  --host TEXT         服务监听地址  [default: 0.0.0.0]
-  --port INTEGER      服务端口  [default: 8081]
-  --url TEXT          Agent Card 对外宣告地址
-  --name TEXT         覆盖 Agent 名称
-  --description TEXT  覆盖 Agent 描述
-  --skill TEXT        可重复传入，追加 Agent Card 技能
-  --no-trace          禁用 Tracing
-  -h, --help          Show this message and exit.
+  --host TEXT            服务监听地址  [default: 0.0.0.0]
+  --port INTEGER         服务端口  [default: 8081]
+  --url TEXT             Agent Card 对外宣告地址(默认 http://host:port)
+  --name TEXT            覆盖 Agent 名称
+  --description TEXT     覆盖 Agent 描述
+  --skill TEXT           可重复传入,追加 Agent Card 技能
+  --task-store-dsn TEXT  durable task store DSN(生产用 postgresql+asyncpg://)
+                         [default: sqlite+aiosqlite:///.ksadk_a2a_tasks.db]
+  --no-trace             禁用 Tracing
+  -h, --help             Show this message and exit.
 
 === a2a_card_help ===
-Usage: cli a2a card [OPTIONS] [AGENT_DIR]
+Usage: cli a2a card [OPTIONS] [AGENT_PATH]
 
-  输出 Agent Card JSON。
+  打印该 agent 的 wire 1.0 AgentCard(supportedInterfaces)。
 
 Options:
   --url TEXT          Agent Card 对外宣告地址  [default: http://127.0.0.1:8081]
   --name TEXT         覆盖 Agent 名称
   --description TEXT  覆盖 Agent 描述
-  --skill TEXT        可重复传入，追加 Agent Card 技能
+  --skill TEXT        可重复传入,追加 Agent Card 技能
   -h, --help          Show this message and exit.
 
 === agent_help ===

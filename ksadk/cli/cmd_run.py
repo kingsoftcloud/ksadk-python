@@ -5,12 +5,13 @@ ksadk run - 本地运行 Agent
 对于 LangChain/LangGraph/DeepAgents 项目，使用自己的实现
 """
 
-import click
-import asyncio
+import os
 import subprocess
 import sys
-import os
 from pathlib import Path
+
+import click
+
 from ksadk.cli.error_utils import ensure_json_output_supported, print_exception
 from ksadk.cli.local_runtime import reexec_with_project_venv_if_needed
 from ksadk.cli.ui import (
@@ -38,16 +39,28 @@ from ksadk.cli.ui import (
     is_flag=True,
     help="兼容参数；TUI 已默认使用 inline viewport 并保留终端 scrollback",
 )
-def run(agent_dir: str, port: int, interactive: bool, no_trace: bool, model: str, show_thinking: bool, no_stream: bool, no_alt_screen: bool):
+def run(
+    agent_dir: str,
+    port: int,
+    interactive: bool,
+    no_trace: bool,
+    model: str,
+    show_thinking: bool,
+    no_stream: bool,
+    no_alt_screen: bool,
+):
     """运行 Agent (支持 LangChain / LangGraph / DeepAgents / ADK)
 
     AGENT_DIR: Agent 项目目录 (默认: 当前目录)
     """
     ensure_json_output_supported(
         "agentengine run",
-        suggestion="请改用 `agentengine agent status --output json` 或 `agentengine build --output json` 获取结构化信息。",
+        suggestion=(
+            "请改用 `agentengine agent status --output json` 或 "
+            "`agentengine build --output json` 获取结构化信息。"
+        ),
     )
-    from ksadk.detection import FrameworkDetector, FrameworkType
+    from ksadk.detection import FrameworkDetector
 
     agent_path = Path(agent_dir).resolve()
     command_args = ["run", str(agent_path), "--port", str(port)]
@@ -91,7 +104,7 @@ def run(agent_dir: str, port: int, interactive: bool, no_trace: bool, model: str
         "langchain": "LangChain",
         "langgraph": "LangGraph",
         "deepagents": "DeepAgents",
-        "unknown": "Unknown"
+        "unknown": "Unknown",
     }
     framework_name = framework_map.get(result.type.value, result.type.value)
 
@@ -99,10 +112,16 @@ def run(agent_dir: str, port: int, interactive: bool, no_trace: bool, model: str
     print_kv("Agent 名称", str(result.name))
     print_kv("入口点", str(result.entry_point))
 
+    from ksadk.cli.cmd_web import configure_local_runtime_persistence
+
+    configure_local_runtime_persistence(agent_path, result.type.value)
+
     # 2. 根据框架类型选择处理方式
     # 所有框架统一使用 _run_custom() 以支持 Langfuse 自动插桩
     # (Langfuse instrumentation 需要在同一进程内生效)
-    _run_custom(result, agent_path, port, interactive, no_trace, show_thinking, no_stream, no_alt_screen)
+    _run_custom(
+        result, agent_path, port, interactive, no_trace, show_thinking, no_stream, no_alt_screen
+    )
 
 
 def _run_adk_cli(agent_path: Path, port: int = 8080, command: str = "run"):
@@ -178,8 +197,9 @@ def _run_custom(
     # 初始化 Tracing
     if not no_trace:
         try:
-            from ksadk.tracing import setup_tracing
             import os
+
+            from ksadk.tracing import setup_tracing
 
             has_langfuse = bool(os.getenv("LANGFUSE_PUBLIC_KEY"))
             has_otlp = bool(
@@ -203,7 +223,9 @@ def _run_custom(
             if has_otlp:
                 print_info("Tracing: Enabled (InMemory + OTLP HTTP)")
             elif has_langfuse:
-                print_info(f"Tracing: Enabled (InMemory + Langfuse, CallbackOnly={use_callback_only})")
+                print_info(
+                    f"Tracing: Enabled (InMemory + Langfuse, CallbackOnly={use_callback_only})"
+                )
             else:
                 print_info("Tracing: Enabled")
         except Exception as e:
@@ -225,6 +247,7 @@ def _run_custom(
     if interactive:
         # TUI 交互模式
         from ksadk.tui.loop import run_tui
+
         run_tui(
             runner,
             show_thinking=show_thinking,

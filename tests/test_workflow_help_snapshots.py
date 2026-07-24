@@ -8,7 +8,6 @@ from ksadk.cli.cmd_build import build
 from ksadk.cli.cmd_deploy import deploy
 from ksadk.cli.cmd_launch import launch
 
-
 SNAPSHOT_FILE = Path(__file__).parent / "snapshots" / "workflow_help_snapshots.txt"
 
 

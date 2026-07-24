@@ -9,7 +9,6 @@ from ksadk.cli.cmd_mcp import mcp
 from ksadk.cli.cmd_openclaw import openclaw
 from ksadk.cli.cmd_version import version
 
-
 SNAPSHOT_FILE = Path(__file__).parent / "snapshots" / "resource_output_snapshots.txt"
 
 
@@ -212,15 +211,23 @@ def test_resource_output_snapshots(monkeypatch):
     assert result.exit_code == 0, result.output
     assert _normalize_output(result.output) == snapshots["openclaw_status"]
 
-    monkeypatch.setattr("ksadk.cli.cmd_version._get_client", lambda *, region, dry_run=False: _FakeVersionClient())
-    monkeypatch.setattr("ksadk.cli.cmd_version._resolve_target_agent_id", _fake_resolve_target_agent_id)
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_version._get_client", lambda *, region, dry_run=False: _FakeVersionClient()
+    )
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_version._resolve_target_agent_id", _fake_resolve_target_agent_id
+    )
     result = runner.invoke(version, ["list", "--agent", "demo-agent"])
     assert result.exit_code == 0, result.output
     assert _normalize_output(result.output) == snapshots["version_list"]
 
     monkeypatch.setattr(cmd_dashboard, "_resolve_agent_detail", _fake_resolve_agent_detail)
-    monkeypatch.setattr(cmd_dashboard, "_list_dashboard_access_links", _fake_list_dashboard_access_links)
-    monkeypatch.setattr(cmd_dashboard, "_delete_dashboard_access_link", _fake_delete_dashboard_access_link)
+    monkeypatch.setattr(
+        cmd_dashboard, "_list_dashboard_access_links", _fake_list_dashboard_access_links
+    )
+    monkeypatch.setattr(
+        cmd_dashboard, "_delete_dashboard_access_link", _fake_delete_dashboard_access_link
+    )
     monkeypatch.setattr(cmd_dashboard, "load_state", lambda _cwd: {})
     result = runner.invoke(cmd_dashboard.dashboard, ["share", "list", "ar-demo"])
     assert result.exit_code == 0, result.output

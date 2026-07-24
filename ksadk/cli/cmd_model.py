@@ -3,15 +3,20 @@ agentengine model - 切换模型
 """
 
 import os
+from pathlib import Path
+
 import click
 import httpx
 import questionary
 import yaml
-from pathlib import Path
 from dotenv import set_key
-from ksadk.deployment.state import load_state
+
 from ksadk.cli.error_utils import abort_with_cli_error, print_exception, usage_error
-from ksadk.cli.resource_common import CONTEXT_SETTINGS, CompatibilityAliasCommand, print_compatibility_hint
+from ksadk.cli.resource_common import (
+    CONTEXT_SETTINGS,
+    CompatibilityAliasCommand,
+    print_compatibility_hint,
+)
 from ksadk.cli.ui import (
     is_color_disabled,
     is_stdout_tty,
@@ -22,6 +27,7 @@ from ksadk.cli.ui import (
     print_title,
     print_warn,
 )
+from ksadk.deployment.state import load_state
 
 
 def _parse_model_selection(raw: str | None) -> list[str]:
@@ -71,7 +77,9 @@ def _write_default_model(selected_model: str) -> Path:
     if not selected_model:
         raise click.ClickException("未选择模型")
     env_file = _resolve_env_file()
-    success, _key, _value = set_key(env_file, "OPENAI_MODEL_NAME", selected_model, quote_mode="never")
+    success, _key, _value = set_key(
+        env_file, "OPENAI_MODEL_NAME", selected_model, quote_mode="never"
+    )
     if not success:
         raise click.ClickException("更新 OPENAI_MODEL_NAME 失败")
     return env_file
@@ -145,7 +153,8 @@ def run_model_command(
                 hints=[
                     "查看当前模型配置请使用 `agentengine config show`。",
                     "非交互修改请使用 `agentengine config set OPENAI_MODEL_NAME=<model>`。",
-                    "为 Agent/deploy 生成环境变量请使用 `agentengine config model --env <model[,model...]>`。",
+                    "为 Agent/deploy 生成环境变量请使用 "
+                    "`agentengine config model --env <model[,model...]>`。",
                 ],
             ),
             argv=["config", "model"],

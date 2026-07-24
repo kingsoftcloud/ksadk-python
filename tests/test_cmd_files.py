@@ -274,7 +274,9 @@ def test_files_list_command_falls_back_to_project_config(monkeypatch, tmp_path: 
     _register_commands()
     monkeypatch.setattr(cmd_files, "AgentEngineClient", _FakeFilesClient)
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "agentengine.yaml").write_text("name: demo-agent\nframework: langgraph\n", encoding="utf-8")
+    (tmp_path / "agentengine.yaml").write_text(
+        "name: demo-agent\nframework: langgraph\n", encoding="utf-8"
+    )
 
     runner = CliRunner()
     result = runner.invoke(
@@ -616,7 +618,9 @@ def test_files_upload_accepts_positional_agent(monkeypatch, tmp_path: Path):
     ]
 
 
-def test_files_push_uploads_new_files_and_skips_existing_targets_by_default(monkeypatch, tmp_path: Path):
+def test_files_push_uploads_new_files_and_skips_existing_targets_by_default(
+    monkeypatch, tmp_path: Path
+):
     from ksadk.cli import cmd_files
 
     _reset_fake_files_client()
@@ -803,7 +807,9 @@ def test_files_push_treats_missing_remote_directory_as_empty(monkeypatch, tmp_pa
     local_dir = tmp_path / "bundle"
     local_dir.mkdir()
     (local_dir / "hello.txt").write_text("hello", encoding="utf-8")
-    _FakeFilesClient.list_results["new-bundle"] = AgentEngineAPIError(404, "workspace path not found")
+    _FakeFilesClient.list_results["new-bundle"] = AgentEngineAPIError(
+        404, "workspace path not found"
+    )
 
     runner = CliRunner()
     result = runner.invoke(

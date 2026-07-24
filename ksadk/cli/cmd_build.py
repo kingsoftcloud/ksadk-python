@@ -7,17 +7,21 @@ agentengine build - 构建 Agent 应用
 """
 
 import asyncio
-import click
 import time
 from datetime import datetime
 from pathlib import Path
-from ksadk.cli.error_utils import abort_with_cli_error, is_debug_mode_enabled, remote_error, validation_error
-from ksadk.cli.workflow_common import print_workflow_header, render_workflow_result
+
+import click
+
+from ksadk.cli.error_utils import (
+    abort_with_cli_error,
+    is_debug_mode_enabled,
+    remote_error,
+    validation_error,
+)
 from ksadk.cli.ui import (
     capture_standard_output,
     is_json_output,
-    output_option as cli_output_option,
-    print_error,
     print_info,
     print_kv,
     print_next_steps,
@@ -25,6 +29,10 @@ from ksadk.cli.ui import (
     print_success,
     print_warn,
 )
+from ksadk.cli.ui import (
+    output_option as cli_output_option,
+)
+from ksadk.cli.workflow_common import print_workflow_header, render_workflow_result
 
 
 @click.command(context_settings=dict(help_option_names=["-h", "--help"]))
@@ -39,9 +47,17 @@ from ksadk.cli.ui import (
 @click.option("--tag", "-t", help="镜像标签 (container 模式)")
 @click.option("--registry", help="镜像仓库地址 (container 模式)")
 @click.option("--push", is_flag=True, help="构建后推送 (镜像到仓库 / zip到KS3)")
-@click.option("--no-cache", is_flag=True, help="强制重新构建，不使用缓存 (code: 忽略已有 zip；container: docker --no-cache)")
-@click.option("--repackage", is_flag=True, help="Code 模式复用依赖缓存，但强制重新打包当前代码/runtime")
-@click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="KS3 区域 (code 模式)")
+@click.option(
+    "--no-cache",
+    is_flag=True,
+    help="强制重新构建，不使用缓存 (code: 忽略已有 zip；container: docker --no-cache)",
+)
+@click.option(
+    "--repackage", is_flag=True, help="Code 模式复用依赖缓存，但强制重新打包当前代码/runtime"
+)
+@click.option(
+    "--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="KS3 区域 (code 模式)"
+)
 @click.option("--ks3-bucket", help="KS3 bucket 名称 (code 模式, 默认: agentengine-{region})")
 @cli_output_option()
 def build(
@@ -92,7 +108,9 @@ def build(
             if mode == "container":
                 result = _build_container(agent_path, tag, registry, push, no_cache)
             else:
-                result = asyncio.run(_build_code(agent_path, push, region, ks3_bucket, no_cache, repackage))
+                result = asyncio.run(
+                    _build_code(agent_path, push, region, ks3_bucket, no_cache, repackage)
+                )
     except Exception as e:
         if is_debug_mode_enabled():
             raise
@@ -126,7 +144,10 @@ def _build_container(agent_path: Path, tag: str, registry: str, push: bool, no_c
             )
 
         print_next_steps(
-            [f"agentengine deploy --target serverless --image {result.metadata['image']} --artifact-type Container"]
+            [
+                "agentengine deploy --target serverless "
+                f"--image {result.metadata['image']} --artifact-type Container"
+            ]
         )
 
     # 摘要
@@ -147,14 +168,16 @@ async def _build_code(
     agent_path: Path,
     push: bool,
     region: str,
-    ks3_bucket: str = None,
+    ks3_bucket: str | None = None,
     no_cache: bool = False,
     repackage: bool = False,
 ):
     """Code 模式构建"""
     from ksadk.builders import CodeBuilder, KS3Uploader
 
-    builder = CodeBuilder(project_dir=agent_path, config={"no_cache": no_cache, "repackage": repackage})
+    builder = CodeBuilder(
+        project_dir=agent_path, config={"no_cache": no_cache, "repackage": repackage}
+    )
     result = builder.build()
 
     if not result.success:
@@ -167,17 +190,19 @@ async def _build_code(
     ks3_internal_url = None
 
     if push:
+        if result.artifact_path is None:
+            raise validation_error("构建成功但未生成代码包路径")
         print_rule("上传到 KS3")
         upload_started_at = time.monotonic()
-        
+
         # 预发特殊逻辑: region 为 pre-online 时，资源上传到 cn-beijing-6
         upload_region = "cn-beijing-6" if region == "pre-online" else region
-        
+
         if region == "pre-online":
             print_warn("预发环境: 资源将上传到 cn-beijing-6 region")
-        
+
         uploader = KS3Uploader(region=upload_region, bucket=ks3_bucket)
-        
+
         # 使用时间戳确保每次上传的代码包路径唯一，支持真正的版本回滚
         timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
         object_key = f"agents/{agent_name}/code_{timestamp}.zip"
@@ -189,7 +214,7 @@ async def _build_code(
             # 更新 metadata 以便持久化
             result.metadata["ks3_path"] = ks3_path
             result.metadata["pushed"] = True
-            
+
             ks3_public_url = uploader.get_public_url_by_key(object_key)
             ks3_internal_url = uploader.get_internal_url_by_key(object_key)
             print_kv("公网地址", ks3_public_url or "-")
@@ -206,7 +231,7 @@ async def _build_code(
     try:
         import json
         from dataclasses import asdict
-        
+
         # 自定义序列化: 处理 Path 对象
         def default_serializer(obj):
             if isinstance(obj, Path):
@@ -228,7 +253,9 @@ async def _build_code(
     return {
         "framework": result.metadata.get("framework", "unknown"),
         "artifact_type": "code",
-        "artifact_source": "built_and_uploaded" if push and result.metadata.get("ks3_path") else "built",
+        "artifact_source": (
+            "built_and_uploaded" if push and result.metadata.get("ks3_path") else "built"
+        ),
         "artifact_reused": bool(result.metadata.get("reused", False)),
         "artifact_built": True,
         "artifact_reference": str(result.metadata.get("ks3_path") or result.artifact_path or ""),

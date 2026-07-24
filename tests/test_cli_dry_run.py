@@ -9,12 +9,11 @@ import yaml
 from click.testing import CliRunner
 
 from ksadk.api.client import AgentEngineAPIError, AgentEngineClient, DryRunExit
-from ksadk.cli import _register_commands, cli, cmd_mcp
+from ksadk.cli import _register_commands, cli, cmd_mcp, cmd_openclaw
 from ksadk.cli.cmd_agent import agent
 from ksadk.cli.cmd_destroy import delete as destroy_delete
 from ksadk.cli.cmd_destroy import destroy as destroy_cmd
 from ksadk.cli.cmd_mcp import mcp
-from ksadk.cli import cmd_openclaw
 from ksadk.cli.cmd_openclaw import openclaw
 from ksadk.cli.cmd_version import version
 from ksadk.cli.dry_run import run_async_with_dry_run
@@ -246,7 +245,9 @@ class _FakeGatewayClient:
         }
         return {"connected": True, "message": "connected"}
 
-    async def config_apply(self, *, config, base_hash, note=None, session_key=None, restart_delay_ms=None):
+    async def config_apply(
+        self, *, config, base_hash, note=None, session_key=None, restart_delay_ms=None
+    ):
         self.__class__.applied_configs.append(
             {
                 "config": config,
@@ -260,7 +261,9 @@ class _FakeGatewayClient:
 
 
 class _FakeConfigApplyReloadGatewayClient(_FakeGatewayClient):
-    async def config_apply(self, *, config, base_hash, note=None, session_key=None, restart_delay_ms=None):
+    async def config_apply(
+        self, *, config, base_hash, note=None, session_key=None, restart_delay_ms=None
+    ):
         await super().config_apply(
             config=config,
             base_hash=base_hash,
@@ -290,7 +293,11 @@ class _FakeDoctorGatewayClient(_FakeGatewayClient):
                 "channels": {
                     "feishu": {"enabled": True},
                     "openclaw-weixin": {"accounts": {"default": {"enabled": True}}},
-                    "wps-xiezuo": {"enabled": True, "appId": "app-demo", "appSecret": "secret-demo"},
+                    "wps-xiezuo": {
+                        "enabled": True,
+                        "appId": "app-demo",
+                        "appSecret": "secret-demo",
+                    },
                 },
             },
         }
@@ -353,7 +360,12 @@ class _FakeWeixinGatewayWithoutWebLoginClient(_FakeGatewayClient):
     async def channels_status(self, *, probe=False, timeout_ms=None):
         return {
             "channels": {
-                "openclaw-weixin": {"configured": True, "connected": False, "probe": probe, "timeout_ms": timeout_ms},
+                "openclaw-weixin": {
+                    "configured": True,
+                    "connected": False,
+                    "probe": probe,
+                    "timeout_ms": timeout_ms,
+                },
             }
         }
 
@@ -368,7 +380,12 @@ class _FakeWeixinGatewayProviderUnavailableClient(_FakeGatewayClient):
     async def channels_status(self, *, probe=False, timeout_ms=None):
         return {
             "channels": {
-                "openclaw-weixin": {"configured": True, "connected": False, "probe": probe, "timeout_ms": timeout_ms},
+                "openclaw-weixin": {
+                    "configured": True,
+                    "connected": False,
+                    "probe": probe,
+                    "timeout_ms": timeout_ms,
+                },
             }
         }
 
@@ -600,12 +617,16 @@ def test_run_async_with_dry_run_handles_exit(capsys):
 
 def test_client_respects_global_dry_run_env(monkeypatch):
     monkeypatch.setenv("AGENTENGINE_GLOBAL_DRY_RUN", "1")
-    client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="", dry_run=False)
+    client = AgentEngineClient(
+        base_url="http://example.com", access_key="", secret_key="", dry_run=False
+    )
     assert client.dry_run is True
 
 
 def test_client_bootstrap_config_can_ignore_dry_run(monkeypatch):
-    client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="", dry_run=True)
+    client = AgentEngineClient(
+        base_url="http://example.com", access_key="", secret_key="", dry_run=True
+    )
     captured = {}
 
     def fake_request(method, path, body=None, *, ignore_dry_run=False):
@@ -1071,7 +1092,9 @@ def test_openclaw_channel_status_uses_gateway_snapshot(monkeypatch):
     monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawDetailClient)
     monkeypatch.setattr("ksadk.cli.cmd_openclaw.OpenClawGatewayClient", _FakeGatewayClient)
 
-    result = runner.invoke(openclaw, ["channel", "status", "ar-demo-1", "--channel", "weixin", "--probe"])
+    result = runner.invoke(
+        openclaw, ["channel", "status", "ar-demo-1", "--channel", "weixin", "--probe"]
+    )
 
     assert result.exit_code == 0, result.output
     assert '"connected": true' in result.output.lower()
@@ -1092,8 +1115,10 @@ def test_openclaw_channel_status_allows_creating_when_gateway_is_reachable(monke
 def test_openclaw_channel_enable_updates_weixin_account_config(monkeypatch):
     runner = CliRunner()
     _FakeGatewayClient.applied_configs = []
+
     async def _fake_sleep(*_args, **_kwargs):
         return None
+
     monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawDetailClient)
     monkeypatch.setattr("ksadk.cli.cmd_openclaw.OpenClawGatewayClient", _FakeGatewayClient)
     monkeypatch.setattr("ksadk.cli.cmd_openclaw.asyncio.sleep", _fake_sleep)
@@ -1114,8 +1139,10 @@ def test_openclaw_channel_connect_weixin_prints_qr_url(monkeypatch):
     _FakeGatewayClient.applied_configs = []
     _FakeGatewayClient.last_wait_kwargs = {}
     _FakeGatewayClient.disconnect_waits = []
+
     async def _fake_sleep(*_args, **_kwargs):
         return None
+
     monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawDetailClient)
     monkeypatch.setattr("ksadk.cli.cmd_openclaw.OpenClawGatewayClient", _FakeGatewayClient)
     monkeypatch.setattr("ksadk.cli.cmd_openclaw.asyncio.sleep", _fake_sleep)
@@ -1141,7 +1168,9 @@ def test_openclaw_channel_connect_weixin_waits_for_gateway_restart(monkeypatch):
         return None
 
     monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawDetailClient)
-    monkeypatch.setattr("ksadk.cli.cmd_openclaw.OpenClawGatewayClient", _FakeRestartingWeixinGatewayClient)
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_openclaw.OpenClawGatewayClient", _FakeRestartingWeixinGatewayClient
+    )
     monkeypatch.setattr("ksadk.cli.cmd_openclaw.asyncio.sleep", _fake_sleep)
 
     result = runner.invoke(openclaw, ["channel", "connect", "ar-demo-1", "--channel", "weixin"])
@@ -1173,7 +1202,9 @@ def test_openclaw_channel_connect_weixin_maps_session_key_to_account_id(monkeypa
     }
 
 
-def test_openclaw_channel_connect_weixin_falls_back_to_remote_cli_without_web_login_rpc(monkeypatch):
+def test_openclaw_channel_connect_weixin_falls_back_to_remote_cli_without_web_login_rpc(
+    monkeypatch,
+):
     runner = CliRunner()
     _FakeWeixinGatewayWithoutWebLoginClient.applied_configs = []
     _FakeWeixinGatewayWithoutWebLoginClient.disconnect_waits = []
@@ -1187,7 +1218,9 @@ def test_openclaw_channel_connect_weixin_falls_back_to_remote_cli_without_web_lo
         return 0
 
     monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawDetailClient)
-    monkeypatch.setattr("ksadk.cli.cmd_openclaw.OpenClawGatewayClient", _FakeWeixinGatewayWithoutWebLoginClient)
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_openclaw.OpenClawGatewayClient", _FakeWeixinGatewayWithoutWebLoginClient
+    )
     monkeypatch.setattr("ksadk.cli.cmd_openclaw.asyncio.sleep", _fake_sleep)
     monkeypatch.setattr(cmd_openclaw, "run_terminal_session", _fake_terminal, raising=False)
 
@@ -1205,7 +1238,9 @@ def test_openclaw_channel_connect_weixin_falls_back_to_remote_cli_without_web_lo
     assert '"mode": "remote_cli"' in result.output
 
 
-def test_openclaw_channel_connect_weixin_falls_back_to_remote_cli_when_provider_unavailable(monkeypatch):
+def test_openclaw_channel_connect_weixin_falls_back_to_remote_cli_when_provider_unavailable(
+    monkeypatch,
+):
     runner = CliRunner()
     captured: Dict[str, Any] = {}
 
@@ -1217,7 +1252,9 @@ def test_openclaw_channel_connect_weixin_falls_back_to_remote_cli_when_provider_
         return 0
 
     monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawDetailClient)
-    monkeypatch.setattr("ksadk.cli.cmd_openclaw.OpenClawGatewayClient", _FakeWeixinGatewayProviderUnavailableClient)
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_openclaw.OpenClawGatewayClient", _FakeWeixinGatewayProviderUnavailableClient
+    )
     monkeypatch.setattr("ksadk.cli.cmd_openclaw.asyncio.sleep", _fake_sleep)
     monkeypatch.setattr(cmd_openclaw, "run_terminal_session", _fake_terminal, raising=False)
 
@@ -1344,7 +1381,9 @@ def test_openclaw_channel_connect_wps_xiezuo_tolerates_reload_disconnect(monkeyp
         return None
 
     monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawDetailClient)
-    monkeypatch.setattr("ksadk.cli.cmd_openclaw.OpenClawGatewayClient", _FakeConfigApplyReloadGatewayClient)
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_openclaw.OpenClawGatewayClient", _FakeConfigApplyReloadGatewayClient
+    )
     monkeypatch.setattr("ksadk.cli.cmd_openclaw.asyncio.sleep", _fake_sleep)
 
     result = runner.invoke(
@@ -1493,7 +1532,9 @@ def test_openclaw_channel_doctor_checks_wps_xiezuo_plugin_and_deps(monkeypatch):
 def test_openclaw_channel_doctor_treats_unconfigured_channels_as_connect_required(monkeypatch):
     runner = CliRunner()
     monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawDetailClient)
-    monkeypatch.setattr("ksadk.cli.cmd_openclaw.OpenClawGatewayClient", _FakeDoctorFreshGatewayClient)
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_openclaw.OpenClawGatewayClient", _FakeDoctorFreshGatewayClient
+    )
     monkeypatch.setattr(
         "ksadk.cli.cmd_openclaw.shutil.which",
         lambda cmd: f"/usr/bin/{cmd}" if cmd in {"node", "npx"} else None,
@@ -1518,7 +1559,9 @@ def test_openclaw_channel_doctor_treats_unconfigured_channels_as_connect_require
 def test_openclaw_channel_doctor_keeps_configured_weixin_qr_rpc_as_hard_failure(monkeypatch):
     runner = CliRunner()
     monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawDetailClient)
-    monkeypatch.setattr("ksadk.cli.cmd_openclaw.OpenClawGatewayClient", _FakeDoctorBrokenWeixinGatewayClient)
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_openclaw.OpenClawGatewayClient", _FakeDoctorBrokenWeixinGatewayClient
+    )
     monkeypatch.setattr(
         "ksadk.cli.cmd_openclaw.shutil.which",
         lambda cmd: f"/usr/bin/{cmd}" if cmd in {"node", "npx"} else None,
@@ -1528,7 +1571,9 @@ def test_openclaw_channel_doctor_keeps_configured_weixin_qr_rpc_as_hard_failure(
         lambda: {"ok": True, "node": "/usr/bin/node", "npm": "/usr/bin/npm"},
     )
 
-    result = runner.invoke(openclaw, ["channel", "doctor", "ar-demo-1", "--channel", "weixin", "--output", "json"])
+    result = runner.invoke(
+        openclaw, ["channel", "doctor", "ar-demo-1", "--channel", "weixin", "--output", "json"]
+    )
 
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
@@ -1886,7 +1931,9 @@ def test_openclaw_deploy_update_payload_includes_explicit_config(monkeypatch, tm
 
     assert result.exit_code == 0, result.output
     payload = _FakeOpenClawCreateClient.update_payload
-    assert any(item["Key"] == "APP_MODE" and item["Value"] == "prod" for item in payload["env_vars"])
+    assert any(
+        item["Key"] == "APP_MODE" and item["Value"] == "prod" for item in payload["env_vars"]
+    )
     assert payload["storage"]["size_gi"] == 50
     assert payload["memory_config"] == {"memory_system": "openclaw_default"}
 
@@ -1938,7 +1985,9 @@ def test_openclaw_deploy_rejects_incomplete_vpc_network():
     assert "VpcId、SubnetId、SecurityGroupId" in result.output
 
 
-def test_openclaw_deploy_does_not_query_get_agent_when_quick_access_is_already_complete(monkeypatch, tmp_path):
+def test_openclaw_deploy_does_not_query_get_agent_when_quick_access_is_already_complete(
+    monkeypatch, tmp_path
+):
     runner = CliRunner()
     monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawCreateClient)
     monkeypatch.setattr("ksadk.cli.cmd_openclaw._GLOBAL_ENV_CACHE", {})
@@ -2019,7 +2068,9 @@ def test_openclaw_deploy_writes_only_configured_model_from_provider_catalog(monk
             },
         ]
 
-    monkeypatch.setattr(cmd_openclaw, "fetch_provider_model_catalog", _fake_fetch_provider_model_catalog)
+    monkeypatch.setattr(
+        cmd_openclaw, "fetch_provider_model_catalog", _fake_fetch_provider_model_catalog
+    )
 
     result = runner.invoke(
         openclaw,
@@ -2034,8 +2085,7 @@ def test_openclaw_deploy_writes_only_configured_model_from_provider_catalog(monk
 
     assert result.exit_code == 0, result.output
     env_vars = {
-        item["Key"]: item["Value"]
-        for item in _FakeOpenClawCreateClient.create_payload["env_vars"]
+        item["Key"]: item["Value"] for item in _FakeOpenClawCreateClient.create_payload["env_vars"]
     }
     catalog = json.loads(env_vars["OPENCLAW_MODEL_CATALOG_JSON"])
     assert [item["id"] for item in catalog] == ["glm-5.2", "kimi-k2.7-code", "deepseek-v4-pro"]
@@ -2073,7 +2123,9 @@ def test_openclaw_deploy_writes_allowlisted_models_from_provider_catalog(monkeyp
             },
         ]
 
-    monkeypatch.setattr(cmd_openclaw, "fetch_provider_model_catalog", _fake_fetch_provider_model_catalog)
+    monkeypatch.setattr(
+        cmd_openclaw, "fetch_provider_model_catalog", _fake_fetch_provider_model_catalog
+    )
 
     result = runner.invoke(
         openclaw,
@@ -2088,8 +2140,7 @@ def test_openclaw_deploy_writes_allowlisted_models_from_provider_catalog(monkeyp
 
     assert result.exit_code == 0, result.output
     env_vars = {
-        item["Key"]: item["Value"]
-        for item in _FakeOpenClawCreateClient.create_payload["env_vars"]
+        item["Key"]: item["Value"] for item in _FakeOpenClawCreateClient.create_payload["env_vars"]
     }
     catalog = json.loads(env_vars["OPENCLAW_MODEL_CATALOG_JSON"])
     assert [item["id"] for item in catalog] == ["glm-5.2", "kimi-k2.7-code", "deepseek-v4-pro"]
@@ -2122,7 +2173,9 @@ def test_openclaw_deploy_refreshes_quick_access_when_agent_id_is_immediate(monke
     assert state["api_key"] == "ak-fresh-openclaw"
 
 
-def test_openclaw_deploy_retries_transient_get_agent_not_found_until_api_key_is_ready(monkeypatch, tmp_path):
+def test_openclaw_deploy_retries_transient_get_agent_not_found_until_api_key_is_ready(
+    monkeypatch, tmp_path
+):
     runner = CliRunner()
     monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawDelayedAccessClient)
     monkeypatch.setattr("ksadk.cli.cmd_openclaw._GLOBAL_ENV_CACHE", {})
@@ -2190,7 +2243,9 @@ def test_version_list_supports_dry_run(monkeypatch):
 def test_top_level_delete_accepts_force_alias(monkeypatch):
     runner = CliRunner()
     provider = _FakeDeleteProvider()
-    monkeypatch.setattr("ksadk.cli.cmd_destroy.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider)
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_destroy.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider
+    )
 
     result = runner.invoke(
         destroy_delete,
@@ -2205,7 +2260,9 @@ def test_top_level_delete_accepts_force_alias(monkeypatch):
 def test_top_level_destroy_accepts_yes_alias(monkeypatch):
     runner = CliRunner()
     provider = _FakeDeleteProvider()
-    monkeypatch.setattr("ksadk.cli.cmd_destroy.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider)
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_destroy.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider
+    )
 
     result = runner.invoke(
         destroy_cmd,
@@ -2339,7 +2396,9 @@ def test_legacy_root_help_points_to_canonical_commands():
 def test_top_level_delete_supports_multiple_ids(monkeypatch):
     runner = CliRunner()
     provider = _FakeDeleteProvider()
-    monkeypatch.setattr("ksadk.cli.cmd_destroy.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider)
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_destroy.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider
+    )
 
     result = runner.invoke(
         destroy_delete,
@@ -2353,11 +2412,22 @@ def test_top_level_delete_supports_multiple_ids(monkeypatch):
 def test_top_level_destroy_supports_repeated_agent_option(monkeypatch):
     runner = CliRunner()
     provider = _FakeDeleteProvider()
-    monkeypatch.setattr("ksadk.cli.cmd_destroy.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider)
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_destroy.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider
+    )
 
     result = runner.invoke(
         destroy_cmd,
-        ["--agent", "ar-123", "--agent", "ar-456", "--account-id", "2000003485", "--yes", "--dry-run"],
+        [
+            "--agent",
+            "ar-123",
+            "--agent",
+            "ar-456",
+            "--account-id",
+            "2000003485",
+            "--yes",
+            "--dry-run",
+        ],
     )
 
     assert result.exit_code == 0, result.output
@@ -2533,11 +2603,23 @@ def test_agent_delete_json_returns_error_on_partial_failure(monkeypatch):
         return ids
 
     monkeypatch.setattr("ksadk.cli.cmd_destroy._resolve_agent_ids", _resolve)
-    monkeypatch.setattr("ksadk.cli.cmd_destroy.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider)
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_destroy.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider
+    )
 
     result = runner.invoke(
         cli,
-        ["--output", "json", "agent", "delete", "ar-1", "ar-2", "--account-id", "2000003485", "--yes"],
+        [
+            "--output",
+            "json",
+            "agent",
+            "delete",
+            "ar-1",
+            "ar-2",
+            "--account-id",
+            "2000003485",
+            "--yes",
+        ],
     )
 
     assert result.exit_code == 6, result.output
@@ -2574,7 +2656,9 @@ def test_serverless_destroy_cleans_local_state_only_after_success(tmp_path, monk
     _FakeDeleteClient.deleted_agents = []
     _FakeDeleteClient.should_succeed = True
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("ksadk.deployment.providers.serverless.AgentEngineClient", _FakeDeleteClient)
+    monkeypatch.setattr(
+        "ksadk.deployment.providers.serverless.AgentEngineClient", _FakeDeleteClient
+    )
 
     success = asyncio.run(
         provider.destroy(
@@ -2598,10 +2682,16 @@ def test_serverless_destroy_keeps_local_state_on_dry_run(tmp_path, monkeypatch):
         async def delete_agent(self, agent_id):
             raise DryRunExit(
                 "dry-run",
-                payload={"method": "POST", "url": "https://example.com", "curl": "curl -X POST https://example.com"},
+                payload={
+                    "method": "POST",
+                    "url": "https://example.com",
+                    "curl": "curl -X POST https://example.com",
+                },
             )
 
-    monkeypatch.setattr("ksadk.deployment.providers.serverless.AgentEngineClient", _DryRunDeleteClient)
+    monkeypatch.setattr(
+        "ksadk.deployment.providers.serverless.AgentEngineClient", _DryRunDeleteClient
+    )
 
     try:
         asyncio.run(
@@ -2625,7 +2715,9 @@ def test_serverless_destroy_keeps_local_state_when_remote_delete_fails(tmp_path,
     _FakeDeleteClient.deleted_agents = []
     _FakeDeleteClient.should_succeed = False
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("ksadk.deployment.providers.serverless.AgentEngineClient", _FakeDeleteClient)
+    monkeypatch.setattr(
+        "ksadk.deployment.providers.serverless.AgentEngineClient", _FakeDeleteClient
+    )
 
     success = asyncio.run(
         provider.destroy(
@@ -2653,7 +2745,9 @@ def test_serverless_destroy_uses_explicit_project_dir_for_state_cleanup(tmp_path
     _FakeDeleteClient.deleted_agents = []
     _FakeDeleteClient.should_succeed = True
     monkeypatch.chdir(other_dir)
-    monkeypatch.setattr("ksadk.deployment.providers.serverless.AgentEngineClient", _FakeDeleteClient)
+    monkeypatch.setattr(
+        "ksadk.deployment.providers.serverless.AgentEngineClient", _FakeDeleteClient
+    )
 
     success = asyncio.run(
         provider.destroy(

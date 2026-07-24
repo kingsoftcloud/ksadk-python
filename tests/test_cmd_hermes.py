@@ -10,7 +10,6 @@ from ksadk.api.client import AgentEngineAPIError, DryRunExit
 from ksadk.cli import cmd_hermes
 from ksadk.cli.ui import OUTPUT_MODE_PRETTY, configure_ui_runtime, status_rich_style
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MAKEFILE = REPO_ROOT / "Makefile"
 
@@ -263,14 +262,19 @@ class _FakeHermesDryRunClient(_FakeHermesClient):
                 "body": {
                     "Advanced": {
                         "EnvironmentVariables": [
-                            {"Key": "OPENAI_API_KEY", "Value": "sk-test-secret", "IsSensitive": True},
+                            {
+                                "Key": "OPENAI_API_KEY",
+                                "Value": "sk-test-secret",
+                                "IsSensitive": True,
+                            },
                             {"Key": "OPENAI_MODEL_NAME", "Value": "glm-test", "IsSensitive": False},
                         ]
                     }
                 },
                 "curl": """curl -X POST "http://example.com" \\
   -H "Authorization: Bearer sk-live-secret" \\
-  -d '{"Advanced":{"EnvironmentVariables":[{"Key":"OPENAI_API_KEY","Value":"sk-test-secret","IsSensitive":true}]}}'""",
+  -d '{"Advanced":{"EnvironmentVariables":["""
+                """{"Key":"OPENAI_API_KEY","Value":"sk-test-secret","IsSensitive":true}]}}'""",
             },
         )
 
@@ -284,7 +288,9 @@ class _FakeHermesBootstrapImageClient(_FakeHermesClient):
         assert kwargs["framework"] == "hermes"
         return {
             "configs": {
-                "bootstrap.default_image": "registry.example.com/agentengine-public/hermes-agent:db-meta"
+                "bootstrap.default_image": (
+                    "registry.example.com/agentengine-public/" "hermes-agent:db-meta"
+                )
             }
         }
 
@@ -296,10 +302,12 @@ def test_hermes_build_defaults_are_externalized_to_agentengine_images_repo():
     assert "AGENTENGINE_IMAGES_DIR ?= ../agentengine-images" in makefile
     assert '$(MAKE) -C "$(AGENTENGINE_IMAGES_DIR)" $@' in makefile
     assert "-f deploy/hermes/Dockerfile" not in makefile
-    assert cmd_hermes.DEFAULT_HERMES_IMAGE.endswith(':v2026.7.7.2-ksadk-v070')
+    assert cmd_hermes.DEFAULT_HERMES_IMAGE.endswith(":v2026.7.7.2-ksadk-v070")
 
 
-def test_hermes_deploy_refreshes_quick_access_when_agent_id_is_immediate(monkeypatch, tmp_path: Path):
+def test_hermes_deploy_refreshes_quick_access_when_agent_id_is_immediate(
+    monkeypatch, tmp_path: Path
+):
     runner = CliRunner()
     monkeypatch.setattr(cmd_hermes, "AgentEngineClient", _FakeHermesImmediateAgentIdClient)
     monkeypatch.chdir(tmp_path)
@@ -376,10 +384,14 @@ def test_hermes_exec_accepts_readonly_subcommand_and_uses_remote_terminal(monkey
         captured.update(kwargs)
 
     monkeypatch.setattr(cmd_hermes, "run_hermes_terminal_session", _fake_exec)
-    monkeypatch.setattr(cmd_hermes, "_resolve_hermes_access", lambda **_kwargs: {
-        "endpoint": "https://hermes.example.com",
-        "api_key": "ak-hermes",
-    })
+    monkeypatch.setattr(
+        cmd_hermes,
+        "_resolve_hermes_access",
+        lambda **_kwargs: {
+            "endpoint": "https://hermes.example.com",
+            "api_key": "ak-hermes",
+        },
+    )
 
     result = runner.invoke(cmd_hermes.hermes, ["exec", "ar-hermes-1", "--", "status"])
 
@@ -414,10 +426,14 @@ def test_hermes_exec_exits_cleanly_on_keyboard_interrupt(monkeypatch):
         raise KeyboardInterrupt
 
     monkeypatch.setattr(cmd_hermes, "run_hermes_terminal_session", _fake_exec)
-    monkeypatch.setattr(cmd_hermes, "_resolve_hermes_access", lambda **_kwargs: {
-        "endpoint": "https://hermes.example.com",
-        "api_key": "ak-hermes",
-    })
+    monkeypatch.setattr(
+        cmd_hermes,
+        "_resolve_hermes_access",
+        lambda **_kwargs: {
+            "endpoint": "https://hermes.example.com",
+            "api_key": "ak-hermes",
+        },
+    )
     monkeypatch.setattr(cmd_hermes.asyncio, "run", _raise_keyboard_interrupt)
 
     result = runner.invoke(cmd_hermes.hermes, ["exec", "ar-hermes-1", "--", "status"])
@@ -563,7 +579,9 @@ def test_hermes_exec_dry_run_does_not_resolve_or_connect(monkeypatch):
     monkeypatch.setattr(
         cmd_hermes,
         "_resolve_hermes_access",
-        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("agent access should not be resolved")),
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("agent access should not be resolved")
+        ),
     )
 
     result = runner.invoke(
@@ -589,7 +607,9 @@ def test_hermes_connect_dry_run_does_not_resolve_or_connect(monkeypatch):
     monkeypatch.setattr(
         cmd_hermes,
         "_resolve_hermes_access",
-        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("agent access should not be resolved")),
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("agent access should not be resolved")
+        ),
     )
 
     result = runner.invoke(
@@ -615,12 +635,24 @@ def test_hermes_pairing_dry_run_does_not_resolve_or_connect(monkeypatch):
     monkeypatch.setattr(
         cmd_hermes,
         "_resolve_hermes_access",
-        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("agent access should not be resolved")),
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("agent access should not be resolved")
+        ),
     )
 
     result = runner.invoke(
         cmd_hermes.hermes,
-        ["pairing", "ar-hermes-1", "--dry-run", "--output", "json", "--", "approve", "feishu", "ABC123"],
+        [
+            "pairing",
+            "ar-hermes-1",
+            "--dry-run",
+            "--output",
+            "json",
+            "--",
+            "approve",
+            "feishu",
+            "ABC123",
+        ],
     )
 
     assert result.exit_code == 0, result.output
@@ -641,12 +673,24 @@ def test_hermes_pairing_dry_run_accepts_wpsxiezuo_platform(monkeypatch):
     monkeypatch.setattr(
         cmd_hermes,
         "_resolve_hermes_access",
-        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("agent access should not be resolved")),
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("agent access should not be resolved")
+        ),
     )
 
     result = runner.invoke(
         cmd_hermes.hermes,
-        ["pairing", "ar-hermes-1", "--dry-run", "--output", "json", "--", "approve", "wpsxiezuo", "WPS123"],
+        [
+            "pairing",
+            "ar-hermes-1",
+            "--dry-run",
+            "--output",
+            "json",
+            "--",
+            "approve",
+            "wpsxiezuo",
+            "WPS123",
+        ],
     )
 
     assert result.exit_code == 0, result.output
@@ -675,7 +719,9 @@ def test_hermes_open_defaults_to_manage_and_supports_chat_override(monkeypatch):
         lambda **kwargs: opened.append(kwargs),
     )
 
-    manage_result = runner.invoke(cmd_hermes.hermes, ["open", "ar-hermes-1", "--manage", "--no-open"])
+    manage_result = runner.invoke(
+        cmd_hermes.hermes, ["open", "ar-hermes-1", "--manage", "--no-open"]
+    )
     chat_result = runner.invoke(cmd_hermes.hermes, ["open", "ar-hermes-1", "--chat", "--no-open"])
 
     assert manage_result.exit_code == 0, manage_result.output
@@ -709,7 +755,16 @@ def test_hermes_open_force_new_forwards_to_dashboard(monkeypatch):
 
     result = runner.invoke(
         cmd_hermes.hermes,
-        ["open", "ar-hermes-1", "--chat", "--share", "--expires-seconds", "86400", "--force-new", "--no-open"],
+        [
+            "open",
+            "ar-hermes-1",
+            "--chat",
+            "--share",
+            "--expires-seconds",
+            "86400",
+            "--force-new",
+            "--no-open",
+        ],
     )
 
     assert result.exit_code == 0, result.output
@@ -726,7 +781,9 @@ def test_hermes_open_dry_run_does_not_resolve_or_open(monkeypatch):
     monkeypatch.setattr(
         cmd_hermes,
         "_get_hermes_detail",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("agent detail should not be resolved")),
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("agent detail should not be resolved")
+        ),
     )
     monkeypatch.setattr(
         cmd_hermes,
@@ -760,7 +817,9 @@ def test_hermes_open_rejects_manage_and_chat_together(monkeypatch):
         ),
     )
 
-    result = runner.invoke(cmd_hermes.hermes, ["open", "ar-hermes-1", "--manage", "--chat", "--no-open"])
+    result = runner.invoke(
+        cmd_hermes.hermes, ["open", "ar-hermes-1", "--manage", "--chat", "--no-open"]
+    )
 
     assert result.exit_code != 0
 
@@ -776,15 +835,24 @@ def test_hermes_deploy_creates_container_framework_and_persists_state(tmp_path: 
     monkeypatch.setenv("OPENAI_MODEL_NAME", "glm-test")
     monkeypatch.setattr(cmd_hermes, "AgentEngineClient", _FakeHermesClient)
 
-    result = runner.invoke(cmd_hermes.hermes, ["deploy", "--name", "demo-hermes", "--image", "registry/hermes:test"])
+    result = runner.invoke(
+        cmd_hermes.hermes, ["deploy", "--name", "demo-hermes", "--image", "registry/hermes:test"]
+    )
 
     assert result.exit_code == 0, result.output
     assert _FakeHermesClient.create_payload["framework"] == "hermes"
     assert _FakeHermesClient.create_payload["artifact_type"] == "Container"
     assert _FakeHermesClient.create_payload["artifact_path"] == "registry/hermes:test"
-    assert _FakeHermesClient.create_payload["ui_config"] == {"profile": "hermes", "path": "/", "url": None}
+    assert _FakeHermesClient.create_payload["ui_config"] == {
+        "profile": "hermes",
+        "path": "/",
+        "url": None,
+    }
     assert _FakeHermesClient.create_payload["network"] == {"enable_public_access": True}
-    assert any(item["Key"] == "OPENAI_API_KEY" and item["Value"] == "sk-test" for item in _FakeHermesClient.create_payload["env_vars"])
+    assert any(
+        item["Key"] == "OPENAI_API_KEY" and item["Value"] == "sk-test"
+        for item in _FakeHermesClient.create_payload["env_vars"]
+    )
     assert "agent_id: ar-hermes-1" in (tmp_path / ".agentengine.state").read_text(encoding="utf-8")
 
 
@@ -838,9 +906,7 @@ def test_hermes_deploy_infers_availability_zone_from_subnet(tmp_path: Path, monk
     monkeypatch.setattr(
         "ksadk.cli.network_options._resolve_subnet_availability_zone",
         lambda *, subnet_id, region: (
-            "cn-beijing-6e"
-            if subnet_id == "subnet-cli" and region == "cn-beijing-6"
-            else None
+            "cn-beijing-6e" if subnet_id == "subnet-cli" and region == "cn-beijing-6" else None
         ),
     )
 
@@ -916,9 +982,14 @@ def test_hermes_deploy_defaults_model_base_url_and_omits_api_key(tmp_path: Path,
         for item in _FakeHermesClient.create_payload["env_vars"]
     )
     env_vars = {item["Key"]: item["Value"] for item in _FakeHermesClient.create_payload["env_vars"]}
-    assert json.loads(env_vars["AGENTENGINE_MODEL_POLICY_JSON"])["fallback"]["model"] == "deepseek-v4-pro"
+    assert (
+        json.loads(env_vars["AGENTENGINE_MODEL_POLICY_JSON"])["fallback"]["model"]
+        == "deepseek-v4-pro"
+    )
     assert env_vars["HERMES_FALLBACK_MODEL"] == "deepseek-v4-pro"
-    assert not any(item["Key"] == "OPENAI_API_KEY" for item in _FakeHermesClient.create_payload["env_vars"])
+    assert not any(
+        item["Key"] == "OPENAI_API_KEY" for item in _FakeHermesClient.create_payload["env_vars"]
+    )
 
 
 def test_hermes_deploy_reads_model_config_from_global_settings(tmp_path: Path, monkeypatch):
@@ -937,12 +1008,23 @@ def test_hermes_deploy_reads_model_config_from_global_settings(tmp_path: Path, m
     )
     monkeypatch.setattr(cmd_hermes, "AgentEngineClient", _FakeHermesClient)
 
-    result = runner.invoke(cmd_hermes.hermes, ["deploy", "--name", "demo-hermes", "--image", "registry/hermes:test"])
+    result = runner.invoke(
+        cmd_hermes.hermes, ["deploy", "--name", "demo-hermes", "--image", "registry/hermes:test"]
+    )
 
     assert result.exit_code == 0, result.output
-    assert any(item["Key"] == "OPENAI_API_KEY" and item["Value"] == "sk-global" for item in _FakeHermesClient.create_payload["env_vars"])
-    assert any(item["Key"] == "OPENAI_BASE_URL" and item["Value"] == "https://model.example.com/v1" for item in _FakeHermesClient.create_payload["env_vars"])
-    assert any(item["Key"] == "OPENAI_MODEL_NAME" and item["Value"] == "glm-global" for item in _FakeHermesClient.create_payload["env_vars"])
+    assert any(
+        item["Key"] == "OPENAI_API_KEY" and item["Value"] == "sk-global"
+        for item in _FakeHermesClient.create_payload["env_vars"]
+    )
+    assert any(
+        item["Key"] == "OPENAI_BASE_URL" and item["Value"] == "https://model.example.com/v1"
+        for item in _FakeHermesClient.create_payload["env_vars"]
+    )
+    assert any(
+        item["Key"] == "OPENAI_MODEL_NAME" and item["Value"] == "glm-global"
+        for item in _FakeHermesClient.create_payload["env_vars"]
+    )
 
 
 def test_hermes_deploy_defaults_kspmas_base_url_when_missing(tmp_path: Path, monkeypatch):
@@ -1046,7 +1128,9 @@ def test_hermes_deploy_forwards_explicit_fallback_model(tmp_path: Path, monkeypa
     assert env_vars["HERMES_FALLBACK_BASE_URL"] == "http://kspmas.ksyun.com/v1"
 
 
-def test_hermes_deploy_uses_provider_context_length_for_configured_model(tmp_path: Path, monkeypatch):
+def test_hermes_deploy_uses_provider_context_length_for_configured_model(
+    tmp_path: Path, monkeypatch
+):
     runner = CliRunner()
     _FakeHermesClient.create_payload = None
     monkeypatch.chdir(tmp_path)
@@ -1094,9 +1178,7 @@ def test_hermes_deploy_forwards_langfuse_env_when_configured(tmp_path: Path, mon
     result = runner.invoke(cmd_hermes.hermes, ["deploy", "--name", "demo-hermes"])
 
     assert result.exit_code == 0, result.output
-    env_vars = {
-        item["Key"]: item for item in _FakeHermesClient.create_payload["env_vars"]
-    }
+    env_vars = {item["Key"]: item for item in _FakeHermesClient.create_payload["env_vars"]}
     assert env_vars["HERMES_LANGFUSE_PUBLIC_KEY"]["Value"] == "pk-lf-test"
     assert env_vars["HERMES_LANGFUSE_PUBLIC_KEY"]["IsSensitive"] is True
     assert env_vars["HERMES_LANGFUSE_SECRET_KEY"]["Value"] == "sk-lf-test"
@@ -1217,7 +1299,9 @@ def test_hermes_deploy_updates_existing_hermes_state(tmp_path: Path, monkeypatch
     _FakeHermesClient.updated_agent_id = None
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".agentengine.state").write_text(
-        "type: hermes\nframework: hermes\nagent_id: ar-hermes-existing\nname: demo-hermes\nendpoint: https://old.example.com\n",
+        "type: hermes\nframework: hermes\n"
+        "agent_id: ar-hermes-existing\nname: demo-hermes\n"
+        "endpoint: https://old.example.com\n",
         encoding="utf-8",
     )
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
@@ -1235,14 +1319,18 @@ def test_hermes_deploy_updates_existing_hermes_state(tmp_path: Path, monkeypatch
     assert _FakeHermesClient.update_payload["artifact_path"] == "registry/hermes:new"
 
 
-def test_hermes_deploy_update_payload_preserves_existing_config_by_default(tmp_path: Path, monkeypatch):
+def test_hermes_deploy_update_payload_preserves_existing_config_by_default(
+    tmp_path: Path, monkeypatch
+):
     runner = CliRunner()
     _FakeHermesClient.create_payload = None
     _FakeHermesClient.update_payload = None
     _FakeHermesClient.updated_agent_id = None
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".agentengine.state").write_text(
-        "type: hermes\nframework: hermes\nagent_id: ar-hermes-existing\nname: demo-hermes\nendpoint: https://old.example.com\n",
+        "type: hermes\nframework: hermes\n"
+        "agent_id: ar-hermes-existing\nname: demo-hermes\n"
+        "endpoint: https://old.example.com\n",
         encoding="utf-8",
     )
     monkeypatch.setenv("OPENAI_API_KEY", "sk-local-shell")
@@ -1267,7 +1355,9 @@ def test_hermes_deploy_update_payload_includes_explicit_config(tmp_path: Path, m
     _FakeHermesClient.updated_agent_id = None
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".agentengine.state").write_text(
-        "type: hermes\nframework: hermes\nagent_id: ar-hermes-existing\nname: demo-hermes\nendpoint: https://old.example.com\n",
+        "type: hermes\nframework: hermes\n"
+        "agent_id: ar-hermes-existing\nname: demo-hermes\n"
+        "endpoint: https://old.example.com\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(cmd_hermes, "AgentEngineClient", _FakeHermesClient)
@@ -1296,7 +1386,10 @@ def test_hermes_deploy_update_payload_includes_explicit_config(tmp_path: Path, m
 
     assert result.exit_code == 0, result.output
     payload = _FakeHermesClient.update_payload
-    assert any(item["Key"] == "OPENAI_MODEL_NAME" and item["Value"] == "glm-test" for item in payload["env_vars"])
+    assert any(
+        item["Key"] == "OPENAI_MODEL_NAME" and item["Value"] == "glm-test"
+        for item in payload["env_vars"]
+    )
     assert payload["storage"]["size_gi"] == 50
     assert payload["network"] == {
         "enable_vpc_access": True,
@@ -1336,7 +1429,9 @@ def test_hermes_deploy_polls_order_until_agent_access_is_available(tmp_path: Pat
 
     monkeypatch.setattr(cmd_hermes.asyncio, "sleep", _fake_sleep)
 
-    result = runner.invoke(cmd_hermes.hermes, ["deploy", "--name", "demo-hermes", "--image", "registry/hermes:test"])
+    result = runner.invoke(
+        cmd_hermes.hermes, ["deploy", "--name", "demo-hermes", "--image", "registry/hermes:test"]
+    )
 
     assert result.exit_code == 0, result.output
     assert _FakeHermesOrderClient.get_agent_calls == 1
@@ -1578,13 +1673,17 @@ def test_is_agent_not_found_error_matches_structured_404():
     from ksadk.deployment.agent_access import is_agent_not_found_error
 
     # AgentEngineAPIError code=404 → 命中
-    assert is_agent_not_found_error(
-        AgentEngineAPIError(404, "未找到对应的 Agent", details={"http_status": 404})
-    ) is True
+    assert (
+        is_agent_not_found_error(
+            AgentEngineAPIError(404, "未找到对应的 Agent", details={"http_status": 404})
+        )
+        is True
+    )
     # details.http_status=404（code 非 int）→ 命中
-    assert is_agent_not_found_error(
-        AgentEngineAPIError("NotFound", "x", details={"http_status": 404})
-    ) is True
+    assert (
+        is_agent_not_found_error(AgentEngineAPIError("NotFound", "x", details={"http_status": 404}))
+        is True
+    )
 
 
 def test_is_agent_not_found_error_matches_text_fallback():

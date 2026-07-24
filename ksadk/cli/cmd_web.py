@@ -1,10 +1,12 @@
 """ksadk web - 启动统一本地 Web UI。"""
 
-import click
+import os
 import webbrowser
 from pathlib import Path
-import os
+
+import click
 import yaml
+
 from ksadk.cli.error_utils import ensure_json_output_supported, print_exception
 from ksadk.cli.local_runtime import reexec_with_project_venv_if_needed
 from ksadk.cli.ui import (
@@ -17,7 +19,6 @@ from ksadk.cli.ui import (
 from ksadk.configs import setup_environment
 from ksadk.detection import FrameworkDetector
 from ksadk.runners.factory import create_runner
-
 
 _PERSISTENT_STM_FRAMEWORKS = {"adk", "langgraph", "langchain", "deepagents"}
 _STM_ENV_NAMES = (
@@ -179,6 +180,47 @@ def _default_project_stm_if_unset(
         )
 
 
+def configure_local_runtime_persistence(
+    agent_path: Path,
+    framework: str,
+    *,
+    explicit_session_env_names: set[str] | None = None,
+    explicit_checkpoint_env_names: set[str] | None = None,
+    explicit_local_ui_env_names: set[str] | None = None,
+) -> None:
+    """Bind locally-run agent state to its project unless the shell overrides it."""
+
+    project_dotenv = _project_dotenv_values(agent_path)
+    if explicit_session_env_names is None:
+        explicit_session_env_names = _explicit_env_names_excluding_project_dotenv(
+            (*_STM_ENV_NAMES, *_SESSION_ENV_NAMES),
+            project_dotenv,
+        )
+    if explicit_checkpoint_env_names is None:
+        explicit_checkpoint_env_names = _explicit_env_names_excluding_project_dotenv(
+            _CHECKPOINT_ENV_NAMES,
+            project_dotenv,
+        )
+    if explicit_local_ui_env_names is None:
+        explicit_local_ui_env_names = _explicit_env_names_excluding_project_dotenv(
+            _LOCAL_UI_ENV_NAMES,
+            project_dotenv,
+        )
+
+    os.environ["KSADK_PROJECT_DIR"] = str(agent_path)
+    local_ui_dir = str(agent_path / ".agentengine" / "ui")
+    if "AGENTENGINE_UI_DIR" not in explicit_local_ui_env_names:
+        os.environ["AGENTENGINE_UI_DIR"] = local_ui_dir
+    else:
+        os.environ.setdefault("AGENTENGINE_UI_DIR", local_ui_dir)
+    _default_project_stm_if_unset(
+        framework,
+        agent_path,
+        explicit_session_env_names=explicit_session_env_names,
+        explicit_checkpoint_env_names=explicit_checkpoint_env_names,
+    )
+
+
 @click.command(context_settings=dict(help_option_names=["-h", "--help"]))
 @click.argument("agent_dir", default=".", type=click.Path(exists=True))
 @click.option("--port", "-p", default=8080, help="Web UI 端口")
@@ -197,7 +239,9 @@ def web(agent_dir: str, port: int, model: str, no_open: bool):
     """
     ensure_json_output_supported(
         "agentengine web",
-        suggestion="请改用 `agentengine dashboard open` 或 `agentengine agent status --output json`。",
+        suggestion=(
+            "请改用 `agentengine dashboard open` 或 " "`agentengine agent status --output json`。"
+        ),
     )
 
     agent_path = Path(agent_dir).resolve()
@@ -248,18 +292,12 @@ def web(agent_dir: str, port: int, model: str, no_open: bool):
     display_name = framework_map.get(result.type.value, result.name)
     print_kv("框架", display_name, value_style="#2da44e")
 
-    # 本地 UI 的持久化目录与项目根绑定
-    os.environ["KSADK_PROJECT_DIR"] = str(agent_path)
-    local_ui_dir = str(agent_path / ".agentengine" / "ui")
-    if "AGENTENGINE_UI_DIR" not in explicit_local_ui_env_names:
-        os.environ["AGENTENGINE_UI_DIR"] = local_ui_dir
-    else:
-        os.environ.setdefault("AGENTENGINE_UI_DIR", local_ui_dir)
-    _default_project_stm_if_unset(
-        result.type.value,
+    configure_local_runtime_persistence(
         agent_path,
+        result.type.value,
         explicit_session_env_names=explicit_session_env_names,
         explicit_checkpoint_env_names=explicit_checkpoint_env_names,
+        explicit_local_ui_env_names=explicit_local_ui_env_names,
     )
     launch_path = _configure_custom_ui_env(agent_path)
 

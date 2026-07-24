@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
 import json
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -16,9 +16,9 @@ from ksadk.cli.ui import (
     print_info,
     print_kv,
     print_next_steps,
+    print_rule,
     print_title,
     print_warn,
-    print_rule,
 )
 
 
@@ -55,9 +55,19 @@ def build_workflow_local_plan(
     normalized_artifact_type = (artifact_type or "").strip().lower()
     normalized_reference = str(artifact_reference or artifact_plan.reference or "")
     source = artifact_plan.source or ("built" if artifact_plan.should_build else "external")
-    will_build = artifact_plan.will_build if artifact_plan.will_build is not None else artifact_plan.should_build
-    should_publish = artifact_plan.should_publish if artifact_plan.should_publish is not None else artifact_plan.should_build
-    will_publish = artifact_plan.will_publish if artifact_plan.will_publish is not None else will_build
+    will_build = (
+        artifact_plan.will_build
+        if artifact_plan.will_build is not None
+        else artifact_plan.should_build
+    )
+    should_publish = (
+        artifact_plan.should_publish
+        if artifact_plan.should_publish is not None
+        else artifact_plan.should_build
+    )
+    will_publish = (
+        artifact_plan.will_publish if artifact_plan.will_publish is not None else will_build
+    )
     build_reason = _plan_step_reason(
         source=source,
         explicit_ref_option=artifact_plan.explicit_ref_option,
@@ -114,7 +124,9 @@ def build_workflow_local_plan(
     }
 
 
-def should_build_artifact(*, target: str, artifact_type: str | None, ks3_path: str | None, image: str | None) -> bool:
+def should_build_artifact(
+    *, target: str, artifact_type: str | None, ks3_path: str | None, image: str | None
+) -> bool:
     """Whether deploy/launch should build artifacts locally."""
     if target != "serverless":
         return False
@@ -176,7 +188,9 @@ def _predict_artifact_reference(
 
     normalized_artifact_type = (artifact_type or "Code").strip().lower()
     normalized_deploy_name = (deploy_name or "agent").strip() or "agent"
-    normalized_region = "cn-beijing-6" if str(region or "").strip() == "pre-online" else str(region or "").strip()
+    normalized_region = (
+        "cn-beijing-6" if str(region or "").strip() == "pre-online" else str(region or "").strip()
+    )
 
     if normalized_artifact_type == "code":
         bucket = (ks3_bucket or "").strip()
@@ -339,7 +353,11 @@ def _request_header_summary(headers: Any) -> str:
 def _summarize_plan_steps(steps: Sequence[dict[str, Any]]) -> tuple[str, str, str]:
     executed = [str(step.get("name") or "-") for step in steps if step.get("will_run")]
     planned = [str(step.get("name") or "-") for step in steps if step.get("planned")]
-    skipped = [str(step.get("name") or "-") for step in steps if not step.get("will_run") and not step.get("planned")]
+    skipped = [
+        str(step.get("name") or "-")
+        for step in steps
+        if not step.get("will_run") and not step.get("planned")
+    ]
     return (
         ", ".join(executed) or "-",
         ", ".join(planned) or "-",
@@ -516,8 +534,14 @@ def render_workflow_dry_run(
 
         print_rule("本地计划")
         print_kv("制品类型", str(plan.get("artifact_type") or "-"))
-        print_kv("需要本地构建", "是" if artifact.get("should_local_build", artifact.get("should_build")) else "否")
-        print_kv("会执行本地构建", "是" if artifact.get("will_local_build", artifact.get("will_build")) else "否")
+        print_kv(
+            "需要本地构建",
+            "是" if artifact.get("should_local_build", artifact.get("should_build")) else "否",
+        )
+        print_kv(
+            "会执行本地构建",
+            "是" if artifact.get("will_local_build", artifact.get("will_build")) else "否",
+        )
         print_kv("需要发布制品", "是" if artifact.get("should_publish") else "否")
         print_kv("会执行制品发布", "是" if artifact.get("will_publish") else "否")
         if artifact.get("source"):

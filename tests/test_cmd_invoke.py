@@ -207,7 +207,16 @@ def test_run_invoke_command_refreshes_stale_state_from_remote(monkeypatch, tmp_p
 
     captured = {}
 
-    async def _fake_invoke_once(endpoint, message, api_key, session_id, stream, insecure, model, api_format="chat_completions"):
+    async def _fake_invoke_once(
+        endpoint,
+        message,
+        api_key,
+        session_id,
+        stream,
+        insecure,
+        model,
+        api_format="chat_completions",
+    ):
         captured["endpoint"] = endpoint
         captured["api_key"] = api_key
         captured["message"] = message
@@ -248,7 +257,16 @@ def test_run_invoke_command_single_shot_uses_fresh_session_each_call(monkeypatch
     session，避免长上下文导致首包变慢。续聊需显式传 --session 或进入交互 TUI。"""
     captured_sessions = []
 
-    async def _fake_invoke_once(endpoint, message, api_key, session_id, stream, insecure, model, api_format="chat_completions"):
+    async def _fake_invoke_once(
+        endpoint,
+        message,
+        api_key,
+        session_id,
+        stream,
+        insecure,
+        model,
+        api_format="chat_completions",
+    ):
         captured_sessions.append(session_id)
 
     monkeypatch.chdir(tmp_path)
@@ -300,7 +318,16 @@ def test_run_invoke_command_single_shot_respects_explicit_session(monkeypatch, t
     """单次 --message + 显式 --session：用指定 session，不生成新的。"""
     captured = []
 
-    async def _fake_invoke_once(endpoint, message, api_key, session_id, stream, insecure, model, api_format="chat_completions"):
+    async def _fake_invoke_once(
+        endpoint,
+        message,
+        api_key,
+        session_id,
+        stream,
+        insecure,
+        model,
+        api_format="chat_completions",
+    ):
         captured.append(session_id)
 
     monkeypatch.chdir(tmp_path)
@@ -482,6 +509,7 @@ def test_select_remote_api_format_prefers_responses_for_default_agents():
 
 def test_resolve_remote_api_format_falls_back_to_chat_when_responses_route_missing(monkeypatch):
     """responses 路由 probe 不通时回退 chat_completions，不抛错（auto 回退）。"""
+
     async def _fake_probe(**_kwargs):
         return False
 
@@ -526,6 +554,7 @@ def test_resolve_remote_api_format_probes_responses_for_default_framework(monkey
 
 def test_resolve_remote_api_format_skips_probe_when_api_format_overridden(monkeypatch):
     """显式 api_format=chat_completions 时不 probe，直接返回。"""
+
     async def _fake_probe(**_kwargs):
         raise AssertionError("should not probe when api_format overridden")
 
@@ -594,7 +623,9 @@ def test_resolve_remote_api_format_probes_openclaw_with_runtime_gateway_token(mo
     assert captured["api_key"] == "gateway-token"
 
 
-def test_run_invoke_command_defaults_to_hermes_native_tui_for_hermes_state(monkeypatch, tmp_path: Path):
+def test_run_invoke_command_defaults_to_hermes_native_tui_for_hermes_state(
+    monkeypatch, tmp_path: Path
+):
     (tmp_path / ".agentengine.state").write_text(
         yaml.safe_dump(
             {
@@ -642,7 +673,9 @@ def test_run_invoke_command_defaults_to_hermes_native_tui_for_hermes_state(monke
     assert captured["api_key"] == "ak-hermes"
 
 
-def test_run_invoke_command_defaults_to_openclaw_native_tui_for_openclaw_state(monkeypatch, tmp_path: Path):
+def test_run_invoke_command_defaults_to_openclaw_native_tui_for_openclaw_state(
+    monkeypatch, tmp_path: Path
+):
     (tmp_path / ".agentengine.state").write_text(
         yaml.safe_dump(
             {
@@ -710,7 +743,9 @@ def test_run_invoke_command_defaults_to_openclaw_native_tui_for_openclaw_state(m
     assert captured["api_key"] == "ak-openclaw"
 
 
-def test_run_invoke_command_transport_chat_uses_responses_tui_for_openclaw_state(monkeypatch, tmp_path: Path):
+def test_run_invoke_command_transport_chat_uses_responses_tui_for_openclaw_state(
+    monkeypatch, tmp_path: Path
+):
     (tmp_path / ".agentengine.state").write_text(
         yaml.safe_dump(
             {
@@ -778,7 +813,9 @@ def test_run_invoke_command_transport_chat_uses_responses_tui_for_openclaw_state
     assert captured["responses_session_header"] == "x-openclaw-session-key"
 
 
-def test_run_invoke_command_uses_openclaw_gateway_token_env_for_runtime_calls(monkeypatch, tmp_path: Path):
+def test_run_invoke_command_uses_openclaw_gateway_token_env_for_runtime_calls(
+    monkeypatch, tmp_path: Path
+):
     (tmp_path / ".agentengine.state").write_text(
         yaml.safe_dump(
             {
@@ -819,7 +856,9 @@ def test_run_invoke_command_uses_openclaw_gateway_token_env_for_runtime_calls(mo
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("OPENCLAW_GATEWAY_TOKEN", "gateway-token")
     monkeypatch.setattr("ksadk.cli.cmd_invoke._invoke_tui", _fake_chat)
-    monkeypatch.setattr("ksadk.cli.cmd_invoke._resolve_remote_api_format", _fake_resolve_remote_api_format)
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_invoke._resolve_remote_api_format", _fake_resolve_remote_api_format
+    )
 
     run_invoke_command(
         agent_ref=None,
@@ -843,7 +882,9 @@ def test_run_invoke_command_uses_openclaw_gateway_token_env_for_runtime_calls(mo
     assert captured["responses_session_header"] == "x-openclaw-session-key"
 
 
-def test_run_invoke_command_uses_openclaw_gateway_token_state_for_runtime_calls(monkeypatch, tmp_path: Path):
+def test_run_invoke_command_uses_openclaw_gateway_token_state_for_runtime_calls(
+    monkeypatch, tmp_path: Path
+):
     (tmp_path / ".agentengine.state").write_text(
         yaml.safe_dump(
             {
@@ -886,7 +927,9 @@ def test_run_invoke_command_uses_openclaw_gateway_token_state_for_runtime_calls(
     monkeypatch.delenv("OPENCLAW_GATEWAY_TOKEN", raising=False)
     monkeypatch.delenv("OPENCLAW_GATEWAY_PASSWORD", raising=False)
     monkeypatch.setattr("ksadk.cli.cmd_invoke._invoke_tui", _fake_chat)
-    monkeypatch.setattr("ksadk.cli.cmd_invoke._resolve_remote_api_format", _fake_resolve_remote_api_format)
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_invoke._resolve_remote_api_format", _fake_resolve_remote_api_format
+    )
 
     run_invoke_command(
         agent_ref=None,
@@ -910,7 +953,9 @@ def test_run_invoke_command_uses_openclaw_gateway_token_state_for_runtime_calls(
     assert captured["responses_session_header"] == "x-openclaw-session-key"
 
 
-def test_run_invoke_command_rejects_openclaw_token_mode_without_gateway_token(monkeypatch, tmp_path: Path):
+def test_run_invoke_command_rejects_openclaw_token_mode_without_gateway_token(
+    monkeypatch, tmp_path: Path
+):
     (tmp_path / ".agentengine.state").write_text(
         yaml.safe_dump(
             {
@@ -948,7 +993,9 @@ def test_run_invoke_command_rejects_openclaw_token_mode_without_gateway_token(mo
     assert "--gateway-token" in str(exc_info.value)
 
 
-def test_run_invoke_command_resolves_openclaw_state_without_explicit_agent(monkeypatch, tmp_path: Path):
+def test_run_invoke_command_resolves_openclaw_state_without_explicit_agent(
+    monkeypatch, tmp_path: Path
+):
     state_file = tmp_path / ".agentengine.state"
     state_file.write_text(
         yaml.safe_dump(
@@ -965,7 +1012,16 @@ def test_run_invoke_command_resolves_openclaw_state_without_explicit_agent(monke
 
     captured = {}
 
-    async def _fake_invoke_once(endpoint, message, api_key, session_id, stream, insecure, model, api_format="chat_completions"):
+    async def _fake_invoke_once(
+        endpoint,
+        message,
+        api_key,
+        session_id,
+        stream,
+        insecure,
+        model,
+        api_format="chat_completions",
+    ):
         captured["endpoint"] = endpoint
         captured["api_key"] = api_key
         captured["api_format"] = api_format
@@ -976,7 +1032,9 @@ def test_run_invoke_command_resolves_openclaw_state_without_explicit_agent(monke
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawInvokeClient)
     monkeypatch.setattr("ksadk.cli.cmd_invoke._invoke_once", _fake_invoke_once)
-    monkeypatch.setattr("ksadk.cli.cmd_invoke._resolve_remote_api_format", _fake_resolve_remote_api_format)
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_invoke._resolve_remote_api_format", _fake_resolve_remote_api_format
+    )
 
     run_invoke_command(
         agent_ref=None,
@@ -1006,7 +1064,9 @@ def test_run_invoke_command_resolves_openclaw_state_without_explicit_agent(monke
     }
 
 
-def test_run_invoke_command_transport_chat_rejects_generic_chat_tui_for_hermes(monkeypatch, tmp_path: Path):
+def test_run_invoke_command_transport_chat_rejects_generic_chat_tui_for_hermes(
+    monkeypatch, tmp_path: Path
+):
     (tmp_path / ".agentengine.state").write_text(
         yaml.safe_dump(
             {
@@ -1065,7 +1125,16 @@ def test_run_invoke_command_message_mode_keeps_http_chat_path(monkeypatch, tmp_p
 
     captured = {"once": 0, "native": 0, "chat": 0}
 
-    async def _fake_invoke_once(endpoint, message, api_key, session_id, stream, insecure, model, api_format="chat_completions"):
+    async def _fake_invoke_once(
+        endpoint,
+        message,
+        api_key,
+        session_id,
+        stream,
+        insecure,
+        model,
+        api_format="chat_completions",
+    ):
         captured["once"] += 1
         captured["endpoint"] = endpoint
         captured["message"] = message
@@ -1181,7 +1250,9 @@ def test_invoke_openclaw_terminal_tui_uses_common_terminal_client(monkeypatch):
     assert captured["mode"] == "tui"
 
 
-def test_run_invoke_command_syncs_local_workspace_before_hermes_native_tui(monkeypatch, tmp_path: Path):
+def test_run_invoke_command_syncs_local_workspace_before_hermes_native_tui(
+    monkeypatch, tmp_path: Path
+):
     workspace_dir = tmp_path / "demo-workspace"
     workspace_dir.mkdir()
     (workspace_dir / "notes.txt").write_text("hello workspace", encoding="utf-8")
@@ -1254,7 +1325,9 @@ def test_run_invoke_command_syncs_local_workspace_before_hermes_native_tui(monke
     assert captured["native"]["cwd"] == "demo-workspace"
 
 
-def test_run_invoke_command_rejects_local_workspace_outside_hermes_native(monkeypatch, tmp_path: Path):
+def test_run_invoke_command_rejects_local_workspace_outside_hermes_native(
+    monkeypatch, tmp_path: Path
+):
     workspace_dir = tmp_path / "demo-workspace"
     workspace_dir.mkdir()
     (tmp_path / ".agentengine.state").write_text(
@@ -1291,7 +1364,9 @@ def test_run_invoke_command_rejects_local_workspace_outside_hermes_native(monkey
     assert exc_info.value.code == 1
 
 
-def test_run_invoke_command_rejects_remote_workspace_path_without_local_workspace(monkeypatch, tmp_path: Path):
+def test_run_invoke_command_rejects_remote_workspace_path_without_local_workspace(
+    monkeypatch, tmp_path: Path
+):
     monkeypatch.chdir(tmp_path)
 
     with pytest.raises(SystemExit) as exc_info:
@@ -1315,7 +1390,9 @@ def test_run_invoke_command_rejects_remote_workspace_path_without_local_workspac
     assert exc_info.value.code == 1
 
 
-def test_sync_local_workspace_for_hermes_invoke_rejects_single_file_over_limit(monkeypatch, tmp_path: Path):
+def test_sync_local_workspace_for_hermes_invoke_rejects_single_file_over_limit(
+    monkeypatch, tmp_path: Path
+):
     from ksadk.cli.cmd_invoke import _sync_local_workspace_for_hermes_invoke
 
     workspace_dir = tmp_path / "demo-workspace"
@@ -1353,7 +1430,9 @@ def test_sync_local_workspace_for_hermes_invoke_rejects_single_file_over_limit(m
     assert "超过" in str(exc_info.value)
 
 
-def test_sync_local_workspace_for_hermes_invoke_rejects_total_directory_size_over_limit(monkeypatch, tmp_path: Path):
+def test_sync_local_workspace_for_hermes_invoke_rejects_total_directory_size_over_limit(
+    monkeypatch, tmp_path: Path
+):
     from ksadk.cli.cmd_invoke import _sync_local_workspace_for_hermes_invoke
 
     workspace_dir = tmp_path / "demo-workspace"
@@ -1463,7 +1542,9 @@ def test_sync_local_workspace_for_hermes_invoke_reports_progress(monkeypatch, tm
     assert events[1]["total_bytes"] == 5
 
 
-def test_sync_local_workspace_for_hermes_invoke_ignores_local_dev_artifacts(monkeypatch, tmp_path: Path):
+def test_sync_local_workspace_for_hermes_invoke_ignores_local_dev_artifacts(
+    monkeypatch, tmp_path: Path
+):
     from ksadk.cli.cmd_invoke import _sync_local_workspace_for_hermes_invoke
 
     workspace_dir = tmp_path / "demo-workspace"
@@ -1654,7 +1735,8 @@ def test_run_invoke_command_builds_verbose_workspace_sync_emitter(monkeypatch, t
     monkeypatch.setattr("ksadk.cli.cmd_invoke._invoke_hermes_terminal_tui", lambda **_kwargs: None)
     monkeypatch.setattr(
         "ksadk.cli.cmd_invoke._build_workspace_sync_progress_emitter",
-        lambda verbose: captured.setdefault("verbose_workspace_sync", verbose) or (lambda _event: None),
+        lambda verbose: captured.setdefault("verbose_workspace_sync", verbose)
+        or (lambda _event: None),
     )
 
     run_invoke_command(
@@ -1678,7 +1760,9 @@ def test_run_invoke_command_builds_verbose_workspace_sync_emitter(monkeypatch, t
     assert captured["verbose_workspace_sync"] is True
 
 
-def test_sync_local_workspace_for_hermes_invoke_keeps_git_when_under_limit(monkeypatch, tmp_path: Path):
+def test_sync_local_workspace_for_hermes_invoke_keeps_git_when_under_limit(
+    monkeypatch, tmp_path: Path
+):
     from ksadk.cli.cmd_invoke import _sync_local_workspace_for_hermes_invoke
 
     workspace_dir = tmp_path / "demo-workspace"
@@ -1729,7 +1813,9 @@ def test_sync_local_workspace_for_hermes_invoke_keeps_git_when_under_limit(monke
     assert captured["ignore_git_artifacts"] is False
 
 
-def test_sync_local_workspace_for_hermes_invoke_drops_git_when_needed_for_limit(monkeypatch, tmp_path: Path):
+def test_sync_local_workspace_for_hermes_invoke_drops_git_when_needed_for_limit(
+    monkeypatch, tmp_path: Path
+):
     from ksadk.cli.cmd_invoke import _sync_local_workspace_for_hermes_invoke
 
     workspace_dir = tmp_path / "demo-workspace"
@@ -1841,7 +1927,16 @@ def test_run_invoke_command_passes_explicit_api_format_to_resolver(monkeypatch, 
         captured.update(kwargs)
         return kwargs.get("api_format") or "chat_completions"
 
-    async def _fake_invoke_once(endpoint, message, api_key, session_id, stream, insecure, model, api_format="chat_completions"):
+    async def _fake_invoke_once(
+        endpoint,
+        message,
+        api_key,
+        session_id,
+        stream,
+        insecure,
+        model,
+        api_format="chat_completions",
+    ):
         return None
 
     monkeypatch.chdir(tmp_path)
@@ -1878,14 +1973,18 @@ def test_probe_responses_route_treats_401_as_unavailable_for_default_framework(m
     class _Client:
         def __init__(self, *a, **kw):
             pass
+
         async def __aenter__(self):
             return self
+
         async def __aexit__(self, *a):
             return False
+
         async def get(self, url, headers=None):
             return _Resp()
 
     import httpx as _httpx_mod
+
     monkeypatch.setattr(_httpx_mod, "AsyncClient", _Client)
 
     available = asyncio.run(
@@ -1906,14 +2005,18 @@ def test_probe_responses_route_treats_405_as_available(monkeypatch):
     class _Client:
         def __init__(self, *a, **kw):
             pass
+
         async def __aenter__(self):
             return self
+
         async def __aexit__(self, *a):
             return False
+
         async def get(self, url, headers=None):
             return _Resp()
 
     import httpx as _httpx_mod
+
     monkeypatch.setattr(_httpx_mod, "AsyncClient", _Client)
 
     available = asyncio.run(

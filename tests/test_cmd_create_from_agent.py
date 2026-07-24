@@ -1,7 +1,7 @@
-from pathlib import Path
 import asyncio
 import importlib
 import sys
+from pathlib import Path
 
 from click.testing import CliRunner
 
@@ -41,7 +41,9 @@ def test_find_entry_file_from_agentengine_yaml(tmp_path: Path):
     entry = src / "agentengine_adapter.py"
     entry.write_text("root_agent = object()\n", encoding="utf-8")
     (tmp_path / "agentengine.yaml").write_text(
-        "framework: langgraph\nentry_point: src/agentengine_adapter.py\nagent_variable: root_agent\n",
+        "framework: langgraph\n"
+        "entry_point: src/agentengine_adapter.py\n"
+        "agent_variable: root_agent\n",
         encoding="utf-8",
     )
 
@@ -56,14 +58,12 @@ def test_find_entry_file_ignores_config_when_agent_variable_missing(tmp_path: Pa
     src = tmp_path / "src" / "demo"
     src.mkdir(parents=True)
     (src / "main.py").write_text(
-        "from fastapi import FastAPI\n"
-        "app = FastAPI()\n",
+        "from fastapi import FastAPI\n" "app = FastAPI()\n",
         encoding="utf-8",
     )
     entry = src / "agent.py"
     entry.write_text(
-        "from google.adk.agents import Agent\n"
-        "root_agent = Agent(name='demo')\n",
+        "from google.adk.agents import Agent\n" "root_agent = Agent(name='demo')\n",
         encoding="utf-8",
     )
     (tmp_path / "agentengine.yaml").write_text(
@@ -84,8 +84,7 @@ def test_find_entry_file_prefers_valid_langgraph_json(tmp_path: Path):
     src.mkdir(parents=True)
     entry = src / "graph.py"
     entry.write_text(
-        "from deepagents import create_deep_agent\n"
-        "graph = create_deep_agent(model=None)\n",
+        "from deepagents import create_deep_agent\n" "graph = create_deep_agent(model=None)\n",
         encoding="utf-8",
     )
     (tmp_path / "agentengine.yaml").write_text(
@@ -148,9 +147,7 @@ def test_wrap_agent_directory_ignores_venv_and_exports_nested_entry(tmp_path: Pa
     entry = source / "src" / "agentengine_adapter.py"
     entry.parent.mkdir(parents=True)
     entry.write_text(
-        "def build_agent():\n"
-        "    return {\"ok\": True}\n"
-        "root_agent = build_agent()\n",
+        "def build_agent():\n" '    return {"ok": True}\n' "root_agent = build_agent()\n",
         encoding="utf-8",
     )
 
@@ -180,7 +177,7 @@ def test_wrap_langgraph_messages_directory_does_not_generate_adapter(tmp_path: P
     entry.write_text(
         "from langgraph.graph import MessagesState\n"
         "def node(state):\n"
-        "    return {\"messages\": []}\n"
+        '    return {"messages": []}\n'
         "root_agent = object()\n",
         encoding="utf-8",
     )
@@ -205,7 +202,7 @@ def test_wrap_langgraph_custom_state_directory_generates_adapter(tmp_path: Path,
         "class State(TypedDict):\n"
         "    query: str\n"
         "def node(state: State):\n"
-        "    return {\"answer\": state[\"query\"]}\n"
+        '    return {"answer": state["query"]}\n'
         "workflow = 'StateGraph(State)'\n"
         "root_agent = object()\n",
         encoding="utf-8",
@@ -225,7 +222,9 @@ def test_wrap_langgraph_custom_state_directory_generates_adapter(tmp_path: Path,
     assert "agent_variable: root_agent" in config_text
 
 
-def test_wrap_langgraph_custom_state_directory_detects_state_outside_entry(tmp_path: Path, monkeypatch):
+def test_wrap_langgraph_custom_state_directory_detects_state_outside_entry(
+    tmp_path: Path, monkeypatch
+):
     source = tmp_path / "source"
     source.mkdir()
     (source / "agent.py").write_text("from .graph import root_agent\n", encoding="utf-8")
@@ -235,7 +234,7 @@ def test_wrap_langgraph_custom_state_directory_detects_state_outside_entry(tmp_p
         "class State(TypedDict):\n"
         "    question: str\n"
         "def node(state: State):\n"
-        "    return {\"answer\": state[\"question\"]}\n"
+        '    return {"answer": state["question"]}\n'
         "root_agent = object()\n",
         encoding="utf-8",
     )
@@ -243,7 +242,9 @@ def test_wrap_langgraph_custom_state_directory_detects_state_outside_entry(tmp_p
     monkeypatch.setattr("ksadk.configs.global_config.get_env_from_global_config", lambda: {})
 
     project_path = tmp_path / "wrapped-split-custom"
-    cmd_create._wrap_agent_directory(source, str(project_path), "langgraph", source / "agent.py", "root_agent")
+    cmd_create._wrap_agent_directory(
+        source, str(project_path), "langgraph", source / "agent.py", "root_agent"
+    )
 
     package_dir = project_path / "wrapped_split_custom"
     adapter_text = (package_dir / "agentengine_adapter.py").read_text(encoding="utf-8")
@@ -255,8 +256,7 @@ def test_wrap_langgraph_custom_state_directory_detects_state_outside_entry(tmp_p
 def test_wrap_langgraph_ambiguous_file_generates_review_adapter(tmp_path: Path, monkeypatch):
     source = tmp_path / "agent.py"
     source.write_text(
-        "from langgraph.graph import StateGraph\n"
-        "root_agent = object()\n",
+        "from langgraph.graph import StateGraph\n" "root_agent = object()\n",
         encoding="utf-8",
     )
     monkeypatch.setattr("ksadk.configs.global_config.global_config_exists", lambda: False)
@@ -294,18 +294,26 @@ def test_wrap_deepagents_service_directory_generates_runtime_adapter(tmp_path: P
         "    def __init__(self, agent, langfuse_mgr=None):\n"
         "        self.agent = agent\n"
         "    async def _ainvoke(self, input, config=None, **kwargs):\n"
-        "        return {\"response\": input.get(\"message\", \"\")}\n",
+        '        return {"response": input.get("message", "")}\n',
         encoding="utf-8",
     )
     (source / "agentengine.yaml").write_text(
-        "framework: deepagents\nentry_point: src/bill_diagnosis/main.py\nagent_variable: root_agent\n",
+        "framework: deepagents\n"
+        "entry_point: src/bill_diagnosis/main.py\n"
+        "agent_variable: root_agent\n",
         encoding="utf-8",
     )
     monkeypatch.setattr("ksadk.configs.global_config.global_config_exists", lambda: False)
     monkeypatch.setattr("ksadk.configs.global_config.get_env_from_global_config", lambda: {})
 
     project_path = tmp_path / "wrapped-service"
-    cmd_create._wrap_agent_directory(source, str(project_path), "deepagents", source / "src" / "bill_diagnosis" / "main.py", "root_agent")
+    cmd_create._wrap_agent_directory(
+        source,
+        str(project_path),
+        "deepagents",
+        source / "src" / "bill_diagnosis" / "main.py",
+        "root_agent",
+    )
 
     package_dir = project_path / "wrapped_service"
     adapter_text = (package_dir / "agentengine_adapter.py").read_text(encoding="utf-8")
@@ -319,7 +327,9 @@ def test_wrap_deepagents_service_directory_generates_runtime_adapter(tmp_path: P
     assert "agent_variable: root_agent" in config_text
 
 
-def test_wrap_deepagents_service_directory_ignores_langgraph_json_local_graph(tmp_path: Path, monkeypatch):
+def test_wrap_deepagents_service_directory_ignores_langgraph_json_local_graph(
+    tmp_path: Path, monkeypatch
+):
     source = tmp_path / "source"
     pkg = source / "src" / "bill_diagnosis"
     pkg.mkdir(parents=True)
@@ -340,7 +350,7 @@ def test_wrap_deepagents_service_directory_ignores_langgraph_json_local_graph(tm
     (pkg / "lifespan.py").write_text(
         "class DeepAgentRunnable:\n"
         "    async def _ainvoke(self, input, config=None, **kwargs):\n"
-        "        return {\"response\": input.get(\"message\", \"\")}\n",
+        '        return {"response": input.get("message", "")}\n',
         encoding="utf-8",
     )
     (source / "langgraph.json").write_text(
@@ -388,7 +398,7 @@ def test_generated_deepagents_service_adapter_invokes_fake_service(tmp_path: Pat
         "# deepagents create_deep_agent(\n"
         "class FakeGraph:\n"
         "    async def ainvoke(self, payload, **kwargs):\n"
-        "        return {\"messages\": [{\"content\": payload.get(\"message\", \"\")}]}\n"
+        '        return {"messages": [{"content": payload.get("message", "")}]}\n'
         "async def init_agent_resources():\n"
         "    return FakeGraph(), None, None, None\n",
         encoding="utf-8",
@@ -398,14 +408,20 @@ def test_generated_deepagents_service_adapter_invokes_fake_service(tmp_path: Pat
         "    def __init__(self, agent, langfuse_mgr=None):\n"
         "        self.agent = agent\n"
         "    async def _ainvoke(self, input, config=None, **kwargs):\n"
-        "        return {\"response\": \"service:\" + input.get(\"message\", \"\")}\n",
+        '        return {"response": "service:" + input.get("message", "")}\n',
         encoding="utf-8",
     )
     monkeypatch.setattr("ksadk.configs.global_config.global_config_exists", lambda: False)
     monkeypatch.setattr("ksadk.configs.global_config.get_env_from_global_config", lambda: {})
 
     project_path = tmp_path / "wrapped-service"
-    cmd_create._wrap_agent_directory(source, str(project_path), "deepagents", source / "src" / "bill_diagnosis" / "main.py", "root_agent")
+    cmd_create._wrap_agent_directory(
+        source,
+        str(project_path),
+        "deepagents",
+        source / "src" / "bill_diagnosis" / "main.py",
+        "root_agent",
+    )
 
     sys.path.insert(0, str(project_path))
     try:
@@ -468,12 +484,12 @@ def test_create_adk_normalizes_leading_digit_project_name(tmp_path: Path, monkey
     project_dir = tmp_path / "0707agent-adk"
     package_dir = project_dir / "agent_0707agent_adk"
     assert package_dir.is_dir()
-    assert "name: agent_0707agent_adk" in (
-        project_dir / "agentengine.yaml"
-    ).read_text(encoding="utf-8-sig")
-    assert 'name="agent_0707agent_adk"' in (
-        package_dir / "agent.py"
-    ).read_text(encoding="utf-8-sig")
+    assert "name: agent_0707agent_adk" in (project_dir / "agentengine.yaml").read_text(
+        encoding="utf-8-sig"
+    )
+    assert 'name="agent_0707agent_adk"' in (package_dir / "agent.py").read_text(
+        encoding="utf-8-sig"
+    )
 
 
 def test_create_rejects_generated_runtime_name_over_63_characters(tmp_path: Path, monkeypatch):
@@ -533,3 +549,28 @@ def test_create_hermes_generates_config_only(tmp_path: Path, monkeypatch):
 def test_deploy_artifact_type_defaults_to_config_for_hermes_template():
     assert _resolve_artifact_type_input({"artifact_type": "Container"}, None) == "Container"
     assert _resolve_artifact_type_input({"artifact_type": "Container"}, "Code") == "Code"
+
+
+def test_langchain_template_uses_create_agent_not_lcel():
+    """langchain init 模板用 create_agent(新写法,LangGraph 基座),不再是 LCEL 链。
+
+    create_agent(无 langgraph 导入)经 detector 判为 LANGCHAIN,由 LangChainRunner
+    (复用 LangGraph 基座)运行;模板必须避免 "StateGraph" 字样以防误触发 langgraph 检测。
+    """
+    import ast
+
+    code = cmd_create.TEMPLATES["langchain"]["agent.py"].format(package_name="demo")
+    ast.parse(code)  # 语法合法
+    assert "create_agent(" in code
+    assert "StrOutputParser" not in code  # 不再是 LCEL 链 prompt|llm|parser
+    assert "StateGraph" not in code  # 避免误触发 _is_langgraph 的 "StateGraph" 子串判定
+    assert cmd_create._detect_framework(code) == "langchain"
+
+
+def test_all_framework_templates_render_valid_python():
+    """全部框架 init 模板渲染后语法合法(adk/langchain/langgraph/deepagents/openclaw)。"""
+    import ast
+
+    for framework, files in cmd_create.TEMPLATES.items():
+        for filename, template in files.items():
+            ast.parse(template.format(package_name="demo")), f"{framework}/{filename} 语法非法"
