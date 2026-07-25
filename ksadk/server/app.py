@@ -1053,7 +1053,7 @@ class ListSessionsActionRequest(BaseModel):
     AgentId: str
     UserId: Optional[str] = "user"
     Page: int = Field(1, ge=1)
-    PageSize: int = Field(20, ge=1, le=200)
+    PageSize: int = Field(20, ge=1, le=1000)
 
 
 class SessionIdRequest(BaseModel):
