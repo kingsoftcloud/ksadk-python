@@ -3395,6 +3395,7 @@ async def build_run_input(
     governance_state: RuntimeGovernanceState | None = None,
     session_service_provider: Callable[[], Any] | None = None,
     run_mode: str = RUN_MODE_FOREGROUND,
+    resume_lifecycle_prepared: bool = False,
 ) -> PreparedConversationTurn:
     """构建一次 turn 的标准运行输入，并在进入模型前做上下文投影/压缩。
 
@@ -3434,35 +3435,32 @@ async def build_run_input(
     if resume_input is not None:
         if not session_id:
             raise ValueError("Responses resume input requires session_id")
-        existing_events = await service.get_events(resolved_session_id)
         normalized_resume_input = dict(resume_input)
         if _is_checkpoint_resume_input(normalized_resume_input):
             normalized_resume_input = _normalize_checkpoint_resume_input(normalized_resume_input)
-            await append_run_resume_event(
-                session_id=resolved_session_id,
-                author=agent_id,
-                run_id=str(normalized_resume_input["run_id"]),
-                checkpoint_id=str(normalized_resume_input["checkpoint_id"]),
-                resume_attempt_id=str(normalized_resume_input["resume_attempt_id"]),
-                framework=str(normalized_resume_input["framework"]),
-                framework_ref=normalized_resume_input["framework_ref"],
-                invocation_id=resolved_invocation_id,
-                session_service_provider=provider,
-            )
-            # 补写 run_status(resuming)：让 ActiveRunStatus 在 resume 期间正确反映"恢复中"。
-            # append_run_resume_event 写的是 run_resume 事件（status=resuming），而
-            # _latest_session_run_status 只扫 run_status 事件 → 不补写则
-            # resuming 不进 ActiveRunStatus。
-            await append_run_status_event(
-                session_id=resolved_session_id,
-                author=agent_id,
-                status="resuming",
-                invocation_id=resolved_invocation_id,
-                detail="checkpoint_resume",
-                session_service_provider=provider,
-                run_mode=caller_run_mode,
-                run_trigger=RUN_TRIGGER_CHECKPOINT_RESUME,
-            )
+            if not resume_lifecycle_prepared:
+                await append_run_resume_event(
+                    session_id=resolved_session_id,
+                    author=agent_id,
+                    run_id=str(normalized_resume_input["run_id"]),
+                    checkpoint_id=str(normalized_resume_input["checkpoint_id"]),
+                    resume_attempt_id=str(normalized_resume_input["resume_attempt_id"]),
+                    framework=str(normalized_resume_input["framework"]),
+                    framework_ref=normalized_resume_input["framework_ref"],
+                    invocation_id=resolved_invocation_id,
+                    session_service_provider=provider,
+                )
+                # run_resume 与 ActiveRunStatus 分属不同事件类型，因此补写 resuming。
+                await append_run_status_event(
+                    session_id=resolved_session_id,
+                    author=agent_id,
+                    status="resuming",
+                    invocation_id=resolved_invocation_id,
+                    detail="checkpoint_resume",
+                    session_service_provider=provider,
+                    run_mode=caller_run_mode,
+                    run_trigger=RUN_TRIGGER_CHECKPOINT_RESUME,
+                )
             history = build_history_from_events(await service.get_events(resolved_session_id))
             return PreparedConversationTurn(
                 session_id=resolved_session_id,
@@ -3490,6 +3488,7 @@ async def build_run_input(
                 run_trigger=RUN_TRIGGER_CHECKPOINT_RESUME,
             )
 
+        existing_events = await service.get_events(resolved_session_id)
         is_approval_resume = _is_approval_resume_input(normalized_resume_input)
         existing_tool_receipt_event = None
         if is_approval_resume and not _has_pending_approval(existing_events):
@@ -3712,6 +3711,7 @@ async def invoke_conversation_once(
     invocation_id: Optional[str] = None,
     session_service_provider: Callable[[], Any] | None = None,
     run_mode: str = RUN_MODE_FOREGROUND,
+    resume_lifecycle_prepared: bool = False,
 ) -> tuple[str, dict[str, Any]]:
     """非流式 turn 编排入口。
 
@@ -3742,6 +3742,7 @@ async def invoke_conversation_once(
             governance_state=governance,
             session_service_provider=provider,
             run_mode=entry_run_mode,
+            resume_lifecycle_prepared=resume_lifecycle_prepared,
         )
         # prepared 之后的 run_status 写入复用 prepared 的 mode/trigger
         run_mode = prepared.run_mode
@@ -4039,6 +4040,7 @@ async def _iter_conversation_turn_events(
     invocation_id: Optional[str] = None,
     session_service_provider: Callable[[], Any] | None = None,
     run_mode: str = RUN_MODE_FOREGROUND,
+    resume_lifecycle_prepared: bool = False,
 ) -> AsyncIterator[dict[str, Any]]:
     """Internal semantic event stream shared by protocol serializers."""
     provider = session_service_provider or resolve_session_service
@@ -4093,6 +4095,7 @@ async def _iter_conversation_turn_events(
             governance_state=governance,
             session_service_provider=provider,
             run_mode=entry_run_mode,
+            resume_lifecycle_prepared=resume_lifecycle_prepared,
         )
         # prepared 之后的 run_status 写入复用 prepared 的 mode/trigger
         run_mode = prepared.run_mode
@@ -4779,6 +4782,7 @@ async def stream_conversation_turn(
     invocation_id: Optional[str] = None,
     session_service_provider: Callable[[], Any] | None = None,
     run_mode: str = RUN_MODE_FOREGROUND,
+    resume_lifecycle_prepared: bool = False,
 ) -> AsyncIterator[str]:
     """Legacy ksadk response SSE stream used by hosted chat and chat-completions."""
     async for event in _iter_conversation_turn_events(
@@ -4799,6 +4803,7 @@ async def stream_conversation_turn(
         invocation_id=invocation_id,
         session_service_provider=session_service_provider,
         run_mode=run_mode,
+        resume_lifecycle_prepared=resume_lifecycle_prepared,
     ):
         event_type = event.get("type")
         if event_type == "compaction":
@@ -4893,6 +4898,7 @@ async def stream_responses_conversation_turn(
     invocation_id: Optional[str] = None,
     session_service_provider: Callable[[], Any] | None = None,
     run_mode: str = RUN_MODE_FOREGROUND,
+    resume_lifecycle_prepared: bool = False,
 ) -> AsyncIterator[str]:
     """OpenAI Responses-style SSE stream."""
     response_id = f"resp_{uuid.uuid4().hex}"
@@ -4972,6 +4978,7 @@ async def stream_responses_conversation_turn(
         invocation_id=invocation_id,
         session_service_provider=session_service_provider,
         run_mode=run_mode,
+        resume_lifecycle_prepared=resume_lifecycle_prepared,
     ):
         event_metadata = event.get("metadata")
         if isinstance(event_metadata, Mapping):

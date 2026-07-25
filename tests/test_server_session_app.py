@@ -3292,6 +3292,98 @@ async def test_resume_run_non_streaming_reports_success_and_terminal_noop_report
 
 
 @pytest.mark.asyncio
+async def test_resume_run_background_precedes_stream_and_returns_json_acceptance(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
+    service = InMemorySessionService()
+    runner = _CheckpointResumeRunner()
+    await service.create_session("demo-agent", "user-1", "resume-background")
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+    await conversation_runtime.append_run_checkpoint_event(
+        session_id="resume-background", author="demo-agent", run_id="run-1",
+        checkpoint_id="cp-1", framework="langgraph", framework_ref={},
+        session_service_provider=lambda: service,
+    )
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/ResumeRun",
+            headers={"accept": "text/event-stream"},
+            json={
+                "AgentId": "demo-agent", "SessionId": "resume-background",
+                "RunId": "run-1", "CheckpointId": "cp-1",
+                "ResumeAttemptId": "resume-bg-1", "InvocationId": "inv-bg-1",
+                "Background": True, "Stream": True,
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/json")
+    data = response.json()["Data"]
+    assert data == {
+        "SessionId": "resume-background",
+        "RunId": "run-1",
+        "CheckpointId": "cp-1",
+        "ResumeAttemptId": "resume-bg-1",
+        "InvocationId": "inv-bg-1",
+        "Status": "resuming",
+        "Background": True,
+        "SubscribeUrl": (
+            "/agentengine/api/v1/SubscribeRunEvents"
+            "?SessionId=resume-background&InvocationId=inv-bg-1"
+        ),
+    }
+
+    for _ in range(20):
+        events = await service.get_events("resume-background")
+        if any(
+            event.event_type == "run_status" and event.content.get("status") == "completed"
+            for event in events
+        ):
+            break
+        await asyncio.sleep(0.01)
+    events = await service.get_events("resume-background")
+    assert len([event for event in events if event.event_type == "run_resume"]) == 1
+    assert [
+        event.content.get("status") for event in events if event.event_type == "run_status"
+    ] == ["resuming", "in_progress", "completed"]
+
+
+@pytest.mark.asyncio
+async def test_resume_run_terminal_background_stream_is_still_synchronous_noop(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
+    service = InMemorySessionService()
+    await service.create_session("demo-agent", "user-1", "resume-terminal-background")
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(_CheckpointResumeRunner())
+    await conversation_runtime.append_run_checkpoint_event(
+        session_id="resume-terminal-background", author="demo-agent", run_id="run-1",
+        checkpoint_id="terminal", framework="langgraph", framework_ref={},
+        metadata={"is_terminal": True, "is_resumable": False},
+        session_service_provider=lambda: service,
+    )
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/ResumeRun",
+            json={
+                "AgentId": "demo-agent", "SessionId": "resume-terminal-background",
+                "RunId": "run-1", "CheckpointId": "terminal",
+                "Background": True, "Stream": True,
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/json")
+    assert response.json()["Data"]["status"] == "noop"
+    assert response.json()["Data"]["success"] is False
+
+
+@pytest.mark.asyncio
 async def test_list_session_checkpoints_filters_by_agent_session_and_run(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")
     conversation_runtime = importlib.import_module("ksadk.conversations.runtime")

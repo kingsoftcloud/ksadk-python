@@ -1149,6 +1149,7 @@ class ResumeRunActionRequest(BaseModel):
     ResumeAttemptId: Optional[str] = None
     InvocationId: Optional[str] = None
     Stream: bool = False
+    Background: bool = False
     Model: Optional[str] = None
     ModelMetadata: Optional[Dict[str, Any]] = None
     ModelOptions: Optional[Dict[str, Any]] = None
@@ -2603,6 +2604,77 @@ async def resume_run_action(request: ResumeRunActionRequest):
     }
     active_runner = _resolve_active_runner()
     user_id = session.user_id or "user"
+
+    if request.Background:
+        resume_invocation_id = str(request.InvocationId or resume_input["resume_attempt_id"])
+        resume_key = _detached_resume_key_from_input(request.SessionId, resume_input)
+        _reject_if_detached_resume_active(resume_key)
+        await conversation.append_run_resume_event(
+            session_id=request.SessionId,
+            author=request.AgentId,
+            run_id=str(request.RunId),
+            checkpoint_id=str(request.CheckpointId),
+            resume_attempt_id=str(resume_input["resume_attempt_id"]),
+            framework=checkpoint["Framework"],
+            framework_ref=checkpoint["FrameworkRef"],
+            invocation_id=resume_invocation_id,
+            session_service_provider=resolve_session_service,
+        )
+        await conversation.append_run_status_event(
+            session_id=request.SessionId,
+            author=request.AgentId,
+            status="resuming",
+            invocation_id=resume_invocation_id,
+            detail="checkpoint_resume",
+            session_service_provider=resolve_session_service,
+            run_mode=RUN_MODE_BACKGROUND,
+            run_trigger=RUN_TRIGGER_CHECKPOINT_RESUME,
+        )
+        detached = _DetachedSSEStream(
+            conversation.stream_responses_conversation_turn(
+                runner=active_runner,
+                agent_id=request.AgentId,
+                user_id=user_id,
+                messages=[],
+                session_id=request.SessionId,
+                model=request.Model,
+                model_metadata=request.ModelMetadata,
+                model_options=request.ModelOptions,
+                request_metadata={"responses_conversation": True},
+                resume_input=resume_input,
+                invocation_id=resume_invocation_id,
+                prepare_runner=_prepare_runner_for_model,
+                session_service_provider=resolve_session_service,
+                run_mode=RUN_MODE_BACKGROUND,
+                resume_lifecycle_prepared=True,
+            ),
+            invocation_id=resume_invocation_id,
+            session_id=request.SessionId,
+            run_mode=RUN_MODE_BACKGROUND,
+            run_trigger=RUN_TRIGGER_CHECKPOINT_RESUME,
+        )
+        if resume_key:
+            _DETACHED_RESUME_KEYS_BY_INVOCATION[resume_invocation_id] = resume_key
+            _ACTIVE_DETACHED_RESUME_INVOCATION_BY_KEY[resume_key] = resume_invocation_id
+            detached._task.add_done_callback(
+                lambda _task, inv=resume_invocation_id, key=resume_key: _clear_detached_resume_key(inv, key)
+            )
+        return _action_response(
+            "ResumeRun",
+            {
+                "SessionId": request.SessionId,
+                "RunId": str(request.RunId),
+                "CheckpointId": str(request.CheckpointId),
+                "ResumeAttemptId": str(resume_input["resume_attempt_id"]),
+                "InvocationId": resume_invocation_id,
+                "Status": "resuming",
+                "Background": True,
+                "SubscribeUrl": (
+                    "/agentengine/api/v1/SubscribeRunEvents"
+                    f"?SessionId={request.SessionId}&InvocationId={resume_invocation_id}"
+                ),
+            },
+        )
 
     if request.Stream:
         resume_invocation_id = str(request.InvocationId or resume_input["resume_attempt_id"])
