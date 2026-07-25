@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import abc
+import asyncio
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -99,15 +100,9 @@ class SessionEvent:
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
-            "id": self.id,
-            "session_id": self.session_id,
-            "author": self.author,
-            "event_type": self.event_type,
-            "content": self.content,
-            "timestamp": self.timestamp,
-            "state_delta": self.state_delta,
-            "seq_id": self.seq_id,
-            "metadata": self.metadata,
+            "id": self.id, "session_id": self.session_id, "author": self.author,
+            "event_type": self.event_type, "content": self.content, "timestamp": self.timestamp,
+            "state_delta": self.state_delta, "seq_id": self.seq_id, "metadata": self.metadata,
         }
         if self.invocation_id:
             payload["invocation_id"] = self.invocation_id
@@ -115,20 +110,30 @@ class SessionEvent:
 
     def to_legacy_dict(self) -> dict[str, Any]:
         payload = dict(self.metadata)
-        payload.update(
-            {
-                "id": self.id,
-                "author": self.author,
-                "invocationId": self.invocation_id,
-                "content": self.content,
-                "timestamp": int(self.timestamp * 1000),
-            }
-        )
+        payload.update({"id": self.id, "author": self.author, "invocationId": self.invocation_id,
+                        "content": self.content, "timestamp": int(self.timestamp * 1000)})
         if self.state_delta:
             payload["stateDelta"] = self.state_delta
         if self.event_type:
             payload["eventType"] = self.event_type
         return payload
+
+
+@dataclass(frozen=True)
+class SessionEventQuery:
+    """Bounded, storage-pushdown event query used by runtime list/resume paths."""
+
+    session_ids: list[str] | None = None
+    agent_id: str | None = None
+    offset: int = 0
+    limit: int = 1000
+    after_seq_id: int | None = None
+    before_seq_id: int | None = None
+    event_types: list[str] | None = None
+    run_id: str | None = None
+    checkpoint_id: str | None = None
+    from_start: bool = False
+
 
 
 @dataclass
@@ -275,7 +280,7 @@ class BaseSessionService(abc.ABC):
     @abc.abstractmethod
     async def list_sessions(
         self,
-        agent_id: str,
+        agent_id: Optional[str],
         user_id: Optional[str] = None,
         offset: Optional[int] = None,
         limit: Optional[int] = None,
@@ -330,6 +335,103 @@ class BaseSessionService(abc.ABC):
         before_seq_id: Optional[int] = None,
     ) -> int:
         raise NotImplementedError
+
+    async def get_sessions_by_ids(self, session_ids: list[str]) -> list[Session]:
+        """Return lightweight session metadata for the requested ids.
+
+        Backends override this with a single query; the compatibility fallback
+        keeps third-party services working while they migrate to the batch API.
+        """
+        sessions = await asyncio.gather(
+            *(self.get_session_metadata(session_id) for session_id in session_ids)
+        )
+        return [session for session in sessions if session is not None]
+
+    async def get_session_metadata(self, session_id: str) -> Optional[Session]:
+        """Return a session without events.
+
+        A backend which has not implemented this cannot safely serve the new
+        batch/list APIs, so it must opt in rather than silently materialising
+        event history through the legacy ``get_session`` method.
+        """
+        # Compatibility-only path for old single-session backends. New multi/all
+        # paths still require an opt-in implementation below.
+        return await self.get_session(session_id)
+
+    async def list_session_metadata(
+        self, agent_id: Optional[str] = None, user_id: Optional[str] = None
+    ) -> list[Session]:
+        raise NotImplementedError("Backend must implement list_session_metadata for batch queries")
+
+    async def query_events(self, query: SessionEventQuery) -> list[SessionEvent]:
+        if (
+            query.session_ids is not None
+            and len(query.session_ids) == 1
+            and not query.event_types
+            and query.run_id is None
+            and query.checkpoint_id is None
+            and not query.from_start
+        ):
+            return await self.get_events(
+                query.session_ids[0], offset=query.offset, limit=query.limit,
+                after_seq_id=query.after_seq_id, before_seq_id=query.before_seq_id,
+            )
+        raise NotImplementedError("Backend does not support batch event queries")
+
+    async def count_event_query(self, query: SessionEventQuery) -> int:
+        if (
+            query.session_ids is not None
+            and len(query.session_ids) == 1
+            and not query.event_types
+            and query.run_id is None
+            and query.checkpoint_id is None
+        ):
+            return await self.count_events(
+                query.session_ids[0], after_seq_id=query.after_seq_id,
+                before_seq_id=query.before_seq_id,
+            )
+        raise NotImplementedError("Backend does not support batch event counts")
+
+    async def get_checkpoint_lookup_stats(
+        self, session_id: str, run_id: str, checkpoint_id: str
+    ) -> dict[str, Any]:
+        raise NotImplementedError("Backend must implement checkpoint lookup stats")
+
+    async def get_events_batch(
+        self,
+        session_ids: list[str] | None = None,
+        *,
+        agent_id: str | None = None,
+        offset: int = 0,
+        limit: int = 1000,
+        after_seq_id: int | None = None,
+        before_seq_id: int | None = None,
+        event_types: list[str] | None = None,
+        from_start: bool = False,
+    ) -> list[SessionEvent]:
+        return await self.query_events(
+            SessionEventQuery(
+                session_ids=session_ids, agent_id=agent_id, offset=offset, limit=limit,
+                after_seq_id=after_seq_id, before_seq_id=before_seq_id,
+                event_types=event_types, from_start=from_start,
+            )
+        )
+
+    async def count_events_batch(
+        self,
+        session_ids: list[str] | None = None,
+        *,
+        agent_id: str | None = None,
+        after_seq_id: int | None = None,
+        before_seq_id: int | None = None,
+        event_types: list[str] | None = None,
+    ) -> int:
+        return await self.count_event_query(
+            SessionEventQuery(
+                session_ids=session_ids, agent_id=agent_id, after_seq_id=after_seq_id,
+                before_seq_id=before_seq_id, event_types=event_types,
+            )
+        )
 
     @abc.abstractmethod
     async def get_state(

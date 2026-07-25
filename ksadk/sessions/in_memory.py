@@ -5,7 +5,9 @@ import copy
 import time
 from typing import Optional
 
-from ksadk.sessions.base import BaseSessionService, Session, SessionEvent, SessionState, generate_id
+from ksadk.sessions.base import (
+    BaseSessionService, Session, SessionEvent, SessionEventQuery, SessionState, generate_id,
+)
 
 
 class InMemorySessionService(BaseSessionService):
@@ -45,7 +47,7 @@ class InMemorySessionService(BaseSessionService):
 
     async def list_sessions(
         self,
-        agent_id: str,
+        agent_id: Optional[str],
         user_id: Optional[str] = None,
         offset: Optional[int] = None,
         limit: Optional[int] = None,
@@ -54,12 +56,26 @@ class InMemorySessionService(BaseSessionService):
             sessions = [
                 copy.deepcopy(session)
                 for session in self._sessions.values()
-                if session.agent_id == agent_id and (user_id is None or session.user_id == user_id)
+                if (agent_id is None or session.agent_id == agent_id)
+                and (user_id is None or session.user_id == user_id)
             ]
             sessions.sort(key=lambda item: (item.updated_at, item.created_at), reverse=True)
             start = offset or 0
             end = None if limit is None else start + limit
             return sessions[start:end]
+
+    async def list_session_metadata(
+        self, agent_id: Optional[str] = None, user_id: Optional[str] = None
+    ) -> list[Session]:
+        async with self._lock:
+            sessions = [
+                self._session_metadata(session)
+                for session in self._sessions.values()
+                if (agent_id is None or session.agent_id == agent_id)
+                and (user_id is None or session.user_id == user_id)
+            ]
+            sessions.sort(key=lambda item: (item.updated_at, item.created_at), reverse=True)
+            return sessions
 
     async def count_sessions(
         self,
@@ -190,6 +206,114 @@ class InMemorySessionService(BaseSessionService):
             if before_seq_id is not None:
                 events = [event for event in events if event.seq_id < before_seq_id]
             return len(events)
+
+    async def get_sessions_by_ids(self, session_ids: list[str]) -> list[Session]:
+        async with self._lock:
+            return [
+                self._session_metadata(self._sessions[session_id])
+                for session_id in session_ids
+                if session_id in self._sessions
+            ]
+
+    async def get_session_metadata(self, session_id: str) -> Optional[Session]:
+        async with self._lock:
+            session = self._sessions.get(session_id)
+            return self._session_metadata(session) if session else None
+
+    @staticmethod
+    def _session_metadata(session: Session) -> Session:
+        return Session(
+            id=session.id, agent_id=session.agent_id, user_id=session.user_id,
+            title=session.title, title_source=session.title_source, summary=session.summary,
+            first_prompt=session.first_prompt, last_prompt=session.last_prompt,
+            state=copy.deepcopy(session.state), events=[], created_at=session.created_at,
+            updated_at=session.updated_at, version=session.version,
+        )
+
+    async def query_events(self, query: SessionEventQuery) -> list[SessionEvent]:
+        return await self._query_events(query, count_only=False)
+
+    async def count_event_query(self, query: SessionEventQuery) -> int:
+        return int(await self._query_events(query, count_only=True))
+
+    async def get_checkpoint_lookup_stats(
+        self, session_id: str, run_id: str, checkpoint_id: str
+    ) -> dict[str, object]:
+        async with self._lock:
+            session = self._sessions.get(session_id)
+            candidate = None
+            max_seq_id = 0
+            resume_count = 0
+            last_resumed_at = None
+            for event in (session.events if session else []):
+                metadata = event.metadata or {}
+                if str(metadata.get("run_id") or "") != run_id:
+                    continue
+                if event.event_type == "run_checkpoint":
+                    max_seq_id = max(max_seq_id, int(event.seq_id or 0))
+                    if str(metadata.get("checkpoint_id") or "") == checkpoint_id and (
+                        candidate is None or event.seq_id > candidate.seq_id
+                    ):
+                        candidate = copy.deepcopy(event)
+                elif event.event_type == "run_resume" and str(metadata.get("checkpoint_id") or "") == checkpoint_id:
+                    resume_count += 1
+                    last_resumed_at = max(last_resumed_at or event.timestamp, event.timestamp)
+            return {"candidate": candidate, "max_seq_id": max_seq_id,
+                    "resume_count": resume_count, "last_resumed_at": last_resumed_at}
+
+    async def _query_events(self, query: SessionEventQuery, *, count_only: bool) -> list[SessionEvent] | int:
+        async with self._lock:
+            selected_ids = list(dict.fromkeys(query.session_ids)) if query.session_ids is not None else list(self._sessions)
+            allowed_types = set(query.event_types or [])
+            events = [
+                event for session_id in selected_ids for session in [self._sessions.get(session_id)]
+                if session is not None and (query.agent_id is None or session.agent_id == query.agent_id)
+                for event in session.events
+                if (query.after_seq_id is None or event.seq_id > query.after_seq_id)
+                and (query.before_seq_id is None or event.seq_id < query.before_seq_id)
+                and (not allowed_types or event.event_type in allowed_types)
+                and (query.run_id is None or str((event.metadata or {}).get("run_id") or "") == query.run_id)
+                and (query.checkpoint_id is None or str((event.metadata or {}).get("checkpoint_id") or "") == query.checkpoint_id)
+            ]
+            if count_only:
+                return len(events)
+            events.sort(key=lambda event: (event.timestamp, event.session_id, event.seq_id, event.id))
+            if query.from_start:
+                return copy.deepcopy(events[query.offset : query.offset + query.limit])
+            end = max(len(events) - query.offset, 0)
+            return copy.deepcopy(events[max(end - query.limit, 0) : end])
+
+    async def get_events_batch(
+        self,
+        session_ids: list[str] | None = None,
+        *,
+        agent_id: str | None = None,
+        offset: int = 0,
+        limit: int = 1000,
+        after_seq_id: int | None = None,
+        before_seq_id: int | None = None,
+        event_types: list[str] | None = None,
+        from_start: bool = False,
+    ) -> list[SessionEvent]:
+        return await self.query_events(SessionEventQuery(
+            session_ids=session_ids, agent_id=agent_id, offset=offset, limit=limit,
+            after_seq_id=after_seq_id, before_seq_id=before_seq_id,
+            event_types=event_types, from_start=from_start,
+        ))
+
+    async def count_events_batch(
+        self,
+        session_ids: list[str] | None = None,
+        *,
+        agent_id: str | None = None,
+        after_seq_id: int | None = None,
+        before_seq_id: int | None = None,
+        event_types: list[str] | None = None,
+    ) -> int:
+        return await self.count_event_query(SessionEventQuery(
+            session_ids=session_ids, agent_id=agent_id, after_seq_id=after_seq_id,
+            before_seq_id=before_seq_id, event_types=event_types,
+        ))
 
     async def get_state(
         self,

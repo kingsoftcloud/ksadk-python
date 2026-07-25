@@ -13,6 +13,7 @@ from ksadk.sessions.base import (
     BaseSessionService,
     Session,
     SessionEvent,
+    SessionEventQuery,
     SessionState,
     generate_id,
 )
@@ -120,7 +121,7 @@ class PostgresSessionService(BaseSessionService):
 
     async def list_sessions(
         self,
-        agent_id: str,
+        agent_id: Optional[str],
         user_id: Optional[str] = None,
         offset: Optional[int] = None,
         limit: Optional[int] = None,
@@ -131,9 +132,12 @@ class PostgresSessionService(BaseSessionService):
                 SELECT id, agent_id, user_id, title, title_source, summary, first_prompt, last_prompt,
                        state_json, created_at, updated_at, version
                 FROM {KSADK_PG_SESSIONS_TABLE}
-                WHERE namespace = $1 AND agent_id = $2
+                WHERE namespace = $1
             """
-            params: list[Any] = [self.namespace, agent_id]
+            params: list[Any] = [self.namespace]
+            if agent_id is not None:
+                params.append(agent_id)
+                query += f" AND agent_id = ${len(params)}"
             if user_id is not None:
                 params.append(user_id)
                 query += f" AND user_id = ${len(params)}"
@@ -419,6 +423,185 @@ class PostgresSessionService(BaseSessionService):
             """
             return int(await connection.fetchval(query, *params) or 0)
 
+    async def get_sessions_by_ids(self, session_ids: list[str]) -> list[Session]:
+        if not session_ids:
+            return []
+        await self._ensure_schema()
+        async with self._pool.acquire() as connection:
+            rows = await connection.fetch(
+                f"""
+                SELECT id, agent_id, user_id, title, title_source, summary, first_prompt, last_prompt,
+                       state_json, created_at, updated_at, version
+                FROM {KSADK_PG_SESSIONS_TABLE}
+                WHERE namespace = $1 AND id = ANY($2::text[])
+                """, self.namespace, session_ids
+            )
+            by_id = {row["id"]: self._session_from_row(row, events=[]) for row in rows}
+            return [by_id[session_id] for session_id in session_ids if session_id in by_id]
+
+    async def get_session_metadata(self, session_id: str) -> Optional[Session]:
+        sessions = await self.get_sessions_by_ids([session_id])
+        return sessions[0] if sessions else None
+
+    async def list_session_metadata(
+        self, agent_id: Optional[str] = None, user_id: Optional[str] = None
+    ) -> list[Session]:
+        return await self.list_sessions(agent_id, user_id)
+
+    async def query_events(self, query: SessionEventQuery) -> list[SessionEvent]:
+        await self._ensure_schema()
+        clauses, params = self._batch_event_where(
+            query.session_ids, query.agent_id, query.after_seq_id, query.before_seq_id,
+            query.event_types, query.run_id, query.checkpoint_id,
+        )
+        params.extend([query.limit, query.offset])
+        direction = "ASC" if query.from_start else "DESC"
+        async with self._pool.acquire() as connection:
+            rows = await connection.fetch(
+                f"""SELECT id, session_id, author, event_type, content_json, timestamp, state_delta_json, seq_id, invocation_id, metadata_json
+                FROM (SELECT event_row.id, event_row.session_id, event_row.author, event_row.event_type, event_row.content_json, event_row.timestamp, event_row.state_delta_json, event_row.seq_id, event_row.invocation_id, event_row.metadata_json
+                      FROM {KSADK_PG_EVENTS_TABLE} AS event_row JOIN {KSADK_PG_SESSIONS_TABLE} AS session_row ON session_row.namespace = event_row.namespace AND session_row.id = event_row.session_id
+                      WHERE {' AND '.join(clauses)} ORDER BY event_row.timestamp {direction}, event_row.session_id {direction}, event_row.seq_id {direction}, event_row.id {direction}
+                      LIMIT ${len(params)-1} OFFSET ${len(params)}) AS page_events
+                ORDER BY timestamp ASC, session_id ASC, seq_id ASC, id ASC""", *params
+            )
+            return [self._event_from_row(row) for row in rows]
+
+    async def count_event_query(self, query: SessionEventQuery) -> int:
+        await self._ensure_schema()
+        clauses, params = self._batch_event_where(
+            query.session_ids, query.agent_id, query.after_seq_id, query.before_seq_id,
+            query.event_types, query.run_id, query.checkpoint_id,
+        )
+        async with self._pool.acquire() as connection:
+            return int(await connection.fetchval(
+                f"SELECT COUNT(*) FROM {KSADK_PG_EVENTS_TABLE} AS event_row JOIN {KSADK_PG_SESSIONS_TABLE} AS session_row ON session_row.namespace = event_row.namespace AND session_row.id = event_row.session_id WHERE {' AND '.join(clauses)}", *params
+            ) or 0)
+
+    async def get_checkpoint_lookup_stats(
+        self, session_id: str, run_id: str, checkpoint_id: str
+    ) -> dict[str, object]:
+        await self._ensure_schema()
+        async with self._pool.acquire() as connection:
+            candidate_row = await connection.fetchrow(
+                f"""SELECT id, session_id, author, event_type, content_json, timestamp, state_delta_json, seq_id, invocation_id, metadata_json
+                FROM {KSADK_PG_EVENTS_TABLE} WHERE namespace = $1 AND session_id = $2 AND event_type = 'run_checkpoint'
+                AND metadata_json ->> 'run_id' = $3 AND metadata_json ->> 'checkpoint_id' = $4 ORDER BY seq_id DESC LIMIT 1""",
+                self.namespace, session_id, run_id, checkpoint_id,
+            )
+            max_seq_id = await connection.fetchval(
+                f"SELECT COALESCE(MAX(seq_id), 0) FROM {KSADK_PG_EVENTS_TABLE} WHERE namespace = $1 AND session_id = $2 AND event_type = 'run_checkpoint' AND metadata_json ->> 'run_id' = $3",
+                self.namespace, session_id, run_id,
+            )
+            audit = await connection.fetchrow(
+                f"SELECT COUNT(*) AS count, MAX(timestamp) AS last_at FROM {KSADK_PG_EVENTS_TABLE} WHERE namespace = $1 AND session_id = $2 AND event_type = 'run_resume' AND metadata_json ->> 'run_id' = $3 AND metadata_json ->> 'checkpoint_id' = $4",
+                self.namespace, session_id, run_id, checkpoint_id,
+            )
+            return {"candidate": self._event_from_row(candidate_row) if candidate_row else None,
+                    "max_seq_id": int(max_seq_id or 0), "resume_count": int(audit["count"] or 0),
+                    "last_resumed_at": audit["last_at"]}
+
+    def _batch_event_where(
+        self,
+        session_ids: list[str] | None,
+        agent_id: str | None,
+        after_seq_id: int | None,
+        before_seq_id: int | None,
+        event_types: list[str] | None,
+        run_id: str | None = None,
+        checkpoint_id: str | None = None,
+    ) -> tuple[list[str], list[Any]]:
+        clauses = ["event_row.namespace = $1"]
+        params: list[Any] = [self.namespace]
+        if session_ids is not None:
+            if not session_ids:
+                return ["FALSE"], []
+            params.append(session_ids)
+            clauses.append(f"event_row.session_id = ANY(${len(params)}::text[])")
+        if agent_id is not None:
+            params.append(agent_id)
+            clauses.append(f"session_row.agent_id = ${len(params)}")
+        if after_seq_id is not None:
+            params.append(after_seq_id)
+            clauses.append(f"event_row.seq_id > ${len(params)}")
+        if before_seq_id is not None:
+            params.append(before_seq_id)
+            clauses.append(f"event_row.seq_id < ${len(params)}")
+        if event_types:
+            params.append(event_types)
+            clauses.append(f"event_row.event_type = ANY(${len(params)}::text[])")
+        if run_id is not None:
+            params.append(run_id)
+            clauses.append(f"event_row.metadata_json ->> 'run_id' = ${len(params)}")
+        if checkpoint_id is not None:
+            params.append(checkpoint_id)
+            clauses.append(f"event_row.metadata_json ->> 'checkpoint_id' = ${len(params)}")
+        return clauses, params
+
+    async def get_events_batch(
+        self,
+        session_ids: list[str] | None = None,
+        *,
+        agent_id: str | None = None,
+        offset: int = 0,
+        limit: int = 1000,
+        after_seq_id: int | None = None,
+        before_seq_id: int | None = None,
+        event_types: list[str] | None = None,
+        from_start: bool = False,
+    ) -> list[SessionEvent]:
+        await self._ensure_schema()
+        clauses, params = self._batch_event_where(
+            session_ids, agent_id, after_seq_id, before_seq_id, event_types
+        )
+        params.extend([limit, offset])
+        direction = "ASC" if from_start else "DESC"
+        limit_param, offset_param = len(params) - 1, len(params)
+        async with self._pool.acquire() as connection:
+            rows = await connection.fetch(
+                f"""
+                SELECT id, session_id, author, event_type, content_json, timestamp,
+                       state_delta_json, seq_id, invocation_id, metadata_json
+                FROM (
+                    SELECT event_row.id, event_row.session_id, event_row.author, event_row.event_type,
+                           event_row.content_json, event_row.timestamp, event_row.state_delta_json,
+                           event_row.seq_id, event_row.invocation_id, event_row.metadata_json
+                    FROM {KSADK_PG_EVENTS_TABLE} AS event_row
+                    JOIN {KSADK_PG_SESSIONS_TABLE} AS session_row
+                      ON session_row.namespace = event_row.namespace AND session_row.id = event_row.session_id
+                    WHERE {' AND '.join(clauses)}
+                    ORDER BY event_row.timestamp {direction}, event_row.session_id {direction},
+                             event_row.seq_id {direction}, event_row.id {direction}
+                    LIMIT ${limit_param} OFFSET ${offset_param}
+                ) AS page_events
+                ORDER BY timestamp ASC, session_id ASC, seq_id ASC, id ASC
+                """, *params
+            )
+            return [self._event_from_row(row) for row in rows]
+
+    async def count_events_batch(
+        self,
+        session_ids: list[str] | None = None,
+        *,
+        agent_id: str | None = None,
+        after_seq_id: int | None = None,
+        before_seq_id: int | None = None,
+        event_types: list[str] | None = None,
+    ) -> int:
+        await self._ensure_schema()
+        clauses, params = self._batch_event_where(
+            session_ids, agent_id, after_seq_id, before_seq_id, event_types
+        )
+        async with self._pool.acquire() as connection:
+            return int(await connection.fetchval(
+                f"""
+                SELECT COUNT(*) FROM {KSADK_PG_EVENTS_TABLE} AS event_row
+                JOIN {KSADK_PG_SESSIONS_TABLE} AS session_row
+                  ON session_row.namespace = event_row.namespace AND session_row.id = event_row.session_id
+                WHERE {' AND '.join(clauses)}
+                """, *params
+            ) or 0)
+
     async def get_state(
         self,
         agent_id: str,
@@ -639,6 +822,13 @@ class PostgresSessionService(BaseSessionService):
 
                     CREATE INDEX IF NOT EXISTS idx_ksadk_pg_events_session_seq
                     ON {KSADK_PG_EVENTS_TABLE} (namespace, session_id, seq_id);
+
+                    CREATE INDEX IF NOT EXISTS idx_ksadk_pg_events_timestamp_session_seq
+                    ON {KSADK_PG_EVENTS_TABLE} (namespace, timestamp, session_id, seq_id, id);
+
+                    CREATE INDEX IF NOT EXISTS idx_ksadk_pg_events_checkpoint_lookup
+                    ON {KSADK_PG_EVENTS_TABLE} (namespace, session_id, event_type,
+                        (metadata_json ->> 'run_id'), (metadata_json ->> 'checkpoint_id'), seq_id);
 
                     CREATE TABLE IF NOT EXISTS {KSADK_PG_STATES_TABLE} (
                         namespace TEXT NOT NULL,

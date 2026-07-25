@@ -2,13 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from enum import Enum
 from typing import Any, Optional, cast
 
-from ksadk.sessions.base import BaseSessionService, Session, SessionEvent, SessionState
+from ksadk.sessions.base import BaseSessionService, Session, SessionEvent, SessionEventQuery, SessionState
 from ksadk.sessions.in_memory import InMemorySessionService
 from ksadk.sessions.resilience import is_session_backend_failure
 
 logger = logging.getLogger(__name__)
+
+
+class _PrimaryCallStatus(Enum):
+    AVAILABLE_RESULT = "available_result"
+    BACKEND_FAILURE = "backend_failure"
+    CAPABILITY_UNSUPPORTED = "capability_unsupported"
 
 
 class ResilientSessionService(BaseSessionService):
@@ -34,23 +41,33 @@ class ResilientSessionService(BaseSessionService):
         self._hydrate_lock = asyncio.Lock()
         self._primary_session_lock = asyncio.Lock()
         self._primary_session_ids: set[str] = set()
+        self._dirty_session_ids: set[str] = set()
         self._probe_task: asyncio.Task[None] | None = None
 
     @property
     def degraded(self) -> bool:
         return not self._primary_enabled
 
-    async def _call_primary(self, method_name: str, *args: Any, **kwargs: Any) -> tuple[bool, Any]:
+    async def _call_primary(
+        self, method_name: str, *args: Any, **kwargs: Any
+    ) -> tuple[_PrimaryCallStatus, Any]:
         if not self._primary_enabled:
-            return False, None
+            return _PrimaryCallStatus.BACKEND_FAILURE, None
         try:
             method = getattr(self.primary, method_name)
-            return True, await method(*args, **kwargs)
+            return _PrimaryCallStatus.AVAILABLE_RESULT, await method(*args, **kwargs)
+        except NotImplementedError as exc:
+            return _PrimaryCallStatus.CAPABILITY_UNSUPPORTED, exc
         except Exception as exc:
             if not is_session_backend_failure(exc):
                 raise
             self._disable_primary(exc)
-            return False, None
+            return _PrimaryCallStatus.BACKEND_FAILURE, None
+
+    @staticmethod
+    def _raise_if_capability_unsupported(status: _PrimaryCallStatus, result: Any) -> None:
+        if status is _PrimaryCallStatus.CAPABILITY_UNSUPPORTED:
+            raise cast(NotImplementedError, result)
 
     def _disable_primary(self, exc: Exception) -> None:
         if not self._primary_enabled:
@@ -133,47 +150,47 @@ class ResilientSessionService(BaseSessionService):
         session_id: Optional[str] = None,
     ) -> Session:
         if session_id:
-            ok, durable = await self._call_primary("get_session", session_id)
-            if ok and durable is not None:
+            status, durable = await self._call_primary("get_session", session_id)
+            if status is _PrimaryCallStatus.AVAILABLE_RESULT and durable is not None:
                 return await self._hydrate(durable)
             existing = await self.fallback.get_session(session_id)
             if existing is not None:
                 return existing
 
         live = await self.fallback.create_session(agent_id, user_id, session_id=session_id)
-        ok, durable = await self._call_primary(
+        status, durable = await self._call_primary(
             "create_session",
             agent_id,
             user_id,
             session_id=live.id,
         )
-        if ok and durable is not None:
+        if status is _PrimaryCallStatus.AVAILABLE_RESULT and durable is not None:
             self._primary_session_ids.add(durable.id)
             return await self._hydrate(durable)
         return live
 
     async def get_session(self, session_id: str) -> Optional[Session]:
         live = await self.fallback.get_session(session_id)
-        ok, durable = await self._call_primary("get_session", session_id)
-        if ok and durable is not None:
+        status, durable = await self._call_primary("get_session", session_id)
+        if status is _PrimaryCallStatus.AVAILABLE_RESULT and durable is not None:
             return await self._hydrate(durable)
         return live
 
     async def list_sessions(
         self,
-        agent_id: str,
+        agent_id: Optional[str],
         user_id: Optional[str] = None,
         offset: Optional[int] = None,
         limit: Optional[int] = None,
     ) -> list[Session]:
-        ok, durable_sessions = await self._call_primary(
+        status, durable_sessions = await self._call_primary(
             "list_sessions",
             agent_id,
             user_id,
             offset,
             limit,
         )
-        if ok:
+        if status is _PrimaryCallStatus.AVAILABLE_RESULT:
             for session in durable_sessions or []:
                 await self._hydrate(session)
         return cast(
@@ -187,10 +204,14 @@ class ResilientSessionService(BaseSessionService):
 
     async def delete_session(self, session_id: str) -> bool:
         deleted = await self.fallback.delete_session(session_id)
-        ok, durable_deleted = await self._call_primary("delete_session", session_id)
-        if ok:
+        status, durable_deleted = await self._call_primary("delete_session", session_id)
+        if status is _PrimaryCallStatus.AVAILABLE_RESULT:
             self._primary_session_ids.discard(session_id)
-        return deleted or bool(durable_deleted) if ok else deleted
+        return (
+            deleted or bool(durable_deleted)
+            if status is _PrimaryCallStatus.AVAILABLE_RESULT
+            else deleted
+        )
 
     async def update_session_metadata(
         self,
@@ -231,20 +252,20 @@ class ResilientSessionService(BaseSessionService):
         async with self._primary_session_lock:
             if not self._primary_enabled or session_id in self._primary_session_ids:
                 return
-            ok, durable = await self._call_primary("get_session", session_id)
-            if not ok:
+            status, durable = await self._call_primary("get_session", session_id)
+            if status is not _PrimaryCallStatus.AVAILABLE_RESULT:
                 return
             if durable is None:
                 live = await self.fallback.get_session(session_id)
                 if live is None:
                     return
-                ok, durable = await self._call_primary(
+                status, durable = await self._call_primary(
                     "create_session",
                     live.agent_id,
                     live.user_id,
                     session_id=live.id,
                 )
-                if not ok or durable is None:
+                if status is not _PrimaryCallStatus.AVAILABLE_RESULT or durable is None:
                     return
             self._primary_session_ids.add(session_id)
 
@@ -253,7 +274,9 @@ class ResilientSessionService(BaseSessionService):
             await self.get_session(session_id)
         live = await self.fallback.append_event(session_id, event)
         await self._ensure_primary_session(session_id)
-        await self._call_primary("append_event", session_id, event)
+        status, _ = await self._call_primary("append_event", session_id, event)
+        if status is not _PrimaryCallStatus.AVAILABLE_RESULT:
+            self._dirty_session_ids.add(session_id)
         return live
 
     async def get_events(
@@ -288,6 +311,195 @@ class ResilientSessionService(BaseSessionService):
             await self.fallback.count_events(session_id, after_seq_id, before_seq_id),
         )
 
+    async def get_sessions_by_ids(self, session_ids: list[str]) -> list[Session]:
+        status, durable = await self._call_primary("get_sessions_by_ids", session_ids)
+        self._raise_if_capability_unsupported(status, durable)
+        if status is _PrimaryCallStatus.BACKEND_FAILURE:
+            return await self.fallback.get_sessions_by_ids(session_ids)
+        durable_by_id = {session.id: session for session in durable or []}
+        live_ids = [
+            session_id
+            for session_id in session_ids
+            if session_id in self._dirty_session_ids or session_id not in durable_by_id
+        ]
+        live = await self.fallback.get_sessions_by_ids(live_ids)
+        live_by_id = {session.id: session for session in live}
+        # A degraded-era session, or a session with unsynchronised writes, must
+        # remain visible through its live metadata even after primary recovery.
+        return [
+            live_by_id[session_id]
+            if session_id in live_by_id and (
+                session_id in self._dirty_session_ids or session_id not in durable_by_id
+            )
+            else durable_by_id[session_id]
+            for session_id in session_ids
+            if session_id in live_by_id or session_id in durable_by_id
+        ]
+
+    async def get_session_metadata(self, session_id: str) -> Optional[Session]:
+        sessions = await self.get_sessions_by_ids([session_id])
+        return sessions[0] if sessions else None
+
+    async def list_session_metadata(
+        self, agent_id: Optional[str] = None, user_id: Optional[str] = None
+    ) -> list[Session]:
+        clean_ids, live_ids = await self._partition_batch_session_ids(None, agent_id)
+        primary: list[Session] = []
+        if clean_ids:
+            status, result = await self._call_primary("get_sessions_by_ids", clean_ids)
+            self._raise_if_capability_unsupported(status, result)
+            if status is _PrimaryCallStatus.AVAILABLE_RESULT:
+                primary = cast(list[Session], result or [])
+            else:
+                live_ids = [session.id for session in await self.fallback.list_session_metadata(agent_id)]
+        live = await self.fallback.get_sessions_by_ids(live_ids) if live_ids else []
+        return [session for session in [*primary, *live] if user_id is None or session.user_id == user_id]
+
+    async def query_events(self, query: SessionEventQuery) -> list[SessionEvent]:
+        clean_ids, live_ids = await self._partition_batch_session_ids(query.session_ids, query.agent_id)
+        window = query.offset + query.limit
+        clean = SessionEventQuery(**{**query.__dict__, "session_ids": clean_ids, "offset": 0, "limit": window})
+        live = SessionEventQuery(**{**query.__dict__, "session_ids": live_ids, "offset": 0, "limit": window})
+        durable_events: list[SessionEvent] = []
+        if clean_ids:
+            status, durable_events = await self._call_primary("query_events", clean)
+            self._raise_if_capability_unsupported(status, durable_events)
+            if status is _PrimaryCallStatus.BACKEND_FAILURE:
+                return await self.fallback.query_events(query)
+        live_events = await self.fallback.query_events(live) if live_ids else []
+        merged = list(durable_events or []) + list(live_events)
+        merged.sort(key=lambda event: (event.timestamp, event.session_id, event.seq_id, event.id))
+        if query.from_start:
+            return merged[query.offset : query.offset + query.limit]
+        end = max(len(merged) - query.offset, 0)
+        return merged[max(end - query.limit, 0) : end]
+
+    async def count_event_query(self, query: SessionEventQuery) -> int:
+        clean_ids, live_ids = await self._partition_batch_session_ids(query.session_ids, query.agent_id)
+        clean = SessionEventQuery(**{**query.__dict__, "session_ids": clean_ids})
+        live = SessionEventQuery(**{**query.__dict__, "session_ids": live_ids})
+        durable_count = 0
+        if clean_ids:
+            status, durable_count = await self._call_primary("count_event_query", clean)
+            self._raise_if_capability_unsupported(status, durable_count)
+            if status is _PrimaryCallStatus.BACKEND_FAILURE:
+                return await self.fallback.count_event_query(query)
+        live_count = await self.fallback.count_event_query(live) if live_ids else 0
+        return int(durable_count or 0) + int(live_count or 0)
+
+    async def get_checkpoint_lookup_stats(
+        self, session_id: str, run_id: str, checkpoint_id: str
+    ) -> dict[str, object]:
+        clean_ids, live_ids = await self._partition_batch_session_ids([session_id], None)
+        if live_ids:
+            return await self.fallback.get_checkpoint_lookup_stats(session_id, run_id, checkpoint_id)
+        if clean_ids:
+            status, stats = await self._call_primary(
+                "get_checkpoint_lookup_stats", session_id, run_id, checkpoint_id
+            )
+            self._raise_if_capability_unsupported(status, stats)
+            if status is _PrimaryCallStatus.AVAILABLE_RESULT:
+                return stats
+        return await self.fallback.get_checkpoint_lookup_stats(session_id, run_id, checkpoint_id)
+
+    async def get_events_batch(
+        self,
+        session_ids: list[str] | None = None,
+        *,
+        agent_id: str | None = None,
+        offset: int = 0,
+        limit: int = 1000,
+        after_seq_id: int | None = None,
+        before_seq_id: int | None = None,
+        event_types: list[str] | None = None,
+        from_start: bool = False,
+    ) -> list[SessionEvent]:
+        clean_ids, live_ids = await self._partition_batch_session_ids(session_ids, agent_id)
+        window = offset + limit
+        durable_events: list[SessionEvent] = []
+        if clean_ids:
+            status, durable = await self._call_primary(
+                "get_events_batch", clean_ids, agent_id=agent_id, offset=0, limit=window,
+                after_seq_id=after_seq_id, before_seq_id=before_seq_id, event_types=event_types,
+                from_start=from_start,
+            )
+            self._raise_if_capability_unsupported(status, durable)
+            if status is _PrimaryCallStatus.BACKEND_FAILURE:
+                return await self.fallback.get_events_batch(
+                    session_ids, agent_id=agent_id, offset=offset, limit=limit,
+                    after_seq_id=after_seq_id, before_seq_id=before_seq_id, event_types=event_types,
+                    from_start=from_start,
+                )
+            durable_events = cast(list[SessionEvent], durable or [])
+        live_events = await self.fallback.get_events_batch(
+            live_ids, agent_id=agent_id, offset=0, limit=window,
+            after_seq_id=after_seq_id, before_seq_id=before_seq_id, event_types=event_types,
+            from_start=from_start,
+        ) if live_ids else []
+        merged = durable_events + live_events
+        merged.sort(key=lambda event: (event.timestamp, event.session_id, event.seq_id, event.id))
+        if from_start:
+            return merged[offset : offset + limit]
+        end = max(len(merged) - offset, 0)
+        return merged[max(end - limit, 0) : end]
+
+    async def count_events_batch(
+        self,
+        session_ids: list[str] | None = None,
+        *,
+        agent_id: str | None = None,
+        after_seq_id: int | None = None,
+        before_seq_id: int | None = None,
+        event_types: list[str] | None = None,
+    ) -> int:
+        clean_ids, live_ids = await self._partition_batch_session_ids(session_ids, agent_id)
+        durable_total = 0
+        if clean_ids:
+            status, durable = await self._call_primary(
+                "count_events_batch", clean_ids, agent_id=agent_id,
+                after_seq_id=after_seq_id, before_seq_id=before_seq_id, event_types=event_types,
+            )
+            self._raise_if_capability_unsupported(status, durable)
+            if status is _PrimaryCallStatus.BACKEND_FAILURE:
+                return await self.fallback.count_events_batch(
+                    session_ids, agent_id=agent_id, after_seq_id=after_seq_id,
+                    before_seq_id=before_seq_id, event_types=event_types,
+                )
+            durable_total = int(durable or 0)
+        live_total = await self.fallback.count_events_batch(
+            live_ids, agent_id=agent_id, after_seq_id=after_seq_id,
+            before_seq_id=before_seq_id, event_types=event_types,
+        ) if live_ids else 0
+        return durable_total + live_total
+
+    async def _partition_batch_session_ids(
+        self, session_ids: list[str] | None, agent_id: str | None
+    ) -> tuple[list[str], list[str]]:
+        """Partition metadata only: durable-clean sessions vs dirty/live-only.
+
+        This intentionally does not call ``get_session``/``_hydrate`` and thus
+        cannot pull historical event arrays into the live fallback.
+        """
+        if session_ids is not None:
+            requested = list(session_ids)
+            status, primary_sessions = await self._call_primary("get_sessions_by_ids", requested)
+            self._raise_if_capability_unsupported(status, primary_sessions)
+            if status is _PrimaryCallStatus.BACKEND_FAILURE:
+                return [], requested
+            primary_ids = {session.id for session in primary_sessions}
+            live_ids = [session_id for session_id in requested if session_id in self._dirty_session_ids or session_id not in primary_ids]
+            return [session_id for session_id in requested if session_id in primary_ids and session_id not in self._dirty_session_ids], live_ids
+        status, primary_sessions = await self._call_primary("list_session_metadata", agent_id, None)
+        self._raise_if_capability_unsupported(status, primary_sessions)
+        if status is _PrimaryCallStatus.BACKEND_FAILURE:
+            return [], [session.id for session in await self.fallback.list_session_metadata(agent_id, user_id=None)]
+        fallback_sessions = await self.fallback.list_session_metadata(agent_id, user_id=None)
+        primary_ids = {session.id for session in primary_sessions}
+        fallback_ids = {session.id for session in fallback_sessions}
+        live_ids = sorted((fallback_ids - primary_ids) | (fallback_ids & self._dirty_session_ids))
+        clean_ids = sorted(primary_ids - set(live_ids))
+        return clean_ids, live_ids
+
     async def get_state(
         self,
         agent_id: str,
@@ -300,14 +512,14 @@ class ResilientSessionService(BaseSessionService):
         live = await self.fallback.get_state(agent_id, user_id, session_id, scope)
         if live is not None or not self._primary_enabled:
             return live
-        ok, durable = await self._call_primary(
+        status, durable = await self._call_primary(
             "get_state",
             agent_id,
             user_id,
             session_id,
             scope,
         )
-        if ok and durable is not None:
+        if status is _PrimaryCallStatus.AVAILABLE_RESULT and durable is not None:
             return await self.fallback.update_state(
                 agent_id=agent_id,
                 user_id=user_id,

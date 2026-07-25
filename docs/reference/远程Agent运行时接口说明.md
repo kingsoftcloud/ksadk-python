@@ -1014,9 +1014,10 @@ KsADK 扩展图片引用示例：
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `SessionId` | `string` | 是 | Session ID |
+| `SessionId` | `string` 或 `string[]` | 否 | 兼容旧字符串。去空白、空项和重复后最多 1000 个；缺省或空数组表示当前 runtime/agent namespace 的全部 session |
 | `Offset` | `integer` | 否 | 起始偏移，`>= 0` |
-| `Limit` | `integer` | 否 | 返回条数，`>= 1`；0.6.7 新增：无上限，可一次性拉取全量事件 |
+| `Limit` | `integer` | 否 | 返回条数，默认/最大 `1000` |
+| `AfterSeqId` / `BeforeSeqId` | `integer` | 否 | 仅单个显式 `SessionId` 可用；多 session 或全部 session 请求会返回 `400` |
 
 会话响应中 `Session` 的主要字段：
 
@@ -1055,6 +1056,7 @@ KsADK 扩展图片引用示例：
 - `ListSessions` 的 `Data` 还会包含服务端回显的 `Page` 和 `PageSize`
 - `ListSessionEvents` 的 `Data` 额外包含请求透传的 `Offset` 和 `Limit`
 - `ListSessionEvents` 的 `Data` 还会包含 `Total`，便于客户端按需回加载更早的事件窗口
+- `ListSessionEvents.Data.SessionId` 回显规范化后的数组。事件按 `(Timestamp, SessionId, SeqId, EventId)` 全局稳定排序；先选择最新的 `Offset + Limit` 窗口，再按正序返回。显式 session 中任意一个不存在或不属于当前 agent 时，整次请求返回通用 `404`。
 
 ### `GET /agentengine/api/v1/SubscribeRunEvents`
 
@@ -1575,7 +1577,7 @@ python scripts/validate_hosted_long_task_e2e.py \
 
 说明：
 
-- 控制台使用该接口展示指定 session 的 checkpoint 列表。
+- 控制台使用该接口展示一个或多个 session 的 checkpoint 列表。
 - 该接口在 0.6.7 起支持分页、可恢复性过滤和框架过滤。
 
 请求体：
@@ -1583,14 +1585,15 @@ python scripts/validate_hosted_long_task_e2e.py \
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `AgentId` | `string` | 是 | Agent ID |
-| `SessionId` | `string` | 是 | 会话 ID |
+| `SessionId` | `string` 或 `string[]` | 否 | 兼容旧字符串；规范化后最多 1000 个。缺省或空数组表示不按 session 过滤 |
+| `CheckpointId` | `string` 或 `string[]` | 否 | 兼容旧字符串；规范化后最多 1000 个。缺省或空数组表示不按 checkpoint ID 过滤 |
 | `RunId` | `string` | 否 | 只返回指定 run 的 checkpoint |
 | `OnlyResumable` | `boolean` | 否 | 只返回可恢复 checkpoint |
 | `Framework` | `string` | 否 | 按框架过滤，例如 `langgraph` |
 | `Offset` | `integer` | 否 | 分页起始偏移 |
 | `Limit` | `integer` | 否 | 分页大小，最大 `500` |
 
-响应 `Data.Checkpoints` 为 checkpoint 列表。checkpoint 来自 runtime session event 中的 `run_checkpoint`，不是客户端传入的状态。响应还包含 `Total`、`Offset` 和 `Limit`。
+响应 `Data.Checkpoints` 为 checkpoint 列表。checkpoint 来自 runtime session event 中的 `run_checkpoint`，不是客户端传入的状态。响应还包含 `SessionId`、`CheckpointId`（均为规范化数组）、`Total`、`ResumableTotal`、`Offset` 和 `Limit`。结果按创建时间从早到晚分页；任一显式 session 不存在或不属于 `AgentId` 时整次请求返回通用 `404`。
 
 每个 checkpoint descriptor 至少包含：
 
@@ -1608,7 +1611,7 @@ python scripts/validate_hosted_long_task_e2e.py \
 | `CheckpointStatus` | 当前状态，例如 `active`、`resumed`、`expired`、`disabled`、`terminal` |
 | `ArtifactPreview` | 产物摘要或缩略信息 |
 
-`ListSessionCheckpoints` 会基于同 session 内的 `run_resume` 事件聚合 `LastResumedAt` 与 `ResumeCount`。若 `ExpiresAt` 已过期，或 `ReplayAllowed=false` 且该 checkpoint 已恢复过，服务端会将 `IsResumable=false` 并填充 `ResumeDisabledReason`，前端不需要重复推导这些禁用规则。
+`ListSessionCheckpoints` 会基于同 session 内的 `run_resume` 事件聚合 `LastResumedAt` 与 `ResumeCount`；审计键为 `(SessionId, RunId, CheckpointId)`，同名 checkpoint 不会跨 session 串联。若 `ExpiresAt` 已过期，或 `ReplayAllowed=false` 且该 checkpoint 已恢复过，服务端会将 `IsResumable=false` 并填充 `ResumeDisabledReason`，前端不需要重复推导这些禁用规则。
 
 !!! info "0.6.7 状态机"
     `CheckpointStatus` 取值为 `active` / `resumed` / `expired` / `disabled` / `terminal`。`ResumeCount` 与 `LastResumedAt` 由服务端从 `run_resume` 事件聚合，不是客户端传入的状态。
@@ -1687,6 +1690,7 @@ stateDiagram-v2
     - `resume_status`：当前恢复状态
     - `is_terminal`：是否终态（此处为 `false`）
 - **终态 checkpoint**：`IsTerminal=true` 时不再报错，返回 `200 noop`。响应 `Data` 包含：
+    - `success=false`
     - `Reason`：`terminal_noop`
     - `CheckpointId`
     - `RunId`
@@ -1695,6 +1699,8 @@ stateDiagram-v2
 
 !!! warning "前端实现提示"
     终态 `noop` 不是错误；前端应按正常完成态收敛 UI，不要把 `200 noop` 当作失败重试。`409` 系列错误不要自动无限重试，应引导用户选择其他 checkpoint 或重新发起 run。
+
+非流式 `ResumeRun(Stream=false)` 正常完成时响应 `Data.success=true`；错误响应和 `Stream=true` 的 SSE 语义保持不变。
 
 ### `POST /agentengine/api/v1/CancelRun`
 

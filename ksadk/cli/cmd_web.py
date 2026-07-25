@@ -255,12 +255,12 @@ def web(agent_dir: str, port: int, model: str, no_open: bool):
         os.environ["AGENTENGINE_UI_DIR"] = local_ui_dir
     else:
         os.environ.setdefault("AGENTENGINE_UI_DIR", local_ui_dir)
-    _default_project_stm_if_unset(
-        result.type.value,
-        agent_path,
-        explicit_session_env_names=explicit_session_env_names,
-        explicit_checkpoint_env_names=explicit_checkpoint_env_names,
-    )
+    # _default_project_stm_if_unset(
+    #     result.type.value,
+    #     agent_path,
+    #     explicit_session_env_names=explicit_session_env_names,
+    #     explicit_checkpoint_env_names=explicit_checkpoint_env_names,
+    # )
     launch_path = _configure_custom_ui_env(agent_path)
 
     try:
