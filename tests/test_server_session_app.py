@@ -2891,11 +2891,75 @@ async def test_list_session_events_empty_scope_and_id_limit(monkeypatch):
         empty = await client.post("/agentengine/api/v1/ListSessionEvents", json={"SessionId": []})
         accepted = await client.post("/agentengine/api/v1/ListSessionEvents", json={"SessionId": ids_1000})
         rejected = await client.post("/agentengine/api/v1/ListSessionEvents", json={"SessionId": ids_1001})
+        max_page = await client.post(
+            "/agentengine/api/v1/ListSessionEvents",
+            json={"Limit": 1000},
+        )
+        oversized_page = await client.post(
+            "/agentengine/api/v1/ListSessionEvents",
+            json={"Limit": 1001},
+        )
 
     assert [event["EventId"] for event in omitted.json()["Data"]["Events"]] == ["all-1"]
+    assert omitted.json()["Data"]["Limit"] == 10
     assert empty.json()["Data"]["SessionId"] == []
     assert accepted.status_code == 404
-    assert rejected.status_code == 400
+    assert rejected.status_code == 422
+    assert max_page.status_code == 200
+    assert max_page.json()["Data"]["Limit"] == 1000
+    assert oversized_page.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_list_session_checkpoints_uses_public_page_contract_and_normalized_id_limit(
+    monkeypatch,
+):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    await service.create_session("demo-agent", "user-1", "checkpoint-page-contract")
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(_DummyRunner())
+    checkpoint_ids_1000 = [f"checkpoint-{index}" for index in range(1000)]
+    checkpoint_ids_1001 = [*checkpoint_ids_1000, "too-many"]
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        omitted = await client.post(
+            "/agentengine/api/v1/ListSessionCheckpoints",
+            json={"AgentId": "demo-agent", "SessionId": "checkpoint-page-contract"},
+        )
+        accepted_ids = await client.post(
+            "/agentengine/api/v1/ListSessionCheckpoints",
+            json={
+                "AgentId": "demo-agent",
+                "SessionId": "checkpoint-page-contract",
+                "CheckpointId": checkpoint_ids_1000,
+                "Limit": 1000,
+            },
+        )
+        rejected_ids = await client.post(
+            "/agentengine/api/v1/ListSessionCheckpoints",
+            json={
+                "AgentId": "demo-agent",
+                "SessionId": "checkpoint-page-contract",
+                "CheckpointId": checkpoint_ids_1001,
+            },
+        )
+        oversized_page = await client.post(
+            "/agentengine/api/v1/ListSessionCheckpoints",
+            json={
+                "AgentId": "demo-agent",
+                "SessionId": "checkpoint-page-contract",
+                "Limit": 1001,
+            },
+        )
+
+    assert omitted.status_code == 200
+    assert omitted.json()["Data"]["Limit"] == 10
+    assert accepted_ids.status_code == 200
+    assert accepted_ids.json()["Data"]["Limit"] == 1000
+    assert rejected_ids.status_code == 422
+    assert oversized_page.status_code == 422
 
 
 @pytest.mark.asyncio

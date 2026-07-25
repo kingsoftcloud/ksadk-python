@@ -22,7 +22,7 @@ import httpx
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 import ksadk.conversations as conversation
 from ksadk.conversations.attachment_storage import AttachmentStorageService
@@ -1060,12 +1060,46 @@ class SessionIdRequest(BaseModel):
     SessionId: str
 
 
+def _normalize_action_id_filter(
+    value: Any,
+    *,
+    field_name: str,
+) -> list[str] | str | None:
+    """Normalize scalar/list filters while preserving legacy scalar wire shape."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        normalized = value.strip()
+        return normalized if normalized else []
+    if not isinstance(value, list):
+        raise ValueError(f"{field_name} must be a string or list of strings")
+
+    normalized_values: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, str):
+            raise ValueError(f"{field_name} must contain only strings")
+        normalized = item.strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        normalized_values.append(normalized)
+    if len(normalized_values) > 1000:
+        raise ValueError(f"{field_name} accepts at most 1000 values")
+    return normalized_values
+
+
 class ListSessionEventsActionRequest(BaseModel):
     SessionId: list[str] | str | None = None
     Offset: Optional[int] = Field(None, ge=0)
     Limit: int = Field(10, ge=1, le=1000)
     AfterSeqId: Optional[int] = Field(None, ge=0)
     BeforeSeqId: Optional[int] = Field(None, ge=1)
+
+    @field_validator("SessionId", mode="before")
+    @classmethod
+    def normalize_session_ids(cls, value: Any) -> list[str] | str | None:
+        return _normalize_action_id_filter(value, field_name="SessionId")
 
 
 class ListSessionMessagesActionRequest(BaseModel):
@@ -1086,7 +1120,17 @@ class ListSessionCheckpointsActionRequest(BaseModel):
     OnlyResumable: bool = False
     Framework: Optional[str] = None
     Offset: Optional[int] = Field(None, ge=0)
-    Limit: int = Field(50, ge=1, le=500)
+    Limit: int = Field(10, ge=1, le=1000)
+
+    @field_validator("SessionId", mode="before")
+    @classmethod
+    def normalize_session_ids(cls, value: Any) -> list[str] | str | None:
+        return _normalize_action_id_filter(value, field_name="SessionId")
+
+    @field_validator("CheckpointId", mode="before")
+    @classmethod
+    def normalize_checkpoint_ids(cls, value: Any) -> list[str] | str | None:
+        return _normalize_action_id_filter(value, field_name="CheckpointId")
 
 
 class ListToolReceiptsActionRequest(BaseModel):
@@ -2184,6 +2228,7 @@ async def delete_session_action(request: SessionIdRequest):
 
 def _normalize_action_id_list(value: list[str] | str | None, *, field_name: str) -> list[str]:
     """Accept legacy scalars while returning a stable, bounded id list."""
+    del field_name
     values = [value] if isinstance(value, str) else list(value or [])
     normalized: list[str] = []
     seen: set[str] = set()
@@ -2193,8 +2238,6 @@ def _normalize_action_id_list(value: list[str] | str | None, *, field_name: str)
             continue
         seen.add(item_id)
         normalized.append(item_id)
-    if len(normalized) > 1000:
-        raise HTTPException(status_code=400, detail=f"{field_name} supports at most 1000 ids")
     return normalized
 
 
