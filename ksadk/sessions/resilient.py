@@ -412,6 +412,21 @@ class ResilientSessionService(BaseSessionService):
         clean_ids, live_ids = await self._partition_batch_session_ids(
             query.session_ids, query.agent_id
         )
+        if clean_ids and not live_ids:
+            clean_query = CheckpointEventQuery(
+                **{**query.__dict__, "session_ids": clean_ids}
+            )
+            status, result = await self._call_primary(
+                "scan_checkpoint_events", clean_query
+            )
+            self._raise_if_capability_unsupported(status, result)
+            if status is _PrimaryCallStatus.AVAILABLE_RESULT:
+                return cast(list[SessionEvent], result or [])
+            return await self.fallback.scan_checkpoint_events(query)
+        if live_ids and not clean_ids:
+            return await self.fallback.scan_checkpoint_events(
+                CheckpointEventQuery(**{**query.__dict__, "session_ids": live_ids})
+            )
         backend_offsets = {"clean": 0, "live": 0}
         pages: dict[str, list[SessionEvent]] = {"clean": [], "live": []}
         indexes = {"clean": 0, "live": 0}

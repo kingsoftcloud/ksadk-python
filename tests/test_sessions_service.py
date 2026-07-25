@@ -376,6 +376,39 @@ async def test_resilient_checkpoint_scan_merges_primary_and_dirty_live_in_stable
 
 
 @pytest.mark.asyncio
+async def test_resilient_checkpoint_scan_pushes_nonzero_offset_to_clean_primary_once():
+    from ksadk.sessions.base import CheckpointEventQuery
+
+    class TrackingPrimary(InMemorySessionService):
+        def __init__(self):
+            super().__init__()
+            self.checkpoint_queries = []
+
+        async def scan_checkpoint_events(self, query):
+            self.checkpoint_queries.append(query)
+            return await super().scan_checkpoint_events(query)
+
+    primary = TrackingPrimary()
+    service = ResilientSessionService(primary, InMemorySessionService())
+    await primary.create_session("agent-a", "user", "clean")
+    for index in range(70):
+        await primary.append_event(
+            "clean",
+            SessionEvent(
+                id=f"cp-{index}", event_type="run_checkpoint", timestamp=index,
+                metadata={"run_id": "run", "checkpoint_id": f"cp-{index}"},
+            ),
+        )
+
+    page = await service.scan_checkpoint_events(
+        CheckpointEventQuery(agent_id="agent-a", offset=60, limit=10)
+    )
+
+    assert [event.id for event in page] == [f"cp-{index}" for index in range(60, 70)]
+    assert [(query.offset, query.limit) for query in primary.checkpoint_queries] == [(60, 10)]
+
+
+@pytest.mark.asyncio
 async def test_resilient_query_merges_primary_and_live_once_before_nonzero_offset_page():
     primary = InMemorySessionService()
     fallback = InMemorySessionService()
