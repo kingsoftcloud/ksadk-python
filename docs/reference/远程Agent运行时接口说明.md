@@ -1016,7 +1016,7 @@ KsADK 扩展图片引用示例：
 | --- | --- | --- | --- |
 | `SessionId` | `string` 或 `string[]` | 否 | 兼容旧字符串。去空白、空项和重复后最多 1000 个；缺省或空数组表示当前 runtime/agent namespace 的全部 session |
 | `Offset` | `integer` | 否 | 起始偏移，`>= 0` |
-| `Limit` | `integer` | 否 | 返回条数，默认/最大 `1000` |
+| `Limit` | `integer` | 否 | 返回条数，默认 `10`，最大 `1000` |
 | `AfterSeqId` / `BeforeSeqId` | `integer` | 否 | 仅单个显式 `SessionId` 可用；多 session 或全部 session 请求会返回 `400` |
 
 会话响应中 `Session` 的主要字段：
@@ -1057,6 +1057,7 @@ KsADK 扩展图片引用示例：
 - `ListSessionEvents` 的 `Data` 额外包含请求透传的 `Offset` 和 `Limit`
 - `ListSessionEvents` 的 `Data` 还会包含 `Total`，便于客户端按需回加载更早的事件窗口
 - `ListSessionEvents.Data.SessionId` 回显规范化后的数组。事件按 `(Timestamp, SessionId, SeqId, EventId)` 全局稳定排序；先选择最新的 `Offset + Limit` 窗口，再按正序返回。显式 session 中任意一个不存在或不属于当前 agent 时，整次请求返回通用 `404`。
+- `X-Session-Id` 只允许与 body 中规范化后的唯一 Session 一致；body 缺省、空数组、多 Session 或不一致时返回 `400`，该 header 不会补充查询过滤条件。
 
 ### `GET /agentengine/api/v1/SubscribeRunEvents`
 
@@ -1591,7 +1592,7 @@ python scripts/validate_hosted_long_task_e2e.py \
 | `OnlyResumable` | `boolean` | 否 | 只返回可恢复 checkpoint |
 | `Framework` | `string` | 否 | 按框架过滤，例如 `langgraph` |
 | `Offset` | `integer` | 否 | 分页起始偏移 |
-| `Limit` | `integer` | 否 | 分页大小，最大 `500` |
+| `Limit` | `integer` | 否 | 分页大小，默认 `10`，最大 `1000` |
 
 响应 `Data.Checkpoints` 为 checkpoint 列表。checkpoint 来自 runtime session event 中的 `run_checkpoint`，不是客户端传入的状态。响应还包含 `SessionId`、`CheckpointId`（均为规范化数组）、`Total`、`ResumableTotal`、`Offset` 和 `Limit`。结果按创建时间从早到晚分页；任一显式 session 不存在或不属于 `AgentId` 时整次请求返回通用 `404`。
 
@@ -1612,6 +1613,8 @@ python scripts/validate_hosted_long_task_e2e.py \
 | `ArtifactPreview` | 产物摘要或缩略信息 |
 
 `ListSessionCheckpoints` 会基于同 session 内的 `run_resume` 事件聚合 `LastResumedAt` 与 `ResumeCount`；审计键为 `(SessionId, RunId, CheckpointId)`，同名 checkpoint 不会跨 session 串联。若 `ExpiresAt` 已过期，或 `ReplayAllowed=false` 且该 checkpoint 已恢复过，服务端会将 `IsResumable=false` 并填充 `ResumeDisabledReason`，前端不需要重复推导这些禁用规则。
+
+runtime 在存储层按 `SessionId` / `CheckpointId` / `RunId` / `Framework` 下推过滤，并以固定 `50` 条内部 chunk 扫描；内部 chunk 不是公开 `Limit`。`Total` 与 `ResumableTotal` 精确统计，端点附加内存只保留当前 chunk 和请求页。
 
 !!! info "0.6.7 状态机"
     `CheckpointStatus` 取值为 `active` / `resumed` / `expired` / `disabled` / `terminal`。`ResumeCount` 与 `LastResumedAt` 由服务端从 `run_resume` 事件聚合，不是客户端传入的状态。
@@ -1668,13 +1671,21 @@ stateDiagram-v2
 | `ResumeAttemptId` | `string` | 否 | 本次恢复尝试 ID；不传由 runtime 生成 |
 | `InvocationId` | `string` | 否 | 本次流式恢复的 invocation ID；用于 `SubscribeRunEvents` / `CancelRun` |
 | `Stream` | `boolean` | 否 | 是否流式返回 |
+| `Background` | `boolean` | 否 | 默认 `false`。`true` 时最高优先级立即返回 JSON 接受响应，不建立 SSE |
 | `Model` | `string` | 否 | 可选模型名 |
 | `ModelMetadata` | `object` | 否 | 可选模型 metadata |
 | `ModelOptions` | `object` | 否 | 可选模型调用参数 |
 | `ResumeInstructionEnabled` | `boolean` | 否 | 0.6.7 新增。是否启用恢复指令注入；默认 `false` |
 | `ResumeInstruction` | `string` | 否 | 0.6.7 新增。仅 `ResumeInstructionEnabled=true` 时生效；作为恢复后的指令追加给 runner |
 
-`Stream=true` 时返回 SSE，gateway 和 server 都按流式代理处理。runtime 只信任服务端已保存的 checkpoint 事件来解析 `framework_ref`，不会信任客户端传入的 framework 状态。
+分支优先级如下：
+
+- `Background=true`：无论 `Stream` 或 `Accept: text/event-stream` 为何，立即返回 JSON；`Data` 包含 `SessionId`、`RunId`、`CheckpointId`、`ResumeAttemptId`、`InvocationId`、`Status="resuming"`、`Background=true`、`SubscribeUrl`，不返回最终 `success=true`。恢复过程通过 `SubscribeRunEvents` 跟踪。
+- `Background=false, Stream=true`：保持原 SSE 协议。
+- `Background=false, Stream=false`：保持原非流式最终响应，正常完成时 `Data.success=true`。
+- terminal checkpoint：所有 flag 组合都同步返回 JSON noop，`Data.success=false`。
+
+runtime 只信任服务端已保存的 checkpoint 事件来解析 `framework_ref`，不会信任客户端传入的 framework 状态。
 
 #### 禁用规则与错误码
 
@@ -1701,6 +1712,9 @@ stateDiagram-v2
     终态 `noop` 不是错误；前端应按正常完成态收敛 UI，不要把 `200 noop` 当作失败重试。`409` 系列错误不要自动无限重试，应引导用户选择其他 checkpoint 或重新发起 run。
 
 非流式 `ResumeRun(Stream=false)` 正常完成时响应 `Data.success=true`；错误响应和 `Stream=true` 的 SSE 语义保持不变。
+
+!!! warning "跨实例完整性与部署顺序"
+    多 Session / 全 Session 查询只有在 runtime 使用共享 Postgres session backend 时承诺跨副本完整；memory、SQLite 或 pod-local backend 只代表当前实例可见数据。推荐部署顺序为 gateway → 新 SDK runtime 镜像 → agentengine-server → 客户端启用数组查询与后台恢复。
 
 ### `POST /agentengine/api/v1/CancelRun`
 

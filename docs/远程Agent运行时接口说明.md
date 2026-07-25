@@ -1004,9 +1004,10 @@ KsADK 扩展图片引用示例：
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `SessionId` | `string` | 是 | Session ID |
+| `SessionId` | `string` 或 `string[]` | 否 | 兼容旧字符串；trim、去空和稳定去重后最多 1000 个，缺省或空数组表示当前 Agent 范围内全部 Session |
 | `Offset` | `integer` | 否 | 起始偏移，`>= 0` |
-| `Limit` | `integer` | 否 | 返回条数，`>= 1` |
+| `Limit` | `integer` | 否 | 返回条数，默认 `10`，最大 `1000` |
+| `AfterSeqId` / `BeforeSeqId` | `integer` | 否 | 仅单个显式 Session 可用；多 Session 或全部 Session 请求返回 `400` |
 
 会话响应中 `Session` 的主要字段：
 
@@ -1045,6 +1046,8 @@ KsADK 扩展图片引用示例：
 - `ListSessions` 的 `Data` 还会包含服务端回显的 `Page` 和 `PageSize`
 - `ListSessionEvents` 的 `Data` 额外包含请求透传的 `Offset` 和 `Limit`
 - `ListSessionEvents` 的 `Data` 还会包含 `Total`，便于客户端按需回加载更早的事件窗口
+- `Data.SessionId` 回显规范化数组；事件以 `(Timestamp, SessionId, SeqId, EventId)` 稳定排序，按“最新窗口、正序返回”分页
+- 显式列表含不存在或越权 Session 时整次返回通用 `404`。`X-Session-Id` 只允许与唯一 Session 一致，不能作为缺省过滤器
 
 ### `GET /agentengine/api/v1/SubscribeRunEvents`
 
@@ -1544,7 +1547,7 @@ python scripts/validate_hosted_long_task_e2e.py \
 
 说明：
 
-- 控制台使用该接口展示指定 session 的 checkpoint 列表。
+- 控制台使用该接口展示一个或多个 session 的 checkpoint 列表。
 - 该接口在 0.6.7 起支持分页、可恢复性过滤和框架过滤。
 
 请求体：
@@ -1552,14 +1555,15 @@ python scripts/validate_hosted_long_task_e2e.py \
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `AgentId` | `string` | 是 | Agent ID |
-| `SessionId` | `string` | 是 | 会话 ID |
+| `SessionId` | `string` 或 `string[]` | 否 | 兼容旧字符串；规范化后最多 1000 个，缺省或空数组表示不按 Session 过滤 |
+| `CheckpointId` | `string` 或 `string[]` | 否 | 兼容旧字符串；规范化后最多 1000 个，缺省或空数组表示不按 checkpoint ID 过滤 |
 | `RunId` | `string` | 否 | 只返回指定 run 的 checkpoint |
 | `OnlyResumable` | `boolean` | 否 | 只返回可恢复 checkpoint |
 | `Framework` | `string` | 否 | 按框架过滤，例如 `langgraph` |
 | `Offset` | `integer` | 否 | 分页起始偏移 |
-| `Limit` | `integer` | 否 | 分页大小，最大 `500` |
+| `Limit` | `integer` | 否 | 分页大小，默认 `10`，最大 `1000` |
 
-响应 `Data.Checkpoints` 为 checkpoint 列表。checkpoint 来自 runtime session event 中的 `run_checkpoint`，不是客户端传入的状态。响应还包含 `Total`、`Offset` 和 `Limit`。
+响应 `Data.Checkpoints` 为 checkpoint 列表。checkpoint 来自 runtime session event 中的 `run_checkpoint`，不是客户端传入的状态。响应还包含规范化数组 `SessionId` / `CheckpointId`、精确 `Total` / `ResumableTotal`、`Offset` 和 `Limit`。结果从早到晚分页；内部存储扫描 chunk 固定为 `50`，不是公开页大小。
 
 每个 checkpoint descriptor 至少包含：
 
@@ -1618,11 +1622,14 @@ python scripts/validate_hosted_long_task_e2e.py \
 | `ResumeAttemptId` | `string` | 否 | 本次恢复尝试 ID；不传由 runtime 生成 |
 | `InvocationId` | `string` | 否 | 本次流式恢复的 invocation ID；用于 `SubscribeRunEvents` / `CancelRun` |
 | `Stream` | `boolean` | 否 | 是否流式返回 |
+| `Background` | `boolean` | 否 | 默认 `false`；`true` 最高优先，立即返回 JSON 接受响应 |
 | `Model` | `string` | 否 | 可选模型名 |
 | `ModelMetadata` | `object` | 否 | 可选模型 metadata |
 | `ModelOptions` | `object` | 否 | 可选模型调用参数 |
 
-`Stream=true` 时返回 SSE，gateway 和 server 都按流式代理处理。runtime 只信任服务端已保存的 checkpoint 事件来解析 `framework_ref`，不会信任客户端传入的 framework 状态。
+`Background=true` 时无论 `Stream` 或 SSE Accept 为何都立即返回 JSON，`Data.Status="resuming"`、`Background=true` 并包含 `SessionId` / `RunId` / `CheckpointId` / `ResumeAttemptId` / `InvocationId` / `SubscribeUrl`，不返回最终 `success=true`。`Background=false, Stream=true` 保持 SSE；`Background=false, Stream=false` 正常完成返回 `success=true`。terminal checkpoint 始终同步 JSON noop 且 `success=false`。runtime 只信任服务端已保存的 checkpoint 事件来解析 `framework_ref`。
+
+多 Session / 全 Session 跨副本完整性只对共享 Postgres session backend 承诺；memory、SQLite 或 pod-local backend 仅代表当前实例可见数据。部署顺序：gateway → 新 SDK runtime 镜像 → agentengine-server → 客户端启用新请求。
 
 ### `POST /agentengine/api/v1/CancelRun`
 
