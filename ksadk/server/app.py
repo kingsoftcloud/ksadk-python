@@ -16,7 +16,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, AsyncIterator, Dict, List, Mapping, Optional, cast
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 import httpx
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
@@ -58,8 +58,8 @@ from ksadk.sessions import (
     describe_session_backend,
     resolve_session_service,
 )
-from ksadk.sessions.base import CheckpointEventQuery
-from ksadk.sessions.errors import SessionBackendUnavailable
+from ksadk.sessions.base import CheckpointEventQuery, SessionEventQuery
+from ksadk.sessions.errors import CheckpointScanRestartRequired, SessionBackendUnavailable
 from ksadk.sessions.local_service import resolve_local_session_dir
 from ksadk.toolsets import describe_agentengine_tools
 from ksadk.tracing import get_memory_exporter
@@ -287,7 +287,8 @@ async def _cancel_detached_streams_for_session(session_id: str) -> None:
 
 
 def _clear_detached_resume_key(invocation_id: str, resume_key: tuple[str, str]) -> None:
-    _DETACHED_RESUME_KEYS_BY_INVOCATION.pop(invocation_id, None)
+    if _DETACHED_RESUME_KEYS_BY_INVOCATION.get(invocation_id) == resume_key:
+        _DETACHED_RESUME_KEYS_BY_INVOCATION.pop(invocation_id, None)
     if _ACTIVE_DETACHED_RESUME_INVOCATION_BY_KEY.get(resume_key) == invocation_id:
         _ACTIVE_DETACHED_RESUME_INVOCATION_BY_KEY.pop(resume_key, None)
 
@@ -322,6 +323,37 @@ def _reject_if_detached_resume_active(resume_key: tuple[str, str] | None) -> Non
             "session_id": resume_key[0],
             "run_id": resume_key[1],
         },
+    )
+
+
+def _reserve_detached_resume_key(
+    resume_key: tuple[str, str] | None,
+    invocation_id: str,
+) -> None:
+    """Atomically reject or reserve a resume key before the next await."""
+
+    _reject_if_detached_resume_active(resume_key)
+    if resume_key is None:
+        return
+    existing_resume_key = _DETACHED_RESUME_KEYS_BY_INVOCATION.get(invocation_id)
+    if existing_resume_key is not None and existing_resume_key != resume_key:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "resume_invocation_already_running",
+                "message": "This invocation id is already running another checkpoint resume.",
+                "invocation_id": invocation_id,
+                "session_id": existing_resume_key[0],
+                "run_id": existing_resume_key[1],
+            },
+        )
+    _DETACHED_RESUME_KEYS_BY_INVOCATION[invocation_id] = resume_key
+    _ACTIVE_DETACHED_RESUME_INVOCATION_BY_KEY[resume_key] = invocation_id
+
+
+def _subscribe_run_events_url(session_id: str, invocation_id: str) -> str:
+    return "/agentengine/api/v1/SubscribeRunEvents?" + urlencode(
+        {"SessionId": session_id, "InvocationId": invocation_id}
     )
 
 
@@ -1714,7 +1746,7 @@ def _check_adk_latest_resumable(
         if event.event_type != "run_checkpoint":
             continue
         ev_meta = event.metadata or {}
-        if str(event.session_id or "") != session_id:
+        if str(getattr(event, "session_id", "") or "") != session_id:
             continue
         if str(ev_meta.get("run_id") or "") != run_id:
             continue
@@ -2371,60 +2403,83 @@ async def _list_checkpoints_payload(request: ListSessionCheckpointsActionRequest
     run_id_filter = str(request.RunId or "").strip()
     framework_filter = str(request.Framework or "").strip().lower()
     offset = int(request.Offset or 0)
-    total = 0
-    resumable_total = 0
-    checkpoints: list[dict[str, Any]] = []
-    event_offset = 0
-    while True:
+    query = CheckpointEventQuery(
+        session_ids=session_ids or None,
+        agent_id=request.AgentId,
+        checkpoint_ids=checkpoint_ids or None,
+        run_id=run_id_filter or None,
+        framework=framework_filter or None,
+        limit=50,
+    )
+    for scan_attempt in range(2):
+        total = 0
+        resumable_total = 0
+        checkpoints: list[dict[str, Any]] = []
+        batches = service.iter_checkpoint_event_chunks(query)
         try:
-            batch = await service.scan_checkpoint_events(
-                CheckpointEventQuery(
-                    session_ids=session_ids or None,
-                    agent_id=request.AgentId,
-                    checkpoint_ids=checkpoint_ids or None,
-                    run_id=run_id_filter or None,
-                    framework=framework_filter or None,
-                    offset=event_offset,
-                    limit=50,
+            async for batch in batches:
+                chunk = [
+                    checkpoint for event in batch
+                    if (checkpoint := _checkpoint_event_to_action_payload(event)) is not None
+                ]
+                keys = [
+                    (
+                        str(checkpoint["SessionId"]),
+                        str(checkpoint["RunId"]),
+                        str(checkpoint["CheckpointId"]),
+                    )
+                    for checkpoint in chunk
+                ]
+                stats = await service.get_checkpoint_stats(keys)
+                resume_audit = cast(
+                    Mapping[tuple[str, str, str], Mapping[str, Any]], stats["audits"]
                 )
-            )
-        except NotImplementedError:
-            return await _list_checkpoints_payload_legacy(request, session_ids, checkpoint_ids)
-        if not batch:
-            break
-        chunk = [
-            checkpoint for event in batch
-            if (checkpoint := _checkpoint_event_to_action_payload(event)) is not None
-        ]
-        keys = [
-            (str(checkpoint["SessionId"]), str(checkpoint["RunId"]), str(checkpoint["CheckpointId"]))
-            for checkpoint in chunk
-        ]
-        try:
-            stats = await service.get_checkpoint_stats(keys)
-        except NotImplementedError:
-            return await _list_checkpoints_payload_legacy(request, session_ids, checkpoint_ids)
-        resume_audit = cast(Mapping[tuple[str, str, str], Mapping[str, Any]], stats["audits"])
-        latest_by_run = cast(Mapping[tuple[str, str], int], stats["latest_seq_ids"])
-        for checkpoint in chunk:
-            checkpoint = _apply_checkpoint_resume_audit(checkpoint, resume_audit)
-            metadata = checkpoint.get("Metadata") or {}
-            latest_key = (str(checkpoint.get("SessionId") or ""), str(checkpoint.get("RunId") or ""))
-            if metadata.get("only_latest_resumable") and int(checkpoint.get("SeqId") or 0) < latest_by_run.get(latest_key, 0):
-                if checkpoint.get("IsResumable") is True:
-                    checkpoint["IsResumable"] = False
-                    checkpoint["ResumeStatus"] = "disabled"
-                    checkpoint["ResumeDisabledReason"] = "新的恢复点已生成，此恢复点暂停恢复能力"
-            if _count_resumable_checkpoints([checkpoint]):
-                resumable_total += 1
-            if request.OnlyResumable and not _is_checkpoint_resumable(checkpoint):
+                latest_by_run = cast(
+                    Mapping[tuple[str, str], int], stats["latest_seq_ids"]
+                )
+                for checkpoint in chunk:
+                    checkpoint = _apply_checkpoint_resume_audit(checkpoint, resume_audit)
+                    metadata = checkpoint.get("Metadata") or {}
+                    latest_key = (
+                        str(checkpoint.get("SessionId") or ""),
+                        str(checkpoint.get("RunId") or ""),
+                    )
+                    if (
+                        metadata.get("only_latest_resumable")
+                        and int(checkpoint.get("SeqId") or 0)
+                        < latest_by_run.get(latest_key, 0)
+                        and checkpoint.get("IsResumable") is True
+                    ):
+                        checkpoint["IsResumable"] = False
+                        checkpoint["ResumeStatus"] = "disabled"
+                        checkpoint["ResumeDisabledReason"] = (
+                            "新的恢复点已生成，此恢复点暂停恢复能力"
+                        )
+                    if _count_resumable_checkpoints([checkpoint]):
+                        resumable_total += 1
+                    if request.OnlyResumable and not _is_checkpoint_resumable(checkpoint):
+                        continue
+                    if offset <= total < offset + int(request.Limit):
+                        checkpoints.append(checkpoint)
+                    total += 1
+        except CheckpointScanRestartRequired as exc:
+            if scan_attempt == 0:
+                await _validate_action_sessions(
+                    service, session_ids, agent_id=request.AgentId
+                )
                 continue
-            if offset <= total < offset + int(request.Limit):
-                checkpoints.append(checkpoint)
-            total += 1
-        event_offset += len(batch)
-        if len(batch) < 50:
-            break
+            raise SessionBackendUnavailable(
+                "Checkpoint backend changed repeatedly during one request"
+            ) from exc
+        except NotImplementedError:
+            return await _list_checkpoints_payload_legacy(
+                request, session_ids, checkpoint_ids
+            )
+        finally:
+            close_batches = getattr(batches, "aclose", None)
+            if callable(close_batches):
+                await close_batches()
+        break
 
     return {
         "Checkpoints": checkpoints,
@@ -2608,56 +2663,61 @@ async def resume_run_action(request: ResumeRunActionRequest):
     if request.Background:
         resume_invocation_id = str(request.InvocationId or resume_input["resume_attempt_id"])
         resume_key = _detached_resume_key_from_input(request.SessionId, resume_input)
-        _reject_if_detached_resume_active(resume_key)
-        await conversation.append_run_resume_event(
-            session_id=request.SessionId,
-            author=request.AgentId,
-            run_id=str(request.RunId),
-            checkpoint_id=str(request.CheckpointId),
-            resume_attempt_id=str(resume_input["resume_attempt_id"]),
-            framework=checkpoint["Framework"],
-            framework_ref=checkpoint["FrameworkRef"],
-            invocation_id=resume_invocation_id,
-            session_service_provider=resolve_session_service,
-        )
-        await conversation.append_run_status_event(
-            session_id=request.SessionId,
-            author=request.AgentId,
-            status="resuming",
-            invocation_id=resume_invocation_id,
-            detail="checkpoint_resume",
-            session_service_provider=resolve_session_service,
-            run_mode=RUN_MODE_BACKGROUND,
-            run_trigger=RUN_TRIGGER_CHECKPOINT_RESUME,
-        )
-        detached = _DetachedSSEStream(
-            conversation.stream_responses_conversation_turn(
-                runner=active_runner,
-                agent_id=request.AgentId,
-                user_id=user_id,
-                messages=[],
+        _reserve_detached_resume_key(resume_key, resume_invocation_id)
+        try:
+            await conversation.append_run_resume_event(
                 session_id=request.SessionId,
-                model=request.Model,
-                model_metadata=request.ModelMetadata,
-                model_options=request.ModelOptions,
-                request_metadata={"responses_conversation": True},
-                resume_input=resume_input,
+                author=request.AgentId,
+                run_id=str(request.RunId),
+                checkpoint_id=str(request.CheckpointId),
+                resume_attempt_id=str(resume_input["resume_attempt_id"]),
+                framework=checkpoint["Framework"],
+                framework_ref=checkpoint["FrameworkRef"],
                 invocation_id=resume_invocation_id,
-                prepare_runner=_prepare_runner_for_model,
+                session_service_provider=resolve_session_service,
+            )
+            await conversation.append_run_status_event(
+                session_id=request.SessionId,
+                author=request.AgentId,
+                status="resuming",
+                invocation_id=resume_invocation_id,
+                detail="checkpoint_resume",
                 session_service_provider=resolve_session_service,
                 run_mode=RUN_MODE_BACKGROUND,
-                resume_lifecycle_prepared=True,
-            ),
-            invocation_id=resume_invocation_id,
-            session_id=request.SessionId,
-            run_mode=RUN_MODE_BACKGROUND,
-            run_trigger=RUN_TRIGGER_CHECKPOINT_RESUME,
-        )
+                run_trigger=RUN_TRIGGER_CHECKPOINT_RESUME,
+            )
+            detached = _DetachedSSEStream(
+                conversation.stream_responses_conversation_turn(
+                    runner=active_runner,
+                    agent_id=request.AgentId,
+                    user_id=user_id,
+                    messages=[],
+                    session_id=request.SessionId,
+                    model=request.Model,
+                    model_metadata=request.ModelMetadata,
+                    model_options=request.ModelOptions,
+                    request_metadata={"responses_conversation": True},
+                    resume_input=resume_input,
+                    invocation_id=resume_invocation_id,
+                    prepare_runner=_prepare_runner_for_model,
+                    session_service_provider=resolve_session_service,
+                    run_mode=RUN_MODE_BACKGROUND,
+                    resume_lifecycle_prepared=True,
+                ),
+                invocation_id=resume_invocation_id,
+                session_id=request.SessionId,
+                run_mode=RUN_MODE_BACKGROUND,
+                run_trigger=RUN_TRIGGER_CHECKPOINT_RESUME,
+            )
+        except BaseException:
+            if resume_key:
+                _clear_detached_resume_key(resume_invocation_id, resume_key)
+            raise
         if resume_key:
-            _DETACHED_RESUME_KEYS_BY_INVOCATION[resume_invocation_id] = resume_key
-            _ACTIVE_DETACHED_RESUME_INVOCATION_BY_KEY[resume_key] = resume_invocation_id
             detached._task.add_done_callback(
-                lambda _task, inv=resume_invocation_id, key=resume_key: _clear_detached_resume_key(inv, key)
+                lambda _task, inv=resume_invocation_id, key=resume_key: (
+                    _clear_detached_resume_key(inv, key)
+                )
             )
         return _action_response(
             "ResumeRun",
@@ -2669,9 +2729,8 @@ async def resume_run_action(request: ResumeRunActionRequest):
                 "InvocationId": resume_invocation_id,
                 "Status": "resuming",
                 "Background": True,
-                "SubscribeUrl": (
-                    "/agentengine/api/v1/SubscribeRunEvents"
-                    f"?SessionId={request.SessionId}&InvocationId={resume_invocation_id}"
+                "SubscribeUrl": _subscribe_run_events_url(
+                    request.SessionId, resume_invocation_id
                 ),
             },
         )
@@ -2748,16 +2807,19 @@ async def subscribe_run_events_action(
         last_seq_id = int(AfterSeqId or 0)
         deadline = time.monotonic() + 5 * 60
         last_heartbeat_at = time.monotonic()
+        terminal_recovery_checked = False
         while True:
-            # 增量查询：把 after_seq_id 下推到后端，只取 seq_id > last_seq_id 的事件，
-            # 避免每轮全量拉取。invocation_id 过滤仍在 Python 侧。
-            events = await service.get_events(session_id, after_seq_id=last_seq_id)
-            matched_events = [
-                event
-                for event in events
-                if event.invocation_id == invocation_id
-            ]
-            for event in matched_events:
+            events = await service.query_events(
+                SessionEventQuery(
+                    session_ids=[session_id],
+                    after_seq_id=last_seq_id,
+                    invocation_id=invocation_id,
+                    limit=1000,
+                    from_start=True,
+                    order_by_seq=True,
+                )
+            )
+            for event in events:
                 last_seq_id = max(last_seq_id, event.seq_id)
                 payload = _event_to_action_payload(event)
                 yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
@@ -2770,16 +2832,23 @@ async def subscribe_run_events_action(
                     yield "data: [DONE]\n\n"
                     return
 
-            # 重连兜底：本轮无新事件时，查全量确认 run 是否已有 terminal
-            # （客户端断连期间 run 已结束）。
-            # 正常流式期间不触发此查询，保持增量收益。
-            if not matched_events:
-                all_events = await service.get_events(session_id)
-                latest_status = None
-                for event in all_events:
-                    if event.invocation_id != invocation_id or event.event_type != "run_status":
-                        continue
-                    latest_status = str((event.content or {}).get("status") or "").strip().lower()
+            # 重连兜底只做一次定向查询；后续 terminal 会由增量查询捕获。
+            if not events and not terminal_recovery_checked:
+                terminal_recovery_checked = True
+                statuses = await service.query_events(
+                    SessionEventQuery(
+                        session_ids=[session_id],
+                        event_types=["run_status"],
+                        invocation_id=invocation_id,
+                        limit=1,
+                        order_by_seq=True,
+                    )
+                )
+                latest_status = (
+                    str((statuses[-1].content or {}).get("status") or "").strip().lower()
+                    if statuses
+                    else ""
+                )
                 if latest_status in _RUN_TERMINAL_STATUSES:
                     yield "data: [DONE]\n\n"
                     return
@@ -3150,59 +3219,62 @@ async def run_agent_action(request: RunAgentActionRequest):
 
     if request.Background:
         invocation_id = request.InvocationId or f"inv_{uuid.uuid4().hex}"
+        resume_key = _detached_resume_key_from_input(request.SessionId, resume_input)
+        _reserve_detached_resume_key(resume_key, invocation_id)
         # 后台 stream 在 detached task 里才被消费（lazy），此时 session 尚未创建。
         # 先 ensure 出 session，才能立刻写 run_status=in_progress（供 SubscribeRunEvents
         # 拉到起始态），并把 resolved session_id 回填给 detached stream 的终态写入与 SubscribeUrl。
-        background_session = await conversation.ensure_conversation_session(
-            agent_id=request.AgentId,
-            user_id=run_user_id,
-            session_id=request.SessionId,
-            session_service_provider=resolve_session_service,
-        )
-        resolved_background_session_id = background_session.id
-        if resume_input is None:
-            await conversation.prime_session_metadata_for_user_turn(
-                service=service,
-                session=background_session,
-                messages=messages,
-            )
-        await conversation.append_run_status_event(
-            session_id=resolved_background_session_id,
-            author=_resolve_active_runner().detection_result.name,
-            status="in_progress",
-            invocation_id=invocation_id,
-            session_service_provider=resolve_session_service,
-            run_mode=RUN_MODE_BACKGROUND,
-            run_trigger=trigger_from_resume_input(resume_input),
-        )
-        resume_key = _detached_resume_key_from_input(resolved_background_session_id, resume_input)
-        _reject_if_detached_resume_active(resume_key)
-        detached = _DetachedSSEStream(
-            conversation.stream_responses_conversation_turn(
-                runner=_resolve_active_runner(),
+        try:
+            background_session = await conversation.ensure_conversation_session(
                 agent_id=request.AgentId,
                 user_id=run_user_id,
-                messages=messages,
+                session_id=request.SessionId,
+                session_service_provider=resolve_session_service,
+            )
+            resolved_background_session_id = background_session.id
+            if resume_input is None:
+                await conversation.prime_session_metadata_for_user_turn(
+                    service=service,
+                    session=background_session,
+                    messages=messages,
+                )
+            await conversation.append_run_status_event(
                 session_id=resolved_background_session_id,
-                model=request.Model,
-                model_metadata=request.ModelMetadata,
-                model_options=request.ModelOptions,
-                request_metadata=request_metadata or None,
-                resume_input=resume_input,
-                account_id=account_id,
+                author=_resolve_active_runner().detection_result.name,
+                status="in_progress",
                 invocation_id=invocation_id,
-                prepare_runner=_prepare_runner_for_model,
                 session_service_provider=resolve_session_service,
                 run_mode=RUN_MODE_BACKGROUND,
-            ),
-            invocation_id=invocation_id,
-            session_id=resolved_background_session_id,
-            run_mode=RUN_MODE_BACKGROUND,
-            run_trigger=trigger_from_resume_input(resume_input),
-        )
-        if invocation_id and resume_key:
-            _DETACHED_RESUME_KEYS_BY_INVOCATION[invocation_id] = resume_key
-            _ACTIVE_DETACHED_RESUME_INVOCATION_BY_KEY[resume_key] = invocation_id
+                run_trigger=trigger_from_resume_input(resume_input),
+            )
+            detached = _DetachedSSEStream(
+                conversation.stream_responses_conversation_turn(
+                    runner=_resolve_active_runner(),
+                    agent_id=request.AgentId,
+                    user_id=run_user_id,
+                    messages=messages,
+                    session_id=resolved_background_session_id,
+                    model=request.Model,
+                    model_metadata=request.ModelMetadata,
+                    model_options=request.ModelOptions,
+                    request_metadata=request_metadata or None,
+                    resume_input=resume_input,
+                    account_id=account_id,
+                    invocation_id=invocation_id,
+                    prepare_runner=_prepare_runner_for_model,
+                    session_service_provider=resolve_session_service,
+                    run_mode=RUN_MODE_BACKGROUND,
+                ),
+                invocation_id=invocation_id,
+                session_id=resolved_background_session_id,
+                run_mode=RUN_MODE_BACKGROUND,
+                run_trigger=trigger_from_resume_input(resume_input),
+            )
+        except BaseException:
+            if resume_key:
+                _clear_detached_resume_key(invocation_id, resume_key)
+            raise
+        if resume_key:
             detached._task.add_done_callback(
                 lambda _t, inv=invocation_id, rk=resume_key: _clear_detached_resume_key(inv, rk)
             )
@@ -3213,10 +3285,8 @@ async def run_agent_action(request: RunAgentActionRequest):
                 "InvocationId": invocation_id,
                 "Status": "running",
                 "Background": True,
-                "SubscribeUrl": (
-                    "/agentengine/api/v1/SubscribeRunEvents"
-                    f"?SessionId={resolved_background_session_id}"
-                    f"&InvocationId={invocation_id}"
+                "SubscribeUrl": _subscribe_run_events_url(
+                    resolved_background_session_id, invocation_id
                 ),
             },
         )

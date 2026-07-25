@@ -200,6 +200,129 @@ async def test_postgres_checkpoint_scan_pushes_filters_and_bounds_storage_page()
     assert args[-2:] == (50, 7)
 
 
+async def test_postgres_event_query_pushes_invocation_filter_before_limit():
+    from ksadk.sessions.base import SessionEventQuery
+    from ksadk.sessions.postgres_service import PostgresSessionService
+
+    calls: list[tuple[str, tuple[object, ...]]] = []
+
+    class FakeConnection:
+        async def fetch(self, sql, *args):
+            calls.append((sql, args))
+            return []
+
+    class AcquireContext:
+        async def __aenter__(self):
+            return FakeConnection()
+
+        async def __aexit__(self, *_args):
+            return None
+
+    class FakePool:
+        def acquire(self):
+            return AcquireContext()
+
+    service = PostgresSessionService(dsn="postgresql://user@db.example.test/session")
+    service._pool = FakePool()
+    service._schema_ready = True
+
+    await service.query_events(
+        SessionEventQuery(
+            session_ids=["session"],
+            invocation_id="invocation",
+            limit=1,
+            from_start=True,
+            order_by_seq=True,
+        )
+    )
+
+    sql, args = calls[0]
+    assert "event_row.invocation_id =" in sql
+    assert "ORDER BY event_row.seq_id ASC, event_row.id ASC" in sql
+    assert args[-3:] == ("invocation", 1, 0)
+
+
+async def test_postgres_checkpoint_iterator_reuses_repeatable_read_snapshot_for_stats():
+    from ksadk.sessions.base import CheckpointEventQuery
+    from ksadk.sessions.postgres_service import PostgresSessionService
+
+    transaction_options: list[dict[str, object]] = []
+    scan_calls: list[tuple[str, tuple[object, ...]]] = []
+
+    class TransactionContext:
+        async def __aenter__(self):
+            return None
+
+        async def __aexit__(self, *_args):
+            return None
+
+    class FakeConnection:
+        def __init__(self):
+            self.scan_calls = 0
+
+        def transaction(self, **kwargs):
+            transaction_options.append(kwargs)
+            return TransactionContext()
+
+        async def fetch(self, sql, *_args):
+            if "ORDER BY event_row.timestamp ASC" in sql:
+                scan_calls.append((sql, _args))
+                self.scan_calls += 1
+                if self.scan_calls == 1:
+                    return [
+                        {
+                            "id": f"cp-{index}", "session_id": "clean",
+                            "author": "agent-a", "event_type": "run_checkpoint",
+                            "content_json": {}, "timestamp": index,
+                            "state_delta_json": {}, "seq_id": index + 1,
+                            "invocation_id": None,
+                            "metadata_json": {
+                                "run_id": "run", "checkpoint_id": f"cp-{index}"
+                            },
+                        }
+                        for index in range(50)
+                    ]
+            return []
+
+    connection = FakeConnection()
+
+    class AcquireContext:
+        async def __aenter__(self):
+            return connection
+
+        async def __aexit__(self, *_args):
+            return None
+
+    class FakePool:
+        def __init__(self):
+            self.acquire_count = 0
+
+        def acquire(self):
+            self.acquire_count += 1
+            return AcquireContext()
+
+    pool = FakePool()
+    service = PostgresSessionService(dsn="postgresql://user@db.example.test/session")
+    service._pool = pool
+    service._schema_ready = True
+
+    iterator = service.iter_checkpoint_event_chunks(
+        CheckpointEventQuery(session_ids=["clean"], offset=7, limit=50)
+    ).__aiter__()
+    batch = await anext(iterator)
+    stats = await service.get_checkpoint_stats([("clean", "run", "cp-1")])
+    with pytest.raises(StopAsyncIteration):
+        await anext(iterator)
+
+    assert len(batch) == 50
+    assert stats["latest_seq_ids"] == {("clean", "run"): 0}
+    assert transaction_options == [{"isolation": "repeatable_read", "readonly": True}]
+    assert pool.acquire_count == 1
+    assert scan_calls[0][1][-2:] == (50, 7)
+    assert "(event_row.timestamp, event_row.session_id" in scan_calls[1][0]
+    assert scan_calls[1][1][-2:] == (50, 0)
+
+
 async def test_resilient_session_keeps_hydrated_history_when_primary_fails(caplog):
     primary = InMemorySessionService()
     await primary.create_session("demo-agent", "user-1", session_id="sess-1")

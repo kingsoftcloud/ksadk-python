@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import importlib
 import sqlite3
 from pathlib import Path
@@ -171,6 +172,85 @@ async def test_batch_events_are_globally_sorted_and_bounded(backend, tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("backend", ["memory", "local"])
+async def test_event_query_filters_invocation_before_pagination(backend, tmp_path):
+    service = (
+        InMemorySessionService()
+        if backend == "memory"
+        else LocalSessionService(db_path=tmp_path / "invocation.sqlite")
+    )
+    await service.create_session("agent-a", "user", "invocation-filter")
+    await service.append_event(
+        "invocation-filter",
+        SessionEvent(id="target-1", invocation_id="target", timestamp=1),
+    )
+    await service.append_event(
+        "invocation-filter",
+        SessionEvent(id="other", invocation_id="other", timestamp=2),
+    )
+    await service.append_event(
+        "invocation-filter",
+        SessionEvent(id="target-2", invocation_id="target", timestamp=3),
+    )
+
+    page = await service.query_events(
+        SessionEventQuery(
+            session_ids=["invocation-filter"],
+            invocation_id="target",
+            limit=1,
+        )
+    )
+
+    assert [event.id for event in page] == ["target-2"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", ["memory", "local"])
+async def test_event_query_can_page_single_session_by_sequence(backend, tmp_path):
+    service = (
+        InMemorySessionService()
+        if backend == "memory"
+        else LocalSessionService(db_path=tmp_path / "sequence.sqlite")
+    )
+    await service.create_session("agent-a", "user", "sequence-page")
+    await service.append_event(
+        "sequence-page",
+        SessionEvent(id="seq-1", invocation_id="target", timestamp=3),
+    )
+    await service.append_event(
+        "sequence-page",
+        SessionEvent(id="seq-2", invocation_id="target", timestamp=2),
+    )
+    await service.append_event(
+        "sequence-page",
+        SessionEvent(id="seq-3", invocation_id="target", timestamp=1),
+    )
+
+    first = await service.query_events(
+        SessionEventQuery(
+            session_ids=["sequence-page"],
+            invocation_id="target",
+            limit=2,
+            from_start=True,
+            order_by_seq=True,
+        )
+    )
+    second = await service.query_events(
+        SessionEventQuery(
+            session_ids=["sequence-page"],
+            invocation_id="target",
+            after_seq_id=first[-1].seq_id,
+            limit=2,
+            from_start=True,
+            order_by_seq=True,
+        )
+    )
+
+    assert [event.id for event in first] == ["seq-1", "seq-2"]
+    assert [event.id for event in second] == ["seq-3"]
+
+
+@pytest.mark.asyncio
 async def test_lightweight_session_metadata_does_not_copy_event_history():
     service = InMemorySessionService()
     await service.create_session("agent-a", "user", "metadata")
@@ -181,6 +261,28 @@ async def test_lightweight_session_metadata_does_not_copy_event_history():
     assert metadata is not None
     assert metadata.id == "metadata"
     assert metadata.events == []
+
+
+@pytest.mark.asyncio
+async def test_local_session_metadata_batch_supports_1000_ids_at_sqlite_999_bind_limit(
+    monkeypatch, tmp_path
+):
+    local_service_module = importlib.import_module("ksadk.sessions.local_service")
+    original_connect = local_service_module.sqlite3.connect
+
+    def limited_connect(*args, **kwargs):
+        connection = original_connect(*args, **kwargs)
+        connection.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
+        return connection
+
+    monkeypatch.setattr(local_service_module.sqlite3, "connect", limited_connect)
+    service = LocalSessionService(db_path=tmp_path / "bind-limit.sqlite")
+
+    sessions = await service.get_sessions_by_ids(
+        [f"missing-{index}" for index in range(1000)]
+    )
+
+    assert sessions == []
 
 
 @pytest.mark.asyncio
@@ -406,6 +508,326 @@ async def test_resilient_checkpoint_scan_pushes_nonzero_offset_to_clean_primary_
 
     assert [event.id for event in page] == [f"cp-{index}" for index in range(60, 70)]
     assert [(query.offset, query.limit) for query in primary.checkpoint_queries] == [(60, 10)]
+
+
+@pytest.mark.asyncio
+async def test_resilient_checkpoint_chunk_iterator_scans_mixed_backends_linearly():
+    from ksadk.sessions.base import CheckpointEventQuery
+
+    class TrackingService(InMemorySessionService):
+        def __init__(self):
+            super().__init__()
+            self.checkpoint_chunk_sizes = []
+
+        async def iter_checkpoint_event_chunks(self, query):
+            async for batch in super().iter_checkpoint_event_chunks(query):
+                self.checkpoint_chunk_sizes.append(len(batch))
+                yield batch
+
+    primary = TrackingService()
+    fallback = TrackingService()
+    service = ResilientSessionService(primary, fallback)
+    await primary.create_session("agent-a", "user", "clean")
+    await fallback.create_session("agent-a", "user", "live")
+    for index in range(60):
+        await primary.append_event(
+            "clean",
+            SessionEvent(
+                id=f"clean-{index}", event_type="run_checkpoint", timestamp=index * 2,
+                metadata={"run_id": "run", "checkpoint_id": f"clean-{index}"},
+            ),
+        )
+        await fallback.append_event(
+            "live",
+            SessionEvent(
+                id=f"live-{index}", event_type="run_checkpoint", timestamp=index * 2 + 1,
+                metadata={"run_id": "run", "checkpoint_id": f"live-{index}"},
+            ),
+        )
+    service._dirty_session_ids.add("live")
+
+    events = []
+    async for chunk in service.iter_checkpoint_event_chunks(
+        CheckpointEventQuery(agent_id="agent-a", limit=50)
+    ):
+        events.extend(chunk)
+
+    assert [event.timestamp for event in events] == list(range(120))
+    assert primary.checkpoint_chunk_sizes == [50, 10]
+    assert fallback.checkpoint_chunk_sizes == [50, 10]
+
+
+@pytest.mark.asyncio
+async def test_in_memory_checkpoint_iterator_keeps_one_snapshot_during_mutations():
+    from ksadk.sessions.base import CheckpointEventQuery
+
+    service = InMemorySessionService()
+    await service.create_session("agent-a", "user", "snapshot")
+    for index in range(60):
+        await service.append_event(
+            "snapshot",
+            SessionEvent(
+                id=f"cp-{index}", event_type="run_checkpoint", timestamp=100 + index,
+                metadata={"run_id": "run", "checkpoint_id": f"cp-{index}"},
+            ),
+        )
+
+    iterator = service.iter_checkpoint_event_chunks(
+        CheckpointEventQuery(session_ids=["snapshot"], limit=50)
+    ).__aiter__()
+    first = await anext(iterator)
+    await service.append_event(
+        "snapshot",
+        SessionEvent(
+            id="late-old", event_type="run_checkpoint", timestamp=0,
+            metadata={"run_id": "run", "checkpoint_id": "late-old"},
+        ),
+    )
+    delete_task = asyncio.create_task(service.delete_session("snapshot"))
+    await asyncio.sleep(0)
+
+    remaining = []
+    async for chunk in iterator:
+        remaining.extend(chunk)
+
+    assert delete_task.done() is False
+    assert [event.id for event in [*first, *remaining]] == [
+        f"cp-{index}" for index in range(60)
+    ]
+    assert await delete_task is True
+
+
+@pytest.mark.asyncio
+async def test_resilient_checkpoint_iterator_closes_nested_fallback_snapshot():
+    from ksadk.sessions.base import CheckpointEventQuery
+
+    primary = InMemorySessionService()
+    fallback = InMemorySessionService()
+    service = ResilientSessionService(primary, fallback)
+    await fallback.create_session("agent-a", "user", "live")
+    for index in range(60):
+        await fallback.append_event(
+            "live",
+            SessionEvent(
+                id=f"cp-{index}", event_type="run_checkpoint", timestamp=index,
+                metadata={"run_id": "run", "checkpoint_id": f"cp-{index}"},
+            ),
+        )
+
+    iterator = service.iter_checkpoint_event_chunks(
+        CheckpointEventQuery(session_ids=["live"], limit=50)
+    ).__aiter__()
+    first = await anext(iterator)
+    await iterator.aclose()
+
+    assert len(first) == 50
+    assert fallback._checkpoint_snapshot_generation.get() is None
+    assert fallback._checkpoint_scan_lock.locked() is False
+    assert await asyncio.wait_for(fallback.delete_session("live"), timeout=0.1) is True
+
+
+@pytest.mark.asyncio
+async def test_resilient_mixed_checkpoint_iterator_keeps_backend_snapshots_stable():
+    from ksadk.sessions.base import CheckpointEventQuery
+
+    primary = InMemorySessionService()
+    fallback = InMemorySessionService()
+    service = ResilientSessionService(primary, fallback)
+    await primary.create_session("agent-a", "user", "clean")
+    await fallback.create_session("agent-a", "user", "live")
+    for index in range(60):
+        await primary.append_event(
+            "clean",
+            SessionEvent(
+                id=f"clean-{index}", event_type="run_checkpoint", timestamp=index * 2,
+                metadata={"run_id": "run", "checkpoint_id": f"clean-{index}"},
+            ),
+        )
+        await fallback.append_event(
+            "live",
+            SessionEvent(
+                id=f"live-{index}", event_type="run_checkpoint", timestamp=index * 2 + 1,
+                metadata={"run_id": "run", "checkpoint_id": f"live-{index}"},
+            ),
+        )
+    service._dirty_session_ids.add("live")
+
+    iterator = service.iter_checkpoint_event_chunks(
+        CheckpointEventQuery(agent_id="agent-a", limit=50)
+    ).__aiter__()
+    events = list(await anext(iterator))
+    await fallback.append_event(
+        "live",
+        SessionEvent(
+            id="late-old", event_type="run_checkpoint", timestamp=-1,
+            metadata={"run_id": "run", "checkpoint_id": "late-old"},
+        ),
+    )
+    async for chunk in iterator:
+        events.extend(chunk)
+
+    assert len(events) == 120
+    assert len({event.id for event in events}) == 120
+    assert "late-old" not in {event.id for event in events}
+
+
+@pytest.mark.asyncio
+async def test_resilient_mixed_short_page_keeps_snapshot_for_page_stats():
+    from ksadk.sessions.base import CheckpointEventQuery
+
+    primary = InMemorySessionService()
+    fallback = InMemorySessionService()
+    service = ResilientSessionService(primary, fallback)
+    await primary.create_session("agent-a", "user", "clean")
+    await fallback.create_session("agent-a", "user", "live")
+    await primary.append_event(
+        "clean",
+        SessionEvent(
+            id="clean-old",
+            event_type="run_checkpoint",
+            timestamp=0,
+            metadata={"run_id": "run", "checkpoint_id": "old"},
+        ),
+    )
+    for index in range(49):
+        await fallback.append_event(
+            "live",
+            SessionEvent(
+                id=f"live-{index}",
+                event_type="run_checkpoint",
+                timestamp=index + 1,
+                metadata={"run_id": "run", "checkpoint_id": f"live-{index}"},
+            ),
+        )
+    service._dirty_session_ids.add("live")
+
+    iterator = service.iter_checkpoint_event_chunks(
+        CheckpointEventQuery(agent_id="agent-a", limit=50)
+    ).__aiter__()
+    batch = await anext(iterator)
+    await primary.append_event(
+        "clean",
+        SessionEvent(
+            id="clean-new",
+            event_type="run_checkpoint",
+            timestamp=100,
+            metadata={"run_id": "run", "checkpoint_id": "new"},
+        ),
+    )
+    stats = await service.get_checkpoint_stats([("clean", "run", "old")])
+    await iterator.aclose()
+
+    assert len(batch) == 50
+    assert stats["latest_seq_ids"] == {("clean", "run"): 1}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", ["memory", "local"])
+async def test_resilient_clean_checkpoint_iterator_keeps_primary_snapshot_stable(
+    backend, tmp_path
+):
+    from ksadk.sessions.base import CheckpointEventQuery
+
+    primary = (
+        InMemorySessionService()
+        if backend == "memory"
+        else LocalSessionService(db_path=tmp_path / "snapshot-primary.sqlite")
+    )
+    service = ResilientSessionService(primary, InMemorySessionService())
+    await primary.create_session("agent-a", "user", "clean")
+    for index in range(60):
+        await primary.append_event(
+            "clean",
+            SessionEvent(
+                id=f"clean-{index}", event_type="run_checkpoint", timestamp=index,
+                metadata={"run_id": "run", "checkpoint_id": f"clean-{index}"},
+            ),
+        )
+
+    iterator = service.iter_checkpoint_event_chunks(
+        CheckpointEventQuery(session_ids=["clean"], limit=50)
+    ).__aiter__()
+    events = list(await anext(iterator))
+    await primary.append_event(
+        "clean",
+        SessionEvent(
+            id="late-old", event_type="run_checkpoint", timestamp=-1,
+            metadata={"run_id": "run", "checkpoint_id": "late-old"},
+        ),
+    )
+    async for chunk in iterator:
+        events.extend(chunk)
+
+    assert len(events) == 60
+    assert len({event.id for event in events}) == 60
+    assert "late-old" not in {event.id for event in events}
+
+
+@pytest.mark.asyncio
+async def test_resilient_checkpoint_stats_reuse_active_iterator_partition():
+    from ksadk.sessions.base import CheckpointEventQuery
+
+    class TrackingPrimary(InMemorySessionService):
+        def __init__(self):
+            super().__init__()
+            self.metadata_calls = 0
+
+        async def get_sessions_by_ids(self, session_ids):
+            self.metadata_calls += 1
+            return await super().get_sessions_by_ids(session_ids)
+
+    primary = TrackingPrimary()
+    service = ResilientSessionService(primary, InMemorySessionService())
+    await primary.create_session("agent-a", "user", "clean")
+    await primary.append_event(
+        "clean",
+        SessionEvent(
+            event_type="run_checkpoint",
+            metadata={"run_id": "run", "checkpoint_id": "cp"},
+        ),
+    )
+
+    iterator = service.iter_checkpoint_event_chunks(
+        CheckpointEventQuery(session_ids=["clean"], limit=50)
+    ).__aiter__()
+    batch = await anext(iterator)
+    await service.get_checkpoint_stats([("clean", "run", "cp")])
+    await iterator.aclose()
+
+    assert len(batch) == 1
+    assert primary.metadata_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_local_checkpoint_stats_share_iterator_rowid_snapshot(tmp_path):
+    from ksadk.sessions.base import CheckpointEventQuery
+
+    service = LocalSessionService(db_path=tmp_path / "stats-snapshot.sqlite")
+    await service.create_session("agent-a", "user", "local")
+    await service.append_event(
+        "local",
+        SessionEvent(
+            event_type="run_checkpoint",
+            metadata={"run_id": "run", "checkpoint_id": "old"},
+        ),
+    )
+
+    iterator = service.iter_checkpoint_event_chunks(
+        CheckpointEventQuery(session_ids=["local"], limit=50)
+    ).__aiter__()
+    batch = await anext(iterator)
+    await service.append_event(
+        "local",
+        SessionEvent(
+            event_type="run_checkpoint",
+            metadata={"run_id": "run", "checkpoint_id": "new"},
+        ),
+    )
+    stats = await service.get_checkpoint_stats([("local", "run", "old")])
+    await iterator.aclose()
+
+    assert [event.id for event in batch]
+    assert stats["latest_seq_ids"] == {("local", "run"): 1}
 
 
 @pytest.mark.asyncio

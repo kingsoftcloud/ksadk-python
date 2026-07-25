@@ -399,9 +399,9 @@ GET /agentengine/api/v1/AttachmentContent?FileUri=ae-upload://<file_id>
 | Action | 请求字段 | 响应字段 |
 | --- | --- | --- |
 | `ListSessions` | `AgentId`、`UserId`（默认 `user`）、`Page`（≥1）、`PageSize`（1~200，默认 20） | `Sessions`、`Total`、`Page`、`PageSize` |
-| `ListSessionEvents` | `SessionId`、`Offset`（≥0）、`Limit`（≥1） | `Events`、`Total`、`Offset`、`Limit` |
+| `ListSessionEvents` | `SessionId`（字符串或数组，可省略）、`Offset`（≥0）、`Limit`（默认 10，最大 1000） | `Events`、`SessionId`（规范化数组）、`Total`、`Offset`、`Limit` |
 
-`ListSessions` 用 `Page` / `PageSize` 做页式分页，客户端按 `Total` 计算总页数；`ListSessionEvents` 用 `Offset` / `Limit` 做偏移分页，`Total` 为该会话事件总数。事件按追加顺序返回，分页只读取已落盘事件，不会阻塞正在写入的事件流。
+`ListSessions` 用 `Page` / `PageSize` 做页式分页，客户端按 `Total` 计算总页数；`ListSessionEvents` 用 `Offset` / `Limit` 做偏移分页，`Total` 为筛选范围内的事件总数。`SessionId` 缺省或传空数组表示当前 Agent / 租户范围内的全部 session；显式数组最多 1000 项，去空白、去重后查询。多 session 事件按 `(Timestamp, SessionId, SeqId, EventId)` 稳定排序，沿用“最新窗口、正序返回”语义；局部 `AfterSeqId` / `BeforeSeqId` 只允许单 session 使用。分页由存储层执行，不会阻塞正在写入的事件流。
 
 ### 5.6 当前不支持
 
@@ -764,7 +764,7 @@ sequenceDiagram
   UI->>RT: ListSessionEvents(SessionId, Offset, Limit)
   RT-->>UI: 已落盘事件 + Total
   U->>UI: 选择「从恢复点继续」
-  UI->>RT: ListSessionCheckpoints(AgentId, SessionId)
+  UI->>RT: ListSessionCheckpoints(AgentId, SessionId[], CheckpointId[])
   RT-->>UI: checkpoints (含 ResumeDisabled 标记)
   UI->>RT: ResumeRun(AgentId, SessionId, RunId, CheckpointId)
   RT-->>UI: 从恢复点继续生成
@@ -773,8 +773,10 @@ sequenceDiagram
 关键 action：
 
 - `CancelRun`：传入 `InvocationId`（即 `run_id`）取消正在运行的流式任务。runtime 会先尝试取消进程内 detached stream，再调用 runner 的 cancel 接口；返回 `Cancelled`、`Found`、`Status`、`RunnerCancelStatus`。
-- `ListSessionCheckpoints`：列出某个会话可恢复的 checkpoint，支持 `OnlyResumable` 过滤、`Offset` / `Limit` 分页（`Limit` 上限 500）。
-- `ResumeRun`：传入 `AgentId` / `SessionId` / `RunId` / `CheckpointId` 从指定恢复点继续。同一 session+run 已有进行中的 resume 时会返回 `resume_already_running`，避免并发重复恢复。
+- `ListSessionCheckpoints`：按一个、多个或全部 session 列出 checkpoint；`SessionId`、`CheckpointId` 均兼容字符串和数组，缺省或空数组表示不过滤。支持 `OnlyResumable`、`RunId`、`Framework` 过滤以及 `Offset` / `Limit` 分页，默认每页 10 条、最大 1000 条；内部固定按 50 条扫描并精确计算 `Total` / `ResumableTotal`。
+- `ResumeRun`：传入 `AgentId` / `SessionId` / `RunId` / `CheckpointId` 从指定恢复点继续。`Background=true` 优先于 `Stream` 和 SSE `Accept`，立即返回 JSON 接受响应及 `SubscribeUrl`，客户端无需等待恢复过程；`Background=false` 时仍按 `Stream` 选择 SSE 或非流式最终 JSON。非流式正常完成返回 `success=true`，terminal checkpoint 的同步 noop 返回 `success=false`。同一 session+run 已有进行中的 resume 时会返回 `resume_already_running`，避免并发重复恢复。
+
+多 session / 全部 session 的跨实例完整性只对共享 Postgres backend 承诺；内存或 pod-local backend 只代表当前实例可见数据。
 
 !!! warning "不可恢复的 checkpoint"
 - 已是终态的 checkpoint 不可恢复（`ResumeDisabledReason` 会提示「选择更早恢复点重跑」）。

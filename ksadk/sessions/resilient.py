@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import aclosing
+from contextvars import ContextVar
 from enum import Enum
-from typing import Any, Optional, cast
+from typing import Any, AsyncIterator, Optional, cast
 
 from ksadk.sessions.base import (
     BaseSessionService, CheckpointEventQuery, Session, SessionEvent, SessionEventQuery, SessionState,
 )
 from ksadk.sessions.in_memory import InMemorySessionService
+from ksadk.sessions.errors import CheckpointScanRestartRequired
 from ksadk.sessions.resilience import is_session_backend_failure
 
 logger = logging.getLogger(__name__)
@@ -45,6 +48,9 @@ class ResilientSessionService(BaseSessionService):
         self._primary_session_ids: set[str] = set()
         self._dirty_session_ids: set[str] = set()
         self._probe_task: asyncio.Task[None] | None = None
+        self._checkpoint_partition: ContextVar[
+            tuple[frozenset[str], frozenset[str]] | None
+        ] = ContextVar(f"checkpoint_partition_{id(self)}", default=None)
 
     @property
     def degraded(self) -> bool:
@@ -370,7 +376,17 @@ class ResilientSessionService(BaseSessionService):
                 return await self.fallback.query_events(query)
         live_events = await self.fallback.query_events(live) if live_ids else []
         merged = list(durable_events or []) + list(live_events)
-        merged.sort(key=lambda event: (event.timestamp, event.session_id, event.seq_id, event.id))
+        if query.order_by_seq:
+            merged.sort(key=lambda event: (event.session_id, event.seq_id, event.id))
+        else:
+            merged.sort(
+                key=lambda event: (
+                    event.timestamp,
+                    event.session_id,
+                    event.seq_id,
+                    event.id,
+                )
+            )
         if query.from_start:
             return merged[query.offset : query.offset + query.limit]
         end = max(len(merged) - query.offset, 0)
@@ -478,15 +494,172 @@ class ResilientSessionService(BaseSessionService):
                 result.append(event)
         return result
 
+    async def iter_checkpoint_event_chunks(
+        self, query: CheckpointEventQuery
+    ) -> AsyncIterator[list[SessionEvent]]:
+        if query.limit < 1 or query.limit > 50:
+            raise ValueError("checkpoint scan limit must be between 1 and 50")
+        clean_ids, live_ids = await self._partition_batch_session_ids(
+            query.session_ids, query.agent_id
+        )
+        partition_token = self._checkpoint_partition.set(
+            (frozenset(clean_ids), frozenset(live_ids))
+        )
+        partitioned_batches = self._iter_checkpoint_event_chunks_for_partition(
+            query, clean_ids, live_ids
+        )
+        try:
+            async with aclosing(partitioned_batches) as batches:
+                async for batch in batches:
+                    yield batch
+        finally:
+            self._checkpoint_partition.reset(partition_token)
+
+    async def _iter_checkpoint_event_chunks_for_partition(
+        self,
+        query: CheckpointEventQuery,
+        clean_ids: list[str],
+        live_ids: list[str],
+    ) -> AsyncIterator[list[SessionEvent]]:
+        if not clean_ids:
+            live_query = CheckpointEventQuery(
+                **{**query.__dict__, "session_ids": live_ids}
+            )
+            async with aclosing(
+                self.fallback.iter_checkpoint_event_chunks(live_query)
+            ) as fallback_batches:
+                async for batch in fallback_batches:
+                    yield batch
+            return
+
+        if not live_ids:
+            clean_query = CheckpointEventQuery(
+                **{**query.__dict__, "session_ids": clean_ids}
+            )
+            clean_batches = self.primary.iter_checkpoint_event_chunks(
+                clean_query
+            ).__aiter__()
+            try:
+                async for batch in clean_batches:
+                    yield batch
+            except NotImplementedError:
+                raise
+            except Exception as exc:
+                if not is_session_backend_failure(exc):
+                    raise
+                self._disable_primary(exc)
+                raise CheckpointScanRestartRequired(
+                    "primary failed during clean checkpoint scan"
+                ) from exc
+            finally:
+                close_clean_batches = getattr(clean_batches, "aclose", None)
+                if callable(close_clean_batches):
+                    await close_clean_batches()
+            return
+
+        clean_query = CheckpointEventQuery(
+            **{
+                **query.__dict__,
+                "session_ids": clean_ids,
+                "offset": 0,
+                "limit": 50,
+            }
+        )
+        live_query = CheckpointEventQuery(
+            **{
+                **query.__dict__,
+                "session_ids": live_ids,
+                "offset": 0,
+                "limit": 50,
+            }
+        )
+        backend_iterators = {
+            "clean": self.primary.iter_checkpoint_event_chunks(clean_query).__aiter__(),
+            "live": self.fallback.iter_checkpoint_event_chunks(live_query).__aiter__(),
+        }
+        pages: dict[str, list[SessionEvent]] = {"clean": [], "live": []}
+        indexes = {"clean": 0, "live": 0}
+        exhausted = {"clean": False, "live": False}
+        skipped = 0
+
+        async def load(kind: str) -> bool:
+            try:
+                page = await anext(backend_iterators[kind])
+            except StopAsyncIteration:
+                page = []
+            except NotImplementedError:
+                raise
+            except Exception as exc:
+                if kind != "clean" or not is_session_backend_failure(exc):
+                    raise
+                self._disable_primary(exc)
+                return False
+            pages[kind] = page
+            indexes[kind] = 0
+            exhausted[kind] = len(page) < 50
+            return True
+
+        try:
+            for kind in ("clean", "live"):
+                if not await load(kind):
+                    raise CheckpointScanRestartRequired(
+                        "primary failed during mixed checkpoint scan"
+                    )
+
+            page: list[SessionEvent] = []
+            while True:
+                for kind in ("clean", "live"):
+                    if indexes[kind] >= len(pages[kind]) and not exhausted[kind]:
+                        if not await load(kind):
+                            raise CheckpointScanRestartRequired(
+                                "primary failed during mixed checkpoint scan"
+                            )
+                candidates = [
+                    (event.timestamp, event.session_id, event.seq_id, event.id, kind, event)
+                    for kind in ("clean", "live")
+                    for event in pages[kind][indexes[kind] : indexes[kind] + 1]
+                ]
+                if not candidates:
+                    if page:
+                        yield page
+                    return
+                *_, kind, event = min(candidates)
+                indexes[kind] += 1
+                if skipped < query.offset:
+                    skipped += 1
+                    continue
+                page.append(event)
+                if len(page) == query.limit:
+                    yield page
+                    page = []
+        finally:
+            for backend_iterator in backend_iterators.values():
+                close_iterator = getattr(backend_iterator, "aclose", None)
+                if callable(close_iterator):
+                    await close_iterator()
+
     async def get_checkpoint_stats(
         self, keys: list[tuple[str, str, str]]
     ) -> dict[str, object]:
         if len(keys) > 50:
             raise ValueError("checkpoint stats batch cannot exceed 50 keys")
         unique_keys = list(dict.fromkeys(keys))
-        clean_ids, live_ids = await self._partition_batch_session_ids(
-            list(dict.fromkeys(key[0] for key in unique_keys)), None
-        )
+        requested_session_ids = list(dict.fromkeys(key[0] for key in unique_keys))
+        active_partition = self._checkpoint_partition.get()
+        if active_partition is None:
+            clean_ids, live_ids = await self._partition_batch_session_ids(
+                requested_session_ids, None
+            )
+        else:
+            clean_set, live_set = active_partition
+            clean_ids = [
+                session_id for session_id in requested_session_ids
+                if session_id in clean_set
+            ]
+            live_ids = [
+                session_id for session_id in requested_session_ids
+                if session_id in live_set
+            ]
         clean_set, live_set = set(clean_ids), set(live_ids)
         clean_keys = [key for key in unique_keys if key[0] in clean_set]
         live_keys = [key for key in unique_keys if key[0] in live_set]
@@ -495,7 +668,9 @@ class ResilientSessionService(BaseSessionService):
             status, value = await self._call_primary("get_checkpoint_stats", clean_keys)
             self._raise_if_capability_unsupported(status, value)
             if status is _PrimaryCallStatus.BACKEND_FAILURE:
-                return await self.fallback.get_checkpoint_stats(unique_keys)
+                raise CheckpointScanRestartRequired(
+                    "primary failed while reading checkpoint stats"
+                )
             durable = cast(dict[str, object], value or durable)
         live = await self.fallback.get_checkpoint_stats(live_keys) if live_keys else {
             "audits": {}, "latest_seq_ids": {}

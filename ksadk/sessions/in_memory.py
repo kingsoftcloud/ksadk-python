@@ -4,7 +4,8 @@ import asyncio
 import bisect
 import copy
 import time
-from typing import Optional
+from contextvars import ContextVar
+from typing import AsyncIterator, Optional
 
 from ksadk.sessions.base import (
     BaseSessionService, CheckpointEventQuery, Session, SessionEvent, SessionEventQuery,
@@ -16,8 +17,13 @@ class InMemorySessionService(BaseSessionService):
     def __init__(self):
         self._sessions: dict[str, Session] = {}
         self._states: dict[tuple[str, str, str, str], SessionState] = {}
-        self._event_order: list[tuple[float, str, int, str, SessionEvent]] = []
+        self._event_order: list[tuple[float, str, int, str, int, SessionEvent]] = []
+        self._event_generation = 0
+        self._checkpoint_snapshot_generation: ContextVar[int | None] = ContextVar(
+            f"checkpoint_snapshot_generation_{id(self)}", default=None
+        )
         self._lock = asyncio.Lock()
+        self._checkpoint_scan_lock = asyncio.Lock()
 
     async def create_session(
         self,
@@ -93,21 +99,24 @@ class InMemorySessionService(BaseSessionService):
             )
 
     async def delete_session(self, session_id: str) -> bool:
-        async with self._lock:
-            session = self._sessions.pop(session_id, None)
-            if not session:
-                return False
-            self._event_order = [item for item in self._event_order if item[1] != session_id]
-            self._states.pop(
-                self._state_key(
-                    "session",
-                    session.agent_id,
-                    session.user_id,
-                    session_id,
-                ),
-                None,
-            )
-            return True
+        async with self._checkpoint_scan_lock:
+            async with self._lock:
+                session = self._sessions.pop(session_id, None)
+                if not session:
+                    return False
+                self._event_order = [
+                    item for item in self._event_order if item[1] != session_id
+                ]
+                self._states.pop(
+                    self._state_key(
+                        "session",
+                        session.agent_id,
+                        session.user_id,
+                        session_id,
+                    ),
+                    None,
+                )
+                return True
 
     async def update_session_metadata(
         self,
@@ -148,9 +157,17 @@ class InMemorySessionService(BaseSessionService):
             if not stored.id:
                 stored.id = generate_id()
             session.events.append(stored)
+            self._event_generation += 1
             bisect.insort(
                 self._event_order,
-                (stored.timestamp, stored.session_id, stored.seq_id, stored.id, stored),
+                (
+                    stored.timestamp,
+                    stored.session_id,
+                    stored.seq_id,
+                    stored.id,
+                    self._event_generation,
+                    stored,
+                ),
             )
             session.updated_at = time.time()
 
@@ -280,7 +297,7 @@ class InMemorySessionService(BaseSessionService):
             framework = str(query.framework or "").lower()
             skipped = 0
             page: list[SessionEvent] = []
-            for _, session_id, _, _, event in self._event_order:
+            for _, session_id, _, _, _, event in self._event_order:
                 session = self._sessions.get(session_id)
                 metadata = event.metadata or {}
                 if (
@@ -301,6 +318,98 @@ class InMemorySessionService(BaseSessionService):
                     break
             return page
 
+    async def iter_checkpoint_event_chunks(
+        self, query: CheckpointEventQuery
+    ) -> AsyncIterator[list[SessionEvent]]:
+        if query.limit < 1 or query.limit > 50:
+            raise ValueError("checkpoint scan limit must be between 1 and 50")
+        selected_ids = None if query.session_ids is None else set(query.session_ids)
+        checkpoint_ids = set(query.checkpoint_ids or [])
+        framework = str(query.framework or "").lower()
+        cursor: tuple[float, str, int, str] | None = None
+        skipped = 0
+        async with self._checkpoint_scan_lock:
+            async with self._lock:
+                snapshot_generation = self._event_generation
+            snapshot_token = self._checkpoint_snapshot_generation.set(
+                snapshot_generation
+            )
+            try:
+                while True:
+                    page: list[SessionEvent] = []
+                    async with self._lock:
+                        order_index = self._event_order_index_after(cursor)
+                        while (
+                            order_index < len(self._event_order)
+                            and len(page) < query.limit
+                        ):
+                            (
+                                timestamp,
+                                session_id,
+                                seq_id,
+                                event_id,
+                                generation,
+                                event,
+                            ) = self._event_order[order_index]
+                            order_index += 1
+                            cursor = (timestamp, session_id, seq_id, event_id)
+                            session = self._sessions.get(session_id)
+                            metadata = event.metadata or {}
+                            if (
+                                generation > snapshot_generation
+                                or session is None
+                                or event.event_type != "run_checkpoint"
+                                or (
+                                    selected_ids is not None
+                                    and session_id not in selected_ids
+                                )
+                                or (
+                                    query.agent_id is not None
+                                    and session.agent_id != query.agent_id
+                                )
+                                or (
+                                    checkpoint_ids
+                                    and str(metadata.get("checkpoint_id") or "")
+                                    not in checkpoint_ids
+                                )
+                                or (
+                                    query.run_id is not None
+                                    and str(metadata.get("run_id") or "") != query.run_id
+                                )
+                                or (
+                                    framework
+                                    and str(metadata.get("framework") or "").lower()
+                                    != framework
+                                )
+                            ):
+                                continue
+                            if skipped < query.offset:
+                                skipped += 1
+                                continue
+                            page.append(copy.deepcopy(event))
+                        exhausted = order_index >= len(self._event_order)
+                    if page:
+                        yield page
+                    if exhausted:
+                        break
+            finally:
+                self._checkpoint_snapshot_generation.reset(snapshot_token)
+
+    def _event_order_index_after(
+        self, cursor: tuple[float, str, int, str] | None
+    ) -> int:
+        if cursor is None:
+            return 0
+        lower = 0
+        upper = len(self._event_order)
+        while lower < upper:
+            middle = (lower + upper) // 2
+            if self._event_order[middle][:4] <= cursor:
+                lower = middle + 1
+            else:
+                upper = middle
+        return lower
+
     async def get_checkpoint_stats(
         self, keys: list[tuple[str, str, str]]
     ) -> dict[str, object]:
@@ -314,24 +423,32 @@ class InMemorySessionService(BaseSessionService):
         run_keys = {(session_id, run_id) for session_id, run_id, _ in unique_keys}
         latest_seq_ids = {key: 0 for key in run_keys}
         async with self._lock:
-            for session_id, run_id in run_keys:
-                session = self._sessions.get(session_id)
-                for event in session.events if session else []:
-                    metadata = event.metadata or {}
-                    if str(metadata.get("run_id") or "") != run_id:
-                        continue
-                    if event.event_type == "run_checkpoint":
-                        latest_seq_ids[(session_id, run_id)] = max(
-                            latest_seq_ids[(session_id, run_id)], int(event.seq_id or 0)
+            snapshot_generation = self._checkpoint_snapshot_generation.get()
+            for _, session_id, _, _, generation, event in self._event_order:
+                if snapshot_generation is not None and generation > snapshot_generation:
+                    continue
+                metadata = event.metadata or {}
+                run_id = str(metadata.get("run_id") or "")
+                run_key = (session_id, run_id)
+                if run_key not in run_keys:
+                    continue
+                if event.event_type == "run_checkpoint":
+                    latest_seq_ids[run_key] = max(
+                        latest_seq_ids[run_key], int(event.seq_id or 0)
+                    )
+                elif event.event_type == "run_resume":
+                    key = (
+                        session_id,
+                        run_id,
+                        str(metadata.get("checkpoint_id") or ""),
+                    )
+                    if key in audits:
+                        audit = audits[key]
+                        audit["resume_count"] = int(audit["resume_count"]) + 1
+                        audit["last_resumed_at"] = max(
+                            audit["last_resumed_at"] or event.timestamp,
+                            event.timestamp,
                         )
-                    elif event.event_type == "run_resume":
-                        key = (session_id, run_id, str(metadata.get("checkpoint_id") or ""))
-                        if key in audits:
-                            audit = audits[key]
-                            audit["resume_count"] = int(audit["resume_count"]) + 1
-                            audit["last_resumed_at"] = max(
-                                audit["last_resumed_at"] or event.timestamp, event.timestamp
-                            )
         return {"audits": audits, "latest_seq_ids": latest_seq_ids}
 
     async def _query_events(self, query: SessionEventQuery, *, count_only: bool) -> list[SessionEvent] | int:
@@ -345,12 +462,26 @@ class InMemorySessionService(BaseSessionService):
                 if (query.after_seq_id is None or event.seq_id > query.after_seq_id)
                 and (query.before_seq_id is None or event.seq_id < query.before_seq_id)
                 and (not allowed_types or event.event_type in allowed_types)
+                and (
+                    query.invocation_id is None
+                    or event.invocation_id == query.invocation_id
+                )
                 and (query.run_id is None or str((event.metadata or {}).get("run_id") or "") == query.run_id)
                 and (query.checkpoint_id is None or str((event.metadata or {}).get("checkpoint_id") or "") == query.checkpoint_id)
             ]
             if count_only:
                 return len(events)
-            events.sort(key=lambda event: (event.timestamp, event.session_id, event.seq_id, event.id))
+            if query.order_by_seq:
+                events.sort(key=lambda event: (event.session_id, event.seq_id, event.id))
+            else:
+                events.sort(
+                    key=lambda event: (
+                        event.timestamp,
+                        event.session_id,
+                        event.seq_id,
+                        event.id,
+                    )
+                )
             if query.from_start:
                 return copy.deepcopy(events[query.offset : query.offset + query.limit])
             end = max(len(events) - query.offset, 0)

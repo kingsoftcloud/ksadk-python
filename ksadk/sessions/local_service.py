@@ -8,9 +8,10 @@ import os
 import sqlite3
 import time
 from contextlib import closing, contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from collections.abc import Iterator
-from typing import Optional
+from typing import AsyncIterator, Optional
 
 from ksadk.sessions.base import (
     BaseSessionService,
@@ -63,6 +64,10 @@ class LocalSessionService(BaseSessionService):
         )
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = asyncio.Lock()
+        self._checkpoint_scan_lock = asyncio.Lock()
+        self._checkpoint_snapshot_rowid: ContextVar[int | None] = ContextVar(
+            f"checkpoint_snapshot_rowid_{id(self)}", default=None
+        )
         self._ensure_schema()
 
     async def create_session(
@@ -103,8 +108,9 @@ class LocalSessionService(BaseSessionService):
             return await asyncio.to_thread(self._count_sessions_sync, agent_id, user_id)
 
     async def delete_session(self, session_id: str) -> bool:
-        async with self._lock:
-            return await asyncio.to_thread(self._delete_session_sync, session_id)
+        async with self._checkpoint_scan_lock:
+            async with self._lock:
+                return await asyncio.to_thread(self._delete_session_sync, session_id)
 
     async def update_session_metadata(
         self,
@@ -198,13 +204,46 @@ class LocalSessionService(BaseSessionService):
         async with self._lock:
             return await asyncio.to_thread(self._scan_checkpoint_events_sync, query)
 
+    async def iter_checkpoint_event_chunks(
+        self, query: CheckpointEventQuery
+    ) -> AsyncIterator[list[SessionEvent]]:
+        if query.limit < 1 or query.limit > 50:
+            raise ValueError("checkpoint scan limit must be between 1 and 50")
+        async with self._checkpoint_scan_lock:
+            snapshot_rowid = await asyncio.to_thread(self._max_event_rowid_sync)
+            snapshot_token = self._checkpoint_snapshot_rowid.set(snapshot_rowid)
+            cursor: tuple[float, str, int, str] | None = None
+            first_page = True
+            try:
+                while True:
+                    batch = await asyncio.to_thread(
+                        self._scan_checkpoint_snapshot_sync,
+                        query,
+                        snapshot_rowid,
+                        cursor,
+                        query.offset if first_page else 0,
+                    )
+                    if not batch:
+                        return
+                    yield batch
+                    last = batch[-1]
+                    cursor = (last.timestamp, last.session_id, last.seq_id, last.id)
+                    first_page = False
+                    if len(batch) < query.limit:
+                        return
+            finally:
+                self._checkpoint_snapshot_rowid.reset(snapshot_token)
+
     async def get_checkpoint_stats(
         self, keys: list[tuple[str, str, str]]
     ) -> dict[str, object]:
         if len(keys) > 50:
             raise ValueError("checkpoint stats batch cannot exceed 50 keys")
+        snapshot_rowid = self._checkpoint_snapshot_rowid.get()
         async with self._lock:
-            return await asyncio.to_thread(self._get_checkpoint_stats_sync, keys)
+            return await asyncio.to_thread(
+                self._get_checkpoint_stats_sync, keys, snapshot_rowid
+            )
 
     async def get_events_batch(
         self,
@@ -400,6 +439,9 @@ class LocalSessionService(BaseSessionService):
 
                 CREATE INDEX IF NOT EXISTS idx_ksadk_events_timestamp_session_seq
                 ON {KSADK_EVENTS_TABLE} (timestamp, session_id, seq_id, id);
+
+                CREATE INDEX IF NOT EXISTS idx_ksadk_events_session_invocation_seq
+                ON {KSADK_EVENTS_TABLE} (session_id, invocation_id, seq_id);
 
                 CREATE INDEX IF NOT EXISTS idx_ksadk_events_checkpoint_lookup
                 ON {KSADK_EVENTS_TABLE} (session_id, event_type,
@@ -896,14 +938,14 @@ class LocalSessionService(BaseSessionService):
         if not session_ids:
             return []
         with self._connection() as connection:
-            placeholders = ", ".join("?" for _ in session_ids)
             rows = connection.execute(
                 f"""
                 SELECT id, agent_id, user_id, title, title_source, summary, first_prompt, last_prompt,
                        state_json, created_at, updated_at, version
-                FROM {KSADK_SESSIONS_TABLE} WHERE id IN ({placeholders})
+                FROM {KSADK_SESSIONS_TABLE}
+                WHERE id IN (SELECT value FROM json_each(?))
                 """,
-                session_ids,
+                [json.dumps(session_ids)],
             ).fetchall()
             by_id = {
                 row["id"]: Session(
@@ -927,6 +969,7 @@ class LocalSessionService(BaseSessionService):
         checkpoint_id: str | None = None,
         checkpoint_ids: list[str] | None = None,
         framework: str | None = None,
+        invocation_id: str | None = None,
     ) -> tuple[str, list[object]]:
         clauses: list[str] = []
         params: list[object] = []
@@ -947,6 +990,9 @@ class LocalSessionService(BaseSessionService):
         if event_types:
             clauses.append("event_row.event_type IN (" + ", ".join("?" for _ in event_types) + ")")
             params.extend(event_types)
+        if invocation_id is not None:
+            clauses.append("event_row.invocation_id = ?")
+            params.append(invocation_id)
         if run_id is not None:
             clauses.append("json_extract(event_row.metadata_json, '$.run_id') = ?")
             params.append(run_id)
@@ -1004,8 +1050,72 @@ class LocalSessionService(BaseSessionService):
                 ) for row in rows
             ]
 
+    def _max_event_rowid_sync(self) -> int:
+        with self._connection() as connection:
+            row = connection.execute(
+                f"SELECT COALESCE(MAX(rowid), 0) AS max_rowid FROM {KSADK_EVENTS_TABLE}"
+            ).fetchone()
+            return int(row["max_rowid"] if row else 0)
+
+    def _scan_checkpoint_snapshot_sync(
+        self,
+        query: CheckpointEventQuery,
+        snapshot_rowid: int,
+        cursor: tuple[float, str, int, str] | None,
+        offset: int,
+    ) -> list[SessionEvent]:
+        where, params = self._batch_event_where(
+            query.session_ids,
+            query.agent_id,
+            None,
+            None,
+            ["run_checkpoint"],
+            query.run_id,
+            None,
+            query.checkpoint_ids,
+            query.framework,
+        )
+        clauses = [f"({where})", "event_row.rowid <= ?"]
+        params.append(snapshot_rowid)
+        if cursor is not None:
+            clauses.append(
+                "(event_row.timestamp, event_row.session_id, event_row.seq_id, event_row.id) "
+                "> (?, ?, ?, ?)"
+            )
+            params.extend(cursor)
+        with self._connection() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT event_row.id, event_row.session_id, event_row.author,
+                       event_row.event_type, event_row.content_json, event_row.timestamp,
+                       event_row.state_delta_json, event_row.seq_id,
+                       event_row.invocation_id, event_row.metadata_json
+                FROM {KSADK_EVENTS_TABLE} AS event_row
+                JOIN {KSADK_SESSIONS_TABLE} AS session_row
+                  ON session_row.id = event_row.session_id
+                WHERE {' AND '.join(clauses)}
+                ORDER BY event_row.timestamp ASC, event_row.session_id ASC,
+                         event_row.seq_id ASC, event_row.id ASC
+                LIMIT ? OFFSET ?
+                """,
+                [*params, query.limit, offset],
+            ).fetchall()
+            return [
+                SessionEvent(
+                    id=row["id"], session_id=row["session_id"], author=row["author"],
+                    event_type=row["event_type"], content=json.loads(row["content_json"] or "{}"),
+                    timestamp=row["timestamp"],
+                    state_delta=json.loads(row["state_delta_json"] or "{}"),
+                    seq_id=row["seq_id"], invocation_id=row["invocation_id"],
+                    metadata=json.loads(row["metadata_json"] or "{}"),
+                )
+                for row in rows
+            ]
+
     def _get_checkpoint_stats_sync(
-        self, keys: list[tuple[str, str, str]]
+        self,
+        keys: list[tuple[str, str, str]],
+        snapshot_rowid: int | None = None,
     ) -> dict[str, object]:
         unique_keys = list(dict.fromkeys(keys))
         audits = {
@@ -1027,6 +1137,10 @@ class LocalSessionService(BaseSessionService):
             for _ in run_keys
         )
         run_params = [value for key in run_keys for value in key]
+        snapshot_clause = " AND rowid <= ?" if snapshot_rowid is not None else ""
+        if snapshot_rowid is not None:
+            audit_params.append(snapshot_rowid)
+            run_params.append(snapshot_rowid)
         with self._connection() as connection:
             audit_rows = connection.execute(
                 f"""SELECT session_id,
@@ -1034,7 +1148,7 @@ class LocalSessionService(BaseSessionService):
                     json_extract(metadata_json, '$.checkpoint_id') AS checkpoint_id,
                     COUNT(*) AS resume_count, MAX(timestamp) AS last_resumed_at
                 FROM {KSADK_EVENTS_TABLE}
-                WHERE event_type = 'run_resume' AND ({audit_terms})
+                WHERE event_type = 'run_resume' AND ({audit_terms}){snapshot_clause}
                 GROUP BY session_id, run_id, checkpoint_id""",
                 audit_params,
             ).fetchall()
@@ -1043,7 +1157,7 @@ class LocalSessionService(BaseSessionService):
                     json_extract(metadata_json, '$.run_id') AS run_id,
                     MAX(seq_id) AS latest_seq_id
                 FROM {KSADK_EVENTS_TABLE}
-                WHERE event_type = 'run_checkpoint' AND ({run_terms})
+                WHERE event_type = 'run_checkpoint' AND ({run_terms}){snapshot_clause}
                 GROUP BY session_id, run_id""",
                 run_params,
             ).fetchall()
@@ -1060,6 +1174,7 @@ class LocalSessionService(BaseSessionService):
         where, params = self._batch_event_where(
             query.session_ids, query.agent_id, query.after_seq_id, query.before_seq_id,
             query.event_types, query.run_id, query.checkpoint_id,
+            invocation_id=query.invocation_id,
         )
         with self._connection() as connection:
             if count_only:
@@ -1068,12 +1183,25 @@ class LocalSessionService(BaseSessionService):
                 ).fetchone()
                 return int(row["total"] if row else 0)
             direction = "ASC" if query.from_start else "DESC"
+            inner_order = (
+                f"event_row.seq_id {direction}, event_row.id {direction}"
+                if query.order_by_seq
+                else (
+                    f"event_row.timestamp {direction}, event_row.session_id {direction}, "
+                    f"event_row.seq_id {direction}, event_row.id {direction}"
+                )
+            )
+            outer_order = (
+                "seq_id ASC, id ASC"
+                if query.order_by_seq
+                else "timestamp ASC, session_id ASC, seq_id ASC, id ASC"
+            )
             rows = connection.execute(
                 f"""SELECT id, session_id, author, event_type, content_json, timestamp, state_delta_json, seq_id, invocation_id, metadata_json
                 FROM (SELECT event_row.id, event_row.session_id, event_row.author, event_row.event_type, event_row.content_json, event_row.timestamp, event_row.state_delta_json, event_row.seq_id, event_row.invocation_id, event_row.metadata_json
                       FROM {KSADK_EVENTS_TABLE} AS event_row JOIN {KSADK_SESSIONS_TABLE} AS session_row ON session_row.id = event_row.session_id WHERE {where}
-                      ORDER BY event_row.timestamp {direction}, event_row.session_id {direction}, event_row.seq_id {direction}, event_row.id {direction} LIMIT ? OFFSET ?)
-                ORDER BY timestamp ASC, session_id ASC, seq_id ASC, id ASC""", [*params, query.limit, query.offset]
+                      ORDER BY {inner_order} LIMIT ? OFFSET ?)
+                ORDER BY {outer_order}""", [*params, query.limit, query.offset]
             ).fetchall()
             return [SessionEvent(id=row["id"], session_id=row["session_id"], author=row["author"], event_type=row["event_type"], content=json.loads(row["content_json"] or "{}"), timestamp=row["timestamp"], state_delta=json.loads(row["state_delta_json"] or "{}"), seq_id=row["seq_id"], invocation_id=row["invocation_id"], metadata=json.loads(row["metadata_json"] or "{}")) for row in rows]
 

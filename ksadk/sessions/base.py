@@ -6,7 +6,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, AsyncIterator, Optional
 
 
 def generate_id() -> str:
@@ -130,9 +130,11 @@ class SessionEventQuery:
     after_seq_id: int | None = None
     before_seq_id: int | None = None
     event_types: list[str] | None = None
+    invocation_id: str | None = None
     run_id: str | None = None
     checkpoint_id: str | None = None
     from_start: bool = False
+    order_by_seq: bool = False
 
 
 @dataclass(frozen=True)
@@ -381,6 +383,7 @@ class BaseSessionService(abc.ABC):
             query.session_ids is not None
             and len(query.session_ids) == 1
             and not query.event_types
+            and query.invocation_id is None
             and query.run_id is None
             and query.checkpoint_id is None
             and not query.from_start
@@ -396,6 +399,7 @@ class BaseSessionService(abc.ABC):
             query.session_ids is not None
             and len(query.session_ids) == 1
             and not query.event_types
+            and query.invocation_id is None
             and query.run_id is None
             and query.checkpoint_id is None
         ):
@@ -415,8 +419,12 @@ class BaseSessionService(abc.ABC):
     ) -> list[SessionEvent]:
         if query.limit < 1 or query.limit > 50:
             raise ValueError("checkpoint scan limit must be between 1 and 50")
+        if query.checkpoint_ids or query.framework is not None:
+            raise NotImplementedError(
+                "Backend must push down checkpoint id and framework filters"
+            )
         if query.session_ids is not None and len(query.session_ids) == 1:
-            events = await self.query_events(
+            return await self.query_events(
                 SessionEventQuery(
                     session_ids=query.session_ids,
                     agent_id=query.agent_id,
@@ -427,13 +435,24 @@ class BaseSessionService(abc.ABC):
                     from_start=True,
                 )
             )
-            checkpoint_ids = set(query.checkpoint_ids or [])
-            return [
-                event for event in events
-                if (not checkpoint_ids or str((event.metadata or {}).get("checkpoint_id") or "") in checkpoint_ids)
-                and (query.framework is None or str((event.metadata or {}).get("framework") or "").lower() == query.framework.lower())
-            ]
         raise NotImplementedError("Backend does not support checkpoint scans")
+
+    async def iter_checkpoint_event_chunks(
+        self, query: CheckpointEventQuery
+    ) -> AsyncIterator[list[SessionEvent]]:
+        """Yield bounded checkpoint pages without materialising the full result."""
+
+        offset = query.offset
+        while True:
+            batch = await self.scan_checkpoint_events(
+                CheckpointEventQuery(**{**query.__dict__, "offset": offset})
+            )
+            if not batch:
+                break
+            yield batch
+            offset += len(batch)
+            if len(batch) < query.limit:
+                break
 
     async def get_checkpoint_stats(
         self, keys: list[tuple[str, str, str]]
