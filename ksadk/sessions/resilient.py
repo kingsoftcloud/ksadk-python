@@ -5,7 +5,9 @@ import logging
 from enum import Enum
 from typing import Any, Optional, cast
 
-from ksadk.sessions.base import BaseSessionService, Session, SessionEvent, SessionEventQuery, SessionState
+from ksadk.sessions.base import (
+    BaseSessionService, CheckpointEventQuery, Session, SessionEvent, SessionEventQuery, SessionState,
+)
 from ksadk.sessions.in_memory import InMemorySessionService
 from ksadk.sessions.resilience import is_session_backend_failure
 
@@ -401,6 +403,95 @@ class ResilientSessionService(BaseSessionService):
             if status is _PrimaryCallStatus.AVAILABLE_RESULT:
                 return stats
         return await self.fallback.get_checkpoint_lookup_stats(session_id, run_id, checkpoint_id)
+
+    async def scan_checkpoint_events(
+        self, query: CheckpointEventQuery
+    ) -> list[SessionEvent]:
+        if query.limit < 1 or query.limit > 50:
+            raise ValueError("checkpoint scan limit must be between 1 and 50")
+        clean_ids, live_ids = await self._partition_batch_session_ids(
+            query.session_ids, query.agent_id
+        )
+        backend_offsets = {"clean": 0, "live": 0}
+        pages: dict[str, list[SessionEvent]] = {"clean": [], "live": []}
+        indexes = {"clean": 0, "live": 0}
+        exhausted = {"clean": not clean_ids, "live": not live_ids}
+
+        async def load(kind: str) -> bool:
+            ids = clean_ids if kind == "clean" else live_ids
+            if exhausted[kind]:
+                return True
+            page_query = CheckpointEventQuery(
+                **{**query.__dict__, "session_ids": ids, "offset": backend_offsets[kind], "limit": 50}
+            )
+            if kind == "clean":
+                status, result = await self._call_primary("scan_checkpoint_events", page_query)
+                self._raise_if_capability_unsupported(status, result)
+                if status is _PrimaryCallStatus.BACKEND_FAILURE:
+                    return False
+                page = cast(list[SessionEvent], result or [])
+            else:
+                page = await self.fallback.scan_checkpoint_events(page_query)
+            pages[kind] = page
+            indexes[kind] = 0
+            backend_offsets[kind] += len(page)
+            exhausted[kind] = len(page) < 50
+            return True
+
+        if not await load("clean"):
+            return await self.fallback.scan_checkpoint_events(query)
+        await load("live")
+        skipped = 0
+        result: list[SessionEvent] = []
+        while len(result) < query.limit:
+            for kind in ("clean", "live"):
+                if indexes[kind] >= len(pages[kind]) and not exhausted[kind]:
+                    if not await load(kind):
+                        return await self.fallback.scan_checkpoint_events(query)
+            candidates = [
+                (event.timestamp, event.session_id, event.seq_id, event.id, kind, event)
+                for kind in ("clean", "live")
+                for event in pages[kind][indexes[kind] : indexes[kind] + 1]
+            ]
+            if not candidates:
+                break
+            *_, kind, event = min(candidates)
+            indexes[kind] += 1
+            if skipped < query.offset:
+                skipped += 1
+            else:
+                result.append(event)
+        return result
+
+    async def get_checkpoint_stats(
+        self, keys: list[tuple[str, str, str]]
+    ) -> dict[str, object]:
+        if len(keys) > 50:
+            raise ValueError("checkpoint stats batch cannot exceed 50 keys")
+        unique_keys = list(dict.fromkeys(keys))
+        clean_ids, live_ids = await self._partition_batch_session_ids(
+            list(dict.fromkeys(key[0] for key in unique_keys)), None
+        )
+        clean_set, live_set = set(clean_ids), set(live_ids)
+        clean_keys = [key for key in unique_keys if key[0] in clean_set]
+        live_keys = [key for key in unique_keys if key[0] in live_set]
+        durable: dict[str, object] = {"audits": {}, "latest_seq_ids": {}}
+        if clean_keys:
+            status, value = await self._call_primary("get_checkpoint_stats", clean_keys)
+            self._raise_if_capability_unsupported(status, value)
+            if status is _PrimaryCallStatus.BACKEND_FAILURE:
+                return await self.fallback.get_checkpoint_stats(unique_keys)
+            durable = cast(dict[str, object], value or durable)
+        live = await self.fallback.get_checkpoint_stats(live_keys) if live_keys else {
+            "audits": {}, "latest_seq_ids": {}
+        }
+        return {
+            "audits": {**cast(dict, durable["audits"]), **cast(dict, live["audits"])},
+            "latest_seq_ids": {
+                **cast(dict, durable["latest_seq_ids"]),
+                **cast(dict, live["latest_seq_ids"]),
+            },
+        }
 
     async def get_events_batch(
         self,

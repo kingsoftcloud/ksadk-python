@@ -3006,13 +3006,21 @@ async def test_checkpoint_listing_uses_bounded_batch_queries(monkeypatch):
         def __init__(self):
             super().__init__()
             self.batch_limits: list[int] = []
+            self.stats_batch_sizes: list[int] = []
 
         async def get_events(self, *args, **kwargs):  # pragma: no cover - assertion guard
             raise AssertionError("checkpoint list must not call unbounded get_events")
 
-        async def get_events_batch(self, *args, **kwargs):
-            self.batch_limits.append(kwargs["limit"])
-            return await super().get_events_batch(*args, **kwargs)
+        async def get_events_batch(self, *args, **kwargs):  # pragma: no cover - assertion guard
+            raise AssertionError("checkpoint list must use checkpoint scan pushdown")
+
+        async def scan_checkpoint_events(self, query):
+            self.batch_limits.append(query.limit)
+            return await super().scan_checkpoint_events(query)
+
+        async def get_checkpoint_stats(self, keys):
+            self.stats_batch_sizes.append(len(keys))
+            return await super().get_checkpoint_stats(keys)
 
     service = _BoundedService()
     await service.create_session("demo-agent", "user-1", "bounded-cp")
@@ -3035,7 +3043,8 @@ async def test_checkpoint_listing_uses_bounded_batch_queries(monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["Data"]["Total"] == 501
-    assert max(service.batch_limits) == 500
+    assert max(service.batch_limits) == 50
+    assert max(service.stats_batch_sizes) <= 50
 
 
 @pytest.mark.asyncio
@@ -3143,6 +3152,12 @@ async def test_legacy_single_session_backend_keeps_old_actions_and_rejects_new_m
         async def get_checkpoint_lookup_stats(self, *args):
             return await super(InMemorySessionService, self).get_checkpoint_lookup_stats(*args)
 
+        async def scan_checkpoint_events(self, query):
+            return await super(InMemorySessionService, self).scan_checkpoint_events(query)
+
+        async def get_checkpoint_stats(self, keys):
+            return await super(InMemorySessionService, self).get_checkpoint_stats(keys)
+
     service = _LegacyBackend()
     await service.create_session("demo-agent", "user", "legacy")
     await service.create_session("demo-agent", "user", "legacy-2")
@@ -3183,6 +3198,12 @@ async def test_resilient_legacy_primary_preserves_single_checkpoint_actions_and_
 
         async def get_checkpoint_lookup_stats(self, *args):
             return await super(InMemorySessionService, self).get_checkpoint_lookup_stats(*args)
+
+        async def scan_checkpoint_events(self, query):
+            return await super(InMemorySessionService, self).scan_checkpoint_events(query)
+
+        async def get_checkpoint_stats(self, keys):
+            return await super(InMemorySessionService, self).get_checkpoint_stats(keys)
 
     primary = _LegacyPrimary()
     for session_id in ("legacy-primary", "legacy-primary-2"):

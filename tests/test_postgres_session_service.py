@@ -159,6 +159,47 @@ async def test_postgres_schema_creates_readable_session_event_view(monkeypatch):
     assert "lifecycle_status" in schema_sql
 
 
+async def test_postgres_checkpoint_scan_pushes_filters_and_bounds_storage_page():
+    from ksadk.sessions.base import CheckpointEventQuery
+    from ksadk.sessions.postgres_service import PostgresSessionService
+
+    calls: list[tuple[str, tuple[object, ...]]] = []
+
+    class FakeConnection:
+        async def fetch(self, sql, *args):
+            calls.append((sql, args))
+            return []
+
+    class AcquireContext:
+        async def __aenter__(self):
+            return FakeConnection()
+
+        async def __aexit__(self, *_args):
+            return None
+
+    class FakePool:
+        def acquire(self):
+            return AcquireContext()
+
+    service = PostgresSessionService(dsn="postgresql://user@db.example.test/session")
+    service._pool = FakePool()
+    service._schema_ready = True
+
+    await service.scan_checkpoint_events(
+        CheckpointEventQuery(
+            session_ids=["a", "b"], agent_id="agent-a", checkpoint_ids=["cp-a", "cp-b"],
+            run_id="run", framework="langgraph", offset=7, limit=50,
+        )
+    )
+
+    sql, args = calls[0]
+    assert "event_row.event_type = ANY" in sql
+    assert "event_row.session_id = ANY" in sql
+    assert "metadata_json ->> 'checkpoint_id'" in sql
+    assert "metadata_json ->> 'framework'" in sql
+    assert args[-2:] == (50, 7)
+
+
 async def test_resilient_session_keeps_hydrated_history_when_primary_fails(caplog):
     primary = InMemorySessionService()
     await primary.create_session("demo-agent", "user-1", session_id="sess-1")

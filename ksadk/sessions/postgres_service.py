@@ -11,6 +11,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from ksadk.sessions.base import (
     BaseSessionService,
+    CheckpointEventQuery,
     Session,
     SessionEvent,
     SessionEventQuery,
@@ -501,6 +502,103 @@ class PostgresSessionService(BaseSessionService):
                     "max_seq_id": int(max_seq_id or 0), "resume_count": int(audit["count"] or 0),
                     "last_resumed_at": audit["last_at"]}
 
+    async def scan_checkpoint_events(
+        self, query: CheckpointEventQuery
+    ) -> list[SessionEvent]:
+        if query.limit < 1 or query.limit > 50:
+            raise ValueError("checkpoint scan limit must be between 1 and 50")
+        await self._ensure_schema()
+        clauses, params = self._batch_event_where(
+            query.session_ids,
+            query.agent_id,
+            None,
+            None,
+            ["run_checkpoint"],
+            query.run_id,
+            None,
+            query.checkpoint_ids,
+            query.framework,
+        )
+        params.extend([query.limit, query.offset])
+        async with self._pool.acquire() as connection:
+            rows = await connection.fetch(
+                f"""SELECT event_row.id, event_row.session_id, event_row.author,
+                    event_row.event_type, event_row.content_json, event_row.timestamp,
+                    event_row.state_delta_json, event_row.seq_id,
+                    event_row.invocation_id, event_row.metadata_json
+                FROM {KSADK_PG_EVENTS_TABLE} AS event_row
+                JOIN {KSADK_PG_SESSIONS_TABLE} AS session_row
+                  ON session_row.namespace = event_row.namespace
+                 AND session_row.id = event_row.session_id
+                WHERE {' AND '.join(clauses)}
+                ORDER BY event_row.timestamp ASC, event_row.session_id ASC,
+                         event_row.seq_id ASC, event_row.id ASC
+                LIMIT ${len(params) - 1} OFFSET ${len(params)}""",
+                *params,
+            )
+            return [self._event_from_row(row) for row in rows]
+
+    async def get_checkpoint_stats(
+        self, keys: list[tuple[str, str, str]]
+    ) -> dict[str, object]:
+        if len(keys) > 50:
+            raise ValueError("checkpoint stats batch cannot exceed 50 keys")
+        unique_keys = list(dict.fromkeys(keys))
+        audits = {
+            key: {"resume_count": 0, "last_resumed_at": None}
+            for key in unique_keys
+        }
+        run_keys = list(dict.fromkeys((session_id, run_id) for session_id, run_id, _ in unique_keys))
+        latest_seq_ids = {key: 0 for key in run_keys}
+        if not unique_keys:
+            return {"audits": audits, "latest_seq_ids": latest_seq_ids}
+        await self._ensure_schema()
+        session_values = [key[0] for key in unique_keys]
+        run_values = [key[1] for key in unique_keys]
+        checkpoint_values = [key[2] for key in unique_keys]
+        run_session_values = [key[0] for key in run_keys]
+        latest_run_values = [key[1] for key in run_keys]
+        async with self._pool.acquire() as connection:
+            audit_rows = await connection.fetch(
+                f"""WITH requested(session_id, run_id, checkpoint_id) AS (
+                    SELECT * FROM unnest($2::text[], $3::text[], $4::text[])
+                )
+                SELECT event_row.session_id,
+                       event_row.metadata_json ->> 'run_id' AS run_id,
+                       event_row.metadata_json ->> 'checkpoint_id' AS checkpoint_id,
+                       COUNT(*) AS resume_count,
+                       MAX(event_row.timestamp) AS last_resumed_at
+                FROM {KSADK_PG_EVENTS_TABLE} AS event_row
+                JOIN requested ON requested.session_id = event_row.session_id
+                  AND requested.run_id = event_row.metadata_json ->> 'run_id'
+                  AND requested.checkpoint_id = event_row.metadata_json ->> 'checkpoint_id'
+                WHERE event_row.namespace = $1 AND event_row.event_type = 'run_resume'
+                GROUP BY event_row.session_id, run_id, checkpoint_id""",
+                self.namespace, session_values, run_values, checkpoint_values,
+            )
+            latest_rows = await connection.fetch(
+                f"""WITH requested(session_id, run_id) AS (
+                    SELECT * FROM unnest($2::text[], $3::text[])
+                )
+                SELECT event_row.session_id,
+                       event_row.metadata_json ->> 'run_id' AS run_id,
+                       MAX(event_row.seq_id) AS latest_seq_id
+                FROM {KSADK_PG_EVENTS_TABLE} AS event_row
+                JOIN requested ON requested.session_id = event_row.session_id
+                  AND requested.run_id = event_row.metadata_json ->> 'run_id'
+                WHERE event_row.namespace = $1 AND event_row.event_type = 'run_checkpoint'
+                GROUP BY event_row.session_id, run_id""",
+                self.namespace, run_session_values, latest_run_values,
+            )
+        for row in audit_rows:
+            audits[(row["session_id"], row["run_id"], row["checkpoint_id"])] = {
+                "resume_count": int(row["resume_count"] or 0),
+                "last_resumed_at": row["last_resumed_at"],
+            }
+        for row in latest_rows:
+            latest_seq_ids[(row["session_id"], row["run_id"])] = int(row["latest_seq_id"] or 0)
+        return {"audits": audits, "latest_seq_ids": latest_seq_ids}
+
     def _batch_event_where(
         self,
         session_ids: list[str] | None,
@@ -510,6 +608,8 @@ class PostgresSessionService(BaseSessionService):
         event_types: list[str] | None,
         run_id: str | None = None,
         checkpoint_id: str | None = None,
+        checkpoint_ids: list[str] | None = None,
+        framework: str | None = None,
     ) -> tuple[list[str], list[Any]]:
         clauses = ["event_row.namespace = $1"]
         params: list[Any] = [self.namespace]
@@ -536,6 +636,14 @@ class PostgresSessionService(BaseSessionService):
         if checkpoint_id is not None:
             params.append(checkpoint_id)
             clauses.append(f"event_row.metadata_json ->> 'checkpoint_id' = ${len(params)}")
+        if checkpoint_ids is not None:
+            if not checkpoint_ids:
+                return ["FALSE"], []
+            params.append(checkpoint_ids)
+            clauses.append(f"event_row.metadata_json ->> 'checkpoint_id' = ANY(${len(params)}::text[])")
+        if framework is not None:
+            params.append(framework.lower())
+            clauses.append(f"lower(event_row.metadata_json ->> 'framework') = ${len(params)}")
         return clauses, params
 
     async def get_events_batch(

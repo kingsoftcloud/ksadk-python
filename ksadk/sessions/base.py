@@ -135,6 +135,19 @@ class SessionEventQuery:
     from_start: bool = False
 
 
+@dataclass(frozen=True)
+class CheckpointEventQuery:
+    """Bounded, ascending checkpoint scan with storage-level filters."""
+
+    session_ids: list[str] | None = None
+    agent_id: str | None = None
+    checkpoint_ids: list[str] | None = None
+    run_id: str | None = None
+    framework: str | None = None
+    offset: int = 0
+    limit: int = 50
+
+
 
 @dataclass
 class SessionState:
@@ -396,6 +409,38 @@ class BaseSessionService(abc.ABC):
         self, session_id: str, run_id: str, checkpoint_id: str
     ) -> dict[str, Any]:
         raise NotImplementedError("Backend must implement checkpoint lookup stats")
+
+    async def scan_checkpoint_events(
+        self, query: CheckpointEventQuery
+    ) -> list[SessionEvent]:
+        if query.limit < 1 or query.limit > 50:
+            raise ValueError("checkpoint scan limit must be between 1 and 50")
+        if query.session_ids is not None and len(query.session_ids) == 1:
+            events = await self.query_events(
+                SessionEventQuery(
+                    session_ids=query.session_ids,
+                    agent_id=query.agent_id,
+                    offset=query.offset,
+                    limit=query.limit,
+                    event_types=["run_checkpoint"],
+                    run_id=query.run_id,
+                    from_start=True,
+                )
+            )
+            checkpoint_ids = set(query.checkpoint_ids or [])
+            return [
+                event for event in events
+                if (not checkpoint_ids or str((event.metadata or {}).get("checkpoint_id") or "") in checkpoint_ids)
+                and (query.framework is None or str((event.metadata or {}).get("framework") or "").lower() == query.framework.lower())
+            ]
+        raise NotImplementedError("Backend does not support checkpoint scans")
+
+    async def get_checkpoint_stats(
+        self, keys: list[tuple[str, str, str]]
+    ) -> dict[str, object]:
+        if len(keys) > 50:
+            raise ValueError("checkpoint stats batch cannot exceed 50 keys")
+        raise NotImplementedError("Backend does not support checkpoint stats batches")
 
     async def get_events_batch(
         self,

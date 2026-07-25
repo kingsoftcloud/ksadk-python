@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import bisect
 import copy
 import time
 from typing import Optional
 
 from ksadk.sessions.base import (
-    BaseSessionService, Session, SessionEvent, SessionEventQuery, SessionState, generate_id,
+    BaseSessionService, CheckpointEventQuery, Session, SessionEvent, SessionEventQuery,
+    SessionState, generate_id,
 )
 
 
@@ -14,6 +16,7 @@ class InMemorySessionService(BaseSessionService):
     def __init__(self):
         self._sessions: dict[str, Session] = {}
         self._states: dict[tuple[str, str, str, str], SessionState] = {}
+        self._event_order: list[tuple[float, str, int, str, SessionEvent]] = []
         self._lock = asyncio.Lock()
 
     async def create_session(
@@ -94,6 +97,7 @@ class InMemorySessionService(BaseSessionService):
             session = self._sessions.pop(session_id, None)
             if not session:
                 return False
+            self._event_order = [item for item in self._event_order if item[1] != session_id]
             self._states.pop(
                 self._state_key(
                     "session",
@@ -144,6 +148,10 @@ class InMemorySessionService(BaseSessionService):
             if not stored.id:
                 stored.id = generate_id()
             session.events.append(stored)
+            bisect.insort(
+                self._event_order,
+                (stored.timestamp, stored.session_id, stored.seq_id, stored.id, stored),
+            )
             session.updated_at = time.time()
 
             if stored.state_delta:
@@ -260,6 +268,71 @@ class InMemorySessionService(BaseSessionService):
                     last_resumed_at = max(last_resumed_at or event.timestamp, event.timestamp)
             return {"candidate": candidate, "max_seq_id": max_seq_id,
                     "resume_count": resume_count, "last_resumed_at": last_resumed_at}
+
+    async def scan_checkpoint_events(
+        self, query: CheckpointEventQuery
+    ) -> list[SessionEvent]:
+        if query.limit < 1 or query.limit > 50:
+            raise ValueError("checkpoint scan limit must be between 1 and 50")
+        async with self._lock:
+            selected_ids = None if query.session_ids is None else set(query.session_ids)
+            checkpoint_ids = set(query.checkpoint_ids or [])
+            framework = str(query.framework or "").lower()
+            skipped = 0
+            page: list[SessionEvent] = []
+            for _, session_id, _, _, event in self._event_order:
+                session = self._sessions.get(session_id)
+                metadata = event.metadata or {}
+                if (
+                    session is None
+                    or event.event_type != "run_checkpoint"
+                    or (selected_ids is not None and session_id not in selected_ids)
+                    or (query.agent_id is not None and session.agent_id != query.agent_id)
+                    or (checkpoint_ids and str(metadata.get("checkpoint_id") or "") not in checkpoint_ids)
+                    or (query.run_id is not None and str(metadata.get("run_id") or "") != query.run_id)
+                    or (framework and str(metadata.get("framework") or "").lower() != framework)
+                ):
+                    continue
+                if skipped < query.offset:
+                    skipped += 1
+                    continue
+                page.append(copy.deepcopy(event))
+                if len(page) == query.limit:
+                    break
+            return page
+
+    async def get_checkpoint_stats(
+        self, keys: list[tuple[str, str, str]]
+    ) -> dict[str, object]:
+        if len(keys) > 50:
+            raise ValueError("checkpoint stats batch cannot exceed 50 keys")
+        unique_keys = list(dict.fromkeys(keys))
+        audits = {
+            key: {"resume_count": 0, "last_resumed_at": None}
+            for key in unique_keys
+        }
+        run_keys = {(session_id, run_id) for session_id, run_id, _ in unique_keys}
+        latest_seq_ids = {key: 0 for key in run_keys}
+        async with self._lock:
+            for session_id, run_id in run_keys:
+                session = self._sessions.get(session_id)
+                for event in session.events if session else []:
+                    metadata = event.metadata or {}
+                    if str(metadata.get("run_id") or "") != run_id:
+                        continue
+                    if event.event_type == "run_checkpoint":
+                        latest_seq_ids[(session_id, run_id)] = max(
+                            latest_seq_ids[(session_id, run_id)], int(event.seq_id or 0)
+                        )
+                    elif event.event_type == "run_resume":
+                        key = (session_id, run_id, str(metadata.get("checkpoint_id") or ""))
+                        if key in audits:
+                            audit = audits[key]
+                            audit["resume_count"] = int(audit["resume_count"]) + 1
+                            audit["last_resumed_at"] = max(
+                                audit["last_resumed_at"] or event.timestamp, event.timestamp
+                            )
+        return {"audits": audits, "latest_seq_ids": latest_seq_ids}
 
     async def _query_events(self, query: SessionEventQuery, *, count_only: bool) -> list[SessionEvent] | int:
         async with self._lock:

@@ -15,7 +15,7 @@ import zipfile
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Any, AsyncIterator, Dict, List, Mapping, Optional
+from typing import Any, AsyncIterator, Dict, List, Mapping, Optional, cast
 from urllib.parse import quote
 
 import httpx
@@ -58,6 +58,7 @@ from ksadk.sessions import (
     describe_session_backend,
     resolve_session_service,
 )
+from ksadk.sessions.base import CheckpointEventQuery
 from ksadk.sessions.errors import SessionBackendUnavailable
 from ksadk.sessions.local_service import resolve_local_session_dir
 from ksadk.toolsets import describe_agentengine_tools
@@ -2368,66 +2369,47 @@ async def _list_checkpoints_payload(request: ListSessionCheckpointsActionRequest
     await _validate_action_sessions(service, session_ids, agent_id=request.AgentId)
     run_id_filter = str(request.RunId or "").strip()
     framework_filter = str(request.Framework or "").strip().lower()
-    # First pass keeps only compact aggregate state. The result page is built
-    # during a second fixed-size scan, never by materialising event history.
-    resume_audit: dict[tuple[str, str, str], dict[str, Any]] = {}
-    adk_latest_by_run: dict[tuple[str, str], int] = {}
-    event_offset = 0
-    while True:
-        try:
-            batch = await service.get_events_batch(
-                session_ids or None, agent_id=request.AgentId, offset=event_offset, limit=500,
-                event_types=["run_checkpoint", "run_resume"], from_start=True,
-            )
-        except NotImplementedError:
-            return await _list_checkpoints_payload_legacy(request, session_ids, checkpoint_ids)
-        if not batch:
-            break
-        for event in batch:
-            if event.event_type == "run_resume":
-                metadata = event.metadata or {}
-                run_id = str(metadata.get("run_id") or "").strip()
-                checkpoint_id = str(metadata.get("checkpoint_id") or "").strip()
-                if run_id and checkpoint_id:
-                    key = (event.session_id, run_id, checkpoint_id)
-                    aggregate = resume_audit.setdefault(key, {"resume_count": 0, "last_resumed_at": None})
-                    aggregate["resume_count"] = int(aggregate["resume_count"]) + 1
-                    aggregate["last_resumed_at"] = event.timestamp
-            else:
-                metadata = event.metadata or {}
-                if metadata.get("only_latest_resumable"):
-                    key = (event.session_id, str(metadata.get("run_id") or ""))
-                    adk_latest_by_run[key] = max(adk_latest_by_run.get(key, 0), int(event.seq_id or 0))
-        event_offset += len(batch)
-        if len(batch) < 500:
-            break
-
     offset = int(request.Offset or 0)
     total = 0
     resumable_total = 0
     checkpoints: list[dict[str, Any]] = []
     event_offset = 0
     while True:
-        batch = await service.get_events_batch(
-            session_ids or None, agent_id=request.AgentId, offset=event_offset, limit=500,
-            event_types=["run_checkpoint"], from_start=True,
-        )
+        try:
+            batch = await service.scan_checkpoint_events(
+                CheckpointEventQuery(
+                    session_ids=session_ids or None,
+                    agent_id=request.AgentId,
+                    checkpoint_ids=checkpoint_ids or None,
+                    run_id=run_id_filter or None,
+                    framework=framework_filter or None,
+                    offset=event_offset,
+                    limit=50,
+                )
+            )
+        except NotImplementedError:
+            return await _list_checkpoints_payload_legacy(request, session_ids, checkpoint_ids)
         if not batch:
             break
-        for event in batch:
-            checkpoint = _checkpoint_event_to_action_payload(event)
-            if checkpoint is None:
-                continue
-            if run_id_filter and checkpoint["RunId"] != run_id_filter:
-                continue
-            if checkpoint_ids and checkpoint["CheckpointId"] not in checkpoint_ids:
-                continue
-            if framework_filter and str(checkpoint["Framework"]).lower() != framework_filter:
-                continue
+        chunk = [
+            checkpoint for event in batch
+            if (checkpoint := _checkpoint_event_to_action_payload(event)) is not None
+        ]
+        keys = [
+            (str(checkpoint["SessionId"]), str(checkpoint["RunId"]), str(checkpoint["CheckpointId"]))
+            for checkpoint in chunk
+        ]
+        try:
+            stats = await service.get_checkpoint_stats(keys)
+        except NotImplementedError:
+            return await _list_checkpoints_payload_legacy(request, session_ids, checkpoint_ids)
+        resume_audit = cast(Mapping[tuple[str, str, str], Mapping[str, Any]], stats["audits"])
+        latest_by_run = cast(Mapping[tuple[str, str], int], stats["latest_seq_ids"])
+        for checkpoint in chunk:
             checkpoint = _apply_checkpoint_resume_audit(checkpoint, resume_audit)
             metadata = checkpoint.get("Metadata") or {}
             latest_key = (str(checkpoint.get("SessionId") or ""), str(checkpoint.get("RunId") or ""))
-            if metadata.get("only_latest_resumable") and int(checkpoint.get("SeqId") or 0) < adk_latest_by_run.get(latest_key, 0):
+            if metadata.get("only_latest_resumable") and int(checkpoint.get("SeqId") or 0) < latest_by_run.get(latest_key, 0):
                 if checkpoint.get("IsResumable") is True:
                     checkpoint["IsResumable"] = False
                     checkpoint["ResumeStatus"] = "disabled"
@@ -2440,7 +2422,7 @@ async def _list_checkpoints_payload(request: ListSessionCheckpointsActionRequest
                 checkpoints.append(checkpoint)
             total += 1
         event_offset += len(batch)
-        if len(batch) < 500:
+        if len(batch) < 50:
             break
 
     return {

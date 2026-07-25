@@ -243,6 +243,139 @@ async def test_checkpoint_lookup_stats_are_exact_beyond_500_events():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("backend", ["memory", "local"])
+async def test_checkpoint_scan_pushes_combined_filters_before_bounded_page(backend, tmp_path):
+    from ksadk.sessions.base import CheckpointEventQuery
+
+    service = (
+        InMemorySessionService()
+        if backend == "memory"
+        else LocalSessionService(db_path=tmp_path / "checkpoint-scan.sqlite")
+    )
+    for session_id, agent_id in (
+        ("scan-a", "agent-a"),
+        ("scan-b", "agent-a"),
+        ("scan-other", "agent-b"),
+    ):
+        await service.create_session(agent_id, "user", session_id)
+    fixtures = (
+        ("scan-a", "a-target", 1, "run-1", "same", "langgraph"),
+        ("scan-b", "b-target", 2, "run-1", "same", "langgraph"),
+        ("scan-a", "wrong-checkpoint", 3, "run-1", "other", "langgraph"),
+        ("scan-a", "wrong-run", 4, "run-2", "same", "langgraph"),
+        ("scan-a", "wrong-framework", 5, "run-1", "same", "adk"),
+        ("scan-other", "wrong-agent", 6, "run-1", "same", "langgraph"),
+    )
+    for session_id, event_id, timestamp, run_id, checkpoint_id, framework in fixtures:
+        await service.append_event(
+            session_id,
+            SessionEvent(
+                id=event_id,
+                event_type="run_checkpoint",
+                timestamp=timestamp,
+                metadata={
+                    "run_id": run_id,
+                    "checkpoint_id": checkpoint_id,
+                    "framework": framework,
+                },
+            ),
+        )
+
+    page = await service.scan_checkpoint_events(
+        CheckpointEventQuery(
+            session_ids=["scan-a", "scan-b", "scan-other"],
+            agent_id="agent-a",
+            checkpoint_ids=["same"],
+            run_id="run-1",
+            framework="langgraph",
+            limit=50,
+        )
+    )
+
+    assert [(event.session_id, event.id) for event in page] == [
+        ("scan-a", "a-target"),
+        ("scan-b", "b-target"),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", ["memory", "local"])
+async def test_checkpoint_stats_batch_isolates_session_audits_and_latest_runs(backend, tmp_path):
+    service = (
+        InMemorySessionService()
+        if backend == "memory"
+        else LocalSessionService(db_path=tmp_path / "checkpoint-stats.sqlite")
+    )
+    for session_id in ("stats-a", "stats-b"):
+        await service.create_session("agent-a", "user", session_id)
+        await service.append_event(
+            session_id,
+            SessionEvent(
+                event_type="run_checkpoint",
+                metadata={"run_id": "same-run", "checkpoint_id": "same-checkpoint"},
+            ),
+        )
+    await service.append_event(
+        "stats-a",
+        SessionEvent(
+            event_type="run_resume",
+            timestamp=20,
+            metadata={"run_id": "same-run", "checkpoint_id": "same-checkpoint"},
+        ),
+    )
+    await service.append_event(
+        "stats-a",
+        SessionEvent(
+            event_type="run_checkpoint",
+            timestamp=30,
+            metadata={"run_id": "same-run", "checkpoint_id": "new-checkpoint"},
+        ),
+    )
+
+    stats = await service.get_checkpoint_stats(
+        [
+            ("stats-a", "same-run", "same-checkpoint"),
+            ("stats-b", "same-run", "same-checkpoint"),
+        ]
+    )
+
+    assert stats["audits"][("stats-a", "same-run", "same-checkpoint")]["resume_count"] == 1
+    assert stats["audits"][("stats-b", "same-run", "same-checkpoint")]["resume_count"] == 0
+    assert stats["latest_seq_ids"][("stats-a", "same-run")] == 3
+    assert stats["latest_seq_ids"][("stats-b", "same-run")] == 1
+
+
+@pytest.mark.asyncio
+async def test_resilient_checkpoint_scan_merges_primary_and_dirty_live_in_stable_order():
+    from ksadk.sessions.base import CheckpointEventQuery
+
+    primary = InMemorySessionService()
+    fallback = InMemorySessionService()
+    service = ResilientSessionService(primary, fallback)
+    await primary.create_session("agent-a", "user", "clean")
+    await fallback.create_session("agent-a", "user", "dirty")
+    await primary.append_event(
+        "clean", SessionEvent(id="clean-2", event_type="run_checkpoint", timestamp=2,
+                              metadata={"run_id": "run", "checkpoint_id": "cp"})
+    )
+    await fallback.append_event(
+        "dirty", SessionEvent(id="dirty-1", event_type="run_checkpoint", timestamp=1,
+                              metadata={"run_id": "run", "checkpoint_id": "cp"})
+    )
+    service._dirty_session_ids.add("dirty")
+
+    page = await service.scan_checkpoint_events(
+        CheckpointEventQuery(agent_id="agent-a", offset=0, limit=50)
+    )
+    stats = await service.get_checkpoint_stats(
+        [(event.session_id, "run", "cp") for event in page]
+    )
+
+    assert [event.id for event in page] == ["dirty-1", "clean-2"]
+    assert stats["latest_seq_ids"] == {("dirty", "run"): 1, ("clean", "run"): 1}
+
+
+@pytest.mark.asyncio
 async def test_resilient_query_merges_primary_and_live_once_before_nonzero_offset_page():
     primary = InMemorySessionService()
     fallback = InMemorySessionService()
