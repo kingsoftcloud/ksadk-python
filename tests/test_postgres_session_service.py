@@ -5,6 +5,7 @@ import logging
 import os
 import sys
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 
@@ -476,6 +477,59 @@ async def test_postgres_session_service_two_instances_share_sessions_events_and_
         await service_a.delete_session(session_id)
         await service_a.aclose()
         await service_b.aclose()
+
+
+async def test_postgres_batch_events_return_existing_data_when_some_session_ids_are_missing():
+    dsn = os.getenv("KSADK_TEST_POSTGRES_DSN")
+    if not dsn:
+        pytest.skip("Set KSADK_TEST_POSTGRES_DSN to run Postgres session integration tests")
+
+    from ksadk.sessions.postgres_service import PostgresSessionService
+
+    asyncpg_dsn = dsn.replace("postgresql+asyncpg://", "postgresql://", 1)
+    service = PostgresSessionService(
+        dsn=asyncpg_dsn,
+        namespace="pytest_partial_session_events",
+    )
+    suffix = uuid4().hex
+    existing_id = f"pytest-partial-existing-{suffix}"
+    missing_id = f"pytest-partial-missing-{suffix}"
+    event_id = f"pytest-partial-event-{suffix}"
+
+    try:
+        await service.create_session("demo-agent", "user-1", session_id=existing_id)
+        await service.append_event(
+            existing_id,
+            SessionEvent(
+                id=event_id,
+                author="user",
+                event_type="user_message",
+                content={
+                    "role": "user",
+                    "parts": [{"text": "partial postgres"}],
+                },
+            ),
+        )
+
+        sessions = await service.get_sessions_by_ids([missing_id, existing_id])
+        events = await service.get_events_batch(
+            [missing_id, existing_id],
+            agent_id="demo-agent",
+            limit=100,
+        )
+        total = await service.count_events_batch(
+            [missing_id, existing_id],
+            agent_id="demo-agent",
+        )
+
+        assert [session.id for session in sessions] == [existing_id]
+        assert [(event.session_id, event.id) for event in events] == [
+            (existing_id, event_id),
+        ]
+        assert total == 1
+    finally:
+        await service.delete_session(existing_id)
+        await service.aclose()
 
 
 async def test_postgres_session_create_is_idempotent_across_instances():

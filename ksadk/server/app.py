@@ -2280,15 +2280,32 @@ async def _validate_action_sessions(
     session_ids: list[str],
     *,
     agent_id: str | None,
-) -> None:
-    """Validate an explicit set atomically without leaking ownership details."""
+    allow_partial: bool = True,
+) -> list[str]:
+    """Return available requested sessions without leaking ownership details."""
     if not session_ids:
-        return
+        return []
     sessions = await service.get_sessions_by_ids(session_ids)
-    if len(sessions) != len(session_ids) or any(
-        agent_id is not None and session.agent_id != agent_id for session in sessions
-    ):
+    found_ids = {
+        session.id
+        for session in sessions
+        if agent_id is None or session.agent_id == agent_id
+    }
+    matched_ids = [session_id for session_id in session_ids if session_id in found_ids]
+    if not matched_ids or (not allow_partial and len(matched_ids) != len(session_ids)):
         raise HTTPException(status_code=404, detail="Session not found")
+    unavailable_ids = [
+        session_id for session_id in session_ids if session_id not in found_ids
+    ]
+    if unavailable_ids:
+        logger.warning(
+            "ListSessionEvents session scope partially matched: "
+            "requested_count=%d matched_count=%d unavailable_session_ids=%s",
+            len(session_ids),
+            len(matched_ids),
+            unavailable_ids,
+        )
+    return matched_ids
 
 
 def _current_runtime_agent_id() -> str | None:
@@ -2302,14 +2319,19 @@ async def list_session_events_action(request: ListSessionEventsActionRequest):
     agent_id = _current_runtime_agent_id()
     if len(session_ids) != 1 and (request.AfterSeqId is not None or request.BeforeSeqId is not None):
         raise HTTPException(status_code=400, detail="Seq cursors require exactly one SessionId")
-    await _validate_action_sessions(service, session_ids, agent_id=agent_id)
+    matched_session_ids = await _validate_action_sessions(
+        service,
+        session_ids,
+        agent_id=agent_id,
+        allow_partial=True,
+    )
     try:
         events = await service.get_events_batch(
-            session_ids or None, agent_id=agent_id, offset=request.Offset or 0,
+            matched_session_ids or None, agent_id=agent_id, offset=request.Offset or 0,
             limit=request.Limit, after_seq_id=request.AfterSeqId, before_seq_id=request.BeforeSeqId,
         )
         total = await service.count_events_batch(
-            session_ids or None, agent_id=agent_id,
+            matched_session_ids or None, agent_id=agent_id,
             after_seq_id=request.AfterSeqId, before_seq_id=request.BeforeSeqId,
         )
     except NotImplementedError as exc:

@@ -2852,7 +2852,144 @@ async def test_list_session_events_accepts_legacy_string_and_normalizes_multi_se
 
 
 @pytest.mark.asyncio
-async def test_list_session_events_rejects_cursor_for_multi_or_unknown_session_atomically(monkeypatch):
+async def test_list_session_events_returns_generic_404_when_all_requested_sessions_are_missing(
+    monkeypatch,
+):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(_DummyRunner())
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://ksadk.local",
+    ) as client:
+        response = await client.post(
+            "/agentengine/api/v1/ListSessionEvents",
+            json={"SessionId": ["missing-a", "missing-b"]},
+        )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Session not found"
+
+
+@pytest.mark.asyncio
+async def test_list_session_events_returns_events_for_partial_session_match(
+    monkeypatch,
+    caplog,
+):
+    server_app_module = importlib.import_module("ksadk.server.app")
+
+    class _BatchScopeService(InMemorySessionService):
+        def __init__(self):
+            super().__init__()
+            self.event_batch_ids: list[str] | None = None
+            self.count_batch_ids: list[str] | None = None
+
+        async def get_events_batch(self, session_ids=None, **kwargs):
+            self.event_batch_ids = list(session_ids or [])
+            return await super().get_events_batch(session_ids, **kwargs)
+
+        async def count_events_batch(self, session_ids=None, **kwargs):
+            self.count_batch_ids = list(session_ids or [])
+            return await super().count_events_batch(session_ids, **kwargs)
+
+    service = _BatchScopeService()
+    await service.create_session("demo-agent", "user-1", "existing")
+    await service.update_session_metadata(
+        "existing",
+        summary="private-summary-marker",
+    )
+    await service.append_event(
+        "existing",
+        SessionEvent(id="existing-event", author="user", event_type="x"),
+    )
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(_DummyRunner())
+    caplog.set_level("WARNING")
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://ksadk.local",
+    ) as client:
+        response = await client.post(
+            "/agentengine/api/v1/ListSessionEvents",
+            json={"SessionId": ["missing", "existing"]},
+        )
+
+    assert response.status_code == 200
+    data = response.json()["Data"]
+    assert data["SessionId"] == ["missing", "existing"]
+    assert [item["SessionId"] for item in data["Events"]] == ["existing"]
+    assert data["Total"] == 1
+    assert service.event_batch_ids == ["existing"]
+    assert service.count_batch_ids == ["existing"]
+    assert "ListSessionEvents session scope partially matched" in caplog.text
+    assert "private-summary-marker" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_list_session_events_partial_match_preserves_agent_scope(
+    monkeypatch,
+    caplog,
+):
+    server_app_module = importlib.import_module("ksadk.server.app")
+
+    class _BatchScopeService(InMemorySessionService):
+        def __init__(self):
+            super().__init__()
+            self.event_batch_ids: list[str] | None = None
+
+        async def get_events_batch(self, session_ids=None, **kwargs):
+            self.event_batch_ids = list(session_ids or [])
+            return await super().get_events_batch(session_ids, **kwargs)
+
+    service = _BatchScopeService()
+    await service.create_session("demo-agent", "user-1", "allowed")
+    await service.create_session("other-agent", "user-1", "foreign")
+    await service.append_event(
+        "allowed",
+        SessionEvent(id="allowed-event", author="user", event_type="x"),
+    )
+    await service.append_event(
+        "foreign",
+        SessionEvent(
+            id="foreign-event",
+            author="user",
+            event_type="x",
+            content={"marker": "foreign-private-marker"},
+        ),
+    )
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(_DummyRunner())
+    caplog.set_level("WARNING")
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://ksadk.local",
+    ) as client:
+        response = await client.post(
+            "/agentengine/api/v1/ListSessionEvents",
+            json={"SessionId": ["allowed", "foreign"]},
+        )
+
+    assert response.status_code == 200
+    data = response.json()["Data"]
+    assert data["SessionId"] == ["allowed", "foreign"]
+    assert [event["EventId"] for event in data["Events"]] == ["allowed-event"]
+    assert data["Total"] == 1
+    assert service.event_batch_ids == ["allowed"]
+    assert "ListSessionEvents session scope partially matched" in caplog.text
+    assert "foreign-private-marker" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_list_session_events_rejects_cursor_for_multi_or_all_unknown_sessions_atomically(
+    monkeypatch,
+):
     server_app_module = importlib.import_module("ksadk.server.app")
     service = InMemorySessionService()
     await service.create_session("demo-agent", "user-1", "events-good")
@@ -2865,13 +3002,13 @@ async def test_list_session_events_rejects_cursor_for_multi_or_unknown_session_a
             "/agentengine/api/v1/ListSessionEvents",
             json={"SessionId": ["events-good", "events-other"], "AfterSeqId": 1},
         )
-        unknown = await client.post(
+        all_unknown = await client.post(
             "/agentengine/api/v1/ListSessionEvents",
-            json={"SessionId": ["events-good", "missing"]},
+            json={"SessionId": ["missing-a", "missing-b"]},
         )
 
     assert cursor.status_code == 400
-    assert unknown.status_code == 404
+    assert all_unknown.status_code == 404
 
 
 @pytest.mark.asyncio
