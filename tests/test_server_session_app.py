@@ -2955,7 +2955,7 @@ async def test_list_session_checkpoints_uses_public_page_contract_and_normalized
         )
 
     assert omitted.status_code == 200
-    assert omitted.json()["Data"]["Limit"] == 10
+    assert omitted.json()["Data"]["Limit"] == 100
     assert accepted_ids.status_code == 200
     assert accepted_ids.json()["Data"]["Limit"] == 1000
     assert rejected_ids.status_code == 422
