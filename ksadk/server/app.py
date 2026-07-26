@@ -1153,7 +1153,7 @@ class ListSessionCheckpointsActionRequest(BaseModel):
     OnlyResumable: bool = False
     Framework: Optional[str] = None
     Offset: Optional[int] = Field(None, ge=0)
-    Limit: int = Field(10, ge=1, le=1000)
+    Limit: int = Field(100, ge=1, le=1000)
 
     @field_validator("SessionId", mode="before")
     @classmethod

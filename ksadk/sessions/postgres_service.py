@@ -685,7 +685,7 @@ class PostgresSessionService(BaseSessionService):
                   AND requested.run_id = event_row.metadata_json ->> 'run_id'
                   AND requested.checkpoint_id = event_row.metadata_json ->> 'checkpoint_id'
                 WHERE event_row.namespace = $1 AND event_row.event_type = 'run_resume'
-                GROUP BY event_row.session_id, run_id, checkpoint_id""",
+                GROUP BY event_row.session_id, event_row.metadata_json ->> 'run_id', event_row.metadata_json ->> 'checkpoint_id'""",
             self.namespace, session_values, run_values, checkpoint_values,
         )
         latest_rows = await connection.fetch(
@@ -699,7 +699,7 @@ class PostgresSessionService(BaseSessionService):
                 JOIN requested ON requested.session_id = event_row.session_id
                   AND requested.run_id = event_row.metadata_json ->> 'run_id'
                 WHERE event_row.namespace = $1 AND event_row.event_type = 'run_checkpoint'
-                GROUP BY event_row.session_id, run_id""",
+                GROUP BY event_row.session_id, event_row.metadata_json ->> 'run_id'""",
             self.namespace, run_session_values, latest_run_values,
         )
         for row in audit_rows:
