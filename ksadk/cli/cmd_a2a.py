@@ -123,13 +123,7 @@ def serve(
         task_store_dsn=task_store_dsn,
     )
     runtime_type = detection_result.type.value
-    runtime_adapter: RuntimeAdapter
-    if runtime_type == "langgraph":
-        runtime_adapter = LangGraphRuntimeAdapter(runner)
-    elif runtime_type == "adk":
-        runtime_adapter = ADKRuntimeAdapter(runner)
-    else:
-        runtime_adapter = RunnerRuntimeAdapter(runner, runtime_type=runtime_type)
+    runtime_adapter = _select_runtime_adapter(runtime_type, runner)
     from ksadk.a2a.task_adapter import A2ARuntimeTaskAdapter
 
     add_a2a_protocol_routes(
@@ -300,6 +294,15 @@ def _load_runner(agent_path: Path, *, no_trace: bool):
     runner = create_runner(detection_result, str(agent_path))
     runner.load_agent()
     return detection_result, runner
+
+
+def _select_runtime_adapter(runtime_type: str, runner) -> RuntimeAdapter:
+    # langchain create_agent 产物是 LangGraph CompiledStateGraph，与 langgraph 共用 time-travel resume
+    if runtime_type in ("langgraph", "langchain"):
+        return LangGraphRuntimeAdapter(runner)
+    if runtime_type == "adk":
+        return ADKRuntimeAdapter(runner)
+    return RunnerRuntimeAdapter(runner, runtime_type=runtime_type)
 
 
 def _setup_tracing(framework_type: str) -> None:
