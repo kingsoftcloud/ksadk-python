@@ -19,17 +19,22 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     EnvVarSpec(
         "KSADK_ADK_SESSION_URL", "sessions", "ADK-native database session URL.", sensitive=True
     ),
-    EnvVarSpec("KSADK_A2A", "a2a", "A2A AICP connection configuration prefix."),
+    EnvVarSpec(
+        "KSADK_A2A_CONTROL_PLANE_URL",
+        "a2a",
+        "AgentEngine A2A runtime control-plane base URL injected by the deploy layer.",
+    ),
     EnvVarSpec(
         "KSADK_A2A_ENABLE_PUBLIC_EGRESS",
         "a2a",
         "Allow calling external (public-egress) agents in the A2A Space.",
-        "false",
+        "false when the deploy layer does not inject a value",
     ),
     EnvVarSpec(
-        "KSADK_A2A_SERVICE_URL",
+        "KSADK_A2A_TOKEN_DIR",
         "a2a",
-        "A2A discovery service base URL; auto-detected when unset.",
+        "Directory containing audience-specific projected A2A workload JWT files.",
+        "/var/run/secrets/agentengine/a2a",
     ),
     EnvVarSpec("KSADK_A2A_SPACE_ID", "a2a", "A2A Space id injected by the deploy layer on bind."),
     EnvVarSpec(

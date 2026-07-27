@@ -1,29 +1,19 @@
-"""A2ASpaceClient — Space 内动态发现与调用 (goal-06 §3.2)。
-
-契约:Runtime 经环境变量 ``AGENTENGINE_A2A_SPACE_ID`` 获得绑定的 Space ID(§4.5,
-locator 非授权),用 internal authenticated KOP facade ``ListA2ASpaceAgents``(§5.5)
-动态发现该 Space 中 hosted/external Agent 的 latest AgentCard,再按
-``supportedInterfaces`` 调用。external 调用受 Runtime 公网出站能力约束(egress,
-§5.4:``A2A_SPACE_REQUIRES_PUBLIC_EGRESS``)。
-
-面向 Agent 开发者的最小 interface(§3.2)::
-
-    client = A2ASpaceClient.from_env()
-    agents = await client.discover(prompt="查询天气")
-    task = await client.send_message(agent_id=agents[0].id, message=message)
-    async for event in client.subscribe(task.id): ...
-    await client.cancel(task.id)
-"""
+"""Space-scoped A2A discovery and authorized data-plane calls."""
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
 import uuid
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Mapping
-from dataclasses import dataclass, field
-from typing import Any, Optional
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from http.cookies import CookieError, SimpleCookie
+from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
 from a2a.client import ClientCallContext, ClientConfig, create_client
@@ -39,206 +29,91 @@ from a2a.types import (
     SubscribeToTaskRequest,
     TaskState,
 )
-from google.protobuf.json_format import MessageToDict
+from google.protobuf.json_format import MessageToDict, ParseDict
 
-from ksadk.a2a.credential import A2ACredentialProvider
+from ksadk.a2a.control_plane import (
+    ENV_A2A_CONTROL_PLANE_URL,
+    A2AControlPlane,
+    A2ARouteInterface,
+    CredentialInjection,
+    DiscoveredAgent,
+    KopA2AControlPlane,
+    PreparedA2AOperation,
+    SpaceAgentPage,
+)
 from ksadk.a2a.event_adapter import A2AEventAdapter
-from ksadk.common.aicp_env import resolve_aicp_connection
+from ksadk.a2a.ids import require_a2a_resource_id
 from ksadk.events.runtime_event import RuntimeEvent
 
 logger = logging.getLogger(__name__)
 
-#: 环境变量(§4.5 / §5.4)。统一使用 KSADK_ 前缀,与 Skill 空间约定一致。
 ENV_A2A_SPACE_ID = "KSADK_A2A_SPACE_ID"
-#: 显式指定 discovery 服务地址;缺省走 resolve_aicp_connection 自动探测(同 Skill)。
-ENV_A2A_SERVICE_URL = "KSADK_A2A_SERVICE_URL"
 ENV_A2A_ENABLE_PUBLIC_EGRESS = "KSADK_A2A_ENABLE_PUBLIC_EGRESS"
-#: 旧变量名,仅作兼容兜底;新部署不应再依赖。
-_LEGACY_ENV_A2A_SPACE_ID = "AGENTENGINE_A2A_SPACE_ID"
-_LEGACY_ENV_SERVER_URL = "AGENTENGINE_SERVER_URL"
-_LEGACY_ENV_A2A_ENABLE_PUBLIC_EGRESS = "AGENTENGINE_A2A_ENABLE_PUBLIC_EGRESS"
+
+ERR_PUBLIC_EGRESS_DISABLED = "A2A_PUBLIC_EGRESS_DISABLED"
 
 
-def _resolve_a2a_service_url() -> str:
-    """解析 discovery endpoint:显式 URL > 旧 AGENTENGINE_SERVER_URL > AICP 自动探测。"""
-    explicit = os.getenv(ENV_A2A_SERVICE_URL, "").strip()
-    if explicit:
-        return explicit.rstrip("/")
-    legacy = os.getenv(_LEGACY_ENV_SERVER_URL, "").strip()
-    if legacy:
-        return legacy.rstrip("/")
-    connection = resolve_aicp_connection("KSADK_A2A")
-    return f"{connection['scheme']}://{connection['endpoint']}".rstrip("/")
+@dataclass(frozen=True)
+class A2APlatformTask:
+    """AgentEngine task locator with an optional latest remote A2A snapshot."""
+
+    id: str
+    remote_task: Any | None = None
+    remote_task_id: str | None = None
+    remote_context_id: str | None = None
 
 
-#: egress 关闭时调 external 的错误码(§5.4)。
-ERR_REQUIRES_PUBLIC_EGRESS = "A2A_SPACE_REQUIRES_PUBLIC_EGRESS"
-
-
-# ---------------------------------------------------------------------------
-# 统一 discovered Agent 模型(hosted / external)
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class DiscoveredAgent:
-    """Space 中可发现的 Agent(hosted/external 统一模型,§3.2)。"""
-
-    agent_id: str
-    version_id: str
-    source: str  # "hosted" | "external"
-    agent_card: AgentCard
-    credential_handle: Optional[str] = None
-    etag: Optional[str] = None
-
-
-@dataclass
-class SpaceAgentPage:
-    """ListA2ASpaceAgents 的一页结果。"""
-
-    agents: list[DiscoveredAgent] = field(default_factory=list)
-    etag: Optional[str] = None
-    next_page_token: Optional[str] = None
-
-
-# ---------------------------------------------------------------------------
-# discovery backend
-# ---------------------------------------------------------------------------
-
-
-class SpaceDiscoveryBackend(ABC):
-    """Space discovery 后端(§5.5 ``ListA2ASpaceAgents``)。"""
+class A2AExternalTransport(ABC):
+    """Capability object supplied by the Runtime network guard for external routes."""
 
     @abstractmethod
-    async def list_space_agents(
+    def client_for_route(
         self,
-        space_id: str,
+        route: A2ARouteInterface,
         *,
-        prompt: Optional[str] = None,
-        skill: Optional[str] = None,
-        if_none_match: Optional[str] = None,
-        page_number: Optional[int] = None,
-        page_size: Optional[int] = None,
-    ) -> SpaceAgentPage:
+        route_kind: str,
+    ) -> httpx.AsyncClient:
+        """Return a client whose DNS/IP/redirect policy is validated and pinned for the route."""
         raise NotImplementedError
 
 
-class KopSpaceDiscoveryBackend(SpaceDiscoveryBackend):
-    """经 KOP facade ``POST {base}/agentengine/api/v1/ListA2ASpaceAgents`` 的 HTTP 实现。
-
-    §5.5:internal authenticated interface。服务端从 runtime identity 推导
-    account/runtime_id 并验证 binding;本 client 经 ``headers`` 携带该 identity
-    (由 gateway/STS 注入,不得伪造)。
-    """
-
-    def __init__(
-        self,
-        base_url: str,
-        *,
-        httpx_client: Optional[httpx.AsyncClient] = None,
-        headers: Optional[dict[str, str]] = None,
-        timeout: float = 15.0,
-    ) -> None:
-        if not base_url:
-            raise ValueError(f"KopSpaceDiscoveryBackend 需要 base_url({ENV_A2A_SERVICE_URL})")
-        self._base_url = base_url.rstrip("/")
-        self._client = httpx_client
-        self._headers = dict(headers or {})
-        self._timeout = timeout
-
-    async def list_space_agents(
-        self,
-        space_id: str,
-        *,
-        prompt: Optional[str] = None,
-        skill: Optional[str] = None,
-        if_none_match: Optional[str] = None,
-        page_number: Optional[int] = None,
-        page_size: Optional[int] = None,
-    ) -> SpaceAgentPage:
-        payload: dict[str, Any] = {"A2ASpaceId": space_id}
-        if prompt:
-            payload["Prompt"] = prompt
-        if skill:
-            payload["Skill"] = skill
-        if if_none_match:
-            payload["IfNoneMatch"] = if_none_match
-        if page_number is not None:
-            payload["PageNumber"] = page_number
-        if page_size is not None:
-            payload["PageSize"] = page_size
-
-        client = self._client or httpx.AsyncClient(timeout=self._timeout)
-        own_client = self._client is None
-        try:
-            response = await client.post(
-                f"{self._base_url}/agentengine/api/v1/ListA2ASpaceAgents",
-                json=payload,
-                headers=self._headers,
-            )
-            response.raise_for_status()
-            envelope = response.json()
-        finally:
-            if own_client:
-                await client.aclose()
-
-        data = envelope.get("Data") or {}
-        agents = [_discovered_agent_from_wire(item) for item in data.get("Agents") or []]
-        return SpaceAgentPage(
-            agents=agents,
-            etag=data.get("ETag"),
-            next_page_token=data.get("NextPageToken"),
-        )
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _discovered_agent_from_wire(item: dict[str, Any]) -> DiscoveredAgent:
-    """把 ListA2ASpaceAgents 的 wire 项解析为 DiscoveredAgent。
-
-    §5.5 返回 latest AgentCard、agent/version ID、credential binding handle、ETag。
-    """
-    card_payload = item.get("AgentCard") or item.get("agent_card") or {}
-    agent_card = _parse_agent_card(card_payload)
-    return DiscoveredAgent(
-        agent_id=str(item.get("AgentId") or item.get("agent_id") or ""),
-        version_id=str(item.get("VersionId") or item.get("version_id") or ""),
-        source=str(item.get("Source") or item.get("source") or "hosted").lower(),
-        agent_card=agent_card,
-        credential_handle=item.get("CredentialHandle") or item.get("credential_handle"),
-        etag=item.get("ETag") or item.get("etag"),
-    )
+def _canonical_proto(value: Any) -> dict[str, Any]:
+    return MessageToDict(value, preserving_proto_field_name=False)
 
 
-def _parse_agent_card(payload: dict[str, Any]) -> AgentCard:
-    from google.protobuf.json_format import ParseDict
-
-    card = ParseDict(payload, AgentCard())
-    assert isinstance(card, AgentCard)
-    return card
-
-
-# ---------------------------------------------------------------------------
-# A2ASpaceClient
-# ---------------------------------------------------------------------------
+def _canonical_sha256(value: Any) -> str:
+    payload = _canonical_proto(value)
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 class A2ASpaceClient:
-    """Space 内动态发现与调用的 client(§3.2)。"""
+    """Discovers Space members and performs permit-authorized A2A calls."""
 
     def __init__(
         self,
         space_id: str,
-        backend: SpaceDiscoveryBackend,
+        backend: A2AControlPlane,
         *,
         egress_enabled: bool = False,
-        httpx_client: Optional[httpx.AsyncClient] = None,
-        credential_provider: Optional[A2ACredentialProvider] = None,
-        event_sink: Optional[Any] = None,
+        httpx_client: httpx.AsyncClient | None = None,
+        external_transport: A2AExternalTransport | None = None,
+        event_sink: Any | None = None,
     ) -> None:
+        require_a2a_resource_id(space_id, "a2a-space-", field_name="space_id")
+        if external_transport is not None and not isinstance(
+            external_transport, A2AExternalTransport
+        ):
+            raise TypeError("external_transport must implement A2AExternalTransport")
         self._space_id = space_id
         self._backend = backend
         self._egress_enabled = egress_enabled
         self._httpx_client = httpx_client
-        self._credential_provider = credential_provider
+        self._external_transport = external_transport
         self._event_sink = event_sink
         self._event_adapter = A2AEventAdapter()
         self._agents_by_id: dict[str, DiscoveredAgent] = {}
@@ -250,100 +125,78 @@ class A2ASpaceClient:
     def from_env(
         cls,
         *,
-        backend: Optional[SpaceDiscoveryBackend] = None,
-        httpx_client: Optional[httpx.AsyncClient] = None,
-        egress_enabled: Optional[bool] = None,
-        credential_provider: Optional[A2ACredentialProvider] = None,
-        event_sink: Optional[Any] = None,
+        backend: A2AControlPlane | None = None,
+        httpx_client: httpx.AsyncClient | None = None,
+        external_transport: A2AExternalTransport | None = None,
+        egress_enabled: bool | None = None,
+        event_sink: Any | None = None,
     ) -> "A2ASpaceClient":
-        """从环境变量构造:``KSADK_A2A_SPACE_ID``(必需,兼容旧 ``AGENTENGINE_A2A_SPACE_ID``)
-        + ``KSADK_A2A_SERVICE_URL``(可选;缺省经 AICP 自动探测,兼容旧 ``AGENTENGINE_SERVER_URL``)
-        + ``KSADK_A2A_ENABLE_PUBLIC_EGRESS``(egress)。
-        """
-        space_id = str(
-            os.getenv(ENV_A2A_SPACE_ID) or os.getenv(_LEGACY_ENV_A2A_SPACE_ID) or ""
-        ).strip()
+        space_id = str(os.getenv(ENV_A2A_SPACE_ID) or "").strip()
         if not space_id:
-            raise ValueError(f"未设置 {ENV_A2A_SPACE_ID};Runtime 需先绑定 Space(§4.5 由部署层注入)")
+            raise ValueError(f"missing {ENV_A2A_SPACE_ID}; bind the Runtime to an A2A Space first")
         if backend is None:
-            backend = KopSpaceDiscoveryBackend(
-                _resolve_a2a_service_url(),
+            control_plane_url = str(os.getenv(ENV_A2A_CONTROL_PLANE_URL) or "").strip()
+            if not control_plane_url:
+                raise ValueError(f"missing {ENV_A2A_CONTROL_PLANE_URL}")
+            backend = KopA2AControlPlane(
+                control_plane_url,
                 httpx_client=httpx_client,
             )
         if egress_enabled is None:
-            egress_enabled = (
-                os.getenv(ENV_A2A_ENABLE_PUBLIC_EGRESS)
-                or os.getenv(_LEGACY_ENV_A2A_ENABLE_PUBLIC_EGRESS)
-                or ""
-            ).strip().lower() in (
-                "1",
-                "true",
-                "yes",
-                "on",
-            )
+            raw_egress = os.getenv(ENV_A2A_ENABLE_PUBLIC_EGRESS) or ""
+            egress_enabled = raw_egress.strip().lower() in {"1", "true", "yes", "on"}
         return cls(
             space_id,
             backend,
             egress_enabled=egress_enabled,
             httpx_client=httpx_client,
-            credential_provider=credential_provider,
+            external_transport=external_transport,
             event_sink=event_sink,
         )
 
-    # ---- discovery ----
-
     async def discover(
         self,
-        prompt: Optional[str] = None,
+        prompt: str | None = None,
         *,
-        skill: Optional[str] = None,
+        skill: str | None = None,
+        include_blocked: bool = False,
     ) -> list[DiscoveredAgent]:
-        """动态发现 Space 中 hosted/external Agent(§5.5 返回 latest AgentCard)。"""
-        page = await self._backend.list_space_agents(self._space_id, prompt=prompt, skill=skill)
+        page = await self._backend.list_space_agents(
+            self._space_id,
+            prompt=prompt,
+            skill_id=skill,
+            include_blocked=include_blocked,
+        )
         for agent in page.agents:
+            require_a2a_resource_id(
+                agent.agent_id,
+                "a2a-agent-",
+                field_name="DiscoveredAgent.agent_id",
+            )
+            require_a2a_resource_id(
+                agent.version_id,
+                "a2a-version-",
+                field_name="DiscoveredAgent.version_id",
+            )
             self._agents_by_id[agent.agent_id] = agent
         return page.agents
 
-    # ---- egress ----
-
     def _check_egress(self, agent: DiscoveredAgent) -> None:
-        """external 调用必须有公网出站;否则 §5.4 报错。"""
-        if agent.source == "external" and not self._egress_enabled:
+        if agent.route_kind == "external_public" and not self._egress_enabled:
             raise PermissionError(
-                f"{ERR_REQUIRES_PUBLIC_EGRESS}: agent {agent.agent_id} 为 external public,"
-                " Runtime 未开启公网出站(§5.4)"
+                f"{ERR_PUBLIC_EGRESS_DISABLED}: external Agent {agent.agent_id} requires "
+                "Network.EnablePublicAccess"
             )
-
-    # ---- 调用 ----
 
     async def _resolve_agent(self, agent_id: str) -> DiscoveredAgent:
         agent = self._agents_by_id.get(agent_id)
         if agent is None:
-            # 允许按需再发现一次(可能已经过期/未 discover 过)。
             await self.discover()
             agent = self._agents_by_id.get(agent_id)
         if agent is None:
-            raise KeyError(f"Space {self._space_id} 中未发现 agent {agent_id!r}")
+            raise KeyError(f"Agent {agent_id!r} is not discoverable in Space {self._space_id}")
         self._check_egress(agent)
         return agent
-
-    async def _client_for_agent(self, agent: DiscoveredAgent):
-        # §3.2:按 agent 的 credential_handle 经 A2ACredentialProvider 解析出站凭据,
-        # 注入 httpx 头(external 出站调用的真实鉴权,不再 read-but-unused)。
-        headers: dict[str, str] = {}
-        if self._credential_provider is not None:
-            credential = await self._credential_provider.resolve(agent.credential_handle)
-            headers = dict(credential.headers)
-        if self._httpx_client is not None:
-            httpx_client = self._httpx_client
-        else:
-            httpx_client = httpx.AsyncClient()
-        client = await create_client(
-            agent=agent.agent_card,
-            client_config=ClientConfig(httpx_client=httpx_client, streaming=True),
-        )
-        call_context = ClientCallContext(service_parameters=headers or None)
-        return client, httpx_client, call_context
 
     async def send_message(
         self,
@@ -351,91 +204,515 @@ class A2ASpaceClient:
         message: str | Message,
         *,
         return_immediately: bool = False,
-    ):
-        """向 Space 中某 Agent 发送消息(§3.2),返回首个 Task(或 terminal 结果)。"""
+        idempotency_token: str | None = None,
+    ) -> A2APlatformTask:
         agent = await self._resolve_agent(agent_id)
-        client, httpx_client, call_context = await self._client_for_agent(agent)
+        normalized = self._normalize_initial_message(message)
+        prepared = await self._backend.prepare_call(
+            target_agent_id=agent.agent_id,
+            expected_version_id=agent.version_id,
+            message_id=normalized.message_id,
+            message_sha256=_canonical_sha256(normalized),
+            idempotency_token=idempotency_token or f"idem-{uuid.uuid4().hex}",
+        )
+        self._validate_prepared_target(agent, prepared)
+        handle = await self._send_prepared_message(
+            prepared,
+            agent,
+            normalized,
+            return_immediately=return_immediately,
+        )
+        self._agents_by_task[prepared.platform_task_id] = agent
+        await self._record_agent_for_task(prepared.platform_task_id, agent)
+        return handle
+
+    async def continue_task(
+        self,
+        task_id: str,
+        message: str | Message,
+        *,
+        return_immediately: bool = False,
+        idempotency_token: str | None = None,
+    ) -> A2APlatformTask:
+        require_a2a_resource_id(task_id, "a2a-task-", field_name="task_id")
+        normalized = self._normalize_initial_message(message)
+        prepared = await self._backend.prepare_task_operation(
+            platform_task_id=task_id,
+            operation="message/continue",
+            message_id=normalized.message_id,
+            message_sha256=_canonical_sha256(normalized),
+            idempotency_token=idempotency_token or f"idem-{uuid.uuid4().hex}",
+        )
+        self._validate_prepared_ids(prepared)
+        binding = self._require_remote_binding(prepared)
+        normalized.task_id = binding.remote_task_id
+        if binding.remote_context_id:
+            normalized.context_id = binding.remote_context_id
+        agent = self._agent_from_prepared(prepared)
+        return await self._send_prepared_message(
+            prepared,
+            agent,
+            normalized,
+            return_immediately=return_immediately,
+        )
+
+    async def _send_prepared_message(
+        self,
+        prepared: PreparedA2AOperation,
+        agent: DiscoveredAgent,
+        message: Message,
+        *,
+        return_immediately: bool,
+    ) -> A2APlatformTask:
+        client, owned_http, context = await self._client_for_operation(agent, prepared)
+        first_task = None
+        remote_task_id = prepared.remote_binding.remote_task_id if prepared.remote_binding else None
+        remote_context_id = (
+            prepared.remote_binding.remote_context_id if prepared.remote_binding else None
+        )
         try:
-            if isinstance(message, str):
-                message = Message(
-                    role=Role.ROLE_USER,
-                    parts=[Part(text=message)],
-                    message_id=f"sm-{uuid.uuid4().hex}",
-                )
-            elif not getattr(message, "message_id", ""):
-                message.message_id = f"sm-{uuid.uuid4().hex}"
             request = SendMessageRequest(
                 message=message,
                 configuration=SendMessageConfiguration(return_immediately=return_immediately),
             )
-            first_task = None
             wire_position = 0
-            async for response in client.send_message(request, context=call_context):
-                if response.task and response.task.id:
-                    if first_task is None:
-                        first_task = response.task
-                        self._agents_by_task[first_task.id] = agent
-                        await self._record_agent_for_task(first_task.id, agent)
-                await self._persist_events(
-                    self._stream_item_to_events(response, agent, wire_position=wire_position)
+            async for response in client.send_message(request, context=context):
+                response_task = getattr(response, "task", None)
+                if response_task is not None and str(getattr(response_task, "id", None) or ""):
+                    first_task = first_task or response_task
+                    remote_task_id = str(response_task.id)
+                    remote_context_id = str(response_task.context_id or "") or None
+                    await self._bind_task(prepared.platform_task_id, response_task)
+                await self._project_stream_item(
+                    prepared.platform_task_id,
+                    response,
+                    agent,
+                    wire_position=wire_position,
                 )
                 wire_position += 1
                 if return_immediately and first_task is not None:
                     break
-            if first_task is not None:
-                self._agents_by_task[first_task.id] = agent
-                await self._record_agent_for_task(first_task.id, agent)
-            return first_task
         finally:
-            if self._httpx_client is None:
-                await client.close()
-                await httpx_client.aclose()
+            await self._close_operation_client(client, owned_http)
+        return A2APlatformTask(
+            id=prepared.platform_task_id,
+            remote_task=first_task,
+            remote_task_id=remote_task_id,
+            remote_context_id=remote_context_id,
+        )
 
     async def subscribe(self, task_id: str):
-        """Subscribe raw SDK items while durably projecting every item."""
-        agent = self._agents_by_task.get(task_id) or await self._resolve_agent_for_task(task_id)
-        async for item, _ in self._iter_subscription(task_id, agent):
+        require_a2a_resource_id(task_id, "a2a-task-", field_name="task_id")
+        prepared = await self._backend.prepare_task_operation(
+            platform_task_id=task_id,
+            operation="task/subscribe",
+        )
+        self._validate_prepared_ids(prepared)
+        agent = self._agent_from_prepared(prepared)
+        async for item, _ in self._iter_subscription(prepared, agent):
             yield item
 
-    async def _iter_subscription(self, task_id: str, agent: DiscoveredAgent):
-        client, httpx_client, call_context = await self._client_for_agent(agent)
+    async def _iter_subscription(
+        self,
+        prepared: PreparedA2AOperation,
+        agent: DiscoveredAgent,
+    ):
+        binding = self._require_remote_binding(prepared)
+        client, owned_http, context = await self._client_for_operation(agent, prepared)
         try:
             wire_position = 0
             async for event in client.subscribe(
-                SubscribeToTaskRequest(id=task_id), context=call_context
+                SubscribeToTaskRequest(id=binding.remote_task_id),
+                context=context,
             ):
-                persisted = await self._persist_events(
-                    self._stream_item_to_events(event, agent, wire_position=wire_position)
+                persisted = await self._project_stream_item(
+                    prepared.platform_task_id,
+                    event,
+                    agent,
+                    wire_position=wire_position,
                 )
                 wire_position += 1
                 yield event, persisted
         finally:
-            if self._httpx_client is None:
-                await client.close()
-                await httpx_client.aclose()
+            await self._close_operation_client(client, owned_http)
 
-    async def cancel(self, task_id: str):
-        """取消 task(§3.2)。"""
-        agent = self._agents_by_task.get(task_id) or await self._resolve_agent_for_task(task_id)
-        client, httpx_client, call_context = await self._client_for_agent(agent)
+    async def cancel(
+        self,
+        task_id: str,
+        *,
+        idempotency_token: str | None = None,
+    ) -> A2APlatformTask:
+        require_a2a_resource_id(task_id, "a2a-task-", field_name="task_id")
+        prepared = await self._backend.prepare_task_operation(
+            platform_task_id=task_id,
+            operation="task/cancel",
+            idempotency_token=idempotency_token or f"idem-{uuid.uuid4().hex}",
+        )
+        self._validate_prepared_ids(prepared)
+        binding = self._require_remote_binding(prepared)
+        agent = self._agent_from_prepared(prepared)
+        client, owned_http, context = await self._client_for_operation(agent, prepared)
         try:
-            return await client.cancel_task(CancelTaskRequest(id=task_id), context=call_context)
+            remote_task = await client.cancel_task(
+                CancelTaskRequest(id=binding.remote_task_id), context=context
+            )
+            await self._project_stream_item(task_id, remote_task, agent, wire_position=0)
+            return A2APlatformTask(
+                id=task_id,
+                remote_task=remote_task,
+                remote_task_id=binding.remote_task_id,
+                remote_context_id=binding.remote_context_id,
+            )
         finally:
-            if self._httpx_client is None:
-                await client.close()
-                await httpx_client.aclose()
+            await self._close_operation_client(client, owned_http)
 
-    async def get_task(self, task_id: str):
-        agent = self._agents_by_task.get(task_id) or await self._resolve_agent_for_task(task_id)
-        client, httpx_client, call_context = await self._client_for_agent(agent)
+    async def get_task(self, task_id: str) -> A2APlatformTask:
+        require_a2a_resource_id(task_id, "a2a-task-", field_name="task_id")
+        prepared = await self._backend.prepare_task_operation(
+            platform_task_id=task_id,
+            operation="task/get",
+        )
+        self._validate_prepared_ids(prepared)
+        binding = self._require_remote_binding(prepared)
+        agent = self._agent_from_prepared(prepared)
+        client, owned_http, context = await self._client_for_operation(agent, prepared)
         try:
-            return await client.get_task(GetTaskRequest(id=task_id), context=call_context)
+            remote_task = await client.get_task(
+                GetTaskRequest(id=binding.remote_task_id), context=context
+            )
+            await self._project_stream_item(task_id, remote_task, agent, wire_position=0)
+            return A2APlatformTask(
+                id=task_id,
+                remote_task=remote_task,
+                remote_task_id=binding.remote_task_id,
+                remote_context_id=binding.remote_context_id,
+            )
         finally:
-            if self._httpx_client is None:
-                await client.close()
-                await httpx_client.aclose()
+            await self._close_operation_client(client, owned_http)
 
-    # ---- 出站结果 → RuntimeEvent(§3.2 A2AEventAdapter) ----
+    def _normalize_initial_message(self, message: str | Message) -> Message:
+        if isinstance(message, str):
+            return Message(
+                role=Role.ROLE_USER,
+                parts=[Part(text=message)],
+                message_id=f"message-{uuid.uuid4().hex}",
+            )
+        if getattr(message, "task_id", "") or getattr(message, "context_id", ""):
+            raise ValueError("caller must not provide remote task_id/context_id")
+        if not getattr(message, "message_id", ""):
+            message.message_id = f"message-{uuid.uuid4().hex}"
+        return message
+
+    @staticmethod
+    def _validate_prepared_target(
+        agent: DiscoveredAgent,
+        prepared: PreparedA2AOperation,
+    ) -> None:
+        A2ASpaceClient._validate_prepared_ids(prepared)
+        if prepared.target.agent_id != agent.agent_id:
+            raise RuntimeError("PrepareA2ACall returned a different target Agent")
+        if prepared.target.version_id != agent.version_id:
+            raise RuntimeError("PrepareA2ACall returned a different target version")
+        if agent.card_sha256 and prepared.target.card_sha256 != agent.card_sha256:
+            raise RuntimeError("PrepareA2ACall returned a different AgentCard hash")
+
+    @staticmethod
+    def _validate_prepared_ids(prepared: PreparedA2AOperation) -> None:
+        require_a2a_resource_id(
+            prepared.platform_task_id,
+            "a2a-task-",
+            field_name="PreparedA2AOperation.platform_task_id",
+        )
+        require_a2a_resource_id(
+            prepared.target.agent_id,
+            "a2a-agent-",
+            field_name="PreparedA2AOperation.target.agent_id",
+        )
+        require_a2a_resource_id(
+            prepared.target.version_id,
+            "a2a-version-",
+            field_name="PreparedA2AOperation.target.version_id",
+        )
+
+    @staticmethod
+    def _require_remote_binding(prepared: PreparedA2AOperation):
+        binding = prepared.remote_binding
+        if binding is None or not binding.remote_task_id:
+            raise RuntimeError("A2A_REMOTE_TASK_NOT_BOUND")
+        require_a2a_resource_id(
+            binding.binding_id,
+            "a2a-binding-",
+            field_name="PreparedA2AOperation.remote_binding.binding_id",
+        )
+        return binding
+
+    def _agent_from_prepared(self, prepared: PreparedA2AOperation) -> DiscoveredAgent:
+        cached = self._agents_by_id.get(prepared.target.agent_id)
+        if cached is not None and cached.version_id == prepared.target.version_id:
+            return cached
+        card = self._route_only_card(prepared.target.agent_id, prepared.target.version_id)
+        return DiscoveredAgent(
+            agent_id=prepared.target.agent_id,
+            version_id=prepared.target.version_id,
+            source="hosted" if prepared.route.kind == "hosted_gateway" else "external",
+            agent_card=card,
+            card_sha256=prepared.target.card_sha256,
+            route_kind=prepared.route.kind,
+        )
+
+    def _route_only_card(self, name: str, version: str) -> AgentCard:
+        return ParseDict(
+            {
+                "name": name,
+                "description": "AgentEngine prepared A2A route",
+                "version": version,
+                "supportedInterfaces": [],
+                "capabilities": {},
+                "defaultInputModes": ["text/plain"],
+                "defaultOutputModes": ["text/plain"],
+                "skills": [],
+            },
+            AgentCard(),
+        )
+
+    async def _client_for_operation(
+        self,
+        agent: DiscoveredAgent,
+        prepared: PreparedA2AOperation,
+    ):
+        injection = CredentialInjection()
+        headers: dict[str, str]
+        external_http: httpx.AsyncClient | None = None
+        if prepared.route.kind == "hosted_gateway":
+            headers = {
+                "Authorization": f"Bearer {self._backend.gateway_token()}",
+                "X-AgentEngine-A2A-Permit": prepared.call_permit,
+            }
+        else:
+            if prepared.route.kind == "external_public" and not self._egress_enabled:
+                raise PermissionError(ERR_PUBLIC_EGRESS_DISABLED)
+            if self._external_transport is None:
+                raise RuntimeError(
+                    "A2A_EGRESS_TRANSPORT_REQUIRED: external calls require a Runtime network "
+                    "guard transport"
+                )
+            external_http = self._external_transport.client_for_route(
+                prepared.route.interface,
+                route_kind=prepared.route.kind,
+            )
+            if not isinstance(external_http, httpx.AsyncClient):
+                raise TypeError("A2AExternalTransport must return httpx.AsyncClient")
+            injection = await self._backend.resolve_credential(
+                platform_task_id=prepared.platform_task_id,
+                credential_handle=prepared.credential_handle,
+                call_permit=prepared.call_permit,
+            )
+            headers = dict(injection.headers)
+            if injection.cookies:
+                if any(name.lower() == "cookie" for name in headers):
+                    raise RuntimeError(
+                        "A2A_CREDENTIAL_INJECTION_CONFLICT: Cookie header and cookie injection "
+                        "cannot both be present"
+                    )
+                headers["Cookie"] = self._cookie_header(injection.cookies)
+        route = prepared.route.interface
+        if injection.query:
+            route = A2ARouteInterface(
+                url=self._url_with_query(route.url, injection.query),
+                protocol_binding=route.protocol_binding,
+                protocol_version=route.protocol_version,
+            )
+        route_card = self._card_for_route(agent.agent_card, route)
+        owned_http = None
+        if prepared.route.kind == "hosted_gateway":
+            http = self._httpx_client
+        else:
+            http = external_http
+            assert http is not None
+        if http is None:
+            owned_http = httpx.AsyncClient()
+            http = owned_http
+        client = await create_client(
+            agent=route_card,
+            client_config=ClientConfig(httpx_client=http, streaming=True),
+        )
+        return client, owned_http, ClientCallContext(service_parameters=headers or None)
+
+    @staticmethod
+    def _url_with_query(url: str, query: dict[str, str]) -> str:
+        parsed = urlsplit(url)
+        values = parse_qsl(parsed.query, keep_blank_values=True)
+        existing = {name for name, _ in values}
+        collision = existing.intersection(query)
+        if collision:
+            raise RuntimeError(
+                "A2A_CREDENTIAL_INJECTION_CONFLICT: credential query collides with route query: "
+                f"{sorted(collision)}"
+            )
+        values.extend(query.items())
+        return urlunsplit(
+            (parsed.scheme, parsed.netloc, parsed.path, urlencode(values), parsed.fragment)
+        )
+
+    @staticmethod
+    def _cookie_header(cookies: dict[str, str]) -> str:
+        jar = SimpleCookie()
+        try:
+            for name, value in cookies.items():
+                jar[name] = value
+        except CookieError as exc:
+            raise RuntimeError(
+                "A2A_CREDENTIAL_INJECTION_CONFLICT: invalid credential cookie"
+            ) from exc
+        return jar.output(header="", sep="; ").strip()
+
+    @staticmethod
+    def _card_for_route(card: AgentCard, route: A2ARouteInterface) -> AgentCard:
+        payload = _canonical_proto(card)
+        payload["supportedInterfaces"] = [
+            {
+                "url": route.url,
+                "protocolBinding": route.protocol_binding,
+                "protocolVersion": route.protocol_version,
+            }
+        ]
+        return ParseDict(payload, AgentCard())
+
+    async def _close_operation_client(
+        self,
+        client: Any,
+        owned_http: httpx.AsyncClient | None,
+    ) -> None:
+        if owned_http is not None:
+            await client.close()
+            await owned_http.aclose()
+
+    async def _bind_task(self, platform_task_id: str, remote_task: Any) -> None:
+        await self._backend.bind_remote_task(
+            platform_task_id=platform_task_id,
+            remote_task_id=str(remote_task.id),
+            remote_context_id=str(remote_task.context_id or "") or None,
+            observed_at=_utc_now(),
+        )
+
+    async def _project_stream_item(
+        self,
+        platform_task_id: str,
+        item: Any,
+        agent: DiscoveredAgent,
+        *,
+        wire_position: int,
+    ) -> list[RuntimeEvent]:
+        runtime_events = self._stream_item_to_events(
+            item,
+            agent,
+            wire_position=wire_position,
+            invocation_id=platform_task_id,
+        )
+        persisted = await self._persist_events(runtime_events)
+        platform_events = self._platform_events(item, platform_task_id)
+        if platform_events:
+            await self._backend.append_task_events(
+                platform_task_id=platform_task_id,
+                events=platform_events,
+            )
+        return persisted
+
+    def _platform_events(
+        self,
+        item: Any,
+        platform_task_id: str,
+    ) -> list[dict[str, Any]]:
+        events: list[dict[str, Any]] = []
+        task = getattr(item, "task", None)
+        if task is None and hasattr(item, "status") and hasattr(item, "id"):
+            task = item
+        status_update = getattr(item, "status_update", None)
+        artifact_update = getattr(item, "artifact_update", None)
+        message = getattr(item, "message", None)
+        if task is not None and getattr(task, "status", None) is not None:
+            events.append(self._platform_status_event(task.status, platform_task_id))
+            for artifact in getattr(task, "artifacts", None) or []:
+                events.append(
+                    self._platform_event(
+                        "artifact",
+                        {
+                            "Artifact": _canonical_proto(artifact),
+                            "Append": False,
+                            "LastChunk": True,
+                        },
+                        platform_task_id,
+                    )
+                )
+        if status_update is not None and getattr(status_update, "status", None) is not None:
+            events.append(self._platform_status_event(status_update.status, platform_task_id))
+        if artifact_update is not None and getattr(artifact_update, "artifact", None) is not None:
+            events.append(
+                self._platform_event(
+                    "artifact",
+                    {
+                        "Artifact": _canonical_proto(artifact_update.artifact),
+                        "Append": bool(getattr(artifact_update, "append", False)),
+                        "LastChunk": bool(getattr(artifact_update, "last_chunk", False)),
+                    },
+                    platform_task_id,
+                )
+            )
+        if message is not None:
+            payload = _canonical_proto(message)
+            events.append(
+                self._platform_event(
+                    "message",
+                    payload,
+                    platform_task_id,
+                )
+            )
+            events.append(
+                self._platform_event(
+                    "status",
+                    {"state": "TASK_STATE_COMPLETED", "message": payload},
+                    platform_task_id,
+                    status="completed",
+                )
+            )
+        return events
+
+    def _platform_status_event(self, status: Any, platform_task_id: str) -> dict[str, Any]:
+        payload = _canonical_proto(status)
+        state_name = TaskState.Name(status.state)
+        normalized = state_name.removeprefix("TASK_STATE_").lower()
+        if normalized == "canceled":
+            normalized = "canceled"
+        return self._platform_event(
+            "status",
+            payload,
+            platform_task_id,
+            status=normalized,
+            occurred_at=str(payload.get("timestamp") or _utc_now()),
+        )
+
+    @staticmethod
+    def _platform_event(
+        kind: str,
+        payload: dict[str, Any],
+        platform_task_id: str,
+        *,
+        status: str | None = None,
+        occurred_at: str | None = None,
+    ) -> dict[str, Any]:
+        canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        source_id = hashlib.sha256(
+            f"{platform_task_id}:{kind}:{canonical}".encode("utf-8")
+        ).hexdigest()
+        event: dict[str, Any] = {
+            "SourceEventId": source_id,
+            "EventKind": kind,
+            "Payload": payload,
+            "OccurredAt": occurred_at or _utc_now(),
+        }
+        if status:
+            event["Status"] = status
+        return event
 
     def _next_seq(self) -> int:
         self._seq += 1
@@ -446,7 +723,7 @@ class A2ASpaceClient:
         agent: DiscoveredAgent,
         invocation_id: str,
         *,
-        event_id: Optional[str] = None,
+        event_id: str | None = None,
     ) -> dict[str, Any]:
         return {
             "agent_id": agent.agent_id,
@@ -458,7 +735,6 @@ class A2ASpaceClient:
         }
 
     def task_to_event(self, task: Any, agent: DiscoveredAgent) -> RuntimeEvent:
-        """A2A Task → RuntimeEvent(run.*)(经 A2AEventAdapter,出站不再裸返回)。"""
         return self._event_adapter.task_status_to_event(
             task.status, **self._event_ctx(agent, invocation_id=str(task.id))
         )
@@ -469,15 +745,16 @@ class A2ASpaceClient:
         agent: DiscoveredAgent,
         *,
         wire_position: int = 0,
+        invocation_id: str | None = None,
     ) -> list[RuntimeEvent]:
-        """把 subscribe 流的一个包装项(.task/.status_update/.artifact_update/.message)
-        经 A2AEventAdapter 转成 0..n 个 RuntimeEvent。"""
         events: list[RuntimeEvent] = []
         task = getattr(item, "task", None)
+        if task is None and hasattr(item, "status") and hasattr(item, "id"):
+            task = item
         status_update = getattr(item, "status_update", None)
         artifact_update = getattr(item, "artifact_update", None)
         message = getattr(item, "message", None)
-        invocation_id = str(
+        resolved_invocation_id = invocation_id or str(
             getattr(item, "task_id", None)
             or getattr(task, "id", "")
             or getattr(status_update, "task_id", "")
@@ -508,13 +785,16 @@ class A2ASpaceClient:
             source_id = native_event_id or message_id or artifact_id
             event_id = uuid.uuid5(
                 uuid.NAMESPACE_URL,
-                f"ksadk:a2a:{invocation_id}:{wire_position}:{kind}:{source_id}",
+                f"ksadk:a2a:{resolved_invocation_id}:{wire_position}:{kind}:{source_id}",
             ).hex
-            return self._event_ctx(agent, invocation_id=invocation_id, event_id=event_id)
+            return self._event_ctx(agent, invocation_id=resolved_invocation_id, event_id=event_id)
 
         if task is not None and getattr(task, "status", None) is not None:
             events.append(
-                self._event_adapter.task_status_to_event(task.status, **ctx("task", task))
+                self._event_adapter.task_status_to_event(
+                    task.status,
+                    **ctx("task", task),
+                )
             )
         if status_update is not None and getattr(status_update, "status", None) is not None:
             status_message = getattr(status_update.status, "message", None)
@@ -575,7 +855,7 @@ class A2ASpaceClient:
         if self._event_sink is not None:
             append = getattr(self._event_sink, "append", None)
             if append is None:
-                raise TypeError("event_sink 必须提供 async append(events)")
+                raise TypeError("event_sink must provide async append(events)")
             persisted = await append(fresh)
             if persisted is not None:
                 fresh = list(persisted)
@@ -583,9 +863,14 @@ class A2ASpaceClient:
         return fresh
 
     async def subscribe_events(self, task_id: str):
-        """订阅 task 事件流并逐个转成 RuntimeEvent(§3.2 出站经 A2AEventAdapter)。"""
-        agent = self._agents_by_task.get(task_id) or await self._resolve_agent_for_task(task_id)
-        async for _, persisted in self._iter_subscription(task_id, agent):
+        require_a2a_resource_id(task_id, "a2a-task-", field_name="task_id")
+        prepared = await self._backend.prepare_task_operation(
+            platform_task_id=task_id,
+            operation="task/subscribe",
+        )
+        self._validate_prepared_ids(prepared)
+        agent = self._agent_from_prepared(prepared)
+        async for _, persisted in self._iter_subscription(prepared, agent):
             for event in persisted:
                 yield event
 
@@ -595,27 +880,15 @@ class A2ASpaceClient:
         after_seq_id: int = 0,
         timeout: float = 1.0,
     ) -> AsyncIterator[RuntimeEvent]:
-        """从注入的 RuntimeEventStore 按 cursor 续传本 Space 的出站事件。"""
         subscribe = getattr(self._event_sink, "subscribe_session", None)
         if subscribe is None:
-            raise RuntimeError("event_sink 不支持 subscribe_session cursor replay")
+            raise RuntimeError("event_sink does not support subscribe_session cursor replay")
         async for event in subscribe(
             self._space_id,
             after_seq_id=after_seq_id,
             timeout=timeout,
         ):
             yield event
-
-    async def _resolve_agent_for_task(self, task_id: str) -> DiscoveredAgent:
-        """Resolve task ownership from the durable locator, then discovery."""
-        get_task_agent = getattr(self._event_sink, "get_task_agent", None)
-        if callable(get_task_agent):
-            agent_id = await get_task_agent(self._space_id, task_id)
-            if agent_id:
-                agent = await self._resolve_agent(str(agent_id))
-                self._agents_by_task[task_id] = agent
-                return agent
-        raise KeyError(f"未知 task {task_id!r} 所属 agent;缺少持久化 task locator")
 
     async def _record_agent_for_task(self, task_id: str, agent: DiscoveredAgent) -> None:
         set_task_agent = getattr(self._event_sink, "set_task_agent", None)
@@ -624,13 +897,12 @@ class A2ASpaceClient:
 
 
 __all__ = [
+    "A2AExternalTransport",
+    "A2APlatformTask",
     "A2ASpaceClient",
     "DiscoveredAgent",
     "ENV_A2A_ENABLE_PUBLIC_EGRESS",
-    "ENV_A2A_SERVICE_URL",
     "ENV_A2A_SPACE_ID",
-    "ERR_REQUIRES_PUBLIC_EGRESS",
-    "KopSpaceDiscoveryBackend",
+    "ERR_PUBLIC_EGRESS_DISABLED",
     "SpaceAgentPage",
-    "SpaceDiscoveryBackend",
 ]

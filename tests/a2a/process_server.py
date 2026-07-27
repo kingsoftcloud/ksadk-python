@@ -10,22 +10,34 @@ import uvicorn
 from a2a.client import A2ACardResolver
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse
+from google.protobuf.json_format import MessageToDict
 
 from ksadk.a2a import (
     A2AConfig,
+    A2AControlPlane,
+    A2AExternalTransport,
+    A2ARoute,
+    A2ARouteInterface,
     A2ARuntimeTaskAdapter,
     A2ASpaceClient,
+    A2ATarget,
+    CredentialInjection,
     DiscoveredAgent,
+    PreparedA2AOperation,
     SpaceAgentPage,
-    SpaceDiscoveryBackend,
     add_a2a_protocol_routes,
 )
-from ksadk.a2a.credential import StaticCredentialProvider
 from ksadk.events.store import RuntimeEventStore
 from ksadk.runtime.runner_adapter import RunnerRuntimeAdapter
 from ksadk.sessions.in_memory import InMemorySessionService
 
-SPACE_ID = "process-interop"
+SPACE_ID = "a2a-space-00000000000040008000000000000031"
+HOSTED_AGENT_ID = "a2a-agent-00000000000040008000000000000032"
+EXTERNAL_AGENT_ID = "a2a-agent-00000000000040008000000000000033"
+HOSTED_VERSION_ID = "a2a-version-00000000000040008000000000000034"
+EXTERNAL_VERSION_ID = "a2a-version-00000000000040008000000000000035"
+TASK_ID = "a2a-task-00000000000040008000000000000036"
+BINDING_ID = "a2a-binding-00000000000040008000000000000037"
 
 
 class EchoRunner:
@@ -38,13 +50,63 @@ class EchoRunner:
         yield {"output": f"echo:{input_data['input']}", "type": "final"}
 
 
-class StaticBackend(SpaceDiscoveryBackend):
-    def __init__(self, agent: DiscoveredAgent) -> None:
+class StaticBackend(A2AControlPlane):
+    def __init__(self, agent: DiscoveredAgent, credential: str) -> None:
         self.agent = agent
+        self.credential = credential
 
     async def list_space_agents(self, space_id: str, **_: Any) -> SpaceAgentPage:
         assert space_id == SPACE_ID
         return SpaceAgentPage(agents=[self.agent])
+
+    async def prepare_call(self, **_: Any) -> PreparedA2AOperation:
+        card = MessageToDict(self.agent.agent_card)
+        interface = card["supportedInterfaces"][0]
+        return PreparedA2AOperation(
+            platform_task_id=TASK_ID,
+            target=A2ATarget(self.agent.agent_id, self.agent.version_id, ""),
+            route=A2ARoute(
+                kind="hosted_gateway" if self.agent.source == "hosted" else "external_public",
+                interface=A2ARouteInterface(
+                    url=interface["url"],
+                    protocol_binding=interface["protocolBinding"],
+                    protocol_version=interface["protocolVersion"],
+                ),
+            ),
+            call_permit="local-permit",
+            call_permit_expires_at="2099-01-01T00:00:00Z",
+            credential_handle="target-token" if self.agent.source == "external" else None,
+        )
+
+    async def prepare_task_operation(self, **_: Any) -> PreparedA2AOperation:
+        raise NotImplementedError
+
+    async def bind_remote_task(self, **_: Any) -> dict[str, Any]:
+        return {"BindingId": BINDING_ID, "Ordinal": 1, "AlreadyBound": False}
+
+    async def append_task_events(self, **kwargs: Any) -> dict[str, Any]:
+        return {"AcceptedCount": len(kwargs["events"]), "DuplicateCount": 0}
+
+    async def resolve_credential(self, **_: Any) -> CredentialInjection:
+        if self.agent.source == "external" and self.credential:
+            return CredentialInjection(headers={"Authorization": f"Bearer {self.credential}"})
+        return CredentialInjection()
+
+    def gateway_token(self) -> str:
+        return "local-gateway-token"
+
+
+class StaticExternalTransport(A2AExternalTransport):
+    def __init__(self, client: httpx.AsyncClient) -> None:
+        self.client = client
+
+    def client_for_route(
+        self,
+        route: A2ARouteInterface,
+        *,
+        route_kind: str,
+    ) -> httpx.AsyncClient:
+        return self.client
 
 
 def build_app(*, port: int, name: str, database_path: str, required_token: str) -> FastAPI:
@@ -71,35 +133,30 @@ def build_app(*, port: int, name: str, database_path: str, required_token: str) 
         target_url = str(payload["target_url"])
         async with httpx.AsyncClient() as discovery_http:
             card = await A2ACardResolver(discovery_http, target_url).get_agent_card()
-        handle = "target-token" if payload.get("credential") else None
+        target_id = str(payload["target_id"])
+        target_source = str(payload["target_source"])
         agent = DiscoveredAgent(
-            agent_id=str(payload["target_id"]),
-            version_id="v1",
-            source=str(payload["target_source"]),
+            agent_id=EXTERNAL_AGENT_ID if target_source == "external" else HOSTED_AGENT_ID,
+            version_id=(EXTERNAL_VERSION_ID if target_source == "external" else HOSTED_VERSION_ID),
+            source=target_source,
             agent_card=card,
-            credential_handle=handle,
+            route_kind="external_public" if target_source == "external" else "hosted_gateway",
         )
-        provider = StaticCredentialProvider(
-            {
-                "target-token": {
-                    "scheme": "bearer",
-                    "token": str(payload.get("credential") or ""),
-                }
-            }
-        )
-        client = A2ASpaceClient(
-            SPACE_ID,
-            StaticBackend(agent),
-            egress_enabled=True,
-            credential_provider=provider,
-            event_sink=event_store,
-        )
-        await client.discover()
-        task = await client.send_message(agent.agent_id, str(payload["message"]))
+        async with httpx.AsyncClient() as outbound_http:
+            client = A2ASpaceClient(
+                SPACE_ID,
+                StaticBackend(agent, str(payload.get("credential") or "")),
+                egress_enabled=True,
+                httpx_client=outbound_http,
+                external_transport=StaticExternalTransport(outbound_http),
+                event_sink=event_store,
+            )
+            await client.discover()
+            task = await client.send_message(agent.agent_id, str(payload["message"]))
         events = await event_store.list(SPACE_ID, invocation_id=task.id)
         return {
             "source": name,
-            "target": agent.agent_id,
+            "target": target_id,
             "task_id": task.id,
             "event_types": [event.event_type for event in events],
             "texts": [event.payload.get("text", "") for event in events],

@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""goal-06 credential provider + 出站 event adapter 的测试(§3.2,review 修复)。
+"""A2A local credential helper + outbound event adapter tests.
 
-- A2ACredentialProvider:credential_handle 不再 read-but-unused;none/bearer/basic/apikey
-  正确物化为出站 HTTP 头;OAuth2/OIDC 报 capability error;未知 handle 报错。
+- StaticCredentialProvider 只用于本地/测试；产品 A2ASpaceClient 始终调用 credential broker。
+- none/bearer/basic/apikey 正确物化为出站 HTTP 头；OAuth2/OIDC 报 capability error。
 - 出站经 A2AEventAdapter:task/status_update/artifact_update/message → RuntimeEvent。
 """
 
@@ -15,6 +15,7 @@ import pytest
 from a2a.types import Artifact, Message, Part, Role, Task, TaskState, TaskStatus
 
 from ksadk.a2a.card import build_agent_card
+from ksadk.a2a.control_plane import CredentialInjection
 from ksadk.a2a.credential import (
     CredentialCapabilityError,
     StaticCredentialProvider,
@@ -25,14 +26,20 @@ from ksadk.events.store import RuntimeEventStore
 from ksadk.sessions.base import SessionEvent
 from ksadk.sessions.in_memory import InMemorySessionService
 
+SPACE_ID = "a2a-space-00000000000040008000000000000021"
+AGENT_ID = "a2a-agent-00000000000040008000000000000022"
+VERSION_ID = "a2a-version-00000000000040008000000000000023"
+AGENT_A_ID = "a2a-agent-00000000000040008000000000000024"
+AGENT_B_ID = "a2a-agent-00000000000040008000000000000025"
+TASK_ID = "a2a-task-00000000000040008000000000000026"
 
-def _agent(agent_id: str = "a1", credential_handle: str | None = None) -> DiscoveredAgent:
+
+def _agent(agent_id: str = AGENT_ID, *, source: str = "hosted") -> DiscoveredAgent:
     return DiscoveredAgent(
         agent_id=agent_id,
-        version_id="v1",
-        source="hosted",
+        version_id=VERSION_ID,
+        source=source,
         agent_card=build_agent_card(name="echo", base_url="http://testserver", skills=["echo"]),
-        credential_handle=credential_handle,
     )
 
 
@@ -75,7 +82,7 @@ async def test_unknown_handle_raises() -> None:
 
 @pytest.mark.asyncio
 async def test_shared_http_client_keeps_agent_credentials_request_scoped(tmp_path) -> None:
-    from test_a2a_discovery import _echo_app, _MockDiscoveryBackend
+    from test_a2a_discovery import _echo_app, _MockDiscoveryBackend, _StaticExternalTransport
 
     seen_authorization: list[str] = []
     app = _echo_app(f"sqlite+aiosqlite:///{tmp_path}/credentials.db")
@@ -90,29 +97,33 @@ async def test_shared_http_client_keeps_agent_credentials_request_scoped(tmp_pat
         transport=httpx.ASGITransport(app=app),
         base_url="http://testserver",
     )
-    provider = StaticCredentialProvider(
-        {
-            "credential-a": {"scheme": "bearer", "token": "token-a"},
-            "credential-b": {"scheme": "bearer", "token": "token-b"},
-        }
-    )
     agents = [
-        _agent("agent-a", "credential-a"),
-        _agent("agent-b", "credential-b"),
+        _agent(AGENT_A_ID, source="external"),
+        _agent(AGENT_B_ID, source="external"),
     ]
+    backend = _MockDiscoveryBackend(agents)
+    backend.credential_handles = {
+        AGENT_A_ID: "credential-a",
+        AGENT_B_ID: "credential-b",
+    }
+    backend.credential_injections = {
+        "credential-a": CredentialInjection(headers={"Authorization": "Bearer token-a"}),
+        "credential-b": CredentialInjection(headers={"Authorization": "Bearer token-b"}),
+    }
     client = A2ASpaceClient(
-        "as-test",
-        _MockDiscoveryBackend(agents),
+        SPACE_ID,
+        backend,
+        egress_enabled=True,
         httpx_client=shared_http,
-        credential_provider=provider,
+        external_transport=_StaticExternalTransport(shared_http),
     )
     try:
         await client.discover()
-        await client.send_message("agent-a", "warmup", return_immediately=True)
+        await client.send_message(AGENT_A_ID, "warmup", return_immediately=True)
         seen_authorization.clear()
         await asyncio.gather(
-            client.send_message("agent-a", "a", return_immediately=True),
-            client.send_message("agent-b", "b", return_immediately=True),
+            client.send_message(AGENT_A_ID, "a", return_immediately=True),
+            client.send_message(AGENT_B_ID, "b", return_immediately=True),
         )
     finally:
         await shared_http.aclose()
@@ -128,7 +139,7 @@ async def test_shared_http_client_keeps_agent_credentials_request_scoped(tmp_pat
 def _client() -> A2ASpaceClient:
     from test_a2a_discovery import _MockDiscoveryBackend
 
-    return A2ASpaceClient("as-test", _MockDiscoveryBackend([]))
+    return A2ASpaceClient(SPACE_ID, _MockDiscoveryBackend([]))
 
 
 def test_task_to_event_uses_event_adapter() -> None:
@@ -162,17 +173,29 @@ def test_stream_item_to_events_converts_status_and_artifact() -> None:
     assert all(isinstance(e, RuntimeEvent) for e in events)
 
 
+def test_platform_event_ids_are_stable_across_stream_reconnects() -> None:
+    client = _client()
+    message = Message(message_id="same", role=Role.ROLE_AGENT, parts=[Part(text="same")])
+    item = type("Item", (), {"task": None, "status_update": None, "artifact_update": None})()
+    item.message = message
+
+    first = client._platform_events(item, TASK_ID)
+    second = client._platform_events(item, TASK_ID)
+
+    assert first[0]["SourceEventId"] == second[0]["SourceEventId"]
+
+
 @pytest.mark.asyncio
 async def test_terminal_status_message_is_persisted_before_run_completed() -> None:
     service = InMemorySessionService()
-    await service.create_session("a1", "a2a_space", "as-test")
+    await service.create_session("a1", "a2a_space", SPACE_ID)
     store = RuntimeEventStore(service)
     client = _client()
     agent = _agent()
     final_message = Message(
         message_id="message-final",
         task_id="t1",
-        context_id="as-test",
+        context_id=SPACE_ID,
         role=Role.ROLE_AGENT,
         parts=[Part(text="final answer")],
     )
@@ -194,7 +217,7 @@ async def test_terminal_status_message_is_persisted_before_run_completed() -> No
         )()
 
     await store.append(client._stream_item_to_events(_Item(), agent))
-    streamed = [event async for event in store.subscribe_run("as-test", "t1", timeout=0.1)]
+    streamed = [event async for event in store.subscribe_run(SPACE_ID, "t1", timeout=0.1)]
 
     assert [event.event_type for event in streamed] == [
         EventType.TEXT_COMPLETED,
@@ -209,13 +232,13 @@ async def test_persist_events_returns_store_assigned_cursor() -> None:
     from test_a2a_discovery import _MockDiscoveryBackend
 
     service = InMemorySessionService()
-    await service.create_session("a1", "a2a_space", "as-test")
+    await service.create_session("a1", "a2a_space", SPACE_ID)
     await service.append_event(
-        "as-test",
-        SessionEvent(session_id="as-test", author="legacy", event_type="legacy"),
+        SPACE_ID,
+        SessionEvent(session_id=SPACE_ID, author="legacy", event_type="legacy"),
     )
     client = A2ASpaceClient(
-        "as-test",
+        SPACE_ID,
         _MockDiscoveryBackend([]),
         event_sink=RuntimeEventStore(service),
     )

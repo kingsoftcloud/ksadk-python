@@ -331,10 +331,10 @@
 | `AGENTENGINE_API_VERSION` | CLI / API client | 否 | 内置版本 | 无 | 否 | 平台 / 开发者 | 否 | 覆盖 AgentEngine API version。 |
 | `AGENTENGINE_PRE_CONTROL_REGION` | CLI / API client | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 预发控制面 region 覆盖。 |
 | `AGENTENGINE_PRE_CUSTOM_SOURCE` | CLI / API client | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 预发 custom source 覆盖。 |
-| `KSADK_A2A` | A2A discovery | 否 | 按 AICP resolver 自动选择 | `KSADK_A2A_ENDPOINT`、`KSADK_A2A_SCHEME`、`KSADK_A2A_REGION` | 否 | 平台 / 开发者 | 否 | A2A 的 AICP 连接配置前缀；通常只需设置下列显式 service URL 或由部署层绑定 Space。 |
-| `KSADK_A2A_SPACE_ID` | A2A Runtime | 条件必传 | 未设置 | `AGENTENGINE_A2A_SPACE_ID` | 否 | 部署层 / 平台 | 否 | 绑定的 A2A Space ID。启用 A2A Space discovery 时必须设置。 |
-| `KSADK_A2A_SERVICE_URL` | A2A discovery | 否 | AICP 自动探测 | `AGENTENGINE_SERVER_URL` | 否 | 平台 / 开发者 | 否 | A2A discovery 服务基地址；未设置时由 AICP resolver 自动发现。 |
-| `KSADK_A2A_ENABLE_PUBLIC_EGRESS` | A2A Runtime | 否 | `false` | `AGENTENGINE_A2A_ENABLE_PUBLIC_EGRESS` | 否 | 平台 / 开发者 | 否 | 是否允许调用 Space 中标记为 external/public-egress 的 agent；默认拒绝。 |
+| `KSADK_A2A_SPACE_ID` | A2A Runtime | 条件必传 | 未设置 | 无 | 否 | 部署层 / 平台 | 否 | 绑定的 `a2a-space-*`。产品化 Space discovery 必须由部署层注入，不读取旧变量。 |
+| `KSADK_A2A_CONTROL_PLANE_URL` | A2A Runtime | 条件必传 | 未设置 | 无 | 否 | 部署层 / 平台 | 否 | Runtime internal A2A Action 基地址；不自动探测、不回退 `AGENTENGINE_SERVER_URL`。 |
+| `KSADK_A2A_ENABLE_PUBLIC_EGRESS` | A2A Runtime | 否 | 由 `Network.EnablePublicAccess` 最终值派生；未注入时 SDK 按 `false` fail-closed | 无 | 否 | 部署层 / 平台 | 否 | 只控制 `external_public`；CreateAgent 的 `Network.EnablePublicAccess` 缺省为 `true`。`external_vpc` 由独立 VPC policy 决定。 |
+| `KSADK_A2A_TOKEN_DIR` | A2A Runtime | 否 | `/var/run/secrets/agentengine/a2a` | 无 | 否 | 部署层 / token sidecar | 否 | audience JWT 目录，包含 `a2a-registry.jwt`、`a2a-task-sink.jwt`、`credential-broker.jwt`、`a2a-gateway.jwt`；文件必须为 regular、非 symlink、`0400`、最大 16 KiB。 |
 | `KSADK_A2UI_GENERATION_TIMEOUT_SECONDS` | A2UI / AG-UI Runtime | 否 | `20` | 无 | 否 | 平台 / 开发者 | 否 | A2UI 结构化生成的超时秒数；有效值会被限制在 `1` 到 `120`。 |
 | `KSADK_AICP_ENDPOINT_MODE` | AICP resolver | 否 | `auto` | 无 | 否 | 平台 / 开发者 | 否 | AICP endpoint 选择策略，支持 `auto/detect/internal/inner/public`。内网环境可显式设为 `inner`，跳过自动探测。 |
 | `AGENTENGINE_MODEL_ALLOWLIST` | CLI model / OpenClaw | 否 | 未设置 | `OPENCLAW_MODEL_ALLOWLIST` | 否 | 平台 / 开发者 | 否 | 模型列表过滤。OpenClaw 场景优先使用 `OPENCLAW_MODEL_ALLOWLIST`。 |

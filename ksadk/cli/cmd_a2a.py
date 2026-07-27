@@ -18,11 +18,13 @@ from typing import Sequence
 
 import click
 import uvicorn
+from a2a.types import TaskState
 from google.protobuf.json_format import MessageToJson
 
 import ksadk.configs as configs
 from ksadk.a2a import (
     A2AConfig,
+    A2APlatformTask,
     A2ASpaceClient,
     add_a2a_protocol_routes,
     build_agent_card,
@@ -178,7 +180,10 @@ def register(agent_path: Path, url: str, name: str | None, description: str, ski
         description=description,
         skills=list(skills),
     )
-    click.echo("# 用于 Space 注册的 AgentCard(server 侧 KOP RegisterA2AAgent 接收此卡):")
+    click.echo(
+        "# 本地 AgentCard 预览；平台注册使用 GetA2AAgentCard + CreateA2AAgent，"
+        "hosted 注册不接收用户手写 Card:"
+    )
     click.echo(MessageToJson(card_obj, indent=2))
 
 
@@ -194,8 +199,8 @@ def _space_client() -> A2ASpaceClient:
     except ValueError as exc:
         raise click.ClickException(
             f"A2A Space 未配置:{exc}。"
-            "设 KSADK_A2A_SPACE_ID(绑定 Space);discovery 地址默认自动探测,可用 "
-            "KSADK_A2A_SERVICE_URL 显式指定。"
+            "AgentEngine 部署必须注入 KSADK_A2A_SPACE_ID、"
+            "KSADK_A2A_CONTROL_PLANE_URL 和 audience workload token。"
         ) from exc
 
 
@@ -216,7 +221,9 @@ def discover(prompt: str | None, skill: str | None):
                         "version_id": agent.version_id,
                         "source": agent.source,
                         "name": getattr(agent.agent_card, "name", ""),
-                        "credential_handle": agent.credential_handle,
+                        "route_kind": agent.route_kind,
+                        "callable": agent.callable,
+                        "blocked_reason": agent.blocked_reason,
                     },
                     ensure_ascii=False,
                 )
@@ -234,12 +241,7 @@ def call(agent_id: str, message: str):
     async def _run() -> None:
         client = _space_client()
         task = await client.send_message(agent_id, message)
-        if task is None:
-            click.echo("未返回 Task")
-            return
-        click.echo(
-            json.dumps({"task_id": task.id, "status": str(task.status.state)}, ensure_ascii=False)
-        )
+        click.echo(json.dumps(_platform_task_summary(task), ensure_ascii=False))
 
     asyncio.run(_run())
 
@@ -252,9 +254,7 @@ def status(task_id: str):
     async def _run() -> None:
         client = _space_client()
         task = await client.get_task(task_id)
-        click.echo(
-            json.dumps({"task_id": task.id, "status": str(task.status.state)}, ensure_ascii=False)
-        )
+        click.echo(json.dumps(_platform_task_summary(task), ensure_ascii=False))
 
     asyncio.run(_run())
 
@@ -267,9 +267,7 @@ def cancel(task_id: str):
     async def _run() -> None:
         client = _space_client()
         task = await client.cancel(task_id)
-        click.echo(
-            json.dumps({"task_id": task.id, "status": str(task.status.state)}, ensure_ascii=False)
-        )
+        click.echo(json.dumps(_platform_task_summary(task), ensure_ascii=False))
 
     asyncio.run(_run())
 
@@ -277,6 +275,15 @@ def cancel(task_id: str):
 # ---------------------------------------------------------------------------
 # 辅助(与旧版一致,框架无关)
 # ---------------------------------------------------------------------------
+
+
+def _platform_task_summary(task: A2APlatformTask) -> dict[str, str | None]:
+    remote_task = task.remote_task
+    remote_status = getattr(remote_task, "status", None)
+    return {
+        "task_id": task.id,
+        "status": TaskState.Name(remote_status.state) if remote_status is not None else None,
+    }
 
 
 def _detect_project(agent_path: Path):
@@ -297,7 +304,8 @@ def _load_runner(agent_path: Path, *, no_trace: bool):
 
 
 def _select_runtime_adapter(runtime_type: str, runner) -> RuntimeAdapter:
-    # langchain create_agent 产物是 LangGraph CompiledStateGraph，与 langgraph 共用 time-travel resume
+    # langchain create_agent 产物是 LangGraph CompiledStateGraph，
+    # 与 langgraph 共用 time-travel resume。
     if runtime_type in ("langgraph", "langchain"):
         return LangGraphRuntimeAdapter(runner)
     if runtime_type == "adk":

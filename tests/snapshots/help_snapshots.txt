@@ -64,7 +64,8 @@ Options:
   --description TEXT     覆盖 Agent 描述
   --skill TEXT           可重复传入,追加 Agent Card 技能
   --task-store-dsn TEXT  durable task store DSN(生产用 postgresql+asyncpg://)
-                         [default: sqlite+aiosqlite:///.ksadk_a2a_tasks.db]
+                         [default:
+                         sqlite+aiosqlite:///.agentengine/a2a_tasks.db]
   --no-trace             禁用 Tracing
   -h, --help             Show this message and exit.
 

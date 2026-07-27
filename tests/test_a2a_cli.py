@@ -3,10 +3,16 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from a2a.types import Task, TaskState, TaskStatus
 from click.testing import CliRunner
 from starlette.testclient import TestClient
 
+from ksadk.a2a import A2APlatformTask, DiscoveredAgent, build_agent_card
 from ksadk.cli import _register_commands, cli
+
+SPACE_AGENT_ID = "a2a-agent-00000000000040008000000000000041"
+SPACE_VERSION_ID = "a2a-version-00000000000040008000000000000042"
+PLATFORM_TASK_ID = "a2a-task-00000000000040008000000000000043"
 
 
 def _write_project_config(tmp_path: Path) -> Path:
@@ -37,6 +43,62 @@ def test_root_help_lists_a2a_workflow_command():
 
     assert result.exit_code == 0, result.output
     assert "a2a" in result.output
+
+
+def test_a2a_discover_prints_callable_route_without_credentials(monkeypatch):
+    class FakeSpaceClient:
+        async def discover(self, **kwargs):
+            return [
+                DiscoveredAgent(
+                    agent_id=SPACE_AGENT_ID,
+                    version_id=SPACE_VERSION_ID,
+                    source="external",
+                    agent_card=build_agent_card(name="remote", base_url="https://example.com"),
+                    callable=False,
+                    blocked_reason="requires_public_egress",
+                    route_kind="external_public",
+                )
+            ]
+
+    monkeypatch.setattr("ksadk.cli.cmd_a2a._space_client", lambda: FakeSpaceClient())
+    _register_commands()
+
+    result = CliRunner().invoke(cli, ["a2a", "discover"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["agent_id"] == SPACE_AGENT_ID
+    assert payload["route_kind"] == "external_public"
+    assert payload["callable"] is False
+    assert "credential_handle" not in payload
+
+
+def test_a2a_call_prints_only_platform_task_id(monkeypatch):
+    remote_task = Task(
+        id="remote-task-1",
+        context_id="remote-context-1",
+        status=TaskStatus(state=TaskState.TASK_STATE_WORKING),
+    )
+
+    class FakeSpaceClient:
+        async def send_message(self, agent_id, message):
+            return A2APlatformTask(
+                id=PLATFORM_TASK_ID,
+                remote_task=remote_task,
+                remote_task_id=remote_task.id,
+                remote_context_id=remote_task.context_id,
+            )
+
+    monkeypatch.setattr("ksadk.cli.cmd_a2a._space_client", lambda: FakeSpaceClient())
+    _register_commands()
+
+    result = CliRunner().invoke(cli, ["a2a", "call", SPACE_AGENT_ID, "hello"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output) == {
+        "task_id": PLATFORM_TASK_ID,
+        "status": "TASK_STATE_WORKING",
+    }
 
 
 def test_a2a_card_command_outputs_agent_card_json(monkeypatch, tmp_path):
