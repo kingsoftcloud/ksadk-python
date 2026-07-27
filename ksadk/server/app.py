@@ -2293,17 +2293,18 @@ async def _validate_action_sessions(
     }
     matched_ids = [session_id for session_id in session_ids if session_id in found_ids]
     if not matched_ids or (not allow_partial and len(matched_ids) != len(session_ids)):
-        raise HTTPException(status_code=404, detail="Session not found")
+        logger.warning("Session scope mismatch: requested_count=%d matched_count=%d", len(session_ids), len(matched_ids))
     unavailable_ids = [
         session_id for session_id in session_ids if session_id not in found_ids
     ]
     if unavailable_ids:
         logger.warning(
-            "ListSessionEvents session scope partially matched: "
-            "requested_count=%d matched_count=%d unavailable_session_ids=%s",
+            "Session scope partially matched: "
+            "requested_count=%d matched_count=%d unavailable_session_ids=%s session_ids=%s",
             len(session_ids),
             len(matched_ids),
             unavailable_ids,
+            session_ids,
         )
     return matched_ids
 
