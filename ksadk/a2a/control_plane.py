@@ -12,7 +12,7 @@ import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, get_args
 
 import httpx
 from a2a.types import AgentCard
@@ -29,6 +29,14 @@ AUDIENCE_REGISTRY = "a2a-registry"
 AUDIENCE_TASK_SINK = "a2a-task-sink"
 AUDIENCE_CREDENTIAL_BROKER = "credential-broker"
 AUDIENCE_GATEWAY = "a2a-gateway"
+
+A2AOperation = Literal[
+    "send_message",
+    "get_task",
+    "subscribe_to_task",
+    "cancel_task",
+]
+A2A_OPERATIONS = frozenset(get_args(A2AOperation))
 
 
 class A2AControlPlaneError(RuntimeError):
@@ -167,9 +175,7 @@ class A2ATarget:
 
 
 @dataclass(frozen=True)
-class RemoteTaskBinding:
-    binding_id: str
-    ordinal: int
+class RemoteTaskReference:
     remote_task_id: str
     remote_context_id: str | None = None
 
@@ -182,7 +188,7 @@ class PreparedA2AOperation:
     call_permit: str
     call_permit_expires_at: str
     credential_handle: str | None = None
-    remote_binding: RemoteTaskBinding | None = None
+    remote_task: RemoteTaskReference | None = None
 
 
 @dataclass(frozen=True)
@@ -234,6 +240,7 @@ class A2AControlPlane(ABC):
     async def prepare_call(
         self,
         *,
+        space_id: str,
         target_agent_id: str,
         expected_version_id: str | None,
         message_id: str,
@@ -247,7 +254,7 @@ class A2AControlPlane(ABC):
         self,
         *,
         platform_task_id: str,
-        operation: str,
+        operation: A2AOperation,
         message_id: str | None = None,
         message_sha256: str | None = None,
         idempotency_token: str | None = None,
@@ -439,6 +446,7 @@ class KopA2AControlPlane(A2AControlPlane):
     async def prepare_call(
         self,
         *,
+        space_id: str,
         target_agent_id: str,
         expected_version_id: str | None,
         message_id: str,
@@ -446,6 +454,7 @@ class KopA2AControlPlane(A2AControlPlane):
         idempotency_token: str,
     ) -> PreparedA2AOperation:
         payload: dict[str, Any] = {
+            "A2ASpaceId": space_id,
             "TargetA2AAgentId": target_agent_id,
             "MessageId": message_id,
             "MessageSha256": message_sha256,
@@ -460,11 +469,17 @@ class KopA2AControlPlane(A2AControlPlane):
         self,
         *,
         platform_task_id: str,
-        operation: str,
+        operation: A2AOperation,
         message_id: str | None = None,
         message_sha256: str | None = None,
         idempotency_token: str | None = None,
     ) -> PreparedA2AOperation:
+        _validate_task_operation_request(
+            operation=operation,
+            message_id=message_id,
+            message_sha256=message_sha256,
+            idempotency_token=idempotency_token,
+        )
         payload: dict[str, Any] = {"A2ATaskId": platform_task_id, "Operation": operation}
         if message_id:
             payload["MessageId"] = message_id
@@ -560,6 +575,31 @@ def _credential_string_map(value: Any, *, field_name: str) -> dict[str, str]:
     return dict(value)
 
 
+def _validate_task_operation_request(
+    *,
+    operation: str,
+    message_id: str | None,
+    message_sha256: str | None,
+    idempotency_token: str | None,
+) -> None:
+    if operation not in A2A_OPERATIONS:
+        raise ValueError(f"unsupported A2A task operation: {operation!r}")
+    if operation == "send_message":
+        if not message_id or not message_sha256 or not idempotency_token:
+            raise ValueError(
+                "send_message requires message_id, message_sha256, and idempotency_token"
+            )
+        return
+    if message_id or message_sha256:
+        raise ValueError(f"{operation} does not accept message fields")
+    if operation == "cancel_task":
+        if not idempotency_token:
+            raise ValueError("cancel_task requires idempotency_token")
+        return
+    if idempotency_token:
+        raise ValueError(f"{operation} does not accept idempotency_token")
+
+
 def _optional_str(value: Any) -> str | None:
     return str(value) if value is not None else None
 
@@ -583,26 +623,6 @@ def _required_str(value: Any, *, field_name: str, prefix: str | None = None) -> 
                 error_code="A2A_CONTROL_PLANE_INVALID_RESPONSE",
                 field=field_name,
             ) from exc
-    return result
-
-
-def _required_positive_int(value: Any, *, field_name: str) -> int:
-    try:
-        result = int(value)
-    except (TypeError, ValueError) as exc:
-        raise A2AControlPlaneError(
-            code=502,
-            message=f"control-plane response field {field_name} must be a positive integer",
-            error_code="A2A_CONTROL_PLANE_INVALID_RESPONSE",
-            field=field_name,
-        ) from exc
-    if result < 1:
-        raise A2AControlPlaneError(
-            code=502,
-            message=f"control-plane response field {field_name} must be a positive integer",
-            error_code="A2A_CONTROL_PLANE_INVALID_RESPONSE",
-            field=field_name,
-        )
     return result
 
 
@@ -671,8 +691,17 @@ def _prepared_operation_from_wire(data: dict[str, Any]) -> PreparedA2AOperation:
     route: dict[str, Any] = raw_route if isinstance(raw_route, dict) else {}
     raw_interface = route.get("Interface")
     interface: dict[str, Any] = raw_interface if isinstance(raw_interface, dict) else {}
-    raw_binding = data.get("RemoteBinding")
-    binding: dict[str, Any] | None = raw_binding if isinstance(raw_binding, dict) else None
+    raw_remote_task = data.get("RemoteTask")
+    if raw_remote_task is not None and not isinstance(raw_remote_task, dict):
+        raise A2AControlPlaneError(
+            code=502,
+            message="control-plane response field RemoteTask must be an object or null",
+            error_code="A2A_CONTROL_PLANE_INVALID_RESPONSE",
+            field="RemoteTask",
+        )
+    remote_task: dict[str, Any] | None = (
+        raw_remote_task if isinstance(raw_remote_task, dict) else None
+    )
     route_kind = _required_str(route.get("Kind"), field_name="Route.Kind")
     if route_kind not in {"hosted_gateway", "external_public", "external_vpc"}:
         raise A2AControlPlaneError(
@@ -731,22 +760,14 @@ def _prepared_operation_from_wire(data: dict[str, Any]) -> PreparedA2AOperation:
             data.get("CallPermitExpiresAt"), field_name="CallPermitExpiresAt"
         ),
         credential_handle=_optional_str(data.get("CredentialHandle")),
-        remote_binding=(
-            RemoteTaskBinding(
-                binding_id=_required_str(
-                    binding.get("BindingId"),
-                    field_name="RemoteBinding.BindingId",
-                    prefix="a2a-binding-",
-                ),
-                ordinal=_required_positive_int(
-                    binding.get("Ordinal"), field_name="RemoteBinding.Ordinal"
-                ),
+        remote_task=(
+            RemoteTaskReference(
                 remote_task_id=_required_str(
-                    binding.get("RemoteTaskId"), field_name="RemoteBinding.RemoteTaskId"
+                    remote_task.get("RemoteTaskId"), field_name="RemoteTask.RemoteTaskId"
                 ),
-                remote_context_id=_optional_str(binding.get("RemoteContextId")),
+                remote_context_id=_optional_str(remote_task.get("RemoteContextId")),
             )
-            if binding is not None
+            if remote_task is not None
             else None
         ),
     )
@@ -755,6 +776,7 @@ def _prepared_operation_from_wire(data: dict[str, Any]) -> PreparedA2AOperation:
 __all__ = [
     "A2AControlPlane",
     "A2AControlPlaneError",
+    "A2AOperation",
     "A2ARoute",
     "A2ARouteInterface",
     "A2ATarget",
@@ -765,7 +787,7 @@ __all__ = [
     "FileWorkloadTokenProvider",
     "KopA2AControlPlane",
     "PreparedA2AOperation",
-    "RemoteTaskBinding",
+    "RemoteTaskReference",
     "SpaceAgentPage",
     "WorkloadTokenProvider",
 ]

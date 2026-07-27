@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import httpx
 import pytest
-from a2a.types import Task, TaskState, TaskStatus
+from a2a.types import Message, Part, Role, StreamResponse, Task, TaskState, TaskStatus
 from fastapi import FastAPI
 
 from ksadk.a2a import (
@@ -24,7 +24,7 @@ from ksadk.a2a import (
     CredentialInjection,
     DiscoveredAgent,
     PreparedA2AOperation,
-    RemoteTaskBinding,
+    RemoteTaskReference,
     SpaceAgentPage,
     add_a2a_protocol_routes,
     build_agent_card,
@@ -32,17 +32,17 @@ from ksadk.a2a import (
 from ksadk.a2a.control_plane import ENV_A2A_CONTROL_PLANE_URL
 from ksadk.a2a.space_client import (
     ENV_A2A_ENABLE_PUBLIC_EGRESS,
-    ENV_A2A_SPACE_ID,
+    ENV_A2A_SPACE_IDS,
     ERR_PUBLIC_EGRESS_DISABLED,
 )
 from ksadk.runtime.runner_adapter import RunnerRuntimeAdapter
 
 SPACE_ID = "a2a-space-00000000000040008000000000000011"
+SPACE_ID_2 = "a2a-space-00000000000040008000000000000021"
 HOSTED_AGENT_ID = "a2a-agent-00000000000040008000000000000012"
 EXTERNAL_AGENT_ID = "a2a-agent-00000000000040008000000000000013"
 VPC_AGENT_ID = "a2a-agent-00000000000040008000000000000014"
 TASK_ID = "a2a-task-00000000000040008000000000000015"
-BINDING_ID = "a2a-binding-00000000000040008000000000000016"
 
 
 class _EchoRunner:
@@ -99,6 +99,8 @@ class _MockDiscoveryBackend(A2AControlPlane):
         self.credential_injection = CredentialInjection()
         self.credential_injections: dict[str, CredentialInjection] = {}
         self.task_operation_calls: list[dict] = []
+        self.platform_task_ids: list[str] = []
+        self.append_error: Exception | None = None
 
     async def list_space_agents(self, space_id, *, prompt=None, skill_id=None, **kwargs):
         self.calls.append({"space_id": space_id, "prompt": prompt, "skill": skill_id})
@@ -112,7 +114,7 @@ class _MockDiscoveryBackend(A2AControlPlane):
         self.prepare_calls.append(kwargs)
         agent = next(a for a in self._agents if a.agent_id == kwargs["target_agent_id"])
         return PreparedA2AOperation(
-            platform_task_id=TASK_ID,
+            platform_task_id=(self.platform_task_ids.pop(0) if self.platform_task_ids else TASK_ID),
             target=A2ATarget(agent.agent_id, agent.version_id, agent.card_sha256),
             route=A2ARoute(
                 kind=agent.route_kind,
@@ -146,9 +148,7 @@ class _MockDiscoveryBackend(A2AControlPlane):
                     protocol_version="1.0",
                 ),
             ),
-            remote_binding=RemoteTaskBinding(
-                binding_id=BINDING_ID,
-                ordinal=1,
+            remote_task=RemoteTaskReference(
                 remote_task_id=binding["remote_task_id"],
                 remote_context_id=binding["remote_context_id"],
             ),
@@ -158,10 +158,30 @@ class _MockDiscoveryBackend(A2AControlPlane):
         )
 
     async def bind_remote_task(self, **kwargs):
+        existing = next(
+            (
+                item
+                for item in self.bind_calls
+                if item["platform_task_id"] == kwargs["platform_task_id"]
+            ),
+            None,
+        )
+        if existing is not None:
+            if (
+                existing["remote_task_id"],
+                existing["remote_context_id"],
+            ) != (
+                kwargs["remote_task_id"],
+                kwargs["remote_context_id"],
+            ):
+                raise RuntimeError("A2A_REMOTE_BINDING_CONFLICT")
+            return {"A2ATaskId": kwargs["platform_task_id"], "AlreadyBound": True}
         self.bind_calls.append(kwargs)
-        return {"BindingId": BINDING_ID, "Ordinal": 1, "AlreadyBound": False}
+        return {"A2ATaskId": kwargs["platform_task_id"], "AlreadyBound": False}
 
     async def append_task_events(self, **kwargs):
+        if self.append_error is not None:
+            raise self.append_error
         self.append_calls.append(kwargs)
         return {"AcceptedCount": len(kwargs["events"]), "DuplicateCount": 0}
 
@@ -197,10 +217,33 @@ def _client_for_app(app: FastAPI, agents, *, egress: bool) -> A2ASpaceClient:
     )
 
 
-def test_from_env_requires_space_id(monkeypatch):
-    monkeypatch.delenv(ENV_A2A_SPACE_ID, raising=False)
-    with pytest.raises(ValueError, match=ENV_A2A_SPACE_ID):
+def test_from_env_requires_space_selection(monkeypatch):
+    monkeypatch.delenv(ENV_A2A_SPACE_IDS, raising=False)
+    with pytest.raises(ValueError, match=ENV_A2A_SPACE_IDS):
         A2ASpaceClient.from_env()
+
+
+def test_from_env_requires_explicit_selection_for_multiple_spaces(monkeypatch):
+    monkeypatch.setenv(ENV_A2A_SPACE_IDS, f'["{SPACE_ID}", "{SPACE_ID_2}"]')
+
+    with pytest.raises(ValueError, match="pass space_id explicitly"):
+        A2ASpaceClient.from_env(backend=_MockDiscoveryBackend([]))
+
+    client = A2ASpaceClient.from_env(
+        space_id=SPACE_ID_2,
+        backend=_MockDiscoveryBackend([]),
+    )
+    assert client._space_id == SPACE_ID_2
+
+
+@pytest.mark.parametrize(
+    "raw_space_ids",
+    ["not-json", "[]", f'["{SPACE_ID}", "{SPACE_ID}"]'],
+)
+def test_from_env_rejects_invalid_space_id_lists(monkeypatch, raw_space_ids):
+    monkeypatch.setenv(ENV_A2A_SPACE_IDS, raw_space_ids)
+    with pytest.raises(ValueError, match=ENV_A2A_SPACE_IDS):
+        A2ASpaceClient.from_env(backend=_MockDiscoveryBackend([]))
 
 
 @pytest.mark.asyncio
@@ -218,7 +261,7 @@ async def test_constructor_rejects_raw_external_http_client():
 
 
 def test_from_env_builds_with_kop_backend(monkeypatch):
-    monkeypatch.setenv(ENV_A2A_SPACE_ID, SPACE_ID)
+    monkeypatch.setenv(ENV_A2A_SPACE_IDS, f'["{SPACE_ID}"]')
     monkeypatch.setenv(ENV_A2A_CONTROL_PLANE_URL, "http://kop")
     monkeypatch.setenv(ENV_A2A_ENABLE_PUBLIC_EGRESS, "true")
     client = A2ASpaceClient.from_env()
@@ -267,6 +310,7 @@ async def test_send_message_to_hosted_via_discovery(tmp_path):
     task = await client.send_message(HOSTED_AGENT_ID, "ping", return_immediately=True)
     assert task is not None and task.id == TASK_ID
     assert client._backend.prepare_calls[0]["target_agent_id"] == HOSTED_AGENT_ID
+    assert client._backend.prepare_calls[0]["space_id"] == SPACE_ID
     assert client._backend.bind_calls[0]["platform_task_id"] == TASK_ID
     assert client._backend.append_calls
     assert seen_headers[-1]["authorization"] == "Bearer gateway-token"
@@ -274,7 +318,7 @@ async def test_send_message_to_hosted_via_discovery(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_get_task_recovers_remote_binding_from_platform_task_id(tmp_path):
+async def test_get_task_recovers_remote_task_reference_from_platform_task_id(tmp_path):
     app = _echo_app(f"sqlite+aiosqlite:///{tmp_path}/recover.db")
     client = _client_for_app(app, [_agent(HOSTED_AGENT_ID, "hosted")], egress=False)
     await client.discover()
@@ -286,36 +330,50 @@ async def test_get_task_recovers_remote_binding_from_platform_task_id(tmp_path):
     assert recovered.remote_task is not None
     assert client._backend.task_operation_calls[-1] == {
         "platform_task_id": TASK_ID,
-        "operation": "task/get",
+        "operation": "get_task",
     }
 
 
 class _FakeTaskClient:
     def __init__(self) -> None:
         self.sent = []
+        self.send_responses = []
         self.subscribed = []
         self.canceled = []
-
-    async def send_message(self, request, *, context):  # noqa: ANN001, ANN201
-        self.sent.append((request, context))
-        if False:
-            yield None
-
-    async def subscribe(self, request, *, context):  # noqa: ANN001, ANN201
-        self.subscribed.append((request, context))
-        yield Task(
+        self.subscribe_responses = [
+            Task(
+                id="remote-task-1",
+                context_id="remote-context-1",
+                status=TaskStatus(state=TaskState.TASK_STATE_COMPLETED),
+            )
+        ]
+        self.cancel_response = Task(
             id="remote-task-1",
-            context_id="remote-context-1",
-            status=TaskStatus(state=TaskState.TASK_STATE_COMPLETED),
-        )
-
-    async def cancel_task(self, request, *, context):  # noqa: ANN001, ANN201
-        self.canceled.append((request, context))
-        return Task(
-            id=request.id,
             context_id="remote-context-1",
             status=TaskStatus(state=TaskState.TASK_STATE_CANCELED),
         )
+        self.get_response = Task(
+            id="remote-task-1",
+            context_id="remote-context-1",
+            status=TaskStatus(state=TaskState.TASK_STATE_WORKING),
+        )
+
+    async def send_message(self, request, *, context):  # noqa: ANN001, ANN201
+        self.sent.append((request, context))
+        for response in self.send_responses:
+            yield response
+
+    async def subscribe(self, request, *, context):  # noqa: ANN001, ANN201
+        self.subscribed.append((request, context))
+        for response in self.subscribe_responses:
+            yield response
+
+    async def cancel_task(self, request, *, context):  # noqa: ANN001, ANN201
+        self.canceled.append((request, context))
+        return self.cancel_response
+
+    async def get_task(self, request, *, context):  # noqa: ANN001, ANN201
+        return self.get_response
 
     async def close(self) -> None:
         return None
@@ -326,6 +384,7 @@ def _task_operation_client(monkeypatch):  # noqa: ANN001, ANN201
     backend = _MockDiscoveryBackend([agent])
     backend.bind_calls.append(
         {
+            "platform_task_id": TASK_ID,
             "remote_task_id": "remote-task-1",
             "remote_context_id": "remote-context-1",
         }
@@ -340,17 +399,126 @@ def _task_operation_client(monkeypatch):  # noqa: ANN001, ANN201
 
 
 @pytest.mark.asyncio
-async def test_continue_task_uses_operation_permit_and_remote_binding(monkeypatch):
+async def test_continue_task_uses_operation_permit_and_remote_task_reference(monkeypatch):
     client, backend, wire_client = _task_operation_client(monkeypatch)
 
     continued = await client.continue_task(TASK_ID, "more", return_immediately=True)
 
     assert continued.id == TASK_ID
-    assert backend.task_operation_calls[-1]["operation"] == "message/continue"
+    assert backend.task_operation_calls[-1]["operation"] == "send_message"
     request, context = wire_client.sent[-1]
     assert request.message.task_id == "remote-task-1"
     assert request.message.context_id == "remote-context-1"
     assert context.service_parameters["X-AgentEngine-A2A-Permit"] == "permit-task-operation"
+
+
+@pytest.mark.asyncio
+async def test_continue_task_rejects_changed_remote_task(monkeypatch):
+    client, backend, wire_client = _task_operation_client(monkeypatch)
+    wire_client.send_responses.append(
+        StreamResponse(
+            task=Task(
+                id="remote-task-2",
+                context_id="remote-context-1",
+                status=TaskStatus(state=TaskState.TASK_STATE_WORKING),
+            )
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="A2A_REMOTE_BINDING_CONFLICT"):
+        await client.continue_task(TASK_ID, "more", return_immediately=True)
+
+    assert backend.bind_calls[-1]["remote_task_id"] == "remote-task-1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["get", "cancel", "subscribe"])
+async def test_task_operations_reject_changed_remote_reference(monkeypatch, operation):
+    client, backend, wire_client = _task_operation_client(monkeypatch)
+    changed = Task(
+        id="remote-task-2",
+        context_id="remote-context-1",
+        status=TaskStatus(state=TaskState.TASK_STATE_WORKING),
+    )
+    wire_client.get_response = changed
+    wire_client.cancel_response = changed
+    wire_client.subscribe_responses = [changed]
+
+    with pytest.raises(RuntimeError, match="A2A_REMOTE_BINDING_CONFLICT"):
+        if operation == "get":
+            await client.get_task(TASK_ID)
+        elif operation == "cancel":
+            await client.cancel(TASK_ID)
+        else:
+            _ = [item async for item in client.subscribe(TASK_ID)]
+
+    assert backend.append_calls == []
+
+
+@pytest.mark.parametrize(
+    ("message", "error"),
+    [
+        (Message(role=Role.ROLE_AGENT, parts=[Part(text="x")]), "role must be user"),
+        (Message(role=Role.ROLE_USER), "parts must contain 1-64"),
+        (
+            Message(role=Role.ROLE_USER, parts=[Part(text="x")] * 65),
+            "parts must contain 1-64",
+        ),
+        (
+            Message(
+                role=Role.ROLE_USER,
+                parts=[Part(text="x")],
+                message_id="m" * 129,
+            ),
+            "message_id must contain 1-128",
+        ),
+    ],
+)
+def test_message_contract_is_validated_before_prepare(message, error):
+    client = A2ASpaceClient(SPACE_ID, _MockDiscoveryBackend([]))
+
+    with pytest.raises(ValueError, match=error):
+        client._normalize_initial_message(message)
+
+
+def test_message_contract_rejects_payload_over_one_mib() -> None:
+    client = A2ASpaceClient(SPACE_ID, _MockDiscoveryBackend([]))
+
+    with pytest.raises(ValueError, match="exceeds 1 MiB"):
+        client._normalize_initial_message("x" * (1024 * 1024))
+
+
+@pytest.mark.asyncio
+async def test_direct_message_completes_without_remote_task_binding(monkeypatch):
+    agent = _agent(HOSTED_AGENT_ID, "hosted")
+    backend = _MockDiscoveryBackend([agent])
+    wire_client = _FakeTaskClient()
+    wire_client.send_responses.append(
+        StreamResponse(
+            message=Message(
+                role=Role.ROLE_AGENT,
+                parts=[Part(text="done")],
+                message_id="message-direct-1",
+                context_id="remote-context-1",
+            )
+        )
+    )
+
+    async def create_fake_client(**kwargs):  # noqa: ANN003, ANN202
+        return wire_client
+
+    monkeypatch.setattr("ksadk.a2a.space_client.create_client", create_fake_client)
+    client = A2ASpaceClient(SPACE_ID, backend)
+    await client.discover()
+
+    result = await client.send_message(HOSTED_AGENT_ID, "ping")
+
+    assert result.remote_task is None
+    assert backend.bind_calls == []
+    assert [event["EventKind"] for event in backend.append_calls[0]["events"]] == [
+        "message",
+        "status",
+    ]
 
 
 @pytest.mark.asyncio
@@ -362,7 +530,7 @@ async def test_cancel_uses_operation_permit_and_remote_task_id(monkeypatch):
     assert canceled.id == TASK_ID
     assert backend.task_operation_calls[-1] == {
         "platform_task_id": TASK_ID,
-        "operation": "task/cancel",
+        "operation": "cancel_task",
         "idempotency_token": "idem-cancel-1",
     }
     assert wire_client.canceled[-1][0].id == "remote-task-1"
@@ -382,8 +550,8 @@ async def test_subscribe_variants_prepare_operation_and_use_remote_task_id(monke
 
     assert len(wire_items) == 1
     assert runtime_events
-    assert backend.task_operation_calls[-1]["operation"] == "task/subscribe"
-    assert event_backend.task_operation_calls[-1]["operation"] == "task/subscribe"
+    assert backend.task_operation_calls[-1]["operation"] == "subscribe_to_task"
+    assert event_backend.task_operation_calls[-1]["operation"] == "subscribe_to_task"
     assert wire_client.subscribed[-1][0].id == "remote-task-1"
     assert event_wire_client.subscribed[-1][0].id == "remote-task-1"
     assert (

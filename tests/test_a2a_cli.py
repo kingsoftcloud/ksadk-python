@@ -13,6 +13,7 @@ from ksadk.cli import _register_commands, cli
 SPACE_AGENT_ID = "a2a-agent-00000000000040008000000000000041"
 SPACE_VERSION_ID = "a2a-version-00000000000040008000000000000042"
 PLATFORM_TASK_ID = "a2a-task-00000000000040008000000000000043"
+SPACE_ID = "a2a-space-00000000000040008000000000000044"
 
 
 def _write_project_config(tmp_path: Path) -> Path:
@@ -60,10 +61,14 @@ def test_a2a_discover_prints_callable_route_without_credentials(monkeypatch):
                 )
             ]
 
-    monkeypatch.setattr("ksadk.cli.cmd_a2a._space_client", lambda: FakeSpaceClient())
+    selected: list[str | None] = []
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_a2a._space_client",
+        lambda space_id=None: selected.append(space_id) or FakeSpaceClient(),
+    )
     _register_commands()
 
-    result = CliRunner().invoke(cli, ["a2a", "discover"])
+    result = CliRunner().invoke(cli, ["a2a", "discover", "--space-id", SPACE_ID])
 
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
@@ -71,6 +76,7 @@ def test_a2a_discover_prints_callable_route_without_credentials(monkeypatch):
     assert payload["route_kind"] == "external_public"
     assert payload["callable"] is False
     assert "credential_handle" not in payload
+    assert selected == [SPACE_ID]
 
 
 def test_a2a_call_prints_only_platform_task_id(monkeypatch):
@@ -85,11 +91,12 @@ def test_a2a_call_prints_only_platform_task_id(monkeypatch):
             return A2APlatformTask(
                 id=PLATFORM_TASK_ID,
                 remote_task=remote_task,
-                remote_task_id=remote_task.id,
-                remote_context_id=remote_task.context_id,
             )
 
-    monkeypatch.setattr("ksadk.cli.cmd_a2a._space_client", lambda: FakeSpaceClient())
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_a2a._space_client",
+        lambda space_id=None: FakeSpaceClient(),
+    )
     _register_commands()
 
     result = CliRunner().invoke(cli, ["a2a", "call", SPACE_AGENT_ID, "hello"])

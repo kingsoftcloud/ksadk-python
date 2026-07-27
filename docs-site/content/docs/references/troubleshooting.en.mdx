@@ -22,7 +22,7 @@ Calling a different `pip` can install the new dependency into another
 environment. An editable source installation also needs the install command
 again after its dependency metadata changes.
 
-KsADK 0.8 requires `a2a-sdk>=1.1.0` for its A2A implementation. Projects that
+KsADK 0.8 pins `a2a-sdk==1.1.0` for its A2A implementation. Projects that
 still pin A2A 0.3, including some VEADK releases, cannot share that virtual
 environment; create separate environments instead. With an incompatible
 optional SDK, `ksadk --help` remains available and `ksadk a2a` reports the

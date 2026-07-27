@@ -37,7 +37,6 @@ EXTERNAL_AGENT_ID = "a2a-agent-00000000000040008000000000000033"
 HOSTED_VERSION_ID = "a2a-version-00000000000040008000000000000034"
 EXTERNAL_VERSION_ID = "a2a-version-00000000000040008000000000000035"
 TASK_ID = "a2a-task-00000000000040008000000000000036"
-BINDING_ID = "a2a-binding-00000000000040008000000000000037"
 
 
 class EchoRunner:
@@ -82,7 +81,7 @@ class StaticBackend(A2AControlPlane):
         raise NotImplementedError
 
     async def bind_remote_task(self, **_: Any) -> dict[str, Any]:
-        return {"BindingId": BINDING_ID, "Ordinal": 1, "AlreadyBound": False}
+        return {"A2ATaskId": TASK_ID, "AlreadyBound": False}
 
     async def append_task_events(self, **kwargs: Any) -> dict[str, Any]:
         return {"AcceptedCount": len(kwargs["events"]), "DuplicateCount": 0}

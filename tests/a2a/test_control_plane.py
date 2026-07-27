@@ -19,7 +19,6 @@ SPACE_ID = "a2a-space-00000000000040008000000000000001"
 AGENT_ID = "a2a-agent-00000000000040008000000000000002"
 VERSION_ID = "a2a-version-00000000000040008000000000000003"
 TASK_ID = "a2a-task-00000000000040008000000000000004"
-BINDING_ID = "a2a-binding-00000000000040008000000000000005"
 NEXT_VERSION_ID = "a2a-version-00000000000040008000000000000006"
 
 
@@ -178,9 +177,14 @@ async def test_prepare_call_parses_frozen_route_and_raises_domain_errors(tmp_pat
             ),
         ]
     )
+    seen_payloads: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_payloads.append(__import__("json").loads(request.content))
+        return next(responses)
 
     http = httpx.AsyncClient(
-        transport=httpx.MockTransport(lambda request: next(responses)),
+        transport=httpx.MockTransport(handler),
         base_url="https://control",
     )
     client = KopA2AControlPlane(
@@ -190,6 +194,7 @@ async def test_prepare_call_parses_frozen_route_and_raises_domain_errors(tmp_pat
     )
     try:
         prepared = await client.prepare_call(
+            space_id=SPACE_ID,
             target_agent_id=AGENT_ID,
             expected_version_id=VERSION_ID,
             message_id="message-1",
@@ -201,6 +206,7 @@ async def test_prepare_call_parses_frozen_route_and_raises_domain_errors(tmp_pat
 
         with pytest.raises(A2AControlPlaneError) as exc_info:
             await client.prepare_call(
+                space_id=SPACE_ID,
                 target_agent_id=AGENT_ID,
                 expected_version_id=VERSION_ID,
                 message_id="message-2",
@@ -213,6 +219,7 @@ async def test_prepare_call_parses_frozen_route_and_raises_domain_errors(tmp_pat
     assert exc_info.value.error_code == "A2A_TARGET_VERSION_CHANGED"
     assert exc_info.value.retryable is True
     assert exc_info.value.details == {"CurrentVersionId": NEXT_VERSION_ID}
+    assert seen_payloads[0]["A2ASpaceId"] == SPACE_ID
 
 
 @pytest.mark.asyncio
@@ -296,9 +303,7 @@ async def test_task_operation_and_credential_broker_contract(tmp_path: Path) -> 
                                 "ProtocolVersion": "1.0",
                             },
                         },
-                        "RemoteBinding": {
-                            "BindingId": BINDING_ID,
-                            "Ordinal": 1,
+                        "RemoteTask": {
                             "RemoteTaskId": "vendor-task-1",
                             "RemoteContextId": "vendor-context-1",
                         },
@@ -332,7 +337,7 @@ async def test_task_operation_and_credential_broker_contract(tmp_path: Path) -> 
     try:
         prepared = await client.prepare_task_operation(
             platform_task_id=TASK_ID,
-            operation="message/continue",
+            operation="send_message",
             message_id="message-2",
             message_sha256="c" * 64,
             idempotency_token="idem-continue-1",
@@ -345,8 +350,8 @@ async def test_task_operation_and_credential_broker_contract(tmp_path: Path) -> 
     finally:
         await http.aclose()
 
-    assert prepared.remote_binding is not None
-    assert prepared.remote_binding.remote_task_id == "vendor-task-1"
+    assert prepared.remote_task is not None
+    assert prepared.remote_task.remote_task_id == "vendor-task-1"
     assert injection.headers == {"Authorization": "Bearer vendor-token"}
     assert injection.query == {"api_key": "query-token"}
     assert injection.cookies == {"session": "cookie-token"}
@@ -356,7 +361,7 @@ async def test_task_operation_and_credential_broker_contract(tmp_path: Path) -> 
             "authorization": f"Bearer {registry_token}",
             "json": {
                 "A2ATaskId": TASK_ID,
-                "Operation": "message/continue",
+                "Operation": "send_message",
                 "MessageId": "message-2",
                 "MessageSha256": "c" * 64,
                 "IdempotencyToken": "idem-continue-1",
@@ -372,6 +377,42 @@ async def test_task_operation_and_credential_broker_contract(tmp_path: Path) -> 
             },
         },
     ]
+
+
+@pytest.mark.asyncio
+async def test_task_operation_rejects_non_contract_operation() -> None:
+    client = KopA2AControlPlane("https://control")
+
+    with pytest.raises(ValueError, match="unsupported A2A task operation"):
+        await client.prepare_task_operation(
+            platform_task_id=TASK_ID,
+            operation="message/continue",  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("operation", "kwargs", "message"),
+    [
+        ("send_message", {}, "requires message_id"),
+        ("cancel_task", {}, "requires idempotency_token"),
+        ("get_task", {"idempotency_token": "idem-read"}, "does not accept idempotency_token"),
+        ("subscribe_to_task", {"message_id": "message-1"}, "does not accept message fields"),
+    ],
+)
+async def test_task_operation_validates_operation_specific_fields(
+    operation: str,
+    kwargs: dict[str, str],
+    message: str,
+) -> None:
+    client = KopA2AControlPlane("https://control")
+
+    with pytest.raises(ValueError, match=message):
+        await client.prepare_task_operation(
+            platform_task_id=TASK_ID,
+            operation=operation,  # type: ignore[arg-type]
+            **kwargs,
+        )
 
 
 def test_file_token_provider_fails_closed_for_missing_or_oversized_token(tmp_path: Path) -> None:

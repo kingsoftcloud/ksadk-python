@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -43,14 +44,22 @@ from ksadk.a2a.control_plane import (
 )
 from ksadk.a2a.event_adapter import A2AEventAdapter
 from ksadk.a2a.ids import require_a2a_resource_id
+from ksadk.a2a.task_event_outbox import (
+    A2ATaskEventOutbox,
+    InMemoryA2ATaskEventOutbox,
+    SQLiteA2ATaskEventOutbox,
+)
 from ksadk.events.runtime_event import RuntimeEvent
 
 logger = logging.getLogger(__name__)
 
-ENV_A2A_SPACE_ID = "KSADK_A2A_SPACE_ID"
+ENV_A2A_SPACE_IDS = "KSADK_A2A_SPACE_IDS"
 ENV_A2A_ENABLE_PUBLIC_EGRESS = "KSADK_A2A_ENABLE_PUBLIC_EGRESS"
 
 ERR_PUBLIC_EGRESS_DISABLED = "A2A_PUBLIC_EGRESS_DISABLED"
+MAX_A2A_MESSAGE_BYTES = 1024 * 1024
+MAX_A2A_MESSAGE_PARTS = 64
+MAX_A2A_MESSAGE_ID_LENGTH = 128
 
 
 @dataclass(frozen=True)
@@ -59,8 +68,6 @@ class A2APlatformTask:
 
     id: str
     remote_task: Any | None = None
-    remote_task_id: str | None = None
-    remote_context_id: str | None = None
 
 
 class A2AExternalTransport(ABC):
@@ -91,6 +98,17 @@ def _canonical_sha256(value: Any) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _present_message_field(value: Any, field_name: str) -> Any | None:
+    has_field = getattr(value, "HasField", None)
+    if callable(has_field):
+        try:
+            if not has_field(field_name):
+                return None
+        except ValueError:
+            pass
+    return getattr(value, field_name, None)
+
+
 class A2ASpaceClient:
     """Discovers Space members and performs permit-authorized A2A calls."""
 
@@ -103,6 +121,7 @@ class A2ASpaceClient:
         httpx_client: httpx.AsyncClient | None = None,
         external_transport: A2AExternalTransport | None = None,
         event_sink: Any | None = None,
+        event_outbox: A2ATaskEventOutbox | None = None,
     ) -> None:
         require_a2a_resource_id(space_id, "a2a-space-", field_name="space_id")
         if external_transport is not None and not isinstance(
@@ -115,6 +134,8 @@ class A2ASpaceClient:
         self._httpx_client = httpx_client
         self._external_transport = external_transport
         self._event_sink = event_sink
+        self._event_outbox = event_outbox or InMemoryA2ATaskEventOutbox()
+        self._outbox_flush_lock = asyncio.Lock()
         self._event_adapter = A2AEventAdapter()
         self._agents_by_id: dict[str, DiscoveredAgent] = {}
         self._agents_by_task: dict[str, DiscoveredAgent] = {}
@@ -125,15 +146,54 @@ class A2ASpaceClient:
     def from_env(
         cls,
         *,
+        space_id: str | None = None,
         backend: A2AControlPlane | None = None,
         httpx_client: httpx.AsyncClient | None = None,
         external_transport: A2AExternalTransport | None = None,
         egress_enabled: bool | None = None,
         event_sink: Any | None = None,
+        event_outbox: A2ATaskEventOutbox | None = None,
     ) -> "A2ASpaceClient":
-        space_id = str(os.getenv(ENV_A2A_SPACE_ID) or "").strip()
-        if not space_id:
-            raise ValueError(f"missing {ENV_A2A_SPACE_ID}; bind the Runtime to an A2A Space first")
+        selected_space_id = str(space_id or "").strip()
+        if selected_space_id:
+            require_a2a_resource_id(
+                selected_space_id,
+                "a2a-space-",
+                field_name="space_id",
+            )
+        else:
+            raw_space_ids = str(os.getenv(ENV_A2A_SPACE_IDS) or "").strip()
+            if not raw_space_ids:
+                raise ValueError(
+                    f"missing {ENV_A2A_SPACE_IDS}; pass space_id or add the Runtime Agent "
+                    "to an A2A Space first"
+                )
+            try:
+                configured_space_ids = json.loads(raw_space_ids)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"{ENV_A2A_SPACE_IDS} must be a JSON string array") from exc
+            if not isinstance(configured_space_ids, list) or not configured_space_ids:
+                raise ValueError(f"{ENV_A2A_SPACE_IDS} must be a non-empty JSON string array")
+            if len(configured_space_ids) > 100:
+                raise ValueError(f"{ENV_A2A_SPACE_IDS} cannot contain more than 100 Space IDs")
+            normalized_space_ids: list[str] = []
+            for index, configured_space_id in enumerate(configured_space_ids):
+                if not isinstance(configured_space_id, str):
+                    raise ValueError(f"{ENV_A2A_SPACE_IDS}[{index}] must be an A2A Space ID string")
+                normalized = configured_space_id.strip()
+                require_a2a_resource_id(
+                    normalized,
+                    "a2a-space-",
+                    field_name=f"{ENV_A2A_SPACE_IDS}[{index}]",
+                )
+                normalized_space_ids.append(normalized)
+            if len(set(normalized_space_ids)) != len(normalized_space_ids):
+                raise ValueError(f"{ENV_A2A_SPACE_IDS} must not contain duplicate Space IDs")
+            if len(normalized_space_ids) != 1:
+                raise ValueError(
+                    f"{ENV_A2A_SPACE_IDS} contains multiple Space IDs; pass space_id explicitly"
+                )
+            selected_space_id = normalized_space_ids[0]
         if backend is None:
             control_plane_url = str(os.getenv(ENV_A2A_CONTROL_PLANE_URL) or "").strip()
             if not control_plane_url:
@@ -145,13 +205,16 @@ class A2ASpaceClient:
         if egress_enabled is None:
             raw_egress = os.getenv(ENV_A2A_ENABLE_PUBLIC_EGRESS) or ""
             egress_enabled = raw_egress.strip().lower() in {"1", "true", "yes", "on"}
+        if event_outbox is None:
+            event_outbox = SQLiteA2ATaskEventOutbox()
         return cls(
-            space_id,
+            selected_space_id,
             backend,
             egress_enabled=egress_enabled,
             httpx_client=httpx_client,
             external_transport=external_transport,
             event_sink=event_sink,
+            event_outbox=event_outbox,
         )
 
     async def discover(
@@ -209,6 +272,7 @@ class A2ASpaceClient:
         agent = await self._resolve_agent(agent_id)
         normalized = self._normalize_initial_message(message)
         prepared = await self._backend.prepare_call(
+            space_id=self._space_id,
             target_agent_id=agent.agent_id,
             expected_version_id=agent.version_id,
             message_id=normalized.message_id,
@@ -238,16 +302,16 @@ class A2ASpaceClient:
         normalized = self._normalize_initial_message(message)
         prepared = await self._backend.prepare_task_operation(
             platform_task_id=task_id,
-            operation="message/continue",
+            operation="send_message",
             message_id=normalized.message_id,
             message_sha256=_canonical_sha256(normalized),
             idempotency_token=idempotency_token or f"idem-{uuid.uuid4().hex}",
         )
         self._validate_prepared_ids(prepared)
-        binding = self._require_remote_binding(prepared)
-        normalized.task_id = binding.remote_task_id
-        if binding.remote_context_id:
-            normalized.context_id = binding.remote_context_id
+        remote_task = self._require_remote_task(prepared)
+        normalized.task_id = remote_task.remote_task_id
+        if remote_task.remote_context_id:
+            normalized.context_id = remote_task.remote_context_id
         agent = self._agent_from_prepared(prepared)
         return await self._send_prepared_message(
             prepared,
@@ -266,10 +330,9 @@ class A2ASpaceClient:
     ) -> A2APlatformTask:
         client, owned_http, context = await self._client_for_operation(agent, prepared)
         first_task = None
-        remote_task_id = prepared.remote_binding.remote_task_id if prepared.remote_binding else None
-        remote_context_id = (
-            prepared.remote_binding.remote_context_id if prepared.remote_binding else None
-        )
+        remote_task_id = prepared.remote_task.remote_task_id if prepared.remote_task else None
+        remote_context_id = prepared.remote_task.remote_context_id if prepared.remote_task else None
+        operation_instance_id = self._operation_instance_id(prepared)
         try:
             request = SendMessageRequest(
                 message=message,
@@ -277,17 +340,32 @@ class A2ASpaceClient:
             )
             wire_position = 0
             async for response in client.send_message(request, context=context):
-                response_task = getattr(response, "task", None)
+                response_task = _present_message_field(response, "task")
                 if response_task is not None and str(getattr(response_task, "id", None) or ""):
                     first_task = first_task or response_task
-                    remote_task_id = str(response_task.id)
-                    remote_context_id = str(response_task.context_id or "") or None
-                    await self._bind_task(prepared.platform_task_id, response_task)
+                    observed_task_id = str(response_task.id)
+                    observed_context_id = str(response_task.context_id or "") or None
+                    if remote_task_id is None:
+                        await self._bind_task(prepared.platform_task_id, response_task)
+                    elif (remote_task_id, remote_context_id) != (
+                        observed_task_id,
+                        observed_context_id,
+                    ):
+                        raise RuntimeError("A2A_REMOTE_BINDING_CONFLICT")
+                    remote_task_id = observed_task_id
+                    remote_context_id = observed_context_id
+                if remote_task_id is not None:
+                    self._validate_remote_task_observation(
+                        remote_task_id,
+                        remote_context_id,
+                        response,
+                    )
                 await self._project_stream_item(
                     prepared.platform_task_id,
                     response,
                     agent,
                     wire_position=wire_position,
+                    operation_instance_id=operation_instance_id,
                 )
                 wire_position += 1
                 if return_immediately and first_task is not None:
@@ -297,15 +375,13 @@ class A2ASpaceClient:
         return A2APlatformTask(
             id=prepared.platform_task_id,
             remote_task=first_task,
-            remote_task_id=remote_task_id,
-            remote_context_id=remote_context_id,
         )
 
     async def subscribe(self, task_id: str):
         require_a2a_resource_id(task_id, "a2a-task-", field_name="task_id")
         prepared = await self._backend.prepare_task_operation(
             platform_task_id=task_id,
-            operation="task/subscribe",
+            operation="subscribe_to_task",
         )
         self._validate_prepared_ids(prepared)
         agent = self._agent_from_prepared(prepared)
@@ -317,19 +393,26 @@ class A2ASpaceClient:
         prepared: PreparedA2AOperation,
         agent: DiscoveredAgent,
     ):
-        binding = self._require_remote_binding(prepared)
+        remote_task = self._require_remote_task(prepared)
+        operation_instance_id = self._operation_instance_id(prepared)
         client, owned_http, context = await self._client_for_operation(agent, prepared)
         try:
             wire_position = 0
             async for event in client.subscribe(
-                SubscribeToTaskRequest(id=binding.remote_task_id),
+                SubscribeToTaskRequest(id=remote_task.remote_task_id),
                 context=context,
             ):
+                self._validate_remote_task_observation(
+                    remote_task.remote_task_id,
+                    remote_task.remote_context_id,
+                    event,
+                )
                 persisted = await self._project_stream_item(
                     prepared.platform_task_id,
                     event,
                     agent,
                     wire_position=wire_position,
+                    operation_instance_id=operation_instance_id,
                 )
                 wire_position += 1
                 yield event, persisted
@@ -345,23 +428,32 @@ class A2ASpaceClient:
         require_a2a_resource_id(task_id, "a2a-task-", field_name="task_id")
         prepared = await self._backend.prepare_task_operation(
             platform_task_id=task_id,
-            operation="task/cancel",
+            operation="cancel_task",
             idempotency_token=idempotency_token or f"idem-{uuid.uuid4().hex}",
         )
         self._validate_prepared_ids(prepared)
-        binding = self._require_remote_binding(prepared)
+        remote_task_ref = self._require_remote_task(prepared)
         agent = self._agent_from_prepared(prepared)
         client, owned_http, context = await self._client_for_operation(agent, prepared)
         try:
             remote_task = await client.cancel_task(
-                CancelTaskRequest(id=binding.remote_task_id), context=context
+                CancelTaskRequest(id=remote_task_ref.remote_task_id), context=context
             )
-            await self._project_stream_item(task_id, remote_task, agent, wire_position=0)
+            self._validate_remote_task_observation(
+                remote_task_ref.remote_task_id,
+                remote_task_ref.remote_context_id,
+                remote_task,
+            )
+            await self._project_stream_item(
+                task_id,
+                remote_task,
+                agent,
+                wire_position=0,
+                operation_instance_id=self._operation_instance_id(prepared),
+            )
             return A2APlatformTask(
                 id=task_id,
                 remote_task=remote_task,
-                remote_task_id=binding.remote_task_id,
-                remote_context_id=binding.remote_context_id,
             )
         finally:
             await self._close_operation_client(client, owned_http)
@@ -370,37 +462,60 @@ class A2ASpaceClient:
         require_a2a_resource_id(task_id, "a2a-task-", field_name="task_id")
         prepared = await self._backend.prepare_task_operation(
             platform_task_id=task_id,
-            operation="task/get",
+            operation="get_task",
         )
         self._validate_prepared_ids(prepared)
-        binding = self._require_remote_binding(prepared)
+        remote_task_ref = self._require_remote_task(prepared)
         agent = self._agent_from_prepared(prepared)
         client, owned_http, context = await self._client_for_operation(agent, prepared)
         try:
             remote_task = await client.get_task(
-                GetTaskRequest(id=binding.remote_task_id), context=context
+                GetTaskRequest(id=remote_task_ref.remote_task_id), context=context
             )
-            await self._project_stream_item(task_id, remote_task, agent, wire_position=0)
+            self._validate_remote_task_observation(
+                remote_task_ref.remote_task_id,
+                remote_task_ref.remote_context_id,
+                remote_task,
+            )
+            await self._project_stream_item(
+                task_id,
+                remote_task,
+                agent,
+                wire_position=0,
+                operation_instance_id=self._operation_instance_id(prepared),
+            )
             return A2APlatformTask(
                 id=task_id,
                 remote_task=remote_task,
-                remote_task_id=binding.remote_task_id,
-                remote_context_id=binding.remote_context_id,
             )
         finally:
             await self._close_operation_client(client, owned_http)
 
     def _normalize_initial_message(self, message: str | Message) -> Message:
         if isinstance(message, str):
-            return Message(
+            message = Message(
                 role=Role.ROLE_USER,
                 parts=[Part(text=message)],
                 message_id=f"message-{uuid.uuid4().hex}",
             )
         if getattr(message, "task_id", "") or getattr(message, "context_id", ""):
             raise ValueError("caller must not provide remote task_id/context_id")
+        if message.role != Role.ROLE_USER:
+            raise ValueError("A2A Message role must be user")
+        if not 1 <= len(message.parts) <= MAX_A2A_MESSAGE_PARTS:
+            raise ValueError("A2A Message parts must contain 1-64 items")
         if not getattr(message, "message_id", ""):
             message.message_id = f"message-{uuid.uuid4().hex}"
+        if len(message.message_id) > MAX_A2A_MESSAGE_ID_LENGTH:
+            raise ValueError("A2A Message message_id must contain 1-128 characters")
+        encoded = json.dumps(
+            _canonical_proto(message),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        if len(encoded) > MAX_A2A_MESSAGE_BYTES:
+            raise ValueError("A2A Message canonical JSON exceeds 1 MiB")
         return message
 
     @staticmethod
@@ -435,16 +550,39 @@ class A2ASpaceClient:
         )
 
     @staticmethod
-    def _require_remote_binding(prepared: PreparedA2AOperation):
-        binding = prepared.remote_binding
-        if binding is None or not binding.remote_task_id:
+    def _require_remote_task(prepared: PreparedA2AOperation):
+        remote_task = prepared.remote_task
+        if remote_task is None or not remote_task.remote_task_id:
             raise RuntimeError("A2A_REMOTE_TASK_NOT_BOUND")
-        require_a2a_resource_id(
-            binding.binding_id,
-            "a2a-binding-",
-            field_name="PreparedA2AOperation.remote_binding.binding_id",
+        return remote_task
+
+    @staticmethod
+    def _operation_instance_id(prepared: PreparedA2AOperation) -> str:
+        return hashlib.sha256(prepared.call_permit.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _validate_remote_task_observation(
+        expected_task_id: str,
+        expected_context_id: str | None,
+        item: Any,
+    ) -> None:
+        task = _present_message_field(item, "task")
+        if task is None and hasattr(item, "status") and hasattr(item, "id"):
+            task = item
+        status_update = _present_message_field(item, "status_update")
+        artifact_update = _present_message_field(item, "artifact_update")
+        message = _present_message_field(item, "message")
+        candidate = task or status_update or artifact_update or message
+        if candidate is None:
+            return
+        observed_task_id = str(
+            getattr(candidate, "id", "") or getattr(candidate, "task_id", "") or ""
         )
-        return binding
+        observed_context_id = str(getattr(candidate, "context_id", "") or "") or None
+        if observed_task_id and observed_task_id != expected_task_id:
+            raise RuntimeError("A2A_REMOTE_BINDING_CONFLICT")
+        if observed_context_id != expected_context_id:
+            raise RuntimeError("A2A_REMOTE_BINDING_CONFLICT")
 
     def _agent_from_prepared(self, prepared: PreparedA2AOperation) -> DiscoveredAgent:
         cached = self._agents_by_id.get(prepared.target.agent_id)
@@ -480,6 +618,8 @@ class A2ASpaceClient:
         agent: DiscoveredAgent,
         prepared: PreparedA2AOperation,
     ):
+        await self._event_outbox.initialize()
+        await self._flush_pending_platform_events(raise_on_error=False)
         injection = CredentialInjection()
         headers: dict[str, str]
         external_http: httpx.AsyncClient | None = None
@@ -602,6 +742,7 @@ class A2ASpaceClient:
         agent: DiscoveredAgent,
         *,
         wire_position: int,
+        operation_instance_id: str,
     ) -> list[RuntimeEvent]:
         runtime_events = self._stream_item_to_events(
             item,
@@ -610,86 +751,101 @@ class A2ASpaceClient:
             invocation_id=platform_task_id,
         )
         persisted = await self._persist_events(runtime_events)
-        platform_events = self._platform_events(item, platform_task_id)
+        platform_events = self._platform_events(
+            item,
+            platform_task_id,
+            operation_instance_id=operation_instance_id,
+            wire_position=wire_position,
+        )
         if platform_events:
-            await self._backend.append_task_events(
+            await self._event_outbox.enqueue(
                 platform_task_id=platform_task_id,
                 events=platform_events,
             )
+            await self._flush_pending_platform_events(raise_on_error=False)
         return persisted
 
     def _platform_events(
         self,
         item: Any,
         platform_task_id: str,
+        *,
+        operation_instance_id: str,
+        wire_position: int,
     ) -> list[dict[str, Any]]:
         events: list[dict[str, Any]] = []
-        task = getattr(item, "task", None)
-        if task is None and hasattr(item, "status") and hasattr(item, "id"):
-            task = item
-        status_update = getattr(item, "status_update", None)
-        artifact_update = getattr(item, "artifact_update", None)
-        message = getattr(item, "message", None)
-        if task is not None and getattr(task, "status", None) is not None:
-            events.append(self._platform_status_event(task.status, platform_task_id))
-            for artifact in getattr(task, "artifacts", None) or []:
-                events.append(
-                    self._platform_event(
-                        "artifact",
-                        {
-                            "Artifact": _canonical_proto(artifact),
-                            "Append": False,
-                            "LastChunk": True,
-                        },
-                        platform_task_id,
-                    )
-                )
-        if status_update is not None and getattr(status_update, "status", None) is not None:
-            events.append(self._platform_status_event(status_update.status, platform_task_id))
-        if artifact_update is not None and getattr(artifact_update, "artifact", None) is not None:
+
+        def append_event(
+            kind: str,
+            payload: dict[str, Any],
+            *,
+            status: str | None = None,
+            occurred_at: str | None = None,
+        ) -> None:
             events.append(
                 self._platform_event(
+                    kind,
+                    payload,
+                    platform_task_id,
+                    operation_instance_id=operation_instance_id,
+                    wire_position=wire_position,
+                    event_ordinal=len(events),
+                    status=status,
+                    occurred_at=occurred_at,
+                )
+            )
+
+        task = _present_message_field(item, "task")
+        if task is None and hasattr(item, "status") and hasattr(item, "id"):
+            task = item
+        status_update = _present_message_field(item, "status_update")
+        artifact_update = _present_message_field(item, "artifact_update")
+        message = _present_message_field(item, "message")
+        if task is not None and getattr(task, "status", None) is not None:
+            payload = _canonical_proto(task.status)
+            state_name = TaskState.Name(task.status.state)
+            append_event(
+                "status",
+                payload,
+                status=state_name.removeprefix("TASK_STATE_").lower(),
+                occurred_at=str(payload.get("timestamp") or _utc_now()),
+            )
+            for artifact in getattr(task, "artifacts", None) or []:
+                append_event(
                     "artifact",
                     {
-                        "Artifact": _canonical_proto(artifact_update.artifact),
-                        "Append": bool(getattr(artifact_update, "append", False)),
-                        "LastChunk": bool(getattr(artifact_update, "last_chunk", False)),
+                        "Artifact": _canonical_proto(artifact),
+                        "Append": False,
+                        "LastChunk": True,
                     },
-                    platform_task_id,
                 )
+        if status_update is not None and getattr(status_update, "status", None) is not None:
+            payload = _canonical_proto(status_update.status)
+            state_name = TaskState.Name(status_update.status.state)
+            append_event(
+                "status",
+                payload,
+                status=state_name.removeprefix("TASK_STATE_").lower(),
+                occurred_at=str(payload.get("timestamp") or _utc_now()),
+            )
+        if artifact_update is not None and getattr(artifact_update, "artifact", None) is not None:
+            append_event(
+                "artifact",
+                {
+                    "Artifact": _canonical_proto(artifact_update.artifact),
+                    "Append": bool(getattr(artifact_update, "append", False)),
+                    "LastChunk": bool(getattr(artifact_update, "last_chunk", False)),
+                },
             )
         if message is not None:
             payload = _canonical_proto(message)
-            events.append(
-                self._platform_event(
-                    "message",
-                    payload,
-                    platform_task_id,
-                )
-            )
-            events.append(
-                self._platform_event(
-                    "status",
-                    {"state": "TASK_STATE_COMPLETED", "message": payload},
-                    platform_task_id,
-                    status="completed",
-                )
+            append_event("message", payload)
+            append_event(
+                "status",
+                {"state": "TASK_STATE_COMPLETED", "message": payload},
+                status="completed",
             )
         return events
-
-    def _platform_status_event(self, status: Any, platform_task_id: str) -> dict[str, Any]:
-        payload = _canonical_proto(status)
-        state_name = TaskState.Name(status.state)
-        normalized = state_name.removeprefix("TASK_STATE_").lower()
-        if normalized == "canceled":
-            normalized = "canceled"
-        return self._platform_event(
-            "status",
-            payload,
-            platform_task_id,
-            status=normalized,
-            occurred_at=str(payload.get("timestamp") or _utc_now()),
-        )
 
     @staticmethod
     def _platform_event(
@@ -697,12 +853,16 @@ class A2ASpaceClient:
         payload: dict[str, Any],
         platform_task_id: str,
         *,
+        operation_instance_id: str,
+        wire_position: int,
+        event_ordinal: int,
         status: str | None = None,
         occurred_at: str | None = None,
     ) -> dict[str, Any]:
-        canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         source_id = hashlib.sha256(
-            f"{platform_task_id}:{kind}:{canonical}".encode("utf-8")
+            (
+                f"{platform_task_id}:{operation_instance_id}:{wire_position}:{event_ordinal}:{kind}"
+            ).encode("utf-8")
         ).hexdigest()
         event: dict[str, Any] = {
             "SourceEventId": source_id,
@@ -713,6 +873,39 @@ class A2ASpaceClient:
         if status:
             event["Status"] = status
         return event
+
+    async def flush_pending_events(self) -> int:
+        """Deliver all currently queued platform event batches or raise on failure."""
+
+        await self._event_outbox.initialize()
+        return await self._flush_pending_platform_events(raise_on_error=True)
+
+    async def _flush_pending_platform_events(self, *, raise_on_error: bool) -> int:
+        delivered = 0
+        async with self._outbox_flush_lock:
+            while True:
+                batches = await self._event_outbox.pending(limit=100)
+                if not batches:
+                    return delivered
+                for batch in batches:
+                    try:
+                        await self._backend.append_task_events(
+                            platform_task_id=batch.platform_task_id,
+                            events=batch.events,
+                        )
+                    except Exception as exc:
+                        failure = str(getattr(exc, "error_code", "") or type(exc).__name__)
+                        await self._event_outbox.record_failure(batch.batch_id, failure)
+                        if raise_on_error:
+                            raise
+                        logger.warning(
+                            "A2A task event batch remains in local outbox: task=%s batch=%s",
+                            batch.platform_task_id,
+                            batch.batch_id,
+                        )
+                        return delivered
+                    await self._event_outbox.acknowledge(batch.batch_id)
+                    delivered += 1
 
     def _next_seq(self) -> int:
         self._seq += 1
@@ -748,12 +941,12 @@ class A2ASpaceClient:
         invocation_id: str | None = None,
     ) -> list[RuntimeEvent]:
         events: list[RuntimeEvent] = []
-        task = getattr(item, "task", None)
+        task = _present_message_field(item, "task")
         if task is None and hasattr(item, "status") and hasattr(item, "id"):
             task = item
-        status_update = getattr(item, "status_update", None)
-        artifact_update = getattr(item, "artifact_update", None)
-        message = getattr(item, "message", None)
+        status_update = _present_message_field(item, "status_update")
+        artifact_update = _present_message_field(item, "artifact_update")
+        message = _present_message_field(item, "message")
         resolved_invocation_id = invocation_id or str(
             getattr(item, "task_id", None)
             or getattr(task, "id", "")
@@ -790,14 +983,40 @@ class A2ASpaceClient:
             return self._event_ctx(agent, invocation_id=resolved_invocation_id, event_id=event_id)
 
         if task is not None and getattr(task, "status", None) is not None:
-            events.append(
-                self._event_adapter.task_status_to_event(
-                    task.status,
-                    **ctx("task", task),
-                )
+            task_status_message = _present_message_field(task.status, "message")
+            task_status_text = A2AEventAdapter._parts_text(
+                getattr(task_status_message, "parts", None)
             )
+            task_is_terminal = task.status.state in {
+                TaskState.TASK_STATE_COMPLETED,
+                TaskState.TASK_STATE_FAILED,
+                TaskState.TASK_STATE_CANCELED,
+                TaskState.TASK_STATE_REJECTED,
+            }
+            if not task_is_terminal:
+                events.append(
+                    self._event_adapter.task_status_to_event(
+                        task.status,
+                        **ctx("task", task),
+                    )
+                )
+            if task_status_text:
+                events.append(
+                    self._event_adapter.message_to_event(
+                        task_status_text,
+                        final=task_is_terminal,
+                        **ctx("task-status-message", task_status_message),
+                    )
+                )
+            if task_is_terminal:
+                events.append(
+                    self._event_adapter.task_status_to_event(
+                        task.status,
+                        **ctx("task", task),
+                    )
+                )
         if status_update is not None and getattr(status_update, "status", None) is not None:
-            status_message = getattr(status_update.status, "message", None)
+            status_message = _present_message_field(status_update.status, "message")
             text = A2AEventAdapter._parts_text(getattr(status_message, "parts", None))
             terminal_states = {
                 TaskState.TASK_STATE_COMPLETED,
@@ -827,11 +1046,19 @@ class A2ASpaceClient:
                     )
                 )
         if artifact_update is not None and getattr(artifact_update, "artifact", None) is not None:
+            artifact = artifact_update.artifact
             events.append(
-                self._event_adapter.artifact_to_event(
-                    artifact_update.artifact, **ctx("artifact", artifact_update)
-                )
+                self._event_adapter.artifact_to_event(artifact, **ctx("artifact", artifact_update))
             )
+            artifact_text = A2AEventAdapter._parts_text(getattr(artifact, "parts", None))
+            if artifact_text and str(getattr(artifact, "name", "") or "") == "response":
+                events.append(
+                    self._event_adapter.message_to_event(
+                        artifact_text,
+                        final=bool(getattr(artifact_update, "last_chunk", False)),
+                        **ctx("artifact-text", artifact_update),
+                    )
+                )
         if message is not None:
             text = A2AEventAdapter._parts_text(getattr(message, "parts", None))
             if text:
@@ -866,7 +1093,7 @@ class A2ASpaceClient:
         require_a2a_resource_id(task_id, "a2a-task-", field_name="task_id")
         prepared = await self._backend.prepare_task_operation(
             platform_task_id=task_id,
-            operation="task/subscribe",
+            operation="subscribe_to_task",
         )
         self._validate_prepared_ids(prepared)
         agent = self._agent_from_prepared(prepared)
@@ -902,7 +1129,7 @@ __all__ = [
     "A2ASpaceClient",
     "DiscoveredAgent",
     "ENV_A2A_ENABLE_PUBLIC_EGRESS",
-    "ENV_A2A_SPACE_ID",
+    "ENV_A2A_SPACE_IDS",
     "ERR_PUBLIC_EGRESS_DISABLED",
     "SpaceAgentPage",
 ]

@@ -21,6 +21,7 @@ from ksadk.a2a.credential import (
     StaticCredentialProvider,
 )
 from ksadk.a2a.space_client import A2ASpaceClient, DiscoveredAgent
+from ksadk.a2a.task_event_outbox import SQLiteA2ATaskEventOutbox
 from ksadk.events.runtime_event import EventType, RuntimeEvent
 from ksadk.events.store import RuntimeEventStore
 from ksadk.sessions.base import SessionEvent
@@ -40,6 +41,7 @@ def _agent(agent_id: str = AGENT_ID, *, source: str = "hosted") -> DiscoveredAge
         version_id=VERSION_ID,
         source=source,
         agent_card=build_agent_card(name="echo", base_url="http://testserver", skills=["echo"]),
+        route_kind="hosted_gateway" if source == "hosted" else "external_public",
     )
 
 
@@ -102,6 +104,11 @@ async def test_shared_http_client_keeps_agent_credentials_request_scoped(tmp_pat
         _agent(AGENT_B_ID, source="external"),
     ]
     backend = _MockDiscoveryBackend(agents)
+    backend.platform_task_ids = [
+        "a2a-task-00000000000040008000000000000027",
+        "a2a-task-00000000000040008000000000000028",
+        "a2a-task-00000000000040008000000000000029",
+    ]
     backend.credential_handles = {
         AGENT_A_ID: "credential-a",
         AGENT_B_ID: "credential-b",
@@ -162,7 +169,14 @@ def test_stream_item_to_events_converts_status_and_artifact() -> None:
         artifact_update = type(
             "A",
             (),
-            {"artifact": Artifact(artifact_id="ar1", parts=[Part(text="hello")])},
+            {
+                "artifact": Artifact(
+                    artifact_id="ar1",
+                    name="response",
+                    parts=[Part(text="hello")],
+                ),
+                "last_chunk": True,
+            },
         )()
         task_id = "t1"
 
@@ -170,19 +184,104 @@ def test_stream_item_to_events_converts_status_and_artifact() -> None:
     types = {e.event_type for e in events}
     assert EventType.RUN_PROGRESS in types  # status_update WORKING
     assert EventType.ARTIFACT_CREATED in types  # artifact_update
+    assert EventType.TEXT_COMPLETED in types  # response artifact last chunk
     assert all(isinstance(e, RuntimeEvent) for e in events)
 
 
-def test_platform_event_ids_are_stable_across_stream_reconnects() -> None:
+def test_terminal_task_status_message_precedes_run_completed() -> None:
+    client = _client()
+    task = Task(
+        id="remote-task-final",
+        context_id="remote-context-final",
+        status=TaskStatus(
+            state=TaskState.TASK_STATE_COMPLETED,
+            message=Message(
+                message_id="message-task-final",
+                role=Role.ROLE_AGENT,
+                parts=[Part(text="final from task")],
+            ),
+        ),
+    )
+
+    events = client._stream_item_to_events(task, _agent())
+
+    assert [event.event_type for event in events] == [
+        EventType.TEXT_COMPLETED,
+        EventType.RUN_COMPLETED,
+    ]
+
+
+def test_platform_event_ids_track_occurrence_and_remain_stable_for_outbox_retry() -> None:
     client = _client()
     message = Message(message_id="same", role=Role.ROLE_AGENT, parts=[Part(text="same")])
     item = type("Item", (), {"task": None, "status_update": None, "artifact_update": None})()
     item.message = message
 
-    first = client._platform_events(item, TASK_ID)
-    second = client._platform_events(item, TASK_ID)
+    first = client._platform_events(
+        item,
+        TASK_ID,
+        operation_instance_id="operation-1",
+        wire_position=0,
+    )
+    retry = client._platform_events(
+        item,
+        TASK_ID,
+        operation_instance_id="operation-1",
+        wire_position=0,
+    )
+    next_occurrence = client._platform_events(
+        item,
+        TASK_ID,
+        operation_instance_id="operation-1",
+        wire_position=1,
+    )
 
-    assert first[0]["SourceEventId"] == second[0]["SourceEventId"]
+    assert first[0]["SourceEventId"] == retry[0]["SourceEventId"]
+    assert first[0]["SourceEventId"] != next_occurrence[0]["SourceEventId"]
+
+
+@pytest.mark.asyncio
+async def test_sqlite_outbox_retries_task_sink_without_losing_remote_result(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from a2a.types import StreamResponse
+    from test_a2a_discovery import _FakeTaskClient, _MockDiscoveryBackend
+
+    agent = _agent()
+    backend = _MockDiscoveryBackend([agent])
+    backend.append_error = RuntimeError("task sink unavailable")
+    wire_client = _FakeTaskClient()
+    wire_client.send_responses = [
+        StreamResponse(
+            message=Message(
+                role=Role.ROLE_AGENT,
+                parts=[Part(text="done")],
+                message_id="message-direct-outbox",
+                context_id="context-direct-outbox",
+            )
+        )
+    ]
+
+    async def create_fake_client(**kwargs):  # noqa: ANN003, ANN202
+        return wire_client
+
+    monkeypatch.setattr("ksadk.a2a.space_client.create_client", create_fake_client)
+    outbox = SQLiteA2ATaskEventOutbox(tmp_path / "a2a-events.sqlite3")
+    client = A2ASpaceClient(SPACE_ID, backend, event_outbox=outbox)
+    await client.discover()
+
+    result = await client.send_message(agent.agent_id, "ping")
+
+    pending = await outbox.pending()
+    assert len(pending) == 1
+    assert pending[0].platform_task_id == result.id
+    source_ids = [event["SourceEventId"] for event in pending[0].events]
+
+    backend.append_error = None
+    assert await client.flush_pending_events() == 1
+    assert await outbox.pending() == []
+    assert [event["SourceEventId"] for event in backend.append_calls[0]["events"]] == source_ids
 
 
 @pytest.mark.asyncio

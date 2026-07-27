@@ -25,6 +25,7 @@ from ksadk.a2a.control_plane import (
     ENV_A2A_TOKEN_DIR,
     A2AControlPlane,
     A2AControlPlaneError,
+    A2AOperation,
     A2ARoute,
     A2ARouteInterface,
     A2ATarget,
@@ -32,7 +33,7 @@ from ksadk.a2a.control_plane import (
     FileWorkloadTokenProvider,
     KopA2AControlPlane,
     PreparedA2AOperation,
-    RemoteTaskBinding,
+    RemoteTaskReference,
     WorkloadTokenProvider,
 )
 from ksadk.a2a.event_adapter import A2AEventAdapter
@@ -41,7 +42,7 @@ from ksadk.a2a.routes import A2AConfig, add_a2a_protocol_routes
 from ksadk.a2a.server import A2AProtocolServer
 from ksadk.a2a.space_client import (
     ENV_A2A_ENABLE_PUBLIC_EGRESS,
-    ENV_A2A_SPACE_ID,
+    ENV_A2A_SPACE_IDS,
     ERR_PUBLIC_EGRESS_DISABLED,
     A2AExternalTransport,
     A2APlatformTask,
@@ -50,12 +51,21 @@ from ksadk.a2a.space_client import (
     SpaceAgentPage,
 )
 from ksadk.a2a.task_adapter import A2ARuntimeTaskAdapter
+from ksadk.a2a.task_event_outbox import (
+    DEFAULT_A2A_EVENT_OUTBOX_PATH,
+    ENV_A2A_EVENT_OUTBOX_PATH,
+    A2ATaskEventBatch,
+    A2ATaskEventOutbox,
+    InMemoryA2ATaskEventOutbox,
+    SQLiteA2ATaskEventOutbox,
+)
 from ksadk.a2a.task_store import A2A_TASK_TABLE, build_a2a_task_store
 
 __all__ = [
     "A2AConfig",
     "A2AControlPlane",
     "A2AControlPlaneError",
+    "A2AOperation",
     "A2AEventAdapter",
     "A2AExternalTransport",
     "A2APlatformTask",
@@ -68,20 +78,26 @@ __all__ = [
     "A2ARouteInterface",
     "A2A_TASK_TABLE",
     "A2ATarget",
+    "A2ATaskEventBatch",
+    "A2ATaskEventOutbox",
     "CredentialInjection",
     "DiscoveredAgent",
+    "DEFAULT_A2A_EVENT_OUTBOX_PATH",
     "ENV_A2A_CONTROL_PLANE_URL",
     "ENV_A2A_ENABLE_PUBLIC_EGRESS",
-    "ENV_A2A_SPACE_ID",
+    "ENV_A2A_EVENT_OUTBOX_PATH",
+    "ENV_A2A_SPACE_IDS",
     "ENV_A2A_TOKEN_DIR",
     "ERR_PUBLIC_EGRESS_DISABLED",
     "FileWorkloadTokenProvider",
+    "InMemoryA2ATaskEventOutbox",
     "JSONRPC_PATH",
     "KopA2AControlPlane",
     "PreparedA2AOperation",
-    "RemoteTaskBinding",
+    "RemoteTaskReference",
     "REST_PATH_PREFIX",
     "SpaceAgentPage",
+    "SQLiteA2ATaskEventOutbox",
     "WorkloadTokenProvider",
     "add_a2a_protocol_routes",
     "build_a2a_task_store",

@@ -53,7 +53,7 @@ def test_attribute_error_during_optional_command_import_is_explicit(monkeypatch,
     assert result.exit_code != 0
     assert "TaskState has no expected member" in result.output
     warning = capsys.readouterr().err
-    assert "a2a-sdk>=1.1.0" in warning
+    assert "a2a-sdk==1.1.0" in warning
     assert 'python -m pip install --upgrade "ksadk[a2a]"' in warning
 
 

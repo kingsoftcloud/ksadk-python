@@ -291,7 +291,7 @@ def _warn_unavailable_optional_command(
     )
     if "a2a" in cmd_names:
         message += (
-            " KsADK 0.8 requires a2a-sdk>=1.1.0; activate the intended virtual environment and "
+            " KsADK 0.8 requires a2a-sdk==1.1.0; activate the intended virtual environment and "
             'run `python -m pip install --upgrade "ksadk[a2a]"`. A2A 0.3 projects must use a '
             "separate environment."
         )

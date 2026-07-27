@@ -31,12 +31,22 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "false when the deploy layer does not inject a value",
     ),
     EnvVarSpec(
+        "KSADK_A2A_EVENT_OUTBOX_PATH",
+        "a2a",
+        "SQLite path for durable A2A task-event delivery batches.",
+        ".agentengine/a2a_event_outbox.sqlite3",
+    ),
+    EnvVarSpec(
         "KSADK_A2A_TOKEN_DIR",
         "a2a",
         "Directory containing audience-specific projected A2A workload JWT files.",
         "/var/run/secrets/agentengine/a2a",
     ),
-    EnvVarSpec("KSADK_A2A_SPACE_ID", "a2a", "A2A Space id injected by the deploy layer on bind."),
+    EnvVarSpec(
+        "KSADK_A2A_SPACE_IDS",
+        "a2a",
+        "JSON array of A2A Space ids configured for this Runtime Agent.",
+    ),
     EnvVarSpec(
         "KSADK_A2UI_GENERATION_TIMEOUT_SECONDS",
         "agui",

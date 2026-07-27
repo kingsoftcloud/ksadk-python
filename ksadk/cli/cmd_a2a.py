@@ -192,26 +192,27 @@ def register(agent_path: Path, url: str, name: str | None, description: str, ski
 # ---------------------------------------------------------------------------
 
 
-def _space_client() -> A2ASpaceClient:
+def _space_client(space_id: str | None = None) -> A2ASpaceClient:
     """从环境构造 A2ASpaceClient;Space 未配置时显式报错(不静默)。"""
     try:
-        return A2ASpaceClient.from_env()
+        return A2ASpaceClient.from_env(space_id=space_id)
     except ValueError as exc:
         raise click.ClickException(
             f"A2A Space 未配置:{exc}。"
-            "AgentEngine 部署必须注入 KSADK_A2A_SPACE_ID、"
+            "请传 --space-id，或由 AgentEngine 部署注入 KSADK_A2A_SPACE_IDS；同时需要"
             "KSADK_A2A_CONTROL_PLANE_URL 和 audience workload token。"
         ) from exc
 
 
 @a2a.command("discover", context_settings=_HELP)
+@click.option("--space-id", default=None, help="本次发现使用的 A2A Space ID")
 @click.option("--prompt", default=None, help="发现关键词(受控匹配)")
 @click.option("--skill", default=None, help="按技能过滤")
-def discover(prompt: str | None, skill: str | None):
+def discover(space_id: str | None, prompt: str | None, skill: str | None):
     """发现 Space 中 hosted/external Agent 的 latest AgentCard。"""
 
     async def _run() -> None:
-        client = _space_client()
+        client = _space_client(space_id)
         agents = await client.discover(prompt=prompt, skill=skill)
         for agent in agents:
             click.echo(
@@ -233,13 +234,14 @@ def discover(prompt: str | None, skill: str | None):
 
 
 @a2a.command("call", context_settings=_HELP)
+@click.option("--space-id", default=None, help="本次调用使用的 A2A Space ID")
 @click.argument("agent_id")
 @click.argument("message")
-def call(agent_id: str, message: str):
+def call(space_id: str | None, agent_id: str, message: str):
     """向 Space 中某 Agent 发送消息,返回首个 Task。"""
 
     async def _run() -> None:
-        client = _space_client()
+        client = _space_client(space_id)
         task = await client.send_message(agent_id, message)
         click.echo(json.dumps(_platform_task_summary(task), ensure_ascii=False))
 
@@ -247,12 +249,13 @@ def call(agent_id: str, message: str):
 
 
 @a2a.command("status", context_settings=_HELP)
+@click.option("--space-id", default=None, help="Task 创建时使用的 A2A Space ID")
 @click.argument("task_id")
-def status(task_id: str):
+def status(space_id: str | None, task_id: str):
     """查询某 A2A Task 的状态。"""
 
     async def _run() -> None:
-        client = _space_client()
+        client = _space_client(space_id)
         task = await client.get_task(task_id)
         click.echo(json.dumps(_platform_task_summary(task), ensure_ascii=False))
 
@@ -260,12 +263,13 @@ def status(task_id: str):
 
 
 @a2a.command("cancel", context_settings=_HELP)
+@click.option("--space-id", default=None, help="Task 创建时使用的 A2A Space ID")
 @click.argument("task_id")
-def cancel(task_id: str):
+def cancel(space_id: str | None, task_id: str):
     """取消某 A2A Task。"""
 
     async def _run() -> None:
-        client = _space_client()
+        client = _space_client(space_id)
         task = await client.cancel(task_id)
         click.echo(json.dumps(_platform_task_summary(task), ensure_ascii=False))
 
