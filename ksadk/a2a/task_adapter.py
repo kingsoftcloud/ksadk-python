@@ -22,6 +22,8 @@ from typing import Any, Optional, cast
 from google.protobuf.json_format import MessageToDict
 from google.protobuf.message import Message as ProtobufMessage
 
+from ksadk.a2a.context_store import A2AContextStore
+from ksadk.a2a.identity import A2AIngressIdentity
 from ksadk.events import RuntimeEvent
 from ksadk.runtime.adapter import (
     CancelResult,
@@ -42,9 +44,16 @@ class A2ARuntimeTaskAdapter:
     把 A2A 侧的 task/cancel/input-required 映射到 Runtime 六动词。
     """
 
-    def __init__(self, runtime_adapter: RuntimeAdapter, *, runtime_type: str = "local") -> None:
+    def __init__(
+        self,
+        runtime_adapter: RuntimeAdapter,
+        *,
+        runtime_type: str = "local",
+        context_store: A2AContextStore | None = None,
+    ) -> None:
         self._adapter = runtime_adapter
         self._runtime_type = runtime_type
+        self._context_store = context_store
         self._handles_by_task_key: dict[tuple[str, str, str], RunHandle] = {}
         self._accepted_canceled_tasks: set[tuple[str, str, str]] = set()
 
@@ -83,6 +92,7 @@ class A2ARuntimeTaskAdapter:
         只使用 ``start`` 返回的进程内真实 handle，或 input-required Task metadata 中
         持久化的 handle；找不到时返回 NOT_RUNNING，不按 task_id 构造假 handle。
         """
+        await self.prepare_context(context)
         task_key = self._task_key(task_id, context)
         handle = self._handles_by_task_key.get(task_key)
         restored = handle is None
@@ -122,6 +132,7 @@ class A2ARuntimeTaskAdapter:
         input_data: Any,
     ) -> RunHandle:
         """通过 RuntimeAdapter 启动 A2A task,返回后续共用的真实 handle。"""
+        await self.prepare_context(context)
         context_metadata = self._as_dict(getattr(context, "metadata", None))
         context_metadata.pop("user_id", None)
         context_metadata.pop("agent_id", None)
@@ -179,6 +190,7 @@ class A2ARuntimeTaskAdapter:
         answer: Any,
     ) -> RunHandle:
         """从 input-required Task metadata 恢复同一 runtime handle。"""
+        await self.prepare_context(context)
         handle, target, payload = self.validate_resume_task(
             task_id,
             context,
@@ -262,11 +274,52 @@ class A2ARuntimeTaskAdapter:
 
     @staticmethod
     def _extract_session_id(context: Any) -> str:
+        call_context = getattr(context, "call_context", None)
+        state = getattr(call_context, "state", None)
+        if isinstance(state, Mapping):
+            internal_session_id = str(state.get("a2a_internal_session_id") or "")
+            if internal_session_id:
+                return internal_session_id
         # A follow-up A2A message may carry only task_id. The durable Task is the
         # authority for the original context/session across requests and restarts.
         current_task = getattr(context, "current_task", None)
         task_context_id = getattr(current_task, "context_id", None)
         return str(task_context_id or getattr(context, "context_id", "") or "")
+
+    async def prepare_context(self, context: Any) -> str:
+        """Resolve the verified external context before adapter state is accessed."""
+
+        if self._context_store is None:
+            return self._extract_session_id(context)
+        call_context = getattr(context, "call_context", None)
+        state = getattr(call_context, "state", None)
+        if not isinstance(state, dict):
+            raise PermissionError("verified Gateway identity is required for A2A context mapping")
+        cached = str(state.get("a2a_internal_session_id") or "")
+        if cached:
+            return cached
+        identity = state.get("a2a_identity")
+        if not isinstance(identity, A2AIngressIdentity):
+            raise PermissionError("verified Gateway identity is required for A2A context mapping")
+        current_task = getattr(context, "current_task", None)
+        external_context_id = str(
+            getattr(current_task, "context_id", "")
+            or getattr(context, "context_id", "")
+            or getattr(context, "task_id", "")
+            or ""
+        )
+        isolation_scope = (
+            str(getattr(context, "task_id", "") or "")
+            if identity.caller_principal_type == "anonymous"
+            else None
+        )
+        internal_session_id = await self._context_store.resolve_or_create(
+            identity.context_identity(),
+            external_context_id,
+            isolation_scope=isolation_scope,
+        )
+        state["a2a_internal_session_id"] = internal_session_id
+        return internal_session_id
 
     @staticmethod
     def _trusted_tenant(context: Any) -> str:

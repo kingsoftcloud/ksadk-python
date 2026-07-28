@@ -63,6 +63,25 @@ def _write(tmp_path, text: str):
     return path
 
 
+def _paths(app) -> set[str]:
+    """Unwrap lazy FastAPI router wrappers before asserting route membership."""
+
+    paths: set[str] = set()
+    for route in app.routes:
+        path = getattr(route, "path", None)
+        if path is not None:
+            paths.add(path)
+            continue
+        original = getattr(route, "original_router", None)
+        if original is not None:
+            paths.update(
+                sub_path
+                for sub in getattr(original, "routes", [])
+                if (sub_path := getattr(sub, "path", None)) is not None
+            )
+    return paths
+
+
 # ---- 子集校验 ----
 
 
@@ -135,7 +154,7 @@ async def test_data_plane_only_no_control_plane(tmp_path):
     """HarnessApp 只挂数据面 route group;控制面(cancel/builder/debug)不进。"""
     app = HarnessApp.from_yaml(_write(tmp_path, VALID_YAML))
     fastapi_app = app.build_app()
-    paths = {getattr(route, "path", None) for route in fastapi_app.routes}
+    paths = _paths(fastapi_app)
     # 数据面在
     assert "/health" in paths
     assert "/v1/chat/completions" in paths

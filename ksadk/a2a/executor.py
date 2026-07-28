@@ -80,6 +80,12 @@ class A2ARuntimeExecutor(AgentExecutor):
             == TaskState.TASK_STATE_INPUT_REQUIRED
         )
         interaction_response: Any = None
+        if self.task_adapter is not None:
+            # Third-party/local adapters written before durable context mapping
+            # do not necessarily provide this optional lifecycle hook.
+            prepare_context = getattr(self.task_adapter, "prepare_context", None)
+            if callable(prepare_context):
+                await prepare_context(context)
         if is_resume and self.task_adapter is not None:
             interaction_response = self.task_adapter.answer_from_context(context)
             # Invalid resume tokens/decisions are request errors. Validate before emitting

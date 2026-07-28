@@ -11,7 +11,9 @@ def create_runtime_app(config):
 ```
 
 A2A route、TaskStore、task adapter 和 card 构造**只有一份实现**,普通 runtime app
-与 HarnessApp 共用;A2A 是数据面 route group,不承载注册副作用。
+与 HarnessApp 共用;A2A 是数据面 route group,不承载注册副作用。``A2AConfig``
+保留给本地开发和协议一致性测试；AgentEngine 产品 Runtime 必须通过
+``AgentEngineA2ABootstrap`` 装配 durable storage、trusted ingress 和 egress guard。
 """
 
 from __future__ import annotations
@@ -32,7 +34,7 @@ from ksadk.a2a.task_store import A2A_TASK_TABLE, A2AOwnerContextBuilder, build_a
 
 @dataclass
 class A2AConfig:
-    """A2A 协议装配配置(数据面 route group)。"""
+    """本地/一致性测试使用的 A2A 协议装配配置(数据面 route group)。"""
 
     enabled: bool = False
     base_url: str = "http://127.0.0.1:8000"

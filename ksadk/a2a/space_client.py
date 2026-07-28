@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import logging
 import os
 import uuid
-from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Mapping
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from http.cookies import CookieError, SimpleCookie
@@ -43,7 +42,9 @@ from ksadk.a2a.control_plane import (
     SpaceAgentPage,
 )
 from ksadk.a2a.event_adapter import A2AEventAdapter
+from ksadk.a2a.external_transport import A2AExternalTransport
 from ksadk.a2a.ids import require_a2a_resource_id
+from ksadk.a2a.task_event_dispatcher import A2ATaskEventDispatcher
 from ksadk.a2a.task_event_outbox import (
     A2ATaskEventOutbox,
     InMemoryA2ATaskEventOutbox,
@@ -68,20 +69,6 @@ class A2APlatformTask:
 
     id: str
     remote_task: Any | None = None
-
-
-class A2AExternalTransport(ABC):
-    """Capability object supplied by the Runtime network guard for external routes."""
-
-    @abstractmethod
-    def client_for_route(
-        self,
-        route: A2ARouteInterface,
-        *,
-        route_kind: str,
-    ) -> httpx.AsyncClient:
-        """Return a client whose DNS/IP/redirect policy is validated and pinned for the route."""
-        raise NotImplementedError
 
 
 def _utc_now() -> str:
@@ -122,6 +109,7 @@ class A2ASpaceClient:
         external_transport: A2AExternalTransport | None = None,
         event_sink: Any | None = None,
         event_outbox: A2ATaskEventOutbox | None = None,
+        event_dispatcher: A2ATaskEventDispatcher | None = None,
     ) -> None:
         require_a2a_resource_id(space_id, "a2a-space-", field_name="space_id")
         if external_transport is not None and not isinstance(
@@ -134,8 +122,12 @@ class A2ASpaceClient:
         self._httpx_client = httpx_client
         self._external_transport = external_transport
         self._event_sink = event_sink
-        self._event_outbox = event_outbox or InMemoryA2ATaskEventOutbox()
-        self._outbox_flush_lock = asyncio.Lock()
+        if event_dispatcher is not None and event_outbox is not None:
+            raise ValueError("pass either event_dispatcher or event_outbox, not both")
+        self._event_dispatcher = event_dispatcher or A2ATaskEventDispatcher(
+            event_outbox or InMemoryA2ATaskEventOutbox(),
+            backend,
+        )
         self._event_adapter = A2AEventAdapter()
         self._agents_by_id: dict[str, DiscoveredAgent] = {}
         self._agents_by_task: dict[str, DiscoveredAgent] = {}
@@ -153,6 +145,7 @@ class A2ASpaceClient:
         egress_enabled: bool | None = None,
         event_sink: Any | None = None,
         event_outbox: A2ATaskEventOutbox | None = None,
+        event_dispatcher: A2ATaskEventDispatcher | None = None,
     ) -> "A2ASpaceClient":
         selected_space_id = str(space_id or "").strip()
         if selected_space_id:
@@ -205,7 +198,7 @@ class A2ASpaceClient:
         if egress_enabled is None:
             raw_egress = os.getenv(ENV_A2A_ENABLE_PUBLIC_EGRESS) or ""
             egress_enabled = raw_egress.strip().lower() in {"1", "true", "yes", "on"}
-        if event_outbox is None:
+        if event_outbox is None and event_dispatcher is None:
             event_outbox = SQLiteA2ATaskEventOutbox()
         return cls(
             selected_space_id,
@@ -215,6 +208,7 @@ class A2ASpaceClient:
             external_transport=external_transport,
             event_sink=event_sink,
             event_outbox=event_outbox,
+            event_dispatcher=event_dispatcher,
         )
 
     async def discover(
@@ -250,6 +244,12 @@ class A2ASpaceClient:
                 f"{ERR_PUBLIC_EGRESS_DISABLED}: external Agent {agent.agent_id} requires "
                 "Network.EnablePublicAccess"
             )
+
+    @property
+    def event_dispatcher(self) -> A2ATaskEventDispatcher:
+        """Runtime-scoped task event dispatcher used by this client."""
+
+        return self._event_dispatcher
 
     async def _resolve_agent(self, agent_id: str) -> DiscoveredAgent:
         agent = self._agents_by_id.get(agent_id)
@@ -328,12 +328,11 @@ class A2ASpaceClient:
         *,
         return_immediately: bool,
     ) -> A2APlatformTask:
-        client, owned_http, context = await self._client_for_operation(agent, prepared)
         first_task = None
         remote_task_id = prepared.remote_task.remote_task_id if prepared.remote_task else None
         remote_context_id = prepared.remote_task.remote_context_id if prepared.remote_task else None
         operation_instance_id = self._operation_instance_id(prepared)
-        try:
+        async with self._operation_client(agent, prepared) as (client, context):
             request = SendMessageRequest(
                 message=message,
                 configuration=SendMessageConfiguration(return_immediately=return_immediately),
@@ -370,8 +369,6 @@ class A2ASpaceClient:
                 wire_position += 1
                 if return_immediately and first_task is not None:
                     break
-        finally:
-            await self._close_operation_client(client, owned_http)
         return A2APlatformTask(
             id=prepared.platform_task_id,
             remote_task=first_task,
@@ -395,8 +392,7 @@ class A2ASpaceClient:
     ):
         remote_task = self._require_remote_task(prepared)
         operation_instance_id = self._operation_instance_id(prepared)
-        client, owned_http, context = await self._client_for_operation(agent, prepared)
-        try:
+        async with self._operation_client(agent, prepared) as (client, context):
             wire_position = 0
             async for event in client.subscribe(
                 SubscribeToTaskRequest(id=remote_task.remote_task_id),
@@ -416,8 +412,6 @@ class A2ASpaceClient:
                 )
                 wire_position += 1
                 yield event, persisted
-        finally:
-            await self._close_operation_client(client, owned_http)
 
     async def cancel(
         self,
@@ -434,8 +428,7 @@ class A2ASpaceClient:
         self._validate_prepared_ids(prepared)
         remote_task_ref = self._require_remote_task(prepared)
         agent = self._agent_from_prepared(prepared)
-        client, owned_http, context = await self._client_for_operation(agent, prepared)
-        try:
+        async with self._operation_client(agent, prepared) as (client, context):
             remote_task = await client.cancel_task(
                 CancelTaskRequest(id=remote_task_ref.remote_task_id), context=context
             )
@@ -455,8 +448,6 @@ class A2ASpaceClient:
                 id=task_id,
                 remote_task=remote_task,
             )
-        finally:
-            await self._close_operation_client(client, owned_http)
 
     async def get_task(self, task_id: str) -> A2APlatformTask:
         require_a2a_resource_id(task_id, "a2a-task-", field_name="task_id")
@@ -467,8 +458,7 @@ class A2ASpaceClient:
         self._validate_prepared_ids(prepared)
         remote_task_ref = self._require_remote_task(prepared)
         agent = self._agent_from_prepared(prepared)
-        client, owned_http, context = await self._client_for_operation(agent, prepared)
-        try:
+        async with self._operation_client(agent, prepared) as (client, context):
             remote_task = await client.get_task(
                 GetTaskRequest(id=remote_task_ref.remote_task_id), context=context
             )
@@ -488,8 +478,6 @@ class A2ASpaceClient:
                 id=task_id,
                 remote_task=remote_task,
             )
-        finally:
-            await self._close_operation_client(client, owned_http)
 
     def _normalize_initial_message(self, message: str | Message) -> Message:
         if isinstance(message, str):
@@ -613,70 +601,73 @@ class A2ASpaceClient:
             AgentCard(),
         )
 
-    async def _client_for_operation(
+    @asynccontextmanager
+    async def _operation_client(
         self,
         agent: DiscoveredAgent,
         prepared: PreparedA2AOperation,
-    ):
-        await self._event_outbox.initialize()
-        await self._flush_pending_platform_events(raise_on_error=False)
+    ) -> AsyncIterator[tuple[Any, ClientCallContext]]:
+        await self._event_dispatcher.ensure_ready()
+        await self._event_dispatcher.drain(raise_on_error=False)
         injection = CredentialInjection()
         headers: dict[str, str]
-        external_http: httpx.AsyncClient | None = None
-        if prepared.route.kind == "hosted_gateway":
-            headers = {
-                "Authorization": f"Bearer {self._backend.gateway_token()}",
-                "X-AgentEngine-A2A-Permit": prepared.call_permit,
-            }
-        else:
-            if prepared.route.kind == "external_public" and not self._egress_enabled:
-                raise PermissionError(ERR_PUBLIC_EGRESS_DISABLED)
-            if self._external_transport is None:
-                raise RuntimeError(
-                    "A2A_EGRESS_TRANSPORT_REQUIRED: external calls require a Runtime network "
-                    "guard transport"
-                )
-            external_http = self._external_transport.client_for_route(
-                prepared.route.interface,
-                route_kind=prepared.route.kind,
-            )
-            if not isinstance(external_http, httpx.AsyncClient):
-                raise TypeError("A2AExternalTransport must return httpx.AsyncClient")
-            injection = await self._backend.resolve_credential(
-                platform_task_id=prepared.platform_task_id,
-                credential_handle=prepared.credential_handle,
-                call_permit=prepared.call_permit,
-            )
-            headers = dict(injection.headers)
-            if injection.cookies:
-                if any(name.lower() == "cookie" for name in headers):
+        async with AsyncExitStack() as exit_stack:
+            if prepared.route.kind == "hosted_gateway":
+                headers = {
+                    "Authorization": f"Bearer {self._backend.gateway_token()}",
+                    "X-AgentEngine-A2A-Permit": prepared.call_permit,
+                }
+                http = self._httpx_client
+            else:
+                if prepared.route.kind == "external_public" and not self._egress_enabled:
+                    raise PermissionError(ERR_PUBLIC_EGRESS_DISABLED)
+                if self._external_transport is None:
                     raise RuntimeError(
-                        "A2A_CREDENTIAL_INJECTION_CONFLICT: Cookie header and cookie injection "
-                        "cannot both be present"
+                        "A2A_EGRESS_TRANSPORT_REQUIRED: external calls require a Runtime network "
+                        "guard transport"
                     )
-                headers["Cookie"] = self._cookie_header(injection.cookies)
-        route = prepared.route.interface
-        if injection.query:
-            route = A2ARouteInterface(
-                url=self._url_with_query(route.url, injection.query),
-                protocol_binding=route.protocol_binding,
-                protocol_version=route.protocol_version,
+                lease = await exit_stack.enter_async_context(
+                    self._external_transport.open_for_route(
+                        prepared.route.interface,
+                        route_kind=prepared.route.kind,
+                    )
+                )
+                http = lease.httpx_client
+                injection = await self._backend.resolve_credential(
+                    platform_task_id=prepared.platform_task_id,
+                    credential_handle=prepared.credential_handle,
+                    call_permit=prepared.call_permit,
+                )
+                headers = dict(injection.headers)
+                if injection.cookies:
+                    if any(name.lower() == "cookie" for name in headers):
+                        raise RuntimeError(
+                            "A2A_CREDENTIAL_INJECTION_CONFLICT: Cookie header and cookie injection "
+                            "cannot both be present"
+                        )
+                    headers["Cookie"] = self._cookie_header(injection.cookies)
+            route = prepared.route.interface
+            if injection.query:
+                route = A2ARouteInterface(
+                    url=self._url_with_query(route.url, injection.query),
+                    protocol_binding=route.protocol_binding,
+                    protocol_version=route.protocol_version,
+                )
+            route_card = self._card_for_route(agent.agent_card, route)
+            owned_http = None
+            if http is None:
+                owned_http = httpx.AsyncClient(trust_env=False)
+                http = owned_http
+            client = await create_client(
+                agent=route_card,
+                client_config=ClientConfig(httpx_client=http, streaming=True),
             )
-        route_card = self._card_for_route(agent.agent_card, route)
-        owned_http = None
-        if prepared.route.kind == "hosted_gateway":
-            http = self._httpx_client
-        else:
-            http = external_http
-            assert http is not None
-        if http is None:
-            owned_http = httpx.AsyncClient()
-            http = owned_http
-        client = await create_client(
-            agent=route_card,
-            client_config=ClientConfig(httpx_client=http, streaming=True),
-        )
-        return client, owned_http, ClientCallContext(service_parameters=headers or None)
+            try:
+                yield client, ClientCallContext(service_parameters=headers or None)
+            finally:
+                if owned_http is not None:
+                    await client.close()
+                    await owned_http.aclose()
 
     @staticmethod
     def _url_with_query(url: str, query: dict[str, str]) -> str:
@@ -718,15 +709,6 @@ class A2ASpaceClient:
         ]
         return ParseDict(payload, AgentCard())
 
-    async def _close_operation_client(
-        self,
-        client: Any,
-        owned_http: httpx.AsyncClient | None,
-    ) -> None:
-        if owned_http is not None:
-            await client.close()
-            await owned_http.aclose()
-
     async def _bind_task(self, platform_task_id: str, remote_task: Any) -> None:
         await self._backend.bind_remote_task(
             platform_task_id=platform_task_id,
@@ -758,11 +740,10 @@ class A2ASpaceClient:
             wire_position=wire_position,
         )
         if platform_events:
-            await self._event_outbox.enqueue(
+            await self._event_dispatcher.enqueue(
                 platform_task_id=platform_task_id,
                 events=platform_events,
             )
-            await self._flush_pending_platform_events(raise_on_error=False)
         return persisted
 
     def _platform_events(
@@ -877,35 +858,7 @@ class A2ASpaceClient:
     async def flush_pending_events(self) -> int:
         """Deliver all currently queued platform event batches or raise on failure."""
 
-        await self._event_outbox.initialize()
-        return await self._flush_pending_platform_events(raise_on_error=True)
-
-    async def _flush_pending_platform_events(self, *, raise_on_error: bool) -> int:
-        delivered = 0
-        async with self._outbox_flush_lock:
-            while True:
-                batches = await self._event_outbox.pending(limit=100)
-                if not batches:
-                    return delivered
-                for batch in batches:
-                    try:
-                        await self._backend.append_task_events(
-                            platform_task_id=batch.platform_task_id,
-                            events=batch.events,
-                        )
-                    except Exception as exc:
-                        failure = str(getattr(exc, "error_code", "") or type(exc).__name__)
-                        await self._event_outbox.record_failure(batch.batch_id, failure)
-                        if raise_on_error:
-                            raise
-                        logger.warning(
-                            "A2A task event batch remains in local outbox: task=%s batch=%s",
-                            batch.platform_task_id,
-                            batch.batch_id,
-                        )
-                        return delivered
-                    await self._event_outbox.acknowledge(batch.batch_id)
-                    delivered += 1
+        return await self._event_dispatcher.drain(raise_on_error=True)
 
     def _next_seq(self) -> int:
         self._seq += 1

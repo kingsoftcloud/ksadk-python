@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
 import httpx
 import pytest
 from a2a.types import Message, Part, Role, StreamResponse, Task, TaskState, TaskStatus
@@ -30,6 +32,7 @@ from ksadk.a2a import (
     build_agent_card,
 )
 from ksadk.a2a.control_plane import ENV_A2A_CONTROL_PLANE_URL
+from ksadk.a2a.external_transport import A2ATransportLease
 from ksadk.a2a.space_client import (
     ENV_A2A_ENABLE_PUBLIC_EGRESS,
     ENV_A2A_SPACE_IDS,
@@ -199,9 +202,15 @@ class _StaticExternalTransport(A2AExternalTransport):
         self.client = client
         self.routes: list[tuple[str, str]] = []
 
-    def client_for_route(self, route, *, route_kind):  # noqa: ANN001, ANN201
+    @asynccontextmanager
+    async def open_for_route(self, route, *, route_kind):  # noqa: ANN001, ANN201
         self.routes.append((route.url, route_kind))
-        return self.client
+        yield A2ATransportLease(
+            httpx_client=self.client,
+            effective_interface=route,
+            route_kind=route_kind,
+            policy_revision="test",
+        )
 
 
 def _client_for_app(app: FastAPI, agents, *, egress: bool) -> A2ASpaceClient:

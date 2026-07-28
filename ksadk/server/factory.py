@@ -124,6 +124,7 @@ class RuntimeAppState:
         self.terminal_manager: Optional[TerminalSessionManager] = None
         # A2A 装配产物(config.a2a.enabled 时由 _wire_a2a_if_enabled 写入)。
         self.a2a_server: Any = None
+        self.a2a_bootstrap: Any = None
         # AG-UI endpoint 及其 app-owned RuntimeAdapter handle registry。
         self.agui_agent: Any = None
         self.agui_config: Any = None
@@ -188,6 +189,7 @@ class RuntimeAppConfig:
         runtime_type: str = "local",
         route_groups: Optional[set[str]] = None,
         a2a: Optional[Any] = None,
+        runtime_adapter: Any = None,
         agui: Optional[Any] = None,
         session_service_provider: Callable[[], Any] | None = None,
         session_backend_provider: Callable[[], dict[str, Any]] | None = None,
@@ -200,6 +202,7 @@ class RuntimeAppConfig:
         # A2A 协议装配配置(``ksadk.a2a.routes.A2AConfig``);enabled 时 factory 装配
         # A2A 数据面端点(契约 §8)。用 Any 避免本模块硬依赖可选的 a2a-sdk。
         self.a2a = a2a
+        self.runtime_adapter = runtime_adapter
         self.agui = agui
         self.session_service_provider = session_service_provider
         self.session_backend_provider = session_backend_provider
@@ -338,8 +341,12 @@ def create_runtime_app(
     @asynccontextmanager
     async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         try:
+            if state.a2a_bootstrap is not None:
+                await state.a2a_bootstrap.start()
             yield
         finally:
+            if state.a2a_bootstrap is not None:
+                await state.a2a_bootstrap.stop()
             await shutdown_runtime_resources(state)
 
     app = FastAPI(
@@ -452,7 +459,33 @@ def _wire_a2a_if_enabled(app: FastAPI, state: RuntimeAppState, config: RuntimeAp
     ``RunnerRuntimeAdapter``(经 P0-2 后 cancel 走真实 asyncio 任务中断)。
     """
     a2a_cfg = config.a2a
-    if a2a_cfg is None or not getattr(a2a_cfg, "enabled", False):
+    if a2a_cfg is None:
+        return
+    from ksadk.a2a.bootstrap import AgentEngineA2ABootstrap
+
+    if isinstance(a2a_cfg, AgentEngineA2ABootstrap):
+        from ksadk.runtime.runner_adapter import RunnerRuntimeAdapter
+
+        proxy = _LazyRunnerProxy(state)
+        runtime_adapter = config.runtime_adapter or RunnerRuntimeAdapter(
+            cast("BaseRunner", proxy),
+            runtime_type=config.runtime_type,
+        )
+        server = a2a_cfg.mount(
+            app,
+            runner=proxy,
+            runtime_adapter=runtime_adapter,
+            runtime_type=config.runtime_type,
+        )
+        state.a2a_bootstrap = a2a_cfg
+        state.a2a_server = server
+        logger.info(
+            "managed A2A Runtime mounted(agent=%s inbound_enabled=%s)",
+            a2a_cfg.runtime_metadata.agent_id,
+            a2a_cfg.inbound_enabled,
+        )
+        return
+    if not getattr(a2a_cfg, "enabled", False):
         return
     from ksadk.a2a.routes import add_a2a_protocol_routes
     from ksadk.a2a.task_adapter import A2ARuntimeTaskAdapter

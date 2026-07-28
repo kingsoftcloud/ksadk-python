@@ -70,11 +70,13 @@ class HarnessApp:
         adapter_builder: Optional[Callable[[BaseRunner], RuntimeAdapter]] = None,
         reasoner: HarnessReasoner | None = None,
         workspace_root: str | Path | None = None,
+        a2a: Any | None = None,
     ) -> None:
         self._config = config
         self._plugins = list(plugins)
         self._adapter_builder = adapter_builder
         self._reasoner = reasoner
+        self._a2a = a2a
         self._owned_workspace: tempfile.TemporaryDirectory[str] | None
         if workspace_root is None:
             self._owned_workspace = tempfile.TemporaryDirectory(prefix="ksadk-harness-")
@@ -86,7 +88,7 @@ class HarnessApp:
         self._runner: BaseRunner | None = None
         self._adapter: RuntimeAdapter | None = None
         self._fastapi_app: FastAPI | None = None
-        self._capabilities = HarnessCapabilities()
+        self._capabilities = HarnessCapabilities(a2a=a2a is not None)
         # Each Harness owns its session backend.  Route handlers may use this
         # marker even when a host does not provide the optional session seam.
         from ksadk.sessions import create_session_service
@@ -240,6 +242,8 @@ class HarnessApp:
                 runner=runner,
                 runtime_type="harness",
                 route_groups=self._route_groups(),
+                a2a=self._a2a,
+                runtime_adapter=self.adapter() if self._a2a is not None else None,
                 session_backend_provider=lambda: {
                     "Backend": "memory",
                     "Shared": False,

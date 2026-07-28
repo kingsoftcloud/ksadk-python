@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import asynccontextmanager
 from typing import Any
 
 import httpx
@@ -27,6 +28,7 @@ from ksadk.a2a import (
     SpaceAgentPage,
     add_a2a_protocol_routes,
 )
+from ksadk.a2a.external_transport import A2ATransportLease
 from ksadk.events.store import RuntimeEventStore
 from ksadk.runtime.runner_adapter import RunnerRuntimeAdapter
 from ksadk.sessions.in_memory import InMemorySessionService
@@ -99,13 +101,19 @@ class StaticExternalTransport(A2AExternalTransport):
     def __init__(self, client: httpx.AsyncClient) -> None:
         self.client = client
 
-    def client_for_route(
+    @asynccontextmanager
+    async def open_for_route(
         self,
         route: A2ARouteInterface,
         *,
         route_kind: str,
-    ) -> httpx.AsyncClient:
-        return self.client
+    ):
+        yield A2ATransportLease(
+            httpx_client=self.client,
+            effective_interface=route,
+            route_kind=route_kind,
+            policy_revision="test",
+        )
 
 
 def build_app(*, port: int, name: str, database_path: str, required_token: str) -> FastAPI:

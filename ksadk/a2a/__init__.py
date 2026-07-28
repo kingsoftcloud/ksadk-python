@@ -14,11 +14,17 @@
 client 侧(``A2ASpaceClient`` 动态发现)见 goal-06。
 """
 
+from ksadk.a2a.bootstrap import AgentEngineA2ABootstrap, RuntimeA2AMetadata
 from ksadk.a2a.card import (
     A2A_PROTOCOL_VERSION,
     JSONRPC_PATH,
     REST_PATH_PREFIX,
     build_agent_card,
+)
+from ksadk.a2a.context_store import (
+    A2AContextIdentity,
+    A2AContextStore,
+    SQLiteA2AContextStore,
 )
 from ksadk.a2a.control_plane import (
     A2A_INTERNAL_ACTIONS,
@@ -42,19 +48,33 @@ from ksadk.a2a.control_plane import (
 )
 from ksadk.a2a.event_adapter import A2AEventAdapter
 from ksadk.a2a.executor import A2ARuntimeExecutor
+from ksadk.a2a.external_transport import (
+    A2AExternalTransport,
+    A2ARouteOpener,
+    A2ATransportLease,
+    CallableA2ARouteOpener,
+    GuardedA2AExternalTransport,
+)
+from ksadk.a2a.identity import (
+    A2AGatewayIdentityMiddleware,
+    A2AIngressIdentity,
+    A2ATrustedIdentityResolver,
+    CallableGatewayIdentityVerifier,
+    GatewayIdentityVerifier,
+)
 from ksadk.a2a.routes import A2AConfig, add_a2a_protocol_routes
 from ksadk.a2a.server import A2AProtocolServer
 from ksadk.a2a.space_client import (
     ENV_A2A_ENABLE_PUBLIC_EGRESS,
     ENV_A2A_SPACE_IDS,
     ERR_PUBLIC_EGRESS_DISABLED,
-    A2AExternalTransport,
     A2APlatformTask,
     A2ASpaceClient,
     DiscoveredAgent,
     SpaceAgentPage,
 )
 from ksadk.a2a.task_adapter import A2ARuntimeTaskAdapter
+from ksadk.a2a.task_event_dispatcher import A2ATaskEventDispatcher, A2ATaskEventSink
 from ksadk.a2a.task_event_outbox import (
     DEFAULT_A2A_EVENT_OUTBOX_PATH,
     ENV_A2A_EVENT_OUTBOX_PATH,
@@ -67,6 +87,8 @@ from ksadk.a2a.task_store import A2A_TASK_TABLE, build_a2a_task_store
 
 __all__ = [
     "A2AConfig",
+    "A2AContextIdentity",
+    "A2AContextStore",
     "A2AControlPlane",
     "A2AControlPlaneError",
     "A2AInternalAction",
@@ -75,6 +97,8 @@ __all__ = [
     "A2AOperation",
     "A2AEventAdapter",
     "A2AExternalTransport",
+    "A2AGatewayIdentityMiddleware",
+    "A2AIngressIdentity",
     "A2APlatformTask",
     "A2AProtocolServer",
     "A2ARuntimeExecutor",
@@ -82,11 +106,19 @@ __all__ = [
     "A2ASpaceClient",
     "A2A_PROTOCOL_VERSION",
     "A2ARoute",
+    "A2ARouteOpener",
     "A2ARouteInterface",
     "A2A_TASK_TABLE",
     "A2ATarget",
     "A2ATaskEventBatch",
+    "A2ATaskEventDispatcher",
+    "A2ATaskEventSink",
     "A2ATaskEventOutbox",
+    "A2ATransportLease",
+    "A2ATrustedIdentityResolver",
+    "AgentEngineA2ABootstrap",
+    "CallableA2ARouteOpener",
+    "CallableGatewayIdentityVerifier",
     "CredentialInjection",
     "DiscoveredAgent",
     "DEFAULT_A2A_EVENT_OUTBOX_PATH",
@@ -97,6 +129,8 @@ __all__ = [
     "ENV_A2A_TOKEN_DIR",
     "ERR_PUBLIC_EGRESS_DISABLED",
     "FileWorkloadTokenProvider",
+    "GatewayIdentityVerifier",
+    "GuardedA2AExternalTransport",
     "InMemoryA2ATaskEventOutbox",
     "JSONRPC_PATH",
     "InternalA2AControlPlaneClient",
@@ -105,6 +139,8 @@ __all__ = [
     "REST_PATH_PREFIX",
     "SpaceAgentPage",
     "SQLiteA2ATaskEventOutbox",
+    "SQLiteA2AContextStore",
+    "RuntimeA2AMetadata",
     "WorkloadTokenProvider",
     "add_a2a_protocol_routes",
     "build_a2a_task_store",
