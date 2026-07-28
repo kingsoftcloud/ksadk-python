@@ -21,20 +21,24 @@ from ksadk.a2a.card import (
     build_agent_card,
 )
 from ksadk.a2a.control_plane import (
+    A2A_INTERNAL_ACTIONS,
+    A2A_INTERNAL_PATH_PREFIX,
     ENV_A2A_CONTROL_PLANE_URL,
     ENV_A2A_TOKEN_DIR,
     A2AControlPlane,
     A2AControlPlaneError,
+    A2AInternalAction,
     A2AOperation,
     A2ARoute,
     A2ARouteInterface,
     A2ATarget,
     CredentialInjection,
     FileWorkloadTokenProvider,
-    KopA2AControlPlane,
+    InternalA2AControlPlaneClient,
     PreparedA2AOperation,
     RemoteTaskReference,
     WorkloadTokenProvider,
+    build_a2a_internal_action_path,
 )
 from ksadk.a2a.event_adapter import A2AEventAdapter
 from ksadk.a2a.executor import A2ARuntimeExecutor
@@ -65,6 +69,9 @@ __all__ = [
     "A2AConfig",
     "A2AControlPlane",
     "A2AControlPlaneError",
+    "A2AInternalAction",
+    "A2A_INTERNAL_ACTIONS",
+    "A2A_INTERNAL_PATH_PREFIX",
     "A2AOperation",
     "A2AEventAdapter",
     "A2AExternalTransport",
@@ -92,7 +99,7 @@ __all__ = [
     "FileWorkloadTokenProvider",
     "InMemoryA2ATaskEventOutbox",
     "JSONRPC_PATH",
-    "KopA2AControlPlane",
+    "InternalA2AControlPlaneClient",
     "PreparedA2AOperation",
     "RemoteTaskReference",
     "REST_PATH_PREFIX",
@@ -101,5 +108,6 @@ __all__ = [
     "WorkloadTokenProvider",
     "add_a2a_protocol_routes",
     "build_a2a_task_store",
+    "build_a2a_internal_action_path",
     "build_agent_card",
 ]

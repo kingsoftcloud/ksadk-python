@@ -38,7 +38,7 @@ from ksadk.a2a.control_plane import (
     A2ARouteInterface,
     CredentialInjection,
     DiscoveredAgent,
-    KopA2AControlPlane,
+    InternalA2AControlPlaneClient,
     PreparedA2AOperation,
     SpaceAgentPage,
 )
@@ -198,7 +198,7 @@ class A2ASpaceClient:
             control_plane_url = str(os.getenv(ENV_A2A_CONTROL_PLANE_URL) or "").strip()
             if not control_plane_url:
                 raise ValueError(f"missing {ENV_A2A_CONTROL_PLANE_URL}")
-            backend = KopA2AControlPlane(
+            backend = InternalA2AControlPlaneClient(
                 control_plane_url,
                 httpx_client=httpx_client,
             )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import time
 from pathlib import Path
 
@@ -9,9 +10,12 @@ import httpx
 import pytest
 
 from ksadk.a2a.control_plane import (
+    A2A_INTERNAL_ACTIONS,
+    A2A_INTERNAL_PATH_PREFIX,
     A2AControlPlaneError,
     FileWorkloadTokenProvider,
-    KopA2AControlPlane,
+    InternalA2AControlPlaneClient,
+    build_a2a_internal_action_path,
 )
 from ksadk.a2a.ids import require_a2a_resource_id
 
@@ -20,6 +24,30 @@ AGENT_ID = "a2a-agent-00000000000040008000000000000002"
 VERSION_ID = "a2a-version-00000000000040008000000000000003"
 TASK_ID = "a2a-task-00000000000040008000000000000004"
 NEXT_VERSION_ID = "a2a-version-00000000000040008000000000000006"
+
+
+def test_runtime_internal_action_names_and_paths_are_frozen() -> None:
+    expected_actions = {
+        "ListA2ASpaceAgents",
+        "PrepareA2ACall",
+        "PrepareA2ATaskOperation",
+        "BindA2ARemoteTask",
+        "AppendA2ATaskEvents",
+        "ResolveA2ACredential",
+    }
+
+    assert A2A_INTERNAL_ACTIONS == expected_actions
+    assert A2A_INTERNAL_PATH_PREFIX == "/agentengine/internal/v1/a2a"
+    assert all(re.fullmatch(r"[A-Z][A-Za-z0-9]*", action) for action in expected_actions)
+    assert {
+        build_a2a_internal_action_path(action)  # type: ignore[arg-type]
+        for action in expected_actions
+    } == {
+        f"/agentengine/internal/v1/a2a/{action}" for action in expected_actions
+    }
+
+    with pytest.raises(ValueError, match="unsupported A2A internal Action"):
+        build_a2a_internal_action_path("RunA2AAgent")  # type: ignore[arg-type]
 
 
 def test_resource_ids_require_lowercase_uuid4_hex() -> None:
@@ -107,7 +135,7 @@ async def test_list_space_agents_uses_internal_action_and_registry_token(tmp_pat
         )
 
     http = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://control")
-    client = KopA2AControlPlane(
+    client = InternalA2AControlPlaneClient(
         "https://control",
         token_provider=FileWorkloadTokenProvider(token_dir),
         httpx_client=http,
@@ -187,7 +215,7 @@ async def test_prepare_call_parses_frozen_route_and_raises_domain_errors(tmp_pat
         transport=httpx.MockTransport(handler),
         base_url="https://control",
     )
-    client = KopA2AControlPlane(
+    client = InternalA2AControlPlaneClient(
         "https://control",
         token_provider=FileWorkloadTokenProvider(token_dir),
         httpx_client=http,
@@ -230,7 +258,7 @@ async def test_control_plane_transport_failure_is_a_retryable_domain_error(tmp_p
         raise httpx.ConnectError("offline", request=request)
 
     http = httpx.AsyncClient(transport=httpx.MockTransport(fail))
-    client = KopA2AControlPlane(
+    client = InternalA2AControlPlaneClient(
         "https://control",
         token_provider=FileWorkloadTokenProvider(tmp_path),
         httpx_client=http,
@@ -251,7 +279,7 @@ async def test_control_plane_non_json_error_is_a_domain_error(tmp_path: Path) ->
     http = httpx.AsyncClient(
         transport=httpx.MockTransport(lambda request: httpx.Response(503, text="unavailable"))
     )
-    client = KopA2AControlPlane(
+    client = InternalA2AControlPlaneClient(
         "https://control",
         token_provider=FileWorkloadTokenProvider(tmp_path),
         httpx_client=http,
@@ -329,7 +357,7 @@ async def test_task_operation_and_credential_broker_contract(tmp_path: Path) -> 
         )
 
     http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    client = KopA2AControlPlane(
+    client = InternalA2AControlPlaneClient(
         "https://control",
         token_provider=FileWorkloadTokenProvider(tmp_path),
         httpx_client=http,
@@ -381,7 +409,7 @@ async def test_task_operation_and_credential_broker_contract(tmp_path: Path) -> 
 
 @pytest.mark.asyncio
 async def test_task_operation_rejects_non_contract_operation() -> None:
-    client = KopA2AControlPlane("https://control")
+    client = InternalA2AControlPlaneClient("https://control")
 
     with pytest.raises(ValueError, match="unsupported A2A task operation"):
         await client.prepare_task_operation(
@@ -405,7 +433,7 @@ async def test_task_operation_validates_operation_specific_fields(
     kwargs: dict[str, str],
     message: str,
 ) -> None:
-    client = KopA2AControlPlane("https://control")
+    client = InternalA2AControlPlaneClient("https://control")
 
     with pytest.raises(ValueError, match=message):
         await client.prepare_task_operation(

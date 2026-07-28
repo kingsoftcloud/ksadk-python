@@ -38,6 +38,25 @@ A2AOperation = Literal[
 ]
 A2A_OPERATIONS = frozenset(get_args(A2AOperation))
 
+A2AInternalAction = Literal[
+    "ListA2ASpaceAgents",
+    "PrepareA2ACall",
+    "PrepareA2ATaskOperation",
+    "BindA2ARemoteTask",
+    "AppendA2ATaskEvents",
+    "ResolveA2ACredential",
+]
+A2A_INTERNAL_ACTIONS = frozenset(get_args(A2AInternalAction))
+A2A_INTERNAL_PATH_PREFIX = "/agentengine/internal/v1/a2a"
+
+
+def build_a2a_internal_action_path(action: A2AInternalAction) -> str:
+    """Return the explicitly registered Runtime internal Action path."""
+
+    if action not in A2A_INTERNAL_ACTIONS:
+        raise ValueError(f"unsupported A2A internal Action: {action}")
+    return f"{A2A_INTERNAL_PATH_PREFIX}/{action}"
+
 
 class A2AControlPlaneError(RuntimeError):
     """Stable error returned by an AgentEngine A2A Action."""
@@ -296,8 +315,8 @@ class A2AControlPlane(ABC):
         raise NotImplementedError
 
 
-class KopA2AControlPlane(A2AControlPlane):
-    """HTTP implementation of the runtime-only A2A Actions."""
+class InternalA2AControlPlaneClient(A2AControlPlane):
+    """Workload-authenticated client for Runtime internal A2A Actions."""
 
     def __init__(
         self,
@@ -308,7 +327,9 @@ class KopA2AControlPlane(A2AControlPlane):
         timeout: float = 15.0,
     ) -> None:
         if not base_url:
-            raise ValueError(f"KopA2AControlPlane requires {ENV_A2A_CONTROL_PLANE_URL}")
+            raise ValueError(
+                f"InternalA2AControlPlaneClient requires {ENV_A2A_CONTROL_PLANE_URL}"
+            )
         self._base_url = base_url.rstrip("/")
         self._token_provider = token_provider or FileWorkloadTokenProvider()
         self._client = httpx_client
@@ -316,7 +337,7 @@ class KopA2AControlPlane(A2AControlPlane):
 
     async def _post(
         self,
-        action: str,
+        action: A2AInternalAction,
         *,
         audience: str,
         payload: dict[str, Any],
@@ -327,7 +348,7 @@ class KopA2AControlPlane(A2AControlPlane):
         try:
             try:
                 response = await client.post(
-                    f"{self._base_url}/agentengine/internal/v1/a2a/{action}",
+                    f"{self._base_url}{build_a2a_internal_action_path(action)}",
                     json=payload,
                     headers={"Authorization": f"Bearer {token}"},
                 )
@@ -774,6 +795,9 @@ def _prepared_operation_from_wire(data: dict[str, Any]) -> PreparedA2AOperation:
 
 
 __all__ = [
+    "A2AInternalAction",
+    "A2A_INTERNAL_ACTIONS",
+    "A2A_INTERNAL_PATH_PREFIX",
     "A2AControlPlane",
     "A2AControlPlaneError",
     "A2AOperation",
@@ -785,9 +809,10 @@ __all__ = [
     "ENV_A2A_CONTROL_PLANE_URL",
     "ENV_A2A_TOKEN_DIR",
     "FileWorkloadTokenProvider",
-    "KopA2AControlPlane",
+    "InternalA2AControlPlaneClient",
     "PreparedA2AOperation",
     "RemoteTaskReference",
     "SpaceAgentPage",
     "WorkloadTokenProvider",
+    "build_a2a_internal_action_path",
 ]
