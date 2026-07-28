@@ -1,0 +1,11 @@
+﻿# AgentEngine codex runtime 项目配置
+name: e2e_codex_agent
+version: "1.0.0"
+
+# 框架:codex(开发态 CodexRunner → 部署态 codex-runtime)
+framework: codex
+
+# codex 的模型与开发者指令(CodexRunner 读取并传入 codex thread)
+model: glm-5.2
+prompt: |
+  你是 codex 编码助手。简洁回答,能跑命令验证就跑(shell 工具),中文回复。

@@ -80,10 +80,21 @@ class CodexPhaseTracker:
         self._phases_by_item_id: dict[str, str] = {}
 
     def observe_item(self, params: dict[str, Any]) -> None:
-        """item/started(或 reload/completed):记录 itemId -> phase。"""
+        """item/started(或 reload/completed):记录 itemId -> phase。
+
+        codex 真实流 agentMessage 的 phase 常为 null,但 agentMessage 就是最终回复
+        (final_answer),reasoning 才是 commentary。phase 为 null 时按 item type 兜底:
+        agentMessage → final_answer,reasoning → commentary。
+        """
         item = _item_params(params)
         item_id = codex_item_id(item) or codex_item_id(params)
         phase = codex_phase_name(item) or codex_phase_name(params)
+        if not phase and item_id:
+            item_type = item.get("type") if isinstance(item, dict) else None
+            if item_type == "agentMessage":
+                phase = "final_answer"
+            elif item_type == "reasoning":
+                phase = "commentary"
         if item_id and phase:
             self._phases_by_item_id[item_id] = phase
 

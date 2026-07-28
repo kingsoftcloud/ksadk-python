@@ -53,7 +53,7 @@ async def test_approved_side_effect_tool_replays_receipt_without_second_write(
     service = InMemorySessionService()
     workspace_ui = tmp_path / "ui"
     monkeypatch.setenv("AGENTENGINE_UI_DIR", str(workspace_ui))
-    monkeypatch.setenv("KSADK_TOOL_APPROVAL_MODE", "strict")
+    monkeypatch.setenv("KSADK_TOOL_APPROVAL_MODE", "risk")
     monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
     await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-tool")
     await service.append_event(

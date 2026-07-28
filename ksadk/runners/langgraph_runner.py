@@ -589,8 +589,6 @@ class LangGraphRunner(BaseRunner):
         checkpoint_ref = self._extract_langgraph_checkpoint_ref(payload)
         history = payload.pop("history", [])
         native_context = self.build_native_context(payload.get("platform_context"))
-        normalized_payload = self._strip_platform_context_fields(payload)
-
         config = self._get_config(session_id)
         if is_checkpoint_resume:
             config = self._apply_checkpoint_resume_config(
@@ -602,13 +600,14 @@ class LangGraphRunner(BaseRunner):
         # 判断输入格式 / resume
         if is_checkpoint_resume:
             state = resume_value
-        elif self._has_prepare_state_hook():
-            state = self._prepare_state_with_hook(payload, session_id, history, is_resume=is_resume)
         elif is_resume:
-            if "input" in normalized_payload and len(normalized_payload) == 1:
-                state = normalized_payload["input"]
-            else:
-                state = normalized_payload
+            # ``Command(resume=...)`` is delivered to the graph's suspended
+            # interrupt. A custom prepare-state hook is for new user input;
+            # applying it here can rewrite an approval decision into ordinary
+            # graph state and turn an approved HITL action into a rejection.
+            state = resume_value
+        elif self._has_prepare_state_hook():
+            state = self._prepare_state_with_hook(payload, session_id, history)
         else:
             state = self._to_state(payload, history)
 
@@ -848,8 +847,6 @@ class LangGraphRunner(BaseRunner):
         resume_value = payload.get("input")
         checkpoint_ref = self._extract_langgraph_checkpoint_ref(payload)
         native_context = self.build_native_context(payload.get("platform_context"))
-        normalized_payload = self._strip_platform_context_fields(payload)
-
         invoke_payload = dict(payload)
         invoke_payload["session_id"] = session_id
         if history:
@@ -871,13 +868,12 @@ class LangGraphRunner(BaseRunner):
 
         if is_checkpoint_resume:
             state = resume_value
-        elif self._has_prepare_state_hook():
-            state = self._prepare_state_with_hook(payload, session_id, history, is_resume=is_resume)
         elif is_resume:
-            if "input" in normalized_payload and len(normalized_payload) == 1:
-                state = normalized_payload["input"]
-            else:
-                state = normalized_payload
+            # Keep the interrupt value intact for ``Command(resume=...)``;
+            # prepare-state hooks only shape fresh user turns.
+            state = resume_value
+        elif self._has_prepare_state_hook():
+            state = self._prepare_state_with_hook(payload, session_id, history)
         else:
             state = self._to_state(payload, history)
 

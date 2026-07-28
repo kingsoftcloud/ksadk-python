@@ -6,7 +6,9 @@ Usage: build [OPTIONS] [AGENT_DIR]
   AGENT_DIR: Agent 项目目录 (默认: 当前目录)
 
   模式:
-      code:      打包 zip + 依赖，上传 KS3 (默认)
+      auto:      按 artifact_type 推断 (默认)
+      managed:   只打包 ManagedRuntime manifest
+      code:      打包 zip + 依赖，上传 KS3
       container: 构建 Docker 镜像
 
   示例:
@@ -18,17 +20,19 @@ Usage: build [OPTIONS] [AGENT_DIR]
       KSYUN_REGION=cn-beijing-6 agentengine build . --mode code --push --no-cache
 
 Options:
-  -m, --mode [container|code]  构建模式: code (默认, zip+KS3) 或 container (Docker)
-  -t, --tag TEXT               镜像标签 (container 模式)
-  --registry TEXT              镜像仓库地址 (container 模式)
-  --push                       构建后推送 (镜像到仓库 / zip到KS3)
-  --no-cache                   强制重新构建，不使用缓存 (code: 忽略已有 zip；container: docker
-                               --no-cache)
-  --repackage                  Code 模式复用依赖缓存，但强制重新打包当前代码/runtime
-  -r, --region TEXT            KS3 区域 (code 模式)
-  --ks3-bucket TEXT            KS3 bucket 名称 (code 模式, 默认: agentengine-{region})
-  --output [pretty|json]       输出格式
-  -h, --help                   Show this message and exit.
+  -m, --mode [auto|managed|container|code]
+                                  构建模式: auto (按配置推断)、managed、code 或 container
+  -t, --tag TEXT                  镜像标签 (container 模式)
+  --registry TEXT                 镜像仓库地址 (container 模式)
+  --push                          构建后推送 (镜像到仓库 / zip到KS3)
+  --no-cache                      强制重新构建，不使用缓存 (code: 忽略已有 zip；container: docker
+                                  --no-cache)
+  --repackage                     Code 模式复用依赖缓存，但强制重新打包当前代码/runtime
+  -r, --region TEXT               KS3 区域 (code 模式)
+  --ks3-bucket TEXT               KS3 bucket 名称 (code 模式, 默认:
+                                  agentengine-{region})
+  --output [pretty|json]          输出格式
+  -h, --help                      Show this message and exit.
 === deploy_help ===
 Usage: deploy [OPTIONS] [AGENT_DIR]
 
@@ -50,8 +54,8 @@ Options:
   -n, --name TEXT                 部署名称
   -r, --region TEXT               区域 (default: cn-beijing-6)
   --account-id TEXT               金山云账号 ID（可选；未设置时从 AK/SK 反查）
-  --artifact-type [Code|Container]
-                                  Serverless 部署模式 (default: Code)
+  --artifact-type [ManagedRuntime|Code|Container]
+                                  Serverless 部署模式；默认从 agentengine.yaml 推断
   --namespace TEXT                K8s 命名空间
   -p, --port INTEGER              服务端口 (default: 8000)
   --registry TEXT                 镜像仓库地址 (k8s/serverless Container 模式)

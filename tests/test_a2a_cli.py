@@ -184,7 +184,7 @@ def test_a2a_serve_builds_server_and_exposes_agent_card(monkeypatch, tmp_path):
 
     assert result.exit_code == 0, result.output
     assert fake_runner.loaded is True
-    assert captured["host"] == "0.0.0.0"
+    assert captured["host"] == "127.0.0.1"
     assert captured["port"] == 9091
 
     client = TestClient(captured["app"])
@@ -196,7 +196,7 @@ def test_a2a_serve_builds_server_and_exposes_agent_card(monkeypatch, tmp_path):
     assert current_card.json()["name"] == "demo-agent"
     assert "url" not in current_card.json()
     assert {interface["url"] for interface in current_card.json()["supportedInterfaces"]} == {
-        "http://0.0.0.0:9091/a2a/jsonrpc",
-        "http://0.0.0.0:9091/a2a/v1",
+        "http://127.0.0.1:9091/a2a/jsonrpc",
+        "http://127.0.0.1:9091/a2a/v1",
     }
     assert [skill["id"] for skill in current_card.json()["skills"]] == ["echo"]

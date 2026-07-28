@@ -1630,7 +1630,7 @@ async def test_invoke_prepare_state_hook_receives_full_normalized_payload():
 
 
 @pytest.mark.asyncio
-async def test_invoke_resume_with_prepare_state_hook():
+async def test_invoke_resume_with_prepare_state_hook_preserves_raw_resume_value():
     captured = []
 
     def ksadk_prepare_state(payload, session_context):
@@ -1652,7 +1652,39 @@ async def test_invoke_resume_with_prepare_state_hook():
     state = runner._agent.last_ainvoke_state
     assert isinstance(state, Command)
     assert state.resume == {"approved": True, "comment": "looks good"}
-    assert captured[0]["is_resume"] is True
+    # Resume values belong to the graph interrupt, not application state. A
+    # state hook may reshape normal user input but must never turn an approval
+    # into a different Command(resume=...) payload.
+    assert captured == []
+
+
+@pytest.mark.asyncio
+async def test_stream_resume_with_prepare_state_hook_preserves_raw_resume_value():
+    captured = []
+
+    def ksadk_prepare_state(payload, session_context):
+        captured.append((payload, session_context))
+        return {"rewritten": True}
+
+    runner = _make_runner(module=SimpleNamespace(ksadk_prepare_state=ksadk_prepare_state))
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {
+                "session_id": "s1",
+                "resume": True,
+                "input": {"approve": True, "request_id": "appr-1"},
+            }
+        )
+    ]
+
+    assert isinstance(runner._agent.last_astream_state, Command)
+    assert runner._agent.last_astream_state.resume == {
+        "approve": True,
+        "request_id": "appr-1",
+    }
+    assert captured == []
+    assert chunks and chunks[-1]["type"] == "final"
 
 
 @pytest.mark.asyncio

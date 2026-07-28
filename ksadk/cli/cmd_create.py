@@ -11,6 +11,7 @@ from pathlib import Path
 
 import click
 import questionary
+from rich.markup import escape
 
 from ksadk.cli.cmd_config import custom_style
 from ksadk.cli.ui import (
@@ -412,7 +413,7 @@ def _load_framework_from_agentengine_yaml(directory: Path) -> str | None:
     if not isinstance(framework, str):
         return None
     framework = framework.strip().lower()
-    if framework in {"adk", "langchain", "langgraph", "deepagents", "openclaw", "hermes"}:
+    if framework in {"adk", "langchain", "langgraph", "deepagents", "openclaw", "hermes", "codex"}:
         return framework
     return None
 
@@ -1570,12 +1571,68 @@ deploy:
     )
 
 
+def _write_codex_project_config(project_path: Path, package_name: str) -> None:
+    """Write the minimal codex runtime project:yaml 驱动,无 package/agent.py。
+
+    codex 的 agent 逻辑由 prompt 承载(CodexRunner.load_agent 是 no-op),所以只生成
+    canonical agentengine.yaml(framework: codex,model+prompt)+ requirements +
+    README。model/prompt 经 CodexRunner 传入 codex thread(开发者指令)。
+    """
+    (project_path / "agentengine.yaml").write_text(
+        f"""# AgentEngine codex runtime 项目配置
+name: {package_name}
+version: "1.0.0"
+
+# 框架:codex(开发态 CodexRunner → 部署态 codex-runtime)
+framework: codex
+artifact_type: ManagedRuntime
+
+# 省略 version 时，build/deploy 从 AgentEngine Runtime catalog 获取默认版本。
+runtime:
+  name: codex
+
+# codex 的模型与开发者指令(CodexRunner 读取并传入 codex thread)
+model: glm-5.2
+prompt: |
+  你是 codex 编码助手。简洁回答,能跑命令验证就跑(shell 工具),中文回复。
+""",
+        encoding="utf-8-sig",
+    )
+    (project_path / "requirements.txt").write_text(
+        "ksadk[codex]\n", encoding="utf-8"  # 无 BOM:pip 解析 BOM 会报 Invalid requirement
+    )
+    (project_path / "README.md").write_text(
+        f"""# {package_name} — codex runtime agent
+
+## 快速开始
+
+```bash
+# 1. 编辑 .env 填星流 OPENAI_API_KEY / OPENAI_API_BASE / OPENAI_MODEL_NAME
+# 2. 本地运行(浏览器对话,codex 自动探测并启用代理)
+agentengine web .
+# 或
+ksadk web .
+```
+
+## 说明
+
+- codex 的 agent 逻辑由 `agentengine.yaml` 的 `prompt`(开发者指令)承载,无 agent.py。
+- codex 自动探测模型协议:OpenAI 官方直连,星流 chat 模型自动启用转换代理。
+- `agentengine build .` 只生成 YAML manifest bundle，不打包本机 Codex 二进制。
+- 部署:`agentengine deploy .`(服务端解析 ManagedRuntime 版本和 Linux 镜像 digest)。
+""",
+        encoding="utf-8-sig",
+    )
+
+
 @click.command(context_settings=dict(help_option_names=["-h", "--help"]))
 @click.argument("project_name", required=False)
 @click.option(
     "--framework",
     "-f",
-    type=click.Choice(["adk", "langchain", "langgraph", "deepagents", "openclaw", "hermes"]),
+    type=click.Choice(
+        ["adk", "langchain", "langgraph", "deepagents", "openclaw", "hermes", "codex"]
+    ),
     default="langgraph",
     help="框架类型 (default: langgraph)",
 )
@@ -1688,7 +1745,7 @@ def create(project_name: str, framework: str, from_agent_path: str):
 
         framework = questionary.select(
             "请选择开发框架:",
-            choices=["langgraph", "langchain", "deepagents", "adk", "openclaw", "hermes"],
+            choices=["langgraph", "langchain", "deepagents", "adk", "openclaw", "hermes", "codex"],
             default="langgraph",
             style=custom_style,
         ).ask()
@@ -1708,7 +1765,7 @@ def create(project_name: str, framework: str, from_agent_path: str):
 
     package_name = _runtime_package_name_or_exit(project_path.name)
     project_path.mkdir(parents=True)
-    if framework not in {"openclaw", "hermes"}:
+    if framework not in {"openclaw", "hermes", "codex"}:
         (project_path / package_name).mkdir(parents=True)
 
     # 检测全局配置
@@ -1901,6 +1958,24 @@ OPENAI_API_KEY={api_key}
         print_info("快速开始 (复制并执行):")
         _print_quick_start_commands(project_name, ["agentengine hermes deploy"])
         print_info("部署前如需覆盖模型/运行时参数，可先编辑 .env")
+        return
+    if framework == "codex":
+        _write_codex_project_config(project_path, package_name)
+        print_success("项目创建成功")
+        print_rule("快速开始")
+        print_info("快速开始 (复制并执行):")
+        _print_quick_start_commands(project_name, ["ksadk web ."])
+        print_info("编辑 .env 填星流 OPENAI_API_KEY/BASE/MODEL_NAME;codex 自动探测并启用代理")
+        # codex 本地环境检测(不阻断):缺 openai-codex SDK 时提醒
+        import importlib.util
+
+        if importlib.util.find_spec("openai_codex") is None:
+            print_warn(
+                escape(
+                    "缺少 codex runtime SDK:请先 `pip install 'ksadk[codex]'`"
+                    "(内含 codex CLI 二进制)"
+                )
+            )
         return
 
     # agentengine.yaml - Agent 配置

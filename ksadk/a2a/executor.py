@@ -40,7 +40,7 @@ ADK_V2_INTEGRATION_METADATA: dict[str, Any] = {
     ADK_V2_INTEGRATION_EXTENSION_URI: {"adk_agent_executor_v2": True}
 }
 
-KSADK_OUTPUT_SNAPSHOT_METADATA = {"ksadk_output_snapshot": True}
+_OUTPUT_SNAPSHOT_METADATA = {"ksadk_output_snapshot": True}
 _ArtifactKind = Literal["text", "thinking"]
 
 
@@ -103,7 +103,7 @@ class _ArtifactStreamEmitter:
             else Part(
                 text=text,
                 metadata=(
-                    dict(KSADK_OUTPUT_SNAPSHOT_METADATA)
+                    dict(_OUTPUT_SNAPSHOT_METADATA)
                     if replace_snapshot
                     else None
                 ),

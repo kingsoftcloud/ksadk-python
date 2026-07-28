@@ -12,6 +12,8 @@ from fastapi.responses import Response
 from starlette.background import BackgroundTask
 
 import ksadk.conversations as conversation
+from ksadk.events.runtime_event import EventType, RuntimeEvent
+from ksadk.events.store import RuntimeEventStore
 from ksadk.runners.base_runner import BaseRunner
 from ksadk.server.api_models import AgentRunRequest, InlineData, Part
 from ksadk.sessions.base import SessionEvent
@@ -129,6 +131,22 @@ class _SlowStreamingRunner(_OverrideStreamingRunner):
         await asyncio.sleep(0.05)
         yield {"type": "text", "delta": "lo"}
         yield {"type": "final", "output": "hello"}
+
+
+class _PausedAfterFirstTextRunner(_OverrideStreamingRunner):
+    """Keeps a detached run alive long enough to inspect its recovery history."""
+
+    def __init__(self):
+        super().__init__()
+        self.first_delta_consumed = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def stream(self, input_data: dict):
+        yield {"type": "text", "delta": "第一段正在生成。"}
+        self.first_delta_consumed.set()
+        await self.release.wait()
+        yield {"type": "text", "delta": "第二段继续生成。"}
+        yield {"type": "final", "output": "第一段正在生成。第二段继续生成。"}
 
 
 class _UnavailableSessionService(InMemorySessionService):
@@ -1146,6 +1164,67 @@ async def test_session_actions_prefer_latest_run_status_when_previous_run_comple
     ):
         assert payload["ActiveInvocationId"] == "run_new_active"
         assert payload["ActiveRunStatus"] == "in_progress"
+
+
+@pytest.mark.asyncio
+async def test_session_actions_project_runtime_event_lifecycle(monkeypatch):
+    """RuntimeEvent-backed LangGraph runs remain reconnectable through the public session API."""
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    session = await service.create_session(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-runtime-event-lifecycle",
+    )
+    store = RuntimeEventStore(service)
+    invocation_id = "run-runtime-event-lifecycle"
+    await store.append_one(
+        RuntimeEvent.create(
+            EventType.RUN_STARTED,
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id=session.id,
+            invocation_id=invocation_id,
+            seq_id=1,
+            payload={"status": "in_progress"},
+        )
+    )
+
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        listed = await client.post(
+            "/agentengine/api/v1/ListSessions",
+            json={"AgentId": "demo-agent", "UserId": "user-1"},
+        )
+        fetched = await client.post(
+            "/agentengine/api/v1/GetSession",
+            json={"SessionId": session.id},
+        )
+
+    for payload in (listed.json()["Data"]["Sessions"][0], fetched.json()["Data"]["Session"]):
+        assert payload["ActiveInvocationId"] == invocation_id
+        assert payload["ActiveRunStatus"] == "in_progress"
+
+    await store.append_one(
+        RuntimeEvent.create(
+            EventType.RUN_COMPLETED,
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id=session.id,
+            invocation_id=invocation_id,
+            seq_id=2,
+            payload={"status": "completed"},
+        )
+    )
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        completed = await client.post(
+            "/agentengine/api/v1/GetSession",
+            json={"SessionId": session.id},
+        )
+
+    assert completed.json()["Data"]["Session"]["ActiveRunStatus"] == "completed"
 
 
 @pytest.mark.asyncio
@@ -4815,7 +4894,10 @@ async def test_run_agent_exposes_nested_custom_metadata_to_runtime_context(monke
     }
     request_metadata = {
         **custom_metadata,
-        "agentengine": {"invocation_id": "internal-invocation"},
+        "agentengine": {
+            "invocation_id": "internal-invocation",
+            "tool_approval_mode": "risk",
+        },
     }
     transport = httpx.ASGITransport(app=server_app_module.app)
     async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
@@ -4835,8 +4917,12 @@ async def test_run_agent_exposes_nested_custom_metadata_to_runtime_context(monke
     assert {
         key: value for key, value in response_metadata.items() if key != "agentengine"
     } == custom_metadata
-    assert response_metadata["agentengine"] == {"invocation_id": "internal-invocation"}
+    assert response_metadata["agentengine"] == {
+        "invocation_id": "internal-invocation",
+        "tool_approval_mode": "risk",
+    }
     assert runner.calls[-1]["platform_context"]["metadata"] == custom_metadata
+    assert runner.calls[-1]["request_metadata"]["tool_approval_mode"] == "risk"
 
 
 @pytest.mark.asyncio
@@ -5273,11 +5359,64 @@ async def test_run_agent_stream_continues_after_client_disconnect(monkeypatch):
     assert [event.event_type for event in events] == [
         "user_message",
         "run_status",
+        "assistant_stream_snapshot",
         "assistant_message",
         "run_status",
     ]
     assert events[-2].content["parts"][0]["text"] == "hello"
     assert events[-1].content["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_background_run_exposes_partial_assistant_text_to_session_history(monkeypatch):
+    """A refresh can recover the assistant text produced before the browser left."""
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    runner = _PausedAfterFirstTextRunner()
+
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+            started = await client.post(
+                "/agentengine/api/v1/RunAgent",
+                json={
+                    "AgentId": "demo-agent",
+                    "SessionId": "sess-partial-history",
+                    "Messages": [{"role": "user", "content": "写一篇长文"}],
+                    "InvocationId": "run-partial-history",
+                    "ApiFormat": "responses",
+                    "Background": True,
+                },
+            )
+            assert started.status_code == 200
+            await asyncio.wait_for(runner.first_delta_consumed.wait(), timeout=1)
+
+            restored = await client.post(
+                "/agentengine/api/v1/ListSessionMessages",
+                json={
+                    "AgentId": "demo-agent",
+                    "SessionId": "sess-partial-history",
+                    "IncludeReasoning": True,
+                    "IncludeToolEvents": True,
+                },
+            )
+
+        assert restored.status_code == 200
+        messages = restored.json()["Data"]["Messages"]
+        assert [(message["Role"], message["Content"]["text"]) for message in messages] == [
+            ("user", "写一篇长文"),
+            ("assistant", "第一段正在生成。"),
+        ]
+        events = await service.get_events("sess-partial-history")
+        snapshots = [event for event in events if event.event_type == "assistant_stream_snapshot"]
+        assert len(snapshots) == 1
+        assert snapshots[0].content["parts"][0]["text"] == "第一段正在生成。"
+        assert all(event.event_type != "assistant_message" for event in events)
+    finally:
+        runner.release.set()
 
 
 @pytest.mark.asyncio

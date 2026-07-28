@@ -112,6 +112,12 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     ),
     EnvVarSpec("KSADK_CHECKPOINT_PATH", "sessions", "Local SQLite checkpoint database path."),
     EnvVarSpec(
+        "KSADK_CODEX_USE_PROXY",
+        "codex",
+        "Codex proxy override: 1 forces the local Responses-to-Chat proxy and "
+        "0 forces direct mode.",
+    ),
+    EnvVarSpec(
         "KSADK_COMMAND_", "sandbox", "Internal prefix for command policy environment controls."
     ),
     EnvVarSpec(
@@ -237,6 +243,27 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     EnvVarSpec("KSADK_MEMORY_PREFIX", "memory", "Generic memory key prefix.", "ksadk:memory:"),
     EnvVarSpec("KSADK_MEMORY_TTL", "memory", "Generic memory default TTL seconds."),
     EnvVarSpec("KSADK_MEMORY_URL", "memory", "Generic memory backend URL.", sensitive=True),
+    EnvVarSpec(
+        "KSADK_MODEL_PROXY_AGENTS",
+        "model_proxy",
+        "Comma-separated agent allowlist for the experimental model proxy.",
+    ),
+    EnvVarSpec(
+        "KSADK_MODEL_PROXY_DENY",
+        "model_proxy",
+        "Comma-separated agent denylist that disables the model proxy.",
+    ),
+    EnvVarSpec(
+        "KSADK_MODEL_PROXY_ENABLED",
+        "model_proxy",
+        "Enable the experimental model proxy globally.",
+        "0",
+    ),
+    EnvVarSpec(
+        "KSADK_MODEL_PROXY_MODELS",
+        "model_proxy",
+        "Comma-separated model allowlist for the experimental model proxy.",
+    ),
     EnvVarSpec("KSADK_PG_EVENTS_TABLE", "sessions", "Internal PostgreSQL events table constant."),
     EnvVarSpec(
         "KSADK_PG_SESSIONS_TABLE", "sessions", "Internal PostgreSQL sessions table constant."
@@ -249,6 +276,20 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     ),
     EnvVarSpec(
         "KSADK_PROJECT_DIR", "sessions", "Project root used for local session/workspace state."
+    ),
+    EnvVarSpec(
+        "KSADK_PROXY_TOKEN", "model_proxy", "Local Codex proxy bearer token.", sensitive=True
+    ),
+    EnvVarSpec(
+        "KSADK_PROXY_UPSTREAM_BASE",
+        "model_proxy",
+        "Override URL for the Codex proxy upstream provider.",
+    ),
+    EnvVarSpec(
+        "KSADK_PROXY_UPSTREAM_KEY",
+        "model_proxy",
+        "Override credential for the Codex proxy upstream provider.",
+        sensitive=True,
     ),
     EnvVarSpec(
         "KSADK_PUBLIC_SKILL_ALLOWLIST",
@@ -507,7 +548,10 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "use * to allow all.",
     ),
     EnvVarSpec(
-        "KSADK_TOOL_APPROVAL_MODE", "tools", "Built-in tool approval mode: off or strict.", "off"
+        "KSADK_TOOL_APPROVAL_MODE",
+        "tools",
+        "Built-in tool approval mode: ask, risk, or full.",
+        "risk",
     ),
     EnvVarSpec(
         "KSADK_TOOL_RESULT_DIR", "tools", "Directory used to persist oversized tool results."
@@ -565,7 +609,7 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "KSADK_WEB_VERSION",
         "web",
         "Published KsADK Web npm version used for a reproducible wheel build.",
-        "0.2.19",
+        "0.3.0",
     ),
     EnvVarSpec(
         "KSADK_WORKING_SET_MAX_FILES",

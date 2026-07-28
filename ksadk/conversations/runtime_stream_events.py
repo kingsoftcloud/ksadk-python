@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any, AsyncIterator, Callable, Dict, Mapping, Optional, Sequence
 
 from ksadk.conversations.run_kinds import (
@@ -10,6 +11,8 @@ from ksadk.conversations.run_kinds import (
 )
 from ksadk.conversations.runtime_compaction import preview_auto_compaction
 from ksadk.conversations.runtime_constants import (
+    ASSISTANT_STREAM_SNAPSHOT_INTERVAL_SECONDS,
+    ASSISTANT_STREAM_SNAPSHOT_MIN_NEW_CHARS,
     PTL_RETRY_KEEP_TAIL_GROUPS,
 )
 from ksadk.conversations.runtime_governance import (
@@ -197,6 +200,9 @@ async def _iter_conversation_turn_events(
         model_options=prepared.model_options,
         kb_context=ambient_contexts.get("kb_context"),
         memory_context=ambient_contexts.get("memory_context"),
+        tool_approval_mode=str(
+            prepared.request_metadata.get("tool_approval_mode") or ""
+        ),
     )
     if prepared.compaction_triggered:
         yield {
@@ -265,6 +271,9 @@ async def _iter_conversation_turn_events(
         )
 
         accumulated_text = ""
+        last_snapshot_text = ""
+        last_snapshot_at = 0.0
+        snapshot_index = 0
         accumulated_reasoning_parts: list[str] = []
         emitted_anything = False
         emitted_response_artifacts = False
@@ -288,6 +297,34 @@ async def _iter_conversation_turn_events(
                 invocation_id=prepared.invocation_id,
                 session_service_provider=provider,
             )
+
+        async def _persist_assistant_snapshot(*, force: bool = False) -> None:
+            """Persist a bounded replay point for detached stream recovery."""
+            nonlocal last_snapshot_at, last_snapshot_text, snapshot_index
+            if not accumulated_text or accumulated_text == last_snapshot_text:
+                return
+            now = time.monotonic()
+            if (
+                last_snapshot_text
+                and not force
+                and len(accumulated_text) - len(last_snapshot_text)
+                < ASSISTANT_STREAM_SNAPSHOT_MIN_NEW_CHARS
+                and now - last_snapshot_at < ASSISTANT_STREAM_SNAPSHOT_INTERVAL_SECONDS
+            ):
+                return
+            snapshot_index += 1
+            await append_conversation_event(
+                session_id=prepared.session_id,
+                author=runner_name,
+                role="model",
+                text=accumulated_text,
+                invocation_id=prepared.invocation_id,
+                event_type="assistant_stream_snapshot",
+                metadata={"stream_snapshot": True, "snapshot_index": snapshot_index},
+                session_service_provider=provider,
+            )
+            last_snapshot_text = accumulated_text
+            last_snapshot_at = now
 
         for attempt in range(2):
             try:
@@ -396,6 +433,7 @@ async def _iter_conversation_turn_events(
                                         delta if replace else accumulated_text + delta
                                     )
                                     emitted_anything = True
+                                    await _persist_assistant_snapshot(force=replace)
                                     text_event: dict[str, Any] = {
                                         "type": "text",
                                         "delta": delta,
@@ -405,6 +443,7 @@ async def _iter_conversation_turn_events(
                                     yield text_event
                                 continue
                             if chunk_type == "tool_call":
+                                await _persist_assistant_snapshot(force=True)
                                 _governance_record_tool_call(governance)
                                 emitted_response_artifacts = True
                                 tool_args = chunk.get("tool_args", {})
@@ -446,6 +485,7 @@ async def _iter_conversation_turn_events(
                                 }
                                 continue
                             if chunk_type in {"stage_tool_call", "stage_tool_result"}:
+                                await _persist_assistant_snapshot(force=True)
                                 emitted_response_artifacts = True
                                 tool_name = str(
                                     chunk.get("tool_name") or chunk.get("name") or "tool"
@@ -496,6 +536,7 @@ async def _iter_conversation_turn_events(
                                 }
                                 continue
                             if chunk_type == "tool_result":
+                                await _persist_assistant_snapshot(force=True)
                                 emitted_response_artifacts = True
                                 tool_name = str(chunk.get("tool_name") or "tool")
                                 tool_args = chunk.get("tool_args", {})
@@ -605,6 +646,7 @@ async def _iter_conversation_turn_events(
                                 }
                                 continue
                             if chunk_type in ("interrupt", "approval"):
+                                await _persist_assistant_snapshot(force=True)
                                 # langgraph_runner 流式路径冒 `approval`(含 HITL action_requests);
                                 # invoke 路径冒 `interrupt`。两者统一走 approval_request 通道。
                                 interrupt_info = chunk.get("interrupt_info")

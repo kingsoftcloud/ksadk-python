@@ -257,9 +257,38 @@ def tool_dispatcher(
     include: str | Iterable[str] | None = None,
     profile: str = "default",
 ) -> dict[str, Any]:
-    """List, describe, or call ksadk built-in tools through one governed entrypoint."""
+    """List, describe, or call ksadk built-in tools through one governed entrypoint.
+
+    Args:
+        action: One of "list" (list available tools), "describe" (get a tool's
+            spec), or "call" (execute a tool). Common synonyms "call_tool",
+            "execute", "run" are auto-mapped to "call"; "get" to "describe".
+        tool_name: Required for "describe" and "call"; ignored for "list".
+        arguments: Tool arguments (dict or JSON string); used with "call".
+        include: Comma-separated tool groups to scope (e.g. "skill,sandbox").
+        profile: Tool profile name (default: "default").
+    """
 
     normalized_action = str(action or "").strip().lower()
+    # 兼容 LLM 常见同义词,避免 "call_tool"/"execute"/"run" 等导致 unknown_action。
+    _ACTION_SYNONYMS = {
+        "call_tool": "call",
+        "execute": "call",
+        "run": "call",
+        "invoke": "call",
+        "get": "describe",
+        "info": "describe",
+        "ls": "list",
+        "search": "list",
+    }
+    normalized_action = _ACTION_SYNONYMS.get(normalized_action, normalized_action)
+    # LLM 常把 tool_name 塞进 action(如 "list_skills"/"search_skills"/"run_command")。
+    # 如果 action 不是合法值,无论 tool_name 是否有值,都自动当成 "call":
+    # 有 tool_name → 直接 call; 无 tool_name → 把 action 值当 tool_name 再 call。
+    if normalized_action not in ("list", "describe", "call"):
+        if not tool_name:
+            tool_name = normalized_action
+        normalized_action = "call"
     requested_include = _normalize_include(include)
 
     if normalized_action == "list":
@@ -883,6 +912,8 @@ def _tool_spec(
         "risk_level": policy.risk_level,
         "requires_approval": tool_policy_requires_approval(policy),
         "side_effects": list(policy.side_effects),
+        "approval_scopes": list(policy.approval_scopes),
+        "approval_exempt": policy.approval_exempt,
         "enabled": True,
     }
     for key, value in dict(extras or {}).items():

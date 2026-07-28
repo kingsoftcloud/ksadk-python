@@ -12,7 +12,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     env:
-      KSADK_WEB_VERSION: "0.2.19"
+      KSADK_WEB_VERSION: "0.3.0"
     steps:
       - uses: actions/checkout@v4
 
@@ -119,3 +119,27 @@ jobs:
 
       - name: a2a command is registered (no silent ImportError swallow)
         run: uv run --no-sync python -c "from ksadk.cli import _register_commands, cli; _register_commands(); assert 'a2a' in cli.commands, 'a2a command was silently swallowed'; print('a2a registered OK')"
+
+  test-codex-native-runtime:
+    name: Codex native ManagedRuntime (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install KsADK and native Codex runtime
+        run: uv sync --extra dev --extra codex
+
+      - name: Import platform package, resolve binary, and start local Web
+        run: uv run --no-sync pytest tests/test_managed_runtime_native_smoke.py -q

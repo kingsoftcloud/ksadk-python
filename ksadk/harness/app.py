@@ -131,6 +131,15 @@ class HarnessApp:
     def _build_runner(self, config: HarnessConfig) -> BaseRunner:
         for plugin in self._plugins:
             plugin.before_build(config)
+        if config.runtime == "codex":
+            # codex runtime:CodexRunner(经 ksadk web 已验证路径),detector stub 用 CODEX
+            from ksadk.detection.detector import FrameworkType
+            from ksadk.runners.codex_runner import CodexRunner
+
+            detection = type(
+                "D", (), {"name": config.model, "type": FrameworkType.CODEX}
+            )()
+            return CodexRunner(detection, str(self._workspace_root))
         return YamlAgentRunner(
             config,
             reasoner=self._reasoner,
@@ -143,9 +152,12 @@ class HarnessApp:
             raise ValueError("adapter 不接受 invocation override;请传给 start(request)")
         if self._adapter is not None:
             return self._adapter
-        builder = self._adapter_builder or (
-            lambda runner: RunnerRuntimeAdapter(runner, runtime_type="harness")
-        )
+        rt = "codex" if self._config.runtime == "codex" else "harness"
+
+        def _default_builder(runner: BaseRunner) -> RuntimeAdapter:
+            return RunnerRuntimeAdapter(runner, runtime_type=rt)
+
+        builder = self._adapter_builder or _default_builder
         self._adapter = builder(self.build_runner())
         return self._adapter
 
@@ -240,7 +252,7 @@ class HarnessApp:
         app = create_runtime_app(
             RuntimeAppConfig(
                 runner=runner,
-                runtime_type="harness",
+                runtime_type="codex" if self._config.runtime == "codex" else "harness",
                 route_groups=self._route_groups(),
                 a2a=self._a2a,
                 runtime_adapter=self.adapter() if self._a2a is not None else None,

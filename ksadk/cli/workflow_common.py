@@ -131,7 +131,7 @@ def should_build_artifact(
     if target != "serverless":
         return False
     mode = (artifact_type or "Code").strip().lower()
-    if mode == "code":
+    if mode in {"code", "managedruntime"}:
         return not bool(ks3_path)
     if mode == "container":
         return not bool(image)
@@ -157,7 +157,7 @@ def plan_artifact_build(
     explicit_ref_option = None
     if target == "serverless" and not should_build:
         mode = (artifact_type or "Code").strip().lower()
-        if mode == "code" and ks3_path:
+        if mode in {"code", "managedruntime"} and ks3_path:
             explicit_ref_option = "--ks3-path"
         elif mode == "container" and image:
             explicit_ref_option = "--image"
@@ -192,13 +192,17 @@ def _predict_artifact_reference(
         "cn-beijing-6" if str(region or "").strip() == "pre-online" else str(region or "").strip()
     )
 
-    if normalized_artifact_type == "code":
+    if normalized_artifact_type in {"code", "managedruntime"}:
         bucket = (ks3_bucket or "").strip()
         if not bucket and account_id and normalized_region:
             bucket = f"agentengine-{account_id}-{normalized_region}"
         if not bucket:
             bucket = "<ks3-bucket>"
-        return f"ks3://{bucket}/agents/{normalized_deploy_name}/code_<dry-run>.zip"
+        artifact_label = "runtime" if normalized_artifact_type == "managedruntime" else "code"
+        return (
+            f"ks3://{bucket}/agents/{normalized_deploy_name}/"
+            f"{artifact_label}_<dry-run>.zip"
+        )
 
     if normalized_artifact_type == "container":
         normalized_registry = (registry or "").strip().rstrip("/")

@@ -210,10 +210,10 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     assert "workflow_dispatch:" in workflow
     assert "publish_target:" in workflow
     assert "alias-only" in workflow
-    assert 'default: "0.2.19"' in workflow
+    assert 'default: "0.3.0"' in workflow
     assert "approved_source_commit:" in workflow
     assert "Reviewed source commit SHA recorded in docs/maintainer-approval-record.md" in workflow
-    assert "KSADK_WEB_VERSION: ${{ github.event.inputs.ksadk_web_version || '0.2.19' }}" in workflow
+    assert "KSADK_WEB_VERSION: ${{ github.event.inputs.ksadk_web_version || '0.3.0' }}" in workflow
     assert (
         "KSADK_APPROVED_SOURCE_COMMIT: "
         "${{ github.event.inputs.approved_source_commit || "
@@ -231,12 +231,14 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     assert "make public-test" in ci_workflow
     assert "tests/test_conversation_runtime.py" not in ci_workflow
     assert "tests/test_server_session_app.py" not in ci_workflow
-    assert 'KSADK_WEB_VERSION: "0.2.19"' in ci_workflow
+    assert 'KSADK_WEB_VERSION: "0.3.0"' in ci_workflow
     assert "PUBLIC_KSADK_WEB_VERSION" not in ci_workflow
-    assert "KSADK_WEB_VERSION ?= 0.2.19" in makefile
+    assert "KSADK_WEB_VERSION ?= 0.3.0" in makefile
     assert (
         "PUBLIC_TEST_TARGETS ?= tests/test_public_release_positioning.py "
-        "tests/test_config_env_registry.py" in makefile
+        "tests/test_config_env_registry.py tests/test_managed_runtime_builder.py "
+        "tests/test_managed_runtime_resolution.py tests/cli/test_cmd_create_codex.py "
+        "tests/runners/test_codex_runner.py" in makefile
     )
     assert "public-sync-ksadk-web-static: sync-ksadk-web-static" in makefile
     assert "python3 scripts/open_source_audit.py --target public-repo" in makefile
@@ -247,6 +249,7 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     assert '--expected-current-commit "$${KSADK_APPROVED_SOURCE_COMMIT:-}"' not in makefile
     assert "KSADK_APPROVED_SOURCE_COMMIT is required" in makefile
     assert "public-build-check: clean-dist sync-ksadk-web-static" in makefile
+    assert "verify-ksadk-web-wheel-static" in makefile
     assert (
         "public-preflight: public-version-gate public-audit sync-ksadk-web-static "
         "public-test docs-site-build public-build-check" in makefile

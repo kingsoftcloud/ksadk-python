@@ -16,8 +16,16 @@ from ksadk.tools.result_budget import budget_tool_output, default_tool_result_bu
 from ksadk.toolsets._langchain import as_tool
 
 _WEB_TOOL_POLICIES = {
-    "web_fetch": ToolPolicy(risk_level="low"),
-    "web_search": ToolPolicy(risk_level="low"),
+    "web_fetch": ToolPolicy(
+        risk_level="low",
+        approval_scopes=("public_network",),
+        approval_exempt=True,
+    ),
+    "web_search": ToolPolicy(
+        risk_level="low",
+        approval_scopes=("public_network",),
+        approval_exempt=True,
+    ),
 }
 
 

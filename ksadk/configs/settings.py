@@ -721,3 +721,13 @@ def setup_environment(agent_path: Path | str):
         click.echo(f"🧠 Model:    {click.style(model_name, fg='cyan')} (Default)")
     if not os.getenv("MODEL_NAME") and os.getenv("OPENAI_MODEL_NAME"):
         os.environ["MODEL_NAME"] = os.getenv("OPENAI_MODEL_NAME", "")
+
+    # 4. 模型出口协议转换层(v2.2):gate 开启且模型在白名单时懒起进程内 ProxyServer,
+    # 把 OPENAI_BASE_URL 重定向到它。默认 gate 关,不重定向,历史路径零影响。
+    # codex 不走此路(它走 AsyncCodexClient 的 v2.1 provider 注入)。
+    try:
+        from ksadk.model_proxy.bootstrap import setup_proxy_redirect_if_enabled
+
+        setup_proxy_redirect_if_enabled()
+    except Exception:  # noqa: BLE001  代理可选,失败不影响主流程(默认关时本就不触发)
+        pass

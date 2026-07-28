@@ -386,7 +386,7 @@ class ServerlessProvider(BaseDeployProvider):
         """构建 & 上传 (客户端直传 KS3)"""
         artifact_type = target.extra.get("artifact_type", "Code")
 
-        if artifact_type == "Code":
+        if artifact_type in {"Code", "ManagedRuntime"}:
             # 1. 检查是否已有 KS3 路径
             # 优先级: CLI传入 > Metadata缓存 (仅当 !no_cache)
             cli_ks3_path = target.extra.get("ks3_path")
@@ -404,17 +404,24 @@ class ServerlessProvider(BaseDeployProvider):
                 logger.info(f"Using cached bundle: {cached_ks3_path}")
                 return package_info
 
-            # 2. 构建 ZIP 包 (委托给 CodeBuilder)
+            # 2. 构建 ZIP 包
 
             # 传递配置，包括 no_cache
             builder_config = target.extra.copy()
             builder_config["no_cache"] = no_cache
             builder_config["repackage"] = repackage
 
-            # 实例化 Builder
-            # 注意: CodeBuilder 目前设计为直接操作 project_dir，
-            # 这里传入原始 project_dir (package_info.project_dir)
-            builder = CodeBuilder(Path(package_info.project_dir), config=builder_config)
+            if artifact_type == "ManagedRuntime":
+                from ksadk.builders.managed_runtime_builder import ManagedRuntimeBuilder
+
+                builder = ManagedRuntimeBuilder(
+                    Path(package_info.project_dir),
+                    config=builder_config,
+                    runtime_version=str(target.extra.get("runtime_version") or ""),
+                )
+            else:
+                # CodeBuilder 直接操作原始 project_dir。
+                builder = CodeBuilder(Path(package_info.project_dir), config=builder_config)
 
             # 执行构建
             build_result = builder.build()
@@ -425,11 +432,15 @@ class ServerlessProvider(BaseDeployProvider):
             zip_path = build_result.artifact_path
             if zip_path is None:
                 raise RuntimeError("代码构建成功但未生成 artifact_path")
+            package_info.metadata.update(build_result.metadata)
+            if build_result.metadata.get("manifest_sha256"):
+                target.extra["manifest_sha256"] = build_result.metadata["manifest_sha256"]
             # click.echo(f"   ✅ ZIP 已生成: {zip_path}")
 
             # 3. 直接上传 KS3 (使用本地 AK/SK)
             # 3. 直接上传 KS3 (使用本地 AK/SK)
-            click.echo("\n正在上传代码包到 KS3...")
+            artifact_label = "Runtime manifest" if artifact_type == "ManagedRuntime" else "代码包"
+            click.echo(f"\n正在上传{artifact_label}到 KS3...")
             upload_started_at = time.monotonic()
 
             ks3_bucket = target.extra.get("ks3_bucket")
@@ -441,7 +452,8 @@ class ServerlessProvider(BaseDeployProvider):
             from datetime import datetime
 
             timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-            object_key = f"agents/{package_info.name}/code_{timestamp}.zip"
+            object_prefix = "runtime" if artifact_type == "ManagedRuntime" else "code"
+            object_key = f"agents/{package_info.name}/{object_prefix}_{timestamp}.zip"
 
             ks3_path = await uploader.upload(zip_path, object_key)
 
@@ -537,7 +549,8 @@ class ServerlessProvider(BaseDeployProvider):
         # 构造请求 payload
         artifact_type = target.extra.get("artifact_type", "Code")
         artifact_path = ""
-        if artifact_type == "Code":
+        code_backed = artifact_type in {"Code", "ManagedRuntime"}
+        if code_backed:
             original_artifact_path = package_info.metadata.get("ks3_path", "")
             artifact_path = original_artifact_path
 
@@ -566,9 +579,9 @@ class ServerlessProvider(BaseDeployProvider):
 
             if not artifact_path:
                 raise ValueError(
-                    "❌ 未找到代码包路径 (ks3_path)。\n"
-                    "   在 Serverless 模式下，必须先上传代码包。\n"
-                    "   👉 请先执行: agentengine build --mode code --push\n"
+                    "❌ 未找到 KS3 artifact 路径 (ks3_path)。\n"
+                    "   在 Serverless 模式下，必须先上传构建产物。\n"
+                    "   👉 请先执行: agentengine build --push\n"
                     "   或者在 deploy 命令中使用 --ks3-path 指定路径。"
                 )
 
@@ -577,10 +590,10 @@ class ServerlessProvider(BaseDeployProvider):
             )
             if not parsed_bucket or not parsed_object_key:
                 raise ValueError(
-                    "❌ ks3_path 格式无效，缺少代码包对象路径。\n"
+                    "❌ ks3_path 格式无效，缺少 artifact 对象路径。\n"
                     f"   当前值: {original_artifact_path or '(empty)'}\n"
                     "   期望格式: ks3://<bucket>/<object-key>\n"
-                    "   👉 请重新执行: agentengine build --mode code --push\n"
+                    "   👉 请重新执行: agentengine build --push\n"
                     "   或者传入完整的 --ks3-path。"
                 )
 
@@ -591,7 +604,7 @@ class ServerlessProvider(BaseDeployProvider):
 
         # 构建 KS3 凭证
         ks3_config = None
-        if artifact_type == "Code":
+        if code_backed:
             from ksadk.common.auth import AWSV4Auth
 
             auth = AWSV4Auth()  # 读取本地 AK/SK
@@ -652,6 +665,27 @@ class ServerlessProvider(BaseDeployProvider):
                     "bucket": bucket_name,
                 }
                 logger.info(f"📦 KS3 Config: bucket={bucket_name}, region={ks3_region}")
+
+        runtime_config = None
+        if artifact_type == "ManagedRuntime":
+            manifest_sha256 = str(
+                target.extra.get("manifest_sha256")
+                or package_info.metadata.get("manifest_sha256")
+                or ""
+            ).strip()
+            if not manifest_sha256 and target.extra.get("dry_run"):
+                manifest_sha256 = "<manifest-sha256>"
+            runtime_config = {
+                "name": str(target.extra.get("runtime_name") or "").strip(),
+                "version": str(target.extra.get("runtime_version") or "").strip(),
+                "manifest_sha256": manifest_sha256,
+            }
+            missing = [key for key, value in runtime_config.items() if not value]
+            if missing:
+                raise ValueError(
+                    "ManagedRuntime 部署缺少 "
+                    + ", ".join(f"runtime_config.{key}" for key in missing)
+                )
 
         try:
             # 获取 dry_run 标识
@@ -714,6 +748,8 @@ class ServerlessProvider(BaseDeployProvider):
                                 "url": resolved_ui.url,
                             },
                         }
+                        if runtime_config:
+                            update_data["runtime_config"] = runtime_config
 
                         if ks3_config:
                             update_data["ks3"] = ks3_config
@@ -733,6 +769,18 @@ class ServerlessProvider(BaseDeployProvider):
                             target.extra.get("env_vars") or {},
                         )
                         env_vars = self._inject_ui_runtime_env(env_vars, ui_state, local_state)
+                        if runtime_config:
+                            env_vars.update(
+                                {
+                                    "AGENTENGINE_MANAGED_RUNTIME_NAME": runtime_config["name"],
+                                    "AGENTENGINE_MANAGED_RUNTIME_VERSION": runtime_config[
+                                        "version"
+                                    ],
+                                    "AGENTENGINE_MANIFEST_SHA256": runtime_config[
+                                        "manifest_sha256"
+                                    ],
+                                }
+                            )
                         if env_vars:
                             update_data["env_vars"] = env_vars
                             if env_file_exists:
@@ -835,6 +883,8 @@ class ServerlessProvider(BaseDeployProvider):
                             "url": resolved_ui.url,
                         },
                     }
+                    if runtime_config:
+                        request_data["runtime_config"] = runtime_config
 
                     if ks3_config:
                         request_data["ks3"] = ks3_config
@@ -855,6 +905,16 @@ class ServerlessProvider(BaseDeployProvider):
                         target.extra.get("env_vars") or {},
                     )
                     env_vars = self._inject_ui_runtime_env(env_vars, ui_state, local_state)
+                    if runtime_config:
+                        env_vars.update(
+                            {
+                                "AGENTENGINE_MANAGED_RUNTIME_NAME": runtime_config["name"],
+                                "AGENTENGINE_MANAGED_RUNTIME_VERSION": runtime_config["version"],
+                                "AGENTENGINE_MANIFEST_SHA256": runtime_config[
+                                    "manifest_sha256"
+                                ],
+                            }
+                        )
                     if env_vars:
                         if env_file_exists:
                             click.echo(

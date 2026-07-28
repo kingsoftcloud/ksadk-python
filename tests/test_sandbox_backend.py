@@ -23,6 +23,8 @@ from ksadk.toolsets.sandbox import run_code, run_command, sandbox_status
 def _reset_sandbox_registry(monkeypatch):
     # 禁用后台 sweep 线程,避免测试间相互干扰。
     monkeypatch.setenv("KSADK_SANDBOX_SWEEP_INTERVAL_SECONDS", "0")
+    # 这些用例验证 sandbox 边界而非交互式工具审批。
+    monkeypatch.setenv("KSADK_TOOL_APPROVAL_MODE", "full")
     GLOBAL_SANDBOX_REGISTRY.reset_for_tests()
     yield
     GLOBAL_SANDBOX_REGISTRY.reset_for_tests()

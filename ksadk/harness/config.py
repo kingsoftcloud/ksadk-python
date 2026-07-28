@@ -14,7 +14,9 @@ from typing import Any, Optional
 import yaml  # type: ignore[import-untyped]
 
 #: 顶层允许的最小子集字段。
-_ALLOWED_TOP_LEVEL = frozenset({"model", "prompt", "mcp_tools", "sandbox"})
+_ALLOWED_TOP_LEVEL = frozenset({"model", "prompt", "mcp_tools", "sandbox", "runtime"})
+#: runtime 允许的值。
+_ALLOWED_RUNTIME = frozenset({"yaml", "codex"})
 #: mcp_tools 单项允许字段。
 _ALLOWED_MCP_TOOL = frozenset({"name", "url", "api_key", "tool_filter", "tool_name_prefix"})
 #: sandbox 允许字段。
@@ -60,6 +62,8 @@ class HarnessConfig:
     prompt: str
     mcp_tools: tuple[McpToolSpec, ...] = ()
     sandbox: SandboxPolicy = field(default_factory=SandboxPolicy)
+    runtime: str = "yaml"
+    """runtime 后端:``yaml``(YamlAgentRunner+LiteLLM)| ``codex``(CodexRunner+codex CLI)。"""
 
     @classmethod
     def from_dict(cls, data: dict[str, Any], *, source: str = "yaml") -> "HarnessConfig":
@@ -71,6 +75,12 @@ class HarnessConfig:
         model = _require_str(data, "model", source)
         prompt = _require_str(data, "prompt", source)
 
+        runtime = str(data.get("runtime", "yaml")).strip().lower()
+        if runtime not in _ALLOWED_RUNTIME:
+            raise HarnessConfigError(
+                f"{source}: runtime 仅支持 {sorted(_ALLOWED_RUNTIME)},得到 {runtime!r}"
+            )
+
         mcp_tools = tuple(
             _parse_mcp_tool(item, index, source)
             for index, item in enumerate(
@@ -78,7 +88,9 @@ class HarnessConfig:
             )
         )
         sandbox = _parse_sandbox(data.get("sandbox", {}), source)
-        return cls(model=model, prompt=prompt, mcp_tools=mcp_tools, sandbox=sandbox)
+        return cls(
+            model=model, prompt=prompt, mcp_tools=mcp_tools, sandbox=sandbox, runtime=runtime
+        )
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "HarnessConfig":

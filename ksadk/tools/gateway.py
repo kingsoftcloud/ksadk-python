@@ -9,11 +9,20 @@ from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
 
+from ksadk.runtime_context import get_current_invocation_context
+
 
 @dataclass(frozen=True)
 class ToolPolicy:
     risk_level: str = "low"
     side_effects: Sequence[str] = field(default_factory=tuple)
+    # Approval scopes classify operations which might need an interactive
+    # decision. ``public_network`` is intentionally a read-only exception:
+    # web discovery must remain available in every approval profile.
+    approval_scopes: Sequence[str] = field(default_factory=tuple)
+    # Use only for tools whose operation is inherently safe to run without a
+    # human decision. This wins over a risk level or explicit legacy policy.
+    approval_exempt: bool = False
     requires_approval: bool | None = None
 
 
@@ -50,8 +59,9 @@ class ToolGateway:
 
     @staticmethod
     def _approval_mode() -> str:
-        value = os.environ.get("KSADK_TOOL_APPROVAL_MODE", "").strip().lower()
-        return value or "off"
+        context = get_current_invocation_context()
+        requested_mode = context.tool_approval_mode if context is not None else None
+        return normalize_tool_approval_mode(requested_mode)
 
     @staticmethod
     def _is_approved(approval: Mapping[str, Any] | None) -> bool:
@@ -108,14 +118,49 @@ def tool_policy_requires_approval(
     *,
     approval_mode: str | None = None,
 ) -> bool:
-    mode = (
-        approval_mode or os.environ.get("KSADK_TOOL_APPROVAL_MODE", "")
-    ).strip().lower() or "off"
-    if policy.requires_approval is not None:
-        return policy.requires_approval and mode != "off"
-    if mode != "strict":
+    mode = normalize_tool_approval_mode(approval_mode)
+    if policy.approval_exempt or _is_read_only_public_network_policy(policy):
         return False
+    if policy.requires_approval is not None:
+        return policy.requires_approval and mode != "full"
+    if mode == "full":
+        return False
+    if mode == "ask" and policy.approval_scopes:
+        return True
     return policy.risk_level.lower() in {"medium", "high", "critical"}
+
+
+def _is_read_only_public_network_policy(policy: ToolPolicy) -> bool:
+    """Keep public web reads available even under the most cautious profile.
+
+    A network write must declare a side effect, so it does not match this
+    exemption and can still require approval.
+    """
+    return bool(policy.approval_scopes) and set(policy.approval_scopes) <= {
+        "public_network"
+    } and not policy.side_effects
+
+
+def normalize_tool_approval_mode(value: str | None = None) -> str:
+    """Resolve the compact runtime approval profile.
+
+    ``ask`` confirms risky and non-network scoped operations; ``risk``
+    confirms medium-and-higher risk only; ``full`` leaves default policies
+    unprompted. Public web reads remain approval-free in every profile. The
+    process environment remains a default for non-UI callers, while a
+    request-scoped mode wins for the duration of that invocation.
+    """
+    raw = str(value or os.environ.get("KSADK_TOOL_APPROVAL_MODE", "risk")).strip().lower()
+    return raw if raw in {"ask", "risk", "full"} else "risk"
+
+
+def tool_approval_capability() -> dict[str, Any]:
+    """Describe the single profile interface exposed to hosted UIs."""
+    return {
+        "Modes": ["ask", "risk", "full"],
+        "DefaultMode": normalize_tool_approval_mode(),
+        "RuntimeOverride": True,
+    }
 
 
 def check_command_policy(command: str) -> dict[str, Any]:

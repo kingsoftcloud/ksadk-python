@@ -18,6 +18,14 @@ _RUN_TERMINAL_STATUSES = RUN_STATUS_TERMINAL
 _RUN_ACTIVE_STATUSES = RUN_STATUS_ACTIVE
 _EVENT_SCAN_PAGE_SIZE = 500
 _MAX_PREVIEW_TOOL_RECEIPTS = 500
+_RUNTIME_RUN_STATUS_BY_EVENT_TYPE = {
+    "run.started": "in_progress",
+    "run.progress": "in_progress",
+    "run.interrupted": "interrupted",
+    "run.completed": "completed",
+    "run.failed": "failed",
+    "run.canceled": "cancelled",
+}
 
 
 def _parse_iso_datetime(value: Any) -> datetime | None:
@@ -275,6 +283,11 @@ def _split_custom_metadata(
     public_metadata.pop("agentengine", None)
     if isinstance(agentengine_metadata, Mapping):
         runtime_metadata["agentengine"] = dict(agentengine_metadata)
+        # The approval profile is a small, validated-by-the-agent runtime control.
+        # It must not be mixed into caller-visible public metadata.
+        tool_approval_mode = agentengine_metadata.get("tool_approval_mode")
+        if isinstance(tool_approval_mode, str):
+            runtime_metadata["tool_approval_mode"] = tool_approval_mode
     return public_metadata, runtime_metadata
 
 
@@ -326,12 +339,25 @@ def _session_user_prompt_from_event(event: SessionEvent) -> str:
 
 
 def _run_status_payload_status(event: SessionEvent) -> str:
-    return str(
+    legacy_status = str(
         (event.metadata or {}).get("status")
         or (event.metadata or {}).get("run_status")
         or (event.content or {}).get("status")
         or ""
     ).strip()
+    if legacy_status:
+        return legacy_status
+    runtime_payload = (event.content or {}).get("payload")
+    runtime_status = (
+        str(runtime_payload.get("status") or "").strip()
+        if isinstance(runtime_payload, Mapping)
+        else ""
+    )
+    return runtime_status or _RUNTIME_RUN_STATUS_BY_EVENT_TYPE.get(event.event_type, "")
+
+
+def _is_run_lifecycle_event(event: SessionEvent) -> bool:
+    return event.event_type == "run_status" or event.event_type in _RUNTIME_RUN_STATUS_BY_EVENT_TYPE
 
 
 def _event_run_id(event: SessionEvent) -> str:
@@ -360,7 +386,7 @@ def _session_topic_from_events(events: list[SessionEvent]) -> str:
 def _latest_session_run_status(events: list[SessionEvent]) -> tuple[str, str]:
     latest_by_invocation: dict[str, tuple[str, SessionEvent]] = {}
     for event in reversed(events):
-        if event.event_type != "run_status":
+        if not _is_run_lifecycle_event(event):
             continue
         status = _run_status_payload_status(event)
         invocation_id = _event_run_id(event)
@@ -396,7 +422,7 @@ def _latest_session_run_metadata(
     run_trigger = RUN_TRIGGER_UNKNOWN
     if invocation_id:
         for event in reversed(events):
-            if event.event_type != "run_status" or _event_run_id(event) != invocation_id:
+            if not _is_run_lifecycle_event(event) or _event_run_id(event) != invocation_id:
                 continue
             metadata = event.metadata or {}
             run_mode = str(metadata.get("run_mode") or RUN_MODE_UNKNOWN)

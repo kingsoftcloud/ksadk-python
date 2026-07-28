@@ -59,7 +59,7 @@ def default_agui_config(runner: Any) -> AGUIConfig:
     runtime_type = str(getattr(framework_type, "value", framework_type) or "").lower()
     agent_name = str(getattr(detection, "name", None) or "ksadk")
     return AGUIConfig(
-        enabled=runtime_type == "langgraph" and agui_dependencies_available(),
+        enabled=runtime_type in ("langgraph", "codex") and agui_dependencies_available(),
         agent_name=agent_name,
         runtime_type=runtime_type or "unknown",
     )

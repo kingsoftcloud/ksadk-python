@@ -24,6 +24,7 @@
     "guides/observability-tracing",
     "guides/runtime-products",
     "guides/build-and-package",
+    "guides/managed-runtime",
     "guides/frameworks",
     "guides/web-ui-source",
     "---[Cloud]云端部署---",

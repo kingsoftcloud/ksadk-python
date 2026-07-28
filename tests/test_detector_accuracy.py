@@ -165,3 +165,17 @@ def test_cmd_a2a_langchain_uses_langgraph_runtime_adapter(monkeypatch):
     selected.clear()
     mod._select_runtime_adapter("deepagents", object())
     assert selected.get("generic") == "deepagents"
+
+
+def test_codex_yaml_detected(tmp_path: Path):
+    """fallback:项目根有 codex.yaml 即判 CODEX。"""
+    (tmp_path / "codex.yaml").write_text("model: glm-5.2\n", encoding="utf-8")
+    assert _detect(tmp_path) == FrameworkType.CODEX
+
+
+def test_codex_framework_in_ksadk_yaml(tmp_path: Path):
+    """显式:ksadk.yaml framework: codex(无需 agent.py)。"""
+    (tmp_path / "ksadk.yaml").write_text(
+        "framework: codex\nname: my-codex-agent\n", encoding="utf-8"
+    )
+    assert _detect(tmp_path) == FrameworkType.CODEX

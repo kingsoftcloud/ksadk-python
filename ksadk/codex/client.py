@@ -18,9 +18,59 @@
 
 from __future__ import annotations
 
+import os
+import secrets
 from abc import ABC, abstractmethod
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any, AsyncIterator, Optional
+
+from ksadk.model_proxy import ProxyConfig, ProxyServer
+from ksadk.model_proxy.cache import CapabilityCache
+from ksadk.model_proxy.detect import probe_responses_capability
+
+# 探测缓存单例:能力判定跨 client 共享,按 (model, base, credential_scope) 长缓存
+_CAPABILITY_CACHE = CapabilityCache(ttl=3600)
+
+
+def _is_openai_official(base: str) -> bool:
+    """OpenAI 官方 base_url(直连,不探测不代理)。"""
+    from urllib.parse import urlsplit
+
+    host = (urlsplit(base).hostname or "").lower()
+    return host == "api.openai.com" or host.endswith(".openai.com")
+
+
+def _upgrade_http_to_https(upstream: str) -> str:
+    """http 非回环自动升级 https(凭证安全 + 兼容历史 http .env;星流等支持 https)。
+
+    ProxyConfig 强制非回环 https(凭证不裸奔);历史 .env 常写 http://kspmas,
+    这里 upgrade 让 codex 代理对它可用,不改通用模板(ADK 等用 http 本就 OK)。
+    """
+    from urllib.parse import urlsplit, urlunsplit
+
+    parts = urlsplit(upstream)
+    scheme = parts.scheme.lower()
+    host = (parts.hostname or "").lower()
+    if scheme == "http" and host not in ("localhost", "127.0.0.1", "::1"):
+        return urlunsplit(("https", parts.netloc, parts.path, parts.query, parts.fragment))
+    return upstream
+
+
+def _probe_requires_proxy(model: str, base: str, key: str) -> bool:
+    """探测上游:只有**确凿不支持 responses** 才返回 True(走代理)。
+
+    supported/unknown 都返回 False(直连)。unknown(故障)保守直连——故障 ≠ 模型
+    不支持 responses,不 silent 改变接入方式。结果经 CapabilityCache 缓存(singleflight)。
+    """
+
+    def probe(m: str, b: str, k: str):
+        import httpx
+
+        with httpx.Client() as client:
+            return probe_responses_capability(client, b, k, m, timeout=15.0)
+
+    caps = _CAPABILITY_CACHE.get_or_probe(model, base, key, probe)
+    return caps.verdict == "unsupported"
 
 
 class CodexClient(ABC):
@@ -106,10 +156,89 @@ class AsyncCodexClient(CodexClient):
                 )
 
         # AsyncCodex 0.144.4 only accepts one CodexConfig positional/keyword.
+        config, self._proxy = self._maybe_apply_proxy(config)
         self._codex = AsyncCodex(config=config)
         self.sdk_version = sdk_version
         self._threads: dict[str, Any] = {}  # thread_id -> AsyncThread
         self._active_handles: dict[str, Any] = {}  # thread_id -> 活跃 AsyncTurnHandle
+
+    @staticmethod
+    def _maybe_apply_proxy(config: Any) -> tuple[Any, Any]:
+        """codex 代理启用:**智能探测 fallback(带显式覆盖)**。
+
+        - ``KSADK_CODEX_USE_PROXY=1`` → 强制开代理;``=0`` → 强制直连(可人工覆盖误判)。
+        - **未设 env 时智能探测**:OpenAI 官方 base_url 直连(不探测);自定义上游
+          (星流等)探测 responses 能力(detect.py + CapabilityCache 缓存,一次探测长缓存):
+          - ``supported`` → 直连(原生 responses 可用)
+          - ``unsupported`` → 自动启用代理(chat 模型,经转换层)
+          - ``unknown``(故障/超时)→ **保守直连**,不 silent 改变接入方式
+        - 凭证闭合:codex 子进程只拿随机 KSADK_PROXY_TOKEN;上游 key 留父进程。
+        - 互斥:launch_args_override 已设时 raise(override 整体覆盖命令行)。
+
+        返回 (新 config, ProxyServer | None)。staticmethod 便于单测。
+        """
+        env_val = os.environ.get("KSADK_CODEX_USE_PROXY")
+        if env_val == "0":
+            return config, None
+        if env_val == "1":
+            return AsyncCodexClient._start_proxy_and_inject(config)
+        # 未设:智能探测
+        base = (
+            os.environ.get("KSADK_PROXY_UPSTREAM_BASE")
+            or os.environ.get("OPENAI_BASE_URL")
+            or os.environ.get("OPENAI_API_BASE")
+            or ""
+        )
+        if not base or _is_openai_official(base):
+            return config, None  # OpenAI 官方:直连,不探测
+        model = os.environ.get("OPENAI_MODEL_NAME") or os.environ.get("MODEL_NAME") or ""
+        key = os.environ.get("KSADK_PROXY_UPSTREAM_KEY") or os.environ.get("OPENAI_API_KEY") or ""
+        if _probe_requires_proxy(model, base, key):
+            return AsyncCodexClient._start_proxy_and_inject(config)
+        return config, None
+
+    @staticmethod
+    def _start_proxy_and_inject(config: Any) -> tuple[Any, Any]:
+        """起进程内 ProxyServer + 注入 codex provider(opt-in/探测判定走代理时)。"""
+        import dataclasses
+
+        from openai_codex import CodexConfig  # type: ignore[import-not-found]
+
+        cfg = config if isinstance(config, CodexConfig) else CodexConfig()
+        if cfg.launch_args_override is not None:
+            raise RuntimeError(
+                "KSADK_CODEX_USE_PROXY 与 CodexConfig.launch_args_override 互斥:"
+                "代理注入靠 config_overrides,而 launch_args_override 会整体覆盖命令行"
+            )
+        upstream = (
+            os.environ.get("KSADK_PROXY_UPSTREAM_BASE")
+            or os.environ.get("OPENAI_BASE_URL")
+            or os.environ.get("OPENAI_API_BASE")
+            or "https://kspmas.ksyun.com/v1"
+        )
+        upstream = _upgrade_http_to_https(upstream)
+        api_key = (
+            os.environ.get("KSADK_PROXY_UPSTREAM_KEY") or os.environ.get("OPENAI_API_KEY") or ""
+        )
+        token = secrets.token_hex(16)
+        proxy = ProxyServer(ProxyConfig(upstream_base=upstream, api_key=api_key, local_token=token))
+        proxy.start()
+        overrides = list(cfg.config_overrides or ())
+        overrides += [
+            "model_provider=ksadk_proxy",
+            "model_providers.ksadk_proxy.name=ksadk_proxy",
+            f"model_providers.ksadk_proxy.base_url={proxy.base_url}",
+            "model_providers.ksadk_proxy.env_key=KSADK_PROXY_TOKEN",
+            "model_providers.ksadk_proxy.wire_api=responses",
+            "model_providers.ksadk_proxy.supports_websockets=false",
+            "web_search=disabled",
+            "features.multi_agent=false",
+            "features.multi_agent_v2=false",
+        ]
+        env = dict(cfg.env or {})
+        env["KSADK_PROXY_TOKEN"] = token
+        return dataclasses.replace(cfg, config_overrides=tuple(overrides), env=env), proxy
+
 
     async def start_thread(self, config: Optional[dict[str, Any]] = None) -> str:
         thread = await self._codex.thread_start(**self._thread_kwargs(config))
@@ -169,6 +298,9 @@ class AsyncCodexClient(CodexClient):
         finally:
             self._active_handles.clear()
             self._threads.clear()
+            if self._proxy is not None:
+                self._proxy.stop()
+                self._proxy = None
 
     # ---- 内部:config / input / 事件映射 ----
 

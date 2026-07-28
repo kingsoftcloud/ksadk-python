@@ -92,9 +92,9 @@ console = get_console()
 )
 @click.option(
     "--artifact-type",
-    type=click.Choice(["Code", "Container"]),
-    default="Code",
-    help="Serverless 部署模式 (default: Code)",
+    type=click.Choice(["ManagedRuntime", "Code", "Container"]),
+    default=None,
+    help="Serverless 部署模式；默认从 agentengine.yaml 推断",
 )
 @click.option("--namespace", default="default", help="K8s 命名空间")
 @click.option("--port", "-p", default=8000, help="服务端口 (default: 8000)")
@@ -372,6 +372,18 @@ async def _deploy_async(
             argv=["deploy"],
         )
 
+    resolved_runtime = None
+    if effective_artifact_type == "ManagedRuntime":
+        if detection_result.type.value != "codex":
+            raise validation_error("ManagedRuntime v1 目前仅支持 framework: codex")
+        from ksadk.managed_runtime import resolve_managed_runtime
+
+        resolved_runtime = await resolve_managed_runtime(config, region=region)
+        print_kv(
+            "Runtime",
+            f"{resolved_runtime.name}@{resolved_runtime.version} ({resolved_runtime.source})",
+        )
+
     # 2. 确定部署名称
     deploy_name = name or config.get("name") or agent_path.name.replace("-", "_").replace(".", "_")
     print_kv("部署名称", deploy_name)
@@ -413,6 +425,8 @@ async def _deploy_async(
             "no_cache": no_cache,
             "repackage": repackage,
             "env_vars": explicit_env_vars,
+            "runtime_name": resolved_runtime.name if resolved_runtime else "",
+            "runtime_version": resolved_runtime.version if resolved_runtime else "",
         },
     )
 
@@ -466,7 +480,11 @@ async def _deploy_async(
         deploy_target.storage.size_gi = storage_config["size_gi"]
 
     normalized_artifact_type = (effective_artifact_type or "Code").strip().lower()
-    explicit_artifact_reference = ks3_path if normalized_artifact_type == "code" else image
+    explicit_artifact_reference = (
+        ks3_path
+        if normalized_artifact_type in {"code", "managedruntime"}
+        else image
+    )
     cached_artifact_reference = None
     if not artifact_plan.should_clear_metadata:
         cached_artifact_reference = load_cached_artifact_reference(
@@ -531,7 +549,7 @@ async def _deploy_async(
                 package_info = await provider.build(package_info, deploy_target)
 
             if target == "serverless":
-                if effective_artifact_type == "Code":
+                if effective_artifact_type in {"Code", "ManagedRuntime"}:
                     ks3 = package_info.metadata.get("ks3_path")
                     if ks3:
                         print_kv("KS3 路径", ks3)
@@ -734,7 +752,11 @@ def _resolve_artifact_type_input(config: dict, cli_artifact_type: str | None) ->
         deploy_config: dict = dict(deploy_value) if isinstance(deploy_value, dict) else {}
         raw = config.get("artifact_type") or deploy_config.get("artifact_type")
     normalized = str(raw or "Code").strip().lower()
-    return "Container" if normalized == "container" else "Code"
+    if normalized == "container":
+        return "Container"
+    if normalized == "managedruntime":
+        return "ManagedRuntime"
+    return "Code"
 
 
 def _apply_network_config(config: dict, deploy_target: "DeployTarget") -> None:

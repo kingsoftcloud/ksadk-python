@@ -1,0 +1,88 @@
+---
+title: Codex Managed Runtime
+description: Use one declarative manifest for native local debugging and a platform-managed cloud Runtime image.
+---
+
+Codex is KsADK's first `ManagedRuntime`. It separates the project declaration, the
+native Codex process on a developer machine, and the Linux Runtime image selected
+by AgentEngine in the cloud. Local development does not require Docker, and a
+deployment bundle never contains Python dependencies, credentials, or a platform
+binary.
+
+## Create a project
+
+```bash title="shell"
+pip install "ksadk[codex]"
+ksadk init --framework codex my-codex-agent
+cd my-codex-agent
+ksadk web . --no-open
+```
+
+The template creates only `agentengine.yaml`, `.env`, `requirements.txt`, and a
+README. It does not create `agent.py` or a second `codex.yaml`. The requirement
+file is for native local development only and is never included in the managed
+Runtime bundle.
+
+```yaml title="agentengine.yaml"
+name: my-codex-agent
+version: "1.0.0"
+framework: codex
+artifact_type: ManagedRuntime
+
+runtime:
+  name: codex
+  version: "0.144.4"
+
+model: gpt-5.1-codex
+prompt: |
+  You are a coding assistant.
+```
+
+Set `runtime.version` explicitly whenever possible. When it is absent, local
+`web` first asks the server bootstrap for its default; offline development uses
+the installed version and reports that it is unlocked. A build never guesses an
+unlocked version while offline.
+
+## Debug natively
+
+`openai-codex` resolves a Codex CLI binary for the current operating system.
+macOS, Windows, and Linux therefore start a local subprocess rather than a
+Docker image:
+
+```bash title="shell"
+ksadk web . --port 8080 --no-open
+```
+
+Put model credentials in the uncommitted local `.env`. Do not include that file
+in source control or a deployment bundle.
+
+## Build and deploy
+
+`artifact_type: ManagedRuntime` makes `ksadk build .` select managed mode:
+
+```bash title="shell"
+ksadk build .
+ksadk deploy . --target serverless
+```
+
+The output is `<name>-<version>-runtime.zip` and contains only a normalized
+`agentengine.yaml` and `runtime-lock.json`. The lock records the manifest
+protocol, Runtime name, resolved version, and manifest SHA-256.
+
+<Callout type="warning" title="Code mode is not for managed Codex">
+Forcing `ksadk build --mode code` for a Codex ManagedRuntime fails. This prevents
+a macOS or Windows Codex binary from being packaged for a Linux deployment.
+`--mode container` remains available for an advanced, user-maintained image.
+</Callout>
+
+The cloud Runtime catalog selects the default version and resolves it to an
+immutable Linux image digest. If the catalog is disabled, deployment fails with
+an actionable error instead of falling back to CodeBuilder.
+
+## Credential and image boundary
+
+- The bundle excludes `.env`, `requirements.txt`, Python source, and native binaries.
+- Platform-managed images are built for Linux `amd64` and `arm64`; there are no
+  macOS or Windows cloud images.
+- The deployment result reports the actual Runtime name, version, and image digest.
+  Startup validates the manifest hash and expected Runtime to prevent silent drift.

@@ -9,6 +9,26 @@ from ksadk.tools.gateway import (
     default_tool_gateway,
     tool_policy_requires_approval,
 )
+from ksadk.runtime_context import PlatformInvocationContext, platform_invocation_scope
+
+
+def _runtime_context(tool_approval_mode: str) -> PlatformInvocationContext:
+    return PlatformInvocationContext(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-1",
+        history=[],
+        input_content=[],
+        input_messages=[],
+        input_parts=[],
+        attachments=[],
+        attachment_results=[],
+        current_attachments=[],
+        current_attachment_results=[],
+        has_current_files=False,
+        runner_type="langgraph",
+        tool_approval_mode=tool_approval_mode,
+    )
 
 
 def test_tool_gateway_imports_public_api():
@@ -17,16 +37,34 @@ def test_tool_gateway_imports_public_api():
     assert isinstance(gateway, ToolGateway)
 
 
-def test_tool_policy_requires_approval_only_in_strict_mode():
+def test_tool_policy_requires_approval_in_risk_mode():
     policy = ToolPolicy(risk_level="high")
 
-    assert tool_policy_requires_approval(policy, approval_mode="off") is False
-    assert tool_policy_requires_approval(policy, approval_mode="permissive") is False
-    assert tool_policy_requires_approval(policy, approval_mode="strict") is True
+    assert tool_policy_requires_approval(policy, approval_mode="full") is False
+    assert tool_policy_requires_approval(policy, approval_mode="risk") is True
 
 
-def test_tool_gateway_returns_approval_request_in_strict_mode(monkeypatch):
-    monkeypatch.setenv("KSADK_TOOL_APPROVAL_MODE", "strict")
+def test_public_network_reads_are_never_approval_gated():
+    web_read = ToolPolicy(risk_level="high", approval_scopes=("public_network",))
+
+    assert tool_policy_requires_approval(web_read, approval_mode="ask") is False
+    assert tool_policy_requires_approval(web_read, approval_mode="risk") is False
+    assert tool_policy_requires_approval(web_read, approval_mode="full") is False
+
+
+def test_tool_gateway_uses_the_current_request_profile_instead_of_process_env(monkeypatch):
+    monkeypatch.setenv("KSADK_TOOL_APPROVAL_MODE", "full")
+    gateway = ToolGateway({"write_file": ToolPolicy(risk_level="medium")})
+
+    with platform_invocation_scope(_runtime_context("risk")):
+        result = gateway.invoke("write_file", lambda: {"ok": True})
+
+    assert result["type"] == "approval_required"
+    assert gateway.invoke("write_file", lambda: {"ok": True}) == {"ok": True}
+
+
+def test_tool_gateway_returns_approval_request_in_risk_mode(monkeypatch):
+    monkeypatch.setenv("KSADK_TOOL_APPROVAL_MODE", "risk")
     gateway = ToolGateway(
         {"write_file": ToolPolicy(risk_level="medium", side_effects=("workspace_write",))}
     )
@@ -40,8 +78,8 @@ def test_tool_gateway_returns_approval_request_in_strict_mode(monkeypatch):
     assert result["approval_request"]["side_effects"] == ["workspace_write"]
 
 
-def test_tool_gateway_runs_approved_call_in_strict_mode(monkeypatch):
-    monkeypatch.setenv("KSADK_TOOL_APPROVAL_MODE", "strict")
+def test_tool_gateway_runs_approved_call_in_risk_mode(monkeypatch):
+    monkeypatch.setenv("KSADK_TOOL_APPROVAL_MODE", "risk")
     gateway = ToolGateway({"write_file": ToolPolicy(risk_level="medium")})
 
     assert gateway.invoke(

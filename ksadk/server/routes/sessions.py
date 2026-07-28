@@ -9,6 +9,7 @@ from fastapi import HTTPException
 
 from ksadk.server.factory import get_runner, get_state
 from ksadk.sessions import SessionEvent
+from ksadk.tools.gateway import tool_approval_capability
 from ksadk.toolsets import describe_agentengine_tools
 from ksadk_runtime_common.workspace_files import (
     build_workspace_files_bootstrap,
@@ -145,6 +146,7 @@ async def get_agent_ui_bootstrap(request: UiBootstrapRequest):
                 "Attachments": True,
                 "WorkspaceFiles": workspace_enabled,
                 "Approval": True,
+                "ApprovalPolicy": tool_approval_capability(),
                 "Thinking": True,
                 "StopRun": cancel_run_supported,
                 "ResumeRun": checkpoint_resume_supported,

@@ -13,6 +13,7 @@
     "observability-tracing",
     "runtime-products",
     "build-and-package",
+    "managed-runtime",
     "frameworks",
     "agent-best-practices",
     "web-ui-source"

@@ -5,6 +5,7 @@ import base64
 import importlib
 import json
 import time
+from contextvars import copy_context
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +47,8 @@ from ksadk.runtime_context import (
     get_current_tool_execution_context_or_default,
     get_current_user_id,
     platform_invocation_scope,
+    reset_current_invocation_context,
+    set_current_invocation_context,
     tool_execution_scope,
 )
 from ksadk.sessions.base import SessionEvent
@@ -669,6 +672,36 @@ def test_runtime_context_helpers_read_current_invocation_scope():
     with platform_invocation_scope(context):
         assert get_current_user_id() == "user-1"
         assert get_current_account_id() == "acct-1"
+
+
+def test_runtime_context_reset_is_safe_after_an_async_stream_context_switch():
+    context = PlatformInvocationContext(
+        agent_id="demo-agent",
+        user_id="user-1",
+        account_id="",
+        session_id="sess-1",
+        history=[],
+        input_content=[],
+        input_messages=[],
+        input_parts=[],
+        attachments=[],
+        attachment_results=[],
+        current_attachments=[],
+        current_attachment_results=[],
+        has_current_files=False,
+        runner_type="mock",
+    )
+    token = set_current_invocation_context(context)
+    try:
+        def reset_from_descendant_context():
+            reset_current_invocation_context(token)
+            return get_current_invocation_context()
+
+        assert copy_context().run(reset_from_descendant_context) is None
+        assert get_current_invocation_context() is context
+    finally:
+        reset_current_invocation_context(token)
+    assert get_current_invocation_context() is None
 
 
 @pytest.mark.asyncio
@@ -2073,7 +2106,7 @@ async def test_invoke_conversation_once_executes_approved_builtin_tool_resume(
     service = InMemorySessionService()
     workspace_ui = tmp_path / "ui"
     monkeypatch.setenv("AGENTENGINE_UI_DIR", str(workspace_ui))
-    monkeypatch.setenv("KSADK_TOOL_APPROVAL_MODE", "strict")
+    monkeypatch.setenv("KSADK_TOOL_APPROVAL_MODE", "risk")
     monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
     await service.create_session(
         agent_id="demo-agent", user_id="user-1", session_id="sess-tool-approval"
@@ -2154,7 +2187,7 @@ async def test_invoke_conversation_once_treats_accepted_memory_save_as_completed
     monkeypatch,
 ):
     service = InMemorySessionService()
-    monkeypatch.setenv("KSADK_TOOL_APPROVAL_MODE", "strict")
+    monkeypatch.setenv("KSADK_TOOL_APPROVAL_MODE", "risk")
     monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
     monkeypatch.setattr(
         "ksadk.conversations.runtime._builtin_tool_callable",
@@ -2227,7 +2260,7 @@ async def test_invoke_conversation_once_replays_existing_tool_receipt_without_si
     service = InMemorySessionService()
     workspace_ui = tmp_path / "ui"
     monkeypatch.setenv("AGENTENGINE_UI_DIR", str(workspace_ui))
-    monkeypatch.setenv("KSADK_TOOL_APPROVAL_MODE", "strict")
+    monkeypatch.setenv("KSADK_TOOL_APPROVAL_MODE", "risk")
     monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
     await service.create_session(
         agent_id="demo-agent", user_id="user-1", session_id="sess-tool-replay"
@@ -2320,6 +2353,7 @@ async def test_invoke_conversation_once_binds_platform_invocation_context_and_am
         messages=[{"role": "user", "content": "继续"}],
         model="gpt-4o",
         account_id="acct-1",
+        request_metadata={"tool_approval_mode": "ask"},
         prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
         session_service_provider=lambda: service,
     )
@@ -2339,6 +2373,7 @@ async def test_invoke_conversation_once_binds_platform_invocation_context_and_am
     assert runner.captured_runtime_context.session_id == session_id
     assert runner.captured_runtime_context.kb_context == {"formatted_text": "KB facts"}
     assert runner.captured_runtime_context.memory_context == {"formatted_text": "Memory facts"}
+    assert runner.captured_runtime_context.tool_approval_mode == "ask"
     assert runner.captured_tool_context is not None
     assert runner.captured_tool_context.session_id == session_id
     assert runner.captured_tool_context.run_id
@@ -3088,6 +3123,27 @@ async def test_stream_responses_conversation_turn_promotes_gateway_approval_resu
 
 
 @pytest.mark.asyncio
+async def test_stream_approval_interrupt_closes_runtime_context_before_yielding_sse(monkeypatch):
+    """An approval pause must not leave a ContextVar token open across SSE yields."""
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    runner = _ApprovalToolResultStreamingRunner()
+
+    async for chunk in stream_responses_conversation_turn(
+        runner=runner,
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-gateway-approval-context",
+        messages=[{"role": "user", "content": "写文件"}],
+        model="gpt-4o",
+        prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+        session_service_provider=lambda: service,
+    ):
+        if chunk.startswith("event: response.incomplete\\n"):
+            assert get_current_invocation_context() is None
+
+
+@pytest.mark.asyncio
 async def test_stream_responses_conversation_turn_adds_tool_receipt_to_tool_result(monkeypatch):
     service = InMemorySessionService()
     monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
@@ -3661,11 +3717,12 @@ async def test_stream_responses_conversation_turn_persists_reasoning_events(monk
     assert [event.event_type for event in events] == [
         "user_message",
         "run_status",
+        "assistant_stream_snapshot",
         "reasoning",
         "assistant_message",
         "run_status",
     ]
-    assert events[2].content["parts"][0]["text"] == "先分析问题"
+    assert events[3].content["parts"][0]["text"] == "先分析问题"
 
 
 @pytest.mark.asyncio

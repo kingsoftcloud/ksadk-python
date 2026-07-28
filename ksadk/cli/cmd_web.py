@@ -1,5 +1,6 @@
 """ksadk web - 启动统一本地 Web UI。"""
 
+import asyncio
 import os
 import webbrowser
 from pathlib import Path
@@ -15,6 +16,7 @@ from ksadk.cli.ui import (
     print_kv,
     print_success,
     print_title,
+    print_warn,
 )
 from ksadk.configs import setup_environment
 from ksadk.detection import FrameworkDetector
@@ -285,12 +287,45 @@ def web(agent_dir: str, port: int, model: str, no_open: bool):
         print_error("未检测到支持的框架")
         raise SystemExit(1)
 
+    if result.type.value == "codex":
+        raw_config = getattr(result, "raw_config", None) or {}
+        if str(raw_config.get("artifact_type") or "").strip().lower() == "managedruntime":
+            from ksadk.managed_runtime import (
+                ManagedRuntimeError,
+                resolve_local_managed_runtime,
+            )
+
+            try:
+                resolved_runtime = asyncio.run(
+                    resolve_local_managed_runtime(
+                        raw_config,
+                        region=os.getenv("KSYUN_REGION", "cn-beijing-6"),
+                    )
+                )
+            except ManagedRuntimeError as exc:
+                print_error(str(exc))
+                raise SystemExit(1) from exc
+            runtime_config = raw_config.setdefault("runtime", {})
+            if isinstance(runtime_config, dict):
+                runtime_config["version"] = resolved_runtime.version
+            print_kv(
+                "Runtime",
+                f"{resolved_runtime.name}@{resolved_runtime.version}",
+                value_style="#58a6ff",
+            )
+            if resolved_runtime.source == "installed-unlocked":
+                print_warn(
+                    "离线使用本机已安装 Runtime；云端构建前请显式锁定版本"
+                    "或连接 AgentEngine 获取默认版本"
+                )
+
     # Map framework types to display names
     framework_map = {
         "adk": "ADK",
         "langchain": "LangChain",
         "langgraph": "LangGraph",
         "deepagents": "DeepAgents",
+        "codex": "Codex",
     }
     display_name = framework_map.get(result.type.value, result.name)
     print_kv("框架", display_name, value_style="#2da44e")

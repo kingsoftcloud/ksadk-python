@@ -1356,7 +1356,7 @@ class AgentEngineClient:
                 "IamRole": data.get("iam_role", "KsyunAgentEngineDefaultRole"),
             }
 
-        if params["DeploymentType"] == "Code":
+        if params["DeploymentType"] in {"Code", "ManagedRuntime"}:
             ks3 = data.get("ks3", {})
             params["CodeConfig"] = {
                 "Path": data.get("artifact_path", ""),
@@ -1365,6 +1365,13 @@ class AgentEngineClient:
                 "Region": self._normalize_payload_region(ks3.get("region", "cn-beijing-6")),
                 "Bucket": ks3.get("bucket"),
             }
+            if params["DeploymentType"] == "ManagedRuntime":
+                runtime_config = data.get("runtime_config") or {}
+                params["RuntimeConfig"] = {
+                    "Name": runtime_config.get("name"),
+                    "Version": runtime_config.get("version"),
+                    "ManifestSha256": runtime_config.get("manifest_sha256"),
+                }
         else:
             ic = data.get("image_credential", {}) or {}
             artifact = (data.get("artifact_path", "") or "").strip()
@@ -1628,12 +1635,15 @@ class AgentEngineClient:
     async def update_agent(self, agent_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
         """更新 Agent (热更新)"""
         params: Dict[str, Any] = {"AgentId": agent_id}
+        artifact_type = data.get("artifact_type")
+        if artifact_type:
+            params["DeploymentType"] = artifact_type
         if data.get("description"):
             params["Description"] = data["description"]
 
         if data.get("artifact_path"):
             artifact = (data.get("artifact_path", "") or "").strip()
-            if (data.get("artifact_type") or "").lower() == "container":
+            if (artifact_type or "").lower() == "container":
                 ic = data.get("image_credential", {}) or {}
                 params["ContainerConfig"] = self._build_container_config_payload(
                     artifact=artifact,
@@ -1648,6 +1658,13 @@ class AgentEngineClient:
                     "Region": self._normalize_payload_region(ks3.get("region", "cn-beijing-6")),
                     "Bucket": ks3.get("bucket"),
                 }
+                if artifact_type == "ManagedRuntime":
+                    runtime_config = data.get("runtime_config") or {}
+                    params["RuntimeConfig"] = {
+                        "Name": runtime_config.get("name"),
+                        "Version": runtime_config.get("version"),
+                        "ManifestSha256": runtime_config.get("manifest_sha256"),
+                    }
 
         if data.get("resources"):
             params["Resource"] = {

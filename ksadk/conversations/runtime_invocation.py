@@ -155,6 +155,9 @@ async def invoke_conversation_once(
         model_options=prepared.model_options,
         kb_context=ambient_contexts.get("kb_context"),
         memory_context=ambient_contexts.get("memory_context"),
+        tool_approval_mode=str(
+            prepared.request_metadata.get("tool_approval_mode") or ""
+        ),
     )
     runner_name = _runner_name(runner)
     async with _conversation_span_scope(runner_name) as span:

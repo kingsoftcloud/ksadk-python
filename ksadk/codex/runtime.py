@@ -61,6 +61,7 @@ class _CodexThread:
     interrupt_event: asyncio.Event = field(default_factory=asyncio.Event)
     pending_approvals: set[str] = field(default_factory=set)
     done: bool = False
+    interrupted: bool = False
 
 
 class CodexRuntime(RuntimeAdapter):
@@ -95,9 +96,14 @@ class CodexRuntime(RuntimeAdapter):
         if provided:
             thread_id = str(provided)
         else:
-            thread_id = await self._client.start_thread(
-                {"sandbox_read_only": self._sandbox_read_only}
-            )
+            # 把 model + base_instructions 传给 codex thread(配置契约,见 plan C)
+            thread_config: dict[str, Any] = {"sandbox_read_only": self._sandbox_read_only}
+            if request.model:
+                thread_config["model"] = request.model
+            base_instructions = request.config.get("base_instructions")
+            if base_instructions:
+                thread_config["base_instructions"] = base_instructions
+            thread_id = await self._client.start_thread(thread_config)
         self._known_threads.add(thread_id)
         thread = _CodexThread(thread_id=thread_id)
         thread.__dict__["_start_request"] = request
@@ -248,6 +254,9 @@ class CodexRuntime(RuntimeAdapter):
         try:
             async for event in self._map_codex_stream(handle, thread, tracker, prompt):
                 yield event
+            # 正常结束(非 interrupt):补 RUN_COMPLETED(AGUI 投射器据此发 RunFinished success)
+            if not thread.interrupted:
+                yield self._event(handle, EventType.RUN_COMPLETED, {"status": "completed"})
         except TimeoutError:
             self.last_cancel_dropped_approvals = set(thread.pending_approvals)
             thread.pending_approvals.clear()
@@ -259,6 +268,13 @@ class CodexRuntime(RuntimeAdapter):
                 handle,
                 EventType.RUN_FAILED,
                 {"status": "failed", "error": "codex turn timed out"},
+            )
+        except Exception as exc:  # noqa: BLE001  通用兜底:任何异常都发 RUN_FAILED
+            self._do_not_persist.add(handle.run_id)
+            yield self._event(
+                handle,
+                EventType.RUN_FAILED,
+                {"status": "failed", "error": str(exc)},
             )
         finally:
             thread.streaming = False
@@ -309,6 +325,11 @@ class CodexRuntime(RuntimeAdapter):
                     task.cancel()
                 if interrupt_task in done:
                     chunk_task.cancel()
+                    thread.interrupted = True
+                    # AGUI 投射器对 RUN_INTERRUPTED 无兜底,必须显式发,否则 raise
+                    yield self._event(
+                        handle, EventType.RUN_INTERRUPTED, {"status": "interrupted"}
+                    )
                     return
                 chunk = chunk_task.result()
                 if chunk is _STREAM_STOP:

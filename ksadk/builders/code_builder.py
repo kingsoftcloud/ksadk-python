@@ -30,7 +30,7 @@ from packaging.requirements import InvalidRequirement, Requirement
 from ksadk.builders.base import BaseBuilder, BuildResult
 from ksadk.builders.framework_requirements import (
     FASTAPI_REQUIREMENT,
-    requirements_for_framework,
+    code_requirements_for_framework,
 )
 from ksadk.builders.requirements_utils import (
     exclude_requirement_names,
@@ -184,6 +184,14 @@ class CodeBuilder(BaseBuilder):
 
         if detection_result.type.value == "unknown":
             return BuildResult(success=False, error_message="未检测到支持的框架")
+        if detection_result.type.value == "codex":
+            return BuildResult(
+                success=False,
+                error_message=(
+                    "Codex 是 ManagedRuntime，不能构建宿主机 Code zip；"
+                    "请使用 `ksadk build .` 的 managed 模式，或显式构建 Container"
+                ),
+            )
 
         click.echo(f"📦 框架: {click.style(detection_result.type.value, fg='green')}")
         click.echo(f"🤖 Agent: {click.style(detection_result.name, fg='blue')}")
@@ -802,7 +810,7 @@ class CodeBuilder(BaseBuilder):
         ]
 
         framework = detection_result.type.value
-        deps += requirements_for_framework(framework)
+        deps += code_requirements_for_framework(framework)
 
         return deps
 

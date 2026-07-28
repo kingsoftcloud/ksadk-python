@@ -262,6 +262,11 @@ async def test_get_agent_ui_bootstrap_matches_local_shape_parity(monkeypatch):
     assert capabilities["WorkspaceFiles"] is True
     assert capabilities["Thinking"] is True
     assert capabilities["Approval"] is True
+    assert capabilities["ApprovalPolicy"] == {
+        "Modes": ["ask", "risk", "full"],
+        "DefaultMode": "risk",
+        "RuntimeOverride": True,
+    }
     assert capabilities["StopRun"] is False
     assert capabilities["ResumeRun"] is False
     assert capabilities["MCP"] is False
@@ -310,7 +315,7 @@ async def test_get_agent_ui_bootstrap_matches_local_shape_parity(monkeypatch):
             "name": "execute_skills",
             "group": "skill",
             "risk_level": "high",
-            "requires_approval": False,
+            "requires_approval": True,
             "enabled": False,
             "backend": "disabled",
             "boundary": "isolated_skill_runtime",

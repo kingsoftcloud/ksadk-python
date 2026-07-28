@@ -42,7 +42,7 @@
 
 - OpenAI Responses 和 Chat Completions 兼容入口仍是默认基线。AG-UI/A2UI 是可选 Hosted UI 能力，不会要求现有 Responses 客户端改协议。
 - 旧版 LangChain 连续性 / HITL 路径不再是 `0.8` 的兼容性承诺。新接入应使用 LangGraph、ADK 或 `RuntimeAdapter`；迁移时先验证 checkpoint、interrupt 和工具语义。
-- 本候选的 Python 版本为 `0.8.0`，配套 Web 候选为 `@kingsoftcloud/ksadk-web@0.3.0`。Python 当前仍固定消费已发布的 `0.2.19` 静态包，待 Web `0.3.0` 经受保护 npm 流程发布后，公开候选必须把 wheel 中的静态资源精确绑定到该版本。
+- 本候选的 Python 版本为 `0.8.0`，配套 Web 候选为 `@kingsoftcloud/ksadk-web@0.3.0`。Python release workflow 已固定请求该版本，并逐文件校验 npm tarball 的 `dist-ksadk`、同步目录和 wheel 内静态资源；在 Web `0.3.0` 经受保护 npm 流程发布前，公开 Python 发布会保持阻塞，不会回退到旧版本。
 - 公开发布仍被 review/sign-off、clean-export/public preflight、真实 staging evidence 与可选的 Codex provider E2E 阻塞；本条目不构成发布批准。
 
 ## [0.7.0] - 2026-07-15

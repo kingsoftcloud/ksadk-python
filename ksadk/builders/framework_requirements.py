@@ -21,11 +21,29 @@ LANGCHAIN_ECOSYSTEM_REQUIREMENTS = (
 
 DEEPAGENTS_REQUIREMENTS = ("deepagents>=0.6.2,<1.0.0",)
 
+# codex runtime:openai-codex SDK(自带 codex CLI 二进制,见 PyPI cli-bin wheel)
+CODEX_REQUIREMENTS = ("openai-codex==0.144.4",)
+
+
+def code_requirements_for_framework(framework: str) -> list[str]:
+    """Dependencies safe to install into a portable Code artifact.
+
+    Codex carries a platform-selected executable package. ManagedRuntime code
+    bundles must remain system independent, so Codex is deliberately excluded
+    from this dependency policy.
+    """
+    normalized = (framework or "").strip().lower()
+    if normalized == "codex":
+        return []
+    return requirements_for_framework(normalized)
+
 
 def requirements_for_framework(framework: str) -> list[str]:
     normalized = (framework or "").strip().lower()
     if normalized == "adk":
         return list(ADK_REQUIREMENTS)
+    if normalized == "codex":
+        return list(CODEX_REQUIREMENTS)
     if normalized in {"langchain", "langgraph", "deepagents"}:
         requirements = list(LANGCHAIN_ECOSYSTEM_REQUIREMENTS)
         if normalized == "deepagents":
@@ -39,6 +57,8 @@ def minimal_requirements_for_framework(framework: str) -> list[str]:
     normalized = (framework or "").strip().lower()
     if normalized == "adk":
         return list(ADK_REQUIREMENTS)
+    if normalized == "codex":
+        return list(CODEX_REQUIREMENTS)
     if normalized in {"langchain", "langgraph", "deepagents"}:
         requirements = [
             "langchain>=1.3.14,<2.0.0",

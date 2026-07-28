@@ -412,6 +412,11 @@ def _build_runner_request_payload(
         "memory_context": runtime_context.memory_context,
         "invocation_id": prepared.invocation_id,
     }
+    if prepared.request_metadata:
+        # Keep endpoint-level controls available to an application entrypoint
+        # (for example, its conversation approval profile) without leaking
+        # caller public metadata into the agent payload.
+        payload["request_metadata"] = dict(prepared.request_metadata)
     if prepared.instructions:
         payload["instructions"] = prepared.instructions
     if prepared.resume_input is not None:

@@ -1,3 +1,5 @@
+import pytest
+
 from ksadk.runtime_context import (
     PlatformInvocationContext,
     platform_invocation_scope,
@@ -17,6 +19,13 @@ from ksadk.toolsets import (
     tool_search,
 )
 from ksadk.toolsets.workspace_state import clear_read_state
+
+
+@pytest.fixture(autouse=True)
+def _allow_tool_side_effects(monkeypatch):
+    """Exercise workspace semantics after the explicit test approval profile."""
+
+    monkeypatch.setenv("KSADK_TOOL_APPROVAL_MODE", "full")
 
 
 class _FakeMemoryService:
