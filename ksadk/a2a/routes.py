@@ -45,6 +45,9 @@ class A2AConfig:
     skills: Sequence[str | AgentSkill] = field(default_factory=tuple)
     streaming: bool = True
     prefer_stream: bool = True
+    # 本地调试可显式开放 reasoning artifact；托管 Runtime 默认关闭，避免把
+    # 模型内部推理写入公开 A2A Task。
+    include_reasoning: bool = False
     # durable task store:dsn(如 sqlite+aiosqlite:///.agentengine/a2a_tasks.db 或
     # postgresql+asyncpg://...)或外部传入 engine/task_store。
     task_store_dsn: Optional[str] = None
@@ -88,6 +91,7 @@ def add_a2a_protocol_routes(
         task_adapter=task_adapter,
         context_builder=context_builder,
         prefer_stream=config.prefer_stream,
+        include_reasoning=config.include_reasoning,
     )
     add_a2a_routes_to_fastapi(
         app,

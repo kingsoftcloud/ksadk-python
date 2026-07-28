@@ -71,7 +71,7 @@ def a2a():
 @click.argument(
     "agent_path", type=click.Path(exists=True, file_okay=False, path_type=Path), default="."
 )
-@click.option("--host", default="0.0.0.0", show_default=True, help="服务监听地址")
+@click.option("--host", default="127.0.0.1", show_default=True, help="服务监听地址")
 @click.option("--port", default=8081, show_default=True, type=int, help="服务端口")
 @click.option("--url", default=None, help="Agent Card 对外宣告地址(默认 http://host:port)")
 @click.option("--name", default=None, help="覆盖 Agent 名称")
@@ -83,6 +83,12 @@ def a2a():
     show_default=True,
     help="durable task store DSN(生产用 postgresql+asyncpg://)",
 )
+@click.option(
+    "--include-reasoning/--no-include-reasoning",
+    default=True,
+    show_default=True,
+    help="将可展示的 reasoning 作为 adk_thought artifact 流式输出",
+)
 @click.option("--no-trace", is_flag=True, help="禁用 Tracing")
 def serve(
     agent_path: Path,
@@ -93,6 +99,7 @@ def serve(
     description: str,
     skills: Sequence[str],
     task_store_dsn: str,
+    include_reasoning: bool,
     no_trace: bool,
 ):
     """把本地 agent 暴露为 A2A 协议服务(JSONRPC + REST + AgentCard)。"""
@@ -108,6 +115,8 @@ def serve(
         command_args.extend(["--skill", skill])
     if task_store_dsn != _DEFAULT_TASK_STORE_DSN:
         command_args.extend(["--task-store-dsn", task_store_dsn])
+    if not include_reasoning:
+        command_args.append("--no-include-reasoning")
     if no_trace:
         command_args.append("--no-trace")
     reexec_with_project_venv_if_needed(agent_path, command_args)
@@ -123,6 +132,7 @@ def serve(
         description=description,
         skills=list(skills),
         task_store_dsn=task_store_dsn,
+        include_reasoning=include_reasoning,
     )
     runtime_type = detection_result.type.value
     runtime_adapter = _select_runtime_adapter(runtime_type, runner)

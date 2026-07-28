@@ -62,3 +62,41 @@ plane, hosted HTTP client, or event outbox, and `client_for_space()` rejects
 explicitly. A standalone `A2ASpaceClient` owns its background dispatcher: call
 `await client.aclose()` when finished, or use `async with`. Clients created by a
 bootstrap are closed by the Runtime lifespan instead.
+
+## Local Cross-Framework Reasoning Streams
+
+`agentengine a2a serve` is a local development command that binds to
+`127.0.0.1` by default. It writes explicit runner `thinking` / `reasoning.*`
+events to a separate `reasoning`
+artifact whose Parts carry `adk_thought=true`. It does not reinterpret ordinary
+status text as reasoning. Use `--no-include-reasoning` when local A2A callers
+must not receive that content. If you explicitly bind to a public or LAN
+address such as `--host 0.0.0.0`, the service becomes reachable through every
+network interface. The local development endpoint does not configure
+authentication, TLS, or network policy for you, so restrict access with trusted
+callers and a firewall.
+
+A LangGraph orchestrator can forward the remote typed events directly into its
+custom stream:
+
+```python
+from langgraph.config import get_stream_writer
+from ksadk.a2a import stream_a2a_agent_to_writer
+
+async def call_remote(state):
+    output = await stream_a2a_agent_to_writer(
+        "http://127.0.0.1:8094",
+        state["query"],
+        writer=get_stream_writer(),
+    )
+    return {"result": output}
+```
+
+The helper is independent of the remote framework, so ADK↔ADK,
+ADK↔LangGraph, and LangGraph↔LangGraph use the same protocol path. It preserves
+the actual `thinking` / `text` order emitted by the remote agent, deduplicates
+artifact snapshots, reconciles authoritative replacements, and returns response
+text only. It never invents alternation that the remote agent did not emit. The
+legacy `stream_a2a_agent()` API yields strings only and cannot encode replacement
+semantics; use typed events or the writer helper when authoritative snapshots
+must be reconciled.

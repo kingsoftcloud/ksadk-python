@@ -67,6 +67,7 @@ class A2AProtocolServer:
         task_store: durable ``DatabaseTaskStore``(``ksadk.a2a.task_store``)。
         task_adapter: 可选 ``A2ARuntimeTaskAdapter``(提供则 cancel 走 RuntimeAdapter.cancel)。
         prefer_stream: 是否优先用 runner.stream(默认 True)。
+        include_reasoning: 是否把 reasoning 输出为 ``adk_thought`` artifact。
     """
 
     def __init__(
@@ -78,6 +79,7 @@ class A2AProtocolServer:
         task_adapter: A2ARuntimeTaskAdapter,
         context_builder: A2AOwnerContextBuilder | None = None,
         prefer_stream: bool = True,
+        include_reasoning: bool = False,
     ) -> None:
         self.runner = runner
         self.agent_card = agent_card
@@ -88,6 +90,7 @@ class A2AProtocolServer:
             runner,
             task_adapter=task_adapter,
             prefer_stream=prefer_stream,
+            include_reasoning=include_reasoning,
         )
         self.request_handler = DefaultRequestHandler(
             agent_executor=self.executor,

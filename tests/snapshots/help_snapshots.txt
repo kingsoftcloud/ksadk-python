@@ -57,17 +57,20 @@ Usage: cli a2a serve [OPTIONS] [AGENT_PATH]
   把本地 agent 暴露为 A2A 协议服务(JSONRPC + REST + AgentCard)。
 
 Options:
-  --host TEXT            服务监听地址  [default: 0.0.0.0]
-  --port INTEGER         服务端口  [default: 8081]
-  --url TEXT             Agent Card 对外宣告地址(默认 http://host:port)
-  --name TEXT            覆盖 Agent 名称
-  --description TEXT     覆盖 Agent 描述
-  --skill TEXT           可重复传入,追加 Agent Card 技能
-  --task-store-dsn TEXT  durable task store DSN(生产用 postgresql+asyncpg://)
-                         [default:
-                         sqlite+aiosqlite:///.agentengine/a2a_tasks.db]
-  --no-trace             禁用 Tracing
-  -h, --help             Show this message and exit.
+  --host TEXT                     服务监听地址  [default: 127.0.0.1]
+  --port INTEGER                  服务端口  [default: 8081]
+  --url TEXT                      Agent Card 对外宣告地址(默认 http://host:port)
+  --name TEXT                     覆盖 Agent 名称
+  --description TEXT              覆盖 Agent 描述
+  --skill TEXT                    可重复传入,追加 Agent Card 技能
+  --task-store-dsn TEXT           durable task store DSN(生产用
+                                  postgresql+asyncpg://)  [default:
+                                  sqlite+aiosqlite:///.agentengine/a2a_tasks.db]
+  --include-reasoning / --no-include-reasoning
+                                  将可展示的 reasoning 作为 adk_thought artifact 流式输出
+                                  [default: include-reasoning]
+  --no-trace                      禁用 Tracing
+  -h, --help                      Show this message and exit.
 
 === a2a_card_help ===
 Usage: cli a2a card [OPTIONS] [AGENT_PATH]

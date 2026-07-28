@@ -977,7 +977,11 @@ class LangGraphRunner(BaseRunner):
                 if is_checkpoint_resume
                 else (Command(resume=state) if is_resume else state)
             )
+            # stream_mode 含 "custom" 才会产生 on_custom_stream 事件(custom writer);
+            # 保留默认 "values" 以兼容既有 on_chain_end/graph_update 消费。
             stream_kwargs = {"version": "v2", "config": config}
+            if self._callable_accepts_keyword(self._agent.astream_events, "stream_mode"):
+                stream_kwargs["stream_mode"] = ["values", "custom"]
             if native_context and self._callable_accepts_keyword(
                 self._agent.astream_events, "context"
             ):
@@ -1039,6 +1043,59 @@ class LangGraphRunner(BaseRunner):
                     run_key = model_run_key(event)
                     if run_key not in stream_usage_run_keys:
                         record_model_usage(event, last_usage or usage)
+
+                elif event_kind == "on_chain_stream":
+                    # node 内 get_stream_writer() 写入的自定义数据,经 stream_mode 含
+                    # "custom" 时,astream_events 包成 on_chain_stream,chunk 为
+                    # (mode, value) tuple:("custom", value) 是 writer 透传内容,
+                    # ("values", state) 是 state 快照(忽略,终态走 on_chain_end)。
+                    # 编排方常用 custom writer 把"调远端 agent/子图"的流式增量透传出来。
+                    chunk = event.get("data", {}).get("chunk")
+                    if not (
+                        isinstance(chunk, tuple) and len(chunk) == 2 and chunk[0] == "custom"
+                    ):
+                        continue
+                    data = chunk[1]
+                    if isinstance(data, str):
+                        accumulated_text += data
+                        yield {"delta": data, "type": "text"}
+                        continue
+                    if isinstance(data, Mapping):
+                        custom_type = str(data.get("type") or "text")
+                        if custom_type in ("tool_call", "tool_result"):
+                            # 结构化工具事件:透传完整 payload(tool_name/tool_args/
+                            # tool_output 等),不计入正文,供 UI 渲染工具卡片。
+                            out = {"type": custom_type}
+                            out.update({k: v for k, v in data.items() if k != "type"})
+                            yield out
+                            continue
+                        custom_delta = ""
+                        for key in ("delta", "text", "content", "output", "data"):
+                            value = data.get(key)
+                            if isinstance(value, str) and value:
+                                custom_delta = value
+                                break
+                        if not custom_delta:
+                            continue
+                        replace = bool(data.get("replace"))
+                        if custom_type == "thinking":
+                            accumulated_reasoning = (
+                                custom_delta
+                                if replace
+                                else accumulated_reasoning + custom_delta
+                            )
+                        else:
+                            accumulated_text = (
+                                custom_delta if replace else accumulated_text + custom_delta
+                            )
+                        out = {"delta": custom_delta, "type": custom_type}
+                        if replace:
+                            out["replace"] = True
+                        yield out
+                        continue
+                    if data is not None:
+                        accumulated_text += str(data)
+                        yield {"delta": str(data), "type": "text"}
 
                 elif event_kind == "on_tool_start":
                     emitted_non_text_event = True

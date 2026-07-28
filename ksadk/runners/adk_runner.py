@@ -31,6 +31,20 @@ logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
 
 
+def _part_metadata_flag(part: Any, key: str) -> bool:
+    """读取 A2A→GenAI Part 保留下来的扩展 metadata 标记。"""
+    metadata = getattr(part, "part_metadata", None)
+    if isinstance(metadata, Mapping):
+        return bool(metadata.get(key))
+    getter = getattr(metadata, "get", None)
+    if callable(getter):
+        try:
+            return bool(getter(key))
+        except (KeyError, TypeError, ValueError):
+            return False
+    return False
+
+
 class ADKRunner(BaseRunner):
     """ADK 框架运行时"""
 
@@ -1978,18 +1992,40 @@ class ADKRunner(BaseRunner):
                 # Only yield text delta if event is partial to avoid duplication of final summary
                 if hasattr(event, "content") and event.content and getattr(event, "partial", False):
                     if hasattr(event.content, "parts"):
+                        author = getattr(event, "author", None)
+                        is_sub_agent = bool(author and top_agent_name and author != top_agent_name)
+                        author_key = str(author)
                         for part in event.content.parts:
                             if hasattr(part, "text") and part.text:
                                 is_thought = getattr(part, "thought", False)
+                                replace_snapshot = bool(
+                                    is_sub_agent
+                                    and _part_metadata_flag(part, "ksadk_output_snapshot")
+                                )
                                 # 思考内容只作为 thinking delta 流出,不计入最终输出,
                                 # 否则最终回复会把思考过程再重复一遍(与 invoke() 语义对齐)。
                                 if not is_thought:
-                                    accumulated_text += part.text
+                                    accumulated_text = (
+                                        part.text
+                                        if replace_snapshot
+                                        else accumulated_text + part.text
+                                    )
+                                    # sub-agent(RemoteA2aAgent)增量也累积进快照,供后续
+                                    # completed 全文消息(同一份结果)在 handoff 分支去重。
+                                    if is_sub_agent:
+                                        sub_agent_snapshots[author_key] = (
+                                            part.text
+                                            if replace_snapshot
+                                            else sub_agent_snapshots.get(author_key, "") + part.text
+                                        )
                                 # 标记思考内容，前端可以选择是否展示
-                                yield {
+                                output_chunk: dict[str, Any] = {
                                     "delta": part.text,
                                     "type": "thinking" if is_thought else "text",
                                 }
+                                if replace_snapshot and not is_thought:
+                                    output_chunk["replace"] = True
+                                yield output_chunk
                 # handoff/sub-agent 回复:partial 为 None/False,上面分支跳过,这里补上。
                 elif hasattr(event, "content") and event.content:
                     author = getattr(event, "author", None)
@@ -1999,21 +2035,49 @@ class ADKRunner(BaseRunner):
                         and author != top_agent_name
                         and hasattr(event.content, "parts")
                     ):
+                        author_key = str(author)
+                        for part in event.content.parts:
+                            if (
+                                hasattr(part, "text")
+                                and part.text
+                                and getattr(part, "thought", False)
+                            ):
+                                # RemoteA2aAgent 将 last_chunk=True 映射成
+                                # partial=False；最后一个 reasoning chunk 仍须透传。
+                                yield {"delta": part.text, "type": "thinking"}
                         snapshot = ""
+                        replace_snapshot = False
                         for part in event.content.parts:
                             if hasattr(part, "text") and part.text and not getattr(
                                 part, "thought", False
                             ):
                                 snapshot += part.text
+                                replace_snapshot = replace_snapshot or _part_metadata_flag(
+                                    part,
+                                    "ksadk_output_snapshot",
+                                )
                         if snapshot:
-                            prev = sub_agent_snapshots.get(author, "")
-                            delta = (
-                                snapshot[len(prev) :] if snapshot.startswith(prev) else snapshot
-                            )
-                            sub_agent_snapshots[author] = snapshot
+                            prev = sub_agent_snapshots.get(author_key, "")
+                            if replace_snapshot:
+                                delta = snapshot
+                                sub_agent_snapshots[author_key] = snapshot
+                                accumulated_text = snapshot
+                            elif snapshot.startswith(prev):
+                                # 累计快照(如 completed 全文):只补发超出已累积的部分;
+                                # 若增量已发全,delta 为空,避免 completed 再渲染一遍。
+                                delta = snapshot[len(prev) :]
+                                sub_agent_snapshots[author_key] = snapshot
+                            else:
+                                # final 增量(小块):追加进累积,不覆盖。
+                                delta = snapshot
+                                sub_agent_snapshots[author_key] = prev + snapshot
                             if delta:
-                                accumulated_text += delta
-                                yield {"delta": delta, "type": "text"}
+                                if not replace_snapshot:
+                                    accumulated_text += delta
+                                output_chunk = {"delta": delta, "type": "text"}
+                                if replace_snapshot:
+                                    output_chunk["replace"] = True
+                                yield output_chunk
 
                 # 处理工具调用事件 — ADK 通过 event.content.parts[].function_call
                 # 发出工具调用（即 event.get_function_calls()），而非

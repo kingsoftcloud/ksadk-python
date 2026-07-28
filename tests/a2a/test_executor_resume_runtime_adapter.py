@@ -374,7 +374,7 @@ async def test_runtime_error_detail_is_not_returned_on_a2a_wire() -> None:
 
 
 @pytest.mark.asyncio
-async def test_runtime_reasoning_is_not_returned_on_a2a_wire() -> None:
+async def test_runtime_reasoning_is_not_returned_on_a2a_wire_by_default() -> None:
     task_adapter = A2ARuntimeTaskAdapter(
         _ReasoningRuntimeAdapter(),  # type: ignore[arg-type]
         runtime_type="test",

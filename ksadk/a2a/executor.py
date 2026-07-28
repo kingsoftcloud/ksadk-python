@@ -14,8 +14,7 @@ from __future__ import annotations
 import inspect
 import json
 import logging
-from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, Literal
 
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
@@ -40,6 +39,84 @@ ADK_V2_INTEGRATION_EXTENSION_URI = "https://google.github.io/adk-docs/a2a/a2a-ex
 ADK_V2_INTEGRATION_METADATA: dict[str, Any] = {
     ADK_V2_INTEGRATION_EXTENSION_URI: {"adk_agent_executor_v2": True}
 }
+
+KSADK_OUTPUT_SNAPSHOT_METADATA = {"ksadk_output_snapshot": True}
+_ArtifactKind = Literal["text", "thinking"]
+
+
+def _thought_part(text: str) -> Part:
+    """构造可被 ADK RemoteA2aAgent 识别为 thought 的 A2A Part。"""
+    return Part(text=text, metadata={"adk_thought": True})
+
+
+class _ArtifactStreamEmitter:
+    """按连续类型分段输出 A2A artifact，并正确终止每个 artifact stream。"""
+
+    def __init__(self, updater: TaskUpdater, task_id: str) -> None:
+        self._updater = updater
+        self._task_id = task_id
+        self._active_kind: _ArtifactKind | None = None
+        self._segments: dict[_ArtifactKind, int] = {"text": 0, "thinking": 0}
+        self._emitted: dict[tuple[_ArtifactKind, int], int] = {}
+        self._pending: tuple[_ArtifactKind, str, bool, int] | None = None
+
+    async def push(
+        self,
+        kind: _ArtifactKind,
+        text: str,
+        *,
+        replace_snapshot: bool = False,
+    ) -> None:
+        if self._pending is not None:
+            switched = self._pending[0] != kind
+            await self._emit(self._pending, last_chunk=switched)
+        if self._active_kind != kind:
+            self._segments[kind] += 1
+            self._active_kind = kind
+        self._pending = (kind, text, replace_snapshot, self._segments[kind])
+
+    async def close(self) -> None:
+        if self._pending is None:
+            return
+        await self._emit(self._pending, last_chunk=True)
+        self._pending = None
+
+    async def _emit(
+        self,
+        pending: tuple[_ArtifactKind, str, bool, int],
+        *,
+        last_chunk: bool,
+    ) -> None:
+        kind, text, replace_snapshot, segment = pending
+        key = (kind, segment)
+        self._emitted[key] = self._emitted.get(key, 0) + 1
+        is_reasoning = kind == "thinking"
+        base_id = (
+            f"{self._task_id}-reasoning"
+            if is_reasoning
+            else f"{self._task_id}-response"
+        )
+        artifact_id = base_id if segment == 1 else f"{base_id}-{segment}"
+        part = (
+            _thought_part(text)
+            if is_reasoning
+            else Part(
+                text=text,
+                metadata=(
+                    dict(KSADK_OUTPUT_SNAPSHOT_METADATA)
+                    if replace_snapshot
+                    else None
+                ),
+            )
+        )
+        await self._updater.add_artifact(
+            parts=[part],
+            artifact_id=artifact_id,
+            name="reasoning" if is_reasoning else "response",
+            append=False if replace_snapshot else self._emitted[key] > 1,
+            last_chunk=last_chunk,
+        )
+
 
 async def _enqueue_initial_task(context: RequestContext, event_queue: EventQueue) -> None:
     """先入队初始 ``Task`` 对象,再发状态更新(a2a-sdk 1.1.0 生命周期要求:
@@ -74,10 +151,17 @@ class A2ARuntimeExecutor(AgentExecutor):
     - cancel: 委托 ``task_adapter.cancel_task``(内部走 RuntimeAdapter.cancel)。
     """
 
-    def __init__(self, runner: Any, task_adapter: Any = None, prefer_stream: bool = True) -> None:
+    def __init__(
+        self,
+        runner: Any,
+        task_adapter: Any = None,
+        prefer_stream: bool = True,
+        include_reasoning: bool = False,
+    ) -> None:
         self.runner = runner
         self.task_adapter = task_adapter
         self.prefer_stream = prefer_stream
+        self.include_reasoning = include_reasoning
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         current_task = getattr(context, "current_task", None)
@@ -223,10 +307,9 @@ class A2ARuntimeExecutor(AgentExecutor):
         runner_input: dict[str, Any],
     ) -> str:
         output_text = ""
-        emitted_chunks = 0
-        artifact_id = f"{context.task_id}-response"
+        artifacts = _ArtifactStreamEmitter(updater, str(context.task_id))
 
-        async for chunk, last_chunk in self._with_last_flag(stream(runner_input)):
+        async for chunk in stream(runner_input):
             chunk_type = chunk.get("type") if isinstance(chunk, dict) else None
             if chunk_type == "input_required":
                 raise RuntimeError(
@@ -240,64 +323,30 @@ class A2ARuntimeExecutor(AgentExecutor):
                     continue
                 if not output_text:
                     output_text = final_text
+                    await artifacts.push("text", final_text)
                 elif final_text.startswith(output_text):
                     suffix = final_text[len(output_text) :]
                     output_text = final_text
                     if suffix:
-                        emitted_chunks += 1
-                        await updater.add_artifact(
-                            parts=[Part(text=suffix)],
-                            artifact_id=artifact_id,
-                            name="response",
-                            append=bool(emitted_chunks > 1),
-                            last_chunk=last_chunk,
-                        )
+                        await artifacts.push("text", suffix)
                     continue
                 else:
                     output_text = final_text
-                    await updater.add_artifact(
-                        parts=[Part(text=final_text)],
-                        artifact_id=artifact_id,
-                        name="response",
-                        append=False,
-                        last_chunk=last_chunk,
-                    )
+                    await artifacts.push("text", final_text, replace_snapshot=True)
                 continue
 
             text = self._coerce_text(chunk)
             if not text:
                 continue
-            # 思考内容不进入 A2A 响应(与 invoke 语义对齐):orchestrator
-            # 只需要最终答复,sub-agent 的 reasoning 不应透传给上游。
             if chunk_type == "thinking":
+                if self.include_reasoning:
+                    await artifacts.push("thinking", text)
                 continue
             output_text += text
-            emitted_chunks += 1
-            await updater.add_artifact(
-                parts=[Part(text=text)],
-                artifact_id=artifact_id,
-                name="response",
-                append=bool(emitted_chunks > 1),
-                last_chunk=last_chunk,
-            )
+            await artifacts.push("text", text)
 
+        await artifacts.close()
         return output_text
-
-    async def _with_last_flag(
-        self, iterator: AsyncIterator[Any]
-    ) -> AsyncIterator[tuple[Any, bool]]:
-        try:
-            previous = await anext(iterator)
-        except StopAsyncIteration:
-            return
-        while True:
-            try:
-                current = await anext(iterator)
-            except StopAsyncIteration:
-                yield previous, True
-                return
-            yield previous, False
-            previous = current
 
     def _build_runner_input(self, context: RequestContext) -> dict[str, Any]:
         metadata = dict(getattr(context, "metadata", None) or {})
@@ -322,28 +371,13 @@ class A2ARuntimeExecutor(AgentExecutor):
         handle: RunHandle,
     ) -> str:
         output_text = ""
-        response_artifact_id = f"{context.task_id}-response"
-        emitted_chunks = 0
-        pending_delta: str | None = None
+        artifacts = _ArtifactStreamEmitter(updater, str(context.task_id))
+        reasoning_text = ""
         input_required = False
         input_prompt = "Input required"
         checkpoint_id: str | None = None
         call_id: str | None = None
         payload_kind: A2AResumePayloadKind = "hitl_answer"
-
-        async def emit_delta(delta: str, *, last_chunk: bool) -> None:
-            # 增量(append=True):首个 artifact append=False 建立,后续 append=True 追加。
-            # 配合 Task/status metadata 的 ADK v2 扩展标记,RemoteA2aAgent 走 v2 handler
-            # 保留每个增量(不再丢中间),编排侧逐条流式,O(n) 带宽优于全量快照。
-            nonlocal emitted_chunks
-            emitted_chunks += 1
-            await updater.add_artifact(
-                parts=[Part(text=delta)],
-                artifact_id=response_artifact_id,
-                name="response",
-                append=emitted_chunks > 1,
-                last_chunk=last_chunk,
-            )
 
         async for event in self.task_adapter.stream_task(handle):
             if not isinstance(event, RuntimeEvent):
@@ -351,9 +385,7 @@ class A2ARuntimeExecutor(AgentExecutor):
             if event.event_type == EventType.RUN_FAILED:
                 raise RuntimeError(self._coerce_text(event.payload.get("error")))
             if event.event_type == EventType.RUN_CANCELED:
-                if pending_delta is not None:
-                    await emit_delta(pending_delta, last_chunk=False)
-                    pending_delta = None
+                await artifacts.close()
                 if not self._cancel_was_accepted(context, handle):
                     await updater.cancel(
                         message=updater.new_agent_message(parts=[Part(text="Request canceled")])
@@ -384,36 +416,59 @@ class A2ARuntimeExecutor(AgentExecutor):
             if event.event_type not in {
                 EventType.TEXT_DELTA,
                 EventType.TEXT_COMPLETED,
+                EventType.REASONING_DELTA,
+                EventType.REASONING_COMPLETED,
             }:
                 continue
             text = self._coerce_text(event.payload.get("text"))
             if not text:
+                continue
+            if event.event_type == EventType.REASONING_COMPLETED:
+                if not self.include_reasoning:
+                    continue
+                if not reasoning_text:
+                    delta = text
+                    reasoning_text = text
+                elif text.startswith(reasoning_text):
+                    delta = text[len(reasoning_text) :]
+                    reasoning_text = text
+                else:
+                    delta = text
+                    reasoning_text += text
+                if delta:
+                    await artifacts.push("thinking", delta)
+                continue
+            if event.event_type == EventType.REASONING_DELTA:
+                if not self.include_reasoning:
+                    continue
+                reasoning_text += text
+                await artifacts.push("thinking", text)
                 continue
             # TEXT_COMPLETED 是累计全文,去重只发新增 suffix;TEXT_DELTA 是增量直接透传。
             if event.event_type == EventType.TEXT_COMPLETED:
                 if not output_text:
                     delta = text
                     output_text = text
+                    replace_snapshot = False
                 elif text.startswith(output_text):
                     delta = text[len(output_text) :]
                     output_text = text
+                    replace_snapshot = False
                 else:
                     delta = text
-                    output_text += text
+                    output_text = text
+                    replace_snapshot = True
             else:
                 delta = text
                 output_text += text
+                replace_snapshot = False
             if not delta:
                 continue
-            if pending_delta is not None:
-                await emit_delta(pending_delta, last_chunk=False)
-            pending_delta = delta
+            await artifacts.push("text", delta, replace_snapshot=replace_snapshot)
         if self._cancel_was_accepted(context, handle):
-            if pending_delta is not None:
-                await emit_delta(pending_delta, last_chunk=False)
+            await artifacts.close()
             raise _RunCanceled()
-        if pending_delta is not None:
-            await emit_delta(pending_delta, last_chunk=True)
+        await artifacts.close()
         if input_required:
             await self.task_adapter.persist_resume_state(
                 task_id=str(context.task_id or ""),

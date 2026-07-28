@@ -391,9 +391,18 @@ async def _iter_conversation_turn_events(
                             if chunk_type == "text":
                                 delta = str(chunk.get("delta", ""))
                                 if delta:
-                                    accumulated_text += delta
+                                    replace = bool(chunk.get("replace"))
+                                    accumulated_text = (
+                                        delta if replace else accumulated_text + delta
+                                    )
                                     emitted_anything = True
-                                    yield {"type": "text", "delta": delta}
+                                    text_event: dict[str, Any] = {
+                                        "type": "text",
+                                        "delta": delta,
+                                    }
+                                    if replace:
+                                        text_event["replace"] = True
+                                    yield text_event
                                 continue
                             if chunk_type == "tool_call":
                                 _governance_record_tool_call(governance)

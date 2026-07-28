@@ -32,3 +32,33 @@ Checkpoint handle 和 resume target 保留在 Runtime 本地 durable storage，�
 托管 Runtime 不会把内部 reasoning event 写成 A2A artifact；上游只会收到协议允许的任务状态、正文与 artifact，不会收到模型的内部推理内容。
 
 只承载入站协议的 Runtime 可以禁用 outbound，此时无需注入 control plane、hosted HTTP client 或 event outbox，`client_for_space()` 会明确拒绝。独立创建的 `A2ASpaceClient` 自己拥有后台 dispatcher：使用完请 `await client.aclose()`，或用 `async with`；由 bootstrap 创建的 client 则由 Runtime lifespan 统一关闭。
+
+## 本地跨框架 reasoning 流
+
+`agentengine a2a serve` 面向本地调试，默认只监听 `127.0.0.1`，并会把 runner 明确产出的
+`thinking` / `reasoning.*` 事件写成独立的 `reasoning` artifact，并为 Part
+添加 `adk_thought=true`。它不会把普通 status 文本伪装成 reasoning。若不希望
+本地 A2A 调用方看到这些内容，使用 `--no-include-reasoning`。若显式改为公网或
+局域网监听地址（例如 `--host 0.0.0.0`），服务会暴露给所有可达网卡；本地开发
+端点默认没有替你配置认证、TLS 或网络访问策略，请先确认调用方可信并配置防火墙。
+
+LangGraph 编排方可以把远端 typed events 直接接入 custom stream：
+
+```python
+from langgraph.config import get_stream_writer
+from ksadk.a2a import stream_a2a_agent_to_writer
+
+async def call_remote(state):
+    output = await stream_a2a_agent_to_writer(
+        "http://127.0.0.1:8094",
+        state["query"],
+        writer=get_stream_writer(),
+    )
+    return {"result": output}
+```
+
+helper 与远端实现框架无关，因此 ADK↔ADK、ADK↔LangGraph 和
+LangGraph↔LangGraph 共用同一协议路径。它会保留远端实际发出的
+`thinking` / `text` 顺序，处理 artifact 快照去重及权威替换，返回值只包含正文；
+不会补造远端没有发送的“交替思考”。旧的 `stream_a2a_agent()` 仅返回字符串增量，
+无法表达替换语义；需要正确处理权威快照时请使用 typed events 或上面的 writer helper。

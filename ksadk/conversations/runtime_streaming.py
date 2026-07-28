@@ -72,7 +72,10 @@ async def stream_conversation_turn(
         elif event_type == "thinking":
             yield _response_sse("response.reasoning.delta", {"delta": event.get("delta", "")})
         elif event_type == "text":
-            yield _response_sse("response.output_text.delta", {"delta": event.get("delta", "")})
+            text_payload: dict[str, Any] = {"delta": event.get("delta", "")}
+            if event.get("replace"):
+                text_payload["replace"] = True
+            yield _response_sse("response.output_text.delta", text_payload)
         elif event_type == "tool_call":
             yield _response_sse(
                 "response.tool_call",
@@ -299,15 +302,19 @@ async def stream_responses_conversation_turn(
                     },
                 )
             delta = str(event.get("delta") or "")
-            completed_text += delta
+            replace = bool(event.get("replace"))
+            completed_text = delta if replace else completed_text + delta
+            text_delta_payload: dict[str, Any] = {
+                "item_id": message_item_id,
+                "output_index": text_output_index,
+                "content_index": 0,
+                "delta": delta,
+            }
+            if replace:
+                text_delta_payload["replace"] = True
             yield _response_sse(
                 "response.output_text.delta",
-                {
-                    "item_id": message_item_id,
-                    "output_index": text_output_index,
-                    "content_index": 0,
-                    "delta": delta,
-                },
+                text_delta_payload,
             )
             continue
 
