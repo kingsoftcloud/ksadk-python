@@ -164,10 +164,7 @@ class ShortTermMemory(BaseModel):
             self._session_service = ResilientADKSessionService(
                 DatabaseSessionService(db_url=normalized_db_url, **service_kwargs)
             )
-            logger.info(
-                f"ShortTermMemory: using DatabaseSessionService "
-                f"({normalized_db_url[:30]}...)"
-            )
+            logger.info("ShortTermMemory: using DatabaseSessionService")
         except ImportError:
             logger.warning(
                 "DatabaseSessionService not available. "
@@ -176,10 +173,11 @@ class ShortTermMemory(BaseModel):
             )
             self._session_service = InMemorySessionService()
             self.backend = "local"
-        except Exception as e:
+        except Exception as exc:
             logger.error(
-                f"Failed to create DatabaseSessionService: {e}. "
-                f"Falling back to InMemorySessionService."
+                "Failed to create DatabaseSessionService (%s); "
+                "falling back to InMemorySessionService.",
+                type(exc).__name__,
             )
             self._session_service = InMemorySessionService()
             self.backend = "local"

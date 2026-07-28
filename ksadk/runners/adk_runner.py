@@ -52,6 +52,7 @@ class ADKRunner(BaseRunner):
         # ADK resumability state
         self._resumable: bool = False
         self._resume_disabled_reason: Optional[str] = None
+        self._resume_disabled_reason_code: Optional[str] = None
         # P1.1 sub-issue: guard invocation_map read-modify-write so concurrent
         # invocations on the same session don't lose each other's mappings.
         self._invocation_map_lock = asyncio.Lock()
@@ -61,7 +62,21 @@ class ADKRunner(BaseRunner):
         ).strip()
 
     async def close(self) -> None:
-        """Close runtime toolsets owned by this runner."""
+        """Close database sessions and runtime toolsets owned by this runner."""
+        session_service = self._session_service
+        self._session_service = None
+        if session_service is not None:
+            close_session = getattr(session_service, "aclose", None) or getattr(
+                session_service, "close", None
+            )
+            if callable(close_session):
+                try:
+                    result = close_session()
+                    if inspect.isawaitable(result):
+                        await result
+                except Exception as exc:
+                    logger.warning("Failed to close ADK session service: %s", exc)
+
         toolsets = list(self._runtime_toolsets)
         self._runtime_toolsets.clear()
         for toolset in toolsets:
@@ -278,7 +293,7 @@ class ADKRunner(BaseRunner):
             elif stm_backend == "database":
                 backend = "adk_invocation+postgres"
             shared_across_pods = stm_backend == "database"
-            return {
+            capability = {
                 "Supported": shared_across_pods,
                 "Backend": backend,
                 "Scope": "invocation",
@@ -294,7 +309,10 @@ class ADKRunner(BaseRunner):
                     "process-local or SQLite and cannot support cross-pod recovery"
                 ),
             }
-        return {
+            if not shared_across_pods:
+                capability["ReasonCode"] = "CHECKPOINTER_NOT_DURABLE"
+            return capability
+        capability = {
             "Supported": False,
             "Backend": "none",
             "Scope": "unknown",
@@ -307,6 +325,9 @@ class ADKRunner(BaseRunner):
                 "KSADK_ADK_RESUMABLE=1 or configure App with resumability_config"
             ),
         }
+        if self._resume_disabled_reason_code:
+            capability["ReasonCode"] = self._resume_disabled_reason_code
+        return capability
 
     def get_runtime_capabilities(self) -> dict[str, Any]:
         capabilities = super().get_runtime_capabilities()
@@ -357,6 +378,9 @@ class ADKRunner(BaseRunner):
                 else "conversation transcript can be replayed",
             }
         capabilities["ResumeRun"]["Reason"] = capabilities["Checkpoint"]["Reason"]
+        reason_code = str(capabilities["Checkpoint"].get("ReasonCode") or "")
+        if reason_code:
+            capabilities["ResumeRun"]["ReasonCode"] = reason_code
         return capabilities
 
     @dataclass
@@ -434,6 +458,8 @@ class ADKRunner(BaseRunner):
 
         resumable = self._resolve_resumability()
         resumability_enabled = resumable.enabled
+        self._resume_disabled_reason = None
+        self._resume_disabled_reason_code = None
 
         # 版本兼容性检查：低于最低版本时强制关闭恢复
         resume_compatible, resume_reason = self._check_adk_resume_compatibility()
@@ -444,6 +470,7 @@ class ADKRunner(BaseRunner):
             resumable = self._ResolvabilityResult(enabled=False, source="version_check", app=None)
             resumability_enabled = False
             self._resume_disabled_reason = resume_reason
+            self._resume_disabled_reason_code = "ADK_VERSION_UNSUPPORTED"
 
         if resumable.app is not None:
             runner_kwargs = dict(
@@ -464,7 +491,7 @@ class ADKRunner(BaseRunner):
                 )
             except ImportError:
                 logger.warning(
-                    "ADK ResumabilityConfig not available (requires google-adk >= 1.14.0); "
+                    "ADK ResumabilityConfig not available (requires google-adk >= 1.16.0); "
                     "falling back to non-resumable Runner"
                 )
                 runner_kwargs = dict(
@@ -474,6 +501,7 @@ class ADKRunner(BaseRunner):
                 )
                 resumability_enabled = False
                 self._resume_disabled_reason = "ADK ResumabilityConfig is unavailable"
+                self._resume_disabled_reason_code = "ADK_VERSION_UNSUPPORTED"
         else:
             runner_kwargs = dict(
                 agent=self._agent,

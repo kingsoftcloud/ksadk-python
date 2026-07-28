@@ -128,6 +128,10 @@ class BaseRunner(ABC):
             },
         }
 
+    async def prepare_runtime_capabilities(self) -> None:
+        """Prepare optional async resources required for capability discovery."""
+        return None
+
     async def close(self) -> None:
         """释放 runner 持有的运行期资源。"""
         return None

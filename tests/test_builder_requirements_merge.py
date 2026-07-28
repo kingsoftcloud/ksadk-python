@@ -126,7 +126,7 @@ def test_container_builder_omits_bundled_ksadk_package_from_runtime_requirements
     assert "requests-aws4auth>=1.2.0" in deps
 
 
-def test_code_builder_bundles_attachment_runtime_requirements_without_optional_backends(tmp_path):
+def test_code_builder_bundles_dynamic_postgres_requirements_for_langgraph(tmp_path):
     builder = CodeBuilder(tmp_path)
 
     deps = builder._build_requirements_list(_detection_result("langgraph"))
@@ -136,7 +136,11 @@ def test_code_builder_bundles_attachment_runtime_requirements_without_optional_b
     assert "rapidocr-onnxruntime>=1.2.0" not in deps
     assert "mcp>=1.1.0" not in deps
     assert "langchain-mcp-adapters>=0.0.1" not in deps
-    assert "asyncpg>=0.30.0,<1.0.0" not in deps
+    assert "asyncpg>=0.30.0,<1.0.0" in deps
+    assert "greenlet>=1.0.0" in deps
+    assert "langgraph-checkpoint-postgres>=3.1.0" in deps
+    assert "psycopg[binary]>=3.2,<4.0" in deps
+    assert "psycopg-pool>=3.2,<4.0" in deps
     assert "boto3==1.40.61" not in deps
     assert "SQLAlchemy==2.0.44" not in deps
     assert "psycopg[binary]==3.3.0" not in deps
@@ -214,6 +218,16 @@ def test_code_builder_includes_asyncpg_when_postgres_session_declared(tmp_path):
     deps = builder._build_requirements_list(_detection_result("langgraph"))
 
     assert "asyncpg>=0.30.0,<1.0.0" in deps
+
+
+def test_code_builder_includes_dynamic_postgres_session_dependency_for_adk(tmp_path):
+    builder = CodeBuilder(tmp_path)
+
+    deps = builder._build_requirements_list(_detection_result("adk"))
+
+    assert "asyncpg>=0.30.0,<1.0.0" in deps
+    assert "greenlet>=1.0.0" in deps
+    assert "langgraph-checkpoint-postgres>=3.1.0" not in deps
 
 
 def test_code_builder_includes_asyncpg_when_postgres_dsn_declared(tmp_path):

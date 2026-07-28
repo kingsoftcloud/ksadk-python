@@ -5,6 +5,7 @@ FastAPI 应用 - 提供 HTTP API 接口 (ADK Web 兼容)
 
 import asyncio
 import base64
+import inspect
 import io
 import json
 import logging
@@ -61,6 +62,7 @@ from ksadk.sessions import (
 from ksadk.sessions.base import CheckpointEventQuery, SessionEventQuery
 from ksadk.sessions.errors import CheckpointScanRestartRequired, SessionBackendUnavailable
 from ksadk.sessions.local_service import resolve_local_session_dir
+from ksadk.sessions.persistence import gate_runtime_capabilities, get_persistence_status
 from ksadk.toolsets import describe_agentengine_tools
 from ksadk.tracing import get_memory_exporter
 from ksadk.ui_config import UI_PROFILE_CUSTOM, resolve_ui_config
@@ -2121,8 +2123,7 @@ async def get_agent_ui_bootstrap(request: UiBootstrapRequest):
     if active_runner:
         detection_type = getattr(getattr(active_runner, "detection_result", None), "type", None)
         framework = str(getattr(detection_type, "value", detection_type) or "").strip().lower()
-        if framework == "langgraph":
-            active_runner = _resolve_active_runner()
+        active_runner = _resolve_active_runner()
     agent_id = request.AgentId or (
         _runtime_agent_id(active_runner) if active_runner else "default-agent"
     )
@@ -2131,12 +2132,28 @@ async def get_agent_ui_bootstrap(request: UiBootstrapRequest):
     )
     workspace_enabled = workspace_files_enabled(default=True)
     ui_spec = _resolve_agent_ui_spec()
+    persistence = await get_persistence_status()
+    prepare_capabilities = getattr(active_runner, "prepare_runtime_capabilities", None)
+    if callable(prepare_capabilities):
+        prepared = prepare_capabilities()
+        if inspect.isawaitable(prepared):
+            await prepared
     runtime_capabilities = (
         active_runner.get_runtime_capabilities()
         if active_runner
         and callable(getattr(active_runner, "get_runtime_capabilities", None))
         else {}
     )
+    runtime_capabilities = gate_runtime_capabilities(runtime_capabilities, persistence)
+    resume_capability = runtime_capabilities.get("ResumeRun") or {}
+    if persistence.get("Ready") and not resume_capability.get("Supported"):
+        reason_code = str(resume_capability.get("ReasonCode") or "").strip()
+        if reason_code:
+            persistence = {
+                **persistence,
+                "ReasonCode": reason_code,
+                "Reason": str(resume_capability.get("Reason") or ""),
+            }
     checkpoint_resume_capability = {
         "Supported": bool(
             (runtime_capabilities.get("ResumeRun") or {}).get("Supported")
@@ -2173,6 +2190,7 @@ async def get_agent_ui_bootstrap(request: UiBootstrapRequest):
                 "Thinking": True,
                 "StopRun": cancel_run_supported,
                 "ResumeRun": checkpoint_resume_supported,
+                "Persistence": persistence,
                 "RuntimeCapabilities": runtime_capabilities,
                 "CheckpointResumeCapability": checkpoint_resume_capability,
                 "RunLifecycle": {

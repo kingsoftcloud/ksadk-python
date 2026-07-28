@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 
 import pytest
 
 from ksadk.runners.adk_runner import ADKRunner
-from ksadk.sessions import create_session_service, describe_session_backend, register_session_backend
+from ksadk.sessions import (
+    create_session_service,
+    describe_session_backend,
+    register_session_backend,
+)
 from ksadk.sessions.in_memory import InMemorySessionService
 from ksadk.sessions.local_service import LocalSessionService
 
@@ -164,6 +169,24 @@ def test_short_term_memory_from_env_falls_back_to_unified_session_dsn(monkeypatc
 
     assert stm.backend == "database"
     assert stm.db_url == dsn
+
+
+def test_short_term_memory_database_log_never_contains_dsn_credentials(
+    monkeypatch, caplog
+):
+    from ksadk.memory.adk.short_term_memory import ShortTermMemory
+
+    dsn = "postgresql+asyncpg://runtime-user:runtime-password@example.invalid:5432/session_db"
+    monkeypatch.setenv("KSADK_SESSION_BACKEND", "postgres")
+    monkeypatch.setenv("KSADK_SESSION_DSN", dsn)
+
+    with caplog.at_level(logging.INFO, logger="ksadk.memory.adk.short_term_memory"):
+        ShortTermMemory.from_env()
+
+    assert "runtime-user" not in caplog.text
+    assert "runtime-password" not in caplog.text
+    assert "postgresql+asyncpg" not in caplog.text
+    assert dsn not in caplog.text
 
 
 def test_adk_runner_short_term_memory_initializes_from_unified_session_env(monkeypatch):

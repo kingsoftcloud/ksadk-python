@@ -7,20 +7,20 @@ Code Builder - zip 打包模式构建
 3. 打包 zip (用户代码 + 依赖 + ksadk 源码 + entrypoint)
 """
 
+import ast
+import hashlib
+import json
 import os
-import sys
+import re
 import shutil
 import subprocess
+import sys
 import threading
 import time
 import zipfile
-import re
-import json
-import hashlib
-import ast
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import List, Optional, Set
+from typing import Any, List, Optional, Set
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
@@ -126,6 +126,12 @@ class CodeBuilder(BaseBuilder):
     )
     BUNDLED_KSADK_POSTGRES_SESSION_REQUIREMENTS = (
         "asyncpg>=0.30.0,<1.0.0",
+        "greenlet>=1.0.0",
+    )
+    BUNDLED_KSADK_LANGGRAPH_POSTGRES_REQUIREMENTS = (
+        "langgraph-checkpoint-postgres>=3.1.0",
+        "psycopg[binary]>=3.2,<4.0",
+        "psycopg-pool>=3.2,<4.0",
     )
     BUNDLED_KSADK_ATTACHMENT_RUNTIME_REQUIREMENTS = (
         "pypdf>=6.0.0",
@@ -414,8 +420,16 @@ class CodeBuilder(BaseBuilder):
         value = os.getenv("KSADK_BUILD_ENABLE_ATTACHMENT_OCR", "")
         return value.strip().lower() in {"1", "true", "yes", "on"}
 
-    def _bundled_runtime_requirements(self) -> tuple[str, ...]:
+    def _bundled_runtime_requirements(self, detection_result: Any = None) -> tuple[str, ...]:
         requirements = list(self.BUNDLED_KSADK_RUNTIME_REQUIREMENTS)
+        detection_type = getattr(detection_result, "type", None)
+        framework = str(
+            getattr(detection_type, "value", detection_type) or ""
+        ).strip().lower()
+        if framework in {"adk", "langgraph"}:
+            requirements.extend(self.BUNDLED_KSADK_POSTGRES_SESSION_REQUIREMENTS)
+        if framework == "langgraph":
+            requirements.extend(self.BUNDLED_KSADK_LANGGRAPH_POSTGRES_REQUIREMENTS)
         if self._attachment_ocr_runtime_enabled():
             requirements.extend(self.BUNDLED_KSADK_ATTACHMENT_OCR_RUNTIME_REQUIREMENTS)
         if self._mcp_runtime_enabled():
@@ -734,7 +748,7 @@ class CodeBuilder(BaseBuilder):
     def _build_requirements_list(self, detection_result) -> List[str]:
         final_deps = merge_requirement_lists(
             self._get_base_requirements(detection_result),
-            self._bundled_runtime_requirements(),
+            self._bundled_runtime_requirements(detection_result),
         )
 
         user_requirements = self.project_dir / "requirements.txt"

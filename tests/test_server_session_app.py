@@ -251,7 +251,24 @@ async def test_ui_bootstrap_enables_checkpoint_controls_from_runtime_capability(
     service = InMemorySessionService()
     runner = _CheckpointResumeRunner()
 
+    async def ready_persistence():
+        return {
+            "Configured": True,
+            "Status": "ready",
+            "Ready": True,
+            "Backend": "postgres",
+            "SharedAcrossPods": True,
+            "EffectiveFor": "new_runs_only",
+            "ReasonCode": "READY",
+            "Reason": "",
+        }
+
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    monkeypatch.setattr(
+        server_app_module,
+        "get_persistence_status",
+        ready_persistence,
+    )
     server_app_module.set_runner(runner)
 
     transport = httpx.ASGITransport(app=server_app_module.app)
@@ -267,6 +284,69 @@ async def test_ui_bootstrap_enables_checkpoint_controls_from_runtime_capability(
     assert capabilities["RunLifecycle"]["Checkpoints"] is True
     assert capabilities["RunLifecycle"]["CheckpointResume"] is True
     assert capabilities["RunLifecycle"]["CheckpointResumePreview"] is True
+
+
+@pytest.mark.asyncio
+async def test_ui_bootstrap_loads_adk_before_describing_checkpoint_capability(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+
+    class _BootstrapAdkRunner(_DummyRunner):
+        def __init__(self):
+            super().__init__()
+            self.detection_result.type = SimpleNamespace(value="adk")
+            self.loaded = False
+            self.load_calls = 0
+
+        def load_agent(self) -> None:
+            self.load_calls += 1
+            self.loaded = True
+
+        def describe_checkpoint_capability(self) -> dict:
+            return {
+                "Supported": self.loaded,
+                "Backend": "adk_invocation+postgres" if self.loaded else "none",
+                "Scope": "invocation" if self.loaded else "unknown",
+                "Durable": self.loaded,
+                "SharedAcrossPods": self.loaded,
+                "ResumeMode": "invocation_id" if self.loaded else "none",
+                "Reason": "" if self.loaded else "ADK runner is not loaded",
+            }
+
+    async def ready_persistence():
+        return {
+            "Configured": True,
+            "Status": "ready",
+            "Ready": True,
+            "Backend": "postgres",
+            "SharedAcrossPods": True,
+            "EffectiveFor": "new_runs_only",
+            "ReasonCode": "READY",
+            "Reason": "",
+        }
+
+    runner = _BootstrapAdkRunner()
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    monkeypatch.setattr(
+        server_app_module,
+        "get_persistence_status",
+        ready_persistence,
+    )
+    server_app_module.set_runner(runner)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/GetAgentUiBootstrap",
+            json={"AgentId": "adk-agent"},
+        )
+
+    capabilities = response.json()["Data"]["Capabilities"]
+    assert runner.load_calls == 1
+    assert capabilities["CheckpointResumeCapability"]["Supported"] is True
+    assert capabilities["RuntimeCapabilities"]["ResumeRun"]["ResumeMode"] == (
+        "invocation_id"
+    )
 
 
 @pytest.mark.asyncio
@@ -294,7 +374,24 @@ async def test_ui_bootstrap_loads_langgraph_before_describing_checkpoint_capabil
     service = InMemorySessionService()
     runner = _BootstrapLangGraphRunner()
 
+    async def ready_persistence():
+        return {
+            "Configured": True,
+            "Status": "ready",
+            "Ready": True,
+            "Backend": "postgres",
+            "SharedAcrossPods": True,
+            "EffectiveFor": "new_runs_only",
+            "ReasonCode": "READY",
+            "Reason": "",
+        }
+
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    monkeypatch.setattr(
+        server_app_module,
+        "get_persistence_status",
+        ready_persistence,
+    )
     server_app_module.set_runner(runner)
 
     transport = httpx.ASGITransport(app=server_app_module.app)

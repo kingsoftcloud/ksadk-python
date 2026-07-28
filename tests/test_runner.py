@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import os
 import textwrap
@@ -303,6 +304,7 @@ def test_adk_runner_does_not_advertise_in_memory_resume(tmp_path):
     assert capabilities["Checkpoint"]["Backend"] == "adk_invocation"
     assert capabilities["ResumeRun"]["Supported"] is False
     assert capabilities["ResumeRun"]["ResumeMode"] == "invocation_id"
+    assert capabilities["ResumeRun"]["ReasonCode"] == "CHECKPOINTER_NOT_DURABLE"
 
     checkpoint_capability = runner.describe_checkpoint_capability()
     assert checkpoint_capability["Supported"] is False
@@ -310,6 +312,53 @@ def test_adk_runner_does_not_advertise_in_memory_resume(tmp_path):
     assert checkpoint_capability["ResumeMode"] == "invocation_id"
     assert checkpoint_capability["Durable"] is False
     assert checkpoint_capability["LocalOnly"] is True
+
+
+def test_adk_runner_reports_stable_reason_when_version_disables_resume(tmp_path, monkeypatch):
+    from google.adk import runners as adk_runners
+
+    from ksadk.runners.adk_runner import ADKRunner
+
+    runner = ADKRunner(_write_detection(FrameworkType.ADK), str(tmp_path))
+    runner._agent = SimpleNamespace(name="demo-agent")
+    runner._session_service = object()
+    monkeypatch.setattr(adk_runners, "Runner", lambda **_kwargs: object())
+    monkeypatch.setattr(
+        runner,
+        "_resolve_resumability",
+        lambda: runner._ResolvabilityResult(enabled=True, source="env", app=None),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_check_adk_resume_compatibility",
+        lambda: (False, "google-adk 1.15.0 < 1.16.0"),
+    )
+
+    runner._build_runner()
+
+    capabilities = runner.get_runtime_capabilities()
+    assert capabilities["Checkpoint"]["Supported"] is False
+    assert capabilities["Checkpoint"]["ReasonCode"] == "ADK_VERSION_UNSUPPORTED"
+    assert capabilities["ResumeRun"]["ReasonCode"] == "ADK_VERSION_UNSUPPORTED"
+
+
+@pytest.mark.asyncio
+async def test_adk_runner_close_releases_database_session_service(tmp_path):
+    from ksadk.runners.adk_runner import ADKRunner
+
+    class _SessionService:
+        closed = False
+
+        async def close(self):
+            self.closed = True
+
+    runner = ADKRunner(_write_detection(FrameworkType.ADK), str(tmp_path))
+    session_service = _SessionService()
+    runner._session_service = session_service
+
+    await runner.close()
+
+    assert session_service.closed is True
 
 
 def test_adk_runner_reports_runtime_level_with_durable_backend(tmp_path):
@@ -877,6 +926,7 @@ def test_langgraph_runner_does_not_advertise_memory_checkpoint_resume(monkeypatc
     assert capabilities["Checkpoint"]["Durable"] is False
     assert capabilities["ResumeRun"]["Supported"] is False
     assert capabilities["ResumeRun"]["ResumeMode"] == "none"
+    assert capabilities["ResumeRun"]["ReasonCode"] == "CHECKPOINTER_NOT_DURABLE"
     assert "In-memory checkpoint" in capabilities["ResumeRun"]["Reason"]
 
 
@@ -1008,6 +1058,204 @@ def test_langgraph_runner_rejects_inconsistent_lazy_checkpoint_capability():
     assert capabilities["Checkpoint"]["Supported"] is False
     assert capabilities["ResumeRun"]["Supported"] is False
     assert "invalid" in capabilities["ResumeRun"]["Reason"].lower()
+
+
+@pytest.mark.asyncio
+async def test_langgraph_runner_builds_graph_through_managed_checkpoint_factory(monkeypatch):
+    from ksadk.runners.langgraph_runner import LangGraphRunner
+
+    class AsyncPostgresSaver:
+        pass
+
+    AsyncPostgresSaver.__module__ = "langgraph.checkpoint.postgres.aio"
+
+    class _Pool:
+        def __init__(self):
+            self.closed = False
+
+        async def close(self):
+            self.closed = True
+
+    saver = AsyncPostgresSaver()
+    pool = _Pool()
+    captured = {}
+
+    class _ManagedRunner(LangGraphRunner):
+        async def _create_managed_postgres_saver(self, dsn):
+            captured["dsn"] = dsn
+            return saver, pool
+
+    module = ModuleType("managed_graph")
+
+    def ksadk_graph_factory(*, checkpointer):
+        captured["checkpointer"] = checkpointer
+        return SimpleNamespace(invoke=lambda *_args, **_kwargs: None, checkpointer=checkpointer)
+
+    module.ksadk_graph_factory = ksadk_graph_factory
+    detection = _write_detection(FrameworkType.LANGGRAPH)
+    runner = _ManagedRunner(detection, "/workspace/demo")
+    runner._module = module
+    runner._agent = SimpleNamespace(invoke=lambda *_args, **_kwargs: None)
+    monkeypatch.setenv("KSADK_LANGGRAPH_AUTO_CHECKPOINT", "1")
+    monkeypatch.setenv(
+        "KSADK_LANGGRAPH_CHECKPOINT_DSN",
+        "postgresql://user:secret@10.0.0.8:5432/appdb",
+    )
+    monkeypatch.setenv("AGENTENGINE_AGENT_ID", "ar-managed-checkpoint")
+    monkeypatch.setenv(
+        "KSADK_SESSION_NAMESPACE",
+        "tenant:acct-1:agent:ar-managed-checkpoint",
+    )
+
+    await runner.prepare_runtime_capabilities()
+
+    capabilities = runner.get_runtime_capabilities()
+    assert captured["dsn"] == "postgresql://user:secret@10.0.0.8:5432/appdb"
+    assert captured["checkpointer"] is saver
+    assert runner._agent.checkpointer is saver
+    assert capabilities["Checkpoint"]["Supported"] is True
+    assert capabilities["ResumeRun"]["ResumeMode"] == "time_travel"
+    assert runner._get_config("sess-1")["configurable"]["checkpoint_ns"] == (
+        "tenant:acct-1:agent:ar-managed-checkpoint"
+    )
+
+    await runner.close()
+    assert pool.closed is True
+
+
+@pytest.mark.asyncio
+async def test_langgraph_runner_reports_factory_required_without_mutating_compiled_graph(
+    monkeypatch,
+):
+    from ksadk.runners.langgraph_runner import LangGraphRunner
+
+    original_graph = SimpleNamespace(invoke=lambda *_args, **_kwargs: None)
+    detection = _write_detection(FrameworkType.LANGGRAPH)
+    runner = LangGraphRunner(detection, "/workspace/demo")
+    runner._module = ModuleType("graph_without_factory")
+    runner._agent = original_graph
+    monkeypatch.setenv("KSADK_LANGGRAPH_AUTO_CHECKPOINT", "1")
+    monkeypatch.setenv(
+        "KSADK_LANGGRAPH_CHECKPOINT_DSN",
+        "postgresql://user:secret@10.0.0.8:5432/appdb",
+    )
+
+    await runner.prepare_runtime_capabilities()
+
+    capabilities = runner.get_runtime_capabilities()
+    assert runner._agent is original_graph
+    assert not hasattr(original_graph, "checkpointer")
+    assert capabilities["Checkpoint"]["Supported"] is False
+    assert capabilities["Checkpoint"]["ReasonCode"] == "LANGGRAPH_FACTORY_REQUIRED"
+    assert capabilities["ResumeRun"]["ReasonCode"] == "LANGGRAPH_FACTORY_REQUIRED"
+
+
+@pytest.mark.asyncio
+async def test_langgraph_runner_detects_existing_postgres_saver_without_boolean_coercion(
+    monkeypatch,
+):
+    from ksadk.runners.langgraph_runner import LangGraphRunner
+
+    class AsyncPostgresSaver:
+        def __bool__(self):
+            raise AssertionError("checkpointer truthiness must not be evaluated")
+
+    AsyncPostgresSaver.__module__ = "langgraph.checkpoint.postgres.aio"
+    saver = AsyncPostgresSaver()
+    detection = _write_detection(FrameworkType.LANGGRAPH)
+    runner = LangGraphRunner(detection, "/workspace/demo")
+    runner._agent = SimpleNamespace(
+        invoke=lambda *_args, **_kwargs: None,
+        checkpointer=saver,
+    )
+    monkeypatch.setenv(
+        "KSADK_SESSION_NAMESPACE",
+        "tenant:acct-1:agent:ar-existing-checkpoint",
+    )
+
+    await runner.prepare_runtime_capabilities()
+
+    assert runner.get_runtime_capabilities()["Checkpoint"]["Supported"] is True
+    assert runner._get_config("sess-1")["configurable"]["checkpoint_ns"] == (
+        "tenant:acct-1:agent:ar-existing-checkpoint"
+    )
+
+
+@pytest.mark.asyncio
+async def test_langgraph_runner_prepares_managed_checkpoint_once_under_concurrency(monkeypatch):
+    from ksadk.runners.langgraph_runner import LangGraphRunner
+
+    class AsyncPostgresSaver:
+        pass
+
+    AsyncPostgresSaver.__module__ = "langgraph.checkpoint.postgres.aio"
+
+    class _Pool:
+        async def close(self):
+            return None
+
+    calls = 0
+
+    class _ManagedRunner(LangGraphRunner):
+        async def _create_managed_postgres_saver(self, _dsn):
+            nonlocal calls
+            calls += 1
+            await asyncio.sleep(0)
+            return AsyncPostgresSaver(), _Pool()
+
+    module = ModuleType("concurrent_managed_graph")
+    module.ksadk_graph_factory = lambda *, checkpointer: SimpleNamespace(
+        invoke=lambda *_args, **_kwargs: None,
+        checkpointer=checkpointer,
+    )
+    runner = _ManagedRunner(_write_detection(FrameworkType.LANGGRAPH), "/workspace/demo")
+    runner._module = module
+    runner._agent = SimpleNamespace(invoke=lambda *_args, **_kwargs: None)
+    monkeypatch.setenv("KSADK_LANGGRAPH_AUTO_CHECKPOINT", "1")
+    monkeypatch.setenv(
+        "KSADK_LANGGRAPH_CHECKPOINT_DSN",
+        "postgresql://user:secret@10.0.0.8:5432/appdb",
+    )
+
+    await asyncio.gather(*(runner.prepare_runtime_capabilities() for _ in range(8)))
+
+    assert calls == 1
+    await runner.close()
+
+
+@pytest.mark.asyncio
+async def test_langgraph_runner_closes_pool_when_factory_rejects_graph(monkeypatch):
+    from ksadk.runners.langgraph_runner import LangGraphRunner
+
+    class _Pool:
+        closed = False
+
+        async def close(self):
+            self.closed = True
+
+    pool = _Pool()
+
+    class _ManagedRunner(LangGraphRunner):
+        async def _create_managed_postgres_saver(self, _dsn):
+            return object(), pool
+
+    module = ModuleType("invalid_managed_graph")
+    module.ksadk_graph_factory = lambda *, checkpointer: object()
+    original_graph = SimpleNamespace(invoke=lambda *_args, **_kwargs: None)
+    runner = _ManagedRunner(_write_detection(FrameworkType.LANGGRAPH), "/workspace/demo")
+    runner._module = module
+    runner._agent = original_graph
+    monkeypatch.setenv("KSADK_LANGGRAPH_AUTO_CHECKPOINT", "1")
+    monkeypatch.setenv(
+        "KSADK_LANGGRAPH_CHECKPOINT_DSN",
+        "postgresql://user:secret@10.0.0.8:5432/appdb",
+    )
+
+    await runner.prepare_runtime_capabilities()
+
+    assert runner._agent is original_graph
+    assert pool.closed is True
+    assert runner.get_runtime_capabilities()["ResumeRun"]["Supported"] is False
 
 
 def test_create_runner_uses_custom_runner_class(monkeypatch, tmp_path):
