@@ -53,6 +53,10 @@ are never included in public A2A Task or Message metadata. Start and stop the
 bootstrap with the Runtime application lifespan so durable stores and the shared
 event dispatcher are ready before traffic is served.
 
+A managed Runtime does not write its internal reasoning events as A2A artifacts.
+Upstream callers receive only protocol task state, response content, and allowed
+artifacts—not model-internal reasoning.
+
 An inbound-only Runtime can disable outbound operation. It then needs no control
 plane, hosted HTTP client, or event outbox, and `client_for_space()` rejects
 explicitly. A standalone `A2ASpaceClient` owns its background dispatcher: call

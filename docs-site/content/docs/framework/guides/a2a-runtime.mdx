@@ -29,4 +29,6 @@ AgentEngine 在部署托管 Runtime 时创建 `AgentEngineA2ABootstrap`。它负
 
 Checkpoint handle 和 resume target 保留在 Runtime 本地 durable storage，绝不出现在公开 A2A Task 或 Message metadata 中。应通过 Runtime application lifespan 启动和停止 bootstrap，确保 durable store 与共享 event dispatcher 在接流量前就绪。
 
+托管 Runtime 不会把内部 reasoning event 写成 A2A artifact；上游只会收到协议允许的任务状态、正文与 artifact，不会收到模型的内部推理内容。
+
 只承载入站协议的 Runtime 可以禁用 outbound，此时无需注入 control plane、hosted HTTP client 或 event outbox，`client_for_space()` 会明确拒绝。独立创建的 `A2ASpaceClient` 自己拥有后台 dispatcher：使用完请 `await client.aclose()`，或用 `async with`；由 bootstrap 创建的 client 则由 Runtime lifespan 统一关闭。

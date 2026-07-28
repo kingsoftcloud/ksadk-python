@@ -24,7 +24,7 @@
 
 - **事件与 adapter**：新增 RuntimeEvent schema、严格反序列化校验、RuntimeEventStore、session 级订阅、共享 projection/replay parser，以及 ADK/LangGraph 的 adapter contract tests。未知事件不能绕过事件边界进入 replay。
 - **AG-UI 与 A2UI**：新增 AG-UI route group、RuntimeEvent 到 activity 的投影、A2UI core/renderer/fixture viewer 和可持久化 action 记录。审批不是另一套 UI 协议，而是事件流中的受控交互状态。
-- **A2A**：新增 Agent Card、Protocol Runtime、PostgreSQL TaskStore、account + runtime 复合 owner identity、Task cancel/resume adapter、Space 内动态发现、credential provider、egress policy 与 A2A event adapter。app factory 直接装配 A2A 数据面路由。
+- **A2A**：新增 Agent Card、Protocol Runtime、PostgreSQL TaskStore、account + runtime 复合 owner identity、Task cancel/resume adapter、Space 内动态发现、credential provider、egress policy 与 A2A event adapter。AgentEngine 的托管 composition root 使用 Gateway 验证的五元目标绑定和受信 Card probe；它将 resume state 留在 Runtime 本地 durable storage，并为 `external_public` 提供 HTTPS-only、DNS/IP pin、禁代理、拒绝 3xx 的 NAT transport。app factory 直接装配 A2A 数据面路由；`external_vpc` 仍需单独的 VPC dialer。
 - **Harness 与 Codex**：新增声明式 HarnessApp composition root，模型/MCP/tool 配置校验和默认只读 sandbox policy；新增基于官方 app-server transport 的 CodexRuntime、生命周期 phase 映射及离线/显式 live 演示。真实 provider 凭证 E2E 不包含在本候选的发布结论中。
 - **框架与 App Factory**：新增 ADK `1.34.x`/`2.x` 兼容层及 CI matrix；server 创建改为 per-app factory/state，路由按职责拆组，WebSocket 也在请求上下文中运行。
 - **CLI 与诊断**：新增 `agentengine a2a` 和 `ksadk replay <session-id>`。`replay` 只读取已持久化的 RuntimeEvent，按 `--after-seq-id` / `--before-seq-id` 定位窗口并输出 text 或 JSON transcript；它不重跑模型、工具或副作用，旧式 SessionEvent 也不在此命令的回放范围内。
@@ -36,6 +36,7 @@
 - 修复 run-event 订阅缺少心跳、空闲 SSE 被中间网络断开、MCP API/delete error 行为漂移、Windows ADK 安装与 create-agent streaming 兼容问题。
 - 修复 E2B sandbox 执行硬化、workspace 编辑工具选择、Hermes 项目创建，以及 PostgreSQL/in-memory session 后端的连续性与 fail-open 行为。
 - 为 agent-scoped session/event 查询增加 covering indexes，降低多会话历史和回放场景下的数据库扫描成本。
+- 托管 A2A 在 public-egress 最终投影缺失时按关闭处理；不把 Runtime reasoning、checkpoint handle 或 resume target 写入公开 A2A Task/Message metadata，取消成功后清除 Runtime-local resume state。
 
 ### 兼容性、迁移与评审边界
 

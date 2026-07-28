@@ -17,6 +17,7 @@ ZH_DOC_URLS = {
     f"{DOCS_ROOT_URL}cn/docs/framework/guides/observability-tracing/",
     f"{DOCS_ROOT_URL}cn/docs/framework/guides/cloud-deployment/",
     f"{DOCS_ROOT_URL}cn/docs/framework/guides/hosted-ui-events/",
+    f"{DOCS_ROOT_URL}cn/docs/framework/guides/a2a-runtime/",
 }
 EN_DOC_URLS = {
     f"{DOCS_ROOT_URL}en/docs/framework/getting-started/quickstart/",
@@ -26,6 +27,7 @@ EN_DOC_URLS = {
     f"{DOCS_ROOT_URL}en/docs/framework/guides/observability-tracing/",
     f"{DOCS_ROOT_URL}en/docs/framework/guides/cloud-deployment/",
     f"{DOCS_ROOT_URL}en/docs/framework/guides/hosted-ui-events/",
+    f"{DOCS_ROOT_URL}en/docs/framework/guides/a2a-runtime/",
 }
 
 
