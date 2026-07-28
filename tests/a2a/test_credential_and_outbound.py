@@ -269,19 +269,61 @@ async def test_sqlite_outbox_retries_task_sink_without_losing_remote_result(
     monkeypatch.setattr("ksadk.a2a.space_client.create_client", create_fake_client)
     outbox = SQLiteA2ATaskEventOutbox(tmp_path / "a2a-events.sqlite3")
     client = A2ASpaceClient(SPACE_ID, backend, event_outbox=outbox)
-    await client.discover()
+    try:
+        await client.discover()
 
-    result = await client.send_message(agent.agent_id, "ping")
+        result = await client.send_message(agent.agent_id, "ping")
 
-    pending = await outbox.pending()
-    assert len(pending) == 1
-    assert pending[0].platform_task_id == result.id
-    source_ids = [event["SourceEventId"] for event in pending[0].events]
+        pending = await outbox.pending()
+        assert len(pending) == 1
+        assert pending[0].platform_task_id == result.id
+        source_ids = [event["SourceEventId"] for event in pending[0].events]
 
-    backend.append_error = None
-    assert await client.flush_pending_events() == 1
-    assert await outbox.pending() == []
-    assert [event["SourceEventId"] for event in backend.append_calls[0]["events"]] == source_ids
+        backend.append_error = None
+        await client.flush_pending_events()
+        assert await outbox.pending() == []
+        assert [event["SourceEventId"] for event in backend.append_calls[0]["events"]] == source_ids
+    finally:
+        await client.aclose(flush_timeout_seconds=0)
+
+
+@pytest.mark.asyncio
+async def test_standalone_space_client_starts_its_outbox_dispatcher(monkeypatch, tmp_path) -> None:
+    from a2a.types import StreamResponse
+    from test_a2a_discovery import _FakeTaskClient, _MockDiscoveryBackend
+
+    agent = _agent()
+    backend = _MockDiscoveryBackend([agent])
+    wire_client = _FakeTaskClient()
+    wire_client.send_responses = [
+        StreamResponse(
+            message=Message(
+                role=Role.ROLE_AGENT,
+                parts=[Part(text="done")],
+                message_id="message-standalone-dispatcher",
+                context_id="context-standalone-dispatcher",
+            )
+        )
+    ]
+
+    async def create_fake_client(**kwargs):  # noqa: ANN003, ANN202
+        return wire_client
+
+    monkeypatch.setattr("ksadk.a2a.space_client.create_client", create_fake_client)
+    outbox = SQLiteA2ATaskEventOutbox(tmp_path / "a2a-events.sqlite3")
+    client = A2ASpaceClient(SPACE_ID, backend, event_outbox=outbox)
+    try:
+        await client.discover()
+        await client.send_message(agent.agent_id, "ping")
+        for _ in range(100):
+            if backend.append_calls and not await outbox.pending():
+                break
+            await asyncio.sleep(0.01)
+
+        assert backend.append_calls
+        assert await outbox.pending() == []
+    finally:
+        await client.aclose(flush_timeout_seconds=0)
 
 
 @pytest.mark.asyncio

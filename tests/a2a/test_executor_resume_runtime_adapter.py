@@ -8,6 +8,7 @@ from a2a.types import Message, Part, Role, Task, TaskState, TaskStatus
 from google.protobuf.json_format import MessageToDict
 
 from ksadk.a2a.executor import A2ARuntimeExecutor
+from ksadk.a2a.resume_store import A2AResumeState
 from ksadk.a2a.task_adapter import A2ARuntimeTaskAdapter
 from ksadk.events import EventPhase, EventType, RuntimeEvent
 from ksadk.runtime import ResumePayload, ResumeTarget, RunHandle
@@ -29,7 +30,7 @@ class _ResumeContext:
             id=self.task_id,
             context_id=self.context_id,
             status=TaskStatus(state=TaskState.TASK_STATE_INPUT_REQUIRED),
-            metadata=metadata or _resume_metadata(),
+            metadata=metadata or {},
         )
         self.metadata: dict[str, Any] = {}
         self.call_context = SimpleNamespace(tenant="trusted-tenant")
@@ -133,21 +134,64 @@ class _RecordingRuntimeAdapter:
         return _events()
 
 
-def _resume_metadata(
+class _ReasoningRuntimeAdapter(_RecordingRuntimeAdapter):
+    def stream(self, handle: RunHandle):  # noqa: ANN201
+        self.stream_handles.append(handle)
+
+        async def _events():
+            yield RuntimeEvent.create(
+                EventType.REASONING_DELTA,
+                agent_id="agent-1",
+                user_id="user-1",
+                session_id=handle.session_id,
+                invocation_id=handle.run_id,
+                seq_id=1,
+                payload={"text": "internal-chain-of-thought"},
+            )
+            yield RuntimeEvent.create(
+                EventType.TEXT_COMPLETED,
+                agent_id="agent-1",
+                user_id="user-1",
+                session_id=handle.session_id,
+                invocation_id=handle.run_id,
+                seq_id=2,
+                phase=EventPhase.FINAL_ANSWER.value,
+                payload={"text": "safe answer"},
+            )
+            yield RuntimeEvent.create(
+                EventType.RUN_COMPLETED,
+                agent_id="agent-1",
+                user_id="user-1",
+                session_id=handle.session_id,
+                invocation_id=handle.run_id,
+                seq_id=3,
+                payload={"status": "completed"},
+            )
+
+        return _events()
+
+
+async def _seed_resume_state(
+    task_adapter: A2ARuntimeTaskAdapter,
+    context: _ResumeContext,
     *,
     target_kind: str = "checkpoint_id",
     payload_kind: str = "approval_decision",
-) -> dict[str, Any]:
-    return {
-        "run_handle": {
-            "run_id": "run-1",
-            "session_id": "session-1",
-            "runtime_type": "test",
-            "native_ref": {"checkpoint_id": "checkpoint-1"},
-        },
-        "resume_target": {"kind": target_kind, "id": "checkpoint-1"},
-        "resume_payload": {"kind": payload_kind, "call_id": "call-1"},
-    }
+) -> None:
+    await task_adapter._resume_state_store.put(  # noqa: SLF001
+        task_adapter._resume_key(context.task_id, context),  # noqa: SLF001
+        A2AResumeState(
+            handle=RunHandle(
+                run_id="run-1",
+                session_id="session-1",
+                runtime_type="test",
+                native_ref={"checkpoint_id": "checkpoint-1"},
+            ),
+            target=ResumeTarget.model_construct(kind=target_kind, id="checkpoint-1"),
+            payload_kind=payload_kind,
+            call_id="call-1",
+        ),
+    )
 
 
 @pytest.mark.asyncio
@@ -171,15 +215,13 @@ async def test_input_required_status_metadata_roundtrips_to_runtime_resume() -> 
         == TaskState.TASK_STATE_INPUT_REQUIRED
     )
     metadata = MessageToDict(status_event.metadata, preserving_proto_field_name=True)
-    assert metadata["run_handle"]["run_id"] == runtime_adapter.started_handle.run_id
-    assert metadata["resume_target"] == {
-        "kind": "checkpoint_id",
-        "id": "checkpoint-1",
-    }
-    assert metadata["resume_payload"]["kind"] == "approval_decision"
+    assert "run_handle" not in metadata
+    assert "checkpoint_id" not in metadata
+    assert "resume_target" not in metadata
+    assert "resume_payload" not in metadata
 
     resumed_queue = _FakeEventQueue()
-    await executor.execute(_ResumeContext("approve", metadata=metadata), resumed_queue)  # type: ignore[arg-type]
+    await executor.execute(_ResumeContext("approve"), resumed_queue)  # type: ignore[arg-type]
 
     resume_handle = runtime_adapter.resume_calls[0][0]
     assert resume_handle == runtime_adapter.started_handle
@@ -210,8 +252,10 @@ async def test_resume_approval_uses_runtime_adapter_and_streams_same_handle(
         task_adapter=task_adapter,
     )
     queue = _FakeEventQueue()
+    context = _ResumeContext(answer)
+    await _seed_resume_state(task_adapter, context)
 
-    await executor.execute(_ResumeContext(answer), queue)  # type: ignore[arg-type]
+    await executor.execute(context, queue)  # type: ignore[arg-type]
 
     assert len(runtime_adapter.resume_calls) == 1
     resume_handle, target, payload = runtime_adapter.resume_calls[0]
@@ -237,10 +281,8 @@ async def test_resume_approval_uses_runtime_adapter_and_streams_same_handle(
 async def test_resume_payload_preserves_falsy_answers(answer: Any) -> None:
     runtime_adapter = _RecordingRuntimeAdapter()
     task_adapter = A2ARuntimeTaskAdapter(runtime_adapter, runtime_type="test")  # type: ignore[arg-type]
-    context = _ResumeContext(
-        "text fallback",
-        metadata=_resume_metadata(payload_kind="hitl_answer"),
-    )
+    context = _ResumeContext("text fallback")
+    await _seed_resume_state(task_adapter, context, payload_kind="hitl_answer")
     answer_part = Part()
     answer_part.data.struct_value.update({"value": answer})
     context.message = Message(
@@ -264,6 +306,7 @@ async def test_unknown_approval_token_is_rejected_before_runtime_resume(answer: 
     runtime_adapter = _RecordingRuntimeAdapter()
     task_adapter = A2ARuntimeTaskAdapter(runtime_adapter, runtime_type="test")  # type: ignore[arg-type]
     context = _ResumeContext(answer)
+    await _seed_resume_state(task_adapter, context)
 
     with pytest.raises(ValueError, match="unknown approval decision"):
         await task_adapter.resume_task(context.task_id, context, answer=answer)
@@ -277,6 +320,7 @@ async def test_invalid_resume_keeps_task_input_required_without_status_events() 
     task_adapter = A2ARuntimeTaskAdapter(runtime_adapter, runtime_type="test")  # type: ignore[arg-type]
     executor = A2ARuntimeExecutor(runner=_ForbiddenRunner(), task_adapter=task_adapter)
     context = _ResumeContext("later")
+    await _seed_resume_state(task_adapter, context)
     queue = _FakeEventQueue()
 
     with pytest.raises(ValueError, match="unknown approval decision"):
@@ -292,10 +336,8 @@ async def test_invalid_resume_keeps_task_input_required_without_status_events() 
 async def test_unknown_resume_target_token_is_rejected() -> None:
     runtime_adapter = _RecordingRuntimeAdapter()
     task_adapter = A2ARuntimeTaskAdapter(runtime_adapter, runtime_type="test")  # type: ignore[arg-type]
-    context = _ResumeContext(
-        "approve",
-        metadata=_resume_metadata(target_kind="unknown"),
-    )
+    context = _ResumeContext("approve")
+    await _seed_resume_state(task_adapter, context, target_kind="unknown")
 
     with pytest.raises(ValueError, match="resume_target"):
         await task_adapter.resume_task(context.task_id, context, answer="approve")
@@ -329,6 +371,28 @@ async def test_runtime_error_detail_is_not_returned_on_a2a_wire() -> None:
     )
     assert wire_text == "A2A task execution failed"
     assert secret not in wire_text
+
+
+@pytest.mark.asyncio
+async def test_runtime_reasoning_is_not_returned_on_a2a_wire() -> None:
+    task_adapter = A2ARuntimeTaskAdapter(
+        _ReasoningRuntimeAdapter(),  # type: ignore[arg-type]
+        runtime_type="test",
+    )
+    executor = A2ARuntimeExecutor(runner=_ForbiddenRunner(), task_adapter=task_adapter)
+    context = _ResumeContext("start")
+    context.current_task = None
+    queue = _FakeEventQueue()
+
+    await executor.execute(context, queue)  # type: ignore[arg-type]
+
+    wire_text = "".join(
+        part.text
+        for event in queue.events
+        for part in getattr(getattr(event, "artifact", None), "parts", ())
+    )
+    assert wire_text == "safe answer"
+    assert "internal-chain-of-thought" not in wire_text
 
 
 @pytest.mark.asyncio

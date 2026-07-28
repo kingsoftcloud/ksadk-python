@@ -11,6 +11,7 @@ wire 对象在 a2a-sdk 1.1.0 是 protobuf(``a2a_pb2``);文本用 ``Part(text=...
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 from collections.abc import AsyncIterator
@@ -22,16 +23,29 @@ from a2a.server.tasks import TaskUpdater
 from a2a.types import Part, Task, TaskState, TaskStatus
 from a2a.utils.errors import TaskNotCancelableError
 
+from ksadk.a2a.resume_store import A2AResumePayloadKind
 from ksadk.events import EventType, RuntimeEvent
 from ksadk.runtime import CancelResult, RunHandle
 
 logger = logging.getLogger(__name__)
 
+#: ADK v2 A2A 集成扩展标记 URI(adk.dev/a2a/a2a-extension)。
+#: 在 Task/status metadata 里塞入该 key 且值非空时,ADK ``RemoteA2aAgent`` 走
+#: ``_handle_a2a_response_v2``——处理每个 ``artifact_update``(含 append=True 增量),
+#: 不再像 v1 那样只放行首块+末块、丢弃中间增量(remote_a2a_agent.py:546/762)。
+#: ksadk 自研 executor 必须带这个标记,否则编排侧 sub-agent 流式被压成"一次性"。
+ADK_V2_INTEGRATION_EXTENSION_URI = "https://google.github.io/adk-docs/a2a/a2a-extension/"
+
+#: 扩展标记值(与 google.adk ``A2aAgentExecutor._get_invocation_metadata`` 对齐)。
+ADK_V2_INTEGRATION_METADATA: dict[str, Any] = {
+    ADK_V2_INTEGRATION_EXTENSION_URI: {"adk_agent_executor_v2": True}
+}
 
 async def _enqueue_initial_task(context: RequestContext, event_queue: EventQueue) -> None:
     """先入队初始 ``Task`` 对象,再发状态更新(a2a-sdk 1.1.0 生命周期要求:
     TaskStatusUpdateEvent 之前必须已有 Task)。``current_task`` 为续跑任务时直接用,
-    否则新建 submitted 任务。
+    否则新建 submitted 任务。Task metadata 带 ADK v2 扩展标记,让 RemoteA2aAgent
+    走 v2 handler 保留全部流式增量。
     """
     task = getattr(context, "current_task", None)
     if task is None:
@@ -39,6 +53,7 @@ async def _enqueue_initial_task(context: RequestContext, event_queue: EventQueue
             id=context.task_id,
             context_id=context.context_id,
             status=TaskStatus(state=TaskState.TASK_STATE_SUBMITTED),
+            metadata=dict(ADK_V2_INTEGRATION_METADATA),
         )
     await event_queue.enqueue_event(task)
 
@@ -90,7 +105,7 @@ class A2ARuntimeExecutor(AgentExecutor):
             interaction_response = self.task_adapter.answer_from_context(context)
             # Invalid resume tokens/decisions are request errors. Validate before emitting
             # working so the durable Task remains input-required and retryable.
-            self.task_adapter.validate_resume_task(
+            await self.task_adapter.validate_resume_task(
                 context.task_id or "",
                 context,
                 answer=interaction_response,
@@ -101,7 +116,12 @@ class A2ARuntimeExecutor(AgentExecutor):
             # §7.2:当前任务处于 input-required 时,本条消息是续跑回包(checkpoint/resume)。
             if not is_resume:
                 await _enqueue_initial_task(context, event_queue)
-            await updater.start_work()
+            # start_work 不透传 metadata;直接 update_status 以带 ADK v2 扩展标记
+            # (RemoteA2aAgent 读 task/status metadata 决定走 v2 全增量 handler)。
+            await updater.update_status(
+                TaskState.TASK_STATE_WORKING,
+                metadata=dict(ADK_V2_INTEGRATION_METADATA),
+            )
             runner_input = self._build_runner_input(context)
             if is_resume:
                 if self.task_adapter is None:
@@ -121,23 +141,26 @@ class A2ARuntimeExecutor(AgentExecutor):
                 output = await self._run_runtime(context, updater, handle)
             else:
                 output = await self._run_runner(context, updater, runner_input)
+            # completed 携带全文消息:非流式消费端与 text.completed 投影(§ event_adapter
+            # message_to_event final)依赖它拿最终结果;流式消费端的重复由 adk_runner
+            # 在 handoff 分支对"增量累积"去重解决(不在此处删消息)。
             completion_message = (
                 updater.new_agent_message(parts=[Part(text=output)]) if output else None
             )
             await updater.complete(message=completion_message)
-            self._forget_task(context, handle)
+            await self._forget_task(context, handle)
         except _InputRequired:
             # runner 请求输入:task 已停在 input-required(附 resume token),不 complete。
             logger.info("A2A task %s 进入 input-required", context.task_id)
         except _RunCanceled:
             logger.info("A2A task %s 已由 runtime 取消", context.task_id)
-            self._forget_task(context, handle)
+            await self._forget_task(context, handle)
         except Exception as exc:  # noqa: BLE001
             logger.error("A2A task execution failed (%s)", type(exc).__name__)
             await updater.failed(
                 message=updater.new_agent_message(parts=[Part(text="A2A task execution failed")])
             )
-            self._forget_task(context, handle)
+            await self._forget_task(context, handle)
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         # §7.4:cancel 统一由 adapter 提供。有 RuntimeAdapter → 尊重其 CancelResult,
@@ -168,6 +191,11 @@ class A2ARuntimeExecutor(AgentExecutor):
         await updater.cancel(
             message=updater.new_agent_message(parts=[Part(text="Request canceled")])
         )
+        clear_resume_state = getattr(self.task_adapter, "clear_resume_state", None)
+        if callable(clear_resume_state):
+            result = clear_resume_state(context.task_id or "", context)
+            if inspect.isawaitable(result):
+                await result
 
     async def _run_runner(
         self, context: RequestContext, updater: TaskUpdater, runner_input: dict[str, Any]
@@ -294,21 +322,24 @@ class A2ARuntimeExecutor(AgentExecutor):
         handle: RunHandle,
     ) -> str:
         output_text = ""
-        artifact_id = f"{context.task_id}-response"
+        response_artifact_id = f"{context.task_id}-response"
         emitted_chunks = 0
-        pending_text: str | None = None
+        pending_delta: str | None = None
         input_required = False
         input_prompt = "Input required"
         checkpoint_id: str | None = None
         call_id: str | None = None
-        payload_kind = "hitl_answer"
+        payload_kind: A2AResumePayloadKind = "hitl_answer"
 
-        async def emit_text(text: str, *, last_chunk: bool) -> None:
+        async def emit_delta(delta: str, *, last_chunk: bool) -> None:
+            # 增量(append=True):首个 artifact append=False 建立,后续 append=True 追加。
+            # 配合 Task/status metadata 的 ADK v2 扩展标记,RemoteA2aAgent 走 v2 handler
+            # 保留每个增量(不再丢中间),编排侧逐条流式,O(n) 带宽优于全量快照。
             nonlocal emitted_chunks
             emitted_chunks += 1
             await updater.add_artifact(
-                parts=[Part(text=text)],
-                artifact_id=artifact_id,
+                parts=[Part(text=delta)],
+                artifact_id=response_artifact_id,
                 name="response",
                 append=emitted_chunks > 1,
                 last_chunk=last_chunk,
@@ -320,9 +351,9 @@ class A2ARuntimeExecutor(AgentExecutor):
             if event.event_type == EventType.RUN_FAILED:
                 raise RuntimeError(self._coerce_text(event.payload.get("error")))
             if event.event_type == EventType.RUN_CANCELED:
-                if pending_text is not None:
-                    await emit_text(pending_text, last_chunk=False)
-                    pending_text = None
+                if pending_delta is not None:
+                    await emit_delta(pending_delta, last_chunk=False)
+                    pending_delta = None
                 if not self._cancel_was_accepted(context, handle):
                     await updater.cancel(
                         message=updater.new_agent_message(parts=[Part(text="Request canceled")])
@@ -353,46 +384,40 @@ class A2ARuntimeExecutor(AgentExecutor):
             if event.event_type not in {
                 EventType.TEXT_DELTA,
                 EventType.TEXT_COMPLETED,
-                EventType.REASONING_DELTA,
-                EventType.REASONING_COMPLETED,
             }:
-                continue
-            # 思考内容不进入 A2A 响应(与 invoke 语义对齐)。
-            if event.event_type in {EventType.REASONING_DELTA, EventType.REASONING_COMPLETED}:
                 continue
             text = self._coerce_text(event.payload.get("text"))
             if not text:
                 continue
-            # TEXT_COMPLETED 的 text 是最终完整正文(累计),不是增量:
-            # 只补发 delta 未覆盖的部分,避免正文重复。suffix 缓冲到 pending,
-            # 由循环末尾以 last_chunk=True 发出(保留 A2A 末块语义)。
+            # TEXT_COMPLETED 是累计全文,去重只发新增 suffix;TEXT_DELTA 是增量直接透传。
             if event.event_type == EventType.TEXT_COMPLETED:
-                if pending_text is not None:
-                    await emit_text(pending_text, last_chunk=False)
-                    pending_text = None
                 if not output_text:
-                    suffix = text
+                    delta = text
                     output_text = text
                 elif text.startswith(output_text):
-                    suffix = text[len(output_text) :]
+                    delta = text[len(output_text) :]
                     output_text = text
                 else:
-                    suffix = text
+                    delta = text
                     output_text += text
-                pending_text = suffix
+            else:
+                delta = text
+                output_text += text
+            if not delta:
                 continue
-            if pending_text is not None:
-                await emit_text(pending_text, last_chunk=False)
-            pending_text = text
-            output_text += text
+            if pending_delta is not None:
+                await emit_delta(pending_delta, last_chunk=False)
+            pending_delta = delta
         if self._cancel_was_accepted(context, handle):
-            if pending_text is not None:
-                await emit_text(pending_text, last_chunk=False)
+            if pending_delta is not None:
+                await emit_delta(pending_delta, last_chunk=False)
             raise _RunCanceled()
-        if pending_text is not None:
-            await emit_text(pending_text, last_chunk=True)
+        if pending_delta is not None:
+            await emit_delta(pending_delta, last_chunk=True)
         if input_required:
-            metadata = self.task_adapter.build_resume_metadata(
+            await self.task_adapter.persist_resume_state(
+                task_id=str(context.task_id or ""),
+                context=context,
                 handle=handle,
                 checkpoint_id=checkpoint_id,
                 call_id=call_id,
@@ -401,7 +426,7 @@ class A2ARuntimeExecutor(AgentExecutor):
             await updater.update_status(
                 TaskState.TASK_STATE_INPUT_REQUIRED,
                 message=updater.new_agent_message(parts=[Part(text=input_prompt)]),
-                metadata=metadata,
+                metadata=dict(ADK_V2_INTEGRATION_METADATA),
             )
             raise _InputRequired()
         return output_text
@@ -413,10 +438,12 @@ class A2ARuntimeExecutor(AgentExecutor):
             and was_cancel_accepted(str(context.task_id or ""), context, handle)
         )
 
-    def _forget_task(self, context: RequestContext, handle: RunHandle | None) -> None:
+    async def _forget_task(self, context: RequestContext, handle: RunHandle | None) -> None:
         forget_task = getattr(self.task_adapter, "forget_task", None)
         if handle is not None and callable(forget_task):
-            forget_task(str(context.task_id or ""), context, handle)
+            result = forget_task(str(context.task_id or ""), context, handle)
+            if inspect.isawaitable(result):
+                await result
 
     @classmethod
     def _coerce_text(cls, payload: Any) -> str:

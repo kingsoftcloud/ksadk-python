@@ -14,7 +14,7 @@
 client 侧(``A2ASpaceClient`` 动态发现)见 goal-06。
 """
 
-from ksadk.a2a.bootstrap import AgentEngineA2ABootstrap, RuntimeA2AMetadata
+from ksadk.a2a.bootstrap import A2ACheckpointStore, AgentEngineA2ABootstrap, RuntimeA2AMetadata
 from ksadk.a2a.card import (
     A2A_PROTOCOL_VERSION,
     JSONRPC_PATH,
@@ -49,18 +49,30 @@ from ksadk.a2a.control_plane import (
 from ksadk.a2a.event_adapter import A2AEventAdapter
 from ksadk.a2a.executor import A2ARuntimeExecutor
 from ksadk.a2a.external_transport import (
+    ERR_VPC_EGRESS_DIALER_REQUIRED,
     A2AExternalTransport,
     A2ARouteOpener,
     A2ATransportLease,
     CallableA2ARouteOpener,
     GuardedA2AExternalTransport,
+    RuntimeLocalA2AExternalTransport,
 )
 from ksadk.a2a.identity import (
     A2AGatewayIdentityMiddleware,
     A2AIngressIdentity,
+    A2AIngressTargetBinding,
     A2ATrustedIdentityResolver,
     CallableGatewayIdentityVerifier,
+    CallableGatewayProbeVerifier,
     GatewayIdentityVerifier,
+    GatewayProbeVerifier,
+)
+from ksadk.a2a.resume_store import (
+    A2AResumePayloadKind,
+    A2AResumeState,
+    A2AResumeStateStore,
+    InMemoryA2AResumeStateStore,
+    SQLiteA2AResumeStateStore,
 )
 from ksadk.a2a.routes import A2AConfig, add_a2a_protocol_routes
 from ksadk.a2a.server import A2AProtocolServer
@@ -87,6 +99,7 @@ from ksadk.a2a.task_store import A2A_TASK_TABLE, build_a2a_task_store
 
 __all__ = [
     "A2AConfig",
+    "A2ACheckpointStore",
     "A2AContextIdentity",
     "A2AContextStore",
     "A2AControlPlane",
@@ -99,10 +112,14 @@ __all__ = [
     "A2AExternalTransport",
     "A2AGatewayIdentityMiddleware",
     "A2AIngressIdentity",
+    "A2AIngressTargetBinding",
     "A2APlatformTask",
     "A2AProtocolServer",
     "A2ARuntimeExecutor",
     "A2ARuntimeTaskAdapter",
+    "A2AResumeState",
+    "A2AResumePayloadKind",
+    "A2AResumeStateStore",
     "A2ASpaceClient",
     "A2A_PROTOCOL_VERSION",
     "A2ARoute",
@@ -119,8 +136,10 @@ __all__ = [
     "AgentEngineA2ABootstrap",
     "CallableA2ARouteOpener",
     "CallableGatewayIdentityVerifier",
+    "CallableGatewayProbeVerifier",
     "CredentialInjection",
     "DiscoveredAgent",
+    "ERR_VPC_EGRESS_DIALER_REQUIRED",
     "DEFAULT_A2A_EVENT_OUTBOX_PATH",
     "ENV_A2A_CONTROL_PLANE_URL",
     "ENV_A2A_ENABLE_PUBLIC_EGRESS",
@@ -130,8 +149,10 @@ __all__ = [
     "ERR_PUBLIC_EGRESS_DISABLED",
     "FileWorkloadTokenProvider",
     "GatewayIdentityVerifier",
+    "GatewayProbeVerifier",
     "GuardedA2AExternalTransport",
     "InMemoryA2ATaskEventOutbox",
+    "InMemoryA2AResumeStateStore",
     "JSONRPC_PATH",
     "InternalA2AControlPlaneClient",
     "PreparedA2AOperation",
@@ -140,7 +161,9 @@ __all__ = [
     "SpaceAgentPage",
     "SQLiteA2ATaskEventOutbox",
     "SQLiteA2AContextStore",
+    "SQLiteA2AResumeStateStore",
     "RuntimeA2AMetadata",
+    "RuntimeLocalA2AExternalTransport",
     "WorkloadTokenProvider",
     "add_a2a_protocol_routes",
     "build_a2a_task_store",

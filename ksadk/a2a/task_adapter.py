@@ -3,7 +3,7 @@
 | A2A | Runtime |
 |---|---|
 | ``context_id`` | ``session_id`` |
-| ``task_id`` | SDK TaskStore 主键;run/checkpoint 引用保存在 Task metadata |
+| ``task_id`` | SDK TaskStore 主键;run/checkpoint 引用保存在 Runtime-local resume store |
 | working | active invocation |
 | input-required | pending interaction + checkpoint/resume token |
 | canceled | ``RuntimeAdapter.cancel(invocation_id)`` 成功后的终态 |
@@ -17,13 +17,19 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncIterator, Mapping
-from typing import Any, Optional, cast
+from typing import Any, Optional
 
 from google.protobuf.json_format import MessageToDict
 from google.protobuf.message import Message as ProtobufMessage
 
 from ksadk.a2a.context_store import A2AContextStore
 from ksadk.a2a.identity import A2AIngressIdentity
+from ksadk.a2a.resume_store import (
+    A2AResumePayloadKind,
+    A2AResumeState,
+    A2AResumeStateStore,
+    InMemoryA2AResumeStateStore,
+)
 from ksadk.events import RuntimeEvent
 from ksadk.runtime.adapter import (
     CancelResult,
@@ -50,10 +56,12 @@ class A2ARuntimeTaskAdapter:
         *,
         runtime_type: str = "local",
         context_store: A2AContextStore | None = None,
+        resume_state_store: A2AResumeStateStore | None = None,
     ) -> None:
         self._adapter = runtime_adapter
         self._runtime_type = runtime_type
         self._context_store = context_store
+        self._resume_state_store = resume_state_store or InMemoryA2AResumeStateStore()
         self._handles_by_task_key: dict[tuple[str, str, str], RunHandle] = {}
         self._accepted_canceled_tasks: set[tuple[str, str, str]] = set()
 
@@ -89,7 +97,7 @@ class A2ARuntimeTaskAdapter:
     async def cancel_task(self, task_id: str, context: Any) -> CancelResult:
         """取消 A2A task → RuntimeAdapter.cancel。
 
-        只使用 ``start`` 返回的进程内真实 handle，或 input-required Task metadata 中
+        只使用 ``start`` 返回的进程内真实 handle，或 Runtime-local resume store 中
         持久化的 handle；找不到时返回 NOT_RUNNING，不按 task_id 构造假 handle。
         """
         await self.prepare_context(context)
@@ -97,7 +105,7 @@ class A2ARuntimeTaskAdapter:
         handle = self._handles_by_task_key.get(task_key)
         restored = handle is None
         if handle is None:
-            handle = self._restore_handle_from_task(task_id, context)
+            handle = await self._restore_handle_from_store(task_id, context)
         if handle is None or not self._handle_matches_context(handle, context):
             return CancelResult.NOT_RUNNING
         try:
@@ -149,15 +157,17 @@ class A2ARuntimeTaskAdapter:
         self._handles_by_task_key[self._task_key(task_id, context)] = handle
         return handle
 
-    def build_resume_metadata(
+    async def persist_resume_state(
         self,
         *,
+        task_id: str,
+        context: Any,
         handle: RunHandle,
         checkpoint_id: str | None,
         call_id: str | None,
-        payload_kind: str,
-    ) -> dict[str, Any]:
-        """把 input-required 的真实 handle 与恢复命令序列化到 Task metadata。"""
+        payload_kind: A2AResumePayloadKind,
+    ) -> None:
+        """Store input-required recovery state locally, never in A2A wire metadata."""
         if checkpoint_id:
             handle.native_ref["checkpoint_id"] = checkpoint_id
             known_checkpoint_ids = handle.native_ref.setdefault("known_checkpoint_ids", [])
@@ -171,16 +181,15 @@ class A2ARuntimeTaskAdapter:
             kind="checkpoint_id" if checkpoint_id else "invocation_id",
             id=str(checkpoint_id or handle.run_id),
         )
-        payload = ResumePayload.model_validate(
-            {"kind": payload_kind, "call_id": call_id, "data": None}
+        await self._resume_state_store.put(
+            self._resume_key(task_id, context),
+            A2AResumeState(
+                handle=handle,
+                target=target,
+                payload_kind=payload_kind,
+                call_id=call_id,
+            ),
         )
-        return {
-            "resume_kind": "checkpoint",
-            "checkpoint_id": str(checkpoint_id or target.id),
-            "run_handle": handle.model_dump(mode="json"),
-            "resume_target": target.model_dump(mode="json"),
-            "resume_payload": payload.model_dump(mode="json"),
-        }
 
     async def resume_task(
         self,
@@ -189,9 +198,9 @@ class A2ARuntimeTaskAdapter:
         *,
         answer: Any,
     ) -> RunHandle:
-        """从 input-required Task metadata 恢复同一 runtime handle。"""
+        """Resume from Runtime-local state associated with the protocol Task."""
         await self.prepare_context(context)
-        handle, target, payload = self.validate_resume_task(
+        handle, target, payload = await self.validate_resume_task(
             task_id,
             context,
             answer=answer,
@@ -210,7 +219,7 @@ class A2ARuntimeTaskAdapter:
         self._handles_by_task_key[task_key] = resumed_handle
         return resumed_handle
 
-    def validate_resume_task(
+    async def validate_resume_task(
         self,
         task_id: str,
         context: Any,
@@ -221,10 +230,14 @@ class A2ARuntimeTaskAdapter:
         task = getattr(context, "current_task", None)
         if str(getattr(task, "id", "") or "") != task_id:
             raise ValueError("resume token does not belong to the requested task")
-        metadata = self._resume_metadata(context)
-        handle = self._parse_handle(metadata)
-        target = self._parse_target(metadata)
-        payload = self._parse_payload(metadata, answer=answer)
+        state = await self._resume_state_store.get(self._resume_key(task_id, context))
+        if state is None:
+            raise ValueError("input-required task has no Runtime-local resume state")
+        handle = state.handle
+        target = state.target
+        if target.kind not in {"checkpoint_id", "invocation_id"} or not target.id:
+            raise ValueError("invalid resume_target in Runtime-local resume state")
+        payload = self._resume_payload(state, answer=answer)
         if not self._handle_matches_context(handle, context):
             raise ValueError("run_handle does not match A2A context or task adapter")
         return handle, target, payload
@@ -241,12 +254,18 @@ class A2ARuntimeTaskAdapter:
             and task_key in self._accepted_canceled_tasks
         )
 
-    def forget_task(self, task_id: str, context: Any, handle: RunHandle) -> None:
+    async def forget_task(self, task_id: str, context: Any, handle: RunHandle) -> None:
         """Release process-local tracking after a terminal task state."""
         task_key = self._task_key(task_id, context)
         if self._handles_by_task_key.get(task_key) == handle:
             self._handles_by_task_key.pop(task_key, None)
         self._accepted_canceled_tasks.discard(task_key)
+        await self.clear_resume_state(task_id, context)
+
+    async def clear_resume_state(self, task_id: str, context: Any) -> None:
+        """Discard private recovery material while preserving active cancel bookkeeping."""
+
+        await self._resume_state_store.delete(self._resume_key(task_id, context))
 
     @staticmethod
     def answer_from_context(context: Any) -> Any:
@@ -308,16 +327,18 @@ class A2ARuntimeTaskAdapter:
             or getattr(context, "task_id", "")
             or ""
         )
-        isolation_scope = (
-            str(getattr(context, "task_id", "") or "")
-            if identity.caller_principal_type == "anonymous"
-            else None
-        )
-        internal_session_id = await self._context_store.resolve_or_create(
-            identity.context_identity(),
-            external_context_id,
-            isolation_scope=isolation_scope,
-        )
+        if current_task is not None:
+            internal_session_id = await self._context_store.get(
+                identity.context_identity(),
+                external_context_id,
+            )
+            if internal_session_id is None:
+                raise RuntimeError("A2A_CONTEXT_MAPPING_NOT_FOUND")
+        else:
+            internal_session_id = await self._context_store.resolve_or_create(
+                identity.context_identity(),
+                external_context_id,
+            )
         state["a2a_internal_session_id"] = internal_session_id
         return internal_session_id
 
@@ -333,14 +354,12 @@ class A2ARuntimeTaskAdapter:
             task_id,
         )
 
-    def _restore_handle_from_task(self, task_id: str, context: Any) -> RunHandle | None:
+    async def _restore_handle_from_store(self, task_id: str, context: Any) -> RunHandle | None:
         task = getattr(context, "current_task", None)
         if str(getattr(task, "id", "") or "") != task_id:
             return None
-        try:
-            return self._parse_handle(self._resume_metadata(context))
-        except ValueError:
-            return None
+        state = await self._resume_state_store.get(self._resume_key(task_id, context))
+        return state.handle if state is not None else None
 
     def _handle_matches_context(self, handle: RunHandle, context: Any) -> bool:
         return (
@@ -348,56 +367,18 @@ class A2ARuntimeTaskAdapter:
             and handle.runtime_type == self._runtime_type
         )
 
-    @classmethod
-    def _resume_metadata(cls, context: Any) -> dict[str, Any]:
-        task = getattr(context, "current_task", None)
-        status = getattr(task, "status", None)
-        status_metadata = cls._as_dict(getattr(status, "metadata", None))
-        task_metadata = cls._as_dict(getattr(task, "metadata", None))
-        metadata = status_metadata or task_metadata
-        if not metadata:
-            raise ValueError("input-required task is missing resume metadata")
-        return metadata
+    def _resume_key(self, task_id: str, context: Any) -> str:
+        tenant, session_id, normalized_task_id = self._task_key(task_id, context)
+        return "\x1f".join((tenant, session_id, normalized_task_id))
 
     @classmethod
-    def _parse_handle(cls, metadata: Mapping[str, Any]) -> RunHandle:
-        raw = cls._as_dict(metadata.get("run_handle"))
-        if not raw:
-            raise ValueError("resume metadata is missing run_handle")
-        try:
-            return cast(RunHandle, RunHandle.model_validate(raw))
-        except Exception as exc:  # noqa: BLE001
-            raise ValueError("invalid run_handle in resume metadata") from exc
-
-    @classmethod
-    def _parse_target(cls, metadata: Mapping[str, Any]) -> ResumeTarget:
-        raw = cls._as_dict(metadata.get("resume_target"))
-        if not raw:
-            raise ValueError("resume metadata is missing resume_target")
-        try:
-            target = cast(ResumeTarget, ResumeTarget.model_validate(raw))
-        except Exception as exc:  # noqa: BLE001
-            raise ValueError("invalid resume_target in resume metadata") from exc
-        if not target.id:
-            raise ValueError("invalid resume_target in resume metadata")
-        return target
-
-    @classmethod
-    def _parse_payload(
-        cls,
-        metadata: Mapping[str, Any],
-        *,
-        answer: Any,
-    ) -> ResumePayload:
-        raw = cls._as_dict(metadata.get("resume_payload"))
-        if not raw:
-            raise ValueError("resume metadata is missing resume_payload")
-        try:
-            template = ResumePayload.model_validate(raw)
-        except Exception as exc:  # noqa: BLE001
-            raise ValueError("invalid resume_payload in resume metadata") from exc
-        data = cls._approval_decision(answer) if template.kind == "approval_decision" else answer
-        return cast(ResumePayload, template.model_copy(update={"data": data}))
+    def _resume_payload(cls, state: A2AResumeState, *, answer: Any) -> ResumePayload:
+        data = (
+            cls._approval_decision(answer)
+            if state.payload_kind == "approval_decision"
+            else answer
+        )
+        return ResumePayload(kind=state.payload_kind, call_id=state.call_id, data=data)
 
     @staticmethod
     def _approval_decision(answer: Any) -> dict[str, list[dict[str, Any]]]:

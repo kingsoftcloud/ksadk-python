@@ -181,13 +181,12 @@ def test_process_b_recovers_and_continues_task_after_process_a_is_killed(
     assert evidence["killed_at_ns"] >= evidence["kill_started_at_ns"]
     assert written_task == before
     assert before["id"] == evidence["task_id"]
-    assert before["context_id"] == before["metadata"]["run_handle"]["session_id"]
     assert before["status"]["state"] == "TASK_STATE_INPUT_REQUIRED"
     assert before["artifacts"][0]["parts"] == [{"text": "durable draft"}]
-    assert before["metadata"]["resume_target"] == {
-        "id": f"checkpoint-{evidence['task_id']}",
-        "kind": "checkpoint_id",
-    }
+    assert "run_handle" not in before.get("metadata", {})
+    assert "checkpoint_id" not in before.get("metadata", {})
+    assert "resume_target" not in before.get("metadata", {})
+    assert "resume_payload" not in before.get("metadata", {})
 
     assert after["id"] == evidence["task_id"]
     assert after["context_id"] == before["context_id"]

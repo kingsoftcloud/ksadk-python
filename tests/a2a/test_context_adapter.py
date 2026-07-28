@@ -37,6 +37,9 @@ def _context(external_context_id: str) -> SimpleNamespace:
                     caller_principal_type="user",
                     caller_principal_id="caller-a",
                     target_agent_id="ar-target",
+                    target_runtime_id="runtime-a",
+                    target_a2a_agent_id="a2a-agent-00000000000040008000000000000041",
+                    authn_mode="api_key",
                 )
             },
         ),
@@ -60,3 +63,21 @@ async def test_task_adapter_uses_owner_scoped_internal_session_id(tmp_path) -> N
     first_session = runtime.requests[0].session_id
     assert first_session != "external-context"
     assert runtime.requests[1].session_id == first_session
+
+
+@pytest.mark.asyncio
+async def test_existing_task_with_missing_context_mapping_fails_closed(tmp_path) -> None:
+    runtime = _RecordingRuntimeAdapter()
+    adapter = A2ARuntimeTaskAdapter(
+        runtime,  # type: ignore[arg-type]
+        runtime_type="test",
+        context_store=SQLiteA2AContextStore(tmp_path / "contexts.sqlite3"),
+    )
+    context = _context("external-context")
+    context.current_task = SimpleNamespace(
+        id="existing-task",
+        context_id="external-context",
+    )
+
+    with pytest.raises(RuntimeError, match="A2A_CONTEXT_MAPPING_NOT_FOUND"):
+        await adapter.prepare_context(context)

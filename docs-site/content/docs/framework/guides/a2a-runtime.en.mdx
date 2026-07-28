@@ -1,0 +1,60 @@
+---
+title: "A2A Runtime"
+description: "Use a platform-managed A2A Runtime without weakening ingress or egress boundaries."
+---
+
+<Callout type="warning" title="Experimental platform capability">
+The managed A2A Runtime is supplied by AgentEngine. It is not enabled by a local
+application simply by setting an environment variable or creating an HTTP client.
+</Callout>
+
+## Product ownership
+
+AgentEngine creates `AgentEngineA2ABootstrap` when it deploys a managed Runtime.
+The bootstrap owns durable task, context, and resume state; Gateway-verified
+inbound identity; the event outbox lifecycle; and outbound transport. Application
+code should use the Space-scoped client supplied by that Runtime, or
+`A2ASpaceClient.from_env()` after the platform has injected its configuration.
+
+Do not construct a permissive external `httpx.AsyncClient` for an external A2A
+Agent. A missing managed transport fails closed with
+`A2A_EGRESS_TRANSPORT_REQUIRED`.
+
+## Outbound access
+
+The first managed release supports `external_public` Agents over the Runtime's NAT
+path. `Network.EnablePublicAccess` is the only public-egress policy input; the
+platform projects its effective value to `KSADK_A2A_ENABLE_PUBLIC_EGRESS`. When it
+is disabled, external-public calls are rejected before credentials are resolved.
+
+If that projection is absent, KsADK treats it as disabled. `CreateAgent` may
+default the resource field to enabled, but a Runtime uses only the effective
+value that the deployment layer explicitly calculates and injects.
+
+The injected transport is HTTPS-only, performs a fresh DNS check for each
+operation, connects to the verified IP while retaining the hostname for TLS,
+disables environment proxies, and rejects redirects. It limits response size and
+parsing depth before A2A payloads are processed.
+
+`external_vpc` is not available in the first managed release. It requires a
+platform-injected VPC dialer and fails with `A2A_VPC_EGRESS_DIALER_REQUIRED`; it
+must not fall back to the public NAT path.
+
+## Inbound access and recovery
+
+Managed inbound A2A routes accept only identity verified by AgentEngine Gateway.
+The Runtime checks the verified account, tenant, target Agent, target Runtime, and
+target A2A registration before the handler receives a request. The Runtime-local
+AgentCard is also restricted to a trusted Gateway or server probe; public discovery
+uses the Gateway-published Card instead.
+
+Checkpoint handles and resume targets remain in Runtime-local durable storage. They
+are never included in public A2A Task or Message metadata. Start and stop the
+bootstrap with the Runtime application lifespan so durable stores and the shared
+event dispatcher are ready before traffic is served.
+
+An inbound-only Runtime can disable outbound operation. It then needs no control
+plane, hosted HTTP client, or event outbox, and `client_for_space()` rejects
+explicitly. A standalone `A2ASpaceClient` owns its background dispatcher: call
+`await client.aclose()` when finished, or use `async with`. Clients created by a
+bootstrap are closed by the Runtime lifespan instead.

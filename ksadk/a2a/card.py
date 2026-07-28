@@ -34,7 +34,7 @@ def build_agent_card(
     base_url: str,
     description: str = "",
     version: str = "1.0.0",
-    skills: Sequence[str] | None = None,
+    skills: Sequence[str | AgentSkill] | None = None,
     streaming: bool = True,
     provider: dict[str, str] | None = None,
 ) -> AgentCard:
@@ -45,7 +45,7 @@ def build_agent_card(
         base_url: 该 Agent 对外宣告的基础地址(各 interface url 由此拼出)。
         description: 描述。
         version: 业务版本。
-        skills: 技能 id 列表(空则给 general)。
+        skills: 标准 ``AgentSkill`` 列表，或本地配置使用的技能 id 列表(空则给 general)。
         streaming: 是否声明 streaming 能力。
         provider: 可选 provider 信息(如 {"organization": ..., "url": ...})。
     """
@@ -83,7 +83,7 @@ def build_agent_card(
     return AgentCard(**card_kwargs)
 
 
-def _build_skills(skills: Sequence[str] | None) -> list[AgentSkill]:
+def _build_skills(skills: Sequence[str | AgentSkill] | None) -> list[AgentSkill]:
     if not skills:
         return [
             AgentSkill(
@@ -93,15 +93,23 @@ def _build_skills(skills: Sequence[str] | None) -> list[AgentSkill]:
                 tags=["general"],
             )
         ]
-    return [
-        AgentSkill(
-            id=skill,
-            name=skill.replace("_", " ").title(),
-            description=f"Skill: {skill}",
-            tags=[skill],
+    result: list[AgentSkill] = []
+    for skill in skills:
+        if isinstance(skill, AgentSkill):
+            result.append(skill)
+            continue
+        if not isinstance(skill, str) or not skill.strip():
+            raise TypeError("AgentCard skills must be non-empty strings or AgentSkill objects")
+        skill_id = skill.strip()
+        result.append(
+            AgentSkill(
+                id=skill_id,
+                name=skill_id.replace("_", " ").title(),
+                description=f"Skill: {skill_id}",
+                tags=[skill_id],
+            )
         )
-        for skill in skills
-    ]
+    return result
 
 
 __all__ = [

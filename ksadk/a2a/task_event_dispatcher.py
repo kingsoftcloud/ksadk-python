@@ -29,14 +29,19 @@ class A2ATaskEventDispatcher:
         task_sink: A2ATaskEventSink,
         *,
         retry_interval_seconds: float = 1.0,
+        task_sink_timeout_seconds: float = 5.0,
     ) -> None:
         if retry_interval_seconds <= 0:
             raise ValueError("retry_interval_seconds must be positive")
+        if task_sink_timeout_seconds <= 0:
+            raise ValueError("task_sink_timeout_seconds must be positive")
         self._outbox = outbox
         self._task_sink = task_sink
         self._retry_interval_seconds = retry_interval_seconds
+        self._task_sink_timeout_seconds = task_sink_timeout_seconds
         self._drain_lock = asyncio.Lock()
         self._stop_event = asyncio.Event()
+        self._wake_event = asyncio.Event()
         self._background_task: asyncio.Task[None] | None = None
         self._started = False
         self._last_error: str | None = None
@@ -56,9 +61,13 @@ class A2ATaskEventDispatcher:
     async def ensure_ready(self) -> None:
         await self._outbox.initialize()
 
+    async def ensure_writable(self) -> None:
+        await self.ensure_ready()
+        await self._outbox.ensure_writable()
+
     async def start(self) -> None:
         await self.ensure_ready()
-        await self.drain(raise_on_error=False)
+        await self.ensure_writable()
         if self._started:
             return
         self._started = True
@@ -67,6 +76,7 @@ class A2ATaskEventDispatcher:
             self._run(),
             name="ksadk-a2a-task-event-dispatcher",
         )
+        self._wake_event.set()
 
     async def stop(self, *, flush_timeout_seconds: float = 5.0) -> None:
         if flush_timeout_seconds < 0:
@@ -97,14 +107,14 @@ class A2ATaskEventDispatcher:
         platform_task_id: str,
         events: list[dict[str, Any]],
     ) -> str:
-        await self.ensure_ready()
+        await self.ensure_writable()
         batch_id = str(
             await self._outbox.enqueue(
                 platform_task_id=platform_task_id,
                 events=events,
             )
         )
-        await self.drain(raise_on_error=False)
+        self._wake_event.set()
         return batch_id
 
     async def drain(self, *, raise_on_error: bool) -> int:
@@ -118,9 +128,12 @@ class A2ATaskEventDispatcher:
                     return delivered
                 for batch in batches:
                     try:
-                        await self._task_sink.append_task_events(
-                            platform_task_id=batch.platform_task_id,
-                            events=batch.events,
+                        await asyncio.wait_for(
+                            self._task_sink.append_task_events(
+                                platform_task_id=batch.platform_task_id,
+                                events=batch.events,
+                            ),
+                            timeout=self._task_sink_timeout_seconds,
                         )
                     except Exception as exc:
                         error = str(getattr(exc, "error_code", "") or type(exc).__name__)
@@ -142,11 +155,13 @@ class A2ATaskEventDispatcher:
             await self.drain(raise_on_error=False)
             try:
                 await asyncio.wait_for(
-                    self._stop_event.wait(),
+                    self._wake_event.wait(),
                     timeout=self._retry_interval_seconds,
                 )
             except TimeoutError:
                 pass
+            finally:
+                self._wake_event.clear()
 
 
 __all__ = ["A2ATaskEventDispatcher", "A2ATaskEventSink"]

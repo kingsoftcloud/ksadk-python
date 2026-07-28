@@ -124,6 +124,7 @@ class A2ASpaceClient:
         self._event_sink = event_sink
         if event_dispatcher is not None and event_outbox is not None:
             raise ValueError("pass either event_dispatcher or event_outbox, not both")
+        self._owns_event_dispatcher = event_dispatcher is None
         self._event_dispatcher = event_dispatcher or A2ATaskEventDispatcher(
             event_outbox or InMemoryA2ATaskEventOutbox(),
             backend,
@@ -250,6 +251,18 @@ class A2ASpaceClient:
         """Runtime-scoped task event dispatcher used by this client."""
 
         return self._event_dispatcher
+
+    async def aclose(self, *, flush_timeout_seconds: float = 5.0) -> None:
+        """Stop the dispatcher only when this standalone client created it."""
+
+        if self._owns_event_dispatcher:
+            await self._event_dispatcher.stop(flush_timeout_seconds=flush_timeout_seconds)
+
+    async def __aenter__(self) -> "A2ASpaceClient":
+        return self
+
+    async def __aexit__(self, *args: Any) -> None:
+        await self.aclose()
 
     async def _resolve_agent(self, agent_id: str) -> DiscoveredAgent:
         agent = self._agents_by_id.get(agent_id)
@@ -607,8 +620,9 @@ class A2ASpaceClient:
         agent: DiscoveredAgent,
         prepared: PreparedA2AOperation,
     ) -> AsyncIterator[tuple[Any, ClientCallContext]]:
-        await self._event_dispatcher.ensure_ready()
-        await self._event_dispatcher.drain(raise_on_error=False)
+        # Product bootstrap starts the shared dispatcher during lifespan startup.
+        # Standalone/from_env clients own their dispatcher and must start it here.
+        await self._event_dispatcher.start()
         injection = CredentialInjection()
         headers: dict[str, str]
         async with AsyncExitStack() as exit_stack:
@@ -732,7 +746,6 @@ class A2ASpaceClient:
             wire_position=wire_position,
             invocation_id=platform_task_id,
         )
-        persisted = await self._persist_events(runtime_events)
         platform_events = self._platform_events(
             item,
             platform_task_id,
@@ -744,7 +757,7 @@ class A2ASpaceClient:
                 platform_task_id=platform_task_id,
                 events=platform_events,
             )
-        return persisted
+        return await self._persist_events(runtime_events)
 
     def _platform_events(
         self,

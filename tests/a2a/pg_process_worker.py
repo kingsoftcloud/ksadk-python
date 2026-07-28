@@ -13,6 +13,8 @@ import asyncio
 import hashlib
 import json
 import socket
+import tempfile
+from pathlib import Path
 from typing import Any, AsyncIterator
 
 import httpx
@@ -32,6 +34,7 @@ from google.protobuf.json_format import MessageToDict
 
 from ksadk.a2a import A2AConfig, A2ARuntimeTaskAdapter, add_a2a_protocol_routes
 from ksadk.a2a.card import build_agent_card
+from ksadk.a2a.resume_store import SQLiteA2AResumeStateStore
 from ksadk.events import EventPhase, EventType, RuntimeEvent
 from ksadk.runtime import (
     BaseRuntime,
@@ -240,6 +243,11 @@ async def _run(args: argparse.Namespace) -> None:
     port = _unused_port()
     app = FastAPI()
     adapter = _DurableProcessAdapter()
+    resume_path = Path(tempfile.gettempdir()) / (
+        "ksadk-a2a-process-resume-"
+        + hashlib.sha256(f"{args.dsn}\x1f{args.task_id}".encode()).hexdigest()
+        + ".sqlite3"
+    )
     protocol = add_a2a_protocol_routes(
         app,
         object(),
@@ -250,7 +258,11 @@ async def _run(args: argparse.Namespace) -> None:
             task_store_dsn=args.dsn,
             create_table=not args.no_create_table,
         ),
-        task_adapter=A2ARuntimeTaskAdapter(adapter, runtime_type=adapter.runtime.runtime_type),
+        task_adapter=A2ARuntimeTaskAdapter(
+            adapter,
+            runtime_type=adapter.runtime.runtime_type,
+            resume_state_store=SQLiteA2AResumeStateStore(resume_path),
+        ),
     )
     server, server_task = await _start_server(app, port)
     http = httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}")

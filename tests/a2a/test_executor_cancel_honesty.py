@@ -164,10 +164,8 @@ async def test_accepted_runtime_cancel_never_completes_execution(
 
     assert runtime.cancel_handles == [runtime.handle]
     assert runtime.cancel_handles[0] is runtime.handle
-    assert runtime.cancel_handles[0].native_ref == {
-        "process_id": 4312,
-        "thread_id": "thread-9",
-    }
+    assert runtime.cancel_handles[0].native_ref["process_id"] == 4312
+    assert runtime.cancel_handles[0].native_ref["thread_id"] == "thread-9"
     assert TaskState.TASK_STATE_COMPLETED not in _states(execute_queue)
     assert _states(cancel_queue) == [TaskState.TASK_STATE_CANCELED]
 
@@ -196,7 +194,14 @@ async def test_cancel_after_restart_uses_persisted_runtime_handle() -> None:
         id=context.task_id,
         context_id=context.context_id,
         status=TaskStatus(state=TaskState.TASK_STATE_INPUT_REQUIRED),
-        metadata={"run_handle": runtime.handle.model_dump(mode="json")},
+    )
+    await task_adapter.persist_resume_state(
+        task_id=context.task_id,
+        context=context,
+        handle=runtime.handle,
+        checkpoint_id="checkpoint-1",
+        call_id=None,
+        payload_kind="hitl_answer",
     )
     queue = _FakeEventQueue()
 
@@ -204,11 +209,11 @@ async def test_cancel_after_restart_uses_persisted_runtime_handle() -> None:
 
     assert runtime.attach_handles == [runtime.handle]
     assert runtime.cancel_handles == [runtime.handle]
-    assert runtime.cancel_handles[0].native_ref == {
-        "process_id": 4312,
-        "thread_id": "thread-9",
-    }
+    assert runtime.cancel_handles[0].native_ref["process_id"] == 4312
+    assert runtime.cancel_handles[0].native_ref["thread_id"] == "thread-9"
     assert _states(queue) == [TaskState.TASK_STATE_CANCELED]
+    with pytest.raises(ValueError, match="no Runtime-local resume state"):
+        await task_adapter.validate_resume_task(context.task_id, context, answer="approve")
 
 
 @pytest.mark.asyncio

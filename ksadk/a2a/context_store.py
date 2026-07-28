@@ -39,6 +39,11 @@ class A2AContextStore(ABC):
     """Maps a verified external context to an internal Runtime session ID."""
 
     @abstractmethod
+    async def initialize(self) -> None:
+        """Verify durable storage is ready before inbound A2A starts serving."""
+        raise NotImplementedError
+
+    @abstractmethod
     async def resolve_or_create(
         self,
         identity: A2AContextIdentity,

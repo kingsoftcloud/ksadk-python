@@ -23,6 +23,7 @@ from typing import Any, Optional, Sequence
 
 from a2a.server.routes import add_a2a_routes_to_fastapi
 from a2a.server.tasks import TaskStore
+from a2a.types import AgentSkill
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -41,7 +42,7 @@ class A2AConfig:
     agent_name: str = "agent"
     description: str = ""
     version: str = "1.0.0"
-    skills: Sequence[str] = field(default_factory=tuple)
+    skills: Sequence[str | AgentSkill] = field(default_factory=tuple)
     streaming: bool = True
     prefer_stream: bool = True
     # durable task store:dsn(如 sqlite+aiosqlite:///.agentengine/a2a_tasks.db 或

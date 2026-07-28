@@ -321,6 +321,7 @@ async def test_send_message_to_hosted_via_discovery(tmp_path):
     assert client._backend.prepare_calls[0]["target_agent_id"] == HOSTED_AGENT_ID
     assert client._backend.prepare_calls[0]["space_id"] == SPACE_ID
     assert client._backend.bind_calls[0]["platform_task_id"] == TASK_ID
+    assert await client.flush_pending_events() == 1
     assert client._backend.append_calls
     assert seen_headers[-1]["authorization"] == "Bearer gateway-token"
     assert seen_headers[-1]["x-agentengine-a2a-permit"] == "permit-1"
@@ -524,6 +525,7 @@ async def test_direct_message_completes_without_remote_task_binding(monkeypatch)
 
     assert result.remote_task is None
     assert backend.bind_calls == []
+    assert await client.flush_pending_events() == 1
     assert [event["EventKind"] for event in backend.append_calls[0]["events"]] == [
         "message",
         "status",
