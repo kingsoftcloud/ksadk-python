@@ -68,6 +68,47 @@ async def test_persistence_status_reports_ready_without_exposing_dsn(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_persistence_status_uses_legacy_stm_postgres_fallbacks(monkeypatch):
+    from ksadk.sessions.persistence import get_persistence_status
+
+    class _Connection:
+        async def fetchval(self, query):
+            if "has_schema_privilege" in query:
+                return True
+            return 1
+
+        async def close(self):
+            return None
+
+    async def connect(**kwargs):
+        assert kwargs["dsn"] == "postgresql://user:secret@db.example.test/session"
+        return _Connection()
+
+    monkeypatch.setenv("KSADK_SESSION_BACKEND", "")
+    monkeypatch.setenv("KSADK_SESSION_DSN", "")
+    monkeypatch.delenv("AGENTENGINE_SESSION_BACKEND", raising=False)
+    monkeypatch.setenv("KSADK_STM_BACKEND", "postgres")
+    monkeypatch.setenv(
+        "KSADK_STM_URL",
+        "postgresql://user:secret@db.example.test/session",
+    )
+
+    status = await get_persistence_status(connect=connect, use_cache=False)
+
+    assert status == {
+        "Configured": True,
+        "Status": "ready",
+        "Ready": True,
+        "Backend": "postgres",
+        "SharedAcrossPods": True,
+        "EffectiveFor": "new_runs_only",
+        "ReasonCode": "READY",
+        "Reason": "",
+    }
+    assert "secret" not in repr(status)
+
+
+@pytest.mark.asyncio
 async def test_persistence_status_classifies_schema_permission_failure(monkeypatch):
     from ksadk.sessions.persistence import get_persistence_status
 

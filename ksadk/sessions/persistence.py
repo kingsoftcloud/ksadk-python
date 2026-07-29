@@ -9,6 +9,8 @@ import time
 from copy import deepcopy
 from typing import Any, Awaitable, Callable, Mapping
 
+from ksadk.sessions import resolve_session_backend_config
+
 ConnectCallable = Callable[..., Awaitable[Any]]
 
 _STATUS_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
@@ -63,10 +65,9 @@ async def get_persistence_status(
 ) -> dict[str, Any]:
     """Return a credential-free persistence diagnostic for bootstrap consumers."""
 
-    backend = str(os.getenv("KSADK_SESSION_BACKEND") or "local").strip().lower()
-    if backend == "sqlite":
-        backend = "local"
-    dsn = str(os.getenv("KSADK_SESSION_DSN") or "").strip()
+    session_config = resolve_session_backend_config()
+    backend = session_config.backend
+    dsn = session_config.dsn
     if backend != "postgres":
         return _base_status(backend=backend or "local", configured=False)
     if not dsn:
