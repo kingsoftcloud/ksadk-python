@@ -665,6 +665,33 @@ OPENAI_API_KEY={api_key}
     return env_content
 
 
+def _generate_codex_env_content(global_env: dict) -> str:
+    """Generate the intentionally small local-only environment for a Codex project.
+
+    A ManagedRuntime manifest is declarative and must never acquire cloud, storage or
+    observability credentials merely because the developer ran ``init``.  The three
+    OpenAI-compatible values are enough for native ``ksadk web`` debugging.  The
+    optional proxy knobs are documented rather than copied from the global profile,
+    because their upstream key can be different from the model key.
+    """
+    api_key = global_env.get("OPENAI_API_KEY", "")
+    base_url = global_env.get("OPENAI_BASE_URL", "")
+    model_name = global_env.get("OPENAI_MODEL_NAME", "")
+    lines = [
+        "# 本地 Codex 模型配置（仅用于 ksadk web，不会进入 ManagedRuntime bundle）",
+        f"OPENAI_API_KEY={api_key}",
+        f"OPENAI_BASE_URL={base_url}" if base_url else "# OPENAI_BASE_URL=",
+        f"OPENAI_MODEL_NAME={model_name}" if model_name else "# OPENAI_MODEL_NAME=glm-5.2",
+        "",
+        "# 可选：自定义上游仅支持 Chat Completions 时，强制启用协议转换代理",
+        "# KSADK_CODEX_USE_PROXY=1",
+        "# KSADK_PROXY_UPSTREAM_BASE=",
+        "# KSADK_PROXY_UPSTREAM_KEY=",
+        "",
+    ]
+    return "\n".join(lines)
+
+
 def _generate_requirements_from_imports(directory: Path, framework: str) -> str:
     """
     扫描目录中的 Python 文件，从 import 语句生成 requirements.txt
@@ -1587,7 +1614,8 @@ version: "1.0.0"
 framework: codex
 artifact_type: ManagedRuntime
 
-# 省略 version 时，build/deploy 从 AgentEngine Runtime catalog 获取默认版本。
+# 托管运行时版本可选；省略时云端由 Runtime catalog 选择默认值。
+# 本地 `ksadk web` 会使用已安装的 openai-codex 并提示该版本未锁定。
 runtime:
   name: codex
 
@@ -1599,7 +1627,8 @@ prompt: |
         encoding="utf-8-sig",
     )
     (project_path / "requirements.txt").write_text(
-        "ksadk[codex]\n", encoding="utf-8"  # 无 BOM:pip 解析 BOM 会报 Invalid requirement
+        "ksadk[codex]\n",
+        encoding="utf-8",  # 无 BOM:pip 解析 BOM 会报 Invalid requirement
     )
     (project_path / "README.md").write_text(
         f"""# {package_name} — codex runtime agent
@@ -1607,7 +1636,7 @@ prompt: |
 ## 快速开始
 
 ```bash
-# 1. 编辑 .env 填星流 OPENAI_API_KEY / OPENAI_API_BASE / OPENAI_MODEL_NAME
+# 1. 编辑 .env 填 OPENAI_API_KEY / OPENAI_BASE_URL / OPENAI_MODEL_NAME
 # 2. 本地运行(浏览器对话,codex 自动探测并启用代理)
 agentengine web .
 # 或
@@ -1618,8 +1647,9 @@ ksadk web .
 
 - codex 的 agent 逻辑由 `agentengine.yaml` 的 `prompt`(开发者指令)承载,无 agent.py。
 - codex 自动探测模型协议:OpenAI 官方直连,星流 chat 模型自动启用转换代理。
-- `agentengine build .` 只生成 YAML manifest bundle，不打包本机 Codex 二进制。
-- 部署:`agentengine deploy .`(服务端解析 ManagedRuntime 版本和 Linux 镜像 digest)。
+- `agentengine build .` 只生成 YAML manifest bundle，不打包本机 Codex 二进制。若
+  `runtime.version` 未指定，build 需要连接到已配置 Runtime catalog；离线构建请显式锁定版本。
+- 部署时服务端解析 ManagedRuntime 版本和 Linux 镜像 digest。
 """,
         encoding="utf-8-sig",
     )
@@ -1875,6 +1905,8 @@ PORT=8080
 # HERMES_CONTEXT_LENGTH=200000
 # HERMES_FALLBACK_MODEL=deepseek-v4-pro
 """
+    elif framework == "codex":
+        env_content = _generate_codex_env_content(global_env)
     else:
         langfuse_public = global_env.get("LANGFUSE_PUBLIC_KEY", "")
         langfuse_secret = global_env.get("LANGFUSE_SECRET_KEY", "")

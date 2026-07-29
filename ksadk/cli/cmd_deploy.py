@@ -376,6 +376,10 @@ async def _deploy_async(
     if effective_artifact_type == "ManagedRuntime":
         if detection_result.type.value != "codex":
             raise validation_error("ManagedRuntime v1 目前仅支持 framework: codex")
+        if ks3_path:
+            raise validation_error(
+                "ManagedRuntime 是服务端内联 manifest，不能使用 --ks3-path；请移除该参数后重试。"
+            )
         from ksadk.managed_runtime import resolve_managed_runtime
 
         resolved_runtime = await resolve_managed_runtime(config, region=region)
@@ -480,13 +484,9 @@ async def _deploy_async(
         deploy_target.storage.size_gi = storage_config["size_gi"]
 
     normalized_artifact_type = (effective_artifact_type or "Code").strip().lower()
-    explicit_artifact_reference = (
-        ks3_path
-        if normalized_artifact_type in {"code", "managedruntime"}
-        else image
-    )
+    explicit_artifact_reference = ks3_path if normalized_artifact_type == "code" else image
     cached_artifact_reference = None
-    if not artifact_plan.should_clear_metadata:
+    if not artifact_plan.should_clear_metadata and normalized_artifact_type != "managedruntime":
         cached_artifact_reference = load_cached_artifact_reference(
             agent_path, effective_artifact_type
         )
@@ -522,7 +522,7 @@ async def _deploy_async(
             if normalized_artifact_type == "container":
                 package_info.image = resolved_artifact_plan.reference
                 package_info.metadata["image"] = resolved_artifact_plan.reference
-            else:
+            elif normalized_artifact_type == "code":
                 package_info.metadata["ks3_path"] = resolved_artifact_plan.reference
 
         print_kv("构建目录", str(package_info.build_dir))
@@ -549,7 +549,7 @@ async def _deploy_async(
                 package_info = await provider.build(package_info, deploy_target)
 
             if target == "serverless":
-                if effective_artifact_type in {"Code", "ManagedRuntime"}:
+                if effective_artifact_type == "Code":
                     ks3 = package_info.metadata.get("ks3_path")
                     if ks3:
                         print_kv("KS3 路径", ks3)

@@ -577,7 +577,10 @@ sync-ksadk-web-static:
 	@echo "Sync KsADK Web static assets from $(KSADK_WEB_PACKAGE)@$(KSADK_WEB_VERSION)"
 	@rm -rf "$(KSADK_WEB_CACHE_DIR)/package"
 	@mkdir -p "$(KSADK_WEB_CACHE_DIR)" "$(STATIC_DIR)"
-	@if [ -n "$(KSADK_WEB_RELEASE_URL)" ]; then \
+	@if [ -f "$(KSADK_WEB_CACHE_DIR)/$(KSADK_WEB_TARBALL_NAME)" ]; then \
+		echo "Using cached tarball $(KSADK_WEB_TARBALL_NAME)"; \
+		echo "$(KSADK_WEB_TARBALL_NAME)" > "$(KSADK_WEB_CACHE_DIR)/.tarball-name"; \
+	elif [ -n "$(KSADK_WEB_RELEASE_URL)" ]; then \
 		echo "Using explicit KSADK_WEB_RELEASE_URL=$(KSADK_WEB_RELEASE_URL)"; \
 		curl -fL --retry 3 --retry-delay 2 --retry-all-errors "$(KSADK_WEB_RELEASE_URL)" -o "$(KSADK_WEB_CACHE_DIR)/$(KSADK_WEB_TARBALL_NAME)"; \
 		echo "$(KSADK_WEB_TARBALL_NAME)" > "$(KSADK_WEB_CACHE_DIR)/.tarball-name"; \

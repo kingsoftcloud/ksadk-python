@@ -94,7 +94,7 @@ def test_deploy_resolves_managed_runtime_from_config():
     assert _resolve_artifact_type_input(config, "Container") == "Container"
 
 
-def test_managed_runtime_deploy_uses_ks3_artifact_reference():
+def test_managed_runtime_deploy_has_no_ks3_artifact_reference():
     plan = plan_artifact_build(
         target="serverless",
         artifact_type="ManagedRuntime",
@@ -110,9 +110,10 @@ def test_managed_runtime_deploy_uses_ks3_artifact_reference():
         no_cache=False,
     )
 
-    assert plan.should_build is True
+    assert plan.should_build is False
+    assert plan.should_publish is False
     assert external.should_build is False
-    assert external.explicit_ref_option == "--ks3-path"
+    assert external.explicit_ref_option is None
 
 
 def test_build_command_auto_selects_managed_runtime(tmp_path):
@@ -122,10 +123,7 @@ def test_build_command_auto_selects_managed_runtime(tmp_path):
 
     assert result.exit_code == 0, result.output
     assert (
-        tmp_path
-        / ".agentengine"
-        / "managed_runtime"
-        / "managed-codex-1.2.3-runtime.zip"
+        tmp_path / ".agentengine" / "managed_runtime" / "managed-codex-1.2.3-runtime.zip"
     ).exists()
 
 

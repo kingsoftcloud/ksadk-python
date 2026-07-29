@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import yaml
 from click.testing import CliRunner
 
 from ksadk.builders.framework_requirements import (
@@ -32,6 +33,10 @@ def test_write_codex_project_config_files(tmp_path):
     # README 说明 codex 运行方式
     readme = (tmp_path / "README.md").read_text(encoding="utf-8-sig")
     assert "ksadk web" in readme
+    manifest = yaml.safe_load(yaml_text)
+    # Version is deliberately resolved by the catalog in cloud.  Init must not
+    # accidentally pin to the SDK installed on the developer's machine.
+    assert manifest["runtime"] == {"name": "codex"}
 
 
 def test_detector_recognizes_codex_project(tmp_path):
@@ -81,6 +86,37 @@ def test_create_codex_cli_warns_when_sdk_missing_but_completes(monkeypatch):
         assert (project / "README.md").exists()
         assert not (project / "codex.yaml").exists()
         assert not list(project.glob("**/agent.py"))
+
+
+def test_create_codex_env_only_contains_local_model_configuration(monkeypatch):
+    """Codex init must not copy deploy, KS3, or observability credentials into .env."""
+    monkeypatch.setattr(
+        "ksadk.configs.global_config.global_config_exists",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "ksadk.configs.global_config.get_env_from_global_config",
+        lambda: {
+            "OPENAI_API_KEY": "model-key",
+            "OPENAI_BASE_URL": "http://model-gateway.internal/v1",
+            "OPENAI_MODEL_NAME": "glm-5.2",
+            "KSYUN_ACCESS_KEY": "must-not-copy",
+            "KSYUN_SECRET_KEY": "must-not-copy",
+            "LANGFUSE_SECRET_KEY": "must-not-copy",
+        },
+    )
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        result = runner.invoke(create_command, ["--framework", "codex", "my-codex-agent"])
+        assert result.exit_code == 0, result.output
+        env_text = (Path("my-codex-agent") / ".env").read_text(encoding="utf-8-sig")
+
+    assert "OPENAI_API_KEY=model-key" in env_text
+    # Keep an explicitly configured internal endpoint intact; init is not a
+    # policy-enforcement layer.
+    assert "OPENAI_BASE_URL=http://model-gateway.internal/v1" in env_text
+    assert "KSYUN_" not in env_text
+    assert "LANGFUSE_" not in env_text
 
 
 def test_requirements_no_codex_when_other_framework():

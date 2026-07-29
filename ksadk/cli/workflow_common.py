@@ -131,8 +131,13 @@ def should_build_artifact(
     if target != "serverless":
         return False
     mode = (artifact_type or "Code").strip().lower()
-    if mode in {"code", "managedruntime"}:
+    if mode == "code":
         return not bool(ks3_path)
+    # ManagedRuntime is a declarative server-side manifest.  ``ksadk build``
+    # remains available for inspection/offline locking, but ``deploy`` neither
+    # uploads nor needs a local artifact.
+    if mode == "managedruntime":
+        return False
     if mode == "container":
         return not bool(image)
     return False
@@ -148,6 +153,7 @@ def plan_artifact_build(
     repackage: bool = False,
 ) -> ArtifactBuildPlan:
     """Plan artifact build behavior and metadata cleanup under cache options."""
+    mode = (artifact_type or "Code").strip().lower()
     should_build = should_build_artifact(
         target=target,
         artifact_type=artifact_type,
@@ -156,8 +162,7 @@ def plan_artifact_build(
     )
     explicit_ref_option = None
     if target == "serverless" and not should_build:
-        mode = (artifact_type or "Code").strip().lower()
-        if mode in {"code", "managedruntime"} and ks3_path:
+        if mode == "code" and ks3_path:
             explicit_ref_option = "--ks3-path"
         elif mode == "container" and image:
             explicit_ref_option = "--image"
@@ -166,8 +171,8 @@ def plan_artifact_build(
         should_clear_metadata=bool((no_cache or repackage) and should_build),
         explicit_ref_option=explicit_ref_option,
         will_build=should_build,
-        should_publish=bool(target == "serverless" and should_build),
-        will_publish=bool(target == "serverless" and should_build),
+        should_publish=bool(target == "serverless" and should_build and mode != "managedruntime"),
+        will_publish=bool(target == "serverless" and should_build and mode != "managedruntime"),
         source="external" if explicit_ref_option else ("built" if should_build else None),
     )
 
@@ -192,17 +197,17 @@ def _predict_artifact_reference(
         "cn-beijing-6" if str(region or "").strip() == "pre-online" else str(region or "").strip()
     )
 
-    if normalized_artifact_type in {"code", "managedruntime"}:
+    if normalized_artifact_type == "code":
         bucket = (ks3_bucket or "").strip()
         if not bucket and account_id and normalized_region:
             bucket = f"agentengine-{account_id}-{normalized_region}"
         if not bucket:
             bucket = "<ks3-bucket>"
         artifact_label = "runtime" if normalized_artifact_type == "managedruntime" else "code"
-        return (
-            f"ks3://{bucket}/agents/{normalized_deploy_name}/"
-            f"{artifact_label}_<dry-run>.zip"
-        )
+        return f"ks3://{bucket}/agents/{normalized_deploy_name}/{artifact_label}_<dry-run>.zip"
+
+    if normalized_artifact_type == "managedruntime":
+        return "inline:managed-runtime"
 
     if normalized_artifact_type == "container":
         normalized_registry = (registry or "").strip().rstrip("/")
@@ -230,6 +235,7 @@ def resolve_artifact_build_plan(
     """Resolve workflow artifact behavior after package metadata is available."""
     normalized_explicit = str(explicit_reference or "").strip()
     normalized_cached = str(cached_reference or "").strip()
+    is_managed_runtime = (artifact_type or "").strip().lower() == "managedruntime"
 
     if normalized_explicit:
         return replace(
@@ -259,7 +265,7 @@ def resolve_artifact_build_plan(
         return replace(
             plan,
             will_build=False,
-            should_publish=bool(target == "serverless"),
+            should_publish=bool(target == "serverless" and not is_managed_runtime),
             will_publish=False,
             source="planned_build",
             reference=_predict_artifact_reference(
@@ -278,8 +284,8 @@ def resolve_artifact_build_plan(
         return replace(
             plan,
             will_build=True,
-            should_publish=bool(target == "serverless"),
-            will_publish=bool(target == "serverless"),
+            should_publish=bool(target == "serverless" and not is_managed_runtime),
+            will_publish=bool(target == "serverless" and not is_managed_runtime),
             source="built",
             reference=plan.reference,
             reference_is_predicted=False,

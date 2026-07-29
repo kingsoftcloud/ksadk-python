@@ -353,6 +353,11 @@
 | `KSADK_PROXY_UPSTREAM_BASE` | Codex model proxy | 否 | `OPENAI_BASE_URL` / `OPENAI_API_BASE` | 无 | 否 | 开发者 / 平台 | 否 | Codex proxy 上游 base URL 覆盖。 |
 | `KSADK_PROXY_UPSTREAM_KEY` | Codex model proxy | 否 | `OPENAI_API_KEY` | 无 | 是 | 开发者 / 平台 | 否 | Codex proxy 上游凭据覆盖。 |
 | `KSADK_PROXY_TOKEN` | Codex model proxy | 否 | 运行时生成 | 无 | 是 | SDK 内部 | 否 | 本地回环 proxy 与 Codex 子进程之间的 bearer token；通常不应手动设置。 |
+| `AGENTENGINE_BASE_INSTRUCTIONS` | Codex ManagedRuntime 声明式创建 | 否 | 内置中文编码助手指令 | 无 | 否 | 控制台 / Server | 否 | 服务端生成 `agentengine.yaml` 时写入 `prompt`。本地 `ksadk web` 直接读取 YAML，不需要设置此变量。 |
+| `AGENTENGINE_MANAGED_RUNTIME_NAME` | Codex Runtime 镜像 | 是（平台注入） | 未设置 | 无 | 否 | AgentEngine Server | 否 | 服务端 catalog 解析后的 Runtime 名称；镜像启动时必须与挂载 YAML 的 `runtime.name` 一致。 |
+| `AGENTENGINE_MANAGED_RUNTIME_VERSION` | Codex Runtime 镜像 | 是（平台注入） | 未设置 | 无 | 否 | AgentEngine Server | 否 | catalog 解析后的 Runtime 版本；镜像启动时同时校验已安装的 `openai-codex` 版本。 |
+| `AGENTENGINE_MANIFEST_PROTOCOL` | Codex Runtime 镜像 | 是（平台注入） | `runtime-manifest/v1`（旧 bundle 兼容） | 无 | 否 | AgentEngine Server | 否 | 内联 manifest 协议版本。当前只支持 `runtime-manifest/v1`。 |
+| `AGENTENGINE_MANIFEST_SHA256` | Codex Runtime 镜像 | 是（平台注入） | 未设置 | 无 | 否 | AgentEngine Server | 否 | 服务端规范化 `agentengine.yaml` 的 SHA-256；镜像启动时校验挂载内容。 |
 | `KSADK_MODEL_PROXY_ENABLED` | Model proxy | 否 | `0` | 无 | 否 | 开发者 / 平台 | 否 | 启用实验性模型协议转换层。 |
 | `KSADK_MODEL_PROXY_AGENTS` | Model proxy | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | 逗号分隔的 agent allowlist。 |
 | `KSADK_MODEL_PROXY_MODELS` | Model proxy | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | 逗号分隔的 model allowlist。 |
