@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import logging
 import os
 import shlex
 import time
-import logging
 from typing import Any
 from uuid import uuid4
 
@@ -14,7 +14,6 @@ from ksadk.tools.gateway import ToolPolicy, check_command_policy, default_tool_g
 from ksadk.tools.result_budget import budget_text_fields
 from ksadk.toolsets._langchain import as_tool
 from ksadk.toolsets.workspace import workspace_root
-
 
 logger = logging.getLogger(__name__)
 
@@ -30,11 +29,19 @@ def _gateway():
     return default_tool_gateway(_SANDBOX_TOOL_POLICIES)
 
 
+def _dict_result(value: Any, *, tool_name: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise TypeError(f"{tool_name} returned {type(value).__name__}, expected dict")
+    return dict(value)
+
+
 def sandbox_backend_name() -> str:
     explicit = os.environ.get("KSADK_SANDBOX_BACKEND", "").strip().lower()
     if explicit:
         return explicit
-    if os.environ.get("KSADK_SANDBOX_TEMPLATE_ID") or os.environ.get("KSADK_SKILL_RUNTIME_TEMPLATE_ID"):
+    if os.environ.get("KSADK_SANDBOX_TEMPLATE_ID") or os.environ.get(
+        "KSADK_SKILL_RUNTIME_TEMPLATE_ID"
+    ):
         return "e2b"
     return "none"
 
@@ -47,15 +54,26 @@ def _sandbox_execution_backend_name() -> str:
 def sandbox_status() -> dict:
     """Report configured AgentEngine sandbox status and boundaries."""
 
-    return _gateway().invoke("sandbox_status", _sandbox_status_impl)
+    return _dict_result(
+        _gateway().invoke("sandbox_status", _sandbox_status_impl),
+        tool_name="sandbox_status",
+    )
 
 
 def _sandbox_status_impl() -> dict[str, Any]:
     backend = sandbox_backend_name()
-    timeout = int(os.environ.get("KSADK_SANDBOX_TIMEOUT") or os.environ.get("KSADK_SKILL_RUNTIME_TIMEOUT") or "600")
+    timeout = int(
+        os.environ.get("KSADK_SANDBOX_TIMEOUT")
+        or os.environ.get("KSADK_SKILL_RUNTIME_TIMEOUT")
+        or "600"
+    )
     idle_ttl = _int_env("KSADK_SANDBOX_IDLE_TTL_SECONDS", 300)
     max_sessions = _int_env("KSADK_SANDBOX_MAX_SESSIONS", 0)
-    template_id = os.environ.get("KSADK_SANDBOX_TEMPLATE_ID") or os.environ.get("KSADK_SKILL_RUNTIME_TEMPLATE_ID") or ""
+    template_id = (
+        os.environ.get("KSADK_SANDBOX_TEMPLATE_ID")
+        or os.environ.get("KSADK_SKILL_RUNTIME_TEMPLATE_ID")
+        or ""
+    )
     isolated = backend not in {"local", "local_process", "pod", "pod_process"}
     latest = GLOBAL_SANDBOX_REGISTRY.latest()
     now = time.time()
@@ -89,7 +107,19 @@ def run_command(
 ) -> dict[str, Any]:
     """Run a shell command inside the configured isolated sandbox."""
 
-    return _gateway().invoke("run_command", _run_command_impl, command, cwd, timeout, env, background, approval=approval)
+    return _dict_result(
+        _gateway().invoke(
+            "run_command",
+            _run_command_impl,
+            command,
+            cwd,
+            timeout,
+            env,
+            background,
+            approval=approval,
+        ),
+        tool_name="run_command",
+    )
 
 
 def _run_command_impl(
@@ -102,11 +132,15 @@ def _run_command_impl(
     command_text = str(command or "").strip()
     if not command_text:
         return {"ok": False, "error_message": "command is required"}
-    policy = check_command_policy(command_text)
+    policy = _dict_result(check_command_policy(command_text), tool_name="check_command_policy")
     if not policy.get("ok"):
         return policy
     if background:
-        return {"ok": False, "error_type": "background_not_supported", "error_message": "background commands are not supported in P0"}
+        return {
+            "ok": False,
+            "error_type": "background_not_supported",
+            "error_message": "background commands are not supported in P0",
+        }
     try:
         entry, _created = _sandbox_entry("ksadk-direct")
         result = entry.session.run_command(command_text, timeout=timeout, env=env, cwd=cwd)
@@ -119,7 +153,15 @@ def _run_command_impl(
             "stderr": result.stderr,
             "exit_code": result.exit_code,
         }
-        return budget_text_fields(payload, tool_name="run_command", fields=("stdout", "stderr"), metadata={"tool_use_id": entry.sandbox_id})
+        return _dict_result(
+            budget_text_fields(
+                payload,
+                tool_name="run_command",
+                fields=("stdout", "stderr"),
+                metadata={"tool_use_id": entry.sandbox_id},
+            ),
+            tool_name="run_command",
+        )
     except SandboxError as exc:
         return {"ok": False, "error_type": type(exc).__name__, "error_message": str(exc)}
     except Exception as exc:
@@ -135,7 +177,12 @@ def run_code(
 ) -> dict[str, Any]:
     """Run a code snippet through the sandbox; this is not a shell replacement."""
 
-    return _gateway().invoke("run_code", _run_code_impl, code, language, timeout, env, approval=approval)
+    return _dict_result(
+        _gateway().invoke(
+            "run_code", _run_code_impl, code, language, timeout, env, approval=approval
+        ),
+        tool_name="run_code",
+    )
 
 
 def _run_code_impl(
@@ -152,7 +199,10 @@ def _run_code_impl(
         return {
             "ok": False,
             "error_type": "isolated_sandbox_required",
-            "error_message": "run_code requires an isolated sandbox backend; local_process and pod_process are not supported for snippet execution",
+            "error_message": (
+                "run_code requires an isolated sandbox backend; local_process and "
+                "pod_process are not supported for snippet execution"
+            ),
             "backend": backend_name,
             "boundary": _sandbox_boundary(backend_name),
         }
@@ -181,7 +231,15 @@ def _run_code_impl(
             "stderr": result.stderr,
             "exit_code": result.exit_code,
         }
-        return budget_text_fields(payload, tool_name="run_code", fields=("stdout", "stderr"), metadata={"tool_use_id": entry.sandbox_id})
+        return _dict_result(
+            budget_text_fields(
+                payload,
+                tool_name="run_code",
+                fields=("stdout", "stderr"),
+                metadata={"tool_use_id": entry.sandbox_id},
+            ),
+            tool_name="run_code",
+        )
     except SandboxError as exc:
         return {"ok": False, "error_type": type(exc).__name__, "error_message": str(exc)}
     except Exception as exc:
@@ -300,10 +358,18 @@ def _int_env(name: str, default: int) -> int:
 
 def _sandbox_boundary(backend: str) -> str:
     if backend in {"local", "local_process"}:
-        return "executes as a local child process; shares local filesystem, env allowlist, and network"
+        return (
+            "executes as a local child process; shares local filesystem, env allowlist, and network"
+        )
     if backend in {"pod", "pod_process"}:
-        return "executes inside the agent pod; shares pod filesystem, env allowlist, network, and service account"
-    return "Sandbox tools execute commands and code only through the configured isolated sandbox backend; they never expose the host shell."
+        return (
+            "executes inside the agent pod; shares pod filesystem, env allowlist, "
+            "network, and service account"
+        )
+    return (
+        "Sandbox tools execute commands and code only through the configured isolated "
+        "sandbox backend; they never expose the host shell."
+    )
 
 
 def get_sandbox_tools() -> list:

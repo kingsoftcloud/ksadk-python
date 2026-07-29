@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-
 _VALID_REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh"}
 _CHAT_COMPLETIONS_REASONING_EFFORTS = {"low", "medium", "high"}
 _PASSTHROUGH_OPTION_KEYS = {"temperature", "top_p", "max_tokens", "max_completion_tokens"}

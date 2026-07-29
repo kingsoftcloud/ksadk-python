@@ -7,62 +7,61 @@
 - serverless: 金山云 Serverless 计算引擎
 """
 
+# 导入并注册所有 Provider
+from ksadk.deployment import providers as providers
 from ksadk.deployment.base import (
     BaseDeployProvider,
-    DeployTarget,
     DeployResult,
     DeployStatus,
+    DeployTarget,
+    NetworkConfig,
     PackageInfo,
     ResourceSpec,
     ScalingConfig,
-    NetworkConfig,
 )
 from ksadk.deployment.registry import DeployProviderRegistry
-
-# 导入并注册所有 Provider
-from ksadk.deployment import providers
 
 
 class DeploymentManager:
     """部署管理器 - 统一入口
-    
+
     使用方式:
         manager = DeploymentManager()
         provider = manager.get_provider("docker")
         result = await provider.deploy(package_info, target)
     """
-    
+
     @staticmethod
-    def get_provider(name: str, config: dict = None) -> BaseDeployProvider:
+    def get_provider(name: str, config: dict | None = None) -> BaseDeployProvider:
         """获取部署 Provider
-        
+
         Args:
             name: Provider 名称 (docker, k8s, serverless)
             config: Provider 配置
-            
+
         Returns:
             Provider 实例
         """
         return DeployProviderRegistry.get(name, config)
-    
+
     @staticmethod
     def list_providers() -> list:
         """列出所有可用 Provider"""
         return DeployProviderRegistry.get_provider_info()
-    
+
     @staticmethod
     def has_provider(name: str) -> bool:
         """检查 Provider 是否存在"""
         return DeployProviderRegistry.has_provider(name)
-    
+
     # 向后兼容: create() 方法
     @classmethod
-    def create(cls, target: str) -> DeployTarget:
+    def create(cls, target: str) -> BaseDeployProvider:
         """创建部署目标
-        
+
         Args:
             target: 部署目标 (docker, k8s, serverless)
-            
+
         Returns:
             部署目标实例
         """

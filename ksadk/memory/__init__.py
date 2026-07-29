@@ -13,9 +13,9 @@
 
 from typing import TYPE_CHECKING
 
-from ksadk.memory.manager import MemoryManager, get_memory_manager
 from ksadk.memory.backends.base import BaseMemoryBackend
 from ksadk.memory.backends.memory import InMemoryBackend
+from ksadk.memory.manager import MemoryManager, get_memory_manager
 
 if TYPE_CHECKING:
     from ksadk.memory.service import LongTermMemoryService

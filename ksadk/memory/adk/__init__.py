@@ -39,10 +39,12 @@ if TYPE_CHECKING:
 def __getattr__(name):
     if name == "ShortTermMemory":
         from ksadk.memory.adk.short_term_memory import ShortTermMemory
+
         return ShortTermMemory
 
     if name == "LongTermMemory":
         from ksadk.memory.adk.long_term_memory import LongTermMemory
+
         return LongTermMemory
 
     raise AttributeError(f"module 'ksadk.memory.adk' has no attribute '{name}'")

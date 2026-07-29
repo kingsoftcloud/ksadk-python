@@ -22,7 +22,7 @@ class SessionContinuityStatus:
     details: dict[str, Any] = field(default_factory=dict)
 
     def to_payload(self) -> dict[str, Any]:
-        payload = {
+        payload: dict[str, Any] = {
             "Level": self.level.value,
             "Path": self.path,
             "Runner": self.runner,
@@ -320,8 +320,7 @@ class ADKSessionAdapter(RunnerSessionAdapter):
             stm_backend = getattr(_stm, "backend", None) if _stm is not None else None
             is_durable = stm_backend is not None and stm_backend != "local"
             level = (
-                SessionContinuityLevel.RUNTIME if is_durable
-                else SessionContinuityLevel.SEMANTIC
+                SessionContinuityLevel.RUNTIME if is_durable else SessionContinuityLevel.SEMANTIC
             )
             path = "adk_resume"
         elif has_native_session:

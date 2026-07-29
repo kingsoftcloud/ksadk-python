@@ -1,14 +1,15 @@
 """agentengine version - Agent 版本资源管理。"""
 
 import os
-import click
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
-from datetime import datetime, timedelta, timezone
+
+import click
 
 from ksadk.api.client import DryRunExit
 from ksadk.cli.agent_ref import merge_agent_inputs, resolve_agent_ref
-from ksadk.cli.dry_run import dry_run_option, run_async_with_dry_run, effective_dry_run
+from ksadk.cli.dry_run import dry_run_option, effective_dry_run, run_async_with_dry_run
 from ksadk.cli.error_utils import abort_with_cli_error, resolution_error
 from ksadk.cli.resource_common import (
     CONTEXT_SETTINGS,
@@ -23,7 +24,8 @@ from ksadk.cli.resource_common import (
     render_descriptor_list,
     render_descriptor_status,
 )
-from ksadk.cli.ui import get_console, output_option as cli_output_option, status_rich_style
+from ksadk.cli.ui import get_console, status_rich_style
+from ksadk.cli.ui import output_option as cli_output_option
 
 console = get_console()
 
@@ -94,8 +96,9 @@ def _extract_agent_id(agent: dict) -> Optional[str]:
     if isinstance(basic, dict):
         agent_id = basic.get("agent_id")
         if agent_id:
-            return agent_id
-    return agent.get("agent_id") or agent.get("id")
+            return str(agent_id)
+    fallback = agent.get("agent_id") or agent.get("id")
+    return str(fallback) if fallback else None
 
 
 async def _resolve_agent_id(agent_ref: str, client) -> Optional[str]:
@@ -147,9 +150,7 @@ async def _resolve_target_agent_id(
         include_project_config=True,
     )
     if not resolved:
-        raise ValueError(
-            "请指定 Agent（--agent 或位置参数），或在当前目录提供可解析的本地配置"
-        )
+        raise ValueError("请指定 Agent（--agent 或位置参数），或在当前目录提供可解析的本地配置")
 
     if resolved.source != "cli":
         console.print(
@@ -162,7 +163,9 @@ async def _resolve_target_agent_id(
     return agent_id
 
 
-@click.group("version", context_settings=CONTEXT_SETTINGS, help=build_resource_group_help(VERSION_RESOURCE))
+@click.group(
+    "version", context_settings=CONTEXT_SETTINGS, help=build_resource_group_help(VERSION_RESOURCE)
+)
 def version():
     pass
 
@@ -345,7 +348,9 @@ def release_version(
     dry_run = effective_dry_run(dry_run)
     try:
         run_async_with_dry_run(
-            _release_version_async(agent_ref, agent_option, name, region, tag, description, dry_run),
+            _release_version_async(
+                agent_ref, agent_option, name, region, tag, description, dry_run
+            ),
             dry_run=dry_run,
             dry_run_resource="version",
             dry_run_action="release",
@@ -437,7 +442,9 @@ def rollback_version(
     dry_run = effective_dry_run(dry_run)
     try:
         run_async_with_dry_run(
-            _rollback_version_async(agent_ref, agent_option, name, region, target, assume_yes, dry_run),
+            _rollback_version_async(
+                agent_ref, agent_option, name, region, target, assume_yes, dry_run
+            ),
             dry_run=dry_run,
             dry_run_resource="version",
             dry_run_action="rollback",
@@ -496,7 +503,7 @@ async def _rollback_version_async(
                     ks3_secret_key=secret_key,
                 )
 
-        fields = [
+        fields: list[tuple[str, str, str | None]] = [
             ("当前版本", str(result.get("current_tag") or "-"), "#58a6ff"),
         ]
         if result.get("message"):

@@ -157,7 +157,7 @@ def get_langfuse_callbacks() -> list[Any]:
     return callbacks
 
 
-def get_langfuse_metadata(session_id: str = None) -> dict:
+def get_langfuse_metadata(session_id: str | None = None) -> dict[str, Any]:
     """获取 Langfuse 的 metadata 字典
 
     通过 metadata 字段传递 trace 属性:
@@ -171,7 +171,7 @@ def get_langfuse_metadata(session_id: str = None) -> dict:
     Returns:
         包含 Langfuse 属性的 metadata 字典
     """
-    metadata = {}
+    metadata: dict[str, Any] = {}
 
     if session_id:
         metadata["langfuse_session_id"] = session_id
@@ -201,7 +201,7 @@ def get_langfuse_metadata(session_id: str = None) -> dict:
     return metadata
 
 
-def prepare_trace_metadata(session_id: str = None) -> tuple:
+def prepare_trace_metadata(session_id: str | None = None) -> tuple[Any, list[Any], Any, Any]:
     """准备 Trace 元数据
 
     Returns:

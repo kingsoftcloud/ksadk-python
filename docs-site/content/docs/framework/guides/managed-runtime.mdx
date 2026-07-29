@@ -1,0 +1,85 @@
+---
+title: Codex Managed Runtime
+description: 用同一份声明式 manifest 在本机原生调试，并由 AgentEngine 在云端选择托管 Runtime 镜像。
+---
+
+Codex 是 KsADK 的第一个 `ManagedRuntime`。它把项目的声明、开发机上的原生 Codex
+进程和云端 Linux Runtime 镜像分开：开发机不需要 Docker，部署包也不会带入 Python
+依赖、模型凭据或平台二进制。
+
+## 创建项目
+
+```bash title="shell"
+pip install "ksadk[codex]"
+ksadk init --framework codex my-codex-agent
+cd my-codex-agent
+ksadk web . --no-open
+```
+
+模板只生成 `agentengine.yaml`、`.env`、`requirements.txt` 和 `README.md`；不会生成
+`agent.py` 或第二份 `codex.yaml`。`requirements.txt` 仅服务于本机调试，不会进入托管
+Runtime bundle。
+
+```yaml title="agentengine.yaml"
+name: my-codex-agent
+version: "1.0.0"
+framework: codex
+artifact_type: ManagedRuntime
+
+runtime:
+  name: codex
+  version: "0.144.4"
+
+model: gpt-5.1-codex
+prompt: |
+  你是一个编码助手。
+```
+
+`runtime.version` 建议始终显式指定。未指定时，本机 `web` 会尝试读取服务端 bootstrap
+默认值；离线开发会使用已安装版本并明确标记为未锁定。`build` 不能在离线且未锁定版本时
+猜测 Runtime 版本。
+
+## 本机调试
+
+`openai-codex` 会为当前操作系统解析相应的 Codex CLI 二进制。因此 macOS、Windows
+和 Linux 都是直接启动本地子进程，而不是启动 Docker 镜像：
+
+```bash title="shell"
+ksadk web . --port 8080 --no-open
+```
+
+首次运行前在本机 `.env` 中配置模型凭据。不要把 `.env` 提交到 Git，也不要把它放进
+部署 bundle。
+
+## 构建与部署
+
+`artifact_type: ManagedRuntime` 会让 `ksadk build .` 自动进入 managed 模式：
+
+```bash title="shell"
+ksadk build .
+ksadk deploy . --target serverless
+```
+
+构建结果是 `<name>-<version>-runtime.zip`，且只含两个文件：规范化的
+`agentengine.yaml` 与 `runtime-lock.json`。lock 固化 manifest protocol、Runtime 名称、
+解析后的版本和 manifest SHA-256。可以先检查其内容：
+
+```bash title="shell"
+unzip -l .agentengine/managed_runtime/*-runtime.zip
+```
+
+<Callout type="warning" title="Code 模式不适用于托管 Codex">
+对 Codex ManagedRuntime 强制 `ksadk build --mode code` 会失败。这样可以避免把开发机的
+macOS 或 Windows Codex 二进制误打进 Linux 部署包。`--mode container` 仍保留给你自己维护
+镜像的高级场景。
+</Callout>
+
+云端 Runtime catalog 决定默认版本并解析为不可变的 Linux 镜像 digest。catalog 未启用时
+ManagedRuntime 部署会给出可操作错误，不会回退到 CodeBuilder。
+
+## 凭据和镜像边界
+
+- Bundle 不包含 `.env`、`requirements.txt`、Python 源码或 native binary。
+- 托管镜像由平台维护，并在 Linux `amd64`、`arm64` 上构建；不会发布 macOS 或 Windows 镜像。
+- Cloud deployment 返回实际 Runtime 名称、版本和镜像 digest；启动时会校验 manifest hash 与
+  期望 Runtime，避免静默漂移。

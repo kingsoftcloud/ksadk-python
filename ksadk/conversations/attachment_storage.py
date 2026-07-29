@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 import logging
 import mimetypes
@@ -81,8 +82,7 @@ def _download_hosted_attachment(file_uri: str) -> AttachmentBytes | None:
         data=content.data,
         display_name=display_name,
         mime_type=(
-            _content_type_without_params(content.content_type)
-            or guess_mime_type(display_name)
+            _content_type_without_params(content.content_type) or guess_mime_type(display_name)
         ),
     )
 
@@ -222,7 +222,9 @@ class AttachmentStorageService:
                     return AttachmentBytes(
                         data=raw,
                         display_name=str(metadata.get("display_name") or local_path.name),
-                        mime_type=str(metadata.get("mime_type") or guess_mime_type(local_path.name)),
+                        mime_type=str(
+                            metadata.get("mime_type") or guess_mime_type(local_path.name)
+                        ),
                         local_path=local_path,
                     )
 
@@ -272,16 +274,17 @@ class AttachmentStorageService:
     async def _read_ks3_object(self, *, bucket: str, object_key: str) -> bytes:
         return await asyncio.to_thread(self._read_ks3_object_sync, bucket, object_key)
 
-    def _put_ks3_object_sync(self, bucket: str, object_key: str, data: bytes, mime_type: str) -> None:
+    def _put_ks3_object_sync(
+        self, bucket: str, object_key: str, data: bytes, mime_type: str
+    ) -> None:
         if not bucket:
             raise ValueError("KS3 bucket is not available")
-        from ks3.connection import Connection
-
         ak = os.getenv("KSYUN_ACCESS_KEY") or os.getenv("KS3_ACCESS_KEY")
         sk = os.getenv("KSYUN_SECRET_KEY") or os.getenv("KS3_SECRET_KEY")
         if not ak or not sk:
             raise ValueError("KS3 credentials are not configured")
-        conn = Connection(ak, sk, host=self._endpoint())
+        connection_class = importlib.import_module("ks3.connection").Connection
+        conn = connection_class(ak, sk, host=self._endpoint())
         ks3_bucket = self._ensure_bucket(conn, bucket)
         key = ks3_bucket.new_key(object_key)
         key.set_contents_from_string(
@@ -292,17 +295,19 @@ class AttachmentStorageService:
     def _read_ks3_object_sync(self, bucket: str, object_key: str) -> bytes:
         if not bucket or not object_key:
             raise FileNotFoundError(object_key)
-        from ks3.connection import Connection
-
         ak = os.getenv("KSYUN_ACCESS_KEY") or os.getenv("KS3_ACCESS_KEY")
         sk = os.getenv("KSYUN_SECRET_KEY") or os.getenv("KS3_SECRET_KEY")
         if not ak or not sk:
             raise ValueError("KS3 credentials are not configured")
-        conn = Connection(ak, sk, host=self._endpoint())
+        connection_class = importlib.import_module("ks3.connection").Connection
+        conn = connection_class(ak, sk, host=self._endpoint())
         key = conn.get_bucket(bucket).get_key(object_key)
         if key is None:
             raise FileNotFoundError(object_key)
-        return key.get_contents_as_string()
+        content = key.get_contents_as_string()
+        if not isinstance(content, bytes):
+            raise TypeError("KS3 object content must be bytes")
+        return content
 
     @staticmethod
     def _ensure_bucket(conn: Any, bucket_name: str):

@@ -116,7 +116,9 @@ async def fetch_provider_model_catalog(
     normalized: list[dict[str, Any]] = []
     for raw_model in _extract_catalog_items(payload):
         item = normalize_model_metadata(raw_model)
-        item["_provider_raw_model"] = raw_model if isinstance(raw_model, Mapping) else {"id": str(raw_model)}
+        item["_provider_raw_model"] = (
+            raw_model if isinstance(raw_model, Mapping) else {"id": str(raw_model)}
+        )
         normalized.append(item)
     return normalized
 
@@ -128,7 +130,9 @@ async def fetch_provider_model_metadata(
     model: str | None,
     timeout: float = 10.0,
 ) -> dict[str, Any] | None:
-    catalog = await fetch_provider_model_catalog(api_base=api_base, api_key=api_key, timeout=timeout)
+    catalog = await fetch_provider_model_catalog(
+        api_base=api_base, api_key=api_key, timeout=timeout
+    )
     raw_models = [item.get("_provider_raw_model") or item for item in catalog]
     raw_match = find_model_in_catalog(raw_models, model)
     if raw_match is None:

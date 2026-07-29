@@ -1,0 +1,102 @@
+---
+title: "A2A Runtime"
+description: "Use a platform-managed A2A Runtime without weakening ingress or egress boundaries."
+---
+
+<Callout type="warning" title="Experimental platform capability">
+The managed A2A Runtime is supplied by AgentEngine. It is not enabled by a local
+application simply by setting an environment variable or creating an HTTP client.
+</Callout>
+
+## Product ownership
+
+AgentEngine creates `AgentEngineA2ABootstrap` when it deploys a managed Runtime.
+The bootstrap owns durable task, context, and resume state; Gateway-verified
+inbound identity; the event outbox lifecycle; and outbound transport. Application
+code should use the Space-scoped client supplied by that Runtime, or
+`A2ASpaceClient.from_env()` after the platform has injected its configuration.
+
+Do not construct a permissive external `httpx.AsyncClient` for an external A2A
+Agent. A missing managed transport fails closed with
+`A2A_EGRESS_TRANSPORT_REQUIRED`.
+
+## Outbound access
+
+The first managed release supports `external_public` Agents over the Runtime's NAT
+path. `Network.EnablePublicAccess` is the only public-egress policy input; the
+platform projects its effective value to `KSADK_A2A_ENABLE_PUBLIC_EGRESS`. When it
+is disabled, external-public calls are rejected before credentials are resolved.
+
+If that projection is absent, KsADK treats it as disabled. `CreateAgent` may
+default the resource field to enabled, but a Runtime uses only the effective
+value that the deployment layer explicitly calculates and injects.
+
+The injected transport is HTTPS-only, performs a fresh DNS check for each
+operation, connects to the verified IP while retaining the hostname for TLS,
+disables environment proxies, and rejects redirects. It limits response size and
+parsing depth before A2A payloads are processed.
+
+`external_vpc` is not available in the first managed release. It requires a
+platform-injected VPC dialer and fails with `A2A_VPC_EGRESS_DIALER_REQUIRED`; it
+must not fall back to the public NAT path.
+
+## Inbound access and recovery
+
+Managed inbound A2A routes accept only identity verified by AgentEngine Gateway.
+The Runtime checks the verified account, tenant, target Agent, target Runtime, and
+target A2A registration before the handler receives a request. The Runtime-local
+AgentCard is also restricted to a trusted Gateway or server probe; public discovery
+uses the Gateway-published Card instead.
+
+Checkpoint handles and resume targets remain in Runtime-local durable storage. They
+are never included in public A2A Task or Message metadata. Start and stop the
+bootstrap with the Runtime application lifespan so durable stores and the shared
+event dispatcher are ready before traffic is served.
+
+A managed Runtime does not write its internal reasoning events as A2A artifacts.
+Upstream callers receive only protocol task state, response content, and allowed
+artifacts—not model-internal reasoning.
+
+An inbound-only Runtime can disable outbound operation. It then needs no control
+plane, hosted HTTP client, or event outbox, and `client_for_space()` rejects
+explicitly. A standalone `A2ASpaceClient` owns its background dispatcher: call
+`await client.aclose()` when finished, or use `async with`. Clients created by a
+bootstrap are closed by the Runtime lifespan instead.
+
+## Local Cross-Framework Reasoning Streams
+
+`agentengine a2a serve` is a local development command that binds to
+`127.0.0.1` by default. It writes explicit runner `thinking` / `reasoning.*`
+events to a separate `reasoning`
+artifact whose Parts carry `adk_thought=true`. It does not reinterpret ordinary
+status text as reasoning. Use `--no-include-reasoning` when local A2A callers
+must not receive that content. If you explicitly bind to a public or LAN
+address such as `--host 0.0.0.0`, the service becomes reachable through every
+network interface. The local development endpoint does not configure
+authentication, TLS, or network policy for you, so restrict access with trusted
+callers and a firewall.
+
+A LangGraph orchestrator can forward the remote typed events directly into its
+custom stream:
+
+```python
+from langgraph.config import get_stream_writer
+from ksadk.a2a import stream_a2a_agent_to_writer
+
+async def call_remote(state):
+    output = await stream_a2a_agent_to_writer(
+        "http://127.0.0.1:8094",
+        state["query"],
+        writer=get_stream_writer(),
+    )
+    return {"result": output}
+```
+
+The helper is independent of the remote framework, so ADK↔ADK,
+ADK↔LangGraph, and LangGraph↔LangGraph use the same protocol path. It preserves
+the actual `thinking` / `text` order emitted by the remote agent, deduplicates
+artifact snapshots, reconciles authoritative replacements, and returns response
+text only. It never invents alternation that the remote agent did not emit. The
+legacy `stream_a2a_agent()` API yields strings only and cannot encode replacement
+semantics; use typed events or the writer helper when authoritative snapshots
+must be reconciled.

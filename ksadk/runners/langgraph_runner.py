@@ -4,25 +4,26 @@ LangGraphRunner - LangGraph 框架运行时
 直接透传 LangGraph 原生能力，最小化封装
 """
 
-import os
-import uuid
-import re
-from typing import Any, AsyncIterator, Dict, Mapping
 import base64
-from pathlib import Path
+import inspect
+import os
+import re
+import uuid
+from typing import Any, AsyncIterator, Dict, Mapping
 
-from ksadk.runners.base_runner import BaseRunner
-from ksadk.runners.usage_accumulator import accumulate_usage
-from ksadk.sessions.continuity import LangGraphSessionAdapter
-from ksadk.runners.utils import get_langfuse_callbacks, get_langfuse_metadata, load_agent_module
 from langgraph.types import Command
+
 from ksadk.conversations.attachments import classify_attachment_kind, read_attachment_uri_bytes
 from ksadk.conversations.reasoning_markup import ReasoningMarkupParser, strip_reasoning_markup
+from ksadk.runners.base_runner import BaseRunner
+from ksadk.runners.usage_accumulator import accumulate_usage
+from ksadk.runners.utils import get_langfuse_callbacks, get_langfuse_metadata, load_agent_module
+from ksadk.sessions.continuity import LangGraphSessionAdapter
 
 
 class LangGraphRunner(BaseRunner):
     """LangGraph 框架运行时
-    
+
     透传原生 LangGraph 功能，支持任意 State 格式
     """
 
@@ -40,7 +41,7 @@ class LangGraphRunner(BaseRunner):
         self._loaded_model_name = self.normalize_requested_model(
             os.getenv("OPENAI_MODEL_NAME") or os.getenv("MODEL_NAME")
         )
-        
+
         if not hasattr(self._agent, "invoke"):
             raise TypeError("加载的对象不是有效的 LangGraph CompiledGraph")
 
@@ -57,10 +58,10 @@ class LangGraphRunner(BaseRunner):
 
     def describe_checkpoint_capability(self) -> dict[str, Any]:
         agent = getattr(self, "_agent", None)
-        has_checkpointer = bool(
-            getattr(agent, "checkpointer", None) or getattr(agent, "_checkpointer", None)
-        )
-        if not has_checkpointer:
+        checkpointer = getattr(agent, "checkpointer", None)
+        if checkpointer is None:
+            checkpointer = getattr(agent, "_checkpointer", None)
+        if checkpointer is None:
             return {
                 "Supported": False,
                 "Backend": "none",
@@ -70,7 +71,16 @@ class LangGraphRunner(BaseRunner):
                 "Reason": "LangGraph graph has no configured checkpointer",
             }
 
-        backend = str(os.getenv("KSADK_CHECKPOINT_BACKEND") or "").strip().lower()
+        checkpointer_type = type(checkpointer)
+        type_name = f"{checkpointer_type.__module__}.{checkpointer_type.__name__}".lower()
+        if "memory" in type_name or "inmemory" in type_name:
+            backend = "memory"
+        elif "sqlite" in type_name:
+            backend = "sqlite"
+        elif "postgres" in type_name:
+            backend = "postgres"
+        else:
+            backend = str(os.getenv("KSADK_CHECKPOINT_BACKEND") or "").strip().lower()
         if backend == "local":
             backend = "sqlite"
         if not backend:
@@ -87,7 +97,9 @@ class LangGraphRunner(BaseRunner):
             scope = "pod_local"
             durable = True
             shared = False
-            reason = "SQLite checkpoint is durable for local web debugging but is not shared across pods"
+            reason = (
+                "SQLite checkpoint is durable for local web debugging but is not shared across pods"
+            )
         elif backend in {"memory", "inmemory"}:
             backend = "memory"
             scope = "process_local"
@@ -109,25 +121,23 @@ class LangGraphRunner(BaseRunner):
         capabilities = super().get_runtime_capabilities()
         capabilities["SessionContinuity"] = {
             "Supported": True,
-            "Type": "checkpoint"
-            if capabilities["Checkpoint"].get("Supported")
-            else "semantic_replay",
-            "Level": "runtime"
-            if capabilities["Checkpoint"].get("Supported")
-            else "semantic",
+            "Type": (
+                "checkpoint" if capabilities["Checkpoint"].get("Supported") else "semantic_replay"
+            ),
+            "Level": "runtime" if capabilities["Checkpoint"].get("Supported") else "semantic",
             "Reason": "",
         }
         return capabilities
 
     def _get_config(self, session_id: str) -> dict:
         """获取运行配置"""
-        config = {"configurable": {"thread_id": session_id}}
-        
+        config: dict[str, Any] = {"configurable": {"thread_id": session_id}}
+
         langfuse_callbacks = get_langfuse_callbacks()
         if langfuse_callbacks:
             config["callbacks"] = langfuse_callbacks
             config["metadata"] = get_langfuse_metadata(session_id)
-        
+
         return config
 
     @staticmethod
@@ -154,7 +164,9 @@ class LangGraphRunner(BaseRunner):
 
         thread_id = str(checkpoint_ref.get("thread_id") or session_id or "").strip()
         if not thread_id:
-            raise ValueError("checkpoint_resume requires session_id or framework_ref.langgraph.thread_id")
+            raise ValueError(
+                "checkpoint_resume requires session_id or framework_ref.langgraph.thread_id"
+            )
 
         next_config = dict(config)
         configurable = dict(next_config.get("configurable") or {})
@@ -163,6 +175,18 @@ class LangGraphRunner(BaseRunner):
         configurable["checkpoint_id"] = checkpoint_id
         next_config["configurable"] = configurable
         return next_config
+
+    @staticmethod
+    def _checkpoint_resume_input(
+        value: Any,
+        *,
+        payload_provided: bool,
+        interrupt_id: str,
+    ) -> Command | None:
+        if not payload_provided:
+            return None
+        resume_value = {interrupt_id: value} if interrupt_id else value
+        return Command(resume=resume_value)
 
     @staticmethod
     def _checkpoint_ref_from_state(state: Any) -> dict[str, Any]:
@@ -180,17 +204,15 @@ class LangGraphRunner(BaseRunner):
         checkpoint_id = str(configurable.get("checkpoint_id") or "").strip()
         if not thread_id or not checkpoint_id:
             return {}
-        next_nodes_raw = state.get("next") if isinstance(state, dict) else getattr(state, "next", None)
+        next_nodes_raw = (
+            state.get("next") if isinstance(state, dict) else getattr(state, "next", None)
+        )
         next_nodes: list[str] = []
         if isinstance(next_nodes_raw, str):
             if next_nodes_raw.strip():
                 next_nodes = [next_nodes_raw.strip()]
         elif isinstance(next_nodes_raw, (list, tuple, set)):
-            next_nodes = [
-                str(item).strip()
-                for item in next_nodes_raw
-                if str(item or "").strip()
-            ]
+            next_nodes = [str(item).strip() for item in next_nodes_raw if str(item or "").strip()]
         return {
             "langgraph": {
                 "thread_id": thread_id,
@@ -273,7 +295,11 @@ class LangGraphRunner(BaseRunner):
     def _ambient_context_text(payload: Dict[str, Any]) -> str:
         sections: list[str] = []
         kb_context = payload.get("kb_context") or {}
-        kb_text = str(kb_context.get("formatted_text") or "").strip() if isinstance(kb_context, dict) else ""
+        kb_text = (
+            str(kb_context.get("formatted_text") or "").strip()
+            if isinstance(kb_context, dict)
+            else ""
+        )
         if kb_text:
             sections.append(f"Knowledge base context:\n{kb_text}")
 
@@ -325,6 +351,14 @@ class LangGraphRunner(BaseRunner):
         prepared = prepare_state(dict(normalized_payload), session_context)
         if not isinstance(prepared, dict):
             raise TypeError("ksadk_prepare_state(payload, session_context) must return a dict")
+        # A custom state hook owns application state, but must not accidentally
+        # erase protocol namespaces that framework middleware consumes. In
+        # particular CopilotKit reads ``ag-ui`` to decide whether to inject the
+        # official A2UI tool, and reads ``copilotkit.actions`` for frontend
+        # actions. Keep these namespaces narrow and transport-owned.
+        for namespace in ("ag-ui", "copilotkit"):
+            if namespace in normalized_payload:
+                prepared.setdefault(namespace, normalized_payload[namespace])
         return prepared
 
     def _to_state(self, payload: Dict[str, Any], history: list) -> Dict[str, Any]:
@@ -338,7 +372,7 @@ class LangGraphRunner(BaseRunner):
         if "input" in normalized_payload and "messages" not in normalized_payload:
             from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-            messages = []
+            messages: list[Any] = []
             if system_text:
                 messages.append(SystemMessage(content=system_text))
             for msg in history:
@@ -442,11 +476,11 @@ class LangGraphRunner(BaseRunner):
                 )
                 continue
 
-            file_uri = attachment.get("file_uri")
-            if not file_uri:
+            attachment_uri = attachment.get("file_uri")
+            if not attachment_uri:
                 continue
 
-            raw = read_attachment_uri_bytes(file_uri)
+            raw = read_attachment_uri_bytes(str(attachment_uri))
             if not raw:
                 continue
 
@@ -536,7 +570,7 @@ class LangGraphRunner(BaseRunner):
 
     async def invoke(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """调用 LangGraph 图
-        
+
         支持两种输入格式：
         1. 简化格式: {"input": "hello"} - 自动转换为 messages
         2. 原生格式: {"messages": [...]} 或自定义 State - 直接透传
@@ -549,11 +583,12 @@ class LangGraphRunner(BaseRunner):
         session_id = payload.pop("session_id", None) or str(uuid.uuid4())[:8]
         is_resume = payload.pop("resume", False)
         is_checkpoint_resume = bool(payload.pop("checkpoint_resume", False))
+        resume_payload_provided = bool(payload.pop("resume_payload_provided", False))
+        resume_interrupt_id = str(payload.pop("resume_interrupt_id", "") or "")
+        resume_value = payload.get("input")
         checkpoint_ref = self._extract_langgraph_checkpoint_ref(payload)
         history = payload.pop("history", [])
         native_context = self.build_native_context(payload.get("platform_context"))
-        normalized_payload = self._strip_platform_context_fields(payload)
-        
         config = self._get_config(session_id)
         if is_checkpoint_resume:
             config = self._apply_checkpoint_resume_config(
@@ -561,24 +596,29 @@ class LangGraphRunner(BaseRunner):
                 session_id=session_id,
                 checkpoint_ref=checkpoint_ref,
             )
-        
+
         # 判断输入格式 / resume
         if is_checkpoint_resume:
-            state = None
-        elif self._has_prepare_state_hook():
-            state = self._prepare_state_with_hook(payload, session_id, history, is_resume=is_resume)
+            state = resume_value
         elif is_resume:
-            if "input" in normalized_payload and len(normalized_payload) == 1:
-                state = normalized_payload["input"]
-            else:
-                state = normalized_payload
+            # ``Command(resume=...)`` is delivered to the graph's suspended
+            # interrupt. A custom prepare-state hook is for new user input;
+            # applying it here can rewrite an approval decision into ordinary
+            # graph state and turn an approved HITL action into a rejection.
+            state = resume_value
+        elif self._has_prepare_state_hook():
+            state = self._prepare_state_with_hook(payload, session_id, history)
         else:
             state = self._to_state(payload, history)
 
         try:
             if is_checkpoint_resume:
                 result = await self._invoke_graph(
-                    None,
+                    self._checkpoint_resume_input(
+                        state,
+                        payload_provided=resume_payload_provided,
+                        interrupt_id=resume_interrupt_id,
+                    ),
                     config=config,
                     context=native_context,
                 )
@@ -606,7 +646,7 @@ class LangGraphRunner(BaseRunner):
             if metadata:
                 output["metadata"] = {**(output.get("metadata") or {}), **metadata}
             return output
-            
+
         except Exception as e:
             if "Interrupt" in type(e).__name__:
                 interrupt_info = self._get_interrupt_info(self._agent.get_state(config))
@@ -614,7 +654,11 @@ class LangGraphRunner(BaseRunner):
                     "type": "interrupt",
                     "interrupt_info": interrupt_info,
                     "session_id": session_id,
-                    "output": interrupt_info.get("message", "需要用户确认") if isinstance(interrupt_info, dict) else "需要用户确认",
+                    "output": (
+                        interrupt_info.get("message", "需要用户确认")
+                        if isinstance(interrupt_info, dict)
+                        else "需要用户确认"
+                    ),
                 }
             raise
 
@@ -623,16 +667,21 @@ class LangGraphRunner(BaseRunner):
         if isinstance(result, dict):
             # 自定义 output 字段是业务显式出参，优先于内部 messages state。
             if "output" in result:
-                return result["output"]
+                return str(result["output"])
             # LangGraph 示例常用 answer 作为最终业务回答字段。
             if "answer" in result:
-                return result["answer"]
+                return str(result["answer"])
             # 标准 messages 格式
             if "messages" in result:
                 messages = result["messages"]
                 if messages:
                     last = messages[-1]
-                    return last.get("content", str(last)) if isinstance(last, dict) else getattr(last, "content", str(last))
+                    content = (
+                        last.get("content", str(last))
+                        if isinstance(last, dict)
+                        else getattr(last, "content", str(last))
+                    )
+                    return str(content)
         return str(result) if result else ""
 
     def _get_interrupt_info(self, state) -> dict:
@@ -642,12 +691,18 @@ class LangGraphRunner(BaseRunner):
                 if hasattr(task, "interrupts") and task.interrupts:
                     for intr in task.interrupts:
                         if hasattr(intr, "value"):
-                            return intr.value
+                            value = intr.value
+                            info = dict(value) if isinstance(value, Mapping) else {"value": value}
+                            interrupt_id = str(getattr(intr, "id", "") or "")
+                            if interrupt_id:
+                                info.setdefault("approval_request_id", interrupt_id)
+                            return info
         return {}
 
     async def _stream_checkpoint_resume_updates(
         self,
         *,
+        stream_input: Any,
         config: dict[str, Any],
         context: dict[str, Any] | None,
     ) -> AsyncIterator[Dict[str, Any]]:
@@ -664,11 +719,17 @@ class LangGraphRunner(BaseRunner):
 
         latest_output: Any = None
         emitted_update = False
-        async for update in self._agent.astream(None, **kwargs):
+        tool_names: dict[str, str] = {}
+        async for update in self._agent.astream(stream_input, **kwargs):
             emitted_update = True
             latest_output = update
             if isinstance(update, Mapping):
                 for node_name, node_output in update.items():
+                    for tool_event in self._tool_events_from_graph_update(
+                        node_output,
+                        tool_names=tool_names,
+                    ):
+                        yield tool_event
                     yield {
                         "type": "graph_update",
                         "node": str(node_name),
@@ -703,6 +764,76 @@ class LangGraphRunner(BaseRunner):
         if metadata:
             yield {"type": "checkpoint", "metadata": metadata}
 
+    @staticmethod
+    def _tool_events_from_graph_update(
+        node_output: Any,
+        *,
+        tool_names: dict[str, str],
+    ) -> list[dict[str, Any]]:
+        """Preserve LangGraph update-mode tool messages as structured runner events."""
+
+        if isinstance(node_output, Mapping):
+            messages = node_output.get("messages")
+        else:
+            messages = getattr(node_output, "messages", None)
+        if not isinstance(messages, (list, tuple)):
+            return []
+
+        events: list[dict[str, Any]] = []
+        for message in messages:
+            if isinstance(message, Mapping):
+                tool_calls = message.get("tool_calls")
+                tool_call_id = message.get("tool_call_id")
+                message_name = message.get("name")
+                message_content = message.get("content")
+                message_status = message.get("status")
+            else:
+                tool_calls = getattr(message, "tool_calls", None)
+                tool_call_id = getattr(message, "tool_call_id", None)
+                message_name = getattr(message, "name", None)
+                message_content = getattr(message, "content", None)
+                message_status = getattr(message, "status", None)
+
+            if isinstance(tool_calls, (list, tuple)):
+                for tool_call in tool_calls:
+                    if isinstance(tool_call, Mapping):
+                        call_id = str(tool_call.get("id") or tool_call.get("tool_call_id") or "")
+                        name = str(tool_call.get("name") or "tool")
+                        args = tool_call.get("args")
+                    else:
+                        call_id = str(
+                            getattr(tool_call, "id", None)
+                            or getattr(tool_call, "tool_call_id", None)
+                            or ""
+                        )
+                        name = str(getattr(tool_call, "name", None) or "tool")
+                        args = getattr(tool_call, "args", None)
+                    if call_id:
+                        tool_names[call_id] = name
+                    events.append(
+                        {
+                            "type": "tool_call",
+                            "tool_call_id": call_id or name,
+                            "tool_name": name,
+                            "tool_args": args,
+                        }
+                    )
+
+            if tool_call_id:
+                call_id = str(tool_call_id)
+                name = str(message_name or tool_names.get(call_id) or "tool")
+                status = str(message_status or "").lower()
+                events.append(
+                    {
+                        "type": "tool_result",
+                        "tool_call_id": call_id,
+                        "tool_name": name,
+                        "tool_output": message_content,
+                        "error": message_content if status in {"error", "failed"} else None,
+                    }
+                )
+        return events
+
     async def stream(self, input_data: Dict[str, Any]) -> AsyncIterator[Dict[str, Any]]:
         """流式调用 LangGraph 图"""
         payload = dict(input_data)
@@ -711,10 +842,11 @@ class LangGraphRunner(BaseRunner):
         history = payload.pop("history", [])
         is_resume = payload.pop("resume", False)
         is_checkpoint_resume = bool(payload.pop("checkpoint_resume", False))
+        resume_payload_provided = bool(payload.pop("resume_payload_provided", False))
+        resume_interrupt_id = str(payload.pop("resume_interrupt_id", "") or "")
+        resume_value = payload.get("input")
         checkpoint_ref = self._extract_langgraph_checkpoint_ref(payload)
         native_context = self.build_native_context(payload.get("platform_context"))
-        normalized_payload = self._strip_platform_context_fields(payload)
-
         invoke_payload = dict(payload)
         invoke_payload["session_id"] = session_id
         if history:
@@ -723,7 +855,9 @@ class LangGraphRunner(BaseRunner):
             invoke_payload["resume"] = True
         if is_checkpoint_resume:
             invoke_payload["checkpoint_resume"] = True
-        
+            invoke_payload["resume_payload_provided"] = resume_payload_provided
+            invoke_payload["resume_interrupt_id"] = resume_interrupt_id
+
         config = self._get_config(session_id)
         if is_checkpoint_resume:
             config = self._apply_checkpoint_resume_config(
@@ -733,14 +867,13 @@ class LangGraphRunner(BaseRunner):
             )
 
         if is_checkpoint_resume:
-            state = None
-        elif self._has_prepare_state_hook():
-            state = self._prepare_state_with_hook(payload, session_id, history, is_resume=is_resume)
+            state = resume_value
         elif is_resume:
-            if "input" in normalized_payload and len(normalized_payload) == 1:
-                state = normalized_payload["input"]
-            else:
-                state = normalized_payload
+            # Keep the interrupt value intact for ``Command(resume=...)``;
+            # prepare-state hooks only shape fresh user turns.
+            state = resume_value
+        elif self._has_prepare_state_hook():
+            state = self._prepare_state_with_hook(payload, session_id, history)
         else:
             state = self._to_state(payload, history)
 
@@ -799,6 +932,11 @@ class LangGraphRunner(BaseRunner):
         if is_checkpoint_resume and callable(getattr(self._agent, "astream", None)):
             try:
                 async for chunk in self._stream_checkpoint_resume_updates(
+                    stream_input=self._checkpoint_resume_input(
+                        state,
+                        payload_provided=resume_payload_provided,
+                        interrupt_id=resume_interrupt_id,
+                    ),
                     config=config,
                     context=native_context,
                 ):
@@ -826,9 +964,23 @@ class LangGraphRunner(BaseRunner):
             return
 
         try:
-            stream_input = None if is_checkpoint_resume else (Command(resume=state) if is_resume else state)
+            stream_input = (
+                self._checkpoint_resume_input(
+                    state,
+                    payload_provided=resume_payload_provided,
+                    interrupt_id=resume_interrupt_id,
+                )
+                if is_checkpoint_resume
+                else (Command(resume=state) if is_resume else state)
+            )
+            # stream_mode 含 "custom" 才会产生 on_custom_stream 事件(custom writer);
+            # 保留默认 "values" 以兼容既有 on_chain_end/graph_update 消费。
             stream_kwargs = {"version": "v2", "config": config}
-            if native_context and self._callable_accepts_keyword(self._agent.astream_events, "context"):
+            if self._callable_accepts_keyword(self._agent.astream_events, "stream_mode"):
+                stream_kwargs["stream_mode"] = ["values", "custom"]
+            if native_context and self._callable_accepts_keyword(
+                self._agent.astream_events, "context"
+            ):
                 stream_kwargs["context"] = native_context
             async for event in self._agent.astream_events(stream_input, **stream_kwargs):
                 event_kind = event.get("event", "")
@@ -855,7 +1007,7 @@ class LangGraphRunner(BaseRunner):
                     reasoning = getattr(chunk, "reasoning_content", None)
                     if not reasoning and hasattr(chunk, "additional_kwargs"):
                         reasoning = chunk.additional_kwargs.get("reasoning_content")
-                    
+
                     if reasoning:
                         accumulated_reasoning += reasoning
                         yield {"delta": reasoning, "type": "thinking"}
@@ -865,9 +1017,9 @@ class LangGraphRunner(BaseRunner):
                         content = self._filter_tool_tags(chunk.content)
                         if isinstance(content, str):
                             if accumulated_reasoning and content.startswith(accumulated_reasoning):
-                                content = content[len(accumulated_reasoning):]
+                                content = content[len(accumulated_reasoning) :]
                             elif reasoning and content.startswith(reasoning):
-                                content = content[len(reasoning):]
+                                content = content[len(reasoning) :]
                         if content:
                             for part in inline_reasoning_parser.feed(content):
                                 if not part.text or not part.text.strip():
@@ -888,6 +1040,59 @@ class LangGraphRunner(BaseRunner):
                     if run_key not in stream_usage_run_keys:
                         record_model_usage(event, last_usage or usage)
 
+                elif event_kind == "on_chain_stream":
+                    # node 内 get_stream_writer() 写入的自定义数据,经 stream_mode 含
+                    # "custom" 时,astream_events 包成 on_chain_stream,chunk 为
+                    # (mode, value) tuple:("custom", value) 是 writer 透传内容,
+                    # ("values", state) 是 state 快照(忽略,终态走 on_chain_end)。
+                    # 编排方常用 custom writer 把"调远端 agent/子图"的流式增量透传出来。
+                    chunk = event.get("data", {}).get("chunk")
+                    if not (
+                        isinstance(chunk, tuple) and len(chunk) == 2 and chunk[0] == "custom"
+                    ):
+                        continue
+                    data = chunk[1]
+                    if isinstance(data, str):
+                        accumulated_text += data
+                        yield {"delta": data, "type": "text"}
+                        continue
+                    if isinstance(data, Mapping):
+                        custom_type = str(data.get("type") or "text")
+                        if custom_type in ("tool_call", "tool_result"):
+                            # 结构化工具事件:透传完整 payload(tool_name/tool_args/
+                            # tool_output 等),不计入正文,供 UI 渲染工具卡片。
+                            out = {"type": custom_type}
+                            out.update({k: v for k, v in data.items() if k != "type"})
+                            yield out
+                            continue
+                        custom_delta = ""
+                        for key in ("delta", "text", "content", "output", "data"):
+                            value = data.get(key)
+                            if isinstance(value, str) and value:
+                                custom_delta = value
+                                break
+                        if not custom_delta:
+                            continue
+                        replace = bool(data.get("replace"))
+                        if custom_type == "thinking":
+                            accumulated_reasoning = (
+                                custom_delta
+                                if replace
+                                else accumulated_reasoning + custom_delta
+                            )
+                        else:
+                            accumulated_text = (
+                                custom_delta if replace else accumulated_text + custom_delta
+                            )
+                        out = {"delta": custom_delta, "type": custom_type}
+                        if replace:
+                            out["replace"] = True
+                        yield out
+                        continue
+                    if data is not None:
+                        accumulated_text += str(data)
+                        yield {"delta": str(data), "type": "text"}
+
                 elif event_kind == "on_tool_start":
                     emitted_non_text_event = True
                     yield {
@@ -896,23 +1101,35 @@ class LangGraphRunner(BaseRunner):
                         "tool_args": event.get("data", {}).get("input", {}),
                         "run_id": event.get("run_id"),
                     }
-                
+
                 elif event_kind == "on_tool_end":
                     emitted_non_text_event = True
                     tool_output = event.get("data", {}).get("output", "")
+                    # LangGraph returns a ToolMessage here for normal tools.
+                    # Preserve its content instead of serializing the repr,
+                    # otherwise structured output such as A2UI envelopes becomes
+                    # unparsable. Keep the callback run_id below: it is paired
+                    # with the preceding ``on_tool_start`` event on this stream.
+                    normalized_output = getattr(tool_output, "content", tool_output)
+                    if isinstance(tool_output, Mapping) and "content" in tool_output:
+                        normalized_output = tool_output["content"]
                     yield {
                         "type": "tool_result",
                         "tool_name": event.get("name", "unknown"),
                         "tool_args": event.get("data", {}).get("input", {}),
-                        "tool_output": tool_output if isinstance(tool_output, dict) else (str(tool_output) if tool_output else ""),
+                        "tool_output": normalized_output,
                         "run_id": event.get("run_id"),
                     }
-                    
+
                 elif event_kind == "on_chain_end":
                     output = event.get("data", {}).get("output", {})
                     if isinstance(output, dict) and "__interrupt__" in output:
                         emitted_non_text_event = True
-                        yield {"type": "interrupt", "interrupt_info": output["__interrupt__"], "session_id": session_id}
+                        yield {
+                            "type": "interrupt",
+                            "interrupt_info": output["__interrupt__"],
+                            "session_id": session_id,
+                        }
                         return
                     extracted_output = self._extract_output(output)
                     if extracted_output:
@@ -922,9 +1139,40 @@ class LangGraphRunner(BaseRunner):
 
         except Exception as e:
             if "Interrupt" in type(e).__name__:
-                yield {"type": "interrupt", "interrupt_info": self._get_interrupt_info(self._agent.get_state(config)), "session_id": session_id}
+                yield {
+                    "type": "interrupt",
+                    "interrupt_info": self._get_interrupt_info(self._agent.get_state(config)),
+                    "session_id": session_id,
+                }
                 return
             raise
+
+        # goal-18(ksadk-web 人机交互):图因审批门(HITL)在流式中静默暂停时,
+        # 这里把审批详情(action_requests)作为 approval 事件冒出,供 UI 渲染审批卡。
+        # 此前流式路径只在 checkpoint 标 resumable,UI 拿不到"该批哪个工具/什么参数/允许哪些决定"。
+        # 注:get_state 在部分 agent 上是 async,统一按 awaitable 处理;取不到则跳过,不破坏事件流。
+        pending_approval = None
+        try:
+            _get_state = getattr(self._agent, "aget_state", None) or getattr(
+                self._agent, "get_state", None
+            )
+            if _get_state is not None:
+                _maybe_state = _get_state(config)
+                if inspect.isawaitable(_maybe_state):
+                    _maybe_state = await _maybe_state
+                pending_approval = self._get_interrupt_info(_maybe_state)
+        except Exception:
+            pending_approval = None
+        if pending_approval:
+            yield {
+                "type": "approval",
+                "interrupt_info": pending_approval,
+                "session_id": session_id,
+            }
+            metadata = await self._latest_checkpoint_metadata(config)
+            if metadata:
+                yield {"type": "checkpoint", "metadata": metadata}
+            return
 
         for part in inline_reasoning_parser.flush():
             if not part.text or not part.text.strip():
@@ -940,35 +1188,49 @@ class LangGraphRunner(BaseRunner):
             if final_output_text:
                 final_chunk = {"output": final_output_text, "type": "final"}
                 usage = accumulated_model_usage() or final_output_usage or latest_stream_usage
-                last_usage = latest_model_usage() or final_output_last_usage or latest_stream_usage or usage
+                last_usage = (
+                    latest_model_usage() or final_output_last_usage or latest_stream_usage or usage
+                )
                 if usage:
                     final_chunk["usage"] = usage
                 if last_usage:
                     final_chunk.setdefault("metadata", {})["last_usage"] = last_usage
                 yield final_chunk
             elif not emitted_non_text_event:
-                result = await self.invoke(
-                    {**invoke_payload, "_ksadk_force_graph_invoke": True}
-                )
-                final_chunk = {"output": result.get("output", ""), "type": "final"}
+                result = await self.invoke({**invoke_payload, "_ksadk_force_graph_invoke": True})
+                fallback_chunk: dict[str, Any] = {
+                    "output": result.get("output", ""),
+                    "type": "final",
+                }
                 usage = self._extract_usage(result)
                 if usage:
-                    final_chunk["usage"] = usage
+                    fallback_chunk["usage"] = usage
                 last_usage = self._extract_last_usage(result)
                 if last_usage:
-                    final_chunk.setdefault("metadata", {})["last_usage"] = last_usage
-                yield final_chunk
-                metadata = result.get("metadata") if isinstance(result, dict) else None
-                if isinstance(metadata, dict) and metadata.get("agentengine"):
-                    yield {"type": "checkpoint", "metadata": metadata}
+                    fallback_chunk.setdefault("metadata", {})["last_usage"] = last_usage
+                yield fallback_chunk
+                checkpoint_metadata = result.get("metadata") if isinstance(result, dict) else None
+                if isinstance(checkpoint_metadata, dict) and checkpoint_metadata.get("agentengine"):
+                    yield {"type": "checkpoint", "metadata": checkpoint_metadata}
                     return
         else:
             final_chunk = {"output": accumulated_text, "type": "final"}
             state_usage = await self._latest_state_usage(config)
-            usage = accumulated_model_usage() or state_usage or final_output_usage or latest_stream_usage
+            usage = (
+                accumulated_model_usage()
+                or state_usage
+                or final_output_usage
+                or latest_stream_usage
+            )
             if usage:
                 final_chunk["usage"] = usage
-                last_usage = latest_model_usage() or state_usage or final_output_last_usage or latest_stream_usage or usage
+                last_usage = (
+                    latest_model_usage()
+                    or state_usage
+                    or final_output_last_usage
+                    or latest_stream_usage
+                    or usage
+                )
                 final_chunk.setdefault("metadata", {})["last_usage"] = last_usage
             yield final_chunk
 
@@ -980,6 +1242,6 @@ class LangGraphRunner(BaseRunner):
         """过滤 <tool_call> 标签"""
         if not isinstance(content, str):
             return content
-        content = re.sub(r'<tool_call>.*?</tool_call>', '', content, flags=re.DOTALL)
-        content = re.sub(r'</?(?:tool_call|arg_key|arg_value)>', '', content)
+        content = re.sub(r"<tool_call>.*?</tool_call>", "", content, flags=re.DOTALL)
+        content = re.sub(r"</?(?:tool_call|arg_key|arg_value)>", "", content)
         return content

@@ -1,0 +1,62 @@
+---
+title: "Hosted UI 与事件回放"
+status: "new"
+---
+
+`0.8.0` 候选将 Hosted UI 的 transport、交互展示和运行时审计分开：OpenAI Responses
+保持兼容基线，AG-UI 是可选 transport，A2UI 是结构化 activity 表示，`RuntimeEvent`
+则是唯一持久化和回放边界。这样前端能力演进不会改变模型调用的原始协议。
+
+<Callout type="warning" title="候选状态">
+本文说明的是评审分支中的接口与边界，不代表已发布的 npm/PyPI 版本。真实 hosted 环境仍应验证自身的网关、鉴权、runner、数据库和 provider 凭证。
+</Callout>
+
+## 协议选择
+
+| 层 | 角色 | 不可用时的行为 |
+| --- | --- | --- |
+| OpenAI Responses | 既有 `/v1/responses`、`/v1/chat/completions` 请求/响应语义 | 始终可作为兼容基线 |
+| AG-UI | Hosted UI 与 runtime 的可选流式 transport | capability 未协商时回退到 Responses |
+| A2UI | activity/组件和用户 action 的结构化表示 | 不替换模型、工具或审批 policy |
+| RuntimeEvent v1 | session 内事件、状态、审计和回放的 canonical 记录 | 不接受未知事件类型绕过校验 |
+
+AG-UI/A2UI 不是第二套模型 API。客户端只有在 Hosted bootstrap 表明支持时才选择它；已有
+Responses 客户端可以维持原样。
+
+## 交互状态
+
+审批、表单和其他可操作 activity 的状态必须从已持久化的 RuntimeEvent 投影，而不是仅依赖
+浏览器内存。用户提交 action 时，runtime 需要再次校验 actor、pending 状态、tool receipt
+和 policy；UI 按钮本身不是授权。
+
+刷新后的 UI 应重新载入 session history 并投影 pending interaction。已完成的 approval
+不应再次执行；若有异常，先用 replay 确认事件顺序和最终状态，再检查 runner 的 native
+interrupt/resume 能力。
+
+## 只读 replay
+
+两个命令入口等价：
+
+```bash
+ksadk replay <session-id>
+agentengine replay <session-id> --after-seq-id 120 --before-seq-id 260 --format json
+```
+
+它读取 `RuntimeEventStore` 中的新事件模型，统一 parser 会投影 text、reasoning、tool、artifact
+和 run status；无法归类的已知事件（包括 A2UI/A2A 扩展）保留为有序 extras。`replay` 不会：
+
+- 调用模型 provider。
+- 重跑 tool、MCP、sandbox 或 approval action。
+- 把旧式 `assistant_message` 等 SessionEvent 猜测性转换成 RuntimeEvent。
+
+`--after-seq-id` 为开区间，`--before-seq-id` 为不含上界。先从完整 session 读取，再缩小到
+异常前后的 cursor，可以区分“事件未写入”“事件写入但 UI 未投影”和“action 已被拒绝/消费”。
+
+## 迁移与排障顺序
+
+1. 保持现有 Responses 调用，先确认 session 和 RuntimeEvent 正常持久化。
+2. 读取 Hosted bootstrap capability，只有协商成功才启用 AG-UI/A2UI。
+3. 针对刷新、断线或重复审批，使用 `ksadk replay` 定位 event cursor 与 terminal 状态。
+4. 对 LangGraph/ADK 的 interrupt 或 resume，再验证框架原生 checkpoint 配置；新接入不要依赖旧 LangChain 连续性路径。
+
+更多本地浏览器调试信息见[本地 Web UI](local-web-ui)，会话与 checkpoint 语义见[会话、运行时与文件](../../../references/runtime-sessions-files)。

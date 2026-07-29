@@ -23,11 +23,17 @@ def create_sandbox_backend(
 ) -> SandboxBackend:
     resolved = (backend or os.environ.get("KSADK_SANDBOX_BACKEND") or "e2b").strip().lower()
     if resolved in {"local", "local_process"}:
-        return LocalProcessSandboxBackend(workspace_root=resolve_local_session_dir() / "workspace", backend_name="local_process")
+        return LocalProcessSandboxBackend(
+            workspace_root=resolve_local_session_dir() / "workspace", backend_name="local_process"
+        )
     if resolved in {"pod", "pod_process"}:
         if not bool_env("KSADK_ALLOW_POD_PROCESS_TOOLS", False):
-            raise SandboxError("KSADK_ALLOW_POD_PROCESS_TOOLS=true is required for pod_process backend")
-        return LocalProcessSandboxBackend(workspace_root=resolve_local_session_dir() / "workspace", backend_name="pod_process")
+            raise SandboxError(
+                "KSADK_ALLOW_POD_PROCESS_TOOLS=true is required for pod_process backend"
+            )
+        return LocalProcessSandboxBackend(
+            workspace_root=resolve_local_session_dir() / "workspace", backend_name="pod_process"
+        )
     if resolved != "e2b":
         raise SandboxError(f"Unsupported sandbox backend: {resolved}")
     return E2BSandboxBackend(spec=sandbox_spec_from_env(), sandbox_cls=sandbox_cls)
@@ -39,7 +45,11 @@ def sandbox_spec_from_env() -> SandboxSpec:
         or os.environ.get("KSADK_SKILL_RUNTIME_TEMPLATE_ID")
         or ""
     )
-    timeout = int(os.environ.get("KSADK_SANDBOX_TIMEOUT") or os.environ.get("KSADK_SKILL_RUNTIME_TIMEOUT") or "900")
+    timeout = int(
+        os.environ.get("KSADK_SANDBOX_TIMEOUT")
+        or os.environ.get("KSADK_SKILL_RUNTIME_TIMEOUT")
+        or "900"
+    )
     allow_internet_access = bool_env(
         "KSADK_SANDBOX_ALLOW_INTERNET_ACCESS",
         bool_env("KSADK_SKILL_RUNTIME_ALLOW_INTERNET_ACCESS", True),

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from typing import Any, Awaitable, Callable, Optional, TypeVar
+from typing import Any, Callable, Coroutine, Optional, TypeVar
 
 import click
 from click.core import ParameterSource
@@ -172,7 +172,7 @@ def sanitize_dry_run_request(payload: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def run_async_with_dry_run(
-    coro: Awaitable[_T],
+    coro: Coroutine[Any, Any, _T],
     *,
     dry_run: bool,
     done_message: str = _DEFAULT_DONE_MSG,
@@ -200,7 +200,9 @@ def run_async_with_dry_run(
             )
         elif safe_payload:
             click.echo("=" * 60)
-            click.echo(f"Dry Run Mode: {safe_payload.get('method', 'REQUEST')} {safe_payload.get('url', '')}")
+            method = safe_payload.get("method", "REQUEST")
+            url = safe_payload.get("url", "")
+            click.echo(f"Dry Run Mode: {method} {url}")
             click.echo("=" * 60)
             click.echo(f"Headers: {safe_payload.get('headers')}")
             if safe_payload.get("body") is not None:

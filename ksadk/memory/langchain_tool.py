@@ -31,7 +31,8 @@ def create_langchain_tools():
         return load_memory_tool, save_memory_tool
     except ImportError:
         logger.warning(
-            "langchain-core not installed, returning raw functions. Install with: pip install langchain-core"
+            "langchain-core not installed, returning raw functions. "
+            "Install with: pip install langchain-core"
         )
         return _load_memory, _save_memory
 

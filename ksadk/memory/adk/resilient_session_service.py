@@ -4,15 +4,14 @@ import asyncio
 import logging
 from typing import Any, Optional
 
-from google.adk.events.event import Event
-from google.adk.sessions import InMemorySessionService
-from google.adk.sessions.base_session_service import (
+from ksadk.compat.adk_compat import (
     BaseSessionService,
+    Event,
     GetSessionConfig,
+    InMemorySessionService,
     ListSessionsResponse,
+    Session,
 )
-from google.adk.sessions.session import Session
-
 from ksadk.sessions.resilience import is_session_backend_failure
 
 logger = logging.getLogger(__name__)

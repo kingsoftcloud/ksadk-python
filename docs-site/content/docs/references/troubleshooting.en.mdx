@@ -4,6 +4,30 @@ title: Troubleshooting
 
 This page covers common local setup and runtime issues.
 
+## `ksadk` Or `a2a` Fails After An Upgrade
+
+Upgrade KsADK in the same Python environment that runs the command. Use an
+isolated environment per project:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade "ksadk[all]"
+python -m pip show ksadk a2a-sdk
+ksadk --help
+```
+
+`python -m pip` must refer to the same interpreter that will run `ksadk`.
+Calling a different `pip` can install the new dependency into another
+environment. An editable source installation also needs the install command
+again after its dependency metadata changes.
+
+KsADK 0.8 pins `a2a-sdk==1.1.0` for its A2A implementation. Projects that
+still pin A2A 0.3, including some VEADK releases, cannot share that virtual
+environment; create separate environments instead. With an incompatible
+optional SDK, `ksadk --help` remains available and `ksadk a2a` reports the
+specific loading error.
+
 ## `agentengine` Command Not Found
 
 Confirm the virtual environment is active and the package is installed:

@@ -8,8 +8,16 @@ from pathlib import Path
 from ksadk.sandbox.base import SandboxCommandResult, SandboxInputFile, SandboxSession
 
 
+def _coerce_output(value: str | bytes | None) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value or ""
+
+
 class LocalProcessSandboxSession:
-    def __init__(self, *, session_id: str, workspace_root: Path, backend_name: str = "local_process"):
+    def __init__(
+        self, *, session_id: str, workspace_root: Path, backend_name: str = "local_process"
+    ):
         self._session_id = session_id
         self._workspace_root = workspace_root.expanduser().resolve()
         self._workspace_root.mkdir(parents=True, exist_ok=True)
@@ -67,8 +75,8 @@ class LocalProcessSandboxSession:
                 pass
             stdout, stderr = process.communicate()
             return SandboxCommandResult(
-                stdout=stdout or exc.stdout or "",
-                stderr=(stderr or exc.stderr or "") + "\ncommand timed out",
+                stdout=_coerce_output(stdout or exc.stdout),
+                stderr=_coerce_output(stderr or exc.stderr) + "\ncommand timed out",
                 exit_code=124,
             )
 

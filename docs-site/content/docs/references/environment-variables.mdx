@@ -37,6 +37,19 @@ OPENAI_BASE_URL=https://api.example.com/v1
 OPENAI_MODEL_NAME=my-model
 ```
 
+## Codex 与模型代理
+
+| 变量 | 用途 |
+| --- | --- |
+| `KSADK_CODEX_USE_PROXY` | `1` 强制启用 Codex 本地协议代理，`0` 强制直连；未设置时只对自定义上游做保守探测 |
+| `KSADK_PROXY_UPSTREAM_BASE` | Codex proxy 上游 URL 覆盖，默认读取 OpenAI 兼容 base URL |
+| `KSADK_PROXY_UPSTREAM_KEY` | Codex proxy 上游凭据覆盖（敏感） |
+| `KSADK_PROXY_TOKEN` | 本地回环 proxy 与 Codex 子进程之间的 bearer token（敏感，通常由 SDK 生成） |
+| `KSADK_MODEL_PROXY_ENABLED` | 启用实验性模型协议转换层，默认 `0` |
+| `KSADK_MODEL_PROXY_AGENTS` | 逗号分隔的 agent allowlist |
+| `KSADK_MODEL_PROXY_MODELS` | 逗号分隔的 model allowlist |
+| `KSADK_MODEL_PROXY_DENY` | 逗号分隔的 denylist，用于紧急关闭代理 |
+
 ## 统一模型策略与 fallback（0.6.6+）
 
 托管部署中，平台可以通过 `AGENTENGINE_MODEL_POLICY_JSON` 注入统一模型策略，Hermes、OpenClaw 和通用 Agent 共用同一套默认语义。0.6.6 默认策略 v1 使用 `glm-5.2` 作为主模型、`kimi-k2.7-code` 作为多模态模型、`deepseek-v4-pro` 作为 fallback；显式请求参数或显式环境变量（如 `HERMES_DEFAULT_MODEL` / `OPENCLAW_FALLBACK_MODEL`）仍优先于策略默认值。
@@ -261,7 +274,7 @@ KSADK_MCP_SERVERS='[{"name":"docs","url":"http://127.0.0.1:9000/mcp"}]'
 
 | 变量 | 用途 |
 | --- | --- |
-| `KSADK_WEB_VERSION` | `make sync-ksadk-web-static` 使用的 `@kingsoftcloud/ksadk-web` npm dist-tag 或版本，默认 `latest` |
+| `KSADK_WEB_VERSION` | `make sync-ksadk-web-static` 使用的已发布 `@kingsoftcloud/ksadk-web` npm 版本，0.8.0 默认 `0.3.0`；wheel 构建前必须先发布并验证新版本 |
 | `KSADK_WEB_PACKAGE` | 本地 UI static 同步使用的 npm 包名，默认 `@kingsoftcloud/ksadk-web` |
 | `KSADK_WEB_TARBALL_NAME` | 设置 `KSADK_WEB_RELEASE_URL` 时作为下载保存文件名；npm pack 模式使用 npm 返回的真实 tarball 文件名 |
 | `KSADK_WEB_RELEASE_URL` | 可选兜底；设置后跳过 npm pack，改从该 tarball URL 下载 |

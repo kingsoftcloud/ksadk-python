@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager, redirect_stderr, redirect_stdout
-from dataclasses import dataclass
 import io
 import json
 import os
 import sys
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
+from dataclasses import dataclass
 from typing import Iterator
 
 import click
@@ -303,7 +303,9 @@ def no_color_option(*, hidden: bool = False, expose_value: bool = False):
     )
 
 
-def build_no_color_click_option(*, hidden: bool = False, expose_value: bool = False) -> click.Option:
+def build_no_color_click_option(
+    *, hidden: bool = False, expose_value: bool = False
+) -> click.Option:
     """Build a shared no-color option for command injection."""
     return click.Option(
         ["--no-color", "no_color"],

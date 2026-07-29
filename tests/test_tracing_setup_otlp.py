@@ -5,6 +5,8 @@ import sys
 import types
 
 import pytest
+from opentelemetry.sdk.trace import ReadableSpan
+from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
 
 
 @pytest.fixture(autouse=True)
@@ -72,7 +74,7 @@ class _FakeBatchSpanProcessor:
 
 
 class _FakeHttpOTLPSpanExporter:
-    instances = []
+    instances: list["_FakeHttpOTLPSpanExporter"] = []
 
     def __init__(self, *, endpoint, headers=None, **kwargs):
         self.endpoint = endpoint
@@ -112,14 +114,19 @@ def _install_fake_otel(monkeypatch):
     monkeypatch.setitem(
         sys.modules,
         "opentelemetry.sdk.trace",
-        types.SimpleNamespace(TracerProvider=_FakeTracerProvider),
+        types.SimpleNamespace(
+            ReadableSpan=ReadableSpan,
+            TracerProvider=_FakeTracerProvider,
+        ),
     )
     monkeypatch.setitem(
         sys.modules,
         "opentelemetry.sdk.trace.export",
         types.SimpleNamespace(
-            SimpleSpanProcessor=_FakeSimpleSpanProcessor,
             BatchSpanProcessor=_FakeBatchSpanProcessor,
+            SimpleSpanProcessor=_FakeSimpleSpanProcessor,
+            SpanExporter=SpanExporter,
+            SpanExportResult=SpanExportResult,
         ),
     )
     monkeypatch.setitem(
@@ -260,7 +267,9 @@ def test_generic_otlp_langfuse_endpoint_adds_auth_from_langfuse_env(monkeypatch)
         "x-langfuse-ingestion-version": "4",
     }
     assert len(trace_api.provider.processors) == 1
-    assert trace_api.provider.processors[0].exporter._span_transform is setup._prepare_langfuse_spans
+    assert (
+        trace_api.provider.processors[0].exporter._span_transform is setup._prepare_langfuse_spans
+    )
 
 
 def test_generic_otlp_langfuse_endpoint_keeps_existing_authorization(monkeypatch):
@@ -294,7 +303,9 @@ def test_generic_otlp_langfuse_endpoint_keeps_existing_authorization(monkeypatch
 
 def test_otlp_authorization_header_accepts_plus_between_scheme_and_value(monkeypatch):
     _install_fake_otel(monkeypatch)
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "https://collector.example.com/v1/traces")
+    monkeypatch.setenv(
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "https://collector.example.com/v1/traces"
+    )
     monkeypatch.setenv(
         "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
         "Authorization=Basic+cGs6c2s=,x-langfuse-ingestion-version=4",
@@ -456,7 +467,10 @@ def test_cloud_monitor_langfuse_sdk_config_keeps_otlp_by_default(monkeypatch, ca
     )
 
     assert len(_FakeHttpOTLPSpanExporter.instances) == 1
-    assert _FakeHttpOTLPSpanExporter.instances[0].endpoint == "https://cn-beijing-6.otlp.ksyun.com:4318/v1/traces"
+    assert (
+        _FakeHttpOTLPSpanExporter.instances[0].endpoint
+        == "https://cn-beijing-6.otlp.ksyun.com:4318/v1/traces"
+    )
     assert len(trace_api.provider.processors) == 1
     assert "CloudMonitor OTLP exporter enabled" in caplog.text
 
@@ -505,7 +519,10 @@ def test_cloud_monitor_otlp_can_be_forced_with_langfuse_sdk_config(monkeypatch):
     )
 
     assert len(_FakeHttpOTLPSpanExporter.instances) == 1
-    assert _FakeHttpOTLPSpanExporter.instances[0].endpoint == "https://cn-beijing-6.otlp.ksyun.com:4318/v1/traces"
+    assert (
+        _FakeHttpOTLPSpanExporter.instances[0].endpoint
+        == "https://cn-beijing-6.otlp.ksyun.com:4318/v1/traces"
+    )
 
 
 def test_cloud_monitor_exporter_logs_export_result(monkeypatch, caplog):
@@ -726,6 +743,5 @@ def test_langfuse_callback_only_skips_generic_otlp_to_same_langfuse_host(monkeyp
     assert _FakeHttpOTLPSpanExporter.instances == []
     assert trace_api.provider.processors == []
     assert (
-        "Generic OTLP HTTP exporter skipped because LANGFUSE_USE_CALLBACK is enabled"
-        in caplog.text
+        "Generic OTLP HTTP exporter skipped because LANGFUSE_USE_CALLBACK is enabled" in caplog.text
     )

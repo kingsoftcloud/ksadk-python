@@ -4,15 +4,17 @@ agentengine status - 查看 Agent 运行状态和 Endpoint
 支持 watch 模式实时刷新
 """
 
-import click
 import asyncio
 import time
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 from typing import Sequence
+
+import click
+
 from ksadk.api.client import DryRunExit
 from ksadk.cli.agent_ref import merge_agent_inputs, resolve_agent_ref
-from ksadk.cli.dry_run import dry_run_option, run_async_with_dry_run, effective_dry_run
+from ksadk.cli.dry_run import dry_run_option, effective_dry_run, run_async_with_dry_run
 from ksadk.cli.error_utils import print_exception, resolution_error, usage_error
 from ksadk.cli.resource_common import (
     CONTEXT_SETTINGS,
@@ -24,14 +26,10 @@ from ksadk.cli.resource_common import (
 from ksadk.cli.ui import (
     get_console,
     is_json_output,
-    print_error,
     print_info,
-    print_kv,
-    print_title,
-    print_warn,
+    replica_rich_style,
     status_click_color,
     status_rich_style,
-    replica_rich_style,
     summary_panel,
 )
 
@@ -55,7 +53,9 @@ AGENT_LIST_HIDDEN_FRAMEWORK_LABELS = {
 @click.option("--watch", "-w", is_flag=True, help="Watch 模式，持续刷新")
 @click.option("--interval", "-i", default=2, help="Watch 刷新间隔 (秒)")
 @click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="区域")
-@click.option("--account-id", envvar="KSYUN_ACCOUNT_ID", help="金山云账号 ID（可选；未设置时从 AK/SK 反查）")
+@click.option(
+    "--account-id", envvar="KSYUN_ACCOUNT_ID", help="金山云账号 ID（可选；未设置时从 AK/SK 反查）"
+)
 @dry_run_option()
 def status(
     agent_ref: str,
@@ -125,9 +125,12 @@ def run_status_command(
         if not resolved:
             raise resolution_error(
                 "请指定 Agent（--agent 或位置参数），或在当前目录提供可解析的本地配置",
-                hints=["自动解析顺序: .agentengine.state -> agentengine.yaml/ksadk.yaml", "请先执行 `agentengine agent list`。"],
+                hints=[
+                    "自动解析顺序: .agentengine.state -> agentengine.yaml/ksadk.yaml",
+                    "请先执行 `agentengine agent list`。",
+                ],
             )
-        agent = resolved.value
+        agent = str(resolved.value)
         if resolved.source != "cli":
             print_info(f"未显式指定 Agent，使用 {resolved.source_text}: {agent}")
 
@@ -136,23 +139,34 @@ def run_status_command(
     if watch and dry_run:
         raise usage_error("Watch 模式不支持 dry-run，请去掉 --watch 或取消 dry-run。")
     if watch and is_json_output():
-        raise usage_error("Watch 模式不支持 `--output json`。", hints=["请去掉 `--watch` 或改用 `agentengine agent status --output json`。"])
+        raise usage_error(
+            "Watch 模式不支持 `--output json`。",
+            hints=["请去掉 `--watch` 或改用 `agentengine agent status --output json`。"],
+        )
 
     # Dry Run 模式由 AgentEngineClient 处理
     # 只要传入 dry_run=True，底层 client 会抛出 DryRunExit 异常
 
+    resolved_account_id = account_id or ""
     if show_all:
         run_async_with_dry_run(
-            _list_all_agents(region, account_id, dry_run, page=page, size=size, framework=framework),
+            _list_all_agents(
+                region,
+                resolved_account_id,
+                dry_run,
+                page=page,
+                size=size,
+                framework=framework,
+            ),
             dry_run=dry_run,
             dry_run_resource="agent",
             dry_run_action="list",
         )
     elif watch:
-        _watch_status(agent, region, account_id, interval)
+        _watch_status(str(agent), region, resolved_account_id, interval)
     else:
         run_async_with_dry_run(
-            _show_agent_status(agent, region, account_id, dry_run),
+            _show_agent_status(str(agent), region, resolved_account_id, dry_run),
             dry_run=dry_run,
             dry_run_resource="agent",
             dry_run_action="status",
@@ -170,7 +184,7 @@ def _watch_status(agent: str, region: str, account_id: str, interval: int):
             click.clear()
 
             # 显示标题
-            click.secho(f"Agent Status Monitor", fg="blue", bold=True)
+            click.secho("Agent Status Monitor", fg="blue", bold=True)
             click.echo(f"   Agent: {agent}")
             click.echo(f"   Region: {region}")
             click.echo(f"   更新时间: {datetime.now().strftime('%H:%M:%S')}")
@@ -205,7 +219,9 @@ async def _show_agent_status(
         # 先按 ID 查询，失败后再按名称查询，避免依赖字符串前缀判断。
         result = await _get_agent_runtime(agent, region, account_id, dry_run, is_name=False)
         if result.get("status") == "Error":
-            result_by_name = await _get_agent_runtime(agent, region, account_id, dry_run, is_name=True)
+            result_by_name = await _get_agent_runtime(
+                agent, region, account_id, dry_run, is_name=True
+            )
             if result_by_name.get("status") != "Error":
                 result = result_by_name
 
@@ -219,14 +235,14 @@ async def _show_agent_status(
     langfuse_url = result.get("langfuseTraceUrl")
     from dateutil import parser
 
-    created_at = result.get('createdAt')
+    created_at = result.get("createdAt")
     if created_at:
         dt = parser.parse(created_at)
         created_at = dt.astimezone().isoformat()
     else:
         created_at = "-"
 
-    updated_at = result.get('updatedAt')
+    updated_at = result.get("updatedAt")
     if updated_at:
         dt = parser.parse(updated_at)
         updated_at = dt.astimezone().isoformat()
@@ -378,8 +394,8 @@ async def _list_all_agents(
     rows = []
     items = []
     for r in results:
-        agent_id = (r.get("agentRuntimeId") or "N/A")
-        name = (r.get("agentRuntimeName") or "N/A")
+        agent_id = r.get("agentRuntimeId") or "N/A"
+        name = r.get("agentRuntimeName") or "N/A"
         status_val = r.get("status", "Unknown")
         ready = int(r.get("readyReplicas", 0) or 0)
         replicas = int(r.get("replicas", 0) or 0)
@@ -419,8 +435,20 @@ async def _list_all_agents(
         columns=(
             {"header": "ID", "key": "id", "style": "#58a6ff", "no_wrap": True, "min_width": 24},
             {"header": "名称", "key": "name", "style": "#c9d1d9", "min_width": 20},
-            {"header": "状态", "key": "status", "no_wrap": True, "justify": "center", "min_width": 10},
-            {"header": "副本", "key": "replicas_display", "no_wrap": True, "justify": "center", "min_width": 8},
+            {
+                "header": "状态",
+                "key": "status",
+                "no_wrap": True,
+                "justify": "center",
+                "min_width": 10,
+            },
+            {
+                "header": "副本",
+                "key": "replicas_display",
+                "no_wrap": True,
+                "justify": "center",
+                "min_width": 8,
+            },
             {"header": "Endpoint", "key": "endpoint", "style": "#8b949e", "overflow": "ellipsis"},
         ),
         rows=rows,
@@ -446,7 +474,9 @@ async def _list_all_agents(
         ],
     )
     if not is_json_output():
-        console.print(summary_panel(total=len(results), healthy=running, attention=unhealthy, noun="Agent"))
+        console.print(
+            summary_panel(total=len(results), healthy=running, attention=unhealthy, noun="Agent")
+        )
 
 
 def _get_status_color(status: str) -> str:
@@ -454,19 +484,24 @@ def _get_status_color(status: str) -> str:
     return status_click_color(status)
 
 
-async def _get_agent_runtime(agent: str, region: str, account_id: str, dry_run: bool = False, is_name: bool = False) -> dict:
+async def _get_agent_runtime(
+    agent: str, region: str, account_id: str, dry_run: bool = False, is_name: bool = False
+) -> dict:
     """获取 Agent 运行时状态
 
     调用 AgentEngine Server API
     """
     from ksadk.api import AgentEngineClient
+
     try:
         extra_headers = {}
         # 传递 Account ID
         if account_id:
             extra_headers["X-Ksc-Account-Id"] = account_id
 
-        async with AgentEngineClient(region=region, dry_run=dry_run, extra_headers=extra_headers) as client:
+        async with AgentEngineClient(
+            region=region, dry_run=dry_run, extra_headers=extra_headers
+        ) as client:
             if is_name:
                 response = await client.get_agent(name=agent)
             else:
@@ -484,10 +519,21 @@ async def _get_agent_runtime(agent: str, region: str, account_id: str, dry_run: 
                 "description": basic.get("description", "") or response.get("description", ""),
                 "status": basic.get("status", "") or response.get("status", "Unknown"),
                 "phase": basic.get("phase", "") or response.get("phase", ""),
-                "replicas": basic.get("replicas") if basic.get("replicas") is not None else response.get("replicas", deploy.get("scaling", {}).get("min_replicas", 1)),
-                "readyReplicas": basic.get("ready_replicas") if basic.get("ready_replicas") is not None else response.get("ready_replicas", 0),
-                "endpoint": quick.get("public_endpoint") or quick.get("private_endpoint") or response.get("endpoint", ""),
-                "langfuseTraceUrl": adv.get("observability_url", "") or response.get("langfuse_trace_url", ""),
+                "replicas": (
+                    basic.get("replicas")
+                    if basic.get("replicas") is not None
+                    else response.get("replicas", deploy.get("scaling", {}).get("min_replicas", 1))
+                ),
+                "readyReplicas": (
+                    basic.get("ready_replicas")
+                    if basic.get("ready_replicas") is not None
+                    else response.get("ready_replicas", 0)
+                ),
+                "endpoint": quick.get("public_endpoint")
+                or quick.get("private_endpoint")
+                or response.get("endpoint", ""),
+                "langfuseTraceUrl": adv.get("observability_url", "")
+                or response.get("langfuse_trace_url", ""),
                 "createdAt": basic.get("created_at", "") or response.get("created_at", ""),
                 "updatedAt": basic.get("updated_at", "") or response.get("updated_at", ""),
                 "message": basic.get("message", "") or response.get("message", ""),
@@ -517,13 +563,16 @@ async def _list_agent_runtimes(
     调用 AgentEngine Server API
     """
     from ksadk.api import AgentEngineClient
+
     try:
         extra_headers = {}
         # 传递 Account ID
         if account_id:
             extra_headers["X-Ksc-Account-Id"] = account_id
 
-        async with AgentEngineClient(region=region, dry_run=dry_run, extra_headers=extra_headers) as client:
+        async with AgentEngineClient(
+            region=region, dry_run=dry_run, extra_headers=extra_headers
+        ) as client:
             response = await client.list_agents(
                 region=region,
                 framework=framework,

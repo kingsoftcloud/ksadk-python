@@ -11,7 +11,11 @@ from ksadk.conversations.compaction_prompt import (
     build_compaction_prompt_messages,
     extract_summary_text,
 )
-from ksadk.conversations.context import canonical_event_type, extract_event_text, summarize_event_groups
+from ksadk.conversations.context import (
+    canonical_event_type,
+    extract_event_text,
+    summarize_event_groups,
+)
 from ksadk.sessions.base import SessionEvent
 
 SUMMARY_VERSION = "v1"
@@ -25,7 +29,8 @@ SUMMARY_PREFIX = "Earlier conversation summary:"
 # 已知局限(有意取舍,对齐 Claude Code 行为):
 # - 默认 0(opt-in),避免 transient 失败永久禁用 semantic;用户显式设 N>0 才启用。
 # - 打开后无 half-open 探测,需进程重启或显式 _reset_semantic_failures 恢复(CC 同样如此)。
-# - 计数为模块级全局,跨 session/model 共享;per-model key 化留作 follow-up(对齐 governance per-session 范式)。
+# - 计数为模块级全局,跨 session/model 共享。
+# - per-model key 化留作 follow-up(对齐 governance per-session 范式)。
 _semantic_summary_failures: int = 0
 
 
@@ -118,7 +123,9 @@ class SummaryModelClient:
         }
         timeout_seconds = max(1.0, float(timeout_ms) / 1000.0)
         async with httpx.AsyncClient(timeout=timeout_seconds) as client:
-            response = await client.post(self._chat_completions_url(), headers=headers, json=payload)
+            response = await client.post(
+                self._chat_completions_url(), headers=headers, json=payload
+            )
             response.raise_for_status()
             data = response.json()
 
@@ -280,7 +287,9 @@ def _build_semantic_input(
     if len(selected_groups) > max_groups:
         skipped_groups = selected_groups[:-max_groups]
         selected_groups = selected_groups[-max_groups:]
-        skipped_summary = summarize_event_groups(skipped_groups, previous_summary=merged_previous_summary)
+        skipped_summary = summarize_event_groups(
+            skipped_groups, previous_summary=merged_previous_summary
+        )
         merged_previous_summary = skipped_summary
     return merged_previous_summary, selected_groups
 
@@ -295,7 +304,10 @@ async def summarize_compaction(
 ) -> CompactionSummaryResult:
     """语义摘要优先，失败后自动回退到 extractive。"""
 
-    fallback_summary = summarize_event_groups(list(groups_to_compact), previous_summary=previous_summary)
+    fallback_summary = summarize_event_groups(
+        [list(group) for group in groups_to_compact],
+        previous_summary=previous_summary,
+    )
     if semantic_compaction_disabled():
         return CompactionSummaryResult(
             summary_text=fallback_summary,

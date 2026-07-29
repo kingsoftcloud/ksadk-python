@@ -1,19 +1,28 @@
 from __future__ import annotations
 
-import os
 import hashlib
 import json
+import os
 import shlex
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
 
+from ksadk.runtime_context import get_current_invocation_context
+
 
 @dataclass(frozen=True)
 class ToolPolicy:
     risk_level: str = "low"
     side_effects: Sequence[str] = field(default_factory=tuple)
+    # Approval scopes classify operations which might need an interactive
+    # decision. ``public_network`` is intentionally a read-only exception:
+    # web discovery must remain available in every approval profile.
+    approval_scopes: Sequence[str] = field(default_factory=tuple)
+    # Use only for tools whose operation is inherently safe to run without a
+    # human decision. This wins over a risk level or explicit legacy policy.
+    approval_exempt: bool = False
     requires_approval: bool | None = None
 
 
@@ -50,8 +59,9 @@ class ToolGateway:
 
     @staticmethod
     def _approval_mode() -> str:
-        value = os.environ.get("KSADK_TOOL_APPROVAL_MODE", "").strip().lower()
-        return value or "off"
+        context = get_current_invocation_context()
+        requested_mode = context.tool_approval_mode if context is not None else None
+        return normalize_tool_approval_mode(requested_mode)
 
     @staticmethod
     def _is_approved(approval: Mapping[str, Any] | None) -> bool:
@@ -108,24 +118,76 @@ def tool_policy_requires_approval(
     *,
     approval_mode: str | None = None,
 ) -> bool:
-    mode = (approval_mode or os.environ.get("KSADK_TOOL_APPROVAL_MODE", "")).strip().lower() or "off"
-    if policy.requires_approval is not None:
-        return policy.requires_approval and mode != "off"
-    if mode != "strict":
+    mode = normalize_tool_approval_mode(approval_mode)
+    if policy.approval_exempt or _is_read_only_public_network_policy(policy):
         return False
+    if policy.requires_approval is not None:
+        return policy.requires_approval and mode != "full"
+    if mode == "full":
+        return False
+    if mode == "ask" and policy.approval_scopes:
+        return True
     return policy.risk_level.lower() in {"medium", "high", "critical"}
+
+
+def _is_read_only_public_network_policy(policy: ToolPolicy) -> bool:
+    """Keep public web reads available even under the most cautious profile.
+
+    A network write must declare a side effect, so it does not match this
+    exemption and can still require approval.
+    """
+    return bool(policy.approval_scopes) and set(policy.approval_scopes) <= {
+        "public_network"
+    } and not policy.side_effects
+
+
+def normalize_tool_approval_mode(value: str | None = None) -> str:
+    """Resolve the compact runtime approval profile.
+
+    ``ask`` confirms risky and non-network scoped operations; ``risk``
+    confirms medium-and-higher risk only; ``full`` leaves default policies
+    unprompted. Public web reads remain approval-free in every profile. The
+    process environment remains a default for non-UI callers, while a
+    request-scoped mode wins for the duration of that invocation.
+    """
+    raw = str(value or os.environ.get("KSADK_TOOL_APPROVAL_MODE", "risk")).strip().lower()
+    return raw if raw in {"ask", "risk", "full"} else "risk"
+
+
+def tool_approval_capability() -> dict[str, Any]:
+    """Describe the single profile interface exposed to hosted UIs."""
+    return {
+        "Modes": ["ask", "risk", "full"],
+        "DefaultMode": normalize_tool_approval_mode(),
+        "RuntimeOverride": True,
+    }
 
 
 def check_command_policy(command: str) -> dict[str, Any]:
     text = str(command or "").strip()
     if not text:
-        return {"ok": False, "decision": "reject", "error_type": "command_required", "error_message": "command is required"}
+        return {
+            "ok": False,
+            "decision": "reject",
+            "error_type": "command_required",
+            "error_message": "command is required",
+        }
     try:
         tokens = shlex.split(text)
     except ValueError as exc:
-        return {"ok": False, "decision": "reject", "error_type": "invalid_command", "error_message": str(exc)}
+        return {
+            "ok": False,
+            "decision": "reject",
+            "error_type": "invalid_command",
+            "error_message": str(exc),
+        }
     if not tokens:
-        return {"ok": False, "decision": "reject", "error_type": "command_required", "error_message": "command is required"}
+        return {
+            "ok": False,
+            "decision": "reject",
+            "error_type": "command_required",
+            "error_message": "command is required",
+        }
     if _contains_recursive_rm(tokens):
         return _command_rejected("recursive rm is not allowed without explicit approval")
     if any(token in _DANGEROUS_COMMAND_TOKENS for token in tokens):
@@ -137,12 +199,19 @@ def check_command_policy(command: str) -> dict[str, Any]:
         if subcommand in _DANGEROUS_GIT_COMMANDS:
             return _command_rejected(f"git {subcommand} is not allowed without explicit approval")
     if _references_metadata_endpoint(tokens):
-        return _command_rejected("metadata/private endpoint access is not allowed by default policy")
+        return _command_rejected(
+            "metadata/private endpoint access is not allowed by default policy"
+        )
     return {"ok": True, "decision": "allow", "reason": "default_allow"}
 
 
 def _command_rejected(message: str) -> dict[str, Any]:
-    return {"ok": False, "decision": "reject", "error_type": "command_rejected", "error_message": message}
+    return {
+        "ok": False,
+        "decision": "reject",
+        "error_type": "command_rejected",
+        "error_message": message,
+    }
 
 
 def _contains_recursive_rm(tokens: Sequence[str]) -> bool:
@@ -162,7 +231,9 @@ def _references_metadata_endpoint(tokens: Sequence[str]) -> bool:
 
 def _canonical_tool_args(tool_args: Any) -> str:
     try:
-        return json.dumps(tool_args or {}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return json.dumps(
+            tool_args or {}, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
     except TypeError:
         return json.dumps(str(tool_args), ensure_ascii=False, separators=(",", ":"))
 
@@ -185,7 +256,9 @@ def build_tool_receipt_idempotency_key(
         "tool_args": _canonical_tool_args(tool_args),
     }
     digest = hashlib.sha256(
-        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
     ).hexdigest()
     return f"tool_receipt:{digest}"
 
@@ -222,8 +295,12 @@ def approval_interrupt_info_from_result(
             or {}
         ),
         "risk_level": str(approval_request.get("risk_level") or result.get("risk_level") or ""),
-        "side_effects": list(approval_request.get("side_effects") or result.get("side_effects") or []),
-        "server_label": str(approval_request.get("server_label") or result.get("server_label") or "ksadk"),
+        "side_effects": list(
+            approval_request.get("side_effects") or result.get("side_effects") or []
+        ),
+        "server_label": str(
+            approval_request.get("server_label") or result.get("server_label") or "ksadk"
+        ),
     }
     if run_id:
         interrupt["run_id"] = str(run_id)
