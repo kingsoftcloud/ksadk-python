@@ -624,17 +624,17 @@ def _fix_nested_imports(file_path: Path, subdirs: list[str]) -> bool:
 
 
 def _generate_env_content(global_env: dict) -> str:
-    """生成 .env 文件内容"""
-    api_key = global_env.get("OPENAI_API_KEY", "")
+    """Generate project-local configuration without copying credentials.
+
+    ``init`` may read a global profile to retain non-secret endpoint defaults, but
+    it must not persist the caller's credentials in a newly created directory.
+    """
     base_url = global_env.get("OPENAI_BASE_URL", "")
     model_name = global_env.get("OPENAI_MODEL_NAME", "")
-    ks_ak = global_env.get("KSYUN_ACCESS_KEY", "")
-    ks_sk = global_env.get("KSYUN_SECRET_KEY", "")
     ks_region = global_env.get("KSYUN_REGION", "cn-beijing-6")
-    ks_account = global_env.get("KSYUN_ACCOUNT_ID", "")
 
-    env_content = f"""# 模型配置
-OPENAI_API_KEY={api_key}
+    env_content = """# 模型配置
+# OPENAI_API_KEY=
 """
     if base_url:
         env_content += f"OPENAI_BASE_URL={base_url}\n"
@@ -648,19 +648,10 @@ OPENAI_API_KEY={api_key}
     env_content += """
 # 金山云配置
 """
-    if ks_ak:
-        env_content += f"KSYUN_ACCESS_KEY={ks_ak}\n"
-    else:
-        env_content += "# KSYUN_ACCESS_KEY=\n"
-    if ks_sk:
-        env_content += f"KSYUN_SECRET_KEY={ks_sk}\n"
-    else:
-        env_content += "# KSYUN_SECRET_KEY=\n"
+    env_content += "# KSYUN_ACCESS_KEY=\n"
+    env_content += "# KSYUN_SECRET_KEY=\n"
     env_content += f"KSYUN_REGION={ks_region}\n"
-    if ks_account:
-        env_content += f"KSYUN_ACCOUNT_ID={ks_account}\n"
-    else:
-        env_content += "# KSYUN_ACCOUNT_ID=\n"
+    env_content += "# KSYUN_ACCOUNT_ID=\n"
 
     return env_content
 
@@ -674,12 +665,11 @@ def _generate_codex_env_content(global_env: dict) -> str:
     optional proxy knobs are documented rather than copied from the global profile,
     because their upstream key can be different from the model key.
     """
-    api_key = global_env.get("OPENAI_API_KEY", "")
     base_url = global_env.get("OPENAI_BASE_URL", "")
     model_name = global_env.get("OPENAI_MODEL_NAME", "")
     lines = [
         "# 本地 Codex 模型配置（仅用于 ksadk web，不会进入 ManagedRuntime bundle）",
-        f"OPENAI_API_KEY={api_key}",
+        "# OPENAI_API_KEY=",
         f"OPENAI_BASE_URL={base_url}" if base_url else "# OPENAI_BASE_URL=",
         f"OPENAI_MODEL_NAME={model_name}" if model_name else "# OPENAI_MODEL_NAME=glm-5.2",
         "",
@@ -1208,7 +1198,7 @@ def _wrap_agent_file(from_agent_path: Path, project_name: str, framework: str, a
     if global_config_exists():
         global_env = get_env_from_global_config()
         if global_env:
-            print_info("检测到全局配置，已自动填充凭证")
+            print_info("检测到全局配置；项目 .env 仅保留非敏感默认值，凭证不会被复制")
 
     # 生成 .env
     (project_path / ".env").write_text(_generate_env_content(global_env), encoding="utf-8-sig")
@@ -1385,7 +1375,7 @@ def _wrap_agent_directory(
     if global_config_exists():
         global_env = get_env_from_global_config()
         if global_env:
-            print_info("检测到全局配置，已自动填充凭证")
+            print_info("检测到全局配置；项目 .env 仅保留非敏感默认值，凭证不会被复制")
 
     # 生成 .env
     (project_path / ".env").write_text(_generate_env_content(global_env), encoding="utf-8-sig")
@@ -1808,35 +1798,27 @@ def create(project_name: str, framework: str, from_agent_path: str):
     if global_config_exists():
         global_env = get_env_from_global_config()
         if global_env:
-            print_info("检测到全局配置，已自动填充凭证")
+            print_info("检测到全局配置；项目 .env 仅保留非敏感默认值，凭证不会被复制")
 
     # .env - 生成配置文件
-    # 如果有全局配置，使用全局配置的值；否则使用占位符
-    # 如果有全局配置，使用全局配置的值；否则使用空字符串
-    api_key = global_env.get("OPENAI_API_KEY", "")
+    # 仅继承非敏感的 endpoint/model/region 默认值；绝不复制凭证。
     base_url = global_env.get("OPENAI_BASE_URL", "")
     model_name = global_env.get("OPENAI_MODEL_NAME", "")
 
-    ks_ak = global_env.get("KSYUN_ACCESS_KEY", "")
-    ks_sk = global_env.get("KSYUN_SECRET_KEY", "")
     ks_region = global_env.get("KSYUN_REGION", "cn-beijing-6")
-    ks_account = global_env.get("KSYUN_ACCOUNT_ID", "")
 
     # 构建 .env 内容
     if framework == "openclaw":
         env_content = f"""# ======================
 # OpenClaw 标准部署最小配置
 # ======================
-KSYUN_ACCESS_KEY={ks_ak}
-KSYUN_SECRET_KEY={ks_sk}
+# KSYUN_ACCESS_KEY=
+# KSYUN_SECRET_KEY=
 KSYUN_REGION={ks_region}
 """
-        if ks_account:
-            env_content += f"KSYUN_ACCOUNT_ID={ks_account}\n"
-        else:
-            env_content += "# KSYUN_ACCOUNT_ID=your-account-id\n"
+        env_content += "# KSYUN_ACCOUNT_ID=your-account-id\n"
 
-        env_content += f"\nOPENAI_API_KEY={api_key}\n"
+        env_content += "\n# OPENAI_API_KEY=\n"
         if base_url:
             env_content += f"OPENAI_BASE_URL={base_url}\n"
         else:
@@ -1850,18 +1832,13 @@ KSYUN_REGION={ks_region}
         env_content = f"""# ======================
 # Hermes 标准部署最小配置
 # ======================
-KSYUN_ACCESS_KEY={ks_ak}
-KSYUN_SECRET_KEY={ks_sk}
+# KSYUN_ACCESS_KEY=
+# KSYUN_SECRET_KEY=
 KSYUN_REGION={ks_region}
 """
-        if ks_account:
-            env_content += f"KSYUN_ACCOUNT_ID={ks_account}\n"
-        else:
-            env_content += "# KSYUN_ACCOUNT_ID=your-account-id\n"
+        env_content += "# KSYUN_ACCOUNT_ID=your-account-id\n"
 
-        env_content += f"""
-OPENAI_API_KEY={api_key}
-"""
+        env_content += "\n# OPENAI_API_KEY=\n"
         if base_url:
             env_content += f"OPENAI_BASE_URL={base_url}\n"
         else:
@@ -1908,14 +1885,12 @@ PORT=8080
     elif framework == "codex":
         env_content = _generate_codex_env_content(global_env)
     else:
-        langfuse_public = global_env.get("LANGFUSE_PUBLIC_KEY", "")
-        langfuse_secret = global_env.get("LANGFUSE_SECRET_KEY", "")
         langfuse_url = global_env.get("LANGFUSE_BASE_URL", "")
 
-        env_content = f"""# ======================
+        env_content = """# ======================
 # 模型配置 (必填, 可以从星流平台获取https://ksp.console.ksyun.com/#/apiKey)
 # ======================
-OPENAI_API_KEY={api_key}
+# OPENAI_API_KEY=
 """
 
         # 可选字段：如果有值则启用，否则注释掉
@@ -1934,15 +1909,8 @@ OPENAI_API_KEY={api_key}
 # 可观测性 (可选)
 # ======================
 """
-        if langfuse_public:
-            env_content += f"LANGFUSE_PUBLIC_KEY={langfuse_public}\n"
-        else:
-            env_content += "# LANGFUSE_PUBLIC_KEY=pk-xxx\n"
-
-        if langfuse_secret:
-            env_content += f"LANGFUSE_SECRET_KEY={langfuse_secret}\n"
-        else:
-            env_content += "# LANGFUSE_SECRET_KEY=sk-xxx\n"
+        env_content += "# LANGFUSE_PUBLIC_KEY=pk-xxx\n"
+        env_content += "# LANGFUSE_SECRET_KEY=sk-xxx\n"
 
         if langfuse_url:
             env_content += f"LANGFUSE_BASE_URL={langfuse_url}\n"
@@ -1954,22 +1922,12 @@ OPENAI_API_KEY={api_key}
 # 金山云配置 (可选,需要部署时必选)
 # ======================
 """
-        if ks_ak:
-            env_content += f"KSYUN_ACCESS_KEY={ks_ak}\n"
-        else:
-            env_content += "# KSYUN_ACCESS_KEY=your-api-key-here\n"
-
-        if ks_sk:
-            env_content += f"KSYUN_SECRET_KEY={ks_sk}\n"
-        else:
-            env_content += "# KSYUN_SECRET_KEY=your-api-secret-here\n"
+        env_content += "# KSYUN_ACCESS_KEY=your-api-key-here\n"
+        env_content += "# KSYUN_SECRET_KEY=your-api-secret-here\n"
 
         env_content += f"KSYUN_REGION={ks_region}\n"
 
-        if ks_account:
-            env_content += f"KSYUN_ACCOUNT_ID={ks_account}\n"
-        else:
-            env_content += "# KSYUN_ACCOUNT_ID=your-account-id\n"
+        env_content += "# KSYUN_ACCOUNT_ID=your-account-id\n"
 
     # 使用 utf-8-sig 编码 (带 BOM)，确保 Windows 程序正确识别为 UTF-8
     (project_path / ".env").write_text(env_content, encoding="utf-8-sig")

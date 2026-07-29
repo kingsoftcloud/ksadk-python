@@ -499,9 +499,10 @@ class TerminalSessionManager:
 
     def _persist_metadata(self, session: TerminalSession) -> None:
         try:
-            state_dir = Path(
-                os.getenv("AGENTENGINE_TERMINAL_STATE_DIR", "/home/node/.agentengine/terminal")
-            )
+            # Persist only under the current runtime user's state directory.  An
+            # environment-controlled absolute path would select an arbitrary
+            # write location before the terminal server starts.
+            state_dir = Path.home() / ".agentengine" / "terminal"
             state_dir.mkdir(parents=True, exist_ok=True)
             (state_dir / f"{session.id}.json").write_text(
                 json.dumps(self.serialize(session), ensure_ascii=False, indent=2),

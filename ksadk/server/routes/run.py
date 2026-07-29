@@ -688,14 +688,15 @@ async def run_sse(request: AgentRunRequest):
                     run_trigger=RUN_TRIGGER_NEW_RUN,
                 )
 
-            except Exception as e:
-                logger.error(f"Error in stream: {e}")
+            except Exception:
+                logger.exception("Error in stream")
+                public_error = "The agent run failed. See server logs for details."
                 await deps.conversation().append_run_status_event(
                     session_id=session_id,
                     author=active_runner.detection_result.name,
                     status="failed",
                     invocation_id=invocation_id,
-                    detail=str(e),
+                    detail=public_error,
                     session_service_provider=deps.resolve_session_service,
                     run_mode=RUN_MODE_FOREGROUND,
                     run_trigger=RUN_TRIGGER_NEW_RUN,
@@ -704,8 +705,8 @@ async def run_sse(request: AgentRunRequest):
                     "id": str(uuid.uuid4()),
                     "sessionId": session_id,
                     "invocationId": invocation_id,
-                    "error": str(e),
-                    "errorMessage": str(e),
+                    "error": "agent_run_failed",
+                    "errorMessage": public_error,
                     "timestamp": int(time.time() * 1000),
                 }
                 yield f"data: {json.dumps(error_event, ensure_ascii=False)}\n\n"

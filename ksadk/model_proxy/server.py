@@ -6,6 +6,7 @@ ProxyServer 在后台线程懒起一个 localhost uvicorn,幂等 + 加锁 + 干�
 
 import asyncio
 import json
+import logging
 import socket
 import threading
 import time
@@ -18,6 +19,21 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from .config import _LOOPBACK_HOSTS, ProxyConfig
 from .transform import Streamer, UnsupportedToolsError, chat_to_response, responses_to_chat
+
+logger = logging.getLogger(__name__)
+
+
+def _upstream_error(status_code: int) -> JSONResponse:
+    """Return a stable public error without relaying an upstream traceback."""
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "error": {
+                "type": "upstream_error",
+                "message": "The model upstream rejected the request.",
+            }
+        },
+    )
 
 
 def create_app(config: ProxyConfig) -> FastAPI:
@@ -61,6 +77,9 @@ def create_app(config: ProxyConfig) -> FastAPI:
             )
         async with httpx.AsyncClient(timeout=config.timeout) as c:
             r = await c.post(f"{base}/chat/completions", json=body, headers=up_headers)
+            if r.is_error:
+                logger.warning("chat upstream rejected request: status=%s", r.status_code)
+                return _upstream_error(r.status_code)
             return JSONResponse(status_code=r.status_code, content=r.json() if r.content else None)
 
     @app.post("/v1/responses")
@@ -80,8 +99,15 @@ def create_app(config: ProxyConfig) -> FastAPI:
         try:
             chat_req, restore_map = responses_to_chat(body)
         except UnsupportedToolsError as e:
+            logger.info("responses request uses unsupported tools: %s", e)
             return JSONResponse(
-                status_code=400, content={"error": {"type": "unsupported_tools", "message": str(e)}}
+                status_code=400,
+                content={
+                    "error": {
+                        "type": "unsupported_tools",
+                        "message": "The request uses tools unsupported by the model upstream.",
+                    }
+                },
             )
         rid = "resp_" + uuid.uuid4().hex[:24]
         model = body.get("model")
@@ -96,10 +122,8 @@ def create_app(config: ProxyConfig) -> FastAPI:
         async with httpx.AsyncClient(timeout=config.timeout) as c:
             r = await c.post(f"{base}/chat/completions", json=chat_req, headers=headers)
             if r.status_code != 200:
-                return JSONResponse(
-                    status_code=r.status_code,
-                    content={"error": {"type": "upstream_error", "message": r.text}},
-                )
+                logger.warning("responses upstream rejected request: status=%s", r.status_code)
+                return _upstream_error(r.status_code)
             return JSONResponse(chat_to_response(r.json(), rid, restore_map))
 
     return app
@@ -115,7 +139,8 @@ async def _chat_passthrough_stream(config: ProxyConfig, base: str, headers: dict
                 async for line in r.aiter_lines():
                     yield line + "\n"
     except Exception as exc:  # noqa: BLE001
-        yield f'data: {json.dumps({"error": str(exc)})}\n\n'
+        logger.warning("chat upstream stream failed", exc_info=exc)
+        yield 'data: {"error":"The model upstream stream failed."}\n\n'
 
 
 async def _stream_gen(
@@ -138,12 +163,15 @@ async def _stream_gen(
                 "POST", f"{base}/chat/completions", json=chat_req, headers=headers
             ) as r:
                 if r.status_code != 200:
-                    raw = (await r.aread()).decode("utf-8", "replace")
+                    logger.warning("responses upstream stream rejected: status=%s", r.status_code)
                     yield Streamer.ev(
                         "response.failed",
                         {
                             "type": "response.failed",
-                            "response": {**s._resp("failed"), "error": {"message": raw}},
+                            "response": {
+                                **s._resp("failed"),
+                                "error": {"message": "The model upstream rejected the request."},
+                            },
                         },
                     )
                     return
@@ -163,11 +191,15 @@ async def _stream_gen(
                     for e in s.handle(chunk):
                         yield e
     except Exception as exc:  # noqa: BLE001
+        logger.warning("responses upstream stream failed", exc_info=exc)
         yield Streamer.ev(
             "response.failed",
             {
                 "type": "response.failed",
-                "response": {**s._resp("failed"), "error": {"message": str(exc)}},
+                "response": {
+                    **s._resp("failed"),
+                    "error": {"message": "The model upstream stream failed."},
+                },
             },
         )
         return
