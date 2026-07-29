@@ -1982,6 +1982,8 @@ class ADKRunner(BaseRunner):
             # partial 分支;且远端 agent 经 A2A 流式返回时,ADK 会产出多个"累积快照"
             # 事件(后一个含前一个内容)。按 author 记录已输出快照,只补发增量去重。
             sub_agent_snapshots: dict[str, str] = {}
+            sub_agent_thought_snapshots: dict[str, str] = {}
+            sub_agent_last_output_kind: dict[str, str] = {}
             top_agent_name = getattr(self._agent, "name", None)
 
             async for event in wrapped_async:
@@ -2002,9 +2004,24 @@ class ADKRunner(BaseRunner):
                                     is_sub_agent
                                     and _part_metadata_flag(part, "ksadk_output_snapshot")
                                 )
+                                output_delta = part.text
                                 # 思考内容只作为 thinking delta 流出,不计入最终输出,
                                 # 否则最终回复会把思考过程再重复一遍(与 invoke() 语义对齐)。
-                                if not is_thought:
+                                if is_thought and is_sub_agent:
+                                    if sub_agent_last_output_kind.get(author_key) == "text":
+                                        # 正文之后的 thought 是一个新的 reasoning segment。
+                                        sub_agent_thought_snapshots[author_key] = ""
+                                    previous_thought = sub_agent_thought_snapshots.get(
+                                        author_key, ""
+                                    )
+                                    if part.text.startswith(previous_thought):
+                                        output_delta = part.text[len(previous_thought) :]
+                                        sub_agent_thought_snapshots[author_key] = part.text
+                                    else:
+                                        sub_agent_thought_snapshots[author_key] = (
+                                            previous_thought + part.text
+                                        )
+                                elif not is_thought:
                                     accumulated_text = (
                                         part.text
                                         if replace_snapshot
@@ -2019,13 +2036,18 @@ class ADKRunner(BaseRunner):
                                             else sub_agent_snapshots.get(author_key, "") + part.text
                                         )
                                 # 标记思考内容，前端可以选择是否展示
-                                output_chunk: dict[str, Any] = {
-                                    "delta": part.text,
-                                    "type": "thinking" if is_thought else "text",
-                                }
-                                if replace_snapshot and not is_thought:
-                                    output_chunk["replace"] = True
-                                yield output_chunk
+                                if output_delta:
+                                    output_chunk: dict[str, Any] = {
+                                        "delta": output_delta,
+                                        "type": "thinking" if is_thought else "text",
+                                    }
+                                    if replace_snapshot and not is_thought:
+                                        output_chunk["replace"] = True
+                                    yield output_chunk
+                                if is_sub_agent:
+                                    sub_agent_last_output_kind[author_key] = (
+                                        "thinking" if is_thought else "text"
+                                    )
                 # handoff/sub-agent 回复:partial 为 None/False,上面分支跳过,这里补上。
                 elif hasattr(event, "content") and event.content:
                     author = getattr(event, "author", None)
@@ -2042,9 +2064,34 @@ class ADKRunner(BaseRunner):
                                 and part.text
                                 and getattr(part, "thought", False)
                             ):
+                                # A2A's terminal artifact is converted by ADK to
+                                # partial=False.  Once that sub-agent has already
+                                # emitted response text, a trailing thought here is
+                                # a terminal snapshot/replacement (not a new
+                                # interleaved reasoning step).  Showing it makes
+                                # the UI appear to end at "thinking" and hides the
+                                # just-emitted final response.
+                                if sub_agent_last_output_kind.get(author_key) == "text":
+                                    continue
                                 # RemoteA2aAgent 将 last_chunk=True 映射成
-                                # partial=False；最后一个 reasoning chunk 仍须透传。
-                                yield {"delta": part.text, "type": "thinking"}
+                                # partial=False；这可能是一个此前 partial thought
+                                # 的终态快照。只补发新增内容，避免正文之后再显示一遍
+                                # 相同的思考块；若此前没有 partial thought，仍完整透传。
+                                previous_thought = sub_agent_thought_snapshots.get(
+                                    author_key, ""
+                                )
+                                if part.text.startswith(previous_thought):
+                                    thought_delta = part.text[len(previous_thought) :]
+                                    sub_agent_thought_snapshots[author_key] = part.text
+                                elif previous_thought.startswith(part.text):
+                                    thought_delta = ""
+                                else:
+                                    thought_delta = part.text
+                                    sub_agent_thought_snapshots[author_key] = (
+                                        previous_thought + part.text
+                                    )
+                                if thought_delta:
+                                    yield {"delta": thought_delta, "type": "thinking"}
                         snapshot = ""
                         replace_snapshot = False
                         for part in event.content.parts:

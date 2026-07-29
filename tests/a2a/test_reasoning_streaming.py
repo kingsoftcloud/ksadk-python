@@ -576,6 +576,94 @@ async def test_adk_runner_preserves_final_thought_chunk_and_replacement(
 
 
 @pytest.mark.asyncio
+async def test_adk_runner_does_not_repeat_terminal_thought_snapshot(
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from google.genai import types
+
+    from ksadk.runners.adk_runner import ADKRunner
+
+    remote_events = [
+        SimpleNamespace(
+            author="remote-agent",
+            partial=True,
+            content=types.Content(
+                role="model",
+                parts=[types.Part(text="阶段一思考", thought=True)],
+            ),
+        ),
+        SimpleNamespace(
+            author="remote-agent",
+            partial=True,
+            content=types.Content(role="model", parts=[types.Part(text="阶段一正文")]),
+        ),
+        SimpleNamespace(
+            author="remote-agent",
+            partial=True,
+            content=types.Content(
+                role="model",
+                parts=[types.Part(text="阶段二思考", thought=True)],
+            ),
+        ),
+        SimpleNamespace(
+            author="remote-agent",
+            partial=True,
+            content=types.Content(role="model", parts=[types.Part(text="阶段二正文")]),
+        ),
+        SimpleNamespace(
+            author="remote-agent",
+            partial=False,
+            content=types.Content(
+                role="model",
+                # ADK may emit a replacement terminal snapshot after the final
+                # response; it is not a new interleaved reasoning segment.
+                parts=[types.Part(text="阶段二思考的终态快照", thought=True)],
+            ),
+        ),
+    ]
+
+    class _FakeADKRunner:
+        async def run_async(self, **_kwargs: Any) -> AsyncIterator[Any]:
+            for event in remote_events:
+                yield event
+
+    detection = SimpleNamespace(
+        entry_point="agent.py",
+        agent_variable="root_agent",
+        name="orchestrator",
+    )
+    runner = ADKRunner(detection, str(tmp_path))
+    runner._agent = SimpleNamespace(name="orchestrator")  # noqa: SLF001
+    runner._runner = _FakeADKRunner()  # noqa: SLF001
+
+    async def fake_ensure_session(_external_session_id: Any = None) -> str:
+        return "adk-session"
+
+    monkeypatch.setattr(runner, "_ensure_session", fake_ensure_session)
+    monkeypatch.setattr(
+        runner,
+        "_prepare_trace_metadata",
+        lambda _session_id: ("", [], "", "orchestrator"),
+    )
+
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {"session_id": "session-1", "input": "问题"},
+        )
+    ]
+
+    assert chunks == [
+        {"type": "thinking", "delta": "阶段一思考"},
+        {"type": "text", "delta": "阶段一正文"},
+        {"type": "thinking", "delta": "阶段二思考"},
+        {"type": "text", "delta": "阶段二正文"},
+        {"type": "final", "output": "阶段一正文阶段二正文"},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_responses_stream_preserves_replacement_and_authoritative_final_text() -> None:
     runner = _replacing_langgraph_runner()
     service = InMemorySessionService()
