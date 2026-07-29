@@ -54,7 +54,7 @@ def test_singleflight_only_one_probe():
     started = threading.Event()
     release = threading.Event()
 
-    def probe(model, base, key):
+    def probe(model, base):
         nonlocal probe_count
         with lock:
             probe_count += 1
@@ -83,7 +83,7 @@ def test_singleflight_async():
     cache = CapabilityCache(ttl=3600)
     probe_count = 0
 
-    async def probe(model, base, key):
+    async def probe(model, base):
         nonlocal probe_count
         probe_count += 1
         await asyncio.sleep(0.05)

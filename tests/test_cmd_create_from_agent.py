@@ -462,11 +462,14 @@ def test_create_openclaw_only_generates_env_file(tmp_path: Path, monkeypatch):
     assert sorted(path.name for path in project_dir.iterdir()) == [".env"]
 
     env_text = (project_dir / ".env").read_text(encoding="utf-8-sig")
-    assert "KSYUN_ACCESS_KEY=ak-demo" in env_text
-    assert "KSYUN_SECRET_KEY=sk-demo" in env_text
+    assert "KSYUN_ACCESS_KEY=ak-demo" not in env_text
+    assert "KSYUN_SECRET_KEY=sk-demo" not in env_text
+    assert "# KSYUN_ACCESS_KEY=" in env_text
+    assert "# KSYUN_SECRET_KEY=" in env_text
     assert "KSYUN_REGION=cn-beijing-6" in env_text
-    assert "KSYUN_ACCOUNT_ID=1234567890" in env_text
-    assert "OPENAI_API_KEY=sk-openclaw" in env_text
+    assert "KSYUN_ACCOUNT_ID=1234567890" not in env_text
+    assert "OPENAI_API_KEY=sk-openclaw" not in env_text
+    assert "# OPENAI_API_KEY=" in env_text
     assert "OPENAI_BASE_URL=https://model.example.com/v1" in env_text
     assert "OPENAI_MODEL_NAME=glm-5.1" in env_text
     assert "LANGFUSE_" not in env_text
@@ -540,7 +543,8 @@ def test_create_hermes_generates_config_only(tmp_path: Path, monkeypatch):
     assert "ui_profile: hermes" in config_text
 
     env_text = (project_dir / ".env").read_text(encoding="utf-8-sig")
-    assert "OPENAI_API_KEY=sk-hermes" in env_text
+    assert "OPENAI_API_KEY=sk-hermes" not in env_text
+    assert "# OPENAI_API_KEY=" in env_text
     assert "OPENAI_BASE_URL=https://model.example.com/v1" in env_text
     assert "OPENAI_MODEL_NAME=glm-hermes" in env_text
     assert "HERMES_IMAGE=" not in env_text

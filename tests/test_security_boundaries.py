@@ -10,12 +10,14 @@ from ksadk.server.routes.common import _find_ui_static_asset
 from ksadk.skills.service_client import SkillServiceClient
 
 
-def test_kop_signing_requires_exact_tls_host():
+def test_kop_signing_requires_exact_host_and_tls_for_public_endpoint():
     trusted = SkillServiceClient(base_url="https://aicp.api.ksyun.com/v1")
+    private_plaintext = SkillServiceClient(base_url="http://aicp.internal.api.ksyun.com/v1")
     spoofed = SkillServiceClient(base_url="https://aicp.api.ksyun.com.attacker.example/v1")
     plaintext = SkillServiceClient(base_url="http://aicp.api.ksyun.com/v1")
 
     assert trusted._is_kop_mode()
+    assert private_plaintext._is_kop_mode()
     assert not spoofed._is_kop_mode()
     assert not plaintext._is_kop_mode()
 

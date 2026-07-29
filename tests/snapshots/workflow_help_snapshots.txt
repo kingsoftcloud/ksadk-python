@@ -24,11 +24,12 @@ Options:
                                   构建模式: auto (按配置推断)、managed、code 或 container
   -t, --tag TEXT                  镜像标签 (container 模式)
   --registry TEXT                 镜像仓库地址 (container 模式)
-  --push                          构建后推送 (镜像到仓库 / zip到KS3)
+  --push                          构建后推送（仅 Container 镜像或 Code zip；ManagedRuntime
+                                  不支持）
   --no-cache                      强制重新构建，不使用缓存 (code: 忽略已有 zip；container: docker
                                   --no-cache)
   --repackage                     Code 模式复用依赖缓存，但强制重新打包当前代码/runtime
-  -r, --region TEXT               KS3 区域 (code 模式)
+  -r, --region TEXT               Code 的 KS3 区域，或 ManagedRuntime catalog 查询区域
   --ks3-bucket TEXT               KS3 bucket 名称 (code 模式, 默认:
                                   agentengine-{region})
   --output [pretty|json]          输出格式

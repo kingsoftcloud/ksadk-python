@@ -70,7 +70,7 @@ def test_native_terminal_support_reports_false_without_posix_modules(monkeypatch
 @pytest.fixture()
 def server_app(monkeypatch, tmp_path):
     appmod = importlib.import_module("ksadk.server.app")
-    monkeypatch.setenv("AGENTENGINE_TERMINAL_STATE_DIR", str(tmp_path / "terminal"))
+    monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("KSADK_WORKSPACE_ROOT", str(tmp_path / "workspace"))
     (tmp_path / "workspace").mkdir()
     appmod.set_runner(_OpenClawRunner())
@@ -120,11 +120,7 @@ async def test_terminal_sessions_reuse_by_business_session_and_mode(server_app, 
     sessions = listing.json()["sessions"]
     assert {item["session_id"] for item in sessions} == {"biz-1"}
     assert {item["mode"] for item in sessions} == {"tui"}
-    state_files = list(
-        (server_app.Path(server_app.os.environ["AGENTENGINE_TERMINAL_STATE_DIR"])).glob(
-            "term-*.json"
-        )
-    )
+    state_files = list((server_app.Path.home() / ".agentengine" / "terminal").glob("term-*.json"))
     assert state_files
     persisted = [json.loads(path.read_text(encoding="utf-8")) for path in state_files]
     assert any(
