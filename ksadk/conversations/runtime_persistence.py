@@ -379,6 +379,7 @@ async def append_reasoning_event(
     author: str,
     text: str,
     invocation_id: Optional[str] = None,
+    metadata: Optional[Mapping[str, Any]] = None,
     session_service_provider: Callable[[], Any] | None = None,
 ) -> SessionEvent | None:
     """Persist assistant reasoning so hosted UI refresh can replay thinking state."""
@@ -392,7 +393,7 @@ async def append_reasoning_event(
         text=reasoning_text,
         invocation_id=invocation_id,
         event_type="reasoning",
-        metadata={"reasoning": reasoning_text},
+        metadata={"reasoning": reasoning_text, **dict(metadata or {})},
         session_service_provider=session_service_provider,
     )
 

@@ -16,6 +16,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 
 from ksadk.conversations.context import build_history_from_events, canonical_event_type
+from ksadk.conversations.message_projection import project_session_messages
 from ksadk.conversations.model_context import estimate_text_tokens
 from ksadk.conversations.model_options import normalize_model_options
 from ksadk.conversations.runtime import (
@@ -537,6 +538,16 @@ class _ThinkingStreamingRunner(_StreamingRunner):
         yield {"type": "thinking", "delta": "问题"}
         yield {"type": "text", "delta": "你好"}
         yield {"type": "final", "output": "你好"}
+
+
+class _InterleavedThinkingStreamingRunner(_StreamingRunner):
+    async def stream(self, input_data: dict):
+        self.stream_calls.append(input_data)
+        yield {"type": "thinking", "delta": "第一阶段思考。"}
+        yield {"type": "text", "delta": "【阶段 1/2】进度。"}
+        yield {"type": "thinking", "delta": "第二阶段思考。"}
+        yield {"type": "text", "delta": "【阶段 2/2】最终答案。"}
+        yield {"type": "final", "output": "【阶段 1/2】进度。【阶段 2/2】最终答案。"}
 
 
 class _ThinkingNoFinalStreamingRunner(_StreamingRunner):
@@ -3717,12 +3728,55 @@ async def test_stream_responses_conversation_turn_persists_reasoning_events(monk
     assert [event.event_type for event in events] == [
         "user_message",
         "run_status",
-        "assistant_stream_snapshot",
         "reasoning",
+        "assistant_stream_snapshot",
         "assistant_message",
         "run_status",
     ]
-    assert events[3].content["parts"][0]["text"] == "先分析问题"
+    assert events[2].content["parts"][0]["text"] == "先分析问题"
+    assert events[2].metadata["stream_boundary"] == "before_text"
+
+
+@pytest.mark.asyncio
+async def test_stream_history_replays_interleaved_reasoning_in_event_order(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+
+    _ = [
+        chunk
+        async for chunk in stream_responses_conversation_turn(
+            runner=_InterleavedThinkingStreamingRunner(),
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id="sess-interleaved-replay",
+            messages=[{"role": "user", "content": "演示开发流程"}],
+            model="gpt-4o",
+            prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+            session_service_provider=lambda: service,
+        )
+    ]
+
+    stored_events = await service.get_events("sess-interleaved-replay")
+    serialized_events = [
+        {
+            "EventId": event.id,
+            "EventType": event.event_type,
+            "Content": event.content,
+            "Metadata": event.metadata,
+            "Timestamp": event.timestamp,
+            "SeqId": event.seq_id,
+            "InvocationId": event.invocation_id,
+        }
+        for event in stored_events
+    ]
+    messages = project_session_messages(serialized_events, include_reasoning=True)
+
+    assert messages[-1]["Blocks"] == [
+        {"Type": "thinking", "Content": "第一阶段思考。", "SeqId": 3},
+        {"Type": "text", "Content": "【阶段 1/2】进度。", "SeqId": 4},
+        {"Type": "thinking", "Content": "第二阶段思考。", "SeqId": 5},
+        {"Type": "text", "Content": "【阶段 2/2】最终答案。", "SeqId": 6},
+    ]
 
 
 @pytest.mark.asyncio

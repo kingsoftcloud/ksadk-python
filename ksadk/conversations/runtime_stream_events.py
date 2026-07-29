@@ -285,7 +285,7 @@ async def _iter_conversation_turn_events(
         stream_last_usage: dict[str, Any] = {}
         reasoning_disabled = _model_options_disable_reasoning(prepared.model_options)
 
-        async def _persist_accumulated_reasoning() -> None:
+        async def _persist_accumulated_reasoning(*, before_text: bool = False) -> None:
             if not accumulated_reasoning_parts:
                 return
             reasoning = "".join(accumulated_reasoning_parts)
@@ -295,6 +295,7 @@ async def _iter_conversation_turn_events(
                 author=runner_name,
                 text=reasoning,
                 invocation_id=prepared.invocation_id,
+                metadata={"stream_boundary": "before_text"} if before_text else None,
                 session_service_provider=provider,
             )
 
@@ -420,6 +421,10 @@ async def _iter_conversation_turn_events(
                                     continue
                                 delta = str(chunk.get("delta", ""))
                                 if delta:
+                                    # Close the preceding text segment before
+                                    # a new thought begins.  Snapshot throttling
+                                    # must not erase this timeline boundary.
+                                    await _persist_assistant_snapshot(force=True)
                                     accumulated_reasoning_parts.append(delta)
                                     emitted_anything = True
                                     emitted_response_artifacts = True
@@ -428,6 +433,13 @@ async def _iter_conversation_turn_events(
                             if chunk_type == "text":
                                 delta = str(chunk.get("delta", ""))
                                 if delta:
+                                    # A reasoning event must be written before
+                                    # the text snapshot it explains.  Without
+                                    # this boundary, historical replay only
+                                    # sees one merged reasoning blob after all
+                                    # streamed text and cannot rebuild an
+                                    # interleaved turn.
+                                    await _persist_accumulated_reasoning(before_text=True)
                                     replace = bool(chunk.get("replace"))
                                     accumulated_text = (
                                         delta if replace else accumulated_text + delta
