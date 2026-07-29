@@ -4,8 +4,8 @@ review v1 指出 ``(model, base_url)`` 缺 credential/tenant 维度:同一网关
 能力可能不同(如星流 glm-5.1 的 responses 403 按 consumer 鉴权),404 也可能是
 "模型不存在"而非"endpoint 不存在"。本模块:
 
-- 键 = ``(model, base_url, credential_scope)``;credential_scope 用 key 的稳定指纹
-  (BLAKE2b 前 8 字节),避免明文 key 入键/日志,又能区分不同 key。
+- 键 = ``(model, base_url, credential_scope)``;credential_scope 用进程内 HMAC
+  标识符，避免明文 key 入键/日志，又能区分不同 key。
 - **明确判定**(supported/unsupported)长缓存(TTL);**不确定**(unknown)不缓存,
   下次重探——避免把一次抖动固化成长期误判。
 - **singleflight**:并发同键只探一次,其余等结果(用 per-key Future)。
@@ -16,7 +16,8 @@ review v1 指出 ``(model, base_url)`` 缺 credential/tenant 维度:同一网关
 from __future__ import annotations
 
 import asyncio
-import hashlib
+import hmac
+import secrets
 import threading
 import time
 from dataclasses import dataclass
@@ -24,12 +25,15 @@ from typing import Any, Callable
 
 from .detect import ModelCapabilities
 
+# The capability cache is process-local, so its credential namespace need not
+# survive a restart.  A random key prevents cache identifiers from being used as
+# an offline oracle for API keys and avoids retaining the original credential.
+_SCOPE_HMAC_KEY = secrets.token_bytes(32)
+
 
 def _scope(key: str) -> str:
-    """Return a domain-separated, non-secret cache scope for a credential."""
-    return hashlib.blake2b(
-        key.encode("utf-8"), digest_size=8, person=b"ksadk-capability"
-    ).hexdigest()
+    """Return a process-local, non-secret cache scope for a credential."""
+    return hmac.digest(_SCOPE_HMAC_KEY, key.encode("utf-8"), "sha256").hex()[:16]
 
 
 @dataclass

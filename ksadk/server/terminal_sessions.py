@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import importlib
 import json
+import logging
 import os
 import shutil
 import signal
@@ -28,6 +29,8 @@ from ksadk.terminal_exec_policy import (
 from ksadk.terminal_exec_policy import (
     validate_terminal_exec_argv as validate_exec_argv_with_policy,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _optional_platform_module(name: str) -> Any | None:
@@ -541,8 +544,8 @@ def register_terminal_routes(
         payload = await request.json()
         try:
             session = await manager.create_or_reuse(payload if isinstance(payload, dict) else {})
-        except ValueError as exc:
-            return JSONResponse({"error": str(exc)}, status_code=400)
+        except ValueError:
+            return JSONResponse({"error": "invalid_terminal_request"}, status_code=400)
         return JSONResponse({"session": manager.serialize(session)})
 
     @app.get("/_ksadk/terminal/sessions")
@@ -587,7 +590,15 @@ def register_terminal_routes(
                 await manager.legacy_start(ws, payload)
             except WebSocketDisconnect:
                 return
-            except Exception as exc:
+            except Exception:
+                logger.exception("terminal websocket request failed")
                 if ws.client_state == WebSocketState.CONNECTED:
-                    await ws.send_text(json.dumps({"type": "error", "message": str(exc)}))
+                    await ws.send_text(
+                        json.dumps(
+                            {
+                                "type": "error",
+                                "message": "Terminal request failed; see server logs for details.",
+                            }
+                        )
+                    )
                     await ws.close()
