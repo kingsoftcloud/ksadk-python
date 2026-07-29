@@ -7,25 +7,22 @@
 
 ## [Unreleased]
 
-## [0.8.0] - 2026-07-24
-
-> **Review candidate, not a published release.** This section covers the work
-> merged after `0.7.0` on 2026-07-15. It does not assert that a PyPI/npm
-> package, tag, or GitHub Release exists.
+## [0.8.0] - 2026-07-29
 
 ### 亮点
 
 - **统一 Runtime 基座**：冻结 `RuntimeEvent v1` 信封和六动词 `RuntimeAdapter`，补齐事件存储、按会话事件序号（`seq_id`）续订的订阅、共享 parser 与历史回放。ADK、LangGraph、A2A、Harness 和 Codex 新集成均以这一契约交换运行状态，而不是各自定义一套 SSE 语义。
 - **Hosted UI 进入 AG-UI + A2UI 轨道**：在不改变 OpenAI Responses 既有请求/响应语义的前提下，增加 capability 协商后的 AG-UI transport 和 A2UI activity 投影；无法协商时仍走 Responses fallback。
 - **可诊断的会话连续性**：runtime storage 成为会话状态的权威来源，补全结构化 Responses 历史投影、请求 metadata 透传、run 订阅心跳与 idle SSE 保活，刷新、续订、审批和恢复都能基于已持久化事件排查。
-- **可组合的运行形态**：加入 A2A wire 1.0 runtime、HarnessApp、CodexRuntime 和 Skill Space 路由；这些能力均保留本地/契约测试，生产环境互操作和真实凭证仍需按部署环境验收。
+- **Codex 成为一等 Runtime**：支持 macOS、Windows 和 Linux 原生子进程调试；`agentengine.yaml` 即 Agent，无需 `agent.py` 或 Docker。ManagedRuntime 使用内联 manifest 部署，不把代码、凭据或开发机平台二进制打进云端制品。
+- **可组合的运行形态**：加入 A2A wire 1.0 runtime、HarnessApp、CodexRuntime 和 Skill Space 路由；这些能力均保留本地与契约测试，生产环境互操作仍按各部署环境的 Runtime catalog 和凭据策略验收。
 
 ### 新增
 
 - **事件与 adapter**：新增 RuntimeEvent schema、严格反序列化校验、RuntimeEventStore、session 级订阅、共享 projection/replay parser，以及 ADK/LangGraph 的 adapter contract tests。未知事件不能绕过事件边界进入 replay。
 - **AG-UI 与 A2UI**：新增 AG-UI route group、RuntimeEvent 到 activity 的投影、A2UI core/renderer/fixture viewer 和可持久化 action 记录。审批不是另一套 UI 协议，而是事件流中的受控交互状态。
 - **A2A**：新增 Agent Card、Protocol Runtime、PostgreSQL TaskStore、account + runtime 复合 owner identity、Task cancel/resume adapter、Space 内动态发现、credential provider、egress policy 与 A2A event adapter。AgentEngine 的托管 composition root 使用 Gateway 验证的五元目标绑定和受信 Card probe；它将 resume state 留在 Runtime 本地 durable storage，并为 `external_public` 提供 HTTPS-only、DNS/IP pin、禁代理、拒绝 3xx 的 NAT transport。app factory 直接装配 A2A 数据面路由；`external_vpc` 仍需单独的 VPC dialer。
-- **Harness 与 Codex**：新增声明式 HarnessApp composition root，模型/MCP/tool 配置校验和默认只读 sandbox policy；新增基于官方 app-server transport 的 CodexRuntime、生命周期 phase 映射及离线/显式 live 演示。真实 provider 凭证 E2E 不包含在本候选的发布结论中。
+- **Harness 与 Codex**：新增声明式 HarnessApp composition root，模型/MCP/tool 配置校验和默认只读 sandbox policy；新增基于官方 app-server transport 的 CodexRuntime、生命周期 phase 映射、Responses ↔ Chat 模型代理，以及 `ksadk init --framework codex`、ManagedRuntime build/deploy 契约。
 - **框架与 App Factory**：新增 ADK `1.34.x`/`2.x` 兼容层及 CI matrix；server 创建改为 per-app factory/state，路由按职责拆组，WebSocket 也在请求上下文中运行。
 - **CLI 与诊断**：新增 `agentengine a2a` 和 `ksadk replay <session-id>`。`replay` 只读取已持久化的 RuntimeEvent，按 `--after-seq-id` / `--before-seq-id` 定位窗口并输出 text 或 JSON transcript；它不重跑模型、工具或副作用，旧式 SessionEvent 也不在此命令的回放范围内。
 - **Skills、工具与可观测性**：新增按 `space_id` 定向的 Skill Space 消费路径，并完成 tools、memory、sandbox 和 tracing adapter 的迁移，以便 Harness/runner 在同一运行边界消费它们。
@@ -42,8 +39,22 @@
 
 - OpenAI Responses 和 Chat Completions 兼容入口仍是默认基线。AG-UI/A2UI 是可选 Hosted UI 能力，不会要求现有 Responses 客户端改协议。
 - 旧版 LangChain 连续性 / HITL 路径不再是 `0.8` 的兼容性承诺。新接入应使用 LangGraph、ADK 或 `RuntimeAdapter`；迁移时先验证 checkpoint、interrupt 和工具语义。
-- 本候选的 Python 版本为 `0.8.0`，配套 Web 候选为 `@kingsoftcloud/ksadk-web@0.3.0`。Python release workflow 已固定请求该版本，并逐文件校验 npm tarball 的 `dist-ksadk`、同步目录和 wheel 内静态资源；在 Web `0.3.0` 经受保护 npm 流程发布前，公开 Python 发布会保持阻塞，不会回退到旧版本。
-- 公开发布仍被 review/sign-off、clean-export/public preflight、真实 staging evidence 与可选的 Codex provider E2E 阻塞；本条目不构成发布批准。
+- 本次 Python 版本为 `0.8.0`，配套 Web 为 `@kingsoftcloud/ksadk-web@0.3.0`。Python release workflow 固定请求该版本，并逐文件校验 npm tarball 的 `dist-ksadk`、同步目录和 wheel 内静态资源；不会静默回退到旧 Web 版本。
+- ManagedRuntime 云端运行依赖 AgentEngine Runtime catalog 启用；未配置时保持关闭，不回退到 CodeBuilder。平台控制面和生产 Runtime rollout 仍按各环境独立发布与验收。
+
+### 文档
+
+- 新增 Codex YAML 即 Agent、Codex ManagedRuntime、HarnessApp 与 A2A Runtime 中英文指南。
+- 文档导航按开始、本地调试、运行时能力、互操作、构建部署和高级维护重组，并增加 README、站内链接和 A2A Card schema 回归门禁。
+
+### 发布记录
+
+- 已评审 GitHub `main` 源提交：`a76f2de7565ffe34d44a9d17257401fa805de0de`
+- Tag：`v0.8.0`
+- Python：`ksadk==0.8.0`
+- 兼容别名：`agentengine-sdk-python==0.8.0`
+- 内置 Web UI：`@kingsoftcloud/ksadk-web@0.3.0`（source `a35ee0411ee0c2a3d64730be4c8ababe4712c59a`）
+- macOS / Windows / Linux Codex native smoke、CI、CodeQL、Secret Pattern Audit 和 `make public-preflight`：已通过
 
 ## [0.7.0] - 2026-07-15
 
