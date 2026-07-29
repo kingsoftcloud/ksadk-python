@@ -1,21 +1,15 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
 from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 from ksadk.conversations.attachments import (
     build_attachment_prompt_text,
     build_attachment_results,
-    compact_attachment_result_for_session,
     decode_inline_data,
-    extract_pdf_text,
-    is_textual_mime,
     looks_like_textual_attachment,
-    read_attachment_bytes,
     resolve_attachment_storage_path,
-    resolve_uploads_dir,
 )
-from ksadk.conversations.context import canonical_event_type
 from ksadk.server.api_models import Part
 
 
@@ -110,7 +104,9 @@ def _inline_data_from_openai_file(item: Dict[str, Any]) -> Optional[Dict[str, An
     display_name = _openai_file_display_name(item)
     return {
         "data": data.strip(),
-        "mimeType": str(item.get("mime_type") or item.get("mimeType") or _guess_mime_type(display_name)),
+        "mimeType": str(
+            item.get("mime_type") or item.get("mimeType") or _guess_mime_type(display_name)
+        ),
         "displayName": display_name,
     }
 
@@ -122,7 +118,9 @@ def _file_data_from_openai_file(item: Dict[str, Any]) -> Optional[Dict[str, Any]
     display_name = _openai_file_display_name(item)
     return {
         "fileUri": file_uri.strip(),
-        "mimeType": str(item.get("mime_type") or item.get("mimeType") or _guess_mime_type(display_name)),
+        "mimeType": str(
+            item.get("mime_type") or item.get("mimeType") or _guess_mime_type(display_name)
+        ),
         "displayName": display_name,
     }
 
@@ -173,9 +171,7 @@ def _canonical_input_content_from_part_payload(payload: Dict[str, Any]) -> Optio
 
 def _canonical_input_content_from_item(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     item_type = str(item.get("type") or "").strip()
-    if item_type in {"input_text", "text"} or (
-        not item_type and item.get("text") is not None
-    ):
+    if item_type in {"input_text", "text"} or (not item_type and item.get("text") is not None):
         return {"type": "input_text", "text": str(item.get("text") or "")}
 
     if item_type in {"input_image", "image_url"}:
@@ -318,7 +314,9 @@ def attachment_from_part(part: Part) -> Optional[Dict[str, Any]]:
         mime_type = (file_data.mimeType or "").strip() or "application/octet-stream"
         storage_path = resolve_attachment_storage_path(file_data.fileUri or "")
         try:
-            size_bytes = storage_path.stat().st_size if storage_path and storage_path.exists() else None
+            size_bytes = (
+                storage_path.stat().st_size if storage_path and storage_path.exists() else None
+            )
         except OSError:
             size_bytes = None
         return {
@@ -360,7 +358,9 @@ def display_content_from_parts(parts: List[Part]) -> str:
 
 
 def normalize_parts_content(parts: List[Part]) -> dict[str, Any]:
-    attachments = [attachment for attachment in (attachment_from_part(part) for part in parts) if attachment]
+    attachments = [
+        attachment for attachment in (attachment_from_part(part) for part in parts) if attachment
+    ]
     attachment_results = build_attachment_results(attachments)
     display_content = display_content_from_parts(parts)
     segments: List[str] = []
@@ -373,7 +373,9 @@ def normalize_parts_content(parts: List[Part]) -> dict[str, Any]:
             segments.append(build_attachment_prompt_text(attachment_results[attachment_index]))
             attachment_index += 1
     return {
-        "content": "\n\n".join(segment.strip() for segment in segments if str(segment).strip()).strip(),
+        "content": "\n\n".join(
+            segment.strip() for segment in segments if str(segment).strip()
+        ).strip(),
         "display_content": display_content,
         "parts": [part.model_dump(exclude_none=True) for part in parts],
         "attachments": attachments,
@@ -436,7 +438,9 @@ def normalize_responses_input(input_payload: Any) -> List[Dict[str, Any]]:
                 "content": input_payload,
                 "display_content": input_payload,
                 "parts": [{"text": input_payload}] if input_payload else [],
-                "input_content": [{"type": "input_text", "text": input_payload}] if input_payload else [],
+                "input_content": (
+                    [{"type": "input_text", "text": input_payload}] if input_payload else []
+                ),
                 "attachments": [],
                 "attachment_results": [],
             }

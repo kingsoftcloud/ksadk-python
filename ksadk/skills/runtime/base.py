@@ -57,8 +57,7 @@ class SkillRuntimeBackend(Protocol):
         env: dict[str, str] | None = None,
         input_files: list[SandboxInputFile] | None = None,
         timeout: int = 900,
-    ) -> SkillRuntimeResult:
-        ...
+    ) -> SkillRuntimeResult: ...
 
 
 def parse_output_files(stdout: str) -> list[str]:

@@ -38,7 +38,10 @@ def network_options(func):
         click.option(
             "--enable-public-access/--disable-public-access",
             default=None,
-            help="是否开启公网访问；创建时默认开启，更新已有 Agent 时未指定则保留现有配置（显式传入才覆盖）",
+            help=(
+                "是否开启公网访问；创建时默认开启，更新已有 Agent 时未指定则保留现有配置"
+                "（显式传入才覆盖）"
+            ),
         ),
         click.option("--enable-vpc-access", is_flag=True, default=False, help="开启 VPC 私网访问"),
         click.option("--vpc-id", default=None, help="VPC ID（开启 VPC 访问时必填）"),
@@ -75,7 +78,8 @@ def extract_network_config(config: Mapping[str, Any] | None) -> dict[str, Any]:
     """Read network from top-level `network` or `deploy.network`."""
     if not isinstance(config, Mapping):
         return {}
-    deploy_config = config.get("deploy") if isinstance(config.get("deploy"), Mapping) else {}
+    deploy_value = config.get("deploy")
+    deploy_config: Mapping[str, Any] = deploy_value if isinstance(deploy_value, Mapping) else {}
     raw_network = config.get("network") or deploy_config.get("network") or {}
     return dict(raw_network) if isinstance(raw_network, Mapping) else {}
 
@@ -98,7 +102,12 @@ def apply_network_config(config: Mapping[str, Any] | None, deploy_target: "Deplo
     if _picked_public_access is not None:
         deploy_target.network.enable_public_access = bool(_picked_public_access)
     deploy_target.network.enable_vpc_access = bool(
-        _pick("enable_vpc_access", "enableVpcAccess", "EnableVpcAccess", default=deploy_target.network.enable_vpc_access)
+        _pick(
+            "enable_vpc_access",
+            "enableVpcAccess",
+            "EnableVpcAccess",
+            default=deploy_target.network.enable_vpc_access,
+        )
     )
     deploy_target.network.vpc_id = str(
         _pick("vpc_id", "vpcId", "VpcId", default=deploy_target.network.vpc_id) or ""
@@ -136,7 +145,9 @@ def apply_network_cli_overrides(deploy_target: "DeployTarget", **network_kwargs:
         value = network_kwargs.get(field)
         if value is not None:
             setattr(deploy_target.network, field, str(value or "").strip())
-    if any(str(getattr(deploy_target.network, field, "") or "").strip() for field in _VPC_ID_FIELDS):
+    if any(
+        str(getattr(deploy_target.network, field, "") or "").strip() for field in _VPC_ID_FIELDS
+    ):
         deploy_target.network.enable_vpc_access = True
 
 
@@ -145,7 +156,9 @@ def validate_deploy_target_network(deploy_target: "DeployTarget") -> None:
     values = {
         "vpc_id": str(getattr(deploy_target.network, "vpc_id", "") or "").strip(),
         "subnet_id": str(getattr(deploy_target.network, "subnet_id", "") or "").strip(),
-        "security_group_id": str(getattr(deploy_target.network, "security_group_id", "") or "").strip(),
+        "security_group_id": str(
+            getattr(deploy_target.network, "security_group_id", "") or ""
+        ).strip(),
     }
     has_any_vpc_id = any(values.values())
     if not (bool(getattr(deploy_target.network, "enable_vpc_access", False)) or has_any_vpc_id):
@@ -156,7 +169,8 @@ def validate_deploy_target_network(deploy_target: "DeployTarget") -> None:
             "开启 VPC 访问时必须同时提供 VpcId、SubnetId、SecurityGroupId。",
             details={"missing": missing},
             hints=[
-                "请同时传入 `--vpc-id`、`--subnet-id`、`--security-group-id`，或在配置文件 network/deploy.network 中同时设置这三个字段。",
+                "请同时传入 `--vpc-id`、`--subnet-id`、`--security-group-id`，"
+                "或在配置文件 network/deploy.network 中同时设置这三个字段。",
                 "`--availability-zone` 是可选字段，不替代子网或安全组。",
             ],
         )
@@ -191,8 +205,7 @@ def resolve_deploy_target_network(
         print_info(f"已根据子网 {subnet_id} 自动推断可用区: {availability_zone}")
     else:
         print_warn(
-            "未能根据子网自动推断可用区；如私网 ENI 调度失败，请显式传入 "
-            "`--availability-zone`。"
+            "未能根据子网自动推断可用区；如私网 ENI 调度失败，请显式传入 " "`--availability-zone`。"
         )
 
 
@@ -234,7 +247,9 @@ def _validate_network_payload(payload: Mapping[str, Any]) -> None:
         )
 
 
-def _fill_network_availability_zone(payload: dict[str, Any], network_kwargs: Mapping[str, Any]) -> None:
+def _fill_network_availability_zone(
+    payload: dict[str, Any], network_kwargs: Mapping[str, Any]
+) -> None:
     if str(payload.get("availability_zone") or "").strip():
         return
     if not bool(payload.get("enable_vpc_access")):
@@ -254,8 +269,7 @@ def _fill_network_availability_zone(payload: dict[str, Any], network_kwargs: Map
         print_info(f"已根据子网 {subnet_id} 自动推断可用区: {availability_zone}")
     else:
         print_warn(
-            "未能根据子网自动推断可用区；如私网 ENI 调度失败，请显式传入 "
-            "`--availability-zone`。"
+            "未能根据子网自动推断可用区；如私网 ENI 调度失败，请显式传入 " "`--availability-zone`。"
         )
 
 
@@ -270,7 +284,9 @@ def _resolve_subnet_availability_zone(*, subnet_id: str, region: str) -> str | N
         return None
 
     try:
-        VpcClient, DescribeSubnetsRequest, Credential, ClientProfile, HttpProfile = _import_vpc_sdk()
+        VpcClient, DescribeSubnetsRequest, Credential, ClientProfile, HttpProfile = (
+            _import_vpc_sdk()
+        )
     except Exception as exc:
         print_warn(f"缺少 VPC 子网查询 SDK，跳过可用区自动推断: {exc}")
         return None
@@ -328,8 +344,12 @@ def _resolve_ksyun_credentials() -> tuple[str, str]:
     except Exception:
         global_env = {}
 
-    access_key = access_key or global_env.get("KSYUN_ACCESS_KEY") or global_env.get("KS3_ACCESS_KEY") or ""
-    secret_key = secret_key or global_env.get("KSYUN_SECRET_KEY") or global_env.get("KS3_SECRET_KEY") or ""
+    access_key = (
+        access_key or global_env.get("KSYUN_ACCESS_KEY") or global_env.get("KS3_ACCESS_KEY") or ""
+    )
+    secret_key = (
+        secret_key or global_env.get("KSYUN_SECRET_KEY") or global_env.get("KS3_SECRET_KEY") or ""
+    )
     return str(access_key or "").strip(), str(secret_key or "").strip()
 
 

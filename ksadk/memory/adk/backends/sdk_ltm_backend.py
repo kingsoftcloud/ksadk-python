@@ -105,9 +105,13 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
             return self._aicp_client
 
         try:
-            from ksyun.common import credential
-            from ksyun.common.profile.client_profile import ClientProfile
-            from ksyun.common.profile.http_profile import HttpProfile
+            from ksyun.common import credential  # type: ignore[import-untyped]
+            from ksyun.common.profile.client_profile import (  # type: ignore[import-untyped]
+                ClientProfile,
+            )
+            from ksyun.common.profile.http_profile import (  # type: ignore[import-untyped]
+                HttpProfile,
+            )
         except ImportError:
             raise ImportError(
                 "kingsoftcloud-sdk-python is required for SDK memory backend. "
@@ -144,9 +148,7 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
         client_profile = ClientProfile()
         client_profile.httpProfile = http_profile
 
-        self._aicp_client = aicp_module.AicpClient(
-            cred, self.region, profile=client_profile
-        )
+        self._aicp_client = aicp_module.AicpClient(cred, self.region, profile=client_profile)
 
         # 强制覆写 API 版本为记忆库 API 所需的 2025-11-14
         self._aicp_client._apiVersion = "2025-11-14"
@@ -181,12 +183,14 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
             if not text:
                 continue
 
-            conversation.append({
-                "Role": role,
-                "CreatedAt": int(time.time() * 1000),
-                "MessageId": str(uuid.uuid4()),
-                "Content": [{"Type": "input_text", "Text": text}],
-            })
+            conversation.append(
+                {
+                    "Role": role,
+                    "CreatedAt": int(time.time() * 1000),
+                    "MessageId": str(uuid.uuid4()),
+                    "Content": [{"Type": "input_text", "Text": text}],
+                }
+            )
         return conversation
 
     def _effective_memory_collection_id(self) -> str:
@@ -195,9 +199,7 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
     def _effective_scene_id(self) -> str:
         return self.scene_id or DEFAULT_SCENE_ID
 
-    def save_memory(
-        self, user_id: str, event_strings: list[str], **kwargs
-    ) -> bool:
+    def save_memory(self, user_id: str, event_strings: list[str], **kwargs) -> bool:
         """调用 CreateMemorySdk 写入记忆
 
         Args:
@@ -221,7 +223,10 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
                 logger.info("No valid conversation items to save")
                 return True
 
-            metadata = kwargs.get("metadata") if isinstance(kwargs.get("metadata"), dict) else {}
+            metadata_value = kwargs.get("metadata")
+            metadata: dict[str, Any] = (
+                dict(metadata_value) if isinstance(metadata_value, dict) else {}
+            )
             agent_id = metadata.get("agent_id") or self.agent_id
             session_id = metadata.get("session_id") or kwargs.get("session_id")
             params = {
@@ -241,9 +246,7 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
                 f"user_id={user_id}, messages={len(conversation)}"
             )
 
-            response = client.call(
-                "CreateMemorySdk", params, options={"IsPostJson": True}
-            )
+            response = client.call("CreateMemorySdk", params, options={"IsPostJson": True})
             self.last_create_response = self._parse_json_response(response) or {}
             self.last_session_status = {
                 "SessionId": session_id,
@@ -252,8 +255,7 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
             }
 
             logger.info(
-                f"Saved {len(conversation)} messages to AICP memory service "
-                f"for user={user_id}"
+                f"Saved {len(conversation)} messages to AICP memory service " f"for user={user_id}"
             )
             return True
 
@@ -262,9 +264,7 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
             logger.error(f"CreateMemorySdk failed: {e}")
             return False
 
-    def search_memory(
-        self, user_id: str, query: str, top_k: int = 5, **kwargs
-    ) -> list[str]:
+    def search_memory(self, user_id: str, query: str, top_k: int = 5, **kwargs) -> list[str]:
         """调用 QueryMemorySdk 检索记忆
 
         Args:
@@ -306,9 +306,7 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
                 f"user_id={user_id}, query='{query[:50]}'"
             )
 
-            response = client.call(
-                "QueryMemorySdk", params, options={"IsPostJson": True}
-            )
+            response = client.call("QueryMemorySdk", params, options={"IsPostJson": True})
 
             # 解析响应
             memories = self._parse_query_response(response)
@@ -443,12 +441,7 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
                 parsed.extend(self._parse_memory_item(memory))
             return parsed
 
-        text = (
-            item.get("Content")
-            or item.get("Text")
-            or item.get("Memory")
-            or item.get("Data")
-        )
+        text = item.get("Content") or item.get("Text") or item.get("Memory") or item.get("Data")
         if text is None:
             return []
         if isinstance(text, (dict, list)):

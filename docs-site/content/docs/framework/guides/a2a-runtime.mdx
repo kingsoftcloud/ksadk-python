@@ -1,0 +1,171 @@
+---
+title: "A2A Runtime"
+description: "在不削弱入站和出站安全边界的前提下使用平台托管的 A2A Runtime。"
+---
+
+<Callout type="warning" title="实验性平台能力">
+托管 A2A Runtime 由 AgentEngine 提供。设置环境变量或创建一个 HTTP client 并不会让本地应用具备这项能力。
+</Callout>
+
+## 协议兼容性与 Agent Card
+
+`0.8.0` 仍是候选版本，因此 A2A 以
+[`a2aproject/A2A` 的 `main/docs/specification.md`](https://github.com/a2aproject/A2A/blob/main/docs/specification.md)
+为目标契约；该文档明确以同仓的 `specification/a2a.proto` 作为规范性数据模型来源。KsADK
+固定 `a2a-sdk==1.1.0`，其 `AgentCard`、`AgentInterface`、`AgentCapabilities` 和
+`SecurityRequirement` protobuf 字段已与当前 main 的这些定义对齐。发布前若上游 main 再变更，
+必须先升级 SDK 或适配实现并更新契约测试，不能只改文档。
+
+这不是 KsADK 自定义 JSON 方言：`supportedInterfaces[]` 中的每一项都使用 `url`、
+`protocolBinding`、`protocolVersion`，发现地址是 `/.well-known/agent-card.json`。不输出旧
+0.3 的顶层 `url`、`preferredTransport` 或 `additionalInterfaces` 字段，也不提供旧
+`/.well-known/agent.json` 服务端路由。
+
+先在本机预览 Card：
+
+```bash title="shell"
+agentengine a2a card . \
+  --url https://agent.example.com \
+  --name research-agent \
+  --description "Answers research questions." \
+  --skill research > agent-card.json
+```
+
+输出是 KsADK **实际生成的最小合规 Card**，不是把官方文档中的完整示例裁剪后手写出来的 JSON。
+`version` 是 Agent 自己的版本；每项 `protocolVersion: "1.0"` 才是 A2A 的
+major.minor 协议版本（不包含 patch）。官方完整示例中出现的 `provider`、`iconUrl`、
+`documentationUrl`、`securitySchemes`、`securityRequirements` 和 signatures 都是可选的扩展
+信息；没有真实值时 KsADK 不会伪造它们。
+
+```json title="agent-card.json"
+{
+  "name": "research-agent",
+  "description": "Answers research questions.",
+  "supportedInterfaces": [
+    {
+      "url": "https://agent.example.com/a2a/jsonrpc",
+      "protocolBinding": "JSONRPC",
+      "protocolVersion": "1.0"
+    },
+    {
+      "url": "https://agent.example.com/a2a/v1",
+      "protocolBinding": "HTTP+JSON",
+      "protocolVersion": "1.0"
+    }
+  ],
+  "version": "1.0.0",
+  "capabilities": {"streaming": true, "pushNotifications": false},
+  "defaultInputModes": ["text/plain"],
+  "defaultOutputModes": ["text/plain"],
+  "skills": [{"id": "research", "name": "Research", "description": "Skill: research", "tags": ["research"]}]
+}
+```
+
+当前 main 要求的 Card 核心字段及 KsADK 的对应关系如下：
+
+| main schema 字段 | KsADK 行为 |
+| --- | --- |
+| `name`、`description`、`version` | 从 `a2a card` 参数或项目检测结果生成 |
+| `supportedInterfaces` | 按偏好顺序声明 JSON-RPC 与 HTTP+JSON，且每项标明 `1.0` |
+| `capabilities` | 明确声明 streaming，明确关闭未实现的 push notification |
+| `defaultInputModes`、`defaultOutputModes` | 当前最小 Runtime 声明 `text/plain` |
+| `skills` | 由 `--skill` 生成；未传时生成 `general`，不会输出空列表 |
+| `securityRequirements` 等可选字段 | 由托管 Gateway/身份层有真实契约时再生成；本地最小 Card 不杜撰认证声明 |
+
+仓库测试会将生成结果重新解析为 pinned SDK 的 protobuf，并断言它不包含 main 之前版本的
+Card 字段。这是发布候选的 schema 门禁；它不把某个演示 Card 的可选 provider 或认证值误当成
+所有 Agent 都必须携带的字段。
+
+发布前可用同一官方 SDK 重新解析它；未识别字段或错误类型会失败：
+
+```bash title="shell"
+python - <<'PY'
+import json
+from a2a.types import AgentCard
+from google.protobuf.json_format import ParseDict
+
+ParseDict(json.load(open("agent-card.json")), AgentCard())
+print("A2A 1.0 AgentCard schema: OK")
+PY
+```
+
+`agentengine a2a serve .` 会在该 Card 声明的两个标准接口挂载 JSON-RPC 与 HTTP+JSON
+路由；本机开发只监听 `127.0.0.1`。托管 Runtime 的公开发现 Card 由 Gateway 发布，
+不要把开发机 Card 当作生产 discovery 记录。
+
+## 产品装配边界
+
+AgentEngine 在部署托管 Runtime 时创建 `AgentEngineA2ABootstrap`。它负责 durable task、context、resume state，Gateway 验证的入站身份，event outbox 生命周期，以及出站 transport。应用代码应使用 Runtime 提供的 Space-scoped client，或在平台注入配置后调用 `A2ASpaceClient.from_env()`。
+
+不要为 external A2A Agent 自行构造宽松的 `httpx.AsyncClient`。缺少平台受控 transport 时会以 `A2A_EGRESS_TRANSPORT_REQUIRED` fail-closed。
+
+## A2A Center / Space 调试
+
+`a2a card` 和 `a2a serve` 是本地协议开发工具；A2A Center（代码中称为 **Space**）是
+AgentEngine 托管运行时之间的发现与调用平面。它不会在普通本地进程中凭空出现：部署后平台会注入
+`KSADK_A2A_SPACE_IDS`、`KSADK_A2A_CONTROL_PLANE_URL` 和 workload token。拿到这些注入后，可用
+CLI 直接检查同一个 Space：
+
+```bash title="shell"
+# 发现一个 Space 中可调用的 Agent，并按能力筛选
+agentengine a2a discover --space-id space-demo --skill research
+
+# 向返回的 agent_id 发起一个 A2A Task，随后查询或取消它
+agentengine a2a call --space-id space-demo <agent_id> "总结本周研究"
+agentengine a2a status --space-id space-demo <task_id>
+agentengine a2a cancel --space-id space-demo <task_id>
+```
+
+这些命令输出的是平台 Task 摘要；Agent Card 本身仍遵循前一节的 A2A `1.0` 标准格式。Space
+未配置时命令会明确报错，而不会偷偷改为直连公网地址。完整变量说明见
+[环境变量参考](/cn/docs/references/environment-variables)。
+
+## 出站访问
+
+首期托管版本通过 Runtime NAT 路径支持 `external_public` Agent。`Network.EnablePublicAccess` 是唯一的 public egress 策略输入，平台将其最终值投影为 `KSADK_A2A_ENABLE_PUBLIC_EGRESS`。关闭时，在解析凭据前拒绝 external-public 调用。
+
+若该投影缺失，KsADK 按关闭处理。`CreateAgent` 的资源缺省值可以是开启，但 Runtime 只使用部署层已计算并显式注入的最终值。
+
+注入的 transport 仅允许 HTTPS；每次操作重新校验 DNS；连接到已校验 IP 但保留 TLS hostname；禁用环境代理并拒绝重定向。在处理 A2A payload 前还会限制响应大小和解析深度。
+
+首期不支持 `external_vpc`。它必须使用平台注入的 VPC dialer，未提供时返回 `A2A_VPC_EGRESS_DIALER_REQUIRED`，绝不能回退到 public NAT 路径。
+
+## 入站与恢复
+
+托管入站 A2A route 只接受 AgentEngine Gateway 验证的身份。请求进入 handler 前，Runtime 会检查 account、tenant、target Agent、target Runtime 和 target A2A registration。Runtime 本地 AgentCard 同样只允许可信 Gateway 或 server probe 获取；公网 discovery 应使用 Gateway 发布的 Card。
+
+Checkpoint handle 和 resume target 保留在 Runtime 本地 durable storage，绝不出现在公开 A2A Task 或 Message metadata 中。应通过 Runtime application lifespan 启动和停止 bootstrap，确保 durable store 与共享 event dispatcher 在接流量前就绪。
+
+托管 Runtime 不会把内部 reasoning event 写成 A2A artifact；上游只会收到协议允许的任务状态、正文与 artifact，不会收到模型的内部推理内容。
+
+只承载入站协议的 Runtime 可以禁用 outbound，此时无需注入 control plane、hosted HTTP client 或 event outbox，`client_for_space()` 会明确拒绝。独立创建的 `A2ASpaceClient` 自己拥有后台 dispatcher：使用完请 `await client.aclose()`，或用 `async with`；由 bootstrap 创建的 client 则由 Runtime lifespan 统一关闭。
+
+## 本地跨框架 reasoning 流
+
+`agentengine a2a serve` 面向本地调试，默认只监听 `127.0.0.1`，并会把 runner 明确产出的
+`thinking` / `reasoning.*` 事件写成独立的 `reasoning` artifact，并为 Part
+添加 `adk_thought=true`。它不会把普通 status 文本伪装成 reasoning。若不希望
+本地 A2A 调用方看到这些内容，使用 `--no-include-reasoning`。若显式改为公网或
+局域网监听地址（例如 `--host 0.0.0.0`），服务会暴露给所有可达网卡；本地开发
+端点默认没有替你配置认证、TLS 或网络访问策略，请先确认调用方可信并配置防火墙。
+
+LangGraph 编排方可以把远端 typed events 直接接入 custom stream：
+
+```python
+from langgraph.config import get_stream_writer
+from ksadk.a2a import stream_a2a_agent_to_writer
+
+async def call_remote(state):
+    output = await stream_a2a_agent_to_writer(
+        "http://127.0.0.1:8094",
+        state["query"],
+        writer=get_stream_writer(),
+    )
+    return {"result": output}
+```
+
+helper 与远端实现框架无关，因此 ADK↔ADK、ADK↔LangGraph 和
+LangGraph↔LangGraph 共用同一协议路径。它会保留远端实际发出的
+`thinking` / `text` 顺序，处理 artifact 快照去重及权威替换，返回值只包含正文；
+不会补造远端没有发送的“交替思考”。旧的 `stream_a2a_agent()` 仅返回字符串增量，
+无法表达替换语义；需要正确处理权威快照时请使用 typed events 或上面的 writer helper。

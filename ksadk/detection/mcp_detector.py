@@ -3,11 +3,13 @@ MCP 检测器 - 自动检测 FastMCP 项目
 """
 
 import ast
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
 import yaml
+
+from ksadk.detection.detector import FrameworkType
 
 
 @dataclass
@@ -19,16 +21,17 @@ class MCPDetectionResult:
     entry_point: str
     package_path: str
     mcp_variable: str = "mcp"
-    tools: List[str] = None  # 检测到的工具名称
+    tools: List[str] = field(default_factory=list)  # 检测到的工具名称
     confidence: float = 0.0
-
-    def __post_init__(self):
-        if self.tools is None:
-            self.tools = []
 
     @property
     def is_valid(self) -> bool:
         return self.is_mcp
+
+    @property
+    def type(self) -> FrameworkType:
+        """Expose the framework contract expected by shared builders."""
+        return FrameworkType.FASTMCP
 
 
 class MCPDetector:

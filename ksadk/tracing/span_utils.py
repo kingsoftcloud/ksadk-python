@@ -93,9 +93,12 @@ def get_langfuse_callback(
         Langfuse callback handler 或 None
     """
     try:
-        from ksadk.tracing import get_langfuse_callback_handler
+        import ksadk.tracing as tracing_module
 
-        handler = get_langfuse_callback_handler()
+        factory = getattr(tracing_module, "get_langfuse_callback_handler", None)
+        if not callable(factory):
+            return None
+        handler = factory()
         if handler:
             # 设置 session 和 metadata
             handler.session_id = session_id

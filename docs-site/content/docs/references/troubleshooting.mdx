@@ -2,6 +2,26 @@
 title: 故障排查
 ---
 
+## 升级后 `ksadk` 或 `a2a` 命令报依赖错误
+
+在运行命令的同一个 Python 环境中升级 KsADK。推荐为每个项目创建独立环境：
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade "ksadk[all]"
+python -m pip show ksadk a2a-sdk
+ksadk --help
+```
+
+`python -m pip` 必须和随后运行 `ksadk` 的 Python 属于同一环境；直接执行另一个
+`pip` 可能把新依赖装到别的解释器。通过源码可编辑安装时，修改依赖声明后也必须再次执行
+安装命令，才能刷新已安装包的元数据。
+
+KsADK 0.8 的 A2A 实现精确锁定 `a2a-sdk==1.1.0`。仍锁定 A2A 0.3 的项目（例如某些
+VEADK 版本）不能与它共用一个虚拟环境，请分别创建环境。依赖不兼容时，`ksadk --help`
+仍可使用；执行 `ksadk a2a` 会显示具体的加载错误。
+
 ## 模型调用失败
 
 检查：

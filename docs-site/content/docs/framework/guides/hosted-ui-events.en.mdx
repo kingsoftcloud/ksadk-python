@@ -1,0 +1,70 @@
+---
+title: "Hosted UI and Event Replay"
+status: "new"
+---
+
+The `0.8.0` candidate separates Hosted UI transport, interactive presentation,
+and runtime audit. OpenAI Responses remains the compatibility baseline, AG-UI
+is an optional transport, A2UI represents structured activities, and
+`RuntimeEvent` is the sole persistence and replay boundary. UI evolution does
+not change the original model-call protocol.
+
+<Callout type="warning" title="Candidate status">
+This page describes interfaces and boundaries on the review branch. It does not mean that an npm/PyPI release exists. A real hosted deployment must still validate its gateway, authentication, runner, database, and provider credentials.
+</Callout>
+
+## Protocol Selection
+
+| Layer | Role | Behavior when unavailable |
+| --- | --- | --- |
+| OpenAI Responses | established `/v1/responses` and `/v1/chat/completions` request/response semantics | always available as the compatibility baseline |
+| AG-UI | optional streaming transport between Hosted UI and runtime | fall back to Responses when the capability is not negotiated |
+| A2UI | structured activities/components and user actions | does not replace model, tool, or approval policy |
+| RuntimeEvent v1 | canonical session events, state, audit, and replay record | unknown event types cannot bypass conformance validation |
+
+AG-UI/A2UI is not a second model API. A client selects it only after Hosted
+bootstrap advertises the capability; existing Responses clients can remain unchanged.
+
+## Interaction State
+
+The state of approvals, forms, and other actionable activities must be
+projected from persisted RuntimeEvents, rather than only browser memory. When a
+user submits an action, the runtime must validate actor, pending state, tool
+receipt, and policy again; the button itself is not authorization.
+
+After a reload, the UI should reload session history and project a pending
+interaction. A completed approval must not execute again. If it behaves
+otherwise, replay the event order and terminal state first, then inspect the
+runner's native interrupt/resume capability.
+
+## Read-Only Replay
+
+The two command entry points are equivalent:
+
+```bash
+ksadk replay <session-id>
+agentengine replay <session-id> --after-seq-id 120 --before-seq-id 260 --format json
+```
+
+The command reads the new event model from `RuntimeEventStore`. Its shared
+parser projects text, reasoning, tools, artifacts, and run status; known but
+unclassified events (including A2UI/A2A extensions) remain ordered extras. It
+does not:
+
+- call a model provider;
+- run a tool, MCP, sandbox, or approval action again;
+- guess-convert legacy `assistant_message` SessionEvent records to RuntimeEvent.
+
+`--after-seq-id` is exclusive and `--before-seq-id` is an exclusive upper
+bound. Read the full session first, then reduce to the cursors around the
+failure to distinguish a missing event, an unprojected event, and an action
+that was rejected or consumed.
+
+## Migration and Triage Order
+
+1. Keep the existing Responses call and first verify that session and RuntimeEvent persistence work.
+2. Read Hosted bootstrap capabilities; only enable AG-UI/A2UI after negotiation succeeds.
+3. For reloads, disconnects, or duplicate approvals, use `ksadk replay` to locate the event cursor and terminal state.
+4. For LangGraph/ADK interrupt or resume, then validate the framework-native checkpoint configuration. New integrations must not depend on legacy LangChain continuity.
+
+For browser debugging, see [Local Web UI](local-web-ui). For session and checkpoint semantics, see [Sessions, Runtime, and Files](../../references/runtime-sessions-files).

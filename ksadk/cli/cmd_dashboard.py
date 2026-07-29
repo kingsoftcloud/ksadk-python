@@ -7,7 +7,7 @@ import os
 import webbrowser
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple, cast
 
 import click
 
@@ -34,8 +34,17 @@ from ksadk.cli.resource_common import (
     render_descriptor_list,
     render_descriptor_status,
 )
-from ksadk.cli.ui import print_info, print_kv, print_success, print_warn
-from ksadk.cli.ui import is_json_output, is_stdout_tty, output_option as cli_output_option
+from ksadk.cli.ui import (
+    is_json_output,
+    is_stdout_tty,
+    print_info,
+    print_kv,
+    print_success,
+    print_warn,
+)
+from ksadk.cli.ui import (
+    output_option as cli_output_option,
+)
 from ksadk.deployment.state import load_state
 from ksadk.deployment.ui_config import resolve_ui_config
 from ksadk.openclaw_gateway import OpenClawGatewayClient
@@ -75,9 +84,7 @@ DASHBOARD_RESOURCE = ResourceDescriptor(
         "agentengine dashboard open --agent <AgentName|AgentId>",
     ),
     open_action_help="打开 Agent Dashboard",
-    extra_action_help=(
-        ("share", "管理 Dashboard 分享链接"),
-    ),
+    extra_action_help=(("share", "管理 Dashboard 分享链接"),),
 )
 
 DASHBOARD_SHARE_RESOURCE = ResourceDescriptor(
@@ -114,6 +121,7 @@ DASHBOARD_SHARE_RESOURCE = ResourceDescriptor(
     list_action_help="列出 Dashboard 分享链接",
     delete_action_help="撤销 Dashboard 分享链接",
 )
+
 
 class DashboardGroup(click.Group):
     """支持 `dashboard open` canonical + `dashboard [agent_ref]` 兼容路径。"""
@@ -169,8 +177,12 @@ def _abort_dashboard_error(
     context_settings=CONTEXT_SETTINGS,
     help=build_resource_group_help(DASHBOARD_RESOURCE),
 )
-@click.option("--agent", "--agent-id", "agent_option", "-a", hidden=True, help="(兼容) Agent 名称或 ID")
-@click.option("--region", "-r", default=None, envvar="KSYUN_REGION", hidden=True, help="(兼容) 区域")
+@click.option(
+    "--agent", "--agent-id", "agent_option", "-a", hidden=True, help="(兼容) Agent 名称或 ID"
+)
+@click.option(
+    "--region", "-r", default=None, envvar="KSYUN_REGION", hidden=True, help="(兼容) 区域"
+)
 @click.option("--path", "ui_path", default=None, hidden=True, help="(兼容) 目标 UI 路径")
 @click.option("--share", is_flag=True, hidden=True, help="(兼容) 创建可分享链接")
 @click.option(
@@ -272,7 +284,11 @@ def dashboard_open(
     )
 
 
-@dashboard.group("share", context_settings=CONTEXT_SETTINGS, help=build_resource_group_help(DASHBOARD_SHARE_RESOURCE))
+@dashboard.group(
+    "share",
+    context_settings=CONTEXT_SETTINGS,
+    help=build_resource_group_help(DASHBOARD_SHARE_RESOURCE),
+)
 def dashboard_share():
     pass
 
@@ -281,7 +297,13 @@ def dashboard_share():
 @click.argument("agent_ref", required=False)
 @click.option("--agent", "--agent-id", "agent_option", "-a", help="Agent 名称或 ID")
 @click.option("--region", "-r", default=None, envvar="KSYUN_REGION", help="区域")
-@click.option("--type", "link_type", type=click.Choice(["private", "share"]), default=None, help="链接类型过滤")
+@click.option(
+    "--type",
+    "link_type",
+    type=click.Choice(["private", "share"]),
+    default=None,
+    help="链接类型过滤",
+)
 @click.option("--status", type=click.Choice(["active", "revoked"]), default=None, help="状态过滤")
 @pagination_options(default_page=1, default_size=20)
 @cli_output_option()
@@ -309,7 +331,9 @@ def dashboard_share_list(
 
     cwd = Path(".").resolve()
     state = load_state(cwd)
-    effective_region = _resolve_effective_region(region, state, region_source=_region_parameter_source(ctx, "region"))
+    effective_region = _resolve_effective_region(
+        region, state, region_source=_region_parameter_source(ctx, "region")
+    )
     primary_ref, fallback_ref = _resolve_references(explicit_ref, cwd)
     if not primary_ref:
         _abort_dashboard_error(
@@ -319,16 +343,23 @@ def dashboard_share_list(
             ),
             argv=["dashboard", "share", "list"],
         )
+        return
 
     try:
-        detail, _, _ = asyncio.run(_resolve_agent_detail(effective_region, primary_ref, fallback_ref))
+        detail, _, _ = asyncio.run(
+            _resolve_agent_detail(effective_region, primary_ref, fallback_ref)
+        )
     except Exception as e:
-        _abort_dashboard_error(e, context="获取 Agent 信息失败", argv=["dashboard", "share", "list"])
+        _abort_dashboard_error(
+            e, context="获取 Agent 信息失败", argv=["dashboard", "share", "list"]
+        )
     agent_id = (detail.get("agent_id") or "").strip()
     agent_name = (detail.get("name") or "").strip()
     if not agent_id and not agent_name:
         _abort_dashboard_error(
-            resolution_error("无法解析 Agent 标识", hints=list(DASHBOARD_SHARE_RESOURCE.resolution_commands)),
+            resolution_error(
+                "无法解析 Agent 标识", hints=list(DASHBOARD_SHARE_RESOURCE.resolution_commands)
+            ),
             argv=["dashboard", "share", "list"],
         )
 
@@ -345,7 +376,9 @@ def dashboard_share_list(
             )
         )
     except Exception as e:
-        _abort_dashboard_error(e, context="查询 Dashboard 链接失败", argv=["dashboard", "share", "list"])
+        _abort_dashboard_error(
+            e, context="查询 Dashboard 链接失败", argv=["dashboard", "share", "list"]
+        )
     links = result.get("links") or []
     total = int(result.get("total") or len(links))
     render_descriptor_list(
@@ -444,7 +477,9 @@ def _open_dashboard(
         return
 
     try:
-        explicit_ref = merge_agent_inputs(agent_option=agent_option, positional_agent=positional_agent)
+        explicit_ref = merge_agent_inputs(
+            agent_option=agent_option, positional_agent=positional_agent
+        )
     except ValueError as e:
         _abort_dashboard_error(usage_error(str(e)), argv=["dashboard", "open"])
 
@@ -460,12 +495,15 @@ def _open_dashboard(
             ),
             argv=["dashboard", "open"],
         )
+        return
 
     if primary_ref.source != "cli":
         print_info(f"未显式指定 Agent，使用 {primary_ref.source_text}: {primary_ref.value}")
 
     try:
-        detail, used_ref, state_stale = asyncio.run(_resolve_agent_detail(effective_region, primary_ref, fallback_ref))
+        detail, used_ref, state_stale = asyncio.run(
+            _resolve_agent_detail(effective_region, primary_ref, fallback_ref)
+        )
     except Exception as e:
         _abort_dashboard_error(e, context="获取 Agent 信息失败", argv=["dashboard", "open"])
         return
@@ -518,25 +556,29 @@ def _open_dashboard(
                 )
             )
         except Exception as e:
-            _abort_dashboard_error(e, context="创建 OpenClaw gateway 链接失败", argv=["dashboard", "open"])
+            _abort_dashboard_error(
+                e, context="创建 OpenClaw gateway 链接失败", argv=["dashboard", "open"]
+            )
             return
         _render_dashboard_open_result(detail=detail, link_data=link_data, no_open=no_open)
         return
 
     link_type = "share" if share else "private"
-    validated_expires = _normalize_expires_seconds(link_type=link_type, expires_seconds=expires_seconds)
+    validated_expires = _normalize_expires_seconds(
+        link_type=link_type, expires_seconds=expires_seconds
+    )
     try:
         link_data = asyncio.run(
-                _create_dashboard_access_link(
-                    region=effective_region,
-                    agent_id=(detail.get("agent_id") or "").strip() or None,
-                    agent_name=(detail.get("name") or "").strip() or None,
-                    link_type=link_type,
-                    path=link_path,
-                    expires_seconds=validated_expires,
-                    force_new=force_new,
-                )
+            _create_dashboard_access_link(
+                region=effective_region,
+                agent_id=(detail.get("agent_id") or "").strip() or None,
+                agent_name=(detail.get("name") or "").strip() or None,
+                link_type=link_type,
+                path=link_path,
+                expires_seconds=validated_expires,
+                force_new=force_new,
             )
+        )
     except Exception as e:
         _abort_dashboard_error(e, context="创建 Dashboard 链接失败", argv=["dashboard", "open"])
         return
@@ -546,7 +588,9 @@ def _open_dashboard(
             remote_error("CreateDashboardAccessLink 返回为空"),
             argv=["dashboard", "open"],
         )
-    _render_dashboard_open_result(detail=detail, link_data=link_data, no_open=no_open, default_link_type=link_type)
+    _render_dashboard_open_result(
+        detail=detail, link_data=link_data, no_open=no_open, default_link_type=link_type
+    )
 
 
 def _render_dashboard_open_result(
@@ -557,7 +601,9 @@ def _render_dashboard_open_result(
     default_link_type: str = "private",
 ):
     open_url = (link_data.get("access_url") or "").strip()
-    actual_link_type = str(link_data.get("link_type") or default_link_type or "").strip() or default_link_type
+    actual_link_type = (
+        str(link_data.get("link_type") or default_link_type or "").strip() or default_link_type
+    )
 
     render_descriptor_status(
         DASHBOARD_SHARE_RESOURCE,
@@ -566,13 +612,19 @@ def _render_dashboard_open_result(
         fields=[
             ("ID", str(link_data.get("link_id") or "-"), "#58a6ff"),
             ("类型", actual_link_type, None),
-            ("过期时间", _format_dashboard_time(link_data.get("expires_at"), never_text="server-default"), None),
+            (
+                "过期时间",
+                _format_dashboard_time(link_data.get("expires_at"), never_text="server-default"),
+                None,
+            ),
         ],
         action="open",
         item={
             "link_id": str(link_data.get("link_id") or "-"),
             "type": actual_link_type,
-            "expires_at": _format_dashboard_time(link_data.get("expires_at"), never_text="server-default"),
+            "expires_at": _format_dashboard_time(
+                link_data.get("expires_at"), never_text="server-default"
+            ),
             "url": open_url,
             "agent_id": str(detail.get("agent_id") or ""),
             "agent_name": str(detail.get("name") or ""),
@@ -596,11 +648,17 @@ def _validate_ui_path_option(ui_path: Optional[str]) -> None:
             )
 
 
-def _resolve_effective_region(region: Optional[str], state: Optional[dict], *, region_source: str) -> str:
+def _resolve_effective_region(
+    region: Optional[str], state: Optional[dict], *, region_source: str
+) -> str:
     explicit_region = str(region or "").strip()
     if explicit_region and region_source == "commandline":
         return explicit_region
-    if explicit_region and region_source == "environment" and not _is_global_config_injected_region():
+    if (
+        explicit_region
+        and region_source == "environment"
+        and not _is_global_config_injected_region()
+    ):
         return explicit_region
     state_region = str((state or {}).get("region") or "").strip()
     return state_region or explicit_region or DEFAULT_REGION
@@ -643,7 +701,8 @@ def _resolve_openclaw_link_path(
         return normalized_path
 
     state_data = state if isinstance(state, dict) else {}
-    nested = state_data.get("ui") if isinstance(state_data.get("ui"), dict) else {}
+    nested_value = state_data.get("ui")
+    nested = nested_value if isinstance(nested_value, dict) else {}
     state_path = state_data.get("ui_path") or nested.get("path")
     if state_path is None:
         return None
@@ -687,7 +746,9 @@ def _resolve_references(
     if explicit_ref:
         return ResolvedAgentRef(value=explicit_ref, source="cli"), None
 
-    hermes_state_ref = resolve_agent_ref(None, cwd=cwd, include_state=True, include_project_config=False)
+    hermes_state_ref = resolve_agent_ref(
+        None, cwd=cwd, include_state=True, include_project_config=False
+    )
     openclaw_state_ref = resolve_openclaw_ref(
         None,
         cwd=cwd,
@@ -735,6 +796,7 @@ async def _resolve_agent_detail(
             and _is_not_found_error(err)
         )
         if can_fallback:
+            assert fallback_ref is not None
             fallback_detail, fallback_err = await _try_get_agent_detail(client, fallback_ref.value)
             if fallback_detail:
                 return fallback_detail, fallback_ref, True
@@ -746,11 +808,16 @@ async def _resolve_agent_detail(
         raise Exception("Agent not found")
 
 
-async def _try_get_agent_detail(client: AgentEngineClient, agent_ref: str) -> Tuple[Optional[dict], Optional[Exception]]:
+async def _try_get_agent_detail(
+    client: AgentEngineClient, agent_ref: str
+) -> Tuple[Optional[dict], Optional[Exception]]:
     err: Optional[Exception] = None
-    for kwargs in ({"agent_id": agent_ref}, {"name": agent_ref}):
+    for lookup_by_id in (True, False):
         try:
-            agent = await client.get_agent(**kwargs)
+            if lookup_by_id:
+                agent = await client.get_agent(agent_id=agent_ref)
+            else:
+                agent = await client.get_agent(name=agent_ref)
             if agent:
                 return _flatten_agent_detail(agent), None
         except Exception as e:
@@ -783,7 +850,7 @@ async def _create_dashboard_access_link(
             kwargs["name"] = agent_name
         else:
             raise Exception("missing agent reference")
-        return await client.create_dashboard_access_link(**kwargs)
+        return cast(dict[str, Any], await client.create_dashboard_access_link(**kwargs))
 
 
 def _build_openclaw_gateway_client(region: str, detail: dict) -> OpenClawGatewayClient:
@@ -844,12 +911,14 @@ async def _list_dashboard_access_links(
             kwargs["name"] = agent_name
         else:
             raise Exception("missing agent reference")
-        return await client.list_dashboard_access_links(**kwargs)
+        return cast(dict[str, Any], await client.list_dashboard_access_links(**kwargs))
 
 
-async def _delete_dashboard_access_link(*, region: str, link_id: str, dry_run: bool = False) -> dict:
+async def _delete_dashboard_access_link(
+    *, region: str, link_id: str, dry_run: bool = False
+) -> dict:
     async with AgentEngineClient(region=region, dry_run=dry_run) as client:
-        return await client.delete_dashboard_access_link(link_id=link_id)
+        return cast(dict[str, Any], await client.delete_dashboard_access_link(link_id=link_id))
 
 
 def _flatten_agent_detail(agent: dict) -> dict:
@@ -860,8 +929,14 @@ def _flatten_agent_detail(agent: dict) -> dict:
     return {
         "agent_id": basic.get("agent_id") or agent.get("agent_id") or "",
         "name": basic.get("name") or agent.get("name") or "",
-        "framework": deploy.get("framework") or basic.get("framework") or agent.get("framework") or "",
-        "endpoint": quick.get("public_endpoint") or quick.get("private_endpoint") or agent.get("endpoint") or "",
+        "framework": deploy.get("framework")
+        or basic.get("framework")
+        or agent.get("framework")
+        or "",
+        "endpoint": quick.get("public_endpoint")
+        or quick.get("private_endpoint")
+        or agent.get("endpoint")
+        or "",
         "langfuse_url": adv.get("observability_url") or agent.get("langfuse_trace_url") or "",
     }
 

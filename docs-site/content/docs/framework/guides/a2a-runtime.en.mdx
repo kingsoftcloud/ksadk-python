@@ -1,0 +1,221 @@
+---
+title: "A2A Runtime"
+description: "Use a platform-managed A2A Runtime without weakening ingress or egress boundaries."
+---
+
+<Callout type="warning" title="Experimental platform capability">
+The managed A2A Runtime is supplied by AgentEngine. It is not enabled by a local
+application simply by setting an environment variable or creating an HTTP client.
+</Callout>
+
+## Protocol compatibility and Agent Card
+
+Because `0.8.0` is still a release candidate, its A2A target contract is
+[`a2aproject/A2A`'s `main/docs/specification.md`](https://github.com/a2aproject/A2A/blob/main/docs/specification.md).
+That document makes `specification/a2a.proto` in the same repository the
+normative source of the data model. KsADK pins `a2a-sdk==1.1.0`; its protobuf
+fields for `AgentCard`, `AgentInterface`, `AgentCapabilities`, and
+`SecurityRequirement` match the current main definitions. If upstream main
+changes before release, we must first upgrade the SDK or adapt the implementation
+and update the contract test—not merely change these docs.
+
+This is not a KsADK JSON dialect. Each `supportedInterfaces[]` entry uses `url`,
+`protocolBinding`, and `protocolVersion`, and discovery uses
+`/.well-known/agent-card.json`. KsADK does not emit legacy 0.3 top-level `url`,
+`preferredTransport`, or `additionalInterfaces`, and does not serve the old
+`/.well-known/agent.json` endpoint.
+
+Preview a Card locally:
+
+```bash title="shell"
+agentengine a2a card . \
+  --url https://agent.example.com \
+  --name research-agent \
+  --description "Answers research questions." \
+  --skill research > agent-card.json
+```
+
+The output is the **actual minimal conforming Card produced by KsADK**, not a
+hand-trimmed copy of the official documentation's full example. `version` is the
+Agent's own version; `protocolVersion: "1.0"` on every interface is the A2A
+major.minor protocol version (without a patch number). The official full example
+also shows optional `provider`, `iconUrl`, `documentationUrl`,
+`securitySchemes`, `securityRequirements`, and signatures. KsADK does not invent
+those fields when it has no real values to declare.
+
+```json title="agent-card.json"
+{
+  "name": "research-agent",
+  "description": "Answers research questions.",
+  "supportedInterfaces": [
+    {
+      "url": "https://agent.example.com/a2a/jsonrpc",
+      "protocolBinding": "JSONRPC",
+      "protocolVersion": "1.0"
+    },
+    {
+      "url": "https://agent.example.com/a2a/v1",
+      "protocolBinding": "HTTP+JSON",
+      "protocolVersion": "1.0"
+    }
+  ],
+  "version": "1.0.0",
+  "capabilities": {"streaming": true, "pushNotifications": false},
+  "defaultInputModes": ["text/plain"],
+  "defaultOutputModes": ["text/plain"],
+  "skills": [{"id": "research", "name": "Research", "description": "Skill: research", "tags": ["research"]}]
+}
+```
+
+The current main schema has the following core fields and KsADK behavior:
+
+| main-schema field | KsADK behavior |
+| --- | --- |
+| `name`, `description`, `version` | Produced from `a2a card` arguments or project detection |
+| `supportedInterfaces` | Declares JSON-RPC then HTTP+JSON, each at protocol `1.0` |
+| `capabilities` | Explicitly declares streaming and disables unimplemented push notifications |
+| `defaultInputModes`, `defaultOutputModes` | The current minimal Runtime declares `text/plain` |
+| `skills` | Generated from `--skill`; with no value, a non-empty `general` skill is emitted |
+| Optional fields such as `securityRequirements` | Produced only when the managed Gateway/identity layer has a real contract; a local minimal Card never invents authentication claims |
+
+The repository test reparses the output through the pinned SDK protobuf and
+asserts that no pre-main legacy Card fields escape. This is a schema gate for the
+release candidate; it deliberately does not treat optional provider or security
+values in an illustrative official Card as mandatory for every Agent.
+
+Before release, reparse it with the same official SDK; an unknown field or an
+invalid type fails the check:
+
+```bash title="shell"
+python - <<'PY'
+import json
+from a2a.types import AgentCard
+from google.protobuf.json_format import ParseDict
+
+ParseDict(json.load(open("agent-card.json")), AgentCard())
+print("A2A 1.0 AgentCard schema: OK")
+PY
+```
+
+`agentengine a2a serve .` mounts JSON-RPC and HTTP+JSON routes at the two
+interfaces declared by that Card and binds only to `127.0.0.1` locally. A
+managed Runtime's public discovery Card is published by the Gateway; do not use
+a development-machine Card as a production discovery record.
+
+## Product ownership
+
+AgentEngine creates `AgentEngineA2ABootstrap` when it deploys a managed Runtime.
+The bootstrap owns durable task, context, and resume state; Gateway-verified
+inbound identity; the event outbox lifecycle; and outbound transport. Application
+code should use the Space-scoped client supplied by that Runtime, or
+`A2ASpaceClient.from_env()` after the platform has injected its configuration.
+
+Do not construct a permissive external `httpx.AsyncClient` for an external A2A
+Agent. A missing managed transport fails closed with
+`A2A_EGRESS_TRANSPORT_REQUIRED`.
+
+## A2A Center / Space debugging
+
+`a2a card` and `a2a serve` are local protocol-development tools. The A2A Center
+(called a **Space** in the code) is the discovery and invocation plane between
+AgentEngine managed Runtimes. It does not appear merely because a normal local
+process starts: after deployment, the platform injects `KSADK_A2A_SPACE_IDS`,
+`KSADK_A2A_CONTROL_PLANE_URL`, and a workload token. With those values, inspect
+the same Space from the CLI:
+
+```bash title="shell"
+# Discover callable Agents in a Space and filter by capability
+agentengine a2a discover --space-id space-demo --skill research
+
+# Start an A2A Task for the returned agent_id, then inspect or cancel it
+agentengine a2a call --space-id space-demo <agent_id> "Summarize this week's research"
+agentengine a2a status --space-id space-demo <task_id>
+agentengine a2a cancel --space-id space-demo <task_id>
+```
+
+These commands print platform Task summaries; the Agent Card itself retains the
+standard A2A `1.0` shape shown above. If no Space is configured, the command
+fails explicitly rather than silently falling back to a public direct URL. See
+the [environment-variable reference](/en/docs/references/environment-variables)
+for the complete variable contract.
+
+## Outbound access
+
+The first managed release supports `external_public` Agents over the Runtime's NAT
+path. `Network.EnablePublicAccess` is the only public-egress policy input; the
+platform projects its effective value to `KSADK_A2A_ENABLE_PUBLIC_EGRESS`. When it
+is disabled, external-public calls are rejected before credentials are resolved.
+
+If that projection is absent, KsADK treats it as disabled. `CreateAgent` may
+default the resource field to enabled, but a Runtime uses only the effective
+value that the deployment layer explicitly calculates and injects.
+
+The injected transport is HTTPS-only, performs a fresh DNS check for each
+operation, connects to the verified IP while retaining the hostname for TLS,
+disables environment proxies, and rejects redirects. It limits response size and
+parsing depth before A2A payloads are processed.
+
+`external_vpc` is not available in the first managed release. It requires a
+platform-injected VPC dialer and fails with `A2A_VPC_EGRESS_DIALER_REQUIRED`; it
+must not fall back to the public NAT path.
+
+## Inbound access and recovery
+
+Managed inbound A2A routes accept only identity verified by AgentEngine Gateway.
+The Runtime checks the verified account, tenant, target Agent, target Runtime, and
+target A2A registration before the handler receives a request. The Runtime-local
+AgentCard is also restricted to a trusted Gateway or server probe; public discovery
+uses the Gateway-published Card instead.
+
+Checkpoint handles and resume targets remain in Runtime-local durable storage. They
+are never included in public A2A Task or Message metadata. Start and stop the
+bootstrap with the Runtime application lifespan so durable stores and the shared
+event dispatcher are ready before traffic is served.
+
+A managed Runtime does not write its internal reasoning events as A2A artifacts.
+Upstream callers receive only protocol task state, response content, and allowed
+artifacts—not model-internal reasoning.
+
+An inbound-only Runtime can disable outbound operation. It then needs no control
+plane, hosted HTTP client, or event outbox, and `client_for_space()` rejects
+explicitly. A standalone `A2ASpaceClient` owns its background dispatcher: call
+`await client.aclose()` when finished, or use `async with`. Clients created by a
+bootstrap are closed by the Runtime lifespan instead.
+
+## Local Cross-Framework Reasoning Streams
+
+`agentengine a2a serve` is a local development command that binds to
+`127.0.0.1` by default. It writes explicit runner `thinking` / `reasoning.*`
+events to a separate `reasoning`
+artifact whose Parts carry `adk_thought=true`. It does not reinterpret ordinary
+status text as reasoning. Use `--no-include-reasoning` when local A2A callers
+must not receive that content. If you explicitly bind to a public or LAN
+address such as `--host 0.0.0.0`, the service becomes reachable through every
+network interface. The local development endpoint does not configure
+authentication, TLS, or network policy for you, so restrict access with trusted
+callers and a firewall.
+
+A LangGraph orchestrator can forward the remote typed events directly into its
+custom stream:
+
+```python
+from langgraph.config import get_stream_writer
+from ksadk.a2a import stream_a2a_agent_to_writer
+
+async def call_remote(state):
+    output = await stream_a2a_agent_to_writer(
+        "http://127.0.0.1:8094",
+        state["query"],
+        writer=get_stream_writer(),
+    )
+    return {"result": output}
+```
+
+The helper is independent of the remote framework, so ADK↔ADK,
+ADK↔LangGraph, and LangGraph↔LangGraph use the same protocol path. It preserves
+the actual `thinking` / `text` order emitted by the remote agent, deduplicates
+artifact snapshots, reconciles authoritative replacements, and returns response
+text only. It never invents alternation that the remote agent did not emit. The
+legacy `stream_a2a_agent()` API yields strings only and cannot encode replacement
+semantics; use typed events or the writer helper when authoritative snapshots
+must be reconciled.

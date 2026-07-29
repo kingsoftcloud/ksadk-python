@@ -16,9 +16,51 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     EnvVarSpec("KSADK_ADK_RESUMABLE", "runners", "Enable ADK invocation resume support.", "false"),
     EnvVarSpec("KSADK_ADK_SESSION_BACKEND", "sessions", "ADK-native session backend selector."),
     EnvVarSpec("KSADK_ADK_SESSION_PATH", "sessions", "ADK-native SQLite session database path."),
-    EnvVarSpec("KSADK_ADK_SESSION_URL", "sessions", "ADK-native database session URL.", sensitive=True),
-    EnvVarSpec("KSADK_AICP_ENDPOINT_MODE", "platform", "AICP endpoint selection mode: auto, detect, inner, or public."),
-    EnvVarSpec("KSADK_ALLOWED_SUFFIXES", "builders", "Internal code package allowed suffix constant."),
+    EnvVarSpec(
+        "KSADK_ADK_SESSION_URL", "sessions", "ADK-native database session URL.", sensitive=True
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_CONTROL_PLANE_URL",
+        "a2a",
+        "AgentEngine A2A runtime control-plane base URL injected by the deploy layer.",
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_ENABLE_PUBLIC_EGRESS",
+        "a2a",
+        "Allow calling external (public-egress) agents in the A2A Space.",
+        "false when the deploy layer does not inject a value",
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_EVENT_OUTBOX_PATH",
+        "a2a",
+        "SQLite path for durable A2A task-event delivery batches.",
+        ".agentengine/a2a_event_outbox.sqlite3",
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_TOKEN_DIR",
+        "a2a",
+        "Directory containing audience-specific projected A2A workload JWT files.",
+        "/var/run/secrets/agentengine/a2a",
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_SPACE_IDS",
+        "a2a",
+        "JSON array of A2A Space ids configured for this Runtime Agent.",
+    ),
+    EnvVarSpec(
+        "KSADK_A2UI_GENERATION_TIMEOUT_SECONDS",
+        "agui",
+        "A2UI structured-generation deadline in seconds; values are clamped to 1 through 120.",
+        "20",
+    ),
+    EnvVarSpec(
+        "KSADK_AICP_ENDPOINT_MODE",
+        "platform",
+        "AICP endpoint selection mode: auto, detect, inner, or public.",
+    ),
+    EnvVarSpec(
+        "KSADK_ALLOWED_SUFFIXES", "builders", "Internal code package allowed suffix constant."
+    ),
     EnvVarSpec(
         "KSADK_ATTACHMENT_OCR_RUNTIME_REQUIREMENTS",
         "builders",
@@ -65,13 +107,42 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "Built-in tool profile selector, such as default or coding.",
         "default",
     ),
-    EnvVarSpec("KSADK_CHECKPOINT_BACKEND", "sessions", "LangGraph checkpoint backend selector.", "local"),
+    EnvVarSpec(
+        "KSADK_CHECKPOINT_BACKEND", "sessions", "LangGraph checkpoint backend selector.", "local"
+    ),
     EnvVarSpec("KSADK_CHECKPOINT_PATH", "sessions", "Local SQLite checkpoint database path."),
-    EnvVarSpec("KSADK_COMMAND_", "sandbox", "Internal prefix for command policy environment controls."),
-    EnvVarSpec("KSADK_COMMAND_CWD", "sandbox", "Current working directory exported to command policy checks."),
-    EnvVarSpec("KSADK_COMPACT_MICROCOMPACT_COLD_ROUNDS", "runtime", "Groups older than this many rounds are compacted by L3 microcompact.", "3"),
-    EnvVarSpec("KSADK_COMPACT_MICROCOMPACT_ENABLED", "runtime", "Enable L3 microcompact deterministic cold-group compression in compaction pipeline.", "true"),
-    EnvVarSpec("KSADK_COMPACT_SNIP_ENABLED", "runtime", "Enable L2 snip deterministic redundancy removal in compaction pipeline.", "true"),
+    EnvVarSpec(
+        "KSADK_CODEX_USE_PROXY",
+        "codex",
+        "Codex proxy override: 1 forces the local Responses-to-Chat proxy and "
+        "0 forces direct mode.",
+    ),
+    EnvVarSpec(
+        "KSADK_COMMAND_", "sandbox", "Internal prefix for command policy environment controls."
+    ),
+    EnvVarSpec(
+        "KSADK_COMMAND_CWD",
+        "sandbox",
+        "Current working directory exported to command policy checks.",
+    ),
+    EnvVarSpec(
+        "KSADK_COMPACT_MICROCOMPACT_COLD_ROUNDS",
+        "runtime",
+        "Groups older than this many rounds are compacted by L3 microcompact.",
+        "3",
+    ),
+    EnvVarSpec(
+        "KSADK_COMPACT_MICROCOMPACT_ENABLED",
+        "runtime",
+        "Enable L3 microcompact deterministic cold-group compression in compaction pipeline.",
+        "true",
+    ),
+    EnvVarSpec(
+        "KSADK_COMPACT_SNIP_ENABLED",
+        "runtime",
+        "Enable L2 snip deterministic redundancy removal in compaction pipeline.",
+        "true",
+    ),
     EnvVarSpec(
         "KSADK_CORE_RUNTIME_REQUIREMENTS",
         "builders",
@@ -81,21 +152,54 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     EnvVarSpec("KSADK_EVENTS_TABLE", "sessions", "Internal SQLite events table constant."),
     EnvVarSpec("KSADK_FEISHU_APP_ID", "cli", "Feishu helper app id used by OpenClaw diagnostics."),
     EnvVarSpec("KSADK_FEISHU_RESULT_PATH", "cli", "Feishu helper result file path."),
-    EnvVarSpec("KSADK_GLOBAL_CONFIG_ENV_KEYS", "cli", "Internal marker for env vars injected from global config."),
+    EnvVarSpec(
+        "KSADK_GLOBAL_CONFIG_ENV_KEYS",
+        "cli",
+        "Internal marker for env vars injected from global config.",
+    ),
+    EnvVarSpec(
+        "KSADK_HOSTED_UI_GUIDELINES",
+        "web",
+        "Internal hosted-A2UI guideline constant; not a supported environment override.",
+    ),
     EnvVarSpec("KSADK_KB", "knowledge_base", "AICP knowledge-base connection prefix."),
-    EnvVarSpec("KSADK_KB_ACCESS_KEY", "knowledge_base", "Knowledge-base API access key.", sensitive=True),
+    EnvVarSpec(
+        "KSADK_KB_ACCESS_KEY", "knowledge_base", "Knowledge-base API access key.", sensitive=True
+    ),
     EnvVarSpec("KSADK_KB_DATASET_ID", "knowledge_base", "Knowledge-base dataset id."),
-    EnvVarSpec("KSADK_KB_ENDPOINT", "knowledge_base", "Knowledge-base API endpoint.", "aicp.api.ksyun.com"),
+    EnvVarSpec(
+        "KSADK_KB_ENDPOINT", "knowledge_base", "Knowledge-base API endpoint.", "aicp.api.ksyun.com"
+    ),
     EnvVarSpec("KSADK_KB_REGION", "knowledge_base", "Knowledge-base region.", "cn-beijing-6"),
-    EnvVarSpec("KSADK_KB_RERANKING_ENABLE", "knowledge_base", "Enable knowledge-base reranking.", "false"),
-    EnvVarSpec("KSADK_KB_SCORE_THRESHOLD", "knowledge_base", "Knowledge-base score threshold.", "0.0"),
-    EnvVarSpec("KSADK_KB_SEARCH_METHOD", "knowledge_base", "Knowledge-base search method.", "intelligence_search"),
-    EnvVarSpec("KSADK_KB_SECRET_KEY", "knowledge_base", "Knowledge-base API secret key.", sensitive=True),
+    EnvVarSpec(
+        "KSADK_KB_RERANKING_ENABLE", "knowledge_base", "Enable knowledge-base reranking.", "false"
+    ),
+    EnvVarSpec(
+        "KSADK_KB_SCORE_THRESHOLD", "knowledge_base", "Knowledge-base score threshold.", "0.0"
+    ),
+    EnvVarSpec(
+        "KSADK_KB_SEARCH_METHOD",
+        "knowledge_base",
+        "Knowledge-base search method.",
+        "intelligence_search",
+    ),
+    EnvVarSpec(
+        "KSADK_KB_SECRET_KEY", "knowledge_base", "Knowledge-base API secret key.", sensitive=True
+    ),
     EnvVarSpec("KSADK_KB_TOP_K", "knowledge_base", "Knowledge-base retrieval result count.", "5"),
-    EnvVarSpec("KSADK_LANGGRAPH_CHECKPOINT_DSN", "sessions", "LangGraph PostgreSQL checkpoint DSN.", sensitive=True),
-    EnvVarSpec("KSADK_LOCAL_SKILLS_DIR", "skills", "Local directory containing extracted Skill packages."),
+    EnvVarSpec(
+        "KSADK_LANGGRAPH_CHECKPOINT_DSN",
+        "sessions",
+        "LangGraph PostgreSQL checkpoint DSN.",
+        sensitive=True,
+    ),
+    EnvVarSpec(
+        "KSADK_LOCAL_SKILLS_DIR", "skills", "Local directory containing extracted Skill packages."
+    ),
     EnvVarSpec("KSADK_LTM", "memory", "AICP long-term-memory connection prefix."),
-    EnvVarSpec("KSADK_LTM_ACCESS_KEY", "memory", "Long-term-memory API access key.", sensitive=True),
+    EnvVarSpec(
+        "KSADK_LTM_ACCESS_KEY", "memory", "Long-term-memory API access key.", sensitive=True
+    ),
     EnvVarSpec("KSADK_LTM_AGENT_ID", "memory", "Long-term-memory agent id."),
     EnvVarSpec("KSADK_LTM_APP_NAME", "memory", "Long-term-memory application name override."),
     EnvVarSpec(
@@ -106,48 +210,126 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     ),
     EnvVarSpec("KSADK_LTM_BACKEND", "memory", "Long-term-memory backend selector.", "local"),
     EnvVarSpec("KSADK_LTM_ENDPOINT", "memory", "Long-term-memory API endpoint."),
-    EnvVarSpec("KSADK_LTM_HTTP_TOKEN", "memory", "HTTP long-term-memory bearer token.", sensitive=True),
-    EnvVarSpec("KSADK_LTM_HTTP_URL", "memory", "HTTP long-term-memory service URL.", sensitive=True),
+    EnvVarSpec(
+        "KSADK_LTM_HTTP_TOKEN", "memory", "HTTP long-term-memory bearer token.", sensitive=True
+    ),
+    EnvVarSpec(
+        "KSADK_LTM_HTTP_URL", "memory", "HTTP long-term-memory service URL.", sensitive=True
+    ),
     EnvVarSpec("KSADK_LTM_INDEX", "memory", "Long-term-memory index name."),
     EnvVarSpec("KSADK_LTM_NAMESPACE", "memory", "Long-term-memory memory collection id."),
     EnvVarSpec("KSADK_LTM_REGION", "memory", "Long-term-memory region.", "cn-beijing-6"),
     EnvVarSpec("KSADK_LTM_SCENE_ID", "memory", "Long-term-memory scene id.", "_sys_general"),
     EnvVarSpec("KSADK_LTM_SCHEME", "memory", "Long-term-memory API scheme.", "https"),
-    EnvVarSpec("KSADK_LTM_SECRET_KEY", "memory", "Long-term-memory API secret key.", sensitive=True),
+    EnvVarSpec(
+        "KSADK_LTM_SECRET_KEY", "memory", "Long-term-memory API secret key.", sensitive=True
+    ),
     EnvVarSpec("KSADK_LTM_TOP_K", "memory", "Long-term-memory retrieval result count.", "5"),
     EnvVarSpec(
         "KSADK_MCP_RUNTIME_REQUIREMENTS",
         "builders",
         "Internal bundled MCP adapter runtime requirement constant.",
     ),
-    EnvVarSpec("KSADK_MCP_KEY", "mcp_runtime", "MCP service API key (also reused by ksyun web search provider).", sensitive=True),
-    EnvVarSpec("KSADK_MCP_SERVERS", "mcp_runtime", "JSON array of MCP server configs.", sensitive=True),
+    EnvVarSpec(
+        "KSADK_MCP_KEY",
+        "mcp_runtime",
+        "MCP service API key (also reused by ksyun web search provider).",
+        sensitive=True,
+    ),
+    EnvVarSpec(
+        "KSADK_MCP_SERVERS", "mcp_runtime", "JSON array of MCP server configs.", sensitive=True
+    ),
     EnvVarSpec("KSADK_MEMORY_BACKEND", "memory", "Generic memory backend selector.", "memory"),
     EnvVarSpec("KSADK_MEMORY_PREFIX", "memory", "Generic memory key prefix.", "ksadk:memory:"),
     EnvVarSpec("KSADK_MEMORY_TTL", "memory", "Generic memory default TTL seconds."),
     EnvVarSpec("KSADK_MEMORY_URL", "memory", "Generic memory backend URL.", sensitive=True),
+    EnvVarSpec(
+        "KSADK_MODEL_PROXY_AGENTS",
+        "model_proxy",
+        "Comma-separated agent allowlist for the experimental model proxy.",
+    ),
+    EnvVarSpec(
+        "KSADK_MODEL_PROXY_DENY",
+        "model_proxy",
+        "Comma-separated agent denylist that disables the model proxy.",
+    ),
+    EnvVarSpec(
+        "KSADK_MODEL_PROXY_ENABLED",
+        "model_proxy",
+        "Enable the experimental model proxy globally.",
+        "0",
+    ),
+    EnvVarSpec(
+        "KSADK_MODEL_PROXY_MODELS",
+        "model_proxy",
+        "Comma-separated model allowlist for the experimental model proxy.",
+    ),
     EnvVarSpec("KSADK_PG_EVENTS_TABLE", "sessions", "Internal PostgreSQL events table constant."),
-    EnvVarSpec("KSADK_PG_SESSIONS_TABLE", "sessions", "Internal PostgreSQL sessions table constant."),
+    EnvVarSpec(
+        "KSADK_PG_SESSIONS_TABLE", "sessions", "Internal PostgreSQL sessions table constant."
+    ),
     EnvVarSpec("KSADK_PG_STATES_TABLE", "sessions", "Internal PostgreSQL states table constant."),
     EnvVarSpec(
         "KSADK_POSTGRES_SESSION_REQUIREMENTS",
         "builders",
         "Internal bundled PostgreSQL session runtime requirement constant.",
     ),
-    EnvVarSpec("KSADK_PROJECT_DIR", "sessions", "Project root used for local session/workspace state."),
-    EnvVarSpec("KSADK_PUBLIC_SKILL_ALLOWLIST", "skills", "Comma-separated public Skill names to load; empty loads all public skills."),
-    EnvVarSpec("KSADK_PUBLIC_SKILL_SPACE_IDS", "skills", "Comma-separated public Skill Space ids appended after user spaces."),
-    EnvVarSpec("KSADK_RESPONSES_SESSION_HEADER", "runners", "Header name for remote Responses session propagation."),
-    EnvVarSpec("KSADK_RUNTIME_PORT", "cli", "Runtime HTTP port exported to template runtimes.", "8080"),
-    EnvVarSpec("KSADK_RUNTIME_REQUIREMENTS", "builders", "Internal bundled runtime requirements constant."),
+    EnvVarSpec(
+        "KSADK_PROJECT_DIR", "sessions", "Project root used for local session/workspace state."
+    ),
+    EnvVarSpec(
+        "KSADK_PROXY_TOKEN", "model_proxy", "Local Codex proxy bearer token.", sensitive=True
+    ),
+    EnvVarSpec(
+        "KSADK_PROXY_UPSTREAM_BASE",
+        "model_proxy",
+        "Override URL for the Codex proxy upstream provider.",
+    ),
+    EnvVarSpec(
+        "KSADK_PROXY_UPSTREAM_KEY",
+        "model_proxy",
+        "Override credential for the Codex proxy upstream provider.",
+        sensitive=True,
+    ),
+    EnvVarSpec(
+        "KSADK_PUBLIC_SKILL_ALLOWLIST",
+        "skills",
+        "Comma-separated public Skill names to load; empty loads all public skills.",
+    ),
+    EnvVarSpec(
+        "KSADK_PUBLIC_SKILL_SPACE_IDS",
+        "skills",
+        "Comma-separated public Skill Space ids appended after user spaces.",
+    ),
+    EnvVarSpec(
+        "KSADK_RESPONSES_SESSION_HEADER",
+        "runners",
+        "Header name for remote Responses session propagation.",
+    ),
+    EnvVarSpec(
+        "KSADK_RUNTIME_PORT", "cli", "Runtime HTTP port exported to template runtimes.", "8080"
+    ),
+    EnvVarSpec(
+        "KSADK_RUNTIME_REQUIREMENTS", "builders", "Internal bundled runtime requirements constant."
+    ),
     EnvVarSpec(
         "KSADK_ALLOW_POD_PROCESS_TOOLS",
         "sandbox",
         "Explicit opt-in required before pod_process sandbox tools are enabled.",
         "false",
     ),
-    EnvVarSpec("KSADK_MAX_TURNS", "runtime", "Maximum conversation turns before runtime circuit breaker opens.", "0"),
-    EnvVarSpec("KSADK_MAX_TOOL_CALLS", "runtime", "Maximum tool calls before runtime circuit breaker opens.", "0"),
+    EnvVarSpec(
+        "KSADK_MAX_TURNS",
+        "runtime",
+        "Maximum conversation turns before runtime circuit breaker opens.",
+        "0",
+    ),
+    EnvVarSpec(
+        "KSADK_MAX_TOOL_CALLS",
+        "runtime",
+        "Maximum tool calls before runtime circuit breaker opens.",
+        "0",
+    ),
     EnvVarSpec(
         "KSADK_MAX_CONSECUTIVE_TOOL_FAILURES",
         "runtime",
@@ -169,106 +351,292 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     EnvVarSpec(
         "KSADK_MAX_CONSECUTIVE_SEMANTIC_FAILURES",
         "runtime",
-        "Consecutive semantic LLM compaction failures before skipping semantic and using extractive; 0 disables the breaker (opt-in, default off to avoid permanent semantic disable from transient failures).",
+        "Consecutive semantic LLM compaction failures before using extractive; "
+        "0 disables the breaker to avoid permanent disable from transient failures.",
         "0",
     ),
-    EnvVarSpec("KSADK_SAFE_", "tools", "Internal prefix for tool safety policy environment controls."),
-    EnvVarSpec("KSADK_SANDBOX_ALLOW_INTERNET_ACCESS", "sandbox", "Allow remote sandbox internet access.", "true"),
+    EnvVarSpec(
+        "KSADK_SAFE_", "tools", "Internal prefix for tool safety policy environment controls."
+    ),
+    EnvVarSpec(
+        "KSADK_SANDBOX_ALLOW_INTERNET_ACCESS",
+        "sandbox",
+        "Allow remote sandbox internet access.",
+        "true",
+    ),
     EnvVarSpec("KSADK_SANDBOX_BACKEND", "sandbox", "Generic sandbox backend selector.", "e2b"),
-    EnvVarSpec("KSADK_SANDBOX_IDLE_TTL_SECONDS", "sandbox", "Idle TTL seconds before sandbox registry reclaims inactive sessions; 0 disables idle reclamation.", "300"),
-    EnvVarSpec("KSADK_SANDBOX_MAX_SESSIONS", "sandbox", "Maximum active sandbox registry sessions.", "0"),
-    EnvVarSpec("KSADK_SANDBOX_SESSION_ID", "sandbox", "Explicit sandbox registry session id override."),
-    EnvVarSpec("KSADK_SANDBOX_STARTUP_RETRY_ATTEMPTS", "sandbox", "Sandbox startup readiness retry attempts.", "6"),
-    EnvVarSpec("KSADK_SANDBOX_STARTUP_RETRY_DELAY", "sandbox", "Sandbox startup readiness initial retry delay seconds.", "0.2"),
-    EnvVarSpec("KSADK_SANDBOX_SWEEP_INTERVAL_SECONDS", "sandbox", "Background sweep interval seconds for sandbox registry; 0 disables the background sweeper.", "60"),
-    EnvVarSpec("KSADK_SANDBOX_SYNC_MAX_FILE_BYTES", "sandbox", "Maximum single file size for workspace sync into sandbox."),
-    EnvVarSpec("KSADK_SANDBOX_SYNC_MAX_FILES", "sandbox", "Maximum file count for workspace sync into sandbox."),
-    EnvVarSpec("KSADK_SANDBOX_SYNC_MAX_TOTAL_BYTES", "sandbox", "Maximum total bytes for workspace sync into sandbox."),
+    EnvVarSpec(
+        "KSADK_SANDBOX_IDLE_TTL_SECONDS",
+        "sandbox",
+        "Idle TTL seconds before sandbox registry reclaims inactive sessions; "
+        "0 disables idle reclamation.",
+        "300",
+    ),
+    EnvVarSpec(
+        "KSADK_SANDBOX_MAX_SESSIONS", "sandbox", "Maximum active sandbox registry sessions.", "0"
+    ),
+    EnvVarSpec(
+        "KSADK_SANDBOX_SESSION_ID", "sandbox", "Explicit sandbox registry session id override."
+    ),
+    EnvVarSpec(
+        "KSADK_SANDBOX_STARTUP_RETRY_ATTEMPTS",
+        "sandbox",
+        "Sandbox startup readiness retry attempts.",
+        "6",
+    ),
+    EnvVarSpec(
+        "KSADK_SANDBOX_STARTUP_RETRY_DELAY",
+        "sandbox",
+        "Sandbox startup readiness initial retry delay seconds.",
+        "0.2",
+    ),
+    EnvVarSpec(
+        "KSADK_SANDBOX_SWEEP_INTERVAL_SECONDS",
+        "sandbox",
+        "Background sweep interval seconds for sandbox registry; "
+        "0 disables the background sweeper.",
+        "60",
+    ),
+    EnvVarSpec(
+        "KSADK_SANDBOX_SYNC_MAX_FILE_BYTES",
+        "sandbox",
+        "Maximum single file size for workspace sync into sandbox.",
+    ),
+    EnvVarSpec(
+        "KSADK_SANDBOX_SYNC_MAX_FILES",
+        "sandbox",
+        "Maximum file count for workspace sync into sandbox.",
+    ),
+    EnvVarSpec(
+        "KSADK_SANDBOX_SYNC_MAX_TOTAL_BYTES",
+        "sandbox",
+        "Maximum total bytes for workspace sync into sandbox.",
+    ),
     EnvVarSpec("KSADK_SANDBOX_TEMPLATE_ID", "sandbox", "Sandbox console template id."),
     EnvVarSpec("KSADK_SANDBOX_TIMEOUT", "sandbox", "Sandbox session timeout seconds.", "600"),
-    EnvVarSpec("KSADK_SANDBOX_TTL_SECONDS", "sandbox", "Hard TTL seconds for sandbox registry sessions.", "900"),
-    EnvVarSpec("KSADK_SANDBOX_TYPE", "sandbox", "Sandbox type: aio, code, browser, or private.", "aio"),
-    EnvVarSpec("KSADK_SELECTED_SKILL_NAMES", "skills", "Comma-separated Skill names selected by the outer agent."),
+    EnvVarSpec(
+        "KSADK_SANDBOX_TTL_SECONDS",
+        "sandbox",
+        "Hard TTL seconds for sandbox registry sessions.",
+        "900",
+    ),
+    EnvVarSpec(
+        "KSADK_SANDBOX_TYPE", "sandbox", "Sandbox type: aio, code, browser, or private.", "aio"
+    ),
+    EnvVarSpec(
+        "KSADK_SELECTED_SKILL_NAMES",
+        "skills",
+        "Comma-separated Skill names selected by the outer agent.",
+    ),
     EnvVarSpec("KSADK_SESSIONS_TABLE", "sessions", "Internal SQLite sessions table constant."),
-    EnvVarSpec("KSADK_SESSION_BACKEND", "sessions", "Conversation session backend selector.", "local"),
-    EnvVarSpec("KSADK_SESSION_CONNECT_TIMEOUT", "sessions", "Conversation PostgreSQL connection timeout seconds.", "5"),
-    EnvVarSpec("KSADK_SESSION_DSN", "sessions", "Conversation session database DSN.", sensitive=True),
+    EnvVarSpec(
+        "KSADK_SESSION_BACKEND", "sessions", "Conversation session backend selector.", "local"
+    ),
+    EnvVarSpec(
+        "KSADK_SESSION_CONNECT_TIMEOUT",
+        "sessions",
+        "Conversation PostgreSQL connection timeout seconds.",
+        "5",
+    ),
+    EnvVarSpec(
+        "KSADK_SESSION_DSN", "sessions", "Conversation session database DSN.", sensitive=True
+    ),
     EnvVarSpec("KSADK_SESSION_NAMESPACE", "sessions", "Conversation session namespace."),
     EnvVarSpec("KSADK_SESSION_PATH", "sessions", "Conversation local SQLite database path."),
-    EnvVarSpec("KSADK_SESSION_PG_CONNECT_TIMEOUT", "sessions", "Legacy PostgreSQL session connection timeout seconds.", "5"),
-    EnvVarSpec("KSADK_SKILLS_MODE", "skills", "Skill loading mode: auto, local, or sandbox.", "auto"),
+    EnvVarSpec(
+        "KSADK_SESSION_PG_CONNECT_TIMEOUT",
+        "sessions",
+        "Legacy PostgreSQL session connection timeout seconds.",
+        "5",
+    ),
+    EnvVarSpec(
+        "KSADK_SKILLS_MODE", "skills", "Skill loading mode: auto, local, or sandbox.", "auto"
+    ),
     EnvVarSpec(
         "KSADK_SKILL_ALLOW_HASH_MISMATCH",
         "skills",
         "Allow loading legacy Skill archives when ContentHash verification fails.",
         "false",
     ),
-    EnvVarSpec("KSADK_SKILL_ARTIFACT_PROJECT", "skills", "Default artifact project name for the minimal Skill Runtime agent.", "ksadk-artifact"),
-    EnvVarSpec("KSADK_SKILL_CACHE_DIR", "skills", "Skill package download and extraction cache directory."),
-    EnvVarSpec("KSADK_SKILL_MANIFEST_LIMIT", "skills", "Maximum remote Skill manifests injected into agent instructions.", "30"),
-    EnvVarSpec("KSADK_SKILL_MANIFEST_TIMEOUT", "skills", "Remote Skill manifest listing timeout seconds.", "5"),
-    EnvVarSpec("KSADK_SKILL_OUTPUT_DIR", "skills", "Output directory exposed to local Skill workflow scripts."),
-    EnvVarSpec("KSADK_SKILL_ROOT_DIR", "skills", "Root directory of the Skill currently executed by the local workflow runner."),
-    EnvVarSpec("KSADK_SKILL_RUNTIME_AGENT_PATH", "skills", "Local process Skill Runtime agent path."),
-    EnvVarSpec("KSADK_SKILL_RUNTIME_ALLOW_INTERNET_ACCESS", "skills", "Allow remote Skill Runtime internet access.", "true"),
-    EnvVarSpec("KSADK_SKILL_RUNTIME_BACKEND", "skills", "Skill Runtime backend selector.", "disabled"),
+    EnvVarSpec(
+        "KSADK_SKILL_ARTIFACT_PROJECT",
+        "skills",
+        "Default artifact project name for the minimal Skill Runtime agent.",
+        "ksadk-artifact",
+    ),
+    EnvVarSpec(
+        "KSADK_SKILL_CACHE_DIR", "skills", "Skill package download and extraction cache directory."
+    ),
+    EnvVarSpec(
+        "KSADK_SKILL_MANIFEST_LIMIT",
+        "skills",
+        "Maximum remote Skill manifests injected into agent instructions.",
+        "30",
+    ),
+    EnvVarSpec(
+        "KSADK_SKILL_MANIFEST_TIMEOUT",
+        "skills",
+        "Remote Skill manifest listing timeout seconds.",
+        "5",
+    ),
+    EnvVarSpec(
+        "KSADK_SKILL_OUTPUT_DIR",
+        "skills",
+        "Output directory exposed to local Skill workflow scripts.",
+    ),
+    EnvVarSpec(
+        "KSADK_SKILL_ROOT_DIR",
+        "skills",
+        "Root directory of the Skill currently executed by the local workflow runner.",
+    ),
+    EnvVarSpec(
+        "KSADK_SKILL_RUNTIME_AGENT_PATH", "skills", "Local process Skill Runtime agent path."
+    ),
+    EnvVarSpec(
+        "KSADK_SKILL_RUNTIME_ALLOW_INTERNET_ACCESS",
+        "skills",
+        "Allow remote Skill Runtime internet access.",
+        "true",
+    ),
+    EnvVarSpec(
+        "KSADK_SKILL_RUNTIME_BACKEND", "skills", "Skill Runtime backend selector.", "disabled"
+    ),
     EnvVarSpec("KSADK_SKILL_RUNTIME_TEMPLATE_ID", "skills", "Skill Runtime backend template id."),
-    EnvVarSpec("KSADK_SKILL_RUNTIME_TIMEOUT", "skills", "Skill Runtime workflow timeout seconds.", "900"),
-    EnvVarSpec("KSADK_SKILL_SERVICE", "skills", "Skill Service AICP connection environment prefix."),
-    EnvVarSpec("KSADK_SKILL_SERVICE_ACCESS_KEY", "skills", "Skill Service KOP access key.", sensitive=True),
+    EnvVarSpec(
+        "KSADK_SKILL_RUNTIME_TIMEOUT", "skills", "Skill Runtime workflow timeout seconds.", "900"
+    ),
+    EnvVarSpec(
+        "KSADK_SKILL_SERVICE", "skills", "Skill Service AICP connection environment prefix."
+    ),
+    EnvVarSpec(
+        "KSADK_SKILL_SERVICE_ACCESS_KEY", "skills", "Skill Service KOP access key.", sensitive=True
+    ),
     EnvVarSpec("KSADK_SKILL_SERVICE_ACCOUNT_ID", "skills", "Skill Service tenant account id."),
-    EnvVarSpec("KSADK_SKILL_SERVICE_API_VERSION", "skills", "Skill Service KOP API version.", "2024-06-12"),
+    EnvVarSpec(
+        "KSADK_SKILL_SERVICE_API_VERSION", "skills", "Skill Service KOP API version.", "2024-06-12"
+    ),
     EnvVarSpec("KSADK_SKILL_SERVICE_ENDPOINT", "skills", "Skill Service AICP endpoint override."),
     EnvVarSpec("KSADK_SKILL_SERVICE_REGION", "skills", "Skill Service KOP region.", "cn-beijing-6"),
     EnvVarSpec("KSADK_SKILL_SERVICE_SCHEME", "skills", "Skill Service AICP URL scheme override."),
-    EnvVarSpec("KSADK_SKILL_SERVICE_SECRET_KEY", "skills", "Skill Service KOP secret key.", sensitive=True),
-    EnvVarSpec("KSADK_SKILL_SERVICE_SIGN_SERVICE", "skills", "Skill Service KOP signing service.", "aicp"),
-    EnvVarSpec("KSADK_SKILL_SERVICE_TOKEN", "skills", "Skill Service bearer token.", sensitive=True),
+    EnvVarSpec(
+        "KSADK_SKILL_SERVICE_SECRET_KEY", "skills", "Skill Service KOP secret key.", sensitive=True
+    ),
+    EnvVarSpec(
+        "KSADK_SKILL_SERVICE_SIGN_SERVICE", "skills", "Skill Service KOP signing service.", "aicp"
+    ),
+    EnvVarSpec(
+        "KSADK_SKILL_SERVICE_TOKEN", "skills", "Skill Service bearer token.", sensitive=True
+    ),
     EnvVarSpec("KSADK_SKILL_SERVICE_URL", "skills", "Skill Service API base URL."),
     EnvVarSpec("KSADK_SKILL_SPACE_IDS", "skills", "Comma-separated Skill Space ids."),
-    EnvVarSpec("KSADK_SKILL_WORKDIR", "skills", "Working directory for the minimal Skill Runtime agent."),
+    EnvVarSpec(
+        "KSADK_SKILL_WORKDIR", "skills", "Working directory for the minimal Skill Runtime agent."
+    ),
     EnvVarSpec("KSADK_STATES_TABLE", "sessions", "Internal SQLite states table constant."),
     EnvVarSpec("KSADK_STM_BACKEND", "sessions", "Short-term-memory session backend selector."),
     EnvVarSpec("KSADK_STM_DB_PATH", "sessions", "Legacy short-term-memory SQLite path."),
-    EnvVarSpec("KSADK_STM_DB_URL", "sessions", "Legacy short-term-memory database URL.", sensitive=True),
+    EnvVarSpec(
+        "KSADK_STM_DB_URL", "sessions", "Legacy short-term-memory database URL.", sensitive=True
+    ),
     EnvVarSpec("KSADK_STM_PATH", "sessions", "Short-term-memory SQLite path."),
     EnvVarSpec("KSADK_STM_URL", "sessions", "Short-term-memory database URL.", sensitive=True),
     EnvVarSpec("KSADK_TENANT_ID", "sessions", "Tenant id used for session namespace scoping."),
     EnvVarSpec(
         "KSADK_TERMINAL_EXEC_SUBCOMMAND_ALLOWLIST",
         "terminal",
-        "Comma-separated remote terminal exec prefixes appended to the default allowlist; use * to allow all.",
+        "Comma-separated remote terminal exec prefixes appended to the default allowlist; "
+        "use * to allow all.",
     ),
-    EnvVarSpec("KSADK_TOOL_APPROVAL_MODE", "tools", "Built-in tool approval mode: off or strict.", "off"),
-    EnvVarSpec("KSADK_TOOL_RESULT_DIR", "tools", "Directory used to persist oversized tool results."),
-    EnvVarSpec("KSADK_TOOL_RESULT_MAX_CHARS", "tools", "Maximum inline characters for budgeted tool outputs."),
-    EnvVarSpec("KSADK_TOOL_RESULT_PERSIST_THRESHOLD_CHARS", "tools", "Character threshold for persisting tool outputs."),
-    EnvVarSpec("KSADK_TOOL_RESULT_PREVIEW_CHARS", "tools", "Preview character count for persisted tool outputs."),
+    EnvVarSpec(
+        "KSADK_TOOL_APPROVAL_MODE",
+        "tools",
+        "Built-in tool approval mode: ask, risk, or full.",
+        "risk",
+    ),
+    EnvVarSpec(
+        "KSADK_TOOL_RESULT_DIR", "tools", "Directory used to persist oversized tool results."
+    ),
+    EnvVarSpec(
+        "KSADK_TOOL_RESULT_MAX_CHARS",
+        "tools",
+        "Maximum inline characters for budgeted tool outputs.",
+    ),
+    EnvVarSpec(
+        "KSADK_TOOL_RESULT_PERSIST_THRESHOLD_CHARS",
+        "tools",
+        "Character threshold for persisting tool outputs.",
+    ),
+    EnvVarSpec(
+        "KSADK_TOOL_RESULT_PREVIEW_CHARS",
+        "tools",
+        "Preview character count for persisted tool outputs.",
+    ),
     EnvVarSpec("KSADK_UPDATED_AT", "configs", "Internal config update timestamp field."),
     EnvVarSpec("KSADK_VERSION", "configs", "Internal config version field."),
-    EnvVarSpec("KSADK_UI_BUNDLE_PATH", "web", "Custom agent UI bundle path relative to project root."),
+    EnvVarSpec(
+        "KSADK_UI_BUNDLE_PATH", "web", "Custom agent UI bundle path relative to project root."
+    ),
     EnvVarSpec("KSADK_UI_PATH", "web", "Custom agent UI mount path."),
     EnvVarSpec("KSADK_UI_PROFILE", "web", "Agent UI profile selector, such as builtin or custom."),
     EnvVarSpec("KSADK_UI_URL", "web", "External custom agent UI URL."),
-    EnvVarSpec("KSADK_WEB_CACHE_DIR", "web", "Directory used by hosted Web UI static asset sync cache."),
-    EnvVarSpec("KSADK_WEB_PACKAGE", "web", "KsADK Web npm package name.", "@kingsoftcloud/ksadk-web"),
+    EnvVarSpec(
+        "KSADK_WEB_CACHE_DIR", "web", "Directory used by hosted Web UI static asset sync cache."
+    ),
+    EnvVarSpec(
+        "KSADK_WEB_PACKAGE", "web", "KsADK Web npm package name.", "@kingsoftcloud/ksadk-web"
+    ),
     EnvVarSpec("KSADK_WEB_RELEASE_URL", "web", "Optional KsADK Web tarball URL fallback."),
-    EnvVarSpec("KSADK_WEB_SEARCH_API_KEY", "web", "HTTP web search provider API key.", sensitive=True),
+    EnvVarSpec(
+        "KSADK_WEB_SEARCH_API_KEY", "web", "HTTP web search provider API key.", sensitive=True
+    ),
     EnvVarSpec("KSADK_WEB_SEARCH_BASE_URL", "web", "HTTP web search provider base URL."),
-    EnvVarSpec("KSADK_WEB_SEARCH_PROVIDER", "web", "Web search provider selector, such as fake, http, or ksyun."),
-    EnvVarSpec("KSADK_WEB_SEARCH_SCOPE", "web", "ksyun provider search scope: webpage/document/scholar/podcast/video.", "webpage"),
-    EnvVarSpec("KSADK_WEB_SSRF_POLICY_JSON", "web", "JSON policy overrides for web_fetch SSRF checks."),
+    EnvVarSpec(
+        "KSADK_WEB_SEARCH_PROVIDER",
+        "web",
+        "Web search provider selector, such as fake, http, or ksyun.",
+    ),
+    EnvVarSpec(
+        "KSADK_WEB_SEARCH_SCOPE",
+        "web",
+        "ksyun provider search scope: webpage/document/scholar/podcast/video.",
+        "webpage",
+    ),
+    EnvVarSpec(
+        "KSADK_WEB_SSRF_POLICY_JSON", "web", "JSON policy overrides for web_fetch SSRF checks."
+    ),
     EnvVarSpec("KSADK_WEB_TARBALL_NAME", "web", "KsADK Web fallback tarball file name."),
-    EnvVarSpec("KSADK_WEB_VERSION", "web", "KsADK Web npm dist-tag or version.", "latest"),
-    EnvVarSpec("KSADK_WORKING_SET_MAX_FILES", "runtime", "Maximum recent files recorded in compaction working set metadata.", "5"),
-    EnvVarSpec("KSADK_USER_BACKEND_URL", "web", "User-facing backend URL used by hosted UI integrations."),
-    EnvVarSpec("KSADK_WORKFLOW_PROMPT", "skills", "Prompt text exposed to local Skill workflow scripts."),
-    EnvVarSpec("KSADK_WORKSPACE_ID", "sessions", "Workspace id used for session namespace scoping."),
-    EnvVarSpec("CLOUD_MONITOR_APP_KEY", "tracing", "CloudMonitor AppKey for optional OTLP ingestion.", sensitive=True),
+    EnvVarSpec(
+        "KSADK_WEB_VERSION",
+        "web",
+        "Published KsADK Web npm version used for a reproducible wheel build.",
+        "0.3.0",
+    ),
+    EnvVarSpec(
+        "KSADK_WORKING_SET_MAX_FILES",
+        "runtime",
+        "Maximum recent files recorded in compaction working set metadata.",
+        "5",
+    ),
+    EnvVarSpec(
+        "KSADK_USER_BACKEND_URL", "web", "User-facing backend URL used by hosted UI integrations."
+    ),
+    EnvVarSpec(
+        "KSADK_WORKFLOW_PROMPT", "skills", "Prompt text exposed to local Skill workflow scripts."
+    ),
+    EnvVarSpec(
+        "KSADK_WORKSPACE_ID", "sessions", "Workspace id used for session namespace scoping."
+    ),
+    EnvVarSpec(
+        "CLOUD_MONITOR_APP_KEY",
+        "tracing",
+        "CloudMonitor AppKey for optional OTLP ingestion.",
+        sensitive=True,
+    ),
     EnvVarSpec(
         "CLOUD_MONITOR_LANGFUSE_ENABLED",
         "tracing",
-        "Enable or disable the CloudMonitor Langfuse SDK callback; defaults to enabled when keys and host are present.",
+        "Enable or disable the CloudMonitor Langfuse SDK callback; defaults to enabled "
+        "when keys and host are present.",
     ),
     EnvVarSpec(
         "CLOUD_MONITOR_LANGFUSE_HOST",
@@ -290,12 +658,14 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     EnvVarSpec(
         "CLOUD_MONITOR_OTLP_ENABLED",
         "tracing",
-        "Enable or disable the CloudMonitor OTLP exporter; defaults to enabled when endpoint and AppKey are present.",
+        "Enable or disable the CloudMonitor OTLP exporter; defaults to enabled when "
+        "endpoint and AppKey are present.",
     ),
     EnvVarSpec(
         "CLOUD_MONITOR_OTLP_ENDPOINT",
         "tracing",
-        "CloudMonitor generic OTLP HTTP endpoint; KsADK derives /v1/traces when no traces endpoint is set.",
+        "CloudMonitor generic OTLP HTTP endpoint; KsADK derives /v1/traces when no "
+        "traces endpoint is set.",
     ),
     EnvVarSpec(
         "CLOUD_MONITOR_OTLP_HEADERS",
@@ -318,13 +688,43 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "tracing",
         "CloudMonitor traces protocol; takes precedence over the generic protocol.",
     ),
-    EnvVarSpec("OTEL_EXPORTER_OTLP_ENDPOINT", "tracing", "Generic OTLP HTTP endpoint used to derive the traces endpoint."),
-    EnvVarSpec("OTEL_EXPORTER_OTLP_HEADERS", "tracing", "Generic OTLP HTTP headers, comma-separated and URL-encoded.", sensitive=True),
-    EnvVarSpec("OTEL_EXPORTER_OTLP_PROTOCOL", "tracing", "Generic OTLP protocol; KsADK auto HTTP exporter supports http/protobuf."),
-    EnvVarSpec("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "tracing", "OTLP HTTP traces endpoint; takes precedence over the generic endpoint."),
-    EnvVarSpec("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "tracing", "OTLP HTTP traces headers; takes precedence over generic headers.", sensitive=True),
-    EnvVarSpec("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", "tracing", "OTLP traces protocol; takes precedence over the generic protocol."),
-    EnvVarSpec("OTEL_RESOURCE_ATTRIBUTES", "tracing", "OpenTelemetry resource attributes in key=value comma-separated form."),
+    EnvVarSpec(
+        "OTEL_EXPORTER_OTLP_ENDPOINT",
+        "tracing",
+        "Generic OTLP HTTP endpoint used to derive the traces endpoint.",
+    ),
+    EnvVarSpec(
+        "OTEL_EXPORTER_OTLP_HEADERS",
+        "tracing",
+        "Generic OTLP HTTP headers, comma-separated and URL-encoded.",
+        sensitive=True,
+    ),
+    EnvVarSpec(
+        "OTEL_EXPORTER_OTLP_PROTOCOL",
+        "tracing",
+        "Generic OTLP protocol; KsADK auto HTTP exporter supports http/protobuf.",
+    ),
+    EnvVarSpec(
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+        "tracing",
+        "OTLP HTTP traces endpoint; takes precedence over the generic endpoint.",
+    ),
+    EnvVarSpec(
+        "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+        "tracing",
+        "OTLP HTTP traces headers; takes precedence over generic headers.",
+        sensitive=True,
+    ),
+    EnvVarSpec(
+        "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
+        "tracing",
+        "OTLP traces protocol; takes precedence over the generic protocol.",
+    ),
+    EnvVarSpec(
+        "OTEL_RESOURCE_ATTRIBUTES",
+        "tracing",
+        "OpenTelemetry resource attributes in key=value comma-separated form.",
+    ),
     EnvVarSpec("OTEL_SERVICE_NAME", "tracing", "OpenTelemetry service name."),
     EnvVarSpec(
         "KSADK_OTLP_MAX_EXPORT_BATCH_SIZE",

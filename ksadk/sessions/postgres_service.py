@@ -9,6 +9,7 @@ import time
 from typing import Any, Optional
 from urllib.parse import urlsplit, urlunsplit
 
+from ksadk.ids import new_session_id
 from ksadk.sessions.base import (
     BaseSessionService,
     Session,
@@ -59,7 +60,7 @@ class PostgresSessionService(BaseSessionService):
         session_id: Optional[str] = None,
     ) -> Session:
         await self._ensure_schema()
-        session_key = session_id or generate_id()
+        session_key = session_id or new_session_id()
         async with self._pool.acquire() as connection:
             async with connection.transaction():
                 existing = await self._get_session_with_connection(connection, session_key)
@@ -70,8 +71,9 @@ class PostgresSessionService(BaseSessionService):
                 await connection.execute(
                     f"""
                     INSERT INTO {KSADK_PG_SESSIONS_TABLE} (
-                        namespace, tenant_id, workspace_id, id, agent_id, user_id, title, title_source, summary,
-                        first_prompt, last_prompt, state_json, created_at, updated_at, version
+                        namespace, tenant_id, workspace_id, id, agent_id, user_id,
+                        title, title_source, summary, first_prompt, last_prompt,
+                        state_json, created_at, updated_at, version
                     )
                     VALUES ($1, $2, $3, $4, $5, $6, '', '', '', '', '', $7::jsonb, $8, $9, 0)
                     ON CONFLICT (namespace, id) DO NOTHING
@@ -96,7 +98,8 @@ class PostgresSessionService(BaseSessionService):
                 await connection.execute(
                     f"""
                     INSERT INTO {KSADK_PG_STATES_TABLE} (
-                        namespace, tenant_id, workspace_id, scope, agent_id, user_id, session_id, state_json, version, updated_at
+                        namespace, tenant_id, workspace_id, scope, agent_id,
+                        user_id, session_id, state_json, version, updated_at
                     )
                     VALUES ($1, $2, $3, 'session', $4, $5, $6, $7::jsonb, 0, $8)
                     ON CONFLICT (namespace, scope, agent_id, user_id, session_id)
@@ -118,6 +121,15 @@ class PostgresSessionService(BaseSessionService):
         async with self._pool.acquire() as connection:
             return await self._get_session_with_connection(connection, session_id)
 
+    async def get_session_metadata(self, session_id: str) -> Optional[Session]:
+        await self._ensure_schema()
+        async with self._pool.acquire() as connection:
+            return await self._get_session_with_connection(
+                connection,
+                session_id,
+                include_events=False,
+            )
+
     async def list_sessions(
         self,
         agent_id: str,
@@ -128,7 +140,8 @@ class PostgresSessionService(BaseSessionService):
         await self._ensure_schema()
         async with self._pool.acquire() as connection:
             query = f"""
-                SELECT id, agent_id, user_id, title, title_source, summary, first_prompt, last_prompt,
+                SELECT id, agent_id, user_id, title, title_source, summary,
+                       first_prompt, last_prompt,
                        state_json, created_at, updated_at, version
                 FROM {KSADK_PG_SESSIONS_TABLE}
                 WHERE namespace = $1 AND agent_id = $2
@@ -137,7 +150,7 @@ class PostgresSessionService(BaseSessionService):
             if user_id is not None:
                 params.append(user_id)
                 query += f" AND user_id = ${len(params)}"
-            query += " ORDER BY updated_at DESC, created_at DESC"
+            query += " ORDER BY updated_at DESC, created_at DESC, id DESC"
             if limit is not None:
                 params.append(limit)
                 query += f" LIMIT ${len(params)}"
@@ -205,7 +218,8 @@ class PostgresSessionService(BaseSessionService):
             async with connection.transaction():
                 row = await connection.fetchrow(
                     f"""
-                    SELECT id, agent_id, user_id, title, title_source, summary, first_prompt, last_prompt,
+                    SELECT id, agent_id, user_id, title, title_source, summary,
+                           first_prompt, last_prompt,
                            state_json, created_at, updated_at, version
                     FROM {KSADK_PG_SESSIONS_TABLE}
                     WHERE namespace = $1 AND id = $2
@@ -294,10 +308,14 @@ class PostgresSessionService(BaseSessionService):
                 await connection.execute(
                     f"""
                     INSERT INTO {KSADK_PG_EVENTS_TABLE} (
-                        namespace, tenant_id, workspace_id, id, session_id, author, event_type, content_json, timestamp,
+                        namespace, tenant_id, workspace_id, id, session_id, author,
+                        event_type, content_json, timestamp,
                         state_delta_json, seq_id, invocation_id, metadata_json
                     )
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10::jsonb, $11, $12, $13::jsonb)
+                    VALUES (
+                        $1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9,
+                        $10::jsonb, $11, $12, $13::jsonb
+                    )
                     """,
                     self.namespace,
                     self.tenant_id,
@@ -419,6 +437,85 @@ class PostgresSessionService(BaseSessionService):
             """
             return int(await connection.fetchval(query, *params) or 0)
 
+    def _agent_events_query_parts(
+        self,
+        agent_id: str,
+        user_id: Optional[str],
+    ) -> tuple[str, list[Any]]:
+        """跨会话事件查询的公共 JOIN/WHERE。events 表无 agent_id 列，需 join sessions。"""
+        conditions = [
+            "e.namespace = $1",
+            "s.namespace = e.namespace",
+            "s.id = e.session_id",
+            "s.agent_id = $2",
+        ]
+        params: list[Any] = [self.namespace, agent_id]
+        if user_id is not None:
+            params.append(user_id)
+            conditions.append(f"s.user_id = ${len(params)}")
+        where_clause = " AND ".join(conditions)
+        from_clause = (
+            f"FROM {KSADK_PG_EVENTS_TABLE} e "
+            f"JOIN {KSADK_PG_SESSIONS_TABLE} s "
+            "ON s.namespace = e.namespace AND s.id = e.session_id "
+            f"WHERE {where_clause}"
+        )
+        return from_clause, params
+
+    async def get_events_for_agent(
+        self,
+        agent_id: str,
+        user_id: Optional[str] = None,
+        offset: Optional[int] = None,
+        limit: Optional[int] = None,
+    ) -> list[SessionEvent]:
+        await self._ensure_schema()
+        from_clause, params = self._agent_events_query_parts(agent_id, user_id)
+        columns = (
+            "e.id, e.session_id, e.author, e.event_type, e.content_json, e.timestamp, "
+            "e.state_delta_json, e.seq_id, e.invocation_id, e.metadata_json"
+        )
+        async with self._pool.acquire() as connection:
+            if limit is not None or offset is not None:
+                # 与 get_events 一致的"最新 N 条"尾部语义：先 DESC 取窗口再 ASC 重排
+                if limit is not None:
+                    params.append(limit)
+                    limit_sql = f"LIMIT ${len(params)}"
+                else:
+                    limit_sql = ""
+                params.append(offset or 0)
+                offset_sql = f"OFFSET ${len(params)}"
+                query = f"""
+                    SELECT id, session_id, author, event_type, content_json, timestamp,
+                           state_delta_json, seq_id, invocation_id, metadata_json
+                    FROM (
+                        SELECT {columns}
+                        {from_clause}
+                        ORDER BY e.timestamp DESC, e.seq_id DESC, e.id DESC
+                        {limit_sql} {offset_sql}
+                    ) AS latest_events
+                    ORDER BY timestamp ASC, seq_id ASC, id ASC
+                """
+            else:
+                query = f"""
+                    SELECT {columns}
+                    {from_clause}
+                    ORDER BY e.timestamp ASC, e.seq_id ASC, e.id ASC
+                """
+            rows = await connection.fetch(query, *params)
+            return [self._event_from_row(row) for row in rows]
+
+    async def count_events_for_agent(
+        self,
+        agent_id: str,
+        user_id: Optional[str] = None,
+    ) -> int:
+        await self._ensure_schema()
+        from_clause, params = self._agent_events_query_parts(agent_id, user_id)
+        async with self._pool.acquire() as connection:
+            query = f"SELECT COUNT(*) AS total {from_clause}"
+            return int(await connection.fetchval(query, *params) or 0)
+
     async def get_state(
         self,
         agent_id: str,
@@ -445,7 +542,8 @@ class PostgresSessionService(BaseSessionService):
                 f"""
                 SELECT scope, agent_id, user_id, session_id, state_json, version, updated_at
                 FROM {KSADK_PG_STATES_TABLE}
-                WHERE namespace = $1 AND scope = $2 AND agent_id = $3 AND user_id = $4 AND session_id = $5
+                WHERE namespace = $1 AND scope = $2 AND agent_id = $3
+                  AND user_id = $4 AND session_id = $5
                 """,
                 self.namespace,
                 scope,
@@ -506,7 +604,8 @@ class PostgresSessionService(BaseSessionService):
                     f"""
                     SELECT state_json, version
                     FROM {KSADK_PG_STATES_TABLE}
-                    WHERE namespace = $1 AND scope = $2 AND agent_id = $3 AND user_id = $4 AND session_id = $5
+                    WHERE namespace = $1 AND scope = $2 AND agent_id = $3
+                      AND user_id = $4 AND session_id = $5
                     FOR UPDATE
                     """,
                     self.namespace,
@@ -521,7 +620,8 @@ class PostgresSessionService(BaseSessionService):
                 await connection.execute(
                     f"""
                     INSERT INTO {KSADK_PG_STATES_TABLE} (
-                        namespace, tenant_id, workspace_id, scope, agent_id, user_id, session_id, state_json, version, updated_at
+                        namespace, tenant_id, workspace_id, scope, agent_id,
+                        user_id, session_id, state_json, version, updated_at
                     )
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10)
                     ON CONFLICT (namespace, scope, agent_id, user_id, session_id)
@@ -568,7 +668,7 @@ class PostgresSessionService(BaseSessionService):
             if self._pool is not None:
                 return
             try:
-                import asyncpg
+                import asyncpg  # type: ignore[import-untyped]
             except ImportError as exc:
                 raise SessionBackendUnavailable(
                     "asyncpg is required for KSADK_SESSION_BACKEND=postgres"
@@ -595,8 +695,7 @@ class PostgresSessionService(BaseSessionService):
                 return
             await self._ensure_pool()
             async with self._pool.acquire() as connection:
-                await connection.execute(
-                    f"""
+                await connection.execute(f"""
                     CREATE TABLE IF NOT EXISTS {KSADK_PG_SESSIONS_TABLE} (
                         namespace TEXT NOT NULL,
                         tenant_id TEXT NOT NULL DEFAULT 'default',
@@ -640,6 +739,18 @@ class PostgresSessionService(BaseSessionService):
                     CREATE INDEX IF NOT EXISTS idx_ksadk_pg_events_session_seq
                     ON {KSADK_PG_EVENTS_TABLE} (namespace, session_id, seq_id);
 
+                    -- 跨会话事件查询（get_events_for_agent）需 JOIN sessions 按
+                    -- s.agent_id 过滤并按 e.timestamp 排序；events 表无 agent_id 列，
+                    -- 覆盖索引 (namespace, session_id, timestamp, id) 服务 JOIN 键
+                    -- s.id=e.session_id + ORDER BY e.timestamp DESC。
+                    CREATE INDEX IF NOT EXISTS idx_ksadk_pg_events_session_ts
+                    ON {KSADK_PG_EVENTS_TABLE} (namespace, session_id, timestamp, id);
+
+                    -- ListSessions 归并按 agent_id 过滤 + updated_at DESC 排序；
+                    -- sessions 表 PK 是 (namespace, id)，缺 agent_id 前缀索引。
+                    CREATE INDEX IF NOT EXISTS idx_ksadk_pg_sessions_agent_updated
+                    ON {KSADK_PG_SESSIONS_TABLE} (namespace, agent_id, updated_at DESC, id);
+
                     CREATE TABLE IF NOT EXISTS {KSADK_PG_STATES_TABLE} (
                         namespace TEXT NOT NULL,
                         tenant_id TEXT NOT NULL DEFAULT 'default',
@@ -666,11 +777,9 @@ class PostgresSessionService(BaseSessionService):
                     ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default';
                     ALTER TABLE {KSADK_PG_STATES_TABLE}
                     ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT 'default';
-                    """
-                )
+                    """)
                 try:
-                    await connection.execute(
-                        f"""
+                    await connection.execute(f"""
                     CREATE OR REPLACE VIEW {PG_READABLE_EVENTS_VIEW} AS
                     SELECT
                         event_row.namespace,
@@ -715,8 +824,7 @@ class PostgresSessionService(BaseSessionService):
                     JOIN {KSADK_PG_SESSIONS_TABLE} AS session_row
                       ON session_row.namespace = event_row.namespace
                      AND session_row.id = event_row.session_id;
-                        """
-                    )
+                        """)
                 except Exception as exc:
                     logger.warning("Postgres readable session view unavailable: %s", exc)
             self._schema_ready = True
@@ -727,6 +835,7 @@ class PostgresSessionService(BaseSessionService):
         session_id: str,
         *,
         for_update: bool = False,
+        include_events: bool = True,
     ) -> Optional[Session]:
         lock_clause = " FOR UPDATE" if for_update else ""
         row = await connection.fetchrow(
@@ -742,10 +851,16 @@ class PostgresSessionService(BaseSessionService):
         )
         if row is None:
             return None
-        events = [] if for_update else await self._get_events_with_connection(connection, session_id)
+        events = (
+            await self._get_events_with_connection(connection, session_id)
+            if include_events and not for_update
+            else []
+        )
         return self._session_from_row(row, events=events)
 
-    async def _get_events_with_connection(self, connection: Any, session_id: str) -> list[SessionEvent]:
+    async def _get_events_with_connection(
+        self, connection: Any, session_id: str
+    ) -> list[SessionEvent]:
         rows = await connection.fetch(
             f"""
             SELECT id, session_id, author, event_type, content_json, timestamp,
@@ -785,7 +900,8 @@ class PostgresSessionService(BaseSessionService):
         await connection.execute(
             f"""
             INSERT INTO {KSADK_PG_STATES_TABLE} (
-                namespace, tenant_id, workspace_id, scope, agent_id, user_id, session_id, state_json, version, updated_at
+                namespace, tenant_id, workspace_id, scope, agent_id,
+                user_id, session_id, state_json, version, updated_at
             )
             VALUES ($1, $2, $3, 'session', $4, $5, $6, $7::jsonb, $8, $9)
             ON CONFLICT (namespace, scope, agent_id, user_id, session_id)
@@ -888,7 +1004,9 @@ def mask_postgres_session_dsn(dsn: str) -> str:
     host = parts.hostname or ""
     port = f":{parts.port}" if parts.port else ""
     auth = f"{username}:***@" if username else "***@"
-    return urlunsplit((parts.scheme, f"{auth}{host}{port}", parts.path, parts.query, parts.fragment))
+    return urlunsplit(
+        (parts.scheme, f"{auth}{host}{port}", parts.path, parts.query, parts.fragment)
+    )
 
 
 __all__ = [

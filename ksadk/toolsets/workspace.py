@@ -8,14 +8,13 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from ksadk.sessions.local_service import resolve_local_session_dir
 from ksadk.tools.gateway import ToolPolicy, default_tool_gateway
 from ksadk.tools.result_budget import budget_tool_output, default_tool_result_budget
 from ksadk.toolsets._langchain import as_tool
 from ksadk.toolsets.workspace_state import WorkspaceReadState, get_read_state, record_read_state
-
 
 _WORKSPACE_TOOL_POLICIES = {
     "workspace_status": ToolPolicy(risk_level="low"),
@@ -35,8 +34,14 @@ def _gateway():
     return default_tool_gateway(_WORKSPACE_TOOL_POLICIES)
 
 
+def _dict_result(value: Any, *, tool_name: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise TypeError(f"{tool_name} returned {type(value).__name__}, expected dict")
+    return dict(value)
+
+
 def workspace_root() -> Path:
-    return resolve_local_session_dir() / "workspace"
+    return Path(resolve_local_session_dir()) / "workspace"
 
 
 def resolve_workspace_path(relative_path: str) -> Path:
@@ -55,7 +60,10 @@ def workspace_relative(path: Path) -> str:
 def workspace_status() -> dict[str, Any]:
     """Return current AgentEngine workspace status."""
 
-    return _gateway().invoke("workspace_status", _workspace_status_impl)
+    return _dict_result(
+        _gateway().invoke("workspace_status", _workspace_status_impl),
+        tool_name="workspace_status",
+    )
 
 
 def _workspace_status_impl() -> dict[str, Any]:
@@ -83,15 +91,18 @@ def list_workspace_files(
 ) -> dict[str, Any]:
     """List files under the AgentEngine workspace."""
 
-    return _gateway().invoke(
-        "list_workspace_files",
-        _list_workspace_files_impl,
-        path,
-        glob,
-        recursive,
-        include_dirs,
-        max_results,
-        sort_by,
+    return _dict_result(
+        _gateway().invoke(
+            "list_workspace_files",
+            _list_workspace_files_impl,
+            path,
+            glob,
+            recursive,
+            include_dirs,
+            max_results,
+            sort_by,
+        ),
+        tool_name="list_workspace_files",
     )
 
 
@@ -117,17 +128,31 @@ def _list_workspace_files_impl(
         items = [
             item
             for item in items
-            if fnmatch.fnmatch(workspace_relative(item), pattern) or fnmatch.fnmatch(item.name, pattern)
+            if fnmatch.fnmatch(workspace_relative(item), pattern)
+            or fnmatch.fnmatch(item.name, pattern)
         ]
     if not include_dirs:
         items = [item for item in items if item.is_file()]
     sort_key = str(sort_by or "name").strip().lower()
+    key: Callable[[Path], tuple[Any, ...]]
     if sort_key == "mtime":
-        key = lambda candidate: (candidate.stat().st_mtime_ns, workspace_relative(candidate))
+
+        def key(candidate: Path) -> tuple[Any, ...]:
+            return candidate.stat().st_mtime_ns, workspace_relative(candidate)
+
     elif sort_key == "size":
-        key = lambda candidate: (candidate.stat().st_size if candidate.is_file() else 0, workspace_relative(candidate))
+
+        def key(candidate: Path) -> tuple[Any, ...]:
+            return (
+                candidate.stat().st_size if candidate.is_file() else 0,
+                workspace_relative(candidate),
+            )
+
     else:
-        key = lambda candidate: (workspace_relative(candidate).lower(), candidate.is_file())
+
+        def key(candidate: Path) -> tuple[Any, ...]:
+            return workspace_relative(candidate).lower(), candidate.is_file()
+
     limit = max(1, min(int(max_results or 500), 5000))
     sorted_items = sorted(items, key=key)
     entries = [
@@ -140,7 +165,13 @@ def _list_workspace_files_impl(
         }
         for item in sorted_items[:limit]
     ]
-    return {"ok": True, "path": path, "recursive": recursive, "entries": entries, "truncated": len(sorted_items) > len(entries)}
+    return {
+        "ok": True,
+        "path": path,
+        "recursive": recursive,
+        "entries": entries,
+        "truncated": len(sorted_items) > len(entries),
+    }
 
 
 def read_workspace_file(
@@ -155,14 +186,17 @@ def read_workspace_file(
     Do not issue a dependent read and edit in the same parallel tool-call batch.
     """
 
-    return _gateway().invoke(
-        "read_workspace_file",
-        _read_workspace_file_impl,
-        path,
-        start_line,
-        end_line,
-        max_chars,
-        include_line_numbers,
+    return _dict_result(
+        _gateway().invoke(
+            "read_workspace_file",
+            _read_workspace_file_impl,
+            path,
+            start_line,
+            end_line,
+            max_chars,
+            include_line_numbers,
+        ),
+        tool_name="read_workspace_file",
     )
 
 
@@ -201,7 +235,9 @@ def _read_workspace_file_impl(
         field_name="content",
         value=content,
         metadata={"tool_use_id": f"read_{relative.replace('/', '_')}"},
-        budget=default_tool_result_budget(max_chars=limit, preview_chars=limit, persist_threshold_chars=limit),
+        budget=default_tool_result_budget(
+            max_chars=limit, preview_chars=limit, persist_threshold_chars=limit
+        ),
     )
     partial = start != 1 or end != total_lines
     record_read_state(
@@ -251,13 +287,16 @@ def write_workspace_file(
 ) -> dict[str, Any]:
     """Write a UTF-8 text file inside the AgentEngine workspace."""
 
-    return _gateway().invoke(
-        "write_workspace_file",
-        _write_workspace_file_impl,
-        path,
-        content,
-        overwrite,
-        approval=approval,
+    return _dict_result(
+        _gateway().invoke(
+            "write_workspace_file",
+            _write_workspace_file_impl,
+            path,
+            content,
+            overwrite,
+            approval=approval,
+        ),
+        tool_name="write_workspace_file",
     )
 
 
@@ -282,16 +321,21 @@ def write_workspace_files(
 ) -> dict[str, Any]:
     """Write multiple UTF-8 text files inside the AgentEngine workspace."""
 
-    return _gateway().invoke(
-        "write_workspace_files",
-        _write_workspace_files_impl,
-        files,
-        overwrite,
-        approval=approval,
+    return _dict_result(
+        _gateway().invoke(
+            "write_workspace_files",
+            _write_workspace_files_impl,
+            files,
+            overwrite,
+            approval=approval,
+        ),
+        tool_name="write_workspace_files",
     )
 
 
-def _write_workspace_files_impl(files: list[dict[str, Any]], overwrite: bool = True) -> dict[str, Any]:
+def _write_workspace_files_impl(
+    files: list[dict[str, Any]], overwrite: bool = True
+) -> dict[str, Any]:
     if not isinstance(files, list) or not files:
         return {"ok": False, "error_message": "files must be a non-empty list"}
     written = []
@@ -301,7 +345,9 @@ def _write_workspace_files_impl(files: list[dict[str, Any]], overwrite: bool = T
         path = str(item.get("path") or "").strip()
         if not path:
             return {"ok": False, "error_message": "each file item requires path"}
-        result = _write_workspace_file_impl(path, str(item.get("content") or ""), overwrite=overwrite)
+        result = _write_workspace_file_impl(
+            path, str(item.get("content") or ""), overwrite=overwrite
+        )
         if not result.get("ok"):
             return result
         written.append({"path": result["path"], "size": result["size"]})
@@ -321,15 +367,18 @@ def edit_workspace_file(
     The read must complete before this call; do not batch a dependent read and edit.
     """
 
-    return _gateway().invoke(
-        "edit_workspace_file",
-        _edit_workspace_file_impl,
-        path,
-        old_text,
-        new_text,
-        expected_replacements,
-        replace_all,
-        approval=approval,
+    return _dict_result(
+        _gateway().invoke(
+            "edit_workspace_file",
+            _edit_workspace_file_impl,
+            path,
+            old_text,
+            new_text,
+            expected_replacements,
+            replace_all,
+            approval=approval,
+        ),
+        tool_name="edit_workspace_file",
     )
 
 
@@ -351,6 +400,8 @@ def _edit_workspace_file_impl(
     text, error = _read_workspace_text(target)
     if error is not None:
         return {**error, "path": path}
+    if text is None:
+        return {"ok": False, "path": path, "error_message": "workspace file read failed"}
     edit_result = _apply_single_edit(
         text,
         old_text,
@@ -390,13 +441,16 @@ def multi_edit_workspace_file(
     The read must complete before this call; do not batch a dependent read and edit.
     """
 
-    return _gateway().invoke(
-        "multi_edit_workspace_file",
-        _multi_edit_workspace_file_impl,
-        path,
-        edits,
-        replace_all,
-        approval=approval,
+    return _dict_result(
+        _gateway().invoke(
+            "multi_edit_workspace_file",
+            _multi_edit_workspace_file_impl,
+            path,
+            edits,
+            replace_all,
+            approval=approval,
+        ),
+        tool_name="multi_edit_workspace_file",
     )
 
 
@@ -478,7 +532,10 @@ def _multi_edit_workspace_file_impl(
 def lint_workspace_file(path: str, language: str = "auto") -> dict[str, Any]:
     """Run lightweight built-in lint checks for a UTF-8 workspace text file."""
 
-    return _gateway().invoke("lint_workspace_file", _lint_workspace_file_impl, path, language)
+    return _dict_result(
+        _gateway().invoke("lint_workspace_file", _lint_workspace_file_impl, path, language),
+        tool_name="lint_workspace_file",
+    )
 
 
 def _lint_workspace_file_impl(path: str, language: str = "auto") -> dict[str, Any]:
@@ -515,9 +572,23 @@ def _lint_workspace_file_impl(path: str, language: str = "auto") -> dict[str, An
     else:
         for line_no, line in enumerate((text or "").splitlines(), start=1):
             if "\x00" in line:
-                issues.append({"severity": "error", "line": line_no, "column": line.index("\x00") + 1, "message": "NUL byte found"})
+                issues.append(
+                    {
+                        "severity": "error",
+                        "line": line_no,
+                        "column": line.index("\x00") + 1,
+                        "message": "NUL byte found",
+                    }
+                )
             if line.rstrip("\n\r") != line.rstrip():
-                issues.append({"severity": "warning", "line": line_no, "column": len(line), "message": "trailing whitespace"})
+                issues.append(
+                    {
+                        "severity": "warning",
+                        "line": line_no,
+                        "column": len(line),
+                        "message": "trailing whitespace",
+                    }
+                )
                 if len(issues) >= 20:
                     break
     return {
@@ -557,16 +628,19 @@ def search_workspace_files(
 ) -> dict[str, Any]:
     """Search UTF-8 text files in the AgentEngine workspace."""
 
-    return _gateway().invoke(
-        "search_workspace_files",
-        _search_workspace_files_impl,
-        query,
-        path,
-        is_regex,
-        glob,
-        case_sensitive,
-        context_lines,
-        max_results,
+    return _dict_result(
+        _gateway().invoke(
+            "search_workspace_files",
+            _search_workspace_files_impl,
+            query,
+            path,
+            is_regex,
+            glob,
+            case_sensitive,
+            context_lines,
+            max_results,
+        ),
+        tool_name="search_workspace_files",
     )
 
 
@@ -584,15 +658,23 @@ def _search_workspace_files_impl(
         return {"ok": False, "error_message": "query is required"}
     base = resolve_workspace_path(path)
     if shutil.which("rg") and not context_lines:
-        rg_result = _search_with_rg(needle, base, is_regex, glob, case_sensitive, context_lines, max_results)
+        rg_result = _search_with_rg(
+            needle, base, is_regex, glob, case_sensitive, context_lines, max_results
+        )
         if rg_result is not None:
-            return _search_payload(query, path, rg_result["results"], rg_result["truncated"], context_lines, "rg")
+            return _search_payload(
+                query, path, rg_result["results"], rg_result["truncated"], context_lines, "rg"
+            )
     candidates = [base] if base.is_file() else [item for item in base.rglob("*") if item.is_file()]
     if glob:
-        candidates = [item for item in candidates if fnmatch.fnmatch(workspace_relative(item), glob) or fnmatch.fnmatch(item.name, glob)]
+        candidates = [
+            item
+            for item in candidates
+            if fnmatch.fnmatch(workspace_relative(item), glob) or fnmatch.fnmatch(item.name, glob)
+        ]
     flags = 0 if case_sensitive else re.IGNORECASE
     pattern = re.compile(needle if is_regex else re.escape(needle), flags)
-    results = []
+    results: list[dict[str, Any]] = []
     limit = max(1, min(int(max_results or 100), 5000))
     context_limit = max(0, min(int(context_lines or 0), 20))
     truncated = False
@@ -665,7 +747,7 @@ def _search_with_rg(
         return None
     if completed.returncode not in {0, 1}:
         return None
-    results = []
+    results: list[dict[str, Any]] = []
     limit = max(1, min(int(max_results or 100), 5000))
     truncated = False
     for raw_line in completed.stdout.splitlines():
@@ -725,13 +807,19 @@ def _validate_read_state(target: Path, relative: str) -> dict[str, Any] | None:
             "suggested_action": f"Call read_workspace_file(path={relative!r}) before editing.",
         }
     stat = target.stat() if target.exists() else None
-    if stat is None or stat.st_mtime_ns != read_state.mtime_ns or stat.st_size != read_state.size_bytes:
+    if (
+        stat is None
+        or stat.st_mtime_ns != read_state.mtime_ns
+        or stat.st_size != read_state.size_bytes
+    ):
         return {
             "ok": False,
             "path": relative,
             "error_type": "file_modified_since_read",
             "error_message": "workspace file changed since last read",
-            "suggested_action": f"Re-read the file with read_workspace_file(path={relative!r}) and retry.",
+            "suggested_action": (
+                f"Re-read the file with read_workspace_file(path={relative!r}) " "and retry."
+            ),
         }
     return None
 
@@ -761,7 +849,17 @@ def _apply_single_edit(
             "error_message": "old_text was not found in the workspace file",
             "occurrences": 0,
             "nearby_candidates": _nearby_candidates(text, old),
-            "suggested_action": "Use one nearby candidate as old_text, or call read_workspace_file with line numbers and retry.",
+            "suggested_action": (
+                "Use one nearby candidate as old_text, or call read_workspace_file "
+                "with line numbers and retry."
+            ),
+        }
+    if actual_old is None:
+        return {
+            "ok": False,
+            "path": relative,
+            "error_type": "snippet_not_found",
+            "error_message": "old_text was not found in the workspace file",
         }
     if not replace_all and occurrences != expected:
         return {
@@ -772,7 +870,10 @@ def _apply_single_edit(
             "occurrences": occurrences,
             "expected_replacements": expected,
             "matches": matches,
-            "suggested_action": "Provide a larger unique old_text snippet, set expected_replacements, or use replace_all=true.",
+            "suggested_action": (
+                "Provide a larger unique old_text snippet, set expected_replacements, "
+                "or use replace_all=true."
+            ),
         }
     replacements = occurrences if replace_all else expected
     return {
@@ -809,11 +910,15 @@ def _match_previews(text: str, needle: str, limit: int = 20) -> list[dict[str, A
 
 def _nearby_candidates(text: str, old: str, limit: int = 5) -> list[dict[str, Any]]:
     old_norm = _normalize_quotes(old).strip()
-    candidates = []
+    candidates: list[dict[str, Any]] = []
     for line_no, line in enumerate(text.splitlines(), start=1):
         ratio = difflib.SequenceMatcher(None, old_norm, _normalize_quotes(line).strip()).ratio()
-        if old_norm and (old_norm[: max(1, min(4, len(old_norm)))] in _normalize_quotes(line) or ratio > 0.45):
-            candidates.append({"line": line_no, "text": line.strip(), "snippet": line, "score": round(ratio, 3)})
+        if old_norm and (
+            old_norm[: max(1, min(4, len(old_norm)))] in _normalize_quotes(line) or ratio > 0.45
+        ):
+            candidates.append(
+                {"line": line_no, "text": line.strip(), "snippet": line, "score": round(ratio, 3)}
+            )
     candidates.sort(key=lambda item: (-float(item["score"]), int(item["line"])))
     return candidates[:limit]
 
@@ -830,11 +935,14 @@ def _build_diff(relative: str, before: str, after: str) -> str:
 
 
 def _budget_diff(tool_name: str, diff: str, relative: str) -> dict[str, Any]:
-    return budget_tool_output(
+    return _dict_result(
+        budget_tool_output(
+            tool_name=tool_name,
+            field_name="diff",
+            value=diff,
+            metadata={"tool_use_id": f"{tool_name}_{relative.replace('/', '_')}"},
+        ),
         tool_name=tool_name,
-        field_name="diff",
-        value=diff,
-        metadata={"tool_use_id": f"{tool_name}_{relative.replace('/', '_')}"},
     )
 
 
@@ -857,7 +965,8 @@ def _find_actual_string(text: str, old: str) -> tuple[str | None, bool]:
     if old in text:
         return old, False
     normalized_old = _normalize_quotes(old)
-    for candidate in {normalized_old, old.translate(str.maketrans({'"': "“", "'": "‘"}))}:
+    smart_quote_map: dict[str, str | int | None] = {'"': "“", "'": "‘"}
+    for candidate in {normalized_old, old.translate(str.maketrans(smart_quote_map))}:
         if candidate and candidate in text:
             return candidate, True
     normalized_text = _normalize_quotes(text)
@@ -868,24 +977,26 @@ def _find_actual_string(text: str, old: str) -> tuple[str | None, bool]:
 
 
 def _normalize_quotes(value: str) -> str:
-    return value.translate(
-        str.maketrans(
-            {
-                "“": '"',
-                "”": '"',
-                "„": '"',
-                "‘": "'",
-                "’": "'",
-                "‚": "'",
-            }
-        )
-    )
+    quote_map: dict[str, str | int | None] = {
+        "“": '"',
+        "”": '"',
+        "„": '"',
+        "‘": "'",
+        "’": "'",
+        "‚": "'",
+    }
+    return value.translate(str.maketrans(quote_map))
 
 
 def delete_workspace_file(path: str, approval: dict[str, Any] | None = None) -> dict[str, Any]:
     """Delete a file or empty directory inside the AgentEngine workspace."""
 
-    return _gateway().invoke("delete_workspace_file", _delete_workspace_file_impl, path, approval=approval)
+    return _dict_result(
+        _gateway().invoke(
+            "delete_workspace_file", _delete_workspace_file_impl, path, approval=approval
+        ),
+        tool_name="delete_workspace_file",
+    )
 
 
 def _delete_workspace_file_impl(path: str) -> dict[str, Any]:

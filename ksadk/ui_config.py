@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlsplit
 
-
 UI_PROFILE_AUTO = "auto"
 UI_PROFILE_ADK = "adk"
 UI_PROFILE_LANGCHAIN = "langchain"
@@ -89,11 +88,14 @@ def default_ui_path(profile: str) -> str:
     return _DEFAULT_PATH_BY_PROFILE.get(profile, "/")
 
 
-def extract_ui_state(state: Optional[Dict[str, Any]]) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+def extract_ui_state(
+    state: Optional[Dict[str, Any]],
+) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     if not isinstance(state, dict):
         return None, None, None
 
-    nested = state.get("ui") if isinstance(state.get("ui"), dict) else {}
+    nested_value = state.get("ui")
+    nested: Dict[str, Any] = nested_value if isinstance(nested_value, dict) else {}
 
     profile = state.get("ui_profile") or nested.get("profile")
     path = state.get("ui_path") or nested.get("path")

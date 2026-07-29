@@ -36,7 +36,7 @@ def create_adk_tool():
         可直接注入到 ADK Agent 的工具对象
     """
     try:
-        from google.adk.tools import FunctionTool
+        from ksadk.compat.adk_compat import FunctionTool
 
         return FunctionTool(func=search_knowledge_base)
     except ImportError:

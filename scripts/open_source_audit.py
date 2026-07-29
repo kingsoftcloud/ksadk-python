@@ -591,7 +591,24 @@ def git_files(root: Path) -> list[str]:
 
 
 def filesystem_files(root: Path) -> list[str]:
-    ignored_dirs = {".git", "__pycache__"}
+    # A clean export intentionally has no .git directory. Release preflight may
+    # create a virtualenv, Web cache, docs build output, and Python artifacts in
+    # that export; none of them is source intended for public import.
+    ignored_dirs = {
+        ".cache",
+        ".git",
+        ".mypy_cache",
+        ".next",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".venv",
+        "__pycache__",
+        "build",
+        "dist",
+        "dist-alias",
+        "node_modules",
+        "out",
+    }
     paths: list[str] = []
     for path in sorted(root.rglob("*")):
         if any(part in ignored_dirs for part in path.relative_to(root).parts):

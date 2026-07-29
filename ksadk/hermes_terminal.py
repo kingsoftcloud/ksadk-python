@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import ctypes
+import importlib
 import io
 import json
 import os
@@ -123,7 +124,9 @@ def validate_terminal_exec_argv(argv: Iterable[str]) -> list[str]:
     return validate_exec_argv_with_policy(argv, policy=GENERIC_TERMINAL_EXEC_POLICY)
 
 
-def build_terminal_exec_validator(policy: TerminalExecPolicy) -> Callable[[Iterable[str]], list[str]]:
+def build_terminal_exec_validator(
+    policy: TerminalExecPolicy,
+) -> Callable[[Iterable[str]], list[str]]:
     def _validator(argv: Iterable[str]) -> list[str]:
         return validate_exec_argv_with_policy(argv, policy=policy)
 
@@ -190,30 +193,34 @@ def _raw_terminal(stdin: Any):
 
 
 @contextlib.contextmanager
-def _windows_raw_terminal(stdin: Any, *, kernel32: Any | None = None, msvcrt_module: Any | None = None):
+def _windows_raw_terminal(
+    stdin: Any, *, kernel32: Any | None = None, msvcrt_module: Any | None = None
+):
     if not hasattr(stdin, "fileno") or not hasattr(stdin, "isatty") or not stdin.isatty():
         yield
         return
 
+    resolved_kernel32: Any = kernel32
+    resolved_msvcrt: Any = msvcrt_module
     try:
-        if kernel32 is None:
-            kernel32 = ctypes.windll.kernel32
-        if msvcrt_module is None:
-            import msvcrt as msvcrt_module  # type: ignore[no-redef]
+        if resolved_kernel32 is None:
+            resolved_kernel32 = getattr(ctypes, "windll").kernel32
+        if resolved_msvcrt is None:
+            resolved_msvcrt = importlib.import_module("msvcrt")
     except Exception:
         yield
         return
 
     try:
         fd = stdin.fileno()
-        handle = msvcrt_module.get_osfhandle(fd)
+        handle = resolved_msvcrt.get_osfhandle(fd)
     except Exception:
         yield
         return
 
     original_mode = wintypes.DWORD()
     try:
-        if not kernel32.GetConsoleMode(handle, ctypes.byref(original_mode)):
+        if not resolved_kernel32.GetConsoleMode(handle, ctypes.byref(original_mode)):
             yield
             return
     except Exception:
@@ -233,7 +240,7 @@ def _windows_raw_terminal(stdin: Any, *, kernel32: Any | None = None, msvcrt_mod
     )
 
     try:
-        if not kernel32.SetConsoleMode(handle, raw_mode):
+        if not resolved_kernel32.SetConsoleMode(handle, raw_mode):
             yield
             return
     except Exception:
@@ -244,14 +251,18 @@ def _windows_raw_terminal(stdin: Any, *, kernel32: Any | None = None, msvcrt_mod
         yield
     finally:
         with contextlib.suppress(Exception):
-            kernel32.SetConsoleMode(handle, int(original_mode.value))
+            resolved_kernel32.SetConsoleMode(handle, int(original_mode.value))
 
 
-async def _connect_websocket(ws_url: str, headers: dict[str, str], ssl_context: ssl.SSLContext | None):
+async def _connect_websocket(
+    ws_url: str, headers: dict[str, str], ssl_context: ssl.SSLContext | None
+):
     try:
         import websockets
     except ImportError as e:
-        raise RuntimeError("missing dependency websockets, please install ksadk with websocket support") from e
+        raise RuntimeError(
+            "missing dependency websockets, please install ksadk with websocket support"
+        ) from e
 
     kwargs: dict[str, Any] = {"subprotocols": [TERMINAL_SUBPROTOCOL]}
     if ssl_context is not None:

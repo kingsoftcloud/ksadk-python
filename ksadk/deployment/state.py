@@ -4,11 +4,11 @@
 用于管理本地 .agentengine.state 文件，记录已部署的 Agent/MCP 信息。
 """
 
-import yaml
-from pathlib import Path
-from typing import Optional, Dict, Any
 from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, Optional
 
+import yaml
 
 STATE_FILE_NAME = ".agentengine.state"
 
@@ -23,9 +23,9 @@ def load_state(project_dir: Path) -> Dict[str, Any]:
     state_file = get_state_file_path(project_dir)
     if not state_file.exists():
         return {}
-        
+
     try:
-        with open(state_file, 'r', encoding='utf-8') as f:
+        with open(state_file, "r", encoding="utf-8") as f:
             return yaml.safe_load(f) or {}
     except Exception:
         return {}
@@ -34,12 +34,12 @@ def load_state(project_dir: Path) -> Dict[str, Any]:
 def save_state(project_dir: Path, data: Dict[str, Any]) -> None:
     """保存状态文件"""
     state_file = get_state_file_path(project_dir)
-    
+
     # 自动添加 updated_at
     if "updated_at" not in data:
         data["updated_at"] = datetime.now().isoformat()
-        
-    with open(state_file, 'w', encoding='utf-8') as f:
+
+    with open(state_file, "w", encoding="utf-8") as f:
         yaml.dump(data, f, default_flow_style=False, allow_unicode=True)
 
 
@@ -51,9 +51,9 @@ def update_state(project_dir: Path, updates: Dict[str, Any]) -> Dict[str, Any]:
     return current_state
 
 
-def clear_state(project_dir: Path, key: str = None) -> bool:
+def clear_state(project_dir: Path, key: Optional[str] = None) -> bool:
     """清理状态文件
-    
+
     Args:
         project_dir: 项目目录
         key: 如果指定，仅当状态中的 ID 与 key 匹配时才删除
@@ -64,7 +64,7 @@ def clear_state(project_dir: Path, key: str = None) -> bool:
     state_file = get_state_file_path(project_dir)
     if not state_file.exists():
         return False
-        
+
     if key:
         # 检查是否匹配
         state = load_state(project_dir)

@@ -7,11 +7,12 @@ import json
 import os
 import sqlite3
 import time
+from collections.abc import Iterator
 from contextlib import closing, contextmanager
 from pathlib import Path
-from collections.abc import Iterator
 from typing import Optional
 
+from ksadk.ids import new_session_id
 from ksadk.sessions.base import (
     BaseSessionService,
     Session,
@@ -75,6 +76,14 @@ class LocalSessionService(BaseSessionService):
     async def get_session(self, session_id: str) -> Optional[Session]:
         async with self._lock:
             return await asyncio.to_thread(self._get_session_sync, session_id)
+
+    async def get_session_metadata(self, session_id: str) -> Optional[Session]:
+        async with self._lock:
+            return await asyncio.to_thread(
+                self._get_session_sync,
+                session_id,
+                include_events=False,
+            )
 
     async def list_sessions(
         self,
@@ -160,6 +169,114 @@ class LocalSessionService(BaseSessionService):
                 after_seq_id,
                 before_seq_id,
             )
+
+    async def get_events_for_agent(
+        self,
+        agent_id: str,
+        user_id: Optional[str] = None,
+        offset: Optional[int] = None,
+        limit: Optional[int] = None,
+    ) -> list[SessionEvent]:
+        async with self._lock:
+            return await asyncio.to_thread(
+                self._get_events_for_agent_sync,
+                agent_id,
+                user_id,
+                offset,
+                limit,
+            )
+
+    async def count_events_for_agent(
+        self,
+        agent_id: str,
+        user_id: Optional[str] = None,
+    ) -> int:
+        async with self._lock:
+            return await asyncio.to_thread(
+                self._count_events_for_agent_sync,
+                agent_id,
+                user_id,
+            )
+
+    def _get_events_for_agent_sync(
+        self,
+        agent_id: str,
+        user_id: Optional[str],
+        offset: Optional[int],
+        limit: Optional[int],
+    ) -> list[SessionEvent]:
+        columns = (
+            "e.id, e.session_id, e.author, e.event_type, e.content_json, e.timestamp, "
+            "e.state_delta_json, e.seq_id, e.invocation_id, e.metadata_json"
+        )
+        user_clause = "AND s.user_id = ?" if user_id is not None else ""
+        from_clause = (
+            f"FROM {KSADK_EVENTS_TABLE} e "
+            f"JOIN {KSADK_SESSIONS_TABLE} s ON s.id = e.session_id "
+            f"WHERE s.agent_id = ? {user_clause}"
+        )
+        base_params: list[object] = [agent_id]
+        if user_id is not None:
+            base_params.append(user_id)
+        with self._connection() as connection:
+            if limit is not None or offset is not None:
+                # 与 get_events 一致的"最新 N 条"尾部语义：先 DESC 取窗口再 ASC 重排
+                query = f"""
+                    SELECT id, session_id, author, event_type, content_json, timestamp,
+                           state_delta_json, seq_id, invocation_id, metadata_json
+                    FROM (
+                        SELECT {columns}
+                        {from_clause}
+                        ORDER BY e.timestamp DESC, e.seq_id DESC, e.id DESC
+                        LIMIT ? OFFSET ?
+                    )
+                    ORDER BY timestamp ASC, seq_id ASC, id ASC
+                """
+                params = [*base_params, limit if limit is not None else -1, offset or 0]
+            else:
+                query = f"""
+                    SELECT {columns}
+                    {from_clause}
+                    ORDER BY e.timestamp ASC, e.seq_id ASC, e.id ASC
+                """
+                params = base_params
+            rows = connection.execute(query, params).fetchall()
+            return [
+                SessionEvent(
+                    id=row["id"],
+                    session_id=row["session_id"],
+                    author=row["author"],
+                    event_type=row["event_type"],
+                    content=json.loads(row["content_json"] or "{}"),
+                    timestamp=row["timestamp"],
+                    state_delta=json.loads(row["state_delta_json"] or "{}"),
+                    seq_id=row["seq_id"],
+                    invocation_id=row["invocation_id"],
+                    metadata=json.loads(row["metadata_json"] or "{}"),
+                )
+                for row in rows
+            ]
+
+    def _count_events_for_agent_sync(
+        self,
+        agent_id: str,
+        user_id: Optional[str],
+    ) -> int:
+        user_clause = "AND s.user_id = ?" if user_id is not None else ""
+        params: list[object] = [agent_id]
+        if user_id is not None:
+            params.append(user_id)
+        with self._connection() as connection:
+            row = connection.execute(
+                f"""
+                SELECT COUNT(*) AS total
+                FROM {KSADK_EVENTS_TABLE} e
+                JOIN {KSADK_SESSIONS_TABLE} s ON s.id = e.session_id
+                WHERE s.agent_id = ? {user_clause}
+                """,
+                params,
+            ).fetchone()
+            return int(row["total"] if row else 0)
 
     async def get_state(
         self,
@@ -258,9 +375,7 @@ class LocalSessionService(BaseSessionService):
             and not self._table_exists(connection, KSADK_EVENTS_TABLE)
             and {"session_id", "author", "event_type"}.issubset(legacy_event_columns)
         ):
-            connection.execute(
-                f"ALTER TABLE {LEGACY_EVENTS_TABLE} RENAME TO {KSADK_EVENTS_TABLE}"
-            )
+            connection.execute(f"ALTER TABLE {LEGACY_EVENTS_TABLE} RENAME TO {KSADK_EVENTS_TABLE}")
 
         legacy_state_columns = self._table_columns(connection, LEGACY_STATES_TABLE)
         if (
@@ -268,15 +383,12 @@ class LocalSessionService(BaseSessionService):
             and not self._table_exists(connection, KSADK_STATES_TABLE)
             and {"scope", "agent_id", "state_json"}.issubset(legacy_state_columns)
         ):
-            connection.execute(
-                f"ALTER TABLE {LEGACY_STATES_TABLE} RENAME TO {KSADK_STATES_TABLE}"
-            )
+            connection.execute(f"ALTER TABLE {LEGACY_STATES_TABLE} RENAME TO {KSADK_STATES_TABLE}")
 
     def _ensure_schema(self) -> None:
         with self._connection() as connection:
             self._migrate_legacy_schema(connection)
-            connection.executescript(
-                f"""
+            connection.executescript(f"""
                 CREATE TABLE IF NOT EXISTS {KSADK_SESSIONS_TABLE} (
                     id TEXT PRIMARY KEY,
                     agent_id TEXT NOT NULL,
@@ -309,6 +421,16 @@ class LocalSessionService(BaseSessionService):
                 CREATE INDEX IF NOT EXISTS idx_ksadk_events_session_seq
                 ON {KSADK_EVENTS_TABLE} (session_id, seq_id);
 
+                -- 跨会话事件查询（get_events_for_agent）JOIN sessions 按
+                -- s.agent_id 过滤 + ORDER BY e.timestamp；覆盖索引服务 JOIN 键
+                -- s.id=e.session_id + 排序。
+                CREATE INDEX IF NOT EXISTS idx_ksadk_events_session_ts
+                ON {KSADK_EVENTS_TABLE} (session_id, timestamp, id);
+
+                -- ListSessions 按 agent_id 过滤 + updated_at DESC 排序。
+                CREATE INDEX IF NOT EXISTS idx_ksadk_sessions_agent_updated
+                ON {KSADK_SESSIONS_TABLE} (agent_id, updated_at DESC, id);
+
                 CREATE TABLE IF NOT EXISTS {KSADK_STATES_TABLE} (
                     scope TEXT NOT NULL,
                     agent_id TEXT NOT NULL,
@@ -319,8 +441,7 @@ class LocalSessionService(BaseSessionService):
                     updated_at REAL NOT NULL,
                     PRIMARY KEY (scope, agent_id, user_id, session_id)
                 );
-                """
-            )
+                """)
             self._ensure_columns(
                 connection,
                 KSADK_SESSIONS_TABLE,
@@ -367,7 +488,7 @@ class LocalSessionService(BaseSessionService):
 
             now = time.time()
             session = Session(
-                id=session_id or generate_id(),
+                id=session_id or new_session_id(),
                 agent_id=agent_id,
                 user_id=user_id,
                 created_at=now,
@@ -413,6 +534,7 @@ class LocalSessionService(BaseSessionService):
         session_id: str,
         *,
         connection: Optional[sqlite3.Connection] = None,
+        include_events: bool = True,
     ) -> Optional[Session]:
         owns_connection = connection is None
         connection = connection or self._connect()
@@ -439,7 +561,11 @@ class LocalSessionService(BaseSessionService):
                 first_prompt=row["first_prompt"],
                 last_prompt=row["last_prompt"],
                 state=json.loads(row["state_json"] or "{}"),
-                events=self._get_events_sync(session_id, connection=connection),
+                events=(
+                    self._get_events_sync(session_id, connection=connection)
+                    if include_events
+                    else []
+                ),
                 created_at=row["created_at"],
                 updated_at=row["updated_at"],
                 version=row["version"],
@@ -467,7 +593,7 @@ class LocalSessionService(BaseSessionService):
             if user_id is not None:
                 query += " AND user_id = ?"
                 params.append(user_id)
-            query += " ORDER BY updated_at DESC, created_at DESC"
+            query += " ORDER BY updated_at DESC, created_at DESC, id DESC"
             if limit is not None:
                 query += " LIMIT ?"
                 params.append(limit)
@@ -520,8 +646,12 @@ class LocalSessionService(BaseSessionService):
             if row is None:
                 return False
 
-            connection.execute(f"DELETE FROM {KSADK_EVENTS_TABLE} WHERE session_id = ?", (session_id,))
-            connection.execute(f"DELETE FROM {KSADK_STATES_TABLE} WHERE session_id = ?", (session_id,))
+            connection.execute(
+                f"DELETE FROM {KSADK_EVENTS_TABLE} WHERE session_id = ?", (session_id,)
+            )
+            connection.execute(
+                f"DELETE FROM {KSADK_STATES_TABLE} WHERE session_id = ?", (session_id,)
+            )
             connection.execute(f"DELETE FROM {KSADK_SESSIONS_TABLE} WHERE id = ?", (session_id,))
             connection.commit()
             return True
@@ -541,7 +671,8 @@ class LocalSessionService(BaseSessionService):
 
             next_seq = int(
                 connection.execute(
-                    f"SELECT COALESCE(MAX(seq_id), 0) + 1 FROM {KSADK_EVENTS_TABLE} WHERE session_id = ?",
+                    f"SELECT COALESCE(MAX(seq_id), 0) + 1 "
+                    f"FROM {KSADK_EVENTS_TABLE} WHERE session_id = ?",
                     (session_id,),
                 ).fetchone()[0]
             )

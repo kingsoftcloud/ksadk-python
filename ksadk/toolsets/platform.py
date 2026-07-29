@@ -34,8 +34,16 @@ def component_status() -> dict:
             "knowledge_base_bound": bool(_env("KSADK_KB_DATASET_ID")),
             "long_term_memory_bound": bool(_env("KSADK_LTM_NAMESPACE")),
             "skill_space_bound": bool(spaces),
-            "isolated_execution": "enabled" if skill_runtime_backend not in {"", "disabled", "none", "off"} else "not_enabled",
-            "sandbox_direct_tools": "enabled" if sandbox_backend not in {"", "disabled", "none", "off"} else "not_enabled",
+            "isolated_execution": (
+                "enabled"
+                if skill_runtime_backend not in {"", "disabled", "none", "off"}
+                else "not_enabled"
+            ),
+            "sandbox_direct_tools": (
+                "enabled"
+                if sandbox_backend not in {"", "disabled", "none", "off"}
+                else "not_enabled"
+            ),
         },
         "skill_space": {
             "space_ids": spaces,
@@ -48,13 +56,17 @@ def component_status() -> dict:
         "skill_runtime": {
             "backend": skill_runtime_backend,
             "enabled": skill_runtime_backend not in {"", "disabled", "none", "off"},
-            "template_bound": bool(_env("KSADK_SANDBOX_TEMPLATE_ID") or _env("KSADK_SKILL_RUNTIME_TEMPLATE_ID")),
+            "template_bound": bool(
+                _env("KSADK_SANDBOX_TEMPLATE_ID") or _env("KSADK_SKILL_RUNTIME_TEMPLATE_ID")
+            ),
             "request_protocol": "--request-file JSON envelope",
         },
         "sandbox": {
             "backend": sandbox_backend,
             "enabled": sandbox_backend not in {"", "disabled", "none", "off"},
-            "template_bound": bool(_env("KSADK_SANDBOX_TEMPLATE_ID") or _env("KSADK_SKILL_RUNTIME_TEMPLATE_ID")),
+            "template_bound": bool(
+                _env("KSADK_SANDBOX_TEMPLATE_ID") or _env("KSADK_SKILL_RUNTIME_TEMPLATE_ID")
+            ),
             "tools": ["sandbox_status", "run_command", "run_code"],
         },
         "workspace": {
@@ -71,7 +83,11 @@ def component_status() -> dict:
                 "delete_workspace_file",
             ],
             "boundary": "Workspace tools are confined to the AgentEngine UI workspace directory.",
-            "editing_model": "write tools support whole-file writes; edit_workspace_file supports exact snippet replacement; lint_workspace_file provides lightweight built-in checks.",
+            "editing_model": (
+                "write tools support whole-file writes; edit_workspace_file supports "
+                "exact snippet replacement; lint_workspace_file provides lightweight "
+                "built-in checks."
+            ),
         },
     }
 

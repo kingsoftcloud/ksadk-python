@@ -18,7 +18,8 @@ class BaseRunner(ABC):
     def __init__(self, detection_result: Any, project_dir: str):
         self.detection_result = detection_result
         self.project_dir = project_dir
-        self._agent = None
+        # Framework runners populate this with SDK-specific agent/graph objects.
+        self._agent: Any = None
 
     @abstractmethod
     def load_agent(self) -> None:
@@ -38,7 +39,7 @@ class BaseRunner(ABC):
         pass
 
     @abstractmethod
-    async def stream(self, input_data: Dict[str, Any]) -> AsyncIterator[Dict[str, Any]]:
+    def stream(self, input_data: Dict[str, Any]) -> AsyncIterator[Dict[str, Any]]:
         """流式调用 Agent
 
         Args:
@@ -47,7 +48,7 @@ class BaseRunner(ABC):
         Yields:
             流式输出的数据块
         """
-        pass
+        raise NotImplementedError
 
     @staticmethod
     def normalize_requested_model(model: Optional[str]) -> Optional[str]:
@@ -108,23 +109,28 @@ class BaseRunner(ABC):
                     if cancel_supported
                     else ["unsupported"]
                 ),
-                "Reason": ""
-                if cancel_supported
-                else "runner does not implement cooperative cancellation",
+                "Reason": (
+                    "" if cancel_supported else "runner does not implement cooperative cancellation"
+                ),
             },
             "Checkpoint": checkpoint,
             "ResumeRun": {
                 "Supported": checkpoint_supported,
                 "ResumeMode": str(checkpoint.get("ResumeMode") or "none"),
-                "Reason": checkpoint_reason
-                if not checkpoint_supported
-                else str(checkpoint.get("ResumeReason") or ""),
+                "Reason": (
+                    checkpoint_reason
+                    if not checkpoint_supported
+                    else str(checkpoint.get("ResumeReason") or "")
+                ),
             },
             "SessionContinuity": {
                 "Supported": True,
                 "Type": "semantic_replay",
                 "Level": "semantic",
-                "Reason": "conversation transcript can be replayed, but exact runtime checkpoint resume is not available",
+                "Reason": (
+                    "conversation transcript can be replayed, but exact runtime checkpoint "
+                    "resume is not available"
+                ),
             },
         }
 
@@ -193,15 +199,15 @@ class BaseRunner(ABC):
         if isinstance(usage_metadata, Mapping):
             input_tokens = cls._int_usage_value(usage_metadata.get("input_tokens"))
             output_tokens = cls._int_usage_value(usage_metadata.get("output_tokens"))
-            input_token_details = usage_metadata.get("input_token_details")
-            output_token_details = usage_metadata.get("output_token_details")
-            if not any(
-                key in usage_metadata
-                for key in ("input_tokens", "output_tokens", "total_tokens")
-            ) and not (
-                isinstance(input_token_details, Mapping) and input_token_details
-            ) and not (
-                isinstance(output_token_details, Mapping) and output_token_details
+            usage_input_details = usage_metadata.get("input_token_details")
+            usage_output_details = usage_metadata.get("output_token_details")
+            if (
+                not any(
+                    key in usage_metadata
+                    for key in ("input_tokens", "output_tokens", "total_tokens")
+                )
+                and not (isinstance(usage_input_details, Mapping) and usage_input_details)
+                and not (isinstance(usage_output_details, Mapping) and usage_output_details)
             ):
                 return {}
             return {
@@ -211,10 +217,10 @@ class BaseRunner(ABC):
                     usage_metadata.get("total_tokens") or (input_tokens + output_tokens)
                 ),
                 "input_token_details": (
-                    dict(input_token_details) if isinstance(input_token_details, Mapping) else {}
+                    dict(usage_input_details) if isinstance(usage_input_details, Mapping) else {}
                 ),
                 "output_token_details": (
-                    dict(output_token_details) if isinstance(output_token_details, Mapping) else {}
+                    dict(usage_output_details) if isinstance(usage_output_details, Mapping) else {}
                 ),
             }
 
@@ -237,10 +243,14 @@ class BaseRunner(ABC):
                     reasoning_tokens = completion_details.get("reasoning_tokens")
                     if reasoning_tokens is not None:
                         output_token_details["reasoning"] = cls._int_usage_value(reasoning_tokens)
-                if not any(
-                    key in token_usage
-                    for key in ("prompt_tokens", "completion_tokens", "total_tokens")
-                ) and not input_token_details and not output_token_details:
+                if (
+                    not any(
+                        key in token_usage
+                        for key in ("prompt_tokens", "completion_tokens", "total_tokens")
+                    )
+                    and not input_token_details
+                    and not output_token_details
+                ):
                     return {}
                 return {
                     "input_tokens": input_tokens,
@@ -295,11 +305,18 @@ class BaseRunner(ABC):
         usage = cls._message_usage(result)
         return usage if usage else {}
 
-
     def run_server(self, port: int = 8000) -> None:
-        """启动 HTTP Server"""
-        from ksadk.server import app, set_runner
+        """启动 HTTP Server(per-app factory,不再依赖 set_runner 全局态)。"""
         import uvicorn
 
-        set_runner(self)
+        from ksadk.agui.config import default_agui_config
+        from ksadk.server.composition import configure_runtime_app
+        from ksadk.server.factory import RuntimeAppConfig, create_runtime_app
+
+        # goal-01/16:经 create_runtime_app 注入 runner(per-app state),替代全局 ``app`` +
+        # ``set_runner`` 全局态。普通 runtime app 装配全部 route group。
+        app = create_runtime_app(
+            RuntimeAppConfig(runner=self, agui=default_agui_config(self)),
+            configure_runtime_app,
+        )
         uvicorn.run(app, host="0.0.0.0", port=port)

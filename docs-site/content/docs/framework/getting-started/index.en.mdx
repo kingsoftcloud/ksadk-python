@@ -1,15 +1,32 @@
 ---
-title: Getting Started
+title: Start here
+description: Choose a project shape first, then complete local running, debugging, and pre-deployment validation.
 ---
 
-Start here to understand KsADK: positioning, architecture, core concepts, and running your first agent in minutes.
+You do not need to read every concept before you start. Pick the path that
+matches your project, complete the local loop, then return to architecture and
+advanced capabilities when they become useful.
+
+## First, make one project work
 
 <Cards>
-  <Card title="Why KsADK" href="/en/docs/framework/getting-started/why-ksadk" description="KsADK provides a unified runtime layer, not another agent framework." />
-  <Card title="Architecture" href="/en/docs/framework/getting-started/architecture" description="The public runtime boundary and responsibilities of each layer." />
-  <Card title="Ecosystem Comparison" href="/en/docs/framework/getting-started/comparison" description="How KsADK complements ADK, LangGraph, OpenAI Agents SDK, VEADK, and AgentRun." />
-  <Card title="Core Concepts" href="/en/docs/framework/getting-started/concepts" description="Key terms: Runner, Session, Transcript, Attachment, Workspace." />
-  <Card title="Quickstart" href="/en/docs/framework/getting-started/quickstart" description="Create and run your first agent in minutes." />
-  <Card title="Configuration" href="/en/docs/framework/getting-started/configuration" description="Model provider, sessions, checkpoint, and observability options." />
-  <Card title="Project Structure" href="/en/docs/framework/getting-started/project-structure" description="Directory conventions and entrypoints for a KsADK project." />
+  <Card title="Python Agent: Quickstart" href="/en/docs/framework/getting-started/quickstart" description="For a new LangGraph Agent; includes installation, model configuration, terminal running, and the Web UI." />
+  <Card title="✨ Codex: YAML Is the Agent" href="/en/docs/framework/tutorials/best-practices/codex-yaml-agent" description="For a Codex coding Agent; no agent.py is generated and Docker is not required." />
+  <Card title="Existing Agent" href="/en/docs/framework/tutorials/existing-agent" description="For existing Python code; create a project wrapper that KsADK can detect reliably." />
+</Cards>
+
+## Then make it maintainable
+
+<Cards>
+  <Card title="Configuration" href="/en/docs/framework/getting-started/configuration" description="Precedence across YAML, .env, global defaults, and command-line overrides." />
+  <Card title="Project structure" href="/en/docs/framework/getting-started/project-structure" description="The files required by a Python Agent versus a YAML Codex manifest." />
+  <Card title="Local Web UI" href="/en/docs/framework/guides/local-web-ui" description="Inspect conversations, tool calls, uploaded files, and sessions in the browser." />
+</Cards>
+
+## Learn the design when needed
+
+<Cards>
+  <Card title="Core concepts" href="/en/docs/framework/getting-started/concepts" description="Projects, Runners, Sessions, Transcripts, Attachments, and Workspaces." />
+  <Card title="Why KsADK" href="/en/docs/framework/getting-started/why-ksadk" description="The boundary between an Agent framework, a Runtime, and the platform." />
+  <Card title="Architecture and ecosystem" href="/en/docs/framework/getting-started/architecture" description="Read the public Runtime boundary; use ecosystem comparison when making a framework choice." />
 </Cards>

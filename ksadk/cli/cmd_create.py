@@ -7,11 +7,12 @@ import platform
 import re
 import shlex
 import shutil
-
 from pathlib import Path
 
 import click
 import questionary
+from rich.markup import escape
+
 from ksadk.cli.cmd_config import custom_style
 from ksadk.cli.ui import (
     print_error,
@@ -112,10 +113,10 @@ model = LiteLlm(
 
 def hello(name: str) -> dict:
     """问候工具
-    
+
     Args:
         name: 名字
-    
+
     Returns:
         问候语
     """
@@ -133,7 +134,7 @@ root_agent = Agent(
     },
     "langchain": {
         "agent.py": '''"""
-{package_name} - LangChain Agent
+{package_name} - LangChain Agent (create_agent)
 """
 
 import os
@@ -142,9 +143,8 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).parent.parent / ".env")
 
+from langchain.agents import create_agent
 from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
 
 llm = ChatOpenAI(
     model=os.getenv("OPENAI_MODEL_NAME", "glm-5.2"),
@@ -153,12 +153,28 @@ llm = ChatOpenAI(
     streaming=True,
 )
 
-prompt = ChatPromptTemplate.from_messages([
-    ("system", "你是一个友好的助手。请用中文回复。"),
-    ("human", "{{input}}")
-])
 
-root_agent = prompt | llm | StrOutputParser()
+def hello(name: str) -> str:
+    """问候工具
+
+    Args:
+        name: 名字
+
+    Returns:
+        问候语
+    """
+    return f"你好, {{name}}!"
+
+
+# create_agent 是新版 LangChain 定义 agent 的推荐方式,自带工具调用;
+# 可选 middleware=[HumanInTheLoopMiddleware(...)](人工审批 HITL)与
+# checkpointer(会话持久化)。detector 将本项目判为 LANGCHAIN,
+# 经 LangChainRunner 运行。
+root_agent = create_agent(
+    model=llm,
+    tools=[hello],
+    system_prompt="你是一个友好的助手。请用中文回复。",
+)
 ''',
     },
     "langgraph": {
@@ -243,42 +259,46 @@ root_agent = None
 
 def _detect_framework(content: str) -> str:
     """检测 Agent 文件使用的框架"""
-    if 'from deepagents' in content or 'import deepagents' in content or 'create_deep_agent(' in content:
-        return 'deepagents'
-    elif 'from langgraph' in content or 'import langgraph' in content:
-        return 'langgraph'
-    elif 'from google.adk' in content or 'import google.adk' in content:
-        return 'adk'
-    elif 'from langchain' in content or 'import langchain' in content:
-        return 'langchain'
-    return 'unknown'
+    if (
+        "from deepagents" in content
+        or "import deepagents" in content
+        or "create_deep_agent(" in content
+    ):
+        return "deepagents"
+    elif "from langgraph" in content or "import langgraph" in content:
+        return "langgraph"
+    elif "from google.adk" in content or "import google.adk" in content:
+        return "adk"
+    elif "from langchain" in content or "import langchain" in content:
+        return "langchain"
+    return "unknown"
 
 
 def _detect_agent_variable(content: str) -> str | None:
     """检测 Agent 变量名"""
     import re
-    
+
     # 优先级匹配: root_agent > compiled graph > StateGraph > Agent()
     # Only module-level exports are valid entry variables. Service-style
     # projects often build a local `graph` inside init_agent_resources(), which
     # must not be treated as importable module state.
     patterns = [
-        (r'^(root_agent)\s*=', 'root_agent'),
-        (r'^(root_agent)\s*:\s*[^=]+\s*=', 'root_agent'),  # type annotated root_agent
-        (r'^(\w+)\s*=\s*\w*graph\w*\.compile\(', None),  # e.g., agent = graph.compile()
-        (r'^(\w+)\s*=\s*StateGraph', None),  # e.g., graph = StateGraph(...)
-        (r'^(\w+)\s*=\s*Agent\(', None),  # ADK: agent = Agent(...)
-        (r'^(\w+)\s*=\s*create_react_agent\(', None),  # create_react_agent
-        (r'^(\w+)\s*=\s*create_deep_agent\(', None),  # deepagents create_deep_agent
-        (r'^(\w+)\s*=\s*create_agent\(', None),  # langchain create_agent
-        (r'^(\w+)\s*=\s*build_agent\(', None),  # adapter style build_agent
+        (r"^(root_agent)\s*=", "root_agent"),
+        (r"^(root_agent)\s*:\s*[^=]+\s*=", "root_agent"),  # type annotated root_agent
+        (r"^(\w+)\s*=\s*\w*graph\w*\.compile\(", None),  # e.g., agent = graph.compile()
+        (r"^(\w+)\s*=\s*StateGraph", None),  # e.g., graph = StateGraph(...)
+        (r"^(\w+)\s*=\s*Agent\(", None),  # ADK: agent = Agent(...)
+        (r"^(\w+)\s*=\s*create_react_agent\(", None),  # create_react_agent
+        (r"^(\w+)\s*=\s*create_deep_agent\(", None),  # deepagents create_deep_agent
+        (r"^(\w+)\s*=\s*create_agent\(", None),  # langchain create_agent
+        (r"^(\w+)\s*=\s*build_agent\(", None),  # adapter style build_agent
     ]
-    
+
     for pattern, fixed_name in patterns:
         match = re.search(pattern, content, re.MULTILINE | re.IGNORECASE)
         if match:
             return fixed_name if fixed_name else match.group(1)
-    
+
     return None
 
 
@@ -367,7 +387,11 @@ def _load_entry_from_langgraph_json(directory: Path) -> tuple[Path, str] | None:
         path_part = path_part.strip().removeprefix("./")
         agent_var = agent_var.strip() or "root_agent"
         entry_path = directory / Path(path_part.replace("\\", "/"))
-        if entry_path.exists() and entry_path.is_file() and _entry_exposes_variable(entry_path, agent_var):
+        if (
+            entry_path.exists()
+            and entry_path.is_file()
+            and _entry_exposes_variable(entry_path, agent_var)
+        ):
             return entry_path, agent_var
     return None
 
@@ -389,7 +413,7 @@ def _load_framework_from_agentengine_yaml(directory: Path) -> str | None:
     if not isinstance(framework, str):
         return None
     framework = framework.strip().lower()
-    if framework in {"adk", "langchain", "langgraph", "deepagents", "openclaw", "hermes"}:
+    if framework in {"adk", "langchain", "langgraph", "deepagents", "openclaw", "hermes", "codex"}:
         return framework
     return None
 
@@ -501,35 +525,37 @@ def _fix_dotenv_paths_in_file(file_path: Path, depth: int = 1) -> bool:
     返回是否修改了文件
     """
     import re
-    
+
     try:
-        content = file_path.read_text(encoding='utf-8')
+        content = file_path.read_text(encoding="utf-8")
     except Exception:
         return False
-    
+
     # 构建替换的 parent 链
-    parent_chain = '.parent' * depth
-    
+    parent_chain = ".parent" * depth
+
     # 匹配各种 load_dotenv 模式
     patterns = [
         # load_dotenv(Path(__file__).parent / ".env")
-        (r'(load_dotenv\s*\(\s*Path\s*\(\s*__file__\s*\)\s*)\.parent(\s*/\s*["\']\.env["\'])',
-         rf'\1{parent_chain}\2'),
+        (
+            r'(load_dotenv\s*\(\s*Path\s*\(\s*__file__\s*\)\s*)\.parent(\s*/\s*["\']\.env["\'])',
+            rf"\1{parent_chain}\2",
+        ),
         # load_dotenv(Path(__file__).parent.parent / ".env") -> 根据 depth 调整
     ]
-    
+
     modified = False
     new_content = content
-    
+
     for pattern, replacement in patterns:
         new_content_temp = re.sub(pattern, replacement, new_content)
         if new_content_temp != new_content:
             new_content = new_content_temp
             modified = True
-    
+
     if modified:
-        file_path.write_text(new_content, encoding='utf-8')
-    
+        file_path.write_text(new_content, encoding="utf-8")
+
     return modified
 
 
@@ -539,76 +565,76 @@ def _fix_dotenv_paths_recursive(directory: Path, depth: int = 1) -> int:
     返回修复的文件数量
     """
     fixed_count = 0
-    
-    for py_file in directory.rglob('*.py'):
+
+    for py_file in directory.rglob("*.py"):
         # 计算相对深度
         rel_path = py_file.relative_to(directory)
         file_depth = len(rel_path.parts) + depth - 1  # 相对于项目根目录
-        
+
         if _fix_dotenv_paths_in_file(py_file, file_depth):
             fixed_count += 1
-    
+
     return fixed_count
 
 
 def _fix_nested_imports(file_path: Path, subdirs: list[str]) -> bool:
     """
     修复文件中的嵌套目录导入
-    
+
     当源目录包含子包目录（如 my_agent/）时，
     入口文件中的 `from my_agent import xxx` 需要改为 `from .my_agent import xxx`
-    
+
     Args:
         file_path: 需要修复的文件
         subdirs: 同级子目录名列表
-    
+
     Returns:
         是否修改了文件
     """
     import re
-    
+
     if not subdirs:
         return False
-    
+
     try:
-        content = file_path.read_text(encoding='utf-8')
+        content = file_path.read_text(encoding="utf-8")
     except Exception:
         return False
-    
+
     original = content
-    
+
     # 为每个子目录生成修复规则
     for subdir in subdirs:
         # from my_agent import xxx -> from .my_agent import xxx
-        pattern = rf'^(from\s+)({re.escape(subdir)})(\s+import\s+)'
-        replacement = rf'\1.\2\3'
+        pattern = rf"^(from\s+)({re.escape(subdir)})(\s+import\s+)"
+        replacement = r"\1.\2\3"
         content = re.sub(pattern, replacement, content, flags=re.MULTILINE)
-        
+
         # import my_agent -> from . import my_agent
         # 只处理独立的 import 语句
-        pattern_import = rf'^import\s+({re.escape(subdir)})\s*$'
-        replacement_import = rf'from . import \1'
+        pattern_import = rf"^import\s+({re.escape(subdir)})\s*$"
+        replacement_import = r"from . import \1"
         content = re.sub(pattern_import, replacement_import, content, flags=re.MULTILINE)
-    
+
     if content != original:
-        file_path.write_text(content, encoding='utf-8')
+        file_path.write_text(content, encoding="utf-8")
         return True
-    
+
     return False
 
 
 def _generate_env_content(global_env: dict) -> str:
-    """生成 .env 文件内容"""
-    api_key = global_env.get("OPENAI_API_KEY", "")
+    """Generate project-local configuration without copying credentials.
+
+    ``init`` may read a global profile to retain non-secret endpoint defaults, but
+    it must not persist the caller's credentials in a newly created directory.
+    """
     base_url = global_env.get("OPENAI_BASE_URL", "")
     model_name = global_env.get("OPENAI_MODEL_NAME", "")
-    ks_ak = global_env.get("KSYUN_ACCESS_KEY", "")
-    ks_sk = global_env.get("KSYUN_SECRET_KEY", "")
     ks_region = global_env.get("KSYUN_REGION", "cn-beijing-6")
-    ks_account = global_env.get("KSYUN_ACCOUNT_ID", "")
-    
-    env_content = f"""# 模型配置
-OPENAI_API_KEY={api_key}
+
+    env_content = """# 模型配置
+# OPENAI_API_KEY=
 """
     if base_url:
         env_content += f"OPENAI_BASE_URL={base_url}\n"
@@ -618,25 +644,42 @@ OPENAI_API_KEY={api_key}
         env_content += f"OPENAI_MODEL_NAME={model_name}\n"
     else:
         env_content += "# OPENAI_MODEL_NAME=\n"
-    
-    env_content += f"""
+
+    env_content += """
 # 金山云配置
 """
-    if ks_ak:
-        env_content += f"KSYUN_ACCESS_KEY={ks_ak}\n"
-    else:
-        env_content += "# KSYUN_ACCESS_KEY=\n"
-    if ks_sk:
-        env_content += f"KSYUN_SECRET_KEY={ks_sk}\n"
-    else:
-        env_content += "# KSYUN_SECRET_KEY=\n"
+    env_content += "# KSYUN_ACCESS_KEY=\n"
+    env_content += "# KSYUN_SECRET_KEY=\n"
     env_content += f"KSYUN_REGION={ks_region}\n"
-    if ks_account:
-        env_content += f"KSYUN_ACCOUNT_ID={ks_account}\n"
-    else:
-        env_content += "# KSYUN_ACCOUNT_ID=\n"
-    
+    env_content += "# KSYUN_ACCOUNT_ID=\n"
+
     return env_content
+
+
+def _generate_codex_env_content(global_env: dict) -> str:
+    """Generate the intentionally small local-only environment for a Codex project.
+
+    A ManagedRuntime manifest is declarative and must never acquire cloud, storage or
+    observability credentials merely because the developer ran ``init``.  The three
+    OpenAI-compatible values are enough for native ``ksadk web`` debugging.  The
+    optional proxy knobs are documented rather than copied from the global profile,
+    because their upstream key can be different from the model key.
+    """
+    base_url = global_env.get("OPENAI_BASE_URL", "")
+    model_name = global_env.get("OPENAI_MODEL_NAME", "")
+    lines = [
+        "# 本地 Codex 模型配置（仅用于 ksadk web，不会进入 ManagedRuntime bundle）",
+        "# OPENAI_API_KEY=",
+        f"OPENAI_BASE_URL={base_url}" if base_url else "# OPENAI_BASE_URL=",
+        f"OPENAI_MODEL_NAME={model_name}" if model_name else "# OPENAI_MODEL_NAME=glm-5.2",
+        "",
+        "# 可选：自定义上游仅支持 Chat Completions 时，强制启用协议转换代理",
+        "# KSADK_CODEX_USE_PROXY=1",
+        "# KSADK_PROXY_UPSTREAM_BASE=",
+        "# KSADK_PROXY_UPSTREAM_KEY=",
+        "",
+    ]
+    return "\n".join(lines)
 
 
 def _generate_requirements_from_imports(directory: Path, framework: str) -> str:
@@ -644,84 +687,88 @@ def _generate_requirements_from_imports(directory: Path, framework: str) -> str:
     扫描目录中的 Python 文件，从 import 语句生成 requirements.txt
     """
     import re
-    
+
     # 常用包名到 PyPI 包名的映射
     import_to_package = {
-        'langchain': 'langchain',
-        'langchain_openai': 'langchain-openai',
-        'langchain_anthropic': 'langchain-anthropic',
-        'langchain_core': 'langchain-core',
-        'langchain_community': 'langchain-community',
-        'langgraph': 'langgraph',
-        'deepagents': 'deepagents',
-        'openai': 'openai',
-        'anthropic': 'anthropic',
-        'dotenv': 'python-dotenv',
-        'pydantic': 'pydantic',
-        'httpx': 'httpx',
-        'requests': 'requests',
-        'google.adk': 'google-adk',
-        'google.genai': 'google-genai',
-        'tiktoken': 'tiktoken',
-        'faiss': 'faiss-cpu',
-        'chromadb': 'chromadb',
-        'tavily': 'tavily-python',
+        "langchain": "langchain",
+        "langchain_openai": "langchain-openai",
+        "langchain_anthropic": "langchain-anthropic",
+        "langchain_core": "langchain-core",
+        "langchain_community": "langchain-community",
+        "langgraph": "langgraph",
+        "deepagents": "deepagents",
+        "openai": "openai",
+        "anthropic": "anthropic",
+        "dotenv": "python-dotenv",
+        "pydantic": "pydantic",
+        "httpx": "httpx",
+        "requests": "requests",
+        "google.adk": "google-adk",
+        "google.genai": "google-genai",
+        "tiktoken": "tiktoken",
+        "faiss": "faiss-cpu",
+        "chromadb": "chromadb",
+        "tavily": "tavily-python",
     }
-    
+
     found_packages = set()
-    
+
     # 扫描所有 .py 文件
-    for py_file in directory.rglob('*.py'):
+    for py_file in directory.rglob("*.py"):
         try:
-            content = py_file.read_text(encoding='utf-8')
+            content = py_file.read_text(encoding="utf-8")
         except Exception:
             continue
-        
+
         # 匹配 import 语句
         # from xxx import yyy
         # import xxx
         import_patterns = [
-            r'^from\s+([\w\.]+)',
-            r'^import\s+([\w\.]+)',
+            r"^from\s+([\w\.]+)",
+            r"^import\s+([\w\.]+)",
         ]
-        
+
         for pattern in import_patterns:
             for match in re.finditer(pattern, content, re.MULTILINE):
-                module = match.group(1).split('.')[0]  # 取顶级模块
+                module = match.group(1).split(".")[0]  # 取顶级模块
                 full_module = match.group(1)
-                
+
                 # 检查是否在映射中
                 if full_module in import_to_package:
                     found_packages.add(import_to_package[full_module])
                 elif module in import_to_package:
                     found_packages.add(import_to_package[module])
                 # 检查常见的下划线包名
-                elif module.replace('_', '-') in ['langchain-openai', 'langchain-anthropic', 
-                                                   'langchain-core', 'langchain-community']:
-                    found_packages.add(module.replace('_', '-'))
-    
+                elif module.replace("_", "-") in [
+                    "langchain-openai",
+                    "langchain-anthropic",
+                    "langchain-core",
+                    "langchain-community",
+                ]:
+                    found_packages.add(module.replace("_", "-"))
+
     # 确保框架相关的核心依赖在列表中
-    if framework == 'langgraph':
-        found_packages.add('langgraph')
-        found_packages.add('langchain')
-        found_packages.add('langchain-openai')
-    elif framework == 'deepagents':
-        found_packages.add('deepagents')
-        found_packages.add('langgraph')
-        found_packages.add('langchain')
-        found_packages.add('langchain-openai')
-    elif framework == 'langchain':
-        found_packages.add('langchain')
-        found_packages.add('langchain-openai')
-    elif framework == 'adk':
-        found_packages.add('google-adk')
-    
+    if framework == "langgraph":
+        found_packages.add("langgraph")
+        found_packages.add("langchain")
+        found_packages.add("langchain-openai")
+    elif framework == "deepagents":
+        found_packages.add("deepagents")
+        found_packages.add("langgraph")
+        found_packages.add("langchain")
+        found_packages.add("langchain-openai")
+    elif framework == "langchain":
+        found_packages.add("langchain")
+        found_packages.add("langchain-openai")
+    elif framework == "adk":
+        found_packages.add("google-adk")
+
     # 总是添加 python-dotenv
-    found_packages.add('python-dotenv')
-    
+    found_packages.add("python-dotenv")
+
     # 按字母顺序排序
     sorted_packages = sorted(found_packages)
-    return '\n'.join(sorted_packages) + '\n'
+    return "\n".join(sorted_packages) + "\n"
 
 
 def _analyze_langgraph_state(content: str) -> dict:
@@ -752,7 +799,9 @@ def _analyze_langgraph_state(content: str) -> dict:
     preferred = ("query", "question", "prompt", "user_input", "input")
     input_field = next((field for field in preferred if field in candidates), None)
 
-    if candidates and ("TypedDict" in content or "StateGraph(" in content or "langgraph" in content):
+    if candidates and (
+        "TypedDict" in content or "StateGraph(" in content or "langgraph" in content
+    ):
         return {"kind": "custom", "input_field": input_field}
     if "StateGraph(" in content or "from langgraph" in content or "import langgraph" in content:
         return {"kind": "ambiguous", "input_field": input_field}
@@ -789,15 +838,15 @@ def _generate_langgraph_adapter_content(
 ) -> str:
     input_field = analysis.get("input_field")
     if input_field:
-        return_body = f'''    return {{
+        return_body = f"""    return {{
         "{input_field}": payload.get("input", ""),
-    }}'''
+    }}"""
     else:
-        return_body = '''    # TODO: Map AgentEngine's chat payload to your LangGraph State.
+        return_body = """    # TODO: Map AgentEngine's chat payload to your LangGraph State.
     # Common examples:
     # return {"query": payload.get("input", "")}
     # return {"question": payload.get("input", ""), "context": []}
-    return dict(payload)'''
+    return dict(payload)"""
 
     return f'''"""
 AgentEngine adapter generated for a LangGraph project.
@@ -919,7 +968,9 @@ def _detect_deepagents_service_project(
 def _generate_deepagents_service_adapter_content(analysis: dict) -> str:
     init_module = analysis["init_module"]
     runnable_module = analysis.get("runnable_module")
-    runnable_module_constant = f'RUNNABLE_MODULE = "{runnable_module}"' if runnable_module else "RUNNABLE_MODULE = None"
+    runnable_module_constant = (
+        f'RUNNABLE_MODULE = "{runnable_module}"' if runnable_module else "RUNNABLE_MODULE = None"
+    )
     runnable_build = "        return None\n"
     if runnable_module:
         runnable_build = """        try:
@@ -1040,7 +1091,14 @@ class AgentEngineDeepAgentsServiceAdapter:
             return self._normalize_result(result)
 
         if hasattr(self._agent, "ainvoke"):
-            result = await self._agent.ainvoke({{"messages": payload.get("messages", [])}} if isinstance(payload, dict) and payload.get("messages") else payload, config=config, **kwargs)
+            agent_payload = (
+                {{"messages": payload.get("messages", [])}}
+                if isinstance(payload, dict) and payload.get("messages")
+                else payload
+            )
+            result = await self._agent.ainvoke(
+                agent_payload, config=config, **kwargs
+            )
             return self._normalize_result(result)
         result = self._agent.invoke(payload, config=config, **kwargs)
         return self._normalize_result(result)
@@ -1050,7 +1108,10 @@ class AgentEngineDeepAgentsServiceAdapter:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return asyncio.run(self.ainvoke(payload, config=config, **kwargs))
-        raise RuntimeError("Synchronous invoke cannot run while an event loop is already active; use ainvoke instead")
+        raise RuntimeError(
+            "Synchronous invoke cannot run while an event loop is already active; "
+            "use ainvoke instead"
+        )
 
 
 def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
@@ -1093,55 +1154,55 @@ def _wrap_agent_file(from_agent_path: Path, project_name: str, framework: str, a
     """包装单个 Agent 文件到新项目"""
     project_path = Path(project_name)
     package_name = _runtime_package_name_or_exit(project_path.name)
-    
+
     if project_path.exists():
         print_error(f"目录 '{project_name}' 已存在")
         raise SystemExit(1)
-    
+
     print_title("包装 Agent 文件")
     print_kv("创建项目", project_name)
     print_kv("框架", framework)
     print_kv("包装文件", str(from_agent_path))
     print_kv("Agent 变量", agent_var)
-    
+
     # 创建目录
     (project_path / package_name).mkdir(parents=True)
-    
+
     # 复制源文件并修复 .env 路径
     source_filename = from_agent_path.name
     dest_path = project_path / package_name / source_filename
-    
+
     # 读取源文件内容
-    source_content = from_agent_path.read_text(encoding='utf-8')
-    
+    source_content = from_agent_path.read_text(encoding="utf-8")
+
     # 修复 load_dotenv 路径：parent -> parent.parent (因为文件被移到了子目录)
     fixed_content = re.sub(
         r'(load_dotenv\s*\(\s*Path\s*\(\s*__file__\s*\)\s*\.parent)(\s*/\s*["\']\.env["\'])',
-        r'\1.parent\2',
-        source_content
+        r"\1.parent\2",
+        source_content,
     )
-    
+
     if fixed_content != source_content:
         print_info("已自动修复 .env 加载路径")
-    
+
     # 写入目标文件
-    dest_path.write_text(fixed_content, encoding='utf-8')
-    
+    dest_path.write_text(fixed_content, encoding="utf-8")
+
     # 检测全局配置
     from ksadk.configs.global_config import (
-        global_config_exists,
         get_env_from_global_config,
+        global_config_exists,
     )
-    
+
     global_env = {}
     if global_config_exists():
         global_env = get_env_from_global_config()
         if global_env:
-            print_info("检测到全局配置，已自动填充凭证")
-    
+            print_info("检测到全局配置；项目 .env 仅保留非敏感默认值，凭证不会被复制")
+
     # 生成 .env
     (project_path / ".env").write_text(_generate_env_content(global_env), encoding="utf-8-sig")
-    
+
     # LangGraph custom-state 项目生成 adapter，避免直接猜业务 State 语义。
     entry_relative = Path(source_filename)
     export_agent_var = agent_var
@@ -1174,23 +1235,29 @@ def _wrap_agent_file(from_agent_path: Path, project_name: str, framework: str, a
 
     # 生成 agentengine.yaml
     entry_module = entry_relative.with_suffix("").name
-    (project_path / "agentengine.yaml").write_text(f"""# AgentEngine 项目配置 (Wrapped)
+    (project_path / "agentengine.yaml").write_text(
+        f"""# AgentEngine 项目配置 (Wrapped)
 name: {package_name}
 version: "1.0.0"
 
 framework: {framework}
 entry_point: {package_name}/{entry_relative}
 agent_variable: {export_agent_var}
-""", encoding="utf-8-sig")
-    
+""",
+        encoding="utf-8-sig",
+    )
+
     # 生成 __init__.py
-    (project_path / package_name / "__init__.py").write_text(f'''"""
+    (project_path / package_name / "__init__.py").write_text(
+        f'''"""
 {project_name} - Wrapped Agent
 """
 from .{entry_module} import {export_agent_var} as root_agent
 __all__ = ["root_agent"]
-''', encoding="utf-8-sig")
-    
+''',
+        encoding="utf-8-sig",
+    )
+
     # 生成 requirements.txt
     reqs = ""
     if framework == "langchain":
@@ -1202,9 +1269,10 @@ __all__ = ["root_agent"]
     elif framework == "adk":
         reqs = "google-adk\npython-dotenv\n"
     (project_path / "requirements.txt").write_text(reqs, encoding="utf-8")
-    
+
     # 生成 README.md
-    (project_path / "README.md").write_text(f"""# {project_name}
+    (project_path / "README.md").write_text(
+        f"""# {project_name}
 
 Wrapped Agent project (from `{from_agent_path.name}`).
 
@@ -1214,36 +1282,36 @@ Wrapped Agent project (from `{from_agent_path.name}`).
 cd {project_name}
 agentengine run -i .
 ```
-""", encoding="utf-8-sig")
-    
+""",
+        encoding="utf-8-sig",
+    )
+
     print_success("包装完成")
     print_rule("快速开始")
     _print_quick_start_commands(project_name, ["agentengine run -i ."])
 
 
-def _wrap_agent_directory(from_agent_dir: Path, project_name: str, framework: str, 
-                          entry_file: Path, agent_var: str):
+def _wrap_agent_directory(
+    from_agent_dir: Path, project_name: str, framework: str, entry_file: Path, agent_var: str
+):
     """包装 Agent 目录到新项目"""
-    import shutil
-    
+
     project_path = Path(project_name)
     package_name = _runtime_package_name_or_exit(project_path.name)
-    source_dir_name = from_agent_dir.name
-    
     if project_path.exists():
         print_error(f"目录 '{project_name}' 已存在")
         raise SystemExit(1)
-    
+
     print_title("包装 Agent 目录")
     print_kv("创建项目", project_name)
     print_kv("框架", framework)
     print_kv("包装目录", str(from_agent_dir))
     print_kv("入口文件", entry_file.name)
     print_kv("Agent 变量", agent_var)
-    
+
     # 创建项目目录
     project_path.mkdir(parents=True)
-    
+
     # 复制整个源目录到项目中（作为 package）
     dest_package_path = project_path / package_name
     ignore_names = {
@@ -1272,42 +1340,46 @@ def _wrap_agent_directory(from_agent_dir: Path, project_name: str, framework: st
         return ignored
 
     shutil.copytree(from_agent_dir, dest_package_path, ignore=_ignore_copytree)
-    
+
     print_info(f"已复制 {sum(1 for _ in dest_package_path.rglob('*.py'))} 个 Python 文件")
-    
+
     # 递归修复 .env 路径
     fixed_count = _fix_dotenv_paths_recursive(dest_package_path, depth=2)
     if fixed_count > 0:
         print_info(f"已自动修复 {fixed_count} 个文件的 .env 加载路径")
-    
+
     # 修复嵌套目录导入路径
     # 查找源目录中的子目录（作为 Python 包）
-    subdirs = [d.name for d in from_agent_dir.iterdir() 
-               if d.is_dir() and not d.name.startswith('.') and not d.name.startswith('_')
-               and (d / '__init__.py').exists()]
-    
+    subdirs = [
+        d.name
+        for d in from_agent_dir.iterdir()
+        if d.is_dir()
+        and not d.name.startswith(".")
+        and not d.name.startswith("_")
+        and (d / "__init__.py").exists()
+    ]
+
     if subdirs:
         # 修复入口文件中的导入
         dest_entry_file = dest_package_path / entry_file.relative_to(from_agent_dir)
         if _fix_nested_imports(dest_entry_file, subdirs):
             print_info(f"已修复嵌套目录导入: {', '.join(subdirs)}")
-    
-    
+
     # 检测全局配置
     from ksadk.configs.global_config import (
-        global_config_exists,
         get_env_from_global_config,
+        global_config_exists,
     )
-    
+
     global_env = {}
     if global_config_exists():
         global_env = get_env_from_global_config()
         if global_env:
-            print_info("检测到全局配置，已自动填充凭证")
-    
+            print_info("检测到全局配置；项目 .env 仅保留非敏感默认值，凭证不会被复制")
+
     # 生成 .env
     (project_path / ".env").write_text(_generate_env_content(global_env), encoding="utf-8-sig")
-    
+
     # 生成 agentengine.yaml
     # entry_point 相对于项目根目录
     entry_relative = entry_file.relative_to(from_agent_dir)
@@ -1350,72 +1422,79 @@ def _wrap_agent_directory(from_agent_dir: Path, project_name: str, framework: st
                 export_agent_var = "root_agent"
                 print_warn("LangGraph state 检测: ambiguous adapter generated, review required")
 
-    (project_path / "agentengine.yaml").write_text(f"""# AgentEngine 项目配置 (Wrapped Directory)
+    (project_path / "agentengine.yaml").write_text(
+        f"""# AgentEngine 项目配置 (Wrapped Directory)
 name: {package_name}
 version: "1.0.0"
 
 framework: {framework}
 entry_point: {package_name}/{entry_relative}
 agent_variable: {export_agent_var}
-""", encoding="utf-8-sig")
-    
+""",
+        encoding="utf-8-sig",
+    )
+
     # 确保 __init__.py 正确导出 root_agent
     init_file = dest_package_path / "__init__.py"
     entry_module = ".".join(entry_relative.with_suffix("").parts)  # e.g. src.agentengine_adapter
     expected_export_line = f"from .{entry_module} import {export_agent_var} as root_agent"
-    
+
     # 检查现有 __init__.py 是否已导出 root_agent
     init_has_export = False
     if init_file.exists():
-        init_content = init_file.read_text(encoding='utf-8')
+        init_content = init_file.read_text(encoding="utf-8")
         if expected_export_line in init_content:
             init_has_export = True
-    
+
     if not init_has_export:
         # 追加或创建导出语句
-        export_code = f'''
+        export_code = f"""
 # AgentEngine 导出 (自动添加)
 {expected_export_line}
 __all__ = ["root_agent"]
-'''
+"""
         if init_file.exists():
             # 追加到现有文件
-            with open(init_file, 'a', encoding='utf-8') as f:
+            with open(init_file, "a", encoding="utf-8") as f:
                 f.write(export_code)
             print_info("已修复 __init__.py 导出")
         else:
-            init_file.write_text(f'''"""
+            init_file.write_text(
+                f'''"""
 {project_name} - Wrapped Agent
 """
 {expected_export_line}
 __all__ = ["root_agent"]
-''', encoding="utf-8-sig")
-    
+''',
+                encoding="utf-8-sig",
+            )
+
     # 处理 requirements.txt
     source_requirements = from_agent_dir / "requirements.txt"
     dest_requirements = project_path / "requirements.txt"
-    
+
     if source_requirements.exists():
         # 如果源目录有 requirements.txt，复制并补充必要的依赖
         import shutil as shutil_req
+
         shutil_req.copy(source_requirements, dest_requirements)
         print_info("已复制 requirements.txt")
-        
+
         # 检查是否缺少必要依赖，追加
-        existing_reqs = dest_requirements.read_text(encoding='utf-8').lower()
+        existing_reqs = dest_requirements.read_text(encoding="utf-8").lower()
         missing = []
-        if framework == "langgraph" and 'langgraph' not in existing_reqs:
+        if framework == "langgraph" and "langgraph" not in existing_reqs:
             missing.append("langgraph")
         if framework == "deepagents":
-            if 'deepagents' not in existing_reqs:
+            if "deepagents" not in existing_reqs:
                 missing.append("deepagents")
-            if 'langgraph' not in existing_reqs:
+            if "langgraph" not in existing_reqs:
                 missing.append("langgraph")
-        if 'python-dotenv' not in existing_reqs and 'dotenv' not in existing_reqs:
+        if "python-dotenv" not in existing_reqs and "dotenv" not in existing_reqs:
             missing.append("python-dotenv")
-        
+
         if missing:
-            with open(dest_requirements, 'a', encoding='utf-8') as f:
+            with open(dest_requirements, "a", encoding="utf-8") as f:
                 f.write("\n# Added by agentengine\n")
                 for pkg in missing:
                     f.write(f"{pkg}\n")
@@ -1425,9 +1504,10 @@ __all__ = ["root_agent"]
         reqs = _generate_requirements_from_imports(dest_package_path, framework)
         dest_requirements.write_text(reqs, encoding="utf-8")
         print_info(f"已自动生成 requirements.txt ({reqs.count(chr(10))} 个依赖)")
-    
+
     # 生成 README.md
-    (project_path / "README.md").write_text(f"""# {project_name}
+    (project_path / "README.md").write_text(
+        f"""# {project_name}
 
 Wrapped Agent project (from `{from_agent_dir.name}/`).
 
@@ -1437,14 +1517,16 @@ Wrapped Agent project (from `{from_agent_dir.name}/`).
 cd {project_name}
 agentengine run -i .
 ```
-""", encoding="utf-8-sig")
-    
+""",
+        encoding="utf-8-sig",
+    )
+
     # === 运行时验证 ===
     print_rule("验证 Agent 加载")
     import subprocess
     import sys
-    
-    verify_code = f'''
+
+    verify_code = f"""
 import sys
 sys.path.insert(0, ".")
 try:
@@ -1453,16 +1535,16 @@ try:
 except Exception as e:
     print("ERROR:" + str(e))
     sys.exit(1)
-'''
-    
+"""
+
     result = subprocess.run(
         [sys.executable, "-c", verify_code],
         cwd=str(project_path),
         capture_output=True,
         text=True,
-        timeout=30
+        timeout=30,
     )
-    
+
     if result.returncode == 0:
         output = result.stdout.strip()
         if output.startswith("TYPE:"):
@@ -1474,47 +1556,16 @@ except Exception as e:
         error_msg = result.stderr or result.stdout
         print_warn(f"Agent 加载警告: {error_msg[:200]}")
         print_info("提示: 请检查依赖是否已安装，或代码是否有错误")
-    
+
     print_success("包装完成")
     print_rule("快速开始")
     _print_quick_start_commands(project_name, ["agentengine run -i ."])
 
 
-def _write_hermes_project_template(project_path: Path, project_name: str, package_name: str) -> None:
-    """生成 Hermes container-first 项目骨架。"""
-    repo_template_root = Path(__file__).resolve().parents[2] / "deploy" / "hermes"
-    if repo_template_root.exists():
-        replacements = {
-            "{{PROJECT_NAME}}": project_name,
-            "{{PACKAGE_NAME}}": package_name,
-        }
-        for source in repo_template_root.rglob("*"):
-            relative = source.relative_to(repo_template_root)
-            if source.is_dir():
-                (project_path / relative).mkdir(parents=True, exist_ok=True)
-                continue
-            destination_relative = relative
-            if source.name.endswith(".template"):
-                destination_relative = relative.with_name(source.name[:-9])
-                content = source.read_text(encoding="utf-8")
-                for key, value in replacements.items():
-                    content = content.replace(key, value)
-                destination = project_path / destination_relative
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                destination.write_text(content, encoding="utf-8-sig")
-                continue
-            destination = project_path / destination_relative
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, destination)
-        entrypoint = project_path / "entrypoint.sh"
-        if entrypoint.exists():
-            entrypoint.chmod(0o755)
-        return
-
-    runtime_dir = project_path / "runtime"
-    runtime_dir.mkdir(parents=True, exist_ok=True)
-
-    (project_path / "agentengine.yaml").write_text(f"""# AgentEngine Hermes 项目配置
+def _write_hermes_project_config(project_path: Path, package_name: str) -> None:
+    """Write the deployable Hermes config; the runtime image is platform-owned."""
+    (project_path / "agentengine.yaml").write_text(
+        f"""# AgentEngine Hermes project configuration
 name: {package_name}
 version: "1.0.0"
 
@@ -1532,353 +1583,90 @@ deploy:
     min_replicas: 1
     max_replicas: 1
     concurrency: 1000
-""", encoding="utf-8-sig")
-
-    (project_path / "Dockerfile").write_text("""FROM python:3.12-slim
-
-ENV PYTHONUNBUFFERED=1 \\
-    PYTHONDONTWRITEBYTECODE=1 \\
-    PIP_NO_CACHE_DIR=1 \\
-    PORT=8080 \\
-    API_SERVER_HOST=127.0.0.1 \\
-    API_SERVER_PORT=8642 \\
-    HERMES_DASHBOARD_HOST=127.0.0.1 \\
-    HERMES_DASHBOARD_PORT=9119
-
-WORKDIR /app
-
-RUN apt-get update \\
-    && apt-get install -y --no-install-recommends bash curl tini \\
-    && rm -rf /var/lib/apt/lists/*
-
-RUN pip install --no-cache-dir \\
-    "fastapi>=0.100" \\
-    "uvicorn[standard]>=0.23" \\
-    "httpx>=0.24" \\
-    "pyyaml>=6.0" \\
-    "python-dotenv>=1.0" \\
-    "hermes-agent==0.9.0"
-
-COPY runtime ./runtime
-COPY entrypoint.sh ./entrypoint.sh
-RUN chmod +x /app/entrypoint.sh
-
-EXPOSE 8080
-
-ENTRYPOINT ["tini", "--"]
-CMD ["/app/entrypoint.sh"]
-""", encoding="utf-8")
-
-    (project_path / "entrypoint.sh").write_text("""#!/usr/bin/env bash
-set -euo pipefail
-
-export HOME="${HOME:-/home/agent}"
-export PORT="${PORT:-8080}"
-export API_SERVER_HOST="${API_SERVER_HOST:-127.0.0.1}"
-export API_SERVER_PORT="${API_SERVER_PORT:-8642}"
-export HERMES_DASHBOARD_HOST="${HERMES_DASHBOARD_HOST:-127.0.0.1}"
-export HERMES_DASHBOARD_PORT="${HERMES_DASHBOARD_PORT:-9119}"
-export API_SERVER_ENABLED="${API_SERVER_ENABLED:-true}"
-
-mkdir -p "${HOME}/.hermes"
-
-cat > "${HOME}/.hermes/.env" <<EOF
-OPENAI_API_KEY=${OPENAI_API_KEY:-}
-OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
-OPENAI_MODEL_NAME=${OPENAI_MODEL_NAME:-}
-API_SERVER_ENABLED=${API_SERVER_ENABLED}
-API_SERVER_KEY=${API_SERVER_KEY:-}
-API_SERVER_HOST=${API_SERVER_HOST}
-API_SERVER_PORT=${API_SERVER_PORT}
-EOF
-
-cat > "${HOME}/.hermes/config.yaml" <<EOF
-model:
-  provider: custom
-  default: "${OPENAI_MODEL_NAME:-}"
-  base_url: "${OPENAI_BASE_URL:-}"
-api_server:
-  enabled: true
-  host: "${API_SERVER_HOST}"
-  port: ${API_SERVER_PORT}
-EOF
-
-hermes gateway run --replace &
-HERMES_API_PID=$!
-
-hermes dashboard --host "${HERMES_DASHBOARD_HOST}" --port "${HERMES_DASHBOARD_PORT}" --no-open &
-HERMES_DASHBOARD_PID=$!
-
-cleanup() {
-  kill "${HERMES_API_PID}" "${HERMES_DASHBOARD_PID}" 2>/dev/null || true
-}
-trap cleanup EXIT
-
-exec uvicorn runtime.app:app --host 0.0.0.0 --port "${PORT}"
-""", encoding="utf-8")
-
-    (runtime_dir / "__init__.py").write_text("", encoding="utf-8")
-    (runtime_dir / "app.py").write_text("""from __future__ import annotations
-
-import asyncio
-import contextlib
-import json
-import os
-import pty
-import select
-import signal
-import termios
-from typing import Iterable
-
-import httpx
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import Response
-from starlette.websockets import WebSocketState
+""",
+        encoding="utf-8-sig",
+    )
 
 
-TERMINAL_SUBPROTOCOL = "ks-terminal.v1"
-SHELL_METACHARS = set("|&;<>()$`\\\\\\n\\r")
-SINGLE_READONLY = {"status", "doctor", "version", "insights"}
-NESTED_READONLY = {
-    "sessions": {"list": (2, 2), "show": (3, 3), "export": (3, 3)},
-    "config": {"show": (2, 2), "check": (2, 2), "path": (2, 2), "env-path": (2, 2)},
-    "skills": {"list": (2, 2), "audit": (2, 2), "check": (2, 2)},
-    "tools": {"list": (2, 2)},
-    "cron": {"list": (2, 2), "status": (2, 2)},
-    "gateway": {"status": (2, 2)},
-}
+def _write_codex_project_config(project_path: Path, package_name: str) -> None:
+    """Write the minimal codex runtime project:yaml 驱动,无 package/agent.py。
 
-app = FastAPI()
+    codex 的 agent 逻辑由 prompt 承载(CodexRunner.load_agent 是 no-op),所以只生成
+    canonical agentengine.yaml(framework: codex,model+prompt)+ requirements +
+    README。model/prompt 经 CodexRunner 传入 codex thread(开发者指令)。
+    """
+    (project_path / "agentengine.yaml").write_text(
+        f"""# AgentEngine codex runtime 项目配置
+name: {package_name}
+version: "1.0.0"
 
+# 框架:codex(开发态 CodexRunner → 部署态 codex-runtime)
+framework: codex
+artifact_type: ManagedRuntime
 
-def _api_base() -> str:
-    return f"http://{os.getenv('API_SERVER_HOST', '127.0.0.1')}:{os.getenv('API_SERVER_PORT', '8642')}"
+# 托管运行时版本可选；省略时云端由 Runtime catalog 选择默认值。
+# 本地 `ksadk web` 会使用已安装的 openai-codex 并提示该版本未锁定。
+runtime:
+  name: codex
 
-
-def _dashboard_base() -> str:
-    return f"http://{os.getenv('HERMES_DASHBOARD_HOST', '127.0.0.1')}:{os.getenv('HERMES_DASHBOARD_PORT', '9119')}"
-
-
-def _validate_exec_argv(argv: Iterable[str]) -> list[str]:
-    normalized = [str(item).strip() for item in argv]
-    if not normalized:
-        raise ValueError("missing argv")
-    for item in normalized:
-        if not item or item.startswith("-") or any(char in SHELL_METACHARS for char in item):
-            raise ValueError(f"unsafe argv: {item}")
-    if normalized[0] in SINGLE_READONLY:
-        if len(normalized) != 1:
-            raise ValueError("unsupported argv")
-        return normalized
-    nested = NESTED_READONLY.get(normalized[0])
-    if not nested or len(normalized) < 2:
-        raise ValueError("unsupported argv")
-    bounds = nested.get(normalized[1])
-    if not bounds:
-        raise ValueError("unsupported argv")
-    if not (bounds[0] <= len(normalized) <= bounds[1]):
-        raise ValueError("unsupported argv")
-    return normalized
-
-
-async def _proxy_http(request: Request, base_url: str, path: str) -> Response:
-    target = f"{base_url}/{path.lstrip('/')}"
-    if request.url.query:
-        target = f"{target}?{request.url.query}"
-    headers = {
-        key: value
-        for key, value in request.headers.items()
-        if key.lower() not in {"host", "content-length"}
-    }
-    async with httpx.AsyncClient(timeout=None) as client:
-        upstream = await client.request(
-            request.method,
-            target,
-            headers=headers,
-            content=await request.body(),
-        )
-    response_headers = {
-        key: value
-        for key, value in upstream.headers.items()
-        if key.lower() not in {"content-encoding", "transfer-encoding", "connection"}
-    }
-    return Response(upstream.content, status_code=upstream.status_code, headers=response_headers)
-
-
-@app.get("/health")
-async def health() -> dict:
-    return {"ok": True}
-
-
-@app.api_route("/v1/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
-async def proxy_api(path: str, request: Request) -> Response:
-    return await _proxy_http(request, _api_base(), f"v1/{path}")
-
-
-def _set_winsize(fd: int, rows: int, cols: int) -> None:
-    termios.tcsetwinsize(fd, (int(rows or 24), int(cols or 80)))
-
-
-async def _pty_reader(ws: WebSocket, fd: int) -> None:
-    loop = asyncio.get_running_loop()
-    while True:
-        await loop.run_in_executor(None, lambda: select.select([fd], [], [], None))
-        data = os.read(fd, 4096)
-        if not data:
-            return
-        await ws.send_bytes(data)
-
-
-async def _wait_process(pid: int) -> int:
-    loop = asyncio.get_running_loop()
-    _, status = await loop.run_in_executor(None, os.waitpid, pid, 0)
-    if os.WIFEXITED(status):
-        return os.WEXITSTATUS(status)
-    if os.WIFSIGNALED(status):
-        return 128 + os.WTERMSIG(status)
-    return status
-
-
-@app.websocket("/_ksadk/terminal/ws")
-async def terminal_ws(ws: WebSocket) -> None:
-    if TERMINAL_SUBPROTOCOL not in (ws.headers.get("sec-websocket-protocol") or ""):
-        await ws.close(code=4400, reason="missing ks-terminal.v1 subprotocol")
-        return
-    await ws.accept(subprotocol=TERMINAL_SUBPROTOCOL)
-    pid = None
-    fd = None
-    receive_task = None
-    reader_task = None
-    wait_task = None
-    try:
-        first = await ws.receive_text()
-        payload = json.loads(first)
-        if payload.get("type") != "start":
-            raise ValueError("first frame must be start")
-        mode = payload.get("mode")
-        argv = payload.get("argv") or []
-        if mode == "tui":
-            command = ["hermes", "chat"]
-        elif mode == "exec":
-            command = ["hermes", *_validate_exec_argv(argv)]
-        else:
-            raise ValueError("unsupported mode")
-
-        pid, fd = pty.fork()
-        if pid == 0:
-            os.execvp(command[0], command)
-
-        _set_winsize(fd, int(payload.get("rows") or 24), int(payload.get("cols") or 80))
-        await ws.send_text(json.dumps({"type": "ready"}))
-        reader_task = asyncio.create_task(_pty_reader(ws, fd))
-        wait_task = asyncio.create_task(_wait_process(pid))
-        receive_task = asyncio.create_task(ws.receive())
-
-        while True:
-            done, _pending = await asyncio.wait({wait_task, receive_task}, return_when=asyncio.FIRST_COMPLETED)
-            if wait_task in done:
-                if reader_task:
-                    reader_task.cancel()
-                if receive_task:
-                    receive_task.cancel()
-                code = wait_task.result()
-                if ws.client_state == WebSocketState.CONNECTED:
-                    await ws.send_text(json.dumps({"type": "exit", "code": code}))
-                return
-
-            message = receive_task.result()
-            receive_task = asyncio.create_task(ws.receive())
-            if message.get("bytes") is not None:
-                os.write(fd, message["bytes"])
-                continue
-            text = message.get("text")
-            if not text:
-                continue
-            control = json.loads(text)
-            if control.get("type") == "resize":
-                _set_winsize(fd, int(control.get("rows") or 24), int(control.get("cols") or 80))
-            elif control.get("type") == "signal":
-                sig = signal.SIGINT if control.get("signal") == "SIGINT" else signal.SIGTERM
-                os.kill(pid, sig)
-            elif control.get("type") == "stdin_eof":
-                os.close(fd)
-                fd = None
-    except WebSocketDisconnect:
-        return
-    except Exception as exc:
-        if ws.client_state == WebSocketState.CONNECTED:
-            await ws.send_text(json.dumps({"type": "error", "message": str(exc)}))
-            await ws.close()
-    finally:
-        for task in (receive_task, reader_task):
-            if task and not task.done():
-                task.cancel()
-        if pid is not None and (wait_task is None or not wait_task.done()):
-            with contextlib.suppress(ProcessLookupError):
-                os.kill(pid, signal.SIGTERM)
-        if wait_task and not wait_task.done():
-            wait_task.cancel()
-        if fd is not None:
-            with contextlib.suppress(OSError):
-                os.close(fd)
-
-
-@app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
-async def proxy_dashboard(path: str, request: Request) -> Response:
-    return await _proxy_http(request, _dashboard_base(), path)
-""", encoding="utf-8")
-
-    (project_path / "README.md").write_text(f"""# {project_name}
-
-Hermes AgentEngine container-first 项目。
+# codex 的模型与开发者指令(CodexRunner 读取并传入 codex thread)
+model: glm-5.2
+prompt: |
+  你是 codex 编码助手。简洁回答,能跑命令验证就跑(shell 工具),中文回复。
+""",
+        encoding="utf-8-sig",
+    )
+    (project_path / "requirements.txt").write_text(
+        "ksadk[codex]\n",
+        encoding="utf-8",  # 无 BOM:pip 解析 BOM 会报 Invalid requirement
+    )
+    (project_path / "README.md").write_text(
+        f"""# {package_name} — codex runtime agent
 
 ## 快速开始
 
 ```bash
-cd {project_name}
-
-# 1. 编辑 .env，填写模型配置
-vim .env
-
-# 2. 部署平台预置 Hermes runtime 镜像
-agentengine hermes deploy
-
-# 3. 打开 Hermes 管理 UI
-agentengine hermes open
-
-# 4. 进入 pod 内 Hermes 原生 TUI
-agentengine invoke
-
-# 5. 使用统一 hosted chat
-agentengine hermes open --chat
-
-# 6. 受限只读运维子命令
-agentengine hermes exec <agent> -- status
-
-# 7. Pairing 审批透传
-agentengine hermes pairing <agent> -- list
+# 1. 编辑 .env 填 OPENAI_API_KEY / OPENAI_BASE_URL / OPENAI_MODEL_NAME
+# 2. 本地运行(浏览器对话,codex 自动探测并启用代理)
+agentengine web .
+# 或
+ksadk web .
 ```
 
-## Runtime Contract
+## 说明
 
-- `/` 反代到 Hermes dashboard 管理 UI
-- `/chat` 由 AgentEngine hosted UI/router 处理
-- `/v1/*` 反代到 Hermes OpenAI-compatible API server
-- `/_ksadk/terminal/ws` 提供 `ks-terminal.v1` 原生 TUI/exec/pairing websocket
-""", encoding="utf-8-sig")
+- codex 的 agent 逻辑由 `agentengine.yaml` 的 `prompt`(开发者指令)承载,无 agent.py。
+- codex 自动探测模型协议:OpenAI 官方直连,星流 chat 模型自动启用转换代理。
+- `agentengine build .` 只生成 YAML manifest bundle，不打包本机 Codex 二进制。若
+  `runtime.version` 未指定，build 需要连接到已配置 Runtime catalog；离线构建请显式锁定版本。
+- 部署时服务端解析 ManagedRuntime 版本和 Linux 镜像 digest。
+""",
+        encoding="utf-8-sig",
+    )
 
 
-@click.command(context_settings=dict(help_option_names=['-h', '--help']))
-@click.argument('project_name', required=False)
-@click.option('--framework', '-f', type=click.Choice(['adk', 'langchain', 'langgraph', 'deepagents', 'openclaw', 'hermes']),
-              default='langgraph', help='框架类型 (default: langgraph)')
-@click.option('--from-agent', 'from_agent_path', type=click.Path(exists=True), 
-              help='包装现有 Agent 文件或目录')
+@click.command(context_settings=dict(help_option_names=["-h", "--help"]))
+@click.argument("project_name", required=False)
+@click.option(
+    "--framework",
+    "-f",
+    type=click.Choice(
+        ["adk", "langchain", "langgraph", "deepagents", "openclaw", "hermes", "codex"]
+    ),
+    default="langgraph",
+    help="框架类型 (default: langgraph)",
+)
+@click.option(
+    "--from-agent",
+    "from_agent_path",
+    type=click.Path(exists=True),
+    help="包装现有 Agent 文件或目录",
+)
 def create(project_name: str, framework: str, from_agent_path: str):
     """创建新的 Agent 项目
-    
+
     PROJECT_NAME: 项目名称
-    
+
     使用 --from-agent 可包装现有代码:
         agentengine init --from-agent ./my_agent.py      # 单文件
         agentengine init --from-agent ./my_agent/        # 目录
@@ -1886,158 +1674,151 @@ def create(project_name: str, framework: str, from_agent_path: str):
     # === 包装模式 ===
     if from_agent_path:
         from_path = Path(from_agent_path)
-        
+
         # === 目录模式 ===
         if from_path.is_dir():
             print_info(f"扫描目录: {from_path}")
-            
+
             # 查找入口文件
             entry_result = _find_entry_file(from_path)
             if not entry_result:
-                print_error("未找到有效的入口文件 (agent.py, main.py, __init__.py 或包含 Agent 定义的文件)")
+                print_error(
+                    "未找到有效的入口文件 (agent.py, main.py, __init__.py 或包含 Agent 定义的文件)"
+                )
                 raise SystemExit(1)
-            
+
             entry_file, detected_var = entry_result
             print_info(f"检测到入口: {entry_file.name}")
             print_info(f"检测到变量: {detected_var}")
-            
+
             # 检测框架：优先读取已有 agentengine.yaml
-            detected_framework = _load_framework_from_agentengine_yaml(from_path) or 'unknown'
-            if detected_framework != 'unknown':
+            detected_framework = _load_framework_from_agentengine_yaml(from_path) or "unknown"
+            if detected_framework != "unknown":
                 print_info(f"从 agentengine.yaml 检测到框架: {detected_framework}")
             else:
-                entry_content = entry_file.read_text(encoding='utf-8')
+                entry_content = entry_file.read_text(encoding="utf-8")
                 detected_framework = _detect_framework(entry_content)
-            
+
             # 如果入口文件未检测到框架，扫描整个目录
-            if detected_framework == 'unknown':
+            if detected_framework == "unknown":
                 for py_file in _iter_python_files(from_path):
                     try:
-                        content = py_file.read_text(encoding='utf-8')
+                        content = py_file.read_text(encoding="utf-8")
                     except Exception:
                         continue
                     detected_framework = _detect_framework(content)
-                    if detected_framework != 'unknown':
+                    if detected_framework != "unknown":
                         break
-            
-            if detected_framework == 'unknown':
+
+            if detected_framework == "unknown":
                 print_warn("无法自动检测框架，将使用默认 langgraph")
-                detected_framework = 'langgraph'
+                detected_framework = "langgraph"
             else:
                 print_info(f"检测到框架: {detected_framework}")
-            
+
             # 如果没有指定项目名，使用目录名
             if not project_name:
-                project_name = from_path.name.replace('_', '-')
-            
-            _wrap_agent_directory(from_path, project_name, detected_framework, entry_file, detected_var)
+                project_name = from_path.name.replace("_", "-")
+
+            _wrap_agent_directory(
+                from_path, project_name, detected_framework, entry_file, detected_var
+            )
             return
-        
+
         # === 单文件模式 ===
         else:
-            content = from_path.read_text(encoding='utf-8')
-            
+            content = from_path.read_text(encoding="utf-8")
+
             # 自动检测框架
             detected_framework = _detect_framework(content)
-            if detected_framework == 'unknown':
+            if detected_framework == "unknown":
                 print_warn("无法自动检测框架，将使用默认 langgraph")
-                detected_framework = 'langgraph'
+                detected_framework = "langgraph"
             else:
                 print_info(f"检测到框架: {detected_framework}")
-            
+
             # 自动检测 Agent 变量
-            detected_var = _detect_agent_variable(content)
-            if not detected_var:
+            detected_agent_var = _detect_agent_variable(content)
+            if not detected_agent_var:
                 print_warn("无法自动检测 Agent 变量，将使用默认 root_agent")
-                detected_var = 'root_agent'
+                detected_agent_var = "root_agent"
             else:
-                print_info(f"检测到变量: {detected_var}")
-            
+                print_info(f"检测到变量: {detected_agent_var}")
+
             # 如果没有指定项目名，使用文件名
             if not project_name:
-                project_name = from_path.stem.replace('_', '-')
-            
-            _wrap_agent_file(from_path, project_name, detected_framework, detected_var)
+                project_name = from_path.stem.replace("_", "-")
+
+            _wrap_agent_file(from_path, project_name, detected_framework, detected_agent_var)
             return
-    
+
     # === 正常模板模式 ===
     # 如果没有提供项目名称，进入交互模式
     if not project_name:
         print_title("初始化新项目")
-        
-        project_name = questionary.text(
-            "请输入项目名称:",
-            style=custom_style
-        ).ask()
-        
+
+        project_name = questionary.text("请输入项目名称:", style=custom_style).ask()
+
         if not project_name:
             print_error("取消创建")
             raise SystemExit(0)
-            
+
         framework = questionary.select(
             "请选择开发框架:",
-            choices=['langgraph', 'langchain', 'deepagents', 'adk', 'openclaw', 'hermes'],
-            default='langgraph',
-            style=custom_style
+            choices=["langgraph", "langchain", "deepagents", "adk", "openclaw", "hermes", "codex"],
+            default="langgraph",
+            style=custom_style,
         ).ask()
-        
+
         if not framework:
             print_error("取消创建")
             raise SystemExit(0)
-            
+
     project_path = Path(project_name)
-    
+
     if project_path.exists():
         print_error(f"目录 '{project_name}' 已存在")
         raise SystemExit(1)
-    
+
     print_kv("创建项目", project_name)
     print_kv("框架", framework)
-    
+
     package_name = _runtime_package_name_or_exit(project_path.name)
     project_path.mkdir(parents=True)
-    if framework not in {"openclaw", "hermes"}:
+    if framework not in {"openclaw", "hermes", "codex"}:
         (project_path / package_name).mkdir(parents=True)
-    
+
     # 检测全局配置
     from ksadk.configs.global_config import (
-        global_config_exists,
         get_env_from_global_config,
+        global_config_exists,
     )
-    
+
     global_env = {}
     if global_config_exists():
         global_env = get_env_from_global_config()
         if global_env:
-            print_info("检测到全局配置，已自动填充凭证")
-    
+            print_info("检测到全局配置；项目 .env 仅保留非敏感默认值，凭证不会被复制")
+
     # .env - 生成配置文件
-    # 如果有全局配置，使用全局配置的值；否则使用占位符
-    # 如果有全局配置，使用全局配置的值；否则使用空字符串
-    api_key = global_env.get("OPENAI_API_KEY", "")
+    # 仅继承非敏感的 endpoint/model/region 默认值；绝不复制凭证。
     base_url = global_env.get("OPENAI_BASE_URL", "")
     model_name = global_env.get("OPENAI_MODEL_NAME", "")
-    
-    ks_ak = global_env.get("KSYUN_ACCESS_KEY", "")
-    ks_sk = global_env.get("KSYUN_SECRET_KEY", "")
+
     ks_region = global_env.get("KSYUN_REGION", "cn-beijing-6")
-    ks_account = global_env.get("KSYUN_ACCOUNT_ID", "")
-    
+
     # 构建 .env 内容
     if framework == "openclaw":
         env_content = f"""# ======================
 # OpenClaw 标准部署最小配置
 # ======================
-KSYUN_ACCESS_KEY={ks_ak}
-KSYUN_SECRET_KEY={ks_sk}
+# KSYUN_ACCESS_KEY=
+# KSYUN_SECRET_KEY=
 KSYUN_REGION={ks_region}
 """
-        if ks_account:
-            env_content += f"KSYUN_ACCOUNT_ID={ks_account}\n"
-        else:
-            env_content += "# KSYUN_ACCOUNT_ID=your-account-id\n"
+        env_content += "# KSYUN_ACCOUNT_ID=your-account-id\n"
 
-        env_content += f"\nOPENAI_API_KEY={api_key}\n"
+        env_content += "\n# OPENAI_API_KEY=\n"
         if base_url:
             env_content += f"OPENAI_BASE_URL={base_url}\n"
         else:
@@ -2051,18 +1832,13 @@ KSYUN_REGION={ks_region}
         env_content = f"""# ======================
 # Hermes 标准部署最小配置
 # ======================
-KSYUN_ACCESS_KEY={ks_ak}
-KSYUN_SECRET_KEY={ks_sk}
+# KSYUN_ACCESS_KEY=
+# KSYUN_SECRET_KEY=
 KSYUN_REGION={ks_region}
 """
-        if ks_account:
-            env_content += f"KSYUN_ACCOUNT_ID={ks_account}\n"
-        else:
-            env_content += "# KSYUN_ACCOUNT_ID=your-account-id\n"
+        env_content += "# KSYUN_ACCOUNT_ID=your-account-id\n"
 
-        env_content += f"""
-OPENAI_API_KEY={api_key}
-"""
+        env_content += "\n# OPENAI_API_KEY=\n"
         if base_url:
             env_content += f"OPENAI_BASE_URL={base_url}\n"
         else:
@@ -2083,7 +1859,6 @@ HERMES_DASHBOARD_PORT=9119
 PORT=8080
 # HERMES_CONTEXT_LENGTH=200000
 # HERMES_FALLBACK_MODEL=deepseek-v4-pro
-# HERMES_IMAGE=hub.kce.ksyun.com/agentengine-public/hermes-agent:2026.5.29.2-ksadk-v1
 """
         env_example_content = """# ======================
 # Hermes 标准部署最小配置示例
@@ -2106,17 +1881,16 @@ HERMES_DASHBOARD_PORT=9119
 PORT=8080
 # HERMES_CONTEXT_LENGTH=200000
 # HERMES_FALLBACK_MODEL=deepseek-v4-pro
-# HERMES_IMAGE=hub.kce.ksyun.com/agentengine-public/hermes-agent:2026.5.29.2-ksadk-v1
 """
+    elif framework == "codex":
+        env_content = _generate_codex_env_content(global_env)
     else:
-        langfuse_public = global_env.get("LANGFUSE_PUBLIC_KEY", "")
-        langfuse_secret = global_env.get("LANGFUSE_SECRET_KEY", "")
         langfuse_url = global_env.get("LANGFUSE_BASE_URL", "")
 
-        env_content = f"""# ======================
+        env_content = """# ======================
 # 模型配置 (必填, 可以从星流平台获取https://ksp.console.ksyun.com/#/apiKey)
 # ======================
-OPENAI_API_KEY={api_key}
+# OPENAI_API_KEY=
 """
 
         # 可选字段：如果有值则启用，否则注释掉
@@ -2135,15 +1909,8 @@ OPENAI_API_KEY={api_key}
 # 可观测性 (可选)
 # ======================
 """
-        if langfuse_public:
-            env_content += f"LANGFUSE_PUBLIC_KEY={langfuse_public}\n"
-        else:
-            env_content += "# LANGFUSE_PUBLIC_KEY=pk-xxx\n"
-
-        if langfuse_secret:
-            env_content += f"LANGFUSE_SECRET_KEY={langfuse_secret}\n"
-        else:
-            env_content += "# LANGFUSE_SECRET_KEY=sk-xxx\n"
+        env_content += "# LANGFUSE_PUBLIC_KEY=pk-xxx\n"
+        env_content += "# LANGFUSE_SECRET_KEY=sk-xxx\n"
 
         if langfuse_url:
             env_content += f"LANGFUSE_BASE_URL={langfuse_url}\n"
@@ -2155,23 +1922,13 @@ OPENAI_API_KEY={api_key}
 # 金山云配置 (可选,需要部署时必选)
 # ======================
 """
-        if ks_ak:
-            env_content += f"KSYUN_ACCESS_KEY={ks_ak}\n"
-        else:
-            env_content += "# KSYUN_ACCESS_KEY=your-api-key-here\n"
-
-        if ks_sk:
-            env_content += f"KSYUN_SECRET_KEY={ks_sk}\n"
-        else:
-            env_content += "# KSYUN_SECRET_KEY=your-api-secret-here\n"
+        env_content += "# KSYUN_ACCESS_KEY=your-api-key-here\n"
+        env_content += "# KSYUN_SECRET_KEY=your-api-secret-here\n"
 
         env_content += f"KSYUN_REGION={ks_region}\n"
 
-        if ks_account:
-            env_content += f"KSYUN_ACCOUNT_ID={ks_account}\n"
-        else:
-            env_content += "# KSYUN_ACCOUNT_ID=your-account-id\n"
-    
+        env_content += "# KSYUN_ACCOUNT_ID=your-account-id\n"
+
     # 使用 utf-8-sig 编码 (带 BOM)，确保 Windows 程序正确识别为 UTF-8
     (project_path / ".env").write_text(env_content, encoding="utf-8-sig")
     if framework == "hermes":
@@ -2185,16 +1942,35 @@ OPENAI_API_KEY={api_key}
         print_info("部署前如需覆盖模型/网关参数，可先编辑 .env")
         return
     if framework == "hermes":
-        _write_hermes_project_template(project_path, project_name, package_name)
+        _write_hermes_project_config(project_path, package_name)
         print_success("项目创建成功")
         print_rule("快速开始")
         print_info("快速开始 (复制并执行):")
         _print_quick_start_commands(project_name, ["agentengine hermes deploy"])
         print_info("部署前如需覆盖模型/运行时参数，可先编辑 .env")
         return
-    
+    if framework == "codex":
+        _write_codex_project_config(project_path, package_name)
+        print_success("项目创建成功")
+        print_rule("快速开始")
+        print_info("快速开始 (复制并执行):")
+        _print_quick_start_commands(project_name, ["ksadk web ."])
+        print_info("编辑 .env 填星流 OPENAI_API_KEY/BASE/MODEL_NAME;codex 自动探测并启用代理")
+        # codex 本地环境检测(不阻断):缺 openai-codex SDK 时提醒
+        import importlib.util
+
+        if importlib.util.find_spec("openai_codex") is None:
+            print_warn(
+                escape(
+                    "缺少 codex runtime SDK:请先 `pip install 'ksadk[codex]'`"
+                    "(内含 codex CLI 二进制)"
+                )
+            )
+        return
+
     # agentengine.yaml - Agent 配置
-    (project_path / "agentengine.yaml").write_text(f"""# AgentEngine 项目配置
+    (project_path / "agentengine.yaml").write_text(
+        f"""# AgentEngine 项目配置
 name: {package_name}
 version: "1.0.0"
 
@@ -2209,23 +1985,27 @@ agent_variable: root_agent
 # deploy:
 #   timeout: 300
 #   memory: 512
-""", encoding="utf-8-sig")
-    
+""",
+        encoding="utf-8-sig",
+    )
+
     # __init__.py
-    (project_path / package_name / "__init__.py").write_text(f'''"""
+    (project_path / package_name / "__init__.py").write_text(
+        f'''"""
 {project_name} - KsADK Agent
 """
 from .agent import root_agent
 __all__ = ["root_agent"]
-''', encoding="utf-8-sig")
-    
+''',
+        encoding="utf-8-sig",
+    )
+
     # agent.py
     template = TEMPLATES[framework]["agent.py"]
     (project_path / package_name / "agent.py").write_text(
-        template.format(package_name=package_name),
-        encoding="utf-8-sig"
+        template.format(package_name=package_name), encoding="utf-8-sig"
     )
-    
+
     # README.md
     if framework == "openclaw":
         readme = f"""# {project_name}
@@ -2292,12 +2072,12 @@ agentengine deploy .    # 部署到云端
         reqs += "deepagents\nlangchain\nlangchain-openai\nlanggraph\npython-dotenv\n"
     elif framework == "adk":
         reqs += "google-adk\npython-dotenv\n"
-    
+
     (project_path / "requirements.txt").write_text(reqs, encoding="utf-8")
-    
+
     print_success("项目创建成功")
     print_rule("快速开始")
-    
+
     print_info("快速开始 (复制并执行):")
     _print_quick_start_commands(project_name, ["agentengine config"])
     print_info("或直接运行 (环境变量中需包含模型 API Key):")

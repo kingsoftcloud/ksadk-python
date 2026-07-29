@@ -1,0 +1,72 @@
+---
+title: HarnessApp
+description: A minimal declarative composition root, new in 0.8, for assembling a unified Runtime data plane from YAML.
+---
+
+<Callout type="warning" title="Experimental API in 0.8">
+HarnessApp is a runnable minimal composition root, not a complete Agent
+configuration language. It does not promise its own `init`, hosted deployment,
+or plugin ecosystem. Validate production credentials, real MCPs, and deployment
+interoperability in the target environment.
+</Callout>
+
+HarnessApp maps a strictly validated YAML file to a `RuntimeAdapter` and a
+FastAPI data plane. It reuses Responses, OpenAI-compatible API, session, and
+health routes without copying a global application or silently installing a
+control plane.
+
+## Minimal application
+
+Create `harness.yaml`:
+
+```yaml title="harness.yaml"
+model: my-model
+prompt: |
+  You are a concise coding assistant.
+runtime: yaml
+sandbox:
+  read_only: true
+```
+
+Create an ASGI entrypoint:
+
+```python title="app.py"
+from ksadk.harness import HarnessApp
+
+app = HarnessApp.from_yaml("harness.yaml").build_app()
+```
+
+Run it locally with your OpenAI-compatible provider variables:
+
+```bash title="shell"
+export OPENAI_API_KEY=<your-key>
+export OPENAI_BASE_URL=https://api.example.com/v1
+uvicorn app:app --host 127.0.0.1 --port 8080
+```
+
+`runtime: yaml` uses the Harness YAML runner. `runtime: codex` uses the native
+Codex runner, so it also needs `ksadk[codex]` and the same local provider setup
+as [Codex Managed Runtime](./managed-runtime).
+
+## Supported YAML surface
+
+| Field | Behavior |
+| --- | --- |
+| `model` | required default model; a single call can override it only through `StartRequest`. |
+| `prompt` | required developer instruction. |
+| `runtime` | `yaml` (default) or `codex`. |
+| `mcp_tools` | optional MCP tools; each item accepts `name`, `url`, `api_key`, `tool_filter`, and `tool_name_prefix`. Never commit a real `api_key` in YAML. |
+| `sandbox.read_only` | defaults to and currently must be `true`; a write policy is rejected explicitly. |
+
+`memory`, `knowledge`, `workflow`, `tracing`, and `skills` fail explicitly as
+unsupported in this release rather than being ignored. HarnessApp does not expose
+workspace files by default, and enables an A2A data plane only when the caller
+explicitly supplies A2A configuration.
+
+## Invocation boundary
+
+The public HarnessApp data plane supports `/v1/responses`,
+`/v1/chat/completions`, and session routes. It is not an `agentengine web`
+project and does not automatically produce a cloud deployment artifact. Use
+`agentengine init` for a standard framework project, or
+[Codex Managed Runtime](./managed-runtime) for YAML-driven managed Codex delivery.
