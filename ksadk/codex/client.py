@@ -25,7 +25,7 @@ from importlib.metadata import PackageNotFoundError, version
 from typing import Any, AsyncIterator, Optional
 
 from ksadk.model_proxy import ProxyConfig, ProxyServer
-from ksadk.model_proxy.cache import CapabilityCache
+from ksadk.model_proxy.cache import CapabilityCache, credential_scope
 from ksadk.model_proxy.detect import probe_responses_capability
 
 # 探测缓存单例:能力判定跨 client 共享,按 (model, base, credential_scope) 长缓存
@@ -63,13 +63,13 @@ def _probe_requires_proxy(model: str, base: str, key: str) -> bool:
     不支持 responses,不 silent 改变接入方式。结果经 CapabilityCache 缓存(singleflight)。
     """
 
-    def probe(m: str, b: str, k: str):
+    def probe(m: str, b: str):
         import httpx
 
         with httpx.Client() as client:
-            return probe_responses_capability(client, b, k, m, timeout=15.0)
+            return probe_responses_capability(client, b, key, m, timeout=15.0)
 
-    caps = _CAPABILITY_CACHE.get_or_probe(model, base, key, probe)
+    caps = _CAPABILITY_CACHE.get_or_probe(model, base, credential_scope(key), probe)
     return caps.verdict == "unsupported"
 
 
