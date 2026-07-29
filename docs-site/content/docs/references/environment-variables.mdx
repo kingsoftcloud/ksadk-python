@@ -50,6 +50,41 @@ OPENAI_MODEL_NAME=my-model
 | `KSADK_MODEL_PROXY_MODELS` | 逗号分隔的 model allowlist |
 | `KSADK_MODEL_PROXY_DENY` | 逗号分隔的 denylist，用于紧急关闭代理 |
 
+## 0.8 Runtime、A2A 与 A2UI
+
+以下变量由 0.8 的托管 Runtime 和 A2A 数据面使用。标记为“平台注入”的变量是部署契约，
+用户不应写进 `.env` 或提交到仓库。
+
+### Codex ManagedRuntime
+
+| 变量 | 所有者 | 用途 |
+| --- | --- | --- |
+| `AGENTENGINE_BASE_INSTRUCTIONS` | 控制台 / Server | 声明式创建 Codex Agent 时写入 manifest `prompt` 的服务端输入；本机 `web` 直接读取 YAML。 |
+| `AGENTENGINE_MANAGED_RUNTIME_NAME` | 平台注入 | catalog 解析后的 Runtime 名称；镜像启动时必须匹配 manifest `runtime.name`。 |
+| `AGENTENGINE_MANAGED_RUNTIME_VERSION` | 平台注入 | catalog 解析后的 Runtime 版本；镜像同时校验已安装的 `openai-codex`。 |
+| `AGENTENGINE_MANIFEST_PROTOCOL` | 平台注入 | 内联 manifest 协议；当前为 `runtime-manifest/v1`。 |
+| `AGENTENGINE_MANIFEST_SHA256` | 平台注入 | 规范化 `agentengine.yaml` 的 SHA-256；启动时用于防止静默漂移。 |
+
+### A2A Runtime
+
+| 变量 | 所有者 | 用途 |
+| --- | --- | --- |
+| `KSADK_A2A_SPACE_IDS` | 平台注入 | Runtime 已配置 A2A Space 的 JSON 数组；一个以上 Space 时调用方必须显式选择 `space_id`。 |
+| `KSADK_A2A_CONTROL_PLANE_URL` | 平台注入 | A2A control plane 基地址；不会回退到通用 AgentEngine server URL。 |
+| `KSADK_A2A_ENABLE_PUBLIC_EGRESS` | 部署层注入 | 是否允许 `external_public`；未注入时按 `false` fail-closed。 |
+| `KSADK_A2A_EVENT_OUTBOX_PATH` | 平台 / 开发者 | durable A2A task-event outbox 路径；生产环境应在 Runtime 可写持久卷中。 |
+| `KSADK_A2A_TOKEN_DIR` | token sidecar | audience workload JWT 的投影目录；不要手动创建或提交这些 token。 |
+
+### Hosted UI
+
+| 变量 | 所有者 | 用途 |
+| --- | --- | --- |
+| `KSADK_A2UI_GENERATION_TIMEOUT_SECONDS` | 平台 / 开发者 | A2UI 结构化生成超时秒数；有效范围 `1` 到 `120`，默认 `20`。 |
+
+这些变量的协议与运行边界见 [A2A Runtime](../framework/guides/a2a-runtime)、
+[Codex Managed Runtime](../framework/guides/managed-runtime) 和
+[Hosted UI 与事件回放](../framework/guides/hosted-ui-events)。
+
 ## 统一模型策略与 fallback（0.6.6+）
 
 托管部署中，平台可以通过 `AGENTENGINE_MODEL_POLICY_JSON` 注入统一模型策略，Hermes、OpenClaw 和通用 Agent 共用同一套默认语义。0.6.6 默认策略 v1 使用 `glm-5.2` 作为主模型、`kimi-k2.7-code` 作为多模态模型、`deepseek-v4-pro` 作为 fallback；显式请求参数或显式环境变量（如 `HERMES_DEFAULT_MODEL` / `OPENCLAW_FALLBACK_MODEL`）仍优先于策略默认值。

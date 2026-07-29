@@ -9,7 +9,7 @@ KsADK 本地运行时的核心职责是：加载用户 Agent 项目，把所选�
 
 ![KsADK 请求生命周期](/assets/ksadk-request-lifecycle.svg)
 
-入口 → 启动 → HTTP/UI → 对话运行时 → Runner → Session 持久化 → 0.6.7 Run 能力层。关键边界是：HTTP server 和对话运行时不需要知道用户项目是 ADK、LangGraph、LangChain 还是 DeepAgents，它们调用 `BaseRunner.invoke()` 或 `BaseRunner.stream()`。
+入口 → 启动 → HTTP/UI → 对话运行时 → Runner / RuntimeAdapter → Session 与 RuntimeEvent 持久化。关键边界是：HTTP server 和对话运行时不需要知道用户项目是 ADK、LangGraph、LangChain、DeepAgents 还是 Codex；代码项目经 `BaseRunner`，跨 Runtime 控制面经 `RuntimeAdapter`。
 
 ## 核心包
 
@@ -18,6 +18,8 @@ KsADK 本地运行时的核心职责是：加载用户 Agent 项目，把所选�
 | `ksadk.cli` | 命令入口、本地进程准备、用户可读错误 |
 | `ksadk.detection` | 项目配置、入口文件、框架和 Agent 变量检测 |
 | `ksadk.runners` | 统一 Runner 契约和框架适配器 |
+| `ksadk.runtime` | 0.8 RuntimeAdapter、RuntimeEvent、取消 / 恢复 / checkpoint 边界 |
+| `ksadk.harness` | 最小 YAML composition root，复用 Runtime 数据面 |
 | `ksadk.server` | FastAPI app、本地 Web UI API、OpenAI 兼容 endpoint |
 | `ksadk.conversations` | 消息规范化、session turn 编排、协议 payload |
 | `ksadk.sessions` | 本地和可插拔 session 存储 |
@@ -31,9 +33,9 @@ KsADK 本地运行时的核心职责是：加载用户 Agent 项目，把所选�
   1. 解析项目目录。
   2. 必要时重新进入项目虚拟环境执行。
   3. 加载环境变量和项目设置。
-  4. 检测框架和入口点。
-  5. 创建匹配的 Runner。
-  6. 加载用户 Agent。
+  4. 检测框架和入口点，或读取 Codex 声明式 manifest。
+  5. 创建匹配的 Runner / RuntimeAdapter。
+  6. 加载用户 Agent，或验证本机托管 Runtime。
   7. 进入终端模式或启动本地 HTTP server。
 </Steps>
 
@@ -119,6 +121,29 @@ agent_variable: root_agent
 新增框架 adapter 时，先从 `BaseRunner` 开始实现 `load_agent()`、`invoke()` 和 `stream()`。session continuity、动态模型覆盖或协议事件映射应在基础路径稳定后再加。
 </Callout>
 
+## RuntimeAdapter（0.8）
+
+`RuntimeAdapter` 是跨 Runner、Harness、Codex 和 A2A 的平台运行接口。普通项目不需要
+直接实现它；只有接入一个新的 Runtime 或把 Runtime 交给平台控制面时才应使用。它把原生
+差异收敛为以下固定语义：
+
+| 动词 | 语义 |
+| --- | --- |
+| `start(request)` | 以用户、session、可选模型和配置启动 run，返回不透明 `RunHandle`。 |
+| `stream(handle)` | 输出规范化 `RuntimeEvent` 异步事件流；它不是双工通道。 |
+| `cancel(handle)` | 返回明确的取消状态（已中断、记录 pending、未运行或失败），而非模糊布尔值。 |
+| `resume(handle, target, payload)` | 将恢复目标与审批/工具/人工回包分开表达。 |
+| `checkpoint(handle)` | 返回真实声明的 checkpoint 粒度与持久化能力，不假设所有 Runtime 都能回滚。 |
+| `close(handle)` | 释放 run 占用的运行期资源。 |
+
+`stream` 只传事件；审批决定、工具结果和 HITL 输入走 `resume`。这使 AG-UI/A2UI、A2A 和
+会话回放共享同一事件边界，也避免把某个框架的私有 SSE 语义泄露给调用方。`attach(handle)`
+是可选的跨进程恢复接口，默认 fail-closed；不能因为持久化了一个 handle 就假设原生
+Runtime 已在当前进程恢复。
+
+新 Runtime 应先用 `RunnerRuntimeAdapter` 覆盖标准 `BaseRunner` 路径，再逐项声明 cancel、
+resume 和 checkpoint 能力；不要用伪造的“全支持” capability 掩盖框架差异。
+
 ## 请求生命周期
 
 普通非流式 `/v1/responses` 请求路径：
@@ -200,7 +225,7 @@ thinking disable 注入语义共同决定（0.6.6 起统一，0.6.7 补全 disab
   中过滤 reasoning 类 output item，因此 `thinking` chunk 不会出现在 SSE 流中。
 
 具体的策略 JSON 结构、catalog 字段和注入细节见
-[环境变量参考](../reference/environment-variables)。
+[环境变量参考](../../references/environment-variables)。
 
 ## Session 与上下文边界
 
@@ -245,7 +270,7 @@ resume 能力受 `GetAgentUiBootstrap` 返回的 `RuntimeCapabilities.ResumeRun.
 同时满足 `RunLifecycle.Checkpoints` 与 `RunLifecycle.CheckpointResume` 才能展示。
 
 完整的 action 路径、ResumeMode 语义、`SubscribeRunEvents` 续订与 5 分钟服务端保护
-超时见 [会话与文件](../reference/runtime-sessions-files)。
+超时见 [会话与文件](../../references/runtime-sessions-files)。
 
 ## 本地协议入口
 

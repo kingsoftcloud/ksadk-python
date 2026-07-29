@@ -1,15 +1,31 @@
 ---
-title: 入门
+title: 从这里开始
+description: 先选项目形态，再完成本地运行、调试和部署前验证。
 ---
 
-从这里开始了解 KsADK：定位、架构、核心概念，再到几分钟内跑起第一个智能体。
+不要先读完所有概念才动手。选择一条与你的项目匹配的路径，跑通本地闭环后，再按需阅读
+架构和高级能力。
+
+## 先跑通一个项目
 
 <Cards>
-  <Card title="为什么需要 KsADK" href="/cn/docs/framework/getting-started/why-ksadk" description="KsADK 补齐的是统一运行时，而不是再造一个 Agent 框架。" />
-  <Card title="架构" href="/cn/docs/framework/getting-started/architecture" description="公开运行时边界与各层职责。" />
-  <Card title="生态对比" href="/cn/docs/framework/getting-started/comparison" description="与 ADK、LangGraph、OpenAI Agents SDK、VEADK、AgentRun 的互补关系。" />
-  <Card title="核心概念" href="/cn/docs/framework/getting-started/concepts" description="Runner、Session、Transcript、Attachment、Workspace 等关键术语。" />
-  <Card title="快速开始" href="/cn/docs/framework/getting-started/quickstart" description="几分钟创建并运行第一个智能体。" />
-  <Card title="配置" href="/cn/docs/framework/getting-started/configuration" description="模型 provider、会话、checkpoint、可观测配置项。" />
-  <Card title="项目结构" href="/cn/docs/framework/getting-started/project-structure" description="KsADK 项目的目录约定与入口文件。" />
+  <Card title="Python Agent：快速开始" href="/cn/docs/framework/getting-started/quickstart" description="适合新建 LangGraph Agent；包含安装、模型配置、终端运行和 Web UI。" />
+  <Card title="✨ Codex：YAML 即 Agent" href="/cn/docs/framework/tutorials/best-practices/codex-yaml-agent" description="适合 Codex 编码 Agent；不生成 agent.py，也不需要 Docker。" />
+  <Card title="已有 Agent" href="/cn/docs/framework/tutorials/existing-agent" description="适合已经有 Python 代码；生成可被 KsADK 稳定检测的项目包装。" />
+</Cards>
+
+## 然后让它可维护
+
+<Cards>
+  <Card title="配置项" href="/cn/docs/framework/getting-started/configuration" description="YAML、.env、全局默认值与命令行覆盖的优先级。" />
+  <Card title="项目结构" href="/cn/docs/framework/getting-started/project-structure" description="Python Agent 与 YAML Codex manifest 分别需要哪些文件。" />
+  <Card title="本地 Web UI" href="/cn/docs/framework/guides/local-web-ui" description="用浏览器检查对话、工具调用、上传文件和会话。" />
+</Cards>
+
+## 需要时再理解设计
+
+<Cards>
+  <Card title="核心概念" href="/cn/docs/framework/getting-started/concepts" description="项目、Runner、Session、Transcript、Attachment 和 Workspace。" />
+  <Card title="为什么是 KsADK" href="/cn/docs/framework/getting-started/why-ksadk" description="了解它与 Agent 框架、运行时和平台之间的边界。" />
+  <Card title="架构与生态定位" href="/cn/docs/framework/getting-started/architecture" description="查看公开运行时边界；需要横向选型时再读生态对比。" />
 </Cards>

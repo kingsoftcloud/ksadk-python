@@ -48,9 +48,10 @@ agentengine web . --no-open
 - **Hosted UI:** AG-UI/A2UI is capability-selected; the established Responses transport remains the fallback when it is unavailable.
 - **Event diagnosis:** `ksadk replay <session-id>` reads persisted RuntimeEvent history and can narrow investigation with `--after-seq-id` / `--before-seq-id`. It never runs a model, tool, or approval side effect again.
 - **Managed A2A (experimental):** AgentEngine composes trusted ingress through its Gateway and Space-scoped outbound clients. The first external-Agent release supports only `external_public`, governed by `Network.EnablePublicAccess` and a constrained NAT transport; `external_vpc` is not yet available.
+- **Codex Managed Runtime (new):** use an `agentengine.yaml` without `agent.py` to debug Codex natively on macOS, Windows, and Linux. Direct deployment sends an inline manifest rather than a KS3 code archive; the cloud selects a pinned Linux Runtime image.
 - **Framework migration:** Prefer LangGraph, Google ADK, or the `RuntimeAdapter` contract for new integrations. Legacy LangChain continuity/HITL is not a `0.8` compatibility commitment.
 
-Read the [Hosted UI and event replay guide](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/hosted-ui-events/), the [managed A2A Runtime guide](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/a2a-runtime/), and the [0.8.0 changelog](CHANGELOG.md).
+Read the [Codex Managed Runtime guide](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/managed-runtime/), the [Hosted UI and event replay guide](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/hosted-ui-events/), the [managed A2A Runtime guide](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/a2a-runtime/), the [HarnessApp guide](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/harness-app/), and the [0.8.0 changelog](CHANGELOG.md).
 
 ## Why KsADK
 

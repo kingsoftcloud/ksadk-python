@@ -1,0 +1,103 @@
+---
+title: "YAML 即 Agent：Codex"
+description: "0.8 新增：用单一 agentengine.yaml 声明、调试并部署 Codex Managed Runtime。"
+---
+
+<Callout type="info" title="0.8 新增">
+Codex 是 KsADK 的第一个 YAML 即 Agent 范式：`agentengine.yaml` 是唯一配置源，
+没有 `agent.py`、没有第二份 `codex.yaml`，也不会把开发机二进制打进云端部署包。
+</Callout>
+
+这份实践适合“用 Codex 作为编码 Agent，并希望本机原生调试与云端托管交付保持同一份
+声明”的场景。需要自定义 Python 编排、业务函数或复杂 state graph 时，应使用 LangGraph、
+ADK 或 HarnessApp，而不是把代码塞进这个 manifest。
+
+## 创建最小项目
+
+```bash title="shell"
+python -m venv .venv
+source .venv/bin/activate
+pip install -U "ksadk[codex]"
+agentengine init --framework codex my-codex-agent
+cd my-codex-agent
+```
+
+模板只有四个用户文件：`agentengine.yaml`、`.env`、`requirements.txt` 和 README。
+其中 `requirements.txt` 只服务本机原生调试；它绝不会进入 ManagedRuntime 制品。
+
+## 让 YAML 成为 Agent
+
+把 Agent 的身份、版本、Runtime、模型和开发者指令一起版本化：
+
+```yaml title="agentengine.yaml"
+name: review-helper
+version: "1.0.0"
+framework: codex
+artifact_type: ManagedRuntime
+
+runtime:
+  name: codex
+  version: "0.144.4"
+
+model: kimi-k3
+prompt: |
+  你是团队的代码审查助手。
+  先说明发现的问题和影响，再给出可执行、最小范围的修复建议。
+  不要臆测未读取的文件；需要验证时说明将执行的命令。
+```
+
+`runtime.version` 是可复现边界：本机 `web` 会验证已安装的 `openai-codex` 与 CLI 二进制，
+云端 catalog 将同一版本解析为不可变 Linux 镜像 digest。开发时可省略它以使用服务端默认值；
+离线时本机可使用已安装版本，但生产构建应始终显式锁定。
+
+## 本机调试：不使用 Docker
+
+把模型凭据仅放入未提交的 `.env`：
+
+```bash title=".env"
+OPENAI_API_KEY=<your-key>
+OPENAI_BASE_URL=https://api.example.com/v1
+OPENAI_MODEL_NAME=gpt-5.1-codex
+```
+
+然后启动浏览器调试 UI：
+
+```bash title="shell"
+agentengine web . --port 8080 --no-open
+```
+
+`openai-codex` 会为 macOS、Windows 或 Linux 解析对应 CLI；它启动的是本机子进程，
+不是 Docker 镜像。对 OpenAI 官方上游走直连；对自定义 chat-only 上游，KsADK 会保守探测
+是否需要本地 Responses-to-Chat 代理。需要固定行为时设 `KSADK_CODEX_USE_PROXY=1` 强制代理，
+或设为 `0` 强制直连。
+
+## 部署：manifest 不走 KS3
+
+构建可复现的本地审计 zip（只含规范化 YAML 与 lock）：
+
+```bash title="shell"
+agentengine build .
+unzip -l .agentengine/managed_runtime/review-helper-1.0.0-runtime.zip
+```
+
+部署不上传这份 zip。CLI 直接把内联 manifest、Runtime 名称、版本和 SHA-256 发送给服务端：
+
+```bash title="shell"
+agentengine deploy . --target serverless --dry-run
+agentengine deploy . --target serverless
+```
+
+因此不要使用 `--push`、`--ks3-bucket`、`--ks3-path` 或 `--mode code`。它们属于 Code
+制品路径，ManagedRuntime 会拒绝；若团队自己维护 Linux 镜像，才选择显式 `--mode container`。
+
+## 提交前检查
+
+- `agentengine.yaml` 只保留声明，不放 API key、AK/SK 或私有 endpoint。
+- `.env` 与 `.agentengine/` 必须在 `.gitignore`；只提交 `.env.example` 占位模板。
+- 固定 `runtime.version`，并在各开发平台执行一次 `agentengine web . --no-open`。
+- 用 `agentengine build .` 检查 zip 仅有 `agentengine.yaml` 与 `runtime-lock.json`。
+- 部署前先执行 `agentengine deploy . --target serverless --dry-run`，确认服务端返回的
+  Runtime 版本和镜像 digest。
+
+完整的 runtime contract、镜像边界和环境变量见
+[Codex Managed Runtime](../../guides/managed-runtime)。
