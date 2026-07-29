@@ -342,6 +342,19 @@ def test_public_release_candidate_tracks_current_version():
     assert "make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=0.8.0" in approval_record
 
 
+def test_0_8_changelog_is_ready_for_authorized_release():
+    changelog = _read("CHANGELOG.md")
+    release_section = changelog.split("## [0.8.0]", 1)[1].split("## [0.7.0]", 1)[0]
+
+    assert "## [0.8.0] - 2026-07-29" in changelog
+    assert "Review candidate" not in release_section
+    assert "本候选" not in release_section
+    assert "本条目不构成发布批准" not in release_section
+    assert "a76f2de7565ffe34d44a9d17257401fa805de0de" in release_section
+    assert "@kingsoftcloud/ksadk-web@0.3.0" in release_section
+    assert "Codex ManagedRuntime" in release_section
+
+
 def test_public_release_sync_compares_exported_file_contents():
     workflow = _read("docs/public-release-workflow.md")
 
