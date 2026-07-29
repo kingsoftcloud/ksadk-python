@@ -134,3 +134,12 @@ def test_build_command_rejects_forced_code_mode_for_codex(tmp_path):
 
     assert result.exit_code != 0
     assert "ManagedRuntime" in result.output
+
+
+def test_build_command_rejects_ks3_push_for_managed_runtime(tmp_path):
+    _write_codex_project(tmp_path)
+
+    result = CliRunner().invoke(build_command, [str(tmp_path), "--push"])
+
+    assert result.exit_code != 0
+    assert "不使用 KS3" in result.output
