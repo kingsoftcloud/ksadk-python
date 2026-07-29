@@ -243,6 +243,45 @@ async def test_postgres_event_query_pushes_invocation_filter_before_limit():
     assert args[-3:] == ("invocation", 1, 0)
 
 
+async def test_postgres_event_query_pushes_checkpoint_ids_before_limit():
+    from ksadk.sessions.base import SessionEventQuery
+    from ksadk.sessions.postgres_service import PostgresSessionService
+
+    calls: list[tuple[str, tuple[object, ...]]] = []
+
+    class FakeConnection:
+        async def fetch(self, sql, *args):
+            calls.append((sql, args))
+            return []
+
+    class AcquireContext:
+        async def __aenter__(self):
+            return FakeConnection()
+
+        async def __aexit__(self, *_args):
+            return None
+
+    class FakePool:
+        def acquire(self):
+            return AcquireContext()
+
+    service = PostgresSessionService(dsn="postgresql://user@db.example.test/session")
+    service._pool = FakePool()
+    service._schema_ready = True
+
+    await service.query_events(
+        SessionEventQuery(
+            session_ids=["session"],
+            checkpoint_ids=["cp-a", "cp-b"],
+            limit=1,
+        )
+    )
+
+    sql, args = calls[0]
+    assert "metadata_json ->> 'checkpoint_id' = ANY" in sql
+    assert args[-3:] == (["cp-a", "cp-b"], 1, 0)
+
+
 async def test_postgres_checkpoint_iterator_reuses_repeatable_read_snapshot_for_stats():
     from ksadk.sessions.base import CheckpointEventQuery
     from ksadk.sessions.postgres_service import PostgresSessionService

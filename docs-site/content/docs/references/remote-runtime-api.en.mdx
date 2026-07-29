@@ -296,6 +296,8 @@ Fetch a single session with its latest events.
 | Field | Type | Required | Notes |
 | --- | --- | --- | --- |
 | `SessionId` | string | yes | Target session id |
+| `CheckpointIds` | string[] | no | Exact `Metadata.checkpoint_id` filter; empty means no filter |
+| `EventTypes` | string[] | no | Exact `EventType` filter; empty means no filter |
 
 ```json title="request.json"
 { "SessionId": "local-demo-session" }
@@ -654,14 +656,16 @@ for reconnect/incremental reads; `BeforeSeqId` is for loading older history.
 
 | Field | Type | Required | Notes |
 | --- | --- | --- | --- |
-| `SessionId` | string | yes | Target session id |
+| `SessionId` | string | yes | One non-empty session id; missing, blank-after-trim, and array values fail validation |
+| `CheckpointIds` | string[] | no | Exact match on event `Metadata.checkpoint_id`; trimmed, empty values removed, deduplicated, max 1000, case-sensitive |
+| `EventTypes` | string[] | no | Exact match on event `EventType`; trimmed, empty values removed, deduplicated, max 1000, case-sensitive |
 | `Offset` | int | no | 0-based offset, default `0` |
-| `Limit` | int | no | Page size, min `1` |
+| `Limit` | int | no | Page size, default `10`, range `1..1000` |
 | `AfterSeqId` | int | no | 0.6.9+ return events with `SeqId > AfterSeqId` for reconnect catch-up |
 | `BeforeSeqId` | int | no | 0.6.9+ return events with `SeqId < BeforeSeqId` for older pages |
 
 ```json title="request.json"
-{ "SessionId": "local-demo-session", "Offset": 0, "Limit": 50 }
+{ "SessionId": "local-demo-session", "EventTypes": ["run_checkpoint"], "CheckpointIds": ["cp-1"], "Offset": 0, "Limit": 50 }
 ```
 
 </Tab>
@@ -675,6 +679,9 @@ for reconnect/incremental reads; `BeforeSeqId` is for loading older history.
   "Action": "ListSessionEvents",
   "Data": {
     "Events": [ /* event payload, same as SubscribeRunEvents */ ],
+    "SessionId": "local-demo-session",
+    "EventTypes": ["run_checkpoint"],
+    "CheckpointIds": ["cp-1"],
     "Total": 128,
     "Offset": 0,
     "Limit": 50,
@@ -688,10 +695,15 @@ Pagination fields:
 
 | Field | Notes |
 | --- | --- |
-| `Total` | Total event count for this session |
+| `Total` | Total after all filters and before `Offset` / `Limit` |
 | `Offset` | Current offset (defaults to `0`) |
-| `Limit` | Current page size (falls back to the returned count when not sent) |
+| `Limit` | Requested page size (defaults to `10` when omitted) |
 | `AfterSeqId` / `BeforeSeqId` | Echoed seq cursors; they move in opposite directions and should not be mixed |
+
+Values within a filter array are ORed. The two filter fields and seq cursor conditions are ANDed;
+an empty array disables that filter. The response echoes the normalized scalar `SessionId`,
+`CheckpointIds`, and `EventTypes`. Filtering and `Total` calculation happen before selecting the
+latest window; events within the returned page remain in ascending chronological order.
 
 </Tab>
 </Tabs>
@@ -1303,16 +1315,25 @@ as unsupported.
 
 | Field | Type | Required | Notes |
 | --- | --- | --- | --- |
-| `AgentId` / `SessionId` | string | yes | Session location |
+| `AgentId` | string | yes | Agent location |
+| `SessionId` | string or string[] | no | Session filter; legacy scalar and array forms are retained, missing or empty means no filter |
+| `CheckpointId` | string or string[] | no | Checkpoint ID filter; legacy scalar and array forms are retained, missing or empty means no filter |
 | `RunId` | string | no | Filter by run |
 | `Framework` | string | no | Filter by framework |
 | `OnlyResumable` | bool | no | Only return resumable checkpoints, default `false` |
-| `Offset` / `Limit` | int | no | Pagination, `Limit` range `1..500` |
+| `ResumeStatus` | string[] | no | Filter the final `ResumeStatus`; values are open for forward compatibility |
+| `ResumeTypes` | string[] | no | Filter final `Scope`: `invocation`, `shared`, `pod_local`, `process_local`, or `unknown` |
+| `Offset` / `Limit` | int | no | Pagination; `Limit` defaults to `100`, range `1..1000` |
 
 Returns a `Checkpoints` array; each element includes `RunId`, `CheckpointId`,
 `Framework`, `FrameworkRef`, `IsResumable`, `ResumeStatus`, `IsTerminal`,
 `CheckpointStatus`, `Backend`, `Scope`, `Durable`, `ResumeCount`,
 `ReplayAllowed`, and `ExpiresAt`.
+
+`ResumeStatus` and `ResumeTypes` are trimmed, lowercased, and deduplicated. The former has an open
+value domain; the latter accepts only the five values listed above. Resume audit, expiry, and
+latest-only corrections run before these filters. `ResumableTotal` is then calculated, followed by
+`OnlyResumable`, `Total`, and pagination. The response echoes both normalized filter arrays.
 
 ### GetCheckpointResumePreview
 

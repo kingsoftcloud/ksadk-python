@@ -133,6 +133,7 @@ class SessionEventQuery:
     invocation_id: str | None = None
     run_id: str | None = None
     checkpoint_id: str | None = None
+    checkpoint_ids: list[str] | None = None
     from_start: bool = False
     order_by_seq: bool = False
 
@@ -386,6 +387,7 @@ class BaseSessionService(abc.ABC):
             and query.invocation_id is None
             and query.run_id is None
             and query.checkpoint_id is None
+            and not query.checkpoint_ids
             and not query.from_start
         ):
             return await self.get_events(
@@ -402,6 +404,7 @@ class BaseSessionService(abc.ABC):
             and query.invocation_id is None
             and query.run_id is None
             and query.checkpoint_id is None
+            and not query.checkpoint_ids
         ):
             return await self.count_events(
                 query.session_ids[0], after_seq_id=query.after_seq_id,

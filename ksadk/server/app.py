@@ -1124,8 +1124,51 @@ def _normalize_action_id_filter(
     return normalized_values
 
 
+def _normalize_action_string_list(
+    value: Any,
+    *,
+    field_name: str,
+    lowercase: bool = False,
+    allowed_values: set[str] | None = None,
+) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError(f"{field_name} must be a list of strings")
+    normalized_values: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, str):
+            raise ValueError(f"{field_name} must contain only strings")
+        normalized = item.strip()
+        if lowercase:
+            normalized = normalized.lower()
+        if not normalized or normalized in seen:
+            continue
+        if allowed_values is not None and normalized not in allowed_values:
+            raise ValueError(
+                f"{field_name} must contain only: {', '.join(sorted(allowed_values))}"
+            )
+        seen.add(normalized)
+        normalized_values.append(normalized)
+    if len(normalized_values) > 1000:
+        raise ValueError(f"{field_name} accepts at most 1000 values")
+    return normalized_values
+
+
+def _normalize_required_action_string(value: Any, *, field_name: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a string")
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError(f"{field_name} must not be empty")
+    return normalized
+
+
 class ListSessionEventsActionRequest(BaseModel):
-    SessionId: list[str] | str | None = None
+    SessionId: str
+    CheckpointIds: list[str] = Field(default_factory=list)
+    EventTypes: list[str] = Field(default_factory=list)
     Offset: Optional[int] = Field(None, ge=0)
     Limit: int = Field(10, ge=1, le=1000)
     AfterSeqId: Optional[int] = Field(None, ge=0)
@@ -1133,8 +1176,13 @@ class ListSessionEventsActionRequest(BaseModel):
 
     @field_validator("SessionId", mode="before")
     @classmethod
-    def normalize_session_ids(cls, value: Any) -> list[str] | str | None:
-        return _normalize_action_id_filter(value, field_name="SessionId")
+    def normalize_session_id(cls, value: Any) -> str:
+        return _normalize_required_action_string(value, field_name="SessionId")
+
+    @field_validator("CheckpointIds", "EventTypes", mode="before")
+    @classmethod
+    def normalize_event_filters(cls, value: Any, info) -> list[str]:
+        return _normalize_action_string_list(value, field_name=info.field_name)
 
 
 class ListSessionMessagesActionRequest(BaseModel):
@@ -1154,6 +1202,8 @@ class ListSessionCheckpointsActionRequest(BaseModel):
     RunId: Optional[str] = None
     OnlyResumable: bool = False
     Framework: Optional[str] = None
+    ResumeStatus: list[str] = Field(default_factory=list)
+    ResumeTypes: list[str] = Field(default_factory=list)
     Offset: Optional[int] = Field(None, ge=0)
     Limit: int = Field(100, ge=1, le=1000)
 
@@ -1166,6 +1216,29 @@ class ListSessionCheckpointsActionRequest(BaseModel):
     @classmethod
     def normalize_checkpoint_ids(cls, value: Any) -> list[str] | str | None:
         return _normalize_action_id_filter(value, field_name="CheckpointId")
+
+    @field_validator("ResumeStatus", mode="before")
+    @classmethod
+    def normalize_resume_status(cls, value: Any) -> list[str]:
+        return _normalize_action_string_list(
+            value, field_name="ResumeStatus", lowercase=True
+        )
+
+    @field_validator("ResumeTypes", mode="before")
+    @classmethod
+    def normalize_resume_types(cls, value: Any) -> list[str]:
+        return _normalize_action_string_list(
+            value,
+            field_name="ResumeTypes",
+            lowercase=True,
+            allowed_values={
+                "invocation",
+                "shared",
+                "pod_local",
+                "process_local",
+                "unknown",
+            },
+        )
 
 
 class ListToolReceiptsActionRequest(BaseModel):
@@ -2310,8 +2383,6 @@ async def _validate_action_sessions(
         if agent_id is None or session.agent_id == agent_id
     }
     matched_ids = [session_id for session_id in session_ids if session_id in found_ids]
-    if not matched_ids or (not allow_partial and len(matched_ids) != len(session_ids)):
-        logger.warning("Session scope mismatch: requested_count=%d matched_count=%d", len(session_ids), len(matched_ids))
     unavailable_ids = [
         session_id for session_id in session_ids if session_id not in found_ids
     ]
@@ -2324,6 +2395,8 @@ async def _validate_action_sessions(
             unavailable_ids,
             session_ids,
         )
+    if not matched_ids or (not allow_partial and len(matched_ids) != len(session_ids)):
+        logger.warning("Session scope mismatch: requested_count=%d matched_count=%d", len(session_ids), len(matched_ids))
     return matched_ids
 
 
@@ -2334,32 +2407,43 @@ def _current_runtime_agent_id() -> str | None:
 @app.post("/agentengine/api/v1/ListSessionEvents")
 async def list_session_events_action(request: ListSessionEventsActionRequest):
     service = resolve_session_service()
-    session_ids = _normalize_action_id_list(request.SessionId, field_name="SessionId")
     agent_id = _current_runtime_agent_id()
-    if len(session_ids) != 1 and (request.AfterSeqId is not None or request.BeforeSeqId is not None):
-        raise HTTPException(status_code=400, detail="Seq cursors require exactly one SessionId")
-    matched_session_ids = await _validate_action_sessions(
+    await _validate_action_sessions(
         service,
-        session_ids,
+        [request.SessionId],
         agent_id=agent_id,
-        allow_partial=True,
     )
     try:
-        events = await service.get_events_batch(
-            matched_session_ids or None, agent_id=agent_id, offset=request.Offset or 0,
-            limit=request.Limit, after_seq_id=request.AfterSeqId, before_seq_id=request.BeforeSeqId,
+        query = SessionEventQuery(
+            session_ids=[request.SessionId],
+            agent_id=agent_id,
+            offset=request.Offset or 0,
+            limit=request.Limit,
+            after_seq_id=request.AfterSeqId,
+            before_seq_id=request.BeforeSeqId,
+            event_types=request.EventTypes or None,
+            checkpoint_ids=request.CheckpointIds or None,
         )
-        total = await service.count_events_batch(
-            matched_session_ids or None, agent_id=agent_id,
-            after_seq_id=request.AfterSeqId, before_seq_id=request.BeforeSeqId,
+        events = await service.query_events(query)
+        total = await service.count_event_query(
+            SessionEventQuery(
+                session_ids=[request.SessionId],
+                agent_id=agent_id,
+                after_seq_id=request.AfterSeqId,
+                before_seq_id=request.BeforeSeqId,
+                event_types=request.EventTypes or None,
+                checkpoint_ids=request.CheckpointIds or None,
+            )
         )
     except NotImplementedError as exc:
-        raise HTTPException(status_code=501, detail="Backend does not support multi-session events") from exc
+        raise HTTPException(status_code=501, detail="Backend does not support event filters") from exc
     return _action_response(
         "ListSessionEvents",
         {
             "Events": [_event_to_action_payload(event) for event in events],
-            "SessionId": session_ids,
+            "SessionId": request.SessionId,
+            "CheckpointIds": request.CheckpointIds,
+            "EventTypes": request.EventTypes,
             "Total": total,
             "Offset": request.Offset or 0,
             "Limit": request.Limit,
@@ -2443,6 +2527,8 @@ async def _list_checkpoints_payload(request: ListSessionCheckpointsActionRequest
     await _validate_action_sessions(service, session_ids, agent_id=request.AgentId)
     run_id_filter = str(request.RunId or "").strip()
     framework_filter = str(request.Framework or "").strip().lower()
+    resume_status_filter = set(request.ResumeStatus)
+    resume_type_filter = set(request.ResumeTypes)
     offset = int(request.Offset or 0)
     query = CheckpointEventQuery(
         session_ids=session_ids or None,
@@ -2496,6 +2582,18 @@ async def _list_checkpoints_payload(request: ListSessionCheckpointsActionRequest
                         checkpoint["ResumeDisabledReason"] = (
                             "新的恢复点已生成，此恢复点暂停恢复能力"
                         )
+                    if (
+                        resume_status_filter
+                        and str(checkpoint.get("ResumeStatus") or "").strip().lower()
+                        not in resume_status_filter
+                    ):
+                        continue
+                    if (
+                        resume_type_filter
+                        and str(checkpoint.get("Scope") or "unknown").strip().lower()
+                        not in resume_type_filter
+                    ):
+                        continue
                     if _count_resumable_checkpoints([checkpoint]):
                         resumable_total += 1
                     if request.OnlyResumable and not _is_checkpoint_resumable(checkpoint):
@@ -2529,6 +2627,8 @@ async def _list_checkpoints_payload(request: ListSessionCheckpointsActionRequest
         "HasResumableCheckpoint": resumable_total > 0,
         "SessionId": session_ids,
         "CheckpointId": checkpoint_ids,
+        "ResumeStatus": request.ResumeStatus,
+        "ResumeTypes": request.ResumeTypes,
         "Offset": offset,
         "Limit": request.Limit,
     }
@@ -2558,6 +2658,22 @@ async def _list_checkpoints_payload_legacy(
             continue
         checkpoints.append(checkpoint)
     checkpoints = _apply_adk_only_latest_resumable(checkpoints)
+    resume_status_filter = set(request.ResumeStatus)
+    resume_type_filter = set(request.ResumeTypes)
+    checkpoints = [
+        checkpoint
+        for checkpoint in checkpoints
+        if (
+            not resume_status_filter
+            or str(checkpoint.get("ResumeStatus") or "").strip().lower()
+            in resume_status_filter
+        )
+        and (
+            not resume_type_filter
+            or str(checkpoint.get("Scope") or "unknown").strip().lower()
+            in resume_type_filter
+        )
+    ]
     resumable_total = _count_resumable_checkpoints(checkpoints)
     if request.OnlyResumable:
         checkpoints = [checkpoint for checkpoint in checkpoints if _is_checkpoint_resumable(checkpoint)]
@@ -2565,7 +2681,9 @@ async def _list_checkpoints_payload_legacy(
     offset = int(request.Offset or 0)
     return {"Checkpoints": checkpoints[offset : offset + request.Limit], "Total": total,
             "ResumableTotal": resumable_total, "HasResumableCheckpoint": resumable_total > 0,
-            "SessionId": session_ids, "CheckpointId": checkpoint_ids, "Offset": offset,
+            "SessionId": session_ids, "CheckpointId": checkpoint_ids,
+            "ResumeStatus": request.ResumeStatus, "ResumeTypes": request.ResumeTypes,
+            "Offset": offset,
             "Limit": request.Limit}
 
 

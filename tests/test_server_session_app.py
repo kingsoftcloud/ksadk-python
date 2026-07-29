@@ -2918,8 +2918,79 @@ async def test_runtime_local_list_session_events_filters_by_before_seq_id(monkey
 
 
 @pytest.mark.asyncio
-async def test_list_session_events_accepts_legacy_string_and_normalizes_multi_session_page(monkeypatch):
-    """The runtime event action accepts old string callers and globally pages normalized ids."""
+async def test_list_session_events_requires_scalar_session_id(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    await service.create_session("demo-agent", "user-1", "events-scalar")
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        missing = await client.post("/agentengine/api/v1/ListSessionEvents", json={})
+        empty = await client.post(
+            "/agentengine/api/v1/ListSessionEvents", json={"SessionId": "  "}
+        )
+        array = await client.post(
+            "/agentengine/api/v1/ListSessionEvents", json={"SessionId": ["events-scalar"]}
+        )
+        scalar = await client.post(
+            "/agentengine/api/v1/ListSessionEvents", json={"SessionId": " events-scalar "}
+        )
+
+    assert missing.status_code == 422
+    assert empty.status_code == 422
+    assert array.status_code == 422
+    assert scalar.status_code == 200
+    assert scalar.json()["Data"]["SessionId"] == "events-scalar"
+
+
+@pytest.mark.asyncio
+async def test_list_session_events_filters_types_and_checkpoint_ids_before_pagination(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    await service.create_session("demo-agent", "user-1", "events-filtered")
+    for event_id, event_type, checkpoint_id, timestamp in (
+        ("match-old", "user_message", "cp-a", 1),
+        ("wrong-type", "assistant_message", "cp-a", 2),
+        ("wrong-checkpoint", "user_message", "cp-b", 3),
+        ("match-new", "user_message", "cp-a", 4),
+        ("missing-checkpoint", "user_message", None, 5),
+    ):
+        await service.append_event(
+            "events-filtered",
+            SessionEvent(
+                id=event_id,
+                event_type=event_type,
+                timestamp=timestamp,
+                metadata={"checkpoint_id": checkpoint_id} if checkpoint_id else {},
+            ),
+        )
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/ListSessionEvents",
+            json={
+                "SessionId": "events-filtered",
+                "EventTypes": [" user_message ", "", "user_message"],
+                "CheckpointIds": [" cp-a ", "cp-a"],
+                "Offset": 0,
+                "Limit": 1,
+            },
+        )
+
+    assert response.status_code == 200
+    data = response.json()["Data"]
+    assert data["SessionId"] == "events-filtered"
+    assert data["EventTypes"] == ["user_message"]
+    assert data["CheckpointIds"] == ["cp-a"]
+    assert data["Total"] == 2
+    assert [event["EventId"] for event in data["Events"]] == ["match-new"]
+
+
+@pytest.mark.asyncio
+async def test_list_session_events_normalizes_scalar_and_rejects_array(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")
     service = InMemorySessionService()
     for session_id in ("events-a", "events-b"):
@@ -2940,12 +3011,8 @@ async def test_list_session_events_accepts_legacy_string_and_normalizes_multi_se
         )
 
     assert legacy.status_code == 200
-    assert legacy.json()["Data"]["SessionId"] == ["events-a"]
-    assert response.status_code == 200
-    data = response.json()["Data"]
-    assert data["SessionId"] == ["events-b", "events-a"]
-    assert data["Total"] == 3
-    assert [event["EventId"] for event in data["Events"]] == ["b-1", "a-2"]
+    assert legacy.json()["Data"]["SessionId"] == "events-a"
+    assert response.status_code == 422
 
 
 @pytest.mark.asyncio
@@ -2964,7 +3031,7 @@ async def test_list_session_events_returns_generic_404_when_all_requested_sessio
     ) as client:
         response = await client.post(
             "/agentengine/api/v1/ListSessionEvents",
-            json={"SessionId": ["missing-a", "missing-b"]},
+            json={"SessionId": "missing-a"},
         )
 
     assert response.status_code == 404
@@ -2972,27 +3039,10 @@ async def test_list_session_events_returns_generic_404_when_all_requested_sessio
 
 
 @pytest.mark.asyncio
-async def test_list_session_events_returns_events_for_partial_session_match(
-    monkeypatch,
-    caplog,
-):
+async def test_list_session_events_rejects_partially_valid_session_array(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")
 
-    class _BatchScopeService(InMemorySessionService):
-        def __init__(self):
-            super().__init__()
-            self.event_batch_ids: list[str] | None = None
-            self.count_batch_ids: list[str] | None = None
-
-        async def get_events_batch(self, session_ids=None, **kwargs):
-            self.event_batch_ids = list(session_ids or [])
-            return await super().get_events_batch(session_ids, **kwargs)
-
-        async def count_events_batch(self, session_ids=None, **kwargs):
-            self.count_batch_ids = list(session_ids or [])
-            return await super().count_events_batch(session_ids, **kwargs)
-
-    service = _BatchScopeService()
+    service = InMemorySessionService()
     await service.create_session("demo-agent", "user-1", "existing")
     await service.update_session_metadata(
         "existing",
@@ -3004,7 +3054,6 @@ async def test_list_session_events_returns_events_for_partial_session_match(
     )
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     server_app_module.set_runner(_DummyRunner())
-    caplog.set_level("WARNING")
 
     transport = httpx.ASGITransport(app=server_app_module.app)
     async with httpx.AsyncClient(
@@ -3016,34 +3065,14 @@ async def test_list_session_events_returns_events_for_partial_session_match(
             json={"SessionId": ["missing", "existing"]},
         )
 
-    assert response.status_code == 200
-    data = response.json()["Data"]
-    assert data["SessionId"] == ["missing", "existing"]
-    assert [item["SessionId"] for item in data["Events"]] == ["existing"]
-    assert data["Total"] == 1
-    assert service.event_batch_ids == ["existing"]
-    assert service.count_batch_ids == ["existing"]
-    assert "ListSessionEvents session scope partially matched" in caplog.text
-    assert "private-summary-marker" not in caplog.text
+    assert response.status_code == 422
 
 
 @pytest.mark.asyncio
-async def test_list_session_events_partial_match_preserves_agent_scope(
-    monkeypatch,
-    caplog,
-):
+async def test_list_session_events_rejects_cross_agent_session_array(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")
 
-    class _BatchScopeService(InMemorySessionService):
-        def __init__(self):
-            super().__init__()
-            self.event_batch_ids: list[str] | None = None
-
-        async def get_events_batch(self, session_ids=None, **kwargs):
-            self.event_batch_ids = list(session_ids or [])
-            return await super().get_events_batch(session_ids, **kwargs)
-
-    service = _BatchScopeService()
+    service = InMemorySessionService()
     await service.create_session("demo-agent", "user-1", "allowed")
     await service.create_session("other-agent", "user-1", "foreign")
     await service.append_event(
@@ -3061,7 +3090,6 @@ async def test_list_session_events_partial_match_preserves_agent_scope(
     )
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     server_app_module.set_runner(_DummyRunner())
-    caplog.set_level("WARNING")
 
     transport = httpx.ASGITransport(app=server_app_module.app)
     async with httpx.AsyncClient(
@@ -3073,18 +3101,11 @@ async def test_list_session_events_partial_match_preserves_agent_scope(
             json={"SessionId": ["allowed", "foreign"]},
         )
 
-    assert response.status_code == 200
-    data = response.json()["Data"]
-    assert data["SessionId"] == ["allowed", "foreign"]
-    assert [event["EventId"] for event in data["Events"]] == ["allowed-event"]
-    assert data["Total"] == 1
-    assert service.event_batch_ids == ["allowed"]
-    assert "ListSessionEvents session scope partially matched" in caplog.text
-    assert "foreign-private-marker" not in caplog.text
+    assert response.status_code == 422
 
 
 @pytest.mark.asyncio
-async def test_list_session_events_rejects_cursor_for_multi_or_all_unknown_sessions_atomically(
+async def test_list_session_events_rejects_arrays_with_or_without_cursor(
     monkeypatch,
 ):
     server_app_module = importlib.import_module("ksadk.server.app")
@@ -3104,40 +3125,42 @@ async def test_list_session_events_rejects_cursor_for_multi_or_all_unknown_sessi
             json={"SessionId": ["missing-a", "missing-b"]},
         )
 
-    assert cursor.status_code == 400
-    assert all_unknown.status_code == 404
+    assert cursor.status_code == 422
+    assert all_unknown.status_code == 422
 
 
 @pytest.mark.asyncio
-async def test_list_session_events_empty_scope_and_id_limit(monkeypatch):
+async def test_list_session_events_filter_and_page_limits(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")
     service = InMemorySessionService()
     await service.create_session("demo-agent", "user-1", "all-events")
     await service.append_event("all-events", SessionEvent(id="all-1", author="user", event_type="x"))
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     server_app_module.set_runner(_DummyRunner())
-    ids_1000 = [f"session-{index}" for index in range(1000)]
-    ids_1001 = [*ids_1000, "too-many"]
+    types_1000 = [f"event-{index}" for index in range(1000)]
+    types_1001 = [*types_1000, "too-many"]
 
     transport = httpx.ASGITransport(app=server_app_module.app)
     async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
-        omitted = await client.post("/agentengine/api/v1/ListSessionEvents", json={})
-        empty = await client.post("/agentengine/api/v1/ListSessionEvents", json={"SessionId": []})
-        accepted = await client.post("/agentengine/api/v1/ListSessionEvents", json={"SessionId": ids_1000})
-        rejected = await client.post("/agentengine/api/v1/ListSessionEvents", json={"SessionId": ids_1001})
+        accepted = await client.post(
+            "/agentengine/api/v1/ListSessionEvents",
+            json={"SessionId": "all-events", "EventTypes": types_1000},
+        )
+        rejected = await client.post(
+            "/agentengine/api/v1/ListSessionEvents",
+            json={"SessionId": "all-events", "EventTypes": types_1001},
+        )
         max_page = await client.post(
             "/agentengine/api/v1/ListSessionEvents",
-            json={"Limit": 1000},
+            json={"SessionId": "all-events", "Limit": 1000},
         )
         oversized_page = await client.post(
             "/agentengine/api/v1/ListSessionEvents",
-            json={"Limit": 1001},
+            json={"SessionId": "all-events", "Limit": 1001},
         )
 
-    assert [event["EventId"] for event in omitted.json()["Data"]["Events"]] == ["all-1"]
-    assert omitted.json()["Data"]["Limit"] == 10
-    assert empty.json()["Data"]["SessionId"] == []
-    assert accepted.status_code == 404
+    assert accepted.status_code == 200
+    assert accepted.json()["Data"]["Total"] == 0
     assert rejected.status_code == 422
     assert max_page.status_code == 200
     assert max_page.json()["Data"]["Limit"] == 1000
@@ -3155,6 +3178,7 @@ async def test_list_session_checkpoints_uses_public_page_contract_and_normalized
     server_app_module.set_runner(_DummyRunner())
     checkpoint_ids_1000 = [f"checkpoint-{index}" for index in range(1000)]
     checkpoint_ids_1001 = [*checkpoint_ids_1000, "too-many"]
+    resume_statuses_1001 = [f"future-status-{index}" for index in range(1001)]
 
     transport = httpx.ASGITransport(app=server_app_module.app)
     async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
@@ -3179,6 +3203,14 @@ async def test_list_session_checkpoints_uses_public_page_contract_and_normalized
                 "CheckpointId": checkpoint_ids_1001,
             },
         )
+        rejected_resume_statuses = await client.post(
+            "/agentengine/api/v1/ListSessionCheckpoints",
+            json={
+                "AgentId": "demo-agent",
+                "SessionId": "checkpoint-page-contract",
+                "ResumeStatus": resume_statuses_1001,
+            },
+        )
         oversized_page = await client.post(
             "/agentengine/api/v1/ListSessionCheckpoints",
             json={
@@ -3193,7 +3225,132 @@ async def test_list_session_checkpoints_uses_public_page_contract_and_normalized
     assert accepted_ids.status_code == 200
     assert accepted_ids.json()["Data"]["Limit"] == 1000
     assert rejected_ids.status_code == 422
+    assert rejected_resume_statuses.status_code == 422
     assert oversized_page.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_list_session_checkpoints_filters_final_resume_status_and_scope_before_pagination(
+    monkeypatch,
+):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    await service.create_session("demo-agent", "user-1", "checkpoint-filtered")
+    fixtures = (
+        ("disabled-shared", "disabled", "shared", False, 1),
+        ("future-shared", "future_status", "shared", True, 2),
+        ("disabled-pod", "disabled", "pod_local", False, 3),
+        ("resumable-shared", "resumable", "shared", True, 4),
+    )
+    for checkpoint_id, resume_status, scope, is_resumable, timestamp in fixtures:
+        await service.append_event(
+            "checkpoint-filtered",
+            SessionEvent(
+                id=f"event-{checkpoint_id}",
+                event_type="run_checkpoint",
+                timestamp=timestamp,
+                metadata={
+                    "run_id": "run-filtered",
+                    "checkpoint_id": checkpoint_id,
+                    "framework": "langgraph",
+                    "framework_ref": {},
+                    "resume_status": resume_status,
+                    "scope": scope,
+                    "is_resumable": is_resumable,
+                },
+            ),
+        )
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/ListSessionCheckpoints",
+            json={
+                "AgentId": "demo-agent",
+                "SessionId": "checkpoint-filtered",
+                "ResumeStatus": [" DISABLED ", "future_status", "disabled"],
+                "ResumeTypes": [" shared ", "shared"],
+                "Offset": 1,
+                "Limit": 1,
+            },
+        )
+        invalid_type = await client.post(
+            "/agentengine/api/v1/ListSessionCheckpoints",
+            json={
+                "AgentId": "demo-agent",
+                "SessionId": "checkpoint-filtered",
+                "ResumeTypes": ["cluster_local"],
+            },
+        )
+
+    assert response.status_code == 200
+    data = response.json()["Data"]
+    assert data["ResumeStatus"] == ["disabled", "future_status"]
+    assert data["ResumeTypes"] == ["shared"]
+    assert data["Total"] == 2
+    assert data["ResumableTotal"] == 1
+    assert data["HasResumableCheckpoint"] is True
+    assert [item["CheckpointId"] for item in data["Checkpoints"]] == ["future-shared"]
+    assert invalid_type.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_list_session_checkpoints_accepts_and_filters_all_resume_types(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    await service.create_session("demo-agent", "user-1", "checkpoint-scopes")
+    resume_types = (
+        "invocation",
+        "shared",
+        "pod_local",
+        "process_local",
+        "unknown",
+    )
+    for index, resume_type in enumerate(resume_types):
+        metadata = {
+            "run_id": "run-scopes",
+            "checkpoint_id": f"cp-{resume_type}",
+            "framework": "langgraph",
+            "framework_ref": {},
+            "is_resumable": True,
+        }
+        if resume_type != "unknown":
+            metadata["scope"] = resume_type
+        await service.append_event(
+            "checkpoint-scopes",
+            SessionEvent(
+                id=f"event-{resume_type}",
+                event_type="run_checkpoint",
+                timestamp=index + 1,
+                metadata=metadata,
+            ),
+        )
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://ksadk.local"
+    ) as client:
+        responses = {
+            resume_type: await client.post(
+                "/agentengine/api/v1/ListSessionCheckpoints",
+                json={
+                    "AgentId": "demo-agent",
+                    "SessionId": "checkpoint-scopes",
+                    "ResumeTypes": [resume_type],
+                },
+            )
+            for resume_type in resume_types
+        }
+
+    for resume_type, response in responses.items():
+        assert response.status_code == 200
+        data = response.json()["Data"]
+        assert data["ResumeTypes"] == [resume_type]
+        assert [item["CheckpointId"] for item in data["Checkpoints"]] == [
+            f"cp-{resume_type}"
+        ]
 
 
 @pytest.mark.asyncio
@@ -3553,12 +3710,17 @@ async def test_legacy_single_session_backend_keeps_old_actions_and_rejects_new_m
     transport = httpx.ASGITransport(app=server_app_module.app)
     async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
         events = await client.post("/agentengine/api/v1/ListSessionEvents", json={"SessionId": "legacy"})
+        filtered_events = await client.post(
+            "/agentengine/api/v1/ListSessionEvents",
+            json={"SessionId": "legacy", "EventTypes": ["run_checkpoint"]},
+        )
         checkpoints = await client.post("/agentengine/api/v1/ListSessionCheckpoints", json={"AgentId": "demo-agent", "SessionId": "legacy"})
         resume = await client.post("/agentengine/api/v1/ResumeRun", json={"AgentId": "demo-agent", "SessionId": "legacy", "RunId": "run", "CheckpointId": "cp"})
         multi = await client.post("/agentengine/api/v1/ListSessionEvents", json={"SessionId": ["legacy", "legacy-2"]})
 
     assert events.status_code == checkpoints.status_code == resume.status_code == 200
-    assert multi.status_code in {400, 501}
+    assert filtered_events.status_code == 501
+    assert multi.status_code == 422
 
 
 @pytest.mark.asyncio

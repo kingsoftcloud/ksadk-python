@@ -455,6 +455,7 @@ class InMemorySessionService(BaseSessionService):
         async with self._lock:
             selected_ids = list(dict.fromkeys(query.session_ids)) if query.session_ids is not None else list(self._sessions)
             allowed_types = set(query.event_types or [])
+            allowed_checkpoint_ids = set(query.checkpoint_ids or [])
             events = [
                 event for session_id in selected_ids for session in [self._sessions.get(session_id)]
                 if session is not None and (query.agent_id is None or session.agent_id == query.agent_id)
@@ -468,6 +469,11 @@ class InMemorySessionService(BaseSessionService):
                 )
                 and (query.run_id is None or str((event.metadata or {}).get("run_id") or "") == query.run_id)
                 and (query.checkpoint_id is None or str((event.metadata or {}).get("checkpoint_id") or "") == query.checkpoint_id)
+                and (
+                    not allowed_checkpoint_ids
+                    or str((event.metadata or {}).get("checkpoint_id") or "")
+                    in allowed_checkpoint_ids
+                )
             ]
             if count_only:
                 return len(events)

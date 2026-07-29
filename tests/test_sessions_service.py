@@ -173,6 +173,97 @@ async def test_batch_events_are_globally_sorted_and_bounded(backend, tmp_path):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("backend", ["memory", "local"])
+async def test_event_query_filters_checkpoint_ids_before_pagination(backend, tmp_path):
+    service = (
+        InMemorySessionService()
+        if backend == "memory"
+        else LocalSessionService(db_path=tmp_path / "checkpoint-filter.sqlite")
+    )
+    await service.create_session("agent-a", "user", "checkpoint-filter")
+    for event_id, checkpoint_id, timestamp in (
+        ("match-old", "cp-a", 1),
+        ("other", "cp-b", 2),
+        ("match-new", "cp-a", 3),
+    ):
+        await service.append_event(
+            "checkpoint-filter",
+            SessionEvent(
+                id=event_id,
+                event_type="run_status",
+                timestamp=timestamp,
+                metadata={"checkpoint_id": checkpoint_id},
+            ),
+        )
+
+    query = SessionEventQuery(
+        session_ids=["checkpoint-filter"],
+        checkpoint_ids=["cp-a"],
+        offset=0,
+        limit=1,
+    )
+    page = await service.query_events(query)
+    total = await service.count_event_query(query)
+
+    assert [event.id for event in page] == ["match-new"]
+    assert total == 2
+
+
+@pytest.mark.asyncio
+async def test_resilient_event_query_preserves_filters_across_primary_and_fallback():
+    primary = InMemorySessionService()
+    fallback = InMemorySessionService()
+    service = ResilientSessionService(primary, fallback)
+    await primary.create_session("agent-a", "user", "clean-filtered")
+    await fallback.create_session("agent-a", "user", "dirty-filtered")
+    for backend, session_id, prefix in (
+        (primary, "clean-filtered", "clean"),
+        (fallback, "dirty-filtered", "dirty"),
+    ):
+        await backend.append_event(
+            session_id,
+            SessionEvent(
+                id=f"{prefix}-match",
+                event_type="run_status",
+                timestamp=1,
+                metadata={"checkpoint_id": "cp-a"},
+            ),
+        )
+        await backend.append_event(
+            session_id,
+            SessionEvent(
+                id=f"{prefix}-wrong-type",
+                event_type="assistant_message",
+                timestamp=2,
+                metadata={"checkpoint_id": "cp-a"},
+            ),
+        )
+        await backend.append_event(
+            session_id,
+            SessionEvent(
+                id=f"{prefix}-wrong-checkpoint",
+                event_type="run_status",
+                timestamp=3,
+                metadata={"checkpoint_id": "cp-b"},
+            ),
+        )
+    service._dirty_session_ids.add("dirty-filtered")
+
+    query = SessionEventQuery(
+        session_ids=["clean-filtered", "dirty-filtered"],
+        agent_id="agent-a",
+        event_types=["run_status"],
+        checkpoint_ids=["cp-a"],
+        limit=10,
+    )
+    events = await service.query_events(query)
+    total = await service.count_event_query(query)
+
+    assert [event.id for event in events] == ["clean-match", "dirty-match"]
+    assert total == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", ["memory", "local"])
 async def test_event_query_filters_invocation_before_pagination(backend, tmp_path):
     service = (
         InMemorySessionService()

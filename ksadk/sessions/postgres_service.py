@@ -458,6 +458,7 @@ class PostgresSessionService(BaseSessionService):
         clauses, params = self._batch_event_where(
             query.session_ids, query.agent_id, query.after_seq_id, query.before_seq_id,
             query.event_types, query.run_id, query.checkpoint_id,
+            checkpoint_ids=query.checkpoint_ids,
             invocation_id=query.invocation_id,
         )
         params.extend([query.limit, query.offset])
@@ -491,6 +492,7 @@ class PostgresSessionService(BaseSessionService):
         clauses, params = self._batch_event_where(
             query.session_ids, query.agent_id, query.after_seq_id, query.before_seq_id,
             query.event_types, query.run_id, query.checkpoint_id,
+            checkpoint_ids=query.checkpoint_ids,
             invocation_id=query.invocation_id,
         )
         async with self._pool.acquire() as connection:

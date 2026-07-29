@@ -1014,7 +1014,9 @@ KsADK 扩展图片引用示例：
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `SessionId` | `string` 或 `string[]` | 否 | 兼容旧字符串。去空白、空项和重复后最多 1000 个；缺省或空数组表示当前 runtime/agent namespace 的全部 session |
+| `SessionId` | `string` | 是 | 单个非空 session ID；数组、缺省和空字符串均校验失败 |
+| `CheckpointIds` | `string[]` | 否 | 按事件 `Metadata.checkpoint_id` 精确过滤；空数组不过滤，最多 1000 项 |
+| `EventTypes` | `string[]` | 否 | 按 `EventType` 精确过滤；空数组不过滤，最多 1000 项 |
 | `Offset` | `integer` | 否 | 起始偏移，`>= 0` |
 | `Limit` | `integer` | 否 | 返回条数，默认 `10`，最大 `1000` |
 | `AfterSeqId` / `BeforeSeqId` | `integer` | 否 | 仅单个显式 `SessionId` 可用；多 session 或全部 session 请求会返回 `400` |
@@ -1056,7 +1058,7 @@ KsADK 扩展图片引用示例：
 - `ListSessions` 的 `Data` 还会包含服务端回显的 `Page` 和 `PageSize`
 - `ListSessionEvents` 的 `Data` 额外包含请求透传的 `Offset` 和 `Limit`
 - `ListSessionEvents` 的 `Data` 还会包含 `Total`，便于客户端按需回加载更早的事件窗口
-- `ListSessionEvents.Data.SessionId` 回显规范化后的数组。事件按 `(Timestamp, SessionId, SeqId, EventId)` 全局稳定排序；先选择最新的 `Offset + Limit` 窗口，再按正序返回。显式 session 中任意一个不存在或不属于当前 agent 时，整次请求返回通用 `404`。
+- `ListSessionEvents.Data.SessionId` 回显规范化字符串，并回显过滤数组。数组内部为 OR、不同过滤器之间为 AND；存储层先过滤和计算 `Total`，再选择最新的 `Offset + Limit` 窗口并按正序返回。session 不存在或不属于当前 agent 时返回通用 `404`。
 - `X-Session-Id` 只允许与 body 中规范化后的唯一 Session 一致；body 缺省、空数组、多 Session 或不一致时返回 `400`，该 header 不会补充查询过滤条件。
 
 ### `GET /agentengine/api/v1/SubscribeRunEvents`
@@ -1591,10 +1593,12 @@ python scripts/validate_hosted_long_task_e2e.py \
 | `RunId` | `string` | 否 | 只返回指定 run 的 checkpoint |
 | `OnlyResumable` | `boolean` | 否 | 只返回可恢复 checkpoint |
 | `Framework` | `string` | 否 | 按框架过滤，例如 `langgraph` |
+| `ResumeStatus` | `string[]` | 否 | 按最终 `ResumeStatus` 过滤；开放字符串值域，trim、转小写、去重，空数组不过滤 |
+| `ResumeTypes` | `string[]` | 否 | 按最终 `Scope` 过滤；可选 `invocation`、`shared`、`pod_local`、`process_local`、`unknown` |
 | `Offset` | `integer` | 否 | 分页起始偏移 |
-| `Limit` | `integer` | 否 | 分页大小，默认 `10`，最大 `1000` |
+| `Limit` | `integer` | 否 | 分页大小，默认 `100`，最大 `1000` |
 
-响应 `Data.Checkpoints` 为 checkpoint 列表。checkpoint 来自 runtime session event 中的 `run_checkpoint`，不是客户端传入的状态。响应还包含 `SessionId`、`CheckpointId`（均为规范化数组）、`Total`、`ResumableTotal`、`Offset` 和 `Limit`。结果按创建时间从早到晚分页；任一显式 session 不存在或不属于 `AgentId` 时整次请求返回通用 `404`。
+响应 `Data.Checkpoints` 为 checkpoint 列表。checkpoint 来自 runtime session event 中的 `run_checkpoint`，不是客户端传入的状态。响应还包含规范化数组 `SessionId` / `CheckpointId` / `ResumeStatus` / `ResumeTypes`、精确 `Total` / `ResumableTotal`、`Offset` 和 `Limit`。恢复审计、过期和 latest-only 修正先于状态/Scope 过滤；随后计算 `ResumableTotal`，再应用 `OnlyResumable`、计算 `Total` 和分页。结果按创建时间从早到晚分页；任一显式 session 不存在或不属于 `AgentId` 时整次请求返回通用 `404`。
 
 每个 checkpoint descriptor 至少包含：
 

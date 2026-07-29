@@ -1174,6 +1174,7 @@ class LocalSessionService(BaseSessionService):
         where, params = self._batch_event_where(
             query.session_ids, query.agent_id, query.after_seq_id, query.before_seq_id,
             query.event_types, query.run_id, query.checkpoint_id,
+            checkpoint_ids=query.checkpoint_ids,
             invocation_id=query.invocation_id,
         )
         with self._connection() as connection:
