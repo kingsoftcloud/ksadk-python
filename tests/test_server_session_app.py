@@ -2918,7 +2918,126 @@ async def test_runtime_local_list_session_events_filters_by_before_seq_id(monkey
 
 
 @pytest.mark.asyncio
-async def test_list_session_events_requires_scalar_session_id(monkeypatch):
+async def test_list_session_events_uses_requested_agent_id_for_runtime_events(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    await service.create_session(
+        "platform-agent-id",
+        "user-1",
+        "hosted-session",
+    )
+    await service.append_event(
+        "hosted-session",
+        SessionEvent(
+            id="checkpoint-1",
+            event_type="run_checkpoint",
+            timestamp=1,
+        ),
+    )
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(_DummyRunner())
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://ksadk.local",
+    ) as client:
+        response = await client.post(
+            "/agentengine/api/v1/ListSessionEvents",
+            json={
+                "AgentId": "platform-agent-id",
+                "SessionId": "hosted-session",
+            },
+        )
+
+    assert response.status_code == 200
+    assert [
+        event["EventType"] for event in response.json()["Data"]["Events"]
+    ] == ["run_checkpoint"]
+
+
+@pytest.mark.asyncio
+async def test_list_session_events_without_session_id_pages_all_agent_sessions(
+    monkeypatch,
+):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    for session_id, agent_id in (
+        ("agent-a-1", "platform-agent-id"),
+        ("agent-a-2", "platform-agent-id"),
+        ("foreign", "other-agent-id"),
+    ):
+        await service.create_session(agent_id, "user-1", session_id)
+    for session_id, event_id, timestamp in (
+        ("agent-a-1", "event-10", 10),
+        ("agent-a-2", "event-20", 20),
+        ("agent-a-1", "event-30", 30),
+        ("foreign", "foreign-40", 40),
+    ):
+        await service.append_event(
+            session_id,
+            SessionEvent(
+                id=event_id,
+                event_type="run_checkpoint",
+                timestamp=timestamp,
+            ),
+        )
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(_DummyRunner())
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://ksadk.local",
+    ) as client:
+        response = await client.post(
+            "/agentengine/api/v1/ListSessionEvents",
+            json={"AgentId": "platform-agent-id", "Offset": 1, "Limit": 2},
+        )
+
+    assert response.status_code == 200
+    data = response.json()["Data"]
+    assert data["SessionId"] is None
+    assert data["Total"] == 3
+    assert [event["EventId"] for event in data["Events"]] == [
+        "event-10",
+        "event-20",
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "cursor",
+    [
+        {"AfterSeqId": 0},
+        {"BeforeSeqId": 2},
+    ],
+)
+async def test_list_session_events_without_session_id_rejects_seq_cursors(
+    monkeypatch,
+    cursor,
+):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://ksadk.local",
+    ) as client:
+        response = await client.post(
+            "/agentengine/api/v1/ListSessionEvents",
+            json={"AgentId": "platform-agent-id", **cursor},
+        )
+
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_list_session_events_accepts_omitted_and_rejects_invalid_session_id(
+    monkeypatch,
+):
     server_app_module = importlib.import_module("ksadk.server.app")
     service = InMemorySessionService()
     await service.create_session("demo-agent", "user-1", "events-scalar")
@@ -2937,7 +3056,8 @@ async def test_list_session_events_requires_scalar_session_id(monkeypatch):
             "/agentengine/api/v1/ListSessionEvents", json={"SessionId": " events-scalar "}
         )
 
-    assert missing.status_code == 422
+    assert missing.status_code == 200
+    assert missing.json()["Data"]["SessionId"] is None
     assert empty.status_code == 422
     assert array.status_code == 422
     assert scalar.status_code == 200

@@ -23,7 +23,7 @@ import httpx
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 import ksadk.conversations as conversation
 from ksadk.conversations.attachment_storage import AttachmentStorageService
@@ -1166,7 +1166,8 @@ def _normalize_required_action_string(value: Any, *, field_name: str) -> str:
 
 
 class ListSessionEventsActionRequest(BaseModel):
-    SessionId: str
+    AgentId: Optional[str] = None
+    SessionId: Optional[str] = None
     CheckpointIds: list[str] = Field(default_factory=list)
     EventTypes: list[str] = Field(default_factory=list)
     Offset: Optional[int] = Field(None, ge=0)
@@ -1174,15 +1175,25 @@ class ListSessionEventsActionRequest(BaseModel):
     AfterSeqId: Optional[int] = Field(None, ge=0)
     BeforeSeqId: Optional[int] = Field(None, ge=1)
 
-    @field_validator("SessionId", mode="before")
+    @field_validator("AgentId", "SessionId", mode="before")
     @classmethod
-    def normalize_session_id(cls, value: Any) -> str:
-        return _normalize_required_action_string(value, field_name="SessionId")
+    def normalize_optional_scope_id(cls, value: Any, info) -> Optional[str]:
+        if value is None:
+            return None
+        return _normalize_required_action_string(value, field_name=info.field_name)
 
     @field_validator("CheckpointIds", "EventTypes", mode="before")
     @classmethod
     def normalize_event_filters(cls, value: Any, info) -> list[str]:
         return _normalize_action_string_list(value, field_name=info.field_name)
+
+    @model_validator(mode="after")
+    def validate_cursor_scope(self):
+        if self.SessionId is None and (
+            self.AfterSeqId is not None or self.BeforeSeqId is not None
+        ):
+            raise ValueError("Seq cursors require SessionId")
+        return self
 
 
 class ListSessionMessagesActionRequest(BaseModel):
@@ -2386,6 +2397,13 @@ async def _validate_action_sessions(
     unavailable_ids = [
         session_id for session_id in session_ids if session_id not in found_ids
     ]
+    if not matched_ids or (not allow_partial and len(matched_ids) != len(session_ids)):
+        logger.warning(
+            "Session scope mismatch: requested_count=%d matched_count=%d",
+            len(session_ids),
+            len(matched_ids),
+        )
+        raise HTTPException(status_code=404, detail="Session not found")
     if unavailable_ids:
         logger.warning(
             "Session scope partially matched: "
@@ -2395,8 +2413,6 @@ async def _validate_action_sessions(
             unavailable_ids,
             session_ids,
         )
-    if not matched_ids or (not allow_partial and len(matched_ids) != len(session_ids)):
-        logger.warning("Session scope mismatch: requested_count=%d matched_count=%d", len(session_ids), len(matched_ids))
     return matched_ids
 
 
@@ -2407,15 +2423,18 @@ def _current_runtime_agent_id() -> str | None:
 @app.post("/agentengine/api/v1/ListSessionEvents")
 async def list_session_events_action(request: ListSessionEventsActionRequest):
     service = resolve_session_service()
-    agent_id = _current_runtime_agent_id()
-    await _validate_action_sessions(
-        service,
-        [request.SessionId],
-        agent_id=agent_id,
-    )
+    agent_id = request.AgentId or _current_runtime_agent_id()
+    session_ids = [request.SessionId] if request.SessionId is not None else None
+    if session_ids is not None:
+        session_ids = await _validate_action_sessions(
+            service,
+            session_ids,
+            agent_id=agent_id,
+            allow_partial=False,
+        )
     try:
         query = SessionEventQuery(
-            session_ids=[request.SessionId],
+            session_ids=session_ids,
             agent_id=agent_id,
             offset=request.Offset or 0,
             limit=request.Limit,
@@ -2427,7 +2446,7 @@ async def list_session_events_action(request: ListSessionEventsActionRequest):
         events = await service.query_events(query)
         total = await service.count_event_query(
             SessionEventQuery(
-                session_ids=[request.SessionId],
+                session_ids=session_ids,
                 agent_id=agent_id,
                 after_seq_id=request.AfterSeqId,
                 before_seq_id=request.BeforeSeqId,
