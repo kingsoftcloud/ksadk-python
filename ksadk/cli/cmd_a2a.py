@@ -163,7 +163,10 @@ def serve(
 @click.option("--skill", "skills", multiple=True, help="可重复传入,追加 Agent Card 技能")
 def card(agent_path: Path, url: str, name: str | None, description: str, skills: Sequence[str]):
     """打印该 agent 的 wire 1.0 AgentCard(supportedInterfaces)。"""
-    detection_result = _detect_project(agent_path)
+    # ``card`` is intentionally machine-readable: users commonly redirect it to
+    # ``agent-card.json``.  Detection only needs the manifest, so avoid the
+    # environment bootstrap here; it may print helpful model-default banners.
+    detection_result = _detect_project(agent_path, configure_environment=False)
     card_obj = build_agent_card(
         name=name or detection_result.name,
         base_url=url,
@@ -183,7 +186,7 @@ def card(agent_path: Path, url: str, name: str | None, description: str, skills:
 @click.option("--skill", "skills", multiple=True, help="可重复传入,追加 Agent Card 技能")
 def register(agent_path: Path, url: str, name: str | None, description: str, skills: Sequence[str]):
     """构造并打印用于 Space 注册的 AgentCard(本地试调;server 侧 KOP 注册见产品化文档)。"""
-    detection_result = _detect_project(agent_path)
+    detection_result = _detect_project(agent_path, configure_environment=False)
     card_obj = build_agent_card(
         name=name or detection_result.name,
         base_url=url,
@@ -300,8 +303,9 @@ def _platform_task_summary(task: A2APlatformTask) -> dict[str, str | None]:
     }
 
 
-def _detect_project(agent_path: Path):
-    configs.setup_environment(agent_path)
+def _detect_project(agent_path: Path, *, configure_environment: bool = True):
+    if configure_environment:
+        configs.setup_environment(agent_path)
     result = FrameworkDetector(str(agent_path)).detect()
     if result.type.value == "unknown":
         raise click.ClickException("未检测到支持的框架 (LangChain/LangGraph/DeepAgents/ADK)")
