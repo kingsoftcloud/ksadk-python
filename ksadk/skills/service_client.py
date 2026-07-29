@@ -11,6 +11,14 @@ import requests
 from ksadk.common.auth import AWSV4Auth
 from ksadk.skills.models import SkillListResponse, SkillRef
 
+_KOP_HOSTS = frozenset(
+    {
+        "aicp.inner.api.ksyun.com",
+        "aicp.internal.api.ksyun.com",
+        "aicp.api.ksyun.com",
+    }
+)
+
 
 class SkillServiceClient:
     def __init__(
@@ -207,12 +215,14 @@ class SkillServiceClient:
         return self._requests_session
 
     def _is_kop_mode(self) -> bool:
-        host = urlsplit(self.base_url).netloc.lower()
-        return (
-            host.endswith("aicp.inner.api.ksyun.com")
-            or host.endswith("aicp.internal.api.ksyun.com")
-            or host.endswith("aicp.api.ksyun.com")
-        )
+        """Match only exact, TLS-protected AICP control-plane endpoints.
+
+        A user-controlled URL such as ``aicp.api.ksyun.com.attacker.example``
+        must never receive KOP signing headers.
+        """
+        parsed = urlsplit(self.base_url)
+        host = (parsed.hostname or "").lower()
+        return parsed.scheme == "https" and host in _KOP_HOSTS
 
     def _kop_base_url(self) -> str:
         parsed = urlsplit(self.base_url)

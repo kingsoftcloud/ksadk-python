@@ -302,6 +302,27 @@ def _is_custom_ui_static_asset_path(relative_path: str) -> bool:
     return first_segment == "assets" or bool(Path(path).suffix)
 
 
+def _find_ui_static_asset(bundle_dir: Path, requested_relative_path: str) -> Path | None:
+    """Look up an asset without constructing a filesystem path from HTTP input."""
+    requested = str(requested_relative_path or "").strip("/")
+    if not requested:
+        return None
+    root = bundle_dir.resolve()
+    if not root.is_dir():
+        return None
+    for asset in root.rglob("*"):
+        if not asset.is_file():
+            continue
+        resolved = asset.resolve()
+        try:
+            relative = resolved.relative_to(root).as_posix()
+        except ValueError:
+            continue
+        if relative == requested:
+            return resolved
+    return None
+
+
 def _resolve_ui_static_response(request_path: str) -> Optional[FileResponse]:
     spec = _resolve_agent_ui_spec()
     if not spec.get("enabled"):
@@ -320,9 +341,9 @@ def _resolve_ui_static_response(request_path: str) -> Optional[FileResponse]:
         relative = path[len(ui_path) :].lstrip("/") if ui_path != "/" else path.lstrip("/")
         if not relative:
             return FileResponse(index_file)
-        candidate = bundle_dir / relative
-        if candidate.exists() and candidate.is_file():
-            return FileResponse(candidate)
+        asset = _find_ui_static_asset(bundle_dir, relative)
+        if asset is not None:
+            return FileResponse(asset)
         if not _is_custom_ui_static_asset_path(relative):
             return FileResponse(index_file)
         return None
@@ -330,9 +351,9 @@ def _resolve_ui_static_response(request_path: str) -> Optional[FileResponse]:
     if path in _RESERVED_UI_PATHS:
         return FileResponse(index_file)
 
-    candidate = bundle_dir / path.lstrip("/")
-    if candidate.exists() and candidate.is_file():
-        return FileResponse(candidate)
+    asset = _find_ui_static_asset(bundle_dir, path.lstrip("/"))
+    if asset is not None:
+        return FileResponse(asset)
     return None
 
 
