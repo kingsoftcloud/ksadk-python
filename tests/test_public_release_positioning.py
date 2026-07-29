@@ -9,6 +9,7 @@ import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 DOCS_ROOT_URL = "https://kingsoftcloud.github.io/ksadk-python/"
+DOCS_CONTENT_ROOT = ROOT / "docs-site" / "content" / "docs"
 ZH_DOC_URLS = {
     f"{DOCS_ROOT_URL}cn/docs/framework/getting-started/quickstart/",
     f"{DOCS_ROOT_URL}cn/docs/framework/getting-started/why-ksadk/",
@@ -18,6 +19,8 @@ ZH_DOC_URLS = {
     f"{DOCS_ROOT_URL}cn/docs/framework/guides/cloud-deployment/",
     f"{DOCS_ROOT_URL}cn/docs/framework/guides/hosted-ui-events/",
     f"{DOCS_ROOT_URL}cn/docs/framework/guides/a2a-runtime/",
+    f"{DOCS_ROOT_URL}cn/docs/framework/guides/managed-runtime/",
+    f"{DOCS_ROOT_URL}cn/docs/framework/guides/harness-app/",
 }
 EN_DOC_URLS = {
     f"{DOCS_ROOT_URL}en/docs/framework/getting-started/quickstart/",
@@ -28,7 +31,14 @@ EN_DOC_URLS = {
     f"{DOCS_ROOT_URL}en/docs/framework/guides/cloud-deployment/",
     f"{DOCS_ROOT_URL}en/docs/framework/guides/hosted-ui-events/",
     f"{DOCS_ROOT_URL}en/docs/framework/guides/a2a-runtime/",
+    f"{DOCS_ROOT_URL}en/docs/framework/guides/managed-runtime/",
+    f"{DOCS_ROOT_URL}en/docs/framework/guides/harness-app/",
 }
+
+_DOCS_LINK_PATTERN = re.compile(
+    r'(?:\[[^\]]+\]\(([^)\s]+)(?:\s+"[^"]*")?\)|'
+    r'<Card\b[^>]*?\bhref=["\']([^"\']+)["\'])'
+)
 
 
 def _read(relative_path: str) -> str:
@@ -37,6 +47,36 @@ def _read(relative_path: str) -> str:
 
 def _github_pages_urls(markdown: str) -> set[str]:
     return set(re.findall(r"https://kingsoftcloud\.github\.io/ksadk-python/[^>\s)\"]*", markdown))
+
+
+def _docs_link_candidates(source: Path, target: str) -> tuple[Path, ...]:
+    """Return source files that can render an internal Fumadocs link.
+
+    The check deliberately covers Markdown links and ``<Card href>`` entries:
+    static builds can render a page even when an in-content link would lead a
+    reader to a 404.  External links and public assets are out of scope here.
+    """
+
+    path = target.split("#", 1)[0].split("?", 1)[0]
+    if not path or path.startswith(("http://", "https://", "mailto:", "/assets/")):
+        return ()
+
+    source_suffix = ".en.mdx" if source.name.endswith(".en.mdx") else ".mdx"
+    if path.startswith("/"):
+        segments = path.strip("/").split("/")
+        if len(segments) < 2 or segments[:2] not in (["cn", "docs"], ["en", "docs"]):
+            return ()
+        locale_suffix = ".en.mdx" if segments[0] == "en" else ".mdx"
+        relative = segments[2:]
+        if relative == ["cli"]:
+            return (DOCS_CONTENT_ROOT / "cli" / f"index{locale_suffix}",)
+        base = DOCS_CONTENT_ROOT.joinpath(*relative)
+        return (base.with_suffix(locale_suffix), base / f"index{locale_suffix}")
+
+    base = source.parent / path
+    if base.suffix:
+        return (base,)
+    return (base.with_suffix(source_suffix), base / f"index{source_suffix}")
 
 
 def test_public_readme_positions_ksadk_as_runtime_platform():
@@ -106,7 +146,6 @@ def test_public_readme_language_variants_keep_homepage_shape():
 
 
 def test_public_readme_docs_links_match_fumadocs_routes():
-    docs_site = ROOT / "docs-site" / "content" / "docs"
     checks = {
         "README.md": "cn",
         "README.zh-CN.md": "cn",
@@ -125,9 +164,28 @@ def test_public_readme_docs_links_match_fumadocs_routes():
             assert parts[1] == "docs"
             doc_segments = parts[2:]
             suffix = ".en.mdx" if expected_locale == "en" else ".mdx"
-            candidate = docs_site.joinpath(*doc_segments).with_suffix(suffix)
-            index_candidate = docs_site.joinpath(*doc_segments, f"index{suffix}")
+            candidate = DOCS_CONTENT_ROOT.joinpath(*doc_segments).with_suffix(suffix)
+            index_candidate = DOCS_CONTENT_ROOT.joinpath(*doc_segments, f"index{suffix}")
             assert candidate.exists() or index_candidate.exists(), url
+
+
+def test_docs_internal_links_resolve_to_rendered_pages():
+    broken: list[str] = []
+    for source in sorted(DOCS_CONTENT_ROOT.rglob("*.mdx")):
+        text = source.read_text(encoding="utf-8")
+        for match in _DOCS_LINK_PATTERN.finditer(text):
+            target = next(value for value in match.groups() if value is not None)
+            candidates = _docs_link_candidates(source, target)
+            if candidates and not any(candidate.exists() for candidate in candidates):
+                display = " or ".join(
+                    candidate.relative_to(DOCS_CONTENT_ROOT).as_posix()
+                    for candidate in candidates
+                )
+                broken.append(
+                    f"{source.relative_to(DOCS_CONTENT_ROOT)} -> {target} ({display})"
+                )
+
+    assert not broken, "Broken internal documentation links:\n" + "\n".join(broken)
 
 
 def test_docs_site_cloud_deployment_guides_and_static_search_are_publicly_reachable():

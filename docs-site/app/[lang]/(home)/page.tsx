@@ -5,7 +5,7 @@ const copy = {
   cn: {
     title: 'Kingsoft Cloud Agent Development Kit',
     subtitle: '金山云智能体开发套件',
-    desc: '构建、部署、调试、观测企业级 AI 智能体的一站式云原生框架。兼容 Google ADK、LangGraph、LangChain 与 DeepAgents，并支持一键拉起 OpenClaw 和 Hermes 运行时。',
+    desc: '构建、部署、调试、观测企业级 AI 智能体的一站式云原生框架。兼容 Google ADK、LangGraph、LangChain 与 DeepAgents；0.8 新增 Codex Managed Runtime、A2A 1.0 数据面、HarnessApp 与 AG-UI/A2UI 事件轨道。',
     cta: '阅读文档',
     ctaSecondary: 'GitHub 仓库',
     installLabel: '安装',
@@ -13,7 +13,7 @@ const copy = {
   en: {
     title: 'Kingsoft Cloud Agent Development Kit',
     subtitle: 'Agent development kit for Kingsoft Cloud',
-    desc: 'A cloud-native framework to build, deploy, debug, and observe enterprise AI agents. It works with Google ADK, LangGraph, LangChain, and DeepAgents, with one-command OpenClaw and Hermes runtime launch paths.',
+    desc: 'A cloud-native framework to build, deploy, debug, and observe enterprise AI agents. It works with Google ADK, LangGraph, LangChain, and DeepAgents; 0.8 adds Codex Managed Runtime, an A2A 1.0 data plane, HarnessApp, and the AG-UI/A2UI event path.',
     cta: 'Read the docs',
     ctaSecondary: 'GitHub',
     installLabel: 'Install',

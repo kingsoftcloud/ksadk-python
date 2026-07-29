@@ -16,6 +16,7 @@ description: 从本地项目、云账号配置到托管 Agent 验证的完整部
 | 目标 | 适用场景 | 默认制品 |
 | --- | --- | --- |
 | `serverless` | 最快把标准 Agent 部署为托管服务 | `Code`，自动构建并上传到 KS3 |
+| `serverless` + `artifact_type: ManagedRuntime` | YAML 驱动的 Codex Agent，需要平台维护的 Runtime 镜像 | ManagedRuntime，内联 manifest，不上传 KS3 代码包、不需要 Docker |
 | `serverless --artifact-type Container` | 代码包体积较大，或依赖系统库 / 自定义镜像 | Container，需 Docker 和镜像仓库 |
 | `kce --artifact-type Container` | 已有 KCE 集群、命名空间和镜像仓库 | Container |
 
@@ -30,14 +31,17 @@ description: 从本地项目、云账号配置到托管 Agent 验证的完整部
    agentengine --version
    ```
 
-2. 本地项目必须有可运行的 `agentengine.yaml`、入口文件和依赖清单。部署前先运行：
+2. 代码项目必须有可运行的 `agentengine.yaml`、入口文件和依赖清单。Codex ManagedRuntime
+   没有入口文件；它必须有显式 `framework: codex`、`artifact_type: ManagedRuntime` 和
+   `runtime.name`。部署前先运行本地验证：
 
    ```bash title="shell"
    agentengine run . -i
    ```
 
-3. 准备金山云 AK/SK，并确保该账号有 AgentEngine、KS3 和目标区域的资源权限。Container 部署还需要
-   可推送的镜像仓库权限；本机需要可用的 Docker。
+3. 准备金山云 AK/SK，并确保该账号有 AgentEngine 和目标区域的资源权限。Code 部署还需要 KS3
+   权限；Container 部署还需要可推送的镜像仓库权限和本机 Docker。ManagedRuntime 不使用 KS3
+   代码包或本机 Docker。
 
 4. 不要把 AK/SK、模型 key 或镜像仓库密码提交到 Git。`.env`、`prod.env` 和 `.agentengine/` 应加入
    `.gitignore`，仓库中只保留 `.env.example`。
@@ -75,6 +79,37 @@ OPENAI_MODEL_NAME=<your-model-name>
   `--env-file` 的内容会进入托管运行时环境。云账号凭证用于本机调用部署 API，不应作为运行时
   env 透传；模型 key 是否需要注入取决于你的 Agent 和模型 provider。
 </Callout>
+
+## 部署 Codex ManagedRuntime（0.8 新增）
+
+Codex 使用唯一的 `agentengine.yaml`，没有 `agent.py`。`runtime.version` 显式锁定时，
+CLI 直接使用该版本；省略时会先请求服务端 Runtime catalog 的默认值，catalog 未启用则失败，
+不会猜测版本或回退到 CodeBuilder。
+
+```yaml title="agentengine.yaml"
+name: my-codex-agent
+version: "1.0.0"
+framework: codex
+artifact_type: ManagedRuntime
+runtime:
+  name: codex
+  version: "0.144.4"
+model: kimi-k3
+prompt: |
+  你是一个编码助手。
+```
+
+先审查部署请求，再执行：
+
+```bash title="shell"
+agentengine deploy . --target serverless --region cn-beijing-6 --dry-run
+agentengine deploy . --target serverless --region cn-beijing-6 --env-file ./prod.env
+```
+
+这里发送的是内联规范化 manifest、Runtime 名称、版本和 SHA-256。不要传 `--ks3-path`，也不要为
+ManagedRuntime 使用 `--push` 或 `--ks3-bucket`；这些 Code 路径参数会被拒绝。返回值应记录实际
+Runtime 版本与镜像 digest。完整本机实践见
+[YAML 即 Agent：Codex](../tutorials/best-practices/codex-yaml-agent)。
 
 ## 一次性部署到 Serverless
 
@@ -198,6 +233,8 @@ agentengine dashboard open <agent-name-or-id>
 | VPC 参数校验失败 | 同时传入 `--vpc-id`、`--subnet-id`、`--security-group-id`；可用区可选，不能替代这三个 ID。 |
 | Container 构建失败 | 确认 Docker 可运行，`--registry` 可访问，并按仓库类型配置 KCR 凭证。 |
 | Code 包过大 | 先移除不必要依赖；仍无法满足时改用 `--artifact-type Container`。 |
+| ManagedRuntime catalog 未配置或版本未知 | 设置显式 `runtime.version`，或请平台配置对应 Runtime catalog；它不会回退到 Code。 |
+| ManagedRuntime 提示 KS3 参数不允许 | 移除 `--push`、`--ks3-bucket` 和 `--ks3-path`；直接执行 `agentengine deploy .`。 |
 | 托管运行时找不到模型配置 | 检查 `prod.env` 是否通过 `--env-file` 传入，并确认其中的变量名符合 Agent 使用的模型 provider。 |
 
 <Callout type="info">

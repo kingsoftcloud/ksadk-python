@@ -9,6 +9,11 @@ by AgentEngine in the cloud. Local development does not require Docker, and a
 deployment bundle never contains Python dependencies, credentials, or a platform
 binary.
 
+<Callout type="info" title="New in 0.8">
+This is the first declarative managed runtime in 0.8: a Codex agent is described
+by YAML `model` and `prompt` fields rather than an object exported from `agent.py`.
+</Callout>
+
 ## Create a project
 
 ```bash title="shell"
@@ -58,16 +63,28 @@ in source control or a deployment bundle.
 
 ## Build and deploy
 
-`artifact_type: ManagedRuntime` makes `ksadk build .` select managed mode:
+`artifact_type: ManagedRuntime` makes `ksadk build .` select managed mode. The
+resulting zip is a reproducible local audit artifact, not a deployment prerequisite:
 
 ```bash title="shell"
 ksadk build .
-ksadk deploy . --target serverless
 ```
 
 The output is `<name>-<version>-runtime.zip` and contains only a normalized
 `agentengine.yaml` and `runtime-lock.json`. The lock records the manifest
 protocol, Runtime name, resolved version, and manifest SHA-256.
+
+Deployment sends the normalized manifest, Runtime name, resolved version, and
+manifest SHA-256 directly to the server. It does not upload a KS3 code package
+or require Docker:
+
+```bash title="shell"
+ksadk deploy . --target serverless
+```
+
+Do not use `--push`, `--ks3-bucket`, or `--ks3-path` for a ManagedRuntime. They
+belong to the Code artifact path; the CLI rejects them instead of uploading the
+manifest as a code package.
 
 <Callout type="warning" title="Code mode is not for managed Codex">
 Forcing `ksadk build --mode code` for a Codex ManagedRuntime fails. This prevents
@@ -78,6 +95,15 @@ a macOS or Windows Codex binary from being packaged for a Linux deployment.
 The cloud Runtime catalog selects the default version and resolves it to an
 immutable Linux image digest. If the catalog is disabled, deployment fails with
 an actionable error instead of falling back to CodeBuilder.
+
+## Model protocol
+
+The official OpenAI upstream is used directly. For a custom OpenAI-compatible
+upstream, KsADK enables its local Responses-to-Chat conversion proxy only when a
+probe shows that it is needed; `KSADK_CODEX_USE_PROXY=1` or `0` overrides that
+decision. The proxy exists only in the local debugging process and is never put
+into the manifest or managed image. See the
+[environment variables reference](/en/docs/references/environment-variables).
 
 ## Credential and image boundary
 

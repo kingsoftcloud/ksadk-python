@@ -1,18 +1,44 @@
 ---
 title: KsADK
+description: The user path from a first local Agent to a managed cloud Runtime.
 ---
 
-**Kingsoft Cloud Agent Development Kit** is a cloud-native framework to build, deploy, debug, and observe enterprise AI agents. Keep building business agents with Google ADK, LangGraph, LangChain, or DeepAgents, then use KsADK for a unified local runtime, browser debugging, OpenAI-compatible API, sandbox execution, OpenClaw / Hermes runtime launch paths, and observability.
+**Kingsoft Cloud Agent Development Kit** builds, debugs, deploys, and observes
+enterprise AI Agents. Start by choosing the shape of your project; every path
+then shares the local Web UI, OpenAI-compatible API, sessions, and observability.
 
 ```bash
 pip install -U "ksadk[all]"
 ```
 
+## Choose a starting point
+
 <Cards>
-  <Card title="Quickstart" href="/en/docs/framework/getting-started/quickstart" description="Create and run your first agent in minutes." />
-  <Card title="Build an agent" href="/en/docs/framework/tutorials/langgraph-agent" description="Configure the model, tools, memory, and knowledge base." />
-  <Card title="Guides" href="/en/docs/framework/guides/runtime-architecture" description="Runtime architecture, local Web UI, attachments, and workspace." />
-  <Card title="Best practices" href="/en/docs/framework/tutorials/best-practices/agent-best-practices" description="LangGraph+Toolsets, long-task resume, custom UI agent." />
-  <Card title="CLI reference" href="/en/docs/references/cli" description="Full agentengine CLI command reference." />
-  <Card title="Environment variables" href="/en/docs/references/environment-variables" description="Model, session, checkpoint, observability variables." />
+  <Card title="Your first Python Agent" href="/en/docs/framework/getting-started/quickstart" description="Start from a LangGraph template: configure a model, run in the terminal, then open the local Web UI." />
+  <Card title="✨ YAML Is the Agent: Codex (New in 0.8)" href="/en/docs/framework/tutorials/best-practices/codex-yaml-agent" description="One agentengine.yaml; native debugging on macOS, Windows, and Linux, with no KS3 code package for managed deployment." />
+  <Card title="Bring an existing Agent" href="/en/docs/framework/tutorials/existing-agent" description="Wrap an existing Python Agent in an explicit, debuggable KsADK project." />
+</Cards>
+
+## Complete the local-development loop
+
+<Cards>
+  <Card title="Project configuration" href="/en/docs/framework/getting-started/configuration" description="Understand YAML, .env, and command-line precedence; distinguish Python projects from a Codex manifest." />
+  <Card title="Local Web UI" href="/en/docs/framework/guides/local-web-ui" description="Browser debugging, sessions, attachments, workspace files, and the local API." />
+  <Card title="Build and deploy" href="/en/docs/framework/guides/cloud-deployment" description="Choose Code, Container, or ManagedRuntime, and validate from dry-run onward." />
+</Cards>
+
+## New in 0.8 and advanced topics
+
+<Cards>
+  <Card title="Codex Managed Runtime" href="/en/docs/framework/guides/managed-runtime" description="Version locking, manifest bundles, server-side image resolution, and the local proxy boundary for the declarative Runtime." />
+  <Card title="A2A Runtime (Experimental)" href="/en/docs/framework/guides/a2a-runtime" description="Official A2A 1.0 Agent Cards, JSON-RPC/HTTP+JSON, and A2A Center / Space debugging." />
+  <Card title="HarnessApp (Experimental)" href="/en/docs/framework/guides/harness-app" description="Compose a minimal unified Runtime data plane from validated YAML for constrained declarative scenarios." />
+  <Card title="Hosted UI and event replay" href="/en/docs/framework/guides/hosted-ui-events" description="AG-UI/A2UI capability negotiation, RuntimeEvent, and read-only replay." />
+</Cards>
+
+## Find the exact contract
+
+<Cards>
+  <Card title="CLI reference" href="/en/docs/cli" description="agentengine commands for creation, running, building, deployment, and diagnosis." />
+  <Card title="Configuration and environment reference" href="/en/docs/references" description="Project manifests, environment variables, OpenAI-compatible API, session files, and troubleshooting." />
 </Cards>
