@@ -111,7 +111,8 @@ def test_create_codex_env_only_contains_local_model_configuration(monkeypatch):
         assert result.exit_code == 0, result.output
         env_text = (Path("my-codex-agent") / ".env").read_text(encoding="utf-8-sig")
 
-    assert "OPENAI_API_KEY=model-key" in env_text
+    assert "OPENAI_API_KEY=model-key" not in env_text
+    assert "# OPENAI_API_KEY=" in env_text
     # Keep an explicitly configured internal endpoint intact; init is not a
     # policy-enforcement layer.
     assert "OPENAI_BASE_URL=http://model-gateway.internal/v1" in env_text

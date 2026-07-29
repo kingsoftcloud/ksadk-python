@@ -13,11 +13,14 @@ model_proxy 代理跑星流 chat 模型的真实对话流。
 from __future__ import annotations
 
 import json
+import logging
 import os
 
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
+
+logger = logging.getLogger(__name__)
 
 # ruff: noqa: E501  内联 HTML/CSS/JS 演示字面量,长行不拆
 
@@ -83,9 +86,11 @@ def create_demo_app() -> FastAPI:
                         if it.get("type") == "agentMessage" and it.get("text"):
                             yield f"data: {json.dumps({'reply': it['text']}, ensure_ascii=False)}\n\n"
                     elif m == "error":
-                        yield f"data: {json.dumps({'error': json.dumps(ev.get('params', {}).get('error', {}), ensure_ascii=False)[:200]}, ensure_ascii=False)}\n\n"
+                        logger.warning("Codex demo runtime reported an error")
+                        yield 'data: {"error":"Codex runtime failed; see local logs."}\n\n'
             except Exception as e:  # noqa: BLE001
-                yield f"data: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
+                logger.warning("Codex demo runtime failed", exc_info=e)
+                yield 'data: {"error":"Codex runtime failed; see local logs."}\n\n'
 
         return StreamingResponse(gen(), media_type="text/event-stream")
 

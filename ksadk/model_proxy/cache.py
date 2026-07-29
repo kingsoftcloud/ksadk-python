@@ -5,7 +5,7 @@ review v1 指出 ``(model, base_url)`` 缺 credential/tenant 维度:同一网关
 "模型不存在"而非"endpoint 不存在"。本模块:
 
 - 键 = ``(model, base_url, credential_scope)``;credential_scope 用 key 的稳定指纹
-  (sha256 前 8 位),避免明文 key 入键/日志,又能区分不同 key。
+  (BLAKE2b 前 8 字节),避免明文 key 入键/日志,又能区分不同 key。
 - **明确判定**(supported/unsupported)长缓存(TTL);**不确定**(unknown)不缓存,
   下次重探——避免把一次抖动固化成长期误判。
 - **singleflight**:并发同键只探一次,其余等结果(用 per-key Future)。
@@ -26,8 +26,10 @@ from .detect import ModelCapabilities
 
 
 def _scope(key: str) -> str:
-    """key 的稳定指纹(sha256 前 8 位),避免明文入键/日志。"""
-    return hashlib.sha256(key.encode("utf-8")).hexdigest()[:8]
+    """Return a domain-separated, non-secret cache scope for a credential."""
+    return hashlib.blake2b(
+        key.encode("utf-8"), digest_size=8, person=b"ksadk-capability"
+    ).hexdigest()
 
 
 @dataclass

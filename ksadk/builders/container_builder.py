@@ -199,15 +199,22 @@ class ContainerBuilder(BaseBuilder):
         """
         from ksadk.configs.settings import check_endpoint_reachable
 
+        registry_text = str(registry).strip()
+        scheme, separator, reference = registry_text.partition("://")
+        prefix = f"{scheme}://" if separator else ""
+        target = reference if separator else registry_text
+        host, slash, remainder = target.partition("/")
+        normalized_host = host.lower()
+
         # 已经是内网地址
-        if "hub-vpc" in registry:
+        if normalized_host == "hub-vpc.kce.ksyun.com":
             return registry
 
-        # 匹配企业版 KCR: hub.kce.ksyun.com
-        if "hub.kce.ksyun.com" in registry:
+        # 仅匹配完整 registry host，避免改写路径或攻击者域名中的同名子串。
+        if normalized_host == "hub.kce.ksyun.com":
             click.echo("🔍 检测 KCR 内网连通性...")
             if check_endpoint_reachable("hub-vpc.kce.ksyun.com", port=443, timeout=2.0):
-                optimized = registry.replace("hub.kce.ksyun.com", "hub-vpc.kce.ksyun.com")
+                optimized = f"{prefix}hub-vpc.kce.ksyun.com{slash}{remainder}"
                 click.secho(f"   ✅ 优化为内网: {optimized}", fg="green")
                 return optimized
             else:
@@ -522,7 +529,7 @@ detection_result = DetectionResult(
     entry_point="{detection_result.entry_point}",
     package_path="/app/{package_name}",
     agent_variable="{detection_result.agent_variable}",
-    runner_class="{getattr(detection_result, 'runner_class', '')}"
+    runner_class="{getattr(detection_result, "runner_class", "")}"
 )
 
 logger.info(f"框架: {{detection_result.name}}")
