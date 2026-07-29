@@ -331,6 +331,12 @@
 | `AGENTENGINE_API_VERSION` | CLI / API client | 否 | 内置版本 | 无 | 否 | 平台 / 开发者 | 否 | 覆盖 AgentEngine API version。 |
 | `AGENTENGINE_PRE_CONTROL_REGION` | CLI / API client | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 预发控制面 region 覆盖。 |
 | `AGENTENGINE_PRE_CUSTOM_SOURCE` | CLI / API client | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 预发 custom source 覆盖。 |
+| `KSADK_A2A_SPACE_IDS` | A2A Runtime | 条件必传 | 未设置 | 无 | 否 | 部署层 / 平台 | 否 | Runtime Agent 当前配置的 Space ID JSON 数组，最多 100 个。`A2ASpaceClient.from_env()` 仅在数组恰有一个元素时自动选择；多 Space 必须传 `space_id`，且服务端 membership 才是授权事实。 |
+| `KSADK_A2A_CONTROL_PLANE_URL` | A2A Runtime | 条件必传 | 未设置 | 无 | 否 | 部署层 / 平台 | 否 | Runtime internal A2A Action 基地址；不自动探测、不回退 `AGENTENGINE_SERVER_URL`。 |
+| `KSADK_A2A_ENABLE_PUBLIC_EGRESS` | A2A Runtime | 否 | 由 `Network.EnablePublicAccess` 最终值派生；未注入时 SDK 按 `false` fail-closed | 无 | 否 | 部署层 / 平台 | 否 | 只控制 `external_public`；CreateAgent 的 `Network.EnablePublicAccess` 缺省为 `true`。`external_vpc` 由独立 VPC policy 决定。 |
+| `KSADK_A2A_EVENT_OUTBOX_PATH` | A2A Runtime | 否 | `.agentengine/a2a_event_outbox.sqlite3` | 无 | 否 | 部署层 / 平台 | 否 | A2A Task event durable outbox 的 SQLite 路径；生产部署应放在 Runtime 可写持久卷，不保存 permit、JWT 或 credential。 |
+| `KSADK_A2A_TOKEN_DIR` | A2A Runtime | 否 | `/var/run/secrets/agentengine/a2a` | 无 | 否 | 部署层 / token sidecar | 否 | audience JWT 目录，包含 `a2a-registry.jwt`、`a2a-task-sink.jwt`、`credential-broker.jwt`、`a2a-gateway.jwt`；文件必须为 regular、非 symlink、`0400`、最大 16 KiB。 |
+| `KSADK_A2UI_GENERATION_TIMEOUT_SECONDS` | A2UI / AG-UI Runtime | 否 | `20` | 无 | 否 | 平台 / 开发者 | 否 | A2UI 结构化生成的超时秒数；有效值会被限制在 `1` 到 `120`。 |
 | `KSADK_AICP_ENDPOINT_MODE` | AICP resolver | 否 | `auto` | 无 | 否 | 平台 / 开发者 | 否 | AICP endpoint 选择策略，支持 `auto/detect/internal/inner/public`。内网环境可显式设为 `inner`，跳过自动探测。 |
 | `AGENTENGINE_MODEL_ALLOWLIST` | CLI model / OpenClaw | 否 | 未设置 | `OPENCLAW_MODEL_ALLOWLIST` | 否 | 平台 / 开发者 | 否 | 模型列表过滤。OpenClaw 场景优先使用 `OPENCLAW_MODEL_ALLOWLIST`。 |
 | `AGENTENGINE_UI_DIR` | 本地 Web UI / Sessions | 否 | 未设置 | 无 | 否 | 本地开发者 | 否 | 本地 UI 静态目录覆盖，主要用于 Web/文件上传本地调试。 |
@@ -338,12 +344,26 @@
 | `KSADK_UI_PATH` | 本地 Web UI / Runtime bootstrap | 否 | `/` | 无 | 否 | 开发者 / 平台 | 否 | 自定义 UI 挂载路径，例如 `/research`。 |
 | `KSADK_UI_URL` | Runtime bootstrap | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 外部自定义 UI URL。 |
 | `KSADK_UI_BUNDLE_PATH` | Runtime bootstrap | 否 | 自动探测 `research-ui/dist` | 无 | 否 | 开发者 / 平台 | 否 | 自定义 UI 静态 bundle 相对项目路径。 |
-| `KSADK_WEB_VERSION` | Hosted Web UI static sync | 否 | `latest` | 可显式设置 `0.2.7` / `v0.2.7` | 否 | 构建环境 / 开发者 | 否 | `make sync-ksadk-web-static` 使用的 `@kingsoftcloud/ksadk-web` npm dist-tag 或版本，默认消费最新 release。 |
+| `KSADK_WEB_VERSION` | Hosted Web UI static sync | 否 | `0.3.0` | 可显式设置已发布版本 | 否 | 构建环境 / 发版负责人 | 否 | `make sync-ksadk-web-static` 使用的 `@kingsoftcloud/ksadk-web` npm 版本。wheel 构建必须固定一个已发布版本；升级此值前先发布并验证对应的 npm 包。 |
 | `KSADK_WEB_PACKAGE` | Hosted Web UI static sync | 否 | `@kingsoftcloud/ksadk-web` | 无 | 否 | 构建环境 / 开发者 | 否 | 本地 UI static 同步使用的 npm 包名。 |
 | `KSADK_WEB_TARBALL_NAME` | Hosted Web UI static sync | 否 | 根据 `KSADK_WEB_VERSION` 派生 | 无 | 否 | 构建环境 | 否 | 仅在设置 `KSADK_WEB_RELEASE_URL` 时作为下载保存文件名；npm pack 模式会使用 npm 返回的真实 tarball 文件名。 |
 | `KSADK_WEB_RELEASE_URL` | Hosted Web UI static sync | 否 | 未设置 | 无 | 否 | 构建环境 / 开发者 | 否 | 可选兼容兜底。设置后跳过 npm pack，改从该 tarball URL 下载。 |
 | `KSADK_WEB_CACHE_DIR` | Hosted Web UI static sync | 否 | `.cache/ksadk-web` | 无 | 否 | 构建环境 / 开发者 | 否 | KsADK Web 包解压缓存目录。 |
+| `KSADK_CODEX_USE_PROXY` | Codex runtime | 否 | 自动探测 | 无 | 否 | 开发者 / 平台 | 否 | `1` 强制启用本地 Responses-to-Chat proxy，`0` 强制直连；未设置时仅对自定义上游进行保守探测。 |
+| `KSADK_PROXY_UPSTREAM_BASE` | Codex model proxy | 否 | `OPENAI_BASE_URL` / `OPENAI_API_BASE` | 无 | 否 | 开发者 / 平台 | 否 | Codex proxy 上游 base URL 覆盖。 |
+| `KSADK_PROXY_UPSTREAM_KEY` | Codex model proxy | 否 | `OPENAI_API_KEY` | 无 | 是 | 开发者 / 平台 | 否 | Codex proxy 上游凭据覆盖。 |
+| `KSADK_PROXY_TOKEN` | Codex model proxy | 否 | 运行时生成 | 无 | 是 | SDK 内部 | 否 | 本地回环 proxy 与 Codex 子进程之间的 bearer token；通常不应手动设置。 |
+| `AGENTENGINE_BASE_INSTRUCTIONS` | Codex ManagedRuntime 声明式创建 | 否 | 内置中文编码助手指令 | 无 | 否 | 控制台 / Server | 否 | 服务端生成 `agentengine.yaml` 时写入 `prompt`。本地 `ksadk web` 直接读取 YAML，不需要设置此变量。 |
+| `AGENTENGINE_MANAGED_RUNTIME_NAME` | Codex Runtime 镜像 | 是（平台注入） | 未设置 | 无 | 否 | AgentEngine Server | 否 | 服务端 catalog 解析后的 Runtime 名称；镜像启动时必须与挂载 YAML 的 `runtime.name` 一致。 |
+| `AGENTENGINE_MANAGED_RUNTIME_VERSION` | Codex Runtime 镜像 | 是（平台注入） | 未设置 | 无 | 否 | AgentEngine Server | 否 | catalog 解析后的 Runtime 版本；镜像启动时同时校验已安装的 `openai-codex` 版本。 |
+| `AGENTENGINE_MANIFEST_PROTOCOL` | Codex Runtime 镜像 | 是（平台注入） | `runtime-manifest/v1`（旧 bundle 兼容） | 无 | 否 | AgentEngine Server | 否 | 内联 manifest 协议版本。当前只支持 `runtime-manifest/v1`。 |
+| `AGENTENGINE_MANIFEST_SHA256` | Codex Runtime 镜像 | 是（平台注入） | 未设置 | 无 | 否 | AgentEngine Server | 否 | 服务端规范化 `agentengine.yaml` 的 SHA-256；镜像启动时校验挂载内容。 |
+| `KSADK_MODEL_PROXY_ENABLED` | Model proxy | 否 | `0` | 无 | 否 | 开发者 / 平台 | 否 | 启用实验性模型协议转换层。 |
+| `KSADK_MODEL_PROXY_AGENTS` | Model proxy | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | 逗号分隔的 agent allowlist。 |
+| `KSADK_MODEL_PROXY_MODELS` | Model proxy | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | 逗号分隔的 model allowlist。 |
+| `KSADK_MODEL_PROXY_DENY` | Model proxy | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | 逗号分隔的 denylist；用于紧急关闭代理。 |
 | `KSADK_GLOBAL_CONFIG_ENV_KEYS` | CLI | 否 | 未设置 | 无 | 否 | CLI 内部 | 否 | CLI 启动时记录哪些环境变量由 `~/.agentengine/settings.json` 补入，用于区分用户显式环境变量和全局配置默认值。 |
+| `KSADK_HOSTED_UI_GUIDELINES` | Hosted A2UI（内部常量） | 否 | 代码常量 | 无 | 否 | SDK 内部 | 否 | Hosted A2UI 的内置生成与设计指引；它不是受支持的环境变量，不应通过部署配置覆盖。 |
 | `KSYUN_IAM_URL` | 身份反查 | 否 | `https://iam.api.ksyun.com` | 无 | 否 | CLI | 否 | 覆盖 IAM endpoint，用于 AK/SK 反查子账号 user uuid。内部账号 AK 公网访问被拒时，CLI 自动 fallback 到 `http://iam.inner.api.ksyun.com`。 |
 | `AGENTENGINE_LOCAL_RUNTIME_VENV_REEXEC` | 本地 runtime CLI | 否 | 自动判断 | 无 | 否 | 本地开发者 / 测试 | 否 | 控制本地 runtime 是否在虚拟环境中 re-exec。普通用户通常无需设置。 |
 | `AGENTENGINE_WEB_VENV_REEXEC` | 本地 Web CLI | 否 | 自动判断 | 无 | 否 | 本地开发者 / 测试 | 否 | 控制本地 Web 命令是否在虚拟环境中 re-exec。普通用户通常无需设置。 |

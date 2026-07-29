@@ -54,7 +54,7 @@ def _format_size(size_bytes: object | None) -> str:
     if size_bytes is None:
         return "-"
     try:
-        value = int(size_bytes)
+        value = int(str(size_bytes))
     except (TypeError, ValueError):
         return str(size_bytes)
     if value < 1024:
@@ -110,7 +110,9 @@ def _echo_section_title(title: str, *, fg: str = "bright_blue") -> None:
     click.secho(title, fg=fg, bold=True)
 
 
-def _normalize_entry_payload(entry: dict, *, root_label: str, workspace_real_root: str | None = None) -> dict:
+def _normalize_entry_payload(
+    entry: dict, *, root_label: str, workspace_real_root: str | None = None
+) -> dict:
     normalized = dict(entry or {})
     path = str(normalized.get("path") or "").strip()
     normalized["display_path"] = _workspace_display_path(path, root_label=root_label)
@@ -125,7 +127,10 @@ def _normalize_entry_payload(entry: dict, *, root_label: str, workspace_real_roo
 
 def _build_list_payload(payload: dict) -> dict:
     root_label = _workspace_root_label(payload)
-    workspace_real_root = str(payload.get("workspace_real_root") or payload.get("workspace_path") or "").strip() or None
+    workspace_real_root = (
+        str(payload.get("workspace_real_root") or payload.get("workspace_path") or "").strip()
+        or None
+    )
     entries = [
         _normalize_entry_payload(
             entry,
@@ -142,7 +147,9 @@ def _build_list_payload(payload: dict) -> dict:
             "ok": True,
             "action": "list",
             "workspace_root": root_label,
-            "workspace_display_path": _workspace_display_path(payload.get("path", "."), root_label=root_label),
+            "workspace_display_path": _workspace_display_path(
+                payload.get("path", "."), root_label=root_label
+            ),
             "workspace_real_root": workspace_real_root,
             "workspace_real_path": _workspace_real_path(
                 payload.get("path", "."),
@@ -182,7 +189,9 @@ def _build_upload_payload(payload: dict, *, local_path: Path, remote_path: str) 
             "local_path": str(local_path),
             "requested_remote_path": remote_path,
             "remote_path": resolved_remote_path,
-            "remote_display_path": _workspace_display_path(resolved_remote_path, root_label=root_label),
+            "remote_display_path": _workspace_display_path(
+                resolved_remote_path, root_label=root_label
+            ),
             "entry": normalized_entry,
             "summary": {
                 "uploaded": 1,
@@ -268,7 +277,9 @@ def _build_sync_payload(payload: dict) -> dict:
             "ok": True,
             "action": str(payload.get("direction", "sync")).strip().lower() or "sync",
             "workspace_root": root_label,
-            "remote_display_path": _workspace_display_path(payload.get("remote_path", "."), root_label=root_label),
+            "remote_display_path": _workspace_display_path(
+                payload.get("remote_path", "."), root_label=root_label
+            ),
             "transport_mode": transport_mode or None,
             "transport_hint": transport_hint,
             "summary": {
@@ -304,20 +315,27 @@ def _emit_payload(payload, output_mode: str | None) -> None:
         if not entries:
             click.secho("当前目录为空。", fg="bright_black")
             return
-        directories = payload.get("directories") or [entry for entry in entries if entry.get("type") == "directory"]
-        files = payload.get("files") or [entry for entry in entries if entry.get("type") != "directory"]
+        directories = payload.get("directories") or [
+            entry for entry in entries if entry.get("type") == "directory"
+        ]
+        files = payload.get("files") or [
+            entry for entry in entries if entry.get("type") != "directory"
+        ]
         if directories:
             _echo_section_title(f"目录（{len(directories)}）", fg="cyan")
             for entry in directories:
-                click.secho(f"  {entry.get('display_path') or _workspace_display_path(entry.get('path', ''), root_label=root_label)}", fg="cyan")
+                display_path = entry.get("display_path") or _workspace_display_path(
+                    entry.get("path", ""), root_label=root_label
+                )
+                click.secho(f"  {display_path}", fg="cyan")
         if files:
             _echo_section_title(f"文件（{len(files)}）", fg="green")
             for entry in files:
-                click.secho(
-                    f"  {entry.get('display_path') or _workspace_display_path(entry.get('path', ''), root_label=root_label)}"
-                    f"  {entry.get('size_human') or _format_size(entry.get('size_bytes'))}",
-                    fg="green",
+                display_path = entry.get("display_path") or _workspace_display_path(
+                    entry.get("path", ""), root_label=root_label
                 )
+                size_text = entry.get("size_human") or _format_size(entry.get("size_bytes"))
+                click.secho(f"  {display_path}  {size_text}", fg="green")
         return
     click.echo(str(payload))
 
@@ -469,11 +487,13 @@ def _collect_local_files(
     ignore_dev_artifacts: bool = False,
     ignore_git_artifacts: bool = True,
 ) -> list[tuple[str, Path]]:
-    return _collect_local_files_report(
+    report = _collect_local_files_report(
         local_dir,
         ignore_dev_artifacts=ignore_dev_artifacts,
         ignore_git_artifacts=ignore_git_artifacts,
-    )["files"]
+    )
+    files = report.get("files")
+    return list(files) if isinstance(files, list) else []
 
 
 def _workspace_client_kwargs(
@@ -505,7 +525,12 @@ def _state_prefers_action_proxy(state: dict) -> bool:
 
 
 def _resolve_workspace_region(region: str | None, state: dict) -> str:
-    return _normalize(region) or _normalize(state.get("region")) or os.getenv("KSYUN_REGION") or DEFAULT_REGION
+    return (
+        _normalize(region)
+        or _normalize(state.get("region"))
+        or os.getenv("KSYUN_REGION")
+        or DEFAULT_REGION
+    )
 
 
 def _resolve_workspace_agent_ref(explicit_ref: str | None, cwd: Path) -> str | None:
@@ -674,7 +699,7 @@ async def _download_workspace_file(
             kwargs["endpoint"] = endpoint
         if api_key:
             kwargs["api_key"] = api_key
-        return await client.download_workspace_file(**kwargs)
+        return bytes(await client.download_workspace_file(**kwargs))
 
 
 async def _delete_workspace_file(
@@ -917,7 +942,9 @@ def files():
 @click.option("--api-key", help="Runtime API Key (与 --endpoint 搭配使用)")
 @click.option("--path", default=".", show_default=True, help="Workspace 目录路径")
 @click.option("--recursive", is_flag=True, help="递归列出目录")
-@click.option("--region", "-r", default=None, envvar=None, help="区域 (默认优先读取 .agentengine.state)")
+@click.option(
+    "--region", "-r", default=None, envvar=None, help="区域 (默认优先读取 .agentengine.state)"
+)
 @cli_output_option()
 def list_files(
     agent_ref: str | None,
@@ -965,7 +992,9 @@ def list_files(
     help="本地文件路径",
 )
 @click.option("--remote-path", required=True, help="Workspace 目标路径")
-@click.option("--region", "-r", default=None, envvar=None, help="区域 (默认优先读取 .agentengine.state)")
+@click.option(
+    "--region", "-r", default=None, envvar=None, help="区域 (默认优先读取 .agentengine.state)"
+)
 @cli_output_option()
 def upload_file(
     agent_ref: str | None,
@@ -1029,7 +1058,9 @@ def upload_file(
     required=True,
     help="本地输出文件路径",
 )
-@click.option("--region", "-r", default=None, envvar=None, help="区域 (默认优先读取 .agentengine.state)")
+@click.option(
+    "--region", "-r", default=None, envvar=None, help="区域 (默认优先读取 .agentengine.state)"
+)
 @cli_output_option()
 def download_file(
     agent_ref: str | None,
@@ -1083,7 +1114,9 @@ def download_file(
 @click.option("--api-key", help="Runtime API Key (与 --endpoint 搭配使用)")
 @click.option("--remote-path", required=True, help="Workspace 文件路径")
 @click.option("--yes", is_flag=True, help="跳过确认")
-@click.option("--region", "-r", default=None, envvar=None, help="区域 (默认优先读取 .agentengine.state)")
+@click.option(
+    "--region", "-r", default=None, envvar=None, help="区域 (默认优先读取 .agentengine.state)"
+)
 @cli_output_option()
 def delete_file(
     agent_ref: str | None,
@@ -1105,7 +1138,9 @@ def delete_file(
         api_key=api_key,
         region=region,
     )
-    if not yes and not click.confirm(f"删除 workspace 文件 {normalized_remote_path}?", default=False):
+    if not yes and not click.confirm(
+        f"删除 workspace 文件 {normalized_remote_path}?", default=False
+    ):
         raise click.Abort()
     payload = asyncio.run(
         _delete_workspace_file(
@@ -1137,7 +1172,9 @@ def delete_file(
 )
 @click.option("--remote-path", default=".", show_default=True, help="Workspace 目标目录")
 @click.option("--force", is_flag=True, help="覆盖远端已存在的同名文件")
-@click.option("--region", "-r", default=None, envvar=None, help="区域 (默认优先读取 .agentengine.state)")
+@click.option(
+    "--region", "-r", default=None, envvar=None, help="区域 (默认优先读取 .agentengine.state)"
+)
 @cli_output_option()
 def push_files(
     agent_ref: str | None,
@@ -1188,7 +1225,9 @@ def push_files(
     help="本地输出目录",
 )
 @click.option("--force", is_flag=True, help="覆盖本地已存在的同名文件")
-@click.option("--region", "-r", default=None, envvar=None, help="区域 (默认优先读取 .agentengine.state)")
+@click.option(
+    "--region", "-r", default=None, envvar=None, help="区域 (默认优先读取 .agentengine.state)"
+)
 @cli_output_option()
 def pull_files(
     agent_ref: str | None,

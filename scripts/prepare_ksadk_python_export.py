@@ -18,8 +18,7 @@ import sys
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, Sequence
-
+from typing import Sequence
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TARGET_REPOSITORY = "https://github.com/kingsoftcloud/ksadk-python"
@@ -94,6 +93,7 @@ SCRIPT_EXPORT_FILES = {
     "scripts/prepare_ksadk_python_export.py",
     "scripts/prepare_ksadk_web_export.py",
     "scripts/public_secret_audit.py",
+    "scripts/verify_ksadk_web_static.py",
 }
 
 PUBLIC_TEST_FILES = {
@@ -105,7 +105,12 @@ PUBLIC_TEST_FILES = {
     "tests/test_open_source_audit.py",
     "tests/test_public_release_positioning.py",
     "tests/test_runtime_common_packaging.py",
+    "tests/test_managed_runtime_builder.py",
+    "tests/test_managed_runtime_native_smoke.py",
+    "tests/test_managed_runtime_resolution.py",
     "tests/test_tracing_setup_otlp.py",
+    "tests/cli/test_cmd_create_codex.py",
+    "tests/runners/test_codex_runner.py",
 }
 
 EXCLUDED_PREFIXES = (
@@ -164,7 +169,15 @@ def normalize(path: str | Path) -> str:
 
 def git_files(root: Path) -> list[str]:
     completed = subprocess.run(
-        ["git", "-c", "core.quotePath=false", "ls-files", "--cached", "--others", "--exclude-standard"],
+        [
+            "git",
+            "-c",
+            "core.quotePath=false",
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+        ],
         cwd=root,
         check=True,
         text=True,
@@ -209,7 +222,11 @@ def is_excluded(path: str) -> bool:
         return True
     if normalized.startswith("docs/reference/") and normalized not in CURATED_REFERENCE_DOCS:
         return True
-    if normalized.startswith("docs/") and normalized not in CURATED_DOCS and normalized not in CURATED_REFERENCE_DOCS:
+    if (
+        normalized.startswith("docs/")
+        and normalized not in CURATED_DOCS
+        and normalized not in CURATED_REFERENCE_DOCS
+    ):
         return True
     if normalized.endswith(EXCLUDED_SUFFIXES):
         return True
@@ -319,7 +336,11 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--repo-root", type=Path, default=REPO_ROOT)
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--json", action="store_true", help="print machine-readable JSON")
-    parser.add_argument("--summary", action="store_true", help="print a concise human-readable summary")
+    parser.add_argument(
+        "--summary",
+        action="store_true",
+        help="print a concise human-readable summary",
+    )
     return parser.parse_args(argv)
 
 

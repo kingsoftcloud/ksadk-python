@@ -5,11 +5,16 @@ Tracing 初始化 - 支持多 Exporter (InMemory + Langfuse + OTLP)
 
 import atexit
 import base64
+import importlib
 import logging
 import os
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Optional
 from urllib.parse import unquote
+
+from opentelemetry.sdk.trace import ReadableSpan
+from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
 
 from ksadk.tracing.exporters.inmemory_exporter import InMemoryExporter
 
@@ -49,18 +54,18 @@ class _OtlpHttpConfig:
     service_name: str
 
 
-class _LoggingSpanExporter:
+class _LoggingSpanExporter(SpanExporter):
     """Small delegating exporter that logs external trace export flow."""
 
     def __init__(
         self,
-        exporter: Any,
+        exporter: SpanExporter,
         *,
         name: str,
         endpoint: str,
         service_name: str,
         header_keys: list[str],
-        span_transform: Any = None,
+        span_transform: Callable[[Sequence[ReadableSpan]], Sequence[ReadableSpan]] | None = None,
     ):
         self._exporter = exporter
         self._name = name
@@ -69,8 +74,8 @@ class _LoggingSpanExporter:
         self._header_keys = header_keys
         self._span_transform = span_transform
 
-    def export(self, spans):
-        span_count = len(spans) if hasattr(spans, "__len__") else "unknown"
+    def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
+        span_count = len(spans)
         logger.info(
             "%s export started: endpoint=%s service_name=%s spans=%s headers=%s",
             self._name,
@@ -101,24 +106,18 @@ class _LoggingSpanExporter:
         )
         return result
 
-    def shutdown(self):
-        shutdown = getattr(self._exporter, "shutdown", None)
-        if shutdown is None:
-            return None
+    def shutdown(self) -> None:
         logger.info("%s exporter shutdown: endpoint=%s", self._name, self._endpoint)
-        return shutdown()
+        self._exporter.shutdown()
 
     def force_flush(self, timeout_millis: int = 30000) -> bool:
-        force_flush = getattr(self._exporter, "force_flush", None)
-        if force_flush is None:
-            return True
         logger.info(
             "%s exporter force_flush: endpoint=%s timeout_millis=%s",
             self._name,
             self._endpoint,
             timeout_millis,
         )
-        return force_flush(timeout_millis)
+        return self._exporter.force_flush(timeout_millis)
 
 
 def _coerce_int(value: Any) -> int:
@@ -164,9 +163,7 @@ def _span_token_usage(span: Any) -> dict[str, int]:
         "input": _coerce_int(attributes.get("gen_ai.usage.input_tokens")),
         "output": _coerce_int(attributes.get("gen_ai.usage.output_tokens")),
         "cache_read": _coerce_int(attributes.get("gen_ai.usage.cache_read.input_tokens")),
-        "reasoning_output": _coerce_int(
-            attributes.get("gen_ai.usage.reasoning.output_tokens")
-        ),
+        "reasoning_output": _coerce_int(attributes.get("gen_ai.usage.reasoning.output_tokens")),
     }
 
 
@@ -294,13 +291,16 @@ def _prepare_cloud_monitor_spans(spans: Any) -> Any:
 
     def has_token_descendant(span: Any) -> bool:
         sid = _span_id(span)
-        key = (_trace_id(span), sid)
         if sid is None:
             return False
+        key = (_trace_id(span), sid)
         if key in has_token_descendant_cache:
             return has_token_descendant_cache[key]
         for child in children_by_parent.get(key, []):
-            child_key = (_trace_id(child), _span_id(child))
+            child_sid = _span_id(child)
+            if child_sid is None:
+                continue
+            child_key = (_trace_id(child), child_sid)
             if _has_nonzero_token_usage(token_usage_by_id.get(child_key, {})):
                 has_token_descendant_cache[key] = True
                 return True
@@ -312,6 +312,8 @@ def _prepare_cloud_monitor_spans(spans: Any) -> Any:
 
     def collect_leaf_usage(span: Any, usage: dict[str, int]) -> None:
         sid = _span_id(span)
+        if sid is None:
+            return
         key = (_trace_id(span), sid)
         own_usage = token_usage_by_id.get(key, {})
         if _has_nonzero_token_usage(own_usage) and not has_token_descendant(span):
@@ -349,7 +351,9 @@ def _prepare_cloud_monitor_spans(spans: Any) -> Any:
     return [replacements.get(id(span), span) for span in span_list]
 
 
-def _build_langfuse_otlp_config(langfuse_config: dict = None) -> Optional[dict]:
+def _build_langfuse_otlp_config(
+    langfuse_config: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
     """Build Langfuse OTLP direct exporter config from explicit config or env."""
     if langfuse_config:
         public_key = langfuse_config.get("public_key") or ""
@@ -358,7 +362,9 @@ def _build_langfuse_otlp_config(langfuse_config: dict = None) -> Optional[dict]:
     else:
         public_key = os.getenv("LANGFUSE_PUBLIC_KEY", "")
         secret_key = os.getenv("LANGFUSE_SECRET_KEY", "")
-        host = os.getenv("LANGFUSE_BASE_URL") or os.getenv("LANGFUSE_HOST") or "http://localhost:3000"
+        host = (
+            os.getenv("LANGFUSE_BASE_URL") or os.getenv("LANGFUSE_HOST") or "http://localhost:3000"
+        )
 
     if not public_key or not secret_key:
         return None
@@ -561,9 +567,7 @@ def _apply_langfuse_auth_fallback(endpoint: str, headers: dict[str, str]) -> boo
     langfuse_headers = _build_langfuse_otlp_headers(public_key, secret_key)
     headers["Authorization"] = langfuse_headers["Authorization"]
     if not _has_header(headers, "x-langfuse-ingestion-version"):
-        headers["x-langfuse-ingestion-version"] = langfuse_headers[
-            "x-langfuse-ingestion-version"
-        ]
+        headers["x-langfuse-ingestion-version"] = langfuse_headers["x-langfuse-ingestion-version"]
     return True
 
 
@@ -595,9 +599,8 @@ def _build_generic_otlp_http_config() -> Optional[dict]:
         )
         return None
 
-    raw_headers = (
-        os.getenv("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "").strip()
-        or os.getenv("OTEL_EXPORTER_OTLP_HEADERS", "")
+    raw_headers = os.getenv("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "").strip() or os.getenv(
+        "OTEL_EXPORTER_OTLP_HEADERS", ""
     )
     headers = _parse_otlp_headers(raw_headers)
     langfuse_auth_fallback = _apply_langfuse_auth_fallback(endpoint, headers)
@@ -618,13 +621,13 @@ def _build_generic_otlp_http_config() -> Optional[dict]:
 
 def setup_tracing(
     enable_inmemory: bool = True,
-    enable_langfuse: bool = None,  # Auto-detect from env
-    langfuse_config: dict = None,
+    enable_langfuse: bool | None = None,  # Auto-detect from env
+    langfuse_config: dict[str, Any] | None = None,
     enable_otlp: bool = False,
     otlp_endpoint: str = "localhost:4317",
     enable_adk_instrumentation: bool = True,  # Auto-instrument ADK
-    use_callback_only: bool = None,  # Explicit override
-    **kwargs
+    use_callback_only: bool | None = None,  # Explicit override
+    **kwargs,
 ) -> Optional[InMemoryExporter]:
     """初始化 Tracing (支持多 Exporter)
 
@@ -657,7 +660,7 @@ def setup_tracing(
 
     # 检查是否已有 TracerProvider (避免覆盖)
     existing_provider = trace.get_tracer_provider()
-    if existing_provider and hasattr(existing_provider, 'add_span_processor'):
+    if existing_provider and hasattr(existing_provider, "add_span_processor"):
         # 使用现有 provider，直接添加 processor
         provider = existing_provider
         logger.debug("Using existing TracerProvider")
@@ -679,14 +682,16 @@ def setup_tracing(
     generic_otlp_config = _build_generic_otlp_http_config()
     if generic_otlp_config:
         try:
-            from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+            from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+                OTLPSpanExporter as HttpOTLPSpanExporter,
+            )
 
-            otlp_exporter = OTLPSpanExporter(
+            raw_otlp_exporter = HttpOTLPSpanExporter(
                 endpoint=generic_otlp_config["endpoint"],
                 headers=generic_otlp_config["headers"],
             )
             otlp_exporter = _LoggingSpanExporter(
-                otlp_exporter,
+                raw_otlp_exporter,
                 name="Generic OTLP",
                 endpoint=generic_otlp_config["endpoint"],
                 service_name=_get_service_name(),
@@ -720,14 +725,16 @@ def setup_tracing(
     cloud_monitor_config = _build_cloud_monitor_otlp_http_config()
     if cloud_monitor_config:
         try:
-            from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+            from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+                OTLPSpanExporter as HttpOTLPSpanExporter,
+            )
 
-            cloud_monitor_exporter = OTLPSpanExporter(
+            raw_cloud_monitor_exporter = HttpOTLPSpanExporter(
                 endpoint=cloud_monitor_config.endpoint,
                 headers=cloud_monitor_config.headers,
             )
             cloud_monitor_exporter = _LoggingSpanExporter(
-                cloud_monitor_exporter,
+                raw_cloud_monitor_exporter,
                 name="CloudMonitor OTLP",
                 endpoint=cloud_monitor_config.endpoint,
                 service_name=cloud_monitor_config.service_name,
@@ -757,9 +764,8 @@ def setup_tracing(
     langfuse_enabled = enable_langfuse
     if langfuse_enabled is None:
         # Auto-detect from environment variables
-        langfuse_enabled = (
-            not generic_otlp_config
-            and bool(os.getenv("LANGFUSE_PUBLIC_KEY") or (langfuse_config or {}).get("public_key"))
+        langfuse_enabled = not generic_otlp_config and bool(
+            os.getenv("LANGFUSE_PUBLIC_KEY") or (langfuse_config or {}).get("public_key")
         )
 
     # 检查是否应该禁用 LangfuseExporter (当使用 LangChain/LangGraph 时)
@@ -769,16 +775,18 @@ def setup_tracing(
 
     if langfuse_enabled and not use_callback_only:
         try:
-            from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+            from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+                OTLPSpanExporter as HttpOTLPSpanExporter,
+            )
 
             config = _build_langfuse_otlp_config(langfuse_config)
             if config:
-                otlp_exporter = OTLPSpanExporter(
+                raw_langfuse_otlp_exporter = HttpOTLPSpanExporter(
                     endpoint=config["endpoint"],
                     headers=config["headers"],
                 )
                 otlp_exporter = _LoggingSpanExporter(
-                    otlp_exporter,
+                    raw_langfuse_otlp_exporter,
                     name="Langfuse OTLP",
                     endpoint=config["endpoint"],
                     service_name=_get_service_name(),
@@ -786,11 +794,11 @@ def setup_tracing(
                     span_transform=_prepare_langfuse_spans,
                 )
                 provider.add_span_processor(
-                BatchSpanProcessor(
-                    otlp_exporter,
-                    **_batch_span_processor_kwargs(),
+                    BatchSpanProcessor(
+                        otlp_exporter,
+                        **_batch_span_processor_kwargs(),
+                    )
                 )
-            )
                 logger.info(
                     "Langfuse OTLP exporter enabled: %s (%s) headers=%s",
                     config["endpoint"],
@@ -810,11 +818,14 @@ def setup_tracing(
     # 5. OTLP Exporter (optional)
     if enable_otlp:
         try:
-            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
-            otlp_exporter = OTLPSpanExporter(endpoint=otlp_endpoint)
+            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
+                OTLPSpanExporter as GrpcOTLPSpanExporter,
+            )
+
+            grpc_otlp_exporter = GrpcOTLPSpanExporter(endpoint=otlp_endpoint)
             provider.add_span_processor(
                 BatchSpanProcessor(
-                    otlp_exporter,
+                    grpc_otlp_exporter,
                     **_batch_span_processor_kwargs(),
                 )
             )
@@ -825,7 +836,10 @@ def setup_tracing(
     # 6. ADK Auto-Instrumentation (for Google ADK projects)
     if enable_adk_instrumentation and not _adk_instrumented:
         try:
-            from openinference.instrumentation.google_adk import GoogleADKInstrumentor
+            instrumentation_module = importlib.import_module(
+                "openinference.instrumentation.google_adk"
+            )
+            GoogleADKInstrumentor = getattr(instrumentation_module, "GoogleADKInstrumentor")
             GoogleADKInstrumentor().instrument()
             _adk_instrumented = True
             logger.info("Google ADK instrumentation enabled")
@@ -841,6 +855,7 @@ def setup_tracing(
     if enable_adk_instrumentation:
         try:
             from openinference.instrumentation.langchain import LangChainInstrumentor
+
             LangChainInstrumentor().instrument()
             logger.info("LangChain instrumentation enabled")
         except ImportError:
@@ -864,7 +879,7 @@ def shutdown_tracing():
 
     if _langfuse_exporter is not None:
         try:
-            if hasattr(_langfuse_exporter, '_exporter'):
+            if hasattr(_langfuse_exporter, "_exporter"):
                 _langfuse_exporter._exporter.shutdown()
             logger.debug("Langfuse exporter shutdown gracefully")
         except Exception:
@@ -887,6 +902,7 @@ def get_tracer(name: str = "ksadk"):
     """获取 Tracer"""
     try:
         from opentelemetry import trace
+
         return trace.get_tracer(name)
     except ImportError:
         return None

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Any
+from typing import Any, cast
 
 from ksadk.common.aicp_env import resolve_aicp_connection
 from ksadk.memory.adk.backends.base_ltm_backend import BaseLongTermMemoryBackend
@@ -49,7 +49,9 @@ class LongTermMemoryService:
         self.backend_config = dict(backend_config or {})
         self.top_k = top_k
         self.app_name = app_name
-        backend_index = getattr(backend, "index", "") if isinstance(backend, BaseLongTermMemoryBackend) else ""
+        backend_index = (
+            getattr(backend, "index", "") if isinstance(backend, BaseLongTermMemoryBackend) else ""
+        )
         self.index = index or backend_index or app_name or "default_app"
         self._backend = self._resolve_backend()
 
@@ -75,12 +77,10 @@ class LongTermMemoryService:
             connection = resolve_aicp_connection("KSADK_LTM")
             backend_config = {
                 "access_key": (
-                    os.environ.get("KSADK_LTM_ACCESS_KEY")
-                    or os.environ.get("KSYUN_ACCESS_KEY", "")
+                    os.environ.get("KSADK_LTM_ACCESS_KEY") or os.environ.get("KSYUN_ACCESS_KEY", "")
                 ),
                 "secret_key": (
-                    os.environ.get("KSADK_LTM_SECRET_KEY")
-                    or os.environ.get("KSYUN_SECRET_KEY", "")
+                    os.environ.get("KSADK_LTM_SECRET_KEY") or os.environ.get("KSYUN_SECRET_KEY", "")
                 ),
                 "region": connection["region"],
                 "endpoint": connection["endpoint"],
@@ -109,7 +109,7 @@ class LongTermMemoryService:
         backend_cls = get_long_term_memory_backend_cls(str(self.backend))
         config = dict(self.backend_config)
         config.setdefault("index", self.index)
-        return backend_cls(**config)
+        return cast(BaseLongTermMemoryBackend, backend_cls(**config))
 
     def search_entries(self, *, user_id: str, query: str, top_k: int | None = None) -> list[str]:
         return self._backend.search_memory(
@@ -142,7 +142,9 @@ class LongTermMemoryService:
             )
         )
 
-    def save_text(self, *, user_id: str, content: str, metadata: dict[str, Any] | None = None) -> bool:
+    def save_text(
+        self, *, user_id: str, content: str, metadata: dict[str, Any] | None = None
+    ) -> bool:
         payload = {
             "role": "user",
             "parts": [{"text": content}],

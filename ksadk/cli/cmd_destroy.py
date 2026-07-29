@@ -2,11 +2,13 @@
 agentengine delete - 删除 Agent 实例
 """
 
-import click
 import asyncio
 from pathlib import Path
+
+import click
+
 from ksadk.cli.agent_ref import resolve_agent_ref
-from ksadk.cli.dry_run import dry_run_option, run_async_with_dry_run, effective_dry_run
+from ksadk.cli.dry_run import dry_run_option, effective_dry_run, run_async_with_dry_run
 from ksadk.cli.error_utils import abort_with_cli_error, remote_error, resolution_error, usage_error
 from ksadk.cli.resource_common import (
     CONTEXT_SETTINGS,
@@ -15,7 +17,6 @@ from ksadk.cli.resource_common import (
     print_compatibility_hint,
     render_resource_status,
 )
-from ksadk.deployment import DeploymentManager, DeployTarget
 from ksadk.cli.ui import (
     is_json_output,
     print_error,
@@ -25,6 +26,7 @@ from ksadk.cli.ui import (
     print_title,
     print_warn,
 )
+from ksadk.deployment import DeploymentManager, DeployTarget
 
 
 def _destroy_impl(
@@ -45,7 +47,8 @@ def _destroy_impl(
         # 2) 显式指定 agent
         agentengine delete --agent ar-xxxx --account-id X-Ksc-Account-Id --force
         # 3) 显式指定区域
-        KSYUN_REGION=cn-beijing-6 agentengine delete --agent ar-xxxx --account-id X-Ksc-Account-Id --dry-run
+        KSYUN_REGION=cn-beijing-6 agentengine delete --agent ar-xxxx \
+            --account-id X-Ksc-Account-Id --dry-run
         # 4) 批量删除
         agentengine delete ar-xxxx ar-yyyy --account-id X-Ksc-Account-Id --yes
     """
@@ -83,7 +86,7 @@ def _destroy_impl(
 
     # 构造 Provider 和 Target
     provider_name = "serverless"  # 目前默认 serverless
-    
+
     try:
         provider = DeploymentManager.get_provider(provider_name)
     except ValueError as e:
@@ -96,7 +99,7 @@ def _destroy_impl(
             "account_id": account_id,
             "dry_run": dry_run,
             "project_dir": str(Path(".").resolve()),
-        }
+        },
     )
 
     if not dry_run:
@@ -148,7 +151,11 @@ def _destroy_impl(
 
     render_resource_status(
         title="Agent 删除结果",
-        subtitle="批量删除" if len(resolved_agent_ids) > 1 else (resolved_agent_ids[0] if resolved_agent_ids else "-"),
+        subtitle=(
+            "批量删除"
+            if len(resolved_agent_ids) > 1
+            else (resolved_agent_ids[0] if resolved_agent_ids else "-")
+        ),
         fields=[
             ("目标数量", str(len(resolved_agent_ids)), None),
             ("已删除", ", ".join(deleted_agents) or "-", None),
@@ -201,7 +208,7 @@ def run_delete_command(
         agent_options=agent_options,
         assume_yes=assume_yes,
         region=region,
-        account_id=account_id,
+        account_id=account_id or "",
         dry_run=dry_run,
     )
 
@@ -214,11 +221,20 @@ def run_delete_command(
     canonical_command="agentengine agent delete",
 )
 @click.argument("agent_refs", nargs=-1)
-@click.option("--agent", "--agent-id", "agent_options", "-a", multiple=True, help="Agent 名称或 ID，可重复传入")
+@click.option(
+    "--agent",
+    "--agent-id",
+    "agent_options",
+    "-a",
+    multiple=True,
+    help="Agent 名称或 ID，可重复传入",
+)
 @click.option("--force", "-f", "assume_yes", is_flag=True, help="跳过确认")
 @click.option("--yes", "-y", "assume_yes", is_flag=True, help="跳过确认")
 @click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="区域")
-@click.option("--account-id", envvar="KSYUN_ACCOUNT_ID", help="金山云账号 ID（可选；未设置时从 AK/SK 反查）")
+@click.option(
+    "--account-id", envvar="KSYUN_ACCOUNT_ID", help="金山云账号 ID（可选；未设置时从 AK/SK 反查）"
+)
 @dry_run_option()
 def destroy(
     agent_refs: tuple[str, ...],
@@ -247,11 +263,20 @@ def destroy(
     canonical_command="agentengine agent delete",
 )
 @click.argument("agent_refs", nargs=-1)
-@click.option("--agent", "--agent-id", "agent_options", "-a", multiple=True, help="Agent 名称或 ID，可重复传入")
+@click.option(
+    "--agent",
+    "--agent-id",
+    "agent_options",
+    "-a",
+    multiple=True,
+    help="Agent 名称或 ID，可重复传入",
+)
 @click.option("--yes", "-y", "assume_yes", is_flag=True, help="跳过确认")
 @click.option("--force", "-f", "assume_yes", is_flag=True, help="跳过确认")
 @click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="区域")
-@click.option("--account-id", envvar="KSYUN_ACCOUNT_ID", help="金山云账号 ID（可选；未设置时从 AK/SK 反查）")
+@click.option(
+    "--account-id", envvar="KSYUN_ACCOUNT_ID", help="金山云账号 ID（可选；未设置时从 AK/SK 反查）"
+)
 @dry_run_option()
 def delete(
     agent_refs: tuple[str, ...],
@@ -273,7 +298,9 @@ def delete(
     )
 
 
-def _collect_agent_refs(*, agent_refs: tuple[str, ...], agent_options: tuple[str, ...]) -> list[str]:
+def _collect_agent_refs(
+    *, agent_refs: tuple[str, ...], agent_options: tuple[str, ...]
+) -> list[str]:
     collected = []
     for value in [*agent_options, *agent_refs]:
         normalized = str(value).strip()
@@ -292,7 +319,10 @@ def _collect_agent_refs(*, agent_refs: tuple[str, ...], agent_options: tuple[str
     if not resolved:
         raise resolution_error(
             "请指定 Agent（--agent 或位置参数），或在当前目录提供可解析的本地配置",
-            hints=["自动解析顺序: .agentengine.state -> agentengine.yaml/ksadk.yaml", "请先执行 `agentengine agent list`。"],
+            hints=[
+                "自动解析顺序: .agentengine.state -> agentengine.yaml/ksadk.yaml",
+                "请先执行 `agentengine agent list`。",
+            ],
         )
 
     if resolved.source != "cli":

@@ -12,7 +12,7 @@ import logging
 from typing import List, Optional
 
 import httpx
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict
 
 from ksadk.memory.adk.backends.base_ltm_backend import BaseLongTermMemoryBackend
 
@@ -52,12 +52,10 @@ class HttpLTMBackend(BaseLongTermMemoryBackend):
     def model_post_init(self, __context) -> None:
         if not self.base_url:
             logger.warning(
-                "HttpLTMBackend: base_url is empty. "
-                "Set KSADK_LTM_HTTP_URL environment variable."
+                "HttpLTMBackend: base_url is empty. " "Set KSADK_LTM_HTTP_URL environment variable."
             )
         logger.info(
-            f"HttpLTMBackend initialized: base_url={self.base_url[:50]}... "
-            f"index={self.index}"
+            f"HttpLTMBackend initialized: base_url={self.base_url[:50]}... " f"index={self.index}"
         )
 
     @property
@@ -75,9 +73,7 @@ class HttpLTMBackend(BaseLongTermMemoryBackend):
             )
         return self._client
 
-    def save_memory(
-        self, user_id: str, event_strings: List[str], **kwargs
-    ) -> bool:
+    def save_memory(self, user_id: str, event_strings: List[str], **kwargs) -> bool:
         """保存记忆到远程服务
 
         TODO: 对接金山云记忆服务 API
@@ -105,24 +101,20 @@ class HttpLTMBackend(BaseLongTermMemoryBackend):
             response.raise_for_status()
 
             logger.info(
-                f"Saved {len(event_strings)} events to remote memory service "
-                f"for user={user_id}"
+                f"Saved {len(event_strings)} events to remote memory service " f"for user={user_id}"
             )
             return True
 
         except httpx.HTTPStatusError as e:
             logger.error(
-                f"HTTP error saving memory: {e.response.status_code} "
-                f"{e.response.text[:200]}"
+                f"HTTP error saving memory: {e.response.status_code} " f"{e.response.text[:200]}"
             )
             return False
         except Exception as e:
             logger.error(f"Error saving memory to remote service: {e}")
             return False
 
-    def search_memory(
-        self, user_id: str, query: str, top_k: int = 5, **kwargs
-    ) -> List[str]:
+    def search_memory(self, user_id: str, query: str, top_k: int = 5, **kwargs) -> List[str]:
         """从远程服务检索记忆
 
         TODO: 对接金山云记忆服务 API
@@ -140,9 +132,7 @@ class HttpLTMBackend(BaseLongTermMemoryBackend):
             }
         """
         if not self.base_url:
-            logger.warning(
-                "HttpLTMBackend: base_url not configured, return empty results."
-            )
+            logger.warning("HttpLTMBackend: base_url not configured, return empty results.")
             return []
 
         try:
@@ -158,7 +148,10 @@ class HttpLTMBackend(BaseLongTermMemoryBackend):
             response.raise_for_status()
 
             data = response.json()
-            memories = data.get("memories", [])
+            raw_memories = data.get("memories", [])
+            memories = (
+                [str(memory) for memory in raw_memories] if isinstance(raw_memories, list) else []
+            )
 
             logger.info(
                 f"Retrieved {len(memories)} memories from remote service "
@@ -168,8 +161,7 @@ class HttpLTMBackend(BaseLongTermMemoryBackend):
 
         except httpx.HTTPStatusError as e:
             logger.error(
-                f"HTTP error searching memory: {e.response.status_code} "
-                f"{e.response.text[:200]}"
+                f"HTTP error searching memory: {e.response.status_code} " f"{e.response.text[:200]}"
             )
             return []
         except Exception as e:

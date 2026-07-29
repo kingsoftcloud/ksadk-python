@@ -37,8 +37,7 @@ def load_skills(
         return SkillLoadResult(skills=skills, warnings=warnings)
 
     cache_dir = Path(
-        os.environ.get("KSADK_SKILL_CACHE_DIR")
-        or Path(tempfile.gettempdir()) / "ksadk-skill-cache"
+        os.environ.get("KSADK_SKILL_CACHE_DIR") or Path(tempfile.gettempdir()) / "ksadk-skill-cache"
     )
     client = SkillServiceClient(
         base_url=service_url,

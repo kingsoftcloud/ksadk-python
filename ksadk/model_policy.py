@@ -58,10 +58,7 @@ DEFAULT_MODEL_POLICY: dict[str, Any] = {
 def _deep_merge(base: dict[str, Any], override: Mapping[str, Any]) -> dict[str, Any]:
     merged = copy.deepcopy(base)
     for key, value in override.items():
-        if (
-            isinstance(value, Mapping)
-            and isinstance(merged.get(key), dict)
-        ):
+        if isinstance(value, Mapping) and isinstance(merged.get(key), dict):
             merged[key] = _deep_merge(merged[key], value)
         else:
             merged[key] = copy.deepcopy(value)
@@ -196,7 +193,12 @@ def build_runtime_model_policy_env(
     multimodal = _role_model(normalized, "multimodal")
     has_primary = any(
         str(env.get(key) or "").strip()
-        for key in ("OPENCLAW_DEFAULT_MODEL", "HERMES_DEFAULT_MODEL", "OPENAI_MODEL_NAME", "MODEL_NAME")
+        for key in (
+            "OPENCLAW_DEFAULT_MODEL",
+            "HERMES_DEFAULT_MODEL",
+            "OPENAI_MODEL_NAME",
+            "MODEL_NAME",
+        )
     )
     runtime_name = str(runtime or "").strip().lower()
     if runtime_name == "openclaw":
@@ -206,7 +208,10 @@ def build_runtime_model_policy_env(
             env.setdefault("OPENCLAW_FALLBACK_MODEL", _provider_ref(fallback))
         if multimodal:
             env.setdefault("OPENCLAW_IMAGE_MODEL", _provider_ref(multimodal))
-        env.setdefault("OPENCLAW_MODEL_CATALOG_JSON", json.dumps(_catalog_from_policy(normalized), ensure_ascii=False))
+        env.setdefault(
+            "OPENCLAW_MODEL_CATALOG_JSON",
+            json.dumps(_catalog_from_policy(normalized), ensure_ascii=False),
+        )
         return env
     if runtime_name == "hermes":
         if primary and not has_primary:
@@ -214,7 +219,10 @@ def build_runtime_model_policy_env(
             env["HERMES_DEFAULT_MODEL"] = primary
         if fallback:
             env.setdefault("HERMES_FALLBACK_MODEL", fallback)
-        env.setdefault("HERMES_MODEL_CATALOG_JSON", json.dumps(_catalog_from_policy(normalized), ensure_ascii=False))
+        env.setdefault(
+            "HERMES_MODEL_CATALOG_JSON",
+            json.dumps(_catalog_from_policy(normalized), ensure_ascii=False),
+        )
         return env
     if primary and not has_primary:
         env["OPENAI_MODEL_NAME"] = primary

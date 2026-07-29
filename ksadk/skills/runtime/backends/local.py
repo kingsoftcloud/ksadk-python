@@ -17,6 +17,12 @@ from ksadk.skills.runtime.base import (
 )
 
 
+def _coerce_output(value: str | bytes | None) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value or ""
+
+
 class LocalProcessSkillRuntimeBackend:
     def __init__(self, agent_path: str | Path, timeout: int = 900):
         self.agent_path = Path(agent_path)
@@ -67,7 +73,13 @@ class LocalProcessSkillRuntimeBackend:
                     encoding="utf-8",
                 )
                 completed = subprocess.run(
-                    [sys.executable, "-u", str(self.agent_path), "--request-file", str(request_path)],
+                    [
+                        sys.executable,
+                        "-u",
+                        str(self.agent_path),
+                        "--request-file",
+                        str(request_path),
+                    ],
                     text=True,
                     capture_output=True,
                     timeout=timeout or self.timeout,
@@ -86,8 +98,8 @@ class LocalProcessSkillRuntimeBackend:
             return SkillRuntimeResult(
                 runtime_id=f"local:{session_id}",
                 exit_code=None,
-                stdout=exc.stdout or "",
-                stderr=exc.stderr or "",
+                stdout=_coerce_output(exc.stdout),
+                stderr=_coerce_output(exc.stderr),
                 duration_ms=int((time.monotonic() - started) * 1000),
                 timed_out=True,
                 error_type="TimeoutExpired",

@@ -10,7 +10,6 @@ from uuid import uuid4
 
 from ksadk.sessions.local_service import resolve_local_session_dir
 
-
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 
 
@@ -58,7 +57,10 @@ def budget_tool_output(
     active_budget = budget or default_tool_result_budget()
     text, mime_type, extension = _stringify_value(value)
     original_chars = len(text)
-    should_persist = original_chars > active_budget.persist_threshold_chars or original_chars > active_budget.max_chars
+    should_persist = (
+        original_chars > active_budget.persist_threshold_chars
+        or original_chars > active_budget.max_chars
+    )
     preview_limit = max(0, min(active_budget.preview_chars, active_budget.max_chars))
     preview = text[:preview_limit] if should_persist else text[: active_budget.max_chars]
     result: dict[str, Any] = {
@@ -126,7 +128,9 @@ def _persist_tool_output(
         or metadata.get("id")
         or uuid4().hex
     )
-    stem = _safe_filename(f"{tool_use_id}.{field_name}") or _safe_filename(f"{tool_name}.{field_name}.{uuid4().hex}")
+    stem = _safe_filename(f"{tool_use_id}.{field_name}") or _safe_filename(
+        f"{tool_name}.{field_name}.{uuid4().hex}"
+    )
     path = (persist_dir / f"{stem}.{extension}").resolve()
     if persist_dir not in path.parents and path != persist_dir:
         raise ValueError("tool result path must stay inside persist_dir")
@@ -137,7 +141,11 @@ def _persist_tool_output(
 def _stringify_value(value: Any) -> tuple[str, str, str]:
     if isinstance(value, str):
         return value, "text/plain", "txt"
-    return json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True), "application/json", "json"
+    return (
+        json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True),
+        "application/json",
+        "json",
+    )
 
 
 def _safe_filename(value: str) -> str:

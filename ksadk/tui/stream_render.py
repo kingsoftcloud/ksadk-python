@@ -3,6 +3,7 @@
 从 RemoteRunner.stream 的归一化 chunk 提取 delta/usage/终止信号，格式化 usage 文本。
 被 loop.py（交互 TUI）和 cmd_invoke._invoke_once（-m 单次）共用，保证两路径渲染口径一致。
 """
+
 from __future__ import annotations
 
 import re

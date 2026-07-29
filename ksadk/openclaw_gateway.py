@@ -15,7 +15,6 @@ import requests
 from ksadk.api import AgentEngineClient
 from ksadk.version import VERSION as KSADK_VERSION
 
-
 DEFAULT_CLIENT_NAME = "openclaw-control-ui"
 DEFAULT_CLIENT_MODE = "webchat"
 DEFAULT_SCOPES = ("operator.admin",)
@@ -152,7 +151,9 @@ class OpenClawGatewayClient:
 
         cookie_header = self._build_cookie_header()
         if not cookie_header:
-            raise OpenClawGatewayError("Dashboard short-link bootstrap did not produce a session cookie")
+            raise OpenClawGatewayError(
+                "Dashboard short-link bootstrap did not produce a session cookie"
+            )
 
         parsed = urlsplit(access_url)
         self.connection_info = DashboardAccessInfo(
@@ -208,7 +209,9 @@ class OpenClawGatewayClient:
         )
         return self.hello
 
-    async def channels_status(self, *, probe: bool = False, timeout_ms: Optional[int] = None) -> dict[str, Any]:
+    async def channels_status(
+        self, *, probe: bool = False, timeout_ms: Optional[int] = None
+    ) -> dict[str, Any]:
         params: dict[str, Any] = {"probe": bool(probe)}
         if timeout_ms is not None:
             params["timeoutMs"] = int(timeout_ms)
@@ -247,7 +250,9 @@ class OpenClawGatewayClient:
         params: dict[str, Any] = {"force": bool(force)}
         if timeout_ms is not None:
             params["timeoutMs"] = int(timeout_ms)
-        return await self.request("web.login.start", params, timeout_ms=(timeout_ms or 30_000) + 5_000)
+        return await self.request(
+            "web.login.start", params, timeout_ms=(timeout_ms or 30_000) + 5_000
+        )
 
     async def web_login_wait(
         self,
@@ -262,7 +267,9 @@ class OpenClawGatewayClient:
             params["accountId"] = effective_account_id
         if timeout_ms is not None:
             params["timeoutMs"] = int(timeout_ms)
-        return await self.request("web.login.wait", params, timeout_ms=(timeout_ms or 120_000) + 5_000)
+        return await self.request(
+            "web.login.wait", params, timeout_ms=(timeout_ms or 120_000) + 5_000
+        )
 
     async def request(
         self,
@@ -285,7 +292,7 @@ class OpenClawGatewayClient:
         return await self._wait_for_response(request_id, timeout_ms=timeout_ms)
 
     async def wait_for_disconnect(self, *, timeout_ms: int = 5_000) -> bool:
-        """Wait briefly for the current websocket to close, typically after config-triggered restart."""
+        """Wait for the websocket to close after a config-triggered restart."""
         if self._ws is None:
             return True
 
@@ -311,16 +318,24 @@ class OpenClawGatewayClient:
                 "Missing dependency `websockets`; reinstall ksadk with channel support enabled"
             ) from exc
 
-        connect_kwargs = {
-            "open_timeout": 10,
-            "ping_interval": 20,
-            "ping_timeout": 20,
-            "max_size": 50 * 1024 * 1024,
-        }
         try:
-            return await websockets.connect(ws_url, additional_headers=headers, **connect_kwargs)
+            return await websockets.connect(
+                ws_url,
+                additional_headers=headers,
+                open_timeout=10,
+                ping_interval=20,
+                ping_timeout=20,
+                max_size=50 * 1024 * 1024,
+            )
         except TypeError:
-            return await websockets.connect(ws_url, extra_headers=headers, **connect_kwargs)
+            return await websockets.connect(
+                ws_url,
+                extra_headers=headers,
+                open_timeout=10,
+                ping_interval=20,
+                ping_timeout=20,
+                max_size=50 * 1024 * 1024,
+            )
 
     async def _wait_for_connect_challenge(self, *, timeout_ms: int = 10_000) -> str:
         deadline = timeout_ms / 1000

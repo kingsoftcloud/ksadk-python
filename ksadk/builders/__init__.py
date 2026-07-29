@@ -10,6 +10,7 @@ from ksadk.builders.base import BaseBuilder, BuildResult
 from ksadk.builders.code_builder import CodeBuilder
 from ksadk.builders.container_builder import ContainerBuilder
 from ksadk.builders.ks3_uploader import KS3Uploader
+from ksadk.builders.managed_runtime_builder import ManagedRuntimeBuilder
 
 __all__ = [
     "BaseBuilder",
@@ -17,4 +18,5 @@ __all__ = [
     "CodeBuilder",
     "ContainerBuilder",
     "KS3Uploader",
+    "ManagedRuntimeBuilder",
 ]

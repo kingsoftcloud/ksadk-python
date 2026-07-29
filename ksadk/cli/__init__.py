@@ -81,7 +81,7 @@ ROOT_HELP_TOOL_COMMANDS = {
     "config",
 }
 SHORT_HELP_MAP = {
-    "a2a": "暴露 A2A 服务与 Agent Card",
+    "a2a": "A2A 协议服务与本地试调",
     "agent": "Agent 资源管理",
     "build": "构建部署制品",
     "completion": "Shell 补全管理",
@@ -180,6 +180,10 @@ class ColoredHelpGroup(click.Group):
         _write_colored_help_row(formatter, "agentengine deploy", "部署到云端")
         _write_colored_help_row(formatter, "agentengine launch", "一键构建+部署")
         _write_colored_help_row(formatter, "agentengine agent", "Agent 资源管理")
+        _write_colored_help_row(formatter, "agentengine version", "Agent 版本管理")
+        _write_colored_help_row(formatter, "agentengine mcp", "MCP 资源管理")
+        _write_colored_help_row(formatter, "agentengine a2a", "A2A 协议服务与本地试调")
+        _write_colored_help_row(formatter, "agentengine files", "管理云端 workspace 文件")
         _write_colored_help_row(formatter, "agentengine dashboard", "打开云端 Agent Dashboard")
         _write_colored_help_row(formatter, "agentengine hermes", "Hermes Agent 资源管理")
         _write_colored_help_row(formatter, "agentengine openclaw", "OpenClaw 资源管理")
@@ -187,12 +191,10 @@ class ColoredHelpGroup(click.Group):
         # 配置与工具
         formatter.write(click.style("  🧰  配置:\n\n", fg="yellow", bold=True))
         _write_colored_help_row(formatter, "agentengine config", "项目配置向导与模型配置")
+        _write_colored_help_row(formatter, "agentengine completion", "Shell 补全管理")
 
         # 自定义 Options 格式化
         self.format_options_colored(ctx, formatter)
-
-        # 自定义 Commands 格式化
-        self.format_commands_colored(ctx, formatter)
 
     def format_options_colored(self, ctx, formatter):
         """自定义选项格式化"""
@@ -212,7 +214,8 @@ class ColoredHelpGroup(click.Group):
         formatter.write_paragraph()
         formatter.write_text("AgentEngine CLI")
         formatter.write_text(
-            "支持 Hermes / OpenClaw / DeepAgents / LangGraph / LangChain / Google ADK 的本地运行与云端部署。"
+            "支持 Hermes / OpenClaw / DeepAgents / LangGraph / LangChain / Google ADK "
+            "的本地运行与云端部署。"
         )
 
         formatter.write_paragraph()
@@ -236,61 +239,6 @@ class ColoredHelpGroup(click.Group):
         formatter.write_paragraph()
         formatter.write_text("使用 `agentengine <command> --help` 查看子命令帮助。")
 
-    def format_commands_colored(self, ctx, formatter):
-        """自定义命令列表格式，更简洁美观"""
-        icon_map = {
-            "a2a": "↔️",
-            "agent": "🤖",
-            "build": "🔨",
-            "completion": "⌨️",
-            "dashboard": "🖥️",
-            "deploy": "🚀",
-            "files": "📄",
-            "hermes": "⌁",
-            "init": "📁",
-            "launch": "✨",
-            "mcp": "🔌",
-            "openclaw": "🦞",
-            "run": "▶️",
-            "version": "🏷️",
-            "web": "🌐",
-        }
-
-        commands = []
-        for subcommand in self.list_commands(ctx):
-            cmd = self.get_command(ctx, subcommand)
-            if cmd is None:
-                continue
-            if getattr(cmd, "hidden", False):
-                continue
-            if subcommand not in ROOT_HELP_COMMANDS:
-                continue
-            commands.append((subcommand, cmd))
-
-        if not commands:
-            return
-
-        formatter.write(click.style("\n  📋  可用命令:\n\n", fg="magenta", bold=True))
-
-        # Emoji、变体选择符和 CJK 字符的 Python len 与终端 cell 宽度不同。
-        # 这里按 cell 宽度补齐，保证命令列和说明列在真实终端里同列。
-        icon_width = max(_terminal_cell_width(icon) for icon in icon_map.values())
-        max_cmd_width = max(max(_terminal_cell_width(name) for name, _ in commands), 16)
-
-        for subcommand, cmd in commands:
-            # 使用预定义的简短描述
-            help_text = SHORT_HELP_MAP.get(subcommand, "")
-            if not help_text and cmd.help:
-                # 只取 docstring 第一行
-                help_text = cmd.help.split("\n")[0].strip()
-
-            # 格式化输出
-            icon = icon_map.get(subcommand, "•")
-            icon_cell = _pad_to_terminal_cells(icon, icon_width)
-            name_cell = _pad_to_terminal_cells(subcommand, max_cmd_width)
-            formatter.write(click.style(f"      {icon_cell}  ", fg="cyan"))
-            formatter.write(click.style(f"{name_cell}        ", fg="cyan"))
-            formatter.write(click.style(f"{help_text}\n\n", fg="white"))
 
 @click.group(cls=ColoredHelpGroup, context_settings=CONTEXT_SETTINGS)
 @click.version_option(version=VERSION, prog_name="AgentEngine")
@@ -311,6 +259,63 @@ def _add_command_once(group: click.Group, command, *, name: str | None = None):
         group.add_command(command, name=name)
 
 
+def _unavailable_command_stub(cmd_name: str, module_path: str, exc: Exception) -> click.Group:
+    """命令加载失败时的**显式降级** stub:``-h`` 可见失败原因,调用报显式错误。
+
+    替代 ``except ImportError: pass`` 静默吞(goal-16 Windows bug:``agentengine a2a -h``
+    曾因 cmd_a2a import 失败被吞而报 "No such command 'a2a'")。降级后 ``-h`` 仍退出 0
+    并显示失败原因,调用子命令报显式 ClickException——失败显式可见,不再静默。
+    """
+
+    @click.group(
+        cmd_name,
+        context_settings=dict(help_option_names=["-h", "--help"]),
+        help=f"(加载失败){cmd_name} 命令不可用:{exc}",
+        invoke_without_command=True,
+        no_args_is_help=False,
+    )
+    def _stub():
+        raise click.ClickException(f"命令 {cmd_name!r} 不可用:加载 {module_path} 失败({exc})")
+
+    return _stub
+
+
+def _warn_unavailable_optional_command(
+    cmd_names: tuple[str, ...], module_path: str, exc: Exception
+) -> None:
+    """Print actionable startup guidance while retaining the explicit command stub."""
+    command_list = ", ".join(repr(name) for name in cmd_names)
+    message = (
+        f"WARNING: optional command {command_list} is unavailable because {module_path} "
+        f"could not load: {exc}. The remaining ksadk commands are still available."
+    )
+    if "a2a" in cmd_names:
+        message += (
+            " KsADK 0.8 requires a2a-sdk==1.1.0; activate the intended virtual environment and "
+            'run `python -m pip install --upgrade "ksadk[a2a]"`. A2A 0.3 projects must use a '
+            "separate environment."
+        )
+    click.echo(message, err=True)
+
+
+def _register_optional_command(cli: click.Group, module_path: str, *cmd_names: str) -> None:
+    """注册可选命令组;导入或依赖 API 不兼容时注册显式降级 stub(不静默吞)。"""
+    import importlib
+
+    try:
+        module = importlib.import_module(module_path)
+    # Optional command imports can fail before an ImportError is raised when an installed
+    # optional SDK exposes an incompatible API. Keep the top-level CLI usable and make the
+    # unavailable command report the original reason instead of masking it as a CLI crash.
+    except (ImportError, AttributeError) as exc:
+        _warn_unavailable_optional_command(cmd_names, module_path, exc)
+        for cmd_name in cmd_names:
+            _add_command_once(cli, _unavailable_command_stub(cmd_name, module_path, exc))
+        return
+    for cmd_name in cmd_names:
+        _add_command_once(cli, getattr(module, cmd_name))
+
+
 def _register_commands():
     from ksadk.cli.cmd_create import create
     from ksadk.cli.cmd_deploy import deploy
@@ -325,124 +330,35 @@ def _register_commands():
     # init 作为主命令 (PRD 规范)
     _add_command_once(cli, create, name="init")
 
-    # 注册新命令 (如果存在)
-    try:
-        from ksadk.cli.cmd_a2a import a2a
-
-        _add_command_once(cli, a2a)
-    except ImportError:
-        pass
-
-    try:
-        from ksadk.cli.cmd_files import files
-
-        _add_command_once(cli, files)
-    except ImportError:
-        pass
-
-    try:
-        from ksadk.cli.cmd_config import config
-
-        _add_command_once(cli, config)
-    except ImportError:
-        pass
-
-    try:
-        from ksadk.cli.cmd_model import model
-
-        _add_command_once(cli, model)
-    except ImportError:
-        pass
-
-    try:
-        from ksadk.cli.cmd_build import build
-
-        _add_command_once(cli, build)
-    except ImportError:
-        pass
-
-    try:
-        from ksadk.cli.cmd_launch import launch
-
-        _add_command_once(cli, launch)
-    except ImportError:
-        pass
-
-    try:
-        from ksadk.cli.cmd_agent import agent
-
-        _add_command_once(cli, agent)
-    except ImportError:
-        pass
-
-    try:
-        from ksadk.cli.cmd_status import status
-
-        _add_command_once(cli, status)
-    except ImportError:
-        pass
-
-    try:
-        from ksadk.cli.cmd_invoke import invoke
-
-        _add_command_once(cli, invoke)
-    except ImportError:
-        pass
-
-    try:
-        from ksadk.cli.cmd_dashboard import dashboard
-
-        _add_command_once(cli, dashboard)
-    except ImportError:
-        pass
-
-    try:
-        from ksadk.cli.cmd_destroy import delete, destroy
-
-        _add_command_once(cli, delete)
-        _add_command_once(cli, destroy)
-    except ImportError:
-        pass
+    # 注册可选命令组;加载失败时显式降级(不静默吞,见 _register_optional_command)。
+    _register_optional_command(cli, "ksadk.cli.cmd_a2a", "a2a")
+    _register_optional_command(cli, "ksadk.cli.cmd_files", "files")
+    _register_optional_command(cli, "ksadk.cli.cmd_config", "config")
+    _register_optional_command(cli, "ksadk.cli.cmd_model", "model")
+    _register_optional_command(cli, "ksadk.cli.cmd_build", "build")
+    _register_optional_command(cli, "ksadk.cli.cmd_launch", "launch")
+    _register_optional_command(cli, "ksadk.cli.cmd_agent", "agent")
+    _register_optional_command(cli, "ksadk.cli.cmd_status", "status")
+    _register_optional_command(cli, "ksadk.cli.cmd_invoke", "invoke")
+    _register_optional_command(cli, "ksadk.cli.cmd_dashboard", "dashboard")
+    _register_optional_command(cli, "ksadk.cli.cmd_replay", "replay")
+    _register_optional_command(cli, "ksadk.cli.cmd_destroy", "delete", "destroy")
 
     # MCP 命令组
-    try:
-        from ksadk.cli.cmd_mcp import mcp
-
-        _add_command_once(cli, mcp)
-    except ImportError:
-        pass
+    _register_optional_command(cli, "ksadk.cli.cmd_mcp", "mcp")
 
     # Completion 命令组
-    try:
-        from ksadk.cli.cmd_completion import completion
-
-        _add_command_once(cli, completion)
-    except ImportError:
-        pass
+    _register_optional_command(cli, "ksadk.cli.cmd_completion", "completion")
 
     # Version 命令组
-    try:
-        from ksadk.cli.cmd_version import version
-
-        _add_command_once(cli, version)
-    except ImportError:
-        pass
+    _register_optional_command(cli, "ksadk.cli.cmd_version", "version")
 
     # OpenClaw 命令组
-    try:
-        from ksadk.cli.cmd_openclaw import openclaw
-
-        _add_command_once(cli, openclaw)
-    except ImportError:
-        pass
+    _register_optional_command(cli, "ksadk.cli.cmd_openclaw", "openclaw")
 
     # Hermes 命令组
-    try:
-        from ksadk.cli.cmd_hermes import hermes
+    _register_optional_command(cli, "ksadk.cli.cmd_hermes", "hermes")
 
-        _add_command_once(cli, hermes)
-    except ImportError:
-        pass
 
 def main():
     # 全局加载 .env 文件
@@ -473,24 +389,25 @@ def main():
             if not loaded:
                 # 回退到系统默认编码 (Windows 上通常是 GBK/cp936)
                 import locale
+
                 fallback_encoding = locale.getpreferredencoding(False)
                 try:
                     load_dotenv(dotenv_path, override=False, encoding=fallback_encoding)
                     click.echo(
                         click.style(
                             f"⚠️  警告: .env 文件使用 {fallback_encoding} 编码，建议转换为 UTF-8\n",
-                            fg="yellow"
+                            fg="yellow",
                         ),
-                        err=True
+                        err=True,
                     )
                 except UnicodeDecodeError:
                     click.echo(
                         click.style(
                             f"❌ 错误: .env 文件编码无法识别，请确保使用 UTF-8 编码保存\n"
                             f"   文件路径: {dotenv_path}\n",
-                            fg="red"
+                            fg="red",
                         ),
-                        err=True
+                        err=True,
                     )
     except ImportError:
         pass
@@ -498,6 +415,7 @@ def main():
     # 全局配置回退: .env 未设置的变量从 ~/.agentengine/settings.json 补充
     try:
         from ksadk.configs.global_config import get_env_from_global_config
+
         global_env = get_env_from_global_config()
         injected_keys = []
         for key, value in global_env.items():

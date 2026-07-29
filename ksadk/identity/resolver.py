@@ -31,11 +31,11 @@ _KRN_ACCOUNT_RE = re.compile(r"krn:ksc:iam::([^:]+):user/")
 class ResolvedIdentity:
     """AK/SK 反查到的身份信息。"""
 
-    user_uuid: Optional[str]        # 子账号 UserId（X-Ksc-User-uuid 值）；主账号 AK 时 None
+    user_uuid: Optional[str]  # 子账号 UserId（X-Ksc-User-uuid 值）；主账号 AK 时 None
     main_account_id: Optional[str]  # 从 Krn 提取的主账号 ID
-    user_name: Optional[str]        # 子账号 UserName（调试用）
-    krn: Optional[str]              # 原始 Krn（调试用）
-    ak_fingerprint: str             # sha256(AK)[:16]，缓存 key
+    user_name: Optional[str]  # 子账号 UserName（调试用）
+    krn: Optional[str]  # 原始 Krn（调试用）
+    ak_fingerprint: str  # sha256(AK)[:16]，缓存 key
 
 
 # ---------------------------------------------------------------------------
@@ -107,14 +107,20 @@ def _should_retry_intranet(error: Exception | None) -> bool:
 def _import_iam_sdk():
     """惰性导入 ksyun IAM SDK，失败返回 None。"""
     try:
-        from ksyun.client.iam.v20151101.client import IamClient
-        from ksyun.client.iam.v20151101.models import (
+        from ksyun.client.iam.v20151101.client import (  # type: ignore[import-untyped]
+            IamClient,
+        )
+        from ksyun.client.iam.v20151101.models import (  # type: ignore[import-untyped]
             GetUserRequest,
             ListAllUserAccessKeysRequest,
         )
-        from ksyun.common.credential import Credential
-        from ksyun.common.profile.client_profile import ClientProfile
-        from ksyun.common.profile.http_profile import HttpProfile
+        from ksyun.common.credential import Credential  # type: ignore[import-untyped]
+        from ksyun.common.profile.client_profile import (  # type: ignore[import-untyped]
+            ClientProfile,
+        )
+        from ksyun.common.profile.http_profile import (  # type: ignore[import-untyped]
+            HttpProfile,
+        )
     except Exception as exc:
         logger.warning("导入 ksyun IAM SDK 失败: %s", exc)
         return None

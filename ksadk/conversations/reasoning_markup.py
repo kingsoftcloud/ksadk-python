@@ -30,7 +30,7 @@ class ReasoningMarkupParser:
             index = self._buffer.find(tag)
             if index >= 0:
                 self._append(parts, self._buffer[:index])
-                self._buffer = self._buffer[index + len(tag):]
+                self._buffer = self._buffer[index + len(tag) :]
                 self._in_think = not self._in_think
                 continue
 

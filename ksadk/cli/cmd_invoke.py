@@ -4,16 +4,18 @@ agentengine invoke - 与已部署的 Agent 进行交互
 支持 OpenAI 兼容格式调用，支持流式输出
 """
 
-import click
 import asyncio
 import io
 import json
 import os
+import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
-import time
-import uuid
+
+import click
+
 from ksadk.api import AgentEngineAPIError, AgentEngineClient
 from ksadk.cli.agent_ref import merge_agent_inputs, resolve_agent_ref, resolve_openclaw_ref
 from ksadk.cli.cmd_files import (
@@ -24,20 +26,28 @@ from ksadk.cli.cmd_files import (
     _normalize_workspace_dir,
     _push_workspace_files,
 )
-from ksadk.cli.resource_common import CONTEXT_SETTINGS, CompatibilityAliasCommand, print_compatibility_hint
+from ksadk.cli.resource_common import (
+    CONTEXT_SETTINGS,
+    CompatibilityAliasCommand,
+    print_compatibility_hint,
+)
 from ksadk.hermes_terminal import run_hermes_terminal_session
 from ksadk.terminal_client import run_terminal_session
 from ksadk_runtime_common.workspace_files.constants import DEFAULT_WORKSPACE_MAX_UPLOAD_BYTES
 
+console: Any = None
+Markdown: Any = None
+Live: Any = None
 try:
-    from rich.console import Console
-    from rich.markdown import Markdown
-    from rich.live import Live
-    console = Console()
+    from rich.console import Console as RichConsole
+    from rich.live import Live as RichLive
+    from rich.markdown import Markdown as RichMarkdown
+
+    console = RichConsole()
+    Markdown = RichMarkdown
+    Live = RichLive
 except ImportError:
-    console = None
-    Markdown = None
-    Live = None
+    pass
 
 
 @click.command(
@@ -147,9 +157,9 @@ def _resolve_remote_workspace_seed_path(
     remote_workspace_path: str | None,
 ) -> str:
     if remote_workspace_path:
-        return _normalize_workspace_dir(remote_workspace_path)
+        return str(_normalize_workspace_dir(remote_workspace_path))
     default_name = local_workspace.resolve().name or local_workspace.name or "workspace"
-    return _normalize_workspace_dir(default_name)
+    return str(_normalize_workspace_dir(default_name))
 
 
 def _summarize_local_workspace_dir(
@@ -200,10 +210,12 @@ def _describe_workspace_sync_phase(event: dict[str, Any] | None) -> str:
     return "同步 workspace"
 
 
-def _render_workspace_sync_progress_bar(current: object | None, total: object | None, *, width: int = 20) -> str:
+def _render_workspace_sync_progress_bar(
+    current: object | None, total: object | None, *, width: int = 20
+) -> str:
     try:
-        current_value = int(current or 0)
-        total_value = max(int(total or 0), 1)
+        current_value = int(str(current or 0))
+        total_value = max(int(str(total or 0)), 1)
     except (TypeError, ValueError):
         current_value = 0
         total_value = 1
@@ -214,8 +226,8 @@ def _render_workspace_sync_progress_bar(current: object | None, total: object | 
 
 def _format_workspace_sync_percent(current: object | None, total: object | None) -> str:
     try:
-        current_value = float(current or 0)
-        total_value = max(float(total or 0), 1.0)
+        current_value = float(str(current or 0))
+        total_value = max(float(str(total or 0)), 1.0)
     except (TypeError, ValueError):
         current_value = 0.0
         total_value = 1.0
@@ -244,7 +256,8 @@ def _build_workspace_sync_progress_emitter(*, verbose: bool) -> Callable[[dict[s
             click.secho(
                 "📂 准备同步 workspace: "
                 f"{event.get('total_files', 0)} 个文件，"
-                f"{_format_size(event.get('total_bytes', 0))} -> workspace:/{event.get('remote_path', '.')}",
+                f"{_format_size(event.get('total_bytes', 0))} -> "
+                f"workspace:/{event.get('remote_path', '.')}",
                 fg="blue",
             )
             ignored_artifacts = list(event.get("ignored_artifacts") or [])
@@ -324,7 +337,7 @@ def _extract_workspace_upload_limit(bootstrap: dict[str, Any] | None) -> int | N
         return None
     raw_limit = workspace.get("max_upload_bytes") or workspace.get("MaxUploadBytes")
     try:
-        limit = int(raw_limit)
+        limit = int(str(raw_limit))
     except (TypeError, ValueError):
         return None
     return limit if limit > 0 else None
@@ -336,7 +349,7 @@ async def _lookup_workspace_upload_limit(
     region: str,
 ) -> int:
     if not agent_ref:
-        return DEFAULT_WORKSPACE_MAX_UPLOAD_BYTES
+        return int(DEFAULT_WORKSPACE_MAX_UPLOAD_BYTES)
 
     try:
         async with AgentEngineClient(region=region) as client:
@@ -345,9 +358,9 @@ async def _lookup_workspace_upload_limit(
             else:
                 payload = await client.get_agent_ui_bootstrap(name=agent_ref)
     except Exception:
-        return DEFAULT_WORKSPACE_MAX_UPLOAD_BYTES
+        return int(DEFAULT_WORKSPACE_MAX_UPLOAD_BYTES)
 
-    return _extract_workspace_upload_limit(payload) or DEFAULT_WORKSPACE_MAX_UPLOAD_BYTES
+    return int(_extract_workspace_upload_limit(payload) or DEFAULT_WORKSPACE_MAX_UPLOAD_BYTES)
 
 
 async def _sync_local_workspace_for_hermes_invoke(
@@ -394,7 +407,8 @@ async def _sync_local_workspace_for_hermes_invoke(
         if item["size_bytes"] > max_upload_bytes:
             raise click.ClickException(
                 "本地目录中存在超过远端 workspace 上传上限的文件："
-                f"{item['path']}（{_format_size(item['size_bytes'])} > {_format_size(max_upload_bytes)}）"
+                f"{item['path']}（{_format_size(item['size_bytes'])} > "
+                f"{_format_size(max_upload_bytes)}）"
             )
 
     if summary["total_bytes"] > max_upload_bytes:
@@ -412,7 +426,7 @@ async def _sync_local_workspace_for_hermes_invoke(
             progress_callback(event)
 
     try:
-        return await _push_workspace_files(
+        result = await _push_workspace_files(
             agent_ref=agent_ref,
             local_dir=local_dir,
             remote_path=remote_path,
@@ -424,11 +438,12 @@ async def _sync_local_workspace_for_hermes_invoke(
             ignore_dev_artifacts=True,
             ignore_git_artifacts=".git" in list(summary.get("ignored_artifacts") or []),
         )
+        if not isinstance(result, dict):
+            raise click.ClickException("同步远端 workspace 返回了无效响应")
+        return result
     except AgentEngineAPIError as exc:
         phase = _describe_workspace_sync_phase(last_progress)
-        raise click.ClickException(
-            f"同步远端 workspace 失败（{phase}）：{exc.message}"
-        ) from exc
+        raise click.ClickException(f"同步远端 workspace 失败（{phase}）：{exc.message}") from exc
 
 
 def run_invoke_command(
@@ -479,7 +494,7 @@ def run_invoke_command(
     state = _load_state()
     latest_access: dict[str, Any] = {}
     target_agent: str | None = None
-    
+
     normalized_transport = (transport or "auto").strip().lower() or "auto"
 
     # 确定 Endpoint
@@ -518,7 +533,7 @@ def run_invoke_command(
             endpoint = latest_access["endpoint"]
         elif not agent_input or _state_matches_target(state, target_agent):
             endpoint = state.get("endpoint")
-            
+
         if not endpoint:
             # 自动获取
             endpoint = _get_endpoint(target_agent, region)
@@ -548,7 +563,7 @@ def run_invoke_command(
         latest_access=latest_access,
     )
 
-    click.secho(f"🤖 连接到 Agent", fg="blue", bold=True)
+    click.secho("🤖 连接到 Agent", fg="blue", bold=True)
     click.echo(f"   Endpoint: {endpoint}")
     if _is_openclaw_target(next_state, latest_access):
         if runtime_api_key:
@@ -561,7 +576,7 @@ def run_invoke_command(
         click.echo(f"   Auth:     Bearer {_mask_secret(api_key)}")
     else:
         click.secho("   ⚠️  未发现 API Key，尝试匿名调用", fg="yellow")
-    
+
     if insecure:
         click.secho("   ⚠️  SSL 证书验证已禁用", fg="yellow")
 
@@ -592,7 +607,6 @@ def run_invoke_command(
         )
     else:
         is_hermes_target = _is_hermes_target(next_state, latest_access)
-        is_openclaw_target = _is_openclaw_target(next_state, latest_access)
         if normalized_transport == "chat" and is_hermes_target:
             click.secho("❌ Hermes 不再支持 ksadk 通用 chat TUI。", fg="red")
             click.echo("   浏览器聊天页请改用: agentengine hermes open --chat")
@@ -691,7 +705,9 @@ def run_invoke_command(
                 show_thinking,
                 api_format=api_format_resolved,
                 responses_session_header=(
-                    "x-openclaw-session-key" if _is_openclaw_target(next_state, latest_access) else None
+                    "x-openclaw-session-key"
+                    if _is_openclaw_target(next_state, latest_access)
+                    else None
                 ),
                 no_alt_screen=no_alt_screen,
                 region=region,
@@ -699,14 +715,12 @@ def run_invoke_command(
             )
 
 
-
-
 def _invoke_tui(
     endpoint: str,
-    api_key: str = None,
-    session_id: str = None,
+    api_key: Optional[str] = None,
+    session_id: Optional[str] = None,
     insecure: bool = False,
-    model: str = None,
+    model: Optional[str] = None,
     show_thinking: bool = False,
     api_format: str = "chat_completions",
     responses_session_header: str | None = None,
@@ -740,7 +754,7 @@ def _invoke_tui(
         if matched is None and runner.available_models:
             matched = runner.available_models[0]
         if matched:
-            runner.model_metadata = matched
+            setattr(runner, "model_metadata", matched)
             # 用户未指定 --model 时，用 ListAgentModels 的 current 作为 runner.model，
             # 让 TUI 启动即显示真实模型名（而非 unknown）。
             if not runner.model and matched.get("id"):
@@ -751,7 +765,7 @@ def _invoke_tui(
             _fetch_tui_model_metadata(endpoint=endpoint, api_key=api_key, model=model)
         )
         if model_metadata:
-            runner.model_metadata = model_metadata
+            setattr(runner, "model_metadata", model_metadata)
 
     run_tui(runner, show_thinking=show_thinking, project_dir=".", no_alt_screen=no_alt_screen)
 
@@ -772,7 +786,8 @@ async def _fetch_tui_model_list(
         from ksadk.api.client import AgentEngineClient
 
         async with AgentEngineClient(region=region) as client:
-            return await client.list_agent_models(agent_id=agent_id)
+            payload = await client.list_agent_models(agent_id=agent_id)
+            return payload if isinstance(payload, dict) else None
     except Exception:
         return None
 
@@ -803,7 +818,8 @@ async def _fetch_tui_model_metadata(
     raw_models = [item.get("_provider_raw_model") or item for item in catalog]
     matched = find_model_in_catalog(raw_models, model)
     if matched is not None:
-        return normalize_model_metadata(matched)
+        metadata = normalize_model_metadata(matched)
+        return metadata if isinstance(metadata, dict) else None
     if model:
         return None
     if len(catalog) == 1:
@@ -816,10 +832,11 @@ async def _fetch_tui_model_metadata(
 def _load_state() -> dict:
     """从 .agentengine.state 加载状态"""
     import yaml
+
     state_file = Path(".") / ".agentengine.state"
     if state_file.exists():
         try:
-            with open(state_file, 'r', encoding='utf-8') as f:
+            with open(state_file, "r", encoding="utf-8") as f:
                 return yaml.safe_load(f) or {}
         except Exception:
             pass
@@ -847,15 +864,13 @@ def _extract_remote_access(detail: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(detail, dict):
         return {}
 
-    basic = detail.get("basic") if isinstance(detail.get("basic"), dict) else {}
-    quick = detail.get("quick_access") if isinstance(detail.get("quick_access"), dict) else {}
-
-    deployment = detail.get("deployment") if isinstance(detail.get("deployment"), dict) else {}
-    framework = (
-        deployment.get("framework")
-        or basic.get("framework")
-        or detail.get("framework")
-    )
+    basic_value = detail.get("basic")
+    quick_value = detail.get("quick_access")
+    deployment_value = detail.get("deployment")
+    basic: Dict[str, Any] = basic_value if isinstance(basic_value, dict) else {}
+    quick: Dict[str, Any] = quick_value if isinstance(quick_value, dict) else {}
+    deployment: Dict[str, Any] = deployment_value if isinstance(deployment_value, dict) else {}
+    framework = deployment.get("framework") or basic.get("framework") or detail.get("framework")
 
     return {
         "agent_id": basic.get("agent_id") or detail.get("agent_id"),
@@ -873,9 +888,13 @@ async def _fetch_remote_access(target_agent: str, region: str) -> Dict[str, Any]
 
     async with AgentEngineClient(region=region) as client:
         try:
-            return _extract_remote_access(await client.get_agent(agent_id=target_agent, include_api_key=True))
+            return _extract_remote_access(
+                await client.get_agent(agent_id=target_agent, include_api_key=True)
+            )
         except Exception:
-            return _extract_remote_access(await client.get_agent(name=target_agent, include_api_key=True))
+            return _extract_remote_access(
+                await client.get_agent(name=target_agent, include_api_key=True)
+            )
 
 
 def _refresh_remote_access(
@@ -904,22 +923,20 @@ def _refresh_remote_access(
 
 
 def _is_hermes_target(state: dict, latest_access: dict) -> bool:
-    framework = str(
-        latest_access.get("framework")
-        or state.get("framework")
-        or state.get("type")
-        or ""
-    ).strip().lower()
+    framework = (
+        str(latest_access.get("framework") or state.get("framework") or state.get("type") or "")
+        .strip()
+        .lower()
+    )
     return framework == "hermes"
 
 
 def _is_openclaw_target(state: dict, latest_access: dict) -> bool:
-    framework = str(
-        latest_access.get("framework")
-        or state.get("framework")
-        or state.get("type")
-        or ""
-    ).strip().lower()
+    framework = (
+        str(latest_access.get("framework") or state.get("framework") or state.get("type") or "")
+        .strip()
+        .lower()
+    )
     return framework == "openclaw"
 
 
@@ -933,13 +950,17 @@ def _mask_secret(secret: str | None) -> str:
 
 
 def _openclaw_auth_mode(state: dict, latest_access: dict) -> str:
-    return str(
-        latest_access.get("openclaw_auth_mode")
-        or latest_access.get("gateway_auth_mode")
-        or state.get("openclaw_auth_mode")
-        or state.get("gateway_auth_mode")
-        or ""
-    ).strip().lower()
+    return (
+        str(
+            latest_access.get("openclaw_auth_mode")
+            or latest_access.get("gateway_auth_mode")
+            or state.get("openclaw_auth_mode")
+            or state.get("gateway_auth_mode")
+            or ""
+        )
+        .strip()
+        .lower()
+    )
 
 
 def _select_runtime_api_key(
@@ -967,11 +988,14 @@ def _select_runtime_api_key(
     auth_mode = _openclaw_auth_mode(state, latest_access)
     if auth_mode in {"token", "password"}:
         raise click.ClickException(
-            "当前 OpenClaw Gateway 为 token/password 模式，agentengine invoke 需要 OpenClaw Gateway token。\n"
+            "当前 OpenClaw Gateway 为 token/password 模式，"
+            "agentengine invoke 需要 OpenClaw Gateway token。\n"
             "请使用: agentengine invoke --gateway-token <token>\n"
             "或设置: OPENCLAW_GATEWAY_TOKEN=<token> agentengine invoke\n"
-            "如果部署时传过 OPENCLAW_GATEWAY_TOKEN，请重新运行部署让本地 .agentengine.state 记录该 token。\n"
-            "注意：这里不是 AgentEngine API Key（ak-*），而是 OPENCLAW_GATEWAY_TOKEN/OPENCLAW_GATEWAY_PASSWORD。"
+            "如果部署时传过 OPENCLAW_GATEWAY_TOKEN，请重新运行部署让本地 "
+            ".agentengine.state 记录该 token。\n"
+            "注意：这里不是 AgentEngine API Key（ak-*），而是 "
+            "OPENCLAW_GATEWAY_TOKEN/OPENCLAW_GATEWAY_PASSWORD。"
         )
 
     return api_key
@@ -1084,7 +1108,9 @@ async def _probe_responses_route(
     return available
 
 
-def _should_use_hermes_native_tui(*, transport: str, local: bool, state: dict, latest_access: dict) -> bool:
+def _should_use_hermes_native_tui(
+    *, transport: str, local: bool, state: dict, latest_access: dict
+) -> bool:
     if transport == "chat":
         return False
     if transport == "native":
@@ -1094,7 +1120,9 @@ def _should_use_hermes_native_tui(*, transport: str, local: bool, state: dict, l
     return _is_hermes_target(state, latest_access)
 
 
-def _should_use_openclaw_native_tui(*, transport: str, local: bool, state: dict, latest_access: dict) -> bool:
+def _should_use_openclaw_native_tui(
+    *, transport: str, local: bool, state: dict, latest_access: dict
+) -> bool:
     if transport == "chat":
         return False
     if transport == "native":
@@ -1106,14 +1134,16 @@ def _should_use_openclaw_native_tui(*, transport: str, local: bool, state: dict,
 
 def _invoke_hermes_terminal_tui(
     endpoint: str,
-    api_key: str = None,
-    session_id: str = None,
+    api_key: Optional[str] = None,
+    session_id: Optional[str] = None,
     insecure: bool = False,
     cwd: str | None = None,
 ):
     click.secho("🖥️  Hermes Native Remote TUI", fg="blue", bold=True)
     click.echo("   退出: Ctrl-D 或 Ctrl-C")
-    click.echo("   新 Pod 首次启动会加载 Hermes tools/skills，可能需要几十秒到 1 分钟；后续进入会更快。")
+    click.echo(
+        "   新 Pod 首次启动会加载 Hermes tools/skills，可能需要几十秒到 1 分钟；后续进入会更快。"
+    )
     try:
         _warmup_hermes_terminal(
             endpoint=endpoint,
@@ -1172,8 +1202,8 @@ def _warmup_hermes_terminal(
 
 def _invoke_openclaw_terminal_tui(
     endpoint: str,
-    api_key: str = None,
-    session_id: str = None,
+    api_key: Optional[str] = None,
+    session_id: Optional[str] = None,
     insecure: bool = False,
 ):
     click.secho("🖥️  OpenClaw Native Remote TUI", fg="blue", bold=True)
@@ -1206,15 +1236,16 @@ def _get_api_key() -> Optional[str]:
 
 def _get_endpoint(agent_ref: str, region: str) -> str:
     """获取 Agent Endpoint（先按 ID，再按名称）"""
-    from ksadk.api import AgentEngineClient
     import asyncio
 
-    async def _get():
+    from ksadk.api import AgentEngineClient
+
+    async def _get() -> str:
         async with AgentEngineClient(region=region) as client:
             # 1) 优先按 ID 查询
             try:
                 res = await client.get_agent(agent_id=agent_ref)
-                endpoint = _extract_remote_access(res).get("endpoint", "")
+                endpoint = str(_extract_remote_access(res).get("endpoint") or "").strip()
                 if endpoint:
                     return endpoint
             except Exception:
@@ -1222,13 +1253,14 @@ def _get_endpoint(agent_ref: str, region: str) -> str:
 
             # 2) 回退按名称查询
             res = await client.get_agent(name=agent_ref)
-            endpoint = _extract_remote_access(res).get("endpoint", "")
+            endpoint = str(_extract_remote_access(res).get("endpoint") or "").strip()
             if endpoint:
                 return endpoint
 
             # endpoint 为空时，尽量提取真实 ID 供默认域名拼接
-            basic = res.get("basic", {})
-            return basic.get("agent_id") or res.get("agent_id") or ""
+            basic_value = res.get("basic")
+            basic = basic_value if isinstance(basic_value, dict) else {}
+            return str(basic.get("agent_id") or res.get("agent_id") or "")
 
     try:
         resolved = asyncio.run(_get())
@@ -1248,16 +1280,16 @@ def _get_endpoint(agent_ref: str, region: str) -> str:
 async def _invoke_once(
     endpoint: str,
     message: str,
-    api_key: str = None,
-    session_id: str = None,
+    api_key: Optional[str] = None,
+    session_id: Optional[str] = None,
     stream: bool = True,
     insecure: bool = False,
-    model: str = None,
+    model: Optional[str] = None,
     api_format: str = "chat_completions",
 ):
     """单次调用"""
     click.echo(f"\n👤 你: {message}")
-    click.echo(f"🤖 Agent: ", nl=False)
+    click.echo("🤖 Agent: ", nl=False)
 
     try:
         if stream:
@@ -1265,12 +1297,19 @@ async def _invoke_once(
             if Live and Markdown:
                 # 降低刷新率减少闪烁，vertical_overflow="visible"防止回滚丢失
                 # 手动控制刷新以减少闪烁
-                with Live(Markdown("", justify="left"), console=console, auto_refresh=False, vertical_overflow="visible") as live:
-                    last_refresh_time = 0
+                with Live(
+                    Markdown("", justify="left"),
+                    console=console,
+                    auto_refresh=False,
+                    vertical_overflow="visible",
+                ) as live:
+                    last_refresh_time = 0.0
                     full_reasoning = ""
-                    async for chunk in _stream_chat(endpoint, message, api_key, session_id, True, insecure, model, api_format):
+                    async for chunk in _stream_chat(
+                        endpoint, message, api_key, session_id, True, insecure, model, api_format
+                    ):
                         content, reasoning = _extract_content(chunk)
-                        
+
                         updated = False
                         if reasoning:
                             full_reasoning += reasoning
@@ -1278,25 +1317,27 @@ async def _invoke_once(
                         if content:
                             full_response += content
                             updated = True
-                            
+
                         if updated:
                             # 构造显示文本
                             display_text = ""
                             if full_reasoning:
-                                formatted_reasoning = full_reasoning.replace('\n', '\n> ')
+                                formatted_reasoning = full_reasoning.replace("\n", "\n> ")
                                 display_text += f"> 🧠 **Thinking:**\n> {formatted_reasoning}\n\n"
                             display_text += full_response
-                            
+
                             live.update(Markdown(display_text, justify="left"))
-                            
+
                             # 基于时间限流刷新 (每0.2秒一次 = 5 FPS)
                             now = time.time()
                             if now - last_refresh_time > 0.2:
                                 live.refresh()
                                 last_refresh_time = now
-                    live.refresh() # 确保最后一次刷新
+                    live.refresh()  # 确保最后一次刷新
             else:
-               async for chunk in _stream_chat(endpoint, message, api_key, session_id, True, insecure, model, api_format):
+                async for chunk in _stream_chat(
+                    endpoint, message, api_key, session_id, True, insecure, model, api_format
+                ):
                     content, reasoning = _extract_content(chunk)
                     if reasoning:
                         click.secho(reasoning, fg="bright_black", nl=False)
@@ -1304,7 +1345,9 @@ async def _invoke_once(
                         print(content, end="", flush=True)
             click.echo()  # 换行
         else:
-            response = await _chat(endpoint, message, api_key, session_id, insecure, model, api_format)
+            response = await _chat(
+                endpoint, message, api_key, session_id, insecure, model, api_format
+            )
             content = _extract_response_content(response)
             if console and Markdown:
                 console.print(Markdown(content))
@@ -1314,16 +1357,15 @@ async def _invoke_once(
         click.secho(f"\n❌ 调用失败: {e}", fg="red")
 
 
-
 async def _chat(
     endpoint: str,
     message: str,
-    api_key: str = None,
-    session_id: str = None,
+    api_key: Optional[str] = None,
+    session_id: Optional[str] = None,
     insecure: bool = False,
-    model: str = None,
+    model: Optional[str] = None,
     api_format: str = "chat_completions",
-) -> dict:
+) -> dict[str, Any]:
     """非流式调用 (OpenAI 兼容格式)"""
     try:
         import httpx
@@ -1334,10 +1376,16 @@ async def _chat(
     normalized_api_format = str(api_format or "chat_completions").strip().lower()
     if normalized_api_format == "responses":
         url = f"{endpoint.rstrip('/')}/v1/responses"
-        payload = {"input": [{"role": "user", "content": message}], "stream": False}
+        payload: dict[str, Any] = {
+            "input": [{"role": "user", "content": message}],
+            "stream": False,
+        }
     else:
         url = f"{endpoint.rstrip('/')}/v1/chat/completions"
-        payload = {"messages": [{"role": "user", "content": message}], "stream": False}
+        payload = {
+            "messages": [{"role": "user", "content": message}],
+            "stream": False,
+        }
 
     if session_id:
         payload["session_id"] = session_id
@@ -1351,31 +1399,37 @@ async def _chat(
     is_local = "localhost" in url or "127.0.0.1" in url or "0.0.0.0" in url
 
     # 构造 httpx client 配置
-    client_kwargs = {"timeout": 60, "trust_env": not is_local}
+    client_kwargs: dict[str, Any] = {
+        "timeout": 60,
+        "trust_env": not is_local,
+    }
 
     # 如果指定了 --insecure 参数，跳过 SSL 证书验证（类似 curl -k）
     if insecure:
         client_kwargs["verify"] = False
 
     # 构造 Headers
-    headers = {}
+    headers: dict[str, str] = {}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
     async with httpx.AsyncClient(**client_kwargs) as client:
         response = await client.post(url, json=payload, headers=headers)
         response.raise_for_status()
-        return response.json()
+        response_payload = response.json()
+        if not isinstance(response_payload, dict):
+            raise ValueError("Agent response must be a JSON object")
+        return response_payload
 
 
 async def _stream_chat(
     endpoint: str,
     message: str,
-    api_key: str = None,
-    session_id: str = None,
+    api_key: Optional[str] = None,
+    session_id: Optional[str] = None,
     is_once: bool = False,
     insecure: bool = False,
-    model: str = None,
+    model: Optional[str] = None,
     api_format: str = "chat_completions",
 ):
     """流式调用 (SSE)"""
@@ -1388,7 +1442,10 @@ async def _stream_chat(
     normalized_api_format = str(api_format or "chat_completions").strip().lower()
     if normalized_api_format == "responses":
         url = f"{endpoint.rstrip('/')}/v1/responses"
-        payload = {"input": [{"role": "user", "content": message}], "stream": True}
+        payload: dict[str, Any] = {
+            "input": [{"role": "user", "content": message}],
+            "stream": True,
+        }
     else:
         url = f"{endpoint.rstrip('/')}/v1/chat/completions"
         payload = {"messages": [{"role": "user", "content": message}], "stream": True}
@@ -1405,14 +1462,17 @@ async def _stream_chat(
     is_local = "localhost" in url or "127.0.0.1" in url or "0.0.0.0" in url
 
     # 构造 httpx client 配置
-    client_kwargs = {"timeout": 60, "trust_env": not is_local}
+    client_kwargs: dict[str, Any] = {
+        "timeout": 60,
+        "trust_env": not is_local,
+    }
 
     # 如果指定了 --insecure 参数，跳过 SSL 证书验证（类似 curl -k）
     if insecure:
         client_kwargs["verify"] = False
 
     # 构造 Headers
-    headers = {}
+    headers: dict[str, str] = {}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
@@ -1437,6 +1497,8 @@ async def _stream_chat(
 
                         try:
                             data = json.loads(data_str)
+                            if not isinstance(data, dict):
+                                continue
                             if current_event and isinstance(data, dict):
                                 data = {**data, "_event": current_event}
                             # 直接 yield 解析后的 JSON 数据，让 _extract_content 处理
@@ -1497,7 +1559,7 @@ def _extract_response_content(response: dict) -> str:
         choices = response.get("choices", [])
         if choices:
             message = choices[0].get("message", {})
-            return message.get("content", "")
+            return str(message.get("content") or "")
     except (KeyError, IndexError):
         pass
     return str(response)

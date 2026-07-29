@@ -23,19 +23,19 @@
 import json
 import logging
 import os
-from typing import Any, List, Literal
+from typing import Any, List, Literal, Optional, cast
 
-from google.adk.events.event import Event
-from google.adk.memory.base_memory_service import (
-    BaseMemoryService,
-    SearchMemoryResponse,
-)
-from google.adk.memory.memory_entry import MemoryEntry
-from google.adk.sessions import Session
-from google.genai import types
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 from typing_extensions import Union, override
 
+from ksadk.compat.adk_compat import (
+    BaseMemoryService,
+    Event,
+    MemoryEntry,
+    SearchMemoryResponse,
+    Session,
+)
+from ksadk.compat.adk_compat import genai_types as types
 from ksadk.memory.adk.backends.base_ltm_backend import BaseLongTermMemoryBackend
 from ksadk.memory.service import LongTermMemoryService
 
@@ -83,8 +83,8 @@ class LongTermMemory(BaseMemoryService, BaseModel):
     index: str = ""
     app_name: str = ""
 
-    _backend: BaseLongTermMemoryBackend = None
-    _service: LongTermMemoryService = None
+    _backend: Optional[BaseLongTermMemoryBackend] = PrivateAttr(default=None)
+    _service: Optional[LongTermMemoryService] = PrivateAttr(default=None)
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -105,14 +105,18 @@ class LongTermMemory(BaseMemoryService, BaseModel):
         )
 
     def _get_service(self) -> LongTermMemoryService:
-        if self._service is None:
+        service = self._service
+        if service is None:
             self.model_post_init(None)
-        if self._backend is not None and self._service._backend is not self._backend:
-            self._service.backend = self._backend
-            self._service._backend = self._backend
-            self._service.index = getattr(self._backend, "index", self._service.index)
-            self.index = self._service.index
-        return self._service
+            service = self._service
+        if service is None:
+            raise RuntimeError("LongTermMemory service initialization failed")
+        if self._backend is not None and service._backend is not self._backend:
+            service.backend = self._backend
+            service._backend = self._backend
+            service.index = getattr(self._backend, "index", service.index)
+            self.index = service.index
+        return service
 
     def _filter_and_convert_events(self, events: List[Event]) -> List[str]:
         """过滤并序列化 session 事件
@@ -157,9 +161,7 @@ class LongTermMemory(BaseMemoryService, BaseModel):
         event_strings = self._filter_and_convert_events(session.events)
 
         if not event_strings:
-            logger.info(
-                f"No user events to save for session={session.id}"
-            )
+            logger.info(f"No user events to save for session={session.id}")
             return
 
         logger.info(
@@ -200,9 +202,7 @@ class LongTermMemory(BaseMemoryService, BaseModel):
                 query=query, top_k=self.top_k, user_id=user_id
             )
         except Exception as e:
-            logger.error(
-                f"Error during memory search: {e}. Returning empty results."
-            )
+            logger.error(f"Error during memory search: {e}. Returning empty results.")
 
         # 转换为 MemoryEntry 格式
         memory_events = []
@@ -213,9 +213,7 @@ class LongTermMemory(BaseMemoryService, BaseModel):
                     text = memory_dict["parts"][0]["text"]
                     role = memory_dict.get("role", "user")
                 except (KeyError, IndexError):
-                    logger.warning(
-                        f"Non-standard memory format: {memory[:100]}. Skipping."
-                    )
+                    logger.warning(f"Non-standard memory format: {memory[:100]}. Skipping.")
                     continue
             except json.JSONDecodeError:
                 # 非 JSON 格式的记忆字符串，直接作为 text
@@ -225,9 +223,7 @@ class LongTermMemory(BaseMemoryService, BaseModel):
             memory_events.append(
                 MemoryEntry(
                     author="user",
-                    content=types.Content(
-                        parts=[types.Part(text=text)], role=role
-                    ),
+                    content=types.Content(parts=[types.Part(text=text)], role=role),
                 )
             )
 
@@ -256,16 +252,16 @@ class LongTermMemory(BaseMemoryService, BaseModel):
             KSADK_LTM_INDEX: 索引名称
         """
         service = LongTermMemoryService.from_env(app_name=app_name, backend=backend)
-        backend_name = (
-            backend
-            or os.environ.get("KSADK_LTM_BACKEND", "local")
-        )
+        backend_name = backend or os.environ.get("KSADK_LTM_BACKEND", "local")
         backend_config = dict(service.backend_config)
         if "index" in backend_config and backend_name != "local":
             backend_config.pop("index", None)
 
+        if backend_name not in {"local", "http", "sdk"}:
+            raise ValueError(f"Unsupported long-term memory backend: {backend_name}")
+        normalized_backend = cast(Literal["local", "http", "sdk"], backend_name)
         return cls(
-            backend=backend_name,
+            backend=normalized_backend,
             backend_config=backend_config,
             top_k=service.top_k,
             index=service.index,

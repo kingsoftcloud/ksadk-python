@@ -6,7 +6,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "scripts" / "check_approval_record.py"
 
@@ -150,8 +149,7 @@ def test_filled_record_passes_when_source_references_include_current_commit(tmp_
     module = _load_module()
     record = tmp_path / "approval.md"
     record.write_text(
-        _approved_record("reviewed export from new-reviewed-commit")
-        .replace(
+        _approved_record("reviewed export from new-reviewed-commit").replace(
             "- `ksadk-web`: /tmp/ksadk-web-export-candidate",
             "- `ksadk-web`: /tmp/ksadk-web-export-candidate at new-reviewed-commit",
         ),

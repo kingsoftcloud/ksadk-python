@@ -1,23 +1,29 @@
 """
 agentengine build - 构建 Agent 应用
 
-支持两种模式:
+支持三种模式:
+- managed: 仅打包系统无关 runtime manifest
 - code: 打包 zip + 依赖 → 上传 KS3 (默认)
 - container: 构建 Docker 镜像
 """
 
 import asyncio
-import click
 import time
 from datetime import datetime
 from pathlib import Path
-from ksadk.cli.error_utils import abort_with_cli_error, is_debug_mode_enabled, remote_error, validation_error
-from ksadk.cli.workflow_common import print_workflow_header, render_workflow_result
+
+import click
+import yaml
+
+from ksadk.cli.error_utils import (
+    abort_with_cli_error,
+    is_debug_mode_enabled,
+    remote_error,
+    validation_error,
+)
 from ksadk.cli.ui import (
     capture_standard_output,
     is_json_output,
-    output_option as cli_output_option,
-    print_error,
     print_info,
     print_kv,
     print_next_steps,
@@ -25,6 +31,10 @@ from ksadk.cli.ui import (
     print_success,
     print_warn,
 )
+from ksadk.cli.ui import (
+    output_option as cli_output_option,
+)
+from ksadk.cli.workflow_common import print_workflow_header, render_workflow_result
 
 
 @click.command(context_settings=dict(help_option_names=["-h", "--help"]))
@@ -32,16 +42,24 @@ from ksadk.cli.ui import (
 @click.option(
     "--mode",
     "-m",
-    type=click.Choice(["container", "code"]),
-    default="code",
-    help="构建模式: code (默认, zip+KS3) 或 container (Docker)",
+    type=click.Choice(["auto", "managed", "container", "code"]),
+    default="auto",
+    help="构建模式: auto (按配置推断)、managed、code 或 container",
 )
 @click.option("--tag", "-t", help="镜像标签 (container 模式)")
 @click.option("--registry", help="镜像仓库地址 (container 模式)")
 @click.option("--push", is_flag=True, help="构建后推送 (镜像到仓库 / zip到KS3)")
-@click.option("--no-cache", is_flag=True, help="强制重新构建，不使用缓存 (code: 忽略已有 zip；container: docker --no-cache)")
-@click.option("--repackage", is_flag=True, help="Code 模式复用依赖缓存，但强制重新打包当前代码/runtime")
-@click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="KS3 区域 (code 模式)")
+@click.option(
+    "--no-cache",
+    is_flag=True,
+    help="强制重新构建，不使用缓存 (code: 忽略已有 zip；container: docker --no-cache)",
+)
+@click.option(
+    "--repackage", is_flag=True, help="Code 模式复用依赖缓存，但强制重新打包当前代码/runtime"
+)
+@click.option(
+    "--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="KS3 区域 (code 模式)"
+)
 @click.option("--ks3-bucket", help="KS3 bucket 名称 (code 模式, 默认: agentengine-{region})")
 @cli_output_option()
 def build(
@@ -63,7 +81,9 @@ def build(
 
     \b
     模式:
-        code:      打包 zip + 依赖，上传 KS3 (默认)
+        auto:      按 artifact_type 推断 (默认)
+        managed:   只打包 ManagedRuntime manifest
+        code:      打包 zip + 依赖，上传 KS3
         container: 构建 Docker 镜像
 
     \b
@@ -77,22 +97,29 @@ def build(
     """
     _ = output_mode
     agent_path = Path(agent_dir).resolve()
+    effective_mode = _resolve_build_mode(agent_path, mode)
     try:
         with capture_standard_output():
             print_workflow_header(
                 title="Agent 构建",
-                subtitle=f"mode: {mode}",
+                subtitle=f"mode: {effective_mode}",
                 project_dir=agent_path,
                 target="build",
-                region=region if mode == "code" else None,
+                region=region if effective_mode in {"code", "managed"} else None,
                 mode_label="构建模式",
-                mode_value=mode,
+                mode_value=effective_mode,
             )
 
-            if mode == "container":
+            if effective_mode == "container":
                 result = _build_container(agent_path, tag, registry, push, no_cache)
+            elif effective_mode == "managed":
+                result = asyncio.run(
+                    _build_managed_runtime(agent_path, push, region, ks3_bucket)
+                )
             else:
-                result = asyncio.run(_build_code(agent_path, push, region, ks3_bucket, no_cache, repackage))
+                result = asyncio.run(
+                    _build_code(agent_path, push, region, ks3_bucket, no_cache, repackage)
+                )
     except Exception as e:
         if is_debug_mode_enabled():
             raise
@@ -101,6 +128,99 @@ def build(
 
     if is_json_output():
         render_workflow_result(action="build", result=result)
+
+
+def _load_build_config(agent_path: Path) -> dict:
+    config_path = agent_path / "agentengine.yaml"
+    if not config_path.exists():
+        config_path = agent_path / "ksadk.yaml"
+    if not config_path.exists():
+        return {}
+    with config_path.open(encoding="utf-8-sig") as stream:
+        loaded = yaml.safe_load(stream)
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _resolve_build_mode(agent_path: Path, requested_mode: str) -> str:
+    normalized = str(requested_mode or "auto").strip().lower()
+    if normalized != "auto":
+        return normalized
+    config = _load_build_config(agent_path)
+    artifact_type = str(config.get("artifact_type") or "").strip().lower()
+    return "managed" if artifact_type == "managedruntime" else "code"
+
+
+async def _build_managed_runtime(
+    agent_path: Path,
+    push: bool,
+    region: str,
+    ks3_bucket: str | None = None,
+):
+    """Build and optionally upload a system-independent runtime manifest."""
+    import json
+    from dataclasses import asdict
+
+    from ksadk.builders import KS3Uploader, ManagedRuntimeBuilder
+    from ksadk.managed_runtime import resolve_managed_runtime
+
+    config = _load_build_config(agent_path)
+    resolved = await resolve_managed_runtime(config, region=region)
+    builder = ManagedRuntimeBuilder(agent_path, runtime_version=resolved.version)
+    result = builder.build()
+    if not result.success or result.artifact_path is None:
+        raise validation_error(result.error_message or "ManagedRuntime manifest 构建失败")
+
+    ks3_public_url = ""
+    ks3_internal_url = ""
+    if push:
+        print_rule("上传 Runtime manifest 到 KS3")
+        upload_region = "cn-beijing-6" if region == "pre-online" else region
+        uploader = KS3Uploader(region=upload_region, bucket=ks3_bucket)
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        agent_name = str(result.metadata.get("agent_name") or agent_path.name)
+        object_key = f"agents/{agent_name}/runtime_{timestamp}.zip"
+        ks3_path = await uploader.upload(result.artifact_path, object_key)
+        if not ks3_path:
+            raise remote_error("Runtime manifest 上传 KS3 失败")
+        result.metadata["ks3_path"] = ks3_path
+        result.metadata["pushed"] = True
+        ks3_public_url = str(uploader.get_public_url_by_key(object_key) or "")
+        ks3_internal_url = str(uploader.get_internal_url_by_key(object_key) or "")
+
+    metadata_file = agent_path / ".agentengine" / "build-metadata.json"
+    metadata_file.parent.mkdir(parents=True, exist_ok=True)
+    data = asdict(result)
+    metadata_file.write_text(
+        json.dumps(
+            data,
+            ensure_ascii=False,
+            indent=2,
+            default=lambda value: str(value) if isinstance(value, Path) else value,
+        ),
+        encoding="utf-8",
+    )
+
+    _print_summary("ManagedRuntime", result, show_next_step=not push)
+    return {
+        "framework": str(result.metadata.get("framework") or "codex"),
+        "artifact_type": "managedruntime",
+        "artifact_source": "built_and_uploaded" if push else "built",
+        "artifact_reused": False,
+        "artifact_built": True,
+        "artifact_reference": str(
+            result.metadata.get("ks3_path") or result.artifact_path or ""
+        ),
+        "artifact_path": str(result.artifact_path),
+        "artifact_size_mb": float(result.artifact_size_mb),
+        "ks3_path": str(result.metadata.get("ks3_path") or ""),
+        "ks3_public_url": ks3_public_url,
+        "ks3_internal_url": ks3_internal_url,
+        "runtime_name": resolved.name,
+        "runtime_version": resolved.version,
+        "runtime_version_source": resolved.source,
+        "manifest_sha256": str(result.metadata.get("manifest_sha256") or ""),
+        "push": bool(push),
+    }
 
 
 def _build_container(agent_path: Path, tag: str, registry: str, push: bool, no_cache: bool):
@@ -126,7 +246,10 @@ def _build_container(agent_path: Path, tag: str, registry: str, push: bool, no_c
             )
 
         print_next_steps(
-            [f"agentengine deploy --target serverless --image {result.metadata['image']} --artifact-type Container"]
+            [
+                "agentengine deploy --target serverless "
+                f"--image {result.metadata['image']} --artifact-type Container"
+            ]
         )
 
     # 摘要
@@ -147,14 +270,16 @@ async def _build_code(
     agent_path: Path,
     push: bool,
     region: str,
-    ks3_bucket: str = None,
+    ks3_bucket: str | None = None,
     no_cache: bool = False,
     repackage: bool = False,
 ):
     """Code 模式构建"""
     from ksadk.builders import CodeBuilder, KS3Uploader
 
-    builder = CodeBuilder(project_dir=agent_path, config={"no_cache": no_cache, "repackage": repackage})
+    builder = CodeBuilder(
+        project_dir=agent_path, config={"no_cache": no_cache, "repackage": repackage}
+    )
     result = builder.build()
 
     if not result.success:
@@ -167,17 +292,19 @@ async def _build_code(
     ks3_internal_url = None
 
     if push:
+        if result.artifact_path is None:
+            raise validation_error("构建成功但未生成代码包路径")
         print_rule("上传到 KS3")
         upload_started_at = time.monotonic()
-        
+
         # 预发特殊逻辑: region 为 pre-online 时，资源上传到 cn-beijing-6
         upload_region = "cn-beijing-6" if region == "pre-online" else region
-        
+
         if region == "pre-online":
             print_warn("预发环境: 资源将上传到 cn-beijing-6 region")
-        
+
         uploader = KS3Uploader(region=upload_region, bucket=ks3_bucket)
-        
+
         # 使用时间戳确保每次上传的代码包路径唯一，支持真正的版本回滚
         timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
         object_key = f"agents/{agent_name}/code_{timestamp}.zip"
@@ -189,7 +316,7 @@ async def _build_code(
             # 更新 metadata 以便持久化
             result.metadata["ks3_path"] = ks3_path
             result.metadata["pushed"] = True
-            
+
             ks3_public_url = uploader.get_public_url_by_key(object_key)
             ks3_internal_url = uploader.get_internal_url_by_key(object_key)
             print_kv("公网地址", ks3_public_url or "-")
@@ -206,7 +333,7 @@ async def _build_code(
     try:
         import json
         from dataclasses import asdict
-        
+
         # 自定义序列化: 处理 Path 对象
         def default_serializer(obj):
             if isinstance(obj, Path):
@@ -228,7 +355,9 @@ async def _build_code(
     return {
         "framework": result.metadata.get("framework", "unknown"),
         "artifact_type": "code",
-        "artifact_source": "built_and_uploaded" if push and result.metadata.get("ks3_path") else "built",
+        "artifact_source": (
+            "built_and_uploaded" if push and result.metadata.get("ks3_path") else "built"
+        ),
         "artifact_reused": bool(result.metadata.get("reused", False)),
         "artifact_built": True,
         "artifact_reference": str(result.metadata.get("ks3_path") or result.artifact_path or ""),

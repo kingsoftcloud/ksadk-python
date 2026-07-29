@@ -15,10 +15,17 @@ from ksadk.tools.gateway import ToolPolicy, default_tool_gateway
 from ksadk.tools.result_budget import budget_tool_output, default_tool_result_budget
 from ksadk.toolsets._langchain import as_tool
 
-
 _WEB_TOOL_POLICIES = {
-    "web_fetch": ToolPolicy(risk_level="low"),
-    "web_search": ToolPolicy(risk_level="low"),
+    "web_fetch": ToolPolicy(
+        risk_level="low",
+        approval_scopes=("public_network",),
+        approval_exempt=True,
+    ),
+    "web_search": ToolPolicy(
+        risk_level="low",
+        approval_scopes=("public_network",),
+        approval_exempt=True,
+    ),
 }
 
 
@@ -26,10 +33,19 @@ def _gateway():
     return default_tool_gateway(_WEB_TOOL_POLICIES)
 
 
+def _dict_result(value: Any, *, tool_name: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise TypeError(f"{tool_name} returned {type(value).__name__}, expected dict")
+    return dict(value)
+
+
 def web_fetch(url: str, max_chars: int | None = None, timeout: int = 30) -> dict:
     """Fetch a public HTTP(S) URL and return sanitized text content."""
 
-    return _gateway().invoke("web_fetch", _web_fetch_impl, url, max_chars, timeout)
+    return _dict_result(
+        _gateway().invoke("web_fetch", _web_fetch_impl, url, max_chars, timeout),
+        tool_name="web_fetch",
+    )
 
 
 def _web_fetch_impl(url: str, max_chars: int | None = None, timeout: int = 30) -> dict:
@@ -44,9 +60,19 @@ def _web_fetch_impl(url: str, max_chars: int | None = None, timeout: int = 30) -
             with httpx.Client(follow_redirects=False, timeout=timeout) as client:
                 response = client.get(current_url)
         except httpx.TimeoutException:
-            return {"ok": False, "error_type": "timeout", "error_message": "web_fetch timed out", "url": current_url}
+            return {
+                "ok": False,
+                "error_type": "timeout",
+                "error_message": "web_fetch timed out",
+                "url": current_url,
+            }
         except httpx.HTTPError as exc:
-            return {"ok": False, "error_type": type(exc).__name__, "error_message": str(exc), "url": current_url}
+            return {
+                "ok": False,
+                "error_type": type(exc).__name__,
+                "error_message": str(exc),
+                "url": current_url,
+            }
         if response.is_redirect and response.headers.get("location"):
             current_url = urljoin(current_url, str(response.headers["location"]))
             continue
@@ -58,7 +84,9 @@ def _web_fetch_impl(url: str, max_chars: int | None = None, timeout: int = 30) -
             field_name="text",
             value=text,
             metadata={"tool_use_id": "web_fetch"},
-            budget=default_tool_result_budget(max_chars=limit, preview_chars=limit, persist_threshold_chars=limit),
+            budget=default_tool_result_budget(
+                max_chars=limit, preview_chars=limit, persist_threshold_chars=limit
+            ),
         )
         return {
             "ok": True,
@@ -68,13 +96,21 @@ def _web_fetch_impl(url: str, max_chars: int | None = None, timeout: int = 30) -
             "content_type": content_type,
             **budgeted,
         }
-    return {"ok": False, "error_type": "too_many_redirects", "error_message": "web_fetch exceeded redirect limit", "url": url}
+    return {
+        "ok": False,
+        "error_type": "too_many_redirects",
+        "error_message": "web_fetch exceeded redirect limit",
+        "url": url,
+    }
 
 
 def web_search(query: str, max_results: int = 5, recency_days: int | None = None) -> dict:
     """Search the web and return title/url/snippet results without fetching full pages."""
 
-    return _gateway().invoke("web_search", _web_search_impl, query, max_results, recency_days)
+    return _dict_result(
+        _gateway().invoke("web_search", _web_search_impl, query, max_results, recency_days),
+        tool_name="web_search",
+    )
 
 
 def _web_search_impl(query: str, max_results: int = 5, recency_days: int | None = None) -> dict:
@@ -83,7 +119,11 @@ def _web_search_impl(query: str, max_results: int = 5, recency_days: int | None 
         return {"ok": False, "error_type": "query_required", "error_message": "query is required"}
     provider = _web_search_provider()
     if not provider:
-        return {"ok": False, "error_type": "provider_not_configured", "error_message": "web search provider is not configured"}
+        return {
+            "ok": False,
+            "error_type": "provider_not_configured",
+            "error_message": "web search provider is not configured",
+        }
     if provider == "fake":
         return {
             "ok": True,
@@ -103,7 +143,11 @@ def _web_search_impl(query: str, max_results: int = 5, recency_days: int | None 
         return _web_search_http(text, max_results=max_results, recency_days=recency_days)
     if provider == "ksyun":
         return _web_search_ksyun(text, max_results=max_results)
-    return {"ok": False, "error_type": "provider_not_configured", "error_message": f"unsupported web search provider: {provider}"}
+    return {
+        "ok": False,
+        "error_type": "provider_not_configured",
+        "error_message": f"unsupported web search provider: {provider}",
+    }
 
 
 def get_web_tools() -> list:
@@ -112,17 +156,35 @@ def get_web_tools() -> list:
 
 def _web_search_provider() -> str:
     return (
-        os.environ.get("KSADK_WEB_SEARCH_PROVIDER")
-        or os.environ.get("OPENCLAW_WEB_SEARCH_PROVIDER")
+        (
+            os.environ.get("KSADK_WEB_SEARCH_PROVIDER")
+            or os.environ.get("OPENCLAW_WEB_SEARCH_PROVIDER")
+            or ""
+        )
+        .strip()
+        .lower()
+    )
+
+
+def _web_search_http(
+    query: str, *, max_results: int = 5, recency_days: int | None = None
+) -> dict[str, Any]:
+    base_url = str(
+        os.environ.get("KSADK_WEB_SEARCH_BASE_URL")
+        or os.environ.get("OPENCLAW_WEB_SEARCH_BASE_URL")
         or ""
-    ).strip().lower()
-
-
-def _web_search_http(query: str, *, max_results: int = 5, recency_days: int | None = None) -> dict[str, Any]:
-    base_url = str(os.environ.get("KSADK_WEB_SEARCH_BASE_URL") or os.environ.get("OPENCLAW_WEB_SEARCH_BASE_URL") or "").strip()
+    ).strip()
     if not base_url:
-        return {"ok": False, "error_type": "provider_not_configured", "error_message": "web search base URL is not configured"}
-    api_key = str(os.environ.get("KSADK_WEB_SEARCH_API_KEY") or os.environ.get("OPENCLAW_WEB_SEARCH_API_KEY") or "").strip()
+        return {
+            "ok": False,
+            "error_type": "provider_not_configured",
+            "error_message": "web search base URL is not configured",
+        }
+    api_key = str(
+        os.environ.get("KSADK_WEB_SEARCH_API_KEY")
+        or os.environ.get("OPENCLAW_WEB_SEARCH_API_KEY")
+        or ""
+    ).strip()
     params: dict[str, Any] = {"q": query, "max_results": max(1, int(max_results or 5))}
     if recency_days is not None:
         params["recency_days"] = int(recency_days)
@@ -190,7 +252,14 @@ def _web_search_ksyun(query: str, *, max_results: int = 5) -> dict[str, Any]:
     endpoint = _ksyun_search_endpoint()
     api_key = _ksyun_search_api_key()
     if not api_key:
-        return {"ok": False, "error_type": "provider_not_configured", "error_message": "ksyun web search api key is not configured (KSADK_WEB_SEARCH_API_KEY / KSADK_MCP_KEY / KSC_AIPRO_API_KEY)"}
+        return {
+            "ok": False,
+            "error_type": "provider_not_configured",
+            "error_message": (
+                "ksyun web search api key is not configured "
+                "(KSADK_WEB_SEARCH_API_KEY / KSADK_MCP_KEY / KSC_AIPRO_API_KEY)"
+            ),
+        }
     size = max(1, min(int(max_results or 5), 200))
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
     payload_body = {"q": query, "scope": _ksyun_search_scope(), "size": size}
@@ -231,25 +300,53 @@ def _web_search_ksyun(query: str, *, max_results: int = 5) -> dict[str, Any]:
 def _validate_public_http_url(url: str) -> dict | None:
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"}:
-        return {"ok": False, "error_type": "unsupported_scheme", "error_message": "only http and https URLs are supported", "url": url}
+        return {
+            "ok": False,
+            "error_type": "unsupported_scheme",
+            "error_message": "only http and https URLs are supported",
+            "url": url,
+        }
     if not parsed.hostname:
-        return {"ok": False, "error_type": "invalid_url", "error_message": "URL host is required", "url": url}
+        return {
+            "ok": False,
+            "error_type": "invalid_url",
+            "error_message": "URL host is required",
+            "url": url,
+        }
     policy = _ssrf_policy()
     if policy.get("allow_private") is True:
         return None
     try:
-        addresses = socket.getaddrinfo(parsed.hostname, parsed.port or (443 if parsed.scheme == "https" else 80), type=socket.SOCK_STREAM)
+        addresses = socket.getaddrinfo(
+            parsed.hostname,
+            parsed.port or (443 if parsed.scheme == "https" else 80),
+            type=socket.SOCK_STREAM,
+        )
     except socket.gaierror as exc:
-        return {"ok": False, "error_type": "dns_resolution_failed", "error_message": str(exc), "url": url}
+        return {
+            "ok": False,
+            "error_type": "dns_resolution_failed",
+            "error_message": str(exc),
+            "url": url,
+        }
     for address in addresses:
         ip = ipaddress.ip_address(address[4][0])
         if ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_multicast or ip.is_reserved:
-            return {"ok": False, "error_type": "blocked_by_ssrf_policy", "error_message": f"blocked non-public address: {ip}", "url": url}
+            return {
+                "ok": False,
+                "error_type": "blocked_by_ssrf_policy",
+                "error_message": f"blocked non-public address: {ip}",
+                "url": url,
+            }
     return None
 
 
 def _ssrf_policy() -> dict:
-    raw = os.environ.get("KSADK_WEB_SSRF_POLICY_JSON") or os.environ.get("OPENCLAW_BROWSER_SSRF_POLICY_JSON") or ""
+    raw = (
+        os.environ.get("KSADK_WEB_SSRF_POLICY_JSON")
+        or os.environ.get("OPENCLAW_BROWSER_SSRF_POLICY_JSON")
+        or ""
+    )
     if not raw:
         return {}
     try:
