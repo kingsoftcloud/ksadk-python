@@ -4,7 +4,8 @@ import importlib
 from pathlib import Path
 
 from ksadk.builders.container_builder import ContainerBuilder
-from ksadk.model_proxy.cache import _scope
+from ksadk.model_proxy.cache import CapabilityCache, credential_scope
+from ksadk.model_proxy.detect import ModelCapabilities
 from ksadk.server.routes.common import _find_ui_static_asset
 from ksadk.skills.service_client import SkillServiceClient
 
@@ -52,9 +53,25 @@ def test_static_asset_lookup_cannot_escape_the_configured_bundle(tmp_path: Path)
 
 
 def test_credential_cache_scope_is_domain_separated_and_nonreversible():
-    first = _scope("model-key-one")
-    second = _scope("model-key-two")
+    first = credential_scope("model-key-one")
+    second = credential_scope("model-key-two")
 
     assert first != second
-    assert len(first) == 16
+    assert len(first) == 32
     assert "model-key" not in first
+
+
+def test_capability_cache_uses_a_prederived_scope_without_retaining_credentials():
+    cache = CapabilityCache()
+    calls: list[tuple[str, str]] = []
+
+    def probe(model: str, base: str) -> ModelCapabilities:
+        calls.append((model, base))
+        return ModelCapabilities(verdict="unsupported")
+
+    scope = credential_scope("model-key")
+    first = cache.get_or_probe("glm-5.2", "https://gateway.example/v1", scope, probe)
+    second = cache.get_or_probe("glm-5.2", "https://gateway.example/v1", scope, probe)
+    assert first.verdict == "unsupported"
+    assert second.verdict == "unsupported"
+    assert calls == [("glm-5.2", "https://gateway.example/v1")]
