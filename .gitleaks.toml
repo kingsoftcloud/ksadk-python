@@ -25,6 +25,18 @@ paths = [
     '''tests/test_cmd_hermes\.py''',
 ]
 
+# Route-manifest fixture checksums are deterministic SHA-256 test data, not
+# credentials. The public CI scans every public branch's history, including the
+# superseded runtime-foundation candidate where this fixture originated.
+[[allowlists]]
+description = "Allowlist deterministic route-manifest SHA-256 test fixture"
+regexes = [
+    '''ac9086d1592d69d7eecd4260c2ca4bfa06b0daaed5cdf0653c4eb409204ed84d''',
+]
+paths = [
+    '''tests/server/test_route_manifest_parity\.py''',
+]
+
 # ---- 历史已删文档中的 OPENAI_API_KEY (疑似真 kspmas key) ----
 # !!! 安全前置条件 !!!
 # 启用本 allowlist 之前, 必须先在金山云 kspmas 控制台 rotate (吊销并重发) 该 key,
