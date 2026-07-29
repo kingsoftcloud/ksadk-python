@@ -48,7 +48,11 @@ from ksadk.cli.workflow_common import print_workflow_header, render_workflow_res
 )
 @click.option("--tag", "-t", help="镜像标签 (container 模式)")
 @click.option("--registry", help="镜像仓库地址 (container 模式)")
-@click.option("--push", is_flag=True, help="构建后推送 (镜像到仓库 / zip到KS3)")
+@click.option(
+    "--push",
+    is_flag=True,
+    help="构建后推送（仅 Container 镜像或 Code zip；ManagedRuntime 不支持）",
+)
 @click.option(
     "--no-cache",
     is_flag=True,
@@ -58,7 +62,11 @@ from ksadk.cli.workflow_common import print_workflow_header, render_workflow_res
     "--repackage", is_flag=True, help="Code 模式复用依赖缓存，但强制重新打包当前代码/runtime"
 )
 @click.option(
-    "--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="KS3 区域 (code 模式)"
+    "--region",
+    "-r",
+    default="cn-beijing-6",
+    envvar="KSYUN_REGION",
+    help="Code 的 KS3 区域，或 ManagedRuntime catalog 查询区域",
 )
 @click.option("--ks3-bucket", help="KS3 bucket 名称 (code 模式, 默认: agentengine-{region})")
 @cli_output_option()
@@ -156,12 +164,23 @@ async def _build_managed_runtime(
     region: str,
     ks3_bucket: str | None = None,
 ):
-    """Build and optionally upload a system-independent runtime manifest."""
+    """Build a local, system-independent runtime manifest for review/audit.
+
+    ManagedRuntime deployment is an inline server contract.  Its optional local
+    zip is deliberately never published to KS3; the server receives the
+    normalized manifest and resolves the managed image itself.
+    """
     import json
     from dataclasses import asdict
 
-    from ksadk.builders import KS3Uploader, ManagedRuntimeBuilder
+    from ksadk.builders import ManagedRuntimeBuilder
     from ksadk.managed_runtime import resolve_managed_runtime
+
+    if push or ks3_bucket:
+        raise validation_error(
+            "ManagedRuntime 不使用 KS3；请移除 --push 和 --ks3-bucket。"
+            "构建出的本地 zip 仅用于审计，直接执行 `ksadk deploy .` 即可部署。"
+        )
 
     config = _load_build_config(agent_path)
     resolved = await resolve_managed_runtime(config, region=region)
@@ -169,23 +188,6 @@ async def _build_managed_runtime(
     result = builder.build()
     if not result.success or result.artifact_path is None:
         raise validation_error(result.error_message or "ManagedRuntime manifest 构建失败")
-
-    ks3_public_url = ""
-    ks3_internal_url = ""
-    if push:
-        print_rule("上传 Runtime manifest 到 KS3")
-        upload_region = "cn-beijing-6" if region == "pre-online" else region
-        uploader = KS3Uploader(region=upload_region, bucket=ks3_bucket)
-        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-        agent_name = str(result.metadata.get("agent_name") or agent_path.name)
-        object_key = f"agents/{agent_name}/runtime_{timestamp}.zip"
-        ks3_path = await uploader.upload(result.artifact_path, object_key)
-        if not ks3_path:
-            raise remote_error("Runtime manifest 上传 KS3 失败")
-        result.metadata["ks3_path"] = ks3_path
-        result.metadata["pushed"] = True
-        ks3_public_url = str(uploader.get_public_url_by_key(object_key) or "")
-        ks3_internal_url = str(uploader.get_internal_url_by_key(object_key) or "")
 
     metadata_file = agent_path / ".agentengine" / "build-metadata.json"
     metadata_file.parent.mkdir(parents=True, exist_ok=True)
@@ -200,26 +202,24 @@ async def _build_managed_runtime(
         encoding="utf-8",
     )
 
-    _print_summary("ManagedRuntime", result, show_next_step=not push)
+    _print_summary("ManagedRuntime", result, show_next_step=True)
     return {
         "framework": str(result.metadata.get("framework") or "codex"),
         "artifact_type": "managedruntime",
-        "artifact_source": "built_and_uploaded" if push else "built",
+        "artifact_source": "built",
         "artifact_reused": False,
         "artifact_built": True,
-        "artifact_reference": str(
-            result.metadata.get("ks3_path") or result.artifact_path or ""
-        ),
+        "artifact_reference": str(result.artifact_path),
         "artifact_path": str(result.artifact_path),
         "artifact_size_mb": float(result.artifact_size_mb),
-        "ks3_path": str(result.metadata.get("ks3_path") or ""),
-        "ks3_public_url": ks3_public_url,
-        "ks3_internal_url": ks3_internal_url,
+        "ks3_path": "",
+        "ks3_public_url": "",
+        "ks3_internal_url": "",
         "runtime_name": resolved.name,
         "runtime_version": resolved.version,
         "runtime_version_source": resolved.source,
         "manifest_sha256": str(result.metadata.get("manifest_sha256") or ""),
-        "push": bool(push),
+        "push": False,
     }
 
 
