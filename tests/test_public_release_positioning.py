@@ -18,9 +18,6 @@ ZH_DOC_URLS = {
     f"{DOCS_ROOT_URL}cn/docs/framework/guides/observability-tracing/",
     f"{DOCS_ROOT_URL}cn/docs/framework/guides/cloud-deployment/",
     f"{DOCS_ROOT_URL}cn/docs/framework/guides/hosted-ui-events/",
-    f"{DOCS_ROOT_URL}cn/docs/framework/guides/a2a-runtime/",
-    f"{DOCS_ROOT_URL}cn/docs/framework/guides/managed-runtime/",
-    f"{DOCS_ROOT_URL}cn/docs/framework/guides/harness-app/",
 }
 EN_DOC_URLS = {
     f"{DOCS_ROOT_URL}en/docs/framework/getting-started/quickstart/",
@@ -30,9 +27,6 @@ EN_DOC_URLS = {
     f"{DOCS_ROOT_URL}en/docs/framework/guides/observability-tracing/",
     f"{DOCS_ROOT_URL}en/docs/framework/guides/cloud-deployment/",
     f"{DOCS_ROOT_URL}en/docs/framework/guides/hosted-ui-events/",
-    f"{DOCS_ROOT_URL}en/docs/framework/guides/a2a-runtime/",
-    f"{DOCS_ROOT_URL}en/docs/framework/guides/managed-runtime/",
-    f"{DOCS_ROOT_URL}en/docs/framework/guides/harness-app/",
 }
 
 _DOCS_LINK_PATTERN = re.compile(
@@ -105,6 +99,8 @@ def test_public_readme_positions_ksadk_as_runtime_platform():
     assert "当前版本：" not in readme
     assert "发布版本：" not in readme
     assert "## 0.6." not in readme
+    assert "0.8.0" not in readme
+    assert "评审候选" not in readme
 
 
 def test_public_readme_language_variants_keep_homepage_shape():
@@ -120,6 +116,8 @@ def test_public_readme_language_variants_keep_homepage_shape():
         assert "ksadk-runtime-architecture.png" in text
         assert "发布版本：" not in text
         assert "## 0.6." not in text
+        assert "0.8.0" not in text
+        assert "评审候选" not in text
 
     assert "Kingsoft Cloud Agent Development Kit" in en_readme
     assert "ksadk-runtime-platform-hero-wide.png" in en_readme
@@ -129,6 +127,8 @@ def test_public_readme_language_variants_keep_homepage_shape():
     assert "ksadk-runtime-architecture.png" not in en_readme
     assert "发布版本：" not in en_readme
     assert "## 0.6." not in en_readme
+    assert "0.8.0" not in en_readme
+    assert "Review Candidate" not in en_readme
 
     assert _github_pages_urls(root_readme) == {DOCS_ROOT_URL, *ZH_DOC_URLS}
     assert _github_pages_urls(zh_readme) == {DOCS_ROOT_URL, *ZH_DOC_URLS}
