@@ -41,18 +41,6 @@ agentengine web . --no-open
 
 <p align="center"><img alt="KsADK 真实本地 Web UI 演示" src="docs-site/public/assets/ksadk-local-debugging-demo.gif" width="860" /></p>
 
-## 0.8.0 评审候选
-
-`0.8.0` 是正在评审的候选分支，不是已发布的 PyPI/npm 版本。它把 RuntimeEvent、AG-UI/A2UI、A2A、Harness 和 CodexRuntime 统一到同一运行时边界，同时保持 `/v1/responses` 和 `/v1/chat/completions` 兼容入口可用。
-
-- **Hosted UI**：AG-UI/A2UI 通过能力协商启用；不能协商时继续使用既有 Responses transport。
-- **事件诊断**：`ksadk replay <session-id>` 只读回放新 RuntimeEvent 历史，可用 `--after-seq-id` / `--before-seq-id` 缩小排查窗口，不会再次执行模型、工具或审批副作用。
-- **托管 A2A（实验性）**：AgentEngine 通过 Gateway 装配可信入站和 Space-scoped 出站 client。首期 external Agent 仅支持 `external_public`；它受 `Network.EnablePublicAccess` 控制并使用受限 NAT transport，`external_vpc` 尚不可用。
-- **Codex Managed Runtime（新增）**：使用无 `agent.py` 的 `agentengine.yaml` 在 macOS、Windows 和 Linux 原生调试 Codex；直接部署发送内联 manifest，不上传 KS3 代码包，云端选择锁定的 Linux Runtime 镜像。
-- **框架迁移**：新接入优先使用 LangGraph、Google ADK 或 `RuntimeAdapter`。旧 LangChain 连续性 / HITL 路径不属于 `0.8` 兼容性承诺。
-
-详见[Codex Managed Runtime 指南](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/managed-runtime/)、[Hosted UI 与事件回放指南](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/hosted-ui-events/)、[托管 A2A Runtime 指南](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/a2a-runtime/)、[HarnessApp 指南](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/harness-app/)和 [0.8.0 更新日志](CHANGELOG.md)。
-
 ## 为什么需要 KsADK
 
 大多数 Agent 框架解决“如何开发 Agent”。KsADK 解决“如何运行、调试、部署和观测 Agent”。
