@@ -66,6 +66,8 @@ jobs:
   test-adk-matrix:
     name: full pytest (google-adk ${{ matrix.google-adk }})
     runs-on: ubuntu-latest
+    env:
+      KSADK_WEB_VERSION: "0.3.0"
     strategy:
       fail-fast: false
       matrix:
@@ -89,6 +91,11 @@ jobs:
 
       - name: Verify google-adk version
         run: uv run --no-sync python -c "from importlib.metadata import version; print('google-adk', version('google-adk'))"
+
+      # Static web assets are deliberately not tracked in the Python source
+      # tree; fetch and verify the released npm payload before wheel build.
+      - name: Sync KsADK Web static assets
+        run: make public-sync-ksadk-web-static
 
       # Packaging tests inspect the wheel itself; build it in each isolated ADK
       # environment rather than depending on an artifact from another job.
