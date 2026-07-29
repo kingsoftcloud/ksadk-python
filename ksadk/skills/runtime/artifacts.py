@@ -20,11 +20,7 @@ def parse_artifact_lines(stdout: str) -> list[str]:
 def collect_output_dir_artifacts(output_dir: Path) -> list[str]:
     if not output_dir.is_dir():
         return []
-    return [
-        str(path)
-        for path in sorted(output_dir.rglob("*"))
-        if path.is_file()
-    ]
+    return [str(path) for path in sorted(output_dir.rglob("*")) if path.is_file()]
 
 
 def merge_artifacts(*groups: list[str]) -> list[str]:

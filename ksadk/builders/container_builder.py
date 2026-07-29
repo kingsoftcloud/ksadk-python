@@ -3,13 +3,12 @@ Container Builder - Docker 镜像构建
 """
 
 import os
-import subprocess
-import shutil
-import time
 import platform
-import asyncio
+import shutil
+import subprocess
+import time
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import click
 
@@ -25,12 +24,15 @@ from ksadk.builders.requirements_utils import (
     parse_requirements_text,
 )
 
+if TYPE_CHECKING:
+    from ksadk.deployment.base import PackageInfo
+
 
 def _registry_host(registry: str | None) -> str:
     value = str(registry or "").strip()
     for prefix in ("http://", "https://"):
         if value.startswith(prefix):
-            value = value[len(prefix):]
+            value = value[len(prefix) :]
             break
     return value.split("/", 1)[0].strip()
 
@@ -100,8 +102,8 @@ def print_registry_credentials_help(registry: str | None, *, kind: str | None = 
 
 def ensure_docker_running() -> bool:
     """确保 Docker 正在运行"""
-    if not shutil.which('docker'):
-        click.secho("❌ 未找到 docker 命令", fg='red')
+    if not shutil.which("docker"):
+        click.secho("❌ 未找到 docker 命令", fg="red")
         click.echo("")
         click.echo("请先安装 Docker:")
         if platform.system() == "Darwin":
@@ -113,36 +115,36 @@ def ensure_docker_running() -> bool:
         else:
             click.echo("  • 下载 Docker Desktop: https://www.docker.com/products/docker-desktop/")
         return False
-    
+
     try:
-        result = subprocess.run(['docker', 'info'], capture_output=True, timeout=10)
+        result = subprocess.run(["docker", "info"], capture_output=True, timeout=10)
         if result.returncode == 0:
             return True
-    except:
+    except (OSError, subprocess.SubprocessError):
         pass
-    
-    click.secho("⚠️  Docker daemon 未运行", fg='yellow')
-    
+
+    click.secho("⚠️  Docker daemon 未运行", fg="yellow")
+
     system_name = platform.system()
     if system_name == "Darwin":
         click.echo("🚀 正在启动 Docker Desktop...")
         try:
-            subprocess.run(['open', '-a', 'Docker'], check=True)
+            subprocess.run(["open", "-a", "Docker"], check=True)
             for i in range(60):
                 time.sleep(1)
                 try:
-                    result = subprocess.run(['docker', 'info'], capture_output=True, timeout=5)
+                    result = subprocess.run(["docker", "info"], capture_output=True, timeout=5)
                     if result.returncode == 0:
-                        click.secho("✅ Docker Desktop 已启动", fg='green')
+                        click.secho("✅ Docker Desktop 已启动", fg="green")
                         return True
-                except:
+                except (OSError, subprocess.SubprocessError):
                     pass
                 if i % 5 == 0 and i > 0:
                     click.echo(f"   等待 Docker 启动中... ({i}秒)")
-            click.secho("❌ Docker Desktop 启动超时", fg='red')
+            click.secho("❌ Docker Desktop 启动超时", fg="red")
             return False
-        except:
-            click.secho("❌ 无法启动 Docker Desktop", fg='red')
+        except (OSError, subprocess.SubprocessError):
+            click.secho("❌ 无法启动 Docker Desktop", fg="red")
             return False
     elif system_name == "Windows":
         click.echo("请启动 Docker Desktop，然后重试当前命令。")
@@ -154,81 +156,95 @@ def ensure_docker_running() -> bool:
 
 class ContainerBuilder(BaseBuilder):
     """Docker 镜像构建器"""
-    
-    def __init__(self, project_dir: Path, config: dict = None,
-                 tag: str = None, registry: str = None, no_cache: bool = False):
+
+    def __init__(
+        self,
+        project_dir: Path,
+        config: Optional[dict] = None,
+        tag: Optional[str] = None,
+        registry: Optional[str] = None,
+        no_cache: bool = False,
+    ):
         super().__init__(project_dir, config)
         self.tag = tag
         self.registry = registry
         self.no_cache = no_cache
-    
+
     def _get_smart_kcr_endpoint(self, region: str) -> str:
         """智能选择 KCR endpoint
-        
+
         使用企业版 KCR (hub.kce.ksyun.com/agentengine/)。
         优先使用内网 VPC endpoint，如果内网不可达则使用公网。
         """
         from ksadk.configs.settings import check_endpoint_reachable
-        
+
         # 企业版 KCR 地址 (带 agentengine 命名空间)
         vpc_endpoint = "hub-vpc.kce.ksyun.com/agentengine"
         public_endpoint = "hub.kce.ksyun.com/agentengine"
-        
-        click.echo(f"🔍 检测 KCR 内网连通性...")
-        
+
+        click.echo("🔍 检测 KCR 内网连通性...")
+
         # 检测 VPC 内网是否可达 (端口 443 for HTTPS registry)
         if check_endpoint_reachable("hub-vpc.kce.ksyun.com", port=443, timeout=2.0):
-            click.secho(f"   ✅ 使用内网: {vpc_endpoint}", fg='green')
+            click.secho(f"   ✅ 使用内网: {vpc_endpoint}", fg="green")
             return vpc_endpoint
         else:
             click.echo(f"   ℹ️  使用公网: {public_endpoint}")
             return public_endpoint
-    
+
     def _optimize_kcr_endpoint(self, registry: str) -> str:
         """优化 KCR endpoint
-        
+
         如果是金山云 KCR 公网地址，且内网可达，则替换为内网地址。
         """
         from ksadk.configs.settings import check_endpoint_reachable
-        
+
+        registry_text = str(registry).strip()
+        scheme, separator, reference = registry_text.partition("://")
+        prefix = f"{scheme}://" if separator else ""
+        target = reference if separator else registry_text
+        host, slash, remainder = target.partition("/")
+        normalized_host = host.lower()
+
         # 已经是内网地址
-        if 'hub-vpc' in registry:
+        if normalized_host == "hub-vpc.kce.ksyun.com":
             return registry
-        
-        # 匹配企业版 KCR: hub.kce.ksyun.com
-        if 'hub.kce.ksyun.com' in registry:
-            click.echo(f"🔍 检测 KCR 内网连通性...")
+
+        # 仅匹配完整 registry host，避免改写路径或攻击者域名中的同名子串。
+        if normalized_host == "hub.kce.ksyun.com":
+            click.echo("🔍 检测 KCR 内网连通性...")
             if check_endpoint_reachable("hub-vpc.kce.ksyun.com", port=443, timeout=2.0):
-                optimized = registry.replace("hub.kce.ksyun.com", "hub-vpc.kce.ksyun.com")
-                click.secho(f"   ✅ 优化为内网: {optimized}", fg='green')
+                optimized = f"{prefix}hub-vpc.kce.ksyun.com{slash}{remainder}"
+                click.secho(f"   ✅ 优化为内网: {optimized}", fg="green")
                 return optimized
             else:
                 click.echo(f"   ℹ️  使用公网: {registry}")
-        
+
         return registry
-    
-    def _package(self, detection_result) -> 'PackageInfo':
+
+    def _package(self, detection_result) -> "PackageInfo":
         """打包项目 - 复制文件并生成 Dockerfile/requirements/entrypoint"""
         from ksadk.deployment.base import PackageInfo
-        
+
         project_path = self.project_dir
         output_dir = project_path / ".agentengine" / "build"
         output_dir.mkdir(parents=True, exist_ok=True)
-        
+
         package_name = Path(detection_result.package_path).name
         is_container_first_template = (
             getattr(getattr(detection_result, "type", None), "value", "") == "hermes"
             and (project_path / "Dockerfile").exists()
             and (project_path / "entrypoint.sh").exists()
         )
-        
+
         # 复制项目文件。真实 .env 只通过 deploy payload 注入，不进入镜像上下文。
         for item in project_path.iterdir():
             if CodeBuilder._is_real_dotenv_file(item.name):
                 continue
-            if (
-                (item.name.startswith('.') and item.name != '.env.example')
-                or item.name in ('__pycache__', '.git', 'node_modules')
+            if (item.name.startswith(".") and item.name != ".env.example") or item.name in (
+                "__pycache__",
+                ".git",
+                "node_modules",
             ):
                 continue
             dest = output_dir / item.name
@@ -249,9 +265,10 @@ class ContainerBuilder(BaseBuilder):
                 )
             else:
                 shutil.copy2(item, dest)
-        
+
         # 复制 ksadk 源码 (确保容器内可用)
         import ksadk
+
         ksadk_src = Path(ksadk.__file__).parent
         ksadk_dest = output_dir / "ksadk"
         if ksadk_dest.exists():
@@ -274,14 +291,15 @@ class ContainerBuilder(BaseBuilder):
             return ignored
 
         shutil.copytree(
-            ksadk_src, 
-            ksadk_dest, 
+            ksadk_src,
+            ksadk_dest,
             ignore=_ignore_ksadk_source,
         )
 
         # 复制 ksadk_runtime_common (如果存在)
         try:
             import ksadk_runtime_common
+
             runtime_common_src = Path(ksadk_runtime_common.__file__).parent
             runtime_common_dest = output_dir / "ksadk_runtime_common"
             if runtime_common_dest.exists():
@@ -305,21 +323,22 @@ class ContainerBuilder(BaseBuilder):
                     ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
                 )
             else:
-                click.echo(click.style(
-                    "⚠️  警告: 未找到 ksadk_runtime_common，镜像可能无法正常运行",
-                    fg="yellow"
-                ))
-        
+                click.echo(
+                    click.style(
+                        "⚠️  警告: 未找到 ksadk_runtime_common，镜像可能无法正常运行", fg="yellow"
+                    )
+                )
+
         dockerfile_path = output_dir / "Dockerfile"
         if not is_container_first_template:
             dockerfile = self._generate_dockerfile(detection_result)
             dockerfile_path.write_text(dockerfile)
-        
+
         # 生成 requirements.txt (合并用户依赖)
         requirements = self._generate_requirements(detection_result, project_path)
         requirements_path = output_dir / "requirements.txt"
         requirements_path.write_text(requirements)
-        
+
         # 生成启动脚本
         if is_container_first_template:
             entrypoint_path = output_dir / "entrypoint.sh"
@@ -327,7 +346,7 @@ class ContainerBuilder(BaseBuilder):
             entrypoint = self._generate_entrypoint(detection_result, package_name)
             entrypoint_path = output_dir / "entrypoint.py"
             entrypoint_path.write_text(entrypoint)
-        
+
         return PackageInfo(
             name=detection_result.name or project_path.name,
             framework=detection_result.type.value,
@@ -339,14 +358,14 @@ class ContainerBuilder(BaseBuilder):
                 "package_name": package_name,
                 "requirements": str(requirements_path),
                 "entrypoint": str(entrypoint_path),
-            }
+            },
         )
-    
+
     def _generate_dockerfile(self, detection_result) -> str:
         """生成优化的 Dockerfile"""
         base_image = "python:3.12-slim"
-        
-        return f'''FROM {base_image}
+
+        return f"""FROM {base_image}
 
 # 设置环境变量
 ENV PYTHONUNBUFFERED=1 \\
@@ -373,9 +392,9 @@ EXPOSE 8080
 
 # 使用 exec 形式确保信号正确传递
 CMD ["python", "entrypoint.py"]
-'''
-    
-    def _generate_requirements(self, detection_result, project_path: Path = None) -> str:
+"""
+
+    def _generate_requirements(self, detection_result, project_path: Optional[Path] = None) -> str:
         """生成 requirements.txt"""
         base_deps = [
             # Core
@@ -392,7 +411,7 @@ CMD ["python", "entrypoint.py"]
             "openinference-instrumentation-langchain>=0.1.0",
             "langfuse>=2.0.0",
         ]
-        
+
         framework = detection_result.type.value
         base_deps += requirements_for_framework(framework)
 
@@ -400,20 +419,26 @@ CMD ["python", "entrypoint.py"]
             base_deps,
             CodeBuilder(project_path or self.project_dir)._bundled_runtime_requirements(),
         )
-        
+
         # 合并用户 requirements.txt (如果存在)
         if project_path:
             user_requirements = project_path / "requirements.txt"
             if user_requirements.exists():
                 user_content = user_requirements.read_text()
+                parsed_user_requirements = parse_requirements_text(user_content)
+                bundled_builder = CodeBuilder(project_path or self.project_dir)
+                base_deps = merge_requirement_lists(
+                    base_deps,
+                    bundled_builder._bundled_ksadk_extra_requirements(parsed_user_requirements),
+                )
                 user_deps = exclude_requirement_names(
-                    parse_requirements_text(user_content),
+                    parsed_user_requirements,
                     excluded_names={"ksadk"},
                 )
                 base_deps = merge_requirement_lists(base_deps, user_deps)
-        
+
         return "\n".join(base_deps)
-    
+
     def _generate_entrypoint(self, detection_result, package_name: str) -> str:
         """生成 entrypoint.py"""
         return f'''"""
@@ -504,14 +529,17 @@ detection_result = DetectionResult(
     entry_point="{detection_result.entry_point}",
     package_path="/app/{package_name}",
     agent_variable="{detection_result.agent_variable}",
-    runner_class="{getattr(detection_result, 'runner_class', '')}"
+    runner_class="{getattr(detection_result, "runner_class", "")}"
 )
 
 logger.info(f"框架: {{detection_result.name}}")
 logger.info(f"入口: {{detection_result.entry_point}}")
 
 # 初始化 Tracing (如果配置了 Langfuse、标准 OTLP HTTP 或 CloudMonitor OTLP)
-has_otlp = bool(os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT") or os.environ.get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"))
+has_otlp = bool(
+    os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
+    or os.environ.get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
+)
 has_cloud_monitor_otlp = bool(
     os.environ.get("CLOUD_MONITOR_APP_KEY")
     or os.environ.get("CLOUD_MONITOR_OTLP_ENDPOINT")
@@ -522,10 +550,18 @@ has_cloud_monitor_langfuse = bool(
     or os.environ.get("CLOUD_MONITOR_LANGFUSE_SECRET_KEY")
     or os.environ.get("CLOUD_MONITOR_LANGFUSE_HOST")
 )
-if os.environ.get("LANGFUSE_PUBLIC_KEY") or has_otlp or has_cloud_monitor_otlp or has_cloud_monitor_langfuse:
+if (
+    os.environ.get("LANGFUSE_PUBLIC_KEY")
+    or has_otlp
+    or has_cloud_monitor_otlp
+    or has_cloud_monitor_langfuse
+):
     try:
         from ksadk.tracing import setup_tracing
-        use_callback_only = os.environ.get("LANGFUSE_USE_CALLBACK", "").strip().lower() in ("1", "true", "yes", "on")
+        use_callback_only = (
+            os.environ.get("LANGFUSE_USE_CALLBACK", "").strip().lower()
+            in ("1", "true", "yes", "on")
+        )
         setup_tracing(use_callback_only=use_callback_only)
         logger.info(
             f"Tracing 已启用 (OTLP={{has_otlp}}, "
@@ -540,7 +576,7 @@ if os.environ.get("LANGFUSE_PUBLIC_KEY") or has_otlp or has_cloud_monitor_otlp o
 logger.info("正在加载 Agent...")
 runner = create_runner(detection_result, "/app")
 runner.load_agent()
-set_runner(runner)
+set_runner(runner, loaded=True)
 logger.info("Agent 加载成功!")
 
 if __name__ == "__main__":
@@ -548,77 +584,69 @@ if __name__ == "__main__":
     logger.info(f"启动 HTTP Server: 0.0.0.0:{{port}}")
     uvicorn.run(app, host="0.0.0.0", port=port, log_level=LOG_LEVEL.lower())
 '''
-    
+
     def build(self) -> BuildResult:
         """构建 Docker 镜像"""
         from ksadk.detection import FrameworkDetector
-        
+
         self._load_dotenv()
         config = self._load_config()
-        
+
         # 检测框架
         detector = FrameworkDetector(str(self.project_dir))
         result = detector.detect()
-        
+
         if result.type.value == "unknown":
-            return BuildResult(
-                success=False,
-                error_message="未检测到支持的框架"
-            )
-        
+            return BuildResult(success=False, error_message="未检测到支持的框架")
+
         click.echo(f"📦 框架: {click.style(result.name, fg='green')}")
-        
+
         # 确定镜像名称
-        image_name = config.get('name', self.project_dir.name).replace('-', '_').replace('.', '_')
-        
+        image_name = config.get("name", self.project_dir.name).replace("-", "_").replace(".", "_")
+
         # Tag 优先级: 命令行 > agentengine.yaml version > config image.tag > latest
         image_tag = self.tag
         if not image_tag:
-            image_tag = config.get('version', '')  # 使用项目版本作为 tag
+            image_tag = config.get("version", "")  # 使用项目版本作为 tag
         if not image_tag:
-            image_tag = config.get('image', {}).get('tag', 'latest')
-        
+            image_tag = config.get("image", {}).get("tag", "latest")
+
         # Registry 优先级: 命令行 > .env KCR_REGISTRY > agentengine.yaml > 默认企业版 KCR
         import os
+
         image_registry = self.registry
         if not image_registry:
-            image_registry = os.getenv('KCR_REGISTRY', '')
+            image_registry = os.getenv("KCR_REGISTRY", "")
         if not image_registry:
-            image_registry = config.get('image', {}).get('registry', '')
+            image_registry = config.get("image", {}).get("registry", "")
         if not image_registry:
             # 默认使用企业版 KCR，智能选择内网/公网
-            image_registry = self._get_smart_kcr_endpoint(os.getenv('KSYUN_REGION', 'cn-beijing-6'))
+            image_registry = self._get_smart_kcr_endpoint(os.getenv("KSYUN_REGION", "cn-beijing-6"))
         else:
             # 即使设置了 registry，如果是金山云公网地址，也尝试优化为内网
             image_registry = self._optimize_kcr_endpoint(image_registry)
-        
+
         full_image = f"{image_registry}/{image_name}:{image_tag}"
-        
+
         click.echo(f"🏷️  镜像名称: {full_image}")
-        
+
         # 打包 (内置打包逻辑，不再依赖 DockerProvider)
         click.echo("\n📦 打包中...")
         try:
             package_info = self._package(result)
             click.echo("✅ 打包完成")
         except Exception as e:
-            return BuildResult(
-                success=False,
-                error_message=f"打包失败: {e}"
-            )
-        
+            return BuildResult(success=False, error_message=f"打包失败: {e}")
+
         # Docker 构建
         if not ensure_docker_running():
-            return BuildResult(
-                success=False,
-                error_message="Docker 未运行"
-            )
-        
+            return BuildResult(success=False, error_message="Docker 未运行")
+
         click.echo("\n🔨 构建 Docker 镜像 (目标平台: linux/amd64)...")
         try:
-            cmd = ['docker', 'build', '--platform', 'linux/amd64', '-t', full_image]
+            cmd = ["docker", "build", "--platform", "linux/amd64", "-t", full_image]
             if self.no_cache:
-                cmd.append('--no-cache')
+                cmd.append("--no-cache")
             cmd.append(package_info.build_dir)
 
             quiet_mode = os.getenv("AGENTENGINE_OUTPUT_MODE", "").strip().lower() == "json"
@@ -628,16 +656,16 @@ if __name__ == "__main__":
                 capture_output=quiet_mode,
                 text=quiet_mode,
             )
-            click.secho(f"\n✅ 镜像构建成功: {full_image}", fg='green')
-            
+            click.secho(f"\n✅ 镜像构建成功: {full_image}", fg="green")
+
             return BuildResult(
                 success=True,
                 artifact_path=None,  # Docker 镜像没有本地文件路径
                 metadata={
                     "image": full_image,
                     "framework": result.type.value,
-                    "build_dir": package_info.build_dir
-                }
+                    "build_dir": package_info.build_dir,
+                },
             )
         except subprocess.CalledProcessError as e:
             error_message = f"镜像构建失败: {e}"
@@ -647,138 +675,130 @@ if __name__ == "__main__":
                 detail = stderr or stdout
                 if detail:
                     error_message = f"{error_message}: {detail}"
-            return BuildResult(
-                success=False,
-                error_message=error_message
-            )
-    
+            return BuildResult(success=False, error_message=error_message)
+
     def push(self, image_name: str) -> bool:
         """推送镜像到仓库"""
         # 检查镜像仓库认证
         registry = self._extract_registry(image_name)
-        
+
         # 尝试使用 .env 中的认证信息自动登录
         if registry:
             if not self._auto_login_from_env(registry):
                 # 自动登录失败，检查是否已有认证
                 if not self._check_registry_auth(registry):
                     return False
-        
-        click.echo(f"\n📤 推送镜像...")
+
+        click.echo("\n📤 推送镜像...")
         try:
-            result = subprocess.run(
-                ['docker', 'push', image_name], 
-                capture_output=True, 
-                text=True
-            )
+            result = subprocess.run(["docker", "push", image_name], capture_output=True, text=True)
             if result.returncode != 0:
                 # 检查是否是认证问题
-                if 'denied' in result.stderr.lower() or 'unauthorized' in result.stderr.lower():
-                    self._print_auth_help(registry or 'docker.io')
+                if "denied" in result.stderr.lower() or "unauthorized" in result.stderr.lower():
+                    self._print_auth_help(registry or "docker.io")
                     return False
-                click.secho(f"❌ 镜像推送失败: {result.stderr}", fg='red')
+                click.secho(f"❌ 镜像推送失败: {result.stderr}", fg="red")
                 return False
-            
-            click.secho(f"✅ 镜像推送成功", fg='green')
+
+            click.secho("✅ 镜像推送成功", fg="green")
             return True
         except subprocess.CalledProcessError as e:
-            click.secho(f"❌ 镜像推送失败: {e}", fg='red')
+            click.secho(f"❌ 镜像推送失败: {e}", fg="red")
             return False
-    
+
     def _auto_login_from_env(self, registry: str) -> bool:
         """尝试使用 .env 中的凭证自动登录"""
         import os
+
         from dotenv import load_dotenv
-        
+
         # 加载 .env
         load_dotenv()
-        
-        # KCR_REGISTRY is a generic registry/namespace target used for KCR and third-party registries.
-        kcr_registry = os.getenv('KCR_REGISTRY', '')
+
+        # KCR_REGISTRY is the registry/namespace target for KCR and third parties.
+        kcr_registry = os.getenv("KCR_REGISTRY", "")
         if not kcr_registry:
             kcr_registry = "hub.kce.ksyun.com/agentengine"
-        
+
         kcr_username, kcr_password, registry_kind = resolve_registry_credentials(registry)
-        
+
         # 检查是否匹配当前 registry (支持部分匹配)
         if registry not in kcr_registry and kcr_registry not in registry:
             return False
-        
+
         if not kcr_username or not kcr_password:
             print_registry_credentials_help(registry, kind=registry_kind)
             return False
-        
+
         click.echo(f"🔐 使用 .env 中的凭证登录 {registry}...")
         try:
             result = subprocess.run(
-                ['docker', 'login', registry, '-u', kcr_username, '--password-stdin'],
+                ["docker", "login", registry, "-u", kcr_username, "--password-stdin"],
                 input=kcr_password,
                 capture_output=True,
                 text=True,
-                timeout=30
+                timeout=30,
             )
             if result.returncode == 0:
-                click.secho(f"✅ 登录成功", fg='green')
+                click.secho("✅ 登录成功", fg="green")
                 return True
             else:
-                click.secho(f"⚠️  自动登录失败: {result.stderr.strip()}", fg='yellow')
+                click.secho(f"⚠️  自动登录失败: {result.stderr.strip()}", fg="yellow")
                 return False
         except Exception as e:
-            click.secho(f"⚠️  自动登录异常: {e}", fg='yellow')
+            click.secho(f"⚠️  自动登录异常: {e}", fg="yellow")
             return False
-    
+
     def get_registry_credentials(self, registry: str | None = None) -> dict:
         """获取镜像仓库凭证 (用于传给 Serverless)
-        
+
         返回扁平化结构: {"username": "...", "password": "..."}
         """
         import os
+
         from dotenv import load_dotenv
-        
+
         load_dotenv()
-        
+
         registry = registry or os.getenv("KCR_REGISTRY", "")
         username, password, _ = resolve_registry_credentials(registry)
-        
+
         if username and password:
-            return {
-                'username': username,
-                'password': password
-            }
+            return {"username": username, "password": password}
         return {}
-    
+
     def _extract_registry(self, image_name: str) -> Optional[str]:
         """从镜像名称提取仓库地址"""
         # 格式: registry/namespace/image:tag 或 namespace/image:tag (默认 docker.io)
-        parts = image_name.split('/')
-        if len(parts) >= 2 and ('.' in parts[0] or ':' in parts[0]):
+        parts = image_name.split("/")
+        if len(parts) >= 2 and ("." in parts[0] or ":" in parts[0]):
             return parts[0]
         return None  # 使用默认 docker.io
-    
+
     def _check_registry_auth(self, registry: str) -> bool:
         """检查是否已登录镜像仓库"""
         try:
             # 尝试获取 docker 配置
             import json
             from pathlib import Path
-            
-            docker_config = Path.home() / '.docker' / 'config.json'
+
+            docker_config = Path.home() / ".docker" / "config.json"
             if docker_config.exists():
                 with open(docker_config) as f:
                     config = json.load(f)
-                    auths = config.get('auths', {})
+                    auths = config.get("auths", {})
                     # 检查是否有该仓库的认证信息
-                    if registry in auths or f'https://{registry}' in auths:
+                    if registry in auths or f"https://{registry}" in auths:
                         return True
-            
+
             # 没有找到认证信息，提示用户
-            click.secho(f"\n⚠️  未检测到 {registry} 的登录凭证", fg='yellow')
+            click.secho(f"\n⚠️  未检测到 {registry} 的登录凭证", fg="yellow")
             self._print_auth_help(registry)
             return False
         except Exception:
             # 无法检查，继续尝试推送
             return True
-    
+
     def _print_auth_help(self, registry: str):
         """打印认证帮助信息"""
         print_registry_credentials_help(registry)

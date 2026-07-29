@@ -1,241 +1,442 @@
 # ksadk/server/app.py
-"""
-FastAPI 应用 - 提供 HTTP API 接口 (ADK Web 兼容)
-"""
+"""Default runtime app facade and backwards-compatible server exports."""
 
-import asyncio
-import base64
-import io
-import json
-import logging
+from __future__ import annotations
+
 import os
-import time
-import uuid
-import zipfile
-from contextlib import asynccontextmanager
-from datetime import datetime, timezone
-from pathlib import Path, PurePosixPath
-from typing import Any, AsyncIterator, Dict, List, Mapping, Optional
-from urllib.parse import quote
+from collections.abc import AsyncIterator
+from pathlib import Path
+from typing import Any
 
-import httpx
-from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response, StreamingResponse
-from pydantic import BaseModel, Field
+from fastapi import FastAPI
+from fastapi.responses import StreamingResponse
 
 import ksadk.conversations as conversation
-from ksadk.conversations.attachment_storage import AttachmentStorageService
-from ksadk.conversations.attachments import compact_attachment_result_for_session
-from ksadk.conversations.model_context import normalize_model_metadata
-from ksadk.conversations.run_kinds import (
-    RUN_MODE_BACKGROUND,
-    RUN_MODE_FOREGROUND,
-    RUN_MODE_UNKNOWN,
-    RUN_TRIGGER_CHECKPOINT_RESUME,
-    RUN_TRIGGER_NEW_RUN,
-    RUN_TRIGGER_UNKNOWN,
-    trigger_from_resume_input,
+from ksadk.server.composition import configure_runtime_app
+from ksadk.server.factory import (
+    RuntimeAppConfig,
+    RuntimeAppState,
+    create_runtime_app,
+    get_state,
+    set_fallback_state,
+    shutdown_runtime_resources,
 )
-from ksadk.conversations.run_status import RUN_STATUS_ACTIVE, RUN_STATUS_TERMINAL
-from ksadk.conversations.session_title import (
-    HEURISTIC_SESSION_TITLE_SOURCE,
-    build_fallback_title,
-    build_heuristic_title,
+from ksadk.server.routes import dependencies as route_dependencies
+from ksadk.server.routes.checkpoint_resolution import (
+    _find_session_checkpoint,
+    _resolve_checkpoint_resume_input_from_session,
 )
-from ksadk.runners.base_runner import BaseRunner
-from ksadk.runtime_state import load_state as load_runtime_state
-from ksadk.server.api_models import AgentRunRequest
-from ksadk.server.terminal_sessions import (
-    TerminalSessionManager,
-    native_terminal_supported,
-    register_terminal_routes,
+from ksadk.server.routes.common import (
+    _CUSTOM_API_PROXY_ENV_KEYS,
+    _HOP_BY_HOP_HEADERS,
+    _MAX_INLINE_BASE64_CHARS,
+    _MAX_INLINE_TEXT_CHARS,
+    _MAX_REFERENCE_TEXT_BYTES,
+    _NATIVE_TUI_FRAMEWORKS,
+    _RESERVED_UI_PATHS,
+    _TEXT_FILE_EXTENSIONS,
+    _TEXT_MIME_PREFIXES,
+    _TEXT_MIME_TYPES,
+    _UPLOAD_URI_SCHEME,
+    STATIC_DIR,
+    _action_response,
+    _attachment_from_part,
+    _attachment_prompt_text,
+    _build_bootstrap_model_payload,
+    _build_native_terminal_capability,
+    _current_framework,
+    _custom_api_proxy_base_url,
+    _decode_inline_data,
+    _default_custom_ui_bundle_dir,
+    _ensure_runner_loaded,
+    _ensure_session,
+    _extract_inline_attachment_text,
+    _extract_pdf_text,
+    _extract_user_input_from_parts,
+    _hydrate_session,
+    _is_custom_ui_static_asset_path,
+    _is_textual_mime,
+    _looks_like_textual_attachment,
+    _normalize_request_ui_path,
+    _prepare_runner_for_model,
+    _proxy_headers,
+    _read_attachment_bytes,
+    _register_integrated_routers,
+    _request_id,
+    _resolve_active_runner,
+    _resolve_agent_ui_spec,
+    _resolve_attachment_storage_path,
+    _resolve_current_model,
+    _resolve_ui_static_response,
+    _resolve_uploads_dir,
+    _response_headers,
+    _runner_project_dir,
+    _sanitize_session_state_for_action,
+    _ui_state_with_env_fallback,
+    _workspace_root_dir,
+    _workspace_runtime_request,
+    custom_api_proxy,
+    health_check,
+    list_apps,
+    set_runner,
 )
-from ksadk.sessions import (
-    ConversationSessionCore,
-    Session,
-    SessionEvent,
+from ksadk.server.routes.control import (
+    get_checkpoint_resume_preview_action,
+    resume_run_action,
+    subscribe_run_events_action,
+)
+from ksadk.server.routes.misc import (
+    _feedback_payload_from_state,
+    _feedback_state_key,
+    _find_feedback_assistant_event,
+    create_session,
+    delete_response_feedback_action,
+    delete_session,
+    get_agent_builder,
+    get_event_graph,
+    get_event_trace,
+    get_response_feedback_action,
+    get_session,
+    get_session_trace,
+    get_traces,
+    list_agent_models_action,
+    list_eval_results,
+    list_eval_sets,
+    list_sessions,
+    save_agent_builder,
+    save_session_to_memory,
+    serve_agent_ui_static,
+    upsert_response_feedback_action,
+)
+from ksadk.server.routes.models import (
+    _EVENT_SCAN_PAGE_SIZE,
+    _MAX_PREVIEW_TOOL_RECEIPTS,
+    _RUN_ACTIVE_STATUSES,
+    _RUN_TERMINAL_STATUSES,
+    CancelRunActionRequest,
+    CreateSessionActionRequest,
+    GetCheckpointResumePreviewActionRequest,
+    ListSessionCheckpointsActionRequest,
+    ListSessionEventsActionRequest,
+    ListSessionMessagesActionRequest,
+    ListSessionsActionRequest,
+    ListToolReceiptsActionRequest,
+    ResponseFeedbackRefActionRequest,
+    ResponsesRequest,
+    ResumeRunActionRequest,
+    RunAgentActionRequest,
+    SessionIdRequest,
+    UiBootstrapRequest,
+    UpsertResponseFeedbackActionRequest,
+    WorkspaceDeleteActionRequest,
+    WorkspaceListActionRequest,
+    _clean_optional_string,
+    _event_run_id,
+    _event_text,
+    _latest_session_run_metadata,
+    _latest_session_run_status,
+    _metadata_invocation_id,
+    _parse_iso_datetime,
+    _resolve_responses_conversation_id,
+    _resolve_responses_session_and_user,
+    _run_agent_response_metadata,
+    _run_status_payload_status,
+    _runtime_agent_id,
+    _session_topic_from_events,
+    _session_user_prompt_from_event,
+    _split_custom_metadata,
+    _truncate_session_text,
+)
+from ksadk.server.routes.openai_compat import (
+    ChatCompletionRequest,
+    chat_completions,
+    list_openai_models,
+    responses,
+)
+from ksadk.server.routes.projection import (
+    _SIDE_EFFECT_TOOL_NAMES,
+    _agent_contains_invocation,
+    _apply_adk_only_latest_resumable,
+    _apply_checkpoint_resume_audit,
+    _apply_latest_checkpoint_policy,
+    _build_checkpoint_resume_preview,
+    _check_adk_latest_resumable,
+    _checkpoint_event_to_action_payload,
+    _checkpoint_resume_disabled_detail,
+    _event_invocation_id,
+    _event_to_action_payload,
+    _extend_invocation_after_window,
+    _extend_invocation_before_window,
+    _iter_agent_event_pages,
+    _iter_scoped_event_pages,
+    _iter_session_event_pages,
+    _iter_with_idle_heartbeat,
+    _latest_invocation_status,
+    _oldest_unconsumed_session_events,
+    _record_resume_audit,
+    _require_action_session,
+    _resume_audit_by_checkpoint,
+    _session_contains_invocation,
+    _session_to_action_payload,
+    _tool_receipt_event_to_action_payload,
+)
+from ksadk.server.routes.routers import (
+    GROUP_ROUTERS,
+    builder_router,
+    control_router,
+    debug_router,
+    feedback_router,
+    health_meta_router,
+    models_router,
+    openai_compat_router,
+    run_router,
+    sessions_adk_compat_router,
+    sessions_router,
+    tools_router,
+    ui_bootstrap_router,
+    workspace_router,
+)
+from ksadk.server.routes.run import cancel_agent_changes, run_agent_action, run_sse
+from ksadk.server.routes.sessions import (
+    _count_resumable_checkpoints,
+    _list_checkpoints_payload,
+    create_session_action,
+    delete_session_action,
+    get_agent_ui_bootstrap,
+    get_session_action,
+    list_session_checkpoints_action,
+    list_session_events_action,
+    list_session_messages_action,
+    list_sessions_action,
+    list_tool_receipts_action,
+)
+from ksadk.server.routes.streaming import (
+    _cancel_detached_streams_for_session,
+    _clear_detached_resume_key,
+    _detached_resume_key_from_input,
+    _DetachedSSEStream,
+    _reject_if_detached_resume_active,
+)
+from ksadk.server.routes.workspace import (
+    ListAgentModelsRequest,
+    _build_models_payload,
+    _normalize_model_catalog_items,
+    attachment_content_action,
+    cancel_run_action,
+    delete_workspace_file_action,
+    export_workspace_zip,
+    get_workspace_file_content_action,
+    list_workspace_files_action,
+    upload_file_action,
+    upload_workspace_file_action,
+    workspace_file_path_route,
+)
+from ksadk.sessions import describe_session_backend, resolve_session_service
+
+# These names were historically importable from this module. Keeping an explicit
+# registry documents the facade and prevents static tooling from deleting aliases.
+_COMPAT_EXPORTS = (
+    Path,
+    RuntimeAppState,
     describe_session_backend,
-    resolve_session_service,
+    get_state,
+    _find_session_checkpoint,
+    _resolve_checkpoint_resume_input_from_session,
+    STATIC_DIR,
+    _CUSTOM_API_PROXY_ENV_KEYS,
+    _HOP_BY_HOP_HEADERS,
+    _MAX_INLINE_BASE64_CHARS,
+    _MAX_INLINE_TEXT_CHARS,
+    _MAX_REFERENCE_TEXT_BYTES,
+    _NATIVE_TUI_FRAMEWORKS,
+    _RESERVED_UI_PATHS,
+    _TEXT_FILE_EXTENSIONS,
+    _TEXT_MIME_PREFIXES,
+    _TEXT_MIME_TYPES,
+    _UPLOAD_URI_SCHEME,
+    _action_response,
+    _attachment_from_part,
+    _attachment_prompt_text,
+    _build_bootstrap_model_payload,
+    _build_native_terminal_capability,
+    _current_framework,
+    _custom_api_proxy_base_url,
+    _decode_inline_data,
+    _default_custom_ui_bundle_dir,
+    _ensure_runner_loaded,
+    _ensure_session,
+    _extract_inline_attachment_text,
+    _extract_pdf_text,
+    _extract_user_input_from_parts,
+    _hydrate_session,
+    _is_custom_ui_static_asset_path,
+    _is_textual_mime,
+    _looks_like_textual_attachment,
+    _normalize_request_ui_path,
+    _prepare_runner_for_model,
+    _proxy_headers,
+    _read_attachment_bytes,
+    _register_integrated_routers,
+    _request_id,
+    _resolve_active_runner,
+    _resolve_agent_ui_spec,
+    _resolve_attachment_storage_path,
+    _resolve_current_model,
+    _resolve_ui_static_response,
+    _resolve_uploads_dir,
+    _response_headers,
+    _runner_project_dir,
+    _sanitize_session_state_for_action,
+    _ui_state_with_env_fallback,
+    _workspace_root_dir,
+    _workspace_runtime_request,
+    custom_api_proxy,
+    health_check,
+    list_apps,
+    set_runner,
+    get_checkpoint_resume_preview_action,
+    resume_run_action,
+    subscribe_run_events_action,
+    _feedback_payload_from_state,
+    _feedback_state_key,
+    _find_feedback_assistant_event,
+    create_session,
+    delete_response_feedback_action,
+    delete_session,
+    get_agent_builder,
+    get_event_graph,
+    get_event_trace,
+    get_response_feedback_action,
+    get_session,
+    get_session_trace,
+    get_traces,
+    list_agent_models_action,
+    list_eval_results,
+    list_eval_sets,
+    list_sessions,
+    save_agent_builder,
+    save_session_to_memory,
+    serve_agent_ui_static,
+    upsert_response_feedback_action,
+    CancelRunActionRequest,
+    CreateSessionActionRequest,
+    GetCheckpointResumePreviewActionRequest,
+    ListSessionCheckpointsActionRequest,
+    ListSessionEventsActionRequest,
+    ListSessionMessagesActionRequest,
+    ListSessionsActionRequest,
+    ListToolReceiptsActionRequest,
+    ResponseFeedbackRefActionRequest,
+    ResponsesRequest,
+    ResumeRunActionRequest,
+    RunAgentActionRequest,
+    SessionIdRequest,
+    UiBootstrapRequest,
+    UpsertResponseFeedbackActionRequest,
+    WorkspaceDeleteActionRequest,
+    WorkspaceListActionRequest,
+    _EVENT_SCAN_PAGE_SIZE,
+    _MAX_PREVIEW_TOOL_RECEIPTS,
+    _RUN_ACTIVE_STATUSES,
+    _RUN_TERMINAL_STATUSES,
+    _clean_optional_string,
+    _event_run_id,
+    _event_text,
+    _latest_session_run_metadata,
+    _latest_session_run_status,
+    _metadata_invocation_id,
+    _parse_iso_datetime,
+    _resolve_responses_conversation_id,
+    _resolve_responses_session_and_user,
+    _run_agent_response_metadata,
+    _run_status_payload_status,
+    _runtime_agent_id,
+    _session_topic_from_events,
+    _session_user_prompt_from_event,
+    _split_custom_metadata,
+    _truncate_session_text,
+    ChatCompletionRequest,
+    chat_completions,
+    list_openai_models,
+    responses,
+    _agent_contains_invocation,
+    _SIDE_EFFECT_TOOL_NAMES,
+    _apply_adk_only_latest_resumable,
+    _apply_checkpoint_resume_audit,
+    _apply_latest_checkpoint_policy,
+    _build_checkpoint_resume_preview,
+    _check_adk_latest_resumable,
+    _checkpoint_event_to_action_payload,
+    _checkpoint_resume_disabled_detail,
+    _event_invocation_id,
+    _event_to_action_payload,
+    _extend_invocation_after_window,
+    _extend_invocation_before_window,
+    _iter_agent_event_pages,
+    _iter_scoped_event_pages,
+    _iter_session_event_pages,
+    _iter_with_idle_heartbeat,
+    _latest_invocation_status,
+    _oldest_unconsumed_session_events,
+    _record_resume_audit,
+    _require_action_session,
+    _resume_audit_by_checkpoint,
+    _session_contains_invocation,
+    _session_to_action_payload,
+    _tool_receipt_event_to_action_payload,
+    builder_router,
+    control_router,
+    debug_router,
+    feedback_router,
+    health_meta_router,
+    models_router,
+    openai_compat_router,
+    run_router,
+    sessions_adk_compat_router,
+    sessions_router,
+    tools_router,
+    ui_bootstrap_router,
+    workspace_router,
+    cancel_agent_changes,
+    run_agent_action,
+    run_sse,
+    _count_resumable_checkpoints,
+    _list_checkpoints_payload,
+    create_session_action,
+    delete_session_action,
+    get_agent_ui_bootstrap,
+    get_session_action,
+    list_session_checkpoints_action,
+    list_session_events_action,
+    list_session_messages_action,
+    list_sessions_action,
+    list_tool_receipts_action,
+    _cancel_detached_streams_for_session,
+    _detached_resume_key_from_input,
+    _reject_if_detached_resume_active,
+    ListAgentModelsRequest,
+    _build_models_payload,
+    _normalize_model_catalog_items,
+    attachment_content_action,
+    cancel_run_action,
+    delete_workspace_file_action,
+    export_workspace_zip,
+    get_workspace_file_content_action,
+    list_workspace_files_action,
+    upload_file_action,
+    upload_workspace_file_action,
+    workspace_file_path_route,
 )
-from ksadk.sessions.errors import SessionBackendUnavailable
-from ksadk.sessions.local_service import resolve_local_session_dir
-from ksadk.toolsets import describe_agentengine_tools
-from ksadk.tracing import get_memory_exporter
-from ksadk.ui_config import UI_PROFILE_CUSTOM, resolve_ui_config
-from ksadk_runtime_common.workspace_files import (
-    build_workspace_files_bootstrap,
-    create_workspace_files_router,
-    workspace_files_enabled,
-)
-from ksadk_runtime_common.workspace_files.preview import (
-    build_workspace_file_base_href,
-    build_workspace_preview_csp,
-    inject_workspace_html_preview,
+
+
+SSE_HEARTBEAT_INTERVAL_SECONDS = max(
+    1.0,
+    float(os.getenv("AGENTENGINE_SSE_HEARTBEAT_SECONDS", "15")),
 )
 
-logger = logging.getLogger(__name__)
-
-
-# Global Runner instance
-runner: BaseRunner = None
-_runner_loaded = False
-_DETACHED_STREAMS: set[asyncio.Task[Any]] = set()
-_DETACHED_STREAMS_BY_INVOCATION: dict[str, "_DetachedSSEStream"] = {}
-_DETACHED_RESUME_KEYS_BY_INVOCATION: dict[str, tuple[str, str]] = {}
-_ACTIVE_DETACHED_RESUME_INVOCATION_BY_KEY: dict[tuple[str, str], str] = {}
-# run_status 事件状态集合：canonical 定义在 ksadk.conversations.run_status，
-# 这里保留旧名做兼容别名（RUN_STATUS_TERMINAL 已含 resume_failed）。
-_RUN_TERMINAL_STATUSES = RUN_STATUS_TERMINAL
-_RUN_ACTIVE_STATUSES = RUN_STATUS_ACTIVE
-
-
-def _parse_iso_datetime(value: Any) -> datetime | None:
-    raw = str(value or "").strip()
-    if not raw:
-        return None
-    if raw.endswith("Z"):
-        raw = f"{raw[:-1]}+00:00"
-    try:
-        parsed = datetime.fromisoformat(raw)
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
-
-
-_RESERVED_UI_PATHS = {"/", "/chat", "/build", "/deploy"}
-_CUSTOM_API_PROXY_ENV_KEYS = ("KSADK_USER_BACKEND_URL", "LUOLUO_USER_BACKEND_URL")
-_HOP_BY_HOP_HEADERS = {
-    "connection",
-    "keep-alive",
-    "proxy-authenticate",
-    "proxy-authorization",
-    "te",
-    "trailer",
-    "transfer-encoding",
-    "upgrade",
-    "host",
-    "content-length",
-}
-
-
-class _DetachedSSEStream:
-    _MAX_BACKLOG_CHUNKS = 256
-
-    def __init__(
-        self,
-        source: AsyncIterator[str],
-        *,
-        invocation_id: str | None = None,
-        session_id: str | None = None,
-        run_mode: str = "unknown",
-        run_trigger: str = "unknown",
-    ):
-        self._source = source
-        self.invocation_id = invocation_id
-        self.session_id = session_id
-        self._run_mode = run_mode
-        self._run_trigger = run_trigger
-        self._subscribers: set[asyncio.Queue[str | None]] = set()
-        self._backlog: list[str] = []
-        self._done = False
-        self._task = asyncio.create_task(self._consume())
-        _DETACHED_STREAMS.add(self._task)
-        self._task.add_done_callback(_DETACHED_STREAMS.discard)
-        if self.invocation_id:
-            _DETACHED_STREAMS_BY_INVOCATION[self.invocation_id] = self
-            self._task.add_done_callback(
-                lambda _task: _DETACHED_STREAMS_BY_INVOCATION.pop(self.invocation_id or "", None)
-            )
-
-    async def _has_terminal_run_status(self) -> bool:
-        if not self.session_id or not self.invocation_id:
-            return False
-        service = resolve_session_service()
-        for event in reversed(await service.get_events(self.session_id)):
-            if event.invocation_id != self.invocation_id or event.event_type != "run_status":
-                continue
-            status = str((event.content or {}).get("status") or "").strip().lower()
-            return status in _RUN_TERMINAL_STATUSES
-        return False
-
-    async def _consume(self) -> None:
-        terminal_fallback_status: str | None = None
-        try:
-            async for chunk in self._source:
-                self._backlog.append(chunk)
-                if len(self._backlog) > self._MAX_BACKLOG_CHUNKS:
-                    self._backlog = self._backlog[-self._MAX_BACKLOG_CHUNKS :]
-                subscribers = list(self._subscribers)
-                if not subscribers:
-                    continue
-                await asyncio.gather(
-                    *(subscriber.put(chunk) for subscriber in subscribers),
-                    return_exceptions=True,
-                )
-        except asyncio.CancelledError:
-            terminal_fallback_status = "cancelled"
-            raise
-        except Exception:
-            terminal_fallback_status = "failed"
-            logger.exception("Detached SSE stream failed")
-            raise
-        finally:
-            self._done = True
-            subscribers = list(self._subscribers)
-            if subscribers:
-                await asyncio.gather(
-                    *(subscriber.put(None) for subscriber in subscribers),
-                    return_exceptions=True,
-                )
-            if terminal_fallback_status and self.session_id:
-                try:
-                    if not await self._has_terminal_run_status():
-                        await conversation.append_run_status_event(
-                            session_id=self.session_id,
-                            author="system",
-                            status=terminal_fallback_status,
-                            invocation_id=self.invocation_id or "",
-                            detail=(
-                                f"background_{terminal_fallback_status}:{self.invocation_id or ''}"
-                            ),
-                            session_service_provider=resolve_session_service,
-                            run_mode=self._run_mode,
-                            run_trigger=self._run_trigger,
-                        )
-                except Exception:
-                    logger.exception("failed to write background terminal status fallback")
-
-    def subscribe(self) -> asyncio.Queue[str | None]:
-        queue: asyncio.Queue[str | None] = asyncio.Queue()
-        for chunk in self._backlog:
-            queue.put_nowait(chunk)
-        if self._done:
-            queue.put_nowait(None)
-        else:
-            self._subscribers.add(queue)
-        return queue
-
-    def unsubscribe(self, queue: asyncio.Queue[str | None]) -> None:
-        self._subscribers.discard(queue)
-
-    def cancel(self) -> bool:
-        if self._task.done():
-            return False
-        return self._task.cancel()
-
-    async def iter_for_client(self) -> AsyncIterator[str]:
-        queue = self.subscribe()
-        try:
-            while True:
-                chunk = await queue.get()
-                if chunk is None:
-                    break
-                yield chunk
-        finally:
-            self.unsubscribe(queue)
+_GROUP_ROUTERS = GROUP_ROUTERS
+_configure_runtime_app = configure_runtime_app
+_shutdown_runner_resources = shutdown_runtime_resources
 
 
 def _detached_streaming_response(
@@ -247,6 +448,7 @@ def _detached_streaming_response(
     run_mode: str = "unknown",
     run_trigger: str = "unknown",
 ) -> StreamingResponse:
+    """Build a detached response through the monkeypatch-compatible facade."""
     detached = _DetachedSSEStream(
         source,
         invocation_id=invocation_id,
@@ -254,3678 +456,46 @@ def _detached_streaming_response(
         run_mode=run_mode,
         run_trigger=run_trigger,
     )
+    registry = detached._registry
     if invocation_id and resume_key:
-        _DETACHED_RESUME_KEYS_BY_INVOCATION[invocation_id] = resume_key
-        _ACTIVE_DETACHED_RESUME_INVOCATION_BY_KEY[resume_key] = invocation_id
+        registry.resume_keys_by_invocation[invocation_id] = resume_key
+        registry.active_resume_invocation_by_key[resume_key] = invocation_id
         detached._task.add_done_callback(
-            lambda _task: _clear_detached_resume_key(invocation_id, resume_key)
+            lambda _task: _clear_detached_resume_key(registry, invocation_id, resume_key)
         )
     return StreamingResponse(detached.iter_for_client(), media_type="text/event-stream")
 
 
-async def _cancel_detached_streams_for_session(session_id: str) -> None:
-    target_session_id = str(session_id or "").strip()
-    if not target_session_id:
-        return
-    detached_streams = [
-        detached
-        for detached in list(_DETACHED_STREAMS_BY_INVOCATION.values())
-        if detached.session_id == target_session_id
-    ]
-    for detached in detached_streams:
-        detached.cancel()
-    if detached_streams:
-        await asyncio.gather(
-            *(detached._task for detached in detached_streams),
-            return_exceptions=True,
-        )
-
-
-def _clear_detached_resume_key(invocation_id: str, resume_key: tuple[str, str]) -> None:
-    _DETACHED_RESUME_KEYS_BY_INVOCATION.pop(invocation_id, None)
-    if _ACTIVE_DETACHED_RESUME_INVOCATION_BY_KEY.get(resume_key) == invocation_id:
-        _ACTIVE_DETACHED_RESUME_INVOCATION_BY_KEY.pop(resume_key, None)
-
-
-def _detached_resume_key_from_input(
-    session_id: str | None,
-    resume_input: Mapping[str, Any] | None,
-) -> tuple[str, str] | None:
-    if not isinstance(resume_input, Mapping):
-        return None
-    if str(resume_input.get("type") or "").strip() != "agentengine.resume_checkpoint":
-        return None
-    normalized_session_id = str(session_id or "").strip()
-    run_id = str(resume_input.get("run_id") or "").strip()
-    if not normalized_session_id or not run_id:
-        return None
-    return normalized_session_id, run_id
-
-
-def _reject_if_detached_resume_active(resume_key: tuple[str, str] | None) -> None:
-    if resume_key is None:
-        return
-    active_resume_invocation_id = _ACTIVE_DETACHED_RESUME_INVOCATION_BY_KEY.get(resume_key)
-    if not active_resume_invocation_id:
-        return
-    raise HTTPException(
-        status_code=409,
-        detail={
-            "code": "resume_already_running",
-            "message": "A checkpoint resume is already running for this session and run.",
-            "invocation_id": active_resume_invocation_id,
-            "session_id": resume_key[0],
-            "run_id": resume_key[1],
-        },
+route_dependencies.configure(
+    route_dependencies.ServerRouteDependencies(
+        resolve_session_service=lambda: resolve_session_service(),
+        describe_session_backend=lambda: describe_session_backend(),
+        resolve_agent_ui_spec=lambda: _resolve_agent_ui_spec(),
+        conversation=lambda: conversation,
+        detached_streaming_response=lambda *args, **kwargs: _detached_streaming_response(
+            *args, **kwargs
+        ),
+        detached_stream_class=lambda: _DetachedSSEStream,
+        heartbeat_interval=lambda: SSE_HEARTBEAT_INTERVAL_SECONDS,
+        runtime_app=lambda: app,
     )
-
-
-async def _shutdown_runner_resources():
-    terminal_manager.reset_for_tests()
-    pending_streams = list(_DETACHED_STREAMS)
-    for task in pending_streams:
-        task.cancel()
-    if pending_streams:
-        await asyncio.gather(*pending_streams, return_exceptions=True)
-    _DETACHED_STREAMS.clear()
-    _DETACHED_STREAMS_BY_INVOCATION.clear()
-    _DETACHED_RESUME_KEYS_BY_INVOCATION.clear()
-    _ACTIVE_DETACHED_RESUME_INVOCATION_BY_KEY.clear()
-
-    active_runner = runner
-    if active_runner is None:
-        return
-    close = getattr(active_runner, "close", None)
-    if callable(close):
-        await close()
-
-    # 释放 sandbox registry 占用的 E2B sandbox,避免进程退出后仍按秒计费到 E2B 服务端 timeout。
-    # clear() 幂等,与模块级 atexit 重复调用安全。
-    try:
-        from ksadk.sandbox.registry import GLOBAL_SANDBOX_REGISTRY
-
-        GLOBAL_SANDBOX_REGISTRY.clear()
-    except Exception:
-        logger.exception("failed to clear sandbox registry on shutdown")
-
-
-@asynccontextmanager
-async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    try:
-        yield
-    finally:
-        await _shutdown_runner_resources()
-
-
-# Create and configure the FastAPI application
-app = FastAPI(
-    title="ADK Core API",
-    description="Agent Development Kit HTTP API",
-    version="1.0.0",
-    lifespan=_lifespan,
 )
 
-
-# Middleware for disabling cache on frontend entry points
-@app.middleware("http")
-async def no_cache_frontend(request: Request, call_next):
-    response = await call_next(request)
-    path = request.url.path
-    if path == "/" or path.endswith(".html"):
-        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-        response.headers["Pragma"] = "no-cache"
-        response.headers["Expires"] = "0"
-    return response
-
-
-# Configure CORS (permissive by default for ADK tools)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+app: FastAPI = create_runtime_app(
+    RuntimeAppConfig(
+        # Keep the documented facade injection seam dynamic. New factory users
+        # get app-owned services unless they explicitly supply a provider.
+        session_service_provider=lambda: resolve_session_service(),
+        session_backend_provider=lambda: describe_session_backend(),
+    ),
+    configure_runtime_app,
 )
-
-_TEXT_MIME_PREFIXES = ("text/",)
-_TEXT_MIME_TYPES = {
-    "application/json",
-    "application/pdf",
-    "application/xml",
-    "application/yaml",
-    "application/x-yaml",
-    "application/x-ndjson",
-}
-_TEXT_FILE_EXTENSIONS = {
-    ".txt",
-    ".md",
-    ".markdown",
-    ".json",
-    ".yaml",
-    ".yml",
-    ".csv",
-    ".tsv",
-    ".log",
-    ".py",
-    ".js",
-    ".ts",
-    ".jsx",
-    ".tsx",
-    ".html",
-    ".css",
-    ".sql",
-    ".xml",
-    ".sh",
-}
-_MAX_INLINE_BASE64_CHARS = 4_000_000
-_MAX_INLINE_TEXT_CHARS = 20_000
-_MAX_REFERENCE_TEXT_BYTES = 3_000_000
-_UPLOAD_URI_SCHEME = "ksadk-upload://"
-
-
-def _workspace_root_dir() -> Path:
-    return resolve_local_session_dir() / "workspace"
-
-
-_NATIVE_TUI_FRAMEWORKS = {"hermes", "openclaw"}
-
-
-def _current_framework() -> str:
-    if not runner:
-        return ""
-    detection_type = getattr(getattr(runner, "detection_result", None), "type", None)
-    return str(getattr(detection_type, "value", detection_type) or "").strip().lower()
-
-
-def _build_native_terminal_capability(framework: str) -> dict[str, Any]:
-    enabled = (
-        native_terminal_supported()
-        and str(framework or "").strip().lower() in _NATIVE_TUI_FRAMEWORKS
-    )
-    return {
-        "Enabled": enabled,
-        "Mode": "tui" if enabled else None,
-        "Protocol": "ks-terminal.v1",
-        "Path": "/_ksadk/terminal/ws" if enabled else None,
-    }
-
-
-terminal_manager = TerminalSessionManager(
-    workspace_root_getter=_workspace_root_dir,
-    framework_getter=_current_framework,
-)
-
-app.include_router(
-    create_workspace_files_router(
-        root_getter=_workspace_root_dir,
-        enabled_getter=lambda: workspace_files_enabled(default=True),
-    )
-)
-register_terminal_routes(app, terminal_manager)
-
-
-@app.exception_handler(SessionBackendUnavailable)
-async def session_backend_unavailable_handler(
-    _request: Request,
-    exc: SessionBackendUnavailable,
-):
-    return Response(
-        content=json.dumps(
-            {
-                "detail": {
-                    "code": "session_backend_unavailable",
-                    "message": str(exc),
-                }
-            },
-            ensure_ascii=False,
-        ),
-        status_code=503,
-        media_type="application/json",
-    )
-
-
-def set_runner(r: BaseRunner):
-    global runner, _runner_loaded
-    runner = r
-    _runner_loaded = False
-
-
-def _ensure_runner_loaded() -> BaseRunner:
-    global _runner_loaded
-    if not runner:
-        raise HTTPException(status_code=500, detail="Runner 未初始化")
-    if _runner_loaded:
-        return runner
-
-    runner.load_agent()
-    _runner_loaded = True
-    return runner
-
-
-def _resolve_active_runner() -> BaseRunner:
-    try:
-        return _ensure_runner_loaded()
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.warning("Runner 加载失败: %s", exc)
-        raise HTTPException(status_code=500, detail=str(exc) or "Runner 加载失败") from exc
-
-
-def _prepare_runner_for_model(active_runner: BaseRunner, model: Optional[str]) -> None:
-    try:
-        active_runner.prepare_for_request(model)
-    except Exception as exc:
-        logger.warning("Runner 模型切换失败: %s", exc)
-        raise HTTPException(status_code=500, detail=str(exc) or "Runner 模型切换失败") from exc
-
-
-def _resolve_current_model() -> tuple[Optional[str], Optional[str]]:
-    candidates = (
-        ("OPENAI_MODEL_NAME", os.getenv("OPENAI_MODEL_NAME")),
-        ("MODEL_NAME", os.getenv("MODEL_NAME")),
-        ("COZE_MODEL_NAME", os.getenv("COZE_MODEL_NAME")),
-    )
-    for source, value in candidates:
-        model = str(value or "").strip()
-        if model:
-            return model, source
-    return None, None
-
-
-def _build_bootstrap_model_payload() -> Optional[dict[str, Any]]:
-    current_model, source = _resolve_current_model()
-    if not current_model:
-        return None
-
-    payload = normalize_model_metadata({"id": current_model})
-    payload["source"] = source
-    return payload
-
-
-def _runner_project_dir() -> Path:
-    if runner and getattr(runner, "project_dir", None):
-        try:
-            return Path(str(runner.project_dir)).resolve()
-        except Exception:
-            pass
-    return Path(".").resolve()
-
-
-def _default_custom_ui_bundle_dir(project_dir: Path) -> Path:
-    return project_dir / "research-ui" / "dist"
-
-
-def _ui_state_with_env_fallback(state: dict[str, Any]) -> dict[str, Any]:
-    merged = dict(state or {})
-    env_fallbacks = {
-        "ui_profile": os.environ.get("KSADK_UI_PROFILE"),
-        "ui_path": os.environ.get("KSADK_UI_PATH"),
-        "ui_url": os.environ.get("KSADK_UI_URL"),
-        "ui_bundle_path": os.environ.get("KSADK_UI_BUNDLE_PATH"),
-    }
-    for key, value in env_fallbacks.items():
-        if value and not merged.get(key):
-            merged[key] = value
-    return merged
-
-
-def _resolve_agent_ui_spec() -> dict[str, Any]:
-    project_dir = _runner_project_dir()
-    state = _ui_state_with_env_fallback(load_runtime_state(project_dir))
-    framework = _current_framework()
-    auto_custom_bundle_dir = _default_custom_ui_bundle_dir(project_dir)
-    if (
-        not state.get("ui_profile")
-        and not state.get("ui_path")
-        and not state.get("ui_url")
-        and (auto_custom_bundle_dir / "index.html").exists()
-    ):
-        state["ui_profile"] = UI_PROFILE_CUSTOM
-        state["ui_path"] = "/"
-        state["ui_bundle_path"] = str(auto_custom_bundle_dir)
-    config = resolve_ui_config(
-        framework=framework,
-        state=state,
-        cli_profile=None,
-        cli_path=None,
-        cli_url=None,
-    )
-
-    if config.profile == UI_PROFILE_CUSTOM:
-        bundle_dir_value = state.get("ui_bundle_path") or state.get("ui_bundle_dir")
-        bundle_dir = None
-        if bundle_dir_value:
-            candidate = Path(str(bundle_dir_value))
-            if not candidate.is_absolute():
-                candidate = project_dir / candidate
-            if candidate.exists():
-                bundle_dir = candidate.resolve()
-        if bundle_dir is None:
-            bundle_dir = _default_custom_ui_bundle_dir(project_dir)
-        index_file = bundle_dir / "index.html"
-        enabled = bundle_dir.exists() and index_file.exists()
-        return {
-            "enabled": enabled,
-            "profile": config.profile,
-            "ui_profile": config.profile,
-            "path": config.path,
-            "ui_path": config.path,
-            "url": config.url,
-            "ui_url": config.url,
-            "bundle_path": str(bundle_dir),
-            "ui_bundle_path": str(bundle_dir),
-            "index_path": str(index_file),
-            "source": "custom",
-        }
-
-    bundle_dir = STATIC_DIR
-    index_file = bundle_dir / "index.html"
-    enabled = bundle_dir.exists() and index_file.exists()
-    return {
-        "enabled": enabled,
-        "profile": config.profile,
-        "ui_profile": config.profile,
-        "path": config.path,
-        "ui_path": config.path,
-        "url": config.url,
-        "ui_url": config.url,
-        "bundle_path": str(bundle_dir),
-        "ui_bundle_path": str(bundle_dir),
-        "index_path": str(index_file),
-        "source": "builtin",
-    }
-
-
-def _normalize_request_ui_path(request_path: str) -> str:
-    path = "/" + str(request_path or "").lstrip("/")
-    return path if path != "//" else "/"
-
-
-def _is_custom_ui_static_asset_path(relative_path: str) -> bool:
-    path = str(relative_path or "").strip("/")
-    if not path:
-        return False
-    first_segment = path.split("/", 1)[0]
-    return first_segment == "assets" or bool(Path(path).suffix)
-
-
-def _resolve_ui_static_response(request_path: str) -> Optional[FileResponse]:
-    spec = _resolve_agent_ui_spec()
-    if not spec.get("enabled"):
-        return None
-
-    bundle_dir = Path(str(spec["bundle_path"]))
-    index_file = Path(str(spec["index_path"]))
-    path = _normalize_request_ui_path(request_path)
-
-    if spec.get("source") == "custom":
-        ui_path = _normalize_request_ui_path(str(spec.get("path") or "/")).rstrip("/") or "/"
-        if path == ui_path or path == f"{ui_path}/":
-            return FileResponse(index_file)
-        if ui_path != "/" and not path.startswith(f"{ui_path}/"):
-            return None
-        relative = path[len(ui_path) :].lstrip("/") if ui_path != "/" else path.lstrip("/")
-        if not relative:
-            return FileResponse(index_file)
-        candidate = bundle_dir / relative
-        if candidate.exists() and candidate.is_file():
-            return FileResponse(candidate)
-        if not _is_custom_ui_static_asset_path(relative):
-            return FileResponse(index_file)
-        return None
-
-    if path in _RESERVED_UI_PATHS:
-        return FileResponse(index_file)
-
-    candidate = bundle_dir / path.lstrip("/")
-    if candidate.exists() and candidate.is_file():
-        return FileResponse(candidate)
-    return None
-
-
-def _is_textual_mime(mime_type: str) -> bool:
-    mime = (mime_type or "").lower()
-    if not mime:
-        return False
-    return mime.startswith(_TEXT_MIME_PREFIXES) or mime in _TEXT_MIME_TYPES
-
-
-def _looks_like_textual_attachment(mime_type: str, display_name: str) -> bool:
-    suffix = Path(display_name or "").suffix.lower()
-    return _is_textual_mime(mime_type) or suffix in _TEXT_FILE_EXTENSIONS
-
-
-def _extract_pdf_text(raw: bytes) -> str:
-    try:
-        from pypdf import PdfReader
-    except Exception:
-        return ""
-
-    try:
-        reader = PdfReader(io.BytesIO(raw))
-    except Exception:
-        return ""
-
-    segments: List[str] = []
-    for page in reader.pages[:10]:
-        try:
-            page_text = page.extract_text() or ""
-        except Exception:
-            page_text = ""
-        if page_text:
-            segments.append(page_text)
-
-    return "\n".join(segments).strip()
-
-
-def _decode_inline_data(data_b64: str) -> bytes:
-    return base64.b64decode((data_b64 or "").strip() + "===")
-
-
-def _resolve_uploads_dir() -> Path:
-    uploads_dir = resolve_local_session_dir() / "files"
-    uploads_dir.mkdir(parents=True, exist_ok=True)
-    return uploads_dir
-
-
-def _resolve_attachment_storage_path(file_uri: str) -> Optional[Path]:
-    normalized_uri = (file_uri or "").strip()
-    if not normalized_uri:
-        return None
-
-    if normalized_uri.startswith("local:"):
-        path = Path(normalized_uri[6:]).expanduser()
-        return path.resolve()
-
-    if normalized_uri.startswith(_UPLOAD_URI_SCHEME):
-        file_id = normalized_uri.removeprefix(_UPLOAD_URI_SCHEME).strip("/")
-        if not file_id:
-            return None
-
-        for candidate in sorted(_resolve_uploads_dir().glob(f"{file_id}*")):
-            if candidate.is_file():
-                return candidate.resolve()
-
-    return None
-
-
-def _custom_api_proxy_base_url() -> str:
-    for key in _CUSTOM_API_PROXY_ENV_KEYS:
-        value = os.environ.get(key)
-        if value and value.strip():
-            return value.strip().rstrip("/")
-    return ""
-
-
-def _proxy_headers(headers: Mapping[str, str]) -> dict[str, str]:
-    return {key: value for key, value in headers.items() if key.lower() not in _HOP_BY_HOP_HEADERS}
-
-
-def _response_headers(headers: Mapping[str, str]) -> dict[str, str]:
-    return {key: value for key, value in headers.items() if key.lower() not in _HOP_BY_HOP_HEADERS}
-
-
-@app.api_route(
-    "/api/{proxy_path:path}",
-    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    include_in_schema=False,
-)
-async def custom_api_proxy(proxy_path: str, request: Request):
-    base_url = _custom_api_proxy_base_url()
-    if not base_url:
-        raise HTTPException(status_code=404, detail="Custom API backend is not configured")
-
-    path = f"/api/{proxy_path.lstrip('/')}"
-    query = request.url.query
-    target_url = f"{base_url}{path}"
-    if query:
-        target_url = f"{target_url}?{query}"
-
-    try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            upstream = await client.request(
-                request.method,
-                target_url,
-                content=await request.body(),
-                headers=_proxy_headers(request.headers),
-            )
-    except httpx.HTTPError as exc:
-        raise HTTPException(
-            status_code=502, detail=f"Custom API backend unavailable: {exc}"
-        ) from exc
-
-    return Response(
-        content=upstream.content,
-        status_code=upstream.status_code,
-        headers=_response_headers(upstream.headers),
-        media_type=upstream.headers.get("content-type"),
-    )
-
-
-def _read_attachment_bytes(
-    storage_path: Optional[Path], *, size_limit: Optional[int] = None
-) -> Optional[bytes]:
-    if storage_path is None or not storage_path.is_file():
-        return None
-
-    try:
-        if size_limit is not None and storage_path.stat().st_size > size_limit:
-            return None
-        return storage_path.read_bytes()
-    except OSError:
-        return None
-
-
-def _extract_inline_attachment_text(*, display_name: str, mime_type: str, raw: bytes) -> str:
-    if mime_type == "application/pdf" or display_name.lower().endswith(".pdf"):
-        text = _extract_pdf_text(raw)
-        if not text:
-            return ""
-        if len(text) > _MAX_INLINE_TEXT_CHARS:
-            return text[:_MAX_INLINE_TEXT_CHARS] + "\n...[内容已截断]"
-        return text
-
-    if _looks_like_textual_attachment(mime_type, display_name):
-        text = raw.decode("utf-8", errors="ignore")
-        if len(text) > _MAX_INLINE_TEXT_CHARS:
-            return text[:_MAX_INLINE_TEXT_CHARS] + "\n...[内容已截断]"
-        return text
-
-    return ""
-
-
-def _attachment_prompt_text(attachment: Dict[str, Any]) -> str:
-    display_name = str(attachment.get("display_name") or "uploaded_file")
-    mime_type = str(attachment.get("mime_type") or "application/octet-stream")
-    transport = str(attachment.get("transport") or "")
-
-    if transport == "inline":
-        data_b64 = str(attachment.get("data") or "").strip()
-        if len(data_b64) > _MAX_INLINE_BASE64_CHARS:
-            return (
-                f"[上传文件: {display_name}, mime={mime_type or 'unknown'}, 内容过大，未直接展开]"
-            )
-
-        try:
-            raw = _decode_inline_data(data_b64)
-        except Exception:
-            return f"[上传文件: {display_name}, 内容解码失败]"
-
-        text = _extract_inline_attachment_text(
-            display_name=display_name,
-            mime_type=mime_type,
-            raw=raw,
-        )
-        if text:
-            return f"[上传文件: {display_name}]\n{text}"
-        return (
-            "[上传文件: "
-            f"{display_name}, "
-            f"mime={mime_type or 'application/octet-stream'}, "
-            f"bytes={len(raw)}]"
-        )
-
-    storage_path_value = attachment.get("storage_path")
-    storage_path = Path(str(storage_path_value)) if storage_path_value else None
-    size_bytes = attachment.get("size_bytes")
-    if size_bytes is None and storage_path is not None and storage_path.exists():
-        try:
-            size_bytes = storage_path.stat().st_size
-        except OSError:
-            size_bytes = None
-
-    raw = _read_attachment_bytes(storage_path, size_limit=_MAX_REFERENCE_TEXT_BYTES)
-    if raw is not None:
-        text = _extract_inline_attachment_text(
-            display_name=display_name,
-            mime_type=mime_type,
-            raw=raw,
-        )
-        if text:
-            return f"[上传文件: {display_name}]\n{text}"
-        return (
-            "[上传文件: "
-            f"{display_name}, "
-            f"mime={mime_type or 'application/octet-stream'}, "
-            f"bytes={len(raw)}]"
-        )
-
-    if size_bytes and size_bytes > _MAX_REFERENCE_TEXT_BYTES:
-        return (
-            "[上传文件: "
-            f"{display_name}, "
-            f"mime={mime_type or 'unknown'}, "
-            f"bytes={size_bytes}, "
-            "内容过大，未直接展开]"
-        )
-
-    file_uri = attachment.get("file_uri") or ""
-    return f"[上传文件引用: {display_name or file_uri}, mime={mime_type or 'unknown'}]"
-
-
-def _extract_user_input_from_parts(parts: List[Any]) -> str:
-    """兼容旧测试/旧调用点，统一复用 conversations 层的规范化逻辑。"""
-
-    return conversation.extract_user_input_from_parts(parts)
-
-
-def _attachment_from_part(part: Any) -> Optional[Dict[str, Any]]:
-    """兼容旧入口，真实实现已经收口到 conversations.normalize。"""
-
-    return conversation.attachment_from_part(part)
-
-
-async def _hydrate_session(session: Optional[Session]) -> Optional[Session]:
-    if not session:
-        return None
-    session.events = await resolve_session_service().get_events(session.id)
-    return session
-
-
-async def _ensure_session(agent_id: str, user_id: str, session_id: Optional[str]) -> Session:
-    service = resolve_session_service()
-    if session_id:
-        existing = await service.get_session(session_id)
-        if existing:
-            if existing.agent_id != agent_id or existing.user_id != user_id:
-                raise HTTPException(
-                    status_code=409,
-                    detail="Session id belongs to a different agent or user",
-                )
-            return await _hydrate_session(existing) or existing
-        created = await service.create_session(agent_id, user_id, session_id=session_id)
-        return await _hydrate_session(created) or created
-
-    created = await service.create_session(agent_id, user_id)
-    return await _hydrate_session(created) or created
-
-
-def _sanitize_session_state_for_action(state: Mapping[str, Any] | None) -> dict[str, Any]:
-    sanitized = dict(state or {})
-    attachment_context = sanitized.get(conversation.runtime.ATTACHMENT_CONTEXT_STATE_KEY)
-    if not isinstance(attachment_context, Mapping):
-        return sanitized
-
-    attachments = [
-        conversation.compact_attachment_for_session(item)
-        for item in attachment_context.get("attachments") or []
-        if isinstance(item, dict)
-    ]
-    attachment_results = [
-        compact_attachment_result_for_session(item)
-        for item in attachment_context.get("attachment_results") or []
-        if isinstance(item, dict)
-    ]
-    sanitized[conversation.runtime.ATTACHMENT_CONTEXT_STATE_KEY] = {
-        "attachments": attachments,
-        "attachment_results": attachment_results,
-    }
-    return sanitized
-
-
-def _request_id() -> str:
-    return f"req-{uuid.uuid4().hex[:12]}"
-
-
-def _action_response(
-    action: str, data: Any, *, request_id: Optional[str] = None, message: str = "Success"
-) -> dict:
-    payload = {
-        "Code": 0,
-        "Message": message,
-        "RequestId": request_id or _request_id(),
-        "Data": data,
-    }
-    if action:
-        payload["Action"] = action
-    return payload
-
-
-async def _workspace_runtime_request(
-    method: str,
-    runtime_path: str,
-    *,
-    params: Optional[Dict[str, Any]] = None,
-    files: Optional[Dict[str, Any]] = None,
-) -> httpx.Response:
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
-        response = await client.request(
-            method,
-            runtime_path,
-            params=params,
-            files=files,
-        )
-
-    if response.status_code >= 400:
-        detail = response.text
-        try:
-            payload = response.json()
-        except Exception:
-            payload = None
-        if isinstance(payload, dict):
-            detail = str(payload.get("detail") or detail)
-        raise HTTPException(
-            status_code=response.status_code, detail=detail or "Workspace request failed"
-        )
-    return response
-
-
-# ============================================================
-# Core ADK API Endpoints
-# ============================================================
-
-
-@app.get("/health")
-async def health_check():
-    framework = "unknown"
-    agent_name = "unknown"
-    if runner and hasattr(runner, "detection_result"):
-        framework = runner.detection_result.type.value  # langgraph, langchain, adk
-        agent_name = runner.detection_result.name
-    return {"status": "ok", "framework": framework, "agent": agent_name}
-
-
-@app.get("/list-apps")
-async def list_apps(relative_path: str = "./"):
-    """Return available apps. For KsADK single-agent mode, returns the current agent."""
-    name = runner.detection_result.name if runner else "default_agent"
-    return [name]
-
-
-class UiBootstrapRequest(BaseModel):
-    AgentId: Optional[str] = None
-    SessionId: Optional[str] = None
-
-
-class CreateSessionActionRequest(BaseModel):
-    AgentId: str
-    UserId: Optional[str] = "user"
-    SessionId: Optional[str] = None
-
-
-class ListSessionsActionRequest(BaseModel):
-    AgentId: str
-    UserId: Optional[str] = "user"
-    Page: int = Field(1, ge=1)
-    PageSize: int = Field(20, ge=1, le=200)
-
-
-class SessionIdRequest(BaseModel):
-    SessionId: str
-
-
-class ListSessionEventsActionRequest(BaseModel):
-    SessionId: str
-    Offset: Optional[int] = Field(None, ge=0)
-    Limit: Optional[int] = Field(None, ge=1)
-    AfterSeqId: Optional[int] = Field(None, ge=0)
-    BeforeSeqId: Optional[int] = Field(None, ge=1)
-
-
-class ListSessionMessagesActionRequest(BaseModel):
-    SessionId: str
-    AfterSeqId: Optional[int] = Field(None, ge=0)
-    BeforeSeqId: Optional[int] = Field(None, ge=1)
-    Limit: int = Field(50, ge=1, le=200)
-    IncludeReasoning: bool = False
-    IncludeToolEvents: bool = False
-    IncludeAttachments: bool = True
-
-
-class ListSessionCheckpointsActionRequest(BaseModel):
-    AgentId: str
-    SessionId: str
-    RunId: Optional[str] = None
-    OnlyResumable: bool = False
-    Framework: Optional[str] = None
-    Offset: Optional[int] = Field(None, ge=0)
-    Limit: Optional[int] = Field(None, ge=1, le=500)
-
-
-class ListToolReceiptsActionRequest(BaseModel):
-    AgentId: str
-    SessionId: str
-    RunId: Optional[str] = None
-    CheckpointId: Optional[str] = None
-
-
-class ResumeRunActionRequest(BaseModel):
-    AgentId: str
-    SessionId: str
-    RunId: str
-    CheckpointId: str
-    ResumeAttemptId: Optional[str] = None
-    InvocationId: Optional[str] = None
-    Stream: bool = False
-    Model: Optional[str] = None
-    ModelMetadata: Optional[Dict[str, Any]] = None
-    ModelOptions: Optional[Dict[str, Any]] = None
-    ResumeInstructionEnabled: bool = False
-    ResumeInstruction: Optional[str] = None
-
-
-class GetCheckpointResumePreviewActionRequest(BaseModel):
-    AgentId: str
-    SessionId: str
-    RunId: str
-    CheckpointId: str
-
-
-class RunAgentActionRequest(BaseModel):
-    AgentId: str
-    Messages: List[Dict[str, Any]] = Field(default_factory=list)
-    UserId: Optional[str] = "user"
-    AccountId: Optional[str] = None
-    SessionId: Optional[str] = None
-    InvocationId: Optional[str] = None
-    ApiFormat: str = "responses"
-    Stream: bool = False
-    Background: bool = False  # 立即返回 job 句柄，后台执行，进度走 SubscribeRunEvents
-    Model: Optional[str] = None
-    ModelMetadata: Optional[Dict[str, Any]] = None
-    ModelOptions: Optional[Dict[str, Any]] = None
-    ResponsesInput: Optional[Any] = None
-    PreviousResponseId: Optional[str] = None
-
-
-class ResponseFeedbackRefActionRequest(BaseModel):
-    AgentId: str
-    SessionId: str
-    ResponseId: str
-
-
-class UpsertResponseFeedbackActionRequest(ResponseFeedbackRefActionRequest):
-    Rating: str
-    Comment: Optional[str] = ""
-    EventId: Optional[str] = None
-    TraceId: Optional[str] = None
-    RootSpanId: Optional[str] = None
-
-
-class ResponsesRequest(BaseModel):
-    input: Any
-    model: Optional[str] = None
-    model_metadata: Optional[Dict[str, Any]] = None
-    model_options: Optional[Dict[str, Any]] = None
-    instructions: Optional[str] = None
-    metadata: Optional[Dict[str, Any]] = None
-    conversation: Optional[Any] = None
-    safety_identifier: Optional[str] = None
-    prompt_cache_key: Optional[str] = None
-    user: Optional[str] = None
-    account_id: Optional[str] = None
-    store: Optional[bool] = None
-    previous_response_id: Optional[str] = None
-    stream: bool = False
-    session_id: Optional[str] = None
-
-
-class WorkspaceListActionRequest(BaseModel):
-    AgentId: Optional[str] = None
-    Path: str = "."
-    Recursive: bool = False
-
-
-def _clean_optional_string(value: Any) -> str | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    return text or None
-
-
-def _resolve_responses_conversation_id(conversation_value: Any) -> str | None:
-    if conversation_value is None:
-        return None
-    if isinstance(conversation_value, str):
-        return _clean_optional_string(conversation_value)
-    if isinstance(conversation_value, Mapping):
-        return _clean_optional_string(conversation_value.get("id"))
-    raise HTTPException(
-        status_code=400,
-        detail="Responses field 'conversation' must be a string or an object with an 'id'.",
-    )
-
-
-def _resolve_responses_session_and_user(request: ResponsesRequest) -> tuple[str | None, str]:
-    conversation_id = _resolve_responses_conversation_id(request.conversation)
-    legacy_session_id = _clean_optional_string(request.session_id)
-
-    if conversation_id and legacy_session_id and conversation_id != legacy_session_id:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Responses field 'conversation' conflicts with ksadk legacy field "
-                "'session_id'. Use 'conversation' for OpenAI-compatible calls."
-            ),
-        )
-    if conversation_id and request.previous_response_id:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Responses fields 'conversation' and 'previous_response_id' cannot be "
-                "used together."
-            ),
-        )
-
-    resolved_session_id = conversation_id or legacy_session_id
-    resolved_user_id = (
-        _clean_optional_string(request.safety_identifier)
-        or _clean_optional_string(request.user)
-        or "user"
-    )
-    return resolved_session_id, resolved_user_id
-
-
-def _runtime_agent_id(active_runner: BaseRunner) -> str:
-    runtime_id = _clean_optional_string(os.getenv("AGENT_RUNTIME_ID"))
-    if runtime_id:
-        return runtime_id
-    return str(getattr(active_runner.detection_result, "name", "") or "agent")
-
-
-def _metadata_invocation_id(metadata: Mapping[str, Any] | None) -> str | None:
-    if not isinstance(metadata, Mapping):
-        return None
-    agentengine_metadata = metadata.get("agentengine")
-    if not isinstance(agentengine_metadata, Mapping):
-        return None
-    return _clean_optional_string(agentengine_metadata.get("invocation_id"))
-
-
-def _event_text(event: SessionEvent) -> str:
-    parts = (event.content or {}).get("parts")
-    if isinstance(parts, list):
-        text_parts: list[str] = []
-        for part in parts:
-            if isinstance(part, Mapping):
-                text_parts.append(str(part.get("text") or ""))
-            else:
-                text_parts.append(str(part or ""))
-        text = "".join(text_parts).strip()
-        if text:
-            return text
-    return str((event.content or {}).get("text") or "").strip()
-
-
-def _truncate_session_text(text: str, limit: int = 512) -> str:
-    normalized = " ".join(str(text or "").strip().split())
-    if len(normalized) <= limit:
-        return normalized
-    return f"{normalized[: max(limit - 1, 0)].rstrip()}…"
-
-
-def _session_user_prompt_from_event(event: SessionEvent) -> str:
-    metadata = event.metadata or {}
-    content = event.content or {}
-    return str(
-        metadata.get("agent_input")
-        or metadata.get("user_input")
-        or content.get("agent_input")
-        or _event_text(event)
-        or ""
-    ).strip()
-
-
-def _run_status_payload_status(event: SessionEvent) -> str:
-    return str(
-        (event.metadata or {}).get("status")
-        or (event.metadata or {}).get("run_status")
-        or (event.content or {}).get("status")
-        or ""
-    ).strip()
-
-
-def _event_run_id(event: SessionEvent) -> str:
-    return str(
-        (event.metadata or {}).get("run_id")
-        or (event.metadata or {}).get("invocation_id")
-        or event.invocation_id
-        or ""
-    ).strip()
-
-
-def _session_topic_from_events(events: list[SessionEvent]) -> str:
-    for event in reversed(events):
-        metadata = event.metadata or {}
-        tool_output = metadata.get("tool_output")
-        if isinstance(tool_output, Mapping):
-            topic = str(tool_output.get("topic") or tool_output.get("research_title") or "").strip()
-            if topic:
-                return topic
-        topic = str(metadata.get("research_title") or metadata.get("task_title") or "").strip()
-        if topic:
-            return topic
-    return ""
-
-
-def _latest_session_run_status(events: list[SessionEvent]) -> tuple[str, str]:
-    latest_by_invocation: dict[str, tuple[str, SessionEvent]] = {}
-    for event in reversed(events):
-        if event.event_type != "run_status":
-            continue
-        status = _run_status_payload_status(event)
-        invocation_id = _event_run_id(event)
-        if status or invocation_id:
-            latest_by_invocation.setdefault(invocation_id, (status, event))
-    for invocation_id, (status, _) in latest_by_invocation.items():
-        if status in _RUN_ACTIVE_STATUSES:
-            return invocation_id, status
-    for invocation_id, (status, _) in latest_by_invocation.items():
-        if status not in _RUN_TERMINAL_STATUSES:
-            return invocation_id, status
-    if latest_by_invocation:
-        invocation_id, (status, _) = next(iter(latest_by_invocation.items()))
-        return invocation_id, status
-    for event in reversed(events):
-        invocation_id = _event_run_id(event)
-        if invocation_id:
-            return invocation_id, ""
-    return "", ""
-
-
-def _latest_session_run_metadata(
-    events: list[SessionEvent],
-) -> tuple[str, str, str, str]:
-    """返回 (invocation_id, status, run_mode, run_trigger)。
-
-    与 _latest_session_run_status 同语义，但额外从最新 run_status 事件的 metadata
-    读取 run_mode/run_trigger。旧事件缺字段降级 unknown。原 _latest_session_run_status
-    不动，保护现有 ActiveInvocationId/ActiveRunStatus 契约。
-    """
-    invocation_id, status = _latest_session_run_status(events)
-    run_mode = RUN_MODE_UNKNOWN
-    run_trigger = RUN_TRIGGER_UNKNOWN
-    if invocation_id:
-        for event in reversed(events):
-            if event.event_type != "run_status" or _event_run_id(event) != invocation_id:
-                continue
-            metadata = event.metadata or {}
-            run_mode = str(metadata.get("run_mode") or RUN_MODE_UNKNOWN)
-            run_trigger = str(metadata.get("run_trigger") or RUN_TRIGGER_UNKNOWN)
-            break
-    return invocation_id, status, run_mode, run_trigger
-
-
-class WorkspaceDeleteActionRequest(BaseModel):
-    AgentId: Optional[str] = None
-    Path: str
-
-
-class CancelRunActionRequest(BaseModel):
-    AgentId: Optional[str] = None
-    InvocationId: str
-
-
-async def _session_to_action_payload(session: Session) -> dict[str, Any]:
-    events = list(session.events or [])
-    if not events:
-        try:
-            events = await resolve_session_service().get_events(session.id)
-        except Exception as exc:
-            logger.debug("Failed to hydrate events for session %s: %s", session.id, exc)
-            events = []
-    event_prompts = [
-        _session_user_prompt_from_event(event)
-        for event in events
-        if event.event_type == "user_message"
-    ]
-    event_prompts = [prompt for prompt in event_prompts if prompt]
-    first_prompt = session.first_prompt or (event_prompts[0] if event_prompts else "")
-    last_prompt = session.last_prompt or (event_prompts[-1] if event_prompts else "")
-    (
-        active_invocation_id,
-        active_run_status,
-        active_run_mode,
-        active_run_trigger,
-    ) = _latest_session_run_metadata(events)
-    title = session.title
-    title_source = session.title_source
-    if not title:
-        title_seed = _session_topic_from_events(events) or first_prompt
-        if title_seed:
-            title = build_fallback_title(title_seed)
-            title_source = "fallback_first_prompt"
-    if title_source == "fallback_first_prompt":
-        heuristic = build_heuristic_title(
-            first_prompt=first_prompt or title,
-            assistant_text=session.summary or "",
-        )
-        if heuristic and heuristic != title:
-            title = heuristic
-            title_source = HEURISTIC_SESSION_TITLE_SOURCE
-    payload = {
-        "SessionId": session.id,
-        "AgentId": session.agent_id,
-        "UserId": session.user_id,
-        "Title": title,
-        "TitleSource": title_source,
-        "Summary": session.summary,
-        "FirstPrompt": _truncate_session_text(first_prompt),
-        "LastPrompt": _truncate_session_text(last_prompt),
-        "ActiveInvocationId": active_invocation_id,
-        "ActiveRunStatus": active_run_status,
-        "ActiveRunMode": active_run_mode,
-        "ActiveRunTrigger": active_run_trigger,
-        "State": _sanitize_session_state_for_action(session.state),
-        "CreatedAt": session.created_at,
-        "UpdatedAt": session.updated_at,
-        "Version": session.version,
-    }
-    if runner is not None:
-        try:
-            continuity = await runner.get_session_adapter().describe_continuity(
-                runner=runner,
-                session=session,
-                core=ConversationSessionCore(resolve_session_service()),
-            )
-            payload["Continuity"] = continuity.to_payload()
-        except Exception as exc:
-            logger.debug("Failed to describe continuity for session %s: %s", session.id, exc)
-    return payload
-
-
-def _event_to_action_payload(event: SessionEvent) -> dict[str, Any]:
-    payload = {
-        "EventId": event.id,
-        "SessionId": event.session_id,
-        "Author": event.author,
-        "EventType": event.event_type,
-        "Content": event.content,
-        "Timestamp": event.timestamp,
-        "SeqId": event.seq_id,
-        "Metadata": event.metadata,
-    }
-    if event.invocation_id:
-        payload["InvocationId"] = event.invocation_id
-    return payload
-
-
-def _checkpoint_event_to_action_payload(event: SessionEvent) -> dict[str, Any] | None:
-    if event.event_type != "run_checkpoint":
-        return None
-    metadata = event.metadata or {}
-    run_id = str(metadata.get("run_id") or "").strip()
-    checkpoint_id = str(metadata.get("checkpoint_id") or "").strip()
-    framework = str(metadata.get("framework") or "").strip()
-    framework_ref = metadata.get("framework_ref")
-    if not run_id or not checkpoint_id or not framework or not isinstance(framework_ref, Mapping):
-        return None
-    next_node = str(metadata.get("next_node") or "").strip()
-    if not next_node:
-        langgraph_ref = framework_ref.get("langgraph")
-        if isinstance(langgraph_ref, Mapping):
-            next_node = str(langgraph_ref.get("next_node") or "").strip()
-    is_terminal = bool(metadata.get("is_terminal", False))
-    is_resumable_raw = metadata.get("is_resumable")
-    is_resumable = is_resumable_raw if isinstance(is_resumable_raw, bool) else None
-    backend = str(metadata.get("backend") or "unknown").strip() or "unknown"
-    scope = str(metadata.get("scope") or "unknown").strip() or "unknown"
-    durable = bool(metadata.get("durable", False))
-    disabled_reason = str(metadata.get("resume_disabled_reason") or "").strip()
-    if is_terminal:
-        is_resumable = False
-        disabled_reason = disabled_reason or "该 checkpoint 已是终态；可选择更早恢复点重跑"
-    if backend == "memory" or scope == "process_local":
-        is_resumable = False
-        disabled_reason = disabled_reason or "进程内 checkpoint 不能跨实例恢复"
-    resume_status = str(metadata.get("resume_status") or "").strip()
-    if not resume_status:
-        if is_resumable is True:
-            resume_status = "resumable"
-        elif is_resumable is False:
-            resume_status = "disabled"
-        else:
-            resume_status = "unknown"
-    if resume_status == "disabled" and not disabled_reason:
-        disabled_reason = "该 checkpoint 不可恢复"
-    artifact_preview = metadata.get("artifact_preview")
-    if not isinstance(artifact_preview, Mapping):
-        artifact_preview = {}
-    resume_count_raw = metadata.get("resume_count")
-    try:
-        resume_count = int(resume_count_raw) if resume_count_raw is not None else 0
-    except (TypeError, ValueError):
-        resume_count = 0
-    last_resumed_at = metadata.get("last_resumed_at")
-    replay_allowed_raw = metadata.get("replay_allowed")
-    replay_allowed = replay_allowed_raw if isinstance(replay_allowed_raw, bool) else True
-    expires_at = metadata.get("expires_at")
-    checkpoint_status = str(metadata.get("checkpoint_status") or "").strip()
-    if not checkpoint_status:
-        if is_terminal:
-            checkpoint_status = "resumed" if resume_count else "terminal"
-        elif is_resumable is False:
-            checkpoint_status = "disabled"
-        else:
-            checkpoint_status = "active"
-    payload = {
-        "EventId": event.id,
-        "SessionId": event.session_id,
-        "InvocationId": event.invocation_id,
-        "SeqId": event.seq_id,
-        "Timestamp": event.timestamp,
-        "RunId": run_id,
-        "CheckpointId": checkpoint_id,
-        "Framework": framework,
-        "FrameworkRef": dict(framework_ref),
-        "Phase": str(metadata.get("phase") or ""),
-        "Metadata": metadata,
-        "IsResumable": is_resumable,
-        "ResumeStatus": resume_status,
-        "IsTerminal": is_terminal,
-        "ResumeDisabledReason": disabled_reason,
-        "NextNode": next_node,
-        "StageKey": str(metadata.get("stage_key") or ""),
-        "StageName": str(
-            metadata.get("stage_name") or metadata.get("stage") or metadata.get("title") or ""
-        ),
-        "StageIndex": metadata.get("stage_index"),
-        "TotalStages": metadata.get("total_stages"),
-        "Backend": backend,
-        "Scope": scope,
-        "Durable": durable,
-        "CreatedAt": event.timestamp,
-        "ArtifactPreview": dict(artifact_preview),
-        "LastResumedAt": last_resumed_at,
-        "ResumeCount": resume_count,
-        "ReplayAllowed": replay_allowed,
-        "ExpiresAt": expires_at,
-        "CheckpointStatus": checkpoint_status,
-    }
-    stage = str(metadata.get("stage") or metadata.get("title") or "").strip()
-    summary = str(metadata.get("summary") or metadata.get("description") or "").strip()
-    next_action = str(metadata.get("next_action") or metadata.get("nextAction") or "").strip()
-    status = str(metadata.get("status") or "").strip()
-    if stage:
-        payload["Stage"] = stage
-    if summary:
-        payload["Summary"] = summary
-    if next_action:
-        payload["NextAction"] = next_action
-    if status:
-        payload["Status"] = status
-    return payload
-
-
-def _resume_audit_by_checkpoint(
-    events: list[SessionEvent],
-) -> dict[tuple[str, str], dict[str, Any]]:
-    audit: dict[tuple[str, str], dict[str, Any]] = {}
-    for event in events:
-        if event.event_type != "run_resume":
-            continue
-        metadata = event.metadata or {}
-        run_id = str(metadata.get("run_id") or "").strip()
-        checkpoint_id = str(metadata.get("checkpoint_id") or "").strip()
-        if not run_id or not checkpoint_id:
-            continue
-        key = (run_id, checkpoint_id)
-        item = audit.setdefault(key, {"resume_count": 0, "last_resumed_at": None})
-        item["resume_count"] = int(item["resume_count"]) + 1
-        item["last_resumed_at"] = event.timestamp
-    return audit
-
-
-def _apply_checkpoint_resume_audit(
-    checkpoint: dict[str, Any],
-    audit_by_checkpoint: Mapping[tuple[str, str], Mapping[str, Any]],
-) -> dict[str, Any]:
-    audit = audit_by_checkpoint.get(
-        (
-            str(checkpoint.get("RunId") or ""),
-            str(checkpoint.get("CheckpointId") or ""),
-        ),
-        {},
-    )
-    metadata = dict(checkpoint.get("Metadata") or {})
-    resume_count = int(audit.get("resume_count") or checkpoint.get("ResumeCount") or 0)
-    last_resumed_at = audit.get("last_resumed_at") or checkpoint.get("LastResumedAt")
-    checkpoint["ResumeCount"] = resume_count
-    checkpoint["LastResumedAt"] = last_resumed_at
-    metadata["resume_count"] = resume_count
-    metadata["last_resumed_at"] = last_resumed_at
-    if resume_count and checkpoint.get("CheckpointStatus") in {"", "active"}:
-        checkpoint["CheckpointStatus"] = "resumed"
-    expires_at = checkpoint.get("ExpiresAt")
-    expires_at_dt = _parse_iso_datetime(expires_at)
-    if expires_at_dt is not None and expires_at_dt <= datetime.now(timezone.utc):
-        checkpoint["IsResumable"] = False
-        checkpoint["ResumeStatus"] = "disabled"
-        checkpoint["CheckpointStatus"] = "expired"
-        checkpoint["ResumeDisabledReason"] = "该 checkpoint 已过期"
-    elif resume_count and checkpoint.get("ReplayAllowed") is False:
-        checkpoint["IsResumable"] = False
-        checkpoint["ResumeStatus"] = "disabled"
-        checkpoint["ResumeDisabledReason"] = "该 checkpoint 已恢复过，当前策略不允许重复恢复"
-    metadata["checkpoint_status"] = checkpoint.get("CheckpointStatus")
-    metadata["resume_status"] = checkpoint.get("ResumeStatus")
-    metadata["resume_disabled_reason"] = checkpoint.get("ResumeDisabledReason")
-    checkpoint["Metadata"] = metadata
-    return checkpoint
-
-
-def _apply_adk_only_latest_resumable(
-    checkpoints: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """P1.4: For ADK invocation_id resume mode, only the latest checkpoint per
-    RunId is independently resumable. Older checkpoints get IsResumable=False."""
-    latest_by_run: dict[str, int] = {}
-    for cp in checkpoints:
-        metadata = cp.get("Metadata") or {}
-        if not metadata.get("only_latest_resumable"):
-            continue
-        run_id = str(cp.get("RunId") or "")
-        seq_id = int(cp.get("SeqId") or 0)
-        if run_id not in latest_by_run or seq_id > latest_by_run[run_id]:
-            latest_by_run[run_id] = seq_id
-
-    for cp in checkpoints:
-        metadata = cp.get("Metadata") or {}
-        if not metadata.get("only_latest_resumable"):
-            continue
-        run_id = str(cp.get("RunId") or "")
-        seq_id = int(cp.get("SeqId") or 0)
-        if seq_id < latest_by_run.get(run_id, 0):
-            if cp.get("IsResumable") is True:
-                cp["IsResumable"] = False
-                cp["ResumeStatus"] = "disabled"
-                cp["ResumeDisabledReason"] = (
-                    "新的恢复点已生成，此恢复点暂停恢复能力"
-                )
-                metadata["resume_disabled_reason"] = (
-                    "新的恢复点已生成，此恢复点暂停恢复能力"
-                )
-                metadata["resume_status"] = "disabled"
-                cp["Metadata"] = metadata
-
-    return checkpoints
-
-
-def _check_adk_latest_resumable(
-    checkpoint: dict[str, Any],
-    events: list,
-) -> dict[str, Any]:
-    """P1.4: For a single ADK only_latest_resumable checkpoint, verify it is
-    the latest for its RunId. If not, mark IsResumable=False."""
-    metadata = checkpoint.get("Metadata") or {}
-    if not metadata.get("only_latest_resumable"):
-        return checkpoint
-
-    run_id = str(checkpoint.get("RunId") or "")
-    my_seq_id = int(checkpoint.get("SeqId") or 0)
-
-    max_seq_id = my_seq_id
-    for event in events:
-        if event.event_type != "run_checkpoint":
-            continue
-        ev_meta = event.metadata or {}
-        if str(ev_meta.get("run_id") or "") != run_id:
-            continue
-        seq_id = int(event.seq_id or 0)
-        if seq_id > max_seq_id:
-            max_seq_id = seq_id
-
-    if my_seq_id < max_seq_id and checkpoint.get("IsResumable") is True:
-        checkpoint["IsResumable"] = False
-        checkpoint["ResumeStatus"] = "disabled"
-        checkpoint["ResumeDisabledReason"] = (
-            "新的恢复点已生成，此恢复点暂停恢复能力"
-        )
-        metadata["resume_disabled_reason"] = (
-            "新的恢复点已生成，此恢复点暂停恢复能力"
-        )
-        metadata["resume_status"] = "disabled"
-        checkpoint["Metadata"] = metadata
-
-    return checkpoint
-
-
-_SIDE_EFFECT_TOOL_NAMES = {
-    "write_workspace_file",
-    "write_workspace_files",
-    "delete_workspace_file",
-    "execute_skills",
-    "run_command",
-    "run_code",
-}
-
-
-def _tool_receipt_event_to_action_payload(event: SessionEvent) -> dict[str, Any] | None:
-    if event.event_type != "tool_result":
-        return None
-    metadata = event.metadata or {}
-    receipt = metadata.get("tool_receipt")
-    if not isinstance(receipt, Mapping):
-        return None
-    tool_name = str(receipt.get("tool_name") or metadata.get("tool_name") or "").strip()
-    if not tool_name:
-        return None
-    return {
-        "EventId": event.id,
-        "SessionId": event.session_id,
-        "InvocationId": event.invocation_id,
-        "SeqId": event.seq_id,
-        "Timestamp": event.timestamp,
-        "ReceiptId": str(receipt.get("receipt_id") or ""),
-        "IdempotencyKey": str(receipt.get("idempotency_key") or ""),
-        "ToolName": tool_name,
-        "ToolCallId": str(receipt.get("tool_call_id") or ""),
-        "RunId": str(receipt.get("run_id") or metadata.get("run_id") or ""),
-        "CheckpointId": str(receipt.get("checkpoint_id") or ""),
-        "Status": str(receipt.get("status") or ""),
-        "Replayed": bool(receipt.get("replayed") or metadata.get("replayed")),
-        "Metadata": dict(metadata),
-    }
-
-
-def _build_checkpoint_resume_preview(
-    *,
-    checkpoint: Mapping[str, Any],
-    events: list[SessionEvent],
-) -> dict[str, Any]:
-    checkpoint_seq_id = int(checkpoint.get("SeqId") or 0)
-    run_id = str(checkpoint.get("RunId") or "")
-    receipts: list[dict[str, Any]] = []
-    for event in events:
-        if checkpoint_seq_id and int(event.seq_id or 0) > checkpoint_seq_id:
-            continue
-        receipt = _tool_receipt_event_to_action_payload(event)
-        if receipt is None:
-            continue
-        if run_id and receipt["RunId"] and receipt["RunId"] != run_id:
-            continue
-        receipts.append(receipt)
-
-    side_effect_receipts = [
-        receipt for receipt in receipts if receipt["ToolName"] in _SIDE_EFFECT_TOOL_NAMES
-    ]
-    risk_level = "low"
-    if side_effect_receipts:
-        risk_level = "medium"
-    if any(receipt["Status"] == "failed" for receipt in receipts):
-        risk_level = "high"
-
-    return {
-        "Checkpoint": dict(checkpoint),
-        "Capabilities": {
-            "Checkpoints": True,
-            "CheckpointResume": checkpoint.get("IsResumable") is not False,
-            "ToolReceipts": True,
-            "IdempotentToolReplay": True,
-        },
-        "CanResume": checkpoint.get("IsResumable") is not False,
-        "Reason": str(checkpoint.get("ResumeDisabledReason") or ""),
-        "NextNode": str(checkpoint.get("NextNode") or ""),
-        "ExpectedAction": (
-            "resume_from_checkpoint"
-            if checkpoint.get("IsResumable") is True
-            else ("preview_required" if checkpoint.get("ResumeStatus") == "unknown" else "disabled")
-        ),
-        "ToolReceipts": receipts,
-        "Risk": {
-            "Level": risk_level,
-            "DuplicateSideEffectRisk": bool(side_effect_receipts),
-            "SideEffectReceiptCount": len(side_effect_receipts),
-            "FailedReceiptCount": len(
-                [receipt for receipt in receipts if receipt["Status"] == "failed"]
-            ),
-        },
-        "Summary": {
-            "RunId": run_id,
-            "CheckpointId": str(checkpoint.get("CheckpointId") or ""),
-            "Phase": str(checkpoint.get("Phase") or ""),
-            "ToolReceiptCount": len(receipts),
-        },
-    }
-
-
-def _checkpoint_resume_disabled_detail(checkpoint: Mapping[str, Any]) -> dict[str, Any] | None:
-    if checkpoint.get("IsResumable") is not False:
-        return None
-    reason = (
-        str(checkpoint.get("ResumeDisabledReason") or "").strip() or "Checkpoint is not resumable"
-    )
-    return {
-        "code": "checkpoint_not_resumable",
-        "reason": reason,
-        "checkpoint_id": str(checkpoint.get("CheckpointId") or ""),
-        "run_id": str(checkpoint.get("RunId") or ""),
-        "resume_status": str(checkpoint.get("ResumeStatus") or "disabled"),
-        "is_terminal": bool(checkpoint.get("IsTerminal")),
-    }
-
-
-async def _find_session_checkpoint(
-    *,
-    service: Any,
-    session_id: str,
-    run_id: str,
-    checkpoint_id: str,
-) -> dict[str, Any] | None:
-    events = await service.get_events(session_id)
-    resume_audit = _resume_audit_by_checkpoint(events)
-    for event in reversed(events):
-        checkpoint = _checkpoint_event_to_action_payload(event)
-        if checkpoint is None:
-            continue
-        checkpoint = _apply_checkpoint_resume_audit(checkpoint, resume_audit)
-        if checkpoint["RunId"] != run_id:
-            continue
-        if checkpoint["CheckpointId"] != checkpoint_id:
-            continue
-        checkpoint = _check_adk_latest_resumable(checkpoint, events)
-        return checkpoint
-    return None
-
-
-async def _resolve_checkpoint_resume_input_from_session(
-    *,
-    service: Any,
-    agent_id: str,
-    session_id: str | None,
-    resume_input: Mapping[str, Any] | None,
-) -> dict[str, Any] | None:
-    if not isinstance(resume_input, Mapping):
-        return None
-    if str(resume_input.get("type") or "").strip() != "agentengine.resume_checkpoint":
-        return dict(resume_input)
-    normalized_session_id = str(session_id or "").strip()
-    if not normalized_session_id:
-        raise HTTPException(status_code=400, detail="Checkpoint resume requires session_id")
-
-    session = await service.get_session(normalized_session_id)
-    if not session or session.agent_id != agent_id:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    run_id = str(resume_input.get("run_id") or "").strip()
-    checkpoint_id = str(resume_input.get("checkpoint_id") or "").strip()
-    if not run_id or not checkpoint_id:
-        raise HTTPException(
-            status_code=400, detail="Checkpoint resume requires run_id and checkpoint_id"
-        )
-
-    checkpoint = await _find_session_checkpoint(
-        service=service,
-        session_id=normalized_session_id,
-        run_id=run_id,
-        checkpoint_id=checkpoint_id,
-    )
-    if checkpoint is None:
-        raise HTTPException(status_code=404, detail="Checkpoint not found")
-
-    resume_attempt_id = str(resume_input.get("resume_attempt_id") or "").strip()
-    return {
-        "type": "agentengine.resume_checkpoint",
-        "run_id": run_id,
-        "checkpoint_id": checkpoint_id,
-        "resume_attempt_id": resume_attempt_id or f"resume_{uuid.uuid4().hex}",
-        "framework": checkpoint["Framework"],
-        "framework_ref": checkpoint["FrameworkRef"],
-        "metadata": dict(checkpoint.get("Metadata") or {}),
-        "checkpoint_metadata": dict(checkpoint.get("Metadata") or {}),
-        "resume_instruction_enabled": bool(
-            resume_input.get("resume_instruction_enabled")
-            or resume_input.get("ResumeInstructionEnabled")
-        ),
-        "resume_instruction": str(
-            resume_input.get("resume_instruction") or resume_input.get("ResumeInstruction") or ""
-        ).strip(),
-    }
-
-
-def _feedback_state_key(response_id: str) -> str:
-    return str(response_id or "").strip()
-
-
-def _feedback_payload_from_state(item: Mapping[str, Any] | None) -> dict[str, Any] | None:
-    if not isinstance(item, Mapping):
-        return None
-    rating = str(item.get("Rating") or item.get("rating") or "").strip().lower()
-    if rating not in {"up", "down"}:
-        return None
-    return {
-        "AgentId": str(item.get("AgentId") or item.get("agent_id") or ""),
-        "SessionId": str(item.get("SessionId") or item.get("session_id") or ""),
-        "ResponseId": str(item.get("ResponseId") or item.get("response_id") or ""),
-        "EventId": str(item.get("EventId") or item.get("event_id") or ""),
-        "Rating": rating,
-        "Comment": str(item.get("Comment") or item.get("comment") or ""),
-        "TraceId": str(item.get("TraceId") or item.get("trace_id") or ""),
-        "RootSpanId": str(item.get("RootSpanId") or item.get("root_span_id") or ""),
-        "CreatedAt": str(item.get("CreatedAt") or item.get("created_at") or ""),
-        "UpdatedAt": str(item.get("UpdatedAt") or item.get("updated_at") or ""),
-    }
-
-
-async def _find_feedback_assistant_event(
-    *,
-    session_id: str,
-    response_id: str,
-    event_id: str | None = None,
-) -> SessionEvent | None:
-    events = await resolve_session_service().get_events(session_id)
-    normalized_event_id = str(event_id or "").strip()
-    normalized_response_id = str(response_id or "").strip()
-    for event in reversed(events):
-        if normalized_event_id and event.id != normalized_event_id:
-            continue
-        metadata = event.metadata or {}
-        if (
-            normalized_response_id
-            and str(metadata.get("response_id") or "") != normalized_response_id
-        ):
-            continue
-        event_type = conversation.canonical_event_type(
-            event.event_type,
-            author=event.author,
-            role=str((event.content or {}).get("role") or ""),
-        )
-        if event_type == "assistant_message":
-            return event
-    return None
-
-
-@app.post("/agentengine/api/v1/GetResponseFeedback")
-async def get_response_feedback_action(request: ResponseFeedbackRefActionRequest):
-    session = await resolve_session_service().get_session(request.SessionId)
-    if not session or session.agent_id != request.AgentId:
-        return _action_response("GetResponseFeedback", {"Feedback": None})
-    feedbacks = session.state.get("__ksadk_response_feedback__")
-    feedback = None
-    if isinstance(feedbacks, Mapping):
-        feedback = _feedback_payload_from_state(
-            feedbacks.get(_feedback_state_key(request.ResponseId))
-        )
-    return _action_response("GetResponseFeedback", {"Feedback": feedback})
-
-
-@app.post("/agentengine/api/v1/UpsertResponseFeedback")
-async def upsert_response_feedback_action(request: UpsertResponseFeedbackActionRequest):
-    rating = str(request.Rating or "").strip().lower()
-    if rating not in {"up", "down"}:
-        raise HTTPException(status_code=400, detail="Feedback rating must be up or down")
-
-    service = resolve_session_service()
-    session = await service.get_session(request.SessionId)
-    if not session or session.agent_id != request.AgentId:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    assistant_event = await _find_feedback_assistant_event(
-        session_id=request.SessionId,
-        response_id=request.ResponseId,
-        event_id=request.EventId,
-    )
-    if assistant_event is None:
-        raise HTTPException(status_code=404, detail="Assistant response not found")
-
-    now = str(time.time())
-    existing_feedbacks = session.state.get("__ksadk_response_feedback__")
-    feedbacks = dict(existing_feedbacks) if isinstance(existing_feedbacks, Mapping) else {}
-    existing = (
-        _feedback_payload_from_state(feedbacks.get(_feedback_state_key(request.ResponseId))) or {}
-    )
-    metadata = assistant_event.metadata or {}
-    feedback = {
-        "AgentId": request.AgentId,
-        "SessionId": request.SessionId,
-        "ResponseId": request.ResponseId,
-        "EventId": request.EventId or assistant_event.id,
-        "Rating": rating,
-        "Comment": request.Comment or "",
-        "TraceId": request.TraceId or str(metadata.get("trace_id") or ""),
-        "RootSpanId": request.RootSpanId or str(metadata.get("root_span_id") or ""),
-        "CreatedAt": existing.get("CreatedAt") or now,
-        "UpdatedAt": now,
-    }
-    feedbacks[_feedback_state_key(request.ResponseId)] = feedback
-    await service.update_state(
-        agent_id=session.agent_id,
-        user_id=session.user_id,
-        session_id=session.id,
-        scope="session",
-        state_delta={"__ksadk_response_feedback__": feedbacks},
-    )
-    return _action_response("UpsertResponseFeedback", {"Feedback": feedback})
-
-
-@app.post("/agentengine/api/v1/DeleteResponseFeedback")
-async def delete_response_feedback_action(request: ResponseFeedbackRefActionRequest):
-    service = resolve_session_service()
-    session = await service.get_session(request.SessionId)
-    if not session or session.agent_id != request.AgentId:
-        return _action_response("DeleteResponseFeedback", {"Deleted": False})
-    existing_feedbacks = session.state.get("__ksadk_response_feedback__")
-    feedbacks = dict(existing_feedbacks) if isinstance(existing_feedbacks, Mapping) else {}
-    deleted = feedbacks.pop(_feedback_state_key(request.ResponseId), None) is not None
-    if deleted:
-        await service.update_state(
-            agent_id=session.agent_id,
-            user_id=session.user_id,
-            session_id=session.id,
-            scope="session",
-            state_delta={"__ksadk_response_feedback__": feedbacks},
-        )
-    return _action_response("DeleteResponseFeedback", {"Deleted": deleted})
-
-
-@app.post("/agentengine/api/v1/GetAgentUiBootstrap")
-async def get_agent_ui_bootstrap(request: UiBootstrapRequest):
-    agent_id = request.AgentId or (_runtime_agent_id(runner) if runner else "default-agent")
-    description = getattr(runner.detection_result, "description", "") if runner else ""
-    framework = ""
-    if runner:
-        detection_type = getattr(getattr(runner, "detection_result", None), "type", None)
-        framework = str(getattr(detection_type, "value", detection_type) or "").strip().lower()
-    workspace_enabled = workspace_files_enabled(default=True)
-    ui_spec = _resolve_agent_ui_spec()
-    runtime_capabilities = (
-        runner.get_runtime_capabilities()
-        if runner and callable(getattr(runner, "get_runtime_capabilities", None))
-        else {}
-    )
-    checkpoint_resume_capability = {
-        "Supported": bool(
-            (runtime_capabilities.get("ResumeRun") or {}).get("Supported")
-            if isinstance(runtime_capabilities, Mapping)
-            else False
-        ),
-        "Checkpoint": (runtime_capabilities.get("Checkpoint") or {})
-        if isinstance(runtime_capabilities, Mapping)
-        else {},
-        "ResumeRun": (runtime_capabilities.get("ResumeRun") or {})
-        if isinstance(runtime_capabilities, Mapping)
-        else {},
-    }
-    checkpoint_resume_supported = bool(checkpoint_resume_capability["Supported"])
-    cancel_run_supported = bool(
-        (runtime_capabilities.get("CancelRun") or {}).get("Supported")
-        if isinstance(runtime_capabilities, Mapping)
-        else False
-    )
-    return _action_response(
-        "GetAgentUiBootstrap",
-        {
-            "Agent": {
-                "AgentId": agent_id,
-                "Name": runner.detection_result.name if runner else agent_id,
-                "Description": description or "",
-                "Framework": framework,
-            },
-            "Modules": ["Chat", "Build", "Deploy"],
-            "Capabilities": {
-                "Attachments": True,
-                "WorkspaceFiles": workspace_enabled,
-                "Approval": True,
-                "Thinking": True,
-                "StopRun": cancel_run_supported,
-                "ResumeRun": checkpoint_resume_supported,
-                "RuntimeCapabilities": runtime_capabilities,
-                "CheckpointResumeCapability": checkpoint_resume_capability,
-                "RunLifecycle": {
-                    "Enabled": True,
-                    "Resume": True,
-                    "Abort": True,
-                    "Checkpoints": checkpoint_resume_supported,
-                    "CheckpointResume": checkpoint_resume_supported,
-                    "CheckpointResumePreview": checkpoint_resume_supported,
-                },
-                "MCP": False,
-                "HostedRuntime": False,
-                "NativeTerminal": _build_native_terminal_capability(framework),
-                "BuiltinTools": describe_agentengine_tools(),
-            },
-            "WorkspaceFiles": build_workspace_files_bootstrap(enabled=workspace_enabled),
-            "AccessMode": "Owner",
-            "SharePermissions": {
-                "Interactive": True,
-                "DefaultPath": ui_spec.get("ui_path") or ui_spec.get("path") or "/chat",
-                "SharePath": ui_spec.get("ui_path") or ui_spec.get("path") or "/chat",
-            },
-            "CustomUI": {
-                "Enabled": bool(ui_spec.get("enabled")),
-                "Profile": ui_spec.get("ui_profile") or ui_spec.get("profile"),
-                "Path": ui_spec.get("ui_path") or ui_spec.get("path"),
-                "Url": ui_spec.get("ui_url") or ui_spec.get("url"),
-                "BundlePath": ui_spec.get("ui_bundle_path") or ui_spec.get("bundle_path"),
-            },
-            "ApiFormats": ["responses", "chat_completions"],
-            "Stream": True,
-            "SessionId": request.SessionId,
-            "SessionBackend": describe_session_backend(),
-            "HostedRuntime": None,
-            "Model": _build_bootstrap_model_payload(),
-        },
-    )
-
-
-@app.post("/agentengine/api/v1/CreateSession")
-async def create_session_action(request: CreateSessionActionRequest):
-    session = await _ensure_session(request.AgentId, request.UserId or "user", request.SessionId)
-    return _action_response("CreateSession", {"Session": await _session_to_action_payload(session)})
-
-
-@app.post("/agentengine/api/v1/ListSessions")
-async def list_sessions_action(request: ListSessionsActionRequest):
-    service = resolve_session_service()
-    offset = (request.Page - 1) * request.PageSize
-    sessions = await service.list_sessions(
-        request.AgentId,
-        request.UserId or "user",
-        offset=offset,
-        limit=request.PageSize,
-    )
-    total = await service.count_sessions(request.AgentId, request.UserId or "user")
-    session_payloads = [await _session_to_action_payload(session) for session in sessions]
-    return _action_response(
-        "ListSessions",
-        {
-            "Sessions": session_payloads,
-            "Total": total,
-            "Page": request.Page,
-            "PageSize": request.PageSize,
-        },
-    )
-
-
-@app.post("/agentengine/api/v1/GetSession")
-async def get_session_action(request: SessionIdRequest):
-    service = resolve_session_service()
-    session = await _hydrate_session(await service.get_session(request.SessionId))
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-    return _action_response("GetSession", {"Session": await _session_to_action_payload(session)})
-
-
-@app.post("/agentengine/api/v1/DeleteSession")
-async def delete_session_action(request: SessionIdRequest):
-    service = resolve_session_service()
-    await _cancel_detached_streams_for_session(request.SessionId)
-    deleted = await service.delete_session(request.SessionId)
-    if not deleted:
-        raise HTTPException(status_code=404, detail="Session not found")
-    return _action_response("DeleteSession", {"Deleted": True})
-
-
-@app.post("/agentengine/api/v1/ListSessionEvents")
-async def list_session_events_action(request: ListSessionEventsActionRequest):
-    service = resolve_session_service()
-    events = await service.get_events(
-        request.SessionId,
-        offset=request.Offset,
-        limit=request.Limit,
-        after_seq_id=request.AfterSeqId,
-        before_seq_id=request.BeforeSeqId,
-    )
-    total = await service.count_events(
-        request.SessionId,
-        after_seq_id=request.AfterSeqId,
-        before_seq_id=request.BeforeSeqId,
-    )
-    return _action_response(
-        "ListSessionEvents",
-        {
-            "Events": [_event_to_action_payload(event) for event in events],
-            "Total": total,
-            "Offset": request.Offset or 0,
-            "Limit": request.Limit if request.Limit is not None else len(events),
-            "AfterSeqId": request.AfterSeqId,
-            "BeforeSeqId": request.BeforeSeqId,
-        },
-    )
-
-
-@app.post("/agentengine/api/v1/ListSessionMessages")
-async def list_session_messages_action(request: ListSessionMessagesActionRequest):
-    from ksadk.conversations.message_projection import project_session_messages
-
-    service = resolve_session_service()
-    events = await service.get_events(
-        request.SessionId,
-        offset=0,
-        limit=2000,
-        after_seq_id=request.AfterSeqId,
-        before_seq_id=request.BeforeSeqId,
-    )
-    serialized_events = [_event_to_action_payload(event) for event in events]
-    messages = project_session_messages(
-        serialized_events,
-        include_reasoning=request.IncludeReasoning,
-        include_tool_events=request.IncludeToolEvents,
-        include_attachments=request.IncludeAttachments,
-    )
-    if request.AfterSeqId is not None:
-        page = messages
-        has_more = False
-        next_cursor = None
-    else:
-        page = messages[-request.Limit :]
-        minimum_seq_id = int(page[0].get("SeqId") or 0) if page else 0
-        has_more = minimum_seq_id > 1 or len(serialized_events) >= 2000
-        next_cursor = minimum_seq_id - 1 if has_more else None
-    latest_seq_id = (
-        int(page[-1].get("SeqId") or 0)
-        if page
-        else max((int(event.get("SeqId") or 0) for event in serialized_events), default=0)
-    )
-    return _action_response(
-        "ListSessionMessages",
-        {
-            "SessionId": request.SessionId,
-            "Messages": page,
-            "LatestSeqId": latest_seq_id,
-            "HasMore": has_more,
-            "NextCursor": next_cursor,
-        },
-    )
-
-
-def _count_resumable_checkpoints(checkpoints: list[dict[str, Any]]) -> int:
-    """统计可恢复 checkpoint 数量。
-
-    规则：IsResumable=True AND ReplayAllowed!=False AND IsTerminal!=True
-    AND CheckpointStatus not in {expired, disabled}。
-    不排除 resumed（已恢复过的仍计入，符合存档点可反复读的回档语义）。
-    """
-    resumable = 0
-    for cp in checkpoints:
-        if cp.get("IsResumable") is not True:
-            continue
-        if cp.get("ReplayAllowed") is False:
-            continue
-        if cp.get("IsTerminal") is True:
-            continue
-        status = str(cp.get("CheckpointStatus") or "").strip().lower()
-        if status in {"expired", "disabled"}:
-            continue
-        resumable += 1
-    return resumable
-
-
-async def _list_checkpoints_payload(request: ListSessionCheckpointsActionRequest) -> dict[str, Any]:
-    service = resolve_session_service()
-    session = await service.get_session(request.SessionId)
-    if not session or session.agent_id != request.AgentId:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    run_id_filter = str(request.RunId or "").strip()
-    framework_filter = str(request.Framework or "").strip().lower()
-    events = await service.get_events(request.SessionId)
-    resume_audit = _resume_audit_by_checkpoint(events)
-    checkpoints: list[dict[str, Any]] = []
-    for event in events:
-        checkpoint = _checkpoint_event_to_action_payload(event)
-        if checkpoint is None:
-            continue
-        checkpoint = _apply_checkpoint_resume_audit(checkpoint, resume_audit)
-        if run_id_filter and checkpoint["RunId"] != run_id_filter:
-            continue
-        if framework_filter and str(checkpoint["Framework"]).lower() != framework_filter:
-            continue
-        # ResumableTotal 在 OnlyResumable 过滤前统计全量可恢复数（RunId/Framework 范围内）
-        checkpoints.append(checkpoint)
-    checkpoints = _apply_adk_only_latest_resumable(checkpoints)
-    resumable_total = _count_resumable_checkpoints(checkpoints)
-    if request.OnlyResumable:
-        checkpoints = [cp for cp in checkpoints if cp.get("IsResumable") is True]
-    total = len(checkpoints)
-    offset = int(request.Offset or 0)
-    if request.Limit is not None:
-        checkpoints = checkpoints[offset : offset + int(request.Limit)]
-    elif offset:
-        checkpoints = checkpoints[offset:]
-
-    return {
-        "Checkpoints": checkpoints,
-        "Total": total,
-        "ResumableTotal": resumable_total,
-        "HasResumableCheckpoint": resumable_total > 0,
-        "Offset": offset,
-        "Limit": request.Limit if request.Limit is not None else len(checkpoints),
-    }
-
-
-@app.post("/agentengine/api/v1/ListSessionCheckpoints")
-async def list_session_checkpoints_action(request: ListSessionCheckpointsActionRequest):
-    return _action_response("ListSessionCheckpoints", await _list_checkpoints_payload(request))
-
-
-@app.post("/agentengine/api/v1/ListToolReceipts")
-async def list_tool_receipts_action(request: ListToolReceiptsActionRequest):
-    service = resolve_session_service()
-    session = await service.get_session(request.SessionId)
-    if not session or session.agent_id != request.AgentId:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    run_id_filter = str(request.RunId or "").strip()
-    checkpoint_id_filter = str(request.CheckpointId or "").strip()
-    receipts: list[dict[str, Any]] = []
-    for event in await service.get_events(request.SessionId):
-        receipt = _tool_receipt_event_to_action_payload(event)
-        if receipt is None:
-            continue
-        if run_id_filter and receipt["RunId"] != run_id_filter:
-            continue
-        if checkpoint_id_filter and receipt["CheckpointId"] != checkpoint_id_filter:
-            continue
-        receipts.append(receipt)
-
-    return _action_response(
-        "ListToolReceipts",
-        {"ToolReceipts": receipts},
-    )
-
-
-@app.post("/agentengine/api/v1/GetCheckpointResumePreview")
-async def get_checkpoint_resume_preview_action(request: GetCheckpointResumePreviewActionRequest):
-    service = resolve_session_service()
-    session = await service.get_session(request.SessionId)
-    if not session or session.agent_id != request.AgentId:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    events = await service.get_events(request.SessionId)
-    resume_audit = _resume_audit_by_checkpoint(events)
-    checkpoint = None
-    for event in reversed(events):
-        candidate = _checkpoint_event_to_action_payload(event)
-        if candidate is None:
-            continue
-        candidate = _apply_checkpoint_resume_audit(candidate, resume_audit)
-        if candidate["RunId"] != str(request.RunId):
-            continue
-        if candidate["CheckpointId"] != str(request.CheckpointId):
-            continue
-        checkpoint = candidate
-        break
-    if checkpoint is None:
-        raise HTTPException(status_code=404, detail="Checkpoint not found")
-
-    checkpoint = _check_adk_latest_resumable(checkpoint, events)
-
-    return _action_response(
-        "GetCheckpointResumePreview",
-        {"Preview": _build_checkpoint_resume_preview(checkpoint=checkpoint, events=events)},
-    )
-
-
-@app.post("/agentengine/api/v1/ResumeRun")
-async def resume_run_action(request: ResumeRunActionRequest):
-    service = resolve_session_service()
-    session = await service.get_session(request.SessionId)
-    if not session or session.agent_id != request.AgentId:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    checkpoint = await _find_session_checkpoint(
-        service=service,
-        session_id=request.SessionId,
-        run_id=str(request.RunId),
-        checkpoint_id=str(request.CheckpointId),
-    )
-    if checkpoint is None:
-        raise HTTPException(status_code=404, detail="Checkpoint not found")
-    disabled_detail = _checkpoint_resume_disabled_detail(checkpoint)
-    if disabled_detail is not None:
-        if disabled_detail.get("is_terminal"):
-            resume_attempt_id = str(request.ResumeAttemptId or f"resume_{uuid.uuid4().hex}")
-            invocation_id = str(request.InvocationId or resume_attempt_id)
-            await conversation.append_run_resume_event(
-                session_id=request.SessionId,
-                author=request.AgentId,
-                run_id=str(request.RunId),
-                checkpoint_id=str(request.CheckpointId),
-                resume_attempt_id=resume_attempt_id,
-                framework=checkpoint["Framework"],
-                framework_ref=checkpoint["FrameworkRef"],
-                invocation_id=invocation_id,
-                session_service_provider=resolve_session_service,
-            )
-            await conversation.append_run_status_event(
-                session_id=request.SessionId,
-                author=request.AgentId,
-                status="completed",
-                invocation_id=invocation_id,
-                detail="resume_noop_terminal_checkpoint",
-                session_service_provider=resolve_session_service,
-                run_mode=RUN_MODE_BACKGROUND,
-                run_trigger=RUN_TRIGGER_CHECKPOINT_RESUME,
-            )
-            return _action_response(
-                "ResumeRun",
-                {
-                    "status": "noop",
-                    "Reason": disabled_detail["reason"],
-                    "CheckpointId": disabled_detail["checkpoint_id"],
-                    "RunId": disabled_detail["run_id"],
-                    "ResumeAttemptId": resume_attempt_id,
-                },
-            )
-        raise HTTPException(status_code=409, detail=disabled_detail)
-
-    resume_input = {
-        "type": "agentengine.resume_checkpoint",
-        "run_id": str(request.RunId),
-        "checkpoint_id": str(request.CheckpointId),
-        "resume_attempt_id": str(request.ResumeAttemptId or f"resume_{uuid.uuid4().hex}"),
-        "framework": checkpoint["Framework"],
-        "framework_ref": checkpoint["FrameworkRef"],
-        "metadata": dict(checkpoint.get("Metadata") or {}),
-        "checkpoint_metadata": dict(checkpoint.get("Metadata") or {}),
-        "resume_instruction_enabled": bool(getattr(request, "ResumeInstructionEnabled", False)),
-        "resume_instruction": str(getattr(request, "ResumeInstruction", "") or "").strip(),
-    }
-    active_runner = _resolve_active_runner()
-    user_id = session.user_id or "user"
-
-    if request.Stream:
-        resume_invocation_id = str(request.InvocationId or resume_input["resume_attempt_id"])
-        resume_key = _detached_resume_key_from_input(request.SessionId, resume_input)
-        _reject_if_detached_resume_active(resume_key)
-        return _detached_streaming_response(
-            conversation.stream_responses_conversation_turn(
-                runner=active_runner,
-                agent_id=request.AgentId,
-                user_id=user_id,
-                messages=[],
-                session_id=request.SessionId,
-                model=request.Model,
-                model_metadata=request.ModelMetadata,
-                model_options=request.ModelOptions,
-                request_metadata={"responses_conversation": True},
-                resume_input=resume_input,
-                invocation_id=resume_invocation_id,
-                prepare_runner=_prepare_runner_for_model,
-                session_service_provider=resolve_session_service,
-                run_mode=RUN_MODE_BACKGROUND,
-            ),
-            invocation_id=resume_invocation_id,
-            resume_key=resume_key,
-            run_mode=RUN_MODE_BACKGROUND,
-            run_trigger=RUN_TRIGGER_CHECKPOINT_RESUME,
-        )
-
-    response_id = f"resp_{uuid.uuid4().hex}"
-    resolved_session_id, result = await conversation.invoke_conversation_once(
-        runner=active_runner,
-        agent_id=request.AgentId,
-        user_id=user_id,
-        messages=[],
-        session_id=request.SessionId,
-        model=request.Model,
-        model_metadata=request.ModelMetadata,
-        model_options=request.ModelOptions,
-        request_metadata={"responses_conversation": True},
-        resume_input=resume_input,
-        response_id=response_id,
-        invocation_id=str(resume_input["resume_attempt_id"]),
-        prepare_runner=_prepare_runner_for_model,
-        session_service_provider=resolve_session_service,
-        run_mode=RUN_MODE_FOREGROUND,
-    )
-    payload = conversation.build_responses_payload(
-        output_text=result["output_text"],
-        model=request.Model,
-        session_id=resolved_session_id,
-        response_id=response_id,
-        metadata=result.get("metadata") if isinstance(result.get("metadata"), dict) else None,
-    )
-    return _action_response("ResumeRun", payload)
-
-
-@app.get("/agentengine/api/v1/SubscribeRunEvents", include_in_schema=False)
-async def subscribe_run_events_action(
-    SessionId: str = Query(...),
-    InvocationId: str = Query(...),
-    AfterSeqId: int = Query(0),
-):
-    session_id = str(SessionId or "").strip()
-    invocation_id = str(InvocationId or "").strip()
-    if not session_id or not invocation_id:
-        raise HTTPException(status_code=400, detail="SessionId and InvocationId are required")
-
-    async def event_generator() -> AsyncIterator[str]:
-        service = resolve_session_service()
-        last_seq_id = int(AfterSeqId or 0)
-        deadline = time.monotonic() + 5 * 60
-        while True:
-            # 增量查询：把 after_seq_id 下推到后端，只取 seq_id > last_seq_id 的事件，
-            # 避免每轮全量拉取。invocation_id 过滤仍在 Python 侧。
-            events = await service.get_events(session_id, after_seq_id=last_seq_id)
-            matched_events = [
-                event
-                for event in events
-                if event.invocation_id == invocation_id
-            ]
-            for event in matched_events:
-                last_seq_id = max(last_seq_id, event.seq_id)
-                payload = _event_to_action_payload(event)
-                yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
-                if (
-                    event.event_type == "run_status"
-                    and str((event.content or {}).get("status") or "").strip().lower()
-                    in _RUN_TERMINAL_STATUSES
-                ):
-                    yield "data: [DONE]\n\n"
-                    return
-
-            # 重连兜底：本轮无新事件时，查全量确认 run 是否已有 terminal
-            # （客户端断连期间 run 已结束）。
-            # 正常流式期间不触发此查询，保持增量收益。
-            if not matched_events:
-                all_events = await service.get_events(session_id)
-                latest_status = None
-                for event in all_events:
-                    if event.invocation_id != invocation_id or event.event_type != "run_status":
-                        continue
-                    latest_status = str((event.content or {}).get("status") or "").strip().lower()
-                if latest_status in _RUN_TERMINAL_STATUSES:
-                    yield "data: [DONE]\n\n"
-                    return
-            if time.monotonic() > deadline:
-                return
-            await asyncio.sleep(0.25)
-
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
-
-
-@app.post("/agentengine/api/v1/UploadFile")
-async def upload_file_action(file: UploadFile = File(...)):
-    file_id = uuid.uuid4().hex
-    data = await file.read()
-    file_uri, _local_path = await AttachmentStorageService().store(
-        data=data,
-        file_id=file_id,
-        display_name=file.filename,
-        mime_type=file.content_type,
-    )
-
-    return _action_response(
-        "UploadFile",
-        {
-            "FileData": {
-                "fileUri": file_uri,
-                "displayName": file.filename or "uploaded_file",
-                "mimeType": file.content_type or "application/octet-stream",
-                "sizeBytes": len(data),
-            }
-        },
-    )
-
-
-@app.get("/agentengine/api/v1/AttachmentContent", include_in_schema=False)
-async def attachment_content_action(FileUri: str = Query(...)):
-    loaded = AttachmentStorageService().read(FileUri)
-    if loaded is None:
-        raise HTTPException(status_code=404, detail="Attachment not found")
-
-    return Response(
-        content=loaded.data,
-        media_type=loaded.mime_type or "application/octet-stream",
-        headers={"Content-Disposition": f'inline; filename="{loaded.display_name}"'},
-    )
-
-
-@app.post("/agentengine/api/v1/ListWorkspaceFiles")
-async def list_workspace_files_action(request: WorkspaceListActionRequest):
-    response = await _workspace_runtime_request(
-        "GET",
-        "/_ksadk/workspace/v1/entries",
-        params={
-            "path": request.Path,
-            "recursive": "true" if request.Recursive else "false",
-        },
-    )
-    return _action_response("ListWorkspaceFiles", response.json())
-
-
-@app.post("/agentengine/api/v1/AddWorkspaceFile")
-async def upload_workspace_file_action(
-    file: UploadFile = File(...),
-    AgentId: Optional[str] = Form(None),
-    Path: str = Form(...),
-):
-    del AgentId
-    try:
-        payload = await file.read()
-    finally:
-        await file.close()
-
-    file_name = file.filename or Path.rsplit("/", 1)[-1]
-    response = await _workspace_runtime_request(
-        "POST",
-        f"/_ksadk/workspace/v1/files/{quote(Path, safe='/')}",
-        files={
-            "file": (
-                file_name,
-                payload,
-                file.content_type or "application/octet-stream",
-            )
-        },
-    )
-    return _action_response("AddWorkspaceFile", response.json())
-
-
-@app.post("/agentengine/api/v1/DeleteWorkspaceFile")
-async def delete_workspace_file_action(request: WorkspaceDeleteActionRequest):
-    response = await _workspace_runtime_request(
-        "DELETE",
-        f"/_ksadk/workspace/v1/files/{quote(request.Path, safe='/')}",
-    )
-    return _action_response("DeleteWorkspaceFile", response.json())
-
-
-@app.post("/agentengine/api/v1/CancelRun")
-async def cancel_run_action(request: CancelRunActionRequest):
-    detached = _DETACHED_STREAMS_BY_INVOCATION.get(request.InvocationId)
-    found = detached is not None
-    cancel_requested = False
-    if detached is not None:
-        cancel_requested = detached.cancel()
-    runner_cancel_status = "not_found" if found else "unsupported"
-    active_runner = _resolve_active_runner()
-    if active_runner is not None:
-        try:
-            runner_result = active_runner.request_cancel(request.InvocationId)
-            if isinstance(runner_result, str) and runner_result:
-                runner_cancel_status = runner_result
-            elif runner_result is True:
-                runner_cancel_status = "accepted"
-            elif runner_result is False and not found:
-                runner_cancel_status = "not_found"
-        except Exception as exc:
-            runner_cancel_status = "error"
-            logger.warning("CancelRun failed: %s", exc)
-    runner_accepted = runner_cancel_status in {"accepted", "cancelling", "cancelled"}
-    status = "cancelling" if found or runner_accepted else runner_cancel_status
-    return _action_response(
-        "CancelRun",
-        {
-            "Cancelled": bool(cancel_requested or runner_accepted),
-            "Found": found,
-            "Status": status,
-            "RunnerCancelStatus": runner_cancel_status,
-        },
-    )
-
-
-@app.get("/agentengine/api/v1/GetWorkspaceFileContent", include_in_schema=False)
-async def get_workspace_file_content_action(
-    FilePath: str = Query(...),
-    AgentId: Optional[str] = Query(None),
-):
-    del AgentId
-    response = await _workspace_runtime_request(
-        "GET",
-        f"/_ksadk/workspace/v1/files/{quote(FilePath, safe='/')}",
-    )
-    headers = {}
-    for key in ("content-disposition", "last-modified"):
-        value = response.headers.get(key)
-        if value:
-            headers[key] = value
-    return Response(
-        content=response.content,
-        status_code=response.status_code,
-        headers=headers,
-        media_type=response.headers.get("content-type"),
-    )
-
-
-@app.get("/agentengine/api/v1/ws/{agent_id}/{file_path:path}", include_in_schema=False)
-async def workspace_file_path_route(request: Request, agent_id: str, file_path: str):
-    response = await _workspace_runtime_request(
-        "GET",
-        f"/_ksadk/workspace/v1/files/{quote(file_path, safe='/')}",
-    )
-    headers = {}
-    for key in ("content-disposition", "last-modified"):
-        value = response.headers.get(key)
-        if value:
-            headers[key] = value
-
-    content_type = response.headers.get("content-type", "")
-    is_html = "text/html" in content_type or file_path.lower().endswith((".html", ".htm"))
-
-    if is_html and response.status_code == 200:
-        del agent_id
-        base_href = build_workspace_file_base_href(file_path)
-        asset_source = f"{request.url.scheme}://{request.url.netloc}{base_href}"
-        html_doc = response.content.decode("utf-8", errors="replace")
-        html_doc = inject_workspace_html_preview(html_doc, file_path)
-        headers.pop("content-disposition", None)
-        headers["Content-Security-Policy"] = build_workspace_preview_csp(asset_source)
-        return Response(
-            content=html_doc.encode("utf-8"),
-            status_code=response.status_code,
-            headers=headers,
-            media_type="text/html; charset=utf-8",
-        )
-
-    return Response(
-        content=response.content,
-        status_code=response.status_code,
-        headers=headers,
-        media_type=content_type,
-    )
-
-
-@app.get("/agentengine/api/v1/ExportWorkspaceZip", include_in_schema=False)
-async def export_workspace_zip(
-    AgentId: Optional[str] = Query(None),
-    Path: str = Query("."),
-):
-    del AgentId
-    dir_path = Path.strip() or "."
-    response = await _workspace_runtime_request(
-        "GET",
-        "/_ksadk/workspace/v1/entries",
-        params={"path": dir_path, "recursive": "true"},
-    )
-    data = response.json() if response.status_code == 200 else {}
-    entries = data.get("Entries", []) if isinstance(data, dict) else []
-    root = _workspace_root_dir()
-    root_resolved = root.resolve()
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for entry in entries:
-            if entry.get("Type") != "file":
-                continue
-            rel = entry.get("Path", "")
-            if not rel:
-                continue
-            rel_path = PurePosixPath(rel)
-            if rel_path.is_absolute() or ".." in rel_path.parts:
-                continue
-            target = root.joinpath(*rel_path.parts)
-            if target.is_symlink():
-                continue
-            try:
-                resolved_target = target.resolve(strict=True)
-            except OSError:
-                continue
-            if not resolved_target.is_relative_to(root_resolved):
-                continue
-            if resolved_target.is_file():
-                zf.writestr(rel_path.as_posix(), resolved_target.read_bytes())
-    buf.seek(0)
-    zip_name = f"workspace-{dir_path.replace('/', '-')}.zip" if dir_path != "." else "workspace.zip"
-    return StreamingResponse(
-        buf,
-        media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{zip_name}"'},
-    )
-
-
-def _normalize_model_catalog_items(raw_models: list[Any]) -> list[dict[str, Any]]:
-    """统一模型目录 shape，并按 id 去重。
-
-    这里刻意保留上游原始 dict 字段，再补 canonical metadata。
-    这样两周后模型服务扩展字段时，这一层不会再次把信息裁掉。
-    """
-
-    normalized_by_id: dict[str, dict[str, Any]] = {}
-    for raw_model in raw_models:
-        item = normalize_model_metadata(raw_model)
-        normalized_by_id[item["id"]] = item
-    return sorted(normalized_by_id.values(), key=lambda item: item["id"])
-
-
-async def _build_models_payload() -> dict[str, Any]:
-    import os
-
-    import httpx
-
-    api_base = os.getenv("OPENAI_BASE_URL") or os.getenv("OPENAI_API_BASE")
-    api_key = os.getenv("OPENAI_API_KEY")
-    current_model, source = _resolve_current_model()
-
-    def _fallback_catalog() -> dict[str, Any]:
-        models = _normalize_model_catalog_items([current_model]) if current_model else []
-        return {
-            "data": models,
-            "current": current_model,
-            "source": source,
-        }
-
-    if not api_base:
-        return _fallback_catalog()
-
-    try:
-        base_url = api_base.rstrip("/")
-        if base_url.endswith("/v1"):
-            url = f"{base_url}/models"
-        else:
-            url = f"{base_url}/v1/models"
-
-        headers = {}
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
-
-        async with httpx.AsyncClient(verify=False, timeout=10) as client:
-            resp = await client.get(url, headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
-
-            if isinstance(data, list):
-                models = _normalize_model_catalog_items(list(data))
-            else:
-                models = _normalize_model_catalog_items(list(data.get("data", [])))
-            if current_model and all(
-                str(item.get("id") or "").strip() != current_model for item in models
-            ):
-                models = _normalize_model_catalog_items([*models, current_model])
-            return {"data": models, "current": current_model, "source": source}
-    except Exception as e:
-        logger.error(f"Failed to fetch models: {e}")
-        fallback = _fallback_catalog()
-        fallback["error"] = str(e)
-        return fallback
-
-
-class ListAgentModelsRequest(BaseModel):
-    AgentId: Optional[str] = None
-    Name: Optional[str] = None
-
-
-@app.post("/agentengine/api/v1/ListAgentModels")
-async def list_agent_models_action(_request: ListAgentModelsRequest):
-    payload = await _build_models_payload()
-    return _action_response(
-        "ListAgentModels",
-        {
-            "Models": payload.get("data", []),
-            "Current": payload.get("current"),
-            "Source": payload.get("source", ""),
-        },
-    )
-
-
-@app.get("/v1/models")
-async def list_openai_models():
-    """Expose the current model catalog through the OpenAI-compatible path."""
-
-    payload = await _build_models_payload()
-    return {
-        "object": "list",
-        "data": payload.get("data", []),
-        "current": payload.get("current"),
-        "source": payload.get("source", ""),
-    }
-
-
-@app.post("/agentengine/api/v1/RunAgent")
-async def run_agent_action(request: RunAgentActionRequest):
-    api_format = (request.ApiFormat or "responses").strip().lower()
-    run_user_id = _clean_optional_string(request.UserId) or "user"
-    account_id = _clean_optional_string(request.AccountId)
-    service = resolve_session_service()
-    resume_input = (
-        conversation.extract_responses_resume_input(request.ResponsesInput)
-        if request.ResponsesInput is not None
-        else None
-    )
-    resume_input = await _resolve_checkpoint_resume_input_from_session(
-        service=service,
-        agent_id=request.AgentId,
-        session_id=request.SessionId,
-        resume_input=resume_input,
-    )
-    if resume_input is not None:
-        messages = []
-    elif request.ResponsesInput is not None and api_format == "responses":
-        messages = conversation.normalize_responses_input(request.ResponsesInput)
-    else:
-        messages = conversation.normalize_kop_messages(request.Messages)
-    request_metadata = (
-        {"previous_response_id": request.PreviousResponseId} if request.PreviousResponseId else {}
-    )
-    if api_format == "responses":
-        request_metadata["responses_conversation"] = True
-
-    if request.Background:
-        invocation_id = request.InvocationId or f"inv_{uuid.uuid4().hex}"
-        # 后台 stream 在 detached task 里才被消费（lazy），此时 session 尚未创建。
-        # 先 ensure 出 session，才能立刻写 run_status=in_progress（供 SubscribeRunEvents
-        # 拉到起始态），并把 resolved session_id 回填给 detached stream 的终态写入与 SubscribeUrl。
-        background_session = await conversation.ensure_conversation_session(
-            agent_id=request.AgentId,
-            user_id=run_user_id,
-            session_id=request.SessionId,
-            session_service_provider=resolve_session_service,
-        )
-        resolved_background_session_id = background_session.id
-        if resume_input is None:
-            await conversation.prime_session_metadata_for_user_turn(
-                service=service,
-                session=background_session,
-                messages=messages,
-            )
-        await conversation.append_run_status_event(
-            session_id=resolved_background_session_id,
-            author=_resolve_active_runner().detection_result.name,
-            status="in_progress",
-            invocation_id=invocation_id,
-            session_service_provider=resolve_session_service,
-            run_mode=RUN_MODE_BACKGROUND,
-            run_trigger=trigger_from_resume_input(resume_input),
-        )
-        resume_key = _detached_resume_key_from_input(resolved_background_session_id, resume_input)
-        _reject_if_detached_resume_active(resume_key)
-        detached = _DetachedSSEStream(
-            conversation.stream_responses_conversation_turn(
-                runner=_resolve_active_runner(),
-                agent_id=request.AgentId,
-                user_id=run_user_id,
-                messages=messages,
-                session_id=resolved_background_session_id,
-                model=request.Model,
-                model_metadata=request.ModelMetadata,
-                model_options=request.ModelOptions,
-                request_metadata=request_metadata or None,
-                resume_input=resume_input,
-                account_id=account_id,
-                invocation_id=invocation_id,
-                prepare_runner=_prepare_runner_for_model,
-                session_service_provider=resolve_session_service,
-                run_mode=RUN_MODE_BACKGROUND,
-            ),
-            invocation_id=invocation_id,
-            session_id=resolved_background_session_id,
-            run_mode=RUN_MODE_BACKGROUND,
-            run_trigger=trigger_from_resume_input(resume_input),
-        )
-        if invocation_id and resume_key:
-            _DETACHED_RESUME_KEYS_BY_INVOCATION[invocation_id] = resume_key
-            _ACTIVE_DETACHED_RESUME_INVOCATION_BY_KEY[resume_key] = invocation_id
-            detached._task.add_done_callback(
-                lambda _t, inv=invocation_id, rk=resume_key: _clear_detached_resume_key(inv, rk)
-            )
-        return _action_response(
-            "RunAgent",
-            {
-                "SessionId": resolved_background_session_id,
-                "InvocationId": invocation_id,
-                "Status": "running",
-                "Background": True,
-                "SubscribeUrl": (
-                    "/agentengine/api/v1/SubscribeRunEvents"
-                    f"?SessionId={resolved_background_session_id}"
-                    f"&InvocationId={invocation_id}"
-                ),
-            },
-        )
-
-    if request.Stream:
-        if api_format == "chat_completions":
-            completion_request = ChatCompletionRequest(
-                messages=messages,
-                model=request.Model,
-                model_metadata=request.ModelMetadata,
-                model_options=request.ModelOptions,
-                stream=True,
-                session_id=request.SessionId,
-                user=run_user_id,
-                account_id=account_id,
-            )
-            return await chat_completions(completion_request)
-        resume_key = _detached_resume_key_from_input(request.SessionId, resume_input)
-        _reject_if_detached_resume_active(resume_key)
-        return _detached_streaming_response(
-            conversation.stream_responses_conversation_turn(
-                runner=_resolve_active_runner(),
-                agent_id=request.AgentId,
-                user_id=run_user_id,
-                messages=messages,
-                session_id=request.SessionId,
-                model=request.Model,
-                model_metadata=request.ModelMetadata,
-                model_options=request.ModelOptions,
-                request_metadata=request_metadata or None,
-                resume_input=resume_input,
-                account_id=account_id,
-                invocation_id=request.InvocationId,
-                prepare_runner=_prepare_runner_for_model,
-                session_service_provider=resolve_session_service,
-                run_mode=RUN_MODE_FOREGROUND,
-            ),
-            invocation_id=request.InvocationId,
-            resume_key=resume_key,
-            run_mode=RUN_MODE_FOREGROUND,
-            run_trigger=trigger_from_resume_input(resume_input),
-        )
-
-    responses_response_id = f"resp_{uuid.uuid4().hex}" if api_format != "chat_completions" else None
-    resolved_session_id, result = await conversation.invoke_conversation_once(
-        runner=_resolve_active_runner(),
-        agent_id=request.AgentId,
-        user_id=run_user_id,
-        messages=messages,
-        session_id=request.SessionId,
-        model=request.Model,
-        model_metadata=request.ModelMetadata,
-        model_options=request.ModelOptions,
-        request_metadata=request_metadata or None,
-        resume_input=resume_input,
-        response_id=responses_response_id,
-        account_id=account_id,
-        invocation_id=request.InvocationId,
-        prepare_runner=_prepare_runner_for_model,
-        session_service_provider=resolve_session_service,
-        run_mode=RUN_MODE_FOREGROUND,
-    )
-    output_text = result["output_text"]
-    if api_format == "chat_completions":
-        payload = conversation.build_chat_completions_payload(
-            output_text=output_text,
-            model=request.Model,
-            session_id=resolved_session_id,
-            metadata=result.get("metadata"),
-        )
-    else:
-        payload = conversation.build_responses_payload(
-            output_text=output_text,
-            model=request.Model,
-            session_id=resolved_session_id,
-            response_id=responses_response_id,
-            metadata=result.get("metadata")
-            if isinstance(result.get("metadata"), Mapping)
-            else None,
-        )
-    return _action_response("RunAgent", payload)
-
-
-# ============================================================
-# Session Management API (ADK Web Compatible)
-# ============================================================
-
-
-@app.post("/apps/{app_name}/users/{user_id}/sessions")
-async def create_session(app_name: str, user_id: str, request: Request):
-    """Create a new session"""
-    # Check if importing existing events
-    body = {}
-    try:
-        body = await request.json()
-    except Exception:
-        pass
-
-    service = resolve_session_service()
-    session = await _ensure_session(app_name, user_id, body.get("sessionId") or body.get("id"))
-
-    for raw_event in body.get("events", []):
-        session_event = SessionEvent.from_dict(raw_event, session_id=session.id)
-        await service.append_event(session.id, session_event)
-
-    hydrated = await _hydrate_session(await service.get_session(session.id))
-    return hydrated.to_legacy_dict() if hydrated else session.to_legacy_dict()
-
-
-@app.get("/apps/{app_name}/users/{user_id}/sessions")
-async def list_sessions(app_name: str, user_id: str):
-    """List all sessions for a user"""
-    service = resolve_session_service()
-    sessions = await service.list_sessions(app_name, user_id)
-    hydrated: List[Dict[str, Any]] = []
-    for session in sessions:
-        session.events = await service.get_events(session.id)
-        hydrated.append(session.to_legacy_dict())
-    return hydrated
-
-
-@app.get("/apps/{app_name}/users/{user_id}/sessions/{session_id}")
-async def get_session(app_name: str, user_id: str, session_id: str):
-    """Get a specific session with its events"""
-    service = resolve_session_service()
-    session = await _hydrate_session(await service.get_session(session_id))
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-    return session.to_legacy_dict()
-
-
-@app.delete("/apps/{app_name}/users/{user_id}/sessions/{session_id}")
-async def delete_session(app_name: str, user_id: str, session_id: str):
-    """Delete a session"""
-    service = resolve_session_service()
-    if await service.delete_session(session_id):
-        return {"status": "deleted"}
-    raise HTTPException(status_code=404, detail="Session not found")
-
-
-# ============================================================
-# Memory API - Save session to long-term memory
-# ============================================================
-
-
-@app.post("/apps/{app_name}/users/{user_id}/sessions/{session_id}/save_memory")
-async def save_session_to_memory(app_name: str, user_id: str, session_id: str):
-    """将指定 session 保存到长期记忆
-
-    当配置了 KSADK_LTM_BACKEND 时，将 session 中的用户消息
-    持久化到长期记忆后端，供后续 session 通过 load_memory 工具检索。
-    """
-    active_runner = _ensure_runner_loaded()
-
-    # 检查 runner 是否支持长期记忆
-    from ksadk.runners.adk_runner import ADKRunner as _ADKRunner
-
-    if not isinstance(active_runner, _ADKRunner):
-        raise HTTPException(
-            status_code=400, detail="Long-term memory is only supported with ADK runner"
-        )
-
-    if not active_runner._long_term_memory:
-        raise HTTPException(
-            status_code=400,
-            detail="Long-term memory not configured. Set KSADK_LTM_BACKEND environment variable.",
-        )
-
-    # 查找 ADK 内部 session ID
-    internal_session_id = active_runner._session_map.get(session_id, session_id)
-
-    success = await active_runner.save_session_to_long_term_memory(
-        session_id=internal_session_id,
-        user_id=user_id,
-    )
-
-    if success:
-        return {"status": "saved", "session_id": session_id}
-    else:
-        raise HTTPException(status_code=500, detail="Failed to save session to long-term memory")
-
-
-# ============================================================
-# Run SSE - Core Agent Execution Endpoint
-# ============================================================
-
-
-@app.post("/run_sse")
-async def run_sse(request: AgentRunRequest):
-    """Unified Streaming Endpoint compatible with ADK Web
-
-    Respects the `streaming` parameter:
-    - streaming=False: Accumulate full response, send as single event
-    - streaming=True: Stream tokens as they arrive (real-time)
-    """
-    active_runner = _ensure_runner_loaded()
-    _prepare_runner_for_model(active_runner, request.model)
-    use_streaming = request.streaming
-    normalized_message = conversation.normalize_parts_content(
-        request.newMessage.parts if request.newMessage else []
-    )
-    user_message = {
-        "role": "user",
-        "content": str(normalized_message.get("content") or ""),
-        "display_content": str(normalized_message.get("display_content") or ""),
-        "parts": list(normalized_message.get("parts") or []),
-        "attachments": list(normalized_message.get("attachments") or []),
-        "attachment_results": list(normalized_message.get("attachment_results") or []),
-    }
-
-    model_version = "models/gemini-pro" if "gemini" in request.appName.lower() else "models/unknown"
-    prepared_non_stream: conversation.PreparedConversationTurn | None = None
-    if request.sessionId:
-        await conversation.ensure_conversation_session(
-            agent_id=request.appName,
-            user_id=request.userId,
-            session_id=request.sessionId,
-            session_service_provider=resolve_session_service,
-        )
-    if not use_streaming:
-        prepared_non_stream = await conversation.build_run_input(
-            agent_id=request.appName,
-            user_id=request.userId,
-            session_id=request.sessionId,
-            messages=[user_message],
-            state_delta=request.stateDelta or {},
-            invocation_id=request.invocationId,
-            session_service_provider=resolve_session_service,
-        )
-        await conversation.append_run_status_event(
-            session_id=prepared_non_stream.session_id,
-            author=active_runner.detection_result.name,
-            status="in_progress",
-            invocation_id=prepared_non_stream.invocation_id,
-            session_service_provider=resolve_session_service,
-            run_mode=RUN_MODE_FOREGROUND,
-            run_trigger=RUN_TRIGGER_NEW_RUN,
-        )
-
-    async def event_generator():
-        if not use_streaming:
-            try:
-                assert prepared_non_stream is not None
-                session_id = prepared_non_stream.session_id
-                user_input = prepared_non_stream.user_input
-                attachments = prepared_non_stream.attachments
-                attachment_results = prepared_non_stream.attachment_results
-                current_attachments = prepared_non_stream.current_attachments
-                current_attachment_results = prepared_non_stream.current_attachment_results
-                input_content = prepared_non_stream.input_content
-                input_messages = prepared_non_stream.input_messages
-                user_parts = prepared_non_stream.user_parts
-                history = prepared_non_stream.history
-                invocation_id = prepared_non_stream.invocation_id
-                common_metadata = {
-                    "modelVersion": model_version,
-                    "usageMetadata": {
-                        "promptTokenCount": len(user_input),
-                        "candidatesTokenCount": 0,
-                        "totalTokenCount": len(user_input),
-                    },
-                }
-                input_data = {
-                    "session_id": session_id,
-                    "input": user_input,
-                    "history": history,
-                    "input_content": list(input_content),
-                    "input_messages": list(input_messages),
-                    "input_parts": list(user_parts),
-                    "attachments": attachments,
-                    "attachment_results": attachment_results,
-                    "current_attachments": current_attachments,
-                    "current_attachment_results": current_attachment_results,
-                    "has_current_files": prepared_non_stream.has_current_files,
-                    "model": request.model,
-                }
-                result = await active_runner.invoke(input_data)
-                final_text = result.get("output", "")
-                response_event = {
-                    "id": str(uuid.uuid4()),
-                    "author": active_runner.detection_result.name,
-                    "sessionId": session_id,
-                    "invocationId": invocation_id,
-                    "content": {"role": "model", "parts": [{"text": final_text}]},
-                    "actions": {"finishReason": "STOP"},
-                    "modelVersion": common_metadata["modelVersion"],
-                    "usageMetadata": {
-                        "promptTokenCount": len(user_input),
-                        "candidatesTokenCount": len(final_text),
-                        "totalTokenCount": len(user_input) + len(final_text),
-                    },
-                    "timestamp": int(time.time() * 1000),
-                }
-                yield f"data: {json.dumps(response_event, ensure_ascii=False)}\n\n"
-                if final_text:
-                    await conversation.append_conversation_event(
-                        session_id=session_id,
-                        author=active_runner.detection_result.name,
-                        role="model",
-                        text=final_text,
-                        invocation_id=invocation_id,
-                        event_type="assistant_message",
-                        session_service_provider=resolve_session_service,
-                    )
-                await conversation.append_run_status_event(
-                    session_id=session_id,
-                    author=active_runner.detection_result.name,
-                    status="completed",
-                    invocation_id=invocation_id,
-                    session_service_provider=resolve_session_service,
-                    run_mode=RUN_MODE_FOREGROUND,
-                    run_trigger=RUN_TRIGGER_NEW_RUN,
-                )
-
-            except Exception as e:
-                logger.error(f"Error in invoke: {e}")
-                await conversation.append_run_status_event(
-                    session_id=session_id,
-                    author=active_runner.detection_result.name,
-                    status="failed",
-                    invocation_id=invocation_id,
-                    detail=str(e),
-                    session_service_provider=resolve_session_service,
-                    run_mode=RUN_MODE_FOREGROUND,
-                    run_trigger=RUN_TRIGGER_NEW_RUN,
-                )
-                error_event = {
-                    "id": str(uuid.uuid4()),
-                    "sessionId": session_id,
-                    "invocationId": invocation_id,
-                    "error": str(e),
-                    "errorMessage": str(e),
-                    "timestamp": int(time.time() * 1000),
-                }
-                yield f"data: {json.dumps(error_event, ensure_ascii=False)}\n\n"
-        else:
-            try:
-                compaction_preview = await conversation.preview_auto_compaction(
-                    agent_id=request.appName,
-                    user_id=request.userId,
-                    session_id=request.sessionId,
-                    messages=[user_message],
-                    session_service_provider=resolve_session_service,
-                )
-                if compaction_preview.should_compact:
-                    yield conversation.build_compaction_sse_event(
-                        phase="start",
-                        trigger="auto",
-                        total_chars=compaction_preview.total_chars,
-                        group_count=compaction_preview.group_count,
-                    )
-
-                prepared = await conversation.build_run_input(
-                    agent_id=request.appName,
-                    user_id=request.userId,
-                    session_id=request.sessionId,
-                    messages=[user_message],
-                    state_delta=request.stateDelta or {},
-                    invocation_id=request.invocationId,
-                    session_service_provider=resolve_session_service,
-                )
-                if prepared.compaction_triggered:
-                    yield conversation.build_compaction_sse_event(
-                        phase="done",
-                        trigger=str(prepared.compaction_trigger or "auto"),
-                        compacted_until_seq_id=prepared.compacted_until_seq_id,
-                        total_chars=compaction_preview.total_chars
-                        if compaction_preview.should_compact
-                        else None,
-                        group_count=compaction_preview.group_count
-                        if compaction_preview.should_compact
-                        else None,
-                    )
-
-                session_id = prepared.session_id
-                user_input = prepared.user_input
-                attachments = prepared.attachments
-                attachment_results = prepared.attachment_results
-                current_attachments = prepared.current_attachments
-                current_attachment_results = prepared.current_attachment_results
-                input_content = prepared.input_content
-                input_messages = prepared.input_messages
-                user_parts = prepared.user_parts
-                history = prepared.history
-                invocation_id = prepared.invocation_id
-                common_metadata = {
-                    "modelVersion": model_version,
-                    "usageMetadata": {
-                        "promptTokenCount": len(user_input),
-                        "candidatesTokenCount": 0,
-                        "totalTokenCount": len(user_input),
-                    },
-                }
-                await conversation.append_run_status_event(
-                    session_id=session_id,
-                    author=active_runner.detection_result.name,
-                    status="in_progress",
-                    invocation_id=invocation_id,
-                    session_service_provider=resolve_session_service,
-                    run_mode=RUN_MODE_FOREGROUND,
-                    run_trigger=RUN_TRIGGER_NEW_RUN,
-                )
-
-                client_visible_text = ""
-                authoritative_text = ""
-                responses_output: list[Any] = []
-                responses_response_id: str | None = None
-                stream_iter = active_runner.stream(
-                    {
-                        "session_id": session_id,
-                        "input": user_input,
-                        "history": history,
-                        "input_content": list(input_content),
-                        "input_messages": list(input_messages),
-                        "input_parts": list(user_parts),
-                        "attachments": attachments,
-                        "attachment_results": attachment_results,
-                        "current_attachments": current_attachments,
-                        "current_attachment_results": current_attachment_results,
-                        "has_current_files": prepared.has_current_files,
-                        "model": request.model,
-                    }
-                )
-                while True:
-                    try:
-                        chunk = await asyncio.wait_for(stream_iter.__anext__(), timeout=15)
-                    except StopAsyncIteration:
-                        break
-                    except asyncio.TimeoutError:
-                        yield ": ping\n\n"
-                        continue
-                    event_id = str(uuid.uuid4())
-                    if chunk.get("type") == "responses_output":
-                        raw_output = chunk.get("output")
-                        responses_output = raw_output if isinstance(raw_output, list) else []
-                        raw_response_id = chunk.get("response_id")
-                        responses_response_id = (
-                            str(raw_response_id) if raw_response_id else responses_response_id
-                        )
-                        continue
-                    if chunk.get("type") == "thinking":
-                        delta = str(chunk.get("delta", ""))
-                        if delta:
-                            await conversation.append_reasoning_event(
-                                session_id=session_id,
-                                author=active_runner.detection_result.name,
-                                text=delta,
-                                invocation_id=invocation_id,
-                                session_service_provider=resolve_session_service,
-                            )
-                            yield (
-                                "event: response.reasoning.delta\n"
-                                f"data: {json.dumps({'delta': delta}, ensure_ascii=False)}\n\n"
-                            )
-                        continue
-                    if chunk.get("type") == "text":
-                        delta_text = chunk.get("delta", "")
-                        client_visible_text += delta_text
-                        authoritative_text = client_visible_text
-                        response_event = {
-                            "id": event_id,
-                            "author": chunk.get("node", active_runner.detection_result.name),
-                            "sessionId": session_id,
-                            "invocationId": invocation_id,
-                            "content": {"role": "model", "parts": [{"text": delta_text}]},
-                            "partial": True,
-                            "timestamp": int(time.time() * 1000),
-                        }
-                        yield f"data: {json.dumps(response_event, ensure_ascii=False)}\n\n"
-                        continue
-                    if chunk.get("type") == "tool_call":
-                        yield (
-                            "event: response.tool_call\n"
-                            "data: "
-                            + json.dumps(
-                                {
-                                    "name": chunk.get("tool_name"),
-                                    "args": chunk.get("tool_args", {}),
-                                },
-                                ensure_ascii=False,
-                            )
-                            + "\n\n"
-                        )
-                        tool_event = {
-                            "id": event_id,
-                            "author": chunk.get("node", "tool"),
-                            "sessionId": session_id,
-                            "invocationId": invocation_id,
-                            "content": {
-                                "role": "model",
-                                "parts": [
-                                    {
-                                        "functionCall": {
-                                            "name": chunk.get("tool_name", "unknown"),
-                                            "args": chunk.get("tool_args", {}),
-                                        }
-                                    }
-                                ],
-                            },
-                            "actions": {
-                                "finishReason": "STOP",
-                                "stateDelta": {},
-                            },
-                            "modelVersion": common_metadata["modelVersion"],
-                            "timestamp": int(time.time() * 1000),
-                        }
-                        yield f"data: {json.dumps(tool_event, ensure_ascii=False)}\n\n"
-                        await conversation.append_conversation_event(
-                            session_id=session_id,
-                            author=chunk.get("node", "tool"),
-                            role="model",
-                            text="",
-                            invocation_id=invocation_id,
-                            event_type="tool_call",
-                            session_service_provider=resolve_session_service,
-                            metadata={
-                                "tool_name": chunk.get("tool_name", "unknown"),
-                                "tool_args": chunk.get("tool_args", {}),
-                            },
-                        )
-                        continue
-                    if chunk.get("type") == "tool_result":
-                        await conversation.append_conversation_event(
-                            session_id=session_id,
-                            author=active_runner.detection_result.name,
-                            role="user",
-                            text=str(chunk.get("tool_output", "")),
-                            invocation_id=invocation_id,
-                            event_type="tool_result",
-                            session_service_provider=resolve_session_service,
-                            metadata={
-                                "tool_name": chunk.get("tool_name"),
-                                "tool_output": chunk.get("tool_output", {}),
-                            },
-                        )
-                        yield (
-                            "event: response.tool_result\n"
-                            "data: "
-                            + json.dumps(
-                                {
-                                    "name": chunk.get("tool_name"),
-                                    "output": chunk.get("tool_output", {}),
-                                },
-                                ensure_ascii=False,
-                            )
-                            + "\n\n"
-                        )
-                        continue
-                    if chunk.get("type") == "interrupt":
-                        await conversation.append_conversation_event(
-                            session_id=session_id,
-                            author=active_runner.detection_result.name,
-                            role="model",
-                            text="approval requested",
-                            invocation_id=invocation_id,
-                            event_type="approval_request",
-                            session_service_provider=resolve_session_service,
-                            metadata={"interrupt_info": chunk.get("interrupt_info")},
-                        )
-                        yield (
-                            "event: response.approval_request\n"
-                            "data: "
-                            + json.dumps(
-                                {"interrupt_info": chunk.get("interrupt_info")},
-                                ensure_ascii=False,
-                            )
-                            + "\n\n"
-                        )
-                        continue
-                    if chunk.get("type") == "final":
-                        final_text = chunk.get("output", "")
-                        if not final_text:
-                            continue
-                        authoritative_text = final_text
-                        if final_text != client_visible_text:
-                            final_event = {
-                                "id": event_id,
-                                "author": active_runner.detection_result.name,
-                                "sessionId": session_id,
-                                "invocationId": invocation_id,
-                                "content": {"role": "model", "parts": [{"text": final_text}]},
-                                "actions": {"finishReason": "STOP"},
-                                "modelVersion": common_metadata["modelVersion"],
-                                "usageMetadata": {
-                                    "promptTokenCount": len(user_input),
-                                    "candidatesTokenCount": len(final_text),
-                                    "totalTokenCount": len(user_input) + len(final_text),
-                                },
-                                "timestamp": int(time.time() * 1000),
-                            }
-                            yield f"data: {json.dumps(final_event, ensure_ascii=False)}\n\n"
-                            client_visible_text = final_text
-
-                if authoritative_text:
-                    await conversation.append_conversation_event(
-                        session_id=session_id,
-                        author=active_runner.detection_result.name,
-                        role="model",
-                        text=authoritative_text,
-                        invocation_id=invocation_id,
-                        event_type="assistant_message",
-                        metadata={
-                            **({"responses_output": responses_output} if responses_output else {}),
-                            **(
-                                {"response_id": responses_response_id}
-                                if responses_response_id
-                                else {}
-                            ),
-                        },
-                        session_service_provider=resolve_session_service,
-                    )
-                await conversation.append_run_status_event(
-                    session_id=session_id,
-                    author=active_runner.detection_result.name,
-                    status="completed",
-                    invocation_id=invocation_id,
-                    session_service_provider=resolve_session_service,
-                    run_mode=RUN_MODE_FOREGROUND,
-                    run_trigger=RUN_TRIGGER_NEW_RUN,
-                )
-
-            except Exception as e:
-                logger.error(f"Error in stream: {e}")
-                await conversation.append_run_status_event(
-                    session_id=session_id,
-                    author=active_runner.detection_result.name,
-                    status="failed",
-                    invocation_id=invocation_id,
-                    detail=str(e),
-                    session_service_provider=resolve_session_service,
-                    run_mode=RUN_MODE_FOREGROUND,
-                    run_trigger=RUN_TRIGGER_NEW_RUN,
-                )
-                error_event = {
-                    "id": str(uuid.uuid4()),
-                    "sessionId": session_id,
-                    "invocationId": invocation_id,
-                    "error": str(e),
-                    "errorMessage": str(e),
-                    "timestamp": int(time.time() * 1000),
-                }
-                yield f"data: {json.dumps(error_event, ensure_ascii=False)}\n\n"
-
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
-
-
-# ============================================================
-# Trace / Debug API (ADK Web Compatible)
-# ============================================================
-
-
-@app.get("/debug/trace/session/{session_id}")
-async def get_session_trace(session_id: str):
-    """Get traces for a session - returns array of Span objects"""
-    exporter = get_memory_exporter()
-    if not exporter:
-        return []  # Return empty array, not object
-
-    # Get all spans and transform to ADK-Web expected format
-    raw_spans = exporter.get_finished_spans()
-
-    # Get session events for invocation mapping
-    service = resolve_session_service()
-    events = await service.get_events(session_id)
-
-    # Build invocation ID mapping from session events
-    invocation_ids = {}
-    for event in events:
-        if event.id and event.invocation_id:
-            invocation_ids[event.id] = event.invocation_id
-
-    # Transform spans to ADK-Web format
-    spans = []
-    for span in raw_spans:
-        # Use session_id as trace_id for grouping
-        trace_id = span.get("trace_id", session_id)
-
-        # Get or create invocation_id
-        invocation_id = span.get("attributes", {}).get("gcp.vertex.agent.invocation_id")
-        if not invocation_id:
-            # Try to derive from event association
-            invocation_id = trace_id[:36] if len(trace_id) >= 36 else trace_id
-
-        # Build attributes with required ADK fields
-        attrs = span.get("attributes", {}).copy()
-        attrs["gcp.vertex.agent.invocation_id"] = invocation_id
-
-        # If this is a LLM span, add request/response
-        if "llm" in span.get("name", "").lower() or "invoke" in span.get("name", "").lower():
-            if "user.input" in attrs:
-                attrs["gcp.vertex.agent.llm_request"] = json.dumps(
-                    {
-                        "contents": [
-                            {"role": "user", "parts": [{"text": attrs.get("user.input", "")}]}
-                        ]
-                    }
-                )
-            if "agent.output" in attrs:
-                attrs["gcp.vertex.agent.llm_response"] = json.dumps(
-                    {
-                        "candidates": [
-                            {
-                                "content": {
-                                    "role": "model",
-                                    "parts": [{"text": attrs.get("agent.output", "")}],
-                                }
-                            }
-                        ]
-                    }
-                )
-
-        formatted_span = {
-            "trace_id": trace_id,
-            "span_id": span.get("span_id", str(uuid.uuid4())[:16]),
-            "parent_span_id": span.get("parent_span_id"),
-            "name": span.get("name", "unknown"),
-            "start_time": span.get("start_time", 0),
-            "end_time": span.get("end_time", 0),
-            "attributes": attrs,
-            "status": span.get("status", {}),
-        }
-        spans.append(formatted_span)
-
-    return spans  # Return array directly
-
-
-@app.get("/debug/trace/{event_id}")
-async def get_event_trace(event_id: str):
-    """Get trace for a specific event - returns array of Span objects"""
-    exporter = get_memory_exporter()
-    if not exporter:
-        return []
-
-    spans = exporter.get_finished_spans()
-    # Filter by event_id or return recent spans
-    filtered = [s for s in spans if s.get("attributes", {}).get("event_id") == event_id]
-    return filtered if filtered else spans[-10:]
-
-
-@app.get("/apps/{app_name}/users/{user_id}/sessions/{session_id}/events/{event_id}/graph")
-async def get_event_graph(app_name: str, user_id: str, session_id: str, event_id: str):
-    """Get event graph (DOT format) - placeholder"""
-    return {"dotSrc": None}
-
-
-# ============================================================
-# OpenAI Compatible API
-# ============================================================
-
-
-class ChatCompletionRequest(BaseModel):
-    messages: List[Dict[str, Any]]
-    model: Optional[str] = None
-    model_metadata: Optional[Dict[str, Any]] = None
-    model_options: Optional[Dict[str, Any]] = None
-    stream: bool = False
-    session_id: Optional[str] = None
-    user: Optional[str] = None
-    account_id: Optional[str] = None
-    temperature: Optional[float] = 0.7
-    max_tokens: Optional[int] = None
-
-
-@app.post("/v1/responses")
-async def responses(request: ResponsesRequest):
-    """OpenAI Responses 兼容接口。"""
-    active_runner = _resolve_active_runner()
-    resolved_session_id, resolved_user_id = _resolve_responses_session_and_user(request)
-    agent_id = _runtime_agent_id(active_runner)
-
-    resume_input = conversation.extract_responses_resume_input(request.input)
-    resume_input = await _resolve_checkpoint_resume_input_from_session(
-        service=resolve_session_service(),
-        agent_id=agent_id,
-        session_id=resolved_session_id,
-        resume_input=resume_input,
-    )
-    messages = (
-        [] if resume_input is not None else conversation.normalize_responses_input(request.input)
-    )
-    request_metadata = dict(request.metadata or {})
-    if request.previous_response_id:
-        request_metadata.setdefault("previous_response_id", request.previous_response_id)
-    if request.prompt_cache_key:
-        request_metadata.setdefault("prompt_cache_key", request.prompt_cache_key)
-    if request.safety_identifier:
-        request_metadata.setdefault("safety_identifier", request.safety_identifier)
-    if request.user:
-        request_metadata.setdefault("user", request.user)
-    if request.conversation is not None:
-        request_metadata.setdefault("conversation", request.conversation)
-    if request.store is not None:
-        request_metadata.setdefault("store", request.store)
-    account_id = _clean_optional_string(request.account_id)
-    invocation_id = _metadata_invocation_id(request_metadata)
-
-    if request.stream:
-        resume_key = _detached_resume_key_from_input(resolved_session_id, resume_input)
-        _reject_if_detached_resume_active(resume_key)
-        return _detached_streaming_response(
-            conversation.stream_responses_conversation_turn(
-                runner=active_runner,
-                agent_id=agent_id,
-                user_id=resolved_user_id,
-                messages=messages,
-                session_id=resolved_session_id,
-                model=request.model,
-                model_metadata=request.model_metadata,
-                model_options=request.model_options,
-                instructions=request.instructions,
-                request_metadata=request_metadata,
-                resume_input=resume_input,
-                account_id=account_id,
-                invocation_id=invocation_id,
-                prepare_runner=_prepare_runner_for_model,
-                session_service_provider=resolve_session_service,
-                run_mode=RUN_MODE_FOREGROUND,
-            ),
-            invocation_id=invocation_id,
-            resume_key=resume_key,
-            run_mode=RUN_MODE_FOREGROUND,
-            run_trigger=trigger_from_resume_input(resume_input),
-        )
-
-    response_id = f"resp_{uuid.uuid4().hex}"
-    resolved_session_id, result = await conversation.invoke_conversation_once(
-        runner=active_runner,
-        agent_id=agent_id,
-        user_id=resolved_user_id,
-        messages=messages,
-        session_id=resolved_session_id,
-        model=request.model,
-        model_metadata=request.model_metadata,
-        model_options=request.model_options,
-        instructions=request.instructions,
-        request_metadata=request_metadata,
-        resume_input=resume_input,
-        response_id=response_id,
-        account_id=account_id,
-        invocation_id=invocation_id,
-        prepare_runner=_prepare_runner_for_model,
-        session_service_provider=resolve_session_service,
-        run_mode=RUN_MODE_FOREGROUND,
-    )
-    return conversation.build_responses_payload(
-        output_text=result["output_text"],
-        model=request.model,
-        session_id=resolved_session_id,
-        response_id=response_id,
-        metadata=result.get("metadata")
-        if isinstance(result.get("metadata"), dict)
-        else request_metadata,
-    )
-
-
-@app.post("/v1/chat/completions")
-async def chat_completions(request: ChatCompletionRequest):
-    """OpenAI 兼容的聊天补全接口 (支持流式和非流式)"""
-    active_runner = _resolve_active_runner()
-    messages = conversation.normalize_kop_messages(request.messages)
-    agent_id = _runtime_agent_id(active_runner)
-    resolved_user_id = _clean_optional_string(request.user) or "user"
-    account_id = _clean_optional_string(request.account_id)
-
-    if request.stream:
-        return StreamingResponse(
-            conversation.stream_conversation_turn(
-                runner=active_runner,
-                agent_id=agent_id,
-                user_id=resolved_user_id,
-                messages=messages,
-                session_id=request.session_id,
-                model=request.model,
-                model_metadata=request.model_metadata,
-                model_options=request.model_options,
-                account_id=account_id,
-                prepare_runner=_prepare_runner_for_model,
-                session_service_provider=resolve_session_service,
-                run_mode=RUN_MODE_FOREGROUND,
-            ),
-            media_type="text/event-stream",
-        )
-
-    resolved_session_id, result = await conversation.invoke_conversation_once(
-        runner=active_runner,
-        agent_id=agent_id,
-        user_id=resolved_user_id,
-        messages=messages,
-        session_id=request.session_id,
-        model=request.model,
-        model_metadata=request.model_metadata,
-        model_options=request.model_options,
-        account_id=account_id,
-        prepare_runner=_prepare_runner_for_model,
-        session_service_provider=resolve_session_service,
-        run_mode=RUN_MODE_FOREGROUND,
-    )
-    return conversation.build_chat_completions_payload(
-        output_text=result["output_text"],
-        model=request.model,
-        session_id=resolved_session_id,
-        metadata=result.get("metadata"),
-    )
-
-
-# ============================================================
-# Stub Endpoints for ADK-Web Compatibility
-# ============================================================
-
-
-@app.get("/apps/{app_name}/eval_sets")
-async def list_eval_sets(app_name: str):
-    """List evaluation sets - stub for ADK-Web"""
-    return []
-
-
-@app.get("/apps/{app_name}/eval_results")
-async def list_eval_results(app_name: str):
-    """List evaluation results - stub for ADK-Web"""
-    return []
-
-
-@app.get("/builder/app/{app_name}")
-async def get_agent_builder(app_name: str, ts: int = 0, tmp: bool = False, file_path: str = None):
-    """Get agent builder config - stub for ADK-Web"""
-    # Return minimal YAML config for non-ADK projects
-    return f"""name: {app_name}
-model: glm-5.1
-description: {app_name} agent
-instruction: You are a helpful assistant.
-"""
-
-
-@app.post("/builder/save")
-async def save_agent_builder(request: Request, tmp: bool = False):
-    """Save agent builder config - stub for ADK-Web"""
-    return True
-
-
-@app.post("/builder/app/{app_name}/cancel")
-async def cancel_agent_changes(app_name: str):
-    """Cancel agent builder changes - stub for ADK-Web"""
-    return True
-
-
-# Legacy /traces endpoint
-@app.get("/traces")
-async def get_traces(limit: int = 50):
-    """Get recent traces (OpenTelemetry)"""
-    exporter = get_memory_exporter()
-    if not exporter:
-        return {"traces": []}
-
-    spans = exporter.get_finished_spans()
-    traces = []
-    for span in spans[-limit:]:
-        traces.append(
-            {
-                "name": span.get("name", "unknown"),
-                "status": span.get("status", {}).get("code", "UNSET"),
-                "start_time": span.get("start_time"),
-                "end_time": span.get("end_time"),
-                "attributes": span.get("attributes", {}),
-            }
-        )
-    return {"traces": traces}
-
-
-# ============================================================
-STATIC_DIR = Path(__file__).parent / "static"
-
-
-@app.get("/{requested_path:path}", include_in_schema=False)
-async def serve_agent_ui_static(requested_path: str):
-    response = _resolve_ui_static_response(requested_path)
-    if response is not None:
-        return response
-    raise HTTPException(status_code=404, detail="Not Found")
+set_fallback_state(app.state.runtime)
+terminal_manager = app.state.runtime.terminal_manager
+
+
+def __getattr__(name: str) -> Any:
+    """Expose the default app's detached stream registry during migration."""
+    if name == "_DETACHED_STREAMS_BY_INVOCATION":
+        return app.state.runtime.stream_registry.streams_by_invocation
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

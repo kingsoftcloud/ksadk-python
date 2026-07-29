@@ -21,11 +21,12 @@ def save_memory(content: str) -> dict:
 
 def create_adk_tool():
     try:
-        from google.adk.tools import FunctionTool
+        from ksadk.compat.adk_compat import FunctionTool
 
         return FunctionTool(func=save_memory)
     except ImportError:
         logger.warning(
-            "google-adk not installed, returning raw function as tool. Install with: pip install ksadk[adk]"
+            "google-adk not installed, returning raw function as tool. "
+            "Install with: pip install ksadk[adk]"
         )
         return save_memory

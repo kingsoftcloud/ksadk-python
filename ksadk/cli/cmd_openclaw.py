@@ -10,11 +10,11 @@ agentengine openclaw - OpenClaw 资源管理
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import io
-import os
-import asyncio
 import json
+import os
 import re
 import secrets
 import shutil
@@ -26,23 +26,27 @@ import time
 import webbrowser
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional, cast
 
 import click
 from click.core import ParameterSource
+from rich.console import Console
 from rich.measure import Measurement
 from rich.table import Table as RichTable
 
 from ksadk.api.client import DryRunExit
+from ksadk.builders.container_builder import (
+    registry_kind_label,
+    resolve_registry_credentials,
+)
 from ksadk.cli.agent_ref import resolve_openclaw_ref
-from ksadk.cli.dry_run import dry_run_option, run_async_with_dry_run, effective_dry_run
+from ksadk.cli.dry_run import dry_run_option, effective_dry_run, run_async_with_dry_run
 from ksadk.cli.error_utils import abort_with_cli_error, remote_error, resolution_error
+from ksadk.cli.model_catalog import fetch_provider_model_catalog, find_model_in_catalog
 from ksadk.cli.network_options import build_network_payload, network_cli_kwargs, network_options
-from ksadk.cli.storage import build_storage_config
-from ksadk.cli.resource_common import ResourceActionDescriptor
 from ksadk.cli.resource_common import (
     CONTEXT_SETTINGS,
-    ResourceActionSet,
+    ResourceActionDescriptor,
     ResourceDescriptor,
     ResourceListSchema,
     ResourceStatusSchema,
@@ -51,18 +55,17 @@ from ksadk.cli.resource_common import (
     confirm_destructive,
     confirm_options,
     pagination_options,
-    print_next_action_hint,
+    region_option,
     render_descriptor_list,
     render_descriptor_status,
-    region_option,
 )
+from ksadk.cli.storage import build_storage_config
 from ksadk.cli.ui import (
     emit_json,
     get_console,
     is_json_output,
     is_stdout_tty,
     json_dumps,
-    output_option as cli_output_option,
     print_info,
     print_kv,
     print_rule,
@@ -71,17 +74,19 @@ from ksadk.cli.ui import (
     print_warn,
     status_rich_style,
 )
-from ksadk.deployment.agent_access import get_latest_agent_access
-from ksadk.cli.model_catalog import fetch_provider_model_catalog, find_model_in_catalog
-from ksadk.conversations.model_context import normalize_model_metadata
-from ksadk.model_policy import build_runtime_model_policy_env
-from ksadk.builders.container_builder import (
-    registry_kind_label,
-    resolve_registry_credentials,
+from ksadk.cli.ui import (
+    output_option as cli_output_option,
 )
-from ksadk.openclaw_gateway import OpenClawGatewayClient, OpenClawGatewayError, OpenClawGatewayRequestError
-from ksadk.terminal_exec_policy import OPENCLAW_TERMINAL_EXEC_POLICY
+from ksadk.conversations.model_context import normalize_model_metadata
+from ksadk.deployment.agent_access import get_latest_agent_access
+from ksadk.model_policy import build_runtime_model_policy_env
+from ksadk.openclaw_gateway import (
+    OpenClawGatewayClient,
+    OpenClawGatewayError,
+    OpenClawGatewayRequestError,
+)
 from ksadk.terminal_client import run_terminal_session
+from ksadk.terminal_exec_policy import OPENCLAW_TERMINAL_EXEC_POLICY
 
 console = get_console()
 # 默认 OpenClaw 镜像。
@@ -136,7 +141,8 @@ OPENCLAW_CHANNEL_CONNECT_HELP = """连接指定 channel。
   飞书：启动官方 onboarding 流程。
     agentengine openclaw channel connect <id> --channel feishu
   WPS 协作：写入开放平台 appId/appSecret 并启动长连接。
-    agentengine openclaw channel connect <id> --channel wps-xiezuo --app-id <appId> --app-secret <appSecret>
+    agentengine openclaw channel connect <id> --channel wps-xiezuo \
+      --app-id <appId> --app-secret <appSecret>
 
 \b
 WPS 协作说明：
@@ -347,6 +353,7 @@ def _get_global_env() -> Dict[str, str]:
 
     try:
         from ksadk.configs.global_config import get_env_from_global_config
+
         _GLOBAL_ENV_CACHE = {
             str(k): str(v).strip()
             for k, v in get_env_from_global_config().items()
@@ -395,6 +402,7 @@ def _resolve_model_base_url(cli_value: Optional[str]) -> Optional[str]:
 
     try:
         from ksadk.configs.settings import settings
+
         api_base = settings.model.api_base
         if api_base and str(api_base).strip():
             return str(api_base).strip()
@@ -434,8 +442,9 @@ def _summarize_openclaw_region(agents: list[Dict[str, Any]], fallback_region: Op
 
 def _print_openclaw_list_summary(table: RichTable, summary_text: str) -> None:
     """将摘要贴在表格下方；宽度不足时退化成普通单行。"""
-    table_width = Measurement.get(console, console.options, table).maximum
-    summary_width = Measurement.get(console, console.options, summary_text).maximum
+    rich_console = cast(Console, console)
+    table_width = Measurement.get(rich_console, rich_console.options, table).maximum
+    summary_width = Measurement.get(rich_console, rich_console.options, summary_text).maximum
     if table_width >= summary_width:
         summary_grid = RichTable.grid(expand=False)
         summary_grid.add_column(justify="right", width=table_width)
@@ -456,7 +465,12 @@ def _normalize_ui_locale(raw: Optional[str]) -> str:
 
     if low in {"c", "c-utf-8", "c.utf-8", "posix"}:
         return "zh-CN"
-    if low.startswith("zh-tw") or low.startswith("zh-hk") or low.startswith("zh-mo") or low.startswith("zh-hant"):
+    if (
+        low.startswith("zh-tw")
+        or low.startswith("zh-hk")
+        or low.startswith("zh-mo")
+        or low.startswith("zh-hant")
+    ):
         return "zh-TW"
     if low.startswith("zh"):
         return "zh-CN"
@@ -531,7 +545,9 @@ def _strip_provider_prefix(provider_id: str, model_id: str) -> str:
 
 
 def _default_openclaw_model_inputs(provider_id: str, model_id: str) -> list[str]:
-    if str(provider_id or "").strip().lower() == "ksyun" and str(model_id or "").strip().lower() in {"glm-5.1", "glm-5.2"}:
+    if str(provider_id or "").strip().lower() == "ksyun" and str(
+        model_id or ""
+    ).strip().lower() in {"glm-5.1", "glm-5.2"}:
         return ["text"]
     return ["text", "image"]
 
@@ -597,9 +613,11 @@ def _openclaw_catalog_item_from_metadata(
         "api": str(raw_model.get("api") or provider_api or "openai-completions"),
         "reasoning": bool(raw_model.get("reasoning", True)),
         "input": inputs or _default_openclaw_model_inputs(provider_id, model_id),
-        "cost": raw_model.get("cost")
-        if isinstance(raw_model.get("cost"), dict)
-        else {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+        "cost": (
+            raw_model.get("cost")
+            if isinstance(raw_model.get("cost"), dict)
+            else {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0}
+        ),
         "contextWindow": int(metadata.get("context_window_tokens") or 200_000),
         "maxTokens": int(metadata.get("max_output_tokens") or 20_000),
     }
@@ -613,7 +631,9 @@ def _apply_openclaw_provider_model_catalog(
         return False
 
     provider_id = str(env.get("OPENCLAW_MODEL_PROVIDER_ID") or "ksyun").strip() or "ksyun"
-    provider_api = str(env.get("OPENCLAW_MODEL_API") or "openai-completions").strip() or "openai-completions"
+    provider_api = (
+        str(env.get("OPENCLAW_MODEL_API") or "openai-completions").strip() or "openai-completions"
+    )
     raw_catalog = str(env.get("OPENCLAW_MODEL_CATALOG_JSON") or "").strip()
     catalog: list[Dict[str, Any]] = []
     if raw_catalog:
@@ -632,16 +652,17 @@ def _apply_openclaw_provider_model_catalog(
 
     changed = False
     for raw_model in raw_models:
-        if not isinstance(raw_model, dict):
-            raw_model = {"id": str(raw_model or "").strip()}
-        item = _openclaw_catalog_item_from_metadata(
-            raw_model,
+        raw_model_dict: Dict[str, Any] = (
+            dict(raw_model) if isinstance(raw_model, dict) else {"id": str(raw_model or "").strip()}
+        )
+        catalog_item = _openclaw_catalog_item_from_metadata(
+            raw_model_dict,
             provider_id=provider_id,
             provider_api=provider_api,
         )
-        if not item:
+        if not catalog_item:
             continue
-        model_key = str(item["id"])
+        model_key = str(catalog_item["id"])
         existing_index = next(
             (
                 index
@@ -651,13 +672,13 @@ def _apply_openclaw_provider_model_catalog(
             None,
         )
         if existing_index is not None:
-            merged = {**catalog[existing_index], **item}
+            merged = {**catalog[existing_index], **catalog_item}
             if merged != catalog[existing_index]:
                 catalog[existing_index] = merged
                 changed = True
             continue
         seen.add(model_key)
-        catalog.append(item)
+        catalog.append(catalog_item)
         changed = True
 
     if not catalog or not changed:
@@ -679,20 +700,12 @@ def _apply_openclaw_provider_model_metadata(
 
 def _openclaw_requested_model_ids(env: Dict[str, str]) -> list[str]:
     raw_allowlist = str(
-        env.get("OPENCLAW_MODEL_ALLOWLIST")
-        or env.get("AGENTENGINE_MODEL_ALLOWLIST")
-        or ""
+        env.get("OPENCLAW_MODEL_ALLOWLIST") or env.get("AGENTENGINE_MODEL_ALLOWLIST") or ""
     ).strip()
     if raw_allowlist:
-        return [
-            item.strip()
-            for item in raw_allowlist.replace(";", ",").split(",")
-            if item.strip()
-        ]
+        return [item.strip() for item in raw_allowlist.replace(";", ",").split(",") if item.strip()]
     primary_model = str(
-        env.get("OPENCLAW_DEFAULT_MODEL")
-        or env.get("OPENAI_MODEL_NAME")
-        or ""
+        env.get("OPENCLAW_DEFAULT_MODEL") or env.get("OPENAI_MODEL_NAME") or ""
     ).strip()
     return [primary_model] if primary_model else []
 
@@ -705,9 +718,7 @@ def _filter_openclaw_provider_catalog(
     if not requested_models:
         return []
     raw_models = [
-        item.get("_provider_raw_model") or item
-        if isinstance(item, dict)
-        else item
+        item.get("_provider_raw_model") or item if isinstance(item, dict) else item
         for item in provider_catalog
     ]
     selected: list[Any] = []
@@ -716,7 +727,9 @@ def _filter_openclaw_provider_catalog(
         match = find_model_in_catalog(raw_models, model_id)
         if match is None:
             continue
-        identities = sorted(str(value).strip().lower() for value in (model_id, str(match)) if str(value).strip())
+        identities = sorted(
+            str(value).strip().lower() for value in (model_id, str(match)) if str(value).strip()
+        )
         dedupe_key = identities[0] if identities else str(model_id).lower()
         if dedupe_key in seen:
             continue
@@ -747,14 +760,12 @@ def _build_openclaw_env_vars(
     openclaw_explicit_model = default_model or _resolve_env("OPENCLAW_DEFAULT_MODEL")
     generic_model_preference = _resolve_env("OPENAI_MODEL_NAME", "MODEL_NAME", "LLM_MODEL")
     model_preference = openclaw_explicit_model or generic_model_preference
-    explicit_base_url = (
-        model_base_url
-        or _resolve_env("OPENCLAW_MODEL_BASE_URL", "OPENAI_BASE_URL", "OPENAI_API_BASE")
+    explicit_base_url = model_base_url or _resolve_env(
+        "OPENCLAW_MODEL_BASE_URL", "OPENAI_BASE_URL", "OPENAI_API_BASE"
     )
     base_url = _resolve_model_base_url(explicit_base_url)
-    api_key = (
-        model_api_key
-        or _resolve_env("OPENCLAW_MODEL_API_KEY", "OPENAI_API_KEY", "LLM_API_KEY", "MODEL_API_KEY")
+    api_key = model_api_key or _resolve_env(
+        "OPENCLAW_MODEL_API_KEY", "OPENAI_API_KEY", "LLM_API_KEY", "MODEL_API_KEY"
     )
     model = model_preference or "glm-5.2"
     explicit_provider_id = model_provider_id or _resolve_env("OPENCLAW_MODEL_PROVIDER_ID")
@@ -762,34 +773,33 @@ def _build_openclaw_env_vars(
     if not inferred_provider_id and model and "/" in model:
         inferred_provider_id = model.split("/", 1)[0].strip()
     provider_id = inferred_provider_id or default_provider_id
-    resolved_gateway_port = (
-        gateway_port
-        or _resolve_env("OPENCLAW_GATEWAY_PORT", "PORT")
-        or "8080"
-    )
-    resolved_public_port = (
-        public_port
-        or _resolve_env("OPENCLAW_PUBLIC_PORT")
-        or "80"
-    )
+    resolved_gateway_port = gateway_port or _resolve_env("OPENCLAW_GATEWAY_PORT", "PORT") or "8080"
+    resolved_public_port = public_port or _resolve_env("OPENCLAW_PUBLIC_PORT") or "80"
     explicit_model_api = _resolve_env("OPENCLAW_MODEL_API")
     model_api = explicit_model_api or default_model_api
     trusted_proxy_user_header = (
-        _resolve_env(
-            "OPENCLAW_TRUSTED_PROXY_USER_HEADER",
-            "OPENCLAW_GATEWAY_TRUSTED_PROXY_USER_HEADER",
+        (
+            _resolve_env(
+                "OPENCLAW_TRUSTED_PROXY_USER_HEADER",
+                "OPENCLAW_GATEWAY_TRUSTED_PROXY_USER_HEADER",
+            )
+            or DEFAULT_TRUSTED_PROXY_USER_HEADER
         )
-        or DEFAULT_TRUSTED_PROXY_USER_HEADER
-    ).strip().lower()
+        .strip()
+        .lower()
+    )
     internal_trusted_proxy_user = (
-        _resolve_env("OPENCLAW_INTERNAL_TRUSTED_PROXY_USER")
-        or "openclaw-backend"
+        _resolve_env("OPENCLAW_INTERNAL_TRUSTED_PROXY_USER") or "openclaw-backend"
     )
     internal_trusted_proxy_user_header = (
-        _resolve_env("OPENCLAW_INTERNAL_TRUSTED_PROXY_USER_HEADER")
-        or trusted_proxy_user_header
-        or DEFAULT_TRUSTED_PROXY_USER_HEADER
-    ).strip().lower()
+        (
+            _resolve_env("OPENCLAW_INTERNAL_TRUSTED_PROXY_USER_HEADER")
+            or trusted_proxy_user_header
+            or DEFAULT_TRUSTED_PROXY_USER_HEADER
+        )
+        .strip()
+        .lower()
+    )
     trusted_proxies = _normalize_csv_list(
         _resolve_env("OPENCLAW_TRUSTED_PROXIES") or "",
         default_items=DEFAULT_TRUSTED_PROXY_CIDRS,
@@ -797,7 +807,9 @@ def _build_openclaw_env_vars(
     browser_enabled = _resolve_env("OPENCLAW_BROWSER_ENABLED")
     browser_no_sandbox = _resolve_env("OPENCLAW_BROWSER_NO_SANDBOX") or "true"
     browser_headless = _resolve_env("OPENCLAW_BROWSER_HEADLESS") or "true"
-    browser_executable = _resolve_env("OPENCLAW_BROWSER_EXECUTABLE_PATH", "OPENCLAW_BROWSER_EXECUTABLE")
+    browser_executable = _resolve_env(
+        "OPENCLAW_BROWSER_EXECUTABLE_PATH", "OPENCLAW_BROWSER_EXECUTABLE"
+    )
     ui_locale = _normalize_ui_locale(_resolve_env("OPENCLAW_UI_LOCALE", "LANG", "LC_ALL"))
     exec_strict_mode_raw = (
         exec_profile_overrides.get("OPENCLAW_EXEC_STRICT_MODE")
@@ -806,13 +818,21 @@ def _build_openclaw_env_vars(
     )
     exec_strict_mode = _is_truthy(exec_strict_mode_raw)
 
-    exec_host = exec_profile_overrides.get("OPENCLAW_EXEC_HOST") or _resolve_env("OPENCLAW_EXEC_HOST") or "gateway"
+    exec_host = (
+        exec_profile_overrides.get("OPENCLAW_EXEC_HOST")
+        or _resolve_env("OPENCLAW_EXEC_HOST")
+        or "gateway"
+    )
     exec_security = (
         exec_profile_overrides.get("OPENCLAW_EXEC_SECURITY")
         or _resolve_env("OPENCLAW_EXEC_SECURITY")
         or ("allowlist" if exec_strict_mode else "full")
     )
-    exec_ask = exec_profile_overrides.get("OPENCLAW_EXEC_ASK") or _resolve_env("OPENCLAW_EXEC_ASK") or "off"
+    exec_ask = (
+        exec_profile_overrides.get("OPENCLAW_EXEC_ASK")
+        or _resolve_env("OPENCLAW_EXEC_ASK")
+        or "off"
+    )
     exec_ask_fallback = (
         exec_profile_overrides.get("OPENCLAW_EXEC_ASK_FALLBACK")
         or _resolve_env("OPENCLAW_EXEC_ASK_FALLBACK")
@@ -831,9 +851,7 @@ def _build_openclaw_env_vars(
     exec_default_allowlist_enabled = (
         exec_profile_overrides.get("OPENCLAW_EXEC_DEFAULT_ALLOWLIST_ENABLED")
         or _resolve_env("OPENCLAW_EXEC_DEFAULT_ALLOWLIST_ENABLED")
-        or (
-        "true" if exec_strict_mode else "false"
-    )
+        or ("true" if exec_strict_mode else "false")
     )
     exec_allowlist = _resolve_env("OPENCLAW_EXEC_ALLOWLIST")
     fs_workspace_only = (
@@ -850,10 +868,14 @@ def _build_openclaw_env_vars(
     env["OPENCLAW_GATEWAY_BIND"] = "lan"
     if gateway_auth_mode:
         env["OPENCLAW_GATEWAY_AUTH_MODE"] = gateway_auth_mode
-    env["OPENCLAW_TRUSTED_PROXY_USER_HEADER"] = trusted_proxy_user_header or DEFAULT_TRUSTED_PROXY_USER_HEADER
+    env["OPENCLAW_TRUSTED_PROXY_USER_HEADER"] = (
+        trusted_proxy_user_header or DEFAULT_TRUSTED_PROXY_USER_HEADER
+    )
     env["OPENCLAW_INTERNAL_TRUSTED_PROXY_USER"] = internal_trusted_proxy_user
     env["OPENCLAW_INTERNAL_TRUSTED_PROXY_USER_HEADER"] = (
-        internal_trusted_proxy_user_header or trusted_proxy_user_header or DEFAULT_TRUSTED_PROXY_USER_HEADER
+        internal_trusted_proxy_user_header
+        or trusted_proxy_user_header
+        or DEFAULT_TRUSTED_PROXY_USER_HEADER
     )
     env["OPENCLAW_TRUSTED_PROXIES"] = trusted_proxies
     env["OPENCLAW_GATEWAY_PORT"] = str(resolved_gateway_port)
@@ -899,8 +921,9 @@ def _build_openclaw_env_vars(
             _, catalog_model_id = normalized_model.split("/", 1)
             resolved_model = normalized_model
         else:
-            catalog_model_id = normalized_model
-            resolved_model = f"{provider_id}/{normalized_model}" if provider_id else normalized_model
+            resolved_model = (
+                f"{provider_id}/{normalized_model}" if provider_id else normalized_model
+            )
         if openclaw_explicit_model:
             env["OPENCLAW_DEFAULT_MODEL"] = resolved_model
         elif generic_model_preference:
@@ -1005,11 +1028,14 @@ def _normalize_openclaw_gateway_auth_env(env: dict[str, str]) -> dict[str, str]:
     auth_mode = raw_mode or ("token" if raw_token or raw_password else "trusted-proxy")
     if auth_mode == "token":
         if raw_token and raw_password and raw_token != raw_password:
-            raise ValueError("OPENCLAW_GATEWAY_TOKEN 与 OPENCLAW_GATEWAY_PASSWORD 同时提供时必须一致")
+            raise ValueError(
+                "OPENCLAW_GATEWAY_TOKEN 与 OPENCLAW_GATEWAY_PASSWORD 同时提供时必须一致"
+            )
         shared_secret = raw_token or raw_password
         if not shared_secret:
             raise ValueError(
-                "OPENCLAW_GATEWAY_AUTH_MODE=token 时必须提供 OPENCLAW_GATEWAY_TOKEN 或 OPENCLAW_GATEWAY_PASSWORD"
+                "OPENCLAW_GATEWAY_AUTH_MODE=token 时必须提供 "
+                "OPENCLAW_GATEWAY_TOKEN 或 OPENCLAW_GATEWAY_PASSWORD"
             )
         normalized_env["OPENCLAW_GATEWAY_AUTH_MODE"] = "token"
         normalized_env["OPENCLAW_GATEWAY_TOKEN"] = shared_secret
@@ -1018,7 +1044,8 @@ def _normalize_openclaw_gateway_auth_env(env: dict[str, str]) -> dict[str, str]:
 
     if raw_token or raw_password:
         raise ValueError(
-            "仅在 OPENCLAW_GATEWAY_AUTH_MODE=token 时支持 OPENCLAW_GATEWAY_TOKEN 或 OPENCLAW_GATEWAY_PASSWORD"
+            "仅在 OPENCLAW_GATEWAY_AUTH_MODE=token 时支持 "
+            "OPENCLAW_GATEWAY_TOKEN 或 OPENCLAW_GATEWAY_PASSWORD"
         )
 
     normalized_env["OPENCLAW_GATEWAY_AUTH_MODE"] = auth_mode
@@ -1174,7 +1201,7 @@ async def _fetch_bootstrap_config(region: str) -> Optional[Dict[str, Any]]:
 
     try:
         async with AgentEngineClient(region=region) as client:
-            return await client.get_client_bootstrap_config(
+            result = await client.get_client_bootstrap_config(
                 product="openclaw",
                 framework="openclaw",
                 region=region,
@@ -1183,6 +1210,7 @@ async def _fetch_bootstrap_config(region: str) -> Optional[Dict[str, Any]]:
                 locale=_resolve_env("OPENCLAW_UI_LOCALE", "LANG", "LC_ALL"),
                 ignore_dry_run=True,
             )
+            return dict(result) if isinstance(result, dict) else None
     except Exception as e:
         print_warn(f"拉取服务端默认配置失败，回退本地默认镜像: {e}")
         return None
@@ -1253,14 +1281,22 @@ def _flatten_agent_detail(agent: dict) -> dict:
         "agent_id": basic.get("agent_id") or agent.get("agent_id") or "",
         "name": basic.get("name") or agent.get("name") or "",
         "status": (basic.get("status") or agent.get("status") or "UNKNOWN").upper(),
-        "framework": basic.get("framework") or deploy.get("framework") or agent.get("framework") or "",
+        "framework": basic.get("framework")
+        or deploy.get("framework")
+        or agent.get("framework")
+        or "",
         "region": basic.get("region") or deploy.get("region") or agent.get("region") or "",
-        "endpoint": quick.get("public_endpoint") or quick.get("private_endpoint") or agent.get("endpoint") or "",
+        "endpoint": quick.get("public_endpoint")
+        or quick.get("private_endpoint")
+        or agent.get("endpoint")
+        or "",
         "artifact_path": deploy.get("artifact_path") or agent.get("artifact_path") or "",
         "created_at": basic.get("created_at") or agent.get("created_at") or "",
         "updated_at": basic.get("updated_at") or agent.get("updated_at") or "",
         "api_key": quick.get("api_key") or agent.get("api_key"),
-        "langfuse_url": (agent.get("advanced") or {}).get("observability_url") or agent.get("langfuse_trace_url") or "",
+        "langfuse_url": (agent.get("advanced") or {}).get("observability_url")
+        or agent.get("langfuse_trace_url")
+        or "",
     }
 
 
@@ -1277,7 +1313,9 @@ async def _get_openclaw_detail_with_client(
     detail = _flatten_agent_detail(agent)
     framework = str(detail.get("framework") or "").strip().lower()
     if framework and framework != "openclaw":
-        raise resolution_error(f"目标 Agent 不是 OpenClaw: {agent_ref}", hints=["agentengine openclaw list"])
+        raise resolution_error(
+            f"目标 Agent 不是 OpenClaw: {agent_ref}", hints=["agentengine openclaw list"]
+        )
     return detail
 
 
@@ -1303,10 +1341,7 @@ def _resolve_region(
 ) -> str:
     """解析 region: 显式参数 > state > 环境变量 > 默认值。"""
     return (
-        cli_region
-        or (state or {}).get("region")
-        or _resolve_env("KSYUN_REGION")
-        or "cn-beijing-6"
+        cli_region or (state or {}).get("region") or _resolve_env("KSYUN_REGION") or "cn-beijing-6"
     )
 
 
@@ -1331,7 +1366,9 @@ async def _resolve_openclaw_detail_or_raise(
         detail = await _get_openclaw_detail_with_client(client, resolved.value)
 
     if not detail:
-        raise resolution_error(f"未找到 OpenClaw: {resolved.value}", hints=["agentengine openclaw list"])
+        raise resolution_error(
+            f"未找到 OpenClaw: {resolved.value}", hints=["agentengine openclaw list"]
+        )
     return resolved_region, detail
 
 
@@ -1378,7 +1415,9 @@ async def _ensure_openclaw_gateway_available(
         await _wait_for_gateway_ready(region, detail, timeout_seconds=timeout_seconds)
 
 
-def _emit_data_payload(title: str, payload: dict[str, Any], *, subtitle: Optional[str] = None) -> None:
+def _emit_data_payload(
+    title: str, payload: dict[str, Any], *, subtitle: Optional[str] = None
+) -> None:
     if is_json_output():
         emit_json(payload)
         return
@@ -1386,7 +1425,9 @@ def _emit_data_payload(title: str, payload: dict[str, Any], *, subtitle: Optiona
     console.print(json_dumps(payload), markup=False)
 
 
-def _render_openclaw_dry_run(action: str, request: dict[str, Any], hints: tuple[str, ...] = ()) -> None:
+def _render_openclaw_dry_run(
+    action: str, request: dict[str, Any], hints: tuple[str, ...] = ()
+) -> None:
     if is_json_output():
         emit_json(
             build_dry_run_envelope(
@@ -1456,7 +1497,9 @@ def _select_openclaw_gateway_secret(
         or ""
     ).strip()
     if token and password and token != password:
-        raise click.ClickException("OPENCLAW_GATEWAY_TOKEN 与 OPENCLAW_GATEWAY_PASSWORD 同时提供时必须一致")
+        raise click.ClickException(
+            "OPENCLAW_GATEWAY_TOKEN 与 OPENCLAW_GATEWAY_PASSWORD 同时提供时必须一致"
+        )
     if token:
         return "token", token
     if password:
@@ -1473,14 +1516,20 @@ def _mask_openclaw_secret(secret: str | None) -> str:
     return f"{text[:4]}****"
 
 
-def _openclaw_auth_mode_from_sources(detail: dict[str, Any], state: dict[str, Any] | None = None) -> str:
-    return str(
-        detail.get("openclaw_auth_mode")
-        or detail.get("gateway_auth_mode")
-        or (state or {}).get("openclaw_auth_mode")
-        or (state or {}).get("gateway_auth_mode")
-        or ""
-    ).strip().lower()
+def _openclaw_auth_mode_from_sources(
+    detail: dict[str, Any], state: dict[str, Any] | None = None
+) -> str:
+    return (
+        str(
+            detail.get("openclaw_auth_mode")
+            or detail.get("gateway_auth_mode")
+            or (state or {}).get("openclaw_auth_mode")
+            or (state or {}).get("gateway_auth_mode")
+            or ""
+        )
+        .strip()
+        .lower()
+    )
 
 
 def _openclaw_state_gateway_token(env_vars: dict[str, str]) -> str | None:
@@ -1488,9 +1537,7 @@ def _openclaw_state_gateway_token(env_vars: dict[str, str]) -> str | None:
     if str(env_vars.get("OPENCLAW_GATEWAY_AUTH_MODE") or "").strip().lower() != "token":
         return None
     token = str(
-        env_vars.get("OPENCLAW_GATEWAY_TOKEN")
-        or env_vars.get("OPENCLAW_GATEWAY_PASSWORD")
-        or ""
+        env_vars.get("OPENCLAW_GATEWAY_TOKEN") or env_vars.get("OPENCLAW_GATEWAY_PASSWORD") or ""
     ).strip()
     return token or None
 
@@ -1523,7 +1570,9 @@ async def _run_weixin_remote_cli_login(
     if not endpoint:
         raise OpenClawGatewayError("OpenClaw runtime endpoint 为空，无法通过远端 CLI 执行微信登录")
 
-    print_info(f"当前 OpenClaw 未暴露微信 web login RPC，改用远端 OpenClaw CLI 登录流程（{reason}）")
+    print_info(
+        f"当前 OpenClaw 未暴露微信 web login RPC，改用远端 OpenClaw CLI 登录流程（{reason}）"
+    )
     exit_code = await run_terminal_session(
         endpoint=endpoint,
         api_key=_openclaw_terminal_api_key(detail),
@@ -1592,9 +1641,8 @@ async def _wait_for_gateway_reload_after_config_apply(
 
 def _is_gateway_reload_disconnect_error(exc: Exception) -> bool:
     message = str(exc).lower()
-    return (
-        "websocket receive failed" in message
-        and ("1011" in message or "bad gateway" in message or "going away" in message)
+    return "websocket receive failed" in message and (
+        "1011" in message or "bad gateway" in message or "going away" in message
     )
 
 
@@ -1684,9 +1732,15 @@ def _is_channel_configured(
         accounts = channel_cfg.get("accounts")
         return isinstance(accounts, dict) and any(str(key).strip() for key in accounts.keys())
     if channel == "feishu":
-        return bool(str(channel_cfg.get("appId") or "").strip() and str(channel_cfg.get("appSecret") or "").strip())
+        return bool(
+            str(channel_cfg.get("appId") or "").strip()
+            and str(channel_cfg.get("appSecret") or "").strip()
+        )
     if channel == "wps-xiezuo":
-        return bool(str(channel_cfg.get("appId") or "").strip() and str(channel_cfg.get("appSecret") or "").strip())
+        return bool(
+            str(channel_cfg.get("appId") or "").strip()
+            and str(channel_cfg.get("appSecret") or "").strip()
+        )
     return bool(channel_cfg)
 
 
@@ -1791,7 +1845,9 @@ def _ensure_local_node_tools() -> dict[str, str]:
     if not node_path or not npx_path:
         raise resolution_error(
             "本地缺少 `node` 或 `npx`，飞书接入依赖官方 onboarding 工具",
-            hints=["先安装 Node.js，然后重试 `agentengine openclaw channel connect --channel feishu`"],
+            hints=[
+                "先安装 Node.js，然后重试 `agentengine openclaw channel connect --channel feishu`"
+            ],
         )
     return {"node": node_path, "npx": npx_path}
 
@@ -1822,14 +1878,11 @@ async def _resolve_npx_cached_package_file(package_spec: str, relative_path: str
         text=True,
     )
     if completed.returncode != 0:
-        raise OpenClawGatewayError(
-            f"无法准备官方 npm 包缓存: {completed.stderr.strip() or completed.stdout.strip() or package_spec}"
-        )
+        npm_error = completed.stderr.strip() or completed.stdout.strip() or package_spec
+        raise OpenClawGatewayError(f"无法准备官方 npm 包缓存: {npm_error}")
 
     npm_cache_root = Path(
-        os.getenv("NPM_CONFIG_CACHE")
-        or os.getenv("npm_config_cache")
-        or str(Path.home() / ".npm")
+        os.getenv("NPM_CONFIG_CACHE") or os.getenv("npm_config_cache") or str(Path.home() / ".npm")
     )
     pattern = f"_npx/**/node_modules/{package_name}/{relative_path}"
     matches = list(npm_cache_root.glob(pattern))
@@ -1847,8 +1900,7 @@ async def _run_feishu_onboarding(existing_app_id: Optional[str]) -> dict[str, An
             "@larksuite/openclaw-lark-tools@latest",
             "dist/utils/install-prompts.js",
         )
-        script_body = textwrap.dedent(
-            """
+        script_body = textwrap.dedent("""
             const fs = require("fs");
             const { runInstallAuthFlow } = require(__INSTALL_PROMPTS_PATH__);
 
@@ -1860,19 +1912,26 @@ async def _run_feishu_onboarding(existing_app_id: Optional[str]) -> dict[str, An
                   {},
                   false,
                 );
-                fs.writeFileSync(process.env.KSADK_FEISHU_RESULT_PATH, JSON.stringify(result), "utf8");
+                fs.writeFileSync(
+                  process.env.KSADK_FEISHU_RESULT_PATH,
+                  JSON.stringify(result),
+                  "utf8",
+                );
               } catch (error) {
                 console.error(error);
                 process.exit(1);
               }
             })();
-            """
-        ).replace("__INSTALL_PROMPTS_PATH__", json.dumps(str(install_prompts_path)))
-        with tempfile.NamedTemporaryFile("w", suffix=".cjs", delete=False, encoding="utf-8") as script_file:
+            """).replace("__INSTALL_PROMPTS_PATH__", json.dumps(str(install_prompts_path)))
+        with tempfile.NamedTemporaryFile(
+            "w", suffix=".cjs", delete=False, encoding="utf-8"
+        ) as script_file:
             script_file.write(script_body.strip())
             script_path = script_file.name
 
-        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as result_file:
+        with tempfile.NamedTemporaryFile(
+            "w", suffix=".json", delete=False, encoding="utf-8"
+        ) as result_file:
             result_path = result_file.name
 
         env = os.environ.copy()
@@ -1945,7 +2004,9 @@ def _resolve_weixin_account_id(
             raise click.ClickException("检测到多个微信账号，请显式传入 --account-id")
     if create_if_missing:
         return "default"
-    raise click.ClickException("尚未检测到微信账号，请先执行 `agentengine openclaw channel connect --channel weixin`")
+    raise click.ClickException(
+        "尚未检测到微信账号，请先执行 `agentengine openclaw channel connect --channel weixin`"
+    )
 
 
 def _mutate_weixin_account_enabled(
@@ -2011,7 +2072,8 @@ def _mutate_feishu_connect_config(config: dict[str, Any], onboarding: dict[str, 
             feishu_cfg[key] = value
             changed = True
 
-    user_info = onboarding.get("userInfo") if isinstance(onboarding.get("userInfo"), dict) else {}
+    user_info_value = onboarding.get("userInfo")
+    user_info: dict[str, Any] = dict(user_info_value) if isinstance(user_info_value, dict) else {}
     open_id = str(user_info.get("openId") or "").strip()
     if open_id:
         if feishu_cfg.get("dmPolicy") != "allowlist":
@@ -2105,8 +2167,12 @@ def _mutate_wps_xiezuo_connect_config(
     bindings = config.setdefault("bindings", [])
     if isinstance(bindings, list):
         next_bindings = [
-            item for item in bindings
-            if not (isinstance(item, dict) and item.get("match", {}).get("channel") == WPS_XIEZUO_CHANNEL_KEY)
+            item
+            for item in bindings
+            if not (
+                isinstance(item, dict)
+                and item.get("match", {}).get("channel") == WPS_XIEZUO_CHANNEL_KEY
+            )
         ]
         desired_binding = {
             "type": "route",
@@ -2130,7 +2196,9 @@ def _mutate_wps_xiezuo_enabled(
 ) -> bool:
     normalized_account = str(account_id or WPS_XIEZUO_DEFAULT_ACCOUNT_ID).strip()
     if normalized_account and normalized_account != WPS_XIEZUO_DEFAULT_ACCOUNT_ID:
-        raise click.ClickException("WPS 协作插件使用扁平 channel 配置，`--account-id` 仅支持 default")
+        raise click.ClickException(
+            "WPS 协作插件使用扁平 channel 配置，`--account-id` 仅支持 default"
+        )
     changed = _ensure_plugin_enabled(config, WPS_XIEZUO_PLUGIN_ID) if enabled else False
     channels = config.setdefault("channels", {})
     channel_cfg = channels.setdefault(WPS_XIEZUO_CHANNEL_KEY, {})
@@ -2152,7 +2220,9 @@ def _check_wps_xiezuo_local_deps() -> dict[str, Any]:
     }
 
 
-@click.group("openclaw", context_settings=CONTEXT_SETTINGS, help=build_resource_group_help(OPENCLAW_RESOURCE))
+@click.group(
+    "openclaw", context_settings=CONTEXT_SETTINGS, help=build_resource_group_help(OPENCLAW_RESOURCE)
+)
 def openclaw():
     pass
 
@@ -2211,8 +2281,15 @@ async def _run_openclaw_repair_action(
 @click.option("--session", "-s", default=None, help="OpenClaw Session key")
 @click.option("--message", "-m", default=None, help="连接后发送的初始消息")
 @click.option("--thinking", default=None, help="Thinking level override")
-@click.option("--history-limit", type=click.IntRange(1, 10000), default=None, help="历史条数 (默认使用 OpenClaw 默认值)")
-@click.option("--timeout-ms", type=click.IntRange(1, 86400000), default=None, help="Agent timeout ms")
+@click.option(
+    "--history-limit",
+    type=click.IntRange(1, 10000),
+    default=None,
+    help="历史条数 (默认使用 OpenClaw 默认值)",
+)
+@click.option(
+    "--timeout-ms", type=click.IntRange(1, 86400000), default=None, help="Agent timeout ms"
+)
 @click.option("--deliver", is_flag=True, help="Deliver assistant replies")
 @click.option("--insecure", "-k", is_flag=True, help="跳过 SSL 证书验证")
 @dry_run_option()
@@ -2279,10 +2356,14 @@ def tui_openclaw(
     elif not agent_ref and str(state.get("endpoint") or "").strip():
         resolved_endpoint = str(state.get("endpoint") or "").strip()
     else:
-        resolved_region, detail = asyncio.run(_resolve_openclaw_detail_or_raise(agent_ref, region=region))
+        resolved_region, detail = asyncio.run(
+            _resolve_openclaw_detail_or_raise(agent_ref, region=region)
+        )
         resolved_endpoint = str(detail.get("endpoint") or "").strip()
     if not resolved_endpoint:
-        raise click.ClickException("未解析到 OpenClaw Endpoint，请传入 --endpoint 或指定 OpenClaw ID/名称")
+        raise click.ClickException(
+            "未解析到 OpenClaw Endpoint，请传入 --endpoint 或指定 OpenClaw ID/名称"
+        )
 
     secret_kind, gateway_secret = _select_openclaw_gateway_secret(
         gateway_token=gateway_token,
@@ -2293,18 +2374,26 @@ def tui_openclaw(
     auth_mode = _openclaw_auth_mode_from_sources(detail, state)
     if auth_mode in {"token", "password"} and not gateway_secret:
         raise click.ClickException(
-            "当前 OpenClaw Gateway 为 token/password 模式，agentengine openclaw tui 需要 OpenClaw Gateway token/password。\n"
+            "当前 OpenClaw Gateway 为 token/password 模式，"
+            "agentengine openclaw tui 需要 OpenClaw Gateway token/password。\n"
             "请使用: agentengine openclaw tui --gateway-token <token>\n"
             "或设置: OPENCLAW_GATEWAY_TOKEN=<token> agentengine openclaw tui\n"
-            "如果部署时传过 OPENCLAW_GATEWAY_TOKEN，请重新运行部署让本地 .agentengine.state 记录该 token。\n"
+            "如果部署时传过 OPENCLAW_GATEWAY_TOKEN，请重新运行部署让本地 "
+            ".agentengine.state 记录该 token。\n"
             "注意：这里不是 AgentEngine API Key（ak-*）。"
         )
 
-    terminal_api_key = gateway_secret or api_key or str(detail.get("api_key") or state.get("api_key") or "").strip() or None
+    terminal_api_key = (
+        gateway_secret
+        or api_key
+        or str(detail.get("api_key") or state.get("api_key") or "").strip()
+        or None
+    )
     click.secho("🖥️  OpenClaw Native Remote TUI", fg="blue", bold=True)
     click.echo(f"   Endpoint: {resolved_endpoint}")
     if gateway_secret:
-        click.echo(f"   Runtime Auth: OpenClaw Gateway {secret_kind} {_mask_openclaw_secret(gateway_secret)}")
+        masked_gateway_secret = _mask_openclaw_secret(gateway_secret)
+        click.echo(f"   Runtime Auth: OpenClaw Gateway {secret_kind} {masked_gateway_secret}")
     elif terminal_api_key:
         click.echo(f"   Runtime Auth: Bearer {_mask_openclaw_secret(terminal_api_key)}")
     else:
@@ -2337,7 +2426,9 @@ def tui_openclaw(
 @region_option(default=None, envvar=None, help_text="区域 (默认优先读取 .agentengine.state)")
 @click.option("--no-open", is_flag=True, help="仅打印 URL，不自动打开浏览器")
 @cli_output_option()
-def gateway_open(agent_ref: Optional[str], region: Optional[str], no_open: bool, output_mode: str | None):
+def gateway_open(
+    agent_ref: Optional[str], region: Optional[str], no_open: bool, output_mode: str | None
+):
     """打开 OpenClaw gateway Dashboard。"""
     _ = output_mode
     no_open = no_open or is_json_output()
@@ -2408,19 +2499,29 @@ def gateway_ws_url(agent_ref: Optional[str], region: Optional[str], output_mode:
             "auth_mode": "cookie-session",
             "note": "该 ws-url 依赖短链 cookie session，不承诺长期复用。",
         }
-        _emit_data_payload("OpenClaw Gateway 连接信息", payload, subtitle=str(detail.get("name") or "-"))
+        _emit_data_payload(
+            "OpenClaw Gateway 连接信息", payload, subtitle=str(detail.get("name") or "-")
+        )
 
     try:
         asyncio.run(_run())
     except Exception as e:
-        _abort_openclaw_error(e, context="获取 gateway ws-url 失败", argv=["openclaw", "gateway", "ws-url"])
+        _abort_openclaw_error(
+            e, context="获取 gateway ws-url 失败", argv=["openclaw", "gateway", "ws-url"]
+        )
 
 
 @openclaw_gateway.command("logs", context_settings=CONTEXT_SETTINGS)
 @click.argument("agent_ref", required=False)
 @region_option(default=None, envvar=None, help_text="区域 (默认优先读取 .agentengine.state)")
 @click.option("--instance", default=None, help="实例名；不填则查询全部实例")
-@click.option("--log-type", type=click.Choice(["stdout", "log"], case_sensitive=False), default="stdout", show_default=True, help="日志类型")
+@click.option(
+    "--log-type",
+    type=click.Choice(["stdout", "log"], case_sensitive=False),
+    default="stdout",
+    show_default=True,
+    help="日志类型",
+)
 @click.option("--start-time", default=None, help="开始时间，支持 Unix 毫秒或 ISO-8601")
 @click.option("--end-time", default=None, help="结束时间，支持 Unix 毫秒或 ISO-8601")
 @cli_output_option()
@@ -2465,7 +2566,9 @@ def gateway_logs(
             emit_json(payload)
             return
 
-        print_title("OpenClaw Gateway 日志", str(detail.get("name") or detail.get("agent_id") or "-"))
+        print_title(
+            "OpenClaw Gateway 日志", str(detail.get("name") or detail.get("agent_id") or "-")
+        )
         print_kv("实例", str(resp.get("instance") or "all"))
         print_kv("日志类型", str(resp.get("log_type") or log_type))
         print_kv("日志条数", str(resp.get("total") or 0))
@@ -2479,13 +2582,20 @@ def gateway_logs(
     try:
         asyncio.run(_run())
     except Exception as e:
-        _abort_openclaw_error(e, context="获取 gateway 日志失败", argv=["openclaw", "gateway", "logs"])
+        _abort_openclaw_error(
+            e, context="获取 gateway 日志失败", argv=["openclaw", "gateway", "logs"]
+        )
 
 
 @openclaw_gateway.command("doctor", context_settings=CONTEXT_SETTINGS)
 @click.argument("agent_ref", required=False)
 @region_option(default=None, envvar=None, help_text="区域 (默认优先读取 .agentengine.state)")
-@click.option("--fix", "do_fix", is_flag=True, help="不走 gateway 内诊断，改为通过控制面执行 openclaw doctor --fix")
+@click.option(
+    "--fix",
+    "do_fix",
+    is_flag=True,
+    help="不走 gateway 内诊断，改为通过控制面执行 openclaw doctor --fix",
+)
 @cli_output_option()
 def gateway_doctor(
     agent_ref: Optional[str],
@@ -2519,7 +2629,7 @@ def gateway_doctor(
                         "ws_url": info.ws_url,
                     }
                 )
-                hello = await gateway.connect()
+                await gateway.connect()
                 checks.append(
                     {
                         "name": "cookie_ws_handshake",
@@ -2606,7 +2716,12 @@ def openclaw_channel():
 @openclaw_channel.command("status", context_settings=CONTEXT_SETTINGS)
 @click.argument("agent_ref", required=False)
 @region_option(default=None, envvar=None, help_text="区域 (默认优先读取 .agentengine.state)")
-@click.option("--channel", type=click.Choice(OPENCLAW_CHANNELS, case_sensitive=False), default=None, help="指定 channel")
+@click.option(
+    "--channel",
+    type=click.Choice(OPENCLAW_CHANNELS, case_sensitive=False),
+    default=None,
+    help="指定 channel",
+)
 @click.option("--probe", is_flag=True, help="触发远端 probe 刷新 channel 快照")
 @cli_output_option()
 def channel_status(
@@ -2626,7 +2741,9 @@ def channel_status(
         gateway = _build_gateway_client(resolved_region, detail)
         try:
             await gateway.connect()
-            snapshot = await gateway.channels_status(probe=probe, timeout_ms=8_000 if probe else None)
+            snapshot = await gateway.channels_status(
+                probe=probe, timeout_ms=8_000 if probe else None
+            )
         finally:
             await gateway.close()
 
@@ -2640,26 +2757,67 @@ def channel_status(
             "snapshot": snapshot,
             "selected": _extract_channel_snapshot(snapshot, normalized_channel),
         }
-        _emit_data_payload("OpenClaw Channel 状态", payload, subtitle=str(detail.get("name") or "-"))
+        _emit_data_payload(
+            "OpenClaw Channel 状态", payload, subtitle=str(detail.get("name") or "-")
+        )
 
     try:
         asyncio.run(_run())
     except Exception as e:
-        _abort_openclaw_error(e, context="获取 channel 状态失败", argv=["openclaw", "channel", "status"])
+        _abort_openclaw_error(
+            e, context="获取 channel 状态失败", argv=["openclaw", "channel", "status"]
+        )
 
 
-@openclaw_channel.command("connect", context_settings=CONTEXT_SETTINGS, help=OPENCLAW_CHANNEL_CONNECT_HELP)
+@openclaw_channel.command(
+    "connect", context_settings=CONTEXT_SETTINGS, help=OPENCLAW_CHANNEL_CONNECT_HELP
+)
 @click.argument("agent_ref", required=False)
 @region_option(default=None, envvar=None, help_text="区域 (默认优先读取 .agentengine.state)")
-@click.option("--channel", "channel_name", type=click.Choice(OPENCLAW_CHANNELS, case_sensitive=False), required=True, help="目标 channel")
+@click.option(
+    "--channel",
+    "channel_name",
+    type=click.Choice(OPENCLAW_CHANNELS, case_sensitive=False),
+    required=True,
+    help="目标 channel",
+)
 @click.option("--open-qr", is_flag=True, help="仅微信：在本地浏览器额外打开二维码链接")
 @click.option("--app-id", "wps_xiezuo_app_id", default=None, help="仅 WPS 协作：开放平台应用 ID")
-@click.option("--app-secret", "wps_xiezuo_app_secret", default=None, help="仅 WPS 协作：开放平台应用密钥")
-@click.option("--account-id", "wps_xiezuo_account_id", default="default", help="仅 WPS 协作：账号 ID；当前只支持 default")
-@click.option("--agent-id", "wps_xiezuo_agent_id", default="main", help="仅 WPS 协作：消息路由到的 OpenClaw agentId")
-@click.option("--dm-policy", "wps_xiezuo_dm_policy", type=click.Choice(("disabled", "open", "pairing", "allowlist")), default="pairing", help="仅 WPS 协作：私聊策略，默认 pairing")
-@click.option("--group-policy", "wps_xiezuo_group_policy", type=click.Choice(("open", "allowlist")), default="open", help="仅 WPS 协作：群聊策略，默认 open")
-@click.option("--base-url", "wps_xiezuo_base_url", default="https://openapi.wps.cn", help="仅 WPS 协作：WPS OpenAPI 基础地址")
+@click.option(
+    "--app-secret", "wps_xiezuo_app_secret", default=None, help="仅 WPS 协作：开放平台应用密钥"
+)
+@click.option(
+    "--account-id",
+    "wps_xiezuo_account_id",
+    default="default",
+    help="仅 WPS 协作：账号 ID；当前只支持 default",
+)
+@click.option(
+    "--agent-id",
+    "wps_xiezuo_agent_id",
+    default="main",
+    help="仅 WPS 协作：消息路由到的 OpenClaw agentId",
+)
+@click.option(
+    "--dm-policy",
+    "wps_xiezuo_dm_policy",
+    type=click.Choice(("disabled", "open", "pairing", "allowlist")),
+    default="pairing",
+    help="仅 WPS 协作：私聊策略，默认 pairing",
+)
+@click.option(
+    "--group-policy",
+    "wps_xiezuo_group_policy",
+    type=click.Choice(("open", "allowlist")),
+    default="open",
+    help="仅 WPS 协作：群聊策略，默认 open",
+)
+@click.option(
+    "--base-url",
+    "wps_xiezuo_base_url",
+    default="https://openapi.wps.cn",
+    help="仅 WPS 协作：WPS OpenAPI 基础地址",
+)
 def channel_connect(
     agent_ref: Optional[str],
     region: Optional[str],
@@ -2779,13 +2937,18 @@ def channel_connect(
         if normalized_channel == "wps-xiezuo":
             app_id = str(wps_xiezuo_app_id or "").strip()
             app_secret = str(wps_xiezuo_app_secret or "").strip()
-            account_id = str(wps_xiezuo_account_id or WPS_XIEZUO_DEFAULT_ACCOUNT_ID).strip() or WPS_XIEZUO_DEFAULT_ACCOUNT_ID
+            account_id = (
+                str(wps_xiezuo_account_id or WPS_XIEZUO_DEFAULT_ACCOUNT_ID).strip()
+                or WPS_XIEZUO_DEFAULT_ACCOUNT_ID
+            )
             if not app_id:
                 raise click.ClickException("连接 WPS 协作 channel 必须提供 --app-id")
             if not app_secret:
                 raise click.ClickException("连接 WPS 协作 channel 必须提供 --app-secret")
             if account_id != WPS_XIEZUO_DEFAULT_ACCOUNT_ID:
-                raise click.ClickException("WPS 协作插件使用扁平 channel 配置，`--account-id` 仅支持 default")
+                raise click.ClickException(
+                    "WPS 协作插件使用扁平 channel 配置，`--account-id` 仅支持 default"
+                )
             apply_gateway = _build_gateway_client(resolved_region, detail)
             changed = False
             try:
@@ -2800,7 +2963,8 @@ def channel_connect(
                     agent_id=str(wps_xiezuo_agent_id or "main").strip() or "main",
                     dm_policy=wps_xiezuo_dm_policy,
                     group_policy=wps_xiezuo_group_policy,
-                    base_url=str(wps_xiezuo_base_url or "https://openapi.wps.cn").strip() or "https://openapi.wps.cn",
+                    base_url=str(wps_xiezuo_base_url or "https://openapi.wps.cn").strip()
+                    or "https://openapi.wps.cn",
                 )
                 if changed:
                     await _config_apply_and_wait_for_reload(
@@ -2842,9 +3006,12 @@ def channel_connect(
             await bootstrap_gateway.close()
 
         config, _ = _extract_config_state(cfg_snapshot)
-        existing_app_id = str(
-            ((config.get("channels") or {}).get(FEISHU_CHANNEL_KEY) or {}).get("appId") or ""
-        ).strip() or None
+        existing_app_id = (
+            str(
+                ((config.get("channels") or {}).get(FEISHU_CHANNEL_KEY) or {}).get("appId") or ""
+            ).strip()
+            or None
+        )
         onboarding = await _run_feishu_onboarding(existing_app_id)
         changed_config = copy.deepcopy(config)
         changed = _mutate_feishu_connect_config(changed_config, onboarding)
@@ -2885,7 +3052,9 @@ def channel_connect(
     try:
         asyncio.run(_run())
     except Exception as e:
-        _abort_openclaw_error(e, context="channel connect 失败", argv=["openclaw", "channel", "connect"])
+        _abort_openclaw_error(
+            e, context="channel connect 失败", argv=["openclaw", "channel", "connect"]
+        )
 
 
 def _run_channel_toggle_command(
@@ -2954,18 +3123,28 @@ def _run_channel_toggle_command(
             "enabled": enabled,
             "status": _extract_channel_snapshot(snapshot, normalized_channel),
         }
-        _emit_data_payload(f"OpenClaw Channel {action.title()}", payload, subtitle=normalized_channel)
+        _emit_data_payload(
+            f"OpenClaw Channel {action.title()}", payload, subtitle=normalized_channel
+        )
 
     try:
         asyncio.run(_run())
     except Exception as e:
-        _abort_openclaw_error(e, context=f"channel {action} 失败", argv=["openclaw", "channel", action])
+        _abort_openclaw_error(
+            e, context=f"channel {action} 失败", argv=["openclaw", "channel", action]
+        )
 
 
 @openclaw_channel.command("enable", context_settings=CONTEXT_SETTINGS)
 @click.argument("agent_ref", required=False)
 @region_option(default=None, envvar=None, help_text="区域 (默认优先读取 .agentengine.state)")
-@click.option("--channel", "channel_name", type=click.Choice(OPENCLAW_CHANNELS, case_sensitive=False), required=True, help="目标 channel")
+@click.option(
+    "--channel",
+    "channel_name",
+    type=click.Choice(OPENCLAW_CHANNELS, case_sensitive=False),
+    required=True,
+    help="目标 channel",
+)
 @click.option("--account-id", default=None, help="账号 ID；飞书 V1 仅支持 default")
 def channel_enable(
     agent_ref: Optional[str],
@@ -2987,7 +3166,13 @@ def channel_enable(
 @openclaw_channel.command("disable", context_settings=CONTEXT_SETTINGS)
 @click.argument("agent_ref", required=False)
 @region_option(default=None, envvar=None, help_text="区域 (默认优先读取 .agentengine.state)")
-@click.option("--channel", "channel_name", type=click.Choice(OPENCLAW_CHANNELS, case_sensitive=False), required=True, help="目标 channel")
+@click.option(
+    "--channel",
+    "channel_name",
+    type=click.Choice(OPENCLAW_CHANNELS, case_sensitive=False),
+    required=True,
+    help="目标 channel",
+)
 @click.option("--account-id", default=None, help="账号 ID；飞书 V1 仅支持 default")
 def channel_disable(
     agent_ref: Optional[str],
@@ -3009,9 +3194,16 @@ def channel_disable(
 @openclaw_channel.command("doctor", context_settings=CONTEXT_SETTINGS)
 @click.argument("agent_ref", required=False)
 @region_option(default=None, envvar=None, help_text="区域 (默认优先读取 .agentengine.state)")
-@click.option("--channel", type=click.Choice(OPENCLAW_CHANNELS, case_sensitive=False), default=None, help="指定 channel")
+@click.option(
+    "--channel",
+    type=click.Choice(OPENCLAW_CHANNELS, case_sensitive=False),
+    default=None,
+    help="指定 channel",
+)
 @cli_output_option()
-def channel_doctor(agent_ref: Optional[str], region: Optional[str], channel: Optional[str], output_mode: str | None):
+def channel_doctor(
+    agent_ref: Optional[str], region: Optional[str], channel: Optional[str], output_mode: str | None
+):
     """检查 channel 接入前置条件。"""
     _ = output_mode
     normalized_channel = str(channel).lower() if channel else None
@@ -3028,20 +3220,28 @@ def channel_doctor(agent_ref: Optional[str], region: Optional[str], channel: Opt
             gateway = _build_gateway_client(resolved_region, detail)
             try:
                 info = await gateway.build_access_info()
-                checks.append({"name": "dashboard_short_link", "ok": True, "dashboard_url": info.access_url})
+                checks.append(
+                    {"name": "dashboard_short_link", "ok": True, "dashboard_url": info.access_url}
+                )
                 await gateway.connect()
                 methods = gateway.methods
                 checks.append({"name": "cookie_ws_handshake", "ok": True, "methods": len(methods)})
                 snapshot = await gateway.channels_status(probe=False)
                 config_snapshot = await gateway.config_get()
-                config = config_snapshot.get("config") if isinstance(config_snapshot.get("config"), dict) else {}
+                config = (
+                    config_snapshot.get("config")
+                    if isinstance(config_snapshot.get("config"), dict)
+                    else {}
+                )
             except Exception as exc:
                 checks.append({"name": "gateway_connectivity", "ok": False, "error": str(exc)})
             finally:
                 await gateway.close()
 
         channels_to_check = [normalized_channel] if normalized_channel else list(OPENCLAW_CHANNELS)
-        plugin_entries = ((config.get("plugins") or {}).get("entries") or {}) if isinstance(config, dict) else {}
+        plugin_entries = (
+            ((config.get("plugins") or {}).get("entries") or {}) if isinstance(config, dict) else {}
+        )
         for item in channels_to_check:
             selected_snapshot = _extract_channel_snapshot(snapshot, item)
             configured = _is_channel_configured(item, config=config, snapshot=selected_snapshot)
@@ -3059,7 +3259,9 @@ def channel_doctor(agent_ref: Optional[str], region: Optional[str], channel: Opt
                         name="weixin_status_snapshot",
                         available=selected_snapshot is not None,
                         configured=configured,
-                        connect_required_message="首次连接前微信状态快照可能为空，执行 channel connect 后会自动补齐",
+                        connect_required_message=(
+                            "首次连接前微信状态快照可能为空，" "执行 channel connect 后会自动补齐"
+                        ),
                     )
                 )
                 checks.append(
@@ -3067,7 +3269,9 @@ def channel_doctor(agent_ref: Optional[str], region: Optional[str], channel: Opt
                         name="weixin_qr_rpc",
                         available="web.login.start" in methods and "web.login.wait" in methods,
                         configured=configured,
-                        connect_required_message="首次连接会先自动启用 bundled weixin plugin，然后再暴露扫码 RPC",
+                        connect_required_message=(
+                            "首次连接会先自动启用 bundled weixin plugin，" "然后再暴露扫码 RPC"
+                        ),
                         connect_required_ok=False,
                         required_methods=["web.login.start", "web.login.wait"],
                     )
@@ -3085,7 +3289,10 @@ def channel_doctor(agent_ref: Optional[str], region: Optional[str], channel: Opt
                         name="feishu_status_snapshot",
                         available=selected_snapshot is not None,
                         configured=configured,
-                        connect_required_message="飞书尚未完成 connect/onboarding，首次接入前不会出现在 channel snapshot 中",
+                        connect_required_message=(
+                            "飞书尚未完成 connect/onboarding，"
+                            "首次接入前不会出现在 channel snapshot 中"
+                        ),
                     )
                 )
                 node_path = shutil.which("node")
@@ -3111,7 +3318,9 @@ def channel_doctor(agent_ref: Optional[str], region: Optional[str], channel: Opt
                         name="wps_xiezuo_status_snapshot",
                         available=selected_snapshot is not None,
                         configured=configured,
-                        connect_required_message="WPS 协作尚未完成配置，首次 connect 前不会出现在 channel snapshot 中",
+                        connect_required_message=(
+                            "WPS 协作尚未完成配置，" "首次 connect 前不会出现在 channel snapshot 中"
+                        ),
                     )
                 )
                 dep_check = _check_wps_xiezuo_local_deps()
@@ -3134,15 +3343,20 @@ def channel_doctor(agent_ref: Optional[str], region: Optional[str], channel: Opt
 
     try:
         payload = asyncio.run(_run())
-        _emit_data_payload("OpenClaw Channel Doctor", payload, subtitle=str(payload.get("name") or "-"))
+        _emit_data_payload(
+            "OpenClaw Channel Doctor", payload, subtitle=str(payload.get("name") or "-")
+        )
     except Exception as e:
-        _abort_openclaw_error(e, context="channel doctor 执行失败", argv=["openclaw", "channel", "doctor"])
+        _abort_openclaw_error(
+            e, context="channel doctor 执行失败", argv=["openclaw", "channel", "doctor"]
+        )
 
 
 @openclaw.command("deploy", context_settings=CONTEXT_SETTINGS)
 @click.option("--name", "-n", default=None, help="OpenClaw 名称 (默认: openclaw-gateway)")
 @click.option(
-    "--region", "-r",
+    "--region",
+    "-r",
     default="cn-beijing-6",
     envvar="KSYUN_REGION",
     help="部署区域 (默认: cn-beijing-6)",
@@ -3154,7 +3368,9 @@ def channel_doctor(agent_ref: Optional[str], region: Optional[str], channel: Opt
     help="安全预设: relaxed | strict | strictest (安全测试建议 strictest)",
 )
 @click.option("--strict-mode", "security_profile", flag_value="strict", help="快捷开启严格模式")
-@click.option("--strictest", "security_profile", flag_value="strictest", help="快捷开启最严格安全模式")
+@click.option(
+    "--strictest", "security_profile", flag_value="strictest", help="快捷开启最严格安全模式"
+)
 @click.option(
     "--image",
     default=None,
@@ -3179,7 +3395,9 @@ def channel_doctor(agent_ref: Optional[str], region: Optional[str], channel: Opt
     help="额外透传自定义环境变量，格式 KEY=VALUE，可重复传入",
 )
 @click.option("--storage-size-gi", type=int, default=20, show_default=True, help="PVC 容量（Gi）")
-@click.option("--storage-mount-path", default=None, help="PVC 挂载目录（默认: /home/node/.openclaw）")
+@click.option(
+    "--storage-mount-path", default=None, help="PVC 挂载目录（默认: /home/node/.openclaw）"
+)
 @click.option("--no-storage", is_flag=True, help="禁用默认 PVC 挂载")
 @network_options
 @dry_run_option("仅显示请求，不实际部署")
@@ -3222,7 +3440,8 @@ def deploy(
         # 一键创建最严格实例（适合安全测试）
         agentengine openclaw deploy --security-profile strictest
         # 显式指定模型
-        agentengine openclaw deploy --model-base-url https://api.example.com/v1 --model-api-key sk-xxx
+        agentengine openclaw deploy --model-base-url https://api.example.com/v1 \
+          --model-api-key sk-xxx
         # 使用自定义镜像
         agentengine openclaw deploy --image ghcr.io/my-org/openclaw:v2
         # 透传业务自定义环境变量
@@ -3316,9 +3535,10 @@ async def _deploy_openclaw(
     dry_run: bool,
 ):
     """异步部署 OpenClaw"""
-    from ksadk.api import AgentEngineClient
-    from ksadk.deployment.state import load_state, save_state, clear_state
     from dotenv import dotenv_values
+
+    from ksadk.api import AgentEngineClient
+    from ksadk.deployment.state import clear_state, load_state, save_state
 
     # 自动加载当前目录 .env（仅补充未导出的变量，不覆盖已导出的 shell 环境）
     project_dir = Path(".").resolve()
@@ -3377,13 +3597,15 @@ async def _deploy_openclaw(
         env_vars.update(custom_env_vars)
     env_vars = _normalize_openclaw_gateway_auth_env(env_vars)
     if not str(env_vars.get("OPENCLAW_MODEL_CATALOG_JSON") or "").strip():
-        catalog_api_base = (
-            model_base_url
-            or _resolve_env("OPENCLAW_MODEL_BASE_URL", "OPENAI_BASE_URL", "OPENAI_API_BASE", "LLM_API_BASE", "MODEL_API_BASE")
+        catalog_api_base = model_base_url or _resolve_env(
+            "OPENCLAW_MODEL_BASE_URL",
+            "OPENAI_BASE_URL",
+            "OPENAI_API_BASE",
+            "LLM_API_BASE",
+            "MODEL_API_BASE",
         )
-        catalog_api_key = (
-            model_api_key
-            or _resolve_env("OPENCLAW_MODEL_API_KEY", "OPENAI_API_KEY", "LLM_API_KEY", "MODEL_API_KEY")
+        catalog_api_key = model_api_key or _resolve_env(
+            "OPENCLAW_MODEL_API_KEY", "OPENAI_API_KEY", "LLM_API_KEY", "MODEL_API_KEY"
         )
         provider_catalog = await fetch_provider_model_catalog(
             api_base=catalog_api_base,
@@ -3391,7 +3613,9 @@ async def _deploy_openclaw(
         )
         selected_catalog = _filter_openclaw_provider_catalog(env_vars, provider_catalog)
         if _apply_openclaw_provider_model_catalog(env_vars, selected_catalog):
-            print_info(f"已从模型服务 /v1/models 同步 OpenClaw 模型元数据: {len(selected_catalog)} 个")
+            print_info(
+                f"已从模型服务 /v1/models 同步 OpenClaw 模型元数据: {len(selected_catalog)} 个"
+            )
     memory_config = _build_openclaw_memory_config(
         memory_system=memory_system,
         mem0_instance_id=mem0_instance_id,
@@ -3445,7 +3669,9 @@ async def _deploy_openclaw(
     if storage_config:
         request_data["storage"] = storage_config
     if existing_agent_id and include_storage_on_update and no_storage:
-        print_warn("更新已有 OpenClaw 时 `--no-storage` 不会删除服务端既有挂盘配置；默认保留已有配置。")
+        print_warn(
+            "更新已有 OpenClaw 时 `--no-storage` 不会删除服务端既有挂盘配置；默认保留已有配置。"
+        )
     network_payload = build_network_payload(
         enable_public_access=enable_public_access,
         enable_vpc_access=enable_vpc_access,
@@ -3456,7 +3682,7 @@ async def _deploy_openclaw(
         region=region,
         dry_run=dry_run,
     )
-    # create 默认开公网（network_payload 未显式 enable_public_access 时补 True）；update 分支用原始 network_payload（None=保留现有配置）
+    # Create 默认开公网；update 使用原始 payload，None 表示保留现有配置。
     create_network_payload = dict(network_payload) if network_payload is not None else {}
     if "enable_public_access" not in create_network_payload:
         create_network_payload["enable_public_access"] = True
@@ -3477,12 +3703,15 @@ async def _deploy_openclaw(
         request_data["image_credential"] = image_credential
     elif kcr_password and not kcr_username and registry_kind != "personal_kcr":
         print_warn(
-            f"检测到 KCR_PASSWORD 但缺少 KCR_USERNAME，已忽略{registry_kind_label(registry_kind)}镜像凭证；"
+            "检测到 KCR_PASSWORD 但缺少 KCR_USERNAME，已忽略"
+            f"{registry_kind_label(registry_kind)}镜像凭证；"
             "企业版 KCR 和第三方镜像仓库必须配置 KCR_USERNAME + KCR_PASSWORD"
         )
     elif "/agentengine-public/" not in image_ref:
         if registry_kind == "personal_kcr":
-            print_warn("未配置个人版 KCR 镜像凭证 (KSYUN_ACCOUNT_ID/KCR_PASSWORD)，私有镜像可能无法拉取")
+            print_warn(
+                "未配置个人版 KCR 镜像凭证 (KSYUN_ACCOUNT_ID/KCR_PASSWORD)，私有镜像可能无法拉取"
+            )
         else:
             print_warn(
                 f"未配置{registry_kind_label(registry_kind)}镜像凭证 "
@@ -3538,12 +3767,13 @@ async def _deploy_openclaw(
                 except Exception as update_err:
                     err_msg = str(update_err)
                     not_found = (
-                        "code: 404" in err_msg.lower()
-                        or "agent not found" in err_msg.lower()
+                        "code: 404" in err_msg.lower() or "agent not found" in err_msg.lower()
                     )
                     if not not_found:
                         raise
-                    print_warn(f"本地状态失效 ({existing_agent_id})，将自动回退为新建: {update_err}")
+                    print_warn(
+                        f"本地状态失效 ({existing_agent_id})，将自动回退为新建: {update_err}"
+                    )
                     cleared = clear_state(project_dir, key=existing_agent_id)
                     if cleared:
                         print_info("已清理失效的 .agentengine.state")
@@ -3568,10 +3798,12 @@ async def _deploy_openclaw(
                         attempts=12,
                         interval_seconds=5,
                         include_api_key=True,
-                        detail_fetcher=lambda agent_ref, include_api_key: _get_openclaw_detail_with_client(
-                            client,
-                            agent_ref,
-                            include_api_key=include_api_key,
+                        detail_fetcher=lambda agent_ref, include_api_key: (
+                            _get_openclaw_detail_with_client(
+                                client,
+                                agent_ref,
+                                include_api_key=include_api_key,
+                            )
                         ),
                         suppress_transient_not_found_log=True,
                     )
@@ -3583,8 +3815,7 @@ async def _deploy_openclaw(
                     else:
                         print_warn("实例创建中，稍后使用 'agentengine openclaw list' 查看")
                 elif agent_id and (
-                    not str(endpoint or "").strip()
-                    or not str(api_key or "").strip()
+                    not str(endpoint or "").strip() or not str(api_key or "").strip()
                 ):
                     latest = await get_latest_agent_access(
                         client,
@@ -3594,10 +3825,12 @@ async def _deploy_openclaw(
                         initial_delay_seconds=2,
                         require_complete_access=True,
                         include_api_key=True,
-                        detail_fetcher=lambda agent_ref, include_api_key: _get_openclaw_detail_with_client(
-                            client,
-                            agent_ref,
-                            include_api_key=include_api_key,
+                        detail_fetcher=lambda agent_ref, include_api_key: (
+                            _get_openclaw_detail_with_client(
+                                client,
+                                agent_ref,
+                                include_api_key=include_api_key,
+                            )
                         ),
                         suppress_transient_not_found_log=True,
                     )
@@ -3627,11 +3860,13 @@ async def _deploy_openclaw(
                 state_payload["openclaw_gateway_token"] = state_gateway_token
             save_state(project_dir, state_payload)
 
-            # 仅在更新已有实例时回读一次状态；新建时底层可能尚未落库，立即按 ID 查询会产生误导性报错。
+            # 更新已有实例才回读；新建后立即查询可能早于底层落库。
             if updated_existing_agent and agent_id:
                 try:
                     latest = await client.get_agent(agent_id=agent_id, include_api_key=False)
-                    latest_status = str(((latest.get("basic") or {}).get("status") or "")).upper() or None
+                    latest_status = (
+                        str(((latest.get("basic") or {}).get("status") or "")).upper() or None
+                    )
                 except Exception:
                     latest_status = None
 
@@ -3672,7 +3907,9 @@ def list_openclaws(region: str, page: int, size: int, dry_run: bool, output_mode
 
     async def _list():
         async with AgentEngineClient(region=region, dry_run=dry_run) as client:
-            resp = await client.list_agents(region=region, framework="openclaw", page=page, page_size=size)
+            resp = await client.list_agents(
+                region=region, framework="openclaw", page=page, page_size=size
+            )
             agents = resp.get("agents", []) or []
             total = int(resp.get("total") or len(agents))
             rows = []
@@ -3765,7 +4002,9 @@ def status(agent_ref: Optional[str], region: Optional[str], dry_run: bool, outpu
                 agent = await client.get_agent(name=agent_ref)
 
             if not agent:
-                raise resolution_error(f"未找到 OpenClaw: {agent_ref}", hints=["agentengine openclaw list"])
+                raise resolution_error(
+                    f"未找到 OpenClaw: {agent_ref}", hints=["agentengine openclaw list"]
+                )
 
             detail = _flatten_agent_detail(agent)
             status_val = detail.get("status", "UNKNOWN")
@@ -3781,7 +4020,11 @@ def status(agent_ref: Optional[str], region: Optional[str], dry_run: bool, outpu
                     ("框架", str(detail.get("framework") or "-"), None),
                     ("区域", str(detail.get("region") or region), None),
                     ("Endpoint", str(detail.get("endpoint") or "N/A"), "#58a6ff"),
-                    ("Langfuse", str(detail.get("langfuse_url") or "-"), "#58a6ff" if detail.get("langfuse_url") else None),
+                    (
+                        "Langfuse",
+                        str(detail.get("langfuse_url") or "-"),
+                        "#58a6ff" if detail.get("langfuse_url") else None,
+                    ),
                     ("镜像", str(detail.get("artifact_path") or "-"), None),
                     ("创建时间", created_at_display, None),
                     ("更新时间", updated_at_display, None),
@@ -3844,6 +4087,7 @@ def _delete_impl(agent_refs: tuple[str, ...], region: str, assume_yes: bool, dry
 
                     # 清理本地状态
                     from ksadk.deployment.state import clear_state
+
                     try:
                         removed = clear_state(Path("."), key=agent_ref)
                         if removed:
@@ -3866,7 +4110,7 @@ def _delete_impl(agent_refs: tuple[str, ...], region: str, assume_yes: bool, dry
                 "failed": failed_refs,
             }
 
-    dry_run_kwargs = {"dry_run": dry_run}
+    dry_run_kwargs: dict[str, Any] = {"dry_run": dry_run}
     if is_json_output():
         dry_run_kwargs.update(
             dry_run_resource="openclaw",
@@ -3904,7 +4148,13 @@ def _delete_impl(agent_refs: tuple[str, ...], region: str, assume_yes: bool, dry
 @confirm_options()
 @dry_run_option()
 @cli_output_option()
-def delete(agent_refs: tuple[str, ...], region: str, assume_yes: bool, dry_run: bool, output_mode: str | None):
+def delete(
+    agent_refs: tuple[str, ...],
+    region: str,
+    assume_yes: bool,
+    dry_run: bool,
+    output_mode: str | None,
+):
     """删除 OpenClaw 实例。"""
     _ = output_mode
     _delete_impl(agent_refs=agent_refs, region=region, assume_yes=assume_yes, dry_run=dry_run)
@@ -3916,7 +4166,13 @@ def delete(agent_refs: tuple[str, ...], region: str, assume_yes: bool, dry_run: 
 @confirm_options()
 @dry_run_option()
 @cli_output_option()
-def destroy(agent_refs: tuple[str, ...], region: str, assume_yes: bool, dry_run: bool, output_mode: str | None):
+def destroy(
+    agent_refs: tuple[str, ...],
+    region: str,
+    assume_yes: bool,
+    dry_run: bool,
+    output_mode: str | None,
+):
     """删除 OpenClaw 实例。"""
     _ = output_mode
     _delete_impl(agent_refs=agent_refs, region=region, assume_yes=assume_yes, dry_run=dry_run)

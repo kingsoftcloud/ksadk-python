@@ -5,6 +5,7 @@ import copy
 import time
 from typing import Optional
 
+from ksadk.ids import new_session_id
 from ksadk.sessions.base import BaseSessionService, Session, SessionEvent, SessionState, generate_id
 
 
@@ -25,7 +26,7 @@ class InMemorySessionService(BaseSessionService):
                 return copy.deepcopy(self._sessions[session_id])
 
             session = Session(
-                id=session_id or generate_id(),
+                id=session_id or new_session_id(),
                 agent_id=agent_id,
                 user_id=user_id,
             )
@@ -43,6 +44,15 @@ class InMemorySessionService(BaseSessionService):
             session = self._sessions.get(session_id)
             return copy.deepcopy(session) if session else None
 
+    async def get_session_metadata(self, session_id: str) -> Optional[Session]:
+        async with self._lock:
+            session = self._sessions.get(session_id)
+            if session is None:
+                return None
+            metadata = copy.deepcopy(session)
+            metadata.events = []
+            return metadata
+
     async def list_sessions(
         self,
         agent_id: str,
@@ -56,7 +66,10 @@ class InMemorySessionService(BaseSessionService):
                 for session in self._sessions.values()
                 if session.agent_id == agent_id and (user_id is None or session.user_id == user_id)
             ]
-            sessions.sort(key=lambda item: (item.updated_at, item.created_at), reverse=True)
+            sessions.sort(
+                key=lambda item: (item.updated_at, item.created_at, item.id),
+                reverse=True,
+            )
             start = offset or 0
             end = None if limit is None else start + limit
             return sessions[start:end]
@@ -190,6 +203,37 @@ class InMemorySessionService(BaseSessionService):
             if before_seq_id is not None:
                 events = [event for event in events if event.seq_id < before_seq_id]
             return len(events)
+
+    async def get_events_for_agent(
+        self,
+        agent_id: str,
+        user_id: Optional[str] = None,
+        offset: Optional[int] = None,
+        limit: Optional[int] = None,
+    ) -> list[SessionEvent]:
+        async with self._lock:
+            merged = [
+                copy.deepcopy(event)
+                for session in self._sessions.values()
+                if session.agent_id == agent_id and (user_id is None or session.user_id == user_id)
+                for event in session.events
+            ]
+            merged.sort(key=lambda event: (event.timestamp, event.seq_id, event.id))
+            end = max(len(merged) - (offset or 0), 0)
+            start = 0 if limit is None else max(end - limit, 0)
+            return merged[start:end]
+
+    async def count_events_for_agent(
+        self,
+        agent_id: str,
+        user_id: Optional[str] = None,
+    ) -> int:
+        async with self._lock:
+            return sum(
+                len(session.events)
+                for session in self._sessions.values()
+                if session.agent_id == agent_id and (user_id is None or session.user_id == user_id)
+            )
 
     async def get_state(
         self,

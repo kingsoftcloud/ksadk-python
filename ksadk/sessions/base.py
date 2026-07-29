@@ -78,16 +78,11 @@ class SessionEvent:
         return cls(
             id=str(payload.get("id") or generate_id()),
             session_id=str(
-                payload.get("session_id")
-                or payload.get("sessionId")
-                or session_id
-                or ""
+                payload.get("session_id") or payload.get("sessionId") or session_id or ""
             ),
             author=str(payload.get("author") or ""),
             event_type=str(
-                payload.get("event_type")
-                or payload.get("eventType")
-                or _infer_event_type(payload)
+                payload.get("event_type") or payload.get("eventType") or _infer_event_type(payload)
             ),
             content=dict(payload.get("content") or {}),
             timestamp=normalize_timestamp(payload.get("timestamp")),
@@ -190,10 +185,7 @@ class Session:
         return cls(
             id=str(payload.get("id") or generate_id()),
             agent_id=str(
-                payload.get("agent_id")
-                or payload.get("app_name")
-                or payload.get("appName")
-                or ""
+                payload.get("agent_id") or payload.get("app_name") or payload.get("appName") or ""
             ),
             user_id=str(payload.get("user_id") or payload.get("userId") or ""),
             title=str(payload.get("title") or payload.get("Title") or ""),
@@ -272,6 +264,14 @@ class BaseSessionService(abc.ABC):
     async def get_session(self, session_id: str) -> Optional[Session]:
         raise NotImplementedError
 
+    async def get_session_metadata(self, session_id: str) -> Optional[Session]:
+        """Return session ownership/state without requiring the event transcript."""
+
+        session = await self.get_session(session_id)
+        if session is not None:
+            session.events = []
+        return session
+
     @abc.abstractmethod
     async def list_sessions(
         self,
@@ -329,6 +329,26 @@ class BaseSessionService(abc.ABC):
         after_seq_id: Optional[int] = None,
         before_seq_id: Optional[int] = None,
     ) -> int:
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    async def get_events_for_agent(
+        self,
+        agent_id: str,
+        user_id: Optional[str] = None,
+        offset: Optional[int] = None,
+        limit: Optional[int] = None,
+    ) -> list[SessionEvent]:
+        """跨会话事件查询，必须由存储后端提供无截断实现。"""
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    async def count_events_for_agent(
+        self,
+        agent_id: str,
+        user_id: Optional[str] = None,
+    ) -> int:
+        """跨会话事件计数，必须由存储后端提供无截断实现。"""
         raise NotImplementedError
 
     @abc.abstractmethod

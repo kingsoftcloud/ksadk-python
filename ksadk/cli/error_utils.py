@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import os
 import re
 import sys
+from dataclasses import dataclass, field
 from typing import Any, Optional, Sequence, Tuple
 
 import click
@@ -128,9 +128,16 @@ def _looks_like_invalid_cloud_credentials(details: dict[str, Any], msg_lower: st
     return any(marker in msg_lower for marker in markers)
 
 
-def _looks_like_runtime_permission_error(details: dict[str, Any], msg_lower: str, code: int | None) -> bool:
+def _looks_like_runtime_permission_error(
+    details: dict[str, Any], msg_lower: str, code: int | None
+) -> bool:
     remote_code = str(details.get("remote_error_code") or "").strip().lower()
-    if remote_code in {"accessdenied", "accessdeniedexception", "unauthorized", "unauthorizedoperation"}:
+    if remote_code in {
+        "accessdenied",
+        "accessdeniedexception",
+        "unauthorized",
+        "unauthorizedoperation",
+    }:
         return True
     if code in {401, 403} and (
         ("权限" in msg_lower)
@@ -145,7 +152,8 @@ def _looks_like_runtime_permission_error(details: dict[str, Any], msg_lower: str
 
 def _credential_setup_hints() -> list[str]:
     return [
-        "请检查当前 shell 或项目 `.env` 中是否设置了 `KSYUN_ACCESS_KEY` / `KSYUN_SECRET_KEY`（兼容 `KS3_ACCESS_KEY` / `KS3_SECRET_KEY`）。",
+        "请检查当前 shell 或项目 `.env` 中是否设置了 `KSYUN_ACCESS_KEY` / "
+        "`KSYUN_SECRET_KEY`（兼容 `KS3_ACCESS_KEY` / `KS3_SECRET_KEY`）。",
         "先到 AgentEngine Runtime 控制台确认账号是否具备运行时权限: https://ksp.console.ksyun.com/#/agentEngineRuntime",
         "如当前子账号没有权限，请到 IAM 授权页授权: https://uc.console.ksyun.com/pro/iam/#/permission/authorize",
         "如果还没有金山云 AK/SK，请让主账号先到 IAM 控制台创建子账号并生成访问密钥: https://uc.console.ksyun.com/pro/iam/",
@@ -154,7 +162,8 @@ def _credential_setup_hints() -> list[str]:
 
 def _invalid_credential_hints() -> list[str]:
     return [
-        "请检查当前 shell 或项目 `.env` 中的 `KSYUN_ACCESS_KEY` / `KSYUN_SECRET_KEY` 是否填写正确，且没有多余空格。",
+        "请检查当前 shell 或项目 `.env` 中的 `KSYUN_ACCESS_KEY` / "
+        "`KSYUN_SECRET_KEY` 是否填写正确，且没有多余空格。",
         "确认该 AK/SK 未被禁用、删除或重置，并且属于当前要操作的金山云账号。",
         "如需确认账号是否具备 AgentEngine Runtime 权限，可先查看: https://ksp.console.ksyun.com/#/agentEngineRuntime",
         "如果凭证属于子账号但仍然被拒绝，请到 IAM 授权页检查授权: https://uc.console.ksyun.com/pro/iam/#/permission/authorize",
@@ -188,7 +197,9 @@ def _matches_resource_not_found(msg_lower: str, args: Sequence[str], *, resource
     return args[0] == resource
 
 
-def explain_exception(err: Exception, argv: Optional[Sequence[str]] = None) -> Tuple[str, list[str]]:
+def explain_exception(
+    err: Exception, argv: Optional[Sequence[str]] = None
+) -> Tuple[str, list[str]]:
     cli_error = cli_error_from_exception(err, argv=argv)
     return cli_error.message, cli_error.hints
 
@@ -384,7 +395,9 @@ def cli_error_from_exception(
 
     if code == 404 and len(args) >= 2 and args[0] == "dashboard" and args[1] == "share":
         summary = "未找到 Dashboard 分享链接或目标 Agent。"
-        hints.append("请先执行 `agentengine dashboard share list --agent <AgentName|AgentId>` 查看分享链接。")
+        hints.append(
+            "请先执行 `agentengine dashboard share list --agent <AgentName|AgentId>` 查看分享链接。"
+        )
         hints.append("如需先确认 Agent，请执行 `agentengine agent list`。")
         error_code = "resolution_error"
         exit_code = EXIT_CODE_RESOLUTION
@@ -396,22 +409,34 @@ def cli_error_from_exception(
         exit_code = EXIT_CODE_RESOLUTION
     elif code == 404 and _matches_resource_not_found(msg_lower, args, resource="agent"):
         summary = "未找到 Agent。"
-        hints.append("请确认 Agent 名称/ID 是否正确，可先执行 `agentengine agent list` 查看已部署 Agent。")
+        hints.append(
+            "请确认 Agent 名称/ID 是否正确，可先执行 `agentengine agent list` 查看已部署 Agent。"
+        )
         if len(args) >= 2 and args[0] == "dashboard" and args[1] == "list":
             hints.append("`agentengine dashboard list` 不是有效命令。")
-            hints.append("如果要查看分享链接，请使用 `agentengine dashboard share list --agent <AgentName|AgentId>`。")
+            hints.append(
+                "如果要查看分享链接，请使用 "
+                "`agentengine dashboard share list --agent <AgentName|AgentId>`。"
+            )
         elif args and args[0] == "dashboard":
-            hints.append("可显式指定 Agent：`agentengine dashboard open --agent <AgentName|AgentId>`。")
+            hints.append(
+                "可显式指定 Agent：`agentengine dashboard open --agent <AgentName|AgentId>`。"
+            )
         error_code = "resolution_error"
         exit_code = EXIT_CODE_RESOLUTION
     elif code == 404 and _matches_resource_not_found(msg_lower, args, resource="mcp"):
         summary = "未找到 MCP。"
-        hints.append("请确认 MCP 名称/ID 是否正确，可先执行 `agentengine mcp list` 查看已部署 MCP。")
+        hints.append(
+            "请确认 MCP 名称/ID 是否正确，可先执行 `agentengine mcp list` 查看已部署 MCP。"
+        )
         error_code = "resolution_error"
         exit_code = EXIT_CODE_RESOLUTION
     elif code == 404 and _matches_resource_not_found(msg_lower, args, resource="openclaw"):
         summary = "未找到 OpenClaw。"
-        hints.append("请确认 OpenClaw 名称/ID 是否正确，可先执行 `agentengine openclaw list` 查看已部署实例。")
+        hints.append(
+            "请确认 OpenClaw 名称/ID 是否正确，可先执行 "
+            "`agentengine openclaw list` 查看已部署实例。"
+        )
         error_code = "resolution_error"
         exit_code = EXIT_CODE_RESOLUTION
     elif _looks_like_missing_cloud_credentials(details, msg_lower):

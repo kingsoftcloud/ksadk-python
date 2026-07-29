@@ -2,8 +2,9 @@
 title: "框架接入"
 ---
 
-KsADK 通过运行时适配器接入常见 Python Agent 框架。公开契约很简单：
-暴露一个 Agent 对象，声明框架类型，然后用 `agentengine` 运行项目。
+KsADK 通过运行时适配器接入常见 Python Agent 框架，也支持声明式托管 Runtime。代码框架
+暴露 Agent 对象、声明框架类型，再用 `agentengine` 运行项目；Codex 则由一个显式 YAML
+manifest 声明，不导入用户 Python Agent。
 
 ## 支持的框架族
 
@@ -13,6 +14,27 @@ KsADK 通过运行时适配器接入常见 Python Agent 框架。公开契约很
 | LangGraph | `ksadk[langgraph]` | `root_agent = graph.compile()` |
 | LangChain | `ksadk[langchain]` 或框架依赖 | `root_agent = prompt | llm | parser` |
 | DeepAgents | `ksadk[deepagents]` | `root_agent = create_deep_agent(...)` |
+| Codex ManagedRuntime（0.8 新增） | `ksadk[codex]` | YAML `model` / `prompt`；无 `agent.py` |
+
+## Codex ManagedRuntime
+
+Codex 是 YAML 即 Agent 的声明式路径：`agentengine.yaml` 中的 `model` 与 `prompt` 定义
+Agent，`runtime.name/version` 定义本机与云端共同的 Runtime 版本边界。它本机启动官方 Codex
+子进程，云端由 Runtime catalog 选择 Linux 镜像；不走 CodeBuilder，也不会复制开发机二进制。
+
+```yaml title="agentengine.yaml"
+framework: codex
+artifact_type: ManagedRuntime
+runtime:
+  name: codex
+  version: "0.144.4"
+model: gpt-5.1-codex
+prompt: |
+  你是一个编码助手。
+```
+
+从[最佳实践：YAML 即 Agent：Codex](../tutorials/best-practices/codex-yaml-agent)
+开始；不要为这个项目添加 `entry_point`、`agent_variable` 或占位 `agent.py`。
 
 ## 框架运行时架构
 
@@ -176,6 +198,7 @@ KsADK 优先读取显式项目配置。如果没有配置文件，再尝试常�
 | LangGraph | 导入配置的 graph 对象 | graph `invoke` / `ainvoke` / 事件流 |
 | LangChain | 导入配置的 runnable、chain 或 callable | runnable/callable invoke 与 stream |
 | DeepAgents | 复用 LangGraph runner 路径 | 编译 graph 执行 |
+| Codex | 读取声明式 manifest，不导入用户 Agent 对象 | 官方 Codex app-server 子进程 |
 
 适配器会把非流式结果归一成 `{"output": ...}`，把流式结果归一成语义
 chunk。它们不会把用户 Agent 改写成另一种框架。

@@ -52,7 +52,7 @@ agentengine --dry-run deploy .
 
 <Steps>
   1. **clean-dist** clears the previous `dist/`
-  2. **sync-ksadk-web-static** fetches the latest UI static assets
+  2. **sync-ksadk-web-static** fetches the pinned, published UI static assets
   3. **uv build** builds the sdist/wheel
   4. **tests/test_runtime_common_packaging.py** inspects wheel contents
   5. **twine check dist/*** final check
@@ -93,7 +93,7 @@ Editable UI source belongs to `ksadk-web`.
 Official PyPI releases run through `.github/workflows/publish-pypi.yml`,
 triggered by a GitHub Release `published` event or `workflow_dispatch`. The
 workflow first runs `make sync-ksadk-web-static` (default
-`@kingsoftcloud/ksadk-web@latest`; pin a version via the `ksadk_web_version`
+the pinned published `@kingsoftcloud/ksadk-web` version; select another published version via the `ksadk_web_version`
 input), then `make public-preflight`, and finally uploads through OIDC Trusted
 Publishing without relying on a long-lived PyPI token.
 

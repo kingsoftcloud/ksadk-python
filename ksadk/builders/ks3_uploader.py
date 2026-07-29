@@ -5,13 +5,12 @@ KS3 上传模块 - 金山云对象存储上传
 import os
 import socket
 import time
-from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 from typing import Optional
+
 import click
-
 from ks3.upload import UploadTask
-
 
 from ksadk.common.constants import get_ks3_endpoints
 
@@ -28,9 +27,9 @@ class KS3Uploader:
     UPLOAD_TIMEOUT_PER_MB_SECONDS = 4.0
     UPLOAD_TIMEOUT_MAX_SECONDS = 3600
 
-    def __init__(self, region: str = "cn-beijing-6", bucket: str = None):
+    def __init__(self, region: str = "cn-beijing-6", bucket: Optional[str] = None):
         """初始化 KS3 上传器
-        
+
         Args:
             region: KS3 区域 (默认 cn-beijing-6)
             bucket: bucket 名称 (可选)
@@ -39,12 +38,12 @@ class KS3Uploader:
                    - 如果环境变量也未设置，默认使用 agentengine-{region}
         """
         self.region = region
-        
+
         # 确定 bucket 名称 (优先级: 参数 > 环境变量 > 默认值)
         if bucket:
             self.bucket_name = bucket
-        elif os.getenv("KS3_BUCKET"):
-            self.bucket_name = os.getenv("KS3_BUCKET")
+        elif env_bucket := os.getenv("KS3_BUCKET"):
+            self.bucket_name = env_bucket
         else:
             # Bucket 名称格式: agentengine-{account_id}-{region}
             account_id = os.getenv("KSYUN_ACCOUNT_ID")
@@ -68,7 +67,7 @@ class KS3Uploader:
                     "   或设置 KS3_BUCKET 显式指定 bucket 名称"
                 )
             self.bucket_name = f"agentengine-{account_id}-{region}"
-        
+
         self.custom_domain = None  # 可选的自定义域名
 
     def get_endpoint(self) -> str:
@@ -100,8 +99,12 @@ class KS3Uploader:
                 pass
 
         size_mb = file_path.stat().st_size / (1024 * 1024)
-        calculated = self.UPLOAD_TIMEOUT_BASE_SECONDS + int(size_mb * self.UPLOAD_TIMEOUT_PER_MB_SECONDS)
-        return min(self.UPLOAD_TIMEOUT_MAX_SECONDS, max(self.UPLOAD_CONNECT_TIMEOUT_SECONDS, calculated))
+        calculated = self.UPLOAD_TIMEOUT_BASE_SECONDS + int(
+            size_mb * self.UPLOAD_TIMEOUT_PER_MB_SECONDS
+        )
+        return min(
+            self.UPLOAD_TIMEOUT_MAX_SECONDS, max(self.UPLOAD_CONNECT_TIMEOUT_SECONDS, calculated)
+        )
 
     def _probe_endpoint_latency(self, host: str) -> Optional[float]:
         started_at = time.monotonic()
@@ -137,12 +140,16 @@ class KS3Uploader:
         if mode == "internal":
             add_candidate(internal_endpoint, "内网")
             add_candidate(public_endpoint, "公网")
-            return candidates, f"强制优先内网 {candidates[0]['host']}" if candidates else "未找到可用 KS3 endpoint"
+            return candidates, (
+                f"强制优先内网 {candidates[0]['host']}" if candidates else "未找到可用 KS3 endpoint"
+            )
 
         if mode == "public":
             add_candidate(public_endpoint, "公网")
             add_candidate(internal_endpoint, "内网")
-            return candidates, f"强制优先公网 {candidates[0]['host']}" if candidates else "未找到可用 KS3 endpoint"
+            return candidates, (
+                f"强制优先公网 {candidates[0]['host']}" if candidates else "未找到可用 KS3 endpoint"
+            )
 
         add_candidate(internal_endpoint, "内网")
         add_candidate(public_endpoint, "公网")
@@ -192,12 +199,24 @@ class KS3Uploader:
                 bucket_exists = False
             else:
                 if "AccessDenied" in error_str or "403" in error_str:
-                    click.secho(f"   ⚠️  提示: Bucket '{self.bucket_name}' 名称冲突或无权限访问 (403)。", fg="yellow")
-                    click.secho("      注意: KS3 Bucket 名称在全网范围内是全局唯一的！", fg="yellow")
+                    click.secho(
+                        f"   ⚠️  提示: Bucket '{self.bucket_name}' 名称冲突或无权限访问 (403)。",
+                        fg="yellow",
+                    )
+                    click.secho(
+                        "      注意: KS3 Bucket 名称在全网范围内是全局唯一的！", fg="yellow"
+                    )
                     click.secho("      该名称已被其他用户占用，您无法使用。", fg="yellow")
                     click.secho("   👉 解决方案:", fg="cyan")
-                    click.secho("      1. (推荐) 在 .env 中设置 KSYUN_ACCOUNT_ID 为您的账户 ID (自动生成唯一名称)。", fg="cyan")
-                    click.secho("      2. 或者，在 .env 中设置 KS3_BUCKET 为一个没人用过的唯一名称。", fg="cyan")
+                    click.secho(
+                        "      1. (推荐) 在 .env 中设置 KSYUN_ACCOUNT_ID 为您的账户 ID "
+                        "(自动生成唯一名称)。",
+                        fg="cyan",
+                    )
+                    click.secho(
+                        "      2. 或者，在 .env 中设置 KS3_BUCKET 为一个没人用过的唯一名称。",
+                        fg="cyan",
+                    )
                 raise
 
         if not bucket_exists:
@@ -206,10 +225,20 @@ class KS3Uploader:
                 click.secho(f"   ✓ Bucket 创建成功: {self.bucket_name}", fg="green")
             except Exception as create_err:
                 create_err_str = str(create_err)
-                if "Conflict" in create_err_str or "409" in create_err_str or "BucketAlreadyExists" in create_err_str:
-                    click.secho(f"   ⚠️  提示: Bucket '{self.bucket_name}' 名称已被其他用户占用。", fg="yellow")
+                if (
+                    "Conflict" in create_err_str
+                    or "409" in create_err_str
+                    or "BucketAlreadyExists" in create_err_str
+                ):
+                    click.secho(
+                        f"   ⚠️  提示: Bucket '{self.bucket_name}' 名称已被其他用户占用。",
+                        fg="yellow",
+                    )
                     click.secho("      注意: KS3 Bucket 名称是全局唯一的。", fg="yellow")
-                    click.secho("   👉 解决方法: 修改 .env 中的 KS3_BUCKET，换一个更复杂的名字再试。", fg="cyan")
+                    click.secho(
+                        "   👉 解决方法: 修改 .env 中的 KS3_BUCKET，换一个更复杂的名字再试。",
+                        fg="cyan",
+                    )
                 raise
 
         return bucket
@@ -299,7 +328,9 @@ class KS3Uploader:
             return None
 
         click.echo(f"   KS3 Endpoint 策略: {selection_summary}")
-        click.echo(f"   上传文件: {file_path.name} ({file_path.stat().st_size / (1024 * 1024):.2f} MB)")
+        click.echo(
+            f"   上传文件: {file_path.name} ({file_path.stat().st_size / (1024 * 1024):.2f} MB)"
+        )
         click.echo(f"   上传超时: {self._upload_timeout_seconds(file_path)} 秒")
 
         # 临时禁用系统代理 (ClashX 等会导致 KS3 上传走代理而失败)
@@ -369,17 +400,17 @@ class KS3Uploader:
     async def upload_with_url(self, file_path: Path, presigned_url: str) -> bool:
         """使用预签名 URL 上传文件 (不依赖本地 AK/SK)"""
         import httpx
-        
-        click.echo(f"   上传中 (使用预签名 URL)...")
-        
+
+        click.echo("   上传中 (使用预签名 URL)...")
+
         try:
             async with httpx.AsyncClient() as client:
-                with open(file_path, 'rb') as f:
+                with open(file_path, "rb") as f:
                     response = await client.put(
-                        presigned_url, 
+                        presigned_url,
                         content=f.read(),
                         headers={"Content-Type": "application/octet-stream"},
-                        timeout=300.0
+                        timeout=300.0,
                     )
                     response.raise_for_status()
                     click.secho("   ✓ 上传成功", fg="green")

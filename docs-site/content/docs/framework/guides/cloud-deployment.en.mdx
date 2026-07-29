@@ -18,6 +18,7 @@ Agent on Kingsoft Cloud.
 | Target | Use it when | Default artifact |
 | --- | --- | --- |
 | `serverless` | You want the fastest hosted deployment for a standard Agent | `Code`, built and uploaded to KS3 automatically |
+| `serverless` + `artifact_type: ManagedRuntime` | A YAML-driven Codex agent needs a platform-maintained Runtime image | ManagedRuntime; inline manifest, no KS3 code package and no Docker |
 | `serverless --artifact-type Container` | The code package is large or needs system dependencies / a custom image | Container; requires Docker and a registry |
 | `kce --artifact-type Container` | You already operate a KCE cluster, namespace, and registry | Container |
 
@@ -34,16 +35,19 @@ deployment.
    agentengine --version
    ```
 
-2. Your project needs a working `agentengine.yaml`, entry point, and dependency
-   manifest. Test it first:
+2. A code project needs a working `agentengine.yaml`, entry point, and dependency
+   manifest. A Codex ManagedRuntime has no entry point; it needs explicit
+   `framework: codex`, `artifact_type: ManagedRuntime`, and `runtime.name`.
+   Test locally first:
 
    ```bash title="shell"
    agentengine run . -i
    ```
 
-3. Prepare Kingsoft Cloud AK/SK credentials with permission for AgentEngine,
-   KS3, and the selected region. Container deployment also needs a registry you
-   can push to and a working local Docker installation.
+3. Prepare Kingsoft Cloud AK/SK credentials with permission for AgentEngine and
+   the selected region. Code deployment also needs KS3 permission. Container
+   deployment also needs a registry you can push to and a working local Docker
+   installation. ManagedRuntime uses neither a KS3 code package nor local Docker.
 
 4. Never commit AK/SK credentials, model keys, registry passwords, `.env`,
    `prod.env`, or `.agentengine/`. Commit only placeholder values in
@@ -83,6 +87,40 @@ OPENAI_MODEL_NAME=<your-model-name>
   `--env-file` injects variables into the hosted runtime. Cloud credentials are
   for the local deployment client and must not be forwarded as runtime env.
 </Callout>
+
+## Deploy Codex ManagedRuntime (new in 0.8)
+
+Codex uses one `agentengine.yaml` and no `agent.py`. When `runtime.version` is
+locked explicitly, the CLI uses it directly. When omitted, it asks the server
+Runtime catalog for a default; a disabled catalog fails instead of guessing a
+version or falling back to CodeBuilder.
+
+```yaml title="agentengine.yaml"
+name: my-codex-agent
+version: "1.0.0"
+framework: codex
+artifact_type: ManagedRuntime
+runtime:
+  name: codex
+  version: "0.144.4"
+model: kimi-k3
+prompt: |
+  You are a coding assistant.
+```
+
+Inspect the request first, then deploy:
+
+```bash title="shell"
+agentengine deploy . --target serverless --region cn-beijing-6 --dry-run
+agentengine deploy . --target serverless --region cn-beijing-6 --env-file ./prod.env
+```
+
+This sends an inline normalized manifest, Runtime name, version, and SHA-256. Do
+not pass `--ks3-path`, and do not use `--push` or `--ks3-bucket` for a
+ManagedRuntime; those Code-path options are rejected. Record the actual Runtime
+version and image digest returned by deployment. See
+[YAML Is the Agent: Codex](../tutorials/best-practices/codex-yaml-agent) for
+the native-local workflow.
 
 ## Deploy To Serverless
 
@@ -208,6 +246,8 @@ pass `--enable-public-access` or `--disable-public-access`.
 | VPC validation fails | Supply `--vpc-id`, `--subnet-id`, and `--security-group-id` together. Availability zone is optional and cannot replace them. |
 | Container build fails | Confirm Docker is running, the registry is reachable, and registry credentials match the registry type. |
 | Code package is too large | Remove unnecessary dependencies first; then use `--artifact-type Container` when an image is justified. |
+| ManagedRuntime catalog is disabled or the version is unknown | Set an explicit `runtime.version` or have the platform configure that Runtime catalog; it does not fall back to Code. |
+| ManagedRuntime rejects a KS3 option | Remove `--push`, `--ks3-bucket`, and `--ks3-path`; deploy directly with `agentengine deploy .`. |
 | Hosted runtime cannot call the model | Confirm `prod.env` was passed with `--env-file` and its variable names match the model provider used by the Agent. |
 
 <Callout type="info">

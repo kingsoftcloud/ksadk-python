@@ -87,3 +87,4 @@ site/
 
 # Legacy local UI source is owned by kingsoftcloud/ksadk-web.
 ksadk/server/web-ui/
+e2e-codex-agent/

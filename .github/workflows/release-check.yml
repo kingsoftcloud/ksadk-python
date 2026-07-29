@@ -6,9 +6,11 @@ on:
     paths:
       - "pyproject.toml"
       - "MANIFEST.in"
+      - "Makefile"
       - "ksadk/**"
       - "ksadk_runtime_common/**"
       - "scripts/open_source_audit.py"
+      - "scripts/verify_ksadk_web_static.py"
       - ".github/workflows/release-check.yml"
 
 jobs:
@@ -25,8 +27,18 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
       - name: Install dependencies
         run: uv sync --extra dev
+
+      - name: Sync pinned KsADK Web static assets
+        env:
+          KSADK_WEB_VERSION: "0.3.0"
+        run: make public-sync-ksadk-web-static
 
       - name: Build artifacts
         run: uv build

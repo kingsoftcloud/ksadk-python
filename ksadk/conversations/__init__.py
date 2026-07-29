@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from ksadk.conversations.attachments import (
+    decode_inline_data,
+    resolve_attachment_storage_path,
+    resolve_uploads_dir,
+)
 from ksadk.conversations.context import (
     CANONICAL_EVENT_TYPES,
     build_history_from_events,
@@ -16,21 +21,18 @@ from ksadk.conversations.normalize import (
     attachment_from_part,
     attachment_prompt_text,
     compact_attachment_for_session,
-    decode_inline_data,
     display_content_from_parts,
     extract_user_input_from_parts,
     normalize_kop_message_content,
     normalize_kop_messages,
     normalize_parts_content,
     normalize_responses_input,
-    resolve_attachment_storage_path,
-    resolve_uploads_dir,
 )
 from ksadk.conversations.runtime import (
     CompactionPlan,
     PreparedConversationTurn,
-    append_conversation_event,
     append_context_checkpoint_event,
+    append_conversation_event,
     append_reasoning_event,
     append_run_checkpoint_event,
     append_run_resume_event,
@@ -43,8 +45,8 @@ from ksadk.conversations.runtime import (
     ensure_conversation_session,
     extract_responses_resume_input,
     invoke_conversation_once,
-    prime_session_metadata_for_user_turn,
     preview_auto_compaction,
+    prime_session_metadata_for_user_turn,
     stream_conversation_turn,
     stream_responses_conversation_turn,
 )

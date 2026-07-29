@@ -7,8 +7,10 @@ agentengine completion - Shell 自动补全安装
 import os
 import re
 import sys
-import click
 from pathlib import Path
+
+import click
+
 from ksadk.cli.error_utils import ensure_json_output_supported, print_exception
 from ksadk.cli.resource_common import CONTEXT_SETTINGS
 from ksadk.cli.ui import (
@@ -63,7 +65,12 @@ def _resolve_bash_rc_file(home: Path) -> Path:
 
 
 def _has_zsh_compinit(rc_content: str) -> bool:
-    return re.search(r"(?m)^\s*(?:autoload\s+-Uz\s+compinit(?:\s*&&\s*compinit)?|compinit)\s*$", rc_content) is not None
+    return (
+        re.search(
+            r"(?m)^\s*(?:autoload\s+-Uz\s+compinit(?:\s*&&\s*compinit)?|compinit)\s*$", rc_content
+        )
+        is not None
+    )
 
 
 def _rewrite_zsh_rc(rc_content: str, completion_file: Path, init_line: str) -> tuple[str, bool]:
@@ -72,7 +79,9 @@ def _rewrite_zsh_rc(rc_content: str, completion_file: Path, init_line: str) -> t
 
     # 清理旧的 AgentEngine 自动补全配置，避免重复 source / eval。
     updated = re.sub(
-        r'(?ms)^\s*if command -v agentengine >/dev/null 2>&1; then\s*\n\s*eval "\$\(_AGENTENGINE_COMPLETE=zsh_source agentengine\)"\s*\n\s*fi\s*\n?',
+        r"(?ms)^\s*if command -v agentengine >/dev/null 2>&1; then\s*\n"
+        r'\s*eval "\$\(_AGENTENGINE_COMPLETE=zsh_source agentengine\)"\s*\n'
+        r"\s*fi\s*\n?",
         "",
         rc_content,
     )
@@ -87,7 +96,7 @@ def _rewrite_zsh_rc(rc_content: str, completion_file: Path, init_line: str) -> t
         updated,
     )
     updated = re.sub(
-        r'(?m)^\s*# AgentEngine CLI 自动补全\s*$\n?',
+        r"(?m)^\s*# AgentEngine CLI 自动补全\s*$\n?",
         "",
         updated,
     )
@@ -116,9 +125,9 @@ def _rewrite_bash_rc(rc_content: str, completion_file: Path) -> str:
         rc_content,
     )
     updated = re.sub(
-        r'(?m)^\s*if command -v agentengine >/dev/null 2>&1; then\s*$\n?'
+        r"(?m)^\s*if command -v agentengine >/dev/null 2>&1; then\s*$\n?"
         r'^\s*eval "\$\(_AGENTENGINE_COMPLETE=bash_source agentengine\)"\s*$\n?'
-        r'^\s*fi\s*$\n?',
+        r"^\s*fi\s*$\n?",
         "",
         updated,
     )
@@ -128,7 +137,7 @@ def _rewrite_bash_rc(rc_content: str, completion_file: Path) -> str:
         updated,
     )
     updated = re.sub(
-        r'(?m)^\s*# AgentEngine CLI 自动补全\s*$\n?',
+        r"(?m)^\s*# AgentEngine CLI 自动补全\s*$\n?",
         "",
         updated,
     )
@@ -140,7 +149,7 @@ def _rewrite_bash_rc(rc_content: str, completion_file: Path) -> str:
 @completion.command("bash", context_settings=CONTEXT_SETTINGS)
 def completion_bash():
     """输出 Bash 补全脚本"""
-    script = '''
+    script = """
 _agentengine_completion() {
     local IFS=$'\\n'
     local line
@@ -165,14 +174,14 @@ _agentengine_completion() {
 }
 
 complete -o default -F _agentengine_completion agentengine
-'''
+"""
     click.echo(script.strip())
 
 
 @completion.command("zsh", context_settings=CONTEXT_SETTINGS)
 def completion_zsh():
     """输出 Zsh 补全脚本"""
-    script = '''
+    script = """
 #compdef agentengine
 
 _agentengine() {
@@ -201,18 +210,22 @@ _agentengine() {
 }
 
 compdef _agentengine agentengine
-'''
+"""
     click.echo(script.strip())
 
 
 @completion.command("install", context_settings=CONTEXT_SETTINGS)
-@click.option("--shell", type=click.Choice(["bash", "zsh", "auto"]), default="auto", 
-              help="指定 Shell 类型")
+@click.option(
+    "--shell", type=click.Choice(["bash", "zsh", "auto"]), default="auto", help="指定 Shell 类型"
+)
 def completion_install(shell: str):
     """自动安装补全脚本到 Shell 配置文件"""
     ensure_json_output_supported(
         "agentengine completion install",
-        suggestion="请直接使用 `agentengine completion bash` 或 `agentengine completion zsh` 获取脚本内容。",
+        suggestion=(
+            "请直接使用 `agentengine completion bash` 或 `agentengine completion zsh` "
+            "获取脚本内容。"
+        ),
     )
     print_title("安装自动补全")
 
@@ -224,59 +237,57 @@ def completion_install(shell: str):
         print_info("请使用 --shell=bash 或 --shell=zsh 指定")
         return
     shell = resolved_shell
-    
+
     home = Path.home()
-    
+
     if shell == "zsh":
         rc_file = home / ".zshrc"
         completion_file = home / ".agentengine-complete.zsh"
-        completion_cmd = '_AGENTENGINE_COMPLETE=zsh_source agentengine'
+        completion_cmd = "_AGENTENGINE_COMPLETE=zsh_source agentengine"
         init_line = "autoload -Uz compinit && compinit"
     else:  # bash
         rc_file = _resolve_bash_rc_file(home)
         completion_file = home / ".agentengine-complete.bash"
-        completion_cmd = '_AGENTENGINE_COMPLETE=bash_source agentengine'
+        completion_cmd = "_AGENTENGINE_COMPLETE=bash_source agentengine"
         init_line = None
-    
+
     print_kv("目标 Shell", shell, value_style="#58a6ff")
-    print_kv("配置文件", rc_file, value_style="#58a6ff")
+    print_kv("配置文件", str(rc_file), value_style="#58a6ff")
     print_info("正在安装补全脚本...")
-    
+
     # 生成补全脚本
     try:
         import subprocess
+
         env = os.environ.copy()
         env["_AGENTENGINE_COMPLETE"] = f"{shell}_source"
-        
+
         result = subprocess.run(
-            [sys.executable, "-m", "ksadk.cli"],
-            env=env,
-            capture_output=True,
-            text=True
+            [sys.executable, "-m", "ksadk.cli"], env=env, capture_output=True, text=True
         )
-        
+
         completion_script = result.stdout
-        
+
         if not completion_script.strip():
             print_error("生成补全脚本失败")
             print_info("请尝试手动安装:")
             print_info(f"{completion_cmd} > {completion_file}")
-            print_info(f'echo \'source "{completion_file}"\' >> {rc_file}')
+            print_info(f"echo 'source \"{completion_file}\"' >> {rc_file}")
             return
-        
+
         # 写入补全脚本文件
         with open(completion_file, "w") as f:
             f.write(completion_script)
-        
+
         print_success(f"补全脚本已保存到: {completion_file}")
-        
+
     except Exception as e:
         print_exception("生成补全脚本失败", e)
         print_info("请尝试手动安装:")
         print_info(f"{completion_cmd} > {completion_file}")
-        print_info(f'echo \'source "{completion_file}"\' >> {rc_file}')
+        print_info(f"echo 'source \"{completion_file}\"' >> {rc_file}")
         return
-    
+
     # 检查并更新 rc 文件
     rc_content = ""
     if rc_file.exists():
@@ -284,6 +295,7 @@ def completion_install(shell: str):
             rc_content = f.read()
 
     if shell == "zsh":
+        assert init_line is not None
         updated_rc, added_compinit = _rewrite_zsh_rc(rc_content, completion_file, init_line)
         if added_compinit:
             print_success("已添加 compinit 初始化")
@@ -297,7 +309,7 @@ def completion_install(shell: str):
             f.write(updated_rc)
     else:
         print_info("补全配置已存在，跳过")
-    
+
     print_success("安装完成")
     print_info("请运行以下命令使其生效:")
     print_kv("命令", f"source {rc_file}", value_style="#58a6ff")

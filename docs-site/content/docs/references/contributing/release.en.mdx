@@ -88,7 +88,7 @@ packages are now published to PyPI via OIDC Trusted Publishing.
 The workflow runs the following steps:
 
 1. **Sync frontend static assets**: `make sync-ksadk-web-static` pulls
-   `dist-ksadk` from `@kingsoftcloud/ksadk-web@latest` by default and unpacks
+   `dist-ksadk` from the pinned, published `@kingsoftcloud/ksadk-web` version and unpacks
    it into the packaging tree. When triggered via `workflow_dispatch`, the
    `ksadk_web_version` input pins a specific npm version (for example `1.2.3`).
 2. **Release preflight**: `make public-preflight` chains `public-audit`,

@@ -6,32 +6,34 @@ AgentEngine 统一配置管理
 
 使用方式:
     from ksadk.configs import settings
-    
+
     # 访问模型配置
     print(settings.model.api_key)
     print(settings.model.api_base)
-    
+
     # 访问 Langfuse 配置
     print(settings.langfuse.public_key)
-    
+
     # 访问 Agent 运行时信息
     print(settings.agent.agent_id)
 """
 
-import os
+import importlib
 import json
 import logging
+import os
 import time
-from typing import Optional, List, Dict, Any
 from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit, urlunsplit
 
 logger = logging.getLogger(__name__)
 
 
-def _get_env(*keys: str, default: str = None) -> Optional[str]:
+def _get_env(*keys: str, default: Optional[str] = None) -> Optional[str]:
     """从多个环境变量 key 中获取第一个存在的值
-    
+
     按优先级顺序匹配，支持别名兼容。
     """
     for key in keys:
@@ -69,44 +71,45 @@ def _is_public_kspmas_url(url: Optional[str]) -> bool:
 
 def check_endpoint_reachable(host: str, port: int = 80, timeout: float = 1.0) -> bool:
     """检测指定端点是否可达
-    
+
     通用函数，可用于检测任意服务的内网地址是否可达。
     结果会被缓存，相同 host 只检测一次。
-    
+
     Args:
         host: 主机名或 IP 地址
         port: 端口号 (默认 80)
         timeout: 超时时间 (默认 1.0 秒)
-    
+
     Returns:
         True 如果可达, False 否则
-    
+
     Usage:
         # KSPMAS 内网检测
         if check_endpoint_reachable("kspmas-internal.sdns.ksyun.com"):
             api_base = "http://kspmas-internal.sdns.ksyun.com/v1"
-        
+
         # KS3 内网检测
         if check_endpoint_reachable("ks3-cn-beijing-internal.ksyuncs.com"):
             ks3_endpoint = "http://ks3-cn-beijing-internal.ksyuncs.com"
     """
     if host in _endpoint_cache:
         return _endpoint_cache[host]
-    
+
     try:
         import socket
+
         # 尝试建立 TCP 连接 (比 ping 更可靠，且不依赖 ICMP)
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.settimeout(timeout)
         s.connect((host, port))
         s.close()
-        
+
         _endpoint_cache[host] = True
         logger.debug(f"Endpoint reachable: {host}:{port}")
     except (socket.timeout, socket.error, OSError):
         _endpoint_cache[host] = False
         logger.debug(f"Endpoint not reachable: {host}:{port}")
-    
+
     return _endpoint_cache[host]
 
 
@@ -125,13 +128,13 @@ DEFAULT_MODEL_NAME = "glm-5.2"
 
 def optimize_kspmas_url(url: str) -> str:
     """优化 KSPMAS URL
-    
+
     如果是 KSPMAS 的公网地址，且检测到内网可达（或在 Serverless 环境），
     将其替换为内网地址以提高速度和稳定性。
     """
     if not url:
         return url
-        
+
     parsed = urlsplit(url)
     if parsed.hostname != "kspmas.ksyun.com":
         return url
@@ -147,13 +150,13 @@ def optimize_kspmas_url(url: str) -> str:
         if parsed.port:
             netloc = f"{netloc}:{parsed.port}"
         return urlunsplit(("http", netloc, parsed.path, parsed.query, parsed.fragment))
-                      
+
     return url
 
 
 def get_kspmas_api_base() -> str:
     """获取 KSPMAS 模型服务的 API Base URL
-    
+
     自动检测内网可达性，优先使用内网地址。
     **特殊逻辑**: 如果在 Serverless 托管环境 (AGENT_RUNTIME_ID 存在)，强制使用内网地址。
     """
@@ -164,7 +167,7 @@ def get_kspmas_api_base() -> str:
     # 2. 自动检测内网可达性
     if check_endpoint_reachable(KSPMAS_INTERNAL_HOST):
         return KSPMAS_INTERNAL_URL
-    
+
     # 3. 默认使用公网
     return KSPMAS_PUBLIC_URL
 
@@ -173,82 +176,83 @@ def get_kspmas_api_base() -> str:
 # 模型配置 (LLM)
 # =============================================================================
 
+
 @dataclass
 class ModelConfig:
     """模型配置
-    
+
     标准环境变量 (优先):
         OPENAI_API_KEY       - API Key (OpenAI 标准)
         OPENAI_BASE_URL      - API Base URL (OpenAI 标准)
         OPENAI_MODEL_NAME    - 模型名称
-    
+
     通用格式:
         MODEL_NAME           - 模型名称
-    
+
     Serverless 平台兼容:
         LLM_API_KEY          - 模型 API Key
         LLM_API_BASE         - 模型 API 地址
         LLM_MODEL            - 模型名称
-    
+
     别名 (兼容):
         OPENAI_API_BASE      - API Base URL 别名
-    
+
     默认值:
         OPENAI_BASE_URL: 自动检测内网/外网，使用金山云模型服务
         MODEL_NAME: glm-5.2
     """
-    
+
     @property
     def api_key(self) -> Optional[str]:
         """获取模型 API Key"""
         return _get_env(
-            "OPENAI_API_KEY",        # OpenAI 标准 (优先)
-            "LLM_API_KEY",           # Serverless 平台兼容
-            "MODEL_API_KEY",         # 通用
+            "OPENAI_API_KEY",  # OpenAI 标准 (优先)
+            "LLM_API_KEY",  # Serverless 平台兼容
+            "MODEL_API_KEY",  # 通用
         )
-    
+
     @property
     def api_base(self) -> str:
         """获取模型 API Base URL
-        
+
         如果未配置，默认使用金山云模型服务地址（自动检测内网）。
         如果已配置且为 KSPMAS 公网地址，也会尝试优化为内网地址。
         """
         configured = _get_env(
-            "OPENAI_BASE_URL",       # OpenAI 标准 (优先)
-            "OPENAI_API_BASE",       # OpenAI 别名 (兼容)
-            "LLM_API_BASE",          # Serverless 平台兼容
-            "MODEL_API_BASE",        # 通用
+            "OPENAI_BASE_URL",  # OpenAI 标准 (优先)
+            "OPENAI_API_BASE",  # OpenAI 别名 (兼容)
+            "LLM_API_BASE",  # Serverless 平台兼容
+            "MODEL_API_BASE",  # 通用
         )
-        
+
         if configured:
             return optimize_kspmas_url(configured)
-            
+
         return get_kspmas_api_base()
-    
+
     @property
     def model_name(self) -> str:
         """获取模型名称
-        
+
         如果未配置，默认使用 glm-5.2。
         """
         configured = _get_env(
-            "OPENAI_MODEL_NAME",     # OpenAI 格式 (优先)
-            "MODEL_NAME",            # 通用
-            "LLM_MODEL",             # Serverless 平台兼容
+            "OPENAI_MODEL_NAME",  # OpenAI 格式 (优先)
+            "MODEL_NAME",  # 通用
+            "LLM_MODEL",  # Serverless 平台兼容
         )
         return configured or DEFAULT_MODEL_NAME
-    
+
     @property
     def is_configured(self) -> bool:
         """是否已配置 API Key"""
         return bool(self.api_key)
-    
+
     @property
     def is_using_internal_network(self) -> bool:
         """是否使用内网地址"""
         return KSPMAS_INTERNAL_URL in self.api_base
-    
+
     def to_dict(self) -> dict:
         """转换为字典 (用于 LiteLLM 等)"""
         result = {}
@@ -263,56 +267,60 @@ class ModelConfig:
 # Langfuse 配置
 # =============================================================================
 
+
 @dataclass
 class LangfuseConfig:
     """Langfuse 可观测性配置
-    
+
     标准环境变量 (Langfuse 官方):
         LANGFUSE_PUBLIC_KEY   - API Public Key
         LANGFUSE_SECRET_KEY   - API Secret Key
         LANGFUSE_HOST         - Langfuse 服务地址
-    
+
     Serverless 平台扩展:
         LANGFUSE_PROJECT_ID   - 项目 ID (区分用户)
         LANGCHAIN_TRACING_V2  - 启用 LangChain 追踪
     """
-    
+
     @property
     def public_key(self) -> Optional[str]:
         return os.getenv("LANGFUSE_PUBLIC_KEY")
-    
+
     @property
     def secret_key(self) -> Optional[str]:
         return os.getenv("LANGFUSE_SECRET_KEY")
-    
+
     @property
     def host(self) -> str:
-        return _get_env(
-            "LANGFUSE_HOST",
-            "LANGFUSE_BASE_URL",
-            default="http://localhost:3000"
+        return (
+            _get_env(
+                "LANGFUSE_HOST",
+                "LANGFUSE_BASE_URL",
+                default="http://localhost:3000",
+            )
+            or "http://localhost:3000"
         )
-    
+
     @property
     def project_id(self) -> Optional[str]:
         """Langfuse 项目 ID (Serverless 平台扩展)"""
         return os.getenv("LANGFUSE_PROJECT_ID")
-    
+
     @property
     def tracing_enabled(self) -> bool:
         """是否启用 LangChain tracing"""
         return os.getenv("LANGCHAIN_TRACING_V2", "").lower() == "true"
-    
+
     @property
     def is_enabled(self) -> bool:
         """是否启用 Langfuse (有 public_key 就启用)"""
         return bool(self.public_key)
-    
+
     @property
     def is_configured(self) -> bool:
         """是否完整配置"""
         return bool(self.public_key and self.secret_key)
-    
+
     def to_dict(self) -> dict:
         """转换为字典"""
         return {
@@ -326,14 +334,15 @@ class LangfuseConfig:
 # Agent 配置
 # =============================================================================
 
+
 @dataclass
 class AgentConfig:
     """Agent 配置
-    
+
     标准环境变量 (OpenTelemetry 兼容):
         OTEL_SERVICE_NAME       - 服务名称 (映射到 agent_name)
         OTEL_RESOURCE_ATTRIBUTES - 资源属性 (key=value 格式)
-    
+
     通用环境变量:
         AGENT_ID          - Agent 唯一 ID
         AGENT_NAME        - Agent 名称
@@ -341,70 +350,70 @@ class AgentConfig:
         USER_ID           - 用户 ID
         ENVIRONMENT       - 运行环境 (dev/staging/prod)
         VERSION           - 版本号
-    
+
     Serverless 平台兼容:
         AGENT_RUNTIME_ID   - Agent 唯一 ID
         AGENT_RUNTIME_NAME - Agent 名称
         ACCOUNT_ID         - 账户 ID (租户)
     """
-    
+
     @property
     def agent_id(self) -> Optional[str]:
         """Agent 唯一 ID"""
         return _get_env(
-            "AGENT_ID",              # 通用 (优先)
-            "AGENT_RUNTIME_ID",      # Serverless 平台兼容
+            "AGENT_ID",  # 通用 (优先)
+            "AGENT_RUNTIME_ID",  # Serverless 平台兼容
         )
-    
+
     @property
     def agent_name(self) -> Optional[str]:
         """Agent 名称"""
         return _get_env(
-            "AGENT_NAME",            # 通用 (优先)
-            "AGENT_RUNTIME_NAME",    # Serverless 平台兼容
-            "OTEL_SERVICE_NAME",     # OpenTelemetry 标准
+            "AGENT_NAME",  # 通用 (优先)
+            "AGENT_RUNTIME_NAME",  # Serverless 平台兼容
+            "OTEL_SERVICE_NAME",  # OpenTelemetry 标准
         )
-    
+
     @property
     def tenant_id(self) -> Optional[str]:
         """租户 ID"""
         return _get_env(
-            "TENANT_ID",             # 通用 (优先)
-            "ACCOUNT_ID",            # Serverless 平台兼容
+            "TENANT_ID",  # 通用 (优先)
+            "ACCOUNT_ID",  # Serverless 平台兼容
         )
-    
+
     @property
     def user_id(self) -> Optional[str]:
         """用户 ID"""
         return os.getenv("USER_ID")
-    
+
     @property
     def session_id(self) -> Optional[str]:
         """会话 ID (用于 Langfuse Sessions 功能)"""
         return os.getenv("SESSION_ID")
-    
+
     @property
     def environment(self) -> Optional[str]:
         """运行环境 (dev/staging/prod)"""
         return os.getenv("ENVIRONMENT")
-    
+
     @property
     def version(self) -> Optional[str]:
         """Agent 版本"""
         return os.getenv("VERSION")
-    
+
     @property
     def tags(self) -> Optional[List[str]]:
         """标签列表 (逗号分隔)"""
         tags_str = os.getenv("TAGS", "")
         tags = [t.strip() for t in tags_str.split(",") if t.strip()]
         return tags if tags else None
-    
+
     @property
     def extra_metadata(self) -> Optional[Dict[str, Any]]:
         """额外的元数据"""
         extra = {}
-        
+
         # 1. 解析 JSON 格式的 metadata
         extra_json = os.getenv("METADATA")
         if extra_json:
@@ -412,7 +421,7 @@ class AgentConfig:
                 extra.update(json.loads(extra_json))
             except json.JSONDecodeError:
                 logger.warning(f"Invalid METADATA JSON: {extra_json}")
-        
+
         # 2. 解析 OTEL_RESOURCE_ATTRIBUTES
         otel_attrs = os.getenv("OTEL_RESOURCE_ATTRIBUTES", "")
         if otel_attrs:
@@ -421,21 +430,21 @@ class AgentConfig:
                     key, value = pair.split("=", 1)
                     if key not in ("service.name", "service.version"):
                         extra[key] = value
-        
+
         return extra if extra else None
-    
+
     @property
     def is_configured(self) -> bool:
         """是否有 Agent 信息"""
         return bool(self.agent_id or self.agent_name)
-    
+
     # ------------------
     # Langfuse 集成方法
     # ------------------
-    
+
     def to_langfuse_params(self) -> dict:
         """转换为 Langfuse trace() 方法的原生参数"""
-        params = {}
+        params: Dict[str, Any] = {}
         if self.session_id:
             params["session_id"] = self.session_id
         if self.user_id:
@@ -445,7 +454,7 @@ class AgentConfig:
         if self.version:
             params["version"] = self.version
         return params
-    
+
     def to_langfuse_metadata(self) -> dict:
         """转换为 Langfuse metadata 字段"""
         metadata = {}
@@ -466,28 +475,29 @@ class AgentConfig:
 # 金山云配置
 # =============================================================================
 
+
 @dataclass
 class KingsoftCloudConfig:
     """金山云 SDK 配置
-    
+
     环境变量:
         KS_ACCESS_KEY_ID     - Access Key ID
         KS_SECRET_ACCESS_KEY - Secret Access Key
         KS_REGION            - 区域 (默认 cn-beijing-6)
     """
-    
+
     @property
     def access_key_id(self) -> Optional[str]:
         return os.getenv("KS_ACCESS_KEY_ID")
-    
+
     @property
     def secret_access_key(self) -> Optional[str]:
         return os.getenv("KS_SECRET_ACCESS_KEY")
-    
+
     @property
     def region(self) -> str:
         return os.getenv("KS_REGION", "cn-beijing-6")
-    
+
     @property
     def is_configured(self) -> bool:
         """是否已配置"""
@@ -498,23 +508,24 @@ class KingsoftCloudConfig:
 # Code 模式配置
 # =============================================================================
 
+
 @dataclass
 class CodeModeConfig:
     """Code 模式配置 (Serverless 平台)
-    
+
     环境变量:
         PYTHONPATH - Python 模块路径
         CODE_PATH  - 代码目录
     """
-    
+
     @property
     def python_path(self) -> Optional[str]:
         return os.getenv("PYTHONPATH")
-    
+
     @property
     def code_path(self) -> Optional[str]:
         return os.getenv("CODE_PATH")
-    
+
     @property
     def is_code_mode(self) -> bool:
         """是否为 Code 模式"""
@@ -525,41 +536,42 @@ class CodeModeConfig:
 # OpenTelemetry 配置
 # =============================================================================
 
+
 @dataclass
 class OTelConfig:
     """OpenTelemetry 配置 (标准环境变量)
-    
+
     环境变量:
         OTEL_SERVICE_NAME           - 服务名称
         OTEL_RESOURCE_ATTRIBUTES    - 资源属性 (key=value,key2=value2)
         OTEL_EXPORTER_OTLP_ENDPOINT - OTLP 导出端点
     """
-    
+
     @property
     def service_name(self) -> Optional[str]:
         return os.getenv("OTEL_SERVICE_NAME")
-    
+
     @property
     def resource_attributes(self) -> Optional[Dict[str, str]]:
         """解析 OTEL_RESOURCE_ATTRIBUTES"""
         attrs_str = os.getenv("OTEL_RESOURCE_ATTRIBUTES", "")
         if not attrs_str:
             return None
-        
+
         attrs = {}
         for pair in attrs_str.split(","):
             if "=" in pair:
                 key, value = pair.split("=", 1)
                 attrs[key] = value
         return attrs if attrs else None
-    
+
     @property
     def otlp_endpoint(self) -> Optional[str]:
         return _get_env(
             "OTEL_EXPORTER_OTLP_ENDPOINT",
             "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
         )
-    
+
     @property
     def is_enabled(self) -> bool:
         """是否启用 OTLP 导出"""
@@ -570,45 +582,52 @@ class OTelConfig:
 # 统一配置入口
 # =============================================================================
 
+
 @dataclass
 class Settings:
     """统一配置入口
-    
+
     使用方式:
         from ksadk.configs import settings
-        
+
         # 模型配置
         if settings.model.is_configured:
             llm = LiteLLM(api_key=settings.model.api_key)
-        
+
         # Langfuse 配置
         if settings.langfuse.is_enabled:
             setup_tracing(langfuse_config=settings.langfuse.to_dict())
-        
+
         # Agent 信息
         print(settings.agent.agent_id)
     """
+
     model: ModelConfig = field(default_factory=ModelConfig)
     langfuse: LangfuseConfig = field(default_factory=LangfuseConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
     cloud: KingsoftCloudConfig = field(default_factory=KingsoftCloudConfig)
     code: CodeModeConfig = field(default_factory=CodeModeConfig)
     otel: OTelConfig = field(default_factory=OTelConfig)
-    
+
     def summary(self) -> str:
         """输出配置摘要"""
         lines = ["AgentEngine Configuration:"]
-        lines.append(f"  Model:    {'✅ Configured' if self.model.is_configured else '❌ Not configured'}")
+        lines.append(
+            f"  Model:    {'✅ Configured' if self.model.is_configured else '❌ Not configured'}"
+        )
         lines.append(f"  Langfuse: {'✅ Enabled' if self.langfuse.is_enabled else '⚪ Disabled'}")
-        
+
         agent_info = self.agent.agent_id or self.agent.agent_name
         lines.append(f"  Agent:    {'✅ ' + agent_info if agent_info else '⚪ No info'}")
-        
-        lines.append(f"  Cloud:    {'✅ Configured' if self.cloud.is_configured else '⚪ Not configured'}")
-        lines.append(f"  CodeMode: {'✅ ' + self.code.code_path if self.code.is_code_mode else '⚪ Container mode'}")
+
+        lines.append(
+            f"  Cloud:    {'✅ Configured' if self.cloud.is_configured else '⚪ Not configured'}"
+        )
+        code_path = self.code.code_path
+        lines.append(f"  CodeMode: {'✅ ' + code_path if code_path else '⚪ Container mode'}")
         lines.append(f"  OTEL:     {'✅ Enabled' if self.otel.is_enabled else '⚪ Disabled'}")
         return "\n".join(lines)
-    
+
     def __repr__(self) -> str:
         return self.summary()
 
@@ -624,32 +643,30 @@ settings = Settings()
 DEFAULT_RUNTIME_TIMEZONE = "Asia/Shanghai"
 
 
-def setup_environment(agent_path: "Path"):
+def setup_environment(agent_path: Path | str):
     """加载环境变量并注入智能默认配置
-    
+
     1. 加载项目根目录的 .env 文件 (override=True)
     2. 注入 OPENAI_API_BASE (智能检测)
     3. 注入 OPENAI_MODEL_NAME (默认值)
     """
     import click
-    import os
-    from pathlib import Path
+
     try:
-        from dotenv import load_dotenv
+        dotenv_module = importlib.import_module("dotenv")
     except ImportError:
-        # 如果没有安装 python-dotenv，则跳过 loading .env
-        load_dotenv = None
-        
+        dotenv_module = None
+
     # 1. 加载 .env
-    if load_dotenv:
+    if dotenv_module is not None:
         # Ensure agent_path is a Path object
         if isinstance(agent_path, str):
             agent_path = Path(agent_path)
-            
+
         env_file = agent_path / ".env"
         if env_file.exists():
             # override=False: 保留通过 API/Serverless 平台注入的环境变量 (优先级高)
-            load_dotenv(env_file, override=False)
+            dotenv_module.load_dotenv(env_file, override=False)
 
     # 本地调试与托管运行时统一默认北京时间；用户通过 shell/.env/平台显式指定 TZ 时不覆盖。
     os.environ.setdefault("TZ", DEFAULT_RUNTIME_TIMEZONE)
@@ -696,7 +713,7 @@ def setup_environment(agent_path: "Path"):
             if not os.getenv("OPENAI_API_BASE"):
                 os.environ["OPENAI_API_BASE"] = api_base
             click.echo(f"🔧 API Base: {click.style(api_base, fg='cyan')} (Auto-detected)")
-            
+
     # Model Name
     if not os.getenv("OPENAI_MODEL_NAME"):
         model_name = settings.model.model_name
@@ -704,3 +721,13 @@ def setup_environment(agent_path: "Path"):
         click.echo(f"🧠 Model:    {click.style(model_name, fg='cyan')} (Default)")
     if not os.getenv("MODEL_NAME") and os.getenv("OPENAI_MODEL_NAME"):
         os.environ["MODEL_NAME"] = os.getenv("OPENAI_MODEL_NAME", "")
+
+    # 4. 模型出口协议转换层(v2.2):gate 开启且模型在白名单时懒起进程内 ProxyServer,
+    # 把 OPENAI_BASE_URL 重定向到它。默认 gate 关,不重定向,历史路径零影响。
+    # codex 不走此路(它走 AsyncCodexClient 的 v2.1 provider 注入)。
+    try:
+        from ksadk.model_proxy.bootstrap import setup_proxy_redirect_if_enabled
+
+        setup_proxy_redirect_if_enabled()
+    except Exception:  # noqa: BLE001  代理可选,失败不影响主流程(默认关时本就不触发)
+        pass

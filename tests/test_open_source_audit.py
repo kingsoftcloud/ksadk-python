@@ -5,7 +5,6 @@ import json
 import sys
 from pathlib import Path
 
-
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "open_source_audit.py"
 
 
@@ -256,7 +255,16 @@ def test_git_files_excludes_deleted_paths(tmp_path):
     audit.subprocess.run(["git", "init"], cwd=tmp_path, check=True, stdout=audit.subprocess.PIPE)
     audit.subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
     audit.subprocess.run(
-        ["git", "-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "-m", "init"],
+        [
+            "git",
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "user.name=Test",
+            "commit",
+            "-m",
+            "init",
+        ],
         cwd=tmp_path,
         check=True,
         stdout=audit.subprocess.PIPE,
@@ -272,6 +280,12 @@ def test_discover_files_falls_back_to_filesystem_for_non_git_directory(tmp_path)
     (tmp_path / "README.md").write_text("ok\n", encoding="utf-8")
     (tmp_path / "src" / "App.tsx").parent.mkdir(parents=True)
     (tmp_path / "src" / "App.tsx").write_text("ok\n", encoding="utf-8")
+    (tmp_path / ".venv" / "bin").mkdir(parents=True)
+    (tmp_path / ".venv" / "bin" / "python").write_text("generated\n", encoding="utf-8")
+    (tmp_path / ".cache" / "ksadk-web").mkdir(parents=True)
+    (tmp_path / ".cache" / "ksadk-web" / "bundle.tgz").write_text(
+        "generated\n", encoding="utf-8"
+    )
 
     assert audit.discover_files(tmp_path) == ["README.md", "src/App.tsx"]
 
@@ -283,9 +297,7 @@ def test_content_audit_blocks_private_doc_domains_and_secret_shapes(tmp_path):
     openai_key = "sk-" + "A" * 48
     github_token = "ghp_" + "B" * 40
 
-    (tmp_path / "README.md").write_text(
-        f"Docs: {private_docs_url}\n", encoding="utf-8"
-    )
+    (tmp_path / "README.md").write_text(f"Docs: {private_docs_url}\n", encoding="utf-8")
     (tmp_path / "config.yml").write_text(f"AWS key {aws_access_key_id}\n", encoding="utf-8")
     (tmp_path / "llm.env").write_text(f"OPENAI_API_KEY={openai_key}\n", encoding="utf-8")
     (tmp_path / "repo.env").write_text(f"GITHUB_TOKEN={github_token}\n", encoding="utf-8")
@@ -354,7 +366,7 @@ def test_content_audit_allows_supported_internal_and_registry_paths(tmp_path):
         encoding="utf-8",
     )
     (tmp_path / "cmd_create.py").write_text(
-        '# HERMES_IMAGE=hub.kce.ksyun.com/agentengine-public/hermes-agent:tag\n',
+        "# HERMES_IMAGE=hub.kce.ksyun.com/agentengine-public/hermes-agent:tag\n",
         encoding="utf-8",
     )
     (tmp_path / "builder.py").write_text(
@@ -378,7 +390,7 @@ def test_content_audit_allows_supported_internal_and_registry_paths(tmp_path):
     assert result.ok is False
     assert [(v.path, v.rule) for v in result.violations] == [
         ("regional.py", "private-container-registry"),
-        ("other.py", "internal-service-endpoint")
+        ("other.py", "internal-service-endpoint"),
     ]
 
 

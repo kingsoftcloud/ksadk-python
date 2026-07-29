@@ -80,7 +80,8 @@ def load_global_config() -> Dict[str, Any]:
     try:
         # 使用 utf-8-sig 自动处理 BOM，确保 Windows 兼容性
         with open(config_path, "r", encoding="utf-8-sig") as f:
-            return json.load(f)
+            payload = json.load(f)
+            return payload if isinstance(payload, dict) else {}
     except (json.JSONDecodeError, IOError):
         return {}
 

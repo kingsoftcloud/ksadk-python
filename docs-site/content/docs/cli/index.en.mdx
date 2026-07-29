@@ -36,6 +36,7 @@ agentengine web --help
 | `run` | run terminal loop or local API server | yes |
 | `web` | start local browser UI | yes |
 | `a2a` | expose A2A surfaces where configured | yes |
+| `replay` | read and project RuntimeEvent history | yes |
 | `mcp` | build or manage MCP resources | depends on target |
 | `build` | prepare deployment artifacts | depends on target |
 | `deploy` | deploy to configured cloud runtime | no |
@@ -59,12 +60,20 @@ Create a new project.
 ```bash title="bash"
 agentengine init my-agent -f langgraph
 agentengine init my-agent -f adk
+agentengine init my-codex-agent -f codex
 agentengine init my-agent --from-agent ./existing_agent.py
 ```
 
 Supported framework flags include `adk`, `langchain`, `langgraph`,
-`deepagents`, `openclaw`, and `hermes`. Public examples should prefer the
+`deepagents`, `openclaw`, `hermes`, and `codex`. Public examples should prefer the
 frameworks that can run locally without internal infrastructure.
+
+<Callout type="info" title="New in 0.8: declarative Codex project">
+`agentengine init --framework codex` creates only `agentengine.yaml`, `.env`,
+`requirements.txt`, and a README; it does not create `agent.py`. Its
+`artifact_type` is `ManagedRuntime`: native Codex runs locally and the server
+selects the cloud Runtime image. See [Codex Managed Runtime](../framework/guides/managed-runtime).
+</Callout>
 
 <Callout type="info">
   After importing existing code, inspect `agentengine.yaml` before running.
@@ -121,6 +130,22 @@ agentengine web . --model my-model
 agentengine web . --no-open
 ```
 
+Codex ManagedRuntime uses the same `agentengine web . --no-open` command. It
+validates the native Codex binary for the current operating system and reports
+when an offline Runtime version is not explicitly locked.
+
+### `ksadk replay` / `agentengine replay`
+
+Project a session's persisted RuntimeEvent log into a readable transcript or JSON. Use it to investigate disconnected streams, restored approval state, A2UI activities, and event ordering across runners. It **never** calls a model, tool, or approval action again.
+
+```bash title="bash"
+ksadk replay session_123
+ksadk replay session_123 --after-seq-id 120 --format json
+agentengine replay session_123 --before-seq-id 260
+```
+
+The command only reads sessions that persist RuntimeEvent v1; it does not convert legacy SessionEvent records. `--after-seq-id` is exclusive and `--before-seq-id` is an exclusive upper bound, so use both to narrow an investigation window.
+
 ## Protocol And Integration
 
 ### `agentengine a2a`
@@ -160,6 +185,24 @@ agentengine openclaw --help
   Use `--dry-run` where supported when documenting or reviewing deployment-shaped commands.
 </Callout>
 
+### Codex ManagedRuntime (New in 0.8)
+
+`artifact_type: ManagedRuntime` makes `agentengine build .` create a local audit
+zip containing only YAML and a lock. It is not a deployment upload; direct
+deployment sends an inline manifest for the server to resolve through its Runtime
+catalog:
+
+```bash title="bash"
+agentengine build .
+agentengine deploy . --target serverless --dry-run
+agentengine deploy . --target serverless
+```
+
+ManagedRuntime does not use a KS3 code package, so `--push`, `--ks3-bucket`, and
+`--ks3-path` are rejected. Forcing `--mode code` also fails so a developer-machine
+binary cannot enter a Linux deployment path. Use explicit `--mode container` when
+you maintain the image yourself.
+
 ### Runtime env pass-through
 
 `agentengine deploy` and `agentengine launch` support passing custom
@@ -182,7 +225,7 @@ agentengine launch . --env KEY=VALUE --env-file ./runtime.env
   The `--env-file` you pass is for explicit runtime env injection. Real `.env`
   / `.env.local` files are excluded from Code, Container, and MCP build
   contexts; only `.env.example` / `.env.sample` / `.env.template` templates are
-  kept. See [Environment Variables Reference](./environment-variables).
+  kept. See [Environment Variables Reference](../references/environment-variables).
 </Callout>
 
 ### `agentengine openclaw`
@@ -213,7 +256,7 @@ Memory backend options (0.6.7):
   The `--memory-system` CLI option only exposes `openclaw_default` and `mem0`.
   The `lancedb` backend must be declared via a `MEMORY_BACKEND_MANIFEST` on the
   runtime side, not through CLI flags; see
-  [Environment Variables Reference](./environment-variables).
+  [Environment Variables Reference](../references/environment-variables).
 </Callout>
 
 <Callout type="info" title="mem0 argument constraints">

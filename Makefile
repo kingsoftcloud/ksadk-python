@@ -1,7 +1,7 @@
 # AgentEngine Makefile
 # 用于同步 KsADK Web static 和管理项目
 
-.PHONY: help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-version-gate docs-site-build docs-site-dev public-test public-build-check public-build-alias-check public-preflight public-publish-check public-release-approval-check public-publish-gate public-release-tag public-review public-sync-ksadk-web-static open-source-audit-dist open-source-audit-alias-dist openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size sync-ksadk-web-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend
+.PHONY: help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-version-gate docs-site-build docs-site-dev public-test public-build-check public-build-alias-check public-preflight public-publish-check public-release-approval-check public-publish-gate public-release-tag public-review public-sync-ksadk-web-static open-source-audit-dist open-source-audit-alias-dist openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size sync-ksadk-web-static verify-ksadk-web-static verify-ksadk-web-wheel-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend
 
 # 默认目标
 help:
@@ -14,7 +14,7 @@ help:
 	@echo "    make test           运行测试"
 	@echo ""
 	@echo "  \033[1;32mWeb UI 构建:\033[0m"
-	@echo "    make sync-ksadk-web-static KSADK_WEB_VERSION=latest"
+	@echo "    make sync-ksadk-web-static KSADK_WEB_VERSION=0.3.0"
 	@echo "                         从 @kingsoftcloud/ksadk-web npm 包同步 static"
 	@echo "    make build-frontend 同步 ksadk-web static"
 	@echo ""
@@ -267,7 +267,7 @@ PUBLIC_DOCS_URL ?= https://kingsoftcloud.github.io/ksadk-python/
 PUBLIC_PYPI_PROJECT ?= ksadk
 PUBLIC_ALIAS_PYPI_PROJECT ?= agentengine-sdk-python
 PUBLIC_RELEASE_TAG ?= v$(V)
-PUBLIC_TEST_TARGETS ?= tests/test_public_release_positioning.py tests/test_config_env_registry.py
+PUBLIC_TEST_TARGETS ?= tests/test_public_release_positioning.py tests/test_config_env_registry.py tests/test_managed_runtime_builder.py tests/test_managed_runtime_resolution.py tests/cli/test_cmd_create_codex.py tests/runners/test_codex_runner.py
 
 public-status:
 	@echo "==> internal worktree"
@@ -329,20 +329,24 @@ public-sync-check:
 
 public-secret-audit:
 	@echo "==> secret and sensitive-file audit"
-	@if git ls-files | grep -E '(^|/)(\.pypirc|kubeconfig|.*\.kubeconfig|id_rsa|id_ed25519)$$'; then \
-		echo "❌ 发现禁止跟踪的敏感文件"; \
-		exit 1; \
+	@if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then \
+		if git ls-files | grep -E '(^|/)(\.pypirc|kubeconfig|.*\.kubeconfig|id_rsa|id_ed25519)$$'; then \
+			echo "❌ 发现禁止跟踪的敏感文件"; \
+			exit 1; \
+		fi; \
 	fi
 	@python3 scripts/public_secret_audit.py
 	@echo "✅ secret audit passed"
 
 public-audit: public-secret-audit
 	@echo "==> public source audit"
-	@blocked=$$(git ls-files | grep -E '^(\.pypirc$$|\.zread/(wiki|site)/)' || true); \
-	if [ -n "$$blocked" ]; then \
-		echo "❌ blocked tracked paths:"; \
-		echo "$$blocked"; \
-		exit 1; \
+	@if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then \
+		blocked=$$(git ls-files | grep -E '^(\.pypirc$$|\.zread/(wiki|site)/)' || true); \
+		if [ -n "$$blocked" ]; then \
+			echo "❌ blocked tracked paths:"; \
+			echo "$$blocked"; \
+			exit 1; \
+		fi; \
 	fi
 	@python3 scripts/open_source_audit.py --target public-repo
 	@echo "✅ public path audit passed"
@@ -373,6 +377,7 @@ public-sync-ksadk-web-static: sync-ksadk-web-static
 public-build-check: clean-dist sync-ksadk-web-static
 	@echo "==> build and twine check"
 	@uv build
+	@$(MAKE) verify-ksadk-web-wheel-static
 	@uv run pytest tests/test_runtime_common_packaging.py -q
 	@uv run --extra dev python -m twine check dist/*
 	@$(MAKE) open-source-audit-dist
@@ -558,7 +563,10 @@ openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size:
 # ============================================================
 
 STATIC_DIR := ksadk/server/static
-KSADK_WEB_VERSION ?= latest
+# The wheel must embed a published, reproducible Web bundle. 0.8.0 is coupled
+# to the 0.3.0 Web release; the release job must fail rather than silently
+# substituting an older npm package when that release is not visible yet.
+KSADK_WEB_VERSION ?= 0.3.0
 KSADK_WEB_PACKAGE ?= @kingsoftcloud/ksadk-web
 KSADK_WEB_TARBALL_NAME := kingsoftcloud-ksadk-web-$(patsubst v%,%,$(KSADK_WEB_VERSION)).tgz
 KSADK_WEB_RELEASE_URL ?=
@@ -569,7 +577,10 @@ sync-ksadk-web-static:
 	@echo "Sync KsADK Web static assets from $(KSADK_WEB_PACKAGE)@$(KSADK_WEB_VERSION)"
 	@rm -rf "$(KSADK_WEB_CACHE_DIR)/package"
 	@mkdir -p "$(KSADK_WEB_CACHE_DIR)" "$(STATIC_DIR)"
-	@if [ -n "$(KSADK_WEB_RELEASE_URL)" ]; then \
+	@if [ -f "$(KSADK_WEB_CACHE_DIR)/$(KSADK_WEB_TARBALL_NAME)" ]; then \
+		echo "Using cached tarball $(KSADK_WEB_TARBALL_NAME)"; \
+		echo "$(KSADK_WEB_TARBALL_NAME)" > "$(KSADK_WEB_CACHE_DIR)/.tarball-name"; \
+	elif [ -n "$(KSADK_WEB_RELEASE_URL)" ]; then \
 		echo "Using explicit KSADK_WEB_RELEASE_URL=$(KSADK_WEB_RELEASE_URL)"; \
 		curl -fL --retry 3 --retry-delay 2 --retry-all-errors "$(KSADK_WEB_RELEASE_URL)" -o "$(KSADK_WEB_CACHE_DIR)/$(KSADK_WEB_TARBALL_NAME)"; \
 		echo "$(KSADK_WEB_TARBALL_NAME)" > "$(KSADK_WEB_CACHE_DIR)/.tarball-name"; \
@@ -592,7 +603,21 @@ sync-ksadk-web-static:
 	@rm -rf "$(STATIC_DIR)"
 	@mkdir -p "$(STATIC_DIR)"
 	cp -R "$(KSADK_WEB_CACHE_DIR)/package/dist-ksadk/." "$(STATIC_DIR)/"
+	@$(MAKE) verify-ksadk-web-static
 	@echo "Synced KsADK Web $(KSADK_WEB_VERSION) static assets into $(STATIC_DIR)"
+
+verify-ksadk-web-static:
+	@python3 scripts/verify_ksadk_web_static.py \
+		--expected "$(KSADK_WEB_CACHE_DIR)/package/dist-ksadk" \
+		--actual "$(STATIC_DIR)" \
+		--package-root "$(KSADK_WEB_CACHE_DIR)/package" \
+		--expected-version "$(patsubst v%,%,$(KSADK_WEB_VERSION))"
+
+verify-ksadk-web-wheel-static:
+	@python3 scripts/verify_ksadk_web_static.py \
+		--expected "$(KSADK_WEB_CACHE_DIR)/package/dist-ksadk" \
+		--wheel "$$(ls dist/ksadk-*.whl)" \
+		--expected-version "$(patsubst v%,%,$(KSADK_WEB_VERSION))"
 
 sync-hosted-ui: sync-ksadk-web-static
 	@echo "sync-hosted-ui is deprecated; static assets now come from $(KSADK_WEB_PACKAGE)."

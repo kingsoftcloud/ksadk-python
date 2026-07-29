@@ -12,7 +12,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     env:
-      KSADK_WEB_VERSION: "0.2.19"
+      KSADK_WEB_VERSION: "0.3.0"
     steps:
       - uses: actions/checkout@v4
 
@@ -59,3 +59,103 @@ jobs:
 
       - name: Audit wheel and sdist file lists
         run: make open-source-audit-dist
+
+  # goal-00: google-adk 多版本 matrix。依赖窗口 >=1.34.0,<3.0,
+  # 对最低锚点 1.34.x 与最新 2.x(2.5.x)各跑一遍全量测试,防止任何一端回归。
+  # 版本差异统一由 ksadk/compat/adk_compat.py 收口(见 docs/adk-multi-version-compat.md)。
+  test-adk-matrix:
+    name: full pytest (google-adk ${{ matrix.google-adk }})
+    runs-on: ubuntu-latest
+    env:
+      KSADK_WEB_VERSION: "0.3.0"
+    strategy:
+      fail-fast: false
+      matrix:
+        google-adk: ["1.34.3", "2.5.0"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: uv sync --extra all
+
+      - name: Pin google-adk for this matrix leg
+        run: uv pip install "google-adk==${{ matrix.google-adk }}"
+
+      - name: Verify google-adk version
+        run: uv run --no-sync python -c "from importlib.metadata import version; print('google-adk', version('google-adk'))"
+
+      # Static web assets are deliberately not tracked in the Python source
+      # tree; fetch and verify the released npm payload before wheel build.
+      - name: Sync KsADK Web static assets
+        run: make public-sync-ksadk-web-static
+
+      # Packaging tests inspect the wheel itself; build it in each isolated ADK
+      # environment rather than depending on an artifact from another job.
+      - name: Build package artifacts
+        run: uv build
+
+      # --no-sync: 防止 uv run 按 lock 重新同步、把上一步行覆盖的 adk 版本回退。
+      - name: Run full test suite
+        run: uv run --no-sync pytest tests/ -q
+
+  # goal-16: Windows a2a 命令 bug 回归(用户首报:"No such command 'a2a'")。
+  # 在本机 macOS 无法闭环 Windows,故 CI 加 Windows runner 跑 CLI smoke:
+  # `agentengine a2a -h` 退出码 0,且 a2a 命令确已注册(非 try/except ImportError 静默吞)。
+  test-cli-windows:
+    name: CLI smoke (windows-latest, a2a -h 注册回归)
+    runs-on: windows-latest
+    env:
+      # GitHub's non-interactive Windows output can default to cp1252 while
+      # KsADK's public CLI help includes Chinese text.
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: uv sync --extra all
+
+      - name: a2a -h exits 0
+        run: uv run --no-sync agentengine a2a -h
+
+      - name: a2a command is registered (no silent ImportError swallow)
+        run: uv run --no-sync python -c "from ksadk.cli import _register_commands, cli; _register_commands(); assert 'a2a' in cli.commands, 'a2a command was silently swallowed'; print('a2a registered OK')"
+
+  test-codex-native-runtime:
+    name: Codex native ManagedRuntime (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install KsADK and native Codex runtime
+        run: uv sync --extra dev --extra codex
+
+      - name: Import platform package, resolve binary, and start local Web
+        run: uv run --no-sync pytest tests/test_managed_runtime_native_smoke.py -q
