@@ -1,0 +1,66 @@
+---
+title: HarnessApp
+description: 0.8 新增的最小声明式 composition root：用 YAML 组装统一 Runtime 数据面。
+---
+
+<Callout type="warning" title="0.8 实验性 API">
+HarnessApp 是可运行的最小 composition root，不是完整 Agent 配置语言，也没有独立的
+`init`、托管 deploy 或插件生态承诺。生产凭据、真实 MCP 和部署互操作仍需按目标环境验收。
+</Callout>
+
+HarnessApp 将一份严格校验的 YAML 映射到 `RuntimeAdapter` 和 FastAPI 数据面。它复用
+Responses、OpenAI-compatible API、会话和 health 路由，但不会复制全局应用或偷偷装入控制面。
+
+## 最小应用
+
+创建 `harness.yaml`：
+
+```yaml title="harness.yaml"
+model: my-model
+prompt: |
+  You are a concise coding assistant.
+runtime: yaml
+sandbox:
+  read_only: true
+```
+
+创建 ASGI 入口：
+
+```python title="app.py"
+from ksadk.harness import HarnessApp
+
+app = HarnessApp.from_yaml("harness.yaml").build_app()
+```
+
+在本地以你的 OpenAI-compatible 模型环境变量运行：
+
+```bash title="shell"
+export OPENAI_API_KEY=<your-key>
+export OPENAI_BASE_URL=https://api.example.com/v1
+uvicorn app:app --host 127.0.0.1 --port 8080
+```
+
+`runtime: yaml` 使用 Harness 的 YAML runner；`runtime: codex` 使用本机 Codex runner，
+因此还需要安装 `ksadk[codex]` 并配置与 [Codex Managed Runtime](./managed-runtime)
+相同的本地 provider 环境。
+
+## 支持的 YAML 范围
+
+| 字段 | 行为 |
+| --- | --- |
+| `model` | 必填，默认模型；一次调用只能通过 `StartRequest` 覆盖。 |
+| `prompt` | 必填，作为开发者指令。 |
+| `runtime` | `yaml`（默认）或 `codex`。 |
+| `mcp_tools` | 可选 MCP 工具列表；每项支持 `name`、`url`、`api_key`、`tool_filter`、`tool_name_prefix`。不要把真实 `api_key` 提交进 YAML。 |
+| `sandbox.read_only` | 默认且当前只能为 `true`；写入策略会明确拒绝。 |
+
+`memory`、`knowledge`、`workflow`、`tracing` 和 `skills` 在本期会明确报“暂不支持”，
+不会被静默忽略。HarnessApp 默认不提供 workspace files；只有调用方显式装配 A2A 配置时才
+开启 A2A 数据面。
+
+## 调用边界
+
+HarnessApp 的公开数据面兼容 `/v1/responses`、`/v1/chat/completions` 和 session 路由。
+它不等同于 `agentengine web` 项目，也不自动产生云端部署包；需要标准框架项目时继续使用
+`agentengine init`，需要 YAML 驱动的 Codex 托管交付时使用
+[Codex Managed Runtime](./managed-runtime)。

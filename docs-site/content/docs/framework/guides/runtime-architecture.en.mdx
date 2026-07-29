@@ -10,7 +10,7 @@ protocols for terminal, browser, and API clients.
 
 ![KsADK request lifecycle](/assets/ksadk-request-lifecycle.svg)
 
-Entry → Boot → HTTP/UI → Conversations Runtime → Runner → Session persistence → 0.6.7 Run capability layer. The important boundary is that the HTTP server and conversation runtime do not need to know whether the user project is ADK, LangGraph, LangChain, or DeepAgents. They call `BaseRunner.invoke()` or `BaseRunner.stream()`.
+Entry → Boot → HTTP/UI → Conversations Runtime → Runner / RuntimeAdapter → Session and RuntimeEvent persistence. The important boundary is that the HTTP server and conversation runtime do not need to know whether the user project is ADK, LangGraph, LangChain, DeepAgents, or Codex. Code projects use `BaseRunner`; cross-Runtime control uses `RuntimeAdapter`.
 
 ## Core Packages
 
@@ -19,6 +19,8 @@ Entry → Boot → HTTP/UI → Conversations Runtime → Runner → Session pers
 | `ksadk.cli` | command entry points, local process setup, user-facing errors |
 | `ksadk.detection` | project config, entry file, framework, and agent variable detection |
 | `ksadk.runners` | common runner contract and framework adapters |
+| `ksadk.runtime` | 0.8 RuntimeAdapter, RuntimeEvent, and cancel / resume / checkpoint boundary |
+| `ksadk.harness` | minimal YAML composition root that reuses the Runtime data plane |
 | `ksadk.server` | FastAPI app, local Web UI APIs, OpenAI-compatible endpoints |
 | `ksadk.conversations` | message normalization, session turn orchestration, protocol payloads |
 | `ksadk.sessions` | local and pluggable session storage |
@@ -32,9 +34,9 @@ Entry → Boot → HTTP/UI → Conversations Runtime → Runner → Session pers
   1. resolve the project directory.
   2. re-execute inside the project virtual environment when needed.
   3. load environment and project settings.
-  4. detect the framework and entry point.
-  5. create the matching runner.
-  6. load the user agent.
+  4. detect the framework and entry point, or read a declarative Codex manifest.
+  5. create the matching Runner / RuntimeAdapter.
+  6. load the user Agent, or validate the native managed Runtime.
   7. run terminal mode or start the local HTTP server.
 </Steps>
 
@@ -130,6 +132,34 @@ The narrow contract also defines where custom behavior should live:
 If you are adding a new framework adapter, start with `BaseRunner` and implement `load_agent()`, `invoke()`, and `stream()` first. Add session continuity, dynamic model overrides, or protocol-specific event mapping only after the basic invoke and stream paths are stable.
 </Callout>
 
+## RuntimeAdapter (0.8)
+
+`RuntimeAdapter` is the platform runtime interface shared by runners, Harness,
+Codex, and A2A. Ordinary projects do not implement it directly; use it when
+integrating a new Runtime or handing a Runtime to the platform control plane. It
+normalizes native differences into these fixed semantics:
+
+| Verb | Meaning |
+| --- | --- |
+| `start(request)` | starts a run with user, session, optional model, and configuration and returns an opaque `RunHandle`. |
+| `stream(handle)` | yields normalized `RuntimeEvent` values asynchronously; it is not a duplex channel. |
+| `cancel(handle)` | returns an explicit state (interrupted, pending recorded, not running, or failed), not an ambiguous boolean. |
+| `resume(handle, target, payload)` | represents a resume target separately from approval, tool, or human response payload. |
+| `checkpoint(handle)` | returns the actually declared checkpoint granularity and durability; it does not assume every Runtime can roll back. |
+| `close(handle)` | releases resources held by the run. |
+
+`stream` carries events only; approval decisions, tool results, and HITL input use
+`resume`. This gives AG-UI/A2UI, A2A, and session replay one event boundary and
+prevents a framework's private SSE semantics from leaking to callers.
+`attach(handle)` is the optional cross-process restoration seam and defaults to
+fail-closed: persisting a handle does not prove that a native Runtime is restored
+in the current process.
+
+For a new Runtime, first cover the normal `BaseRunner` path with
+`RunnerRuntimeAdapter`, then declare cancel, resume, and checkpoint capabilities
+one by one. Do not hide framework differences behind a fabricated “fully
+supported” capability.
+
 ## Request Lifecycle
 
 A normal non-streaming `/v1/responses` request follows this path:
@@ -221,7 +251,7 @@ semantics (unified from 0.6.6, disable injection completed in 0.6.7):
   output items from the stream, so no `thinking` chunk is emitted over SSE.
 
 For the policy JSON structure, catalog fields, and injection details see
-[Environment Variables](../reference/environment-variables).
+[Environment Variables](../../references/environment-variables).
 
 ## Session And Context Boundary
 
@@ -275,7 +305,7 @@ shown.
 
 For the full action paths, ResumeMode semantics, `SubscribeRunEvents` replay,
 and the 5-minute server protection timeout see
-[Sessions And Files](../reference/runtime-sessions-files).
+[Sessions And Files](../../references/runtime-sessions-files).
 
 ## Local Protocol Entrypoints
 

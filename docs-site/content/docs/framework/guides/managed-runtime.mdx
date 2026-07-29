@@ -7,6 +7,11 @@ Codex 是 KsADK 的第一个 `ManagedRuntime`。它把项目的声明、开发�
 进程和云端 Linux Runtime 镜像分开：开发机不需要 Docker，部署包也不会带入 Python
 依赖、模型凭据或平台二进制。
 
+<Callout type="info" title="0.8 新增">
+这是 0.8 首个声明式托管 Runtime：Codex Agent 的行为由 YAML 中的 `model` 与 `prompt`
+声明，而不是由 `agent.py` 导出对象。
+</Callout>
+
 ## 创建项目
 
 ```bash title="shell"
@@ -53,11 +58,11 @@ ksadk web . --port 8080 --no-open
 
 ## 构建与部署
 
-`artifact_type: ManagedRuntime` 会让 `ksadk build .` 自动进入 managed 模式：
+`artifact_type: ManagedRuntime` 会让 `ksadk build .` 自动进入 managed 模式。构建的
+zip 是本地可复现审计制品，不是部署前置条件：
 
 ```bash title="shell"
 ksadk build .
-ksadk deploy . --target serverless
 ```
 
 构建结果是 `<name>-<version>-runtime.zip`，且只含两个文件：规范化的
@@ -68,6 +73,16 @@ ksadk deploy . --target serverless
 unzip -l .agentengine/managed_runtime/*-runtime.zip
 ```
 
+实际部署直接发送规范化 manifest、Runtime 名称、解析版本和 manifest SHA-256；不上传
+KS3 代码包，也不要求 Docker：
+
+```bash title="shell"
+ksadk deploy . --target serverless
+```
+
+不要为 ManagedRuntime 使用 `--push`、`--ks3-bucket` 或 `--ks3-path`。这些参数属于
+Code 制品路径；CLI 会明确拒绝它们，而不是把 manifest 当作代码包上传。
+
 <Callout type="warning" title="Code 模式不适用于托管 Codex">
 对 Codex ManagedRuntime 强制 `ksadk build --mode code` 会失败。这样可以避免把开发机的
 macOS 或 Windows Codex 二进制误打进 Linux 部署包。`--mode container` 仍保留给你自己维护
@@ -76,6 +91,13 @@ macOS 或 Windows Codex 二进制误打进 Linux 部署包。`--mode container` 
 
 云端 Runtime catalog 决定默认版本并解析为不可变的 Linux 镜像 digest。catalog 未启用时
 ManagedRuntime 部署会给出可操作错误，不会回退到 CodeBuilder。
+
+## 模型协议
+
+OpenAI 官方上游会直连。对于自定义 OpenAI-compatible 上游，KsADK 只在探测到需要时启用
+本机 Responses-to-Chat 转换代理；可以用 `KSADK_CODEX_USE_PROXY=1` 或 `0` 显式覆盖。
+该代理只存在于本机调试进程，不会写入 manifest 或托管镜像。详见
+[环境变量参考](/cn/docs/references/environment-variables)。
 
 ## 凭据和镜像边界
 

@@ -1,21 +1,22 @@
 {
-  "title": "核心",
+  "title": "运行与能力",
   "pages": [
-    "runtime-architecture",
-    "agent-context",
-    "attachments-multimodal",
+    "frameworks",
+    "harness-app",
     "local-web-ui",
     "hosted-ui-events",
+    "agent-context",
+    "attachments-multimodal",
     "workspace-files",
     "tools-and-skill-runtime",
     "memory-knowledge",
-    "a2a-runtime",
     "observability-tracing",
-    "runtime-products",
-    "build-and-package",
+    "a2a-runtime",
     "managed-runtime",
-    "frameworks",
-    "agent-best-practices",
+    "build-and-package",
+    "cloud-deployment",
+    "runtime-products",
+    "runtime-architecture",
     "web-ui-source"
   ]
 }
