@@ -17,6 +17,7 @@ import click
 import yaml
 
 from ksadk.api import AgentEngineClient, DryRunExit
+from ksadk.builders.base import BaseBuilder
 from ksadk.builders.code_builder import CodeBuilder
 from ksadk.builders.container_builder import (
     ContainerBuilder,
@@ -430,20 +431,24 @@ class ServerlessProvider(BaseDeployProvider):
             builder_config["no_cache"] = no_cache
             builder_config["repackage"] = repackage
 
+            artifact_builder: BaseBuilder
             if artifact_type == "ManagedRuntime":
                 from ksadk.builders.managed_runtime_builder import ManagedRuntimeBuilder
 
-                builder = ManagedRuntimeBuilder(
+                artifact_builder = ManagedRuntimeBuilder(
                     Path(package_info.project_dir),
                     config=builder_config,
                     runtime_version=str(target.extra.get("runtime_version") or ""),
                 )
             else:
                 # CodeBuilder 直接操作原始 project_dir。
-                builder = CodeBuilder(Path(package_info.project_dir), config=builder_config)
+                artifact_builder = CodeBuilder(
+                    Path(package_info.project_dir),
+                    config=builder_config,
+                )
 
             # 执行构建
-            build_result = builder.build()
+            build_result = artifact_builder.build()
 
             if not build_result.success:
                 raise Exception(f"构建失败: {build_result.error_message}")

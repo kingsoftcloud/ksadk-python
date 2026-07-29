@@ -1084,10 +1084,13 @@ class LangGraphRunner(BaseRunner):
                             accumulated_text = (
                                 custom_delta if replace else accumulated_text + custom_delta
                             )
-                        out = {"delta": custom_delta, "type": custom_type}
+                        custom_event: dict[str, Any] = {
+                            "delta": custom_delta,
+                            "type": custom_type,
+                        }
                         if replace:
-                            out["replace"] = True
-                        yield out
+                            custom_event["replace"] = True
+                        yield custom_event
                         continue
                     if data is not None:
                         accumulated_text += str(data)

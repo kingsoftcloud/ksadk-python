@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ksadk.runtime_context import PlatformInvocationContext, platform_invocation_scope
 from ksadk.tools.gateway import (
     ToolGateway,
     ToolPolicy,
@@ -9,7 +10,6 @@ from ksadk.tools.gateway import (
     default_tool_gateway,
     tool_policy_requires_approval,
 )
-from ksadk.runtime_context import PlatformInvocationContext, platform_invocation_scope
 
 
 def _runtime_context(tool_approval_mode: str) -> PlatformInvocationContext:

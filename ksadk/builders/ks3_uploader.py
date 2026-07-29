@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Optional
 
 import click
-from ks3.upload import UploadTask
+from ks3.upload import UploadTask  # type: ignore[import-untyped]
 
 from ksadk.common.constants import get_ks3_endpoints
 
@@ -258,7 +258,7 @@ class KS3Uploader:
         return record_dir / f"{safe_key}.ks3resume"
 
     def _upload_via_host(self, file_path: Path, object_key: str, host: str) -> bool:
-        from ks3.connection import Connection
+        from ks3.connection import Connection  # type: ignore[import-untyped]
 
         ak = os.environ.get("KSYUN_ACCESS_KEY") or os.environ.get("KS3_ACCESS_KEY")
         sk = os.environ.get("KSYUN_SECRET_KEY") or os.environ.get("KS3_SECRET_KEY")
