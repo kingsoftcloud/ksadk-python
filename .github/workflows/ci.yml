@@ -90,6 +90,11 @@ jobs:
       - name: Verify google-adk version
         run: uv run --no-sync python -c "from importlib.metadata import version; print('google-adk', version('google-adk'))"
 
+      # Packaging tests inspect the wheel itself; build it in each isolated ADK
+      # environment rather than depending on an artifact from another job.
+      - name: Build package artifacts
+        run: uv build
+
       # --no-sync: 防止 uv run 按 lock 重新同步、把上一步行覆盖的 adk 版本回退。
       - name: Run full test suite
         run: uv run --no-sync pytest tests/ -q
@@ -100,6 +105,10 @@ jobs:
   test-cli-windows:
     name: CLI smoke (windows-latest, a2a -h 注册回归)
     runs-on: windows-latest
+    env:
+      # GitHub's non-interactive Windows output can default to cp1252 while
+      # KsADK's public CLI help includes Chinese text.
+      PYTHONUTF8: "1"
     steps:
       - uses: actions/checkout@v4
 

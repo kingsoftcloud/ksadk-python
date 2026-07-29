@@ -25,12 +25,22 @@ def _unused_local_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def _wait_for_health(port: int, process: subprocess.Popen[bytes]) -> dict:
+def _process_diagnostics(process: subprocess.Popen[str]) -> str:
+    if process.stdout is None:
+        return ""
+    return process.stdout.read().strip()
+
+
+def _wait_for_health(port: int, process: subprocess.Popen[str]) -> dict:
     deadline = time.monotonic() + 30
     url = f"http://127.0.0.1:{port}/health"
     while time.monotonic() < deadline:
         if process.poll() is not None:
-            pytest.fail(f"ksadk web exited before health check (code={process.returncode})")
+            details = _process_diagnostics(process)
+            pytest.fail(
+                "ksadk web exited before health check "
+                f"(code={process.returncode}): {details or '(no output)'}"
+            )
         try:
             with urllib.request.urlopen(url, timeout=1) as response:  # noqa: S310
                 import json
@@ -79,6 +89,9 @@ def test_codex_native_binary_and_web_start_on_current_os(tmp_path: Path) -> None
             "OPENAI_API_KEY": "native-smoke-no-request",
             "OPENAI_BASE_URL": "https://api.openai.com/v1",
             "OPENAI_MODEL_NAME": "gpt-5.1-codex",
+            # Keep the spawned CLI's Chinese diagnostic output portable on
+            # non-interactive Windows runners as well as local terminals.
+            "PYTHONUTF8": "1",
         }
     )
     process = subprocess.Popen(
@@ -93,15 +106,17 @@ def test_codex_native_binary_and_web_start_on_current_os(tmp_path: Path) -> None
             "--no-open",
         ],
         env=env,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
     )
     try:
         health = _wait_for_health(port, process)
         assert health["status"] == "ok"
         assert health["framework"] == "codex"
     finally:
-        process.terminate()
+        if process.poll() is None:
+            process.terminate()
         try:
             process.wait(timeout=10)
         except subprocess.TimeoutExpired:
