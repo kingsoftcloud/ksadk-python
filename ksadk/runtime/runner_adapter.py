@@ -597,7 +597,7 @@ class RunnerRuntimeAdapter(RuntimeAdapter):
             else nullcontext()
         )
         runner_name = _runner_name(self._runner)
-        accumulated_output: list[str] = []
+        accumulated_output = ""
         usage: dict[str, Any] = {}
         runner_gen: Optional[AsyncIterator[Any]] = None
         async with _conversation_span_scope(runner_name) as span:
@@ -664,7 +664,10 @@ class RunnerRuntimeAdapter(RuntimeAdapter):
                                     chunk.get("delta") or chunk.get("output") or chunk.get("data")
                                 )
                                 if text:
-                                    accumulated_output.append(text)
+                                    if chunk_type == "final" or chunk.get("replace"):
+                                        accumulated_output = text
+                                    else:
+                                        accumulated_output += text
                             raw_usage = chunk.get("usage")
                             if isinstance(raw_usage, dict):
                                 usage.update(raw_usage)
@@ -677,7 +680,7 @@ class RunnerRuntimeAdapter(RuntimeAdapter):
                             yield self._event(handle, event_type, payload)
             finally:
                 if accumulated_output:
-                    _set_conversation_output_attributes(span, "".join(accumulated_output))
+                    _set_conversation_output_attributes(span, accumulated_output)
                 _set_conversation_usage_attributes(span, usage)
                 if runner_gen is not None:
                     aclose = getattr(runner_gen, "aclose", None)
@@ -840,7 +843,10 @@ class RunnerRuntimeAdapter(RuntimeAdapter):
         text = self._coerce(chunk.get("delta") or chunk.get("output") or chunk.get("data"))
         if not text:
             return None
-        return self._event(handle, EventType.TEXT_DELTA, {"text": text}, phase="commentary")
+        payload: dict[str, Any] = {"text": text}
+        if chunk.get("replace"):
+            payload["replace"] = True
+        return self._event(handle, EventType.TEXT_DELTA, payload, phase="commentary")
 
     def _event(
         self,

@@ -242,6 +242,28 @@ async def test_runner_final_replacement_is_marked_as_authoritative_snapshot() ->
 
 
 @pytest.mark.asyncio
+async def test_runner_text_replacement_is_marked_as_authoritative_snapshot() -> None:
+    async def stream(_runner_input: dict[str, Any]) -> AsyncIterator[dict[str, Any]]:
+        yield {"type": "text", "delta": "旧答"}
+        yield {"type": "text", "delta": "新答", "replace": True}
+
+    executor = A2ARuntimeExecutor(runner=object())
+    updater = _RecordingUpdater()
+
+    output = await executor._run_streaming(  # noqa: SLF001
+        SimpleNamespace(task_id="task-1"),
+        updater,  # type: ignore[arg-type]
+        stream,
+        {},
+    )
+
+    assert output == "新答"
+    assert [item["parts"][0].text for item in updater.artifacts] == ["旧答", "新答"]
+    assert updater.artifacts[-1]["append"] is False
+    assert updater.artifacts[-1]["parts"][0].metadata["ksadk_output_snapshot"] is True
+
+
+@pytest.mark.asyncio
 async def test_runtime_stream_preserves_reasoning_without_mixing_it_into_answer() -> None:
     executor = A2ARuntimeExecutor(
         runner=object(),
@@ -407,6 +429,42 @@ async def test_a2a_server_to_langgraph_writer_round_trip(tmp_path: Any) -> None:
         ("text", "第一段。"),
         ("thinking", "再检查。"),
         ("text", "第二段。"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a2a_server_round_trip_preserves_text_replacement(tmp_path: Any) -> None:
+    runner = _replacing_langgraph_runner()
+    app = FastAPI()
+    add_a2a_protocol_routes(
+        app,
+        runner,
+        A2AConfig(
+            enabled=True,
+            base_url="http://testserver",
+            agent_name="replacing-agent",
+            task_store_dsn=f"sqlite+aiosqlite:///{tmp_path}/tasks.db",
+        ),
+        task_adapter=A2ARuntimeTaskAdapter(
+            RunnerRuntimeAdapter(runner, runtime_type="test"),
+            runtime_type="test",
+        ),
+    )
+    written: list[dict[str, Any]] = []
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        output = await stream_a2a_agent_to_writer(
+            "http://testserver",
+            "问题",
+            writer=written.append,
+            httpx_client=client,
+        )
+
+    assert output == "新答"
+    assert written == [
+        {"type": "text", "delta": "旧答", "replace": False},
+        {"type": "text", "delta": "新答", "replace": True},
     ]
 
 
