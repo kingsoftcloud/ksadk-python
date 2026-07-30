@@ -1255,6 +1255,7 @@ class ADKRunner(BaseRunner):
             "current_attachments",
             "current_attachment_results",
             "has_current_files",
+            "metadata",
         ):
             if key in input_data:
                 state_delta[key] = input_data.get(key)
