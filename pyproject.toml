@@ -85,7 +85,7 @@ dependencies = [
     # goal-00: 由 ==1.37.0 放宽到 [1.39, 1.41.1],取 adk 1.34.x(otel<=1.41.1)与
     # adk 2.x(otel 1.39~1.42.1)的交集,使默认即可解析到 adk 2.x(支持 2.x)。
     "opentelemetry-api>=1.39.0,<=1.41.1",
-    "opentelemetry-sdk>=1.39.0,<=1.41.1",
+    "opentelemetry-sdk>=1.39.0,<=1.44.0",
     "opentelemetry-exporter-otlp>=1.39.0,<=1.41.1",
 ]
 
