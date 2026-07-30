@@ -342,8 +342,9 @@ class A2ARuntimeExecutor(AgentExecutor):
                 if self.include_reasoning:
                     await artifacts.push("thinking", text)
                 continue
-            output_text += text
-            await artifacts.push("text", text)
+            replace = bool(isinstance(chunk, dict) and chunk.get("replace"))
+            output_text = text if replace else output_text + text
+            await artifacts.push("text", text, replace_snapshot=replace)
 
         await artifacts.close()
         return output_text
@@ -444,7 +445,8 @@ class A2ARuntimeExecutor(AgentExecutor):
                 reasoning_text += text
                 await artifacts.push("thinking", text)
                 continue
-            # TEXT_COMPLETED 是累计全文,去重只发新增 suffix;TEXT_DELTA 是增量直接透传。
+            # TEXT_COMPLETED 是累计全文,去重只发新增 suffix;TEXT_DELTA 默认是增量,
+            # 但 runner 显式标记 replace 时是权威快照。
             if event.event_type == EventType.TEXT_COMPLETED:
                 if not output_text:
                     delta = text
@@ -460,8 +462,8 @@ class A2ARuntimeExecutor(AgentExecutor):
                     replace_snapshot = True
             else:
                 delta = text
-                output_text += text
-                replace_snapshot = False
+                replace_snapshot = bool(event.payload.get("replace"))
+                output_text = text if replace_snapshot else output_text + text
             if not delta:
                 continue
             await artifacts.push("text", delta, replace_snapshot=replace_snapshot)
