@@ -130,7 +130,7 @@ tracing = [
 kb = []
 # Skill Runtime E2B backend
 skills = [
-    "e2b>=2.15.3,<2.25.0",
+    "e2b>=2.15.3,<2.36.0",
 ]
 # Codex Runtime (goal-09): OpenAI 官方 openai-codex SDK,自带 pin 版 CLI 二进制。
 # 可选 extra,不进默认依赖(二进制几十 MB);缺依赖时 CodexRuntime 显式报错。
