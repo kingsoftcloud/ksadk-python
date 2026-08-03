@@ -153,10 +153,28 @@ def test_short_term_memory_from_env_prefers_adk_session_override(monkeypatch):
     assert stm.local_database_path == "/tmp/adk-private.sqlite"
 
 
-def test_short_term_memory_from_env_falls_back_to_unified_session_dsn(monkeypatch):
+@pytest.mark.parametrize(
+    ("dsn", "expected_db_url"),
+    [
+        (
+            "postgresql://user:pass@example.invalid:5432/session_db",
+            "postgresql+asyncpg://user:pass@example.invalid:5432/session_db",
+        ),
+        (
+            "postgres://user:pass@example.invalid:5432/session_db",
+            "postgresql+asyncpg://user:pass@example.invalid:5432/session_db",
+        ),
+        (
+            "postgresql+asyncpg://user:pass@example.invalid:5432/session_db",
+            "postgresql+asyncpg://user:pass@example.invalid:5432/session_db",
+        ),
+    ],
+)
+def test_short_term_memory_from_env_normalizes_unified_postgres_dsn(
+    monkeypatch, dsn, expected_db_url
+):
     from ksadk.memory.adk.short_term_memory import ShortTermMemory
 
-    dsn = "postgresql+asyncpg://user:pass@example.invalid:5432/session_db"
     monkeypatch.delenv("KSADK_ADK_SESSION_BACKEND", raising=False)
     monkeypatch.delenv("KSADK_ADK_SESSION_URL", raising=False)
     monkeypatch.delenv("KSADK_STM_BACKEND", raising=False)
@@ -168,7 +186,7 @@ def test_short_term_memory_from_env_falls_back_to_unified_session_dsn(monkeypatc
     stm = ShortTermMemory.from_env()
 
     assert stm.backend == "database"
-    assert stm.db_url == dsn
+    assert stm.db_url == expected_db_url
 
 
 def test_short_term_memory_database_log_never_contains_dsn_credentials(
@@ -190,7 +208,8 @@ def test_short_term_memory_database_log_never_contains_dsn_credentials(
 
 
 def test_adk_runner_short_term_memory_initializes_from_unified_session_env(monkeypatch):
-    dsn = "postgresql+asyncpg://user:pass@example.invalid:5432/session_db"
+    dsn = "postgresql://user:pass@example.invalid:5432/session_db"
+    expected_adk_url = "postgresql+asyncpg://user:pass@example.invalid:5432/session_db"
     monkeypatch.delenv("KSADK_ADK_SESSION_BACKEND", raising=False)
     monkeypatch.delenv("KSADK_ADK_SESSION_URL", raising=False)
     monkeypatch.delenv("KSADK_STM_BACKEND", raising=False)
@@ -204,7 +223,7 @@ def test_adk_runner_short_term_memory_initializes_from_unified_session_env(monke
 
     assert stm is not None
     assert stm.backend == "database"
-    assert stm.db_url == dsn
+    assert stm.db_url == expected_adk_url
 
 
 def test_short_term_memory_from_env_requires_dsn_for_unified_postgres(monkeypatch):

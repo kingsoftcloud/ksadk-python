@@ -54,14 +54,20 @@ def _normalize_backend_name(backend: str) -> str:
 
 
 def _normalize_database_url(db_url: str) -> str:
-    """Normalize sqlite URLs for google.adk DatabaseSessionService.
+    """Normalize database URLs for google.adk DatabaseSessionService.
 
-    ADK uses SQLAlchemy async engines underneath, so plain `sqlite:///...`
-    URLs fail while `sqlite+aiosqlite:///...` works.
+    ADK uses SQLAlchemy async engines underneath, so plain PostgreSQL and
+    SQLite URLs need their corresponding async driver schemes.
     """
     normalized = str(db_url or "").strip()
     if not normalized:
         return ""
+    if normalized.startswith("postgresql+asyncpg:"):
+        return normalized
+    if normalized.startswith("postgresql:"):
+        return "postgresql+asyncpg:" + normalized[len("postgresql:") :]
+    if normalized.startswith("postgres:"):
+        return "postgresql+asyncpg:" + normalized[len("postgres:") :]
     if normalized.startswith("sqlite+aiosqlite:"):
         return normalized
     if normalized.startswith("sqlite:"):
