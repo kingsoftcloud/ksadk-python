@@ -56,6 +56,7 @@ dependencies = [
     "a2ui-core==0.1.1",
     "httpx-sse>=0.4.0",
     "sse-starlette>=2.1.0",
+    "mcp>=1.26.0,<2.0.0",
     # HTTP 请求 + AWS 签名
     "requests>=2.28.0",
     "requests-aws4auth>=1.2.0",
@@ -179,7 +180,7 @@ include = ["ksadk*", "ksadk_runtime_common*"]
 exclude = ["ksadk.server.web-ui*"]
 
 [tool.setuptools.package-data]
-ksadk = ["server/static/**/*"]
+ksadk = ["server/static/**/*", "studio/static/**/*"]
 ksadk_runtime_common = ["schemas/*.json"]
 
 [tool.black]
