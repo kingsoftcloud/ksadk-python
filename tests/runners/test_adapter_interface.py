@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import inspect
+from importlib import import_module
 from typing import AsyncIterator
 
 import pytest
@@ -88,6 +89,16 @@ class _FakeAdapter(RuntimeAdapter):
 # ---- 六动词签名 ----
 
 EXPECTED_VERBS = {"start", "stream", "cancel", "resume", "checkpoint", "close"}
+
+
+def test_codex_runtime_adapter_is_the_only_public_codex_execution_type() -> None:
+    """防止 Codex 执行类型再次出现 Runtime/Runner 多套公开命名。"""
+
+    module = import_module("ksadk.codex.runtime")
+    adapter_type = getattr(module, "CodexRuntimeAdapter")
+
+    assert issubclass(adapter_type, RuntimeAdapter)
+    assert not hasattr(module, "CodexRuntime")
 
 
 def test_six_verbs_present_and_abstract():
