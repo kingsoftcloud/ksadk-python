@@ -106,6 +106,53 @@ def test_model_credentials_are_never_written_to_browser_storage() -> None:
     assert "sessionStorage" not in script
 
 
+def test_create_agent_distinguishes_workspace_slug_from_cloud_agent_id() -> None:
+    markup = INDEX_HTML.read_text(encoding="utf-8")
+
+    assert "本地标识" in markup
+    assert "不是云端 AgentId" in markup
+    assert "云端 AgentId 由部署服务分配" in markup
+
+
+def test_invocation_drawer_uses_openai_responses_instead_of_control_plane_runs() -> None:
+    markup = INDEX_HTML.read_text(encoding="utf-8")
+    script = APP_SCRIPT.read_text(encoding="utf-8")
+
+    assert "POST /v1/responses" in markup
+    assert 'const endpoint = "/v1/responses"' in script
+    assert '"input_text"' in script
+    assert "X-AgentKit-Session" not in script[script.index("function renderInvocation"):]
+    assert "/api/v1/builds/${buildId}/runs" not in script
+
+
+def test_chat_composer_starts_at_one_line_and_grows_until_its_scroll_limit() -> None:
+    stylesheet = STYLESHEET.read_text(encoding="utf-8")
+    script = APP_SCRIPT.read_text(encoding="utf-8")
+
+    start = stylesheet.index(".composer textarea {")
+    block = stylesheet[start:stylesheet.index("}", start)]
+    assert "min-height: 42px" in block
+    assert "max-height: 160px" in block
+    assert "overflow-y: auto" in block
+    assert 'input.style.height = "42px"' in script
+    assert "Math.min(Math.max(input.scrollHeight, 42), 160)" in script
+
+
+def test_long_chat_output_scrolls_inside_the_message_pane() -> None:
+    stylesheet = STYLESHEET.read_text(encoding="utf-8")
+
+    for selector, declarations in {
+        ".chat-shell {": ["min-height: 0", "overflow: hidden"],
+        ".conversation {": ["min-height: 0", "overflow: hidden"],
+        ".message-list {": ["min-height: 0", "overflow-y: auto", "overflow-x: hidden"],
+        ".message-content {": ["max-width: 100%", "overflow-wrap: anywhere"],
+    }.items():
+        start = stylesheet.index(selector)
+        block = stylesheet[start:stylesheet.index("}", start)]
+        for declaration in declarations:
+            assert declaration in block
+
+
 def test_shared_chat_composer_has_one_focus_boundary() -> None:
     stylesheet = SHARED_CHAT_STYLESHEET.read_text(encoding="utf-8")
 

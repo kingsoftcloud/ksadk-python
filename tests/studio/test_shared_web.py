@@ -5,12 +5,14 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from ksadk.events.runtime_event import EventType, RuntimeEvent
 from ksadk.studio.api import create_studio_app
 from ksadk.studio.contracts import RunRecord, RunStatus, Usage
 from ksadk.studio.model_client import ModelResponse
 from ksadk.studio.service import StudioService
 from ksadk.studio.shared_web import StudioSharedWebBridge
 from ksadk.studio.templates import default_agent_spec
+from tests.studio.runtime_adapter_fixtures import RuntimeFixture
 
 
 class RecordingModelClient:
@@ -33,6 +35,12 @@ class RecordingModelClient:
 def _valid_spec():
     return {
         "description": "Shared Web test",
+        "runtime": {
+            "type": "langgraph",
+            "projectPath": "agents/demo-agent/source",
+            "entryPoint": "agent.py",
+            "agentVariable": "graph",
+        },
         "instructions": {
             "system": "You are a shared Web test agent.",
             "task": "Answer the request.",
@@ -67,6 +75,43 @@ def _valid_spec():
         },
         "evaluation": {"suiteRefs": [], "minimumPassRate": 1},
     }
+
+
+async def _shared_runtime_events(request, handle):
+    turn = int(handle.run_id.rsplit("-", 1)[-1])
+    text = f"共享会话回复 {turn}"
+    common = {
+        "agent_id": request.agent_id or "agent",
+        "user_id": request.user_id,
+        "session_id": request.session_id,
+        "invocation_id": handle.run_id,
+    }
+    yield RuntimeEvent.create(
+        EventType.RUN_STARTED,
+        **common,
+        seq_id=1,
+        payload={"status": "in_progress"},
+    )
+    yield RuntimeEvent.create(
+        EventType.TEXT_DELTA,
+        **common,
+        seq_id=2,
+        phase="final_answer",
+        payload={"text": text},
+    )
+    yield RuntimeEvent.create(
+        EventType.TEXT_COMPLETED,
+        **common,
+        seq_id=3,
+        phase="final_answer",
+        payload={"text": text},
+    )
+    yield RuntimeEvent.create(
+        EventType.RUN_COMPLETED,
+        **common,
+        seq_id=4,
+        payload={"status": "completed", "duration_ms": 9},
+    )
 
 
 def _shared_static(tmp_path: Path) -> Path:
@@ -154,7 +199,7 @@ def test_shared_chat_static_entry_and_selected_agent_bootstrap(
         assert bootstrap["Agent"] == {
             "AgentId": "demo-agent",
             "Name": "Demo Agent",
-            "Framework": "agentkit",
+            "Framework": "langgraph",
         }
         hosted = bootstrap["Capabilities"]["HostedChat"]
         assert hosted["Enabled"] is True
@@ -239,7 +284,15 @@ def test_shared_chat_runs_and_replays_two_turn_session(tmp_path: Path, monkeypat
         lambda: static_root,
     )
     model_client = RecordingModelClient()
-    service = StudioService(tmp_path, model_client=model_client)
+    runtime_fixture = RuntimeFixture(
+        _shared_runtime_events,
+        runtime_types=("langgraph",),
+    )
+    service = StudioService(
+        tmp_path,
+        model_client=model_client,
+        runtime_executor=runtime_fixture.executor,
+    )
     app = create_studio_app(
         tmp_path,
         service=service,
@@ -265,9 +318,9 @@ def test_shared_chat_runs_and_replays_two_turn_session(tmp_path: Path, monkeypat
             text="第二轮",
         )
         assert "共享会话回复 2" in second_stream
-        assert len(model_client.messages) == 2
-        assert [message["role"] for message in model_client.messages[-1]] == [
-            "system",
+        conversation = runtime_fixture.start_requests[-1].conversation_preprocessing()
+        assert conversation is not None
+        assert [message["role"] for message in conversation.messages] == [
             "user",
             "assistant",
             "user",

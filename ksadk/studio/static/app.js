@@ -25,17 +25,22 @@ const iconPaths = {
   "refresh": '<path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 4v5h5"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2M20 20v-5h-5"/>',
   "search": '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
   "settings": '<path d="M12.2 2h-.4a2 2 0 0 0-2 2v.2a2 2 0 0 1-1 1.7l-.4.2a2 2 0 0 1-2 0l-.1-.1a2 2 0 0 0-2.7.7l-.2.4a2 2 0 0 0 .7 2.7l.1.1a2 2 0 0 1 1 1.7v.5a2 2 0 0 1-1 1.7l-.1.1a2 2 0 0 0-.7 2.7l.2.4a2 2 0 0 0 2.7.7l.1-.1a2 2 0 0 1 2 0l.4.2a2 2 0 0 1 1 1.7v.2a2 2 0 0 0 2 2h.4a2 2 0 0 0 2-2v-.2a2 2 0 0 1 1-1.7l.4-.2a2 2 0 0 1 2 0l.1.1a2 2 0 0 0 2.7-.7l.2-.4a2 2 0 0 0-.7-2.7l-.1-.1a2 2 0 0 1-1-1.7v-.5a2 2 0 0 1 1-1.7l.1-.1a2 2 0 0 0 .7-2.7l-.2-.4a2 2 0 0 0-2.7-.7l-.1.1a2 2 0 0 1-2 0l-.4-.2a2 2 0 0 1-1-1.7V4a2 2 0 0 0-2-2Z"/><circle cx="12" cy="12" r="3"/>',
+  "send": '<path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/>',
   "shield-check": '<path d="M20 13c0 5-3.5 7.5-8 9-4.5-1.5-8-4-8-9V5l8-3 8 3Z"/><path d="m9 12 2 2 4-4"/>',
   "sparkles": '<path d="m12 3-1.9 5.1L5 10l5.1 1.9L12 17l1.9-5.1L19 10l-5.1-1.9Z"/><path d="M5 3v4"/><path d="M3 5h4"/><path d="M19 17v4"/><path d="M17 19h4"/>',
   "square-pen": '<path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.4 2.6a2.1 2.1 0 0 1 3 3L12 15l-4 1 1-4Z"/>',
+  "trash": '<path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="m19 6-1 14H6L5 6"/><path d="M10 11v5"/><path d="M14 11v5"/>',
+  "upload": '<path d="M12 3v12"/><path d="m7 8 5-5 5 5"/><path d="M5 21h14"/>',
   "wrench": '<path d="M14.7 6.3a4 4 0 0 0-5-5l2.1 2.1-2.8 2.8-2.1-2.1a4 4 0 0 0 5 5l8.5 8.5a2 2 0 0 1-2.8 2.8Z"/>',
   "x": '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>'
+  ,"zap": '<path d="M13 2 3 14h9l-1 8 10-12h-9Z"/>'
 };
 
 const state = {
   csrf: "",
   sessionToken: "",
   bootstrap: null,
+  uiCapabilities: null,
   agents: [],
   agentDetails: new Map(),
   catalog: { model: [], tool: [], mcp: [], skill: [] },
@@ -50,6 +55,7 @@ const state = {
   wizard: {
     step: 1,
     template: "blank",
+    runtime: "codex",
     depth: "deep",
     composition: null,
     selectedToolIds: [],
@@ -61,10 +67,29 @@ const state = {
     composing: false
   },
   chatSessionId: null,
+  editingAgentId: null,
+  pendingDeleteAgentId: null,
+  pendingDeleteSessionId: null,
   activeRun: null,
+  recoveringRunIds: new Set(),
+  chatViewRevision: 0,
+  chatModels: [],
+  activeChatModel: "",
   activeModelResourceId: null,
   lastFailedMessage: "",
-  invocationTab: "curl"
+  invocationTab: "curl",
+  traces: [],
+  activeTrace: null,
+  activeSpanId: null,
+  traceTab: "summary",
+  traceRawOtlp: null,
+  traceDetailExpanded: false,
+  authoringMode: "quick",
+  authoringConversation: [],
+  authoringProposal: null,
+  importInspection: null,
+  projectInspection: null,
+  skillDiscovery: null
 };
 
 const terminalOperationStatuses = new Set([
@@ -76,6 +101,7 @@ const terminalOperationStatuses = new Set([
 
 const $ = id => document.getElementById(id);
 const sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
+let browserSessionRecovery = null;
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -118,6 +144,60 @@ function formatDate(value) {
 function shortId(value, length = 18) {
   const text = String(value || "");
   return text.length > length ? `${text.slice(0, length)}…` : text;
+}
+
+function formatDuration(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return "未上报";
+  const milliseconds = Number(value);
+  if (milliseconds < 1) return `${milliseconds.toFixed(3)} ms`;
+  if (milliseconds < 1000) return `${Math.round(milliseconds)} ms`;
+  return `${(milliseconds / 1000).toFixed(milliseconds < 10000 ? 2 : 1)} s`;
+}
+
+function formatTokenCount(value) {
+  if (value === null || value === undefined) return "未上报";
+  return new Intl.NumberFormat("zh-CN").format(Number(value));
+}
+
+function formatNanoseconds(value) {
+  const milliseconds = Number(BigInt(String(value || "0")) / 1000000n);
+  return milliseconds ? new Date(milliseconds).toISOString() : "-";
+}
+
+function initialBrowserRoute() {
+  const params = new URLSearchParams(location.search);
+  return {
+    view: params.get("view") || "",
+    agentId: params.get("agentId") || "",
+    sessionId: params.get("sessionId") || "",
+    traceId: params.get("traceId") || ""
+  };
+}
+
+function syncBrowserRoute() {
+  const url = new URL(location.href);
+  const currentAgentId = state.current?.draft?.metadata?.id;
+  if (currentAgentId) url.searchParams.set("agentId", currentAgentId);
+  else url.searchParams.delete("agentId");
+  if (state.view === "chat" && state.current?.draft?.metadata?.id) {
+    url.searchParams.set("view", "chat");
+    if (state.chatSessionId) url.searchParams.set("sessionId", state.chatSessionId);
+    else url.searchParams.delete("sessionId");
+    url.searchParams.delete("traceId");
+  } else if (state.view === "observability") {
+    url.searchParams.set("view", "observability");
+    url.searchParams.delete("sessionId");
+    if (state.activeTrace?.traceId) {
+      url.searchParams.set("traceId", state.activeTrace.traceId);
+    } else {
+      url.searchParams.delete("traceId");
+    }
+  } else {
+    url.searchParams.delete("view");
+    url.searchParams.delete("sessionId");
+    url.searchParams.delete("traceId");
+  }
+  history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
 }
 
 function setButtonLoading(button, loading, label = "处理中") {
@@ -195,6 +275,22 @@ async function establishSession() {
     history.replaceState(null, "", `${location.pathname}${location.search}`);
   }
   state.bootstrap = await api("/system/bootstrap");
+  state.uiCapabilities = window.AgentKitSharedWeb?.normalizeCapabilities({
+    Data: {
+      Agent: { Framework: "runtime-adapter" },
+      ApiFormats: ["responses", "chat_completions"],
+      Capabilities: {
+        Thinking: true,
+        HostedChat: { Enabled: Boolean(state.bootstrap.features?.run) },
+        RunLifecycle: {
+          Enabled: Boolean(state.bootstrap.features?.run),
+          Resume: true,
+          Abort: true,
+          Checkpoints: false
+        }
+      }
+    }
+  }) || null;
   state.csrf = state.csrf || state.bootstrap.csrfToken || "";
   $("workspaceName").textContent = state.bootstrap.workspace.name;
   $("workspacePath").textContent = state.bootstrap.workspace.path;
@@ -267,7 +363,40 @@ async function reconnectWorkspace() {
   }
 }
 
+async function recoverBrowserSession() {
+  if (!browserSessionRecovery) {
+    browserSessionRecovery = (async () => {
+      const rootResponse = await fetch("/", {
+        method: "GET",
+        cache: "no-store",
+        credentials: "same-origin"
+      });
+      if (!rootResponse.ok) {
+        throw new Error("无法重新连接本地 Studio 服务。");
+      }
+      const bootstrapResponse = await fetch("/api/v1/system/bootstrap", {
+        method: "GET",
+        cache: "no-store",
+        credentials: "same-origin"
+      });
+      if (!bootstrapResponse.ok) {
+        throw new Error("本地 Studio 会话恢复失败，请刷新页面。");
+      }
+      state.bootstrap = await bootstrapResponse.json();
+      state.csrf = state.bootstrap.csrfToken || "";
+      state.sessionToken = "";
+      setRuntimeStatus("Ready");
+    })().finally(() => {
+      browserSessionRecovery = null;
+    });
+  }
+  return browserSessionRecovery;
+}
+
 async function api(path, options = {}) {
+  const allowSessionRecovery = options.allowSessionRecovery !== false;
+  const requestOptions = { ...options };
+  delete requestOptions.allowSessionRecovery;
   const method = String(options.method || "GET").toUpperCase();
   const headers = new Headers(options.headers || {});
   let body = options.body;
@@ -282,10 +411,11 @@ async function api(path, options = {}) {
     headers.set("X-AgentKit-Session", state.sessionToken);
   }
   const response = await fetch(`/api/v1${path}`, {
-    ...options,
+    ...requestOptions,
     method,
     headers,
-    body
+    body,
+    credentials: "same-origin"
   });
   if (response.status === 204) return null;
   const contentType = response.headers.get("content-type") || "";
@@ -294,6 +424,14 @@ async function api(path, options = {}) {
     : await response.text();
   if (!response.ok) {
     const error = payload?.error || {};
+    if (
+      allowSessionRecovery
+      && response.status === 401
+      && error.code === "LOCAL_SESSION_REQUIRED"
+    ) {
+      await recoverBrowserSession();
+      return api(path, { ...options, allowSessionRecovery: false });
+    }
     const failure = new Error(error.message || `请求失败 (${response.status})`);
     failure.code = error.code;
     failure.field = error.field;
@@ -350,12 +488,21 @@ function switchView(view, { parent = null, title = null } = {}) {
   const viewNode = $(`view-${view}`);
   setBreadcrumb(title || viewNode?.dataset.title || view, parent);
   $("sidebar").classList.remove("open");
+  syncBrowserRoute();
 }
-
 async function refreshCatalog() {
-  const payload = await api("/catalog/resources?limit=200");
+  const [payload, discoveredModels] = await Promise.all([
+    api("/catalog/resources?limit=200"),
+    api("/catalog/models").catch(() => null)
+  ]);
   state.catalog = { model: [], tool: [], mcp: [], skill: [] };
   payload.items.forEach(item => state.catalog[item.kind].push(item));
+  if (discoveredModels?.items?.length) {
+    state.catalog.model = [
+      ...state.catalog.model.filter(item => item.source === "local" || item.source === "market"),
+      ...discoveredModels.items
+    ];
+  }
   await refreshCredentialStatuses();
   $("modelCount").textContent = state.catalog.model.filter(item => item.status === "ready").length;
   $("capabilityCount").textContent = [
@@ -377,9 +524,80 @@ async function refreshAgents() {
   state.agentDetails = new Map(
     details.map(detail => [detail.draft.metadata.id, detail])
   );
+  selectDefaultAgent(details);
   $("agentCount").textContent = state.agents.length;
   $("agentSyncState").textContent = "已同步";
   renderAgentRows();
+  renderGlobalContext();
+  renderTraceAgentFilter();
+}
+
+function renderGlobalContext() {
+  const select = $("globalAgentSelect");
+  const currentId = state.current?.draft?.metadata?.id || "";
+  select.innerHTML = state.agents.length
+    ? state.agents.map(agent => `<option value="${escapeHtml(agent.metadata.id)}">${escapeHtml(agent.metadata.name)}</option>`).join("")
+    : '<option value="">未选择 Agent</option>';
+  if (currentId) select.value = currentId;
+  const runtimeType = state.current?.draft?.spec?.runtime?.type
+    || state.current?.draft?.metadata?.labels?.["agentkit.ksyun.com/framework"]
+    || "";
+  $("globalRuntimeBadge").textContent = runtimeType
+    ? `${runtimeType} RuntimeAdapter`
+    : "Runtime 未选择";
+}
+
+async function switchGlobalAgent(agentId) {
+  if (!agentId || agentId === state.current?.draft?.metadata?.id) return;
+  const detail = state.agentDetails.get(agentId)
+    || await api(`/agents/${encodeURIComponent(agentId)}`);
+  state.current = detail;
+  state.build = currentSuccessfulBuild(detail);
+  state.chatSessionId = null;
+  state.activeRun = null;
+  state.activeChatModel = "";
+  renderGlobalContext();
+  if (state.view === "chat") {
+    await openChat(agentId);
+    return;
+  }
+  if (state.view === "agent-detail") renderAgentDetail();
+  if (state.view === "builds") renderBuildWorkspace();
+  if (state.view === "observability") {
+    $("traceAgentFilter").value = agentId;
+    await refreshTraces();
+  }
+  syncBrowserRoute();
+}
+
+function renderTraceAgentFilter() {
+  const select = $("traceAgentFilter");
+  if (!select) return;
+  const selected = select.value;
+  select.innerHTML = '<option value="">全部 Agent</option>' + state.agents.map(agent => (
+    `<option value="${escapeHtml(agent.metadata.id)}">${escapeHtml(agent.metadata.name)}</option>`
+  )).join("");
+  if (state.agents.some(agent => agent.metadata.id === selected)) select.value = selected;
+}
+
+function selectDefaultAgent(details) {
+  if (!details.length) return;
+  const currentId = state.current?.draft?.metadata?.id;
+  const selected = details.find(detail => detail.draft.metadata.id === currentId)
+    || (state.current ? null : details[0]);
+  if (!selected) return;
+  state.current = selected;
+  state.build = currentSuccessfulBuild(selected);
+  renderGlobalContext();
+}
+
+function currentSuccessfulBuild(detail = state.current) {
+  if (!detail) return null;
+  const successful = detail.builds?.filter(item => item.status === "SUCCEEDED") || [];
+  if (detail.manifestSha256) {
+    return successful.find(item => item.manifestSha256 === detail.manifestSha256) || null;
+  }
+  return successful[0] || null;
 }
 
 function renderAgentRows() {
@@ -399,9 +617,12 @@ function renderAgentRows() {
   $("agentEmpty").hidden = filtered.length > 0;
   $("agentRows").innerHTML = filtered.map(agent => {
     const detail = state.agentDetails.get(agent.metadata.id);
-    const latestBuild = detail?.builds?.find(item => item.status === "SUCCEEDED");
+    const latestBuild = currentSuccessfulBuild(detail);
     const bindings = agent.spec.bindings || {};
     const template = agent.metadata.labels?.["agentkit.ksyun.com/template"] || "blank";
+    const runtimeType = agent.spec.runtime?.type
+      || agent.metadata.labels?.["agentkit.ksyun.com/framework"]
+      || "adk";
     return `
       <tr>
         <td>
@@ -413,13 +634,15 @@ function renderAgentRows() {
             </div>
           </div>
         </td>
-        <td><span class="status-badge neutral">${template === "research" ? "Research" : "Blank"}</span></td>
+        <td><span class="status-badge neutral">${escapeHtml(runtimeType)}</span> <span class="meta-inline">${template === "research" ? "Research" : "Blank"}</span></td>
         <td><div class="resource-counts"><span>${bindings.tools?.length || 0} Tool</span><span>${bindings.mcpServers?.length || 0} MCP</span><span>${bindings.skills?.length || 0} Skill</span></div></td>
         <td><span class="mono">r${agent.metadata.revision}</span></td>
         <td>${latestBuild ? `<span class="status-badge success">已构建</span>` : `<span class="status-badge neutral">草稿</span>`}</td>
         <td class="actions-column">
           <button class="button tertiary small" data-open-agent="${escapeHtml(agent.metadata.id)}" type="button">配置</button>
+          <button class="button tertiary small" data-edit-agent="${escapeHtml(agent.metadata.id)}" type="button">编辑</button>
           <button class="button secondary small" data-chat-agent="${escapeHtml(agent.metadata.id)}" type="button">会话</button>
+          <button class="button danger small" data-delete-agent="${escapeHtml(agent.metadata.id)}" type="button">删除</button>
         </td>
       </tr>
     `;
@@ -532,6 +755,11 @@ async function composeAgent({ preservePrompt = true } = {}) {
     await refreshCatalog();
     if (requestSequence !== state.composeSequence) return state.wizard.composition;
     state.wizard.composition = composition;
+    if (state.wizard.runtime === "codex") {
+      composition.spec.bindings.tools = [];
+      composition.spec.bindings.skills = [];
+      composition.spec.bindings.mcpServers = [];
+    }
     state.wizard.selectedToolIds = composition.spec.bindings.tools.map(item => item.resourceId);
     state.wizard.selectedSkillIds = composition.spec.bindings.skills.map(item => item.resourceId);
     state.wizard.selectedMcpIds = composition.spec.bindings.mcpServers.map(item => item.resourceId);
@@ -559,6 +787,7 @@ function resetWizard() {
   state.wizard = {
     step: 1,
     template: "blank",
+    runtime: "codex",
     depth: "deep",
     composition: null,
     selectedToolIds: [],
@@ -573,6 +802,7 @@ function resetWizard() {
   $("newAgentName").value = "New Agent";
   $("newAgentId").value = uniqueAgentId("new-agent");
   $("agentDescription").value = "";
+  $("agentRuntime").value = "codex";
   $("agentPrompt").value = "";
   $("researchAudience").value = "产品与技术负责人";
   $("researchLanguage").value = "zh-CN";
@@ -592,6 +822,38 @@ function resetWizard() {
   populateModelSelect();
   setWizardStep(1);
   updatePromptCounter();
+  renderWizardSummary();
+}
+
+function runtimeRef(agentId, runtimeType) {
+  if (runtimeType === "codex") {
+    return { type: "codex", version: "0.144.4" };
+  }
+  return {
+    type: runtimeType,
+    projectPath: `agents/${agentId}/source`,
+    entryPoint: "agent.py",
+    agentVariable: runtimeType === "langgraph" ? "graph" : "root_agent",
+    detection: "declared"
+  };
+}
+
+function updateRuntimeUi() {
+  state.wizard.runtime = $("agentRuntime").value || "codex";
+  const descriptions = {
+    codex: "由 CodexRuntimeAdapter 直接运行，支持星流 Proxy；当前只绑定模型，ksadk Tool、MCP 与 Skill 不会伪装为已兼容。",
+    adk: "生成 Google ADK 源码，由 ADKRuntimeAdapter 执行。",
+    langgraph: "生成带 MemorySaver 的 LangGraph 源码，由 LangGraphRuntimeAdapter 执行。"
+  };
+  if (state.wizard.runtime === "codex") {
+    state.wizard.selectedToolIds = [];
+    state.wizard.selectedSkillIds = [];
+    state.wizard.selectedMcpIds = [];
+    state.wizard.autoBindTools = false;
+    state.wizard.autoBindMcp = false;
+  }
+  $("agentRuntimeHelper").textContent = descriptions[state.wizard.runtime];
+  if (state.wizard.composition) renderWizardCapabilities();
   renderWizardSummary();
 }
 
@@ -659,9 +921,415 @@ function isGeneratedAgentId(value, prefix) {
 }
 
 function openCreate() {
+  state.editingAgentId = null;
+  state.authoringConversation = [];
+  state.authoringProposal = null;
+  state.importInspection = null;
+  state.projectInspection = null;
   resetWizard();
+  renderAuthoringTranscript();
+  $("authoringConversationInput").value = "";
+  $("authoringProposalJson").textContent = "完成一轮或多轮对话后，这里会出现可编辑的 Draft Patch。";
+  $("authoringProposalDot").className = "status-dot";
+  $("confirmConversationAgent").disabled = true;
+  $("agentImportInspection").textContent = "选择文件并检查后显示解析结果、警告和 RuntimeRef。";
+  $("agentImportCommit").disabled = true;
+  $("projectInspection").textContent = "输入本地项目路径后显示 FrameworkDetector 证据。";
+  $("projectCommit").disabled = true;
   switchView("create", { parent: "Agent", title: "创建 Agent" });
+  $("authoringModeTabs").hidden = false;
+  setAuthoringMode("quick");
   $("newAgentName").focus();
+}
+
+function setAuthoringMode(mode) {
+  if (!["quick", "conversation", "import", "project"].includes(mode)) return;
+  state.authoringMode = mode;
+  document.querySelectorAll("[data-authoring-mode]").forEach(button => {
+    button.classList.toggle("active", button.dataset.authoringMode === mode);
+  });
+  $("quickAgentEditor").hidden = true;
+  document.querySelector(".wizard-layout").hidden = mode !== "quick";
+  $("authoringConversationPanel").hidden = mode !== "conversation";
+  $("authoringImportPanel").hidden = mode !== "import";
+  $("authoringProjectPanel").hidden = mode !== "project";
+  if (mode === "conversation") populateConversationModels();
+  injectIcons($("view-create"));
+}
+
+function populateConversationModels() {
+  const models = state.catalog.model;
+  const current = $("authoringConversationModel").value;
+  $("authoringConversationModel").innerHTML = models.map(item => `
+    <option value="${escapeHtml(item.resourceId)}">${escapeHtml(item.displayName)} · ${escapeHtml(item.contract?.model || item.name)}</option>
+  `).join("");
+  if (models.some(item => item.resourceId === current)) {
+    $("authoringConversationModel").value = current;
+  }
+}
+
+function renderAuthoringTranscript() {
+  const messages = state.authoringConversation.filter(item => item.role === "user");
+  $("authoringTranscript").innerHTML = messages.length
+    ? messages.map((item, index) => `<article class="authoring-message"><span>第 ${index + 1} 轮</span><p>${escapeHtml(item.content)}</p></article>`).join("")
+    : '<div class="trace-stage-empty compact"><p>说明 Agent 的职责、边界、Runtime 和期望能力。</p></div>';
+}
+
+async function composeConversationAgent() {
+  const input = $("authoringConversationInput").value.trim();
+  const modelProfileId = $("authoringConversationModel").value;
+  if (!input || !modelProfileId) {
+    showToast("缺少构建信息", "请输入需求并选择用于构建的模型。", "error");
+    return;
+  }
+  const button = $("authoringConversationSend");
+  state.authoringConversation.push({ role: "user", content: input });
+  $("authoringConversationInput").value = "";
+  renderAuthoringTranscript();
+  setButtonLoading(button, true, "正在生成");
+  try {
+    const result = await api("/authoring/conversations:compose", {
+      method: "POST",
+      body: { messages: state.authoringConversation, modelProfileId }
+    });
+    state.authoringProposal = result.proposal;
+    state.authoringConversation.push({
+      role: "assistant",
+      content: JSON.stringify(result.proposal)
+    });
+    $("proposalName").value = result.proposal.name;
+    $("proposalSlug").value = result.proposal.slug;
+    $("proposalRuntime").value = result.proposal.runtimeType;
+    $("proposalPrompt").value = result.proposal.instructions.system;
+    $("authoringProposalJson").textContent = JSON.stringify(result.proposal, null, 2);
+    $("authoringProposalDot").className = "status-dot success";
+    $("confirmConversationAgent").disabled = false;
+  } catch (error) {
+    state.authoringConversation.pop();
+    showToast("对话构建失败", error.message, "error");
+  } finally {
+    setButtonLoading(button, false);
+  }
+}
+
+async function finishAuthoredAgent(created, message) {
+  await refreshAgents();
+  state.current = await api(`/agents/${encodeURIComponent(created.metadata.id)}`);
+  state.build = currentSuccessfulBuild(state.current);
+  renderGlobalContext();
+  showToast("Agent Revision 已创建", message);
+  await openAgentDetail(created.metadata.id);
+}
+
+async function confirmConversationAgent(event) {
+  event.preventDefault();
+  if (!state.authoringProposal) return;
+  const proposal = state.authoringProposal;
+  const created = await api("/authoring/quick", {
+    method: "POST",
+    body: {
+      name: $("proposalName").value.trim(),
+      slug: $("proposalSlug").value.trim(),
+      runtimeType: $("proposalRuntime").value,
+      description: proposal.description || "",
+      spec: {
+        instructions: {
+          system: $("proposalPrompt").value.trim(),
+          task: proposal.instructions?.task || ""
+        },
+        bindings: {
+          modelProfileId: $("authoringConversationModel").value || null,
+          modelProfileIds: $("authoringConversationModel").value
+            ? [$("authoringConversationModel").value]
+            : []
+        }
+      }
+    }
+  });
+  await finishAuthoredAgent(created, "模型生成的 Draft Patch 已经用户确认并写入工作区。");
+}
+
+async function inspectAgentImport(event) {
+  event.preventDefault();
+  const file = $("agentImportFile").files?.[0];
+  if (!file) return;
+  const body = new FormData();
+  body.append("file", file);
+  state.importInspection = await api("/authoring/imports:inspect", {
+    method: "POST",
+    body
+  });
+  $("agentImportName").value = state.importInspection.displayName;
+  $("agentImportSlug").value = state.importInspection.displayName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "imported-agent";
+  $("agentImportInspection").textContent = JSON.stringify(state.importInspection, null, 2);
+  $("agentImportCommit").disabled = false;
+}
+
+async function commitAgentImport(event) {
+  event.preventDefault();
+  if (!state.importInspection) return;
+  const created = await api(`/authoring/imports/${encodeURIComponent(state.importInspection.inspectionToken)}:commit`, {
+    method: "POST",
+    body: {
+      name: $("agentImportName").value.trim(),
+      slug: $("agentImportSlug").value.trim()
+    }
+  });
+  state.importInspection = null;
+  await finishAuthoredAgent(created, "导入检查已确认，canonical Agent 已写入工作区。");
+}
+
+async function inspectAgentProject(event) {
+  event.preventDefault();
+  state.projectInspection = await api("/authoring/projects:inspect", {
+    method: "POST",
+    body: { path: $("projectInspectPath").value.trim() }
+  });
+  const fallback = state.projectInspection.name || "Detected Agent";
+  $("projectAgentName").value = fallback;
+  $("projectAgentSlug").value = fallback.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "detected-agent";
+  $("projectInspection").textContent = JSON.stringify(state.projectInspection, null, 2);
+  $("projectCommit").disabled = false;
+}
+
+async function commitAgentProject(event) {
+  event.preventDefault();
+  if (!state.projectInspection) return;
+  const created = await api(`/authoring/projects/${encodeURIComponent(state.projectInspection.inspectionToken)}:commit`, {
+    method: "POST",
+    body: {
+      name: $("projectAgentName").value.trim(),
+      slug: $("projectAgentSlug").value.trim(),
+      modelProfileId: state.catalog.model[0]?.resourceId || null
+    }
+  });
+  state.projectInspection = null;
+  await finishAuthoredAgent(created, "FrameworkDetector 证据已确认，原项目源码未被重写。");
+}
+
+function prepareQuickCreate(editingDetail = null) {
+  const editing = Boolean(editingDetail);
+  const reference = editingDetail?.draft || state.current?.draft || state.agents[0] || null;
+  const runtimeType = reference?.spec?.runtime?.type
+    || reference?.metadata?.labels?.["agentkit.ksyun.com/framework"]
+    || "codex";
+  const currentModelId = reference?.spec?.bindings?.modelProfileId || "";
+  const currentModelName = reference?.metadata?.labels?.["agentkit.ksyun.com/model"] || "glm-5.1";
+  const models = state.catalog.model;
+  const configuredIds = reference?.spec?.bindings?.modelProfileIds?.length
+    ? reference.spec.bindings.modelProfileIds
+    : currentModelId ? [currentModelId] : [];
+  const inferredCurrent = models.find(item => (
+    item.contract?.model || item.name
+  ) === currentModelName)?.resourceId;
+  const selectedIds = configuredIds.length
+    ? configuredIds
+    : inferredCurrent ? [inferredCurrent] : models[0] ? [models[0].resourceId] : [];
+  $("quickAgentModels").innerHTML = models.length
+    ? models.map(item => `
+      <label class="quick-model-option" title="${escapeHtml(item.description || item.displayName)}">
+        <input type="checkbox" data-quick-model-id="${escapeHtml(item.resourceId)}" ${selectedIds.includes(item.resourceId) ? "checked" : ""}>
+        <span><strong>${escapeHtml(item.displayName)}</strong><small>${escapeHtml(item.contract?.model || item.name || "")}</small></span>
+      </label>
+    `).join("")
+    : '<div class="session-empty">当前模型服务没有返回可绑定模型</div>';
+  syncQuickModelSelect(currentModelId || selectedIds[0] || "", currentModelName);
+  if (editing) {
+    const draft = editingDetail.draft;
+    $("quickAgentName").value = draft.metadata.name;
+    $("quickAgentId").value = draft.metadata.id;
+    $("quickAgentPrompt").value = draft.spec.instructions.system;
+    $("quickAgentTask").value = "";
+  } else if (state.agents.length) {
+    const next = state.agents.length + 1;
+    $("quickAgentName").value = `Assistant ${next}`;
+    $("quickAgentId").value = uniqueAgentId("assistant");
+    $("quickAgentPrompt").value = "你是一个可靠的工作助手。先理解用户目标和当前上下文，再给出准确、可执行且边界清晰的结果；信息不足时先说明缺口。";
+  } else {
+    $("quickAgentName").value = "Review Helper";
+    $("quickAgentId").value = "review-helper";
+    $("quickAgentPrompt").value = "你是代码审查助手。请先理解用户目标和工作区代码，只报告能够定位且可复现的问题，并给出最小修复建议。";
+  }
+  $("quickAgentRuntime").value = runtimeType;
+  $("quickAgentRuntime").disabled = editing;
+  $("quickRuntimeTitle").textContent = `${runtimeType === "adk" ? "ADK" : runtimeType === "langgraph" ? "LangGraph" : "Codex"}RuntimeAdapter`;
+  $("quickAgentName").readOnly = editing;
+  $("quickAgentId").readOnly = editing;
+  $("createPageTitle").textContent = editing ? "编辑 Agent" : "创建 Agent";
+  $("createPageDescription").textContent = editing
+    ? "修改系统提示词与模型绑定；本地标识保持不变，避免破坏已有引用。"
+    : "从系统提示词开始，按需组合模型、Tool、MCP 与 Skill。";
+  $("quickCreateHeading").textContent = editing
+    ? `编辑 ${reference.metadata.id}`
+    : "描述角色，保存后即可构建与对话";
+  $("quickCreateDescription").textContent = editing
+    ? "保存会直接回写该 Agent 的 agentengine.yaml；旧构建会标记为过期。"
+    : "每个 Agent 维护一份 YAML 配置源；构建会生成不可变审计制品，自定义 Tool 可在后续 Bundle 中加入。";
+  $("quickSuggestedTaskField").hidden = editing;
+  $("quickBuildAfterCreate").checked = !editing;
+  $("quickBuildActionTitle").textContent = editing ? "保存后立即重新构建" : "保存后立即构建";
+  $("quickBuildActionDescription").textContent = editing
+    ? "新构建完成后直接进入会话工作台"
+    : "构建成功后直接进入会话工作台";
+  $("quickCreateSubmit").querySelector("span").textContent = editing ? "保存修改" : "保存并构建";
+  renderQuickManifestPreview();
+  injectIcons($("quickAgentEditor"));
+}
+
+async function openEditAgent(agentId) {
+  const detail = await api(`/agents/${encodeURIComponent(agentId)}`);
+  state.current = detail;
+  state.build = currentSuccessfulBuild(detail);
+  renderGlobalContext();
+  state.editingAgentId = agentId;
+  switchView("create", { parent: "Agent", title: "编辑 Agent" });
+  $("authoringModeTabs").hidden = true;
+  $("authoringConversationPanel").hidden = true;
+  $("authoringImportPanel").hidden = true;
+  $("authoringProjectPanel").hidden = true;
+  $("quickAgentEditor").hidden = false;
+  document.querySelector(".wizard-layout").hidden = true;
+  prepareQuickCreate(detail);
+  $("quickAgentPrompt").focus();
+}
+
+function quickSelectedModelIds() {
+  return [...document.querySelectorAll("[data-quick-model-id]:checked")]
+    .map(node => node.dataset.quickModelId);
+}
+
+function syncQuickModelSelect(preferred = $("quickAgentModel").value, fallbackName = "") {
+  const selectedIds = quickSelectedModelIds();
+  const selectedModels = selectedIds.map(resourceById).filter(Boolean);
+  if (!selectedModels.length) {
+    $("quickAgentModel").innerHTML = `<option value="">${escapeHtml(fallbackName || "当前运行环境默认模型")}</option>`;
+    return;
+  }
+  $("quickAgentModel").innerHTML = selectedModels.map(item => `
+    <option value="${escapeHtml(item.resourceId)}">${escapeHtml(item.displayName)} · ${escapeHtml(item.contract?.model || item.name || "")}</option>
+  `).join("");
+  $("quickAgentModel").value = selectedIds.includes(preferred) ? preferred : selectedIds[0];
+}
+
+function yamlScalar(value) {
+  return JSON.stringify(String(value || ""));
+}
+
+function renderQuickManifestPreview() {
+  const model = resourceById($("quickAgentModel").value);
+  const reference = state.current?.draft || state.agents[0] || null;
+  const modelName = model?.contract?.model || model?.name || reference?.metadata?.labels?.["agentkit.ksyun.com/model"] || "glm-5.1";
+  const prompt = $("quickAgentPrompt").value || "";
+  const runtimeType = $("quickAgentRuntime").value || "codex";
+  const models = quickSelectedModelIds()
+    .map(resourceById)
+    .filter(Boolean)
+    .map(item => item.contract?.model || item.name)
+    .filter(Boolean);
+  const agentId = $("quickAgentId").value || "review-helper";
+  const runtime = runtimeRef(agentId, runtimeType);
+  $("quickManifestPreview").textContent = runtimeType === "codex" ? [
+      `name: ${agentId}`,
+      "version: 1.0.0",
+      "framework: codex",
+      "artifact_type: ManagedRuntime",
+      "runtime:",
+      "  name: codex",
+      "  version: 0.144.4",
+      `model: ${modelName}`,
+      ...(models.length > 1 ? ["models:", ...models.map(name => `  - ${name}`)] : []),
+      "prompt: |-",
+      ...prompt.split("\n").map(line => `  ${line}`)
+    ].join("\n") : [
+      "apiVersion: agentkit.ksyun.com/v1alpha1",
+      "kind: Agent",
+      "metadata:",
+      `  id: ${agentId}`,
+      "spec:",
+      "  runtime:",
+      `    type: ${runtime.type}`,
+      `    projectPath: ${runtime.projectPath}`,
+      `    entryPoint: ${runtime.entryPoint}`,
+      `    agentVariable: ${runtime.agentVariable}`,
+      "  instructions:",
+      "    system: |-",
+      ...prompt.split("\n").map(line => `      ${line}`)
+    ].join("\n");
+}
+
+async function submitQuickCreateAgent(event) {
+  event.preventDefault();
+  const form = $("quickAgentEditorForm");
+  if (!form.checkValidity()) {
+    form.reportValidity();
+    return;
+  }
+  const button = $("quickCreateSubmit");
+  $("quickCreateError").hidden = true;
+  setButtonLoading(button, true, "正在保存");
+  try {
+    const editingAgentId = state.editingAgentId;
+    const modelResourceId = $("quickAgentModel").value || null;
+    const modelResourceIds = quickSelectedModelIds();
+    const spec = editingAgentId && state.current?.draft?.spec
+      ? clone(state.current.draft.spec)
+      : { description: "AgentKit Studio Agent" };
+    spec.runtime = runtimeRef($("quickAgentId").value.trim(), $("quickAgentRuntime").value);
+    spec.instructions = {
+      system: $("quickAgentPrompt").value.trim(),
+      task: spec.instructions?.task || ""
+    };
+    spec.bindings = {
+      ...(spec.bindings || {}),
+      modelProfileId: modelResourceId,
+      modelProfileIds: modelResourceIds
+    };
+    const saved = editingAgentId
+      ? await api(`/agents/${encodeURIComponent(editingAgentId)}`, {
+        method: "PUT",
+        headers: { "If-Match": String(state.current?.draft?.metadata?.revision || 1) },
+        body: spec
+      })
+      : await api("/authoring/quick", {
+        method: "POST",
+        body: {
+          name: $("quickAgentName").value.trim(),
+          slug: $("quickAgentId").value.trim(),
+          runtimeType: $("quickAgentRuntime").value,
+          description: spec.description || "AgentKit Studio Agent",
+          template: "blank",
+          spec
+        }
+      });
+    await refreshAgents();
+    state.current = await api(`/agents/${encodeURIComponent(saved.metadata.id)}`);
+    state.build = currentSuccessfulBuild(state.current);
+    renderGlobalContext();
+    state.editingAgentId = null;
+    showToast(
+      editingAgentId ? "Agent 已更新" : "Agent YAML 已保存",
+      editingAgentId ? "agentengine.yaml 已回写，旧构建不会继续用于新会话。" : "现在可以构建并进入真实 Codex 会话。"
+    );
+    if ($("quickBuildAfterCreate").checked) {
+      const build = await buildCurrentAgent({ navigate: false });
+      if (build) {
+        await openChat(saved.metadata.id);
+        const suggested = $("quickAgentTask").value.trim();
+        if (suggested) {
+          $("chatInput").value = suggested;
+          autoSizeComposer();
+        }
+      }
+    } else {
+      await openAgentDetail(saved.metadata.id);
+    }
+  } catch (error) {
+    $("quickCreateError").hidden = false;
+    $("quickCreateErrorMessage").textContent = error.message;
+    showToast("保存失败", error.message, "error");
+  } finally {
+    setButtonLoading(button, false);
+  }
 }
 
 function validateStepOne() {
@@ -722,6 +1390,7 @@ async function nextWizardStep() {
 function renderWizardCapabilities() {
   const composition = state.wizard.composition;
   if (!composition) return;
+  const bindingsSupported = state.wizard.runtime !== "codex";
   populateModelSelect();
   const boundToolIds = new Set(state.wizard.selectedToolIds);
   const boundSkillIds = new Set(state.wizard.selectedSkillIds);
@@ -730,7 +1399,7 @@ function renderWizardCapabilities() {
     .filter(item => item.status === "ready")
     .map(item => `
       <label class="selection-item ${boundToolIds.has(item.resourceId) ? "selected" : ""}">
-        <input type="checkbox" data-tool-id="${escapeHtml(item.resourceId)}" ${boundToolIds.has(item.resourceId) ? "checked" : ""}>
+        <input type="checkbox" data-tool-id="${escapeHtml(item.resourceId)}" ${boundToolIds.has(item.resourceId) ? "checked" : ""} ${bindingsSupported ? "" : "disabled"}>
         <span class="capability-icon"><svg data-icon="wrench"></svg></span>
         <span class="selection-item-copy"><strong>${escapeHtml(item.displayName)}</strong><span>${escapeHtml(item.description || "结构化 Tool Contract")} · ${escapeHtml(item.contract?.sideEffect || "none")}</span></span>
         <span class="resource-source">${escapeHtml(item.version)}</span>
@@ -741,7 +1410,7 @@ function renderWizardCapabilities() {
     const required = state.wizard.template === "research" && item.name === "deep-research-methodology";
     return `
     <label class="selection-item ${boundSkillIds.has(item.resourceId) ? "selected" : ""}">
-      <input type="checkbox" data-skill-id="${escapeHtml(item.resourceId)}" ${boundSkillIds.has(item.resourceId) ? "checked" : ""} ${required ? "disabled" : ""}>
+      <input type="checkbox" data-skill-id="${escapeHtml(item.resourceId)}" ${boundSkillIds.has(item.resourceId) ? "checked" : ""} ${required || !bindingsSupported ? "disabled" : ""}>
       <span class="capability-icon"><svg data-icon="sparkles"></svg></span>
       <span class="selection-item-copy"><strong>${escapeHtml(item.displayName)}</strong><span>${escapeHtml(item.description || "版本化 Skill")}${required ? " · 模板必需" : ""}</span></span>
       <span class="resource-source">${escapeHtml(item.version)}</span>
@@ -751,7 +1420,7 @@ function renderWizardCapabilities() {
   $("agentMcpList").innerHTML = state.catalog.mcp.length
     ? state.catalog.mcp.map(item => `
       <label class="selection-item ${boundMcpIds.has(item.resourceId) ? "selected" : ""}">
-        <input type="checkbox" data-mcp-id="${escapeHtml(item.resourceId)}" ${boundMcpIds.has(item.resourceId) ? "checked" : ""} ${item.status !== "ready" ? "disabled" : ""}>
+        <input type="checkbox" data-mcp-id="${escapeHtml(item.resourceId)}" ${boundMcpIds.has(item.resourceId) ? "checked" : ""} ${item.status !== "ready" || !bindingsSupported ? "disabled" : ""}>
         <span class="capability-icon"><svg data-icon="network"></svg></span>
         <span class="selection-item-copy"><strong>${escapeHtml(item.displayName)}</strong><span>${escapeHtml(item.description || "MCP Server")} · ${item.health?.toolCount || 0} Tool</span></span>
         <span class="status-badge ${item.status === "ready" ? "success" : "warning"}">${item.status === "ready" ? "Ready" : escapeHtml(item.status)}</span>
@@ -759,7 +1428,14 @@ function renderWizardCapabilities() {
     `).join("")
     : '<div class="selection-item"><span class="selection-item-copy"><strong>没有已连接的 MCP</strong><span>点击“连接 MCP”添加外部服务</span></span></div>';
   $("mcpMissingAlert").hidden = state.wizard.template !== "research" || composition.warnings.length === 0;
+  $("mcpMissingAlert").querySelector("strong").textContent = "尚未绑定外部调研 MCP";
+  $("mcpMissingAlert").querySelector("p").textContent = "可以继续创建，但 Agent 只能使用用户输入和工作区资料，并会在回答中声明限制。";
   $("skillRecommendation").hidden = state.wizard.template !== "research";
+  if (!bindingsSupported) {
+    $("mcpMissingAlert").hidden = false;
+    $("mcpMissingAlert").querySelector("strong").textContent = "Codex 能力边界";
+    $("mcpMissingAlert").querySelector("p").textContent = "CodexRuntimeAdapter 当前使用 Codex 原生工具；ksadk Tool、MCP 与 Skill 只可绑定到 ADK 或 LangGraph。";
+  }
   injectIcons($("view-create"));
   renderWizardSummary();
 }
@@ -771,6 +1447,7 @@ function renderWizardSummary() {
     : state.catalog.model.find(item => item.resourceId === $("agentModel").value);
   const policy = policyCopy(state.wizard.policyTemplate);
   $("summaryTemplate").textContent = templateName(state.wizard.template);
+  $("summaryRuntime").textContent = state.wizard.runtime === "langgraph" ? "LangGraph" : state.wizard.runtime === "adk" ? "Google ADK" : "Codex";
   $("summaryModel").textContent = model?.displayName || "待选择";
   $("summarySkills").textContent = state.wizard.selectedSkillIds.length;
   $("summaryMcp").textContent = state.wizard.selectedMcpIds.length;
@@ -787,7 +1464,7 @@ function renderReview() {
   const templateMeta = state.wizard.template === "research"
     ? depthName(state.wizard.depth)
     : templateName(state.wizard.template);
-  $("reviewAgentMeta").textContent = `${$("newAgentId").value.trim()} · ${templateMeta}`;
+  $("reviewAgentMeta").textContent = `${$("newAgentId").value.trim()} · ${state.wizard.runtime} · ${templateMeta}`;
   $("reviewAgentGoal").textContent = $("agentDescription").value.trim() || $("agentPrompt").value.trim();
   $("reviewAgentAvatar").classList.toggle("research", state.wizard.template === "research");
   $("reviewAgentAvatar").innerHTML = `<svg data-icon="${state.wizard.template === "research" ? "search" : "bot"}"></svg>`;
@@ -846,12 +1523,14 @@ async function submitCreateAgent(event) {
       system: $("generatedSystemPrompt").value.trim(),
       task: $("generatedTaskPrompt").value.trim()
     };
+    spec.runtime = runtimeRef($("newAgentId").value.trim(), state.wizard.runtime);
     spec.description = $("agentDescription").value.trim() || spec.description;
-    const created = await api("/agents", {
+    const created = await api("/authoring/quick", {
       method: "POST",
       body: {
-        id: $("newAgentId").value.trim(),
         name: $("newAgentName").value.trim(),
+        slug: $("newAgentId").value.trim(),
+        runtimeType: state.wizard.runtime,
         description: spec.description,
         template: state.wizard.template,
         spec
@@ -864,7 +1543,11 @@ async function submitCreateAgent(event) {
       validation: { valid: true, diagnostics: [] }
     };
     state.build = null;
-    showToast("Agent 已创建", "系统提示词和能力绑定已写入 Agent Draft。");
+    renderGlobalContext();
+    showToast(
+      "Agent 已创建",
+      "YAML Revision、RuntimeRef 和能力绑定已写入工作区。"
+    );
     if ($("buildAfterCreate").checked) {
       switchView("builds");
       renderBuildWorkspace();
@@ -881,11 +1564,11 @@ async function submitCreateAgent(event) {
     setButtonLoading(button, false);
   }
 }
-
 async function openAgentDetail(agentId) {
   const detail = await api(`/agents/${encodeURIComponent(agentId)}`);
   state.current = detail;
-  state.build = detail.builds.find(item => item.status === "SUCCEEDED") || null;
+  state.build = currentSuccessfulBuild(detail);
+  renderGlobalContext();
   renderAgentDetail();
   switchView("agent-detail", { parent: "Agent", title: detail.draft.metadata.name });
 }
@@ -894,12 +1577,23 @@ function renderAgentDetail() {
   if (!state.current) return;
   const draft = state.current.draft;
   const bindings = draft.spec.bindings || {};
+  $("detailEdit").hidden = false;
   $("detailAgentName").textContent = draft.metadata.name;
   $("detailAgentMeta").textContent = `${draft.metadata.id} · revision ${draft.metadata.revision}`;
   $("detailSystemPrompt").textContent = draft.spec.instructions.system;
   $("detailTaskPrompt").textContent = draft.spec.instructions.task || "未配置任务契约";
+  const manifestModels = String(
+    draft.metadata.labels?.["agentkit.ksyun.com/models"] || ""
+  ).split(",").map(item => item.trim()).filter(Boolean);
+  const boundModelIds = bindings.modelProfileIds?.length
+    ? bindings.modelProfileIds
+    : bindings.modelProfileId ? [bindings.modelProfileId] : [];
   const groups = [
-    ["Model", bindings.modelProfileId ? [bindings.modelProfileId] : []],
+    ["Model", boundModelIds.length
+      ? boundModelIds
+      : manifestModels.length ? manifestModels : draft.metadata.labels?.["agentkit.ksyun.com/model"]
+        ? [draft.metadata.labels["agentkit.ksyun.com/model"]]
+        : []],
     ["Skill", (bindings.skills || []).map(item => item.resourceId)],
     ["MCP", (bindings.mcpServers || []).map(item => item.resourceId)],
     ["Tool", (bindings.tools || []).map(item => item.resourceId)]
@@ -916,11 +1610,12 @@ function renderAgentDetail() {
   `).join("");
   $("detailSummary").innerHTML = `
     <div><dt>Revision</dt><dd>r${draft.metadata.revision}</dd></div>
+    <div><dt>Runtime</dt><dd>${escapeHtml(draft.spec.runtime?.type || draft.metadata.labels?.["agentkit.ksyun.com/framework"] || "adk")}</dd></div>
     <div><dt>策略</dt><dd>${escapeHtml(draft.spec.execution.strategy)}</dd></div>
     <div><dt>最大步骤</dt><dd>${draft.spec.execution.maxSteps}</dd></div>
     <div><dt>超时</dt><dd>${draft.spec.execution.timeoutSeconds}s</dd></div>
   `;
-  const latestBuild = state.current.builds.find(item => item.status === "SUCCEEDED");
+  const latestBuild = currentSuccessfulBuild(state.current);
   $("detailBuildState").innerHTML = latestBuild
     ? `<span class="status-dot success"></span><div><strong>Bundle 已就绪</strong><span>${escapeHtml(shortId(latestBuild.bundleDigest, 28))}</span></div>`
     : '<span class="status-dot neutral"></span><div><strong>尚未构建</strong><span>创建 Bundle 后即可对话</span></div>';
@@ -953,13 +1648,20 @@ async function buildCurrentAgent({ navigate = true } = {}) {
     if (completed.status !== "SUCCEEDED") {
       throw new Error(completed.error?.message || "构建未完成");
     }
-    state.build = await api(`/builds/${encodeURIComponent(completed.resourceId)}`);
+    const completedBuild = await api(`/builds/${encodeURIComponent(completed.resourceId)}`);
     const refreshed = await api(`/agents/${encodeURIComponent(draft.metadata.id)}`);
-    state.current = refreshed;
     state.agentDetails.set(draft.metadata.id, refreshed);
-    renderBuildWorkspace();
-    showToast("AgentBundle 构建完成", shortId(state.build.bundleDigest, 36));
-    return state.build;
+    renderAgentRows();
+    if (state.current?.draft?.metadata?.id === draft.metadata.id) {
+      state.current = refreshed;
+      state.build = completedBuild;
+      renderBuildWorkspace();
+    }
+    showToast(
+      `${draft.spec.runtime?.type || "Agent"} Bundle 构建完成`,
+      shortId(completedBuild.bundleDigest, 36)
+    );
+    return completedBuild;
   } catch (error) {
     setStatusBadge($("buildStatus"), "FAILED");
     $("buildLog").textContent += `\n${error.message}\n`;
@@ -972,11 +1674,15 @@ async function buildCurrentAgent({ navigate = true } = {}) {
 
 function renderBuildWorkspace() {
   const draft = state.current?.draft;
-  const build = state.build || state.current?.builds?.find(item => item.status === "SUCCEEDED");
+  const build = state.build || currentSuccessfulBuild(state.current);
   $("buildAgentName").textContent = draft?.metadata.name || "未选择";
   $("buildRevision").textContent = draft ? `r${draft.metadata.revision}` : "-";
   $("buildDigest").textContent = build?.bundleDigest || "-";
   setStatusBadge($("buildStatus"), build?.status || "IDLE");
+  $("runtimeManifestDigest").textContent = build?.manifestSha256 || build?.sourceDigest || build?.resolvedDigest || "-";
+  $("runtimeContract").textContent = build?.runtimeName
+    ? `${build.runtimeName} ${build.runtimeVersion || ""}`.trim()
+    : build?.runtimeType || draft?.spec?.runtime?.type || "未选择";
   if (build) {
     $("buildLog").textContent = [
       `Build       ${build.id}`,
@@ -1012,7 +1718,6 @@ async function waitOperation(operationId, { onEvents = () => {}, onStatus = () =
   }
   throw new Error("操作等待超时");
 }
-
 function setStatusBadge(node, status) {
   if (!node) return;
   const value = String(status || "IDLE");
@@ -1020,7 +1725,27 @@ function setStatusBadge(node, status) {
   node.textContent = value;
 }
 
-async function openChat(agentId = state.current?.draft?.metadata?.id) {
+async function refreshChatModels(agentId) {
+  const payload = await api(`/agents/${encodeURIComponent(agentId)}/models`);
+  state.chatModels = payload.Models || [];
+  const allowedIds = state.chatModels.map(item => String(item.id));
+  const selected = allowedIds.includes(state.activeChatModel)
+    ? state.activeChatModel
+    : String(payload.Current || allowedIds[0] || "");
+  state.activeChatModel = selected;
+  $("chatModel").innerHTML = state.chatModels.length
+    ? state.chatModels.map(item => `
+      <option value="${escapeHtml(item.id)}">${escapeHtml(item.display_name || item.displayName || item.id)}</option>
+    `).join("")
+    : '<option value="">未绑定模型</option>';
+  $("chatModel").value = selected;
+  $("chatModel").disabled = state.chatModels.length <= 1;
+}
+
+async function openChat(
+  agentId = state.current?.draft?.metadata?.id,
+  { sessionId = null } = {}
+) {
   if (!agentId) {
     const first = state.agents[0];
     if (!first) {
@@ -1029,61 +1754,35 @@ async function openChat(agentId = state.current?.draft?.metadata?.id) {
     }
     agentId = first.metadata.id;
   }
+  const viewRevision = ++state.chatViewRevision;
   const detail = await api(`/agents/${encodeURIComponent(agentId)}`);
+  if (viewRevision !== state.chatViewRevision) return;
   state.current = detail;
-  state.build = detail.builds.find(item => item.status === "SUCCEEDED") || null;
-  state.chatSessionId = null;
+  state.build = currentSuccessfulBuild(detail);
+  clearChatRunInspector();
+  renderGlobalContext();
+  state.chatSessionId = sessionId;
+  $("sendMessage").disabled = false;
   renderChatAgent();
   switchView("chat");
-  if (state.bootstrap?.features?.sharedChat) {
-    mountSharedChat(agentId);
-    renderInvocation();
-    return;
+  await Promise.all([refreshRuns(), refreshChatModels(agentId)]);
+  renderChatAgent();
+  const requestedSessionExists = state.chatSessionId
+    && groupedSessions().some(item => item.sessionId === state.chatSessionId);
+  if (!requestedSessionExists) {
+    state.chatSessionId = groupedSessions()[0]?.sessionId || null;
+    renderSessionList();
   }
-  mountLegacyChat();
-  await refreshRuns();
   renderMessages();
+  const latest = agentRuns()
+    .filter(run => run.sessionId === state.chatSessionId)
+    .at(-1);
+  if (latest) {
+    state.activeRun = latest;
+    await renderTrace(latest);
+  }
   renderInvocation();
-}
-
-function mountSharedChat(agentId) {
-  const host = $("sharedChatHost");
-  const legacy = $("legacyChatShell");
-  const frame = $("sharedChatFrame");
-  host.hidden = false;
-  legacy.hidden = true;
-  if (frame.dataset.themeListener !== "bound") {
-    frame.dataset.themeListener = "bound";
-    frame.addEventListener("load", () => applySharedChatTheme(frame));
-  }
-  const source = `/chat/?agentId=${encodeURIComponent(agentId)}`;
-  if (frame.dataset.source !== source) {
-    frame.dataset.source = source;
-    frame.src = source;
-  } else {
-    applySharedChatTheme(frame);
-  }
-}
-
-function applySharedChatTheme(frame) {
-  try {
-    const document = frame.contentDocument;
-    if (!document?.head) return;
-    document.documentElement.dataset.agentkitStudioChat = "workbench";
-    if (document.getElementById("agentkitStudioSharedChatTheme")) return;
-    const stylesheet = document.createElement("link");
-    stylesheet.id = "agentkitStudioSharedChatTheme";
-    stylesheet.rel = "stylesheet";
-    stylesheet.href = "/static/shared-chat.css";
-    document.head.append(stylesheet);
-  } catch {
-    // The official shared UI remains usable if the optional Studio theme cannot load.
-  }
-}
-
-function mountLegacyChat() {
-  $("sharedChatHost").hidden = true;
-  $("legacyChatShell").hidden = false;
+  syncBrowserRoute();
 }
 
 function renderChatAgent() {
@@ -1120,7 +1819,7 @@ function renderChatAgent() {
   $("inspectorAgentSummary").innerHTML = draft
     ? `
       <div><dt>Revision</dt><dd>r${draft.metadata.revision}</dd></div>
-      <div><dt>Model</dt><dd>${escapeHtml(resourceById(bindings.modelProfileId)?.displayName || "未选择")}</dd></div>
+      <div><dt>Model</dt><dd>${escapeHtml(state.chatModels.length > 1 ? `${state.chatModels.length} 个已绑定` : draft.metadata.labels?.["agentkit.ksyun.com/model"] || resourceById(bindings.modelProfileId)?.displayName || "未选择")}</dd></div>
       <div><dt>Skill</dt><dd>${bindings.skills?.length || 0}</dd></div>
       <div><dt>MCP</dt><dd>${bindings.mcpServers?.length || 0}</dd></div>
       <div><dt>Tool</dt><dd>${bindings.tools?.length || 0}</dd></div>
@@ -1133,7 +1832,43 @@ async function refreshRuns() {
   const payload = await api("/runs");
   state.runs = payload.items;
   renderSessionList();
-  renderRunRows();
+  recoverActiveRuns();
+}
+
+function recoverActiveRuns() {
+  state.runs
+    .filter(run => run.status === "RUNNING" && !state.recoveringRunIds.has(run.id))
+    .forEach(run => pollActiveRun(run.id));
+}
+
+async function pollActiveRun(runId) {
+  state.recoveringRunIds.add(runId);
+  try {
+    while (true) {
+      const run = await api(`/runs/${encodeURIComponent(runId)}`);
+      const index = state.runs.findIndex(item => item.id === run.id);
+      if (index >= 0) state.runs[index] = run;
+      else state.runs.push(run);
+      const visible = state.current?.draft?.metadata?.id === run.agentId
+        && state.chatSessionId === run.sessionId;
+      if (visible) {
+        state.activeRun = run;
+        renderSessionList();
+        renderMessages();
+        setStatusBadge($("inspectorStatus"), run.status);
+      }
+      if (run.status !== "RUNNING") {
+        if (visible) await renderTrace(run);
+        if (state.view === "observability") await refreshTraces();
+        break;
+      }
+      await sleep(400);
+    }
+  } catch (error) {
+    console.warn("恢复本地 Run 状态失败", runId, error);
+  } finally {
+    state.recoveringRunIds.delete(runId);
+  }
 }
 
 function agentRuns() {
@@ -1163,14 +1898,104 @@ function renderSessionList() {
       const firstInput = runs[0]?.input || "新会话";
       const latest = runs.at(-1);
       return `
-        <button class="session-item ${state.chatSessionId === sessionId ? "active" : ""}" data-session-id="${escapeHtml(sessionId)}" type="button">
-          <strong>${escapeHtml(shortId(firstInput, 34))}</strong>
-          <span>${runs.length} 次运行 · ${escapeHtml(latest?.status || "CREATED")}</span>
-          <small>${formatDate(latest?.startedAt || latest?.completedAt)}</small>
-        </button>
+        <div class="session-item ${state.chatSessionId === sessionId ? "active" : ""}">
+          <button class="session-main" data-session-id="${escapeHtml(sessionId)}" title="${escapeHtml(firstInput)}" type="button">
+            <span class="session-status ${latest?.status === "RUNNING" ? "running" : ""}"></span>
+            <strong>${escapeHtml(shortId(firstInput, 28))}</strong>
+          </button>
+          <time>${formatSessionTime(latest?.startedAt || latest?.completedAt)}</time>
+          <button class="session-more" data-session-menu="${escapeHtml(sessionId)}" type="button" aria-label="会话操作" title="会话操作">•••</button>
+          <div class="session-menu" data-session-menu-popover="${escapeHtml(sessionId)}" hidden>
+            <button data-delete-session="${escapeHtml(sessionId)}" type="button">删除会话</button>
+          </div>
+        </div>
       `;
     }).join("")
     : '<div class="session-empty">当前 Agent 还没有会话</div>';
+}
+
+function formatSessionTime(value) {
+  if (!value) return "刚刚";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const now = new Date();
+  if (date.toDateString() === now.toDateString()) {
+    return new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit" }).format(date);
+  }
+  return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit" }).format(date);
+}
+
+function openDeleteSession(sessionId) {
+  state.pendingDeleteSessionId = sessionId;
+  document.querySelectorAll("[data-session-menu-popover]").forEach(node => { node.hidden = true; });
+  openOverlay("deleteSessionOverlay");
+}
+
+async function deleteSession() {
+  const sessionId = state.pendingDeleteSessionId;
+  if (!sessionId) return;
+  const button = $("confirmDeleteSession");
+  setButtonLoading(button, true, "正在删除");
+  try {
+    await api(`/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
+    if (state.chatSessionId === sessionId) {
+      state.chatSessionId = null;
+      state.activeRun = null;
+    }
+    state.pendingDeleteSessionId = null;
+    closeOverlay("deleteSessionOverlay");
+    await refreshRuns();
+    if (!state.chatSessionId) {
+      state.chatSessionId = groupedSessions()[0]?.sessionId || null;
+    }
+    renderMessages();
+    renderInvocation();
+    syncBrowserRoute();
+    showToast("会话已删除", "相关 Run 与 Trace 已从本地工作区移除。");
+  } catch (error) {
+    showToast("删除失败", error.message, "error");
+  } finally {
+    setButtonLoading(button, false);
+  }
+}
+
+function openDeleteAgent(agentId) {
+  state.pendingDeleteAgentId = agentId;
+  $("deleteAgentTitle").textContent = `删除 ${agentId}？`;
+  $("deleteAgentDescription").textContent = "该 Agent 的 YAML、Build、Artifact、Run 与 Trace 将移入 .agentkit/trash，可从工作区手工恢复。";
+  openOverlay("deleteAgentOverlay");
+}
+
+async function deleteAgent() {
+  const agentId = state.pendingDeleteAgentId;
+  if (!agentId) return;
+  const button = $("confirmDeleteAgent");
+  setButtonLoading(button, true, "正在删除");
+  try {
+    await api(`/agents/${encodeURIComponent(agentId)}`, { method: "DELETE" });
+    const deletingCurrent = state.current?.draft?.metadata?.id === agentId;
+    if (deletingCurrent) {
+      state.current = null;
+      state.build = null;
+      state.chatSessionId = null;
+      state.activeRun = null;
+      state.chatModels = [];
+      state.activeChatModel = "";
+      state.editingAgentId = null;
+    }
+    state.pendingDeleteAgentId = null;
+    closeOverlay("deleteAgentOverlay");
+    await Promise.all([refreshAgents(), refreshRuns()]);
+    switchView("agents");
+    showToast(
+      "Agent 已删除",
+      "YAML 与关联的本地构建、运行和 Trace 已移入回收站。"
+    );
+  } catch (error) {
+    showToast("删除失败", error.message, "error");
+  } finally {
+    setButtonLoading(button, false);
+  }
 }
 
 function renderMessages() {
@@ -1181,11 +2006,22 @@ function renderMessages() {
   document.querySelectorAll("#messageList .message").forEach(node => node.remove());
   runs.forEach(run => {
     appendMessage("user", run.input, { time: run.startedAt });
+    if (run.status === "RUNNING") {
+      appendMessage("assistant", "", {
+        loading: true,
+        runId: run.id,
+        model: run.model,
+        time: run.startedAt
+      });
+      return;
+    }
+    const cancelled = run.status === "CANCELLED";
     appendMessage(
-      run.status === "COMPLETED" ? "assistant" : "error",
-      run.output || run.error?.message || `运行状态：${run.status}`,
+      run.status === "COMPLETED" ? "assistant" : cancelled ? "status" : "error",
+      run.output || run.error?.message || (cancelled ? "运行已取消" : `运行状态：${run.status}`),
       {
         runId: run.id,
+        model: run.model,
         time: run.completedAt,
         errorCode: run.error?.code || "",
         retryRunId: run.id
@@ -1203,7 +2039,8 @@ function appendMessage(
     runId = "",
     time = null,
     errorCode = "",
-    retryRunId = ""
+    retryRunId = "",
+    model = ""
   } = {}
 ) {
   $("chatEmpty").hidden = true;
@@ -1220,12 +2057,96 @@ function appendMessage(
       </div>
     `
     : "";
+  const renderedContent = loading
+    ? '<span class="message-loading"><i></i><i></i><i></i></span>'
+    : role === "assistant"
+      ? '<ksadk-message></ksadk-message>'
+      : `<span class="plain-message">${escapeHtml(content)}</span>`;
   node.innerHTML = `
-    <div class="message-meta"><strong>${escapeHtml(author)}</strong><span>${time ? formatDate(time) : "刚刚"}</span>${runId ? `<span>${escapeHtml(shortId(runId, 18))}</span>` : ""}</div>
-    <div class="message-content">${loading ? '<span class="message-loading"><i></i><i></i><i></i></span>' : escapeHtml(content)}${recovery}</div>
+    <div class="message-meta"><strong>${escapeHtml(author)}</strong><span>${time ? formatDate(time) : "刚刚"}</span>${model ? `<span class="message-model">${escapeHtml(model)}</span>` : ""}${runId ? `<span>${escapeHtml(shortId(runId, 18))}</span>` : ""}</div>
+    <div class="message-content">${renderedContent}${recovery}</div>
   `;
+  const markdown = node.querySelector("ksadk-message");
+  if (markdown) {
+    if (customElements.get("ksadk-message")) markdown.content = content;
+    else customElements.whenDefined("ksadk-message").then(() => { markdown.content = content; });
+  }
   $("messageList").append(node);
   return node;
+}
+
+function updateStreamingMessage(node, content) {
+  node.removeAttribute("data-loading-message");
+  const container = node.querySelector(".message-content");
+  let markdown = container.querySelector("ksadk-message");
+  if (!markdown) {
+    container.replaceChildren(document.createElement("ksadk-message"));
+    markdown = container.querySelector("ksadk-message");
+  }
+  if (customElements.get("ksadk-message")) markdown.content = content;
+  else customElements.whenDefined("ksadk-message").then(() => { markdown.content = content; });
+  scrollMessages();
+}
+
+function parseSseBlock(block) {
+  let id = "";
+  let type = "message";
+  const data = [];
+  for (const line of block.split("\n")) {
+    if (line.startsWith("id:")) id = line.slice(3).trim();
+    else if (line.startsWith("event:")) type = line.slice(6).trim();
+    else if (line.startsWith("data:")) data.push(line.slice(5).trimStart());
+  }
+  if (!data.length) return null;
+  const raw = data.join("\n");
+  try {
+    return { id, type, data: JSON.parse(raw) };
+  } catch {
+    return { id, type, data: { text: raw } };
+  }
+}
+
+async function streamRun(buildId, body, onEvent, allowSessionRecovery = true) {
+  const headers = new Headers({
+    "Content-Type": "application/json",
+    "Idempotency-Key": operationKey("chat-stream")
+  });
+  if (state.csrf) headers.set("X-CSRF-Token", state.csrf);
+  if (state.sessionToken) headers.set("X-AgentKit-Session", state.sessionToken);
+  const response = await fetch(`/api/v1/builds/${encodeURIComponent(buildId)}/run:stream`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+    credentials: "same-origin"
+  });
+  if (response.status === 401 && allowSessionRecovery) {
+    await recoverBrowserSession();
+    return streamRun(buildId, body, onEvent, false);
+  }
+  if (!response.ok || !response.body) {
+    const payload = await response.json().catch(() => ({}));
+    const error = payload?.error || {};
+    const failure = new Error(error.message || `运行请求失败（HTTP ${response.status}）`);
+    failure.code = error.code || "";
+    throw failure;
+  }
+  const decoder = new TextDecoder();
+  const reader = response.body.getReader();
+  let buffer = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done }).replaceAll("\r\n", "\n");
+    let boundary = buffer.indexOf("\n\n");
+    while (boundary >= 0) {
+      const event = parseSseBlock(buffer.slice(0, boundary));
+      buffer = buffer.slice(boundary + 2);
+      if (event) onEvent(event);
+      boundary = buffer.indexOf("\n\n");
+    }
+    if (done) break;
+  }
+  const tail = parseSseBlock(buffer);
+  if (tail) onEvent(tail);
 }
 
 function scrollMessages() {
@@ -1234,18 +2155,21 @@ function scrollMessages() {
 
 function autoSizeComposer() {
   const input = $("chatInput");
-  input.style.height = "auto";
-  input.style.height = `${Math.min(input.scrollHeight, 160)}px`;
+  input.style.height = "42px";
+  input.style.height = `${Math.min(Math.max(input.scrollHeight, 42), 160)}px`;
 }
 
 async function ensureChatBuild() {
   if (state.build?.status === "SUCCEEDED") return state.build;
-  const latest = state.current?.builds?.find(item => item.status === "SUCCEEDED");
+  const latest = currentSuccessfulBuild(state.current);
   if (latest) {
     state.build = latest;
     return latest;
   }
-  showToast("正在准备 AgentBundle", "第一次对话前需要完成本地构建。");
+  showToast(
+    "正在准备不可变 Runtime Bundle",
+    "第一次对话前需要完成本地构建。"
+  );
   return buildCurrentAgent({ navigate: false });
 }
 
@@ -1257,100 +2181,139 @@ async function sendChatMessage() {
     showToast("没有选择 Agent", "请先创建或选择一个 Agent。", "error");
     return;
   }
+  const runAgentId = state.current.draft.metadata.id;
+  const selectedModel = $("chatModel").value || state.activeChatModel;
+  const chatRevision = state.chatViewRevision;
+  const requestedSessionId = state.chatSessionId;
+  const isVisible = () => state.chatViewRevision === chatRevision
+    && state.current?.draft?.metadata?.id === runAgentId;
   $("sendMessage").disabled = true;
   input.value = "";
   autoSizeComposer();
   appendMessage("user", content);
-  const loading = appendMessage("assistant", "", { loading: true });
+  const loading = appendMessage("assistant", "", {
+    loading: true,
+    model: selectedModel
+  });
   scrollMessages();
   try {
     const build = await ensureChatBuild();
-    if (!build) throw new Error("AgentBundle 尚未就绪");
+    if (!build) {
+      throw new Error("Runtime Bundle 尚未就绪");
+    }
     const body = {
+      model: selectedModel,
       input: { role: "user", content },
       environment: "local",
       stream: true
     };
-    if (state.chatSessionId) body.sessionId = state.chatSessionId;
-    const operation = await api(`/builds/${encodeURIComponent(build.id)}/runs`, {
-      method: "POST",
-      headers: { "Idempotency-Key": operationKey("chat") },
-      body
+    if (requestedSessionId) body.sessionId = requestedSessionId;
+    beginChatRunInspector();
+    const liveEvents = [];
+    let streamedOutput = "";
+    let streamedSessionId = requestedSessionId;
+    let streamFailure = null;
+    await streamRun(build.id, body, event => {
+      liveEvents.push(event);
+      if (event.type === "run.created") streamedSessionId = event.data.sessionId || streamedSessionId;
+      if (event.type === "message.delta") {
+        streamedOutput += String(event.data.text || "");
+        if (isVisible()) updateStreamingMessage(loading, streamedOutput);
+      } else if (event.type === "message.completed") {
+        streamedOutput = String(event.data.text || streamedOutput);
+        if (isVisible()) updateStreamingMessage(loading, streamedOutput);
+      } else if (event.type === "run.failed") {
+        streamFailure = event.data;
+      }
+      if (isVisible()) renderTimeline(liveEvents);
     });
-    setStatusBadge($("inspectorStatus"), "RUNNING");
-    $("inspectorRunId").textContent = operation.id;
-    const operationEvents = [];
-    const completed = await waitOperation(operation.id, {
-      onEvents: events => {
-        operationEvents.push(...events);
-        renderTimeline(operationEvents);
-      },
-      onStatus: status => setStatusBadge($("inspectorStatus"), status)
-    });
-    if (completed.status !== "SUCCEEDED") {
-      const failure = new Error(completed.error?.message || "Agent 运行失败");
-      failure.code = completed.error?.code || "";
+    if (streamFailure) {
+      const failure = new Error(streamFailure.message || streamFailure.error || "Agent 运行失败");
+      failure.code = streamFailure.code || "";
       throw failure;
     }
-    const run = await api(`/runs/${encodeURIComponent(completed.resourceId)}`);
-    state.activeRun = run;
-    state.chatSessionId = run.sessionId;
+    await refreshRuns();
+    const run = state.runs
+      .filter(item => item.agentId === runAgentId && item.sessionId === streamedSessionId)
+      .at(-1);
+    if (!run) throw new Error("运行已结束，但未找到对应的 Run 记录");
     loading.remove();
     const completedSuccessfully = run.status === "COMPLETED";
-    appendMessage(
-      completedSuccessfully ? "assistant" : "error",
-      completedSuccessfully
-        ? run.output
-        : run.error?.message || `Agent 运行状态：${run.status}`,
-      {
-        runId: run.id,
-        time: run.completedAt,
-        errorCode: run.error?.code || "",
-        retryRunId: run.id
-      }
-    );
     if (run.error?.code === "SECRET_NOT_FOUND") {
       state.lastFailedMessage = content;
     }
-    await refreshRuns();
-    renderSessionList();
-    await renderTrace(run);
-    renderInvocation();
-    if (!completedSuccessfully) {
-      showToast(
-        "Agent 运行未完成",
-        run.error?.message || `运行状态：${run.status}`,
-        "error"
-      );
+    if (isVisible()) {
+      state.chatSessionId = streamedSessionId;
+      syncBrowserRoute();
+      state.activeRun = run;
+      renderSessionList();
+      renderMessages();
+      await renderTrace(run);
+      renderInvocation();
+      if (!completedSuccessfully && run.status !== "CANCELLED") {
+        showToast(
+          "Agent 运行未完成",
+          run.error?.message || `运行状态：${run.status}`,
+          "error"
+        );
+      }
     }
   } catch (error) {
     loading.remove();
     if (error.code === "SECRET_NOT_FOUND") {
       state.lastFailedMessage = content;
     }
-    appendMessage("error", error.message, { errorCode: error.code || "" });
-    setStatusBadge($("inspectorStatus"), "FAILED");
-    showToast("运行失败", error.message, "error");
+    if (isVisible()) {
+      appendMessage("error", error.message, { errorCode: error.code || "" });
+      setStatusBadge($("inspectorStatus"), "FAILED");
+      showToast("运行失败", error.message, "error");
+    }
   } finally {
-    $("sendMessage").disabled = false;
-    input.focus();
-    scrollMessages();
+    if (isVisible()) {
+      $("sendMessage").disabled = false;
+      input.focus();
+      scrollMessages();
+    }
   }
 }
 
 async function renderTrace(run) {
   const trace = await api(`/traces/${encodeURIComponent(run.traceId)}`);
-  renderTimeline(trace.events);
+  renderSpanTimeline(trace.spans || []);
   $("inspectorRunId").textContent = run.id;
   setStatusBadge($("inspectorStatus"), run.status);
-  $("usageInput").textContent = run.usage?.inputTokens || 0;
-  $("usageOutput").textContent = run.usage?.outputTokens || 0;
-  $("usageDuration").textContent = `${run.durationMs || 0} ms`;
+  $("usageInput").textContent = trace.metrics?.usageReported
+    ? formatTokenCount(trace.metrics.inputTokens)
+    : "未上报";
+  $("usageOutput").textContent = trace.metrics?.usageReported
+    ? formatTokenCount(trace.metrics.outputTokens)
+    : "未上报";
+  $("usageDuration").textContent = formatDuration(trace.metrics?.durationMs);
+  $("openFullTrace").disabled = false;
+  $("openFullTrace").dataset.traceId = trace.traceId;
+}
+
+function renderSpanTimeline(spans) {
+  const ordered = [...spans].sort((left, right) => (
+    Number(BigInt(left.startTimeUnixNano || "0") - BigInt(right.startTimeUnixNano || "0"))
+  ));
+  $("eventTimeline").innerHTML = ordered.length
+    ? ordered.map(span => `
+      <div class="timeline-event">
+        <span class="timeline-marker"></span>
+        <div class="timeline-copy">
+          <strong>${escapeHtml(span.name)}</strong>
+          <span>${escapeHtml(span.kind)} · ${escapeHtml(formatDuration(span.durationMs))} · ${escapeHtml(span.status)}</span>
+        </div>
+      </div>
+    `).join("")
+    : '<div class="timeline-empty">当前 Trace 没有 Span</div>';
 }
 
 function renderTimeline(events) {
-  $("eventTimeline").innerHTML = events.length
-    ? events.map(event => `
+  const visibleEvents = compactTimelineEvents(events);
+  $("eventTimeline").innerHTML = visibleEvents.length
+    ? visibleEvents.map(event => `
       <div class="timeline-event">
         <span class="timeline-marker"></span>
         <div class="timeline-copy"><strong>${escapeHtml(event.type)}</strong><span>${escapeHtml(eventSummary(event))}</span></div>
@@ -1359,8 +2322,49 @@ function renderTimeline(events) {
     : '<div class="timeline-empty">发送消息后显示模型和 Tool 事件</div>';
 }
 
+function clearChatRunInspector() {
+  state.activeRun = null;
+  $("eventTimeline").innerHTML = '<div class="timeline-empty">发送消息后显示模型和 Tool 事件</div>';
+  setStatusBadge($("inspectorStatus"), "IDLE");
+  $("inspectorRunId").textContent = "尚未运行";
+  $("usageInput").textContent = "未上报";
+  $("usageOutput").textContent = "未上报";
+  $("usageDuration").textContent = "未上报";
+  $("openFullTrace").disabled = true;
+  delete $("openFullTrace").dataset.traceId;
+}
+
+function beginChatRunInspector() {
+  clearChatRunInspector();
+  setStatusBadge($("inspectorStatus"), "RUNNING");
+  $("inspectorRunId").textContent = "正在创建 Run";
+  $("eventTimeline").innerHTML = '<div class="timeline-empty">正在建立 Runtime 连接…</div>';
+}
+
+function compactTimelineEvents(events) {
+  const compacted = [];
+  for (const event of events || []) {
+    if (!["thinking.delta", "message.delta"].includes(event?.type)) {
+      compacted.push(event);
+      continue;
+    }
+    const previous = compacted.at(-1);
+    if (previous?.type === event.type) {
+      previous.data.text = String(previous.data.text || "") + String(event.data?.text || "");
+      previous.createdAt = event.createdAt || previous.createdAt;
+    } else {
+      compacted.push({ ...event, data: { ...(event.data || {}), text: String(event.data?.text || "") } });
+    }
+  }
+  return compacted;
+}
+
 function eventSummary(event) {
   const data = event.data || {};
+  if (event.type === "run.started") return `${data.runtime || data.runtimeType || "RuntimeAdapter"}`;
+  if (event.type === "command.started") return data.command || "command";
+  if (event.type === "command.completed") return `exit ${data.exitCode ?? "-"} · ${data.durationMs || 0} ms`;
+  if (["thinking.delta", "message.delta"].includes(event.type)) return String(data.text || "").trim();
   if (data.model) return `${data.model} · step ${data.step || 1}`;
   if (data.tool) return data.tool;
   if (data.usage) return `${data.usage.totalTokens || 0} tokens`;
@@ -1369,17 +2373,16 @@ function eventSummary(event) {
 }
 
 function newChatSession() {
+  state.chatViewRevision += 1;
   state.chatSessionId = null;
-  state.activeRun = null;
+  $("sendMessage").disabled = false;
   renderSessionList();
   renderMessages();
-  $("eventTimeline").innerHTML = '<div class="timeline-empty">发送消息后显示模型和 Tool 事件</div>';
-  setStatusBadge($("inspectorStatus"), "IDLE");
-  $("inspectorRunId").textContent = "尚未运行";
+  clearChatRunInspector();
   $("chatInput").focus();
   renderInvocation();
+  syncBrowserRoute();
 }
-
 function openOverlay(id) {
   $(id).hidden = false;
   document.body.style.overflow = "hidden";
@@ -1454,46 +2457,57 @@ function openInvocation() {
 }
 
 function renderInvocation() {
-  const buildId = state.build?.id || state.current?.builds?.find(item => item.status === "SUCCEEDED")?.id;
+  const buildId = state.build?.id || currentSuccessfulBuild(state.current)?.id;
   const sessionId = state.chatSessionId;
-  const endpoint = buildId
-    ? `/api/v1/builds/${buildId}/runs`
-    : "/api/v1/builds/{buildId}/runs";
+  const endpoint = "/v1/responses";
   $("invokeEndpoint").textContent = `POST ${endpoint}`;
   $("invokeBuildId").textContent = buildId || "尚未构建";
   $("invokeSessionId").textContent = sessionId || "首次调用可省略";
   const template = state.current?.draft?.metadata?.labels?.["agentkit.ksyun.com/template"] || "blank";
+  const modelResource = resourceById(
+    state.current?.draft?.spec?.bindings?.modelProfileId || ""
+  );
   const body = {
-    ...(sessionId ? { sessionId } : {}),
-    input: {
+    model: $("chatModel").value
+      || state.activeChatModel
+      || modelResource?.contract?.model
+      || state.current?.draft?.metadata?.labels?.["agentkit.ksyun.com/model"]
+      || "glm-5.1",
+    input: [{
       role: "user",
-      content: template === "research"
-        ? "调研 Agent 工程平台的核心能力"
-        : "请根据你的职责处理这个请求"
+      content: [{
+        type: "input_text",
+        text: template === "research"
+          ? "调研 Agent 工程平台的核心能力"
+          : "请根据你的职责处理这个请求"
+      }]
+    }],
+    metadata: {
+      agent_id: state.current?.draft?.metadata?.id || "review-helper"
     },
-    environment: "local",
+    ...(sessionId ? { conversation: sessionId } : {}),
     stream: true
   };
   const code = state.invocationTab === "curl"
     ? [
-      `curl -X POST "http://127.0.0.1:7831${endpoint}" \\`,
+      `curl -X POST "${window.location.origin}${endpoint}" \\`,
       '  -H "Content-Type: application/json" \\',
-      '  -H "X-AgentKit-Session: <STUDIO_SESSION_TOKEN>" \\',
-      '  -H "X-CSRF-Token: <CSRF_TOKEN>" \\',
-      `  -H "Idempotency-Key: run-$(date +%s)" \\`,
+      '  -H "Authorization: Bearer <RUNTIME_API_KEY>" \\',
       `  -d '${JSON.stringify(body, null, 2)}'`
     ].join("\n")
     : [
-      `const response = await fetch("${endpoint}", {`,
+      `const response = await fetch("${window.location.origin}${endpoint}", {`,
       '  method: "POST",',
       "  headers: {",
       '    "Content-Type": "application/json",',
-      '    "X-CSRF-Token": csrfToken,',
-      '    "Idempotency-Key": crypto.randomUUID()',
+      '    "Authorization": `Bearer ${runtimeApiKey}`',
       "  },",
       `  body: JSON.stringify(${JSON.stringify(body, null, 2)})`,
       "});",
-      "const operation = await response.json();"
+      "for await (const event of response.body) {",
+      "  // OpenAI Responses SSE: created / output_text.delta / completed",
+      "  console.log(event);",
+      "}"
     ].join("\n");
   $("invocationCode").textContent = code;
 }
@@ -1517,8 +2531,18 @@ function renderResources() {
   $("addResourceButton").querySelector("span").textContent = state.resourceKind === "model"
     ? "配置模型"
     : state.resourceKind === "skill"
-    ? "安装 Skill"
+    ? "发现 Skill"
+    : state.resourceKind === "tool"
+    ? "添加 Python Tool"
     : "添加资源";
+  const headings = state.resourceKind === "model"
+    ? ["发现来源", "上下文窗口", "输入模态"]
+    : state.resourceKind === "tool"
+    ? ["来源", "Tool 分组", "权限 / 边界"]
+    : ["来源", "版本", "说明"];
+  $("resourceSourceHeading").textContent = headings[0];
+  $("resourceDetailHeading").textContent = headings[1];
+  $("resourceCapabilityHeading").textContent = headings[2];
   const query = $("resourceSearch").value.trim().toLowerCase();
   const status = $("resourceStatusFilter").value;
   const items = state.catalog[state.resourceKind].filter(item => {
@@ -1538,14 +2562,65 @@ function renderResources() {
   $("resourceRows").innerHTML = items.map(item => `
     <tr>
       <td><div class="agent-cell"><span class="capability-icon"><svg data-icon="${resourceIcon(item.kind)}"></svg></span><div class="agent-cell-copy"><strong>${escapeHtml(item.displayName)}</strong><span>${escapeHtml(item.name)}</span></div></div></td>
-      <td>${escapeHtml(item.source)}</td>
-      <td><span class="mono">${escapeHtml(item.version)}</span></td>
-      <td>${escapeHtml(item.description || "未提供说明")}</td>
+      <td>${resourceSourceMarkup(item)}</td>
+      <td>${resourceDetailMarkup(item)}</td>
+      <td>${resourceCapabilityMarkup(item)}</td>
       <td>${resourceStatusMarkup(item)}</td>
       <td class="actions-column">${resourceActionMarkup(item)}</td>
     </tr>
   `).join("");
   injectIcons($("resourceRows"));
+}
+
+function resourceSourceMarkup(item) {
+  const labels = {
+    provider: "模型服务 /v1/models",
+    builtin: "ksadk 内置",
+    local: "工作区自定义",
+    market: "市场"
+  };
+  return escapeHtml(labels[item.source] || item.source);
+}
+
+function resourceDetailMarkup(item) {
+  if (item.kind === "model") {
+    const metadata = item.contract?.metadata || {};
+    const tokens = Number(metadata.context_window_tokens || 0);
+    const origin = item.contract?.discovery?.contextWindow === "provider"
+      ? "服务返回"
+      : "ksadk 默认";
+    const value = tokens >= 1000000
+      ? `${(tokens / 1000000).toFixed(tokens % 1000000 ? 1 : 0)}M`
+      : tokens >= 1000
+      ? `${Math.round(tokens / 1000)}K`
+      : `${tokens || "-"}`;
+    return `<strong>${escapeHtml(value)}</strong><span class="resource-origin">${escapeHtml(origin)}</span>`;
+  }
+  if (item.kind === "tool") {
+    return `<span class="status-badge neutral">${escapeHtml(item.contract?.group || item.category || "general")}</span>`;
+  }
+  return `<span class="mono">${escapeHtml(item.version)}</span>`;
+}
+
+function resourceCapabilityMarkup(item) {
+  if (item.kind === "model") {
+    const metadata = item.contract?.metadata || {};
+    const capabilities = metadata.capabilities || {};
+    const modalities = ["文字"];
+    if (capabilities.multimodal_input_image) modalities.push("图片");
+    if (capabilities.multimodal_input_video) modalities.push("视频");
+    if (capabilities.multimodal_input_file) modalities.push("文件");
+    const origin = item.contract?.discovery?.inputModalities === "provider"
+      ? "服务返回"
+      : "ksadk 默认";
+    return `${escapeHtml(modalities.join(" + "))}<span class="resource-origin">${escapeHtml(origin)}</span>`;
+  }
+  if (item.kind === "tool") {
+    const approval = item.contract?.approval === "always" ? "需审批" : "无需审批";
+    const boundary = item.contract?.boundary || "ksadk-runtime";
+    return `${escapeHtml(approval)}<span class="resource-origin">${escapeHtml(boundary)}</span>`;
+  }
+  return escapeHtml(item.description || "未提供说明");
 }
 
 function resourceStatusMarkup(item) {
@@ -1716,6 +2791,127 @@ async function probeMcp(resourceId) {
   }
 }
 
+function renderSkillDiscovery() {
+  const candidates = state.skillDiscovery?.candidates || [];
+  $("skillDiscoveryList").innerHTML = candidates.length
+    ? candidates.map(candidate => {
+      const risk = candidate.risk || {};
+      const valid = ["ready", "conflict"].includes(candidate.status);
+      const details = candidate.diagnostics?.map(item => item.message).join("；")
+        || `${candidate.fileCount || 0} 个文件 · ${formatByteCount(candidate.totalBytes || 0)}`;
+      return `<label class="skill-candidate ${valid ? "" : "invalid"}">
+        <input type="radio" name="skillCandidate" data-skill-candidate="${escapeHtml(candidate.candidateId)}" ${valid ? "" : "disabled"}>
+        <span class="capability-icon"><svg data-icon="sparkles"></svg></span>
+        <span class="selection-item-copy"><strong>${escapeHtml(candidate.displayName || candidate.name)}</strong><span>${escapeHtml(candidate.path)} · ${escapeHtml(candidate.version || "版本无效")}</span><small>${escapeHtml(details)}</small></span>
+        <span class="status-badge ${candidate.status === "ready" ? "success" : "warning"}">${escapeHtml(candidate.status)}${risk.requiresReview ? " · 需复核" : ""}</span>
+      </label>`;
+    }).join("")
+    : '<div class="trace-stage-empty compact"><p>安全默认目录中没有发现 Skill。</p></div>';
+  $("commitDiscoveredSkill").disabled = true;
+  injectIcons($("skillDiscoveryOverlay"));
+}
+
+function formatByteCount(value) {
+  const bytes = Number(value || 0);
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
+}
+
+async function discoverWorkspaceSkills() {
+  const button = $("discoverSkills");
+  $("skillDiscoveryError").hidden = true;
+  const scanPaths = $("skillScanPaths").value
+    .split(",")
+    .map(item => item.trim())
+    .filter(Boolean);
+  setButtonLoading(button, true, "正在扫描");
+  try {
+    state.skillDiscovery = await api("/catalog/skills:discover", {
+      method: "POST",
+      body: { scanPaths }
+    });
+    renderSkillDiscovery();
+  } catch (error) {
+    $("skillDiscoveryError").hidden = false;
+    $("skillDiscoveryErrorMessage").textContent = error.message;
+  } finally {
+    setButtonLoading(button, false);
+  }
+}
+
+async function commitSelectedSkill(overwrite = false) {
+  const selected = document.querySelector("[data-skill-candidate]:checked");
+  const token = state.skillDiscovery?.inspectionToken;
+  if (!selected || !token) return;
+  const candidate = state.skillDiscovery.candidates.find(
+    item => item.candidateId === selected.dataset.skillCandidate
+  );
+  const button = $("commitDiscoveredSkill");
+  setButtonLoading(button, true, "正在导入");
+  try {
+    const created = await api(`/catalog/skills/discoveries/${encodeURIComponent(token)}:commit`, {
+      method: "POST",
+      body: { candidateId: selected.dataset.skillCandidate, overwrite }
+    });
+    await refreshCatalog();
+    closeOverlay("skillDiscoveryOverlay");
+    state.skillDiscovery = null;
+    showToast("Skill 已安装", `${created.displayName || created.name} · ${created.version}`);
+  } catch (error) {
+    if (error.code === "SKILL_IMPORT_CONFLICT" && !overwrite) {
+      if (window.confirm(`Skill ${candidate?.displayName || candidate?.name || ""} 已存在，是否覆盖并把旧版本移入回收站？`)) {
+        await commitSelectedSkill(true);
+      }
+      return;
+    }
+    $("skillDiscoveryError").hidden = false;
+    $("skillDiscoveryErrorMessage").textContent = error.message;
+  } finally {
+    setButtonLoading(button, false);
+  }
+}
+
+async function savePythonTool(event) {
+  event.preventDefault();
+  const form = $("pythonToolForm");
+  if (!form.reportValidity()) return;
+  const button = $("savePythonTool");
+  $("pythonToolError").hidden = true;
+  setButtonLoading(button, true, "正在保存");
+  try {
+    const name = $("pythonToolName").value.trim();
+    const created = await api("/catalog/tools", {
+      method: "POST",
+      body: {
+        displayName: name,
+        category: "custom",
+        contract: {
+          name,
+          version: "1.0.0",
+          description: $("pythonToolDescription").value.trim(),
+          inputSchema: { type: "object", properties: {} },
+          outputSchema: { type: "object", properties: {} },
+          executor: "python",
+          sourcePath: $("pythonToolSource").value.trim(),
+          callableName: $("pythonToolCallable").value.trim(),
+          sideEffect: "none",
+          approval: "never"
+        }
+      }
+    });
+    await refreshCatalog();
+    form.reset();
+    closeOverlay("pythonToolOverlay");
+    showToast("Python Tool 已保存", `${created.displayName} · SHA-256 已锁定`);
+  } catch (error) {
+    $("pythonToolError").hidden = false;
+    $("pythonToolErrorMessage").textContent = error.message;
+  } finally {
+    setButtonLoading(button, false);
+  }
+}
+
 function addResource() {
   if (state.resourceKind === "model") {
     const model = state.catalog.model[0];
@@ -1727,52 +2923,292 @@ function addResource() {
     return;
   }
   if (state.resourceKind === "skill") {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = ".zip,application/zip";
-    input.onchange = async () => {
-      if (!input.files?.[0]) return;
-      const body = new FormData();
-      body.append("file", input.files[0]);
-      try {
-        await api("/catalog/skills:import", { method: "POST", body });
-        await refreshCatalog();
-        showToast("Skill 已安装", input.files[0].name);
-      } catch (error) {
-        showToast("Skill 安装失败", error.message, "error");
-      }
-    };
-    input.click();
+    state.skillDiscovery = null;
+    $("skillDiscoveryList").innerHTML = '<div class="trace-stage-empty compact"><p>点击扫描候选。</p></div>';
+    $("skillDiscoveryError").hidden = true;
+    $("commitDiscoveredSkill").disabled = true;
+    openOverlay("skillDiscoveryOverlay");
+    return;
+  }
+  if (state.resourceKind === "tool") {
+    $("pythonToolError").hidden = true;
+    openOverlay("pythonToolOverlay");
     return;
   }
   showToast("资源创建入口正在收敛", "当前可在 Agent 创建流程中选择已有资源。");
 }
+async function refreshTraces({ selectFirst = true } = {}) {
+  const query = new URLSearchParams({ limit: "500" });
+  const agentId = $("traceAgentFilter").value;
+  const status = $("traceStatusFilter").value;
+  if (agentId) query.set("agentId", agentId);
+  if (status) query.set("status", status);
+  const payload = await api(`/traces?${query}`);
+  state.traces = payload.items || [];
+  renderTraceList();
+  const currentId = state.activeTrace?.traceId;
+  const currentStillVisible = currentId
+    && state.traces.some(trace => trace.traceId === currentId);
+  if (currentStillVisible) {
+    await openTrace(currentId, { switchToView: false });
+  } else if (selectFirst && state.traces.length) {
+    await openTrace(state.traces[0].traceId, { switchToView: false });
+  } else {
+    clearTraceExplorer();
+  }
+}
 
-function renderRunRows() {
-  $("runEmpty").hidden = state.runs.length > 0;
-  $("runRows").innerHTML = [...state.runs].reverse().map(run => `
-    <tr>
-      <td><div class="agent-cell-copy"><strong>${escapeHtml(run.agentId)}</strong><span>${escapeHtml(run.id)}</span></div></td>
-      <td><span class="mono">${escapeHtml(shortId(run.sessionId, 20))}</span></td>
-      <td><span class="status-badge ${escapeHtml(run.status)}">${escapeHtml(run.status)}</span></td>
-      <td>${run.durationMs ?? "-"} ms</td>
-      <td>${run.usage?.totalTokens || 0}</td>
-      <td class="actions-column"><button class="button tertiary small" data-open-run="${escapeHtml(run.id)}" type="button">查看 Trace</button></td>
-    </tr>
+function filteredTraces() {
+  const query = $("traceSearch").value.trim().toLowerCase();
+  if (!query) return state.traces;
+  return state.traces.filter(trace => [
+    trace.traceId,
+    trace.runId,
+    trace.sessionId,
+    trace.agentId,
+    trace.model,
+    trace.runtimeType
+  ].some(value => String(value || "").toLowerCase().includes(query)));
+}
+
+function renderTraceList() {
+  const traces = filteredTraces();
+  $("traceCount").textContent = `${traces.length} 条`;
+  $("traceEmpty").hidden = traces.length > 0;
+  $("traceList").hidden = traces.length === 0;
+  $("traceList").innerHTML = traces.map(trace => `
+    <button class="trace-list-item ${state.activeTrace?.traceId === trace.traceId ? "active" : ""}"
+      data-open-trace="${escapeHtml(trace.traceId)}" type="button">
+      <span class="trace-list-status ${escapeHtml(trace.status)}"></span>
+      <span class="trace-list-copy">
+        <strong>${escapeHtml(trace.agentId || "unknown-agent")}</strong>
+        <span>${escapeHtml(shortId(trace.traceId, 24))}</span>
+        <span class="trace-list-meta">
+          <span>${escapeHtml(formatDate(trace.startedAt))}</span>
+          <span>${escapeHtml(formatDuration(trace.durationMs))} · ${trace.usageReported ? `${escapeHtml(formatTokenCount(trace.totalTokens))} tokens` : "Token 未上报"}</span>
+        </span>
+      </span>
+    </button>
   `).join("");
 }
 
-async function openRun(runId) {
-  const run = await api(`/runs/${encodeURIComponent(runId)}`);
-  const agent = state.agents.find(item => item.metadata.id === run.agentId);
-  if (agent) await openChat(agent.metadata.id);
-  state.chatSessionId = run.sessionId;
-  state.activeRun = run;
-  renderSessionList();
-  renderMessages();
-  await renderTrace(run);
+async function openTrace(traceId, { switchToView = true } = {}) {
+  const trace = await api(`/traces/${encodeURIComponent(traceId)}`);
+  // 从会话工作台直达 Trace 时，列表尚未预取。先同步目录，避免详情已经
+  // 正确展示而左侧却错误提示“还没有 Trace”。由 refreshTraces 打开的条目
+  // 已在 state.traces 中，不会产生重复请求。
+  if (!state.traces.some(item => item.traceId === trace.traceId)) {
+    const payload = await api("/traces?limit=500");
+    state.traces = payload.items || [];
+  }
+  state.activeTrace = trace;
+  state.activeSpanId = trace.rootSpanId || trace.spans?.[0]?.spanId || null;
+  state.traceRawOtlp = null;
+  $("copyRawOtlp").disabled = false;
+  state.traceTab = "summary";
+  renderTraceList();
+  renderTraceExplorer();
+  if (switchToView) switchView("observability");
+  else syncBrowserRoute();
 }
 
+function clearTraceExplorer() {
+  state.activeTrace = null;
+  state.activeSpanId = null;
+  state.traceRawOtlp = null;
+  $("traceMetricStatus").textContent = "未选择";
+  $("traceMetricSpanCount").textContent = "选择一条 Trace 查看";
+  $("traceMetricDuration").textContent = "未上报";
+  $("traceMetricDurationSource").textContent = "等待 Runtime 上报";
+  $("traceMetricTokens").textContent = "未上报";
+  $("traceMetricTokenSplit").textContent = "输入 / 输出";
+  $("traceMetricModel").textContent = "-";
+  $("traceMetricRuntime").textContent = "Runtime";
+  $("traceTitle").textContent = "选择一条 Trace";
+  $("traceIdLabel").textContent = "-";
+  $("copyTraceparent").disabled = true;
+  $("copyRawOtlp").disabled = true;
+  $("traceSpanTree").innerHTML = '<div class="trace-stage-empty"><svg data-icon="network"></svg><p>选择左侧 Trace，查看 Agent、模型和 Tool 的父子关系与耗时。</p></div>';
+  $("traceDetailTitle").textContent = "Span 详情";
+  $("traceDetailSubtitle").textContent = "尚未选择 Span";
+  $("traceDetailContent").innerHTML = '<div class="trace-stage-empty compact"><p>选择一个 Span 查看标准属性。</p></div>';
+  $("traceRawOtlp").hidden = true;
+  $("traceDetail").querySelector(".trace-detail-body").classList.remove("raw-active");
+  injectIcons($("traceExplorer"));
+  syncBrowserRoute();
+}
+
+function renderTraceExplorer() {
+  const trace = state.activeTrace;
+  if (!trace) {
+    clearTraceExplorer();
+    return;
+  }
+  const metrics = trace.metrics || {};
+  $("traceMetricStatus").textContent = trace.status || "UNSET";
+  $("traceMetricSpanCount").textContent = `${trace.spans?.length || 0} Span · ${trace.target?.name || "本地工作区"}`;
+  $("traceMetricDuration").textContent = formatDuration(metrics.durationMs);
+  $("traceMetricDurationSource").textContent = metrics.durationMs === null || metrics.durationMs === undefined
+    ? "Runtime 未上报"
+    : metrics.durationSource === "runtime" ? "Runtime 精确上报" : "Studio 时钟回退";
+  $("traceMetricTokens").textContent = metrics.usageReported
+    ? formatTokenCount(metrics.totalTokens)
+    : "未上报";
+  $("traceMetricTokenSplit").textContent = metrics.usageReported
+    ? `${formatTokenCount(metrics.inputTokens)} 输入 · ${formatTokenCount(metrics.outputTokens)} 输出`
+    : "Provider / Runtime 未返回 Usage";
+  $("traceMetricModel").textContent = trace.model || "-";
+  $("traceMetricRuntime").textContent = `${trace.runtimeType || "unknown"} · ${metrics.usageSource || "Usage 未上报"}`;
+  $("traceTitle").textContent = `${trace.agentId || "Agent"} · ${trace.runId || "Run"}`;
+  $("traceIdLabel").textContent = trace.traceId;
+  $("copyTraceparent").disabled = false;
+  renderTraceSpans();
+  renderTraceDetail();
+  renderTraceList();
+}
+
+function orderedTraceSpans(trace) {
+  const spans = trace?.spans || [];
+  const byParent = new Map();
+  spans.forEach(span => {
+    const parent = span.parentSpanId || "";
+    if (!byParent.has(parent)) byParent.set(parent, []);
+    byParent.get(parent).push(span);
+  });
+  byParent.forEach(children => children.sort((left, right) => (
+    Number(BigInt(left.startTimeUnixNano || "0") - BigInt(right.startTimeUnixNano || "0"))
+  )));
+  const ordered = [];
+  const visited = new Set();
+  const visit = (span, depth) => {
+    if (!span || visited.has(span.spanId)) return;
+    visited.add(span.spanId);
+    ordered.push({ span, depth });
+    (byParent.get(span.spanId) || []).forEach(child => visit(child, depth + 1));
+  };
+  const root = spans.find(span => span.spanId === trace.rootSpanId)
+    || spans.find(span => !span.parentSpanId);
+  visit(root, 0);
+  spans.forEach(span => visit(span, span.parentSpanId ? 1 : 0));
+  return ordered;
+}
+
+function renderTraceSpans() {
+  const trace = state.activeTrace;
+  const ordered = orderedTraceSpans(trace);
+  if (!ordered.length) {
+    $("traceSpanTree").innerHTML = '<div class="trace-stage-empty"><p>该 OTLP Trace 没有 Span。</p></div>';
+    return;
+  }
+  const root = ordered.find(item => item.span.spanId === trace.rootSpanId)?.span || ordered[0].span;
+  const rootStart = BigInt(root.startTimeUnixNano || "0");
+  const rootEnd = BigInt(root.endTimeUnixNano || root.startTimeUnixNano || "0");
+  const rootDuration = Number(rootEnd > rootStart ? rootEnd - rootStart : 1n);
+  $("traceSpanTree").innerHTML = ordered.map(({ span, depth }) => {
+    const start = BigInt(span.startTimeUnixNano || "0");
+    const end = BigInt(span.endTimeUnixNano || span.startTimeUnixNano || "0");
+    const left = Math.max(0, Math.min(100, Number(start - rootStart) / rootDuration * 100));
+    const width = Math.max(0, Math.min(100 - left, Number(end - start) / rootDuration * 100));
+    return `
+      <button class="trace-span-row ${span.spanId === state.activeSpanId ? "active" : ""}"
+        data-open-span="${escapeHtml(span.spanId)}" data-kind="${escapeHtml(span.kind)}" data-status="${escapeHtml(span.status)}" type="button">
+        <span class="trace-span-name">
+          <span class="trace-span-guides">${'<span class="trace-span-guide"></span>'.repeat(depth)}</span>
+          <span class="trace-span-status ${escapeHtml(span.status)}"></span>
+          <span class="trace-span-name-copy"><strong>${escapeHtml(span.name)}</strong><span>${escapeHtml(span.kind)} · ${escapeHtml(shortId(span.spanId, 16))}</span></span>
+        </span>
+        <span class="trace-waterfall-track"><span class="trace-waterfall-bar" style="--span-left:${left.toFixed(3)}%;--span-width:${width.toFixed(3)}%"></span></span>
+        <span class="trace-span-duration">${escapeHtml(formatDuration(span.durationMs))}</span>
+      </button>
+    `;
+  }).join("");
+}
+
+function traceKeyValues(values) {
+  const entries = Object.entries(values || {}).sort(([left], [right]) => left.localeCompare(right));
+  if (!entries.length) return '<div class="trace-stage-empty compact"><p>没有可展示的字段。</p></div>';
+  return `<dl class="trace-kv-list">${entries.map(([key, value]) => `
+    <div class="trace-kv-row"><dt class="trace-kv-key">${escapeHtml(key)}</dt><dd class="trace-kv-value">${escapeHtml(typeof value === "object" ? JSON.stringify(value, null, 2) : value)}</dd></div>
+  `).join("")}</dl>`;
+}
+
+function setTraceDetailExpanded(expanded) {
+  state.traceDetailExpanded = Boolean(expanded);
+  $("traceWorkbench").classList.toggle("detail-expanded", state.traceDetailExpanded);
+  $("toggleTraceDetail").setAttribute("aria-pressed", String(state.traceDetailExpanded));
+  $("toggleTraceDetail").setAttribute(
+    "aria-label",
+    state.traceDetailExpanded ? "收起 Span 详情" : "展开 Span 详情"
+  );
+  $("toggleTraceDetail").title = state.traceDetailExpanded ? "收起详情" : "展开详情";
+  $("toggleTraceDetail").querySelector("span").textContent = state.traceDetailExpanded ? "收起" : "展开";
+}
+
+function renderTraceDetail() {
+  const trace = state.activeTrace;
+  const span = trace?.spans?.find(item => item.spanId === state.activeSpanId);
+  document.querySelectorAll("[data-trace-tab]").forEach(button => {
+    const active = button.dataset.traceTab === state.traceTab;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", String(active));
+  });
+  $("traceRawOtlp").hidden = state.traceTab !== "raw";
+  $("traceDetailContent").hidden = state.traceTab === "raw";
+  $("traceDetail").querySelector(".trace-detail-body").classList.toggle("raw-active", state.traceTab === "raw");
+  if (!span) {
+    $("traceDetailTitle").textContent = "Span 详情";
+    $("traceDetailSubtitle").textContent = "尚未选择 Span";
+    $("traceDetailContent").innerHTML = '<div class="trace-stage-empty compact"><p>选择一个 Span 查看标准属性。</p></div>';
+    return;
+  }
+  $("traceDetailTitle").textContent = span.name;
+  $("traceDetailSubtitle").textContent = `${span.kind} · ${span.status}`;
+  if (state.traceTab === "summary") {
+    $("traceDetailContent").innerHTML = `<dl class="trace-detail-grid">
+      <div><dt>Trace ID</dt><dd>${escapeHtml(trace.traceId)}</dd></div>
+      <div><dt>Span ID</dt><dd>${escapeHtml(span.spanId)}</dd></div>
+      <div><dt>Parent</dt><dd>${escapeHtml(span.parentSpanId || "Root")}</dd></div>
+      <div><dt>Kind</dt><dd>${escapeHtml(span.kind)}</dd></div>
+      <div><dt>Status</dt><dd>${escapeHtml(span.status)}</dd></div>
+      <div><dt>开始</dt><dd>${escapeHtml(formatNanoseconds(span.startTimeUnixNano))}</dd></div>
+      <div><dt>耗时</dt><dd>${escapeHtml(formatDuration(span.durationMs))}</dd></div>
+    </dl>`;
+  } else if (state.traceTab === "attributes") {
+    $("traceDetailContent").innerHTML = traceKeyValues(span.attributes);
+  } else if (state.traceTab === "events") {
+    $("traceDetailContent").innerHTML = span.events?.length
+      ? `<div class="trace-event-list">${span.events.map(event => `<article class="trace-event-card"><strong>${escapeHtml(event.name)}</strong><span>${escapeHtml(formatNanoseconds(event.timeUnixNano))}</span>${traceKeyValues(event.attributes)}</article>`).join("")}</div>`
+      : '<div class="trace-stage-empty compact"><p>该 Span 没有 Events。</p></div>';
+  } else if (state.traceTab === "resource") {
+    $("traceDetailContent").innerHTML = traceKeyValues({ ...trace.resource, "otel.scope.name": trace.scope?.name, "otel.scope.version": trace.scope?.version });
+  } else if (state.traceTab === "raw") {
+    loadRawTrace(trace.traceId).catch(handleGlobalError);
+  }
+}
+
+async function loadRawTrace(traceId) {
+  if (state.traceRawOtlp) {
+    $("traceRawOtlp").textContent = JSON.stringify(state.traceRawOtlp, null, 2);
+    return;
+  }
+  $("traceRawOtlp").textContent = "正在读取 OTLP JSON…";
+  const raw = await api(`/traces/${encodeURIComponent(traceId)}/otlp`);
+  if (state.activeTrace?.traceId !== traceId) return;
+  state.traceRawOtlp = raw;
+  $("traceRawOtlp").textContent = JSON.stringify(raw, null, 2);
+}
+
+async function copyRawTrace() {
+  const traceId = state.activeTrace?.traceId;
+  if (!traceId) return;
+  if (!state.traceRawOtlp) await loadRawTrace(traceId);
+  if (!state.traceRawOtlp || state.activeTrace?.traceId !== traceId) return;
+  await navigator.clipboard.writeText(JSON.stringify(state.traceRawOtlp, null, 2));
+  const label = $("copyRawOtlp").querySelector("span");
+  label.textContent = "已复制";
+  window.setTimeout(() => { label.textContent = "复制 Raw OTLP"; }, 1400);
+  showToast("Raw OTLP 已复制", shortId(traceId, 24));
+}
 function updatePromptCounter() {
   const length = $("agentPrompt").value.length;
   $("promptCounter").textContent = `${length} / 32768`;
@@ -1780,8 +3216,31 @@ function updatePromptCounter() {
 
 function bindEvents() {
   $("createAgentButton").onclick = openCreate;
+  $("globalAgentSelect").onchange = event => {
+    switchGlobalAgent(event.target.value).catch(handleGlobalError);
+  };
+  $("executionTargetSelect").onchange = event => {
+    if (event.target.value !== "local") {
+      event.target.value = "local";
+      showToast(
+        "金山云尚未连接",
+        "绑定云凭证后可在此切换云 Agent；本地版本不会返回 Mock 云状态。",
+        "error"
+      );
+    }
+  };
+  $("agentRuntime").onchange = updateRuntimeUi;
+  $("quickAgentRuntime").onchange = () => {
+    $("quickRuntimeTitle").textContent = `${$("quickAgentRuntime").value === "adk" ? "ADK" : $("quickAgentRuntime").value === "langgraph" ? "LangGraph" : "Codex"}RuntimeAdapter`;
+    renderQuickManifestPreview();
+  };
   $("emptyCreateAgent").onclick = openCreate;
-  $("exitCreate").onclick = () => switchView("agents");
+  $("exitCreate").onclick = () => {
+    const editingAgentId = state.editingAgentId;
+    state.editingAgentId = null;
+    if (editingAgentId) openAgentDetail(editingAgentId).catch(handleGlobalError);
+    else switchView("agents");
+  };
   $("backToAgents").onclick = () => switchView("agents");
   $("globalRefresh").onclick = () => {
     if (!state.bootstrap) {
@@ -1801,6 +3260,27 @@ function bindEvents() {
   $("wizardPrevious").onclick = () => setWizardStep(state.wizard.step - 1);
   $("wizardNext").onclick = () => nextWizardStep().catch(handleGlobalError);
   $("createAgentForm").onsubmit = event => submitCreateAgent(event);
+  $("quickAgentEditorForm").onsubmit = event => submitQuickCreateAgent(event);
+  $("authoringConversationSend").onclick = () => composeConversationAgent().catch(handleGlobalError);
+  $("authoringConversationInput").onkeydown = event => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      composeConversationAgent().catch(handleGlobalError);
+    }
+  };
+  $("authoringProposalForm").onsubmit = event => confirmConversationAgent(event).catch(handleGlobalError);
+  $("agentImportInspectForm").onsubmit = event => inspectAgentImport(event).catch(handleGlobalError);
+  $("agentImportCommitForm").onsubmit = event => commitAgentImport(event).catch(handleGlobalError);
+  $("projectInspectForm").onsubmit = event => inspectAgentProject(event).catch(handleGlobalError);
+  $("projectCommitForm").onsubmit = event => commitAgentProject(event).catch(handleGlobalError);
+  ["quickAgentId", "quickAgentPrompt", "quickAgentModel"].forEach(id => {
+    $(id).addEventListener("input", renderQuickManifestPreview);
+    $(id).addEventListener("change", renderQuickManifestPreview);
+  });
+  $("quickAgentModels").onchange = () => {
+    syncQuickModelSelect();
+    renderQuickManifestPreview();
+  };
   $("regeneratePrompt").onclick = () => composeAgent({ preservePrompt: false }).catch(handleGlobalError);
   $("agentModel").onchange = async () => {
     renderSelectedModelCredentialStatus();
@@ -1826,6 +3306,14 @@ function bindEvents() {
   $("saveModelCredential").onclick = () => saveModelCredential();
   $("saveAndTestModelCredential").onclick = () => saveModelCredential({ testConnection: true });
   $("removeModelCredential").onclick = () => removeModelCredential();
+  $("detailEdit").onclick = () => {
+    const agentId = state.current?.draft?.metadata?.id;
+    if (agentId) openEditAgent(agentId).catch(handleGlobalError);
+  };
+  $("detailDelete").onclick = () => {
+    const agentId = state.current?.draft?.metadata?.id;
+    if (agentId) openDeleteAgent(agentId);
+  };
   $("detailBuild").onclick = () => buildCurrentAgent();
   $("detailChat").onclick = () => openChat().catch(handleGlobalError);
   $("detailInvoke").onclick = openInvocation;
@@ -1833,7 +3321,13 @@ function bindEvents() {
   $("conversationInvoke").onclick = openInvocation;
   $("toggleInspector").onclick = () => $("runInspector").classList.toggle("open");
   $("newSession").onclick = newChatSession;
+  $("confirmDeleteAgent").onclick = () => deleteAgent();
+  $("confirmDeleteSession").onclick = () => deleteSession();
   $("sendMessage").onclick = () => sendChatMessage();
+  $("chatModel").onchange = () => {
+    state.activeChatModel = $("chatModel").value;
+    renderInvocation();
+  };
   $("chatInput").oninput = autoSizeComposer;
   $("chatInput").onkeydown = event => {
     if (event.key === "Enter" && !event.shiftKey) {
@@ -1843,11 +3337,34 @@ function bindEvents() {
   };
   $("copyInvocation").onclick = () => copyInvocation();
   $("addResourceButton").onclick = addResource;
+  $("discoverSkills").onclick = () => discoverWorkspaceSkills().catch(handleGlobalError);
+  $("commitDiscoveredSkill").onclick = () => commitSelectedSkill().catch(handleGlobalError);
+  $("pythonToolForm").onsubmit = event => savePythonTool(event).catch(handleGlobalError);
   $("resourceSearch").oninput = renderResources;
   $("resourceStatusFilter").onchange = renderResources;
-  $("refreshRuns").onclick = () => refreshRuns().catch(handleGlobalError);
+  $("refreshRuns").onclick = () => refreshTraces().catch(handleGlobalError);
+  $("traceSearch").oninput = renderTraceList;
+  $("traceAgentFilter").onchange = () => refreshTraces().catch(handleGlobalError);
+  $("traceStatusFilter").onchange = () => refreshTraces().catch(handleGlobalError);
+  $("openFullTrace").onclick = () => {
+    const traceId = $("openFullTrace").dataset.traceId;
+    if (traceId) openTrace(traceId).catch(handleGlobalError);
+  };
+  $("copyTraceparent").onclick = async () => {
+    const trace = state.activeTrace;
+    if (!trace?.traceId || !trace.rootSpanId) return;
+    await navigator.clipboard.writeText(`00-${trace.traceId}-${trace.rootSpanId}-01`);
+    showToast("traceparent 已复制", shortId(trace.traceId, 24));
+  };
+  $("toggleTraceDetail").onclick = () => setTraceDetailExpanded(!state.traceDetailExpanded);
+  $("copyRawOtlp").onclick = () => copyRawTrace().catch(handleGlobalError);
 
   document.addEventListener("click", event => {
+    const authoringMode = event.target.closest("[data-authoring-mode]");
+    if (authoringMode) {
+      setAuthoringMode(authoringMode.dataset.authoringMode);
+      return;
+    }
     const navigation = event.target.closest(".nav-item");
     if (navigation) {
       const view = navigation.dataset.view;
@@ -1858,8 +3375,8 @@ function bindEvents() {
         switchView("resources", { title: navigation.textContent.trim() });
       } else {
         if (view === "builds") renderBuildWorkspace();
-        if (view === "observability") refreshRuns().catch(handleGlobalError);
         switchView(view);
+        if (view === "observability") refreshTraces().catch(handleGlobalError);
       }
       return;
     }
@@ -1885,9 +3402,19 @@ function bindEvents() {
       openAgentDetail(openAgent.dataset.openAgent).catch(handleGlobalError);
       return;
     }
+    const editAgent = event.target.closest("[data-edit-agent]");
+    if (editAgent) {
+      openEditAgent(editAgent.dataset.editAgent).catch(handleGlobalError);
+      return;
+    }
     const chatAgent = event.target.closest("[data-chat-agent]");
     if (chatAgent) {
       openChat(chatAgent.dataset.chatAgent).catch(handleGlobalError);
+      return;
+    }
+    const deleteAgentButton = event.target.closest("[data-delete-agent]");
+    if (deleteAgentButton) {
+      openDeleteAgent(deleteAgentButton.dataset.deleteAgent);
       return;
     }
     const wizardStep = event.target.closest(".wizard-step");
@@ -1955,14 +3482,30 @@ function bindEvents() {
       $("chatInput").focus();
       return;
     }
+    const sessionMenu = event.target.closest("[data-session-menu]");
+    if (sessionMenu) {
+      const sessionId = sessionMenu.dataset.sessionMenu;
+      document.querySelectorAll("[data-session-menu-popover]").forEach(node => {
+        node.hidden = node.dataset.sessionMenuPopover !== sessionId || !node.hidden;
+      });
+      return;
+    }
+    const deleteSessionButton = event.target.closest("[data-delete-session]");
+    if (deleteSessionButton) {
+      openDeleteSession(deleteSessionButton.dataset.deleteSession);
+      return;
+    }
     const session = event.target.closest("[data-session-id]");
     if (session) {
+      state.chatViewRevision += 1;
       state.chatSessionId = session.dataset.sessionId;
+      $("sendMessage").disabled = false;
       renderSessionList();
       renderMessages();
       const latest = agentRuns().filter(run => run.sessionId === state.chatSessionId).at(-1);
       if (latest) renderTrace(latest).catch(handleGlobalError);
       renderInvocation();
+      syncBrowserRoute();
       return;
     }
     const codeTab = event.target.closest("[data-code-tab]");
@@ -1984,8 +3527,29 @@ function bindEvents() {
       probeMcp(probe.dataset.probeMcp);
       return;
     }
-    const run = event.target.closest("[data-open-run]");
-    if (run) openRun(run.dataset.openRun).catch(handleGlobalError);
+    const skillCandidate = event.target.closest("[data-skill-candidate]");
+    if (skillCandidate) {
+      $("commitDiscoveredSkill").disabled = !skillCandidate.checked;
+      return;
+    }
+    const trace = event.target.closest("[data-open-trace]");
+    if (trace) {
+      openTrace(trace.dataset.openTrace).catch(handleGlobalError);
+      return;
+    }
+    const span = event.target.closest("[data-open-span]");
+    if (span) {
+      state.activeSpanId = span.dataset.openSpan;
+      renderTraceSpans();
+      renderTraceDetail();
+      return;
+    }
+    const traceTab = event.target.closest("[data-trace-tab]");
+    if (traceTab) {
+      state.traceTab = traceTab.dataset.traceTab;
+      if (state.traceTab === "raw") setTraceDetailExpanded(true);
+      renderTraceDetail();
+    }
   });
 
   document.addEventListener("keydown", event => {
@@ -2001,7 +3565,7 @@ async function refreshAll() {
   if (state.current?.draft?.metadata?.id) {
     const currentId = state.current.draft.metadata.id;
     state.current = await api(`/agents/${encodeURIComponent(currentId)}`);
-    state.build = state.current.builds.find(item => item.status === "SUCCEEDED") || null;
+    state.build = currentSuccessfulBuild(state.current);
   }
   if (state.view === "agent-detail") renderAgentDetail();
   if (state.view === "chat") {
@@ -2009,6 +3573,7 @@ async function refreshAll() {
     renderSessionList();
     renderMessages();
   }
+  if (state.view === "observability") await refreshTraces();
 }
 
 function handleGlobalError(error) {
@@ -2017,17 +3582,37 @@ function handleGlobalError(error) {
 }
 
 async function initialize() {
+  const route = initialBrowserRoute();
   injectIcons();
   bindEvents();
+  if (window.matchMedia("(max-width: 1279px)").matches) {
+    $("runInspector").classList.remove("open");
+  }
   updateMcpTransport();
   setRuntimeStatus("Connecting");
   try {
     await establishSession();
     await Promise.all([refreshCatalog(), refreshAgents(), refreshRuns()]);
+    if (route.agentId && state.agentDetails.has(route.agentId)) {
+      state.current = state.agentDetails.get(route.agentId);
+      state.build = currentSuccessfulBuild(state.current);
+      renderGlobalContext();
+    }
     resetWizard();
     renderResources();
-    renderRunRows();
-    switchView("agents");
+    if (
+      route.view === "chat"
+      && route.agentId
+      && state.agents.some(agent => agent.metadata.id === route.agentId)
+    ) {
+      await openChat(route.agentId, { sessionId: route.sessionId || null });
+    } else if (route.view === "observability") {
+      switchView("observability");
+      await refreshTraces({ selectFirst: !route.traceId });
+      if (route.traceId) await openTrace(route.traceId, { switchToView: false });
+    } else {
+      switchView("agents");
+    }
   } catch (error) {
     setRuntimeStatus("Disconnected");
     handleGlobalError(error);
