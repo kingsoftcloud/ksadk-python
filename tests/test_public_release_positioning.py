@@ -223,8 +223,8 @@ def test_public_metadata_uses_runtime_platform_positioning():
     init_text = _read("ksadk/__init__.py")
     version_text = _read("ksadk/version.py")
 
-    assert pyproject["project"]["version"] == "0.8.1"
-    assert 'VERSION = "0.8.1"' in version_text
+    assert pyproject["project"]["version"] == "0.8.0"
+    assert 'VERSION = "0.8.0"' in version_text
     assert "Agent Runtime Platform" in pyproject["project"]["description"]
     assert "Agent Runtime Platform" in init_text
     assert "Agent Development Kit" not in pyproject["project"]["description"]

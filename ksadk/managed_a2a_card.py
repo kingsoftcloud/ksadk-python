@@ -10,7 +10,7 @@ v1 scope (this module):
     The card mounts whenever ``KSADK_A2A_RUNTIME_ID`` (ar-*, available at deploy
     time) is non-empty. It does **not** depend on ``KSADK_A2A_AGENT_ID``
     (only known after the A2A Agent is registered). skills default to empty;
-    :func:`ksadk.a2a.card.build_agent_card` fills a ``general`` skill when none
+    :func:`ksadk.a2a_card.build_agent_card` fills a ``general`` skill when none
     are provided.
 
 v2 scope (future, not this module):
@@ -29,16 +29,30 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Sequence
 
+from a2a.types import AgentSkill
 from fastapi import FastAPI
 
-from ksadk.a2a.card import build_agent_card
-from ksadk.a2a.routes import A2AConfig
+from ksadk.a2a_card import build_agent_card
 
 
 def _env(name: str) -> str:
     return os.getenv(name, "").strip()
+
+
+@dataclass(frozen=True)
+class ManagedA2ACardConfig:
+    """Database-free configuration for the managed discovery-only route."""
+
+    enabled: bool = True
+    base_url: str = "http://127.0.0.1:8000"
+    agent_name: str = "agent"
+    description: str = ""
+    version: str = "0.1.0"
+    skills: Sequence[str | AgentSkill] = ()
+    streaming: bool = False
+    prefer_stream: bool = False
 
 
 @dataclass(frozen=True)
@@ -49,7 +63,7 @@ class ManagedA2ACardMount:
     it without importing the (optional) ``AgentEngineA2ABootstrap`` class.
     """
 
-    config: A2AConfig
+    config: ManagedA2ACardConfig
 
     def mount(self, app: FastAPI) -> None:
         """Mount ``GET /.well-known/agent-card.json`` into ``app``.
@@ -101,7 +115,7 @@ def build_managed_a2a_card_if_configured() -> Optional[ManagedA2ACardMount]:
     name = _env("KSADK_A2A_AGENT_NAME") or _env("AGENTENGINE_MANAGED_RUNTIME_NAME") or runtime_id
     version = _env("KSADK_A2A_AGENT_VERSION") or "0.1.0"
 
-    config = A2AConfig(
+    config = ManagedA2ACardConfig(
         enabled=True,
         base_url=base_url,
         agent_name=name,
@@ -114,4 +128,8 @@ def build_managed_a2a_card_if_configured() -> Optional[ManagedA2ACardMount]:
     return ManagedA2ACardMount(config)
 
 
-__all__ = ["ManagedA2ACardMount", "build_managed_a2a_card_if_configured"]
+__all__ = [
+    "ManagedA2ACardConfig",
+    "ManagedA2ACardMount",
+    "build_managed_a2a_card_if_configured",
+]

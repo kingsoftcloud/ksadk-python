@@ -100,7 +100,7 @@ dev-backend:
 
 test:
 	@echo "🧪 运行 Python 测试..."
-	pytest tests/ -v
+	uv run --extra all pytest tests/ -v
 
 # ============================================================
 # 构建和发布

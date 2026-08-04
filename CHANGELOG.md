@@ -7,8 +7,6 @@
 
 ## [Unreleased]
 
-## [0.8.1] - 2026-08-04
-
 ### 修复
 
 - AgentEngine 托管 runtime 在模块级 `ksadk.server.app:app` 与 `BaseRunner.run_server()` 两个真实入口都按 `KSADK_A2A_RUNTIME_ID` 挂载 discovery-only `/.well-known/agent-card.json`；卡片明确声明 `streaming=false`，不开放 JSON-RPC、REST Task 或其他 A2A 数据面路由。
@@ -17,7 +15,7 @@
 
 ### 兼容性
 
-- `KSADK_A2A_AGENT_ID` 文档改为不透明注册 ID，不再承诺 `a2a-agent-*` 前缀；v1 discovery card 仍只依赖部署期的 `KSADK_A2A_RUNTIME_ID`。
+- A2A 环境变量明确区分部署期 `KSADK_A2A_RUNTIME_ID` 与注册后 `KSADK_A2A_AGENT_ID`；v1 discovery card 只依赖前者。
 
 ## [0.8.0] - 2026-07-29
 

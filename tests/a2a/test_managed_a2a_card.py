@@ -14,12 +14,11 @@ else — no JSON-RPC, no identity middleware, no TaskStore. It must:
 
 from __future__ import annotations
 
-import importlib
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
 from typing import Iterator
 
 import pytest
@@ -71,7 +70,9 @@ def test_returns_none_when_agent_id_absent(_clean_env: None) -> None:
     assert build_managed_a2a_card_if_configured() is None
 
 
-def test_mounts_card_without_a2a_agent_id(_clean_env: None, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_mounts_card_without_a2a_agent_id(
+    _clean_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """v1 discovery card mounts before the A2A Agent is registered."""
     monkeypatch.setenv("KSADK_A2A_RUNTIME_ID", "ar-test-runtime")
     monkeypatch.setenv("KSADK_A2A_INTERNAL_BASE_URL", "http://runtime.internal:8080")
@@ -88,7 +89,9 @@ def test_mounts_card_without_a2a_agent_id(_clean_env: None, monkeypatch: pytest.
     assert not any(p.startswith("/a2a/v1") for p in paths)
 
 
-def test_card_payload_uses_injected_name_version(_clean_env: None, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_card_payload_uses_injected_name_version(
+    _clean_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv("KSADK_A2A_RUNTIME_ID", "ar-test-runtime")
     monkeypatch.setenv("KSADK_A2A_AGENT_NAME", "weather-agent")
     monkeypatch.setenv("KSADK_A2A_AGENT_VERSION", "2.3.0")

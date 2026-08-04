@@ -332,7 +332,7 @@
 | `AGENTENGINE_PRE_CONTROL_REGION` | CLI / API client | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 预发控制面 region 覆盖。 |
 | `AGENTENGINE_PRE_CUSTOM_SOURCE` | CLI / API client | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 预发 custom source 覆盖。 |
 | `KSADK_A2A_ACCOUNT_ID` | A2A Runtime | 条件必传 | 未设置 | 无 | 否 | 部署层 / 平台 | 否 | Runtime 归属账号 id（ar-* agent 的 account），v2 inbound 身份校验需要。 |
-| `KSADK_A2A_AGENT_ID` | A2A Runtime | 条件必传 | 未设置 | 无 | 否 | 部署层 / 平台 | 否 | 已注册 A2A Agent 的不透明 id，注册后由 reconciler 注入。调用方不得依赖固定前缀；v2 完整 inbound JSON-RPC 装配需要此值，v1 discovery-only card 不依赖它。 |
+| `KSADK_A2A_AGENT_ID` | A2A Runtime | 条件必传 | 未设置 | 无 | 否 | 部署层 / 平台 | 否 | 已注册 A2A Agent 的 id，注册后由 reconciler 注入；当前平台生成 `a2a-agent-*`，调用方应按不透明字符串传递。v2 完整 inbound JSON-RPC 装配需要此值，v1 discovery-only card 不依赖它。 |
 | `KSADK_A2A_AGENT_NAME` | A2A Runtime | 否 | fallback `AGENTENGINE_MANAGED_RUNTIME_NAME` → `KSADK_A2A_RUNTIME_ID` | 无 | 否 | 部署层 / 平台 | 否 | AgentCard 展示名称；普通 Code runtime 无 `AGENTENGINE_MANAGED_RUNTIME_NAME` 时由部署层用 `agents.name` 注入。 |
 | `KSADK_A2A_AGENT_VERSION` | A2A Runtime | 否 | `0.1.0` | 无 | 否 | 部署层 / 平台 | 否 | AgentCard 业务版本，区别于 runtime 镜像版本（`AGENTENGINE_MANAGED_RUNTIME_VERSION`）。 |
 | `KSADK_A2A_SPACE_ID` | A2A Runtime | 条件必传 | 未设置 | 无 | 否 | 部署层 / 平台 | 否 | Runtime Agent 当前选择的主 Space ID。`A2ASpaceClient.from_env()` 优先读取此值；ID 按不透明字符串处理，不依赖固定前缀。 |
