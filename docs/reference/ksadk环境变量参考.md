@@ -332,10 +332,11 @@
 | `AGENTENGINE_PRE_CONTROL_REGION` | CLI / API client | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 预发控制面 region 覆盖。 |
 | `AGENTENGINE_PRE_CUSTOM_SOURCE` | CLI / API client | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 预发 custom source 覆盖。 |
 | `KSADK_A2A_ACCOUNT_ID` | A2A Runtime | 条件必传 | 未设置 | 无 | 否 | 部署层 / 平台 | 否 | Runtime 归属账号 id（ar-* agent 的 account），v2 inbound 身份校验需要。 |
-| `KSADK_A2A_AGENT_ID` | A2A Runtime | 条件必传 | 未设置 | 无 | 否 | 部署层 / 平台 | 否 | 已注册的 A2A Agent id（`a2a-agent-*`），注册后由 reconciler 调 UpdateAgentRuntime 注入。v2 完整 inbound JSON-RPC 装配需要此值；v1 discovery-only card 不依赖它。 |
+| `KSADK_A2A_AGENT_ID` | A2A Runtime | 条件必传 | 未设置 | 无 | 否 | 部署层 / 平台 | 否 | 已注册 A2A Agent 的不透明 id，注册后由 reconciler 注入。调用方不得依赖固定前缀；v2 完整 inbound JSON-RPC 装配需要此值，v1 discovery-only card 不依赖它。 |
 | `KSADK_A2A_AGENT_NAME` | A2A Runtime | 否 | fallback `AGENTENGINE_MANAGED_RUNTIME_NAME` → `KSADK_A2A_RUNTIME_ID` | 无 | 否 | 部署层 / 平台 | 否 | AgentCard 展示名称；普通 Code runtime 无 `AGENTENGINE_MANAGED_RUNTIME_NAME` 时由部署层用 `agents.name` 注入。 |
 | `KSADK_A2A_AGENT_VERSION` | A2A Runtime | 否 | `0.1.0` | 无 | 否 | 部署层 / 平台 | 否 | AgentCard 业务版本，区别于 runtime 镜像版本（`AGENTENGINE_MANAGED_RUNTIME_VERSION`）。 |
-| `KSADK_A2A_SPACE_IDS` | A2A Runtime | 条件必传 | 未设置 | 无 | 否 | 部署层 / 平台 | 否 | Runtime Agent 当前配置的 Space ID JSON 数组，最多 100 个。`A2ASpaceClient.from_env()` 仅在数组恰有一个元素时自动选择；多 Space 必须传 `space_id`，且服务端 membership 才是授权事实。 |
+| `KSADK_A2A_SPACE_ID` | A2A Runtime | 条件必传 | 未设置 | 无 | 否 | 部署层 / 平台 | 否 | Runtime Agent 当前选择的主 Space ID。`A2ASpaceClient.from_env()` 优先读取此值；ID 按不透明字符串处理，不依赖固定前缀。 |
+| `KSADK_A2A_SPACE_IDS` | A2A Runtime | 否 | 未设置 | `KSADK_A2A_SPACE_ID` 缺失时兼容读取 | 否 | 部署层 / 平台 | 否 | 兼容旧部署的 Space ID JSON 数组，最多 100 个。仅在数组恰有一个元素时自动选择；多 Space 必须显式传 `space_id`，且服务端 membership 才是授权事实。 |
 | `KSADK_A2A_CONTROL_PLANE_URL` | A2A Runtime | 条件必传 | 未设置 | 无 | 否 | 部署层 / 平台 | 否 | Runtime internal A2A Action 基地址；不自动探测、不回退 `AGENTENGINE_SERVER_URL`。 |
 | `KSADK_A2A_ENABLE_PUBLIC_EGRESS` | A2A Runtime | 否 | 由 `Network.EnablePublicAccess` 最终值派生；未注入时 SDK 按 `false` fail-closed | 无 | 否 | 部署层 / 平台 | 否 | 只控制 `external_public`；CreateAgent 的 `Network.EnablePublicAccess` 缺省为 `true`。`external_vpc` 由独立 VPC policy 决定。 |
 | `KSADK_A2A_EVENT_OUTBOX_PATH` | A2A Runtime | 否 | `.agentengine/a2a_event_outbox.sqlite3` | 无 | 否 | 部署层 / 平台 | 否 | A2A Task event durable outbox 的 SQLite 路径；生产部署应放在 Runtime 可写持久卷，不保存 permit、JWT 或 credential。 |

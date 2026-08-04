@@ -35,6 +35,7 @@ from ksadk.a2a.control_plane import ENV_A2A_CONTROL_PLANE_URL
 from ksadk.a2a.external_transport import A2ATransportLease
 from ksadk.a2a.space_client import (
     ENV_A2A_ENABLE_PUBLIC_EGRESS,
+    ENV_A2A_SPACE_ID,
     ENV_A2A_SPACE_IDS,
     ERR_PUBLIC_EGRESS_DISABLED,
 )
@@ -227,9 +228,20 @@ def _client_for_app(app: FastAPI, agents, *, egress: bool) -> A2ASpaceClient:
 
 
 def test_from_env_requires_space_selection(monkeypatch):
+    monkeypatch.delenv(ENV_A2A_SPACE_ID, raising=False)
     monkeypatch.delenv(ENV_A2A_SPACE_IDS, raising=False)
-    with pytest.raises(ValueError, match=ENV_A2A_SPACE_IDS):
+    with pytest.raises(ValueError, match=ENV_A2A_SPACE_ID):
         A2ASpaceClient.from_env()
+
+
+def test_from_env_prefers_singular_space_id_over_plural_compatibility(monkeypatch):
+    server_space_id = "as-0abc123def45"
+    monkeypatch.setenv(ENV_A2A_SPACE_ID, server_space_id)
+    monkeypatch.setenv(ENV_A2A_SPACE_IDS, f'["{SPACE_ID_2}"]')
+
+    client = A2ASpaceClient.from_env(backend=_MockDiscoveryBackend([]))
+
+    assert client._space_id == server_space_id
 
 
 def test_from_env_requires_explicit_selection_for_multiple_spaces(monkeypatch):

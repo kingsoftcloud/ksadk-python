@@ -15,7 +15,11 @@ else — no JSON-RPC, no identity middleware, no TaskStore. It must:
 from __future__ import annotations
 
 import importlib
+import json
 import os
+from pathlib import Path
+import subprocess
+import sys
 from typing import Iterator
 
 import pytest
@@ -99,6 +103,7 @@ def test_card_payload_uses_injected_name_version(_clean_env: None, monkeypatch: 
     body = resp.json()
     assert body["name"] == "weather-agent"
     assert body["version"] == "2.3.0"
+    assert body["capabilities"]["streaming"] is False
     # skills 非空(build_agent_card 空 skills 自动补 general)
     assert body["skills"], "card must have at least one skill"
 
@@ -140,3 +145,38 @@ def test_start_stop_are_noop(_clean_env: None, monkeypatch: pytest.MonkeyPatch) 
     assert mount is not None
     assert asyncio.run(mount.start()) is None
     assert asyncio.run(mount.stop()) is None
+
+
+def test_module_level_server_app_mounts_discovery_only_card_in_fresh_process() -> None:
+    """Code/Container entrypoints import ``ksadk.server.app:app`` directly."""
+    probe = """
+import json
+from fastapi.testclient import TestClient
+from ksadk.server.app import app
+
+paths = sorted(
+    path
+    for route in app.routes
+    if (path := getattr(route, "path", None)) is not None
+)
+body = TestClient(app).get("/.well-known/agent-card.json").json()
+print(json.dumps({"paths": paths, "body": body}, sort_keys=True))
+"""
+    env = os.environ.copy()
+    env["KSADK_A2A_RUNTIME_ID"] = "ar-module-entrypoint"
+    env["KSADK_A2A_INTERNAL_BASE_URL"] = "http://runtime.internal:8080"
+    env.pop("KSADK_A2A_AGENT_ID", None)
+    completed = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=Path(__file__).resolve().parents[2],
+        env=env,
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    payload = json.loads(completed.stdout.strip().splitlines()[-1])
+    assert "/.well-known/agent-card.json" in payload["paths"]
+    assert JSONRPC_PATH not in payload["paths"]
+    assert not any(path.startswith("/a2a/v1") for path in payload["paths"])
+    assert payload["body"]["capabilities"]["streaming"] is False

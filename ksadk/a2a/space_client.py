@@ -54,6 +54,7 @@ from ksadk.events.runtime_event import RuntimeEvent
 
 logger = logging.getLogger(__name__)
 
+ENV_A2A_SPACE_ID = "KSADK_A2A_SPACE_ID"
 ENV_A2A_SPACE_IDS = "KSADK_A2A_SPACE_IDS"
 ENV_A2A_ENABLE_PUBLIC_EGRESS = "KSADK_A2A_ENABLE_PUBLIC_EGRESS"
 
@@ -61,6 +62,14 @@ ERR_PUBLIC_EGRESS_DISABLED = "A2A_PUBLIC_EGRESS_DISABLED"
 MAX_A2A_MESSAGE_BYTES = 1024 * 1024
 MAX_A2A_MESSAGE_PARTS = 64
 MAX_A2A_MESSAGE_ID_LENGTH = 128
+
+
+def _require_opaque_space_id(value: str, *, field_name: str) -> str:
+    """Validate a server-issued opaque Space ID without assuming a prefix."""
+    normalized = str(value or "").strip()
+    if not normalized or len(normalized) > 256 or any(char.isspace() for char in normalized):
+        raise ValueError(f"{field_name} must be a non-empty opaque resource ID")
+    return normalized
 
 
 @dataclass(frozen=True)
@@ -111,7 +120,7 @@ class A2ASpaceClient:
         event_outbox: A2ATaskEventOutbox | None = None,
         event_dispatcher: A2ATaskEventDispatcher | None = None,
     ) -> None:
-        require_a2a_resource_id(space_id, "a2a-space-", field_name="space_id")
+        space_id = _require_opaque_space_id(space_id, field_name="space_id")
         if external_transport is not None and not isinstance(
             external_transport, A2AExternalTransport
         ):
@@ -148,19 +157,19 @@ class A2ASpaceClient:
         event_outbox: A2ATaskEventOutbox | None = None,
         event_dispatcher: A2ATaskEventDispatcher | None = None,
     ) -> "A2ASpaceClient":
-        selected_space_id = str(space_id or "").strip()
+        selected_space_id = str(
+            space_id or os.getenv(ENV_A2A_SPACE_ID) or ""
+        ).strip()
         if selected_space_id:
-            require_a2a_resource_id(
-                selected_space_id,
-                "a2a-space-",
-                field_name="space_id",
+            selected_space_id = _require_opaque_space_id(
+                selected_space_id, field_name="space_id"
             )
         else:
             raw_space_ids = str(os.getenv(ENV_A2A_SPACE_IDS) or "").strip()
             if not raw_space_ids:
                 raise ValueError(
-                    f"missing {ENV_A2A_SPACE_IDS}; pass space_id or add the Runtime Agent "
-                    "to an A2A Space first"
+                    f"missing {ENV_A2A_SPACE_ID} and {ENV_A2A_SPACE_IDS}; pass space_id "
+                    "or add the Runtime Agent to an A2A Space first"
                 )
             try:
                 configured_space_ids = json.loads(raw_space_ids)
@@ -175,10 +184,8 @@ class A2ASpaceClient:
                 if not isinstance(configured_space_id, str):
                     raise ValueError(f"{ENV_A2A_SPACE_IDS}[{index}] must be an A2A Space ID string")
                 normalized = configured_space_id.strip()
-                require_a2a_resource_id(
-                    normalized,
-                    "a2a-space-",
-                    field_name=f"{ENV_A2A_SPACE_IDS}[{index}]",
+                normalized = _require_opaque_space_id(
+                    normalized, field_name=f"{ENV_A2A_SPACE_IDS}[{index}]"
                 )
                 normalized_space_ids.append(normalized)
             if len(set(normalized_space_ids)) != len(normalized_space_ids):
@@ -1095,6 +1102,7 @@ __all__ = [
     "A2ASpaceClient",
     "DiscoveredAgent",
     "ENV_A2A_ENABLE_PUBLIC_EGRESS",
+    "ENV_A2A_SPACE_ID",
     "ENV_A2A_SPACE_IDS",
     "ERR_PUBLIC_EGRESS_DISABLED",
     "SpaceAgentPage",

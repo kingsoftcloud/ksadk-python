@@ -481,12 +481,25 @@ route_dependencies.configure(
     )
 )
 
+
+def _build_managed_a2a_card_for_default_app():
+    """Avoid importing the A2A package while it initializes other SDK modules."""
+    if not os.getenv("KSADK_A2A_RUNTIME_ID", "").strip():
+        return None
+    from ksadk.managed_a2a_card import build_managed_a2a_card_if_configured
+
+    return build_managed_a2a_card_if_configured()
+
+
 app: FastAPI = create_runtime_app(
     RuntimeAppConfig(
         # Keep the documented facade injection seam dynamic. New factory users
         # get app-owned services unless they explicitly supply a provider.
         session_service_provider=lambda: resolve_session_service(),
         session_backend_provider=lambda: describe_session_backend(),
+        # Code/Container builders import this module-level app directly. Mount
+        # the discovery-only card here as well as in BaseRunner.run_server.
+        a2a=_build_managed_a2a_card_for_default_app(),
     ),
     configure_runtime_app,
 )

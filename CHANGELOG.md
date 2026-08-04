@@ -7,6 +7,18 @@
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-08-04
+
+### 修复
+
+- AgentEngine 托管 runtime 在模块级 `ksadk.server.app:app` 与 `BaseRunner.run_server()` 两个真实入口都按 `KSADK_A2A_RUNTIME_ID` 挂载 discovery-only `/.well-known/agent-card.json`；卡片明确声明 `streaming=false`，不开放 JSON-RPC、REST Task 或其他 A2A 数据面路由。
+- `A2ASpaceClient.from_env()` 优先读取 `KSADK_A2A_SPACE_ID`，并保留对单元素 `KSADK_A2A_SPACE_IDS` JSON 数组的兼容读取。
+- A2A 核心依赖改为 `a2a-sdk[fastapi]`；PostgreSQL TaskStore 支持移到可选 `ksadk[a2a-postgres]`，discovery-only runtime 不再因 A2A 被强制安装 PostgreSQL adapter。会话系统既有 `asyncpg` 依赖保持不变。
+
+### 兼容性
+
+- `KSADK_A2A_AGENT_ID` 文档改为不透明注册 ID，不再承诺 `a2a-agent-*` 前缀；v1 discovery card 仍只依赖部署期的 `KSADK_A2A_RUNTIME_ID`。
+
 ## [0.8.0] - 2026-07-29
 
 ### 亮点

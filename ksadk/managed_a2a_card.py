@@ -108,6 +108,8 @@ def build_managed_a2a_card_if_configured() -> Optional[ManagedA2ACardMount]:
         description="",
         version=version,
         skills=(),
+        streaming=False,
+        prefer_stream=False,
     )
     return ManagedA2ACardMount(config)
 

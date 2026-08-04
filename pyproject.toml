@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ksadk"
-version = "0.8.0"
+version = "0.8.1"
 description = "KsADK Agent Runtime Platform - unified runtime, debugging, deployment and observability for AI agents"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -48,7 +48,7 @@ dependencies = [
     "httpcore>=1.0.9,<1.1.0",
     # A2A wire 1.0 清洁重写基线 (goal-00): 首期精确锁定 1.1.0。
     # 旧 0.3.x 与 wire 1.0 API 不兼容，不能与 KsADK 0.8 共用一个环境。
-    "a2a-sdk[fastapi,postgresql]==1.1.0",
+    "a2a-sdk[fastapi]==1.1.0",
     # A2UI:官方 Python 包(ag-ui-a2ui-toolkit 等)当前仍对齐 v0.9,v1.0(2026-06 Candidate)
     # 尚未进包。B 方案:守 G0.2 冻结 schema,前端已加 v1.0 消息名兼容层(createSurface/
     # updateComponents/deleteSurface),待官方包跟进 v1.0 后整体切换、撤自研 ksadk/a2ui/。
@@ -119,7 +119,12 @@ deepagents = [
 ]
 # A2A 协议集成 (goal-00: 与主依赖一致精确锁定 wire 1.0 SDK)
 a2a = [
-    "a2a-sdk[fastapi,postgresql]==1.1.0",
+    "a2a-sdk[fastapi]==1.1.0",
+]
+# A2A PostgreSQL TaskStore adapter. Discovery-only and in-memory/SQLite A2A
+# runtimes do not install this extra.
+a2a-postgres = [
+    "a2a-sdk[postgresql]==1.1.0",
 ]
 # 可观测性
 tracing = [

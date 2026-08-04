@@ -22,7 +22,7 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     EnvVarSpec(
         "KSADK_A2A_AGENT_ID",
         "a2a",
-        "Registered A2A Agent id (a2a-agent-*) injected post-registration; "
+        "Opaque registered A2A Agent id injected post-registration; "
         "required to wire full inbound JSON-RPC in v2. v1 discovery-only card "
         "does not depend on it.",
     ),
@@ -72,9 +72,14 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "must be an absolute origin with no path/query/fragment.",
     ),
     EnvVarSpec(
+        "KSADK_A2A_SPACE_ID",
+        "a2a",
+        "Primary A2A Space id configured for this Runtime Agent.",
+    ),
+    EnvVarSpec(
         "KSADK_A2A_SPACE_IDS",
         "a2a",
-        "JSON array of A2A Space ids configured for this Runtime Agent.",
+        "Compatibility JSON array of A2A Space ids configured for this Runtime Agent.",
     ),
     EnvVarSpec(
         "KSADK_A2A_TENANT_ID",
