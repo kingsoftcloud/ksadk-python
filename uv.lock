@@ -2024,7 +2024,7 @@ name = "ksadk"
 version = "0.8.0"
 source = { editable = "." }
 dependencies = [
-    { name = "a2a-sdk", extra = ["fastapi", "postgresql"] },
+    { name = "a2a-sdk", extra = ["fastapi"] },
     { name = "a2ui-core" },
     { name = "asyncpg" },
     { name = "beautifulsoup4" },
@@ -2066,7 +2066,12 @@ dependencies = [
 
 [package.optional-dependencies]
 a2a = [
-    { name = "a2a-sdk", extra = ["fastapi", "postgresql"] },
+    { name = "a2a-sdk", extra = ["fastapi"] },
+    { name = "aiosqlite" },
+    { name = "sqlalchemy", extra = ["asyncio"] },
+]
+a2a-postgres = [
+    { name = "a2a-sdk", extra = ["postgresql"] },
 ]
 adk = [
     { name = "google-adk" },
@@ -2079,9 +2084,10 @@ agui = [
     { name = "copilotkit" },
 ]
 all = [
-    { name = "a2a-sdk", extra = ["fastapi", "postgresql"] },
+    { name = "a2a-sdk", extra = ["fastapi"] },
     { name = "ag-ui-langgraph", extra = ["fastapi"] },
     { name = "ag-ui-protocol" },
+    { name = "aiosqlite" },
     { name = "black" },
     { name = "build" },
     { name = "copilotkit" },
@@ -2103,6 +2109,7 @@ all = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "ruff" },
+    { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "twine" },
     { name = "types-protobuf" },
     { name = "types-python-dateutil" },
@@ -2156,11 +2163,13 @@ tracing = [
 
 [package.metadata]
 requires-dist = [
-    { name = "a2a-sdk", extras = ["fastapi", "postgresql"], specifier = "==1.1.0" },
-    { name = "a2a-sdk", extras = ["fastapi", "postgresql"], marker = "extra == 'a2a'", specifier = "==1.1.0" },
+    { name = "a2a-sdk", extras = ["fastapi"], specifier = "==1.1.0" },
+    { name = "a2a-sdk", extras = ["fastapi"], marker = "extra == 'a2a'", specifier = "==1.1.0" },
+    { name = "a2a-sdk", extras = ["postgresql"], marker = "extra == 'a2a-postgres'", specifier = "==1.1.0" },
     { name = "a2ui-core", specifier = "==0.1.1" },
     { name = "ag-ui-langgraph", extras = ["fastapi"], marker = "extra == 'agui'", specifier = "==0.0.42" },
     { name = "ag-ui-protocol", marker = "extra == 'agui'", specifier = "==0.1.19" },
+    { name = "aiosqlite", marker = "extra == 'a2a'", specifier = ">=0.20.0,<1.0.0" },
     { name = "asyncpg", specifier = ">=0.30.0,<1.0.0" },
     { name = "beautifulsoup4", specifier = ">=4.12.0" },
     { name = "black", marker = "extra == 'dev'", specifier = ">=22.0.0" },
@@ -2222,6 +2231,7 @@ requires-dist = [
     { name = "requests-aws4auth", specifier = ">=1.2.0" },
     { name = "rich", specifier = ">=13.0.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.0" },
+    { name = "sqlalchemy", extras = ["asyncio"], marker = "extra == 'a2a'", specifier = ">=2.0.0,<3.0.0" },
     { name = "sse-starlette", specifier = ">=2.1.0" },
     { name = "twine", marker = "extra == 'dev'", specifier = ">=5.0.0" },
     { name = "types-protobuf", marker = "extra == 'dev'", specifier = ">=6.32.0" },
@@ -2232,7 +2242,7 @@ requires-dist = [
     { name = "uvicorn", specifier = ">=0.23.0" },
     { name = "websockets", specifier = ">=12.0,<16.0" },
 ]
-provides-extras = ["adk", "langchain", "langgraph", "deepagents", "a2a", "tracing", "kb", "skills", "codex", "agui", "dev", "all"]
+provides-extras = ["adk", "langchain", "langgraph", "deepagents", "a2a", "a2a-postgres", "tracing", "kb", "skills", "codex", "agui", "dev", "all"]
 
 [[package]]
 name = "langchain"

@@ -461,6 +461,17 @@ def _wire_a2a_if_enabled(app: FastAPI, state: RuntimeAppState, config: RuntimeAp
     a2a_cfg = config.a2a
     if a2a_cfg is None:
         return
+    from ksadk.managed_a2a_card import ManagedA2ACardMount
+
+    if isinstance(a2a_cfg, ManagedA2ACardMount):
+        a2a_cfg.mount(app)
+        state.a2a_bootstrap = a2a_cfg
+        logger.info(
+            "managed A2A discovery card mounted(agent_name=%s base_url=%s)",
+            a2a_cfg.config.agent_name,
+            a2a_cfg.config.base_url,
+        )
+        return
     from ksadk.a2a.bootstrap import AgentEngineA2ABootstrap
 
     if isinstance(a2a_cfg, AgentEngineA2ABootstrap):

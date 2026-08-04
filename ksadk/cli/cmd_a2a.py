@@ -212,7 +212,8 @@ def _space_client(space_id: str | None = None) -> A2ASpaceClient:
     except ValueError as exc:
         raise click.ClickException(
             f"A2A Space 未配置:{exc}。"
-            "请传 --space-id，或由 AgentEngine 部署注入 KSADK_A2A_SPACE_IDS；同时需要"
+            "请传 --space-id，或由 AgentEngine 部署注入 KSADK_A2A_SPACE_ID"
+            "（兼容 KSADK_A2A_SPACE_IDS）；同时需要"
             "KSADK_A2A_CONTROL_PLANE_URL 和 audience workload token。"
         ) from exc
 

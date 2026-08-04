@@ -100,7 +100,7 @@ dev-backend:
 
 test:
 	@echo "🧪 运行 Python 测试..."
-	pytest tests/ -v
+	uv run --extra all pytest tests/ -v
 
 # ============================================================
 # 构建和发布
@@ -563,7 +563,7 @@ openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size:
 # ============================================================
 
 STATIC_DIR := ksadk/server/static
-# The wheel must embed a published, reproducible Web bundle. 0.8.0 is coupled
+# The wheel must embed a published, reproducible Web bundle. 0.8.x is coupled
 # to the 0.3.0 Web release; the release job must fail rather than silently
 # substituting an older npm package when that release is not visible yet.
 KSADK_WEB_VERSION ?= 0.3.0
