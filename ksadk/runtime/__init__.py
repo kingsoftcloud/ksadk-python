@@ -17,6 +17,7 @@ from ksadk.runtime.adapter import (
     RuntimeServices,
     StartRequest,
 )
+from ksadk.runtime.executor import RuntimeExecutor
 from ksadk.runtime.framework_adapters import (
     ADKRuntimeAdapter,
     LangGraphRuntimeAdapter,
@@ -41,6 +42,7 @@ __all__ = [
     "RuntimeAdapterFactory",
     "RuntimeLaunchContext",
     "RuntimeRegistry",
+    "RuntimeExecutor",
     "RuntimeServices",
     "StartRequest",
     "build_default_registry",
