@@ -11,7 +11,10 @@ from ksadk.runtime.adapter import (
     ResumeTarget,
     RunHandle,
     RuntimeAdapter,
+    RuntimeAdapterFactory,
+    RuntimeLaunchContext,
     RuntimeRegistry,
+    RuntimeServices,
     StartRequest,
 )
 from ksadk.runtime.framework_adapters import (
@@ -35,7 +38,10 @@ __all__ = [
     "RunHandle",
     "RunnerRuntimeAdapter",
     "RuntimeAdapter",
+    "RuntimeAdapterFactory",
+    "RuntimeLaunchContext",
     "RuntimeRegistry",
+    "RuntimeServices",
     "StartRequest",
     "build_default_registry",
 ]

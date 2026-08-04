@@ -30,12 +30,14 @@ adapter)。本模块定义三层结构与六动词签名,供 Runtime 产生端�
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from enum import Enum
 from typing import Any, AsyncIterator, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from ksadk.events.runtime_event import RuntimeEvent
+from ksadk.runtime.launch import RuntimeLaunchContext, RuntimeServices
 
 # ---------------------------------------------------------------------------
 # cancel 状态机
@@ -298,37 +300,52 @@ class RuntimeAdapter(ABC):
 # ---------------------------------------------------------------------------
 
 
+RuntimeAdapterFactory = Callable[[RuntimeLaunchContext], RuntimeAdapter]
+
+
 class RuntimeRegistry:
-    """按 ``runtime_type`` 注册/查找 :class:`RuntimeAdapter`。
+    """按 ``runtime_type`` 注册/创建 :class:`RuntimeAdapter`。
 
     替代 ``runners/factory.py`` 的 if/elif 分发:新 runtime 通过 ``register``
     注册,不再改 factory 分支。
     """
 
     def __init__(self) -> None:
-        self._adapters: dict[str, type[RuntimeAdapter]] = {}
+        self._factories: dict[str, RuntimeAdapterFactory] = {}
 
-    def register(self, runtime_type: str, adapter_cls: type[RuntimeAdapter]) -> None:
+    def register(self, runtime_type: str, factory: RuntimeAdapterFactory) -> None:
         if not isinstance(runtime_type, str) or not runtime_type.strip():
-            raise ValueError("runtime_type 必须是非空字符串")
-        if not (isinstance(adapter_cls, type) and issubclass(adapter_cls, RuntimeAdapter)):
-            raise TypeError(f"adapter_cls 必须是 RuntimeAdapter 子类: {adapter_cls!r}")
-        self._adapters[runtime_type.strip()] = adapter_cls
+            raise ValueError("runtime type must be a non-empty string")
+        key = runtime_type.strip().lower()
+        if key in self._factories:
+            raise ValueError(f"duplicate runtime type: {runtime_type!r}")
+        if not callable(factory):
+            raise TypeError(f"runtime factory must be callable: {factory!r}")
+        self._factories[key] = factory
 
-    def get(self, runtime_type: str) -> type[RuntimeAdapter]:
+    def get(self, runtime_type: str) -> RuntimeAdapterFactory:
+        key = runtime_type.strip().lower()
         try:
-            return self._adapters[runtime_type]
+            return self._factories[key]
         except KeyError:
             raise KeyError(
-                f"未注册的 runtime_type: {runtime_type!r}(已注册: {sorted(self._adapters)})"
+                f"missing runtime type: {runtime_type!r}; "
+                f"registered: {sorted(self._factories)}"
             ) from None
 
-    def create(self, runtime_type: str, runtime: BaseRuntime) -> RuntimeAdapter:
-        """按 runtime_type 实例化 adapter(注入原生 runtime)。"""
-        return self.get(runtime_type)(runtime)
+    def create(self, context: RuntimeLaunchContext) -> RuntimeAdapter:
+        """使用不可变启动上下文创建一个新的 Adapter 实例。"""
+
+        adapter = self.get(context.runtime_type)(context)
+        if not isinstance(adapter, RuntimeAdapter):
+            raise TypeError(
+                "runtime factory must return RuntimeAdapter, "
+                f"got {type(adapter).__name__}"
+            )
+        return adapter
 
     def registered_types(self) -> list[str]:
-        return sorted(self._adapters)
+        return sorted(self._factories)
 
 
 __all__ = [
@@ -340,6 +357,9 @@ __all__ = [
     "ResumeTarget",
     "RunHandle",
     "RuntimeAdapter",
+    "RuntimeAdapterFactory",
+    "RuntimeLaunchContext",
     "RuntimeRegistry",
+    "RuntimeServices",
     "StartRequest",
 ]

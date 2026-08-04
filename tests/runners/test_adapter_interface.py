@@ -14,10 +14,12 @@ from __future__ import annotations
 
 import inspect
 from importlib import import_module
+from pathlib import Path
 from typing import AsyncIterator
 
 import pytest
 
+import ksadk.runtime.adapter as runtime_adapter_module
 from ksadk.events.runtime_event import EventType, RuntimeEvent
 from ksadk.runtime.adapter import (
     BaseRuntime,
@@ -180,19 +182,25 @@ def test_start_request_has_session_tenant_dimensions():
 
 def test_registry_register_get_create():
     registry = RuntimeRegistry()
-    registry.register("fake", _FakeAdapter)
-    assert registry.get("fake") is _FakeAdapter
-    adapter = registry.create("fake", _FakeRuntime())
+
+    def factory(_context):
+        return _FakeAdapter(_FakeRuntime())
+
+    registry.register("fake", factory)
+    assert registry.get("fake") is factory
+    adapter = registry.create(
+        runtime_adapter_module.RuntimeLaunchContext(
+            runtime_type="fake", project_dir=Path.cwd()
+        )
+    )
     assert isinstance(adapter, _FakeAdapter)
     assert "fake" in registry.registered_types()
 
 
 def test_registry_rejects_invalid():
     registry = RuntimeRegistry()
-    with pytest.raises(TypeError):
-        registry.register("bad", object)  # 非 RuntimeAdapter 子类
     with pytest.raises(ValueError):
-        registry.register("  ", _FakeAdapter)
+        registry.register("  ", lambda _context: _FakeAdapter(_FakeRuntime()))
     with pytest.raises(KeyError):
         registry.get("missing")
 
