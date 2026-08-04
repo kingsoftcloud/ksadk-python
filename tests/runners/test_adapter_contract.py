@@ -19,7 +19,7 @@ from typing import Any, Optional
 import pytest
 
 from ksadk.codex.client import CodexClient
-from ksadk.codex.runtime import CodexRuntime
+from ksadk.codex.runtime import CodexRuntimeAdapter
 from ksadk.events.runtime_event import RuntimeEvent
 from ksadk.runners.base_runner import BaseRunner
 from ksadk.runtime.adapter import (
@@ -187,7 +187,7 @@ def _make_langgraph(**kw):
 
 def _make_codex(**kw):
     client = _FakeCodexClient(**kw)
-    return CodexRuntime(client), client
+    return CodexRuntimeAdapter(client), client
 
 
 def _make_miniflow(**kw):

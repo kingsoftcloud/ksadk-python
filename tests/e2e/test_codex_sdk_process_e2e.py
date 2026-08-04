@@ -14,7 +14,7 @@ import os
 import pytest
 
 from ksadk.codex.client import AsyncCodexClient
-from ksadk.codex.runtime import CodexRuntime
+from ksadk.codex.runtime import CodexRuntimeAdapter
 from ksadk.runtime.adapter import CancelResult, ResumePayload, ResumeTarget, StartRequest
 
 pytestmark = pytest.mark.skipif(
@@ -26,7 +26,7 @@ pytestmark = pytest.mark.skipif(
 @pytest.mark.asyncio
 async def test_live_cli_one_turn_resume_and_process_exit() -> None:
     client = AsyncCodexClient()
-    runtime = CodexRuntime(client)
+    runtime = CodexRuntimeAdapter(client)
     process = None
     try:
         handle = await runtime.start(
@@ -95,7 +95,7 @@ async def test_live_cli_one_turn_resume_and_process_exit() -> None:
 async def test_live_cli_pending_cancel_is_consumed_without_persisting_thread() -> None:
     """Pending cancel is a real SDK process lifecycle path, not a fake-only case."""
     client = AsyncCodexClient()
-    runtime = CodexRuntime(client)
+    runtime = CodexRuntimeAdapter(client)
     try:
         handle = await runtime.start(
             StartRequest(input="unused", user_id="e2e-user", session_id="e2e-cancel")

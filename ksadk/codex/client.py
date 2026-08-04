@@ -1,6 +1,6 @@
-"""CodexRuntime 的 codex 后端接口 (goal-09)。
+"""CodexRuntimeAdapter 的 codex 后端接口 (goal-09)。
 
-重托管模式:CodexRuntime 对执行生命周期负责,不把 cancel/进程管理薄委托给上层。
+重托管模式:CodexRuntimeAdapter 对执行生命周期负责,不把 cancel/进程管理薄委托给上层。
 ``CodexClient`` 是 codex 后端(thread/turn 生命周期)的最小接口,方法集对齐 OpenAI
 官方 ``openai-codex`` SDK 的**真实**线程模型(``thread_start`` / ``thread.turn`` /
 ``handle.stream`` / ``handle.interrupt`` / ``thread_resume``):
@@ -112,7 +112,7 @@ class CodexClient(ABC):
 
 def _missing_codex_error() -> RuntimeError:
     return RuntimeError(
-        "CodexRuntime 需要 openai-codex SDK;请安装 ksadk[codex]:"
+        "CodexRuntimeAdapter 需要 openai-codex SDK;请安装 ksadk[codex]:"
         " pip install 'ksadk[codex]'(openai-codex 为可选 extra,不进默认依赖)"
     )
 
@@ -126,7 +126,7 @@ class AsyncCodexClient(CodexClient):
     ``AsyncThread.turn`` / ``AsyncTurnHandle.stream``/``interrupt``),版本漂移 fail-fast。
     """
 
-    def __init__(self, config: Any = None) -> None:
+    def __init__(self, config: Any = None, *, proxy_observer: Any = None) -> None:
         try:
             from openai_codex import (  # type: ignore[import-not-found]
                 AsyncCodex,
@@ -156,14 +156,21 @@ class AsyncCodexClient(CodexClient):
                 )
 
         # AsyncCodex 0.144.4 only accepts one CodexConfig positional/keyword.
-        config, self._proxy = self._maybe_apply_proxy(config)
+        config, self._proxy = self._maybe_apply_proxy(
+            config,
+            proxy_observer=proxy_observer,
+        )
         self._codex = AsyncCodex(config=config)
         self.sdk_version = sdk_version
         self._threads: dict[str, Any] = {}  # thread_id -> AsyncThread
         self._active_handles: dict[str, Any] = {}  # thread_id -> 活跃 AsyncTurnHandle
 
     @staticmethod
-    def _maybe_apply_proxy(config: Any) -> tuple[Any, Any]:
+    def _maybe_apply_proxy(
+        config: Any,
+        *,
+        proxy_observer: Any = None,
+    ) -> tuple[Any, Any]:
         """codex 代理启用:**智能探测 fallback(带显式覆盖)**。
 
         - ``KSADK_CODEX_USE_PROXY=1`` → 强制开代理;``=0`` → 强制直连(可人工覆盖误判)。
@@ -181,7 +188,10 @@ class AsyncCodexClient(CodexClient):
         if env_val == "0":
             return config, None
         if env_val == "1":
-            return AsyncCodexClient._start_proxy_and_inject(config)
+            return AsyncCodexClient._start_proxy_and_inject(
+                config,
+                proxy_observer=proxy_observer,
+            )
         # 未设:智能探测
         base = (
             os.environ.get("KSADK_PROXY_UPSTREAM_BASE")
@@ -194,11 +204,18 @@ class AsyncCodexClient(CodexClient):
         model = os.environ.get("OPENAI_MODEL_NAME") or os.environ.get("MODEL_NAME") or ""
         key = os.environ.get("KSADK_PROXY_UPSTREAM_KEY") or os.environ.get("OPENAI_API_KEY") or ""
         if _probe_requires_proxy(model, base, key):
-            return AsyncCodexClient._start_proxy_and_inject(config)
+            return AsyncCodexClient._start_proxy_and_inject(
+                config,
+                proxy_observer=proxy_observer,
+            )
         return config, None
 
     @staticmethod
-    def _start_proxy_and_inject(config: Any) -> tuple[Any, Any]:
+    def _start_proxy_and_inject(
+        config: Any,
+        *,
+        proxy_observer: Any = None,
+    ) -> tuple[Any, Any]:
         """起进程内 ProxyServer + 注入 codex provider(opt-in/探测判定走代理时)。"""
         import dataclasses
 
@@ -221,7 +238,14 @@ class AsyncCodexClient(CodexClient):
             os.environ.get("KSADK_PROXY_UPSTREAM_KEY") or os.environ.get("OPENAI_API_KEY") or ""
         )
         token = secrets.token_hex(16)
-        proxy = ProxyServer(ProxyConfig(upstream_base=upstream, api_key=api_key, local_token=token))
+        proxy = ProxyServer(
+            ProxyConfig(
+                upstream_base=upstream,
+                api_key=api_key,
+                local_token=token,
+                event_callback=proxy_observer,
+            )
+        )
         proxy.start()
         overrides = list(cfg.config_overrides or ())
         overrides += [
@@ -386,6 +410,9 @@ class AsyncCodexClient(CodexClient):
             "item/agentMessage/delta",
             "item/autoApprovalReview/started",
             "item/autoApprovalReview/completed",
+            "thread/tokenUsage/updated",
+            "turn/started",
+            "turn/completed",
             "error",
         }
         if method in supported_methods:

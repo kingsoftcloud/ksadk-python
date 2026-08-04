@@ -1,4 +1,4 @@
-"""CodexRuntime — 非 ADK 体系的第三验证样本,按 Wegent 重托管模式 (goal-09)。
+"""CodexRuntimeAdapter — 非 ADK 体系的第三验证样本 (goal-09)。
 
 对执行生命周期负责(不做 veadk 式薄桥接),后端能力面对齐 ``openai-codex`` SDK 真实线程模型
 (``thread_start``/``thread.turn``/``handle.stream``/``handle.interrupt``/``thread_resume``):
@@ -62,9 +62,12 @@ class _CodexThread:
     pending_approvals: set[str] = field(default_factory=set)
     done: bool = False
     interrupted: bool = False
+    started_at: int | None = None
+    completed_at: int | None = None
+    duration_ms: int | None = None
 
 
-class CodexRuntime(RuntimeAdapter):
+class CodexRuntimeAdapter(RuntimeAdapter):
     """Codex 的 RuntimeAdapter(重托管)。"""
 
     def __init__(
@@ -103,6 +106,9 @@ class CodexRuntime(RuntimeAdapter):
             base_instructions = request.config.get("base_instructions")
             if base_instructions:
                 thread_config["base_instructions"] = base_instructions
+            cwd = request.config.get("cwd")
+            if cwd:
+                thread_config["cwd"] = str(cwd)
             thread_id = await self._client.start_thread(thread_config)
         self._known_threads.add(thread_id)
         thread = _CodexThread(thread_id=thread_id)
@@ -158,7 +164,9 @@ class CodexRuntime(RuntimeAdapter):
     ) -> RunHandle:
         # resume 用 thread id 语义(resume_thread_id),不套 ADK invocation 模型。
         if target.kind != "thread_id":
-            raise ValueError(f"CodexRuntime resume 仅支持 thread_id 目标,得到 {target.kind!r}")
+            raise ValueError(
+                f"CodexRuntimeAdapter resume 仅支持 thread_id 目标,得到 {target.kind!r}"
+            )
         if handle.run_id in self._do_not_persist:
             raise ValueError(f"thread {handle.run_id} 已被中断/杀进程,不持久化,不可 resume")
         self._pending_cancels.discard(handle.run_id)
@@ -244,7 +252,7 @@ class CodexRuntime(RuntimeAdapter):
         request = thread.__dict__.get("_start_request")
         resume_state = thread.__dict__.get("_resume")
         if request is not None:
-            prompt = request.input
+            prompt = _request_prompt(request)
         elif resume_state is not None:
             prompt = _resume_prompt(resume_state.get("payload"))
         else:
@@ -256,7 +264,22 @@ class CodexRuntime(RuntimeAdapter):
                 yield event
             # 正常结束(非 interrupt):补 RUN_COMPLETED(AGUI 投射器据此发 RunFinished success)
             if not thread.interrupted:
-                yield self._event(handle, EventType.RUN_COMPLETED, {"status": "completed"})
+                completed_payload: dict[str, Any] = {
+                    "status": "completed",
+                    "source": "codex",
+                }
+                if thread.started_at is not None:
+                    completed_payload["started_at"] = thread.started_at
+                if thread.completed_at is not None:
+                    completed_payload["completed_at"] = thread.completed_at
+                if thread.duration_ms is not None:
+                    completed_payload["duration_ms"] = thread.duration_ms
+                yield self._event(handle, EventType.RUN_COMPLETED, completed_payload)
+        except asyncio.CancelledError:
+            thread.interrupted = True
+            self._do_not_persist.add(handle.run_id)
+            await self._client.interrupt_active_turn(thread.thread_id)
+            raise
         except TimeoutError:
             self.last_cancel_dropped_approvals = set(thread.pending_approvals)
             thread.pending_approvals.clear()
@@ -298,6 +321,8 @@ class CodexRuntime(RuntimeAdapter):
             if self._turn_timeout_seconds is not None
             else None
         )
+        chunk_task: asyncio.Task[Any] | None = None
+        interrupt_task: asyncio.Task[bool] | None = None
         try:
             while True:
                 chunk_task = asyncio.ensure_future(_anext_or_stop(codex_gen))
@@ -323,8 +348,9 @@ class CodexRuntime(RuntimeAdapter):
                     raise TimeoutError("codex turn timed out")
                 for task in pending:
                     task.cancel()
+                if pending:
+                    await asyncio.gather(*pending, return_exceptions=True)
                 if interrupt_task in done:
-                    chunk_task.cancel()
                     thread.interrupted = True
                     # AGUI 投射器对 RUN_INTERRUPTED 无兜底,必须显式发,否则 raise
                     yield self._event(
@@ -338,6 +364,16 @@ class CodexRuntime(RuntimeAdapter):
                 if event is not None:
                     yield event
         finally:
+            waiter_tasks = [
+                task
+                for task in (chunk_task, interrupt_task)
+                if task is not None
+            ]
+            for task in waiter_tasks:
+                if not task.done():
+                    task.cancel()
+            if waiter_tasks:
+                await asyncio.gather(*waiter_tasks, return_exceptions=True)
             aclose = getattr(codex_gen, "aclose", None)
             if callable(aclose):
                 try:
@@ -357,12 +393,97 @@ class CodexRuntime(RuntimeAdapter):
         method = str(chunk.get("method") or chunk.get("type") or "")
         params = chunk.get("params") or chunk
 
+        if method == "thread/tokenUsage/updated":
+            token_usage = params.get("token_usage") or params.get("tokenUsage") or {}
+            last = token_usage.get("last") if isinstance(token_usage, dict) else {}
+            if not isinstance(last, dict):
+                last = {}
+            return self._event(
+                handle,
+                EventType.USAGE_REPORTED,
+                {
+                    "input_tokens": int(
+                        last.get("input_tokens", last.get("inputTokens", 0)) or 0
+                    ),
+                    "cached_tokens": int(
+                        last.get("cached_input_tokens", last.get("cachedInputTokens", 0))
+                        or 0
+                    ),
+                    "output_tokens": int(
+                        last.get("output_tokens", last.get("outputTokens", 0)) or 0
+                    ),
+                    "reasoning_tokens": int(
+                        last.get(
+                            "reasoning_output_tokens",
+                            last.get("reasoningOutputTokens", 0),
+                        )
+                        or 0
+                    ),
+                    "total_tokens": int(
+                        last.get("total_tokens", last.get("totalTokens", 0)) or 0
+                    ),
+                    "source": "codex",
+                },
+            )
+        if method in {"turn/started", "turn/completed"}:
+            turn = params.get("turn") if isinstance(params.get("turn"), dict) else {}
+            started_at = turn.get("started_at", turn.get("startedAt"))
+            completed_at = turn.get("completed_at", turn.get("completedAt"))
+            duration_ms = turn.get("duration_ms", turn.get("durationMs"))
+            if started_at is not None:
+                thread.started_at = int(started_at)
+            if completed_at is not None:
+                thread.completed_at = int(completed_at)
+            if duration_ms is not None:
+                thread.duration_ms = max(0, int(duration_ms))
+            return None
+
         if method == "item/started":
             tracker.observe_item(params)
+            item = params.get("item") or params
+            if item.get("type") == "commandExecution":
+                call_id = str(item.get("id") or "")
+                return self._event(
+                    handle,
+                    EventType.TOOL_CALL_BEGIN,
+                    {
+                        "call_id": call_id,
+                        "name": "codex.command",
+                        "args": {
+                            "command": str(item.get("command") or ""),
+                            "cwd": str(item.get("cwd") or ""),
+                            "command_actions": item.get("commandActions")
+                            or item.get("command_actions")
+                            or [],
+                        },
+                    },
+                )
             return None
         if method == "item/completed":
             item = params.get("item") or params
-            if item.get("type") != "agentMessage":
+            item_type = item.get("type")
+            if item_type == "commandExecution":
+                tracker.forget_item(params)
+                call_id = str(item.get("id") or "")
+                return self._event(
+                    handle,
+                    EventType.TOOL_CALL_END,
+                    {
+                        "call_id": call_id,
+                        "name": "codex.command",
+                        "result": {
+                            "status": str(item.get("status") or "completed"),
+                            "exit_code": item.get("exitCode", item.get("exit_code")),
+                            "duration_ms": item.get("durationMs", item.get("duration_ms")),
+                            "output": str(
+                                item.get("aggregatedOutput")
+                                or item.get("aggregated_output")
+                                or ""
+                            ),
+                        },
+                    },
+                )
+            if item_type != "agentMessage":
                 tracker.forget_item(params)
                 return None
             phase = tracker.runtime_phase_for_item(params)
@@ -446,4 +567,29 @@ def _resume_prompt(payload: Optional[ResumePayload]) -> Any:
     return json.dumps(payload.data, ensure_ascii=False, sort_keys=True)
 
 
-__all__ = ["CodexRuntime"]
+def _request_prompt(request: StartRequest) -> Any:
+    """Render canonical conversation history for a native Codex turn."""
+
+    conversation = request.conversation_preprocessing()
+    if conversation is None or not conversation.messages:
+        return request.input
+
+    labels = {
+        "assistant": "Assistant",
+        "developer": "Developer",
+        "system": "System",
+        "tool": "Tool",
+        "user": "User",
+    }
+    lines: list[str] = []
+    for message in conversation.messages:
+        content = message.get("content")
+        if not isinstance(content, str):
+            continue
+        role = str(message.get("role") or "user").strip().lower()
+        label = labels.get(role, role.replace("_", " ").title() or "User")
+        lines.append(f"{label}: {content}")
+    return "\n".join(lines) or request.input
+
+
+__all__ = ["CodexRuntimeAdapter"]

@@ -8,7 +8,7 @@ group 装配,**控制面 action 不进入**;不 import 全局 ``base_app`` 再�
 Harness read-only sandbox policy。不含完整 AgentDraft v1 字段面、plugin 生态或 deploy 自动化。
 
 分层职责:yaml → RuntimeAdapter ``start(request)`` 的映射在**本层**;平台请求 →
-codex 配置(config.toml/AGENTS.md/mcp_servers)的翻译是 goal-09 CodexRuntime 的职责,
+codex 配置(config.toml/AGENTS.md/mcp_servers)的翻译是 goal-09 CodexRuntimeAdapter 的职责,
 不在本层做。
 """
 

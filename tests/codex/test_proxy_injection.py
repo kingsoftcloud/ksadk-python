@@ -168,3 +168,22 @@ def test_close_stops_proxy():
     # 重复 close:proxy 已 None,不再 stop,不报错
     asyncio.run(c.close())
     assert proxy.stopped == 1
+
+
+def test_proxy_observer_is_forwarded_to_proxy_config(monkeypatch):
+    from openai_codex import CodexConfig
+
+    monkeypatch.setenv("KSADK_CODEX_USE_PROXY", "1")
+    observed = []
+
+    def observer(event, data):
+        observed.append((event, data))
+
+    _config, proxy = AsyncCodexClient._maybe_apply_proxy(
+        CodexConfig(),
+        proxy_observer=observer,
+    )
+    try:
+        assert proxy.config.event_callback is observer
+    finally:
+        proxy.stop()
