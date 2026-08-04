@@ -5,7 +5,9 @@ import json
 from collections.abc import Iterable
 from typing import Any
 
-from ksadk.server.app import app
+from ksadk.server import RuntimeAppConfig, configure_runtime_app, create_runtime_app
+
+app = create_runtime_app(RuntimeAppConfig(), configure_runtime_app)
 
 _ROUTE_MANIFEST_SHA256 = "51a60325487a422f10a5d82ad51d5d233e8d314956a7fd84cc91dcf7bc27019a"
 _OPENAPI_OPERATIONS_SHA256 = "ac9086d1592d69d7eecd4260c2ca4bfa06b0daaed5cdf0653c4eb409204ed84d"
@@ -47,10 +49,8 @@ def _openapi_operations() -> list[list[str]]:
 def _without_agui(routes: Iterable[list[str]]) -> list[list[str]]:
     """Keep the legacy route baseline stable while asserting AG-UI explicitly.
 
-    ``server.app`` mounts AG-UI lazily once a runner is installed, so the
-    default-app facade may be observed before or after that installation
-    depending on the test process. AG-UI is an intentional optional transport,
-    not an accidental mutation of the legacy HTTP contract.
+    AG-UI is an intentional optional transport and is excluded from the stable
+    default HTTP contract unless explicitly configured on RuntimeAppConfig.
     """
     return [route for route in routes if route[1] not in _AGUI_PATHS]
 

@@ -717,23 +717,15 @@ def test_sandbox_registry_concurrent_get_or_create_does_not_deadlock(monkeypatch
 
 def test_shutdown_runner_resources_clears_sandbox_registry(monkeypatch):
     import asyncio
-    import sys
 
-    import ksadk.server.app  # noqa: F401  触发模块注册到 sys.modules
+    from ksadk.server.factory import RuntimeAppState, shutdown_runtime_resources
 
-    app_module = sys.modules["ksadk.server.app"]
-
-    # 用一个带空 close() 的 mock runner,触发完整 shutdown 路径(含 sandbox clear)。
-    class FakeRunner:
-        async def close(self):
-            return None
-
-    # goal-01: runner 迁至 per-app state;shutdown 需显式传 state。
-    state = app_module.app.state.runtime
-    monkeypatch.setattr(state, "runner", FakeRunner())
+    # RuntimeAdapter-first composition has no module global app/runner. The
+    # resource owner is the explicit per-app state passed to shutdown.
+    state = RuntimeAppState()
     calls: list[bool] = []
     monkeypatch.setattr(state.sandbox_registry, "close", lambda: calls.append(True))
 
-    asyncio.run(app_module._shutdown_runner_resources(state))
+    asyncio.run(shutdown_runtime_resources(state))
 
     assert calls == [True]

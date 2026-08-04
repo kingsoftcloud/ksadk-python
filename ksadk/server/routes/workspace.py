@@ -16,7 +16,8 @@ from pydantic import BaseModel
 
 from ksadk.conversations.attachment_storage import AttachmentStorageService
 from ksadk.conversations.model_context import normalize_model_metadata
-from ksadk.server.factory import get_state
+from ksadk.runtime.adapter import CancelResult
+from ksadk.server.factory import get_runtime_execution, get_state
 from ksadk_runtime_common.workspace_files.preview import (
     build_workspace_file_base_href,
     build_workspace_preview_csp,
@@ -26,7 +27,6 @@ from ksadk_runtime_common.workspace_files.preview import (
 from . import dependencies as deps
 from .common import (
     _action_response,
-    _resolve_active_runner,
     _resolve_current_model,
     _workspace_root_dir,
     _workspace_runtime_request,
@@ -134,6 +134,7 @@ async def delete_workspace_file_action(request: WorkspaceDeleteActionRequest):
 
 @control_router.post("/agentengine/api/v1/CancelRun")
 async def cancel_run_action(request: CancelRunActionRequest):
+    executor, launch_context = get_runtime_execution()
     detached = get_state().stream_registry.streams_by_invocation.get(request.InvocationId)
     service = deps.resolve_session_service()
     scoped_session_id = str(request.SessionId or "").strip()
@@ -145,6 +146,15 @@ async def cancel_run_action(request: CancelRunActionRequest):
         )
     if not scoped_session_id and detached is not None:
         scoped_session_id = detached_session_id
+    handle = (
+        executor.find_handle(
+            launch_context.runtime_type,
+            request.InvocationId,
+            scoped_session_id,
+        )
+        if scoped_session_id
+        else None
+    )
     if scoped_session_id:
         await _require_action_session(
             service,
@@ -152,7 +162,7 @@ async def cancel_run_action(request: CancelRunActionRequest):
             agent_id=request.AgentId,
             user_id=request.UserId,
         )
-        if detached is None and not await _session_contains_invocation(
+        if detached is None and handle is None and not await _session_contains_invocation(
             service,
             scoped_session_id,
             request.InvocationId,
@@ -171,33 +181,31 @@ async def cancel_run_action(request: CancelRunActionRequest):
             user_id=request.UserId,
         ):
             raise HTTPException(status_code=404, detail="Invocation not found")
-    found = detached is not None
+    found = detached is not None or handle is not None
     cancel_requested = False
     if detached is not None:
         cancel_requested = detached.cancel()
-    runner_cancel_status = "not_found" if found else "unsupported"
-    active_runner = _resolve_active_runner()
-    if active_runner is not None:
+    runtime_cancel_status = "detached_task_cancelled" if cancel_requested else "not_running"
+    if handle is not None and detached is None:
         try:
-            runner_result = active_runner.request_cancel(request.InvocationId)
-            if isinstance(runner_result, str) and runner_result:
-                runner_cancel_status = runner_result
-            elif runner_result is True:
-                runner_cancel_status = "accepted"
-            elif runner_result is False and not found:
-                runner_cancel_status = "not_found"
-        except Exception as exc:
-            runner_cancel_status = "error"
+            runtime_result = await executor.cancel(handle)
+            runtime_cancel_status = runtime_result.value
+        except Exception as exc:  # noqa: BLE001
+            runtime_cancel_status = CancelResult.FAILED.value
             logger.warning("CancelRun failed: %s", exc)
-    runner_accepted = runner_cancel_status in {"accepted", "cancelling", "cancelled"}
-    status = "cancelling" if found or runner_accepted else runner_cancel_status
+    runtime_accepted = runtime_cancel_status in {
+        "detached_task_cancelled",
+        CancelResult.INTERRUPTED_ACTIVE_TURN.value,
+        CancelResult.PENDING_CANCEL_RECORDED.value,
+    }
+    status = "cancelling" if runtime_accepted else runtime_cancel_status
     return _action_response(
         "CancelRun",
         {
-            "Cancelled": bool(cancel_requested or runner_accepted),
+            "Cancelled": bool(cancel_requested or runtime_accepted),
             "Found": found,
             "Status": status,
-            "RunnerCancelStatus": runner_cancel_status,
+            "RuntimeCancelStatus": runtime_cancel_status,
         },
     )
 

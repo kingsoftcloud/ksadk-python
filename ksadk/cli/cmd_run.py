@@ -11,9 +11,11 @@ import sys
 from pathlib import Path
 
 import click
+import uvicorn
 
 from ksadk.cli.error_utils import ensure_json_output_supported, print_exception
 from ksadk.cli.local_runtime import reexec_with_project_venv_if_needed
+from ksadk.cli.runtime_bootstrap import create_runtime_web_app
 from ksadk.cli.ui import (
     print_error,
     print_info,
@@ -191,8 +193,7 @@ def _run_custom(
     no_stream: bool = False,
     no_alt_screen: bool = False,
 ):
-    """使用自定义实现 (LangChain/LangGraph/DeepAgents)"""
-    from ksadk.runners.factory import create_runner
+    """Run one detected project through the canonical RuntimeAdapter composition."""
 
     # 初始化 Tracing
     if not no_trace:
@@ -231,32 +232,21 @@ def _run_custom(
         except Exception as e:
             print_warn(f"Tracing 初始化失败: {e}")
 
-    # 创建 Runner
+    if interactive:
+        del show_thinking, no_stream, no_alt_screen
+        print_error(
+            "RuntimeAdapter TUI 尚未接通；请使用 `ksadk web` 或不带 --interactive 启动"
+        )
+        raise SystemExit(2)
+
     try:
-        print_info("初始化 Runner...")
-        runner = create_runner(result, str(agent_path))
-        runner.load_agent()
-        print_success("Agent 加载成功")
+        runtime_app = create_runtime_web_app(result, agent_path)
     except Exception as e:
-        print_exception("Agent 加载失败", e)
-        # import traceback
-        # traceback.print_exc()
+        print_exception("RuntimeAdapter 初始化失败", e)
         raise SystemExit(1)
 
-    # 运行
-    if interactive:
-        # TUI 交互模式
-        from ksadk.tui.loop import run_tui
-
-        run_tui(
-            runner,
-            show_thinking=show_thinking,
-            project_dir=str(agent_path),
-            no_alt_screen=no_alt_screen,
-        )
-    else:
-        print_success(f"Server running at http://0.0.0.0:{port}")
-        print_kv("API Docs", f"http://0.0.0.0:{port}/docs")
-        print_kv("Chat API", f"http://0.0.0.0:{port}/chat")
-        print_info("Press Ctrl+C to stop")
-        runner.run_server(port=port)
+    print_success(f"Server running at http://127.0.0.1:{port}")
+    print_kv("API Docs", f"http://127.0.0.1:{port}/docs")
+    print_kv("Chat API", f"http://127.0.0.1:{port}/chat")
+    print_info("Press Ctrl+C to stop")
+    uvicorn.run(runtime_app, host="127.0.0.1", port=port)

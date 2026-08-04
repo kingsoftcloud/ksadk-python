@@ -3,6 +3,7 @@
 均不打真实上游(鉴权与 400 在接触上游前返回;ProxyServer 用 /healthz,不触上游)。
 """
 
+import json
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -102,6 +103,82 @@ def test_config_rejects_non_http_scheme():
 def test_non_loopback_host_requires_token():
     with pytest.raises(ValueError, match="local_token"):
         ProxyServer(_cfg(local_token=""), host="0.0.0.0")
+
+
+class _RequestIdUpstream(BaseHTTPRequestHandler):
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length") or "0")
+        self.rfile.read(length)
+        payload = {
+            "id": "chatcmpl-test",
+            "object": "chat.completion",
+            "created": 1,
+            "model": "glm-5.2",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        }
+        body = json.dumps(payload).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Request-Id", "xingliu-request-123")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *_args):
+        pass
+
+
+def test_proxy_observer_reports_response_translation_and_upstream_request_id():
+    upstream = HTTPServer(("127.0.0.1", 0), _RequestIdUpstream)
+    threading.Thread(target=upstream.serve_forever, daemon=True).start()
+    observed: list[tuple[str, dict]] = []
+    config = ProxyConfig(
+        upstream_base=f"http://127.0.0.1:{upstream.server_address[1]}/v1",
+        api_key="secret-upstream-key",
+        local_token="local-token",
+        event_callback=lambda event, data: observed.append((event, data)),
+    )
+    try:
+        response = TestClient(create_app(config)).post(
+            "/v1/responses",
+            json={"model": "glm-5.2", "input": "hello"},
+            headers={"Authorization": "Bearer local-token"},
+        )
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+    assert response.status_code == 200
+    assert [event for event, _ in observed] == [
+        "proxy.requested",
+        "proxy.upstream",
+        "proxy.completed",
+    ]
+    assert observed[0][1]["model"] == "glm-5.2"
+    assert observed[0][1]["protocol"] == "responses-to-chat"
+    assert observed[1][1] == {
+        "requestId": "xingliu-request-123",
+        "statusCode": 200,
+    }
+    assert observed[2][1]["responseId"].startswith("resp_")
+    assert observed[2][1]["model"] == "glm-5.2"
+    assert observed[2][1]["statusCode"] == 200
+    assert observed[2][1]["durationMs"] >= 0
+    assert observed[2][1]["usage"] == {
+        "inputTokens": 1,
+        "outputTokens": 1,
+        "totalTokens": 2,
+        "cachedInputTokens": 0,
+        "reasoningOutputTokens": 0,
+    }
+    assert "secret-upstream-key" not in json.dumps(observed)
 
 
 # ---- 生命周期:启动超时 / 活动 SSE ----

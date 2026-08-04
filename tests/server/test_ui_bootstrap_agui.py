@@ -3,6 +3,9 @@ from types import SimpleNamespace
 from fastapi.testclient import TestClient
 
 from ksadk.agui.config import AGUIConfig
+from ksadk.runtime.adapter import RuntimeLaunchContext, RuntimeRegistry
+from ksadk.runtime.executor import RuntimeExecutor
+from ksadk.runtime.runner_adapter import RunnerRuntimeAdapter
 from ksadk.server.factory import RuntimeAppConfig, create_runtime_app
 from ksadk.server.routes.routers import ui_bootstrap_router
 
@@ -19,15 +22,34 @@ class _Runner:
     def get_runtime_capabilities(self):
         return {
             "CancelRun": {"Supported": True},
-            "ResumeRun": {"Supported": self.loaded},
-            "Checkpoint": {"Supported": self.loaded},
+            "ResumeRun": {"Supported": True},
+            "Checkpoint": {"Supported": True},
         }
 
 
+def _execution_for(runner):
+    registry = RuntimeRegistry()
+    registry.register(
+        "langgraph",
+        lambda _context: RunnerRuntimeAdapter(runner, runtime_type="langgraph"),
+    )
+    return (
+        RuntimeExecutor(registry),
+        RuntimeLaunchContext(
+            runtime_type="langgraph",
+            project_dir=".",
+            detection=runner.detection_result,
+        ),
+    )
+
+
 def test_bootstrap_advertises_agui_only_when_endpoint_is_enabled():
+    runner = _Runner()
+    executor, launch_context = _execution_for(runner)
     app = create_runtime_app(
         RuntimeAppConfig(
-            runner=_Runner(),
+            runtime_executor=executor,
+            launch_context=launch_context,
             agui=AGUIConfig(enabled=True, agent_name="agent"),
             route_groups={"ui_bootstrap", "agui"},
         )
@@ -51,7 +73,14 @@ def test_bootstrap_advertises_agui_only_when_endpoint_is_enabled():
 
 
 def test_bootstrap_falls_back_to_responses_without_agui():
-    app = create_runtime_app(RuntimeAppConfig(route_groups={"ui_bootstrap"}))
+    executor, launch_context = _execution_for(_Runner())
+    app = create_runtime_app(
+        RuntimeAppConfig(
+            runtime_executor=executor,
+            launch_context=launch_context,
+            route_groups={"ui_bootstrap"},
+        )
+    )
     app.include_router(ui_bootstrap_router)
     response = TestClient(app).post(
         "/agentengine/api/v1/GetAgentUiBootstrap",
@@ -72,9 +101,12 @@ def test_bootstrap_does_not_advertise_agui_interrupt_without_runtime_checkpoint(
                 "Checkpoint": {"Supported": False},
             }
 
+    runner = _NoCheckpointRunner()
+    executor, launch_context = _execution_for(runner)
     app = create_runtime_app(
         RuntimeAppConfig(
-            runner=_NoCheckpointRunner(),
+            runtime_executor=executor,
+            launch_context=launch_context,
             agui=AGUIConfig(enabled=True, agent_name="agent"),
             route_groups={"ui_bootstrap", "agui"},
         )
@@ -88,7 +120,6 @@ def test_bootstrap_does_not_advertise_agui_interrupt_without_runtime_checkpoint(
 
     assert response.status_code == 200
     data = response.json()["Data"]
-    assert app.state.runtime.runner_loaded is True
     assert data["HostedChat"]["Transports"][0]["Capabilities"] == {
         "A2UI": True,
         "Interrupt": False,

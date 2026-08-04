@@ -6,7 +6,9 @@ import httpx
 import pytest
 
 from ksadk.harness import HarnessApp
-from ksadk.harness.runner import HarnessReasoningTurn, HarnessToolCall
+from ksadk.harness.reasoner import HarnessReasoningTurn, HarnessToolCall
+from ksadk.harness.runtime import HarnessRuntimeAdapter
+from ksadk.runtime import StartRequest
 
 from .fixtures.mcp_server import run_fixture_mcp_server, run_http_app
 
@@ -101,9 +103,12 @@ async def test_mcp_startup_failure_identifies_server(tmp_path):
         reasoner=_CallLookupThenAnswer(),
         workspace_root=tmp_path,
     )
-    runner = app.build_runner()
+    adapter = app.adapter()
+    assert isinstance(adapter, HarnessRuntimeAdapter)
     with pytest.raises(RuntimeError, match="weather.*127.0.0.1:1"):
-        await runner.invoke({"input": "weather?"})
+        await adapter.execute_request(
+            StartRequest(input="weather?", user_id="u", session_id="s")
+        )
 
 
 @pytest.mark.asyncio
@@ -122,7 +127,11 @@ async def test_missing_filtered_tool_identifies_server_and_tool(tmp_path):
             workspace_root=tmp_path,
         )
         with pytest.raises(RuntimeError, match="weather.*missing_tool"):
-            await app.build_runner().invoke({"input": "weather?"})
+            adapter = app.adapter()
+            assert isinstance(adapter, HarnessRuntimeAdapter)
+            await adapter.execute_request(
+                StartRequest(input="weather?", user_id="u", session_id="s")
+            )
 
 
 def _write_config(tmp_path, url: str, *, api_key: str):

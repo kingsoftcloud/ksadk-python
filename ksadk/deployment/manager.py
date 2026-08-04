@@ -224,9 +224,9 @@ try:
 except ImportError:
     pass
 
-from ksadk.runners import create_runner
 from ksadk.detection import DetectionResult, FrameworkType
-from ksadk.server import app, set_runner
+from ksadk.runtime import RuntimeExecutor, RuntimeLaunchContext, build_default_runtime_registry
+from ksadk.server import RuntimeAppConfig, configure_runtime_app, create_runtime_app
 import uvicorn
 
 # 检测结果 (部署时固化)
@@ -238,12 +238,20 @@ detection_result = DetectionResult(
     agent_variable="{detection_result.agent_variable}"
 )
 
-# 创建 Runner 并加载 Agent
-runner = create_runner(detection_result, "/app")
-runner.load_agent()
-
-# 设置 Runner 到 FastAPI app
-set_runner(runner, loaded=True)
+runtime_context = RuntimeLaunchContext(
+    runtime_type=detection_result.type.value,
+    project_dir="/app",
+    detection=detection_result,
+    config=dict(getattr(detection_result, "raw_config", None) or {{}}),
+)
+app = create_runtime_app(
+    RuntimeAppConfig(
+        runtime_type=detection_result.type.value,
+        runtime_executor=RuntimeExecutor(build_default_runtime_registry()),
+        launch_context=runtime_context,
+    ),
+    configure_runtime_app,
+)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

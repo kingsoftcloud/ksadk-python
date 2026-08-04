@@ -103,7 +103,6 @@ def _build_app(task_dsn: str, runner=None) -> tuple[FastAPI, object]:
     )
     server = add_a2a_protocol_routes(
         app,
-        runner,
         config,
         task_adapter=A2ARuntimeTaskAdapter(
             RunnerRuntimeAdapter(runner, runtime_type="test"), runtime_type="test"
@@ -240,7 +239,7 @@ def test_production_routes_require_runtime_adapter(tmp_path):
     )
 
     with pytest.raises(TypeError, match="task_adapter"):
-        add_a2a_protocol_routes(app, _BlockingRunner(), config)
+        add_a2a_protocol_routes(app, config)
 
 
 @pytest.mark.asyncio
@@ -324,9 +323,9 @@ async def test_hosted_to_hosted(tmp_path):
     """hosted→hosted:hosted agent A 的 runner 经 A2A 协议调用 hosted agent B。"""
     # agent B(hosted,echo)
     app_b = FastAPI()
+    runner_b = _EchoRunner()
     add_a2a_protocol_routes(
         app_b,
-        (runner_b := _EchoRunner()),
         A2AConfig(
             enabled=True,
             base_url="http://agent-b",
@@ -342,9 +341,9 @@ async def test_hosted_to_hosted(tmp_path):
     card_b = build_agent_card(name="agent-b", base_url="http://agent-b", skills=["echo"])
     # agent A(hosted),runner 委托调 B
     app_a = FastAPI()
+    runner_a = _DelegatingRunner(app_b, card_b)
     add_a2a_protocol_routes(
         app_a,
-        (runner_a := _DelegatingRunner(app_b, card_b)),
         A2AConfig(
             enabled=True,
             base_url="http://agent-a",
@@ -495,7 +494,6 @@ async def test_input_required_then_resume(tmp_path):
     runtime_adapter = _HitlRuntimeAdapter()
     add_a2a_protocol_routes(
         app,
-        object(),
         A2AConfig(
             enabled=True,
             base_url="http://testserver",
@@ -599,7 +597,6 @@ class _NoopRuntime(BaseRuntime):
 @pytest.mark.asyncio
 async def test_cancel_routes_through_runtime_adapter(tmp_path):
     """goal-05 硬性要求:A2A cancel 走 RuntimeAdapter.cancel(G0.3),不在 executor 自造。"""
-    runner = _BlockingRunner()
     adapter = _RecordingRuntimeAdapter()
     task_adapter = A2ARuntimeTaskAdapter(adapter, runtime_type="test")
     app = FastAPI()
@@ -610,7 +607,7 @@ async def test_cancel_routes_through_runtime_adapter(tmp_path):
         task_store_dsn=f"sqlite+aiosqlite:///{tmp_path}/t.db",
         create_table=True,
     )
-    add_a2a_protocol_routes(app, runner, config, task_adapter=task_adapter)
+    add_a2a_protocol_routes(app, config, task_adapter=task_adapter)
     client, httpx_client = await _client_for(app)
 
     async def _consume():

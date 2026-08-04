@@ -31,6 +31,7 @@ from ksadk.conversations.runtime_observability import (
 from ksadk.events.runtime_event import EventType, RuntimeEvent
 from ksadk.runners.base_runner import BaseRunner
 from ksadk.runtime.adapter import (
+    RESUME_START_REQUEST_NATIVE_KEY,
     BaseRuntime,
     CancelResult,
     CheckpointCapability,
@@ -42,6 +43,7 @@ from ksadk.runtime.adapter import (
     StartRequest,
 )
 from ksadk.runtime.preprocessing import PreparedRuntimeStart, prepare_runtime_start
+from ksadk.runtime.runner_loading import ensure_runner_loaded
 from ksadk.runtime_context import platform_invocation_scope
 
 logger = logging.getLogger(__name__)
@@ -157,6 +159,7 @@ class _ActiveRun:
     resume_fingerprint: Any = None
     skip_runner: bool = False
     done: bool = False
+    completion_metrics: dict[str, Any] = field(default_factory=dict)
 
 
 class RunnerRuntimeAdapter(RuntimeAdapter):
@@ -230,7 +233,13 @@ class RunnerRuntimeAdapter(RuntimeAdapter):
 
     # ---- 六动词 ----
 
+    async def preflight(self) -> None:
+        """Load the framework agent before a streaming HTTP response commits."""
+
+        ensure_runner_loaded(self._runner, runtime_type=self._runtime_type)
+
     async def start(self, request: StartRequest) -> RunHandle:
+        ensure_runner_loaded(self._runner, runtime_type=self._runtime_type)
         run_id = str(request.metadata.get("invocation_id") or self._next_invocation_id())
         prepared_start = await prepare_runtime_start(request, self._runner)
         handle = RunHandle(
@@ -336,6 +345,12 @@ class RunnerRuntimeAdapter(RuntimeAdapter):
             return handle
         self._require_native_checkpoint_capability()
         self._known_runs.add(handle.run_id)
+        prepared_start: PreparedRuntimeStart | None = None
+        raw_start_request = handle.native_ref.pop(RESUME_START_REQUEST_NATIVE_KEY, None)
+        if isinstance(raw_start_request, Mapping):
+            prepared_start = await prepare_runtime_start(
+                StartRequest.model_validate(raw_start_request), self._runner
+            )
         # _resume_native 返回的 runner_input 覆盖存到 run 上,下一次 stream() 经
         # _build_runner_input 消费,以框架原生方式真驱动恢复。
         override = await self._resume_native(handle, target, payload)
@@ -380,6 +395,8 @@ class RunnerRuntimeAdapter(RuntimeAdapter):
             resume_key=resume_key,
             resume_fingerprint=resume_fingerprint,
         )
+        if prepared_start is not None:
+            run.__dict__["_prepared_start"] = prepared_start
         if override:
             run.__dict__["_resume_input_override"] = override
         self._resume_decisions[resume_key] = resume_fingerprint
@@ -493,7 +510,7 @@ class RunnerRuntimeAdapter(RuntimeAdapter):
             yield self._event(
                 handle,
                 EventType.RUN_COMPLETED,
-                {"status": "already_resumed"},
+                self._completion_payload(handle, status="already_resumed"),
             )
             return
 
@@ -540,7 +557,15 @@ class RunnerRuntimeAdapter(RuntimeAdapter):
                     {"status": "input_required"},
                 )
             elif not terminal_event_seen:
-                yield self._event(handle, EventType.RUN_COMPLETED, {"status": "completed"})
+                yield self._event(
+                    handle,
+                    EventType.RUN_COMPLETED,
+                    self._completion_payload(
+                        handle,
+                        status="completed",
+                        metrics=run.completion_metrics,
+                    ),
+                )
         finally:
             run.stream = None
             run.done = True
@@ -551,19 +576,28 @@ class RunnerRuntimeAdapter(RuntimeAdapter):
         # 直接作为 runner 输入,驱动框架原生恢复。
         run = self._active_runs.get(handle.run_id)
         override = run.__dict__.get("_resume_input_override") if run is not None else None
+        prepared_start = run.__dict__.get("_prepared_start") if run is not None else None
         if override is not None:
-            merged = {
+            merged = (
+                dict(prepared_start.runner_input)
+                if isinstance(prepared_start, PreparedRuntimeStart)
+                else {}
+            )
+            base_metadata = merged.get("metadata")
+            merged.update({
                 "input": override.get("input"),
                 "session_id": handle.session_id,
                 "invocation_id": handle.run_id,
-                "metadata": dict(override.get("metadata") or {}),
-            }
+                "metadata": {
+                    **(dict(base_metadata) if isinstance(base_metadata, Mapping) else {}),
+                    **dict(override.get("metadata") or {}),
+                },
+            })
             for key, value in override.items():
                 if key not in ("input", "metadata"):
                     merged[key] = value
             return merged
 
-        prepared_start = run.__dict__.get("_prepared_start") if run is not None else None
         if isinstance(prepared_start, PreparedRuntimeStart):
             return dict(prepared_start.runner_input)
 
@@ -615,7 +649,12 @@ class RunnerRuntimeAdapter(RuntimeAdapter):
                 _set_conversation_input_attributes(span, prepared_start.input_text)
             try:
                 with scope:
-                    stream_result = self._runner.stream(runner_input)
+                    canonical_stream = getattr(self._runner, "stream_runtime_events", None)
+                    stream_result = (
+                        canonical_stream(runner_input)
+                        if callable(canonical_stream)
+                        else self._runner.stream(runner_input)
+                    )
                     if inspect.iscoroutine(stream_result):
                         # runner.stream 若声明为 async def -> AsyncIterator(非 async generator),
                         # 调用返回 coroutine,需 await 得到迭代器。
@@ -657,8 +696,29 @@ class RunnerRuntimeAdapter(RuntimeAdapter):
                                 run.chunk_task = None
                         if chunk is _STREAM_STOP:
                             return
+                        if isinstance(chunk, RuntimeEvent):
+                            if chunk.event_type in {
+                                EventType.TEXT_DELTA,
+                                EventType.TEXT_COMPLETED,
+                            } and chunk.phase == "final_answer":
+                                text = self._coerce(chunk.payload.get("text"))
+                                if chunk.event_type == EventType.TEXT_COMPLETED:
+                                    accumulated_output = text
+                                else:
+                                    accumulated_output += text
+                            elif chunk.event_type == EventType.USAGE_REPORTED:
+                                usage.update(chunk.payload)
                         if isinstance(chunk, dict):
                             chunk_type = str(chunk.get("type") or "")
+                            if chunk_type == "final" and run is not None:
+                                for source_key, target_key in (
+                                    ("duration_ms", "duration_ms"),
+                                    ("started_at", "started_at"),
+                                    ("completed_at", "completed_at"),
+                                    ("metrics_source", "source"),
+                                ):
+                                    if chunk.get(source_key) is not None:
+                                        run.completion_metrics[target_key] = chunk[source_key]
                             if chunk_type in {"final", "text", "text_delta"}:
                                 text = self._coerce(
                                     chunk.get("delta") or chunk.get("output") or chunk.get("data")
@@ -695,6 +755,25 @@ class RunnerRuntimeAdapter(RuntimeAdapter):
     def _chunk_to_event(
         self, handle: RunHandle, run: Optional[_ActiveRun], chunk: Any
     ) -> Optional[RuntimeEvent]:
+        if isinstance(chunk, RuntimeEvent):
+            # Outer adapter owns the public lifecycle envelope.  A native
+            # Runtime may emit its own RUN_STARTED with private identifiers;
+            # suppress that duplicate and rebind all other canonical events
+            # to the public handle without flattening their payloads.
+            if chunk.event_type == EventType.RUN_STARTED:
+                return None
+            return RuntimeEvent.create(
+                chunk.event_type,
+                agent_id=str(handle.native_ref.get("agent_id") or "agent"),
+                user_id=str(handle.native_ref.get("user_id") or "user"),
+                session_id=handle.session_id,
+                invocation_id=handle.run_id,
+                seq_id=self._next_seq(),
+                phase=chunk.phase,
+                payload=dict(chunk.payload),
+                event_id=chunk.event_id,
+                timestamp=chunk.timestamp,
+            )
         if not isinstance(chunk, dict):
             return self._event(
                 handle, EventType.TEXT_DELTA, {"text": str(chunk)}, phase="commentary"
@@ -784,13 +863,16 @@ class RunnerRuntimeAdapter(RuntimeAdapter):
                 },
             )
         if chunk_type == "checkpoint":
-            metadata = chunk.get("metadata") or {}
-            agentengine = metadata.get("agentengine") if isinstance(metadata, dict) else {}
-            framework_ref = (
-                agentengine.get("framework_ref") if isinstance(agentengine, dict) else {}
-            ) or {}
+            raw_metadata = chunk.get("metadata")
+            metadata: dict[str, Any] = raw_metadata if isinstance(raw_metadata, dict) else {}
+            raw_agentengine = metadata.get("agentengine")
+            agentengine: dict[str, Any] = (
+                raw_agentengine if isinstance(raw_agentengine, dict) else {}
+            )
+            framework = str(agentengine.get("framework") or self._runtime_type)
+            framework_ref = agentengine.get("framework_ref") or {}
             runtime_ref = (
-                framework_ref.get(self._runtime_type) if isinstance(framework_ref, dict) else {}
+                framework_ref.get(framework) if isinstance(framework_ref, dict) else {}
             ) or {}
             checkpoint_id = str(
                 runtime_ref.get("checkpoint_id") if isinstance(runtime_ref, dict) else ""
@@ -810,6 +892,9 @@ class RunnerRuntimeAdapter(RuntimeAdapter):
                 {
                     "checkpoint_id": checkpoint_id,
                     "granularity": self._checkpoint_capability().granularity,
+                    "run_id": str(agentengine.get("run_id") or handle.run_id),
+                    "framework": framework,
+                    "framework_ref": framework_ref,
                     "resume_target": framework_ref,
                 },
             )
@@ -821,6 +906,21 @@ class RunnerRuntimeAdapter(RuntimeAdapter):
                     "status": "in_progress",
                     "node": str(chunk.get("node") or ""),
                     "state_update": self._coerce(chunk.get("output")),
+                },
+            )
+        if chunk_type == "usage":
+            raw_usage = chunk.get("usage")
+            usage: dict[str, Any] = raw_usage if isinstance(raw_usage, dict) else {}
+            return self._event(
+                handle,
+                EventType.USAGE_REPORTED,
+                {
+                    "input_tokens": int(usage.get("input_tokens") or 0),
+                    "output_tokens": int(usage.get("output_tokens") or 0),
+                    "total_tokens": int(usage.get("total_tokens") or 0),
+                    "cached_tokens": int(usage.get("cached_tokens") or 0),
+                    "reasoning_tokens": int(usage.get("reasoning_tokens") or 0),
+                    "source": str(usage.get("source") or self._runtime_type),
                 },
             )
         if chunk_type == "error":
@@ -866,6 +966,23 @@ class RunnerRuntimeAdapter(RuntimeAdapter):
             phase=phase,
             payload=payload,
         )
+
+    def _completion_payload(
+        self,
+        handle: RunHandle,
+        *,
+        status: str,
+        metrics: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"status": status, **dict(metrics or {})}
+        framework_ref = handle.native_ref.get("framework_ref")
+        if isinstance(framework_ref, Mapping) and framework_ref:
+            payload["agentengine"] = {
+                "run_id": handle.run_id,
+                "framework": self._runtime_type,
+                "framework_ref": dict(framework_ref),
+            }
+        return payload
 
     @staticmethod
     def _coerce(value: Any) -> str:

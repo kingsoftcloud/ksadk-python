@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -20,6 +21,7 @@ from ksadk.runtime import (
     RuntimeAdapter,
     RuntimeLaunchContext,
     RuntimeRegistry,
+    RuntimeServices,
     StartRequest,
 )
 
@@ -28,7 +30,7 @@ class _ExecutorRuntime(BaseRuntime):
     runtime_type = "fixture"
 
     def native_capabilities(self) -> dict[str, object]:
-        return {}
+        return {"CancelRun": {"Supported": True}}
 
 
 class _RecordingAdapter(RuntimeAdapter):
@@ -38,7 +40,11 @@ class _RecordingAdapter(RuntimeAdapter):
         self.cancelled: list[RunHandle] = []
         self.closed: list[RunHandle] = []
         self.attached: list[RunHandle] = []
+        self.preflight_calls = 0
         self.resume_handle: RunHandle | None = None
+
+    async def preflight(self) -> None:
+        self.preflight_calls += 1
 
     async def start(self, request: StartRequest) -> RunHandle:
         return RunHandle(
@@ -92,6 +98,32 @@ class _RecordingAdapter(RuntimeAdapter):
         self.closed.append(handle)
 
 
+@pytest.mark.asyncio
+async def test_find_handle_only_returns_attached_runtime_ownership() -> None:
+    adapter = _RecordingAdapter()
+    registry = RuntimeRegistry()
+    registry.register("fixture", lambda _context: adapter)
+    executor = runtime_api.RuntimeExecutor(registry)
+    context = RuntimeLaunchContext(runtime_type="fixture", project_dir=".")
+
+    handle = await executor.start(
+        context,
+        StartRequest(
+            input="hello",
+            user_id="user-1",
+            session_id="session-1",
+            metadata={"run_id": "run-1"},
+        ),
+    )
+
+    assert executor.find_handle("fixture", "run-1", "session-1") == handle
+    assert executor.find_handle("fixture", "run-1", "other-session") is None
+
+    await executor.close(handle)
+
+    assert executor.find_handle("fixture", "run-1", "session-1") is None
+
+
 def _context(tmp_path: Path) -> RuntimeLaunchContext:
     return RuntimeLaunchContext(runtime_type="fixture", project_dir=tmp_path)
 
@@ -117,6 +149,35 @@ def _registry(adapters: list[_RecordingAdapter]) -> RuntimeRegistry:
     return registry
 
 
+def test_framework_runtime_factory_patches_langchain_before_constructing_runner(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """框架补丁属于 RuntimeAdapter Factory，不应由生成入口绕开统一执行链。"""
+    from ksadk.runners import patch_langchain
+    from ksadk.runtime.factory import create_runtime_adapter
+
+    patched = False
+
+    def apply_patch() -> None:
+        nonlocal patched
+        patched = True
+
+    def runner_factory(_detection, _project_dir):
+        assert patched is True
+        return object()
+
+    monkeypatch.setattr(patch_langchain, "apply_patch", apply_patch)
+    context = RuntimeLaunchContext(
+        runtime_type="langgraph",
+        project_dir=tmp_path,
+        detection=SimpleNamespace(),
+        services=RuntimeServices(runner_factory=runner_factory),
+    )
+
+    with pytest.raises(TypeError, match="BaseRunner"):
+        create_runtime_adapter(context)
+
+
 @pytest.mark.asyncio
 async def test_executor_routes_handle_to_owning_adapter_and_closes_it(tmp_path: Path) -> None:
     """防止 stream/cancel/close 被路由到另一个 Runtime 实例。"""
@@ -134,6 +195,22 @@ async def test_executor_routes_handle_to_owning_adapter_and_closes_it(tmp_path: 
     assert adapters[0].cancelled == [handle]
     assert adapters[0].closed == [handle]
     assert executor.is_attached(handle) is False
+
+
+@pytest.mark.asyncio
+async def test_executor_reuses_preflighted_adapter_for_one_start(tmp_path: Path) -> None:
+    adapters: list[_RecordingAdapter] = []
+    executor = runtime_api.RuntimeExecutor(_registry(adapters))
+    context = _context(tmp_path)
+
+    preparation = await executor.prepare_start(context)
+    handle = await executor.start(context, _request(), preparation=preparation)
+
+    assert len(adapters) == 1
+    assert adapters[0].preflight_calls == 1
+    assert executor.is_attached(handle) is True
+    with pytest.raises(RuntimeError, match="already consumed"):
+        await executor.start(context, _request("session-2"), preparation=preparation)
 
 
 @pytest.mark.asyncio
@@ -227,6 +304,29 @@ async def test_same_runtime_run_id_is_isolated_by_session(tmp_path: Path) -> Non
     assert executor.is_attached(second) is True
     assert adapters[0].closed == [first]
     assert adapters[1].closed == []
+
+
+@pytest.mark.asyncio
+async def test_close_all_releases_every_executor_owned_runtime(tmp_path: Path) -> None:
+    adapters: list[_RecordingAdapter] = []
+    executor = runtime_api.RuntimeExecutor(_registry(adapters))
+    first = await executor.start(_context(tmp_path), _request("session-1", run_id="run-1"))
+    second = await executor.start(_context(tmp_path), _request("session-2", run_id="run-2"))
+
+    await executor.close_all()
+
+    assert adapters[0].closed == [first]
+    assert adapters[1].closed == [second]
+    assert executor.is_attached(first) is False
+    assert executor.is_attached(second) is False
+
+
+def test_native_capabilities_come_from_registered_runtime(tmp_path: Path) -> None:
+    executor = runtime_api.RuntimeExecutor(_registry([]))
+
+    capabilities = executor.native_capabilities(_context(tmp_path))
+
+    assert capabilities == {"CancelRun": {"Supported": True}}
 
 
 @pytest.mark.asyncio

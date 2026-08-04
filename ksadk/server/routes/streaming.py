@@ -4,18 +4,24 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from collections.abc import AsyncIterator, Mapping
 from typing import Any
 
 from fastapi import HTTPException
+from fastapi.responses import StreamingResponse
 
+from ksadk.conversations.runtime_persistence import append_run_status_event
 from ksadk.server.factory import get_state
 
-from . import dependencies as deps
 from .models import _RUN_TERMINAL_STATUSES
 from .projection import _latest_invocation_status
 
 logger = logging.getLogger(__name__)
+SSE_HEARTBEAT_INTERVAL_SECONDS = max(
+    0.01,
+    float(os.getenv("AGENTENGINE_SSE_HEARTBEAT_SECONDS", "15")),
+)
 
 _RESERVED_UI_PATHS = {"/", "/chat", "/build", "/deploy"}
 _CUSTOM_API_PROXY_ENV_KEYS = ("KSADK_USER_BACKEND_URL", "LUOLUO_USER_BACKEND_URL")
@@ -31,6 +37,13 @@ _HOP_BY_HOP_HEADERS = {
     "host",
     "content-length",
 }
+
+
+def _observe_detached_task_result(task: asyncio.Task[Any]) -> None:
+    """Consume a detached task exception after ``_consume`` has logged it."""
+    if task.cancelled():
+        return
+    task.exception()
 
 
 class _DetachedSSEStream:
@@ -58,6 +71,7 @@ class _DetachedSSEStream:
         self._task = asyncio.create_task(self._consume())
         self._registry.streams.add(self._task)
         self._task.add_done_callback(self._registry.streams.discard)
+        self._task.add_done_callback(_observe_detached_task_result)
         if self.invocation_id:
             self._registry.streams_by_invocation[self.invocation_id] = self
             self._task.add_done_callback(
@@ -70,7 +84,7 @@ class _DetachedSSEStream:
         if not self.session_id or not self.invocation_id:
             return False
         status = await _latest_invocation_status(
-            deps.resolve_session_service(),
+            get_state().resolve_session_service(),
             self.session_id,
             self.invocation_id,
         )
@@ -108,7 +122,7 @@ class _DetachedSSEStream:
             if terminal_fallback_status and self.session_id:
                 try:
                     if not await self._has_terminal_run_status():
-                        await deps.conversation().append_run_status_event(
+                        await append_run_status_event(
                             session_id=self.session_id,
                             author="system",
                             status=terminal_fallback_status,
@@ -116,7 +130,7 @@ class _DetachedSSEStream:
                             detail=(
                                 f"background_{terminal_fallback_status}:{self.invocation_id or ''}"
                             ),
-                            session_service_provider=deps.resolve_session_service,
+                            session_service_provider=get_state().resolve_session_service,
                             run_mode=self._run_mode,
                             run_trigger=self._run_trigger,
                         )
@@ -151,7 +165,7 @@ class _DetachedSSEStream:
                 try:
                     chunk = await asyncio.wait_for(
                         queue.get(),
-                        timeout=deps.heartbeat_interval(),
+                        timeout=SSE_HEARTBEAT_INTERVAL_SECONDS,
                     )
                 except asyncio.TimeoutError:
                     yield ": ping\n\n"
@@ -221,3 +235,31 @@ def _reject_if_detached_resume_active(resume_key: tuple[str, str] | None) -> Non
             "run_id": resume_key[1],
         },
     )
+
+
+def detached_streaming_response(
+    source: AsyncIterator[str],
+    *,
+    invocation_id: str | None = None,
+    session_id: str | None = None,
+    resume_key: tuple[str, str] | None = None,
+    run_mode: str = "unknown",
+    run_trigger: str = "unknown",
+) -> StreamingResponse:
+    """Create an app-owned detached SSE response with reconnectable backlog."""
+
+    detached = _DetachedSSEStream(
+        source,
+        invocation_id=invocation_id,
+        session_id=session_id,
+        run_mode=run_mode,
+        run_trigger=run_trigger,
+    )
+    registry = detached._registry
+    if invocation_id and resume_key:
+        registry.resume_keys_by_invocation[invocation_id] = resume_key
+        registry.active_resume_invocation_by_key[resume_key] = invocation_id
+        detached._task.add_done_callback(
+            lambda _task: _clear_detached_resume_key(registry, invocation_id, resume_key)
+        )
+    return StreamingResponse(detached.iter_for_client(), media_type="text/event-stream")

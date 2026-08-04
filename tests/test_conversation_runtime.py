@@ -4673,9 +4673,10 @@ def test_build_responses_payload_uses_real_usage_from_metadata():
 
     assert payload["usage"] == {
         "input_tokens": 8,
+        "input_tokens_details": {"cached_tokens": 0},
         "output_tokens": 13,
+        "output_tokens_details": {"reasoning_tokens": 5},
         "total_tokens": 21,
-        "output_token_details": {"reasoning": 5},
     }
     # last_usage 透传到 metadata(供 server 取窗口占用)
     assert payload["metadata"]["last_usage"]["input_tokens"] == 8
@@ -4707,17 +4708,23 @@ async def test_stream_conversation_turn_preserves_final_chunk_usage(monkeypatch)
     completed_payload = _extract_sse_payload(chunks, "response.completed")
     assert completed_payload["usage"] == {
         "input_tokens": 8,
+        "input_tokens_details": {"cached_tokens": 4},
         "output_tokens": 13,
+        "output_tokens_details": {"reasoning_tokens": 5},
         "total_tokens": 21,
-        "input_token_details": {"cached": 4},
-        "output_token_details": {"reasoning": 5},
     }
     # last_usage 透传到 response.completed 的 metadata(供 server 取窗口占用)
     assert completed_payload["metadata"]["last_usage"]["input_tokens"] == 8
     assert completed_payload["metadata"]["last_usage"]["input_token_details"]["cached"] == 4
     events = await service.get_events("sess-stream-usage")
     assistant_event = next(event for event in events if event.event_type == "assistant_message")
-    assert assistant_event.metadata["usage"] == completed_payload["usage"]
+    assert assistant_event.metadata["usage"] == {
+        "input_tokens": 8,
+        "output_tokens": 13,
+        "total_tokens": 21,
+        "input_token_details": {"cached": 4},
+        "output_token_details": {"reasoning": 5},
+    }
     assert assistant_event.metadata["last_usage"]["input_tokens"] == 8
 
 
@@ -4744,13 +4751,19 @@ async def test_stream_responses_conversation_turn_preserves_responses_output_usa
     completed_payload = _extract_sse_payload(chunks, "response.completed")
     assert completed_payload["usage"] == {
         "input_tokens": 9,
+        "input_tokens_details": {"cached_tokens": 0},
+        "output_tokens": 4,
+        "output_tokens_details": {"reasoning_tokens": 2},
+        "total_tokens": 13,
+    }
+    events = await service.get_events("sess-native-output-usage")
+    assistant_event = next(event for event in events if event.event_type == "assistant_message")
+    assert assistant_event.metadata["usage"] == {
+        "input_tokens": 9,
         "output_tokens": 4,
         "total_tokens": 13,
         "output_token_details": {"reasoning": 2},
     }
-    events = await service.get_events("sess-native-output-usage")
-    assistant_event = next(event for event in events if event.event_type == "assistant_message")
-    assert assistant_event.metadata["usage"] == completed_payload["usage"]
 
 
 @pytest.mark.asyncio

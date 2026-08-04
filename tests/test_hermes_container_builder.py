@@ -110,9 +110,13 @@ def test_container_builder_packages_project_custom_ui_dist_without_node_modules(
     assert (build_dir / "research-ui" / "dist" / "index.html").exists()
     assert (build_dir / "research-ui" / "dist" / "assets" / "index.js").exists()
     assert not (build_dir / "research-ui" / "node_modules" / "ignored.js").exists()
-    assert "from ksadk.server import app, set_runner" in (build_dir / "entrypoint.py").read_text(
-        encoding="utf-8"
-    )
+    entrypoint = (build_dir / "entrypoint.py").read_text(encoding="utf-8")
+    assert "RuntimeExecutor" in entrypoint
+    assert "RuntimeLaunchContext" in entrypoint
+    assert "create_runtime_app" in entrypoint
+    assert "create_runner" not in entrypoint
+    assert "set_runner" not in entrypoint
+    assert "ksadk.runners" not in entrypoint
 
 
 def test_container_builder_excludes_real_dotenv_files_but_keeps_example(tmp_path: Path):

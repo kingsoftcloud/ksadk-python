@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import importlib
 import json
 import subprocess
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
@@ -13,6 +13,10 @@ from fastapi.testclient import TestClient
 import ksadk.server.terminal_sessions as terminal_sessions
 from ksadk.hermes_terminal import TERMINAL_SUBPROTOCOL
 from ksadk.runners.base_runner import BaseRunner
+from ksadk.runtime import RuntimeExecutor, RuntimeLaunchContext, RuntimeRegistry
+from ksadk.runtime.runner_adapter import RunnerRuntimeAdapter
+from ksadk.server.composition import configure_runtime_app
+from ksadk.server.factory import RuntimeAppConfig, create_runtime_app, set_fallback_state
 from ksadk.server.terminal_sessions import TerminalSession
 
 
@@ -69,11 +73,33 @@ def test_native_terminal_support_reports_false_without_posix_modules(monkeypatch
 
 @pytest.fixture()
 def server_app(monkeypatch, tmp_path):
-    appmod = importlib.import_module("ksadk.server.app")
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("KSADK_WORKSPACE_ROOT", str(tmp_path / "workspace"))
     (tmp_path / "workspace").mkdir()
-    appmod.set_runner(_OpenClawRunner())
+    runner = _OpenClawRunner()
+    runner.load_agent()
+    registry = RuntimeRegistry()
+    registry.register(
+        "openclaw",
+        lambda _context: RunnerRuntimeAdapter(runner, runtime_type="openclaw"),
+    )
+    app = create_runtime_app(
+        RuntimeAppConfig(
+            runtime_executor=RuntimeExecutor(registry),
+            launch_context=RuntimeLaunchContext(
+                runtime_type="openclaw",
+                project_dir=runner.project_dir,
+                detection=runner.detection_result,
+            ),
+        ),
+        configure_runtime_app,
+    )
+    set_fallback_state(app.state.runtime)
+    appmod = SimpleNamespace(
+        app=app,
+        terminal_manager=app.state.runtime.terminal_manager,
+        Path=Path,
+    )
     appmod.terminal_manager.reset_for_tests()
     yield appmod
     appmod.terminal_manager.reset_for_tests()

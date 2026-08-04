@@ -22,6 +22,12 @@ def _create_codex(context: RuntimeLaunchContext) -> RuntimeAdapter:
 
 
 def _create_framework_runner(context: RuntimeLaunchContext, runtime_type: str) -> BaseRunner:
+    try:
+        from ksadk.runners.patch_langchain import apply_patch
+
+        apply_patch()
+    except ImportError:
+        pass
     detection = context.detection
     if detection is None:
         raise ValueError(f"{runtime_type} runtime requires framework detection")

@@ -1,17 +1,16 @@
 from __future__ import annotations
 
 import asyncio
-import importlib
 from concurrent.futures import ThreadPoolExecutor
-from types import SimpleNamespace
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
 
 from ksadk.hermes_terminal import TERMINAL_SUBPROTOCOL
+from ksadk.runtime import RuntimeLaunchContext
 from ksadk.sandbox.registry import GLOBAL_SANDBOX_REGISTRY, get_sandbox_registry
-from ksadk.server.app import _configure_runtime_app
+from ksadk.server.composition import configure_runtime_app
 from ksadk.server.factory import (
     ALL_GROUPS,
     RuntimeAppConfig,
@@ -20,13 +19,20 @@ from ksadk.server.factory import (
 )
 from ksadk.server.terminal_sessions import TerminalSession
 
-server_app_module = importlib.import_module("ksadk.server.app")
 
-
-def _make_app(runner=None):
+def _make_app(*, runtime_type: str | None = None, executor=None):
+    context = (
+        RuntimeLaunchContext(runtime_type=runtime_type, project_dir=".")
+        if runtime_type
+        else None
+    )
     return create_runtime_app(
-        RuntimeAppConfig(runner=runner, route_groups=set(ALL_GROUPS)),
-        _configure_runtime_app,
+        RuntimeAppConfig(
+            runtime_executor=executor,
+            launch_context=context,
+            route_groups=set(ALL_GROUPS),
+        ),
+        configure_runtime_app,
     )
 
 
@@ -86,7 +92,7 @@ def test_workspace_proxy_targets_the_current_runtime_app():
             async def list_entries(path: str = ".", recursive: bool = False):
                 return {"label": label, "path": path, "recursive": recursive}
 
-            _configure_runtime_app(app, state, groups)
+            configure_runtime_app(app, state, groups)
 
         return create_runtime_app(RuntimeAppConfig(), configure)
 
@@ -118,10 +124,7 @@ def test_workspace_proxy_targets_the_current_runtime_app():
 
 
 def test_terminal_websocket_binds_own_runtime_state(monkeypatch):
-    runner = SimpleNamespace(
-        detection_result=SimpleNamespace(type=SimpleNamespace(value="openclaw"))
-    )
-    app = _make_app(runner=runner)
+    app = _make_app(runtime_type="openclaw")
     manager = app.state.runtime.terminal_manager
     frameworks: list[str] = []
 
@@ -177,7 +180,7 @@ def test_same_sandbox_key_is_isolated_by_runtime_app():
             )
             return {"sandbox_id": entry.sandbox_id}
 
-        _configure_runtime_app(app, state, groups)
+        configure_runtime_app(app, state, groups)
 
     app_a = create_runtime_app(RuntimeAppConfig(), configure)
     app_b = create_runtime_app(RuntimeAppConfig(), configure)
@@ -211,7 +214,7 @@ async def test_background_tasks_keep_app_context_after_request_and_peer_shutdown
                 tasks[label] = asyncio.create_task(record_context())
                 return {"scheduled": True}
 
-            _configure_runtime_app(app, state, groups)
+            configure_runtime_app(app, state, groups)
 
         return create_runtime_app(RuntimeAppConfig(), configure)
 
@@ -272,11 +275,11 @@ async def test_shutdown_of_one_app_does_not_touch_other_app_resources(monkeypatc
     closed: list[str] = []
     killed: list[str] = []
 
-    class FakeRunner:
+    class FakeExecutor:
         def __init__(self, name: str):
             self.name = name
 
-        async def close(self):
+        async def close_all(self):
             closed.append(self.name)
 
     class FakeSession:
@@ -293,8 +296,8 @@ async def test_shutdown_of_one_app_does_not_touch_other_app_resources(monkeypatc
         def create_session(self, **_kwargs):
             return FakeSession(self.sandbox_id)
 
-    app_a = _make_app(runner=FakeRunner("runner-a"))
-    app_b = _make_app(runner=FakeRunner("runner-b"))
+    app_a = _make_app(executor=FakeExecutor("executor-a"))
+    app_b = _make_app(executor=FakeExecutor("executor-b"))
     state_a = app_a.state.runtime
     state_b = app_b.state.runtime
 
@@ -324,7 +327,7 @@ async def test_shutdown_of_one_app_does_not_touch_other_app_resources(monkeypatc
         async with app_a.router.lifespan_context(app_a):
             pass
 
-        assert closed == ["runner-a"]
+        assert closed == ["executor-a"]
         assert stream_a.done()
         assert not stream_b.done()
         assert state_a.stream_registry.streams == set()
@@ -335,7 +338,7 @@ async def test_shutdown_of_one_app_does_not_touch_other_app_resources(monkeypatc
         assert [entry.sandbox_id for entry in state_b.sandbox_registry.entries()] == ["sandbox-b"]
         assert killed == ["sandbox-a"]
 
-    assert closed == ["runner-a", "runner-b"]
+    assert closed == ["executor-a", "executor-b"]
     assert stream_b.done()
     assert state_b.terminal_manager.sessions == {}
     assert state_b.sandbox_registry.entries() == []
@@ -377,24 +380,3 @@ def test_two_apps_create_same_terminal_session_id_concurrently(monkeypatch):
         assert terminal_a != terminal_b
         assert set(app_a.state.runtime.terminal_manager.sessions) == {terminal_a}
         assert set(app_b.state.runtime.terminal_manager.sessions) == {terminal_b}
-
-
-def test_compatibility_shims_stay_bound_to_default_app():
-    default_state = server_app_module.app.state.runtime
-    other_app = _make_app()
-    other_state = other_app.state.runtime
-    unique_invocation = "non-default-app-only"
-
-    other_state.stream_registry.streams_by_invocation[unique_invocation] = object()
-    try:
-        assert server_app_module.terminal_manager is default_state.terminal_manager
-        assert server_app_module.terminal_manager is not other_state.terminal_manager
-        assert get_sandbox_registry() is default_state.sandbox_registry
-        assert get_sandbox_registry() is not other_state.sandbox_registry
-        assert (
-            server_app_module._DETACHED_STREAMS_BY_INVOCATION
-            is default_state.stream_registry.streams_by_invocation
-        )
-        assert unique_invocation not in server_app_module._DETACHED_STREAMS_BY_INVOCATION
-    finally:
-        other_state.stream_registry.streams_by_invocation.pop(unique_invocation, None)

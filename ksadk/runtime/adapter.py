@@ -139,6 +139,9 @@ class CheckpointDescriptor(BaseModel):
 CONVERSATION_PREPROCESSING_METADATA_KEY = "conversation_request"
 """StartRequest metadata key for the shared conversation preprocessing contract."""
 
+RESUME_START_REQUEST_NATIVE_KEY = "_conversation_start_request"
+"""Ephemeral adapter-private key carrying current request context across attach/resume."""
+
 
 class ConversationPreprocessingRequest(BaseModel):
     """Transport-neutral input for the existing conversation preprocessing path.
@@ -237,6 +240,18 @@ class RuntimeAdapter(ABC):
     @property
     def runtime(self) -> BaseRuntime:
         return self._runtime
+
+    async def preflight(self) -> None:
+        """Validate that this adapter can accept a new run without creating one.
+
+        This is deliberately an additive lifecycle hook rather than a seventh
+        platform verb.  HTTP streaming routes use it before committing a 200
+        response, so a lazy runner import or configuration failure is returned
+        as a normal request error instead of a detached, half-open SSE stream.
+        Implementations must not allocate a run handle or start model work.
+        """
+
+        return None
 
     @abstractmethod
     async def start(self, request: StartRequest) -> RunHandle:

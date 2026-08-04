@@ -27,6 +27,8 @@
     {"event_type": "run.completed", "payload": {"status": "completed"}},
     {"event_type": "run.failed", "payload": {"status": "failed", "error": "boom"}},
     {"event_type": "run.canceled", "payload": {"status": "cancelled", "cancel_result": "interrupted_active_turn"}},
+    {"event_type": "context.compaction.started", "payload": {"phase": "before_model", "trigger": "token_budget"}},
+    {"event_type": "context.compaction.completed", "payload": {"phase": "before_model", "trigger": "token_budget", "compacted_until_seq_id": 12}},
     {"event_type": "checkpoint.created", "payload": {"checkpoint_id": "ck_1", "granularity": "snapshot"}},
     {"event_type": "checkpoint.resumed", "payload": {"checkpoint_id": "ck_1", "resume_target": {"kind": "checkpoint_id", "id": "ck_1"}}},
     {"event_type": "usage.reported", "payload": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15, "cached_tokens": 2, "reasoning_tokens": 3}},

@@ -19,7 +19,7 @@ A2A route、TaskStore、task adapter 和 card 构造**只有一份实现**,普�
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Optional, Sequence
+from typing import Optional, Sequence
 
 from a2a.server.routes import add_a2a_routes_to_fastapi
 from a2a.server.tasks import TaskStore
@@ -57,7 +57,6 @@ class A2AConfig:
 
 def add_a2a_protocol_routes(
     app: FastAPI,
-    runner: Any,
     config: A2AConfig,
     *,
     task_adapter: A2ARuntimeTaskAdapter,
@@ -85,12 +84,10 @@ def add_a2a_protocol_routes(
         create_table=config.create_table,
     )
     server = A2AProtocolServer(
-        runner,
         agent_card=card,
         task_store=store,
         task_adapter=task_adapter,
         context_builder=context_builder,
-        prefer_stream=config.prefer_stream,
         include_reasoning=config.include_reasoning,
     )
     add_a2a_routes_to_fastapi(

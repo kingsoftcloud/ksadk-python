@@ -426,7 +426,8 @@ class CodexRuntimeAdapter(RuntimeAdapter):
                 },
             )
         if method in {"turn/started", "turn/completed"}:
-            turn = params.get("turn") if isinstance(params.get("turn"), dict) else {}
+            raw_turn = params.get("turn")
+            turn: dict[str, Any] = raw_turn if isinstance(raw_turn, dict) else {}
             started_at = turn.get("started_at", turn.get("startedAt"))
             completed_at = turn.get("completed_at", turn.get("completedAt"))
             duration_ms = turn.get("duration_ms", turn.get("durationMs"))

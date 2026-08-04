@@ -87,10 +87,14 @@ class LangGraphRuntimeAdapter(RunnerRuntimeAdapter):
         # ``checkpoint_resume`` + ``framework_ref.langgraph.{checkpoint_id,thread_id}``。
         return {
             "checkpoint_resume": True,
+            "run_id": handle.run_id,
             "resume_payload_provided": payload is not None,
             "resume_interrupt_id": payload.call_id if payload else None,
             "framework_ref": {
-                "langgraph": {"checkpoint_id": target.id, "thread_id": handle.session_id}
+                "langgraph": {
+                    "checkpoint_id": target.id,
+                    "thread_id": str(handle.native_ref.get("thread_id") or handle.session_id),
+                }
             },
             "input": payload.data if payload else None,
         }

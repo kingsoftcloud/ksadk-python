@@ -47,9 +47,10 @@ from ksadk.runtime.adapter import (
     ResumePayload,
     ResumeTarget,
     RunHandle,
-    RuntimeAdapter,
+    RuntimeLaunchContext,
     StartRequest,
 )
+from ksadk.runtime.executor import RuntimeExecutor
 
 EventStoreFactory = Callable[[], Any]
 SessionServiceFactory = Callable[[], Any]
@@ -85,7 +86,8 @@ class _ThreadRun:
 
 @dataclass
 class _SharedRuntime:
-    adapter: RuntimeAdapter
+    executor: RuntimeExecutor
+    launch_context: RuntimeLaunchContext
     event_store_factory: Optional[EventStoreFactory]
     session_service_factory: Optional[SessionServiceFactory]
     threads: dict[str, _ThreadRun] = field(default_factory=dict)
@@ -118,20 +120,27 @@ class KsadkAGUIAgent:
         self,
         *,
         name: str,
-        adapter: RuntimeAdapter,
+        executor: RuntimeExecutor | None = None,
+        launch_context: RuntimeLaunchContext | None = None,
         event_store_factory: Optional[EventStoreFactory] = None,
         session_service_factory: Optional[SessionServiceFactory] = None,
         _shared: Optional[_SharedRuntime] = None,
     ) -> None:
         self.name = name
-        self._shared = _shared or _SharedRuntime(
-            adapter,
-            event_store_factory,
-            session_service_factory,
-        )
+        if _shared is not None:
+            self._shared = _shared
+        else:
+            if executor is None or launch_context is None:
+                raise ValueError("AG-UI requires RuntimeExecutor and RuntimeLaunchContext")
+            self._shared = _SharedRuntime(
+                executor,
+                launch_context,
+                event_store_factory,
+                session_service_factory,
+            )
 
     def clone(self) -> "KsadkAGUIAgent":
-        return type(self)(name=self.name, adapter=self._shared.adapter, _shared=self._shared)
+        return type(self)(name=self.name, _shared=self._shared)
 
     async def run(self, input: RunAgentInput) -> AsyncIterator[BaseEvent]:
         wire = _WireState(
@@ -160,7 +169,7 @@ class KsadkAGUIAgent:
                 return
 
             run.active = True
-            async for runtime_event in self._shared.adapter.stream(run.handle):
+            async for runtime_event in self._shared.executor.stream(run.handle):
                 persisted = await self._persist(self._event_for_persistence(runtime_event, run))
                 async for event in self._project(persisted, wire, run):
                     yield event
@@ -230,7 +239,10 @@ class KsadkAGUIAgent:
                 config=request_config,
                 metadata={"invocation_id": input.run_id, "transport": "ag-ui"},
             )
-            handle = await self._shared.adapter.start(request)
+            handle = await self._shared.executor.start(
+                self._shared.launch_context,
+                request,
+            )
             await self._persist_user_input(input, request, handle)
             run = _ThreadRun(handle=handle)
             self._shared.threads[input.thread_id] = run
@@ -287,7 +299,7 @@ class KsadkAGUIAgent:
         for interrupt_id, fingerprint in fingerprints.items():
             self._shared.consumed_resumes[(input.thread_id, interrupt_id)] = fingerprint
 
-        resumed = await self._shared.adapter.resume(
+        resumed = await self._shared.executor.resume(
             current.handle,
             ResumeTarget(kind="checkpoint_id", id=next(iter(checkpoint_ids))),
             ResumePayload(
@@ -692,8 +704,11 @@ class KsadkAGUIAgent:
             pending[interrupt.id] = _PendingInterrupt(interrupt, checkpoint_id)
         if not pending:
             return None, False
-        if not self._shared.adapter.is_handle_attached(handle):
-            handle = await self._shared.adapter.attach(handle)
+        if not self._shared.executor.is_attached(handle):
+            handle = await self._shared.executor.attach(
+                self._shared.launch_context,
+                handle,
+            )
         return _ThreadRun(handle=handle, interrupted=True, pending=pending), False
 
     async def _durable_events(self, session_id: str) -> list[RuntimeEvent]:
@@ -757,14 +772,14 @@ class KsadkAGUIAgent:
 
     async def _close_thread(self, thread_id: str, run: _ThreadRun) -> None:
         try:
-            await self._shared.adapter.close(run.handle)
+            await self._shared.executor.close(run.handle)
         finally:
             async with self._shared.lock:
                 if self._shared.threads.get(thread_id) is run:
                     self._shared.threads.pop(thread_id, None)
 
     async def _cancel_and_close(self, thread_id: str, run: _ThreadRun) -> CancelResult:
-        result = await self._shared.adapter.cancel(run.handle)
+        result = await self._shared.executor.cancel(run.handle)
         if result in {
             CancelResult.INTERRUPTED_ACTIVE_TURN,
             CancelResult.PENDING_CANCEL_RECORDED,
