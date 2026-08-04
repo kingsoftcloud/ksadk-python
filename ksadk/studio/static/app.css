@@ -832,7 +832,6 @@ select:disabled {
 .compact-select {
   width: 156px;
 }
-
 .table-surface {
   position: relative;
   overflow: hidden;
@@ -1057,7 +1056,6 @@ td.actions-column {
   font-size: var(--font-size-body);
   line-height: var(--line-height-body);
 }
-
 /* Create wizard */
 
 .create-shell {
@@ -1394,7 +1392,6 @@ td.actions-column {
 .manifest-contract svg {
   color: var(--success);
 }
-
 .wizard-steps {
   display: flex;
   flex-direction: column;
@@ -2237,7 +2234,6 @@ td.actions-column {
   font-size: var(--font-size-caption);
   line-height: var(--line-height-caption);
 }
-
 .authoring-mode-tabs {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -2605,7 +2601,6 @@ td.actions-column {
   color: var(--text-tertiary);
   font-size: var(--font-size-caption);
 }
-
 /* Chat */
 
 .chat-view {
@@ -3018,7 +3013,6 @@ ksadk-message {
   gap: 8px;
   margin-top: 10px;
 }
-
 .message-actions .button {
   color: var(--text);
   background: var(--surface);
@@ -3290,7 +3284,6 @@ ksadk-message {
   width: 100%;
   margin-top: 10px;
 }
-
 /* OpenTelemetry Trace Explorer */
 
 .observability-page {
@@ -3838,7 +3831,6 @@ ksadk-message {
   overscroll-behavior: contain;
   scrollbar-gutter: stable both-edges;
 }
-
 /* Build */
 
 .build-workspace {
@@ -3917,7 +3909,6 @@ ksadk-message {
   line-height: var(--line-height-editor);
   white-space: pre-wrap;
 }
-
 /* Drawer, overlays, toast */
 
 .overlay {

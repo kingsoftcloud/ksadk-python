@@ -715,7 +715,6 @@ async function refreshCredentialStatuses() {
   }));
   state.credentialStatuses = Object.fromEntries(statuses);
 }
-
 function currentWizardPayload() {
   const prompt = $("agentPrompt").value.trim();
   return {
