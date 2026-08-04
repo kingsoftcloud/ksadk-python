@@ -38,7 +38,17 @@ class AgentBundleBuilder:
 
     def build(self, draft: AgentDraft) -> BuildRecord:
         compiled = self.compiler.compile(draft)
-        short_digest = compiled.resolved.resolved_digest.removeprefix("sha256:")[:20]
+        runtime_type, source_digest, runtime_lock = self._runtime_snapshot(draft, compiled)
+        resolved_digest = sha256_digest(
+            canonical_json(
+                {
+                    "definitionDigest": compiled.resolved.resolved_digest,
+                    "runtime": runtime_lock,
+                    "sourceDigest": source_digest,
+                }
+            )
+        )
+        short_digest = resolved_digest.removeprefix("sha256:")[:20]
         build_id = f"build_{short_digest}"
         final_dir = self.workspace.resolve(Path("dist") / draft.metadata.id / build_id)
         zip_path = final_dir / "agent-bundle.zip"
@@ -51,12 +61,21 @@ class AgentBundleBuilder:
         bundle_root = staging / "agent-bundle"
         bundle_root.mkdir(parents=True, exist_ok=False)
         try:
-            self._write_payload(bundle_root, draft, compiled)
+            self._write_payload(
+                bundle_root,
+                draft,
+                compiled,
+                runtime_lock=runtime_lock,
+                resolved_digest=resolved_digest,
+            )
+            self._copy_runtime_source(bundle_root, draft)
             files = self._file_entries(bundle_root)
             manifest = BundleManifest(
                 agent_id=draft.metadata.id,
                 source_revision=draft.metadata.revision,
-                resolved_digest=compiled.resolved.resolved_digest,
+                resolved_digest=resolved_digest,
+                runtime_type=runtime_type,
+                source_digest=source_digest,
                 files=files,
             )
             digest_payload = manifest.model_dump(
@@ -83,7 +102,10 @@ class AgentBundleBuilder:
             agent_id=draft.metadata.id,
             source_revision=draft.metadata.revision,
             status=BuildStatus.SUCCEEDED,
-            resolved_digest=compiled.resolved.resolved_digest,
+            resolved_digest=resolved_digest,
+            runtime_type=runtime_type,
+            source_digest=source_digest,
+            runtime_lock=runtime_lock,
             bundle_digest=manifest.bundle_digest,
             artifact_path=self.workspace.relative(zip_path),
             created_at=now,
@@ -91,12 +113,31 @@ class AgentBundleBuilder:
         )
         return self.repository.save(record)
 
-    def _write_payload(self, root: Path, draft: AgentDraft, compiled) -> None:
+    def _write_payload(
+        self,
+        root: Path,
+        draft: AgentDraft,
+        compiled,
+        *,
+        runtime_lock: dict,
+        resolved_digest: str,
+    ) -> None:
+        definition_digest = compiled.resolved.resolved_digest
+        resolved_payload = compiled.resolved.model_dump(
+            by_alias=True,
+            exclude_none=True,
+            mode="json",
+        )
+        resolved_payload["resolvedDigest"] = resolved_digest
+        dependency_lock = dict(compiled.dependency_lock)
+        dependency_lock["definitionDigest"] = definition_digest
+        dependency_lock["resolvedDigest"] = resolved_digest
         self._write_json(
             root / "resolved-agent-spec.json",
-            compiled.resolved.model_dump(by_alias=True, exclude_none=True, mode="json"),
+            resolved_payload,
         )
-        self._write_json(root / "agentkit.lock", compiled.dependency_lock)
+        self._write_json(root / "agentkit.lock", dependency_lock)
+        self._write_json(root / "runtime-lock.json", runtime_lock)
         instructions = root / "instructions"
         instructions.mkdir()
         (instructions / "system.md").write_text(
@@ -156,11 +197,76 @@ class AgentBundleBuilder:
                 "agentId": draft.metadata.id,
                 "sourceRevision": draft.metadata.revision,
                 "sourceDigest": compiled.resolved.source_digest,
-                "resolvedDigest": compiled.resolved.resolved_digest,
+                "definitionDigest": definition_digest,
+                "resolvedDigest": resolved_digest,
                 "compilerVersion": compiled.resolved.compiler_version,
                 "runtimeContract": "agentkit.runtime/v1",
             },
         )
+
+    def _runtime_snapshot(self, draft: AgentDraft, compiled) -> tuple[str, str, dict]:
+        runtime = draft.spec.runtime
+        runtime_type = runtime.type if runtime is not None else ""
+        source_digest = ""
+        source_files: list[dict[str, object]] = []
+        if runtime is not None and runtime.project_path:
+            source_root = self.workspace.resolve(runtime.project_path, must_exist=True)
+            for path in self._source_files(source_root):
+                content = path.read_bytes()
+                relative = path.relative_to(source_root).as_posix()
+                digest = f"sha256:{hashlib.sha256(content).hexdigest()}"
+                source_files.append(
+                    {"path": relative, "sha256": digest, "size": len(content)}
+                )
+            source_digest = sha256_digest(canonical_json(source_files))
+        bound_models = [
+            item.model for item in self.compiler.catalog.resolve_models(draft.spec.bindings)
+        ]
+        if compiled.resolved.model.model not in bound_models:
+            bound_models.insert(0, compiled.resolved.model.model)
+        lock = {
+            "type": runtime_type,
+            "projectPath": runtime.project_path if runtime is not None else None,
+            "entryPoint": runtime.entry_point if runtime is not None else None,
+            "agentVariable": runtime.agent_variable if runtime is not None else None,
+            "version": runtime.version if runtime is not None else None,
+            "detection": runtime.detection if runtime is not None else None,
+            "sourceDigest": source_digest,
+            "definitionDigest": compiled.resolved.resolved_digest,
+            "model": compiled.resolved.model.model,
+            "models": list(dict.fromkeys(bound_models)),
+        }
+        return runtime_type, source_digest, {
+            key: value for key, value in lock.items() if value is not None
+        }
+
+    def _copy_runtime_source(self, bundle_root: Path, draft: AgentDraft) -> None:
+        runtime = draft.spec.runtime
+        if runtime is None or not runtime.project_path:
+            return
+        source_root = self.workspace.resolve(runtime.project_path, must_exist=True)
+        target_root = bundle_root / "runtime"
+        for source in self._source_files(source_root):
+            relative = source.relative_to(source_root)
+            target = target_root / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(source.read_bytes())
+
+    @staticmethod
+    def _source_files(root: Path) -> list[Path]:
+        files: list[Path] = []
+        for path in sorted(root.rglob("*"), key=lambda item: item.as_posix()):
+            if path.is_symlink():
+                raise ValueError(f"Runtime source cannot contain symlinks: {path}")
+            if not path.is_file():
+                continue
+            relative = path.relative_to(root)
+            if any(part in {"__pycache__", ".git", ".venv"} for part in relative.parts):
+                continue
+            if path.suffix in {".pyc", ".pyo"}:
+                continue
+            files.append(path)
+        return files
 
     @staticmethod
     def _write_json(path: Path, payload: object) -> None:

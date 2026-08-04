@@ -8,11 +8,13 @@ from urllib.parse import quote
 
 from fastapi.testclient import TestClient
 
+from ksadk.events.runtime_event import EventType, RuntimeEvent
 from ksadk.studio.api import create_studio_app
 from ksadk.studio.cloud import InMemoryCloudGateway
 from ksadk.studio.contracts import Usage
 from ksadk.studio.model_client import CredentialResolver, ModelResponse
 from ksadk.studio.service import StudioService
+from tests.studio.runtime_adapter_fixtures import RuntimeFixture
 
 
 class FakeModelClient:
@@ -26,9 +28,54 @@ class FakeModelClient:
         )
 
 
+async def _runtime_events(request, handle):
+    common = {
+        "agent_id": request.agent_id or "agent",
+        "user_id": request.user_id,
+        "session_id": request.session_id,
+        "invocation_id": handle.run_id,
+    }
+    yield RuntimeEvent.create(
+        EventType.RUN_STARTED,
+        **common,
+        seq_id=1,
+        payload={"status": "in_progress"},
+    )
+    yield RuntimeEvent.create(
+        EventType.TEXT_COMPLETED,
+        **common,
+        seq_id=2,
+        phase="final_answer",
+        payload={"text": "AGENTKIT_E2E_OK"},
+    )
+    yield RuntimeEvent.create(
+        EventType.USAGE_REPORTED,
+        **common,
+        seq_id=3,
+        payload={
+            "input_tokens": 5,
+            "output_tokens": 3,
+            "total_tokens": 8,
+            "source": "fixture",
+        },
+    )
+    yield RuntimeEvent.create(
+        EventType.RUN_COMPLETED,
+        **common,
+        seq_id=4,
+        payload={"status": "completed", "duration_ms": 12},
+    )
+
+
 def _valid_spec():
     return {
         "description": "API test",
+        "runtime": {
+            "type": "langgraph",
+            "projectPath": "agents/demo-agent/source",
+            "entryPoint": "agent.py",
+            "agentVariable": "graph",
+        },
         "instructions": {
             "system": "You are a test agent.",
             "task": "Only answer the request.",
@@ -80,6 +127,10 @@ def test_api_complete_create_build_run_and_deploy_flow(tmp_path: Path):
         tmp_path,
         model_client=FakeModelClient(),
         cloud_gateway=cloud,
+        runtime_executor=RuntimeFixture(
+            _runtime_events,
+            runtime_types=("langgraph",),
+        ).executor,
     )
     app = create_studio_app(tmp_path, service=service, security_enabled=False)
 
@@ -165,6 +216,55 @@ def test_api_complete_create_build_run_and_deploy_flow(tmp_path: Path):
         deployment = client.get(f"/api/v1/deployments/{completed_deployment['resourceId']}").json()
         assert deployment["bundleDigest"] == build["bundleDigest"]
         assert len(cloud.uploads) == 1
+
+
+def test_framework_stream_forwards_created_event_to_the_browser(tmp_path: Path):
+    """The generic runtime path must expose session identity before deltas."""
+    service = StudioService(
+        tmp_path,
+        model_client=FakeModelClient(),
+        runtime_executor=RuntimeFixture(
+            _runtime_events,
+            runtime_types=("langgraph",),
+        ).executor,
+    )
+    app = create_studio_app(tmp_path, service=service, security_enabled=False)
+
+    with TestClient(app) as client:
+        assert client.post(
+            "/api/v1/agents",
+            json={"id": "stream-agent", "name": "Stream Agent", "template": "blank"},
+        ).status_code == 201
+        assert client.put(
+            "/api/v1/agents/stream-agent",
+            headers={"If-Match": '"1"'},
+            json=_valid_spec(),
+        ).status_code == 200
+        operation = client.post(
+            "/api/v1/agents/stream-agent/builds",
+            headers={"Idempotency-Key": "framework-stream-build"},
+            json={"revision": 2},
+        ).json()
+        build_id = _wait(client, operation["id"])["resourceId"]
+
+        with client.stream(
+            "POST",
+            f"/api/v1/builds/{build_id}/run:stream",
+            headers={"Idempotency-Key": "framework-stream-run"},
+            json={
+                "sessionId": "ses-framework-stream",
+                "input": {"role": "user", "content": "reply ok"},
+                "environment": "local",
+                "stream": True,
+            },
+        ) as response:
+            stream = "".join(response.iter_text())
+
+    assert response.status_code == 200
+    assert "event: run.created" in stream
+    assert '"sessionId":"ses-framework-stream"' in stream
+    assert "event: message.completed" in stream
+    assert "event: run.completed" in stream
 
 
 def test_api_revision_idempotency_and_validation_errors(tmp_path: Path):
@@ -409,7 +509,14 @@ def test_api_session_credential_lifecycle_and_model_connection(tmp_path: Path):
 
 
 def test_api_blank_agent_create_build_and_chat_flow(tmp_path: Path):
-    service = StudioService(tmp_path, model_client=FakeModelClient())
+    service = StudioService(
+        tmp_path,
+        model_client=FakeModelClient(),
+        runtime_executor=RuntimeFixture(
+            _runtime_events,
+            runtime_types=("langgraph",),
+        ).executor,
+    )
     app = create_studio_app(tmp_path, service=service, security_enabled=False)
     prompt = (
         "你是一名企业技术支持助手。先识别问题类型，再给出准确、可执行的处理步骤；信息不足时先提问。"
@@ -421,7 +528,7 @@ def test_api_blank_agent_create_build_and_chat_flow(tmp_path: Path):
         assert templates.json()["items"][0]["id"] == "blank"
         resources = client.get("/api/v1/catalog/resources?limit=200").json()["items"]
         model = next(item for item in resources if item["kind"] == "model")
-        read_tool = next(item for item in resources if item["name"] == "workspace.read")
+        read_tool = next(item for item in resources if item["name"] == "read_workspace_file")
 
         composed = client.post(
             "/api/v1/agent-templates/blank:compose",
@@ -453,6 +560,12 @@ def test_api_blank_agent_create_build_and_chat_flow(tmp_path: Path):
         ]
         assert composition["spec"]["bindings"]["skills"] == []
         assert composition["spec"]["bindings"]["mcpServers"] == []
+        composition["spec"]["runtime"] = {
+            "type": "langgraph",
+            "projectPath": "agents/support-agent/source",
+            "entryPoint": "agent.py",
+            "agentVariable": "graph",
+        }
 
         created = client.post(
             "/api/v1/agents",
@@ -505,7 +618,15 @@ def test_api_research_template_create_build_and_chat_flow(tmp_path: Path):
             )
 
     model_client = CapturingModelClient()
-    service = StudioService(tmp_path, model_client=model_client)
+    runtime_fixture = RuntimeFixture(
+        _runtime_events,
+        runtime_types=("langgraph",),
+    )
+    service = StudioService(
+        tmp_path,
+        model_client=model_client,
+        runtime_executor=runtime_fixture.executor,
+    )
     app = create_studio_app(tmp_path, service=service, security_enabled=False)
 
     with TestClient(app) as client:
@@ -530,6 +651,12 @@ def test_api_research_template_create_build_and_chat_flow(tmp_path: Path):
         composition = composed.json()
         assert composition["templateId"] == "research"
         assert composition["spec"]["bindings"]["skills"]
+        composition["spec"]["runtime"] = {
+            "type": "langgraph",
+            "projectPath": "agents/research-agent/source",
+            "entryPoint": "agent.py",
+            "agentVariable": "graph",
+        }
 
         created = client.post(
             "/api/v1/agents",
@@ -569,7 +696,7 @@ def test_api_research_template_create_build_and_chat_flow(tmp_path: Path):
         )
         first_completed = _wait(client, first_operation.json()["id"])
         first_run = client.get(f"/api/v1/runs/{first_completed['resourceId']}").json()
-        assert first_run["output"] == "RESEARCH_CHAT_OK"
+        assert first_run["output"] == "AGENTKIT_E2E_OK"
 
         second_operation = client.post(
             f"/api/v1/builds/{build_id}/runs",
@@ -595,8 +722,12 @@ def test_api_research_template_create_build_and_chat_flow(tmp_path: Path):
             first_run["id"],
             second_run["id"],
         ]
-        assert len(model_client.messages[-1]) == 4
-        assert "Deep Research Methodology" in model_client.messages[-1][0]["content"]
+        conversation = runtime_fixture.start_requests[-1].conversation_preprocessing()
+        assert conversation is not None
+        assert len(conversation.messages) == 3
+        assert "工作原则" in runtime_fixture.start_requests[-1].config[
+            "base_instructions"
+        ]
 
 
 def test_api_mcp_probe_returns_discovered_tool_contracts(tmp_path: Path):
@@ -617,7 +748,7 @@ def test_api_mcp_probe_returns_discovered_tool_contracts(tmp_path: Path):
                 "timeoutSeconds": timeout_seconds,
             }
 
-    service.runtime.mcp_runtime = FakeMCPRuntime()
+    service.mcp_runtime = FakeMCPRuntime()
     app = create_studio_app(
         tmp_path,
         service=service,
@@ -648,8 +779,8 @@ def test_api_catalog_binding_policy_and_schema_flow(tmp_path: Path):
         assert resources.status_code == 200
         items = resources.json()["items"]
         model = next(item for item in items if item["kind"] == "model")
-        read = next(item for item in items if item["name"] == "workspace.read")
-        write = next(item for item in items if item["name"] == "workspace.write")
+        read = next(item for item in items if item["name"] == "read_workspace_file")
+        write = next(item for item in items if item["name"] == "write_workspace_file")
 
         client.post(
             "/api/v1/agents",
@@ -684,8 +815,8 @@ def test_api_catalog_binding_policy_and_schema_flow(tmp_path: Path):
         assert preview.status_code == 200
         approvals = {item["name"]: item["approval"] for item in preview.json()["tools"]}
         assert approvals == {
-            "workspace.read": "never",
-            "workspace.write": "always",
+            "read_workspace_file": "never",
+            "write_workspace_file": "always",
         }
 
         schema = client.post(
@@ -754,7 +885,7 @@ def test_api_persists_mcp_probe_and_imports_skill_zip(tmp_path: Path):
                 "timeoutSeconds": timeout_seconds,
             }
 
-    service.runtime.mcp_runtime = FakeMCPRuntime()
+    service.mcp_runtime = FakeMCPRuntime()
     app = create_studio_app(
         tmp_path,
         service=service,

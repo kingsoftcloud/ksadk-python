@@ -309,10 +309,9 @@ def compose_research_agent(
         for item in tools
         if item.name
         in {
-            "builtin.current_time",
-            "workspace.glob",
-            "workspace.grep",
-            "workspace.read",
+            "list_workspace_files",
+            "search_workspace_files",
+            "read_workspace_file",
         }
         and item.status == "ready"
     ]

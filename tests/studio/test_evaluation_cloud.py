@@ -69,7 +69,7 @@ class FakeRuntime:
         self.event_store = FakeEventStore()
         self.calls = 0
 
-    async def run(self, build_id, user_input, *, session_id):
+    async def run(self, build_id, user_input, session_id):
         self.calls += 1
         output = "AGENTKIT_OK" if "ok" in user_input.lower() else '{"ok":true}'
         return RunRecord(
@@ -118,7 +118,12 @@ cases:
         + "\n",
         encoding="utf-8",
     )
-    runner = EvaluationRunner(workspace, runtime=FakeRuntime())
+    runtime = FakeRuntime()
+    runner = EvaluationRunner(
+        workspace,
+        run_agent=runtime.run,
+        event_store=runtime.event_store,
+    )
 
     result = await runner.run(build.id, ["evaluations/smoke.yaml"])
 
@@ -151,7 +156,12 @@ cases:
         encoding="utf-8",
     )
 
-    result = await EvaluationRunner(workspace, runtime=FakeRuntime()).run(
+    runtime = FakeRuntime()
+    result = await EvaluationRunner(
+        workspace,
+        run_agent=runtime.run,
+        event_store=runtime.event_store,
+    ).run(
         build.id,
         ["evaluations/fail.yaml"],
     )

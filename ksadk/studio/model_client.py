@@ -340,6 +340,17 @@ class OpenAICompatibleModelClient:
             input_tokens=int(raw_usage.get("prompt_tokens") or 0),
             output_tokens=int(raw_usage.get("completion_tokens") or 0),
             total_tokens=int(raw_usage.get("total_tokens") or 0),
+            cached_input_tokens=int(
+                (raw_usage.get("prompt_tokens_details") or {}).get("cached_tokens") or 0
+            ),
+            reasoning_output_tokens=int(
+                (raw_usage.get("completion_tokens_details") or {}).get(
+                    "reasoning_tokens"
+                )
+                or 0
+            ),
+            reported=bool(raw_usage),
+            source="model-provider" if raw_usage else None,
         )
         return ModelResponse(
             content=content,

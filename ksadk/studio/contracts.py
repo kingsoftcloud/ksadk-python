@@ -56,6 +56,8 @@ class ModelSpec(ContractModel):
     base_url: str | None = None
     credential_ref: str = Field(min_length=1, max_length=512)
     parameters: ModelParameters = Field(default_factory=ModelParameters)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    discovery: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_address(self) -> "ModelSpec":
@@ -101,9 +103,17 @@ class ToolContract(ContractModel):
     timeout_seconds: int = Field(default=20, ge=1, le=3600)
     side_effect: Literal["none", "read", "write", "external"] = "none"
     approval: Literal["never", "always", "policy"] = "never"
-    executor: Literal["builtin", "mcp", "deferred"] = "builtin"
+    executor: Literal["builtin", "mcp", "deferred", "python"] = "builtin"
     mcp_server: str | None = None
+    source_path: str | None = Field(default=None, min_length=1, max_length=1024)
+    callable_name: str | None = Field(default=None, min_length=1, max_length=256)
+    source_sha256: str | None = None
     digest: str | None = None
+    group: str | None = None
+    risk_level: str | None = None
+    boundary: str | None = None
+    backend: str | None = None
+    enabled: bool = True
 
     @model_validator(mode="after")
     def validate_executor(self) -> "ToolContract":
@@ -111,6 +121,20 @@ class ToolContract(ContractModel):
             raise ValueError("MCP Tool 必须配置 mcpServer")
         if self.executor != "mcp" and self.mcp_server:
             raise ValueError("只有 MCP Tool 可以配置 mcpServer")
+        if self.executor == "python":
+            if not self.source_path or not self.callable_name:
+                raise ValueError("Python Tool 必须配置 sourcePath 和 callableName")
+            normalized = self.source_path.strip().replace("\\", "/")
+            if (
+                normalized.startswith("/")
+                or normalized == ".."
+                or normalized.startswith("../")
+                or "/../" in normalized
+            ):
+                raise ValueError("Python Tool sourcePath 必须位于工作区内")
+            self.source_path = normalized
+        elif self.source_path or self.callable_name or self.source_sha256:
+            raise ValueError("只有 Python Tool 可以配置源码字段")
         return self
 
 
@@ -121,7 +145,7 @@ class ResourceDescriptor(ContractModel):
     display_name: str = Field(min_length=1, max_length=128)
     version: str = Field(min_length=1, max_length=64)
     digest: str
-    source: Literal["builtin", "local", "market"] = "local"
+    source: Literal["builtin", "provider", "local", "market"] = "local"
     status: Literal[
         "ready",
         "unhealthy",
@@ -148,11 +172,26 @@ class CapabilityBinding(ContractModel):
 
 class AgentBindings(ContractModel):
     model_profile_id: str | None = None
+    model_profile_ids: list[str] = Field(default_factory=list)
     model_parameters: ModelParameters | None = None
     policy_template: Literal["loose", "strict", "custom"] = "strict"
     tools: list[CapabilityBinding] = Field(default_factory=list)
     mcp_servers: list[CapabilityBinding] = Field(default_factory=list)
     skills: list[CapabilityBinding] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_model_profiles(self) -> "AgentBindings":
+        if len(set(self.model_profile_ids)) != len(self.model_profile_ids):
+            raise ValueError("modelProfileIds 不能包含重复资源")
+        if self.model_profile_ids and not self.model_profile_id:
+            raise ValueError("绑定多个模型时必须指定默认 modelProfileId")
+        if (
+            self.model_profile_id
+            and self.model_profile_ids
+            and self.model_profile_id not in self.model_profile_ids
+        ):
+            raise ValueError("默认 modelProfileId 必须包含在 modelProfileIds 中")
+        return self
 
 
 class CapabilitiesSpec(ContractModel):
@@ -207,8 +246,50 @@ class EvaluationSpec(ContractModel):
     minimum_pass_rate: float = Field(default=1, ge=0, le=1)
 
 
+class RuntimeRef(ContractModel):
+    """Per-Agent reference to one registered RuntimeAdapter implementation.
+
+    Studio is a control plane and therefore must not have a process-wide runtime
+    mode.  Each Agent declares the adapter type and, for Python frameworks, the
+    project entrypoint that is snapshotted by its Build.
+    """
+
+    type: Literal["codex", "adk", "langgraph"]
+    project_path: str | None = Field(default=None, min_length=1, max_length=1024)
+    entry_point: str | None = Field(default=None, min_length=1, max_length=1024)
+    agent_variable: str = Field(default="root_agent", min_length=1, max_length=256)
+    version: str | None = Field(default=None, min_length=1, max_length=64)
+    detection: Literal["declared", "auto"] = "declared"
+
+    @field_validator("project_path", "entry_point")
+    @classmethod
+    def validate_relative_path(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip().replace("\\", "/")
+        if (
+            not normalized
+            or normalized.startswith("/")
+            or normalized == ".."
+            or normalized.startswith("../")
+            or "/../" in normalized
+        ):
+            raise ValueError("Runtime 路径必须是工作区内的相对路径")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_framework_source(self) -> "RuntimeRef":
+        if self.type in {"adk", "langgraph"}:
+            if not self.project_path:
+                raise ValueError(f"{self.type} Runtime 必须配置 projectPath")
+            if self.detection == "declared" and not self.entry_point:
+                raise ValueError(f"{self.type} Runtime 使用 declared 检测时必须配置 entryPoint")
+        return self
+
+
 class AgentSpec(ContractModel):
     description: str = Field(default="", max_length=1024)
+    runtime: RuntimeRef | None = None
     instructions: Instructions = Field(default_factory=Instructions)
     model: ModelSpec | None = None
     capabilities: CapabilitiesSpec = Field(default_factory=CapabilitiesSpec)
@@ -344,6 +425,8 @@ class BundleManifest(ContractModel):
     agent_id: str
     source_revision: int
     resolved_digest: str
+    runtime_type: str = ""
+    source_digest: str = ""
     runtime_contract: Literal["agentkit.runtime/v1"] = "agentkit.runtime/v1"
     files: list[FileEntry]
     created_at: str = "1970-01-01T00:00:00Z"
@@ -356,6 +439,9 @@ class BuildRecord(ContractModel):
     source_revision: int
     status: BuildStatus
     resolved_digest: str = ""
+    runtime_type: str = ""
+    source_digest: str = ""
+    runtime_lock: dict[str, Any] = Field(default_factory=dict)
     bundle_digest: str = ""
     artifact_path: str | None = None
     diagnostics: list[Diagnostic] = Field(default_factory=list)
@@ -403,6 +489,7 @@ class RunStatus(str, Enum):
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
+    INTERRUPTED = "INTERRUPTED"
     TIMED_OUT = "TIMED_OUT"
 
 
@@ -410,6 +497,10 @@ class Usage(ContractModel):
     input_tokens: int = Field(default=0, ge=0)
     output_tokens: int = Field(default=0, ge=0)
     total_tokens: int = Field(default=0, ge=0)
+    cached_input_tokens: int = Field(default=0, ge=0)
+    reasoning_output_tokens: int = Field(default=0, ge=0)
+    reported: bool = False
+    source: str | None = None
 
 
 class RunRecord(ContractModel):
@@ -418,6 +509,10 @@ class RunRecord(ContractModel):
     agent_id: str
     session_id: str
     trace_id: str
+    manifest_sha256: str = ""
+    runtime_type: str = ""
+    model: str = ""
+    runtime_handle: dict[str, Any] = Field(default_factory=dict)
     status: RunStatus = RunStatus.CREATED
     input: str
     output: str = ""
@@ -426,6 +521,7 @@ class RunRecord(ContractModel):
     started_at: datetime | None = None
     completed_at: datetime | None = None
     duration_ms: int | None = None
+    duration_source: Literal["runtime", "studio"] | None = None
 
 
 class RunEvent(ContractModel):

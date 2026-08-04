@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import cast
 from uuid import uuid4
@@ -22,8 +23,8 @@ from ksadk.studio.contracts import (
     RunStatus,
 )
 from ksadk.studio.errors import StudioError
+from ksadk.studio.event_store import RunEventStore
 from ksadk.studio.repository import BuildRepository, load_yaml_file
-from ksadk.studio.runtime import LocalAgentRuntime
 from ksadk.studio.workspace import Workspace
 
 
@@ -32,11 +33,13 @@ class EvaluationRunner:
         self,
         workspace: Workspace,
         *,
-        runtime: LocalAgentRuntime,
+        run_agent: Callable[[str, str, str | None], Awaitable[RunRecord]],
+        event_store: RunEventStore,
         build_repository: BuildRepository | None = None,
     ) -> None:
         self.workspace = workspace
-        self.runtime = runtime
+        self.run_agent = run_agent
+        self.event_store = event_store
         self.build_repository = build_repository or BuildRepository(workspace)
 
     async def run(
@@ -57,10 +60,10 @@ class EvaluationRunner:
         )
         for suite in suites:
             for case in suite.cases:
-                run = await self.runtime.run(
+                run = await self.run_agent(
                     build_id,
                     case.input,
-                    session_id=f"eval_{evaluation.id}_{case.id}",
+                    f"eval_{evaluation.id}_{case.id}",
                 )
                 assertion_results = [
                     self._assert(assertion, run) for assertion in case.assertions
@@ -160,7 +163,7 @@ class EvaluationRunner:
         elif assertion.type in {"toolCalled", "toolNotCalled"}:
             called = {
                 event.data.get("tool")
-                for event in self.runtime.event_store.events(run.id)
+                for event in self.event_store.events(run.id)
                 if event.type == "tool.requested"
             }
             passed = (

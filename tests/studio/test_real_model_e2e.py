@@ -168,7 +168,7 @@ def test_real_model_create_build_run_and_cloud_contract(tmp_path: Path):
         assert "model.completed" in event_text
         assert "run.completed" in event_text
         trace = client.get(f"/api/v1/traces/{run['traceId']}").json()
-        assert trace["run"]["id"] == run["id"]
+        assert trace["runId"] == run["id"]
 
         deployment_operation = client.post(
             f"/api/v1/builds/{first_build['id']}/deployments",

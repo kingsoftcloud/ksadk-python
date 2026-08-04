@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import time
 from pathlib import Path
-from typing import Literal
-from urllib.parse import urlparse
+from typing import Callable, Literal, cast
 
+from ksadk.runtime import RuntimeExecutor, build_default_runtime_registry
+from ksadk.studio.agent_lifecycle import delete_framework_agent
+from ksadk.studio.authoring_coordinator import StudioAuthoringCoordinator
 from ksadk.studio.builder import AgentBundleBuilder
 from ksadk.studio.capabilities import builtin_tool_contracts
 from ksadk.studio.cloud import (
@@ -15,24 +16,45 @@ from ksadk.studio.cloud import (
     CloudDeploymentService,
     UnavailableCloudGateway,
 )
+from ksadk.studio.codex_agent_service import CodexAgentService
+from ksadk.studio.codex_builder import (
+    CodexBuildRecord,
+    CodexBuildRepository,
+    CodexStudioBuilder,
+    RuntimeInspector,
+)
+from ksadk.studio.codex_manifest import (
+    CodexAgentManifest,
+    CodexManifestRepository,
+)
+from ksadk.studio.codex_run import CodexRunSpecResolver
+from ksadk.studio.compiler import AgentCompiler
 from ksadk.studio.contracts import (
     AgentBindings,
+    AgentDraft,
     AgentSpec,
     AgentTemplateComposeRequest,
     AgentTemplateComposition,
     DeploymentRequest,
-    ModelSpec,
-    NetworkPolicy,
     Operation,
     OperationKind,
+    RunEvent,
+    RunStatus,
+    RuntimeRef,
 )
+from ksadk.studio.errors import StudioError
 from ksadk.studio.evaluation import EvaluationRunner
 from ksadk.studio.event_store import RunEventStore
+from ksadk.studio.framework_run import FrameworkRunSpecResolver
+from ksadk.studio.mcp_runtime import MCPRuntimeAdapter
 from ksadk.studio.model_client import CredentialResolver, OpenAICompatibleModelClient
+from ksadk.studio.model_profile_service import test_model_profile_connection
 from ksadk.studio.operations import OperationManager
 from ksadk.studio.repository import AgentDraftRepository, BuildRepository
 from ksadk.studio.resource_catalog import LocalResourceCatalog
-from ksadk.studio.runtime import LocalAgentRuntime
+from ksadk.studio.run_service import StudioRunService
+from ksadk.studio.runtime_catalog import inspect_runtime_catalog
+from ksadk.studio.runtime_source import materialize_generated_runtime_source
 from ksadk.studio.templates import (
     compose_blank_agent,
     compose_research_agent,
@@ -51,6 +73,8 @@ class StudioService:
         model_client: OpenAICompatibleModelClient | None = None,
         credential_resolver: CredentialResolver | None = None,
         cloud_gateway: CloudDeploymentGateway | None = None,
+        codex_runtime_inspector: RuntimeInspector | None = None,
+        runtime_executor: RuntimeExecutor | None = None,
     ) -> None:
         self.workspace = Workspace(root)
         self.workspace.initialize()
@@ -58,8 +82,45 @@ class StudioService:
         self.catalog = LocalResourceCatalog(self.workspace)
         self.builds = BuildRepository(self.workspace)
         self.validator = AgentValidator()
-        self.builder = AgentBundleBuilder(self.workspace, repository=self.builds)
+        self.builder = AgentBundleBuilder(
+            self.workspace,
+            compiler=AgentCompiler(
+                self.workspace,
+                validator=self.validator,
+                catalog=self.catalog,
+            ),
+            repository=self.builds,
+        )
         self.event_store = RunEventStore(self.workspace)
+        self.event_store.recover_interrupted()
+        self.codex_manifests = CodexManifestRepository(self.workspace)
+        self.codex_builds = CodexBuildRepository(self.workspace)
+        codex_builder_kwargs = {}
+        if codex_runtime_inspector is not None:
+            codex_builder_kwargs["runtime_inspector"] = codex_runtime_inspector
+        self.codex_builder = CodexStudioBuilder(
+            self.workspace,
+            manifest_repository=self.codex_manifests,
+            build_repository=self.codex_builds,
+            **codex_builder_kwargs,
+        )
+        self.runtime_executor = runtime_executor or RuntimeExecutor(
+            build_default_runtime_registry()
+        )
+        self.run_service = StudioRunService(
+            self.workspace,
+            self.runtime_executor,
+            event_store=self.event_store,
+        )
+        self.codex_runs = CodexRunSpecResolver(
+            self.workspace,
+            build_repository=self.codex_builds,
+            manifest_repository=self.codex_manifests,
+        )
+        self.framework_runs = FrameworkRunSpecResolver(
+            self.workspace,
+            build_repository=self.builds,
+        )
         self.credentials = (
             credential_resolver
             or getattr(model_client, "credential_resolver", None)
@@ -68,15 +129,12 @@ class StudioService:
         runtime_model_client = model_client or OpenAICompatibleModelClient(
             credential_resolver=self.credentials
         )
-        self.runtime = LocalAgentRuntime(
-            self.workspace,
-            model_client=runtime_model_client,
-            build_repository=self.builds,
-            event_store=self.event_store,
-        )
+        self.model_client = runtime_model_client
+        self.mcp_runtime = MCPRuntimeAdapter(self.workspace)
         self.evaluations = EvaluationRunner(
             self.workspace,
-            runtime=self.runtime,
+            run_agent=self.run_build,
+            event_store=self.event_store,
             build_repository=self.builds,
         )
         self.cloud = CloudDeploymentService(
@@ -85,52 +143,104 @@ class StudioService:
             build_repository=self.builds,
         )
         self.operations = OperationManager(self.workspace)
+        self.authoring = StudioAuthoringCoordinator(self)
+        self.codex_agents = CodexAgentService(self)
+
+    def runtime_catalog(self) -> list[dict]:
+        return inspect_runtime_catalog(self.runtime_executor)
+
+    def codex_manifest_state(self, agent_id: str | None = None) -> dict:
+        return self.codex_agents.manifest_state(agent_id)
+
+    def save_codex_manifest(self, manifest: CodexAgentManifest) -> dict:
+        return self.codex_agents.save_manifest(manifest)
+
+    def list_codex_agents(self, *, query: str = "", limit: int = 50) -> list[AgentDraft]:
+        return self.codex_agents.list(query=query, limit=limit)
+
+    def create_codex_agent(
+        self,
+        *,
+        agent_id: str,
+        spec: AgentSpec | None,
+        name: str | None = None,
+    ) -> AgentDraft:
+        return self.codex_agents.create(agent_id=agent_id, spec=spec, name=name)
+
+    def update_codex_agent(
+        self,
+        agent_id: str,
+        spec: AgentSpec,
+        *,
+        expected_revision: int,
+    ) -> AgentDraft:
+        return self.codex_agents.update(
+            agent_id,
+            spec,
+            expected_revision=expected_revision,
+        )
+
+    def delete_codex_agent(self, agent_id: str, *, purge: bool = False) -> None:
+        self.codex_agents.delete(agent_id, purge=purge)
+
+    def codex_agent_detail(self, agent_id: str | None = None) -> dict:
+        return self.codex_agents.detail(agent_id)
+
+    @staticmethod
+    def codex_build_view(record: CodexBuildRecord) -> dict:
+        return CodexAgentService.build_view(record)
+
+    def submit_codex_build(
+        self,
+        *,
+        idempotency_key: str,
+        agent_id: str | None = None,
+    ) -> Operation:
+        return self.codex_agents.submit_build(
+            idempotency_key=idempotency_key,
+            agent_id=agent_id,
+        )
+
+    def submit_codex_run(
+        self,
+        build_id: str,
+        user_input: str,
+        *,
+        session_id: str | None,
+        model: str | None = None,
+        idempotency_key: str,
+        on_event: Callable[[RunEvent], None] | None = None,
+    ) -> Operation:
+        return self.codex_agents.submit_run(
+            build_id,
+            user_input,
+            session_id=session_id,
+            model=model,
+            idempotency_key=idempotency_key,
+            on_event=on_event,
+        )
+
+    def delete_session(self, session_id: str) -> None:
+        from ksadk.studio.errors import not_found
+
+        runs = self.event_store.list_runs(session_id=session_id)
+        if not runs:
+            raise not_found("session", session_id)
+        if any(run.status == RunStatus.RUNNING for run in runs):
+            raise StudioError(
+                "SESSION_RUN_ACTIVE",
+                "会话仍在运行，请先停止运行后再删除",
+                status_code=409,
+                details={"sessionId": session_id},
+            )
+        self.event_store.delete_session(session_id)
 
     async def test_model_profile(self, resource_id: str) -> dict:
-        descriptor = self.catalog.get(resource_id)
-        if descriptor.kind != "model":
-            from ksadk.studio.errors import StudioError
-
-            raise StudioError(
-                "RESOURCE_KIND_INVALID",
-                "连接测试只能用于 Model Profile",
-                status_code=422,
-                details={"resourceId": resource_id},
-            )
-        spec = ModelSpec.model_validate(descriptor.contract)
-        resolved = self.catalog.resolver.resolve_model(spec)
-        resolved.parameters = resolved.parameters.model_copy(
-            update={
-                "temperature": 0,
-                "max_tokens": min(resolved.parameters.max_tokens, 16),
-            }
+        return await test_model_profile_connection(
+            catalog=self.catalog,
+            model_client=self.model_client,
+            resource_id=resource_id,
         )
-        host = (urlparse(resolved.endpoint_url).hostname or "").lower().rstrip(".")
-        started = time.monotonic()
-        response = await self.runtime.model_client.complete(
-            resolved,
-            messages=[
-                {
-                    "role": "user",
-                    "content": "这是连接测试。请只回复 OK。",
-                }
-            ],
-            network_policy=NetworkPolicy(
-                mode="restricted",
-                allowed_hosts=[host] if host else [],
-                allow_private_network=False,
-            ),
-            timeout_seconds=20,
-            max_attempts=1,
-            backoff_seconds=0,
-        )
-        return {
-            "ok": True,
-            "resourceId": resource_id,
-            "model": resolved.model,
-            "finishReason": response.finish_reason,
-            "latencyMs": int((time.monotonic() - started) * 1000),
-        }
 
     def create_agent(
         self,
@@ -140,20 +250,362 @@ class StudioService:
         description: str = "",
         template: str = "blank",
         spec: AgentSpec | None = None,
+        labels: dict[str, str] | None = None,
     ):
+        if self.codex_manifests.exists(agent_id):
+            from ksadk.studio.errors import StudioError
+
+            raise StudioError(
+                "AGENT_ALREADY_EXISTS",
+                "Agent ID 已存在",
+                status_code=409,
+                details={"id": agent_id},
+            )
         resolved_spec = spec or default_agent_spec(
             template,
             description=description,
         )
-        if resolved_spec.bindings.model_profile_id:
-            self._validate_bindings(resolved_spec.bindings)
-        return self.drafts.create(
+        self._validate_bindings(resolved_spec.bindings)
+        draft = self.drafts.create(
             agent_id=agent_id,
             name=name,
             description=description,
             template=template,
             spec=resolved_spec,
+            labels=labels,
         )
+        materialize_generated_runtime_source(self.workspace, draft)
+        return draft
+
+    def create_authored_agent(
+        self,
+        *,
+        name: str,
+        slug: str,
+        runtime_type: str,
+        template: str = "blank",
+        description: str = "",
+        spec: AgentSpec | None = None,
+    ) -> AgentDraft:
+        return self.authoring.create(
+            name=name,
+            slug=slug,
+            runtime_type=runtime_type,
+            description=description,
+            template=template,
+            spec=spec,
+        )
+
+    def inspect_agent_import(self, content: bytes, *, filename: str) -> dict:
+        return self.authoring.inspect_import(content, filename=filename)
+
+    def commit_agent_import(
+        self,
+        inspection_token: str,
+        *,
+        name: str | None = None,
+        slug: str | None = None,
+    ) -> AgentDraft:
+        return self.authoring.commit_import(
+            inspection_token,
+            name=name,
+            slug=slug,
+        )
+
+    def inspect_agent_project(self, project_path: str) -> dict:
+        return self.authoring.inspect_project(project_path)
+
+    def commit_agent_project(
+        self,
+        inspection_token: str,
+        *,
+        name: str | None = None,
+        slug: str | None = None,
+        model_profile_id: str | None = None,
+    ) -> AgentDraft:
+        return self.authoring.commit_project(
+            inspection_token,
+            name=name,
+            slug=slug,
+            model_profile_id=model_profile_id,
+        )
+
+    async def compose_agent_conversation(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        model_profile_id: str,
+    ) -> dict:
+        return await self.authoring.compose_conversation(
+            messages=messages,
+            model_profile_id=model_profile_id,
+        )
+
+    def is_codex_agent(self, agent_id: str) -> bool:
+        """Return whether one Agent is backed by the Codex YAML contract."""
+
+        return self.codex_manifests.exists(agent_id)
+
+    def agent_runtime_type(self, agent_id: str) -> str:
+        """Resolve runtime from the Agent itself, never from Studio process state."""
+
+        if self.is_codex_agent(agent_id):
+            return "codex"
+        draft = self.drafts.get(agent_id)
+        runtime = draft.spec.runtime
+        if runtime is None:
+            # Read compatibility for Agent drafts written before RuntimeRef existed.
+            framework = draft.metadata.labels.get("agentkit.ksyun.com/framework", "")
+            return framework.strip().lower() or "adk"
+        return runtime.type
+
+    def list_agents(self, *, query: str = "", limit: int = 50) -> list[AgentDraft]:
+        """List all local Agents from one registry view across runtime types."""
+
+        if limit < 1:
+            return []
+        normalized = query.strip().lower()
+        combined: dict[str, AgentDraft] = {
+            draft.metadata.id: draft for draft in self.list_codex_agents(query=query, limit=limit)
+        }
+        for draft in self.drafts.list(query=query, limit=limit):
+            combined.setdefault(draft.metadata.id, draft)
+        values = list(combined.values())
+        if normalized:
+            values = [
+                item
+                for item in values
+                if normalized in item.metadata.id.lower()
+                or normalized in item.metadata.name.lower()
+            ]
+        return values[:limit]
+
+    def agent_detail(self, agent_id: str) -> dict:
+        if self.is_codex_agent(agent_id):
+            return self.codex_agent_detail(agent_id)
+        draft = self.drafts.get(agent_id)
+        return {
+            "draft": draft,
+            "builds": self.builds.list_for_agent(agent_id)[:10],
+            "validation": self.validator.validate(draft),
+        }
+
+    def create_studio_agent(
+        self,
+        *,
+        agent_id: str,
+        name: str,
+        description: str = "",
+        template: str = "blank",
+        spec: AgentSpec | None = None,
+        runtime: RuntimeRef | None = None,
+    ) -> AgentDraft:
+        """Create one Agent and dispatch from its RuntimeRef."""
+
+        resolved_spec = (spec or default_agent_spec(template, description=description)).model_copy(
+            deep=True
+        )
+        selected = runtime or resolved_spec.runtime
+        resolved_spec.runtime = selected
+        if selected is not None and selected.type == "codex":
+            return cast(
+                AgentDraft,
+                self.create_codex_agent(
+                    agent_id=agent_id,
+                    spec=resolved_spec,
+                    name=name,
+                ),
+            )
+        return cast(
+            AgentDraft,
+            self.create_agent(
+                agent_id=agent_id,
+                name=name,
+                description=description,
+                template=template,
+                spec=resolved_spec,
+            ),
+        )
+
+    def update_studio_agent(
+        self,
+        agent_id: str,
+        spec: AgentSpec,
+        *,
+        expected_revision: int,
+    ) -> AgentDraft:
+        if self.is_codex_agent(agent_id):
+            spec.runtime = self.agent_detail(agent_id)["draft"].spec.runtime
+            return cast(
+                AgentDraft,
+                self.update_codex_agent(
+                    agent_id,
+                    spec,
+                    expected_revision=expected_revision,
+                ),
+            )
+        current = self.drafts.get(agent_id)
+        if spec.runtime is None:
+            spec.runtime = current.spec.runtime
+        elif current.spec.runtime is not None and spec.runtime.type != current.spec.runtime.type:
+            from ksadk.studio.errors import StudioError
+
+            raise StudioError(
+                "AGENT_RUNTIME_IMMUTABLE",
+                "编辑 Agent 时不能直接切换 Runtime；请通过导入/迁移创建新 Agent",
+                status_code=422,
+                field="runtime.type",
+            )
+        return cast(
+            AgentDraft,
+            self.update_agent(agent_id, spec, expected_revision=expected_revision),
+        )
+
+    def update_studio_agent_bindings(
+        self,
+        agent_id: str,
+        bindings: AgentBindings,
+        *,
+        expected_revision: int,
+    ) -> AgentDraft:
+        detail = self.agent_detail(agent_id)
+        spec = detail["draft"].spec.model_copy(deep=True)
+        spec.bindings = bindings
+        return self.update_studio_agent(
+            agent_id,
+            spec,
+            expected_revision=expected_revision,
+        )
+
+    def delete_studio_agent(self, agent_id: str, *, purge: bool = False) -> None:
+        if self.is_codex_agent(agent_id):
+            self.delete_codex_agent(agent_id, purge=purge)
+            return
+        delete_framework_agent(self, agent_id, purge=purge)
+
+    def validate_studio_agent(
+        self,
+        agent_id: str,
+        *,
+        revision: int,
+        level: Literal["schema", "build", "release"] = "build",
+    ):
+        detail = self.agent_detail(agent_id)
+        draft = detail["draft"]
+        if draft.metadata.revision != revision:
+            from ksadk.studio.errors import StudioError
+
+            raise StudioError(
+                "AGENT_REVISION_CONFLICT",
+                "Validation revision 与当前 Agent 不一致",
+                status_code=409,
+            )
+        if self.is_codex_agent(agent_id):
+            return detail["validation"]
+        return self.validator.validate(draft, level=level)
+
+    def submit_studio_build(
+        self,
+        agent_id: str,
+        *,
+        revision: int,
+        idempotency_key: str,
+    ) -> Operation:
+        runtime_type = self.agent_runtime_type(agent_id)
+        runtime = next(
+            (item for item in self.runtime_catalog() if item["runtimeType"] == runtime_type),
+            None,
+        )
+        if runtime is None:
+            from ksadk.studio.errors import StudioError
+
+            raise StudioError(
+                "RUNTIME_NOT_REGISTERED",
+                "Agent 引用的 RuntimeAdapter 未注册",
+                status_code=422,
+                details={"runtimeType": runtime_type},
+            )
+        if runtime["status"] != "ready":
+            from ksadk.studio.errors import StudioError
+
+            raise StudioError(
+                "RUNTIME_DEPENDENCY_MISSING",
+                f"{runtime['displayName']} Runtime 依赖未安装",
+                status_code=422,
+                details={
+                    "runtimeType": runtime_type,
+                    "installCommand": runtime["installCommand"],
+                },
+            )
+        if self.is_codex_agent(agent_id):
+            detail = self.agent_detail(agent_id)
+            if revision != detail["draft"].metadata.revision:
+                from ksadk.studio.errors import StudioError
+
+                raise StudioError(
+                    "AGENT_REVISION_CONFLICT",
+                    "Build revision 与当前 Agent 不一致",
+                    status_code=409,
+                )
+            return self.submit_codex_build(
+                idempotency_key=idempotency_key,
+                agent_id=agent_id,
+            )
+        return self.submit_build(
+            agent_id,
+            revision=revision,
+            idempotency_key=idempotency_key,
+        )
+
+    def build_view(self, build_id: str):
+        try:
+            return self.codex_build_view(self.codex_builds.get(build_id))
+        except Exception as exc:  # repository not-found is the only fallback contract
+            if getattr(exc, "status_code", None) != 404:
+                raise
+        return self.builds.get(build_id)
+
+    def submit_studio_run(
+        self,
+        build_id: str,
+        user_input: str,
+        *,
+        session_id: str | None,
+        model: str | None,
+        idempotency_key: str,
+        on_event: Callable[[RunEvent], None] | None = None,
+    ) -> Operation:
+        try:
+            self.codex_builds.get(build_id)
+        except Exception as exc:
+            if getattr(exc, "status_code", None) != 404:
+                raise
+        else:
+            return self.submit_codex_run(
+                build_id,
+                user_input,
+                session_id=session_id,
+                model=model,
+                idempotency_key=idempotency_key,
+                on_event=on_event,
+            )
+        return self.submit_run(
+            build_id,
+            user_input,
+            session_id=session_id,
+            model=model,
+            idempotency_key=idempotency_key,
+            on_event=on_event,
+        )
+
+    def _draft_exists(self, agent_id: str) -> bool:
+        try:
+            self.drafts.get(agent_id)
+        except Exception as exc:
+            if getattr(exc, "status_code", None) == 404:
+                return False
+            raise
+        return True
 
     @staticmethod
     def list_agent_templates() -> list[dict]:
@@ -191,11 +643,13 @@ class StudioService:
         expected_revision: int,
     ):
         self._validate_bindings(spec.bindings)
-        return self.drafts.update(
+        updated = self.drafts.update(
             agent_id,
             spec,
             expected_revision=expected_revision,
         )
+        materialize_generated_runtime_source(self.workspace, updated)
+        return updated
 
     def update_agent_bindings(
         self,
@@ -216,6 +670,7 @@ class StudioService:
 
     def _validate_bindings(self, bindings: AgentBindings) -> None:
         self.catalog.resolve_model(bindings)
+        self.catalog.resolve_models(bindings)
         self.catalog.policy_preview(bindings)
         self.catalog.resolve_mcp_servers(bindings)
         self.catalog.resolve_mcp_tools(bindings)
@@ -264,13 +719,17 @@ class StudioService:
         user_input: str,
         *,
         session_id: str | None,
+        model: str | None = None,
         idempotency_key: str,
+        on_event: Callable[[RunEvent], None] | None = None,
     ) -> Operation:
         async def runner():
-            return await self.runtime.run(
+            return await self.run_build(
                 build_id,
                 user_input,
-                session_id=session_id,
+                session_id,
+                model=model,
+                on_event=on_event,
             )
 
         return self.operations.submit(
@@ -278,6 +737,30 @@ class StudioService:
             resource_id=build_id,
             idempotency_key=idempotency_key,
             runner=runner,
+        )
+
+    async def run_build(
+        self,
+        build_id: str,
+        user_input: str,
+        session_id: str | None,
+        *,
+        model: str | None = None,
+        on_event: Callable[[RunEvent], None] | None = None,
+    ):
+        """Execute any immutable Studio Build through the canonical executor."""
+
+        try:
+            spec = self.codex_runs.resolve(build_id, model=model)
+        except Exception as exc:
+            if getattr(exc, "status_code", None) != 404:
+                raise
+            spec = self.framework_runs.resolve(build_id, model=model)
+        return await self.run_service.run(
+            spec,
+            user_input,
+            session_id=session_id,
+            on_event=on_event,
         )
 
     def submit_evaluation(

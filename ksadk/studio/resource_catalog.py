@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import builtins
+import hashlib
 import io
 import re
 import shutil
@@ -9,15 +11,16 @@ import stat
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterable, List, Literal, cast
+from typing import Any, Iterable, Literal, cast
 from uuid import uuid4
 
 import yaml  # type: ignore[import-untyped]
 from pydantic import ValidationError
 
+from ksadk.cli.model_catalog import fetch_provider_model_catalog
+from ksadk.conversations.model_context import normalize_model_metadata
 from ksadk.studio.capabilities import (
     LocalCapabilityResolver,
-    builtin_tool_contracts,
     canonical_json,
     require_exact_version,
     sha256_digest,
@@ -33,12 +36,67 @@ from ksadk.studio.contracts import (
 )
 from ksadk.studio.errors import StudioError
 from ksadk.studio.repository import load_yaml_file
+from ksadk.studio.skill_discovery import SkillDiscoveryService
 from ksadk.studio.workspace import Workspace
+from ksadk.toolsets import describe_agentengine_tools, get_agentengine_tools
 
 _SLUG = re.compile(r"[^a-z0-9]+")
 _MAX_SKILL_ARCHIVE_BYTES = 50 * 1024 * 1024
 _MAX_SKILL_EXPANDED_BYTES = 100 * 1024 * 1024
 _MAX_SKILL_FILES = 1000
+
+
+def _models_endpoint(api_base: str | None) -> str:
+    base = str(api_base or "").strip().rstrip("/")
+    if not base:
+        return ""
+    if base.endswith("/models"):
+        return base
+    if base.endswith("/v1"):
+        return f"{base}/models"
+    return f"{base}/v1/models"
+
+
+def _provider_reports_context(raw: dict[str, Any]) -> bool:
+    direct = {
+        "context_window_tokens",
+        "context_length",
+        "context_window",
+        "input_max_length",
+    }
+    if direct.intersection(raw):
+        return True
+    for key in ("metadata", "limits"):
+        nested = raw.get(key)
+        if isinstance(nested, dict) and direct.intersection(nested):
+            return True
+    return False
+
+
+def _provider_reports_modalities(raw: dict[str, Any]) -> bool:
+    architecture = raw.get("architecture")
+    if isinstance(architecture, dict) and isinstance(architecture.get("input_modalities"), list):
+        return True
+    capabilities = raw.get("capabilities")
+    return isinstance(capabilities, dict) and any(
+        key in capabilities
+        for key in (
+            "multimodal_input_image",
+            "multimodal_input_video",
+            "multimodal_input_file",
+        )
+    )
+
+
+def _tool_side_effect(side_effects: list[str]) -> str:
+    if not side_effects:
+        return "none"
+    lowered = " ".join(side_effects).lower()
+    if any(marker in lowered for marker in ("write", "edit", "delete", "command", "code")):
+        return "write"
+    if any(marker in lowered for marker in ("network", "external", "http")):
+        return "external"
+    return "read"
 
 
 def resource_slug(value: str) -> str:
@@ -61,6 +119,8 @@ class LocalResourceCatalog:
     def __init__(self, workspace: Workspace) -> None:
         self.workspace = workspace
         self.resolver = LocalCapabilityResolver(workspace)
+        self.skill_discovery = SkillDiscoveryService(workspace)
+        self._provider_models: dict[str, ResourceDescriptor] = {}
 
     def list(
         self,
@@ -72,14 +132,16 @@ class LocalResourceCatalog:
         installed: bool | None = None,
         limit: int = 50,
     ) -> list[ResourceDescriptor]:
-        resources = [
+        candidates = [
             *self._builtin_models(),
+            *self._provider_models.values(),
             *self._builtin_tools(),
             *self._persisted("models"),
             *self._persisted("mcp"),
             *self._persisted("tools"),
             *self._local_skills(),
         ]
+        resources = list({item.resource_id: item for item in candidates}.values())
         normalized = query.strip().lower()
         filtered = [
             item
@@ -98,12 +160,90 @@ class LocalResourceCatalog:
         filtered.sort(
             key=lambda item: (
                 item.kind,
-                0 if item.source == "builtin" else 1,
+                0 if item.source in {"builtin", "provider"} else 1,
                 item.display_name.lower(),
                 item.version,
             )
         )
         return filtered[:limit]
+
+    async def discover_provider_models(
+        self,
+        *,
+        api_base: str | None,
+        api_key: str | None,
+        current_model: str | None,
+        timeout: float = 5.0,
+    ) -> tuple[builtins.list[ResourceDescriptor], str]:
+        """Project the same provider catalog used by ksadk runtimes into Studio.
+
+        The provider response is authoritative only for fields it actually
+        returns.  Canonical fallback values remain annotated as ``ksadk-default``
+        so the UI never presents a guessed context window or modality as probed.
+        """
+
+        catalog = await fetch_provider_model_catalog(
+            api_base=api_base,
+            api_key=api_key,
+            timeout=timeout,
+        )
+        source = "provider" if catalog else "fallback"
+        if not catalog:
+            catalog = [normalize_model_metadata({"id": current_model or "glm-5.1"})]
+
+        descriptors: list[ResourceDescriptor] = []
+        for item in catalog:
+            normalized = dict(item)
+            raw = normalized.pop("_provider_raw_model", None)
+            raw_mapping = raw if isinstance(raw, dict) else {}
+            normalized = normalize_model_metadata(normalized)
+            model_id = str(normalized.get("id") or current_model or "unknown-model")
+            display_name = str(normalized.get("display_name") or model_id)
+            context_source = (
+                "provider" if _provider_reports_context(raw_mapping) else "ksadk-default"
+            )
+            modality_source = (
+                "provider" if _provider_reports_modalities(raw_mapping) else "ksadk-default"
+            )
+            spec = ModelSpec(
+                provider="openai-compatible",
+                model=model_id,
+                base_url=(api_base or "https://kspmas.ksyun.com/v1").rstrip("/"),
+                credential_ref="env://OPENAI_API_KEY",
+                metadata=normalized,
+                discovery={
+                    "source": source,
+                    "endpoint": _models_endpoint(api_base),
+                    "contextWindow": context_source,
+                    "inputModalities": modality_source,
+                },
+            )
+            descriptor_source = "provider" if source == "provider" else "builtin"
+            descriptor = self._descriptor(
+                kind="model",
+                source=descriptor_source,
+                name=model_id,
+                display_name=display_name,
+                version=str(
+                    normalized.get("version") or ("live" if source == "provider" else "1.0.0")
+                ),
+                description=(
+                    "由模型服务 /v1/models 自动发现"
+                    if source == "provider"
+                    else "模型服务未返回目录，使用 ksadk 当前模型配置"
+                ),
+                category="provider-catalog",
+                contract=spec.model_dump(
+                    by_alias=True,
+                    exclude_none=True,
+                    mode="json",
+                ),
+                required_secret_refs=[spec.credential_ref],
+            )
+            descriptors.append(descriptor)
+
+        self._provider_models = {item.resource_id: item for item in descriptors}
+        return descriptors, source
 
     def get(self, resource: str) -> ResourceDescriptor:
         found = next(
@@ -176,6 +316,8 @@ class LocalResourceCatalog:
         contract: ToolContract,
     ) -> ResourceDescriptor:
         require_exact_version(contract.version, field="version")
+        if contract.executor == "python":
+            contract = self._snapshot_python_tool(contract)
         resolved = self.resolver.resolve_tool(contract)
         descriptor = self._descriptor(
             kind="tool",
@@ -191,6 +333,49 @@ class LocalResourceCatalog:
             ),
         )
         return self._persist_descriptor("tools", descriptor)
+
+    def _snapshot_python_tool(self, contract: ToolContract) -> ToolContract:
+        assert contract.source_path is not None
+        source = self.workspace.resolve(contract.source_path, must_exist=True)
+        if source.is_symlink() or not source.is_file() or source.suffix != ".py":
+            raise StudioError(
+                "TOOL_SOURCE_INVALID",
+                "Python Tool sourcePath 必须是工作区内的普通 .py 文件",
+                status_code=422,
+                field="sourcePath",
+            )
+        content = source.read_bytes()
+        if len(content) > 1024 * 1024:
+            raise StudioError(
+                "TOOL_SOURCE_TOO_LARGE",
+                "Python Tool 源码不能超过 1 MiB",
+                status_code=422,
+                field="sourcePath",
+            )
+        try:
+            text = content.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise StudioError(
+                "TOOL_SOURCE_INVALID",
+                "Python Tool 源码必须使用 UTF-8 编码",
+                status_code=422,
+                field="sourcePath",
+            ) from exc
+        target = self.workspace.resolve(
+            Path(".agentkit/catalog/tool-sources")
+            / f"{resource_slug(contract.name)}-{resource_slug(contract.version)}"
+            / "tool.py"
+        )
+        self.workspace.atomic_write_text(target, text)
+        return cast(
+            ToolContract,
+            contract.model_copy(
+                update={
+                    "source_path": self.workspace.relative(target),
+                    "source_sha256": f"sha256:{hashlib.sha256(content).hexdigest()}",
+                }
+            ),
+        )
 
     def save_probe(
         self,
@@ -238,8 +423,8 @@ class LocalResourceCatalog:
     def policy_preview(
         self,
         bindings: AgentBindings,
-    ) -> tuple[List[ToolContract], List[str]]:
-        tools: List[ToolContract] = []
+    ) -> tuple[builtins.list[ToolContract], builtins.list[str]]:
+        tools: builtins.list[ToolContract] = []
         permissions: set[str] = set()
         for binding in bindings.tools:
             if not binding.enabled:
@@ -299,8 +484,22 @@ class LocalResourceCatalog:
             resolved.parameters = bindings.model_parameters
         return resolved
 
-    def resolve_skills(self, bindings: AgentBindings) -> List[CapabilityRef]:
-        refs: List[CapabilityRef] = []
+    def resolve_models(self, bindings: AgentBindings) -> builtins.list[ModelSpec]:
+        resource_ids = builtins.list(bindings.model_profile_ids)
+        if not resource_ids and bindings.model_profile_id:
+            resource_ids = [bindings.model_profile_id]
+        resolved: builtins.list[ModelSpec] = []
+        for resource_id in resource_ids:
+            selected = bindings.model_copy(
+                update={"model_profile_id": resource_id, "model_profile_ids": []}
+            )
+            model = self.resolve_model(selected)
+            if model is not None:
+                resolved.append(model)
+        return resolved
+
+    def resolve_skills(self, bindings: AgentBindings) -> builtins.list[CapabilityRef]:
+        refs: builtins.list[CapabilityRef] = []
         for binding in bindings.skills:
             if not binding.enabled:
                 continue
@@ -314,22 +513,26 @@ class LocalResourceCatalog:
             )
         return refs
 
-    def resolve_mcp_servers(self, bindings: AgentBindings) -> List[MCPServerRef]:
-        refs: List[MCPServerRef] = []
+    def resolve_mcp_servers(
+        self,
+        bindings: AgentBindings,
+    ) -> builtins.list[MCPServerRef]:
+        refs: builtins.list[MCPServerRef] = []
         for binding in bindings.mcp_servers:
             if not binding.enabled:
                 continue
             descriptor = self._ready_binding(binding, expected_kind="mcp")
             payload = {
-                key: value
-                for key, value in descriptor.contract.items()
-                if key != "discoveredTools"
+                key: value for key, value in descriptor.contract.items() if key != "discoveredTools"
             }
             refs.append(MCPServerRef.model_validate(payload))
         return refs
 
-    def resolve_mcp_tools(self, bindings: AgentBindings) -> List[ToolContract]:
-        tools: List[ToolContract] = []
+    def resolve_mcp_tools(
+        self,
+        bindings: AgentBindings,
+    ) -> builtins.list[ToolContract]:
+        tools: builtins.list[ToolContract] = []
         for binding in bindings.mcp_servers:
             if not binding.enabled:
                 continue
@@ -393,10 +596,7 @@ class LocalResourceCatalog:
                     or ".." in path.parts
                     or mode == stat.S_IFLNK
                     or (info.compress_size == 0 and info.file_size > 0)
-                    or (
-                        info.compress_size > 0
-                        and info.file_size / info.compress_size > 200
-                    )
+                    or (info.compress_size > 0 and info.file_size / info.compress_size > 200)
                 ):
                     raise StudioError(
                         "SKILL_ARCHIVE_UNSAFE",
@@ -460,6 +660,41 @@ class LocalResourceCatalog:
             raise StudioError(
                 "SKILL_IMPORT_FAILED",
                 "Skill 安装后无法解析",
+                status_code=500,
+            )
+        return descriptor
+
+    def discover_skills(
+        self,
+        *,
+        scan_paths: builtins.list[str] | None = None,
+    ) -> dict[str, Any]:
+        return self.skill_discovery.discover(scan_paths=scan_paths)
+
+    def commit_discovered_skill(
+        self,
+        inspection_token: str,
+        candidate_id: str,
+        *,
+        overwrite: bool = False,
+    ) -> ResourceDescriptor:
+        slug, version = self.skill_discovery.commit(
+            inspection_token,
+            candidate_id,
+            overwrite=overwrite,
+        )
+        descriptor = next(
+            (
+                item
+                for item in self._local_skills()
+                if item.name == slug and item.version == version
+            ),
+            None,
+        )
+        if descriptor is None:
+            raise StudioError(
+                "SKILL_IMPORT_FAILED",
+                "Skill 导入后无法解析",
                 status_code=500,
             )
         return descriptor
@@ -533,35 +768,62 @@ class LocalResourceCatalog:
         )
 
     def _builtin_tools(self) -> Iterable[ResourceDescriptor]:
-        display_names = {
-            "builtin.echo": ("Echo", "utility"),
-            "builtin.current_time": ("Current Time", "utility"),
-            "workspace.read": ("Read", "workspace"),
-            "workspace.write": ("Write", "workspace"),
-            "workspace.edit": ("Edit", "workspace"),
-            "workspace.glob": ("Glob", "workspace"),
-            "workspace.grep": ("Grep", "workspace"),
+        runtime_tools = {
+            str(getattr(tool, "name", None) or getattr(tool, "__name__", "")): tool
+            for tool in get_agentengine_tools(profile="coding", mode="direct")
         }
-        for tool in builtin_tool_contracts().values():
-            resolved = self.resolver.resolve_tool(tool)
-            display_name, category = display_names.get(
-                tool.name,
-                (tool.name, "general"),
+        for descriptor in describe_agentengine_tools(profile="coding", mode="direct"):
+            name = str(descriptor["name"])
+            group = str(descriptor.get("group") or "general")
+            side_effects = [str(item) for item in descriptor.get("side_effects") or []]
+            side_effect = _tool_side_effect(side_effects)
+            permissions = [str(item) for item in descriptor.get("approval_scopes") or []]
+            if group == "workspace":
+                workspace_permission = (
+                    "workspace:file:write" if side_effect == "write" else "workspace:file:read"
+                )
+                if workspace_permission not in permissions:
+                    permissions.append(workspace_permission)
+            runtime_tool = runtime_tools.get(name)
+            args_schema = getattr(runtime_tool, "args_schema", None)
+            input_schema = (
+                args_schema.model_json_schema()
+                if args_schema is not None and hasattr(args_schema, "model_json_schema")
+                else {"type": "object", "properties": {}}
             )
-            yield self._descriptor(
+            tool = ToolContract(
+                name=name,
+                version="1.0.0",
+                description=str(descriptor.get("description") or ""),
+                input_schema=input_schema,
+                permissions=permissions,
+                side_effect=cast(Any, side_effect),
+                approval="always" if descriptor.get("requires_approval") else "never",
+                executor="builtin",
+                group=group,
+                risk_level=str(descriptor.get("risk_level") or "low"),
+                boundary=str(descriptor.get("boundary") or "ksadk-runtime"),
+                backend=str(descriptor.get("backend") or "") or None,
+                enabled=bool(descriptor.get("enabled", True)),
+            )
+            resolved = self.resolver.resolve_tool(tool)
+            resource = self._descriptor(
                 kind="tool",
                 source="builtin",
                 name=tool.name,
-                display_name=display_name,
+                display_name=name,
                 version=tool.version,
                 description=tool.description,
-                category=category,
+                category=group,
                 contract=resolved.model_dump(
                     by_alias=True,
                     exclude_none=True,
                     mode="json",
                 ),
             )
+            if not tool.enabled:
+                resource = resource.model_copy(update={"status": "unresolved"})
+            yield resource
 
     def _local_skills(self) -> Iterable[ResourceDescriptor]:
         root = self.workspace.resolve("capabilities/skills")
@@ -586,9 +848,7 @@ class LocalResourceCatalog:
                 kind="skill",
                 name=directory.name,
                 display_name=str(
-                    manifest.get("displayName")
-                    or manifest.get("name")
-                    or directory.name
+                    manifest.get("displayName") or manifest.get("name") or directory.name
                 ),
                 version=version,
                 digest=digest,
@@ -652,7 +912,7 @@ class LocalResourceCatalog:
         category: str,
         contract: dict[str, Any],
         source: str = "local",
-        required_secret_refs: List[str] | None = None,
+        required_secret_refs: builtins.list[str] | None = None,
     ) -> ResourceDescriptor:
         digest = str(contract.get("digest") or sha256_digest(canonical_json(contract)))
         return ResourceDescriptor(
@@ -672,13 +932,9 @@ class LocalResourceCatalog:
 
     @staticmethod
     def _skill_entry(
-        files: List[zipfile.ZipInfo],
+        files: builtins.list[zipfile.ZipInfo],
     ) -> tuple[zipfile.ZipInfo, PurePosixPath]:
-        candidates = [
-            info
-            for info in files
-            if PurePosixPath(info.filename).name == "SKILL.md"
-        ]
+        candidates = [info for info in files if PurePosixPath(info.filename).name == "SKILL.md"]
         if len(candidates) != 1:
             raise StudioError(
                 "SKILL_MANIFEST_REQUIRED",
@@ -718,8 +974,10 @@ class LocalResourceCatalog:
                 "SKILL.md frontmatter 无法解析",
                 status_code=422,
             ) from exc
-        if not isinstance(payload, dict) or not payload.get("name") or not payload.get(
-            "description"
+        if (
+            not isinstance(payload, dict)
+            or not payload.get("name")
+            or not payload.get("description")
         ):
             raise StudioError(
                 "SKILL_MANIFEST_INVALID",

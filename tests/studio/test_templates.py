@@ -19,7 +19,9 @@ def test_blank_template_preserves_prompt_and_explicit_capabilities(tmp_path: Pat
     workspace = Workspace(tmp_path)
     workspace.initialize()
     catalog = LocalResourceCatalog(workspace)
-    read_tool = next(item for item in catalog.list(limit=200) if item.name == "workspace.read")
+    read_tool = next(
+        item for item in catalog.list(limit=200) if item.name == "read_workspace_file"
+    )
     prompt = "你是一名企业技术支持助手。只根据已知信息回答，缺少关键上下文时先提问，不要虚构事实。"
 
     composition = compose_blank_agent(

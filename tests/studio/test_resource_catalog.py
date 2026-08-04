@@ -58,10 +58,69 @@ def test_catalog_lists_stable_builtin_model_and_tool_resources(tmp_path: Path):
     assert any(
         item.resource_id == "model:builtin:glm-5-1:1.0.0" for item in first
     )
-    assert any(
-        item.resource_id == "tool:builtin:workspace-read:1.0.0"
-        for item in first
+    builtin_tools = {
+        item.name: item for item in first if item.kind == "tool" and item.source == "builtin"
+    }
+    assert "read_workspace_file" in builtin_tools
+    assert "tool_search" in builtin_tools
+    assert builtin_tools["read_workspace_file"].category == "workspace"
+    assert builtin_tools["read_workspace_file"].contract["boundary"] == "workspace_root"
+    assert "builtin.echo" not in builtin_tools
+
+
+@pytest.mark.asyncio
+async def test_provider_models_reuse_ksadk_metadata_normalization(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    async def _provider_catalog(**_kwargs):
+        return [
+            {
+                "id": "vision-model",
+                "display_name": "Vision Model",
+                "context_window_tokens": 131072,
+                "max_output_tokens": 8192,
+                "architecture": {
+                    "input_modalities": ["文字", "图片"],
+                    "output_modalities": ["文字"],
+                },
+                "capabilities": {
+                    "multimodal_input_image": True,
+                    "multimodal_input_video": False,
+                    "multimodal_input_file": False,
+                },
+                "limits": {
+                    "context_window_tokens": 131072,
+                    "max_output_tokens": 8192,
+                },
+                "_provider_raw_model": {
+                    "id": "vision-model",
+                    "display_name": "Vision Model",
+                    "context_length": 131072,
+                    "architecture": {"input_modalities": ["文字", "图片"]},
+                },
+            }
+        ]
+
+    monkeypatch.setattr(
+        "ksadk.studio.resource_catalog.fetch_provider_model_catalog",
+        _provider_catalog,
     )
+    catalog = _catalog(tmp_path)
+    actual, actual_source = await catalog.discover_provider_models(
+        api_base="https://models.example.test/v1",
+        api_key="secret",
+        current_model="vision-model",
+    )
+
+    assert actual_source == "provider"
+    assert [item.name for item in actual] == ["vision-model"]
+    descriptor = actual[0]
+    assert descriptor.source == "provider"
+    assert descriptor.contract["metadata"]["context_window_tokens"] == 131072
+    assert descriptor.contract["metadata"]["capabilities"]["multimodal_input_image"] is True
+    assert descriptor.contract["discovery"]["contextWindow"] == "provider"
+    assert descriptor.contract["discovery"]["inputModalities"] == "provider"
 
 
 def test_catalog_persists_model_mcp_and_custom_tool_resources(tmp_path: Path):
@@ -115,8 +174,8 @@ def test_catalog_persists_model_mcp_and_custom_tool_resources(tmp_path: Path):
 def test_policy_preview_maps_strict_loose_and_custom_approvals(tmp_path: Path):
     catalog = _catalog(tmp_path)
     tools = {item.name: item for item in catalog.list(kind="tool", limit=100)}
-    read = CapabilityBinding(resource_id=tools["workspace.read"].resource_id)
-    write = CapabilityBinding(resource_id=tools["workspace.write"].resource_id)
+    read = CapabilityBinding(resource_id=tools["read_workspace_file"].resource_id)
+    write = CapabilityBinding(resource_id=tools["write_workspace_file"].resource_id)
 
     strict, permissions = catalog.policy_preview(
         AgentBindings(policy_template="strict", tools=[read, write])
@@ -135,11 +194,11 @@ def test_policy_preview_maps_strict_loose_and_custom_approvals(tmp_path: Path):
     )
 
     assert {tool.name: tool.approval for tool in strict} == {
-        "workspace.read": "never",
-        "workspace.write": "always",
+        "read_workspace_file": "never",
+        "write_workspace_file": "always",
     }
     assert {tool.approval for tool in loose} == {"never"}
-    assert {tool.name: tool.approval for tool in custom}["workspace.write"] == (
+    assert {tool.name: tool.approval for tool in custom}["write_workspace_file"] == (
         "never"
     )
     assert permissions == ["workspace:file:read", "workspace:file:write"]
@@ -159,10 +218,10 @@ def test_compiler_materializes_bindings_into_immutable_dependencies(tmp_path: Pa
                 policy_template="strict",
                 tools=[
                     CapabilityBinding(
-                        resource_id=tools["workspace.read"].resource_id
+                        resource_id=tools["read_workspace_file"].resource_id
                     ),
                     CapabilityBinding(
-                        resource_id=tools["workspace.write"].resource_id
+                        resource_id=tools["write_workspace_file"].resource_id
                     ),
                 ],
             ),
@@ -174,12 +233,12 @@ def test_compiler_materializes_bindings_into_immutable_dependencies(tmp_path: Pa
     assert result.resolved.model.model == "glm-5.1"
     assert result.resolved.model.parameters.max_tokens == 777
     assert {tool.name for tool in result.resolved.capabilities.tools} == {
-        "workspace.read",
-        "workspace.write",
+        "read_workspace_file",
+        "write_workspace_file",
     }
     assert {
         tool.name: tool.approval for tool in result.resolved.capabilities.tools
-    }["workspace.write"] == "always"
+    }["write_workspace_file"] == "always"
     assert "workspace:file:write" in result.resolved.security.allowed_permissions
     assert result.dependency_lock["model"]["model"] == "glm-5.1"
 

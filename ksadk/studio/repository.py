@@ -40,6 +40,7 @@ class AgentDraftRepository:
         description: str = "",
         template: str = "blank",
         spec: AgentSpec | None = None,
+        labels: dict[str, str] | None = None,
     ) -> AgentDraft:
         if template not in {"blank", "research"}:
             raise StudioError(
@@ -53,7 +54,10 @@ class AgentDraftRepository:
             metadata=AgentMetadata(
                 id=agent_id,
                 name=name,
-                labels={"agentkit.ksyun.com/template": template},
+                labels={
+                    "agentkit.ksyun.com/template": template,
+                    **dict(labels or {}),
+                },
             ),
             spec=spec
             or AgentSpec(
@@ -123,15 +127,39 @@ class AgentDraftRepository:
         self._write(self._agent_file(agent_id), updated)
         return updated
 
-    def delete(self, agent_id: str, *, purge: bool = False) -> None:
+    def replace(self, draft: AgentDraft) -> AgentDraft:
+        """Persist metadata-only creation state without creating a Revision."""
+
+        current = self.get(draft.metadata.id)
+        if draft.metadata.revision != current.metadata.revision:
+            raise StudioError(
+                "AGENT_REVISION_CONFLICT",
+                "Agent metadata replacement revision mismatch",
+                status_code=409,
+            )
+        self._write(self._agent_file(draft.metadata.id), draft)
+        return draft
+
+    def delete(
+        self,
+        agent_id: str,
+        *,
+        purge: bool = False,
+        trash_directory: Path | None = None,
+    ) -> None:
         agent_dir = self._agent_dir(agent_id)
         if not agent_dir.is_dir():
             raise not_found("agent", agent_id)
         if purge:
             shutil.rmtree(agent_dir)
             return
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        trash = self.workspace.resolve(Path(".agentkit/trash") / f"{agent_id}-{timestamp}")
+        if trash_directory is None:
+            timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            trash = self.workspace.resolve(
+                Path(".agentkit/trash") / f"{agent_id}-{timestamp}"
+            )
+        else:
+            trash = self.workspace.resolve(trash_directory / "source" / "agents" / agent_id)
         trash.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(agent_dir), str(trash))
 
@@ -197,6 +225,48 @@ class BuildRepository:
             if record.agent_id == agent_id:
                 records.append(record)
         return records
+
+    def delete_for_agent(
+        self,
+        agent_id: str,
+        *,
+        purge: bool,
+        trash_directory: Path | None = None,
+    ) -> int:
+        records = self.list_for_agent(agent_id)
+        artifact_directories: set[Path] = set()
+        for record in records:
+            if record.artifact_path:
+                archive = self.workspace.resolve(record.artifact_path)
+                artifact_directories.add(archive.parent)
+        for directory in artifact_directories:
+            if not directory.is_dir():
+                continue
+            if purge:
+                shutil.rmtree(directory)
+            else:
+                if trash_directory is None:
+                    raise ValueError("recoverable deletion requires a trash directory")
+                destination = self.workspace.resolve(
+                    trash_directory / "artifacts" / directory.name
+                )
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(directory), str(destination))
+        for record in records:
+            path = self._path(record.id)
+            if not path.is_file():
+                continue
+            if purge:
+                path.unlink()
+            else:
+                if trash_directory is None:
+                    raise ValueError("recoverable deletion requires a trash directory")
+                destination = self.workspace.resolve(
+                    trash_directory / "builds" / path.name
+                )
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(path), str(destination))
+        return len(records)
 
 
 def load_yaml_file(path: Path) -> dict[str, Any]:
