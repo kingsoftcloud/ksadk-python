@@ -310,13 +310,20 @@ class BaseRunner(ABC):
         import uvicorn
 
         from ksadk.agui.config import default_agui_config
+        from ksadk.managed_a2a_card import build_managed_a2a_card_if_configured
         from ksadk.server.composition import configure_runtime_app
         from ksadk.server.factory import RuntimeAppConfig, create_runtime_app
 
         # goal-01/16:经 create_runtime_app 注入 runner(per-app state),替代全局 ``app`` +
         # ``set_runner`` 全局态。普通 runtime app 装配全部 route group。
+        # managed A2A discovery-only card:KSADK_A2A_AGENT_ID 非空时挂
+        # ``/.well-known/agent-card.json``;注册前即可被 server 探测(a2a-runtime-inbound-wiring)。
         app = create_runtime_app(
-            RuntimeAppConfig(runner=self, agui=default_agui_config(self)),
+            RuntimeAppConfig(
+                runner=self,
+                agui=default_agui_config(self),
+                a2a=build_managed_a2a_card_if_configured(),
+            ),
             configure_runtime_app,
         )
         uvicorn.run(app, host="0.0.0.0", port=port)

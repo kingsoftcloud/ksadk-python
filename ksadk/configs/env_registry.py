@@ -20,6 +20,34 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "KSADK_ADK_SESSION_URL", "sessions", "ADK-native database session URL.", sensitive=True
     ),
     EnvVarSpec(
+        "KSADK_A2A_A2A_AGENT_ID",
+        "a2a",
+        "Registered A2A Agent id injected by the deploy layer; required to wire full "
+        "inbound JSON-RPC in v2. v1 discovery-only card does not depend on it.",
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_ACCOUNT_ID",
+        "a2a",
+        "Runtime owner account id injected by the deploy layer (ar-* agent's account).",
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_AGENT_ID",
+        "a2a",
+        "Hosted Agent resource id (ar-*) injected by the deploy layer; the v1 "
+        "discovery-only card mounts whenever this is non-empty.",
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_AGENT_NAME",
+        "a2a",
+        "AgentCard display name injected by the deploy layer; falls back to "
+        "AGENTENGINE_MANAGED_RUNTIME_NAME then to the agent id.",
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_AGENT_VERSION",
+        "a2a",
+        "AgentCard business version injected by the deploy layer; defaults to 0.1.0.",
+    ),
+    EnvVarSpec(
         "KSADK_A2A_CONTROL_PLANE_URL",
         "a2a",
         "AgentEngine A2A runtime control-plane base URL injected by the deploy layer.",
@@ -37,15 +65,31 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         ".agentengine/a2a_event_outbox.sqlite3",
     ),
     EnvVarSpec(
-        "KSADK_A2A_TOKEN_DIR",
+        "KSADK_A2A_INTERNAL_BASE_URL",
         "a2a",
-        "Directory containing audience-specific projected A2A workload JWT files.",
-        "/var/run/secrets/agentengine/a2a",
+        "Internal HTTP(S) origin used as AgentCard base_url before the gateway rewrites it; "
+        "must be an absolute origin with no path/query/fragment.",
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_RUNTIME_ID",
+        "a2a",
+        "Runtime instance id injected by the deploy layer; v1 equals KSADK_A2A_AGENT_ID.",
     ),
     EnvVarSpec(
         "KSADK_A2A_SPACE_IDS",
         "a2a",
         "JSON array of A2A Space ids configured for this Runtime Agent.",
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_TENANT_ID",
+        "a2a",
+        "Runtime tenant id injected by the deploy layer; falls back to account id.",
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_TOKEN_DIR",
+        "a2a",
+        "Directory containing audience-specific projected A2A workload JWT files.",
+        "/var/run/secrets/agentengine/a2a",
     ),
     EnvVarSpec(
         "KSADK_A2UI_GENERATION_TIMEOUT_SECONDS",
