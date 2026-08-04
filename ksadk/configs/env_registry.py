@@ -20,10 +20,11 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "KSADK_ADK_SESSION_URL", "sessions", "ADK-native database session URL.", sensitive=True
     ),
     EnvVarSpec(
-        "KSADK_A2A_A2A_AGENT_ID",
+        "KSADK_A2A_AGENT_ID",
         "a2a",
-        "Registered A2A Agent id injected by the deploy layer; required to wire full "
-        "inbound JSON-RPC in v2. v1 discovery-only card does not depend on it.",
+        "Registered A2A Agent id (a2a-agent-*) injected post-registration; "
+        "required to wire full inbound JSON-RPC in v2. v1 discovery-only card "
+        "does not depend on it.",
     ),
     EnvVarSpec(
         "KSADK_A2A_ACCOUNT_ID",
@@ -31,10 +32,10 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "Runtime owner account id injected by the deploy layer (ar-* agent's account).",
     ),
     EnvVarSpec(
-        "KSADK_A2A_AGENT_ID",
+        "KSADK_A2A_RUNTIME_ID",
         "a2a",
-        "Hosted Agent resource id (ar-*) injected by the deploy layer; the v1 "
-        "discovery-only card mounts whenever this is non-empty.",
+        "Hosted Agent runtime resource id (ar-*) injected by the deploy layer; "
+        "the v1 discovery-only card mounts whenever this is non-empty.",
     ),
     EnvVarSpec(
         "KSADK_A2A_AGENT_NAME",
@@ -69,11 +70,6 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "a2a",
         "Internal HTTP(S) origin used as AgentCard base_url before the gateway rewrites it; "
         "must be an absolute origin with no path/query/fragment.",
-    ),
-    EnvVarSpec(
-        "KSADK_A2A_RUNTIME_ID",
-        "a2a",
-        "Runtime instance id injected by the deploy layer; v1 equals KSADK_A2A_AGENT_ID.",
     ),
     EnvVarSpec(
         "KSADK_A2A_SPACE_IDS",

@@ -316,8 +316,9 @@ class BaseRunner(ABC):
 
         # goal-01/16:经 create_runtime_app 注入 runner(per-app state),替代全局 ``app`` +
         # ``set_runner`` 全局态。普通 runtime app 装配全部 route group。
-        # managed A2A discovery-only card:KSADK_A2A_AGENT_ID 非空时挂
+        # managed A2A discovery-only card:KSADK_A2A_RUNTIME_ID 非空时挂
         # ``/.well-known/agent-card.json``;注册前即可被 server 探测(a2a-runtime-inbound-wiring)。
+        # KSADK_A2A_AGENT_ID(a2a-agent-*)注册后由 reconciler 注入,v2 JSON-RPC 绑定用,v1 card 不依赖。
         app = create_runtime_app(
             RuntimeAppConfig(
                 runner=self,

@@ -4,7 +4,7 @@
 ``ManagedA2ACardMount`` mounts ``GET /.well-known/agent-card.json`` and nothing
 else — no JSON-RPC, no identity middleware, no TaskStore. It must:
 
-* mount whenever ``KSADK_A2A_AGENT_ID`` is set, even without ``KSADK_A2A_A2A_AGENT_ID``
+* mount whenever ``KSADK_A2A_RUNTIME_ID`` is set, even without ``KSADK_A2A_AGENT_ID``
   (breaks the hosted registration chicken-and-egg);
 * NOT mount any JSON-RPC / REST task routes (v1 scope);
 * return a wire-1.0-conformant card with the injected name/version/base_url;
@@ -50,7 +50,6 @@ def _paths(app) -> set[str]:
 def _clean_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     for key in (
         "KSADK_A2A_AGENT_ID",
-        "KSADK_A2A_A2A_AGENT_ID",
         "KSADK_A2A_ACCOUNT_ID",
         "KSADK_A2A_TENANT_ID",
         "KSADK_A2A_RUNTIME_ID",
@@ -70,7 +69,7 @@ def test_returns_none_when_agent_id_absent(_clean_env: None) -> None:
 
 def test_mounts_card_without_a2a_agent_id(_clean_env: None, monkeypatch: pytest.MonkeyPatch) -> None:
     """v1 discovery card mounts before the A2A Agent is registered."""
-    monkeypatch.setenv("KSADK_A2A_AGENT_ID", "ar-test-runtime")
+    monkeypatch.setenv("KSADK_A2A_RUNTIME_ID", "ar-test-runtime")
     monkeypatch.setenv("KSADK_A2A_INTERNAL_BASE_URL", "http://runtime.internal:8080")
 
     mount = build_managed_a2a_card_if_configured()
@@ -86,7 +85,7 @@ def test_mounts_card_without_a2a_agent_id(_clean_env: None, monkeypatch: pytest.
 
 
 def test_card_payload_uses_injected_name_version(_clean_env: None, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("KSADK_A2A_AGENT_ID", "ar-test-runtime")
+    monkeypatch.setenv("KSADK_A2A_RUNTIME_ID", "ar-test-runtime")
     monkeypatch.setenv("KSADK_A2A_AGENT_NAME", "weather-agent")
     monkeypatch.setenv("KSADK_A2A_AGENT_VERSION", "2.3.0")
     monkeypatch.setenv("KSADK_A2A_INTERNAL_BASE_URL", "http://runtime.internal:8080")
@@ -105,10 +104,10 @@ def test_card_payload_uses_injected_name_version(_clean_env: None, monkeypatch: 
 
 
 def test_name_fallback_chain(_clean_env: None, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("KSADK_A2A_AGENT_ID", "ar-fallback-runtime")
+    monkeypatch.setenv("KSADK_A2A_RUNTIME_ID", "ar-fallback-runtime")
     monkeypatch.setenv("KSADK_A2A_INTERNAL_BASE_URL", "http://runtime.internal:8080")
 
-    # 无 KSADK_A2A_AGENT_NAME,无 AGENTENGINE_MANAGED_RUNTIME_NAME → fallback 到 agent_id
+    # 无 KSADK_A2A_AGENT_NAME,无 AGENTENGINE_MANAGED_RUNTIME_NAME → fallback 到 runtime_id
     mount = build_managed_a2a_card_if_configured()
     assert mount is not None
     assert mount.config.agent_name == "ar-fallback-runtime"
@@ -127,7 +126,7 @@ def test_name_fallback_chain(_clean_env: None, monkeypatch: pytest.MonkeyPatch) 
 
 
 def test_internal_base_url_default(_clean_env: None, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("KSADK_A2A_AGENT_ID", "ar-test-runtime")
+    monkeypatch.setenv("KSADK_A2A_RUNTIME_ID", "ar-test-runtime")
     mount = build_managed_a2a_card_if_configured()
     assert mount is not None
     assert mount.config.base_url == "http://localhost:8080"
@@ -136,7 +135,7 @@ def test_internal_base_url_default(_clean_env: None, monkeypatch: pytest.MonkeyP
 def test_start_stop_are_noop(_clean_env: None, monkeypatch: pytest.MonkeyPatch) -> None:
     import asyncio
 
-    monkeypatch.setenv("KSADK_A2A_AGENT_ID", "ar-test-runtime")
+    monkeypatch.setenv("KSADK_A2A_RUNTIME_ID", "ar-test-runtime")
     mount = build_managed_a2a_card_if_configured()
     assert mount is not None
     assert asyncio.run(mount.start()) is None

@@ -7,8 +7,8 @@ v1 scope (this module):
     server-side ``GetAToAAgentCard(hosted)`` probe can fetch it and break the
     registration chicken-and-egg cycle.
 
-    The card mounts whenever ``KSADK_A2A_AGENT_ID`` (ar-*, available at deploy
-    time) is non-empty. It does **not** depend on ``KSADK_A2A_A2A_AGENT_ID``
+    The card mounts whenever ``KSADK_A2A_RUNTIME_ID`` (ar-*, available at deploy
+    time) is non-empty. It does **not** depend on ``KSADK_A2A_AGENT_ID``
     (only known after the A2A Agent is registered). skills default to empty;
     :func:`ksadk.a2a.card.build_agent_card` fills a ``general`` skill when none
     are provided.
@@ -84,21 +84,21 @@ class ManagedA2ACardMount:
 def build_managed_a2a_card_if_configured() -> Optional[ManagedA2ACardMount]:
     """Read the A2A identity env vars and build a discovery-only card mount.
 
-    Returns ``None`` when the runtime is not A2A-capable (``KSADK_A2A_AGENT_ID``
-    empty), so ``run_server`` skips mounting entirely. Returns a mount even when
-    ``KSADK_A2A_A2A_AGENT_ID`` is absent: the discovery card is intentionally
-    available *before* the A2A Agent is registered.
+    Returns ``None`` when the runtime is not A2A-capable
+    (``KSADK_A2A_RUNTIME_ID`` empty), so ``run_server`` skips mounting entirely.
+    Returns a mount even when ``KSADK_A2A_AGENT_ID`` is absent: the discovery
+    card is intentionally available *before* the A2A Agent is registered.
 
     Name/version fallback chain:
         ``KSADK_A2A_AGENT_NAME`` → ``AGENTENGINE_MANAGED_RUNTIME_NAME`` →
-        ``KSADK_A2A_AGENT_ID``.
+        ``KSADK_A2A_RUNTIME_ID``.
     """
-    agent_id = _env("KSADK_A2A_AGENT_ID")
-    if not agent_id:
+    runtime_id = _env("KSADK_A2A_RUNTIME_ID")
+    if not runtime_id:
         return None
 
     base_url = _env("KSADK_A2A_INTERNAL_BASE_URL") or "http://localhost:8080"
-    name = _env("KSADK_A2A_AGENT_NAME") or _env("AGENTENGINE_MANAGED_RUNTIME_NAME") or agent_id
+    name = _env("KSADK_A2A_AGENT_NAME") or _env("AGENTENGINE_MANAGED_RUNTIME_NAME") or runtime_id
     version = _env("KSADK_A2A_AGENT_VERSION") or "0.1.0"
 
     config = A2AConfig(
