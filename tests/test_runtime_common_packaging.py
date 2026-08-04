@@ -67,6 +67,20 @@ def test_built_wheel_excludes_web_ui_node_modules():
     assert leaked == []
 
 
+def test_built_wheel_excludes_studio_web_sources_and_node_modules():
+    wheels = sorted((REPO_ROOT / "dist").glob("ksadk-*.whl"))
+    assert wheels, "请先运行 uv build 生成 dist/ksadk-*.whl"
+
+    with zipfile.ZipFile(wheels[-1]) as archive:
+        leaked = [
+            name
+            for name in archive.namelist()
+            if name.startswith("ksadk/studio/web/")
+        ]
+
+    assert leaked == []
+
+
 def test_built_wheel_includes_synced_web_static_entrypoint():
     wheels = sorted((REPO_ROOT / "dist").glob("ksadk-*.whl"))
     assert wheels, "请先运行 uv build 生成 dist/ksadk-*.whl"
@@ -101,6 +115,7 @@ def test_pyproject_excludes_legacy_web_ui_from_package_discovery():
 
     package_find = pyproject["tool"]["setuptools"]["packages"]["find"]
     assert "ksadk.server.web-ui*" in package_find["exclude"]
+    assert "ksadk.studio.web*" in package_find["exclude"]
 
 
 def test_pyproject_declares_python_multipart_for_local_web_ui_uploads():

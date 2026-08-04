@@ -29,6 +29,37 @@ AgentKit Studio 已经能够在本地创建 Codex Agent、构建 ManagedRuntime 
 - 多 Agent、运行目标、创建方式、Tool、Skill、Session、Build 和 Trace 形成一致闭环。
 - 为后续真实金山云凭证和云 Agent 接入保留目标模型，但本地版本绝不返回 Mock 云成功状态。
 
+### 2.1 执行 Goal
+
+> 在 `ksadk-python` 的 `agentkit-studio-codex-ld1` 工作树交付可发布、可在应用内浏览器完整演示的 AgentKit Studio 本地版本：以 `RuntimeAdapter`、`RuntimeRegistry` 和 `RuntimeExecutor` 作为唯一上层运行合同，真实打通 Codex、ADK、LangGraph 的创建、依赖检测、构建、标准 Responses 流式对话、取消、刷新恢复、Session 和 OTLP Trace；完成多 Agent/目标全局切换、四种创建入口、模型绑定与会话级切换、Tool 管理、Skill 自动发现/校验/确认导入、Raw OTLP 复制，并删除 Studio/Runner 重复执行层。所有架构、协议、Runtime、前端和浏览器验收门禁通过后方可完成；真实金山云部署不在本 Goal 写集内，但必须保留诚实的未连接云目标，禁止 Mock 成功。
+
+该 Goal 是结果目标，不以“完成若干模块”或“代码已提交”作为完成依据。
+
+### 2.2 用户最终看到的完整效果
+
+| 场景 | 必须达到的效果 |
+|---|---|
+| 启动 | `ksadk studio` 只监听 loopback，打开统一的 `AgentKit Studio`；不显示 `Codex Local`，不同时维护另一套 Studio Web |
+| 创建 | 创建中心提供快速创建、对话构建、导入、项目识别四种真实入口；最终都生成可查看、可编辑、可校验、可构建的 YAML Revision |
+| Runtime | Codex、ADK、LangGraph 显示真实依赖、版本和能力；缺依赖时给出安装/修复命令，不伪造可用状态 |
+| Agent 管理 | 可以创建多个 Agent，真实列出、切换、编辑、删除；Agent ID 由系统生成稳定主键，用户只编辑名称/slug，避免未来云端冲突 |
+| 全局上下文 | 顶栏统一切换 Workspace、Agent、Execution Target；会话、构建、部署、资源和 Trace 都跟随当前上下文，云未连接时明确显示未连接 |
+| 构建 | 对 YAML、源码、依赖、Tool 和 Skill 做真实校验，产出可追溯 Bundle；Codex/ADK/LangGraph 使用各自 Codec/Builder，不抹平专属字段 |
+| 模型 | Agent 可绑定多个模型，默认模型写入 Revision；会话可在允许集合内动态切换，服务端拒绝未绑定模型；模型能力来自真实探测而非前端常量 |
+| 对话 | 请求与流式输出兼容 OpenAI Responses；输入框动态高度；长 Markdown、代码和 Tool 事件在消息区内滚动；切换会话或刷新不会误取消运行 |
+| 会话 | Session 真实创建、切换、恢复和删除；删除范围有确认提示；活跃 Run 使用 handle attach 恢复，不能恢复时显示真实原因 |
+| Tool/Skill | 展示 ksadk 内置 Tool、工作区 Tool 和 MCP Tool；Skill 可自动发现候选、检查风险、确认导入、绑定并进入构建产物 |
+| Trace | Trace Explorer 使用 OTLP 数据模型，详情不跳转会话页；展示 Span 树、Attributes、Events、Resource、真实 Token/耗时和可复制 Raw OTLP |
+| 协议 | Studio、统一 Web、Responses、AG-UI、A2A、Harness 都从同一 RuntimeEvent 流投影，不各自实现 Runtime 或事件转换 |
+
+### 2.3 前端源码与发布物边界
+
+- 可维护源码放在 `ksadk/studio/web/src/`，按 `app-shell`、`context`、`agents`、`authoring`、`builds`、`chat`、`resources`、`traces`、`api` 和 `store` 拆分，禁止继续扩张单一超大 `app.js`。
+- 复用 `ksadk-web` 时采用构建期 npm 依赖和稳定导出，不复制其内部源码、不在浏览器运行时访问在线 npm。
+- 构建后的静态文件写入 `ksadk/studio/static/` 并随 `ksadk` wheel 发布；安装 PyPI 包后无需 Node/npm 也能打开 Studio。
+- `ksadk/server/static/` 不再作为第二套手工维护的产品前端；兼容入口必须指向同一构建产物，迁移完成后删除重复资源。
+- 生产 Python 源码单文件超过 700 行触发 CI 告警，要求在后续扩张前说明深模块边界或拆分理由；新文件或非遗留文件超过 1000 行 CI 直接失败。仓库中已有的超限文件采用“当前行数只减不增”的显式基线，后续逐步拆分；测试 Fixture 与前端编译产物不计入该门禁。
+
 ## 3. 非目标
 
 本 Goal 不实现以下内容：
@@ -433,6 +464,47 @@ Codex、ADK/LangGraph、Web Composition 可在合同冻结后并行。
 - 应用内浏览器全场景回归。
 - 删除旧代码、文档和兼容提示。
 
+### 17.1 模块化工作包、依赖和工作量
+
+工作量用于表示复杂度，不是工期承诺：`S` 为局部修改，`M` 为单模块完整闭环，`L` 为跨层闭环，`XL` 为多个跨层闭环。
+
+| 工作包 | 主要工作 | 可独立验收的产物 | 依赖 | 工作量 |
+|---|---|---|---|---|
+| G0 合同与门禁 | 冻结 RuntimeAdapter 六动词、RuntimeEvent、Responses/OTLP 投影规则、删除符号和禁止导入规则 | 合同测试与架构测试先红后绿 | 无 | M |
+| G1 Runtime 内核统一 | 完成 Factory Registry、RuntimeExecutor、Handle 所有权；Codex 统一为 `CodexRuntimeAdapter`；BaseRunner 退回框架内部 | 三 Runtime 合同测试；上层不再选择 Runner | G0 | XL |
+| G2 Server 与协议入口 | Web、Run、Responses、AG-UI、A2A、Harness 全部注入 Executor/Adapter；统一 stream/cancel/resume/attach | 同一 Fake Adapter 可通过所有协议入口；标准 SSE Fixture 一致 | G1 | XL |
+| G3 Agent Draft/Revision 与构建 | 四种创建方式汇聚 Draft；Runtime Codec、依赖探测、校验、Bundle 和供应链摘要 | Codex/ADK/LangGraph 各生成一个可重复构建的本地 Bundle | G0，可与 G1 后半段并行 | XL |
+| G4 全局上下文与多 Agent | Workspace/Agent/Target 选择器；所有 Tab 查询显式带上下文；Agent 编辑、删除、迁移 | 至少三个 Agent 跨 Tab 切换无串数据 | G3，接口模型可与 G2 并行 | L |
+| G5 模型、Tool 与 Skill | 模型真实探测、多绑定和会话切换；内置/自定义/MCP Tool Catalog；Skill 发现、inspect、commit、绑定 | 能绑定两个模型、一个 Tool、一个 Skill 并进入 Revision/Bundle | G3，Catalog 可独立并行 | XL |
+| G6 会话与对话体验 | 标准 Responses 请求、增量事件、动态输入框、长内容滚动、Session CRUD、Run attach/cancel | 运行中刷新可恢复，显式取消才进入 CANCELLED，会话真删除 | G2 + G4；UI 可与 G5 并行 | XL |
+| G7 OTLP Trace Explorer | RuntimeEvent→OTLP、持久化/查询、Span 树详情、真实 usage/duration、Raw OTLP 复制 | 本地三 Runtime Trace 均通过 OTLP Schema 与 UI 验收 | G2；采集可与 G4-G6 并行 | L |
+| G8 前端工程化与去重 | 拆分 Studio Web 源码、复用 ksadk-web 稳定包、统一构建产物、删除旧静态界面和重复 Runtime | wheel 内只有一套可用 Studio 前端，静态资源可离线加载 | G2-G7 逐步收口 | L |
+| G9 发布与浏览器验收 | 全量测试、lint、mypy/语法、wheel 构建安装、应用内浏览器逐项验证并留证 | 干净环境安装 wheel 后完整演示，验收矩阵全部 PASS | G1-G8 | L |
+
+### 17.2 并行关系
+
+```mermaid
+flowchart LR
+    G0["G0 合同与门禁"] --> G1["G1 Runtime 内核"]
+    G0 --> G3["G3 Draft / 构建"]
+    G1 --> G2["G2 Server / 协议"]
+    G3 --> G4["G4 全局上下文"]
+    G3 --> G5["G5 模型 / Tool / Skill"]
+    G2 --> G6["G6 Session / Chat"]
+    G4 --> G6
+    G2 --> G7["G7 OTLP Trace"]
+    G4 --> G8["G8 前端统一 / 去重"]
+    G5 --> G8
+    G6 --> G8
+    G7 --> G8
+    G8 --> G9["G9 发布 / 浏览器验收"]
+```
+
+- G0 冻结后，G1、G3 的非重叠部分可以并行。
+- G2 完成 Executor 注入合同后，协议入口、G5 Catalog、G7 Trace 采集可以并行。
+- G4 与 G6 必须共享同一个上下文键和 URL 合同，不能分别造前端全局状态。
+- G8 不是最后一次“大重写”；各功能合并时就迁入统一前端模块，最终只做去重和发布收口。
+
 ## 18. 验收门禁
 
 以下条件必须全部满足：
@@ -452,6 +524,21 @@ Codex、ADK/LangGraph、Web Composition 可在合同冻结后并行。
 
 ## 19. Goal 停止条件
 
+### 19.1 允许标记完成的停止条件
+
+只有第 18 节 12 项验收门禁全部满足，并同时具备以下证据，Goal 才允许标记 `complete`：
+
+1. 架构证据：禁止上层导入 Runner 的测试通过，所有待删除类和重复静态入口零引用。
+2. 自动化证据：目标测试、相关全量测试、Ruff、mypy/语法、前端构建、wheel 构建安装和 `git diff --check` 全绿。
+3. 协议证据：三 Runtime 的非流式/流式 Responses、cancel、resume/attach、Session 和 OTLP Fixture 通过。
+4. 产品证据：在应用内浏览器逐项执行第 2.2 节场景，记录实际输入、结果、Trace/Run ID 和截图；不能用 API 单测替代 UI 验收。
+5. 发布证据：从新构建的 wheel 安装启动，而不是依赖源码目录或开发服务器残留资源。
+6. 诚实性证据：断开模型凭证、缺 Runtime 依赖、未连接云目标时均明确失败，无 Mock 成功、猜测 Token 或假能力。
+
+满足这些条件时停止的是本地演示 Goal；真实金山云部署仍由后续 Goal 承接。
+
+### 19.2 运行中允许暂停并请求用户的条件
+
 不得因为时间、token、工作量、测试失败、改动文件较多或第一次方案不可行而停止。
 
 只有以下情况可以暂停并请求用户：
@@ -462,4 +549,12 @@ Codex、ADK/LangGraph、Web Composition 可在合同冻结后并行。
 - 同一个外部依赖连续三个 Goal 回合阻塞，且已经穷尽安全替代路径。
 - 现有公开兼容合同与本设计存在无法自动解决的冲突。
 
-Goal 只有在第 18 节全部得到当前代码、测试和浏览器证据证明后才能标记 complete。
+对于外部依赖阻塞，必须记录三轮使用了哪些检查和替代路径；未达到三轮同因阻塞不得标记 `blocked`。
+
+### 19.3 产品内 Agent Run 的停止语义
+
+- 用户点击取消时，按 `(runtimeType, invocationId, sessionId)` 精确取消当前 Handle，并持久化 Runtime 返回的真实终态。
+- 页面刷新、路由切换、Agent 切换和浏览器 SSE 断开不得自动把运行标记为 `CANCELLED`；Server 必须继续持有运行并允许重新 attach。
+- Runtime 已不可恢复时标记 `INTERRUPTED/ATTACH_UNAVAILABLE` 并说明原因，不能冒充用户取消。
+- Session 删除若涉及活跃 Run，必须先明确提示并由用户确认是否取消；不得静默终止。
+- token、运行时长和前端等待超时默认只用于展示/诊断，不构成自动停止条件；只有 Agent Revision 明确配置了预算策略时才由 Runtime 执行相应终止。

@@ -6,8 +6,8 @@
 from __future__ import annotations
 
 import ast
+import inspect
 from pathlib import Path
-
 
 ROOT = Path(__file__).resolve().parents[2]
 PACKAGE_ROOT = ROOT / "ksadk"
@@ -20,6 +20,7 @@ RUNTIME_ENTRYPOINTS = (
 RETIRED_RUNTIME_MODULES = (
     PACKAGE_ROOT / "runners" / "codex_runner.py",
     PACKAGE_ROOT / "studio" / "codex_runtime.py",
+    PACKAGE_ROOT / "studio" / "runtime.py",
     PACKAGE_ROOT / "studio" / "runtime_orchestrator.py",
 )
 
@@ -64,3 +65,23 @@ def test_duplicate_codex_and_studio_runtime_modules_are_removed() -> None:
     )
 
     assert remaining == []
+
+
+def test_a2a_public_composition_accepts_runtime_adapter_not_runner() -> None:
+    """A2A must not retain a second execution contract beside RuntimeAdapter."""
+
+    from ksadk.a2a.bootstrap import AgentEngineA2ABootstrap
+    from ksadk.a2a.executor import A2ARuntimeExecutor
+    from ksadk.a2a.routes import add_a2a_protocol_routes
+    from ksadk.a2a.server import A2AProtocolServer
+
+    callables = (
+        add_a2a_protocol_routes,
+        A2AProtocolServer,
+        A2ARuntimeExecutor,
+        AgentEngineA2ABootstrap.mount,
+    )
+    for callable_ in callables:
+        parameters = inspect.signature(callable_).parameters
+        assert "runner" not in parameters, callable_
+    assert "task_adapter" in inspect.signature(A2ARuntimeExecutor).parameters

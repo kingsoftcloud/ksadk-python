@@ -611,8 +611,10 @@ Context Manager 一期行为：
 4. system 指令、当前输入、未完成 Tool call 和最近一轮消息不能被删除。
 5. 压缩前后发出 `context.compaction.started/completed` 事件。
 
-Tokenizer 不可用时使用保守字符估算并在 Trace 标记 `tokenEstimate=true`，不能假装是精确
-token 数。
+Tokenizer 不可用时，Context Manager 可以使用保守字符估算做本地预算，但该估算只属于
+上下文裁剪内部信息，**不得写入 Provider Usage 或 Trace Token 指标**。Trace 中的
+`gen_ai.usage.*` 只接受模型 Provider 或 Runtime 明确上报的值；未上报时返回 `null`，UI
+显示“未上报”，不能显示 `0` 或估算值。
 
 ## 10. Local API 设计
 
@@ -834,7 +836,26 @@ SSE，支持断线续传。
 
 #### `GET /api/v1/traces/{traceId}`
 
-返回 Run、Model、Tool span 树。默认对消息内容按本地隐私设置裁剪。
+返回由标准 OTLP JSON 派生的 `TraceView`，包含 Run、Model、Tool Span 树、父子关系、
+Attributes、Events、Resource、Scope 和精确指标。该接口不返回自定义 RunEvent 列表，也
+不负责跳转会话页。
+
+#### `GET /api/v1/traces`
+
+返回 Trace 摘要列表，支持 `agentId`、`status` 和 `limit` 筛选，供独立 Trace Explorer
+使用。Trace 列表和详情不依赖当前选中的会话或 Agent。
+
+#### `GET /api/v1/traces/{traceId}/otlp`
+
+返回规范 OTLP JSON：`resourceSpans -> scopeSpans -> spans`。`traceId` 固定 32 位十六进制，
+`spanId` 固定 16 位十六进制，纳秒时间使用 Protobuf JSON 字符串。Studio 本地持久化的
+事实源是该 OTLP 文档；`TraceView` 只是无损 UI 读模型。
+
+Runtime 与 Trace 的边界固定为：Runtime 产生统一 `RuntimeEvent`，`TraceAdapter` 单向投影
+为 OTLP。原生 Runtime 若能直接产生 `RuntimeEvent`，`RunnerRuntimeAdapter` 必须优先消费
+标准事件流，不得先压平成临时 chunk 再解析回来。Token 只接受 `USAGE_REPORTED`；总耗时
+优先接受 `RUN_COMPLETED.duration_ms`，缺失时才使用 Studio 单调时钟回退，并明确标记
+`agentkit.duration.source=studio`。
 
 ### 10.7 Evaluation
 
@@ -961,7 +982,8 @@ WebUI 延续已经确认的轻量云控制台视觉语言：247px 左侧栏、�
 - 构建：阶段日志、诊断、Bundle manifest、digest。
 - 测试：输入、流式输出、事件、usage、评测集。
 - 部署：目标、Binding、Admission 结果、Deployment 状态和回滚。
-- 可观测：Run 列表、事件时间线、Trace 详情。
+- 可观测：独立 Trace Explorer、Agent/状态筛选、Span 父子树与耗时瀑布、Attributes、
+  Events、Resource、Raw OTLP；点击 Trace 不改变会话状态。
 
 ## 12. 安全控制
 
@@ -1055,7 +1077,10 @@ WebUI 延续已经确认的轻量云控制台视觉语言：247px 左侧栏、�
 - usage 聚合正确。
 - Evaluation 每类断言通过和失败。
 - minimumPassRate 边界。
-- Trace span 父子关系。
+- Trace span 父子关系、OTLP JSON 合法性和 W3C Trace/Span ID 长度。
+- Provider/Runtime 未上报 Usage 时 UI 显示“未上报”，不得显示 0 或估算值。
+- Runtime 上报耗时为权威值；Studio 回退耗时必须展示来源。
+- Trace 深链刷新后仍停留在 `view=observability&traceId=...`，不跳转会话页。
 
 ### 14.4 F11-F12
 
