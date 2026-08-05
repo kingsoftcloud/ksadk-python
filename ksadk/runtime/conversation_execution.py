@@ -96,6 +96,7 @@ async def iter_runtime_conversation_events(
         invocation_id=invocation_id,
         session_service_provider=provider,
         run_mode=run_mode,
+        runtime_type=launch_context.runtime_type,
     )
     canonical_messages = prepared.responses_history or [dict(item) for item in messages]
     conversation_request = {
@@ -148,6 +149,10 @@ async def iter_runtime_conversation_events(
     terminal = False
     interrupted = False
     completed_assistant_text = ""
+    _baseline_turn_start = _baseline_monotonic()
+    _baseline_usage: dict[str, Any] = {}
+    _baseline_ptl = False
+    _baseline_attempts = 0
     try:
         for context_event in _compaction_runtime_events(
             prepared=prepared,
@@ -170,6 +175,9 @@ async def iter_runtime_conversation_events(
                 and persisted.phase == "final_answer"
             ):
                 completed_assistant_text = str(persisted.payload.get("text") or "")
+                usage_payload = persisted.payload.get("usage")
+                if isinstance(usage_payload, Mapping):
+                    _baseline_usage = dict(usage_payload)
             terminal = persisted.event_type in _TERMINAL_EVENTS
             interrupted = persisted.event_type == EventType.RUN_INTERRUPTED
             yield persisted
@@ -212,6 +220,52 @@ async def iter_runtime_conversation_events(
             )
         if terminal:
             await executor.close(handle)
+
+    _record_baseline_turn(
+        prepared=prepared,
+        model=model,
+        usage=_baseline_usage,
+        ptl=_baseline_ptl,
+        attempts=_baseline_attempts,
+        turn_start_monotonic=_baseline_turn_start,
+    )
+
+
+def _baseline_monotonic() -> float:
+    import time
+
+    return time.monotonic()
+
+
+def _record_baseline_turn(
+    *,
+    prepared: Any,
+    model: str | None,
+    usage: Mapping[str, Any] | None,
+    ptl: bool,
+    attempts: int,
+    turn_start_monotonic: float | None,
+) -> None:
+    """env-gated 旁路采集：未启用时 no-op，启用时记录一条 turn 基线，不进决策路径、不抛异常。"""
+    from ksadk.context_engine.baseline import record_baseline_turn
+
+    import time
+
+    latency_ms = None
+    if turn_start_monotonic is not None:
+        latency_ms = int((time.monotonic() - turn_start_monotonic) * 1000)
+    record_baseline_turn(
+        getattr(prepared, "shadow_context_plan", None),
+        session_id=getattr(prepared, "session_id", ""),
+        invocation_id=getattr(prepared, "invocation_id", ""),
+        model=str(model or ""),
+        usage=usage,
+        compaction_triggered=bool(getattr(prepared, "compaction_triggered", False)),
+        compaction_trigger=str(getattr(prepared, "compaction_trigger", "") or ""),
+        prompt_too_long=ptl,
+        retry_attempts=attempts,
+        turn_latency_ms=latency_ms,
+    )
 
 
 def _compaction_runtime_events(

@@ -235,3 +235,125 @@ async def test_checkpoint_resume_reuses_owned_handle_and_calls_executor_resume()
         )
     ]
     assert {event.invocation_id for event in events} == {"original-run"}
+
+
+@pytest.mark.asyncio
+async def test_canonical_path_attaches_single_shadow_plan_with_correct_ownership() -> None:
+    """Shadow 基线验收：canonical 路径 prepared_turn 携带且仅携带一份 shadow plan，
+    ownership 由 launch_context.runtime_type 解析（非 opaque），不重复规划。"""
+
+    class _LangGraphAdapter(_Adapter):
+        async def start(self, request: StartRequest) -> RunHandle:
+            self.requests.append(request)
+            return RunHandle(
+                run_id=str(request.metadata["invocation_id"]),
+                session_id=request.session_id,
+                runtime_type="langgraph",
+            )
+
+    service = InMemorySessionService()
+    adapter = _LangGraphAdapter()
+    registry = RuntimeRegistry()
+    registry.register("langgraph", lambda _context: adapter)
+    executor = RuntimeExecutor(registry)
+    context = RuntimeLaunchContext(runtime_type="langgraph", project_dir=".")
+
+    events = [
+        event
+        async for event in iter_runtime_conversation_events(
+            executor=executor,
+            launch_context=context,
+            agent_id="agent-1",
+            user_id="user-1",
+            messages=[{"role": "user", "content": "帮我做个总结"}],
+            session_id=None,
+            model=None,
+            instructions="你是助手",
+            session_service_provider=lambda: service,
+        )
+    ]
+    assert [event.event_type for event in events] == [
+        EventType.RUN_STARTED,
+        EventType.TEXT_COMPLETED,
+        EventType.RUN_COMPLETED,
+    ]
+
+    request = adapter.requests[0]
+    prepared = request.metadata[CONVERSATION_PREPROCESSING_METADATA_KEY]["prepared_turn"]
+    plan = prepared["shadow_context_plan"]
+    # 单一 plan，且 ownership 来自 runtime_type（langgraph → estimated，非 opaque）。
+    assert plan is not None
+    assert plan["accounting_accuracy"] == "estimated"
+    assert plan["runtime_type"] == "langgraph"
+    assert plan["capability_hash"].startswith("sha256:")
+    # prepared_turn 经 asdict 序列化进 metadata 后仍是同一份 plan（未重复生成）。
+    assert plan["plan_id"].startswith("ctxplan_")
+    # shadow plan 未泄漏进 runner 实际消费的 payload 字段。
+    assert "shadow_context_plan" not in request.input
+    assert request.input == "帮我做个总结"
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_resume_keeps_single_plan_and_preserves_run_target() -> None:
+    """Shadow 基线验收：checkpoint resume 不产生重复 plan，仍调用 executor.resume（保留恢复目标）。"""
+
+    class _LangGraphAdapter(_Adapter):
+        async def start(self, request: StartRequest) -> RunHandle:
+            self.requests.append(request)
+            return RunHandle(
+                run_id=str(request.metadata["invocation_id"]),
+                session_id=request.session_id,
+                runtime_type="langgraph",
+            )
+
+    service = InMemorySessionService()
+    await service.create_session("agent-1", "user-1", "session-resume-plan")
+    adapter = _LangGraphAdapter()
+    registry = RuntimeRegistry()
+    registry.register("langgraph", lambda _context: adapter)
+    executor = RuntimeExecutor(registry)
+    context = RuntimeLaunchContext(runtime_type="langgraph", project_dir=".")
+    original = await executor.start(
+        context,
+        StartRequest(
+            input="initial",
+            user_id="user-1",
+            session_id="session-resume-plan",
+            agent_id="agent-1",
+            metadata={"invocation_id": "original-run"},
+        ),
+    )
+
+    events = [
+        event
+        async for event in iter_runtime_conversation_events(
+            executor=executor,
+            launch_context=context,
+            agent_id="agent-1",
+            user_id="user-1",
+            messages=[],
+            session_id="session-resume-plan",
+            model=None,
+            resume_input={
+                "type": "agentengine.resume_checkpoint",
+                "run_id": "original-run",
+                "checkpoint_id": "checkpoint-1",
+                "resume_attempt_id": "resume-1",
+                "framework": "langgraph",
+                "framework_ref": {
+                    "langgraph": {
+                        "checkpoint_id": "checkpoint-1",
+                        "thread_id": "session-resume-plan",
+                    }
+                },
+            },
+            invocation_id="resume-1",
+            session_service_provider=lambda: service,
+        )
+    ]
+    # resume 走 executor.resume（保留 checkpoint 恢复目标），不再 start 第二份 run。
+    assert adapter.resumes == [
+        (original, ResumeTarget(kind="checkpoint_id", id="checkpoint-1"), None)
+    ]
+    assert {event.invocation_id for event in events} == {"original-run"}
+

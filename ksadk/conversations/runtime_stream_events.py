@@ -38,10 +38,12 @@ from ksadk.conversations.runtime_observability import (
     _extract_deferred_tool_names,
     _get_conversation_tracer,
     _normalize_usage_payload,
+    _set_context_plan_attributes,
     _set_conversation_input_attributes,
     _set_conversation_output_attributes,
     _set_conversation_span_attributes,
     _set_conversation_usage_attributes,
+    _set_prompt_cache_attributes,
     _set_span_attribute,
     _span_current_context,
     _span_feedback_metadata,
@@ -77,6 +79,35 @@ from ksadk.sessions import resolve_session_service
 from ksadk.tools.gateway import (
     approval_interrupt_info_from_result,
 )
+
+
+def _record_baseline_turn(
+    *,
+    prepared: Any,
+    model: str | None,
+    usage: Any,
+    ptl: bool,
+    attempts: int,
+    turn_start_monotonic: float | None,
+) -> None:
+    """env-gated 旁路采集：未启用时 no-op，启用时记录一条 turn 基线。不进决策路径。"""
+    from ksadk.context_engine.baseline import record_baseline_turn
+
+    latency_ms = None
+    if turn_start_monotonic is not None:
+        latency_ms = int((time.monotonic() - turn_start_monotonic) * 1000)
+    record_baseline_turn(
+        getattr(prepared, "shadow_context_plan", None),
+        session_id=getattr(prepared, "session_id", ""),
+        invocation_id=getattr(prepared, "invocation_id", ""),
+        model=str(model or ""),
+        usage=usage if isinstance(usage, Mapping) else None,
+        compaction_triggered=bool(getattr(prepared, "compaction_triggered", False)),
+        compaction_trigger=str(getattr(prepared, "compaction_trigger", "") or ""),
+        prompt_too_long=ptl,
+        retry_attempts=attempts,
+        turn_latency_ms=latency_ms,
+    )
 
 
 async def _iter_conversation_turn_events(
@@ -155,6 +186,7 @@ async def _iter_conversation_turn_events(
             governance_state=governance,
             session_service_provider=provider,
             run_mode=entry_run_mode,
+            runner=runner,
         )
         # prepared 之后的 run_status 写入复用 prepared 的 mode/trigger
         run_mode = prepared.run_mode
@@ -254,7 +286,11 @@ async def _iter_conversation_turn_events(
             response_id=response_id,
         )
         _set_conversation_input_attributes(span, prepared.user_input or prepared.user_display_input)
+        _set_context_plan_attributes(span, prepared.shadow_context_plan)
         trace_metadata = _span_feedback_metadata(span)
+        _baseline_turn_start = time.monotonic()
+        _baseline_ptl = False
+        _baseline_attempts = 0
         yield {
             "type": "started",
             "session_id": prepared.session_id,
@@ -723,6 +759,8 @@ async def _iter_conversation_turn_events(
                 return
             except Exception as exc:
                 if attempt == 0 and not emitted_anything and _is_prompt_too_long_error(exc):
+                    _baseline_ptl = True
+                    _baseline_attempts = attempt + 1
                     yield {"type": "compaction", "phase": "start", "trigger": "prompt_too_long"}
                     try:
                         checkpoint = await _compact_conversation_history_with_governance(
@@ -887,6 +925,20 @@ async def _iter_conversation_turn_events(
             run_trigger=run_trigger,
         )
         _set_conversation_usage_attributes(span, assistant_metadata.get("usage"))
+        _set_prompt_cache_attributes(
+            span,
+            session_id=prepared.session_id,
+            plan=prepared.shadow_context_plan,
+            usage=assistant_metadata.get("usage"),
+        )
+        _record_baseline_turn(
+            prepared=prepared,
+            model=model,
+            usage=assistant_metadata.get("usage"),
+            ptl=_baseline_ptl,
+            attempts=_baseline_attempts,
+            turn_start_monotonic=_baseline_turn_start,
+        )
         _finish_span()
         yield {
             "type": "completed",

@@ -143,6 +143,12 @@ class _RunnerAsBaseRuntime(BaseRuntime):
                 pass
         return {"Framework": self.runtime_type}
 
+    def describe_context_capabilities(self) -> Any:
+        """Context ownership 按 runtime_type 分派（与内部 Runner detection-type 等价）。"""
+        from ksadk.context_engine.capabilities import capabilities_for_runtime_type
+
+        return capabilities_for_runtime_type(self.runtime_type)
+
 
 @dataclass
 class _ActiveRun:

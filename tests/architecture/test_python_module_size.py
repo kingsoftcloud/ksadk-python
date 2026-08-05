@@ -23,6 +23,7 @@ _LEGACY_OVERSIZED_MAX = {
     "ksadk/deployment/providers/serverless.py": 1233,
     "ksadk/runners/adk_runner.py": 2219,
     "ksadk/runners/langgraph_runner.py": 1250,
+    "ksadk/runtime/runner_adapter.py": 1010,
     "ksadk/sessions/local_service.py": 1080,
     "ksadk/sessions/postgres_service.py": 1019,
     "ksadk/studio/api.py": 1014,

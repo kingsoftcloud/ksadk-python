@@ -102,6 +102,17 @@ class CodexRuntimeAdapter(RuntimeAdapter):
         self.last_cancel_dropped_approvals: set[str] = set()
         self._seq = 0
 
+    def describe_context_capabilities(self) -> Any:
+        """Codex 的 Context ownership 声明：native_runtime。
+
+        base_instructions/history/compaction/memory/skill 全部由 codex 后端 thread 拥有。
+        KsADK 不重复注入完整 Transcript、不运行第二套 compaction（方案 6.2 / ADR-008）。
+        第一个 PR 中该声明仅供 shadow ContextPlan / conformance 测试消费。
+        """
+        from ksadk.context_engine.capabilities import codex_context_capabilities
+
+        return codex_context_capabilities()
+
     # ---- 六动词 ----
 
     async def start(self, request: StartRequest) -> RunHandle:

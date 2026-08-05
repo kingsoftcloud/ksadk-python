@@ -42,6 +42,10 @@ from ksadk.conversations.runtime_metadata import (
     _user_event_content,
 )
 from ksadk.conversations.runtime_observability import _latest_deferred_tool_names
+from ksadk.context_engine.shadow_plan import (
+    build_shadow_context_plan_dict,
+    minimal_shadow_context_plan_dict,
+)
 from ksadk.conversations.runtime_payloads import PreparedConversationTurn
 from ksadk.conversations.runtime_persistence import (
     append_conversation_event,
@@ -87,6 +91,8 @@ async def build_run_input(
     governance_state: RuntimeGovernanceState | None = None,
     session_service_provider: Callable[[], Any] | None = None,
     run_mode: str = RUN_MODE_FOREGROUND,
+    runner: Any | None = None,
+    runtime_type: str | None = None,
 ) -> PreparedConversationTurn:
     """构建一次 turn 的标准运行输入，并在进入模型前做上下文投影/压缩。
 
@@ -184,6 +190,9 @@ async def build_run_input(
                 resume_input=normalized_resume_input,
                 run_mode=caller_run_mode,
                 run_trigger=RUN_TRIGGER_CHECKPOINT_RESUME,
+                shadow_context_plan=minimal_shadow_context_plan_dict(
+                    runner=runner, runtime_type=runtime_type
+                ),
             )
 
         is_approval_resume = _is_approval_resume_input(normalized_resume_input)
@@ -279,6 +288,15 @@ async def build_run_input(
             resume_input=effective_resume_input,
             run_mode=caller_run_mode,
             run_trigger=RUN_TRIGGER_APPROVAL_RESUME,
+            shadow_context_plan=build_shadow_context_plan_dict(
+                instructions=normalized_instructions,
+                history=history,
+                user_input=resume_text,
+                request_metadata=normalized_request_metadata,
+                runner=runner,
+                runtime_type=runtime_type,
+                model_metadata=resolved_model_metadata,
+            ),
         )
 
     normalized_messages = _normalized_conversation_messages(messages)
@@ -397,6 +415,15 @@ async def build_run_input(
         ),
         run_mode=caller_run_mode,
         run_trigger=caller_run_trigger,
+        shadow_context_plan=build_shadow_context_plan_dict(
+            instructions=normalized_instructions,
+            history=history,
+            user_input=user_input,
+            request_metadata=normalized_request_metadata,
+            runner=runner,
+            runtime_type=runtime_type,
+            model_metadata=resolved_model_metadata,
+        ),
     )
 
 

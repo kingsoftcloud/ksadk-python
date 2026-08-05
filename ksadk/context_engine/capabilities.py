@@ -1,0 +1,293 @@
+"""Runner Context Capabilities —— Prompt/Context/Memory 的 ownership 合同。
+
+对齐 ``docs/prompt-context-memory-implementation.md`` 第 6 节。能力声明是可执行合同，
+不是展示标签：Runtime 按 ``ContextCapabilities`` 决定是否编译/投影 Prompt、是否注入
+History/Memory、是否执行 compaction。
+
+本模块只落地数据模型与已知 Runner 的显式默认值；任何行为型接入（实际改写 Runner 输入、
+按 capability 切换 ambient 注入、双阈值等）都在后续 PR，第一个 PR 仅做声明与 shadow 观测，
+不改线上行为。未知自定义 Runner 默认采用最保守的 ``framework_assisted + opaque``。
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Literal
+
+ContextIntegrationMode = Literal["ksadk_hosted", "framework_assisted", "native_runtime"]
+"""KsADK 对最终模型输入的控制程度。
+
+- ``ksadk_hosted``: KsADK 负责编译 Prompt、候选选择、预算、compaction 和最终输入组装。
+- ``framework_assisted``: KsADK 提供统一 CompiledPrompt/Policy/Memory/观测，框架负责
+  投影到原生 instruction/state/store。
+- ``native_runtime``: KsADK 只传递版本化 instructions、平台边界和外部 Memory hook，
+  原生 Runtime 持有 Agent loop/history/compaction/最终输入。
+"""
+
+ContextOwner = Literal["ksadk", "framework", "native"]
+"""某一关注点（prompt/history/compaction/memory/skill）的实际所有者。"""
+
+ContextAccuracy = Literal["exact", "runtime_reported", "estimated", "opaque"]
+"""Context 观测精度等级（方案 6.3）。
+
+- ``exact``: KsADK 生成最终模型输入并用匹配 tokenizer 计算。
+- ``runtime_reported``: 原生 Runtime/模型返回了实际 usage 或 context 统计。
+- ``estimated``: KsADK 只能对提交给 Runner 的内容做启发式估算。
+- ``opaque``: Runner 不暴露最终输入或可靠 usage，只记录来源/hash/能力缺口。
+"""
+
+
+@dataclass(frozen=True)
+class ContextCapabilities:
+    """单个 Runner 的 Context 接入能力与 ownership 声明。
+
+    必须由 Runner 实现或由 KsADK 为已知 Runner 提供显式默认值，不能仅靠 ``hasattr``
+    猜测。若实际 usage 或事件证明声明不一致，应记录 ``context.capability_mismatch``
+    并停止对该 Runner 启用行为型 Context Engine（该熔断逻辑留后续 PR）。
+    """
+
+    integration_mode: ContextIntegrationMode
+    prompt_owner: ContextOwner
+    history_owner: ContextOwner
+    compaction_owner: ContextOwner
+    memory_owner: ContextOwner
+    skill_owner: ContextOwner
+    # Runner 投影 Prompt 时实际使用的目标 SDK 承载形式，例如
+    # ``{"system_message","state"}`` / ``{"instruction","session","memory_service"}`` /
+    # ``{"base_instructions","thread"}``。空集表示未知/不投影。
+    prompt_projection: frozenset[str]
+    memory_read: bool
+    memory_write: bool
+    core_memory: bool
+    native_skills: bool
+    token_accounting: ContextAccuracy
+    supports_context_snapshot: bool
+
+
+def DEFAULT_CONTEXT_CAPABILITIES() -> ContextCapabilities:
+    """未知自定义 Runner 的保守合同：framework_assisted + opaque，不启用任何行为型接入。"""
+    return ContextCapabilities(
+        integration_mode="framework_assisted",
+        prompt_owner="framework",
+        history_owner="framework",
+        compaction_owner="framework",
+        memory_owner="framework",
+        skill_owner="framework",
+        prompt_projection=frozenset(),
+        memory_read=False,
+        memory_write=False,
+        core_memory=False,
+        native_skills=False,
+        token_accounting="opaque",
+        supports_context_snapshot=False,
+    )
+
+
+def adk_context_capabilities() -> ContextCapabilities:
+    """Google ADK：framework_assisted。
+
+    instructions 拼进 new_message 文本 + agent.instruction 加载时改写；history 由 ADK
+    SessionService 拥有（忽略 payload.history）；STM/LTM 作为 memory_service 注入 +
+    load/save_memory 工具；skills 完整注入（manifest 仅 name/desc/version）；无 compaction。
+    """
+    return ContextCapabilities(
+        integration_mode="framework_assisted",
+        prompt_owner="framework",
+        history_owner="framework",
+        compaction_owner="framework",
+        memory_owner="framework",
+        skill_owner="framework",
+        prompt_projection=frozenset({"instruction", "session", "memory_service"}),
+        memory_read=True,
+        memory_write=True,
+        core_memory=False,
+        native_skills=True,
+        token_accounting="runtime_reported",
+        supports_context_snapshot=True,
+    )
+
+
+def langgraph_context_capabilities() -> ContextCapabilities:
+    """LangGraph：framework_assisted，KsADK 侧参与 prompt/history/compaction 投影。
+
+    instructions→SystemMessage（或 ``ksadk_prepare_state`` hook）；history 由 runner
+    组装（history dict→HumanMessage/AIMessage）；memory=checkpointer + memory_context
+    payload 字段；无 skills；无 compaction。
+    """
+    return ContextCapabilities(
+        integration_mode="framework_assisted",
+        prompt_owner="ksadk",
+        history_owner="ksadk",
+        compaction_owner="ksadk",
+        memory_owner="framework",
+        skill_owner="framework",
+        prompt_projection=frozenset({"system_message", "state"}),
+        memory_read=True,
+        memory_write=False,
+        core_memory=False,
+        native_skills=False,
+        token_accounting="estimated",
+        supports_context_snapshot=True,
+    )
+
+
+def langchain_context_capabilities() -> ContextCapabilities:
+    """LangChain：framework_assisted，继承 LangGraph 的 prompt 投影但 history/compaction 交框架。"""
+    return ContextCapabilities(
+        integration_mode="framework_assisted",
+        prompt_owner="ksadk",
+        history_owner="framework",
+        compaction_owner="framework",
+        memory_owner="framework",
+        skill_owner="framework",
+        prompt_projection=frozenset({"system_message", "state"}),
+        memory_read=False,
+        memory_write=False,
+        core_memory=False,
+        native_skills=False,
+        token_accounting="estimated",
+        supports_context_snapshot=False,
+    )
+
+
+def deepagents_context_capabilities() -> ContextCapabilities:
+    """DeepAgents：framework_assisted，LangGraph 系编译图，history/compaction 交框架。"""
+    return ContextCapabilities(
+        integration_mode="framework_assisted",
+        prompt_owner="ksadk",
+        history_owner="framework",
+        compaction_owner="framework",
+        memory_owner="framework",
+        skill_owner="framework",
+        prompt_projection=frozenset({"system_message", "state"}),
+        memory_read=False,
+        memory_write=False,
+        core_memory=False,
+        native_skills=False,
+        token_accounting="estimated",
+        supports_context_snapshot=False,
+    )
+
+
+def codex_context_capabilities() -> ContextCapabilities:
+    """Codex：native_runtime。
+
+    base_instructions 移交后端 thread；history 由后端 thread_id 拥有；无 memory hook；
+    无 skills 暴露；compaction 后端拥有。KsADK 不重复注入完整 Transcript、不运行第二套
+    compaction。
+    """
+    return ContextCapabilities(
+        integration_mode="native_runtime",
+        prompt_owner="native",
+        history_owner="native",
+        compaction_owner="native",
+        memory_owner="native",
+        skill_owner="native",
+        prompt_projection=frozenset({"base_instructions", "thread"}),
+        memory_read=False,
+        memory_write=False,
+        core_memory=False,
+        native_skills=True,
+        token_accounting="runtime_reported",
+        supports_context_snapshot=True,
+    )
+
+
+# detection_result.type.value → 已知 Runner capability 工厂。显式枚举，不靠 hasattr。
+_KNOWN_RUNNER_CAPABILITIES: dict[str, Any] = {
+    "adk": adk_context_capabilities,
+    "langgraph": langgraph_context_capabilities,
+    "langchain": langchain_context_capabilities,
+    "deepagents": deepagents_context_capabilities,
+    "codex": codex_context_capabilities,
+}
+
+
+def _runner_type_value(runner: Any) -> str:
+    """读取 runner.detection_result.type.value，兼容缺失字段。返回小写字符串。"""
+    detection_result = getattr(runner, "detection_result", None)
+    if detection_result is None:
+        return ""
+    detection_type = getattr(detection_result, "type", None)
+    if detection_type is None:
+        return ""
+    value = getattr(detection_type, "value", detection_type)
+    return str(value or "").strip().lower()
+
+
+def _capabilities_for_detection_type(value: str) -> ContextCapabilities:
+    """按 detection_result.type.value 显式分派已知 Runner capability，未知走 DEFAULT。
+
+    纯 registry 查找，不调用 runner 的 ``describe_context_capabilities``，因此无递归风险：
+    ``BaseRunner.describe_context_capabilities`` 默认实现直接走本函数。
+    """
+    factory = _KNOWN_RUNNER_CAPABILITIES.get(value)
+    if factory is not None:
+        return factory()
+    return DEFAULT_CONTEXT_CAPABILITIES()
+
+
+def capabilities_for_runtime_type(runtime_type: str | None) -> ContextCapabilities:
+    """按 ``runtime_type``（平台边界 ``BaseRuntime.runtime_type``）显式分派 capability。
+
+    对 framework runner，``runtime_type`` 与 ``detection_result.type.value`` 一致
+    （adk/langgraph/langchain/deepagents/codex），故 canonical conversation execution
+    路径在 ``build_run_input`` 阶段（尚未拿到 adapter/runner 实例）也能取得正确 ownership，
+    不落成默认 opaque。未知 runtime_type 走 DEFAULT。
+    """
+    normalized = str(runtime_type or "").strip().lower()
+    return _capabilities_for_detection_type(normalized)
+
+
+_CAPABILITY_HASH_FIELDS: tuple[str, ...] = (
+    "integration_mode",
+    "prompt_owner",
+    "history_owner",
+    "compaction_owner",
+    "memory_owner",
+    "skill_owner",
+    "memory_read",
+    "memory_write",
+    "core_memory",
+    "native_skills",
+    "token_accounting",
+    "supports_context_snapshot",
+)
+
+
+def capability_hash(caps: ContextCapabilities) -> str:
+    """对 capability 稳定字段做 SHA-256，供 Plan/Trace 记录 ``capability_hash``。
+
+    ``prompt_projection`` 是 frozenset，按排序后元素拼接以保证确定性。不含 ``metadata``。
+    """
+    import hashlib
+    import json
+
+    payload = {field: getattr(caps, field) for field in _CAPABILITY_HASH_FIELDS}
+    projection = sorted(getattr(caps, "prompt_projection", frozenset()) or [])
+    payload["prompt_projection"] = projection
+    serialized = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    return "sha256:" + hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def capabilities_for_runner(runner: Any | None) -> ContextCapabilities:
+    """统一 lookup：优先 runner 自身的 ``describe_context_capabilities()``，否则按 detection
+    type 显式分派，未知走 DEFAULT。
+
+    不依赖 ``hasattr`` 猜测 ownership（方案 6.1）。``BaseRunner`` 的默认 ``describe_context_capabilities``
+    走 ``_capabilities_for_detection_type``，故本函数对 BaseRunner 子类不会递归。第一个 PR
+    不被任何行为型消费方调用，仅供 shadow plan / conformance 测试使用。
+    """
+    if runner is None:
+        return DEFAULT_CONTEXT_CAPABILITIES()
+
+    describe = getattr(runner, "describe_context_capabilities", None)
+    if callable(describe):
+        try:
+            caps = describe()
+        except Exception:
+            caps = None
+        if isinstance(caps, ContextCapabilities):
+            return caps
+
+    return _capabilities_for_detection_type(_runner_type_value(runner))

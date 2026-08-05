@@ -83,6 +83,7 @@ async def prepare_runtime_start(request: StartRequest, runner: Any) -> PreparedR
             request_metadata=request_metadata,
             custom_metadata=conversation.custom_metadata,
             invocation_id=str(request.metadata.get("invocation_id") or "") or None,
+            runner=runner,
         )
     _inject_runner_deferred_tools_for_request(runner, prepared)
     ambient_contexts = _build_runner_ambient_contexts(

@@ -55,6 +55,10 @@ class PreparedConversationTurn:
     request_history: list[dict[str, str]] = field(default_factory=list)
     request_responses_history: list[dict[str, Any]] = field(default_factory=list)
     responses_history: list[dict[str, Any]] = field(default_factory=list)
+    # shadow ContextPlan 的 plain dict 投影（P0 可观测基线）。
+    # 仅用启发式 tokenizer 按 kind 累加 tokens_by_kind + 标注 ownership/精度，
+    # 不进任何决策路径、不进 runner payload。None 表示尚未生成（resume 旁路也会填最小值）。
+    shadow_context_plan: dict[str, Any] | None = None
 
 
 @dataclass
