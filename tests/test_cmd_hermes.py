@@ -402,18 +402,27 @@ def test_hermes_exec_accepts_readonly_subcommand_and_uses_remote_terminal(monkey
     assert captured["argv"] == ["status"]
 
 
-def test_hermes_exec_rejects_mutating_subcommand_before_remote_call(monkeypatch):
+def test_hermes_exec_passthrough_mutating_subcommand_to_remote(monkeypatch):
     runner = CliRunner()
+    captured = {}
 
-    async def _forbidden_exec(**_kwargs):
-        raise AssertionError("remote terminal should not be called")
+    async def _fake_exec(**kwargs):
+        captured.update(kwargs)
 
-    monkeypatch.setattr(cmd_hermes, "run_hermes_terminal_session", _forbidden_exec)
+    monkeypatch.setattr(cmd_hermes, "run_hermes_terminal_session", _fake_exec)
+    monkeypatch.setattr(
+        cmd_hermes,
+        "_resolve_hermes_access",
+        lambda **_kwargs: {
+            "endpoint": "https://hermes.example.com",
+            "api_key": "ak-hermes",
+        },
+    )
 
     result = runner.invoke(cmd_hermes.hermes, ["exec", "ar-hermes-1", "--", "gateway", "restart"])
 
-    assert result.exit_code != 0
-    assert "不允许" in result.output or "not allowed" in result.output
+    assert result.exit_code == 0, result.output
+    assert captured["argv"] == ["gateway", "restart"]
 
 
 def test_hermes_exec_exits_cleanly_on_keyboard_interrupt(monkeypatch):
@@ -1250,6 +1259,156 @@ def test_hermes_deploy_normalizes_ui_locale_from_lang(tmp_path: Path, monkeypatc
         item["Key"] == "HERMES_UI_LOCALE" and item["Value"] == "en"
         for item in _FakeHermesClient.create_payload["env_vars"]
     )
+
+
+def _hermes_deploy_env_test_setup(tmp_path: Path, monkeypatch) -> None:
+    runner = CliRunner()
+    _FakeHermesClient.create_payload = None
+    _FakeHermesClient.update_payload = None
+    _FakeHermesClient.updated_agent_id = None
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cmd_hermes, "_get_hermes_global_env", lambda: {}, raising=False)
+    monkeypatch.delenv("HERMES_UI_LOCALE", raising=False)
+    monkeypatch.delenv("LANG", raising=False)
+    monkeypatch.delenv("LC_ALL", raising=False)
+    for _k in ("FOO", "BAR", "BAZ"):
+        monkeypatch.delenv(_k, raising=False)
+    monkeypatch.setattr(cmd_hermes, "AgentEngineClient", _FakeHermesClient)
+    return runner
+
+
+def test_hermes_deploy_env_flag_forwards_extra_env_to_create_payload(tmp_path: Path, monkeypatch):
+    runner = _hermes_deploy_env_test_setup(tmp_path, monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://model.example.com/v1")
+    monkeypatch.setenv("OPENAI_MODEL_NAME", "glm-test")
+
+    result = runner.invoke(
+        cmd_hermes.hermes,
+        ["deploy", "--name", "demo-hermes", "--image", "registry/hermes:test", "--env", "FOO=bar"],
+    )
+
+    assert result.exit_code == 0, result.output
+    env_vars = {
+        item["Key"]: item["Value"] for item in _FakeHermesClient.create_payload["env_vars"]
+    }
+    assert env_vars.get("FOO") == "bar"
+
+
+def test_hermes_deploy_env_flag_forces_env_vars_in_update(tmp_path: Path, monkeypatch):
+    runner = _hermes_deploy_env_test_setup(tmp_path, monkeypatch)
+    (tmp_path / ".agentengine.state").write_text(
+        "type: hermes\nframework: hermes\n"
+        "agent_id: ar-hermes-existing\nname: demo-hermes\n"
+        "endpoint: https://old.example.com\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://model.example.com/v1")
+    monkeypatch.setenv("OPENAI_MODEL_NAME", "glm-test")
+
+    result = runner.invoke(
+        cmd_hermes.hermes,
+        ["deploy", "--image", "registry/hermes:new", "--env", "FOO=bar"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _FakeHermesClient.create_payload is None
+    assert "env_vars" in _FakeHermesClient.update_payload
+    env_vars = {item["Key"]: item["Value"] for item in _FakeHermesClient.update_payload["env_vars"]}
+    assert env_vars.get("FOO") == "bar"
+
+
+def test_hermes_deploy_env_file_loads_extra_env(tmp_path: Path, monkeypatch):
+    runner = _hermes_deploy_env_test_setup(tmp_path, monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://model.example.com/v1")
+    monkeypatch.setenv("OPENAI_MODEL_NAME", "glm-test")
+    (tmp_path / "custom.env").write_text("FOO=from-file\nBAR=baz\n", encoding="utf-8")
+
+    result = runner.invoke(
+        cmd_hermes.hermes,
+        ["deploy", "--name", "demo-hermes", "--image", "registry/hermes:test", "--env-file", "custom.env"],
+    )
+
+    assert result.exit_code == 0, result.output
+    env_vars = {
+        item["Key"]: item["Value"] for item in _FakeHermesClient.create_payload["env_vars"]
+    }
+    assert env_vars.get("FOO") == "from-file"
+    assert env_vars.get("BAR") == "baz"
+
+
+def test_hermes_deploy_env_flag_overrides_shell(tmp_path: Path, monkeypatch):
+    runner = _hermes_deploy_env_test_setup(tmp_path, monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://model.example.com/v1")
+    monkeypatch.setenv("OPENAI_MODEL_NAME", "glm-test")
+    monkeypatch.setenv("FOO", "shell-value")
+
+    result = runner.invoke(
+        cmd_hermes.hermes,
+        ["deploy", "--name", "demo-hermes", "--image", "registry/hermes:test", "--env", "FOO=cli-value"],
+    )
+
+    assert result.exit_code == 0, result.output
+    env_vars = {
+        item["Key"]: item["Value"] for item in _FakeHermesClient.create_payload["env_vars"]
+    }
+    assert env_vars.get("FOO") == "cli-value"
+
+
+def test_hermes_deploy_auto_dotenv_does_not_override_shell(tmp_path: Path, monkeypatch):
+    runner = _hermes_deploy_env_test_setup(tmp_path, monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://model.example.com/v1")
+    monkeypatch.setenv("OPENAI_MODEL_NAME", "glm-test")
+    monkeypatch.setenv("FOO", "shell-value")
+    (tmp_path / ".env").write_text("FOO=from-dotenv\n", encoding="utf-8")
+
+    result = runner.invoke(
+        cmd_hermes.hermes,
+        ["deploy", "--name", "demo-hermes", "--image", "registry/hermes:test"],
+    )
+
+    assert result.exit_code == 0, result.output
+    env_vars = {
+        item["Key"]: item["Value"] for item in _FakeHermesClient.create_payload["env_vars"]
+    }
+    assert "FOO" not in env_vars
+
+
+def test_hermes_deploy_default_dotenv_auto_loaded_with_only_image(tmp_path: Path, monkeypatch):
+    runner = _hermes_deploy_env_test_setup(tmp_path, monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://model.example.com/v1")
+    monkeypatch.setenv("OPENAI_MODEL_NAME", "glm-test")
+    (tmp_path / ".env").write_text("HERMES_UI_LOCALE=zh\n", encoding="utf-8")
+
+    result = runner.invoke(
+        cmd_hermes.hermes,
+        ["deploy", "--name", "demo-hermes", "--image", "registry/hermes:test"],
+    )
+
+    assert result.exit_code == 0, result.output
+    env_vars = {
+        item["Key"]: item["Value"] for item in _FakeHermesClient.create_payload["env_vars"]
+    }
+    assert env_vars.get("HERMES_UI_LOCALE") == "zh"
+
+
+def test_hermes_deploy_explicit_env_file_missing_raises(tmp_path: Path, monkeypatch):
+    runner = _hermes_deploy_env_test_setup(tmp_path, monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://model.example.com/v1")
+    monkeypatch.setenv("OPENAI_MODEL_NAME", "glm-test")
+
+    result = runner.invoke(
+        cmd_hermes.hermes,
+        ["deploy", "--name", "demo-hermes", "--image", "registry/hermes:test", "--env-file", "missing.env"],
+    )
+
+    assert result.exit_code != 0
 
 
 def test_hermes_deploy_prefers_bootstrap_default_image(tmp_path: Path, monkeypatch):

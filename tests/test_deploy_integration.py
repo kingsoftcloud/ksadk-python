@@ -866,7 +866,6 @@ class TestDeployLogic:
         temp_project_dir,
     ):
         provider = ServerlessProvider()
-        (temp_project_dir / ".env").write_text("TZ=UTC\n", encoding="utf-8")
 
         with (
             patch.dict(os.environ, {"TZ": "Asia/Shanghai"}, clear=True),
@@ -877,12 +876,12 @@ class TestDeployLogic:
         ):
             env_vars, _, _ = provider._load_deploy_env_vars(
                 temp_project_dir,
-                {"CUSTOM_RUNTIME_FLAG": "enabled"},
+                {"TZ": "UTC", "CUSTOM_RUNTIME_FLAG": "enabled"},
             )
 
         assert env_vars["TZ"] == "UTC"
 
-    def test_deploy_project_env_overrides_process_env_allowlist(
+    def test_deploy_shell_env_overrides_project_env(
         self,
         temp_project_dir,
     ):
@@ -908,8 +907,8 @@ class TestDeployLogic:
         ):
             env_vars, _, _ = provider._load_deploy_env_vars(temp_project_dir)
 
-        assert env_vars["OPENAI_API_KEY"] == "project-key"
-        assert env_vars["OPENAI_MODEL_NAME"] == "project-model"
+        assert env_vars["OPENAI_API_KEY"] == "shell-key"
+        assert env_vars["OPENAI_MODEL_NAME"] == "shell-model"
 
     @pytest.mark.asyncio
     async def test_deploy_forwards_network_configuration_to_create_agent(
