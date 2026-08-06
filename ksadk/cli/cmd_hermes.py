@@ -1162,6 +1162,7 @@ def exec_hermes(
                 insecure=insecure,
                 mode="exec",
                 argv=validated_argv,
+                exec_argv_validator=_passthrough_exec_argv,
             )
         )
     except (KeyboardInterrupt, asyncio.CancelledError):
