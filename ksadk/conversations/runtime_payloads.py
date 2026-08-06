@@ -59,6 +59,10 @@ class PreparedConversationTurn:
     # 仅用启发式 tokenizer 按 kind 累加 tokens_by_kind + 标注 ownership/精度，
     # 不进任何决策路径、不进 runner payload。None 表示尚未生成（resume 旁路也会填最小值）。
     shadow_context_plan: dict[str, Any] | None = None
+    # PR A：真实 CompiledPrompt 的 plain dict 投影（agent_system/agent_task 非空时由
+    # ResolvedPromptSources 编译）。仅用于 hash/trace/future projection，不进 Runner payload。
+    # None=instructions-only 回退（canonical 路径无 agent_system/agent_task，或 resume 旁路）。
+    compiled_prompt: dict[str, Any] | None = None
 
 
 @dataclass

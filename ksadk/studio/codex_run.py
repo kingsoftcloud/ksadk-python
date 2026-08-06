@@ -88,6 +88,11 @@ class CodexRunSpecResolver:
             launch_config["env"] = runtime_env
         request_config: dict[str, Any] = {
             "base_instructions": manifest.prompt,
+            # Codex manifest already stores the merged system/task prompt. Keep
+            # an explicit source projection for PCM tracing without changing
+            # the native runner input.
+            "agent_system": manifest.prompt,
+            "agent_task": "",
             "cwd": str(project_dir),
             "skills": skills,
             "sandbox_read_only": sandbox == "read-only",

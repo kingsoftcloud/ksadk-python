@@ -67,6 +67,10 @@ class FrameworkRunSpecResolver:
         instructions = resolved.get("instructions") if isinstance(resolved, dict) else {}
         request_config = {
             "base_instructions": str((instructions or {}).get("system") or ""),
+            # Preserve system/task as separate PCM sources while keeping the
+            # framework runner's existing base_instructions projection.
+            "agent_system": str((instructions or {}).get("system") or ""),
+            "agent_task": str((instructions or {}).get("task") or ""),
             "entry_point": detection.entry_point,
             "agent_variable": detection.agent_variable,
         }

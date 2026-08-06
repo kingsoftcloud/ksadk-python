@@ -143,6 +143,7 @@ def build_shadow_context_plan_dict(
     runner: Any | None = None,
     runtime_type: str | None = None,
     model_metadata: Mapping[str, Any] | None = None,
+    prompt_shadow: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """构造 shadow ContextPlan 的 plain dict 投影。
 
@@ -150,6 +151,11 @@ def build_shadow_context_plan_dict(
     解析顺序：``runner``（adapter/runner 实例，含 RuntimeAdapter）→ ``runtime_type``
     （canonical conversation execution 路径，build_run_input 阶段尚未拿到 adapter）→ DEFAULT。
     canonical 路径因此不再落成默认 opaque（方案 6.1 / ADR-009）。
+
+    ``prompt_shadow``：调用方可传入预编译的真实 CompiledPrompt dict（PR A，含 agent_system/
+    agent_task 的稳定 section）。为 None 时回退到 ``compile_shadow_prompt_dict(instructions)``
+    （仅 request_instructions volatile）。传入真实 dict 时，``prompt_*`` 键全部来自真实编译，
+    ``stable_prefix_hash`` 非空（stable section 进了编译）。
     """
     counter = get_default_token_counter()
     tokens_by_kind = _empty_tokens_by_kind()
@@ -168,7 +174,9 @@ def build_shadow_context_plan_dict(
 
     caps, resolved_runtime_type = _resolve_caps(runner=runner, runtime_type=runtime_type)
     planned = sum(tokens_by_kind.values())
-    prompt_shadow = compile_shadow_prompt_dict(instructions)
+    prompt_shadow_dict = (
+        prompt_shadow if prompt_shadow is not None else compile_shadow_prompt_dict(instructions)
+    )
 
     return {
         "plan_id": f"ctxplan_{uuid.uuid4().hex[:16]}",
@@ -180,7 +188,7 @@ def build_shadow_context_plan_dict(
         "planned_input_tokens": planned,
         "projected_input_tokens": None,
         "runtime_reported_input_tokens": None,
-        "stable_prefix_hash": prompt_shadow["prompt_stable_prefix_hash"],
+        "stable_prefix_hash": prompt_shadow_dict["prompt_stable_prefix_hash"],
         "projection_id": None,
         "contributor_status": {},
         # capability 摘要，便于 Trace 单独解释 ownership（不替代 conformance 测试）。
@@ -193,8 +201,9 @@ def build_shadow_context_plan_dict(
         # 可比对 adapter 声明一致性（capability mismatch 检测留后续 PR）。
         "runtime_type": resolved_runtime_type,
         "capability_hash": capability_hash(caps),
-        # PR2：shadow CompiledPrompt hash/section 统计，供 cache-break 诊断与可观测。
-        **prompt_shadow,
+        # PR2/PR A：shadow CompiledPrompt hash/section 统计，供 cache-break 诊断与可观测。
+        # prompt_shadow_dict 来自真实编译（PR A 含 agent_system/agent_task）或 instructions-only 回退。
+        **prompt_shadow_dict,
     }
 
 

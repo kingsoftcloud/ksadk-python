@@ -93,6 +93,8 @@ async def build_run_input(
     run_mode: str = RUN_MODE_FOREGROUND,
     runner: Any | None = None,
     runtime_type: str | None = None,
+    agent_system: str = "",
+    agent_task: str = "",
 ) -> PreparedConversationTurn:
     """构建一次 turn 的标准运行输入，并在进入模型前做上下文投影/压缩。
 
@@ -129,6 +131,26 @@ async def build_run_input(
         **model_policy_options_for_model(policy_model or ""),
     }
     normalized_instructions = str(instructions or "").strip()
+
+    # PR A：当 agent_system/agent_task 非空时，编译真实 CompiledPrompt（含 stable section）。
+    # 仅用于 hash/trace/future projection，不改 Runner 输入（payload["instructions"] 不变）。
+    # platform_policy_source 默认 EnvPlatformPolicySource（env 未设→不产 platform_safety）。
+    compiled_prompt: dict[str, Any] | None = None
+    if (agent_system or "").strip() or (agent_task or "").strip():
+        from ksadk.prompts.resolved import (
+            ResolvedPromptSources,
+            compile_resolved_prompt_dict,
+            get_default_platform_policy_source,
+        )
+
+        compiled_prompt = compile_resolved_prompt_dict(
+            ResolvedPromptSources(
+                agent_system=agent_system,
+                agent_task=agent_task,
+                request_instructions=normalized_instructions,
+                platform_policy_source=get_default_platform_policy_source(),
+            )
+        )
 
     if resume_input is not None:
         if not session_id:
@@ -193,6 +215,7 @@ async def build_run_input(
                 shadow_context_plan=minimal_shadow_context_plan_dict(
                     runner=runner, runtime_type=runtime_type
                 ),
+                compiled_prompt=None,
             )
 
         is_approval_resume = _is_approval_resume_input(normalized_resume_input)
@@ -297,6 +320,7 @@ async def build_run_input(
                 runtime_type=runtime_type,
                 model_metadata=resolved_model_metadata,
             ),
+            compiled_prompt=None,
         )
 
     normalized_messages = _normalized_conversation_messages(messages)
@@ -423,7 +447,9 @@ async def build_run_input(
             runner=runner,
             runtime_type=runtime_type,
             model_metadata=resolved_model_metadata,
+            prompt_shadow=compiled_prompt,
         ),
+        compiled_prompt=compiled_prompt,
     )
 
 

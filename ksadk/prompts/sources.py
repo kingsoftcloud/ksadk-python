@@ -28,12 +28,20 @@ DEFAULT_RULE_FILE_MAX_TOKENS = 4000
 DEFAULT_RULE_FILES_MAX_TOKENS = 12000
 
 
-def platform_safety_section(*, source: str = "platform") -> PromptSection:
-    """平台安全分区：稳定、protected、不可被 request_instructions 覆盖。"""
+def platform_safety_section(
+    *, content: str | None = None, source: str = "platform"
+) -> PromptSection:
+    """平台安全分区：稳定、protected、不可被 request_instructions 覆盖。
+
+    ``content=None`` 时回退到 ``PLATFORM_SAFETY_TEXT``（仅测试/shadow fixture）。
+    生产 platform safety 必须由可信 ``PlatformPolicySource`` 提供内容（见
+    ``ksadk.prompts.resolved``），未提供时不产该 section。
+    """
+    text = content if content is not None else PLATFORM_SAFETY_TEXT
     return PromptSection(
         section_id="platform_safety",
         kind="platform_safety",
-        content=PLATFORM_SAFETY_TEXT,
+        content=text,
         source=source,
         priority=10,
         trust_level="platform",

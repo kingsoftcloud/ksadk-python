@@ -44,6 +44,7 @@ from ksadk.conversations.runtime_observability import (
     _set_conversation_span_attributes,
     _set_conversation_usage_attributes,
     _set_prompt_cache_attributes,
+    _set_prompt_source_attributes,
     _set_span_attribute,
     _span_current_context,
     _span_feedback_metadata,
@@ -131,6 +132,8 @@ async def _iter_conversation_turn_events(
     invocation_id: Optional[str] = None,
     session_service_provider: Callable[[], Any] | None = None,
     run_mode: str = RUN_MODE_FOREGROUND,
+    agent_system: str = "",
+    agent_task: str = "",
 ) -> AsyncIterator[dict[str, Any]]:
     """Internal semantic event stream shared by protocol serializers."""
     provider = session_service_provider or resolve_session_service
@@ -187,6 +190,8 @@ async def _iter_conversation_turn_events(
             session_service_provider=provider,
             run_mode=entry_run_mode,
             runner=runner,
+            agent_system=agent_system,
+            agent_task=agent_task,
         )
         # prepared 之后的 run_status 写入复用 prepared 的 mode/trigger
         run_mode = prepared.run_mode
@@ -931,6 +936,7 @@ async def _iter_conversation_turn_events(
             plan=prepared.shadow_context_plan,
             usage=assistant_metadata.get("usage"),
         )
+        _set_prompt_source_attributes(span, getattr(prepared, "compiled_prompt", None))
         _record_baseline_turn(
             prepared=prepared,
             model=model,

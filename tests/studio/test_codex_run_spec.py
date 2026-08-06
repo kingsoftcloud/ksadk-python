@@ -46,6 +46,8 @@ def test_resolver_builds_canonical_codex_launch_context(tmp_path: Path) -> None:
     assert spec.model == "kimi-k2-code"
     assert spec.request_config == {
         "base_instructions": _manifest().prompt,
+        "agent_system": _manifest().prompt,
+        "agent_task": "",
         "cwd": str(tmp_path),
         "skills": [],
         "sandbox": "read-only",

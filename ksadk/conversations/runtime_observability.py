@@ -453,3 +453,25 @@ def _set_prompt_cache_attributes(
     # 记录本轮稳定前缀供下一轮诊断（best-effort，进程内）。
     if session_id and stable_prefix_hash:
         registry.record(session_id, stable_prefix_hash)
+
+
+def _set_prompt_source_attributes(span: Any | None, compiled_prompt: Any | None) -> None:
+    """PR A：记录真实 CompiledPrompt 的 source hash/version/section count 到 span。
+
+    ``compiled_prompt`` 为 ``PreparedConversationTurn.compiled_prompt``（plain dict，agent_system/
+    agent_task 非空时由 ResolvedPromptSources 编译）。None 时 no-op。只记 hash/version/count，
+    不记 Prompt 正文（安全要求）。
+    """
+    if span is None or not isinstance(compiled_prompt, Mapping):
+        return
+    section_hashes = compiled_prompt.get("prompt_section_hashes")
+    if isinstance(section_hashes, Mapping) and section_hashes:
+        _set_span_attribute(span, "prompt.source.agent_system_hash", section_hashes.get("agent_identity"))
+        _set_span_attribute(span, "prompt.source.agent_task_hash", section_hashes.get("agent_policy"))
+        _set_span_attribute(span, "prompt.source.section_count", len(section_hashes))
+    _set_span_attribute(
+        span, "prompt.source.platform_policy_version", compiled_prompt.get("prompt_platform_policy_version")
+    )
+    _set_span_attribute(
+        span, "prompt.source.resolved_sources_version", compiled_prompt.get("prompt_resolved_sources_version")
+    )

@@ -100,17 +100,23 @@ def _build_runner(llm: Any) -> Any:
 REAL_CASES = [
     {
         "case_id": "REAL-001",
-        "instructions": "你是助手，用中文简短回答。",
+        "agent_system": "你是 Python 升级助手，用中文简短回答。",
+        "agent_task": "默认使用 Python 3.12 和 uv。",
+        "instructions": "本次问题：用一句话介绍 Python 的 GIL。",
         "messages": [{"role": "user", "content": "用一句话介绍 Python 的 GIL。"}],
     },
     {
         "case_id": "REAL-002",
-        "instructions": "你是助手，严格遵守约束：不得修改生产配置；用 uv run 跑测试。",
+        "agent_system": "你是助手，严格遵守约束。",
+        "agent_task": "不得修改生产配置；用 uv run 跑测试。",
+        "instructions": "本次问题：分析升级方案，先不要改文件。",
         "messages": [{"role": "user", "content": "把这个项目升级到 Python 3.12 并修复测试，先分析不要改文件。"}],
     },
     {
         "case_id": "REAL-003",
-        "instructions": "你是助手。",
+        "agent_system": "你是助手。",
+        "agent_task": "",
+        "instructions": "本次问题：请重复一遍 OK。",
         "messages": [{"role": "user", "content": "请重复一遍：OK"}],
     },
 ]
@@ -128,6 +134,10 @@ async def _run_case(case: dict, runner: Any, service: Any, session_id: str) -> N
         model=os.environ.get("ANTHROPIC_MODEL", ""),
         prepare_runner=lambda _runner, _model: None,
         instructions=case["instructions"],
+        # PR A：agent_system/agent_task 进 prompt source contract（编译真实 CompiledPrompt，
+        # 含 stable section → stable_prefix_hash 非空）。不改 Runner 输入（payload instructions 不变）。
+        agent_system=case.get("agent_system", ""),
+        agent_task=case.get("agent_task", ""),
         session_service_provider=lambda: service,
     )
     print(f"  {case['case_id']}: output={result.get('output_text','')[:40]!r}")

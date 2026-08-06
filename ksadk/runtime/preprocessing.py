@@ -84,6 +84,10 @@ async def prepare_runtime_start(request: StartRequest, runner: Any) -> PreparedR
             custom_metadata=conversation.custom_metadata,
             invocation_id=str(request.metadata.get("invocation_id") or "") or None,
             runner=runner,
+            # PR A：从 request.config 提取 agent_system/agent_task（Studio resolver 注入），
+            # 编译真实 CompiledPrompt 供 hash/trace。不改 Runner 输入。
+            agent_system=str(request.config.get("agent_system") or ""),
+            agent_task=str(request.config.get("agent_task") or ""),
         )
     _inject_runner_deferred_tools_for_request(runner, prepared)
     ambient_contexts = _build_runner_ambient_contexts(
