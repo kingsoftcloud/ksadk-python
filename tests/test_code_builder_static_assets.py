@@ -35,19 +35,23 @@ def test_code_builder_packages_web_static_assets(tmp_path):
     assert any(n.endswith(".html") for n in static_files), "应包含 html 入口"
     assert any(n.endswith(".js") for n in static_files), "应包含 js 资源"
     assert any(n.endswith(".css") for n in static_files), "应包含 css 资源"
-    assert not any(n.startswith("ksadk/server/web-ui/") for n in names), (
-        "runtime 产物不应包含前端源码/node_modules"
-    )
+    assert not any(
+        n.startswith("ksadk/server/web-ui/") for n in names
+    ), "runtime 产物不应包含前端源码/node_modules"
 
 
 def test_code_builder_packages_project_custom_ui_dist(tmp_path):
     (tmp_path / "agent.py").write_text("print('ok')\n", encoding="utf-8")
     custom_dist = tmp_path / "research-ui" / "dist" / "assets"
     custom_dist.mkdir(parents=True)
-    (tmp_path / "research-ui" / "dist" / "index.html").write_text("<title>Custom UI</title>", encoding="utf-8")
+    (tmp_path / "research-ui" / "dist" / "index.html").write_text(
+        "<title>Custom UI</title>", encoding="utf-8"
+    )
     (custom_dist / "index.js").write_text("console.log('custom ui')\n", encoding="utf-8")
     (tmp_path / "research-ui" / "node_modules").mkdir(parents=True)
-    (tmp_path / "research-ui" / "node_modules" / "ignored.js").write_text("ignored\n", encoding="utf-8")
+    (tmp_path / "research-ui" / "node_modules" / "ignored.js").write_text(
+        "ignored\n", encoding="utf-8"
+    )
 
     builder = CodeBuilder(tmp_path)
     builder.build_dir.mkdir(parents=True, exist_ok=True)
@@ -93,9 +97,9 @@ def test_code_builder_packages_runtime_common_sources(tmp_path):
     with zipfile.ZipFile(zip_path) as zf:
         names = zf.namelist()
 
-    assert any(n.startswith("ksadk_runtime_common/") for n in names), (
-        "应包含 ksadk_runtime_common 共享运行时代码"
-    )
+    assert any(
+        n.startswith("ksadk_runtime_common/") for n in names
+    ), "应包含 ksadk_runtime_common 共享运行时代码"
 
 
 def test_code_builder_excludes_real_dotenv_files_but_keeps_example(tmp_path):

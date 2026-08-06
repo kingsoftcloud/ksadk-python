@@ -21,9 +21,7 @@ class BaseLongTermMemoryBackend(ABC, BaseModel):
     index: str = ""
 
     @abstractmethod
-    def save_memory(
-        self, user_id: str, event_strings: List[str], **kwargs
-    ) -> bool:
+    def save_memory(self, user_id: str, event_strings: List[str], **kwargs) -> bool:
         """保存记忆
 
         Args:
@@ -36,9 +34,7 @@ class BaseLongTermMemoryBackend(ABC, BaseModel):
         pass
 
     @abstractmethod
-    def search_memory(
-        self, user_id: str, query: str, top_k: int = 5, **kwargs
-    ) -> List[str]:
+    def search_memory(self, user_id: str, query: str, top_k: int = 5, **kwargs) -> List[str]:
         """检索记忆
 
         Args:

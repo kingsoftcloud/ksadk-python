@@ -48,7 +48,9 @@ def test_load_agent_module_supports_nested_entry_point(tmp_path: Path):
     module_name = "agent_loader_nested_pkg.agents.entry"
     _cleanup_module(module_name)
 
-    agent, module = load_agent_module(str(tmp_path), "agent_loader_nested_pkg/agents/entry.py", "root_agent")
+    agent, module = load_agent_module(
+        str(tmp_path), "agent_loader_nested_pkg/agents/entry.py", "root_agent"
+    )
 
     assert agent == "nested-root-agent"
     assert module.__name__ == module_name

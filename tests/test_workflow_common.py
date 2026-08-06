@@ -1,5 +1,5 @@
-from pathlib import Path
 import json
+from pathlib import Path
 
 from ksadk.cli.workflow_common import (
     build_workflow_local_plan,
@@ -12,39 +12,54 @@ from ksadk.cli.workflow_common import (
 
 
 def test_should_build_artifact_serverless_code_and_container():
-    assert should_build_artifact(
-        target="serverless",
-        artifact_type="Code",
-        ks3_path=None,
-        image=None,
-    ) is True
-    assert should_build_artifact(
-        target="serverless",
-        artifact_type="Code",
-        ks3_path="ks3://bucket/object.zip",
-        image=None,
-    ) is False
-    assert should_build_artifact(
-        target="serverless",
-        artifact_type="Container",
-        ks3_path=None,
-        image=None,
-    ) is True
-    assert should_build_artifact(
-        target="serverless",
-        artifact_type="Container",
-        ks3_path=None,
-        image="hub.kce.ksyun.com/demo:image",
-    ) is False
+    assert (
+        should_build_artifact(
+            target="serverless",
+            artifact_type="Code",
+            ks3_path=None,
+            image=None,
+        )
+        is True
+    )
+    assert (
+        should_build_artifact(
+            target="serverless",
+            artifact_type="Code",
+            ks3_path="ks3://bucket/object.zip",
+            image=None,
+        )
+        is False
+    )
+    assert (
+        should_build_artifact(
+            target="serverless",
+            artifact_type="Container",
+            ks3_path=None,
+            image=None,
+        )
+        is True
+    )
+    assert (
+        should_build_artifact(
+            target="serverless",
+            artifact_type="Container",
+            ks3_path=None,
+            image="hub.kce.ksyun.com/demo:image",
+        )
+        is False
+    )
 
 
 def test_should_build_artifact_non_serverless_never_builds():
-    assert should_build_artifact(
-        target="kce",
-        artifact_type="Code",
-        ks3_path=None,
-        image=None,
-    ) is False
+    assert (
+        should_build_artifact(
+            target="kce",
+            artifact_type="Code",
+            ks3_path=None,
+            image=None,
+        )
+        is False
+    )
 
 
 def test_plan_artifact_build_no_cache_behaviors():
@@ -112,8 +127,14 @@ def test_load_cached_artifact_reference_reads_code_and_container_metadata(tmp_pa
         encoding="utf-8",
     )
 
-    assert load_cached_artifact_reference(tmp_path, "Code") == "ks3://bucket/agents/demo-agent/code.zip"
-    assert load_cached_artifact_reference(tmp_path, "Container") == "hub.kce.ksyun.com/demo/demo-agent:latest"
+    assert (
+        load_cached_artifact_reference(tmp_path, "Code")
+        == "ks3://bucket/agents/demo-agent/code.zip"
+    )
+    assert (
+        load_cached_artifact_reference(tmp_path, "Container")
+        == "hub.kce.ksyun.com/demo/demo-agent:latest"
+    )
 
 
 def test_resolve_artifact_build_plan_prefers_cached_then_predicted_dry_run():
@@ -164,7 +185,10 @@ def test_resolve_artifact_build_plan_prefers_cached_then_predicted_dry_run():
     assert predicted.will_publish is False
     assert predicted.source == "planned_build"
     assert predicted.reference_is_predicted is True
-    assert predicted.reference == "ks3://agentengine-2000003485-cn-beijing-6/agents/demo-agent/code_<dry-run>.zip"
+    assert (
+        predicted.reference
+        == "ks3://agentengine-2000003485-cn-beijing-6/agents/demo-agent/code_<dry-run>.zip"
+    )
 
 
 def test_build_workflow_local_plan_splits_local_build_and_artifact_publish_steps():

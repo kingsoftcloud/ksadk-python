@@ -63,11 +63,20 @@ def test_deploy_no_cache_triggers_build_and_clears_metadata(tmp_path: Path, monk
     provider = _FakeProvider()
     metadata_dir = tmp_path / ".agentengine"
     metadata_dir.mkdir(parents=True, exist_ok=True)
-    (metadata_dir / "build-metadata.json").write_text('{"metadata":{"ks3_path":"ks3://old/path.zip"}}', encoding="utf-8")
+    (metadata_dir / "build-metadata.json").write_text(
+        '{"metadata":{"ks3_path":"ks3://old/path.zip"}}', encoding="utf-8"
+    )
 
-    monkeypatch.setattr("ksadk.detection.FrameworkDetector", lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})())
-    monkeypatch.setattr("ksadk.cli.cmd_deploy._load_config", lambda *_args, **_kwargs: {"name": "demo-agent"})
-    monkeypatch.setattr("ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider)
+    monkeypatch.setattr(
+        "ksadk.detection.FrameworkDetector",
+        lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})(),
+    )
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_deploy._load_config", lambda *_args, **_kwargs: {"name": "demo-agent"}
+    )
+    monkeypatch.setattr(
+        "ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider
+    )
 
     asyncio.run(
         cmd_deploy._deploy_async(
@@ -99,15 +108,26 @@ def test_deploy_no_cache_triggers_build_and_clears_metadata(tmp_path: Path, monk
     assert provider.calls == ["validate", "package", "build", "deploy"]
 
 
-def test_deploy_repackage_triggers_build_and_clears_cached_artifact_metadata(tmp_path: Path, monkeypatch):
+def test_deploy_repackage_triggers_build_and_clears_cached_artifact_metadata(
+    tmp_path: Path, monkeypatch
+):
     provider = _FakeProvider()
     metadata_dir = tmp_path / ".agentengine"
     metadata_dir.mkdir(parents=True, exist_ok=True)
-    (metadata_dir / "build-metadata.json").write_text('{"metadata":{"ks3_path":"ks3://old/path.zip"}}', encoding="utf-8")
+    (metadata_dir / "build-metadata.json").write_text(
+        '{"metadata":{"ks3_path":"ks3://old/path.zip"}}', encoding="utf-8"
+    )
 
-    monkeypatch.setattr("ksadk.detection.FrameworkDetector", lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})())
-    monkeypatch.setattr("ksadk.cli.cmd_deploy._load_config", lambda *_args, **_kwargs: {"name": "demo-agent"})
-    monkeypatch.setattr("ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider)
+    monkeypatch.setattr(
+        "ksadk.detection.FrameworkDetector",
+        lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})(),
+    )
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_deploy._load_config", lambda *_args, **_kwargs: {"name": "demo-agent"}
+    )
+    monkeypatch.setattr(
+        "ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider
+    )
 
     asyncio.run(
         cmd_deploy._deploy_async(
@@ -142,12 +162,21 @@ def test_deploy_repackage_triggers_build_and_clears_cached_artifact_metadata(tmp
     assert provider.calls == ["validate", "package", "build", "deploy"]
 
 
-def test_deploy_no_cache_warns_when_explicit_ks3_path_is_supplied(tmp_path: Path, monkeypatch, capsys):
+def test_deploy_no_cache_warns_when_explicit_ks3_path_is_supplied(
+    tmp_path: Path, monkeypatch, capsys
+):
     provider = _FakeProvider()
 
-    monkeypatch.setattr("ksadk.detection.FrameworkDetector", lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})())
-    monkeypatch.setattr("ksadk.cli.cmd_deploy._load_config", lambda *_args, **_kwargs: {"name": "demo-agent"})
-    monkeypatch.setattr("ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider)
+    monkeypatch.setattr(
+        "ksadk.detection.FrameworkDetector",
+        lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})(),
+    )
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_deploy._load_config", lambda *_args, **_kwargs: {"name": "demo-agent"}
+    )
+    monkeypatch.setattr(
+        "ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider
+    )
 
     asyncio.run(
         cmd_deploy._deploy_async(
@@ -183,7 +212,10 @@ def test_deploy_no_cache_warns_when_explicit_ks3_path_is_supplied(tmp_path: Path
 def test_deploy_reads_network_config_from_agentengine_yaml(tmp_path: Path, monkeypatch):
     provider = _FakeProvider()
 
-    monkeypatch.setattr("ksadk.detection.FrameworkDetector", lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})())
+    monkeypatch.setattr(
+        "ksadk.detection.FrameworkDetector",
+        lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})(),
+    )
     monkeypatch.setattr(
         "ksadk.cli.cmd_deploy._load_config",
         lambda *_args, **_kwargs: {
@@ -198,7 +230,9 @@ def test_deploy_reads_network_config_from_agentengine_yaml(tmp_path: Path, monke
             },
         },
     )
-    monkeypatch.setattr("ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider)
+    monkeypatch.setattr(
+        "ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider
+    )
 
     asyncio.run(
         cmd_deploy._deploy_async(
@@ -238,7 +272,10 @@ def test_deploy_cli_network_options_override_config(tmp_path: Path, monkeypatch)
     provider = _FakeProvider()
     runner = CliRunner()
 
-    monkeypatch.setattr("ksadk.detection.FrameworkDetector", lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})())
+    monkeypatch.setattr(
+        "ksadk.detection.FrameworkDetector",
+        lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})(),
+    )
     monkeypatch.setattr(
         "ksadk.cli.cmd_deploy._load_config",
         lambda *_args, **_kwargs: {
@@ -253,7 +290,9 @@ def test_deploy_cli_network_options_override_config(tmp_path: Path, monkeypatch)
             },
         },
     )
-    monkeypatch.setattr("ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider)
+    monkeypatch.setattr(
+        "ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider
+    )
 
     result = runner.invoke(
         cmd_deploy.deploy,
@@ -294,9 +333,16 @@ def test_deploy_cli_forwards_explicit_env_and_env_file(tmp_path: Path, monkeypat
         encoding="utf-8",
     )
 
-    monkeypatch.setattr("ksadk.detection.FrameworkDetector", lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})())
-    monkeypatch.setattr("ksadk.cli.cmd_deploy._load_config", lambda *_args, **_kwargs: {"name": "demo-agent"})
-    monkeypatch.setattr("ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider)
+    monkeypatch.setattr(
+        "ksadk.detection.FrameworkDetector",
+        lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})(),
+    )
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_deploy._load_config", lambda *_args, **_kwargs: {"name": "demo-agent"}
+    )
+    monkeypatch.setattr(
+        "ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider
+    )
 
     result = runner.invoke(
         cmd_deploy.deploy,
@@ -332,10 +378,16 @@ def test_deploy_rejects_hermes_and_openclaw_frameworks(tmp_path: Path, monkeypat
         lambda *_args, **_kwargs: type(
             "D",
             (),
-            {"detect": lambda self: type("R", (), {"type": type("T", (), {"value": "hermes"})(), "name": "hermes"})()},
+            {
+                "detect": lambda self: type(
+                    "R", (), {"type": type("T", (), {"value": "hermes"})(), "name": "hermes"}
+                )()
+            },
         )(),
     )
-    monkeypatch.setattr("ksadk.cli.cmd_deploy._load_config", lambda *_args, **_kwargs: {"name": "demo-hermes"})
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_deploy._load_config", lambda *_args, **_kwargs: {"name": "demo-hermes"}
+    )
 
     result = runner.invoke(
         cmd_deploy.deploy,
@@ -356,10 +408,16 @@ def test_deploy_rejects_hermes_and_openclaw_frameworks(tmp_path: Path, monkeypat
         lambda *_args, **_kwargs: type(
             "D",
             (),
-            {"detect": lambda self: type("R", (), {"type": type("T", (), {"value": "openclaw"})(), "name": "openclaw"})()},
+            {
+                "detect": lambda self: type(
+                    "R", (), {"type": type("T", (), {"value": "openclaw"})(), "name": "openclaw"}
+                )()
+            },
         )(),
     )
-    monkeypatch.setattr("ksadk.cli.cmd_deploy._load_config", lambda *_args, **_kwargs: {"name": "demo-openclaw"})
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_deploy._load_config", lambda *_args, **_kwargs: {"name": "demo-openclaw"}
+    )
 
     result = runner.invoke(
         cmd_deploy.deploy,
@@ -379,7 +437,10 @@ def test_deploy_rejects_hermes_and_openclaw_frameworks(tmp_path: Path, monkeypat
 def test_deploy_rejects_incomplete_vpc_network_config(tmp_path: Path, monkeypatch):
     provider = _FakeProvider()
 
-    monkeypatch.setattr("ksadk.detection.FrameworkDetector", lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})())
+    monkeypatch.setattr(
+        "ksadk.detection.FrameworkDetector",
+        lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})(),
+    )
     monkeypatch.setattr(
         "ksadk.cli.cmd_deploy._load_config",
         lambda *_args, **_kwargs: {
@@ -390,7 +451,9 @@ def test_deploy_rejects_incomplete_vpc_network_config(tmp_path: Path, monkeypatc
             },
         },
     )
-    monkeypatch.setattr("ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider)
+    monkeypatch.setattr(
+        "ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider
+    )
 
     with pytest.raises(CLIError) as exc_info:
         asyncio.run(
@@ -426,7 +489,10 @@ def test_deploy_rejects_incomplete_vpc_network_config(tmp_path: Path, monkeypatc
 def test_deploy_network_ids_imply_vpc_access(tmp_path: Path, monkeypatch):
     provider = _FakeProvider()
 
-    monkeypatch.setattr("ksadk.detection.FrameworkDetector", lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})())
+    monkeypatch.setattr(
+        "ksadk.detection.FrameworkDetector",
+        lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})(),
+    )
     monkeypatch.setattr(
         "ksadk.cli.cmd_deploy._load_config",
         lambda *_args, **_kwargs: {
@@ -440,7 +506,9 @@ def test_deploy_network_ids_imply_vpc_access(tmp_path: Path, monkeypatch):
             },
         },
     )
-    monkeypatch.setattr("ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider)
+    monkeypatch.setattr(
+        "ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider
+    )
 
     asyncio.run(
         cmd_deploy._deploy_async(
@@ -475,7 +543,10 @@ def test_deploy_network_ids_imply_vpc_access(tmp_path: Path, monkeypatch):
 def test_deploy_reads_ui_config_from_agentengine_yaml_when_cli_not_set(tmp_path: Path, monkeypatch):
     provider = _FakeProvider()
 
-    monkeypatch.setattr("ksadk.detection.FrameworkDetector", lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})())
+    monkeypatch.setattr(
+        "ksadk.detection.FrameworkDetector",
+        lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})(),
+    )
     monkeypatch.setattr(
         "ksadk.cli.cmd_deploy._load_config",
         lambda *_args, **_kwargs: {
@@ -487,7 +558,9 @@ def test_deploy_reads_ui_config_from_agentengine_yaml_when_cli_not_set(tmp_path:
             },
         },
     )
-    monkeypatch.setattr("ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider)
+    monkeypatch.setattr(
+        "ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider
+    )
 
     asyncio.run(
         cmd_deploy._deploy_async(

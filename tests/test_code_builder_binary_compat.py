@@ -17,8 +17,7 @@ def test_detect_critical_binary_issues_rejects_python_abi_mismatch(tmp_path):
     issues = builder._detect_critical_binary_issues(names)
 
     assert (
-        "python-abi-mismatch:pydantic_core/_pydantic_core:"
-        "expected-cpython-312-or-abi3"
+        "python-abi-mismatch:pydantic_core/_pydantic_core:" "expected-cpython-312-or-abi3"
     ) in issues
 
 

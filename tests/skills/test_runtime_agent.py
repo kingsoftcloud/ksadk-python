@@ -11,15 +11,18 @@ import httpx
 
 from ksadk.skills.loader import load_local_skill
 from ksadk.skills.models import SkillRef
-from ksadk.skills.runtime.registry import select_remote_skill_refs
 from ksadk.skills.runtime import agent as runtime_agent
+from ksadk.skills.runtime import executor as runtime_executor
 from ksadk.skills.runtime.agent import run_agent
+from ksadk.skills.runtime.registry import select_remote_skill_refs
 
 
 def _zip_bytes(skill_name: str = "demo-skill") -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as archive:
-        archive.writestr(f"{skill_name}/SKILL.md", f"---\nname: {skill_name}\ndescription: Demo\n---\n# Demo\n")
+        archive.writestr(
+            f"{skill_name}/SKILL.md", f"---\nname: {skill_name}\ndescription: Demo\n---\n# Demo\n"
+        )
     return buf.getvalue()
 
 
@@ -48,7 +51,9 @@ def test_runtime_agent_loads_active_skills_from_service(monkeypatch, tmp_path: P
                 },
             )
         if request.url.path.endswith("/GetSkillDownloadUrl"):
-            return httpx.Response(200, json={"Data": {"DownloadUrl": "https://download.example/demo.zip"}})
+            return httpx.Response(
+                200, json={"Data": {"DownloadUrl": "https://download.example/demo.zip"}}
+            )
         if str(request.url) == "https://download.example/demo.zip":
             return httpx.Response(200, content=archive)
         return httpx.Response(404)
@@ -66,7 +71,9 @@ def test_runtime_agent_loads_active_skills_from_service(monkeypatch, tmp_path: P
     assert code == 0
     assert "workflow=使用 demo-skill build something" in out
     assert "loaded_skills=demo-skill" in out
-    assert (tmp_path / "cache" / "sk-demo__sv-demo-v1" / "extracted" / "demo-skill" / "SKILL.md").exists()
+    assert (
+        tmp_path / "cache" / "sk-demo__sv-demo-v1" / "extracted" / "demo-skill" / "SKILL.md"
+    ).exists()
 
 
 def test_runtime_selects_remote_skill_by_alias_tag_and_description():
@@ -90,9 +97,15 @@ def test_runtime_selects_remote_skill_by_alias_tag_and_description():
         ),
     ]
 
-    assert [skill.name for skill in select_remote_skill_refs(skills, "帮我生成一份研究报告")] == ["report-writer"]
-    assert [skill.name for skill in select_remote_skill_refs(skills, "frontend artifact")] == ["web-builder"]
-    assert [skill.name for skill in select_remote_skill_refs(skills, "write a research report")] == ["report-writer"]
+    assert [skill.name for skill in select_remote_skill_refs(skills, "帮我生成一份研究报告")] == [
+        "report-writer"
+    ]
+    assert [skill.name for skill in select_remote_skill_refs(skills, "frontend artifact")] == [
+        "web-builder"
+    ]
+    assert [
+        skill.name for skill in select_remote_skill_refs(skills, "write a research report")
+    ] == ["report-writer"]
 
 
 def test_runtime_agent_auto_resolves_aicp_skill_service_when_url_unset(
@@ -126,7 +139,9 @@ def test_runtime_agent_auto_resolves_aicp_skill_service_when_url_unset(
                 },
             )
         if request.url.params.get("Action") == "GetSkillDownloadUrl":
-            return httpx.Response(200, json={"Data": {"DownloadUrl": "https://download.example/demo.zip"}})
+            return httpx.Response(
+                200, json={"Data": {"DownloadUrl": "https://download.example/demo.zip"}}
+            )
         if str(request.url) == "https://download.example/demo.zip":
             return httpx.Response(200, content=archive)
         return httpx.Response(404)
@@ -188,7 +203,9 @@ def test_runtime_agent_downloads_only_prompted_remote_skill(monkeypatch, tmp_pat
             )
         if request.url.path.endswith("/GetSkillDownloadUrl"):
             skill_id = request.url.params.get("SkillId")
-            return httpx.Response(200, json={"Data": {"DownloadUrl": f"https://download.example/{skill_id}.zip"}})
+            return httpx.Response(
+                200, json={"Data": {"DownloadUrl": f"https://download.example/{skill_id}.zip"}}
+            )
         if str(request.url) == "https://download.example/sk-demo.zip":
             download_urls.append(str(request.url))
             return httpx.Response(200, content=demo_archive)
@@ -210,7 +227,9 @@ def test_runtime_agent_downloads_only_prompted_remote_skill(monkeypatch, tmp_pat
     assert code == 0
     assert "loaded_skills=demo-skill" in out
     assert download_urls == ["https://download.example/sk-demo.zip"]
-    assert (tmp_path / "cache" / "sk-demo__sv-demo-v1" / "extracted" / "demo-skill" / "SKILL.md").exists()
+    assert (
+        tmp_path / "cache" / "sk-demo__sv-demo-v1" / "extracted" / "demo-skill" / "SKILL.md"
+    ).exists()
     assert not (tmp_path / "cache" / "sk-unused__sv-unused-v1").exists()
 
 
@@ -255,7 +274,9 @@ def test_runtime_agent_downloads_explicit_remote_skill_even_when_prompt_omits_na
             )
         if request.url.path.endswith("/GetSkillDownloadUrl"):
             skill_id = request.url.params.get("SkillId")
-            return httpx.Response(200, json={"Data": {"DownloadUrl": f"https://download.example/{skill_id}.zip"}})
+            return httpx.Response(
+                200, json={"Data": {"DownloadUrl": f"https://download.example/{skill_id}.zip"}}
+            )
         if str(request.url) == "https://download.example/sk-demo.zip":
             download_urls.append(str(request.url))
             return httpx.Response(200, content=demo_archive)
@@ -278,11 +299,15 @@ def test_runtime_agent_downloads_explicit_remote_skill_even_when_prompt_omits_na
     assert code == 0
     assert "loaded_skills=demo-skill" in out
     assert download_urls == ["https://download.example/sk-demo.zip"]
-    assert (tmp_path / "cache" / "sk-demo__sv-demo-v1" / "extracted" / "demo-skill" / "SKILL.md").exists()
+    assert (
+        tmp_path / "cache" / "sk-demo__sv-demo-v1" / "extracted" / "demo-skill" / "SKILL.md"
+    ).exists()
     assert not (tmp_path / "cache" / "sk-unused__sv-unused-v1").exists()
 
 
-def test_runtime_agent_loads_all_public_skills_without_allowlist(monkeypatch, tmp_path: Path, capsys):
+def test_runtime_agent_loads_all_public_skills_without_allowlist(
+    monkeypatch, tmp_path: Path, capsys
+):
     pdf_archive = _zip_bytes("pdf")
     weather_archive = _zip_bytes("weather")
     pdf_digest = hashlib.sha256(pdf_archive).hexdigest()
@@ -319,7 +344,9 @@ def test_runtime_agent_loads_all_public_skills_without_allowlist(monkeypatch, tm
             )
         if request.url.path.endswith("/GetPremadeSkillDownloadUrl"):
             skill_id = request.url.params.get("SkillId")
-            return httpx.Response(200, json={"Data": {"DownloadUrl": f"https://download.example/{skill_id}.zip"}})
+            return httpx.Response(
+                200, json={"Data": {"DownloadUrl": f"https://download.example/{skill_id}.zip"}}
+            )
         if str(request.url) == "https://download.example/premade-pdf.zip":
             download_urls.append(str(request.url))
             return httpx.Response(200, content=pdf_archive)
@@ -341,7 +368,9 @@ def test_runtime_agent_loads_all_public_skills_without_allowlist(monkeypatch, tm
         "https://download.example/premade-pdf.zip",
         "https://download.example/premade-weather.zip",
     ]
-    assert (tmp_path / "cache" / f"premade-pdf__{pdf_digest}" / "extracted" / "pdf" / "SKILL.md").exists()
+    assert (
+        tmp_path / "cache" / f"premade-pdf__{pdf_digest}" / "extracted" / "pdf" / "SKILL.md"
+    ).exists()
     assert (
         tmp_path
         / "cache"
@@ -389,7 +418,9 @@ def test_runtime_agent_filters_public_skills_with_allowlist(monkeypatch, tmp_pat
             )
         if request.url.path.endswith("/GetPremadeSkillDownloadUrl"):
             skill_id = request.url.params.get("SkillId")
-            return httpx.Response(200, json={"Data": {"DownloadUrl": f"https://download.example/{skill_id}.zip"}})
+            return httpx.Response(
+                200, json={"Data": {"DownloadUrl": f"https://download.example/{skill_id}.zip"}}
+            )
         if str(request.url) == "https://download.example/premade-pdf.zip":
             download_urls.append(str(request.url))
             return httpx.Response(200, content=pdf_archive)
@@ -474,9 +505,13 @@ def test_runtime_agent_prefers_user_skill_over_same_name_public_skill(
                 },
             )
         if request.url.path.endswith("/GetSkillDownloadUrl"):
-            return httpx.Response(200, json={"Data": {"DownloadUrl": "https://download.example/user.zip"}})
+            return httpx.Response(
+                200, json={"Data": {"DownloadUrl": "https://download.example/user.zip"}}
+            )
         if request.url.path.endswith("/GetPremadeSkillDownloadUrl"):
-            return httpx.Response(200, json={"Data": {"DownloadUrl": "https://download.example/public.zip"}})
+            return httpx.Response(
+                200, json={"Data": {"DownloadUrl": "https://download.example/public.zip"}}
+            )
         if str(request.url) == "https://download.example/user.zip":
             download_urls.append(str(request.url))
             return httpx.Response(200, content=user_archive)
@@ -496,7 +531,9 @@ def test_runtime_agent_prefers_user_skill_over_same_name_public_skill(
     assert code == 0
     assert "loaded_skills=demo-skill" in out
     assert download_urls == ["https://download.example/user.zip"]
-    assert (tmp_path / "cache" / "sk-user-demo__sv-user-v1" / "extracted" / "demo-skill" / "SKILL.md").exists()
+    assert (
+        tmp_path / "cache" / "sk-user-demo__sv-user-v1" / "extracted" / "demo-skill" / "SKILL.md"
+    ).exists()
     assert not (tmp_path / "cache" / f"premade-demo__{public_digest}").exists()
 
 
@@ -529,7 +566,9 @@ def test_runtime_agent_can_load_legacy_remote_skill_when_hash_mismatch_is_allowe
                 },
             )
         if request.url.path.endswith("/GetSkillDownloadUrl"):
-            return httpx.Response(200, json={"Data": {"DownloadUrl": "https://download.example/legacy.zip"}})
+            return httpx.Response(
+                200, json={"Data": {"DownloadUrl": "https://download.example/legacy.zip"}}
+            )
         if str(request.url) == "https://download.example/legacy.zip":
             download_urls.append(str(request.url))
             return httpx.Response(200, content=archive)
@@ -609,7 +648,9 @@ def test_runtime_agent_accepts_request_file_json(tmp_path: Path, monkeypatch, ca
     assert 'selected_skills=["generic-workflow"]' in out
 
 
-def test_runtime_agent_rejects_prompt_file_and_request_file_together(tmp_path: Path, monkeypatch, capsys):
+def test_runtime_agent_rejects_prompt_file_and_request_file_together(
+    tmp_path: Path, monkeypatch, capsys
+):
     prompt_file = tmp_path / "prompt.txt"
     prompt_file.write_text("from file", encoding="utf-8")
     request_file = tmp_path / "request.json"
@@ -636,9 +677,9 @@ def test_runtime_agent_executes_generic_run_workflow_script(monkeypatch, tmp_pat
     )
     (scripts_dir / "run-workflow.sh").write_text(
         "#!/bin/bash\n"
-        "mkdir -p \"$KSADK_SKILL_WORKDIR/out\"\n"
-        "printf '%s' \"$KSADK_WORKFLOW_PROMPT\" > \"$KSADK_SKILL_WORKDIR/out/prompt.txt\"\n"
-        "echo \"artifact=$KSADK_SKILL_WORKDIR/out/prompt.txt\"\n",
+        'mkdir -p "$KSADK_SKILL_WORKDIR/out"\n'
+        'printf \'%s\' "$KSADK_WORKFLOW_PROMPT" > "$KSADK_SKILL_WORKDIR/out/prompt.txt"\n'
+        'echo "artifact=$KSADK_SKILL_WORKDIR/out/prompt.txt"\n',
         encoding="utf-8",
     )
     workdir = tmp_path / "work"
@@ -671,7 +712,7 @@ def test_runtime_agent_collects_generic_workflow_output_dir(monkeypatch, tmp_pat
     )
     (scripts_dir / "run-workflow.sh").write_text(
         "#!/bin/bash\n"
-        "mkdir -p \"$KSADK_SKILL_OUTPUT_DIR\"\n"
+        'mkdir -p "$KSADK_SKILL_OUTPUT_DIR"\n'
         "printf 'generated' > \"$KSADK_SKILL_OUTPUT_DIR/result.txt\"\n",
         encoding="utf-8",
     )
@@ -725,13 +766,17 @@ def test_runtime_agent_executes_web_artifacts_builder_without_real_npm(monkeypat
     monkeypatch.setenv("KSADK_SKILL_ARTIFACT_PROJECT", "demo-artifact")
 
     def fake_run(args, **kwargs):
+        assert isinstance(args, list)
+        assert not kwargs.get("shell", False)
         if str(args[-1]).endswith("demo-artifact"):
             (workdir / "demo-artifact").mkdir(parents=True)
         elif str(args[1]).endswith("bundle-artifact.sh"):
-            (workdir / "demo-artifact" / "bundle.html").write_text("<html></html>", encoding="utf-8")
+            (workdir / "demo-artifact" / "bundle.html").write_text(
+                "<html></html>", encoding="utf-8"
+            )
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="ok\n", stderr="")
 
-    monkeypatch.setattr(runtime_agent.subprocess, "run", fake_run)
+    monkeypatch.setattr(runtime_executor.subprocess, "run", fake_run)
 
     result = runtime_agent._execute_workflow(
         "使用 web-artifacts-builder 初始化并打包一个最小 artifact",

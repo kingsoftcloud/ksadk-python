@@ -53,9 +53,24 @@ class _FakeMCPClient:
         page = int(kwargs.get("page", 1))
         page_size = int(kwargs.get("page_size", 20))
         all_items = [
-            {"mcp_id": "mcp-1", "name": "first", "status": "running", "mcp_endpoint": "https://demo1.example.com/mcp"},
-            {"mcp_id": "mcp-2", "name": "second", "status": "failed", "mcp_endpoint": "https://demo2.example.com/mcp"},
-            {"mcp_id": "mcp-3", "name": "third", "status": "creating", "mcp_endpoint": "https://demo3.example.com/mcp"},
+            {
+                "mcp_id": "mcp-1",
+                "name": "first",
+                "status": "running",
+                "mcp_endpoint": "https://demo1.example.com/mcp",
+            },
+            {
+                "mcp_id": "mcp-2",
+                "name": "second",
+                "status": "failed",
+                "mcp_endpoint": "https://demo2.example.com/mcp",
+            },
+            {
+                "mcp_id": "mcp-3",
+                "name": "third",
+                "status": "creating",
+                "mcp_endpoint": "https://demo3.example.com/mcp",
+            },
         ]
         start = (page - 1) * page_size
         end = start + page_size
@@ -120,7 +135,9 @@ def test_agent_status_falls_back_to_openclaw_local_state(monkeypatch, tmp_path: 
     monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeAgentStatusClient)
     state_path = tmp_path / ".agentengine.state"
     state_path.write_text(
-        yaml.safe_dump({"type": "openclaw", "agent_id": "ar-openclaw-local", "region": "pre-online"}),
+        yaml.safe_dump(
+            {"type": "openclaw", "agent_id": "ar-openclaw-local", "region": "pre-online"}
+        ),
         encoding="utf-8",
     )
 
@@ -212,7 +229,9 @@ def test_agent_list_fills_visible_page_after_filtering_openclaw(monkeypatch):
 
     monkeypatch.setattr("ksadk.cli.cmd_status._list_agent_runtimes", _fake_list_agent_runtimes)
 
-    result = runner.invoke(agent, ["list", "--page", "1", "--size", "1", "--account-id", "2000003485"])
+    result = runner.invoke(
+        agent, ["list", "--page", "1", "--size", "1", "--account-id", "2000003485"]
+    )
 
     assert result.exit_code == 0, result.output
     assert "visible-agent" in result.output

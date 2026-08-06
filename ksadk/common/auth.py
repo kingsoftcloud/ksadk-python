@@ -22,11 +22,11 @@ AWS Signature V4 签名认证
     response = requests.post(url, auth=auth.get_auth(), headers=headers)
 """
 
-import os
 import logging
+import os
 from typing import Dict, Optional
 
-from requests_aws4auth import AWS4Auth
+from requests_aws4auth import AWS4Auth  # type: ignore[import-untyped]
 
 logger = logging.getLogger(__name__)
 

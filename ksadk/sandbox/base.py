@@ -20,7 +20,9 @@ class SandboxType(str, Enum):
     def from_value(cls, value: str | "SandboxType" | None) -> "SandboxType":
         if isinstance(value, SandboxType):
             return value
-        normalized = (value or "").strip().lower().replace("_", "").replace("-", "").replace(" ", "")
+        normalized = (
+            (value or "").strip().lower().replace("_", "").replace("-", "").replace(" ", "")
+        )
         aliases = {
             "": cls.AIO,
             "aio": cls.AIO,
@@ -64,14 +66,11 @@ class SandboxSpec:
 
 class SandboxSession(Protocol):
     @property
-    def sandbox_id(self) -> str:
-        ...
+    def sandbox_id(self) -> str: ...
 
-    def write_file(self, path: str, data: str | bytes) -> None:
-        ...
+    def write_file(self, path: str, data: str | bytes) -> None: ...
 
-    def read_file(self, path: str) -> str:
-        ...
+    def read_file(self, path: str) -> str: ...
 
     def run_command(
         self,
@@ -80,14 +79,11 @@ class SandboxSession(Protocol):
         timeout: int | None = None,
         env: dict[str, str] | None = None,
         cwd: str | None = None,
-    ) -> SandboxCommandResult:
-        ...
+    ) -> SandboxCommandResult: ...
 
-    def get_host(self, port: int) -> str:
-        ...
+    def get_host(self, port: int) -> str: ...
 
-    def kill(self) -> None:
-        ...
+    def kill(self) -> None: ...
 
 
 class SandboxBackend(Protocol):
@@ -97,5 +93,4 @@ class SandboxBackend(Protocol):
         session_id: str,
         env: dict[str, str] | None = None,
         input_files: list[SandboxInputFile] | None = None,
-    ) -> SandboxSession:
-        ...
+    ) -> SandboxSession: ...

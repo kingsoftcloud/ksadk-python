@@ -4,13 +4,11 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
 from ksadk.identity.resolver import (
-    ResolvedIdentity,
     _ak_fingerprint,
     _extract_main_account_id_from_krn,
     _find_username_by_ak,
@@ -21,7 +19,6 @@ from ksadk.identity.resolver import (
     invalidate_cache,
     resolve_identity,
 )
-
 
 # ---------------------------------------------------------------------------
 # 纯函数测试
@@ -148,7 +145,10 @@ def isolated_cache(monkeypatch, tmp_path):
     def fake_save(config):
         cache_file.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    monkeypatch.setattr("ksadk.identity.resolver._load_identity_cache", lambda: fake_load().__getitem__("cloud").get("IDENTITY_CACHE", {}) if fake_load() else {})
+    monkeypatch.setattr(
+        "ksadk.identity.resolver._load_identity_cache",
+        lambda: fake_load().__getitem__("cloud").get("IDENTITY_CACHE", {}) if fake_load() else {},
+    )
     # 直接 patch _load/_save 更简单
     _cache = {}
 
@@ -215,8 +215,6 @@ def test_resolve_identity_cache_miss_invokes_iam(isolated_cache, monkeypatch):
     """缓存 miss 时调 IAM 两步链路并写缓存。"""
     sdk_parts = _mock_sdk_parts()
     IamClient = sdk_parts[0]
-    ListReq = sdk_parts[1]
-    GetReq = sdk_parts[2]
 
     # mock client 实例
     client = MagicMock()
@@ -225,7 +223,11 @@ def test_resolve_identity_cache_miss_invokes_iam(isolated_cache, monkeypatch):
         {"AccessKeyList": [{"AccessKey": "AKLTtest", "UserName": "xiayu"}]}
     )
     client.GetUser.return_value = json.dumps(
-        {"GetUserResult": {"User": {"UserId": "uuid-new", "Krn": "krn:ksc:iam::2000003485:user/xiayu"}}}
+        {
+            "GetUserResult": {
+                "User": {"UserId": "uuid-new", "Krn": "krn:ksc:iam::2000003485:user/xiayu"}
+            }
+        }
     )
 
     monkeypatch.setattr("ksadk.identity.resolver._import_iam_sdk", lambda: sdk_parts)
@@ -280,7 +282,11 @@ def test_resolve_identity_intranet_fallback(isolated_cache, monkeypatch):
         json.dumps({"AccessKeyList": [{"AccessKey": "AKLTtest", "UserName": "inner-user"}]}),
     ]
     client.GetUser.return_value = json.dumps(
-        {"GetUserResult": {"User": {"UserId": "uuid-inner", "Krn": "krn:ksc:iam::2000003485:user/inner-user"}}}
+        {
+            "GetUserResult": {
+                "User": {"UserId": "uuid-inner", "Krn": "krn:ksc:iam::2000003485:user/inner-user"}
+            }
+        }
     )
     intranet_host = "iam." + "inner." + "api.ksyun.com"
     monkeypatch.setenv("KSYUN_IAM_INTRANET_URL", f"http://{intranet_host}")

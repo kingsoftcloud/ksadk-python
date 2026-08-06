@@ -11,7 +11,13 @@ from ksadk.conversations.compaction_pipeline import (
 from ksadk.sessions.base import SessionEvent
 
 
-def _tool_call_event(seq: int, name: str, arguments: str | dict, invocation_id: str = "inv1", run_id: str | None = None) -> SessionEvent:
+def _tool_call_event(
+    seq: int,
+    name: str,
+    arguments: str | dict,
+    invocation_id: str = "inv1",
+    run_id: str | None = None,
+) -> SessionEvent:
     """构造真实 runtime 形态的 tool_call event。
 
     真实 runtime 把 tool_name/tool_args 放在 metadata(不是 content),content.role="model",
@@ -35,7 +41,9 @@ def _tool_call_event(seq: int, name: str, arguments: str | dict, invocation_id: 
     )
 
 
-def _tool_result_event(seq: int, ok: bool = True, error_type: str = "", run_id: str | None = None) -> SessionEvent:
+def _tool_result_event(
+    seq: int, ok: bool = True, error_type: str = "", run_id: str | None = None
+) -> SessionEvent:
     """构造真实 runtime 形态的 tool_result event。
 
     真实 runtime 的失败状态在 metadata.tool_receipt.status,不在 content.ok。
@@ -101,9 +109,16 @@ class TestSnipDoesNotMutateTranscript:
 
 class TestSnipRedundancyRemoval:
     def test_removes_tool_result_covered_by_later_group(self):
-        # 组1: search(query=a) [run_id=r1] → result [run_id=r1];组2: search(query=a) [run_id=r2] → result [run_id=r2](覆盖)
-        group1 = [_tool_call_event(1, "search", "query=a", run_id="r1"), _tool_result_event(2, run_id="r1")]
-        group2 = [_tool_call_event(3, "search", "query=a", run_id="r2"), _tool_result_event(4, run_id="r2")]
+        # 组1: search(query=a) [run_id=r1] → result [run_id=r1];
+        # 组2: search(query=a) [run_id=r2] → result [run_id=r2](覆盖)
+        group1 = [
+            _tool_call_event(1, "search", "query=a", run_id="r1"),
+            _tool_result_event(2, run_id="r1"),
+        ]
+        group2 = [
+            _tool_call_event(3, "search", "query=a", run_id="r2"),
+            _tool_result_event(4, run_id="r2"),
+        ]
         groups = [group1, group2]
 
         result = snip_redundant_groups(groups)
@@ -118,9 +133,10 @@ class TestSnipRedundancyRemoval:
         assert result.stats.removed_redundant_tool_results >= 2  # call+result 成对
 
     def test_parallel_tool_calls_no_orphan_result(self):
-        """Codex Finding 1:parallel_tool_calls=True 时同一轮多 tool_call 交错,按 run_id 精确配对不留孤儿。
+        """parallel_tool_calls=True 时同轮多 tool_call 交错。
 
-        场景:同一组内两个 tool_call(search + web_fetch)交错,search 被后续组覆盖。
+        按 run_id 精确配对，不留下孤儿结果。
+        同组两个 tool_call(search + web_fetch)交错，search 被后续组覆盖。
         旧实现(邻接配对)会误删 web_fetch 的 result 或留 search 的孤儿 result;
         新实现(按 run_id 配对)只删 search 的 call+result,web_fetch 完整保留。
         """
@@ -128,11 +144,14 @@ class TestSnipRedundancyRemoval:
         group1 = [
             _tool_call_event(1, "search", "query=a", run_id="r1"),
             _tool_call_event(2, "web_fetch", "url=x", run_id="r2"),
-            _tool_result_event(3, run_id="r1"),   # search 的 result(被覆盖,应删)
-            _tool_result_event(4, run_id="r2"),   # web_fetch 的 result(保留)
+            _tool_result_event(3, run_id="r1"),  # search 的 result(被覆盖,应删)
+            _tool_result_event(4, run_id="r2"),  # web_fetch 的 result(保留)
         ]
         # 组2: search(query=a) 覆盖组1 的 search
-        group2 = [_tool_call_event(5, "search", "query=a", run_id="r3"), _tool_result_event(6, run_id="r3")]
+        group2 = [
+            _tool_call_event(5, "search", "query=a", run_id="r3"),
+            _tool_result_event(6, run_id="r3"),
+        ]
         groups = [group1, group2]
 
         result = snip_redundant_groups(groups)
@@ -222,7 +241,12 @@ class TestMicrocompactProjection:
         assert result.groups[1][0].seq_id == 3
 
     def test_microcompact_does_not_mutate_original_groups(self):
-        groups = [[_assistant_event(1, "x")], [_assistant_event(2, "y")], [_assistant_event(3, "z")], [_assistant_event(4, "w")]]
+        groups = [
+            [_assistant_event(1, "x")],
+            [_assistant_event(2, "y")],
+            [_assistant_event(3, "z")],
+            [_assistant_event(4, "w")],
+        ]
         original_len = len(groups)
 
         microcompact_cold_groups(groups)
@@ -233,7 +257,12 @@ class TestMicrocompactProjection:
     def test_microcompact_preserved_receipts_collected(self):
         cold_event = _assistant_event(1, "x")
         cold_event.metadata = {"receipt_key": "deepresearch:web_search:v1"}
-        groups = [cold_event, _assistant_event(2, "y")], [[_assistant_event(3, "z")]], [[_assistant_event(4, "w")]], [[_assistant_event(5, "v")]]
+        _groups = (
+            [cold_event, _assistant_event(2, "y")],
+            [[_assistant_event(3, "z")]],
+            [[_assistant_event(4, "w")]],
+            [[_assistant_event(5, "v")]],
+        )
         # 构造 4+ 组让前几组变冷。
         flat_groups = [
             [cold_event, _assistant_event(2, "y")],

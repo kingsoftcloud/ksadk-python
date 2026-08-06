@@ -87,9 +87,7 @@ def _bool_env(name: str, default: bool) -> bool:
 def candidate_tokens(groups: Sequence[Sequence[SessionEvent]]) -> int:
     """估算 candidate groups 的总 token(用于 pipeline 渐进停止判断)。"""
     return sum(
-        estimate_text_tokens(extract_event_text(event))
-        for group in groups
-        for event in group
+        estimate_text_tokens(extract_event_text(event)) for group in groups for event in group
     )
 
 
@@ -108,12 +106,7 @@ def _tool_signature(event: SessionEvent) -> str | None:
         return None
     content = event.content or {}
     metadata = event.metadata or {}
-    name = str(
-        metadata.get("tool_name")
-        or content.get("name")
-        or content.get("tool_name")
-        or ""
-    )
+    name = str(metadata.get("tool_name") or content.get("name") or content.get("tool_name") or "")
     # 参数优先取 metadata.tool_args(真实 runtime),回退 content.arguments(合成/历史)。
     arguments = (
         metadata.get("tool_args")
@@ -264,8 +257,14 @@ def microcompact_cold_groups(
 
     # 尾部 N 组保留(它们可能还被模型需要),更早的组视为冷组。
     cold_rounds = _microcompact_cold_rounds()
-    cold_groups = list(groups[:-cold_rounds]) if cold_rounds < len(groups) else []
-    tail_groups = list(groups[-cold_rounds:]) if cold_rounds < len(groups) else list(groups)
+    cold_groups = (
+        [list(group) for group in groups[:-cold_rounds]] if cold_rounds < len(groups) else []
+    )
+    tail_groups = (
+        [list(group) for group in groups[-cold_rounds:]]
+        if cold_rounds < len(groups)
+        else [list(group) for group in groups]
+    )
 
     if not cold_groups:
         return MicrocompactResult(
@@ -323,7 +322,8 @@ def build_working_set_metadata(
 ) -> dict[str, Any]:
     """L5 working set 恢复(保守版):只记 metadata,不读文件内容。
 
-    recent_files: 调用方从 workspace_state 取最近 N 个文件的 {path, mtime_ns, size_bytes, read_range}。
+    recent_files: 调用方从 workspace_state 取最近 N 个文件的
+        {path, mtime_ns, size_bytes, read_range}。
     active_tools: 调用方从 describe_agentengine_tools 取 enabled 工具名。
     下一轮 prompt 注入时只提示"这些文件最近读过",不注入内容(避免 token 膨胀)。
     """

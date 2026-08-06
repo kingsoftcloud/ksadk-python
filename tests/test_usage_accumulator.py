@@ -1,4 +1,5 @@
 """usage_accumulator 单测:逐字段累加(input/output/total + details 子键)。"""
+
 from __future__ import annotations
 
 from ksadk.runners.usage_accumulator import accumulate_usage
@@ -17,7 +18,9 @@ def test_accumulate_usage_sums_input_token_details():
     """details 键名不统一(cached/cache_read/cache_creation),逐键求和作诊断明细。"""
     acc = {}
     acc = accumulate_usage(acc, {"input_tokens": 100, "input_token_details": {"cached": 50}})
-    acc = accumulate_usage(acc, {"input_tokens": 200, "input_token_details": {"cached": 30, "cache_read": 10}})
+    acc = accumulate_usage(
+        acc, {"input_tokens": 200, "input_token_details": {"cached": 30, "cache_read": 10}}
+    )
     assert acc["input_token_details"]["cached"] == 80
     assert acc["input_token_details"]["cache_read"] == 10
 

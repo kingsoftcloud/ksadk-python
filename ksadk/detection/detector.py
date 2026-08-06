@@ -4,7 +4,7 @@
 
 import ast
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Optional
@@ -20,6 +20,8 @@ class FrameworkType(Enum):
     LANGGRAPH = "langgraph"
     DEEPAGENTS = "deepagents"
     HERMES = "hermes"
+    FASTMCP = "fastmcp"
+    CODEX = "codex"
     UNKNOWN = "unknown"
 
 
@@ -34,6 +36,9 @@ class DetectionResult:
     agent_variable: str = "root_agent"
     runner_class: str = ""
     confidence: float = 0.0
+    # 配置文件的原始内容(ksadk.yaml/agentengine.yaml),供 runner 读 model/prompt 等
+    # 真实生效字段(codex 无 root_agent,配置全靠它)。默认空 dict,不影响既有构造。
+    raw_config: dict = field(default_factory=dict)
 
     @property
     def is_valid(self) -> bool:
@@ -44,6 +49,14 @@ class FrameworkDetector:
     """框架检测器"""
 
     _ENTRY_FILES = ("agent.py", "main.py", "app.py")
+    _LANGCHAIN_MODULES = frozenset(
+        {
+            "langchain",
+            "langchain_openai",
+            "langchain_core",
+            "langchain_community",
+        }
+    )
 
     def __init__(self, project_dir: str):
         self.project_dir = Path(project_dir).resolve()
@@ -55,6 +68,11 @@ class FrameworkDetector:
         config_result = self._check_config()
         if config_result:
             return config_result
+
+        # 1.5 codex.yaml 标志文件(fallback 自动探测,优先级低于 ksadk.yaml framework)
+        codex_result = self._check_codex_yaml()
+        if codex_result:
+            return codex_result
 
         graph_config_result = self._check_langgraph_json()
         if graph_config_result:
@@ -104,12 +122,15 @@ class FrameworkDetector:
                 "langgraph": FrameworkType.LANGGRAPH,
                 "deepagents": FrameworkType.DEEPAGENTS,
                 "hermes": FrameworkType.HERMES,
+                "codex": FrameworkType.CODEX,
             }.get(framework, FrameworkType.UNKNOWN)
 
             artifact_type = str(config.get("artifact_type") or "").strip().lower()
             is_hermes_container = (
                 framework_type == FrameworkType.HERMES and artifact_type == "container"
             )
+            # codex 无 root_agent 变量(agent 逻辑在 prompt),跳过 entry_exposes_variable 校验
+            is_codex = framework_type == FrameworkType.CODEX
             default_entry_point = (
                 "runtime/app.py"
                 if is_hermes_container and (self.project_dir / "runtime" / "app.py").is_file()
@@ -119,10 +140,13 @@ class FrameworkDetector:
             agent_variable = config.get("agent_variable", "root_agent")
             runner_class = str(config.get("runner_class") or "").strip()
             entry_path = self.project_dir / str(entry_point).replace("\\", "/")
-            if not entry_path.exists() or not entry_path.is_file():
+            # codex 无 agent.py(逻辑在 prompt),容忍 entry_point 不存在
+            if not is_codex and (not entry_path.exists() or not entry_path.is_file()):
                 return None
-            if not is_hermes_container and not self._entry_exposes_variable(
-                entry_path, agent_variable
+            if (
+                not is_codex
+                and not is_hermes_container
+                and not self._entry_exposes_variable(entry_path, agent_variable)
             ):
                 return None
             package = str(config.get("package") or "").strip()
@@ -141,9 +165,29 @@ class FrameworkDetector:
                 agent_variable=agent_variable,
                 runner_class=runner_class,
                 confidence=1.0,
+                raw_config=config,
             )
         except Exception:
             return None
+
+    def _check_codex_yaml(self) -> Optional[DetectionResult]:
+        """fallback:项目根有 codex.yaml 即判 CODEX(最小标志文件,可含 model/sandbox)。
+
+        保守规则,不做源码 import 扫描(避免误判普通 Python 项目)。优先级低于
+        ksadk.yaml framework: codex 显式声明。
+        """
+        codex_path = self.project_dir / "codex.yaml"
+        if not codex_path.exists():
+            return None
+        return DetectionResult(
+            type=FrameworkType.CODEX,
+            name=self.project_dir.name,
+            entry_point="",
+            package_path=str(self.project_dir),
+            agent_variable="",
+            runner_class="",
+            confidence=0.9,
+        )
 
     def _find_package_dir(self) -> Optional[Path]:
         """查找 Python 包目录"""
@@ -270,19 +314,16 @@ class FrameworkDetector:
     ) -> FrameworkType:
         try:
             content = entry_path.read_text(encoding="utf-8-sig")
-            tree = ast.parse(content, filename=str(entry_path))
-            imports = self._extract_imports(tree)
         except Exception:
             return fallback
-        if self._is_deepagents(imports, content):
-            return FrameworkType.DEEPAGENTS
-        if self._is_langgraph(imports, content):
-            return FrameworkType.LANGGRAPH
-        if self._is_adk(imports, content):
-            return FrameworkType.ADK
-        if self._is_langchain(imports, content):
-            return FrameworkType.LANGCHAIN
-        return fallback
+        try:
+            tree = ast.parse(content, filename=str(entry_path))
+            imports = self._extract_imports(tree)
+            calls = self._extract_call_names(tree)
+            framework = self._classify(imports, calls, content)
+        except Exception:
+            framework = self._classify_from_strings(content)
+        return framework if framework != FrameworkType.UNKNOWN else fallback
 
     def _check_langgraph_json(self) -> Optional[DetectionResult]:
         config_path = self.project_dir / "langgraph.json"
@@ -318,70 +359,78 @@ class FrameworkDetector:
 
     def _analyze_code(self, agent_file: Path, package_path: Path) -> DetectionResult:
         """分析代码确定框架类型"""
+        entry_point = str(agent_file.relative_to(self.project_dir))
         try:
             # 使用 utf-8-sig 自动处理 BOM，兼容 Windows/编辑器带 BOM 的脚本
             content = agent_file.read_text(encoding="utf-8-sig")
-            tree = ast.parse(content, filename=str(agent_file))
         except Exception:
             return DetectionResult(
                 type=FrameworkType.UNKNOWN,
                 name=self.project_dir.name,
-                entry_point=str(agent_file.relative_to(self.project_dir)),
+                entry_point=entry_point,
                 package_path=str(package_path),
             )
 
-        imports = self._extract_imports(tree)
+        calls: set = set()
+        try:
+            tree = ast.parse(content, filename=str(agent_file))
+            imports = self._extract_imports(tree)
+            calls = self._extract_call_names(tree)
+            framework = self._classify(imports, calls, content)
+        except Exception:
+            # AST 解析失败(语法错误等)时退化为字符串判定，避免直接判 UNKNOWN
+            framework = self._classify_from_strings(content)
 
-        # 检测 ADK
-        if self._is_adk(imports, content):
-            return DetectionResult(
-                type=FrameworkType.ADK,
-                name=package_path.name,
-                entry_point=str(agent_file.relative_to(self.project_dir)),
-                package_path=str(package_path),
-                agent_variable="root_agent",
-                confidence=0.9,
-            )
-
-        # 检测 DeepAgents (LangChain 生态, 底层基于 LangGraph)
-        if self._is_deepagents(imports, content):
-            return DetectionResult(
-                type=FrameworkType.DEEPAGENTS,
-                name=package_path.name,
-                entry_point=str(agent_file.relative_to(self.project_dir)),
-                package_path=str(package_path),
-                agent_variable="root_agent",
-                confidence=0.9,
-            )
-
-        # 检测 LangGraph
-        if self._is_langgraph(imports, content):
-            return DetectionResult(
-                type=FrameworkType.LANGGRAPH,
-                name=package_path.name,
-                entry_point=str(agent_file.relative_to(self.project_dir)),
-                package_path=str(package_path),
-                agent_variable="root_agent",
-                confidence=0.9,
-            )
-
-        # 检测 LangChain
-        if self._is_langchain(imports, content):
-            return DetectionResult(
-                type=FrameworkType.LANGCHAIN,
-                name=package_path.name,
-                entry_point=str(agent_file.relative_to(self.project_dir)),
-                package_path=str(package_path),
-                agent_variable="root_agent",
-                confidence=0.8,
-            )
-
+        name = package_path.name if framework != FrameworkType.UNKNOWN else self.project_dir.name
         return DetectionResult(
-            type=FrameworkType.UNKNOWN,
-            name=self.project_dir.name,
-            entry_point=str(agent_file.relative_to(self.project_dir)),
+            type=framework,
+            name=name,
+            entry_point=entry_point,
             package_path=str(package_path),
+            agent_variable="root_agent",
+            confidence=self._confidence_for(framework, calls),
         )
+
+    def _classify(self, imports: set, calls: set, content: str) -> FrameworkType:
+        """AST 级统一分类,顺序:
+        ADK → DeepAgents → LangChain(高层) → LangGraph → LangChain(legacy) → UNKNOWN"""
+        if self._is_adk(imports, content):
+            return FrameworkType.ADK
+        if self._is_deepagents(imports, calls, content):
+            return FrameworkType.DEEPAGENTS
+        if self._is_langchain_high_level(imports, calls):
+            return FrameworkType.LANGCHAIN
+        if self._is_langgraph(calls):
+            return FrameworkType.LANGGRAPH
+        if self._is_langchain_legacy(imports, calls):
+            return FrameworkType.LANGCHAIN
+        return FrameworkType.UNKNOWN
+
+    def _classify_from_strings(self, content: str) -> FrameworkType:
+        """AST 解析失败时的字符串兜底，顺序与 _classify 保持一致"""
+        if "google.adk" in content or "from google.adk" in content:
+            return FrameworkType.ADK
+        if "deepagents" in content or "create_deep_agent(" in content:
+            return FrameworkType.DEEPAGENTS
+        if "create_agent(" in content:
+            return FrameworkType.LANGCHAIN
+        if (
+            "StateGraph" in content
+            or "langgraph.graph" in content
+            or "create_react_agent(" in content
+        ):
+            return FrameworkType.LANGGRAPH
+        if any(m in content for m in self._LANGCHAIN_MODULES):
+            return FrameworkType.LANGCHAIN
+        return FrameworkType.UNKNOWN
+
+    def _confidence_for(self, framework: FrameworkType, calls: set) -> float:
+        if framework == FrameworkType.UNKNOWN:
+            return 0.0
+        if framework == FrameworkType.LANGCHAIN:
+            # 高层(create_agent 调用) 0.9，legacy 兜底 0.8
+            return 0.9 if "create_agent" in calls else 0.8
+        return 0.9
 
     def _extract_imports(self, tree: ast.AST) -> set:
         """提取导入的模块"""
@@ -395,6 +444,19 @@ class FrameworkDetector:
                     imports.add(node.module.split(".")[0])
         return imports
 
+    def _extract_call_names(self, tree: ast.AST) -> set:
+        """提取代码中实际调用的函数/方法名（AST 级，避免注释/字符串误判）"""
+        calls = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if isinstance(func, ast.Name):
+                calls.add(func.id)
+            elif isinstance(func, ast.Attribute):
+                calls.add(func.attr)
+        return calls
+
     def _is_adk(self, imports: set, content: str) -> bool:
         """检测是否为 ADK 项目"""
         # 检查 google.adk 导入
@@ -402,29 +464,30 @@ class FrameworkDetector:
             return True
         return False
 
-    def _is_langgraph(self, imports: set, content: str) -> bool:
-        """检测是否为 LangGraph 项目"""
-        if "langgraph" in imports:
-            return True
-        if "StateGraph" in content or "langgraph.graph" in content:
-            return True
-        return False
+    def _is_langgraph(self, calls: set) -> bool:
+        """检测是否为 LangGraph 项目:直接编排 StateGraph 或调用 create_react_agent。
+        不再用 `"StateGraph" in content` 字符串包含,避免注释/类型注解误命中
+        导致 deepagents/langchain 塌缩。"""
+        return "StateGraph" in calls or "create_react_agent" in calls
 
-    def _is_langchain(self, imports: set, content: str) -> bool:
-        """检测是否为 LangChain 项目"""
-        langchain_modules = {
-            "langchain",
-            "langchain_openai",
-            "langchain_core",
-            "langchain_community",
-        }
-        if langchain_modules & imports:
-            return True
-        return False
+    def _is_langchain_high_level(self, imports: set, calls: set) -> bool:
+        """新版 LangChain 高层 API：langchain 系 import 且调用 create_agent。"""
+        if not (self._LANGCHAIN_MODULES & imports):
+            return False
+        return "create_agent" in calls
 
-    def _is_deepagents(self, imports: set, content: str) -> bool:
+    def _is_langchain_legacy(self, imports: set, calls: set) -> bool:
+        """LangChain legacy 兜底:langchain 系 import 且无 LangGraph 直接编排
+        信号(覆盖 LCEL 链等旧用法)。"""
+        if not (self._LANGCHAIN_MODULES & imports):
+            return False
+        return "StateGraph" not in calls and "create_react_agent" not in calls
+
+    def _is_deepagents(self, imports: set, calls: set, content: str) -> bool:
         """检测是否为 DeepAgents 项目"""
         if "deepagents" in imports:
+            return True
+        if "create_deep_agent" in calls:
             return True
         if "from deepagents import" in content or "create_deep_agent(" in content:
             return True

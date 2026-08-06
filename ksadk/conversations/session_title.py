@@ -112,7 +112,6 @@ def build_heuristic_title(*, first_prompt: str, assistant_text: str) -> str:
     prompt = _normalize_source_text(first_prompt)
     assistant = _normalize_source_text(assistant_text)
     combined = f"{prompt} {assistant}".strip()
-    prompt_lower = prompt.lower()
     combined_lower = combined.lower()
 
     if _SELF_INTRO_RE.search(prompt):
@@ -126,7 +125,9 @@ def build_heuristic_title(*, first_prompt: str, assistant_text: str) -> str:
     if _RECRUIT_RE.search(combined_lower):
         if "简历" in combined_lower or "候选人" in combined_lower:
             return "简历分析"
-        if "面试" in combined_lower and (_ANALYZE_RE.search(combined) or _FILE_RE.search(combined_lower)):
+        if "面试" in combined_lower and (
+            _ANALYZE_RE.search(combined) or _FILE_RE.search(combined_lower)
+        ):
             return "面试分析"
 
     if _FILE_RE.search(combined_lower):
@@ -230,7 +231,9 @@ class SessionTitleClient:
         }
         timeout_seconds = max(1.0, float(timeout_ms) / 1000.0)
         async with httpx.AsyncClient(timeout=timeout_seconds) as client:
-            response = await client.post(self._chat_completions_url(), headers=headers, json=payload)
+            response = await client.post(
+                self._chat_completions_url(), headers=headers, json=payload
+            )
             response.raise_for_status()
             data = response.json()
 

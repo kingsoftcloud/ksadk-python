@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Any
 
-
 _FENCE_MARKER_CHARS = ("`", "~")
 _LIST_PREFIXES = ("- ", "* ", "+ ")
 
@@ -157,7 +156,11 @@ def _is_closing_fence(candidate: str, open_marker: str) -> bool:
 
 
 def _is_table_line(stripped_line: str) -> bool:
-    return stripped_line.startswith("|") and stripped_line.endswith("|") and stripped_line.count("|") >= 2
+    return (
+        stripped_line.startswith("|")
+        and stripped_line.endswith("|")
+        and stripped_line.count("|") >= 2
+    )
 
 
 def _is_list_line(stripped_line: str) -> bool:

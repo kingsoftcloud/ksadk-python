@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import asyncio
+import contextvars
 import logging
 import os
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Callable
+from typing import Callable, Iterator
 from urllib.parse import urlsplit, urlunsplit
 
 from ksadk.sessions.base import BaseSessionService, Session, SessionEvent, SessionState
@@ -21,6 +24,10 @@ from ksadk.sessions.in_memory import InMemorySessionService
 from ksadk.sessions.local_service import create_local_session_service
 
 _cached_session_service: BaseSessionService | None = None
+_cached_session_service_loop: asyncio.AbstractEventLoop | None = None
+_session_service_override: contextvars.ContextVar[BaseSessionService | None] = (
+    contextvars.ContextVar("ksadk_session_service", default=None)
+)
 logger = logging.getLogger(__name__)
 
 
@@ -48,12 +55,16 @@ def register_session_backend(name: str, factory: SessionBackendFactory) -> None:
 def resolve_session_backend_config(*, backend: str | None = None) -> SessionBackendConfig:
     _register_builtin_backends()
     resolved_backend = (
-        backend
-        or os.getenv("KSADK_SESSION_BACKEND")
-        or os.getenv("AGENTENGINE_SESSION_BACKEND")
-        or os.getenv("KSADK_STM_BACKEND")
-        or ""
-    ).strip().lower()
+        (
+            backend
+            or os.getenv("KSADK_SESSION_BACKEND")
+            or os.getenv("AGENTENGINE_SESSION_BACKEND")
+            or os.getenv("KSADK_STM_BACKEND")
+            or ""
+        )
+        .strip()
+        .lower()
+    )
     if not resolved_backend:
         resolved_backend = "local"
     if resolved_backend == "sqlite":
@@ -86,14 +97,10 @@ def resolve_session_backend_config(*, backend: str | None = None) -> SessionBack
         or "default"
     ).strip()
     tenant_id = (
-        os.getenv("KSADK_TENANT_ID")
-        or os.getenv("AGENTENGINE_TENANT_ID")
-        or "default"
+        os.getenv("KSADK_TENANT_ID") or os.getenv("AGENTENGINE_TENANT_ID") or "default"
     ).strip()
     workspace_id = (
-        os.getenv("KSADK_WORKSPACE_ID")
-        or os.getenv("AGENTENGINE_WORKSPACE_ID")
-        or "default"
+        os.getenv("KSADK_WORKSPACE_ID") or os.getenv("AGENTENGINE_WORKSPACE_ID") or "default"
     ).strip()
     return SessionBackendConfig(
         backend=resolved_backend,
@@ -188,7 +195,8 @@ def log_session_backend_diagnostics(*, backend: str | None = None) -> None:
     logger.info("KSADK session backend: %s", payload)
     if not bool(payload.get("ProductionSafe")):
         logger.warning(
-            "KSADK session backend %s is not cross-pod recoverable; use postgres for K8s multi-replica deployments.",
+            "KSADK session backend %s is not cross-pod recoverable; "
+            "use postgres for K8s multi-replica deployments.",
             payload.get("Backend"),
         )
 
@@ -225,23 +233,64 @@ def create_session_service(
     return service
 
 
+@contextmanager
+def bind_session_service(service: BaseSessionService) -> Iterator[None]:
+    """Bind a service to the current request/task context."""
+    token = _session_service_override.set(service)
+    try:
+        yield
+    finally:
+        _session_service_override.reset(token)
+
+
+def _running_loop() -> asyncio.AbstractEventLoop | None:
+    try:
+        return asyncio.get_running_loop()
+    except RuntimeError:
+        return None
+
+
 def resolve_session_service() -> BaseSessionService:
-    global _cached_session_service
+    """Resolve a request-bound service or a loop-safe legacy fallback.
+
+    ``LocalSessionService`` owns asyncio synchronization primitives. A process
+    cache shared by pytest-asyncio loops can therefore reuse a lock bound to a
+    closed peer loop. Legacy non-request callers retain caching, while async
+    callers never reuse a cache created by another running loop.
+    """
+    global _cached_session_service, _cached_session_service_loop
+
+    override = _session_service_override.get()
+    if override is not None:
+        return override
+
+    loop = _running_loop()
     if _cached_session_service is not None:
-        return _cached_session_service
+        if loop is None or _cached_session_service_loop is loop:
+            return _cached_session_service
+        if _cached_session_service_loop is None:
+            # A synchronous startup path created the service. Associate it
+            # with the first async caller rather than replacing it eagerly.
+            _cached_session_service_loop = loop
+            return _cached_session_service
+
     _cached_session_service = create_session_service()
+    _cached_session_service_loop = loop
     return _cached_session_service
 
 
 async def reset_session_service() -> None:
-    global _cached_session_service
+    global _cached_session_service, _cached_session_service_loop
     if _cached_session_service is None:
+        _cached_session_service_loop = None
         return
 
-    close = getattr(_cached_session_service, "aclose", None)
+    service = _cached_session_service
+    _cached_session_service = None
+    _cached_session_service_loop = None
+    close = getattr(service, "aclose", None)
     if close is not None:
         await close()
-    _cached_session_service = None
 
 
 def get_session_service() -> BaseSessionService:
@@ -255,6 +304,7 @@ async def close_session_service() -> None:
 __all__ = [
     "ADKSessionAdapter",
     "BaseSessionService",
+    "bind_session_service",
     "ConversationSessionCore",
     "InMemorySessionService",
     "LangChainSessionAdapter",

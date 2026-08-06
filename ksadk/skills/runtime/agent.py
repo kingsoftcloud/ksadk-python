@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -12,15 +11,29 @@ import httpx
 from ksadk.skills.loader import LocalSkill
 from ksadk.skills.models import SkillRef
 from ksadk.skills.package_store import PackageStore
+from ksadk.skills.runtime import loader as runtime_loader
+from ksadk.skills.runtime import registry as runtime_registry
 from ksadk.skills.runtime.base import normalize_skill_names
 from ksadk.skills.runtime.executor import (
     WorkflowExecution,
     execute_workflow,
+)
+from ksadk.skills.runtime.executor import (
     _can_run_web_artifacts_builder as _executor_can_run_web_artifacts_builder,
+)
+from ksadk.skills.runtime.executor import (
     _run_command as _executor_run_command,
+)
+from ksadk.skills.runtime.executor import (
     _run_web_artifacts_builder as _executor_run_web_artifacts_builder,
+)
+from ksadk.skills.runtime.executor import (
     _runtime_timeout as _executor_runtime_timeout,
+)
+from ksadk.skills.runtime.executor import (
     _safe_project_name as _executor_safe_project_name,
+)
+from ksadk.skills.runtime.executor import (
     _tail as _executor_tail,
 )
 from ksadk.skills.runtime.request import (
@@ -28,8 +41,6 @@ from ksadk.skills.runtime.request import (
     SkillWorkflowRequestError,
     parse_workflow_request,
 )
-from ksadk.skills.runtime import loader as runtime_loader
-from ksadk.skills.runtime import registry as runtime_registry
 
 
 def _skill_space_ids() -> list[str]:
@@ -109,7 +120,9 @@ def run_agent(
         print("workflow=")
         print(f"skill_spaces={','.join(_skill_space_ids())}")
         print("loaded_skills=")
-        print(f"workflow_result={json.dumps(asdict(execution), ensure_ascii=False, sort_keys=True)}")
+        print(
+            f"workflow_result={json.dumps(asdict(execution), ensure_ascii=False, sort_keys=True)}"
+        )
         return 1
 
     prompt = request.workflow_prompt
@@ -125,7 +138,9 @@ def run_agent(
     print(f"loaded_skills={','.join(skill.name for skill in loaded_skills)}")
     print(f"selected_skills={json.dumps(selected_skill_names, ensure_ascii=False, sort_keys=True)}")
     if _SKILL_LOAD_WARNINGS:
-        print(f"skill_warnings={json.dumps(_SKILL_LOAD_WARNINGS, ensure_ascii=False, sort_keys=True)}")
+        print(
+            f"skill_warnings={json.dumps(_SKILL_LOAD_WARNINGS, ensure_ascii=False, sort_keys=True)}"
+        )
     print(f"workflow_result={json.dumps(asdict(execution), ensure_ascii=False, sort_keys=True)}")
     return 0 if execution.status != "failed" else 1
 

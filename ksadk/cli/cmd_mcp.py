@@ -4,13 +4,23 @@ import os
 from dataclasses import asdict, is_dataclass, replace
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import click
 
 from ksadk.api.client import DryRunExit
+from ksadk.builders.container_builder import (
+    registry_kind_label,
+    resolve_registry_credentials,
+)
 from ksadk.cli.agent_ref import resolve_mcp_ref
-from ksadk.cli.dry_run import dry_run_option, run_async_with_dry_run, effective_dry_run
-from ksadk.cli.error_utils import abort_with_cli_error, remote_error, resolution_error, usage_error, validation_error
+from ksadk.cli.dry_run import dry_run_option, effective_dry_run, run_async_with_dry_run
+from ksadk.cli.error_utils import (
+    abort_with_cli_error,
+    remote_error,
+    resolution_error,
+    validation_error,
+)
 from ksadk.cli.network_options import build_network_payload, network_cli_kwargs, network_options
 from ksadk.cli.resource_common import (
     CONTEXT_SETTINGS,
@@ -22,23 +32,23 @@ from ksadk.cli.resource_common import (
     confirm_destructive,
     confirm_options,
     pagination_options,
-    print_next_action_hint,
+    region_option,
     render_descriptor_list,
     render_descriptor_status,
-    region_option,
 )
 from ksadk.cli.ui import (
     capture_standard_output,
     get_console,
     is_json_output,
-    output_option as cli_output_option,
     print_info,
     print_kv,
     print_rule,
     print_success,
-    print_title,
     print_warn,
     status_rich_style,
+)
+from ksadk.cli.ui import (
+    output_option as cli_output_option,
 )
 from ksadk.cli.workflow_common import (
     build_workflow_local_plan,
@@ -50,10 +60,6 @@ from ksadk.cli.workflow_common import (
     render_workflow_dry_run,
     render_workflow_result,
     resolve_artifact_build_plan,
-)
-from ksadk.builders.container_builder import (
-    registry_kind_label,
-    resolve_registry_credentials,
 )
 
 console = get_console()
@@ -127,14 +133,14 @@ def mcp():
 @click.option("--tag", help="镜像标签 (Container 模式)")
 @click.option("--registry", help="镜像仓库地址 (Container 模式)")
 @click.option(
-    "--region", "-r",
+    "--region",
+    "-r",
     default="cn-beijing-6",
     envvar="KSYUN_REGION",
     help="构建使用的区域 (Code 模式用于 KS3，Container 模式用于默认镜像仓库推断)",
 )
 @click.option(
-    "--ks3-bucket",
-    help="KS3 存储桶名称 (Code 模式，默认: agentengine-{account_id}-{region})"
+    "--ks3-bucket", help="KS3 存储桶名称 (Code 模式，默认: agentengine-{account_id}-{region})"
 )
 @click.option(
     "--no-cache",
@@ -177,28 +183,18 @@ def build(
         render_workflow_result(action="build", result=result)
 
 
-@mcp.command("deploy", context_settings=CONTEXT_SETTINGS)
+@mcp.command("deploy", context_settings=CONTEXT_SETTINGS, short_help="部署 MCP Server 到云端")
 @click.argument("mcp_dir", default=".", type=click.Path(exists=True))
+@click.option("--name", "-n", help="MCP Server 名称 (默认: 目录名)")
 @click.option(
-    "--name", "-n",
-    help="MCP Server 名称 (默认: 目录名)"
-)
-@click.option(
-    "--region", "-r",
+    "--region",
+    "-r",
     default="cn-beijing-6",
     envvar="KSYUN_REGION",
-    help="部署区域 (default: cn-beijing-6)"
+    help="部署区域 (default: cn-beijing-6)",
 )
-@click.option(
-    "--ks3-bucket",
-    help="KS3 存储桶名称 (默认: agentengine-{region})"
-)
-@click.option(
-    "--enable-auth",
-    is_flag=True,
-    default=False,
-    help="启用 API Key 保护 (可选)"
-)
+@click.option("--ks3-bucket", help="KS3 存储桶名称 (默认: agentengine-{region})")
+@click.option("--enable-auth", is_flag=True, default=False, help="启用 API Key 保护 (可选)")
 @dry_run_option("仅显示请求内容，不实际部署")
 @click.option(
     "--artifact-type",
@@ -232,10 +228,10 @@ def deploy(
     output_mode: str | None,
 ):
     """部署 MCP Server 到云端
-    
+
     \b
     MCP_DIR: MCP 项目目录 (默认: 当前目录)
-    
+
     \b
     示例:
         # 1) 默认部署 (Code 模式)
@@ -244,7 +240,7 @@ def deploy(
         agentengine mcp deploy ./my-mcp --name my-tools --artifact-type Container
         # 3) 显式指定区域
         KSYUN_REGION=cn-beijing-6 agentengine mcp deploy . --dry-run
-    
+
     \b
     部署后的 endpoint 兼容标准 MCP 协议，可以被:
         - LangGraph/LangChain (via langchain-mcp-adapters)
@@ -255,6 +251,15 @@ def deploy(
     _ = output_mode
     dry_run = effective_dry_run(dry_run)
     dry_run_context: dict[str, object] = {}
+
+    def render_mcp_deploy_dry_run(exc: DryRunExit) -> None:
+        plan_value = dry_run_context.get("plan")
+        render_workflow_dry_run(
+            action="deploy",
+            request=dict(exc.payload) if isinstance(exc.payload, dict) else {},
+            plan=dict(plan_value) if isinstance(plan_value, dict) else None,
+        )
+
     try:
         result = run_async_with_dry_run(
             _deploy_mcp_async(
@@ -277,13 +282,7 @@ def deploy(
                 dry_run_context=dry_run_context,
             ),
             dry_run=dry_run,
-            on_dry_run=(
-                lambda exc: render_workflow_dry_run(
-                    action="deploy",
-                    request=dict(exc.payload or {}),
-                    plan=dict(dry_run_context.get("plan") or {}) or None,
-                )
-            ),
+            on_dry_run=render_mcp_deploy_dry_run,
         )
     except Exception as e:
         _abort_mcp_error(e, context="部署失败", argv=["mcp", "deploy"])
@@ -403,9 +402,11 @@ def _print_mcp_build_summary(
         print_kv("工具", ", ".join(build_result.metadata["tools"]))
 
 
-def _persist_mcp_build_metadata(mcp_path: Path, build_result, *, artifact_type: str, artifact_reference: str) -> None:
+def _persist_mcp_build_metadata(
+    mcp_path: Path, build_result, *, artifact_type: str, artifact_reference: str
+) -> None:
     metadata_file = mcp_path / ".agentengine" / "build-metadata.json"
-    if is_dataclass(build_result):
+    if is_dataclass(build_result) and not isinstance(build_result, type):
         payload = asdict(build_result)
     else:
         payload = {
@@ -462,8 +463,11 @@ async def _build_code_artifact(
         uploader = KS3Uploader(region=upload_region, bucket=ks3_bucket)
         timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
         object_key = f"mcps/{mcp_name}/code_{timestamp}.zip"
+        artifact_path = build_result.artifact_path
+        if artifact_path is None:
+            raise validation_error("构建成功但未生成 artifact_path")
         with capture_standard_output():
-            ks3_path = await uploader.upload(build_result.artifact_path, object_key)
+            ks3_path = await uploader.upload(artifact_path, object_key)
         if not ks3_path:
             raise remote_error("KS3 上传失败")
         artifact_reference = ks3_path
@@ -528,7 +532,7 @@ def _build_mcp_request_data(
 ) -> dict:
     resources = config.get("resources") or {}
     scaling = config.get("scaling") or {}
-    request_data = {
+    request_data: dict[str, Any] = {
         "name": mcp_name,
         "type": "mcp",
         "artifact_type": artifact_type,
@@ -564,15 +568,19 @@ def _build_mcp_request_data(
     else:
         kcr_username, kcr_password, registry_kind = resolve_registry_credentials(artifact_reference)
         if kcr_username and kcr_password:
-            request_data["image_credential"] = {
+            image_credential = {
                 "endpoint": artifact_reference.split("/", 1)[0],
                 "username": kcr_username,
                 "password": kcr_password,
             }
-            print_kv("镜像凭证", f"{kcr_username}@{request_data['image_credential']['endpoint']}")
+            request_data["image_credential"] = image_credential
+            print_kv("镜像凭证", f"{kcr_username}@{image_credential['endpoint']}")
         else:
             if registry_kind == "personal_kcr":
-                print_warn("未配置个人版 KCR 镜像凭证 (KSYUN_ACCOUNT_ID/KCR_PASSWORD)，私有镜像可能无法拉取")
+                print_warn(
+                    "未配置个人版 KCR 镜像凭证 "
+                    "(KSYUN_ACCOUNT_ID/KCR_PASSWORD)，私有镜像可能无法拉取"
+                )
             else:
                 print_warn(
                     f"未配置{registry_kind_label(registry_kind)} 镜像凭证 "
@@ -670,8 +678,7 @@ async def _build_mcp_async(
         "artifact_source": (
             "built_and_uploaded"
             if normalized_artifact_type == "Code" and push
-            else "built_and_pushed" if normalized_artifact_type == "Container" and push
-            else "built"
+            else "built_and_pushed" if normalized_artifact_type == "Container" and push else "built"
         ),
         "artifact_reused": bool(build_result.metadata.get("reused", False)),
         "artifact_built": True,
@@ -753,7 +760,9 @@ async def _deploy_mcp_async(
 
     cached_artifact_reference = None
     if not artifact_plan.should_clear_metadata:
-        cached_artifact_reference = load_cached_artifact_reference(mcp_path, normalized_artifact_type)
+        cached_artifact_reference = load_cached_artifact_reference(
+            mcp_path, normalized_artifact_type
+        )
 
     resolved_artifact_plan = resolve_artifact_build_plan(
         plan=artifact_plan,
@@ -869,7 +878,7 @@ async def _deploy_mcp_async(
             res = await client.update_mcp(existing_mcp_id, request_data)
             mcp_id = existing_mcp_id
         else:
-            # create 默认开公网（network 未显式 enable_public_access 时补 True）；update 分支用原始 request_data（network 缺省=保留服务端现有配置）
+            # create 默认开公网；update 缺省 network 时保留服务端配置。
             create_network = dict(request_data.get("network") or {})
             if "enable_public_access" not in create_network:
                 create_network["enable_public_access"] = True
@@ -935,7 +944,7 @@ def list_mcps(region: str, page: int, size: int, dry_run: bool, output_mode: str
     _ = output_mode
     dry_run = effective_dry_run(dry_run)
     from ksadk.api import AgentEngineClient
-    
+
     async def _list():
         async with AgentEngineClient(region=region, dry_run=dry_run) as client:
             resp = await client.list_mcps(region=region, page=page, page_size=size)
@@ -984,14 +993,14 @@ def list_mcps(region: str, page: int, size: int, dry_run: bool, output_mode: str
         _abort_mcp_error(e, context="获取列表失败", argv=["mcp", "list"])
 
 
-@mcp.command("status", context_settings=CONTEXT_SETTINGS)
+@mcp.command("status", context_settings=CONTEXT_SETTINGS, short_help="查看 MCP 状态")
 @click.argument("mcp_ref", required=False)
 @region_option(default=None, envvar=None, help_text="区域 (默认优先读取 .agentengine.state)")
 @dry_run_option()
 @cli_output_option()
 def status(mcp_ref: str | None, region: str | None, dry_run: bool, output_mode: str | None):
     """查看 MCP 状态
-    
+
     MCP_ID: MCP 的 ID
     """
     _ = output_mode
@@ -1015,7 +1024,7 @@ def status(mcp_ref: str | None, region: str | None, dry_run: bool, output_mode: 
     target_ref = resolved.value
     if resolved.source != "cli":
         print_info(f"未显式指定 MCP，使用 {resolved.source_text}: {target_ref}")
-    
+
     async def _get():
         async with AgentEngineClient(region=region, dry_run=dry_run) as client:
             mcp = None
@@ -1027,7 +1036,7 @@ def status(mcp_ref: str | None, region: str | None, dry_run: bool, output_mode: 
                 mcp = await client.get_mcp_by_name(target_ref, region=region)
             if not mcp:
                 raise resolution_error(f"未找到 MCP: {target_ref}", hints=["agentengine mcp list"])
-            
+
             status_text = (mcp.get("status") or "UNKNOWN").upper()
             fields = [
                 ("ID", str(mcp.get("mcp_id", "-")), None),
@@ -1037,7 +1046,7 @@ def status(mcp_ref: str | None, region: str | None, dry_run: bool, output_mode: 
                 ("MCP URL", str(mcp.get("mcp_endpoint", "N/A")), "#58a6ff"),
                 ("认证", "已开启" if mcp.get("enable_auth") else "未开启", None),
             ]
-            if mcp.get('tools'):
+            if mcp.get("tools"):
                 fields.append(("工具", ", ".join(mcp["tools"]), None))
             fields.extend(
                 [
@@ -1088,19 +1097,32 @@ def _delete_impl(mcp_ids: tuple[str, ...], region: str, assume_yes: bool, dry_ru
         prompt=f"确定要删除这 {len(mcp_ids)} 个 MCP 吗?",
     ):
         return
-    
+
     async def _delete():
         async with AgentEngineClient(region=region, dry_run=dry_run) as client:
             failed_ids: list[str] = []
             deleted_ids: list[str] = []
+            failure_reasons: dict[str, str] = {}
             for mcp_id in mcp_ids:
-                success = await client.delete_mcp(mcp_id)
+                try:
+                    success = await client.delete_mcp(mcp_id)
+                except DryRunExit:
+                    raise
+                except Exception as exc:
+                    failed_ids.append(mcp_id)
+                    reason = str(exc)
+                    request_id = str(getattr(exc, "details", {}).get("request_id") or "")
+                    if request_id:
+                        reason = f"{reason} (RequestId: {request_id})"
+                    failure_reasons[mcp_id] = reason
+                    continue
                 if success:
                     deleted_ids.append(mcp_id)
                     print_success(f"MCP 已删除: {mcp_id}")
 
                     # 尝试清理本地状态文件 (如果在项目目录中)
                     from ksadk.deployment.state import clear_state
+
                     try:
                         removed = clear_state(Path("."), key=mcp_id)
                         if removed:
@@ -1111,11 +1133,19 @@ def _delete_impl(mcp_ids: tuple[str, ...], region: str, assume_yes: bool, dry_ru
                         pass
                 else:
                     failed_ids.append(mcp_id)
+                    failure_reasons[mcp_id] = "服务端未确认删除"
 
             if failed_ids:
+                reason_text = "; ".join(
+                    f"{mcp_id}: {failure_reasons[mcp_id]}" for mcp_id in failed_ids
+                )
                 raise remote_error(
-                    f"以下 MCP 删除失败: {', '.join(failed_ids)}",
-                    details={"deleted": deleted_ids, "failed": failed_ids},
+                    f"以下 MCP 删除失败: {', '.join(failed_ids)}。原因: {reason_text}",
+                    details={
+                        "deleted": deleted_ids,
+                        "failed": failed_ids,
+                        "errors": failure_reasons,
+                    },
                 )
             return {
                 "targets": list(mcp_ids),
@@ -1123,7 +1153,7 @@ def _delete_impl(mcp_ids: tuple[str, ...], region: str, assume_yes: bool, dry_ru
                 "failed": failed_ids,
             }
 
-    dry_run_kwargs = {"dry_run": dry_run}
+    dry_run_kwargs: dict[str, Any] = {"dry_run": dry_run}
     if is_json_output():
         dry_run_kwargs.update(
             dry_run_resource="mcp",
@@ -1161,7 +1191,9 @@ def _delete_impl(mcp_ids: tuple[str, ...], region: str, assume_yes: bool, dry_ru
 @confirm_options()
 @dry_run_option()
 @cli_output_option()
-def delete(mcp_ids: tuple[str, ...], region: str, assume_yes: bool, dry_run: bool, output_mode: str | None):
+def delete(
+    mcp_ids: tuple[str, ...], region: str, assume_yes: bool, dry_run: bool, output_mode: str | None
+):
     """删除 MCP。"""
     _ = output_mode
     _delete_impl(mcp_ids=mcp_ids, region=region, assume_yes=assume_yes, dry_run=dry_run)
@@ -1173,7 +1205,9 @@ def delete(mcp_ids: tuple[str, ...], region: str, assume_yes: bool, dry_run: boo
 @confirm_options()
 @dry_run_option()
 @cli_output_option()
-def destroy(mcp_ids: tuple[str, ...], region: str, assume_yes: bool, dry_run: bool, output_mode: str | None):
+def destroy(
+    mcp_ids: tuple[str, ...], region: str, assume_yes: bool, dry_run: bool, output_mode: str | None
+):
     """删除 MCP。"""
     _ = output_mode
     _delete_impl(mcp_ids=mcp_ids, region=region, assume_yes=assume_yes, dry_run=dry_run)

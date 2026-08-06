@@ -1,6 +1,7 @@
 import asyncio
-import re
 import json
+import re
+
 import pytest
 
 from ksadk.cli import cmd_openclaw
@@ -53,7 +54,10 @@ def test_build_openclaw_env_vars_defaults_to_trusted_proxy(monkeypatch):
     assert env["OPENCLAW_TRUSTED_PROXY_USER_HEADER"] == "x-forwarded-user"
     assert env["OPENCLAW_INTERNAL_TRUSTED_PROXY_USER"] == "openclaw-backend"
     assert env["OPENCLAW_INTERNAL_TRUSTED_PROXY_USER_HEADER"] == "x-forwarded-user"
-    assert env["OPENCLAW_TRUSTED_PROXIES"] == "127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,35.0.0.0/8"
+    assert (
+        env["OPENCLAW_TRUSTED_PROXIES"]
+        == "127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,35.0.0.0/8"
+    )
 
 
 def test_build_openclaw_env_vars_switches_to_token_mode_when_token_configured(monkeypatch):
@@ -395,7 +399,7 @@ def test_openclaw_provider_model_metadata_preserves_explicit_catalog_items(monke
         {
             "id": "deepseek-v4-pro",
             "context_window_tokens": 1_000_000,
-        }
+        },
     )
 
     assert changed is True

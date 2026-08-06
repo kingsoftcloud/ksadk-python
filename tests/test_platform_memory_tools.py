@@ -21,6 +21,7 @@ class _FakeMemoryService:
 class _AcceptedButUnverifiedMemoryService(_FakeMemoryService):
     def __init__(self):
         super().__init__()
+
         class SdkLTMBackend:
             last_error = ""
 

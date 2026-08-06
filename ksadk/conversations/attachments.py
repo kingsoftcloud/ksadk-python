@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import base64
+import importlib
 import io
-import json
 import mimetypes
 import zipfile
 from pathlib import Path, PurePosixPath
@@ -168,7 +168,9 @@ def resolve_attachment_storage_path(file_uri: str) -> Optional[Path]:
     return None
 
 
-def read_attachment_bytes(storage_path: Optional[Path], *, size_limit: Optional[int] = None) -> Optional[bytes]:
+def read_attachment_bytes(
+    storage_path: Optional[Path], *, size_limit: Optional[int] = None
+) -> Optional[bytes]:
     if storage_path is None or not storage_path.is_file():
         return None
 
@@ -272,12 +274,7 @@ def build_attachment_prompt_text(result: Mapping[str, Any]) -> str:
 
     size_bytes = result.get("size_bytes")
     if size_bytes is not None:
-        return (
-            "[上传文件: "
-            f"{display_name}, "
-            f"mime={mime_type}, "
-            f"bytes={size_bytes}]"
-        )
+        return "[上传文件: " f"{display_name}, " f"mime={mime_type}, " f"bytes={size_bytes}]"
 
     return f"[上传文件引用: {display_name}, mime={mime_type}]"
 
@@ -353,9 +350,11 @@ def _build_attachment_result_from_raw(
     if raw is None:
         result["status"] = "partial" if size_bytes else "failed"
         result["warnings"] = [
-            "附件原始内容不可用，当前仅保留元数据摘要。"
-            if size_bytes
-            else "附件内容无法读取，请重新上传或检查文件句柄是否仍可访问。"
+            (
+                "附件原始内容不可用，当前仅保留元数据摘要。"
+                if size_bytes
+                else "附件内容无法读取，请重新上传或检查文件句柄是否仍可访问。"
+            )
         ]
         return result
 
@@ -420,7 +419,9 @@ def _extract_document_attachment(result: dict[str, Any], raw: bytes) -> dict[str
         if text:
             return _with_text(result, text=text, extraction_method=extractor[1])
         result["status"] = "failed"
-        result["warnings"] = [f"{suffix.lstrip('.').upper()} 文档抽取失败，请检查文件是否损坏或重新导出后重试。"]
+        result["warnings"] = [
+            f"{suffix.lstrip('.').upper()} 文档抽取失败，请检查文件是否损坏或重新导出后重试。"
+        ]
         result["extraction_method"] = extractor[1]
         return result
 
@@ -435,7 +436,9 @@ def _extract_document_attachment(result: dict[str, Any], raw: bytes) -> dict[str
 
 
 def _extract_image_attachment(result: dict[str, Any], raw: bytes) -> dict[str, Any]:
-    ocr = perform_ocr(raw, str(result.get("mime_type") or ""), str(result.get("display_name") or ""))
+    ocr = perform_ocr(
+        raw, str(result.get("mime_type") or ""), str(result.get("display_name") or "")
+    )
     result["image"] = {"ocr_engine": ocr.get("engine") or ""}
     if ocr.get("text"):
         return _with_text(result, text=ocr["text"], extraction_method="image_ocr")
@@ -524,9 +527,7 @@ def _extract_archive_attachment(result: dict[str, Any], raw: bytes) -> dict[str,
                 }
             )
             if child_result.get("text"):
-                extracted_chunks.append(
-                    f"[{normalized_path}]\n{child_result['text']}"
-                )
+                extracted_chunks.append(f"[{normalized_path}]\n{child_result['text']}")
 
     result["archive"] = {
         "entries": entries,
@@ -578,9 +579,11 @@ def _load_attachment_bytes(attachment: Mapping[str, Any]) -> Optional[bytes]:
             return None
         return raw if len(raw) <= _MAX_PROCESS_BYTES else None
 
-    raw = read_attachment_uri_bytes(attachment.get("file_uri"), size_limit=_MAX_PROCESS_BYTES)
-    if raw is not None:
-        return raw
+    stored_raw = read_attachment_uri_bytes(
+        attachment.get("file_uri"), size_limit=_MAX_PROCESS_BYTES
+    )
+    if stored_raw is not None:
+        return stored_raw
     return None
 
 
@@ -621,7 +624,11 @@ def _extract_xlsx_text(raw: bytes) -> str:
                 shared_strings = []
 
         rows: list[str] = []
-        for name in sorted(item for item in archive.namelist() if item.startswith("xl/worksheets/") and item.endswith(".xml")):
+        for name in sorted(
+            item
+            for item in archive.namelist()
+            if item.startswith("xl/worksheets/") and item.endswith(".xml")
+        ):
             try:
                 root = ET.fromstring(archive.read(name))
             except Exception:
@@ -648,7 +655,9 @@ def _extract_xlsx_text(raw: bytes) -> str:
                             if isinstance(child.tag, str) and child.tag.endswith("}t")
                         )
                     else:
-                        value_text = next((child.text or "" for child in cell if child.tag.endswith("}v")), "")
+                        value_text = next(
+                            (child.text or "" for child in cell if child.tag.endswith("}v")), ""
+                        )
                     if value_text.strip():
                         values.append(value_text.strip())
                 if values:
@@ -679,17 +688,19 @@ def _extract_xml_text_from_zip(raw: bytes, *, prefixes: tuple[str, ...]) -> str:
     texts: list[str] = []
     with archive:
         for name in sorted(
-            item for item in archive.namelist() if item.endswith(".xml") and item.startswith(prefixes)
+            item
+            for item in archive.namelist()
+            if item.endswith(".xml") and item.startswith(prefixes)
         ):
             try:
                 root = ET.fromstring(archive.read(name))
             except Exception:
                 continue
-            fragment = [
-                node.text.strip()
-                for node in root.iter()
-                if isinstance(node.tag, str) and node.tag.endswith("}t") and (node.text or "").strip()
-            ]
+            fragment = []
+            for node in root.iter():
+                text = node.text or ""
+                if isinstance(node.tag, str) and node.tag.endswith("}t") and text.strip():
+                    fragment.append(text.strip())
             if fragment:
                 texts.append("\n".join(fragment))
     return "\n\n".join(texts)
@@ -710,22 +721,18 @@ def _pdf_text_quality_is_poor(text: str) -> bool:
     normalized = "".join(ch for ch in text if not ch.isspace())
     if len(normalized) < 20:
         return True
-    readable = sum(
-        1
-        for ch in normalized
-        if ch.isalnum() or ("\u4e00" <= ch <= "\u9fff")
-    )
+    readable = sum(1 for ch in normalized if ch.isalnum() or ("\u4e00" <= ch <= "\u9fff"))
     return readable / max(len(normalized), 1) < 0.5
 
 
 def _perform_rapidocr(raw: bytes) -> str:
     try:
-        from rapidocr_onnxruntime import RapidOCR
+        rapidocr_module = importlib.import_module("rapidocr_onnxruntime")
     except Exception:
         return ""
 
     try:
-        engine = RapidOCR()
+        engine = rapidocr_module.RapidOCR()
         result, _ = engine(raw)
     except Exception:
         return ""
@@ -741,7 +748,8 @@ def _perform_rapidocr(raw: bytes) -> str:
 def _perform_tesseract_ocr(raw: bytes) -> str:
     try:
         from PIL import Image
-        import pytesseract
+
+        pytesseract = importlib.import_module("pytesseract")
     except Exception:
         return ""
 
@@ -755,7 +763,7 @@ def _perform_tesseract_ocr(raw: bytes) -> str:
             text = pytesseract.image_to_string(image, lang=lang)
         except Exception:
             continue
-        if text and text.strip():
+        if isinstance(text, str) and text.strip():
             return text.strip()
     return ""
 

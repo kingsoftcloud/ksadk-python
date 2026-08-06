@@ -8,7 +8,7 @@ from click.utils import strip_ansi
 from rich.cells import cell_len
 
 import ksadk.cli as cli_module
-from ksadk.cli import ROOT_HELP_COMMANDS, SHORT_HELP_MAP, _register_commands, cli
+from ksadk.cli import ROOT_HELP_COMMANDS, _register_commands, cli
 
 SNAPSHOT_FILE = Path(__file__).parent / "snapshots" / "help_snapshots.txt"
 COLORED_ROOT_HELP_ROWS = {
@@ -19,10 +19,15 @@ COLORED_ROOT_HELP_ROWS = {
     "agentengine deploy": "部署到云端",
     "agentengine launch": "一键构建+部署",
     "agentengine agent": "Agent 资源管理",
+    "agentengine version": "Agent 版本管理",
+    "agentengine mcp": "MCP 资源管理",
+    "agentengine a2a": "A2A 协议服务与本地试调",
+    "agentengine files": "管理云端 workspace 文件",
     "agentengine dashboard": "打开云端 Agent Dashboard",
     "agentengine hermes": "Hermes Agent 资源管理",
     "agentengine openclaw": "OpenClaw 资源管理",
     "agentengine config": "项目配置向导与模型配置",
+    "agentengine completion": "Shell 补全管理",
     "--output": "输出格式（pretty/json）",
     "--no-color": "禁用颜色输出",
     "--version": "显示版本号",
@@ -89,7 +94,8 @@ def test_help_snapshots_match_canonical_cli_surface():
         assert _normalize_help(result.output) == snapshots[name]
 
 
-def test_colored_root_help_command_columns_align_with_unicode_icons(monkeypatch):
+def test_colored_root_help_exposes_all_workflow_commands(monkeypatch):
+    """去掉重复的 📋 可用命令板块后,所有工作流命令仍在 curated 板块可发现。"""
     _register_commands()
     monkeypatch.setattr(cli_module, "should_render_banner", lambda: True)
 
@@ -97,30 +103,14 @@ def test_colored_root_help_command_columns_align_with_unicode_icons(monkeypatch)
 
     assert result.exit_code == 0, result.output
 
-    command_lines: list[str] = []
-    in_commands = False
-    for line in strip_ansi(result.output).splitlines():
-        if "可用命令:" in line:
-            in_commands = True
-            continue
-        if in_commands and line.startswith("      ") and line.strip():
-            command_lines.append(line)
-
-    assert len(command_lines) == len(ROOT_HELP_COMMANDS)
-
-    command_offsets: set[int] = set()
-    description_offsets: set[int] = set()
-    for line in command_lines:
-        command_name = next(
-            name for name in ROOT_HELP_COMMANDS if re.search(rf"\b{re.escape(name)}\b", line)
-        )
-        description = SHORT_HELP_MAP[command_name]
-
-        command_offsets.add(cell_len(line[: line.index(command_name)]))
-        description_offsets.add(cell_len(line[: line.index(description)]))
-
-    assert command_offsets == {10}
-    assert description_offsets == {34}
+    output = strip_ansi(result.output)
+    # 不再有独立的"可用命令"重复板块
+    assert "可用命令:" not in output
+    # 每个工作流命令仍以 `agentengine <name>` 行出现在某个 curated 板块
+    for name in ROOT_HELP_COMMANDS:
+        assert f"agentengine {name}" in output, f"colored 帮助缺少命令: {name}"
+    # config 属工具命令,也在配置板块
+    assert "agentengine config" in output
 
 
 def test_colored_root_help_overview_rows_share_description_column(monkeypatch):

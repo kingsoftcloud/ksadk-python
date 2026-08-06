@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping, Sequence
 from typing import Any, Dict, Iterable, List
 
 from ksadk.sessions.base import SessionEvent
@@ -33,9 +34,7 @@ TRANSCRIPT_EVENT_TYPES = {
     "context_checkpoint",
 }
 
-DATA_URL_RE = re.compile(
-    r"data:(?P<mime>[A-Za-z0-9.+-]+/[A-Za-z0-9.+-]+);base64,[A-Za-z0-9+/=_-]+"
-)
+DATA_URL_RE = re.compile(r"data:(?P<mime>[A-Za-z0-9.+-]+/[A-Za-z0-9.+-]+);base64,[A-Za-z0-9+/=_-]+")
 BASE64_FIELD_RE = re.compile(
     r"(?P<prefix>['\"](?P<field>file_data|data|bytes|base64)['\"]\s*:\s*['\"])(?P<value>[A-Za-z0-9+/=_-]{512,})(?P<suffix>['\"])",
     re.IGNORECASE,
@@ -79,7 +78,9 @@ def extract_event_text(event: SessionEvent) -> str:
     if text:
         return sanitize_event_text_for_context(text)
 
-    return sanitize_event_text_for_context(extract_text_from_event_parts(content.get("parts") or []))
+    return sanitize_event_text_for_context(
+        extract_text_from_event_parts(content.get("parts") or [])
+    )
 
 
 def canonical_event_type(
@@ -109,7 +110,11 @@ def canonical_event_type(
         return "run_checkpoint"
     if raw in {"run_resume", "runtime_resume"}:
         return "run_resume"
-    if raw in {"assistant", "model"} or role in {"assistant", "model"} or author in {"assistant", "model"}:
+    if (
+        raw in {"assistant", "model"}
+        or role in {"assistant", "model"}
+        or author in {"assistant", "model"}
+    ):
         return "assistant_message"
     return "user_message"
 
@@ -157,7 +162,9 @@ def build_request_history(messages: Iterable[Dict[str, Any]]) -> List[Dict[str, 
 
 def compacted_until_seq_id(events: List[SessionEvent]) -> int:
     """读取最新 checkpoint 覆盖到哪一个 seq_id。"""
-    checkpoints = [event for event in events if canonical_event_type(event.event_type) == "context_checkpoint"]
+    checkpoints = [
+        event for event in events if canonical_event_type(event.event_type) == "context_checkpoint"
+    ]
     if not checkpoints:
         return 0
     latest = checkpoints[-1]
@@ -300,4 +307,212 @@ def build_history_from_events(events: List[SessionEvent]) -> List[Dict[str, str]
         content = str(message.get("content") or "")
         if role in {"user", "model"} and content:
             history.append({"role": role, "content": content})
+    return history
+
+
+def _responses_json_string(value: Any, *, default: str = "") -> str:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value or default
+    try:
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _responses_message(role: str, text: Any) -> dict[str, Any] | None:
+    normalized_text = sanitize_event_text_for_context(text).strip()
+    if not normalized_text:
+        return None
+    return {
+        "role": role,
+        "content": [{"type": "input_text", "text": normalized_text}],
+    }
+
+
+def _event_content_function_part(event: SessionEvent, part_name: str) -> Mapping[str, Any] | None:
+    content = event.content or {}
+    parts = content.get("parts") or []
+    for part in parts:
+        if not isinstance(part, Mapping):
+            continue
+        value = part.get(part_name)
+        if isinstance(value, Mapping):
+            return value
+    return None
+
+
+def _response_tool_call_id(event: SessionEvent) -> str:
+    metadata = event.metadata or {}
+    for key in ("tool_call_id", "call_id", "run_id"):
+        value = metadata.get(key)
+        if value:
+            return str(value)
+    receipt = metadata.get("tool_receipt")
+    if isinstance(receipt, Mapping):
+        for key in ("tool_call_id", "call_id", "run_id"):
+            value = receipt.get(key)
+            if value:
+                return str(value)
+    resume_input = metadata.get("resume_input")
+    if isinstance(resume_input, Mapping):
+        for key in ("tool_call_id", "call_id", "run_id"):
+            value = resume_input.get(key)
+            if value:
+                return str(value)
+    return ""
+
+
+def _response_tool_call_item(event: SessionEvent) -> dict[str, Any] | None:
+    metadata = event.metadata or {}
+    content = event.content or {}
+    function_call = _event_content_function_part(event, "function_call") or {}
+    name = str(
+        metadata.get("tool_name")
+        or content.get("name")
+        or content.get("tool_name")
+        or function_call.get("name")
+        or ""
+    ).strip()
+    arguments: Any = metadata.get("tool_args")
+    if arguments is None:
+        arguments = (
+            content.get("arguments")
+            or content.get("args")
+            or content.get("input")
+            or function_call.get("args")
+            or function_call.get("arguments")
+            or {}
+        )
+    call_id = _response_tool_call_id(event)
+    if not name or not call_id:
+        return None
+    return {
+        "type": "function_call",
+        "call_id": call_id,
+        "name": name,
+        "arguments": _responses_json_string(arguments, default="{}"),
+    }
+
+
+def _response_tool_output_item(event: SessionEvent) -> dict[str, Any] | None:
+    metadata = event.metadata or {}
+    content = event.content or {}
+    function_response = _event_content_function_part(event, "function_response") or {}
+    output: Any = metadata.get("tool_output") if "tool_output" in metadata else None
+    if output is None:
+        resume_input = metadata.get("resume_input")
+        if isinstance(resume_input, Mapping) and "output" in resume_input:
+            output = resume_input.get("output")
+    if output is None:
+        output = (
+            content.get("output")
+            or content.get("result")
+            or function_response.get("response")
+            or extract_event_text(event)
+        )
+    call_id = _response_tool_call_id(event)
+    if not call_id:
+        return None
+    return {
+        "type": "function_call_output",
+        "call_id": call_id,
+        "output": _responses_json_string(output),
+    }
+
+
+def project_responses_history(events: List[SessionEvent]) -> List[dict[str, Any]]:
+    """Project the compacted transcript into OpenAI Responses input items.
+
+    The checkpoint summary represents the compacted prefix. Only the retained
+    tail is replayed as typed tool items, so an old call_id is never fabricated
+    from a text summary. Events without a reliable call id fall back to the
+    existing explanatory message representation instead of emitting an invalid
+    ``function_call_output`` item.
+    """
+    projected: List[dict[str, Any]] = []
+    projected_call_ids: set[str] = set()
+    compacted_until = compacted_until_seq_id(events)
+    checkpoint = next(
+        (
+            event
+            for event in reversed(events)
+            if canonical_event_type(event.event_type) == "context_checkpoint"
+        ),
+        None,
+    )
+    if checkpoint:
+        summary_message = _responses_message("assistant", extract_event_text(checkpoint))
+        if summary_message:
+            projected.append(summary_message)
+
+    for event in events:
+        event_type = canonical_event_type(
+            event.event_type,
+            author=event.author,
+            role=str((event.content or {}).get("role") or ""),
+        )
+        if event.seq_id <= compacted_until and event_type != "context_checkpoint":
+            continue
+        if event_type not in TRANSCRIPT_EVENT_TYPES:
+            continue
+        if event_type in {"context_checkpoint", "compaction_boundary"}:
+            continue
+
+        if event_type == "tool_call":
+            item = _response_tool_call_item(event)
+            if item:
+                projected.append(item)
+                projected_call_ids.add(str(item["call_id"]))
+                continue
+            message = _responses_message("assistant", f"[tool_call] {extract_event_text(event)}")
+        elif event_type == "tool_result":
+            item = _response_tool_output_item(event)
+            if item and str(item["call_id"]) in projected_call_ids:
+                projected.append(item)
+                continue
+            message = _responses_message("user", f"[tool_result] {extract_event_text(event)}")
+        elif event_type == "assistant_message":
+            message = _responses_message("assistant", extract_event_text(event))
+        elif event_type == "approval_request":
+            message = _responses_message(
+                "assistant", f"[approval_request] {extract_event_text(event)}"
+            )
+        elif event_type == "approval_response":
+            message = _responses_message("user", f"[approval_response] {extract_event_text(event)}")
+        elif event_type == "attachment_ref":
+            message = _responses_message("user", f"[attachment] {extract_event_text(event)}")
+        else:
+            message = _responses_message("user", extract_event_text(event))
+        if message:
+            projected.append(message)
+
+    return projected
+
+
+def build_responses_history_from_messages(
+    messages: Sequence[Mapping[str, Any]],
+) -> List[dict[str, Any]]:
+    """Normalize request-provided prior messages for Responses history."""
+    history: List[dict[str, Any]] = []
+    for message in messages or []:
+        role = str(message.get("role") or "").strip().lower()
+        if role == "model":
+            role = "assistant"
+        if role not in {"user", "assistant"}:
+            continue
+
+        content = message.get("input_content")
+        if not isinstance(content, Sequence) or isinstance(content, (str, bytes, bytearray)):
+            content = message.get("content")
+        if isinstance(content, Sequence) and not isinstance(content, (str, bytes, bytearray)):
+            content_items = [dict(item) for item in content if isinstance(item, Mapping)]
+            if content_items:
+                history.append({"role": role, "content": content_items})
+                continue
+
+        item = _responses_message(role, message.get("content"))
+        if item:
+            history.append(item)
     return history

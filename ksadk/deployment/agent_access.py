@@ -5,7 +5,6 @@ import inspect
 from contextlib import nullcontext
 from typing import Any, Awaitable, Callable, Mapping, Sequence
 
-
 AgentAccessDetailFetcher = Callable[[str, bool], Awaitable[dict[str, Any]]]
 AgentAccessErrorHandler = Callable[[Exception], None]
 
@@ -16,16 +15,13 @@ def canonicalize_agent_access_detail(detail: Mapping[str, Any] | None) -> dict[s
         return {}
 
     normalized = dict(detail)
-    basic = normalized.get("basic") if isinstance(normalized.get("basic"), Mapping) else {}
-    quick = (
-        normalized.get("quick_access")
-        if isinstance(normalized.get("quick_access"), Mapping)
-        else {}
-    )
-    deployment = (
-        normalized.get("deployment")
-        if isinstance(normalized.get("deployment"), Mapping)
-        else {}
+    basic_value = normalized.get("basic")
+    basic: Mapping[str, Any] = basic_value if isinstance(basic_value, Mapping) else {}
+    quick_value = normalized.get("quick_access")
+    quick: Mapping[str, Any] = quick_value if isinstance(quick_value, Mapping) else {}
+    deployment_value = normalized.get("deployment")
+    deployment: Mapping[str, Any] = (
+        deployment_value if isinstance(deployment_value, Mapping) else {}
     )
 
     def _pick(*values: Any) -> Any:
@@ -74,9 +70,8 @@ def is_agent_not_visible_yet_error(exc: Exception) -> bool:
     text = str(exc or "").lower()
     if not text:
         return False
-    return (
-        ("http 404" in text or "status=404" in text or "code: 404" in text)
-        and ("未找到对应的 agent" in text or "not found" in text)
+    return ("http 404" in text or "status=404" in text or "code: 404" in text) and (
+        "未找到对应的 agent" in text or "not found" in text
     )
 
 
@@ -99,7 +94,7 @@ def is_agent_not_found_error(exc: Exception) -> bool:
     if isinstance(details, Mapping):
         http_status = details.get("http_status")
         try:
-            if int(http_status) == 404:
+            if http_status is not None and int(http_status) == 404:
                 return True
         except (TypeError, ValueError):
             pass
@@ -174,11 +169,7 @@ async def get_latest_agent_access(
 
     fetcher = detail_fetcher or _default_detail_fetcher
     retry_delay_values = [float(item) for item in (retry_delays or ())]
-    attempts = (
-        1 + len(retry_delay_values)
-        if retry_delay_values
-        else max(1, int(attempts or 1))
-    )
+    attempts = 1 + len(retry_delay_values) if retry_delay_values else max(1, int(attempts or 1))
     last_exc: Exception | None = None
 
     suppress_ctx = nullcontext()
@@ -205,9 +196,7 @@ async def get_latest_agent_access(
                 if delay > 0:
                     await asyncio.sleep(delay)
             try:
-                detail = canonicalize_agent_access_detail(
-                    await fetcher(agent_ref, include_api_key)
-                )
+                detail = canonicalize_agent_access_detail(await fetcher(agent_ref, include_api_key))
             except Exception as exc:
                 last_exc = exc
                 if attempt < attempts - 1 and is_agent_not_visible_yet_error(exc):

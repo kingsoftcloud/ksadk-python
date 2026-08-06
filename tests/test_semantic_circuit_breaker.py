@@ -6,12 +6,10 @@ governance compact failure 不触发。因此 semantic 熔断需独立计数(本
 
 from __future__ import annotations
 
-import asyncio
 import pytest
 
 from ksadk.conversations import semantic_summary as ss
 from ksadk.conversations.semantic_summary import (
-    CompactionSummaryResult,
     summarize_compaction,
 )
 
@@ -78,24 +76,33 @@ async def test_circuit_opens_after_threshold_failures(monkeypatch):
 
     # 第一次失败:计数=1,未熔断,走 try。
     r1 = await summarize_compaction(
-        groups_to_compact=[], previous_summary="", pinned_state={},
-        model_metadata=None, model="m",
+        groups_to_compact=[],
+        previous_summary="",
+        pinned_state={},
+        model_metadata=None,
+        model="m",
     )
     assert r1.fallback_reason == "simulated LLM timeout"
     assert ss._semantic_summary_failures == 1
 
     # 第二次失败:计数=2,达到阈值。
     r2 = await summarize_compaction(
-        groups_to_compact=[], previous_summary="", pinned_state={},
-        model_metadata=None, model="m",
+        groups_to_compact=[],
+        previous_summary="",
+        pinned_state={},
+        model_metadata=None,
+        model="m",
     )
     assert r2.fallback_reason == "simulated LLM timeout"
     assert ss._semantic_summary_failures == 2
 
     # 第三次:熔断已开,直接走 extractive 不调 LLM,fallback_reason 变成 circuit_open。
     r3 = await summarize_compaction(
-        groups_to_compact=[], previous_summary="", pinned_state={},
-        model_metadata=None, model="m",
+        groups_to_compact=[],
+        previous_summary="",
+        pinned_state={},
+        model_metadata=None,
+        model="m",
     )
     assert r3.summary_strategy == "extractive"
     assert r3.fallback_reason == "semantic_circuit_open"
@@ -110,16 +117,22 @@ async def test_success_resets_counter(monkeypatch):
 
     # 一次失败。
     await summarize_compaction(
-        groups_to_compact=[], previous_summary="", pinned_state={},
-        model_metadata=None, model="m",
+        groups_to_compact=[],
+        previous_summary="",
+        pinned_state={},
+        model_metadata=None,
+        model="m",
     )
     assert ss._semantic_summary_failures == 1
 
     # 切回成功 client。
     _setup_client(monkeypatch, _SuccessClient())
     r = await summarize_compaction(
-        groups_to_compact=[], previous_summary="", pinned_state={},
-        model_metadata=None, model="m",
+        groups_to_compact=[],
+        previous_summary="",
+        pinned_state={},
+        model_metadata=None,
+        model="m",
     )
     assert r.summary_strategy == "semantic"
     assert ss._semantic_summary_failures == 0  # 成功清零
@@ -133,7 +146,10 @@ async def test_circuit_disabled_when_threshold_zero(monkeypatch):
     # 阈值 0 = 禁用熔断,失败多次仍走 try(每次都调 LLM 失败)。
     for _ in range(5):
         r = await summarize_compaction(
-            groups_to_compact=[], previous_summary="", pinned_state={},
-            model_metadata=None, model="m",
+            groups_to_compact=[],
+            previous_summary="",
+            pinned_state={},
+            model_metadata=None,
+            model="m",
         )
         assert r.fallback_reason == "simulated LLM timeout"  # 不是 circuit_open

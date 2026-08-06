@@ -101,9 +101,13 @@ class KnowledgeBaseClient(BaseModel):
             return self._aicp_client
 
         try:
-            from ksyun.common import credential
-            from ksyun.common.profile.client_profile import ClientProfile
-            from ksyun.common.profile.http_profile import HttpProfile
+            from ksyun.common import credential  # type: ignore[import-untyped]
+            from ksyun.common.profile.client_profile import (  # type: ignore[import-untyped]
+                ClientProfile,
+            )
+            from ksyun.common.profile.http_profile import (  # type: ignore[import-untyped]
+                HttpProfile,
+            )
         except ImportError:
             raise ImportError(
                 "kingsoftcloud-sdk-python is required for knowledge base. "
@@ -140,9 +144,7 @@ class KnowledgeBaseClient(BaseModel):
         client_profile = ClientProfile()
         client_profile.httpProfile = http_profile
 
-        self._aicp_client = aicp_module.AicpClient(
-            cred, self.region, profile=client_profile
-        )
+        self._aicp_client = aicp_module.AicpClient(cred, self.region, profile=client_profile)
 
         # 强制覆写 API 版本为 RetrieveKnowledge 所需的 2025-11-14
         # SDK 的 _apiVersion 由导入的模块版本决定，可能不匹配
@@ -159,19 +161,20 @@ class KnowledgeBaseClient(BaseModel):
         """构建 RetrieveKnowledge 请求参数 (JSON 嵌套格式)"""
         effective_top_k = top_k if top_k is not None else self.top_k
 
-        params = {
+        retrieval_model: dict[str, Any] = {
+            "SearchMethod": self.search_method,
+            "TopK": effective_top_k,
+            "RerankingEnable": self.reranking_enable,
+        }
+        params: dict[str, Any] = {
             "DatasetId": self.dataset_id,
             "Query": query,
-            "RetrievalModel": {
-                "SearchMethod": self.search_method,
-                "TopK": effective_top_k,
-                "RerankingEnable": self.reranking_enable,
-            },
+            "RetrievalModel": retrieval_model,
         }
 
         if self.score_threshold_enabled:
-            params["RetrievalModel"]["ScoreThresholdEnabled"] = True
-            params["RetrievalModel"]["ScoreThreshold"] = self.score_threshold
+            retrieval_model["ScoreThresholdEnabled"] = True
+            retrieval_model["ScoreThreshold"] = self.score_threshold
 
         return params
 
@@ -205,9 +208,7 @@ class KnowledgeBaseClient(BaseModel):
 
         return results
 
-    def search(
-        self, query: str, top_k: Optional[int] = None
-    ) -> List[KnowledgeBaseResult]:
+    def search(self, query: str, top_k: Optional[int] = None) -> List[KnowledgeBaseResult]:
         """检索知识库
 
         Args:
@@ -221,18 +222,14 @@ class KnowledgeBaseClient(BaseModel):
         params = self._build_params(query, top_k)
 
         logger.info(
-            f"Searching knowledge base: dataset_id={self.dataset_id}, "
-            f"query='{query[:50]}'"
+            f"Searching knowledge base: dataset_id={self.dataset_id}, " f"query='{query[:50]}'"
         )
 
         try:
-            response = client.call(
-                "RetrieveKnowledge", params, options={"IsPostJson": True}
-            )
+            response = client.call("RetrieveKnowledge", params, options={"IsPostJson": True})
             results = self._parse_response(response)
             logger.info(
-                f"Knowledge base returned {len(results)} results "
-                f"for query='{query[:50]}'"
+                f"Knowledge base returned {len(results)} results " f"for query='{query[:50]}'"
             )
             return results
         except Exception as e:
@@ -252,8 +249,7 @@ class KnowledgeBaseClient(BaseModel):
         dataset_id = os.environ.get("KSADK_KB_DATASET_ID", "")
         if not dataset_id:
             raise ValueError(
-                "KSADK_KB_DATASET_ID environment variable is required "
-                "to enable knowledge base."
+                "KSADK_KB_DATASET_ID environment variable is required " "to enable knowledge base."
             )
 
         access_key = (
@@ -283,9 +279,7 @@ class KnowledgeBaseClient(BaseModel):
             endpoint=connection["endpoint"],
             scheme=connection["scheme"],
             top_k=int(os.environ.get("KSADK_KB_TOP_K", "5")),
-            search_method=os.environ.get(
-                "KSADK_KB_SEARCH_METHOD", "intelligence_search"
-            ),
+            search_method=os.environ.get("KSADK_KB_SEARCH_METHOD", "intelligence_search"),
             score_threshold=score_threshold,
             score_threshold_enabled=score_threshold_enabled,
             reranking_enable=reranking_enable,

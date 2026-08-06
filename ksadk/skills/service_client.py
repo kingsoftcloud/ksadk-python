@@ -9,8 +9,21 @@ import httpx
 import requests
 
 from ksadk.common.auth import AWSV4Auth
-
 from ksadk.skills.models import SkillListResponse, SkillRef
+
+_KOP_HOSTS = frozenset(
+    {
+        "aicp.inner.api.ksyun.com",
+        "aicp.internal.api.ksyun.com",
+        "aicp.api.ksyun.com",
+    }
+)
+_PRIVATE_KOP_HOSTS = frozenset(
+    {
+        "aicp.inner.api.ksyun.com",
+        "aicp.internal.api.ksyun.com",
+    }
+)
 
 
 class SkillServiceClient:
@@ -31,14 +44,24 @@ class SkillServiceClient:
     ):
         self.base_url = _normalize_base_url(base_url)
         self.token = token
-        self.access_key = access_key or _env("KSADK_SKILL_SERVICE_ACCESS_KEY", "KSYUN_ACCESS_KEY", "KS3_ACCESS_KEY")
-        self.secret_key = secret_key or _env("KSADK_SKILL_SERVICE_SECRET_KEY", "KSYUN_SECRET_KEY", "KS3_SECRET_KEY")
+        self.access_key = access_key or _env(
+            "KSADK_SKILL_SERVICE_ACCESS_KEY", "KSYUN_ACCESS_KEY", "KS3_ACCESS_KEY"
+        )
+        self.secret_key = secret_key or _env(
+            "KSADK_SKILL_SERVICE_SECRET_KEY", "KSYUN_SECRET_KEY", "KS3_SECRET_KEY"
+        )
         self.account_id = account_id or _env("KSADK_SKILL_SERVICE_ACCOUNT_ID", "KSYUN_ACCOUNT_ID")
-        self.logical_region = region or _env("KSADK_SKILL_SERVICE_REGION", "KSYUN_REGION") or "cn-beijing-6"
+        self.logical_region = (
+            region or _env("KSADK_SKILL_SERVICE_REGION", "KSYUN_REGION") or "cn-beijing-6"
+        )
         self.region = _normalize_control_region(self.logical_region)
         self.custom_source = _resolve_custom_source(self.logical_region)
-        self.api_version = api_version or os.environ.get("KSADK_SKILL_SERVICE_API_VERSION", "2024-06-12")
-        self.sign_service = sign_service or os.environ.get("KSADK_SKILL_SERVICE_SIGN_SERVICE", "aicp")
+        self.api_version = api_version or os.environ.get(
+            "KSADK_SKILL_SERVICE_API_VERSION", "2024-06-12"
+        )
+        self.sign_service = sign_service or os.environ.get(
+            "KSADK_SKILL_SERVICE_SIGN_SERVICE", "aicp"
+        )
         self.extra_headers = dict(extra_headers or {})
         self.timeout = timeout
         self.transport = transport
@@ -76,7 +99,9 @@ class SkillServiceClient:
 
     def list_available_premade_skills(self) -> SkillListResponse:
         payload = self._get_json("ListAvailablePremadeSkills", {})
-        return SkillListResponse.from_payload(payload, space_id="public", space_name="Public Skills")
+        return SkillListResponse.from_payload(
+            payload, space_id="public", space_name="Public Skills"
+        )
 
     def get_skill_download_url(self, skill: SkillRef) -> str:
         action = "GetSkillDownloadUrl" if skill.version_id else "GetPremadeSkillDownloadUrl"
@@ -97,7 +122,7 @@ class SkillServiceClient:
         with httpx.Client(**self._client_kwargs()) as client:
             response = client.get(download_url)
             response.raise_for_status()
-            return response.content
+            return bytes(response.content)
 
     def _get_json(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
         if self._is_kop_mode():
@@ -169,15 +194,15 @@ class SkillServiceClient:
                 "Set KSADK_SKILL_SERVICE_ACCESS_KEY/KSADK_SKILL_SERVICE_SECRET_KEY "
                 "or KSYUN_ACCESS_KEY/KSYUN_SECRET_KEY."
             )
-        response = self._requests().get(
+        requests_response = self._requests().get(
             self._kop_base_url() + "/",
             params=query,
             headers=headers,
             auth=self._auth.get_auth(),
             timeout=self.timeout,
         )
-        response.raise_for_status()
-        data = response.json()
+        requests_response.raise_for_status()
+        data = requests_response.json()
         if not isinstance(data, dict):
             raise ValueError(f"Skill Service returned non-object response for {action}")
         code = data.get("Code", data.get("code"))
@@ -196,11 +221,17 @@ class SkillServiceClient:
         return self._requests_session
 
     def _is_kop_mode(self) -> bool:
-        host = urlsplit(self.base_url).netloc.lower()
-        return (
-            host.endswith("aicp.inner.api.ksyun.com")
-            or host.endswith("aicp.internal.api.ksyun.com")
-            or host.endswith("aicp.api.ksyun.com")
+        """Match only exact AICP control-plane endpoints.
+
+        A user-controlled URL such as ``aicp.api.ksyun.com.attacker.example``
+        must never receive KOP signing headers. Public AICP requires TLS; the
+        private ``inner`` and ``internal`` endpoints also support their existing
+        in-cluster HTTP transport.
+        """
+        parsed = urlsplit(self.base_url)
+        host = (parsed.hostname or "").lower()
+        return host in _KOP_HOSTS and (
+            parsed.scheme == "https" or (parsed.scheme == "http" and host in _PRIVATE_KOP_HOSTS)
         )
 
     def _kop_base_url(self) -> str:

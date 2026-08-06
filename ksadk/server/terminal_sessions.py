@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import importlib
 import json
+import logging
 import os
 import shutil
 import signal
@@ -12,7 +14,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable
+from typing import Any, Callable, ContextManager
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
@@ -28,20 +30,19 @@ from ksadk.terminal_exec_policy import (
     validate_terminal_exec_argv as validate_exec_argv_with_policy,
 )
 
-try:
-    import pty
-except ImportError:  # pragma: no cover - exercised through subprocess import test
-    pty = None  # type: ignore[assignment]
+logger = logging.getLogger(__name__)
 
-try:
-    import select
-except ImportError:  # pragma: no cover - Windows compatibility
-    select = None  # type: ignore[assignment]
 
-try:
-    import termios
-except ImportError:  # pragma: no cover - exercised through subprocess import test
-    termios = None  # type: ignore[assignment]
+def _optional_platform_module(name: str) -> Any | None:
+    try:
+        return importlib.import_module(name)
+    except ImportError:
+        return None
+
+
+pty = _optional_platform_module("pty")
+select = _optional_platform_module("select")
+termios = _optional_platform_module("termios")
 
 
 TERMINAL_REPLAY_BUFFER_BYTES = 64 * 1024
@@ -96,12 +97,7 @@ def _env_bool(name: str, default: bool) -> bool:
 
 
 def native_terminal_supported() -> bool:
-    return (
-        os.name != "nt"
-        and pty is not None
-        and select is not None
-        and termios is not None
-    )
+    return os.name != "nt" and pty is not None and select is not None and termios is not None
 
 
 class TerminalSessionManager:
@@ -119,6 +115,24 @@ class TerminalSessionManager:
     def reset_for_tests(self) -> None:
         for session in list(self.sessions.values()):
             self._terminate_session(session)
+        self.sessions.clear()
+
+    async def close(self) -> None:
+        """Terminate and await every terminal task owned by this manager."""
+        sessions = list(self.sessions.values())
+        tasks: list[asyncio.Task[Any]] = []
+        attachments: set[WebSocket] = set()
+        for session in sessions:
+            self._terminate_session(session)
+            attachments.update(session.attachments)
+            tasks.extend(
+                task for task in (session.reader_task, session.wait_task) if task is not None
+            )
+        for ws in attachments:
+            with contextlib.suppress(Exception):
+                await ws.close(code=1012, reason="runtime shutting down")
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         self.sessions.clear()
 
     def serialize(self, session: TerminalSession) -> dict[str, Any]:
@@ -213,7 +227,10 @@ class TerminalSessionManager:
         session = TerminalSession(
             id=f"term-{uuid.uuid4().hex[:12]}",
             session_id=str(
-                payload.get("session_id") or payload.get("sessionId") or payload.get("SessionId") or ""
+                payload.get("session_id")
+                or payload.get("sessionId")
+                or payload.get("SessionId")
+                or ""
             ).strip(),
             mode=str(payload.get("mode") or "tui").strip().lower(),
             framework=self._current_framework(),
@@ -255,7 +272,10 @@ class TerminalSessionManager:
         for session in list(self.sessions.values()):
             if session.deleted:
                 continue
-            if session.status == "detached" and now - session.updated_at > TERMINAL_DETACHED_TTL_SECONDS:
+            if (
+                session.status == "detached"
+                and now - session.updated_at > TERMINAL_DETACHED_TTL_SECONDS
+            ):
                 session.deleted = True
                 session.status = "deleted"
                 self._terminate_session(session)
@@ -272,7 +292,9 @@ class TerminalSessionManager:
         ):
             raise ValueError("too many terminal sessions in this runtime")
         if session_id:
-            per_business_session = [session for session in active_sessions if session.session_id == session_id]
+            per_business_session = [
+                session for session in active_sessions if session.session_id == session_id
+            ]
             if len(per_business_session) >= _env_int(
                 "AGENTENGINE_TERMINAL_MAX_SESSIONS_PER_BUSINESS_SESSION",
                 MAX_TERMINAL_SESSIONS_PER_BUSINESS_SESSION,
@@ -285,7 +307,11 @@ class TerminalSessionManager:
         if mode == "tui":
             return self._resolve_tui_command(session)
         if mode == "exec":
-            policy = HERMES_TERMINAL_EXEC_POLICY if framework == "hermes" else OPENCLAW_TERMINAL_EXEC_POLICY
+            policy = (
+                HERMES_TERMINAL_EXEC_POLICY
+                if framework == "hermes"
+                else OPENCLAW_TERMINAL_EXEC_POLICY
+            )
             if framework not in {"hermes", "openclaw"}:
                 policy = GENERIC_TERMINAL_EXEC_POLICY
             return validate_exec_argv_with_policy(session.argv, policy=policy)
@@ -296,13 +322,17 @@ class TerminalSessionManager:
         if framework == "hermes" and shutil.which("hermes"):
             command = ["hermes", "chat"]
             if session.session_id and _env_bool("HERMES_TERMINAL_RESUME_ENABLED", True):
-                command.extend([os.getenv("HERMES_TERMINAL_RESUME_FLAG", "--resume"), session.session_id])
+                command.extend(
+                    [os.getenv("HERMES_TERMINAL_RESUME_FLAG", "--resume"), session.session_id]
+                )
             session.argv = command
             return command
         if framework == "openclaw" and shutil.which("openclaw"):
             command = ["openclaw", "tui"]
             if session.session_id:
-                command.extend([os.getenv("OPENCLAW_TERMINAL_SESSION_FLAG", "--session"), session.session_id])
+                command.extend(
+                    [os.getenv("OPENCLAW_TERMINAL_SESSION_FLAG", "--session"), session.session_id]
+                )
             session.argv = command
             return command
         shell = os.getenv("SHELL") or "/bin/sh"
@@ -367,13 +397,15 @@ class TerminalSessionManager:
             session.fd = None
 
     async def _session_reader(self, session: TerminalSession) -> None:
-        if session.fd is None:
+        fd = session.fd
+        selector = select
+        if fd is None or selector is None:
             return
         loop = asyncio.get_running_loop()
         while True:
-            await loop.run_in_executor(None, lambda: select.select([session.fd], [], [], None))
+            await loop.run_in_executor(None, lambda: selector.select([fd], [], [], None))
             try:
-                data = os.read(session.fd, 4096)
+                data = os.read(fd, 4096)
             except OSError:
                 return
             if not data:
@@ -396,7 +428,11 @@ class TerminalSessionManager:
 
     async def _attach_existing(self, ws: WebSocket, session: TerminalSession) -> None:
         session.attachments.add(ws)
-        session.status = "running" if session.status == "detached" and session.pid is not None else session.status
+        session.status = (
+            "running"
+            if session.status == "detached" and session.pid is not None
+            else session.status
+        )
         session.updated_at = time.time()
         try:
             await ws.send_text(
@@ -466,9 +502,10 @@ class TerminalSessionManager:
 
     def _persist_metadata(self, session: TerminalSession) -> None:
         try:
-            state_dir = Path(
-                os.getenv("AGENTENGINE_TERMINAL_STATE_DIR", "/home/node/.agentengine/terminal")
-            )
+            # Persist only under the current runtime user's state directory.  An
+            # environment-controlled absolute path would select an arbitrary
+            # write location before the terminal server starts.
+            state_dir = Path.home() / ".agentengine" / "terminal"
             state_dir.mkdir(parents=True, exist_ok=True)
             (state_dir / f"{session.id}.json").write_text(
                 json.dumps(self.serialize(session), ensure_ascii=False, indent=2),
@@ -482,7 +519,8 @@ def _set_winsize(fd: int, rows: int, cols: int) -> None:
     if termios is None:
         return
     with contextlib.suppress(Exception):
-        termios.tcsetwinsize(fd, (int(rows or 24), int(cols or 80)))
+        set_winsize = getattr(termios, "tcsetwinsize")
+        set_winsize(fd, (int(rows or 24), int(cols or 80)))
 
 
 async def _wait_process(pid: int) -> int:
@@ -495,14 +533,19 @@ async def _wait_process(pid: int) -> int:
     return status
 
 
-def register_terminal_routes(app: FastAPI, manager: TerminalSessionManager) -> None:
+def register_terminal_routes(
+    app: FastAPI,
+    manager: TerminalSessionManager,
+    *,
+    bind_context: Callable[[], ContextManager[Any]] | None = None,
+) -> None:
     @app.post("/_ksadk/terminal/sessions")
     async def create_terminal_session(request: Request) -> JSONResponse:
         payload = await request.json()
         try:
             session = await manager.create_or_reuse(payload if isinstance(payload, dict) else {})
-        except ValueError as exc:
-            return JSONResponse({"error": str(exc)}, status_code=400)
+        except ValueError:
+            return JSONResponse({"error": "invalid_terminal_request"}, status_code=400)
         return JSONResponse({"session": manager.serialize(session)})
 
     @app.get("/_ksadk/terminal/sessions")
@@ -525,27 +568,37 @@ def register_terminal_routes(app: FastAPI, manager: TerminalSessionManager) -> N
 
     @app.websocket("/_ksadk/terminal/ws")
     async def terminal_ws(ws: WebSocket) -> None:
-        if TERMINAL_SUBPROTOCOL not in (ws.headers.get("sec-websocket-protocol") or ""):
-            await ws.close(code=4400, reason="missing ks-terminal.v1 subprotocol")
-            return
-        await ws.accept(subprotocol=TERMINAL_SUBPROTOCOL)
-        try:
-            query_session_id = str(ws.query_params.get("terminal_session_id") or "").strip()
-            if query_session_id:
-                await manager.attach(ws, query_session_id)
+        context = bind_context() if bind_context is not None else contextlib.nullcontext()
+        with context:
+            if TERMINAL_SUBPROTOCOL not in (ws.headers.get("sec-websocket-protocol") or ""):
+                await ws.close(code=4400, reason="missing ks-terminal.v1 subprotocol")
                 return
-            first = await ws.receive_text()
-            payload = json.loads(first)
-            if payload.get("type") == "attach":
-                terminal_session_id = str(payload.get("terminal_session_id") or "").strip()
-                await manager.attach(ws, terminal_session_id)
+            await ws.accept(subprotocol=TERMINAL_SUBPROTOCOL)
+            try:
+                query_session_id = str(ws.query_params.get("terminal_session_id") or "").strip()
+                if query_session_id:
+                    await manager.attach(ws, query_session_id)
+                    return
+                first = await ws.receive_text()
+                payload = json.loads(first)
+                if payload.get("type") == "attach":
+                    terminal_session_id = str(payload.get("terminal_session_id") or "").strip()
+                    await manager.attach(ws, terminal_session_id)
+                    return
+                if payload.get("type") != "start":
+                    raise ValueError("first frame must be start")
+                await manager.legacy_start(ws, payload)
+            except WebSocketDisconnect:
                 return
-            if payload.get("type") != "start":
-                raise ValueError("first frame must be start")
-            await manager.legacy_start(ws, payload)
-        except WebSocketDisconnect:
-            return
-        except Exception as exc:
-            if ws.client_state == WebSocketState.CONNECTED:
-                await ws.send_text(json.dumps({"type": "error", "message": str(exc)}))
-                await ws.close()
+            except Exception:
+                logger.exception("terminal websocket request failed")
+                if ws.client_state == WebSocketState.CONNECTED:
+                    await ws.send_text(
+                        json.dumps(
+                            {
+                                "type": "error",
+                                "message": "Terminal request failed; see server logs for details.",
+                            }
+                        )
+                    )
+                    await ws.close()

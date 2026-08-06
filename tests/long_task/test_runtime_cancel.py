@@ -94,9 +94,7 @@ async def test_cancel_run_stops_detached_stream_and_writes_cancelled_terminal(mo
     for _ in range(20):
         events = await service.get_events("sess-cancel-long-task")
         statuses = [
-            event.content.get("status")
-            for event in events
-            if event.event_type == "run_status"
+            event.content.get("status") for event in events if event.event_type == "run_status"
         ]
         if statuses == ["in_progress"]:
             break
@@ -119,16 +117,16 @@ async def test_cancel_run_stops_detached_stream_and_writes_cancelled_terminal(mo
 
     for _ in range(30):
         events = await service.get_events("sess-cancel-long-task")
-        if events and events[-1].event_type == "run_status" and events[-1].content.get("status") == "cancelled":
+        if (
+            events
+            and events[-1].event_type == "run_status"
+            and events[-1].content.get("status") == "cancelled"
+        ):
             break
         await asyncio.sleep(0.02)
 
     events = await service.get_events("sess-cancel-long-task")
-    statuses = [
-        event.content.get("status")
-        for event in events
-        if event.event_type == "run_status"
-    ]
+    statuses = [event.content.get("status") for event in events if event.event_type == "run_status"]
     event_types = [event.event_type for event in events]
     assert statuses == ["in_progress", "cancelled"]
     assert "assistant_message" not in event_types

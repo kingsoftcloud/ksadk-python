@@ -1,0 +1,115 @@
+---
+title: "YAML Is the Agent: Codex"
+description: "New in 0.8: declare, debug, and deploy a Codex Managed Runtime from one agentengine.yaml."
+---
+
+<Callout type="info" title="New in 0.8">
+Codex is KsADK's first “YAML is the agent” pattern: `agentengine.yaml` is the
+single configuration source. There is no `agent.py`, no second `codex.yaml`, and
+no developer-machine binary enters the cloud deployment artifact.
+</Callout>
+
+Use this pattern when Codex is the coding agent and the same declaration should
+work for native local debugging and managed cloud delivery. Use LangGraph, ADK,
+or HarnessApp when you need custom Python orchestration, business functions, or a
+complex state graph rather than putting code into this manifest.
+
+## Create the minimal project
+
+```bash title="shell"
+python -m venv .venv
+source .venv/bin/activate
+pip install -U "ksadk[codex]"
+agentengine init --framework codex my-codex-agent
+cd my-codex-agent
+```
+
+The template has only four user files: `agentengine.yaml`, `.env`,
+`requirements.txt`, and a README. `requirements.txt` is for native local
+debugging only; it never enters a ManagedRuntime artifact.
+
+## Make YAML the agent
+
+Version the identity, Runtime, model, and developer instruction together:
+
+```yaml title="agentengine.yaml"
+name: review-helper
+version: "1.0.0"
+framework: codex
+artifact_type: ManagedRuntime
+
+runtime:
+  name: codex
+  version: "0.144.4"
+
+model: kimi-k3
+prompt: |
+  You are the team's code-review assistant.
+  State findings and their impact before giving minimal, executable fixes.
+  Do not guess about unread files; say which command you would run to verify.
+```
+
+`runtime.version` is the reproducibility boundary. Local `web` validates the
+installed `openai-codex` package and CLI binary; the cloud catalog resolves the
+same version to an immutable Linux image digest. Development may omit it to use a
+server default; offline local development can use the installed version, but a
+production build should always lock it explicitly.
+
+## Debug natively, without Docker
+
+Put model credentials only in an uncommitted `.env`:
+
+```bash title=".env"
+OPENAI_API_KEY=<your-key>
+OPENAI_BASE_URL=https://api.example.com/v1
+OPENAI_MODEL_NAME=gpt-5.1-codex
+```
+
+Start the browser debugging UI:
+
+```bash title="shell"
+agentengine web . --port 8080 --no-open
+```
+
+`openai-codex` resolves the matching CLI for macOS, Windows, or Linux and starts
+a native subprocess, not a Docker image. The official OpenAI upstream is direct.
+For a custom chat-only upstream, KsADK conservatively probes whether it needs a
+local Responses-to-Chat proxy. Set `KSADK_CODEX_USE_PROXY=1` to force the proxy or
+`0` to force direct mode.
+
+## Deploy: the manifest does not go through KS3
+
+Build the reproducible local audit zip (only normalized YAML and a lock):
+
+```bash title="shell"
+agentengine build .
+unzip -l .agentengine/managed_runtime/review-helper-1.0.0-runtime.zip
+```
+
+Deployment does not upload that zip. The CLI sends an inline manifest, Runtime
+name, version, and SHA-256 to the server:
+
+```bash title="shell"
+agentengine deploy . --target serverless --dry-run
+agentengine deploy . --target serverless
+```
+
+Do not use `--push`, `--ks3-bucket`, `--ks3-path`, or `--mode code`; they belong
+to the Code artifact path and ManagedRuntime rejects them. Choose explicit
+`--mode container` only when your team maintains the Linux image itself.
+
+## Pre-commit checklist
+
+- Keep only declarations in `agentengine.yaml`; never include API keys, cloud
+  AK/SK values, or private endpoints.
+- Put `.env` and `.agentengine/` in `.gitignore`; commit only a placeholder
+  `.env.example`.
+- Lock `runtime.version` and run `agentengine web . --no-open` once on every
+  development platform.
+- Run `agentengine build .` and verify the zip contains only `agentengine.yaml`
+  and `runtime-lock.json`.
+- Before deployment, run `agentengine deploy . --target serverless --dry-run`
+  and verify the returned Runtime version and image digest.
+
+See [Codex Managed Runtime](../../guides/managed-runtime) for the full runtime
+contract, image boundary, and environment variables.

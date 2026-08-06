@@ -6,7 +6,6 @@ from typing import Optional
 
 import click
 
-
 DEFAULT_STORAGE_SIZE_GI = 20
 MIN_STORAGE_SIZE_GI = 20
 MAX_STORAGE_SIZE_GI = 500

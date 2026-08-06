@@ -92,10 +92,12 @@ def build_compaction_prompt_messages(
     不把 prompt 字符串散落到 runtime 编排里。
     """
 
-    groups_text = "\n\n".join(
-        _format_group(group, index=index + 1)
-        for index, group in enumerate(groups_to_compact)
-    ).strip() or "无可压缩内容"
+    groups_text = (
+        "\n\n".join(
+            _format_group(group, index=index + 1) for index, group in enumerate(groups_to_compact)
+        ).strip()
+        or "无可压缩内容"
+    )
     user_prompt = _SUMMARY_USER_PROMPT.format(
         model_metadata=json.dumps(dict(model_metadata or {}), ensure_ascii=False, indent=2),
         previous_summary=previous_summary.strip() or "无",
@@ -115,7 +117,9 @@ def extract_summary_text(response_text: str) -> str:
     if not raw:
         return ""
 
-    summary_match = re.search(r"<summary>\s*(.*?)\s*</summary>", raw, flags=re.DOTALL | re.IGNORECASE)
+    summary_match = re.search(
+        r"<summary>\s*(.*?)\s*</summary>", raw, flags=re.DOTALL | re.IGNORECASE
+    )
     if summary_match:
         return summary_match.group(1).strip()
 

@@ -2,14 +2,26 @@
 agentengine launch - 一键完成构建和部署
 """
 
-import click
-import asyncio
 from pathlib import Path
+from typing import Any
+
+import click
+
 from ksadk.api.client import DryRunExit
-from ksadk.cli.cmd_deploy import _apply_network_config, _resolve_artifact_type_input, _resolve_ui_config_inputs
+from ksadk.cli.cmd_deploy import (
+    _apply_network_config,
+    _resolve_artifact_type_input,
+    _resolve_ui_config_inputs,
+)
 from ksadk.cli.dry_run import effective_dry_run, run_async_with_dry_run
 from ksadk.cli.env_options import env_options, resolve_explicit_env_vars
-from ksadk.cli.error_utils import cli_error_from_exception, is_debug_mode_enabled, remote_error, usage_error, validation_error
+from ksadk.cli.error_utils import (
+    cli_error_from_exception,
+    is_debug_mode_enabled,
+    remote_error,
+    usage_error,
+    validation_error,
+)
 from ksadk.cli.network_options import (
     apply_network_cli_overrides,
     network_cli_kwargs,
@@ -18,6 +30,18 @@ from ksadk.cli.network_options import (
     validate_deploy_target_network,
 )
 from ksadk.cli.storage import build_storage_config
+from ksadk.cli.ui import (
+    capture_standard_output,
+    is_json_output,
+    print_info,
+    print_kv,
+    print_rule,
+    print_success,
+    print_warn,
+)
+from ksadk.cli.ui import (
+    output_option as cli_output_option,
+)
 from ksadk.cli.workflow_common import (
     build_workflow_local_plan,
     clear_build_metadata,
@@ -31,17 +55,10 @@ from ksadk.cli.workflow_common import (
     resolve_artifact_build_plan,
 )
 from ksadk.deployment.ui_config import SUPPORTED_UI_PROFILES
-from ksadk.cli.ui import (
-    capture_standard_output,
-    is_json_output,
-    output_option as cli_output_option,
-    print_error,
-    print_info,
-    print_kv,
-    print_rule,
-    print_success,
-    print_warn,
-)
+
+
+def _dict_or_none(value: object) -> dict[str, Any] | None:
+    return dict(value) if isinstance(value, dict) and value else None
 
 
 @click.command(context_settings=dict(help_option_names=["-h", "--help"]))
@@ -54,8 +71,12 @@ from ksadk.cli.ui import (
     help="部署目标 (default: serverless)",
 )
 @click.option("--name", "-n", help="部署名称")
-@click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="区域 (serverless)")
-@click.option("--account-id", envvar="KSYUN_ACCOUNT_ID", help="金山云账号 ID（可选；未设置时从 AK/SK 反查）")
+@click.option(
+    "--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="区域 (serverless)"
+)
+@click.option(
+    "--account-id", envvar="KSYUN_ACCOUNT_ID", help="金山云账号 ID（可选；未设置时从 AK/SK 反查）"
+)
 @click.option("--observability/--no-observability", default=True, help="是否启用可观测性")
 @click.option("--no-cache", is_flag=True, help="强制重新构建，不使用缓存")
 @click.option("--port", "-p", default=8000, help="服务端口 (default: 8000)")
@@ -71,7 +92,10 @@ from ksadk.cli.ui import (
 @click.option(
     "--storage-mount-path",
     default=None,
-    help="PVC 挂载目录（hermes/openclaw 默认按框架推导；adk/langgraph 等其他框架默认不挂盘，需显式指定）",
+    help=(
+        "PVC 挂载目录（hermes/openclaw 默认按框架推导；"
+        "adk/langgraph 等其他框架默认不挂盘，需显式指定）"
+    ),
 )
 @click.option("--no-storage", is_flag=True, help="禁用默认 PVC 挂载")
 @network_options
@@ -181,7 +205,7 @@ def launch(
             lambda exc: render_workflow_dry_run(
                 action="launch",
                 request=dict(exc.payload or {}),
-                plan=dict(dry_run_context.get("plan") or {}) or None,
+                plan=_dict_or_none(dry_run_context.get("plan")),
             )
         ),
     )
@@ -223,8 +247,8 @@ async def _launch_async(
     env_file: str | None = None,
     dry_run_context: dict[str, object] | None = None,
 ):
-    from ksadk.detection import FrameworkDetector
     from ksadk.deployment import DeploymentManager, DeployTarget
+    from ksadk.detection import FrameworkDetector
 
     agent_path = Path(agent_dir).resolve()
     config = _load_config(agent_path)
@@ -236,7 +260,11 @@ async def _launch_async(
         )
     except ValueError as e:
         raise validation_error(str(e))
-    effective_artifact_type = _resolve_artifact_type_input(config, artifact_type) if target == "serverless" else artifact_type
+    effective_artifact_type = (
+        _resolve_artifact_type_input(config, artifact_type)
+        if target == "serverless"
+        else artifact_type
+    )
     print_workflow_header(
         title="Agent Launch",
         subtitle=f"target: {target}",
@@ -337,7 +365,9 @@ async def _launch_async(
     explicit_artifact_reference = ks3_path if normalized_artifact_type == "code" else image
     cached_artifact_reference = None
     if not artifact_plan.should_clear_metadata:
-        cached_artifact_reference = load_cached_artifact_reference(agent_path, effective_artifact_type)
+        cached_artifact_reference = load_cached_artifact_reference(
+            agent_path, effective_artifact_type
+        )
     resolved_artifact_plan = resolve_artifact_build_plan(
         plan=artifact_plan,
         target=target,
@@ -381,7 +411,7 @@ async def _launch_async(
                 package_info.metadata["image"] = resolved_artifact_plan.reference
             else:
                 package_info.metadata["ks3_path"] = resolved_artifact_plan.reference
-        
+
         print_kv("构建目录", str(package_info.build_dir))
     except Exception as e:
         raise cli_error_from_exception(e, context="打包失败")
@@ -412,7 +442,7 @@ async def _launch_async(
                 if ks3:
                     print_kv("KS3 路径", ks3)
             else:
-                print_kv("镜像", package_info.image)
+                print_kv("镜像", package_info.image or "-")
 
         except Exception as e:
             raise cli_error_from_exception(e, context="构建失败")
@@ -458,10 +488,11 @@ async def _launch_async(
                 print_warn("请妥善保存此 API Key，它仅在首次部署时显示")
             if result.message:
                 print_kv("信息", result.message)
-            
+
             # 9. 自动创建版本快照 (除非指定 --no-version)
             if result.agent_id and not no_version and not dry_run:
                 from ksadk.cli.deploy_utils import auto_release_version
+
                 with capture_standard_output():
                     await auto_release_version(result.agent_id, region, deploy_name)
 
@@ -494,7 +525,11 @@ async def _launch_async(
             }
         else:
             if result.status.name == "SKIPPED":
-                dry_run_request = result.metadata.get("dry_run_request") if isinstance(result.metadata, dict) else None
+                dry_run_request = (
+                    result.metadata.get("dry_run_request")
+                    if isinstance(result.metadata, dict)
+                    else None
+                )
                 if dry_run and dry_run_request:
                     raise DryRunExit(result.message or "Dry Run finished.", payload=dry_run_request)
                 print_warn(f"部署状态: {result.status.value}")
@@ -531,10 +566,11 @@ async def _launch_async(
             )
             if result.message:
                 print_info(result.message)
-            
+
             # 10. 自动回滚
             if auto_rollback and result.agent_id and result.status.name not in ["SKIPPED"]:
                 from ksadk.cli.deploy_utils import auto_rollback_to_previous
+
                 with capture_standard_output():
                     await auto_rollback_to_previous(result.agent_id, region)
 
@@ -558,7 +594,7 @@ def _load_config(agent_path: Path) -> dict:
 
     if config_path.exists():
         # 使用 utf-8-sig 自动处理 BOM，确保 Windows 兼容性
-        with open(config_path, encoding='utf-8-sig') as f:
+        with open(config_path, encoding="utf-8-sig") as f:
             return yaml.safe_load(f) or {}
 
     return {}

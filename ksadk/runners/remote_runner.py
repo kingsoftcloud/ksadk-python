@@ -47,7 +47,9 @@ class RemoteRunner(BaseRunner):
         self._responses_text_streamed = False
         self._responses_reasoning_streamed = False
         self._observed_model: str | None = None  # 流式回包里观察到的真实模型名
-        self.available_models: list[dict[str, Any]] | None = None  # ListAgentModels 拿到的可选模型列表
+        self.available_models: list[dict[str, Any]] | None = (
+            None  # ListAgentModels 拿到的可选模型列表
+        )
 
     @staticmethod
     def _normalize_api_format(api_format: Optional[str]) -> str:
@@ -112,18 +114,44 @@ class RemoteRunner(BaseRunner):
         return str(user_input or "")
 
     @staticmethod
-    def _build_responses_conversation_history(history: Any, current_input: Any) -> list[dict[str, Any]]:
-        if not isinstance(history, Sequence) or isinstance(
-            history, (str, bytes, bytearray)
-        ):
+    def _build_responses_conversation_history(
+        history: Any, current_input: Any
+    ) -> list[dict[str, Any]]:
+        if not isinstance(history, Sequence) or isinstance(history, (str, bytes, bytearray)):
             return []
 
         messages: list[dict[str, Any]] = []
+        current_output_call_ids: set[str] = set()
+        if isinstance(current_input, Mapping):
+            current_items = [current_input]
+        elif isinstance(current_input, Sequence) and not isinstance(
+            current_input, (str, bytes, bytearray)
+        ):
+            current_items = [item for item in current_input if isinstance(item, Mapping)]
+        else:
+            current_items = []
+        for item in current_items:
+            if str(item.get("type") or "").strip().lower() != "function_call_output":
+                continue
+            call_id = str(item.get("call_id") or "").strip()
+            if call_id:
+                current_output_call_ids.add(call_id)
         current_text = RemoteRunner._responses_message_text(
             {"role": "user", "content": current_input}
         ).strip()
         for item in history:
             if not isinstance(item, Mapping):
+                continue
+            item_type = str(item.get("type") or "").strip().lower()
+            if item_type in {"function_call", "function_call_output"}:
+                # Responses tool items are already protocol-shaped. Do not
+                # reinterpret them as chat messages or they lose call_id.
+                if (
+                    item_type == "function_call_output"
+                    and str(item.get("call_id") or "").strip() in current_output_call_ids
+                ):
+                    continue
+                messages.append(dict(item))
                 continue
             role = str(item.get("role") or "").strip().lower()
             if role == "model":
@@ -144,7 +172,9 @@ class RemoteRunner(BaseRunner):
         return messages
 
     @staticmethod
-    def _responses_conversation_name(input_data: Mapping[str, Any], session_id: Optional[str]) -> str:
+    def _responses_conversation_name(
+        input_data: Mapping[str, Any], session_id: Optional[str]
+    ) -> str:
         if not session_id:
             return ""
         platform_context = input_data.get("platform_context")
@@ -181,10 +211,27 @@ class RemoteRunner(BaseRunner):
                 "input": self._build_responses_input(user_input),
                 "stream": stream,
             }
-            history_enabled = bool(input_data.get("responses_conversation")) and not previous_response_id
+            history_enabled = (
+                bool(input_data.get("responses_conversation"))
+                or bool(input_data.get("responses_history"))
+            ) and not previous_response_id
             if history_enabled:
+                structured_history = input_data.get("responses_history")
+                history_input: Sequence[Any] | None
+                if isinstance(structured_history, Sequence) and not isinstance(
+                    structured_history, (str, bytes, bytearray)
+                ):
+                    history_input = structured_history
+                else:
+                    fallback_history = input_data.get("history")
+                    history_input = (
+                        fallback_history
+                        if isinstance(fallback_history, Sequence)
+                        and not isinstance(fallback_history, (str, bytes, bytearray))
+                        else None
+                    )
                 history = self._build_responses_conversation_history(
-                    input_data.get("history"),
+                    history_input,
                     user_input,
                 )
                 if history:
@@ -193,9 +240,7 @@ class RemoteRunner(BaseRunner):
             if conversation and not previous_response_id:
                 payload["conversation"] = conversation
             elif (
-                input_data.get("responses_conversation")
-                and session_id
-                and not previous_response_id
+                input_data.get("responses_conversation") and session_id and not previous_response_id
             ):
                 conversation = self._responses_conversation_name(input_data, str(session_id))
                 if conversation:
@@ -209,9 +254,15 @@ class RemoteRunner(BaseRunner):
         return payload
 
     @staticmethod
-    def _builtin_response_tool_schemas(input_data: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
+    def _builtin_response_tool_schemas(
+        input_data: Mapping[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
         try:
-            from ksadk.toolsets import builtin_tool_descriptors_for_runtime, builtin_tools_mode, describe_agentengine_tools
+            from ksadk.toolsets import (
+                builtin_tool_descriptors_for_runtime,
+                builtin_tools_mode,
+                describe_agentengine_tools,
+            )
 
             mode = builtin_tools_mode(default="off")
             descriptors = builtin_tool_descriptors_for_runtime(mode=mode)
@@ -220,7 +271,9 @@ class RemoteRunner(BaseRunner):
         deferred_names = RemoteRunner._deferred_tool_names(input_data)
         if deferred_names:
             try:
-                direct_descriptors = describe_agentengine_tools(include=deferred_names, profile="coding")
+                direct_descriptors = describe_agentengine_tools(
+                    include=deferred_names, profile="coding"
+                )
             except Exception:
                 direct_descriptors = []
             direct_descriptors = [
@@ -347,7 +400,9 @@ class RemoteRunner(BaseRunner):
         usage = self._response_usage_payload(data)
 
         if self.api_format == "responses":
-            result = {"output": self._extract_responses_output_text(data) or str(data)}
+            result: dict[str, Any] = {
+                "output": self._extract_responses_output_text(data) or str(data)
+            }
             if usage:
                 result["usage"] = usage
             return result
@@ -440,7 +495,9 @@ class RemoteRunner(BaseRunner):
                             # 兜底：api_format 标成 chat 但 runtime 实发 responses 格式
                             # 事件（event_name 或 data.type 以 response. 开头）→ 按 responses
                             # 解析，否则 response.reasoning.delta 会被 chat 路径当顶层 text 显示。
-                            _ev = event_name or (str(data.get("type")) if isinstance(data, Mapping) else "")
+                            _ev = event_name or (
+                                str(data.get("type")) if isinstance(data, Mapping) else ""
+                            )
                             if _ev.startswith("response."):
                                 async for item in self._iter_responses_stream_events(
                                     data, event_name=event_name
@@ -592,7 +649,13 @@ class RemoteRunner(BaseRunner):
                 else item.get("args", item.get("input"))
             )
             self._remember_responses_tool(key, item, name, args)
-            yield {"type": "tool_call", "tool_name": name, "tool_args": args, "status": status, "call_id": key}
+            yield {
+                "type": "tool_call",
+                "tool_name": name,
+                "tool_args": args,
+                "status": status,
+                "call_id": key,
+            }
             return
 
         if item_type == "function_call_output":
@@ -605,7 +668,12 @@ class RemoteRunner(BaseRunner):
             output = self._stringify_responses_payload(
                 item.get("output") if "output" in item else item.get("result", item.get("content"))
             )
-            yield {"type": "tool_result", "tool_name": name, "tool_output": output, "call_id": call_id or key}
+            yield {
+                "type": "tool_result",
+                "tool_name": name,
+                "tool_output": output,
+                "call_id": call_id or key,
+            }
             return
 
         if item_type == "mcp_approval_request":
@@ -687,9 +755,17 @@ class RemoteRunner(BaseRunner):
         # ksadk/runtime 特有 tool 事件（对标 hosted UI responses-stream.js:176-186）
         if event_type in {"response.tool_call", "response.ksadk.stage_tool_call"}:
             name = str(data.get("name") or data.get("tool_name") or "tool")
-            args = self._stringify_responses_payload(data.get("args") if "args" in data else data.get("arguments"))
+            args = self._stringify_responses_payload(
+                data.get("args") if "args" in data else data.get("arguments")
+            )
             cid = str(data.get("call_id") or data.get("item_id") or data.get("run_id") or "")
-            yield {"type": "tool_call", "tool_name": name, "tool_args": args, "status": "running", "call_id": cid}
+            yield {
+                "type": "tool_call",
+                "tool_name": name,
+                "tool_args": args,
+                "status": "running",
+                "call_id": cid,
+            }
             return
         if event_type in {
             "response.tool_result",
@@ -697,7 +773,9 @@ class RemoteRunner(BaseRunner):
             "response.ksadk.stage_tool_result",
         }:
             name = str(data.get("name") or data.get("tool_name") or "tool")
-            output = self._stringify_responses_payload(data.get("output") if "output" in data else data.get("result"))
+            output = self._stringify_responses_payload(
+                data.get("output") if "output" in data else data.get("result")
+            )
             cid = str(data.get("call_id") or data.get("item_id") or data.get("run_id") or "")
             yield {
                 "type": "tool_result",
@@ -712,7 +790,13 @@ class RemoteRunner(BaseRunner):
             args = f"{self._responses_tool_args.get(key, '')}{str(data.get('delta') or '')}"
             if key:
                 self._responses_tool_args[key] = args
-            yield {"type": "tool_call", "tool_name": name, "tool_args": args, "status": "running", "call_id": key}
+            yield {
+                "type": "tool_call",
+                "tool_name": name,
+                "tool_args": args,
+                "status": "running",
+                "call_id": key,
+            }
             return
         if event_type == "response.function_call_arguments.done":
             key = str(data.get("item_id") or data.get("call_id") or "")
@@ -722,16 +806,27 @@ class RemoteRunner(BaseRunner):
             )
             if key:
                 self._responses_tool_args[key] = args
-            yield {"type": "tool_call", "tool_name": name, "tool_args": args, "status": "running", "call_id": key}
+            yield {
+                "type": "tool_call",
+                "tool_name": name,
+                "tool_args": args,
+                "status": "running",
+                "call_id": key,
+            }
             return
         if event_type == "response.completed":
-            response = data.get("response") if isinstance(data.get("response"), dict) else data
-            output = response.get("output") if isinstance(response, dict) else None
-            if isinstance(output, list):
+            nested_response = data.get("response")
+            response_data: dict[str, Any] = (
+                dict(nested_response) if isinstance(nested_response, dict) else data
+            )
+            completed_output = (
+                response_data.get("output") if isinstance(response_data, dict) else None
+            )
+            if isinstance(completed_output, list):
                 replayed_item_keys = set(self._responses_streamed_item_keys)
                 replay_completed_text = not self._responses_text_streamed
                 replay_completed_reasoning = not self._responses_reasoning_streamed
-                for item in output:
+                for item in completed_output:
                     if isinstance(item, dict):
                         key = self._responses_item_key(item, {"item": item})
                         call_id = str(item.get("call_id") or "")
@@ -748,13 +843,13 @@ class RemoteRunner(BaseRunner):
                             yield projected
                 chunk = {
                     "type": "responses_output",
-                    "output": output,
-                    "response_id": response.get("id"),
+                    "output": completed_output,
+                    "response_id": response_data.get("id"),
                 }
-                usage = response.get("usage")
+                usage = response_data.get("usage")
                 if isinstance(usage, Mapping):
                     chunk["usage"] = dict(usage)
-                metadata = response.get("metadata")
+                metadata = response_data.get("metadata")
                 if isinstance(metadata, Mapping):
                     chunk["metadata"] = dict(metadata)
                 yield chunk
@@ -762,9 +857,15 @@ class RemoteRunner(BaseRunner):
         # response.content_part.delta：glm 等模型把 reasoning 走这个事件，
         # partType 含 "reasoning" → thinking（不显示），否则 text（对标 hosted UI）。
         if event_type == "response.content_part.delta":
-            part = data.get("part") if isinstance(data.get("part"), dict) else {}
+            part_value = data.get("part")
+            part: dict[str, Any] = dict(part_value) if isinstance(part_value, dict) else {}
             delta = data.get("delta")
-            part_type = str(part.get("type") or (delta.get("type") if isinstance(delta, dict) else "") or data.get("content_type") or "")
+            part_type = str(
+                part.get("type")
+                or (delta.get("type") if isinstance(delta, dict) else "")
+                or data.get("content_type")
+                or ""
+            )
             text = ""
             if isinstance(delta, dict):
                 text = str(delta.get("text") or delta.get("content") or "")

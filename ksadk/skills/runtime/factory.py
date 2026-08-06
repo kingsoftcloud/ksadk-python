@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import os
 
-from ksadk.skills.runtime.base import SkillRuntimeBackend
 from ksadk.skills.runtime.backends.disabled import DisabledSkillRuntimeBackend
 from ksadk.skills.runtime.backends.e2b import E2BSkillRuntimeBackend
 from ksadk.skills.runtime.backends.local import LocalProcessSkillRuntimeBackend
+from ksadk.skills.runtime.base import SkillRuntimeBackend
 
 
 def _resolve_backend(backend: str | None = None) -> str:
@@ -20,7 +20,9 @@ def _resolve_backend(backend: str | None = None) -> str:
     if sandbox_backend and sandbox_backend not in {"disabled", "none", "off"}:
         return sandbox_backend
 
-    if os.environ.get("KSADK_SANDBOX_TEMPLATE_ID") or os.environ.get("KSADK_SKILL_RUNTIME_TEMPLATE_ID"):
+    if os.environ.get("KSADK_SANDBOX_TEMPLATE_ID") or os.environ.get(
+        "KSADK_SKILL_RUNTIME_TEMPLATE_ID"
+    ):
         return "e2b"
 
     return "disabled"

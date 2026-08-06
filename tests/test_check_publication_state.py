@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 
-
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "check_publication_state.py"
 
 
@@ -211,7 +210,10 @@ def test_publication_state_fails_when_github_homepage_points_elsewhere(monkeypat
     module = _load_module()
 
     def fake_open(_url):
-        return 200, b'{"homepage":"https://kingsoftcloud.github.io/ksadk-python/getting-started/quickstart/"}'
+        return (
+            200,
+            b'{"homepage":"https://kingsoftcloud.github.io/ksadk-python/getting-started/quickstart/"}',
+        )
 
     monkeypatch.setattr(module, "_open", fake_open)
 

@@ -9,6 +9,7 @@ import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 DOCS_ROOT_URL = "https://kingsoftcloud.github.io/ksadk-python/"
+DOCS_CONTENT_ROOT = ROOT / "docs-site" / "content" / "docs"
 ZH_DOC_URLS = {
     f"{DOCS_ROOT_URL}cn/docs/framework/getting-started/quickstart/",
     f"{DOCS_ROOT_URL}cn/docs/framework/getting-started/why-ksadk/",
@@ -16,6 +17,7 @@ ZH_DOC_URLS = {
     f"{DOCS_ROOT_URL}cn/docs/framework/getting-started/comparison/",
     f"{DOCS_ROOT_URL}cn/docs/framework/guides/observability-tracing/",
     f"{DOCS_ROOT_URL}cn/docs/framework/guides/cloud-deployment/",
+    f"{DOCS_ROOT_URL}cn/docs/framework/guides/hosted-ui-events/",
 }
 EN_DOC_URLS = {
     f"{DOCS_ROOT_URL}en/docs/framework/getting-started/quickstart/",
@@ -24,7 +26,13 @@ EN_DOC_URLS = {
     f"{DOCS_ROOT_URL}en/docs/framework/getting-started/comparison/",
     f"{DOCS_ROOT_URL}en/docs/framework/guides/observability-tracing/",
     f"{DOCS_ROOT_URL}en/docs/framework/guides/cloud-deployment/",
+    f"{DOCS_ROOT_URL}en/docs/framework/guides/hosted-ui-events/",
 }
+
+_DOCS_LINK_PATTERN = re.compile(
+    r'(?:\[[^\]]+\]\(([^)\s]+)(?:\s+"[^"]*")?\)|'
+    r'<Card\b[^>]*?\bhref=["\']([^"\']+)["\'])'
+)
 
 
 def _read(relative_path: str) -> str:
@@ -33,6 +41,36 @@ def _read(relative_path: str) -> str:
 
 def _github_pages_urls(markdown: str) -> set[str]:
     return set(re.findall(r"https://kingsoftcloud\.github\.io/ksadk-python/[^>\s)\"]*", markdown))
+
+
+def _docs_link_candidates(source: Path, target: str) -> tuple[Path, ...]:
+    """Return source files that can render an internal Fumadocs link.
+
+    The check deliberately covers Markdown links and ``<Card href>`` entries:
+    static builds can render a page even when an in-content link would lead a
+    reader to a 404.  External links and public assets are out of scope here.
+    """
+
+    path = target.split("#", 1)[0].split("?", 1)[0]
+    if not path or path.startswith(("http://", "https://", "mailto:", "/assets/")):
+        return ()
+
+    source_suffix = ".en.mdx" if source.name.endswith(".en.mdx") else ".mdx"
+    if path.startswith("/"):
+        segments = path.strip("/").split("/")
+        if len(segments) < 2 or segments[:2] not in (["cn", "docs"], ["en", "docs"]):
+            return ()
+        locale_suffix = ".en.mdx" if segments[0] == "en" else ".mdx"
+        relative = segments[2:]
+        if relative == ["cli"]:
+            return (DOCS_CONTENT_ROOT / "cli" / f"index{locale_suffix}",)
+        base = DOCS_CONTENT_ROOT.joinpath(*relative)
+        return (base.with_suffix(locale_suffix), base / f"index{locale_suffix}")
+
+    base = source.parent / path
+    if base.suffix:
+        return (base,)
+    return (base.with_suffix(source_suffix), base / f"index{source_suffix}")
 
 
 def test_public_readme_positions_ksadk_as_runtime_platform():
@@ -61,6 +99,8 @@ def test_public_readme_positions_ksadk_as_runtime_platform():
     assert "当前版本：" not in readme
     assert "发布版本：" not in readme
     assert "## 0.6." not in readme
+    assert "0.8.0" not in readme
+    assert "评审候选" not in readme
 
 
 def test_public_readme_language_variants_keep_homepage_shape():
@@ -76,6 +116,8 @@ def test_public_readme_language_variants_keep_homepage_shape():
         assert "ksadk-runtime-architecture.png" in text
         assert "发布版本：" not in text
         assert "## 0.6." not in text
+        assert "0.8.0" not in text
+        assert "评审候选" not in text
 
     assert "Kingsoft Cloud Agent Development Kit" in en_readme
     assert "ksadk-runtime-platform-hero-wide.png" in en_readme
@@ -85,6 +127,8 @@ def test_public_readme_language_variants_keep_homepage_shape():
     assert "ksadk-runtime-architecture.png" not in en_readme
     assert "发布版本：" not in en_readme
     assert "## 0.6." not in en_readme
+    assert "0.8.0" not in en_readme
+    assert "Review Candidate" not in en_readme
 
     assert _github_pages_urls(root_readme) == {DOCS_ROOT_URL, *ZH_DOC_URLS}
     assert _github_pages_urls(zh_readme) == {DOCS_ROOT_URL, *ZH_DOC_URLS}
@@ -102,7 +146,6 @@ def test_public_readme_language_variants_keep_homepage_shape():
 
 
 def test_public_readme_docs_links_match_fumadocs_routes():
-    docs_site = ROOT / "docs-site" / "content" / "docs"
     checks = {
         "README.md": "cn",
         "README.zh-CN.md": "cn",
@@ -121,9 +164,28 @@ def test_public_readme_docs_links_match_fumadocs_routes():
             assert parts[1] == "docs"
             doc_segments = parts[2:]
             suffix = ".en.mdx" if expected_locale == "en" else ".mdx"
-            candidate = docs_site.joinpath(*doc_segments).with_suffix(suffix)
-            index_candidate = docs_site.joinpath(*doc_segments, f"index{suffix}")
+            candidate = DOCS_CONTENT_ROOT.joinpath(*doc_segments).with_suffix(suffix)
+            index_candidate = DOCS_CONTENT_ROOT.joinpath(*doc_segments, f"index{suffix}")
             assert candidate.exists() or index_candidate.exists(), url
+
+
+def test_docs_internal_links_resolve_to_rendered_pages():
+    broken: list[str] = []
+    for source in sorted(DOCS_CONTENT_ROOT.rglob("*.mdx")):
+        text = source.read_text(encoding="utf-8")
+        for match in _DOCS_LINK_PATTERN.finditer(text):
+            target = next(value for value in match.groups() if value is not None)
+            candidates = _docs_link_candidates(source, target)
+            if candidates and not any(candidate.exists() for candidate in candidates):
+                display = " or ".join(
+                    candidate.relative_to(DOCS_CONTENT_ROOT).as_posix()
+                    for candidate in candidates
+                )
+                broken.append(
+                    f"{source.relative_to(DOCS_CONTENT_ROOT)} -> {target} ({display})"
+                )
+
+    assert not broken, "Broken internal documentation links:\n" + "\n".join(broken)
 
 
 def test_docs_site_cloud_deployment_guides_and_static_search_are_publicly_reachable():
@@ -161,8 +223,8 @@ def test_public_metadata_uses_runtime_platform_positioning():
     init_text = _read("ksadk/__init__.py")
     version_text = _read("ksadk/version.py")
 
-    assert pyproject["project"]["version"] == "0.7.0"
-    assert 'VERSION = "0.7.0"' in version_text
+    assert pyproject["project"]["version"] == "0.8.0"
+    assert 'VERSION = "0.8.0"' in version_text
     assert "Agent Runtime Platform" in pyproject["project"]["description"]
     assert "Agent Runtime Platform" in init_text
     assert "Agent Development Kit" not in pyproject["project"]["description"]
@@ -206,10 +268,10 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     assert "workflow_dispatch:" in workflow
     assert "publish_target:" in workflow
     assert "alias-only" in workflow
-    assert 'default: "0.2.19"' in workflow
+    assert 'default: "0.3.0"' in workflow
     assert "approved_source_commit:" in workflow
     assert "Reviewed source commit SHA recorded in docs/maintainer-approval-record.md" in workflow
-    assert "KSADK_WEB_VERSION: ${{ github.event.inputs.ksadk_web_version || '0.2.19' }}" in workflow
+    assert "KSADK_WEB_VERSION: ${{ github.event.inputs.ksadk_web_version || '0.3.0' }}" in workflow
     assert (
         "KSADK_APPROVED_SOURCE_COMMIT: "
         "${{ github.event.inputs.approved_source_commit || "
@@ -227,12 +289,14 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     assert "make public-test" in ci_workflow
     assert "tests/test_conversation_runtime.py" not in ci_workflow
     assert "tests/test_server_session_app.py" not in ci_workflow
-    assert 'KSADK_WEB_VERSION: "0.2.19"' in ci_workflow
+    assert 'KSADK_WEB_VERSION: "0.3.0"' in ci_workflow
     assert "PUBLIC_KSADK_WEB_VERSION" not in ci_workflow
-    assert "KSADK_WEB_VERSION ?= latest" in makefile
+    assert "KSADK_WEB_VERSION ?= 0.3.0" in makefile
     assert (
         "PUBLIC_TEST_TARGETS ?= tests/test_public_release_positioning.py "
-        "tests/test_config_env_registry.py" in makefile
+        "tests/test_config_env_registry.py tests/test_managed_runtime_builder.py "
+        "tests/test_managed_runtime_resolution.py tests/cli/test_cmd_create_codex.py "
+        "tests/runners/test_codex_runner.py" in makefile
     )
     assert "public-sync-ksadk-web-static: sync-ksadk-web-static" in makefile
     assert "python3 scripts/open_source_audit.py --target public-repo" in makefile
@@ -243,6 +307,7 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     assert '--expected-current-commit "$${KSADK_APPROVED_SOURCE_COMMIT:-}"' not in makefile
     assert "KSADK_APPROVED_SOURCE_COMMIT is required" in makefile
     assert "public-build-check: clean-dist sync-ksadk-web-static" in makefile
+    assert "verify-ksadk-web-wheel-static" in makefile
     assert (
         "public-preflight: public-version-gate public-audit sync-ksadk-web-static "
         "public-test docs-site-build public-build-check" in makefile
@@ -270,11 +335,24 @@ def test_public_ci_runs_gitleaks_and_documents_branch_protection():
     assert "Branch protection and publish environment are configured" in approval_record
 
 
-def test_public_release_approval_template_tracks_current_version():
+def test_public_release_candidate_tracks_current_version():
     approval_record = _read("docs/maintainer-approval-record.md")
 
-    assert "| Python package version | 0.7.0 |" in approval_record
-    assert "make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=0.7.0" in approval_record
+    assert "| Python package version | 0.8.0 |" in approval_record
+    assert "make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=0.8.0" in approval_record
+
+
+def test_0_8_changelog_is_ready_for_authorized_release():
+    changelog = _read("CHANGELOG.md")
+    release_section = changelog.split("## [0.8.0]", 1)[1].split("## [0.7.0]", 1)[0]
+
+    assert "## [0.8.0] - 2026-07-29" in changelog
+    assert "Review candidate" not in release_section
+    assert "本候选" not in release_section
+    assert "本条目不构成发布批准" not in release_section
+    assert "a76f2de7565ffe34d44a9d17257401fa805de0de" in release_section
+    assert "@kingsoftcloud/ksadk-web@0.3.0" in release_section
+    assert "Codex ManagedRuntime" in release_section
 
 
 def test_public_release_sync_compares_exported_file_contents():

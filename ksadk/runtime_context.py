@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Iterator
 
 
@@ -22,10 +22,14 @@ class PlatformInvocationContext:
     has_current_files: bool
     runner_type: str
     account_id: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
     model: str | None = None
     model_options: dict[str, Any] | None = None
     kb_context: dict[str, Any] | None = None
     memory_context: dict[str, Any] | None = None
+    # Request-scoped runtime control. It is intentionally separate from
+    # public caller metadata so built-in tools can enforce it consistently.
+    tool_approval_mode: str = ""
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -43,6 +47,7 @@ class PlatformInvocationContext:
             "current_attachment_results": list(self.current_attachment_results or []),
             "has_current_files": self.has_current_files,
             "runner_type": self.runner_type,
+            "metadata": dict(self.metadata or {}),
             "model": self.model,
             "model_options": dict(self.model_options or {}),
         }
@@ -122,7 +127,14 @@ def set_current_invocation_context(
 def reset_current_invocation_context(
     token: Token[PlatformInvocationContext | None],
 ) -> None:
-    _CURRENT_PLATFORM_INVOCATION_CONTEXT.reset(token)
+    try:
+        _CURRENT_PLATFORM_INVOCATION_CONTEXT.reset(token)
+    except ValueError:
+        # ASGI streaming may resume an async generator in a descendant
+        # Context after it yielded an interrupt. Tokens cannot be reset from
+        # that different Context; clearing the active descendant avoids
+        # converting a successfully persisted approval pause into a failed run.
+        _CURRENT_PLATFORM_INVOCATION_CONTEXT.set(None)
 
 
 def set_current_tool_execution_context(
@@ -134,7 +146,10 @@ def set_current_tool_execution_context(
 def reset_current_tool_execution_context(
     token: Token[ToolExecutionContext | None],
 ) -> None:
-    _CURRENT_TOOL_EXECUTION_CONTEXT.reset(token)
+    try:
+        _CURRENT_TOOL_EXECUTION_CONTEXT.reset(token)
+    except ValueError:
+        _CURRENT_TOOL_EXECUTION_CONTEXT.set(None)
 
 
 @contextmanager

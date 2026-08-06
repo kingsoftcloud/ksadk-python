@@ -61,7 +61,9 @@ def test_extract_user_input_from_file_reference():
     assert "a.txt" in text
 
 
-def test_extract_user_input_from_local_file_reference_outside_uploads_dir_keeps_reference_only(tmp_path):
+def test_extract_user_input_from_local_file_reference_outside_uploads_dir_keeps_reference_only(
+    tmp_path,
+):
     attachment_path = tmp_path / "resume.txt"
     attachment_path.write_text("张三\n8年经验\n熟悉LangGraph", encoding="utf-8")
     parts = [

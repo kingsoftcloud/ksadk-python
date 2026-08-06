@@ -69,7 +69,7 @@ def test_repair_markdown_can_be_enabled_with_one_switch():
 
 
 def test_repair_markdown_is_idempotent():
-    raw = "标题\n```json\n{\"ok\": true}"
+    raw = '标题\n```json\n{"ok": true}'
 
     once = repair_markdown(raw, enabled=True)
     twice = repair_markdown(once, enabled=True)

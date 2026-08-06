@@ -19,9 +19,12 @@ agent_variable: root_agent
 | --- | --- |
 | `name` | 项目名 |
 | `version` | 项目版本 |
-| `framework` | `adk`、`langgraph`、`langchain` 或 `deepagents` |
-| `entry_point` | 导入 Agent 的 Python 文件 |
-| `agent_variable` | 文件中导出的 Agent 对象变量名 |
+| `framework` | 代码框架为 `adk`、`langgraph`、`langchain` 或 `deepagents`；声明式 Runtime 使用 `codex` |
+| `entry_point` | 代码框架导入 Agent 的 Python 文件；Codex 不需要它 |
+| `agent_variable` | 代码框架文件中导出的 Agent 对象变量名；Codex 不需要它 |
+| `artifact_type` | 可选 specialized packaging mode；Codex ManagedRuntime 必填 `ManagedRuntime` |
+| `runtime` | ManagedRuntime 的名称与锁定版本，例如 `name: codex`、`version: "0.144.4"` |
+| `model` / `prompt` | 声明式 Runtime 的模型与开发者指令 |
 | `ui_profile` | optional，UI profile 选择器，如 `custom`；默认 `auto`（0.6.7 新增） |
 | `ui_bundle_path` | optional，custom UI 静态 bundle 相对项目路径，如 `research-ui/dist`（0.6.7 新增） |
 | `ui_path` | optional，custom UI 挂载路径，如 `/` 或 `/research`；custom profile 下 `/chat` 会被自动修正为 `/`（0.6.7 新增） |
@@ -44,6 +47,25 @@ framework: langgraph
 entry_point: my_agent/agent.py
 agent_variable: root_agent
 ```
+
+Codex ManagedRuntime（0.8 新增）：
+
+```yaml title="agentengine.yaml"
+name: my-codex-agent
+version: "1.0.0"
+framework: codex
+artifact_type: ManagedRuntime
+runtime:
+  name: codex
+  version: "0.144.4"
+model: gpt-5.1-codex
+prompt: |
+  你是一个编码助手。
+```
+
+Codex manifest 没有 `entry_point`、`agent_variable` 或 `agent.py`。它由
+`model` 与 `prompt` 定义 agent 行为；完整的本机和部署流程见
+[YAML 即 Agent：Codex](../framework/tutorials/best-practices/codex-yaml-agent)。
 
 ## 环境变量
 
@@ -78,4 +100,5 @@ AK/SK、镜像仓库密码不要写入 YAML；它们应保存在未提交的 `.e
 ## 检测规则
 
 运行时优先读取显式 YAML；没有配置时才尝试 `langgraph.json`、`agent.py`、
-`main.py`、`app.py` 等约定路径。公开项目建议始终使用 YAML。
+`main.py`、`app.py` 等代码项目约定路径。Codex 必须使用显式 manifest；公开项目建议
+始终使用 YAML。

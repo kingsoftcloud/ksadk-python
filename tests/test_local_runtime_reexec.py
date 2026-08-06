@@ -1,14 +1,16 @@
 from __future__ import annotations
 
-from pathlib import Path
 import sys
+from pathlib import Path
 
 from click.testing import CliRunner
 
 from ksadk.cli import _register_commands, cli
 
 
-def _assert_bootstrap_args(captured: dict[str, object], venv_python: Path, command_args: list[str]) -> str:
+def _assert_bootstrap_args(
+    captured: dict[str, object], venv_python: Path, command_args: list[str]
+) -> str:
     assert captured["file"] == str(venv_python)
     args = captured["args"]
     assert isinstance(args, list)

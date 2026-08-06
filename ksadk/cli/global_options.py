@@ -10,8 +10,7 @@ from ksadk.cli.ui import build_no_color_click_option, build_output_click_option
 
 def _has_long_option(command: click.Command, option_name: str) -> bool:
     return any(
-        isinstance(param, click.Option) and option_name in param.opts
-        for param in command.params
+        isinstance(param, click.Option) and option_name in param.opts for param in command.params
     )
 
 

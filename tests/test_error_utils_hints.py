@@ -3,7 +3,6 @@ from pathlib import Path
 from ksadk.api.client import AgentEngineAPIError
 from ksadk.cli.error_utils import explain_exception
 
-
 SNAPSHOT_FILE = Path(__file__).parent / "snapshots" / "error_hint_snapshots.txt"
 
 

@@ -20,6 +20,16 @@ def test_web_tool_descriptors_include_web_group():
     assert specs["web_search"]["group"] == "web"
 
 
+def test_web_read_tools_remain_approval_exempt_in_ask_profile(monkeypatch):
+    monkeypatch.setenv("KSADK_TOOL_APPROVAL_MODE", "ask")
+
+    specs = {spec["name"]: spec for spec in describe_agentengine_tools(include=["web"])}
+
+    for tool_name in ("web_fetch", "web_search"):
+        assert specs[tool_name]["requires_approval"] is False
+        assert specs[tool_name]["approval_exempt"] is True
+
+
 def test_web_fetch_blocks_loopback_before_request(monkeypatch):
     def _should_not_request(*_args, **_kwargs):
         raise AssertionError("web_fetch must block loopback URLs before issuing requests")
@@ -73,7 +83,9 @@ def test_web_fetch_strips_html_and_budgets_large_content(monkeypatch, tmp_path):
         return httpx.Response(
             200,
             headers={"content-type": "text/html"},
-            text="<html><script>bad()</script><body><h1>Hello</h1><p>" + ("world " * 20) + "</p></body></html>",
+            text="<html><script>bad()</script><body><h1>Hello</h1><p>"
+            + ("world " * 20)
+            + "</p></body></html>",
             request=httpx.Request("GET", url),
         )
 

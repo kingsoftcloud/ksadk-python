@@ -35,6 +35,41 @@ async def test_create_agent_preserves_deepagents_when_server_supports_it(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_create_agent_forwards_managed_runtime_contract(monkeypatch):
+    client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
+    calls = []
+
+    def fake_action(action: str, params: dict):
+        calls.append((action, params.copy()))
+        return {"agent_id": "ar-managed"}
+
+    monkeypatch.setattr(client, "_action", fake_action)
+
+    await client.create_agent(
+        {
+            "name": "managed-codex",
+            "framework": "codex",
+            "artifact_type": "ManagedRuntime",
+            "artifact_path": "ks3://bucket/managed-codex-runtime.zip",
+            "runtime_config": {
+                "name": "codex",
+                "version": "0.144.4",
+                "manifest_sha256": "a" * 64,
+            },
+        }
+    )
+
+    payload = calls[0][1]
+    assert payload["DeploymentType"] == "ManagedRuntime"
+    assert payload["CodeConfig"]["Path"] == "ks3://bucket/managed-codex-runtime.zip"
+    assert payload["RuntimeConfig"] == {
+        "Name": "codex",
+        "Version": "0.144.4",
+        "ManifestSha256": "a" * 64,
+    }
+
+
+@pytest.mark.asyncio
 async def test_create_agent_forwards_network_configuration(monkeypatch):
     client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
     calls = []
@@ -210,6 +245,39 @@ async def test_update_agent_forwards_network_configuration(monkeypatch):
         "VpcId": "vpc-demo",
         "SubnetId": "subnet-demo",
         "SecurityGroupId": "sg-demo",
+    }
+
+
+@pytest.mark.asyncio
+async def test_update_agent_forwards_managed_runtime_contract(monkeypatch):
+    client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
+    calls = []
+
+    def fake_action(action: str, params: dict):
+        calls.append((action, params.copy()))
+        return {"agent_id": "ar-managed"}
+
+    monkeypatch.setattr(client, "_action", fake_action)
+
+    await client.update_agent(
+        "ar-managed",
+        {
+            "artifact_type": "ManagedRuntime",
+            "artifact_path": "ks3://bucket/managed-codex-runtime.zip",
+            "runtime_config": {
+                "name": "codex",
+                "version": "0.144.4",
+                "manifest_sha256": "b" * 64,
+            },
+        },
+    )
+
+    payload = calls[0][1]
+    assert payload["DeploymentType"] == "ManagedRuntime"
+    assert payload["RuntimeConfig"] == {
+        "Name": "codex",
+        "Version": "0.144.4",
+        "ManifestSha256": "b" * 64,
     }
 
 

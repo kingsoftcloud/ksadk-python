@@ -5,7 +5,6 @@ from typing import Iterable, List
 
 from packaging.requirements import InvalidRequirement, Requirement
 
-
 _NORMALIZED_NAME_RE = re.compile(r"[-_.]+")
 
 
@@ -47,10 +46,7 @@ def exclude_requirement_names(
     *,
     excluded_names: Iterable[str],
 ) -> List[str]:
-    excluded = {
-        _NORMALIZED_NAME_RE.sub("-", name).lower()
-        for name in excluded_names
-    }
+    excluded = {_NORMALIZED_NAME_RE.sub("-", name).lower() for name in excluded_names}
     filtered: List[str] = []
 
     for raw_requirement in requirements:

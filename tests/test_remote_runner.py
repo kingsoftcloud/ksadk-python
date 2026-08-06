@@ -354,6 +354,104 @@ async def test_remote_runner_responses_stream_sends_hermes_conversation_and_hist
 
 
 @pytest.mark.asyncio
+async def test_remote_runner_responses_stream_forwards_structured_history_items(
+    monkeypatch,
+):
+    import httpx
+
+    _FakeAsyncClient.calls = []
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
+    runner = RemoteRunner(endpoint="https://agent.example.com", api_format="responses")
+
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {
+                "input": "继续搜索",
+                "session_id": "sess-1",
+                "responses_conversation": True,
+                "platform_context": {"agent_id": "demo-agent"},
+                "responses_history": [
+                    {"role": "assistant", "content": [{"type": "input_text", "text": "准备搜索"}]},
+                    {
+                        "type": "function_call",
+                        "call_id": "call-1",
+                        "name": "search",
+                        "arguments": '{"query":"openai"}',
+                    },
+                    {
+                        "type": "function_call_output",
+                        "call_id": "call-1",
+                        "output": '{"ok":true}',
+                    },
+                ],
+            }
+        )
+    ]
+
+    assert chunks
+    assert _FakeAsyncClient.calls[0]["json"]["conversation_history"] == [
+        {"role": "assistant", "content": [{"type": "input_text", "text": "准备搜索"}]},
+        {
+            "type": "function_call",
+            "call_id": "call-1",
+            "name": "search",
+            "arguments": '{"query":"openai"}',
+        },
+        {
+            "type": "function_call_output",
+            "call_id": "call-1",
+            "output": '{"ok":true}',
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_remote_runner_responses_deduplicates_current_function_output_from_history(
+    monkeypatch,
+):
+    import httpx
+
+    _FakeAsyncClient.calls = []
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
+    runner = RemoteRunner(endpoint="https://agent.example.com", api_format="responses")
+    current_output = {
+        "type": "function_call_output",
+        "call_id": "call-1",
+        "output": '{"ok":true}',
+    }
+
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {
+                "input": current_output,
+                "responses_history": [
+                    {
+                        "type": "function_call",
+                        "call_id": "call-1",
+                        "name": "search",
+                        "arguments": "{}",
+                    },
+                    current_output,
+                ],
+            }
+        )
+    ]
+
+    assert chunks
+    assert _FakeAsyncClient.calls[0]["json"]["input"] == [current_output]
+    assert _FakeAsyncClient.calls[0]["json"]["conversation_history"] == [
+        {
+            "type": "function_call",
+            "call_id": "call-1",
+            "name": "search",
+            "arguments": "{}",
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_remote_runner_responses_stream_does_not_mix_conversation_with_previous_response_id(
     monkeypatch,
 ):
@@ -372,6 +470,9 @@ async def test_remote_runner_responses_stream_does_not_mix_conversation_with_pre
                 "responses_conversation": True,
                 "previous_response_id": "resp_123",
                 "history": [{"role": "user", "content": "旧消息"}],
+                "responses_history": [
+                    {"role": "user", "content": [{"type": "input_text", "text": "旧消息"}]}
+                ],
                 "platform_context": {"agent_id": "demo-agent"},
             }
         )
@@ -428,12 +529,17 @@ async def test_remote_runner_responses_stream_parses_native_tool_items(monkeypat
     chunks = [chunk async for chunk in runner.stream({"input": "hi"})]
 
     assert chunks == [
-        {"type": "tool_call", "tool_name": "search", "tool_args": "", "status": "running", "call_id": "fc_1"},
-        {"type": "tool_call", "tool_name": "search", "tool_args": '{"q":', "status": "running", "call_id": "fc_1"},
         {
             "type": "tool_call",
             "tool_name": "search",
-            "tool_args": '{"q":"openclaw"}',
+            "tool_args": "",
+            "status": "running",
+            "call_id": "fc_1",
+        },
+        {
+            "type": "tool_call",
+            "tool_name": "search",
+            "tool_args": '{"q":',
             "status": "running",
             "call_id": "fc_1",
         },
@@ -444,7 +550,19 @@ async def test_remote_runner_responses_stream_parses_native_tool_items(monkeypat
             "status": "running",
             "call_id": "fc_1",
         },
-        {"type": "tool_result", "tool_name": "search", "tool_output": '{\n  "ok": true\n}', "call_id": "fc_1"},
+        {
+            "type": "tool_call",
+            "tool_name": "search",
+            "tool_args": '{"q":"openclaw"}',
+            "status": "running",
+            "call_id": "fc_1",
+        },
+        {
+            "type": "tool_result",
+            "tool_name": "search",
+            "tool_output": '{\n  "ok": true\n}',
+            "call_id": "fc_1",
+        },
         {
             "type": "responses_output",
             "output": [
@@ -640,7 +758,7 @@ async def test_remote_runner_responses_stream_preserves_completed_usage(monkeypa
                 "output_tokens": 4,
                 "total_tokens": 13,
             },
-        }
+        },
     ]
 
 
@@ -677,7 +795,12 @@ async def test_remote_runner_responses_completed_output_projects_tool_items(monk
             "status": "completed",
             "call_id": "fc_1",
         },
-        {"type": "tool_result", "tool_name": "search", "tool_output": '{\n  "ok": true\n}', "call_id": "fc_1"},
+        {
+            "type": "tool_result",
+            "tool_name": "search",
+            "tool_output": '{\n  "ok": true\n}',
+            "call_id": "fc_1",
+        },
     ]
     assert chunks[-1]["type"] == "responses_output"
     assert chunks[-1]["usage"]["total_tokens"] == 13
@@ -852,7 +975,7 @@ async def test_remote_runner_responses_stream_preserves_completed_usage_metadata
                 "total_tokens": 13,
             },
             "metadata": {"last_usage": {"input_tokens": 9000}},
-        }
+        },
     ]
 
 
@@ -913,4 +1036,6 @@ async def test_remote_runner_chat_stream_parses_top_level_delta(monkeypatch):
 
     text_chunks = [c["delta"] for c in chunks if c.get("type") == "text"]
     assert text_chunks == ["你", "好"]
-    assert any(c.get("type") == "final" and c.get("usage", {}).get("total_tokens") == 7 for c in chunks)
+    assert any(
+        c.get("type") == "final" and c.get("usage", {}).get("total_tokens") == 7 for c in chunks
+    )

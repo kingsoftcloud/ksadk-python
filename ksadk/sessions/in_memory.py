@@ -7,9 +7,15 @@ import time
 from contextvars import ContextVar
 from typing import AsyncIterator, Optional
 
+from ksadk.ids import new_session_id
 from ksadk.sessions.base import (
-    BaseSessionService, CheckpointEventQuery, Session, SessionEvent, SessionEventQuery,
-    SessionState, generate_id,
+    BaseSessionService,
+    CheckpointEventQuery,
+    Session,
+    SessionEvent,
+    SessionEventQuery,
+    SessionState,
+    generate_id,
 )
 
 
@@ -36,7 +42,7 @@ class InMemorySessionService(BaseSessionService):
                 return copy.deepcopy(self._sessions[session_id])
 
             session = Session(
-                id=session_id or generate_id(),
+                id=session_id or new_session_id(),
                 agent_id=agent_id,
                 user_id=user_id,
             )
@@ -68,7 +74,10 @@ class InMemorySessionService(BaseSessionService):
                 if (agent_id is None or session.agent_id == agent_id)
                 and (user_id is None or session.user_id == user_id)
             ]
-            sessions.sort(key=lambda item: (item.updated_at, item.created_at), reverse=True)
+            sessions.sort(
+                key=lambda item: (item.updated_at, item.created_at, item.id),
+                reverse=True,
+            )
             start = offset or 0
             end = None if limit is None else start + limit
             return sessions[start:end]
@@ -524,6 +533,37 @@ class InMemorySessionService(BaseSessionService):
             session_ids=session_ids, agent_id=agent_id, after_seq_id=after_seq_id,
             before_seq_id=before_seq_id, event_types=event_types,
         ))
+
+    async def get_events_for_agent(
+        self,
+        agent_id: str,
+        user_id: Optional[str] = None,
+        offset: Optional[int] = None,
+        limit: Optional[int] = None,
+    ) -> list[SessionEvent]:
+        async with self._lock:
+            merged = [
+                copy.deepcopy(event)
+                for session in self._sessions.values()
+                if session.agent_id == agent_id and (user_id is None or session.user_id == user_id)
+                for event in session.events
+            ]
+            merged.sort(key=lambda event: (event.timestamp, event.seq_id, event.id))
+            end = max(len(merged) - (offset or 0), 0)
+            start = 0 if limit is None else max(end - limit, 0)
+            return merged[start:end]
+
+    async def count_events_for_agent(
+        self,
+        agent_id: str,
+        user_id: Optional[str] = None,
+    ) -> int:
+        async with self._lock:
+            return sum(
+                len(session.events)
+                for session in self._sessions.values()
+                if session.agent_id == agent_id and (user_id is None or session.user_id == user_id)
+            )
 
     async def get_state(
         self,

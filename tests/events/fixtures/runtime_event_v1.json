@@ -1,0 +1,42 @@
+{
+  "comment": "RuntimeEvent v1 conformance fixture (goal-02)。每个 v1 事件类型一个 canonical 样例,必须全部通过 runtime_event_v1.json JSON Schema 校验 + Python 模型 roundtrip。additive 演进:新增事件类型在此追加样例。",
+  "base": {
+    "schema_version": 1,
+    "event_id": "evt_00000000000000000000000000000001",
+    "timestamp": 1753257600.0,
+    "agent_id": "demo-agent",
+    "user_id": "user-1",
+    "session_id": "sess-1",
+    "invocation_id": "inv_1",
+    "seq_id": 1
+  },
+  "events": [
+    {"event_type": "text.delta", "phase": "commentary", "payload": {"text": "正在", "message_id": "msg_1"}},
+    {"event_type": "text.completed", "phase": "final_answer", "payload": {"text": "答案", "message_id": "msg_1"}},
+    {"event_type": "reasoning.delta", "phase": "commentary", "payload": {"text": "思考", "summary": "s"}},
+    {"event_type": "reasoning.completed", "phase": "commentary", "payload": {"text": "思考完", "summary": "s"}},
+    {"event_type": "tool.call.begin", "payload": {"call_id": "call_1", "name": "search", "args": {"q": "x"}}},
+    {"event_type": "tool.call.end", "payload": {"call_id": "call_1", "name": "search", "result": {"r": 1}, "error": null, "duration_ms": 12}},
+    {"event_type": "artifact.created", "payload": {"name": "report.md", "version": 1, "uri": "ks3://b/report.md", "mime": "text/markdown"}},
+    {"event_type": "artifact.updated", "payload": {"name": "report.md", "version": 2, "uri": "ks3://b/report.md", "mime": "text/markdown"}},
+    {"event_type": "approval.requested", "payload": {"approval_id": "ap_1", "call_id": "call_1", "kind": "tool", "detail": {"reason": "high risk"}}},
+    {"event_type": "approval.resolved", "payload": {"approval_id": "ap_1", "call_id": "call_1", "decision": "approved"}},
+    {"event_type": "run.started", "payload": {"status": "in_progress"}},
+    {"event_type": "run.progress", "payload": {"status": "in_progress", "progress": 0.5}},
+    {"event_type": "run.interrupted", "payload": {"status": "interrupted"}},
+    {"event_type": "run.completed", "payload": {"status": "completed"}},
+    {"event_type": "run.failed", "payload": {"status": "failed", "error": "boom"}},
+    {"event_type": "run.canceled", "payload": {"status": "cancelled", "cancel_result": "interrupted_active_turn"}},
+    {"event_type": "checkpoint.created", "payload": {"checkpoint_id": "ck_1", "granularity": "snapshot"}},
+    {"event_type": "checkpoint.resumed", "payload": {"checkpoint_id": "ck_1", "resume_target": {"kind": "checkpoint_id", "id": "ck_1"}}},
+    {"event_type": "usage.reported", "payload": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15, "cached_tokens": 2, "reasoning_tokens": 3}},
+    {"event_type": "a2ui.surface.begin", "payload": {"surface_id": "sf_1", "catalog": "basic"}},
+    {"event_type": "a2ui.surface.update", "payload": {"surface_id": "sf_1", "block_id": "b1", "data": {}}},
+    {"event_type": "a2ui.surface.end", "payload": {"surface_id": "sf_1"}},
+    {"event_type": "a2ui.interaction", "payload": {"surface_id": "sf_1", "block_id": "b1"}},
+    {"event_type": "a2ui.action", "payload": {"surface_id": "sf_1", "block_id": "b1", "data": {"op": "click"}}},
+    {"event_type": "a2a.task.created", "payload": {"task_id": "t_1", "origin": "a2a://space/agent"}},
+    {"event_type": "a2a.task.status", "payload": {"task_id": "t_1", "origin": "a2a://space/agent", "status": "working"}},
+    {"event_type": "a2a.task.artifact", "payload": {"task_id": "t_1", "origin": "a2a://space/agent", "artifact": {"name": "out"}}}
+  ]
+}

@@ -21,12 +21,8 @@ def clear_permission_probe_cache():
 @pytest.fixture(autouse=True)
 def _stub_identity_resolve(monkeypatch):
     """这些测试用假 AK/SK，mock 掉身份反查避免联网 + warning 干扰 caplog 断言。"""
-    monkeypatch.setattr(
-        "ksadk.identity.resolve_identity", lambda **kw: None
-    )
-    monkeypatch.setattr(
-        "ksadk.identity.get_cached_identity", lambda ak: None
-    )
+    monkeypatch.setattr("ksadk.identity.resolve_identity", lambda **kw: None)
+    monkeypatch.setattr("ksadk.identity.get_cached_identity", lambda ak: None)
 
 
 def _build_client() -> AgentEngineClient:
@@ -325,7 +321,9 @@ def test_request_retries_inner_endpoint_for_inner_account(monkeypatch):
 
 def test_auto_detected_public_endpoint_retries_inner_for_inner_account(monkeypatch):
     monkeypatch.delenv("AGENTENGINE_SERVER_URL", raising=False)
-    monkeypatch.setattr(AgentEngineClient, "_is_connectable", staticmethod(lambda *_args, **_kwargs: False))
+    monkeypatch.setattr(
+        AgentEngineClient, "_is_connectable", staticmethod(lambda *_args, **_kwargs: False)
+    )
     client = AgentEngineClient(
         access_key="ak",
         secret_key="sk",

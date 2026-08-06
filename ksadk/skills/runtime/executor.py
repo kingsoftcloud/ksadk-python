@@ -82,7 +82,10 @@ def _can_run_web_artifacts_builder(skill: LocalSkill, prompt: str) -> bool:
     if not init_script.exists() or not bundle_script.exists():
         return False
     normalized = prompt.lower()
-    return any(marker in normalized for marker in ("web-artifacts-builder", "artifact", "bundle", "html", "react"))
+    return any(
+        marker in normalized
+        for marker in ("web-artifacts-builder", "artifact", "bundle", "html", "react")
+    )
 
 
 def _can_run_generic_workflow(skill: LocalSkill) -> bool:
@@ -91,7 +94,9 @@ def _can_run_generic_workflow(skill: LocalSkill) -> bool:
 
 def _run_web_artifacts_builder(skill: LocalSkill) -> WorkflowExecution:
     workdir = _skill_workdir()
-    project_name = _safe_project_name(os.environ.get("KSADK_SKILL_ARTIFACT_PROJECT") or "ksadk-artifact")
+    project_name = _safe_project_name(
+        os.environ.get("KSADK_SKILL_ARTIFACT_PROJECT") or "ksadk-artifact"
+    )
     project_dir = workdir / project_name
     workdir.mkdir(parents=True, exist_ok=True)
     if project_dir.exists():
@@ -114,7 +119,9 @@ def _run_web_artifacts_builder(skill: LocalSkill) -> WorkflowExecution:
         timeout=timeout,
     )
     commands.append(bundle_result)
-    output_files = [str(project_dir / "bundle.html")] if (project_dir / "bundle.html").exists() else []
+    output_files = (
+        [str(project_dir / "bundle.html")] if (project_dir / "bundle.html").exists() else []
+    )
     status = "ok" if bundle_result["exit_code"] == 0 and output_files else "failed"
     return WorkflowExecution(
         status=status,

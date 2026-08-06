@@ -52,10 +52,14 @@ def test_resolve_aicp_connection_falls_back_to_inner_when_internal_unreachable(m
     assert connection["scheme"] == "http"
 
 
-def test_resolve_aicp_connection_falls_back_to_public_when_private_endpoints_unreachable(monkeypatch):
+def test_resolve_aicp_connection_falls_back_to_public_when_private_endpoints_unreachable(
+    monkeypatch,
+):
     monkeypatch.delenv("KSADK_KB_ENDPOINT", raising=False)
     monkeypatch.delenv("KSADK_KB_SCHEME", raising=False)
-    monkeypatch.setattr(socket, "create_connection", lambda *args, **kwargs: (_ for _ in ()).throw(OSError()))
+    monkeypatch.setattr(
+        socket, "create_connection", lambda *args, **kwargs: (_ for _ in ()).throw(OSError())
+    )
 
     connection = resolve_aicp_connection("KSADK_KB")
 
@@ -67,7 +71,9 @@ def test_resolve_aicp_connection_honors_global_endpoint_mode(monkeypatch):
     monkeypatch.delenv("KSADK_KB_ENDPOINT", raising=False)
     monkeypatch.delenv("KSADK_KB_SCHEME", raising=False)
     monkeypatch.setenv("KSADK_AICP_ENDPOINT_MODE", "inner")
-    monkeypatch.setattr(socket, "create_connection", lambda *args, **kwargs: (_ for _ in ()).throw(OSError()))
+    monkeypatch.setattr(
+        socket, "create_connection", lambda *args, **kwargs: (_ for _ in ()).throw(OSError())
+    )
 
     connection = resolve_aicp_connection("KSADK_KB")
 

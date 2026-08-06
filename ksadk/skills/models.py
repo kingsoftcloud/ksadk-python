@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
@@ -48,7 +49,9 @@ class SkillRef:
             name=str(payload.get("Name") or payload.get("name") or ""),
             description=str(payload.get("Description") or payload.get("description") or ""),
             status=str(payload.get("Status") or payload.get("status") or ""),
-            content_hash=ContentHash.parse(payload.get("ContentHash") or payload.get("content_hash")),
+            content_hash=ContentHash.parse(
+                payload.get("ContentHash") or payload.get("content_hash")
+            ),
             archive_uri=str(payload.get("ArchiveUri") or payload.get("archive_uri") or ""),
             aliases=_string_tuple(payload.get("Aliases") or payload.get("aliases")),
             tags=_string_tuple(payload.get("Tags") or payload.get("tags")),
@@ -65,7 +68,9 @@ class SkillRef:
         version_key = self.version_id or self.version
         if not version_key and self.content_hash:
             version_key = self.content_hash.value
-        return "__".join(part.replace("/", "_").replace(":", "_") for part in (identity, version_key) if part)
+        return "__".join(
+            part.replace("/", "_").replace(":", "_") for part in (identity, version_key) if part
+        )
 
     @property
     def is_active(self) -> bool:
@@ -90,14 +95,20 @@ class SkillListResponse:
         space_name: str = "",
     ) -> "SkillListResponse":
         data = payload.get("Data") or payload.get("data") or {}
-        skills_payload = data.get("Skills") or data.get("skills") or data.get("Items") or data.get("items") or []
+        skills_payload = (
+            data.get("Skills") or data.get("skills") or data.get("Items") or data.get("items") or []
+        )
         return cls(
             code=int(payload.get("Code") or payload.get("code") or 0),
             message=str(payload.get("Message") or payload.get("message") or ""),
             request_id=str(payload.get("RequestId") or payload.get("request_id") or ""),
             space_id=str(data.get("SkillSpaceId") or data.get("skill_space_id") or space_id),
-            space_name=str(data.get("SkillSpaceName") or data.get("skill_space_name") or space_name),
-            skills=[SkillRef.from_payload(item) for item in skills_payload if isinstance(item, dict)],
+            space_name=str(
+                data.get("SkillSpaceName") or data.get("skill_space_name") or space_name
+            ),
+            skills=[
+                SkillRef.from_payload(item) for item in skills_payload if isinstance(item, dict)
+            ],
         )
 
     def active_skills(self) -> list[SkillRef]:
@@ -107,6 +118,7 @@ class SkillListResponse:
 def _string_tuple(raw: Any) -> tuple[str, ...]:
     if raw is None:
         return ()
+    values: Iterable[Any]
     if isinstance(raw, str):
         values = raw.split(",")
     elif isinstance(raw, (list, tuple, set)):

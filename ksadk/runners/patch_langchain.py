@@ -5,12 +5,6 @@ Monkey patch for langchain-openai to support reasoning_content field (e.g. for D
 import logging
 from typing import Any, Mapping, cast
 
-from ksadk.conversations.model_options import (
-    model_options_for_chat_completions,
-    model_options_for_responses,
-)
-from ksadk.runtime_context import get_current_invocation_context
-
 from langchain_core.messages import (
     AIMessageChunk,
     BaseMessageChunk,
@@ -21,6 +15,12 @@ from langchain_core.messages import (
     ToolMessageChunk,
 )
 from langchain_core.messages.tool import tool_call_chunk
+
+from ksadk.conversations.model_options import (
+    model_options_for_chat_completions,
+    model_options_for_responses,
+)
+from ksadk.runtime_context import get_current_invocation_context
 
 logger = logging.getLogger(__name__)
 
@@ -95,22 +95,22 @@ _original_chat_get_request_payload = None
 def _patched_convert_message_to_dict(message, *args, **kwargs):
     """Patched version to include reasoning_content in outgoing requests."""
     from langchain_core.messages import AIMessage
-    
+
     # Call original function first
     result = _original_convert_message_to_dict(message, *args, **kwargs)
-    
+
     # If this is an AIMessage with tool_calls and reasoning_content in additional_kwargs
     if isinstance(message, AIMessage):
-        additional_kwargs = getattr(message, 'additional_kwargs', {}) or {}
-        reasoning = additional_kwargs.get('reasoning_content')
-        
+        additional_kwargs = getattr(message, "additional_kwargs", {}) or {}
+        reasoning = additional_kwargs.get("reasoning_content")
+
         # Only add if we have tool_calls (required by some thinking models)
         if message.tool_calls and reasoning is not None:
-            result['reasoning_content'] = reasoning
+            result["reasoning_content"] = reasoning
         elif message.tool_calls and reasoning is None:
             # Force add empty reasoning_content for thinking models
-            result['reasoning_content'] = ''
-    
+            result["reasoning_content"] = ""
+
     return result
 
 
@@ -168,7 +168,7 @@ def apply_patch():
         # Patch 1: Fix receiving responses (capture reasoning_content)
         _original_convert_delta = base_module._convert_delta_to_message_chunk
         base_module._convert_delta_to_message_chunk = _patched_convert_delta_to_message_chunk
-        
+
         # Patch 2: Fix sending requests (include reasoning_content for tool_call messages)
         _original_convert_message_to_dict = base_module._convert_message_to_dict
         base_module._convert_message_to_dict = _patched_convert_message_to_dict
@@ -177,7 +177,7 @@ def apply_patch():
         base_module.BaseChatOpenAI._get_request_payload = _patched_base_get_request_payload
         _original_chat_get_request_payload = base_module.ChatOpenAI._get_request_payload
         base_module.ChatOpenAI._get_request_payload = _patched_chat_get_request_payload
-        
+
         base_module._ksadk_patched = True
 
         # logger.info("Applied langchain-openai patch for reasoning_content support")

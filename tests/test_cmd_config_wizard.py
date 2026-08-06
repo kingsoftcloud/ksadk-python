@@ -72,7 +72,9 @@ def test_config_wizard_prompts_for_kcr_username(monkeypatch, tmp_path: Path):
         "Base URL (OPENAI_BASE_URL) [选填,默认使用金山云星流平台URL]:": "",
         "模型名称 (OPENAI_MODEL_NAME) [选填,默认使用金山云星流平台glm-5.2]:": "",
         "KCR 用户名 (企业版请填写访问凭证用户名):": "enterprise-user",
-        "镜像仓库地址 [选填,如: agenthzzqy-vpc.ksyunkcr.com/testagent-pub]:": "agenthzzqy-vpc.ksyunkcr.com/testagent-pub",
+        (
+            "镜像仓库地址 [选填,如: " "agenthzzqy-vpc.ksyunkcr.com/testagent-pub]:"
+        ): "agenthzzqy-vpc.ksyunkcr.com/testagent-pub",
     }
     password_answers = {
         "API Key (OPENAI_API_KEY):": "",

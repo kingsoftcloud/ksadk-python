@@ -47,7 +47,7 @@ async def test_get_agent_by_id_does_not_fallback_on_not_found_with_request_id(mo
     def fake_action(action: str, params: dict):
         calls.append((action, params.copy()))
         raise Exception(
-            'HTTP 404 POST http://example.com/?Action=GetAgent&Version=2024-06-12: '
+            "HTTP 404 POST http://example.com/?Action=GetAgent&Version=2024-06-12: "
             '{"Code":404,"Message":"未找到对应的 Agent","RequestId":"abc-id-123"}'
         )
 
@@ -68,7 +68,7 @@ async def test_get_agent_by_id_falls_back_only_for_legacy_field_compat(monkeypat
         calls.append((action, params.copy()))
         if len(calls) == 1:
             raise Exception(
-                'HTTP 422 POST http://example.com/?Action=GetAgent&Version=2024-06-12: '
+                "HTTP 422 POST http://example.com/?Action=GetAgent&Version=2024-06-12: "
                 '{"detail":[{"loc":["body","AgentId"],"msg":"extra inputs are not permitted"}]}'
             )
         return {"AgentId": "ar-demo"}

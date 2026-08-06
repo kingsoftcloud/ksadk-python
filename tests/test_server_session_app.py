@@ -1,23 +1,24 @@
 from __future__ import annotations
 
-import base64
 import asyncio
+import base64
 import importlib
 import json
 from types import SimpleNamespace
 
 import httpx
 import pytest
-from starlette.background import BackgroundTask
 from fastapi.responses import Response
+from starlette.background import BackgroundTask
 
 import ksadk.conversations as conversation
+from ksadk.events.runtime_event import EventType, RuntimeEvent
+from ksadk.events.store import RuntimeEventStore
 from ksadk.runners.base_runner import BaseRunner
 from ksadk.server.api_models import AgentRunRequest, InlineData, Part
 from ksadk.sessions.base import SessionEvent
 from ksadk.sessions.errors import SessionBackendUnavailable
 from ksadk.sessions.in_memory import InMemorySessionService
-from ksadk.sessions.resilient import ResilientSessionService
 
 
 class _DummyRunner(BaseRunner):
@@ -132,6 +133,22 @@ class _SlowStreamingRunner(_OverrideStreamingRunner):
         yield {"type": "final", "output": "hello"}
 
 
+class _PausedAfterFirstTextRunner(_OverrideStreamingRunner):
+    """Keeps a detached run alive long enough to inspect its recovery history."""
+
+    def __init__(self):
+        super().__init__()
+        self.first_delta_consumed = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def stream(self, input_data: dict):
+        yield {"type": "text", "delta": "第一段正在生成。"}
+        self.first_delta_consumed.set()
+        await self.release.wait()
+        yield {"type": "text", "delta": "第二段继续生成。"}
+        yield {"type": "final", "output": "第一段正在生成。第二段继续生成。"}
+
+
 class _UnavailableSessionService(InMemorySessionService):
     async def create_session(self, *args, **kwargs):
         raise SessionBackendUnavailable("Postgres session backend unavailable")
@@ -141,6 +158,25 @@ class _UnavailableSessionService(InMemorySessionService):
 
     async def count_sessions(self, *args, **kwargs):
         raise SessionBackendUnavailable("Postgres session backend unavailable")
+
+
+class _BoundedReadSessionService(InMemorySessionService):
+    def __init__(self):
+        super().__init__()
+        self.event_read_limits: list[int] = []
+        self.agent_event_read_limits: list[int] = []
+
+    async def get_events(self, *args, limit=None, **kwargs):
+        if limit is None:
+            raise AssertionError("session event reads must be bounded")
+        self.event_read_limits.append(limit)
+        return await super().get_events(*args, limit=limit, **kwargs)
+
+    async def get_events_for_agent(self, *args, limit=None, **kwargs):
+        if limit is None:
+            raise AssertionError("agent event reads must be bounded")
+        self.agent_event_read_limits.append(limit)
+        return await super().get_events_for_agent(*args, limit=limit, **kwargs)
 
 
 class _CancellableStreamingRunner(_OverrideStreamingRunner):
@@ -251,6 +287,7 @@ async def test_ui_bootstrap_enables_checkpoint_controls_from_runtime_capability(
     service = InMemorySessionService()
     runner = _CheckpointResumeRunner()
 
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     async def ready_persistence():
         return {
             "Configured": True,
@@ -263,12 +300,7 @@ async def test_ui_bootstrap_enables_checkpoint_controls_from_runtime_capability(
             "Reason": "",
         }
 
-    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
-    monkeypatch.setattr(
-        server_app_module,
-        "get_persistence_status",
-        ready_persistence,
-    )
+    monkeypatch.setattr(server_app_module, "get_persistence_status", ready_persistence)
     server_app_module.set_runner(runner)
 
     transport = httpx.ASGITransport(app=server_app_module.app)
@@ -284,129 +316,6 @@ async def test_ui_bootstrap_enables_checkpoint_controls_from_runtime_capability(
     assert capabilities["RunLifecycle"]["Checkpoints"] is True
     assert capabilities["RunLifecycle"]["CheckpointResume"] is True
     assert capabilities["RunLifecycle"]["CheckpointResumePreview"] is True
-
-
-@pytest.mark.asyncio
-async def test_ui_bootstrap_loads_adk_before_describing_checkpoint_capability(monkeypatch):
-    server_app_module = importlib.import_module("ksadk.server.app")
-    service = InMemorySessionService()
-
-    class _BootstrapAdkRunner(_DummyRunner):
-        def __init__(self):
-            super().__init__()
-            self.detection_result.type = SimpleNamespace(value="adk")
-            self.loaded = False
-            self.load_calls = 0
-
-        def load_agent(self) -> None:
-            self.load_calls += 1
-            self.loaded = True
-
-        def describe_checkpoint_capability(self) -> dict:
-            return {
-                "Supported": self.loaded,
-                "Backend": "adk_invocation+postgres" if self.loaded else "none",
-                "Scope": "invocation" if self.loaded else "unknown",
-                "Durable": self.loaded,
-                "SharedAcrossPods": self.loaded,
-                "ResumeMode": "invocation_id" if self.loaded else "none",
-                "Reason": "" if self.loaded else "ADK runner is not loaded",
-            }
-
-    async def ready_persistence():
-        return {
-            "Configured": True,
-            "Status": "ready",
-            "Ready": True,
-            "Backend": "postgres",
-            "SharedAcrossPods": True,
-            "EffectiveFor": "new_runs_only",
-            "ReasonCode": "READY",
-            "Reason": "",
-        }
-
-    runner = _BootstrapAdkRunner()
-    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
-    monkeypatch.setattr(
-        server_app_module,
-        "get_persistence_status",
-        ready_persistence,
-    )
-    server_app_module.set_runner(runner)
-
-    transport = httpx.ASGITransport(app=server_app_module.app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
-        response = await client.post(
-            "/agentengine/api/v1/GetAgentUiBootstrap",
-            json={"AgentId": "adk-agent"},
-        )
-
-    capabilities = response.json()["Data"]["Capabilities"]
-    assert runner.load_calls == 1
-    assert capabilities["CheckpointResumeCapability"]["Supported"] is True
-    assert capabilities["RuntimeCapabilities"]["ResumeRun"]["ResumeMode"] == (
-        "invocation_id"
-    )
-
-
-@pytest.mark.asyncio
-async def test_ui_bootstrap_loads_langgraph_before_describing_checkpoint_capability(monkeypatch):
-    from langgraph.checkpoint.memory import MemorySaver
-
-    from ksadk.runners.langgraph_runner import LangGraphRunner
-
-    class _BootstrapLangGraphRunner(LangGraphRunner):
-        def __init__(self):
-            super().__init__(
-                detection_result=SimpleNamespace(
-                    name="langgraph-agent",
-                    type=SimpleNamespace(value="langgraph"),
-                ),
-                project_dir=".",
-            )
-            self.load_calls = 0
-
-        def load_agent(self) -> None:
-            self.load_calls += 1
-            self._agent = SimpleNamespace(checkpointer=MemorySaver())
-
-    server_app_module = importlib.import_module("ksadk.server.app")
-    service = InMemorySessionService()
-    runner = _BootstrapLangGraphRunner()
-
-    async def ready_persistence():
-        return {
-            "Configured": True,
-            "Status": "ready",
-            "Ready": True,
-            "Backend": "postgres",
-            "SharedAcrossPods": True,
-            "EffectiveFor": "new_runs_only",
-            "ReasonCode": "READY",
-            "Reason": "",
-        }
-
-    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
-    monkeypatch.setattr(
-        server_app_module,
-        "get_persistence_status",
-        ready_persistence,
-    )
-    server_app_module.set_runner(runner)
-
-    transport = httpx.ASGITransport(app=server_app_module.app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
-        response = await client.post(
-            "/agentengine/api/v1/GetAgentUiBootstrap",
-            json={"AgentId": "langgraph-agent"},
-        )
-
-    assert response.status_code == 200
-    checkpoint = response.json()["Data"]["Capabilities"]["RuntimeCapabilities"]["Checkpoint"]
-    assert runner.load_calls == 1
-    assert checkpoint["Backend"] == "memory"
-    assert checkpoint["Scope"] == "process_local"
-    assert checkpoint["Reason"].startswith("In-memory checkpoint")
 
 
 @pytest.mark.asyncio
@@ -609,7 +518,9 @@ async def test_run_sse_passes_attachment_results_to_runner(monkeypatch):
                             inlineData=InlineData(
                                 displayName="resume.txt",
                                 mimeType="text/plain",
-                                data=base64.b64encode("候选人简历内容".encode("utf-8")).decode("ascii"),
+                                data=base64.b64encode("候选人简历内容".encode("utf-8")).decode(
+                                    "ascii"
+                                ),
                             )
                         ).model_dump(exclude_none=True),
                     ],
@@ -776,7 +687,9 @@ async def test_workspace_files_runtime_routes_use_state_dir_workspace_root(monke
 
     assert upload_response.status_code == 200
     assert upload_response.json()["Entry"]["Path"] == "uploads/report.txt"
-    assert (workspace_dir / "uploads" / "report.txt").read_text(encoding="utf-8") == "workspace upload"
+    assert (workspace_dir / "uploads" / "report.txt").read_text(
+        encoding="utf-8"
+    ) == "workspace upload"
 
     assert download_response.status_code == 200
     assert download_response.content == b"workspace upload"
@@ -860,7 +773,9 @@ async def test_workspace_files_action_route_deletes_empty_directory(monkeypatch,
 
 
 @pytest.mark.asyncio
-async def test_workspace_files_runtime_routes_reject_non_empty_directory_delete(monkeypatch, tmp_path):
+async def test_workspace_files_runtime_routes_reject_non_empty_directory_delete(
+    monkeypatch, tmp_path
+):
     server_app_module = importlib.import_module("ksadk.server.app")
     ui_dir = tmp_path / ".agentengine" / "ui"
     workspace_dir = ui_dir / "workspace"
@@ -970,7 +885,9 @@ async def test_workspace_files_action_routes_match_runtime_contract(monkeypatch,
 
     assert upload_response.status_code == 200
     assert upload_response.json()["Data"]["Entry"]["Path"] == "uploads/report.txt"
-    assert (workspace_dir / "uploads" / "report.txt").read_text(encoding="utf-8") == "workspace upload"
+    assert (workspace_dir / "uploads" / "report.txt").read_text(
+        encoding="utf-8"
+    ) == "workspace upload"
 
     assert download_response.status_code == 200
     assert download_response.content == b"workspace upload"
@@ -1112,6 +1029,37 @@ async def test_runtime_local_list_sessions_returns_page_metadata(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_runtime_list_sessions_optionally_filters_user(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    await service.create_session("demo-agent", "user-a", session_id="sess-user-a")
+    await service.create_session("demo-agent", "user-b", session_id="sess-user-b")
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        all_users = await client.post(
+            "/agentengine/api/v1/ListSessions",
+            json={"AgentId": "demo-agent"},
+        )
+        user_a = await client.post(
+            "/agentengine/api/v1/ListSessions",
+            json={"AgentId": "demo-agent", "UserId": "user-a"},
+        )
+
+    assert all_users.status_code == 200
+    assert all_users.json()["Data"]["Total"] == 2
+    assert {item["SessionId"] for item in all_users.json()["Data"]["Sessions"]} == {
+        "sess-user-a",
+        "sess-user-b",
+    }
+    assert all_users.json()["Data"]["SessionContractVersion"] == 2
+    assert user_a.status_code == 200
+    assert user_a.json()["Data"]["Total"] == 1
+    assert [item["SessionId"] for item in user_a.json()["Data"]["Sessions"]] == ["sess-user-a"]
+
+
+@pytest.mark.asyncio
 async def test_list_sessions_hydrates_summary_from_event_log_when_session_row_is_empty(monkeypatch):
     """ListSessions 不能只返回空壳 session；event log 已有事实时要回填标题与 active run。"""
     server_app_module = importlib.import_module("ksadk.server.app")
@@ -1229,6 +1177,67 @@ async def test_session_actions_prefer_latest_run_status_when_previous_run_comple
     ):
         assert payload["ActiveInvocationId"] == "run_new_active"
         assert payload["ActiveRunStatus"] == "in_progress"
+
+
+@pytest.mark.asyncio
+async def test_session_actions_project_runtime_event_lifecycle(monkeypatch):
+    """RuntimeEvent-backed LangGraph runs remain reconnectable through the public session API."""
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    session = await service.create_session(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-runtime-event-lifecycle",
+    )
+    store = RuntimeEventStore(service)
+    invocation_id = "run-runtime-event-lifecycle"
+    await store.append_one(
+        RuntimeEvent.create(
+            EventType.RUN_STARTED,
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id=session.id,
+            invocation_id=invocation_id,
+            seq_id=1,
+            payload={"status": "in_progress"},
+        )
+    )
+
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        listed = await client.post(
+            "/agentengine/api/v1/ListSessions",
+            json={"AgentId": "demo-agent", "UserId": "user-1"},
+        )
+        fetched = await client.post(
+            "/agentengine/api/v1/GetSession",
+            json={"SessionId": session.id},
+        )
+
+    for payload in (listed.json()["Data"]["Sessions"][0], fetched.json()["Data"]["Session"]):
+        assert payload["ActiveInvocationId"] == invocation_id
+        assert payload["ActiveRunStatus"] == "in_progress"
+
+    await store.append_one(
+        RuntimeEvent.create(
+            EventType.RUN_COMPLETED,
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id=session.id,
+            invocation_id=invocation_id,
+            seq_id=2,
+            payload={"status": "completed"},
+        )
+    )
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        completed = await client.post(
+            "/agentengine/api/v1/GetSession",
+            json={"SessionId": session.id},
+        )
+
+    assert completed.json()["Data"]["Session"]["ActiveRunStatus"] == "completed"
 
 
 @pytest.mark.asyncio
@@ -1630,6 +1639,64 @@ async def test_chat_completions_forwards_model_to_runner(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_chat_completions_exposes_custom_metadata_to_runtime_context(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    runner = _DummyRunner()
+
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/v1/chat/completions",
+            json={
+                "messages": [{"role": "user", "content": "hello"}],
+                "metadata": {
+                    "tenant": "acme",
+                    "trace_id": "chat-trace",
+                    "agentengine": {"invocation_id": "caller-controlled"},
+                },
+                "stream": False,
+            },
+        )
+
+    assert response.status_code == 200
+    assert runner.calls[-1]["platform_context"]["metadata"] == {
+        "tenant": "acme",
+        "trace_id": "chat-trace",
+    }
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_stream_exposes_custom_metadata_to_runtime_context(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    runner = _DummyRunner()
+
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/v1/chat/completions",
+            json={
+                "messages": [{"role": "user", "content": "hello"}],
+                "metadata": {"tenant": "acme", "trace_id": "chat-stream-trace"},
+                "stream": True,
+            },
+        )
+
+    assert response.status_code == 200
+    assert runner.calls[-1]["platform_context"]["metadata"] == {
+        "tenant": "acme",
+        "trace_id": "chat-stream-trace",
+    }
+
+
+@pytest.mark.asyncio
 async def test_chat_completions_converts_chat_content_blocks_to_runner_responses_input(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")
     service = InMemorySessionService()
@@ -1904,7 +1971,9 @@ async def test_list_agent_models_action_normalizes_default_metadata(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_list_agent_models_action_preserves_upstream_fields_and_normalizes_aliases(monkeypatch):
+async def test_list_agent_models_action_preserves_upstream_fields_and_normalizes_aliases(
+    monkeypatch,
+):
     server_app_module = importlib.import_module("ksadk.server.app")
     real_async_client = httpx.AsyncClient
     monkeypatch.setenv("OPENAI_BASE_URL", "https://kspmas.ksyun.com/v1")
@@ -2051,8 +2120,9 @@ async def test_responses_fetches_remote_model_metadata_and_passes_to_runner(monk
     service = InMemorySessionService()
     runner = _DummyRunner()
 
-    monkeypatch.setattr(server_app_module, "runner", runner)
-    monkeypatch.setattr(server_app_module, "_runner_loaded", True)
+    # goal-01: runner 迁至 per-app state(app.state.runtime),不再 monkeypatch 模块全局。
+    monkeypatch.setattr(server_app_module.app.state.runtime, "runner", runner)
+    monkeypatch.setattr(server_app_module.app.state.runtime, "runner_loaded", True)
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     monkeypatch.setenv("OPENAI_BASE_URL", "https://kspmas.ksyun.com/v1")
     monkeypatch.setenv("OPENAI_API_KEY", "secret-key")
@@ -2088,7 +2158,11 @@ async def test_responses_fetches_remote_model_metadata_and_passes_to_runner(monk
 
     assert response.status_code == 200
     assert runner.calls[0]["model_metadata"]["id"] == "kimi-k2.6"
-    assert runner.calls[0]["model_metadata"]["architecture"]["input_modalities"] == ["文字", "图片", "视频"]
+    assert runner.calls[0]["model_metadata"]["architecture"]["input_modalities"] == [
+        "文字",
+        "图片",
+        "视频",
+    ]
     assert runner.calls[0]["model_metadata"]["capabilities"]["multimodal_input_image"] is True
 
 
@@ -2123,6 +2197,68 @@ async def test_responses_uses_official_conversation_as_runtime_session(monkeypat
     assert runner.calls[-1]["session_id"] == "conv-a"
     assert runner.calls[-1]["platform_context"]["user_id"] == "user-a"
     assert runner.calls[-1]["platform_context"]["account_id"] == "acct-a"
+
+
+@pytest.mark.asyncio
+async def test_responses_preserves_public_metadata_without_internal_fields(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    runner = _DummyRunner()
+
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+
+    custom_metadata = {"tenant": "acme", "trace_id": "caller-trace"}
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/v1/responses",
+            json={
+                "input": "hello",
+                "metadata": custom_metadata,
+                "previous_response_id": "resp-previous",
+                "stream": False,
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["metadata"] == custom_metadata
+    assert runner.calls[-1]["previous_response_id"] == "resp-previous"
+    assert runner.calls[-1]["platform_context"]["metadata"] == custom_metadata
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {f"key-{index}": str(index) for index in range(17)},
+        {"k" * 65: "value"},
+        {"key": "v" * 513},
+        {"key": 1},
+        {"biz": {"order_id": "o-9"}},
+    ],
+)
+async def test_responses_rejects_metadata_outside_official_limits(monkeypatch, metadata):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    runner = _DummyRunner()
+
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/v1/responses",
+            json={
+                "input": "hello",
+                "metadata": metadata,
+                "stream": False,
+            },
+        )
+
+    assert response.status_code == 422
+    assert runner.calls == []
 
 
 @pytest.mark.asyncio
@@ -2208,18 +2344,22 @@ async def test_responses_accepts_agentengine_checkpoint_resume_input(monkeypatch
                 ],
                 "conversation": "conv-resume",
                 "safety_identifier": "user-a",
+                "metadata": {"tenant": "acme", "trace_id": "responses-resume-trace"},
                 "stream": False,
             },
         )
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["metadata"]["agentengine"]["run_id"] == "run-1"
-    assert payload["metadata"]["agentengine"]["framework_ref"]["langgraph"]["checkpoint_id"] == "ckpt-1"
+    assert payload["metadata"] == {
+        "tenant": "acme",
+        "trace_id": "responses-resume-trace",
+    }
     assert runner.calls[-1]["checkpoint_resume"] is True
     assert runner.calls[-1]["run_id"] == "run-1"
     assert runner.calls[-1]["framework_ref"]["langgraph"]["thread_id"] == "tenant:agent:conv-resume"
     assert runner.calls[-1]["framework_ref"]["langgraph"]["checkpoint_id"] == "ckpt-1"
+    assert runner.calls[-1]["platform_context"]["metadata"] == payload["metadata"]
     events = await service.get_events("conv-resume")
     assert [event.event_type for event in events] == [
         "run_checkpoint",
@@ -2239,12 +2379,16 @@ async def test_responses_accepts_agentengine_checkpoint_resume_input(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_responses_rejects_agentengine_checkpoint_resume_without_server_checkpoint(monkeypatch):
+async def test_responses_rejects_agentengine_checkpoint_resume_without_server_checkpoint(
+    monkeypatch,
+):
     server_app_module = importlib.import_module("ksadk.server.app")
     service = InMemorySessionService()
     runner = _CheckpointResumeRunner()
 
-    await service.create_session(agent_id="demo-agent", user_id="user-a", session_id="conv-resume-missing")
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-a", session_id="conv-resume-missing"
+    )
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     server_app_module.set_runner(runner)
 
@@ -2279,13 +2423,17 @@ async def test_responses_rejects_agentengine_checkpoint_resume_without_server_ch
 
 
 @pytest.mark.asyncio
-async def test_stream_responses_checkpoint_resume_rejects_concurrent_resume_for_same_run(monkeypatch):
+async def test_stream_responses_checkpoint_resume_rejects_concurrent_resume_for_same_run(
+    monkeypatch,
+):
     server_app_module = importlib.import_module("ksadk.server.app")
     conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
     service = InMemorySessionService()
     runner = _CancellableStreamingRunner()
 
-    await service.create_session(agent_id="demo-agent", user_id="user-a", session_id="conv-resume-stream")
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-a", session_id="conv-resume-stream"
+    )
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     server_app_module.set_runner(runner)
     await conversation_runtime.append_run_checkpoint_event(
@@ -2363,13 +2511,17 @@ async def test_stream_responses_checkpoint_resume_rejects_concurrent_resume_for_
 
 
 @pytest.mark.asyncio
-async def test_run_agent_responses_checkpoint_resume_resolves_framework_ref_from_server(monkeypatch):
+async def test_run_agent_responses_checkpoint_resume_resolves_framework_ref_from_server(
+    monkeypatch,
+):
     server_app_module = importlib.import_module("ksadk.server.app")
     conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
     service = InMemorySessionService()
     runner = _CheckpointResumeRunner()
 
-    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-runagent-resume")
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-runagent-resume"
+    )
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     server_app_module.set_runner(runner)
     await conversation_runtime.append_run_checkpoint_event(
@@ -2398,6 +2550,7 @@ async def test_run_agent_responses_checkpoint_resume_resolves_framework_ref_from
                 "UserId": "user-1",
                 "ApiFormat": "responses",
                 "Stream": False,
+                "Metadata": {"tenant": "acme", "trace_id": "runagent-resume-trace"},
                 "ResponsesInput": [
                     {
                         "type": "agentengine.resume_checkpoint",
@@ -2423,11 +2576,20 @@ async def test_run_agent_responses_checkpoint_resume_resolves_framework_ref_from
         payload["metadata"]["agentengine"]["framework_ref"]["langgraph"]["thread_id"]
         == "tenant:agent:sess-runagent-resume"
     )
-    assert runner.calls[-1]["framework_ref"]["langgraph"]["thread_id"] == "tenant:agent:sess-runagent-resume"
+    assert (
+        runner.calls[-1]["framework_ref"]["langgraph"]["thread_id"]
+        == "tenant:agent:sess-runagent-resume"
+    )
+    assert runner.calls[-1]["platform_context"]["metadata"] == {
+        "tenant": "acme",
+        "trace_id": "runagent-resume-trace",
+    }
 
 
 @pytest.mark.asyncio
-async def test_run_agent_stream_checkpoint_resume_rejects_concurrent_resume_for_same_run(monkeypatch):
+async def test_run_agent_stream_checkpoint_resume_rejects_concurrent_resume_for_same_run(
+    monkeypatch,
+):
     server_app_module = importlib.import_module("ksadk.server.app")
     conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
     service = InMemorySessionService()
@@ -2616,7 +2778,9 @@ async def test_stream_responses_registers_invocation_for_cancel_run(monkeypatch)
         captured_invocations.append(invocation_id)
         return Response(status_code=202)
 
-    monkeypatch.setattr(server_app_module, "_detached_streaming_response", fake_detached_streaming_response)
+    monkeypatch.setattr(
+        server_app_module, "_detached_streaming_response", fake_detached_streaming_response
+    )
     response = await server_app_module.responses(
         server_app_module.ResponsesRequest(
             input="hello",
@@ -2794,7 +2958,9 @@ async def test_responses_events_are_visible_through_runtime_local_list_session_e
     assert run_response.status_code == 200
     assert events_response.status_code == 200
     events = events_response.json()["Data"]["Events"]
-    message_events = [event for event in events if event["EventType"] in {"user_message", "assistant_message"}]
+    message_events = [
+        event for event in events if event["EventType"] in {"user_message", "assistant_message"}
+    ]
     assert [event["Author"] for event in message_events] == ["user", "demo-agent"]
     assert message_events[0]["Content"]["parts"][0]["text"] == "hello"
     assert message_events[1]["Content"]["parts"][0]["text"] == "assistant says hi"
@@ -2918,1340 +3084,42 @@ async def test_runtime_local_list_session_events_filters_by_before_seq_id(monkey
 
 
 @pytest.mark.asyncio
-async def test_list_session_events_uses_requested_agent_id_for_runtime_events(monkeypatch):
+async def test_runtime_list_session_events_is_bounded_by_default_and_schema_limit(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")
     service = InMemorySessionService()
     await service.create_session(
-        "platform-agent-id",
-        "user-1",
-        "hosted-session",
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-events-bounded",
     )
-    await service.append_event(
-        "hosted-session",
-        SessionEvent(
-            id="checkpoint-1",
-            event_type="run_checkpoint",
-            timestamp=1,
-        ),
-    )
-    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
-    server_app_module.set_runner(_DummyRunner())
-
-    transport = httpx.ASGITransport(app=server_app_module.app)
-    async with httpx.AsyncClient(
-        transport=transport,
-        base_url="http://ksadk.local",
-    ) as client:
-        response = await client.post(
-            "/agentengine/api/v1/ListSessionEvents",
-            json={
-                "AgentId": "platform-agent-id",
-                "SessionId": "hosted-session",
-            },
-        )
-
-    assert response.status_code == 200
-    assert [
-        event["EventType"] for event in response.json()["Data"]["Events"]
-    ] == ["run_checkpoint"]
-
-
-@pytest.mark.asyncio
-async def test_list_session_events_without_session_id_pages_all_agent_sessions(
-    monkeypatch,
-):
-    server_app_module = importlib.import_module("ksadk.server.app")
-    service = InMemorySessionService()
-    for session_id, agent_id in (
-        ("agent-a-1", "platform-agent-id"),
-        ("agent-a-2", "platform-agent-id"),
-        ("foreign", "other-agent-id"),
-    ):
-        await service.create_session(agent_id, "user-1", session_id)
-    for session_id, event_id, timestamp in (
-        ("agent-a-1", "event-10", 10),
-        ("agent-a-2", "event-20", 20),
-        ("agent-a-1", "event-30", 30),
-        ("foreign", "foreign-40", 40),
-    ):
+    for index in range(205):
         await service.append_event(
-            session_id,
+            "sess-events-bounded",
             SessionEvent(
-                id=event_id,
-                event_type="run_checkpoint",
-                timestamp=timestamp,
-            ),
-        )
-    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
-    server_app_module.set_runner(_DummyRunner())
-
-    transport = httpx.ASGITransport(app=server_app_module.app)
-    async with httpx.AsyncClient(
-        transport=transport,
-        base_url="http://ksadk.local",
-    ) as client:
-        response = await client.post(
-            "/agentengine/api/v1/ListSessionEvents",
-            json={"AgentId": "platform-agent-id", "Offset": 1, "Limit": 2},
-        )
-
-    assert response.status_code == 200
-    data = response.json()["Data"]
-    assert data["SessionId"] is None
-    assert data["Total"] == 3
-    assert [event["EventId"] for event in data["Events"]] == [
-        "event-10",
-        "event-20",
-    ]
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "cursor",
-    [
-        {"AfterSeqId": 0},
-        {"BeforeSeqId": 2},
-    ],
-)
-async def test_list_session_events_without_session_id_rejects_seq_cursors(
-    monkeypatch,
-    cursor,
-):
-    server_app_module = importlib.import_module("ksadk.server.app")
-    service = InMemorySessionService()
-    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
-
-    transport = httpx.ASGITransport(app=server_app_module.app)
-    async with httpx.AsyncClient(
-        transport=transport,
-        base_url="http://ksadk.local",
-    ) as client:
-        response = await client.post(
-            "/agentengine/api/v1/ListSessionEvents",
-            json={"AgentId": "platform-agent-id", **cursor},
-        )
-
-    assert response.status_code == 422
-
-
-@pytest.mark.asyncio
-async def test_list_session_events_accepts_omitted_and_rejects_invalid_session_id(
-    monkeypatch,
-):
-    server_app_module = importlib.import_module("ksadk.server.app")
-    service = InMemorySessionService()
-    await service.create_session("demo-agent", "user-1", "events-scalar")
-    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
-
-    transport = httpx.ASGITransport(app=server_app_module.app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
-        missing = await client.post("/agentengine/api/v1/ListSessionEvents", json={})
-        empty = await client.post(
-            "/agentengine/api/v1/ListSessionEvents", json={"SessionId": "  "}
-        )
-        array = await client.post(
-            "/agentengine/api/v1/ListSessionEvents", json={"SessionId": ["events-scalar"]}
-        )
-        scalar = await client.post(
-            "/agentengine/api/v1/ListSessionEvents", json={"SessionId": " events-scalar "}
-        )
-
-    assert missing.status_code == 200
-    assert missing.json()["Data"]["SessionId"] is None
-    assert empty.status_code == 422
-    assert array.status_code == 422
-    assert scalar.status_code == 200
-    assert scalar.json()["Data"]["SessionId"] == "events-scalar"
-
-
-@pytest.mark.asyncio
-async def test_list_session_events_filters_types_and_checkpoint_ids_before_pagination(monkeypatch):
-    server_app_module = importlib.import_module("ksadk.server.app")
-    service = InMemorySessionService()
-    await service.create_session("demo-agent", "user-1", "events-filtered")
-    for event_id, event_type, checkpoint_id, timestamp in (
-        ("match-old", "user_message", "cp-a", 1),
-        ("wrong-type", "assistant_message", "cp-a", 2),
-        ("wrong-checkpoint", "user_message", "cp-b", 3),
-        ("match-new", "user_message", "cp-a", 4),
-        ("missing-checkpoint", "user_message", None, 5),
-    ):
-        await service.append_event(
-            "events-filtered",
-            SessionEvent(
-                id=event_id,
-                event_type=event_type,
-                timestamp=timestamp,
-                metadata={"checkpoint_id": checkpoint_id} if checkpoint_id else {},
+                author="user",
+                event_type="user_message",
+                content={"index": index},
             ),
         )
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
 
     transport = httpx.ASGITransport(app=server_app_module.app)
     async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
-        response = await client.post(
+        bounded = await client.post(
             "/agentengine/api/v1/ListSessionEvents",
-            json={
-                "SessionId": "events-filtered",
-                "EventTypes": [" user_message ", "", "user_message"],
-                "CheckpointIds": [" cp-a ", "cp-a"],
-                "Offset": 0,
-                "Limit": 1,
-            },
+            json={"SessionId": "sess-events-bounded"},
         )
-
-    assert response.status_code == 200
-    data = response.json()["Data"]
-    assert data["SessionId"] == "events-filtered"
-    assert data["EventTypes"] == ["user_message"]
-    assert data["CheckpointIds"] == ["cp-a"]
-    assert data["Total"] == 2
-    assert [event["EventId"] for event in data["Events"]] == ["match-new"]
-
-
-@pytest.mark.asyncio
-async def test_list_session_events_normalizes_scalar_and_rejects_array(monkeypatch):
-    server_app_module = importlib.import_module("ksadk.server.app")
-    service = InMemorySessionService()
-    for session_id in ("events-a", "events-b"):
-        await service.create_session("demo-agent", "user-1", session_id)
-    await service.append_event("events-a", SessionEvent(id="a-1", author="user", event_type="x", timestamp=10))
-    await service.append_event("events-b", SessionEvent(id="b-1", author="user", event_type="x", timestamp=20))
-    await service.append_event("events-a", SessionEvent(id="a-2", author="user", event_type="x", timestamp=30))
-    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
-
-    transport = httpx.ASGITransport(app=server_app_module.app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
-        legacy = await client.post(
-            "/agentengine/api/v1/ListSessionEvents", json={"SessionId": " events-a "}
-        )
-        response = await client.post(
+        too_large = await client.post(
             "/agentengine/api/v1/ListSessionEvents",
-            json={"SessionId": [" events-b ", "events-a", "events-b", ""], "Offset": 0, "Limit": 2},
+            json={"SessionId": "sess-events-bounded", "Limit": 2001},
         )
 
-    assert legacy.status_code == 200
-    assert legacy.json()["Data"]["SessionId"] == "events-a"
-    assert response.status_code == 422
-
-
-@pytest.mark.asyncio
-async def test_list_session_events_returns_generic_404_when_all_requested_sessions_are_missing(
-    monkeypatch,
-):
-    server_app_module = importlib.import_module("ksadk.server.app")
-    service = InMemorySessionService()
-    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
-    server_app_module.set_runner(_DummyRunner())
-
-    transport = httpx.ASGITransport(app=server_app_module.app)
-    async with httpx.AsyncClient(
-        transport=transport,
-        base_url="http://ksadk.local",
-    ) as client:
-        response = await client.post(
-            "/agentengine/api/v1/ListSessionEvents",
-            json={"SessionId": "missing-a"},
-        )
-
-    assert response.status_code == 404
-    assert response.json()["detail"] == "Session not found"
-
-
-@pytest.mark.asyncio
-async def test_list_session_events_rejects_partially_valid_session_array(monkeypatch):
-    server_app_module = importlib.import_module("ksadk.server.app")
-
-    service = InMemorySessionService()
-    await service.create_session("demo-agent", "user-1", "existing")
-    await service.update_session_metadata(
-        "existing",
-        summary="private-summary-marker",
-    )
-    await service.append_event(
-        "existing",
-        SessionEvent(id="existing-event", author="user", event_type="x"),
-    )
-    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
-    server_app_module.set_runner(_DummyRunner())
-
-    transport = httpx.ASGITransport(app=server_app_module.app)
-    async with httpx.AsyncClient(
-        transport=transport,
-        base_url="http://ksadk.local",
-    ) as client:
-        response = await client.post(
-            "/agentengine/api/v1/ListSessionEvents",
-            json={"SessionId": ["missing", "existing"]},
-        )
-
-    assert response.status_code == 422
-
-
-@pytest.mark.asyncio
-async def test_list_session_events_rejects_cross_agent_session_array(monkeypatch):
-    server_app_module = importlib.import_module("ksadk.server.app")
-
-    service = InMemorySessionService()
-    await service.create_session("demo-agent", "user-1", "allowed")
-    await service.create_session("other-agent", "user-1", "foreign")
-    await service.append_event(
-        "allowed",
-        SessionEvent(id="allowed-event", author="user", event_type="x"),
-    )
-    await service.append_event(
-        "foreign",
-        SessionEvent(
-            id="foreign-event",
-            author="user",
-            event_type="x",
-            content={"marker": "foreign-private-marker"},
-        ),
-    )
-    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
-    server_app_module.set_runner(_DummyRunner())
-
-    transport = httpx.ASGITransport(app=server_app_module.app)
-    async with httpx.AsyncClient(
-        transport=transport,
-        base_url="http://ksadk.local",
-    ) as client:
-        response = await client.post(
-            "/agentengine/api/v1/ListSessionEvents",
-            json={"SessionId": ["allowed", "foreign"]},
-        )
-
-    assert response.status_code == 422
-
-
-@pytest.mark.asyncio
-async def test_list_session_events_rejects_arrays_with_or_without_cursor(
-    monkeypatch,
-):
-    server_app_module = importlib.import_module("ksadk.server.app")
-    service = InMemorySessionService()
-    await service.create_session("demo-agent", "user-1", "events-good")
-    await service.create_session("other-agent", "user-1", "events-other")
-    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
-
-    transport = httpx.ASGITransport(app=server_app_module.app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
-        cursor = await client.post(
-            "/agentengine/api/v1/ListSessionEvents",
-            json={"SessionId": ["events-good", "events-other"], "AfterSeqId": 1},
-        )
-        all_unknown = await client.post(
-            "/agentengine/api/v1/ListSessionEvents",
-            json={"SessionId": ["missing-a", "missing-b"]},
-        )
-
-    assert cursor.status_code == 422
-    assert all_unknown.status_code == 422
-
-
-@pytest.mark.asyncio
-async def test_list_session_events_filter_and_page_limits(monkeypatch):
-    server_app_module = importlib.import_module("ksadk.server.app")
-    service = InMemorySessionService()
-    await service.create_session("demo-agent", "user-1", "all-events")
-    await service.append_event("all-events", SessionEvent(id="all-1", author="user", event_type="x"))
-    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
-    server_app_module.set_runner(_DummyRunner())
-    types_1000 = [f"event-{index}" for index in range(1000)]
-    types_1001 = [*types_1000, "too-many"]
-
-    transport = httpx.ASGITransport(app=server_app_module.app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
-        accepted = await client.post(
-            "/agentengine/api/v1/ListSessionEvents",
-            json={"SessionId": "all-events", "EventTypes": types_1000},
-        )
-        rejected = await client.post(
-            "/agentengine/api/v1/ListSessionEvents",
-            json={"SessionId": "all-events", "EventTypes": types_1001},
-        )
-        max_page = await client.post(
-            "/agentengine/api/v1/ListSessionEvents",
-            json={"SessionId": "all-events", "Limit": 1000},
-        )
-        oversized_page = await client.post(
-            "/agentengine/api/v1/ListSessionEvents",
-            json={"SessionId": "all-events", "Limit": 1001},
-        )
-
-    assert accepted.status_code == 200
-    assert accepted.json()["Data"]["Total"] == 0
-    assert rejected.status_code == 422
-    assert max_page.status_code == 200
-    assert max_page.json()["Data"]["Limit"] == 1000
-    assert oversized_page.status_code == 422
-
-
-@pytest.mark.asyncio
-async def test_list_session_checkpoints_uses_public_page_contract_and_normalized_id_limit(
-    monkeypatch,
-):
-    server_app_module = importlib.import_module("ksadk.server.app")
-    service = InMemorySessionService()
-    await service.create_session("demo-agent", "user-1", "checkpoint-page-contract")
-    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
-    server_app_module.set_runner(_DummyRunner())
-    checkpoint_ids_1000 = [f"checkpoint-{index}" for index in range(1000)]
-    checkpoint_ids_1001 = [*checkpoint_ids_1000, "too-many"]
-    resume_statuses_1001 = [f"future-status-{index}" for index in range(1001)]
-
-    transport = httpx.ASGITransport(app=server_app_module.app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
-        omitted = await client.post(
-            "/agentengine/api/v1/ListSessionCheckpoints",
-            json={"AgentId": "demo-agent", "SessionId": "checkpoint-page-contract"},
-        )
-        accepted_ids = await client.post(
-            "/agentengine/api/v1/ListSessionCheckpoints",
-            json={
-                "AgentId": "demo-agent",
-                "SessionId": "checkpoint-page-contract",
-                "CheckpointId": checkpoint_ids_1000,
-                "Limit": 1000,
-            },
-        )
-        rejected_ids = await client.post(
-            "/agentengine/api/v1/ListSessionCheckpoints",
-            json={
-                "AgentId": "demo-agent",
-                "SessionId": "checkpoint-page-contract",
-                "CheckpointId": checkpoint_ids_1001,
-            },
-        )
-        rejected_resume_statuses = await client.post(
-            "/agentengine/api/v1/ListSessionCheckpoints",
-            json={
-                "AgentId": "demo-agent",
-                "SessionId": "checkpoint-page-contract",
-                "ResumeStatus": resume_statuses_1001,
-            },
-        )
-        oversized_page = await client.post(
-            "/agentengine/api/v1/ListSessionCheckpoints",
-            json={
-                "AgentId": "demo-agent",
-                "SessionId": "checkpoint-page-contract",
-                "Limit": 1001,
-            },
-        )
-
-    assert omitted.status_code == 200
-    assert omitted.json()["Data"]["Limit"] == 100
-    assert accepted_ids.status_code == 200
-    assert accepted_ids.json()["Data"]["Limit"] == 1000
-    assert rejected_ids.status_code == 422
-    assert rejected_resume_statuses.status_code == 422
-    assert oversized_page.status_code == 422
-
-
-@pytest.mark.asyncio
-async def test_list_session_checkpoints_filters_final_resume_status_and_scope_before_pagination(
-    monkeypatch,
-):
-    server_app_module = importlib.import_module("ksadk.server.app")
-    service = InMemorySessionService()
-    await service.create_session("demo-agent", "user-1", "checkpoint-filtered")
-    fixtures = (
-        ("disabled-shared", "disabled", "shared", False, 1),
-        ("future-shared", "future_status", "shared", True, 2),
-        ("disabled-pod", "disabled", "pod_local", False, 3),
-        ("resumable-shared", "resumable", "shared", True, 4),
-    )
-    for checkpoint_id, resume_status, scope, is_resumable, timestamp in fixtures:
-        await service.append_event(
-            "checkpoint-filtered",
-            SessionEvent(
-                id=f"event-{checkpoint_id}",
-                event_type="run_checkpoint",
-                timestamp=timestamp,
-                metadata={
-                    "run_id": "run-filtered",
-                    "checkpoint_id": checkpoint_id,
-                    "framework": "langgraph",
-                    "framework_ref": {},
-                    "resume_status": resume_status,
-                    "scope": scope,
-                    "is_resumable": is_resumable,
-                },
-            ),
-        )
-    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
-
-    transport = httpx.ASGITransport(app=server_app_module.app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
-        response = await client.post(
-            "/agentengine/api/v1/ListSessionCheckpoints",
-            json={
-                "AgentId": "demo-agent",
-                "SessionId": "checkpoint-filtered",
-                "ResumeStatus": [" DISABLED ", "future_status", "disabled"],
-                "ResumeTypes": [" shared ", "shared"],
-                "Offset": 1,
-                "Limit": 1,
-            },
-        )
-        invalid_type = await client.post(
-            "/agentengine/api/v1/ListSessionCheckpoints",
-            json={
-                "AgentId": "demo-agent",
-                "SessionId": "checkpoint-filtered",
-                "ResumeTypes": ["cluster_local"],
-            },
-        )
-
-    assert response.status_code == 200
-    data = response.json()["Data"]
-    assert data["ResumeStatus"] == ["disabled", "future_status"]
-    assert data["ResumeTypes"] == ["shared"]
-    assert data["Total"] == 2
-    assert data["ResumableTotal"] == 1
-    assert data["HasResumableCheckpoint"] is True
-    assert [item["CheckpointId"] for item in data["Checkpoints"]] == ["future-shared"]
-    assert invalid_type.status_code == 422
-
-
-@pytest.mark.asyncio
-async def test_list_session_checkpoints_accepts_and_filters_all_resume_types(monkeypatch):
-    server_app_module = importlib.import_module("ksadk.server.app")
-    service = InMemorySessionService()
-    await service.create_session("demo-agent", "user-1", "checkpoint-scopes")
-    resume_types = (
-        "invocation",
-        "shared",
-        "pod_local",
-        "process_local",
-        "unknown",
-    )
-    for index, resume_type in enumerate(resume_types):
-        metadata = {
-            "run_id": "run-scopes",
-            "checkpoint_id": f"cp-{resume_type}",
-            "framework": "langgraph",
-            "framework_ref": {},
-            "is_resumable": True,
-        }
-        if resume_type != "unknown":
-            metadata["scope"] = resume_type
-        await service.append_event(
-            "checkpoint-scopes",
-            SessionEvent(
-                id=f"event-{resume_type}",
-                event_type="run_checkpoint",
-                timestamp=index + 1,
-                metadata=metadata,
-            ),
-        )
-    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
-
-    transport = httpx.ASGITransport(app=server_app_module.app)
-    async with httpx.AsyncClient(
-        transport=transport, base_url="http://ksadk.local"
-    ) as client:
-        responses = {
-            resume_type: await client.post(
-                "/agentengine/api/v1/ListSessionCheckpoints",
-                json={
-                    "AgentId": "demo-agent",
-                    "SessionId": "checkpoint-scopes",
-                    "ResumeTypes": [resume_type],
-                },
-            )
-            for resume_type in resume_types
-        }
-
-    for resume_type, response in responses.items():
-        assert response.status_code == 200
-        data = response.json()["Data"]
-        assert data["ResumeTypes"] == [resume_type]
-        assert [item["CheckpointId"] for item in data["Checkpoints"]] == [
-            f"cp-{resume_type}"
-        ]
-
-
-@pytest.mark.asyncio
-async def test_list_checkpoints_normalizes_filters_and_keeps_same_named_cross_session_audits_isolated(monkeypatch):
-    server_app_module = importlib.import_module("ksadk.server.app")
-    conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
-    service = InMemorySessionService()
-    for session_id in ("cp-a", "cp-b"):
-        await service.create_session("demo-agent", "user-1", session_id)
-        await conversation_runtime.append_run_checkpoint_event(
-            session_id=session_id, author="demo-agent", run_id="same-run", checkpoint_id="same-cp",
-            framework="langgraph", framework_ref={}, session_service_provider=lambda: service,
-        )
-    await conversation_runtime.append_run_resume_event(
-        session_id="cp-a", author="demo-agent", run_id="same-run", checkpoint_id="same-cp",
-        resume_attempt_id="resume-a", framework="langgraph", framework_ref={},
-        session_service_provider=lambda: service,
-    )
-    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
-    server_app_module.set_runner(_DummyRunner())
-
-    transport = httpx.ASGITransport(app=server_app_module.app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
-        response = await client.post(
-            "/agentengine/api/v1/ListSessionCheckpoints",
-            json={"AgentId": "demo-agent", "SessionId": [" cp-b ", "cp-a", "cp-a"],
-                  "CheckpointId": [" same-cp ", "same-cp"]},
-        )
-
-    assert response.status_code == 200
-    data = response.json()["Data"]
-    assert data["SessionId"] == ["cp-b", "cp-a"]
-    assert data["CheckpointId"] == ["same-cp"]
-    checkpoints = {checkpoint["SessionId"]: checkpoint for checkpoint in data["Checkpoints"]}
-    assert checkpoints["cp-a"]["ResumeCount"] == 1
-    assert checkpoints["cp-b"]["ResumeCount"] == 0
-
-
-@pytest.mark.asyncio
-async def test_checkpoint_listing_uses_bounded_batch_queries(monkeypatch):
-    server_app_module = importlib.import_module("ksadk.server.app")
-
-    class _BoundedService(InMemorySessionService):
-        def __init__(self):
-            super().__init__()
-            self.batch_limits: list[int] = []
-            self.stats_batch_sizes: list[int] = []
-
-        async def get_events(self, *args, **kwargs):  # pragma: no cover - assertion guard
-            raise AssertionError("checkpoint list must not call unbounded get_events")
-
-        async def get_events_batch(self, *args, **kwargs):  # pragma: no cover - assertion guard
-            raise AssertionError("checkpoint list must use checkpoint scan pushdown")
-
-        async def scan_checkpoint_events(self, query):
-            self.batch_limits.append(query.limit)
-            return await super().scan_checkpoint_events(query)
-
-        async def iter_checkpoint_event_chunks(self, query):
-            self.batch_limits.append(query.limit)
-            async for batch in super().iter_checkpoint_event_chunks(query):
-                assert len(batch) <= 50
-                yield batch
-
-        async def get_checkpoint_stats(self, keys):
-            self.stats_batch_sizes.append(len(keys))
-            return await super().get_checkpoint_stats(keys)
-
-    service = _BoundedService()
-    await service.create_session("demo-agent", "user-1", "bounded-cp")
-    for index in range(501):
-        await service.append_event(
-            "bounded-cp",
-            SessionEvent(
-                id=f"cp-{index}", author="demo-agent", event_type="run_checkpoint", timestamp=index,
-                metadata={"run_id": "run", "checkpoint_id": f"cp-{index}", "framework": "langgraph", "framework_ref": {}},
-            ),
-        )
-    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
-
-    transport = httpx.ASGITransport(app=server_app_module.app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
-        response = await client.post(
-            "/agentengine/api/v1/ListSessionCheckpoints",
-            json={"AgentId": "demo-agent", "SessionId": "bounded-cp"},
-        )
-
-    assert response.status_code == 200
-    assert response.json()["Data"]["Total"] == 501
-    assert max(service.batch_limits) == 50
-    assert max(service.stats_batch_sizes) <= 50
-
-
-@pytest.mark.asyncio
-async def test_in_memory_checkpoint_stats_share_the_active_scan_snapshot(monkeypatch):
-    server_app_module = importlib.import_module("ksadk.server.app")
-
-    class _AppendLatestBeforeStats(InMemorySessionService):
-        def __init__(self):
-            super().__init__()
-            self.appended = False
-
-        async def get_checkpoint_stats(self, keys):
-            if not self.appended:
-                self.appended = True
-                await self.append_event(
-                    "snapshot-stats",
-                    SessionEvent(
-                        event_type="run_checkpoint",
-                        metadata={
-                            "run_id": "run",
-                            "checkpoint_id": "new-after-scan",
-                            "framework": "adk",
-                            "framework_ref": {},
-                            "is_resumable": True,
-                            "only_latest_resumable": True,
-                        },
-                    ),
-                )
-            return await super().get_checkpoint_stats(keys)
-
-    service = _AppendLatestBeforeStats()
-    await service.create_session("demo-agent", "user", "snapshot-stats")
-    await service.append_event(
-        "snapshot-stats",
-        SessionEvent(
-            event_type="run_checkpoint",
-            metadata={
-                "run_id": "run",
-                "checkpoint_id": "visible-at-scan-start",
-                "framework": "adk",
-                "framework_ref": {},
-                "is_resumable": True,
-                "only_latest_resumable": True,
-            },
-        ),
-    )
-    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
-
-    transport = httpx.ASGITransport(app=server_app_module.app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
-        response = await client.post(
-            "/agentengine/api/v1/ListSessionCheckpoints",
-            json={
-                "AgentId": "demo-agent",
-                "SessionId": "snapshot-stats",
-                "OnlyResumable": True,
-            },
-        )
-
-    assert response.status_code == 200
-    assert response.json()["Data"]["Total"] == 1
-    assert response.json()["Data"]["ResumableTotal"] == 1
-    assert [item["CheckpointId"] for item in response.json()["Data"]["Checkpoints"]] == [
-        "visible-at-scan-start"
-    ]
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("failure_point", ["scan", "stats"])
-async def test_checkpoint_listing_restarts_on_mixed_primary_epoch_failure(
-    monkeypatch, failure_point
-):
-    server_app_module = importlib.import_module("ksadk.server.app")
-
-    class _FailDuringCheckpointReadPrimary(InMemorySessionService):
-        def __init__(self):
-            super().__init__()
-            self.scan_calls = 0
-            self.stats_calls = 0
-
-        async def iter_checkpoint_event_chunks(self, query):
-            async for batch in super().iter_checkpoint_event_chunks(query):
-                self.scan_calls += 1
-                if failure_point == "scan" and self.scan_calls == 2:
-                    raise SessionBackendUnavailable(
-                        "primary failed during checkpoint scan"
-                    )
-                yield batch
-
-        async def get_checkpoint_stats(self, keys):
-            self.stats_calls += 1
-            if failure_point == "stats" and self.stats_calls == 1:
-                raise SessionBackendUnavailable("primary failed during checkpoint stats")
-            return await super().get_checkpoint_stats(keys)
-
-    primary = _FailDuringCheckpointReadPrimary()
-    fallback = InMemorySessionService()
-    service = ResilientSessionService(primary, fallback)
-    await primary.create_session("demo-agent", "user", "clean")
-    await fallback.create_session("demo-agent", "user", "clean")
-    await fallback.create_session("demo-agent", "user", "live")
-    for index in range(60):
-        await primary.append_event(
-            "clean",
-            SessionEvent(
-                id=f"clean-{index}", event_type="run_checkpoint", timestamp=index * 2,
-                metadata={
-                    "run_id": "run", "checkpoint_id": f"clean-{index}",
-                    "framework": "langgraph", "framework_ref": {},
-                },
-            ),
-        )
-        await fallback.append_event(
-            "live",
-            SessionEvent(
-                id=f"live-{index}", event_type="run_checkpoint", timestamp=index * 2 + 1,
-                metadata={
-                    "run_id": "run", "checkpoint_id": f"live-{index}",
-                    "framework": "langgraph", "framework_ref": {},
-                },
-            ),
-        )
-    service._dirty_session_ids.add("live")
-    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
-
-    transport = httpx.ASGITransport(app=server_app_module.app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
-        response = await client.post(
-            "/agentengine/api/v1/ListSessionCheckpoints",
-            json={
-                "AgentId": "demo-agent",
-                "SessionId": ["clean", "live"],
-                "Offset": 10,
-                "Limit": 10,
-            },
-        )
-
-    assert response.status_code == 200
-    assert response.json()["Data"]["Total"] == 60
-    assert [item["CheckpointId"] for item in response.json()["Data"]["Checkpoints"]] == [
-        f"live-{index}" for index in range(10, 20)
-    ]
-
-
-@pytest.mark.asyncio
-async def test_checkpoint_lookup_prefers_highest_seq_id_when_timestamps_are_out_of_order():
-    server_app_module = importlib.import_module("ksadk.server.app")
-    service = InMemorySessionService()
-    await service.create_session("demo-agent", "user", "out-of-order")
-    for timestamp, marker in ((100, "old"), (1, "new")):
-        await service.append_event(
-            "out-of-order",
-            SessionEvent(
-                event_type="run_checkpoint", timestamp=timestamp,
-                metadata={
-                    "run_id": "run", "checkpoint_id": "same", "framework": "langgraph",
-                    "framework_ref": {"marker": marker}, "is_resumable": True,
-                },
-            ),
-        )
-
-    checkpoint = await server_app_module._find_session_checkpoint(
-        service=service, session_id="out-of-order", run_id="run", checkpoint_id="same"
-    )
-
-    assert checkpoint is not None
-    assert checkpoint["SeqId"] == 2
-    assert checkpoint["FrameworkRef"]["marker"] == "new"
-
-
-@pytest.mark.asyncio
-async def test_checkpoint_replay_policy_uses_one_predicate_for_total_and_only_resumable(monkeypatch):
-    server_app_module = importlib.import_module("ksadk.server.app")
-    conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
-    service = InMemorySessionService()
-    await service.create_session("demo-agent", "user", "predicate")
-    await conversation_runtime.append_run_checkpoint_event(
-        session_id="predicate", author="demo-agent", run_id="run", checkpoint_id="first-use",
-        framework="langgraph", framework_ref={},
-        metadata={"is_resumable": True, "replay_allowed": False},
-        session_service_provider=lambda: service,
-    )
-    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
-    transport = httpx.ASGITransport(app=server_app_module.app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
-        response = await client.post(
-            "/agentengine/api/v1/ListSessionCheckpoints",
-            json={"AgentId": "demo-agent", "SessionId": "predicate", "OnlyResumable": True},
-        )
-
-    data = response.json()["Data"]
-    assert data["ResumableTotal"] == 1
-    assert data["Total"] == 1
-    assert [item["CheckpointId"] for item in data["Checkpoints"]] == ["first-use"]
-
-
-@pytest.mark.asyncio
-async def test_resume_checkpoint_lookup_pushes_run_and_checkpoint_filters_to_storage():
-    server_app_module = importlib.import_module("ksadk.server.app")
-
-    class _QuerySpy(InMemorySessionService):
-        def __init__(self):
-            super().__init__()
-            self.lookups = []
-
-        async def get_events_batch(self, *args, **kwargs):  # pragma: no cover - assertion guard
-            raise AssertionError("resume lookup must use targeted query_events")
-
-        async def get_checkpoint_lookup_stats(self, session_id, run_id, checkpoint_id):
-            self.lookups.append((session_id, run_id, checkpoint_id))
-            return await super().get_checkpoint_lookup_stats(session_id, run_id, checkpoint_id)
-
-    service = _QuerySpy()
-    await service.create_session("demo-agent", "user", "targeted")
-    await service.append_event(
-        "targeted", SessionEvent(
-            event_type="run_checkpoint", metadata={"run_id": "wanted", "checkpoint_id": "wanted-cp",
-            "framework": "langgraph", "framework_ref": {}, "is_resumable": True},
-        ),
-    )
-    checkpoint = await server_app_module._find_session_checkpoint(
-        service=service, session_id="targeted", run_id="wanted", checkpoint_id="wanted-cp"
-    )
-
-    assert checkpoint is not None
-    assert service.lookups == [("targeted", "wanted", "wanted-cp")]
-
-
-@pytest.mark.asyncio
-async def test_legacy_single_session_backend_keeps_old_actions_and_rejects_new_multi_scope(monkeypatch):
-    server_app_module = importlib.import_module("ksadk.server.app")
-    conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
-
-    class _LegacyBackend(InMemorySessionService):
-        async def get_session_metadata(self, session_id):
-            return await super(InMemorySessionService, self).get_session_metadata(session_id)
-
-        async def get_sessions_by_ids(self, session_ids):
-            return await super(InMemorySessionService, self).get_sessions_by_ids(session_ids)
-
-        async def query_events(self, query):
-            return await super(InMemorySessionService, self).query_events(query)
-
-        async def count_event_query(self, query):
-            return await super(InMemorySessionService, self).count_event_query(query)
-
-        async def get_checkpoint_lookup_stats(self, *args):
-            return await super(InMemorySessionService, self).get_checkpoint_lookup_stats(*args)
-
-        async def scan_checkpoint_events(self, query):
-            return await super(InMemorySessionService, self).scan_checkpoint_events(query)
-
-        async def get_checkpoint_stats(self, keys):
-            return await super(InMemorySessionService, self).get_checkpoint_stats(keys)
-
-    service = _LegacyBackend()
-    await service.create_session("demo-agent", "user", "legacy")
-    await service.create_session("demo-agent", "user", "legacy-2")
-    await conversation_runtime.append_run_checkpoint_event(
-        session_id="legacy", author="demo-agent", run_id="run", checkpoint_id="cp",
-        framework="langgraph", framework_ref={}, metadata={"is_resumable": True},
-        session_service_provider=lambda: service,
-    )
-    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
-    server_app_module.set_runner(_CheckpointResumeRunner())
-    transport = httpx.ASGITransport(app=server_app_module.app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
-        events = await client.post("/agentengine/api/v1/ListSessionEvents", json={"SessionId": "legacy"})
-        filtered_events = await client.post(
-            "/agentengine/api/v1/ListSessionEvents",
-            json={"SessionId": "legacy", "EventTypes": ["run_checkpoint"]},
-        )
-        checkpoints = await client.post("/agentengine/api/v1/ListSessionCheckpoints", json={"AgentId": "demo-agent", "SessionId": "legacy"})
-        resume = await client.post("/agentengine/api/v1/ResumeRun", json={"AgentId": "demo-agent", "SessionId": "legacy", "RunId": "run", "CheckpointId": "cp"})
-        multi = await client.post("/agentengine/api/v1/ListSessionEvents", json={"SessionId": ["legacy", "legacy-2"]})
-
-    assert events.status_code == checkpoints.status_code == resume.status_code == 200
-    assert filtered_events.status_code == 501
-    assert multi.status_code == 422
-
-
-@pytest.mark.asyncio
-async def test_legacy_checkpoint_filters_do_not_page_before_filtering(monkeypatch):
-    server_app_module = importlib.import_module("ksadk.server.app")
-
-    class _LegacyFilteredBackend(InMemorySessionService):
-        async def scan_checkpoint_events(self, query):
-            return await super(InMemorySessionService, self).scan_checkpoint_events(query)
-
-        async def iter_checkpoint_event_chunks(self, query):
-            async for batch in super(
-                InMemorySessionService, self
-            ).iter_checkpoint_event_chunks(query):
-                yield batch
-
-        async def get_checkpoint_stats(self, keys):
-            return await super(InMemorySessionService, self).get_checkpoint_stats(keys)
-
-    service = _LegacyFilteredBackend()
-    await service.create_session("demo-agent", "user", "legacy-filter")
-    for index in range(51):
-        await service.append_event(
-            "legacy-filter",
-            SessionEvent(
-                event_type="run_checkpoint",
-                metadata={
-                    "run_id": "run",
-                    "checkpoint_id": "target" if index == 50 else f"other-{index}",
-                    "framework": "langgraph",
-                    "framework_ref": {},
-                    "is_resumable": True,
-                },
-            ),
-        )
-    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
-
-    transport = httpx.ASGITransport(app=server_app_module.app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
-        response = await client.post(
-            "/agentengine/api/v1/ListSessionCheckpoints",
-            json={
-                "AgentId": "demo-agent",
-                "SessionId": "legacy-filter",
-                "CheckpointId": "target",
-            },
-        )
-
-    assert response.status_code == 200
-    assert response.json()["Data"]["Total"] == 1
-    assert [item["CheckpointId"] for item in response.json()["Data"]["Checkpoints"]] == [
-        "target"
-    ]
-
-
-@pytest.mark.asyncio
-async def test_resilient_legacy_primary_preserves_single_checkpoint_actions_and_rejects_batch_scope(monkeypatch):
-    server_app_module = importlib.import_module("ksadk.server.app")
-
-    class _LegacyPrimary(InMemorySessionService):
-        async def get_session_metadata(self, session_id):
-            return await super(InMemorySessionService, self).get_session_metadata(session_id)
-
-        async def get_sessions_by_ids(self, session_ids):
-            return await super(InMemorySessionService, self).get_sessions_by_ids(session_ids)
-
-        async def query_events(self, query):
-            return await super(InMemorySessionService, self).query_events(query)
-
-        async def count_event_query(self, query):
-            return await super(InMemorySessionService, self).count_event_query(query)
-
-        async def get_checkpoint_lookup_stats(self, *args):
-            return await super(InMemorySessionService, self).get_checkpoint_lookup_stats(*args)
-
-        async def scan_checkpoint_events(self, query):
-            return await super(InMemorySessionService, self).scan_checkpoint_events(query)
-
-        async def get_checkpoint_stats(self, keys):
-            return await super(InMemorySessionService, self).get_checkpoint_stats(keys)
-
-    primary = _LegacyPrimary()
-    for session_id in ("legacy-primary", "legacy-primary-2"):
-        await primary.create_session("demo-agent", "user", session_id)
-    await primary.append_event(
-        "legacy-primary",
-        SessionEvent(
-            event_type="run_checkpoint",
-            metadata={
-                "run_id": "run",
-                "checkpoint_id": "cp",
-                "framework": "langgraph",
-                "framework_ref": {},
-                "is_resumable": True,
-            },
-        ),
-    )
-    service = ResilientSessionService(primary, InMemorySessionService())
-    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
-    server_app_module.set_runner(_CheckpointResumeRunner())
-
-    transport = httpx.ASGITransport(app=server_app_module.app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
-        checkpoints = await client.post(
-            "/agentengine/api/v1/ListSessionCheckpoints",
-            json={"AgentId": "demo-agent", "SessionId": "legacy-primary"},
-        )
-        resume = await client.post(
-            "/agentengine/api/v1/ResumeRun",
-            json={
-                "AgentId": "demo-agent",
-                "SessionId": "legacy-primary",
-                "RunId": "run",
-                "CheckpointId": "cp",
-            },
-        )
-        multi = await client.post(
-            "/agentengine/api/v1/ListSessionCheckpoints",
-            json={"AgentId": "demo-agent", "SessionId": ["legacy-primary", "legacy-primary-2"]},
-        )
-        all_sessions = await client.post(
-            "/agentengine/api/v1/ListSessionCheckpoints",
-            json={"AgentId": "demo-agent"},
-        )
-
-    assert checkpoints.status_code == 200
-    assert checkpoints.json()["Data"]["Checkpoints"][0]["CheckpointId"] == "cp"
-    assert resume.status_code == 200
-    assert resume.json()["Data"]["success"] is True
-    assert multi.status_code == all_sessions.status_code == 501
-    assert service.degraded is False
-
-
-@pytest.mark.asyncio
-async def test_resume_run_non_streaming_reports_success_and_terminal_noop_reports_false(monkeypatch):
-    server_app_module = importlib.import_module("ksadk.server.app")
-    conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
-    service = InMemorySessionService()
-    runner = _CheckpointResumeRunner()
-    await service.create_session("demo-agent", "user-1", "resume-success")
-    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
-    server_app_module.set_runner(runner)
-    await conversation_runtime.append_run_checkpoint_event(
-        session_id="resume-success", author="demo-agent", run_id="run", checkpoint_id="active",
-        framework="langgraph", framework_ref={}, session_service_provider=lambda: service,
-    )
-    await conversation_runtime.append_run_checkpoint_event(
-        session_id="resume-success", author="demo-agent", run_id="run", checkpoint_id="terminal",
-        framework="langgraph", framework_ref={}, metadata={"is_terminal": True, "is_resumable": False},
-        session_service_provider=lambda: service,
-    )
-    transport = httpx.ASGITransport(app=server_app_module.app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
-        success = await client.post(
-            "/agentengine/api/v1/ResumeRun",
-            json={"AgentId": "demo-agent", "SessionId": "resume-success", "RunId": "run", "CheckpointId": "active"},
-        )
-        noop = await client.post(
-            "/agentengine/api/v1/ResumeRun",
-            json={"AgentId": "demo-agent", "SessionId": "resume-success", "RunId": "run", "CheckpointId": "terminal"},
-        )
-    assert success.status_code == 200
-    assert success.json()["Data"]["success"] is True
-    assert noop.status_code == 200
-    assert noop.json()["Data"]["success"] is False
-
-
-@pytest.mark.asyncio
-async def test_resume_run_background_precedes_stream_and_returns_json_acceptance(monkeypatch):
-    server_app_module = importlib.import_module("ksadk.server.app")
-    conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
-    service = InMemorySessionService()
-    runner = _CheckpointResumeRunner()
-    await service.create_session("demo-agent", "user-1", "resume-background")
-    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
-    server_app_module.set_runner(runner)
-    await conversation_runtime.append_run_checkpoint_event(
-        session_id="resume-background", author="demo-agent", run_id="run-1",
-        checkpoint_id="cp-1", framework="langgraph", framework_ref={},
-        session_service_provider=lambda: service,
-    )
-
-    transport = httpx.ASGITransport(app=server_app_module.app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
-        response = await client.post(
-            "/agentengine/api/v1/ResumeRun",
-            headers={"accept": "text/event-stream"},
-            json={
-                "AgentId": "demo-agent", "SessionId": "resume-background",
-                "RunId": "run-1", "CheckpointId": "cp-1",
-                "ResumeAttemptId": "resume-bg-1",
-                "InvocationId": "inv-bg-1&next=bad value",
-                "Background": True, "Stream": True,
-            },
-        )
-
-    assert response.status_code == 200
-    assert response.headers["content-type"].startswith("application/json")
-    data = response.json()["Data"]
-    assert data == {
-        "SessionId": "resume-background",
-        "RunId": "run-1",
-        "CheckpointId": "cp-1",
-        "ResumeAttemptId": "resume-bg-1",
-        "InvocationId": "inv-bg-1&next=bad value",
-        "Status": "resuming",
-        "Background": True,
-        "SubscribeUrl": (
-            "/agentengine/api/v1/SubscribeRunEvents"
-            "?SessionId=resume-background&InvocationId=inv-bg-1%26next%3Dbad+value"
-        ),
-    }
-
-    for _ in range(20):
-        events = await service.get_events("resume-background")
-        if any(
-            event.event_type == "run_status" and event.content.get("status") == "completed"
-            for event in events
-        ):
-            break
-        await asyncio.sleep(0.01)
-    events = await service.get_events("resume-background")
-    assert len([event for event in events if event.event_type == "run_resume"]) == 1
-    assert [
-        event.content.get("status") for event in events if event.event_type == "run_status"
-    ] == ["resuming", "in_progress", "completed"]
-
-
-@pytest.mark.asyncio
-async def test_concurrent_background_resumes_reserve_run_before_lifecycle_writes(monkeypatch):
-    server_app_module = importlib.import_module("ksadk.server.app")
-    conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
-
-    class BlockingResumeService(InMemorySessionService):
-        def __init__(self):
-            super().__init__()
-            self.first_resume_started = asyncio.Event()
-            self.release_first_resume = asyncio.Event()
-            self.resume_writes = 0
-
-        async def append_event(self, session_id, event):
-            if event.event_type == "run_resume":
-                self.resume_writes += 1
-                if self.resume_writes == 1:
-                    self.first_resume_started.set()
-                    await self.release_first_resume.wait()
-            return await super().append_event(session_id, event)
-
-    service = BlockingResumeService()
-    await service.create_session("demo-agent", "user-1", "resume-race")
-    await service.create_session("demo-agent", "user-1", "resume-other")
-    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
-    server_app_module.set_runner(_CheckpointResumeRunner())
-    await conversation_runtime.append_run_checkpoint_event(
-        session_id="resume-race", author="demo-agent", run_id="run-1",
-        checkpoint_id="cp-1", framework="langgraph", framework_ref={},
-        session_service_provider=lambda: service,
-    )
-    await conversation_runtime.append_run_checkpoint_event(
-        session_id="resume-other", author="demo-agent", run_id="run-2",
-        checkpoint_id="cp-2", framework="langgraph", framework_ref={},
-        session_service_provider=lambda: service,
-    )
-    request_body = {
-        "AgentId": "demo-agent", "SessionId": "resume-race", "RunId": "run-1",
-        "CheckpointId": "cp-1", "InvocationId": "shared-inv", "Background": True,
-    }
-
-    transport = httpx.ASGITransport(app=server_app_module.app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
-        first = asyncio.create_task(client.post("/agentengine/api/v1/ResumeRun", json=request_body))
-        await service.first_resume_started.wait()
-        second = await client.post("/agentengine/api/v1/ResumeRun", json=request_body)
-        invocation_conflict = await client.post(
-            "/agentengine/api/v1/ResumeRun",
-            json={
-                "AgentId": "demo-agent", "SessionId": "resume-other", "RunId": "run-2",
-                "CheckpointId": "cp-2", "InvocationId": "shared-inv", "Background": True,
-            },
-        )
-        service.release_first_resume.set()
-        first_response = await first
-
-    assert first_response.status_code == 200
-    assert second.status_code == 409
-    assert second.json()["detail"]["code"] == "resume_already_running"
-    assert invocation_conflict.status_code == 409
-    assert invocation_conflict.json()["detail"]["code"] == "resume_invocation_already_running"
-    assert service.resume_writes == 1
-
-
-@pytest.mark.asyncio
-async def test_run_agent_background_resume_reserves_before_status_write(monkeypatch):
-    server_app_module = importlib.import_module("ksadk.server.app")
-    conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
-    service = InMemorySessionService()
-    for session_id, run_id, checkpoint_id in (
-        ("run-agent-race", "run-1", "cp-1"),
-        ("run-agent-other", "run-2", "cp-2"),
-    ):
-        await service.create_session("demo-agent", "user-1", session_id)
-        await conversation_runtime.append_run_checkpoint_event(
-            session_id=session_id,
-            author="demo-agent",
-            run_id=run_id,
-            checkpoint_id=checkpoint_id,
-            framework="langgraph",
-            framework_ref={},
-            session_service_provider=lambda: service,
-        )
-    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
-    server_app_module.set_runner(_CancellableStreamingRunner())
-
-    first_status_started = asyncio.Event()
-    release_first_status = asyncio.Event()
-    status_write_count = 0
-    original_append_run_status = conversation_runtime.append_run_status_event
-
-    async def blocking_append_run_status(*args, **kwargs):
-        nonlocal status_write_count
-        status_write_count += 1
-        if status_write_count == 1:
-            first_status_started.set()
-            await release_first_status.wait()
-        return await original_append_run_status(*args, **kwargs)
-
-    monkeypatch.setattr(
-        conversation_runtime,
-        "append_run_status_event",
-        blocking_append_run_status,
-    )
-
-    def request_body(session_id, run_id, checkpoint_id, invocation_id):
-        return {
-            "AgentId": "demo-agent",
-            "SessionId": session_id,
-            "UserId": "user-1",
-            "ApiFormat": "responses",
-            "InvocationId": invocation_id,
-            "Background": True,
-            "ResponsesInput": [
-                {
-                    "type": "agentengine.resume_checkpoint",
-                    "run_id": run_id,
-                    "checkpoint_id": checkpoint_id,
-                    "resume_attempt_id": f"resume-{checkpoint_id}",
-                }
-            ],
-        }
-
-    transport = httpx.ASGITransport(app=server_app_module.app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
-        first = asyncio.create_task(
-            client.post(
-                "/agentengine/api/v1/RunAgent",
-                json=request_body("run-agent-race", "run-1", "cp-1", "shared-inv"),
-            )
-        )
-        await first_status_started.wait()
-        same_run = await client.post(
-            "/agentengine/api/v1/RunAgent",
-            json=request_body("run-agent-race", "run-1", "cp-1", "other-inv"),
-        )
-        reused_invocation = await client.post(
-            "/agentengine/api/v1/RunAgent",
-            json=request_body("run-agent-other", "run-2", "cp-2", "shared-inv"),
-        )
-        release_first_status.set()
-        first_response = await first
-
-    assert first_response.status_code == 200
-    assert same_run.status_code == 409
-    assert same_run.json()["detail"]["code"] == "resume_already_running"
-    assert reused_invocation.status_code == 409
-    assert (
-        reused_invocation.json()["detail"]["code"]
-        == "resume_invocation_already_running"
-    )
-    assert status_write_count == 1
-
-
-@pytest.mark.asyncio
-async def test_resume_run_terminal_background_stream_is_still_synchronous_noop(monkeypatch):
-    server_app_module = importlib.import_module("ksadk.server.app")
-    conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
-    service = InMemorySessionService()
-    await service.create_session("demo-agent", "user-1", "resume-terminal-background")
-    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
-    server_app_module.set_runner(_CheckpointResumeRunner())
-    await conversation_runtime.append_run_checkpoint_event(
-        session_id="resume-terminal-background", author="demo-agent", run_id="run-1",
-        checkpoint_id="terminal", framework="langgraph", framework_ref={},
-        metadata={"is_terminal": True, "is_resumable": False},
-        session_service_provider=lambda: service,
-    )
-
-    transport = httpx.ASGITransport(app=server_app_module.app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
-        response = await client.post(
-            "/agentengine/api/v1/ResumeRun",
-            json={
-                "AgentId": "demo-agent", "SessionId": "resume-terminal-background",
-                "RunId": "run-1", "CheckpointId": "terminal",
-                "Background": True, "Stream": True,
-            },
-        )
-
-    assert response.status_code == 200
-    assert response.headers["content-type"].startswith("application/json")
-    assert response.json()["Data"]["status"] == "noop"
-    assert response.json()["Data"]["success"] is False
+    assert bounded.status_code == 200
+    data = bounded.json()["Data"]
+    assert data["Limit"] == 200
+    assert data["Total"] == 205
+    assert [item["SeqId"] for item in data["Events"]] == list(range(6, 206))
+    assert too_large.status_code == 422
 
 
 @pytest.mark.asyncio
@@ -4261,7 +3129,9 @@ async def test_list_session_checkpoints_filters_by_agent_session_and_run(monkeyp
     service = InMemorySessionService()
     runner = _DummyRunner()
 
-    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-checkpoints")
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-checkpoints"
+    )
     await service.create_session(agent_id="other-agent", user_id="user-1", session_id="sess-other")
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     server_app_module.set_runner(runner)
@@ -4272,7 +3142,9 @@ async def test_list_session_checkpoints_filters_by_agent_session_and_run(monkeyp
         run_id="run-1",
         checkpoint_id="ckpt-1",
         framework="langgraph",
-        framework_ref={"langgraph": {"thread_id": "tenant:agent:sess-checkpoints", "checkpoint_id": "ckpt-1"}},
+        framework_ref={
+            "langgraph": {"thread_id": "tenant:agent:sess-checkpoints", "checkpoint_id": "ckpt-1"}
+        },
         phase="tool_result",
         invocation_id="inv-1",
         session_service_provider=lambda: service,
@@ -4283,7 +3155,9 @@ async def test_list_session_checkpoints_filters_by_agent_session_and_run(monkeyp
         run_id="run-2",
         checkpoint_id="ckpt-2",
         framework="langgraph",
-        framework_ref={"langgraph": {"thread_id": "tenant:agent:sess-checkpoints", "checkpoint_id": "ckpt-2"}},
+        framework_ref={
+            "langgraph": {"thread_id": "tenant:agent:sess-checkpoints", "checkpoint_id": "ckpt-2"}
+        },
         phase="completed",
         invocation_id="inv-2",
         session_service_provider=lambda: service,
@@ -4294,7 +3168,9 @@ async def test_list_session_checkpoints_filters_by_agent_session_and_run(monkeyp
         run_id="run-1",
         checkpoint_id="ckpt-other",
         framework="langgraph",
-        framework_ref={"langgraph": {"thread_id": "tenant:other:sess-other", "checkpoint_id": "ckpt-other"}},
+        framework_ref={
+            "langgraph": {"thread_id": "tenant:other:sess-other", "checkpoint_id": "ckpt-other"}
+        },
         invocation_id="inv-other",
         session_service_provider=lambda: service,
     )
@@ -4315,7 +3191,9 @@ async def test_list_session_checkpoints_filters_by_agent_session_and_run(monkeyp
     assert [item["CheckpointId"] for item in checkpoints] == ["ckpt-1"]
     assert checkpoints[0]["RunId"] == "run-1"
     assert checkpoints[0]["Framework"] == "langgraph"
-    assert checkpoints[0]["FrameworkRef"]["langgraph"]["thread_id"] == "tenant:agent:sess-checkpoints"
+    assert (
+        checkpoints[0]["FrameworkRef"]["langgraph"]["thread_id"] == "tenant:agent:sess-checkpoints"
+    )
     assert wrong_agent.status_code == 404
 
 
@@ -4325,7 +3203,9 @@ async def test_list_session_checkpoints_returns_business_resume_fields(monkeypat
     conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
     service = InMemorySessionService()
 
-    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-business-checkpoints")
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-business-checkpoints"
+    )
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     await conversation_runtime.append_run_checkpoint_event(
         session_id="sess-business-checkpoints",
@@ -4333,7 +3213,12 @@ async def test_list_session_checkpoints_returns_business_resume_fields(monkeypat
         run_id="run-business",
         checkpoint_id="ckpt-metrics",
         framework="langgraph",
-        framework_ref={"langgraph": {"thread_id": "tenant:agent:sess-business-checkpoints", "checkpoint_id": "ckpt-metrics"}},
+        framework_ref={
+            "langgraph": {
+                "thread_id": "tenant:agent:sess-business-checkpoints",
+                "checkpoint_id": "ckpt-metrics",
+            }
+        },
         phase="指标聚合已完成，等待生成报告",
         invocation_id="inv-business",
         metadata={
@@ -4371,12 +3256,128 @@ async def test_list_session_checkpoints_returns_business_resume_fields(monkeypat
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("action", "payload"),
+    [
+        (
+            "ListSessionCheckpoints",
+            {"AgentId": "demo-agent", "SessionId": "sess-owned-by-b"},
+        ),
+        (
+            "ListToolReceipts",
+            {"AgentId": "demo-agent", "SessionId": "sess-owned-by-b"},
+        ),
+        (
+            "GetCheckpointResumePreview",
+            {
+                "AgentId": "demo-agent",
+                "SessionId": "sess-owned-by-b",
+                "RunId": "run-owned-by-b",
+                "CheckpointId": "ckpt-owned-by-b",
+            },
+        ),
+        (
+            "ResumeRun",
+            {
+                "AgentId": "demo-agent",
+                "SessionId": "sess-owned-by-b",
+                "RunId": "run-owned-by-b",
+                "CheckpointId": "ckpt-owned-by-b",
+            },
+        ),
+    ],
+)
+async def test_checkpoint_actions_enforce_user_scope(monkeypatch, action, payload):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
+    service = InMemorySessionService()
+    await service.create_session(
+        agent_id="demo-agent",
+        user_id="user-b",
+        session_id="sess-owned-by-b",
+    )
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(_CheckpointResumeRunner())
+    await conversation_runtime.append_run_checkpoint_event(
+        session_id="sess-owned-by-b",
+        author="demo-agent",
+        run_id="run-owned-by-b",
+        checkpoint_id="ckpt-owned-by-b",
+        framework="langgraph",
+        framework_ref={
+            "langgraph": {
+                "thread_id": "sess-owned-by-b",
+                "checkpoint_id": "ckpt-owned-by-b",
+                "next_node": "continue",
+            }
+        },
+        invocation_id="inv-owned-by-b",
+        metadata={
+            "is_resumable": True,
+            "backend": "postgres",
+            "scope": "shared",
+            "durable": True,
+        },
+        session_service_provider=lambda: service,
+    )
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            f"/agentengine/api/v1/{action}",
+            json={**payload, "UserId": "user-a"},
+        )
+
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_subscribe_run_events_enforces_agent_and_user_scope(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    session = await service.create_session(
+        agent_id="demo-agent",
+        user_id="user-b",
+        session_id="sess-subscribe-owned-by-b",
+    )
+    await service.append_event(
+        session.id,
+        SessionEvent.from_dict(
+            {
+                "author": "demo-agent",
+                "eventType": "run_status",
+                "invocationId": "inv-owned-by-b",
+                "content": {"status": "completed"},
+            },
+            session_id=session.id,
+        ),
+    )
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.get(
+            "/agentengine/api/v1/SubscribeRunEvents",
+            params={
+                "AgentId": "demo-agent",
+                "UserId": "user-a",
+                "SessionId": session.id,
+                "InvocationId": "inv-owned-by-b",
+            },
+        )
+
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_list_session_checkpoints_filters_resumable_and_framework(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")
     conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
     service = InMemorySessionService()
 
-    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-filter-checkpoints")
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-filter-checkpoints"
+    )
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     await conversation_runtime.append_run_checkpoint_event(
         session_id="sess-filter-checkpoints",
@@ -4448,7 +3449,9 @@ async def test_list_session_checkpoints_is_the_single_checkpoint_listing_endpoin
     conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
     service = InMemorySessionService()
 
-    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-list-checkpoints")
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-list-checkpoints"
+    )
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     for index in range(3):
         await conversation_runtime.append_run_checkpoint_event(
@@ -4512,7 +3515,9 @@ async def test_list_session_checkpoints_includes_resume_audit_fields(monkeypatch
     conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
     service = InMemorySessionService()
 
-    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-checkpoint-audit")
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-checkpoint-audit"
+    )
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     await conversation_runtime.append_run_checkpoint_event(
         session_id="sess-checkpoint-audit",
@@ -4591,7 +3596,9 @@ async def test_list_session_checkpoints_disables_expired_or_non_replayable_check
     conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
     service = InMemorySessionService()
 
-    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-checkpoint-policy")
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-checkpoint-policy"
+    )
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     await conversation_runtime.append_run_checkpoint_event(
         session_id="sess-checkpoint-policy",
@@ -4599,7 +3606,9 @@ async def test_list_session_checkpoints_disables_expired_or_non_replayable_check
         run_id="run-policy",
         checkpoint_id="ckpt-no-replay",
         framework="langgraph",
-        framework_ref={"langgraph": {"thread_id": "sess-checkpoint-policy", "checkpoint_id": "ckpt-no-replay"}},
+        framework_ref={
+            "langgraph": {"thread_id": "sess-checkpoint-policy", "checkpoint_id": "ckpt-no-replay"}
+        },
         metadata={"is_resumable": True, "replay_allowed": False},
         session_service_provider=lambda: service,
     )
@@ -4610,7 +3619,9 @@ async def test_list_session_checkpoints_disables_expired_or_non_replayable_check
         checkpoint_id="ckpt-no-replay",
         resume_attempt_id="resume-1",
         framework="langgraph",
-        framework_ref={"langgraph": {"thread_id": "sess-checkpoint-policy", "checkpoint_id": "ckpt-no-replay"}},
+        framework_ref={
+            "langgraph": {"thread_id": "sess-checkpoint-policy", "checkpoint_id": "ckpt-no-replay"}
+        },
         session_service_provider=lambda: service,
     )
     await conversation_runtime.append_run_checkpoint_event(
@@ -4619,7 +3630,9 @@ async def test_list_session_checkpoints_disables_expired_or_non_replayable_check
         run_id="run-policy",
         checkpoint_id="ckpt-expired",
         framework="langgraph",
-        framework_ref={"langgraph": {"thread_id": "sess-checkpoint-policy", "checkpoint_id": "ckpt-expired"}},
+        framework_ref={
+            "langgraph": {"thread_id": "sess-checkpoint-policy", "checkpoint_id": "ckpt-expired"}
+        },
         metadata={"is_resumable": True, "expires_at": "2000-01-01T00:00:00Z"},
         session_service_provider=lambda: service,
     )
@@ -4632,10 +3645,7 @@ async def test_list_session_checkpoints_disables_expired_or_non_replayable_check
         )
 
     assert response.status_code == 200
-    checkpoints = {
-        item["CheckpointId"]: item
-        for item in response.json()["Data"]["Checkpoints"]
-    }
+    checkpoints = {item["CheckpointId"]: item for item in response.json()["Data"]["Checkpoints"]}
     no_replay = checkpoints["ckpt-no-replay"]
     assert no_replay["ReplayAllowed"] is False
     assert no_replay["ResumeCount"] == 1
@@ -4657,7 +3667,9 @@ async def test_resume_run_rejects_checkpoint_policy_disabled_by_audit(monkeypatc
     service = InMemorySessionService()
     runner = _CheckpointResumeRunner()
 
-    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-resume-policy")
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-resume-policy"
+    )
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     server_app_module.set_runner(runner)
     await conversation_runtime.append_run_checkpoint_event(
@@ -4666,7 +3678,9 @@ async def test_resume_run_rejects_checkpoint_policy_disabled_by_audit(monkeypatc
         run_id="run-policy",
         checkpoint_id="ckpt-no-replay",
         framework="langgraph",
-        framework_ref={"langgraph": {"thread_id": "sess-resume-policy", "checkpoint_id": "ckpt-no-replay"}},
+        framework_ref={
+            "langgraph": {"thread_id": "sess-resume-policy", "checkpoint_id": "ckpt-no-replay"}
+        },
         metadata={"is_resumable": True, "replay_allowed": False},
         session_service_provider=lambda: service,
     )
@@ -4677,7 +3691,9 @@ async def test_resume_run_rejects_checkpoint_policy_disabled_by_audit(monkeypatc
         checkpoint_id="ckpt-no-replay",
         resume_attempt_id="resume-1",
         framework="langgraph",
-        framework_ref={"langgraph": {"thread_id": "sess-resume-policy", "checkpoint_id": "ckpt-no-replay"}},
+        framework_ref={
+            "langgraph": {"thread_id": "sess-resume-policy", "checkpoint_id": "ckpt-no-replay"}
+        },
         session_service_provider=lambda: service,
     )
 
@@ -4704,13 +3720,82 @@ async def test_resume_run_rejects_checkpoint_policy_disabled_by_audit(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_resume_run_stream_persists_resuming_event_before_response(monkeypatch):
+    """ResumeRun(Stream) 返回响应前必须同步落 resuming 起始事件。
+
+    UI 拿到 ResumeRun 200 响应头后立刻调 SubscribeRunEvents；起始事件若只靠
+    detached turn 异步补写，订阅会抢在首次写入前触发 _session_contains_invocation
+    失败 → 409 "InvocationId does not belong to SessionId"（浏览器里真实命中）。
+    直接调 handler + 慢速 append_run_status_event 做确定性验证（ASGITransport
+    会把 body 跑完，掩盖该竞态）。
+    """
+    server_app_module = importlib.import_module("ksadk.server.app")
+    conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
+    service = InMemorySessionService()
+    runner = _CheckpointResumeRunner()
+
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-resume-race"
+    )
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+    await conversation_runtime.append_run_checkpoint_event(
+        session_id="sess-resume-race",
+        author="demo-agent",
+        run_id="run-race",
+        checkpoint_id="ckpt-race",
+        framework="langgraph",
+        framework_ref={
+            "langgraph": {"thread_id": "sess-resume-race", "checkpoint_id": "ckpt-race"}
+        },
+        metadata={"is_resumable": True},
+        session_service_provider=lambda: service,
+    )
+
+    real_append = conversation_runtime.append_run_status_event
+
+    async def slow_append_run_status_event(**kwargs):
+        await asyncio.sleep(0.05)
+        return await real_append(**kwargs)
+
+    monkeypatch.setattr(
+        conversation_runtime, "append_run_status_event", slow_append_run_status_event
+    )
+
+    request = server_app_module.ResumeRunActionRequest(
+        AgentId="demo-agent",
+        SessionId="sess-resume-race",
+        RunId="run-race",
+        CheckpointId="ckpt-race",
+        ResumeAttemptId="run-attempt-race",
+        InvocationId="run-attempt-race",
+        Stream=True,
+    )
+    await server_app_module.resume_run_action(request)
+    try:
+        # handler 已返回；此后不做任何 await（不给 detached turn 调度机会），
+        # 同步快照必须已经包含 resuming 起始事件。
+        snapshot = list(service._sessions["sess-resume-race"].events)
+        assert any(
+            event.event_type == "run_status" and event.invocation_id == "run-attempt-race"
+            for event in snapshot
+        )
+    finally:
+        detached = server_app_module._DETACHED_STREAMS_BY_INVOCATION.get("run-attempt-race")
+        if detached is not None:
+            detached._task.cancel()
+
+
+@pytest.mark.asyncio
 async def test_resume_run_rejects_expired_checkpoint(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")
     conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
     service = InMemorySessionService()
     runner = _CheckpointResumeRunner()
 
-    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-resume-expired")
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-resume-expired"
+    )
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     server_app_module.set_runner(runner)
     await conversation_runtime.append_run_checkpoint_event(
@@ -4719,7 +3804,9 @@ async def test_resume_run_rejects_expired_checkpoint(monkeypatch):
         run_id="run-expired",
         checkpoint_id="ckpt-expired",
         framework="langgraph",
-        framework_ref={"langgraph": {"thread_id": "sess-resume-expired", "checkpoint_id": "ckpt-expired"}},
+        framework_ref={
+            "langgraph": {"thread_id": "sess-resume-expired", "checkpoint_id": "ckpt-expired"}
+        },
         metadata={"is_resumable": True, "expires_at": "2000-01-01T00:00:00Z"},
         session_service_provider=lambda: service,
     )
@@ -4753,7 +3840,9 @@ async def test_resume_run_action_reuses_checkpoint_and_records_resume(monkeypatc
     service = InMemorySessionService()
     runner = _CheckpointResumeRunner()
 
-    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-resume-action")
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-resume-action"
+    )
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     server_app_module.set_runner(runner)
     await conversation_runtime.append_run_checkpoint_event(
@@ -4762,7 +3851,9 @@ async def test_resume_run_action_reuses_checkpoint_and_records_resume(monkeypatc
         run_id="run-1",
         checkpoint_id="ckpt-1",
         framework="langgraph",
-        framework_ref={"langgraph": {"thread_id": "tenant:agent:sess-resume-action", "checkpoint_id": "ckpt-1"}},
+        framework_ref={
+            "langgraph": {"thread_id": "tenant:agent:sess-resume-action", "checkpoint_id": "ckpt-1"}
+        },
         invocation_id="inv-1",
         metadata={
             "stage_key": "plan_research",
@@ -4783,6 +3874,7 @@ async def test_resume_run_action_reuses_checkpoint_and_records_resume(monkeypatc
                 "RunId": "run-1",
                 "CheckpointId": "ckpt-1",
                 "ResumeAttemptId": "resume-1",
+                "Metadata": {"tenant": "acme", "trace_id": "resume-trace"},
                 "Stream": False,
             },
         )
@@ -4790,6 +3882,10 @@ async def test_resume_run_action_reuses_checkpoint_and_records_resume(monkeypatc
     assert response.status_code == 200
     payload = response.json()["Data"]
     assert payload["session_id"] == "sess-resume-action"
+    assert {key: value for key, value in payload["metadata"].items() if key != "agentengine"} == {
+        "tenant": "acme",
+        "trace_id": "resume-trace",
+    }
     assert payload["metadata"]["agentengine"]["run_id"] == "run-1"
     assert runner.calls[-1]["checkpoint_resume"] is True
     assert runner.calls[-1]["framework_ref"]["langgraph"]["checkpoint_id"] == "ckpt-1"
@@ -4797,6 +3893,10 @@ async def test_resume_run_action_reuses_checkpoint_and_records_resume(monkeypatc
     assert runner.calls[-1]["metadata"]["stage_index"] == 1
     assert runner.calls[-1]["metadata"]["total_stages"] == 7
     assert runner.calls[-1]["metadata"]["artifact_preview"]["path"] == "research/x/01-plan.json"
+    assert runner.calls[-1]["platform_context"]["metadata"] == {
+        "tenant": "acme",
+        "trace_id": "resume-trace",
+    }
     events = await service.get_events("sess-resume-action")
     resume_events = [event for event in events if event.event_type == "run_resume"]
     assert len(resume_events) == 1
@@ -4810,7 +3910,9 @@ async def test_resume_run_action_returns_noop_for_terminal_checkpoint(monkeypatc
     service = InMemorySessionService()
     runner = _CheckpointResumeRunner()
 
-    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-resume-disabled")
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-resume-disabled"
+    )
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     server_app_module.set_runner(runner)
     await conversation_runtime.append_run_checkpoint_event(
@@ -4819,7 +3921,9 @@ async def test_resume_run_action_returns_noop_for_terminal_checkpoint(monkeypatc
         run_id="run-1",
         checkpoint_id="ckpt-terminal",
         framework="langgraph",
-        framework_ref={"langgraph": {"thread_id": "sess-resume-disabled", "checkpoint_id": "ckpt-terminal"}},
+        framework_ref={
+            "langgraph": {"thread_id": "sess-resume-disabled", "checkpoint_id": "ckpt-terminal"}
+        },
         metadata={
             "is_terminal": True,
             "is_resumable": False,
@@ -4847,7 +3951,9 @@ async def test_resume_run_action_returns_noop_for_terminal_checkpoint(monkeypatc
     assert data["Reason"]
     assert runner.calls == []
     events = await service.get_events("sess-resume-disabled")
-    assert [event.event_type for event in events if event.event_type in {"run_resume", "run_status"}] == [
+    assert [
+        event.event_type for event in events if event.event_type in {"run_resume", "run_status"}
+    ] == [
         "run_resume",
         "run_status",
     ]
@@ -4861,7 +3967,9 @@ async def test_resume_run_action_rejects_process_local_checkpoint(monkeypatch):
     service = InMemorySessionService()
     runner = _CheckpointResumeRunner()
 
-    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-resume-local")
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-resume-local"
+    )
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     server_app_module.set_runner(runner)
     await conversation_runtime.append_run_checkpoint_event(
@@ -4870,7 +3978,9 @@ async def test_resume_run_action_rejects_process_local_checkpoint(monkeypatch):
         run_id="run-1",
         checkpoint_id="ckpt-local",
         framework="langgraph",
-        framework_ref={"langgraph": {"thread_id": "sess-resume-local", "checkpoint_id": "ckpt-local"}},
+        framework_ref={
+            "langgraph": {"thread_id": "sess-resume-local", "checkpoint_id": "ckpt-local"}
+        },
         metadata={
             "is_resumable": False,
             "backend": "memory",
@@ -4905,7 +4015,9 @@ async def test_get_checkpoint_resume_preview_reports_terminal_checkpoint_as_disa
     conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
     service = InMemorySessionService()
 
-    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-preview-terminal")
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-preview-terminal"
+    )
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     await conversation_runtime.append_run_checkpoint_event(
         session_id="sess-preview-terminal",
@@ -4913,7 +4025,9 @@ async def test_get_checkpoint_resume_preview_reports_terminal_checkpoint_as_disa
         run_id="run-1",
         checkpoint_id="ckpt-terminal",
         framework="langgraph",
-        framework_ref={"langgraph": {"thread_id": "sess-preview-terminal", "checkpoint_id": "ckpt-terminal"}},
+        framework_ref={
+            "langgraph": {"thread_id": "sess-preview-terminal", "checkpoint_id": "ckpt-terminal"}
+        },
         metadata={"is_terminal": True, "is_resumable": False},
         session_service_provider=lambda: service,
     )
@@ -4944,7 +4058,9 @@ async def test_resume_run_action_stream_uses_invocation_id_for_detached_cancel(m
     service = InMemorySessionService()
     runner = _CheckpointResumeRunner()
 
-    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-resume-stream")
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-resume-stream"
+    )
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     server_app_module.set_runner(runner)
     await conversation_runtime.append_run_checkpoint_event(
@@ -4953,7 +4069,9 @@ async def test_resume_run_action_stream_uses_invocation_id_for_detached_cancel(m
         run_id="run-1",
         checkpoint_id="ckpt-1",
         framework="langgraph",
-        framework_ref={"langgraph": {"thread_id": "tenant:agent:sess-resume-stream", "checkpoint_id": "ckpt-1"}},
+        framework_ref={
+            "langgraph": {"thread_id": "tenant:agent:sess-resume-stream", "checkpoint_id": "ckpt-1"}
+        },
         invocation_id="inv-checkpoint",
         session_service_provider=lambda: service,
     )
@@ -4965,7 +4083,9 @@ async def test_resume_run_action_stream_uses_invocation_id_for_detached_cancel(m
         captured_invocations.append(invocation_id)
         return Response(status_code=202)
 
-    monkeypatch.setattr(server_app_module, "_detached_streaming_response", fake_detached_streaming_response)
+    monkeypatch.setattr(
+        server_app_module, "_detached_streaming_response", fake_detached_streaming_response
+    )
     transport = httpx.ASGITransport(app=server_app_module.app)
     async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
         response = await client.post(
@@ -4992,7 +4112,9 @@ async def test_resume_run_action_stream_passes_checkpoint_metadata_to_runner(mon
     service = InMemorySessionService()
     runner = _CheckpointResumeRunner()
 
-    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-resume-stream-metadata")
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-resume-stream-metadata"
+    )
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     server_app_module.set_runner(runner)
     await conversation_runtime.append_run_checkpoint_event(
@@ -5001,21 +4123,30 @@ async def test_resume_run_action_stream_passes_checkpoint_metadata_to_runner(mon
         run_id="run-1",
         checkpoint_id="ckpt-1",
         framework="langgraph",
-        framework_ref={"langgraph": {"thread_id": "tenant:agent:sess-resume-stream-metadata", "checkpoint_id": "ckpt-1"}},
+        framework_ref={
+            "langgraph": {
+                "thread_id": "tenant:agent:sess-resume-stream-metadata",
+                "checkpoint_id": "ckpt-1",
+            }
+        },
         invocation_id="inv-checkpoint",
         metadata={"stage_key": "plan_research", "stage_index": 1, "total_stages": 7},
         session_service_provider=lambda: service,
     )
 
+    streamed_chunks: list[str] = []
+
     async def consume_stream(source):
-        async for _chunk in source:
-            pass
+        async for chunk in source:
+            streamed_chunks.append(chunk)
 
     def fake_detached_streaming_response(source, *, invocation_id=None, **kwargs):
         del invocation_id, kwargs
         return Response(status_code=202, background=BackgroundTask(consume_stream, source))
 
-    monkeypatch.setattr(server_app_module, "_detached_streaming_response", fake_detached_streaming_response)
+    monkeypatch.setattr(
+        server_app_module, "_detached_streaming_response", fake_detached_streaming_response
+    )
     transport = httpx.ASGITransport(app=server_app_module.app)
     async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
         response = await client.post(
@@ -5027,6 +4158,7 @@ async def test_resume_run_action_stream_passes_checkpoint_metadata_to_runner(mon
                 "CheckpointId": "ckpt-1",
                 "ResumeAttemptId": "resume-1",
                 "InvocationId": "run-ui-resume-1",
+                "Metadata": {"tenant": "acme", "trace_id": "resume-stream-trace"},
                 "Stream": True,
             },
         )
@@ -5035,6 +4167,22 @@ async def test_resume_run_action_stream_passes_checkpoint_metadata_to_runner(mon
     assert runner.calls[-1]["checkpoint_resume"] is True
     assert runner.calls[-1]["metadata"]["stage_key"] == "plan_research"
     assert runner.calls[-1]["metadata"]["stage_index"] == 1
+    assert runner.calls[-1]["platform_context"]["metadata"] == {
+        "tenant": "acme",
+        "trace_id": "resume-stream-trace",
+    }
+    completed_chunk = next(
+        chunk for chunk in streamed_chunks if chunk.startswith("event: response.completed\n")
+    )
+    completed_payload = json.loads(
+        next(
+            line.removeprefix("data: ")
+            for line in completed_chunk.splitlines()
+            if line.startswith("data: ")
+        )
+    )
+    assert completed_payload["metadata"]["tenant"] == "acme"
+    assert completed_payload["metadata"]["agentengine"]["run_id"] == "run-1"
 
 
 @pytest.mark.asyncio
@@ -5044,7 +4192,9 @@ async def test_resume_run_action_stream_registers_detached_cancel(monkeypatch):
     service = InMemorySessionService()
     runner = _CancellableStreamingRunner()
 
-    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-resume-cancel")
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-resume-cancel"
+    )
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     server_app_module.set_runner(runner)
     await conversation_runtime.append_run_checkpoint_event(
@@ -5094,9 +4244,7 @@ async def test_resume_run_action_stream_registers_detached_cancel(monkeypatch):
         for _ in range(20):
             events = await service.get_events("sess-resume-cancel")
             statuses = [
-                event.content.get("status")
-                for event in events
-                if event.event_type == "run_status"
+                event.content.get("status") for event in events if event.event_type == "run_status"
             ]
             if "in_progress" in statuses and "cancelled" not in statuses:
                 break
@@ -5117,20 +4265,14 @@ async def test_resume_run_action_stream_registers_detached_cancel(monkeypatch):
     for _ in range(20):
         events = await service.get_events("sess-resume-cancel")
         statuses = [
-            event.content.get("status")
-            for event in events
-            if event.event_type == "run_status"
+            event.content.get("status") for event in events if event.event_type == "run_status"
         ]
         if "cancelled" in statuses:
             break
         await asyncio.sleep(0.02)
 
     events = await service.get_events("sess-resume-cancel")
-    statuses = [
-        event.content.get("status")
-        for event in events
-        if event.event_type == "run_status"
-    ]
+    statuses = [event.content.get("status") for event in events if event.event_type == "run_status"]
     # resume 现在先写 run_status(resuming) 再写 in_progress，cancel 后写 cancelled。
     assert statuses == ["resuming", "in_progress", "cancelled"]
     assert runner.cancel_requests == [invocation_id]
@@ -5216,7 +4358,9 @@ async def test_resume_run_action_rejects_unknown_checkpoint(monkeypatch):
     service = InMemorySessionService()
     runner = _CheckpointResumeRunner()
 
-    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-resume-missing")
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-resume-missing"
+    )
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     server_app_module.set_runner(runner)
 
@@ -5237,6 +4381,103 @@ async def test_resume_run_action_rejects_unknown_checkpoint(monkeypatch):
     assert runner.calls == []
     events = await service.get_events("sess-resume-missing")
     assert events == []
+
+
+@pytest.mark.asyncio
+async def test_append_run_status_event_deduplicates_across_bounded_pages():
+    conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
+    service = _BoundedReadSessionService()
+    session_id = "sess-dedupe-status-bounded"
+    await service.create_session(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id=session_id,
+    )
+    original = await service.append_event(
+        session_id,
+        SessionEvent(
+            id="evt-original-status",
+            author="demo-agent",
+            event_type="run_status",
+            content={"status": "in_progress"},
+            metadata={"status": "in_progress"},
+            invocation_id="inv-bounded-status",
+        ),
+    )
+    for index in range(500):
+        await service.append_event(
+            session_id,
+            SessionEvent(
+                id=f"evt-filler-{index}",
+                author="demo-agent",
+                event_type="stage_progress",
+                content={"index": index},
+                invocation_id="inv-bounded-status",
+            ),
+        )
+
+    duplicate = await conversation_runtime.append_run_status_event(
+        session_id=session_id,
+        author="demo-agent",
+        status="in_progress",
+        invocation_id="inv-bounded-status",
+        session_service_provider=lambda: service,
+    )
+
+    assert duplicate.id == original.id
+    assert service.event_read_limits == [500, 1]
+
+
+@pytest.mark.asyncio
+async def test_append_run_checkpoint_event_deduplicates_across_bounded_pages():
+    conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
+    service = _BoundedReadSessionService()
+    session_id = "sess-dedupe-checkpoint-bounded"
+    await service.create_session(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id=session_id,
+    )
+    original = await service.append_event(
+        session_id,
+        SessionEvent(
+            id="evt-original-checkpoint",
+            author="demo-agent",
+            event_type="run_checkpoint",
+            content={"status": "checkpointed"},
+            metadata={
+                "run_id": "run-bounded",
+                "checkpoint_id": "ckpt-bounded",
+                "framework": "langgraph",
+            },
+            invocation_id="inv-bounded-checkpoint",
+        ),
+    )
+    for index in range(500):
+        await service.append_event(
+            session_id,
+            SessionEvent(
+                id=f"evt-checkpoint-filler-{index}",
+                author="demo-agent",
+                event_type="stage_progress",
+                content={"index": index},
+                invocation_id="inv-bounded-checkpoint",
+            ),
+        )
+
+    duplicate = await conversation_runtime.append_run_checkpoint_event(
+        session_id=session_id,
+        author="demo-agent",
+        run_id="run-bounded",
+        checkpoint_id="ckpt-bounded",
+        framework="langgraph",
+        framework_ref={"langgraph": {"checkpoint_id": "ckpt-bounded"}},
+        invocation_id="inv-bounded-checkpoint",
+        session_service_provider=lambda: service,
+    )
+
+    assert duplicate.id == original.id
+    assert service.event_read_limits == [500, 1]
 
 
 @pytest.mark.asyncio
@@ -5331,7 +4572,9 @@ async def test_get_checkpoint_resume_preview_summarizes_checkpoint_and_tool_rece
         run_id="run-1",
         checkpoint_id="ckpt-1",
         framework="langgraph",
-        framework_ref={"langgraph": {"thread_id": "tenant:agent:sess-preview", "checkpoint_id": "ckpt-1"}},
+        framework_ref={
+            "langgraph": {"thread_id": "tenant:agent:sess-preview", "checkpoint_id": "ckpt-1"}
+        },
         phase="tool_result",
         invocation_id="inv-1",
         session_service_provider=lambda: service,
@@ -5360,13 +4603,99 @@ async def test_get_checkpoint_resume_preview_summarizes_checkpoint_and_tool_rece
 
 
 @pytest.mark.asyncio
+async def test_checkpoint_preview_bounds_receipts_but_counts_full_risk(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = _BoundedReadSessionService()
+    await service.create_session(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-preview-bounded",
+    )
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    for index in range(501):
+        side_effect = index == 500
+        await service.append_event(
+            "sess-preview-bounded",
+            SessionEvent(
+                id=f"evt-receipt-{index}",
+                author="tool",
+                event_type="tool_result",
+                content={"text": "failed" if side_effect else "ok"},
+                metadata={
+                    "tool_name": "write_workspace_file" if side_effect else "search",
+                    "run_id": "run-bounded",
+                    "tool_receipt": {
+                        "receipt_id": f"tr-{index}",
+                        "idempotency_key": f"receipt-{index}",
+                        "tool_name": "write_workspace_file" if side_effect else "search",
+                        "tool_call_id": f"call-{index}",
+                        "run_id": "run-bounded",
+                        "checkpoint_id": "",
+                        "status": "failed" if side_effect else "completed",
+                    },
+                },
+                invocation_id="inv-bounded",
+            ),
+        )
+    await service.append_event(
+        "sess-preview-bounded",
+        SessionEvent(
+            id="evt-checkpoint-bounded",
+            author="demo-agent",
+            event_type="run_checkpoint",
+            content={"status": "checkpointed"},
+            metadata={
+                "run_id": "run-bounded",
+                "checkpoint_id": "ckpt-bounded",
+                "framework": "langgraph",
+                "framework_ref": {"langgraph": {"checkpoint_id": "ckpt-bounded"}},
+                "is_resumable": True,
+                "resume_status": "resumable",
+            },
+            invocation_id="inv-bounded",
+        ),
+    )
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/GetCheckpointResumePreview",
+            json={
+                "AgentId": "demo-agent",
+                "UserId": "user-1",
+                "SessionId": "sess-preview-bounded",
+                "RunId": "run-bounded",
+                "CheckpointId": "ckpt-bounded",
+            },
+        )
+
+    assert response.status_code == 200
+    preview = response.json()["Data"]["Preview"]
+    assert len(preview["ToolReceipts"]) == 500
+    assert preview["ToolReceiptsTruncated"] is True
+    assert preview["Summary"]["ToolReceiptCount"] == 501
+    assert preview["Risk"] == {
+        "Level": "high",
+        "DuplicateSideEffectRisk": True,
+        "SideEffectReceiptCount": 1,
+        "FailedReceiptCount": 1,
+    }
+    assert service.event_read_limits
+    assert max(service.event_read_limits) <= 500
+
+
+@pytest.mark.asyncio
 async def test_list_tool_receipts_filters_by_agent_session_run_and_checkpoint(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")
     service = InMemorySessionService()
     runner = _DummyRunner()
 
-    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-receipts")
-    await service.create_session(agent_id="other-agent", user_id="user-1", session_id="sess-other-receipts")
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-receipts"
+    )
+    await service.create_session(
+        agent_id="other-agent", user_id="user-1", session_id="sess-other-receipts"
+    )
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     server_app_module.set_runner(runner)
 
@@ -5444,6 +4773,95 @@ async def test_list_tool_receipts_filters_by_agent_session_run_and_checkpoint(mo
 
 
 @pytest.mark.asyncio
+async def test_checkpoint_and_receipt_lists_page_from_latest_with_bounded_reads(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = _BoundedReadSessionService()
+    await service.create_session(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-checkpoint-pages",
+    )
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    for index in range(3):
+        await service.append_event(
+            "sess-checkpoint-pages",
+            SessionEvent(
+                id=f"evt-receipt-page-{index}",
+                author="tool",
+                event_type="tool_result",
+                content={"text": "ok"},
+                metadata={
+                    "tool_name": "search",
+                    "run_id": "run-pages",
+                    "tool_receipt": {
+                        "receipt_id": f"tr-page-{index}",
+                        "tool_name": "search",
+                        "tool_call_id": f"call-page-{index}",
+                        "run_id": "run-pages",
+                        "checkpoint_id": f"ckpt-page-{index}",
+                        "status": "completed",
+                    },
+                },
+                invocation_id="inv-pages",
+            ),
+        )
+        await service.append_event(
+            "sess-checkpoint-pages",
+            SessionEvent(
+                id=f"evt-checkpoint-page-{index}",
+                author="demo-agent",
+                event_type="run_checkpoint",
+                content={"status": "checkpointed"},
+                metadata={
+                    "run_id": "run-pages",
+                    "checkpoint_id": f"ckpt-page-{index}",
+                    "framework": "langgraph",
+                    "framework_ref": {"langgraph": {"checkpoint_id": f"ckpt-page-{index}"}},
+                    "is_resumable": True,
+                    "resume_status": "resumable",
+                },
+                invocation_id="inv-pages",
+            ),
+        )
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        checkpoints = await client.post(
+            "/agentengine/api/v1/ListSessionCheckpoints",
+            json={
+                "AgentId": "demo-agent",
+                "UserId": "user-1",
+                "SessionId": "sess-checkpoint-pages",
+                "Offset": 1,
+                "Limit": 1,
+            },
+        )
+        receipts = await client.post(
+            "/agentengine/api/v1/ListToolReceipts",
+            json={
+                "AgentId": "demo-agent",
+                "UserId": "user-1",
+                "SessionId": "sess-checkpoint-pages",
+                "Offset": 1,
+                "Limit": 1,
+            },
+        )
+
+    checkpoint_data = checkpoints.json()["Data"]
+    assert checkpoint_data["Total"] == 3
+    assert checkpoint_data["Offset"] == 1
+    assert checkpoint_data["Limit"] == 1
+    assert [item["CheckpointId"] for item in checkpoint_data["Checkpoints"]] == ["ckpt-page-1"]
+    receipt_data = receipts.json()["Data"]
+    assert receipt_data["Total"] == 3
+    assert receipt_data["Offset"] == 1
+    assert receipt_data["Limit"] == 1
+    assert [item["ReceiptId"] for item in receipt_data["ToolReceipts"]] == ["tr-page-1"]
+    assert service.event_read_limits
+    assert max(service.event_read_limits) <= 500
+
+
+@pytest.mark.asyncio
 async def test_run_agent_action_passes_model_options_to_runner(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")
     service = InMemorySessionService()
@@ -5471,6 +4889,83 @@ async def test_run_agent_action_passes_model_options_to_runner(monkeypatch):
         "reasoning": {"effort": "none"},
         "max_reasoning_tokens": 0,
     }
+
+
+@pytest.mark.asyncio
+async def test_run_agent_exposes_nested_custom_metadata_to_runtime_context(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    runner = _DummyRunner()
+
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+
+    custom_metadata = {
+        "tenant": "acme",
+        "trace_id": "caller-trace",
+        "biz": {"order_id": "o-9"},
+    }
+    request_metadata = {
+        **custom_metadata,
+        "agentengine": {
+            "invocation_id": "internal-invocation",
+            "tool_approval_mode": "risk",
+        },
+    }
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/RunAgent",
+            json={
+                "AgentId": "demo-agent",
+                "Messages": [{"role": "user", "content": "hello"}],
+                "Metadata": request_metadata,
+                "ApiFormat": "responses",
+                "Stream": False,
+            },
+        )
+
+    assert response.status_code == 200
+    response_metadata = response.json()["Data"]["metadata"]
+    assert {
+        key: value for key, value in response_metadata.items() if key != "agentengine"
+    } == custom_metadata
+    assert response_metadata["agentengine"] == {
+        "invocation_id": "internal-invocation",
+        "tool_approval_mode": "risk",
+    }
+    assert runner.calls[-1]["platform_context"]["metadata"] == custom_metadata
+    assert runner.calls[-1]["request_metadata"]["tool_approval_mode"] == "risk"
+
+
+@pytest.mark.asyncio
+async def test_run_agent_chat_completions_stream_exposes_custom_metadata_internally(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    runner = _DummyRunner()
+
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+
+    custom_metadata = {"tenant": "acme", "biz": {"order_id": "o-9"}}
+    invocation_id = "run_chat_metadata_stream"
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/RunAgent",
+            json={
+                "AgentId": "demo-agent",
+                "Messages": [{"role": "user", "content": "hello"}],
+                "Metadata": custom_metadata,
+                "InvocationId": invocation_id,
+                "ApiFormat": "chat_completions",
+                "Stream": True,
+            },
+        )
+
+    assert response.status_code == 200
+    assert runner.calls[-1]["platform_context"]["metadata"] == custom_metadata
+    assert runner.calls[-1]["invocation_id"] == invocation_id
 
 
 @pytest.mark.asyncio
@@ -5551,6 +5046,120 @@ async def test_subscribe_run_events_streams_events_appended_after_subscription(m
     ]
     assert payloads[0]["Content"]["parts"][0]["text"] == "hello"
     assert payloads[-1]["Content"]["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_subscribe_run_events_rejects_run_from_another_session(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(_DummyRunner())
+
+    for session_id, invocation_id in (
+        ("sess-subscribe-a", "run-a"),
+        ("sess-subscribe-b", "run-b"),
+    ):
+        await service.create_session(
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id=session_id,
+        )
+        await service.append_event(
+            session_id,
+            SessionEvent.from_dict(
+                {
+                    "author": "demo-agent",
+                    "eventType": "run_status",
+                    "invocationId": invocation_id,
+                    "content": {"status": "in_progress"},
+                },
+                session_id=session_id,
+            ),
+        )
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.get(
+            "/agentengine/api/v1/SubscribeRunEvents",
+            params={
+                "SessionId": "sess-subscribe-a",
+                "InvocationId": "run-b",
+            },
+        )
+
+    assert response.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_subscribe_run_events_pages_forward_without_skipping_target_events(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = _BoundedReadSessionService()
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(_DummyRunner())
+    session = await service.create_session(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-subscribe-bounded",
+    )
+    in_progress = await service.append_event(
+        session.id,
+        SessionEvent.from_dict(
+            {
+                "author": "demo-agent",
+                "eventType": "run_status",
+                "invocationId": "inv-target",
+                "content": {"status": "in_progress"},
+            },
+            session_id=session.id,
+        ),
+    )
+    for index in range(501):
+        await service.append_event(
+            session.id,
+            SessionEvent.from_dict(
+                {
+                    "author": "demo-agent",
+                    "eventType": "reasoning",
+                    "invocationId": "inv-other",
+                    "content": {"text": f"other-{index}"},
+                },
+                session_id=session.id,
+            ),
+        )
+    terminal = await service.append_event(
+        session.id,
+        SessionEvent.from_dict(
+            {
+                "author": "demo-agent",
+                "eventType": "run_status",
+                "invocationId": "inv-target",
+                "content": {"status": "completed"},
+            },
+            session_id=session.id,
+        ),
+    )
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.get(
+            "/agentengine/api/v1/SubscribeRunEvents",
+            params={
+                "SessionId": session.id,
+                "InvocationId": "inv-target",
+                "AfterSeqId": in_progress.seq_id,
+            },
+        )
+
+    assert response.status_code == 200
+    payloads = [
+        json.loads(line.removeprefix("data: "))
+        for line in response.text.splitlines()
+        if line.startswith("data: ") and line.strip() != "data: [DONE]"
+    ]
+    assert [payload["SeqId"] for payload in payloads] == [terminal.seq_id]
+    assert response.text.endswith("data: [DONE]\n\n")
+    assert service.event_read_limits
+    assert max(service.event_read_limits) <= 500
 
 
 @pytest.mark.asyncio
@@ -5723,68 +5332,6 @@ async def test_subscribe_run_events_reconnects_without_replaying_consumed_events
 
 
 @pytest.mark.asyncio
-async def test_subscribe_run_events_uses_bounded_invocation_queries(monkeypatch):
-    server_app_module = importlib.import_module("ksadk.server.app")
-
-    class TrackingService(InMemorySessionService):
-        def __init__(self):
-            super().__init__()
-            self.queries = []
-
-        async def get_events(self, *_args, **_kwargs):
-            raise AssertionError("SubscribeRunEvents must not materialize session history")
-
-        async def query_events(self, query):
-            self.queries.append(query)
-            return await super().query_events(query)
-
-    service = TrackingService()
-    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
-    server_app_module.set_runner(_DummyRunner())
-    session = await service.create_session(
-        agent_id="demo-agent",
-        user_id="user-1",
-        session_id="bounded-subscribe",
-    )
-    terminal = await service.append_event(
-        session.id,
-        SessionEvent.from_dict(
-            {
-                "author": "demo-agent",
-                "eventType": "run_status",
-                "invocationId": "target-invocation",
-                "content": {"status": "completed"},
-            },
-            session_id=session.id,
-        ),
-    )
-
-    transport = httpx.ASGITransport(app=server_app_module.app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
-        response = await client.get(
-            "/agentengine/api/v1/SubscribeRunEvents",
-            params={
-                "SessionId": session.id,
-                "InvocationId": "target-invocation",
-                "AfterSeqId": terminal.seq_id,
-            },
-        )
-
-    assert response.status_code == 200
-    assert response.text == "data: [DONE]\n\n"
-    assert len(service.queries) == 2
-    incremental, recovery = service.queries
-    assert incremental.invocation_id == recovery.invocation_id == "target-invocation"
-    assert incremental.after_seq_id == terminal.seq_id
-    assert incremental.from_start is True
-    assert incremental.order_by_seq is True
-    assert incremental.limit == 1000
-    assert recovery.event_types == ["run_status"]
-    assert recovery.order_by_seq is True
-    assert recovery.limit == 1
-
-
-@pytest.mark.asyncio
 async def test_run_agent_stream_continues_after_client_disconnect(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")
     service = InMemorySessionService()
@@ -5813,7 +5360,11 @@ async def test_run_agent_stream_continues_after_client_disconnect(monkeypatch):
 
     for _ in range(20):
         events = await service.get_events("sess-detached-run")
-        if events and events[-1].event_type == "run_status" and events[-1].content.get("status") == "completed":
+        if (
+            events
+            and events[-1].event_type == "run_status"
+            and events[-1].content.get("status") == "completed"
+        ):
             break
         await asyncio.sleep(0.02)
 
@@ -5821,11 +5372,64 @@ async def test_run_agent_stream_continues_after_client_disconnect(monkeypatch):
     assert [event.event_type for event in events] == [
         "user_message",
         "run_status",
+        "assistant_stream_snapshot",
         "assistant_message",
         "run_status",
     ]
     assert events[-2].content["parts"][0]["text"] == "hello"
     assert events[-1].content["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_background_run_exposes_partial_assistant_text_to_session_history(monkeypatch):
+    """A refresh can recover the assistant text produced before the browser left."""
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    runner = _PausedAfterFirstTextRunner()
+
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+            started = await client.post(
+                "/agentengine/api/v1/RunAgent",
+                json={
+                    "AgentId": "demo-agent",
+                    "SessionId": "sess-partial-history",
+                    "Messages": [{"role": "user", "content": "写一篇长文"}],
+                    "InvocationId": "run-partial-history",
+                    "ApiFormat": "responses",
+                    "Background": True,
+                },
+            )
+            assert started.status_code == 200
+            await asyncio.wait_for(runner.first_delta_consumed.wait(), timeout=1)
+
+            restored = await client.post(
+                "/agentengine/api/v1/ListSessionMessages",
+                json={
+                    "AgentId": "demo-agent",
+                    "SessionId": "sess-partial-history",
+                    "IncludeReasoning": True,
+                    "IncludeToolEvents": True,
+                },
+            )
+
+        assert restored.status_code == 200
+        messages = restored.json()["Data"]["Messages"]
+        assert [(message["Role"], message["Content"]["text"]) for message in messages] == [
+            ("user", "写一篇长文"),
+            ("assistant", "第一段正在生成。"),
+        ]
+        events = await service.get_events("sess-partial-history")
+        snapshots = [event for event in events if event.event_type == "assistant_stream_snapshot"]
+        assert len(snapshots) == 1
+        assert snapshots[0].content["parts"][0]["text"] == "第一段正在生成。"
+        assert all(event.event_type != "assistant_message" for event in events)
+    finally:
+        runner.release.set()
 
 
 @pytest.mark.asyncio
@@ -5858,9 +5462,7 @@ async def test_cancel_run_cancels_detached_stream_and_writes_cancelled_status(mo
         for _ in range(20):
             events = await service.get_events("sess-cancel-run")
             statuses = [
-                event.content.get("status")
-                for event in events
-                if event.event_type == "run_status"
+                event.content.get("status") for event in events if event.event_type == "run_status"
             ]
             if statuses == ["in_progress"]:
                 break
@@ -5879,20 +5481,106 @@ async def test_cancel_run_cancels_detached_stream_and_writes_cancelled_status(mo
 
     for _ in range(20):
         events = await service.get_events("sess-cancel-run")
-        if events and events[-1].event_type == "run_status" and events[-1].content.get("status") == "cancelled":
+        if (
+            events
+            and events[-1].event_type == "run_status"
+            and events[-1].content.get("status") == "cancelled"
+        ):
             break
         await asyncio.sleep(0.02)
 
     events = await service.get_events("sess-cancel-run")
     event_types = [event.event_type for event in events]
-    statuses = [
-        event.content.get("status")
-        for event in events
-        if event.event_type == "run_status"
-    ]
+    statuses = [event.content.get("status") for event in events if event.event_type == "run_status"]
     assert statuses == ["in_progress", "cancelled"]
     assert "assistant_message" not in event_types
     assert runner.cancel_requests == [invocation_id]
+
+
+@pytest.mark.asyncio
+async def test_cancel_run_rejects_detached_run_owned_by_another_session(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(_DummyRunner())
+    for session_id in ("sess-cancel-a", "sess-cancel-b"):
+        await service.create_session(
+            agent_id="demo-agent",
+            user_id="user",
+            session_id=session_id,
+        )
+
+    invocation_id = "inv-detached-a"
+    detached = SimpleNamespace(
+        session_id="sess-cancel-a",
+        cancel=lambda: True,
+    )
+    server_app_module._DETACHED_STREAMS_BY_INVOCATION[invocation_id] = detached
+    try:
+        transport = httpx.ASGITransport(app=server_app_module.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+            response = await client.post(
+                "/agentengine/api/v1/CancelRun",
+                json={
+                    "AgentId": "demo-agent",
+                    "UserId": "user",
+                    "SessionId": "sess-cancel-b",
+                    "InvocationId": invocation_id,
+                },
+            )
+    finally:
+        server_app_module._DETACHED_STREAMS_BY_INVOCATION.pop(invocation_id, None)
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "InvocationId does not belong to SessionId"
+
+
+@pytest.mark.asyncio
+async def test_cancel_run_scans_session_in_bounded_pages(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = _BoundedReadSessionService()
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(_DummyRunner())
+    session = await service.create_session(
+        agent_id="demo-agent",
+        user_id="user",
+        session_id="sess-cancel-bounded",
+    )
+    for index in range(501):
+        await service.append_event(
+            session.id,
+            SessionEvent(
+                author="demo-agent",
+                event_type="reasoning",
+                content={"text": f"other-{index}"},
+                invocation_id="inv-other",
+            ),
+        )
+    await service.append_event(
+        session.id,
+        SessionEvent(
+            author="demo-agent",
+            event_type="run_status",
+            content={"status": "in_progress"},
+            invocation_id="inv-target",
+        ),
+    )
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/CancelRun",
+            json={
+                "AgentId": "demo-agent",
+                "UserId": "user",
+                "SessionId": session.id,
+                "InvocationId": "inv-target",
+            },
+        )
+
+    assert response.status_code == 200
+    assert service.event_read_limits
+    assert max(service.event_read_limits) <= 500
 
 
 @pytest.mark.asyncio
@@ -5963,3 +5651,389 @@ async def test_cancel_run_reports_unsupported_when_runner_has_no_cancel_hook(mon
     assert cancel_data["Cancelled"] is False
     assert cancel_data["Status"] == "unsupported"
     assert cancel_data["RunnerCancelStatus"] == "unsupported"
+
+
+async def test_iter_with_idle_heartbeat_survives_slow_generator_frames(monkeypatch):
+    """单帧间隔 > idle timeout 时，helper 发 ping 但不关闭原生 async generator，
+    后续 chunk 仍能拿到（回归 wait_for(__anext__) 会 cancel 关闭 generator 的坑）。
+    """
+    server_app_module = importlib.import_module("ksadk.server.app")
+
+    monkeypatch.setattr(
+        server_app_module,
+        "SSE_HEARTBEAT_INTERVAL_SECONDS",
+        0.05,
+    )
+
+    async def slow_native_gen():
+        for i in range(3):
+            await asyncio.sleep(0.15)  # 单帧间隔 > 0.05s timeout
+            yield {"i": i}
+
+    seen: list[tuple[str, object]] = []
+    async for kind, chunk in server_app_module._iter_with_idle_heartbeat(slow_native_gen()):
+        seen.append((kind, chunk))
+
+    heartbeats = [c for k, c in seen if k == "heartbeat"]
+    chunks = [c for k, c in seen if k == "chunk"]
+    assert heartbeats, "应至少发一次心跳"
+    assert chunks == [{"i": 0}, {"i": 1}, {"i": 2}], f"所有 chunk 必须完整到达，实际: {chunks}"
+
+
+async def test_iter_with_idle_heartbeat_propagates_upstream_error():
+    server_app_module = importlib.import_module("ksadk.server.app")
+
+    async def failing_gen():
+        yield {"i": 0}
+        raise RuntimeError("upstream boom")
+
+    with pytest.raises(RuntimeError, match="upstream boom"):
+        async for _ in server_app_module._iter_with_idle_heartbeat(failing_gen()):
+            pass
+
+
+async def test_iter_with_idle_heartbeat_completes_normally():
+    server_app_module = importlib.import_module("ksadk.server.app")
+
+    async def quick_gen():
+        yield {"a": 1}
+        yield {"a": 2}
+
+    out = [c async for k, c in server_app_module._iter_with_idle_heartbeat(quick_gen())]
+    assert out == [{"a": 1}, {"a": 2}]
+
+
+async def test_iter_with_idle_heartbeat_propagates_source_cancelled_error(monkeypatch):
+    """source 自身取消时应及时传播，不能被误判成正常结束或无限 heartbeat。"""
+    server_app_module = importlib.import_module("ksadk.server.app")
+    monkeypatch.setattr(server_app_module, "SSE_HEARTBEAT_INTERVAL_SECONDS", 0.05)
+
+    async def cancelling_gen():
+        yield {"i": 0}
+        await asyncio.sleep(0.01)
+        raise asyncio.CancelledError()
+
+    async def consume() -> None:
+        async for kind, chunk in server_app_module._iter_with_idle_heartbeat(cancelling_gen()):
+            del kind, chunk
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(consume(), timeout=2.0)
+
+
+async def test_iter_with_idle_heartbeat_cleans_pump_on_consumer_break():
+    """队列已满时客户端断开，helper 也必须立即关闭 source，不能卡在终止通知。"""
+    server_app_module = importlib.import_module("ksadk.server.app")
+    source_closed = asyncio.Event()
+    third_chunk_requested = asyncio.Event()
+
+    async def tracked_gen():
+        try:
+            yield {"i": 0}
+            yield {"i": 1}
+            third_chunk_requested.set()
+            yield {"i": 2}
+        finally:
+            source_closed.set()
+
+    agen = server_app_module._iter_with_idle_heartbeat(tracked_gen())
+    kind, chunk = await agen.__anext__()
+    assert (kind, chunk) == ("chunk", {"i": 0})
+    await asyncio.wait_for(third_chunk_requested.wait(), timeout=1.0)
+    await asyncio.wait_for(agen.aclose(), timeout=1.0)
+    await asyncio.wait_for(source_closed.wait(), timeout=1.0)
+
+
+async def test_detached_stream_iter_for_client_emits_heartbeat_when_idle(monkeypatch):
+    """detached 订阅边界：上游空闲时客户端收到 SSE comment 心跳，
+    业务帧完整到达，且心跳不进入 _backlog（断线重连不回放心跳帧）。
+    """
+    server_app_module = importlib.import_module("ksadk.server.app")
+    monkeypatch.setattr(server_app_module, "SSE_HEARTBEAT_INTERVAL_SECONDS", 0.05)
+
+    async def slow_source():
+        yield "data: one\n\n"
+        await asyncio.sleep(0.2)  # > 0.05 idle timeout
+        yield "data: two\n\n"
+
+    detached = server_app_module._DetachedSSEStream(slow_source())
+    frames: list[str] = []
+    async for frame in detached.iter_for_client():
+        frames.append(frame)
+
+    assert ": ping\n\n" in frames
+    assert "data: one\n\n" in frames
+    assert "data: two\n\n" in frames
+    assert ": ping\n\n" not in detached._backlog, "心跳不得进入 backlog"
+
+
+@pytest.mark.asyncio
+async def test_responses_stream_emits_heartbeat_when_runner_idle(monkeypatch):
+    """端点级：/v1/responses(stream=true) 在 runner 单帧间隔超过心跳阈值时，
+    客户端仍能持续收到心跳，且业务帧与终态完整（回归线上 30s 无响应场景）。
+    """
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+
+    class _IdleThenStreamRunner(_DummyRunner):
+        async def stream(self, input_data: dict):
+            self.calls.append(input_data)
+            yield {"type": "text", "delta": "hel"}
+            await asyncio.sleep(0.2)  # 模拟 LLM 长思考，单帧间隔 > 心跳阈值
+            yield {"type": "text", "delta": "lo"}
+            yield {"type": "final", "output": "hello"}
+
+    runner = _IdleThenStreamRunner()
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    monkeypatch.setattr(server_app_module, "SSE_HEARTBEAT_INTERVAL_SECONDS", 0.05)
+    server_app_module.set_runner(runner)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    body = ""
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        async with client.stream(
+            "POST",
+            "/v1/responses",
+            json={"input": "hello", "stream": True},
+        ) as response:
+            assert response.status_code == 200
+            async for line in response.aiter_lines():
+                body += line + "\n"
+
+    assert ": ping" in body, f"空闲期应有心跳，实际响应:\n{body[:500]}"
+    assert "hel" in body and "lo" in body, f"业务帧必须完整，实际响应:\n{body[:500]}"
+
+
+@pytest.mark.asyncio
+async def test_list_session_events_without_session_id_returns_all_sessions(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(_DummyRunner())
+
+    from ksadk.sessions.base import SessionEvent
+
+    for session_id, text in (("sess-a", "hello-a"), ("sess-b", "hello-b")):
+        await service.create_session(agent_id="demo-agent", user_id="user", session_id=session_id)
+        await service.append_event(
+            session_id,
+            SessionEvent(
+                session_id=session_id,
+                author="user",
+                event_type="user_message",
+                content={"text": text},
+            ),
+        )
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/ListSessionEvents",
+            json={"AgentId": "demo-agent"},
+        )
+
+    assert response.status_code == 200
+    data = response.json()["Data"]
+    assert data["ScopedAllSessions"] is True
+    assert data["Total"] == 2
+    session_ids = {event["SessionId"] for event in data["Events"]}
+    assert session_ids == {"sess-a", "sess-b"}
+
+
+@pytest.mark.asyncio
+async def test_list_session_events_without_session_id_filters_total_by_user(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(_DummyRunner())
+
+    from ksadk.sessions.base import SessionEvent
+
+    for session_id, user_id in (("sess-user-a", "user-a"), ("sess-user-b", "user-b")):
+        await service.create_session(
+            agent_id="demo-agent",
+            user_id=user_id,
+            session_id=session_id,
+        )
+        await service.append_event(
+            session_id,
+            SessionEvent(
+                session_id=session_id,
+                author="user",
+                event_type="user_message",
+                content={"text": user_id},
+            ),
+        )
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/ListSessionEvents",
+            json={"AgentId": "demo-agent", "UserId": "user-a"},
+        )
+
+    assert response.status_code == 200
+    data = response.json()["Data"]
+    assert data["Total"] == 1
+    assert [event["SessionId"] for event in data["Events"]] == ["sess-user-a"]
+
+
+@pytest.mark.asyncio
+async def test_list_session_events_rejects_mismatched_session_user(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    await service.create_session(
+        agent_id="demo-agent",
+        user_id="user-b",
+        session_id="sess-owned-by-b",
+    )
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(_DummyRunner())
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/ListSessionEvents",
+            json={
+                "AgentId": "demo-agent",
+                "SessionId": "sess-owned-by-b",
+                "UserId": "user-a",
+            },
+        )
+
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_list_session_checkpoints_without_session_id_returns_all_sessions(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
+    service = InMemorySessionService()
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(_DummyRunner())
+
+    for session_id, checkpoint_id in (("sess-a", "ckpt-a"), ("sess-b", "ckpt-b")):
+        await service.create_session(agent_id="demo-agent", user_id="user", session_id=session_id)
+        await conversation_runtime.append_run_checkpoint_event(
+            session_id=session_id,
+            author="demo-agent",
+            run_id=f"run_{session_id}",
+            checkpoint_id=checkpoint_id,
+            framework="langgraph",
+            framework_ref={
+                "langgraph": {"thread_id": f"t:{session_id}", "checkpoint_id": checkpoint_id}
+            },
+            invocation_id=f"inv-{session_id}",
+            session_service_provider=lambda: service,
+        )
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/ListSessionCheckpoints",
+            json={"AgentId": "demo-agent"},
+        )
+
+    assert response.status_code == 200
+    data = response.json()["Data"]
+    assert data["Total"] == 2
+    assert {cp["SessionId"] for cp in data["Checkpoints"]} == {"sess-a", "sess-b"}
+    assert {cp["CheckpointId"] for cp in data["Checkpoints"]} == {"ckpt-a", "ckpt-b"}
+
+
+@pytest.mark.asyncio
+async def test_list_session_events_filters_types_and_checkpoint_ids_before_pagination(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    await service.create_session("demo-agent", "user-1", "events-filtered")
+    for event_id, event_type, checkpoint_id, timestamp in (
+        ("match-old", "user_message", "cp-a", 1),
+        ("wrong-type", "assistant_message", "cp-a", 2),
+        ("wrong-checkpoint", "user_message", "cp-b", 3),
+        ("match-new", "user_message", "cp-a", 4),
+    ):
+        await service.append_event(
+            "events-filtered",
+            SessionEvent(
+                id=event_id,
+                event_type=event_type,
+                timestamp=timestamp,
+                metadata={"checkpoint_id": checkpoint_id},
+            ),
+        )
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/ListSessionEvents",
+            json={
+                "SessionId": "events-filtered",
+                "EventTypes": [" user_message ", "user_message"],
+                "CheckpointIds": [" cp-a ", "cp-a"],
+                "Limit": 1,
+            },
+        )
+
+    assert response.status_code == 200
+    data = response.json()["Data"]
+    assert data["EventTypes"] == ["user_message"]
+    assert data["CheckpointIds"] == ["cp-a"]
+    assert data["Total"] == 2
+    assert [event["EventId"] for event in data["Events"]] == ["match-new"]
+
+
+@pytest.mark.asyncio
+async def test_resume_run_background_precedes_stream_and_returns_json_acceptance(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
+    service = InMemorySessionService()
+    runner = _CheckpointResumeRunner()
+    await service.create_session("demo-agent", "user-1", "resume-background")
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+    await conversation_runtime.append_run_checkpoint_event(
+        session_id="resume-background",
+        author="demo-agent",
+        run_id="run-1",
+        checkpoint_id="cp-1",
+        framework="langgraph",
+        framework_ref={},
+        session_service_provider=lambda: service,
+    )
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/ResumeRun",
+            json={
+                "AgentId": "demo-agent",
+                "SessionId": "resume-background",
+                "RunId": "run-1",
+                "CheckpointId": "cp-1",
+                "ResumeAttemptId": "resume-bg-1",
+                "InvocationId": "inv-bg-1",
+                "Background": True,
+                "Stream": True,
+            },
+        )
+
+    assert response.status_code == 200
+    data = response.json()["Data"]
+    assert data["Background"] is True
+    assert data["InvocationId"] == "inv-bg-1"
+    assert data["SubscribeUrl"].endswith("SessionId=resume-background&InvocationId=inv-bg-1")
+
+    for _ in range(20):
+        events = await service.get_events("resume-background")
+        if any(
+            event.event_type == "run_status" and event.content.get("status") == "completed"
+            for event in events
+        ):
+            break
+        await asyncio.sleep(0.01)
+    events = await service.get_events("resume-background")
+    assert len([event for event in events if event.event_type == "run_resume"]) == 1
+    assert [
+        event.content.get("status") for event in events if event.event_type == "run_status"
+    ] == ["resuming", "in_progress", "completed"]

@@ -140,10 +140,9 @@ def validate_terminal_exec_argv(
 
     normalized = normalize_exec_argv(argv, policy_name=policy.name)
     allowed_exact = tuple(tuple(item) for item in policy.default_exact)
-    allowed_prefixes = (
-        tuple(tuple(item) for item in policy.default_prefixes)
-        + _env_allowlist_prefixes(policy.env_names, policy_name=policy.name)
-    )
+    allowed_prefixes = tuple(
+        tuple(item) for item in policy.default_prefixes
+    ) + _env_allowlist_prefixes(policy.env_names, policy_name=policy.name)
 
     if _matches_exact_or_prefix(
         normalized,

@@ -195,16 +195,33 @@ class ResilientSessionService(BaseSessionService):
             "list_sessions",
             agent_id,
             user_id,
-            offset,
-            limit,
+            None,
+            None,
         )
         if status is _PrimaryCallStatus.AVAILABLE_RESULT:
             for session in durable_sessions or []:
                 await self._hydrate(session)
-        return cast(
-            list[Session],
-            await self.fallback.list_sessions(agent_id, user_id, offset, limit),
-        )
+            # Preserve the durable backend's ordering before applying pagination.
+            # Hydrating into the in-memory fallback assigns fresh timestamps, so
+            # reading the page back from that store would reorder equal-age
+            # sessions and previously applied the requested page twice.
+            live_sessions = await self.fallback.list_sessions(agent_id, user_id)
+            live_by_id = {session.id: session for session in live_sessions}
+            durable_ids = {session.id for session in durable_sessions or []}
+            sessions = [
+                live_by_id.get(session.id, session)
+                if session.id in self._dirty_session_ids
+                else session
+                for session in durable_sessions or []
+            ]
+            sessions.extend(session for session in live_sessions if session.id not in durable_ids)
+            sessions.sort(
+                key=lambda item: (item.updated_at, item.created_at, item.id), reverse=True
+            )
+            start = offset or 0
+            end = None if limit is None else start + limit
+            return sessions[start:end]
+        return cast(list[Session], await self.fallback.list_sessions(agent_id, user_id, offset, limit))
 
     async def count_sessions(self, agent_id: str, user_id: Optional[str] = None) -> int:
         sessions = await self.list_sessions(agent_id, user_id)
@@ -780,6 +797,34 @@ class ResilientSessionService(BaseSessionService):
         live_ids = sorted((fallback_ids - primary_ids) | (fallback_ids & self._dirty_session_ids))
         clean_ids = sorted(primary_ids - set(live_ids))
         return clean_ids, live_ids
+
+    async def get_events_for_agent(
+        self,
+        agent_id: str,
+        user_id: Optional[str] = None,
+        offset: Optional[int] = None,
+        limit: Optional[int] = None,
+    ) -> list[SessionEvent]:
+        status, events = await self._call_primary(
+            "get_events_for_agent", agent_id, user_id, offset, limit
+        )
+        self._raise_if_capability_unsupported(status, events)
+        if status is _PrimaryCallStatus.AVAILABLE_RESULT:
+            return cast(list[SessionEvent], events)
+        return await self.fallback.get_events_for_agent(agent_id, user_id, offset, limit)
+
+    async def count_events_for_agent(
+        self,
+        agent_id: str,
+        user_id: Optional[str] = None,
+    ) -> int:
+        status, total = await self._call_primary(
+            "count_events_for_agent", agent_id, user_id
+        )
+        self._raise_if_capability_unsupported(status, total)
+        if status is _PrimaryCallStatus.AVAILABLE_RESULT:
+            return int(total or 0)
+        return await self.fallback.count_events_for_agent(agent_id, user_id)
 
     async def get_state(
         self,

@@ -79,11 +79,14 @@ class PackageStore:
         if not ref.content_hash:
             return
         if ref.content_hash.algorithm != "sha256":
-            raise SkillPackageError(f"Unsupported ContentHash algorithm: {ref.content_hash.algorithm}")
+            raise SkillPackageError(
+                f"Unsupported ContentHash algorithm: {ref.content_hash.algorithm}"
+            )
         actual = hashlib.sha256(content).hexdigest()
         if actual.lower() != ref.content_hash.value.lower():
             raise SkillPackageError(
-                f"ContentHash mismatch for {ref.name}: expected {ref.content_hash.render()}, got sha256:{actual}"
+                f"ContentHash mismatch for {ref.name}: expected "
+                f"{ref.content_hash.render()}, got sha256:{actual}"
             )
 
     def _safe_extract(self, archive_path: Path, extract_dir: Path) -> None:

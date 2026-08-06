@@ -1,18 +1,19 @@
 from __future__ import annotations
 
+import inspect
 import json
 import os
-import inspect
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Any, Coroutine, Sequence, cast
 from urllib.parse import urlparse
 
 import httpx
-from google.adk.tools.mcp_tool.mcp_session_manager import (
+
+from ksadk.compat.adk_compat import (
     CheckableMcpHttpClientFactory,
+    McpToolset,
     StreamableHTTPConnectionParams,
 )
-from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 
 MCP_TOOLSET_KEY_ATTR = "_ksadk_mcp_toolset_key"
 
@@ -64,7 +65,9 @@ def build_connection_params(
     httpx_client_factory: CheckableMcpHttpClientFactory | None = None,
 ) -> StreamableHTTPConnectionParams:
     kwargs: dict[str, Any] = {"url": config.url, "headers": config.headers}
-    kwargs["httpx_client_factory"] = httpx_client_factory or _default_httpx_client_factory(config.url)
+    kwargs["httpx_client_factory"] = httpx_client_factory or _default_httpx_client_factory(
+        config.url
+    )
     return StreamableHTTPConnectionParams(**kwargs)
 
 
@@ -146,7 +149,7 @@ def _mcp_toolset_tools_sync(toolset: Any) -> list[Any]:
             try:
                 asyncio.get_running_loop()
             except RuntimeError:
-                result = asyncio.run(result)
+                result = asyncio.run(cast(Coroutine[Any, Any, Any], result))
             else:
                 close = getattr(result, "close", None)
                 if callable(close):

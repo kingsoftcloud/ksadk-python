@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import site
 import sys
+from pathlib import Path
 from typing import Sequence
-
 
 LOCAL_RUNTIME_VENV_REEXEC_ENV = "AGENTENGINE_LOCAL_RUNTIME_VENV_REEXEC"
 LEGACY_WEB_VENV_REEXEC_ENV = "AGENTENGINE_WEB_VENV_REEXEC"

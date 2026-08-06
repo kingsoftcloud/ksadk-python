@@ -3,8 +3,8 @@ from __future__ import annotations
 from ksadk.builders.container_builder import ContainerBuilder
 from ksadk.builders.mcp_builder import MCPContainerBuilder
 from ksadk.cli import cmd_mcp, cmd_openclaw
-from ksadk.detection.mcp_detector import MCPDetectionResult
 from ksadk.deployment.providers.serverless import ServerlessProvider
+from ksadk.detection.mcp_detector import MCPDetectionResult
 
 
 def test_enterprise_registry_requires_explicit_kcr_username(monkeypatch, tmp_path, capsys):
@@ -93,7 +93,9 @@ def test_openclaw_container_request_does_not_fallback_for_third_party_registry(m
     assert (username, password, kind) == ("", "secret", "third_party")
 
 
-def test_serverless_container_request_does_not_fallback_for_enterprise_registry(monkeypatch, capsys):
+def test_serverless_container_request_does_not_fallback_for_enterprise_registry(
+    monkeypatch, capsys
+):
     monkeypatch.delenv("KCR_USERNAME", raising=False)
     monkeypatch.setenv("KSYUN_ACCOUNT_ID", "2000003485")
     monkeypatch.setenv("KCR_PASSWORD", "secret")

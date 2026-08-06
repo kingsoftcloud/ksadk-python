@@ -12,8 +12,10 @@ from ksadk.skills.service_env import (
     public_skill_space_ids,
     resolve_skill_service_url,
     should_resolve_child_skill_service_url,
-    skill_space_ids as configured_skill_space_ids,
     user_skill_space_ids,
+)
+from ksadk.skills.service_env import (
+    skill_space_ids as configured_skill_space_ids,
 )
 
 RUNTIME_AGENT_ENV_NAMES = (
@@ -51,11 +53,7 @@ def _parse_skill_space_ids(*raw_values: str) -> list[str]:
 
 
 def runtime_agent_env_from_process(skill_space_ids: list[str] | None = None) -> dict[str, str]:
-    env = {
-        name: value
-        for name in RUNTIME_AGENT_ENV_NAMES
-        if (value := os.environ.get(name))
-    }
+    env = {name: value for name in RUNTIME_AGENT_ENV_NAMES if (value := os.environ.get(name))}
     if "KSADK_SKILL_SERVICE_ACCOUNT_ID" not in env and (
         account_id := os.environ.get("KSYUN_ACCOUNT_ID")
     ):
@@ -72,7 +70,11 @@ def runtime_agent_env_from_process(skill_space_ids: list[str] | None = None) -> 
                 if value:
                     env[target] = value
                     break
-    if has_spaces and should_resolve_child_skill_service_url() and "KSADK_SKILL_SERVICE_URL" not in env:
+    if (
+        has_spaces
+        and should_resolve_child_skill_service_url()
+        and "KSADK_SKILL_SERVICE_URL" not in env
+    ):
         service_url = resolve_skill_service_url(require_spaces=False)
         if service_url:
             env["KSADK_SKILL_SERVICE_URL"] = service_url
@@ -125,7 +127,8 @@ def load_remote_skill_manifests(skill_space_ids: list[str] | None = None) -> lis
     seen: set[str] = set()
     limit = _manifest_limit()
     public_allowlist = {
-        name.lower() for name in normalize_skill_names(os.environ.get("KSADK_PUBLIC_SKILL_ALLOWLIST", ""))
+        name.lower()
+        for name in normalize_skill_names(os.environ.get("KSADK_PUBLIC_SKILL_ALLOWLIST", ""))
     }
     for space_id in user_spaces:
         listing = client.list_skills_by_space_id(space_id)
@@ -161,8 +164,10 @@ def build_skill_manifest_instruction(manifests: list[dict[str, str]]) -> str:
     lines = [
         "",
         "Available remote skills are listed below. Use them only when they match the user's task.",
-        "When a skill is useful, call execute_skills with the original workflow_prompt and skill_names set to the exact skill name.",
-        "Do not assume full skill instructions are already loaded; execute_skills loads selected skills on demand.",
+        "When a skill is useful, call execute_skills with the original workflow_prompt "
+        "and skill_names set to the exact skill name.",
+        "Do not assume full skill instructions are already loaded; execute_skills loads "
+        "selected skills on demand.",
         "",
         "Remote skills:",
     ]

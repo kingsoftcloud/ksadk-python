@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import re
+from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Sequence, TypeVar
 
 import click
@@ -181,6 +181,7 @@ def confirm_destructive(
                 details={"prompt": prompt},
             )
         )
+        return False
     if click.confirm(prompt):
         return True
     from ksadk.cli.error_utils import abort_with_cli_error, cancelled_error
@@ -192,6 +193,7 @@ def confirm_destructive(
             details={"prompt": prompt},
         )
     )
+    return False
 
 
 def print_list_summary(*, total: int, page: int, size: int, noun: str) -> None:
@@ -244,7 +246,9 @@ def get_descriptor_resource_key(descriptor: ResourceDescriptor) -> str:
     return descriptor.resource_key or _resource_key(descriptor.name) or "resource"
 
 
-def _legacy_action_descriptors(descriptor: ResourceDescriptor) -> tuple[ResourceActionDescriptor, ...]:
+def _legacy_action_descriptors(
+    descriptor: ResourceDescriptor,
+) -> tuple[ResourceActionDescriptor, ...]:
     action_set = descriptor.actions
     if not isinstance(action_set, ResourceActionSet):
         return tuple(action_set)

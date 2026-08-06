@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from types import SimpleNamespace
-import sys
 
 from click.testing import CliRunner
 
@@ -66,7 +66,9 @@ def test_completion_install_prefers_bash_profile_on_macos(tmp_path: Path, monkey
 
     monkeypatch.setattr(
         "subprocess.run",
-        lambda *args, **kwargs: SimpleNamespace(stdout="_agentengine_completion() { :; }\n", returncode=0),
+        lambda *args, **kwargs: SimpleNamespace(
+            stdout="_agentengine_completion() { :; }\n", returncode=0
+        ),
     )
 
     runner = CliRunner()
@@ -85,7 +87,9 @@ def test_completion_install_auto_detects_git_bash_without_shell_env(tmp_path: Pa
 
     monkeypatch.setattr(
         "subprocess.run",
-        lambda *args, **kwargs: SimpleNamespace(stdout="_agentengine_completion() { :; }\n", returncode=0),
+        lambda *args, **kwargs: SimpleNamespace(
+            stdout="_agentengine_completion() { :; }\n", returncode=0
+        ),
     )
 
     runner = CliRunner()
@@ -105,7 +109,9 @@ def test_completion_install_auto_detects_wsl_without_shell_env(tmp_path: Path, m
 
     monkeypatch.setattr(
         "subprocess.run",
-        lambda *args, **kwargs: SimpleNamespace(stdout="_agentengine_completion() { :; }\n", returncode=0),
+        lambda *args, **kwargs: SimpleNamespace(
+            stdout="_agentengine_completion() { :; }\n", returncode=0
+        ),
     )
 
     runner = CliRunner()

@@ -8,6 +8,8 @@ import logging
 from collections import defaultdict
 from typing import List
 
+from pydantic import PrivateAttr
+
 from ksadk.memory.adk.backends.base_ltm_backend import BaseLongTermMemoryBackend
 
 logger = logging.getLogger(__name__)
@@ -27,19 +29,13 @@ class InMemoryLTMBackend(BaseLongTermMemoryBackend):
         ```
     """
 
-    # Pydantic v2 不允许直接声明 mutable default，使用 model_post_init
-    _storage: dict = None
+    _storage: defaultdict[str, list[str]] = PrivateAttr(default_factory=lambda: defaultdict(list))
 
     def model_post_init(self, __context) -> None:
         # {user_id: [event_string, ...]}
-        self._storage = defaultdict(list)
-        logger.info(
-            f"InMemoryLTMBackend initialized: index={self.index}"
-        )
+        logger.info(f"InMemoryLTMBackend initialized: index={self.index}")
 
-    def save_memory(
-        self, user_id: str, event_strings: List[str], **kwargs
-    ) -> bool:
+    def save_memory(self, user_id: str, event_strings: List[str], **kwargs) -> bool:
         """保存记忆到内存"""
         if not event_strings:
             return True
@@ -51,9 +47,7 @@ class InMemoryLTMBackend(BaseLongTermMemoryBackend):
         )
         return True
 
-    def search_memory(
-        self, user_id: str, query: str, top_k: int = 5, **kwargs
-    ) -> List[str]:
+    def search_memory(self, user_id: str, query: str, top_k: int = 5, **kwargs) -> List[str]:
         """基于关键词匹配检索记忆
 
         简单实现：对 query 分词后，按匹配关键词数量排序。
@@ -68,7 +62,7 @@ class InMemoryLTMBackend(BaseLongTermMemoryBackend):
         # 按字符分词（支持中英文混合）
         query_terms = query_lower.split()
 
-        scored = []
+        scored: list[tuple[int, str]] = []
         for memory in user_memories:
             memory_lower = memory.lower()
             # 计算匹配分数：完整 query 匹配得高分，部分关键词匹配得低分

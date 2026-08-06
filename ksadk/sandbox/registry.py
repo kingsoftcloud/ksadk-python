@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import atexit
+import contextvars
 import logging
 import os
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
+from typing import Any, Iterator
 
 from ksadk.sandbox.base import SandboxBackend, SandboxSession
 
@@ -43,7 +46,9 @@ class SandboxRegistry:
 
     @staticmethod
     def _resolve_sweep_interval() -> int:
-        raw = os.environ.get("KSADK_SANDBOX_SWEEP_INTERVAL_SECONDS", str(_DEFAULT_SWEEP_INTERVAL_SECONDS))
+        raw = os.environ.get(
+            "KSADK_SANDBOX_SWEEP_INTERVAL_SECONDS", str(_DEFAULT_SWEEP_INTERVAL_SECONDS)
+        )
         try:
             value = int(raw)
         except (TypeError, ValueError):
@@ -103,7 +108,8 @@ class SandboxRegistry:
             expired = [
                 key
                 for key, entry in self._entries.items()
-                if entry.expires_at <= current or (idle_ttl > 0 and current - entry.last_used_at > idle_ttl)
+                if entry.expires_at <= current
+                or (idle_ttl > 0 and current - entry.last_used_at > idle_ttl)
             ]
         for key in expired:
             self.kill(key)
@@ -138,7 +144,8 @@ class SandboxRegistry:
         with self._lock:
             while len(self._entries) - len(to_kill) >= max_sessions:
                 candidates = [
-                    entry for entry in self._entries.values()
+                    entry
+                    for entry in self._entries.values()
                     if entry.key != keep_key and entry.key not in to_kill
                 ]
                 if not candidates:
@@ -171,17 +178,61 @@ class SandboxRegistry:
 
     def reset_for_tests(self) -> None:
         """停后台 sweep 线程并清空所有 entry,用于测试隔离。"""
+        self.close()
+        self._idle_ttl_seconds = 0
+        self._sweep_stop.clear()
+
+    def close(self) -> None:
+        """Stop the owned sweep thread and kill every sandbox session."""
         self._sweep_stop.set()
         thread = self._sweep_thread
         if thread is not None and thread.is_alive():
             thread.join(timeout=2.0)
         self._sweep_thread = None
         self.clear()
-        self._idle_ttl_seconds = 0
-        self._sweep_stop.clear()
 
 
-GLOBAL_SANDBOX_REGISTRY = SandboxRegistry()
+_current_sandbox_registry: contextvars.ContextVar[SandboxRegistry | None] = contextvars.ContextVar(
+    "ksadk_sandbox_registry", default=None
+)
+_fallback_sandbox_registry = SandboxRegistry()
+
+
+def set_fallback_sandbox_registry(registry: SandboxRegistry) -> None:
+    """Set the registry used by legacy calls outside a bound app context."""
+    global _fallback_sandbox_registry
+    _fallback_sandbox_registry = registry
+
+
+@contextmanager
+def bind_sandbox_registry(registry: SandboxRegistry) -> Iterator[None]:
+    token = _current_sandbox_registry.set(registry)
+    try:
+        yield
+    finally:
+        _current_sandbox_registry.reset(token)
+
+
+def get_sandbox_registry() -> SandboxRegistry:
+    return _current_sandbox_registry.get() or _fallback_sandbox_registry
+
+
+class _ContextualSandboxRegistry:
+    """Compatibility proxy resolving the registry owned by the current app."""
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(get_sandbox_registry(), name)
+
+    def clear(self) -> None:
+        # Keep atexit dynamic: resolve the default app registry when invoked,
+        # not when the callback is registered.
+        get_sandbox_registry().clear()
+
+    def close(self) -> None:
+        get_sandbox_registry().close()
+
+
+GLOBAL_SANDBOX_REGISTRY = _ContextualSandboxRegistry()
 # 进程退出时清理 sandbox,避免 E2B sandbox 活到服务端 timeout 才销毁(按秒计费)。
 # clear() 幂等,与 server lifespan shutdown 重复调用安全。kill -9 不触发 atexit,只能靠 E2B 兜底。
 atexit.register(GLOBAL_SANDBOX_REGISTRY.clear)

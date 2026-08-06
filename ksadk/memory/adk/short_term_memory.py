@@ -24,14 +24,15 @@
 
 import logging
 import os
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, cast
 
-from google.adk.sessions import (
+from pydantic import BaseModel, PrivateAttr
+
+from ksadk.compat.adk_compat import (
     BaseSessionService,
     InMemorySessionService,
     Session,
 )
-from pydantic import BaseModel, PrivateAttr
 
 logger = logging.getLogger(__name__)
 
@@ -125,14 +126,9 @@ class ShortTermMemory(BaseModel):
                 logger.info("ShortTermMemory: using InMemorySessionService")
 
             case "sqlite":
-                db_url = _normalize_database_url(
-                    f"sqlite:///{self.local_database_path}"
-                )
+                db_url = _normalize_database_url(f"sqlite:///{self.local_database_path}")
                 self._init_database_service(db_url)
-                logger.info(
-                    f"ShortTermMemory: using SQLite at "
-                    f"{self.local_database_path}"
-                )
+                logger.info(f"ShortTermMemory: using SQLite at " f"{self.local_database_path}")
 
             case "database":
                 if not self.db_url:
@@ -154,8 +150,7 @@ class ShortTermMemory(BaseModel):
         """初始化数据库 SessionService"""
         normalized_db_url = _normalize_database_url(db_url)
         try:
-            from google.adk.sessions import DatabaseSessionService
-
+            from ksadk.compat.adk_compat import DatabaseSessionService
             from ksadk.memory.adk.resilient_session_service import ResilientADKSessionService
             from ksadk.sessions.resilience import session_backend_timeout_seconds
 
@@ -222,8 +217,7 @@ class ShortTermMemory(BaseModel):
                 )
                 if session:
                     logger.debug(
-                        f"Session {session_id} already exists "
-                        f"(app={app_name}, user={user_id})"
+                        f"Session {session_id} already exists " f"(app={app_name}, user={user_id})"
                     )
                     return session
             except Exception as e:
@@ -242,10 +236,7 @@ class ShortTermMemory(BaseModel):
                     app_name=app_name,
                     user_id=user_id,
                 )
-            logger.info(
-                f"Created session: id={session.id}, "
-                f"app={app_name}, user={user_id}"
-            )
+            logger.info(f"Created session: id={session.id}, " f"app={app_name}, user={user_id}")
             return session
         except Exception as e:
             logger.error(f"Failed to create session: {e}")
@@ -301,8 +292,9 @@ class ShortTermMemory(BaseModel):
             else:
                 backend = "local"
 
+        backend_name = cast(Literal["local", "sqlite", "database"], backend)
         return cls(
-            backend=backend,
+            backend=backend_name,
             db_url=db_url,
             local_database_path=db_path,
         )

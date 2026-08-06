@@ -36,6 +36,7 @@ agentengine web --help
 | `run` | 运行终端循环或本地 API server | 是 |
 | `web` | 启动本地浏览器 UI | 是 |
 | `a2a` | 在配置后暴露 A2A surface | 是 |
+| `replay` | 只读回放 RuntimeEvent 历史 | 是 |
 | `mcp` | 构建或管理 MCP 资源 | 取决于目标 |
 | `build` | 准备部署制品 | 取决于目标 |
 | `deploy` | 部署到配置的云端运行时 | 否 |
@@ -59,11 +60,19 @@ agentengine web --help
 ```bash title="bash"
 agentengine init my-agent -f langgraph
 agentengine init my-agent -f adk
+agentengine init my-codex-agent -f codex
 agentengine init my-agent --from-agent ./existing_agent.py
 ```
 
 支持的 framework flag 包括 `adk`、`langchain`、`langgraph`、`deepagents`、
-`openclaw` 和 `hermes`。公开示例应优先使用不依赖内部基础设施就能本地运行的框架。
+`openclaw`、`hermes` 和 `codex`。公开示例应优先使用不依赖内部基础设施就能本地运行的框架。
+
+<Callout type="info" title="0.8 新增：声明式 Codex 项目">
+`agentengine init --framework codex` 只生成 `agentengine.yaml`、`.env`、
+`requirements.txt` 和 README，不生成 `agent.py`。它的 `artifact_type` 是
+`ManagedRuntime`；本机运行原生 Codex 子进程，云端由服务端选择 Runtime 镜像。详见
+[Codex Managed Runtime](../framework/guides/managed-runtime)。
+</Callout>
 
 <Callout type="info">
   导入已有代码后，先检查 `agentengine.yaml` 再运行。
@@ -118,6 +127,23 @@ agentengine web . --model my-model
 agentengine web . --no-open
 ```
 
+Codex ManagedRuntime 同样使用 `agentengine web . --no-open`。它会校验当前操作系统
+对应的本地 Codex 二进制；离线但未显式锁定 Runtime 版本时会给出未锁定提示。
+
+### `ksadk replay` / `agentengine replay`
+
+从一个 session 的新 RuntimeEvent 日志生成可读 transcript 或 JSON，适合排查断线、刷新后的
+审批状态、A2UI activity 和跨 runner 事件顺序。它**不会**重新调用模型、工具或审批 action。
+
+```bash title="bash"
+ksadk replay session_123
+ksadk replay session_123 --after-seq-id 120 --format json
+agentengine replay session_123 --before-seq-id 260
+```
+
+只有 RuntimeEvent v1 已持久化的 session 可被这个命令读取；旧式 SessionEvent 不会自动转换。
+`--after-seq-id` 是开区间，`--before-seq-id` 是不含上界，可用二者缩小诊断窗口。
+
 ## 协议和集成
 
 ### `agentengine a2a`
@@ -156,6 +182,21 @@ agentengine openclaw --help
   解释或审核部署形态命令时，在支持的地方使用 `--dry-run`。
 </Callout>
 
+### Codex ManagedRuntime（0.8 新增）
+
+`artifact_type: ManagedRuntime` 让 `agentengine build .` 自动生成只含 YAML 与 lock 的
+本地审计 zip。它不是部署上传物；直接部署会以内联 manifest 请求服务端解析 Runtime catalog：
+
+```bash title="bash"
+agentengine build .
+agentengine deploy . --target serverless --dry-run
+agentengine deploy . --target serverless
+```
+
+ManagedRuntime 不使用 KS3 代码包，因此不能传 `--push`、`--ks3-bucket` 或 `--ks3-path`。
+强制 `--mode code` 也会失败，避免把开发机平台二进制打入 Linux 部署路径。需要完全自管镜像时，
+使用显式 `--mode container`。
+
 ### 运行时 env 透传
 
 `agentengine deploy` 和 `agentengine launch` 支持向 hosted runtime 透传自定义环境变量（0.6.5）：
@@ -177,7 +218,7 @@ agentengine launch . --env KEY=VALUE --env-file ./runtime.env
   传入的 `--env-file` 用于显式注入运行时 env。真实的 `.env` / `.env.local`
   不会进入 Code、Container 或 MCP 构建上下文，构建只保留 `.env.example` /
   `.env.sample` / `.env.template` 模板文件。详见
-  [环境变量参考](./environment-variables)。
+  [环境变量参考](../references/environment-variables)。
 </Callout>
 
 ### `agentengine openclaw`
@@ -207,7 +248,7 @@ agentengine openclaw --help
   `--memory-system` CLI 选项只暴露 `openclaw_default` 与 `mem0`。`lancedb`
   后端需要通过 `MEMORY_BACKEND_MANIFEST` 在运行时侧声明 manifest，不走 CLI
   参数；详见
-  [环境变量参考](./environment-variables)。
+  [环境变量参考](../references/environment-variables)。
 </Callout>
 
 <Callout type="info" title="mem0 参数约束">

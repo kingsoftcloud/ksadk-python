@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import sqlite3
-from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
@@ -35,8 +34,7 @@ class _ContinuityRunner(BaseRunner):
 async def test_local_session_service_migrates_legacy_tables_to_namespaced_schema(tmp_path):
     db_path = tmp_path / "sessions.sqlite"
     connection = sqlite3.connect(db_path)
-    connection.executescript(
-        """
+    connection.executescript("""
         CREATE TABLE sessions (
             id TEXT PRIMARY KEY,
             agent_id TEXT NOT NULL,
@@ -81,9 +79,11 @@ async def test_local_session_service_migrates_legacy_tables_to_namespaced_schema
             'first', 'last', '{\"topic\": \"billing\"}', 1, 2, 3
         );
         INSERT INTO events (
-            id, session_id, author, event_type, content_json, timestamp, state_delta_json, seq_id, invocation_id, metadata_json
+            id, session_id, author, event_type, content_json, timestamp,
+            state_delta_json, seq_id, invocation_id, metadata_json
         ) VALUES (
-            'evt-1', 'sess-1', 'user', 'user_message', '{\"role\": \"user\", \"parts\": [{\"text\": \"hello\"}]}',
+            'evt-1', 'sess-1', 'user', 'user_message',
+            '{\"role\": \"user\", \"parts\": [' || '{\"text\": \"hello\"}]}',
             1, '{}', 1, NULL, '{}'
         );
         INSERT INTO states (
@@ -91,8 +91,7 @@ async def test_local_session_service_migrates_legacy_tables_to_namespaced_schema
         ) VALUES (
             'session', 'demo-agent', 'user', 'sess-1', '{\"topic\": \"billing\"}', 1, 2
         );
-        """
-    )
+        """)
     connection.commit()
     connection.close()
 
@@ -105,9 +104,9 @@ async def test_local_session_service_migrates_legacy_tables_to_namespaced_schema
 
     tables = {
         row[0]
-        for row in sqlite3.connect(db_path).execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        ).fetchall()
+        for row in sqlite3.connect(db_path)
+        .execute("SELECT name FROM sqlite_master WHERE type='table'")
+        .fetchall()
     }
     assert "ksadk_sessions" in tables
     assert "ksadk_events" in tables

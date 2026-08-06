@@ -2,9 +2,10 @@
 title: "Frameworks"
 ---
 
-KsADK supports common Python agent framework families through runtime adapters.
-The public contract is simple: expose an agent object, declare the framework, and
-run the project through `agentengine`.
+KsADK supports common Python agent framework families through runtime adapters
+and also supports a declarative managed Runtime. Code frameworks expose an agent
+object, declare the framework, and run through `agentengine`; Codex is declared
+by an explicit YAML manifest and does not import a user Python agent.
 
 ## Supported Families
 
@@ -14,6 +15,29 @@ run the project through `agentengine`.
 | LangGraph | `ksadk[langgraph]` | `root_agent = graph.compile()` |
 | LangChain | `ksadk[langchain]` or framework dependencies | `root_agent = prompt | llm | parser` |
 | DeepAgents | `ksadk[deepagents]` | `root_agent = create_deep_agent(...)` |
+| Codex ManagedRuntime (new in 0.8) | `ksadk[codex]` | YAML `model` / `prompt`; no `agent.py` |
+
+## Codex ManagedRuntime
+
+Codex is the declarative “YAML is the agent” path. Its `model` and `prompt` in
+`agentengine.yaml` define the agent, while `runtime.name/version` define the
+shared local/cloud Runtime version boundary. It starts the official native Codex
+subprocess locally and the Runtime catalog selects a Linux image in the cloud; it
+does not use CodeBuilder or copy a developer-machine binary.
+
+```yaml title="agentengine.yaml"
+framework: codex
+artifact_type: ManagedRuntime
+runtime:
+  name: codex
+  version: "0.144.4"
+model: gpt-5.1-codex
+prompt: |
+  You are a coding assistant.
+```
+
+Start with the [YAML Is the Agent: Codex best practice](../tutorials/best-practices/codex-yaml-agent).
+Do not add `entry_point`, `agent_variable`, or a placeholder `agent.py` to this project.
 
 ## Framework Runtime Architecture
 
@@ -229,6 +253,7 @@ Each runner keeps the framework's native execution model:
 | LangGraph | imports the configured graph object | graph `invoke` / `ainvoke` / event stream |
 | LangChain | imports the configured runnable, chain, or callable | runnable/callable invoke and stream |
 | DeepAgents | reuses the LangGraph runner path | compiled graph execution |
+| Codex | reads a declarative manifest without importing a user Agent object | official Codex app-server subprocess |
 
 The adapters normalize the result into `{"output": ...}` for non-streaming calls
 and semantic chunks for streaming calls. They do not rewrite the user's agent

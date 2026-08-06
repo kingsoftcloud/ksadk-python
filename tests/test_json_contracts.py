@@ -7,12 +7,11 @@ import yaml
 from click.testing import CliRunner
 
 from ksadk.api.client import DryRunExit
-from ksadk.cli import _register_commands, cli
-from ksadk.cli import cmd_dashboard, cmd_deploy, cmd_launch, cmd_mcp
+from ksadk.builders.base import BuildResult
+from ksadk.cli import _register_commands, cli, cmd_dashboard, cmd_deploy, cmd_launch, cmd_mcp
 from ksadk.cli.cmd_build import build
 from ksadk.cli.cmd_mcp import mcp
 from ksadk.deployment.base import DeployResult, DeployStatus, PackageInfo
-from ksadk.builders.base import BuildResult
 
 
 def _parse_json(output: str) -> dict:
@@ -137,7 +136,9 @@ def test_dashboard_open_json_does_not_open_browser(monkeypatch):
         }
 
     monkeypatch.setattr(cmd_dashboard, "_resolve_agent_detail", _fake_resolve_agent_detail)
-    monkeypatch.setattr(cmd_dashboard, "_create_dashboard_access_link", _fake_create_dashboard_access_link)
+    monkeypatch.setattr(
+        cmd_dashboard, "_create_dashboard_access_link", _fake_create_dashboard_access_link
+    )
     monkeypatch.setattr(cmd_dashboard, "load_state", lambda _cwd: {})
     monkeypatch.setattr(cmd_dashboard.webbrowser, "open", lambda url: opened_urls.append(url))
 
@@ -161,7 +162,9 @@ def test_dashboard_share_revoke_json_requires_yes(monkeypatch):
 
     monkeypatch.setattr(cmd_dashboard, "_delete_dashboard_access_link", _should_not_run)
 
-    result = runner.invoke(cmd_dashboard.dashboard, ["share", "revoke", "lnk-demo", "--output", "json"])
+    result = runner.invoke(
+        cmd_dashboard.dashboard, ["share", "revoke", "lnk-demo", "--output", "json"]
+    )
 
     assert result.exit_code == 2, result.output
     payload = _parse_json(result.output)
@@ -268,7 +271,10 @@ def test_mcp_deploy_json_envelope(tmp_path: Path, monkeypatch):
     assert payload["resource"] == "workflow"
     assert payload["action"] == "deploy"
     assert payload["result"]["artifact_type"] == "code"
-    assert payload["result"]["artifact_reference"] == "ks3://demo-bucket/mcps/demo-mcp/code_20260322120000.zip"
+    assert (
+        payload["result"]["artifact_reference"]
+        == "ks3://demo-bucket/mcps/demo-mcp/code_20260322120000.zip"
+    )
     assert payload["result"]["mcp_id"] == "mcp-demo"
     assert payload["result"]["mcp_url"] == "https://mcp.example.com/mcp"
 
@@ -319,7 +325,9 @@ def test_mcp_build_json_envelope(tmp_path: Path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cmd_mcp, "_build_mcp_async", _fake_build_mcp_async)
 
-    result = runner.invoke(mcp, ["build", str(tmp_path), "--artifact-type", "Code", "--output", "json"])
+    result = runner.invoke(
+        mcp, ["build", str(tmp_path), "--artifact-type", "Code", "--output", "json"]
+    )
 
     assert result.exit_code == 0, result.output
     payload = _parse_json(result.output)
@@ -328,7 +336,9 @@ def test_mcp_build_json_envelope(tmp_path: Path, monkeypatch):
     assert payload["resource"] == "workflow"
     assert payload["action"] == "build"
     assert payload["result"]["artifact_type"] == "code"
-    assert payload["result"]["artifact_reference"] == "ks3://demo-bucket/mcps/demo-mcp/code_fake.zip"
+    assert (
+        payload["result"]["artifact_reference"] == "ks3://demo-bucket/mcps/demo-mcp/code_fake.zip"
+    )
 
 
 class _FakeBuildResult:
@@ -352,7 +362,11 @@ class _FakeContainerBuildResult:
     def __init__(self):
         self.success = True
         self.error_message = ""
-        self.metadata = {"framework": "langgraph", "image": "hub.kce.ksyun.com/demo/demo-agent:latest", "reused": False}
+        self.metadata = {
+            "framework": "langgraph",
+            "image": "hub.kce.ksyun.com/demo/demo-agent:latest",
+            "reused": False,
+        }
         self.artifact_path = Path("/tmp/demo-image.tar")
         self.artifact_size_mb = 25.0
 
@@ -479,9 +493,16 @@ def test_deploy_json_envelope(tmp_path: Path, monkeypatch):
     provider = _FakeProvider()
     runner = CliRunner()
 
-    monkeypatch.setattr("ksadk.detection.FrameworkDetector", lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})())
-    monkeypatch.setattr("ksadk.cli.cmd_deploy._load_config", lambda *_args, **_kwargs: {"name": "demo-agent"})
-    monkeypatch.setattr("ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider)
+    monkeypatch.setattr(
+        "ksadk.detection.FrameworkDetector",
+        lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})(),
+    )
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_deploy._load_config", lambda *_args, **_kwargs: {"name": "demo-agent"}
+    )
+    monkeypatch.setattr(
+        "ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider
+    )
 
     result = runner.invoke(
         cmd_deploy.deploy,
@@ -502,9 +523,16 @@ def test_launch_json_envelope(tmp_path: Path, monkeypatch):
     provider = _FakeProvider()
     runner = CliRunner()
 
-    monkeypatch.setattr("ksadk.detection.FrameworkDetector", lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})())
-    monkeypatch.setattr("ksadk.cli.cmd_launch._load_config", lambda *_args, **_kwargs: {"name": "demo-agent"})
-    monkeypatch.setattr("ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider)
+    monkeypatch.setattr(
+        "ksadk.detection.FrameworkDetector",
+        lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})(),
+    )
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_launch._load_config", lambda *_args, **_kwargs: {"name": "demo-agent"}
+    )
+    monkeypatch.setattr(
+        "ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider
+    )
 
     result = runner.invoke(
         cmd_launch.launch,
@@ -521,13 +549,22 @@ def test_launch_json_envelope(tmp_path: Path, monkeypatch):
     assert payload["result"]["endpoint"] == "http://demo-endpoint"
 
 
-def test_deploy_dry_run_json_envelope_includes_local_plan_and_remote_curl(tmp_path: Path, monkeypatch):
+def test_deploy_dry_run_json_envelope_includes_local_plan_and_remote_curl(
+    tmp_path: Path, monkeypatch
+):
     provider = _NoBuildDuringDryRunProvider()
     runner = CliRunner()
 
-    monkeypatch.setattr("ksadk.detection.FrameworkDetector", lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})())
-    monkeypatch.setattr("ksadk.cli.cmd_deploy._load_config", lambda *_args, **_kwargs: {"name": "demo-agent"})
-    monkeypatch.setattr("ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider)
+    monkeypatch.setattr(
+        "ksadk.detection.FrameworkDetector",
+        lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})(),
+    )
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_deploy._load_config", lambda *_args, **_kwargs: {"name": "demo-agent"}
+    )
+    monkeypatch.setattr(
+        "ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider
+    )
 
     result = runner.invoke(
         cmd_deploy.deploy,
@@ -564,16 +601,25 @@ def test_deploy_dry_run_json_envelope_includes_local_plan_and_remote_curl(tmp_pa
     assert payload["plan"]["steps"][3]["planned"] is True
     assert payload["plan"]["steps"][3]["reason"] == "dry_run_prediction"
     assert "CreateAgent" in payload["request"]["curl"]
-    assert payload["request"]["body"]["ArtifactPath"].startswith("ks3://agentengine-2000003485-cn-beijing-6/")
+    assert payload["request"]["body"]["ArtifactPath"].startswith(
+        "ks3://agentengine-2000003485-cn-beijing-6/"
+    )
 
 
 def test_deploy_dry_run_pretty_output_groups_summary_plan_and_request(tmp_path: Path, monkeypatch):
     provider = _NoBuildDuringDryRunProvider()
     runner = CliRunner()
 
-    monkeypatch.setattr("ksadk.detection.FrameworkDetector", lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})())
-    monkeypatch.setattr("ksadk.cli.cmd_deploy._load_config", lambda *_args, **_kwargs: {"name": "demo-agent"})
-    monkeypatch.setattr("ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider)
+    monkeypatch.setattr(
+        "ksadk.detection.FrameworkDetector",
+        lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})(),
+    )
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_deploy._load_config", lambda *_args, **_kwargs: {"name": "demo-agent"}
+    )
+    monkeypatch.setattr(
+        "ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider
+    )
 
     result = runner.invoke(
         cmd_deploy.deploy,
@@ -597,9 +643,16 @@ def test_launch_dry_run_json_envelope_tracks_external_artifact_plan(tmp_path: Pa
     provider = _FakeWorkflowDryRunProvider()
     runner = CliRunner()
 
-    monkeypatch.setattr("ksadk.detection.FrameworkDetector", lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})())
-    monkeypatch.setattr("ksadk.cli.cmd_launch._load_config", lambda *_args, **_kwargs: {"name": "demo-agent"})
-    monkeypatch.setattr("ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider)
+    monkeypatch.setattr(
+        "ksadk.detection.FrameworkDetector",
+        lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})(),
+    )
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_launch._load_config", lambda *_args, **_kwargs: {"name": "demo-agent"}
+    )
+    monkeypatch.setattr(
+        "ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider
+    )
 
     result = runner.invoke(
         cmd_launch.launch,
@@ -636,13 +689,22 @@ def test_launch_dry_run_json_envelope_tracks_external_artifact_plan(tmp_path: Pa
     assert payload["request"]["body"]["ArtifactPath"] == "hub.kce.ksyun.com/demo/demo-agent:latest"
 
 
-def test_launch_dry_run_json_skips_real_build_and_predicts_container_reference(tmp_path: Path, monkeypatch):
+def test_launch_dry_run_json_skips_real_build_and_predicts_container_reference(
+    tmp_path: Path, monkeypatch
+):
     provider = _NoBuildDuringDryRunProvider()
     runner = CliRunner()
 
-    monkeypatch.setattr("ksadk.detection.FrameworkDetector", lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})())
-    monkeypatch.setattr("ksadk.cli.cmd_launch._load_config", lambda *_args, **_kwargs: {"name": "demo-agent"})
-    monkeypatch.setattr("ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider)
+    monkeypatch.setattr(
+        "ksadk.detection.FrameworkDetector",
+        lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})(),
+    )
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_launch._load_config", lambda *_args, **_kwargs: {"name": "demo-agent"}
+    )
+    monkeypatch.setattr(
+        "ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider
+    )
 
     result = runner.invoke(
         cmd_launch.launch,
@@ -685,9 +747,16 @@ def test_deploy_reuses_cached_artifact_without_rebuild(tmp_path: Path, monkeypat
         encoding="utf-8",
     )
 
-    monkeypatch.setattr("ksadk.detection.FrameworkDetector", lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})())
-    monkeypatch.setattr("ksadk.cli.cmd_deploy._load_config", lambda *_args, **_kwargs: {"name": "demo-agent"})
-    monkeypatch.setattr("ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider)
+    monkeypatch.setattr(
+        "ksadk.detection.FrameworkDetector",
+        lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})(),
+    )
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_deploy._load_config", lambda *_args, **_kwargs: {"name": "demo-agent"}
+    )
+    monkeypatch.setattr(
+        "ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider
+    )
 
     result = runner.invoke(
         cmd_deploy.deploy,
@@ -708,17 +777,37 @@ def test_launch_reuses_cached_container_artifact_without_rebuild(tmp_path: Path,
     metadata_dir = tmp_path / ".agentengine"
     metadata_dir.mkdir(parents=True, exist_ok=True)
     (metadata_dir / "build-metadata.json").write_text(
-        json.dumps({"image": "hub.kce.ksyun.com/demo/demo-agent:cached", "metadata": {"image": "hub.kce.ksyun.com/demo/demo-agent:cached"}}),
+        json.dumps(
+            {
+                "image": "hub.kce.ksyun.com/demo/demo-agent:cached",
+                "metadata": {"image": "hub.kce.ksyun.com/demo/demo-agent:cached"},
+            }
+        ),
         encoding="utf-8",
     )
 
-    monkeypatch.setattr("ksadk.detection.FrameworkDetector", lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})())
-    monkeypatch.setattr("ksadk.cli.cmd_launch._load_config", lambda *_args, **_kwargs: {"name": "demo-agent"})
-    monkeypatch.setattr("ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider)
+    monkeypatch.setattr(
+        "ksadk.detection.FrameworkDetector",
+        lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})(),
+    )
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_launch._load_config", lambda *_args, **_kwargs: {"name": "demo-agent"}
+    )
+    monkeypatch.setattr(
+        "ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider
+    )
 
     result = runner.invoke(
         cmd_launch.launch,
-        [str(tmp_path), "--account-id", "2000003485", "--artifact-type", "Container", "--output", "json"],
+        [
+            str(tmp_path),
+            "--account-id",
+            "2000003485",
+            "--artifact-type",
+            "Container",
+            "--output",
+            "json",
+        ],
     )
 
     assert result.exit_code == 0, result.output
