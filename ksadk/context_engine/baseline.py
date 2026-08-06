@@ -194,6 +194,10 @@ class BaselineCollector:
             ) or record.cache_read_tokens
             record.cache_creation_tokens = _opt_int(usage.get("cache_creation_input_tokens"))
 
+        # cache_status/unexpected_break 由 span 路径（_set_prompt_cache_attributes）同源诊断
+        # 并写入 trace；baseline 只记录 raw cache tokens，不重复跑 registry（避免与 span 路径
+        # 共享 registry 时的记录顺序污染）。summary 的 unexpected_cache_break_count 据此如实
+        # 为 0；完整诊断看 trace。如需 baseline 独立诊断，后续 PR 用独立 registry。
         self._records.append(record)
         return record
 
