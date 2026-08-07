@@ -36,10 +36,15 @@ _SESSION_ENV_NAMES = (
     "KSADK_SESSION_PATH",
     "KSADK_SESSION_DSN",
 )
+_CHECKPOINT_DSN_ENV_NAMES = (
+    "KSADK_CHECKPOINT_DSN",
+    "KSADK_LANGGRAPH_CHECKPOINT_DSN",
+    "KSADK_ADK_SESSION_URL",
+)
 _CHECKPOINT_ENV_NAMES = (
     "KSADK_CHECKPOINT_BACKEND",
     "KSADK_CHECKPOINT_PATH",
-    "KSADK_LANGGRAPH_CHECKPOINT_DSN",
+    *_CHECKPOINT_DSN_ENV_NAMES,
 )
 _LOCAL_UI_ENV_NAMES = ("AGENTENGINE_UI_DIR",)
 
@@ -125,11 +130,21 @@ def _ensure_langgraph_sqlite_checkpoint_available() -> None:
         raise SystemExit(1)
 
 
+def _remove_project_checkpoint_dsns(explicit_checkpoint_env_names: set[str]) -> None:
+    """Keep only checkpoint DSNs explicitly supplied outside the project .env."""
+    for name in _CHECKPOINT_DSN_ENV_NAMES:
+        if name not in explicit_checkpoint_env_names:
+            os.environ.pop(name, None)
+
+
 def _configure_langgraph_checkpoint_env(
     agent_path: Path,
     *,
     explicit_checkpoint_env_names: set[str],
 ) -> None:
+    if set(_CHECKPOINT_DSN_ENV_NAMES).intersection(explicit_checkpoint_env_names):
+        return
+
     checkpoint_backend = str(os.environ.get("KSADK_CHECKPOINT_BACKEND") or "").strip().lower()
     if checkpoint_backend == "local":
         checkpoint_backend = "sqlite"
@@ -141,7 +156,6 @@ def _configure_langgraph_checkpoint_env(
             "KSADK_CHECKPOINT_PATH",
             str(agent_path / ".agentengine" / "ui" / "checkpoints.sqlite"),
         )
-        os.environ.pop("KSADK_LANGGRAPH_CHECKPOINT_DSN", None)
         return
 
     if explicit_checkpoint_env_names.intersection(_CHECKPOINT_ENV_NAMES):
@@ -152,7 +166,6 @@ def _configure_langgraph_checkpoint_env(
     os.environ["KSADK_CHECKPOINT_PATH"] = str(
         agent_path / ".agentengine" / "ui" / "checkpoints.sqlite"
     )
-    os.environ.pop("KSADK_LANGGRAPH_CHECKPOINT_DSN", None)
 
 
 def _default_project_stm_if_unset(
@@ -166,6 +179,7 @@ def _default_project_stm_if_unset(
         return
     explicit_session_env_names = explicit_session_env_names or set()
     explicit_checkpoint_env_names = explicit_checkpoint_env_names or set()
+    _remove_project_checkpoint_dsns(explicit_checkpoint_env_names)
     session_db_path = str(agent_path / ".agentengine" / "ui" / "sessions.sqlite")
     if not any(name in os.environ for name in _STM_ENV_NAMES):
         os.environ["KSADK_STM_BACKEND"] = "sqlite"

@@ -116,7 +116,8 @@
 | `KSADK_MEMORY_BACKEND` | 否 | 无 | 否 | 开发者 | 轻量 KV/消息历史 MemoryManager backend，默认 `memory`。 |
 | `KSADK_MEMORY_URL` | 条件必传 | 无 | 是 | 开发者 / Secret | `KSADK_MEMORY_BACKEND=redis` 等远端 backend 连接 URL。 |
 | `KSADK_SESSION_BACKEND` | 否 | `AGENTENGINE_SESSION_BACKEND`、`KSADK_STM_BACKEND` | 否 | 平台 / 开发者 | 会话 backend，默认 `local`。ADK/STM 也会把它作为兜底。 |
-| `KSADK_SESSION_DSN` | 条件必传 | `KSADK_STM_URL`、`KSADK_STM_DB_URL`、`KSADK_ADK_SESSION_URL` | 是 | 平台 Secret | `postgres` / `database` backend 时必传。PostgreSQL 统一使用 `postgresql://...`，不需要 `+asyncpg`；KsADK 直接交给 asyncpg，ADK 原生 session 会自动转换。 |
+| `KSADK_SESSION_DSN` | 条件必传 | `KSADK_STM_URL`、`KSADK_STM_DB_URL` | 是 | 平台 Secret | Session PostgreSQL DSN；未显式选择本地 backend 时优先于 `KSADK_CHECKPOINT_DSN`。统一使用 `postgresql://...`，不需要 `+asyncpg`。 |
+| `KSADK_CHECKPOINT_DSN` | 否 | 无 | 是 | 平台 Secret | 框架无关的 PostgreSQL checkpoint DSN；仅配置它时也会作为 Session 持久化 fallback。 |
 | `KSADK_SESSION_PATH` | 否 | `KSADK_STM_PATH`、`KSADK_STM_DB_PATH` | 否 | 本地运行时 | 本地 SQLite 会话库路径。 |
 | `KSADK_SESSION_NAMESPACE` | 否 | `KSADK_WORKSPACE_ID`、`AGENTENGINE_WORKSPACE_ID`、`KSADK_TENANT_ID`、`AGENTENGINE_TENANT_ID` | 否 | 平台 / 开发者 | 会话命名空间。 |
 
@@ -259,7 +260,8 @@
 | 变量 | 作用层级 | 是否必传 | 默认值 | 别名/兼容 | 敏感 | 配置方/来源 | 是否业务自定义 | 说明 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `KSADK_SESSION_BACKEND` | Sessions | 否 | `local` | `AGENTENGINE_SESSION_BACKEND`、`KSADK_STM_BACKEND` | 否 | 开发者 / 平台 | 否 | 会话存储 backend。ADK/STM 也会把它作为兜底。 |
-| `KSADK_SESSION_DSN` | Sessions | 条件必传 | 未设置 | `KSADK_STM_URL`、`KSADK_STM_DB_URL`、`KSADK_ADK_SESSION_URL` | 是 | Secret | 否 | PostgreSQL DSN。`postgres` / `database` backend 时必传；统一使用 `postgresql://...`，不需要 `+asyncpg`。KsADK 直接交给 asyncpg，ADK 原生 session 会自动转换。 |
+| `KSADK_SESSION_DSN` | Sessions | 条件必传 | 未设置 | `KSADK_STM_URL`、`KSADK_STM_DB_URL` | 是 | Secret | 否 | Session PostgreSQL DSN；未显式选择本地 backend 时优先于 `KSADK_CHECKPOINT_DSN`。统一使用 `postgresql://...`，不需要 `+asyncpg`。 |
+| `KSADK_CHECKPOINT_DSN` | 通用 checkpoint | 否 | 未设置 | 无 | 是 | Secret | 否 | 框架无关 PostgreSQL checkpoint DSN。仅配置它时也作为 Session 持久化 fallback。 |
 | `KSADK_SESSION_PATH` | Sessions | 否 | 项目目录下本地 sqlite 路径 | `KSADK_STM_PATH`、`KSADK_STM_DB_PATH` | 否 | 开发者 / 本地运行时 | 否 | 本地 SQLite 会话路径。 |
 | `KSADK_SESSION_CONNECT_TIMEOUT` | Sessions | 否 | `5` | `KSADK_SESSION_PG_CONNECT_TIMEOUT` | 否 | 开发者 / 平台 | 否 | PostgreSQL 会话 backend 连接超时秒数。 |
 | `KSADK_SESSION_PG_CONNECT_TIMEOUT` | Sessions 旧兼容 | 否 | `5` | `KSADK_SESSION_CONNECT_TIMEOUT` | 否 | 兼容旧部署 | 否 | 旧 PostgreSQL session 连接超时变量。新部署优先 `KSADK_SESSION_CONNECT_TIMEOUT`。 |
@@ -267,7 +269,7 @@
 | `KSADK_CHECKPOINT_BACKEND` | LangGraph checkpoint | 否 | `local` | `local` 等价本地 SQLite；也支持 `sqlite`、`memory`、`postgres` | 否 | 开发者 / 平台 | 否 | LangGraph checkpoint backend。`agentengine web` 本地调试默认优先使用 SQLite。 |
 | `KSADK_CHECKPOINT_PATH` | LangGraph checkpoint | 否 | 项目目录下 `.agentengine/ui/checkpoints.sqlite` | 无 | 否 | 开发者 / 本地运行时 | 否 | 本地 SQLite checkpoint 文件路径。 |
 | `KSADK_LANGGRAPH_AUTO_CHECKPOINT` | LangGraph checkpoint | 否 | `false` | 无 | 否 | 平台 | 否 | 设为 `1` 时仅通过项目导出的 `ksadk_graph_factory(*, checkpointer)` 安全创建托管 PostgreSQL graph；不会修改 compiled graph 私有字段。 |
-| `KSADK_LANGGRAPH_CHECKPOINT_DSN` | LangGraph checkpoint | 条件必传 | 未设置 | `KSADK_SESSION_DSN` | 是 | Secret | 否 | 托管 LangGraph checkpointer PostgreSQL DSN。 |
+| `KSADK_LANGGRAPH_CHECKPOINT_DSN` | LangGraph checkpoint | 条件必传 | 未设置 | `KSADK_CHECKPOINT_DSN`、`KSADK_SESSION_DSN` | 是 | Secret | 否 | 托管 LangGraph checkpointer PostgreSQL DSN，优先于通用 checkpoint DSN。 |
 | `KSADK_LANGGRAPH_POSTGRES_REQUIREMENTS` | Builder 内部常量 | 否 | 代码常量 | 无 | 否 | KsADK | 否 | 托管 Code Runtime 的 LangGraph PostgreSQL checkpointer 依赖集合，不建议业务覆盖。 |
 | `KSADK_PERSISTENCE_PROBE_TIMEOUT` | Runtime bootstrap | 否 | `2` | 无 | 否 | 平台 | 否 | PostgreSQL readiness 探测超时秒数。 |
 | `KSADK_PERSISTENCE_PROBE_CACHE_TTL` | Runtime bootstrap | 否 | `30` | 无 | 否 | 平台 | 否 | PostgreSQL readiness 结果缓存秒数；缓存键仅含 DSN 的 SHA-256 摘要。 |
@@ -281,7 +283,7 @@
 | `KSADK_STM_DB_URL` | 旧 STM / Sessions fallback | 条件必传 | 未设置 | `KSADK_SESSION_DSN` | 是 | 兼容旧部署 | 否 | 旧变量。ADK/STM 仍可读。 |
 | `KSADK_ADK_SESSION_BACKEND` | ADK Memory | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | ADK 原生 session backend。 |
 | `KSADK_ADK_SESSION_PATH` | ADK Memory | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | ADK 原生 session sqlite 路径。 |
-| `KSADK_ADK_SESSION_URL` | ADK Memory | 条件必传 | 未设置 | `KSADK_SESSION_DSN` | 是 | Secret | 否 | ADK 原生 session 数据库 URL。PostgreSQL 使用 `postgresql://...`，适配层会自动转换为 ADK 所需的 `postgresql+asyncpg://...`；统一 session DSN 也可兜底。 |
+| `KSADK_ADK_SESSION_URL` | ADK Memory | 条件必传 | 未设置 | `KSADK_CHECKPOINT_DSN`、`KSADK_SESSION_DSN` | 是 | Secret | 否 | ADK 原生 session 数据库 URL，优先于通用 checkpoint DSN。PostgreSQL 使用 `postgresql://...`，适配层会自动转换为 ADK 所需的 `postgresql+asyncpg://...`。 |
 | `KSADK_ADK_RESUMABLE` | ADK Runner resume | 否 | `false` | 无 | 否 | 开发者 / 平台 | 否 | 显式启用 ADK invocation resume。平台 checkpoint 恢复仍要求共享 database session backend。 |
 | `KSADK_MEMORY_BACKEND` | MemoryManager | 否 | `memory` | 无 | 否 | 开发者 / 平台 | 否 | 轻量 KV/消息历史 backend。当前内置 `memory`，注册 Redis backend 后可用 `redis`。 |
 | `KSADK_MEMORY_URL` | MemoryManager | 条件必传 | 未设置 | 无 | 是 | Secret | 否 | 远端 MemoryManager backend 连接 URL，例如 Redis URL。 |
@@ -308,6 +310,21 @@
 | `MEM0_USER_ID` | OpenClaw memory backend | 条件必传 | 未设置 | 无 | 否 | 平台 / 用户上下文 | 否 | 选择 `mem0` memory backend manifest 时需要。 |
 | `MEM0_BASE_URL` | OpenClaw memory backend | 条件必传 | 未设置 | 无 | 否 | 平台 | 否 | 选择 `mem0` memory backend manifest 时需要。 |
 | `MEMORY_BACKEND_MANIFEST` | OpenClaw memory backend | 条件必传 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | OpenClaw memory backend manifest，声明 `backend_type` 及其连接配置；视 `backend_type` 不同，对应 backend 专有变量（例如 `mem0` 的 `MEM0_*`）条件必传。 |
+
+### 8.1 Session / Checkpoint 双库拓扑
+
+`KSADK_SESSION_DSN` 管 KsADK 会话、transcript 与运行绑定；`KSADK_CHECKPOINT_DSN` 管框架原生 checkpoint。两者均使用普通 `postgresql://...` DSN，不能在文档或日志中写入真实凭证。
+
+| Session DSN | Checkpoint DSN | 有效 Session | 有效 Checkpoint |
+| --- | --- | --- | --- |
+| 未配置 | 未配置 | 无远端持久化 | 无远端持久化 |
+| 已配置 | 未配置 | Session 库 | Session 库 fallback |
+| 未配置 | 已配置 | Checkpoint 库 fallback | Checkpoint 库 |
+| 已配置 | 已配置 | Session 库 | Checkpoint 库 |
+
+- `KSADK_SESSION_BACKEND=local`、`sqlite` 或 `memory` 是对 Session 的显式本地选择，不会被 checkpoint DSN 覆盖。
+- ADK 原生状态优先级是 `KSADK_ADK_SESSION_URL` → `KSADK_CHECKPOINT_DSN` → `KSADK_SESSION_DSN`；LangGraph、LangChain（新 graph 形态）和 DeepAgents 是 `KSADK_LANGGRAPH_CHECKPOINT_DSN` → `KSADK_CHECKPOINT_DSN` → `KSADK_SESSION_DSN`。
+- Bootstrap 中 `Capabilities.Persistence` 表示 Session 状态，`Capabilities.CheckpointPersistence` 表示框架 checkpoint 状态。`ResumeRun.Supported` 只有两者都已 ready，且框架原生 saver/session service 已成功初始化时才为 `true`；旧版 LangChain 不声明 checkpoint 恢复能力。
 
 ## 9. 知识库
 

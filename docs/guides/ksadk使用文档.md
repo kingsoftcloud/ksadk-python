@@ -577,7 +577,7 @@ flowchart TB
 - 推荐多模态图片写法：让支持图片的模型直接消费 OpenAI Responses `input_image` / runner `input_content`，不要为了“看图”默认启用本地 OCR。
 - 兼容 OCR 写法：如果业务明确需要平台先把图片转成 `current_attachment_results[*].text`，再设置 `KSADK_BUILD_ENABLE_ATTACHMENT_OCR=true`，或在项目 `requirements.txt` 显式写入 OCR 依赖。
 - MCP adapter：默认不打包；当项目 import `mcp` / `langchain_mcp_adapters`，或 `.env` 配置了非空 `KSADK_MCP_SERVERS` 时自动加入。自动发现不到时可设置 `KSADK_BUILD_ENABLE_MCP=true`。
-- PostgreSQL session：默认不打包 `asyncpg`；当 `.env` 设置 `KSADK_SESSION_BACKEND=postgres` 或 PostgreSQL DSN 时自动加入。自动发现不到时可设置 `KSADK_BUILD_ENABLE_POSTGRES_SESSION=true`。
+- PostgreSQL session/checkpoint：默认不打包 `asyncpg`；当 `.env` 设置 `KSADK_SESSION_BACKEND=postgres`、`KSADK_SESSION_DSN` 或 `KSADK_CHECKPOINT_DSN` 时自动加入。LangGraph、LangChain graph 与 DeepAgents 还会携带托管 PostgreSQL saver 依赖。自动发现不到时可设置 `KSADK_BUILD_ENABLE_POSTGRES_SESSION=true`。
 
 构建会复用 `.agentengine/code_build/pip_cache`，依赖清单未变化时也会复用 `.agentengine/code_build/linux_deps`，避免第二次构建从头下载。`pip install` 默认超时为 45 分钟，可用 `KSADK_BUILD_PIP_INSTALL_TIMEOUT_SECONDS` 调整。
 
@@ -740,6 +740,22 @@ Hosted 部署下，bootstrap 会返回 `RuntimeCapabilities` 字段，声明当�
 | `ResumeRun` | 是否支持从 checkpoint 恢复长任务（含 `Supported` 子字段） |
 
 `ResumeRun.Supported=true` 时，`ListSessionCheckpoints` 返回的每条 checkpoint 会带 `ResumeDisabled` / `ResumeDisabledReason`，标记哪些恢复点当前可用。已恢复过的 checkpoint 在当前策略下不允许重复恢复。
+
+### 8.6 Session / Checkpoint 双库配置
+
+生产环境可以把 KsADK Session 与框架原生 Checkpoint 分开部署：
+
+```bash
+# 只使用占位符；请通过 Secret 注入真实 DSN。
+KSADK_SESSION_DSN=postgresql://<user>:<password>@<session-host>:5432/<session-db>
+KSADK_CHECKPOINT_DSN=postgresql://<user>:<password>@<checkpoint-host>:5432/<checkpoint-db>
+```
+
+两者都未配置时不声明远端持久化能力；只配置任一 DSN 时，另一个逻辑存储会回退复用该库；两者都配置时各自使用各自的库。`KSADK_SESSION_BACKEND=local`、`sqlite` 或 `memory` 是明确的 Session 本地 opt-out，不会被 checkpoint DSN 替换。
+
+框架专用覆盖优先级如下：ADK 为 `KSADK_ADK_SESSION_URL` → `KSADK_CHECKPOINT_DSN` → `KSADK_SESSION_DSN`；LangGraph、LangChain graph 与 DeepAgents 为 `KSADK_LANGGRAPH_CHECKPOINT_DSN` → `KSADK_CHECKPOINT_DSN` → `KSADK_SESSION_DSN`。`agentengine web` 本地调试会忽略仅来自项目 `.env` 的 Session/Checkpoint DSN，并写入项目本地 SQLite 默认值；命令环境中显式传入的配置会保留。
+
+Bootstrap 的 `Capabilities.Persistence` 与 `Capabilities.CheckpointPersistence` 分别展示两者的 readiness。即便数据库可连通，`ResumeRun.Supported` 仍要求这两个状态都 ready 且框架原生 saver/session service 完成初始化；旧版 LangChain 不具备 checkpoint 恢复能力。
 
 ## 9. 长任务恢复与 CancelRun / ResumeRun
 

@@ -2325,6 +2325,7 @@ def test_cmd_web_defaults_supported_framework_stm_to_persistent_sqlite(
     monkeypatch.delenv("KSADK_SESSION_DSN", raising=False)
     monkeypatch.delenv("KSADK_CHECKPOINT_BACKEND", raising=False)
     monkeypatch.delenv("KSADK_CHECKPOINT_PATH", raising=False)
+    monkeypatch.delenv("KSADK_CHECKPOINT_DSN", raising=False)
     monkeypatch.delenv("KSADK_LANGGRAPH_CHECKPOINT_DSN", raising=False)
     monkeypatch.delenv("AGENTENGINE_UI_DIR", raising=False)
     monkeypatch.delenv("KSADK_PROJECT_DIR", raising=False)
@@ -2356,7 +2357,7 @@ def test_cmd_web_defaults_supported_framework_stm_to_persistent_sqlite(
         )
 
 
-def test_cmd_web_overrides_project_dotenv_postgres_session_for_local_debug(monkeypatch, tmp_path):
+def test_cmd_web_overrides_project_dotenv_checkpoint_dsn_for_local_debug(monkeypatch, tmp_path):
     runner = CliRunner()
     fake_runner = _UiRunner()
     project_dir = tmp_path / "demo-langgraph-agent"
@@ -2382,15 +2383,17 @@ def test_cmd_web_overrides_project_dotenv_postgres_session_for_local_debug(monke
     monkeypatch.delenv("KSADK_SESSION_DSN", raising=False)
     monkeypatch.delenv("KSADK_CHECKPOINT_BACKEND", raising=False)
     monkeypatch.delenv("KSADK_CHECKPOINT_PATH", raising=False)
+    monkeypatch.delenv("KSADK_CHECKPOINT_DSN", raising=False)
     monkeypatch.delenv("KSADK_LANGGRAPH_CHECKPOINT_DSN", raising=False)
     monkeypatch.delenv("AGENTENGINE_UI_DIR", raising=False)
     monkeypatch.delenv("KSADK_PROJECT_DIR", raising=False)
 
     def fake_setup_environment(_path):
-        os.environ["KSADK_SESSION_BACKEND"] = "postgres"
-        os.environ["KSADK_SESSION_DSN"] = "postgresql://ksadk:secret@db.example.test/session"
-        os.environ["KSADK_CHECKPOINT_BACKEND"] = "postgres"
-        os.environ["KSADK_LANGGRAPH_CHECKPOINT_DSN"] = (
+        monkeypatch.setenv("KSADK_SESSION_BACKEND", "postgres")
+        monkeypatch.setenv("KSADK_SESSION_DSN", "postgresql://ksadk:secret@db.example.test/session")
+        monkeypatch.setenv("KSADK_CHECKPOINT_BACKEND", "postgres")
+        monkeypatch.setenv(
+            "KSADK_CHECKPOINT_DSN",
             "postgresql://ksadk:secret@db.example.test/checkpoints"
         )
 
@@ -2416,10 +2419,10 @@ def test_cmd_web_overrides_project_dotenv_postgres_session_for_local_debug(monke
     assert os.environ["KSADK_CHECKPOINT_PATH"] == str(
         project_dir / ".agentengine" / "ui" / "checkpoints.sqlite"
     )
-    assert "KSADK_LANGGRAPH_CHECKPOINT_DSN" not in os.environ
+    assert "KSADK_CHECKPOINT_DSN" not in os.environ
 
 
-def test_cmd_web_overrides_dotenv_loaded_before_web_command(monkeypatch, tmp_path):
+def test_cmd_web_overrides_loaded_checkpoint_dsn_for_local_debug(monkeypatch, tmp_path):
     runner = CliRunner()
     fake_runner = _UiRunner()
     project_dir = tmp_path / "demo-langgraph-agent"
@@ -2428,7 +2431,7 @@ def test_cmd_web_overrides_dotenv_loaded_before_web_command(monkeypatch, tmp_pat
         [
             "KSADK_SESSION_BACKEND=postgres",
             "KSADK_SESSION_DSN=postgresql://ksadk:secret@db.example.test/session",
-            "KSADK_LANGGRAPH_CHECKPOINT_DSN=postgresql://ksadk:secret@db.example.test/checkpoints",
+            "KSADK_CHECKPOINT_DSN=postgresql://ksadk:secret@db.example.test/checkpoints",
         ]
     )
     (project_dir / ".env").write_text(dotenv_text, encoding="utf-8")
@@ -2449,7 +2452,7 @@ def test_cmd_web_overrides_dotenv_loaded_before_web_command(monkeypatch, tmp_pat
     monkeypatch.setenv("KSADK_SESSION_BACKEND", "postgres")
     monkeypatch.setenv("KSADK_SESSION_DSN", "postgresql://ksadk:secret@db.example.test/session")
     monkeypatch.setenv(
-        "KSADK_LANGGRAPH_CHECKPOINT_DSN", "postgresql://ksadk:secret@db.example.test/checkpoints"
+        "KSADK_CHECKPOINT_DSN", "postgresql://ksadk:secret@db.example.test/checkpoints"
     )
     monkeypatch.delenv("KSADK_SESSION_PATH", raising=False)
     monkeypatch.delenv("KSADK_CHECKPOINT_BACKEND", raising=False)
@@ -2478,7 +2481,7 @@ def test_cmd_web_overrides_dotenv_loaded_before_web_command(monkeypatch, tmp_pat
     assert os.environ["KSADK_CHECKPOINT_PATH"] == str(
         project_dir / ".agentengine" / "ui" / "checkpoints.sqlite"
     )
-    assert "KSADK_LANGGRAPH_CHECKPOINT_DSN" not in os.environ
+    assert "KSADK_CHECKPOINT_DSN" not in os.environ
 
 
 def test_cmd_web_overrides_project_dotenv_ui_dir_for_local_debug(monkeypatch, tmp_path):
@@ -2741,6 +2744,125 @@ def test_cmd_web_preserves_explicit_stm_configuration(monkeypatch, tmp_path):
     )
 
 
+def test_configure_local_runtime_persistence_preserves_explicit_checkpoint_dsn(
+    monkeypatch, tmp_path
+):
+    """A shell-provided checkpoint DSN must win over local web defaults."""
+    import ksadk.cli.cmd_web as cmd_web_module
+
+    project_dir = tmp_path / "demo-langgraph-agent"
+    project_dir.mkdir()
+    for name in (
+        "KSADK_STM_BACKEND",
+        "KSADK_STM_PATH",
+        "KSADK_STM_URL",
+        "KSADK_STM_DB_PATH",
+        "KSADK_STM_DB_URL",
+        "KSADK_SESSION_BACKEND",
+        "AGENTENGINE_SESSION_BACKEND",
+        "KSADK_SESSION_PATH",
+        "KSADK_SESSION_DSN",
+        "KSADK_CHECKPOINT_BACKEND",
+        "KSADK_CHECKPOINT_PATH",
+        "KSADK_LANGGRAPH_CHECKPOINT_DSN",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(
+        "KSADK_CHECKPOINT_DSN", "postgresql://checkpoint.example.test/checkpoint_db"
+    )
+
+    cmd_web_module.configure_local_runtime_persistence(project_dir, "langgraph")
+
+    assert (
+        os.environ["KSADK_CHECKPOINT_DSN"]
+        == "postgresql://checkpoint.example.test/checkpoint_db"
+    )
+    assert "KSADK_CHECKPOINT_BACKEND" not in os.environ
+
+
+@pytest.mark.parametrize(
+    ("framework", "checkpoint_env_name"),
+    [
+        ("adk", "KSADK_ADK_SESSION_URL"),
+        ("langchain", "KSADK_LANGGRAPH_CHECKPOINT_DSN"),
+        ("deepagents", "KSADK_CHECKPOINT_DSN"),
+    ],
+)
+def test_configure_local_runtime_persistence_removes_project_checkpoint_dsn(
+    monkeypatch, tmp_path, framework, checkpoint_env_name
+):
+    """Project DSNs must not escape into non-LangGraph local Web runtimes."""
+    import ksadk.cli.cmd_web as cmd_web_module
+
+    project_dir = tmp_path / f"demo-{framework}-agent"
+    project_dir.mkdir()
+    checkpoint_dsn = "postgresql://checkpoint.example.test/checkpoint_db"
+    (project_dir / ".env").write_text(
+        f"{checkpoint_env_name}={checkpoint_dsn}\n", encoding="utf-8"
+    )
+    for name in (
+        "KSADK_STM_BACKEND",
+        "KSADK_STM_PATH",
+        "KSADK_STM_URL",
+        "KSADK_STM_DB_PATH",
+        "KSADK_STM_DB_URL",
+        "KSADK_SESSION_BACKEND",
+        "AGENTENGINE_SESSION_BACKEND",
+        "KSADK_SESSION_PATH",
+        "KSADK_SESSION_DSN",
+        "KSADK_CHECKPOINT_BACKEND",
+        "KSADK_CHECKPOINT_PATH",
+        "KSADK_CHECKPOINT_DSN",
+        "KSADK_LANGGRAPH_CHECKPOINT_DSN",
+        "KSADK_ADK_SESSION_URL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(checkpoint_env_name, checkpoint_dsn)
+
+    cmd_web_module.configure_local_runtime_persistence(project_dir, framework)
+
+    assert checkpoint_env_name not in os.environ
+
+
+def test_configure_local_runtime_persistence_preserves_shell_checkpoint_dsn_over_project_backend(
+    monkeypatch, tmp_path
+):
+    """An external DSN wins even if the project selects a local checkpoint backend."""
+    import ksadk.cli.cmd_web as cmd_web_module
+
+    project_dir = tmp_path / "demo-langgraph-agent"
+    project_dir.mkdir()
+    (project_dir / ".env").write_text(
+        "KSADK_CHECKPOINT_BACKEND=local\n", encoding="utf-8"
+    )
+    for name in (
+        "KSADK_STM_BACKEND",
+        "KSADK_STM_PATH",
+        "KSADK_STM_URL",
+        "KSADK_STM_DB_PATH",
+        "KSADK_STM_DB_URL",
+        "KSADK_SESSION_BACKEND",
+        "AGENTENGINE_SESSION_BACKEND",
+        "KSADK_SESSION_PATH",
+        "KSADK_SESSION_DSN",
+        "KSADK_CHECKPOINT_PATH",
+        "KSADK_LANGGRAPH_CHECKPOINT_DSN",
+        "KSADK_ADK_SESSION_URL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("KSADK_CHECKPOINT_BACKEND", "local")
+    monkeypatch.setenv(
+        "KSADK_CHECKPOINT_DSN", "postgresql://checkpoint.example.test/checkpoint_db"
+    )
+
+    cmd_web_module.configure_local_runtime_persistence(project_dir, "langgraph")
+
+    assert (
+        os.environ["KSADK_CHECKPOINT_DSN"]
+        == "postgresql://checkpoint.example.test/checkpoint_db"
+    )
+
+
 def test_cmd_web_treats_explicit_local_checkpoint_backend_as_sqlite(monkeypatch, tmp_path):
     runner = CliRunner()
     fake_runner = _UiRunner()
@@ -2762,6 +2884,7 @@ def test_cmd_web_treats_explicit_local_checkpoint_backend_as_sqlite(monkeypatch,
 
     monkeypatch.setenv("KSADK_CHECKPOINT_BACKEND", "local")
     monkeypatch.delenv("KSADK_CHECKPOINT_PATH", raising=False)
+    monkeypatch.delenv("KSADK_CHECKPOINT_DSN", raising=False)
     monkeypatch.delenv("KSADK_LANGGRAPH_CHECKPOINT_DSN", raising=False)
     monkeypatch.setattr(cmd_web_module, "FrameworkDetector", _Detector, raising=False)
     monkeypatch.setattr(cmd_web_module, "setup_environment", lambda path: None, raising=False)
@@ -2812,6 +2935,7 @@ def test_cmd_web_errors_when_langgraph_sqlite_checkpoint_package_missing(monkeyp
 
     monkeypatch.delenv("KSADK_CHECKPOINT_BACKEND", raising=False)
     monkeypatch.delenv("KSADK_CHECKPOINT_PATH", raising=False)
+    monkeypatch.delenv("KSADK_CHECKPOINT_DSN", raising=False)
     monkeypatch.delenv("KSADK_LANGGRAPH_CHECKPOINT_DSN", raising=False)
     monkeypatch.setattr(builtins, "__import__", fake_import)
     monkeypatch.setattr(cmd_web_module, "FrameworkDetector", _Detector, raising=False)
