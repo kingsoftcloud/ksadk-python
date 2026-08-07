@@ -41,6 +41,62 @@ class _AsyncStateAgent(_DummyAgent):
     get_state = None
 
 
+@pytest.mark.asyncio
+async def test_managed_langgraph_checkpoint_prefers_generic_checkpoint_dsn(monkeypatch, tmp_path):
+    """Catch a managed saver opening the Session database despite a dedicated target."""
+    runner = LangGraphRunner(SimpleNamespace(entry_point="agent.py", agent_variable="graph"), str(tmp_path))
+    runner._agent = SimpleNamespace(checkpointer=None, _checkpointer=None)
+    captured_dsns = []
+
+    class _Pool:
+        async def close(self):
+            return None
+
+    async def create_saver(dsn):
+        captured_dsns.append(dsn)
+        return SimpleNamespace(), _Pool()
+
+    def graph_factory(*, checkpointer):
+        assert checkpointer is not None
+        return SimpleNamespace(invoke=lambda *_args, **_kwargs: None)
+
+    runner._module = SimpleNamespace(ksadk_graph_factory=graph_factory)
+    monkeypatch.setattr(runner, "_create_managed_postgres_saver", create_saver)
+    monkeypatch.setenv("KSADK_LANGGRAPH_AUTO_CHECKPOINT", "1")
+    monkeypatch.delenv("KSADK_LANGGRAPH_CHECKPOINT_DSN", raising=False)
+    monkeypatch.setenv("KSADK_SESSION_DSN", "postgresql://session.example.test/session_db")
+    monkeypatch.setenv(
+        "KSADK_CHECKPOINT_DSN", "postgresql://checkpoint.example.test/checkpoint_db"
+    )
+
+    await runner.prepare_runtime_capabilities()
+
+    assert captured_dsns == ["postgresql://checkpoint.example.test/checkpoint_db"]
+
+
+@pytest.mark.asyncio
+async def test_managed_langgraph_checkpoint_reports_target_unreachable(monkeypatch, tmp_path):
+    """Catch collapsing managed checkpoint setup failures into a generic DB error."""
+    runner = LangGraphRunner(SimpleNamespace(entry_point="agent.py", agent_variable="graph"), str(tmp_path))
+    runner._agent = SimpleNamespace(checkpointer=None, _checkpointer=None)
+    runner._module = SimpleNamespace(
+        ksadk_graph_factory=lambda *, checkpointer: SimpleNamespace(invoke=lambda: checkpointer)
+    )
+
+    async def fail_to_create_saver(_dsn):
+        raise OSError("unreachable")
+
+    monkeypatch.setattr(runner, "_create_managed_postgres_saver", fail_to_create_saver)
+    monkeypatch.setenv("KSADK_LANGGRAPH_AUTO_CHECKPOINT", "1")
+    monkeypatch.setenv(
+        "KSADK_CHECKPOINT_DSN", "postgresql://checkpoint.example.test/checkpoint_db"
+    )
+
+    await runner.prepare_runtime_capabilities()
+
+    assert runner.describe_checkpoint_capability()["ReasonCode"] == "CHECKPOINT_STORE_UNREACHABLE"
+
+
 class _Chunk:
     def __init__(self, content="", reasoning_content=None, usage_metadata=None):
         self.content = content

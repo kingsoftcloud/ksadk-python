@@ -277,6 +277,33 @@ def test_code_builder_includes_asyncpg_when_postgres_dsn_declared(tmp_path):
     assert "asyncpg>=0.30.0,<1.0.0" in deps
 
 
+def test_code_builder_declares_checkpoint_postgres_dependencies_for_langchain(tmp_path):
+    """Catch LangGraph-derived LangChain builds omitting a configured checkpoint store."""
+    (tmp_path / ".env").write_text(
+        "KSADK_CHECKPOINT_DSN=postgresql://checkpoint.example.test/checkpoint_db\n",
+        encoding="utf-8",
+    )
+    builder = CodeBuilder(tmp_path)
+
+    deps = builder._build_requirements_list(_detection_result("langchain"))
+
+    assert "asyncpg>=0.30.0,<1.0.0" in deps
+    assert "langgraph-checkpoint-postgres>=3.1.0" in deps
+
+
+def test_code_builder_treats_checkpoint_dsn_as_postgres_session_fallback(tmp_path):
+    """Catch generic checkpoint storage skipping the Session fallback dependencies."""
+    (tmp_path / ".env").write_text(
+        "KSADK_CHECKPOINT_DSN=postgresql://checkpoint.example.test/checkpoint_db\n",
+        encoding="utf-8",
+    )
+    builder = CodeBuilder(tmp_path)
+
+    deps = builder._build_requirements_list(_detection_result("custom"))
+
+    assert "asyncpg>=0.30.0,<1.0.0" in deps
+
+
 def test_code_builder_includes_asyncpg_when_build_flag_enabled(tmp_path, monkeypatch):
     monkeypatch.setenv("KSADK_BUILD_ENABLE_POSTGRES_SESSION", "true")
     builder = CodeBuilder(tmp_path)

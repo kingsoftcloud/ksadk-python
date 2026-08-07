@@ -441,9 +441,9 @@ class CodeBuilder(BaseBuilder):
         framework = str(
             getattr(detection_type, "value", detection_type) or ""
         ).strip().lower()
-        if framework in {"adk", "langgraph"}:
+        if framework in {"adk", "langgraph", "langchain", "deepagents"}:
             requirements.extend(self.BUNDLED_KSADK_POSTGRES_SESSION_REQUIREMENTS)
-        if framework == "langgraph":
+        if framework in {"langgraph", "langchain", "deepagents"}:
             requirements.extend(self.BUNDLED_KSADK_LANGGRAPH_POSTGRES_REQUIREMENTS)
         if self._attachment_ocr_runtime_enabled():
             requirements.extend(self.BUNDLED_KSADK_ATTACHMENT_OCR_RUNTIME_REQUIREMENTS)
@@ -478,7 +478,8 @@ class CodeBuilder(BaseBuilder):
         if backend.strip().lower() == "postgres":
             return True
         dsn = (
-            self._project_env_value("KSADK_SESSION_DSN")
+            self._project_env_value("KSADK_CHECKPOINT_DSN")
+            or self._project_env_value("KSADK_SESSION_DSN")
             or self._project_env_value("KSADK_STM_URL")
             or self._project_env_value("KSADK_STM_DB_URL")
         )

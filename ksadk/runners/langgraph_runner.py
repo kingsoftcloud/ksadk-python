@@ -20,6 +20,7 @@ from ksadk.conversations.reasoning_markup import ReasoningMarkupParser, strip_re
 from ksadk.runners.base_runner import BaseRunner
 from ksadk.runners.usage_accumulator import accumulate_usage
 from ksadk.runners.utils import get_langfuse_callbacks, get_langfuse_metadata, load_agent_module
+from ksadk.sessions import resolve_persistence_topology
 from ksadk.sessions.continuity import LangGraphSessionAdapter
 
 
@@ -375,12 +376,12 @@ class LangGraphRunner(BaseRunner):
                 return
 
             auto_enabled = self._env_flag("KSADK_LANGGRAPH_AUTO_CHECKPOINT")
-            dsn = str(
-                os.getenv("KSADK_LANGGRAPH_CHECKPOINT_DSN")
-                or os.getenv("KSADK_SESSION_DSN")
-                or ""
-            ).strip()
-            if not auto_enabled or not dsn:
+            checkpoint_target = resolve_persistence_topology(framework="langgraph").checkpoint
+            if (
+                not auto_enabled
+                or checkpoint_target.backend != "postgres"
+                or not checkpoint_target.dsn
+            ):
                 self._managed_checkpoint_prepared = True
                 return
 
@@ -396,7 +397,7 @@ class LangGraphRunner(BaseRunner):
 
             pool = None
             try:
-                saver, pool = await self._create_managed_postgres_saver(dsn)
+                saver, pool = await self._create_managed_postgres_saver(checkpoint_target.dsn)
                 managed_graph = factory(checkpointer=saver)
                 if not callable(getattr(managed_graph, "invoke", None)):
                     raise TypeError("ksadk_graph_factory must return a compiled LangGraph graph")
@@ -417,7 +418,7 @@ class LangGraphRunner(BaseRunner):
                 reason_code = (
                     "SCHEMA_PERMISSION_DENIED"
                     if "privilege" in error_name or "permission" in error_name
-                    else "DB_UNREACHABLE"
+                    else "CHECKPOINT_STORE_UNREACHABLE"
                 )
                 self._managed_checkpoint_error = (
                     reason_code,
