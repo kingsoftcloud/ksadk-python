@@ -70,6 +70,48 @@ async def test_persistence_status_reports_ready_without_exposing_dsn(monkeypatch
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("configured_dsn", "asyncpg_dsn"),
+    [
+        ("postgresql://user:secret@db.example.test/app", "postgresql://user:secret@db.example.test/app"),
+        ("postgres://user:secret@db.example.test/app", "postgres://user:secret@db.example.test/app"),
+        (
+            "postgresql+asyncpg://user:secret@db.example.test/app",
+            "postgresql://user:secret@db.example.test/app",
+        ),
+    ],
+)
+async def test_persistence_probe_accepts_postgres_driver_url_variants(
+    configured_dsn, asyncpg_dsn
+):
+    """Catch passing an ADK SQLAlchemy URL directly to asyncpg."""
+    from ksadk.sessions.persistence import probe_storage_target
+    from ksadk.sessions.topology import StorageTarget
+
+    class _Connection:
+        async def fetchval(self, query):
+            if "has_schema_privilege" in query:
+                return True
+            return 1
+
+        async def close(self):
+            return None
+
+    async def connect(**kwargs):
+        assert kwargs["dsn"] == asyncpg_dsn
+        return _Connection()
+
+    status = await probe_storage_target(
+        StorageTarget(backend="postgres", dsn=configured_dsn),
+        connect=connect,
+        use_cache=False,
+    )
+
+    assert status["Ready"] is True
+    assert "secret" not in repr(status)
+
+
+@pytest.mark.asyncio
 async def test_persistence_status_uses_legacy_stm_postgres_fallbacks(monkeypatch):
     from ksadk.sessions.persistence import get_persistence_status
 

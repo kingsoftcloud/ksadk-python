@@ -67,6 +67,14 @@ def _cache_key(backend: str, dsn: str) -> str:
     return f"{backend}:{digest}"
 
 
+def _asyncpg_dsn(dsn: str) -> str:
+    """Translate ADK's SQLAlchemy asyncpg URL to asyncpg's native DSN."""
+    prefix = "postgresql+asyncpg://"
+    if dsn.lower().startswith(prefix):
+        return "postgresql://" + dsn[len(prefix) :]
+    return dsn
+
+
 async def _default_connect(**kwargs: Any) -> Any:
     import asyncpg
 
@@ -104,7 +112,7 @@ async def _probe_postgres_target(
     connect: ConnectCallable | None,
     use_cache: bool,
 ) -> dict[str, Any]:
-    dsn = target.dsn
+    dsn = _asyncpg_dsn(target.dsn)
 
     timeout = max(0.1, float(os.getenv("KSADK_PERSISTENCE_PROBE_TIMEOUT") or "2"))
     ttl = max(0.0, float(os.getenv("KSADK_PERSISTENCE_PROBE_CACHE_TTL") or "30"))
@@ -184,7 +192,7 @@ async def get_persistence_status(
     async def probe(target: StorageTarget, *, store: str) -> dict[str, Any]:
         if target.backend != "postgres" or not target.dsn:
             return _not_configured_target_status(target, store=store)
-        key = _cache_key(target.backend, target.dsn)
+        key = _cache_key(target.backend, _asyncpg_dsn(target.dsn))
         if key not in probe_results:
             probe_results[key] = await _probe_postgres_target(
                 target,

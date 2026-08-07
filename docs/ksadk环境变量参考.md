@@ -265,7 +265,7 @@
 | `KSADK_STM_DB_URL` | 旧 STM / Sessions fallback | 条件必传 | 未设置 | `KSADK_SESSION_DSN` | 是 | 兼容旧部署 | 否 | 旧变量。ADK/STM 仍可读。 |
 | `KSADK_ADK_SESSION_BACKEND` | ADK Memory | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | ADK 原生 session backend。 |
 | `KSADK_ADK_SESSION_PATH` | ADK Memory | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | ADK 原生 session sqlite 路径。 |
-| `KSADK_ADK_SESSION_URL` | ADK Memory | 条件必传 | 未设置 | `KSADK_SESSION_DSN` | 是 | Secret | 否 | ADK 原生 session 数据库 URL。统一 session DSN 也可兜底。 |
+| `KSADK_ADK_SESSION_URL` | ADK Memory | 条件必传 | 未设置 | `KSADK_SESSION_DSN` | 是 | Secret | 否 | ADK 原生 session 数据库 URL。接受 `postgresql://`、`postgres://` 和 ADK/SQLAlchemy 使用的 `postgresql+asyncpg://`；持久化探针会将后者转换为 asyncpg 原生 DSN。统一 session DSN 也可兜底。 |
 | `KSADK_MEMORY_BACKEND` | MemoryManager | 否 | `memory` | 无 | 否 | 开发者 / 平台 | 否 | 轻量 KV/消息历史 backend。当前内置 `memory`，注册 Redis backend 后可用 `redis`。 |
 | `KSADK_MEMORY_URL` | MemoryManager | 条件必传 | 未设置 | 无 | 是 | Secret | 否 | 远端 MemoryManager backend 连接 URL，例如 Redis URL。 |
 | `KSADK_MEMORY_PREFIX` | MemoryManager | 否 | `ksadk:memory:` | 无 | 否 | 开发者 / 平台 | 否 | MemoryManager key prefix。 |
