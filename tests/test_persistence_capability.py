@@ -281,6 +281,29 @@ async def test_status_deduplicates_same_target_fallback_probe(monkeypatch):
     assert status["Checkpoint"]["Source"] == "session_fallback"
     assert status["Session"] == {**status["Checkpoint"], "Source": "explicit"}
 
+    from ksadk.sessions.persistence import gate_runtime_capabilities
+
+    capabilities = gate_runtime_capabilities(
+        {
+            "Checkpoint": {
+                "Supported": True,
+                "Backend": "postgres",
+                "Scope": "shared",
+                "Durable": True,
+                "SharedAcrossPods": True,
+                "ResumeMode": "time_travel",
+                "Reason": "",
+            },
+            "ResumeRun": {"Supported": True, "ResumeMode": "time_travel", "Reason": ""},
+        },
+        status["Session"],
+        status["Checkpoint"],
+    )
+
+    assert capabilities["Checkpoint"]["Backend"] == "postgres"
+    assert "NativeBackend" not in capabilities["Checkpoint"]
+    assert "PersistenceGate" not in capabilities["Checkpoint"]
+
 
 @pytest.mark.asyncio
 async def test_single_target_probe_uses_a_generic_not_configured_reason():
@@ -376,6 +399,68 @@ async def test_bootstrap_exposes_independent_checkpoint_status_and_gates_resume(
     assert capabilities["RuntimeCapabilities"]["ResumeRun"]["ReasonCode"] == (
         "CHECKPOINT_STORE_UNREACHABLE"
     )
+    assert capabilities["RuntimeCapabilities"]["Checkpoint"] == {
+        "Supported": False,
+        "Backend": "none",
+        "NativeBackend": "postgres",
+        "Scope": "shared",
+        "Durable": False,
+        "SharedAcrossPods": False,
+        "ResumeMode": "none",
+        "ReasonCode": "CHECKPOINT_STORE_UNREACHABLE",
+        "Reason": "Checkpoint storage is unreachable",
+        "PersistenceGate": {
+            "BlockedStore": "checkpoint",
+            "Source": "explicit",
+            "ReasonCode": "CHECKPOINT_STORE_UNREACHABLE",
+            "Reason": "Checkpoint storage is unreachable",
+        },
+    }
+
+
+def test_persistence_gate_identifies_session_fallback_as_blocker():
+    """Catch a gate report that blames Checkpoint when Session is unavailable."""
+    from ksadk.sessions.persistence import gate_runtime_capabilities
+
+    capabilities = gate_runtime_capabilities(
+        {
+            "Checkpoint": {
+                "Supported": True,
+                "Backend": "adk_invocation+postgres",
+                "Scope": "invocation",
+                "Durable": True,
+                "SharedAcrossPods": True,
+                "ResumeMode": "invocation_id",
+                "Reason": "",
+            },
+            "ResumeRun": {
+                "Supported": True,
+                "ResumeMode": "invocation_id",
+                "Reason": "",
+            },
+        },
+        {
+            "Ready": False,
+            "Source": "checkpoint_fallback",
+            "ReasonCode": "SESSION_STORE_UNREACHABLE",
+            "Reason": "Session storage is unreachable",
+        },
+        {
+            "Ready": True,
+            "Source": "explicit",
+            "ReasonCode": "READY",
+            "Reason": "",
+        },
+    )
+
+    assert capabilities["Checkpoint"]["Backend"] == "none"
+    assert capabilities["Checkpoint"]["NativeBackend"] == "adk_invocation+postgres"
+    assert capabilities["Checkpoint"]["PersistenceGate"] == {
+        "BlockedStore": "session",
+        "Source": "checkpoint_fallback",
+        "ReasonCode": "SESSION_STORE_UNREACHABLE",
+        "Reason": "Session storage is unreachable",
+    }
 
 
 @pytest.mark.asyncio

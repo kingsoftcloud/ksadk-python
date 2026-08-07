@@ -208,10 +208,11 @@ def gate_runtime_capabilities(
 
     gated = deepcopy(dict(capabilities or {}))
     checkpoint_persistence = checkpoint_persistence or session_persistence
+    blocked_store = (
+        "session" if session_persistence.get("Ready") is not True else "checkpoint"
+    )
     unavailable = (
-        session_persistence
-        if session_persistence.get("Ready") is not True
-        else checkpoint_persistence
+        session_persistence if blocked_store == "session" else checkpoint_persistence
     )
     if unavailable.get("Ready") is True:
         return gated
@@ -221,16 +222,26 @@ def gate_runtime_capabilities(
         unavailable.get("ReasonCode") or "RUNTIME_CAPABILITY_UNAVAILABLE"
     )
     checkpoint = dict(gated.get("Checkpoint") or {})
+    native_backend = str(checkpoint.get("Backend") or "").strip()
     checkpoint.update(
         {
             "Supported": False,
+            "Backend": "none",
             "Durable": False,
             "SharedAcrossPods": False,
             "ResumeMode": "none",
             "ReasonCode": reason_code,
             "Reason": reason,
+            "PersistenceGate": {
+                "BlockedStore": blocked_store,
+                "Source": str(unavailable.get("Source") or "none"),
+                "ReasonCode": reason_code,
+                "Reason": reason,
+            },
         }
     )
+    if native_backend:
+        checkpoint["NativeBackend"] = native_backend
     gated["Checkpoint"] = checkpoint
     gated["ResumeRun"] = {
         "Supported": False,

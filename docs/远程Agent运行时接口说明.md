@@ -884,6 +884,8 @@ KsADK 扩展图片引用示例：
 
 能力门控以 `GetAgentUiBootstrap.Data.Capabilities.RunLifecycle` 为准。`RunLifecycle.Resume` 只表示普通运行生命周期可继续交互；checkpoint 恢复必须同时看到 `RunLifecycle.Checkpoints=true` 和 `RunLifecycle.CheckpointResume=true`。控制台应优先读取 `RuntimeCapabilities.ResumeRun.ResumeMode`：`time_travel` 表示可选择历史 checkpoint 回档，`forward_only` 表示只能沿框架原生事件或 invocation 连续性继续，`none` 表示没有框架级恢复能力。当前 `adk`、`langchain`、`langgraph`、`deepagents` 可声明 checkpoint lifecycle；`hermes` 虽然有 Hosted Chat、原生 dashboard 和 terminal，但其 Hermes runtime 壳只代理 `/v1/*` 与原生管理路由，不提供 `ListSessionCheckpoints` / `ResumeRun` / `CancelRun` 本地同名 action，因此不应默认点亮 checkpoint 恢复能力。
 
+当持久化门控禁用恢复时，`RuntimeCapabilities.Checkpoint.Backend` 表示当前**有效**后端，固定为 `none`，不能据此推断已配置了 PostgreSQL。若 runner 原本声明了后端，`NativeBackend` 会保留其原生值，例如 `adk_invocation+postgres`。可选的 `PersistenceGate` 返回 `BlockedStore`（`session` 或 `checkpoint`）、有效存储的 `Source`、`ReasonCode` 和安全的 `Reason`；控制台应结合 `Persistence` 与 `CheckpointPersistence` 展示故障原因。`CheckpointPersistence.Source=session_fallback` 表示 checkpoint 合法复用了 Session 数据库，并非缺少独立 checkpoint 数据库。
+
 ## 6.5 Hosted UI Bootstrap
 
 ### `POST /agentengine/api/v1/GetAgentUiBootstrap`
