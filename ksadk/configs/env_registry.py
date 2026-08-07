@@ -238,6 +238,12 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     ),
     EnvVarSpec("KSADK_KB_TOP_K", "knowledge_base", "Knowledge-base retrieval result count.", "5"),
     EnvVarSpec(
+        "KSADK_CHECKPOINT_DSN",
+        "sessions",
+        "Framework-agnostic PostgreSQL checkpoint DSN.",
+        sensitive=True,
+    ),
+    EnvVarSpec(
         "KSADK_LANGGRAPH_CHECKPOINT_DSN",
         "sessions",
         "LangGraph PostgreSQL checkpoint DSN.",
