@@ -17,7 +17,7 @@ from typing import Any, Callable, Iterator
 class ServerRouteDependencies:
     resolve_session_service: Callable[[], Any]
     describe_session_backend: Callable[[], dict[str, Any]]
-    get_persistence_status: Callable[[], Any]
+    get_persistence_status: Callable[..., Any]
     resolve_agent_ui_spec: Callable[[], dict[str, Any]]
     conversation: Callable[[], Any]
     detached_streaming_response: Callable[..., Any]
@@ -75,8 +75,8 @@ def describe_session_backend() -> dict[str, Any]:
     return current().describe_session_backend()
 
 
-async def get_persistence_status() -> dict[str, Any]:
-    return dict(await current().get_persistence_status())
+async def get_persistence_status(*, framework: str | None = None) -> dict[str, Any]:
+    return dict(await current().get_persistence_status(framework=framework))
 
 
 def resolve_agent_ui_spec() -> dict[str, Any]:

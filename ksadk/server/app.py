@@ -471,7 +471,7 @@ route_dependencies.configure(
     route_dependencies.ServerRouteDependencies(
         resolve_session_service=lambda: resolve_session_service(),
         describe_session_backend=lambda: describe_session_backend(),
-        get_persistence_status=lambda: get_persistence_status(),
+        get_persistence_status=lambda framework=None: get_persistence_status(framework=framework),
         resolve_agent_ui_spec=lambda: _resolve_agent_ui_spec(),
         conversation=lambda: conversation,
         detached_streaming_response=lambda *args, **kwargs: _detached_streaming_response(

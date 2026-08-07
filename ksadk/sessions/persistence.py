@@ -9,7 +9,8 @@ import time
 from copy import deepcopy
 from typing import Any, Awaitable, Callable, Mapping
 
-from ksadk.sessions import resolve_session_backend_config
+from ksadk.sessions import resolve_persistence_topology
+from ksadk.sessions.topology import StorageTarget
 
 ConnectCallable = Callable[..., Awaitable[Any]]
 
@@ -17,21 +18,35 @@ _STATUS_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _CACHE_LOCK = asyncio.Lock()
 
 
-def _base_status(*, backend: str, configured: bool) -> dict[str, Any]:
+def _base_status(*, target: StorageTarget, configured: bool) -> dict[str, Any]:
     return {
         "Configured": configured,
         "Status": "checking" if configured else "not_configured",
         "Ready": False,
-        "Backend": backend,
+        "Backend": target.backend,
         "SharedAcrossPods": False,
         "EffectiveFor": "new_runs_only",
-        "ReasonCode": "" if configured else "NOT_CONFIGURED",
-        "Reason": "" if configured else "PostgreSQL persistence is not configured",
+        "Source": target.source,
+        "ReasonCode": "",
+        "Reason": "",
     }
 
 
-def _error_status(*, code: str, reason: str) -> dict[str, Any]:
-    status = _base_status(backend="postgres", configured=True)
+def _not_configured_target_status(target: StorageTarget, *, store: str) -> dict[str, Any]:
+    status = _base_status(target=target, configured=False)
+    prefix = f"{store}_" if store else ""
+    label = f"{store.title()} storage" if store else "Storage"
+    status.update(
+        {
+            "ReasonCode": f"{prefix}STORE_NOT_CONFIGURED",
+            "Reason": f"{label} is not configured",
+        }
+    )
+    return status
+
+
+def _error_status(target: StorageTarget, *, code: str, reason: str) -> dict[str, Any]:
+    status = _base_status(target=target, configured=True)
     status.update({"Status": "error", "ReasonCode": code, "Reason": reason})
     return status
 
@@ -44,7 +59,7 @@ def _classify_probe_error(exc: BaseException) -> tuple[str, str]:
         return "AUTH_FAILED", "PostgreSQL authentication failed"
     if "privilege" in name or "permission" in name:
         return "SCHEMA_PERMISSION_DENIED", "PostgreSQL schema permissions are insufficient"
-    return "DB_UNREACHABLE", "PostgreSQL persistence is unreachable"
+    return "STORE_UNREACHABLE", "PostgreSQL persistence is unreachable"
 
 
 def _cache_key(backend: str, dsn: str) -> str:
@@ -58,27 +73,42 @@ async def _default_connect(**kwargs: Any) -> Any:
     return await asyncpg.connect(**kwargs)
 
 
-async def get_persistence_status(
+def _status_for_target(
+    status: Mapping[str, Any], target: StorageTarget, *, store: str = ""
+) -> dict[str, Any]:
+    result = deepcopy(dict(status))
+    result.update({"Backend": target.backend, "Source": target.source})
+    if result.get("ReasonCode") == "STORE_UNREACHABLE" and store:
+        result["ReasonCode"] = f"{store}_STORE_UNREACHABLE"
+    return result
+
+
+async def probe_storage_target(
+    target: StorageTarget,
     *,
     connect: ConnectCallable | None = None,
     use_cache: bool = True,
+    store: str = "",
 ) -> dict[str, Any]:
-    """Return a credential-free persistence diagnostic for bootstrap consumers."""
+    """Probe one storage target without exposing its DSN in the result."""
+    if target.backend != "postgres" or not target.dsn:
+        return _not_configured_target_status(target, store=store)
 
-    session_config = resolve_session_backend_config()
-    backend = session_config.backend
-    dsn = session_config.dsn
-    if backend != "postgres":
-        return _base_status(backend=backend or "local", configured=False)
-    if not dsn:
-        return _error_status(
-            code="DB_UNREACHABLE",
-            reason="PostgreSQL session DSN is missing",
-        )
+    result = await _probe_postgres_target(target, connect=connect, use_cache=use_cache)
+    return _status_for_target(result, target, store=store)
+
+
+async def _probe_postgres_target(
+    target: StorageTarget,
+    *,
+    connect: ConnectCallable | None,
+    use_cache: bool,
+) -> dict[str, Any]:
+    dsn = target.dsn
 
     timeout = max(0.1, float(os.getenv("KSADK_PERSISTENCE_PROBE_TIMEOUT") or "2"))
     ttl = max(0.0, float(os.getenv("KSADK_PERSISTENCE_PROBE_CACHE_TTL") or "30"))
-    key = _cache_key(backend, dsn)
+    key = _cache_key(target.backend, dsn)
     now = time.monotonic()
     if use_cache:
         cached = _STATUS_CACHE.get(key)
@@ -106,6 +136,7 @@ async def get_persistence_status(
             )
             if can_create is not True:
                 result = _error_status(
+                    target,
                     code="SCHEMA_PERMISSION_DENIED",
                     reason=(
                         "PostgreSQL account cannot create persistence tables "
@@ -113,7 +144,7 @@ async def get_persistence_status(
                     ),
                 )
             else:
-                result = _base_status(backend="postgres", configured=True)
+                result = _base_status(target=target, configured=True)
                 result.update(
                     {
                         "Status": "ready",
@@ -125,13 +156,13 @@ async def get_persistence_status(
                 )
             if use_cache:
                 _STATUS_CACHE[key] = (time.monotonic(), deepcopy(result))
-            return result
+            return deepcopy(result)
     except Exception as exc:
         code, reason = _classify_probe_error(exc)
-        result = _error_status(code=code, reason=reason)
+        result = _error_status(target, code=code, reason=reason)
         if use_cache:
             _STATUS_CACHE[key] = (time.monotonic(), deepcopy(result))
-        return result
+        return deepcopy(result)
     finally:
         if connection is not None:
             try:
@@ -140,19 +171,54 @@ async def get_persistence_status(
                 pass
 
 
+async def get_persistence_status(
+    *,
+    framework: str | None = None,
+    connect: ConnectCallable | None = None,
+    use_cache: bool = True,
+) -> dict[str, Any]:
+    """Return independent credential-free Session and Checkpoint readiness."""
+    topology = resolve_persistence_topology(framework=framework)
+    probe_results: dict[str, dict[str, Any]] = {}
+
+    async def probe(target: StorageTarget, *, store: str) -> dict[str, Any]:
+        if target.backend != "postgres" or not target.dsn:
+            return _not_configured_target_status(target, store=store)
+        key = _cache_key(target.backend, target.dsn)
+        if key not in probe_results:
+            probe_results[key] = await _probe_postgres_target(
+                target,
+                connect=connect,
+                use_cache=use_cache,
+            )
+        return _status_for_target(probe_results[key], target, store=store)
+
+    return {
+        "Session": await probe(topology.session, store="SESSION"),
+        "Checkpoint": await probe(topology.checkpoint, store="CHECKPOINT"),
+    }
+
+
 def gate_runtime_capabilities(
     capabilities: Mapping[str, Any] | None,
-    persistence: Mapping[str, Any],
+    session_persistence: Mapping[str, Any],
+    checkpoint_persistence: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Fail closed unless PostgreSQL persistence is positively ready."""
+    """Fail closed unless Session and Checkpoint persistence are both ready."""
 
     gated = deepcopy(dict(capabilities or {}))
-    if persistence.get("Ready") is True:
+    checkpoint_persistence = checkpoint_persistence or session_persistence
+    unavailable = (
+        session_persistence
+        if session_persistence.get("Ready") is not True
+        else checkpoint_persistence
+    )
+    if unavailable.get("Ready") is True:
         return gated
 
-    reason = str(persistence.get("Reason") or "PostgreSQL persistence is unavailable")
+    reason = str(unavailable.get("Reason") or "PostgreSQL persistence is unavailable")
     reason_code = str(
-        persistence.get("ReasonCode") or "RUNTIME_CAPABILITY_UNAVAILABLE"
+        unavailable.get("ReasonCode") or "RUNTIME_CAPABILITY_UNAVAILABLE"
     )
     checkpoint = dict(gated.get("Checkpoint") or {})
     checkpoint.update(
@@ -175,4 +241,4 @@ def gate_runtime_capabilities(
     return gated
 
 
-__all__ = ["gate_runtime_capabilities", "get_persistence_status"]
+__all__ = ["gate_runtime_capabilities", "get_persistence_status", "probe_storage_target"]

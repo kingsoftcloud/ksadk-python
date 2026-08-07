@@ -74,7 +74,15 @@ async def get_agent_ui_bootstrap(request: UiBootstrapRequest):
         framework = str(getattr(detection_type, "value", detection_type) or "").strip().lower()
     workspace_enabled = workspace_files_enabled(default=True)
     ui_spec = deps.resolve_agent_ui_spec()
-    persistence = await deps.get_persistence_status()
+    persistence_status = await deps.get_persistence_status(framework=framework)
+    if isinstance(persistence_status.get("Session"), Mapping):
+        persistence = dict(persistence_status["Session"])
+        checkpoint_persistence = dict(persistence_status.get("Checkpoint") or {})
+    else:
+        # Route providers are monkeypatchable public seams.  Accept their
+        # legacy flat payload during the response-shape transition.
+        persistence = dict(persistence_status)
+        checkpoint_persistence = dict(persistence_status)
     prepare_capabilities = getattr(runner, "prepare_runtime_capabilities", None)
     if callable(prepare_capabilities):
         prepared = prepare_capabilities()
@@ -96,16 +104,12 @@ async def get_agent_ui_bootstrap(request: UiBootstrapRequest):
         and checkpoint_capability.get("SharedAcrossPods") is True
     )
     if requires_shared_persistence:
-        runtime_capabilities = gate_runtime_capabilities(runtime_capabilities, persistence)
+        runtime_capabilities = gate_runtime_capabilities(
+            runtime_capabilities,
+            persistence,
+            checkpoint_persistence,
+        )
     resume_capability = runtime_capabilities.get("ResumeRun") or {}
-    if persistence.get("Ready") and not resume_capability.get("Supported"):
-        reason_code = str(resume_capability.get("ReasonCode") or "").strip()
-        if reason_code:
-            persistence = {
-                **persistence,
-                "ReasonCode": reason_code,
-                "Reason": str(resume_capability.get("Reason") or ""),
-            }
     checkpoint_resume_capability = {
         "Supported": bool(
             (runtime_capabilities.get("ResumeRun") or {}).get("Supported")
@@ -183,6 +187,7 @@ async def get_agent_ui_bootstrap(request: UiBootstrapRequest):
                 "StopRun": cancel_run_supported,
                 "ResumeRun": checkpoint_resume_supported,
                 "Persistence": persistence,
+                "CheckpointPersistence": checkpoint_persistence,
                 "RuntimeCapabilities": runtime_capabilities,
                 "CheckpointResumeCapability": checkpoint_resume_capability,
                 "RunLifecycle": {

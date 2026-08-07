@@ -288,7 +288,7 @@ async def test_ui_bootstrap_enables_checkpoint_controls_from_runtime_capability(
     runner = _CheckpointResumeRunner()
 
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
-    async def ready_persistence():
+    async def ready_persistence(*, framework=None):
         return {
             "Configured": True,
             "Status": "ready",
