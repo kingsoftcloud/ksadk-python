@@ -33,6 +33,7 @@ from ksadk.compat.adk_compat import (
     InMemorySessionService,
     Session,
 )
+from ksadk.sessions.topology import StorageTarget, resolve_persistence_topology
 
 logger = logging.getLogger(__name__)
 
@@ -243,6 +244,13 @@ class ShortTermMemory(BaseModel):
             return None
 
     @classmethod
+    def from_persistence_target(cls, target: StorageTarget) -> "ShortTermMemory":
+        """Build ADK-native state from an effective Checkpoint storage target."""
+        if target.backend == "postgres" and target.dsn:
+            return cls(backend="database", db_url=_normalize_database_url(target.dsn))
+        return cls(backend="local")
+
+    @classmethod
     def from_env(cls) -> "ShortTermMemory":
         """从环境变量创建 ShortTermMemory
 
@@ -256,6 +264,10 @@ class ShortTermMemory(BaseModel):
             KSADK_SESSION_BACKEND: 统一 session backend fallback
             KSADK_SESSION_DSN: 统一 session DSN fallback
         """
+        topology = resolve_persistence_topology(framework="adk")
+        if topology.checkpoint.backend == "postgres" and topology.checkpoint.dsn:
+            return cls.from_persistence_target(topology.checkpoint)
+
         explicit_backend = _normalize_backend_name(
             _env_first(
                 "KSADK_ADK_SESSION_BACKEND",

@@ -58,6 +58,7 @@ class ADKRunner(BaseRunner):
         self._default_session_id: Optional[str] = None
         # Memory integration
         self._short_term_memory: Any = None
+        self._checkpoint_storage_source = "none"
         self._long_term_memory: Any = None
         # Knowledge base integration
         self._knowledge_base: Any = None
@@ -267,14 +268,23 @@ class ADKRunner(BaseRunner):
             "KSADK_STM_DB_URL",
             "KSADK_SESSION_BACKEND",
             "KSADK_SESSION_DSN",
+            "KSADK_CHECKPOINT_DSN",
         )
         if not any(str(os.environ.get(name, "")).strip() for name in configured_names):
             return None
 
         try:
             from ksadk.memory.adk import ShortTermMemory
+            from ksadk.sessions import resolve_persistence_topology
 
-            stm = ShortTermMemory.from_env()
+            topology = resolve_persistence_topology(framework="adk")
+            self._checkpoint_storage_source = topology.checkpoint.source
+            if topology.checkpoint.backend == "postgres" and topology.checkpoint.dsn:
+                stm = ShortTermMemory.from_persistence_target(topology.checkpoint)
+            else:
+                # Preserve legacy SQLite ADK/STM path handling when no remote
+                # checkpoint target has been selected.
+                stm = ShortTermMemory.from_env()
             logger.info(
                 "ShortTermMemory initialized: backend=%s path=%s",
                 stm.backend,
@@ -1721,6 +1731,7 @@ class ADKRunner(BaseRunner):
         metadata["scope"] = "invocation"
         metadata["durable"] = stm_backend is not None and stm_backend != "local"
         metadata["shared_across_pods"] = shared_across_pods
+        metadata["source"] = self._checkpoint_storage_source
         if not platform_resumable:
             metadata["resume_disabled_reason"] = (
                 self._resume_disabled_reason

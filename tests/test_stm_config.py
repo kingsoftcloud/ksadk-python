@@ -226,6 +226,65 @@ def test_adk_runner_short_term_memory_initializes_from_unified_session_env(monke
     assert stm.db_url == expected_adk_url
 
 
+def test_short_term_memory_from_persistence_target_uses_checkpoint_database():
+    """Catch native ADK state being built from a Session target by default."""
+    from ksadk.memory.adk.short_term_memory import ShortTermMemory
+    from ksadk.sessions.topology import StorageTarget
+
+    stm = ShortTermMemory.from_persistence_target(
+        StorageTarget(
+            backend="postgres",
+            dsn="postgresql://user:pass@example.invalid:5432/checkpoint_db",
+            source="explicit",
+        )
+    )
+
+    assert stm.backend == "database"
+    assert stm.db_url.endswith("/checkpoint_db")
+
+
+def test_adk_checkpoint_target_falls_back_to_session_database(monkeypatch):
+    """Catch disabling ADK resume when only the Session database is configured."""
+    from ksadk.memory.adk.short_term_memory import ShortTermMemory
+    from ksadk.sessions.topology import resolve_persistence_topology
+
+    monkeypatch.delenv("KSADK_ADK_SESSION_URL", raising=False)
+    monkeypatch.delenv("KSADK_CHECKPOINT_DSN", raising=False)
+    monkeypatch.setenv("KSADK_SESSION_BACKEND", "postgres")
+    monkeypatch.setenv(
+        "KSADK_SESSION_DSN", "postgresql://user:pass@example.invalid:5432/session_db"
+    )
+
+    topology = resolve_persistence_topology(framework="adk")
+    stm = ShortTermMemory.from_persistence_target(topology.checkpoint)
+
+    assert topology.checkpoint.source == "session_fallback"
+    assert stm.backend == "database"
+    assert stm.db_url.endswith("/session_db")
+
+
+def test_adk_runner_uses_checkpoint_target_and_records_its_source(monkeypatch):
+    """Catch an ADK runner ignoring a configured dedicated checkpoint database."""
+    monkeypatch.delenv("KSADK_ADK_SESSION_URL", raising=False)
+    monkeypatch.setenv("KSADK_SESSION_BACKEND", "postgres")
+    monkeypatch.setenv(
+        "KSADK_SESSION_DSN", "postgresql://user:pass@example.invalid:5432/session_db"
+    )
+    monkeypatch.setenv(
+        "KSADK_CHECKPOINT_DSN", "postgresql://user:pass@example.invalid:5432/checkpoint_db"
+    )
+    runner = _make_adk_runner()
+
+    stm = runner._init_short_term_memory()
+    runner._short_term_memory = stm
+    runner._resumable = True
+    metadata = runner._extract_checkpoint_metadata(SimpleNamespace(actions=None))
+
+    assert stm is not None
+    assert stm.db_url.endswith("/checkpoint_db")
+    assert metadata["source"] == "explicit"
+
+
 def test_short_term_memory_from_env_requires_dsn_for_unified_postgres(monkeypatch):
     from ksadk.memory.adk.short_term_memory import ShortTermMemory
 
