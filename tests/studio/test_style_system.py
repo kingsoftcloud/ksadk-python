@@ -102,8 +102,83 @@ def test_model_credentials_are_never_written_to_browser_storage() -> None:
     assert 'id="modelCredentialValue"' in markup
     assert 'type="password"' in markup
     assert 'autocomplete="new-password"' in markup
-    assert "localStorage" not in script
     assert "sessionStorage" not in script
+    draft_start = script.index("function collectWizardDraft()")
+    draft_end = script.index("function saveWizardDraft", draft_start)
+    draft_serializer = script[draft_start:draft_end]
+
+    for forbidden_reference in {
+        "modelCredentialValue",
+        "credentialStatuses",
+        "sessionToken",
+        "csrf",
+        "apiKey",
+        "secretValue",
+    }:
+        assert forbidden_reference not in draft_serializer
+
+    assert "window.localStorage.setItem(wizardDraftStorageKey(), JSON.stringify(draft))" in script
+    assert "window.localStorage.removeItem(wizardDraftStorageKey())" in script
+
+
+def test_create_workbench_uses_compact_two_rail_authoring_structure() -> None:
+    markup = INDEX_HTML.read_text(encoding="utf-8")
+    stylesheet = STYLESHEET.read_text(encoding="utf-8")
+    script = APP_SCRIPT.read_text(encoding="utf-8")
+
+    assert 'class="create-workbench"' in markup
+    assert 'class="create-rail"' in markup
+    assert 'class="create-stage"' in markup
+    assert 'id="authoringModeTabs"' in markup
+    assert 'document.body.classList.toggle("create-mode", view === "create")' in script
+    assert "body.create-mode .sidebar" in stylesheet
+    assert "grid-template-columns: 212px minmax(0, 1fr)" in stylesheet
+    assert ".wizard-content" in stylesheet
+    assert "border: 0" in stylesheet[stylesheet.index(".wizard-content {") :]
+
+
+def test_create_workbench_has_draft_summary_search_and_step_contracts() -> None:
+    markup = INDEX_HTML.read_text(encoding="utf-8")
+    script = APP_SCRIPT.read_text(encoding="utf-8")
+
+    for element_id in {
+        "saveWizardDraft",
+        "toggleWizardSummary",
+        "wizardSummary",
+        "wizardSummaryBackdrop",
+        "wizardCapabilitySearch",
+        "wizardCapabilityFilter",
+        "wizardCapabilityCount",
+        "wizardDraftState",
+    }:
+        assert f'id="{element_id}"' in markup
+
+    assert "function saveWizardDraft" in script
+    assert "function restoreWizardDraft" in script
+    assert "function filterWizardCapabilities" in script
+    assert "function showWizardError" in script
+    assert "state.wizard.maxStep" in script
+    assert 'button.disabled = value > state.wizard.maxStep' in script
+
+
+def test_edge_cloud_views_use_real_workspace_catalog_and_run_state() -> None:
+    markup = INDEX_HTML.read_text(encoding="utf-8")
+    stylesheet = STYLESHEET.read_text(encoding="utf-8")
+    script = APP_SCRIPT.read_text(encoding="utf-8")
+
+    for view in {"runtime-resources", "orchestration"}:
+        assert f'data-view="{view}"' in markup
+        assert f'id="view-{view}"' in markup
+
+    assert 'id="executionRoute"' in markup
+    assert "function renderRuntimeResources" in script
+    assert "function renderOrchestration" in script
+    assert "state.catalog" in script[script.index("function renderRuntimeResources") :]
+    assert "state.runs.length" in script[script.index("function renderRuntimeResources") :]
+    assert "agentRuns().slice(-5).reverse()" in script
+    assert "--edge:" in stylesheet
+    assert "--cloud:" in stylesheet
+    assert "--route:" in stylesheet
 
 
 def test_create_agent_distinguishes_workspace_slug_from_cloud_agent_id() -> None:

@@ -54,6 +54,7 @@ const state = {
   reconnecting: false,
   wizard: {
     step: 1,
+    maxStep: 1,
     template: "blank",
     runtime: "codex",
     depth: "deep",
@@ -91,6 +92,8 @@ const state = {
   projectInspection: null,
   skillDiscovery: null
 };
+
+const WIZARD_DRAFT_STORAGE_PREFIX = "agentkit.studio.agentDraft.v1";
 
 const terminalOperationStatuses = new Set([
   "SUCCEEDED",
@@ -192,6 +195,10 @@ function syncBrowserRoute() {
     } else {
       url.searchParams.delete("traceId");
     }
+  } else if (["runtime-resources", "orchestration"].includes(state.view)) {
+    url.searchParams.set("view", state.view);
+    url.searchParams.delete("sessionId");
+    url.searchParams.delete("traceId");
   } else {
     url.searchParams.delete("view");
     url.searchParams.delete("sessionId");
@@ -254,6 +261,7 @@ function setRuntimeStatus(status) {
   $("workspaceSwitcher").disabled = !ready;
   $("runtimeIndicator").disabled = !ready;
   $("createAgentButton").disabled = !ready;
+  if ($("runtimeResourceStatus")) renderRuntimeResources();
 }
 
 async function establishSession() {
@@ -471,6 +479,7 @@ function setBreadcrumb(title, parent = null) {
 
 function switchView(view, { parent = null, title = null } = {}) {
   state.view = view;
+  document.body.classList.toggle("create-mode", view === "create");
   document.querySelectorAll(".view").forEach(node => {
     node.classList.toggle("active", node.id === `view-${view}`);
   });
@@ -488,6 +497,7 @@ function switchView(view, { parent = null, title = null } = {}) {
   const viewNode = $(`view-${view}`);
   setBreadcrumb(title || viewNode?.dataset.title || view, parent);
   $("sidebar").classList.remove("open");
+  window.scrollTo({ top: 0, behavior: "auto" });
   syncBrowserRoute();
 }
 async function refreshCatalog() {
@@ -567,6 +577,8 @@ async function switchGlobalAgent(agentId) {
     $("traceAgentFilter").value = agentId;
     await refreshTraces();
   }
+  if (state.view === "runtime-resources") renderRuntimeResources();
+  if (state.view === "orchestration") renderOrchestration();
   syncBrowserRoute();
 }
 
@@ -785,6 +797,7 @@ function resetWizard() {
   state.composeSequence += 1;
   state.wizard = {
     step: 1,
+    maxStep: 1,
     template: "blank",
     runtime: "codex",
     depth: "deep",
@@ -810,6 +823,8 @@ function resetWizard() {
   $("generatedSystemPrompt").value = "";
   $("generatedTaskPrompt").value = "";
   $("createError").hidden = true;
+  $("wizardDraftState").textContent = "尚未保存";
+  closeWizardSummary();
   document.querySelectorAll("#researchDepth .choice-card").forEach(card => {
     card.classList.toggle("selected", card.dataset.value === "deep");
   });
@@ -822,6 +837,111 @@ function resetWizard() {
   setWizardStep(1);
   updatePromptCounter();
   renderWizardSummary();
+}
+
+function wizardDraftStorageKey() {
+  const workspace = state.bootstrap?.workspace || {};
+  const identity = workspace.root || workspace.path || workspace.name || "local-workspace";
+  return `${WIZARD_DRAFT_STORAGE_PREFIX}:${identity}`;
+}
+
+function collectWizardDraft() {
+  return {
+    version: 1,
+    savedAt: new Date().toISOString(),
+    authoringMode: state.authoringMode,
+    wizard: {
+      step: state.wizard.step,
+      maxStep: state.wizard.maxStep,
+      template: state.wizard.template,
+      runtime: state.wizard.runtime,
+      depth: state.wizard.depth,
+      selectedToolIds: [...state.wizard.selectedToolIds],
+      selectedSkillIds: [...state.wizard.selectedSkillIds],
+      selectedMcpIds: [...state.wizard.selectedMcpIds],
+      policyTemplate: state.wizard.policyTemplate,
+      autoBindTools: state.wizard.autoBindTools,
+      autoBindMcp: state.wizard.autoBindMcp,
+      composition: state.wizard.composition ? clone(state.wizard.composition) : null
+    },
+    fields: {
+      name: $("newAgentName").value,
+      slug: $("newAgentId").value,
+      description: $("agentDescription").value,
+      prompt: $("agentPrompt").value,
+      audience: $("researchAudience").value,
+      language: $("researchLanguage").value,
+      outputFormat: $("researchFormat").value,
+      modelProfileId: $("agentModel").value,
+      generatedSystemPrompt: $("generatedSystemPrompt").value,
+      generatedTaskPrompt: $("generatedTaskPrompt").value,
+      buildAfterCreate: $("buildAfterCreate").checked
+    }
+  };
+}
+
+function saveWizardDraft({ notify = true } = {}) {
+  try {
+    const draft = collectWizardDraft();
+    window.localStorage.setItem(wizardDraftStorageKey(), JSON.stringify(draft));
+    $("wizardDraftState").textContent = `已保存 ${new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit" }).format(new Date(draft.savedAt))}`;
+    if (notify) showToast("草稿已保存", "仅保存当前工作区的 Agent 配置，不包含模型凭证。");
+    return true;
+  } catch (error) {
+    if (notify) showToast("草稿保存失败", error.message || "浏览器存储不可用", "error");
+    return false;
+  }
+}
+
+function clearWizardDraft() {
+  try {
+    window.localStorage.removeItem(wizardDraftStorageKey());
+  } catch {
+    // Browser storage may be disabled; successful Agent creation should still continue.
+  }
+}
+
+function restoreWizardDraft() {
+  let draft = null;
+  try {
+    draft = JSON.parse(window.localStorage.getItem(wizardDraftStorageKey()) || "null");
+  } catch {
+    return null;
+  }
+  if (!draft || draft.version !== 1 || !draft.fields || !draft.wizard) return null;
+  const wizard = draft.wizard;
+  state.wizard = {
+    ...state.wizard,
+    ...wizard,
+    step: Math.max(1, Math.min(4, Number(wizard.step) || 1)),
+    maxStep: Math.max(1, Math.min(4, Number(wizard.maxStep) || Number(wizard.step) || 1)),
+    selectedToolIds: Array.isArray(wizard.selectedToolIds) ? wizard.selectedToolIds : [],
+    selectedSkillIds: Array.isArray(wizard.selectedSkillIds) ? wizard.selectedSkillIds : [],
+    selectedMcpIds: Array.isArray(wizard.selectedMcpIds) ? wizard.selectedMcpIds : [],
+    composition: wizard.composition || null,
+    composing: false
+  };
+  const fields = draft.fields;
+  $("newAgentName").value = String(fields.name || "New Agent");
+  $("newAgentId").value = String(fields.slug || uniqueAgentId("new-agent"));
+  $("agentDescription").value = String(fields.description || "");
+  $("agentPrompt").value = String(fields.prompt || "");
+  $("researchAudience").value = String(fields.audience || "产品与技术负责人");
+  $("researchLanguage").value = String(fields.language || "zh-CN");
+  $("researchFormat").value = String(fields.outputFormat || "report");
+  $("agentRuntime").value = state.wizard.runtime;
+  $("generatedSystemPrompt").value = String(fields.generatedSystemPrompt || "");
+  $("generatedTaskPrompt").value = String(fields.generatedTaskPrompt || "");
+  $("buildAfterCreate").checked = fields.buildAfterCreate !== false;
+  updateTemplateUi();
+  populateModelSelect();
+  if (fields.modelProfileId) $("agentModel").value = String(fields.modelProfileId);
+  if (state.wizard.composition) renderWizardCapabilities();
+  updatePromptCounter();
+  renderWizardSummary();
+  $("wizardDraftState").textContent = `已恢复 ${formatDate(draft.savedAt)}`;
+  setWizardStep(state.wizard.step).catch(handleGlobalError);
+  return draft;
 }
 
 function runtimeRef(agentId, runtimeType) {
@@ -926,6 +1046,7 @@ function openCreate() {
   state.importInspection = null;
   state.projectInspection = null;
   resetWizard();
+  const restoredDraft = restoreWizardDraft();
   renderAuthoringTranscript();
   $("authoringConversationInput").value = "";
   $("authoringProposalJson").textContent = "完成一轮或多轮对话后，这里会出现可编辑的 Draft Patch。";
@@ -937,8 +1058,9 @@ function openCreate() {
   $("projectCommit").disabled = true;
   switchView("create", { parent: "Agent", title: "创建 Agent" });
   $("authoringModeTabs").hidden = false;
-  setAuthoringMode("quick");
-  $("newAgentName").focus();
+  setAuthoringMode(restoredDraft?.authoringMode || "quick");
+  if (!restoredDraft) $("newAgentName").focus();
+  else showToast("已恢复创建草稿", "可以从上次保存的位置继续配置。");
 }
 
 function setAuthoringMode(mode) {
@@ -952,6 +1074,8 @@ function setAuthoringMode(mode) {
   $("authoringConversationPanel").hidden = mode !== "conversation";
   $("authoringImportPanel").hidden = mode !== "import";
   $("authoringProjectPanel").hidden = mode !== "project";
+  document.querySelector(".wizard-steps").hidden = mode !== "quick";
+  document.querySelector(".wizard-step-label").hidden = mode !== "quick";
   if (mode === "conversation") populateConversationModels();
   injectIcons($("view-create"));
 }
@@ -1340,23 +1464,48 @@ function validateStepOne() {
   if (state.wizard.template === "research") fields.push($("researchAudience"));
   for (const field of fields) {
     if (!field.checkValidity()) {
-      field.reportValidity();
-      field.focus();
+      const label = field.closest(".field")?.querySelector("label")?.textContent.trim() || "必填字段";
+      showWizardError(`${label}填写不完整，请检查后继续。`, { step: 1, field });
       return false;
     }
   }
+  clearWizardError();
   return true;
+}
+
+function clearWizardError() {
+  $("createError").hidden = true;
+  $("createErrorMessage").textContent = "";
+  document.querySelectorAll("#createAgentForm [aria-invalid='true']").forEach(field => {
+    field.removeAttribute("aria-invalid");
+    field.closest(".field")?.classList.remove("invalid");
+  });
+}
+
+function showWizardError(message, { step = state.wizard.step, field = null } = {}) {
+  $("createError").hidden = false;
+  $("createErrorMessage").textContent = message;
+  if (field) {
+    field.setAttribute("aria-invalid", "true");
+    field.closest(".field")?.classList.add("invalid");
+  }
+  setWizardStep(step).then(() => {
+    field?.focus();
+    $("createError").scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }).catch(handleGlobalError);
 }
 
 async function setWizardStep(step) {
   state.wizard.step = Math.max(1, Math.min(4, Number(step)));
+  state.wizard.maxStep = Math.max(state.wizard.maxStep || 1, state.wizard.step);
   document.querySelectorAll(".wizard-panel").forEach(panel => {
     panel.classList.toggle("active", Number(panel.dataset.stepPanel) === state.wizard.step);
   });
   document.querySelectorAll(".wizard-step").forEach(button => {
     const value = Number(button.dataset.step);
     button.classList.toggle("active", value === state.wizard.step);
-    button.classList.toggle("completed", value < state.wizard.step);
+    button.classList.toggle("completed", value < state.wizard.maxStep && value !== state.wizard.step);
+    button.disabled = value > state.wizard.maxStep;
   });
   $("wizardPrevious").disabled = state.wizard.step === 1;
   $("wizardNext").hidden = state.wizard.step === 4;
@@ -1379,11 +1528,31 @@ async function nextWizardStep() {
   }
   if (state.wizard.step === 3) {
     if (!$("generatedSystemPrompt").value.trim()) {
-      showToast("Prompt 不完整", "请补充角色与系统提示词。", "error");
+      showWizardError("请补充角色与系统提示词。", { step: 3, field: $("generatedSystemPrompt") });
       return;
     }
   }
+  clearWizardError();
   await setWizardStep(state.wizard.step + 1);
+}
+
+function filterWizardCapabilities() {
+  const query = $("wizardCapabilitySearch").value.trim().toLowerCase();
+  const filter = $("wizardCapabilityFilter").value;
+  const items = [...document.querySelectorAll("[data-capability-item]")];
+  let visible = 0;
+  items.forEach(item => {
+    const checkbox = item.querySelector('input[type="checkbox"]');
+    const selected = Boolean(checkbox?.checked);
+    const available = item.dataset.capabilityStatus === "ready" && !checkbox?.disabled;
+    const matchesQuery = !query || item.textContent.toLowerCase().includes(query);
+    const matchesFilter = filter === "all"
+      || (filter === "selected" && selected)
+      || (filter === "available" && available);
+    item.hidden = !(matchesQuery && matchesFilter);
+    if (!item.hidden) visible += 1;
+  });
+  $("wizardCapabilityCount").textContent = `${visible} 个资源`;
 }
 
 function renderWizardCapabilities() {
@@ -1397,7 +1566,7 @@ function renderWizardCapabilities() {
   $("agentToolList").innerHTML = state.catalog.tool
     .filter(item => item.status === "ready")
     .map(item => `
-      <label class="selection-item ${boundToolIds.has(item.resourceId) ? "selected" : ""}">
+      <label class="selection-item ${boundToolIds.has(item.resourceId) ? "selected" : ""}" data-capability-item data-capability-kind="tool" data-capability-status="${escapeHtml(item.status)}">
         <input type="checkbox" data-tool-id="${escapeHtml(item.resourceId)}" ${boundToolIds.has(item.resourceId) ? "checked" : ""} ${bindingsSupported ? "" : "disabled"}>
         <span class="capability-icon"><svg data-icon="wrench"></svg></span>
         <span class="selection-item-copy"><strong>${escapeHtml(item.displayName)}</strong><span>${escapeHtml(item.description || "结构化 Tool Contract")} · ${escapeHtml(item.contract?.sideEffect || "none")}</span></span>
@@ -1408,7 +1577,7 @@ function renderWizardCapabilities() {
   $("agentSkillList").innerHTML = visibleSkills.map(item => {
     const required = state.wizard.template === "research" && item.name === "deep-research-methodology";
     return `
-    <label class="selection-item ${boundSkillIds.has(item.resourceId) ? "selected" : ""}">
+    <label class="selection-item ${boundSkillIds.has(item.resourceId) ? "selected" : ""}" data-capability-item data-capability-kind="skill" data-capability-status="${escapeHtml(item.status)}">
       <input type="checkbox" data-skill-id="${escapeHtml(item.resourceId)}" ${boundSkillIds.has(item.resourceId) ? "checked" : ""} ${required || !bindingsSupported ? "disabled" : ""}>
       <span class="capability-icon"><svg data-icon="sparkles"></svg></span>
       <span class="selection-item-copy"><strong>${escapeHtml(item.displayName)}</strong><span>${escapeHtml(item.description || "版本化 Skill")}${required ? " · 模板必需" : ""}</span></span>
@@ -1418,7 +1587,7 @@ function renderWizardCapabilities() {
   }).join("") || '<div class="selection-item"><span class="selection-item-copy"><strong>没有已安装的 Skill</strong><span>可在工程资源中导入版本化 Skill</span></span></div>';
   $("agentMcpList").innerHTML = state.catalog.mcp.length
     ? state.catalog.mcp.map(item => `
-      <label class="selection-item ${boundMcpIds.has(item.resourceId) ? "selected" : ""}">
+      <label class="selection-item ${boundMcpIds.has(item.resourceId) ? "selected" : ""}" data-capability-item data-capability-kind="mcp" data-capability-status="${escapeHtml(item.status)}">
         <input type="checkbox" data-mcp-id="${escapeHtml(item.resourceId)}" ${boundMcpIds.has(item.resourceId) ? "checked" : ""} ${item.status !== "ready" || !bindingsSupported ? "disabled" : ""}>
         <span class="capability-icon"><svg data-icon="network"></svg></span>
         <span class="selection-item-copy"><strong>${escapeHtml(item.displayName)}</strong><span>${escapeHtml(item.description || "MCP Server")} · ${item.health?.toolCount || 0} Tool</span></span>
@@ -1436,6 +1605,7 @@ function renderWizardCapabilities() {
     $("mcpMissingAlert").querySelector("p").textContent = "CodexRuntimeAdapter 当前使用 Codex 原生工具；ksadk Tool、MCP 与 Skill 只可绑定到 ADK 或 LangGraph。";
   }
   injectIcons($("view-create"));
+  filterWizardCapabilities();
   renderWizardSummary();
 }
 
@@ -1454,6 +1624,26 @@ function renderWizardSummary() {
   $("summaryStrategy").textContent = state.wizard.template === "research" ? "Plan · Act · Observe" : "Direct";
   $("summaryPolicyTitle").textContent = policy.title;
   $("summaryPolicyDescription").textContent = policy.description;
+  $("summaryCapabilityCount").textContent = state.wizard.selectedSkillIds.length
+    + state.wizard.selectedMcpIds.length
+    + state.wizard.selectedToolIds.length;
+}
+
+function toggleWizardSummary(forceOpen = null) {
+  const summary = $("wizardSummary");
+  const open = forceOpen === null ? summary.hidden : Boolean(forceOpen);
+  summary.hidden = !open;
+  $("wizardSummaryBackdrop").hidden = !open;
+  $("toggleWizardSummary").setAttribute("aria-expanded", String(open));
+  if (open) $("closeWizardSummary").focus();
+}
+
+function closeWizardSummary() {
+  const summary = $("wizardSummary");
+  if (!summary) return;
+  summary.hidden = true;
+  $("wizardSummaryBackdrop").hidden = true;
+  $("toggleWizardSummary").setAttribute("aria-expanded", "false");
 }
 
 function renderReview() {
@@ -1547,6 +1737,7 @@ async function submitCreateAgent(event) {
       "Agent 已创建",
       "YAML Revision、RuntimeRef 和能力绑定已写入工作区。"
     );
+    clearWizardDraft();
     if ($("buildAfterCreate").checked) {
       switchView("builds");
       renderBuildWorkspace();
@@ -1556,8 +1747,7 @@ async function submitCreateAgent(event) {
       await openAgentDetail(created.metadata.id);
     }
   } catch (error) {
-    $("createError").hidden = false;
-    $("createErrorMessage").textContent = error.message;
+    showWizardError(error.message, { step: 4 });
     showToast("创建失败", error.message, "error");
   } finally {
     setButtonLoading(button, false);
@@ -1815,6 +2005,12 @@ function renderChatAgent() {
     ? "输入调研问题，Enter 发送，Shift + Enter 换行"
     : "输入消息，Enter 发送，Shift + Enter 换行";
   const bindings = draft?.spec?.bindings || {};
+  $("runtimeEdgeState").textContent = draft ? "当前执行" : "等待 Agent";
+  $("runtimeCloudState").textContent = "尚未连接";
+  $("runtimeDispatchMode").textContent = "本地直连";
+  $("runtimeRoutePolicy").textContent = draft
+    ? "输入、上下文和工具调用保留在当前本地工作区；构建产物可按 Revision 部署到云端。"
+    : "选择 Agent 后显示执行位置与路由约束。";
   $("inspectorAgentSummary").innerHTML = draft
     ? `
       <div><dt>Revision</dt><dd>r${draft.metadata.revision}</dd></div>
@@ -2298,27 +2494,43 @@ function renderSpanTimeline(spans) {
   ));
   $("eventTimeline").innerHTML = ordered.length
     ? ordered.map(span => `
-      <div class="timeline-event">
+      <div class="timeline-event ${spanExecutionLocation(span)}">
         <span class="timeline-marker"></span>
         <div class="timeline-copy">
           <strong>${escapeHtml(span.name)}</strong>
-          <span>${escapeHtml(span.kind)} · ${escapeHtml(formatDuration(span.durationMs))} · ${escapeHtml(span.status)}</span>
+          <span>${spanExecutionLocation(span) === "cloud" ? "Cloud" : "Edge"} · ${escapeHtml(span.kind)} · ${escapeHtml(formatDuration(span.durationMs))} · ${escapeHtml(span.status)}</span>
         </div>
       </div>
     `).join("")
     : '<div class="timeline-empty">当前 Trace 没有 Span</div>';
 }
 
+function spanExecutionLocation(span) {
+  const attributes = span.attributes || {};
+  const location = String(
+    attributes["agentkit.execution.location"]
+      || attributes["deployment.environment"]
+      || attributes["cloud.provider"]
+      || "edge"
+  ).toLowerCase();
+  return location.includes("cloud") || attributes["cloud.provider"] ? "cloud" : "edge";
+}
+
 function renderTimeline(events) {
   const visibleEvents = compactTimelineEvents(events);
   $("eventTimeline").innerHTML = visibleEvents.length
     ? visibleEvents.map(event => `
-      <div class="timeline-event">
+      <div class="timeline-event ${eventExecutionLocation(event)}">
         <span class="timeline-marker"></span>
-        <div class="timeline-copy"><strong>${escapeHtml(event.type)}</strong><span>${escapeHtml(eventSummary(event))}</span></div>
+        <div class="timeline-copy"><strong>${escapeHtml(event.type)}</strong><span>${eventExecutionLocation(event) === "cloud" ? "Cloud" : "Edge"} · ${escapeHtml(eventSummary(event))}</span></div>
       </div>
     `).join("")
     : '<div class="timeline-empty">发送消息后显示模型和 Tool 事件</div>';
+}
+
+function eventExecutionLocation(event) {
+  const location = String(event?.data?.location || event?.data?.environment || "edge").toLowerCase();
+  return location.includes("cloud") ? "cloud" : "edge";
 }
 
 function clearChatRunInspector() {
@@ -2644,6 +2856,136 @@ function resourceActionMarkup(item) {
 
 function resourceIcon(kind) {
   return { model: "cpu", tool: "wrench", mcp: "network", skill: "sparkles" }[kind] || "database";
+}
+
+function effectiveResourceStatus(item) {
+  if (item.kind !== "model") return item.status;
+  const reference = modelCredentialReference(item);
+  return state.credentialStatuses[reference]?.configured ? "ready" : "missing-secret";
+}
+
+function renderRuntimeResources() {
+  if (!$("runtimeResourceStatus")) return;
+  const ready = Boolean(state.bootstrap?.workspace);
+  $("runtimeResourceStatus").className = `status-badge ${ready ? "success" : "warning"}`;
+  $("runtimeResourceStatus").textContent = ready ? "Local Ready" : "未连接";
+  $("runtimeMetricLocal").textContent = ready ? "Ready" : "Disconnected";
+  $("runtimeResourceWorkspace").textContent = state.bootstrap?.workspace?.path || "等待本地工作区";
+  $("runtimeMetricCloud").textContent = "未连接";
+  const models = state.catalog.model.filter(item => effectiveResourceStatus(item) === "ready");
+  const capabilities = [
+    ...state.catalog.tool,
+    ...state.catalog.mcp,
+    ...state.catalog.skill
+  ].filter(item => effectiveResourceStatus(item) === "ready");
+  $("runtimeMetricModels").textContent = models.length;
+  $("runtimeMetricCapabilities").textContent = capabilities.length;
+  $("runtimeMetricRuns").textContent = state.runs.length;
+  const labels = {
+    model: ["Model Profile", "cpu"],
+    tool: ["Tool", "wrench"],
+    mcp: ["MCP Server", "network"],
+    skill: ["Skill", "sparkles"]
+  };
+  $("runtimeResourceGroups").innerHTML = Object.entries(labels).map(([kind, [label, icon]]) => {
+    const items = state.catalog[kind] || [];
+    return `
+      <article class="runtime-resource-group">
+        <header><span class="runtime-group-icon"><svg data-icon="${icon}"></svg></span><div><strong>${label}</strong><small>${items.length} 个已发现</small></div></header>
+        <div class="runtime-resource-list">${items.length
+          ? items.map(item => {
+            const status = effectiveResourceStatus(item);
+            return `
+              <div class="runtime-resource-row">
+                <span class="resource-state ${status === "ready" ? "ready" : "warning"}"></span>
+                <span><strong>${escapeHtml(item.displayName)}</strong><small>${escapeHtml(item.version || item.source || item.name)}</small></span>
+                <span class="status-badge ${status === "ready" ? "success" : "warning"}">${status === "ready" ? "Ready" : escapeHtml(status)}</span>
+              </div>
+            `;
+          }).join("")
+          : '<div class="runtime-resource-empty">当前工作区未发现此类资源</div>'}
+        </div>
+      </article>
+    `;
+  }).join("");
+  injectIcons($("view-runtime-resources"));
+}
+
+function orchestrationNode(icon, title, subtitle, { location = "edge", muted = false } = {}) {
+  return `
+    <div class="pipeline-node ${location} ${muted ? "muted" : ""}">
+      <span class="pipeline-node-icon"><svg data-icon="${icon}"></svg></span>
+      <span><strong>${escapeHtml(title)}</strong><small>${escapeHtml(subtitle)}</small></span>
+      <span class="pipeline-location">${location === "cloud" ? "Cloud" : "Edge"}</span>
+    </div>
+  `;
+}
+
+function orchestrationConnector(label = "") {
+  return `<div class="pipeline-connector"><span></span>${label ? `<small>${escapeHtml(label)}</small>` : ""}</div>`;
+}
+
+function renderOrchestration() {
+  if (!$("orchestrationWorkbench")) return;
+  const draft = state.current?.draft;
+  $("orchestrationEmpty").hidden = Boolean(draft);
+  $("orchestrationWorkbench").hidden = !draft;
+  if (!draft) {
+    $("orchestrationRuntimeStatus").className = "status-badge neutral";
+    $("orchestrationRuntimeStatus").textContent = "未选择 Agent";
+    return;
+  }
+  const bindings = draft.spec?.bindings || {};
+  const runtimeType = draft.spec?.runtime?.type
+    || draft.metadata?.labels?.["agentkit.ksyun.com/framework"]
+    || "runtime";
+  const strategy = draft.spec?.execution?.strategy || "direct";
+  const model = resourceById(bindings.modelProfileId);
+  $("orchestrationRuntimeStatus").className = "status-badge success";
+  $("orchestrationRuntimeStatus").textContent = "Local Runtime";
+  $("orchestrationAgentName").textContent = draft.metadata.name;
+  $("orchestrationAgentMeta").textContent = `${draft.metadata.id} · revision ${draft.metadata.revision} · ${runtimeType}`;
+  $("orchestrationRouteMode").className = "route-mode-badge edge";
+  $("orchestrationRouteMode").textContent = "EDGE";
+  const capabilityCount = (bindings.tools?.length || 0)
+    + (bindings.mcpServers?.length || 0)
+    + (bindings.skills?.length || 0);
+  const nodes = [
+    orchestrationNode("messages", "任务输入", "用户消息与会话上下文"),
+    orchestrationConnector("dispatch"),
+    orchestrationNode("code", `${runtimeType} RuntimeAdapter`, `${strategy} · 本地执行`),
+    orchestrationConnector("model"),
+    orchestrationNode("cpu", model?.displayName || bindings.modelProfileId || "未绑定模型", "Model Profile")
+  ];
+  if (capabilityCount) {
+    nodes.push(orchestrationConnector("capabilities"));
+    nodes.push(orchestrationNode(
+      "network",
+      `${capabilityCount} 个能力绑定`,
+      `${bindings.tools?.length || 0} Tool · ${bindings.mcpServers?.length || 0} MCP · ${bindings.skills?.length || 0} Skill`
+    ));
+  }
+  nodes.push(orchestrationConnector("response"));
+  nodes.push(orchestrationNode("check", "结构化输出", "返回会话并写入 Trace"));
+  $("orchestrationPipeline").innerHTML = nodes.join("");
+  $("orchestrationSummary").innerHTML = `
+    <div><dt>Revision</dt><dd>r${draft.metadata.revision}</dd></div>
+    <div><dt>执行位置</dt><dd>Edge · Local</dd></div>
+    <div><dt>Runtime</dt><dd>${escapeHtml(runtimeType)}</dd></div>
+    <div><dt>策略</dt><dd>${escapeHtml(strategy)}</dd></div>
+    <div><dt>最大步骤</dt><dd>${escapeHtml(draft.spec?.execution?.maxSteps || "-")}</dd></div>
+    <div><dt>云端</dt><dd>未连接</dd></div>
+  `;
+  const recentRuns = agentRuns().slice(-5).reverse();
+  $("orchestrationDispatchLog").innerHTML = recentRuns.length
+    ? recentRuns.map(run => `
+      <div class="dispatch-log-row">
+        <span class="dispatch-status ${String(run.status).toLowerCase()}"></span>
+        <span><strong>${escapeHtml(shortId(run.input || "Run", 34))}</strong><small>${escapeHtml(formatDate(run.startedAt))} · ${escapeHtml(run.status)}</small></span>
+      </div>
+    `).join("")
+    : '<div class="dispatch-log-empty">当前 Agent 还没有运行记录</div>';
+  injectIcons($("view-orchestration"));
 }
 
 function renderModelCredentialStatus(status) {
@@ -3234,6 +3576,7 @@ function bindEvents() {
     renderQuickManifestPreview();
   };
   $("emptyCreateAgent").onclick = openCreate;
+  $("orchestrationCreateAgent").onclick = openCreate;
   $("exitCreate").onclick = () => {
     const editingAgentId = state.editingAgentId;
     state.editingAgentId = null;
@@ -3258,7 +3601,21 @@ function bindEvents() {
   $("agentPrompt").oninput = updatePromptCounter;
   $("wizardPrevious").onclick = () => setWizardStep(state.wizard.step - 1);
   $("wizardNext").onclick = () => nextWizardStep().catch(handleGlobalError);
+  $("saveWizardDraft").onclick = () => saveWizardDraft();
+  $("toggleWizardSummary").onclick = () => toggleWizardSummary();
+  $("closeWizardSummary").onclick = closeWizardSummary;
+  $("wizardSummaryBackdrop").onclick = closeWizardSummary;
+  $("wizardCapabilitySearch").oninput = filterWizardCapabilities;
+  $("wizardCapabilityFilter").onchange = filterWizardCapabilities;
   $("createAgentForm").onsubmit = event => submitCreateAgent(event);
+  $("createAgentForm").addEventListener("input", event => {
+    if (event.target.matches("input, textarea, select")) {
+      event.target.removeAttribute("aria-invalid");
+      event.target.closest(".field")?.classList.remove("invalid");
+      if (!$("createError").hidden) clearWizardError();
+      $("wizardDraftState").textContent = "有未保存更改";
+    }
+  });
   $("quickAgentEditorForm").onsubmit = event => submitQuickCreateAgent(event);
   $("authoringConversationSend").onclick = () => composeConversationAgent().catch(handleGlobalError);
   $("authoringConversationInput").onkeydown = event => {
@@ -3374,6 +3731,8 @@ function bindEvents() {
         switchView("resources", { title: navigation.textContent.trim() });
       } else {
         if (view === "builds") renderBuildWorkspace();
+        if (view === "runtime-resources") renderRuntimeResources();
+        if (view === "orchestration") renderOrchestration();
         switchView(view);
         if (view === "observability") refreshTraces().catch(handleGlobalError);
       }
@@ -3417,7 +3776,7 @@ function bindEvents() {
       return;
     }
     const wizardStep = event.target.closest(".wizard-step");
-    if (wizardStep && Number(wizardStep.dataset.step) < state.wizard.step) {
+    if (wizardStep && Number(wizardStep.dataset.step) <= state.wizard.maxStep) {
       setWizardStep(Number(wizardStep.dataset.step));
       return;
     }
@@ -3450,6 +3809,7 @@ function bindEvents() {
       else selected.delete(id);
       state.wizard.selectedToolIds = [...selected];
       state.wizard.autoBindTools = false;
+      filterWizardCapabilities();
       composeAgent().catch(handleGlobalError);
       return;
     }
@@ -3460,6 +3820,7 @@ function bindEvents() {
       if (skillCheckbox.checked) selected.add(id);
       else selected.delete(id);
       state.wizard.selectedSkillIds = [...selected];
+      filterWizardCapabilities();
       composeAgent().catch(handleGlobalError);
       return;
     }
@@ -3471,6 +3832,7 @@ function bindEvents() {
       else selected.delete(id);
       state.wizard.selectedMcpIds = [...selected];
       state.wizard.autoBindMcp = false;
+      filterWizardCapabilities();
       composeAgent().catch(handleGlobalError);
       return;
     }
@@ -3554,6 +3916,7 @@ function bindEvents() {
   document.addEventListener("keydown", event => {
     if (event.key === "Escape") {
       document.querySelectorAll(".overlay:not([hidden])").forEach(node => closeOverlay(node.id));
+      closeWizardSummary();
       $("sidebar").classList.remove("open");
     }
   });
@@ -3573,6 +3936,8 @@ async function refreshAll() {
     renderMessages();
   }
   if (state.view === "observability") await refreshTraces();
+  renderRuntimeResources();
+  renderOrchestration();
 }
 
 function handleGlobalError(error) {
@@ -3599,6 +3964,8 @@ async function initialize() {
     }
     resetWizard();
     renderResources();
+    renderRuntimeResources();
+    renderOrchestration();
     if (
       route.view === "chat"
       && route.agentId
@@ -3609,6 +3976,10 @@ async function initialize() {
       switchView("observability");
       await refreshTraces({ selectFirst: !route.traceId });
       if (route.traceId) await openTrace(route.traceId, { switchToView: false });
+    } else if (["runtime-resources", "orchestration"].includes(route.view)) {
+      switchView(route.view);
+      if (route.view === "runtime-resources") renderRuntimeResources();
+      else renderOrchestration();
     } else {
       switchView("agents");
     }

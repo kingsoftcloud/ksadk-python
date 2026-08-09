@@ -48,7 +48,13 @@ def test_codex_capabilities_are_integrated_into_the_original_studio_shell(
     assert "selectDefaultAgent" in app_script.text
     assert "openEditAgent" in app_script.text
     assert "deleteAgent" in app_script.text
-    assert "localStorage" not in app_script.text
+    draft_start = app_script.text.index("function collectWizardDraft()")
+    draft_end = app_script.text.index("function saveWizardDraft", draft_start)
+    draft_serializer = app_script.text[draft_start:draft_end]
+    assert "modelCredentialValue" not in draft_serializer
+    assert "credentialStatuses" not in draft_serializer
+    assert "sessionToken" not in draft_serializer
+    assert "csrf" not in draft_serializer
     assert "sessionStorage" not in app_script.text
 
 

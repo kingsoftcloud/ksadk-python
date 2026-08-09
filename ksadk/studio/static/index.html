@@ -67,6 +67,12 @@
           <button class="nav-item" data-view="observability" type="button" aria-label="可观测" title="可观测">
             <svg data-icon="activity"></svg><span>可观测</span>
           </button>
+          <button class="nav-item" data-view="runtime-resources" type="button" aria-label="运行资源" title="运行资源">
+            <svg data-icon="cpu"></svg><span>运行资源</span>
+          </button>
+          <button class="nav-item" data-view="orchestration" type="button" aria-label="任务编排" title="任务编排">
+            <svg data-icon="network"></svg><span>任务编排</span>
+          </button>
         </div>
       </nav>
 
@@ -190,15 +196,41 @@
                 <h1 id="createPageTitle">创建 Agent</h1>
                 <p id="createPageDescription">从系统提示词开始，按需组合模型、Tool、MCP 与 Skill。</p>
               </div>
-              <div class="draft-state"><span class="status-dot neutral"></span>配置草稿</div>
+              <div class="draft-state"><span class="status-dot neutral"></span><span id="wizardDraftState">尚未保存</span></div>
             </header>
 
-            <nav class="authoring-mode-tabs" id="authoringModeTabs" aria-label="创建方式">
-              <button class="active" data-authoring-mode="quick" type="button"><svg data-icon="zap"></svg><span><strong>快速创建</strong><small>配置 YAML Revision</small></span></button>
-              <button data-authoring-mode="conversation" type="button"><svg data-icon="messages"></svg><span><strong>对话构建</strong><small>多轮生成 Draft Patch</small></span></button>
-              <button data-authoring-mode="import" type="button"><svg data-icon="upload"></svg><span><strong>导入</strong><small>YAML / Agent ZIP</small></span></button>
-              <button data-authoring-mode="project" type="button"><svg data-icon="folder"></svg><span><strong>项目识别</strong><small>检测 ADK / LangGraph</small></span></button>
-            </nav>
+            <div class="create-workbench">
+              <aside class="create-rail">
+                <div class="create-rail-label">创建方式</div>
+                <nav class="authoring-mode-tabs" id="authoringModeTabs" aria-label="创建方式">
+                  <button class="active" data-authoring-mode="quick" type="button"><svg data-icon="zap"></svg><span><strong>快速创建</strong><small>配置 YAML Revision</small></span></button>
+                  <button data-authoring-mode="conversation" type="button"><svg data-icon="messages"></svg><span><strong>对话构建</strong><small>多轮生成 Draft Patch</small></span></button>
+                  <button data-authoring-mode="import" type="button"><svg data-icon="upload"></svg><span><strong>导入</strong><small>YAML / Agent ZIP</small></span></button>
+                  <button data-authoring-mode="project" type="button"><svg data-icon="folder"></svg><span><strong>项目识别</strong><small>检测 ADK / LangGraph</small></span></button>
+                </nav>
+                <div class="create-rail-divider"></div>
+                <div class="create-rail-label wizard-step-label">配置步骤</div>
+                <nav class="wizard-steps" aria-label="创建步骤">
+                  <button class="wizard-step active" data-step="1" type="button">
+                    <span class="step-number">1</span>
+                    <span><strong>定义 Agent</strong><small>模板与系统提示词</small></span>
+                  </button>
+                  <button class="wizard-step" data-step="2" type="button">
+                    <span class="step-number">2</span>
+                    <span><strong>绑定能力</strong><small>Model · Tool · MCP · Skill</small></span>
+                  </button>
+                  <button class="wizard-step" data-step="3" type="button">
+                    <span class="step-number">3</span>
+                    <span><strong>Prompt 与策略</strong><small>检查并调整</small></span>
+                  </button>
+                  <button class="wizard-step" data-step="4" type="button">
+                    <span class="step-number">4</span>
+                    <span><strong>检查并创建</strong><small>构建与打开会话</small></span>
+                  </button>
+                </nav>
+              </aside>
+
+              <div class="create-stage">
 
             <section class="authoring-mode-panel" id="authoringConversationPanel" hidden>
               <div class="authoring-panel-heading"><div><span class="eyebrow">Conversation authoring</span><h2>通过多轮对话设计 Agent</h2><p>模型只返回结构化 Draft Patch；确认前不会写入工作区。</p></div><span class="status-badge neutral">Inspect → Confirm</span></div>
@@ -291,25 +323,6 @@
             </div>
 
             <div class="wizard-layout">
-              <aside class="wizard-steps" aria-label="创建步骤">
-                <button class="wizard-step active" data-step="1" type="button">
-                  <span class="step-number">1</span>
-                  <span><strong>定义 Agent</strong><small>模板与系统提示词</small></span>
-                </button>
-                <button class="wizard-step" data-step="2" type="button">
-                  <span class="step-number">2</span>
-                  <span><strong>绑定能力</strong><small>Model · Tool · MCP · Skill</small></span>
-                </button>
-                <button class="wizard-step" data-step="3" type="button">
-                  <span class="step-number">3</span>
-                  <span><strong>Prompt 与策略</strong><small>检查并调整</small></span>
-                </button>
-                <button class="wizard-step" data-step="4" type="button">
-                  <span class="step-number">4</span>
-                  <span><strong>检查并创建</strong><small>构建与打开会话</small></span>
-                </button>
-              </aside>
-
               <form class="wizard-content" id="createAgentForm">
                 <section class="wizard-panel active" data-step-panel="1">
                   <div class="panel-heading">
@@ -406,6 +419,19 @@
                   <div class="panel-heading">
                     <span class="panel-index">02</span>
                     <div><h2>选择 Agent 可以使用的能力</h2><p>所有依赖都会在构建时锁定版本和摘要，并由权限策略控制调用。</p></div>
+                  </div>
+
+                  <div class="capability-browser-toolbar">
+                    <div class="search-field">
+                      <svg data-icon="search" aria-hidden="true"></svg>
+                      <input id="wizardCapabilitySearch" type="search" placeholder="搜索 Tool、MCP 或 Skill" aria-label="搜索能力资源">
+                    </div>
+                    <select class="compact-select" id="wizardCapabilityFilter" aria-label="筛选能力资源">
+                      <option value="all">全部资源</option>
+                      <option value="selected">已选择</option>
+                      <option value="available">可用资源</option>
+                    </select>
+                    <span class="capability-result-count" id="wizardCapabilityCount">0 个资源</span>
                   </div>
 
                   <div class="capability-section">
@@ -508,17 +534,24 @@
                     <input id="buildAfterCreate" type="checkbox" checked>
                     <span><strong>创建后立即构建并打开会话</strong><small>生成不可变 AgentBundle，完成后进入 Chat 工作台</small></span>
                   </label>
-                  <div class="inline-alert error" id="createError" hidden>
-                    <svg data-icon="circle-alert"></svg>
-                    <div><strong>创建失败</strong><p id="createErrorMessage"></p></div>
-                  </div>
                 </section>
+
+                <div class="inline-alert error wizard-error-summary" id="createError" role="alert" hidden>
+                  <svg data-icon="circle-alert"></svg>
+                  <div><strong>需要处理一项配置</strong><p id="createErrorMessage"></p></div>
+                </div>
 
                 <footer class="wizard-actions">
                   <button class="button secondary" id="wizardPrevious" type="button" disabled>
                     <svg data-icon="arrow-left"></svg><span>上一步</span>
                   </button>
+                  <button class="button tertiary" id="saveWizardDraft" type="button">
+                    <svg data-icon="copy"></svg><span>保存草稿</span>
+                  </button>
                   <span class="wizard-progress" id="wizardProgress">第 1 步，共 4 步</span>
+                  <button class="button tertiary" id="toggleWizardSummary" type="button" aria-expanded="false" aria-controls="wizardSummary">
+                    <svg data-icon="panel-right"></svg><span>配置摘要</span><span class="summary-count" id="summaryCapabilityCount">0</span>
+                  </button>
                   <button class="button accent" id="wizardNext" type="button">
                     <span>继续</span><svg data-icon="arrow-right"></svg>
                   </button>
@@ -528,8 +561,9 @@
                 </footer>
               </form>
 
-              <aside class="wizard-summary">
-                <div class="summary-header"><span>配置摘要</span><span class="status-badge neutral">Draft</span></div>
+              <div class="wizard-summary-backdrop" id="wizardSummaryBackdrop" hidden></div>
+              <aside class="wizard-summary" id="wizardSummary" role="dialog" aria-modal="true" aria-labelledby="wizardSummaryTitle" hidden>
+                <div class="summary-header"><span id="wizardSummaryTitle">配置摘要</span><button class="icon-button tertiary" id="closeWizardSummary" type="button" aria-label="关闭配置摘要" title="关闭"><svg data-icon="x"></svg></button></div>
                 <dl>
                   <div><dt>模板</dt><dd id="summaryTemplate">空白 Agent</dd></div>
                   <div><dt>Runtime</dt><dd id="summaryRuntime">Codex</dd></div>
@@ -549,6 +583,8 @@
                   <div><strong>不可变构建</strong><p>Skill、MCP 和 Tool 将锁定版本与摘要。</p></div>
                 </div>
               </aside>
+            </div>
+              </div>
             </div>
           </div>
         </section>
@@ -672,6 +708,21 @@
                 <div><strong>运行详情</strong><span id="inspectorRunId">尚未运行</span></div>
                 <span class="status-badge neutral" id="inspectorStatus">IDLE</span>
               </div>
+              <div class="inspector-section route-inspector-section">
+                <div class="inspector-title">执行位置</div>
+                <div class="execution-route" id="executionRoute">
+                  <div class="route-node edge active">
+                    <span class="route-node-icon"><svg data-icon="cpu"></svg></span>
+                    <span><strong>Edge · Local</strong><small id="runtimeEdgeState">当前执行</small></span>
+                  </div>
+                  <div class="route-connector"><span></span><strong id="runtimeDispatchMode">本地直连</strong></div>
+                  <div class="route-node cloud">
+                    <span class="route-node-icon"><svg data-icon="cloud-upload"></svg></span>
+                    <span><strong>Cloud</strong><small id="runtimeCloudState">尚未连接</small></span>
+                  </div>
+                </div>
+                <p class="route-policy-note" id="runtimeRoutePolicy">输入与工具执行保留在本地工作区。</p>
+              </div>
               <div class="inspector-section">
                 <div class="inspector-title">Agent 配置</div>
                 <dl id="inspectorAgentSummary"></dl>
@@ -727,6 +778,54 @@
                 <span class="empty-icon"><svg data-icon="database"></svg></span>
                 <h2>没有匹配的资源</h2><p>调整筛选条件，或添加一个新的工程资源。</p>
               </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="view" id="view-runtime-resources" data-title="运行资源">
+          <div class="page-container runtime-resource-page">
+            <header class="page-header">
+              <div><h1>运行资源</h1><p>查看当前端侧 Runtime、模型和能力资源的真实就绪状态。</p></div>
+              <span class="status-badge neutral" id="runtimeResourceStatus">正在检查</span>
+            </header>
+            <div class="runtime-overview-grid">
+              <div class="runtime-metric edge"><span>端侧 Runtime</span><strong id="runtimeMetricLocal">检查中</strong><small id="runtimeResourceWorkspace">本地工作区</small></div>
+              <div class="runtime-metric cloud"><span>云端连接</span><strong id="runtimeMetricCloud">未连接</strong><small>一期保留部署入口</small></div>
+              <div class="runtime-metric"><span>可用模型</span><strong id="runtimeMetricModels">0</strong><small>Model Profile</small></div>
+              <div class="runtime-metric"><span>能力资源</span><strong id="runtimeMetricCapabilities">0</strong><small>Tool · MCP · Skill</small></div>
+              <div class="runtime-metric"><span>运行记录</span><strong id="runtimeMetricRuns">0</strong><small>当前工作区</small></div>
+            </div>
+            <section class="runtime-resource-section">
+              <div class="section-heading"><div><h2>本地能力清单</h2><p>仅展示 Catalog 返回的资源和状态，不使用模拟硬件指标。</p></div></div>
+              <div class="runtime-resource-groups" id="runtimeResourceGroups"></div>
+            </section>
+          </div>
+        </section>
+
+        <section class="view" id="view-orchestration" data-title="任务编排">
+          <div class="page-container orchestration-page">
+            <header class="page-header">
+              <div><h1>任务编排</h1><p>把当前 Agent 的声明式配置映射为可检查的执行链路与端云路由。</p></div>
+              <span class="status-badge neutral" id="orchestrationRuntimeStatus">未选择 Agent</span>
+            </header>
+            <div class="orchestration-empty" id="orchestrationEmpty" hidden>
+              <span class="empty-icon"><svg data-icon="network"></svg></span>
+              <h2>先选择或创建一个 Agent</h2>
+              <p>编排视图会读取 Agent Revision、RuntimeRef 和能力绑定生成真实执行链路。</p>
+              <button class="button accent" id="orchestrationCreateAgent" type="button"><svg data-icon="plus"></svg><span>创建 Agent</span></button>
+            </div>
+            <div class="orchestration-workbench" id="orchestrationWorkbench">
+              <section class="orchestration-canvas">
+                <div class="section-heading"><div><h2 id="orchestrationAgentName">当前 Agent</h2><p id="orchestrationAgentMeta">等待加载 Revision</p></div><span class="route-mode-badge edge" id="orchestrationRouteMode">EDGE</span></div>
+                <div class="orchestration-pipeline" id="orchestrationPipeline"></div>
+              </section>
+              <aside class="orchestration-aside">
+                <div class="aside-title">路由与约束</div>
+                <dl id="orchestrationSummary"></dl>
+                <div class="aside-divider"></div>
+                <div class="aside-title">最近调度</div>
+                <div class="dispatch-log" id="orchestrationDispatchLog"></div>
+              </aside>
             </div>
           </div>
         </section>
