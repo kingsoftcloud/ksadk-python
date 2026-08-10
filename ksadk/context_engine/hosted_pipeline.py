@@ -31,14 +31,17 @@ from ksadk.context_engine.contributors import (
 )
 from ksadk.context_engine.models import ContextItem
 from ksadk.context_engine.planner import ContextPlanner, build_budget
-from ksadk.context_engine.policies import ContextBudgetPolicy, ContextPolicy
+from ksadk.context_engine.policies import ContextPolicy
 from ksadk.context_engine.tokenizer import get_default_token_counter
 
 
 def hosted_pipeline_enabled() -> bool:
     """全局 kill switch（方案 §14.2）。默认关——关闭时 build_run_input 走旧 PR B 分支。"""
     return str(os.environ.get("KSADK_CONTEXT_ENGINE_V2_ENABLED", "")).strip().lower() in (
-        "1", "true", "yes", "on",
+        "1",
+        "true",
+        "yes",
+        "on",
     )
 
 
@@ -70,20 +73,22 @@ def _history_to_items(history: list[dict[str, str]]) -> list[ContextItem]:
         if not content:
             continue
         text = content if isinstance(content, str) else str(content)
-        items.append(ContextItem(
-            item_id=f"hist:{index}",
-            kind="history_round",
-            content=text,
-            source="transcript",
-            trust_level="developer",
-            priority=0,
-            estimated_tokens=counter.count_text(text),
-            required=False,
-            droppable=True,
-            group_id=f"round:{index}",
-            seq_start=index,
-            metadata={"role": role if role in ("user", "assistant", "model") else "assistant"},
-        ))
+        items.append(
+            ContextItem(
+                item_id=f"hist:{index}",
+                kind="history_round",
+                content=text,
+                source="transcript",
+                trust_level="developer",
+                priority=0,
+                estimated_tokens=counter.count_text(text),
+                required=False,
+                droppable=True,
+                group_id=f"round:{index}",
+                seq_start=index,
+                metadata={"role": role if role in ("user", "assistant", "model") else "assistant"},
+            )
+        )
     return items
 
 
@@ -94,6 +99,7 @@ def _working_state_to_item(working_state: Mapping[str, Any] | None) -> ContextIt
     # 复用 runtime_input 的渲染，保证 XML 格式与重注入一致。
     try:
         from ksadk.conversations.runtime_input import _render_working_state_xml
+
         xml = _render_working_state_xml(working_state)
     except Exception:  # noqa: BLE001
         return None
@@ -130,7 +136,9 @@ def _compiled_prompt_to_item(compiled_prompt: Mapping[str, Any] | None) -> Conte
         source="prompt_compiler",
         trust_level="platform",  # compiled_prompt 含 platform_safety（若编译含）
         priority=0,
-        estimated_tokens=int(compiled_prompt.get("prompt_estimated_tokens") or counter.count_text(content)),
+        estimated_tokens=int(
+            compiled_prompt.get("prompt_estimated_tokens") or counter.count_text(content)
+        ),
         required=True,
         droppable=False,
         stable=True,
@@ -177,25 +185,33 @@ def default_hosted_contributors(
     if pol.memory.enabled:
         try:
             from ksadk.memory.coordinator import MemoryCoordinator
+
             if memory_provider is None:
                 from ksadk.memory.providers.local_sqlite import resolve_default_memory_provider
+
                 memory_provider = resolve_default_memory_provider()
             coordinator = MemoryCoordinator(
-                memory_provider, tenant_id="local", workspace_id="local",
+                memory_provider,
+                tenant_id="local",
+                workspace_id="local",
             )
-            contributors.append(MemoryRecallContributor(
-                coordinator,
-                max_tokens=pol.memory.recall_max_tokens,
-                top_k=pol.memory.recall_top_k,
-                min_score=pol.memory.min_score,
-            ))
+            contributors.append(
+                MemoryRecallContributor(
+                    coordinator,
+                    max_tokens=pol.memory.recall_max_tokens,
+                    top_k=pol.memory.recall_top_k,
+                    min_score=pol.memory.min_score,
+                )
+            )
         except Exception:  # noqa: BLE001 — Provider 构造失败不应阻断 hosted 链路
             pass
     if pol.prompt.auto_discovery:
         try:
-            contributors.append(WorkspaceRulesContributor(
-                max_tokens=pol.prompt.rule_files_max_tokens,
-            ))
+            contributors.append(
+                WorkspaceRulesContributor(
+                    max_tokens=pol.prompt.rule_files_max_tokens,
+                )
+            )
         except Exception:  # noqa: BLE001
             pass
     return contributors
@@ -224,7 +240,7 @@ async def run_hosted_pipeline(
     pol = policy or ContextPolicy.from_env()
     counter = get_default_token_counter()
 
-    # 1. 基础候选：compiled_prompt(required) + current_input(required) + history rounds + working_state
+    # 1. 基础候选：compiled_prompt(required) + current_input(required) + history rounds + working_state  # noqa: E501
     candidates: list[ContextItem] = []
     prompt_item = _compiled_prompt_to_item(compiled_prompt)
     if prompt_item is not None:
@@ -241,11 +257,15 @@ async def run_hosted_pipeline(
     contrib_status: dict[str, str] = {}
     if contributors:
         request = ContextContributionRequest(
-            user_input=user_input, session_id=session_id, invocation_id=invocation_id,
-            user_id=user_id, agent_id=agent_id,
+            user_input=user_input,
+            session_id=session_id,
+            invocation_id=invocation_id,
+            user_id=user_id,
+            agent_id=agent_id,
         )
         result: ContributionResult = await run_contributors(
-            contributors, request,
+            contributors,
+            request,
             default_timeout_ms=pol.contributors.default_timeout_ms,
             default_failure_mode=pol.contributors.default_failure_mode,
         )
@@ -261,7 +281,7 @@ async def run_hosted_pipeline(
     from ksadk.conversations.model_context import get_effective_context_window_tokens
 
     max_input = get_effective_context_window_tokens(model_metadata)
-    # max_input 已扣 AUTOCOMPACT_SUMMARY_RESERVE（≈ reserved output）；safety_buffer 由 policy 提供，
+    # max_input 已扣 AUTOCOMPACT_SUMMARY_RESERVE（≈ reserved output）；safety_buffer 由 policy 提供，  # noqa: E501
     # 但 effective 已含 buffer，这里把 policy.safety_buffer 视为已包含，避免重复扣减 → 传 0。
     budget = build_budget(
         policy=pol.budget,
@@ -294,11 +314,16 @@ async def run_hosted_pipeline(
 def _plan_to_dict(plan: Any) -> dict[str, Any]:
     """ContextPlan → plain dict 投影（供 trace / payload 接管 / 后续 usage 回填）。"""
     from dataclasses import asdict
+
     d = asdict(plan)
     # 冻结决策审计：selected 只记 id/kind/tokens，不记 content（明文不进 trace，方案 §19）
     d["selected"] = [
-        {"item_id": i.get("item_id"), "kind": i.get("kind"),
-         "estimated_tokens": i.get("estimated_tokens"), "group_id": i.get("group_id")}
+        {
+            "item_id": i.get("item_id"),
+            "kind": i.get("kind"),
+            "estimated_tokens": i.get("estimated_tokens"),
+            "group_id": i.get("group_id"),
+        }
         for i in d.get("selected", [])
     ]
     return d

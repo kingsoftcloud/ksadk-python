@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Literal, Sequence
+from typing import Any, Literal, Sequence
 
 from ksadk.context_engine.models import ContextItem, ContextTrustLevel
 
@@ -107,7 +107,13 @@ class WorkspaceRulesContributor(ContextContributor):
     固定 ``developer``，不高于平台安全。默认 ``cacheability=turn``（规则文件按 turn 读一次）。
     """
 
-    def __init__(self, *, max_tokens: int = 12000, timeout_ms: int = 3000, failure_mode: ContributorFailureMode = "skip") -> None:
+    def __init__(
+        self,
+        *,
+        max_tokens: int = 12000,
+        timeout_ms: int = 3000,
+        failure_mode: ContributorFailureMode = "skip",
+    ) -> None:
         self.capabilities = ContributorCapabilities(
             contributor_id="workspace_rules",
             trust_level="developer",
@@ -125,15 +131,17 @@ class WorkspaceRulesContributor(ContextContributor):
             return []
         items: list[ContextItem] = []
         for index, section in enumerate(sections):
-            items.append(_make_item(
-                contributor_id=self.capabilities.contributor_id,
-                trust_level=self.capabilities.trust_level,
-                kind="resource_manifest",
-                content=section.content,
-                tokens=int(section.metadata.get("tokens", 0)) or 1,
-                source=section.source,
-                metadata={"path": section.metadata.get("path"), "kind": "rule_file"},
-            ))
+            items.append(
+                _make_item(
+                    contributor_id=self.capabilities.contributor_id,
+                    trust_level=self.capabilities.trust_level,
+                    kind="resource_manifest",
+                    content=section.content,
+                    tokens=int(section.metadata.get("tokens", 0)) or 1,
+                    source=section.source,
+                    metadata={"path": section.metadata.get("path"), "kind": "rule_file"},
+                )
+            )
         return items
 
 
@@ -144,7 +152,15 @@ class MemoryRecallContributor(ContextContributor):
     返回的 ContextItem 一律 ``untrusted``，不能覆盖 PromptSection（方案 §8.1 / §19）。
     """
 
-    def __init__(self, coordinator: Any, *, max_tokens: int = 4000, timeout_ms: int = 3000, top_k: int = 8, min_score: float = 0.45) -> None:
+    def __init__(
+        self,
+        coordinator: Any,
+        *,
+        max_tokens: int = 4000,
+        timeout_ms: int = 3000,
+        top_k: int = 8,
+        min_score: float = 0.45,
+    ) -> None:
         self._coordinator = coordinator
         self._top_k = top_k
         self._min_score = min_score
@@ -173,23 +189,32 @@ class MemoryRecallContributor(ContextContributor):
         if ctx is None:
             return []
         from ksadk.context_engine.tokenizer import get_default_token_counter
+
         tokens = get_default_token_counter().count_text(ctx["formatted_text"])
-        return [_make_item(
-            contributor_id=self.capabilities.contributor_id,
-            trust_level=self.capabilities.trust_level,
-            kind="recalled_memory",
-            content=ctx["formatted_text"],
-            tokens=tokens,
-            source="memory_provider",
-            score=None,
-            metadata={"recall_count": ctx.get("recall_count", 0), "status": result.status},
-        )]
+        return [
+            _make_item(
+                contributor_id=self.capabilities.contributor_id,
+                trust_level=self.capabilities.trust_level,
+                kind="recalled_memory",
+                content=ctx["formatted_text"],
+                tokens=tokens,
+                source="memory_provider",
+                score=None,
+                metadata={"recall_count": ctx.get("recall_count", 0), "status": result.status},
+            )
+        ]
 
 
 class SkillManifestContributor(ContextContributor):
     """Skill manifest Contributor（方案 §7.7 / §8.7）：只暴露 name/desc/version，不进正文。"""
 
-    def __init__(self, manifests: Sequence[dict[str, Any]] | None = None, *, max_tokens: int = 8000, timeout_ms: int = 3000) -> None:
+    def __init__(
+        self,
+        manifests: Sequence[dict[str, Any]] | None = None,
+        *,
+        max_tokens: int = 8000,
+        timeout_ms: int = 3000,
+    ) -> None:
         self._manifests = list(manifests or [])
         self.capabilities = ContributorCapabilities(
             contributor_id="skill_manifest",
@@ -207,17 +232,21 @@ class SkillManifestContributor(ContextContributor):
         if not self._manifests:
             return []
         import json
+
         text = json.dumps(self._manifests, ensure_ascii=False)
         from ksadk.context_engine.tokenizer import get_default_token_counter
-        return [_make_item(
-            contributor_id=self.capabilities.contributor_id,
-            trust_level=self.capabilities.trust_level,
-            kind="resource_manifest",
-            content=text,
-            tokens=get_default_token_counter().count_text(text),
-            source="skill_manifest",
-            metadata={"skill_count": len(self._manifests)},
-        )]
+
+        return [
+            _make_item(
+                contributor_id=self.capabilities.contributor_id,
+                trust_level=self.capabilities.trust_level,
+                kind="resource_manifest",
+                content=text,
+                tokens=get_default_token_counter().count_text(text),
+                source="skill_manifest",
+                metadata={"skill_count": len(self._manifests)},
+            )
+        ]
 
 
 # ---- 并发执行与约束（方案 §8.7 / §17.2）----
@@ -245,6 +274,7 @@ async def run_contributors(
     - 异常 → 按 failure_mode：skip 返空 / warn 返空 + warning / fail 抛给上层。
     - 返回的 ContextItem 总 token 受各自 ``max_tokens`` 约束（Planner 再做全局预算）。
     """
+
     async def _run_one(c: ContextContributor) -> tuple[str, list[ContextItem], str, str | None]:
         timeout = max(c.capabilities.timeout_ms, 1) / 1000.0
         try:

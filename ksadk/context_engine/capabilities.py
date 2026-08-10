@@ -282,7 +282,8 @@ def capabilities_for_runner(runner: Any | None) -> ContextCapabilities:
     """统一 lookup：优先 runner 自身的 ``describe_context_capabilities()``，否则按 detection
     type 显式分派，未知走 DEFAULT。
 
-    不依赖 ``hasattr`` 猜测 ownership（方案 6.1）。``BaseRunner`` 的默认 ``describe_context_capabilities``
+    不依赖 ``hasattr`` 猜测 ownership（方案 6.1）。``BaseRunner`` 的默认
+    ``describe_context_capabilities``
     走 ``_capabilities_for_detection_type``，故本函数对 BaseRunner 子类不会递归。已被 compaction
     门控（``runtime_preparation`` proactive compaction）与 shadow plan / conformance 测试消费。
     """
@@ -331,10 +332,7 @@ def detect_capability_mismatch(
         reasons.append(f"history_owner:{declared.history_owner}!={actual_history_owner}")
     if actual_compaction_owner is not None and actual_compaction_owner != declared.compaction_owner:
         reasons.append(f"compaction_owner:{declared.compaction_owner}!={actual_compaction_owner}")
-    if (
-        runtime_reported_usage is False
-        and declared.token_accounting == "runtime_reported"
-    ):
+    if runtime_reported_usage is False and declared.token_accounting == "runtime_reported":
         reasons.append("token_accounting:declared_runtime_reported_but_no_usage")
     if duplicate_history_injected:
         reasons.append("duplicate_history_injected")
@@ -387,9 +385,7 @@ def allowed_ownership_choices(runtime_type: str | None) -> tuple[str, ...]:
     return _OWNERSHIP_CHOICES.get(key, ("framework",))
 
 
-def validate_ownership_for_runtime(
-    ownership: str, *, runtime_type: str | None
-) -> None:
+def validate_ownership_for_runtime(ownership: str, *, runtime_type: str | None) -> None:
     """校验 ownership 与 runtime capability 兼容（方案 §5.2）。
 
     不支持组合时抛 ``ValueError``，Studio 据 it 返回 capability mismatch，不静默降级。
@@ -405,9 +401,7 @@ def validate_ownership_for_runtime(
         )
 
 
-def resolve_ownership(
-    ownership: str, *, runtime_type: str | None
-) -> str:
+def resolve_ownership(ownership: str, *, runtime_type: str | None) -> str:
     """把 ``context.ownership`` 解析为实际 prompt ownership（ksadk/framework/native）。
 
     ``auto`` → 解析为该 runtime 的**保守产品默认**（方案 §5.2：langgraph/adk 默认 framework，

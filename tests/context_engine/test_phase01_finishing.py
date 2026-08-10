@@ -13,7 +13,6 @@ from ksadk.context_engine.capabilities import (
     reset_capability_circuit,
 )
 from ksadk.context_engine.tokenizer import (
-    HeuristicTokenCounter,
     get_default_token_counter,
     set_default_token_counter,
 )
@@ -23,15 +22,20 @@ from ksadk.prompts.sources import agent_identity_section, request_instructions_s
 
 
 def _compiled():
-    return PromptCompiler().compile([agent_identity_section("你是助手"), request_instructions_section("做X")])
+    return PromptCompiler().compile(
+        [agent_identity_section("你是助手"), request_instructions_section("做X")]
+    )
 
 
 # ---- Prompt Projection ----
 
+
 def test_project_compiled_prompt_langgraph():
     compiled = _compiled()
     res = project_compiled_prompt(
-        compiled, runner_type="langgraph", integration_mode="framework_assisted",
+        compiled,
+        runner_type="langgraph",
+        integration_mode="framework_assisted",
         accounting_accuracy="estimated",
     )
     assert res.runner_type == "langgraph"
@@ -43,7 +47,9 @@ def test_project_compiled_prompt_langgraph():
 def test_project_compiled_prompt_codex_native():
     compiled = _compiled()
     res = project_compiled_prompt(
-        compiled, runner_type="codex", integration_mode="native_runtime",
+        compiled,
+        runner_type="codex",
+        integration_mode="native_runtime",
         accounting_accuracy="runtime_reported",
     )
     assert res.projected_roles == ("base_instructions", "thread")
@@ -63,6 +69,7 @@ def test_project_to_runner_payload_hosted():
 
 # ---- Capability Mismatch ----
 
+
 def test_detect_capability_mismatch_owner():
     caps = langgraph_context_capabilities()
     reason = detect_capability_mismatch(declared=caps, actual_history_owner="native")
@@ -71,7 +78,9 @@ def test_detect_capability_mismatch_owner():
 
 def test_detect_capability_mismatch_no_reason_when_consistent():
     caps = langgraph_context_capabilities()
-    assert detect_capability_mismatch(declared=caps, actual_history_owner=caps.history_owner) is None
+    assert (
+        detect_capability_mismatch(declared=caps, actual_history_owner=caps.history_owner) is None
+    )
 
 
 def test_detect_capability_mismatch_double_compaction():
@@ -99,6 +108,7 @@ def test_capability_circuit_isolates_by_runtime_type():
 
 
 # ---- Tokenizer provider ----
+
 
 def test_default_token_counter_is_heuristic_without_tiktoken():
     set_default_token_counter(None)

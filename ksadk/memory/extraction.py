@@ -14,9 +14,9 @@ from __future__ import annotations
 
 import re
 import uuid
-from typing import Iterable, Mapping, Sequence
+from typing import Sequence
 
-from ksadk.memory.models import MemoryCandidate, MemoryScope, MemoryType
+from ksadk.memory.models import MemoryCandidate, MemoryScope
 
 # 显式记忆意图（中英）。
 _EXPLICIT_PATTERNS: tuple[re.Pattern[str], ...] = (
@@ -32,6 +32,7 @@ _FACT_SIGNALS = ("confirmed", "最终确认", "final", "verified", "确认成功
 def _event_text(event: any) -> str:  # type: ignore[name-defined]
     try:
         from ksadk.conversations.context import extract_event_text
+
         return extract_event_text(event)
     except Exception:  # noqa: BLE001
         return str(getattr(event, "text", "") or "")
@@ -67,34 +68,40 @@ def propose_memory_candidates(
                     content = (m.group(1) or text).strip().strip("。.，,")
                     if not content:
                         continue
-                    candidates.append(MemoryCandidate(
-                        candidate_id=f"cand_{uuid.uuid4().hex[:16]}",
-                        operation="add",
-                        memory_type="profile",
-                        scope=scope,
-                        scope_id=scope_id,
-                        content=content[:1000],
-                        confidence=0.9,
-                        importance=0.8,
-                        source_event_ids=[event_id],
-                        reason="explicit_user_request",
-                    ))
+                    candidates.append(
+                        MemoryCandidate(
+                            candidate_id=f"cand_{uuid.uuid4().hex[:16]}",
+                            operation="add",
+                            memory_type="profile",
+                            scope=scope,
+                            scope_id=scope_id,
+                            content=content[:1000],
+                            confidence=0.9,
+                            importance=0.8,
+                            source_event_ids=[event_id],
+                            reason="explicit_user_request",
+                        )
+                    )
                     break
 
         # 2. 工具稳定事实（assistant/tool 事件含确认信号）
-        if event_type in ("tool_result", "assistant_message") and any(sig in text.lower() for sig in _FACT_SIGNALS):
-            candidates.append(MemoryCandidate(
-                candidate_id=f"cand_{uuid.uuid4().hex[:16]}",
-                operation="add",
-                memory_type="fact",
-                scope=scope,
-                scope_id=scope_id,
-                content=text[:1000],
-                confidence=0.7,
-                importance=0.6,
-                source_event_ids=[event_id],
-                reason="tool_fact",
-            ))
+        if event_type in ("tool_result", "assistant_message") and any(
+            sig in text.lower() for sig in _FACT_SIGNALS
+        ):
+            candidates.append(
+                MemoryCandidate(
+                    candidate_id=f"cand_{uuid.uuid4().hex[:16]}",
+                    operation="add",
+                    memory_type="fact",
+                    scope=scope,
+                    scope_id=scope_id,
+                    content=text[:1000],
+                    confidence=0.7,
+                    importance=0.6,
+                    source_event_ids=[event_id],
+                    reason="tool_fact",
+                )
+            )
     return candidates
 
 

@@ -12,7 +12,6 @@ import asyncio
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
-
 _SESSION_LOCKS: dict[str, asyncio.Lock] = {}
 _REGISTRY_LOCK = asyncio.Lock()
 

@@ -7,7 +7,6 @@ Provider，二者共用同一套契约测试（方案 §17.4）。``expected_ver
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Protocol
 
 from ksadk.memory.models import (

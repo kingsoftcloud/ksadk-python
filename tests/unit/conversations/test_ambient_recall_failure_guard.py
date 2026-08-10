@@ -14,15 +14,12 @@ build_context 层的失败分支（error 字段 / last_error）已由
 
 from __future__ import annotations
 
-import pytest
-
 from ksadk.conversations.runtime_input import (
     _ambient_context_has_error,
     _build_runner_ambient_contexts,
 )
 from ksadk.memory.adk.backends.base_ltm_backend import BaseLongTermMemoryBackend
 from ksadk.memory.service import LongTermMemoryService
-
 
 # --- 守卫 ---
 

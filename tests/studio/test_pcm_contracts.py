@@ -14,11 +14,10 @@ from ksadk.studio.contracts import (
     CompactionSpec,
     ContextSpec,
     MemorySpec,
-    RolloutSpec,
 )
 
-
 # ---- ContextSpec 扩展 ----
+
 
 def test_context_spec_defaults_backward_compatible():
     c = ContextSpec()
@@ -64,6 +63,7 @@ def test_agent_spec_has_memory_field():
 
 
 # ---- ownership capability 校验 ----
+
 
 def test_allowed_ownership_choices():
     assert allowed_ownership_choices("codex") == ("native",)

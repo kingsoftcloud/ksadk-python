@@ -12,7 +12,6 @@ compaction/PTL 后通过新 ``plan_id`` 重新调用（方案 §11.1 / ADR-016�
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
 from typing import Iterable
 
 from ksadk.context_engine.models import (
@@ -98,12 +97,16 @@ class ContextPlanner:
         plan_id = f"ctxplan_{uuid.uuid4().hex[:16]}"
         decisions: list[ContextDecision] = []
 
-        # 1. required 先锁定（方案 §8.4）。required 超 hard_limit → 配置错误，仍返回 plan 但标 dropped。
+        # 1. required 先锁定（方案 §8.4）。required 超 hard_limit → 配置错误，仍返回 plan 但标 dropped。  # noqa: E501
         required = self._select_required(candidates, budget.hard_limit_tokens, decisions)
         selected = list(required)
 
         # 2. 非 required 按 §8.4 优先级排序后增量加入，遵守 group 原子性 + 分区预算。
-        non_required = [c for c in candidates if not c.required and c.item_id not in {i.item_id for i in selected}]
+        non_required = [
+            c
+            for c in candidates
+            if not c.required and c.item_id not in {i.item_id for i in selected}
+        ]
         non_required.sort(key=self._sort_key)
         selected = self._add_within_budget(
             selected, non_required, budget, decisions, strict_section_limits=True
@@ -158,10 +161,15 @@ class ContextPlanner:
         for item in required:
             selected.append(item)
             seen.add(item.item_id)
-            decisions.append(ContextDecision(
-                item_id=item.item_id, action="included", reason="required",
-                tokens_before=item.estimated_tokens, tokens_after=item.estimated_tokens,
-            ))
+            decisions.append(
+                ContextDecision(
+                    item_id=item.item_id,
+                    action="included",
+                    reason="required",
+                    tokens_before=item.estimated_tokens,
+                    tokens_after=item.estimated_tokens,
+                )
+            )
         # 拉入 required 所在 group 的非 required 成员（原子保留，方案 §8.1）。
         for item in required:
             if not item.group_id:
@@ -171,10 +179,15 @@ class ContextPlanner:
                     continue
                 selected.append(mate)
                 seen.add(mate.item_id)
-                decisions.append(ContextDecision(
-                    item_id=mate.item_id, action="included", reason="required_group_atomic",
-                    tokens_before=mate.estimated_tokens, tokens_after=mate.estimated_tokens,
-                ))
+                decisions.append(
+                    ContextDecision(
+                        item_id=mate.item_id,
+                        action="included",
+                        reason="required_group_atomic",
+                        tokens_before=mate.estimated_tokens,
+                        tokens_after=mate.estimated_tokens,
+                    )
+                )
         return selected
 
     def _sort_key(self, item: ContextItem) -> tuple[int, int, str]:
@@ -211,7 +224,11 @@ class ContextPlanner:
                 added = self._try_truncate_into(selected, members, budget, decisions)
                 selected.extend(added)
                 continue
-            if strict_section_limits and limit is not None and section_used.get(section, 0) + group_tokens > limit:
+            if (
+                strict_section_limits
+                and limit is not None
+                and section_used.get(section, 0) + group_tokens > limit
+            ):
                 # 分区预算超限：整组跳过（保留可回流语义：不抢占已选）
                 continue
             # 全组成员未选 → 整组进入
@@ -221,10 +238,15 @@ class ContextPlanner:
             selected.extend(new_members)
             section_used[section] = section_used.get(section, 0) + _tokens(new_members)
             for m in new_members:
-                decisions.append(ContextDecision(
-                    item_id=m.item_id, action="included", reason=f"section:{section}",
-                    tokens_before=m.estimated_tokens, tokens_after=m.estimated_tokens,
-                ))
+                decisions.append(
+                    ContextDecision(
+                        item_id=m.item_id,
+                        action="included",
+                        reason=f"section:{section}",
+                        tokens_before=m.estimated_tokens,
+                        tokens_after=m.estimated_tokens,
+                    )
+                )
         return selected
 
     def _try_truncate_into(
@@ -234,13 +256,14 @@ class ContextPlanner:
         budget: ContextBudget,
         decisions: list[ContextDecision],
     ) -> list[ContextItem]:
-        """整组超 hard_limit 时尝试单项抢救：truncatable 截断、大 tool_result 转摘要（方案 §8.6）。"""
+        """整组超 hard_limit 时尝试单项抢救：truncatable 截断、大 tool_result 转摘要（方案 §8.6）。"""  # noqa: E501
         added: list[ContextItem] = []
         for m in members:
             remaining = budget.hard_limit_tokens - _tokens(selected) - _tokens(added)
             if remaining <= 0:
                 break
             from dataclasses import replace
+
             # 大 tool_result → artifact summary（方案 §8.6：保留 error tail + 引用）
             if (
                 m.kind == "tool_result"
@@ -250,12 +273,22 @@ class ContextPlanner:
             ):
                 after = max(remaining, 200)
                 after = min(after, m.estimated_tokens // 8 + 200)
-                added.append(replace(m, estimated_tokens=after,
-                                      metadata={**m.metadata, "replaced_with_artifact_summary": True}))
-                decisions.append(ContextDecision(
-                    item_id=m.item_id, action="summarized", reason="large_tool_result_to_artifact",
-                    tokens_before=m.estimated_tokens, tokens_after=after,
-                ))
+                added.append(
+                    replace(
+                        m,
+                        estimated_tokens=after,
+                        metadata={**m.metadata, "replaced_with_artifact_summary": True},
+                    )
+                )
+                decisions.append(
+                    ContextDecision(
+                        item_id=m.item_id,
+                        action="summarized",
+                        reason="large_tool_result_to_artifact",
+                        tokens_before=m.estimated_tokens,
+                        tokens_after=after,
+                    )
+                )
                 continue
             if not m.truncatable or m.estimated_tokens == 0:
                 continue
@@ -264,11 +297,20 @@ class ContextPlanner:
             after = max(0, int(m.estimated_tokens * ratio))
             if after == 0:
                 continue
-            added.append(replace(m, estimated_tokens=after, metadata={**m.metadata, "truncated_to_tokens": after}))
-            decisions.append(ContextDecision(
-                item_id=m.item_id, action="truncated", reason="hard_limit_truncate",
-                tokens_before=m.estimated_tokens, tokens_after=after,
-            ))
+            added.append(
+                replace(
+                    m, estimated_tokens=after, metadata={**m.metadata, "truncated_to_tokens": after}
+                )
+            )
+            decisions.append(
+                ContextDecision(
+                    item_id=m.item_id,
+                    action="truncated",
+                    reason="hard_limit_truncate",
+                    tokens_before=m.estimated_tokens,
+                    tokens_after=after,
+                )
+            )
         return added
 
     def _deterministic_reduce(
@@ -281,7 +323,7 @@ class ContextPlanner:
         降低 recall top_k。required 与 current_input 不动。
         """
         kept = list(selected)
-        kept_ids = {i.item_id for i in kept}
+        {i.item_id for i in kept}
 
         # 1. 重复 resource_manifest（同 content_hash 去重）
         seen_hashes: set[str] = set()
@@ -329,19 +371,24 @@ class ContextPlanner:
         all_groups = _group_groups(kept)
         droppable_groups: set[str] = set()
         for gkey, members in all_groups.items():
-            if all(
-                m.droppable and not m.required and m.kind != "current_input" for m in members
-            ):
+            if all(m.droppable and not m.required and m.kind != "current_input" for m in members):
                 droppable_groups.add(gkey)
         # 候选丢弃单元：可整组丢的 group + 无 group 的可丢单项
         drop_candidates: list[tuple[int, list[ContextItem]]] = []
         for gkey, members in all_groups.items():
             if gkey in droppable_groups:
-                drop_candidates.append((min(_PRIORITY_RANK.get(m.kind, 99) for m in members), members))
+                drop_candidates.append(
+                    (min(_PRIORITY_RANK.get(m.kind, 99) for m in members), members)
+                )
             else:
                 # 无 group 的可丢单项
                 for m in members:
-                    if not m.group_id and m.droppable and not m.required and m.kind != "current_input":
+                    if (
+                        not m.group_id
+                        and m.droppable
+                        and not m.required
+                        and m.kind != "current_input"
+                    ):
                         drop_candidates.append((_PRIORITY_RANK.get(m.kind, 99), [m]))
         # 按优先级逆序丢（rank 大先丢）
         drop_candidates.sort(key=lambda x: (-x[0],))
@@ -365,21 +412,38 @@ class ContextPlanner:
                 item.kind == "tool_result"
                 and item.droppable
                 and not item.required
-                and item.estimated_tokens > self._policy.sections.get("tool_and_attachment", SectionBudget(10, 16000)).max_tokens
+                and item.estimated_tokens
+                > self._policy.sections.get(
+                    "tool_and_attachment", SectionBudget(10, 16000)
+                ).max_tokens
             ):
-                # 转摘要：保留 error tail + artifact reference（这里以估算 1/8 表达，assembler 真正截断）
+                # 转摘要：保留 error tail + artifact reference（这里以估算 1/8 表达，assembler 真正截断）  # noqa: E501
                 from dataclasses import replace
+
                 after = max(item.estimated_tokens // 8, 200)
-                new_kept.append(replace(item, estimated_tokens=after, metadata={**item.metadata, "replaced_with_artifact_summary": True}))
-                decisions.append(ContextDecision(
-                    item_id=item.item_id, action="summarized", reason="large_tool_result_to_artifact",
-                    tokens_before=item.estimated_tokens, tokens_after=after,
-                ))
+                new_kept.append(
+                    replace(
+                        item,
+                        estimated_tokens=after,
+                        metadata={**item.metadata, "replaced_with_artifact_summary": True},
+                    )
+                )
+                decisions.append(
+                    ContextDecision(
+                        item_id=item.item_id,
+                        action="summarized",
+                        reason="large_tool_result_to_artifact",
+                        tokens_before=item.estimated_tokens,
+                        tokens_after=after,
+                    )
+                )
             else:
                 new_kept.append(item)
         return new_kept
 
-    def _drop_overwritten_tools(self, kept: list[ContextItem], decisions: list[ContextDecision]) -> list[ContextItem]:
+    def _drop_overwritten_tools(
+        self, kept: list[ContextItem], decisions: list[ContextDecision]
+    ) -> list[ContextItem]:
         overwritten = {
             item.metadata.get("overwritten_by")
             for item in kept
@@ -396,7 +460,11 @@ class ContextPlanner:
         drop_groups: set[str] = set()
         drop_items: set[str] = set()
         for item in kept:
-            if not (item.kind == "tool_result" and item.content_hash in overwritten and not item.required):
+            if not (
+                item.kind == "tool_result"
+                and item.content_hash in overwritten
+                and not item.required
+            ):
                 continue
             if item.group_id:
                 if item.group_id in droppable_groups:
@@ -413,7 +481,9 @@ class ContextPlanner:
             new_kept.append(item)
         return new_kept
 
-    def _drop_cold_rounds(self, kept: list[ContextItem], decisions: list[ContextDecision], soft_limit: int) -> list[ContextItem]:
+    def _drop_cold_rounds(
+        self, kept: list[ContextItem], decisions: list[ContextDecision], soft_limit: int
+    ) -> list[ContextItem]:
         all_groups = _group_groups(kept)
         # 只丢全体可丢且非 required 的 group（避免孤儿）。
         droppable_groups: set[str] = set()
@@ -439,14 +509,18 @@ class ContextPlanner:
                     self._drop(decisions, item, "cold_round_drop")
         return kept
 
-    def _reduce_recall(self, kept: list[ContextItem], decisions: list[ContextDecision], limit: int) -> list[ContextItem]:
+    def _reduce_recall(
+        self, kept: list[ContextItem], decisions: list[ContextDecision], limit: int
+    ) -> list[ContextItem]:
         all_groups = _group_groups(kept)
         droppable_groups: set[str] = set()
         for gkey, members in all_groups.items():
             if all(m.droppable and not m.required for m in members):
                 droppable_groups.add(gkey)
-        recalls = [i for i in kept if i.kind == "recalled_memory" and i.droppable and not i.required]
-        recalls.sort(key=lambda i: (i.score if i.score is not None else 0.0))
+        recalls = [
+            i for i in kept if i.kind == "recalled_memory" and i.droppable and not i.required
+        ]
+        recalls.sort(key=lambda i: i.score if i.score is not None else 0.0)
         for item in recalls:
             if _tokens(kept) <= limit:
                 break
@@ -466,10 +540,15 @@ class ContextPlanner:
 
     @staticmethod
     def _drop(decisions: list[ContextDecision], item: ContextItem, reason: str) -> None:
-        decisions.append(ContextDecision(
-            item_id=item.item_id, action="dropped", reason=reason,
-            tokens_before=item.estimated_tokens, tokens_after=0,
-        ))
+        decisions.append(
+            ContextDecision(
+                item_id=item.item_id,
+                action="dropped",
+                reason=reason,
+                tokens_before=item.estimated_tokens,
+                tokens_after=0,
+            )
+        )
 
     @staticmethod
     def _section_used(selected: list[ContextItem]) -> dict[str, int]:

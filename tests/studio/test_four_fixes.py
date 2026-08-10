@@ -8,16 +8,12 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
-import pytest
 from fastapi.testclient import TestClient
 
 from ksadk.studio.api import create_studio_app
-from ksadk.studio.contracts import AgentSpec, ContextSpec, Instructions, MemorySpec, RuntimeRef
+from ksadk.studio.contracts import AgentSpec, ContextSpec, Instructions, RuntimeRef
 from ksadk.studio.service import StudioService
 from ksadk.studio.validator import AgentValidator
-
 
 # ---- 1. ownership capability 校验接入 validator ----
 
@@ -48,10 +44,15 @@ def test_validator_accepts_auto_ownership():
 
 def _make_draft(runtime_type: str, ownership: str):
     from ksadk.studio.contracts import AgentDraft, AgentMetadata
+
     return AgentDraft(
         metadata=AgentMetadata(id="test-agent", name="Test"),
         spec=AgentSpec(
-            runtime=RuntimeRef(type=runtime_type, project_path="runtimes/demo", entry_point="agent.py:graph") if runtime_type != "codex" else RuntimeRef(type="codex"),
+            runtime=RuntimeRef(
+                type=runtime_type, project_path="runtimes/demo", entry_point="agent.py:graph"
+            )
+            if runtime_type != "codex"
+            else RuntimeRef(type="codex"),
             instructions=Instructions(system="你是助手"),
             context=ContextSpec(ownership=ownership),
         ),
@@ -67,22 +68,37 @@ def test_edit_agent_preserves_memory_subconfig(tmp_path):
     app = create_studio_app(tmp_path, service=svc, security_enabled=False)
     with TestClient(app) as client:
         # 创建带完整 memory 配置的 agent
-        client.post("/api/v1/agents", json={
-            "id": "mem-test", "name": "mem-test", "description": "x", "template": "blank",
-            "spec": {"runtime": {"type": "codex", "version": "0.144.4"},
-                     "description": "x", "instructions": {"system": "s", "task": ""},
-                     "bindings": {},
-                     "memory": {"enabled": True, "providerRef": "custom-ref",
-                                "recall": {"enabled": True, "maxTokens": 2000, "topK": 5},
-                                "write": {"mode": "explicit_only", "flushBeforeCompaction": False},
-                                "scopes": ["user", "agent"]}},
-        })
+        client.post(
+            "/api/v1/agents",
+            json={
+                "id": "mem-test",
+                "name": "mem-test",
+                "description": "x",
+                "template": "blank",
+                "spec": {
+                    "runtime": {"type": "codex", "version": "0.144.4"},
+                    "description": "x",
+                    "instructions": {"system": "s", "task": ""},
+                    "bindings": {},
+                    "memory": {
+                        "enabled": True,
+                        "providerRef": "custom-ref",
+                        "recall": {"enabled": True, "maxTokens": 2000, "topK": 5},
+                        "write": {"mode": "explicit_only", "flushBeforeCompaction": False},
+                        "scopes": ["user", "agent"],
+                    },
+                },
+            },
+        )
         detail = client.get("/api/v1/agents/mem-test").json()
         spec = detail["draft"]["spec"]
         # 模拟前端编辑：只改 memory.enabled，保留其余
         spec["memory"]["enabled"] = False
-        updated = client.put("/api/v1/agents/mem-test", json=spec,
-                             headers={"If-Match": str(detail["draft"]["metadata"]["revision"])})
+        updated = client.put(
+            "/api/v1/agents/mem-test",
+            json=spec,
+            headers={"If-Match": str(detail["draft"]["metadata"]["revision"])},
+        )
         assert updated.status_code == 200
         mem = updated.json()["spec"]["memory"]
         assert mem["enabled"] is False
@@ -99,12 +115,17 @@ def test_edit_agent_preserves_memory_subconfig(tmp_path):
 def test_compaction_owner_native_blocks_ksadk_dual_threshold():
     """compaction_owner=native 时即使 prompt_integration_mode=ksadk_hosted 也不走双阈值。"""
     from ksadk.conversations.runtime_compaction import _plan_compaction
-    from ksadk.conversations.context import SessionEvent
+
     # 构造超 soft limit 的 events
     events = [_user_event(i, "x" * 200) for i in range(20)]
     # compaction_owner=native + ksadk_hosted → 应走旧单阈值（is_ksadk_hosted=False）
-    plan = _plan_compaction(events, model="m", model_metadata={"context_window_tokens": 200000},
-                             prompt_integration_mode="ksadk_hosted", compaction_owner="native")
+    plan = _plan_compaction(
+        events,
+        model="m",
+        model_metadata={"context_window_tokens": 200000},
+        prompt_integration_mode="ksadk_hosted",
+        compaction_owner="native",
+    )
     # native 门控 → trigger_band 非 soft/hard（走旧单阈值或 none）
     assert plan.trigger_band not in ("soft", "hard") or plan.trigger_band == ""
 
@@ -112,9 +133,15 @@ def test_compaction_owner_native_blocks_ksadk_dual_threshold():
 def test_compaction_owner_ksadk_allows_dual_threshold():
     """compaction_owner=ksadk + ksadk_hosted → 走双阈值。"""
     from ksadk.conversations.runtime_compaction import _plan_compaction
+
     events = [_user_event(i, "x" * 200) for i in range(20)]
-    plan = _plan_compaction(events, model="m", model_metadata={"context_window_tokens": 200000},
-                             prompt_integration_mode="ksadk_hosted", compaction_owner="ksadk")
+    plan = _plan_compaction(
+        events,
+        model="m",
+        model_metadata={"context_window_tokens": 200000},
+        prompt_integration_mode="ksadk_hosted",
+        compaction_owner="ksadk",
+    )
     # ksadk 门控 → 可能触发 soft/hard
     assert plan.soft_limit_tokens is not None
     assert plan.hard_limit_tokens is not None
@@ -122,9 +149,15 @@ def test_compaction_owner_ksadk_allows_dual_threshold():
 
 def _user_event(seq, text):
     from ksadk.sessions.base import SessionEvent
+
     return SessionEvent(
-        id=f"u-{seq}", seq_id=seq, event_type="user_message", author="user",
-        invocation_id="i", content={"role": "user", "parts": [{"text": text}]}, metadata={},
+        id=f"u-{seq}",
+        seq_id=seq,
+        event_type="user_message",
+        author="user",
+        invocation_id="i",
+        content={"role": "user", "parts": [{"text": text}]},
+        metadata={},
     )
 
 
@@ -137,7 +170,9 @@ def test_import_root_project_one_click(tmp_path):
     svc = StudioService(tmp_path)
     app = create_studio_app(tmp_path, service=svc, security_enabled=False)
     with TestClient(app) as client:
-        r = client.post("/api/v1/workspace:import-root", json={"name": "demo-agent", "slug": "demo-agent"})
+        r = client.post(
+            "/api/v1/workspace:import-root", json={"name": "demo-agent", "slug": "demo-agent"}
+        )
         assert r.status_code == 201
         draft = r.json()
         assert draft["spec"]["runtime"]["type"] == "langgraph"

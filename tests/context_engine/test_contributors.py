@@ -8,8 +8,8 @@ import pytest
 
 from ksadk.context_engine.contributors import (
     ContextContributionRequest,
-    ContributorCapabilities,
     ContextContributor,
+    ContributorCapabilities,
     SkillManifestContributor,
     run_contributors,
 )
@@ -25,8 +25,12 @@ class _OkContributor(ContextContributor):
     def __init__(self, items):
         self._items = items
         self.capabilities = ContributorCapabilities(
-            contributor_id="ok", trust_level="untrusted", max_tokens=10000,
-            timeout_ms=1000, cacheability="turn", failure_mode="skip",
+            contributor_id="ok",
+            trust_level="untrusted",
+            max_tokens=10000,
+            timeout_ms=1000,
+            cacheability="turn",
+            failure_mode="skip",
         )
 
     async def contribute(self, request):
@@ -36,8 +40,12 @@ class _OkContributor(ContextContributor):
 class _SlowContributor(ContextContributor):
     def __init__(self):
         self.capabilities = ContributorCapabilities(
-            contributor_id="slow", trust_level="untrusted", max_tokens=10000,
-            timeout_ms=10, cacheability="turn", failure_mode="skip",
+            contributor_id="slow",
+            trust_level="untrusted",
+            max_tokens=10000,
+            timeout_ms=10,
+            cacheability="turn",
+            failure_mode="skip",
         )
 
     async def contribute(self, request):
@@ -48,8 +56,12 @@ class _SlowContributor(ContextContributor):
 class _FailingContributor(ContextContributor):
     def __init__(self, fail_mode="skip"):
         self.capabilities = ContributorCapabilities(
-            contributor_id="fail", trust_level="untrusted", max_tokens=10000,
-            timeout_ms=1000, cacheability="turn", failure_mode=fail_mode,
+            contributor_id="fail",
+            trust_level="untrusted",
+            max_tokens=10000,
+            timeout_ms=1000,
+            cacheability="turn",
+            failure_mode=fail_mode,
         )
 
     async def contribute(self, request):
@@ -57,8 +69,15 @@ class _FailingContributor(ContextContributor):
 
 
 def _item(iid, tokens):
-    return ContextItem(item_id=iid, kind="recalled_memory", content=iid, source="t",
-                       trust_level="untrusted", priority=0, estimated_tokens=tokens)
+    return ContextItem(
+        item_id=iid,
+        kind="recalled_memory",
+        content=iid,
+        source="t",
+        trust_level="untrusted",
+        priority=0,
+        estimated_tokens=tokens,
+    )
 
 
 def test_contributors_run_concurrent():
@@ -87,7 +106,9 @@ def test_contributor_failure_fail_propagates():
 
 
 def test_skill_manifest_contributor_emits_resource_manifest():
-    c = SkillManifestContributor([{"name": "deploy", "description": "deploy skill", "version": "1.0"}])
+    c = SkillManifestContributor(
+        [{"name": "deploy", "description": "deploy skill", "version": "1.0"}]
+    )
     res = asyncio.run(run_contributors([c], _request()))
     assert len(res.items) == 1
     assert res.items[0].kind == "resource_manifest"
@@ -103,9 +124,7 @@ def test_contributors_trust_level_never_platform():
         assert not it.required  # Contributor 不得自行声明 required
 
 
-def test_default_hosted_contributors_include_memory_when_enabled(
-    tmp_path, monkeypatch
-):
+def test_default_hosted_contributors_include_memory_when_enabled(tmp_path, monkeypatch):
     monkeypatch.setenv("KSADK_MEMORY_ENABLED", "true")
     monkeypatch.setenv("KSADK_MEMORY_DB_PATH", str(tmp_path / "memory.db"))
 

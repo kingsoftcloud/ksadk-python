@@ -21,7 +21,8 @@ from typing import Any, Mapping
 from ksadk.context_engine.capabilities import ContextAccuracy
 
 CacheBreakStatus = str
-"""``cached`` / ``expected_invalidation`` / ``unexpected_break`` / ``no_cache_info`` / ``opaque``。"""
+"""``cached`` / ``expected_invalidation`` / ``unexpected_break``
+    / ``no_cache_info`` / ``opaque``."""
 
 
 @dataclass(frozen=True)
@@ -70,7 +71,11 @@ def _extract_cache_tokens(usage: Mapping[str, Any] | None) -> tuple[int, int]:
     # OpenAI / 通用 input_token_details.cached
     input_details = usage.get("input_token_details") or usage.get("input_tokens_details")
     if isinstance(input_details, Mapping):
-        cached = input_details.get("cached_tokens") or input_details.get("cached") or input_details.get("cache_read")
+        cached = (
+            input_details.get("cached_tokens")
+            or input_details.get("cached")
+            or input_details.get("cache_read")
+        )
         if cached is not None:
             try:
                 cache_read = max(cache_read, int(cached))
@@ -140,7 +145,9 @@ def diagnose_cache_break(
             break_reason="no runtime usage reported",
         )
 
-    hash_changed = bool(previous_stable_prefix_hash) and previous_stable_prefix_hash != stable_prefix_hash
+    hash_changed = (
+        bool(previous_stable_prefix_hash) and previous_stable_prefix_hash != stable_prefix_hash
+    )
     if hash_changed or expected_invalidation_signal:
         return CacheBreakDiagnosis(
             status="expected_invalidation",

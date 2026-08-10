@@ -15,17 +15,15 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
-from ksadk.context_engine.capabilities import ContextAccuracy
 from ksadk.memory.models import (
     CoreMemoryRequest,
     MemoryCandidate,
     MemoryCapabilities,
     MemoryDeleteRequest,
     MemoryRecord,
+    MemoryScope,
     MemorySearchRequest,
     MemorySearchResult,
-    MemoryScope,
-    MemoryType,
 )
 from ksadk.memory.policy import MemoryEvaluation, MemoryPolicy
 
@@ -186,7 +184,9 @@ class MemoryCoordinator:
             self._commit(candidate, evaluation, existing)
         return evaluation
 
-    def delete(self, memory_id: str, *, scope: MemoryScope, scope_id: str, hard: bool = False) -> bool:
+    def delete(
+        self, memory_id: str, *, scope: MemoryScope, scope_id: str, hard: bool = False
+    ) -> bool:
         """用户明确遗忘（方案 §10.4 / §19）：不支持 hard delete 时明确返回失败。"""
         caps = self.capabilities()
         if hard and not caps.hard_delete:

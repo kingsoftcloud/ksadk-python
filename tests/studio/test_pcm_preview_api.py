@@ -34,7 +34,10 @@ def _create_langgraph_agent(client: TestClient, agent_id: str = "demo-agent") ->
                     "projectPath": "runtimes/demo",
                     "entryPoint": "src/agent.py:graph",
                 },
-                "instructions": {"system": "你是 Python 助手，绝不回显凭证。", "task": "用 uv run。"},
+                "instructions": {
+                    "system": "你是 Python 助手，绝不回显凭证。",
+                    "task": "用 uv run。",
+                },
                 "bindings": {},
             },
         },
@@ -44,7 +47,9 @@ def _create_langgraph_agent(client: TestClient, agent_id: str = "demo-agent") ->
 def test_prompt_compile_returns_hashes_without_content(tmp_path):
     c, _ = _client(tmp_path)
     _create_langgraph_agent(c)
-    r = c.post("/api/v1/agents/demo-agent/prompt:compile", json={"requestInstructions": "本次：介绍 GIL"})
+    r = c.post(
+        "/api/v1/agents/demo-agent/prompt:compile", json={"requestInstructions": "本次：介绍 GIL"}
+    )
     assert r.status_code == 200
     body = r.json()
     assert body["contentHash"].startswith("sha256:")

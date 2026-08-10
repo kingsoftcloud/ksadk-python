@@ -25,7 +25,12 @@ async def test_session_lock_serializes_same_session():
 
     await asyncio.gather(task("a", 0.05), task("b", 0.0))
     # a 完整 start→end 后 b 才进入（同 session 串行）
-    assert order.index("a:start") < order.index("a:end") < order.index("b:start") < order.index("b:end")
+    assert (
+        order.index("a:start")
+        < order.index("a:end")
+        < order.index("b:start")
+        < order.index("b:end")
+    )
     clear_session_locks()
 
 

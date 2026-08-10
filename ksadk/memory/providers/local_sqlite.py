@@ -24,12 +24,11 @@ from ksadk.memory.models import (
     MemoryDeleteRequest,
     MemoryDeleteResult,
     MemoryRecord,
+    MemoryScope,
     MemorySearchRequest,
     MemorySearchResult,
-    MemoryScope,
 )
 from ksadk.memory.policy import content_hash
-
 
 _ASCII_QUERY_TOKEN = re.compile(r"[a-z0-9][a-z0-9_.-]+", re.IGNORECASE)
 _CJK_QUERY_RUN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]+")
@@ -109,7 +108,8 @@ CREATE TABLE IF NOT EXISTS memory_records (
     created_at TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL DEFAULT ''
 );
-CREATE INDEX IF NOT EXISTS idx_scope ON memory_records(tenant_id, workspace_id, scope, scope_id, status);
+CREATE INDEX IF NOT EXISTS idx_scope ON memory_records(tenant_id, workspace_id,
+    scope, scope_id, status);
 CREATE INDEX IF NOT EXISTS idx_content_hash ON memory_records(content_hash);
 """
 
@@ -131,7 +131,13 @@ class SqliteMemoryProvider:
         max_record_chars=8192,
     )
 
-    def __init__(self, *, db_path: str | Path = ":memory:", tenant_id: str = "local", workspace_id: str = "local") -> None:
+    def __init__(
+        self,
+        *,
+        db_path: str | Path = ":memory:",
+        tenant_id: str = "local",
+        workspace_id: str = "local",
+    ) -> None:
         self._db_path = str(db_path)
         self._tenant_id = tenant_id
         self._workspace_id = workspace_id
@@ -193,8 +199,12 @@ class SqliteMemoryProvider:
             ).fetchone()
             now = _now_iso()
             if existing is not None:
-                if expected_version is not None and int(existing["version"]) != int(expected_version):
-                    self.last_error = f"version_conflict:expected={expected_version},actual={existing['version']}"
+                if expected_version is not None and int(existing["version"]) != int(
+                    expected_version
+                ):
+                    self.last_error = (
+                        f"version_conflict:expected={expected_version},actual={existing['version']}"
+                    )
                     raise VersionConflict(self.last_error)
                 version = int(existing["version"]) + 1
                 created = record.created_at or now
@@ -214,23 +224,42 @@ class SqliteMemoryProvider:
                     valid_from=excluded.valid_from, valid_to=excluded.valid_to,
                     expires_at=excluded.expires_at, source_event_ids=excluded.source_event_ids,
                     source_seq_range=excluded.source_seq_range, content_hash=excluded.content_hash,
-                    version=excluded.version, metadata=excluded.metadata, updated_at=excluded.updated_at
+                    version=excluded.version, metadata=excluded.metadata,
+                        updated_at=excluded.updated_at
                 """,
                 (
-                    record.memory_id, record.tenant_id or self._tenant_id,
-                    record.workspace_id or self._workspace_id, record.scope, record.scope_id,
-                    record.memory_type, record.content, record.summary, record.status,
-                    record.confidence, record.importance, record.valid_from, record.valid_to,
-                    record.expires_at, record.source_session_id,
+                    record.memory_id,
+                    record.tenant_id or self._tenant_id,
+                    record.workspace_id or self._workspace_id,
+                    record.scope,
+                    record.scope_id,
+                    record.memory_type,
+                    record.content,
+                    record.summary,
+                    record.status,
+                    record.confidence,
+                    record.importance,
+                    record.valid_from,
+                    record.valid_to,
+                    record.expires_at,
+                    record.source_session_id,
                     json.dumps(record.source_event_ids, ensure_ascii=False),
                     json.dumps(list(record.source_seq_range) if record.source_seq_range else []),
-                    record.content_hash or content_hash(record.content), version,
-                    json.dumps(record.metadata, ensure_ascii=False), created, now,
+                    record.content_hash or content_hash(record.content),
+                    version,
+                    json.dumps(record.metadata, ensure_ascii=False),
+                    created,
+                    now,
                 ),
             )
             self._conn.commit()
         return MemoryRecord(
-            **{**record.__dict__, "version": version, "created_at": record.created_at or created, "updated_at": now}
+            **{
+                **record.__dict__,
+                "version": version,
+                "created_at": record.created_at or created,
+                "updated_at": now,
+            }
         )
 
     def delete(self, request: MemoryDeleteRequest) -> MemoryDeleteResult:
@@ -241,7 +270,9 @@ class SqliteMemoryProvider:
             if row is None:
                 return MemoryDeleteResult(status="ok", deleted=False, error_code="not_found")
             if request.hard:
-                self._conn.execute("DELETE FROM memory_records WHERE memory_id = ?", (request.memory_id,))
+                self._conn.execute(
+                    "DELETE FROM memory_records WHERE memory_id = ?", (request.memory_id,)
+                )
             else:
                 self._conn.execute(
                     "UPDATE memory_records SET status='deleted', updated_at=? WHERE memory_id=?",
@@ -371,7 +402,9 @@ def _resolve_default_db_path() -> str:
         return ":memory:"
 
 
-def resolve_default_memory_provider(*, tenant_id: str = "local", workspace_id: str = "local") -> "SqliteMemoryProvider":
+def resolve_default_memory_provider(
+    *, tenant_id: str = "local", workspace_id: str = "local"
+) -> "SqliteMemoryProvider":
     """构造默认持久化 Memory Provider（替换临时 ``:memory:``）。
 
     本地默认用 SQLite 文件 Provider（持久化到本地 session dir / ``KSADK_MEMORY_DB_PATH``）；

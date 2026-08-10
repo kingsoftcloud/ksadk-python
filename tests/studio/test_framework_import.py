@@ -6,11 +6,8 @@ commit_project 保留 Runtime/Prompt/Model/Task/Context 生成 AgentDraft；boot
 
 from __future__ import annotations
 
-import json
-import tempfile
 from pathlib import Path
 
-import pytest
 from fastapi.testclient import TestClient
 
 from ksadk.studio.api import create_studio_app
@@ -21,13 +18,14 @@ def _write_framework_workspace(tmp_path: Path, *, with_context: bool = False) ->
     """写根 agentengine.yaml（供 detect_importable_project 检测，方案 §6.1 根 manifest）。"""
     manifest = "framework: langgraph\nname: demo-agent\nmodel: glm-5.2\nprompt: 你是助手\nentry_point: src/agent.py\nagent_variable: graph\ntask: 先分析再改\n"
     if with_context:
-        manifest += "context:\n  maxInputTokens: 65536\n  reserveOutputTokens: 8192\n  ownership: ksadk\n"
+        manifest += (
+            "context:\n  maxInputTokens: 65536\n  reserveOutputTokens: 8192\n  ownership: ksadk\n"
+        )
     (tmp_path / "agentengine.yaml").write_text(manifest, encoding="utf-8")
     src = tmp_path / "src"
     src.mkdir()
     (src / "__init__.py").write_text("")
     (src / "agent.py").write_text("graph = object()\n")
-
 
 
 def _write_framework_project(tmp_path: Path, *, with_context: bool = False) -> Path:
@@ -56,6 +54,7 @@ def _write_framework_project(tmp_path: Path, *, with_context: bool = False) -> P
     (src / "__init__.py").write_text("")
     (src / "agent.py").write_text("graph = object()\n")
     return project
+
 
 def test_detect_importable_project_returns_framework_info(tmp_path):
     _write_framework_workspace(tmp_path)
@@ -112,7 +111,9 @@ def test_commit_project_preserves_model_task_and_context(tmp_path):
     svc = StudioService(tmp_path)
     inspection = svc.inspect_agent_project("project")
     draft = svc.commit_agent_project(
-        inspection["inspectionToken"], name="demo-agent", slug="demo-agent",
+        inspection["inspectionToken"],
+        name="demo-agent",
+        slug="demo-agent",
     )
     assert draft.metadata.id.startswith("demo-agent")
     assert draft.spec.runtime.type == "langgraph"
@@ -152,7 +153,9 @@ def test_commit_project_preserves_model_without_context(tmp_path):
     _write_framework_project(tmp_path, with_context=False)
     svc = StudioService(tmp_path)
     inspection = svc.inspect_agent_project("project")
-    draft = svc.commit_agent_project(inspection["inspectionToken"], name="demo-agent", slug="demo-agent")
+    draft = svc.commit_agent_project(
+        inspection["inspectionToken"], name="demo-agent", slug="demo-agent"
+    )
     assert draft.spec.model is not None
     assert draft.spec.model.model == "glm-5.2"
     # context 走默认

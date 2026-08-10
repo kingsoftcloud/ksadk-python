@@ -11,7 +11,7 @@ Assembler 是 KsADK-owned（``ksadk_hosted``）路径的最终输入组装器：
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Iterable, Literal
+from typing import Any, Literal
 
 from ksadk.context_engine.models import ContextItem, ContextPlan
 
@@ -53,7 +53,11 @@ def _split_prompt_and_rest(selected: list[ContextItem]) -> tuple[str, list[Conte
     rest: list[ContextItem] = []
     for item in selected:
         if item.kind == "compiled_prompt":
-            prompt_text = (prompt_text + "\n\n" + _item_text(item)).strip("\n\n") if prompt_text else _item_text(item)
+            prompt_text = (
+                (prompt_text + "\n\n" + _item_text(item)).strip("\n\n")
+                if prompt_text
+                else _item_text(item)
+            )
         else:
             rest.append(item)
     return prompt_text, rest
@@ -123,7 +127,13 @@ class ContextAssembler:
         rest = _current_input_last(rest)
         items: list[dict[str, Any]] = []
         if system:
-            items.append({"type": "message", "role": "system", "content": [{"type": "input_text", "text": system}]})
+            items.append(
+                {
+                    "type": "message",
+                    "role": "system",
+                    "content": [{"type": "input_text", "text": system}],
+                }
+            )
         warnings: list[str] = []
         for item in rest:
             role = _role_for(item)
@@ -132,11 +142,21 @@ class ContextAssembler:
                 warnings.append(f"{item.item_id}:truncated")
             if item.kind == "tool_result":
                 # Responses function_call_output
-                call_id = str(item.metadata.get("call_id") or item.metadata.get("tool_call_id") or "")
-                items.append({"type": "function_call_output", "call_id": call_id, "output": content})
+                call_id = str(
+                    item.metadata.get("call_id") or item.metadata.get("tool_call_id") or ""
+                )
+                items.append(
+                    {"type": "function_call_output", "call_id": call_id, "output": content}
+                )
             else:
                 item_type = "input_text" if role == "user" else "output_text"
-                items.append({"type": "message", "role": role, "content": [{"type": item_type, "text": content}]})
+                items.append(
+                    {
+                        "type": "message",
+                        "role": role,
+                        "content": [{"type": item_type, "text": content}],
+                    }
+                )
         return AssembledInput(
             format="responses",
             system=system,

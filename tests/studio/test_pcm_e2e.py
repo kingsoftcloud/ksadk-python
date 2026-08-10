@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 import time
-from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -42,15 +41,23 @@ def client(tmp_path):
 
 
 def _create_codex_agent(client, agent_id="pcm-e2e-agent"):
-    client.post("/api/v1/agents", json={
-        "id": agent_id, "name": agent_id, "description": "PCM E2E", "template": "blank",
-        "spec": {"runtime": {"type": "codex", "version": "0.144.4"},
-                 "description": "PCM E2E",
-                 "instructions": {"system": "你是助手，绝不回显凭证。", "task": "用 uv run。"},
-                 "bindings": {},
-                 "context": {"ownership": "auto", "rollout": {"contextEngine": "shadow"}},
-                 "memory": {"enabled": False}},
-    })
+    client.post(
+        "/api/v1/agents",
+        json={
+            "id": agent_id,
+            "name": agent_id,
+            "description": "PCM E2E",
+            "template": "blank",
+            "spec": {
+                "runtime": {"type": "codex", "version": "0.144.4"},
+                "description": "PCM E2E",
+                "instructions": {"system": "你是助手，绝不回显凭证。", "task": "用 uv run。"},
+                "bindings": {},
+                "context": {"ownership": "auto", "rollout": {"contextEngine": "shadow"}},
+                "memory": {"enabled": False},
+            },
+        },
+    )
     return agent_id
 
 
@@ -81,31 +88,43 @@ def test_pcm_api_e2e_full_loopback(client):
     assert updated.json()["spec"]["memory"]["enabled"] is True
 
     # 3. Prompt 编译预览
-    r = client.post(f"/api/v1/agents/{agent_id}/prompt:compile",
-                    json={"requestInstructions": "本次：介绍 GIL", "includeContent": True})
+    r = client.post(
+        f"/api/v1/agents/{agent_id}/prompt:compile",
+        json={"requestInstructions": "本次：介绍 GIL", "includeContent": True},
+    )
     assert r.status_code == 200
     assert "你是助手" in r.json()["content"]
 
     # 4. Context 预览
-    r = client.post(f"/api/v1/agents/{agent_id}/context:preview",
-                    json={"userInput": "介绍 GIL", "includeContent": True})
+    r = client.post(
+        f"/api/v1/agents/{agent_id}/context:preview",
+        json={"userInput": "介绍 GIL", "includeContent": True},
+    )
     assert r.status_code == 200
     assert r.json()["projection"]["runtimeType"] == "codex"
 
     # 5. Build + Run（镜像 passing test：build 前的 list/get 调用保持 background task 生命周期）
     client.get("/api/v1/agents").json()["items"]
     client.get(f"/api/v1/agents/{agent_id}").json()
-    bop = client.post(f"/api/v1/agents/{agent_id}/builds",
-                      headers={"Idempotency-Key": "pcm-e2e-build"},
-                      json={"revision": updated.json()["metadata"]["revision"], "runEvaluation": False})
+    bop = client.post(
+        f"/api/v1/agents/{agent_id}/builds",
+        headers={"Idempotency-Key": "pcm-e2e-build"},
+        json={"revision": updated.json()["metadata"]["revision"], "runEvaluation": False},
+    )
     build_done = _wait(client, bop.json()["id"])
     assert build_done["status"] == "SUCCEEDED"
     build_id = build_done["resourceId"]
 
-    rop = client.post(f"/api/v1/codex/builds/{build_id}/runs",
-                      headers={"Idempotency-Key": "pcm-e2e-run"},
-                      json={"sessionId": "pcm-e2e", "input": {"role": "user", "content": "审查"},
-                            "environment": "local", "stream": True})
+    rop = client.post(
+        f"/api/v1/codex/builds/{build_id}/runs",
+        headers={"Idempotency-Key": "pcm-e2e-run"},
+        json={
+            "sessionId": "pcm-e2e",
+            "input": {"role": "user", "content": "审查"},
+            "environment": "local",
+            "stream": True,
+        },
+    )
     run_done = _wait(client, rop.json()["id"])
     assert run_done["status"] == "SUCCEEDED"
     run_id = run_done["resourceId"]
@@ -130,12 +149,15 @@ def test_pcm_bootstrap_exposes_importable(client, tmp_path):
     bootstrap = client.get("/api/v1/system/bootstrap").json()
     # 无根 manifest → None
     assert bootstrap.get("importableProject") is None
-    assert "pcm" not in str(bootstrap.get("features", {})).lower() or True  # features 不含 pcm 字段也 OK
+    assert (
+        "pcm" not in str(bootstrap.get("features", {})).lower() or True
+    )  # features 不含 pcm 字段也 OK
 
 
 def test_pcm_static_assets_contain_pcm_modules():
     """构建产物含 PCM 前端代码（验证 build-static 拼接正确）。"""
     import pathlib
+
     app_js = pathlib.Path("ksadk/studio/static/app.js").read_text(encoding="utf-8")
     app_css = pathlib.Path("ksadk/studio/static/app.css").read_text(encoding="utf-8")
     assert "renderPcmPanel" in app_js

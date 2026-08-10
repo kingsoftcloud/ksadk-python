@@ -9,7 +9,6 @@ import pytest
 from ksadk.conversations.runtime_input import _build_runner_request_payload
 from ksadk.conversations.runtime_payloads import PreparedConversationTurn
 from ksadk.conversations.runtime_preparation import build_run_input
-from ksadk.context_engine.shadow_plan import build_shadow_context_plan_dict
 from ksadk.runtime_context import PlatformInvocationContext
 from ksadk.sessions.in_memory import InMemorySessionService
 
@@ -37,7 +36,9 @@ async def _build(
 
 
 @pytest.mark.asyncio
-async def test_agent_sources_produce_compiled_prompt_with_stable_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_agent_sources_produce_compiled_prompt_with_stable_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.delenv("KSADK_PLATFORM_SAFETY_TEXT", raising=False)
     prepared = await _build(
         agent_system="你是助手",
@@ -47,7 +48,10 @@ async def test_agent_sources_produce_compiled_prompt_with_stable_prefix(monkeypa
     assert prepared.compiled_prompt is not None
     assert prepared.compiled_prompt["prompt_stable_prefix_hash"].startswith("sha256:")
     # shadow_context_plan 的 stable_prefix_hash 与真实 compiled_prompt 一致（prompt_shadow override 生效）。
-    assert prepared.shadow_context_plan["prompt_stable_prefix_hash"] == prepared.compiled_prompt["prompt_stable_prefix_hash"]
+    assert (
+        prepared.shadow_context_plan["prompt_stable_prefix_hash"]
+        == prepared.compiled_prompt["prompt_stable_prefix_hash"]
+    )
     assert set(prepared.compiled_prompt["prompt_section_hashes"]) == {
         "agent_identity",
         "agent_policy",
@@ -56,7 +60,9 @@ async def test_agent_sources_produce_compiled_prompt_with_stable_prefix(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_no_agent_sources_falls_back_to_instructions_only(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_no_agent_sources_falls_back_to_instructions_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """agent_system/agent_task 全空 → compiled_prompt None，shadow 行为与 PR2 一致（回退保护）。"""
     monkeypatch.delenv("KSADK_PLATFORM_SAFETY_TEXT", raising=False)
     prepared = await _build(instructions="本次问题")
@@ -91,7 +97,9 @@ async def test_runner_payload_unchanged_by_compiled_prompt(monkeypatch: pytest.M
         has_current_files=False,
         runner_type="langgraph",
     )
-    payload = _build_runner_request_payload(prepared=prepared, model="m", runtime_context=ctx, runner=None)
+    payload = _build_runner_request_payload(
+        prepared=prepared, model="m", runtime_context=ctx, runner=None
+    )
     assert payload["instructions"] == "本次问题"
     assert "compiled_prompt" not in payload
     assert "agent_system" not in payload

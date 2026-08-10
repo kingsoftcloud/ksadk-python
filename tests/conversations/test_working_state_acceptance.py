@@ -11,8 +11,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from ksadk.conversations.runtime_compaction import _working_state_from_checkpoint
 from ksadk.conversations.semantic_summary import WorkingState, extract_working_state
 from ksadk.sessions.base import SessionEvent
@@ -20,15 +18,25 @@ from ksadk.sessions.base import SessionEvent
 
 def _user_event(seq: int, text: str, inv: str = "inv1") -> SessionEvent:
     return SessionEvent(
-        id=f"u-{seq}", seq_id=seq, event_type="user_message", author="user",
-        invocation_id=inv, content={"role": "user", "parts": [{"text": text}]}, metadata={},
+        id=f"u-{seq}",
+        seq_id=seq,
+        event_type="user_message",
+        author="user",
+        invocation_id=inv,
+        content={"role": "user", "parts": [{"text": text}]},
+        metadata={},
     )
 
 
 def _assistant_event(seq: int, text: str, inv: str = "inv1") -> SessionEvent:
     return SessionEvent(
-        id=f"a-{seq}", seq_id=seq, event_type="assistant_message", author="assistant",
-        invocation_id=inv, content={"role": "assistant", "parts": [{"text": text}]}, metadata={},
+        id=f"a-{seq}",
+        seq_id=seq,
+        event_type="assistant_message",
+        author="assistant",
+        invocation_id=inv,
+        content={"role": "assistant", "parts": [{"text": text}]},
+        metadata={},
     )
 
 
@@ -121,23 +129,29 @@ def test_deployment_case_full_recovery_after_compaction():
     # P0 通过标准：四项完整
     assert "部署" in merged.current_goal, f"goal 丢失: {merged.current_goal!r}"
     assert "不得操作生产环境" in merged.constraints, f"constraints 丢失: {merged.constraints!r}"
-    assert "镜像" in str(merged.completed_steps) or merged.completed_steps == [], "completed_steps 异常"
+    assert "镜像" in str(merged.completed_steps) or merged.completed_steps == [], (
+        "completed_steps 异常"
+    )
     assert merged.next_action == "执行预发 dry-run", f"next_action 丢失: {merged.next_action!r}"
     assert merged.critical_fields_present(), "关键字段不完整"
 
 
 def test_deployment_case_working_state_from_checkpoint_reconstructs():
     """压缩前 checkpoint 的 WorkingState 能被重建用于合并。"""
-    checkpoint = type("C", (), {
-        "metadata": {
-            "working_state": {
-                "current_goal": "部署服务到预发",
-                "next_action": "执行预发 dry-run",
-                "constraints": ["不得操作生产环境"],
-                "source_seq_range": [1, 8],
+    checkpoint = type(
+        "C",
+        (),
+        {
+            "metadata": {
+                "working_state": {
+                    "current_goal": "部署服务到预发",
+                    "next_action": "执行预发 dry-run",
+                    "constraints": ["不得操作生产环境"],
+                    "source_seq_range": [1, 8],
+                }
             }
-        }
-    })()
+        },
+    )()
     ws = _working_state_from_checkpoint(checkpoint)
     assert ws is not None
     assert "部署" in ws.current_goal

@@ -14,36 +14,67 @@ from ksadk.context_engine.planner import ContextPlanner, build_budget
 from ksadk.context_engine.policies import (
     ContextBudgetPolicy,
     ContextPolicy,
-    SectionBudget,
     compute_budget_tokens,
 )
 
 
-def _item(item_id, kind, tokens, *, required=False, group_id=None, score=None, seq=None, droppable=True, content=None, metadata=None, content_hash=None):
+def _item(
+    item_id,
+    kind,
+    tokens,
+    *,
+    required=False,
+    group_id=None,
+    score=None,
+    seq=None,
+    droppable=True,
+    content=None,
+    metadata=None,
+    content_hash=None,
+):
     return ContextItem(
-        item_id=item_id, kind=kind, content=content or item_id, source="test",
-        trust_level="developer", priority=0, estimated_tokens=tokens, required=required,
-        group_id=group_id, score=score, seq_start=seq, droppable=droppable,
-        metadata=metadata or {}, content_hash=content_hash,
+        item_id=item_id,
+        kind=kind,
+        content=content or item_id,
+        source="test",
+        trust_level="developer",
+        priority=0,
+        estimated_tokens=tokens,
+        required=required,
+        group_id=group_id,
+        score=score,
+        seq_start=seq,
+        droppable=droppable,
+        metadata=metadata or {},
+        content_hash=content_hash,
     )
 
 
 def _budget(max_input, soft=None, hard=None, sections=None):
     from ksadk.context_engine.models import ContextBudget
+
     soft = soft if soft is not None else max_input // 2
     hard = hard if hard is not None else int(max_input * 0.85)
     return ContextBudget(
-        context_window_tokens=max_input + 8000, reserved_output_tokens=4000,
-        reserved_reasoning_tokens=0, safety_buffer_tokens=8000, max_input_tokens=max_input,
-        soft_limit_tokens=soft, hard_limit_tokens=hard, section_limits=sections or {},
+        context_window_tokens=max_input + 8000,
+        reserved_output_tokens=4000,
+        reserved_reasoning_tokens=0,
+        safety_buffer_tokens=8000,
+        max_input_tokens=max_input,
+        soft_limit_tokens=soft,
+        hard_limit_tokens=hard,
+        section_limits=sections or {},
     )
 
 
 # ---- budget 计算 ----
 
+
 def test_compute_budget_tokens():
     p = ContextBudgetPolicy()
-    t = compute_budget_tokens(p, context_window_tokens=200000, reserved_output_tokens=8000, reserved_reasoning_tokens=0)
+    t = compute_budget_tokens(
+        p, context_window_tokens=200000, reserved_output_tokens=8000, reserved_reasoning_tokens=0
+    )
     assert t["max_input_tokens"] == 200000 - 8000 - 0 - 8000
     assert t["soft_limit_tokens"] == int(t["max_input_tokens"] * 0.50)
     assert t["hard_limit_tokens"] == int(t["max_input_tokens"] * 0.85)
@@ -65,6 +96,7 @@ def test_context_policy_from_env_defaults():
 
 
 # ---- Planner required / group 原子性 ----
+
 
 def test_required_always_included_even_over_hard_limit():
     p = ContextPlanner()
@@ -105,6 +137,7 @@ def test_group_atomicity_dropped_together_when_emergency():
 
 
 # ---- 优先级与缩减 ----
+
 
 def test_priority_current_input_over_recall():
     p = ContextPlanner()
@@ -149,13 +182,19 @@ def test_large_tool_result_summarized():
 def test_planned_tokens_not_exceed_hard_when_droppable():
     p = ContextPlanner()
     req = _item("safety", "compiled_prompt", 30, required=True)
-    items = [_item(f"r{i}", "history_round", 100, group_id=f"g{i}", droppable=True, seq=i) for i in range(10)]
+    items = [
+        _item(f"r{i}", "history_round", 100, group_id=f"g{i}", droppable=True, seq=i)
+        for i in range(10)
+    ]
     budget = _budget(max_input=200, soft=50, hard=120)
     plan = p.plan([req, *items], budget=budget)
-    assert plan.planned_input_tokens <= 120 + 30  # hard + required（required 可超，但非 required 不超）
+    assert (
+        plan.planned_input_tokens <= 120 + 30
+    )  # hard + required（required 可超，但非 required 不超）
 
 
 # ---- Assembler ----
+
 
 def test_assemble_chat_system_first():
     p = ContextPlanner()
@@ -172,9 +211,7 @@ def test_assemble_chat_system_first():
 def test_assemble_chat_keeps_current_input_after_selected_history():
     p = ContextPlanner()
     req = _item("prompt", "compiled_prompt", 10, required=True, content="system")
-    current = _item(
-        "current", "current_input", 10, required=True, content="second turn"
-    )
+    current = _item("current", "current_input", 10, required=True, content="second turn")
     history = _item(
         "history",
         "history_round",
@@ -198,15 +235,26 @@ def test_assemble_chat_keeps_current_input_after_selected_history():
 def test_assemble_responses_tool_output():
     p = ContextPlanner()
     req = _item("safety", "compiled_prompt", 10, required=True, content="sys")
-    tool = _item("tr", "tool_result", 10, group_id="g1", required=True, content="42",
-                 metadata={"call_id": "c1"})
+    tool = _item(
+        "tr",
+        "tool_result",
+        10,
+        group_id="g1",
+        required=True,
+        content="42",
+        metadata={"call_id": "c1"},
+    )
     budget = _budget(max_input=1000, soft=500, hard=800)
     plan = p.plan([req, tool], budget=budget)
     out = assemble(plan, fmt="responses")
-    assert any(it.get("type") == "function_call_output" and it.get("call_id") == "c1" for it in out.responses_items)
+    assert any(
+        it.get("type") == "function_call_output" and it.get("call_id") == "c1"
+        for it in out.responses_items
+    )
 
 
 # ---- property-based invariant ----
+
 
 def test_property_no_orphan_group_after_reduce():
     rng = random.Random(2026)
@@ -215,11 +263,28 @@ def test_property_no_orphan_group_after_reduce():
         n = rng.randint(2, 8)
         cands = []
         for i in range(n):
-            kind = rng.choice(["compiled_prompt", "current_input", "history_round", "tool_result", "recalled_memory"])
+            kind = rng.choice(
+                [
+                    "compiled_prompt",
+                    "current_input",
+                    "history_round",
+                    "tool_result",
+                    "recalled_memory",
+                ]
+            )
             grp = f"g{rng.randint(0, n // 2)}" if rng.random() < 0.5 else None
-            cands.append(_item(f"i{i}", kind, rng.randint(10, 300), group_id=grp,
-                               required=(kind in ("compiled_prompt", "current_input")),
-                               droppable=kind != "current_input", seq=i, score=rng.random()))
+            cands.append(
+                _item(
+                    f"i{i}",
+                    kind,
+                    rng.randint(10, 300),
+                    group_id=grp,
+                    required=(kind in ("compiled_prompt", "current_input")),
+                    droppable=kind != "current_input",
+                    seq=i,
+                    score=rng.random(),
+                )
+            )
         budget = _budget(max_input=rng.randint(200, 800), soft=100, hard=rng.randint(150, 700))
         plan = p.plan(cands, budget=budget)
         # invariant：无孤儿 group —— 同 group 全在或全不在 selected
@@ -235,5 +300,7 @@ def test_property_no_orphan_group_after_reduce():
 
 if __name__ == "__main__":
     import sys
+
     import pytest
+
     sys.exit(pytest.main([__file__, "-q"]))

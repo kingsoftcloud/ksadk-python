@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pytest
-
 from ksadk.conversations.runtime_compaction import _working_state_from_checkpoint
 from ksadk.conversations.semantic_summary import WorkingState, extract_working_state
 

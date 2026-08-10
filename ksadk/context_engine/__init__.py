@@ -7,12 +7,12 @@ policies / contributors 的实际逻辑。本模块导出稳定类型与运行�
 from ksadk.context_engine.assembler import AssembledInput, ContextAssembler, assemble
 from ksadk.context_engine.capabilities import (
     DEFAULT_CONTEXT_CAPABILITIES,
-    DeploymentMode,
+    CapabilityCircuitOpen,
     ContextAccuracy,
     ContextCapabilities,
     ContextIntegrationMode,
     ContextOwner,
-    CapabilityCircuitOpen,
+    DeploymentMode,
     adk_context_capabilities,
     assert_capability_not_circuit_open,
     capabilities_for_runner,

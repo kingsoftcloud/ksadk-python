@@ -11,11 +11,10 @@ PR B 之前 Projection 仅用于可观测/审计，不替换 Runner 实际发送
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
 from typing import Any
 
 from ksadk.context_engine.capabilities import ContextAccuracy, ContextIntegrationMode
-from ksadk.prompts.models import CompiledPrompt, PromptProjectionResult, PromptSection
+from ksadk.prompts.models import CompiledPrompt, PromptProjectionResult
 
 PROJECTION_VERSION = "v1"
 
@@ -53,7 +52,9 @@ def project_compiled_prompt(
         runner_type=runner_type,
         integration_mode=integration_mode,
         projection_version=PROJECTION_VERSION,
-        section_hashes=tuple(compiled.section_hashes.get(s.section_id, "") for s in compiled.sections),
+        section_hashes=tuple(
+            compiled.section_hashes.get(s.section_id, "") for s in compiled.sections
+        ),
         projected_roles=roles,
         accounting_accuracy=accounting_accuracy,
         estimated_tokens=compiled.estimated_tokens,

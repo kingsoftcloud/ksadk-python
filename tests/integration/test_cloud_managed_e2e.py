@@ -53,7 +53,9 @@ async def test_cloud_managed_e2e_canonical_consistency():
 @pytest.mark.asyncio
 async def test_cloud_managed_deployment_writes_two_axes():
     """Run/Trace 同时记录 deployment_mode + integration_mode（ADR-018 / PCM-DEPLOY-002）。"""
-    pytest.fail("cloud e2e 未实现：条件满足后断言 trace 同时含 context.deployment_mode 与 context.integration_mode")
+    pytest.fail(
+        "cloud e2e 未实现：条件满足后断言 trace 同时含 context.deployment_mode 与 context.integration_mode"
+    )
 
 
 # ---- 本机可验证的云端一致性合同（PCM-DEPLOY-001 的本地侧）----
@@ -74,10 +76,16 @@ async def test_local_side_canonical_hash_is_deterministic_across_runs(monkeypatc
     async def _build():
         service = InMemorySessionService()
         return await build_run_input(
-            agent_id="a", user_id="u", session_id="s",
-            messages=[{"role": "user", "content": "x"}], model="m",
-            instructions="q", agent_system="你是助手", agent_task="用 uv",
-            prompt_integration_mode="ksadk_hosted", runtime_type="langgraph",
+            agent_id="a",
+            user_id="u",
+            session_id="s",
+            messages=[{"role": "user", "content": "x"}],
+            model="m",
+            instructions="q",
+            agent_system="你是助手",
+            agent_task="用 uv",
+            prompt_integration_mode="ksadk_hosted",
+            runtime_type="langgraph",
             session_service_provider=lambda: service,
         )
 
@@ -100,10 +108,16 @@ async def test_deployment_mode_change_does_not_silently_change_ownership(monkeyp
     async def _build(deployment_mode):
         service = InMemorySessionService()
         return await build_run_input(
-            agent_id="a", user_id="u", session_id="s",
-            messages=[{"role": "user", "content": "x"}], model="m",
-            instructions="q", agent_system="你是助手", agent_task="",
-            prompt_integration_mode="ksadk_hosted", runtime_type="langgraph",
+            agent_id="a",
+            user_id="u",
+            session_id="s",
+            messages=[{"role": "user", "content": "x"}],
+            model="m",
+            instructions="q",
+            agent_system="你是助手",
+            agent_task="",
+            prompt_integration_mode="ksadk_hosted",
+            runtime_type="langgraph",
             deployment_mode=deployment_mode,
             session_service_provider=lambda: service,
         )
@@ -111,7 +125,10 @@ async def test_deployment_mode_change_does_not_silently_change_ownership(monkeyp
     local = await _build("local")
     cloud = await _build("ksadk_managed_cloud")
     # ownership 不随 deployment 变化（langgraph 均为 framework_assisted，prompt_owner=ksadk）
-    assert local.shadow_context_plan["integration_mode"] == cloud.shadow_context_plan["integration_mode"]
+    assert (
+        local.shadow_context_plan["integration_mode"]
+        == cloud.shadow_context_plan["integration_mode"]
+    )
     assert local.shadow_context_plan["prompt_owner"] == cloud.shadow_context_plan["prompt_owner"]
     # deployment_mode 确实独立写入且不同
     assert local.shadow_context_plan["deployment_mode"] == "local"

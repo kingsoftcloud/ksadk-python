@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import pytest
 
-from ksadk.conversations.runtime_compaction import compact_conversation_history, _working_state_from_checkpoint
+from ksadk.conversations.runtime_compaction import (
+    _working_state_from_checkpoint,
+    compact_conversation_history,
+)
 from ksadk.conversations.semantic_summary import WorkingState
 from ksadk.sessions.base import SessionEvent
 from ksadk.sessions.in_memory import InMemorySessionService
@@ -17,15 +20,25 @@ from ksadk.sessions.in_memory import InMemorySessionService
 
 def _user(seq, text, inv="inv1"):
     return SessionEvent(
-        id=f"u{seq}", seq_id=seq, event_type="user_message", author="user",
-        invocation_id=inv, content={"role": "user", "parts": [{"text": text}]}, metadata={},
+        id=f"u{seq}",
+        seq_id=seq,
+        event_type="user_message",
+        author="user",
+        invocation_id=inv,
+        content={"role": "user", "parts": [{"text": text}]},
+        metadata={},
     )
 
 
 def _assistant(seq, text, inv="inv1"):
     return SessionEvent(
-        id=f"a{seq}", seq_id=seq, event_type="assistant_message", author="assistant",
-        invocation_id=inv, content={"role": "assistant", "parts": [{"text": text}]}, metadata={},
+        id=f"a{seq}",
+        seq_id=seq,
+        event_type="assistant_message",
+        author="assistant",
+        invocation_id=inv,
+        content={"role": "assistant", "parts": [{"text": text}]},
+        metadata={},
     )
 
 
@@ -110,9 +123,13 @@ async def test_deployment_case_checkpoint_working_state_has_content_hash():
     for ev in _deployment_case_events():
         await service.append_event("sess-hash", ev)
     checkpoint = await compact_conversation_history(
-        session_id="sess-hash", author="agent", model="m",
-        model_metadata=_MODEL_METADATA, session_service_provider=lambda: service,
-        prompt_integration_mode="ksadk_hosted", compaction_owner="ksadk",
+        session_id="sess-hash",
+        author="agent",
+        model="m",
+        model_metadata=_MODEL_METADATA,
+        session_service_provider=lambda: service,
+        prompt_integration_mode="ksadk_hosted",
+        compaction_owner="ksadk",
     )
     ws = checkpoint.metadata["working_state"]
     assert ws["content_hash"].startswith("sha256:")
@@ -128,9 +145,13 @@ async def test_deployment_case_merge_recovers_goal_when_summary_lost_it():
     for ev in _deployment_case_events():
         await service.append_event("sess-merge", ev)
     checkpoint = await compact_conversation_history(
-        session_id="sess-merge", author="agent", model="m",
-        model_metadata=_MODEL_METADATA, session_service_provider=lambda: service,
-        prompt_integration_mode="ksadk_hosted", compaction_owner="ksadk",
+        session_id="sess-merge",
+        author="agent",
+        model="m",
+        model_metadata=_MODEL_METADATA,
+        session_service_provider=lambda: service,
+        prompt_integration_mode="ksadk_hosted",
+        compaction_owner="ksadk",
     )
     previous = _working_state_from_checkpoint(checkpoint)
     # 模拟新 turn 摘要丢失 goal
@@ -150,9 +171,13 @@ async def test_deployment_case_non_ksadk_hosted_no_working_state():
     for ev in _deployment_case_events():
         await service.append_event("sess-no-ws", ev)  # 长 history 触发单阈值
     checkpoint = await compact_conversation_history(
-        session_id="sess-no-ws", author="agent", model="m",
-        model_metadata=_MODEL_METADATA, session_service_provider=lambda: service,
-        prompt_integration_mode="", compaction_owner="framework",
+        session_id="sess-no-ws",
+        author="agent",
+        model="m",
+        model_metadata=_MODEL_METADATA,
+        session_service_provider=lambda: service,
+        prompt_integration_mode="",
+        compaction_owner="framework",
     )
     assert checkpoint is not None
     assert "working_state" not in (checkpoint.metadata or {}), "非 hosted 不应写 working_state"
@@ -166,9 +191,13 @@ async def test_deployment_case_compaction_owner_native_blocks_ksadk_compaction()
     for ev in _deployment_case_events():
         await service.append_event("sess-native", ev)
     checkpoint = await compact_conversation_history(
-        session_id="sess-native", author="agent", model="m",
-        model_metadata=_MODEL_METADATA, session_service_provider=lambda: service,
-        prompt_integration_mode="ksadk_hosted", compaction_owner="native",
+        session_id="sess-native",
+        author="agent",
+        model="m",
+        model_metadata=_MODEL_METADATA,
+        session_service_provider=lambda: service,
+        prompt_integration_mode="ksadk_hosted",
+        compaction_owner="native",
     )
     if checkpoint is not None:
         assert "working_state" not in (checkpoint.metadata or {})

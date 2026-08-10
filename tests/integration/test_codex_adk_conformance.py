@@ -7,20 +7,17 @@ ADK 路径在 ``ksadk[adk]`` 未装时 importorskip。云端预发 E2E 见 ``tes
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from ksadk.codex.runtime import CodexRuntimeAdapter
 from ksadk.context_engine.capabilities import (
     adk_context_capabilities,
-    codex_context_capabilities,
-    langgraph_context_capabilities,
     capabilities_for_runtime_type,
+    codex_context_capabilities,
 )
-from ksadk.codex.runtime import CodexRuntimeAdapter
 from ksadk.runtime.adapter import StartRequest
-
 
 # ---- Codex native Conformance（真实 adapter + fake client）----
 
@@ -38,14 +35,21 @@ class _StreamingFakeCodexClient:
         return "codex_thread_c1"
 
     async def run_turn(self, thread_id: str, user_input: str, **kwargs):
-        self.run_turn_inputs.append({"thread_id": thread_id, "user_input": user_input, "kwargs": kwargs})
+        self.run_turn_inputs.append(
+            {"thread_id": thread_id, "user_input": user_input, "kwargs": kwargs}
+        )
         # 模拟 Codex 后端流式产出 + 完成
         yield {"type": "text", "text": "Codex-OK"}
         yield {"type": "completed", "usage": {"input_tokens": 20, "prompt_tokens": 20}}
 
-    async def interrupt_active_turn(self, thread_id): return None
-    async def resume_thread(self, thread_id, config): return None
-    async def close(self): self._closed = True
+    async def interrupt_active_turn(self, thread_id):
+        return None
+
+    async def resume_thread(self, thread_id, config):
+        return None
+
+    async def close(self):
+        self._closed = True
 
 
 @pytest.mark.asyncio
@@ -60,7 +64,8 @@ async def test_codex_conformance_native_ownership_across_lifecycle():
 
     request = StartRequest(
         input="继续",
-        user_id="u", session_id="s",
+        user_id="u",
+        session_id="s",
         config={"base_instructions": "你是 codex 助手", "model": "codex-model"},
         metadata={"history": [{"role": "user", "content": "上一轮"}]},
     )
@@ -83,10 +88,16 @@ async def test_codex_conformance_hosted_pipeline_does_not_take_over_native():
 
     service = InMemorySessionService()
     prepared = await build_run_input(
-        agent_id="codex-a", user_id="u", session_id="s-codex",
-        messages=[{"role": "user", "content": "x"}], model="m",
-        instructions="q", agent_system="你是助手", agent_task="",
-        prompt_integration_mode="ksadk_hosted", runtime_type="codex",
+        agent_id="codex-a",
+        user_id="u",
+        session_id="s-codex",
+        messages=[{"role": "user", "content": "x"}],
+        model="m",
+        instructions="q",
+        agent_system="你是助手",
+        agent_task="",
+        prompt_integration_mode="ksadk_hosted",
+        runtime_type="codex",
         session_service_provider=lambda: service,
     )
     assert prepared.context_plan is None
@@ -97,6 +108,7 @@ async def test_codex_conformance_hosted_pipeline_does_not_take_over_native():
 
 
 # ---- ADK Conformance（framework_assisted）----
+
 
 def test_adk_conformance_framework_assisted_ownership():
     """ADK Conformance：framework_assisted，history/compaction owner=framework，native_skills=True。"""
@@ -113,18 +125,27 @@ def test_adk_conformance_framework_assisted_ownership():
 
 def test_adk_conformance_hosted_pipeline_skips_framework_assisted():
     """ADK framework_assisted：prompt_owner=framework，hosted pipeline 不接管（仅 ksadk-owned 接管）。"""
-    from ksadk.conversations.runtime_preparation import build_run_input
-    from ksadk.sessions.in_memory import InMemorySessionService
     import asyncio
 
+    from ksadk.conversations.runtime_preparation import build_run_input
+    from ksadk.sessions.in_memory import InMemorySessionService
+
     service = InMemorySessionService()
-    prepared = asyncio.run(build_run_input(
-        agent_id="adk-a", user_id="u", session_id="s-adk",
-        messages=[{"role": "user", "content": "x"}], model="m",
-        instructions="q", agent_system="你是助手", agent_task="用 uv",
-        prompt_integration_mode="ksadk_hosted", runtime_type="adk",
-        session_service_provider=lambda: service,
-    ))
+    prepared = asyncio.run(
+        build_run_input(
+            agent_id="adk-a",
+            user_id="u",
+            session_id="s-adk",
+            messages=[{"role": "user", "content": "x"}],
+            model="m",
+            instructions="q",
+            agent_system="你是助手",
+            agent_task="用 uv",
+            prompt_integration_mode="ksadk_hosted",
+            runtime_type="adk",
+            session_service_provider=lambda: service,
+        )
+    )
     # adk prompt_owner=framework != ksadk → hosted pipeline 不接管
     assert prepared.context_plan is None
     assert prepared.assembled_input is None
@@ -133,11 +154,15 @@ def test_adk_conformance_hosted_pipeline_skips_framework_assisted():
 
 # ---- capability mismatch 影响 native Conformance（熔断隔离）----
 
+
 def test_circuit_breaker_isolates_by_runtime_type():
     """熔断 codex 不影响 langgraph（按 runtime_type 隔离，方案 §6.1）。"""
     from ksadk.context_engine.capabilities import (
-        is_capability_circuit_open, mark_capability_mismatch, reset_capability_circuit,
+        is_capability_circuit_open,
+        mark_capability_mismatch,
+        reset_capability_circuit,
     )
+
     reset_capability_circuit(runtime_type="codex")
     reset_capability_circuit(runtime_type="langgraph")
     mark_capability_mismatch(runtime_type="codex")

@@ -76,7 +76,11 @@ def detect_manifest_kind(workspace_root: Path | str) -> ManifestKindResult:
 
     framework = str(payload.get("framework") or "").strip().lower()
     runtime = payload.get("runtime") or {}
-    runtime_type = str(runtime.get("type") or runtime.get("name") or "").strip().lower() if isinstance(runtime, dict) else ""
+    runtime_type = (
+        str(runtime.get("type") or runtime.get("name") or "").strip().lower()
+        if isinstance(runtime, dict)
+        else ""
+    )
     artifact_type = str(payload.get("artifact_type") or "").strip().lower()
     detected = {
         "framework": framework,
@@ -88,19 +92,29 @@ def detect_manifest_kind(workspace_root: Path | str) -> ManifestKindResult:
     # 2. 显式 codex
     if framework in _CODEX_FRAMEWORK_VALUES or runtime_type in _CODEX_RUNTIME_VALUES:
         return ManifestKindResult(
-            kind="codex", path=path, framework=framework,
-            runtime_type=runtime_type, artifact_type=artifact_type,
+            kind="codex",
+            path=path,
+            framework=framework,
+            runtime_type=runtime_type,
+            artifact_type=artifact_type,
         )
     # 3. 显式 framework
     if framework in _FRAMEWORK_VALUES or runtime_type in _FRAMEWORK_VALUES:
         return ManifestKindResult(
-            kind="framework", path=path, framework=framework or runtime_type,
-            runtime_type=runtime_type, artifact_type=artifact_type,
+            kind="framework",
+            path=path,
+            framework=framework or runtime_type,
+            runtime_type=runtime_type,
+            artifact_type=artifact_type,
         )
     # 4. 无法判定（例如只有 name/version 但无 framework/runtime）
     return ManifestKindResult(
-        kind="ambiguous", path=path, framework=framework, runtime_type=runtime_type,
-        artifact_type=artifact_type, detected_fields=detected,
+        kind="ambiguous",
+        path=path,
+        framework=framework,
+        runtime_type=runtime_type,
+        artifact_type=artifact_type,
+        detected_fields=detected,
     )
 
 

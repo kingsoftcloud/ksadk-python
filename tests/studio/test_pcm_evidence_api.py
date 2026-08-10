@@ -19,6 +19,7 @@ from tests.studio.test_codex_api import _inspector
 
 def _wait(client: TestClient, operation_id: str) -> dict:
     import time
+
     for _ in range(300):
         op = client.get(f"/api/v1/operations/{operation_id}").json()
         if op["status"] in {"SUCCEEDED", "FAILED", "CANCELLED", "INTERRUPTED"}:
@@ -35,11 +36,13 @@ def _setup(tmp_path: Path):
         runtime_executor=RuntimeFixture(standard_codex_events).executor,
     )
     app = create_studio_app(tmp_path, service=service, security_enabled=False)
-    client = TestClient(app)
 
     def payload(agent_id: str, prompt: str) -> dict:
         return {
-            "id": agent_id, "name": agent_id, "description": prompt, "template": "blank",
+            "id": agent_id,
+            "name": agent_id,
+            "description": prompt,
+            "template": "blank",
             "spec": {
                 "runtime": {"type": "codex", "version": "0.144.4"},
                 "description": prompt,
@@ -69,7 +72,12 @@ def test_run_captures_pcm_evidence_into_record(tmp_path):
     run_op = c.post(
         f"/api/v1/codex/builds/{build_id}/runs",
         headers={"Idempotency-Key": "evidence-run"},
-        json={"sessionId": "ses-ev", "input": {"role": "user", "content": "请审查 src/demo.py"}, "environment": "local", "stream": True},
+        json={
+            "sessionId": "ses-ev",
+            "input": {"role": "user", "content": "请审查 src/demo.py"},
+            "environment": "local",
+            "stream": True,
+        },
     )
     run_done = _wait(c, run_op.json()["id"])
     run_id = run_done["resourceId"]
@@ -83,7 +91,12 @@ def test_run_context_endpoint_returns_ownership_for_native(tmp_path):
     run_op = c.post(
         f"/api/v1/codex/builds/{build_id}/runs",
         headers={"Idempotency-Key": "evidence-run2"},
-        json={"sessionId": "ses-ev2", "input": {"role": "user", "content": "审查"}, "environment": "local", "stream": True},
+        json={
+            "sessionId": "ses-ev2",
+            "input": {"role": "user", "content": "审查"},
+            "environment": "local",
+            "stream": True,
+        },
     )
     run_done = _wait(c, run_op.json()["id"])
     run_id = run_done["resourceId"]
@@ -98,7 +111,12 @@ def test_run_prompt_endpoint_returns_hashes(tmp_path):
     run_op = c.post(
         f"/api/v1/codex/builds/{build_id}/runs",
         headers={"Idempotency-Key": "evidence-run3"},
-        json={"sessionId": "ses-ev3", "input": {"role": "user", "content": "审查"}, "environment": "local", "stream": True},
+        json={
+            "sessionId": "ses-ev3",
+            "input": {"role": "user", "content": "审查"},
+            "environment": "local",
+            "stream": True,
+        },
     )
     run_id = _wait(c, run_op.json()["id"])["resourceId"]
     prompt = c.get(f"/api/v1/runs/{run_id}/prompt").json()
@@ -111,7 +129,12 @@ def test_run_working_state_endpoint(tmp_path):
     run_op = c.post(
         f"/api/v1/codex/builds/{build_id}/runs",
         headers={"Idempotency-Key": "evidence-run4"},
-        json={"sessionId": "ses-ev4", "input": {"role": "user", "content": "审查"}, "environment": "local", "stream": True},
+        json={
+            "sessionId": "ses-ev4",
+            "input": {"role": "user", "content": "审查"},
+            "environment": "local",
+            "stream": True,
+        },
     )
     run_id = _wait(c, run_op.json()["id"])["resourceId"]
     ws = c.get(f"/api/v1/runs/{run_id}/working-state").json()
@@ -123,7 +146,12 @@ def test_run_memory_events_endpoint(tmp_path):
     run_op = c.post(
         f"/api/v1/codex/builds/{build_id}/runs",
         headers={"Idempotency-Key": "evidence-run5"},
-        json={"sessionId": "ses-ev5", "input": {"role": "user", "content": "审查"}, "environment": "local", "stream": True},
+        json={
+            "sessionId": "ses-ev5",
+            "input": {"role": "user", "content": "审查"},
+            "environment": "local",
+            "stream": True,
+        },
     )
     run_id = _wait(c, run_op.json()["id"])["resourceId"]
     me = c.get(f"/api/v1/runs/{run_id}/memory-events").json()
@@ -136,7 +164,12 @@ def test_evidence_does_not_break_run(tmp_path):
     run_op = c.post(
         f"/api/v1/codex/builds/{build_id}/runs",
         headers={"Idempotency-Key": "evidence-run6"},
-        json={"sessionId": "ses-ev6", "input": {"role": "user", "content": "审查"}, "environment": "local", "stream": True},
+        json={
+            "sessionId": "ses-ev6",
+            "input": {"role": "user", "content": "审查"},
+            "environment": "local",
+            "stream": True,
+        },
     )
     run_done = _wait(c, run_op.json()["id"])
     assert run_done["status"] == "SUCCEEDED"

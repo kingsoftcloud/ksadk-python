@@ -28,8 +28,12 @@ def _write_root_manifest(workspace_root: Path, content: str) -> None:
 
 def test_detect_codex_manifest():
     import tempfile
+
     d = Path(tempfile.mkdtemp())
-    _write_root_manifest(d, "name: codex-agent\nframework: codex\nruntime:\n  name: codex\n  version: '0.144.4'\nmodel: m\nprompt: p\n")
+    _write_root_manifest(
+        d,
+        "name: codex-agent\nframework: codex\nruntime:\n  name: codex\n  version: '0.144.4'\nmodel: m\nprompt: p\n",
+    )
     result = detect_manifest_kind(d)
     assert result.kind == "codex"
     assert result.is_codex
@@ -37,8 +41,11 @@ def test_detect_codex_manifest():
 
 def test_detect_langgraph_manifest():
     import tempfile
+
     d = Path(tempfile.mkdtemp())
-    _write_root_manifest(d, "framework: langgraph\nruntime:\n  type: langgraph\n  projectPath: runtimes/demo\n")
+    _write_root_manifest(
+        d, "framework: langgraph\nruntime:\n  type: langgraph\n  projectPath: runtimes/demo\n"
+    )
     result = detect_manifest_kind(d)
     assert result.kind == "framework"
     assert not result.is_codex
@@ -46,6 +53,7 @@ def test_detect_langgraph_manifest():
 
 def test_detect_adk_manifest():
     import tempfile
+
     d = Path(tempfile.mkdtemp())
     _write_root_manifest(d, "framework: adk\nruntime:\n  type: adk\n")
     result = detect_manifest_kind(d)
@@ -54,6 +62,7 @@ def test_detect_adk_manifest():
 
 def test_detect_no_manifest():
     import tempfile
+
     d = Path(tempfile.mkdtemp())
     result = detect_manifest_kind(d)
     assert result.kind == "none"
@@ -61,6 +70,7 @@ def test_detect_no_manifest():
 
 def test_detect_ambiguous_manifest():
     import tempfile
+
     d = Path(tempfile.mkdtemp())
     _write_root_manifest(d, "name: my-agent\nversion: '1.0'\n")
     result = detect_manifest_kind(d)
@@ -69,6 +79,7 @@ def test_detect_ambiguous_manifest():
 
 def test_root_manifest_is_codex_helper():
     import tempfile
+
     d = Path(tempfile.mkdtemp())
     _write_root_manifest(d, "framework: langgraph\n")
     assert root_manifest_is_codex(d) is False
@@ -82,7 +93,10 @@ def test_root_manifest_is_codex_helper():
 
 def test_codex_repo_list_skips_non_codex_root_manifest(tmp_path):
     """根 agentengine.yaml 声明 framework: langgraph 时，list() 不抛 CODEX_MANIFEST_INVALID。"""
-    _write_root_manifest(tmp_path, "framework: langgraph\nruntime:\n  type: langgraph\n  projectPath: runtimes/demo\n")
+    _write_root_manifest(
+        tmp_path,
+        "framework: langgraph\nruntime:\n  type: langgraph\n  projectPath: runtimes/demo\n",
+    )
     workspace = Workspace(tmp_path)
     repo = CodexManifestRepository(workspace)
     # 修复前：list() 会无脑 _load_path(self.path) → CODEX_MANIFEST_INVALID
@@ -107,7 +121,10 @@ def test_codex_repo_load_raises_not_found_for_non_codex_root(tmp_path):
 
 def test_codex_repo_still_lists_real_codex_root(tmp_path):
     """真 codex 根 manifest 仍被正确解析列出。"""
-    _write_root_manifest(tmp_path, "name: codex-a\nversion: '1.0'\nframework: codex\nartifact_type: ManagedRuntime\nruntime:\n  name: codex\n  version: '0.144.4'\nmodel: m\nprompt: p\n")
+    _write_root_manifest(
+        tmp_path,
+        "name: codex-a\nversion: '1.0'\nframework: codex\nartifact_type: ManagedRuntime\nruntime:\n  name: codex\n  version: '0.144.4'\nmodel: m\nprompt: p\n",
+    )
     workspace = Workspace(tmp_path)
     repo = CodexManifestRepository(workspace)
     snapshots = repo.list()
@@ -120,7 +137,10 @@ def test_codex_repo_still_lists_real_codex_root(tmp_path):
 
 def test_studio_lists_agents_with_langgraph_root_manifest(tmp_path):
     """Studio 启动 + list_agents：根 langgraph manifest 不抛错，正常返回空列表。"""
-    _write_root_manifest(tmp_path, "framework: langgraph\nruntime:\n  type: langgraph\n  projectPath: runtimes/demo\n")
+    _write_root_manifest(
+        tmp_path,
+        "framework: langgraph\nruntime:\n  type: langgraph\n  projectPath: runtimes/demo\n",
+    )
     service = StudioService(tmp_path)
     app = create_studio_app(tmp_path, service=service, security_enabled=False)
     with TestClient(app) as client:
@@ -131,7 +151,10 @@ def test_studio_lists_agents_with_langgraph_root_manifest(tmp_path):
 
 def test_studio_creates_framework_agent_alongside_langgraph_root(tmp_path):
     """根 langgraph manifest 存在时，Studio 不误判，list_agents 正常返回。"""
-    _write_root_manifest(tmp_path, "framework: langgraph\nruntime:\n  type: langgraph\n  projectPath: runtimes/demo\n")
+    _write_root_manifest(
+        tmp_path,
+        "framework: langgraph\nruntime:\n  type: langgraph\n  projectPath: runtimes/demo\n",
+    )
     service = StudioService(tmp_path)
     # 不调真实 create（langgraph runtime 可能未装），只验证 list 不抛 CODEX_MANIFEST_INVALID
     agents = service.list_agents()

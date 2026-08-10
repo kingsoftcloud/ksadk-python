@@ -65,13 +65,18 @@ _SECRET_PATTERNS: tuple[tuple[re.Pattern[str], SensitiveLabel], ...] = (
     (re.compile(r"(?i)AKIA[0-9A-Z]{16}"), "access_key"),
     (re.compile(r"(?i)cookie\s*[:=]\s*\S+"), "cookie"),
     (re.compile(r"(?i)authorization\s*[:=]\s*bearer\s+\S+"), "auth_header"),
-    (re.compile(r"https?://\S+?(?:X-Amz-Signature|X-Amz-Security-Token|signed)=", re.I), "signed_url"),
+    (
+        re.compile(r"https?://\S+?(?:X-Amz-Signature|X-Amz-Security-Token|signed)=", re.I),
+        "signed_url",
+    ),
     (re.compile(r"(?i)(postgres|mysql|mongodb|redis)://\S+:\S+@\S+"), "dsn"),
     (re.compile(r"(?i)sk-[A-Za-z0-9]{20,}"), "token"),
 )
 
 
-def detect_sensitive_labels(content: str, candidate_labels: list[SensitiveLabel]) -> list[SensitiveLabel]:
+def detect_sensitive_labels(
+    content: str, candidate_labels: list[SensitiveLabel]
+) -> list[SensitiveLabel]:
     """对 Candidate 正文做敏感信息检测（方案 §19）。
 
     先采纳 Candidate 自带的 ``sensitive_labels``，再用正则做 best-effort 补检。任一硬拒绝
@@ -114,7 +119,8 @@ class MemoryPolicy:
         - 硬拒绝敏感标签 → ``reject``（绝不写入）。
         - 用户明确"记住"（reason 含 explicit）→ 同步 propose，达阈值 commit。
         - 用户明确"忘掉"（operation=delete）→ 解析目标删除；歧义时不猜测 → reject。
-        - 一次性当前任务状态 / 模型猜测 → 留 Session，不写 → ``reject``（reason 标 ``not_durable``）。
+        - 一次性当前任务状态 / 模型猜测 → 留 Session，不写 → ``reject``
+          （reason 标 ``not_durable``）。
         - 与旧事实冲突 → ``update``/``supersede``，不覆盖历史来源。
         """
         labels = detect_sensitive_labels(candidate.content, list(candidate.sensitive_labels))

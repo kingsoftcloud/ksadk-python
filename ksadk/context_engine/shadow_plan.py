@@ -70,9 +70,7 @@ def _ambient_text(section: Any) -> str:
     return ""
 
 
-def _resolve_caps(
-    *, runner: Any | None, runtime_type: str | None
-) -> tuple[Any, str]:
+def _resolve_caps(*, runner: Any | None, runtime_type: str | None) -> tuple[Any, str]:
     """解析 capability：优先 runner（adapter/runner 实例），否则 runtime_type，再退 DEFAULT。
 
     返回 ``(caps, runtime_type)``。``runtime_type`` 用于 Plan 记录；优先取 runner 的
@@ -227,7 +225,8 @@ def build_shadow_context_plan_dict(
         "deployment_mode": str(deployment_mode or "local"),
         "capability_hash": capability_hash(caps),
         # PR2/PR A：shadow CompiledPrompt hash/section 统计，供 cache-break 诊断与可观测。
-        # shadow_prompt_keys 来自真实编译（PR A 含 agent_system/agent_task）或 instructions-only 回退，
+        # shadow_prompt_keys 来自真实编译（PR A 含 agent_system/agent_task）
+        # 或 instructions-only 回退，
         # 已剥离 prompt_content（明文不进 shadow plan/trace）。
         **shadow_prompt_keys,
     }

@@ -13,8 +13,6 @@ search_text（工具路径）不在本 PR 范围，仍返错误字符串，单�
 
 from __future__ import annotations
 
-import pytest
-
 from ksadk.memory.adk.backends.base_ltm_backend import BaseLongTermMemoryBackend
 from ksadk.memory.adk.backends.http_ltm_backend import HttpLTMBackend
 from ksadk.memory.service import LongTermMemoryService
