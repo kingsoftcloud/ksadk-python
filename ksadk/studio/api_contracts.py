@@ -6,6 +6,8 @@ from typing import Any, Literal
 
 from pydantic import Field, SecretStr
 
+from ksadk.evaluation import EvaluationConfig as PublicEvaluationConfig
+from ksadk.evaluation import TargetRef
 from ksadk.studio.contracts import (
     AgentBindings,
     AgentSpec,
@@ -92,6 +94,14 @@ class EvaluationRequest(ContractModel):
     suite_refs: list[str] = Field(min_length=1)
     concurrency: int = Field(default=1, ge=1, le=4)
     fail_fast: bool = False
+
+
+class StudioEvaluationCreate(ContractModel):
+    """Request for the shared CLI/Studio evaluation executor."""
+
+    evalset_file: str = Field(min_length=1, max_length=4096)
+    target: TargetRef
+    config: PublicEvaluationConfig = Field(default_factory=PublicEvaluationConfig)
 
 
 class SecretReferenceCheckRequest(ContractModel):

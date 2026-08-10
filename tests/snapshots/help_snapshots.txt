@@ -12,6 +12,7 @@ AgentEngine CLI
   agentengine completion Shell 补全管理
   agentengine dashboard  打开云端 Agent Dashboard
   agentengine deploy     部署到云端
+  agentengine eval       评测本地、A2A 或 Codex Agent
   agentengine files      管理 workspace 文件
   agentengine hermes     Hermes Agent 资源管理
   agentengine init       创建新项目
