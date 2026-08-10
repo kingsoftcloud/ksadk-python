@@ -133,8 +133,10 @@ class HttpLTMBackend(BaseLongTermMemoryBackend):
         """
         if not self.base_url:
             logger.warning("HttpLTMBackend: base_url not configured, return empty results.")
+            self.last_error = "base_url not configured"
             return []
 
+        self.last_error = ""
         try:
             payload = {
                 "index": self.index,
@@ -160,11 +162,13 @@ class HttpLTMBackend(BaseLongTermMemoryBackend):
             return memories
 
         except httpx.HTTPStatusError as e:
+            self.last_error = str(e)
             logger.error(
                 f"HTTP error searching memory: {e.response.status_code} " f"{e.response.text[:200]}"
             )
             return []
         except Exception as e:
+            self.last_error = str(e)
             logger.error(f"Error searching memory from remote service: {e}")
             return []
 

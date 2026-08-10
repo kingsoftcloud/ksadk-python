@@ -16,9 +16,13 @@ class BaseLongTermMemoryBackend(ABC, BaseModel):
 
     Attributes:
         index: 索引/集合名称，用于隔离不同应用的记忆数据
+        last_error: 最近一次 search/save 失败的原因。成功调用前置空，失败时填充。
+            上层（LongTermMemoryService.build_context）据此区分"后端吞错返空"与
+            "真无记忆"——前者不得把错误伪装成"未找到"注入模型上下文。
     """
 
     index: str = ""
+    last_error: str = ""
 
     @abstractmethod
     def save_memory(self, user_id: str, event_strings: List[str], **kwargs) -> bool:

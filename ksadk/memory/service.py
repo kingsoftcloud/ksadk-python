@@ -118,14 +118,62 @@ class LongTermMemoryService:
             top_k=top_k if top_k is not None else self.top_k,
         )
 
+    @property
+    def last_error(self) -> str:
+        """最近一次后端失败原因（成功调用前置空，失败时填充）。
+
+        后端（SDK/HTTP）失败时可能吞掉异常返空列表而非抛错，这里把该信号暴露给
+        ``build_context``，以区分"后端吞错返空"与"真无记忆"。无 ``last_error``
+        属性的后端视为无法报告失败（空串）。
+        """
+        return str(getattr(self._backend, "last_error", "") or "")
+
     def search_text(self, *, user_id: str, query: str, top_k: int | None = None) -> str:
+        """检索长期记忆并格式化为文本（方案 §10.8：错误不得混入正文）。
+
+        Provider 异常时返回空字符串而非 ``"长期记忆检索失败: {exc}"``——错误文本会被当作
+        记忆正文注入模型上下文，污染回答（方案 §10.8 第 3 条）。需要区分"真无记忆"与"后端
+        失败"的调用方应改用 ``build_context()``（返回独立 ``error`` 字段）或 ``search_entries``
+        后检查 ``self.last_error``。
+        """
         try:
             return format_memory_entries(
                 self.search_entries(user_id=user_id, query=query, top_k=top_k)
             )
         except Exception as exc:
             logger.error("load_memory failed: %s", exc)
-            return f"长期记忆检索失败: {exc}"
+            # 不把错误字符串塞进模型上下文（方案 §10.8）。返回空串，让上层按 last_error 判断。
+            return ""
+
+    def build_context(
+        self,
+        *,
+        user_id: str,
+        query: str,
+        top_k: int | None = None,
+    ) -> dict[str, str] | None:
+        """构造环境记忆上下文。失败时返回 ``formatted_text=""`` + 独立 ``error`` 字段，
+        不把错误字符串塞进 ``formatted_text``（避免错误伪装成记忆正文注入模型）。
+
+        - 后端抛错（如 SDK 客户端初始化失败）→ except 捕获，返 ``error`` 字段。
+        - 后端吞错返空列表（SDK/HTTP 网络失败）→ ``last_error`` 非空，返 ``error`` 字段。
+        - 真无记忆（后端正常返空）→ ``formatted_text`` 为"未找到…"（语义真实，可注入）。
+        """
+        normalized = str(query or "").strip()
+        if not normalized or not self.is_configured():
+            return None
+        try:
+            entries = self.search_entries(user_id=user_id, query=normalized, top_k=top_k)
+        except Exception as exc:
+            logger.error("load_memory failed: %s", exc)
+            return {"query": normalized, "formatted_text": "", "error": str(exc)}
+        backend_error = self.last_error
+        if not entries and backend_error:
+            return {"query": normalized, "formatted_text": "", "error": backend_error}
+        return {
+            "query": normalized,
+            "formatted_text": format_memory_entries(entries),
+        }
 
     def save_event_strings(
         self,
@@ -155,20 +203,3 @@ class LongTermMemoryService:
             event_strings=[json.dumps(payload, ensure_ascii=False)],
             metadata=metadata,
         )
-
-    def build_context(
-        self,
-        *,
-        user_id: str,
-        query: str,
-        top_k: int | None = None,
-    ) -> dict[str, str] | None:
-        normalized = str(query or "").strip()
-        if not normalized:
-            return None
-        if not self.is_configured():
-            return None
-        return {
-            "query": normalized,
-            "formatted_text": self.search_text(user_id=user_id, query=normalized, top_k=top_k),
-        }
