@@ -1,25 +1,31 @@
 """Context Engine —— Prompt/Context/Memory 的运行时上下文协调层。
 
-第一个 PR（shadow 可观测基线）只导出稳定数据模型与 capability 合同：
-``ContextCapabilities`` / ``ContextItem`` / ``ContextBudget`` / ``ContextPlan`` /
-``ContextDecision`` / ``TokenCounter`` / ``HeuristicTokenCounter`` / ``ProjectionResult``。
-planner / assembler / contributors / policies / cache_observability 的实际逻辑留后续 PR。
+数据模型、capability 合同与 shadow 可观测基线已落地；后续 PR 新增 planner / assembler /
+policies / contributors 的实际逻辑。本模块导出稳定类型与运行时合同。
 """
 
+from ksadk.context_engine.assembler import AssembledInput, ContextAssembler, assemble
 from ksadk.context_engine.capabilities import (
     DEFAULT_CONTEXT_CAPABILITIES,
+    DeploymentMode,
     ContextAccuracy,
     ContextCapabilities,
     ContextIntegrationMode,
     ContextOwner,
+    CapabilityCircuitOpen,
     adk_context_capabilities,
+    assert_capability_not_circuit_open,
     capabilities_for_runner,
     capabilities_for_runtime_type,
     capability_hash,
     codex_context_capabilities,
     deepagents_context_capabilities,
+    detect_capability_mismatch,
+    is_capability_circuit_open,
     langchain_context_capabilities,
     langgraph_context_capabilities,
+    mark_capability_mismatch,
+    reset_capability_circuit,
 )
 from ksadk.context_engine.models import (
     CONTEXT_POLICY_VERSION,
@@ -28,6 +34,13 @@ from ksadk.context_engine.models import (
     ContextItem,
     ContextKind,
     ContextPlan,
+)
+from ksadk.context_engine.planner import ContextPlanner, build_budget
+from ksadk.context_engine.policies import (
+    ContextBudgetPolicy,
+    ContextPolicy,
+    SectionBudget,
+    compute_budget_tokens,
 )
 from ksadk.context_engine.projection import PROJECTION_VERSION, ProjectionResult
 from ksadk.context_engine.tokenizer import (
@@ -38,9 +51,12 @@ from ksadk.context_engine.tokenizer import (
 )
 
 __all__ = [
+    "AssembledInput",
     "CONTEXT_POLICY_VERSION",
+    "ContextAssembler",
     "ContextAccuracy",
     "ContextBudget",
+    "ContextBudgetPolicy",
     "ContextCapabilities",
     "ContextDecision",
     "ContextIntegrationMode",
@@ -48,19 +64,35 @@ __all__ = [
     "ContextKind",
     "ContextOwner",
     "ContextPlan",
+    "ContextPlanner",
+    "ContextPolicy",
     "DEFAULT_CONTEXT_CAPABILITIES",
+    "DeploymentMode",
     "HEURISTIC_TOKENIZER_NAME",
     "HeuristicTokenCounter",
     "PROJECTION_VERSION",
     "ProjectionResult",
+    "SectionBudget",
     "TokenCounter",
     "adk_context_capabilities",
+    "assemble",
+    "build_budget",
     "capabilities_for_runner",
     "capabilities_for_runtime_type",
     "capability_hash",
     "codex_context_capabilities",
+    "compute_budget_tokens",
     "deepagents_context_capabilities",
+    "detect_capability_mismatch",
     "get_default_token_counter",
+    "is_capability_circuit_open",
     "langchain_context_capabilities",
     "langgraph_context_capabilities",
+    "mark_capability_mismatch",
+    "reset_capability_circuit",
+    "assert_capability_not_circuit_open",
+    "CapabilityCircuitOpen",
+    "allowed_ownership_choices",
+    "validate_ownership_for_runtime",
+    "resolve_ownership",
 ]

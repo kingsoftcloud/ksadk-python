@@ -144,6 +144,8 @@ def build_shadow_context_plan_dict(
     runtime_type: str | None = None,
     model_metadata: Mapping[str, Any] | None = None,
     prompt_shadow: Mapping[str, Any] | None = None,
+    prompt_integration_mode: str = "",
+    deployment_mode: str = "local",
 ) -> dict[str, Any]:
     """构造 shadow ContextPlan 的 plain dict 投影。
 
@@ -152,10 +154,19 @@ def build_shadow_context_plan_dict(
     （canonical conversation execution 路径，build_run_input 阶段尚未拿到 adapter）→ DEFAULT。
     canonical 路径因此不再落成默认 opaque（方案 6.1 / ADR-009）。
 
+    ``deployment_mode``（方案 §4.3 / §6.1）：与 Context ownership 正交，独立写入 plan/trace。
+    默认 ``local``，云端由控制面传入 ``ksadk_managed_cloud``/``external_managed``。不得据它
+    推断 ``integration_mode``。
+
     ``prompt_shadow``：调用方可传入预编译的真实 CompiledPrompt dict（PR A，含 agent_system/
     agent_task 的稳定 section）。为 None 时回退到 ``compile_shadow_prompt_dict(instructions)``
     （仅 request_instructions volatile）。传入真实 dict 时，``prompt_*`` 键全部来自真实编译，
     ``stable_prefix_hash`` 非空（stable section 进了编译）。
+
+    ``prompt_integration_mode``（PR B）：per-Build 接管标记。仅当为 ``ksadk_hosted`` 且
+    capability ``prompt_owner==ksadk`` 且 ``runtime_type==langgraph`` 时，``integration_mode``
+    显示字段覆盖为 ``ksadk_hosted``（表示本 turn 由 ksadk 编译并接管 instructions）。
+    ``capability_hash`` 仍用原 caps（稳定，不随 per-request 接管状态抖动）。
     """
     counter = get_default_token_counter()
     tokens_by_kind = _empty_tokens_by_kind()
@@ -177,18 +188,31 @@ def build_shadow_context_plan_dict(
     prompt_shadow_dict = (
         prompt_shadow if prompt_shadow is not None else compile_shadow_prompt_dict(instructions)
     )
+    # PR B：prompt_content 是真实正文，含明文，不得进 shadow plan/trace。这里剥离，
+    # 只保留 hash/统计键（与 _set_prompt_source_attributes 只读 hash 一致）。
+    shadow_prompt_keys = {
+        key: value for key, value in prompt_shadow_dict.items() if key != "prompt_content"
+    }
+    # PR B：接管态显示。capability_hash 不变（不随 per-request 抖动）。
+    effective_mode = caps.integration_mode
+    if (
+        prompt_integration_mode == "ksadk_hosted"
+        and caps.prompt_owner == "ksadk"
+        and resolved_runtime_type == "langgraph"
+    ):
+        effective_mode = "ksadk_hosted"
 
     return {
         "plan_id": f"ctxplan_{uuid.uuid4().hex[:16]}",
         "policy_version": CONTEXT_POLICY_VERSION,
         "tokenizer": counter.name or HEURISTIC_TOKENIZER_NAME,
-        "integration_mode": caps.integration_mode,
+        "integration_mode": effective_mode,
         "accounting_accuracy": caps.token_accounting,
         "tokens_by_kind": tokens_by_kind,
         "planned_input_tokens": planned,
         "projected_input_tokens": None,
         "runtime_reported_input_tokens": None,
-        "stable_prefix_hash": prompt_shadow_dict["prompt_stable_prefix_hash"],
+        "stable_prefix_hash": shadow_prompt_keys["prompt_stable_prefix_hash"],
         "projection_id": None,
         "contributor_status": {},
         # capability 摘要，便于 Trace 单独解释 ownership（不替代 conformance 测试）。
@@ -200,10 +224,12 @@ def build_shadow_context_plan_dict(
         # 接线修正：记录 runtime_type + capability_hash，使 canonical 路径的 Plan 可解释、
         # 可比对 adapter 声明一致性（capability mismatch 检测留后续 PR）。
         "runtime_type": resolved_runtime_type,
+        "deployment_mode": str(deployment_mode or "local"),
         "capability_hash": capability_hash(caps),
         # PR2/PR A：shadow CompiledPrompt hash/section 统计，供 cache-break 诊断与可观测。
-        # prompt_shadow_dict 来自真实编译（PR A 含 agent_system/agent_task）或 instructions-only 回退。
-        **prompt_shadow_dict,
+        # shadow_prompt_keys 来自真实编译（PR A 含 agent_system/agent_task）或 instructions-only 回退，
+        # 已剥离 prompt_content（明文不进 shadow plan/trace）。
+        **shadow_prompt_keys,
     }
 
 
@@ -211,6 +237,7 @@ def minimal_shadow_context_plan_dict(
     *,
     runner: Any | None = None,
     runtime_type: str | None = None,
+    deployment_mode: str = "local",
 ) -> dict[str, Any]:
     """resume / 空输入场景的最小 shadow plan：只带 ownership 与精度，不累加 token。"""
     caps, resolved_runtime_type = _resolve_caps(runner=runner, runtime_type=runtime_type)
@@ -234,6 +261,7 @@ def minimal_shadow_context_plan_dict(
         "memory_owner": caps.memory_owner,
         "skill_owner": caps.skill_owner,
         "runtime_type": resolved_runtime_type,
+        "deployment_mode": str(deployment_mode or "local"),
         "capability_hash": capability_hash(caps),
         **prompt_shadow,
     }

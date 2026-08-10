@@ -60,6 +60,7 @@ class BaselineTurnRecord:
     ksadk_version: str = ""
     context_policy_version: str = ""
     runner_type: str = ""
+    deployment_mode: str = ""
     integration_mode: str = ""
     accounting_accuracy: str = ""
     capability_hash: str = ""
@@ -112,13 +113,15 @@ class BaselineCollector:
 
     def __init__(self, *, execution_target: str = "local") -> None:
         self._records: list[BaselineTurnRecord] = []
+        self._records_lock = threading.RLock()
         self._commit = _safe_commit()
         self._version = _ksadk_version()
         self._execution_target = execution_target
 
     @property
     def records(self) -> list[BaselineTurnRecord]:
-        return list(self._records)
+        with self._records_lock:
+            return list(self._records)
 
     def record_turn(
         self,
@@ -160,6 +163,7 @@ class BaselineCollector:
         if isinstance(plan, Mapping) and plan:
             record.context_policy_version = str(plan.get("policy_version") or "")
             record.runner_type = str(plan.get("runtime_type") or "")
+            record.deployment_mode = str(plan.get("deployment_mode") or "local")
             record.integration_mode = str(plan.get("integration_mode") or "")
             record.accounting_accuracy = str(plan.get("accounting_accuracy") or "opaque")
             record.capability_hash = str(plan.get("capability_hash") or "")
@@ -187,62 +191,84 @@ class BaselineCollector:
             details = usage.get("input_token_details") or usage.get("input_tokens_details")
             if isinstance(details, Mapping):
                 record.cache_read_tokens = _opt_int(
-                    details.get("cached_tokens") or details.get("cached") or details.get("cache_read")
+                    details.get("cached_tokens")
+                    or details.get("cached")
+                    or details.get("cache_read")
                 )
-            record.cache_read_tokens = _opt_int(
-                usage.get("cache_read_input_tokens")
-            ) or record.cache_read_tokens
+            record.cache_read_tokens = (
+                _opt_int(usage.get("cache_read_input_tokens")) or record.cache_read_tokens
+            )
             record.cache_creation_tokens = _opt_int(usage.get("cache_creation_input_tokens"))
 
         # cache_status/unexpected_break 由 span 路径（_set_prompt_cache_attributes）同源诊断
         # 并写入 trace；baseline 只记录 raw cache tokens，不重复跑 registry（避免与 span 路径
         # 共享 registry 时的记录顺序污染）。summary 的 unexpected_cache_break_count 据此如实
         # 为 0；完整诊断看 trace。如需 baseline 独立诊断，后续 PR 用独立 registry。
-        self._records.append(record)
+        with self._records_lock:
+            self._records.append(record)
+            if _flush_each_turn_enabled():
+                self.dump(os.environ.get(_BASELINE_PATH_ENV, _DEFAULT_BASELINE_PATH))
         return record
 
     def summary(self) -> dict[str, Any]:
         """汇总指标（评测方案 §12.2 Scorecard 的基线版）。"""
-        if not self._records:
-            return {"turn_count": 0}
-        total = len(self._records)
-        planned = [r.planned_input_tokens for r in self._records if r.planned_input_tokens]
-        reported = [r.runtime_reported_input_tokens for r in self._records if r.runtime_reported_input_tokens is not None]
-        latencies = [r.turn_latency_ms for r in self._records if r.turn_latency_ms is not None]
-        return {
-            "turn_count": total,
-            "ptl_rate": _ratio(sum(1 for r in self._records if r.prompt_too_long), total),
-            "compaction_count": sum(1 for r in self._records if r.compaction_triggered),
-            "ptl_recovery_count": sum(
-                1 for r in self._records if r.prompt_too_long and r.retry_attempts >= 1 and not _is_failed(r)
-            ),
-            "opaque_request_rate": _ratio(
-                sum(1 for r in self._records if r.accounting_accuracy == "opaque"), total
-            ),
-            "capability_mismatch_count": sum(1 for r in self._records if r.capability_mismatch),
-            "unexpected_cache_break_count": sum(1 for r in self._records if r.unexpected_break),
-            "planned_input_tokens": _stats(planned),
-            "runtime_reported_input_tokens": _stats(reported),
-            "turn_latency_ms": _stats(latencies),
-            "runner_type_breakdown": _count_by([r.runner_type for r in self._records]),
-            "accounting_accuracy_breakdown": _count_by([r.accounting_accuracy for r in self._records]),
-            "stable_prefix_hash_changes": _count_distinct(
-                [r.prompt_stable_prefix_hash for r in self._records if r.prompt_stable_prefix_hash]
-            ),
-        }
+        with self._records_lock:
+            if not self._records:
+                return {"turn_count": 0}
+            total = len(self._records)
+            planned = [r.planned_input_tokens for r in self._records if r.planned_input_tokens]
+            reported = [
+                r.runtime_reported_input_tokens
+                for r in self._records
+                if r.runtime_reported_input_tokens is not None
+            ]
+            latencies = [r.turn_latency_ms for r in self._records if r.turn_latency_ms is not None]
+            return {
+                "turn_count": total,
+                "ptl_rate": _ratio(sum(1 for r in self._records if r.prompt_too_long), total),
+                "compaction_count": sum(1 for r in self._records if r.compaction_triggered),
+                "ptl_recovery_count": sum(
+                    1
+                    for r in self._records
+                    if r.prompt_too_long and r.retry_attempts >= 1 and not _is_failed(r)
+                ),
+                "opaque_request_rate": _ratio(
+                    sum(1 for r in self._records if r.accounting_accuracy == "opaque"), total
+                ),
+                "capability_mismatch_count": sum(1 for r in self._records if r.capability_mismatch),
+                "unexpected_cache_break_count": sum(1 for r in self._records if r.unexpected_break),
+                "planned_input_tokens": _stats(planned),
+                "runtime_reported_input_tokens": _stats(reported),
+                "turn_latency_ms": _stats(latencies),
+                "runner_type_breakdown": _count_by([r.runner_type for r in self._records]),
+                "accounting_accuracy_breakdown": _count_by(
+                    [r.accounting_accuracy for r in self._records]
+                ),
+                "stable_prefix_hash_changes": _count_distinct(
+                    [
+                        r.prompt_stable_prefix_hash
+                        for r in self._records
+                        if r.prompt_stable_prefix_hash
+                    ]
+                ),
+            }
 
     def dump(self, path: str | Path) -> Path:
         """落盘 JSONL（每行一条 turn 记录）+ 末尾一条 ``__summary__`` 汇总。"""
         out = Path(path)
         out.parent.mkdir(parents=True, exist_ok=True)
-        with out.open("w", encoding="utf-8") as fh:
-            for record in self._records:
-                fh.write(json.dumps(asdict(record), ensure_ascii=False) + "\n")
-            fh.write(json.dumps({"__summary__": self.summary()}, ensure_ascii=False) + "\n")
+        temporary = out.with_name(f".{out.name}.{os.getpid()}.tmp")
+        with self._records_lock:
+            with temporary.open("w", encoding="utf-8") as fh:
+                for record in self._records:
+                    fh.write(json.dumps(asdict(record), ensure_ascii=False) + "\n")
+                fh.write(json.dumps({"__summary__": self.summary()}, ensure_ascii=False) + "\n")
+            os.replace(temporary, out)
         return out
 
     def clear(self) -> None:
-        self._records.clear()
+        with self._records_lock:
+            self._records.clear()
 
 
 def _opt_int(value: Any) -> int | None:
@@ -294,7 +320,10 @@ def _utc_now_iso() -> str:
     secs = int(t)
     millis = int((t - secs) * 1000)
     g = time.gmtime(secs)
-    return f"{g.tm_year:04d}-{g.tm_mon:02d}-{g.tm_mday:02d}T{g.tm_hour:02d}:{g.tm_min:02d}:{g.tm_sec:02d}.{millis:03d}Z"
+    return (
+        f"{g.tm_year:04d}-{g.tm_mon:02d}-{g.tm_mday:02d}T"
+        f"{g.tm_hour:02d}:{g.tm_min:02d}:{g.tm_sec:02d}.{millis:03d}Z"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -305,6 +334,16 @@ _BASELINE_COLLECT_ENV = "KSADK_BASELINE_COLLECT"
 _BASELINE_PATH_ENV = "KSADK_BASELINE_PATH"
 _DEFAULT_BASELINE_PATH = "/tmp/ksadk-context-baseline.jsonl"
 
+
+def _flush_each_turn_enabled() -> bool:
+    return str(os.environ.get("KSADK_BASELINE_FLUSH_EACH_TURN", "")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 _singleton_lock = threading.Lock()
 _singleton: BaselineCollector | None = None
 _atexit_registered = False
@@ -312,7 +351,12 @@ _atexit_registered = False
 
 def baseline_collection_enabled() -> bool:
     """是否启用基线采集（env ``KSADK_BASELINE_COLLECT=1/true/on``）。"""
-    return str(os.environ.get(_BASELINE_COLLECT_ENV, "")).strip().lower() in ("1", "true", "yes", "on")
+    return str(os.environ.get(_BASELINE_COLLECT_ENV, "")).strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
 
 
 def _baseline_path() -> str:

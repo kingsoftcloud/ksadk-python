@@ -14,6 +14,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
+DeploymentMode = Literal["local", "ksadk_managed_cloud", "external_managed"]
+"""部署位置（方案 §4.3 / §6.1）。
+
+与 Context ownership 正交：描述实例在哪里运行、谁负责构建/扩缩容/运维，不描述谁拥有最终
+模型输入。``local`` / ``ksadk_managed_cloud`` / ``external_managed``。不得据字符串判断
+Context owner（``ksadk_managed_cloud`` 不自动等于 ``ksadk_owned``）。
+"""
+
 ContextIntegrationMode = Literal["ksadk_hosted", "framework_assisted", "native_runtime"]
 """KsADK 对最终模型输入的控制程度。
 
@@ -275,8 +283,8 @@ def capabilities_for_runner(runner: Any | None) -> ContextCapabilities:
     type 显式分派，未知走 DEFAULT。
 
     不依赖 ``hasattr`` 猜测 ownership（方案 6.1）。``BaseRunner`` 的默认 ``describe_context_capabilities``
-    走 ``_capabilities_for_detection_type``，故本函数对 BaseRunner 子类不会递归。第一个 PR
-    不被任何行为型消费方调用，仅供 shadow plan / conformance 测试使用。
+    走 ``_capabilities_for_detection_type``，故本函数对 BaseRunner 子类不会递归。已被 compaction
+    门控（``runtime_preparation`` proactive compaction）与 shadow plan / conformance 测试消费。
     """
     if runner is None:
         return DEFAULT_CONTEXT_CAPABILITIES()
@@ -291,3 +299,152 @@ def capabilities_for_runner(runner: Any | None) -> ContextCapabilities:
             return caps
 
     return _capabilities_for_detection_type(_runner_type_value(runner))
+
+
+# ---- Capability Mismatch 检测与熔断（方案 §6.1 / §8.3）----
+
+# 进程内 best-effort 熔断记录：runner 标识 → 已熔断。只影响"是否对该 Runner 启用行为型
+# Context Engine"，不影响 shadow 观测与正常执行（方案 §6.1）。pod 重启清空。
+_MISMATCH_CIRCUIT: dict[str, bool] = {}
+
+
+def detect_capability_mismatch(
+    *,
+    declared: ContextCapabilities,
+    actual_prompt_owner: str | None = None,
+    actual_history_owner: str | None = None,
+    actual_compaction_owner: str | None = None,
+    runtime_reported_usage: bool | None = None,
+    duplicate_history_injected: bool = False,
+    double_compaction: bool = False,
+) -> str | None:
+    """检测声明的 capability 与运行时实际证据是否一致（方案 §6.1）。
+
+    返回 mismatch 原因字符串（``prompt_owner``/``history_owner``/``compaction_owner``/
+    ``token_accounting``/``duplicate_history``/``double_compaction``）；一致返回 ``None``。
+    熔断由 ``mark_capability_mismatch`` / ``is_capability_circuit_open`` 表达。
+    """
+    reasons: list[str] = []
+    if actual_prompt_owner is not None and actual_prompt_owner != declared.prompt_owner:
+        reasons.append(f"prompt_owner:{declared.prompt_owner}!={actual_prompt_owner}")
+    if actual_history_owner is not None and actual_history_owner != declared.history_owner:
+        reasons.append(f"history_owner:{declared.history_owner}!={actual_history_owner}")
+    if actual_compaction_owner is not None and actual_compaction_owner != declared.compaction_owner:
+        reasons.append(f"compaction_owner:{declared.compaction_owner}!={actual_compaction_owner}")
+    if (
+        runtime_reported_usage is False
+        and declared.token_accounting == "runtime_reported"
+    ):
+        reasons.append("token_accounting:declared_runtime_reported_but_no_usage")
+    if duplicate_history_injected:
+        reasons.append("duplicate_history_injected")
+    if double_compaction:
+        reasons.append("double_compaction")
+    return ";".join(reasons) if reasons else None
+
+
+def _mismatch_key(runner: Any | None, runtime_type: str | None) -> str:
+    rt = _runner_type_value(runner) if runner is not None else str(runtime_type or "")
+    return rt or "unknown"
+
+
+def mark_capability_mismatch(runner: Any | None = None, runtime_type: str | None = None) -> None:
+    """标记某 Runner 触发 capability mismatch 熔断（方案 §6.1）。
+
+    熔断后 ``is_capability_circuit_open`` 返回 True，行为型 Context Engine 对该 Runner 停用；
+    shadow 观测与正常 Runner 执行不受影响。
+    """
+    _MISMATCH_CIRCUIT[_mismatch_key(runner, runtime_type)] = True
+
+
+def is_capability_circuit_open(runner: Any | None = None, runtime_type: str | None = None) -> bool:
+    """该 Runner 是否已因 capability mismatch 熔断（方案 §6.1）。"""
+    return _MISMATCH_CIRCUIT.get(_mismatch_key(runner, runtime_type), False)
+
+
+def reset_capability_circuit(runner: Any | None = None, runtime_type: str | None = None) -> None:
+    """清除熔断标记（测试/运维用）。"""
+    key = _mismatch_key(runner, runtime_type)
+    _MISMATCH_CIRCUIT.pop(key, None)
+
+
+# ---- Ownership 可选范围与校验（方案 §5.2：ownership 不允许任意选择）----
+
+# 按 runtime_type 列出 Studio 可选 ownership（context.ownership 字段值）。
+# auto = 由 capability 推导；ksadk/framework/native 必须与 capability 兼容。
+_OWNERSHIP_CHOICES: dict[str, tuple[str, ...]] = {
+    "codex": ("native",),
+    "adk": ("framework",),  # 后续开放 assisted
+    "langgraph": ("framework", "ksadk"),
+    "langchain": ("framework",),
+    "deepagents": ("framework",),
+}
+
+
+def allowed_ownership_choices(runtime_type: str | None) -> tuple[str, ...]:
+    """该 runtime 在 Studio 中可选的 ownership（方案 §5.2）。未知 runtime 走保守 framework。"""
+    key = str(runtime_type or "").strip().lower()
+    return _OWNERSHIP_CHOICES.get(key, ("framework",))
+
+
+def validate_ownership_for_runtime(
+    ownership: str, *, runtime_type: str | None
+) -> None:
+    """校验 ownership 与 runtime capability 兼容（方案 §5.2）。
+
+    不支持组合时抛 ``ValueError``，Studio 据 it 返回 capability mismatch，不静默降级。
+    ``auto`` 总是合法（运行时按 capability 推导）。
+    """
+    if ownership == "auto":
+        return
+    allowed = allowed_ownership_choices(runtime_type)
+    if ownership not in allowed:
+        raise ValueError(
+            f"ownership={ownership!r} 不被 runtime={runtime_type!r} 支持；"
+            f"可选: {list(allowed)}（方案 §5.2）"
+        )
+
+
+def resolve_ownership(
+    ownership: str, *, runtime_type: str | None
+) -> str:
+    """把 ``context.ownership`` 解析为实际 prompt ownership（ksadk/framework/native）。
+
+    ``auto`` → 解析为该 runtime 的**保守产品默认**（方案 §5.2：langgraph/adk 默认 framework，
+    codex 默认 native），而非 capability 上限——capability 表示“能接管”，不代表“默认接管”。
+    显式值原样返回（已由 ``validate_ownership_for_runtime`` 校验）。
+    """
+    if ownership == "auto":
+        rt = str(runtime_type or "").strip().lower()
+        if rt == "codex":
+            return "native"
+        return "framework"  # langgraph/adk/langchain/deepagents 默认 framework
+    return ownership
+
+
+def assert_capability_not_circuit_open(
+    *, runner: Any | None = None, runtime_type: str | None = None, label: str = ""
+) -> None:
+    """行为型 Context Engine 接入前的门禁（方案 §6.1）。
+
+    若该 Runner 已因 capability mismatch 熔断，则抛 ``CapabilityCircuitOpen``——调用方据
+    此回退 shadow/旧路径，**不**继续行为型接管。``label`` 仅用于错误信息，便于诊断是哪个接入点
+    被熔断拦下。shadow 观测与正常 Runner 执行不受此门禁影响。
+    """
+    if is_capability_circuit_open(runner=runner, runtime_type=runtime_type):
+        raise CapabilityCircuitOpen(
+            runtime_type=_mismatch_key(runner, runtime_type),
+            label=label or "behavioral_context_engine",
+        )
+
+
+class CapabilityCircuitOpen(RuntimeError):
+    """Runner 因 capability mismatch 被熔断，行为型 Context Engine 对其停用（方案 §6.1）。"""
+
+    def __init__(self, *, runtime_type: str, label: str) -> None:
+        self.runtime_type = runtime_type
+        self.label = label
+        super().__init__(
+            f"capability circuit open for runtime={runtime_type!r} at {label!r}; "
+            "behavioral context engine disabled for this runner"
+        )

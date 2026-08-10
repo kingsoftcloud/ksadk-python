@@ -8,6 +8,7 @@ tokenizer 接入留后续 PR。
 
 from __future__ import annotations
 
+import os
 from typing import Any, Protocol, Sequence
 
 HEURISTIC_TOKENIZER_NAME = "heuristic_cjk_ascii"
@@ -86,15 +87,76 @@ class HeuristicTokenCounter:
 
 
 _DEFAULT_COUNTER: HeuristicTokenCounter | None = None
+_PROVIDER_COUNTER: "TokenCounter | None" = None
+
+
+class _TiktokenTokenCounter:
+    """tiktoken 兼容 tokenizer（方案 §8.9 实现顺序 2）。
+
+    用于 OpenAI cl100k_base/o200k 系模型；非该系模型回退到 heuristic。``name`` 记录实际
+    tokenizer，供 ContextPlan ``tokenizer`` 字段如实标注。
+    """
+
+    name = "tiktoken"
+
+    def __init__(self, encoding_name: str = "cl100k_base") -> None:
+        try:
+            import tiktoken  # type: ignore
+
+            self._enc = tiktoken.get_encoding(encoding_name)
+            self._encoding_name = encoding_name
+        except Exception:  # noqa: BLE001
+            self._enc = None
+            self._encoding_name = encoding_name
+
+    def count_text(self, text: str, *, model: str | None = None) -> int:
+        if self._enc is None:
+            return HeuristicTokenCounter().count_text(text)
+        try:
+            return len(self._enc.encode(str(text or "")))
+        except Exception:  # noqa: BLE001
+            return HeuristicTokenCounter().count_text(text)
+
+    def count_messages(self, messages: Sequence[Any], *, model: str | None = None) -> int:
+        total = 0
+        for message in messages:
+            total += HeuristicTokenCounter._count_message(message, self.count_text)
+        return total
+
+
+def _provider_counter_enabled() -> bool:
+    """是否启用 provider/兼容 tokenizer（方案 §8.9）。
+
+    默认 **关闭**（保持 heuristic baseline，不静默改变既有计数口径——方案 §8.9 "先观测后接管"）；
+    显式 ``KSADK_TOKENIZER_PROVIDER=auto|tiktoken`` 才尝试 tiktoken，不可用时回退 heuristic。
+    """
+    raw = str(os.environ.get("KSADK_TOKENIZER_PROVIDER", "") or "").strip().lower()
+    return raw in ("auto", "tiktoken")
 
 
 def get_default_token_counter() -> TokenCounter:
-    """返回进程级默认 TokenCounter（启发式）。
+    """返回进程级默认 TokenCounter（方案 §8.9）。
 
-    provider 官方 tokenizer / 兼容 tokenizer 的切换留后续 PR；当前第一个 PR
-    只用启发式估算做 shadow 可观测基线。
+    优先 provider/兼容 tokenizer（``KSADK_TOKENIZER_PROVIDER=auto`` 时尝试 tiktoken，不可用
+    回退 heuristic）；``auto`` 之外显式 ``heuristic`` 则只用启发式。名称如实记录，偏差监控由
+    调用方按 model 维度做（方案 §8.9 末）。
     """
+    global _PROVIDER_COUNTER
+    if _provider_counter_enabled() and _PROVIDER_COUNTER is None:
+        _PROVIDER_COUNTER = _TiktokenTokenCounter()
+        # 若 tiktoken 不可用，name 仍是 tiktoken 但行为回退 heuristic；这里如实保留，调用方可
+        # 通过对比 runtime_reported 发现偏差并调整 mapping。
+    if _PROVIDER_COUNTER is not None and _provider_counter_enabled():
+        return _PROVIDER_COUNTER
     global _DEFAULT_COUNTER
     if _DEFAULT_COUNTER is None:
         _DEFAULT_COUNTER = HeuristicTokenCounter()
     return _DEFAULT_COUNTER
+
+
+def set_default_token_counter(counter: TokenCounter | None) -> None:
+    """测试/注入用：覆盖默认 counter。``None`` 恢复自动解析。"""
+    global _PROVIDER_COUNTER, _DEFAULT_COUNTER
+    _PROVIDER_COUNTER = counter
+    if counter is None:
+        _DEFAULT_COUNTER = None

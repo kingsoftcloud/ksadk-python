@@ -129,4 +129,7 @@ def compile_resolved_prompt_dict(sources: ResolvedPromptSources) -> dict[str, An
         "prompt_resolved_sources_version": sources.version,
         "prompt_platform_policy_version": (policy_source.version if policy_active else None),
         "prompt_platform_policy_source": (policy_source.source if policy_active else None),
+        # PR B：真实正文。供接管注入读 ``prepared.compiled_prompt["prompt_content"]``。
+        # 注意：含明文，**不得**进 shadow plan/trace（build_shadow_context_plan_dict 会剥离）。
+        "prompt_content": compiled.content,
     }
