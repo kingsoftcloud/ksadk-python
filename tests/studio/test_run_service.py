@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -332,6 +333,69 @@ async def test_runtime_reported_usage_and_duration_are_authoritative(
     }
     assert record.duration_ms == 1340
     assert record.duration_source == "runtime"
+
+
+@pytest.mark.asyncio
+async def test_completed_hosted_studio_turn_flushes_explicit_memory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    memory_db = tmp_path / "studio-memory.db"
+    monkeypatch.setenv("KSADK_MEMORY_FLUSH_ENABLED", "1")
+    monkeypatch.setenv("KSADK_MEMORY_DB_PATH", str(memory_db))
+    calls: list[tuple[str, Any]] = []
+    registry = RuntimeRegistry()
+    registry.register("langgraph", lambda _context: _RecordingAdapter(calls))
+    workspace = Workspace(tmp_path / "workspace")
+    workspace.initialize()
+    service = StudioRunService(workspace, RuntimeExecutor(registry))
+
+    await service.run(
+        StudioRunSpec(
+            launch_context=RuntimeLaunchContext(
+                runtime_type="langgraph",
+                project_dir=tmp_path,
+            ),
+            build_id="build-hosted",
+            agent_id="memory-agent",
+            request_config={"prompt_integration_mode": "ksadk_hosted"},
+        ),
+        "请记住我的部署偏好：始终先执行 dry-run",
+        session_id="ses-memory",
+    )
+
+    with sqlite3.connect(memory_db) as conn:
+        contents = [row[0] for row in conn.execute("SELECT content FROM memory_records")]
+    assert contents == ["我的部署偏好：始终先执行 dry-run"]
+
+
+@pytest.mark.asyncio
+async def test_framework_owned_studio_turn_does_not_flush_platform_memory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    memory_db = tmp_path / "framework-memory.db"
+    monkeypatch.setenv("KSADK_MEMORY_FLUSH_ENABLED", "1")
+    monkeypatch.setenv("KSADK_MEMORY_DB_PATH", str(memory_db))
+    registry = RuntimeRegistry()
+    registry.register("langgraph", lambda _context: _RecordingAdapter([]))
+    workspace = Workspace(tmp_path / "workspace")
+    workspace.initialize()
+
+    await StudioRunService(workspace, RuntimeExecutor(registry)).run(
+        StudioRunSpec(
+            launch_context=RuntimeLaunchContext(
+                runtime_type="langgraph",
+                project_dir=tmp_path,
+            ),
+            build_id="build-framework",
+            agent_id="memory-agent",
+        ),
+        "请记住我的部署偏好：始终先执行 dry-run",
+        session_id="ses-framework",
+    )
+
+    assert not memory_db.exists()
 
 
 @pytest.mark.asyncio

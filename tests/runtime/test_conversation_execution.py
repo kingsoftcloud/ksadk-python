@@ -19,6 +19,7 @@ from ksadk.runtime import (
     StartRequest,
 )
 from ksadk.runtime.conversation_execution import (
+    _resolve_runtime_prompt_config,
     invoke_runtime_conversation_once,
     iter_runtime_conversation_events,
 )
@@ -293,9 +294,123 @@ async def test_canonical_path_attaches_single_shadow_plan_with_correct_ownership
     assert request.input == "帮我做个总结"
 
 
+def test_resolve_runtime_prompt_config_prefers_nested_build_contract() -> None:
+    resolved = _resolve_runtime_prompt_config(
+        {
+            "prompt": "legacy system",
+            "prompt_integration_mode": "framework_assisted",
+            "context": {
+                "prompt_ownership": "ksadk",
+                "agent_system": "cloud system",
+                "agent_task": "cloud task",
+            },
+        }
+    )
+
+    assert resolved == {
+        "agent_system": "cloud system",
+        "agent_task": "cloud task",
+        "prompt_integration_mode": "ksadk_hosted",
+    }
+
+
+@pytest.mark.asyncio
+async def test_canonical_cloud_path_propagates_prompt_and_deployment_contract() -> None:
+    class _LangGraphAdapter(_Adapter):
+        async def start(self, request: StartRequest) -> RunHandle:
+            self.requests.append(request)
+            return RunHandle(
+                run_id=str(request.metadata["invocation_id"]),
+                session_id=request.session_id,
+                runtime_type="langgraph",
+            )
+
+    service = InMemorySessionService()
+    adapter = _LangGraphAdapter()
+    registry = RuntimeRegistry()
+    registry.register("langgraph", lambda _context: adapter)
+    context = RuntimeLaunchContext(
+        runtime_type="langgraph",
+        project_dir=".",
+        deployment_mode="ksadk_managed_cloud",
+        config={
+            "context": {
+                "prompt_ownership": "ksadk",
+                "agent_system": "You are the cloud canary.",
+                "agent_task": "Answer deployment checks.",
+            }
+        },
+    )
+
+    _ = [
+        event
+        async for event in iter_runtime_conversation_events(
+            executor=RuntimeExecutor(registry),
+            launch_context=context,
+            agent_id="agent-1",
+            user_id="user-1",
+            messages=[{"role": "user", "content": "health check"}],
+            session_id=None,
+            model=None,
+            session_service_provider=lambda: service,
+        )
+    ]
+
+    request = adapter.requests[0]
+    prepared = request.metadata[CONVERSATION_PREPROCESSING_METADATA_KEY]["prepared_turn"]
+    assert request.config["context"]["prompt_ownership"] == "ksadk"
+    assert prepared["user_id"] == "user-1"
+    assert prepared["agent_id"] == "agent-1"
+    assert prepared["prompt_integration_mode"] == "ksadk_hosted"
+    compiled_content = prepared["compiled_prompt"]["prompt_content"]
+    assert "<agent_identity>\nYou are the cloud canary." in compiled_content
+    assert "<agent_policy>\nAnswer deployment checks." in compiled_content
+    assert prepared["shadow_context_plan"]["deployment_mode"] == (
+        "ksadk_managed_cloud"
+    )
+
+
+@pytest.mark.asyncio
+async def test_turn_memory_is_written_to_user_scope_for_cross_session_recall(
+    tmp_path, monkeypatch
+) -> None:
+    from ksadk.memory.models import MemorySearchRequest
+    from ksadk.memory.providers.local_sqlite import SqliteMemoryProvider
+
+    memory_path = tmp_path / "memory.db"
+    monkeypatch.setenv("KSADK_MEMORY_FLUSH_ENABLED", "true")
+    monkeypatch.setenv("KSADK_MEMORY_DB_PATH", str(memory_path))
+    service = InMemorySessionService()
+    registry = RuntimeRegistry()
+    registry.register("fixture", lambda _context: _Adapter())
+
+    session_id, _ = await invoke_runtime_conversation_once(
+        executor=RuntimeExecutor(registry),
+        launch_context=RuntimeLaunchContext(runtime_type="fixture", project_dir="."),
+        agent_id="agent-1",
+        user_id="user-1",
+        messages=[{"role": "user", "content": "记住：默认使用 Python 3.12"}],
+        session_id=None,
+        model=None,
+        session_service_provider=lambda: service,
+    )
+
+    provider = SqliteMemoryProvider(db_path=memory_path)
+    result = provider.search(
+        MemorySearchRequest(
+            query="Python",
+            scopes=[("user", "user-1")],
+            memory_types=["profile", "fact", "episode"],
+        )
+    )
+    assert result.status == "ok"
+    assert any("Python 3.12" in record.content for record in result.records)
+    assert all(record.scope_id != session_id for record in result.records)
+
+
 @pytest.mark.asyncio
 async def test_checkpoint_resume_keeps_single_plan_and_preserves_run_target() -> None:
-    """Shadow 基线验收：checkpoint resume 不产生重复 plan，仍调用 executor.resume（保留恢复目标）。"""
+    """Checkpoint resume 只保留一份 shadow plan，并调用 executor.resume。"""
 
     class _LangGraphAdapter(_Adapter):
         async def start(self, request: StartRequest) -> RunHandle:
@@ -356,4 +471,3 @@ async def test_checkpoint_resume_keeps_single_plan_and_preserves_run_target() ->
         (original, ResumeTarget(kind="checkpoint_id", id="checkpoint-1"), None)
     ]
     assert {event.invocation_id for event in events} == {"original-run"}
-

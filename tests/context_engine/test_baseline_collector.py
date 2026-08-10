@@ -96,3 +96,21 @@ def test_dump_does_not_contain_prompt_plaintext(tmp_path: Path) -> None:
     content = out.read_text(encoding="utf-8")
     assert secret not in content
     assert "sha256:" in content  # 只记 hash
+
+
+def test_flush_each_turn_persists_without_process_exit(tmp_path: Path, monkeypatch) -> None:
+    """云端长驻进程不依赖 atexit，每轮以原子替换方式更新 JSONL。"""
+    out = tmp_path / "baseline.jsonl"
+    monkeypatch.setenv("KSADK_BASELINE_FLUSH_EACH_TURN", "true")
+    monkeypatch.setenv("KSADK_BASELINE_PATH", str(out))
+
+    collector = BaselineCollector(execution_target="cloud-canary")
+    collector.record_turn(_plan(), session_id="s1", invocation_id="i1")
+    first = out.read_text(encoding="utf-8").strip().splitlines()
+    assert len(first) == 2
+    assert json.loads(first[-1])["__summary__"]["turn_count"] == 1
+
+    collector.record_turn(_plan(), session_id="s1", invocation_id="i2")
+    second = out.read_text(encoding="utf-8").strip().splitlines()
+    assert len(second) == 3
+    assert json.loads(second[-1])["__summary__"]["turn_count"] == 2

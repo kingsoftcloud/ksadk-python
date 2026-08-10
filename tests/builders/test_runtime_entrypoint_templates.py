@@ -48,3 +48,32 @@ def test_generated_runtime_entrypoints_only_compose_runtime_executor(
     assert "create_runner" not in entrypoint
     assert "set_runner" not in entrypoint
     assert "ksadk.runners" not in entrypoint
+
+
+@pytest.mark.parametrize("source", ["code", "container"])
+def test_generated_runtime_entrypoint_preserves_build_context_config(
+    source: str,
+    detection: DetectionResult,
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "agentengine.yaml").write_text(
+        """context:
+  prompt_ownership: ksadk
+  agent_system: 你是云端 Agent
+  agent_task: 保持简洁
+""",
+        encoding="utf-8",
+    )
+
+    if source == "code":
+        entrypoint = CodeBuilder(tmp_path)._generate_entrypoint(detection)
+    else:
+        entrypoint = ContainerBuilder(tmp_path)._generate_entrypoint(
+            detection,
+            "demo_agent",
+        )
+
+    ast.parse(entrypoint)
+    assert '"prompt_ownership":"ksadk"' in entrypoint
+    assert "你是云端 Agent" in entrypoint
+    assert "config=dict(runtime_build_config)" in entrypoint

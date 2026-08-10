@@ -66,6 +66,7 @@ def test_studio_cli_loads_only_model_env_subset_and_forces_codex_proxy(
         encoding="utf-8",
     )
     monkeypatch.delenv("OPENAI_API_BASE", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_MODEL_NAME", raising=False)
     monkeypatch.delenv("UNRELATED_SECRET", raising=False)
@@ -78,6 +79,7 @@ def test_studio_cli_loads_only_model_env_subset_and_forces_codex_proxy(
                 key: __import__("os").environ.get(key)
                 for key in (
                     "OPENAI_API_BASE",
+                    "OPENAI_BASE_URL",
                     "OPENAI_API_KEY",
                     "OPENAI_MODEL_NAME",
                     "KSADK_CODEX_USE_PROXY",
@@ -101,17 +103,25 @@ def test_studio_cli_loads_only_model_env_subset_and_forces_codex_proxy(
 
     assert result.exit_code == 0
     assert "模型环境" in result.output
-    assert "3/3" in result.output
+    # 别名归一：OPENAI_API_BASE 被加载并归一到 OPENAI_BASE_URL，两个都有值（方案 §2.4 第 5 点）
+    assert active_environment["OPENAI_API_BASE"] == "https://models.example/v1"
+    assert active_environment["OPENAI_BASE_URL"] == "https://models.example/v1"
+    assert active_environment["OPENAI_API_KEY"] == "top-secret-value"
+    assert active_environment["OPENAI_MODEL_NAME"] == "glm-5.2"
+    # 白名单仍挡住非模型 env
+    assert active_environment.get("KSADK_CODEX_USE_PROXY") == "1"
     assert "top-secret-value" not in result.output
     assert "must-not-be-loaded" not in result.output
     assert "models.example" not in result.output
     assert active_environment == {
         "OPENAI_API_BASE": "https://models.example/v1",
+        "OPENAI_BASE_URL": "https://models.example/v1",
         "OPENAI_API_KEY": "top-secret-value",
         "OPENAI_MODEL_NAME": "glm-5.2",
         "KSADK_CODEX_USE_PROXY": "1",
     }
     assert "OPENAI_API_BASE" not in __import__("os").environ
+    assert "OPENAI_BASE_URL" not in __import__("os").environ
     assert "OPENAI_API_KEY" not in __import__("os").environ
     assert "OPENAI_MODEL_NAME" not in __import__("os").environ
     assert "UNRELATED_SECRET" not in __import__("os").environ
