@@ -221,12 +221,44 @@ agentengine launch . --env KEY=VALUE --env-file ./runtime.env
 | `--env KEY=VALUE` | extra runtime environment variable, repeatable; explicit env goes into the deploy payload `env_vars`. |
 | `--env-file PATH` | extra runtime environment variable file, accepts `.env` or a JSON object. |
 
+Sensitive credentials, including secrets passed with `--env`, are redacted from `--dry-run` output.
+
 <Callout type="info" title="env file boundary">
   The `--env-file` you pass is for explicit runtime env injection. Real `.env`
   / `.env.local` files are excluded from Code, Container, and MCP build
   contexts; only `.env.example` / `.env.sample` / `.env.template` templates are
   kept. See [Environment Variables Reference](../references/environment-variables).
 </Callout>
+
+### Default observability and explicit opt-out
+
+Managed Agent `deploy`, `launch`, and `hermes deploy` commands send `enable_observability=true` by default. The CLI and console use the same control-plane switch. When enabled, the platform injects the standard Langfuse OTLP primary route and CloudMonitor OTLP secondary route, preserving the same `trace_id` and `span_id` for each span.
+
+```bash title="bash"
+# Enabled by default
+agentengine deploy . --target serverless
+agentengine launch . --target serverless
+agentengine hermes deploy --name my-hermes
+
+# Explicit user opt-out
+agentengine deploy . --target serverless --no-observability
+agentengine launch . --target serverless --no-observability
+agentengine hermes deploy --name my-hermes --no-observability
+```
+
+Disabling observability clears the managed OTLP endpoints, headers, and protocols. Do not use `--env` to override platform-managed observability variables. See the [Environment Variables Reference](../references/environment-variables) for the protocol contract.
+
+### `agentengine hermes`
+
+Hermes exec passes argv directly and never parses it through a shell. The supported target forms are:
+
+```bash title="bash"
+agentengine hermes exec --agent my-hermes -- status
+agentengine hermes exec ar-123 -- status
+agentengine hermes exec -- sessions list
+```
+
+Use `--agent` to explicitly target an Agent by name; a positional target is retained only for `ar-*` Agent IDs. Without a target, the command uses the project default Agent, and ordinary argv tokens are never guessed to be Agent names. A business session ID passed with `--session` is sent in the terminal start frame (while retaining the compatibility header) so the runtime can resume the session.
 
 ### `agentengine openclaw`
 

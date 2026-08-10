@@ -46,6 +46,7 @@ from ksadk.cli.ui import (
 from ksadk.cli.ui import (
     output_option as cli_output_option,
 )
+from ksadk.configs.env_registry import is_sensitive_env_var
 from ksadk.deployment.agent_access import (
     get_latest_agent_access,
     is_agent_not_found_error,
@@ -150,6 +151,7 @@ def _build_hermes_update_payload(
         "resources": payload["resources"],
         "scaling": payload["scaling"],
         "ui_config": payload["ui_config"],
+        "enable_observability": payload["enable_observability"],
     }
     if include_env:
         update_payload["env_vars"] = payload["env_vars"]
@@ -316,26 +318,9 @@ def _build_hermes_env_vars(
     api_server_key = _env_value("API_SERVER_KEY", "HERMES_API_SERVER_KEY")
     if api_server_key:
         raw["API_SERVER_KEY"] = api_server_key
-    langfuse_public_key = _env_value("HERMES_LANGFUSE_PUBLIC_KEY", "LANGFUSE_PUBLIC_KEY")
-    langfuse_secret_key = _env_value("HERMES_LANGFUSE_SECRET_KEY", "LANGFUSE_SECRET_KEY")
-    if langfuse_public_key and langfuse_secret_key:
-        raw["HERMES_LANGFUSE_PUBLIC_KEY"] = langfuse_public_key
-        raw["HERMES_LANGFUSE_SECRET_KEY"] = langfuse_secret_key
-        langfuse_base_url = _env_value(
-            "HERMES_LANGFUSE_BASE_URL", "LANGFUSE_BASE_URL", "LANGFUSE_HOST"
-        )
-        if langfuse_base_url:
-            raw["HERMES_LANGFUSE_BASE_URL"] = langfuse_base_url
-        for target_key, source_keys in {
-            "HERMES_LANGFUSE_ENV": ("HERMES_LANGFUSE_ENV", "LANGFUSE_ENV"),
-            "HERMES_LANGFUSE_RELEASE": ("HERMES_LANGFUSE_RELEASE", "LANGFUSE_RELEASE"),
-            "HERMES_LANGFUSE_SAMPLE_RATE": ("HERMES_LANGFUSE_SAMPLE_RATE",),
-            "HERMES_LANGFUSE_MAX_CHARS": ("HERMES_LANGFUSE_MAX_CHARS",),
-            "HERMES_LANGFUSE_DEBUG": ("HERMES_LANGFUSE_DEBUG",),
-        }.items():
-            value = _env_value(*source_keys)
-            if value:
-                raw[target_key] = value
+    # Observability routes and credentials are platform-managed. The Hermes
+    # deploy CLI must not translate or forward legacy Langfuse SDK variables;
+    # server/runtime inject the standard OTLP primary and CloudMonitor secondary.
     for key in (
         "WPSXIEZUO_APP_ID",
         "WPSXIEZUO_APP_KEY",
@@ -362,7 +347,7 @@ def _build_hermes_env_vars(
         {
             "Key": key,
             "Value": str(value),
-            "IsSensitive": any(token in key for token in ("KEY", "TOKEN", "SECRET")),
+            "IsSensitive": is_sensitive_env_var(key),
         }
         for key, value in raw.items()
         if value is not None and str(value).strip() != ""
@@ -548,6 +533,11 @@ def _render_hermes_dry_run(
 @click.option("--storage-size-gi", type=int, default=20, show_default=True, help="PVC 容量（Gi）")
 @click.option("--storage-mount-path", default=None, help="PVC 挂载目录（默认: /home/node/.hermes）")
 @click.option("--no-storage", is_flag=True, help="禁用默认 PVC 挂载")
+@click.option(
+    "--observability/--no-observability",
+    default=True,
+    help="是否启用可观测性 (默认开启)",
+)
 @network_options
 @dry_run_option()
 @cli_output_option()
@@ -563,6 +553,7 @@ def deploy(
     storage_size_gi: int,
     storage_mount_path: Optional[str],
     no_storage: bool,
+    observability: bool,
     enable_public_access: Optional[bool],
     enable_vpc_access: bool,
     vpc_id: Optional[str],
@@ -603,6 +594,7 @@ def deploy(
             storage_size_gi=storage_size_gi,
             storage_mount_path=storage_mount_path,
             no_storage=no_storage,
+            observability=observability,
             include_env_on_update=include_env_on_update,
             include_storage_on_update=include_storage_on_update,
             **network_cli_kwargs(
@@ -634,6 +626,7 @@ async def _deploy_hermes(
     storage_size_gi: int,
     storage_mount_path: str | None,
     no_storage: bool,
+    observability: bool,
     include_env_on_update: bool,
     include_storage_on_update: bool,
     enable_public_access: bool | None,
@@ -686,6 +679,7 @@ async def _deploy_hermes(
         "region": region,
         "resources": {"cpu": cpu, "memory": memory},
         "scaling": {"min_replicas": 1, "max_replicas": 1, "concurrency": 1000},
+        "enable_observability": observability,
         "env_vars": env_vars,
         "ui_config": {"profile": "hermes", "path": "/", "url": None},
     }
@@ -1072,6 +1066,7 @@ def open_hermes(
 
 @hermes.command("exec", context_settings=CONTEXT_SETTINGS)
 @click.argument("argv", nargs=-1, required=True)
+@click.option("--agent", "agent_option", default=None, help="Hermes Agent 名称（显式指定）")
 @click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="区域")
 @click.option("--endpoint", "-e", default=None, help="Agent Endpoint URL (覆盖自动获取)")
 @click.option("--api-key", default=None, help="AgentEngine API Key (覆盖自动获取)")
@@ -1081,6 +1076,7 @@ def open_hermes(
 @cli_output_option()
 def exec_hermes(
     argv: tuple[str, ...],
+    agent_option: Optional[str],
     region: str,
     endpoint: Optional[str],
     api_key: Optional[str],
@@ -1092,10 +1088,19 @@ def exec_hermes(
     """透传受限 Hermes 只读运维子命令。"""
     _ = output_mode
     try:
-        agent_ref, validated_argv = _split_terminal_agent_ref_and_argv(
+        if agent_option is not None:
+            agent_option = agent_option.strip()
+            if not agent_option:
+                raise click.ClickException("--agent 必须指定非空的 Hermes Agent 名称")
+        positional_agent_ref, validated_argv = _split_terminal_agent_ref_and_argv(
             argv,
             validator=validate_hermes_exec_argv,
         )
+        if agent_option is not None and positional_agent_ref:
+            raise click.ClickException(
+                "--agent 不能与位置参数 Agent ID 同时使用: " f"{positional_agent_ref}"
+            )
+        agent_ref = agent_option if agent_option is not None else positional_agent_ref
         dry_run = effective_dry_run(dry_run)
         if dry_run:
             _render_hermes_dry_run(

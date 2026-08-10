@@ -1,7 +1,12 @@
 import importlib
+import shutil
+import subprocess
 import sys
 import zipfile
+from email.parser import BytesParser
 from pathlib import Path
+
+from packaging.requirements import Requirement
 
 if sys.version_info >= (3, 11):
     tomllib = importlib.import_module("tomllib")
@@ -13,6 +18,57 @@ from ksadk.builders.container_builder import ContainerBuilder
 from ksadk.detection import DetectionResult, FrameworkType
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _build_wheel_in_isolated_source(tmp_path: Path) -> Path:
+    source_dir = tmp_path / "source"
+    wheel_dir = tmp_path / "wheel"
+    source_dir.mkdir()
+    wheel_dir.mkdir()
+
+    for filename in ("pyproject.toml", "README.md", "LICENSE", "MANIFEST.in"):
+        shutil.copy2(REPO_ROOT / filename, source_dir / filename)
+
+    def ignore_generated_files(directory: str, names: list[str]) -> set[str]:
+        ignored = {
+            name
+            for name in names
+            if name in {"__pycache__", "build", "dist"}
+            or name.endswith(".egg-info")
+            or name.endswith((".pyc", ".pyo"))
+        }
+        if Path(directory) == REPO_ROOT / "ksadk" / "server":
+            ignored.add("static")
+        return ignored
+
+    for package_dir in ("ksadk", "ksadk_runtime_common"):
+        shutil.copytree(
+            REPO_ROOT / package_dir,
+            source_dir / package_dir,
+            ignore=ignore_generated_files,
+        )
+
+    subprocess.run(
+        [
+            "uv",
+            "build",
+            "--wheel",
+            "--no-build-logs",
+            "--no-create-gitignore",
+            "--out-dir",
+            str(wheel_dir),
+            str(source_dir),
+        ],
+        cwd=tmp_path,
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+
+    wheels = list(wheel_dir.glob("ksadk-*.whl"))
+    assert len(wheels) == 1
+    return wheels[0]
 
 
 def test_pyproject_uses_in_repo_runtime_common_source_package():
@@ -134,18 +190,60 @@ def test_pyproject_declares_greenlet_for_adk_database_session_backend():
 
 
 def test_pyproject_declares_validated_framework_dependency_windows():
-    pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    dependencies = pyproject["project"]["dependencies"]
+    optional_dependencies = pyproject["project"]["optional-dependencies"]
 
-    assert "fastapi>=0.100.0,<1.0.0" in pyproject
+    assert "fastapi>=0.100.0,<1.0.0" in dependencies
     # goal-00: ADK 窗口放宽为 1.34.x 至 <3.0(支持 1.x 与 2.x)
-    assert "google-adk>=1.34.0,<3.0.0" in pyproject
+    assert "google-adk>=1.34.0,<3.0.0" in optional_dependencies["adk"]
     # LangChain 生态下限锚定本地已验证版本(不降级,<2.0 守 1.x 稳定线)
-    assert "langchain>=1.3.14,<2.0.0" in pyproject
-    assert "langchain-core>=1.5.0,<2.0.0" in pyproject
-    assert "langchain-openai>=1.4.0,<2.0.0" in pyproject
-    assert "langgraph>=1.2.0,<1.3.0" in pyproject
-    assert "deepagents>=0.6.2,<1.0.0" in pyproject
-    assert "fastapi>=0.100.0,<0.124.0" not in pyproject
+    assert "langchain>=1.3.14,<2.0.0" in dependencies
+    assert "langchain-core>=1.5.0,<2.0.0" in dependencies
+    assert "langgraph>=1.2.0,<1.3.0" in dependencies
+    assert (
+        "deepagents>=0.6.2,<1.0.0; python_version >= '3.11'" in optional_dependencies["deepagents"]
+    )
+    assert "fastapi>=0.100.0,<0.124.0" not in dependencies
+
+
+def test_pyproject_makes_langchain_openai_framework_optional():
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    dependencies = pyproject["project"]["dependencies"]
+    optional_dependencies = pyproject["project"]["optional-dependencies"]
+
+    mandatory_names = {Requirement(dependency).name for dependency in dependencies}
+    assert "langchain-openai" not in mandatory_names
+
+    for extra in ("langchain", "langgraph", "deepagents"):
+        assert "langchain-openai>=1.4.0,<2.0.0" in optional_dependencies[extra]
+
+
+def test_built_wheel_makes_langchain_openai_framework_optional(tmp_path: Path):
+    wheel_path = _build_wheel_in_isolated_source(tmp_path)
+
+    with zipfile.ZipFile(wheel_path) as archive:
+        metadata_path = next(
+            name for name in archive.namelist() if name.endswith(".dist-info/METADATA")
+        )
+        metadata = BytesParser().parsebytes(archive.read(metadata_path))
+
+    assert metadata["Version"] == "0.8.1"
+    requirements = [Requirement(raw) for raw in metadata.get_all("Requires-Dist", [])]
+    assert all(
+        requirement.name != "langchain-openai" or requirement.marker is not None
+        for requirement in requirements
+    )
+
+    for extra in ("langchain", "langgraph", "deepagents"):
+        matching_requirements = [
+            requirement
+            for requirement in requirements
+            if requirement.name == "langchain-openai"
+            and str(requirement.specifier) == "<2.0.0,>=1.4.0"
+            and str(requirement.marker) == f'extra == "{extra}"'
+        ]
+        assert matching_requirements
 
 
 def test_repo_root_dockerignore_excludes_local_build_artifacts():
@@ -183,14 +281,21 @@ def test_runtime_templates_initialize_tracing_for_otlp_envs(tmp_path: Path):
 
         assert "OTEL_EXPORTER_OTLP_ENDPOINT" in source
         assert "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT" in source
+        assert "OTEL_EXPORTER_OTLP_HEADERS" in source
+        assert "OTEL_EXPORTER_OTLP_TRACES_HEADERS" in source
         assert "CLOUD_MONITOR_APP_KEY" in source
         assert "CLOUD_MONITOR_OTLP_ENDPOINT" in source
         assert "CLOUD_MONITOR_OTLP_TRACES_ENDPOINT" in source
-        assert "CLOUD_MONITOR_LANGFUSE_PUBLIC_KEY" in source
-        assert "CLOUD_MONITOR_LANGFUSE_SECRET_KEY" in source
-        assert "CLOUD_MONITOR_LANGFUSE_HOST" in source
+        assert "CLOUD_MONITOR_OTLP_HEADERS" in source
+        assert "CLOUD_MONITOR_OTLP_TRACES_HEADERS" in source
+        assert "CLOUD_MONITOR_LANGFUSE_PUBLIC_KEY" not in source
+        assert "CLOUD_MONITOR_LANGFUSE_SECRET_KEY" not in source
+        assert "CLOUD_MONITOR_LANGFUSE_HOST" not in source
+        assert "CLOUD_MONITOR_OTLP_ENABLED" not in source
+        assert "use_callback_only" not in source
+        assert "has_cloud_monitor_langfuse" not in source
         assert (
-            'os.environ.get("LANGFUSE_PUBLIC_KEY") or has_otlp '
-            "or has_cloud_monitor_otlp or has_cloud_monitor_langfuse"
+            'os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT") '
+            'or os.environ.get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")'
         ) in normalized_source
-        assert "setup_tracing(use_callback_only=use_callback_only)" in source
+        assert "setup_tracing()" in source

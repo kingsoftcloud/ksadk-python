@@ -7,15 +7,39 @@
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-08-10
+
+### 亮点
+
+- **标准 OTLP 成为唯一远端 trace 通路**：每个 Python Agent 进程使用一个 `TracerProvider`，由两个 OTLP/HTTP `BatchSpanProcessor` 将同一批 spans 写入 Langfuse 主路（标准 `OTEL_EXPORTER_OTLP_*`）和 CloudMonitor 次路（平台 `CLOUD_MONITOR_OTLP_*`），两端保持相同的 `trace_id` / `span_id`。不再部署 CallbackHandler、Langfuse SDK exporter、Collector、sidecar、额外容器或额外 Pod。
+- **托管可观测性默认开启**：`agentengine deploy`、`agentengine launch` 和 `agentengine hermes deploy` 默认请求平台可观测性；CLI 与控制台共用控制面开关，由平台注入主路和次路配置。只有显式选择 `--no-observability` 或在控制台关闭时才禁用。
+
+### 变更
+
+- 删除 `langfuse_exporter.py`、`runners/utils/langfuse.py`、`LANGFUSE_USE_CALLBACK` 和 Langfuse SDK callback 路径；`tracing` extra 不再安装 `langfuse`，仅保留 OpenInference 自动插桩。
+- 调整 Python 包依赖边界：`langchain-openai` 仅随 `langchain`、`langgraph` 和 `deepagents` framework extras 安装，不再由基础 `ksadk` wheel 强制安装。这样 Hermes 等不使用 LangChain OpenAI adapter 的运行时可保留其已验证的 OpenAI SDK 版本；选择这些框架的生成项目仍会声明并安装同一受支持版本范围。
+- `agentengine hermes exec` 增加显式 `--agent` 目标，并将 `--session` 业务会话 ID 写入 terminal start frame；普通 argv 不再被猜测为 Agent 名称。
+- 用户显式调用 `save_memory` 时向 SDK 记忆后端发送 `flush=True`，保证本次数据完成抽取后再返回；自动轮次保存继续使用后端默认批处理语义。
+
 ### 修复
 
+- CloudMonitor traces 专用 endpoint、protocol 和 headers 分别优先于通用配置；`CLOUD_MONITOR_OTLP_TRACES_HEADERS` 与 `CLOUD_MONITOR_OTLP_HEADERS` 都支持 RFC 3986 percent-encoded values。
+- `CLOUD_MONITOR_APP_KEY` 降级为一个版本的过渡 fallback：仅当 traces 和通用 headers 环境变量都整体缺失时才翻译为 `Ksc-Appkey`。任一 headers 变量已提供但无有效 `Ksc-Appkey` 时 fail closed，不混入旧 AppKey。
 - AgentEngine 托管 runtime 在模块级 `ksadk.server.app:app` 与 `BaseRunner.run_server()` 两个真实入口都按 `KSADK_A2A_RUNTIME_ID` 挂载 discovery-only `/.well-known/agent-card.json`；卡片明确声明 `streaming=false`，不开放 JSON-RPC、REST Task 或其他 A2A 数据面路由。
 - `A2ASpaceClient.from_env()` 优先读取 `KSADK_A2A_SPACE_ID`，并保留对单元素 `KSADK_A2A_SPACE_IDS` JSON 数组的兼容读取。
 - A2A 核心依赖改为 `a2a-sdk[fastapi]`；PostgreSQL TaskStore 支持移到可选 `ksadk[a2a-postgres]`，discovery-only runtime 不再因 A2A 被强制安装 PostgreSQL adapter。会话系统既有 `asyncpg` 依赖保持不变。
 
-### 兼容性
+### 兼容性与迁移
 
+- 旧 `LANGFUSE_*` 凭证不再创建 SDK callback/exporter。迁移时把 Langfuse OTLP endpoint 与 Authorization header 配置到标准 `OTEL_EXPORTER_OTLP_*`。
+- 新部署使用 `CLOUD_MONITOR_OTLP_TRACES_HEADERS` 或 `CLOUD_MONITOR_OTLP_HEADERS` 提供 `Ksc-Appkey`；`CLOUD_MONITOR_APP_KEY` 仅用于旧控制面的短期兼容。
 - A2A 环境变量明确区分部署期 `KSADK_A2A_RUNTIME_ID` 与注册后 `KSADK_A2A_AGENT_ID`；v1 discovery card 只依赖前者。
+
+### 文档
+
+- 同步中英文 README、CLI、可观测性、环境变量、知识库与记忆库指南，明确默认双写、显式关闭、header 优先级、旧 AppKey 边界以及 Hermes session 语义。
+
+内部 `0.8.1` 发版候选；PyPI、tag、GitHub Release 与公开文档站仍须通过受信 workflow 和维护者批准后发布。
 
 ## [0.8.0] - 2026-07-29
 
