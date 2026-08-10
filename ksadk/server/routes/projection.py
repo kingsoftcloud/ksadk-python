@@ -527,12 +527,12 @@ def _checkpoint_resume_disabled_detail(checkpoint: Mapping[str, Any]) -> dict[st
         str(checkpoint.get("ResumeDisabledReason") or "").strip() or "Checkpoint is not resumable"
     )
     return {
-        "code": "checkpoint_not_resumable",
-        "reason": reason,
-        "checkpoint_id": str(checkpoint.get("CheckpointId") or ""),
-        "run_id": str(checkpoint.get("RunId") or ""),
-        "resume_status": str(checkpoint.get("ResumeStatus") or "disabled"),
-        "is_terminal": bool(checkpoint.get("IsTerminal")),
+        "Code": "checkpoint_not_resumable",
+        "Reason": reason,
+        "CheckpointId": str(checkpoint.get("CheckpointId") or ""),
+        "RunId": str(checkpoint.get("RunId") or ""),
+        "ResumeStatus": str(checkpoint.get("ResumeStatus") or "disabled"),
+        "IsTerminal": bool(checkpoint.get("IsTerminal")),
     }
 
 

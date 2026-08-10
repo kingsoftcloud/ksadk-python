@@ -2504,7 +2504,6 @@ async def test_stream_responses_checkpoint_resume_rejects_concurrent_resume_for_
     assert second_response.status_code == 409
     detail = second_response.json()["detail"]
     assert detail["code"] == "resume_already_running"
-    # 409 detail 字段契约：snake_case（与 checkpoint_not_resumable 对齐）
     assert isinstance(detail["session_id"], str) and detail["session_id"]
     assert isinstance(detail["invocation_id"], str) and detail["invocation_id"]
     assert isinstance(detail["run_id"], str) and detail["run_id"]
@@ -3713,9 +3712,10 @@ async def test_resume_run_rejects_checkpoint_policy_disabled_by_audit(monkeypatc
 
     assert response.status_code == 409
     detail = response.json()["detail"]
-    assert detail["code"] == "checkpoint_not_resumable"
-    assert detail["resume_status"] == "disabled"
-    assert "重复恢复" in detail["reason"]
+    assert detail["Code"] == "checkpoint_not_resumable"
+    assert detail["ResumeStatus"] == "disabled"
+    assert "重复恢复" in detail["Reason"]
+    assert not any("_" in key for key in detail)
     assert runner.calls == []
 
 
@@ -3827,9 +3827,10 @@ async def test_resume_run_rejects_expired_checkpoint(monkeypatch):
 
     assert response.status_code == 409
     detail = response.json()["detail"]
-    assert detail["code"] == "checkpoint_not_resumable"
-    assert detail["resume_status"] == "disabled"
-    assert "已过期" in detail["reason"]
+    assert detail["Code"] == "checkpoint_not_resumable"
+    assert detail["ResumeStatus"] == "disabled"
+    assert "已过期" in detail["Reason"]
+    assert not any("_" in key for key in detail)
     assert runner.calls == []
 
 
@@ -3947,8 +3948,9 @@ async def test_resume_run_action_returns_noop_for_terminal_checkpoint(monkeypatc
 
     assert response.status_code == 200
     data = response.json()["Data"]
-    assert data["status"] == "noop"
+    assert data["Status"] == "noop"
     assert data["Reason"]
+    assert not any("_" in key for key in data)
     assert runner.calls == []
     events = await service.get_events("sess-resume-disabled")
     assert [
@@ -4004,8 +4006,9 @@ async def test_resume_run_action_rejects_process_local_checkpoint(monkeypatch):
         )
 
     assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "checkpoint_not_resumable"
-    assert "进程内" in response.json()["detail"]["reason"]
+    assert response.json()["detail"]["Code"] == "checkpoint_not_resumable"
+    assert "进程内" in response.json()["detail"]["Reason"]
+    assert not any("_" in key for key in response.json()["detail"])
     assert runner.calls == []
 
 
@@ -4349,7 +4352,9 @@ async def test_resume_run_action_stream_rejects_concurrent_resume_for_same_run(m
 
     assert first_response.status_code == 202
     assert second_response.status_code == 409
-    assert second_response.json()["detail"]["code"] == "resume_already_running"
+    detail = second_response.json()["detail"]
+    assert detail["Code"] == "resume_already_running"
+    assert not any("_" in key for key in detail)
 
 
 @pytest.mark.asyncio
@@ -6023,6 +6028,7 @@ async def test_resume_run_background_precedes_stream_and_returns_json_acceptance
     assert data["Background"] is True
     assert data["InvocationId"] == "inv-bg-1"
     assert data["SubscribeUrl"].endswith("SessionId=resume-background&InvocationId=inv-bg-1")
+    assert not any("_" in key for key in data)
 
     for _ in range(20):
         events = await service.get_events("resume-background")

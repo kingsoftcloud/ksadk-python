@@ -203,7 +203,11 @@ def _detached_resume_key_from_input(
     return normalized_session_id, run_id
 
 
-def _reject_if_detached_resume_active(resume_key: tuple[str, str] | None) -> None:
+def _reject_if_detached_resume_active(
+    resume_key: tuple[str, str] | None,
+    *,
+    pascal_case_detail: bool = False,
+) -> None:
     if resume_key is None:
         return
     active_resume_invocation_id = get_state().stream_registry.active_resume_invocation_by_key.get(
@@ -211,13 +215,22 @@ def _reject_if_detached_resume_active(resume_key: tuple[str, str] | None) -> Non
     )
     if not active_resume_invocation_id:
         return
+    detail = {
+        "code": "resume_already_running",
+        "message": "A checkpoint resume is already running for this session and run.",
+        "invocation_id": active_resume_invocation_id,
+        "session_id": resume_key[0],
+        "run_id": resume_key[1],
+    }
+    if pascal_case_detail:
+        detail = {
+            "Code": detail["code"],
+            "Message": detail["message"],
+            "InvocationId": detail["invocation_id"],
+            "SessionId": detail["session_id"],
+            "RunId": detail["run_id"],
+        }
     raise HTTPException(
         status_code=409,
-        detail={
-            "code": "resume_already_running",
-            "message": "A checkpoint resume is already running for this session and run.",
-            "invocation_id": active_resume_invocation_id,
-            "session_id": resume_key[0],
-            "run_id": resume_key[1],
-        },
+        detail=detail,
     )

@@ -127,7 +127,7 @@ async def resume_run_action(request: ResumeRunActionRequest):
         raise HTTPException(status_code=404, detail="Checkpoint not found")
     disabled_detail = _checkpoint_resume_disabled_detail(checkpoint)
     if disabled_detail is not None:
-        if disabled_detail.get("is_terminal"):
+        if disabled_detail.get("IsTerminal"):
             resume_attempt_id = str(request.ResumeAttemptId or f"resume_{uuid.uuid4().hex}")
             invocation_id = str(request.InvocationId or resume_attempt_id)
             await deps.conversation().append_run_resume_event(
@@ -154,10 +154,10 @@ async def resume_run_action(request: ResumeRunActionRequest):
             return _action_response(
                 "ResumeRun",
                 {
-                    "status": "noop",
-                    "Reason": disabled_detail["reason"],
-                    "CheckpointId": disabled_detail["checkpoint_id"],
-                    "RunId": disabled_detail["run_id"],
+                    "Status": "noop",
+                    "Reason": disabled_detail["Reason"],
+                    "CheckpointId": disabled_detail["CheckpointId"],
+                    "RunId": disabled_detail["RunId"],
                     "ResumeAttemptId": resume_attempt_id,
                 },
             )
@@ -185,7 +185,7 @@ async def resume_run_action(request: ResumeRunActionRequest):
     if request.Background:
         resume_invocation_id = str(request.InvocationId or resume_input["resume_attempt_id"])
         resume_key = _detached_resume_key_from_input(request.SessionId, resume_input)
-        _reject_if_detached_resume_active(resume_key)
+        _reject_if_detached_resume_active(resume_key, pascal_case_detail=True)
         await deps.conversation().append_run_resume_event(
             session_id=request.SessionId,
             author=request.AgentId,
@@ -261,7 +261,7 @@ async def resume_run_action(request: ResumeRunActionRequest):
     if request.Stream:
         resume_invocation_id = str(request.InvocationId or resume_input["resume_attempt_id"])
         resume_key = _detached_resume_key_from_input(request.SessionId, resume_input)
-        _reject_if_detached_resume_active(resume_key)
+        _reject_if_detached_resume_active(resume_key, pascal_case_detail=True)
         # 与 RunAgent Background 同款：返回 SSE 前同步落 resuming 起始事件。
         # detached turn 的首个事件要等流被消费才写；UI 拿到响应头会立刻调
         # SubscribeRunEvents，其 _session_contains_invocation 校验若抢在首次写入前

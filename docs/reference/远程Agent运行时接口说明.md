@@ -1721,18 +1721,19 @@ runtime 只信任服务端已保存的 checkpoint 事件来解析 `framework_ref
 可恢复性判断以服务端 checkpoint 事件的 `IsResumable` 与 `ResumeStatus` 为准：
 
 - **非终态且不可恢复**：checkpoint `IsResumable=false` 且 `IsTerminal=false` 时，返回 `409 checkpoint_not_resumable`。响应体包含：
-    - `reason`：禁用原因
-    - `checkpoint_id`：触发的 checkpoint ID
-    - `run_id`：原 run ID
-    - `resume_status`：当前恢复状态
-    - `is_terminal`：是否终态（此处为 `false`）
+    - `Code`：错误码
+    - `Reason`：禁用原因
+    - `CheckpointId`：触发的 checkpoint ID
+    - `RunId`：原 run ID
+    - `ResumeStatus`：当前恢复状态
+    - `IsTerminal`：是否终态（此处为 `false`）
 - **终态 checkpoint**：`IsTerminal=true` 时不再报错，返回 `200 noop`。响应 `Data` 包含：
-    - `success=false`
+    - `Status=noop`
     - `Reason`：`terminal_noop`
     - `CheckpointId`
     - `RunId`
     - `ResumeAttemptId`：本次恢复尝试 ID
-- **同 `(SessionId, RunId)` detached resume 互斥**：若同一 session+run 已有一个 detached resume 在进行中，重复发起返回 `409 resume_already_running`，响应体包含 `reason`、`checkpoint_id`、`run_id` 与当前活跃的 `resume_attempt_id`。
+- **同 `(SessionId, RunId)` detached resume 互斥**：若同一 session+run 已有一个 detached resume 在进行中，重复发起返回 `409 resume_already_running`，响应体包含 `Code`、`Message`、`InvocationId`、`SessionId` 和 `RunId`。
 
 !!! warning "前端实现提示"
     终态 `noop` 不是错误；前端应按正常完成态收敛 UI，不要把 `200 noop` 当作失败重试。`409` 系列错误不要自动无限重试，应引导用户选择其他 checkpoint 或重新发起 run。
