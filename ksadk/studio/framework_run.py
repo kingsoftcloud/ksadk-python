@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from ksadk.detection.detector import FrameworkDetector
 from ksadk.runtime import RuntimeLaunchContext
@@ -11,6 +12,22 @@ from ksadk.studio.repository import BuildRepository
 from ksadk.studio.run_service import StudioRunSpec
 from ksadk.studio.workspace import Workspace
 from ksadk.tools.gateway import normalize_tool_approval_mode
+
+
+def _resolved_prompt_ownership(resolved: Any) -> str:
+    """从 resolved-agent-spec.json 的 context 块读 prompt_ownership。
+
+    resolved spec 由 ContractModel 以 ``by_alias=True`` 序列化，alias_generator 为
+    camelCase，故字段名为 ``promptOwnership``；``populate_by_name`` 仅作用于输入，JSON
+    输出仍为 alias。此处 camelCase 与 snake 两种写法都查，稳妥兼容。非 dict / 缺失时
+    返回空串（== framework 默认，不接管 Runner 输入）。
+    """
+    if not isinstance(resolved, dict):
+        return ""
+    context = resolved.get("context")
+    if not isinstance(context, dict):
+        return ""
+    return str(context.get("promptOwnership") or context.get("prompt_ownership") or "")
 
 
 class FrameworkRunSpecResolver:
@@ -71,6 +88,11 @@ class FrameworkRunSpecResolver:
             # framework runner's existing base_instructions projection.
             "agent_system": str((instructions or {}).get("system") or ""),
             "agent_task": str((instructions or {}).get("task") or ""),
+            **(
+                {"prompt_integration_mode": "ksadk_hosted"}
+                if _resolved_prompt_ownership(resolved) == "ksadk"
+                else {}
+            ),
             "entry_point": detection.entry_point,
             "agent_variable": detection.agent_variable,
         }

@@ -21,11 +21,14 @@ from ksadk.studio.api_catalog_routes import register_catalog_routes
 from ksadk.studio.api_contracts import (
     AuthoringCommitRequest,
     BuildRequest,
+    ContextPreviewRequest,
     ConversationAuthoringRequest,
     CreateAgentRequest,
     EvaluationRequest,
     InteractionSubmitRequest,
     ProjectInspectRequest,
+    ImportRootRequest,
+    PromptCompileRequest,
     QuickAuthoringRequest,
     RollbackRequest,
     RunRequest,
@@ -471,6 +474,7 @@ def create_studio_app(
                 "reactChat": True,
             },
             "runtimes": studio.runtime_catalog(),
+            "importableProject": studio.detect_importable_project(),
         }
 
     @app.get("/api/v1/system/settings")
@@ -799,6 +803,33 @@ def create_studio_app(
             level=payload.level,
         )
 
+    @app.post("/api/v1/workspace:import-root", status_code=201)
+    async def import_root_project(payload: ImportRootRequest):
+        """PR-S6：一键导入根 Framework 项目（方案 §6.1）。"""
+        return studio.import_root_project(name=payload.name, slug=payload.slug)
+
+    @app.post("/api/v1/agents/{agent_id}/prompt:compile")
+    async def compile_prompt(agent_id: str, payload: PromptCompileRequest):
+        """PR-S2：Prompt 编译预览（方案 §6.2）。只读，不写 Session/Trace/Build。"""
+        return studio.compile_prompt_preview(
+            agent_id,
+            request_instructions=payload.request_instructions,
+            include_content=payload.include_content,
+        )
+
+    @app.post("/api/v1/agents/{agent_id}/context:preview")
+    async def preview_context(agent_id: str, payload: ContextPreviewRequest):
+        """PR-S2：Context 预览（方案 §6.2）。复用真实 Planner，不调模型。"""
+        return await studio.preview_context(
+            agent_id,
+            user_input=payload.user_input,
+            request_instructions=payload.request_instructions,
+            simulated_history=[
+                {"role": m.role, "content": m.content} for m in payload.simulated_history
+            ],
+            include_content=payload.include_content,
+        )
+
     @app.post("/api/v1/agents/{agent_id}/builds", status_code=202)
     async def create_build(
         agent_id: str,
@@ -883,6 +914,66 @@ def create_studio_app(
             name=payload.name,
             data=payload.data,
         )
+
+    @app.get("/api/v1/runs/{run_id}/context")
+    async def get_run_context(run_id: str):
+        """PR-S4：Runtime Context Evidence（方案 §6.3）。planned/projected/actual + 精度 + ownership。"""
+        record = studio.event_store.get(run_id)
+        plan = record.context_plan or {}
+        evidence = record.prompt_evidence or {}
+        return {
+            "planId": plan.get("plan_id"),
+            "accuracy": evidence.get("accountingAccuracy") or plan.get("accounting_accuracy", "opaque"),
+            "policyVersion": plan.get("policy_version"),
+            "tokensByKind": plan.get("tokens_by_kind", {}),
+            "plannedInputTokens": plan.get("planned_input_tokens"),
+            "projectedInputTokens": plan.get("projected_input_tokens"),
+            "runtimeReportedInputTokens": plan.get("runtime_reported_input_tokens"),
+            "selected": plan.get("selected", []),
+            "decisions": plan.get("decisions", []),
+            "ownership": {
+                "promptOwner": evidence.get("promptOwner"),
+                "historyOwner": (plan.get("history_owner") if isinstance(plan, dict) else None),
+                "integrationMode": evidence.get("integrationMode"),
+                "runtimeType": evidence.get("runtimeType"),
+                "deploymentMode": evidence.get("deploymentMode"),
+                "capabilityHash": evidence.get("capabilityHash"),
+            },
+            "warnings": [],
+        }
+
+    @app.get("/api/v1/runs/{run_id}/prompt")
+    async def get_run_prompt(run_id: str):
+        """PR-S4：Prompt evidence（方案 §6.3 / §7.3）。section hash/版本，默认不返回正文。"""
+        record = studio.event_store.get(run_id)
+        evidence = record.prompt_evidence or {}
+        return {
+            "contentHash": evidence.get("contentHash"),
+            "stablePrefixHash": evidence.get("stablePrefixHash"),
+            "sectionHashes": evidence.get("sectionHashes", {}),
+            "tokensBySection": evidence.get("tokensBySection", {}),
+            "estimatedTokens": evidence.get("estimatedTokens"),
+            "sectionCount": evidence.get("sectionCount"),
+            "runtimeType": evidence.get("runtimeType"),
+            "integrationMode": evidence.get("integrationMode"),
+        }
+
+    @app.get("/api/v1/runs/{run_id}/working-state")
+    async def get_run_working_state(run_id: str):
+        """PR-S4：Working State evidence（方案 §6.5）。从 checkpoint/read record 读取。"""
+        record = studio.event_store.get(run_id)
+        return {"workingState": record.working_state}
+
+    @app.get("/api/v1/runs/{run_id}/memory-events")
+    async def get_run_memory_events(run_id: str):
+        """PR-S4：Memory events（方案 §6.4）。从 run events 过滤 memory 相关事件。"""
+        events = studio.event_store.events(run_id)
+        memory_events = [
+            {"id": e.id, "type": e.type, "data": e.data}
+            for e in events
+            if "memory" in e.type.lower() or "memory" in str(e.data).lower()[:200]
+        ]
+        return {"items": memory_events}
 
     @app.delete("/api/v1/sessions/{session_id}", status_code=204)
     async def delete_studio_session(session_id: str):

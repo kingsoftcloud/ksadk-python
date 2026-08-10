@@ -385,6 +385,190 @@ class StudioService:
             return framework.strip().lower() or "adk"
         return runtime.type
 
+    def _agent_prompt_sources(self, agent_id: str, *, revision: int = 1) -> tuple[str, str, str]:
+        """取 agent 的 (agent_system, agent_task, runtime_type) 供 prompt 编译/preview。"""
+        if self.is_codex_agent(agent_id):
+            snapshot = self.codex_manifests.load(agent_id)
+            prompt = snapshot.manifest.prompt or ""
+            return prompt, "", "codex"
+        draft = self.drafts.get(agent_id)
+        instructions = draft.spec.instructions
+        runtime_type = self.agent_runtime_type(agent_id)
+        return str(instructions.system or ""), str(instructions.task or ""), runtime_type
+
+    def compile_prompt_preview(
+        self, agent_id: str, *, request_instructions: str = "", include_content: bool = False
+    ) -> dict:
+        """PR-S2：编译 Prompt 预览（方案 §6.2）。只读，不写 Session/Trace/Build。
+
+        复用真实 PromptCompiler + ResolvedPromptSources。默认不返回敏感正文（仅 hash/section
+        统计）；``include_content=True`` 时返回 canonical 正文（仅 local debug）。
+        """
+        from ksadk.prompts.resolved import (
+            ResolvedPromptSources,
+            compile_resolved_prompt_dict,
+            get_default_platform_policy_source,
+        )
+
+        agent_system, agent_task, runtime_type = self._agent_prompt_sources(agent_id)
+        compiled = compile_resolved_prompt_dict(
+            ResolvedPromptSources(
+                agent_system=agent_system,
+                agent_task=agent_task,
+                request_instructions=str(request_instructions or "").strip(),
+                platform_policy_source=get_default_platform_policy_source(),
+            )
+        )
+        if compiled is None:
+            return {
+                "promptVersion": "v1",
+                "contentHash": "",
+                "stablePrefixHash": "",
+                "sections": [],
+                "runtimeType": runtime_type,
+                "warnings": ["no prompt content to compile"],
+            }
+        result: dict = {
+            "promptVersion": compiled["prompt_compiler_version"],
+            "contentHash": compiled["prompt_content_hash"],
+            "stablePrefixHash": compiled["prompt_stable_prefix_hash"],
+            "sectionHashes": compiled["prompt_section_hashes"],
+            "tokensBySection": compiled["prompt_tokens_by_section"],
+            "estimatedTokens": compiled["prompt_estimated_tokens"],
+            "sectionCount": compiled["prompt_section_count"],
+            "runtimeType": runtime_type,
+            "platformPolicyVersion": compiled.get("prompt_platform_policy_version"),
+            "warnings": [],
+        }
+        if include_content:
+            result["content"] = compiled["prompt_content"]
+        return result
+
+    async def preview_context(
+        self,
+        agent_id: str,
+        *,
+        user_input: str = "",
+        request_instructions: str = "",
+        simulated_history: list | None = None,
+        include_content: bool = False,
+    ) -> dict:
+        """PR-S2：Context 预览（方案 §6.2）。复用真实 hosted_pipeline，不调模型、不写 Session。
+
+        返回 budget/items(脱敏)/decisions/totalsByKind/projection/accuracy。``include_content``
+        控制是否返回 assembled system 正文。
+        """
+        from ksadk.context_engine.hosted_pipeline import run_hosted_pipeline
+        from ksadk.context_engine.capabilities import capabilities_for_runtime_type
+
+        agent_system, agent_task, runtime_type = self._agent_prompt_sources(agent_id)
+        caps = capabilities_for_runtime_type(runtime_type)
+        # 构造与 build_run_input 一致的 compiled_prompt dict（含 prompt_content）
+        from ksadk.prompts.resolved import (
+            ResolvedPromptSources,
+            compile_resolved_prompt_dict,
+            get_default_platform_policy_source,
+        )
+        compiled_prompt = compile_resolved_prompt_dict(
+            ResolvedPromptSources(
+                agent_system=agent_system,
+                agent_task=agent_task,
+                request_instructions=str(request_instructions or "").strip(),
+                platform_policy_source=get_default_platform_policy_source(),
+            )
+        )
+        history = [
+            {"role": m.get("role", "user"), "content": m.get("content", "")}
+            for m in (simulated_history or [])
+        ]
+        result = await run_hosted_pipeline(
+            compiled_prompt=compiled_prompt,
+            user_input=str(user_input or "").strip(),
+            history=history,
+            working_state=None,
+            model_metadata={"context_window_tokens": 200000, "max_output_tokens": 32000},
+            contributors=None,  # preview 不跑外部 Contributor（避免副作用/超时），方案 §6.2
+            integration_mode=caps.integration_mode,
+            accounting_accuracy="estimated",
+            session_id=f"preview-{agent_id}",
+            invocation_id=f"preview-{agent_id}",
+        )
+        if result is None:
+            return {"accuracy": "estimated", "warnings": ["no content to plan"], "items": []}
+        plan = result.plan
+        assembled = result.assembled
+        return {
+            "accuracy": plan.get("accounting_accuracy", "estimated"),
+            "policyVersion": plan.get("policy_version"),
+            "planId": plan.get("plan_id"),
+            "budget": {
+                "maxInputTokens": (plan.get("budget") or {}).get("max_input_tokens"),
+                "softLimitTokens": (plan.get("budget") or {}).get("soft_limit_tokens"),
+                "hardLimitTokens": (plan.get("budget") or {}).get("hard_limit_tokens"),
+            },
+            "items": plan.get("selected", []),
+            "decisions": plan.get("decisions", []),
+            "totalsByKind": plan.get("tokens_by_kind", {}),
+            "plannedInputTokens": plan.get("planned_input_tokens"),
+            "warnings": list(assembled.warnings),
+            "projection": {
+                "runtimeType": runtime_type,
+                "integrationMode": caps.integration_mode,
+                "promptOwner": caps.prompt_owner,
+            },
+            **({"system": assembled.system} if include_content else {}),
+        }
+
+    def detect_importable_project(self) -> dict | None:
+        """检测工作区根是否有可导入的 framework 项目（方案 §6.1）。
+
+        根 agentengine.yaml 声明 framework: langgraph/adk 但尚未导入为 Studio Draft 时，
+        返回待导入信息（runtime/name/model/prompt），供前端提示用户确认导入；不自动创建
+        Draft，不改用户根配置。返回 None 表示无可导入项目。
+        """
+        from ksadk.studio.manifest_resolver import detect_manifest_kind
+        result = detect_manifest_kind(self.workspace.root)
+        if result.kind != "framework":
+            return None
+        # 读根 manifest 的完整字段，供前端预览
+        import yaml as _yaml
+        try:
+            payload = _yaml.safe_load(result.path.read_text(encoding="utf-8-sig")) or {}
+        except Exception:  # noqa: BLE001
+            return None
+        runtime_type = result.framework or result.runtime_type
+        return {
+            "kind": "framework",
+            "runtimeType": runtime_type,
+            "name": str(payload.get("name") or self.workspace.root.name or "imported-agent"),
+            "model": str(payload.get("model") or ""),
+            "prompt": str(payload.get("prompt") or payload.get("instruction") or ""),
+            "task": str(payload.get("task") or ""),
+            "manifestPath": "agentengine.yaml",
+            "requiresConfirmation": True,
+        }
+
+    def import_root_project(self, *, name: str | None = None, slug: str | None = None) -> AgentDraft:
+        """一键导入根 Framework 项目（方案 §6.1）。
+
+        检测根 agentengine.yaml 为 framework 时，inspect + commit 一步完成，生成 Studio Draft
+        并保留 Runtime/Prompt/Model/Context 配置。返回创建的 AgentDraft。根 manifest 非 framework
+        或无 manifest 时报错。
+        """
+        importable = self.detect_importable_project()
+        if importable is None or importable["kind"] != "framework":
+            raise StudioError(
+                "PROJECT_NOT_IMPORTABLE",
+                "当前工作区根没有可导入的 Framework 项目",
+                status_code=422,
+            )
+        inspection = self.inspect_agent_project(".")
+        return self.commit_agent_project(
+            inspection["inspectionToken"],
+            name=name or importable.get("name"),
+            slug=slug or importable.get("name"),
+        )
+
     def list_agents(self, *, query: str = "", limit: int = 50) -> list[AgentDraft]:
         """List all local Agents from one registry view across runtime types."""
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
@@ -27,6 +27,7 @@ from ksadk.studio.event_store import RunEventStore
 from ksadk.studio.workspace import Workspace
 
 _CANCEL_TIMEOUT_SECONDS = 2.0
+_STUDIO_LOCAL_USER_ID = "local-user"
 
 
 @dataclass(frozen=True)
@@ -85,6 +86,7 @@ class StudioRunService:
             input=user_input,
         )
         self.event_store.create(record)
+        prepared_turn = await self._capture_pcm_evidence(record, spec, user_input)
         created = self.event_store.append(
             record.id,
             "run.created",
@@ -134,9 +136,11 @@ class StudioRunService:
                 conversation_request["request_metadata"] = {
                     "tool_approval_mode": tool_approval_mode,
                 }
+            if prepared_turn is not None:
+                conversation_request["prepared_turn"] = asdict(prepared_turn)
             request = StartRequest(
                 input=runtime_input if runtime_input is not None else user_input,
-                user_id="local-user",
+                user_id=_STUDIO_LOCAL_USER_ID,
                 session_id=session,
                 agent_id=spec.agent_id,
                 model=spec.model,
@@ -267,6 +271,7 @@ class StudioRunService:
                     on_event(resumed)
                 self.event_store.save(record)
             record.output = final_text or streamed_final
+            await self._finalize_via_shared(record, spec, user_input)
         except asyncio.CancelledError:
             cancel_result = "task_cancelled"
             if handle is not None and self.executor.is_attached(handle):
@@ -285,7 +290,7 @@ class StudioRunService:
             cancelled = RuntimeEvent.create(
                 EventType.RUN_CANCELED,
                 agent_id=spec.agent_id,
-                user_id="local-user",
+                user_id=_STUDIO_LOCAL_USER_ID,
                 session_id=session,
                 invocation_id=handle.run_id if handle is not None else run_id,
                 seq_id=len(self.event_store.events(run_id)) + 1,
@@ -299,7 +304,7 @@ class StudioRunService:
             failure = RuntimeEvent.create(
                 EventType.RUN_FAILED,
                 agent_id=spec.agent_id,
-                user_id="local-user",
+                user_id=_STUDIO_LOCAL_USER_ID,
                 session_id=session,
                 invocation_id=handle.run_id if handle is not None else run_id,
                 seq_id=len(self.event_store.events(run_id)) + 1,
@@ -566,6 +571,117 @@ class StudioRunService:
         if on_event is not None:
             on_event(begin)
             on_event(interaction)
+
+    async def _finalize_via_shared(
+        self,
+        record: RunRecord,
+        spec: StudioRunSpec,
+        user_input: str,
+    ) -> None:
+        """Finalize hosted turns through the shared PCM lifecycle."""
+        if record.status != RunStatus.COMPLETED:
+            return
+        if str(spec.request_config.get("prompt_integration_mode") or "") != "ksadk_hosted":
+            return
+        try:
+            from types import SimpleNamespace
+
+            from ksadk.runtime.hosted_finalizer import FinalizeContext, finalize_hosted_turn
+
+            turn_event = SimpleNamespace(
+                author="user",
+                event_type="user_message",
+                text=user_input,
+                seq_id=1,
+                id=f"{record.id}:user",
+            )
+            usage_dict = (
+                record.usage.model_dump(by_alias=False, mode="json")
+                if record.usage.reported and hasattr(record.usage, "model_dump")
+                else None
+            )
+            await finalize_hosted_turn(
+                FinalizeContext(
+                    session_id=record.session_id,
+                    invocation_id=record.id,
+                    user_id=_STUDIO_LOCAL_USER_ID,
+                    context_plan=record.context_plan,
+                    shadow_context_plan=None,
+                    usage=usage_dict,
+                    runtime_type=record.runtime_type,
+                    prompt_integration_mode=str(
+                        spec.request_config.get("prompt_integration_mode") or ""
+                    ),
+                    session_events=[turn_event],
+                ),
+            )
+        except Exception:  # noqa: BLE001 - finalization must not break a Studio run
+            return
+
+    async def _capture_pcm_evidence(
+        self,
+        record: RunRecord,
+        spec: StudioRunSpec,
+        user_input: str,
+    ) -> Any | None:
+        """Prepare once and persist the exact PCM evidence consumed by the adapter."""
+        try:
+            from ksadk.conversations.runtime_preparation import build_run_input
+            from ksadk.sessions.in_memory import InMemorySessionService
+
+            temporary_sessions = InMemorySessionService()
+            await temporary_sessions.create_session(
+                agent_id=spec.agent_id,
+                user_id=_STUDIO_LOCAL_USER_ID,
+                session_id=record.session_id,
+            )
+            cfg = dict(spec.request_config or {})
+            prepared = await build_run_input(
+                agent_id=spec.agent_id,
+                user_id=_STUDIO_LOCAL_USER_ID,
+                session_id=record.session_id,
+                messages=self._conversation_messages(
+                    spec.agent_id,
+                    record.session_id,
+                    user_input,
+                ),
+                model=spec.model,
+                instructions=str(cfg.get("instructions") or cfg.get("base_instructions") or ""),
+                agent_system=str(cfg.get("agent_system") or ""),
+                agent_task=str(cfg.get("agent_task") or ""),
+                prompt_integration_mode=str(cfg.get("prompt_integration_mode") or ""),
+                context_engine_rollout=str(cfg.get("context_engine_rollout") or "") or None,
+                memory_recall_enabled=cfg.get("memory_recall_enabled"),
+                memory_write_rollout=str(cfg.get("memory_write_rollout") or "") or None,
+                runtime_type=spec.launch_context.runtime_type,
+                deployment_mode=spec.launch_context.deployment_mode,
+                invocation_id=record.id,
+                session_service_provider=lambda: temporary_sessions,
+            )
+            record.context_plan = prepared.context_plan
+            compiled = prepared.compiled_prompt
+            shadow = prepared.shadow_context_plan or {}
+            record.prompt_evidence = {
+                "contentHash": (compiled or {}).get("prompt_content_hash"),
+                "stablePrefixHash": (compiled or {}).get("prompt_stable_prefix_hash"),
+                "sectionHashes": (compiled or {}).get("prompt_section_hashes", {}),
+                "tokensBySection": (compiled or {}).get("prompt_tokens_by_section", {}),
+                "estimatedTokens": (compiled or {}).get("prompt_estimated_tokens"),
+                "sectionCount": (compiled or {}).get("prompt_section_count"),
+                "integrationMode": shadow.get("integration_mode"),
+                "accountingAccuracy": shadow.get("accounting_accuracy"),
+                "promptOwner": shadow.get("prompt_owner"),
+                "runtimeType": shadow.get("runtime_type"),
+                "deploymentMode": shadow.get("deployment_mode"),
+                "capabilityHash": shadow.get("capability_hash"),
+                "tokensByKind": shadow.get("tokens_by_kind", {}),
+                "plannedInputTokens": shadow.get("planned_input_tokens"),
+            }
+            record.working_state = prepared.working_state
+            self.event_store.save(record)
+            return prepared
+        except Exception:  # noqa: BLE001 - evidence collection is best effort
+            return None
 
     def _conversation_messages(
         self,

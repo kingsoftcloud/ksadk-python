@@ -123,9 +123,21 @@ class CodexManifestRepository:
         self.path = workspace.resolve("agentengine.yaml")
         self.agents_path = workspace.resolve("agents")
 
+    def _root_is_codex(self) -> bool:
+        """根 agentengine.yaml 是否应走 Codex 解析（方案 §6.1 ManifestResolver）。
+
+        根 manifest 存在时先读 framework/runtime 字段，只有显式 codex 才走 Codex 解析；
+        否则（标准 LangGraph/ADK 项目）跳过，避免 CODEX_MANIFEST_INVALID 误判。
+        """
+        if not self.path.is_file():
+            return False
+        from ksadk.studio.manifest_resolver import root_manifest_is_codex
+        return root_manifest_is_codex(self.workspace.root)
+
     def exists(self, agent_id: str | None = None) -> bool:
         if agent_id is None:
-            return self.path.is_file()
+            # 方案 §6.1：根 manifest 非 codex 时不当作 codex agent 存在
+            return self._root_is_codex()
         try:
             self.load(agent_id)
         except StudioError as exc:
@@ -136,9 +148,12 @@ class CodexManifestRepository:
 
     def load(self, agent_id: str | None = None) -> CodexManifestSnapshot:
         if agent_id is None:
+            # 方案 §6.1：根 manifest 非 codex 时报 not_found，交由 framework drafts 处理
+            if not self._root_is_codex():
+                raise not_found("agent", "")
             return self._load_path(self.path)
         self._validate_agent_id(agent_id)
-        if self.path.is_file():
+        if self.path.is_file() and self._root_is_codex():
             root = self._load_path(self.path)
             if root.manifest.name == agent_id:
                 return root
@@ -156,7 +171,7 @@ class CodexManifestRepository:
     def list(self) -> list[CodexManifestSnapshot]:
         snapshots: list[CodexManifestSnapshot] = []
         seen: set[str] = set()
-        if self.path.is_file():
+        if self._root_is_codex():
             root = self._load_path(self.path)
             snapshots.append(root)
             seen.add(root.manifest.name)

@@ -464,7 +464,11 @@ class AgentAuthoringService:
 
     @staticmethod
     def _tree_digest(root: Path, *, exclude: set[str] | None = None) -> str:
-        ignored = exclude or set()
+        # 默认排除 .agentkit（Studio 自身状态）与常见忽略目录，避免 inspect 后写 token json
+        # 改变 digest 导致 commit 时 PROJECT_CHANGED_AFTER_INSPECTION 误报（方案 §6.1）。
+        ignored = set(exclude or [])
+        ignored.add(".agentkit")
+        ignored.add(".git")
         entries: list[dict[str, Any]] = []
         for path in sorted(root.rglob("*"), key=lambda item: item.as_posix()):
             if path.is_symlink():
@@ -476,7 +480,10 @@ class AgentAuthoringService:
                 )
             if not path.is_file() or path.name in ignored:
                 continue
+            # 跳过 .agentkit / .git 目录下的文件
             relative = path.relative_to(root).as_posix()
+            if any(relative.startswith(ignored_dir + "/") for ignored_dir in (".agentkit", ".git")):
+                continue
             content = path.read_bytes()
             entries.append(
                 {

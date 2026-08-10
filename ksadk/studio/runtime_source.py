@@ -316,7 +316,7 @@ def _call_model(state: AgentState):
     client = ChatOpenAI(
         model=selected,
         api_key=os.environ["OPENAI_API_KEY"],
-        base_url=os.getenv("OPENAI_API_BASE") or os.getenv("OPENAI_BASE_URL"),
+        base_url=os.getenv("OPENAI_BASE_URL") or os.getenv("OPENAI_API_BASE"),
     )
     runnable = client.bind_tools(_tools) if _tools else client
     messages = [SystemMessage(content={json.dumps(prompt)}), *state["messages"]]
