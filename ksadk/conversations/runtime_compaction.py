@@ -304,7 +304,7 @@ def _working_state_from_checkpoint(checkpoint: Any) -> Any:
     return WorkingState(
         current_goal=str(ws_audit.get("current_goal") or ""),
         next_action=ws_audit.get("next_action"),
-        completed_steps=[],  # 审计只存 count，不重建列表
+        completed_steps=list(ws_audit.get("completed_steps") or []),
         constraints=list(ws_audit.get("constraints") or []),
         source_seq_range=tuple(ws_audit.get("source_seq_range") or (0, 0)),  # type: ignore[arg-type]
     )

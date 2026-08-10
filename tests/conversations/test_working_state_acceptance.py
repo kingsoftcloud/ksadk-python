@@ -95,6 +95,7 @@ def test_deployment_case_merge_recovers_lost_goal():
     previous = WorkingState(
         current_goal="部署服务到预发",
         constraints=["不得操作生产环境"],
+        completed_steps=["镜像已构建"],
         next_action="执行预发 dry-run",
     )
     merged = new_ws.merge_missing_from(previous)

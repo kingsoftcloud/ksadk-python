@@ -20,9 +20,27 @@ def test_working_state_has_constraints_field():
 
 
 def test_critical_fields_present():
-    assert WorkingState(current_goal="目标").critical_fields_present() is True
-    assert WorkingState(current_goal="").critical_fields_present() is False
-    assert WorkingState(current_goal="   ").critical_fields_present() is False
+    # P0 严格：四项必须全部非空
+    ws_ok = WorkingState(
+        current_goal="目标",
+        constraints=["约束"],
+        completed_steps=["步骤1"],
+        next_action="下一步",
+    )
+    assert ws_ok.critical_fields_present() is True
+    # 缺任一项都不通过
+    assert WorkingState(
+        current_goal="", constraints=["c"], completed_steps=["s"], next_action="n"
+    ).critical_fields_present() is False
+    assert WorkingState(
+        current_goal="g", constraints=[], completed_steps=["s"], next_action="n"
+    ).critical_fields_present() is False
+    assert WorkingState(
+        current_goal="g", constraints=["c"], completed_steps=[], next_action="n"
+    ).critical_fields_present() is False
+    assert WorkingState(
+        current_goal="g", constraints=["c"], completed_steps=["s"], next_action=""
+    ).critical_fields_present() is False
 
 
 def test_merge_missing_from_previous_fills_goal():
@@ -91,8 +109,15 @@ def test_merge_used_in_compaction_bad_case(tmp_path):
     """§8.1 Bad Case：压缩后摘要丢失 current_goal，但合并旧 checkpoint 保留它。"""
     # 模拟：新提取的 ws 丢了 goal（空），但旧 checkpoint 有
     new_ws = WorkingState(current_goal="", constraints=[])
-    previous = WorkingState(current_goal="不得遗忘的目标", constraints=["不得操作生产"])
+    previous = WorkingState(
+        current_goal="不得遗忘的目标",
+        constraints=["不得操作生产"],
+        completed_steps=["镜像已构建"],
+        next_action="执行预发 dry-run",
+    )
     merged = new_ws.merge_missing_from(previous)
     assert merged.current_goal == "不得遗忘的目标"
     assert merged.constraints == ["不得操作生产"]
+    assert merged.completed_steps == ["镜像已构建"]
+    assert merged.next_action == "执行预发 dry-run"
     assert merged.critical_fields_present() is True
