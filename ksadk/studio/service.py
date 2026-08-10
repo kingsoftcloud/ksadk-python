@@ -5,7 +5,20 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from typing import Callable, Literal, cast
+from urllib.parse import urlparse
 
+from ksadk.evaluation import (
+    EvaluationConfig as PublicEvaluationConfig,
+    EvaluationNotImplementedError,
+    EvaluationRequest as PublicEvaluationRequest,
+    EvaluationStorage,
+    EvaluationStorageError,
+    TargetKind,
+    TargetRef,
+    execute_evaluation,
+    load_evalset,
+)
+from ksadk.evaluation.evalset import EvalSetParseError
 from ksadk.runtime import RuntimeExecutor, build_default_runtime_registry
 from ksadk.studio.agent_lifecycle import delete_framework_agent
 from ksadk.studio.authoring_coordinator import StudioAuthoringCoordinator
@@ -136,6 +149,9 @@ class StudioService:
             run_agent=self.run_build,
             event_store=self.event_store,
             build_repository=self.builds,
+        )
+        self.evaluation_storage = EvaluationStorage(
+            self.workspace.resolve(".agentkit/evaluations")
         )
         self.cloud = CloudDeploymentService(
             self.workspace,
@@ -784,6 +800,105 @@ class StudioService:
             idempotency_key=idempotency_key,
             runner=runner,
         )
+
+    def submit_public_evaluation(
+        self,
+        evalset_file: str,
+        target: TargetRef,
+        config: PublicEvaluationConfig,
+        *,
+        idempotency_key: str,
+    ) -> Operation:
+        """Queue the public CLI/Studio handoff without exposing adapter internals."""
+
+        try:
+            path = self.workspace.resolve(evalset_file, must_exist=True)
+        except StudioError:
+            raise
+        if not path.is_file():
+            raise StudioError(
+                "EVALSET_FILE_INVALID",
+                "EvalSet 必须是工作区内的文件",
+                status_code=422,
+                field="evalsetFile",
+            )
+        try:
+            evalset = load_evalset(path)
+        except EvalSetParseError as exc:
+            raise StudioError(
+                exc.code,
+                str(exc),
+                status_code=422,
+                field="evalsetFile",
+            ) from exc
+        target = self._normalize_public_evaluation_target(target)
+        request = PublicEvaluationRequest(
+            evalset=evalset,
+            target=target,
+            config=config,
+            report_dir=str(self.evaluation_storage.root),
+        )
+
+        async def runner():
+            try:
+                report = await execute_evaluation(request)
+            except EvaluationNotImplementedError as exc:
+                raise StudioError(
+                    "EVALUATION_EXECUTOR_UNAVAILABLE",
+                    str(exc),
+                    status_code=501,
+                ) from exc
+            try:
+                self.evaluation_storage.write_report(report)
+            except EvaluationStorageError as exc:
+                raise StudioError(
+                    "EVALUATION_REPORT_WRITE_FAILED",
+                    "评测报告写入失败",
+                    status_code=500,
+                ) from exc
+            return report
+
+        return self.operations.submit(
+            kind=OperationKind.EVALUATION,
+            resource_id=evalset.content_digest,
+            idempotency_key=idempotency_key,
+            runner=runner,
+        )
+
+    def list_public_evaluations(self):
+        return self.evaluation_storage.list_reports()
+
+    def get_public_evaluation(self, evaluation_id: str):
+        try:
+            return self.evaluation_storage.read_report(evaluation_id)
+        except EvaluationStorageError as exc:
+            raise StudioError(
+                "EVALUATION_NOT_FOUND",
+                "Evaluation 不存在",
+                status_code=404,
+                details={"id": evaluation_id},
+            ) from exc
+
+    def _normalize_public_evaluation_target(self, target: TargetRef) -> TargetRef:
+        if target.kind == TargetKind.A2A:
+            parsed = urlparse(target.locator)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                raise StudioError(
+                    "EVALUATION_A2A_URL_INVALID",
+                    "A2A target 必须是 http 或 https URL",
+                    status_code=422,
+                    field="target.locator",
+                )
+            return target
+        path = self.workspace.resolve(target.locator, must_exist=True)
+        if not path.is_dir():
+            raise StudioError(
+                "EVALUATION_TARGET_INVALID",
+                "本地 target 必须是工作区内的目录",
+                status_code=422,
+                field="target.locator",
+            )
+        return target.model_copy(update={"locator": str(path)})
 
     def submit_deployment(
         self,
