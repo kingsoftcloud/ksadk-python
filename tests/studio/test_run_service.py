@@ -174,6 +174,50 @@ async def test_studio_run_service_uses_core_executor_and_persists_runtime_events
 
 
 @pytest.mark.asyncio
+async def test_studio_reuses_evidence_prepared_turn_for_runtime_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KSADK_PROMPT_COMPILER_ENABLED", "1")
+    monkeypatch.setenv("KSADK_CONTEXT_ENGINE_V2_ENABLED", "1")
+    calls: list[tuple[str, Any]] = []
+    registry = RuntimeRegistry()
+    registry.register("langgraph", lambda _context: _RecordingAdapter(calls))
+    workspace = Workspace(tmp_path)
+    workspace.initialize()
+    service = StudioRunService(workspace, RuntimeExecutor(registry))
+
+    record = await service.run(
+        StudioRunSpec(
+            launch_context=RuntimeLaunchContext(
+                runtime_type="langgraph",
+                project_dir=tmp_path,
+            ),
+            build_id="build-hosted",
+            agent_id="review-helper",
+            model="glm-5.2",
+            request_config={
+                "agent_system": "你是部署助手。",
+                "agent_task": "只操作预发环境。",
+                "prompt_integration_mode": "ksadk_hosted",
+            },
+        ),
+        "检查部署计划",
+        session_id="ses-single-prepare",
+    )
+
+    request = next(value for name, value in calls if name == "start")
+    conversation = request.conversation_preprocessing()
+    assert conversation is not None
+    prepared = (conversation.model_extra or {})["prepared_turn"]
+    assert prepared["invocation_id"] == record.id
+    assert prepared["context_plan"] == record.context_plan
+    assert prepared["compiled_prompt"]["prompt_content_hash"] == (
+        record.prompt_evidence["contentHash"]
+    )
+
+
+@pytest.mark.asyncio
 async def test_second_turn_receives_transport_neutral_session_history(
     tmp_path: Path,
 ) -> None:
