@@ -273,7 +273,15 @@ def _set_context_plan_attributes(span: Any | None, plan: Any | None) -> None:
     _set_span_attribute(span, "context.plan_id", plan.get("plan_id"))
     _set_span_attribute(span, "context.policy_version", plan.get("policy_version"))
     _set_span_attribute(span, "context.tokenizer", plan.get("tokenizer"))
+    _set_span_attribute(span, "context.deployment_mode", plan.get("deployment_mode"))
+    _set_span_attribute(span, "context.runtime_type", plan.get("runtime_type"))
     _set_span_attribute(span, "context.planned_input_tokens", plan.get("planned_input_tokens"))
+    # 方案 §6.3：projected/runtime_reported 贯穿 Trace（缺口 6）。projected=Adapter 实际投影给
+    # Runner 的；runtime_reported=Provider/Runner 回报的实际。None 表示该口径不可得（诚实标注）。
+    _set_span_attribute(span, "context.projected_input_tokens", plan.get("projected_input_tokens"))
+    _set_span_attribute(
+        span, "context.runtime_reported_input_tokens", plan.get("runtime_reported_input_tokens")
+    )
     _set_span_attribute(span, "context.integration_mode", plan.get("integration_mode"))
     _set_span_attribute(span, "context.accounting_accuracy", plan.get("accounting_accuracy"))
     _set_span_attribute(span, "context.prompt_owner", plan.get("prompt_owner"))
@@ -281,6 +289,17 @@ def _set_context_plan_attributes(span: Any | None, plan: Any | None) -> None:
     _set_span_attribute(span, "context.compaction_owner", plan.get("compaction_owner"))
     _set_span_attribute(span, "context.memory_owner", plan.get("memory_owner"))
     _set_span_attribute(span, "context.skill_owner", plan.get("skill_owner"))
+    # 方案 §6.3 / 缺口 7：native compaction 不可见时的统一展示规范。compaction_owner=native 且
+    # actual 不可见时，标 compaction_visibility=opaque，不把 planned 伪装成 actual。
+    compaction_owner = str(plan.get("compaction_owner") or "")
+    accuracy = str(plan.get("accounting_accuracy") or "")
+    if compaction_owner == "native" and accuracy in ("opaque", "estimated"):
+        _set_span_attribute(span, "context.compaction_visibility", "opaque")
+        _set_span_attribute(
+            span,
+            "context.compaction_note",
+            "native runtime 内部 compaction 不可见，仅记录平台 projection",
+        )
     tokens_by_kind = plan.get("tokens_by_kind")
     if tokens_by_kind:
         try:
@@ -426,7 +445,9 @@ def _set_prompt_cache_attributes(
         get_default_cache_break_registry,
     )
 
-    stable_prefix_hash = str(plan.get("prompt_stable_prefix_hash") or plan.get("stable_prefix_hash") or "")
+    stable_prefix_hash = str(
+        plan.get("prompt_stable_prefix_hash") or plan.get("stable_prefix_hash") or ""
+    )
     accounting_accuracy = str(plan.get("accounting_accuracy") or "opaque")
     _set_span_attribute(span, "prompt.content_hash", plan.get("prompt_content_hash"))
     _set_span_attribute(span, "prompt.stable_prefix_hash", stable_prefix_hash or None)
@@ -446,7 +467,9 @@ def _set_prompt_cache_attributes(
     _set_span_attribute(
         span, "prompt.cache.creation_input_tokens", diagnosis.cache_creation_tokens or None
     )
-    _set_span_attribute(span, "prompt.cache.expected_invalidation", diagnosis.expected_invalidation or None)
+    _set_span_attribute(
+        span, "prompt.cache.expected_invalidation", diagnosis.expected_invalidation or None
+    )
     _set_span_attribute(span, "prompt.cache.unexpected_break", diagnosis.unexpected_break or None)
     _set_span_attribute(span, "prompt.cache.break_reason", diagnosis.break_reason or None)
     _set_span_attribute(span, "prompt.cache.status", diagnosis.status)
@@ -466,12 +489,20 @@ def _set_prompt_source_attributes(span: Any | None, compiled_prompt: Any | None)
         return
     section_hashes = compiled_prompt.get("prompt_section_hashes")
     if isinstance(section_hashes, Mapping) and section_hashes:
-        _set_span_attribute(span, "prompt.source.agent_system_hash", section_hashes.get("agent_identity"))
-        _set_span_attribute(span, "prompt.source.agent_task_hash", section_hashes.get("agent_policy"))
+        _set_span_attribute(
+            span, "prompt.source.agent_system_hash", section_hashes.get("agent_identity")
+        )
+        _set_span_attribute(
+            span, "prompt.source.agent_task_hash", section_hashes.get("agent_policy")
+        )
         _set_span_attribute(span, "prompt.source.section_count", len(section_hashes))
     _set_span_attribute(
-        span, "prompt.source.platform_policy_version", compiled_prompt.get("prompt_platform_policy_version")
+        span,
+        "prompt.source.platform_policy_version",
+        compiled_prompt.get("prompt_platform_policy_version"),
     )
     _set_span_attribute(
-        span, "prompt.source.resolved_sources_version", compiled_prompt.get("prompt_resolved_sources_version")
+        span,
+        "prompt.source.resolved_sources_version",
+        compiled_prompt.get("prompt_resolved_sources_version"),
     )

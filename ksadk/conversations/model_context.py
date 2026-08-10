@@ -226,6 +226,51 @@ def get_auto_compact_threshold_percentage(model_metadata: Mapping[str, Any] | No
     return max(0, min(100, int(round((threshold_tokens / context_window) * 100))))
 
 
+# --- PR D1：双阈值（仅 ksadk_hosted 路径使用） ---
+# soft_limit：proactive 整理触发线（默认 50% effective window）。
+# hard_limit：proactive 强制压缩触发线（≈ 现单阈值，默认 ~84%），尽量在 PTL 之前止血。
+# 非 ksadk_hosted 路径仍用 get_auto_compact_threshold_tokens 单阈值，行为不变。
+KSADK_COMPACT_SOFT_LIMIT_PCT_DEFAULT = 50
+KSADK_COMPACT_HARD_LIMIT_PCT_DEFAULT = 85
+
+
+def _compact_limit_pct_env(name: str, default: int) -> int:
+    import os
+
+    raw = os.environ.get(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    try:
+        return max(1, min(100, int(raw)))
+    except ValueError:
+        return default
+
+
+def get_auto_compact_soft_limit_tokens(model_metadata: Mapping[str, Any] | None = None) -> int:
+    """soft_limit：proactive 整理触发线（默认 effective window 的 50%）。
+
+    百分比可由 env ``KSADK_COMPACT_SOFT_LIMIT_PCT`` 覆盖（1..100）。
+    """
+    pct = _compact_limit_pct_env("KSADK_COMPACT_SOFT_LIMIT_PCT", KSADK_COMPACT_SOFT_LIMIT_PCT_DEFAULT)
+    effective = get_effective_context_window_tokens(model_metadata)
+    return max(1, math.floor(effective * pct / 100))
+
+
+def get_auto_compact_hard_limit_tokens(model_metadata: Mapping[str, Any] | None = None) -> int:
+    """hard_limit：proactive 强制压缩触发线（≈ 现单阈值算法，reserve+buffer）。
+
+    默认复用 ``get_auto_compact_threshold_tokens``（~84%）。可由 env
+    ``KSADK_COMPACT_HARD_LIMIT_PCT`` 覆盖为按百分比计算（1..100）；未设则用现阈值算法，
+    保证与 PTL/非门控路径的既有 hard 边界一致。
+    """
+    pct_env = _compact_limit_pct_env("KSADK_COMPACT_HARD_LIMIT_PCT", 0)  # 0 = 未设，走现算法
+    if pct_env:
+        effective = get_effective_context_window_tokens(model_metadata)
+        return max(1, math.floor(effective * pct_env / 100))
+    return get_auto_compact_threshold_tokens(model_metadata)
+
+
+
 def normalize_model_metadata(raw_model: Mapping[str, Any] | str | None) -> dict[str, Any]:
     """把模型目录统一规范成稳定 shape。
 

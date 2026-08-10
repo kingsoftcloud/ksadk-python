@@ -122,6 +122,7 @@ async def invoke_conversation_once(
     run_mode: str = RUN_MODE_FOREGROUND,
     agent_system: str = "",
     agent_task: str = "",
+    prompt_integration_mode: str = "",
 ) -> tuple[str, dict[str, Any]]:
     """非流式 turn 编排入口。
 
@@ -154,8 +155,10 @@ async def invoke_conversation_once(
             session_service_provider=provider,
             run_mode=entry_run_mode,
             runner=runner,
+            runtime_type=_runner_type_name(runner),
             agent_system=agent_system,
             agent_task=agent_task,
+            prompt_integration_mode=prompt_integration_mode,
         )
         # prepared 之后的 run_status 写入复用 prepared 的 mode/trigger
         run_mode = prepared.run_mode
@@ -281,6 +284,10 @@ async def invoke_conversation_once(
                             trigger="prompt_too_long",
                             keep_tail_groups=PTL_RETRY_KEEP_TAIL_GROUPS,
                             session_service_provider=provider,
+                            # PR D1：PTL 路径仍 force=True（trigger_band=emergency），
+                            # 透传 ownership 便于未来按门控调 PTL 策略；当前行为等价。
+                            prompt_integration_mode=getattr(prepared, "prompt_integration_mode", ""),
+                            compaction_owner=str((getattr(prepared, "shadow_context_plan", None) or {}).get("compaction_owner", "")),
                         )
                     except RuntimeCircuitOpen as circuit_exc:
                         await append_run_status_event(

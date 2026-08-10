@@ -6,6 +6,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Dict, Iterable, List
 
 from ksadk.sessions.base import SessionEvent
+from ksadk.tools.result_budget import ToolResultBudget, budget_tool_output, default_tool_result_budget
 
 CANONICAL_EVENT_TYPES = {
     "user_message",
@@ -144,6 +145,67 @@ def _stringify_part_text(value: Any) -> str:
             return f"{preview}{suffix}".strip()
         return json.dumps(value, ensure_ascii=False, sort_keys=True)
     return str(value)
+
+
+def budget_tool_result_for_event(
+    *,
+    tool_name: str,
+    tool_output: Any,
+    tool_call_id: str | None,
+    enabled: bool,
+    budget: ToolResultBudget | None = None,
+) -> tuple[str, dict[str, Any]]:
+    """PR C：tool_result 落 SessionEvent 前的单项预算（ksadk_hosted 门控）。
+
+    返回 ``(session_event_text, metadata_extras)``：
+
+    - ``enabled=False`` → ``(str(tool_output), {})``：与旧 ``text=str(tool_output)`` **字节级一致**，
+      非ksadk_hosted / framework / native 路径零行为变更。
+    - ``enabled=True``：先 ``_stringify_part_text`` 干净渲染（已预算的 toolset dict →
+      ``"preview\\n[persisted-output] path (mime)"``；裸串 → 原串），再若仍超 ``max_chars`` 则
+      ``budget_tool_output`` 落盘+截断，``text = "preview\\n[persisted-output] path (mime)"``，
+      ``extras = {"tool_result_budget": {truncated, original_chars, preview_chars, persisted}}``。
+      未超阈值 → ``(rendered, {})``。
+
+    **不碰 ``metadata.tool_output``**：调用方保留原值（UI/Responses 读取方不受影响，会话存储节省留后续）。
+    只 bound 进 ``content.parts[0].text``——即下一轮 ``extract_event_text`` → ``payload["history"]``
+    → 模型输入的那条 text。已预算 dict 经 ``_stringify_part_text`` 渲染后必小于阈值，不重复落盘。
+    """
+    if not enabled:
+        return str(tool_output), {}
+    active = budget or default_tool_result_budget()
+    rendered = _stringify_part_text(tool_output)
+    if len(rendered) <= active.max_chars:
+        return rendered, {}
+    budgeted = budget_tool_output(
+        tool_name=tool_name,
+        field_name="output",
+        value=tool_output,
+        metadata={"tool_call_id": tool_call_id or ""},
+        budget=active,
+    )
+    preview = str(budgeted.get("output") or "")
+    persisted = budgeted.get("persisted")
+    if not isinstance(persisted, Mapping) or not persisted.get("path"):
+        # 无落盘（不应发生，但兜底）→ 退回 rendered 截断标记，不谎报 persisted。
+        marker = f"\n[truncated {len(rendered) - active.max_chars} chars]"
+        return (rendered[: active.max_chars] + marker), {
+            "tool_result_budget": {
+                "truncated": True,
+                "original_chars": int(budgeted.get("original_chars") or len(rendered)),
+                "preview_chars": active.max_chars,
+            }
+        }
+    text = f"{preview}\n[persisted-output] {persisted['path']} ({persisted.get('mime_type') or 'text/plain'})"
+    extras = {
+        "tool_result_budget": {
+            "truncated": bool(budgeted.get("truncated")),
+            "original_chars": int(budgeted.get("original_chars") or 0),
+            "preview_chars": int(budgeted.get("preview_chars") or len(preview)),
+            "persisted": dict(persisted),
+        }
+    }
+    return text, extras
 
 
 def build_request_history(messages: Iterable[Dict[str, Any]]) -> List[Dict[str, str]]:

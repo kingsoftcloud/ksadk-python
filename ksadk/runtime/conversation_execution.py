@@ -71,6 +71,7 @@ async def iter_runtime_conversation_events(
     """Prepare once, execute through RuntimeExecutor, and persist RuntimeEvents."""
 
     provider = session_service_provider or resolve_session_service
+    prompt_config = _resolve_runtime_prompt_config(launch_context.config)
     compaction_preview = await preview_auto_compaction(
         agent_id=agent_id,
         user_id=user_id,
@@ -97,6 +98,10 @@ async def iter_runtime_conversation_events(
         session_service_provider=provider,
         run_mode=run_mode,
         runtime_type=launch_context.runtime_type,
+        deployment_mode=getattr(launch_context, "deployment_mode", "local"),
+        agent_system=prompt_config["agent_system"],
+        agent_task=prompt_config["agent_task"],
+        prompt_integration_mode=prompt_config["prompt_integration_mode"],
     )
     canonical_messages = prepared.responses_history or [dict(item) for item in messages]
     conversation_request = {
@@ -117,6 +122,7 @@ async def iter_runtime_conversation_events(
         session_id=prepared.session_id,
         agent_id=agent_id,
         model=model,
+        config=dict(launch_context.config),
         metadata={
             "invocation_id": prepared.invocation_id,
             CONVERSATION_PREPROCESSING_METADATA_KEY: conversation_request,
@@ -229,6 +235,93 @@ async def iter_runtime_conversation_events(
         attempts=_baseline_attempts,
         turn_start_monotonic=_baseline_turn_start,
     )
+    # PR E：把 runtime usage 回填进真实 ContextPlan + 压缩后 Memory Candidate 抽取（方案 §11.1
+    # 步骤 14-16）。仅 hosted 路径（context_plan 非空）执行；失败不阻断主链路。
+    await _finalize_hosted_turn(
+        prepared=prepared,
+        usage=_baseline_usage,
+        session_service_provider=provider,
+    )
+
+
+async def _finalize_hosted_turn(
+    *,
+    prepared: Any,
+    usage: Mapping[str, Any] | None,
+    session_service_provider: Callable[[], Any],
+) -> None:
+    """PR E：hosted turn 收尾——委托共享 HostedTurnFinalizer（方案 §11.1 / P0 收敛）。
+
+    Studio 与 canonical Runtime 共用同一收尾逻辑，避免两条路径漂移。
+    """
+    from ksadk.runtime.hosted_finalizer import FinalizeContext, finalize_hosted_turn
+
+    await finalize_hosted_turn(
+        FinalizeContext(
+            session_id=getattr(prepared, "session_id", ""),
+            invocation_id=getattr(prepared, "invocation_id", ""),
+            user_id=getattr(prepared, "user_id", "") or "local-user",
+            context_plan=getattr(prepared, "context_plan", None),
+            shadow_context_plan=getattr(prepared, "shadow_context_plan", None),
+            usage=usage,
+            runtime_type=str(
+                (getattr(prepared, "shadow_context_plan", None) or {}).get("runtime_type") or ""
+            ),
+            prompt_integration_mode=str(getattr(prepared, "prompt_integration_mode", "")),
+        ),
+        session_service_provider=session_service_provider,
+    )
+
+
+def _resolve_runtime_prompt_config(config: Mapping[str, Any] | None) -> dict[str, str]:
+    """Resolve the per-build Prompt ownership contract from ``agentengine.yaml``.
+
+    Standard Code/Container deployments only carry ``RuntimeLaunchContext.config``;
+    without this projection the Studio path can enable hosted Context while the same
+    immutable build silently falls back after cloud deployment.  Prefer the nested
+    ``context`` block, while accepting the existing flat request-config keys.
+    """
+
+    raw = dict(config or {})
+    nested_value = raw.get("context")
+    nested = dict(nested_value) if isinstance(nested_value, Mapping) else {}
+    ownership = (
+        str(
+            nested.get("prompt_ownership")
+            or nested.get("promptOwnership")
+            or raw.get("prompt_ownership")
+            or raw.get("promptOwnership")
+            or ""
+        )
+        .strip()
+        .lower()
+    )
+    nested_mode = nested.get("integration_mode") or nested.get("integrationMode")
+    if nested_mode:
+        mode = str(nested_mode).strip().lower()
+    elif ownership == "ksadk":
+        # A nested ownership declaration is the build contract and must not be
+        # silently weakened by a legacy flat request setting.
+        mode = "ksadk_hosted"
+    else:
+        mode = str(raw.get("prompt_integration_mode") or "").strip().lower()
+    if mode not in {"", "ksadk_hosted", "framework_assisted", "native_runtime"}:
+        mode = ""
+
+    return {
+        "agent_system": str(
+            nested.get("agent_system")
+            or nested.get("agentSystem")
+            or raw.get("agent_system")
+            or raw.get("base_instructions")
+            or raw.get("prompt")
+            or ""
+        ),
+        "agent_task": str(
+            nested.get("agent_task") or nested.get("agentTask") or raw.get("agent_task") or ""
+        ),
+        "prompt_integration_mode": mode,
+    }
 
 
 def _baseline_monotonic() -> float:
@@ -247,9 +340,9 @@ def _record_baseline_turn(
     turn_start_monotonic: float | None,
 ) -> None:
     """env-gated 旁路采集：未启用时 no-op，启用时记录一条 turn 基线，不进决策路径、不抛异常。"""
-    from ksadk.context_engine.baseline import record_baseline_turn
-
     import time
+
+    from ksadk.context_engine.baseline import record_baseline_turn
 
     latency_ms = None
     if turn_start_monotonic is not None:
@@ -392,9 +485,7 @@ def _resume_target(resume_input: Mapping[str, Any]) -> ResumeTarget:
     framework = str(resume_input.get("framework") or "").strip().lower()
     framework_ref = resume_input.get("framework_ref")
     raw_runtime_ref = framework_ref.get(framework) if isinstance(framework_ref, Mapping) else None
-    runtime_ref: Mapping[str, Any] = (
-        raw_runtime_ref if isinstance(raw_runtime_ref, Mapping) else {}
-    )
+    runtime_ref: Mapping[str, Any] = raw_runtime_ref if isinstance(raw_runtime_ref, Mapping) else {}
     checkpoint_id = str(resume_input.get("checkpoint_id") or "").strip()
     run_id = str(resume_input.get("run_id") or "").strip()
     if framework == "langgraph":

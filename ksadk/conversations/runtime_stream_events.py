@@ -24,6 +24,7 @@ from ksadk.conversations.runtime_governance import (
     _runtime_governance_from_env,
     _tool_observability_metadata,
 )
+from ksadk.conversations.context import budget_tool_result_for_event
 from ksadk.conversations.runtime_input import (
     _auto_save_ltm_turn,
     _build_runner_ambient_contexts,
@@ -134,6 +135,7 @@ async def _iter_conversation_turn_events(
     run_mode: str = RUN_MODE_FOREGROUND,
     agent_system: str = "",
     agent_task: str = "",
+    prompt_integration_mode: str = "",
 ) -> AsyncIterator[dict[str, Any]]:
     """Internal semantic event stream shared by protocol serializers."""
     provider = session_service_provider or resolve_session_service
@@ -151,6 +153,8 @@ async def _iter_conversation_turn_events(
             model=model,
             model_metadata=model_metadata,
             session_service_provider=provider,
+            # PR D1：双阈值门控透传（仅 preview 用，不改会话）。
+            prompt_integration_mode=prompt_integration_mode,
         )
     else:
         compaction_preview = CompactionPlan(
@@ -190,8 +194,10 @@ async def _iter_conversation_turn_events(
             session_service_provider=provider,
             run_mode=entry_run_mode,
             runner=runner,
+            runtime_type=_runner_type_name(runner),
             agent_system=agent_system,
             agent_task=agent_task,
+            prompt_integration_mode=prompt_integration_mode,
         )
         # prepared 之后的 run_status 写入复用 prepared 的 mode/trigger
         run_mode = prepared.run_mode
@@ -599,12 +605,24 @@ async def _iter_conversation_turn_events(
                                 tool_call_id = str(
                                     chunk.get("call_id") or chunk.get("run_id") or tool_run_id
                                 ).strip()
+                                # PR C：tool_result 单项预算（仅 ksadk_hosted 门控）。
+                                # bound 进 content.parts[0].text（下一轮 history → 模型输入的那条），
+                                # metadata.tool_output 保留原值（UI/Responses 读取方不受影响）。
+                                # enabled=False → (str(output), {}) 与旧逻辑字节级一致。
+                                _tool_output_raw = chunk.get("tool_output", "")
+                                _budget_enabled = prepared.prompt_integration_mode == "ksadk_hosted"
+                                _budgeted_text, _budget_extras = budget_tool_result_for_event(
+                                    tool_name=tool_name,
+                                    tool_output=_tool_output_raw,
+                                    tool_call_id=tool_call_id,
+                                    enabled=_budget_enabled,
+                                )
                                 checkpoint_metadata = _latest_checkpoint_metadata_for_run(
                                     await provider().get_events(prepared.session_id),
                                     tool_run_id,
                                 )
                                 approval_interrupt_info = approval_interrupt_info_from_result(
-                                    chunk.get("tool_output", ""),
+                                    _tool_output_raw,
                                     fallback_tool_name=tool_name,
                                     tool_args=tool_args,
                                     run_id=tool_run_id,
@@ -643,17 +661,18 @@ async def _iter_conversation_turn_events(
                                     session_id=prepared.session_id,
                                     author=runner_name,
                                     role="user",
-                                    text=str(chunk.get("tool_output", "")),
+                                    text=_budgeted_text,
                                     invocation_id=prepared.invocation_id,
                                     event_type="tool_result",
                                     metadata={
                                         "tool_name": tool_name,
-                                        "tool_output": chunk.get("tool_output", ""),
+                                        "tool_output": _tool_output_raw,
                                         "run_id": tool_run_id,
                                         "tool_call_id": tool_call_id,
                                         "observability": _tool_observability_metadata(
-                                            tool_name, chunk.get("tool_output", "")
+                                            tool_name, _tool_output_raw
                                         ),
+                                        **_budget_extras,
                                         "tool_receipt": _tool_receipt_metadata(
                                             session_id=prepared.session_id,
                                             run_id=tool_run_id,
@@ -665,8 +684,8 @@ async def _iter_conversation_turn_events(
                                             framework_ref=checkpoint_metadata.get("framework_ref"),
                                             status=(
                                                 "failed"
-                                                if isinstance(chunk.get("tool_output"), Mapping)
-                                                and chunk.get("tool_output", {}).get("ok") is False
+                                                if isinstance(_tool_output_raw, Mapping)
+                                                and _tool_output_raw.get("ok") is False
                                                 else "completed"
                                             ),
                                         ),
@@ -779,6 +798,9 @@ async def _iter_conversation_turn_events(
                             trigger="prompt_too_long",
                             keep_tail_groups=PTL_RETRY_KEEP_TAIL_GROUPS,
                             session_service_provider=provider,
+                            # PR D1：PTL 路径仍 force=True；透传 ownership 便于未来按门控调策略。
+                            prompt_integration_mode=getattr(prepared, "prompt_integration_mode", ""),
+                            compaction_owner=str((getattr(prepared, "shadow_context_plan", None) or {}).get("compaction_owner", "")),
                         )
                     except RuntimeCircuitOpen as circuit_exc:
                         await append_run_status_event(
