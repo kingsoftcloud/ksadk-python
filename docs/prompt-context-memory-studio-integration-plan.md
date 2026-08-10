@@ -83,19 +83,22 @@ ksadk/studio/api.py
 
 | 范围 | 估算完成度 | 说明 |
 |---|---:|---|
-| PCM 核心数据模型和 Runtime 主链 | 约 85% | 关键模块已接线，但 Working State、PTL、生产 Provider 仍有缺口 |
-| Studio 后端合同接入 | 约 55% | AgentSpec/Build/Run 已有接缝，缺预览、调试和导入收口 |
-| Studio 前端产品体验 | 约 25% | 目前主要能编辑 Prompt，PCM 专属配置与 Inspector 尚未实现 |
-| 云端生产化 | 约 50% | 单副本 canary 已验证，生产 Memory、多副本和回退验收未完成 |
+| PCM 核心数据模型和 Runtime 主链 | 约 90% | Prompt/Context/Memory/Compaction/Working State 主链已接线并完成真实云端复测；真实 PTL 故障注入仍缺证据 |
+| Studio 后端合同接入 | 约 85% | AgentSpec、导入、Preview、Evidence API 和单一 PreparedTurn 已完成；Operation/AgentVersion 控制面合同仍需收口 |
+| Studio 前端产品体验 | 约 60% | 已有 PCM 配置、Prompt/Context 预览和 Context Inspector；Memory 治理、A/B 评测和发布体验仍需产品化 |
+| 云端生产化 | 约 60% | 单副本 canary、Working State 与开关回退已通过；生产 Memory、多副本、滚动存储和 PTL 演练未完成 |
 
-### 2.4 已确认的 Studio 缺口
+### 2.4 当前剩余的 Studio 缺口
 
-1. 现有标准 LangGraph 项目作为 Studio workspace 启动后，根 `agentengine.yaml` 可能先进入 Codex Manifest 解析，导致 `CODEX_MANIFEST_INVALID`。
-2. `ContextSpec.prompt_ownership` 后端字段已存在，但当前前端没有配置入口；模板默认 `framework`，普通 UI 操作不会自动进入 `ksadk_hosted`。
-3. `KSADK_CONTEXT_ENGINE_V2_ENABLED`、`KSADK_MEMORY_ENABLED`、`KSADK_MEMORY_FLUSH_ENABLED` 仍主要依赖环境变量，不是 AgentVersion 级显式策略。
-4. Studio 没有 CompiledPrompt、ContextPlan、Memory Recall、Working State、Compaction 决策的调试页面。
-5. Studio 的 `--env-file` 安全加载键使用 `OPENAI_API_BASE`，现有 canary 使用 `OPENAI_BASE_URL`；两种别名需要统一。
-6. Studio 全量测试当前为 `165 passed, 3 failed, 2 skipped`。失败涉及 `sharedChat` feature 状态和 Codex Build Operation，不能宣称 Studio 全量无回归。
+ManifestResolver、ownership 配置入口、Prompt/Context Preview、Context Inspector、环境变量别名
+以及原 Studio 回归均已在本期关闭。当前剩余项为：
+
+1. rollout 仍需从环境变量兼容入口升级为 AgentVersion 级 `off/shadow/enabled` 发布策略；
+2. Memory 页面目前偏调试，缺生产 Provider 的查询、删除、冲突和权限治理入口；
+3. A/B 评测、版本对比、灰度和回退还未形成完整 Studio 产品流程；
+4. Build/Run/Deploy 的 Operation、Idempotency-Key 和控制面状态合同尚未完全统一；
+5. native Runtime 只能展示 projected/runtime-reported/opaque 证据，不能伪装成 exact；前端仍需
+   更清晰地解释这一边界。
 
 ---
 
@@ -590,15 +593,14 @@ pcm-evaluation.js
 
 ## 8. Runtime 与后端底座仍需完成的工作
 
-### 8.1 Working State 修复
+### 8.1 Working State 修复（本期已完成）
 
-真实云端 Compaction 已触发，但没有稳定保留“不得操作生产环境”和精确下一步。需要：
+当前实现已经补齐 `constraints`、严格四字段验收、摘要后 schema 校验，以及关键字段缺失时与
+压缩前 Working State 合并。2026-08-10 真实云端 Compaction 后，目标、关键约束、已完成项和
+下一步全部恢复，首轮 Bad Case 已关闭。
 
-1. 把 `constraints`、`next_action`、`pending_approvals` 设为结构化 required 字段；
-2. 摘要生成后执行 schema 校验；
-3. 关键字段缺失时使用压缩前 Working State 合并，而不是接受空值覆盖；
-4. Checkpoint 提交增加 version/stale guard；
-5. 增加真实 Bad Case 回归测试。
+后续生产增强只剩 Checkpoint 并发 version/stale guard、多副本恢复，以及更多 tool/approval
+pending state 的云端压力测试，不再把基本 Working State 连续性列为未完成。
 
 ### 8.2 真实 PTL/emergency retry
 
@@ -636,7 +638,9 @@ contextEngine: off | shadow | enabled
 memoryWrite: off | shadow | enabled
 ```
 
-回退必须不更换 Agent ID、不清空 Session、不删除 Memory，并产生独立 AgentVersion/Deployment 记录。
+2026-08-10 已用环境开关完成一次真实预发回退与恢复：Agent ID/Endpoint 不变，基本调用和
+同 Session 均成功。下一步仍需把该能力从环境变量升级为正式 AgentVersion rollout，并保证
+回退不清空 Session/Memory、产生独立 Deployment 审计记录。
 
 ---
 

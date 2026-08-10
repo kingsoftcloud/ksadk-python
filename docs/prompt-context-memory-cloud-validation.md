@@ -216,7 +216,7 @@ agentengine files download ksadk-pcm-canary \
 3. 多副本并发、版本冲突、删除、TTL、故障降级和数据隔离测试；
 4. Memory Service 的最小权限运行时身份与审计。
 
-## 9. 2026-08-07 真实预发结果
+## 9. 2026-08-07 首轮真实预发结果
 
 验证对象：`ksadk-pcm-canary`，Region `cn-beijing-6`，Agent ID
 `ar-20260807141359-21a82339`，Serverless Code，单副本。
@@ -248,3 +248,38 @@ agentengine files download ksadk-pcm-canary \
 更新持久化、真实 PTL、回退演练和生产 Memory Provider 仍未完成。控制面状态曾从 `CREATING`
 收敛为 `RUNNING`，说明原状态同步问题不是永久状态；但后续 GetAgent/Deploy 连续返回 502，
 而已有数据面仍能返回 `PCM-DATA-PLANE-OK`，需要将控制面可用性作为独立问题排查。
+
+## 10. 2026-08-10 修复后复测结果
+
+验证对象仍为 `ksadk-pcm-canary`，Agent ID 与 Endpoint 不变。当前源码提交为
+`fa83074`；最终恢复版本为 `v27`，控制面状态 `RUNNING`、1/1 Ready。复测先上线 V2，
+再临时降低压缩阈值验证 Compaction，随后关闭 V2 演练回退，最后恢复 V2 和默认阈值。
+
+| Case | 结果 | 证据与结论 |
+|---|---|---|
+| 制品与状态 | 通过 | 当前仓库源码进入 Serverless Code 制品；最终 `v27` 为 `RUNNING`、1/1 Ready |
+| A Prompt 接管 | 通过 | 返回 `PCM-FINAL-OK`；最终 `ChatOpenAI` span 的模型输入为 1 条 system + 1 条 user，system 中各只有 1 个 `agent_identity` 和 `agent_policy`，未重复注入 |
+| B 同 Session | 通过 | Chat Completions、Responses 的流式与非流式四种组合均能恢复同 Session 校验词；最终隔离 Session 恢复“银杏” |
+| C 跨 Session Memory | 通过（同一部署版本） | 写 Session 保存“先预发灰度再正式发布”，新 Session 正确召回；Provider 诊断 `records=1`、`direct_recall=1` |
+| C 滚动更新持久化 | 未通过 | `v21` 的 5 条 active 记录在 `v23` 更新后丢失；控制面虽返回 `mount_path=/home/node/.agentengine`、`size_gi=20`，实际数据未复用，不能把 SQLite 当生产 Memory |
+| D Compaction | 通过 | canary 临时使用 soft/hard 1%/2%；第 5 轮触发 `compactions=1`、`last_trigger=auto`、`last_planned=20890`，无 PTL 和重试 |
+| D Working State | 通过 | 压缩后准确恢复“预发支付接口回归”“绝不能操作生产环境”“已完成登录/查询”“下一步验证退款幂等性”四个 P0 字段 |
+| D 真实 PTL | 未触发 | Context 规划和主动压缩在本轮避免了 PTL，`ptl_rate=0`；Provider 真正返回 PTL 时的一次受控重试仍只有确定性测试证据 |
+| E 开关回退 | 通过 | `v25` 关闭 `KSADK_CONTEXT_ENGINE_V2_ENABLED` 和 `KSADK_MEMORY_FLUSH_ENABLED` 后，基本调用和同 Session 继续成功；随后 `v27` 恢复 V2，Agent ID/Endpoint 不变 |
+| 恢复后稳定性 | 通过，记录切换窗口 | 恢复后 5 个隔离 Session 连续返回 `STABLE-0..4`；滚动切换早期 Memory 请求曾短暂返回 500，重试后恢复，需纳入发布就绪/连接排空观测 |
+
+与首轮相比，当前代码已经关闭两个关键缺口：
+
+1. Studio Evidence 与真实 Runtime 不再各自准备一次请求；同一个
+   `PreparedConversationTurn` 同时用于证据和执行，避免 prompt hash、invocation id 和
+   ContextPlan 因二次准备发生漂移。
+2. Working State 采用严格四字段验收和压缩前状态合并，首轮 Bad Case 已在真实云端复测通过。
+
+当前不能宣称“全部生产完成”。剩余阻塞属于生产基础设施和跨仓治理：
+
+1. 接入 `LongTermMemoryService`/HTTP/SDK Provider，并完成多副本、租户隔离、TTL、删除、
+   冲突和故障降级测试；Serverless SQLite/PVC 当前不满足滚动持久化要求。
+2. 由 AgentEngine 控制面把 Ready、数据面可调用和旧副本排空形成一致发布状态；本轮观察到
+   Ready 后的短暂非 JSON/500 窗口。
+3. 在可控 Provider 或专用测试模型上补真实 PTL 注入，验证最多一次恢复和失败语义；不能用
+   “没有发生 PTL”冒充 PTL 恢复已通过。

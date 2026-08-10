@@ -358,9 +358,38 @@ Studio 产品化方案 §2.3 表更新：
 | Studio 前端产品体验 | ~25% | **~60%**（可配置表单 + capability 限制 + Inspector 完整页签 + E2E）（PCM 配置区 + 编译预览 + Context 预览 + Context Inspector） |
 | 云端生产化 | ~50% | ~50%（本仓库只交付合同，真实预发见云端验证手册） |
 
-### 仍需后续（不在本仓库 / 需前端）
+### 仍需后续（跨仓 / 产品化）
 
-1. **Studio 前端**（§7）：配置页/Context Inspector/Memory 调试页/A/B 评测页——需改 `ksadk/studio/web/src/` 并同步构建产物，工作面与回退面不同，单独 PR。
+1. **Studio 深化**：现有配置、Preview 和 Inspector 已完成；仍需生产 Memory 治理、A/B 评测、
+   AgentVersion 对比和灰度发布体验。
 2. ~~**ManifestResolver 多 Runner 导入修复**（§6.1）~~ ✅ 已完成（本轮 PR-S0.7）。
-3. **Operation 合同统一**（§6.6）：Build/Run/Deploy 返回统一 Operation schema + Idempotency-Key——部分已有，需收口。
-4. **跨仓**：AgentVersion rollout 状态机、生产 Memory Service、灰度/回退——属 agentengine-server。
+3. **Operation 合同统一**（§6.6）：Build/Run/Deploy 返回统一 Operation schema +
+   Idempotency-Key——部分已有，需收口。
+4. **跨仓**：AgentVersion rollout 状态机、生产 Memory Service、多副本与正式灰度——属
+   `agentengine-server`/Memory Service。
+
+## 第六轮：单一 PreparedTurn 与云端修复后验收（2026-08-10）
+
+- [x] Studio `RunService` 不再为了 Evidence 和真实执行分别调用两次准备链路；
+  `_capture_pcm_evidence()` 返回同一个 `PreparedConversationTurn`，序列化进
+  `conversation_request.prepared_turn`，canonical Runtime 直接复用。
+- [x] 新增回归断言：Evidence 与 Runtime request 的 `invocation_id`、ContextPlan 和 prompt hash
+  完全一致，防止 Contributor、Memory Recall 或动态来源被执行两次后发生漂移。
+- [x] fresh 本地验证：PCM/Runtime/Conversation/Adapter/Architecture 相关套件
+  **488 passed, 2 skipped**；定向 Studio 接线 15 passed，Ruff 通过。
+- [x] 真实 Serverless Code 更新并验收 Prompt 接管、同 Session、跨 Session Memory、
+  Compaction、Working State、关闭开关回退和恢复。
+- [x] 首轮 Working State Bad Case 已关闭：真实 Compaction 后目标、关键约束、已完成项和
+  下一步四个 P0 字段全部恢复。
+- [x] 回退演练已完成：关闭 Context V2/Memory Flush 后原路径继续可用，再恢复 V2；Agent ID
+  和 Endpoint 未改变。
+
+云端验收同时确认两个尚不能由本仓宣称完成的边界：
+
+1. Serverless 控制面虽声明 20 Gi 存储挂载到 `/home/node/.agentengine`，SQLite 记忆仍会在
+   滚动更新后丢失；生产必须接平台 Memory Provider，或先由 AgentEngine 修复 PVC 复用。
+2. 本轮主动压缩避免了真实 PTL，Provider PTL 的一次受控恢复仍缺真实云端故障注入证据；
+   现阶段只能声明确定性测试通过，不能声明生产 PTL 演练完成。
+
+详细证据见
+[云端预发验证手册 §10](./prompt-context-memory-cloud-validation.md#10-2026-08-10-修复后复测结果)。
