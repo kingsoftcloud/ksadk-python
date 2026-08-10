@@ -2,6 +2,7 @@
 Container Builder - Docker 镜像构建
 """
 
+import json
 import os
 import platform
 import shutil
@@ -441,6 +442,9 @@ CMD ["python", "entrypoint.py"]
 
     def _generate_entrypoint(self, detection_result, package_name: str) -> str:
         """生成 entrypoint.py"""
+        runtime_config_json = json.dumps(
+            self._load_config(), ensure_ascii=False, separators=(",", ":"), default=str
+        )
         return f'''"""
 AgentEngine Container 模式入口
 """
@@ -448,6 +452,7 @@ AgentEngine Container 模式入口
 import sys
 import os
 import logging
+import json
 from pathlib import Path
 
 # ========== 日志配置 ==========
@@ -549,11 +554,12 @@ if has_otlp or has_cloud_monitor_otlp:
         logger.warning(f"Tracing 初始化失败: {{e}}")
 
 # 只装配统一 RuntimeAdapter 执行链；具体 Adapter 在请求开始时由 Registry 创建。
+runtime_build_config = json.loads({runtime_config_json!r})
 runtime_context = RuntimeLaunchContext(
     runtime_type=detection_result.type.value,
     project_dir=Path("/app"),
     detection=detection_result,
-    config=dict(getattr(detection_result, "raw_config", None) or {{}}),
+    config=dict(runtime_build_config),
 )
 # managed A2A discovery-only card:KSADK_A2A_RUNTIME_ID 非空时挂
 # /.well-known/agent-card.json;注册前即可被 server 探测(a2a-runtime-inbound-wiring)。
