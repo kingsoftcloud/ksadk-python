@@ -186,6 +186,7 @@ class CodexAgentService:
         spec: AgentSpec,
         *,
         expected_revision: int,
+        name: str | None = None,
     ) -> AgentDraft:
         snapshot = self.studio.codex_manifests.load(agent_id)
         current = self._project(snapshot)
@@ -207,7 +208,10 @@ class CodexAgentService:
         updated = AgentDraft(
             metadata=current.metadata.model_copy(
                 deep=True,
-                update={"revision": current.metadata.revision + 1},
+                update={
+                    "revision": current.metadata.revision + 1,
+                    **({"name": name} if name is not None else {}),
+                },
             ),
             spec=resolved,
         )

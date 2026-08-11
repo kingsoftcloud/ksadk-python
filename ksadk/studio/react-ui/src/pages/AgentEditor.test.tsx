@@ -143,7 +143,7 @@ describe("AgentEditor form", () => {
     fireEvent.click(screen.getByRole("button", { name: "保存修改" }));
 
     await waitFor(() => expect(mockedFetch).toHaveBeenCalledWith(
-      "/api/v1/agents/agentkit-a1b2c3d4",
+      "/api/v1/agents/agentkit-a1b2c3d4?name=Research",
       expect.objectContaining({
         method: "PUT",
         body: expect.stringContaining('"modelProfileId":"model-glm-5-1"'),

@@ -744,6 +744,7 @@ def create_studio_app(
         agent_id: str,
         spec: AgentSpec,
         if_match: str | None = Header(default=None, alias="If-Match"),
+        name: str | None = Query(default=None, min_length=1, max_length=128),
     ):
         if not if_match:
             raise StudioError(
@@ -763,6 +764,7 @@ def create_studio_app(
             agent_id,
             spec,
             expected_revision=revision,
+            name=name,
         )
 
     @app.put("/api/v1/agents/{agent_id}/bindings")

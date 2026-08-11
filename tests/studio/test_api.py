@@ -235,12 +235,16 @@ def test_api_complete_create_build_run_and_deploy_flow(tmp_path: Path):
         assert created.json()["metadata"]["revision"] == 1
 
         updated = client.put(
-            "/api/v1/agents/demo-agent",
+            "/api/v1/agents/demo-agent?name=Renamed%20Agent",
             headers={"If-Match": '"1"'},
             json=_valid_spec(),
         )
         assert updated.status_code == 200
         assert updated.json()["metadata"]["revision"] == 2
+        assert updated.json()["metadata"]["name"] == "Renamed Agent"
+        assert client.get("/api/v1/agents/demo-agent").json()["draft"]["metadata"]["name"] == (
+            "Renamed Agent"
+        )
 
         validation = client.post(
             "/api/v1/agents/demo-agent/validations",

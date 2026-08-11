@@ -189,11 +189,13 @@ class StudioService:
         spec: AgentSpec,
         *,
         expected_revision: int,
+        name: str | None = None,
     ) -> AgentDraft:
         return self.codex_agents.update(
             agent_id,
             spec,
             expected_revision=expected_revision,
+            name=name,
         )
 
     def delete_codex_agent(self, agent_id: str, *, purge: bool = False) -> None:
@@ -646,6 +648,7 @@ class StudioService:
         spec: AgentSpec,
         *,
         expected_revision: int,
+        name: str | None = None,
     ) -> AgentDraft:
         if self.is_codex_agent(agent_id):
             spec.runtime = self.agent_detail(agent_id)["draft"].spec.runtime
@@ -655,6 +658,7 @@ class StudioService:
                     agent_id,
                     spec,
                     expected_revision=expected_revision,
+                    name=name,
                 ),
             )
         current = self.drafts.get(agent_id)
@@ -671,7 +675,12 @@ class StudioService:
             )
         return cast(
             AgentDraft,
-            self.update_agent(agent_id, spec, expected_revision=expected_revision),
+            self.update_agent(
+                agent_id,
+                spec,
+                expected_revision=expected_revision,
+                name=name,
+            ),
         )
 
     def update_studio_agent_bindings(
@@ -888,12 +897,14 @@ class StudioService:
         spec: AgentSpec,
         *,
         expected_revision: int,
+        name: str | None = None,
     ):
         self._validate_bindings(spec.bindings)
         updated = self.drafts.update(
             agent_id,
             spec,
             expected_revision=expected_revision,
+            name=name,
         )
         materialize_generated_runtime_source(self.workspace, updated)
         return updated

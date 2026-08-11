@@ -227,14 +227,17 @@ export function AgentEditor({
         skills: selectedSkills.map(resourceId => ({ resourceId, enabled: true })),
         mcpServers: selectedMcp.map(resourceId => ({ resourceId, enabled: true })),
       };
-      const response = await apiFetch(`/api/v1/agents/${encodeURIComponent(agentId)}`, {
+      const response = await apiFetch(
+        `/api/v1/agents/${encodeURIComponent(agentId)}?name=${encodeURIComponent(values.name.trim())}`,
+        {
         method: "PUT",
         headers: {
           "Content-Type": "application/json",
           "If-Match": String(detail.draft.metadata.revision),
         },
         body: JSON.stringify(spec),
-      });
+        },
+      );
       const saved = await response.json().catch(() => null);
       if (!response.ok) {
         if (applyApiFieldErrors(saved, agentForm.setError)) return;
