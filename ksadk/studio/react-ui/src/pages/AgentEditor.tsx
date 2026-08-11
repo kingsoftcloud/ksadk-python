@@ -11,7 +11,7 @@ import { StudioMultiSelect } from "../components/ui/StudioMultiSelect";
 import { StudioSelect } from "../components/ui/StudioSelect";
 import { CodeViewer } from "../components/ui/CodeViewer";
 import { applyApiFieldErrors } from "../lib/formErrors";
-import { quickAgentSchema, type QuickAgentFormValues } from "../schemas/agentForms";
+import { agentEditSchema, type AgentEditFormValues } from "../schemas/agentForms";
 
 export interface EditorCatalogItem {
   resourceId: string;
@@ -94,8 +94,8 @@ export function AgentEditor({
 }) {
   const [detail, setDetail] = useState<AgentDetail | null>(null);
   const [loadError, setLoadError] = useState("");
-  const agentForm = useForm<QuickAgentFormValues>({
-    resolver: zodResolver(quickAgentSchema) as Resolver<QuickAgentFormValues>,
+  const agentForm = useForm<AgentEditFormValues>({
+    resolver: zodResolver(agentEditSchema) as Resolver<AgentEditFormValues>,
     defaultValues: {
       name: "",
       slug: agentId,
@@ -104,6 +104,7 @@ export function AgentEditor({
       description: "",
     },
   });
+  const resetAgentForm = agentForm.reset;
   const { name, slug, runtimeType: runtime, prompt } = agentForm.watch();
   const [defaultModel, setDefaultModel] = useState("");
   const [selectedModels, setSelectedModels] = useState<string[]>([]);
@@ -133,7 +134,7 @@ export function AgentEditor({
           ? bindings.modelProfileIds
           : bindings.modelProfileId ? [bindings.modelProfileId] : [];
         setDetail(payload);
-        agentForm.reset({
+        resetAgentForm({
           name: draft.metadata.name || "",
           slug: draft.metadata.id || agentId,
           runtimeType: draft.spec?.runtime?.type || draft.metadata.labels?.["agentkit.ksyun.com/framework"] || "codex",
@@ -147,7 +148,7 @@ export function AgentEditor({
       })
       .catch(error => { if (active) setLoadError(error.message || "Agent 加载失败"); });
     return () => { active = false; };
-  }, [agentId, agentForm]);
+  }, [agentId, resetAgentForm]);
 
   useEffect(() => {
     if (!detail || selectedModels.length || !models.length) return;
@@ -196,8 +197,13 @@ export function AgentEditor({
     ...prompt.split("\n").map(line => `      ${line}`),
   ].join("\n");
 
-  async function save(values: QuickAgentFormValues) {
+  async function save(values: AgentEditFormValues) {
     if (!detail || saving) return;
+    const resolvedDefaultModel = defaultModel || selectedModels[0] || "";
+    if (!resolvedDefaultModel) {
+      setSaveError("请至少绑定一个模型并设置为默认模型");
+      return;
+    }
     setSaving(true);
     setSaveError("");
     try {
@@ -216,7 +222,7 @@ export function AgentEditor({
       };
       spec.bindings = {
         ...(original.bindings || {}),
-        modelProfileId: defaultModel || null,
+        modelProfileId: resolvedDefaultModel,
         modelProfileIds: selectedModels,
         skills: selectedSkills.map(resourceId => ({ resourceId, enabled: true })),
         mcpServers: selectedMcp.map(resourceId => ({ resourceId, enabled: true })),
@@ -289,7 +295,14 @@ export function AgentEditor({
   return (
     <div className="quick-create">
       <FormProvider {...agentForm}>
-      <form className="quick-create-form" onSubmit={agentForm.handleSubmit(save)} noValidate>
+      <form
+        className="quick-create-form"
+        onSubmit={agentForm.handleSubmit(save, errors => {
+          const firstError = Object.values(errors).find(error => typeof error?.message === "string");
+          setSaveError(String(firstError?.message || "请检查必填配置后重试"));
+        })}
+        noValidate
+      >
         <div className="quick-runtime-strip">
           <span className="runtime-logo"><Code size={17} /></span>
           <div><strong>{runtimeTitle(runtime)}</strong><span>一 Agent 一 YAML · 不可变 Bundle</span></div>

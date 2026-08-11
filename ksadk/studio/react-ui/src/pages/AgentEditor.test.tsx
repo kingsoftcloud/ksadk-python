@@ -89,4 +89,65 @@ describe("AgentEditor form", () => {
       }),
     ));
   });
+
+  it("persists an inferred model binding for an existing LangGraph agent", async () => {
+    mockedFetch.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (init?.method === "PUT") {
+        return {
+          ok: true,
+          json: async () => ({
+            metadata: { id: "agentkit-a1b2c3d4", name: "Research", revision: 2 },
+          }),
+        } as Response;
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          draft: {
+            metadata: {
+              id: "agentkit-a1b2c3d4",
+              name: "Research",
+              revision: 1,
+              labels: { "agentkit.ksyun.com/model": "glm-5.1" },
+            },
+            spec: {
+              runtime: { type: "langgraph", projectPath: ".", entryPoint: "graph.py", agentVariable: "app" },
+              instructions: { system: "你是一个研究助手。" },
+              bindings: { modelProfileIds: [] },
+            },
+          },
+        }),
+      } as Response;
+    });
+
+    render(
+      <AgentEditor
+        agentId="agentkit-a1b2c3d4"
+        catalog={[{
+          resourceId: "model-glm-5-1",
+          kind: "model",
+          name: "glm-5.1",
+          displayName: "glm-5.1",
+          version: "1",
+          status: "ready",
+          contract: { model: "glm-5.1" },
+        }]}
+        onSaved={vi.fn()}
+      />,
+    );
+
+    await screen.findByText("已选 1 个");
+    const rebuild = await screen.findByRole("checkbox", { name: /保存后立即重新构建/ });
+    fireEvent.click(rebuild);
+    fireEvent.click(screen.getByRole("button", { name: "保存修改" }));
+
+    await waitFor(() => expect(mockedFetch).toHaveBeenCalledWith(
+      "/api/v1/agents/agentkit-a1b2c3d4",
+      expect.objectContaining({
+        method: "PUT",
+        body: expect.stringContaining('"modelProfileId":"model-glm-5-1"'),
+      }),
+    ));
+  });
 });

@@ -32,6 +32,14 @@ export const quickAgentSchema = z.object({
   }
 });
 
+export const agentEditSchema = z.object({
+  name: agentName,
+  slug: agentSlug,
+  runtimeType,
+  prompt: agentPrompt,
+  description,
+});
+
 export const conversationCommitSchema = z.object({
   name: agentName,
   slug: agentSlug,
@@ -53,6 +61,7 @@ export const projectImportSchema = z.object({
 });
 
 export type QuickAgentFormValues = z.infer<typeof quickAgentSchema>;
+export type AgentEditFormValues = z.infer<typeof agentEditSchema>;
 export type ConversationCommitFormValues = z.infer<typeof conversationCommitSchema>;
 export type AgentImportFormValues = z.infer<typeof agentImportSchema>;
 export type ProjectImportFormValues = z.infer<typeof projectImportSchema>;
