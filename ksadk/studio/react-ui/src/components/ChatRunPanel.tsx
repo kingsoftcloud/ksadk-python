@@ -63,6 +63,31 @@ interface WaterfallSpan extends Span {
   depth: number;
 }
 
+interface ContextEvidence {
+  accuracy?: string;
+  policyVersion?: string;
+  plannedInputTokens?: number | null;
+  projectedInputTokens?: number | null;
+  runtimeReportedInputTokens?: number | null;
+  tokensByKind?: Record<string, number>;
+  selected?: unknown[];
+  decisions?: Array<{ decision?: string; kind?: string; reason?: string }>;
+  ownership?: {
+    promptOwner?: string;
+    historyOwner?: string;
+    integrationMode?: string;
+    runtimeType?: string;
+  };
+}
+
+interface PromptEvidence {
+  sectionCount?: number | null;
+  estimatedTokens?: number | null;
+  tokensBySection?: Record<string, number>;
+  runtimeType?: string;
+  integrationMode?: string;
+}
+
 function fmtDuration(ms?: number | null): string {
   if (!Number.isFinite(ms) || Number(ms) < 0) return "未上报";
   if (Number(ms) < 1000) return `${Math.round(Number(ms))}ms`;
@@ -147,6 +172,8 @@ export function ChatRunPanel({ agentId, onOpenTrace, onClose }: { agentId: strin
   const [latest, setLatest] = useState<RunRecord | null>(null);
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [spans, setSpans] = useState<Span[]>([]);
+  const [contextEvidence, setContextEvidence] = useState<ContextEvidence | null>(null);
+  const [promptEvidence, setPromptEvidence] = useState<PromptEvidence | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshKey, setRefreshKey] = useState(0);
 
@@ -165,15 +192,21 @@ export function ChatRunPanel({ agentId, onOpenTrace, onClose }: { agentId: strin
         if (!current) {
           setEvents([]);
           setSpans([]);
+          setContextEvidence(null);
+          setPromptEvidence(null);
           return;
         }
-        const [nextEvents, trace] = await Promise.all([
+        const [nextEvents, trace, context, prompt] = await Promise.all([
           loadEvents(current.id),
           apiFetch(`/api/v1/traces/${encodeURIComponent(current.traceId)}`).then(response => response.ok ? response.json() : null).catch(() => null),
+          apiFetch(`/api/v1/runs/${encodeURIComponent(current.id)}/context`).then(response => response.ok ? response.json() : null).catch(() => null),
+          apiFetch(`/api/v1/runs/${encodeURIComponent(current.id)}/prompt`).then(response => response.ok ? response.json() : null).catch(() => null),
         ]);
         if (!cancelled && currentRequest === requestId) {
           setEvents(nextEvents);
           setSpans(trace?.spans || []);
+          setContextEvidence(context);
+          setPromptEvidence(prompt);
         }
       } catch {
         // Inspector 是增强视图，保留上次可用数据，避免遮断会话。
@@ -196,6 +229,16 @@ export function ChatRunPanel({ agentId, onOpenTrace, onClose }: { agentId: strin
   const timeline = useMemo(() => projectRunInspectorTimeline(events), [events]);
   const waterfall = useMemo(() => waterfallLayout(spans), [spans]);
   const usageReported = latest?.usage?.reported === true;
+  const contextKinds = Object.entries(contextEvidence?.tokensByKind || {})
+    .filter(([, value]) => Number(value) > 0)
+    .sort((left, right) => Number(right[1]) - Number(left[1]));
+  const contextStatus = contextEvidence?.decisions?.some(item => item.decision === "compressed")
+    ? "已自动压缩"
+    : contextEvidence?.decisions?.some(item => item.decision === "dropped")
+      ? "部分内容已裁剪"
+      : contextEvidence
+        ? "正常"
+        : "等待证据";
 
   return (
     <aside className="chat-run-panel" aria-label="运行检查器">
@@ -246,6 +289,39 @@ export function ChatRunPanel({ agentId, onOpenTrace, onClose }: { agentId: strin
                 <div><MessageSquare size={13} /><span>输入 / 输出</span><strong>{usageReported ? `${fmtTokens(latest.usage?.inputTokens)} / ${fmtTokens(latest.usage?.outputTokens)}` : "未上报"}</strong></div>
                 <div><GitBranch size={13} /><span>Span</span><strong>{spans.length || "—"}</strong></div>
               </div>
+            </section>
+
+            <section className="chat-run-section pcm-run-summary">
+              <div className="chat-run-section-title"><span>上下文</span><small>{contextStatus}</small></div>
+              <div className="pcm-run-summary-grid">
+                <div><span>Prompt</span><strong>{promptEvidence?.sectionCount ? `${promptEvidence.sectionCount} 个组成部分` : "未提供"}</strong></div>
+                <div><span>计划上下文</span><strong>{fmtTokens(contextEvidence?.plannedInputTokens ?? undefined)}</strong></div>
+                <div><span>交给 Runner</span><strong>{fmtTokens(contextEvidence?.projectedInputTokens ?? undefined)}</strong></div>
+                <div><span>模型实际输入</span><strong>{usageReported ? fmtTokens(latest.usage?.inputTokens) : fmtTokens(contextEvidence?.runtimeReportedInputTokens ?? undefined)}</strong></div>
+              </div>
+              <div className="pcm-run-evidence-note">
+                <span>精度：{contextEvidence?.accuracy === "runtime_reported" ? "Runtime 上报" : contextEvidence?.accuracy === "exact" ? "精确" : contextEvidence?.accuracy === "estimated" ? "估算" : "不可见"}</span>
+                <span>管理方式：{contextEvidence?.ownership?.integrationMode || contextEvidence?.ownership?.promptOwner || "Runtime 默认"}</span>
+              </div>
+              <details className="pcm-run-details">
+                <summary>查看技术详情</summary>
+                <div className="pcm-run-detail-body">
+                  <div className="pcm-run-kind-list">
+                    {contextKinds.length ? contextKinds.map(([kind, tokens]) => (
+                      <div key={kind}><span>{kind}</span><strong>{fmtTokens(tokens)}</strong></div>
+                    )) : <span className="chat-run-inline-empty">暂无分类用量</span>}
+                  </div>
+                  <div className="pcm-run-decision-list">
+                    {(contextEvidence?.decisions || []).slice(0, 8).map((item, index) => (
+                      <div key={`${item.kind || "item"}-${index}`}>
+                        <span>{item.kind || "context"}</span>
+                        <strong>{item.decision || "selected"}</strong>
+                        {item.reason && <small>{item.reason}</small>}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </details>
             </section>
 
             <section className="chat-run-section">

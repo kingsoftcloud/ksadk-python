@@ -154,17 +154,24 @@ def test_pcm_bootstrap_exposes_importable(client, tmp_path):
     )  # features 不含 pcm 字段也 OK
 
 
-def test_pcm_static_assets_contain_pcm_modules():
-    """构建产物含 PCM 前端代码（验证 build-static 拼接正确）。"""
+def test_pcm_react_workspace_contains_policy_and_evidence_surfaces():
+    """React Studio keeps PCM policy authoring and progressive evidence UI."""
     import pathlib
 
-    app_js = pathlib.Path("ksadk/studio/static/app.js").read_text(encoding="utf-8")
-    app_css = pathlib.Path("ksadk/studio/static/app.css").read_text(encoding="utf-8")
-    assert "renderPcmPanel" in app_js
-    assert "renderRunContextInspector" in app_js
-    assert "pcmOwnership" in app_js  # 可配置表单
-    assert "pcm-tab" in app_css  # inspector 页签
-    assert "pcmUpdateOwnershipChoices" in app_js  # capability 限制
+    create_page = pathlib.Path(
+        "ksadk/studio/react-ui/src/pages/CreatePage.tsx"
+    ).read_text(encoding="utf-8")
+    run_panel = pathlib.Path(
+        "ksadk/studio/react-ui/src/components/ChatRunPanel.tsx"
+    ).read_text(encoding="utf-8")
+    assert "contextOwnership" in create_page
+    assert "contextEngineRollout" in create_page
+    assert "memoryWriteRollout" in create_page
+    assert "Context Engine" in create_page
+    assert "/context`" in run_panel
+    assert "/prompt`" in run_panel
+    assert "查看技术详情" in run_panel
+    assert "模型实际输入" in run_panel
 
 
 # ---- 浏览器级 E2E（需 playwright + 运行中的 studio server，独立运行）----

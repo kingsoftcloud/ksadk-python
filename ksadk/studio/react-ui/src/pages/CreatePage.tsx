@@ -136,6 +136,30 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
   const [selectedMcp, setSelectedMcp] = useState<string[]>([]);
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
   const [policy, setPolicy] = useState("strict");
+  const [contextOwnership, setContextOwnership] = useState("auto");
+  const [contextEngineRollout, setContextEngineRollout] = useState("shadow");
+  const [memoryEnabled, setMemoryEnabled] = useState(false);
+  const [memoryWriteRollout, setMemoryWriteRollout] = useState("shadow");
+  const contextOwnershipOptions = useMemo(() => {
+    const automatic = { value: "auto", label: "自动（推荐）", description: "根据 Runtime 能力选择安全模式" };
+    if (runtime === "codex") {
+      return [
+        automatic,
+        { value: "native", label: "原生 Runtime 管理", description: "由 Codex 等原生 Agent Runtime 管理最终上下文" },
+      ];
+    }
+    if (runtime === "langgraph") {
+      return [
+        automatic,
+        { value: "framework", label: "框架管理", description: "保留 LangGraph 原有行为" },
+        { value: "ksadk", label: "KsADK 管理", description: "统一编译 Prompt 并规划上下文" },
+      ];
+    }
+    return [
+      automatic,
+      { value: "framework", label: "框架管理", description: "保留 ADK 原有行为" },
+    ];
+  }, [runtime]);
   const [promptStatus, setPromptStatus] = useState<"idle" | "composing" | "done">("idle");
   const [createError, setCreateError] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -146,6 +170,12 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
   const createRailTriggerRef = useRef<HTMLButtonElement>(null);
   const composeSeq = useRef(0);
   const conversationEntryInitialized = useRef(false);
+
+  useEffect(() => {
+    if (!contextOwnershipOptions.some(option => option.value === contextOwnership)) {
+      setContextOwnership("auto");
+    }
+  }, [contextOwnership, contextOwnershipOptions]);
 
   /* conversation 模式 */
   const [convMessages, setConvMessages] = useState<Array<{ role: string; content: string }>>([]);
@@ -239,7 +269,11 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
     try {
       window.localStorage.setItem(draftKey(), JSON.stringify({
         version: 1, savedAt: new Date().toISOString(), mode,
-        wizard: { step, maxStep, template, runtime, depth, selectedTools, selectedSkills, selectedMcp, selectedModels, policy },
+        wizard: {
+          step, maxStep, template, runtime, depth, selectedTools, selectedSkills,
+          selectedMcp, selectedModels, policy, contextOwnership,
+          contextEngineRollout, memoryEnabled, memoryWriteRollout,
+        },
         fields: { name, slug, description, prompt, audience, language, format, systemPrompt, taskPrompt, buildAfterCreate },
       }));
       setDraftState(`已保存 ${new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit" }).format(new Date())}`);
@@ -319,6 +353,25 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
       spec.instructions = { system: values.systemPrompt.trim(), task: values.taskPrompt.trim() };
       spec.runtime = runtimeRef(values.runtimeType);
       spec.description = values.description.trim() || spec.description;
+      spec.context = {
+        ...(spec.context || {}),
+        ownership: contextOwnership,
+        promptOwnership: contextOwnership === "ksadk"
+          ? "ksadk"
+          : contextOwnership === "framework"
+            ? "framework"
+            : spec.context?.promptOwnership || "framework",
+        rollout: {
+          ...(spec.context?.rollout || {}),
+          contextEngine: contextEngineRollout,
+          memoryWrite: memoryEnabled ? memoryWriteRollout : "off",
+        },
+      };
+      spec.memory = {
+        ...(spec.memory || {}),
+        enabled: memoryEnabled,
+        recall: { ...(spec.memory?.recall || {}), enabled: memoryEnabled },
+      };
       const res = await apiFetch("/api/v1/authoring/quick", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1047,6 +1100,60 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
                   <FormField label="任务契约" requirement="optional" htmlFor="composedTaskPrompt" hint="约束每次请求的执行步骤、工具使用和交付结构" error={quickForm.formState.errors.taskPrompt?.message}>
                     <textarea id="composedTaskPrompt" className="prompt-editor" rows={10} {...quickForm.register("taskPrompt", { onChange: markDirty })} />
                   </FormField>
+                  <details className="pcm-policy-card">
+                    <summary>
+                      <span><strong>上下文与记忆策略</strong><small>高级配置，默认以观察模式运行</small></span>
+                    </summary>
+                    <div className="pcm-policy-body">
+                      <div className="form-grid two-columns">
+                        <FormField label="上下文管理方式" requirement="optional" htmlFor="contextOwnership" hint="决定由 KsADK、框架或原生 Runtime 负责最终上下文。">
+                          <StudioSelect
+                            id="contextOwnership"
+                            ariaLabel="上下文管理方式"
+                            value={contextOwnership}
+                            options={contextOwnershipOptions}
+                            onValueChange={value => { setContextOwnership(value); markDirty(); }}
+                          />
+                        </FormField>
+                        <FormField label="Context Engine" requirement="optional" htmlFor="contextEngineRollout" hint="观察模式只记录计划，不改变 Runner 输入。">
+                          <StudioSelect
+                            id="contextEngineRollout"
+                            ariaLabel="Context Engine"
+                            value={contextEngineRollout}
+                            options={[
+                              { value: "off", label: "关闭", description: "使用原有上下文路径" },
+                              { value: "shadow", label: "观察模式（推荐）", description: "生成证据但不改变运行行为" },
+                              { value: "enabled", label: "启用", description: "按 ContextPlan 选择和压缩上下文" },
+                            ]}
+                            onValueChange={value => { setContextEngineRollout(value); markDirty(); }}
+                          />
+                        </FormField>
+                      </div>
+                      <label className="pcm-memory-toggle">
+                        <input
+                          type="checkbox"
+                          checked={memoryEnabled}
+                          onChange={event => { setMemoryEnabled(event.target.checked); markDirty(); }}
+                        />
+                        <span><strong>启用长期记忆</strong><small>允许在后续会话召回经过筛选的稳定事实；不是保存完整聊天记录。</small></span>
+                      </label>
+                      {memoryEnabled && (
+                        <FormField label="记忆写入" requirement="optional" htmlFor="memoryWriteRollout" hint="建议先观察候选，确认质量后再正式写入。">
+                          <StudioSelect
+                            id="memoryWriteRollout"
+                            ariaLabel="记忆写入"
+                            value={memoryWriteRollout}
+                            options={[
+                              { value: "off", label: "不写入" },
+                              { value: "shadow", label: "仅观察候选（推荐）" },
+                              { value: "enabled", label: "正式写入" },
+                            ]}
+                            onValueChange={value => { setMemoryWriteRollout(value); markDirty(); }}
+                          />
+                        </FormField>
+                      )}
+                    </div>
+                  </details>
                 </section>
 
                 {/* 第 4 步：检查并创建 */}
@@ -1074,6 +1181,14 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
                   <div className="review-block">
                     <div className="review-title"><span>Prompt</span><button className="text-button" type="button" onClick={() => gotoStep(3)}>编辑</button></div>
                     <div className="prompt-preview">{systemPrompt || prompt || "等待生成"}</div>
+                  </div>
+                  <div className="review-block">
+                    <div className="review-title"><span>上下文与记忆</span><button className="text-button" type="button" onClick={() => gotoStep(3)}>编辑</button></div>
+                    <div className="pcm-review-summary">
+                      <span>管理方式 <strong>{contextOwnership === "auto" ? "自动" : contextOwnership}</strong></span>
+                      <span>Context Engine <strong>{contextEngineRollout === "shadow" ? "观察" : contextEngineRollout === "enabled" ? "启用" : "关闭"}</strong></span>
+                      <span>长期记忆 <strong>{memoryEnabled ? (memoryWriteRollout === "enabled" ? "已启用" : "仅观察") : "关闭"}</strong></span>
+                    </div>
                   </div>
                   <label className="post-create-option">
                     <input type="checkbox" {...quickForm.register("buildAfterCreate")} />
