@@ -1,5 +1,12 @@
 """Public contracts and file loading for local Agent evaluation."""
 
+from .a2a_adapter import A2ATargetAdapter, A2ATargetError
+from .adapters import (
+    EvaluationNotImplementedError,
+    TargetAdapter,
+    TargetAdapterError,
+    create_target_adapter,
+)
 from .contracts import (
     AssertionSpec,
     AssertionType,
@@ -31,17 +38,15 @@ from .evalset import (
     load_evalset,
     parse_evalset,
 )
-from .executor import (
-    EvaluationExecutionError,
-    EvaluationNotImplementedError,
-    TargetAdapter,
-    execute_evaluation,
-)
+from .executor import EvaluationExecutionError, execute_evaluation
 from .storage import EvaluationStorage, EvaluationStorageError
+from .target import EvaluationTarget
 
 __all__ = [
     "AssertionSpec",
     "AssertionType",
+    "A2ATargetAdapter",
+    "A2ATargetError",
     "CaseRun",
     "DataPolicy",
     "EvalCase",
@@ -59,10 +64,12 @@ __all__ = [
     "EvaluationRequest",
     "EvaluationStorage",
     "EvaluationStorageError",
+    "EvaluationTarget",
     "MetricResult",
     "MetricStatus",
     "TargetKind",
     "TargetAdapter",
+    "TargetAdapterError",
     "TargetRun",
     "TargetRunStatus",
     "TargetSnapshot",
@@ -73,4 +80,5 @@ __all__ = [
     "load_evalset",
     "parse_evalset",
     "execute_evaluation",
+    "create_target_adapter",
 ]

@@ -29,6 +29,7 @@ from ksadk.evaluation.contracts import (
     EvalRunReport,
     EvalRunStatus,
     MetricStatus,
+    TargetRunStatus,
     TargetKind,
 )
 from ksadk.evaluation.evalset import EvalSetParseError
@@ -172,7 +173,9 @@ def _build_request(
             evaluators=list(evaluators) or list(_EVALUATORS),
             data_policy=data_policy,
         ),
-        report_dir=str(report_dir.resolve()) if report_dir else None,
+        report_dir=str(
+            (report_dir or Path.cwd() / ".agentkit/evaluations").resolve()
+        ),
     )
 
 
@@ -201,9 +204,12 @@ def _report_exit_code(report: EvalRunReport) -> int:
     }:
         return 2
     if any(
-        metric.required and metric.status is MetricStatus.UNAVAILABLE
+        case_run.target_run.status is TargetRunStatus.UNAVAILABLE
+        or any(
+            metric.required and metric.status is MetricStatus.UNAVAILABLE
+            for metric in case_run.metrics
+        )
         for case_run in report.case_runs
-        for metric in case_run.metrics
     ):
         return 3
     return 1 if report.status is EvalRunStatus.FAILED else 0
