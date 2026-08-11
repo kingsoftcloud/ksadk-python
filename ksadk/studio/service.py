@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 
 from ksadk.evaluation import (
     EvaluationConfig as PublicEvaluationConfig,
+    EvaluationExecutionError,
     EvaluationNotImplementedError,
     EvaluationRequest as PublicEvaluationRequest,
     EvaluationStorage,
@@ -848,13 +849,11 @@ class StudioService:
                     str(exc),
                     status_code=501,
                 ) from exc
-            try:
-                self.evaluation_storage.write_report(report)
-            except EvaluationStorageError as exc:
+            except EvaluationExecutionError as exc:
                 raise StudioError(
-                    "EVALUATION_REPORT_WRITE_FAILED",
-                    "评测报告写入失败",
-                    status_code=500,
+                    "EVALUATION_EXECUTION_FAILED",
+                    str(exc),
+                    status_code=502,
                 ) from exc
             return report
 

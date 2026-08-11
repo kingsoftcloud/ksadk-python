@@ -258,6 +258,7 @@ class TargetRun(EvaluationModel):
     error_code: str | None = None
     error_message: str | None = None
     trace_ref: TraceRef | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class MetricResult(EvaluationModel):

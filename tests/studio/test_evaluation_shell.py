@@ -23,7 +23,7 @@ cases:
 
     operation = service.submit_public_evaluation(
         "smoke.yaml",
-        TargetRef(kind=TargetKind.A2A, locator="https://agent.example.invalid/card"),
+        TargetRef(kind=TargetKind.LOCAL_SOURCE, locator=str(tmp_path)),
         EvaluationConfig(),
         idempotency_key="evaluation-shell-1",
     )

@@ -29,6 +29,7 @@ from ksadk.evaluation.contracts import (
     EvalRunReport,
     EvalRunStatus,
     MetricStatus,
+    TargetRunStatus,
     TargetKind,
 )
 from ksadk.evaluation.evalset import EvalSetParseError
@@ -121,18 +122,49 @@ def eval(
     if output_format:
         configure_ui_runtime(output_mode=output_format)
     target = _target_ref(
-        agent_dir,
-        a2a_url,
-        codex_worktree,
-        entrypoint,
-        credential_ref,
-        codex_profile,
+        agent_dir=agent_dir,
+        a2a_url=a2a_url,
+        codex_worktree=codex_worktree,
+        entrypoint=entrypoint,
+        credential_ref=credential_ref,
+        codex_profile=codex_profile,
     )
+    request = _build_request(
+        evalset_file=evalset_file,
+        target=target,
+        evaluators=evaluators,
+        timeout_seconds=timeout_seconds,
+        fail_fast=fail_fast,
+        data_policy=data_policy,
+        report_dir=report_dir,
+    )
+    if validate_only:
+        _render_validation(request)
+        return
+
+    report = _execute_request(request)
+    exit_code = _report_exit_code(report)
+    _render_report(report)
+    if exit_code:
+        raise click.exceptions.Exit(exit_code)
+
+
+def _build_request(
+    *,
+    evalset_file: Path,
+    target: TargetRef,
+    evaluators: tuple[str, ...],
+    timeout_seconds: int,
+    fail_fast: bool,
+    data_policy: str,
+    report_dir: Path | None,
+) -> EvaluationRequest:
     try:
         evalset = load_evalset(evalset_file)
     except EvalSetParseError as exc:
         raise click.UsageError(f"{exc.code}: {exc}") from exc
-    request = EvaluationRequest(
+
+    return EvaluationRequest(
         evalset=evalset,
         target=target,
         config=EvaluationConfig(
@@ -141,26 +173,26 @@ def eval(
             evaluators=list(evaluators) or list(_EVALUATORS),
             data_policy=data_policy,
         ),
-        report_dir=str(report_dir.resolve()) if report_dir else None,
+        report_dir=str(
+            (report_dir or Path.cwd() / ".agentkit/evaluations").resolve()
+        ),
     )
-    if validate_only:
-        _render_validation(request)
-        return
+
+
+def _execute_request(request: EvaluationRequest) -> EvalRunReport:
     try:
-        report = asyncio.run(execute_evaluation(request))
-    except EvaluationNotImplementedError as exc:
+        return asyncio.run(execute_evaluation(request))
+    except (EvaluationNotImplementedError, EvaluationExecutionError) as exc:
         raise EvaluationCliError(str(exc)) from exc
-    except EvaluationExecutionError as exc:
-        raise EvaluationCliError(str(exc)) from exc
-    exit_code = _report_exit_code(report)
+
+
+def _render_report(report: EvalRunReport) -> None:
     if is_json_output():
         emit_json(report.model_dump(mode="json", by_alias=True, exclude_none=True))
     else:
         print_title("Agent 评测完成")
         print_kv("运行状态", report.status.value)
         print_kv("Run ID", report.spec.id)
-    if exit_code:
-        raise click.exceptions.Exit(exit_code)
 
 
 def _report_exit_code(report: EvalRunReport) -> int:
@@ -172,9 +204,12 @@ def _report_exit_code(report: EvalRunReport) -> int:
     }:
         return 2
     if any(
-        metric.required and metric.status is MetricStatus.UNAVAILABLE
+        case_run.target_run.status is TargetRunStatus.UNAVAILABLE
+        or any(
+            metric.required and metric.status is MetricStatus.UNAVAILABLE
+            for metric in case_run.metrics
+        )
         for case_run in report.case_runs
-        for metric in case_run.metrics
     ):
         return 3
     return 1 if report.status is EvalRunStatus.FAILED else 0
