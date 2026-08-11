@@ -45,8 +45,8 @@ async def _require_action_session(
     if (
         session is None
         or (agent_id is not None and session.agent_id != agent_id)
-        or (user_id is not None and session.user_id != user_id)
     ):
+        logger.warning("Session %s not found", session_id)
         raise HTTPException(status_code=404, detail="Session not found")
     return cast(Session, session)
 
