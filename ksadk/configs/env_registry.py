@@ -163,6 +163,47 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "0 forces direct mode.",
     ),
     EnvVarSpec(
+        "KSADK_CODEX_SANDBOX",
+        "codex",
+        "Codex sandbox mode: read_only (default, no writes) / workspace_write "
+        "(write inside workspace) / full_access (write anywhere).",
+    ),
+    EnvVarSpec(
+        "KSADK_CODEX_APPROVAL",
+        "codex",
+        "Codex approval mode: deny_all (default for read_only) / auto_review "
+        "(auto-approve with review log).",
+    ),
+    EnvVarSpec(
+        "KSADK_CODEX_HOME",
+        "codex",
+        "Explicit Codex home directory override for the native runtime.",
+    ),
+    EnvVarSpec(
+        "KSADK_CODEX_ISOLATE_HOME",
+        "codex",
+        "Isolate native Codex state under the project workspace; set to 0 for debugging only.",
+        "1",
+    ),
+    EnvVarSpec(
+        "KSADK_STUDIO_NO_SECURITY",
+        "studio",
+        "Disable Studio loopback session and CSRF checks for controlled tests only.",
+        "0",
+    ),
+    EnvVarSpec(
+        "KSADK_STUDIO_SESSION_TOKEN",
+        "studio",
+        "Explicit local Studio browser session token; generated randomly when unset.",
+        sensitive=True,
+    ),
+    EnvVarSpec(
+        "KSADK_STUDIO_TRACE_CONTENT",
+        "studio",
+        "Persist Studio trace event content; set to 0 to retain metadata only.",
+        "1",
+    ),
+    EnvVarSpec(
         "KSADK_COMMAND_", "sandbox", "Internal prefix for command policy environment controls."
     ),
     EnvVarSpec(

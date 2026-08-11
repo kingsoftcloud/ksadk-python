@@ -64,7 +64,6 @@ def _echo_app(dsn: str) -> FastAPI:
     runner = _EchoRunner()
     add_a2a_protocol_routes(
         app,
-        runner,
         A2AConfig(
             enabled=True,
             base_url="http://testserver",

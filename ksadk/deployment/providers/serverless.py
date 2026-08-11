@@ -194,19 +194,25 @@ class ServerlessProvider(BaseDeployProvider):
     ) -> tuple[Dict[str, str], bool, int]:
         """读取部署时注入到托管运行时的环境变量。
 
-        全局配置作为兜底，项目 .env 作为项目级覆盖；真实 .env 文件不会随
-        Code/Container 制品打包，只通过 deploy payload 注入到 Pod 环境变量。
+        优先级: --env/--env-file (explicit) > shell env (转发白名单前缀) > 项目 .env > 全局配置。
+        真实 .env 文件不会随 Code/Container 制品打包，只通过 deploy payload 注入到 Pod 环境变量。
         """
+        shell_keys = set(os.environ)
         env_vars: Dict[str, str] = dict(get_env_from_global_config())
         env_file = Path(project_dir) / ".env"
         project_env_count = 0
-        for key, value in sorted(os.environ.items()):
-            if value and _should_forward_process_env(key):
-                env_vars.setdefault(key, value)
         if env_file.exists():
             project_env = cls._load_project_env_vars(env_file)
             project_env_count = len(project_env)
-            env_vars.update(project_env)
+            # auto .env 覆盖 global_config，但不覆盖 shell (shell 优先于 auto .env)
+            for key, value in project_env.items():
+                if key not in shell_keys:
+                    env_vars[key] = value
+        # shell 转发 (仅 KSADK_/OPENAI_/KSYUN_/E2B_ 前缀 + 白名单)；shell 覆盖 auto .env 与全局配置
+        for key, value in sorted(os.environ.items()):
+            if value and _should_forward_process_env(key):
+                env_vars[key] = value
+        # explicit --env/--env-file (显式 CLI 意图最高)
         env_vars.update(explicit_env_vars or {})
         env_vars.setdefault("TZ", DEFAULT_RUNTIME_TIMEZONE)
         return env_vars, env_file.exists(), project_env_count

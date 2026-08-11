@@ -298,7 +298,7 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
         "PUBLIC_TEST_TARGETS ?= tests/test_public_release_positioning.py "
         "tests/test_config_env_registry.py tests/test_managed_runtime_builder.py "
         "tests/test_managed_runtime_resolution.py tests/cli/test_cmd_create_codex.py "
-        "tests/runners/test_codex_runner.py" in makefile
+        "tests/runners/test_adapter_contract.py" in makefile
     )
     assert "public-sync-ksadk-web-static: sync-ksadk-web-static" in makefile
     assert "python3 scripts/open_source_audit.py --target public-repo" in makefile

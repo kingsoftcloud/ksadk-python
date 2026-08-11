@@ -61,7 +61,7 @@ class _StubTaskAdapter:
 )
 async def test_cancel_marks_canceled_when_underlying_accepted(accepted: CancelResult) -> None:
     adapter = _StubTaskAdapter(accepted)
-    executor = A2ARuntimeExecutor(runner=object(), task_adapter=adapter)
+    executor = A2ARuntimeExecutor(task_adapter=adapter)
     queue = _FakeEventQueue()
     await executor.cancel(_FakeContext(), queue)  # type: ignore[arg-type]
     assert adapter.calls == ["t1"]
@@ -76,7 +76,7 @@ async def test_cancel_marks_canceled_when_underlying_accepted(accepted: CancelRe
 )
 async def test_cancel_rejected_when_underlying_not_cancelled(rejected: Any) -> None:
     adapter = _StubTaskAdapter(rejected)
-    executor = A2ARuntimeExecutor(runner=object(), task_adapter=adapter)
+    executor = A2ARuntimeExecutor(task_adapter=adapter)
     queue = _FakeEventQueue()
     with pytest.raises(TaskNotCancelableError):
         await executor.cancel(_FakeContext(), queue)  # type: ignore[arg-type]
@@ -86,11 +86,8 @@ async def test_cancel_rejected_when_underlying_not_cancelled(rejected: Any) -> N
 
 @pytest.mark.asyncio
 async def test_cancel_without_adapter_is_rejected() -> None:
-    executor = A2ARuntimeExecutor(runner=object(), task_adapter=None)
-    queue = _FakeEventQueue()
-    with pytest.raises(TaskNotCancelableError, match="runtime task adapter"):
-        await executor.cancel(_FakeContext(), queue)  # type: ignore[arg-type]
-    assert queue.events == []
+    with pytest.raises(TypeError, match="task_adapter is required"):
+        A2ARuntimeExecutor(task_adapter=None)
 
 
 class _CancelableRuntimeAdapter:
@@ -152,7 +149,7 @@ async def test_accepted_runtime_cancel_never_completes_execution(
 ) -> None:
     runtime = _CancelableRuntimeAdapter(emit_canceled_event=emit_canceled_event)
     task_adapter = A2ARuntimeTaskAdapter(runtime, runtime_type="test")  # type: ignore[arg-type]
-    executor = A2ARuntimeExecutor(runner=object(), task_adapter=task_adapter)
+    executor = A2ARuntimeExecutor(task_adapter=task_adapter)
     context = _FakeContext()
     execute_queue = _FakeEventQueue()
     cancel_queue = _FakeEventQueue()
@@ -174,7 +171,7 @@ async def test_accepted_runtime_cancel_never_completes_execution(
 async def test_cancel_without_real_handle_does_not_call_runtime() -> None:
     runtime = _CancelableRuntimeAdapter()
     task_adapter = A2ARuntimeTaskAdapter(runtime, runtime_type="test")  # type: ignore[arg-type]
-    executor = A2ARuntimeExecutor(runner=object(), task_adapter=task_adapter)
+    executor = A2ARuntimeExecutor(task_adapter=task_adapter)
     queue = _FakeEventQueue()
 
     with pytest.raises(TaskNotCancelableError, match="not_running"):
@@ -188,7 +185,7 @@ async def test_cancel_without_real_handle_does_not_call_runtime() -> None:
 async def test_cancel_after_restart_uses_persisted_runtime_handle() -> None:
     runtime = _CancelableRuntimeAdapter()
     task_adapter = A2ARuntimeTaskAdapter(runtime, runtime_type="test")  # type: ignore[arg-type]
-    executor = A2ARuntimeExecutor(runner=object(), task_adapter=task_adapter)
+    executor = A2ARuntimeExecutor(task_adapter=task_adapter)
     context = _FakeContext()
     context.current_task = Task(
         id=context.task_id,
@@ -235,7 +232,7 @@ async def test_runtime_canceled_event_is_terminal_and_never_completed() -> None:
 
     runtime = _NaturalCanceledRuntimeAdapter()
     task_adapter = A2ARuntimeTaskAdapter(runtime, runtime_type="test")  # type: ignore[arg-type]
-    executor = A2ARuntimeExecutor(runner=object(), task_adapter=task_adapter)
+    executor = A2ARuntimeExecutor(task_adapter=task_adapter)
     queue = _FakeEventQueue()
 
     await executor.execute(_FakeContext(), queue)  # type: ignore[arg-type]

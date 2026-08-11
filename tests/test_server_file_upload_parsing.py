@@ -1,12 +1,12 @@
 import base64
 
+from ksadk.conversations.normalize import attachment_from_part, extract_user_input_from_parts
 from ksadk.server.api_models import FileData, InlineData, Part
-from ksadk.server.app import _attachment_from_part, _extract_user_input_from_parts
 
 
 def test_extract_user_input_from_text_part():
     parts = [Part(text="看下这个候选人简历")]
-    text = _extract_user_input_from_parts(parts)
+    text = extract_user_input_from_parts(parts)
     assert text == "看下这个候选人简历"
 
 
@@ -23,7 +23,7 @@ def test_extract_user_input_from_inline_text_file():
         )
     ]
 
-    text = _extract_user_input_from_parts(parts)
+    text = extract_user_input_from_parts(parts)
     assert "[上传文件: 张三.txt]" in text
     assert "8年经验" in text
 
@@ -40,7 +40,7 @@ def test_extract_user_input_from_binary_file_keeps_metadata():
         )
     ]
 
-    text = _extract_user_input_from_parts(parts)
+    text = extract_user_input_from_parts(parts)
     assert "avatar.png" in text
     assert "image/png" in text
 
@@ -56,7 +56,7 @@ def test_extract_user_input_from_file_reference():
         )
     ]
 
-    text = _extract_user_input_from_parts(parts)
+    text = extract_user_input_from_parts(parts)
     assert "上传文件引用" in text
     assert "a.txt" in text
 
@@ -76,7 +76,7 @@ def test_extract_user_input_from_local_file_reference_outside_uploads_dir_keeps_
         )
     ]
 
-    text = _extract_user_input_from_parts(parts)
+    text = extract_user_input_from_parts(parts)
     assert "上传文件引用" in text
     assert "resume.txt" in text
     assert "8年经验" not in text
@@ -100,7 +100,7 @@ def test_extract_user_input_from_opaque_upload_handle_reads_text(monkeypatch, tm
         )
     ]
 
-    text = _extract_user_input_from_parts(parts)
+    text = extract_user_input_from_parts(parts)
     assert "[上传文件: resume.txt]" in text
     assert "候选人简历内容" in text
 
@@ -113,7 +113,7 @@ def test_attachment_from_part_resolves_storage_path_for_upload_handle(monkeypatc
     stored_file.write_text("hello", encoding="utf-8")
     monkeypatch.setenv("AGENTENGINE_UI_DIR", str(ui_dir))
 
-    attachment = _attachment_from_part(
+    attachment = attachment_from_part(
         Part(
             fileData=FileData(
                 fileUri="ksadk-upload://abc123",

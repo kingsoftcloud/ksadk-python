@@ -64,6 +64,9 @@ class EventType:
     RUN_COMPLETED = "run.completed"
     RUN_FAILED = "run.failed"
     RUN_CANCELED = "run.canceled"
+    # context preprocessing. payload: phase, trigger; completed also carries cursor
+    CONTEXT_COMPACTION_STARTED = "context.compaction.started"
+    CONTEXT_COMPACTION_COMPLETED = "context.compaction.completed"
     # checkpoint。payload: checkpoint_id, granularity(delta|snapshot), resume_target?
     CHECKPOINT_CREATED = "checkpoint.created"
     CHECKPOINT_RESUMED = "checkpoint.resumed"
@@ -100,6 +103,8 @@ ALL_EVENT_TYPES: frozenset[str] = frozenset(
         EventType.RUN_COMPLETED,
         EventType.RUN_FAILED,
         EventType.RUN_CANCELED,
+        EventType.CONTEXT_COMPACTION_STARTED,
+        EventType.CONTEXT_COMPACTION_COMPLETED,
         EventType.CHECKPOINT_CREATED,
         EventType.CHECKPOINT_RESUMED,
         EventType.USAGE_REPORTED,
@@ -133,6 +138,10 @@ EVENT_PAYLOAD_REQUIRED_KEYS: dict[str, frozenset[str]] = {
     EventType.RUN_COMPLETED: frozenset({"status"}),
     EventType.RUN_FAILED: frozenset({"status", "error"}),
     EventType.RUN_CANCELED: frozenset({"status"}),
+    EventType.CONTEXT_COMPACTION_STARTED: frozenset({"phase", "trigger"}),
+    EventType.CONTEXT_COMPACTION_COMPLETED: frozenset(
+        {"phase", "trigger", "compacted_until_seq_id"}
+    ),
     EventType.CHECKPOINT_CREATED: frozenset({"checkpoint_id", "granularity"}),
     EventType.CHECKPOINT_RESUMED: frozenset({"checkpoint_id"}),
     EventType.USAGE_REPORTED: frozenset({"input_tokens", "output_tokens", "total_tokens"}),

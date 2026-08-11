@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from ksadk.codex.client import AsyncCodexClient
-from ksadk.codex.runtime import CodexRuntime
+from ksadk.codex.runtime import CodexRuntimeAdapter
 from ksadk.runtime.adapter import (
     CancelResult,
     ResumePayload,
@@ -82,6 +82,7 @@ async def test_real_sdk_transport_surface_and_process_cleanup(tmp_path: Path):
 
     assert resumed_id == thread_id
     assert [event["method"] for event in events] == [
+        "turn/started",
         "item/started",
         "item/completed",
         "item/started",
@@ -92,8 +93,14 @@ async def test_real_sdk_transport_surface_and_process_cleanup(tmp_path: Path):
         "item/started",
         "item/agentMessage/delta",
         "item/completed",
+        "turn/completed",
     ]
-    final_started = events[7]
+    final_started = next(
+        event
+        for event in events
+        if event["method"] == "item/started"
+        and event["params"]["item"].get("phase") == "final_answer"
+    )
     assert final_started["params"]["item"]["phase"] == "final_answer"
 
     requests = [
@@ -178,7 +185,7 @@ def test_client_surface_failure_reports_installed_version(monkeypatch):
 @pytest.mark.asyncio
 async def test_runtime_real_transport_stream_cancel_and_approval_drain(tmp_path: Path):
     client = AsyncCodexClient(config=_config(tmp_path))
-    runtime = CodexRuntime(client)
+    runtime = CodexRuntimeAdapter(client)
     handle = await runtime.start(StartRequest(input="BLOCK", user_id="u", session_id="s"))
     events = []
 
@@ -207,7 +214,7 @@ async def test_runtime_real_transport_stream_cancel_and_approval_drain(tmp_path:
 @pytest.mark.asyncio
 async def test_runtime_real_transport_same_thread_resume_uses_payload(tmp_path: Path):
     client = AsyncCodexClient(config=_config(tmp_path))
-    runtime = CodexRuntime(client)
+    runtime = CodexRuntimeAdapter(client)
     handle = await runtime.start(StartRequest(input="complete", user_id="u", session_id="s"))
     first = [event async for event in runtime.stream(handle)]
     await runtime.resume(
@@ -235,7 +242,7 @@ async def test_runtime_real_transport_same_thread_resume_uses_payload(tmp_path: 
 @pytest.mark.asyncio
 async def test_runtime_external_thread_uses_real_backend_resume(tmp_path: Path):
     client = AsyncCodexClient(config=_config(tmp_path))
-    runtime = CodexRuntime(client)
+    runtime = CodexRuntimeAdapter(client)
     handle = await runtime.start(
         StartRequest(
             input="complete",
@@ -259,7 +266,7 @@ async def test_runtime_external_thread_uses_real_backend_resume(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_runtime_timeout_closes_real_transport_process(tmp_path: Path):
     client = AsyncCodexClient(config=_config(tmp_path))
-    runtime = CodexRuntime(client, turn_timeout_seconds=0.15)
+    runtime = CodexRuntimeAdapter(client, turn_timeout_seconds=0.15)
     handle = await runtime.start(StartRequest(input="BLOCK", user_id="u", session_id="s"))
     pid = int((tmp_path / "pid").read_text(encoding="utf-8"))
     events = [event async for event in runtime.stream(handle)]

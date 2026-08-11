@@ -39,8 +39,13 @@ class BlockSqlAlchemy(importlib.abc.MetaPathFinder):
 
 sys.meta_path.insert(0, BlockSqlAlchemy())
 
-from ksadk.server.app import app
+from ksadk.managed_a2a_card import build_managed_a2a_card_if_configured
+from ksadk.server.app import RuntimeAppConfig, configure_runtime_app, create_runtime_app
 
+app = create_runtime_app(
+    RuntimeAppConfig(a2a=build_managed_a2a_card_if_configured()),
+    configure_runtime_app,
+)
 paths = {getattr(route, "path", None) for route in app.routes}
 assert "/.well-known/agent-card.json" in paths
 """

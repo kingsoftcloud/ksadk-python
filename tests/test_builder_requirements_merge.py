@@ -431,14 +431,14 @@ def test_code_builder_entrypoint_uses_otlp_direct_by_default_for_code_frameworks
         assert 'in ("LANGCHAIN", "LANGGRAPH", "DEEPAGENTS")' not in entrypoint
 
 
-def test_code_builder_entrypoint_patches_langchain_before_loading_user_agent(tmp_path):
+def test_code_builder_entrypoint_delegates_langchain_loading_to_runtime_adapter(tmp_path):
     builder = CodeBuilder(tmp_path)
 
     entrypoint = builder._generate_entrypoint(_full_detection_result(FrameworkType.LANGGRAPH))
 
-    patch_index = entrypoint.index("apply_langchain_patch()")
-    load_index = entrypoint.index("runner.load_agent()")
-    assert patch_index < load_index
+    assert "build_default_runtime_registry" in entrypoint
+    assert "apply_langchain_patch()" not in entrypoint
+    assert "runner.load_agent()" not in entrypoint
 
 
 def test_code_builder_entrypoint_adds_src_layout_to_pythonpath(tmp_path):
@@ -471,7 +471,7 @@ def test_container_builder_entrypoint_uses_otlp_direct_by_default_for_code_frame
         assert 'in ("LANGCHAIN", "LANGGRAPH", "DEEPAGENTS")' not in entrypoint
 
 
-def test_container_builder_entrypoint_patches_langchain_before_loading_user_agent(tmp_path):
+def test_container_builder_entrypoint_delegates_langchain_loading_to_runtime_adapter(tmp_path):
     builder = ContainerBuilder(tmp_path)
 
     entrypoint = builder._generate_entrypoint(
@@ -479,6 +479,6 @@ def test_container_builder_entrypoint_patches_langchain_before_loading_user_agen
         "demo_agent",
     )
 
-    patch_index = entrypoint.index("apply_langchain_patch()")
-    load_index = entrypoint.index("runner.load_agent()")
-    assert patch_index < load_index
+    assert "build_default_runtime_registry" in entrypoint
+    assert "apply_langchain_patch()" not in entrypoint
+    assert "runner.load_agent()" not in entrypoint

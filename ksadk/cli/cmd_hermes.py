@@ -14,6 +14,12 @@ from ksadk.api import AgentEngineClient
 from ksadk.cli.agent_ref import merge_agent_inputs, resolve_agent_ref
 from ksadk.cli.cmd_dashboard import _open_dashboard
 from ksadk.cli.dry_run import dry_run_option, effective_dry_run, run_async_with_dry_run
+from ksadk.cli.env_options import (
+    apply_explicit_env_with_shell_priority,
+    env_options,
+    inject_env_to_environ,
+    resolve_runtime_env_overrides,
+)
 from ksadk.cli.error_utils import remote_error, resolution_error
 from ksadk.cli.model_catalog import fetch_provider_model_metadata
 from ksadk.cli.network_options import build_network_payload, network_cli_kwargs, network_options
@@ -55,7 +61,6 @@ from ksadk.deployment.agent_access import (
 from ksadk.deployment.state import clear_state, load_state, save_state
 from ksadk.hermes_terminal import (
     run_hermes_terminal_session,
-    validate_hermes_exec_argv,
     validate_hermes_pairing_argv,
 )
 from ksadk.model_policy import build_runtime_model_policy_env
@@ -167,19 +172,6 @@ def hermes():
     """Hermes Agent 资源管理。"""
 
 
-def _load_dotenv_into_env(project_dir: Path) -> None:
-    env_path = project_dir / ".env"
-    if not env_path.exists():
-        return
-    try:
-        from dotenv import dotenv_values
-    except ImportError:
-        return
-    for key, value in dotenv_values(env_path).items():
-        if key and value is not None and os.getenv(key) is None:
-            os.environ[key] = str(value)
-
-
 def _get_hermes_global_env() -> dict[str, str]:
     global _HERMES_GLOBAL_ENV_CACHE
     if _HERMES_GLOBAL_ENV_CACHE is not None:
@@ -275,6 +267,9 @@ def _build_hermes_env_vars(
     model_api_key: str | None = None,
     default_model: str | None = None,
     model_metadata: dict[str, Any] | None = None,
+    cli_env: dict[str, str] | None = None,
+    auto_dotenv: dict[str, str] | None = None,
+    shell_keys: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     raw_model_base_url = model_base_url or _env_value("OPENAI_BASE_URL")
     resolved_model_base_url = (
@@ -342,6 +337,10 @@ def _build_hermes_env_vars(
         raw.setdefault(
             "HERMES_FALLBACK_BASE_URL",
             _env_value("HERMES_FALLBACK_BASE_URL") or resolved_model_base_url,
+        )
+    if cli_env or auto_dotenv:
+        apply_explicit_env_with_shell_priority(
+            raw, cli_env or {}, auto_dotenv or {}, shell_keys or set(os.environ)
         )
     return [
         {
@@ -485,6 +484,13 @@ def _split_terminal_agent_ref_and_argv(
     *,
     validator: Callable[[tuple[str, ...] | list[str]], list[str]],
 ) -> tuple[str | None, list[str]]:
+    """Split argv into (agent_ref, exec_argv).
+
+    The first token is treated as agent_ref when the validator rejects the
+    full argv (whitelist validators raise ValueError), or when the validator
+    is the passthrough one and the first token looks like an agent id
+    (``ar-`` prefix) with remaining tokens.
+    """
     raw = [str(item) for item in argv]
     try:
         return None, validator(raw)
@@ -495,6 +501,19 @@ def _split_terminal_agent_ref_and_argv(
             except ValueError:
                 pass
         raise direct_error
+
+
+def _passthrough_exec_argv(argv: tuple[str, ...] | list[str]) -> list[str]:
+    """Local exec passes argv through unchanged; the pod enforces allowlists.
+
+    Raises ValueError when the first token looks like an agent id (``ar-``
+    prefix) and there are remaining tokens, so ``_split_terminal_agent_ref_and_argv``
+    falls back to splitting the first token as agent_ref.
+    """
+    items = [str(item) for item in argv]
+    if len(items) >= 2 and items[0].startswith("ar-"):
+        raise ValueError("first token looks like an agent ref")
+    return items
 
 
 def _render_hermes_dry_run(
@@ -533,6 +552,7 @@ def _render_hermes_dry_run(
 @click.option("--storage-size-gi", type=int, default=20, show_default=True, help="PVC 容量（Gi）")
 @click.option("--storage-mount-path", default=None, help="PVC 挂载目录（默认: /home/node/.hermes）")
 @click.option("--no-storage", is_flag=True, help="禁用默认 PVC 挂载")
+@env_options
 @click.option(
     "--observability/--no-observability",
     default=True,
@@ -553,6 +573,8 @@ def deploy(
     storage_size_gi: int,
     storage_mount_path: Optional[str],
     no_storage: bool,
+    extra_env: tuple[str, ...],
+    env_file: Optional[str],
     observability: bool,
     enable_public_access: Optional[bool],
     enable_vpc_access: bool,
@@ -569,6 +591,8 @@ def deploy(
     ctx = click.get_current_context(silent=True)
     include_env_on_update = any(
         (
+            bool(extra_env),
+            _option_was_explicit(ctx, "env_file"),
             _option_was_explicit(ctx, "model_base_url"),
             _option_was_explicit(ctx, "model_api_key"),
             _option_was_explicit(ctx, "default_model"),
@@ -597,6 +621,8 @@ def deploy(
             observability=observability,
             include_env_on_update=include_env_on_update,
             include_storage_on_update=include_storage_on_update,
+            extra_env=extra_env,
+            env_file=env_file,
             **network_cli_kwargs(
                 enable_public_access=enable_public_access,
                 enable_vpc_access=enable_vpc_access,
@@ -629,16 +655,27 @@ async def _deploy_hermes(
     observability: bool,
     include_env_on_update: bool,
     include_storage_on_update: bool,
-    enable_public_access: bool | None,
-    enable_vpc_access: bool,
-    vpc_id: str | None,
-    subnet_id: str | None,
-    security_group_id: str | None,
-    availability_zone: str | None,
-    dry_run: bool,
+    extra_env: tuple[str, ...] = (),
+    env_file: str | None = None,
+    enable_public_access: bool | None = None,
+    enable_vpc_access: bool = False,
+    vpc_id: str | None = None,
+    subnet_id: str | None = None,
+    security_group_id: str | None = None,
+    availability_zone: str | None = None,
+    dry_run: bool = False,
 ) -> None:
     project_dir = Path(".").resolve()
-    _load_dotenv_into_env(project_dir)
+    cli_env, auto_dotenv, shell_keys, env_source = resolve_runtime_env_overrides(
+        env_file=env_file,
+        extra_env=extra_env,
+        base_dir=project_dir,
+    )
+    loaded = inject_env_to_environ(cli_env, auto_dotenv, shell_keys)
+    if loaded:
+        print_info(f"已从 {env_source or '--env'} 注入环境变量: {loaded} 项")
+    if cli_env or auto_dotenv:
+        include_env_on_update = True
     state = load_state(project_dir)
     existing_agent_id = None
     if str(state.get("type") or state.get("framework") or "").strip().lower() == "hermes":
@@ -669,6 +706,9 @@ async def _deploy_hermes(
         model_api_key=model_api_key,
         default_model=default_model,
         model_metadata=model_metadata,
+        cli_env=cli_env,
+        auto_dotenv=auto_dotenv,
+        shell_keys=shell_keys,
     )
     payload = {
         "name": agent_name,
@@ -1094,7 +1134,7 @@ def exec_hermes(
                 raise click.ClickException("--agent 必须指定非空的 Hermes Agent 名称")
         positional_agent_ref, validated_argv = _split_terminal_agent_ref_and_argv(
             argv,
-            validator=validate_hermes_exec_argv,
+            validator=_passthrough_exec_argv,
         )
         if agent_option is not None and positional_agent_ref:
             raise click.ClickException(
@@ -1127,6 +1167,7 @@ def exec_hermes(
                 insecure=insecure,
                 mode="exec",
                 argv=validated_argv,
+                exec_argv_validator=_passthrough_exec_argv,
             )
         )
     except (KeyboardInterrupt, asyncio.CancelledError):

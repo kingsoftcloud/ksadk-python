@@ -19,7 +19,7 @@ from typing import Any, Optional
 import pytest
 
 from ksadk.codex.client import CodexClient
-from ksadk.codex.runtime import CodexRuntime
+from ksadk.codex.runtime import CodexRuntimeAdapter
 from ksadk.events.runtime_event import RuntimeEvent
 from ksadk.runners.base_runner import BaseRunner
 from ksadk.runtime.adapter import (
@@ -167,8 +167,11 @@ class _FakeCodexClient(CodexClient):
 
     async def interrupt_active_turn(self, thread_id: str) -> bool:
         self.interrupted.append(thread_id)
-        # 仅记录 interrupt;turn 的本地中断由 runtime 取消 chunk task 产生
-        # (CancelledError 进入生成器 in-flight await,与 ADK/LangGraph 同机制)。
+        # Codex 使用原生 interrupt RPC；后端随后把 terminal 通知写入
+        # 同一 turn 流。这与 ADK/LangGraph 取消本地生成器的机制不同，
+        # fixture 必须释放流来模拟真实 SDK，避免伪造一个永不终止的 turn。
+        self.stream_interrupted = True
+        self._release.set()
         return True
 
     async def close(self) -> None:
@@ -187,7 +190,7 @@ def _make_langgraph(**kw):
 
 def _make_codex(**kw):
     client = _FakeCodexClient(**kw)
-    return CodexRuntime(client), client
+    return CodexRuntimeAdapter(client), client
 
 
 def _make_miniflow(**kw):

@@ -19,6 +19,7 @@ AgentEngine CLI
   agentengine mcp        MCP 资源管理
   agentengine openclaw   OpenClaw 资源管理
   agentengine run        运行 Agent
+  agentengine studio     启动本地 Agent 构建控制台
   agentengine version    Agent 版本管理
   agentengine web        本地调试 Agent Invoke UI
 

@@ -123,6 +123,20 @@ def test_built_wheel_excludes_web_ui_node_modules():
     assert leaked == []
 
 
+def test_built_wheel_excludes_studio_frontend_sources_and_node_modules():
+    wheels = sorted((REPO_ROOT / "dist").glob("ksadk-*.whl"))
+    assert wheels, "请先运行 uv build 生成 dist/ksadk-*.whl"
+
+    with zipfile.ZipFile(wheels[-1]) as archive:
+        leaked = [
+            name
+            for name in archive.namelist()
+            if name.startswith(("ksadk/studio/web/", "ksadk/studio/react-ui/"))
+        ]
+
+    assert leaked == []
+
+
 def test_built_wheel_includes_synced_web_static_entrypoint():
     wheels = sorted((REPO_ROOT / "dist").glob("ksadk-*.whl"))
     assert wheels, "请先运行 uv build 生成 dist/ksadk-*.whl"
@@ -132,6 +146,20 @@ def test_built_wheel_includes_synced_web_static_entrypoint():
 
     assert "ksadk/server/static/index.html" in names
     assert any(name.startswith("ksadk/server/static/assets/") for name in names)
+
+
+def test_built_wheel_includes_react_studio_static_entrypoint():
+    wheels = sorted((REPO_ROOT / "dist").glob("ksadk-*.whl"))
+    assert wheels, "请先运行 uv build 生成 dist/ksadk-*.whl"
+
+    with zipfile.ZipFile(wheels[-1]) as archive:
+        names = set(archive.namelist())
+        studio_index = archive.read("ksadk/studio/static/index.html").decode("utf-8")
+
+    assert '<div id="root"></div>' in studio_index
+    assert '/static/assets/' in studio_index
+    assert "ksadk/studio/static/shared-chat.css" not in names
+    assert any(name.startswith("ksadk/studio/static/assets/") for name in names)
 
 
 def test_built_wheel_excludes_legacy_web_ui_sources_and_build_outputs():
@@ -152,11 +180,22 @@ def test_pyproject_keeps_only_synced_static_as_ksadk_web_package_data():
     assert all("server/web-ui" not in entry for entry in package_data)
 
 
-def test_pyproject_excludes_legacy_web_ui_from_package_discovery():
+def test_pyproject_excludes_non_python_frontend_sources_from_package_discovery():
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
     package_find = pyproject["tool"]["setuptools"]["packages"]["find"]
     assert "ksadk.server.web-ui*" in package_find["exclude"]
+    assert "ksadk.studio.react-ui*" in package_find["exclude"]
+    assert "ksadk.studio.web*" not in package_find["exclude"]
+
+
+def test_react_is_the_only_studio_frontend_source_tree():
+    studio_root = REPO_ROOT / "ksadk/studio"
+
+    assert not (studio_root / "web").exists()
+    assert not (studio_root / "static-react").exists()
+    assert (studio_root / "react-ui/src/main.tsx").is_file()
+    assert (studio_root / "react-ui/src/studio.css").is_file()
 
 
 def test_pyproject_declares_python_multipart_for_local_web_ui_uploads():

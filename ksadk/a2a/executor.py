@@ -1,4 +1,4 @@
-"""A2ARuntimeExecutor — 把 ksadk runner 桥接进 A2A 请求生命周期 (goal-05)。
+"""A2ARuntimeExecutor — 把 RuntimeAdapter 桥接进 A2A 请求生命周期。
 
 契约 §7.2:A2A ``context_id`` ↔ Runtime ``session_id``;``canceled`` ↔
 ``RuntimeAdapter.cancel(invocation_id)``。executor 不在此自造 cancel,而是委托
@@ -136,7 +136,7 @@ async def _enqueue_initial_task(context: RequestContext, event_queue: EventQueue
 
 
 class _InputRequired(Exception):
-    """runner 请求用户输入的信号(内部用于跳出 execute,task 停 input-required)。"""
+    """Runtime 请求用户输入的信号(内部用于跳出 execute,task 停 input-required)。"""
 
 
 class _RunCanceled(Exception):
@@ -144,23 +144,20 @@ class _RunCanceled(Exception):
 
 
 class A2ARuntimeExecutor(AgentExecutor):
-    """在 A2A 请求生命周期内执行 ksadk runner。
+    """在 A2A 请求生命周期内执行 RuntimeAdapter。
 
-    - sync: ``runner.invoke``。
-    - streaming: ``runner.stream``,逐 chunk 发 artifact。
-    - cancel: 委托 ``task_adapter.cancel_task``(内部走 RuntimeAdapter.cancel)。
+    start/stream/resume/cancel 全部委托 ``A2ARuntimeTaskAdapter``；协议层不再
+    保留 Runner fallback，因此所有入口共享同一 RuntimeEvent 合同。
     """
 
     def __init__(
         self,
-        runner: Any,
-        task_adapter: Any = None,
-        prefer_stream: bool = True,
+        task_adapter: Any,
         include_reasoning: bool = False,
     ) -> None:
-        self.runner = runner
+        if task_adapter is None:
+            raise TypeError("task_adapter is required")
         self.task_adapter = task_adapter
-        self.prefer_stream = prefer_stream
         self.include_reasoning = include_reasoning
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
@@ -179,13 +176,12 @@ class A2ARuntimeExecutor(AgentExecutor):
             == TaskState.TASK_STATE_INPUT_REQUIRED
         )
         interaction_response: Any = None
-        if self.task_adapter is not None:
-            # Third-party/local adapters written before durable context mapping
-            # do not necessarily provide this optional lifecycle hook.
-            prepare_context = getattr(self.task_adapter, "prepare_context", None)
-            if callable(prepare_context):
-                await prepare_context(context)
-        if is_resume and self.task_adapter is not None:
+        # Third-party/local adapters written before durable context mapping do not
+        # necessarily provide this optional lifecycle hook.
+        prepare_context = getattr(self.task_adapter, "prepare_context", None)
+        if callable(prepare_context):
+            await prepare_context(context)
+        if is_resume:
             interaction_response = self.task_adapter.answer_from_context(context)
             # Invalid resume tokens/decisions are request errors. Validate before emitting
             # working so the durable Task remains input-required and retryable.
@@ -206,25 +202,20 @@ class A2ARuntimeExecutor(AgentExecutor):
                 TaskState.TASK_STATE_WORKING,
                 metadata=dict(ADK_V2_INTEGRATION_METADATA),
             )
-            runner_input = self._build_runner_input(context)
             if is_resume:
-                if self.task_adapter is None:
-                    raise RuntimeError("runtime task adapter is required to resume A2A task")
                 handle = await self.task_adapter.resume_task(
                     context.task_id or "",
                     context,
                     answer=interaction_response,
                 )
                 output = await self._run_runtime(context, updater, handle)
-            elif self.task_adapter is not None:
+            else:
                 handle = await self.task_adapter.start_task(
                     task_id=str(context.task_id or ""),
                     context=context,
-                    input_data=runner_input.get("input"),
+                    input_data=context.get_user_input(),
                 )
                 output = await self._run_runtime(context, updater, handle)
-            else:
-                output = await self._run_runner(context, updater, runner_input)
             # completed 携带全文消息:非流式消费端与 text.completed 投影(§ event_adapter
             # message_to_event final)依赖它拿最终结果;流式消费端的重复由 adk_runner
             # 在 handoff 分支对"增量累积"去重解决(不在此处删消息)。
@@ -259,8 +250,6 @@ class A2ARuntimeExecutor(AgentExecutor):
                 getattr(current_task, "context_id", "") or context.context_id or "unknown-context"
             ),
         )
-        if self.task_adapter is None:
-            raise TaskNotCancelableError(message="runtime task adapter is not configured")
         result = await self.task_adapter.cancel_task(context.task_id or "", context)
         # 只有底层真的接受了取消(已中断活跃 turn,或已登记 pending cancel)才把
         # 协议 Task 置 canceled;其他结果如实拒绝,包括未来新增的 UNSUPPORTED。
@@ -280,90 +269,6 @@ class A2ARuntimeExecutor(AgentExecutor):
             result = clear_resume_state(context.task_id or "", context)
             if inspect.isawaitable(result):
                 await result
-
-    async def _run_runner(
-        self, context: RequestContext, updater: TaskUpdater, runner_input: dict[str, Any]
-    ) -> str:
-        stream = getattr(self.runner, "stream", None)
-        if self.prefer_stream and callable(stream):
-            return await self._run_streaming(context, updater, stream, runner_input)
-
-        result = await self.runner.invoke(runner_input)
-        text = self._coerce_text(result)
-        if text:
-            await updater.add_artifact(
-                parts=[Part(text=text)],
-                artifact_id=f"{context.task_id}-response",
-                name="response",
-                last_chunk=True,
-            )
-        return text
-
-    async def _run_streaming(
-        self,
-        context: RequestContext,
-        updater: TaskUpdater,
-        stream: Any,
-        runner_input: dict[str, Any],
-    ) -> str:
-        output_text = ""
-        artifacts = _ArtifactStreamEmitter(updater, str(context.task_id))
-
-        async for chunk in stream(runner_input):
-            chunk_type = chunk.get("type") if isinstance(chunk, dict) else None
-            if chunk_type == "input_required":
-                raise RuntimeError(
-                    "runner emitted input_required without a RuntimeAdapter execution path"
-                )
-            if chunk_type == "final":
-                final_text = (
-                    self._coerce_text(chunk.get("output")) if isinstance(chunk, dict) else ""
-                )
-                if not final_text:
-                    continue
-                if not output_text:
-                    output_text = final_text
-                    await artifacts.push("text", final_text)
-                elif final_text.startswith(output_text):
-                    suffix = final_text[len(output_text) :]
-                    output_text = final_text
-                    if suffix:
-                        await artifacts.push("text", suffix)
-                    continue
-                else:
-                    output_text = final_text
-                    await artifacts.push("text", final_text, replace_snapshot=True)
-                continue
-
-            text = self._coerce_text(chunk)
-            if not text:
-                continue
-            if chunk_type == "thinking":
-                if self.include_reasoning:
-                    await artifacts.push("thinking", text)
-                continue
-            replace = bool(isinstance(chunk, dict) and chunk.get("replace"))
-            output_text = text if replace else output_text + text
-            await artifacts.push("text", text, replace_snapshot=replace)
-
-        await artifacts.close()
-        return output_text
-
-    def _build_runner_input(self, context: RequestContext) -> dict[str, Any]:
-        metadata = dict(getattr(context, "metadata", None) or {})
-        state = metadata.get("state", {})
-        if not isinstance(state, dict):
-            state = {}
-        # §7.2: A2A context_id ↔ Runtime session_id。
-        return {
-            "input": context.get_user_input(),
-            "task_id": context.task_id,
-            "context_id": context.context_id,
-            "session_id": context.context_id,
-            "state": dict(state),
-            "branch": metadata.get("branch", ""),
-            "metadata": metadata,
-        }
 
     async def _run_runtime(
         self,

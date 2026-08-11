@@ -199,7 +199,6 @@ async def test_input_required_status_metadata_roundtrips_to_runtime_resume() -> 
     runtime_adapter = _RecordingRuntimeAdapter()
     task_adapter = A2ARuntimeTaskAdapter(runtime_adapter, runtime_type="test")  # type: ignore[arg-type]
     executor = A2ARuntimeExecutor(
-        runner=_ForbiddenRunner(),
         task_adapter=task_adapter,
     )
     first_queue = _FakeEventQueue()
@@ -248,7 +247,6 @@ async def test_resume_approval_uses_runtime_adapter_and_streams_same_handle(
     runtime_adapter = _RecordingRuntimeAdapter()
     task_adapter = A2ARuntimeTaskAdapter(runtime_adapter, runtime_type="test")  # type: ignore[arg-type]
     executor = A2ARuntimeExecutor(
-        runner=_ForbiddenRunner(),
         task_adapter=task_adapter,
     )
     queue = _FakeEventQueue()
@@ -290,7 +288,7 @@ async def test_resume_payload_preserves_falsy_answers(answer: Any) -> None:
         role=Role.ROLE_USER,
         parts=[answer_part],
     )
-    executor = A2ARuntimeExecutor(runner=_ForbiddenRunner(), task_adapter=task_adapter)
+    executor = A2ARuntimeExecutor(task_adapter=task_adapter)
 
     await executor.execute(context, _FakeEventQueue())  # type: ignore[arg-type]
 
@@ -318,7 +316,7 @@ async def test_unknown_approval_token_is_rejected_before_runtime_resume(answer: 
 async def test_invalid_resume_keeps_task_input_required_without_status_events() -> None:
     runtime_adapter = _RecordingRuntimeAdapter()
     task_adapter = A2ARuntimeTaskAdapter(runtime_adapter, runtime_type="test")  # type: ignore[arg-type]
-    executor = A2ARuntimeExecutor(runner=_ForbiddenRunner(), task_adapter=task_adapter)
+    executor = A2ARuntimeExecutor(task_adapter=task_adapter)
     context = _ResumeContext("later")
     await _seed_resume_state(task_adapter, context)
     queue = _FakeEventQueue()
@@ -357,7 +355,7 @@ async def test_runtime_error_detail_is_not_returned_on_a2a_wire() -> None:
         _FailingStartRuntimeAdapter(),  # type: ignore[arg-type]
         runtime_type="test",
     )
-    executor = A2ARuntimeExecutor(runner=_ForbiddenRunner(), task_adapter=task_adapter)
+    executor = A2ARuntimeExecutor(task_adapter=task_adapter)
     context = _ResumeContext("start")
     context.current_task = None
     queue = _FakeEventQueue()
@@ -379,7 +377,7 @@ async def test_runtime_reasoning_is_not_returned_on_a2a_wire_by_default() -> Non
         _ReasoningRuntimeAdapter(),  # type: ignore[arg-type]
         runtime_type="test",
     )
-    executor = A2ARuntimeExecutor(runner=_ForbiddenRunner(), task_adapter=task_adapter)
+    executor = A2ARuntimeExecutor(task_adapter=task_adapter)
     context = _ResumeContext("start")
     context.current_task = None
     queue = _FakeEventQueue()
@@ -399,7 +397,7 @@ async def test_runtime_reasoning_is_not_returned_on_a2a_wire_by_default() -> Non
 async def test_start_uses_trusted_tenant_and_ignores_client_identity_metadata() -> None:
     runtime_adapter = _RecordingRuntimeAdapter()
     task_adapter = A2ARuntimeTaskAdapter(runtime_adapter, runtime_type="test")  # type: ignore[arg-type]
-    executor = A2ARuntimeExecutor(runner=_ForbiddenRunner(), task_adapter=task_adapter)
+    executor = A2ARuntimeExecutor(task_adapter=task_adapter)
     context = _ResumeContext("start")
     context.current_task = None
     context.metadata = {

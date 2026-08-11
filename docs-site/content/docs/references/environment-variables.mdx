@@ -41,6 +41,10 @@ OPENAI_MODEL_NAME=my-model
 
 | 变量 | 用途 |
 | --- | --- |
+| `KSADK_CODEX_APPROVAL` | Codex 审批策略；Studio 可按下一轮对话传入审批等级 |
+| `KSADK_CODEX_HOME` | 原生 Codex HOME 显式覆盖；通常由运行时自动隔离 |
+| `KSADK_CODEX_ISOLATE_HOME` | 默认 `1`；设为 `0` 仅用于调试复用进程 HOME |
+| `KSADK_CODEX_SANDBOX` | Codex 沙箱模式：`read_only`、`workspace_write` 或 `full_access` |
 | `KSADK_CODEX_USE_PROXY` | `1` 强制启用 Codex 本地协议代理，`0` 强制直连；未设置时只对自定义上游做保守探测 |
 | `KSADK_PROXY_UPSTREAM_BASE` | Codex proxy 上游 URL 覆盖，默认读取 OpenAI 兼容 base URL |
 | `KSADK_PROXY_UPSTREAM_KEY` | Codex proxy 上游凭据覆盖（敏感） |
@@ -49,6 +53,9 @@ OPENAI_MODEL_NAME=my-model
 | `KSADK_MODEL_PROXY_AGENTS` | 逗号分隔的 agent allowlist |
 | `KSADK_MODEL_PROXY_MODELS` | 逗号分隔的 model allowlist |
 | `KSADK_MODEL_PROXY_DENY` | 逗号分隔的 denylist，用于紧急关闭代理 |
+| `KSADK_STUDIO_NO_SECURITY` | 仅受控自动化测试使用；设为 `1` 会关闭本地 session/CSRF 校验 |
+| `KSADK_STUDIO_SESSION_TOKEN` | Studio 本地浏览器 session token（敏感；未设置时随机生成） |
+| `KSADK_STUDIO_TRACE_CONTENT` | 是否保存 Trace 事件正文，默认 `1`；设为 `0` 只保留元数据 |
 
 ## 0.8 Runtime、A2A 与 A2UI
 

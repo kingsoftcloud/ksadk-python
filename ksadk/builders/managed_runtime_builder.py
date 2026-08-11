@@ -20,8 +20,37 @@ _MANIFEST_KEYS = (
     "artifact_type",
     "runtime",
     "model",
+    "models",
     "prompt",
+    "skills",
+    "mcp_servers",
+    "sandbox",
+    "approval_mode",
 )
+
+
+class _RuntimeManifestDumper(yaml.SafeDumper):
+    """Keep multi-line prompts readable while preserving deterministic bytes."""
+
+
+def _represent_manifest_string(dumper: yaml.SafeDumper, value: str):
+    style = "|" if "\n" in value else None
+    return dumper.represent_scalar("tag:yaml.org,2002:str", value, style=style)
+
+
+_RuntimeManifestDumper.add_representer(str, _represent_manifest_string)
+
+
+def serialize_managed_runtime_manifest(manifest: dict[str, Any]) -> bytes:
+    """Serialize the canonical ManagedRuntime manifest used by every client."""
+
+    return yaml.dump(
+        manifest,
+        Dumper=_RuntimeManifestDumper,
+        allow_unicode=True,
+        sort_keys=False,
+        default_flow_style=False,
+    ).encode("utf-8")
 
 
 class ManagedRuntimeBuilder(BaseBuilder):
@@ -44,7 +73,10 @@ class ManagedRuntimeBuilder(BaseBuilder):
         self.build_dir = self.project_dir / ".agentengine" / "managed_runtime"
 
     def build(self) -> BuildResult:
-        config = self._load_config()
+        # An explicitly supplied snapshot is authoritative.  Studio can keep
+        # more than one Agent manifest in a workspace, so falling back to the
+        # root agentengine.yaml here would silently build the wrong Agent.
+        config = dict(self.config) if self.config else self._load_config()
         error = self._validate_config(config)
         if error:
             return BuildResult(success=False, error_message=error)
@@ -63,11 +95,7 @@ class ManagedRuntimeBuilder(BaseBuilder):
         runtime_name = str(runtime.get("name") or config.get("framework") or "").strip().lower()
         runtime = {"name": runtime_name, "version": version}
         manifest = self._normalized_manifest(config, runtime)
-        manifest_bytes = yaml.safe_dump(
-            manifest,
-            allow_unicode=True,
-            sort_keys=False,
-        ).encode("utf-8")
+        manifest_bytes = serialize_managed_runtime_manifest(manifest)
         manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
         lock = {
             "schema_version": RUNTIME_MANIFEST_SCHEMA,

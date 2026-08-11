@@ -102,6 +102,19 @@ test:
 	@echo "🧪 运行 Python 测试..."
 	uv run --extra all pytest tests/ -v
 
+studio-react-install-browser:
+	uv run playwright install chromium
+
+studio-react-test:
+	npm --prefix ksadk/studio/react-ui ci
+	npm --prefix ksadk/studio/react-ui test
+	npm --prefix ksadk/studio/react-ui run test:ui
+	cd ksadk/studio/react-ui && npx tsc --noEmit
+	npm --prefix ksadk/studio/react-ui run build
+	uv run pytest tests/studio/test_style_system.py -q
+	PYTHONPATH=. uv run python tests/studio/e2e/studio_browser_smoke.py
+	PYTHONPATH=. uv run python tests/studio/e2e/studio_responsive_smoke.py
+
 # ============================================================
 # 构建和发布
 # ============================================================
@@ -267,7 +280,7 @@ PUBLIC_DOCS_URL ?= https://kingsoftcloud.github.io/ksadk-python/
 PUBLIC_PYPI_PROJECT ?= ksadk
 PUBLIC_ALIAS_PYPI_PROJECT ?= agentengine-sdk-python
 PUBLIC_RELEASE_TAG ?= v$(V)
-PUBLIC_TEST_TARGETS ?= tests/test_public_release_positioning.py tests/test_config_env_registry.py tests/test_managed_runtime_builder.py tests/test_managed_runtime_resolution.py tests/cli/test_cmd_create_codex.py tests/runners/test_codex_runner.py
+PUBLIC_TEST_TARGETS ?= tests/test_public_release_positioning.py tests/test_config_env_registry.py tests/test_managed_runtime_builder.py tests/test_managed_runtime_resolution.py tests/cli/test_cmd_create_codex.py tests/runners/test_adapter_contract.py
 
 public-status:
 	@echo "==> internal worktree"

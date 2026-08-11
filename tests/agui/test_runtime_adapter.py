@@ -8,9 +8,13 @@ from typing import Optional
 import pytest
 from ag_ui.core import Context, RunAgentInput, Tool, UserMessage
 from ag_ui_a2ui_toolkit import A2UI_SCHEMA_CONTEXT_DESCRIPTION
+from fastapi import FastAPI
 
+import ksadk.runtime as runtime_api
 from ksadk.agui.a2ui_projection import project_a2ui_operations
 from ksadk.agui.agent import KsadkAGUIAgent
+from ksadk.agui.config import AGUIConfig
+from ksadk.agui.routes import add_ksadk_agui_endpoint
 from ksadk.conversations.message_projection import project_session_messages
 from ksadk.events.runtime_event import EventType, RuntimeEvent
 from ksadk.events.store import RuntimeEventStore, runtime_event_to_session_event
@@ -21,6 +25,8 @@ from ksadk.runtime.adapter import (
     ResumeTarget,
     RunHandle,
     RuntimeAdapter,
+    RuntimeLaunchContext,
+    RuntimeRegistry,
     StartRequest,
 )
 from ksadk.runtime.runner_adapter import RunnerRuntimeAdapter
@@ -81,6 +87,51 @@ class _Adapter(RuntimeAdapter):
 
     async def close(self, handle):
         self.closed.append(handle)
+
+
+def _executor_for(adapter: RuntimeAdapter):
+    registry = RuntimeRegistry()
+    registry.register("fake", lambda _context: adapter)
+    return (
+        runtime_api.RuntimeExecutor(registry),
+        RuntimeLaunchContext(runtime_type="fake", project_dir="."),
+    )
+
+
+def _agent_for(adapter: RuntimeAdapter, *, name: str = "agent", **kwargs):
+    executor, launch_context = _executor_for(adapter)
+    return KsadkAGUIAgent(
+        name=name,
+        executor=executor,
+        launch_context=launch_context,
+        **kwargs,
+    )
+
+
+def test_agui_endpoint_uses_provided_runtime_adapter_without_runner_wrapping(
+    monkeypatch,
+) -> None:
+    """防止 AG-UI 入口重新按框架选择 Runner 包装器。"""
+
+    mounted: list[object] = []
+    monkeypatch.setattr("ksadk.agui.routes.require_agui_dependencies", lambda: None)
+    monkeypatch.setattr(
+        "ksadk.agui.routes._fastapi_endpoint_helper",
+        lambda: lambda _app, agent, *, path: mounted.append((agent, path)),
+    )
+    adapter = _Adapter()
+    executor, launch_context = _executor_for(adapter)
+
+    agent = add_ksadk_agui_endpoint(
+        FastAPI(),
+        executor,
+        launch_context,
+        AGUIConfig(enabled=True, agent_name="agent"),
+    )
+
+    assert agent._shared.executor is executor
+    assert agent._shared.launch_context is launch_context
+    assert mounted == [(agent, "/agentengine/agui")]
 
 
 def _runtime_event(event_type: str, payload: dict, *, seq: int) -> RuntimeEvent:
@@ -165,6 +216,66 @@ async def test_runner_runtime_adapter_emits_reasoning_tool_and_terminal_contract
 
 
 @pytest.mark.asyncio
+async def test_runner_runtime_adapter_prefers_canonical_runtime_event_stream():
+    """A native Runtime must not be flattened to dict chunks and parsed again."""
+
+    class _NativeEventRunner:
+        def stream(self, _input_data):
+            raise AssertionError("legacy chunk stream must not be used")
+
+        async def stream_runtime_events(self, _input_data):
+            yield RuntimeEvent.create(
+                EventType.RUN_STARTED,
+                agent_id="native-agent",
+                user_id="native-user",
+                session_id="native-session",
+                invocation_id="native-run",
+                seq_id=1,
+                payload={"status": "in_progress"},
+            )
+            yield RuntimeEvent.create(
+                EventType.TEXT_COMPLETED,
+                agent_id="native-agent",
+                user_id="native-user",
+                session_id="native-session",
+                invocation_id="native-run",
+                seq_id=2,
+                phase="final_answer",
+                payload={"text": "done"},
+            )
+            yield RuntimeEvent.create(
+                EventType.RUN_COMPLETED,
+                agent_id="native-agent",
+                user_id="native-user",
+                session_id="native-session",
+                invocation_id="native-run",
+                seq_id=3,
+                payload={"status": "completed", "duration_ms": 42},
+            )
+
+    adapter = RunnerRuntimeAdapter(_NativeEventRunner(), runtime_type="native")
+    handle = await adapter.start(
+        StartRequest(
+            input="go",
+            user_id="outer-user",
+            session_id="outer-session",
+            agent_id="outer-agent",
+            metadata={"invocation_id": "outer-run"},
+        )
+    )
+    events = [event async for event in adapter.stream(handle)]
+
+    assert [event.event_type for event in events] == [
+        EventType.RUN_STARTED,
+        EventType.TEXT_COMPLETED,
+        EventType.RUN_COMPLETED,
+    ]
+    assert all(event.invocation_id == "outer-run" for event in events)
+    assert all(event.session_id == "outer-session" for event in events)
+    assert events[-1].payload["duration_ms"] == 42
+
+
+@pytest.mark.asyncio
 async def test_runner_runtime_adapter_projects_a2ui_tool_envelope_as_canonical_surface_event():
     class _ChunkRunner:
         async def stream(self, _input_data):
@@ -225,7 +336,7 @@ async def test_projects_text_reasoning_tools_and_terminal_with_stable_ids():
         _runtime_event(EventType.TEXT_COMPLETED, {"text": "done"}, seq=5),
         _runtime_event(EventType.RUN_COMPLETED, {"status": "completed"}, seq=6),
     ]
-    agent = KsadkAGUIAgent(name="agent", adapter=adapter)
+    agent = _agent_for(adapter)
 
     events = [event async for event in agent.run(_input())]
     types = [event.type.value for event in events]
@@ -255,7 +366,7 @@ async def test_final_text_snapshot_does_not_duplicate_streamed_delta():
         _runtime_event(EventType.TEXT_COMPLETED, {"text": "OK"}, seq=2),
         _runtime_event(EventType.RUN_COMPLETED, {"status": "completed"}, seq=3),
     ]
-    agent = KsadkAGUIAgent(name="agent", adapter=adapter)
+    agent = _agent_for(adapter)
 
     events = [event async for event in agent.run(_input())]
     deltas = [event.delta for event in events if event.type.value == "TEXT_MESSAGE_CONTENT"]
@@ -271,9 +382,8 @@ async def test_agui_first_user_turn_primes_session_title_metadata():
     adapter.streams["thread-1"] = [
         _runtime_event(EventType.RUN_COMPLETED, {"status": "completed"}, seq=1)
     ]
-    agent = KsadkAGUIAgent(
-        name="agent",
-        adapter=adapter,
+    agent = _agent_for(
+        adapter,
         event_store_factory=lambda: RuntimeEventStore(service),
         session_service_factory=lambda: service,
     )
@@ -315,7 +425,7 @@ async def test_agui_interrupt_exposes_tool_context_for_an_actionable_card():
         ),
         _runtime_event(EventType.RUN_INTERRUPTED, {"status": "input_required"}, seq=2),
     ]
-    agent = KsadkAGUIAgent(name="agent", adapter=adapter)
+    agent = _agent_for(adapter)
 
     events = [event async for event in agent.run(_input())]
     interrupt = events[-1].outcome.interrupts[0]
@@ -335,7 +445,7 @@ async def test_catalog_tools_and_injection_flag_reach_the_existing_runner_state(
     adapter.streams["thread-1"] = [
         _runtime_event(EventType.RUN_COMPLETED, {"status": "completed"}, seq=1)
     ]
-    agent = KsadkAGUIAgent(name="agent", adapter=adapter)
+    agent = _agent_for(adapter)
     input_data = _input().model_copy(
         update={
             "tools": [Tool(name="frontend_action", description="action", parameters={})],
@@ -375,7 +485,7 @@ async def test_resume_finds_original_handle_and_preserves_falsy_payload():
         ),
         _runtime_event(EventType.RUN_INTERRUPTED, {"status": "input_required"}, seq=2),
     ]
-    agent = KsadkAGUIAgent(name="agent", adapter=adapter)
+    agent = _agent_for(adapter)
     first = [event async for event in agent.run(_input())]
     original = adapter.handles["thread-1"]
     assert first[-1].type.value == "RUN_FINISHED"
@@ -415,7 +525,7 @@ async def test_unknown_or_incomplete_resume_is_rejected_without_corrupting_handl
         ),
         _runtime_event(EventType.RUN_INTERRUPTED, {"status": "input_required"}, seq=2),
     ]
-    agent = KsadkAGUIAgent(name="agent", adapter=adapter)
+    agent = _agent_for(adapter)
     _ = [event async for event in agent.run(_input())]
 
     invalid = _input(
@@ -440,7 +550,7 @@ async def test_failed_resume_does_not_consume_interrupt_and_can_be_retried():
         ),
         _runtime_event(EventType.RUN_INTERRUPTED, {"status": "input_required"}, seq=2),
     ]
-    agent = KsadkAGUIAgent(name="agent", adapter=adapter)
+    agent = _agent_for(adapter)
     _ = [event async for event in agent.run(_input())]
     resume_input = _input(
         run_id="run-2",
@@ -492,9 +602,8 @@ async def test_durable_replay_restores_pending_interrupt_and_resumes_once():
         ),
         _runtime_event(EventType.RUN_INTERRUPTED, {"status": "input_required"}, seq=2),
     ]
-    first_agent = KsadkAGUIAgent(
-        name="agent",
-        adapter=first_adapter,
+    first_agent = _agent_for(
+        first_adapter,
         event_store_factory=lambda: store,
     )
     _ = [event async for event in first_agent.run(_input())]
@@ -504,9 +613,8 @@ async def test_durable_replay_restores_pending_interrupt_and_resumes_once():
         _runtime_event(EventType.TEXT_COMPLETED, {"text": "resumed"}, seq=3),
         _runtime_event(EventType.RUN_COMPLETED, {"status": "completed"}, seq=4),
     ]
-    restarted_agent = KsadkAGUIAgent(
-        name="agent",
-        adapter=restarted_adapter,
+    restarted_agent = _agent_for(
+        restarted_adapter,
         event_store_factory=lambda: RuntimeEventStore(service),
     )
     resume_input = _input(
@@ -521,9 +629,9 @@ async def test_durable_replay_restores_pending_interrupt_and_resumes_once():
     )
 
     resumed = [event async for event in restarted_agent.run(resume_input)]
-    duplicate_agent = KsadkAGUIAgent(
-        name="agent",
-        adapter=_AttachableAdapter(),
+    duplicate_adapter = _AttachableAdapter()
+    duplicate_agent = _agent_for(
+        duplicate_adapter,
         event_store_factory=lambda: RuntimeEventStore(service),
     )
     duplicate = [event async for event in duplicate_agent.run(resume_input)]
@@ -532,7 +640,7 @@ async def test_durable_replay_restores_pending_interrupt_and_resumes_once():
     assert len(restarted_adapter.attached) == 1
     assert len(restarted_adapter.resumed) == 1
     assert duplicate[-1].result == {"status": "already_resumed"}
-    assert not duplicate_agent._shared.adapter.resumed
+    assert not duplicate_adapter.resumed
 
 
 @pytest.mark.asyncio
@@ -668,9 +776,8 @@ async def test_successful_resume_persists_approval_resolved_for_replay():
         ),
         _runtime_event(EventType.RUN_INTERRUPTED, {"status": "input_required"}, seq=2),
     ]
-    agent = KsadkAGUIAgent(
-        name="agent",
-        adapter=adapter,
+    agent = _agent_for(
+        adapter,
         event_store_factory=lambda: store,
     )
     _ = [event async for event in agent.run(_input())]
@@ -763,7 +870,7 @@ async def test_projects_standard_runtime_a2ui_events_as_official_agui_activities
         _runtime_event(EventType.A2UI_SURFACE_END, {"surface_id": "surface-1"}, seq=3),
         _runtime_event(EventType.RUN_COMPLETED, {"status": "completed"}, seq=4),
     ]
-    agent = KsadkAGUIAgent(name="agent", adapter=adapter, event_store_factory=lambda: store)
+    agent = _agent_for(adapter, event_store_factory=lambda: store)
 
     events = [event async for event in agent.run(_input())]
     activities = [event for event in events if event.type.value == "ACTIVITY_SNAPSHOT"]
@@ -814,7 +921,7 @@ async def test_clone_shares_adapter_but_two_threads_are_isolated():
     adapter.streams["thread-1"] = [
         _runtime_event(EventType.RUN_COMPLETED, {"status": "completed"}, seq=1)
     ]
-    agent = KsadkAGUIAgent(name="agent", adapter=adapter)
+    agent = _agent_for(adapter)
     clone = agent.clone()
     second = _input(run_id="run-2").model_copy(update={"thread_id": "thread-2"})
     adapter.streams["thread-2"] = [
@@ -857,7 +964,7 @@ async def test_disconnect_cancels_and_closes_the_same_handle():
             return generate()
 
     adapter = _BlockingAdapter()
-    agent = KsadkAGUIAgent(name="agent", adapter=adapter)
+    agent = _agent_for(adapter)
     consume = asyncio.create_task(_collect(agent.run(_input())))
     await asyncio.wait_for(adapter.entered.wait(), timeout=1)
 

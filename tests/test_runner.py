@@ -1128,10 +1128,11 @@ def test_base_runner_run_server_registers_runner(monkeypatch):
         {"app": app, "host": host, "port": port}
     )
 
-    # run_server 现经 create_runtime_app(RuntimeAppConfig(runner=self)) 装配(goal-16,
-    # 不再走 ksadk.server.app + set_runner 全局态)。monkeypatch factory 捕获注入的 runner。
+    # run_server 只把 RuntimeExecutor + RuntimeLaunchContext 注入 app factory；
+    # BaseRunner 必须被收敛在其注册的 RuntimeAdapter 内，而不是作为 app 配置字段泄漏。
     def _fake_create_runtime_app(config, configure=None):
-        recorded["config_runner"] = config.runner
+        recorded["executor"] = config.runtime_executor
+        recorded["launch_context"] = config.launch_context
         recorded["agui_config"] = config.agui
         return "fake-app"
 
@@ -1149,7 +1150,8 @@ def test_base_runner_run_server_registers_runner(monkeypatch):
 
     runner.run_server(port=9000)
 
-    assert recorded["config_runner"] is runner
+    adapter = recorded["executor"]._registry.create(recorded["launch_context"])
+    assert adapter._runner is runner
     assert recorded["agui_config"].enabled is True
     assert recorded["agui_config"].runtime_type == "langgraph"
     assert recorded["agui_config"].agent_name == "demo-agent"
@@ -1755,7 +1757,7 @@ def test_apply_adk_only_latest_resumable_marks_older_checkpoints():
     """P1.4: _apply_adk_only_latest_resumable should set IsResumable=False
     on older ADK checkpoints within the same RunId, keeping only the latest
     one resumable."""
-    from ksadk.server.app import _apply_adk_only_latest_resumable
+    from ksadk.server.routes.projection import _apply_adk_only_latest_resumable
 
     checkpoints = [
         {
@@ -1798,7 +1800,7 @@ def test_apply_adk_only_latest_resumable_marks_older_checkpoints():
 
 def test_apply_adk_only_latest_resumable_separate_run_ids():
     """P1.4: Different RunIds should each keep their own latest checkpoint resumable."""
-    from ksadk.server.app import _apply_adk_only_latest_resumable
+    from ksadk.server.routes.projection import _apply_adk_only_latest_resumable
 
     checkpoints = [
         {
@@ -1825,7 +1827,7 @@ def test_apply_adk_only_latest_resumable_separate_run_ids():
 
 def test_apply_adk_only_latest_resumable_skips_non_adk():
     """P1.4: Non-ADK checkpoints (no only_latest_resumable flag) should be untouched."""
-    from ksadk.server.app import _apply_adk_only_latest_resumable
+    from ksadk.server.routes.projection import _apply_adk_only_latest_resumable
 
     checkpoints = [
         {
@@ -1853,7 +1855,7 @@ def test_apply_adk_only_latest_resumable_skips_non_adk():
 def test_check_adk_latest_resumable_marks_non_latest():
     """P1.4: _check_adk_latest_resumable should disable a checkpoint that is
     not the latest for its RunId, based on event history."""
-    from ksadk.server.app import _check_adk_latest_resumable
+    from ksadk.server.routes.projection import _check_adk_latest_resumable
 
     checkpoint = {
         "CheckpointId": "adk-ckpt-1",
@@ -1884,7 +1886,7 @@ def test_check_adk_latest_resumable_marks_non_latest():
 
 def test_check_adk_latest_resumable_keeps_latest():
     """P1.4: _check_adk_latest_resumable should keep the latest checkpoint resumable."""
-    from ksadk.server.app import _check_adk_latest_resumable
+    from ksadk.server.routes.projection import _check_adk_latest_resumable
 
     checkpoint = {
         "CheckpointId": "adk-ckpt-3",
@@ -1914,7 +1916,7 @@ def test_check_adk_latest_resumable_keeps_latest():
 
 def test_check_adk_latest_resumable_skips_non_adk():
     """P1.4: Non-ADK checkpoints should be passed through unchanged."""
-    from ksadk.server.app import _check_adk_latest_resumable
+    from ksadk.server.routes.projection import _check_adk_latest_resumable
 
     checkpoint = {
         "CheckpointId": "lg-ckpt-1",
