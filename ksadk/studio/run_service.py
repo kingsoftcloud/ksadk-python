@@ -657,6 +657,8 @@ class StudioRunService:
                 deployment_mode=spec.launch_context.deployment_mode,
                 invocation_id=record.id,
                 session_service_provider=lambda: temporary_sessions,
+                agent_max_input_tokens=cfg.get("max_input_tokens"),
+                agent_reserve_output_tokens=cfg.get("reserve_output_tokens"),
             )
             record.context_plan = prepared.context_plan
             compiled = prepared.compiled_prompt

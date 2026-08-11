@@ -251,10 +251,14 @@ async def run_hosted_pipeline(
     invocation_id: str = "",
     user_id: str = "",
     agent_id: str = "",
+    agent_max_input_tokens: int | None = None,
+    agent_reserve_output_tokens: int | None = None,
 ) -> HostedPipelineResult | None:
     """运行真实 hosted 链路（方案 §11.1 细化时序 1-10）。
 
-    返回 ``None`` 表示无 compiled_prompt 且无 current_input（无可组装内容），调用方回退旧路径。
+    ``agent_max_input_tokens``/``agent_reserve_output_tokens``：AgentVersion 的 ContextSpec
+    预算覆盖（方案 §8.2）。非 None 时优先于 model_metadata 的窗口（解决 AgentVersion 预算
+    没传到 Planner 的问题）。返回 ``None`` 表示无可组装内容。
     """
     pol = policy or ContextPolicy.from_env()
     counter = get_default_token_counter()
@@ -294,20 +298,29 @@ async def run_hosted_pipeline(
     if not any(i.kind == "compiled_prompt" for i in candidates) and not input_item:
         return None
 
-    # 3. 构造预算（方案 §8.2）：effective context window 已扣 reserved output/reasoning/buffer
-    # （model_context.get_effective_context_window_tokens），这里用它做 max_input，safety_buffer 由
-    # policy 叠加（与现 compaction hard_limit 算法一致，避免双重扣减）。
-    from ksadk.conversations.model_context import get_effective_context_window_tokens
+    # 3. 构造预算（方案 §8.2）。优先用 AgentVersion 的 ContextSpec 预算（agent_max_input_tokens），
+    # 缺失时 fallback 到 model_metadata 的 effective context window。
+    if agent_max_input_tokens is not None and agent_max_input_tokens > 0:
+        # AgentVersion 预算：max_input_tokens 直接作为 context_window，reserve 从 spec 取
+        reserve_out = agent_reserve_output_tokens or 0
+        budget = build_budget(
+            policy=pol.budget,
+            context_window_tokens=agent_max_input_tokens + reserve_out,
+            reserved_output_tokens=reserve_out,
+            reserved_reasoning_tokens=0,
+        )
+    else:
+        from ksadk.conversations.model_context import (
+            get_effective_context_window_tokens,
+        )
 
-    max_input = get_effective_context_window_tokens(model_metadata)
-    # max_input 已扣 AUTOCOMPACT_SUMMARY_RESERVE（≈ reserved output）；safety_buffer 由 policy 提供，  # noqa: E501
-    # 但 effective 已含 buffer，这里把 policy.safety_buffer 视为已包含，避免重复扣减 → 传 0。
-    budget = build_budget(
-        policy=pol.budget,
-        context_window_tokens=max_input + pol.budget.safety_buffer_tokens,
-        reserved_output_tokens=0,
-        reserved_reasoning_tokens=0,
-    )
+        max_input = get_effective_context_window_tokens(model_metadata)
+        budget = build_budget(
+            policy=pol.budget,
+            context_window_tokens=max_input + pol.budget.safety_buffer_tokens,
+            reserved_output_tokens=0,
+            reserved_reasoning_tokens=0,
+        )
 
     # 4. Planner 决策（方案 §8.4）
     planner = ContextPlanner(policy=pol.budget)

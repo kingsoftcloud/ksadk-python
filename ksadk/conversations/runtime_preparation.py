@@ -104,6 +104,8 @@ async def build_run_input(
     memory_recall_enabled: bool | None = None,
     memory_write_rollout: str | None = None,
     deployment_mode: str = "local",
+    agent_max_input_tokens: int | None = None,
+    agent_reserve_output_tokens: int | None = None,
 ) -> PreparedConversationTurn:
     """构建一次 turn 的标准运行输入，并在进入模型前做上下文投影/压缩。
 
@@ -505,14 +507,21 @@ async def build_run_input(
     # 失败回退空字段（prepared 字段语义完整），不阻断主链路。
     await _maybe_fill_hosted_pipeline(
         prepared,
-        compiled_prompt=compiled_prompt, user_input=user_input, history=hosted_history,
-        working_state=working_state, model_metadata=resolved_model_metadata,
+        compiled_prompt=compiled_prompt,
+        user_input=user_input,
+        history=hosted_history,
+        working_state=working_state,
+        model_metadata=resolved_model_metadata,
         prompt_integration_mode=prompt_integration_mode,
         context_engine_rollout=context_engine_rollout,
         memory_recall_enabled=memory_recall_enabled,
         runtime_type=runtime_type,
-        session_id=resolved_session_id, invocation_id=resolved_invocation_id,
-        user_id=resolved_user_id, agent_id=agent_id,
+        session_id=resolved_session_id,
+        invocation_id=resolved_invocation_id,
+        user_id=resolved_user_id,
+        agent_id=agent_id,
+        agent_max_input_tokens=agent_max_input_tokens,
+        agent_reserve_output_tokens=agent_reserve_output_tokens,
     )
     prepared.memory_write_rollout = memory_write_rollout
     return prepared
@@ -529,6 +538,8 @@ async def _maybe_fill_hosted_pipeline(
     prompt_integration_mode: str,
     context_engine_rollout: str | None,
     memory_recall_enabled: bool | None,
+    agent_max_input_tokens: int | None = None,
+    agent_reserve_output_tokens: int | None = None,
     runtime_type: str | None,
     session_id: str,
     invocation_id: str,
@@ -559,9 +570,10 @@ async def _maybe_fill_hosted_pipeline(
         or prompt_integration_mode != "ksadk_hosted"
     ):
         return
-    if not isinstance(compiled_prompt, dict) or not str(
-        compiled_prompt.get("prompt_content") or ""
-    ).strip():
+    if (
+        not isinstance(compiled_prompt, dict)
+        or not str(compiled_prompt.get("prompt_content") or "").strip()
+    ):
         return
     caps = capabilities_for_runtime_type(runtime_type)
     if caps.prompt_owner != "ksadk":
@@ -586,12 +598,21 @@ async def _maybe_fill_hosted_pipeline(
             working_state=working_state,
             model_metadata=model_metadata,
             contributors=contributors,
-            integration_mode=caps.integration_mode,
+            # 与 shadow_plan 口径一致：ksadk_hosted + prompt_owner=ksadk + langgraph → ksadk_hosted
+            integration_mode=(
+                "ksadk_hosted"
+                if prompt_integration_mode == "ksadk_hosted"
+                and caps.prompt_owner == "ksadk"
+                and runtime_type == "langgraph"
+                else caps.integration_mode
+            ),
             accounting_accuracy=caps.token_accounting,
             session_id=session_id,
             invocation_id=invocation_id,
             user_id=user_id,
             agent_id=agent_id,
+            agent_max_input_tokens=agent_max_input_tokens,
+            agent_reserve_output_tokens=agent_reserve_output_tokens,
         )
     except Exception:  # noqa: BLE001 — hosted pipeline 失败必须回退旧路径，不阻断主链路
         logger.warning(
