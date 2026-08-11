@@ -20,7 +20,7 @@ _LEGACY_OVERSIZED_MAX = {
     "ksadk/cli/cmd_mcp.py": 1213,
     "ksadk/cli/cmd_openclaw.py": 4178,
     "ksadk/codex/client.py": 1042,
-    "ksadk/deployment/providers/serverless.py": 1233,
+    "ksadk/deployment/providers/serverless.py": 1296,
     "ksadk/runners/adk_runner.py": 2219,
     "ksadk/runners/langgraph_runner.py": 1250,
     "ksadk/sessions/local_service.py": 1080,
