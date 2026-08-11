@@ -284,6 +284,7 @@ export default function App() {
                   agentId={currentAgentId}
                   agentName={currentAgent?.metadata.name || "Agent"}
                   agentAppearance={currentAgent?.metadata.appearance}
+                  refreshTick={refreshTick}
                 />
               )}
               {chatMounted && !currentAgentId && (
@@ -322,6 +323,9 @@ export default function App() {
                 onCreated={(id, openChat) => {
                   setEditingAgentId("");
                   loadAgents();
+                  // 同一 Agent 重建后 ChatWorkspace 仍常驻挂载；强制重读
+                  // Build 的模型锁定，避免沿用上一 Revision 的模型选择。
+                  setRefreshTick(t => t + 1);
                   if (id && openChat) enterChat(id);
                   else if (id) openDetail(id);
                   else setView("agents");

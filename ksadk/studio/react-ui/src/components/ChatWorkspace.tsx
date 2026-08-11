@@ -79,6 +79,7 @@ interface ChatWorkspaceProps {
   agentId: string;
   agentName: string;
   agentAppearance?: AgentAppearance;
+  refreshTick?: number;
   onRunChanged?: () => void;
 }
 
@@ -544,7 +545,13 @@ function StreamingTurn({
   );
 }
 
-export function ChatWorkspace({ agentId, agentName, agentAppearance, onRunChanged }: ChatWorkspaceProps) {
+export function ChatWorkspace({
+  agentId,
+  agentName,
+  agentAppearance,
+  refreshTick = 0,
+  onRunChanged,
+}: ChatWorkspaceProps) {
   const [runs, setRuns] = useState<ChatRun[]>([]);
   const [models, setModels] = useState<ChatModel[]>([]);
   const [model, setModel] = useState("");
@@ -657,7 +664,7 @@ export function ChatWorkspace({ agentId, agentName, agentAppearance, onRunChange
       cancelled = true;
       abortRef.current?.abort();
     };
-  }, [agentId, loadWorkspace]); // 只在切换 Agent 时重置；运行中的刷新由下方轮询负责。
+  }, [agentId, loadWorkspace, refreshTick]); // Agent/Build 变更后同步最新模型锁定；运行中刷新由下方轮询负责。
 
   useEffect(() => {
     setApprovalMode(normalizeApprovalMode(localStorage.getItem(approvalModeStorageKey(agentId))));
