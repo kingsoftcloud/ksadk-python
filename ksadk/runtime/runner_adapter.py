@@ -5,8 +5,7 @@
 无活跃 turn 记 pending / **级联丢弃 pending 工具审批** / 返回 :class:`CancelResult`。
 
 框架差异(resume 目标、checkpoint 粒度)由子类钩子 ``_resume_native`` 与
-``_checkpoint_capability`` 诚实声明(ADK forward-only vs LangGraph time-travel)。
-"""
+``_checkpoint_capability`` 诚实声明(ADK forward-only vs LangGraph time-travel)。"""
 
 from __future__ import annotations
 
@@ -44,6 +43,7 @@ from ksadk.runtime.adapter import (
 )
 from ksadk.runtime.preprocessing import PreparedRuntimeStart, prepare_runtime_start
 from ksadk.runtime.runner_loading import ensure_runner_loaded
+from ksadk.runtime.usage import canonical_usage_payload
 from ksadk.runtime_context import platform_invocation_scope
 
 logger = logging.getLogger(__name__)
@@ -740,6 +740,21 @@ class RunnerRuntimeAdapter(RuntimeAdapter):
                         event = self._chunk_to_event(handle, run, chunk)
                         if event is not None:
                             yield event
+                        # final chunk 的 usage 也要投影为公共事件；显式 usage chunk 仍走
+                        # 下方解析，避免重复。
+                        if (
+                            isinstance(chunk, dict)
+                            and str(chunk.get("type") or "") != "usage"
+                            and isinstance(chunk.get("usage"), dict)
+                            and chunk.get("usage")
+                        ):
+                            yield self._event(
+                                handle,
+                                EventType.USAGE_REPORTED,
+                                canonical_usage_payload(
+                                    chunk["usage"], runtime_type=self._runtime_type
+                                ),
+                            )
                         a2ui_surface = _a2ui_surface_event(chunk)
                         if a2ui_surface is not None:
                             event_type, payload = a2ui_surface
@@ -920,14 +935,7 @@ class RunnerRuntimeAdapter(RuntimeAdapter):
             return self._event(
                 handle,
                 EventType.USAGE_REPORTED,
-                {
-                    "input_tokens": int(usage.get("input_tokens") or 0),
-                    "output_tokens": int(usage.get("output_tokens") or 0),
-                    "total_tokens": int(usage.get("total_tokens") or 0),
-                    "cached_tokens": int(usage.get("cached_tokens") or 0),
-                    "reasoning_tokens": int(usage.get("reasoning_tokens") or 0),
-                    "source": str(usage.get("source") or self._runtime_type),
-                },
+                canonical_usage_payload(usage, runtime_type=self._runtime_type),
             )
         if chunk_type == "error":
             error = self._coerce(chunk.get("message") or chunk.get("error"))

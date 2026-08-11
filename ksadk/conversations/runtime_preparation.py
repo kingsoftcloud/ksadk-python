@@ -100,6 +100,9 @@ async def build_run_input(
     agent_system: str = "",
     agent_task: str = "",
     prompt_integration_mode: str = "",
+    context_engine_rollout: str | None = None,
+    memory_recall_enabled: bool | None = None,
+    memory_write_rollout: str | None = None,
     deployment_mode: str = "local",
 ) -> PreparedConversationTurn:
     """构建一次 turn 的标准运行输入，并在进入模型前做上下文投影/压缩。
@@ -391,8 +394,16 @@ async def build_run_input(
     )
 
     # compaction_owner 硬门控（方案 §6.2）：从 capability 取 owner，非 ksadk 时不走双阈值
-    from ksadk.context_engine.capabilities import capabilities_for_runner, capabilities_for_runtime_type
-    _caps = capabilities_for_runner(runner) if runner is not None else capabilities_for_runtime_type(runtime_type)
+    from ksadk.context_engine.capabilities import (
+        capabilities_for_runner,
+        capabilities_for_runtime_type,
+    )
+
+    _caps = (
+        capabilities_for_runner(runner)
+        if runner is not None
+        else capabilities_for_runtime_type(runtime_type)
+    )
     checkpoint = await _compact_conversation_history_with_governance(
         governance_state,
         session_id=resolved_session_id,
@@ -496,10 +507,14 @@ async def build_run_input(
         prepared,
         compiled_prompt=compiled_prompt, user_input=user_input, history=hosted_history,
         working_state=working_state, model_metadata=resolved_model_metadata,
-        prompt_integration_mode=prompt_integration_mode, runtime_type=runtime_type,
+        prompt_integration_mode=prompt_integration_mode,
+        context_engine_rollout=context_engine_rollout,
+        memory_recall_enabled=memory_recall_enabled,
+        runtime_type=runtime_type,
         session_id=resolved_session_id, invocation_id=resolved_invocation_id,
         user_id=resolved_user_id, agent_id=agent_id,
     )
+    prepared.memory_write_rollout = memory_write_rollout
     return prepared
 
 
@@ -512,6 +527,8 @@ async def _maybe_fill_hosted_pipeline(
     working_state: dict[str, Any] | None,
     model_metadata: dict[str, Any],
     prompt_integration_mode: str,
+    context_engine_rollout: str | None,
+    memory_recall_enabled: bool | None,
     runtime_type: str | None,
     session_id: str,
     invocation_id: str,
@@ -537,7 +554,10 @@ async def _maybe_fill_hosted_pipeline(
         run_hosted_pipeline,
     )
 
-    if not hosted_pipeline_enabled() or prompt_integration_mode != "ksadk_hosted":
+    if (
+        not hosted_pipeline_enabled(rollout=context_engine_rollout)
+        or prompt_integration_mode != "ksadk_hosted"
+    ):
         return
     if not isinstance(compiled_prompt, dict) or not str(
         compiled_prompt.get("prompt_content") or ""
@@ -553,7 +573,11 @@ async def _maybe_fill_hosted_pipeline(
         logger.info("hosted pipeline skipped for session=%s: capability circuit open", session_id)
         return
     # PR E：注入默认 Contributors（MemoryRecall 等）进真实链路（方案 §8.7）。
-    contributors = default_hosted_contributors(user_id=user_id, agent_id=agent_id)
+    contributors = default_hosted_contributors(
+        user_id=user_id,
+        agent_id=agent_id,
+        memory_recall_enabled=memory_recall_enabled,
+    )
     try:
         result = await run_hosted_pipeline(
             compiled_prompt=compiled_prompt,

@@ -252,8 +252,8 @@ class ContextSpec(ContractModel):
     # framework（默认）= 框架自带 SystemMessage，ksadk 不接管 Runner 输入；
     # ksadk = 由 ksadk 的 PromptCompiler 编译 CompiledPrompt 并接管 instructions。
     prompt_ownership: Literal["framework", "ksadk"] = "framework"
-    # PCM：ownership 高阶字段（方案 §5.1）。auto=按 capability 推导（向后兼容现有 prompt_ownership）；
-    # 显式 ksadk/framework/native 时覆盖 prompt_ownership。Studio 据 capability 限制可选项（§5.2）。
+    # PCM：ownership 高阶字段（方案 §5.1）。auto=按 capability 推导，向后兼容现有
+    # prompt_ownership；显式 ksadk/framework/native 时覆盖。Studio 据 capability 限制选项。
     ownership: Literal["auto", "ksadk", "framework", "native"] = "auto"
     tokenizer: Literal["auto", "heuristic"] = "auto"
     policy_version: str = Field(default="context-v2", max_length=64)
@@ -480,6 +480,7 @@ class ResolvedAgentSpec(ContractModel):
     capabilities: ResolvedCapabilities
     execution: ExecutionSpec
     context: ContextSpec
+    memory: MemorySpec
     security: SecuritySpec
     evaluation: EvaluationSpec
     source_digest: str

@@ -131,3 +131,16 @@ def test_default_hosted_contributors_include_memory_when_enabled(tmp_path, monke
     contributors = default_hosted_contributors(user_id="user", agent_id="agent")
 
     assert any(item.id() == "memory_recall" for item in contributors)
+
+
+def test_agent_memory_off_overrides_enabled_environment(tmp_path, monkeypatch):
+    monkeypatch.setenv("KSADK_MEMORY_ENABLED", "true")
+    monkeypatch.setenv("KSADK_MEMORY_DB_PATH", str(tmp_path / "memory.db"))
+
+    contributors = default_hosted_contributors(
+        user_id="user",
+        agent_id="agent",
+        memory_recall_enabled=False,
+    )
+
+    assert all(item.id() != "memory_recall" for item in contributors)

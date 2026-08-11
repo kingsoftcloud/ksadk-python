@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -112,3 +113,26 @@ def test_build_repository_round_trip(workspace: Workspace):
     loaded = repository.get("build_123")
     assert loaded == record
     assert repository.list_for_agent("demo-agent") == [record]
+
+
+def test_build_repository_lists_newest_build_first(workspace: Workspace):
+    repository = BuildRepository(workspace)
+    now = datetime.now(timezone.utc)
+    older = BuildRecord(
+        id="build_z_old",
+        agent_id="demo-agent",
+        source_revision=1,
+        status=BuildStatus.SUCCEEDED,
+        created_at=now - timedelta(minutes=1),
+    )
+    newer = BuildRecord(
+        id="build_a_new",
+        agent_id="demo-agent",
+        source_revision=2,
+        status=BuildStatus.SUCCEEDED,
+        created_at=now,
+    )
+    repository.save(older)
+    repository.save(newer)
+
+    assert repository.list_for_agent("demo-agent") == [newer, older]

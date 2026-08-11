@@ -216,6 +216,39 @@ async def test_runner_runtime_adapter_emits_reasoning_tool_and_terminal_contract
 
 
 @pytest.mark.asyncio
+async def test_runner_runtime_adapter_projects_usage_attached_to_final_chunk():
+    class _UsageRunner:
+        async def stream(self, _input_data):
+            yield {
+                "type": "final",
+                "output": "done",
+                "usage": {
+                    "input_tokens": 21,
+                    "output_tokens": 7,
+                    "total_tokens": 28,
+                    "input_token_details": {"cached": 3},
+                    "output_token_details": {"reasoning": 2},
+                    "source": "model-provider",
+                },
+            }
+
+    adapter = RunnerRuntimeAdapter(_UsageRunner(), runtime_type="langgraph")
+    handle = await adapter.start(StartRequest(input="go", user_id="u", session_id="s"))
+    events = [event async for event in adapter.stream(handle)]
+
+    usage = next(event for event in events if event.event_type == EventType.USAGE_REPORTED)
+    assert usage.payload == {
+        "input_tokens": 21,
+        "output_tokens": 7,
+        "total_tokens": 28,
+        "cached_tokens": 3,
+        "reasoning_tokens": 2,
+        "source": "model-provider",
+    }
+    assert events.index(usage) < len(events) - 1
+
+
+@pytest.mark.asyncio
 async def test_runner_runtime_adapter_prefers_canonical_runtime_event_stream():
     """A native Runtime must not be flattened to dict chunks and parsed again."""
 

@@ -245,7 +245,7 @@ class BuildRepository:
                 continue
             if record.agent_id == agent_id:
                 records.append(record)
-        return records
+        return sorted(records, key=lambda item: item.created_at, reverse=True)
 
     def delete_for_agent(
         self,

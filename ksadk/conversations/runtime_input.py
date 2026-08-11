@@ -65,7 +65,8 @@ def _should_project_compiled_prompt(
 
     满足全部条件才接管：
     1. 全局 flag 开（``KSADK_PROMPT_COMPILER_ENABLED``）；
-    2. per-Build 接管标记 ``prompt_integration_mode=="ksadk_hosted"``（仅 ``prompt_ownership=ksadk``）；
+    2. per-Build 接管标记 ``prompt_integration_mode=="ksadk_hosted"``
+       （仅 ``prompt_ownership=ksadk``）；
     3. 已编译出真实 CompiledPrompt 且含非空 ``prompt_content``（agent_system/agent_task 非空，
        非 resume 旁路）；
     4. runner 类型为 langgraph（ADK/Codex 接管错位，排除）。
@@ -551,7 +552,9 @@ def _build_runner_request_payload(
     return payload
 
 
-def _maybe_inject_working_state(payload: dict[str, Any], prepared: PreparedConversationTurn) -> None:
+def _maybe_inject_working_state(
+    payload: dict[str, Any], prepared: PreparedConversationTurn
+) -> None:
     """PR D2：把 working_state 渲染成 <working_state> XML 段追加进 payload instructions。
 
     门控：仅 ``prompt_integration_mode=="ksadk_hosted"`` 且 ``working_state`` 非空时注入。
@@ -724,7 +727,12 @@ async def _auto_save_ltm_turn(
     runner_type: str,
     model: str | None,
 ) -> None:
-    if prepared.resume_input is not None or not _ltm_auto_save_enabled():
+    if prepared.resume_input is not None:
+        return
+    memory_rollout = str(prepared.memory_write_rollout or "").strip().lower()
+    if memory_rollout in {"off", "shadow"}:
+        return
+    if not memory_rollout and not _ltm_auto_save_enabled():
         return
 
     metadata: dict[str, Any] = {

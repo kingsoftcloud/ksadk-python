@@ -5,8 +5,9 @@
 user_input、working_state，运行 Contributors 产出候选 ContextItem，交给 ContextPlanner 做预算
 决策，再由 ContextAssembler 投影成最终 Chat 输入。返回 ``(ContextPlan, AssembledInput)``。
 
-**门控**：仅 ``KSADK_CONTEXT_ENGINE_V2_ENABLED`` + ``prompt_integration_mode=="ksadk_hosted"``
-时由 ``build_run_input`` 调用。默认关闭 → 走旧 PR B 分支，字节级一致。本模块纯计算 + 受控
+**门控**：AgentVersion ``context.rollout.contextEngine=enabled`` 开启，环境变量
+``KSADK_CONTEXT_ENGINE_V2_ENABLED=false`` 可作为全局紧急关闭。只有
+``prompt_integration_mode=="ksadk_hosted"`` 才由 ``build_run_input`` 调用。本模块纯计算 + 受控
 Contributor 调用，不接触 Session Store、不调模型；replan 由调用方在 compaction/PTL 后重新调用
 （ADR-016：每 Turn 只生成一份 canonical Plan）。
 
@@ -35,14 +36,21 @@ from ksadk.context_engine.policies import ContextPolicy
 from ksadk.context_engine.tokenizer import get_default_token_counter
 
 
-def hosted_pipeline_enabled() -> bool:
-    """全局 kill switch（方案 §14.2）。默认关——关闭时 build_run_input 走旧 PR B 分支。"""
-    return str(os.environ.get("KSADK_CONTEXT_ENGINE_V2_ENABLED", "")).strip().lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
-    )
+def hosted_pipeline_enabled(*, rollout: str | None = None) -> bool:
+    """解析全局 kill switch 与 AgentVersion 级 Context rollout。
+
+    传入 rollout 时，``enabled`` 开启真实链路，``off``/``shadow`` 不改变 Runner
+    输入。环境变量仍是最高优先级的紧急开关：显式 false 一律关闭；旧调用未传
+    rollout 时则保持原语义，只有环境变量显式 true 才开启。
+    """
+    raw = os.environ.get("KSADK_CONTEXT_ENGINE_V2_ENABLED")
+    normalized = str(raw or "").strip().lower()
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    env_enabled = normalized in {"1", "true", "yes", "on"}
+    if rollout is not None:
+        return str(rollout).strip().lower() == "enabled" and (raw is None or env_enabled)
+    return env_enabled
 
 
 def _env_flag(name: str, default: bool = True) -> bool:
@@ -170,6 +178,7 @@ def default_hosted_contributors(
     user_id: str = "",
     agent_id: str = "",
     memory_provider: Any = None,
+    memory_recall_enabled: bool | None = None,
 ) -> list[ContextContributor]:
     """构造默认 hosted Contributors（方案 §8.7 首批内置）。
 
@@ -182,7 +191,17 @@ def default_hosted_contributors(
     """
     pol = policy or ContextPolicy.from_env()
     contributors: list[ContextContributor] = []
-    if pol.memory.enabled:
+    memory_enabled = pol.memory.enabled
+    if memory_recall_enabled is not None:
+        memory_enabled = bool(memory_recall_enabled)
+        # 环境级 false 保留为生产紧急 kill switch。
+        if os.environ.get("KSADK_MEMORY_ENABLED", "").strip().lower() in {
+            "0",
+            "false",
+            "off",
+        }:
+            memory_enabled = False
+    if memory_enabled:
         try:
             from ksadk.memory.coordinator import MemoryCoordinator
 
@@ -303,9 +322,13 @@ async def run_hosted_pipeline(
 
     # 5. Assembler 投影成 Chat 输入（方案 §8）
     assembled = ContextAssembler().assemble_chat(plan)
+    plan_dict = _plan_to_dict(plan)
+    # hosted 模式由 KsADK 拥有最终 Runner payload，因此 assembler 的 token 结果就是
+    # projected 口径；actual 仍只接受 Runtime/Provider usage 回填。
+    plan_dict["projected_input_tokens"] = assembled.estimated_tokens
 
     return HostedPipelineResult(
-        plan=_plan_to_dict(plan),
+        plan=plan_dict,
         assembled=assembled,
         contributor_status=contrib_status,
     )

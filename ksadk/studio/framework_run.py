@@ -30,6 +30,52 @@ def _resolved_prompt_ownership(resolved: Any) -> str:
     return str(context.get("promptOwnership") or context.get("prompt_ownership") or "")
 
 
+def _resolved_context_engine_rollout(resolved: Any) -> str:
+    """读取 AgentVersion 固化的 Context Engine rollout。"""
+    if not isinstance(resolved, dict):
+        return ""
+    context = resolved.get("context")
+    if not isinstance(context, dict):
+        return ""
+    rollout = context.get("rollout")
+    if not isinstance(rollout, dict):
+        return ""
+    return str(rollout.get("contextEngine") or rollout.get("context_engine") or "")
+
+
+def _resolved_memory_recall_enabled(resolved: Any) -> bool | None:
+    """读取 AgentVersion 的 Memory 召回开关；缺失时保留旧环境策略。"""
+    if not isinstance(resolved, dict):
+        return None
+    memory = resolved.get("memory")
+    if not isinstance(memory, dict) or "enabled" not in memory:
+        return None
+    enabled = bool(memory.get("enabled"))
+    recall = memory.get("recall")
+    if isinstance(recall, dict) and "enabled" in recall:
+        enabled = enabled and bool(recall.get("enabled"))
+    context = resolved.get("context")
+    contributors = context.get("contributors") if isinstance(context, dict) else None
+    if isinstance(contributors, dict):
+        explicit = contributors.get("memoryRecall", contributors.get("memory_recall"))
+        if explicit is not None:
+            enabled = enabled and bool(explicit)
+    return enabled
+
+
+def _resolved_memory_write_rollout(resolved: Any) -> str:
+    """读取 AgentVersion 固化的 Memory 写入 rollout。"""
+    if not isinstance(resolved, dict):
+        return ""
+    context = resolved.get("context")
+    if not isinstance(context, dict):
+        return ""
+    rollout = context.get("rollout")
+    if not isinstance(rollout, dict):
+        return ""
+    return str(rollout.get("memoryWrite") or rollout.get("memory_write") or "")
+
+
 class FrameworkRunSpecResolver:
     def __init__(
         self,
@@ -93,6 +139,9 @@ class FrameworkRunSpecResolver:
                 if _resolved_prompt_ownership(resolved) == "ksadk"
                 else {}
             ),
+            "context_engine_rollout": _resolved_context_engine_rollout(resolved),
+            "memory_recall_enabled": _resolved_memory_recall_enabled(resolved),
+            "memory_write_rollout": _resolved_memory_write_rollout(resolved),
             "entry_point": detection.entry_point,
             "agent_variable": detection.agent_variable,
         }

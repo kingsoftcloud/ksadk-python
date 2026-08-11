@@ -92,6 +92,11 @@ async def prepare_runtime_start(request: StartRequest, runner: Any) -> PreparedR
             # PR B：per-Build 接管标记（Studio resolver 据 prompt_ownership 注入）。
             # 非空（ksadk_hosted）→ ksadk 编译并接管 instructions（仅 ksadk-owned LangGraph）。
             prompt_integration_mode=str(request.config.get("prompt_integration_mode") or ""),
+            context_engine_rollout=str(request.config.get("context_engine_rollout") or "")
+            or None,
+            memory_recall_enabled=request.config.get("memory_recall_enabled"),
+            memory_write_rollout=str(request.config.get("memory_write_rollout") or "")
+            or None,
         )
     _inject_runner_deferred_tools_for_request(runner, prepared)
     ambient_contexts = _build_runner_ambient_contexts(

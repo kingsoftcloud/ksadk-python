@@ -181,8 +181,29 @@ async def test_studio_reuses_evidence_prepared_turn_for_runtime_request(
     monkeypatch.setenv("KSADK_PROMPT_COMPILER_ENABLED", "1")
     monkeypatch.setenv("KSADK_CONTEXT_ENGINE_V2_ENABLED", "1")
     calls: list[tuple[str, Any]] = []
+
+    class _HostedMetricsAdapter(_RecordingAdapter):
+        async def stream(self, handle: RunHandle) -> AsyncIterator[RuntimeEvent]:
+            async for event in super().stream(handle):
+                if event.event_type == EventType.RUN_COMPLETED:
+                    yield RuntimeEvent.create(
+                        EventType.USAGE_REPORTED,
+                        agent_id="review-helper",
+                        user_id="local-user",
+                        session_id=handle.session_id,
+                        invocation_id=handle.run_id,
+                        seq_id=3,
+                        payload={
+                            "input_tokens": 11,
+                            "output_tokens": 4,
+                            "total_tokens": 15,
+                            "source": "fixture",
+                        },
+                    )
+                yield event
+
     registry = RuntimeRegistry()
-    registry.register("langgraph", lambda _context: _RecordingAdapter(calls))
+    registry.register("langgraph", lambda _context: _HostedMetricsAdapter(calls))
     workspace = Workspace(tmp_path)
     workspace.initialize()
     service = StudioRunService(workspace, RuntimeExecutor(registry))
@@ -211,10 +232,14 @@ async def test_studio_reuses_evidence_prepared_turn_for_runtime_request(
     assert conversation is not None
     prepared = (conversation.model_extra or {})["prepared_turn"]
     assert prepared["invocation_id"] == record.id
-    assert prepared["context_plan"] == record.context_plan
+    finalized_plan = dict(record.context_plan)
+    finalized_plan["runtime_reported_input_tokens"] = None
+    assert prepared["context_plan"] == finalized_plan
     assert prepared["compiled_prompt"]["prompt_content_hash"] == (
         record.prompt_evidence["contentHash"]
     )
+    assert record.usage.reported is True
+    assert record.context_plan["runtime_reported_input_tokens"] == 11
 
 
 @pytest.mark.asyncio

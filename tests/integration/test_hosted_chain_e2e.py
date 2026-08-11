@@ -21,6 +21,7 @@ from typing import Any
 import pytest
 
 from ksadk.conversations.runtime_invocation import invoke_conversation_once
+from ksadk.conversations.runtime_preparation import build_run_input
 from ksadk.runners.base_runner import BaseRunner
 from ksadk.sessions.in_memory import InMemorySessionService
 
@@ -36,7 +37,7 @@ _LANGGRAPH_DETECTION = SimpleNamespace(
 
 
 class _RecordingRunner(BaseRunner):
-    """记录型 Runner：detection_type=langgraph，记录每次进模型的 instructions/input/history，回固定输出 + usage。
+    """记录型 Runner，记录每次进模型的 instructions/input/history。
 
     走真实 BaseRunner.invoke 契约，经 RunnerRuntimeAdapter 接入 canonical 路径。
     """
@@ -215,7 +216,7 @@ async def test_hosted_chain_off_by_default_is_byte_identical():
         prompt_integration_mode="ksadk_hosted",  # 即使声明接管
         session_service_provider=lambda: service,
     )
-    # 未开 KSADK_PROMPT_COMPILER_ENABLED/CONTEXT_ENGINE_V2 → instructions 仍是旧拼接（无 XML section）
+    # 未开 Prompt Compiler/Context Engine → instructions 仍是旧拼接（无 XML section）
     recv = runner.received[-1]
     # 旧路径：instructions == request instructions（"q"），不含 agent_system/task
     assert recv["instructions"] == "q"
@@ -223,8 +224,56 @@ async def test_hosted_chain_off_by_default_is_byte_identical():
 
 
 @pytest.mark.asyncio
+async def test_agent_rollout_enables_hosted_chain_without_process_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AgentVersion 的 enabled 是行为合同，不应要求 Studio 进程再手工设置 env。"""
+    monkeypatch.delenv("KSADK_CONTEXT_ENGINE_V2_ENABLED", raising=False)
+    service = InMemorySessionService()
+    prepared = await build_run_input(
+        agent_id="rollout-agent",
+        user_id="rollout-user",
+        session_id="rollout-session",
+        messages=[{"role": "user", "content": "继续任务"}],
+        model="m",
+        agent_system="你是助手",
+        agent_task="保持当前工作状态",
+        prompt_integration_mode="ksadk_hosted",
+        context_engine_rollout="enabled",
+        runtime_type="langgraph",
+        session_service_provider=lambda: service,
+    )
+    assert prepared.context_plan is not None
+    assert prepared.assembled_input is not None
+    assert prepared.context_plan["projected_input_tokens"] == (
+        prepared.assembled_input["estimated_tokens"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_global_false_kill_switch_overrides_agent_rollout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KSADK_CONTEXT_ENGINE_V2_ENABLED", "false")
+    service = InMemorySessionService()
+    prepared = await build_run_input(
+        agent_id="rollout-agent-off",
+        user_id="rollout-user",
+        session_id="rollout-session-off",
+        messages=[{"role": "user", "content": "继续任务"}],
+        agent_system="你是助手",
+        prompt_integration_mode="ksadk_hosted",
+        context_engine_rollout="enabled",
+        runtime_type="langgraph",
+        session_service_provider=lambda: service,
+    )
+    assert prepared.context_plan is None
+    assert prepared.assembled_input is None
+
+
+@pytest.mark.asyncio
 async def test_managed_codex_native_not_taken_over(env_hosted):
-    """Managed Codex（native_runtime）：即使开 V2，assembled_input 不产出，不被接管（PCM-RUNNER-003）。"""
+    """Managed Codex 即使开 V2 也不产出 assembled_input（PCM-RUNNER-003）。"""
     from ksadk.conversations.runtime_preparation import build_run_input
 
     service = InMemorySessionService()

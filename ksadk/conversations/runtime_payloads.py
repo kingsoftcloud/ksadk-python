@@ -80,6 +80,8 @@ class PreparedConversationTurn:
     # 可信 Principal，供平台 Memory 写入与召回使用。不能用 session_id 代替 user scope。
     user_id: str = ""
     agent_id: str = ""
+    # AgentVersion 级 Memory 写入灰度。None=旧环境策略；off/shadow=不写；enabled=写入。
+    memory_write_rollout: str | None = None
 
 
 @dataclass

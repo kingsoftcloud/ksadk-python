@@ -121,6 +121,10 @@ def test_quick_authoring_generates_detectable_framework_source(tmp_path: Path) -
         assert detected.entry_point == "agent.py"
         assert detected.agent_variable == variable
         assert (source / ".agentkit-generated").is_file()
+        if runtime_type == "langgraph":
+            generated = (source / "agent.py").read_text(encoding="utf-8")
+            assert "stream_usage=True" in generated
+            assert "if not any(isinstance(message, SystemMessage)" in generated
 
 
 def test_framework_build_runs_from_immutable_source_snapshot(tmp_path: Path) -> None:
