@@ -137,6 +137,20 @@ class _ControllableCodex(CodexClient):
     def run_turn(self, thread_id, prompt, *, config=None):
         async def gen():
             yield _turn_started(thread_id)
+            # Emit an approval request so the canonical adapter can track
+            # pending_approvals from InteractionRequested events.
+            yield {
+                "id": "req-approval-1",
+                "method": "item/commandExecution/requestApproval",
+                "params": {
+                    "threadId": thread_id,
+                    "turnId": "turn-1",
+                    "itemId": "call-1",
+                    "approvalId": "call-1",
+                    "command": "git status",
+                    "cwd": "/workspace",
+                },
+            }
             if self._block:
                 await self._release.wait()
             yield _item_started(thread_id, "m1")
@@ -473,15 +487,10 @@ async def test_cancel_interrupts_turn_and_skips_persistence():
     await asyncio.wait_for(consume, timeout=2)
 
 
-@pytest.mark.xfail(reason="PROD BUG: codex runtime adapter doesn't populate _CodexThread.pending_approvals from InteractionRequested events in canonical path; also _ControllableCodex.run_turn doesn't generate approval events. Needs both prod fix (track pending_approvals) and test fix (generate approval events)")
 @pytest.mark.asyncio
 async def test_cancel_cascades_pending_approvals():
-    # NOTE: In the canonical path, CodexRuntimeAdapter does not populate
-    # _CodexThread.pending_approvals from InteractionRequested events (the
-    # old v1 _codex_chunk_to_event did this, but the canonical CodexEventAdapter
-    # doesn't have access to _CodexThread). This test will time out waiting
-    # for pending_approvals to be non-empty. Production fix needed: the
-    # adapter should track pending approvals from InteractionRequested events.
+    # In the canonical path, CodexRuntimeAdapter tracks pending_approvals
+    # from InteractionRequested events (canonical interaction_id).
     client = _ControllableCodex()
     adapter = CodexRuntimeAdapter(client)
     handle = await adapter.start(StartRequest(input="go", user_id="u", session_id="s"))
@@ -491,9 +500,17 @@ async def test_cancel_cascades_pending_approvals():
         if adapter._threads[handle.run_id].pending_approvals:
             break
         await asyncio.sleep(0.01)
+    assert adapter._threads[handle.run_id].pending_approvals, "pending_approvals should be non-empty"
     await adapter.cancel(handle)
     # 级联丢弃来自 runtime 自跟踪的 pending 审批集(真实 SDK 无独立 drain API)。
-    assert adapter.last_cancel_dropped_approvals == {"call-1"}
+    # The canonical interaction_id is a stable hash of the codex scope/method/interaction id.
+    dropped = adapter.last_cancel_dropped_approvals
+    assert len(dropped) == 1, f"expected 1 dropped approval, got {dropped}"
+    # Verify the dropped id matches the InteractionRequested event's interaction_id.
+    requested_events = [e for e in events if hasattr(e, "event_type") and e.event_type == "interaction.requested"]
+    assert len(requested_events) >= 1
+    expected_id = requested_events[0].interaction_id
+    assert dropped == {expected_id}
     await asyncio.wait_for(consume, timeout=2)
 
 

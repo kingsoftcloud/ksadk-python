@@ -37,6 +37,7 @@ from ag_ui.core import (
     ToolCallStartEvent,
 )
 
+from ksadk.agui.a2ui_projection import project_a2ui_operations
 from ksadk.conversations.runtime_metadata import (
     _update_session_metadata_after_assistant_turn,
     prime_session_metadata_for_user_turn,
@@ -195,7 +196,10 @@ class KsadkAGUIAgent:
 
             run.active = True
             async for runtime_event in self._shared.executor.stream(run.handle):
-                persisted = await self._persist(self._event_for_persistence(runtime_event, run))
+                persisted = await self._persist(
+                    self._event_for_persistence(runtime_event, run),
+                    session_id=input.thread_id,
+                )
                 async for event in self._project(persisted, wire, run):
                     yield event
             if not wire.terminal:
@@ -382,11 +386,13 @@ class KsadkAGUIAgent:
                 ),
             )
             if index == 0:
-                _persisted, reservation_created = await self._reserve(event)
+                _persisted, reservation_created = await self._reserve(
+                    event, session_id=input.thread_id
+                )
                 if not reservation_created:
                     return False
             else:
-                await self._persist(event)
+                await self._persist(event, session_id=input.thread_id)
         return reservation_created
 
     @staticmethod
@@ -669,15 +675,15 @@ class KsadkAGUIAgent:
             wire.text_open = False
             yield TextMessageEndEvent(message_id=wire.message_id)
 
-    async def _persist(self, event: RuntimeEvent) -> RuntimeEvent:
+    async def _persist(self, event: RuntimeEvent, *, session_id: str = "") -> RuntimeEvent:
         factory = self._shared.event_store_factory
         if factory is None:
             return event
         store = factory()
-        session_id = str(event.source.metadata.get("session_id") or "")
-        return cast(RuntimeEvent, await store.append_one(session_id, event))
+        sid = str(event.source.metadata.get("session_id") or session_id or "")
+        return cast(RuntimeEvent, await store.append_one(sid, event))
 
-    async def _reserve(self, event: RuntimeEvent) -> tuple[RuntimeEvent, bool]:
+    async def _reserve(self, event: RuntimeEvent, *, session_id: str = "") -> tuple[RuntimeEvent, bool]:
         factory = self._shared.event_store_factory
         if factory is None:
             return event, True
@@ -686,8 +692,8 @@ class KsadkAGUIAgent:
         if callable(reserve):
             persisted, created = await reserve(event)
             return cast(RuntimeEvent, persisted), bool(created)
-        session_id = str(event.source.metadata.get("session_id") or "")
-        return cast(RuntimeEvent, await store.append_one(session_id, event)), True
+        sid = str(event.source.metadata.get("session_id") or session_id or "")
+        return cast(RuntimeEvent, await store.append_one(sid, event)), True
 
     async def _persist_user_input(
         self,
@@ -716,7 +722,8 @@ class KsadkAGUIAgent:
                     },
                 ),
                 status="running",
-            )
+            ),
+            session_id=input.thread_id,
         )
         await self._prime_session_metadata_for_user_turn(
             session_id=input.thread_id,
@@ -917,12 +924,24 @@ class KsadkAGUIAgent:
     ) -> list[dict[str, Any]]:
         if isinstance(event, ItemStarted):
             part = KsadkAGUIAgent._first_part(event.initial)
-            if isinstance(part, DataContent) and isinstance(part.data, list):
-                return [dict(op) for op in part.data if isinstance(op, Mapping)]
+            if isinstance(part, DataContent):
+                if isinstance(part.data, list):
+                    return [dict(op) for op in part.data if isinstance(op, Mapping)]
+                if isinstance(part.data, Mapping):
+                    # Surface data dict (surface_id, catalog_id, components, etc.)
+                    # Use project_a2ui_operations to extract canonical operations.
+                    return project_a2ui_operations(
+                        "a2ui.surface.begin", dict(part.data)
+                    )
             return []
         if isinstance(event, ItemUpdated):
-            if isinstance(event.update, DataContent) and isinstance(event.update.data, list):
-                return [dict(op) for op in event.update.data if isinstance(op, Mapping)]
+            if isinstance(event.update, DataContent):
+                if isinstance(event.update.data, list):
+                    return [dict(op) for op in event.update.data if isinstance(op, Mapping)]
+                if isinstance(event.update.data, Mapping):
+                    return project_a2ui_operations(
+                        "a2ui.surface.update", dict(event.update.data)
+                    )
             return []
         # ItemCompleted (end): produce deleteSurface to preserve AG-UI wire
         if surface_id:

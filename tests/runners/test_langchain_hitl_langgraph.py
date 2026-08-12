@@ -212,7 +212,7 @@ async def test_runner_interrupt_detectable_via_checkpoint_metadata():
     assert md["framework_ref"]["langgraph"]["checkpoint_id"]
 
 
-@pytest.mark.xfail(reason="PROD BUG: langgraph stream_canonical_events doesn't set handle.native_ref checkpoint_id on normal completion; adapter.checkpoint() requires checkpoint_id in native_ref. Only interrupt path sets checkpoint via ContinuationCreated")
+@pytest.mark.xfail(reason="langgraph stream_canonical_events normal completion path: checkpoint() on non-interrupted run requires checkpoint_id in native_ref, but v3 stream completion doesn't set it (only interrupt path sets via ContinuationCreated). Requires v3 stream completion checkpoint extraction, beyond Task 7 scope.")
 @pytest.mark.asyncio
 async def test_runtime_adapter_resume_approve_decision_executes_tool():
     """RuntimeAdapter 把真实 HITL 决定送入 Command(resume=),工具真执行。"""

@@ -43,7 +43,7 @@ def _input(run_id: str, resume=None):
     )
 
 
-@pytest.mark.xfail(reason="PROD BUG: langgraph stream_canonical_events resume path does not re-execute interrupted graph node after canonical switch; interrupt detection + ContinuationCreated now fixed but resume->replay flow incomplete")
+@pytest.mark.xfail(reason="langgraph v3 stream resume path: interrupted graph node does not re-execute after Command(resume=...); ContinuationCreated + interrupt detection work but the resumed v3 stream does not emit the node's output text. Requires investigation of v3 AsyncGraphRunStream resume semantics, beyond Task 7 scope.")
 @pytest.mark.asyncio
 async def test_langgraph_interrupt_resumes_same_thread_with_command_resume():
     runner = LangGraphRunner(

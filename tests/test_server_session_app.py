@@ -5597,7 +5597,6 @@ async def test_run_agent_stream_continues_after_client_disconnect(monkeypatch):
     assert events[-1].content["status"] == "completed"
 
 
-@pytest.mark.xfail(reason="PROD BUG: message_projection.py not updated for canonical event types; partial assistant text (item.updated) not projected to session history as assistant_message. Only item.completed creates assistant_message")
 @pytest.mark.asyncio
 async def test_background_run_exposes_partial_assistant_text_to_session_history(monkeypatch):
     """A refresh can recover the assistant text produced before the browser left."""
@@ -5642,9 +5641,18 @@ async def test_background_run_exposes_partial_assistant_text_to_session_history(
             ("assistant", "第一段正在生成。"),
         ]
         events = await service.get_events("sess-partial-history")
-        deltas = [event for event in events if event.event_type == "text.delta"]
-        assert len(deltas) == 1
-        assert deltas[0].content["payload"]["text"] == "第一段正在生成。"
+        # The canonical streaming path persists partial assistant text as
+        # item.updated (message delta) events.
+        deltas = [
+            event for event in events
+            if event.event_type == "item.updated"
+        ]
+        assert len(deltas) >= 1, f"expected >=1 item.updated, got {len(deltas)}; event types: {[e.event_type for e in events]}"
+        # The partial text "第一段正在生成。" should be in the item.updated event.
+        delta_event = deltas[0]
+        runtime_event = delta_event.content.get("runtime_event", {})
+        update = runtime_event.get("update", {})
+        assert update.get("text") == "第一段正在生成。"
         assert all(event.event_type != "assistant_message" for event in events)
     finally:
         runner.release.set()

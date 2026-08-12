@@ -412,7 +412,7 @@ async def test_a2a_server_to_langgraph_writer_round_trip(tmp_path: Any) -> None:
     ]
 
 
-@pytest.mark.xfail(reason="PROD BUG: langgraph stream_canonical_events on_chain_end path produces RunCompleted with open commentary item (same _ensure_no_open_items conformance issue as the dict-chunk path, but the fix is in the LangGraphEventAdapter, not runner_adapter._chunk_to_event)")
+@pytest.mark.xfail(reason="Test fixture uses v2 astream_events API (on_chain_stream/on_chain_end) but stream_canonical_events now uses v3 ProtocolEvent API; fixture needs rewrite to v3 format")
 @pytest.mark.asyncio
 async def test_a2a_server_round_trip_preserves_text_replacement(tmp_path: Any) -> None:
     runner = _replacing_langgraph_runner()

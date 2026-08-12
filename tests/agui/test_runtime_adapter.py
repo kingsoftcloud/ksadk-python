@@ -741,7 +741,6 @@ async def test_failed_resume_does_not_consume_interrupt_and_can_be_retried():
     assert adapter.resumed[-1][2].data == 0
 
 
-@pytest.mark.xfail(reason="PROD BUG: agui durable replay session_id empty in canonical persist path; InteractionRequested tracking + ContinuationCreated checkpoint partially fixed but resume flow incomplete")
 @pytest.mark.asyncio
 async def test_durable_replay_restores_pending_interrupt_and_resumes_once():
     class _AttachableAdapter(_Adapter):
@@ -807,7 +806,6 @@ async def test_durable_replay_restores_pending_interrupt_and_resumes_once():
     assert not duplicate_adapter.resumed
 
 
-@pytest.mark.xfail(reason="PROD BUG: message_projection.py not updated for canonical event types (item.started/item.completed/item.updated vs old text.completed/text.delta); project_session_messages returns empty")
 @pytest.mark.asyncio
 async def test_agui_runtime_events_project_to_refreshable_history():
     events = [
@@ -830,6 +828,13 @@ async def test_agui_runtime_events_project_to_refreshable_history():
             "tool",
             seq=2,
             detail={"tool_name": "shell", "arguments": {"cmd": "echo ok"}},
+        ).model_copy(
+            update={
+                "source": SourceRef(
+                    framework="ksadk",
+                    metadata={"protocol": "ag-ui"},
+                )
+            }
         ),
         _run_interrupted(seq=3),
         InteractionResolved(
@@ -957,7 +962,6 @@ async def test_successful_resume_persists_approval_resolved_for_replay():
     assert resolved[0].source.metadata.get("protocol") == "ag-ui"
 
 
-@pytest.mark.xfail(reason="PROD BUG: a2ui activity projection expects 3 activities but canonical switch changes event structure; message_projection.py not updated for canonical event types")
 @pytest.mark.asyncio
 async def test_projects_standard_runtime_a2ui_events_as_official_agui_activities():
     class _Store:

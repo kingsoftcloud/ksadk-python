@@ -275,7 +275,15 @@ class TestAdapterContract:
         handle = await adapter.start(StartRequest(input="go", user_id="u", session_id="s"))
         events: list = []
         consume = asyncio.create_task(_drain(adapter, handle, events))
-        await asyncio.sleep(0.1)  # approval(call-1)已记录
+        # Wait for pending approvals to be populated (event-driven, not time-based).
+        for _ in range(100):
+            if (
+                hasattr(adapter, "_threads")
+                and handle.run_id in adapter._threads
+                and adapter._threads[handle.run_id].pending_approvals
+            ):
+                break
+            await asyncio.sleep(0.01)
         result = await adapter.cancel(handle)
         assert result is CancelResult.INTERRUPTED_ACTIVE_TURN
         if framework == "codex":

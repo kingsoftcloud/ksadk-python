@@ -56,7 +56,10 @@ def _project_event_group(
         for event in events
         if event.get("EventType") == "reasoning" and _event_text(event)
     ]
-    tool_events = (
+    # Split tool events: approval-only events before first assistant_message
+    # vs all tool events. When approval events precede a text completion, they
+    # get their own assistant message placeholder.
+    all_tool_events = (
         _project_tool_events(events, approval_responses=approval_responses)
         if include_tool_events
         else []
@@ -68,6 +71,27 @@ def _project_event_group(
     streamed_text = ""
     start_seq_id = min((int(event.get("SeqId") or 0) for event in events), default=0)
 
+    # Check if there are approval events before the first assistant_message.
+    # When approval events precede a text completion, they get their own
+    # assistant message placeholder with empty text.
+    has_assistant_message = any(
+        str(e.get("EventType") or "") == "assistant_message" for e in events
+    )
+    pre_assistant_tool_events: list[dict[str, Any]] = []
+    post_assistant_tool_events: list[dict[str, Any]] = []
+    if has_assistant_message and all_tool_events:
+        # Split: approval events go to pre_assistant, tool_call/tool_result
+        # go to post_assistant.
+        for te in all_tool_events:
+            if te.get("Type") == "approval":
+                pre_assistant_tool_events.append(te)
+            else:
+                post_assistant_tool_events.append(te)
+    else:
+        post_assistant_tool_events = list(all_tool_events)
+
+    has_pre_assistant_approvals = bool(pre_assistant_tool_events)
+
     for event in events:
         event_type = str(event.get("EventType") or "")
         if event_type == "user_message":
@@ -78,13 +102,31 @@ def _project_event_group(
                     message["Attachments"] = attachments
             projected.append(message)
         elif event_type == "assistant_message":
+            # If there are approval events that preceded this assistant_message,
+            # emit a placeholder assistant message for them first.
+            if has_pre_assistant_approvals and not assistant_seen:
+                anchor = next(
+                    (e for e in events
+                     if str(e.get("EventType") or "") == "approval_request"),
+                    events[0],
+                )
+                placeholder = _base_message(anchor, "assistant", content="")
+                if include_tool_events and pre_assistant_tool_events:
+                    placeholder["ToolEvents"] = pre_assistant_tool_events
+                projected.append(placeholder)
+                assistant_seen = True
+                # Don't add tool_events/reasoning to the next message — they
+                # belong to the placeholder.
             message = _base_message(event, "assistant")
+            # Attach reasoning to the first non-placeholder assistant message.
+            # When has_pre_assistant_approvals is True, the placeholder was
+            # already emitted, so this is the real assistant message.
             if include_reasoning and reasoning:
                 message["Reasoning"] = reasoning
-            if tool_events:
-                message["ToolEvents"] = tool_events
+            if include_tool_events and post_assistant_tool_events:
+                message["ToolEvents"] = post_assistant_tool_events
             if include_reasoning:
-                blocks = _project_interleaved_blocks(events, tool_events=tool_events)
+                blocks = _project_interleaved_blocks(events, tool_events=post_assistant_tool_events)
                 if blocks:
                     message["Blocks"] = blocks
             projected.append(message)
@@ -95,7 +137,7 @@ def _project_event_group(
             streamed_text += _event_text(event)
 
     if not assistant_seen and (
-        latest_snapshot is not None or streamed_text or reasoning or tool_events or activities
+        latest_snapshot is not None or streamed_text or reasoning or all_tool_events or activities
     ):
         anchor = next(
             (
@@ -124,10 +166,10 @@ def _project_event_group(
         )
         if include_reasoning and reasoning:
             message["Reasoning"] = reasoning
-        if tool_events:
-            message["ToolEvents"] = tool_events
+        if all_tool_events:
+            message["ToolEvents"] = all_tool_events
         if include_reasoning:
-            blocks = _project_interleaved_blocks(events, tool_events=tool_events)
+            blocks = _project_interleaved_blocks(events, tool_events=all_tool_events)
             if blocks:
                 message["Blocks"] = blocks
         projected.append(message)
@@ -526,11 +568,12 @@ def _normalize_canonical_event(
         return event
     event_type = str(runtime_event.get("event_type") or "")
     item_kind = str(runtime_event.get("item_kind") or "")
+    raw_source = runtime_event.get("source") or {}
+    source = raw_source if isinstance(raw_source, Mapping) else {}
     normalized = dict(event)
     normalized_metadata = dict(metadata)
 
     if event_type == "run.started":
-        source = runtime_event.get("source") or {}
         source_metadata = source.get("metadata") if isinstance(source, Mapping) else None
         if isinstance(source_metadata, Mapping) and source_metadata.get("source") == "ag-ui":
             normalized["EventType"] = "user_message"
@@ -564,6 +607,22 @@ def _normalize_canonical_event(
             normalized["EventType"] = "tool_call"
             normalized["Content"] = {"call_id": call_id, "name": name, "args": args}
             normalized_metadata.update({"call_id": call_id, "tool_name": name, "tool_args": args})
+        elif item_kind == "data" and source.get("protocol") == "a2ui":
+            surface_id = str(source.get("metadata", {}).get("surface_id") or "")
+            initial = runtime_event.get("initial") or {}
+            parts = initial.get("parts") if isinstance(initial, Mapping) else []
+            data: Any = {}
+            for part in (parts or []):
+                if isinstance(part, Mapping) and part.get("content_type") == "data":
+                    data = part.get("data")
+                    break
+            if isinstance(data, list):
+                normalized["Content"] = {"surface_id": surface_id, "components": data}
+            elif isinstance(data, Mapping):
+                normalized["Content"] = data
+            else:
+                normalized["Content"] = {"surface_id": surface_id}
+            normalized["EventType"] = "a2ui.surface.begin"
         else:
             return event
     elif event_type == "item.completed":
@@ -592,6 +651,10 @@ def _normalize_canonical_event(
             normalized["EventType"] = "tool_result"
             normalized["Content"] = {"call_id": call_id, "name": "", "result": result}
             normalized_metadata.update({"call_id": call_id, "tool_output": result})
+        elif item_kind == "data" and source.get("protocol") == "a2ui":
+            surface_id = str(source.get("metadata", {}).get("surface_id") or "")
+            normalized["EventType"] = "a2ui.surface.end"
+            normalized["Content"] = {"surface_id": surface_id}
         else:
             return event
     elif event_type == "item.updated":
@@ -605,11 +668,86 @@ def _normalize_canonical_event(
             text = update.get("text", "") if isinstance(update, Mapping) else ""
             normalized["EventType"] = "reasoning"
             normalized["Content"] = {"role": "model", "parts": [{"text": text}]}
+        elif item_kind == "data" and source.get("protocol") == "a2ui":
+            surface_id = str(source.get("metadata", {}).get("surface_id") or "")
+            update = runtime_event.get("update") or {}
+            update_data = update.get("data") if isinstance(update, Mapping) else None
+            if isinstance(update_data, list):
+                normalized["Content"] = {"surface_id": surface_id, "components": update_data}
+            elif isinstance(update_data, Mapping):
+                normalized["Content"] = update_data
+            else:
+                normalized["Content"] = {"surface_id": surface_id}
+            normalized["EventType"] = "a2ui.surface.update"
         else:
             return event
     elif event_type == "interaction.requested":
-        normalized["EventType"] = "approval_request"
-        normalized["Content"] = {"detail": runtime_event.get("request", {})}
+        interaction_kind = str(runtime_event.get("interaction_kind") or "approval")
+        request = runtime_event.get("request") or {}
+        if not isinstance(request, Mapping):
+            request = {}
+        if interaction_kind == "approval":
+            interaction_id = str(runtime_event.get("interaction_id") or "")
+            call_id = str(request.get("call_id") or "")
+            kind = str(request.get("kind") or "approval")
+            detail = request.get("detail")
+            if not isinstance(detail, Mapping):
+                detail = {}
+            normalized["EventType"] = "approval_request"
+            normalized["Content"] = {"detail": detail}
+            normalized_metadata["interrupt_info"] = {
+                "approval_request_id": interaction_id or call_id,
+                "id": interaction_id or call_id,
+                "tool_name": detail.get("tool_name") or kind,
+                "arguments": detail.get("arguments") or detail.get("args"),
+                "approval_level": detail.get("approval_level"),
+                "approval_message": detail.get("message"),
+            }
+            # Preserve ag-ui protocol tag from source metadata.
+            source = runtime_event.get("source") or {}
+            source_metadata = source.get("metadata") if isinstance(source, Mapping) else None
+            if isinstance(source_metadata, Mapping) and source_metadata.get("protocol") == "ag-ui":
+                normalized_metadata["protocol"] = "ag-ui"
+        else:
+            # structured_input: project as approval_request but with
+            # structured input schema in detail.
+            interaction_id = str(runtime_event.get("interaction_id") or "")
+            normalized["EventType"] = "approval_request"
+            normalized["Content"] = {"detail": request}
+            normalized_metadata["interrupt_info"] = {
+                "approval_request_id": interaction_id,
+                "id": interaction_id,
+                "tool_name": "structured_input",
+                "arguments": None,
+            }
+    elif event_type == "interaction.resolved":
+        interaction_kind = str(runtime_event.get("interaction_kind") or "")
+        response = runtime_event.get("response") or {}
+        if not isinstance(response, Mapping):
+            response = {}
+        response_type = str(response.get("response_type") or "")
+        interaction_id = str(runtime_event.get("interaction_id") or "")
+        if response_type == "approval":
+            decision = str(response.get("decision") or "")
+            normalized["EventType"] = "approval_response"
+            normalized["Content"] = {"detail": response}
+            normalized_metadata["resume_input"] = {
+                "approval_request_id": interaction_id,
+                "approve": decision in ("approved", "approve", True),
+                "decision": decision,
+            }
+            source = runtime_event.get("source") or {}
+            source_metadata = source.get("metadata") if isinstance(source, Mapping) else None
+            if isinstance(source_metadata, Mapping) and source_metadata.get("protocol") == "ag-ui":
+                normalized_metadata["protocol"] = "ag-ui"
+        else:
+            normalized["EventType"] = "approval_response"
+            normalized["Content"] = {"detail": response}
+            normalized_metadata["resume_input"] = {
+                "approval_request_id": interaction_id,
+                "approve": True,
+                "decision": "approved",
+            }
     else:
         return event
 
