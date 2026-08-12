@@ -150,6 +150,7 @@ def set_runner(r: BaseRunner, *, loaded: bool = False):
     state = get_state()
     state.runner = r
     state.runner_loaded = loaded
+    state.persistence_capability.invalidate(r)
     from ksadk.server.factory import wire_default_agui_for_runner
 
     wire_default_agui_for_runner(state, r)

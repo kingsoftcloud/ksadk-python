@@ -105,6 +105,40 @@ async def test_configured_postgres_backend_fails_open_to_memory(monkeypatch, cap
     assert "session persistence degraded" in caplog.text
 
 
+async def test_checkpoint_written_during_degradation_is_permanently_non_resumable():
+    class _FailingPrimary(InMemorySessionService):
+        async def append_event(self, session_id, event):
+            raise ConnectionError("database unavailable")
+
+    fallback = InMemorySessionService()
+    await fallback.create_session("demo-agent", "user-1", session_id="sess-checkpoint")
+    service = ResilientSessionService(_FailingPrimary(), fallback=fallback)
+    event = SessionEvent(
+        id="evt-checkpoint",
+        event_type="run_checkpoint",
+        metadata={
+            "run_id": "run-1",
+            "checkpoint_id": "ckpt-1",
+            "framework": "langgraph",
+            "framework_ref": {"langgraph": {"checkpoint_id": "ckpt-1"}},
+            "is_resumable": True,
+            "resume_status": "resumable",
+            "backend": "postgres",
+            "durable": True,
+        },
+    )
+
+    stored = await service.append_event("sess-checkpoint", event)
+
+    assert stored.metadata["is_resumable"] is False
+    assert stored.metadata["resume_status"] == "disabled"
+    assert stored.metadata["durable"] is False
+    assert stored.metadata["resume_disabled_reason"] == (
+        "Checkpoint was not written to durable persistence"
+    )
+    await service.aclose()
+
+
 async def test_configured_postgres_backend_fails_open_when_asyncpg_is_missing(
     monkeypatch,
     caplog,
@@ -122,7 +156,10 @@ async def test_configured_postgres_backend_fails_open_when_asyncpg_is_missing(
     assert session.id == "sess-1"
     assert isinstance(service, ResilientSessionService)
     assert service.degraded is True
-    assert "asyncpg is required" in caplog.text
+    assert any(
+        getattr(record, "session_backend_reason_code", "") == "DEPENDENCY_MISSING"
+        for record in caplog.records
+    )
     assert "session persistence degraded" in caplog.text
 
 
@@ -858,6 +895,20 @@ async def test_resilient_service_recovers_after_probe(monkeypatch, caplog):
     await asyncio.sleep(0.15)
     assert service.degraded is False
     assert "session persistence recovered" in caplog.text
+
+
+async def test_resilient_service_can_refresh_persistence_without_waiting_for_probe_loop():
+    primary = _RecoverablePrimary(fail_count=1)
+    service = ResilientSessionService(primary)
+
+    await service.get_session("missing")
+    assert service.degraded is True
+
+    recovered = await service.refresh_persistence_capability()
+
+    assert recovered is True
+    assert service.degraded is False
+    await service.aclose()
     await service.aclose()
 
 

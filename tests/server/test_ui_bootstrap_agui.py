@@ -94,3 +94,30 @@ def test_bootstrap_does_not_advertise_agui_interrupt_without_runtime_checkpoint(
         "Interrupt": False,
         "Cancel": True,
     }
+
+
+def test_lifespan_refreshes_capability_only_after_lazy_runner_load():
+    calls = []
+
+    class _LazyRunner(_Runner):
+        def load_agent(self):
+            calls.append("load")
+            self.loaded = True
+
+        async def refresh_runtime_capabilities(self):
+            assert self.loaded is True
+            calls.append("refresh")
+
+    app = create_runtime_app(
+        RuntimeAppConfig(runner=_LazyRunner(), route_groups={"ui_bootstrap"})
+    )
+    app.include_router(ui_bootstrap_router)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/agentengine/api/v1/GetAgentUiBootstrap",
+            json={"AgentId": "agent", "UserId": "user", "SessionId": "s1"},
+        )
+
+    assert response.status_code == 200
+    assert calls == ["load", "refresh"]

@@ -76,6 +76,30 @@ class _CheckpointResumeRunner(_DummyRunner):
         }
 
 
+@pytest.fixture(autouse=True)
+def _ready_persistence_for_route_unit_tests(monkeypatch):
+    """Keep route behavior tests focused on their declared checkpoint scenario."""
+
+    server_app_module = importlib.import_module("ksadk.server.app")
+
+    async def ready_persistence(*, framework=None, use_cache=True):
+        del framework, use_cache
+        status = {
+            "Configured": True,
+            "Status": "ready",
+            "Ready": True,
+            "Backend": "postgres",
+            "SharedAcrossPods": True,
+            "EffectiveFor": "new_runs_only",
+            "Source": "explicit",
+            "ReasonCode": "READY",
+            "Reason": "",
+        }
+        return {"Session": dict(status), "Checkpoint": dict(status)}
+
+    monkeypatch.setattr(server_app_module, "get_persistence_status", ready_persistence)
+
+
 class _CheckpointMetadataRunner(_DummyRunner):
     async def invoke(self, input_data: dict) -> dict:
         self.calls.append(input_data)
@@ -191,6 +215,11 @@ class _CancellableStreamingRunner(_OverrideStreamingRunner):
     def request_cancel(self, invocation_id: str) -> str:
         self.cancel_requests.append(invocation_id)
         return "accepted"
+
+
+class _CheckpointCancellableStreamingRunner(_CancellableStreamingRunner):
+    def describe_checkpoint_capability(self) -> dict:
+        return _CheckpointResumeRunner().describe_checkpoint_capability()
 
 
 class _ModelAwareRunner(_DummyRunner):
@@ -3720,6 +3749,138 @@ async def test_resume_run_rejects_checkpoint_policy_disabled_by_audit(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_resume_run_rejects_when_runtime_persistence_is_unavailable(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
+    service = InMemorySessionService()
+    runner = _CheckpointResumeRunner()
+
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-runtime-gate"
+    )
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+    await conversation_runtime.append_run_checkpoint_event(
+        session_id="sess-runtime-gate",
+        author="demo-agent",
+        run_id="run-runtime-gate",
+        checkpoint_id="ckpt-runtime-gate",
+        framework="langgraph",
+        framework_ref={
+            "langgraph": {
+                "thread_id": "sess-runtime-gate",
+                "checkpoint_id": "ckpt-runtime-gate",
+            }
+        },
+        metadata={"is_resumable": True, "backend": "postgres", "durable": True},
+        session_service_provider=lambda: service,
+    )
+
+    async def unavailable(*, framework=None, use_cache=True):
+        base = {
+            "Configured": True,
+            "Status": "error",
+            "Ready": False,
+            "Backend": "postgres",
+            "SharedAcrossPods": False,
+            "EffectiveFor": "new_runs_only",
+            "Source": "explicit",
+            "ReasonCode": "SESSION_STORE_UNREACHABLE",
+            "Reason": "PostgreSQL persistence is unreachable",
+        }
+        return {"Session": base, "Checkpoint": {**base, "ReasonCode": "READY", "Ready": True}}
+
+    monkeypatch.setattr(server_app_module, "get_persistence_status", unavailable)
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/ResumeRun",
+            json={
+                "AgentId": "demo-agent",
+                "SessionId": "sess-runtime-gate",
+                "RunId": "run-runtime-gate",
+                "CheckpointId": "ckpt-runtime-gate",
+                "Stream": False,
+            },
+        )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == {
+        "Code": "runtime_persistence_unavailable",
+        "ReasonCode": "SESSION_STORE_UNREACHABLE",
+        "Reason": "PostgreSQL persistence is unreachable",
+        "BlockedStore": "session",
+        "Retryable": True,
+    }
+    events = await service.get_events("sess-runtime-gate")
+    assert not any(event.event_type == "run_resume" for event in events)
+    assert runner.calls == []
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_preview_temporarily_disables_resume_when_persistence_is_down(
+    monkeypatch,
+):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
+    service = InMemorySessionService()
+    runner = _CheckpointResumeRunner()
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-preview-gate"
+    )
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+    await conversation_runtime.append_run_checkpoint_event(
+        session_id="sess-preview-gate",
+        author="demo-agent",
+        run_id="run-preview-gate",
+        checkpoint_id="ckpt-preview-gate",
+        framework="langgraph",
+        framework_ref={
+            "langgraph": {
+                "thread_id": "sess-preview-gate",
+                "checkpoint_id": "ckpt-preview-gate",
+            }
+        },
+        metadata={"is_resumable": True, "backend": "postgres", "durable": True},
+        session_service_provider=lambda: service,
+    )
+
+    async def unavailable(*, framework=None, use_cache=True):
+        status = {
+            "Configured": True,
+            "Status": "error",
+            "Ready": False,
+            "Backend": "postgres",
+            "SharedAcrossPods": False,
+            "EffectiveFor": "new_runs_only",
+            "Source": "explicit",
+            "ReasonCode": "CHECKPOINT_STORE_UNREACHABLE",
+            "Reason": "PostgreSQL persistence is unreachable",
+        }
+        return {"Session": {**status, "Ready": True, "ReasonCode": "READY"}, "Checkpoint": status}
+
+    monkeypatch.setattr(server_app_module, "get_persistence_status", unavailable)
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/GetCheckpointResumePreview",
+            json={
+                "AgentId": "demo-agent",
+                "SessionId": "sess-preview-gate",
+                "RunId": "run-preview-gate",
+                "CheckpointId": "ckpt-preview-gate",
+            },
+        )
+
+    preview = response.json()["Data"]["Preview"]
+    assert preview["Checkpoint"]["IsResumable"] is True
+    assert preview["CanResume"] is False
+    assert preview["Capabilities"]["CheckpointResume"] is False
+    assert preview["Reason"] == "PostgreSQL persistence is unreachable"
+
+
+@pytest.mark.asyncio
 async def test_resume_run_stream_persists_resuming_event_before_response(monkeypatch):
     """ResumeRun(Stream) 返回响应前必须同步落 resuming 起始事件。
 
@@ -4193,7 +4354,7 @@ async def test_resume_run_action_stream_registers_detached_cancel(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")
     conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
     service = InMemorySessionService()
-    runner = _CancellableStreamingRunner()
+    runner = _CheckpointCancellableStreamingRunner()
 
     await service.create_session(
         agent_id="demo-agent", user_id="user-1", session_id="sess-resume-cancel"
@@ -4286,7 +4447,7 @@ async def test_resume_run_action_stream_rejects_concurrent_resume_for_same_run(m
     server_app_module = importlib.import_module("ksadk.server.app")
     conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
     service = InMemorySessionService()
-    runner = _CancellableStreamingRunner()
+    runner = _CheckpointCancellableStreamingRunner()
 
     await service.create_session(
         agent_id="demo-agent",

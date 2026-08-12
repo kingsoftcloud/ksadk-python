@@ -5,11 +5,11 @@ LangGraphRunner - LangGraph 框架运行时
 """
 
 import asyncio
-import sqlite3
 import base64
 import inspect
 import os
 import re
+import sqlite3
 import uuid
 from typing import Any, AsyncIterator, Dict, Mapping
 
@@ -34,6 +34,7 @@ class LangGraphRunner(BaseRunner):
         super().__init__(detection_result, project_dir)
         self._managed_checkpoint_lock = asyncio.Lock()
         self._managed_checkpoint_prepared = False
+        self._managed_checkpoint_state = "uninitialized"
         self._managed_checkpoint_error: tuple[str, str] | None = None
         self._managed_checkpoint_pool: Any = None
         self._managed_checkpoint_namespace = ""
@@ -359,10 +360,23 @@ class LangGraphRunner(BaseRunner):
             raise
 
     async def prepare_runtime_capabilities(self) -> None:
-        if self._managed_checkpoint_prepared:
+        await self._prepare_managed_checkpoint(allow_transient_retry=False)
+
+    async def refresh_runtime_capabilities(self) -> None:
+        await self._prepare_managed_checkpoint(allow_transient_retry=True)
+
+    async def _prepare_managed_checkpoint(self, *, allow_transient_retry: bool) -> None:
+        if self._managed_checkpoint_state in {"ready", "terminal_failure"}:
+            return
+        if self._managed_checkpoint_state == "transient_failure" and not allow_transient_retry:
             return
         async with self._managed_checkpoint_lock:
-            if self._managed_checkpoint_prepared:
+            if self._managed_checkpoint_state in {"ready", "terminal_failure"}:
+                return
+            if (
+                self._managed_checkpoint_state == "transient_failure"
+                and not allow_transient_retry
+            ):
                 return
 
             checkpointer = getattr(self._agent, "checkpointer", None)
@@ -373,6 +387,7 @@ class LangGraphRunner(BaseRunner):
                     self._resolve_checkpoint_namespace()
                 )
                 self._managed_checkpoint_prepared = True
+                self._managed_checkpoint_state = "ready"
                 return
 
             auto_enabled = self._env_flag("KSADK_LANGGRAPH_AUTO_CHECKPOINT")
@@ -383,6 +398,7 @@ class LangGraphRunner(BaseRunner):
                 or not checkpoint_target.dsn
             ):
                 self._managed_checkpoint_prepared = True
+                self._managed_checkpoint_state = "terminal_failure"
                 return
 
             factory = getattr(self._module, "ksadk_graph_factory", None)
@@ -393,6 +409,7 @@ class LangGraphRunner(BaseRunner):
                     "ksadk_graph_factory(*, checkpointer) for managed PostgreSQL checkpoints",
                 )
                 self._managed_checkpoint_prepared = True
+                self._managed_checkpoint_state = "terminal_failure"
                 return
 
             pool = None
@@ -407,22 +424,41 @@ class LangGraphRunner(BaseRunner):
                     self._resolve_checkpoint_namespace()
                 )
                 self._managed_checkpoint_error = None
+                self._managed_checkpoint_state = "ready"
             except (ModuleNotFoundError, ImportError):
                 self._managed_checkpoint_error = (
                     "DEPENDENCY_MISSING",
                     "langgraph-checkpoint-postgres and psycopg are required "
                     "for managed checkpoints",
                 )
+                self._managed_checkpoint_state = "terminal_failure"
             except Exception as exc:
                 error_name = type(exc).__name__.lower()
+                authentication_failure = any(
+                    marker in error_name
+                    for marker in ("password", "authentication", "authorization")
+                )
+                permission_failure = any(
+                    marker in error_name for marker in ("privilege", "permission")
+                )
+                terminal = authentication_failure or permission_failure or isinstance(
+                    exc, (TypeError, ValueError)
+                )
                 reason_code = (
-                    "SCHEMA_PERMISSION_DENIED"
-                    if "privilege" in error_name or "permission" in error_name
+                    "AUTH_FAILED"
+                    if authentication_failure
+                    else "SCHEMA_PERMISSION_DENIED"
+                    if permission_failure
+                    else "CHECKPOINTER_NOT_DURABLE"
+                    if terminal
                     else "CHECKPOINT_STORE_UNREACHABLE"
                 )
                 self._managed_checkpoint_error = (
                     reason_code,
                     "Managed LangGraph PostgreSQL checkpointer initialization failed",
+                )
+                self._managed_checkpoint_state = (
+                    "terminal_failure" if terminal else "transient_failure"
                 )
             finally:
                 if pool is not None and self._managed_checkpoint_pool is None:

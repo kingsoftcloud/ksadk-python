@@ -36,6 +36,7 @@ from ksadk.sandbox.registry import (
     bind_sandbox_registry,
     set_fallback_sandbox_registry,
 )
+from ksadk.server.persistence_capability import PersistenceCapabilityCoordinator
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +129,7 @@ class RuntimeAppState:
         # AG-UI endpoint 及其 app-owned RuntimeAdapter handle registry。
         self.agui_agent: Any = None
         self.agui_config: Any = None
+        self.persistence_capability = PersistenceCapabilityCoordinator()
 
     def resolve_session_service(self) -> Any:
         """Return this app's session service for the current execution loop."""
@@ -290,6 +292,8 @@ async def shutdown_runtime_resources(state: RuntimeAppState) -> None:
         await asyncio.gather(*pending_streams, return_exceptions=True)
     registry.clear()
 
+    await state.persistence_capability.aclose()
+
     active_runner = state.runner
     if active_runner is not None:
         close = getattr(active_runner, "close", None)
@@ -341,6 +345,21 @@ def create_runtime_app(
     @asynccontextmanager
     async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         try:
+            if state.runner is not None and state.runner_loaded:
+                from ksadk.sessions.persistence import get_persistence_status
+
+                detection_type = getattr(
+                    getattr(state.runner, "detection_result", None), "type", None
+                )
+                framework = str(
+                    getattr(detection_type, "value", detection_type) or ""
+                ).strip().lower()
+                state.persistence_capability.start(
+                    runner=state.runner,
+                    framework=framework,
+                    status_provider=get_persistence_status,
+                    session_service_provider=state.resolve_session_service,
+                )
             if state.a2a_bootstrap is not None:
                 await state.a2a_bootstrap.start()
             yield

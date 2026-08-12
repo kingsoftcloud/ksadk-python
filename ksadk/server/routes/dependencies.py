@@ -75,8 +75,16 @@ def describe_session_backend() -> dict[str, Any]:
     return current().describe_session_backend()
 
 
-async def get_persistence_status(*, framework: str | None = None) -> dict[str, Any]:
-    return dict(await current().get_persistence_status(framework=framework))
+async def get_persistence_status(
+    *, framework: str | None = None, use_cache: bool = True
+) -> dict[str, Any]:
+    provider = current().get_persistence_status
+    try:
+        return dict(await provider(framework=framework, use_cache=use_cache))
+    except TypeError as exc:
+        if "use_cache" not in str(exc):
+            raise
+        return dict(await provider(framework=framework))
 
 
 def resolve_agent_ui_spec() -> dict[str, Any]:

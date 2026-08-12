@@ -298,6 +298,19 @@ class ADKRunner(BaseRunner):
     def get_session_adapter(self):
         return ADKSessionAdapter()
 
+    async def refresh_runtime_capabilities(self) -> None:
+        await super().refresh_runtime_capabilities()
+        session_service = (
+            getattr(self._short_term_memory, "session_service", None)
+            if self._short_term_memory
+            else None
+        )
+        refresh = getattr(session_service, "refresh_persistence_capability", None)
+        if callable(refresh):
+            result = refresh()
+            if inspect.isawaitable(result):
+                await result
+
     def describe_checkpoint_capability(self) -> dict[str, Any]:
         resumable = getattr(self, "_resumable", False)
         stm_backend = (
@@ -310,8 +323,16 @@ class ADKRunner(BaseRunner):
             elif stm_backend == "database":
                 backend = "adk_invocation+postgres"
             shared_across_pods = stm_backend == "database"
+            session_service = (
+                getattr(self._short_term_memory, "session_service", None)
+                if self._short_term_memory
+                else None
+            )
+            persistence_degraded = bool(
+                shared_across_pods and getattr(session_service, "degraded", False)
+            )
             capability = {
-                "Supported": shared_across_pods,
+                "Supported": shared_across_pods and not persistence_degraded,
                 "Backend": backend,
                 "Scope": "invocation",
                 "Durable": stm_backend is not None and stm_backend != "local",
@@ -321,12 +342,16 @@ class ADKRunner(BaseRunner):
                 "Reason": (
                     "ADK ResumabilityConfig and shared database session backend enabled; "
                     "resume via invocation_id"
-                    if shared_across_pods
+                    if shared_across_pods and not persistence_degraded
+                    else "ADK database session persistence is temporarily degraded"
+                    if persistence_degraded
                     else "ADK ResumabilityConfig enabled, but the session backend is "
                     "process-local or SQLite and cannot support cross-pod recovery"
                 ),
             }
-            if not shared_across_pods:
+            if persistence_degraded:
+                capability["ReasonCode"] = "CHECKPOINT_STORE_DEGRADED"
+            elif not shared_across_pods:
                 capability["ReasonCode"] = "CHECKPOINTER_NOT_DURABLE"
             return capability
         capability = {
@@ -1724,18 +1749,32 @@ class ADKRunner(BaseRunner):
             getattr(self._short_term_memory, "backend", None) if self._short_term_memory else None
         )
         shared_across_pods = stm_backend == "database"
-        platform_resumable = self._resumable and shared_across_pods
+        session_service = (
+            getattr(self._short_term_memory, "session_service", None)
+            if self._short_term_memory
+            else None
+        )
+        persistence_degraded = bool(
+            shared_across_pods and getattr(session_service, "degraded", False)
+        )
+        platform_resumable = (
+            self._resumable and shared_across_pods and not persistence_degraded
+        )
         metadata["is_resumable"] = platform_resumable
         metadata["resume_status"] = "resumable" if platform_resumable else "disabled"
         metadata["backend"] = stm_backend or "in_memory"
         metadata["scope"] = "invocation"
-        metadata["durable"] = stm_backend is not None and stm_backend != "local"
-        metadata["shared_across_pods"] = shared_across_pods
+        metadata["durable"] = (
+            stm_backend is not None and stm_backend != "local" and not persistence_degraded
+        )
+        metadata["shared_across_pods"] = shared_across_pods and not persistence_degraded
         metadata["source"] = self._checkpoint_storage_source
         if not platform_resumable:
             metadata["resume_disabled_reason"] = (
                 self._resume_disabled_reason
                 if not self._resumable and self._resume_disabled_reason
+                else "ADK database session persistence was degraded when this checkpoint was written"
+                if persistence_degraded
                 else "ADK checkpoint uses an in-memory or local-only session backend; "
                 "cross-pod resume is unavailable"
             )

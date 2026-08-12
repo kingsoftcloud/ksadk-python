@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 import uuid
 from collections.abc import AsyncIterator, Mapping
@@ -93,17 +94,40 @@ async def get_checkpoint_resume_preview_action(request: GetCheckpointResumePrevi
             if len(receipts) < _MAX_PREVIEW_TOOL_RECEIPTS:
                 receipts.append(receipt)
 
+    preview = _build_checkpoint_resume_preview(
+        checkpoint=checkpoint,
+        receipts=receipts,
+        receipt_total=receipt_total,
+        side_effect_receipt_count=side_effect_receipt_count,
+        failed_receipt_count=failed_receipt_count,
+    )
+    snapshot = await _runtime_capability_snapshot(force=False)
+    if preview.get("CanResume") is True and not snapshot.resume_supported:
+        gate = dict(snapshot.persistence_gate)
+        checkpoint_capability = snapshot.runtime_capabilities.get("Checkpoint") or {}
+        reason = str(
+            gate.get("Reason")
+            or (
+                checkpoint_capability.get("Reason")
+                if isinstance(checkpoint_capability, Mapping)
+                else ""
+            )
+            or "Runtime checkpoint persistence is unavailable"
+        )
+        preview = {
+            **preview,
+            "Capabilities": {
+                **dict(preview.get("Capabilities") or {}),
+                "CheckpointResume": False,
+            },
+            "CanResume": False,
+            "Reason": reason,
+            "ExpectedAction": "disabled",
+        }
+
     return _action_response(
         "GetCheckpointResumePreview",
-        {
-            "Preview": _build_checkpoint_resume_preview(
-                checkpoint=checkpoint,
-                receipts=receipts,
-                receipt_total=receipt_total,
-                side_effect_receipt_count=side_effect_receipt_count,
-                failed_receipt_count=failed_receipt_count,
-            )
-        },
+        {"Preview": preview},
     )
 
 
@@ -162,6 +186,8 @@ async def resume_run_action(request: ResumeRunActionRequest):
                 },
             )
         raise HTTPException(status_code=409, detail=disabled_detail)
+
+    await _require_runtime_checkpoint_persistence()
 
     resume_input = {
         "type": "agentengine.resume_checkpoint",
@@ -330,6 +356,65 @@ async def resume_run_action(request: ResumeRunActionRequest):
         usage=result.get("usage") if isinstance(result.get("usage"), Mapping) else None,
     )
     return _action_response("ResumeRun", payload)
+
+
+def _runner_framework(runner: Any) -> str:
+    detection_type = getattr(getattr(runner, "detection_result", None), "type", None)
+    return str(getattr(detection_type, "value", detection_type) or "").strip().lower()
+
+
+async def _runtime_capability_snapshot(*, force: bool) -> Any:
+    from ksadk.server.factory import get_state
+
+    state = get_state()
+    runner = _resolve_active_runner()
+    wait_timeout = max(
+        0.1, float(os.getenv("KSADK_PERSISTENCE_PROBE_TIMEOUT") or "2")
+    )
+    return await state.persistence_capability.get_snapshot(
+        runner=runner,
+        framework=_runner_framework(runner),
+        status_provider=deps.get_persistence_status,
+        session_service_provider=deps.resolve_session_service,
+        force=force,
+        wait_timeout=wait_timeout,
+    )
+
+
+async def _require_runtime_checkpoint_persistence() -> None:
+    snapshot = await _runtime_capability_snapshot(force=True)
+    if snapshot.resume_supported:
+        return
+    gate = dict(snapshot.persistence_gate)
+    checkpoint = snapshot.runtime_capabilities.get("Checkpoint") or {}
+    reason_code = str(
+        gate.get("ReasonCode")
+        or (checkpoint.get("ReasonCode") if isinstance(checkpoint, Mapping) else "")
+        or "RUNTIME_CAPABILITY_UNAVAILABLE"
+    )
+    reason = str(
+        gate.get("Reason")
+        or (checkpoint.get("Reason") if isinstance(checkpoint, Mapping) else "")
+        or "Runtime checkpoint persistence is unavailable"
+    )
+    blocked_store = str(gate.get("BlockedStore") or "checkpoint")
+    retryable = reason_code not in {
+        "AUTH_FAILED",
+        "DEPENDENCY_MISSING",
+        "SCHEMA_PERMISSION_DENIED",
+        "LANGGRAPH_FACTORY_REQUIRED",
+        "CHECKPOINTER_NOT_DURABLE",
+    }
+    raise HTTPException(
+        status_code=503,
+        detail={
+            "Code": "runtime_persistence_unavailable",
+            "ReasonCode": reason_code,
+            "Reason": reason,
+            "BlockedStore": blocked_store,
+            "Retryable": retryable,
+        },
+    )
 
 
 @run_router.get("/agentengine/api/v1/SubscribeRunEvents", include_in_schema=False)

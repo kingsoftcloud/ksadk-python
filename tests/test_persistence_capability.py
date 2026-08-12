@@ -259,6 +259,46 @@ async def test_status_probes_session_and_checkpoint_targets_independently(monkey
 
 
 @pytest.mark.asyncio
+async def test_status_probes_distinct_targets_concurrently(monkeypatch):
+    from ksadk.sessions.persistence import get_persistence_status
+
+    both_started = asyncio.Event()
+    release = asyncio.Event()
+    started = 0
+
+    class _Connection:
+        async def fetchval(self, query):
+            return True if "has_schema_privilege" in query else 1
+
+        async def close(self):
+            return None
+
+    async def connect(**kwargs):
+        nonlocal started
+        assert kwargs["dsn"].endswith(("/session_db", "/checkpoint_db"))
+        started += 1
+        if started == 2:
+            both_started.set()
+        await release.wait()
+        return _Connection()
+
+    monkeypatch.setenv("KSADK_SESSION_DSN", "postgresql://session.example.test/session_db")
+    monkeypatch.setenv(
+        "KSADK_CHECKPOINT_DSN", "postgresql://checkpoint.example.test/checkpoint_db"
+    )
+    task = asyncio.create_task(
+        get_persistence_status(framework="langgraph", connect=connect, use_cache=False)
+    )
+
+    await asyncio.wait_for(both_started.wait(), timeout=0.2)
+    release.set()
+    status = await task
+
+    assert status["Session"]["Ready"] is True
+    assert status["Checkpoint"]["Ready"] is True
+
+
+@pytest.mark.asyncio
 async def test_checkpoint_unreachable_status_uses_checkpoint_reason_code(monkeypatch):
     """Catch returning the generic database error for a failed Checkpoint target."""
     from ksadk.sessions.persistence import get_persistence_status
@@ -619,3 +659,49 @@ async def test_bootstrap_awaits_runner_capability_preparation(monkeypatch):
 
     assert active_runner.prepared is True
     assert response.json()["Data"]["Capabilities"]["ResumeRun"] is True
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_capability_recovers_without_restarting_app(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    runner = _PostgresCheckpointRunner()
+    server_app_module.set_runner(runner)
+    ready = False
+
+    async def changing_status(*, framework=None, use_cache=True):
+        base = {
+            "Configured": True,
+            "Status": "ready" if ready else "error",
+            "Ready": ready,
+            "Backend": "postgres",
+            "SharedAcrossPods": ready,
+            "EffectiveFor": "new_runs_only",
+            "Source": "explicit",
+            "ReasonCode": "READY" if ready else "STORE_UNREACHABLE",
+            "Reason": "" if ready else "PostgreSQL persistence is unreachable",
+        }
+        return {
+            "Session": {
+                **base,
+                "ReasonCode": "READY" if ready else "SESSION_STORE_UNREACHABLE",
+            },
+            "Checkpoint": {
+                **base,
+                "ReasonCode": "READY" if ready else "CHECKPOINT_STORE_UNREACHABLE",
+            },
+        }
+
+    monkeypatch.setattr(server_app_module, "get_persistence_status", changing_status)
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        first = await client.post(
+            "/agentengine/api/v1/GetAgentUiBootstrap", json={"AgentId": "demo-agent"}
+        )
+        ready = True
+        server_app_module.app.state.runtime.persistence_capability._snapshot = None
+        second = await client.post(
+            "/agentengine/api/v1/GetAgentUiBootstrap", json={"AgentId": "demo-agent"}
+        )
+
+    assert first.json()["Data"]["Capabilities"]["ResumeRun"] is False
+    assert second.json()["Data"]["Capabilities"]["ResumeRun"] is True

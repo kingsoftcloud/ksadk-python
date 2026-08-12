@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import inspect
+import os
 from collections.abc import Mapping
 from typing import Any
 
@@ -11,7 +11,6 @@ from fastapi import HTTPException
 from ksadk.server.factory import get_runner, get_state
 from ksadk.sessions.base import CheckpointEventQuery, SessionEvent, SessionEventQuery
 from ksadk.sessions.errors import CheckpointScanRestartRequired, SessionBackendUnavailable
-from ksadk.sessions.persistence import gate_runtime_capabilities
 from ksadk.tools.gateway import tool_approval_capability
 from ksadk.toolsets import describe_agentengine_tools
 from ksadk_runtime_common.workspace_files import (
@@ -40,8 +39,8 @@ from .models import (
     _runtime_agent_id,
 )
 from .projection import (
-    _apply_checkpoint_resume_audit,
     _apply_adk_only_latest_resumable,
+    _apply_checkpoint_resume_audit,
     _apply_latest_checkpoint_policy,
     _checkpoint_event_to_action_payload,
     _event_invocation_id,
@@ -51,8 +50,8 @@ from .projection import (
     _iter_scoped_event_pages,
     _iter_session_event_pages,
     _record_resume_audit,
-    _resume_audit_by_checkpoint,
     _require_action_session,
+    _resume_audit_by_checkpoint,
     _session_to_action_payload,
     _tool_receipt_event_to_action_payload,
 )
@@ -74,42 +73,19 @@ async def get_agent_ui_bootstrap(request: UiBootstrapRequest):
         framework = str(getattr(detection_type, "value", detection_type) or "").strip().lower()
     workspace_enabled = workspace_files_enabled(default=True)
     ui_spec = deps.resolve_agent_ui_spec()
-    persistence_status = await deps.get_persistence_status(framework=framework)
-    if isinstance(persistence_status.get("Session"), Mapping):
-        persistence = dict(persistence_status["Session"])
-        checkpoint_persistence = dict(persistence_status.get("Checkpoint") or {})
-    else:
-        # Route providers are monkeypatchable public seams.  Accept their
-        # legacy flat payload during the response-shape transition.
-        persistence = dict(persistence_status)
-        checkpoint_persistence = dict(persistence_status)
-    prepare_capabilities = getattr(runner, "prepare_runtime_capabilities", None)
-    if callable(prepare_capabilities):
-        prepared = prepare_capabilities()
-        if inspect.isawaitable(prepared):
-            await prepared
-    runtime_capabilities = (
-        runner.get_runtime_capabilities()
-        if runner and callable(getattr(runner, "get_runtime_capabilities", None))
-        else {}
+    wait_timeout = max(
+        0.1, float(os.getenv("KSADK_PERSISTENCE_PROBE_TIMEOUT") or "2")
     )
-    checkpoint_capability = (
-        runtime_capabilities.get("Checkpoint")
-        if isinstance(runtime_capabilities, Mapping)
-        else None
+    capability_snapshot = await state.persistence_capability.get_snapshot(
+        runner=runner,
+        framework=framework,
+        status_provider=deps.get_persistence_status,
+        session_service_provider=deps.resolve_session_service,
+        wait_timeout=wait_timeout,
     )
-    requires_shared_persistence = bool(
-        isinstance(checkpoint_capability, Mapping)
-        and checkpoint_capability.get("Durable") is True
-        and checkpoint_capability.get("SharedAcrossPods") is True
-    )
-    if requires_shared_persistence:
-        runtime_capabilities = gate_runtime_capabilities(
-            runtime_capabilities,
-            persistence,
-            checkpoint_persistence,
-        )
-    resume_capability = runtime_capabilities.get("ResumeRun") or {}
+    persistence = dict(capability_snapshot.session_persistence)
+    checkpoint_persistence = dict(capability_snapshot.checkpoint_persistence)
+    runtime_capabilities = dict(capability_snapshot.runtime_capabilities)
     checkpoint_resume_capability = {
         "Supported": bool(
             (runtime_capabilities.get("ResumeRun") or {}).get("Supported")

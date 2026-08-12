@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from types import SimpleNamespace
 
 import pytest
 from google.adk.events.event import Event
 from google.adk.sessions import InMemorySessionService
 
 from ksadk.memory.adk.resilient_session_service import ResilientADKSessionService
+from ksadk.runners.adk_runner import ADKRunner
 
 
 class AppendFailingSessionService(InMemorySessionService):
@@ -167,4 +169,102 @@ async def test_adk_session_recovers_after_probe(caplog):
     await asyncio.sleep(0.15)
     assert service.degraded is False
     assert "ADK session persistence recovered" in caplog.text
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_adk_runner_refreshes_resilient_checkpoint_service_without_rebuild():
+    primary = _RecoverableADKPrimary(fail_count=1)
+    service = ResilientADKSessionService(primary)
+    runner = ADKRunner(SimpleNamespace(type=SimpleNamespace(value="adk")), ".")
+    runner._resumable = True
+    runner._short_term_memory = SimpleNamespace(
+        backend="database",
+        session_service=service,
+    )
+
+    await service.get_session(
+        app_name="demo-agent", user_id="user-1", session_id="missing"
+    )
+    assert runner.describe_checkpoint_capability()["Supported"] is False
+
+    await runner.refresh_runtime_capabilities()
+
+    assert service.degraded is False
+    assert runner.describe_checkpoint_capability()["Supported"] is True
+    await service.close()
+
+
+def test_adk_checkpoint_capability_tracks_resilient_session_state():
+    service = ResilientADKSessionService(InMemorySessionService())
+    runner = ADKRunner(
+        SimpleNamespace(type=SimpleNamespace(value="adk")),
+        ".",
+    )
+    runner._resumable = True
+    runner._short_term_memory = SimpleNamespace(
+        backend="database",
+        session_service=service,
+    )
+
+    service._primary_enabled = False
+    degraded = runner.describe_checkpoint_capability()
+    service._primary_enabled = True
+    recovered = runner.describe_checkpoint_capability()
+
+    assert degraded["Supported"] is False
+    assert degraded["ReasonCode"] == "CHECKPOINT_STORE_DEGRADED"
+    assert recovered["Supported"] is True
+    assert recovered["Backend"] == "adk_invocation+postgres"
+
+
+def test_adk_checkpoint_written_during_degradation_is_not_resumable():
+    service = ResilientADKSessionService(InMemorySessionService())
+    runner = ADKRunner(SimpleNamespace(type=SimpleNamespace(value="adk")), ".")
+    runner._resumable = True
+    runner._short_term_memory = SimpleNamespace(
+        backend="database",
+        session_service=service,
+    )
+    event = SimpleNamespace(actions=None, get_function_calls=lambda: [])
+
+    service._primary_enabled = False
+    degraded = runner._extract_checkpoint_metadata(event)
+    service._primary_enabled = True
+    recovered = runner._extract_checkpoint_metadata(event)
+
+    assert degraded["is_resumable"] is False
+    assert degraded["durable"] is False
+    assert degraded["resume_status"] == "disabled"
+    assert recovered["is_resumable"] is True
+    assert recovered["durable"] is True
+    assert recovered["resume_status"] == "resumable"
+
+
+@pytest.mark.asyncio
+async def test_first_adk_durable_append_failure_disables_following_checkpoint_metadata():
+    primary = AppendFailingSessionService()
+    service = ResilientADKSessionService(primary)
+    runner = ADKRunner(SimpleNamespace(type=SimpleNamespace(value="adk")), ".")
+    runner._resumable = True
+    runner._short_term_memory = SimpleNamespace(
+        backend="database",
+        session_service=service,
+    )
+    session = await service.create_session(
+        app_name="demo-agent", user_id="user-1", session_id="sess-first-failure"
+    )
+
+    await service.append_event(
+        session,
+        Event(author="demo-agent", invocation_id="inv-first-failure"),
+    )
+    metadata = runner._extract_checkpoint_metadata(
+        SimpleNamespace(actions=None, get_function_calls=lambda: [])
+    )
+
+    assert service.degraded is True
+    assert metadata["is_resumable"] is False
+    assert metadata["durable"] is False
+    assert metadata["resume_status"] == "disabled"
     await service.close()

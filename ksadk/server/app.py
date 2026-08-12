@@ -467,11 +467,23 @@ def _detached_streaming_response(
     return StreamingResponse(detached.iter_for_client(), media_type="text/event-stream")
 
 
+async def _get_persistence_status_for_routes(
+    *, framework: str | None = None, use_cache: bool = True
+) -> dict[str, Any]:
+    """Preserve the monkeypatchable facade while allowing uncached probes."""
+    try:
+        return await get_persistence_status(framework=framework, use_cache=use_cache)
+    except TypeError as exc:
+        if "use_cache" not in str(exc):
+            raise
+        return await get_persistence_status(framework=framework)
+
+
 route_dependencies.configure(
     route_dependencies.ServerRouteDependencies(
         resolve_session_service=lambda: resolve_session_service(),
         describe_session_backend=lambda: describe_session_backend(),
-        get_persistence_status=lambda framework=None: get_persistence_status(framework=framework),
+        get_persistence_status=_get_persistence_status_for_routes,
         resolve_agent_ui_spec=lambda: _resolve_agent_ui_spec(),
         conversation=lambda: conversation,
         detached_streaming_response=lambda *args, **kwargs: _detached_streaming_response(

@@ -18,6 +18,14 @@ _STATUS_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _CACHE_LOCK = asyncio.Lock()
 
 
+class _NoopAsyncLock:
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *_args: Any) -> None:
+        return None
+
+
 def _base_status(*, target: StorageTarget, configured: bool) -> dict[str, Any]:
     return {
         "Configured": configured,
@@ -126,7 +134,8 @@ async def _probe_postgres_target(
     connector = connect or _default_connect
     connection = None
     try:
-        async with _CACHE_LOCK:
+        lock = _CACHE_LOCK if use_cache else _NoopAsyncLock()
+        async with lock:
             if use_cache:
                 cached = _STATUS_CACHE.get(key)
                 if cached and time.monotonic() - cached[0] < ttl:
@@ -187,24 +196,27 @@ async def get_persistence_status(
 ) -> dict[str, Any]:
     """Return independent credential-free Session and Checkpoint readiness."""
     topology = resolve_persistence_topology(framework=framework)
-    probe_results: dict[str, dict[str, Any]] = {}
+    probe_tasks: dict[str, asyncio.Task[dict[str, Any]]] = {}
 
     async def probe(target: StorageTarget, *, store: str) -> dict[str, Any]:
         if target.backend != "postgres" or not target.dsn:
             return _not_configured_target_status(target, store=store)
         key = _cache_key(target.backend, _asyncpg_dsn(target.dsn))
-        if key not in probe_results:
-            probe_results[key] = await _probe_postgres_target(
-                target,
-                connect=connect,
-                use_cache=use_cache,
+        if key not in probe_tasks:
+            probe_tasks[key] = asyncio.create_task(
+                _probe_postgres_target(
+                    target,
+                    connect=connect,
+                    use_cache=use_cache,
+                )
             )
-        return _status_for_target(probe_results[key], target, store=store)
+        return _status_for_target(await probe_tasks[key], target, store=store)
 
-    return {
-        "Session": await probe(topology.session, store="SESSION"),
-        "Checkpoint": await probe(topology.checkpoint, store="CHECKPOINT"),
-    }
+    session_status, checkpoint_status = await asyncio.gather(
+        probe(topology.session, store="SESSION"),
+        probe(topology.checkpoint, store="CHECKPOINT"),
+    )
+    return {"Session": session_status, "Checkpoint": checkpoint_status}
 
 
 def gate_runtime_capabilities(

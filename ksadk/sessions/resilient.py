@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 from contextlib import aclosing
 from contextvars import ContextVar
@@ -8,10 +9,15 @@ from enum import Enum
 from typing import Any, AsyncIterator, Optional, cast
 
 from ksadk.sessions.base import (
-    BaseSessionService, CheckpointEventQuery, Session, SessionEvent, SessionEventQuery, SessionState,
+    BaseSessionService,
+    CheckpointEventQuery,
+    Session,
+    SessionEvent,
+    SessionEventQuery,
+    SessionState,
 )
-from ksadk.sessions.in_memory import InMemorySessionService
 from ksadk.sessions.errors import CheckpointScanRestartRequired
+from ksadk.sessions.in_memory import InMemorySessionService
 from ksadk.sessions.resilience import is_session_backend_failure
 
 logger = logging.getLogger(__name__)
@@ -81,12 +87,24 @@ class ResilientSessionService(BaseSessionService):
         if not self._primary_enabled:
             return
         self._primary_enabled = False
+        chain: list[BaseException] = []
+        current: BaseException | None = exc
+        seen: set[int] = set()
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            chain.append(current)
+            current = current.__cause__ or current.__context__
+        reason_code = (
+            "DEPENDENCY_MISSING"
+            if any(isinstance(item, (ModuleNotFoundError, ImportError)) for item in chain)
+            else "SESSION_STORE_UNREACHABLE"
+        )
         logger.error(
-            "KSADK session persistence degraded; using in-memory live session: %s",
-            exc,
+            "KSADK session persistence degraded; using in-memory live session",
             extra={
                 "session_backend_state": "degraded",
                 "session_backend": type(self.primary).__name__,
+                "session_backend_reason_code": reason_code,
             },
         )
         self._start_probe()
@@ -101,18 +119,26 @@ class ResilientSessionService(BaseSessionService):
             await asyncio.sleep(self._probe_interval_seconds)
             if self._primary_enabled:
                 break
-            try:
-                await self.primary.get_session("__ksadk_probe__")
-            except Exception:
-                continue
-            self._primary_enabled = True
-            logger.info(
-                "KSADK session persistence recovered; durable backend re-enabled",
-                extra={
-                    "session_backend_state": "recovered",
-                    "session_backend": type(self.primary).__name__,
-                },
-            )
+            await self.refresh_persistence_capability()
+
+    async def refresh_persistence_capability(self) -> bool:
+        """Probe a degraded primary immediately for app capability refresh."""
+        if self._primary_enabled:
+            return True
+        try:
+            await self.primary.get_session("__ksadk_probe__")
+        except Exception:
+            return False
+        self._primary_enabled = True
+        logger.info(
+            "KSADK session persistence recovered; durable backend re-enabled",
+            extra={
+                "session_backend_state": "recovered",
+                "session_backend": type(self.primary).__name__,
+                "session_backend_reason_code": "READY",
+            },
+        )
+        return True
 
     async def _hydrate(self, session: Session) -> Session:
         async with self._hydrate_lock:
@@ -297,6 +323,25 @@ class ResilientSessionService(BaseSessionService):
     async def append_event(self, session_id: str, event: SessionEvent) -> SessionEvent:
         if await self.fallback.get_session(session_id) is None:
             await self.get_session(session_id)
+        if event.event_type == "run_checkpoint":
+            checkpoint_event = copy.deepcopy(event)
+            await self._ensure_primary_session(session_id)
+            status, _ = await self._call_primary(
+                "append_event", session_id, checkpoint_event
+            )
+            if status is not _PrimaryCallStatus.AVAILABLE_RESULT:
+                checkpoint_event.metadata.update(
+                    {
+                        "is_resumable": False,
+                        "resume_status": "disabled",
+                        "durable": False,
+                        "resume_disabled_reason": (
+                            "Checkpoint was not written to durable persistence"
+                        ),
+                    }
+                )
+                self._dirty_session_ids.add(session_id)
+            return await self.fallback.append_event(session_id, checkpoint_event)
         live = await self.fallback.append_event(session_id, event)
         await self._ensure_primary_session(session_id)
         status, _ = await self._call_primary("append_event", session_id, event)

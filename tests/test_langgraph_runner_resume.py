@@ -97,6 +97,92 @@ async def test_managed_langgraph_checkpoint_reports_target_unreachable(monkeypat
     assert runner.describe_checkpoint_capability()["ReasonCode"] == "CHECKPOINT_STORE_UNREACHABLE"
 
 
+@pytest.mark.asyncio
+async def test_managed_langgraph_checkpoint_retries_transient_initialization_failure(
+    monkeypatch, tmp_path
+):
+    """A startup network failure must not pin capability false until restart."""
+    runner = LangGraphRunner(
+        SimpleNamespace(entry_point="agent.py", agent_variable="graph"), str(tmp_path)
+    )
+    runner._agent = SimpleNamespace(checkpointer=None, _checkpointer=None)
+    runner._module = SimpleNamespace(
+        ksadk_graph_factory=lambda *, checkpointer: SimpleNamespace(
+            invoke=lambda *_args, **_kwargs: None,
+            checkpointer=checkpointer,
+        )
+    )
+    attempts = 0
+
+    class PostgresSaver:
+        pass
+
+    class _Pool:
+        async def close(self):
+            return None
+
+    async def create_saver(_dsn):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("database network unavailable")
+        return PostgresSaver(), _Pool()
+
+    monkeypatch.setattr(runner, "_create_managed_postgres_saver", create_saver)
+    monkeypatch.setenv("KSADK_LANGGRAPH_AUTO_CHECKPOINT", "1")
+    monkeypatch.setenv(
+        "KSADK_CHECKPOINT_DSN", "postgresql://checkpoint.example.test/checkpoint_db"
+    )
+
+    await runner.prepare_runtime_capabilities()
+    first = runner.describe_checkpoint_capability()
+    await runner.refresh_runtime_capabilities()
+    second = runner.describe_checkpoint_capability()
+
+    assert attempts == 2
+    assert first["Supported"] is False
+    assert first["ReasonCode"] == "CHECKPOINT_STORE_UNREACHABLE"
+    assert second["Supported"] is True
+    assert second["Backend"] == "postgres"
+
+
+@pytest.mark.asyncio
+async def test_managed_langgraph_checkpoint_does_not_retry_authentication_failure(
+    monkeypatch, tmp_path
+):
+    runner = LangGraphRunner(
+        SimpleNamespace(entry_point="agent.py", agent_variable="graph"), str(tmp_path)
+    )
+    runner._agent = SimpleNamespace(checkpointer=None, _checkpointer=None)
+    runner._module = SimpleNamespace(
+        ksadk_graph_factory=lambda *, checkpointer: SimpleNamespace(
+            invoke=lambda *_args, **_kwargs: None,
+            checkpointer=checkpointer,
+        )
+    )
+    attempts = 0
+
+    class InvalidPasswordError(Exception):
+        pass
+
+    async def create_saver(_dsn):
+        nonlocal attempts
+        attempts += 1
+        raise InvalidPasswordError("invalid password")
+
+    monkeypatch.setattr(runner, "_create_managed_postgres_saver", create_saver)
+    monkeypatch.setenv("KSADK_LANGGRAPH_AUTO_CHECKPOINT", "1")
+    monkeypatch.setenv("KSADK_CHECKPOINT_DSN", "postgresql://placeholder.invalid/db")
+
+    await runner.prepare_runtime_capabilities()
+    await runner.refresh_runtime_capabilities()
+
+    capability = runner.describe_checkpoint_capability()
+    assert attempts == 1
+    assert capability["Supported"] is False
+    assert capability["ReasonCode"] == "AUTH_FAILED"
+
+
 class _Chunk:
     def __init__(self, content="", reasoning_content=None, usage_metadata=None):
         self.content = content
