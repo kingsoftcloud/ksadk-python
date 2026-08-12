@@ -48,31 +48,43 @@ def _normalize_agent_ref(value: str) -> str:
     return (value or "").strip().lower().removeprefix("a2a-agent-")
 
 
-async def _discover_agents() -> list[dict[str, Any]]:
-    from ksadk.a2a.space_client import A2ASpaceClient
+def _discover_agents() -> list[dict[str, Any]]:
+    """同步发现 space 下的可用 A2A agent（经 KOP ListAToASpaceAgents)。
+
+    用同步 KOPClient,不用 async A2ASpaceClient——这样 tool 可在 langgraph 的
+    async node 里安全调用(避免 sync 工具内部 asyncio.run 与运行中 event loop 冲突,
+    也保证 OTel traceparent contextvar 沿 event loop 传递不断链)。
+    """
+    from ksadk.common.kop_client import KOPClient
 
     space_id = _a2a_space_id()
     if not space_id:
         return []
     try:
-        async with A2ASpaceClient.from_env(space_id=space_id) as client:
-            agents = await client.discover()
+        kop = KOPClient()
+        data = kop.post_action(
+            "ListAToASpaceAgents",
+            {"A2ASpaceId": space_id, "Status": "available", "PageSize": 100},
+        )
     except Exception:
         return []
     result = []
-    for a in agents:
-        card = a.agent_card
-        name = str(getattr(card, "name", "") or "")
-        interfaces = list(getattr(card, "supported_interfaces", None) or [])
-        card_url = str(interfaces[0].url) if interfaces and getattr(interfaces[0], "url", None) else ""
+    for item in data.get("Agents") or []:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("InvocationStatus") or "") not in {"", "available"}:
+            continue
+        card = item.get("AgentCard") if isinstance(item.get("AgentCard"), dict) else {}
+        ifaces = card.get("supportedInterfaces") or []
+        card_url = str(ifaces[0].get("url")) if ifaces and isinstance(ifaces[0], dict) else ""
         result.append(
             {
-                "agent_id": a.agent_id,
-                "name": name,
-                "description": str(getattr(card, "description", "") or ""),
-                "version_id": a.version_id,
-                "card_sha256": a.card_sha256,
-                "source": a.source,
+                "agent_id": str(item.get("A2AAgentId") or ""),
+                "name": str(card.get("name") or item.get("Name") or ""),
+                "description": str(card.get("description") or item.get("Description") or ""),
+                "version_id": str(item.get("VersionId") or item.get("LatestVersionId") or ""),
+                "card_sha256": str(item.get("CardSha256") or ""),
+                "source": str(item.get("Source") or "hosted"),
                 "url": card_url,
             }
         )
@@ -146,7 +158,7 @@ def list_a2a_agents() -> dict[str, Any]:
     if not space_id:
         return {"ok": False, "error_message": "A2A Space not configured"}
     try:
-        agents = asyncio.run(_discover_agents())
+        agents = _discover_agents()
     except Exception as exc:
         return {"ok": False, "error_type": type(exc).__name__, "error_message": str(exc)}
     return {"ok": True, "space_id": space_id, "agents": agents}
@@ -162,7 +174,7 @@ def get_a2a_agent_card(agent: str) -> dict[str, Any]:
     if not space_id:
         return {"ok": False, "error_message": "A2A Space not configured"}
     try:
-        agents = asyncio.run(_discover_agents())
+        agents = _discover_agents()
     except Exception as exc:
         return {"ok": False, "error_type": type(exc).__name__, "error_message": str(exc)}
     matched, hint = _match_agent(agents, agent)
@@ -189,7 +201,7 @@ def call_a2a_agent(agent: str, message: str) -> dict[str, Any]:
     if not (message or "").strip():
         return {"ok": False, "error_message": "message is required"}
     try:
-        agents = asyncio.run(_discover_agents())
+        agents = _discover_agents()
     except Exception as exc:
         return {"ok": False, "error_type": type(exc).__name__, "error_message": str(exc)}
     matched, hint = _match_agent(agents, agent)

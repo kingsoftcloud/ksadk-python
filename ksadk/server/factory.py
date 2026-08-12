@@ -363,18 +363,29 @@ def create_runtime_app(
                 backend=state.describe_session_backend(),
             ),
         ):
-            # 提取 inbound OTel trace context(traceparent),让本 runtime 的 span
-            # 挂到调用方(A2A/HTTP client)发起的同一条分布式 trace 上。
+            # 提取 inbound OTel trace context(traceparent);无有效 inbound 时建一个
+            # 覆盖整个请求的 root server span,让 langchain/openinference 的 agent span 与
+            # tool 内 outbound(A2A)调用都挂到这条 trace 上(openinference 只在 LLM 调用
+            # 期间建 span,tool 执行时其 span 已 detach,需一个贯穿 span 兜底)。
             try:
                 from opentelemetry import context as _otel_ctx, propagate
+                from opentelemetry import trace as _otel_trace
 
                 _carrier = dict(request.headers)
                 _parent = propagate.extract(_carrier)
-                _token = _otel_ctx.attach(_parent)
-                try:
-                    response = await call_next(request)
-                finally:
-                    _otel_ctx.detach(_token)
+                _parent_span_ctx = _otel_trace.get_current_span(_parent).get_span_context()
+                if _parent_span_ctx.is_valid:
+                    _token = _otel_ctx.attach(_parent)
+                    try:
+                        response = await call_next(request)
+                    finally:
+                        _otel_ctx.detach(_token)
+                else:
+                    _tracer = _otel_trace.get_tracer("ksadk.server")
+                    with _tracer.start_as_current_span(
+                        f"{request.method} {request.url.path}"
+                    ):
+                        response = await call_next(request)
             except Exception:
                 response = await call_next(request)
             path = request.url.path
