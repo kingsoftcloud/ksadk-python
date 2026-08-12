@@ -29,6 +29,7 @@ from ksadk.studio.api_contracts import (
     QuickAuthoringRequest,
     RollbackRequest,
     RunRequest,
+    StudioEvaluationCreate,
     SessionExchangeRequest,
     ValidationRequest,
     WorkspaceOpenRequest,
@@ -955,9 +956,41 @@ def create_studio_app(
             idempotency_key=_require_idempotency_key(idempotency_key),
         )
 
+    @app.post("/api/v1/evaluations", status_code=202)
+    async def create_public_evaluation(
+        payload: StudioEvaluationCreate,
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    ):
+        return studio.submit_public_evaluation(
+            payload.evalset_file,
+            payload.target,
+            payload.config,
+            idempotency_key=_require_idempotency_key(idempotency_key),
+        )
+
+    @app.get("/api/v1/evaluations")
+    async def list_public_evaluations():
+        return {"items": studio.list_public_evaluations()}
+
     @app.get("/api/v1/evaluations/{evaluation_id}")
     async def get_evaluation(evaluation_id: str):
+        report_path = studio.evaluation_storage.report_path(evaluation_id)
+        if report_path.is_file():
+            return studio.get_public_evaluation(evaluation_id)
         return studio.evaluations.get(evaluation_id)
+
+    @app.get("/api/v1/evaluations/{evaluation_id}/cases/{case_id}")
+    async def get_public_evaluation_case(evaluation_id: str, case_id: str):
+        report = studio.get_public_evaluation(evaluation_id)
+        for case_run in report.case_runs:
+            if case_run.case_id == case_id:
+                return case_run
+        raise StudioError(
+            "EVALUATION_CASE_NOT_FOUND",
+            "Evaluation Case 不存在",
+            status_code=404,
+            details={"id": case_id, "evaluationId": evaluation_id},
+        )
 
     @app.post("/api/v1/builds/{build_id}/deployments", status_code=202)
     async def create_deployment(

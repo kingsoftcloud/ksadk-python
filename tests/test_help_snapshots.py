@@ -18,6 +18,7 @@ COLORED_ROOT_HELP_ROWS = {
     "agentengine web": "本地调试 Agent Invoke UI",
     "agentengine build": "构建部署制品",
     "agentengine deploy": "部署到云端",
+    "agentengine eval": "评测本地、A2A 或 Codex Agent",
     "agentengine launch": "一键构建+部署",
     "agentengine agent": "Agent 资源管理",
     "agentengine version": "Agent 版本管理",
