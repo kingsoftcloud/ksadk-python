@@ -135,6 +135,24 @@ def test_codex_factory_applies_runtime_sandbox_and_timeout_config(tmp_path: Path
     assert adapter._turn_timeout_seconds == 2.5
 
 
+def test_codex_factory_enables_structured_user_input_in_default_mode(tmp_path: Path) -> None:
+    captured: dict[str, Any] = {}
+
+    class _ConfiguredClient(_FactoryCodexClient):
+        def __init__(self, config=None) -> None:
+            captured["config"] = config
+
+    context = runtime_api.RuntimeLaunchContext(
+        runtime_type="codex",
+        project_dir=tmp_path,
+        services=runtime_api.RuntimeServices(codex_client_factory=_ConfiguredClient),
+    )
+
+    runtime_api.create_runtime_adapter(context)
+
+    assert "features.default_mode_request_user_input=true" in captured["config"].config_overrides
+
+
 def test_framework_factory_requires_detection_without_injected_runner(
     tmp_path: Path,
 ) -> None:

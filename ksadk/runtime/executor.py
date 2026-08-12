@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from ksadk.runtime.adapter import (
     CancelResult,
     CheckpointDescriptor,
+    PauseResult,
     ResumePayload,
     ResumeTarget,
     RunHandle,
@@ -42,9 +43,7 @@ class RuntimeExecutor:
         self._registry = registry
         self._runs: dict[_HandleKey, _OwnedRun] = {}
 
-    async def prepare_start(
-        self, context: RuntimeLaunchContext
-    ) -> RuntimeStartPreparation:
+    async def prepare_start(self, context: RuntimeLaunchContext) -> RuntimeStartPreparation:
         """Preflight a fresh adapter and retain it for the matching ``start``.
 
         A response streaming endpoint must learn about lazy import/configuration
@@ -84,9 +83,7 @@ class RuntimeExecutor:
         if _handle_key(handle) in self._runs:
             with suppress(Exception):
                 await adapter.close(handle)
-            raise RuntimeError(
-                f"runtime handle is already attached: {_handle_key(handle)!r}"
-            )
+            raise RuntimeError(f"runtime handle is already attached: {_handle_key(handle)!r}")
         self._record_owner(adapter, handle)
         return handle
 
@@ -97,6 +94,14 @@ class RuntimeExecutor:
     async def cancel(self, handle: RunHandle) -> CancelResult:
         owned = self._resolve(handle)
         return await owned.adapter.cancel(owned.handle)
+
+    async def pause(self, handle: RunHandle) -> PauseResult:
+        owned = self._resolve(handle)
+        return await owned.adapter.pause(owned.handle)
+
+    async def submit(self, handle: RunHandle, payload: ResumePayload) -> None:
+        owned = self._resolve(handle)
+        await owned.adapter.submit(owned.handle, payload)
 
     async def resume(
         self,

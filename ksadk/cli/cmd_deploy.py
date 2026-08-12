@@ -81,6 +81,14 @@ console = get_console()
 )
 @click.option("--name", "-n", help="部署名称")
 @click.option(
+    "--agent-id",
+    default=None,
+    help=(
+        "指定要更新的已有 Agent ID；当前凭证有权限时会自动回填 "
+        ".agentengine.state 并走热更新（用于本地状态丢失后重新关联）"
+    ),
+)
+@click.option(
     "--region",
     "-r",
     default="cn-beijing-6",
@@ -136,6 +144,7 @@ def deploy(
     agent_dir: str,
     target: str,
     name: str,
+    agent_id: str | None,
     region: str,
     account_id: str,
     artifact_type: str,
@@ -240,6 +249,7 @@ def deploy(
             env_file=env_file,
             repackage=repackage,
             dry_run_context=dry_run_context,
+            agent_id=agent_id,
         ),
         dry_run=dry_run,
         on_dry_run=render_deploy_dry_run,
@@ -315,6 +325,7 @@ async def _deploy_async(
     dry_run_context: dict[str, object] | None = None,
     *,
     repackage: bool = False,
+    agent_id: str | None = None,
 ):
     """异步部署流程"""
     from ksadk.deployment import DeploymentManager, DeployTarget
@@ -431,6 +442,7 @@ async def _deploy_async(
             "env_vars": explicit_env_vars,
             "runtime_name": resolved_runtime.name if resolved_runtime else "",
             "runtime_version": resolved_runtime.version if resolved_runtime else "",
+            "agent_id": agent_id,
         },
     )
 

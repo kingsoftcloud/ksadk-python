@@ -688,6 +688,19 @@ agentengine launch . --target kce --env-file ./prod.env
 - `--env-file` 支持 `.env`（dotenv）或 JSON 对象文件；路径不存在或格式不合法会直接报错退出。
 - `--env` 与 `--env-file` 可同时使用，同名变量以 `--env` 为准（命令行优先级高于文件）。
 
+Hermes 与 OpenClaw 的 framework-specific deploy 在 `0.8.1` 采用完整的运行时覆盖规则：
+
+```bash
+agentengine hermes deploy --name hermes-demo \
+  --env LOG_LEVEL=debug \
+  --env-file ./hermes.env
+```
+
+- 未指定 `--env-file` 时自动发现当前目录 `.env`。
+- 优先级为 `--env` > `--env-file` > 当前进程环境 > 自动 `.env`。
+- 显式 `--env` / `--env-file` 会更新已有实例的 `env_vars`；只更新镜像时不会覆盖服务端既有环境配置。
+- 通用 `agentengine deploy` / `launch` 仍只读取显式 `--env` / `--env-file`，不会自动加载项目 `.env`。
+
 `.env` 构建上下文边界：
 
 - 真实 `.env` 只通过 deploy payload 注入 runtime，不会进入镜像构建上下文或源码包。
@@ -945,7 +958,7 @@ agentengine agent invoke my-hermes \
 常用命令：
 
 ```bash
-agentengine hermes deploy --name hermes-demo
+agentengine hermes deploy --name hermes-demo --env LOG_LEVEL=debug
 agentengine hermes status
 agentengine hermes open --chat
 agentengine hermes connect

@@ -7,7 +7,7 @@ import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 import yaml  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -39,6 +39,10 @@ class CodexAgentManifest(BaseModel):
     model: str = Field(min_length=1, max_length=256)
     models: list[str] | None = None
     prompt: str = Field(min_length=1, max_length=32768)
+    skills: list[str] | None = None
+    mcp_servers: list[dict[str, Any]] | None = None
+    sandbox: str | None = None
+    approval_mode: str | None = None
 
     @model_validator(mode="after")
     def validate_models(self) -> "CodexAgentManifest":
@@ -57,6 +61,35 @@ class CodexAgentManifest(BaseModel):
         if self.model not in normalized:
             raise ValueError("默认模型 model 必须包含在 models 中")
         self.models = normalized
+        if self.skills is not None:
+            seen: set[str] = set()
+            deduped: list[str] = []
+            for sid in self.skills:
+                sid = str(sid).strip()
+                if not sid:
+                    raise ValueError("skills 不能包含空值")
+                if sid in seen:
+                    raise ValueError("skills 不能包含重复资源")
+                seen.add(sid)
+                deduped.append(sid)
+            self.skills = deduped
+        if self.mcp_servers is not None:
+            mcp_seen: set[str] = set()
+            mcp_deduped: list[dict[str, Any]] = []
+            for server in self.mcp_servers:
+                if not isinstance(server, dict):
+                    raise ValueError("mcp_servers 必须是对象列表")
+                name = str(server.get("name") or "").strip()
+                url = str(server.get("url") or "").strip()
+                if not name:
+                    raise ValueError("mcp_servers 每项必须有 name")
+                if not url:
+                    raise ValueError("mcp_servers 每项必须有 url")
+                if name in mcp_seen:
+                    raise ValueError("mcp_servers 不能包含重复 name")
+                mcp_seen.add(name)
+                mcp_deduped.append(server)
+            self.mcp_servers = mcp_deduped
         return self
 
     @property

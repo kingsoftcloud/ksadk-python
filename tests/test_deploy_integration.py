@@ -723,7 +723,15 @@ class TestDeployLogic:
         mock_client.__aexit__ = AsyncMock()
 
         with (
-            patch.dict(os.environ, {"AGENTENGINE_SERVER_URL": "http://localhost:8080"}),
+            patch.dict(
+                os.environ,
+                {"AGENTENGINE_SERVER_URL": "http://localhost:8080"},
+                clear=True,
+            ),
+            patch(
+                "ksadk.deployment.providers.serverless.get_env_from_global_config",
+                return_value={},
+            ),
             patch(
                 "ksadk.deployment.providers.serverless.AgentEngineClient", return_value=mock_client
             ),
@@ -771,7 +779,11 @@ class TestDeployLogic:
         mock_client.__aexit__ = AsyncMock()
 
         with (
-            patch.dict(os.environ, {"AGENTENGINE_SERVER_URL": "http://localhost:8080"}),
+            patch.dict(
+                os.environ,
+                {"AGENTENGINE_SERVER_URL": "http://localhost:8080"},
+                clear=True,
+            ),
             patch(
                 "ksadk.deployment.providers.serverless.get_env_from_global_config",
                 return_value={

@@ -69,3 +69,26 @@ async def test_prepared_conversation_turn_is_not_built_twice(monkeypatch) -> Non
     assert prepared.input_text == "current"
     assert prepared.runner_input["history"] == [{"role": "user", "content": "previous"}]
     assert prepared.runner_input["input"] == "current"
+
+
+@pytest.mark.asyncio
+async def test_request_scoped_tool_approval_mode_reaches_runtime_context() -> None:
+    request = StartRequest(
+        input="current",
+        user_id="user-1",
+        session_id="session-1",
+        agent_id="agent-1",
+        metadata={
+            "invocation_id": "run-1",
+            CONVERSATION_PREPROCESSING_METADATA_KEY: {
+                "messages": [{"role": "user", "content": "current"}],
+                "request_metadata": {"tool_approval_mode": "ask"},
+                "prepared_turn": asdict(_prepared_turn()),
+            },
+        },
+    )
+
+    prepared = await prepare_runtime_start(request, _Runner())
+
+    assert prepared is not None
+    assert prepared.context.tool_approval_mode == "ask"

@@ -2,7 +2,7 @@
 title: "可观测与链路追踪"
 ---
 
-KsADK 提供本地 spans、Langfuse 兼容路径和标准 OTLP HTTP traces exporter。tracing 是可选诊断能力，不应成为 quickstart 的前置条件。
+KsADK 提供本地 spans 和标准 OTLP HTTP traces exporter。tracing 是可选诊断能力，不应成为 quickstart 的前置条件。托管 Agent 通过 CLI 或控制台创建时默认请求可观测性，由平台注入 Langfuse 主路和 CloudMonitor 次路；只有显式传入 `--no-observability` 或在控制台关闭才禁用。
 
 从 `0.6.2` 开始，推荐把业务代码写成 **OTel-first**：应用只创建 OpenTelemetry spans、span events 和 attributes，后端通过 `OTEL_EXPORTER_OTLP_*` 环境变量路由到 Langfuse、OTel Collector 或其他兼容后端。
 
@@ -15,8 +15,8 @@ KsADK 提供本地 spans、Langfuse 兼容路径和标准 OTLP HTTP traces expor
 | 路径 | 默认行为 | 用途 |
 | --- | --- | --- |
 | In-memory spans | 本地 runner 路径默认启用 | 本地 debug API 和 Web UI trace 视图 |
-| Generic OTLP HTTP | 设置 `OTEL_EXPORTER_OTLP_*` 后启用 | 发送到 Langfuse 或任意 OTLP HTTP Collector |
-| Langfuse OTLP HTTP | 没有 generic OTLP 且设置 Langfuse key 时自动启用 | 兼容旧 Langfuse 环境变量 |
+| Langfuse OTLP HTTP(主) | 本地设置 `OTEL_EXPORTER_OTLP_*` 后启用；托管环境默认由平台注入 | 发送到 Langfuse 或任意 OTLP HTTP backend |
+| CloudMonitor OTLP HTTP(次) | 本地设置 `CLOUD_MONITOR_OTLP_*` 后启用；托管环境默认由平台注入 | 平台扩展，双写到云监控 trace 平台 |
 | OTLP gRPC | 通过 `enable_otlp=True` 显式启用 | 兼容旧代码路径 |
 | OpenInference instrumentation | best effort | 为 ADK、LangChain 等框架补充框架级 spans |
 
@@ -48,18 +48,6 @@ export OTEL_EXPORTER_OTLP_TRACES_HEADERS="Authorization=Bearer%20trace-token"
 headers 使用 OTLP 约定的逗号分隔格式，value 建议 URL encode。KsADK 会把 `Bearer%20trace-token` 解码为 `Bearer trace-token`。
 </Callout>
 
-## Langfuse 兼容
-
-如果团队仍使用 Langfuse 环境变量，原配置继续可用：
-
-```bash title="env.sh"
-export LANGFUSE_BASE_URL="https://langfuse.example.com"
-
-agentengine run .
-```
-
-当 generic OTLP 和 Langfuse 环境变量同时存在时，`setup_tracing(enable_langfuse=None)` 优先使用 generic OTLP，不会再额外启用 Langfuse 直连 exporter。这样可以避免同一次运行在 Langfuse 中出现重复 traces。确实需要强制 Langfuse 兼容路径时，可显式调用 `setup_tracing(enable_langfuse=True)`。
-
 如果把 Langfuse 当作 OTLP backend，也可以只配置标准 OTLP 变量：
 
 ```bash title="env.sh"
@@ -72,67 +60,57 @@ export OTEL_EXPORTER_OTLP_TRACES_HEADERS="Authorization=Basic%20<base64-public-s
 公开文档只能使用占位 key 和用户自有 endpoint，不要发布真实 trace 截图、tenant id 或私有 URL。
 </Callout>
 
-## Callback-only 模式
+## OTLP 双写
 
-LangChain 或 LangGraph 项目有时更适合使用 Langfuse callback handler，而不是 direct OTLP。显式启用 callback-only：
+KsADK 收敛为每个 Python Agent 进程对应一个 TracerProvider + 两个 OTLP/HTTP BatchSpanProcessor:Langfuse 主(标准 `OTEL_EXPORTER_OTLP_*`)+ CloudMonitor 次(平台扩展 `CLOUD_MONITOR_OTLP_*`)。Langfuse CallbackHandler 路径已删除,不再通过 Langfuse SDK 上报。
+
+两个 exporter 都运行在 Agent 进程内并直连各自 OTLP endpoint,不会部署 OpenTelemetry Collector、sidecar、额外容器或额外 Pod。
 
 ```bash title="env.sh"
-export LANGFUSE_BASE_URL="https://langfuse.example.com"
-export LANGFUSE_USE_CALLBACK="true"
+# 主路(Langfuse OTLP)
+export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="https://langfuse.example.com/api/public/otel/v1/traces"
+export OTEL_EXPORTER_OTLP_TRACES_HEADERS="Authorization=Basic%20<base64-public-secret>,x-langfuse-ingestion-version=4"
+
+# 次路(CloudMonitor OTLP,平台注入)
+export CLOUD_MONITOR_OTLP_TRACES_ENDPOINT="https://cloudmonitor.example.com/v1/traces"
+export CLOUD_MONITOR_OTLP_HEADERS="Ksc-Appkey=<app-key>"
 
 agentengine run .
 ```
 
-<Callout type="warning">
-同一次运行通常只选择 callback 或 direct OTLP 之一，除非已经确认重复 traces 可接受。
+<Callout type="info">
+headers value 使用 RFC 3986 percent-encode(空格 `%20` 非 `+`)。KsADK 会解码为真实 header 值后传给 OTLP exporter。
 </Callout>
 
-## 云监控双写 (0.6.7 新增)
+## 云监控 OTLP
 
-<Callout type="info" title="0.6.7 新增">
-`setup_tracing()` 自动探测 `CLOUD_MONITOR_*` 环境变量，与自建 Langfuse、标准 OTLP 互不压制。单条 span 可同时上报到自建可观测集群与云监控 trace 平台，无需在业务代码里区分后端。
-</Callout>
-
-`setup_tracing()` 在初始化时检查 `CLOUD_MONITOR_*` 变量：存在 `CLOUD_MONITOR_OTLP_ENDPOINT` 或 `CLOUD_MONITOR_LANGFUSE_HOST` 时，分别构建云监控 OTLP exporter 和 Langfuse SDK callback，与自建 Langfuse / 标准 `OTEL_EXPORTER_OTLP_*` 路径并行写入。三条路径各自独立探测、互不压制，单条 span 可以同时进入自建集群和云监控 trace 平台。
+`setup_tracing()` 自动探测 `CLOUD_MONITOR_OTLP_*` 变量，构建 CloudMonitor OTLP exporter，与主路 Langfuse OTLP 并行写入。单条 span 同时进入两个后端，共享同一 `trace_id` / `span_id`。traces 专用 endpoint、protocol 和 headers 分别优先于通用值。
 
 | 路径 | 鉴权 | 协议 | 触发条件 |
 | --- | --- | --- | --- |
-| CloudMonitor OTLP exporter | `Ksc-Appkey` header | `http/protobuf` | `CLOUD_MONITOR_OTLP_ENDPOINT` 设置且 `CLOUD_MONITOR_OTLP_ENABLED` 未显式置 false |
-| CloudMonitor Langfuse SDK CallbackHandler | 独立 TracerProvider，Langfuse public/secret key | Langfuse SDK callback | `LANGFUSE_USE_CALLBACK=true` 触发，或显式 `CLOUD_MONITOR_LANGFUSE_ENABLED=true` |
+| CloudMonitor OTLP exporter | `Ksc-Appkey` header | `http/protobuf` | endpoint 已设置，且 traces 专用或通用 headers 提供 `Ksc-Appkey` |
 
-CloudMonitor OTLP exporter 使用 `Ksc-Appkey` header 注入 AppKey 鉴权，固定 `http/protobuf` protocol；trace token 会归集回填到 root span，便于在云监控平台按一次完整调用聚合。CloudMonitor Langfuse SDK callback handler 挂在独立 TracerProvider 上，避免与业务侧 TracerProvider 互相干扰。
-
-涉及的环境变量（共 11 个，参考 `../reference/environment-variables.md` 可观测小节）：
+涉及的环境变量:
 
 | 变量 | 敏感 | 说明 |
 | --- | --- | --- |
-| `CLOUD_MONITOR_APP_KEY` | 是 | 云监控 OTLP AppKey，用于 `Ksc-Appkey` 鉴权。 |
-| `CLOUD_MONITOR_OTLP_ENABLED` | 否 | 显式启用或禁用 CloudMonitor OTLP exporter，默认自动判断。 |
-| `CLOUD_MONITOR_OTLP_ENDPOINT` | 否 | CloudMonitor 通用 OTLP HTTP endpoint，未设 traces 专用 endpoint 时派生 `/v1/traces`。 |
-| `CLOUD_MONITOR_OTLP_PROTOCOL` | 否 | CloudMonitor 通用 OTLP 协议，当前支持 `http/protobuf`。 |
-| `CLOUD_MONITOR_OTLP_HEADERS` | 是 | CloudMonitor OTLP 附加 headers，逗号分隔且 URL encoded。 |
-| `CLOUD_MONITOR_OTLP_TRACES_ENDPOINT` | 否 | CloudMonitor traces 专用 endpoint，优先于通用 endpoint。 |
-| `CLOUD_MONITOR_OTLP_TRACES_PROTOCOL` | 否 | CloudMonitor traces 专用协议，优先于通用 protocol。 |
-| `CLOUD_MONITOR_LANGFUSE_ENABLED` | 否 | 显式启用或禁用 CloudMonitor Langfuse SDK callback，默认自动判断。 |
-| `CLOUD_MONITOR_LANGFUSE_HOST` | 否 | CloudMonitor AppMonitor Langfuse SDK host，未设置时回落到 `CLOUD_MONITOR_OTLP_ENDPOINT`。 |
-| `CLOUD_MONITOR_LANGFUSE_PUBLIC_KEY` | 是 | CloudMonitor AppMonitor Langfuse public key。 |
-| `CLOUD_MONITOR_LANGFUSE_SECRET_KEY` | 是 | CloudMonitor AppMonitor Langfuse secret key。 |
+| `CLOUD_MONITOR_APP_KEY` | 是 | 已废弃，过渡兼容。仅当 `CLOUD_MONITOR_OTLP_TRACES_HEADERS` 和 `CLOUD_MONITOR_OTLP_HEADERS` 都整体缺失时翻译为 `Ksc-Appkey` header。 |
+| `CLOUD_MONITOR_OTLP_ENDPOINT` | 否 | CloudMonitor 通用 OTLP HTTP endpoint,未设 traces 专用 endpoint 时派生 `/v1/traces`。 |
+| `CLOUD_MONITOR_OTLP_PROTOCOL` | 否 | CloudMonitor 通用 OTLP 协议,当前支持 `http/protobuf`。 |
+| `CLOUD_MONITOR_OTLP_HEADERS` | 是 | CloudMonitor OTLP 附加 headers,逗号分隔且 RFC 3986 encoded。 |
+| `CLOUD_MONITOR_OTLP_TRACES_ENDPOINT` | 否 | CloudMonitor traces 专用 endpoint,优先于通用 endpoint。 |
+| `CLOUD_MONITOR_OTLP_TRACES_HEADERS` | 是 | CloudMonitor traces 专用 headers，优先于通用 headers；已提供但缺少 `Ksc-Appkey` 时 fail closed。 |
+| `CLOUD_MONITOR_OTLP_TRACES_PROTOCOL` | 否 | CloudMonitor traces 专用协议,优先于通用 protocol。 |
 
 <Callout type="warning" title="敏感变量">
-标注「是」的变量为平台 Secret 或可能携带鉴权信息，**不要**写入公开仓库的 `.env` 或镜像环境变量。使用占位值或平台密钥服务下发。
+标注「是」的变量为平台 Secret 或可能携带鉴权信息,**不要**写入公开仓库的 `.env` 或镜像环境变量。使用占位值或平台密钥服务下发。
 </Callout>
 
-最小配置示例（占位值，请替换为自有 endpoint 与 AppKey）：
+最小配置示例(占位值,请替换为自有 endpoint 与 AppKey):
 
 ```bash title="env.sh"
 export CLOUD_MONITOR_OTLP_ENDPOINT="https://cloudmonitor.example.com"
-export CLOUD_MONITOR_APP_KEY="cm-appkey-placeholder"
-
-# 可选：CloudMonitor Langfuse callback
-export LANGFUSE_USE_CALLBACK="true"
-export CLOUD_MONITOR_LANGFUSE_PUBLIC_KEY="pk-cm"
-export CLOUD_MONITOR_LANGFUSE_SECRET_KEY="cm-secret"
-export CLOUD_MONITOR_LANGFUSE_HOST="https://cloudmonitor.example.com"
+export CLOUD_MONITOR_OTLP_HEADERS="Ksc-Appkey=cm-appkey-placeholder"
 
 agentengine run .
 ```
@@ -194,12 +172,11 @@ span.set_attribute("score.comment", "Report covers evidence and next steps.")
 | 现象 | 可能原因 | 检查 |
 | --- | --- | --- |
 | 本地 trace 视图为空 | 没有运行产生 spans，或 tracing 被禁用 | 先跑一次请求，再确认本地服务启用了 tracing |
-| generic OTLP 没有数据 | endpoint、TLS、auth 或 Collector policy 不匹配 | 检查 `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` 和 headers |
-| Langfuse 没有收到 spans | key 缺失、base URL 错误、callback-only 或 generic OTLP 抢占 | 检查 Langfuse 变量、`LANGFUSE_USE_CALLBACK` 和 `OTEL_EXPORTER_OTLP_*` |
-| Langfuse 出现重复 traces | callback 和 direct OTLP 同时启用 | 同一项目选择一种路径 |
+| Langfuse 没有收到 spans | endpoint、headers、TLS 或 auth 不匹配 | 检查 `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` 和 `OTEL_EXPORTER_OTLP_TRACES_HEADERS`(value 需 RFC 3986 encode) |
+| 云监控看不到 spans | 选中的 traces/通用 headers 缺 `Ksc-Appkey`，或 endpoint 未派生 `/v1/traces` | 优先检查 `CLOUD_MONITOR_OTLP_TRACES_HEADERS`，再检查通用 headers 和 endpoint；旧 AppKey 只在两个 headers 变量都未设置时 fallback |
+| 双写一边缺失 | 单后端故障 | 主路故障时次路仍可用,反之亦然;Agent 业务不阻断 |
 | score 没有显示为 native score | 后端没有把 `score.*` attributes 做映射 | 在 Collector 或平台服务侧增加转换逻辑 |
 | 框架 spans 较少 | optional instrumentation 未安装或未生效 | 安装 tracing extra，并检查框架 instrumentation |
-| 云监控看不到 spans | `CLOUD_MONITOR_APP_KEY`/`CLOUD_MONITOR_OTLP_ENDPOINT` 缺失，或 protocol 非 `http/protobuf` | 检查 `CLOUD_MONITOR_OTLP_ENABLED` 未显式置 `false`、endpoint 已派生 `/v1/traces`、`Ksc-Appkey` header 已注入 |
 
 ## 公开文档规则
 

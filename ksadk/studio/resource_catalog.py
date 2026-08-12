@@ -8,10 +8,11 @@ import io
 import re
 import shutil
 import stat
+import time
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterable, Literal, cast
+from typing import Any, Callable, Iterable, Literal, cast
 from uuid import uuid4
 
 import yaml  # type: ignore[import-untyped]
@@ -35,6 +36,8 @@ from ksadk.studio.contracts import (
     ToolContract,
 )
 from ksadk.studio.errors import StudioError
+from ksadk.studio.pagination import keyset_page
+from ksadk.studio.python_tool_inspection import PythonToolInspector
 from ksadk.studio.repository import load_yaml_file
 from ksadk.studio.skill_discovery import SkillDiscoveryService
 from ksadk.studio.workspace import Workspace
@@ -120,7 +123,16 @@ class LocalResourceCatalog:
         self.workspace = workspace
         self.resolver = LocalCapabilityResolver(workspace)
         self.skill_discovery = SkillDiscoveryService(workspace)
+        self.python_tool_inspector = PythonToolInspector(workspace)
         self._provider_models: dict[str, ResourceDescriptor] = {}
+        # api_base -> (monotonic_ts, descriptors, source)，见 discover_provider_models。
+        self._provider_catalog_cache: dict[
+            str, tuple[float, builtins.list[ResourceDescriptor], str]
+        ] = {}
+        # 内建工具描述构建一次约 40ms（导入 + schema 生成 + digest），
+        # catalog.list 调用方很多，用短 TTL 缓存避免页面加载期间重复构建；
+        # enabled 依赖 sandbox backend 配置，设置页改完后几秒自动生效。
+        self._builtin_tools_cache: tuple[float, builtins.list[ResourceDescriptor]] | None = None
 
     def list(
         self,
@@ -132,8 +144,98 @@ class LocalResourceCatalog:
         installed: bool | None = None,
         limit: int = 50,
     ) -> list[ResourceDescriptor]:
+        filtered = self._filtered_resources(
+            kind=kind,
+            query=query,
+            source=source,
+            status=status,
+            installed=installed,
+        )
+        filtered.sort(key=self._default_sort_key)
+        return filtered[:limit]
+
+    def list_page(
+        self,
+        *,
+        kind: str | None = None,
+        query: str = "",
+        source: str | None = None,
+        status: str | None = None,
+        installed: bool | None = None,
+        limit: int = 50,
+        cursor: str | None = None,
+        sort: str = "default",
+        status_resolver: Callable[[ResourceDescriptor], str] | None = None,
+    ) -> dict[str, Any]:
+        if sort not in {"default", "displayName:asc", "displayName:desc"}:
+            raise StudioError(
+                "PAGINATION_SORT_INVALID",
+                "Resource 排序字段无效",
+                status_code=422,
+                field="sort",
+            )
+        filtered = self._filtered_resources(
+            kind=kind,
+            query=query,
+            source=source,
+            status=status,
+            installed=installed,
+            status_resolver=status_resolver,
+        )
+        if sort == "default":
+            sort_key = self._default_sort_key
+            reverse = False
+        else:
+
+            def sort_key(item: ResourceDescriptor) -> tuple[str, str, int, str, str]:
+                return (
+                    item.display_name.lower(),
+                    item.kind,
+                    0 if item.source in {"builtin", "provider"} else 1,
+                    item.version,
+                    item.resource_id,
+                )
+
+            reverse = sort.endswith(":desc")
+        filters = {
+            "kind": kind or "",
+            "query": query.strip().lower(),
+            "source": source or "",
+            "status": status or "",
+            "installed": installed,
+        }
+        return keyset_page(
+            filtered,
+            key=sort_key,
+            reverse=reverse,
+            limit=max(1, min(limit, 200)),
+            cursor=cursor,
+            namespace="catalog-resources",
+            sort=sort,
+            filters=filters,
+        )
+
+    @staticmethod
+    def _default_sort_key(item: ResourceDescriptor) -> tuple[str, int, str, str, str]:
+        return (
+            item.kind,
+            0 if item.source in {"builtin", "provider"} else 1,
+            item.display_name.lower(),
+            item.version,
+            item.resource_id,
+        )
+
+    def _filtered_resources(
+        self,
+        *,
+        kind: str | None,
+        query: str,
+        source: str | None,
+        status: str | None,
+        installed: bool | None,
+        status_resolver: Callable[[ResourceDescriptor], str] | None = None,
+    ) -> builtins.list[ResourceDescriptor]:
         candidates = [
-            *self._builtin_models(),
             *self._provider_models.values(),
             *self._builtin_tools(),
             *self._persisted("models"),
@@ -143,29 +245,28 @@ class LocalResourceCatalog:
         ]
         resources = list({item.resource_id: item for item in candidates}.values())
         normalized = query.strip().lower()
-        filtered = [
-            item
-            for item in resources
-            if (kind is None or item.kind == kind)
-            and (source is None or item.source == source)
-            and (status is None or item.status == status)
-            and (installed is None or item.installed is installed)
-            and (
-                not normalized
-                or normalized in item.name.lower()
-                or normalized in item.display_name.lower()
-                or normalized in item.description.lower()
+        filtered: builtins.list[ResourceDescriptor] = []
+        for item in resources:
+            effective_status = status_resolver(item) if status_resolver else item.status
+            if kind is not None and item.kind != kind:
+                continue
+            if source is not None and item.source != source:
+                continue
+            if status is not None and effective_status != status:
+                continue
+            if installed is not None and item.installed is not installed:
+                continue
+            if normalized and not any(
+                normalized in value.lower()
+                for value in (item.name, item.display_name, item.description)
+            ):
+                continue
+            filtered.append(
+                item
+                if effective_status == item.status
+                else item.model_copy(update={"status": effective_status})
             )
-        ]
-        filtered.sort(
-            key=lambda item: (
-                item.kind,
-                0 if item.source in {"builtin", "provider"} else 1,
-                item.display_name.lower(),
-                item.version,
-            )
-        )
-        return filtered[:limit]
+        return filtered
 
     async def discover_provider_models(
         self,
@@ -182,6 +283,15 @@ class LocalResourceCatalog:
         so the UI never presents a guessed context window or modality as probed.
         """
 
+        # /v1/models 是真实外网往返，catalog/models 等接口每次调用都走这里，
+        # 会话/资源页加载会连续触发多次。做 60s 进程内缓存；上游失败且
+        # 有缓存时直接回退缓存，避免上游抖动拖垮整个模型目录。
+        cache_key = (api_base or "").rstrip("/")
+        now = time.monotonic()
+        cached = self._provider_catalog_cache.get(cache_key)
+        if cached is not None and now - cached[0] < 60.0:
+            return cached[1], cached[2]
+
         catalog = await fetch_provider_model_catalog(
             api_base=api_base,
             api_key=api_key,
@@ -189,6 +299,8 @@ class LocalResourceCatalog:
         )
         source = "provider" if catalog else "fallback"
         if not catalog:
+            if cached is not None:
+                return cached[1], cached[2]
             catalog = [normalize_model_metadata({"id": current_model or "glm-5.1"})]
 
         descriptors: list[ResourceDescriptor] = []
@@ -208,7 +320,7 @@ class LocalResourceCatalog:
             spec = ModelSpec(
                 provider="openai-compatible",
                 model=model_id,
-                base_url=(api_base or "https://kspmas.ksyun.com/v1").rstrip("/"),
+                base_url=(api_base or "https://api.openai.com/v1").rstrip("/"),
                 credential_ref="env://OPENAI_API_KEY",
                 metadata=normalized,
                 discovery={
@@ -243,6 +355,7 @@ class LocalResourceCatalog:
             descriptors.append(descriptor)
 
         self._provider_models = {item.resource_id: item for item in descriptors}
+        self._provider_catalog_cache[cache_key] = (now, descriptors, source)
         return descriptors, source
 
     def get(self, resource: str) -> ResourceDescriptor:
@@ -334,9 +447,75 @@ class LocalResourceCatalog:
         )
         return self._persist_descriptor("tools", descriptor)
 
+    def inspect_python_tool(self, content: bytes, *, filename: str) -> dict[str, Any]:
+        return self.python_tool_inspector.inspect(content, filename=filename)
+
+    def commit_python_tool(
+        self,
+        inspection_token: str,
+        *,
+        display_name: str,
+        name: str,
+        callable_name: str,
+        description: str = "",
+    ) -> ResourceDescriptor:
+        inspection = self.python_tool_inspector.load(inspection_token)
+        callable_meta = next(
+            (
+                item
+                for item in inspection.get("callables") or []
+                if item.get("name") == callable_name
+            ),
+            None,
+        )
+        if callable_meta is None:
+            raise StudioError(
+                "PYTHON_TOOL_CALLABLE_INVALID",
+                "所选 Callable 不在已检查的源码中",
+                status_code=422,
+                field="callableName",
+            )
+        required = list(callable_meta.get("required") or [])
+        parameters = [
+            value
+            for value in callable_meta.get("parameters") or []
+            if not str(value).startswith(("*", "**"))
+        ]
+        resolved_description = str(description or callable_meta.get("description") or "").strip()
+        descriptor = self.create_tool(
+            display_name=display_name,
+            category="custom",
+            contract=ToolContract(
+                name=name,
+                version="1.0.0",
+                description=resolved_description,
+                input_schema={
+                    "type": "object",
+                    "properties": {parameter: {} for parameter in parameters},
+                    **({"required": required} if required else {}),
+                },
+                output_schema={},
+                executor="python",
+                source_path=str(inspection["sourcePath"]),
+                callable_name=callable_name,
+                approval="policy",
+                side_effect="none",
+            ),
+        )
+        self.python_tool_inspector.consume(inspection_token)
+        return descriptor
+
     def _snapshot_python_tool(self, contract: ToolContract) -> ToolContract:
         assert contract.source_path is not None
-        source = self.workspace.resolve(contract.source_path, must_exist=True)
+        try:
+            source = self.workspace.resolve(contract.source_path, must_exist=True)
+        except FileNotFoundError as exc:
+            raise StudioError(
+                "TOOL_SOURCE_NOT_FOUND",
+                f"Python Tool 源码文件不存在：{contract.source_path}（相对于当前工作区）",
+                status_code=422,
+                field="sourcePath",
+            ) from exc
         if source.is_symlink() or not source.is_file() or source.suffix != ".py":
             raise StudioError(
                 "TOOL_SOURCE_INVALID",
@@ -408,6 +587,7 @@ class LocalResourceCatalog:
         resource: str,
         *,
         code: str,
+        detail: str | None = None,
     ) -> ResourceDescriptor:
         descriptor = self.get(resource)
         updated = descriptor.model_copy(deep=True)
@@ -417,6 +597,8 @@ class LocalResourceCatalog:
             "code": code,
             "probedAt": datetime.now(timezone.utc).isoformat(),
         }
+        if detail:
+            updated.health["message"] = detail[:500]
         updated.updated_at = datetime.now(timezone.utc)
         return self._persist_descriptor("mcp", updated, overwrite=True)
 
@@ -699,6 +881,38 @@ class LocalResourceCatalog:
             )
         return descriptor
 
+    def preview_discovered_skill(
+        self,
+        inspection_token: str,
+        candidate_id: str,
+        *,
+        path: str | None = None,
+    ) -> dict[str, Any]:
+        return self.skill_discovery.preview_candidate(
+            inspection_token,
+            candidate_id,
+            path=path,
+        )
+
+    def preview_installed_skill(
+        self,
+        resource_id_value: str,
+        *,
+        path: str | None = None,
+    ) -> dict[str, Any]:
+        descriptor = self.get(resource_id_value)
+        if descriptor.kind != "skill" or descriptor.source != "local":
+            raise StudioError(
+                "RESOURCE_KIND_INVALID",
+                "仅支持预览工作区已安装的 Skill",
+                status_code=422,
+            )
+        directory = self.workspace.resolve(
+            Path("capabilities/skills") / descriptor.name,
+            must_exist=True,
+        )
+        return self.skill_discovery.preview_directory(directory, path=path)
+
     def _ready_binding(
         self,
         binding: CapabilityBinding,
@@ -744,30 +958,16 @@ class LocalResourceCatalog:
             )
         return tool.approval
 
-    def _builtin_models(self) -> Iterable[ResourceDescriptor]:
-        spec = ModelSpec(
-            provider="openai-compatible",
-            model="glm-5.1",
-            endpoint_url="https://kspmas.ksyun.com/v1/chat/completions",
-            credential_ref="env://AGENTKIT_MODEL_API_KEY",
-        )
-        yield self._descriptor(
-            kind="model",
-            source="builtin",
-            name="glm-5.1",
-            display_name="GLM-5.1",
-            version="1.0.0",
-            description="金山云 OpenAI-compatible 模型配置",
-            category="general",
-            contract=spec.model_dump(
-                by_alias=True,
-                exclude_none=True,
-                mode="json",
-            ),
-            required_secret_refs=[spec.credential_ref],
-        )
-
     def _builtin_tools(self) -> Iterable[ResourceDescriptor]:
+        cached = self._builtin_tools_cache
+        now = time.monotonic()
+        if cached is not None and now - cached[0] < 5.0:
+            return cached[1]
+        built = list(self._build_builtin_tools())
+        self._builtin_tools_cache = (now, built)
+        return built
+
+    def _build_builtin_tools(self) -> Iterable[ResourceDescriptor]:
         runtime_tools = {
             str(getattr(tool, "name", None) or getattr(tool, "__name__", "")): tool
             for tool in get_agentengine_tools(profile="coding", mode="direct")
@@ -900,6 +1100,36 @@ class LocalResourceCatalog:
             ),
         )
         return descriptor
+
+    def delete_resource(self, resource_id: str) -> None:
+        """Remove a persisted catalog resource (model/tool/mcp/skill) by id."""
+        descriptor = self.get(resource_id)
+        kind = descriptor.kind
+        if kind == "skill":
+            # Skill 以目录形式安装在 capabilities/skills/{name}
+            target_dir = self.workspace.resolve(Path("capabilities/skills") / descriptor.name)
+            if target_dir.is_dir():
+                shutil.rmtree(target_dir)
+            return
+        directory = {
+            "model": "models",
+            "mcp": "mcp",
+            "tool": "tools",
+            "tool-source": "tool-sources",
+        }.get(kind, kind)
+        target = self.workspace.resolve(
+            Path(".agentkit/catalog")
+            / directory
+            / f"{resource_slug(descriptor.name)}-{resource_slug(descriptor.version)}.yaml"
+        )
+        if not target.exists():
+            raise StudioError(
+                "RESOURCE_NOT_FOUND",
+                "资源的持久化文件不存在，无法删除",
+                status_code=404,
+                details={"resourceId": resource_id, "path": str(target)},
+            )
+        target.unlink()
 
     def _descriptor(
         self,

@@ -676,6 +676,8 @@ def test_run_invoke_command_defaults_to_hermes_native_tui_for_hermes_state(
 def test_run_invoke_command_defaults_to_openclaw_native_tui_for_openclaw_state(
     monkeypatch, tmp_path: Path
 ):
+    monkeypatch.delenv("OPENCLAW_GATEWAY_TOKEN", raising=False)
+    monkeypatch.delenv("OPENCLAW_GATEWAY_PASSWORD", raising=False)
     (tmp_path / ".agentengine.state").write_text(
         yaml.safe_dump(
             {
@@ -746,6 +748,8 @@ def test_run_invoke_command_defaults_to_openclaw_native_tui_for_openclaw_state(
 def test_run_invoke_command_transport_chat_uses_responses_tui_for_openclaw_state(
     monkeypatch, tmp_path: Path
 ):
+    monkeypatch.delenv("OPENCLAW_GATEWAY_TOKEN", raising=False)
+    monkeypatch.delenv("OPENCLAW_GATEWAY_PASSWORD", raising=False)
     (tmp_path / ".agentengine.state").write_text(
         yaml.safe_dump(
             {

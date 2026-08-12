@@ -9,6 +9,7 @@ _EXPORTS = {
     "ADKRuntimeAdapter": ("ksadk.runtime.framework_adapters", "ADKRuntimeAdapter"),
     "BaseRuntime": ("ksadk.runtime.adapter", "BaseRuntime"),
     "CancelResult": ("ksadk.runtime.adapter", "CancelResult"),
+    "PauseResult": ("ksadk.runtime.adapter", "PauseResult"),
     "CheckpointCapability": ("ksadk.runtime.adapter", "CheckpointCapability"),
     "CheckpointDescriptor": ("ksadk.runtime.adapter", "CheckpointDescriptor"),
     "ConversationPreprocessingRequest": (

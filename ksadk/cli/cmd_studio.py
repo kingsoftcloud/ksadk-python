@@ -62,11 +62,12 @@ def studio(
             except ValueError as exc:
                 raise click.ClickException(str(exc)) from exc
             loaded = 0
-            for key in _MODEL_ENV_KEYS:
-                value = values.get(key)
-                if value:
+            for key, value in values.items():
+                if key not in _MODEL_ENV_KEYS or not value:
+                    continue
+                loaded += 1
+                if key not in os.environ:
                     os.environ[key] = value
-                    loaded += 1
             print_kv("模型环境", f"已安全加载 {loaded}/{len(_MODEL_ENV_KEYS)} 个字段")
         if codex_proxy == "forced":
             os.environ["KSADK_CODEX_USE_PROXY"] = "1"
@@ -74,7 +75,7 @@ def studio(
             os.environ["KSADK_CODEX_USE_PROXY"] = "0"
         elif codex_proxy == "auto":
             os.environ.pop("KSADK_CODEX_USE_PROXY", None)
-        session_token = secrets.token_urlsafe(32)
+        session_token = os.environ.get("KSADK_STUDIO_SESSION_TOKEN") or secrets.token_urlsafe(32)
         csrf_token = secrets.token_urlsafe(24)
         service = StudioService(root)
         app = create_studio_app(
@@ -82,6 +83,7 @@ def studio(
             service=service,
             session_token=session_token,
             csrf_token=csrf_token,
+            security_enabled=os.environ.get("KSADK_STUDIO_NO_SECURITY") != "1",
         )
         base_url = f"http://127.0.0.1:{port}/"
         launch_url = f"{base_url}#session={session_token}"

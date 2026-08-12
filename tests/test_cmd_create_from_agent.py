@@ -322,6 +322,8 @@ def test_wrap_deepagents_service_directory_generates_runtime_adapter(tmp_path: P
     assert '"message": message' in adapter_text
     assert 'INIT_MODULE = ".src.bill_diagnosis.graph"' in adapter_text
     assert "importlib.import_module(INIT_MODULE, __package__)" in adapter_text
+    assert "CallbackHandler" not in adapter_text
+    assert "Langfuse" not in adapter_text
     config_text = (project_path / "agentengine.yaml").read_text(encoding="utf-8-sig")
     assert "entry_point: wrapped_service/agentengine_adapter.py" in config_text
     assert "agent_variable: root_agent" in config_text

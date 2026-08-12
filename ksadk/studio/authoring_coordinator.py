@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import shutil
+import threading
 from pathlib import Path
 from typing import Any, cast
 
@@ -17,6 +19,7 @@ from ksadk.studio.contracts import (
     RuntimeRef,
 )
 from ksadk.studio.errors import StudioError
+from ksadk.studio.identifiers import generate_agent_slug, is_generated_agent_slug
 from ksadk.studio.templates import default_agent_spec
 
 
@@ -26,35 +29,36 @@ class StudioAuthoringCoordinator:
     def __init__(self, studio: Any) -> None:
         self.studio = studio
         self.backend = AgentAuthoringService(studio.workspace)
+        self._id_lock = threading.Lock()
 
     def create(
         self,
         *,
         name: str,
-        slug: str,
+        slug: str | None = None,
         runtime_type: str,
         template: str = "blank",
         description: str = "",
         spec: AgentSpec | None = None,
     ) -> AgentDraft:
-        agent_id = self.backend.allocate_agent_id(slug)
-        resolved = (spec or default_agent_spec(template, description=description)).model_copy(
-            deep=True
-        )
-        resolved.runtime = self.backend.runtime_ref(agent_id, runtime_type)
-        if description:
-            resolved.description = description
-        draft = self.studio.create_studio_agent(
-            agent_id=agent_id,
-            name=name,
-            description=description,
-            template=template,
-            spec=resolved,
-        )
-        if self.studio.is_codex_agent(agent_id):
-            return cast(AgentDraft, draft)
-        draft.metadata.labels["agentkit.ksyun.com/slug"] = self.backend.normalize_slug(slug)
-        return cast(AgentDraft, self.studio.drafts.replace(draft))
+        with self._id_lock:
+            agent_id = self._allocate_agent_id(slug)
+            resolved_slug = slug or agent_id
+            resolved = (spec or default_agent_spec(template, description=description)).model_copy(
+                deep=True
+            )
+            resolved.runtime = self.backend.runtime_ref(agent_id, runtime_type)
+            if description:
+                resolved.description = description
+            draft = self.studio.create_studio_agent(
+                agent_id=agent_id,
+                name=name,
+                description=description,
+                template=template,
+                spec=resolved,
+                labels={"agentkit.ksyun.com/slug": self.backend.normalize_slug(resolved_slug)},
+            )
+        return cast(AgentDraft, draft)
 
     def inspect_import(self, content: bytes, *, filename: str) -> dict:
         return self.backend.inspect_import(content, filename=filename)
@@ -68,13 +72,14 @@ class StudioAuthoringCoordinator:
     ) -> AgentDraft:
         inspection = self.backend.load_import(inspection_token)
         display_name = str(name or inspection.display_name).strip()
-        resolved_slug = slug or display_name
-        agent_id = self.backend.allocate_agent_id(resolved_slug)
+        agent_id = self._allocate_agent_id(slug)
+        resolved_slug = slug or agent_id
         if inspection.kind == "codex-manifest":
             created = self._commit_codex_import(
                 agent_id,
                 display_name,
                 CodexAgentManifest.model_validate(inspection.payload),
+                resolved_slug=resolved_slug,
             )
             self.backend.consume_import(inspection_token)
             return created
@@ -131,7 +136,7 @@ class StudioAuthoringCoordinator:
         inspection = self.backend.load_project(inspection_token)
         runtime_type = str(inspection["runtimeType"])
         display_name = str(name or inspection.get("name") or "Imported Agent").strip()
-        resolved_slug = slug or display_name
+        resolved_slug = slug
         if runtime_type == "codex":
             manifest_path = self.studio.workspace.resolve(
                 Path(str(inspection["projectPath"])) / "agentengine.yaml",
@@ -148,7 +153,8 @@ class StudioAuthoringCoordinator:
             self.backend.consume_project(inspection_token)
             return created
 
-        agent_id = self.backend.allocate_agent_id(resolved_slug)
+        agent_id = self._allocate_agent_id(resolved_slug)
+        resolved_slug = resolved_slug or agent_id
         config = inspection.get("evidence", {}).get("config", {})
         prompt = str(
             config.get("prompt")
@@ -213,19 +219,53 @@ class StudioAuthoringCoordinator:
             "usage": response.usage.model_dump(by_alias=True, mode="json"),
         }
 
+    def _agent_exists(self, agent_id: str) -> bool:
+        return bool(
+            self.studio.codex_manifests.exists(agent_id)
+            or self.studio._draft_exists(agent_id)
+            or (self.studio.workspace.resolve("agents") / agent_id).exists()
+        )
+
+    def _allocate_agent_id(self, slug: str | None) -> str:
+        if slug and slug.strip():
+            if is_generated_agent_slug(slug):
+                candidate = slug.strip()
+                if self._agent_exists(candidate):
+                    raise StudioError(
+                        "AGENT_ALREADY_EXISTS",
+                        "本地标识已存在，请重新生成",
+                        status_code=409,
+                        field="slug",
+                        details={"id": candidate},
+                    )
+                return candidate
+            return self.backend.allocate_agent_id(slug)
+        return generate_agent_slug(self._agent_exists)
+
     def _commit_codex_import(
         self,
         agent_id: str,
         display_name: str,
         manifest: CodexAgentManifest,
+        *,
+        resolved_slug: str,
     ) -> AgentDraft:
+        upstream = (
+            (os.environ.get("OPENAI_BASE_URL") or os.environ.get("OPENAI_API_BASE") or "")
+            .strip()
+            .rstrip("/")
+        )
+        if upstream.endswith("/chat/completions"):
+            model_endpoint: dict[str, str] = {"endpoint_url": upstream}
+        else:
+            model_endpoint = {"base_url": upstream or "https://api.openai.com/v1"}
         spec = AgentSpec(
             runtime=RuntimeRef(type="codex", version=manifest.runtime.version),
             instructions=Instructions(system=manifest.prompt),
             model=ModelSpec(
                 model=manifest.model,
-                endpoint_url="https://kspmas.ksyun.com/v1/chat/completions",
                 credential_ref="env://AGENTKIT_MODEL_API_KEY",
+                **model_endpoint,
             ),
         )
         return cast(
@@ -234,6 +274,10 @@ class StudioAuthoringCoordinator:
                 agent_id=agent_id,
                 spec=spec,
                 name=display_name,
+                labels={
+                    "agentkit.ksyun.com/slug": self.backend.normalize_slug(resolved_slug),
+                    "agentkit.ksyun.com/source": "import",
+                },
             ),
         )
 

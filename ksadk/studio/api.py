@@ -10,11 +10,11 @@ import secrets
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, File, Header, Query, Request, Response, UploadFile
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from ksadk.studio.api_catalog_routes import register_catalog_routes
@@ -24,6 +24,7 @@ from ksadk.studio.api_contracts import (
     ConversationAuthoringRequest,
     CreateAgentRequest,
     EvaluationRequest,
+    InteractionSubmitRequest,
     ProjectInspectRequest,
     QuickAuthoringRequest,
     RollbackRequest,
@@ -59,6 +60,7 @@ from ksadk.studio.api_helpers import (
 )
 from ksadk.studio.codex_manifest import CodexAgentManifest
 from ksadk.studio.contracts import (
+    AgentAppearance,
     AgentBindings,
     AgentSpec,
     AgentTemplateComposeRequest,
@@ -67,7 +69,7 @@ from ksadk.studio.contracts import (
 )
 from ksadk.studio.errors import StudioError
 from ksadk.studio.service import StudioService
-from ksadk.studio.shared_web import StudioSharedWebBridge, shared_web_static_root
+from ksadk.studio.shared_web import StudioSharedWebBridge
 
 _WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 _PUBLIC_API_PATHS = {
@@ -75,33 +77,6 @@ _PUBLIC_API_PATHS = {
     "/api/v1/system/session",
 }
 _LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost", "testserver"}
-_SHARED_CHAT_THEME = (
-    '<link id="agentkitStudioSharedChatTheme" rel="stylesheet" href="/static/shared-chat.css">'
-)
-
-
-def _themed_shared_chat_document(path: Path) -> str:
-    document = path.read_text(encoding="utf-8")
-    if "data-agentkit-studio-chat" not in document:
-        document = document.replace(
-            "<html",
-            '<html data-agentkit-studio-chat="workbench"',
-            1,
-        )
-    if "agentkitStudioSharedChatTheme" not in document:
-        if "</head>" in document:
-            document = document.replace(
-                "</head>",
-                f"  {_SHARED_CHAT_THEME}\n  </head>",
-                1,
-            )
-        else:
-            document = document.replace(
-                "<body",
-                f"<head>{_SHARED_CHAT_THEME}</head><body",
-                1,
-            )
-    return document
 
 
 def create_studio_app(
@@ -135,21 +110,9 @@ def create_studio_app(
     app.state.session_token = session_secret
     app.state.csrf_token = csrf_secret
     static_root = Path(__file__).with_name("static")
-    shared_static_root = shared_web_static_root()
-    shared_chat_document = (
-        _themed_shared_chat_document(shared_static_root / "index.html")
-        if shared_static_root is not None
-        else None
-    )
     shared_web = StudioSharedWebBridge(studio)
     app.state.shared_web_bridge = shared_web
     app.mount("/static", StaticFiles(directory=static_root), name="studio-static")
-    if shared_static_root is not None:
-        app.mount(
-            "/chat/assets",
-            StaticFiles(directory=shared_static_root / "assets"),
-            name="shared-chat-assets",
-        )
 
     @app.middleware("http")
     async def local_security(request: Request, call_next):
@@ -193,8 +156,13 @@ def create_studio_app(
             )
         studio_api = request.url.path.startswith("/api/v1")
         shared_web_api = request.url.path.startswith("/agentengine/api/v1")
+        responses_api = request.url.path == "/v1/responses" or request.url.path.startswith(
+            "/v1/responses/"
+        )
         if security_enabled and (
-            (studio_api and request.url.path not in _PUBLIC_API_PATHS) or shared_web_api
+            (studio_api and request.url.path not in _PUBLIC_API_PATHS)
+            or shared_web_api
+            or responses_api
         ):
             supplied = request.cookies.get("agentkit_studio_session") or request.headers.get(
                 "X-AgentKit-Session"
@@ -208,7 +176,7 @@ def create_studio_app(
                     ),
                     request,
                 )
-            if studio_api and request.method in _WRITE_METHODS:
+            if (studio_api or responses_api) and request.method in _WRITE_METHODS:
                 csrf = request.headers.get("X-CSRF-Token")
                 if not csrf or not hmac.compare_digest(csrf, csrf_secret):
                     return _error_response(
@@ -227,9 +195,7 @@ def create_studio_app(
             else response.headers.get("Cache-Control", "no-cache")
         )
         response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["X-Frame-Options"] = (
-            "SAMEORIGIN" if request.url.path.startswith("/chat") else "DENY"
-        )
+        response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "no-referrer"
         return response
 
@@ -298,6 +264,31 @@ def create_studio_app(
         metadata = payload.get("metadata")
         metadata = metadata if isinstance(metadata, dict) else {}
         agent_id = str(metadata.get("agent_id") or metadata.get("agentId") or "") or None
+        requested_approval_mode = (
+            str(metadata.get("approval_mode") or metadata.get("approvalMode") or "").strip().lower()
+        )
+        if requested_approval_mode and requested_approval_mode not in {"ask", "risk", "full"}:
+            raise StudioError(
+                "APPROVAL_MODE_INVALID",
+                "批准模式必须是 ask、risk 或 full",
+                status_code=422,
+                field="metadata.approval_mode",
+            )
+        collaboration_mode = (
+            str(metadata.get("collaboration_mode") or metadata.get("collaborationMode") or "")
+            .strip()
+            .lower()
+        )
+        if collaboration_mode and collaboration_mode not in {"default", "plan"}:
+            raise StudioError(
+                "COLLABORATION_MODE_INVALID",
+                "协作模式必须是 default 或 plan",
+                status_code=422,
+                field="metadata.collaboration_mode",
+            )
+        goal_objective = str(
+            metadata.get("goal_objective") or metadata.get("goalObjective") or ""
+        ).strip()
         session_id = _responses_session_id(payload, bridge=shared_web)
         response_id = str(
             metadata.get("invocation_id")
@@ -310,6 +301,9 @@ def create_studio_app(
             "InvocationId": response_id,
             "Model": str(payload.get("model") or ""),
             "ResponsesInput": _responses_input(payload.get("input")),
+            "ApprovalMode": requested_approval_mode,
+            "CollaborationMode": collaboration_mode,
+            "GoalObjective": goal_objective,
         }
         bridge_payload["Model"] = shared_web.select_model(
             bridge_payload["AgentId"],
@@ -323,23 +317,22 @@ def create_studio_app(
             )
         return await shared_web.invoke_response(bridge_payload)
 
-    if shared_static_root is not None:
+    @app.post("/v1/responses/{response_id}/cancel")
+    async def cancel_openai_response(response_id: str):
+        result = shared_web.cancel_run(response_id)
+        return {
+            "id": response_id,
+            "object": "response",
+            "status": "cancelled" if result["Cancelled"] else "not_found",
+        }
 
-        @app.get("/chat")
-        @app.get("/chat/")
-        async def shared_chat(request: Request):
-            requested = request.query_params.get("agentId")
-            agent_id = shared_web.resolve_agent_id(requested)
-            response = HTMLResponse(shared_chat_document)
-            response.set_cookie(
-                "agentkit_studio_chat_agent",
-                agent_id,
-                httponly=True,
-                samesite="strict",
-                secure=False,
-                path="/",
-            )
-            return response
+    @app.post("/v1/responses/{response_id}:pause", status_code=202)
+    async def pause_openai_response(response_id: str):
+        return await shared_web.pause_run(response_id)
+
+    @app.post("/v1/responses/{response_id}:resume", status_code=202)
+    async def resume_openai_response(response_id: str):
+        return await shared_web.resume_run(response_id)
 
     @app.post("/agentengine/api/v1/{action}")
     async def shared_chat_action(
@@ -476,10 +469,18 @@ def create_studio_app(
                 "evaluation": True,
                 "deployment": True,
                 "cloudRebuild": False,
-                "sharedChat": shared_static_root is not None,
+                "reactChat": True,
             },
             "runtimes": studio.runtime_catalog(),
         }
+
+    @app.get("/api/v1/system/settings")
+    async def get_settings():
+        return studio.get_settings()
+
+    @app.put("/api/v1/system/settings")
+    async def update_settings(payload: dict[str, Any]):
+        return studio.update_settings(payload)
 
     @app.post("/api/v1/workspaces:open")
     async def open_workspace(payload: WorkspaceOpenRequest):
@@ -567,6 +568,7 @@ def create_studio_app(
             payload.input.content,
             session_id=payload.session_id,
             model=payload.model,
+            sandbox=payload.sandbox,
             idempotency_key=key,
             on_event=observe,
         )
@@ -615,6 +617,35 @@ def create_studio_app(
             template=payload.template,
             spec=payload.spec,
             runtime=payload.runtime,
+        )
+
+    @app.post("/api/v1/assets/agent-avatars", status_code=201)
+    async def upload_agent_avatar(request: Request):
+        declared_size = request.headers.get("Content-Length")
+        if (
+            declared_size
+            and declared_size.isdigit()
+            and int(declared_size) > studio.avatar_assets.MAX_BYTES
+        ):
+            raise StudioError(
+                "AGENT_AVATAR_TOO_LARGE",
+                "头像文件不能超过 2 MiB",
+                status_code=413,
+                field="file",
+                details={"maxBytes": studio.avatar_assets.MAX_BYTES},
+            )
+        return studio.avatar_assets.store(
+            await request.body(),
+            content_type=request.headers.get("Content-Type", ""),
+        )
+
+    @app.get("/api/v1/assets/agent-avatars/{asset_name}")
+    async def get_agent_avatar(asset_name: str):
+        path, media_type = studio.avatar_assets.get(asset_name)
+        return FileResponse(
+            path,
+            media_type=media_type,
+            headers={"Cache-Control": "private, max-age=31536000, immutable"},
         )
 
     @app.get("/api/v1/agent-templates")
@@ -744,6 +775,18 @@ def create_studio_app(
             expected_revision=revision,
         )
 
+    @app.put("/api/v1/agents/{agent_id}/appearance")
+    async def update_agent_appearance(
+        agent_id: str,
+        appearance: AgentAppearance,
+        if_match: str | None = Header(default=None, alias="If-Match"),
+    ):
+        return studio.update_studio_agent_appearance(
+            agent_id,
+            appearance,
+            expected_revision=_parse_revision(if_match),
+        )
+
     @app.delete("/api/v1/agents/{agent_id}", status_code=204)
     async def delete_agent(agent_id: str, purge: bool = False):
         studio.delete_studio_agent(agent_id, purge=purge)
@@ -817,6 +860,31 @@ def create_studio_app(
     async def get_run(run_id: str):
         return studio.event_store.get(run_id)
 
+    @app.post("/api/v1/runs/{run_id}:cancel", status_code=202)
+    async def cancel_run(run_id: str):
+        return await studio.run_service.cancel_run(run_id)
+
+    @app.post("/api/v1/runs/{run_id}:pause", status_code=202)
+    async def pause_run(run_id: str):
+        return await studio.run_service.pause_run(run_id)
+
+    @app.post("/api/v1/runs/{run_id}:resume", status_code=202)
+    async def resume_run(run_id: str):
+        return await studio.run_service.resume_run(run_id)
+
+    @app.post("/api/v1/runs/{run_id}/interactions/{interaction_id}:submit")
+    async def submit_run_interaction(
+        run_id: str,
+        interaction_id: str,
+        payload: InteractionSubmitRequest,
+    ):
+        return await studio.run_service.submit_interaction(
+            run_id,
+            interaction_id,
+            name=payload.name,
+            data=payload.data,
+        )
+
     @app.delete("/api/v1/sessions/{session_id}", status_code=204)
     async def delete_studio_session(session_id: str):
         studio.delete_session(session_id)
@@ -837,23 +905,39 @@ def create_studio_app(
         events = studio.event_store.events(run_id, after=cursor)
         return _sse(events)
 
-    @app.get("/api/v1/traces/{trace_id}")
-    async def get_trace(trace_id: str):
-        return studio.event_store.trace(trace_id)
+    @app.get("/api/v1/traces/overview")
+    async def trace_overview(
+        range_name: Literal["24h", "7d"] = Query(default="24h", alias="range"),
+        agent_id: str | None = Query(default=None, alias="agentId"),
+        status: str | None = Query(default=None),
+    ):
+        return studio.event_store.trace_overview(
+            range_name=range_name,
+            agent_id=agent_id,
+            status=status,
+        )
 
     @app.get("/api/v1/traces")
     async def list_traces(
         agent_id: str | None = Query(default=None, alias="agentId"),
         status: str | None = Query(default=None),
-        limit: int = Query(default=200, ge=1, le=1000),
+        query: str = Query(default=""),
+        limit: int = Query(default=50, ge=1, le=1000),
+        cursor: str | None = Query(default=None),
+        sort: Literal["startedAt:desc", "startedAt:asc"] = "startedAt:desc",
     ):
-        return {
-            "items": studio.event_store.list_traces(
-                agent_id=agent_id,
-                status=status,
-                limit=limit,
-            )
-        }
+        return studio.event_store.list_traces_page(
+            agent_id=agent_id,
+            status=status,
+            query=query,
+            limit=limit,
+            cursor=cursor,
+            sort=sort,
+        )
+
+    @app.get("/api/v1/traces/{trace_id}")
+    async def get_trace(trace_id: str):
+        return studio.event_store.trace(trace_id)
 
     @app.get("/api/v1/traces/{trace_id}/otlp")
     async def get_trace_otlp(trace_id: str):

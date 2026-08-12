@@ -42,11 +42,63 @@ class ModelResponse:
 
 
 class CredentialResolver:
-    """Resolve immutable Secret references with an ephemeral local-session overlay."""
+    """Resolve immutable Secret references with a workspace-persisted overlay.
 
-    def __init__(self) -> None:
+    Resolution order: in-memory session values → workspace secrets file
+    (``.agentkit/secrets.env``) → process environment (with paired fallback).
+    """
+
+    _FALLBACK_PAIRS: tuple[tuple[str, str], ...] = (
+        ("AGENTKIT_MODEL_API_KEY", "OPENAI_API_KEY"),
+        ("OPENAI_API_KEY", "AGENTKIT_MODEL_API_KEY"),
+    )
+
+    def __init__(self, workspace: Any = None) -> None:
         self._session_values: dict[str, bytearray] = {}
         self._lock = RLock()
+        self._workspace = workspace
+        self._persisted: dict[str, str] | None = None
+
+    def _secrets_path(self) -> Any | None:
+        if self._workspace is None:
+            return None
+        try:
+            return self._workspace.resolve(".agentkit/secrets.env")
+        except Exception:
+            return None
+
+    def _load_persisted(self) -> dict[str, str]:
+        if self._persisted is not None:
+            return self._persisted
+        self._persisted = {}
+        path = self._secrets_path()
+        if path is not None and path.is_file():
+            try:
+                for line in path.read_text(encoding="utf-8").splitlines():
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    key, _, value = line.partition("=")
+                    key = key.strip()
+                    if key:
+                        self._persisted[key] = value
+            except Exception:
+                pass
+        return self._persisted
+
+    def _write_persisted(self) -> None:
+        path = self._secrets_path()
+        if path is None:
+            return
+        lines = [f"{k}={v}" for k, v in sorted(self._persisted.items())]
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+            try:
+                path.chmod(0o600)
+            except Exception:
+                pass
+        except Exception:
+            pass
 
     @staticmethod
     def _validate_name(name: str) -> str:
@@ -95,6 +147,11 @@ class CredentialResolver:
             previous = self._session_values.get(name)
             self._session_values[name] = encoded
             self._zero(previous)
+            if self._secrets_path() is not None:
+                persisted = self._load_persisted()
+                if persisted.get(name) != value:
+                    persisted[name] = value
+                    self._write_persisted()
         return self.status(f"env://{name}")
 
     def delete_session(self, name: str) -> dict[str, str | bool]:
@@ -102,6 +159,11 @@ class CredentialResolver:
         with self._lock:
             previous = self._session_values.pop(name, None)
             self._zero(previous)
+            if self._secrets_path() is not None:
+                persisted = self._load_persisted()
+                if name in persisted:
+                    persisted.pop(name, None)
+                    self._write_persisted()
         return self.status(f"env://{name}")
 
     def clear_session(self) -> None:
@@ -111,41 +173,69 @@ class CredentialResolver:
             for value in values:
                 self._zero(value)
 
+    def _fallback_name(self, name: str) -> str | None:
+        for primary, alternate in self._FALLBACK_PAIRS:
+            if name == primary and alternate != primary:
+                return alternate
+        return None
+
+    def _resolve_source(self, name: str) -> tuple[bool, str]:
+        """Return (configured, source) considering session, persisted file, env, and fallback."""
+        fallback = self._fallback_name(name)
+        with self._lock:
+            if name in self._session_values:
+                return True, "session"
+            if fallback and fallback in self._session_values:
+                return True, "session-alias"
+        persisted = self._load_persisted()
+        if name in persisted:
+            return True, "workspace"
+        if fallback and fallback in persisted:
+            return True, "workspace-alias"
+        if os.environ.get(name):
+            return True, "environment"
+        if fallback and os.environ.get(fallback):
+            return True, "fallback"
+        return False, "missing"
+
+    def _session_value(self, name: str) -> str | None:
+        with self._lock:
+            value = self._session_values.get(name)
+            return value.decode("utf-8") if value is not None else None
+
     def status(self, reference: str) -> dict[str, str | bool]:
         name = self._environment_name(reference)
-        with self._lock:
-            session_configured = name in self._session_values
-        environment_configured = bool(os.environ.get(name))
-        source = (
-            "session"
-            if session_configured
-            else "environment"
-            if environment_configured
-            else "missing"
-        )
+        configured, source = self._resolve_source(name)
         return {
             "reference": reference,
             "name": name,
-            "configured": session_configured or environment_configured,
+            "configured": configured,
             "source": source,
-            "persistence": "session" if session_configured else source,
+            "persistence": source,
         }
 
     def resolve(self, reference: str) -> str:
         name = self._environment_name(reference)
-        with self._lock:
-            session_value = self._session_values.get(name)
-            if session_value is not None:
-                return session_value.decode("utf-8")
-        value = os.environ.get(name)
-        if not value:
-            raise StudioError(
-                "SECRET_NOT_FOUND",
-                "模型凭证尚未配置",
-                status_code=422,
-                details={"reference": reference},
-            )
-        return value
+        fallback = self._fallback_name(name)
+        aliases = [name, *([fallback] if fallback else [])]
+        for candidate in aliases:
+            value = self._session_value(candidate)
+            if value is not None:
+                return value
+        persisted = self._load_persisted()
+        for candidate in aliases:
+            if candidate in persisted:
+                return persisted[candidate]
+        for candidate in aliases:
+            value = os.environ.get(candidate)
+            if value:
+                return value
+        raise StudioError(
+            "SECRET_NOT_FOUND",
+            "模型凭证尚未配置",
+            status_code=422,
+            details={"reference": reference},
+        )
 
     def exists(self, reference: str) -> bool:
         try:
@@ -234,21 +324,26 @@ class OpenAICompatibleModelClient:
         max_attempts: int,
         backoff_seconds: float,
         tools: list[dict[str, Any]] | None = None,
+        allow_empty: bool = False,
     ) -> ModelResponse:
         await self.network_guard.check(model.endpoint_url, network_policy)
         credential = self.credential_resolver.resolve(model.credential_ref)
-        payload: dict[str, Any] = {
-            "model": model.model,
-            "messages": messages,
-            "temperature": model.parameters.temperature,
-            "max_tokens": model.parameters.max_tokens,
-            "stream": False,
-        }
-        if model.parameters.top_p is not None:
-            payload["top_p"] = model.parameters.top_p
-        if tools:
-            payload["tools"] = tools
-            payload["tool_choice"] = "auto"
+        wire_api = (model.wire_api or "chat").strip().lower()
+        if wire_api == "responses":
+            payload = self._responses_payload(model, messages, tools)
+        else:
+            payload = {
+                "model": model.model,
+                "messages": messages,
+                "temperature": model.parameters.temperature,
+                "max_tokens": model.parameters.max_tokens,
+                "stream": False,
+            }
+            if model.parameters.top_p is not None:
+                payload["top_p"] = model.parameters.top_p
+            if tools:
+                payload["tools"] = tools
+                payload["tool_choice"] = "auto"
         headers = {
             "Authorization": f"Bearer {credential}",
             "Content-Type": "application/json",
@@ -294,11 +389,101 @@ class OpenAICompatibleModelClient:
                         status_code=502,
                         details={"upstreamStatus": response.status_code},
                     )
-                return self._parse_response(response)
+                if wire_api == "responses":
+                    return self._parse_responses_response(response, allow_empty=allow_empty)
+                return self._parse_response(response, allow_empty=allow_empty)
         raise AssertionError("unreachable")
 
     @staticmethod
-    def _parse_response(response: httpx.Response) -> ModelResponse:
+    def _responses_payload(
+        model: ResolvedModel,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+    ) -> dict[str, Any]:
+        """把 chat 语义消息映射到 Responses API 最小可用载荷。"""
+        if tools:
+            raise StudioError(
+                "MODEL_REQUEST_FAILED",
+                "Responses 端点暂不支持 tools 参数",
+                status_code=422,
+            )
+        instructions: list[str] = []
+        items: list[dict[str, Any]] = []
+        for message in messages:
+            role = str(message.get("role") or "user")
+            text = str(message.get("content") or "")
+            if role == "system":
+                instructions.append(text)
+                continue
+            part_type = "output_text" if role == "assistant" else "input_text"
+            items.append({"role": role, "content": [{"type": part_type, "text": text}]})
+        payload: dict[str, Any] = {
+            "model": model.model,
+            "input": items,
+            "max_output_tokens": model.parameters.max_tokens,
+        }
+        if instructions:
+            payload["instructions"] = "\n\n".join(instructions)
+        return payload
+
+    @staticmethod
+    def _parse_responses_response(
+        response: httpx.Response, allow_empty: bool = False
+    ) -> ModelResponse:
+        if len(response.content) > 16 * 1024 * 1024:
+            raise StudioError(
+                "MODEL_RESPONSE_TOO_LARGE",
+                "模型响应超过 16 MiB 限制",
+                status_code=502,
+            )
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise StudioError(
+                "MODEL_RESPONSE_INVALID",
+                "模型响应不符合 Responses 协议",
+                status_code=502,
+            ) from exc
+        content = payload.get("output_text")
+        if not isinstance(content, str) or not content:
+            parts: list[str] = []
+            for item in payload.get("output") or []:
+                if not isinstance(item, dict):
+                    continue
+                for part in item.get("content") or []:
+                    if isinstance(part, dict) and part.get("type") in {"output_text", "text"}:
+                        parts.append(str(part.get("text") or ""))
+            content = "".join(parts)
+        status = str(payload.get("status") or "")
+        if not content and not allow_empty:
+            raise StudioError(
+                "MODEL_EMPTY_RESPONSE",
+                "模型未返回可用内容",
+                status_code=502,
+                details={"status": status},
+            )
+        raw_usage = payload.get("usage") or {}
+        usage = Usage(
+            input_tokens=int(raw_usage.get("input_tokens") or 0),
+            output_tokens=int(raw_usage.get("output_tokens") or 0),
+            total_tokens=int(raw_usage.get("total_tokens") or 0),
+            cached_input_tokens=int(
+                (raw_usage.get("input_tokens_details") or {}).get("cached_tokens") or 0
+            ),
+            reasoning_output_tokens=int(
+                (raw_usage.get("output_tokens_details") or {}).get("reasoning_tokens") or 0
+            ),
+        )
+        return ModelResponse(
+            content=content,
+            finish_reason="stop" if status == "completed" else status,
+            usage=usage,
+            tool_calls=[],
+            raw_message={"output": payload.get("output")},
+        )
+
+    @staticmethod
+    def _parse_response(response: httpx.Response, allow_empty: bool = False) -> ModelResponse:
         if len(response.content) > 16 * 1024 * 1024:
             raise StudioError(
                 "MODEL_RESPONSE_TOO_LARGE",
@@ -328,7 +513,7 @@ class OpenAICompatibleModelClient:
             )
         content = str(message.get("content") or "")
         finish_reason = str(choice.get("finish_reason") or "")
-        if not content and not calls:
+        if not content and not calls and not allow_empty:
             raise StudioError(
                 "MODEL_EMPTY_RESPONSE",
                 "模型未返回可用内容",
@@ -344,10 +529,7 @@ class OpenAICompatibleModelClient:
                 (raw_usage.get("prompt_tokens_details") or {}).get("cached_tokens") or 0
             ),
             reasoning_output_tokens=int(
-                (raw_usage.get("completion_tokens_details") or {}).get(
-                    "reasoning_tokens"
-                )
-                or 0
+                (raw_usage.get("completion_tokens_details") or {}).get("reasoning_tokens") or 0
             ),
             reported=bool(raw_usage),
             source="model-provider" if raw_usage else None,

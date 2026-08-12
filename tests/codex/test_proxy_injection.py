@@ -35,7 +35,12 @@ def test_proxy_overrides_injected_and_merged(monkeypatch):
         codex_bin="/x",
         cwd="/tmp",
         config_overrides=("existing=k",),
-        env={"FOO": "bar"},
+        env={
+            "FOO": "bar",
+            "OPENAI_API_KEY": "config-upstream-secret",
+            "AGENTKIT_MODEL_API_KEY": "alias-upstream-secret",
+            "KSADK_PROXY_UPSTREAM_KEY": "proxy-upstream-secret",
+        },
     )
     out, proxy = AsyncCodexClient._maybe_apply_proxy(cfg)
     try:
@@ -54,6 +59,9 @@ def test_proxy_overrides_injected_and_merged(monkeypatch):
         assert out.codex_bin == "/x" and out.cwd == "/tmp"
         assert out.env["FOO"] == "bar"
         assert out.env["KSADK_PROXY_TOKEN"]  # 随机 token 下发子进程
+        assert "OPENAI_API_KEY" not in out.env
+        assert "AGENTKIT_MODEL_API_KEY" not in out.env
+        assert "KSADK_PROXY_UPSTREAM_KEY" not in out.env
     finally:
         proxy.stop()
 
@@ -101,6 +109,39 @@ def test_probe_unsupported_enables_proxy(monkeypatch):
         assert "model_provider=ksadk_proxy" in list(out.config_overrides)
     finally:
         proxy.stop()
+
+
+def test_probe_uses_launch_config_environment(monkeypatch):
+    """Break caught: Studio injects endpoint/key into CodexConfig but proxy ignores it."""
+    from openai_codex import CodexConfig
+
+    monkeypatch.delenv("KSADK_CODEX_USE_PROXY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_BASE", raising=False)
+    observed = {}
+
+    def probe(model, base, key):
+        observed.update(model=model, base=base, key=key)
+        return False
+
+    monkeypatch.setattr("ksadk.codex.client._probe_requires_proxy", probe)
+    out, proxy = AsyncCodexClient._maybe_apply_proxy(
+        CodexConfig(
+            env={
+                "OPENAI_BASE_URL": "https://model.example.com/v1",
+                "OPENAI_API_KEY": "workspace-model-key",
+                "OPENAI_MODEL_NAME": "glm-5.2",
+            }
+        )
+    )
+
+    assert proxy is None
+    assert out is not None
+    assert observed == {
+        "model": "glm-5.2",
+        "base": "https://model.example.com/v1",
+        "key": "workspace-model-key",
+    }
 
 
 def test_probe_supported_direct(monkeypatch):

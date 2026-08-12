@@ -11,9 +11,37 @@ import yaml
 from fastapi.testclient import TestClient
 
 from ksadk.studio.api import create_studio_app
-from ksadk.studio.contracts import AgentSpec, Instructions, RuntimeRef, Usage
+from ksadk.studio.contracts import AgentSpec, Instructions, ModelSpec, RuntimeRef, Usage
+from ksadk.studio.errors import StudioError
 from ksadk.studio.model_client import ModelResponse
 from ksadk.studio.service import StudioService
+
+
+def test_generated_agent_slug_retries_collisions(monkeypatch: pytest.MonkeyPatch) -> None:
+    from ksadk.studio import identifiers
+
+    values = iter(["00000000", "a1b2c3d4"])
+    monkeypatch.setattr(identifiers.secrets, "token_hex", lambda _size: next(values))
+
+    assert (
+        identifiers.generate_agent_slug(lambda value: value == "agentkit-00000000")
+        == "agentkit-a1b2c3d4"
+    )
+
+
+def _register_model(studio: StudioService) -> None:
+    studio.catalog.create_model_profile(
+        name="glm-5.1",
+        display_name="GLM-5.1",
+        version="1.0.0",
+        description="",
+        spec=ModelSpec(
+            provider="openai-compatible",
+            model="glm-5.1",
+            endpoint_url="https://api.openai.com/v1/chat/completions",
+            credential_ref="env://AGENTKIT_MODEL_API_KEY",
+        ),
+    )
 
 
 class _AuthoringModelClient:
@@ -65,6 +93,37 @@ def test_quick_authoring_allocates_stable_id_and_owns_generated_source(
         agent_variable="graph",
     )
     assert (tmp_path / draft.spec.runtime.project_path / "agent.py").is_file()
+
+
+def test_quick_authoring_generates_local_id_when_slug_is_omitted(tmp_path: Path) -> None:
+    studio = StudioService(tmp_path)
+
+    draft = studio.create_authored_agent(
+        name="Generated Helper",
+        runtime_type="adk",
+        spec=AgentSpec(instructions=Instructions(system="Help safely.")),
+    )
+
+    assert re.fullmatch(r"agentkit-[0-9a-f]{8}", draft.metadata.id)
+    assert draft.metadata.labels["agentkit.ksyun.com/slug"] == draft.metadata.id
+
+
+def test_generated_local_id_is_never_overwritten(tmp_path: Path) -> None:
+    studio = StudioService(tmp_path)
+    created = studio.create_authored_agent(
+        name="First",
+        slug="agentkit-deadbeef",
+        runtime_type="adk",
+    )
+    assert created.metadata.id == "agentkit-deadbeef"
+
+    with pytest.raises(StudioError) as raised:
+        studio.create_authored_agent(
+            name="Second",
+            slug="agentkit-deadbeef",
+            runtime_type="adk",
+        )
+    assert getattr(raised.value, "code", "") == "AGENT_ALREADY_EXISTS"
 
 
 def test_import_inspect_is_read_only_until_confirmed_commit(tmp_path: Path) -> None:
@@ -127,6 +186,7 @@ def test_agent_zip_import_preserves_source_only_after_confirmation(tmp_path: Pat
     assert not list((tmp_path / "agents").glob("*/source/agent.py"))
 
     draft = studio.commit_agent_import(inspection["inspectionToken"])
+    assert re.fullmatch(r"agentkit-[0-9a-f]{8}", draft.metadata.id)
     source = tmp_path / draft.spec.runtime.project_path / "agent.py"
     assert "StateGraph" in source.read_text()
     assert not (source.parent / ".agentkit-generated").exists()
@@ -178,6 +238,7 @@ async def test_conversation_authoring_uses_bound_real_model_and_returns_patch_on
     )
     model_client = _AuthoringModelClient(response)
     studio = StudioService(tmp_path, model_client=model_client)
+    _register_model(studio)
     model_profile = studio.catalog.list(kind="model")[0]
 
     proposal = await studio.compose_agent_conversation(
@@ -224,6 +285,18 @@ def test_authoring_api_exposes_four_real_modes(tmp_path: Path) -> None:
         assert quick.status_code == 201
         assert quick.json()["spec"]["runtime"]["type"] == "adk"
 
+        generated = client.post(
+            "/api/v1/authoring/quick",
+            json={
+                "name": "Generated Agent",
+                "runtimeType": "codex",
+                "spec": {"instructions": {"system": "Help.", "task": ""}},
+            },
+        )
+        assert generated.status_code == 201
+        assert re.fullmatch(r"agentkit-[0-9a-f]{8}", generated.json()["metadata"]["id"])
+
+        _register_model(service)
         model_profile = service.catalog.list(kind="model")[0]
         conversation = client.post(
             "/api/v1/authoring/conversations:compose",
@@ -258,9 +331,9 @@ def test_authoring_api_exposes_four_real_modes(tmp_path: Path) -> None:
             "apiVersion": "agentkit.ksyun.com/v1alpha1",
             "kind": "Agent",
             "metadata": {"id": "api-import", "name": "API Import"},
-            "spec": _framework_spec(
-                "adk", "agents/api-import/source"
-            ).model_dump(by_alias=True, exclude_none=True, mode="json"),
+            "spec": _framework_spec("adk", "agents/api-import/source").model_dump(
+                by_alias=True, exclude_none=True, mode="json"
+            ),
         }
         inspected = client.post(
             "/api/v1/authoring/imports:inspect",

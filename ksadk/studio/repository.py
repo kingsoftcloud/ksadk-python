@@ -12,6 +12,7 @@ import yaml  # type: ignore[import-untyped]
 from pydantic import ValidationError
 
 from ksadk.studio.contracts import (
+    AgentAppearance,
     AgentDraft,
     AgentMetadata,
     AgentSpec,
@@ -127,6 +128,28 @@ class AgentDraftRepository:
         self._write(self._agent_file(agent_id), updated)
         return updated
 
+    def update_appearance(
+        self,
+        agent_id: str,
+        appearance: AgentAppearance,
+        *,
+        expected_revision: int,
+    ) -> AgentDraft:
+        current = self.get(agent_id)
+        if current.metadata.revision != expected_revision:
+            raise StudioError(
+                "AGENT_REVISION_CONFLICT",
+                "Agent 已被其他操作更新",
+                status_code=409,
+                field="metadata.revision",
+                details={"expected": expected_revision, "actual": current.metadata.revision},
+            )
+        updated = cast(AgentDraft, current.model_copy(deep=True))
+        updated.metadata.revision += 1
+        updated.metadata.appearance = appearance
+        self._write(self._agent_file(agent_id), updated)
+        return updated
+
     def replace(self, draft: AgentDraft) -> AgentDraft:
         """Persist metadata-only creation state without creating a Revision."""
 
@@ -155,9 +178,7 @@ class AgentDraftRepository:
             return
         if trash_directory is None:
             timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-            trash = self.workspace.resolve(
-                Path(".agentkit/trash") / f"{agent_id}-{timestamp}"
-            )
+            trash = self.workspace.resolve(Path(".agentkit/trash") / f"{agent_id}-{timestamp}")
         else:
             trash = self.workspace.resolve(trash_directory / "source" / "agents" / agent_id)
         trash.parent.mkdir(parents=True, exist_ok=True)
@@ -247,9 +268,7 @@ class BuildRepository:
             else:
                 if trash_directory is None:
                     raise ValueError("recoverable deletion requires a trash directory")
-                destination = self.workspace.resolve(
-                    trash_directory / "artifacts" / directory.name
-                )
+                destination = self.workspace.resolve(trash_directory / "artifacts" / directory.name)
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(directory), str(destination))
         for record in records:
@@ -261,9 +280,7 @@ class BuildRepository:
             else:
                 if trash_directory is None:
                     raise ValueError("recoverable deletion requires a trash directory")
-                destination = self.workspace.resolve(
-                    trash_directory / "builds" / path.name
-                )
+                destination = self.workspace.resolve(trash_directory / "builds" / path.name)
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(path), str(destination))
         return len(records)

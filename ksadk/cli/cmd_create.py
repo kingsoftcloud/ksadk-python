@@ -976,7 +976,7 @@ def _generate_deepagents_service_adapter_content(analysis: dict) -> str:
         runnable_build = """        try:
             runnable_module = importlib.import_module(RUNNABLE_MODULE, __package__)
             deep_agent_runnable = getattr(runnable_module, "DeepAgentRunnable")
-            return deep_agent_runnable(agent, _NullLangfuseManager())
+            return deep_agent_runnable(agent, _NullObservabilityManager())
         except Exception:
             return None
 """
@@ -992,20 +992,11 @@ import asyncio
 import importlib
 from typing import Any
 
-try:
-    from langchain_core.callbacks import BaseCallbackHandler
-except Exception:  # pragma: no cover - dependency may be absent during static checks
-    BaseCallbackHandler = object
-
 INIT_MODULE = "{init_module}"
 {runnable_module_constant}
 
-class _NoopCallbackHandler(BaseCallbackHandler):
-    pass
-
-
-class _NullLangfuseManager:
-    callback_handler = _NoopCallbackHandler()
+class _NullObservabilityManager:
+    callback_handler = None
 
 
 class AgentEngineDeepAgentsServiceAdapter:
@@ -1885,8 +1876,6 @@ PORT=8080
     elif framework == "codex":
         env_content = _generate_codex_env_content(global_env)
     else:
-        langfuse_url = global_env.get("LANGFUSE_BASE_URL", "")
-
         env_content = """# ======================
 # 模型配置 (必填, 可以从星流平台获取https://ksp.console.ksyun.com/#/apiKey)
 # ======================
@@ -1909,13 +1898,9 @@ PORT=8080
 # 可观测性 (可选)
 # ======================
 """
-        env_content += "# LANGFUSE_PUBLIC_KEY=pk-xxx\n"
-        env_content += "# LANGFUSE_SECRET_KEY=sk-xxx\n"
-
-        if langfuse_url:
-            env_content += f"LANGFUSE_BASE_URL={langfuse_url}\n"
-        else:
-            env_content += "# LANGFUSE_BASE_URL=https://cloud.langfuse.com\n"
+        env_content += "# OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf\n"
+        env_content += "# OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=https://collector.example.com/v1/traces\n"
+        env_content += "# OTEL_EXPORTER_OTLP_TRACES_HEADERS=Authorization=Bearer%20placeholder\n"
 
         env_content += """
 # ======================

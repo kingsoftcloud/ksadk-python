@@ -181,6 +181,92 @@ def test_proxy_observer_reports_response_translation_and_upstream_request_id():
     assert "secret-upstream-key" not in json.dumps(observed)
 
 
+class _RecordingUpstream(BaseHTTPRequestHandler):
+    received: list[dict] = []
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length") or "0")
+        body = json.loads(self.rfile.read(length) or b"{}")
+        type(self).received.append(body)
+        payload = {
+            "id": "chatcmpl-test",
+            "object": "chat.completion",
+            "created": 1,
+            "model": body.get("model"),
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        }
+        raw = json.dumps(payload).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def log_message(self, *_args):
+        pass
+
+
+def test_responses_rewrites_pseudo_model_to_configured_upstream_model():
+    # codex auto_review guardian 发内部伪模型名 codex-auto-review;
+    # 单上游代理必须改写为配置的真实模型,否则上游按未知模型 403。
+    _RecordingUpstream.received = []
+    upstream = HTTPServer(("127.0.0.1", 0), _RecordingUpstream)
+    threading.Thread(target=upstream.serve_forever, daemon=True).start()
+    observed: list[tuple[str, dict]] = []
+    config = ProxyConfig(
+        upstream_base=f"http://127.0.0.1:{upstream.server_address[1]}/v1",
+        api_key="secret-upstream-key",
+        local_token="local-token",
+        upstream_model="glm-5.2",
+        event_callback=lambda event, data: observed.append((event, data)),
+    )
+    try:
+        response = TestClient(create_app(config)).post(
+            "/v1/responses",
+            json={"model": "codex-auto-review", "input": "review this"},
+            headers={"Authorization": "Bearer local-token"},
+        )
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+    assert response.status_code == 200
+    assert _RecordingUpstream.received[0]["model"] == "glm-5.2"
+    # 事件流仍保留客户端请求的原始模型名(可观测性如实呈现)
+    requested = [data for event, data in observed if event == "proxy.requested"]
+    assert requested[0]["model"] == "codex-auto-review"
+
+
+def test_responses_without_upstream_model_passes_model_through():
+    _RecordingUpstream.received = []
+    upstream = HTTPServer(("127.0.0.1", 0), _RecordingUpstream)
+    threading.Thread(target=upstream.serve_forever, daemon=True).start()
+    config = ProxyConfig(
+        upstream_base=f"http://127.0.0.1:{upstream.server_address[1]}/v1",
+        api_key="secret-upstream-key",
+        local_token="local-token",
+    )
+    try:
+        response = TestClient(create_app(config)).post(
+            "/v1/responses",
+            json={"model": "codex-auto-review", "input": "review this"},
+            headers={"Authorization": "Bearer local-token"},
+        )
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+    assert response.status_code == 200
+    assert _RecordingUpstream.received[0]["model"] == "codex-auto-review"
+
+
 # ---- 生命周期:启动超时 / 活动 SSE ----
 
 

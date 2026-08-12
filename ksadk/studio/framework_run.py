@@ -10,6 +10,7 @@ from ksadk.studio.errors import StudioError
 from ksadk.studio.repository import BuildRepository
 from ksadk.studio.run_service import StudioRunSpec
 from ksadk.studio.workspace import Workspace
+from ksadk.tools.gateway import normalize_tool_approval_mode
 
 
 class FrameworkRunSpecResolver:
@@ -22,7 +23,13 @@ class FrameworkRunSpecResolver:
         self.workspace = workspace
         self.builds = build_repository or BuildRepository(workspace)
 
-    def resolve(self, build_id: str, *, model: str | None = None) -> StudioRunSpec:
+    def resolve(
+        self,
+        build_id: str,
+        *,
+        model: str | None = None,
+        approval_mode: str | None = None,
+    ) -> StudioRunSpec:
         build = self.builds.get(build_id)
         runtime_type = build.runtime_type.strip().lower()
         if runtime_type not in {"adk", "langgraph"}:
@@ -58,6 +65,15 @@ class FrameworkRunSpecResolver:
         resolved_path = bundle_root / "resolved-agent-spec.json"
         resolved = json.loads(resolved_path.read_text(encoding="utf-8"))
         instructions = resolved.get("instructions") if isinstance(resolved, dict) else {}
+        request_config = {
+            "base_instructions": str((instructions or {}).get("system") or ""),
+            "entry_point": detection.entry_point,
+            "agent_variable": detection.agent_variable,
+        }
+        if approval_mode:
+            request_config["tool_approval_mode"] = normalize_tool_approval_mode(
+                approval_mode
+            )
         return StudioRunSpec(
             launch_context=RuntimeLaunchContext(
                 runtime_type=runtime_type,
@@ -68,11 +84,7 @@ class FrameworkRunSpecResolver:
             build_id=build.id,
             agent_id=build.agent_id,
             model=selected_model,
-            request_config={
-                "base_instructions": str((instructions or {}).get("system") or ""),
-                "entry_point": detection.entry_point,
-                "agent_variable": detection.agent_variable,
-            },
+            request_config=request_config,
             manifest_sha256=build.resolved_digest,
         )
 

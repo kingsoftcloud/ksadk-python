@@ -11,7 +11,9 @@ from jsonschema.exceptions import SchemaError  # type: ignore[import-untyped]
 from ksadk.studio.api_contracts import (
     CredentialPutRequest,
     MCPResourceCreateRequest,
+    ModelEndpointProbeRequest,
     ModelProfileCreateRequest,
+    PythonToolCommitRequest,
     SecretReferenceCheckRequest,
     SkillDiscoveryCommitRequest,
     SkillDiscoveryRequest,
@@ -21,6 +23,7 @@ from ksadk.studio.api_contracts import (
 )
 from ksadk.studio.contracts import MCPServerRef
 from ksadk.studio.errors import StudioError
+from ksadk.studio.model_profile_service import probe_model_endpoint
 from ksadk.studio.service import StudioService
 
 ModelCatalogLoader = Callable[[], Awaitable[tuple[list, str]]]
@@ -46,18 +49,36 @@ def register_catalog_routes(
         status: str | None = None,
         installed: bool | None = None,
         limit: int = Query(default=50, ge=1, le=200),
+        cursor: str | None = None,
+        sort: Literal["default", "displayName:asc", "displayName:desc"] = "default",
     ):
-        return {
-            "items": studio.catalog.list(
-                kind=kind,
-                query=query,
-                source=source,
-                status=status,
-                installed=installed,
-                limit=limit,
-            ),
-            "nextCursor": None,
-        }
+        if kind == "model":
+            await runtime_model_catalog()
+
+        def effective_status(resource) -> str:
+            if resource.kind != "model":
+                return resource.status
+            references = list(resource.required_secret_refs or [])
+            reference = references[0] if references else resource.contract.get("credentialRef")
+            if not reference:
+                return resource.status
+            return (
+                "ready"
+                if studio.credentials.status(str(reference))["configured"]
+                else "missing-secret"
+            )
+
+        return studio.catalog.list_page(
+            kind=kind,
+            query=query,
+            source=source,
+            status=status,
+            installed=installed,
+            limit=limit,
+            cursor=cursor,
+            sort=sort,
+            status_resolver=effective_status,
+        )
 
     @app.get("/api/v1/catalog/models")
     async def catalog_models():
@@ -110,9 +131,30 @@ def register_catalog_routes(
         try:
             result = await studio.mcp_runtime.probe(server, timeout_seconds=timeout_seconds)
         except StudioError as exc:
-            studio.catalog.mark_probe_failed(resource_id, code=exc.code)
+            detail = str((exc.details or {}).get("detail") or exc.message)
+            studio.catalog.mark_probe_failed(resource_id, code=exc.code, detail=detail)
             raise
         return studio.catalog.save_probe(resource_id, result=result)
+
+    @app.delete("/api/v1/catalog/resources/{resource_id}", status_code=204)
+    async def delete_catalog_resource(resource_id: str):
+        descriptor = studio.catalog.get(resource_id)
+        if descriptor.kind not in {"mcp", "tool", "model", "skill"}:
+            raise StudioError(
+                "RESOURCE_KIND_INVALID",
+                "只支持删除 MCP / Tool / Model / Skill 资源",
+                status_code=422,
+                details={"kind": descriptor.kind},
+            )
+        if descriptor.kind == "model" and descriptor.source != "local":
+            raise StudioError(
+                "RESOURCE_KIND_INVALID",
+                "内置或上游发现的模型不可删除；仅支持删除手动添加的模型",
+                status_code=422,
+                details={"kind": descriptor.kind, "source": descriptor.source},
+            )
+        studio.catalog.delete_resource(resource_id)
+        return None
 
     @app.post("/api/v1/catalog/tools", status_code=201)
     async def create_tool_resource(payload: ToolResourceCreateRequest):
@@ -120,6 +162,30 @@ def register_catalog_routes(
             display_name=payload.display_name,
             category=payload.category,
             contract=payload.contract,
+        )
+
+    @app.post("/api/v1/catalog/python-tools:inspect")
+    async def inspect_python_tool(file: UploadFile = File(...)):
+        content = await file.read(1024 * 1024 + 1)
+        return studio.catalog.inspect_python_tool(
+            content,
+            filename=file.filename or "tool.py",
+        )
+
+    @app.post(
+        "/api/v1/catalog/python-tools/{inspection_token}:commit",
+        status_code=201,
+    )
+    async def commit_python_tool(
+        inspection_token: str,
+        payload: PythonToolCommitRequest,
+    ):
+        return studio.catalog.commit_python_tool(
+            inspection_token,
+            display_name=payload.display_name,
+            name=payload.name,
+            callable_name=payload.callable_name,
+            description=payload.description,
         )
 
     @app.post("/api/v1/catalog/skills:import", status_code=201)
@@ -130,6 +196,27 @@ def register_catalog_routes(
     @app.post("/api/v1/catalog/skills:discover")
     async def discover_skills(payload: SkillDiscoveryRequest):
         return studio.catalog.discover_skills(scan_paths=payload.scan_paths or None)
+
+    @app.get(
+        "/api/v1/catalog/skills/discoveries/{inspection_token}/candidates/{candidate_id}/files"
+    )
+    async def preview_discovered_skill(
+        inspection_token: str,
+        candidate_id: str,
+        path: str | None = Query(default=None, max_length=1024),
+    ):
+        return studio.catalog.preview_discovered_skill(
+            inspection_token,
+            candidate_id,
+            path=path,
+        )
+
+    @app.get("/api/v1/catalog/skills/{resource_id}/files")
+    async def preview_installed_skill(
+        resource_id: str,
+        path: str | None = Query(default=None, max_length=1024),
+    ):
+        return studio.catalog.preview_installed_skill(resource_id, path=path)
 
     @app.post(
         "/api/v1/catalog/skills/discoveries/{inspection_token}:commit",
@@ -215,6 +302,23 @@ def register_catalog_routes(
     @app.post("/api/v1/model-profiles/{resource_id}:test")
     async def test_model_profile(resource_id: str):
         return await studio.test_model_profile(resource_id)
+
+    @app.post("/api/v1/model-endpoints:probe")
+    async def probe_model_endpoint_route(payload: ModelEndpointProbeRequest):
+        credential: str | None = None
+        if payload.api_key is not None:
+            credential = payload.api_key.get_secret_value()
+        elif payload.credential_ref:
+            try:
+                credential = studio.credentials.resolve(payload.credential_ref)
+            except Exception:
+                credential = None  # 未配置凭证时降级为匿名探测
+        guard = getattr(studio.model_client, "network_guard", None)
+        return await probe_model_endpoint(
+            url=payload.url,
+            credential=credential,
+            network_guard=guard,
+        )
 
 
 __all__ = ["register_catalog_routes"]

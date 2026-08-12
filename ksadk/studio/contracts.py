@@ -54,6 +54,7 @@ class ModelSpec(ContractModel):
     model: str = Field(min_length=1, max_length=256)
     endpoint_url: str | None = None
     base_url: str | None = None
+    wire_api: Literal["chat", "responses"] | None = None
     credential_ref: str = Field(min_length=1, max_length=512)
     parameters: ModelParameters = Field(default_factory=ModelParameters)
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -210,6 +211,8 @@ class ExecutionSpec(ContractModel):
     max_steps: int = Field(default=12, ge=1, le=100)
     timeout_seconds: int = Field(default=120, ge=1, le=3600)
     retry: RetryPolicy = Field(default_factory=RetryPolicy)
+    sandbox: str | None = None
+    approval_mode: str | None = None
 
 
 class CompactionSpec(ContractModel):
@@ -301,6 +304,25 @@ class AgentSpec(ContractModel):
 
 
 _AGENT_ID_PATTERN = re.compile(r"^[a-z][a-z0-9-]{2,62}$")
+_AGENT_AVATAR_URL_PATTERN = re.compile(r"^/api/v1/assets/agent-avatars/[0-9a-f]{64}\.(?:png|webp)$")
+
+
+class AgentAppearance(ContractModel):
+    icon: Literal["bot", "sparkles", "search", "code", "workflow"] = "bot"
+    color: str = Field(default="#426ea8", pattern=r"^#[0-9a-fA-F]{6}$")
+    image_url: str | None = Field(default=None, max_length=160)
+
+    @field_validator("color")
+    @classmethod
+    def normalize_color(cls, value: str) -> str:
+        return value.lower()
+
+    @field_validator("image_url")
+    @classmethod
+    def validate_image_url(cls, value: str | None) -> str | None:
+        if value is not None and not _AGENT_AVATAR_URL_PATTERN.fullmatch(value):
+            raise ValueError("imageUrl 必须引用当前工作区的内容寻址头像资源")
+        return value
 
 
 class AgentMetadata(ContractModel):
@@ -308,6 +330,7 @@ class AgentMetadata(ContractModel):
     name: str = Field(min_length=1, max_length=128)
     revision: int = Field(default=1, ge=1)
     labels: dict[str, str] = Field(default_factory=dict)
+    appearance: AgentAppearance = Field(default_factory=AgentAppearance)
 
     @field_validator("id")
     @classmethod
@@ -334,6 +357,7 @@ class AgentTemplateComposeRequest(ContractModel):
     depth: Literal["focused", "standard", "deep"] = "deep"
     output_format: Literal["brief", "report", "evidence-table"] = "report"
     model_profile_id: str | None = None
+    model_profile_ids: list[str] = Field(default_factory=list)
     tool_resource_ids: list[str] = Field(default_factory=list)
     skill_resource_ids: list[str] = Field(default_factory=list)
     mcp_resource_ids: list[str] = Field(default_factory=list)
@@ -372,6 +396,7 @@ class ResolvedModel(ContractModel):
     endpoint_url: str
     credential_ref: str
     parameters: ModelParameters
+    wire_api: str | None = None
 
 
 class ResolvedCapabilities(ContractModel):
@@ -486,6 +511,8 @@ class OperationEvent(ContractModel):
 class RunStatus(str, Enum):
     CREATED = "CREATED"
     RUNNING = "RUNNING"
+    PAUSED = "PAUSED"
+    WAITING_INPUT = "WAITING_INPUT"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
@@ -512,6 +539,8 @@ class RunRecord(ContractModel):
     manifest_sha256: str = ""
     runtime_type: str = ""
     model: str = ""
+    collaboration_mode: str = ""
+    goal_objective: str = ""
     runtime_handle: dict[str, Any] = Field(default_factory=dict)
     status: RunStatus = RunStatus.CREATED
     input: str

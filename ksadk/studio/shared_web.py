@@ -1,10 +1,4 @@
-"""Adapter between AgentKit Studio state and the shared ``ksadk-web`` UI.
-
-The Studio owns Agent authoring and immutable builds.  The shared Web package
-owns the production conversation experience.  This module keeps that boundary
-explicit by projecting Studio records onto the stable ``ksadk-web`` action
-contract instead of maintaining a second chat implementation.
-"""
+"""Project AgentKit Studio runs onto Responses and compatibility API contracts."""
 
 from __future__ import annotations
 
@@ -12,13 +6,13 @@ import asyncio
 import json
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 from ksadk.studio.contracts import BuildStatus, OperationStatus, RunRecord, RunStatus
 from ksadk.studio.errors import StudioError, not_found
 from ksadk.studio.service import StudioService
+from ksadk.tools.gateway import tool_approval_capability
 
 _TERMINAL_OPERATIONS = {
     OperationStatus.SUCCEEDED,
@@ -28,22 +22,14 @@ _TERMINAL_OPERATIONS = {
 }
 
 
-def shared_web_static_root() -> Path | None:
-    """Return the synchronized ``ksadk-web`` payload when it is available."""
-
-    candidate = Path(__file__).resolve().parents[1] / "server" / "static"
-    if (candidate / "index.html").is_file() and (candidate / "assets").is_dir():
-        return candidate
-    return None
-
-
 class StudioSharedWebBridge:
-    """Project Studio repositories onto the public ``ksadk-web`` API surface."""
+    """Project Studio repositories onto Responses and legacy action surfaces."""
 
     def __init__(self, studio: StudioService) -> None:
         self.studio = studio
         self._operations_by_invocation: dict[str, str] = {}
         self._response_runs: dict[str, str] = {}
+        self._run_ids_by_invocation: dict[str, str] = {}
 
     def resolve_agent_id(self, requested: str | None = None) -> str:
         if requested:
@@ -78,8 +64,8 @@ class StudioSharedWebBridge:
                             "Endpoint": "/agentengine/api/v1/RunAgent",
                             "Version": "v1",
                             "Capabilities": {
-                                "A2UI": False,
-                                "Interrupt": False,
+                                "A2UI": True,
+                                "Interrupt": True,
                                 "Cancel": True,
                             },
                         }
@@ -87,17 +73,13 @@ class StudioSharedWebBridge:
                 },
                 "RunLifecycle": {
                     "Enabled": True,
-                    "Resume": False,
+                    "Resume": True,
                     "Abort": True,
                     "Checkpoints": False,
                     "CheckpointResume": False,
                     "CheckpointResumePreview": False,
                 },
-                "ApprovalPolicy": {
-                    "Modes": ["ask", "risk"],
-                    "DefaultMode": "risk",
-                    "RuntimeOverride": False,
-                },
+                "ApprovalPolicy": tool_approval_capability(),
                 "WorkspaceFiles": {"Enabled": False},
                 "NativeDashboard": {"Enabled": False},
                 "NativeTerminal": {"Enabled": False},
@@ -107,7 +89,7 @@ class StudioSharedWebBridge:
 
     def list_models(self, agent_id: str) -> dict[str, Any]:
         models = self._model_descriptors(agent_id)
-        model = self._model_descriptor(agent_id)
+        model = self._model_descriptor(agent_id, models)
         return {
             "Models": models,
             "Current": model["id"],
@@ -242,6 +224,18 @@ class StudioSharedWebBridge:
             self.studio.operations.cancel(operation_id)
         return {"InvocationId": invocation_id, "Cancelled": bool(operation_id)}
 
+    async def pause_run(self, invocation_id: str) -> dict[str, Any]:
+        run_id = self._run_ids_by_invocation.get(invocation_id)
+        if not run_id:
+            raise StudioError("RUN_NOT_READY", "运行尚未创建，请稍后重试", status_code=409)
+        return await self.studio.run_service.pause_run(run_id)
+
+    async def resume_run(self, invocation_id: str) -> dict[str, Any]:
+        run_id = self._run_ids_by_invocation.get(invocation_id)
+        if not run_id:
+            raise StudioError("RUN_NOT_FOUND", "未找到可继续的运行", status_code=404)
+        return await self.studio.run_service.resume_run(run_id)
+
     def response_session_id(self, response_id: str) -> str:
         run_id = self._response_runs.get(response_id, response_id)
         return self.studio.event_store.get(run_id).session_id
@@ -251,7 +245,31 @@ class StudioSharedWebBridge:
         session_id = str(payload.get("SessionId") or f"ses_{uuid4().hex}")
         invocation_id = str(payload.get("InvocationId") or f"resp_{uuid4().hex}")
         prompt = self._input_text(payload)
+        runtime_input = self._runtime_input(payload)
         model = self._select_model(agent_id, str(payload.get("Model") or ""))
+        approval_mode = str(payload.get("ApprovalMode") or "")
+        collaboration_mode = str(payload.get("CollaborationMode") or "")
+        goal_objective = str(payload.get("GoalObjective") or "")
+        execution = asyncio.create_task(
+            self._execute_run(
+                agent_id=agent_id,
+                session_id=session_id,
+                invocation_id=invocation_id,
+                prompt=prompt,
+                runtime_input=runtime_input,
+                model=model,
+                approval_mode=approval_mode,
+                collaboration_mode=collaboration_mode,
+                goal_objective=goal_objective,
+            )
+        )
+
+        def release_operation(task: asyncio.Task[RunRecord]) -> None:
+            self._operations_by_invocation.pop(invocation_id, None)
+            if not task.cancelled():
+                task.exception()
+
+        execution.add_done_callback(release_operation)
 
         yield self._sse(
             "response.created",
@@ -268,34 +286,22 @@ class StudioSharedWebBridge:
                     "response": self._response_shell(invocation_id, model=model),
                 },
             )
-            execution = asyncio.create_task(
-                self._execute_run(
-                    agent_id=agent_id,
-                    session_id=session_id,
-                    invocation_id=invocation_id,
-                    prompt=prompt,
-                    model=model,
-                )
-            )
             seen_events: set[tuple[str, int]] = set()
             emitted_text = ""
             idle_polls = 0
             while not execution.done():
-                projected = self._project_response_deltas(
+                projected = self._project_response_events(
                     session_id=session_id,
                     agent_id=agent_id,
+                    invocation_id=invocation_id,
                     seen=seen_events,
                 )
                 if projected:
                     idle_polls = 0
-                    for event_name, delta in projected:
+                    for event_name, event_payload in projected:
                         if event_name == "response.output_text.delta":
-                            emitted_text += delta
-                        yield self._response_delta_sse(
-                            event_name,
-                            invocation_id=invocation_id,
-                            delta=delta,
-                        )
+                            emitted_text += str(event_payload.get("delta") or "")
+                        yield self._sse(event_name, event_payload)
                 else:
                     idle_polls += 1
                     if idle_polls >= 20:
@@ -303,22 +309,17 @@ class StudioSharedWebBridge:
                         yield ": keep-alive\n\n"
                 await asyncio.sleep(0.05)
             run = await execution
-            for event_name, delta in self._project_response_deltas(
+            for event_name, event_payload in self._project_response_events(
                 session_id=session_id,
                 agent_id=agent_id,
+                invocation_id=invocation_id,
                 seen=seen_events,
             ):
                 if event_name == "response.output_text.delta":
-                    emitted_text += delta
-                yield self._response_delta_sse(
-                    event_name,
-                    invocation_id=invocation_id,
-                    delta=delta,
-                )
+                    emitted_text += str(event_payload.get("delta") or "")
+                yield self._sse(event_name, event_payload)
             remaining = (
-                run.output[len(emitted_text) :]
-                if run.output.startswith(emitted_text)
-                else ""
+                run.output[len(emitted_text) :] if run.output.startswith(emitted_text) else ""
             )
             if remaining:
                 yield self._response_delta_sse(
@@ -342,7 +343,8 @@ class StudioSharedWebBridge:
         except Exception:
             yield self._failed_sse(invocation_id, "本地 Agent 运行失败")
         finally:
-            self._operations_by_invocation.pop(invocation_id, None)
+            if execution.done():
+                self._operations_by_invocation.pop(invocation_id, None)
 
     async def invoke_response(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Run once and return an OpenAI Responses-compatible JSON object."""
@@ -351,13 +353,20 @@ class StudioSharedWebBridge:
         session_id = str(payload.get("SessionId") or f"ses_{uuid4().hex}")
         invocation_id = str(payload.get("InvocationId") or f"resp_{uuid4().hex}")
         model = self._select_model(agent_id, str(payload.get("Model") or ""))
+        approval_mode = str(payload.get("ApprovalMode") or "")
+        collaboration_mode = str(payload.get("CollaborationMode") or "")
+        goal_objective = str(payload.get("GoalObjective") or "")
         try:
             run = await self._execute_run(
                 agent_id=agent_id,
                 session_id=session_id,
                 invocation_id=invocation_id,
                 prompt=self._input_text(payload),
+                runtime_input=self._runtime_input(payload),
                 model=model,
+                approval_mode=approval_mode,
+                collaboration_mode=collaboration_mode,
+                goal_objective=goal_objective,
             )
             return self._response_payload(
                 run,
@@ -374,15 +383,31 @@ class StudioSharedWebBridge:
         session_id: str,
         invocation_id: str,
         prompt: str,
+        runtime_input: Any,
         model: str,
+        approval_mode: str = "",
+        collaboration_mode: str = "",
+        goal_objective: str = "",
     ) -> RunRecord:
         build = await self._ensure_build(agent_id)
+
+        def observe(event: Any) -> None:
+            if event.type == "run.created":
+                run_id = str(event.data.get("runId") or "")
+                if run_id:
+                    self._run_ids_by_invocation[invocation_id] = run_id
+
         operation = self.studio.submit_studio_run(
             build.id,
             prompt,
             session_id=session_id,
             model=model,
+            approval_mode=approval_mode or None,
+            collaboration_mode=collaboration_mode or None,
+            goal_objective=goal_objective or None,
+            runtime_input=runtime_input or None,
             idempotency_key=f"responses:{invocation_id}",
+            on_event=observe,
         )
         self._operations_by_invocation[invocation_id] = operation.id
         while True:
@@ -409,36 +434,153 @@ class StudioSharedWebBridge:
             "output": [],
         }
 
-    def _project_response_deltas(
+    def _project_response_events(
         self,
         *,
         session_id: str,
         agent_id: str,
+        invocation_id: str,
         seen: set[tuple[str, int]],
-    ) -> list[tuple[str, str]]:
-        projected: list[tuple[str, str]] = []
+    ) -> list[tuple[str, dict[str, Any]]]:
+        projected: list[tuple[str, dict[str, Any]]] = []
+        current_run_id = self._run_ids_by_invocation.get(invocation_id)
+        if not current_run_id:
+            return projected
         for run in self.studio.event_store.list_runs(session_id=session_id):
-            if run.agent_id != agent_id:
+            if run.agent_id != agent_id or run.id != current_run_id:
                 continue
-            for event in self.studio.event_store.events(run.id):
+            events = self.studio.event_store.events(run.id)
+            starts = {
+                str(event.data.get("callId") or event.data.get("call_id") or ""): event.data
+                for event in events
+                if event.type in {"command.started", "tool.started", "tool.requested"}
+            }
+            for event in events:
                 key = (run.id, event.id)
                 if key in seen:
                     continue
                 seen.add(key)
-                if event.type not in {"message.delta", "thinking.delta"}:
-                    continue
-                delta = str(event.data.get("text") or event.data.get("delta") or "")
-                if not delta:
-                    continue
-                projected.append(
-                    (
+                if event.type in {"message.delta", "thinking.delta"}:
+                    delta = str(event.data.get("text") or event.data.get("delta") or "")
+                    if not delta:
+                        continue
+                    event_name = (
                         "response.output_text.delta"
                         if event.type == "message.delta"
-                        else "response.reasoning_summary_text.delta",
-                        delta,
+                        else "response.reasoning_summary_text.delta"
                     )
-                )
+                    projected.append(
+                        (
+                            event_name,
+                            self._response_delta_payload(
+                                event_name,
+                                invocation_id=invocation_id,
+                                delta=delta,
+                            ),
+                        )
+                    )
+                    continue
+                if event.type.startswith("a2ui."):
+                    projected.append(
+                        (
+                            event.type,
+                            {
+                                "type": event.type,
+                                "runId": run.id,
+                                **event.data,
+                            },
+                        )
+                    )
+                    continue
+                if event.type == "run.paused":
+                    projected.append(
+                        (
+                            "response.paused",
+                            {
+                                "type": "response.paused",
+                                "response_id": invocation_id,
+                                "runId": run.id,
+                            },
+                        )
+                    )
+                    continue
+                if event.type == "run.resumed":
+                    projected.append(
+                        (
+                            "response.resumed",
+                            {
+                                "type": "response.resumed",
+                                "response_id": invocation_id,
+                                "runId": run.id,
+                            },
+                        )
+                    )
+                    continue
+                item_event = self._response_item_event(event.type, event.data, starts)
+                if item_event is not None:
+                    projected.append(item_event)
         return projected
+
+    @staticmethod
+    def _response_item_event(
+        event_type: str,
+        data: dict[str, Any],
+        starts: dict[str, dict[str, Any]],
+    ) -> tuple[str, dict[str, Any]] | None:
+        call_id = str(data.get("callId") or data.get("call_id") or "")
+        started = starts.get(call_id, {})
+        done = event_type in {
+            "command.completed",
+            "tool.completed",
+            "command.failed",
+            "tool.failed",
+        }
+        if event_type.startswith("command."):
+            command = str(data.get("command") or started.get("command") or "执行命令")
+            item = {
+                "id": call_id or f"shell_{uuid4().hex}",
+                "call_id": call_id,
+                "type": "shell_call",
+                "status": "failed"
+                if event_type.endswith("failed") or data.get("exitCode") not in {None, 0}
+                else "completed"
+                if done
+                else "in_progress",
+                "action": {
+                    "commands": [command],
+                    "cwd": data.get("cwd") or started.get("cwd") or "",
+                },
+                "exit_code": data.get("exitCode"),
+                "output": data.get("output") or "",
+            }
+        elif event_type.startswith("tool."):
+            name = str(data.get("tool") or data.get("name") or started.get("tool") or "调用工具")
+            args = data.get("args", started.get("args"))
+            item = {
+                "id": call_id or f"tool_{uuid4().hex}",
+                "call_id": call_id,
+                "type": "function_call",
+                "name": name,
+                "arguments": json.dumps(args, ensure_ascii=False) if args is not None else "",
+                "status": "failed"
+                if event_type.endswith("failed")
+                else "completed"
+                if done
+                else "in_progress",
+                "output": data.get("output") or data.get("result") or "",
+            }
+        elif event_type == "approval.requested":
+            item = {
+                "id": call_id or f"approval_{uuid4().hex}",
+                "call_id": call_id,
+                "type": "approval_request",
+                "status": "in_progress",
+                "action": data,
+            }
+        else:
+            return None
+        response_event = "response.output_item.done" if done else "response.output_item.added"
+        return response_event, {"type": response_event, "item": item}
 
     @classmethod
     def _response_delta_sse(
@@ -448,14 +590,27 @@ class StudioSharedWebBridge:
         invocation_id: str,
         delta: str,
     ) -> str:
-        payload = {
+        payload = cls._response_delta_payload(
+            event_name,
+            invocation_id=invocation_id,
+            delta=delta,
+        )
+        return cls._sse(event_name, payload)
+
+    @staticmethod
+    def _response_delta_payload(
+        event_name: str,
+        *,
+        invocation_id: str,
+        delta: str,
+    ) -> dict[str, Any]:
+        return {
             "type": event_name,
             "item_id": f"msg_{invocation_id}",
             "output_index": 0,
             "content_index": 0,
             "delta": delta,
         }
-        return cls._sse(event_name, payload)
 
     @staticmethod
     def _response_payload(
@@ -503,8 +658,7 @@ class StudioSharedWebBridge:
             builds = [
                 record
                 for record in self.studio.codex_builds.list()
-                if record.agent_name == agent_id
-                and self.studio.codex_builder.is_current(record)
+                if record.agent_name == agent_id and self.studio.codex_builder.is_current(record)
             ]
             if builds:
                 return builds[0]
@@ -513,10 +667,7 @@ class StudioSharedWebBridge:
             if record.status == BuildStatus.SUCCEEDED:
                 return record
         draft = self.studio.drafts.get(agent_id)
-        if (
-            draft.spec.model is None
-            and not draft.spec.bindings.model_profile_id
-        ):
+        if draft.spec.model is None and not draft.spec.bindings.model_profile_id:
             raise StudioError(
                 "AGENT_MODEL_REQUIRED",
                 "当前 Agent 未绑定 Model Profile，请先在 Agent 配置中选择模型；"
@@ -539,9 +690,9 @@ class StudioSharedWebBridge:
     def _session_record(self, runs: list[RunRecord]) -> dict[str, Any]:
         ordered = sorted(
             runs,
-            key=lambda run: run.started_at
-            or run.completed_at
-            or datetime.min.replace(tzinfo=timezone.utc),
+            key=lambda run: (
+                run.started_at or run.completed_at or datetime.min.replace(tzinfo=timezone.utc)
+            ),
         )
         first = ordered[0]
         latest = ordered[-1]
@@ -566,8 +717,11 @@ class StudioSharedWebBridge:
             "TokenUsage": usage,
         }
 
-    def _model_descriptor(self, agent_id: str) -> dict[str, Any]:
-        models = self._model_descriptors(agent_id)
+    def _model_descriptor(
+        self, agent_id: str, models: list[dict[str, Any]] | None = None
+    ) -> dict[str, Any]:
+        if models is None:
+            models = self._model_descriptors(agent_id)
         if self.studio.is_codex_agent(agent_id):
             default_model = self.studio.codex_manifests.load(agent_id).manifest.model
             return next(
@@ -580,8 +734,11 @@ class StudioSharedWebBridge:
         draft = self._draft(agent_id)
         if self.studio.is_codex_agent(agent_id):
             manifest = self.studio.codex_manifests.load(agent_id).manifest
+            # catalog.list 每次调用都要全量扫描（内建工具/持久化目录/Skill），
+            # 按 allowed_models 逐个扫会成倍放大，这里一次取出后复用。
+            catalog_models = self.studio.catalog.list(kind="model", limit=500)
             codex_descriptors = [
-                self._model_descriptor_for_name(draft, model)
+                self._model_descriptor_for_name(draft, model, catalog_models)
                 for model in manifest.allowed_models
             ]
             return codex_descriptors
@@ -614,8 +771,12 @@ class StudioSharedWebBridge:
             return [self._model_descriptor_from_spec(draft, draft.spec.model)]
         return [self._unconfigured_model_descriptor(draft)]
 
-    def _model_descriptor_for_name(self, draft, model_name: str) -> dict[str, Any]:
-        for descriptor in self.studio.catalog.list(kind="model", limit=500):
+    def _model_descriptor_for_name(
+        self, draft, model_name: str, catalog_models: list | None = None
+    ) -> dict[str, Any]:
+        if catalog_models is None:
+            catalog_models = self.studio.catalog.list(kind="model", limit=500)
+        for descriptor in catalog_models:
             try:
                 from ksadk.studio.contracts import ModelSpec
 
@@ -670,8 +831,7 @@ class StudioSharedWebBridge:
     @staticmethod
     def _unconfigured_model_descriptor(draft) -> dict[str, Any]:
         model_id = str(
-            draft.metadata.labels.get("agentkit.ksyun.com/model")
-            or "unconfigured-model"
+            draft.metadata.labels.get("agentkit.ksyun.com/model") or "unconfigured-model"
         )
         return {
             "id": model_id,
@@ -688,7 +848,7 @@ class StudioSharedWebBridge:
     def _select_model(self, agent_id: str, requested: str) -> str:
         models = self._model_descriptors(agent_id)
         allowed = [str(item["id"]) for item in models]
-        default = str(self._model_descriptor(agent_id)["id"])
+        default = str(self._model_descriptor(agent_id, models)["id"])
         selected = requested.strip() or default
         if selected not in allowed:
             raise StudioError(
@@ -709,9 +869,7 @@ class StudioSharedWebBridge:
             if not isinstance(operations, list):
                 continue
             surface_id = str(
-                event.data.get("surfaceId")
-                or event.data.get("surface_id")
-                or f"{run.id}-surface"
+                event.data.get("surfaceId") or event.data.get("surface_id") or f"{run.id}-surface"
             )
             activities.append(
                 {
@@ -744,8 +902,7 @@ class StudioSharedWebBridge:
             texts = [
                 str(part.get("text") or "")
                 for part in content
-                if isinstance(part, dict)
-                and str(part.get("type") or "") in {"input_text", "text"}
+                if isinstance(part, dict) and str(part.get("type") or "") in {"input_text", "text"}
             ]
             value = "\n".join(text.strip() for text in texts if text.strip())
             if value:
@@ -755,6 +912,42 @@ class StudioSharedWebBridge:
             "请输入消息后再发送",
             status_code=422,
         )
+
+    @staticmethod
+    def _runtime_input(payload: dict[str, Any]) -> list[dict[str, str]]:
+        """Project the latest Responses user message into native multimodal input."""
+
+        sources = payload.get("ResponsesInput") or payload.get("Messages") or []
+        if not isinstance(sources, list):
+            return []
+        for message in reversed(sources):
+            if not isinstance(message, dict) or str(message.get("role") or "user") != "user":
+                continue
+            content = message.get("content")
+            if isinstance(content, str) and content.strip():
+                return []
+            if not isinstance(content, list):
+                continue
+            items: list[dict[str, str]] = []
+            has_image = False
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                kind = str(part.get("type") or "")
+                if kind in {"input_text", "text"}:
+                    text = str(part.get("text") or "")
+                    if text:
+                        items.append({"type": "text", "text": text})
+                elif kind in {"input_image", "image"}:
+                    url = str(
+                        part.get("image_url") or part.get("imageUrl") or part.get("url") or ""
+                    )
+                    if url:
+                        items.append({"type": "image", "url": url})
+                        has_image = True
+            if items and has_image:
+                return items
+        return []
 
     @staticmethod
     def _active_status(status: RunStatus) -> str:
@@ -798,4 +991,4 @@ class StudioSharedWebBridge:
         )
 
 
-__all__ = ["StudioSharedWebBridge", "shared_web_static_root"]
+__all__ = ["StudioSharedWebBridge"]
