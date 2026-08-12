@@ -272,23 +272,56 @@ class ContextPlanner:
         budget: ContextBudget,
         decisions: list[ContextDecision],
     ) -> list[ContextItem]:
-        """整组超 hard_limit 时尝试单项抢救：truncatable 截断、大 tool_result 转摘要（方案 §8.6）。"""  # noqa: E501
-        added: list[ContextItem] = []
-        for m in members:
+        """整组超 hard_limit 时原子抢救：固定成员保留，其余截断或摘要（方案 §8.1/§8.6）。
+
+        即使 Tool Result 可降载，Tool Call/Result 仍是一个协议组，不能只留下 Result。
+        因此先为不可缩减成员预留预算，再处理可缩减成员；任一成员无法进入时整组放弃。
+        """
+        from dataclasses import replace
+
+        def _reducible(item: ContextItem) -> bool:
+            return bool(
+                item.truncatable
+                or (
+                    item.kind == "tool_result"
+                    and item.droppable
+                    and not item.required
+                )
+            )
+
+        remaining_total = budget.hard_limit_tokens - _tokens(selected)
+        fixed = [item for item in members if not _reducible(item)]
+        fixed_tokens = _tokens(fixed)
+        reducible = [item for item in members if _reducible(item)]
+        if fixed_tokens > remaining_total or (reducible and fixed_tokens >= remaining_total):
+            return []
+
+        added: list[ContextItem] = list(fixed)
+        pending_decisions: list[ContextDecision] = [
+            ContextDecision(
+                item_id=item.item_id,
+                action="included",
+                reason="group_atomic_fixed",
+                tokens_before=item.estimated_tokens,
+                tokens_after=item.estimated_tokens,
+            )
+            for item in fixed
+        ]
+        for index, m in enumerate(reducible):
             remaining = budget.hard_limit_tokens - _tokens(selected) - _tokens(added)
-            if remaining <= 0:
-                break
-            from dataclasses import replace
+            # 至少给后续每个可缩减成员留 1 token，保证整组原子进入。
+            available = remaining - (len(reducible) - index - 1)
+            if available <= 0:
+                return []
 
             # 大 tool_result → artifact summary（方案 §8.6：保留 error tail + 引用）
             if (
                 m.kind == "tool_result"
                 and m.droppable
                 and not m.required
-                and m.estimated_tokens > remaining
+                and m.estimated_tokens > available
             ):
-                after = max(remaining, 200)
-                after = min(after, m.estimated_tokens // 8 + 200)
+                after = max(1, min(available, m.estimated_tokens // 8 + 200))
                 added.append(
                     replace(
                         m,
@@ -296,7 +329,7 @@ class ContextPlanner:
                         metadata={**m.metadata, "replaced_with_artifact_summary": True},
                     )
                 )
-                decisions.append(
+                pending_decisions.append(
                     ContextDecision(
                         item_id=m.item_id,
                         action="summarized",
@@ -307,18 +340,31 @@ class ContextPlanner:
                 )
                 continue
             if not m.truncatable or m.estimated_tokens == 0:
+                # 可缩减集合里的非 truncatable 项只能是尚未超过 available 的 Tool Result。
+                if m.estimated_tokens > available:
+                    return []
+                added.append(m)
+                pending_decisions.append(
+                    ContextDecision(
+                        item_id=m.item_id,
+                        action="included",
+                        reason="group_atomic_fit",
+                        tokens_before=m.estimated_tokens,
+                        tokens_after=m.estimated_tokens,
+                    )
+                )
                 continue
             # 截断到剩余预算（启发式按 token 比例截字符；实际截断由 assembler 处理）
-            ratio = remaining / max(m.estimated_tokens, 1)
+            ratio = available / max(m.estimated_tokens, 1)
             after = max(0, int(m.estimated_tokens * ratio))
             if after == 0:
-                continue
+                return []
             added.append(
                 replace(
                     m, estimated_tokens=after, metadata={**m.metadata, "truncated_to_tokens": after}
                 )
             )
-            decisions.append(
+            pending_decisions.append(
                 ContextDecision(
                     item_id=m.item_id,
                     action="truncated",
@@ -327,6 +373,9 @@ class ContextPlanner:
                     tokens_after=after,
                 )
             )
+        if len(added) != len(members):
+            return []
+        decisions.extend(pending_decisions)
         return added
 
     def _deterministic_reduce(

@@ -179,6 +179,29 @@ def test_large_tool_result_summarized():
     assert sel and sel[0].estimated_tokens < 20000
 
 
+def test_large_tool_result_keeps_tool_protocol_group_atomic():
+    p = ContextPlanner()
+    req = _item("safety", "compiled_prompt", 80, required=True, droppable=False)
+    current = _item("current", "current_input", 40, required=True, droppable=False)
+    call = _item(
+        "call",
+        "history_round",
+        100,
+        group_id="tool-1",
+        metadata={"role": "assistant"},
+    )
+    result = _item("result", "tool_result", 20000, group_id="tool-1")
+    # soft 与 hard 对齐：本用例验证超大结果的原子降载，而非后续冷轮丢弃。
+    budget = _budget(max_input=1000, soft=850, hard=850)
+
+    plan = p.plan([req, current, call, result], budget=budget)
+
+    selected = {item.item_id: item for item in plan.selected}
+    assert {"call", "result"} <= selected.keys()
+    assert selected["result"].estimated_tokens < result.estimated_tokens
+    assert plan.planned_input_tokens <= budget.hard_limit_tokens
+
+
 def test_planned_tokens_not_exceed_hard_when_droppable():
     p = ContextPlanner()
     req = _item("safety", "compiled_prompt", 30, required=True)

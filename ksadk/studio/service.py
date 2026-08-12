@@ -131,6 +131,7 @@ class StudioService:
             manifest_repository=self.codex_manifests,
             credential_resolver=self.credentials,
             resource_catalog=self.catalog,
+            draft_repository=self.codex_drafts,
         )
         self.framework_runs = FrameworkRunSpecResolver(
             self.workspace,
@@ -392,7 +393,8 @@ class StudioService:
         if self.is_codex_agent(agent_id):
             snapshot = self.codex_manifests.load(agent_id)
             prompt = snapshot.manifest.prompt or ""
-            return prompt, "", "codex"
+            task_prompt = snapshot.manifest.task_prompt or ""
+            return prompt, task_prompt, "codex"
         draft = self.drafts.get(agent_id)
         instructions = draft.spec.instructions
         runtime_type = self.agent_runtime_type(agent_id)
@@ -460,8 +462,8 @@ class StudioService:
         返回 budget/items(脱敏)/decisions/totalsByKind/projection/accuracy。``include_content``
         控制是否返回 assembled system 正文。
         """
-        from ksadk.context_engine.hosted_pipeline import run_hosted_pipeline
         from ksadk.context_engine.capabilities import capabilities_for_runtime_type
+        from ksadk.context_engine.hosted_pipeline import run_hosted_pipeline
 
         agent_system, agent_task, runtime_type = self._agent_prompt_sources(agent_id)
         caps = capabilities_for_runtime_type(runtime_type)
@@ -471,6 +473,7 @@ class StudioService:
             compile_resolved_prompt_dict,
             get_default_platform_policy_source,
         )
+
         compiled_prompt = compile_resolved_prompt_dict(
             ResolvedPromptSources(
                 agent_system=agent_system,
@@ -529,11 +532,13 @@ class StudioService:
         Draft，不改用户根配置。返回 None 表示无可导入项目。
         """
         from ksadk.studio.manifest_resolver import detect_manifest_kind
+
         result = detect_manifest_kind(self.workspace.root)
         if result.kind != "framework":
             return None
         # 读根 manifest 的完整字段，供前端预览
         import yaml as _yaml
+
         try:
             payload = _yaml.safe_load(result.path.read_text(encoding="utf-8-sig")) or {}
         except Exception:  # noqa: BLE001
@@ -550,7 +555,9 @@ class StudioService:
             "requiresConfirmation": True,
         }
 
-    def import_root_project(self, *, name: str | None = None, slug: str | None = None) -> AgentDraft:
+    def import_root_project(
+        self, *, name: str | None = None, slug: str | None = None
+    ) -> AgentDraft:
         """一键导入根 Framework 项目（方案 §6.1）。
 
         检测根 agentengine.yaml 为 framework 时，inspect + commit 一步完成，生成 Studio Draft

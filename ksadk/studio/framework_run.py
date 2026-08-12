@@ -139,20 +139,6 @@ class FrameworkRunSpecResolver:
             # framework runner's existing base_instructions projection.
             "agent_system": str((instructions or {}).get("system") or ""),
             "agent_task": str((instructions or {}).get("task") or ""),
-            # Codex: 如果有 task，追加到 base_instructions（Codex 只认 base_instructions，
-            # 不分 system/task；compiled_prompt evidence 仍记录分段 hash）
-            **(
-                {
-                    "base_instructions": str((instructions or {}).get("system") or "")
-                    + (
-                        "\n\n" + (instructions or {}).get("task")
-                        if (instructions or {}).get("task")
-                        else ""
-                    )
-                }
-                if (instructions or {}).get("task")
-                else {}
-            ),
             **(
                 {"prompt_integration_mode": "ksadk_hosted"}
                 if _resolved_prompt_ownership(resolved) == "ksadk"

@@ -227,6 +227,7 @@ def _parse_summary_v2_sections(
                         "Decision",
                         "Error",
                         "Pending",
+                        "最新用户指令",
                     ):
                         if other.startswith(label):
                             continue

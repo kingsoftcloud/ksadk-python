@@ -578,10 +578,12 @@ class StudioRunService:
         spec: StudioRunSpec,
         user_input: str,
     ) -> None:
-        """Finalize hosted turns through the shared PCM lifecycle."""
+        """Finalize hosted turns through the shared PCM lifecycle.
+
+        Usage 回填始终执行（不依赖 memory_write_rollout）；
+        Memory flush 由 memory_write_rollout 决定（在 finalize_hosted_turn 内部门控）。
+        """
         if record.status != RunStatus.COMPLETED:
-            return
-        if str(spec.request_config.get("prompt_integration_mode") or "") != "ksadk_hosted":
             return
         try:
             from types import SimpleNamespace

@@ -44,6 +44,11 @@ BASE64_FIELD_RE = re.compile(
     r"(?P<prefix>['\"](?P<field>file_data|data|bytes|base64)['\"]\s*:\s*['\"])(?P<value>[A-Za-z0-9+/=_-]{512,})(?P<suffix>['\"])",
     re.IGNORECASE,
 )
+_CORRECTION_MARKER_RE = re.compile(
+    r"(?:修正|更正|改为|更新为|最新(?:的)?|废弃|作废|不再使用|不是.+而是|不要|不得|禁止)"
+)
+_LATEST_USER_INSTRUCTION_MAX_CHARS = 8192
+_CORRECTION_SUMMARY_MAX_CHARS = 2048
 
 
 def sanitize_event_text_for_context(text: Any) -> str:
@@ -162,15 +167,17 @@ def budget_tool_result_for_event(
 
     返回 ``(session_event_text, metadata_extras)``：
 
-    - ``enabled=False`` → ``(str(tool_output), {})``：与旧 ``text=str(tool_output)`` **字节级一致**，
-      非ksadk_hosted / framework / native 路径零行为变更。
+    - ``enabled=False`` → ``(str(tool_output), {})``：与旧
+      ``text=str(tool_output)`` **字节级一致**，非ksadk_hosted / framework / native
+      路径零行为变更。
     - ``enabled=True``：先 ``_stringify_part_text`` 干净渲染（已预算的 toolset dict →
       ``"preview\\n[persisted-output] path (mime)"``；裸串 → 原串），再若仍超 ``max_chars`` 则
       ``budget_tool_output`` 落盘+截断，``text = "preview\\n[persisted-output] path (mime)"``，
       ``extras = {"tool_result_budget": {truncated, original_chars, preview_chars, persisted}}``。
       未超阈值 → ``(rendered, {})``。
 
-    **不碰 ``metadata.tool_output``**：调用方保留原值（UI/Responses 读取方不受影响，会话存储节省留后续）。
+    **不碰 ``metadata.tool_output``**：调用方保留原值（UI/Responses 读取方不受影响，
+    会话存储节省留后续）。
     只 bound 进 ``content.parts[0].text``——即下一轮 ``extract_event_text`` → ``payload["history"]``
     → 模型输入的那条 text。已预算 dict 经 ``_stringify_part_text`` 渲染后必小于阈值，不重复落盘。
     """
@@ -199,7 +206,8 @@ def budget_tool_result_for_event(
                 "preview_chars": active.max_chars,
             }
         }
-    text = f"{preview}\n[persisted-output] {persisted['path']} ({persisted.get('mime_type') or 'text/plain'})"
+    mime_type = persisted.get("mime_type") or "text/plain"
+    text = f"{preview}\n[persisted-output] {persisted['path']} ({mime_type})"
     extras = {
         "tool_result_budget": {
             "truncated": bool(budgeted.get("truncated")),
@@ -256,15 +264,16 @@ def summarize_event_groups(
 ) -> str:
     """把要折叠的旧轮次压成一段 checkpoint 文本。
 
-    extractive fallback：结构化骨架 + 末尾保留最新 user 纠正完整内容。
-    无摘要模型时，最新 user 消息可能含关键 Region 修正（如"不要改生产配置"），
-    截断 180 字符会丢失。保留最后一条 user 消息完整内容（方案 §9.4）。
+    extractive fallback：结构化骨架 + 有界保留错误修正和最新长 user 指令。
+    无摘要模型时，关键修正可能位于长消息尾部，也可能不是最后一条 user 消息；
+    因此跨消息提取修正，并在预算上限内保留最新长指令首尾（方案 §9.4）。
     """
     lines: List[str] = []
     if previous_summary:
         lines.append(previous_summary)
     lines.append("Earlier conversation summary:")
     last_user_text = ""
+    correction_snippets: list[str] = []
     for group in groups:
         snippets: List[str] = []
         for event in group:
@@ -282,13 +291,34 @@ def summarize_event_groups(
                 role = "assistant"
             else:
                 role = "user"
-                last_user_text = text  # 保留最新 user 消息完整内容
+                last_user_text = text
+                for sentence in re.split(r"[\n。；;]+", text):
+                    normalized = sentence.strip()
+                    if normalized and _CORRECTION_MARKER_RE.search(normalized):
+                        correction_snippets.append(normalized[:512])
             snippets.append(f"{role}: {text[:180]}")
         if snippets:
             lines.append(" | ".join(snippets))
-    # 末尾追加最新 user 纠正完整内容（避免 extractive 截断丢失关键指令）
+    # 修正不一定是 compact 范围内最后一条 user 消息；单独形成结构化段，供
+    # Working State 确定性解析。总量有界，避免用“保留完整”重新撑爆上下文。
+    if correction_snippets:
+        unique: list[str] = []
+        for snippet in correction_snippets:
+            if snippet not in unique:
+                unique.append(snippet)
+        correction_text = "；".join(unique[-8:])[-_CORRECTION_SUMMARY_MAX_CHARS:]
+        lines.append(f"错误修正：{correction_text}")
+    # 末尾追加最新 user 指令的有界首尾内容。短消息已在摘要骨架里，不重复。
     if last_user_text and len(last_user_text) > 180:
-        lines.append(f"最新用户指令（完整）: {last_user_text}")
+        preserved = last_user_text
+        if len(preserved) > _LATEST_USER_INSTRUCTION_MAX_CHARS:
+            half = _LATEST_USER_INSTRUCTION_MAX_CHARS // 2
+            preserved = (
+                preserved[:half]
+                + "\n...[中间内容因上下文预算省略]...\n"
+                + preserved[-half:]
+            )
+        lines.append(f"最新用户指令（有界保留）: {preserved}")
     return "\n".join(line for line in lines if line).strip()
 
 

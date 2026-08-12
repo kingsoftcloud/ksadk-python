@@ -132,6 +132,34 @@ def test_codex_repo_still_lists_real_codex_root(tmp_path):
     assert snapshots[0].manifest.name == "codex-a"
 
 
+def test_codex_repo_save_preserves_non_codex_root_manifest(tmp_path):
+    """Codex Agent 与根 LangGraph manifest 共存，不解析或覆盖根文件。"""
+    root_source = "framework: langgraph\nentry_point: agent.py\n"
+    _write_root_manifest(tmp_path, root_source)
+    workspace = Workspace(tmp_path)
+    repo = CodexManifestRepository(workspace)
+
+    from ksadk.studio.codex_manifest import CodexAgentManifest
+
+    snapshot = repo.save(
+        CodexAgentManifest.model_validate(
+            {
+                "name": "codex-sidecar",
+                "version": "1.0.0",
+                "framework": "codex",
+                "artifact_type": "ManagedRuntime",
+                "runtime": {"name": "codex", "version": "0.144.4"},
+                "model": "glm-5.2",
+                "prompt": "Keep the root framework manifest intact.\n",
+            }
+        )
+    )
+
+    assert (tmp_path / "agentengine.yaml").read_text(encoding="utf-8") == root_source
+    assert snapshot.source_path == tmp_path / "agents/codex-sidecar/agentengine.yaml"
+    assert repo.load("codex-sidecar").manifest.name == "codex-sidecar"
+
+
 # ---- 端到端：Studio 启动时不误判 langgraph workspace ----
 
 

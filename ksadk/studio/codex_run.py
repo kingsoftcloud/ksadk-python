@@ -86,13 +86,20 @@ class CodexRunSpecResolver:
         }
         if runtime_env:
             launch_config["env"] = runtime_env
+        agent_task = str(manifest.task_prompt or "").strip()
+        # PCM 策略从不可变 Manifest 读取（方案 §5.1：Build 锁定后 sidecar 修改不影响旧 Build）
+        # manifest.context/memory 由 _manifest() 从 AgentSpec 写入，随 Build 进入 Artifact
+        resolved_context = manifest.context if isinstance(manifest.context, dict) else {}
+        resolved_memory = manifest.memory if isinstance(manifest.memory, dict) else {}
+        base_instructions = manifest.prompt
+        if agent_task:
+            base_instructions = f"{manifest.prompt}\n\n{agent_task}"
         request_config: dict[str, Any] = {
-            "base_instructions": manifest.prompt,
-            # Codex manifest already stores the merged system/task prompt. Keep
-            # an explicit source projection for PCM tracing without changing
-            # the native runner input.
+            # Codex 原生只接收 base_instructions，因此运行前合并；PCM 证据仍使用下面
+            # 两个独立来源生成 agent_identity / agent_policy 的分段 hash。
+            "base_instructions": base_instructions,
             "agent_system": manifest.prompt,
-            "agent_task": "",
+            "agent_task": agent_task,
             "cwd": str(project_dir),
             "skills": skills,
             "sandbox_read_only": sandbox == "read-only",
@@ -101,6 +108,14 @@ class CodexRunSpecResolver:
             "summary": "auto",
             # Studio sessions resume the same native Codex thread across turns.
             "ephemeral": False,
+            # PCM 配置（方案 §5.1）：从 Manifest 读取预算和 rollout
+            "max_input_tokens": resolved_context.get("maxInputTokens")
+            or resolved_context.get("max_input_tokens"),
+            "reserve_output_tokens": resolved_context.get("reserveOutputTokens")
+            or resolved_context.get("reserve_output_tokens"),
+            "context_engine_rollout": resolved_context.get("rollout", {}).get("contextEngine"),
+            "memory_recall_enabled": resolved_memory.get("recall", {}).get("enabled"),
+            "memory_write_rollout": resolved_context.get("rollout", {}).get("memoryWrite"),
         }
         if approval_profile:
             request_config["tool_approval_mode"] = approval_profile

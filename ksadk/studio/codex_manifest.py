@@ -39,10 +39,17 @@ class CodexAgentManifest(BaseModel):
     model: str = Field(min_length=1, max_length=256)
     models: list[str] | None = None
     prompt: str = Field(min_length=1, max_length=32768)
+    # Codex Runtime 最终仍消费合并后的 base_instructions；该字段用于在 AgentVersion /
+    # Build 中保留任务契约来源，避免为了运行投影而破坏 PromptSection 审计。
+    task_prompt: str | None = Field(default=None, max_length=32768)
     skills: list[str] | None = None
     mcp_servers: list[dict[str, Any]] | None = None
     sandbox: str | None = None
     approval_mode: str | None = None
+    # PCM 策略（方案 §5.1）：随 Manifest 进入不可变 Artifact，Build 后修改 sidecar
+    # 不影响旧 Build 的运行行为。缺字段时走兼容默认（方案 §13.1）。
+    context: dict[str, Any] | None = None
+    memory: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def validate_models(self) -> "CodexAgentManifest":
@@ -132,6 +139,7 @@ class CodexManifestRepository:
         if not self.path.is_file():
             return False
         from ksadk.studio.manifest_resolver import root_manifest_is_codex
+
         return root_manifest_is_codex(self.workspace.root)
 
     def exists(self, agent_id: str | None = None) -> bool:
@@ -260,9 +268,7 @@ class CodexManifestRepository:
             return
         if trash_directory is None:
             raise ValueError("recoverable deletion requires a trash directory")
-        destination = self.workspace.resolve(
-            trash_directory / "source/agents" / agent_id
-        )
+        destination = self.workspace.resolve(trash_directory / "source/agents" / agent_id)
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(agent_directory), str(destination))
 
@@ -270,7 +276,10 @@ class CodexManifestRepository:
         self._validate_agent_id(agent_id)
         if not self.path.is_file():
             return self.path
-        if self._load_path(self.path).manifest.name == agent_id:
+        # A workspace root manifest can belong to LangGraph/ADK.  Never parse
+        # or overwrite it as a Codex manifest; Codex agents must coexist under
+        # agents/<agent-id>/agentengine.yaml in that case.
+        if self._root_is_codex() and self._load_path(self.path).manifest.name == agent_id:
             return self.path
         return self._agent_path(agent_id)
 

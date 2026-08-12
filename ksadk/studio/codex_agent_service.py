@@ -459,15 +459,35 @@ class CodexAgentService:
         manifest = snapshot.manifest
         saved = current or self.drafts.get(manifest.name)
         bindings = self._model_bindings(manifest)
+        # 从 Manifest 恢复 PCM context/memory（方案 §5.1：Build 不可变）
+        from ksadk.studio.contracts import ContextSpec, MemorySpec
+
+        context_spec = ContextSpec()
+        memory_spec = MemorySpec()
+        if isinstance(manifest.context, dict) and manifest.context:
+            try:
+                context_spec = ContextSpec.model_validate(manifest.context)
+            except Exception:
+                pass
+        if isinstance(manifest.memory, dict) and manifest.memory:
+            try:
+                memory_spec = MemorySpec.model_validate(manifest.memory)
+            except Exception:
+                pass
         if saved is not None:
             draft = saved.model_copy(deep=True)
             draft.spec.runtime = RuntimeRef(
                 type="codex",
                 version=manifest.runtime.version,
             )
-            draft.spec.instructions = Instructions(system=manifest.prompt, task="")
+            draft.spec.instructions = Instructions(
+                system=manifest.prompt,
+                task=manifest.task_prompt or "",
+            )
             draft.spec.bindings.model_profile_id = bindings[0]
             draft.spec.bindings.model_profile_ids = bindings[1]
+            draft.spec.context = context_spec
+            draft.spec.memory = memory_spec
             draft.metadata.labels.update(self._labels(manifest))
             return draft
         default_profile, profiles = bindings
@@ -480,11 +500,16 @@ class CodexAgentService:
             spec=AgentSpec(
                 description="由 agentengine.yaml 管理的 Codex Agent",
                 runtime=RuntimeRef(type="codex", version=manifest.runtime.version),
-                instructions=Instructions(system=manifest.prompt),
+                instructions=Instructions(
+                    system=manifest.prompt,
+                    task=manifest.task_prompt or "",
+                ),
                 bindings=AgentBindings(
                     model_profile_id=default_profile,
                     model_profile_ids=profiles,
                 ),
+                context=context_spec,
+                memory=memory_spec,
             ),
         )
 
@@ -498,10 +523,16 @@ class CodexAgentService:
         model = self._model_name(spec, agent_id=agent_id)
         models = self._model_names(spec, default_model=model, agent_id=agent_id)
         prompt = spec.instructions.system.strip()
-        if spec.instructions.task.strip():
-            prompt = f"{prompt}\n\n任务约束：\n{spec.instructions.task.strip()}"
+        task_prompt = spec.instructions.task.strip() or None
         skill_ids = self._skill_resource_ids(spec)
         mcp_servers = self._mcp_server_configs(spec)
+        # PCM 策略写入 Manifest（随 Build 锁定，不可变）
+        context_payload = (
+            spec.context.model_dump(by_alias=True, exclude_none=True, mode="json") or None
+        )
+        memory_payload = (
+            spec.memory.model_dump(by_alias=True, exclude_none=True, mode="json") or None
+        )
         return CodexAgentManifest(
             name=agent_id,
             version=current.version if current is not None else "1.0.0",
@@ -509,10 +540,13 @@ class CodexAgentService:
             model=model,
             models=models if len(models) > 1 else None,
             prompt=prompt,
+            task_prompt=task_prompt,
             skills=skill_ids or None,
             mcp_servers=mcp_servers or None,
             sandbox=spec.execution.sandbox,
             approval_mode=spec.execution.approval_mode,
+            context=context_payload,
+            memory=memory_payload,
         )
 
     @staticmethod

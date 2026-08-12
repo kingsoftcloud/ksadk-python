@@ -12,7 +12,11 @@ from ksadk.studio.errors import StudioError
 from ksadk.studio.workspace import Workspace
 
 
-def _manifest(prompt: str = "检查 src/demo.py，只报告确定的问题。\n"):
+def _manifest(
+    prompt: str = "检查 src/demo.py，只报告确定的问题。\n",
+    *,
+    task_prompt: str | None = None,
+):
     return CodexAgentManifest.model_validate(
         {
             "name": "review-helper",
@@ -21,6 +25,7 @@ def _manifest(prompt: str = "检查 src/demo.py，只报告确定的问题。\n"
             "model": "glm-5.2",
             "models": ["glm-5.2", "kimi-k2-code"],
             "prompt": prompt,
+            **({"task_prompt": task_prompt} if task_prompt is not None else {}),
         }
     )
 
@@ -55,7 +60,31 @@ def test_resolver_builds_canonical_codex_launch_context(tmp_path: Path) -> None:
         "approval_mode": "deny_all",
         "summary": "auto",
         "ephemeral": False,
+        "max_input_tokens": None,
+        "reserve_output_tokens": None,
+        "context_engine_rollout": None,
+        "memory_recall_enabled": None,
+        "memory_write_rollout": None,
     }
+
+
+def test_resolver_merges_codex_input_but_preserves_prompt_sources(tmp_path: Path) -> None:
+    workspace = Workspace(tmp_path)
+    workspace.initialize()
+    manifest = _manifest(
+        "你是代码审查助手。",
+        task_prompt="只报告有证据的问题。",
+    )
+    CodexManifestRepository(workspace).save(manifest)
+    build = CodexStudioBuilder(workspace, runtime_inspector=_inspector).build()
+
+    spec = CodexRunSpecResolver(workspace).resolve(build.id)
+
+    assert spec.request_config["base_instructions"] == (
+        "你是代码审查助手。\n\n只报告有证据的问题。"
+    )
+    assert spec.request_config["agent_system"] == "你是代码审查助手。"
+    assert spec.request_config["agent_task"] == "只报告有证据的问题。"
 
 
 def test_resolver_injects_workspace_model_credentials_into_codex(

@@ -154,3 +154,27 @@ def test_prompt_compile_codex_native_runtime(tmp_path):
     body = r.json()
     assert body["runtimeType"] == "codex"
     assert body["contentHash"].startswith("sha256:")
+
+
+def test_prompt_compile_codex_preserves_system_and_task_section_hashes(tmp_path):
+    c, _ = _client(tmp_path)
+    c.put(
+        "/api/v1/codex/manifest",
+        json={
+            "name": "codex-sections",
+            "version": "1.0.0",
+            "framework": "codex",
+            "artifact_type": "ManagedRuntime",
+            "runtime": {"name": "codex", "version": "0.144.4"},
+            "model": "m",
+            "prompt": "你是 Codex 助手。",
+            "task_prompt": "任何线上变更必须先 dry-run。",
+        },
+    )
+
+    response = c.post("/api/v1/agents/codex-sections/prompt:compile", json={})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["sectionCount"] == 2
+    assert set(body["sectionHashes"]) == {"agent_identity", "agent_policy"}
