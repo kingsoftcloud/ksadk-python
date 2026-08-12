@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional, cast
 
@@ -558,6 +559,14 @@ def _render_hermes_dry_run(
     default=True,
     help="是否启用可观测性 (默认开启)",
 )
+@click.option(
+    "--agent-id",
+    default=None,
+    help=(
+        "指定要更新的已有 Agent ID；当前凭证有权限时会自动回填 "
+        ".agentengine.state 并走热更新（用于本地状态丢失后重新关联）"
+    ),
+)
 @network_options
 @dry_run_option()
 @cli_output_option()
@@ -576,6 +585,7 @@ def deploy(
     extra_env: tuple[str, ...],
     env_file: Optional[str],
     observability: bool,
+    agent_id: Optional[str],
     enable_public_access: Optional[bool],
     enable_vpc_access: bool,
     vpc_id: Optional[str],
@@ -680,6 +690,13 @@ async def _deploy_hermes(
     existing_agent_id = None
     if str(state.get("type") or state.get("framework") or "").strip().lower() == "hermes":
         existing_agent_id = str(state.get("agent_id") or "").strip() or None
+    explicit_agent_id = (agent_id or "").strip() or None
+    if explicit_agent_id:
+        if existing_agent_id and existing_agent_id != explicit_agent_id:
+            print_warn(
+                f"--agent-id ({explicit_agent_id}) 与本地状态 ({existing_agent_id}) 不一致，以 --agent-id 为准"
+            )
+        existing_agent_id = explicit_agent_id
     agent_name = name or state.get("name") or project_dir.name.replace("-", "_")
     image_ref = image or _env_value("HERMES_IMAGE", "HERMES_DOCKER_IMAGE")
     if not image_ref:
@@ -757,6 +774,38 @@ async def _deploy_hermes(
     print_kv("镜像", image_ref)
 
     async with AgentEngineClient(region=region, dry_run=dry_run) as client:
+        if explicit_agent_id and not dry_run:
+            try:
+                detail = await client.get_agent(
+                    explicit_agent_id, include_api_key=True
+                )
+            except Exception as e:
+                raise click.ClickException(
+                    f"指定的 Agent ID '{explicit_agent_id}' 不存在，或当前凭证无权限访问。\n"
+                    f"   详情: {e}\n"
+                    "   👉 请确认 agent_id 正确，且当前 AK/SK / 账号有该 Agent 的权限。"
+                ) from e
+            qa = detail.get("quick_access", {}) or {}
+            basic = detail.get("basic", {}) or {}
+            recovered_state = state.copy()
+            recovered_state.update(
+                {
+                    "agent_id": explicit_agent_id,
+                    "name": basic.get("name") or agent_name,
+                    "type": "hermes",
+                    "region": region,
+                    "endpoint": qa.get("public_endpoint"),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+            if qa.get("api_key"):
+                recovered_state["api_key"] = qa["api_key"]
+            recovered_state = {
+                k: v for k, v in recovered_state.items() if v is not None
+            }
+            save_state(project_dir, recovered_state)
+            state = recovered_state
+            print_info(f"已通过 --agent-id 关联已有 Agent: {explicit_agent_id}")
         if existing_agent_id:
             update_payload = _build_hermes_update_payload(
                 payload=payload,
