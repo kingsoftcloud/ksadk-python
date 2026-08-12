@@ -236,7 +236,7 @@ def _render_report(report: EvalRunReport, *, report_dir: str | None = None) -> N
 
 def _render_start(request: EvaluationRequest) -> None:
     print_info(
-        "开始评测:"
+        "开始评测："
         f"{request.evalset.name}，{len(request.evalset.cases)} 个 Case，"
         f"Target: {request.target.kind.value}"
     )
