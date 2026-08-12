@@ -561,6 +561,7 @@ def _render_hermes_dry_run(
 )
 @click.option(
     "--agent-id",
+    "agent_id_opt",
     default=None,
     help=(
         "指定要更新的已有 Agent ID；当前凭证有权限时会自动回填 "
@@ -585,7 +586,7 @@ def deploy(
     extra_env: tuple[str, ...],
     env_file: Optional[str],
     observability: bool,
-    agent_id: Optional[str],
+    agent_id_opt: Optional[str],
     enable_public_access: Optional[bool],
     enable_vpc_access: bool,
     vpc_id: Optional[str],
@@ -629,6 +630,7 @@ def deploy(
             storage_mount_path=storage_mount_path,
             no_storage=no_storage,
             observability=observability,
+            agent_id=agent_id_opt,
             include_env_on_update=include_env_on_update,
             include_storage_on_update=include_storage_on_update,
             extra_env=extra_env,
@@ -663,6 +665,7 @@ async def _deploy_hermes(
     storage_mount_path: str | None,
     no_storage: bool,
     observability: bool,
+    agent_id: str | None = None,
     include_env_on_update: bool,
     include_storage_on_update: bool,
     extra_env: tuple[str, ...] = (),
@@ -898,7 +901,7 @@ async def _deploy_hermes(
     if dry_run:
         return
 
-    agent_id = res.get("agent_id")
+    final_agent_id = res.get("agent_id")
     endpoint = res.get("endpoint")
     api_key = res.get("api_key")
     deployment_status = normalize_deployment_status(res.get("status") or res.get("phase"))
@@ -907,7 +910,7 @@ async def _deploy_hermes(
         {
             "type": "hermes",
             "framework": "hermes",
-            "agent_id": agent_id,
+            "agent_id": final_agent_id,
             "name": res.get("name") or agent_name,
             "region": region,
             "endpoint": endpoint,
@@ -924,8 +927,8 @@ async def _deploy_hermes(
                 resource="hermes",
                 action="deploy",
                 result={
-                    "id": str(agent_id or ""),
-                    "agent_id": str(agent_id or ""),
+                    "id": str(final_agent_id or ""),
+                    "agent_id": str(final_agent_id or ""),
                     "name": str(res.get("name") or agent_name),
                     "status": deployment_status,
                     "framework": "hermes",
@@ -940,7 +943,7 @@ async def _deploy_hermes(
         )
         return
     print_success("Hermes 已提交部署")
-    print_kv("Agent ID", str(agent_id or "(创建中)"))
+    print_kv("Agent ID", str(final_agent_id or "(创建中)"))
     print_kv("当前状态", deployment_status, value_style=status_rich_style(deployment_status))
     if endpoint:
         print_kv("Endpoint", str(endpoint), value_style="#58a6ff")

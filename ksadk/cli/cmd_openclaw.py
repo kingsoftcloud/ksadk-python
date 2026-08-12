@@ -3388,6 +3388,7 @@ def channel_doctor(
 @click.option("--no-storage", is_flag=True, help="禁用默认 PVC 挂载")
 @click.option(
     "--agent-id",
+    "agent_id_opt",
     default=None,
     help=(
         "指定要更新的已有 Agent ID；当前凭证有权限时会自动回填 "
@@ -3413,7 +3414,7 @@ def deploy(
     storage_size_gi: int,
     storage_mount_path: Optional[str],
     no_storage: bool,
-    agent_id: Optional[str],
+    agent_id_opt: Optional[str],
     enable_public_access: Optional[bool],
     enable_vpc_access: bool,
     vpc_id: Optional[str],
@@ -3488,6 +3489,7 @@ def deploy(
                 storage_size_gi=storage_size_gi,
                 storage_mount_path=storage_mount_path,
                 no_storage=no_storage,
+                agent_id_opt=agent_id_opt,
                 include_env_on_update=include_env_on_update,
                 include_storage_on_update=include_storage_on_update,
                 **network_cli_kwargs(
@@ -3524,6 +3526,7 @@ async def _deploy_openclaw(
     storage_size_gi: int = 20,
     storage_mount_path: Optional[str] = None,
     no_storage: bool = False,
+    agent_id_opt: Optional[str] = None,
     include_env_on_update: bool = False,
     include_storage_on_update: bool = False,
     enable_public_access: Optional[bool] = None,
@@ -3564,7 +3567,7 @@ async def _deploy_openclaw(
     if state_kind == "openclaw":
         existing_agent_id = state.get("agent_id")
         state_name = str(state.get("name") or "").strip() or None
-    explicit_agent_id = (agent_id or "").strip() or None
+    explicit_agent_id = (agent_id_opt or "").strip() or None
     if explicit_agent_id:
         if existing_agent_id and existing_agent_id != explicit_agent_id:
             print_info(
