@@ -9,6 +9,7 @@ import { ResourcesPage, type ResourceKind } from "./pages/ResourcesPage";
 import { ObservabilityPage } from "./pages/ObservabilityPage";
 import { RuntimeResourcesPage } from "./pages/RuntimeResourcesPage";
 import { OrchestrationPage } from "./pages/OrchestrationPage";
+import { EvaluationsPage } from "./pages/EvaluationsPage";
 import { SettingsOverlay } from "./components/SettingsOverlay";
 import { ChatRunPanel } from "./components/ChatRunPanel";
 import { ChatWorkspace } from "./components/ChatWorkspace";
@@ -38,6 +39,7 @@ const VIEW_TITLE: Record<View, string> = {
   builds: "构建",
   deployments: "部署",
   observability: "可观测",
+  evaluations: "评测",
   "runtime-resources": "运行资源",
   orchestration: "任务编排",
 };
@@ -344,6 +346,7 @@ export default function App() {
             {view === "observability" && (
               <ObservabilityPage refreshTick={refreshTick} />
             )}
+            {view === "evaluations" && <EvaluationsPage refreshTick={refreshTick} />}
             {view === "runtime-resources" && <RuntimeResourcesPage refreshTick={refreshTick} />}
             {view === "orchestration" && <OrchestrationPage currentAgentId={currentAgentId} agents={agents} onSelectAgent={setCurrentAgentId} onCreate={openCreate} />}
           </div>

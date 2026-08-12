@@ -184,24 +184,45 @@ def _evaluate_runtime_budget(
 def _evaluate_tool_trajectory(
     context: _EvaluationContext,
 ) -> list[MetricResult]:
-    """Report unavailable until A2A exposes normalized tool trajectories."""
+    """Evaluate tool requirements against normalized RuntimeEvent evidence."""
 
     requirements = _tool_requirements(context.case)
     if not requirements:
         return []
 
-    return [
-        MetricResult(
-            name="tool_trajectory",
-            status=MetricStatus.UNAVAILABLE,
-            required=required,
-            evidence={
-                "assertion": assertion_type,
-                "reason": "A2A target 未提供标准化工具轨迹",
-            },
+    if context.target_run.trace_ref is None:
+        return [
+            MetricResult(
+                name="tool_trajectory",
+                status=MetricStatus.UNAVAILABLE,
+                required=required,
+                evidence={
+                    "assertion": assertion_type,
+                    "tool": tool_name,
+                    "reason": "Target 未提供可查询的标准化工具轨迹",
+                },
+            )
+            for assertion_type, tool_name, required, _expected_called in requirements
+        ]
+
+    results: list[MetricResult] = []
+    for assertion_type, tool_name, required, expected_called in requirements:
+        matched = [call.call_id for call in context.target_run.tool_calls if call.name == tool_name]
+        passed = bool(matched) is expected_called
+        results.append(
+            MetricResult(
+                name="tool_trajectory",
+                status=MetricStatus.PASS if passed else MetricStatus.FAIL,
+                score=1.0 if passed else 0.0,
+                required=required,
+                evidence={
+                    "assertion": assertion_type,
+                    "tool": tool_name,
+                    "matchedCallIds": matched,
+                },
+            )
         )
-        for assertion_type, required in requirements
-    ]
+    return results
 
 
 def _response_assertions(case: EvalCase) -> list[AssertionSpec]:
@@ -220,14 +241,30 @@ def _runtime_assertions(case: EvalCase) -> list[AssertionSpec]:
     ]
 
 
-def _tool_requirements(case: EvalCase) -> list[tuple[str, bool]]:
+def _tool_requirements(case: EvalCase) -> list[tuple[str, str, bool, bool]]:
     requirements = [
-        (assertion.type.value, assertion.required)
+        (
+            assertion.type.value,
+            str(assertion.value),
+            assertion.required,
+            assertion.type is AssertionType.TOOL_CALLED,
+        )
         for assertion in case.assertions
         if assertion.type in {AssertionType.TOOL_CALLED, AssertionType.TOOL_NOT_CALLED}
     ]
-    requirements.extend(("tool.expected", True) for turn in case.turns for _ in turn.expected_tools)
+    requirements.extend(
+        ("tool.expected", str(tool.get("name") or ""), True, True)
+        for turn in case.turns
+        for tool in turn.expected_tools
+        if str(tool.get("name") or "").strip()
+    )
     return requirements
+
+
+def evaluate_tool_trajectory(case: EvalCase, target_run: TargetRun) -> list[MetricResult]:
+    """Compatibility entry point for direct deterministic tool evaluation."""
+
+    return _evaluate_tool_trajectory(_EvaluationContext(case, target_run, EvaluationConfig()))
 
 
 def _response_metric(assertion: AssertionSpec, output: str) -> MetricResult:
@@ -429,8 +466,7 @@ def _run_llm_judge(
     metric = GEval(
         name="Response quality",
         criteria=(
-            "Determine whether the actual output is factually correct "
-            "based on the expected output."
+            "Determine whether the actual output is factually correct based on the expected output."
         ),
         evaluation_params=[
             LLMTestCaseParams.INPUT,

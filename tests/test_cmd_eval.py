@@ -56,6 +56,33 @@ def _report() -> EvalRunReport:
     )
 
 
+def _local_agent(tmp_path):
+    project = tmp_path / "local-agent"
+    project.mkdir()
+    (project / "agentengine.yaml").write_text(
+        "name: cli-local-agent\n"
+        "framework: langgraph\n"
+        "entry_point: agent.py\n"
+        "agent_variable: graph\n",
+        encoding="utf-8",
+    )
+    (project / "agent.py").write_text(
+        """from langgraph.graph import END, START, StateGraph
+
+def answer(_state):
+    return {'output': 'hello from local graph'}
+
+builder = StateGraph(dict)
+builder.add_node('answer', answer)
+builder.add_edge(START, 'answer')
+builder.add_edge('answer', END)
+graph = builder.compile()
+""",
+        encoding="utf-8",
+    )
+    return project
+
+
 def test_eval_help_exposes_complete_target_shell():
     result = CliRunner().invoke(eval, ["--help"])
     assert result.exit_code == 0, result.output
@@ -285,7 +312,7 @@ def test_eval_json_output_does_not_render_progress(tmp_path, monkeypatch):
     assert payload["spec"]["id"] == "eval-preview"
 
 
-def test_eval_unimplemented_executor_uses_execution_exit_code(tmp_path):
+def test_eval_invalid_local_source_uses_execution_exit_code(tmp_path):
     result = CliRunner().invoke(
         eval,
         [
@@ -296,4 +323,36 @@ def test_eval_unimplemented_executor_uses_execution_exit_code(tmp_path):
         ],
     )
     assert result.exit_code == 2
-    assert "尚未实现" in result.output
+    assert "LOCAL_FRAMEWORK_UNSUPPORTED" in result.output
+
+
+def test_eval_local_source_executes_and_persists_report(tmp_path):
+    project = _local_agent(tmp_path)
+    report_dir = tmp_path / "reports"
+    result = CliRunner().invoke(
+        eval,
+        [
+            "--evalset-file",
+            str(_evalset(tmp_path)),
+            "--agent-dir",
+            str(project),
+            "--report-dir",
+            str(report_dir),
+            "--format",
+            "json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["status"] == "PASSED"
+    assert payload["spec"]["target"]["kind"] == "local_source"
+    assert payload["caseRuns"][0]["targetRun"]["output"] == "hello from local graph"
+    assert (report_dir / payload["spec"]["id"] / "report.json").is_file()
+    trace_ref = payload["caseRuns"][0]["targetRun"]["traceRef"]
+    assert (
+        report_dir
+        / trace_ref["runId"]
+        / "evidence"
+        / trace_ref["sessionId"]
+        / f"{trace_ref['invocationId']}.json"
+    ).is_file()

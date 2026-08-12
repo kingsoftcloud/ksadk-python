@@ -10,9 +10,10 @@ from urllib.parse import urlparse
 
 from ksadk.evaluation import (
     EvaluationConfig as PublicEvaluationConfig,
+)
+from ksadk.evaluation import (
     EvaluationExecutionError,
     EvaluationNotImplementedError,
-    EvaluationRequest as PublicEvaluationRequest,
     EvaluationStorage,
     EvaluationStorageError,
     TargetKind,
@@ -20,7 +21,16 @@ from ksadk.evaluation import (
     execute_evaluation,
     load_evalset,
 )
+from ksadk.evaluation import (
+    EvaluationRequest as PublicEvaluationRequest,
+)
 from ksadk.evaluation.evalset import EvalSetParseError
+from ksadk.evaluation.evidence import EvidenceStore
+from ksadk.evaluation.studio_build_adapter import (
+    StudioBuildResolution,
+    StudioBuildTargetAdapter,
+    StudioBuildTargetError,
+)
 from ksadk.runtime import RuntimeExecutor, build_default_runtime_registry
 from ksadk.studio.agent_avatar_assets import AgentAvatarAssetStore
 from ksadk.studio.agent_lifecycle import delete_framework_agent
@@ -52,6 +62,7 @@ from ksadk.studio.contracts import (
     AgentSpec,
     AgentTemplateComposeRequest,
     AgentTemplateComposition,
+    BuildStatus,
     DeploymentRequest,
     Operation,
     OperationKind,
@@ -576,6 +587,21 @@ class StudioService:
         revision: int,
         idempotency_key: str,
     ) -> Operation:
+        if self.is_codex_agent(agent_id):
+            detail = self.agent_detail(agent_id)
+            if revision != detail["draft"].metadata.revision:
+                from ksadk.studio.errors import StudioError
+
+                raise StudioError(
+                    "AGENT_REVISION_CONFLICT",
+                    "Build revision 与当前 Agent 不一致",
+                    status_code=409,
+                )
+            return self.submit_codex_build(
+                idempotency_key=idempotency_key,
+                agent_id=agent_id,
+            )
+
         runtime_type = self.agent_runtime_type(agent_id)
         runtime = next(
             (item for item in self.runtime_catalog() if item["runtimeType"] == runtime_type),
@@ -601,20 +627,6 @@ class StudioService:
                     "runtimeType": runtime_type,
                     "installCommand": runtime["installCommand"],
                 },
-            )
-        if self.is_codex_agent(agent_id):
-            detail = self.agent_detail(agent_id)
-            if revision != detail["draft"].metadata.revision:
-                from ksadk.studio.errors import StudioError
-
-                raise StudioError(
-                    "AGENT_REVISION_CONFLICT",
-                    "Build revision 与当前 Agent 不一致",
-                    status_code=409,
-                )
-            return self.submit_codex_build(
-                idempotency_key=idempotency_key,
-                agent_id=agent_id,
             )
         return self.submit_build(
             agent_id,
@@ -940,7 +952,8 @@ class StudioService:
 
         async def runner():
             try:
-                report = await execute_evaluation(request)
+                adapter = self._public_evaluation_adapter(request)
+                report = await execute_evaluation(request, adapter=adapter)
             except EvaluationNotImplementedError as exc:
                 raise StudioError(
                     "EVALUATION_EXECUTOR_UNAVAILABLE",
@@ -973,6 +986,54 @@ class StudioService:
     def list_public_evaluations(self):
         return self.evaluation_storage.list_reports()
 
+    def evaluation_catalog(self) -> dict[str, list[dict]]:
+        builds = [
+            {
+                "id": record.id,
+                "agentId": record.agent_id,
+                "runtime": record.runtime_type,
+                "digest": f"sha256:{record.bundle_digest}",
+                "createdAt": record.created_at.isoformat().replace("+00:00", "Z"),
+            }
+            for record in self.builds.list()
+            if record.status == BuildStatus.SUCCEEDED and record.artifact_path
+        ]
+        builds.extend(
+            {
+                "id": record.id,
+                "agentId": record.agent_name,
+                "runtime": record.runtime_name,
+                "digest": f"sha256:{record.manifest_sha256}",
+                "createdAt": record.created_at.isoformat().replace("+00:00", "Z"),
+            }
+            for record in self.codex_builds.list()
+            if record.status == "SUCCEEDED" and record.artifact_path
+        )
+        builds.sort(key=lambda item: item["createdAt"], reverse=True)
+
+        evalsets: list[dict] = []
+        candidates: set[Path] = set()
+        for pattern in ("*.yaml", "*.yml", "*.json"):
+            candidates.update(self.workspace.root.glob(pattern))
+            candidates.update(self.workspace.root.glob(f"evaluations/**/{pattern}"))
+            candidates.update(self.workspace.root.glob(f"agents/*/evaluations/**/{pattern}"))
+        for path in sorted(candidates):
+            relative = path.relative_to(self.workspace.root)
+            try:
+                evalset = load_evalset(path)
+            except (EvalSetParseError, OSError):
+                continue
+            evalsets.append(
+                {
+                    "path": relative.as_posix(),
+                    "name": evalset.name,
+                    "caseCount": len(evalset.cases),
+                    "contentDigest": evalset.content_digest,
+                }
+            )
+        evalsets.sort(key=lambda item: item["path"])
+        return {"builds": builds, "evalsets": evalsets}
+
     def get_public_evaluation(self, evaluation_id: str):
         try:
             return self.evaluation_storage.read_report(evaluation_id)
@@ -995,6 +1056,9 @@ class StudioService:
                     field="target.locator",
                 )
             return target
+        if target.kind == TargetKind.STUDIO_BUILD:
+            self._validate_evaluation_build(target.locator)
+            return target
         path = self.workspace.resolve(target.locator, must_exist=True)
         if not path.is_dir():
             raise StudioError(
@@ -1004,6 +1068,87 @@ class StudioService:
                 field="target.locator",
             )
         return target.model_copy(update={"locator": str(path)})
+
+    def _public_evaluation_adapter(self, request: PublicEvaluationRequest):
+        if request.target.kind != TargetKind.STUDIO_BUILD:
+            return None
+        evidence_store = EvidenceStore(request.report_dir) if request.report_dir else None
+        return StudioBuildTargetAdapter(
+            timeout_seconds=request.config.timeout_seconds,
+            resolve_build=self._resolve_evaluation_build,
+            run_service=self.run_service,
+            evidence_store=evidence_store,
+        )
+
+    def _resolve_evaluation_build(self, build_id: str) -> StudioBuildResolution:
+        try:
+            codex_build = self.codex_builds.get(build_id)
+        except Exception as exc:
+            if getattr(exc, "status_code", None) != 404:
+                raise
+        else:
+            run_spec = self.codex_runs.resolve(build_id)
+            return StudioBuildResolution(
+                build_id=codex_build.id,
+                agent_id=codex_build.agent_name,
+                revision_digest=f"sha256:{codex_build.manifest_sha256}",
+                runtime="codex",
+                model=run_spec.model,
+                run_spec=run_spec,
+                metadata={
+                    "manifestSha256": codex_build.manifest_sha256,
+                    "runtimeVersion": codex_build.runtime_version,
+                },
+            )
+
+        build = self.builds.get(build_id)
+        if build.status != BuildStatus.SUCCEEDED or not build.artifact_path:
+            raise StudioBuildTargetError(
+                "STUDIO_BUILD_NOT_READY",
+                "Studio Build must be SUCCEEDED before evaluation",
+            )
+        run_spec = self.framework_runs.resolve(build_id)
+        revision_digest = str(build.bundle_digest or build.resolved_digest).strip()
+        if not revision_digest:
+            raise StudioBuildTargetError(
+                "STUDIO_BUILD_INVALID",
+                "Studio Build is missing an immutable digest",
+            )
+        return StudioBuildResolution(
+            build_id=build.id,
+            agent_id=build.agent_id,
+            revision_digest=revision_digest,
+            runtime=build.runtime_type,
+            model=run_spec.model,
+            run_spec=run_spec,
+            metadata={
+                "bundleDigest": build.bundle_digest,
+                "resolvedDigest": build.resolved_digest,
+                "sourceDigest": build.source_digest,
+                "sourceRevision": build.source_revision,
+            },
+        )
+
+    def _validate_evaluation_build(self, build_id: str) -> None:
+        try:
+            codex_build = self.codex_builds.get(build_id)
+        except Exception as exc:
+            if getattr(exc, "status_code", None) != 404:
+                raise
+        else:
+            if not codex_build.artifact_path:
+                raise StudioBuildTargetError(
+                    "STUDIO_BUILD_NOT_READY",
+                    "Studio Build must be SUCCEEDED before evaluation",
+                )
+            return
+
+        build = self.builds.get(build_id)
+        if build.status != BuildStatus.SUCCEEDED or not build.artifact_path:
+            raise StudioBuildTargetError(
+                "STUDIO_BUILD_NOT_READY",
+                "Studio Build must be SUCCEEDED before evaluation",
+            )
 
     def submit_deployment(
         self,

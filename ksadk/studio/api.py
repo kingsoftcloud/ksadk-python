@@ -29,8 +29,8 @@ from ksadk.studio.api_contracts import (
     QuickAuthoringRequest,
     RollbackRequest,
     RunRequest,
-    StudioEvaluationCreate,
     SessionExchangeRequest,
+    StudioEvaluationCreate,
     ValidationRequest,
     WorkspaceOpenRequest,
 )
@@ -971,6 +971,10 @@ def create_studio_app(
     @app.get("/api/v1/evaluations")
     async def list_public_evaluations():
         return {"items": studio.list_public_evaluations()}
+
+    @app.get("/api/v1/evaluation-targets")
+    async def list_evaluation_targets():
+        return studio.evaluation_catalog()
 
     @app.get("/api/v1/evaluations/{evaluation_id}")
     async def get_evaluation(evaluation_id: str):

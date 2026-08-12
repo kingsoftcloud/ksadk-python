@@ -288,11 +288,25 @@ class TraceRef(EvaluationModel):
     run_id: str | None = None
     trace_id: str | None = None
     root_span_id: str | None = None
+    session_id: str | None = None
+    invocation_id: str | None = None
+    seq_start: int | None = Field(default=None, ge=1)
+    seq_end: int | None = Field(default=None, ge=1)
+    remote_task_id: str | None = None
     seq_id: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def require_reference(self) -> "TraceRef":
-        if not any((self.run_id, self.trace_id, self.seq_id)):
+        if not any(
+            (
+                self.run_id,
+                self.trace_id,
+                self.session_id,
+                self.invocation_id,
+                self.remote_task_id,
+                self.seq_id,
+            )
+        ):
             raise ValueError("TraceRef 至少需要一个可查询 ID")
         return self
 
@@ -306,6 +320,16 @@ class UsageSnapshot(EvaluationModel):
     reported: bool = False
 
 
+class ToolCallEvidence(EvaluationModel):
+    """Non-sensitive projection of one runtime tool invocation."""
+
+    call_id: str = Field(min_length=1, max_length=256)
+    name: str = Field(min_length=1, max_length=256)
+    status: Literal["SUCCEEDED", "ERROR", "INCOMPLETE"]
+    seq_start: int | None = Field(default=None, ge=1)
+    seq_end: int | None = Field(default=None, ge=1)
+
+
 class TargetRun(EvaluationModel):
     """Normalized result returned by a target adapter for one case."""
 
@@ -316,6 +340,7 @@ class TargetRun(EvaluationModel):
     error_code: str | None = None
     error_message: str | None = None
     trace_ref: TraceRef | None = None
+    tool_calls: list[ToolCallEvidence] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

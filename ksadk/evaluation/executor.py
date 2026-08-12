@@ -16,6 +16,7 @@ from .contracts import (
     TargetRunStatus,
 )
 from .evaluators import evaluate_case_async
+from .evidence import EvidenceStore
 from .storage import EvaluationStorage, EvaluationStorageError
 from .target import EvaluationExecutionError, EvaluationTarget
 
@@ -31,10 +32,17 @@ async def execute_evaluation(
     request: EvaluationRequest,
     *,
     on_case_started: Callable[[str, int, int], None] | None = None,
+    adapter: TargetAdapter | None = None,
 ) -> EvalRunReport:
     """Execute and persist one evaluation request."""
 
-    target = EvaluationTarget(request.target, request.config)
+    evidence_store = EvidenceStore(request.report_dir) if request.report_dir else None
+    target = EvaluationTarget(
+        request.target,
+        request.config,
+        evidence_store=evidence_store,
+        adapter=adapter,
+    )
     snapshot = await target.snapshot()
     spec = EvalRunSpec(
         id=f"eval_{uuid4().hex}",

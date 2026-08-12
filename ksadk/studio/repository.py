@@ -247,6 +247,18 @@ class BuildRepository:
                 records.append(record)
         return records
 
+    def list(self) -> list[BuildRecord]:
+        records: list[BuildRecord] = []
+        directory = self.workspace.resolve(".agentkit/builds")
+        for path in directory.glob("build_*.json"):
+            try:
+                records.append(
+                    BuildRecord.model_validate_json(path.read_text(encoding="utf-8"))
+                )
+            except (OSError, ValidationError):
+                continue
+        return sorted(records, key=lambda item: item.created_at, reverse=True)
+
     def delete_for_agent(
         self,
         agent_id: str,
