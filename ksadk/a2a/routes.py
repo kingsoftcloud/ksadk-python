@@ -90,11 +90,18 @@ def add_a2a_protocol_routes(
         context_builder=context_builder,
         include_reasoning=config.include_reasoning,
     )
+    rest = server.rest_routes()
+    # a2a-sdk REST routes 附带贪婪 Mount('/{tenant}')(多租户 catch-all),
+    # 它会拦截 /v1/responses、/agentengine/api/v1/*、/chat 等单段前缀路径导致 404。
+    # 只保留明确前缀(/a2a/v1/...)的明确路由,丢弃贪婪 Mount。
+    from starlette.routing import Mount as _Mount
+
+    rest = [route for route in rest if not isinstance(route, _Mount)]
     add_a2a_routes_to_fastapi(
         app,
         agent_card_routes=server.agent_card_routes(),
         jsonrpc_routes=server.jsonrpc_routes(),
-        rest_routes=server.rest_routes(),
+        rest_routes=rest,
     )
     return server
 

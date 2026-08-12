@@ -14,6 +14,7 @@ call_a2a_agent。LLM 操作哪个远程 agent 通过参数动态指定。
 from __future__ import annotations
 
 import asyncio
+import uuid
 import difflib
 import os
 from typing import Any
@@ -62,6 +63,8 @@ async def _discover_agents() -> list[dict[str, Any]]:
     for a in agents:
         card = a.agent_card
         name = str(getattr(card, "name", "") or "")
+        interfaces = list(getattr(card, "supported_interfaces", None) or [])
+        card_url = str(interfaces[0].url) if interfaces and getattr(interfaces[0], "url", None) else ""
         result.append(
             {
                 "agent_id": a.agent_id,
@@ -70,6 +73,7 @@ async def _discover_agents() -> list[dict[str, Any]]:
                 "version_id": a.version_id,
                 "card_sha256": a.card_sha256,
                 "source": a.source,
+                "url": card_url,
             }
         )
     return result
@@ -97,7 +101,25 @@ def _task_state_name(remote_task: Any) -> str:
 
 
 def _extract_reply_text(remote_task: Any) -> str:
-    """从 remote task 的 status.message.parts 与 artifacts 提取回复文本。"""
+    """从 task 的 status.message.parts 与 artifacts 提取回复文本。
+
+    兼容 proto Task 对象（属性访问）与 JSON dict（键访问）。
+    """
+    if isinstance(remote_task, dict):
+        status = remote_task.get("status") or {}
+        message = status.get("message") or {}
+        parts: list[str] = []
+        # 优先 status.message.parts（终态回复）；无则退到 artifacts 分片。
+        for part in (message.get("parts") or []):
+            if isinstance(part, dict) and part.get("text"):
+                parts.append(part["text"])
+        if parts:
+            return "".join(parts)
+        for artifact in (remote_task.get("artifacts") or []):
+            for part in (artifact.get("parts") or []):
+                if isinstance(part, dict) and part.get("text"):
+                    parts.append(part["text"])
+        return "".join(parts)
     parts_text: list[str] = []
     status = getattr(remote_task, "status", None)
     message = getattr(status, "message", None)
@@ -178,35 +200,59 @@ def call_a2a_agent(agent: str, message: str) -> dict[str, Any]:
             "available_agents": hint,
         }
     try:
-        from ksadk.a2a.space_client import A2ASpaceClient
+        import httpx
 
-        async def _call() -> dict[str, Any]:
-            import asyncio as _aio
+        card_url = str(matched.get("url") or "").strip()
+        if not card_url:
+            return {"ok": False, "error_message": f"agent {matched['agent_id']} card 无可用 url"}
 
-            async with A2ASpaceClient.from_env(space_id=space_id) as client:
-                task = await client.send_message(matched["agent_id"], message)
-                platform_task_id = task.id
-                remote_task = task.remote_task
-                # send_message 返回首个 task(SUBMITTED);轮询 get_task 到终态拿回复文本。
-                for _ in range(60):
-                    state = _task_state_name(remote_task)
-                    if state in {"TASK_STATE_COMPLETED", "TASK_STATE_FAILED", "TASK_STATE_CANCELED", "TASK_STATE_REJECTED"}:
-                        break
-                    await _aio.sleep(1)
-                    try:
-                        polled = await client.get_task(platform_task_id)
-                        remote_task = polled.remote_task
-                    except Exception:
-                        break
-                return {
-                    "task_id": platform_task_id,
-                    "remote_task_id": str(getattr(remote_task, "id", "") or ""),
-                    "state": _task_state_name(remote_task),
-                    "reply": _extract_reply_text(remote_task),
-                }
+        def _send() -> dict[str, Any]:
+            # 直接对 card.url 发非流式 SendMessage(returnImmediately=false),同步拿终态回复。
+            # 不走 space_client 的流式 send_message/subscribe(其 task 状态跟踪在异步下不可靠)。
+            payload = {
+                "jsonrpc": "2.0",
+                "method": "SendMessage",
+                "id": "1",
+                "params": {
+                    "message": {
+                        "messageId": f"m-{uuid.uuid4().hex[:12]}",
+                        "role": "ROLE_USER",
+                        "parts": [{"text": message}],
+                    },
+                    "configuration": {"returnImmediately": False},
+                },
+            }
+            # 透传 OTel trace context：把当前 span 注入 traceparent header,
+            # 让被调 agent 的 span 挂到同一条分布式 trace 上。
+            headers = {"Content-Type": "application/json", "A2A-Version": "1.0"}
+            try:
+                from opentelemetry import propagate
 
-        result = asyncio.run(_call())
-        return {"ok": True, "agent": matched["agent_id"], **result}
+                propagate.inject(headers)
+            except Exception:
+                pass
+            resp = httpx.post(
+                card_url,
+                json=payload,
+                headers=headers,
+                timeout=120,
+                verify=False,
+            )
+            if resp.status_code != 200:
+                return {"ok": False, "error_type": "A2AClientError", "error_message": f"HTTP {resp.status_code}: {resp.text[:200]}"}
+            data = resp.json()
+            if "error" in data and data["error"]:
+                return {"ok": False, "error_type": "A2AError", "error_message": str(data["error"])[:300]}
+            task = (data.get("result") or {}).get("task") or {}
+            return {
+                "ok": True,
+                "agent": matched["agent_id"],
+                "task_id": task.get("id", ""),
+                "state": str((task.get("status") or {}).get("state", "")),
+                "reply": _extract_reply_text(task),
+            }
+
+        return _send()
     except Exception as exc:
         return {"ok": False, "error_type": type(exc).__name__, "error_message": str(exc)}
 

@@ -30,6 +30,7 @@ from packaging.requirements import InvalidRequirement, Requirement
 from ksadk.builders.base import BaseBuilder, BuildResult
 from ksadk.builders.framework_requirements import (
     FASTAPI_REQUIREMENT,
+    STARLETTE_REQUIREMENT,
     code_requirements_for_framework,
 )
 from ksadk.builders.requirements_utils import (
@@ -800,6 +801,7 @@ class CodeBuilder(BaseBuilder):
         deps = [
             # Core
             FASTAPI_REQUIREMENT,
+            STARLETTE_REQUIREMENT,
             "uvicorn>=0.23.0",
             "python-dotenv>=1.0.0",
             "pydantic>=2.0.0",
