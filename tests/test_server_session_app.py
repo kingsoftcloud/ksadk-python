@@ -3315,7 +3315,9 @@ async def test_list_session_checkpoints_returns_business_resume_fields(monkeypat
         ),
     ],
 )
-async def test_checkpoint_actions_enforce_user_scope(monkeypatch, action, payload):
+async def test_checkpoint_actions_allow_mismatched_user_and_enforce_agent_scope(
+    monkeypatch, action, payload
+):
     server_app_module = importlib.import_module("ksadk.server.app")
     conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
     service = InMemorySessionService()
@@ -3355,12 +3357,17 @@ async def test_checkpoint_actions_enforce_user_scope(monkeypatch, action, payloa
             f"/agentengine/api/v1/{action}",
             json={**payload, "UserId": "user-a"},
         )
+        wrong_agent = await client.post(
+            f"/agentengine/api/v1/{action}",
+            json={**payload, "AgentId": "other-agent", "UserId": "user-a"},
+        )
 
-    assert response.status_code == 404
+    assert response.status_code == 200
+    assert wrong_agent.status_code == 404
 
 
 @pytest.mark.asyncio
-async def test_subscribe_run_events_enforces_agent_and_user_scope(monkeypatch):
+async def test_subscribe_run_events_allows_mismatched_user_and_enforces_agent_scope(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")
     service = InMemorySessionService()
     session = await service.create_session(
@@ -3393,8 +3400,19 @@ async def test_subscribe_run_events_enforces_agent_and_user_scope(monkeypatch):
                 "InvocationId": "inv-owned-by-b",
             },
         )
+        wrong_agent = await client.get(
+            "/agentengine/api/v1/SubscribeRunEvents",
+            params={
+                "AgentId": "other-agent",
+                "UserId": "user-a",
+                "SessionId": session.id,
+                "InvocationId": "inv-owned-by-b",
+            },
+        )
 
-    assert response.status_code == 404
+    assert response.status_code == 200
+    assert "data: [DONE]" in response.text
+    assert wrong_agent.status_code == 404
 
 
 @pytest.mark.asyncio
@@ -6045,13 +6063,22 @@ async def test_list_session_events_without_session_id_filters_total_by_user(monk
 
 
 @pytest.mark.asyncio
-async def test_list_session_events_rejects_mismatched_session_user(monkeypatch):
+async def test_list_session_events_allows_mismatched_session_user(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")
     service = InMemorySessionService()
     await service.create_session(
         agent_id="demo-agent",
         user_id="user-b",
         session_id="sess-owned-by-b",
+    )
+    await service.append_event(
+        "sess-owned-by-b",
+        SessionEvent(
+            session_id="sess-owned-by-b",
+            author="user",
+            event_type="user_message",
+            content={"text": "hello from user-b"},
+        ),
     )
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     server_app_module.set_runner(_DummyRunner())
@@ -6067,7 +6094,10 @@ async def test_list_session_events_rejects_mismatched_session_user(monkeypatch):
             },
         )
 
-    assert response.status_code == 404
+    assert response.status_code == 200
+    data = response.json()["Data"]
+    assert data["Total"] == 1
+    assert [event["SessionId"] for event in data["Events"]] == ["sess-owned-by-b"]
 
 
 @pytest.mark.asyncio

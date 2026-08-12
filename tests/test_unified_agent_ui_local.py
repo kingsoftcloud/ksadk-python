@@ -1162,7 +1162,9 @@ async def test_local_list_session_messages_replays_nested_agui_approval_decision
 
 
 @pytest.mark.asyncio
-async def test_local_list_session_messages_enforces_user_scope_and_exclusive_cursors(monkeypatch):
+async def test_local_list_session_messages_allows_mismatched_user_and_enforces_agent_scope(
+    monkeypatch,
+):
     _, _, service, transport = _build_transport(monkeypatch)
     session = await service.create_session(
         agent_id="demo-agent",
@@ -1182,10 +1184,18 @@ async def test_local_list_session_messages_enforces_user_scope_and_exclusive_cur
         )
 
     async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
-        wrong_user = await client.post(
+        mismatched_user = await client.post(
             "/agentengine/api/v1/ListSessionMessages",
             json={
                 "AgentId": "demo-agent",
+                "UserId": "user-a",
+                "SessionId": session.id,
+            },
+        )
+        wrong_agent = await client.post(
+            "/agentengine/api/v1/ListSessionMessages",
+            json={
+                "AgentId": "other-agent",
                 "UserId": "user-a",
                 "SessionId": session.id,
             },
@@ -1220,7 +1230,8 @@ async def test_local_list_session_messages_enforces_user_scope_and_exclusive_cur
             },
         )
 
-    assert wrong_user.status_code == 404
+    assert mismatched_user.status_code == 200
+    assert wrong_agent.status_code == 404
     assert [item["SeqId"] for item in latest_data["Messages"]] == [7, 8]
     assert latest_data["NextCursor"] == 7
     assert [item["SeqId"] for item in older.json()["Data"]["Messages"]] == [5, 6]
