@@ -223,13 +223,29 @@ class ContextPlanner:
                 # 尝试 truncatable 单项截断
                 added = self._try_truncate_into(selected, members, budget, decisions)
                 selected.extend(added)
+                if not added:
+                    # 整组因 hard_limit 被跳过 → 记录 dropped 决策（方案 §8.8）
+                    for m in members:
+                        if m.item_id not in chosen_ids:
+                            self._drop(
+                                decisions,
+                                m,
+                                "hard_limit_exceeded",
+                            )
                 continue
             if (
                 strict_section_limits
                 and limit is not None
                 and section_used.get(section, 0) + group_tokens > limit
             ):
-                # 分区预算超限：整组跳过（保留可回流语义：不抢占已选）
+                # 分区预算超限：整组跳过 → 记录 dropped 决策（方案 §8.8）
+                for m in members:
+                    if m.item_id not in chosen_ids:
+                        self._drop(
+                            decisions,
+                            m,
+                            f"section_limit:{section}",
+                        )
                 continue
             # 全组成员未选 → 整组进入
             new_members = [m for m in members if m.item_id not in chosen_ids]

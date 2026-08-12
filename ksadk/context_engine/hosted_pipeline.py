@@ -70,9 +70,14 @@ class HostedPipelineResult:
 
 
 def _history_to_items(history: list[dict[str, str]]) -> list[ContextItem]:
-    """把投影后的 history rounds 转成 ContextItem（每轮一个，group_id=round_index）。"""
+    """把投影后的 history rounds 转成 ContextItem。
+
+    user+assistant 绑定为同一原子组（方案 §8.1 group_id），避免长 User 被跳过而
+    短 Assistant 留下成为孤儿历史。
+    """
     counter = get_default_token_counter()
     items: list[ContextItem] = []
+    round_index = 0
     for index, turn in enumerate(history):
         if not isinstance(turn, Mapping):
             continue
@@ -81,6 +86,9 @@ def _history_to_items(history: list[dict[str, str]]) -> list[ContextItem]:
         if not content:
             continue
         text = content if isinstance(content, str) else str(content)
+        # user 开启新 round；assistant 继承上一个 round（与 user 同组）
+        if role == "user":
+            round_index += 1
         items.append(
             ContextItem(
                 item_id=f"hist:{index}",
@@ -92,9 +100,11 @@ def _history_to_items(history: list[dict[str, str]]) -> list[ContextItem]:
                 estimated_tokens=counter.count_text(text),
                 required=False,
                 droppable=True,
-                group_id=f"round:{index}",
+                group_id=f"round:{round_index}",
                 seq_start=index,
-                metadata={"role": role if role in ("user", "assistant", "model") else "assistant"},
+                metadata={
+                    "role": role if role in ("user", "assistant", "model") else "assistant",
+                },
             )
         )
     return items
