@@ -6,7 +6,11 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Dict, Iterable, List
 
 from ksadk.sessions.base import SessionEvent
-from ksadk.tools.result_budget import ToolResultBudget, budget_tool_output, default_tool_result_budget
+from ksadk.tools.result_budget import (
+    ToolResultBudget,
+    budget_tool_output,
+    default_tool_result_budget,
+)
 
 CANONICAL_EVENT_TYPES = {
     "user_message",
@@ -56,8 +60,7 @@ def sanitize_event_text_for_context(text: Any) -> str:
     value = DATA_URL_RE.sub(_replace_data_url, value)
     value = BASE64_FIELD_RE.sub(
         lambda match: (
-            f"{match.group('prefix')}[base64 {match.group('field')} omitted]"
-            f"{match.group('suffix')}"
+            f"{match.group('prefix')}[base64 {match.group('field')} omitted]{match.group('suffix')}"
         ),
         value,
     )
@@ -253,14 +256,15 @@ def summarize_event_groups(
 ) -> str:
     """把要折叠的旧轮次压成一段 checkpoint 文本。
 
-    这里没有直接照搬 Claude Code 的 LLM summarizer，而是先落一个可预测、
-    可恢复的结构化摘要骨架，后续再替换成真正的 summarize agent 也不需要改
-    event contract。
+    extractive fallback：结构化骨架 + 末尾保留最新 user 纠正完整内容。
+    无摘要模型时，最新 user 消息可能含关键 Region 修正（如"不要改生产配置"），
+    截断 180 字符会丢失。保留最后一条 user 消息完整内容（方案 §9.4）。
     """
     lines: List[str] = []
     if previous_summary:
         lines.append(previous_summary)
     lines.append("Earlier conversation summary:")
+    last_user_text = ""
     for group in groups:
         snippets: List[str] = []
         for event in group:
@@ -278,9 +282,13 @@ def summarize_event_groups(
                 role = "assistant"
             else:
                 role = "user"
+                last_user_text = text  # 保留最新 user 消息完整内容
             snippets.append(f"{role}: {text[:180]}")
         if snippets:
             lines.append(" | ".join(snippets))
+    # 末尾追加最新 user 纠正完整内容（避免 extractive 截断丢失关键指令）
+    if last_user_text and len(last_user_text) > 180:
+        lines.append(f"最新用户指令（完整）: {last_user_text}")
     return "\n".join(line for line in lines if line).strip()
 
 
