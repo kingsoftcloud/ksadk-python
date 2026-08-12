@@ -312,9 +312,15 @@ def _is_agent_execution_path(path: str, method: str) -> bool:
     """
     m = (method or "").upper()
     p = (path or "").strip()
-    if m == "POST" and p in {"/v1/responses", "/v1/chat/completions", "/run", "/agentengine/api/v1/RunAgent"}:
+    if m == "POST" and p in {
+        "/v1/responses",
+        "/v1/chat/completions",
+        "/run",
+        "/run_sse",
+        "/agentengine/api/v1/RunAgent",
+    }:
         return True
-    if m == "GET" and p in {"/run_sse", "/agentengine/api/v1/SubscribeRunEvents"}:
+    if m == "GET" and p in {"/agentengine/api/v1/SubscribeRunEvents"}:
         return True
     return False
 
@@ -384,7 +390,8 @@ def create_runtime_app(
             # 只对 agent 执行类路径建 root span;session/UI 管理路径(GetAgentUiBootstrap/
             # ListSessionMessages 等轮询)不建,避免一次问答产生一堆独立 trace。
             try:
-                from opentelemetry import context as _otel_ctx, propagate
+                from opentelemetry import context as _otel_ctx
+                from opentelemetry import propagate
                 from opentelemetry import trace as _otel_trace
 
                 _carrier = dict(request.headers)
@@ -405,7 +412,9 @@ def create_runtime_app(
                 else:
                     response = await call_next(request)
             except Exception:
-                response = await call_next(request)
+                # OTel 插桩异常不应导致 handler 重复执行（try 内已调 call_next）;
+                # 让异常向上抛由 Starlette exception handler 处理。
+                raise
             path = request.url.path
             if path == "/" or path.endswith(".html"):
                 response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"

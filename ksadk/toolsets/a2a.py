@@ -13,10 +13,9 @@ call_a2a_agent。LLM 操作哪个远程 agent 通过参数动态指定。
 
 from __future__ import annotations
 
-import asyncio
-import uuid
 import difflib
 import os
+import uuid
 from typing import Any
 
 from ksadk.tools.gateway import ToolPolicy
@@ -96,7 +95,9 @@ def _match_agent(agents: list[dict[str, Any]], ref: str) -> tuple[dict[str, Any]
     if not target:
         return None, [a["agent_id"] for a in agents]
     for a in agents:
-        if _normalize_agent_ref(a["agent_id"]) == target or _normalize_agent_ref(a["name"]) == target:
+        if _normalize_agent_ref(a["agent_id"]) == target or _normalize_agent_ref(
+            a["name"]
+        ) == target:
             return a, []
     available = [a["agent_id"] for a in agents]
     names = [_normalize_agent_ref(a["agent_id"]) for a in agents] + [
@@ -243,18 +244,38 @@ def call_a2a_agent(agent: str, message: str) -> dict[str, Any]:
                 propagate.inject(headers)
             except Exception:
                 pass
+            # SSRF 防护：拒绝内网/环回/链路本地地址（与 ksadk.toolsets.web 同款）。
+            import ipaddress
+            from urllib.parse import urlsplit
+
+            _parsed = urlsplit(card_url)
+            _host = (_parsed.hostname or "").lower()
+            if _host and not _host.endswith(".ksyun.com"):
+                try:
+                    _ip = ipaddress.ip_address(_host)
+                    if _ip.is_private or _ip.is_loopback or _ip.is_link_local or _ip.is_reserved:
+                        return {
+                            "ok": False,
+                            "error_message": f"card url 指向内网地址，拒绝调用: {card_url}",
+                        }
+                except ValueError:
+                    pass  # 非 IP hostname（如 agent-pre.kspmas.ksyun.com），放行
             resp = httpx.post(
                 card_url,
                 json=payload,
                 headers=headers,
                 timeout=120,
-                verify=False,
             )
             if resp.status_code != 200:
-                return {"ok": False, "error_type": "A2AClientError", "error_message": f"HTTP {resp.status_code}: {resp.text[:200]}"}
+                return {
+                    "ok": False,
+                    "error_type": "A2AClientError",
+                    "error_message": f"HTTP {resp.status_code}: {resp.text[:200]}",
+                }
             data = resp.json()
             if "error" in data and data["error"]:
-                return {"ok": False, "error_type": "A2AError", "error_message": str(data["error"])[:300]}
+                err = str(data["error"])[:300]
+                return {"ok": False, "error_type": "A2AError", "error_message": err}
             task = (data.get("result") or {}).get("task") or {}
             return {
                 "ok": True,
