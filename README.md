@@ -46,6 +46,13 @@ agentengine web . --no-open
 
 迁移与环境变量示例见[可观测指南](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/observability-tracing/)和[环境变量参考](https://kingsoftcloud.github.io/ksadk-python/cn/docs/references/environment-variables/)。
 
+## 0.8.1 RuntimeEvent schema v2 契约
+
+- 运行事件主路径使用 canonical `RuntimeEvent(schema_version=2)`：runtime、协议投影、事件存储、回放与最终输出选择都以 v2 为唯一事实来源。
+- v1 事件转为只读兼容投影，不再接受新的 v1 写入；未升级的下游消费者收到终端快照，已升级的消费者可显式选择 identity-aware 的 replace 语义。
+- 能力描述：`RuntimeEventVersions=[1,2]`、`RuntimeEventDefault=2`、`RuntimeEventV1ProjectionModes=["snapshot_only","identity_replace"]`、`RuntimeEventV1ProjectionDefault="snapshot_only"`。
+- 本地 Web UI、Studio 与 Hosted UI 必须使用与本次 Python 发布一致的 identity-aware 版本，才能按 item identity 正确归并流式与回放输出。
+
 <p align="center"><a href="https://raw.githubusercontent.com/kingsoftcloud/ksadk-python/main/docs-site/public/assets/ksadk-web-ui-screenshot.png"><img alt="KsADK 真实 Web UI 调试截图" src="https://raw.githubusercontent.com/kingsoftcloud/ksadk-python/main/docs-site/public/assets/ksadk-web-ui-screenshot.png" width="860" /></a></p>
 
 <p align="center"><a href="https://raw.githubusercontent.com/kingsoftcloud/ksadk-python/main/docs-site/public/assets/ksadk-local-debugging-demo.gif"><img alt="KsADK 真实本地 Web UI 演示" src="https://raw.githubusercontent.com/kingsoftcloud/ksadk-python/main/docs-site/public/assets/ksadk-local-debugging-demo.gif" width="860" /></a></p>

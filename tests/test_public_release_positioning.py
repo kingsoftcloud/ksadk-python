@@ -233,6 +233,31 @@ def test_public_metadata_uses_runtime_platform_positioning():
     assert "Agent Development Kit" not in init_text
 
 
+def test_runtime_event_v2_capability_is_documented_publicly():
+    changelog = _read("CHANGELOG.md")
+    readme = _read("README.md")
+    zh_readme = _read("README.zh-CN.md")
+    en_readme = _read("README.en.md")
+
+    # The canonical-v2 / read-only-v1 boundary replaces the stale additive-v1 claim.
+    assert "schema_version=2" in changelog
+    assert "只读兼容投影" in changelog
+    assert "继续保持 v1 additive 兼容" not in changelog
+
+    for text in (readme, zh_readme):
+        assert "RuntimeEvent schema v2 契约" in text
+        assert "RuntimeEventVersions=[1,2]" in text
+        assert "RuntimeEventDefault=2" in text
+        assert 'RuntimeEventV1ProjectionModes=["snapshot_only","identity_replace"]' in text
+        assert 'RuntimeEventV1ProjectionDefault="snapshot_only"' in text
+
+    assert "RuntimeEvent Schema v2 Contract" in en_readme
+    assert "RuntimeEventVersions=[1,2]" in en_readme
+    assert "RuntimeEventDefault=2" in en_readme
+    assert 'RuntimeEventV1ProjectionModes=["snapshot_only","identity_replace"]' in en_readme
+    assert 'RuntimeEventV1ProjectionDefault="snapshot_only"' in en_readme
+
+
 def test_adk_extra_avoids_litellm_source_build_on_windows_python_3_13():
     pyproject = tomllib.loads(_read("pyproject.toml"))
     adk_requirements = pyproject["project"]["optional-dependencies"]["adk"]

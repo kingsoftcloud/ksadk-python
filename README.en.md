@@ -46,6 +46,13 @@ agentengine web . --no-open
 
 See the [observability guide](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/observability-tracing/) and [environment variable reference](https://kingsoftcloud.github.io/ksadk-python/en/docs/references/environment-variables/) for migration details and examples.
 
+## 0.8.1 RuntimeEvent Schema v2 Contract
+
+- The runtime event main path uses the canonical `RuntimeEvent(schema_version=2)`: the runtime, protocol projections, event store, replay, and final-output selection all treat v2 as the single source of truth.
+- v1 events become a read-only compatibility projection and no longer accept new v1 writes. Undeclared downstream consumers receive terminal snapshots, while upgraded consumers explicitly opt into identity-aware replace semantics.
+- Capability descriptor: `RuntimeEventVersions=[1,2]`, `RuntimeEventDefault=2`, `RuntimeEventV1ProjectionModes=["snapshot_only","identity_replace"]`, `RuntimeEventV1ProjectionDefault="snapshot_only"`.
+- The local Web UI, Studio, and Hosted UI must run the identity-aware version that matches this Python release so they can merge streaming and replayed output by item identity.
+
 <p align="center"><img alt="Real KsADK Web UI debugging screenshot" src="docs-site/public/assets/ksadk-web-ui-screenshot.png" width="860" /></p>
 
 <p align="center"><img alt="Real local Web UI demo" src="docs-site/public/assets/ksadk-local-debugging-demo.gif" width="860" /></p>

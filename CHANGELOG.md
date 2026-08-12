@@ -62,7 +62,9 @@
 ### 兼容性、迁移与评审边界
 
 - `0.8.1` 是 AgentKit Studio 的首次交付，不存在从 `0.8.0` Studio 或 vanilla Studio 迁移的问题。Studio 只有一个 React 前端入口；自研 UI 仍可直接消费 Responses/SSE、RuntimeEvent、AG-UI/A2UI 和运行控制 API，不要求使用 React。
-- RuntimeEvent schema 继续保持 v1 additive 兼容；新增交互和运行控制通过追加事件类型与控制 API 表达，不修改既有事件字段语义。
+- RuntimeEvent 主路径升级为 canonical `schema_version=2`：runtime、协议投影、事件存储、回放与最终输出选择统一以 v2 为唯一事实来源，不再沿用 v1 additive 演进。v1 事件转为只读兼容投影，不接受新的 v1 写入；未声明的下游消费者收到终端快照，已升级的消费者显式选择 identity-aware 的 replace 语义。
+- RuntimeEvent 能力描述：`RuntimeEventVersions=[1,2]`、`RuntimeEventDefault=2`、`RuntimeEventV1ProjectionModes=["snapshot_only","identity_replace"]`、`RuntimeEventV1ProjectionDefault="snapshot_only"`。
+- 本地 Web UI、Studio react-ui 与 Hosted UI 必须配套与本次 Python 发布一致的 identity-aware 版本，才能按 run/scope/item/part identity 正确归并流式与回放输出。
 - 旧 `LANGFUSE_*` 凭证不再创建 SDK callback/exporter。迁移时把 Langfuse OTLP endpoint 与 Authorization header 配置到标准 `OTEL_EXPORTER_OTLP_*`。
 - 新部署使用 `CLOUD_MONITOR_OTLP_TRACES_HEADERS` 或 `CLOUD_MONITOR_OTLP_HEADERS` 提供 `Ksc-Appkey`；`CLOUD_MONITOR_APP_KEY` 仅用于旧控制面的短期兼容。
 - A2A 环境变量明确区分部署期 `KSADK_A2A_RUNTIME_ID` 与注册后 `KSADK_A2A_AGENT_ID`；v1 discovery card 只依赖前者。
