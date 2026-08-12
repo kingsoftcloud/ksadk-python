@@ -55,7 +55,7 @@ class MessageInput(ContractModel):
 
 class QuickAuthoringRequest(ContractModel):
     name: str = Field(min_length=1, max_length=128)
-    slug: str = Field(min_length=1, max_length=63)
+    slug: str | None = Field(default=None, min_length=1, max_length=63)
     runtime_type: Literal["codex", "adk", "langgraph"]
     template: Literal["blank", "research"] = "blank"
     description: str = Field(default="", max_length=1024)
@@ -88,6 +88,12 @@ class RunRequest(ContractModel):
     input: MessageInput
     environment: str = "local"
     stream: bool = True
+    sandbox: str | None = None
+
+
+class InteractionSubmitRequest(ContractModel):
+    name: str = Field(min_length=1, max_length=64)
+    data: dict[str, Any] = Field(default_factory=dict)
 
 
 class EvaluationRequest(ContractModel):
@@ -125,6 +131,12 @@ class ModelProfileCreateRequest(ContractModel):
     spec: ModelSpec
 
 
+class ModelEndpointProbeRequest(ContractModel):
+    url: str = Field(min_length=8, max_length=1024)
+    credential_ref: str | None = Field(default=None, max_length=512)
+    api_key: SecretStr | None = None
+
+
 class MCPResourceCreateRequest(ContractModel):
     display_name: str = Field(min_length=1, max_length=128)
     description: str = Field(default="", max_length=4096)
@@ -135,6 +147,13 @@ class ToolResourceCreateRequest(ContractModel):
     display_name: str = Field(min_length=1, max_length=128)
     category: str = Field(default="custom", max_length=64)
     contract: ToolContract
+
+
+class PythonToolCommitRequest(ContractModel):
+    display_name: str = Field(min_length=1, max_length=128)
+    name: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
+    callable_name: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
+    description: str = Field(default="", max_length=1024)
 
 
 class ToolSchemaValidationRequest(ContractModel):

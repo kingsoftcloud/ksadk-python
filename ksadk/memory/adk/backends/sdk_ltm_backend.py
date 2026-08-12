@@ -240,6 +240,8 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
                 params["AgentId"] = agent_id
             if session_id:
                 params["SessionId"] = session_id
+            if metadata.get("flush") is True or kwargs.get("flush") is True:
+                params["Flush"] = True
 
             logger.info(
                 f"CreateMemorySdk: memory_collection_id={memory_collection_id}, "

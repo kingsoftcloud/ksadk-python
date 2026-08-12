@@ -153,10 +153,19 @@ def create_app(config: ProxyConfig) -> FastAPI:
                 content={
                     "error": {
                         "type": "unsupported_tools",
-                        "message": "The request uses tools unsupported by the model upstream.",
+                        "message": f"The request uses tools unsupported by the model upstream: {e}",
                     }
                 },
             )
+        # codex 会对内建能力发内部伪模型名(如 auto_review guardian 用 codex-auto-review),
+        # 单上游代理必须落回配置的真实模型,否则上游按未知模型 403。
+        if config.upstream_model and chat_req.get("model") != config.upstream_model:
+            logger.debug(
+                "responses model rewrite: %s -> %s",
+                chat_req.get("model"),
+                config.upstream_model,
+            )
+            chat_req["model"] = config.upstream_model
         rid = "resp_" + uuid.uuid4().hex[:24]
         model = body.get("model")
         started = time.monotonic()
@@ -264,7 +273,15 @@ async def _stream_gen(
                         status_code=r.status_code,
                         started=started,
                     )
-                    logger.warning("responses upstream stream rejected: status=%s", r.status_code)
+                    logger.warning(
+                        "responses upstream stream rejected: status=%s model=%s tools=%s msgs=%s bytes=%s has_text_format=%s",
+                        r.status_code,
+                        chat_req.get("model"),
+                        len(chat_req.get("tools") or []),
+                        len(chat_req.get("messages") or []),
+                        len(json.dumps(chat_req)),
+                        bool(chat_req.get("response_format")),
+                    )
                     yield Streamer.ev(
                         "response.failed",
                         {

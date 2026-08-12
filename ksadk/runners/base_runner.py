@@ -311,6 +311,7 @@ class BaseRunner(ABC):
         import uvicorn
 
         from ksadk.agui.config import default_agui_config
+        from ksadk.managed_a2a_card import build_managed_a2a_card_if_configured
         from ksadk.runtime import RuntimeExecutor, RuntimeLaunchContext, RuntimeRegistry
         from ksadk.runtime.runner_adapter import RunnerRuntimeAdapter
         from ksadk.server.composition import configure_runtime_app
@@ -331,11 +332,15 @@ class BaseRunner(ABC):
             lambda _context: RunnerRuntimeAdapter(self, runtime_type=runtime_type),
         )
         # BaseRunner 仍可作为底层框架实现启动 Web，但 HTTP 层只消费 RuntimeAdapter。
+        # managed A2A discovery-only card:KSADK_A2A_RUNTIME_ID 非空时挂
+        # ``/.well-known/agent-card.json``;注册前即可被 server 探测(a2a-runtime-inbound-wiring)。
+        # KSADK_A2A_AGENT_ID 是注册后注入的不透明注册 ID；v2 JSON-RPC 绑定用，v1 card 不依赖。
         app = create_runtime_app(
             RuntimeAppConfig(
                 runtime_executor=RuntimeExecutor(registry),
                 launch_context=launch_context,
                 agui=default_agui_config(self),
+                a2a=build_managed_a2a_card_if_configured(),
             ),
             configure_runtime_app,
         )

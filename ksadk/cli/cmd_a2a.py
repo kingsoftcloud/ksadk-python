@@ -211,7 +211,8 @@ def _space_client(space_id: str | None = None) -> A2ASpaceClient:
     except ValueError as exc:
         raise click.ClickException(
             f"A2A Space 未配置:{exc}。"
-            "请传 --space-id，或由 AgentEngine 部署注入 KSADK_A2A_SPACE_IDS；同时需要"
+            "请传 --space-id，或由 AgentEngine 部署注入 KSADK_A2A_SPACE_ID"
+            "（兼容 KSADK_A2A_SPACE_IDS）；同时需要"
             "KSADK_A2A_CONTROL_PLANE_URL 和 audience workload token。"
         ) from exc
 
@@ -331,15 +332,8 @@ def _setup_tracing(framework_type: str) -> None:
 
         from ksadk.tracing import setup_tracing
 
-        use_callback_only = os.getenv("LANGFUSE_USE_CALLBACK", "").strip().lower() in (
-            "1",
-            "true",
-            "yes",
-            "on",
-        )
         setup_tracing(
             enable_inmemory=True,
-            use_callback_only=use_callback_only,
         )
     except Exception:
         return

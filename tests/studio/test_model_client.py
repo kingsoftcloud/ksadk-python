@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import socket
+from pathlib import Path
 
 import httpx
 import pytest
@@ -87,11 +88,7 @@ async def test_model_client_retries_5xx_without_leaking_secret(monkeypatch):
             return httpx.Response(503, text="upstream failed")
         return httpx.Response(
             200,
-            json={
-                "choices": [
-                    {"message": {"content": "OK"}, "finish_reason": "stop"}
-                ]
-            },
+            json={"choices": [{"message": {"content": "OK"}, "finish_reason": "stop"}]},
         )
 
     async def fake_sleep(value):
@@ -122,9 +119,7 @@ async def test_model_client_rejects_redirect(monkeypatch):
     client = OpenAICompatibleModelClient(
         network_guard=AllowNetwork(),
         transport=httpx.MockTransport(
-            lambda _request: httpx.Response(
-                302, headers={"Location": "https://attacker.invalid"}
-            )
+            lambda _request: httpx.Response(302, headers={"Location": "https://attacker.invalid"})
         ),
     )
 
@@ -216,6 +211,44 @@ def test_credential_resolver_session_overlay_precedes_environment(monkeypatch):
     assert resolver.resolve("env://MODEL_API_KEY") == "environment-secret"
 
 
+def test_credential_resolver_applies_alias_to_workspace_secret(tmp_path: Path):
+    """Break caught: Studio sees a persisted model key but Codex receives no auth."""
+
+    from ksadk.studio.workspace import Workspace
+
+    workspace = Workspace(tmp_path)
+    workspace.initialize()
+    resolver = CredentialResolver(workspace)
+    resolver.put_session("AGENTKIT_MODEL_API_KEY", "workspace-model-key")
+    resolver = CredentialResolver(workspace)
+
+    assert resolver.resolve("env://OPENAI_API_KEY") == "workspace-model-key"
+    status = resolver.status("env://OPENAI_API_KEY")
+    assert status["configured"] is True
+    assert status["source"] == "workspace-alias"
+
+
+def test_credential_resolver_prefers_workspace_alias_over_process_primary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A host OPENAI_API_KEY must not shadow a Studio-configured model credential."""
+
+    from ksadk.studio.workspace import Workspace
+
+    monkeypatch.setenv("OPENAI_API_KEY", "host-primary-key")
+    workspace = Workspace(tmp_path)
+    workspace.initialize()
+    workspace.atomic_write_text(
+        ".agentkit/secrets.env",
+        "AGENTKIT_MODEL_API_KEY=workspace-profile-key\n",
+    )
+
+    resolver = CredentialResolver(workspace)
+
+    assert resolver.resolve("env://OPENAI_API_KEY") == "workspace-profile-key"
+
+
 def test_credential_resolver_rejects_unsafe_session_values():
     resolver = CredentialResolver()
 
@@ -250,9 +283,7 @@ async def test_network_guard_denies_metadata_and_private_dns(monkeypatch):
     monkeypatch.setattr(
         socket,
         "getaddrinfo",
-        lambda *_args, **_kwargs: [
-            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.2", 443))
-        ],
+        lambda *_args, **_kwargs: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.2", 443))],
     )
     with pytest.raises(StudioError) as private:
         await guard.check(

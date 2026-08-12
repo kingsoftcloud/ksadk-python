@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import logging
+import time
 import uuid
 import zipfile
 from pathlib import PurePosixPath
@@ -332,6 +333,11 @@ def _normalize_model_catalog_items(raw_models: list[Any]) -> list[dict[str, Any]
     return sorted(normalized_by_id.values(), key=lambda item: item["id"])
 
 
+_MODELS_CATALOG_TTL_SECONDS = 60.0
+# api_base -> (monotonic_ts, payload)。进程内短 TTL 缓存，见 _build_models_payload。
+_MODELS_CATALOG_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+
+
 async def _build_models_payload() -> dict[str, Any]:
     import os
 
@@ -351,6 +357,18 @@ async def _build_models_payload() -> dict[str, Any]:
 
     if not api_base:
         return _fallback_catalog()
+
+    # 上游 /v1/models 是一次真实外网往返（数百毫秒），会话页初始化会
+    # 调用本接口，不能每次都同步打上游。做短 TTL 进程内缓存：
+    # 命中直接返回；上游失败时优先回退到过期的缓存值，避免模型列表
+    # 因上游抖动整体不可用。
+    cache_key = api_base.rstrip("/")
+    cached = _MODELS_CATALOG_CACHE.get(cache_key)
+    now = time.monotonic()
+    if cached is not None and now - cached[0] < _MODELS_CATALOG_TTL_SECONDS:
+        payload = dict(cached[1])
+        payload["cached"] = True
+        return payload
 
     try:
         base_url = api_base.rstrip("/")
@@ -376,9 +394,16 @@ async def _build_models_payload() -> dict[str, Any]:
                 str(item.get("id") or "").strip() != current_model for item in models
             ):
                 models = _normalize_model_catalog_items([*models, current_model])
-            return {"data": models, "current": current_model, "source": source}
+            payload = {"data": models, "current": current_model, "source": source}
+            _MODELS_CATALOG_CACHE[cache_key] = (now, payload)
+            return dict(payload)
     except Exception as e:
         logger.error(f"Failed to fetch models: {e}")
+        if cached is not None:
+            payload = dict(cached[1])
+            payload["stale"] = True
+            payload["error"] = str(e)
+            return payload
         fallback = _fallback_catalog()
         fallback["error"] = str(e)
         return fallback

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import stat
@@ -20,6 +21,11 @@ from ksadk.studio.workspace import Workspace
 
 MAX_SKILL_BYTES = 100 * 1024 * 1024
 MAX_SKILL_FILES = 1000
+MAX_PREVIEW_BYTES = 512 * 1024
+SCRIPT_SUFFIXES = frozenset({".py", ".sh", ".js", ".ts", ".tsx", ".ps1", ".rb"})
+TEXT_SUFFIXES = frozenset(
+    {".md", ".txt", ".yaml", ".yml", ".json", ".toml", ".ini", ".cfg", ".css", ".html", ".xml"}
+)
 EXCLUDED_PARTS = frozenset(
     {".git", ".venv", "venv", "node_modules", "dist", "build", "__pycache__"}
 )
@@ -51,6 +57,7 @@ class SkillDiscoveryService:
         requested = scan_paths or list(DEFAULT_SCAN_PATHS)
         candidates: list[dict[str, Any]] = []
         seen: set[str] = set()
+        seen_real: set[Path] = set()
         for raw in requested:
             root, source, display_root = self._resolve_scan_root(str(raw))
             if not root.exists():
@@ -62,12 +69,7 @@ class SkillDiscoveryService:
                     status_code=422,
                     details={"path": str(raw)},
                 )
-            manifests = [root / "SKILL.md"] if (root / "SKILL.md").is_file() else []
-            manifests.extend(
-                path
-                for path in root.rglob("SKILL.md")
-                if not any(part in EXCLUDED_PARTS for part in path.parts)
-            )
+            manifests = self._scan_manifests(root)
             for manifest in sorted(set(manifests), key=lambda item: item.as_posix()):
                 directory = manifest.parent
                 relative = self._candidate_relative(directory, source=source, root=root)
@@ -77,6 +79,10 @@ class SkillDiscoveryService:
                 ):
                     continue
                 seen.add(identity)
+                real = directory.resolve()
+                if real in seen_real:
+                    continue
+                seen_real.add(real)
                 candidates.append(
                     self.inspect_candidate(
                         directory,
@@ -196,8 +202,133 @@ class SkillDiscoveryService:
             shutil.move(str(staging), str(destination))
         finally:
             shutil.rmtree(staging, ignore_errors=True)
-        record_path.unlink(missing_ok=True)
+        remaining = [
+            item
+            for item in record.get("candidates") or []
+            if item.get("candidateId") != candidate_id
+        ]
+        if any(item.get("status") in {"ready", "conflict"} for item in remaining):
+            record["candidates"] = remaining
+            self.workspace.atomic_write_text(
+                record_path,
+                json.dumps(record, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+            )
+        else:
+            record_path.unlink(missing_ok=True)
         return slug, str(candidate["version"])
+
+    def preview_candidate(
+        self,
+        inspection_token: str,
+        candidate_id: str,
+        *,
+        path: str | None = None,
+    ) -> dict[str, Any]:
+        candidate = self._candidate_from_record(inspection_token, candidate_id)
+        directory, _, _, _ = self._resolve_candidate_directory(candidate)
+        return self.preview_directory(directory, path=path)
+
+    def preview_directory(
+        self,
+        directory: Path,
+        *,
+        path: str | None = None,
+    ) -> dict[str, Any]:
+        resolved = directory.resolve(strict=True)
+        files, total_bytes = self._safe_directory(resolved, display_path=directory.name)
+        entries = [
+            {
+                "path": relative,
+                "size": (resolved / relative).stat().st_size,
+                "kind": self._preview_kind(relative),
+            }
+            for relative in files
+        ]
+        if path is None:
+            return {"files": entries, "fileCount": len(entries), "totalBytes": total_bytes}
+
+        requested = Path(path)
+        if requested.is_absolute() or ".." in requested.parts:
+            raise StudioError(
+                "SKILL_PREVIEW_PATH_INVALID",
+                "Skill 预览路径必须是 Skill 内的相对路径",
+                status_code=422,
+                details={"path": path},
+            )
+        target = (resolved / requested).resolve(strict=True)
+        try:
+            target.relative_to(resolved)
+        except ValueError as exc:
+            raise StudioError(
+                "SKILL_PREVIEW_PATH_FORBIDDEN",
+                "Skill 预览文件不在候选目录中",
+                status_code=403,
+                details={"path": path},
+            ) from exc
+        if not target.is_file() or target.is_symlink():
+            raise StudioError(
+                "SKILL_PREVIEW_FILE_INVALID",
+                "Skill 预览仅支持普通文件",
+                status_code=422,
+                details={"path": path},
+            )
+        relative = target.relative_to(resolved).as_posix()
+        if relative not in files:
+            raise StudioError(
+                "SKILL_PREVIEW_FILE_INVALID",
+                "Skill 预览文件未通过安全检查",
+                status_code=422,
+                details={"path": path},
+            )
+        content = target.read_bytes()
+        kind = self._preview_kind(relative)
+        if kind == "binary":
+            return {
+                "path": relative,
+                "size": len(content),
+                "kind": kind,
+                "content": None,
+                "truncated": False,
+            }
+        truncated = len(content) > MAX_PREVIEW_BYTES
+        text = content[:MAX_PREVIEW_BYTES].decode("utf-8", errors="replace")
+        return {
+            "path": relative,
+            "size": len(content),
+            "kind": kind,
+            "content": text,
+            "truncated": truncated,
+        }
+
+    def _candidate_from_record(
+        self,
+        inspection_token: str,
+        candidate_id: str,
+    ) -> dict[str, Any]:
+        record_path = self._record_path(inspection_token, validate=True)
+        try:
+            record = json.loads(record_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise StudioError(
+                "SKILL_DISCOVERY_NOT_FOUND",
+                "Skill 发现记录不存在或已失效",
+                status_code=404,
+            ) from exc
+        candidate = next(
+            (
+                item
+                for item in record.get("candidates") or []
+                if item.get("candidateId") == candidate_id
+            ),
+            None,
+        )
+        if not isinstance(candidate, dict):
+            raise StudioError(
+                "SKILL_CANDIDATE_NOT_FOUND",
+                "Skill 候选不属于该发现记录",
+                status_code=404,
+            )
+        return candidate
 
     def inspect_candidate(
         self,
@@ -214,14 +345,12 @@ class SkillDiscoveryService:
             source=source,
             display_root=display_root,
         )
-        candidate_id = "skill_" + hashlib.sha256(
-            f"{source}:{relative}".encode("utf-8")
-        ).hexdigest()[:16]
+        candidate_id = (
+            "skill_" + hashlib.sha256(f"{source}:{relative}".encode("utf-8")).hexdigest()[:16]
+        )
         try:
             files, total_bytes = self._safe_directory(directory, display_path=display_path)
-            metadata = self._frontmatter(
-                (directory / "SKILL.md").read_text(encoding="utf-8")
-            )
+            metadata = self._frontmatter((directory / "SKILL.md").read_text(encoding="utf-8"))
             name = str(metadata["name"])
             slug = skill_slug(name)
             version = str(metadata.get("version") or "1.0.0")
@@ -328,8 +457,11 @@ class SkillDiscoveryService:
         if token.startswith("~") or Path(token).is_absolute():
             expanded = Path(token).expanduser().resolve()
             for source, (root, display) in user_roots.items():
-                if expanded == root:
-                    return root, source, display
+                try:
+                    expanded.relative_to(root)
+                except ValueError:
+                    continue
+                return expanded, source, display
             raise StudioError(
                 "SKILL_DISCOVERY_PATH_FORBIDDEN",
                 "仅允许扫描工作区目录或预置的本地 Skill 目录",
@@ -355,22 +487,52 @@ class SkillDiscoveryService:
                 "Skill 候选来源不在允许的本地目录中",
                 status_code=403,
             )
-        root, display_root = configured
+        root, _display_root = configured
         directory = (root / relative).resolve(strict=True)
-        try:
-            directory.relative_to(root)
-        except ValueError as exc:
-            raise StudioError(
-                "SKILL_DISCOVERY_PATH_FORBIDDEN",
-                "Skill 候选路径不在允许的本地目录中",
-                status_code=403,
-            ) from exc
-        return directory, source, root, display_root
+        for allowed_source, (
+            allowed_root,
+            allowed_display_root,
+        ) in self._user_skill_roots().items():
+            try:
+                directory.relative_to(allowed_root)
+            except ValueError:
+                continue
+            return directory, allowed_source, allowed_root, allowed_display_root
+        raise StudioError(
+            "SKILL_DISCOVERY_PATH_FORBIDDEN",
+            "Skill 候选路径不在允许的本地目录中",
+            status_code=403,
+        )
 
     def _candidate_relative(self, directory: Path, *, source: str, root: Path) -> str:
         if source == "workspace":
             return self.workspace.relative(directory)
-        return directory.resolve().relative_to(root).as_posix()
+        configured = self._user_skill_roots().get(source)
+        source_root = configured[0] if configured is not None else root
+        try:
+            return directory.relative_to(source_root).as_posix()
+        except ValueError:
+            return directory.resolve().relative_to(source_root).as_posix()
+
+    @staticmethod
+    def _scan_manifests(root: Path) -> list[Path]:
+        """递归查找 SKILL.md；跟随目录软链（用户技能常通过软链挂载），并防循环。"""
+        manifests: list[Path] = []
+        if (root / "SKILL.md").is_file():
+            manifests.append(root / "SKILL.md")
+        visited: set[str] = set()
+        for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
+            real = os.path.realpath(dirpath)
+            if real in visited:
+                dirnames[:] = []
+                continue
+            visited.add(real)
+            dirnames[:] = [d for d in dirnames if d not in EXCLUDED_PARTS]
+            if dirpath == str(root):
+                continue
+            if "SKILL.md" in filenames:
+                manifests.append(Path(dirpath) / "SKILL.md")
+        return manifests
 
     def _display_candidate_path(
         self,
@@ -407,6 +569,18 @@ class SkillDiscoveryService:
         return sha256_digest(canonical_json(entries))
 
     @staticmethod
+    def _preview_kind(relative: str) -> str:
+        path = Path(relative)
+        suffix = path.suffix.lower()
+        if suffix == ".md":
+            return "markdown"
+        if suffix in SCRIPT_SUFFIXES:
+            return "script"
+        if suffix in TEXT_SUFFIXES or not suffix:
+            return "text"
+        return "binary"
+
+    @staticmethod
     def _frontmatter(content: str) -> dict[str, Any]:
         if not content.startswith("---\n"):
             raise StudioError(
@@ -429,8 +603,10 @@ class SkillDiscoveryService:
                 "SKILL.md frontmatter 无法解析",
                 status_code=422,
             ) from exc
-        if not isinstance(payload, dict) or not payload.get("name") or not payload.get(
-            "description"
+        if (
+            not isinstance(payload, dict)
+            or not payload.get("name")
+            or not payload.get("description")
         ):
             raise StudioError(
                 "SKILL_MANIFEST_INVALID",

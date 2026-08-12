@@ -76,9 +76,9 @@ class RunEventStore:
                 continue
             records.append(record)
         records.sort(
-            key=lambda item: item.started_at
-            or item.completed_at
-            or datetime.min.replace(tzinfo=timezone.utc),
+            key=lambda item: (
+                item.started_at or item.completed_at or datetime.min.replace(tzinfo=timezone.utc)
+            ),
             reverse=False,
         )
         return records
@@ -115,9 +115,7 @@ class RunEventStore:
             else:
                 if trash_directory is None:
                     raise ValueError("recoverable deletion requires a trash directory")
-                destination = self.workspace.resolve(
-                    trash_directory / "runs" / path.name
-                )
+                destination = self.workspace.resolve(trash_directory / "runs" / path.name)
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 self.trace_store.delete(
                     record.trace_id,
@@ -140,7 +138,12 @@ class RunEventStore:
 
         recovered = 0
         for record in self.list_runs():
-            if record.status not in {RunStatus.CREATED, RunStatus.RUNNING}:
+            if record.status not in {
+                RunStatus.CREATED,
+                RunStatus.RUNNING,
+                RunStatus.PAUSED,
+                RunStatus.WAITING_INPUT,
+            }:
                 continue
             events = self.events(record.id)
             terminal = next(
@@ -218,6 +221,38 @@ class RunEventStore:
             limit=limit,
         )
 
+    def list_traces_page(
+        self,
+        *,
+        agent_id: str | None = None,
+        status: str | None = None,
+        query: str = "",
+        limit: int = 50,
+        cursor: str | None = None,
+        sort: str = "startedAt:desc",
+    ) -> dict:
+        return self.trace_store.paginate_trace_summaries(
+            agent_id=agent_id,
+            status=status,
+            query=query,
+            limit=limit,
+            cursor=cursor,
+            sort=sort,
+        )
+
+    def trace_overview(
+        self,
+        *,
+        range_name: str = "24h",
+        agent_id: str | None = None,
+        status: str | None = None,
+    ) -> dict:
+        return self.trace_store.trace_overview(
+            range_name=range_name,
+            agent_id=agent_id,
+            status=status,
+        )
+
     def _read(self, run_id: str) -> tuple[RunRecord, List[RunEvent]]:
         path = self._path(run_id)
         if not path.is_file():
@@ -239,8 +274,7 @@ class RunEventStore:
         payload = {
             "record": record.model_dump(by_alias=True, exclude_none=True, mode="json"),
             "events": [
-                event.model_dump(by_alias=True, exclude_none=True, mode="json")
-                for event in events
+                event.model_dump(by_alias=True, exclude_none=True, mode="json") for event in events
             ],
         }
         self.workspace.atomic_write_text(

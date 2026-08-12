@@ -26,6 +26,7 @@ from ksadk.studio.codex_manifest import (
     CodexRuntimeRef,
 )
 from ksadk.studio.contracts import (
+    AgentAppearance,
     AgentBindings,
     AgentDraft,
     AgentMetadata,
@@ -106,7 +107,9 @@ class CodexAgentService:
 
     def __init__(self, studio: Any) -> None:
         self.studio = studio
-        self.drafts = CodexDraftRepository(studio.workspace)
+        self.drafts = getattr(studio, "codex_drafts", None) or CodexDraftRepository(
+            studio.workspace
+        )
 
     def manifest_state(self, agent_id: str | None = None) -> dict:
         snapshot = self.studio.codex_manifests.load(agent_id)
@@ -117,7 +120,7 @@ class CodexAgentService:
             "manifestSha256": snapshot.manifest_sha256,
             "sourcePath": self.studio.workspace.relative(snapshot.source_path),
             "sourceYaml": snapshot.source_bytes.decode("utf-8"),
-            "buildCurrent": bool(latest and latest.manifest_sha256 == snapshot.manifest_sha256),
+            "buildCurrent": bool(latest and self.studio.codex_builder.is_current(latest)),
             "latestBuild": latest,
         }
 
@@ -152,6 +155,7 @@ class CodexAgentService:
         agent_id: str,
         spec: AgentSpec | None,
         name: str | None = None,
+        labels: dict[str, str] | None = None,
     ) -> AgentDraft:
         if self.studio.codex_manifests.exists(agent_id) or self.studio._draft_exists(agent_id):
             raise StudioError(
@@ -169,7 +173,7 @@ class CodexAgentService:
             metadata=AgentMetadata(
                 id=agent_id,
                 name=str(name or agent_id).strip() or agent_id,
-                labels=self._labels(manifest),
+                labels={**self._labels(manifest), **dict(labels or {})},
             ),
             spec=resolved,
         )
@@ -211,6 +215,29 @@ class CodexAgentService:
         self.drafts.save(updated)
         return self._project(updated_snapshot)
 
+    def update_appearance(
+        self,
+        agent_id: str,
+        appearance: AgentAppearance,
+        *,
+        expected_revision: int,
+    ) -> AgentDraft:
+        snapshot = self.studio.codex_manifests.load(agent_id)
+        current = self._project(snapshot)
+        if current.metadata.revision != expected_revision:
+            raise StudioError(
+                "AGENT_REVISION_CONFLICT",
+                "Agent 已被其他操作更新",
+                status_code=409,
+                field="metadata.revision",
+                details={"expected": expected_revision, "actual": current.metadata.revision},
+            )
+        updated = current.model_copy(deep=True)
+        updated.metadata.revision += 1
+        updated.metadata.appearance = appearance
+        self.drafts.save(updated)
+        return self._project(snapshot, current=updated)
+
     @staticmethod
     def ensure_bindings_supported(spec: AgentSpec) -> None:
         bindings = spec.bindings
@@ -222,22 +249,65 @@ class CodexAgentService:
                 field="spec.bindings.tools",
                 details={"runtimeType": "codex"},
             )
-        if bindings.mcp_servers or spec.capabilities.mcp_servers:
-            raise StudioError(
-                "TOOL_RUNTIME_INCOMPATIBLE",
-                "Codex Runtime 当前未接通 ksadk MCP 绑定",
-                status_code=422,
-                field="spec.bindings.mcpServers",
-                details={"runtimeType": "codex"},
-            )
-        if bindings.skills or spec.capabilities.skills:
-            raise StudioError(
-                "SKILL_RUNTIME_INCOMPATIBLE",
-                "Codex Runtime 当前未接通 ksadk Skill Bundle",
-                status_code=422,
-                field="spec.bindings.skills",
-                details={"runtimeType": "codex"},
-            )
+        # codex 支持 streamable-http MCP（通过 config_overrides 注入 mcp_servers）。
+
+    def _skill_resource_ids(self, spec: AgentSpec) -> list[str]:
+        bindings = spec.bindings
+        ids = [b.resource_id for b in bindings.skills]
+        ids.extend(spec.capabilities.skills or [])
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for sid in ids:
+            if sid and sid not in seen:
+                seen.add(sid)
+                ordered.append(sid)
+        return ordered
+
+    def _mcp_server_configs(self, spec: AgentSpec) -> list[dict[str, Any]]:
+        """Resolve bound MCP resource ids to codex streamable-http MCP configs."""
+        bindings = spec.bindings
+        ids = [b.resource_id for b in bindings.mcp_servers]
+        ids.extend(spec.capabilities.mcp_servers or [])
+        seen: set[str] = set()
+        ordered: list[dict[str, Any]] = []
+        catalog = getattr(self.studio, "catalog", None)
+        if catalog is None:
+            return ordered
+        try:
+            resources = catalog.list(limit=200)
+        except Exception:
+            return ordered
+        mcp_by_id = {item.resource_id: item for item in resources if item.kind == "mcp"}
+        for rid in ids:
+            if rid in seen:
+                continue
+            seen.add(rid)
+            descriptor = mcp_by_id.get(rid)
+            if descriptor is None:
+                continue
+            contract = descriptor.contract or {}
+            url = str(
+                contract.get("endpointUrl")
+                or contract.get("endpoint_url")
+                or contract.get("url")
+                or ""
+            ).strip()
+            if not url:
+                continue
+            env_refs = contract.get("envRefs") or {}
+            env_key = ""
+            for ref in env_refs.values():
+                if isinstance(ref, str) and ref.startswith("env://"):
+                    env_key = ref.removeprefix("env://")
+                    break
+            entry: dict[str, Any] = {
+                "name": descriptor.name,
+                "url": url,
+            }
+            if env_key:
+                entry["env_key"] = env_key
+            ordered.append(entry)
+        return ordered
 
     def delete(self, agent_id: str, *, purge: bool = False) -> None:
         self.studio.codex_manifests.load(agent_id)
@@ -346,6 +416,11 @@ class CodexAgentService:
         model: str | None,
         idempotency_key: str,
         on_event: Callable[[RunEvent], None] | None,
+        sandbox: str | None = None,
+        approval_mode: str | None = None,
+        collaboration_mode: str | None = None,
+        goal_objective: str | None = None,
+        runtime_input: Any = None,
     ) -> Operation:
         async def runner():
             return await self.studio.run_build(
@@ -353,6 +428,11 @@ class CodexAgentService:
                 user_input,
                 session_id,
                 model=model,
+                sandbox=sandbox,
+                approval_mode=approval_mode,
+                collaboration_mode=collaboration_mode,
+                goal_objective=goal_objective,
+                runtime_input=runtime_input,
                 on_event=on_event,
             )
 
@@ -416,6 +496,8 @@ class CodexAgentService:
         prompt = spec.instructions.system.strip()
         if spec.instructions.task.strip():
             prompt = f"{prompt}\n\n任务约束：\n{spec.instructions.task.strip()}"
+        skill_ids = self._skill_resource_ids(spec)
+        mcp_servers = self._mcp_server_configs(spec)
         return CodexAgentManifest(
             name=agent_id,
             version=current.version if current is not None else "1.0.0",
@@ -423,6 +505,10 @@ class CodexAgentService:
             model=model,
             models=models if len(models) > 1 else None,
             prompt=prompt,
+            skills=skill_ids or None,
+            mcp_servers=mcp_servers or None,
+            sandbox=spec.execution.sandbox,
+            approval_mode=spec.execution.approval_mode,
         )
 
     @staticmethod

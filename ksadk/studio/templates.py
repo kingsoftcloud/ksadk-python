@@ -181,6 +181,7 @@ def compose_blank_agent(
     mcps = [item for item in resources if item.kind == "mcp"]
 
     model = _select_model(models, request.model_profile_id)
+    selected_model_ids = _select_model_ids(models, request.model_profile_id, request.model_profile_ids)
     selected_tools = _select_resources(
         tools,
         request.tool_resource_ids,
@@ -204,6 +205,7 @@ def compose_blank_agent(
     description = request.description.strip() or system_prompt[:160]
     bindings = AgentBindings(
         model_profile_id=model.resource_id,
+        model_profile_ids=selected_model_ids,
         model_parameters=ModelParameters(
             temperature=0.2,
             max_tokens=4096,
@@ -275,6 +277,7 @@ def compose_research_agent(
     mcps = [item for item in resources if item.kind == "mcp"]
 
     model = _select_model(models, request.model_profile_id)
+    selected_model_ids = _select_model_ids(models, request.model_profile_id, request.model_profile_ids)
     research_skill = next(
         (
             item
@@ -327,6 +330,7 @@ def compose_research_agent(
     settings = _DEPTH_SETTINGS[request.depth]
     bindings = AgentBindings(
         model_profile_id=model.resource_id,
+        model_profile_ids=selected_model_ids,
         model_parameters=ModelParameters(
             temperature=0.2,
             max_tokens=settings["max_tokens"],
@@ -452,6 +456,24 @@ def _select_model(
             status_code=409,
         )
     return selected
+
+
+def _select_model_ids(
+    models: list[ResourceDescriptor],
+    primary_id: str | None,
+    requested_ids: list[str] | None,
+) -> list[str]:
+    """Resolve the full set of bound model profile ids, deduped, primary first."""
+    valid = [item for item in models if item.status in {"ready", "missing-secret"}]
+    valid_ids = {item.resource_id for item in valid}
+    ordered: list[str] = []
+    if primary_id and primary_id in valid_ids:
+        ordered.append(primary_id)
+    for rid in requested_ids or []:
+        if rid in valid_ids and rid not in ordered:
+            ordered.append(rid)
+    return ordered
+
 
 
 def _bound_recommendations(

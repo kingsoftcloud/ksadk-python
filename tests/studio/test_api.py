@@ -7,6 +7,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from fastapi.testclient import TestClient
+from PIL import Image
 
 from ksadk.events.runtime_event import EventType, RuntimeEvent
 from ksadk.studio.api import create_studio_app
@@ -15,6 +16,92 @@ from ksadk.studio.contracts import Usage
 from ksadk.studio.model_client import CredentialResolver, ModelResponse
 from ksadk.studio.service import StudioService
 from tests.studio.runtime_adapter_fixtures import RuntimeFixture
+
+
+def _register_model(client: TestClient) -> str:
+    created = client.post(
+        "/api/v1/catalog/model-profiles",
+        json={
+            "name": "glm-5.1",
+            "displayName": "GLM-5.1",
+            "version": "1.0.0",
+            "description": "",
+            "spec": {
+                "provider": "openai-compatible",
+                "model": "glm-5.1",
+                "endpointUrl": "https://api.openai.com/v1/chat/completions",
+                "credentialRef": "env://AGENTKIT_MODEL_API_KEY",
+            },
+        },
+    )
+    assert created.status_code == 201, created.text
+    return created.json()["resourceId"]
+
+
+def _avatar_png(*, size: tuple[int, int] = (96, 96)) -> bytes:
+    stream = io.BytesIO()
+    Image.new("RGB", size, color=(68, 104, 162)).save(stream, format="PNG")
+    return stream.getvalue()
+
+
+def test_agent_avatar_asset_and_appearance_round_trip(tmp_path: Path) -> None:
+    service = StudioService(tmp_path)
+    app = create_studio_app(tmp_path, service=service, security_enabled=False)
+
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/v1/agents",
+            json={"id": "avatar-agent", "name": "Avatar Agent", "template": "blank"},
+        )
+        assert created.status_code == 201
+        assert created.json()["metadata"]["appearance"] == {
+            "icon": "bot",
+            "color": "#426ea8",
+            "imageUrl": None,
+        }
+
+        content = _avatar_png()
+        uploaded = client.post(
+            "/api/v1/assets/agent-avatars",
+            content=content,
+            headers={"Content-Type": "image/png"},
+        )
+        assert uploaded.status_code == 201, uploaded.text
+        asset = uploaded.json()
+        assert asset["url"].startswith("/api/v1/assets/agent-avatars/")
+        assert asset["mimeType"] == "image/png"
+        assert asset["width"] == asset["height"] == 96
+
+        updated = client.put(
+            "/api/v1/agents/avatar-agent/appearance",
+            headers={"If-Match": '"1"'},
+            json={"icon": "sparkles", "color": "#7c5cc4", "imageUrl": asset["url"]},
+        )
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["metadata"]["revision"] == 2
+        assert updated.json()["metadata"]["appearance"]["imageUrl"] == asset["url"]
+
+        persisted = client.get("/api/v1/agents/avatar-agent").json()["draft"]
+        assert persisted["metadata"]["appearance"] == updated.json()["metadata"]["appearance"]
+        downloaded = client.get(asset["url"])
+        assert downloaded.status_code == 200
+        assert downloaded.content == content
+        assert downloaded.headers["content-type"] == "image/png"
+
+        non_square = client.post(
+            "/api/v1/assets/agent-avatars",
+            content=_avatar_png(size=(96, 64)),
+            headers={"Content-Type": "image/png"},
+        )
+        assert non_square.status_code == 422
+        assert non_square.json()["error"]["code"] == "AGENT_AVATAR_NOT_SQUARE"
+
+        external = client.put(
+            "/api/v1/agents/avatar-agent/appearance",
+            headers={"If-Match": '"2"'},
+            json={"icon": "bot", "color": "#426ea8", "imageUrl": "https://example.com/a.png"},
+        )
+        assert external.status_code == 422
 
 
 class FakeModelClient:
@@ -231,15 +318,21 @@ def test_framework_stream_forwards_created_event_to_the_browser(tmp_path: Path):
     app = create_studio_app(tmp_path, service=service, security_enabled=False)
 
     with TestClient(app) as client:
-        assert client.post(
-            "/api/v1/agents",
-            json={"id": "stream-agent", "name": "Stream Agent", "template": "blank"},
-        ).status_code == 201
-        assert client.put(
-            "/api/v1/agents/stream-agent",
-            headers={"If-Match": '"1"'},
-            json=_valid_spec(),
-        ).status_code == 200
+        assert (
+            client.post(
+                "/api/v1/agents",
+                json={"id": "stream-agent", "name": "Stream Agent", "template": "blank"},
+            ).status_code
+            == 201
+        )
+        assert (
+            client.put(
+                "/api/v1/agents/stream-agent",
+                headers={"If-Match": '"1"'},
+                json=_valid_spec(),
+            ).status_code
+            == 200
+        )
         operation = client.post(
             "/api/v1/agents/stream-agent/builds",
             headers={"Idempotency-Key": "framework-stream-build"},
@@ -308,6 +401,9 @@ def test_api_local_session_origin_host_and_csrf_security(tmp_path: Path):
         unauthorized = client.get("/api/v1/system/bootstrap")
         assert unauthorized.status_code == 401
 
+        unauthenticated_response_write = client.post("/v1/responses/resp-security:pause")
+        assert unauthenticated_response_write.status_code == 401
+
         bad_session = client.post(
             "/api/v1/system/session",
             json={"token": "wrong-token-that-is-long-enough"},
@@ -319,6 +415,15 @@ def test_api_local_session_origin_host_and_csrf_security(tmp_path: Path):
         )
         assert exchanged.status_code == 200
         assert exchanged.json()["csrfToken"] == "csrf-token-that-is-long-enough"
+
+        response_write_without_csrf = client.post("/v1/responses/resp-security/cancel")
+        assert response_write_without_csrf.status_code == 403
+        response_write_with_csrf = client.post(
+            "/v1/responses/resp-security/cancel",
+            headers={"X-CSRF-Token": "csrf-token-that-is-long-enough"},
+        )
+        assert response_write_with_csrf.status_code == 200
+        assert response_write_with_csrf.json()["status"] == "not_found"
 
         no_csrf = client.post(
             "/api/v1/agents",
@@ -381,48 +486,16 @@ def test_static_studio_shell_is_served(tmp_path: Path):
     app = create_studio_app(tmp_path, security_enabled=False)
     with TestClient(app) as client:
         response = client.get("/")
-        stylesheet = client.get("/static/app.css")
-        script = client.get("/static/app.js")
+        legacy_stylesheet = client.get("/static/app.css")
+        legacy_script = client.get("/static/app.js")
 
     assert response.status_code == 200
     assert "<title>AgentKit Studio</title>" in response.text
-    assert 'id="view-create"' in response.text
-    assert 'id="agentTemplatePicker"' in response.text
-    assert 'data-template="blank"' in response.text
-    assert 'id="agentPrompt"' in response.text
-    assert 'id="agentToolList"' in response.text
-    assert 'id="agentSkillList"' in response.text
-    assert 'id="agentMcpList"' in response.text
-    assert 'id="policyTemplate"' in response.text
-    assert 'id="generatedSystemPrompt"' in response.text
-    assert 'id="view-chat"' in response.text
-    assert 'id="invocationCode"' in response.text
-    assert 'id="workspaceOverlay"' in response.text
-    assert 'id="reconnectWorkspace"' in response.text
-    assert 'id="environmentStateLabel"' in response.text
-    assert 'id="modelCredentialOverlay"' in response.text
-    assert 'id="modelCredentialValue"' in response.text
-    assert 'id="configureSelectedModel"' in response.text
-    assert 'type="password"' in response.text
-    assert stylesheet.status_code == 200
-    assert "--accent: #2167d5" in stylesheet.text
-    assert "--accent-soft: #eaf3ff" in stylesheet.text
-    assert "min-width: 1280px" in stylesheet.text
-    assert "--font-size-body: 15px" in stylesheet.text
-    assert "font-size: var(--font-size-body)" in stylesheet.text
-    assert "font-size: 9px" not in stylesheet.text
-    assert "font-size: 10px" not in stylesheet.text
-    assert script.status_code == 200
-    assert "composeAgent" in script.text
-    assert "/agent-templates/${state.wizard.template}:compose" in script.text
-    assert "sendChatMessage" in script.text
-    assert "saveModelCredential" in script.text
-    assert "/credentials/${encodeURIComponent(name)}" in script.text
-    assert "openWorkspaceConnection" in script.text
-    assert 'api("/workspaces:open"' in script.text
-    assert "setRuntimeStatus" in script.text
-    assert "reconnectSessionFromHash" in script.text
-    assert 'window.addEventListener("hashchange"' in script.text
+    assert '<div id="root"></div>' in response.text
+    assert 'type="module"' in response.text
+    assert "/static/assets/" in response.text
+    assert legacy_stylesheet.status_code == 404
+    assert legacy_script.status_code == 404
 
 
 def test_api_workspace_connection_is_bound_to_daemon_root(tmp_path: Path):
@@ -453,9 +526,7 @@ def test_api_session_credential_lifecycle_and_model_connection(tmp_path: Path):
             self.observed_credential = ""
 
         async def complete(self, model, **_kwargs):
-            self.observed_credential = self.credential_resolver.resolve(
-                model.credential_ref
-            )
+            self.observed_credential = self.credential_resolver.resolve(model.credential_ref)
             return ModelResponse(
                 content="OK",
                 finish_reason="stop",
@@ -483,19 +554,15 @@ def test_api_session_credential_lifecycle_and_model_connection(tmp_path: Path):
         assert configured.json()["source"] == "session"
         assert secret not in configured.text
 
-        resource_id = "model:builtin:glm-5-1:1.0.0"
-        connection = client.post(
-            f"/api/v1/model-profiles/{quote(resource_id, safe='')}:test"
-        )
+        resource_id = _register_model(client)
+        connection = client.post(f"/api/v1/model-profiles/{quote(resource_id, safe='')}:test")
         assert connection.status_code == 200
         assert connection.json()["ok"] is True
         assert connection.json()["model"] == "glm-5.1"
         assert model_client.observed_credential == secret
         assert secret not in connection.text
 
-        cleared = client.delete(
-            "/api/v1/credentials/AGENTKIT_MODEL_API_KEY"
-        )
+        cleared = client.delete("/api/v1/credentials/AGENTKIT_MODEL_API_KEY")
         assert cleared.status_code == 200
         assert cleared.json()["configured"] is False
         assert cleared.json()["source"] == "missing"
@@ -523,6 +590,7 @@ def test_api_blank_agent_create_build_and_chat_flow(tmp_path: Path):
     )
 
     with TestClient(app) as client:
+        _register_model(client)
         templates = client.get("/api/v1/agent-templates")
         assert templates.status_code == 200
         assert templates.json()["items"][0]["id"] == "blank"
@@ -630,6 +698,7 @@ def test_api_research_template_create_build_and_chat_flow(tmp_path: Path):
     app = create_studio_app(tmp_path, service=service, security_enabled=False)
 
     with TestClient(app) as client:
+        _register_model(client)
         templates = client.get("/api/v1/agent-templates")
         assert templates.status_code == 200
         assert [item["id"] for item in templates.json()["items"]] == [
@@ -725,9 +794,7 @@ def test_api_research_template_create_build_and_chat_flow(tmp_path: Path):
         conversation = runtime_fixture.start_requests[-1].conversation_preprocessing()
         assert conversation is not None
         assert len(conversation.messages) == 3
-        assert "工作原则" in runtime_fixture.start_requests[-1].config[
-            "base_instructions"
-        ]
+        assert "工作原则" in runtime_fixture.start_requests[-1].config["base_instructions"]
 
 
 def test_api_mcp_probe_returns_discovered_tool_contracts(tmp_path: Path):
@@ -775,6 +842,7 @@ def test_api_mcp_probe_returns_discovered_tool_contracts(tmp_path: Path):
 def test_api_catalog_binding_policy_and_schema_flow(tmp_path: Path):
     app = create_studio_app(tmp_path, security_enabled=False)
     with TestClient(app) as client:
+        _register_model(client)
         resources = client.get("/api/v1/catalog/resources?limit=100")
         assert resources.status_code == 200
         items = resources.json()["items"]

@@ -65,6 +65,10 @@ async def prepare_runtime_start(request: StartRequest, runner: Any) -> PreparedR
     raw_prepared = (conversation.model_extra or {}).get("prepared_turn")
     if isinstance(raw_prepared, Mapping):
         prepared = PreparedConversationTurn(**dict(raw_prepared))
+        prepared.request_metadata = {
+            **prepared.request_metadata,
+            **request_metadata,
+        }
     else:
         prepared = await build_run_input(
             agent_id=str(request.agent_id or "agent"),
@@ -106,6 +110,9 @@ async def prepare_runtime_start(request: StartRequest, runner: Any) -> PreparedR
         model_options=prepared.model_options,
         kb_context=ambient_contexts.get("kb_context"),
         memory_context=ambient_contexts.get("memory_context"),
+        tool_approval_mode=str(
+            prepared.request_metadata.get("tool_approval_mode") or ""
+        ),
     )
     canonical_payload = _build_runner_request_payload(
         prepared=prepared,

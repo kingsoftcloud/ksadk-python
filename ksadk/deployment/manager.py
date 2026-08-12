@@ -244,11 +244,19 @@ runtime_context = RuntimeLaunchContext(
     detection=detection_result,
     config=dict(getattr(detection_result, "raw_config", None) or {{}}),
 )
+# managed A2A discovery-only card:KSADK_A2A_RUNTIME_ID 非空时挂
+# /.well-known/agent-card.json;注册前即可被 server 探测(a2a-runtime-inbound-wiring)。
+_managed_a2a_card = None
+if os.environ.get("KSADK_A2A_RUNTIME_ID", "").strip():
+    from ksadk.managed_a2a_card import build_managed_a2a_card_if_configured
+
+    _managed_a2a_card = build_managed_a2a_card_if_configured()
 app = create_runtime_app(
     RuntimeAppConfig(
         runtime_type=detection_result.type.value,
         runtime_executor=RuntimeExecutor(build_default_runtime_registry()),
         launch_context=runtime_context,
+        a2a=_managed_a2a_card,
     ),
     configure_runtime_app,
 )

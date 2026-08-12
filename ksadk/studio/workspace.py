@@ -31,6 +31,7 @@ class Workspace:
             ".agentkit/operations",
             ".agentkit/runs",
             ".agentkit/traces",
+            ".agentkit/assets/agent-avatars",
             ".agentkit/cache",
             ".agentkit/trash",
             "dist",
@@ -45,6 +46,14 @@ class Workspace:
                     "kind": "AgentWorkspace",
                     "metadata": {"name": self.root.name or "agentkit-workspace"},
                 },
+            )
+        gitignore = self.root / ".gitignore"
+        wanted = ".agentkit/secrets.env\n"
+        existing = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
+        if ".agentkit/secrets.env" not in existing.splitlines():
+            gitignore.write_text(
+                (existing + ("\n" if existing and not existing.endswith("\n") else "") + wanted),
+                encoding="utf-8",
             )
 
     def resolve(self, relative: Path | str, *, must_exist: bool = False) -> Path:
@@ -77,6 +86,22 @@ class Workspace:
         temporary = Path(temporary_name)
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
+                stream.write(content)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def atomic_write_bytes(self, path: Path | str, content: bytes) -> None:
+        target = self.resolve(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{target.name}.", suffix=".tmp", dir=target.parent
+        )
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
                 stream.write(content)
                 stream.flush()
                 os.fsync(stream.fileno())

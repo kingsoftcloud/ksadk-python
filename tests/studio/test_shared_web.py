@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from ksadk.events.runtime_event import EventType, RuntimeEvent
 from ksadk.studio.api import create_studio_app
-from ksadk.studio.contracts import RunRecord, RunStatus, Usage
+from ksadk.studio.contracts import ModelSpec, RunRecord, RunStatus, Usage
 from ksadk.studio.model_client import ModelResponse
 from ksadk.studio.service import StudioService
 from ksadk.studio.shared_web import StudioSharedWebBridge
@@ -114,17 +114,6 @@ async def _shared_runtime_events(request, handle):
     )
 
 
-def _shared_static(tmp_path: Path) -> Path:
-    root = tmp_path / "shared-static"
-    (root / "assets").mkdir(parents=True)
-    (root / "index.html").write_text(
-        '<!doctype html><html><body><div id="root">shared chat</div></body></html>',
-        encoding="utf-8",
-    )
-    (root / "assets" / "app.js").write_text("export {};", encoding="utf-8")
-    return root
-
-
 def _create_agent(client: TestClient) -> None:
     created = client.post(
         "/api/v1/agents",
@@ -166,52 +155,42 @@ def _run_shared_chat(
         return "".join(response.iter_text())
 
 
-def test_shared_chat_static_entry_and_selected_agent_bootstrap(
-    tmp_path: Path,
-    monkeypatch,
-):
-    static_root = _shared_static(tmp_path)
-    monkeypatch.setattr(
-        "ksadk.studio.api.shared_web_static_root",
-        lambda: static_root,
-    )
+def test_react_chat_has_one_root_entry_and_no_standalone_chat(tmp_path: Path):
     app = create_studio_app(tmp_path, security_enabled=False)
 
     with TestClient(app) as client:
         _create_agent(client)
-        page = client.get("/chat/?agentId=demo-agent")
-        assert page.status_code == 200
-        assert "shared chat" in page.text
-        assert 'data-agentkit-studio-chat="workbench"' in page.text
-        assert 'href="/static/shared-chat.css"' in page.text
-        assert page.headers["x-frame-options"] == "SAMEORIGIN"
-        assert client.cookies.get("agentkit_studio_chat_agent") == "demo-agent"
-
-        theme = client.get("/static/shared-chat.css")
-        assert theme.status_code == 200
-        assert '--ak-chat-canvas: #fbfbfa' in theme.text
-        assert 'data-agentkit-studio-chat="workbench"' in theme.text
-
-        bootstrap = client.post(
-            "/agentengine/api/v1/GetAgentUiBootstrap",
-            json={},
-        ).json()["Data"]
-        assert bootstrap["Agent"] == {
-            "AgentId": "demo-agent",
-            "Name": "Demo Agent",
-            "Framework": "langgraph",
-        }
-        hosted = bootstrap["Capabilities"]["HostedChat"]
-        assert hosted["Enabled"] is True
-        assert hosted["PreferredTransport"] == "responses"
-        assert hosted["Transports"][0]["Capabilities"]["A2UI"] is False
+        root = client.get("/")
+        standalone = client.get("/chat?agentId=demo-agent")
+        shared_theme = client.get("/static/shared-chat.css")
 
         system = client.get("/api/v1/system/bootstrap").json()
-        assert system["features"]["sharedChat"] is True
+        route_paths = {getattr(route, "path", "") for route in app.routes}
+
+        assert root.status_code == 200
+        assert standalone.status_code == 404
+        assert standalone.headers["x-frame-options"] == "DENY"
+        assert shared_theme.status_code == 404
+        assert "/chat" not in route_paths
+        assert "/chat/" not in route_paths
+        assert system["features"]["reactChat"] is True
+        assert "sharedChat" not in system["features"]
 
 
 def test_shared_chat_resolves_bound_model_profile(tmp_path: Path):
     service = StudioService(tmp_path)
+    service.catalog.create_model_profile(
+        name="glm-5.1",
+        display_name="GLM-5.1",
+        version="1.0.0",
+        description="",
+        spec=ModelSpec(
+            provider="openai-compatible",
+            model="glm-5.1",
+            endpoint_url="https://api.openai.com/v1/chat/completions",
+            credential_ref="env://AGENTKIT_MODEL_API_KEY",
+        ),
+    )
     model_profile = service.catalog.list(kind="model")[0]
     spec = default_agent_spec("blank")
     spec.bindings.model_profile_id = model_profile.resource_id
@@ -241,12 +220,7 @@ def test_shared_chat_keeps_unbound_agent_model_explicit(tmp_path: Path):
     assert model["display_name"] == "未配置模型"
 
 
-def test_shared_chat_explains_unbound_model_profile(tmp_path: Path, monkeypatch):
-    static_root = _shared_static(tmp_path)
-    monkeypatch.setattr(
-        "ksadk.studio.api.shared_web_static_root",
-        lambda: static_root,
-    )
+def test_shared_chat_explains_unbound_model_profile(tmp_path: Path):
     service = StudioService(tmp_path)
     service.create_agent(agent_id="unbound-agent", name="Unbound Agent")
     app = create_studio_app(
@@ -277,12 +251,7 @@ def test_shared_chat_explains_unbound_model_profile(tmp_path: Path, monkeypatch)
     assert "API Key 只提供访问凭证" in stream
 
 
-def test_shared_chat_runs_and_replays_two_turn_session(tmp_path: Path, monkeypatch):
-    static_root = _shared_static(tmp_path)
-    monkeypatch.setattr(
-        "ksadk.studio.api.shared_web_static_root",
-        lambda: static_root,
-    )
+def test_shared_chat_runs_and_replays_two_turn_session(tmp_path: Path):
     model_client = RecordingModelClient()
     runtime_fixture = RuntimeFixture(
         _shared_runtime_events,
@@ -406,12 +375,7 @@ def test_shared_chat_history_preserves_a2ui_activity(tmp_path: Path):
     ]
 
 
-def test_shared_chat_api_requires_local_studio_session(tmp_path: Path, monkeypatch):
-    static_root = _shared_static(tmp_path)
-    monkeypatch.setattr(
-        "ksadk.studio.api.shared_web_static_root",
-        lambda: static_root,
-    )
+def test_shared_chat_api_requires_local_studio_session(tmp_path: Path):
     service = StudioService(tmp_path)
     service.create_agent(agent_id="demo-agent", name="Demo Agent")
     app = create_studio_app(

@@ -22,6 +22,10 @@ _MANIFEST_KEYS = (
     "model",
     "models",
     "prompt",
+    "skills",
+    "mcp_servers",
+    "sandbox",
+    "approval_mode",
 )
 
 

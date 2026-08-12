@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
-from typing import Callable, Literal, cast
+from typing import Any, Callable, Literal, cast
 from urllib.parse import urlparse
 
 from ksadk.evaluation import (
@@ -21,6 +22,7 @@ from ksadk.evaluation import (
 )
 from ksadk.evaluation.evalset import EvalSetParseError
 from ksadk.runtime import RuntimeExecutor, build_default_runtime_registry
+from ksadk.studio.agent_avatar_assets import AgentAvatarAssetStore
 from ksadk.studio.agent_lifecycle import delete_framework_agent
 from ksadk.studio.authoring_coordinator import StudioAuthoringCoordinator
 from ksadk.studio.builder import AgentBundleBuilder
@@ -30,7 +32,7 @@ from ksadk.studio.cloud import (
     CloudDeploymentService,
     UnavailableCloudGateway,
 )
-from ksadk.studio.codex_agent_service import CodexAgentService
+from ksadk.studio.codex_agent_service import CodexAgentService, CodexDraftRepository
 from ksadk.studio.codex_builder import (
     CodexBuildRecord,
     CodexBuildRepository,
@@ -44,6 +46,7 @@ from ksadk.studio.codex_manifest import (
 from ksadk.studio.codex_run import CodexRunSpecResolver
 from ksadk.studio.compiler import AgentCompiler
 from ksadk.studio.contracts import (
+    AgentAppearance,
     AgentBindings,
     AgentDraft,
     AgentSpec,
@@ -64,7 +67,7 @@ from ksadk.studio.mcp_runtime import MCPRuntimeAdapter
 from ksadk.studio.model_client import CredentialResolver, OpenAICompatibleModelClient
 from ksadk.studio.model_profile_service import test_model_profile_connection
 from ksadk.studio.operations import OperationManager
-from ksadk.studio.repository import AgentDraftRepository, BuildRepository
+from ksadk.studio.repository import AgentDraftRepository, BuildRepository, load_yaml_file
 from ksadk.studio.resource_catalog import LocalResourceCatalog
 from ksadk.studio.run_service import StudioRunService
 from ksadk.studio.runtime_catalog import inspect_runtime_catalog
@@ -92,6 +95,8 @@ class StudioService:
     ) -> None:
         self.workspace = Workspace(root)
         self.workspace.initialize()
+        self._apply_persisted_settings()
+        self.avatar_assets = AgentAvatarAssetStore(self.workspace)
         self.drafts = AgentDraftRepository(self.workspace)
         self.catalog = LocalResourceCatalog(self.workspace)
         self.builds = BuildRepository(self.workspace)
@@ -109,6 +114,7 @@ class StudioService:
         self.event_store.recover_interrupted()
         self.codex_manifests = CodexManifestRepository(self.workspace)
         self.codex_builds = CodexBuildRepository(self.workspace)
+        self.codex_drafts = CodexDraftRepository(self.workspace)
         codex_builder_kwargs = {}
         if codex_runtime_inspector is not None:
             codex_builder_kwargs["runtime_inspector"] = codex_runtime_inspector
@@ -116,6 +122,8 @@ class StudioService:
             self.workspace,
             manifest_repository=self.codex_manifests,
             build_repository=self.codex_builds,
+            resource_catalog=self.catalog,
+            draft_repository=self.codex_drafts,
             **codex_builder_kwargs,
         )
         self.runtime_executor = runtime_executor or RuntimeExecutor(
@@ -126,33 +134,32 @@ class StudioService:
             self.runtime_executor,
             event_store=self.event_store,
         )
+        self.credentials = (
+            credential_resolver
+            or getattr(model_client, "credential_resolver", None)
+            or CredentialResolver(self.workspace)
+        )
         self.codex_runs = CodexRunSpecResolver(
             self.workspace,
             build_repository=self.codex_builds,
             manifest_repository=self.codex_manifests,
+            credential_resolver=self.credentials,
+            resource_catalog=self.catalog,
         )
         self.framework_runs = FrameworkRunSpecResolver(
             self.workspace,
             build_repository=self.builds,
         )
-        self.credentials = (
-            credential_resolver
-            or getattr(model_client, "credential_resolver", None)
-            or CredentialResolver()
-        )
         runtime_model_client = model_client or OpenAICompatibleModelClient(
             credential_resolver=self.credentials
         )
         self.model_client = runtime_model_client
-        self.mcp_runtime = MCPRuntimeAdapter(self.workspace)
+        self.mcp_runtime = MCPRuntimeAdapter(self.workspace, credentials=self.credentials)
         self.evaluations = EvaluationRunner(
             self.workspace,
             run_agent=self.run_build,
             event_store=self.event_store,
             build_repository=self.builds,
-        )
-        self.evaluation_storage = EvaluationStorage(
-            self.workspace.resolve(".agentkit/evaluations")
         )
         self.cloud = CloudDeploymentService(
             self.workspace,
@@ -160,6 +167,9 @@ class StudioService:
             build_repository=self.builds,
         )
         self.operations = OperationManager(self.workspace)
+        self.evaluation_storage = EvaluationStorage(
+            self.workspace.resolve(".agentkit/evaluations")
+        )
         self.authoring = StudioAuthoringCoordinator(self)
         self.codex_agents = CodexAgentService(self)
 
@@ -181,8 +191,14 @@ class StudioService:
         agent_id: str,
         spec: AgentSpec | None,
         name: str | None = None,
+        labels: dict[str, str] | None = None,
     ) -> AgentDraft:
-        return self.codex_agents.create(agent_id=agent_id, spec=spec, name=name)
+        return self.codex_agents.create(
+            agent_id=agent_id,
+            spec=spec,
+            name=name,
+            labels=labels,
+        )
 
     def update_codex_agent(
         self,
@@ -225,6 +241,11 @@ class StudioService:
         *,
         session_id: str | None,
         model: str | None = None,
+        sandbox: str | None = None,
+        approval_mode: str | None = None,
+        collaboration_mode: str | None = None,
+        goal_objective: str | None = None,
+        runtime_input: Any = None,
         idempotency_key: str,
         on_event: Callable[[RunEvent], None] | None = None,
     ) -> Operation:
@@ -233,6 +254,11 @@ class StudioService:
             user_input,
             session_id=session_id,
             model=model,
+            sandbox=sandbox,
+            approval_mode=approval_mode,
+            collaboration_mode=collaboration_mode,
+            goal_objective=goal_objective,
+            runtime_input=runtime_input,
             idempotency_key=idempotency_key,
             on_event=on_event,
         )
@@ -298,7 +324,7 @@ class StudioService:
         self,
         *,
         name: str,
-        slug: str,
+        slug: str | None = None,
         runtime_type: str,
         template: str = "blank",
         description: str = "",
@@ -416,6 +442,7 @@ class StudioService:
         template: str = "blank",
         spec: AgentSpec | None = None,
         runtime: RuntimeRef | None = None,
+        labels: dict[str, str] | None = None,
     ) -> AgentDraft:
         """Create one Agent and dispatch from its RuntimeRef."""
 
@@ -431,6 +458,7 @@ class StudioService:
                     agent_id=agent_id,
                     spec=resolved_spec,
                     name=name,
+                    labels=labels,
                 ),
             )
         return cast(
@@ -441,6 +469,7 @@ class StudioService:
                 description=description,
                 template=template,
                 spec=resolved_spec,
+                labels=labels,
             ),
         )
 
@@ -491,6 +520,25 @@ class StudioService:
         return self.update_studio_agent(
             agent_id,
             spec,
+            expected_revision=expected_revision,
+        )
+
+    def update_studio_agent_appearance(
+        self,
+        agent_id: str,
+        appearance: AgentAppearance,
+        *,
+        expected_revision: int,
+    ) -> AgentDraft:
+        if self.is_codex_agent(agent_id):
+            return self.codex_agents.update_appearance(
+                agent_id,
+                appearance,
+                expected_revision=expected_revision,
+            )
+        return self.drafts.update_appearance(
+            agent_id,
+            appearance,
             expected_revision=expected_revision,
         )
 
@@ -590,6 +638,11 @@ class StudioService:
         session_id: str | None,
         model: str | None,
         idempotency_key: str,
+        sandbox: str | None = None,
+        approval_mode: str | None = None,
+        collaboration_mode: str | None = None,
+        goal_objective: str | None = None,
+        runtime_input: Any = None,
         on_event: Callable[[RunEvent], None] | None = None,
     ) -> Operation:
         try:
@@ -603,6 +656,11 @@ class StudioService:
                 user_input,
                 session_id=session_id,
                 model=model,
+                sandbox=sandbox,
+                approval_mode=approval_mode,
+                collaboration_mode=collaboration_mode,
+                goal_objective=goal_objective,
+                runtime_input=runtime_input,
                 idempotency_key=idempotency_key,
                 on_event=on_event,
             )
@@ -611,6 +669,11 @@ class StudioService:
             user_input,
             session_id=session_id,
             model=model,
+            sandbox=sandbox,
+            approval_mode=approval_mode,
+            collaboration_mode=collaboration_mode,
+            goal_objective=goal_objective,
+            runtime_input=runtime_input,
             idempotency_key=idempotency_key,
             on_event=on_event,
         )
@@ -737,6 +800,11 @@ class StudioService:
         *,
         session_id: str | None,
         model: str | None = None,
+        sandbox: str | None = None,
+        approval_mode: str | None = None,
+        collaboration_mode: str | None = None,
+        goal_objective: str | None = None,
+        runtime_input: Any = None,
         idempotency_key: str,
         on_event: Callable[[RunEvent], None] | None = None,
     ) -> Operation:
@@ -746,6 +814,11 @@ class StudioService:
                 user_input,
                 session_id,
                 model=model,
+                sandbox=sandbox,
+                approval_mode=approval_mode,
+                collaboration_mode=collaboration_mode,
+                goal_objective=goal_objective,
+                runtime_input=runtime_input,
                 on_event=on_event,
             )
 
@@ -763,19 +836,44 @@ class StudioService:
         session_id: str | None,
         *,
         model: str | None = None,
+        sandbox: str | None = None,
+        approval_mode: str | None = None,
+        collaboration_mode: str | None = None,
+        goal_objective: str | None = None,
+        runtime_input: Any = None,
         on_event: Callable[[RunEvent], None] | None = None,
     ):
         """Execute any immutable Studio Build through the canonical executor."""
 
         try:
-            spec = self.codex_runs.resolve(build_id, model=model)
+            spec = self.codex_runs.resolve(
+                build_id,
+                model=model,
+                sandbox=sandbox,
+                approval_mode=approval_mode,
+            )
         except Exception as exc:
             if getattr(exc, "status_code", None) != 404:
                 raise
-            spec = self.framework_runs.resolve(build_id, model=model)
+            spec = self.framework_runs.resolve(
+                build_id,
+                model=model,
+                approval_mode=approval_mode,
+            )
+        if collaboration_mode or goal_objective:
+            from dataclasses import replace
+
+            request_config = dict(spec.request_config)
+            if collaboration_mode:
+                request_config["collaboration_mode"] = collaboration_mode
+            if goal_objective:
+                request_config["goal_objective"] = goal_objective
+                request_config["ephemeral"] = False
+            spec = replace(spec, request_config=request_config)
         return await self.run_service.run(
             spec,
             user_input,
+            runtime_input=runtime_input,
             session_id=session_id,
             on_event=on_event,
         )
@@ -854,6 +952,14 @@ class StudioService:
                     "EVALUATION_EXECUTION_FAILED",
                     str(exc),
                     status_code=502,
+                ) from exc
+            try:
+                self.evaluation_storage.write_report(report)
+            except EvaluationStorageError as exc:
+                raise StudioError(
+                    "EVALUATION_REPORT_WRITE_FAILED",
+                    "评测报告写入失败",
+                    status_code=500,
                 ) from exc
             return report
 
@@ -935,6 +1041,85 @@ class StudioService:
             idempotency_key=idempotency_key,
             runner=runner,
         )
+
+    def get_settings(self) -> dict[str, Any]:
+        path = self.workspace.resolve(".agentkit/settings.yaml")
+        data: dict[str, Any] = {}
+        if path.is_file():
+            try:
+                data = load_yaml_file(path) or {}
+            except Exception:
+                data = {}
+        defaults = {
+            "sandbox": os.environ.get("KSADK_CODEX_SANDBOX", "read_only"),
+            "buildAfterCreate": True,
+            "codexProxy": os.environ.get("KSADK_CODEX_USE_PROXY", "auto"),
+            "cloudAccessKey": os.environ.get("KINGSOFTCLOUD_ACCESS_KEY", ""),
+            "cloudSecretKey": os.environ.get("KINGSOFTCLOUD_SECRET_KEY", ""),
+            "cloudRegion": os.environ.get("KSYUN_REGION", "cn-beijing-6"),
+            "traceContent": os.environ.get("KSADK_STUDIO_TRACE_CONTENT", "1") != "0",
+        }
+        defaults.update({k: v for k, v in data.items() if v is not None})
+        return defaults
+
+    def update_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
+        allowed = {
+            "sandbox",
+            "buildAfterCreate",
+            "codexProxy",
+            "cloudAccessKey",
+            "cloudSecretKey",
+            "cloudRegion",
+            "traceContent",
+        }
+        data = {k: payload[k] for k in allowed if k in payload}
+        if data.get("sandbox") and data["sandbox"] not in {
+            "read-only",
+            "workspace-write",
+            "workspace-write-auto",
+            "full-access",
+            "read_only",
+            "workspace_write",
+            "workspace_write_auto",
+            "full_access",
+        }:
+            raise StudioError("SETTINGS_INVALID", "sandbox 取值非法", status_code=422)
+        path = self.workspace.resolve(".agentkit/settings.yaml")
+        self.workspace.atomic_write_yaml(path, data)
+        self._apply_settings_to_env(data)
+        return self.get_settings()
+
+    def _apply_persisted_settings(self) -> None:
+        """启动时把 settings.yaml 回填到进程环境。
+
+        update_settings 只在 PUT 时桥接 env;重启后 env 丢失,运行解析
+        (如 _resolve_sandbox 读 KSADK_CODEX_SANDBOX)会回落默认,表现为
+        「设置页显示 workspace-write-auto,实际运行 read-only」。
+        """
+        path = self.workspace.resolve(".agentkit/settings.yaml")
+        if not path.is_file():
+            return
+        try:
+            data = load_yaml_file(path) or {}
+        except Exception:
+            return
+        if isinstance(data, dict):
+            self._apply_settings_to_env(data)
+
+    @staticmethod
+    def _apply_settings_to_env(data: dict[str, Any]) -> None:
+        if data.get("sandbox"):
+            os.environ["KSADK_CODEX_SANDBOX"] = data["sandbox"]
+        if data.get("codexProxy"):
+            os.environ["KSADK_CODEX_USE_PROXY"] = data["codexProxy"]
+        if data.get("cloudAccessKey"):
+            os.environ["KINGSOFTCLOUD_ACCESS_KEY"] = data["cloudAccessKey"]
+        if data.get("cloudSecretKey"):
+            os.environ["KINGSOFTCLOUD_SECRET_KEY"] = data["cloudSecretKey"]
+        if data.get("cloudRegion"):
+            os.environ["KSYUN_REGION"] = data["cloudRegion"]
+        if "traceContent" in data:
+            os.environ["KSADK_STUDIO_TRACE_CONTENT"] = "1" if data["traceContent"] else "0"
 
     @staticmethod
     def builtin_capabilities():

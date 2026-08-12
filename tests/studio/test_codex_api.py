@@ -173,7 +173,8 @@ def test_original_studio_routes_drive_the_codex_manifest_build_and_runtime(
     with TestClient(app) as client:
         bootstrap = client.get("/api/v1/system/bootstrap").json()
         assert bootstrap["features"]["runtimeRegistry"] is True
-        assert bootstrap["features"]["sharedChat"] is True
+        assert bootstrap["features"]["reactChat"] is True
+        assert "sharedChat" not in bootstrap["features"]
         assert {item["runtimeType"] for item in bootstrap["runtimes"]} == {"codex"}
 
         created = client.post("/api/v1/agents", json=agent_payload)
@@ -408,6 +409,49 @@ async def test_closing_stream_does_not_cancel_background_run(tmp_path: Path) -> 
     assert runs[0].output == "刷新不会中断。"
 
 
+@pytest.mark.asyncio
+async def test_reloading_after_first_responses_event_keeps_run_recoverable(
+    tmp_path: Path,
+) -> None:
+    service = StudioService(
+        tmp_path,
+        codex_runtime_inspector=_inspector,
+        runtime_executor=RuntimeFixture(_slow_codex_events).executor,
+    )
+    service.save_codex_manifest(CodexAgentManifest.model_validate(_manifest()))
+    service.codex_builder.build()
+    app = create_studio_app(tmp_path, service=service, security_enabled=False)
+    endpoint = next(
+        route.endpoint for route in app.routes if getattr(route, "path", "") == "/v1/responses"
+    )
+
+    response = await endpoint(
+        {
+            "model": "glm-5.2",
+            "input": "刷新页面",
+            "stream": True,
+            "metadata": {
+                "agent_id": "review-helper",
+                "session_id": "ses-responses-refresh",
+                "invocation_id": "resp-refresh",
+            },
+        }
+    )
+    iterator = response.body_iterator
+    first_event = await anext(iterator)
+    assert "event: response.created" in first_event
+    await iterator.aclose()
+
+    runs = []
+    for _ in range(120):
+        runs = service.event_store.list_runs(session_id="ses-responses-refresh")
+        if runs and runs[0].status != RunStatus.RUNNING:
+            break
+        await asyncio.sleep(0.01)
+    assert runs[0].status == RunStatus.COMPLETED
+    assert runs[0].output == "刷新不会中断。"
+
+
 def test_openai_responses_endpoint_is_the_public_runtime_contract(tmp_path: Path) -> None:
     (tmp_path / "src").mkdir()
     (tmp_path / "src/demo.py").write_text("value = 1\n", encoding="utf-8")
@@ -464,6 +508,10 @@ def test_openai_responses_endpoint_is_the_public_runtime_contract(tmp_path: Path
         assert response.status_code == 200
         assert "event: response.created" in stream
         assert "event: response.output_text.delta" in stream
+        assert "event: response.output_item.added" in stream
+        assert "event: response.output_item.done" in stream
+        assert '"type":"shell_call"' in stream
+        assert "sed -n '1,80p' src/demo.py" in stream
         assert stream.count("event: response.output_text.delta") >= 2
         assert "发现除零风险" in stream
         assert "event: response.completed" in stream
@@ -527,6 +575,152 @@ def test_openai_responses_model_selects_real_bound_codex_model(tmp_path: Path) -
         assert runtime_fixture.start_requests[0].model == "kimi-k2-code"
         run = service.event_store.list_runs()[0]
         assert run.model == "kimi-k2-code"
+
+
+@pytest.mark.parametrize(
+    ("approval_mode", "sandbox", "codex_approval"),
+    [
+        ("ask", "workspace-write", "manual"),
+        ("risk", "workspace-write", "auto_review"),
+        ("full", "full-access", "deny_all"),
+    ],
+)
+def test_openai_responses_applies_turn_scoped_approval_mode(
+    tmp_path: Path,
+    approval_mode: str,
+    sandbox: str,
+    codex_approval: str,
+) -> None:
+    runtime_fixture = RuntimeFixture(standard_codex_events)
+    service = StudioService(
+        tmp_path,
+        codex_runtime_inspector=_inspector,
+        runtime_executor=runtime_fixture.executor,
+    )
+    service.save_codex_manifest(CodexAgentManifest.model_validate(_manifest()))
+    app = create_studio_app(tmp_path, service=service, security_enabled=False)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/responses",
+            json={
+                "model": "glm-5.2",
+                "input": f"使用 {approval_mode} 批准模式",
+                "metadata": {
+                    "agent_id": "review-helper",
+                    "approval_mode": approval_mode,
+                },
+            },
+        )
+
+    assert response.status_code == 200
+    request = runtime_fixture.start_requests[0]
+    assert request.config["sandbox"] == sandbox
+    assert request.config["sandbox_read_only"] is False
+    assert request.config["approval_mode"] == codex_approval
+    assert request.config["tool_approval_mode"] == approval_mode
+    conversation = request.conversation_preprocessing()
+    assert conversation is not None
+    assert conversation.request_metadata["tool_approval_mode"] == approval_mode
+
+
+def test_openai_responses_forwards_plan_goal_and_structured_attachments(
+    tmp_path: Path,
+) -> None:
+    runtime_fixture = RuntimeFixture(standard_codex_events)
+    service = StudioService(
+        tmp_path,
+        codex_runtime_inspector=_inspector,
+        runtime_executor=runtime_fixture.executor,
+    )
+    service.save_codex_manifest(CodexAgentManifest.model_validate(_manifest()))
+    app = create_studio_app(tmp_path, service=service, security_enabled=False)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/responses",
+            json={
+                "model": "glm-5.2",
+                "input": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": "分析这张图"},
+                            {"type": "input_image", "image_url": "data:image/png;base64,AAAA"},
+                        ],
+                    }
+                ],
+                "metadata": {
+                    "agent_id": "review-helper",
+                    "session_id": "ses-plan-goal",
+                    "collaboration_mode": "plan",
+                    "goal_objective": "完成视觉回归",
+                },
+            },
+        )
+
+    assert response.status_code == 200
+    request = runtime_fixture.start_requests[0]
+    assert request.config["collaboration_mode"] == "plan"
+    assert request.config["goal_objective"] == "完成视觉回归"
+    assert request.input == [
+        {"type": "text", "text": "分析这张图"},
+        {"type": "image", "url": "data:image/png;base64,AAAA"},
+    ]
+
+
+def test_openai_responses_rejects_unknown_collaboration_mode(tmp_path: Path) -> None:
+    runtime_fixture = RuntimeFixture(standard_codex_events)
+    service = StudioService(
+        tmp_path,
+        codex_runtime_inspector=_inspector,
+        runtime_executor=runtime_fixture.executor,
+    )
+    service.save_codex_manifest(CodexAgentManifest.model_validate(_manifest()))
+    app = create_studio_app(tmp_path, service=service, security_enabled=False)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/responses",
+            json={
+                "input": "不应执行",
+                "metadata": {
+                    "agent_id": "review-helper",
+                    "collaboration_mode": "creative-ish",
+                },
+            },
+        )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "COLLABORATION_MODE_INVALID"
+    assert runtime_fixture.start_requests == []
+
+
+def test_openai_responses_rejects_unknown_approval_mode(tmp_path: Path) -> None:
+    runtime_fixture = RuntimeFixture(standard_codex_events)
+    service = StudioService(
+        tmp_path,
+        codex_runtime_inspector=_inspector,
+        runtime_executor=runtime_fixture.executor,
+    )
+    service.save_codex_manifest(CodexAgentManifest.model_validate(_manifest()))
+    app = create_studio_app(tmp_path, service=service, security_enabled=False)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/responses",
+            json={
+                "input": "无效批准模式不应静默降级",
+                "metadata": {
+                    "agent_id": "review-helper",
+                    "approval_mode": "unrestricted-ish",
+                },
+            },
+        )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "APPROVAL_MODE_INVALID"
+    assert runtime_fixture.start_requests == []
 
 
 def test_openai_responses_rejects_unbound_model_before_starting_codex(
@@ -733,6 +927,44 @@ def test_codex_agent_preserves_display_metadata_and_real_revision(tmp_path: Path
             json=spec,
         )
         assert stale.status_code == 409
+
+
+def test_codex_agent_appearance_is_kept_in_studio_sidecar(tmp_path: Path) -> None:
+    service = StudioService(
+        tmp_path,
+        codex_runtime_inspector=_inspector,
+        runtime_executor=RuntimeFixture(standard_codex_events).executor,
+    )
+    app = create_studio_app(tmp_path, service=service, security_enabled=False)
+
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/v1/agents",
+            json={
+                "id": "avatar-codex",
+                "name": "Avatar Codex",
+                "spec": {
+                    "runtime": {"type": "codex", "version": "0.144.4"},
+                    "instructions": {"system": "Review code.", "task": ""},
+                    "bindings": {},
+                },
+            },
+        ).json()
+        updated = client.put(
+            "/api/v1/agents/avatar-codex/appearance",
+            headers={"If-Match": str(created["metadata"]["revision"])},
+            json={"icon": "code", "color": "#7c5cc4", "imageUrl": None},
+        )
+
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["metadata"]["appearance"] == {
+            "icon": "code",
+            "color": "#7c5cc4",
+            "imageUrl": None,
+        }
+        persisted = client.get("/api/v1/agents/avatar-codex").json()["draft"]
+        assert persisted["metadata"]["appearance"] == updated.json()["metadata"]["appearance"]
+        assert service.codex_manifests.load("avatar-codex").manifest.name == "avatar-codex"
 
 
 def test_codex_rejects_ksadk_tool_binding_instead_of_pretending_to_execute(

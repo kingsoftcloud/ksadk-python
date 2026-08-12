@@ -64,6 +64,19 @@ class CancelResult(str, Enum):
     """取消动作本身失败(如底层 runtime 报错)。"""
 
 
+class PauseResult(str, Enum):
+    """Non-terminal pause capability result.
+
+    Pause is deliberately separate from :class:`CancelResult`: an adapter must
+    never claim a run is resumable after applying destructive cancel semantics.
+    """
+
+    PAUSED_ACTIVE_TURN = "paused_active_turn"
+    NOT_SUPPORTED = "not_supported"
+    NOT_RUNNING = "not_running"
+    FAILED = "failed"
+
+
 # ---------------------------------------------------------------------------
 # resume 目标与回包(两件拆开的的事)
 # ---------------------------------------------------------------------------
@@ -272,6 +285,26 @@ class RuntimeAdapter(ABC):
         """请求取消。返回状态机结果;成功 cancel 级联丢弃该 turn 的 pending 审批。"""
         raise NotImplementedError
 
+    async def pause(self, handle: RunHandle) -> PauseResult:
+        """Pause an active turn without invalidating its resumable state.
+
+        This additive hook defaults to an honest unsupported result.  It must
+        not fall back to ``cancel`` because cancellation is terminal for some
+        runtimes (notably Codex).
+        """
+
+        return PauseResult.NOT_SUPPORTED
+
+    async def submit(self, handle: RunHandle, payload: ResumePayload) -> None:
+        """Submit input to a live interaction without restarting the stream.
+
+        Runtimes whose HITL model ends the current stream should continue to
+        use :meth:`resume`; live JSON-RPC approval requests use this command
+        channel instead.
+        """
+
+        raise RuntimeError(f"{type(self).__name__} does not support live interaction input")
+
     @abstractmethod
     async def resume(
         self,
@@ -344,8 +377,7 @@ class RuntimeRegistry:
             return self._factories[key]
         except KeyError:
             raise KeyError(
-                f"missing runtime type: {runtime_type!r}; "
-                f"registered: {sorted(self._factories)}"
+                f"missing runtime type: {runtime_type!r}; registered: {sorted(self._factories)}"
             ) from None
 
     def create(self, context: RuntimeLaunchContext) -> RuntimeAdapter:
@@ -354,8 +386,7 @@ class RuntimeRegistry:
         adapter = self.get(context.runtime_type)(context)
         if not isinstance(adapter, RuntimeAdapter):
             raise TypeError(
-                "runtime factory must return RuntimeAdapter, "
-                f"got {type(adapter).__name__}"
+                f"runtime factory must return RuntimeAdapter, got {type(adapter).__name__}"
             )
         return adapter
 
@@ -366,6 +397,7 @@ class RuntimeRegistry:
 __all__ = [
     "BaseRuntime",
     "CancelResult",
+    "PauseResult",
     "CheckpointCapability",
     "CheckpointDescriptor",
     "ResumePayload",

@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict
 
+import pytest
 import yaml
 from click.testing import CliRunner
 
@@ -16,7 +17,7 @@ from ksadk.cli.cmd_destroy import destroy as destroy_cmd
 from ksadk.cli.cmd_mcp import mcp
 from ksadk.cli.cmd_openclaw import openclaw
 from ksadk.cli.cmd_version import version
-from ksadk.cli.dry_run import run_async_with_dry_run
+from ksadk.cli.dry_run import run_async_with_dry_run, sanitize_dry_run_request
 from ksadk.deployment.base import DeployTarget
 from ksadk.deployment.providers.serverless import ServerlessProvider
 
@@ -1763,6 +1764,107 @@ def test_openclaw_deploy_explicit_env_file_missing_raises(monkeypatch, tmp_path)
     assert result.exit_code != 0
 
 
+def test_openclaw_runtime_env_credentials_are_sensitive(monkeypatch, tmp_path):
+    runner = CliRunner()
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawCreateClient)
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw._GLOBAL_ENV_CACHE", {})
+    monkeypatch.chdir(tmp_path)
+    _FakeOpenClawCreateClient.create_payload = None
+    _FakeOpenClawCreateClient.update_payload = None
+    _FakeOpenClawCreateClient.get_agent_calls = 0
+
+    result = runner.invoke(
+        openclaw,
+        [
+            "deploy",
+            "--name",
+            "demo-openclaw",
+            "--image",
+            "ghcr.io/openclaw:test",
+            "--env",
+            "OTEL_EXPORTER_OTLP_HEADERS=literal-secret",
+            "--env",
+            "OTEL_EXPORTER_OTLP_METRICS_HEADERS=literal-secret",
+            "--env",
+            "OTEL_EXPORTER_OTLP_LOGS_HEADERS=literal-secret",
+            "--env",
+            "CLOUD_MONITOR_OTLP_TRACES_HEADERS=literal-secret",
+            "--env",
+            "OPENCLAW_CONFIG_PATCH_JSON=literal-secret",
+            "--env",
+            "PROXY_AUTHORIZATION=literal-secret",
+            "--env",
+            "USER_SIGNATURE=literal-secret",
+            "--env",
+            "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=https://metrics.example.com",
+            "--env",
+            "OTEL_EXPORTER_OTLP_LOGS_PROTOCOL=http/protobuf",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    env_vars = {
+        item["Key"]: item for item in _FakeOpenClawCreateClient.create_payload["env_vars"]
+    }
+    for name in (
+        "OTEL_EXPORTER_OTLP_HEADERS",
+        "OTEL_EXPORTER_OTLP_METRICS_HEADERS",
+        "OTEL_EXPORTER_OTLP_LOGS_HEADERS",
+        "CLOUD_MONITOR_OTLP_TRACES_HEADERS",
+        "OPENCLAW_CONFIG_PATCH_JSON",
+        "PROXY_AUTHORIZATION",
+        "USER_SIGNATURE",
+    ):
+        assert env_vars[name]["Value"] == "literal-secret"
+        assert env_vars[name]["IsSensitive"] is True
+
+    assert env_vars["OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"]["IsSensitive"] is False
+    assert env_vars["OTEL_EXPORTER_OTLP_LOGS_PROTOCOL"]["IsSensitive"] is False
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "OTEL_EXPORTER_OTLP_HEADERS",
+        "OTEL_EXPORTER_OTLP_METRICS_HEADERS",
+        "OTEL_EXPORTER_OTLP_LOGS_HEADERS",
+        "CLOUD_MONITOR_OTLP_TRACES_HEADERS",
+        "OPENCLAW_CONFIG_PATCH_JSON",
+        "PROXY_AUTHORIZATION",
+        "USER_SIGNATURE",
+    ],
+)
+def test_runtime_env_credentials_are_redacted(name):
+    request = {
+        "body": {
+            "env_vars": [
+                {"Key": name, "Value": "literal-secret", "IsSensitive": False},
+            ]
+        }
+    }
+
+    assert sanitize_dry_run_request(request)["body"]["env_vars"][0]["Value"] == "***"
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+        "OTEL_EXPORTER_OTLP_LOGS_PROTOCOL",
+    ],
+)
+def test_runtime_env_transport_settings_are_not_redacted(name):
+    request = {
+        "body": {
+            "env_vars": [
+                {"Key": name, "Value": "literal-setting", "IsSensitive": False},
+            ]
+        }
+    }
+
+    assert sanitize_dry_run_request(request)["body"]["env_vars"][0]["Value"] == "literal-setting"
+
+
 def test_openclaw_deploy_forwards_explicit_memory_config(monkeypatch):
     runner = CliRunner()
     captured: Dict[str, Any] = {}
@@ -2148,6 +2250,12 @@ def test_openclaw_deploy_persists_gateway_token_from_extra_env(monkeypatch, tmp_
     monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawCreateClient)
     monkeypatch.setattr("ksadk.cli.cmd_openclaw._GLOBAL_ENV_CACHE", {})
     monkeypatch.chdir(tmp_path)
+    # The deploy command intentionally injects explicit CLI env into the
+    # process for the duration of a real CLI invocation. Register these keys
+    # with monkeypatch first so this in-process test restores the host
+    # environment afterwards instead of leaking credentials to later tests.
+    monkeypatch.setenv("OPENCLAW_GATEWAY_AUTH_MODE", "anonymous")
+    monkeypatch.setenv("OPENCLAW_GATEWAY_TOKEN", "test-sentinel")
     _FakeOpenClawCreateClient.get_agent_calls = 0
 
     result = runner.invoke(

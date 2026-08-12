@@ -13,6 +13,7 @@ from click.core import ParameterSource
 from ksadk.api.client import DryRunExit
 from ksadk.cli.resource_common import build_dry_run_envelope
 from ksadk.cli.ui import emit_json, is_json_output
+from ksadk.configs.env_registry import is_sensitive_env_var
 
 _T = TypeVar("_T")
 _DEFAULT_DONE_MSG = "✅ Dry Run Completed: 请求已打印，未执行实际变更。"
@@ -117,7 +118,7 @@ def _mask_if_sensitive(value: Any, *, sensitive: bool) -> Any:
 def _sanitize_dry_run_value(value: Any, *, parent_key: str | None = None) -> Any:
     if isinstance(value, dict):
         env_key = str(value.get("Key") or "")
-        env_sensitive = bool(value.get("IsSensitive")) or _is_sensitive_key(env_key)
+        env_sensitive = bool(value.get("IsSensitive")) or is_sensitive_env_var(env_key)
         sanitized: dict[str, Any] = {}
         for key, item in value.items():
             key_text = str(key)

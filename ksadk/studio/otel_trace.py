@@ -10,15 +10,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import quote
 
 from ksadk.studio.contracts import RunEvent, RunRecord
-from ksadk.studio.errors import not_found
+from ksadk.studio.errors import StudioError, not_found
+from ksadk.studio.pagination import keyset_page
 from ksadk.studio.workspace import Workspace
 
 _TRACE_ID = re.compile(r"^[0-9a-f]{32}$")
@@ -37,6 +39,13 @@ _SENSITIVE_KEYS = {
     "text",
     "token",
 }
+
+# 内容类字段：本地 Studio 默认放行（localhost 单用户调试），secret/token 永远脱敏
+_CONTENT_KEYS = {"args", "command", "content", "input", "output", "prompt", "text", "delta"}
+
+
+def _trace_content_enabled() -> bool:
+    return os.environ.get("KSADK_STUDIO_TRACE_CONTENT", "1") != "0"
 
 
 def _canonical_trace_id(value: str) -> str:
@@ -59,6 +68,21 @@ def _iso(value: datetime | None) -> str | None:
     if value is None:
         return None
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _stringify(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, ensure_ascii=False, default=str)
+    except Exception:
+        return str(value)
+
+
+def _truncate(text: str, limit: int = 4096) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "…"
 
 
 def _otlp_value(value: Any) -> dict[str, Any]:
@@ -97,8 +121,17 @@ def _decoded_attributes(items: Iterable[dict[str, Any]]) -> dict[str, Any]:
 
 def _safe_event_attributes(data: dict[str, Any]) -> dict[str, Any]:
     safe: dict[str, Any] = {}
+    include_content = _trace_content_enabled()
     for key, value in data.items():
-        if key in _SENSITIVE_KEYS or any(token in key.lower() for token in ("secret", "token")):
+        if any(token in key.lower() for token in ("secret", "token")):
+            continue
+        if key in _SENSITIVE_KEYS:
+            if (
+                include_content
+                and key in _CONTENT_KEYS
+                and isinstance(value, (str, int, float, bool))
+            ):
+                safe[f"agentkit.event.{key}"] = _truncate(_stringify(value), 2048)
             continue
         if isinstance(value, (str, int, float, bool)):
             safe[f"agentkit.event.{key}"] = value
@@ -216,8 +249,61 @@ class OtlpTraceStore:
         status: str | None = None,
         limit: int = 200,
     ) -> list[dict[str, Any]]:
+        summaries = self._trace_summaries(agent_id=agent_id, status=status)
+        summaries.sort(
+            key=lambda item: (item["startedAt"] or "", item["traceId"]),
+            reverse=True,
+        )
+        return summaries[: max(1, min(limit, 1000))]
+
+    def paginate_trace_summaries(
+        self,
+        *,
+        agent_id: str | None = None,
+        status: str | None = None,
+        query: str = "",
+        limit: int = 50,
+        cursor: str | None = None,
+        sort: str = "startedAt:desc",
+    ) -> dict[str, Any]:
+        if sort not in {"startedAt:desc", "startedAt:asc"}:
+            raise StudioError(
+                "PAGINATION_SORT_INVALID",
+                "Trace 排序字段无效",
+                status_code=422,
+                field="sort",
+            )
+        summaries = self._trace_summaries(
+            agent_id=agent_id,
+            status=status,
+            query=query,
+        )
+        filters = {
+            "agentId": agent_id or "",
+            "status": status or "",
+            "query": query.strip().lower(),
+        }
+        return keyset_page(
+            summaries,
+            key=lambda item: (item["startedAt"] or "", item["traceId"]),
+            reverse=sort.endswith(":desc"),
+            limit=max(1, min(limit, 1000)),
+            cursor=cursor,
+            namespace="traces",
+            sort=sort,
+            filters=filters,
+        )
+
+    def _trace_summaries(
+        self,
+        *,
+        agent_id: str | None = None,
+        status: str | None = None,
+        query: str = "",
+    ) -> list[dict[str, Any]]:
         directory = self.workspace.resolve(".agentkit/traces")
         summaries: list[dict[str, Any]] = []
+        normalized_query = query.strip().lower()
         for path in directory.glob("*.otlp.json"):
             try:
                 view = self.get_trace_view(path.name.removesuffix(".otlp.json"))
@@ -226,6 +312,19 @@ class OtlpTraceStore:
             if agent_id and view["agentId"] != agent_id:
                 continue
             if status and view["status"] != status:
+                continue
+            if normalized_query and not any(
+                normalized_query in str(view.get(field) or "").lower()
+                for field in (
+                    "traceId",
+                    "runId",
+                    "agentId",
+                    "sessionId",
+                    "runtimeType",
+                    "model",
+                    "status",
+                )
+            ):
                 continue
             metrics = view["metrics"]
             summaries.append(
@@ -240,14 +339,88 @@ class OtlpTraceStore:
                     "startedAt": view["startedAt"],
                     "durationMs": metrics["durationMs"],
                     "durationSource": metrics["durationSource"],
+                    "inputTokens": metrics["inputTokens"],
+                    "outputTokens": metrics["outputTokens"],
                     "totalTokens": metrics["totalTokens"],
                     "usageReported": metrics["usageReported"],
                     "spanCount": len(view["spans"]),
                     "target": view["target"],
                 }
             )
-        summaries.sort(key=lambda item: item["startedAt"] or "", reverse=True)
-        return summaries[: max(1, min(limit, 1000))]
+        return summaries
+
+    def trace_overview(
+        self,
+        *,
+        range_name: str = "24h",
+        agent_id: str | None = None,
+        status: str | None = None,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        if range_name not in {"24h", "7d"}:
+            raise StudioError(
+                "TRACE_RANGE_INVALID",
+                "Trace 时间范围无效",
+                status_code=422,
+                field="range",
+            )
+        current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        if range_name == "24h":
+            bucket_delta = timedelta(hours=1)
+            bucket_count = 24
+            bucket_start = current.replace(minute=0, second=0, microsecond=0)
+        else:
+            bucket_delta = timedelta(days=1)
+            bucket_count = 7
+            bucket_start = current.replace(hour=0, minute=0, second=0, microsecond=0)
+        starts = [bucket_start - bucket_delta * index for index in range(bucket_count - 1, -1, -1)]
+        buckets = [
+            {
+                "startedAt": _iso(start),
+                "runs": 0,
+                "completed": 0,
+            }
+            for start in starts
+        ]
+        cutoff = starts[0]
+        summaries = self._trace_summaries(agent_id=agent_id, status=status)
+        in_range: list[dict[str, Any]] = []
+        for item in summaries:
+            raw_started_at = item.get("startedAt")
+            if not raw_started_at:
+                continue
+            try:
+                started_at = datetime.fromisoformat(
+                    str(raw_started_at).replace("Z", "+00:00")
+                ).astimezone(timezone.utc)
+            except ValueError:
+                continue
+            if started_at < cutoff or started_at > current:
+                continue
+            index = int((started_at - cutoff) // bucket_delta)
+            if index < 0 or index >= bucket_count:
+                continue
+            in_range.append(item)
+            buckets[index]["runs"] += 1
+            if item["status"] == "COMPLETED":
+                buckets[index]["completed"] += 1
+
+        completed = [item for item in in_range if item["status"] == "COMPLETED"]
+        durations = [
+            int(item["durationMs"]) for item in completed if item.get("durationMs") is not None
+        ]
+        total = len(in_range)
+        return {
+            "range": range_name,
+            "total": total,
+            "completed": len(completed),
+            "successRate": len(completed) / total if total else None,
+            "averageDurationMs": (sum(durations) / len(durations) if durations else None),
+            "inputTokens": sum(int(item.get("inputTokens") or 0) for item in in_range),
+            "outputTokens": sum(int(item.get("outputTokens") or 0) for item in in_range),
+            "totalTokens": sum(int(item.get("totalTokens") or 0) for item in in_range),
+            "buckets": buckets,
+        }
 
     def delete(
         self,
@@ -506,6 +679,31 @@ class OtlpTraceStore:
         exit_code = end.data.get("exitCode") if end is not None else None
         status = str(end.data.get("status") or "") if end is not None else ""
         failed = (exit_code not in (None, 0)) or status.lower() in {"failed", "error"}
+        include_content = _trace_content_enabled()
+        tool_input: Any = None
+        if include_content:
+            if start.type == "command.started":
+                tool_input = start.data.get("command") or start.data.get("commandActions")
+            elif start.type == "tool.started":
+                tool_input = (
+                    start.data.get("args") or start.data.get("arguments") or start.data.get("input")
+                )
+        tool_output: Any = None
+        if include_content and end is not None:
+            tool_output = (
+                end.data.get("result") or end.data.get("output") or end.data.get("content")
+            )
+        attrs: dict[str, Any] = {
+            "gen_ai.operation.name": "execute_tool",
+            "gen_ai.tool.name": name,
+            "gen_ai.tool.call.id": call_id,
+            "agentkit.tool.exit_code": exit_code,
+            "agentkit.tool.status": status,
+        }
+        if tool_input is not None:
+            attrs["agentkit.tool.input"] = _truncate(_stringify(tool_input))
+        if tool_output is not None:
+            attrs["agentkit.tool.output"] = _truncate(_stringify(tool_output))
         return {
             "traceId": trace_id,
             "spanId": _span_id(trace_id, f"tool:{call_id}:{start.id}"),
@@ -514,15 +712,7 @@ class OtlpTraceStore:
             "kind": 1,
             "startTimeUnixNano": str(start_ns),
             "endTimeUnixNano": str(max(start_ns, end_ns)),
-            "attributes": _attributes(
-                {
-                    "gen_ai.operation.name": "execute_tool",
-                    "gen_ai.tool.name": name,
-                    "gen_ai.tool.call.id": call_id,
-                    "agentkit.tool.exit_code": exit_code,
-                    "agentkit.tool.status": status,
-                }
-            ),
+            "attributes": _attributes(attrs),
             "events": [],
             "status": {"code": 2 if failed else 1 if end is not None else 0},
         }
@@ -544,9 +734,7 @@ class OtlpTraceStore:
             "parentSpanId": span.get("parentSpanId"),
             "name": span.get("name", ""),
             "kind": _SPAN_KIND.get(int(span.get("kind") or 0), "UNSPECIFIED"),
-            "status": _STATUS_CODE.get(
-                int((span.get("status") or {}).get("code") or 0), "UNSET"
-            ),
+            "status": _STATUS_CODE.get(int((span.get("status") or {}).get("code") or 0), "UNSET"),
             "startTimeUnixNano": str(start_ns),
             "endTimeUnixNano": str(end_ns),
             "durationMs": max(0, round((end_ns - start_ns) / 1_000_000, 3)),

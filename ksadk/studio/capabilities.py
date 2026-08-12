@@ -68,6 +68,7 @@ class LocalCapabilityResolver:
             endpoint_url=endpoint,
             credential_ref=spec.credential_ref,
             parameters=spec.parameters,
+            wire_api=spec.wire_api,
         )
 
     def resolve_skill(self, ref: CapabilityRef) -> dict[str, Any]:
@@ -149,7 +150,8 @@ class LocalCapabilityResolver:
             return spec.endpoint_url.rstrip("/")
         assert spec.base_url
         base = spec.base_url.rstrip("/")
-        return f"{base}/chat/completions"
+        suffix = "/responses" if spec.wire_api == "responses" else "/chat/completions"
+        return f"{base}{suffix}"
 
     def _directory_digest(self, root: Path) -> str:
         digest = hashlib.sha256()

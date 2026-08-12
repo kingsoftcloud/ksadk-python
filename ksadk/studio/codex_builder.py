@@ -7,7 +7,7 @@ import os
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Literal, cast
+from typing import Any, Callable, Literal, cast
 
 from pydantic import ValidationError
 
@@ -18,7 +18,7 @@ from ksadk.managed_runtime import (
     validate_runtime_binary,
 )
 from ksadk.studio.codex_manifest import CodexManifestRepository
-from ksadk.studio.contracts import ContractModel
+from ksadk.studio.contracts import ContractModel, ModelSpec
 from ksadk.studio.errors import StudioError, not_found
 from ksadk.studio.workspace import Workspace
 from ksadk.version import VERSION as SDK_VERSION
@@ -40,6 +40,10 @@ class CodexBuildRecord(ContractModel):
     cli_version: str
     proxy_mode: Literal["forced", "auto", "direct"]
     runtime_lock: dict
+    # ``None`` identifies legacy records that predate connection snapshots.
+    # New builds always persist a mapping (possibly empty), so run resolution
+    # never consults mutable Catalog state after the build has been created.
+    model_profiles: dict[str, dict[str, Any]] | None = None
     created_at: datetime
 
 
@@ -48,9 +52,7 @@ class CodexBuildRepository:
         self.workspace = workspace
 
     def _path(self, build_id: str) -> Path:
-        return self.workspace.resolve(
-            Path(".agentkit/codex-builds") / f"{build_id}.json"
-        )
+        return self.workspace.resolve(Path(".agentkit/codex-builds") / f"{build_id}.json")
 
     def save(self, record: CodexBuildRecord) -> CodexBuildRecord:
         payload = record.model_dump(
@@ -87,9 +89,7 @@ class CodexBuildRepository:
         for path in directory.glob("build_*.json"):
             try:
                 records.append(
-                    CodexBuildRecord.model_validate_json(
-                        path.read_text(encoding="utf-8")
-                    )
+                    CodexBuildRecord.model_validate_json(path.read_text(encoding="utf-8"))
                 )
             except (OSError, ValidationError):
                 continue
@@ -104,9 +104,7 @@ class CodexBuildRepository:
     ) -> int:
         records = [item for item in self.list() if item.agent_name == agent_id]
         artifacts = {
-            self.workspace.resolve(item.artifact_path)
-            for item in records
-            if item.artifact_path
+            self.workspace.resolve(item.artifact_path) for item in records if item.artifact_path
         }
         for artifact in artifacts:
             self._remove_file(
@@ -124,9 +122,7 @@ class CodexBuildRepository:
                 path,
                 purge=purge,
                 destination=(
-                    None
-                    if trash_directory is None
-                    else trash_directory / "builds" / path.name
+                    None if trash_directory is None else trash_directory / "builds" / path.name
                 ),
             )
         return len(records)
@@ -173,11 +169,15 @@ class CodexStudioBuilder:
         manifest_repository: CodexManifestRepository | None = None,
         build_repository: CodexBuildRepository | None = None,
         runtime_inspector: RuntimeInspector = _inspect_runtime,
+        resource_catalog: Any = None,
+        draft_repository: Any = None,
     ) -> None:
         self.workspace = workspace
         self.manifests = manifest_repository or CodexManifestRepository(workspace)
         self.repository = build_repository or CodexBuildRepository(workspace)
         self.runtime_inspector = runtime_inspector
+        self.catalog = resource_catalog
+        self.drafts = draft_repository
 
     def build(
         self,
@@ -186,7 +186,11 @@ class CodexStudioBuilder:
         source_revision: int = 1,
     ) -> CodexBuildRecord:
         snapshot = self.manifests.load(agent_id)
-        build_id = f"build_{snapshot.manifest_sha256[:20]}"
+        model_profiles = self._model_profile_snapshot(
+            snapshot.manifest.name,
+            allowed_models=snapshot.manifest.allowed_models,
+        )
+        build_id = self._build_id(snapshot.manifest_sha256, model_profiles)
         try:
             existing = self.repository.get(build_id)
         except StudioError as exc:
@@ -240,15 +244,69 @@ class CodexStudioBuilder:
             cli_version=cli_version,
             proxy_mode=current_proxy_mode(),
             runtime_lock=lock,
+            model_profiles=model_profiles,
             created_at=datetime.now(timezone.utc),
         )
         return self.repository.save(record)
 
     def is_current(self, record: CodexBuildRecord) -> bool:
-        return (
-            record.manifest_sha256
-            == self.manifests.load(record.agent_name).manifest_sha256
+        snapshot = self.manifests.load(record.agent_name)
+        if record.manifest_sha256 != snapshot.manifest_sha256:
+            return False
+        if record.model_profiles is None:
+            return True
+        return record.model_profiles == self._model_profile_snapshot(
+            snapshot.manifest.name,
+            allowed_models=snapshot.manifest.allowed_models,
         )
+
+    @staticmethod
+    def _build_id(
+        manifest_sha256: str,
+        model_profiles: dict[str, dict[str, Any]],
+    ) -> str:
+        if not model_profiles:
+            return f"build_{manifest_sha256[:20]}"
+        fingerprint = json.dumps(
+            model_profiles,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        import hashlib
+
+        digest = hashlib.sha256(f"{manifest_sha256}\n{fingerprint}".encode()).hexdigest()
+        return f"build_{digest[:20]}"
+
+    def _model_profile_snapshot(
+        self,
+        agent_id: str,
+        *,
+        allowed_models: tuple[str, ...],
+    ) -> dict[str, dict[str, Any]]:
+        if self.catalog is None or self.drafts is None:
+            return {}
+        draft = self.drafts.get(agent_id)
+        if draft is None:
+            return {}
+        bindings = draft.spec.bindings
+        resource_ids = list(getattr(bindings, "model_profile_ids", []) or [])
+        default_id = getattr(bindings, "model_profile_id", None)
+        if not resource_ids and default_id:
+            resource_ids = [default_id]
+        profiles: dict[str, dict[str, Any]] = {}
+        for resource_id in resource_ids:
+            descriptor = self.catalog.get(resource_id)
+            profile = ModelSpec.model_validate(descriptor.contract)
+            if profile.model not in allowed_models or profile.model in profiles:
+                continue
+            profiles[profile.model] = profile.model_dump(
+                by_alias=True,
+                exclude_defaults=True,
+                exclude_none=True,
+                mode="json",
+            )
+        return profiles
 
     @staticmethod
     def _runtime_lock(artifact_path: Path) -> dict:
