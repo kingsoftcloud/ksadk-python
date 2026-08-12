@@ -305,6 +305,20 @@ async def shutdown_runtime_resources(state: RuntimeAppState) -> None:
         logger.exception("failed to clear sandbox registry on shutdown")
 
 
+def _is_agent_execution_path(path: str, method: str) -> bool:
+    """是否 agent 执行类请求(需要 root span 兜底,让 tool 内 outbound 挂到该 trace)。
+
+    session 管理(GetAgentUiBootstrap/ListSessionMessages 等轮询)与 UI/health 不建 span。
+    """
+    m = (method or "").upper()
+    p = (path or "").strip()
+    if m == "POST" and p in {"/v1/responses", "/v1/chat/completions", "/run", "/agentengine/api/v1/RunAgent"}:
+        return True
+    if m == "GET" and p in {"/run_sse", "/agentengine/api/v1/SubscribeRunEvents"}:
+        return True
+    return False
+
+
 def create_runtime_app(
     config: RuntimeAppConfig,
     configure: Optional[ConfigureApp] = None,
@@ -367,6 +381,8 @@ def create_runtime_app(
             # 覆盖整个请求的 root server span,让 langchain/openinference 的 agent span 与
             # tool 内 outbound(A2A)调用都挂到这条 trace 上(openinference 只在 LLM 调用
             # 期间建 span,tool 执行时其 span 已 detach,需一个贯穿 span 兜底)。
+            # 只对 agent 执行类路径建 root span;session/UI 管理路径(GetAgentUiBootstrap/
+            # ListSessionMessages 等轮询)不建,避免一次问答产生一堆独立 trace。
             try:
                 from opentelemetry import context as _otel_ctx, propagate
                 from opentelemetry import trace as _otel_trace
@@ -380,12 +396,14 @@ def create_runtime_app(
                         response = await call_next(request)
                     finally:
                         _otel_ctx.detach(_token)
-                else:
+                elif _is_agent_execution_path(request.url.path, request.method):
                     _tracer = _otel_trace.get_tracer("ksadk.server")
                     with _tracer.start_as_current_span(
                         f"{request.method} {request.url.path}"
                     ):
                         response = await call_next(request)
+                else:
+                    response = await call_next(request)
             except Exception:
                 response = await call_next(request)
             path = request.url.path
