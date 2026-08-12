@@ -614,7 +614,7 @@ async def _maybe_fill_hosted_pipeline(
             agent_max_input_tokens=agent_max_input_tokens,
             agent_reserve_output_tokens=agent_reserve_output_tokens,
         )
-    except Exception:  # noqa: BLE001 — hosted pipeline 失败必须回退旧路径，不阻断主链路
+    except Exception:  # noqa: BLE001
         logger.warning(
             "hosted pipeline failed for session=%s; falling back to PR B path",
             session_id,
