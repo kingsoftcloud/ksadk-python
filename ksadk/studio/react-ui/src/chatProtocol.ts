@@ -91,9 +91,21 @@ export interface RunActivity {
   data: Record<string, unknown>;
 }
 
+export interface RuntimeTextItem {
+  runId: string;
+  scopeId: string;
+  itemId: string;
+  partId: string;
+  phase: string;
+  kind: "message" | "thinking";
+  text: string;
+  completed: boolean;
+}
+
 export interface RunActivityProjection {
   reasoning: string;
   output: string;
+  textItems: RuntimeTextItem[];
   activities: RunActivity[];
 }
 
@@ -531,22 +543,69 @@ function responseItemActivity(item: Record<string, unknown>, done: boolean): Run
   };
 }
 
+function textItemKey(data: Record<string, unknown>): string {
+  return [
+    String(data.runId || ""),
+    String(data.scopeId || ""),
+    String(data.itemId || ""),
+    String(data.partId || ""),
+  ].join("/");
+}
+
+function outputRefsFrom(event: RunEvent): Array<Record<string, unknown>> {
+  const runtimeEvent = recordOf(event.data?.runtimeEvent);
+  const raw = runtimeEvent.output_refs ?? runtimeEvent.outputRefs;
+  return Array.isArray(raw) ? raw.map(recordOf) : [];
+}
+
 export function projectRunActivities(events: RunEvent[]): RunActivityProjection {
-  let reasoning = "";
-  let output = "";
+  const textItems: RuntimeTextItem[] = [];
+  const textByKey = new Map<string, number>();
   const activities: RunActivity[] = [];
   const byKey = new Map<string, number>();
+  let terminalOutputRefs: Array<Record<string, unknown>> | null = null;
 
   for (const event of events) {
     const data = event.data || {};
-    if (event.type === "thinking.delta" || event.type === "thinking.completed") {
+    const isThinking = event.type === "thinking.delta" || event.type === "thinking.completed";
+    const isMessage = event.type === "message.delta" || event.type === "message.completed";
+    if (isThinking || isMessage) {
+      const kind: RuntimeTextItem["kind"] = isThinking ? "thinking" : "message";
+      const completed = event.type.endsWith(".completed");
+      const operation = completed ? "complete" : String(data.operation || "append");
       const text = String(data.text || data.delta || "");
-      reasoning = event.type === "thinking.completed" && text ? text : reasoning + text;
+      const key = `${kind}:${textItemKey(data)}`;
+      const existingIndex = textByKey.get(key);
+      const runtimeEvent = recordOf(data.runtimeEvent);
+      const phase = String(data.phase || runtimeEvent.phase || "");
+      if (existingIndex === undefined) {
+        textByKey.set(key, textItems.length);
+        textItems.push({
+          runId: String(data.runId || ""),
+          scopeId: String(data.scopeId || ""),
+          itemId: String(data.itemId || ""),
+          partId: String(data.partId || ""),
+          phase,
+          kind,
+          text,
+          completed,
+        });
+      } else {
+        const previous = textItems[existingIndex];
+        const nextText = operation === "append" ? previous.text + text : text || previous.text;
+        textItems[existingIndex] = {
+          ...previous,
+          phase: previous.phase || phase,
+          text: nextText,
+          completed: completed || previous.completed,
+        };
+      }
       continue;
     }
-    if (event.type === "message.delta" || event.type === "message.completed") {
-      const text = String(data.text || data.delta || "");
-      output = event.type === "message.completed" && text ? text : output + text;
+
+    if (["run.completed", "run.failed", "run.interrupted", "run.cancelled", "run.canceled"].includes(event.type)) {
+      const refs = outputRefsFrom(event);
+      if (refs.length) terminalOutputRefs = refs;
       continue;
     }
 
@@ -590,7 +649,25 @@ export function projectRunActivities(events: RunEvent[]): RunActivityProjection 
     }
   }
 
-  return { reasoning, output, activities };
+  const messageItems = textItems.filter(item => item.kind === "message");
+  const thinkingItems = textItems.filter(item => item.kind === "thinking");
+  const reasoning = thinkingItems.map(item => item.text).join("");
+
+  let output: string;
+  if (terminalOutputRefs && terminalOutputRefs.length) {
+    const byIdentity = new Map<string, RuntimeTextItem>();
+    for (const item of messageItems) byIdentity.set(`${item.scopeId}/${item.itemId}`, item);
+    output = terminalOutputRefs
+      .map(ref => byIdentity.get(`${String(ref.scope_id ?? ref.scopeId ?? "")}/${String(ref.item_id ?? ref.itemId ?? "")}`))
+      .filter((item): item is RuntimeTextItem => Boolean(item))
+      .map(item => item.text)
+      .join("\n\n");
+  } else {
+    const completed = messageItems.filter(item => item.completed);
+    output = (completed.length ? completed : messageItems).map(item => item.text).join("");
+  }
+
+  return { reasoning, output, textItems, activities };
 }
 
 function tokenSummary(data: Record<string, unknown>): string {
