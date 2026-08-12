@@ -45,11 +45,16 @@ async def test_agent_budget_drives_planner_not_model_window(tmp_path, monkeypatc
     assert result is not None
     budget = result.plan.get("budget", {})
     # budget 用 AgentVersion 的 4096，不是模型的 1012000
-    assert budget["max_input_tokens"] <= 4096, (
-        f"budget 应 ≤ 4096，实际 {budget['max_input_tokens']}"
+    # 精确断言：4096 预算不被 safety_buffer 扣成 0
+    assert budget["max_input_tokens"] == 4096, (
+        f"budget max_input 应为 4096（AgentVersion 预算，不扣 safety_buffer），"
+        f"实际 {budget['max_input_tokens']}"
     )
-    assert budget["soft_limit_tokens"] <= 2048, (
-        f"soft_limit 应 ≤ 2048，实际 {budget['soft_limit_tokens']}"
+    assert budget["soft_limit_tokens"] == 2048, (
+        f"soft_limit 应为 2048（50% of 4096），实际 {budget['soft_limit_tokens']}"
+    )
+    assert budget["hard_limit_tokens"] == 3481, (
+        f"hard_limit 应为 3481（85% of 4096），实际 {budget['hard_limit_tokens']}"
     )
 
 

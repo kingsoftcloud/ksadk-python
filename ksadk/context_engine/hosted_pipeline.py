@@ -298,13 +298,18 @@ async def run_hosted_pipeline(
     if not any(i.kind == "compiled_prompt" for i in candidates) and not input_item:
         return None
 
-    # 3. 构造预算（方案 §8.2）。优先用 AgentVersion 的 ContextSpec 预算（agent_max_input_tokens），
-    # 缺失时 fallback 到 model_metadata 的 effective context window。
+    # 3. 构造预算（方案 §8.2）。优先用 AgentVersion 的 ContextSpec 预算
+    # （agent_max_input_tokens），缺失时 fallback 到 model_metadata。
     if agent_max_input_tokens is not None and agent_max_input_tokens > 0:
-        # AgentVersion 预算：max_input_tokens 直接作为 context_window，reserve 从 spec 取
+        # AgentVersion 预算：max_input_tokens 直接作为 context_window，reserve 从 spec 取。
+        # 不扣 safety_buffer（AgentVersion 已显式指定预算，8000 默认 buffer 是为百万
+        # token 窗口设计的，在小预算下会导致 max_input=0）。
+        from dataclasses import replace
+
         reserve_out = agent_reserve_output_tokens or 0
+        agent_policy = replace(pol.budget, safety_buffer_tokens=0)
         budget = build_budget(
-            policy=pol.budget,
+            policy=agent_policy,
             context_window_tokens=agent_max_input_tokens + reserve_out,
             reserved_output_tokens=reserve_out,
             reserved_reasoning_tokens=0,

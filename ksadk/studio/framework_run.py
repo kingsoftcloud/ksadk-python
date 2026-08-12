@@ -27,7 +27,12 @@ def _resolved_prompt_ownership(resolved: Any) -> str:
     context = resolved.get("context")
     if not isinstance(context, dict):
         return ""
-    return str(context.get("promptOwnership") or context.get("prompt_ownership") or "")
+    return str(
+        context.get("promptOwnership")
+        or context.get("prompt_ownership")
+        or context.get("ownership")
+        or ""
+    )
 
 
 def _resolved_context_engine_rollout(resolved: Any) -> str:
@@ -145,10 +150,19 @@ class FrameworkRunSpecResolver:
             "entry_point": detection.entry_point,
             "agent_variable": detection.agent_variable,
         }
-        if approval_mode:
-            request_config["tool_approval_mode"] = normalize_tool_approval_mode(
-                approval_mode
+        # AgentVersion 的 ContextSpec 预算传到 Planner（方案 §8.2）
+        context_spec = resolved.get("context") if isinstance(resolved, dict) else {}
+        if isinstance(context_spec, dict):
+            max_input = context_spec.get("maxInputTokens") or context_spec.get("max_input_tokens")
+            reserve_output = context_spec.get("reserveOutputTokens") or context_spec.get(
+                "reserve_output_tokens"
             )
+            if max_input is not None:
+                request_config["max_input_tokens"] = int(max_input)
+            if reserve_output is not None:
+                request_config["reserve_output_tokens"] = int(reserve_output)
+        if approval_mode:
+            request_config["tool_approval_mode"] = normalize_tool_approval_mode(approval_mode)
         return StudioRunSpec(
             launch_context=RuntimeLaunchContext(
                 runtime_type=runtime_type,
