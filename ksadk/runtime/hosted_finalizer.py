@@ -57,6 +57,7 @@ class FinalizeContext:
     runtime_type: str
     prompt_integration_mode: str = ""
     session_events: Any = None  # 已取的 turn events（避免重复读 store）
+    memory_write_rollout: str = ""
 
 
 async def finalize_hosted_turn(
@@ -85,7 +86,13 @@ async def finalize_hosted_turn(
         pass
 
     # 3. Memory Candidate 抽取 + flush（据 MemoryPolicy 门控）
-    if not _memory_extract_enabled():
+    # memory_write_rollout=enabled → 即使 env 没设也 flush（AgentVersion 级策略）
+    # memory_write_rollout=shadow/off → 不 flush（仅观测/关闭）
+    # memory_write_rollout 未设（空）→ fallback 到 env KSADK_MEMORY_FLUSH_ENABLED
+    should_flush = ctx.memory_write_rollout == "enabled" or (
+        not ctx.memory_write_rollout and _memory_extract_enabled()
+    )
+    if not should_flush:
         return
     # 不强制 prompt_integration_mode=ksadk_hosted：canonical 路径可能在非 hosted 也需 flush
     # （如 framework_assisted 的显式"记住"），只要 Memory 开关开启即 flush（方案 §10.4）。

@@ -395,7 +395,20 @@ class LangGraphRunner(BaseRunner):
             if system_text and isinstance(state.get("messages"), list):
                 from langchain_core.messages import SystemMessage
 
-                state["messages"] = [SystemMessage(content=system_text), *state["messages"]]
+                # 避免重复注入：如果 messages 已含 SystemMessage，不再 prepend
+                # （ksadk_hosted 模式下 compiled prompt 已在 instructions 里，
+                # 用户 agent.py 可能也加了 SystemMessage，不应再加一个）
+                has_system = any(
+                    isinstance(m, SystemMessage)
+                    or (isinstance(m, dict) and m.get("role") == "system")
+                    or (hasattr(m, "type") and m.type == "system")
+                    for m in state["messages"]
+                )
+                if not has_system:
+                    state["messages"] = [
+                        SystemMessage(content=system_text),
+                        *state["messages"],
+                    ]
             return state
 
         return normalized_payload
@@ -1040,9 +1053,7 @@ class LangGraphRunner(BaseRunner):
                     # ("values", state) 是 state 快照(忽略,终态走 on_chain_end)。
                     # 编排方常用 custom writer 把"调远端 agent/子图"的流式增量透传出来。
                     chunk = event.get("data", {}).get("chunk")
-                    if not (
-                        isinstance(chunk, tuple) and len(chunk) == 2 and chunk[0] == "custom"
-                    ):
+                    if not (isinstance(chunk, tuple) and len(chunk) == 2 and chunk[0] == "custom"):
                         continue
                     data = chunk[1]
                     if isinstance(data, str):
@@ -1069,9 +1080,7 @@ class LangGraphRunner(BaseRunner):
                         replace = bool(data.get("replace"))
                         if custom_type == "thinking":
                             accumulated_reasoning = (
-                                custom_delta
-                                if replace
-                                else accumulated_reasoning + custom_delta
+                                custom_delta if replace else accumulated_reasoning + custom_delta
                             )
                         else:
                             accumulated_text = (

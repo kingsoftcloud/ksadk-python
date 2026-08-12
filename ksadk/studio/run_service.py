@@ -612,6 +612,7 @@ class StudioRunService:
                     prompt_integration_mode=str(
                         spec.request_config.get("prompt_integration_mode") or ""
                     ),
+                    memory_write_rollout=str(spec.request_config.get("memory_write_rollout") or ""),
                     session_events=[turn_event],
                 ),
             )

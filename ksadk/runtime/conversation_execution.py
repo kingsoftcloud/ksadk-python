@@ -268,6 +268,7 @@ async def _finalize_hosted_turn(
                 (getattr(prepared, "shadow_context_plan", None) or {}).get("runtime_type") or ""
             ),
             prompt_integration_mode=str(getattr(prepared, "prompt_integration_mode", "")),
+            memory_write_rollout=str(getattr(prepared, "memory_write_rollout", "") or ""),
         ),
         session_service_provider=session_service_provider,
     )

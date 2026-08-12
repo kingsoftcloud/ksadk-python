@@ -1135,7 +1135,7 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
                           checked={memoryEnabled}
                           onChange={event => { setMemoryEnabled(event.target.checked); markDirty(); }}
                         />
-                        <span><strong>启用长期记忆</strong><small>允许在后续会话召回经过筛选的稳定事实；不是保存完整聊天记录。</small></span>
+                        <span><strong>长期记忆召回</strong><small>允许在后续会话召回已保存的稳定事实；不是保存完整聊天记录。写入需在下方单独开启。</small></span>
                       </label>
                       {memoryEnabled && (
                         <FormField label="记忆写入" requirement="optional" htmlFor="memoryWriteRollout" hint="建议先观察候选，确认质量后再正式写入。">
