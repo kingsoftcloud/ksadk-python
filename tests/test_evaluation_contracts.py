@@ -1,10 +1,10 @@
 from ksadk.evaluation.contracts import (
     CaseRun,
+    DataPolicy,
     EvalCase,
     EvalRunReport,
     EvalRunSpec,
     EvalSetVersion,
-    DataPolicy,
     EvaluationConfig,
     MetricResult,
     TargetKind,
@@ -62,3 +62,23 @@ def test_report_models_preserve_unavailable_trace_evidence():
     assert report.case_runs[0].passed is False
     assert report.summary.unavailable_cases == 1
     assert EvaluationConfig().data_policy is DataPolicy.LOCAL_ONLY
+
+
+def test_optional_metric_error_does_not_fail_case():
+    case_run = CaseRun(
+        case_id="case-1",
+        target_run=TargetRun(status="PASSED"),
+        metrics=[
+            MetricResult(
+                name="optional_quality",
+                status="ERROR",
+                required=False,
+            )
+        ],
+    )
+
+    report = EvalRunReport(spec=_spec(), status="PASSED", case_runs=[case_run])
+
+    assert case_run.passed is True
+    assert report.summary.passed_cases == 1
+    assert report.summary.error_cases == 0

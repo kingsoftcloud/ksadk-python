@@ -1,6 +1,6 @@
 # KsADK 端上 Agent 观测与评测落地技术方案
 
-> 状态：实施设计，尚未表示功能已实现。
+> 状态：实施设计；阶段一公共评测契约、A2A 主链路和本地参考答案自动评分已落地，LocalTarget/Studio 全闭环仍按下文 Roadmap 推进。
 >
 > 范围：`ksadk-python` 的本地评测、CLI、本地 Studio 和运行关联。云端只定义客户端需要的接口，不在本仓实现资产管理或调度服务。
 >
@@ -21,7 +21,7 @@ P1 先做三个目标切片：
 | P1 要做 | P1 不做 |
 | --- | --- |
 | EvalSet 读取、执行、评分、报告、CLI、Studio 详情 | 云端 EvalSet CRUD、云端调度、生产流量回放 |
-| 本地 Agent 评测；本地串行 A2A 评测 | A2A 云端批量调度、ManagedRuntime 云端 Worker、LLM Judge、趋势比较 |
+| 本地 Agent 评测；本地串行 A2A 评测；基于参考答案的本地自动评分 | A2A 云端批量调度、ManagedRuntime 云端 Worker、默认启用的外部 LLM Judge、趋势比较 |
 | Codex 的 worktree、JSONL、diff、验证日志和安全门禁 | 修改 Codex 本体、读取 Codex 历史目录或 TUI |
 
 ## 2. 主流程
@@ -101,12 +101,21 @@ cases:
 
 支持响应、预算和工具轨迹断言。旧 Studio Suite 和 ADK EvalSet JSON 可以导入；不支持的字段必须报错，不能静默丢弃。
 
+`expectedOutput` 是自动评分的参考答案，不是断言。可以与 `input` 使用同一层级的紧凑格式：
+
+```yaml
+cases:
+  - id: echo
+    input: ping
+    expectedOutput: pong
+```
+
 ## 4. 模块与边界
 
 | 模块 | 优先级 | 主要实现 | 边界 |
 | --- | --- | --- | --- |
 | 本地 Agent 评测 | P0-P1 / 高 | `ksadk.evaluation`：加载 EvalSet，`EvaluationExecutor` 按 Case 调用 `LocalTarget` 或 `A2ATarget`，处理超时/取消/隔离，执行断言后原子写 `EvalRunReport` 和 artifact | 不负责云端管理、HTTP 接口或 Studio 页面；只返回统一 `TargetRun` 和报告 |
-| 评估器 | P1 / 高 | `ksadk.evaluation.evaluators`：对响应、JSON、延迟、Token 预算和工具轨迹做确定性判断，生成逐项 `MetricResult` 和证据摘要 | 不重新运行 Agent，不修改原始 `TargetRun`；缺少轨迹只能返回 `UNAVAILABLE`，不降级为通过 |
+| 评估器 | P1 / 高 | `ksadk.evaluation.evaluators`：对响应、JSON、延迟、Token 预算、工具轨迹和参考答案做评分，生成逐项 `MetricResult` 和证据摘要 | 不重新运行 Agent，不修改原始 `TargetRun`；缺少轨迹只能返回 `UNAVAILABLE`，不降级为通过 |
 | CLI 执行 | P1 / 高 | `ksadk.cli.cmd_eval` 实现 `agentengine eval`：校验 `--agent-dir`、`--a2a-url`、`--codex-worktree` 互斥，加载 EvalSet，调用执行器，输出进度、文本报告或 JSON，并用退出码表示通过、质量失败、执行错误和证据缺失 | 不实现评分、Trace 查询或页面；CLI 与 Studio 必须读取同一份报告 |
 | Studio 页面 | P1 / 高 | `ksadk.studio`：`api.py`/`api_contracts.py` 创建和查询评测，`service.py`/`operations.py` 异步执行；`static/` 提供评测列表、新建评测、运行详情、Case 详情、取消和刷新页面；`evaluation.py` 复用 build 评测 | 不复制执行器、评分逻辑或报告存储；HTTP 请求不等待 Agent 完成，页面只读报告和脱敏 artifact |
 | `runtime_observability` | P1-P3 / 中低 | 通用 Agent 的上下文、TraceRef、查询和外导 | 不创建第二份 Trace 存储 |
@@ -147,15 +156,17 @@ P1 先支持单机串行执行；并发、重试和批量调度不放入首版�
 
 ### 4.2 评估器怎么实现（P1）
 
-评估器只消费 `TargetRun` 和可用的 RuntimeEvent/Trace，不参与 Agent 调用。P1 采用确定性评估，先保证结果可复现，再考虑模型评审。
+评估器只消费 `TargetRun` 和可用的 RuntimeEvent/Trace，不参与 Agent 调用。默认采用确定性评估，先保证结果可复现；模型评审必须单独显式启用。
 
 1. `evaluators.py` 按断言类型分发：响应包含/相等、JSON Schema、最大延迟、Token 预算、工具调用和工具未调用。
 2. 每条断言返回一个 `MetricResult`，至少包含 `metric_id`、状态、实际值、阈值和简短 evidence；状态统一为 `PASS`、`FAIL`、`UNAVAILABLE` 或 `ERROR`。
 3. 响应和预算直接读取 `TargetRun`；工具断言读取同一次运行的事件索引；没有对应事件或 Trace 时返回 `UNAVAILABLE`，不重新查询其他运行。
 4. Case 结果由断言结果聚合：所有必需断言通过才算 Case 通过；运行总结果同时保留通过数、失败数、不可用数和错误数，不用平均分掩盖关键失败。
-5. P1 不引入 LLM Judge。P3 如需 Judge，单独增加模型、提示词、成本和人工复核信息，不能覆盖确定性门禁结果。
+5. `reference_match@v1` 不是默认评估器。调用方显式选择 `--evaluator reference_match@v1` 后，才会在最终 Turn 有 `expectedOutput` 时使用本地 Rouge-1 F1 参考答案评分，阈值为 `0.8`；没有参考答案时不产生该指标。
+6. `llm_judge@v1` 不是默认评估器。它要求执行 `uv sync --extra judge`、显式选择 `--evaluator llm_judge@v1`、`--data-policy full_trace`、`--judge-model`、`--judge-api-base` 和密钥环境变量；任一条件缺失时返回 `UNAVAILABLE`，不发起 Judge 调用。当前实现使用 DeepEval 作为 Judge 执行引擎，但评估器名称不绑定具体供应商。报告不保存 Judge 的输入、自然语言理由或远端异常文本。
+7. Judge 结果不覆盖确定性断言、工具轨迹或运行预算门禁。
 
-评估器的输入是 EvalSet 中的 assertion 配置和 `TargetRun`，输出写入 `EvalRunReport.results`；不保存完整 Prompt、Reasoning 或敏感工具返回。测试重点覆盖边界值、类型错误、缺失证据和多断言聚合。
+评估器的输入是 EvalSet 中的 assertion、参考答案和 `TargetRun`，输出写入 `EvalRunReport.results`；不保存完整 Prompt、Reasoning、Judge 理由或敏感工具返回。测试重点覆盖边界值、类型错误、缺失证据和多断言聚合。
 
 ### 4.3 CLI 执行怎么实现（P1）
 
@@ -163,9 +174,10 @@ CLI 只负责把命令行参数转换成 `EvalRunSpec`，不在 CLI 内复制执
 
 1. 解析 `--evalset-file`、`--agent-dir`、`--a2a-url`、`--report-dir`、`--format` 和超时参数，并校验 target 参数互斥。
 2. 调用 `EvaluationExecutor.run()`；默认输出简短进度，结束后从 `report.json` 渲染结果。
-3. `--format pretty|text` 输出通过率、失败 Case 和错误摘要；`--format json` 输出完整 `EvalRunReport`，供 CI 或脚本读取。`text` 是 `pretty` 的兼容别名。
-4. 根据报告状态返回固定退出码：全部通过为 `0`，质量失败为 `1`，配置/执行错误为 `2`，必需证据缺失为 `3`。
-5. CLI 只输出脱敏摘要；详细 artifact 通过 `--report-dir` 指定的报告目录保存，不把 token、环境变量或完整异常栈写到终端。
+3. 需要参考答案匹配时，调用方显式设置 `--evaluator reference_match@v1`；需要语义 Judge 时，调用方显式设置 `--evaluator llm_judge@v1 --data-policy full_trace --judge-model <model> --judge-api-base <url>`，并通过 `--judge-api-key-env` 引用环境变量；命令行和报告均不接收密钥值。
+4. `--format pretty|text` 输出通过率、失败 Case 和错误摘要；`--format json` 输出完整 `EvalRunReport`，供 CI 或脚本读取。`text` 是 `pretty` 的兼容别名。
+5. 根据报告状态返回固定退出码：全部通过为 `0`，质量失败为 `1`，配置/执行错误为 `2`，必需证据缺失为 `3`。
+6. CLI 只输出脱敏摘要；详细 artifact 通过 `--report-dir` 指定的报告目录保存，不把 token、环境变量或完整异常栈写到终端。
 
 实现入口为 `ksadk/cli/cmd_eval.py`，报告读写复用 `ksadk.evaluation.storage`。CLI 和 Studio 使用同一份报告做一致性验收。
 
@@ -324,7 +336,7 @@ Studio P1 只做本地评测的发起和查看，执行仍由本地 Runner 完�
 
 | 产品阶段 | 对应任务 | 交付目标 | 网络与数据默认 |
 | --- | --- | --- | --- |
-| 阶段一：端上本地评测闭环 | P0 + P1 | CLI、Studio 使用同一执行器和报告契约，完成本地 Agent、本地串行 A2A 和 Codex 专项评测 | 报告和证据默认只落本地，`local_only`，不新增 Trace 外导 |
+| 阶段一：端上本地评测闭环 | P0 + P1 | CLI、Studio 使用同一执行器和报告契约，完成本地 Agent、本地串行 A2A、Codex 专项评测和本地参考答案自动评分 | 报告和证据默认只落本地，`local_only`，不新增 Trace 外导 |
 | 阶段二：端云资产与结果协作 | P1.5 + P2 | 精确版本 EvalSet 下发、`result_only` 上传、本地/云端 Worker 契约对齐和通用运行查询 | 执行器位于可访问 Target 的一侧；云端不反向访问本地 Agent |
 | 阶段三：观测外导与评测治理 | P3 | OTLP 外导、可比较实验、质量门禁、Judge、趋势和数据治理 | Trace 外导与报告上传独立授权，未显式开启时仍只保留本地数据 |
 

@@ -127,6 +127,10 @@ tracing = [
     "openinference-instrumentation-langchain>=0.1.0",
     "langfuse>=3.0.0",
 ]
+# LLM Judge 评测；默认不安装，避免本地评测隐式依赖或外发数据。
+judge = [
+    "deepeval>=3.2.6",
+]
 # 知识库 & 记忆库支持
 kb = []
 # Skill Runtime E2B backend
@@ -162,7 +166,7 @@ dev = [
 ]
 # 全部依赖
 all = [
-    "ksadk[a2a,adk,agui,langchain,langgraph,deepagents,kb,skills,tracing,dev]",
+    "ksadk[a2a,adk,agui,langchain,langgraph,deepagents,kb,skills,tracing,judge,dev]",
 ]
 
 [project.scripts]
