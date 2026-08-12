@@ -8,6 +8,14 @@ from typing import Any
 
 from ksadk.tools.gateway import ToolPolicy, tool_policy_requires_approval
 from ksadk.toolsets._langchain import as_tool
+from ksadk.toolsets.a2a import (
+    _A2A_TOOL_POLICIES,
+    _a2a_space_id,
+    call_a2a_agent,
+    get_a2a_agent_card,
+    get_a2a_tools,
+    list_a2a_agents,
+)
 from ksadk.toolsets.platform import component_status, get_platform_tools
 from ksadk.toolsets.sandbox import (
     _SANDBOX_TOOL_POLICIES,
@@ -43,7 +51,7 @@ from ksadk.toolsets.workspace import (
     write_workspace_files,
 )
 
-_DEFAULT_GROUPS = ("skill", "workspace", "platform", "sandbox", "web")
+_DEFAULT_GROUPS = ("skill", "workspace", "platform", "sandbox", "web", "a2a")
 _DISPATCHER_TOOL_NAME = "tool_dispatcher"
 _LEGACY_DISPATCHER_TOOL_NAME = "agentengine_tool_dispatcher"
 _TOOL_SEARCH_NAME = "tool_search"
@@ -75,6 +83,7 @@ _TOOLSET_FACTORIES = {
     "platform": get_platform_tools,
     "sandbox": get_sandbox_tools,
     "web": get_web_tools,
+    "a2a": get_a2a_tools,
 }
 
 _TOOLSET_DESCRIPTORS: dict[
@@ -180,6 +189,23 @@ _TOOLSET_DESCRIPTORS: dict[
     "web": (
         (web_fetch, _WEB_TOOL_POLICIES["web_fetch"], {"boundary": "public_http"}),
         (web_search, _WEB_TOOL_POLICIES["web_search"], {"boundary": "search_provider"}),
+    ),
+    "a2a": (
+        (
+            list_a2a_agents,
+            _A2A_TOOL_POLICIES["list_a2a_agents"],
+            {"enabled": lambda: bool(_a2a_space_id()), "boundary": "a2a_discovery"},
+        ),
+        (
+            get_a2a_agent_card,
+            _A2A_TOOL_POLICIES["get_a2a_agent_card"],
+            {"enabled": lambda: bool(_a2a_space_id()), "boundary": "a2a_discovery"},
+        ),
+        (
+            call_a2a_agent,
+            _A2A_TOOL_POLICIES["call_a2a_agent"],
+            {"enabled": lambda: bool(_a2a_space_id()), "boundary": "a2a_data_plane"},
+        ),
     ),
 }
 

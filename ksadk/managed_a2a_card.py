@@ -68,13 +68,11 @@ class ManagedA2ACardMount:
     def mount(self, app: FastAPI) -> None:
         """Mount ``GET /.well-known/agent-card.json`` into ``app``.
 
-        Uses :func:`a2a.server.routes.create_agent_card_routes` (from a2a-sdk)
-        so the response body is byte-identical to the full A2A server's card
-        endpoint — v2 upgrade to ``AgentEngineA2ABootstrap`` just adds more
-        routes beside this one.
+        Directly registers a FastAPI route returning the card JSON, avoiding
+        ``a2a.server.routes`` (which pulls in the full A2A server stack and its
+        ``culsans`` dependency). The response body is the same AgentCard JSON
+        that ``create_agent_card_routes`` would produce.
         """
-        from a2a.server.routes import create_agent_card_routes
-
         card = build_agent_card(
             name=self.config.agent_name,
             base_url=self.config.base_url,
@@ -83,8 +81,35 @@ class ManagedA2ACardMount:
             skills=self.config.skills or (),
             streaming=self.config.streaming,
         )
-        for route in create_agent_card_routes(card):
-            app.routes.append(route)
+
+        def _card_to_dict() -> dict:
+            # a2a.types.AgentCard is a protobuf message; serialize to the same
+            # camelCase JSON wire format the a2a-sdk route produces.
+            from google.protobuf.json_format import MessageToDict
+
+            return MessageToDict(
+                card,
+                preserving_proto_field_name=False,
+                use_integers_for_enums=False,
+                always_print_fields_with_no_presence=True,
+            )
+
+        from fastapi import Response
+        from fastapi.responses import JSONResponse
+        import json
+
+        card_payload = _card_to_dict()
+
+        async def _get_agent_card() -> Response:
+            return JSONResponse(content=card_payload)
+
+        app.add_api_route(
+            "/.well-known/agent-card.json",
+            _get_agent_card,
+            methods=["GET"],
+            name="a2a_agent_card",
+            include_in_schema=False,
+        )
 
     async def start(self) -> None:
         """No stores/middleware to initialize in v1."""

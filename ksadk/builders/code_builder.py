@@ -111,10 +111,14 @@ class CodeBuilder(BaseBuilder):
     }
     BUNDLED_KSADK_CORE_RUNTIME_REQUIREMENTS = (
         "a2a-sdk>=0.3.22",
+        "culsans>=0.11.0",
         "httpx-sse>=0.4.0",
         "sse-starlette>=2.1.0",
         "python-multipart>=0.0.9,<1.0.0",
         "requests>=2.28.0",
+        "sqlalchemy>=2.0.0",
+        "aiosqlite>=0.19.0",
+        "greenlet>=3.0.0",
         "requests-aws4auth>=1.2.0",
         "kingsoftcloud-sdk-python>=1.5.8.94",
         "cryptography>=44.0.0",
@@ -1878,19 +1882,37 @@ runtime_context = RuntimeLaunchContext(
     detection=detection_result,
     config=dict(getattr(detection_result, "raw_config", None) or {{}}),
 )
-# managed A2A discovery-only card:KSADK_A2A_RUNTIME_ID 非空时挂
-# /.well-known/agent-card.json;注册前即可被 server 探测(a2a-runtime-inbound-wiring)。
-_managed_a2a_card = None
+# managed A2A:KSADK_A2A_RUNTIME_ID 非空时挂 discovery card + 完整数据面 route。
+_a2a_config = None
+_a2a_adapter = None
 if os.environ.get("KSADK_A2A_RUNTIME_ID", "").strip():
     from ksadk.managed_a2a_card import build_managed_a2a_card_if_configured
 
     _managed_a2a_card = build_managed_a2a_card_if_configured()
+    try:
+        from ksadk.a2a.routes import A2AConfig
+        from ksadk.runtime.factory import create_runtime_adapter
+
+        _a2a_adapter = create_runtime_adapter(runtime_context)
+        _base = os.environ.get("KSADK_A2A_INTERNAL_BASE_URL", "").strip() or "http://localhost:8080"
+        _a2a_config = A2AConfig(
+            enabled=True,
+            base_url=_base,
+            agent_name=os.environ.get("KSADK_A2A_AGENT_NAME", "").strip() or os.environ.get("KSADK_A2A_RUNTIME_ID", "").strip(),
+            streaming=True,
+            task_store_dsn="sqlite+aiosqlite:///.agentengine/a2a_tasks.db",
+        )
+    except Exception as _e:
+        logger.warning(f"managed A2A 数据面装配失败,回退 discovery-only: {{_e}}")
+        _a2a_config = None
+        _a2a_adapter = None
 app = create_runtime_app(
     RuntimeAppConfig(
         runtime_type=detection_result.type.value,
         runtime_executor=RuntimeExecutor(build_default_runtime_registry()),
         launch_context=runtime_context,
-        a2a=_managed_a2a_card,
+        a2a=_a2a_config or _managed_a2a_card,
+        a2a_runtime_adapter=_a2a_adapter,
     ),
     configure_runtime_app,
 )

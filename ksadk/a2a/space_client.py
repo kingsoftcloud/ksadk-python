@@ -35,6 +35,7 @@ from ksadk.a2a.control_plane import (
     ENV_A2A_CONTROL_PLANE_URL,
     A2AControlPlane,
     A2ARouteInterface,
+    A2AAgentCardClient,
     CredentialInjection,
     DiscoveredAgent,
     InternalA2AControlPlaneClient,
@@ -196,11 +197,18 @@ class A2ASpaceClient:
                 )
             selected_space_id = normalized_space_ids[0]
         if backend is None:
-            control_plane_url = str(os.getenv(ENV_A2A_CONTROL_PLANE_URL) or "").strip()
-            if not control_plane_url:
-                raise ValueError(f"missing {ENV_A2A_CONTROL_PLANE_URL}")
-            backend = InternalA2AControlPlaneClient(
-                control_plane_url,
+            from ksadk.a2a.service_env import (
+                resolve_a2a_service_url,
+                resolve_a2a_service_token,
+            )
+            service_url = resolve_a2a_service_url()
+            if not service_url:
+                raise ValueError(
+                    "A2A service url not configured: set KSADK_A2A_SERVICE_URL or AICP env"
+                )
+            backend = A2AAgentCardClient(
+                service_url,
+                service_token=resolve_a2a_service_token(),
                 httpx_client=httpx_client,
             )
         if egress_enabled is None:
@@ -361,7 +369,9 @@ class A2ASpaceClient:
             async for response in client.send_message(request, context=context):
                 response_task = _present_message_field(response, "task")
                 if response_task is not None and str(getattr(response_task, "id", None) or ""):
-                    first_task = first_task or response_task
+                    # 跟踪最新 task 状态：每个带 task 的 response 都更新 first_task，
+                    # 使 send_message 返回的是最终状态(如 COMPLETED)而非首个 SUBMITTED。
+                    first_task = response_task
                     observed_task_id = str(response_task.id)
                     observed_context_id = str(response_task.context_id or "") or None
                     if remote_task_id is None:
@@ -471,9 +481,11 @@ class A2ASpaceClient:
 
     async def get_task(self, task_id: str) -> A2APlatformTask:
         require_a2a_resource_id(task_id, "a2a-task-", field_name="task_id")
+        cached_agent = self._agents_by_task.get(task_id)
         prepared = await self._backend.prepare_task_operation(
             platform_task_id=task_id,
             operation="get_task",
+            agent_id=getattr(cached_agent, "agent_id", None),
         )
         self._validate_prepared_ids(prepared)
         remote_task_ref = self._require_remote_task(prepared)
@@ -634,10 +646,12 @@ class A2ASpaceClient:
         headers: dict[str, str]
         async with AsyncExitStack() as exit_stack:
             if prepared.route.kind == "hosted_gateway":
+                token = self._backend.gateway_token()
                 headers = {
-                    "Authorization": f"Bearer {self._backend.gateway_token()}",
                     "X-AgentEngine-A2A-Permit": prepared.call_permit,
                 }
+                if token:
+                    headers["Authorization"] = f"Bearer {token}"
                 http = self._httpx_client
             else:
                 if prepared.route.kind == "external_public" and not self._egress_enabled:
@@ -677,7 +691,9 @@ class A2ASpaceClient:
             route_card = self._card_for_route(agent.agent_card, route)
             owned_http = None
             if http is None:
-                owned_http = httpx.AsyncClient(trust_env=False)
+                # 预发 gateway 使用自签证书;runtime 在集群内走内网 http 不验证。
+                # 外部调用方需自行传入已配置 verify 的 httpx_client。
+                owned_http = httpx.AsyncClient(trust_env=False, verify=False)
                 http = owned_http
             client = await create_client(
                 agent=route_card,
