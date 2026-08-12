@@ -8,6 +8,10 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+# ---------------------------------------------------------------------------
+# Base model & helpers
+# ---------------------------------------------------------------------------
+
 
 def _to_camel_case(value: str) -> str:
     head, *tail = value.split("_")
@@ -37,6 +41,13 @@ class EvaluationModel(BaseModel):
     )
 
 
+# ---------------------------------------------------------------------------
+# Enums
+# ---------------------------------------------------------------------------
+
+
+# Assertion kinds & data egress policy (configure how cases are asserted and
+# what data may leave the local process).
 class AssertionType(str, Enum):
     """Deterministic assertion kinds supported by the first evaluation phase."""
 
@@ -60,6 +71,8 @@ class DataPolicy(str, Enum):
     FULL_TRACE = "full_trace"
 
 
+# Lifecycle & outcome statuses (run-level, per-case target invocation, and
+# per-metric verdicts).
 class EvalRunStatus(str, Enum):
     """Lifecycle status for an entire evaluation run."""
 
@@ -90,7 +103,14 @@ class MetricStatus(str, Enum):
     ERROR = "ERROR"
 
 
+# ---------------------------------------------------------------------------
+# Evaluation set & input cases
+# ---------------------------------------------------------------------------
+
+
 class EvalTurn(EvaluationModel):
+    """A single conversational turn within a multi-turn case."""
+
     input: str = Field(min_length=1, max_length=32768)
     expected_output: str | None = Field(default=None, max_length=32768)
     expected_tools: list[dict[str, Any]] = Field(default_factory=list)
@@ -98,6 +118,8 @@ class EvalTurn(EvaluationModel):
 
 
 class AssertionSpec(EvaluationModel):
+    """A single deterministic assertion with type-dependent value validation."""
+
     type: AssertionType
     value: Any
     required: bool = True
@@ -118,6 +140,8 @@ class AssertionSpec(EvaluationModel):
 
 
 class EvalCase(EvaluationModel):
+    """One evaluation case: ordered turns plus assertions to check."""
+
     id: str = Field(min_length=1, max_length=128)
     turns: list[EvalTurn] = Field(min_length=1)
     assertions: list[AssertionSpec] = Field(default_factory=list)
@@ -130,7 +154,11 @@ class EvalCase(EvaluationModel):
             return value
         data = dict(value)
         if "input" in data and "turns" not in data:
-            data["turns"] = [{"input": data.pop("input")}]
+            turn = {"input": data.pop("input")}
+            for field in ("expected_output", "expectedOutput", "expected_tools", "expectedTools"):
+                if field in data:
+                    turn[field] = data.pop(field)
+            data["turns"] = [turn]
         return data
 
     @property
@@ -141,6 +169,8 @@ class EvalCase(EvaluationModel):
 
 
 class EvalSetVersion(EvaluationModel):
+    """A versioned, content-digested evaluation set of one or more cases."""
+
     schema_version: Literal["ksadk.eval/v1"] = "ksadk.eval/v1"
     name: str = Field(min_length=1, max_length=256)
     cases: list[EvalCase] = Field(min_length=1)
@@ -168,6 +198,11 @@ class EvalSetVersion(EvaluationModel):
             exclude={"content_digest", "source_format"},
         )
         return _content_digest(payload)
+
+
+# ---------------------------------------------------------------------------
+# Target identity & references
+# ---------------------------------------------------------------------------
 
 
 class TargetKind(str, Enum):
@@ -199,6 +234,11 @@ class TargetRef(EvaluationModel):
     profile: str | None = Field(default=None, min_length=1, max_length=256)
 
 
+# ---------------------------------------------------------------------------
+# Execution config & request / spec
+# ---------------------------------------------------------------------------
+
+
 class EvaluationConfig(EvaluationModel):
     """Execution limits and evaluator selection shared by CLI and Studio."""
 
@@ -206,6 +246,13 @@ class EvaluationConfig(EvaluationModel):
     fail_fast: bool = False
     evaluators: list[str] = Field(default_factory=list)
     data_policy: DataPolicy = DataPolicy.LOCAL_ONLY
+    judge_model: str | None = Field(default=None, min_length=1, max_length=256)
+    judge_api_base: str | None = Field(default=None, min_length=1, max_length=2048)
+    judge_api_key_env: str = Field(
+        default="KSADK_EVAL_JUDGE_API_KEY",
+        pattern=r"^[A-Za-z_][A-Za-z0-9_]*$",
+        max_length=128,
+    )
 
 
 class EvaluationRequest(EvaluationModel):
@@ -228,7 +275,16 @@ class EvalRunSpec(EvaluationModel):
     attempt: int = Field(default=1, ge=1)
 
 
+# ---------------------------------------------------------------------------
+# Run results: trace, usage, target run, metric results, case run, report
+# ---------------------------------------------------------------------------
+
+
+# Per-case adapter output: trace linkage, token usage, and the normalized
+# invocation result returned by a target adapter.
 class TraceRef(EvaluationModel):
+    """Queryable linkage to a recorded trace; at least one id required."""
+
     run_id: str | None = None
     trace_id: str | None = None
     root_span_id: str | None = None
@@ -242,6 +298,8 @@ class TraceRef(EvaluationModel):
 
 
 class UsageSnapshot(EvaluationModel):
+    """Token usage for one invocation; zero unless the adapter reported it."""
+
     input_tokens: int = Field(default=0, ge=0)
     output_tokens: int = Field(default=0, ge=0)
     total_tokens: int = Field(default=0, ge=0)
@@ -261,6 +319,8 @@ class TargetRun(EvaluationModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+# Evaluator output: per-metric verdicts, per-case aggregation, run-level
+# summary counts, and the canonical persisted report.
 class MetricResult(EvaluationModel):
     """One deterministic evaluator result and its non-sensitive evidence."""
 
@@ -283,7 +343,7 @@ class CaseRun(EvaluationModel):
     @property
     def passed(self) -> bool:
         return self.target_run.status is TargetRunStatus.PASSED and all(
-            metric.status is MetricStatus.PASS for metric in self.metrics
+            metric.status is MetricStatus.PASS for metric in self.metrics if metric.required
         )
 
 
@@ -324,7 +384,10 @@ class EvalRunReport(EvaluationModel):
     def _summarize_cases(self) -> EvalRunSummary:
         counts = EvalRunSummary(total_cases=len(self.case_runs))
         for case_run in self.case_runs:
-            if case_run.target_run.status is TargetRunStatus.ERROR:
+            if case_run.target_run.status is TargetRunStatus.ERROR or any(
+                metric.required and metric.status is MetricStatus.ERROR
+                for metric in case_run.metrics
+            ):
                 counts.error_cases += 1
             elif case_run.target_run.status is TargetRunStatus.CANCELLED:
                 counts.cancelled_cases += 1
@@ -342,7 +405,5 @@ class EvalRunReport(EvaluationModel):
     def compute_digest(self) -> str:
         """Return a stable digest excluding the digest field itself."""
 
-        payload = self.model_dump(
-            mode="json", by_alias=False, exclude={"report_digest"}
-        )
+        payload = self.model_dump(mode="json", by_alias=False, exclude={"report_digest"})
         return _content_digest(payload)

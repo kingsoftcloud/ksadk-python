@@ -4,6 +4,16 @@ from click.testing import CliRunner
 
 from ksadk.cli import _register_commands, cli
 from ksadk.cli.cmd_eval import eval
+from ksadk.evaluation.contracts import (
+    CaseRun,
+    EvalCase,
+    EvalRunReport,
+    EvalRunSpec,
+    EvalSetVersion,
+    TargetKind,
+    TargetRun,
+    TargetSnapshot,
+)
 
 
 def _evalset(tmp_path):
@@ -24,6 +34,28 @@ cases:
     return path
 
 
+def _report() -> EvalRunReport:
+    spec = EvalRunSpec(
+        id="eval-preview",
+        evalset=EvalSetVersion(name="smoke", cases=[EvalCase(id="one", input="hello")]),
+        target=TargetSnapshot(
+            kind=TargetKind.A2A,
+            entrypoint="https://agent.example.test",
+            revision_digest="sha256:agent",
+        ),
+    )
+    return EvalRunReport(
+        spec=spec,
+        status="PASSED",
+        case_runs=[
+            CaseRun(
+                case_id="one",
+                target_run=TargetRun(status="PASSED", duration_ms=12),
+            )
+        ],
+    )
+
+
 def test_eval_help_exposes_complete_target_shell():
     result = CliRunner().invoke(eval, ["--help"])
     assert result.exit_code == 0, result.output
@@ -36,6 +68,9 @@ def test_eval_help_exposes_complete_target_shell():
         "--credential-ref",
         "--codex-profile",
         "--evaluator",
+        "--judge-model",
+        "--judge-api-base",
+        "--judge-api-key-env",
         "--timeout-seconds",
         "--fail-fast",
         "--data-policy",
@@ -44,6 +79,15 @@ def test_eval_help_exposes_complete_target_shell():
         "--format",
     ):
         assert option in result.output
+
+
+def test_eval_help_lists_automatic_evaluators():
+    result = CliRunner().invoke(eval, ["--help"])
+
+    assert result.exit_code == 0, result.output
+    assert "reference_match@v1" in result.output
+    assert "llm_judge@v1" in result.output
+    assert "--judge-model" in result.output
 
 
 def test_root_help_exposes_eval_command():
@@ -72,6 +116,11 @@ def test_eval_validate_only_returns_normalized_summary(tmp_path):
     assert payload["evalset"]["sourceFormat"] == "native"
     assert payload["evalset"]["caseCount"] == 1
     assert payload["target"]["kind"] == "local_source"
+    assert payload["config"]["evaluators"] == [
+        "response_contract@v1",
+        "runtime_budget@v1",
+        "tool_trajectory@v1",
+    ]
 
 
 def test_eval_accepts_canonical_a2a_parameters(tmp_path):
@@ -152,7 +201,7 @@ def test_eval_rejects_ambiguous_targets(tmp_path):
 
 
 def test_eval_calls_single_execution_entrypoint(tmp_path, monkeypatch):
-    async def fake_execute(request):
+    async def fake_execute(request, *, on_case_started=None):
         raise RuntimeError(request.target.kind.value)
 
     monkeypatch.setattr("ksadk.cli.cmd_eval.execute_evaluation", fake_execute)
@@ -168,6 +217,72 @@ def test_eval_calls_single_execution_entrypoint(tmp_path, monkeypatch):
     assert result.exit_code == 1
     assert isinstance(result.exception, RuntimeError)
     assert str(result.exception) == "a2a"
+
+
+def test_eval_pretty_output_shows_key_progress_and_report_preview(tmp_path, monkeypatch):
+    async def fake_execute(_request, *, on_case_started=None):
+        assert on_case_started is not None
+        on_case_started("one", 1, 1)
+        return _report()
+
+    monkeypatch.setattr("ksadk.cli.cmd_eval.execute_evaluation", fake_execute)
+    result = CliRunner().invoke(
+        eval,
+        [
+            "--evalset-file",
+            str(_evalset(tmp_path)),
+            "--a2a-url",
+            "https://agent.example.test",
+            "--report-dir",
+            str(tmp_path / "reports"),
+            "--format",
+            "pretty",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "开始评测：smoke，1 个 Case，Target: a2a" in result.output
+    assert "[1/1] 执行 Case: one" in result.output
+    assert "评测集列表" in result.output
+    assert "Case" in result.output
+    assert "目标状态" in result.output
+    assert "耗时" in result.output
+    assert "指标" in result.output
+    assert "结果统计" in result.output
+    assert "\n  结果统计\n" in result.output
+    assert "  评测集列表" in result.output
+    assert "统计:" not in result.output
+    for value in ("总计", "通过", "失败", "错误", "不可用", "取消", "1", "0"):
+        assert value in result.output
+    assert "报告文件" in result.output
+    assert str(tmp_path / "reports" / "eval-preview" / "report.json") in result.output
+    assert "one" in result.output
+    assert "PASSED" in result.output
+    assert "12 ms" in result.output
+    assert "无指标" in result.output
+
+
+def test_eval_json_output_does_not_render_progress(tmp_path, monkeypatch):
+    async def fake_execute(_request, *, on_case_started=None):
+        assert on_case_started is None
+        return _report()
+
+    monkeypatch.setattr("ksadk.cli.cmd_eval.execute_evaluation", fake_execute)
+    result = CliRunner().invoke(
+        eval,
+        [
+            "--evalset-file",
+            str(_evalset(tmp_path)),
+            "--a2a-url",
+            "https://agent.example.test",
+            "--format",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["spec"]["id"] == "eval-preview"
 
 
 def test_eval_unimplemented_executor_uses_execution_exit_code(tmp_path):

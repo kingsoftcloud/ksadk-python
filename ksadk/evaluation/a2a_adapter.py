@@ -283,15 +283,7 @@ class A2ATargetAdapter:
 
     async def _run_turn(self, client: object, text: str, context_id: str | None) -> _TurnResult:
         collector = _ResponseCollector(context_id=context_id)
-        request = SendMessageRequest(
-            message=Message(
-                role=Role.ROLE_USER,
-                parts=[Part(text=text)],
-                message_id=f"eval-message-{uuid4().hex}",
-                context_id=context_id or "",
-            ),
-            configuration=SendMessageConfiguration(return_immediately=False),
-        )
+        request = _build_send_request(text, context_id)
         try:
             async for response in client.send_message(request):  # type: ignore[attr-defined]
                 collector.observe(response)
@@ -314,6 +306,20 @@ class A2ATargetAdapter:
             error_message=error_message,
         )
 
+
+def _build_send_request(
+    text: str,
+    context_id: str | None,
+) -> SendMessageRequest:
+    return SendMessageRequest(
+        message=Message(
+            role=Role.ROLE_USER,
+            parts=[Part(text=text)],
+            message_id=f"eval-message-{uuid4().hex}",
+            context_id=context_id or "",
+        ),
+        configuration=SendMessageConfiguration(return_immediately=False),
+    )
 
 def _card_location(locator: str) -> _CardLocation:
     parsed = urlsplit(locator)

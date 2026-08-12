@@ -6,14 +6,21 @@ import asyncio
 from pathlib import Path
 
 import click
+from rich.markup import escape
+from rich.padding import Padding
+from rich.table import Table
 
 from ksadk.cli.ui import (
     configure_ui_runtime,
     emit_json,
+    get_console,
     is_json_output,
+    new_table,
+    print_info,
     print_kv,
     print_success,
     print_title,
+    status_rich_style,
 )
 from ksadk.evaluation import (
     EvaluationConfig,
@@ -28,17 +35,17 @@ from ksadk.evaluation.contracts import (
     DataPolicy,
     EvalRunReport,
     EvalRunStatus,
+    EvalRunSummary,
+    MetricResult,
     MetricStatus,
-    TargetRunStatus,
     TargetKind,
+    TargetRunStatus,
 )
 from ksadk.evaluation.evalset import EvalSetParseError
+from ksadk.evaluation.evaluators import DEFAULT_EVALUATORS, SUPPORTED_EVALUATORS
+from ksadk.evaluation.storage import EvaluationStorage
 
-_EVALUATORS = (
-    "response_contract@v1",
-    "runtime_budget@v1",
-    "tool_trajectory@v1",
-)
+_DEFAULT_EVALUATORS = tuple(DEFAULT_EVALUATORS)
 _DATA_POLICIES = tuple(policy.value for policy in DataPolicy)
 
 
@@ -71,8 +78,17 @@ class EvaluationCliError(click.ClickException):
     "--evaluator",
     "evaluators",
     multiple=True,
-    type=click.Choice(_EVALUATORS),
-    help="启用的确定性评估器；可重复指定",
+    type=click.Choice(SUPPORTED_EVALUATORS),
+    help="启用评估器；可重复指定",
+)
+@click.option("--judge-model", type=str, help="LLM Judge 模型名")
+@click.option("--judge-api-base", type=str, help="LLM Judge OpenAI 兼容 API 地址")
+@click.option(
+    "--judge-api-key-env",
+    default="KSADK_EVAL_JUDGE_API_KEY",
+    show_default=True,
+    type=str,
+    help="保存 Judge API Key 的环境变量名",
 )
 @click.option(
     "--timeout-seconds",
@@ -110,6 +126,9 @@ def eval(
     credential_ref: str | None,
     codex_profile: str | None,
     evaluators: tuple[str, ...],
+    judge_model: str | None,
+    judge_api_base: str | None,
+    judge_api_key_env: str,
     timeout_seconds: int,
     fail_fast: bool,
     data_policy: str,
@@ -133,6 +152,9 @@ def eval(
         evalset_file=evalset_file,
         target=target,
         evaluators=evaluators,
+        judge_model=judge_model,
+        judge_api_base=judge_api_base,
+        judge_api_key_env=judge_api_key_env,
         timeout_seconds=timeout_seconds,
         fail_fast=fail_fast,
         data_policy=data_policy,
@@ -144,7 +166,7 @@ def eval(
 
     report = _execute_request(request)
     exit_code = _report_exit_code(report)
-    _render_report(report)
+    _render_report(report, report_dir=request.report_dir)
     if exit_code:
         raise click.exceptions.Exit(exit_code)
 
@@ -154,6 +176,9 @@ def _build_request(
     evalset_file: Path,
     target: TargetRef,
     evaluators: tuple[str, ...],
+    judge_model: str | None,
+    judge_api_base: str | None,
+    judge_api_key_env: str,
     timeout_seconds: int,
     fail_fast: bool,
     data_policy: str,
@@ -170,29 +195,109 @@ def _build_request(
         config=EvaluationConfig(
             timeout_seconds=timeout_seconds,
             fail_fast=fail_fast,
-            evaluators=list(evaluators) or list(_EVALUATORS),
+            evaluators=list(evaluators) or list(_DEFAULT_EVALUATORS),
             data_policy=data_policy,
+            judge_model=judge_model,
+            judge_api_base=judge_api_base,
+            judge_api_key_env=judge_api_key_env,
         ),
-        report_dir=str(
-            (report_dir or Path.cwd() / ".agentkit/evaluations").resolve()
-        ),
+        report_dir=str((report_dir or Path.cwd() / ".agentkit/evaluations").resolve()),
     )
 
 
 def _execute_request(request: EvaluationRequest) -> EvalRunReport:
+    on_case_started = None
+    if not is_json_output():
+        _render_start(request)
+        on_case_started = _render_case_started
     try:
-        return asyncio.run(execute_evaluation(request))
+        return asyncio.run(execute_evaluation(request, on_case_started=on_case_started))
     except (EvaluationNotImplementedError, EvaluationExecutionError) as exc:
         raise EvaluationCliError(str(exc)) from exc
 
 
-def _render_report(report: EvalRunReport) -> None:
+def _render_report(report: EvalRunReport, *, report_dir: str | None = None) -> None:
     if is_json_output():
         emit_json(report.model_dump(mode="json", by_alias=True, exclude_none=True))
     else:
         print_title("Agent 评测完成")
+        get_console().print(f"[title][i]评测摘要[/i][/]")
         print_kv("运行状态", report.status.value)
         print_kv("Run ID", report.spec.id)
+        if report_dir:
+            print_kv(
+                "报告文件",
+                str(EvaluationStorage(report_dir).report_path(report.spec.id)),
+                value_style="#58a6ff",
+            )
+        _render_report_preview(report)
+
+
+
+def _render_start(request: EvaluationRequest) -> None:
+    print_info(
+        "开始评测:"
+        f"{request.evalset.name}，{len(request.evalset.cases)} 个 Case，"
+        f"Target: {request.target.kind.value}"
+    )
+
+
+def _render_case_started(case_id: str, index: int, total_cases: int) -> None:
+    print_info(f"[{index}/{total_cases}] 执行 Case: {case_id}")
+
+
+def _render_report_preview(report: EvalRunReport) -> None:
+    _render_summary(report.summary)
+    _render_case_table(report)
+    remaining_cases = len(report.case_runs) - 5
+    if remaining_cases > 0:
+        print_info(f"其余 {remaining_cases} 个 Case 已省略")
+
+
+def _render_summary(summary: EvalRunSummary) -> None:
+    items = (
+        ("总计", summary.total_cases, "white"),
+        ("通过", summary.passed_cases, "ok"),
+        ("失败", summary.failed_cases, "err"),
+        ("错误", summary.error_cases, "err"),
+        ("不可用", summary.unavailable_cases, "warn"),
+        ("取消", summary.cancelled_cases, "warn"),
+    )
+    table = Table.grid(padding=(0, 2))
+    for _label, _count, style in items:
+        table.add_column(justify="center", style=style, no_wrap=True)
+    table.add_row(*(label for label, _count, _style in items), style="muted")
+    table.add_row(*(f"[{style if count else 'muted'}]{count}[/]" for _label, count, style in items))
+    print_info("  结果统计")
+    get_console().print(Padding(table, (0, 0, 0, 4)))
+
+
+def _render_case_table(report: EvalRunReport) -> None:
+    table = new_table("  评测集列表")
+    table.add_column("Case", style="#58a6ff", no_wrap=True)
+    table.add_column("目标状态", no_wrap=True)
+    table.add_column("耗时", justify="right", no_wrap=True)
+    table.add_column("指标")
+    for case_run in report.case_runs[:5]:
+        target_status = case_run.target_run.status.value
+        table.add_row(
+            escape(case_run.case_id),
+            f"[{status_rich_style(target_status)}]{target_status}[/]",
+            _format_duration(case_run.target_run.duration_ms),
+            _metric_summary(case_run.metrics),
+        )
+    get_console().print(table)
+
+
+def _format_duration(duration_ms: int | None) -> str:
+    return f"{duration_ms} ms" if duration_ms is not None else "-"
+
+
+def _metric_summary(metrics: list[MetricResult]) -> str:
+    if not metrics:
+        return "无指标"
+    counts = {status: sum(metric.status is status for metric in metrics) for status in MetricStatus}
+    return "，".join(f"{status.value} {count}" for status, count in counts.items() if count)
 
 
 def _report_exit_code(report: EvalRunReport) -> int:
@@ -225,9 +330,7 @@ def _target_ref(
 ) -> TargetRef:
     targets = [agent_dir is not None, bool(a2a_url), codex_worktree is not None]
     if sum(targets) != 1:
-        raise click.UsageError(
-            "--agent-dir、--a2a-url、--codex-worktree 必须且只能指定一个"
-        )
+        raise click.UsageError("--agent-dir、--a2a-url、--codex-worktree 必须且只能指定一个")
     if credential_ref and not a2a_url:
         raise click.UsageError("--credential-ref 只能与 --a2a-url 一起使用")
     if entrypoint and not agent_dir:

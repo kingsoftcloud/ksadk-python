@@ -25,6 +25,20 @@ def test_parse_native_evalset_and_identify_legacy_assertions():
     assert len(result.content_digest) == 64
 
 
+def test_parse_native_evalset_maps_compact_expected_output_to_final_turn():
+    result = parse_evalset(
+        {
+            "schemaVersion": "ksadk.eval/v1",
+            "name": "native",
+            "cases": [
+                {"id": "one", "input": "ping", "expectedOutput": "pong"},
+            ],
+        }
+    )
+
+    assert result.cases[0].turns[-1].expected_output == "pong"
+
+
 def test_parse_studio_suite_maps_old_assertion_names():
     result = parse_evalset(
         {
@@ -81,11 +95,7 @@ def test_parse_adk_evalset_rejects_lossy_content():
                     {
                         "eval_id": "adk-1",
                         "conversation": [
-                            {
-                                "user_content": {
-                                    "parts": [{"text": "hello", "inline_data": "raw"}]
-                                }
-                            }
+                            {"user_content": {"parts": [{"text": "hello", "inline_data": "raw"}]}}
                         ],
                     }
                 ]
