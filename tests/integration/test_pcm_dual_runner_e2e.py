@@ -448,8 +448,7 @@ def test_langgraph_build_run_context_evidence(studio):
         json={"revision": 1, "runEvaluation": False},
     )
     op = _wait_op(c, bop.json()["id"], timeout=60)
-    if op["status"] != "SUCCEEDED":
-        pytest.skip("LangGraph Build failed (needs runtime source)")
+    assert op["status"] == "SUCCEEDED", f"LangGraph Build should succeed: {op}"
     build_id = op["resourceId"]
 
     rop = c.post(
@@ -463,20 +462,21 @@ def test_langgraph_build_run_context_evidence(studio):
         },
     )
     op2 = _wait_op(c, rop.json()["id"], timeout=60)
-    run_id = op2.get("resourceId", "")
+    assert op2["status"] == "SUCCEEDED", f"LangGraph Run should succeed: {op2}"
+    run_id = op2["resourceId"]
+    assert run_id, f"run_id should not be empty: {op2}"
 
-    if run_id:
-        run = c.get(f"/api/v1/runs/{run_id}").json()
-        pe = run.get("promptEvidence", {})
-        # LangGraph ksadk_hosted → promptOwner=ksadk
-        assert pe.get("runtimeType") == "langgraph"
-        assert pe.get("promptOwner") == "ksadk"
-        assert pe.get("integrationMode") == "ksadk_hosted"
+    run = c.get(f"/api/v1/runs/{run_id}").json()
+    pe = run.get("promptEvidence", {})
+    assert pe.get("runtimeType") == "langgraph", f"runtimeType should be langgraph: {pe}"
+    assert pe.get("promptOwner") == "ksadk", f"promptOwner should be ksadk: {pe}"
+    assert pe.get("integrationMode") == "ksadk_hosted", (
+        f"integrationMode should be ksadk_hosted: {pe}"
+    )
 
-        # Context evidence
-        ctx = c.get(f"/api/v1/runs/{run_id}/context").json()
-        assert ctx.get("ownership", {}).get("integrationMode") == "ksadk_hosted"
-        assert ctx.get("ownership", {}).get("promptOwner") == "ksadk"
+    ctx = c.get(f"/api/v1/runs/{run_id}/context").json()
+    assert ctx.get("ownership", {}).get("integrationMode") == "ksadk_hosted"
+    assert ctx.get("ownership", {}).get("promptOwner") == "ksadk"
 
 
 # ---- Codex RunSpec Memory 字段断言 ----
@@ -639,17 +639,33 @@ def test_studio_recall_with_fake_provider(studio, monkeypatch):
         },
     )
     op2 = _wait_op(c, rop.json()["id"], timeout=60)
-    run_id = op2.get("resourceId", "")
+    assert op2["status"] == "SUCCEEDED", f"Run should succeed: {op2}"
+    run_id = op2["resourceId"]
+    assert run_id, f"run_id should not be empty: {op2}"
 
-    if run_id:
-        resp = c.get(f"/api/v1/runs/{run_id}/memory-events")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "items" in data
-        # 如果 recall 触发，应该有 memory.recall.* 事件
-        # 但 recall 取决于 ambient context 是否触发（_should_load_memory_ambient_context）
-        # 这里只验证 API 可用 + 返回结构
-        types = [e.get("type", "") for e in data.get("items", [])]
-        # 可能含 memory.recall.completed 或 memory.candidate.created
-        # 至少不应该报错
-        assert isinstance(types, list)
+    resp = c.get(f"/api/v1/runs/{run_id}/memory-events")
+    assert resp.status_code == 200, f"memory-events API: {resp.status_code}"
+    data = resp.json()
+    assert "items" in data, f"missing items key: {data}"
+    # 预置了记忆 + recall enabled + memoryWrite=enabled
+    # → 如果 ambient recall 触发，应有 memory.recall.* 事件
+    # → 如果 flush 触发，应有 memory.candidate.*/memory.flush.* 事件
+    # Codex 路径的 ambient recall 取决于 _should_use_platform_ambient_context
+    # 和 _should_load_memory_ambient_context 的启发式判断
+    # flush 取决于 _finalize_via_shared 的 ResolvedMemoryPolicy
+    # 这里验证：如果产生了 memory.* 事件，类型必须以 memory. 开头
+    # 如果没有产生，也接受（ambient 条件可能不满足）
+    # 但 API 必须返回 200 + items 列表
+    types = [e.get("type", "") for e in data.get("items", [])]
+    memory_types = [t for t in types if t.startswith("memory.")]
+    # 如果有 memory 事件，验证类型合法
+    for t in memory_types:
+        assert t in (
+            "memory.recall.completed",
+            "memory.recall.empty",
+            "memory.recall.failed",
+            "memory.candidate.created",
+            "memory.candidate.rejected",
+            "memory.flush.completed",
+            "memory.flush.failed",
+        ), f"未知 memory 事件类型: {t}"
