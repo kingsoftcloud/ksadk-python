@@ -671,7 +671,8 @@ def test_studio_recall_with_fake_provider(studio, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_canonical_recall_events_persisted(tmp_path, monkeypatch):
-    """invoke_conversation_once: 预置记忆 → recall 事件写入 prepared。"""
+    """invoke_conversation_once: 预置记忆 → recall 触发 →
+    memory_context 进入 Runner + 含召回正文。"""
     from types import SimpleNamespace
 
     from ksadk.conversations.runtime_invocation import invoke_conversation_once
@@ -713,12 +714,15 @@ async def test_canonical_recall_events_persisted(tmp_path, monkeypatch):
         expected_version=None,
     )
 
-    class _RecallRunner(BaseRunner):
+    # Spy Runner: 记录收到的 memory_context
+    received_memory_context = []
+
+    class _SpyRunner(BaseRunner):
         def __init__(self):
             super().__init__(
                 SimpleNamespace(
                     type=SimpleNamespace(value="langgraph"),
-                    name="recall-test",
+                    name="recall-spy",
                     is_valid=True,
                 ),
                 ".",
@@ -729,6 +733,9 @@ async def test_canonical_recall_events_persisted(tmp_path, monkeypatch):
             pass
 
         async def invoke(self, input_data):
+            mc = input_data.get("memory_context")
+            if mc:
+                received_memory_context.append(mc)
             return {
                 "output": "ok",
                 "usage": {"input_tokens": 10, "output_tokens": 5},
@@ -738,25 +745,28 @@ async def test_canonical_recall_events_persisted(tmp_path, monkeypatch):
             raise NotImplementedError
 
     service = InMemorySessionService()
-    runner = _RecallRunner()
+    runner = _SpyRunner()
     _, result = await invoke_conversation_once(
         runner=runner,
         agent_id="agent-1",
         user_id="user-1",
         session_id=None,
-        messages=[{"role": "user", "content": "Python 3.12 是什么"}],
+        messages=[{"role": "user", "content": "Python"}],
         model="test",
         prepare_runner=lambda r, m: None,
         instructions="你是助手",
         session_service_provider=lambda: service,
     )
 
-    # invoke_conversation_once 调 _build_runner_ambient_contexts
-    # → prepared.memory_recall_events 应该有 recall 事件
-    # 但 result 不含 prepared → 需要从 session events 验证
-    # 或直接验证 LongTermMemoryService.build_context 被调了
-    # （通过 SqliteLTMBackend 的 search_memory 被调）
-
-    # 验证：SQLite 里的记忆被搜索过（last_error 应该清空或保持）
-    # 更直接：验证 result 有输出（recall 不阻断运行）
+    # 1. Run 成功
     assert result.get("output_text") == "ok", f"output should be 'ok': {result}"
+
+    # 2. memory_context 进入 Runner input（recall 真实触发）
+    assert len(received_memory_context) > 0, (
+        "memory_context should have been passed to Runner (recall did not trigger)"
+    )
+    mc = received_memory_context[0]
+    formatted_text = mc.get("formatted_text", "") if isinstance(mc, dict) else str(mc)
+    assert "Python 3.12" in formatted_text, (
+        f"recalled memory should contain 'Python 3.12': {formatted_text[:200]}"
+    )
