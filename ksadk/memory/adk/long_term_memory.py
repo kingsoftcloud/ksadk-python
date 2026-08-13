@@ -246,8 +246,9 @@ class LongTermMemory(BaseMemoryService, BaseModel):
             KSADK_LTM_BACKEND: local / http / sdk
             KSADK_LTM_HTTP_URL: HTTP 记忆服务地址
             KSADK_LTM_HTTP_TOKEN: HTTP 认证 Token
-            KSADK_LTM_ACCESS_KEY: SDK AK (fallback to KSYUN_ACCESS_KEY)
-            KSADK_LTM_SECRET_KEY: SDK SK (fallback to KSYUN_SECRET_KEY)
+            KSADK_LTM_ACCESS_KEY: SDK AK (fallback to KSYUN_ACCESS_KEY / KSYUN_ACCESS_KEY_ID)
+            KSADK_LTM_SECRET_KEY: SDK SK (fallback to KSYUN_SECRET_KEY / KSYUN_SECRET_ACCESS_KEY)
+            KSADK_LTM_SESSION_TOKEN: SDK STS token (fallback to KSYUN_SESSION_TOKEN)
             KSADK_LTM_TOP_K: 检索数量 (默认 5)
             KSADK_LTM_INDEX: 索引名称
         """

@@ -23,6 +23,54 @@ from .transform import Streamer, UnsupportedToolsError, chat_to_response, respon
 logger = logging.getLogger(__name__)
 
 
+def _request_id(response: httpx.Response) -> str:
+    for name in (
+        "x-request-id",
+        "request-id",
+        "x-ks-request-id",
+        "x-amzn-requestid",
+    ):
+        value = response.headers.get(name)
+        if value:
+            return str(value)
+    return ""
+
+
+def _reported_usage(raw: object) -> dict[str, int] | None:
+    if not isinstance(raw, dict):
+        return None
+    prompt_details = raw.get("prompt_tokens_details") or {}
+    completion_details = raw.get("completion_tokens_details") or {}
+    return {
+        "inputTokens": int(raw.get("prompt_tokens") or 0),
+        "outputTokens": int(raw.get("completion_tokens") or 0),
+        "totalTokens": int(raw.get("total_tokens") or 0),
+        "cachedInputTokens": int(prompt_details.get("cached_tokens") or 0),
+        "reasoningOutputTokens": int(completion_details.get("reasoning_tokens") or 0),
+    }
+
+
+def _emit_completed(
+    config: ProxyConfig,
+    *,
+    response_id: str,
+    model: object,
+    status_code: int,
+    started: float,
+    usage: object = None,
+) -> None:
+    payload: dict[str, object] = {
+        "responseId": response_id,
+        "model": str(model or ""),
+        "statusCode": status_code,
+        "durationMs": max(0, int((time.monotonic() - started) * 1000)),
+    }
+    reported = _reported_usage(usage)
+    if reported is not None:
+        payload["usage"] = reported
+    config.emit("proxy.completed", payload)
+
+
 def _upstream_error(status_code: int) -> JSONResponse:
     """Return a stable public error without relaying an upstream traceback."""
     return JSONResponse(
@@ -98,8 +146,8 @@ def create_app(config: ProxyConfig) -> FastAPI:
         body = await req.json()
         try:
             chat_req, restore_map = responses_to_chat(body)
-        except UnsupportedToolsError as e:
-            logger.info("responses request uses unsupported tools: %s", e)
+        except UnsupportedToolsError:
+            logger.info("responses request uses unsupported tools")
             return JSONResponse(
                 status_code=400,
                 content={
@@ -109,22 +157,71 @@ def create_app(config: ProxyConfig) -> FastAPI:
                     }
                 },
             )
+        # codex 会对内建能力发内部伪模型名(如 auto_review guardian 用 codex-auto-review),
+        # 单上游代理必须落回配置的真实模型,否则上游按未知模型 403。
+        if config.upstream_model and chat_req.get("model") != config.upstream_model:
+            logger.debug(
+                "responses model rewrite: %s -> %s",
+                chat_req.get("model"),
+                config.upstream_model,
+            )
+            chat_req["model"] = config.upstream_model
         rid = "resp_" + uuid.uuid4().hex[:24]
         model = body.get("model")
+        started = time.monotonic()
+        config.emit(
+            "proxy.requested",
+            {
+                "responseId": rid,
+                "model": str(model or ""),
+                "protocol": "responses-to-chat",
+                "stream": bool(body.get("stream")),
+            },
+        )
         if body.get("stream"):
             chat_req["stream"] = True
             chat_req["stream_options"] = {"include_usage": True}
             return StreamingResponse(
-                _stream_gen(config, base, headers, chat_req, rid, model, cancel, restore_map),
+                _stream_gen(
+                    config,
+                    base,
+                    headers,
+                    chat_req,
+                    rid,
+                    model,
+                    cancel,
+                    restore_map,
+                    started,
+                ),
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
         async with httpx.AsyncClient(timeout=config.timeout) as c:
             r = await c.post(f"{base}/chat/completions", json=chat_req, headers=headers)
+            config.emit(
+                "proxy.upstream",
+                {"requestId": _request_id(r), "statusCode": r.status_code},
+            )
             if r.status_code != 200:
+                _emit_completed(
+                    config,
+                    response_id=rid,
+                    model=model,
+                    status_code=r.status_code,
+                    started=started,
+                )
                 logger.warning("responses upstream rejected request: status=%s", r.status_code)
                 return _upstream_error(r.status_code)
-            return JSONResponse(chat_to_response(r.json(), rid, restore_map))
+            upstream_payload = r.json()
+            _emit_completed(
+                config,
+                response_id=rid,
+                model=model,
+                status_code=r.status_code,
+                started=started,
+                usage=upstream_payload.get("usage"),
+            )
+            return JSONResponse(chat_to_response(upstream_payload, rid, restore_map))
 
     return app
 
@@ -152,7 +249,9 @@ async def _stream_gen(
     model,
     cancel: threading.Event,
     restore_map: dict | None = None,
+    started: float | None = None,
 ):
+    started = time.monotonic() if started is None else started
     s = Streamer(rid, model, restore_map)
     for e in s.start():
         yield e
@@ -162,8 +261,28 @@ async def _stream_gen(
             async with c.stream(
                 "POST", f"{base}/chat/completions", json=chat_req, headers=headers
             ) as r:
+                config.emit(
+                    "proxy.upstream",
+                    {"requestId": _request_id(r), "statusCode": r.status_code},
+                )
                 if r.status_code != 200:
-                    logger.warning("responses upstream stream rejected: status=%s", r.status_code)
+                    _emit_completed(
+                        config,
+                        response_id=rid,
+                        model=model,
+                        status_code=r.status_code,
+                        started=started,
+                    )
+                    logger.warning(
+                        "responses upstream stream rejected: status=%s model=%s tools=%s "
+                        "msgs=%s bytes=%s has_text_format=%s",
+                        r.status_code,
+                        chat_req.get("model"),
+                        len(chat_req.get("tools") or []),
+                        len(chat_req.get("messages") or []),
+                        len(json.dumps(chat_req)),
+                        bool(chat_req.get("response_format")),
+                    )
                     yield Streamer.ev(
                         "response.failed",
                         {
@@ -177,6 +296,14 @@ async def _stream_gen(
                     return
                 async for line in r.aiter_lines():
                     if cancel.is_set():
+                        _emit_completed(
+                            config,
+                            response_id=rid,
+                            model=model,
+                            status_code=499,
+                            started=started,
+                            usage=s.usage,
+                        )
                         return  # stop() 置位:主动中断活动 SSE,让线程能及时回收
                     line = line.strip()
                     if not line.startswith("data:"):
@@ -191,6 +318,14 @@ async def _stream_gen(
                     for e in s.handle(chunk):
                         yield e
     except Exception as exc:  # noqa: BLE001
+        _emit_completed(
+            config,
+            response_id=rid,
+            model=model,
+            status_code=502,
+            started=started,
+            usage=s.usage,
+        )
         logger.warning("responses upstream stream failed", exc_info=exc)
         yield Streamer.ev(
             "response.failed",
@@ -205,6 +340,14 @@ async def _stream_gen(
         return
     for e in s.finalize():
         yield e
+    _emit_completed(
+        config,
+        response_id=rid,
+        model=model,
+        status_code=200,
+        started=started,
+        usage=s.usage,
+    )
 
 
 class ProxyServer:

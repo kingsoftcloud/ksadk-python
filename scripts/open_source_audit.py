@@ -74,7 +74,9 @@ COMMON_RULES = (
     DenyRule(
         name="zread-output",
         prefixes=(".zread/",),
-        description=".zread output is an internal/code-understanding snapshot, not a public artifact",
+        description=(
+            ".zread output is an internal/code-understanding snapshot, not a public artifact"
+        ),
     ),
     DenyRule(
         name="internal-docs",
@@ -114,7 +116,10 @@ PUBLIC_REPO_RULES = COMMON_RULES + (
             "docs/reference/ksadk\u73af\u5883\u53d8\u91cf\u53c2\u8003.md",
         ),
         prefix_only=True,
-        description="internal planning and technical design docs stay out of the public repository; public docs live in docs-site/ (Fumadocs)",
+        description=(
+            "internal planning and technical design docs stay out of the public "
+            "repository; public docs live in docs-site/ (Fumadocs)"
+        ),
     ),
     DenyRule(
         name="internal-deploy-material",
@@ -124,25 +129,34 @@ PUBLIC_REPO_RULES = COMMON_RULES + (
             "Makefile.promo.Dockerfile",
         ),
         prefix_only=True,
-        description="internal deployment shells, runtime images, and private registry examples stay out of the first public repository snapshot",
+        description=(
+            "internal deployment shells, runtime images, and private registry examples "
+            "stay out of the first public repository snapshot"
+        ),
     ),
     DenyRule(
         name="internal-agent-ops-material",
-        prefixes=(
-            "skills/agentengine-",
+        prefixes=("skills/agentengine-",),
+        description=(
+            "internal agent/operator playbooks can expose private operations, "
+            "kubeconfig paths, or support procedures"
         ),
-        description="internal agent/operator playbooks can expose private operations, kubeconfig paths, or support procedures",
     ),
     DenyRule(
         name="non-curated-examples",
         prefixes=("examples/",),
-        description="examples must be separately curated and scrubbed before first public publication",
+        description=(
+            "examples must be separately curated and scrubbed before first public publication"
+        ),
     ),
     DenyRule(
         name="env-example",
         prefixes=(".env.example",),
         contains=("/.env.example",),
-        description="environment examples must be curated before publication to avoid private endpoints or credential names",
+        description=(
+            "environment examples must be curated before publication to avoid private "
+            "endpoints or credential names"
+        ),
     ),
 )
 
@@ -155,7 +169,9 @@ WHEEL_RULES = (
     DenyRule(
         name="web-ui-source",
         prefixes=("ksadk/server/web-ui/",),
-        description="editable frontend source and Web UI build inputs should not be part of the SDK package",
+        description=(
+            "editable frontend source and Web UI build inputs should not be part of the SDK package"
+        ),
     ),
 )
 
@@ -181,7 +197,10 @@ KSADK_WEB_CANDIDATE_RULES = COMMON_RULES + (
             "scripts/sync-static.mjs",
             "tsconfig.tsbuildinfo",
         ),
-        description="KSADK Web candidate must not include hosted deployment shells, generated bundles, or consumer sync scripts",
+        description=(
+            "KSADK Web candidate must not include hosted deployment shells, generated "
+            "bundles, or consumer sync scripts"
+        ),
     ),
     DenyRule(
         name="hosted-only-tests",
@@ -208,7 +227,9 @@ CONTENT_AUDIT_TARGETS = {"public-repo", "ksadk-web-candidate", "sdist", "wheel"}
 CONTENT_RULES = (
     ContentRule(
         name="private-doc-domain",
-        pattern=re.compile(r"https?://(?:ksadk\.kingsoft\.com/docs|private-docs\.example\.invalid)"),
+        pattern=re.compile(
+            r"https?://(?:ksadk\.kingsoft\.com/docs|private-docs\.example\.invalid)"
+        ),
         description="public docs and package metadata should point to GitHub Pages",
     ),
     ContentRule(
@@ -233,14 +254,20 @@ CONTENT_RULES = (
             r"(?!kmr\.[a-z-]+\.inner\.api\.ksyun\.com\b)"
             r"(?:[A-Za-z0-9-]+\.)*(?:inner\.api|internal\.api|sdns)\.ksyun\.com\b"
         ),
-        description="internal service endpoints must not be published unless explicitly supported by the public SDK",
+        description=(
+            "internal service endpoints must not be published unless explicitly "
+            "supported by the public SDK"
+        ),
     ),
     ContentRule(
         name="private-container-registry",
         # 金山云容器仓库 hub/hub-vpc.kce.ksyun.com 是公开服务 endpoint(用户推镜像必需),
         # 只挡其他私有 registry 域名。agentengine/agentengine-public 等命名空间由用户自配,不算秘密。
         pattern=re.compile(r"\bhub-[A-Za-z0-9-]+\.kce\.ksyun\.com/(?!agentengine)"),
-        description="regional private container registry defaults must not be published; kce.ksyun.com is the public Kingsoft Cloud registry",
+        description=(
+            "regional private container registry defaults must not be published; "
+            "kce.ksyun.com is the public Kingsoft Cloud registry"
+        ),
     ),
     ContentRule(
         name="aws-access-key-id",
@@ -250,7 +277,10 @@ CONTENT_RULES = (
     ContentRule(
         name="aws-secret-access-key",
         # AWS Secret Access Key: 40 字符 base64-ish,常含 / + =,赋值给 SECRET_KEY/secret_key
-        pattern=re.compile(r"(?i)\b(?:aws_secret_access_key|secret_access_key|secret_key)\b\s*[:=]\s*[\"']?[A-Za-z0-9/+=]{40}"),
+        pattern=re.compile(
+            r"(?i)\b(?:aws_secret_access_key|secret_access_key|secret_key)\b"
+            r"\s*[:=]\s*[\"']?[A-Za-z0-9/+=]{40}"
+        ),
         description="AWS-style secret access keys must not be published",
     ),
     ContentRule(
@@ -261,14 +291,16 @@ CONTENT_RULES = (
     ),
     ContentRule(
         name="ksyun-secret-key-assignment",
-        # 金山云 SK: 赋值给 KSYUN_SECRET_KEY/secret_key,值是 40 字符 base64-ish(常以 OHL/AKL 开头但不确定)
+        # 金山云 SK: 赋值给 KSYUN_SECRET_KEY/secret_key，值是 32+ 字符 base64-ish。
         pattern=re.compile(r"(?i)\bksyun_secret_key\b\s*[:=]\s*[\"']?[A-Za-z0-9/+=]{32,}"),
         description="Kingsoft Cloud secret keys must not be published",
     ),
     ContentRule(
         name="uuid-secret-assignment",
         # UUID 格式 key 赋值给 *_API_KEY/*_TOKEN/*_MCP_KEY 等(如 OPENAI_API_KEY=4fd210b0-...)
-        pattern=re.compile(r"(?i)\b[A-Z0-9_]*(?:API_KEY|MCP_KEY|TOKEN|SECRET)[A-Z0-9_]*\b\s*[:=]\s*[\"']?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"),
+        pattern=re.compile(
+            r"(?i)\b[A-Z0-9_]*(?:API_KEY|MCP_KEY|TOKEN|SECRET)[A-Z0-9_]*\b\s*[:=]\s*[\"']?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+        ),
         description="UUID-shaped secrets assigned to *_KEY/*_TOKEN vars must not be published",
     ),
     ContentRule(
@@ -486,7 +518,9 @@ def audit_ksadk_web_candidate_metadata(root: Path, paths: Iterable[str]) -> Audi
                     Violation(
                         path="package.json",
                         rule="wrong-ksadk-web-homepage",
-                        description="KSADK Web homepage must point to its public GitHub Pages demo/docs URL",
+                        description=(
+                            "KSADK Web homepage must point to its public GitHub Pages demo/docs URL"
+                        ),
                     )
                 )
             scripts = package.get("scripts", {})
@@ -506,7 +540,9 @@ def audit_ksadk_web_candidate_metadata(root: Path, paths: Iterable[str]) -> Audi
                     Violation(
                         path="package.json",
                         rule="consumer-sync-script-reference",
-                        description="KSADK Web package scripts must not call KSADK consumer sync scripts",
+                        description=(
+                            "KSADK Web package scripts must not call KSADK consumer sync scripts"
+                        ),
                     )
                 )
 
@@ -536,7 +572,9 @@ def audit_ksadk_web_candidate_metadata(root: Path, paths: Iterable[str]) -> Audi
                     Violation(
                         path="export-manifest.json",
                         rule="wrong-ksadk-web-public-demo",
-                        description="export manifest must record the public KSADK Web GitHub Pages URL",
+                        description=(
+                            "export manifest must record the public KSADK Web GitHub Pages URL"
+                        ),
                     )
                 )
             if not manifest.get("generatedCandidateFiles"):

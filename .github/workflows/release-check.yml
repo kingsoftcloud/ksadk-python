@@ -35,10 +35,10 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev
 
-      - name: Sync pinned KsADK Web static assets
+      - name: Build pinned frontend static assets
         env:
-          KSADK_WEB_VERSION: "0.3.0"
-        run: make public-sync-ksadk-web-static
+          KSADK_WEB_VERSION: "0.3.1"
+        run: make build-frontend
 
       - name: Build artifacts
         run: uv build

@@ -316,11 +316,13 @@ def _resolve_subnet_availability_zone(*, subnet_id: str, region: str) -> str | N
 
 
 def _import_vpc_sdk():
-    from ksyun.client.vpc.v20160304.client import VpcClient
-    from ksyun.client.vpc.v20160304.models import DescribeSubnetsRequest
-    from ksyun.common.credential import Credential
-    from ksyun.common.profile.client_profile import ClientProfile
-    from ksyun.common.profile.http_profile import HttpProfile
+    from ksyun.client.vpc.v20160304.client import VpcClient  # type: ignore[import-untyped]
+    from ksyun.client.vpc.v20160304.models import (  # type: ignore[import-untyped]
+        DescribeSubnetsRequest,
+    )
+    from ksyun.common.credential import Credential  # type: ignore[import-untyped]
+    from ksyun.common.profile.client_profile import ClientProfile  # type: ignore[import-untyped]
+    from ksyun.common.profile.http_profile import HttpProfile  # type: ignore[import-untyped]
 
     return VpcClient, DescribeSubnetsRequest, Credential, ClientProfile, HttpProfile
 

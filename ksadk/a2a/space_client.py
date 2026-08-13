@@ -32,12 +32,11 @@ from a2a.types import (
 from google.protobuf.json_format import MessageToDict, ParseDict
 
 from ksadk.a2a.control_plane import (
-    ENV_A2A_CONTROL_PLANE_URL,
+    A2AAgentCardClient,
     A2AControlPlane,
     A2ARouteInterface,
     CredentialInjection,
     DiscoveredAgent,
-    InternalA2AControlPlaneClient,
     PreparedA2AOperation,
     SpaceAgentPage,
 )
@@ -54,6 +53,7 @@ from ksadk.events.runtime_event import RuntimeEvent
 
 logger = logging.getLogger(__name__)
 
+ENV_A2A_SPACE_ID = "KSADK_A2A_SPACE_ID"
 ENV_A2A_SPACE_IDS = "KSADK_A2A_SPACE_IDS"
 ENV_A2A_ENABLE_PUBLIC_EGRESS = "KSADK_A2A_ENABLE_PUBLIC_EGRESS"
 
@@ -61,6 +61,14 @@ ERR_PUBLIC_EGRESS_DISABLED = "A2A_PUBLIC_EGRESS_DISABLED"
 MAX_A2A_MESSAGE_BYTES = 1024 * 1024
 MAX_A2A_MESSAGE_PARTS = 64
 MAX_A2A_MESSAGE_ID_LENGTH = 128
+
+
+def _require_opaque_space_id(value: str, *, field_name: str) -> str:
+    """Validate a server-issued opaque Space ID without assuming a prefix."""
+    normalized = str(value or "").strip()
+    if not normalized or len(normalized) > 256 or any(char.isspace() for char in normalized):
+        raise ValueError(f"{field_name} must be a non-empty opaque resource ID")
+    return normalized
 
 
 @dataclass(frozen=True)
@@ -111,7 +119,7 @@ class A2ASpaceClient:
         event_outbox: A2ATaskEventOutbox | None = None,
         event_dispatcher: A2ATaskEventDispatcher | None = None,
     ) -> None:
-        require_a2a_resource_id(space_id, "a2a-space-", field_name="space_id")
+        space_id = _require_opaque_space_id(space_id, field_name="space_id")
         if external_transport is not None and not isinstance(
             external_transport, A2AExternalTransport
         ):
@@ -148,19 +156,19 @@ class A2ASpaceClient:
         event_outbox: A2ATaskEventOutbox | None = None,
         event_dispatcher: A2ATaskEventDispatcher | None = None,
     ) -> "A2ASpaceClient":
-        selected_space_id = str(space_id or "").strip()
+        selected_space_id = str(
+            space_id or os.getenv(ENV_A2A_SPACE_ID) or ""
+        ).strip()
         if selected_space_id:
-            require_a2a_resource_id(
-                selected_space_id,
-                "a2a-space-",
-                field_name="space_id",
+            selected_space_id = _require_opaque_space_id(
+                selected_space_id, field_name="space_id"
             )
         else:
             raw_space_ids = str(os.getenv(ENV_A2A_SPACE_IDS) or "").strip()
             if not raw_space_ids:
                 raise ValueError(
-                    f"missing {ENV_A2A_SPACE_IDS}; pass space_id or add the Runtime Agent "
-                    "to an A2A Space first"
+                    f"missing {ENV_A2A_SPACE_ID} and {ENV_A2A_SPACE_IDS}; pass space_id "
+                    "or add the Runtime Agent to an A2A Space first"
                 )
             try:
                 configured_space_ids = json.loads(raw_space_ids)
@@ -175,10 +183,8 @@ class A2ASpaceClient:
                 if not isinstance(configured_space_id, str):
                     raise ValueError(f"{ENV_A2A_SPACE_IDS}[{index}] must be an A2A Space ID string")
                 normalized = configured_space_id.strip()
-                require_a2a_resource_id(
-                    normalized,
-                    "a2a-space-",
-                    field_name=f"{ENV_A2A_SPACE_IDS}[{index}]",
+                normalized = _require_opaque_space_id(
+                    normalized, field_name=f"{ENV_A2A_SPACE_IDS}[{index}]"
                 )
                 normalized_space_ids.append(normalized)
             if len(set(normalized_space_ids)) != len(normalized_space_ids):
@@ -189,11 +195,18 @@ class A2ASpaceClient:
                 )
             selected_space_id = normalized_space_ids[0]
         if backend is None:
-            control_plane_url = str(os.getenv(ENV_A2A_CONTROL_PLANE_URL) or "").strip()
-            if not control_plane_url:
-                raise ValueError(f"missing {ENV_A2A_CONTROL_PLANE_URL}")
-            backend = InternalA2AControlPlaneClient(
-                control_plane_url,
+            from ksadk.a2a.service_env import (
+                resolve_a2a_service_token,
+                resolve_a2a_service_url,
+            )
+            service_url = resolve_a2a_service_url()
+            if not service_url:
+                raise ValueError(
+                    "A2A service url not configured: set KSADK_A2A_SERVICE_URL or AICP env"
+                )
+            backend = A2AAgentCardClient(
+                service_url,
+                service_token=resolve_a2a_service_token(),
                 httpx_client=httpx_client,
             )
         if egress_enabled is None:
@@ -354,7 +367,9 @@ class A2ASpaceClient:
             async for response in client.send_message(request, context=context):
                 response_task = _present_message_field(response, "task")
                 if response_task is not None and str(getattr(response_task, "id", None) or ""):
-                    first_task = first_task or response_task
+                    # 跟踪最新 task 状态：每个带 task 的 response 都更新 first_task，
+                    # 使 send_message 返回的是最终状态(如 COMPLETED)而非首个 SUBMITTED。
+                    first_task = response_task
                     observed_task_id = str(response_task.id)
                     observed_context_id = str(response_task.context_id or "") or None
                     if remote_task_id is None:
@@ -464,9 +479,11 @@ class A2ASpaceClient:
 
     async def get_task(self, task_id: str) -> A2APlatformTask:
         require_a2a_resource_id(task_id, "a2a-task-", field_name="task_id")
+        cached_agent = self._agents_by_task.get(task_id)
         prepared = await self._backend.prepare_task_operation(
             platform_task_id=task_id,
             operation="get_task",
+            agent_id=getattr(cached_agent, "agent_id", None),
         )
         self._validate_prepared_ids(prepared)
         remote_task_ref = self._require_remote_task(prepared)
@@ -627,10 +644,12 @@ class A2ASpaceClient:
         headers: dict[str, str]
         async with AsyncExitStack() as exit_stack:
             if prepared.route.kind == "hosted_gateway":
+                token = self._backend.gateway_token()
                 headers = {
-                    "Authorization": f"Bearer {self._backend.gateway_token()}",
                     "X-AgentEngine-A2A-Permit": prepared.call_permit,
                 }
+                if token:
+                    headers["Authorization"] = f"Bearer {token}"
                 http = self._httpx_client
             else:
                 if prepared.route.kind == "external_public" and not self._egress_enabled:
@@ -670,6 +689,7 @@ class A2ASpaceClient:
             route_card = self._card_for_route(agent.agent_card, route)
             owned_http = None
             if http is None:
+                # 外部调用方需自行传入已配置 verify 的 httpx_client。
                 owned_http = httpx.AsyncClient(trust_env=False)
                 http = owned_http
             client = await create_client(
@@ -1095,6 +1115,7 @@ __all__ = [
     "A2ASpaceClient",
     "DiscoveredAgent",
     "ENV_A2A_ENABLE_PUBLIC_EGRESS",
+    "ENV_A2A_SPACE_ID",
     "ENV_A2A_SPACE_IDS",
     "ERR_PUBLIC_EGRESS_DISABLED",
     "SpaceAgentPage",

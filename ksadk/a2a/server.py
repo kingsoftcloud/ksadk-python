@@ -59,37 +59,30 @@ class _DurableRequestContextBuilder(SimpleRequestContextBuilder):
 
 
 class A2AProtocolServer:
-    """把一个 ksadk runner 暴露为 A2A 协议数据面。
+    """把一个 RuntimeAdapter 暴露为 A2A 协议数据面。
 
     参数:
-        runner: 当前 runtime 的 runner。
         agent_card: 符合 wire 1.0 的 AgentCard(``ksadk.a2a.card.build_agent_card``)。
         task_store: durable ``DatabaseTaskStore``(``ksadk.a2a.task_store``)。
         task_adapter: 可选 ``A2ARuntimeTaskAdapter``(提供则 cancel 走 RuntimeAdapter.cancel)。
-        prefer_stream: 是否优先用 runner.stream(默认 True)。
         include_reasoning: 是否把 reasoning 输出为 ``adk_thought`` artifact。
     """
 
     def __init__(
         self,
-        runner: Any,
         *,
         agent_card: AgentCard,
         task_store: TaskStore,
         task_adapter: A2ARuntimeTaskAdapter,
         context_builder: A2AOwnerContextBuilder | None = None,
-        prefer_stream: bool = True,
         include_reasoning: bool = False,
     ) -> None:
-        self.runner = runner
         self.agent_card = agent_card
         self.task_store = task_store
         self.task_adapter = task_adapter
         self.context_builder = context_builder or A2AOwnerContextBuilder()
         self.executor = A2ARuntimeExecutor(
-            runner,
             task_adapter=task_adapter,
-            prefer_stream=prefer_stream,
             include_reasoning=include_reasoning,
         )
         self.request_handler = DefaultRequestHandler(

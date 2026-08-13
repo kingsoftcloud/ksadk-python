@@ -58,6 +58,8 @@ Long-term memory is accessed through a small backend contract:
 
 The runtime service chooses a backend from environment configuration, formats results into prompt text, and exposes framework tools such as `load_memory` and `save_memory`. If no long-term memory backend is configured, the public runtime should continue to work normally.
 
+For the SDK memory backend, an explicit `save_memory` tool call forces extraction of the submitted data so that a later lookup can observe it promptly. Automatic per-turn persistence retains the backend's default batching behavior.
+
 <Callout type="info">
 Backend options can include local test stores, HTTP services, or cloud SDK integrations. For open-source examples, document the interface first and make hosted backends optional.
 </Callout>
@@ -97,6 +99,17 @@ def search_documents(query: str, top_k: int = 3) -> list[dict[str, str]]:
 <Callout type="warning">
 Hosted knowledge integrations can follow the same visible shape: a query enters the retriever, the retriever returns scored snippets, and the runner receives a short formatted context block. Keep raw private document IDs, account IDs, and dataset names out of public examples.
 </Callout>
+
+## Managed Hermes Integration
+
+The Hermes image consumes the same platform bindings through a KsADK memory provider and knowledge tools without modifying upstream Hermes source code:
+
+- Long-term memory uses only stable user, session, and Agent identities supplied by the platform. Missing identity or service bindings fail closed; identity is never inferred from model text.
+- A session switch prefetches relevant memory into an isolated cache. Prompt injection reads only the current session cache, and an in-flight result from an older session cannot be published into the new session.
+- An explicit save waits for the bound service to complete `save_event_strings` and extraction before returning. Operations already in flight remain attached to their original user and session during reconfiguration.
+- Knowledge tools query the current platform binding and format the result. Retrieval, formatting, or service failures return a generic diagnostic without exposing credentials, internal endpoints, or raw exceptions to the model or logs.
+
+These integrations are optional. A Hermes Agent continues to chat and use unrelated tools when no knowledge base or long-term memory service is bound.
 
 ## ADK Versus Other Frameworks
 

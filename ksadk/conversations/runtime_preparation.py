@@ -253,6 +253,14 @@ async def build_run_input(
                 existing_events=existing_events,
             )
         effective_resume_input = tool_resume_input or normalized_resume_input
+        if tool_resume_input is not None:
+            # ToolGateway approvals complete after an otherwise normal tool
+            # call. Only LangGraph needs this private marker to restart a
+            # terminal graph semantically; runtime_input strips it elsewhere.
+            effective_resume_input = {
+                **tool_resume_input,
+                "_ksadk_gateway_approval_resume": True,
+            }
         del existing_events
         event_history = await service.get_events(resolved_session_id)
         history = build_history_from_events(event_history)

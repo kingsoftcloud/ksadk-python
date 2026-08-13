@@ -1,0 +1,81 @@
+---
+title: AgentKit Local Studio
+description: 0.8.1 新增的本地 Agent 创作、构建与对话工作区。
+status: new
+---
+
+<Callout type="info" title="0.8.1 新增">
+  AgentKit Local Studio 是面向本地开发的 Agent 创作工作区：在浏览器中创建、构建并测试 Agent，不需要另行安装 Node.js。
+</Callout>
+
+`agentengine studio` 是 KsADK 的本地优先工作区。它把 Agent 定义、构建记录、会话、资源、Trace 与任务编排放在同一个浏览器界面中；模型调用和构建仍由本机 KsADK 运行时执行。
+
+它不是 `agentengine web` 的替代品：后者用于调试一个已经存在的项目；Studio 用于从需求开始创建和维护多个本地 Agent。
+
+## 启动工作区
+
+安装 KsADK 后，在一个准备存放本地 Agent 的目录启动 Studio：
+
+```bash title="shell"
+pip install -U "ksadk[all]"
+mkdir my-agent-workspace
+agentengine studio ./my-agent-workspace
+```
+
+默认监听 `127.0.0.1:8080`，命令会打印带本地 session 的访问地址并自动打开浏览器。这个地址只适合本机使用；不要把其中的 `#session=...` 片段分享给其他人。
+
+```bash title="shell"
+# 不自动打开浏览器，并改用其他端口
+agentengine studio ./my-agent-workspace --port 8081 --no-open
+
+# 为本次启动提供模型配置文件
+agentengine studio ./my-agent-workspace --env-file ./model.env
+```
+
+`--env-file` 只读取 `OPENAI_API_BASE`、`OPENAI_API_KEY` 和 `OPENAI_MODEL_NAME`。已有的进程环境变量优先，不会被该文件覆盖。Codex 项目需要 Responses-to-Chat 兼容转换时，可使用 `--codex-proxy auto`；完整选项见[命令行参考](/cn/docs/cli#agentengine-studio)。
+
+<Callout type="warning" title="仅本地工作区">
+  0.8.1 不包含 Studio 的云端部署或多人协作能力。需要部署已有项目时，请使用项目目录中的 `agentengine deploy`，并遵循[云端部署](cloud-deployment)文档。
+</Callout>
+
+## 创建、构建并对话
+
+在 Studio 的 **创建 Agent** 向导中选择运行时、模板和模型配置，填写 Agent 名称与任务说明。当前可创建并在本机运行的运行时包括：
+
+- **Codex**：声明式 YAML Agent；适合使用本机 Codex Runtime 调试。
+- **ADK**：导出 `root_agent` 的 Python Agent。
+- **LangGraph**：导出编译图的 Python Agent。
+
+向导会生成可编辑的 Agent 定义；可选择在创建后立即构建。构建完成后，从该 Agent 的会话页发送消息，即可在同一工作区检查回复、运行记录和 Trace。模型凭据只从本机环境或显式配置文件读取，不会写进 Agent 定义。
+
+如果你已有 KsADK 项目，也可以继续使用 CLI 模板创建后再用本地 Web UI 调试：
+
+```bash title="shell"
+ksadk init --framework langgraph my-langgraph-agent
+cd my-langgraph-agent
+agentengine web .
+```
+
+有关模板生成的文件、各运行时的入口约定和部署方式，请分别参阅[创建项目](../getting-started/quickstart)、[Codex Managed Runtime](managed-runtime)和[云端部署](cloud-deployment)。
+
+## Studio 与本地 Web UI 的分工
+
+| 场景 | 使用的命令 | 适合做什么 |
+| --- | --- | --- |
+| 从零创建或维护多个本地 Agent | `agentengine studio <workspace>` | 创作、构建、资源管理、会话、Trace 与编排 |
+| 调试一个已有的 KsADK 项目 | `agentengine web <project>` | 发送消息、检查本地会话、附件和 OpenAI 兼容 API |
+| 在终端快速验证一个项目 | `agentengine run <project> -i` | 交互式运行与问题隔离 |
+
+Studio 与 `agentengine web` 都只绑定 loopback；它们不会把浏览器直接连到模型 provider。浏览器写操作由本地 session 和 CSRF token 校验，本机运行时再调用配置的框架 Runner。
+
+## 本地状态与重置
+
+Studio 的工作区数据和会话是本地开发状态，不是需要提交的源代码。若只是想清理一次本地实验，可停止 Studio 后删除该工作区中的 `.agentengine/`，再重新启动。
+
+不要删除你的 Agent 源码或 `agentengine.yaml` 来重置会话；它们是项目定义，应正常纳入版本控制。
+
+## UI 包与源码
+
+安装 wheel 的用户不需要构建 Studio 前端：wheel 已包含生产静态资源。贡献 Studio UI 时，受跟踪的源码位于 `ksadk/studio/react-ui`；生成到 `ksadk/studio/static` 的文件不会进入 Git，但会在 wheel 构建时自动生成并打包。
+
+详见[构建与打包](build-and-package)和[Web UI 源码与发布契约](web-ui-source)。

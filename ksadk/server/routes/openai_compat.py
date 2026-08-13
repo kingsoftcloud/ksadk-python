@@ -9,11 +9,22 @@ from typing import Any, Dict, List, Optional
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from ksadk.conversations.normalize import normalize_kop_messages, normalize_responses_input
 from ksadk.conversations.run_kinds import RUN_MODE_FOREGROUND, trigger_from_resume_input
+from ksadk.conversations.runtime_payloads import (
+    build_chat_completions_payload,
+    build_responses_payload,
+    extract_responses_resume_input,
+)
+from ksadk.conversations.runtime_streaming import (
+    stream_runtime_conversation_turn,
+    stream_runtime_responses_conversation_turn,
+)
+from ksadk.runtime.conversation_execution import invoke_runtime_conversation_once
+from ksadk.server.factory import get_runtime_execution
 
 from . import dependencies as deps
 from .checkpoint_resolution import _resolve_checkpoint_resume_input_from_session
-from .common import _prepare_runner_for_model, _resolve_active_runner
 from .models import (
     ResponsesRequest,
     _clean_optional_string,
@@ -23,7 +34,10 @@ from .models import (
     _split_custom_metadata,
 )
 from .routers import openai_compat_router
-from .streaming import _detached_resume_key_from_input, _reject_if_detached_resume_active
+from .streaming import (
+    _detached_resume_key_from_input,
+    _reject_if_detached_resume_active,
+)
 from .workspace import _build_models_payload
 
 
@@ -57,11 +71,11 @@ async def list_openai_models():
 @openai_compat_router.post("/v1/responses")
 async def responses(request: ResponsesRequest):
     """OpenAI Responses 兼容接口。"""
-    active_runner = _resolve_active_runner()
+    executor, launch_context = get_runtime_execution()
     resolved_session_id, resolved_user_id = _resolve_responses_session_and_user(request)
-    agent_id = _runtime_agent_id(active_runner)
+    agent_id = _runtime_agent_id(launch_context)
 
-    resume_input = deps.conversation().extract_responses_resume_input(request.input)
+    resume_input = extract_responses_resume_input(request.input)
     resume_input = await _resolve_checkpoint_resume_input_from_session(
         service=deps.resolve_session_service(),
         agent_id=agent_id,
@@ -71,7 +85,7 @@ async def responses(request: ResponsesRequest):
     messages = (
         []
         if resume_input is not None
-        else deps.conversation().normalize_responses_input(request.input)
+        else normalize_responses_input(request.input)
     )
     custom_metadata, request_metadata = _split_custom_metadata(request.metadata)
     if request.previous_response_id:
@@ -90,11 +104,17 @@ async def responses(request: ResponsesRequest):
     invocation_id = _metadata_invocation_id(request_metadata)
 
     if request.stream:
+        runtime_preparation = (
+            None
+            if resume_input is not None
+            else await executor.prepare_start(launch_context)
+        )
         resume_key = _detached_resume_key_from_input(resolved_session_id, resume_input)
         _reject_if_detached_resume_active(resume_key)
         return deps.detached_streaming_response(
-            deps.conversation().stream_responses_conversation_turn(
-                runner=active_runner,
+            stream_runtime_responses_conversation_turn(
+                executor=executor,
+                launch_context=launch_context,
                 agent_id=agent_id,
                 user_id=resolved_user_id,
                 messages=messages,
@@ -108,9 +128,9 @@ async def responses(request: ResponsesRequest):
                 resume_input=resume_input,
                 account_id=account_id,
                 invocation_id=invocation_id,
-                prepare_runner=_prepare_runner_for_model,
                 session_service_provider=deps.resolve_session_service,
                 run_mode=RUN_MODE_FOREGROUND,
+                runtime_preparation=runtime_preparation,
             ),
             invocation_id=invocation_id,
             resume_key=resume_key,
@@ -119,8 +139,9 @@ async def responses(request: ResponsesRequest):
         )
 
     response_id = f"resp_{uuid.uuid4().hex}"
-    resolved_session_id, result = await deps.conversation().invoke_conversation_once(
-        runner=active_runner,
+    resolved_session_id, result = await invoke_runtime_conversation_once(
+        executor=executor,
+        launch_context=launch_context,
         agent_id=agent_id,
         user_id=resolved_user_id,
         messages=messages,
@@ -135,11 +156,10 @@ async def responses(request: ResponsesRequest):
         response_id=response_id,
         account_id=account_id,
         invocation_id=invocation_id,
-        prepare_runner=_prepare_runner_for_model,
         session_service_provider=deps.resolve_session_service,
         run_mode=RUN_MODE_FOREGROUND,
     )
-    return deps.conversation().build_responses_payload(
+    return build_responses_payload(
         output_text=result["output_text"],
         model=request.model,
         session_id=resolved_session_id,
@@ -152,18 +172,20 @@ async def responses(request: ResponsesRequest):
 @openai_compat_router.post("/v1/chat/completions")
 async def chat_completions(request: ChatCompletionRequest):
     """OpenAI 兼容的聊天补全接口 (支持流式和非流式)"""
-    active_runner = _resolve_active_runner()
-    messages = deps.conversation().normalize_kop_messages(request.messages)
-    agent_id = _runtime_agent_id(active_runner)
+    executor, launch_context = get_runtime_execution()
+    messages = normalize_kop_messages(request.messages)
+    agent_id = _runtime_agent_id(launch_context)
     resolved_user_id = _clean_optional_string(request.user) or "user"
     account_id = _clean_optional_string(request.account_id)
     custom_metadata, request_metadata = _split_custom_metadata(request.metadata)
     invocation_id = _metadata_invocation_id(request_metadata)
 
     if request.stream:
+        runtime_preparation = await executor.prepare_start(launch_context)
         return StreamingResponse(
-            deps.conversation().stream_conversation_turn(
-                runner=active_runner,
+            stream_runtime_conversation_turn(
+                executor=executor,
+                launch_context=launch_context,
                 agent_id=agent_id,
                 user_id=resolved_user_id,
                 messages=messages,
@@ -175,15 +197,16 @@ async def chat_completions(request: ChatCompletionRequest):
                 custom_metadata=custom_metadata,
                 invocation_id=invocation_id,
                 account_id=account_id,
-                prepare_runner=_prepare_runner_for_model,
                 session_service_provider=deps.resolve_session_service,
                 run_mode=RUN_MODE_FOREGROUND,
+                runtime_preparation=runtime_preparation,
             ),
             media_type="text/event-stream",
         )
 
-    resolved_session_id, result = await deps.conversation().invoke_conversation_once(
-        runner=active_runner,
+    resolved_session_id, result = await invoke_runtime_conversation_once(
+        executor=executor,
+        launch_context=launch_context,
         agent_id=agent_id,
         user_id=resolved_user_id,
         messages=messages,
@@ -195,11 +218,10 @@ async def chat_completions(request: ChatCompletionRequest):
         custom_metadata=custom_metadata,
         invocation_id=invocation_id,
         account_id=account_id,
-        prepare_runner=_prepare_runner_for_model,
         session_service_provider=deps.resolve_session_service,
         run_mode=RUN_MODE_FOREGROUND,
     )
-    return deps.conversation().build_chat_completions_payload(
+    return build_chat_completions_payload(
         output_text=result["output_text"],
         model=request.model,
         session_id=resolved_session_id,

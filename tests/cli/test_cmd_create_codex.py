@@ -33,6 +33,8 @@ def test_write_codex_project_config_files(tmp_path):
     # README 说明 codex 运行方式
     readme = (tmp_path / "README.md").read_text(encoding="utf-8-sig")
     assert "ksadk web" in readme
+    assert "Runtime catalog" in readme
+    assert "不回退为 Code 部署" in readme
     manifest = yaml.safe_load(yaml_text)
     # Version is deliberately resolved by the catalog in cloud.  Init must not
     # accidentally pin to the SDK installed on the developer's machine.

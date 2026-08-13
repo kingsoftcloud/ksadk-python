@@ -17,6 +17,7 @@
     "tutorials",
     "guides/harness-app",
     "guides/local-web-ui",
+    "guides/agentkit-local-studio",
     "guides/hosted-ui-events",
     "---[Blocks]运行时能力---",
     "guides/agent-context",

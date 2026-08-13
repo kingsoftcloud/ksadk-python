@@ -25,6 +25,7 @@ agentengine --help
 agentengine init --help
 agentengine run --help
 agentengine web --help
+agentengine studio --help
 ```
 
 ## 命令分组
@@ -35,6 +36,7 @@ agentengine web --help
 | `config` | 管理模型和项目设置 | 是 |
 | `run` | 运行终端循环或本地 API server | 是 |
 | `web` | 启动本地浏览器 UI | 是 |
+| `studio` | 启动本地 Agent 构建与调试工作区 | 是 |
 | `a2a` | 在配置后暴露 A2A surface | 是 |
 | `replay` | 只读回放 RuntimeEvent 历史 | 是 |
 | `mcp` | 构建或管理 MCP 资源 | 取决于目标 |
@@ -130,6 +132,27 @@ agentengine web . --no-open
 Codex ManagedRuntime 同样使用 `agentengine web . --no-open`。它会校验当前操作系统
 对应的本地 Codex 二进制；离线但未显式锁定 Runtime 版本时会给出未锁定提示。
 
+### `agentengine studio`
+
+启动只监听 loopback 的本地 Agent 构建工作区：
+
+```bash title="bash"
+agentengine studio .
+agentengine studio . --port 8081 --no-open
+agentengine studio . --env-file ./model.env --codex-proxy auto
+```
+
+Studio 使用单一 React shell 承载 Agent、会话、构建、资源、Trace 与任务编排页面，根路径
+直接进入工作区；没有需要单独维护的 `/chat` 前端。模型环境可从当前进程、全局配置或显式
+`--env-file` 解析，浏览器写操作使用本地 session 与 CSRF 双重校验。
+
+`studio/static` 是随 Python 包分发、但不进入 Git 的 React 生产构建产物；前端源码与测试位于
+`ksadk/studio/react-ui`。修改源码后使用 `make studio-react-test` 验证前端，发布构建通过
+`make build-wheel` 或 `make public-build-check` 重新生成并打包产物。
+
+从启动工作区到创建、构建和测试 Agent 的完整流程见
+[AgentKit Local Studio（0.8.1 新增）](/cn/docs/framework/guides/agentkit-local-studio)。
+
 ### `ksadk replay` / `agentengine replay`
 
 从一个 session 的新 RuntimeEvent 日志生成可读 transcript 或 JSON，适合排查断线、刷新后的
@@ -214,12 +237,57 @@ agentengine launch . --env KEY=VALUE --env-file ./runtime.env
 | `--env KEY=VALUE` | 额外运行时环境变量，可重复传入；显式 env 进入部署 payload `env_vars` |
 | `--env-file PATH` | 额外运行时环境变量文件，支持 `.env` 或 JSON 对象 |
 
+敏感凭证（包括通过 `--env` 传入的密钥）会在 `--dry-run` 输出中脱敏。
+
 <Callout type="info" title="env 文件边界">
   传入的 `--env-file` 用于显式注入运行时 env。真实的 `.env` / `.env.local`
   不会进入 Code、Container 或 MCP 构建上下文，构建只保留 `.env.example` /
   `.env.sample` / `.env.template` 模板文件。详见
   [环境变量参考](../references/environment-variables)。
 </Callout>
+
+### 默认可观测性与显式关闭
+
+托管 Agent 的 `deploy`、`launch` 和 `hermes deploy` 默认发送 `enable_observability=true`。CLI 与控制台使用同一个控制面开关；平台在开启时注入 Langfuse 标准 OTLP 主路和 CloudMonitor OTLP 次路，同一 span 在两端保持相同的 `trace_id` / `span_id`。
+
+```bash title="bash"
+# 默认开启
+agentengine deploy . --target serverless
+agentengine launch . --target serverless
+agentengine hermes deploy --name my-hermes
+
+# 用户显式关闭
+agentengine deploy . --target serverless --no-observability
+agentengine launch . --target serverless --no-observability
+agentengine hermes deploy --name my-hermes --no-observability
+```
+
+关闭后平台会清理托管 OTLP endpoint、headers 和 protocol；不要用 `--env` 覆盖平台托管的可观测变量。环境变量协议见[环境变量参考](../references/environment-variables)。
+
+### `agentengine hermes`
+
+Hermes deploy 支持显式运行时环境变量，也会在未指定 `--env-file` 时自动读取当前目录 `.env`：
+
+```bash title="bash"
+agentengine hermes deploy --name my-hermes \
+  --env LOG_LEVEL=debug \
+  --env FEATURE_FLAG=on
+agentengine hermes deploy --name my-hermes --env-file ./hermes.env
+```
+
+`--env` 可重复传入，`--env-file` 支持 dotenv 或 JSON 对象。优先级为
+`--env` > `--env-file` > 当前进程环境 > 自动发现的 `.env`。显式环境参数会更新
+已有 Hermes 的 `env_vars`；未显式传入模型或环境参数时，镜像更新不会覆盖服务端现有环境配置。
+
+Hermes exec 使用 argv 透传，不经过 shell 解析。支持以下目标形式：
+
+```bash title="bash"
+agentengine hermes exec --agent my-hermes -- status
+agentengine hermes exec ar-123 -- status
+agentengine hermes exec -- sessions list
+```
+
+`--agent` 用于显式指定名称；位置参数只兼容 `ar-*` Agent ID。未指定目标时，命令会使用当前项目的默认 Agent，普通 argv token 不会被猜测为 Agent 名称。传入 `--session` 的业务 session ID 会同时写入 terminal start frame（并保留兼容 header），以便运行时恢复会话。
 
 ### `agentengine openclaw`
 
@@ -258,7 +326,9 @@ agentengine openclaw --help
 </Callout>
 
 <Callout type="info">
-  OpenClaw 部署同样支持 `--env KEY=VALUE`（可重复）和 `--env-file` 透传运行时环境变量，语义与通用 deploy/launch 一致（0.6.5）。
+  OpenClaw 部署同样支持可重复的 `--env KEY=VALUE`、`--env-file` 和当前目录
+  `.env` 自动发现，并采用与 Hermes 相同的优先级。通用 `deploy` / `launch`
+  只读取显式传入的 `--env` / `--env-file`，不会自动加载项目 `.env`。
 </Callout>
 
 ## JSON 输出

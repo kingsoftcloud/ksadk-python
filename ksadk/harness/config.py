@@ -63,7 +63,7 @@ class HarnessConfig:
     mcp_tools: tuple[McpToolSpec, ...] = ()
     sandbox: SandboxPolicy = field(default_factory=SandboxPolicy)
     runtime: str = "yaml"
-    """runtime 后端:``yaml``(YamlAgentRunner+LiteLLM)| ``codex``(CodexRunner+codex CLI)。"""
+    """runtime 后端:``yaml``(HarnessRuntimeAdapter)| ``codex``(CodexRuntimeAdapter)。"""
 
     @classmethod
     def from_dict(cls, data: dict[str, Any], *, source: str = "yaml") -> "HarnessConfig":

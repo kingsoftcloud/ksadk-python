@@ -17,7 +17,6 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -163,7 +162,8 @@ Mention whether this affects hosted UI, KSADK static UI, or both.
 
 ## Security
 
-- [ ] No tokens, credentials, private URLs, customer data, internal deployment notes, or generated deployment bundles are introduced.
+- [ ] No tokens, credentials, private URLs, customer data, internal deployment
+      notes, or generated deployment bundles are introduced.
 - [ ] Maintainer review is required before public release or publish actions.
 """,
     ".github/workflows/ci.yml": """name: CI
@@ -516,8 +516,12 @@ def build_export_plan(hosted_root: Path, ksadk_web_ui: Path) -> ExportPlan:
         hosted_root=str(hosted_root),
         ksadk_web_ui=str(ksadk_web_ui),
         export_paths=export_paths,
-        hosted_only_tests=[name for name in HOSTED_ONLY_TESTS if (hosted_root / "tests" / name).is_file()],
-        ksadk_only_tests=[name for name in KSADK_ONLY_TESTS if (ksadk_web_ui / "tests" / name).is_file()],
+        hosted_only_tests=[
+            name for name in HOSTED_ONLY_TESTS if (hosted_root / "tests" / name).is_file()
+        ],
+        ksadk_only_tests=[
+            name for name in KSADK_ONLY_TESTS if (ksadk_web_ui / "tests" / name).is_file()
+        ],
         forbidden_paths_seen=collect_forbidden_paths(hosted_root),
         violations=violations,
     )
@@ -570,7 +574,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--ksadk-web-ui", type=Path, default=DEFAULT_KSADK_WEB_UI)
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--json", action="store_true", help="print machine-readable JSON")
-    parser.add_argument("--summary", action="store_true", help="print a concise human-readable summary")
+    parser.add_argument(
+        "--summary", action="store_true", help="print a concise human-readable summary"
+    )
     return parser.parse_args(argv)
 
 

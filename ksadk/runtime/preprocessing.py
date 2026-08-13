@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -11,6 +12,7 @@ from ksadk.conversations.runtime_input import (
     _inject_runner_deferred_tools_for_request,
     _runner_type_name,
 )
+from ksadk.conversations.runtime_payloads import PreparedConversationTurn
 from ksadk.conversations.runtime_preparation import build_run_input
 from ksadk.runtime.adapter import (
     CONVERSATION_PREPROCESSING_METADATA_KEY,
@@ -60,20 +62,28 @@ async def prepare_runtime_start(request: StartRequest, runner: Any) -> PreparedR
     }
     request_metadata = {**outer_metadata, **conversation.request_metadata}
     messages = conversation.messages or _fallback_messages(request.input)
-    prepared = await build_run_input(
-        agent_id=str(request.agent_id or "agent"),
-        user_id=request.user_id,
-        session_id=request.session_id,
-        messages=messages,
-        model=request.model,
-        model_metadata=conversation.model_metadata or None,
-        model_options=conversation.model_options or None,
-        state_delta=conversation.state_delta or None,
-        instructions=conversation.instructions,
-        request_metadata=request_metadata,
-        custom_metadata=conversation.custom_metadata,
-        invocation_id=str(request.metadata.get("invocation_id") or "") or None,
-    )
+    raw_prepared = (conversation.model_extra or {}).get("prepared_turn")
+    if isinstance(raw_prepared, Mapping):
+        prepared = PreparedConversationTurn(**dict(raw_prepared))
+        prepared.request_metadata = {
+            **prepared.request_metadata,
+            **request_metadata,
+        }
+    else:
+        prepared = await build_run_input(
+            agent_id=str(request.agent_id or "agent"),
+            user_id=request.user_id,
+            session_id=request.session_id,
+            messages=messages,
+            model=request.model,
+            model_metadata=conversation.model_metadata or None,
+            model_options=conversation.model_options or None,
+            state_delta=conversation.state_delta or None,
+            instructions=conversation.instructions,
+            request_metadata=request_metadata,
+            custom_metadata=conversation.custom_metadata,
+            invocation_id=str(request.metadata.get("invocation_id") or "") or None,
+        )
     _inject_runner_deferred_tools_for_request(runner, prepared)
     ambient_contexts = _build_runner_ambient_contexts(
         runner=runner,
@@ -100,6 +110,9 @@ async def prepare_runtime_start(request: StartRequest, runner: Any) -> PreparedR
         model_options=prepared.model_options,
         kb_context=ambient_contexts.get("kb_context"),
         memory_context=ambient_contexts.get("memory_context"),
+        tool_approval_mode=str(
+            prepared.request_metadata.get("tool_approval_mode") or ""
+        ),
     )
     canonical_payload = _build_runner_request_payload(
         prepared=prepared,

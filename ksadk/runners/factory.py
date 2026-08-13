@@ -77,9 +77,10 @@ def create_runner(detection_result: DetectionResult, project_dir: str) -> BaseRu
         return DeepAgentsRunner(detection_result, project_dir)
 
     elif detection_result.type == FrameworkType.CODEX:
-        from ksadk.runners.codex_runner import CodexRunner
-
-        return CodexRunner(detection_result, project_dir)
+        raise ValueError(
+            "Codex 只支持 RuntimeAdapter 执行链；请使用 "
+            "ksadk.runtime.create_runtime_adapter"
+        )
 
     else:
         raise ValueError(f"不支持的框架类型: {detection_result.type}")

@@ -17,7 +17,7 @@ from ksadk.conversations.attachments import classify_attachment_kind, read_attac
 from ksadk.conversations.reasoning_markup import ReasoningMarkupParser, strip_reasoning_markup
 from ksadk.runners.base_runner import BaseRunner
 from ksadk.runners.usage_accumulator import accumulate_usage
-from ksadk.runners.utils import get_langfuse_callbacks, get_langfuse_metadata, load_agent_module
+from ksadk.runners.utils import load_agent_module
 from ksadk.sessions.continuity import LangGraphSessionAdapter
 
 
@@ -26,6 +26,10 @@ class LangGraphRunner(BaseRunner):
 
     透传原生 LangGraph 功能，支持任意 State 格式
     """
+
+    # ToolGateway approvals can arise after an otherwise terminal tool call;
+    # this runner opts into the runtime's semantic follow-up continuation.
+    supports_gateway_approval_semantic_resume = True
 
     def load_agent(self) -> None:
         self._load_agent(force_reload=False)
@@ -131,14 +135,7 @@ class LangGraphRunner(BaseRunner):
 
     def _get_config(self, session_id: str) -> dict:
         """获取运行配置"""
-        config: dict[str, Any] = {"configurable": {"thread_id": session_id}}
-
-        langfuse_callbacks = get_langfuse_callbacks()
-        if langfuse_callbacks:
-            config["callbacks"] = langfuse_callbacks
-            config["metadata"] = get_langfuse_metadata(session_id)
-
-        return config
+        return {"configurable": {"thread_id": session_id}}
 
     @staticmethod
     def _extract_langgraph_checkpoint_ref(payload: Dict[str, Any]) -> dict[str, Any]:
@@ -187,6 +184,38 @@ class LangGraphRunner(BaseRunner):
             return None
         resume_value = {interrupt_id: value} if interrupt_id else value
         return Command(resume=resume_value)
+
+    @staticmethod
+    def _is_gateway_approval_semantic_resume(value: Any) -> bool:
+        """Whether ``value`` came from a completed ToolGateway approval.
+
+        Native LangGraph ``interrupt()`` values must keep using
+        ``Command(resume=...)``.  In contrast, a ToolGateway can return an
+        ``approval_required`` result from an otherwise normal tool call; the
+        graph then reaches its terminal node before KsADK shows the approval
+        card.  Its approved tool result needs a new semantic graph turn.
+        """
+
+        return bool(
+            isinstance(value, Mapping)
+            and value.get("_ksadk_gateway_approval_resume") is True
+            and str(value.get("type") or "") == "function_call_output"
+        )
+
+    @staticmethod
+    def _gateway_approval_follow_up_input() -> str:
+        """A neutral prompt for the post-approval semantic continuation.
+
+        The actual approval response and durable tool result are already in
+        the session history.  Do not repeat their contents here: project hooks
+        commonly route by input keywords, and copying a workspace path back
+        into a synthetic user message can accidentally trigger another tool.
+        """
+
+        return (
+            "系统已完成此前获批的操作。请基于会话记录中的真实结果，直接向用户说明完成情况；"
+            "不要重试，也不要再次要求确认。"
+        )
 
     @staticmethod
     def _checkpoint_ref_from_state(state: Any) -> dict[str, Any]:
@@ -586,6 +615,16 @@ class LangGraphRunner(BaseRunner):
         resume_payload_provided = bool(payload.pop("resume_payload_provided", False))
         resume_interrupt_id = str(payload.pop("resume_interrupt_id", "") or "")
         resume_value = payload.get("input")
+        is_gateway_approval_resume = bool(
+            is_resume and self._is_gateway_approval_semantic_resume(resume_value)
+        )
+        if is_gateway_approval_resume:
+            # ``Command(resume=...)`` only works for a graph that actually
+            # yielded LangGraph's native interrupt.  ToolGateway approvals are
+            # intercepted after a normal tool result, when the graph already
+            # ended, so restart a normal turn from the persisted transcript.
+            payload["input"] = self._gateway_approval_follow_up_input()
+            resume_value = payload["input"]
         checkpoint_ref = self._extract_langgraph_checkpoint_ref(payload)
         history = payload.pop("history", [])
         native_context = self.build_native_context(payload.get("platform_context"))
@@ -600,14 +639,19 @@ class LangGraphRunner(BaseRunner):
         # 判断输入格式 / resume
         if is_checkpoint_resume:
             state = resume_value
-        elif is_resume:
+        elif is_resume and not is_gateway_approval_resume:
             # ``Command(resume=...)`` is delivered to the graph's suspended
             # interrupt. A custom prepare-state hook is for new user input;
             # applying it here can rewrite an approval decision into ordinary
             # graph state and turn an approved HITL action into a rejection.
             state = resume_value
         elif self._has_prepare_state_hook():
-            state = self._prepare_state_with_hook(payload, session_id, history)
+            state = self._prepare_state_with_hook(
+                payload,
+                session_id,
+                history,
+                is_resume=is_gateway_approval_resume,
+            )
         else:
             state = self._to_state(payload, history)
 
@@ -622,7 +666,7 @@ class LangGraphRunner(BaseRunner):
                     config=config,
                     context=native_context,
                 )
-            elif is_resume:
+            elif is_resume and not is_gateway_approval_resume:
                 result = await self._invoke_graph(
                     Command(resume=state),
                     config=config,
@@ -845,13 +889,21 @@ class LangGraphRunner(BaseRunner):
         resume_payload_provided = bool(payload.pop("resume_payload_provided", False))
         resume_interrupt_id = str(payload.pop("resume_interrupt_id", "") or "")
         resume_value = payload.get("input")
+        is_gateway_approval_resume = bool(
+            is_resume and self._is_gateway_approval_semantic_resume(resume_value)
+        )
+        if is_gateway_approval_resume:
+            # See ``invoke``: the graph did not suspend at a native interrupt,
+            # so use the durable transcript to run the post-tool answer turn.
+            payload["input"] = self._gateway_approval_follow_up_input()
+            resume_value = payload["input"]
         checkpoint_ref = self._extract_langgraph_checkpoint_ref(payload)
         native_context = self.build_native_context(payload.get("platform_context"))
         invoke_payload = dict(payload)
         invoke_payload["session_id"] = session_id
         if history:
             invoke_payload["history"] = history
-        if is_resume:
+        if is_resume and not is_gateway_approval_resume:
             invoke_payload["resume"] = True
         if is_checkpoint_resume:
             invoke_payload["checkpoint_resume"] = True
@@ -868,12 +920,17 @@ class LangGraphRunner(BaseRunner):
 
         if is_checkpoint_resume:
             state = resume_value
-        elif is_resume:
+        elif is_resume and not is_gateway_approval_resume:
             # Keep the interrupt value intact for ``Command(resume=...)``;
             # prepare-state hooks only shape fresh user turns.
             state = resume_value
         elif self._has_prepare_state_hook():
-            state = self._prepare_state_with_hook(payload, session_id, history)
+            state = self._prepare_state_with_hook(
+                payload,
+                session_id,
+                history,
+                is_resume=is_gateway_approval_resume,
+            )
         else:
             state = self._to_state(payload, history)
 
@@ -971,7 +1028,9 @@ class LangGraphRunner(BaseRunner):
                     interrupt_id=resume_interrupt_id,
                 )
                 if is_checkpoint_resume
-                else (Command(resume=state) if is_resume else state)
+                else (
+                    Command(resume=state) if is_resume and not is_gateway_approval_resume else state
+                )
             )
             # stream_mode 含 "custom" 才会产生 on_custom_stream 事件(custom writer);
             # 保留默认 "values" 以兼容既有 on_chain_end/graph_update 消费。
@@ -1047,9 +1106,7 @@ class LangGraphRunner(BaseRunner):
                     # ("values", state) 是 state 快照(忽略,终态走 on_chain_end)。
                     # 编排方常用 custom writer 把"调远端 agent/子图"的流式增量透传出来。
                     chunk = event.get("data", {}).get("chunk")
-                    if not (
-                        isinstance(chunk, tuple) and len(chunk) == 2 and chunk[0] == "custom"
-                    ):
+                    if not (isinstance(chunk, tuple) and len(chunk) == 2 and chunk[0] == "custom"):
                         continue
                     data = chunk[1]
                     if isinstance(data, str):
@@ -1076,18 +1133,19 @@ class LangGraphRunner(BaseRunner):
                         replace = bool(data.get("replace"))
                         if custom_type == "thinking":
                             accumulated_reasoning = (
-                                custom_delta
-                                if replace
-                                else accumulated_reasoning + custom_delta
+                                custom_delta if replace else accumulated_reasoning + custom_delta
                             )
                         else:
                             accumulated_text = (
                                 custom_delta if replace else accumulated_text + custom_delta
                             )
-                        out = {"delta": custom_delta, "type": custom_type}
+                        custom_event: dict[str, Any] = {
+                            "delta": custom_delta,
+                            "type": custom_type,
+                        }
                         if replace:
-                            out["replace"] = True
-                        yield out
+                            custom_event["replace"] = True
+                        yield custom_event
                         continue
                     if data is not None:
                         accumulated_text += str(data)

@@ -8,7 +8,7 @@
 - [ ] `make public-audit`
 - [ ] `make docs-site-build`
 - [ ] `make open-source-audit-dist` if package artifacts changed.
-- [ ] `uv build`
+- [ ] `make build-wheel`
 - [ ] `uv run --extra dev python -m twine check dist/*`
 
 ## Public Surface
