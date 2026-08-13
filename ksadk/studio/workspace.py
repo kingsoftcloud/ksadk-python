@@ -67,23 +67,24 @@ class Workspace:
             )
 
     def resolve(self, relative: Path | str, *, must_exist: bool = False) -> Path:
-        root_path = os.path.realpath(os.fspath(self.root))
-        raw_path = os.fspath(relative)
-        requested_path = (
-            raw_path if os.path.isabs(raw_path) else os.path.join(root_path, raw_path)
-        )
-        candidate_path = os.path.realpath(requested_path)
-        root_prefix = root_path if root_path.endswith(os.sep) else f"{root_path}{os.sep}"
-        if candidate_path != root_path and not candidate_path.startswith(root_prefix):
+        raw = Path(relative)
+        if raw.is_absolute():
+            # `Path.resolve` canonicalizes links; `relative_to` below rejects escapes.
+            # codeql[py/path-injection]
+            candidate = raw.resolve(strict=must_exist)
+        else:
+            # `Path.resolve` canonicalizes links; `relative_to` below rejects escapes.
+            # codeql[py/path-injection]
+            candidate = (self.root / raw).resolve(strict=must_exist)
+        try:
+            candidate.relative_to(self.root)
+        except ValueError as exc:
             raise StudioError(
                 "WORKSPACE_PATH_FORBIDDEN",
                 "路径不在当前工作区内",
                 status_code=403,
                 details={"path": str(relative)},
-            )
-        candidate = Path(candidate_path)
-        if must_exist:
-            candidate.stat()
+            ) from exc
         return candidate
 
     def relative(self, path: Path | str) -> str:
