@@ -334,14 +334,15 @@ def test_public_ci_runs_gitleaks_and_documents_branch_protection():
     assert "Secret Pattern Audit / scan" in branch_protection
     assert "CodeQL / analyze" in branch_protection
     assert "pypi environment" in branch_protection
-    assert "Branch protection and publish environment are configured" in approval_record
+    assert "required GitHub checks" in approval_record
 
 
 def test_public_release_candidate_tracks_current_version():
     approval_record = _read("docs/maintainer-approval-record.md")
+    version = tomllib.loads(_read("pyproject.toml"))["project"]["version"]
 
-    assert "| Python package version | 0.8.0 |" in approval_record
-    assert "make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=0.8.0" in approval_record
+    assert f"| Python package version | {version} |" in approval_record
+    assert f"make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V={version}" in approval_record
 
 
 def test_0_8_changelog_is_ready_for_authorized_release():
