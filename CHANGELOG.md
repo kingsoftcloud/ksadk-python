@@ -46,6 +46,8 @@
 
 ### 修复与性能
 
+- 修复 LangGraph 回调将 ToolGateway 结果序列化为 JSON 文本时，工具审批未被识别为可恢复交互的问题；Responses 客户端现在会收到标准审批项，批准后可继续原工具调用并执行真实副作用。
+- 修复 LangGraph 中 ToolGateway 审批完成后向已结束图发送原生 resume、导致副作用虽已执行却没有后续回复的问题；现在会基于已持久化的真实工具结果继续生成最终回答，同时保留原生 `interrupt()` 的 resume 语义。
 - 修复 Studio 快速创建向导与模板编排 API 的请求契约，并将 ADK/LangGraph 的源码路径和入口变量完全交由服务端生成；“创建后立即构建并打开会话”现在会实际提交 Build、等待成功后再进入会话。Codex、ADK、LangGraph 三种 Runtime 均按同一流程创建和构建。
 - 修复 Codex RuntimeAdapter 事件信封丢失调用方 `agent_id` / `user_id` / `invocation_id` 的问题，避免通过 `/v1/responses` 运行时因作用域校验不一致返回 500。
 - 修复通用 Agent 创建与更新部署 payload 未标记敏感环境变量的问题；模型 API Key、Token、Secret 等现在按统一规则写入 `IsSensitive`，避免控制面将其按普通变量处理。

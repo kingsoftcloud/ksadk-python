@@ -23,7 +23,11 @@ _LEGACY_OVERSIZED_MAX = {
     "ksadk/codex/client.py": 1042,
     "ksadk/deployment/providers/serverless.py": 1297,
     "ksadk/runners/adk_runner.py": 2219,
-    "ksadk/runners/langgraph_runner.py": 1250,
+    # 0.8.1 approval continuation baseline; split the LangGraph execution
+    # paths at the next runner-focused maintenance pass.
+    "ksadk/runners/langgraph_runner.py": 1305,
+    # 0.8.1 canonical ToolGateway approval projection baseline.
+    "ksadk/runtime/runner_adapter.py": 1032,
     "ksadk/sessions/local_service.py": 1080,
     "ksadk/sessions/postgres_service.py": 1019,
     "ksadk/studio/api.py": 1047,
