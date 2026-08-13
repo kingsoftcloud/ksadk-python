@@ -77,10 +77,18 @@ class LongTermMemoryService:
             connection = resolve_aicp_connection("KSADK_LTM")
             backend_config = {
                 "access_key": (
-                    os.environ.get("KSADK_LTM_ACCESS_KEY") or os.environ.get("KSYUN_ACCESS_KEY", "")
+                    os.environ.get("KSADK_LTM_ACCESS_KEY")
+                    or os.environ.get("KSYUN_ACCESS_KEY")
+                    or os.environ.get("KSYUN_ACCESS_KEY_ID", "")
                 ),
                 "secret_key": (
-                    os.environ.get("KSADK_LTM_SECRET_KEY") or os.environ.get("KSYUN_SECRET_KEY", "")
+                    os.environ.get("KSADK_LTM_SECRET_KEY")
+                    or os.environ.get("KSYUN_SECRET_KEY")
+                    or os.environ.get("KSYUN_SECRET_ACCESS_KEY", "")
+                ),
+                "session_token": (
+                    os.environ.get("KSADK_LTM_SESSION_TOKEN")
+                    or os.environ.get("KSYUN_SESSION_TOKEN", "")
                 ),
                 "region": connection["region"],
                 "endpoint": connection["endpoint"],

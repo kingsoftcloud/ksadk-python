@@ -71,6 +71,7 @@ class KnowledgeBaseClient(BaseModel):
     dataset_id: str
     access_key: str = ""
     secret_key: str = ""
+    session_token: str = ""
     region: str = "cn-beijing-6"
     endpoint: str = "aicp.api.ksyun.com"
     scheme: str = "https"
@@ -133,7 +134,9 @@ class KnowledgeBaseClient(BaseModel):
                 "Ensure kingsoftcloud-sdk-python is installed and up to date."
             )
 
-        cred = credential.Credential(self.access_key, self.secret_key)
+        cred = credential.Credential(
+            self.access_key, self.secret_key, self.session_token or None
+        )
 
         http_profile = HttpProfile()
         http_profile.endpoint = self.endpoint
@@ -255,12 +258,17 @@ class KnowledgeBaseClient(BaseModel):
         access_key = (
             os.environ.get("KSADK_KB_ACCESS_KEY")
             or os.environ.get("KSYUN_ACCESS_KEY")
+            or os.environ.get("KSYUN_ACCESS_KEY_ID")
             or os.environ.get("KSYUN_SECRET_ID", "")
         )
         secret_key = (
             os.environ.get("KSADK_KB_SECRET_KEY")
             or os.environ.get("KSYUN_SECRET_KEY")
-            or os.environ.get("KSYUN_SECRET_KEY", "")
+            or os.environ.get("KSYUN_SECRET_ACCESS_KEY", "")
+        )
+        session_token = (
+            os.environ.get("KSADK_KB_SESSION_TOKEN")
+            or os.environ.get("KSYUN_SESSION_TOKEN", "")
         )
 
         score_threshold_str = os.environ.get("KSADK_KB_SCORE_THRESHOLD", "")
@@ -275,6 +283,7 @@ class KnowledgeBaseClient(BaseModel):
             dataset_id=dataset_id,
             access_key=access_key,
             secret_key=secret_key,
+            session_token=session_token,
             region=connection["region"],
             endpoint=connection["endpoint"],
             scheme=connection["scheme"],

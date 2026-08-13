@@ -64,6 +64,7 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
 
     access_key: str = ""
     secret_key: str = ""
+    session_token: str = ""
     region: str = "cn-beijing-6"
     endpoint: str = "aicp.api.ksyun.com"
     scheme: str = "https"
@@ -137,7 +138,9 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
                 "Ensure kingsoftcloud-sdk-python>=1.5.8.94 is installed."
             )
 
-        cred = credential.Credential(self.access_key, self.secret_key)
+        cred = credential.Credential(
+            self.access_key, self.secret_key, self.session_token or None
+        )
 
         http_profile = HttpProfile()
         http_profile.endpoint = self.endpoint
