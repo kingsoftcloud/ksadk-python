@@ -186,9 +186,7 @@ def test_cmd_run_binds_local_persistence_to_the_agent_project(monkeypatch, tmp_p
     monkeypatch.setattr(
         cmd_run_module.uvicorn,
         "run",
-        lambda app, host, port: captured.update(
-            {"app": app, "host": host, "port": str(port)}
-        ),
+        lambda app, host, port: captured.update({"app": app, "host": host, "port": str(port)}),
     )
     monkeypatch.chdir(tmp_path)
 
@@ -539,7 +537,7 @@ async def test_run_agent_action_forwards_model_metadata_to_conversation_runtime(
                     "max_completion_tokens": "8k",
                 },
             },
-    )
+        )
 
     assert response.status_code == 200
     assert response.json()["Code"] == 0
@@ -2916,6 +2914,7 @@ def test_cmd_web_exits_quietly_on_keyboard_interrupt(monkeypatch, tmp_path):
         lambda result, project_dir: fake_runner,
         raising=False,
     )
+
     def raise_keyboard_interrupt(*_args, **_kwargs) -> None:
         raise KeyboardInterrupt
 

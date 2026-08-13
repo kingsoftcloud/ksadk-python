@@ -29,18 +29,30 @@ def test_critical_fields_present():
     )
     assert ws_ok.critical_fields_present() is True
     # 缺任一项都不通过
-    assert WorkingState(
-        current_goal="", constraints=["c"], completed_steps=["s"], next_action="n"
-    ).critical_fields_present() is False
-    assert WorkingState(
-        current_goal="g", constraints=[], completed_steps=["s"], next_action="n"
-    ).critical_fields_present() is False
-    assert WorkingState(
-        current_goal="g", constraints=["c"], completed_steps=[], next_action="n"
-    ).critical_fields_present() is False
-    assert WorkingState(
-        current_goal="g", constraints=["c"], completed_steps=["s"], next_action=""
-    ).critical_fields_present() is False
+    assert (
+        WorkingState(
+            current_goal="", constraints=["c"], completed_steps=["s"], next_action="n"
+        ).critical_fields_present()
+        is False
+    )
+    assert (
+        WorkingState(
+            current_goal="g", constraints=[], completed_steps=["s"], next_action="n"
+        ).critical_fields_present()
+        is False
+    )
+    assert (
+        WorkingState(
+            current_goal="g", constraints=["c"], completed_steps=[], next_action="n"
+        ).critical_fields_present()
+        is False
+    )
+    assert (
+        WorkingState(
+            current_goal="g", constraints=["c"], completed_steps=["s"], next_action=""
+        ).critical_fields_present()
+        is False
+    )
 
 
 def test_merge_missing_from_previous_fills_goal():

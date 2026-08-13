@@ -158,12 +158,12 @@ def test_pcm_react_workspace_contains_policy_and_evidence_surfaces():
     """React Studio keeps PCM policy authoring and progressive evidence UI."""
     import pathlib
 
-    create_page = pathlib.Path(
-        "ksadk/studio/react-ui/src/pages/CreatePage.tsx"
-    ).read_text(encoding="utf-8")
-    run_panel = pathlib.Path(
-        "ksadk/studio/react-ui/src/components/ChatRunPanel.tsx"
-    ).read_text(encoding="utf-8")
+    create_page = pathlib.Path("ksadk/studio/react-ui/src/pages/CreatePage.tsx").read_text(
+        encoding="utf-8"
+    )
+    run_panel = pathlib.Path("ksadk/studio/react-ui/src/components/ChatRunPanel.tsx").read_text(
+        encoding="utf-8"
+    )
     assert "contextOwnership" in create_page
     assert "contextEngineRollout" in create_page
     assert "memoryWriteRollout" in create_page

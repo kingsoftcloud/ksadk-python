@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 import random
-from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from typing import Any
 
@@ -34,7 +33,6 @@ from ksadk.conversations.runtime_observability import (
     _set_prompt_cache_attributes,
 )
 from ksadk.conversations.runtime_payloads import PreparedConversationTurn
-from ksadk.runtime import RuntimeLaunchContext
 from ksadk.runtime.adapter import StartRequest
 from ksadk.runtime_context import PlatformInvocationContext
 
@@ -43,7 +41,9 @@ from ksadk.runtime_context import PlatformInvocationContext
 # ---------------------------------------------------------------------------
 
 
-def _make_prepared(*, instructions: str = "你是助手", user_input: str = "hi") -> PreparedConversationTurn:
+def _make_prepared(
+    *, instructions: str = "你是助手", user_input: str = "hi"
+) -> PreparedConversationTurn:
     plan = build_shadow_context_plan_dict(instructions=instructions, user_input=user_input)
     return PreparedConversationTurn(
         session_id="s",
@@ -160,7 +160,9 @@ def test_canonical_runtime_type_capability_matches_adapter_instance() -> None:
     adapter = RunnerRuntimeAdapter(runner, runtime_type="langgraph")
     dispatch_caps = capabilities_for_runtime_type("langgraph")
     assert adapter.describe_context_capabilities() == dispatch_caps
-    assert capability_hash(adapter.describe_context_capabilities()) == capability_hash(dispatch_caps)
+    assert capability_hash(adapter.describe_context_capabilities()) == capability_hash(
+        dispatch_caps
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -229,7 +231,9 @@ def test_trace_attributes_only_record_hashes_and_counts_not_content() -> None:
     plan = prepared.shadow_context_plan
     span = _RecordingSpan()
     _set_context_plan_attributes(span, plan)
-    _set_prompt_cache_attributes(span, session_id="s", plan=plan, usage={"cache_read_input_tokens": 10})
+    _set_prompt_cache_attributes(
+        span, session_id="s", plan=plan, usage={"cache_read_input_tokens": 10}
+    )
 
     dumped = repr(span.attrs)
     assert "SECRET-INSTRUCTION-DO-NOT-LEAK" not in dumped

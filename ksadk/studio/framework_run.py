@@ -147,6 +147,10 @@ class FrameworkRunSpecResolver:
             "context_engine_rollout": _resolved_context_engine_rollout(resolved),
             "memory_recall_enabled": _resolved_memory_recall_enabled(resolved),
             "memory_write_rollout": _resolved_memory_write_rollout(resolved),
+            "memory_enabled": _resolved_memory_enabled(resolved),
+            "memory_write_mode": _resolved_memory_write_mode(resolved),
+            "flush_before_compaction": _resolved_memory_flush_before_compaction(resolved),
+            "provider_ref": _resolved_memory_provider_ref(resolved),
             "entry_point": detection.entry_point,
             "agent_variable": detection.agent_variable,
         }
@@ -201,3 +205,40 @@ class FrameworkRunSpecResolver:
 
 
 __all__ = ["FrameworkRunSpecResolver"]
+
+
+def _resolved_memory_enabled(resolved: Any) -> bool:
+    memory = resolved.get("memory") if isinstance(resolved, dict) else {}
+    return bool(memory.get("enabled", False)) if isinstance(memory, dict) else False
+
+
+    memory = resolved.get("memory") if isinstance(resolved, dict) else {}
+    if not isinstance(memory, dict) or not memory.get("enabled", False):
+        return False
+    recall = memory.get("recall", {})
+    return bool(recall.get("enabled", True)) if isinstance(recall, dict) else True
+
+
+def _resolved_memory_write_mode(resolved: Any) -> str:
+    memory = resolved.get("memory") if isinstance(resolved, dict) else {}
+    write = memory.get("write", {}) if isinstance(memory, dict) else {}
+    return (
+        str(write.get("mode", "candidate") or "candidate")
+        if isinstance(write, dict)
+        else "candidate"
+    )
+
+
+def _resolved_memory_flush_before_compaction(resolved: Any) -> bool:
+    memory = resolved.get("memory") if isinstance(resolved, dict) else {}
+    write = memory.get("write", {}) if isinstance(memory, dict) else {}
+    return bool(write.get("flushBeforeCompaction", True)) if isinstance(write, dict) else True
+
+
+def _resolved_memory_provider_ref(resolved: Any) -> str:
+    memory = resolved.get("memory") if isinstance(resolved, dict) else {}
+    return (
+        str(memory.get("providerRef", "local-default") or "local-default")
+        if isinstance(memory, dict)
+        else "local-default"
+    )

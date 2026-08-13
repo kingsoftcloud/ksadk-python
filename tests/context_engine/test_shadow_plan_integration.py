@@ -11,13 +11,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from ksadk.conversations.runtime_preparation import build_run_input
 from ksadk.conversations.runtime_observability import _set_context_plan_attributes
+from ksadk.conversations.runtime_preparation import build_run_input
 from ksadk.sessions.in_memory import InMemorySessionService
 
 
 def _langgraph_runner() -> SimpleNamespace:
-    return SimpleNamespace(detection_result=SimpleNamespace(type=SimpleNamespace(value="langgraph")))
+    return SimpleNamespace(
+        detection_result=SimpleNamespace(type=SimpleNamespace(value="langgraph"))
+    )
 
 
 @pytest.mark.asyncio
@@ -47,7 +49,9 @@ async def test_build_run_input_attaches_shadow_plan_with_token_breakdown() -> No
 async def test_shadow_plan_without_runner_or_runtime_type_is_opaque() -> None:
     # 既无 runner 也无 runtime_type（如未知入口）→ DEFAULT opaque，但仍生成结构。
     service = InMemorySessionService()
-    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-shadow-none")
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-shadow-none"
+    )
     prepared = await build_run_input(
         agent_id="demo-agent",
         user_id="user-1",
@@ -68,7 +72,9 @@ async def test_canonical_path_runtime_type_yields_correct_ownership_not_opaque()
     # canonical conversation execution 路径在 build_run_input 阶段尚未拿到 adapter/runner，
     # 但传入 launch_context.runtime_type 即可取得正确 ownership，不落成默认 opaque。
     service = InMemorySessionService()
-    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-canonical")
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-canonical"
+    )
     prepared = await build_run_input(
         agent_id="demo-agent",
         user_id="user-1",

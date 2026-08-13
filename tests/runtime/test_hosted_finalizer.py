@@ -26,6 +26,11 @@ async def test_finalize_usage_backfills_actual_into_plan(tmp_path, monkeypatch):
         shadow_context_plan={"runtime_type": "langgraph"},
         usage={"input_tokens": 88, "prompt_tokens": 88},
         runtime_type="langgraph",
+        memory_enabled=True,
+        memory_write_mode="candidate",
+        memory_recall_enabled=True,
+        flush_before_compaction=True,
+        provider_ref="local-default",
     )
     await finalize_hosted_turn(ctx)
     assert plan["runtime_reported_input_tokens"] == 88
@@ -43,6 +48,11 @@ async def test_finalize_no_usage_leaves_plan_unchanged(tmp_path, monkeypatch):
         shadow_context_plan={"runtime_type": "langgraph"},
         usage=None,
         runtime_type="langgraph",
+        memory_enabled=True,
+        memory_write_mode="candidate",
+        memory_recall_enabled=True,
+        flush_before_compaction=True,
+        provider_ref="local-default",
     )
     await finalize_hosted_turn(ctx)
     assert "runtime_reported_input_tokens" not in plan
@@ -69,6 +79,12 @@ async def test_finalize_memory_flush_disabled_by_default(tmp_path, monkeypatch):
         shadow_context_plan=None,
         usage=None,
         runtime_type="langgraph",
+        memory_enabled=True,
+        memory_write_rollout="enabled",
+        memory_write_mode="candidate",
+        memory_recall_enabled=True,
+        flush_before_compaction=True,
+        provider_ref="local-default",
         session_events=events,
     )
     await finalize_hosted_turn(ctx)  # 不应 flush
@@ -97,6 +113,12 @@ async def test_finalize_memory_flush_writes_when_enabled(tmp_path, monkeypatch):
         shadow_context_plan=None,
         usage=None,
         runtime_type="langgraph",
+        memory_enabled=True,
+        memory_write_rollout="enabled",
+        memory_write_mode="candidate",
+        memory_recall_enabled=True,
+        flush_before_compaction=True,
+        provider_ref="local-default",
         session_events=events,
     )
     await finalize_hosted_turn(ctx)
@@ -133,6 +155,12 @@ async def test_finalize_does_not_duplicate_memory_on_reentry(tmp_path, monkeypat
         shadow_context_plan=None,
         usage=None,
         runtime_type="langgraph",
+        memory_enabled=True,
+        memory_write_rollout="enabled",
+        memory_write_mode="candidate",
+        memory_recall_enabled=True,
+        flush_before_compaction=True,
+        provider_ref="local-default",
         session_events=events,
     )
     await finalize_hosted_turn(ctx)
@@ -160,6 +188,11 @@ async def test_finalize_failure_does_not_raise(tmp_path, monkeypatch):
         shadow_context_plan=None,
         usage=None,
         runtime_type="langgraph",
+        memory_enabled=True,
+        memory_write_mode="candidate",
+        memory_recall_enabled=True,
+        flush_before_compaction=True,
+        provider_ref="local-default",
         session_events=[],
     )
     await finalize_hosted_turn(ctx)  # 不抛

@@ -704,6 +704,7 @@ def test_runtime_context_reset_is_safe_after_an_async_stream_context_switch():
     )
     token = set_current_invocation_context(context)
     try:
+
         def reset_from_descendant_context():
             reset_current_invocation_context(token)
             return get_current_invocation_context()
@@ -4065,8 +4066,7 @@ async def test_invoke_conversation_once_uses_heuristic_title_for_architecture_at
             self.calls.append(input_data)
             return {
                 "output": (
-                    "这张图展示了典型的微服务分层架构，"
-                    "包含网关、业务服务、数据库和异步消息链路。"
+                    "这张图展示了典型的微服务分层架构，包含网关、业务服务、数据库和异步消息链路。"
                 )
             }
 

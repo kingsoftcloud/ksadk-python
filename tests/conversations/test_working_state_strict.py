@@ -19,15 +19,23 @@ from ksadk.sessions.in_memory import InMemorySessionService
 
 def _user(seq, text, inv="inv1"):
     return SessionEvent(
-        id=f"u{seq}", seq_id=seq, event_type="user_message", author="user",
-        invocation_id=inv, content={"role": "user", "parts": [{"text": text}]},
+        id=f"u{seq}",
+        seq_id=seq,
+        event_type="user_message",
+        author="user",
+        invocation_id=inv,
+        content={"role": "user", "parts": [{"text": text}]},
     )
 
 
 def _assistant(seq, text, inv="inv1"):
     return SessionEvent(
-        id=f"a{seq}", seq_id=seq, event_type="assistant_message", author="assistant",
-        invocation_id=inv, content={"role": "assistant", "parts": [{"text": text}]},
+        id=f"a{seq}",
+        seq_id=seq,
+        event_type="assistant_message",
+        author="assistant",
+        invocation_id=inv,
+        content={"role": "assistant", "parts": [{"text": text}]},
     )
 
 
@@ -66,9 +74,7 @@ async def test_deployment_full_chain_strict_acceptance():
     P0 不可放宽：无 or []、无 if、无 or True。
     """
     service = InMemorySessionService()
-    await service.create_session(
-        agent_id="agent", user_id="user-1", session_id="sess-strict"
-    )
+    await service.create_session(agent_id="agent", user_id="user-1", session_id="sess-strict")
     for ev in _deployment_events():
         await service.append_event("sess-strict", ev)
 
@@ -110,9 +116,7 @@ async def test_deployment_full_chain_strict_acceptance():
 async def test_deployment_bad_case_merge_recovers_all_four():
     """Bad Case：压缩后摘要丢失全部四项，合并旧 checkpoint 恢复。"""
     service = InMemorySessionService()
-    await service.create_session(
-        agent_id="agent", user_id="user-1", session_id="sess-bad"
-    )
+    await service.create_session(agent_id="agent", user_id="user-1", session_id="sess-bad")
     for ev in _deployment_events():
         await service.append_event("sess-bad", ev)
 
@@ -128,9 +132,7 @@ async def test_deployment_bad_case_merge_recovers_all_four():
     previous = _working_state_from_checkpoint(checkpoint)
 
     # 模拟新 turn 摘要丢失全部四项
-    new_ws = WorkingState(
-        current_goal="", constraints=[], completed_steps=[], next_action=None
-    )
+    new_ws = WorkingState(current_goal="", constraints=[], completed_steps=[], next_action=None)
     merged = new_ws.merge_missing_from(previous)
 
     # 严格断言合并后四项完整
@@ -146,9 +148,7 @@ async def test_deployment_bad_case_merge_recovers_all_four():
 async def test_deployment_checkpoint_preserves_completed_steps_list():
     """checkpoint audit dict 保存具体 completed_steps 列表，不只 count。"""
     service = InMemorySessionService()
-    await service.create_session(
-        agent_id="agent", user_id="u", session_id="sess-list"
-    )
+    await service.create_session(agent_id="agent", user_id="u", session_id="sess-list")
     for ev in _deployment_events():
         await service.append_event("sess-list", ev)
     checkpoint = await compact_conversation_history(

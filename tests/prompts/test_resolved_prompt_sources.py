@@ -23,7 +23,9 @@ def test_env_platform_policy_source_unset_returns_none(monkeypatch: pytest.Monke
     assert EnvPlatformPolicySource().resolve() is None
 
 
-def test_env_platform_policy_source_set_returns_stripped_text(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_env_platform_policy_source_set_returns_stripped_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("KSADK_PLATFORM_SAFETY_TEXT", "  平台安全规则  ")
     src = EnvPlatformPolicySource()
     assert src.resolve() == "平台安全规则"
@@ -41,10 +43,14 @@ def test_sections_from_resolved_sources_all_empty_returns_empty() -> None:
     assert sections_from_resolved_sources(ResolvedPromptSources()) == []
 
 
-def test_sections_from_resolved_sources_partial_no_platform_safety(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_sections_from_resolved_sources_partial_no_platform_safety(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.delenv("KSADK_PLATFORM_SAFETY_TEXT", raising=False)
     sections = sections_from_resolved_sources(
-        ResolvedPromptSources(agent_system="你是助手", agent_task="用中文", request_instructions="hi")
+        ResolvedPromptSources(
+            agent_system="你是助手", agent_task="用中文", request_instructions="hi"
+        )
     )
     kinds = [s.kind for s in sections]
     # canonical 顺序：agent_identity(20) → agent_policy(30) → request_instructions(60)
@@ -53,7 +59,9 @@ def test_sections_from_resolved_sources_partial_no_platform_safety(monkeypatch: 
     assert "platform_safety" not in kinds
 
 
-def test_sections_from_resolved_sources_with_platform_policy(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_sections_from_resolved_sources_with_platform_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("KSADK_PLATFORM_SAFETY_TEXT", "平台安全规则")
     sections = sections_from_resolved_sources(
         ResolvedPromptSources(
@@ -75,16 +83,24 @@ def test_compile_resolved_prompt_dict_all_empty_returns_none() -> None:
     assert compile_resolved_prompt_dict(ResolvedPromptSources()) is None
 
 
-def test_compile_resolved_prompt_dict_non_empty_has_all_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_compile_resolved_prompt_dict_non_empty_has_all_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.delenv("KSADK_PLATFORM_SAFETY_TEXT", raising=False)
     d = compile_resolved_prompt_dict(
-        ResolvedPromptSources(agent_system="你是助手", agent_task="用中文", request_instructions="hi")
+        ResolvedPromptSources(
+            agent_system="你是助手", agent_task="用中文", request_instructions="hi"
+        )
     )
     assert d is not None
     assert d["prompt_content_hash"].startswith("sha256:")
     # agent_system/agent_task 是 stable → stable_prefix_hash 非空。
     assert d["prompt_stable_prefix_hash"].startswith("sha256:")
-    assert set(d["prompt_section_hashes"]) == {"agent_identity", "agent_policy", "request_instructions"}
+    assert set(d["prompt_section_hashes"]) == {
+        "agent_identity",
+        "agent_policy",
+        "request_instructions",
+    }
     assert d["prompt_section_count"] == 3
     assert d["prompt_resolved_sources_version"] == "v1"
     # env 未设 → 无 platform_policy_version
@@ -108,7 +124,9 @@ def test_compile_resolved_prompt_dict_with_platform_policy(monkeypatch: pytest.M
 
 def test_compile_resolved_prompt_dict_is_deterministic(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("KSADK_PLATFORM_SAFETY_TEXT", raising=False)
-    sources = ResolvedPromptSources(agent_system="你是助手", agent_task="用中文", request_instructions="hi")
+    sources = ResolvedPromptSources(
+        agent_system="你是助手", agent_task="用中文", request_instructions="hi"
+    )
     a = compile_resolved_prompt_dict(sources)
     b = compile_resolved_prompt_dict(sources)
     assert a is not None and b is not None
@@ -116,14 +134,20 @@ def test_compile_resolved_prompt_dict_is_deterministic(monkeypatch: pytest.Monke
     assert a["prompt_stable_prefix_hash"] == b["prompt_stable_prefix_hash"]
 
 
-def test_stable_prefix_hash_excludes_request_instructions_changes(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_stable_prefix_hash_excludes_request_instructions_changes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """request_instructions(volatile) 变化不改变 stable_prefix_hash（agent_system/task 不变）。"""
     monkeypatch.delenv("KSADK_PLATFORM_SAFETY_TEXT", raising=False)
     base = compile_resolved_prompt_dict(
-        ResolvedPromptSources(agent_system="你是助手", agent_task="用中文", request_instructions="问题A")
+        ResolvedPromptSources(
+            agent_system="你是助手", agent_task="用中文", request_instructions="问题A"
+        )
     )
     changed = compile_resolved_prompt_dict(
-        ResolvedPromptSources(agent_system="你是助手", agent_task="用中文", request_instructions="问题B")
+        ResolvedPromptSources(
+            agent_system="你是助手", agent_task="用中文", request_instructions="问题B"
+        )
     )
     assert base is not None and changed is not None
     assert base["prompt_stable_prefix_hash"] == changed["prompt_stable_prefix_hash"]

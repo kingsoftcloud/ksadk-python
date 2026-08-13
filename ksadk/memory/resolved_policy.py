@@ -92,7 +92,10 @@ def resolve_memory_policy(
     mode = str(write_mode or "").strip().lower()
 
     if rollout not in ("off", "shadow", "enabled"):
-        rollout = "off"
+        import os
+
+        env = str(os.environ.get("KSADK_MEMORY_FLUSH_ENABLED", "")).strip().lower()
+        rollout = "enabled" if env in ("1", "true", "yes", "on") else "off"
 
     if rollout == "off":
         return ResolvedMemoryPolicy(

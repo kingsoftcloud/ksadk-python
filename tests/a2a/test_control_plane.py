@@ -42,9 +42,7 @@ def test_runtime_internal_action_names_and_paths_are_frozen() -> None:
     assert {
         build_a2a_internal_action_path(action)  # type: ignore[arg-type]
         for action in expected_actions
-    } == {
-        f"/agentengine/internal/v1/a2a/{action}" for action in expected_actions
-    }
+    } == {f"/agentengine/internal/v1/a2a/{action}" for action in expected_actions}
 
     with pytest.raises(ValueError, match="unsupported A2A internal Action"):
         build_a2a_internal_action_path("RunA2AAgent")  # type: ignore[arg-type]

@@ -116,6 +116,12 @@ class CodexRunSpecResolver:
             "context_engine_rollout": resolved_context.get("rollout", {}).get("contextEngine"),
             "memory_recall_enabled": resolved_memory.get("recall", {}).get("enabled"),
             "memory_write_rollout": resolved_context.get("rollout", {}).get("memoryWrite"),
+            "memory_enabled": resolved_memory.get("enabled", False),
+            "memory_write_mode": resolved_memory.get("write", {}).get("mode", "candidate"),
+            "flush_before_compaction": resolved_memory.get("write", {}).get(
+                "flushBeforeCompaction", True
+            ),
+            "provider_ref": resolved_memory.get("providerRef", "local-default"),
         }
         if approval_profile:
             request_config["tool_approval_mode"] = approval_profile

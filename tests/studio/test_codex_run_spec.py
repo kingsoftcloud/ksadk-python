@@ -65,6 +65,10 @@ def test_resolver_builds_canonical_codex_launch_context(tmp_path: Path) -> None:
         "context_engine_rollout": None,
         "memory_recall_enabled": None,
         "memory_write_rollout": None,
+        "memory_enabled": False,
+        "memory_write_mode": "candidate",
+        "flush_before_compaction": True,
+        "provider_ref": "local-default",
     }
 
 

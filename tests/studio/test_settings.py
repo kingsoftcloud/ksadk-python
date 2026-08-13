@@ -6,9 +6,7 @@ from pathlib import Path
 from ksadk.studio.service import StudioService
 
 
-def test_persisted_sandbox_is_applied_to_env_on_service_start(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_persisted_sandbox_is_applied_to_env_on_service_start(tmp_path: Path, monkeypatch) -> None:
     """重启后 settings.yaml 必须回填进程环境,否则运行解析回落默认值。"""
     monkeypatch.delenv("KSADK_CODEX_SANDBOX", raising=False)
     monkeypatch.delenv("KSADK_CODEX_USE_PROXY", raising=False)
@@ -33,9 +31,9 @@ def test_update_settings_writes_yaml_and_env(tmp_path: Path, monkeypatch) -> Non
 
     assert settings["sandbox"] == "full-access"
     assert os.environ["KSADK_CODEX_SANDBOX"] == "full-access"
-    assert "full-access" in (
-        tmp_path / "ws" / ".agentkit" / "settings.yaml"
-    ).read_text(encoding="utf-8")
+    assert "full-access" in (tmp_path / "ws" / ".agentkit" / "settings.yaml").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_missing_settings_file_keeps_env_untouched(tmp_path: Path, monkeypatch) -> None:

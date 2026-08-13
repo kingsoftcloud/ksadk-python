@@ -42,9 +42,7 @@ def _workspace_and_build(tmp_path: Path):
                 endpoint_url="https://model.example.com/v1/chat/completions",
                 credential_ref="env://MODEL_API_KEY",
             ),
-            security=SecuritySpec(
-                network=NetworkPolicy(allowed_hosts=["model.example.com"])
-            ),
+            security=SecuritySpec(network=NetworkPolicy(allowed_hosts=["model.example.com"])),
         ),
     )
     return workspace, AgentBundleBuilder(workspace).build(draft)
@@ -231,9 +229,7 @@ async def test_cloud_rollback_redeploys_historical_immutable_build(tmp_path: Pat
                 endpoint_url="https://model.example.com/v1/chat/completions",
                 credential_ref="env://MODEL_API_KEY",
             ),
-            security=SecuritySpec(
-                network=NetworkPolicy(allowed_hosts=["model.example.com"])
-            ),
+            security=SecuritySpec(network=NetworkPolicy(allowed_hosts=["model.example.com"])),
         ),
     )
     second = AgentBundleBuilder(workspace).build(second_draft)

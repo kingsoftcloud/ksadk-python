@@ -297,8 +297,7 @@ class _ExplicitRuntimeAppFixture:
     @staticmethod
     def _execution(runner: BaseRunner):
         detected_runtime_type = str(
-            getattr(getattr(runner.detection_result, "type", None), "value", None)
-            or "fixture"
+            getattr(getattr(runner.detection_result, "type", None), "value", None) or "fixture"
         ).lower()
         context = RuntimeLaunchContext(
             runtime_type=detected_runtime_type,

@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from ksadk.context_engine.capabilities import codex_context_capabilities, langgraph_context_capabilities
+from ksadk.context_engine.capabilities import (
+    codex_context_capabilities,
+    langgraph_context_capabilities,
+)
 from ksadk.context_engine.shadow_plan import (
     build_shadow_context_plan_dict,
     minimal_shadow_context_plan_dict,
@@ -27,9 +30,12 @@ def test_build_shadow_plan_accumulates_tokens_by_kind() -> None:
     assert plan["plan_id"].startswith("ctxplan_")
 
     expected_prompt = estimate_text_tokens(instructions)
-    expected_history = estimate_text_tokens("user") + estimate_text_tokens("第一轮问题") + estimate_text_tokens(
-        "assistant"
-    ) + estimate_text_tokens("第一轮回答")
+    expected_history = (
+        estimate_text_tokens("user")
+        + estimate_text_tokens("第一轮问题")
+        + estimate_text_tokens("assistant")
+        + estimate_text_tokens("第一轮回答")
+    )
     expected_input = estimate_text_tokens(user_input)
 
     assert plan["tokens_by_kind"]["compiled_prompt"] == expected_prompt

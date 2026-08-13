@@ -9,7 +9,9 @@ from ksadk.prompts.resolved import ResolvedPromptSources, compile_resolved_promp
 def _real_compiled_dict(monkeypatch) -> dict:
     monkeypatch.delenv("KSADK_PLATFORM_SAFETY_TEXT", raising=False)
     return compile_resolved_prompt_dict(  # type: ignore[return-value]
-        ResolvedPromptSources(agent_system="你是助手", agent_task="用中文", request_instructions="本轮")
+        ResolvedPromptSources(
+            agent_system="你是助手", agent_task="用中文", request_instructions="本轮"
+        )
     )
 
 

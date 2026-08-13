@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+
 import pytest
 
 from ksadk.studio.contracts import (
@@ -47,9 +48,9 @@ def _build_agent(tmp_path: Path, ownership: str, *, rollout: str = "shadow") -> 
         ),
     )
     build = studio.builder.build(draft)
-    run_spec = FrameworkRunSpecResolver(
-        studio.workspace, build_repository=studio.builds
-    ).resolve(build.id)
+    run_spec = FrameworkRunSpecResolver(studio.workspace, build_repository=studio.builds).resolve(
+        build.id
+    )
     return run_spec.request_config
 
 
@@ -76,22 +77,30 @@ def test_framework_run_resolver_includes_agent_budget(tmp_path):
     写入 request_config（方案 §8.2）。
     """
     import json
+
+    from ksadk.studio.contracts import (
+        AgentSpec,
+        ContextSpec,
+        Instructions,
+        RuntimeRef,
+    )
     from ksadk.studio.framework_run import FrameworkRunSpecResolver
     from ksadk.studio.workspace import Workspace
-    from ksadk.studio.builder import AgentBundleBuilder
-    from ksadk.studio.contracts import AgentDraft, AgentMetadata, AgentSpec, ContextSpec, Instructions, RuntimeRef
 
     workspace = Workspace(tmp_path)
     workspace.initialize()
 
     # 创建 agent draft 含 ContextSpec maxInputTokens=4096
     from ksadk.studio.repository import AgentDraftRepository
+
     drafts = AgentDraftRepository(workspace)
     draft = drafts.create(
         agent_id="budget-test",
         name="Budget Test",
         spec=AgentSpec(
-            runtime=RuntimeRef(type="langgraph", project_path="runtimes/demo", entry_point="agent.py:graph"),
+            runtime=RuntimeRef(
+                type="langgraph", project_path="runtimes/demo", entry_point="agent.py:graph"
+            ),
             instructions=Instructions(system="你是助手"),
             context=ContextSpec(max_input_tokens=4096, reserve_output_tokens=512),
         ),
@@ -99,12 +108,19 @@ def test_framework_run_resolver_includes_agent_budget(tmp_path):
 
     # Build 需要模型 + runtime 源码；直接写 resolved-agent-spec.json 测试 resolver 读取
     from ksadk.studio.contracts import ModelSpec
+
     draft = drafts.update(
         "budget-test",
         AgentSpec(
-            runtime=RuntimeRef(type="langgraph", project_path="runtimes/demo", entry_point="agent.py:graph"),
+            runtime=RuntimeRef(
+                type="langgraph", project_path="runtimes/demo", entry_point="agent.py:graph"
+            ),
             instructions=Instructions(system="你是助手"),
-            model=ModelSpec(model="test-model", credential_ref="env://OPENAI_API_KEY", endpoint_url="env://OPENAI_BASE_URL"),
+            model=ModelSpec(
+                model="test-model",
+                credential_ref="env://OPENAI_API_KEY",
+                endpoint_url="env://OPENAI_BASE_URL",
+            ),
             context=ContextSpec(max_input_tokens=4096, reserve_output_tokens=512),
         ),
         expected_revision=1,
@@ -113,8 +129,12 @@ def test_framework_run_resolver_includes_agent_budget(tmp_path):
     # 直接构造 resolved-agent-spec.json（绕过 build 的 runtime 源码检查）
     build_dir = workspace.resolve(".agentkit/builds/build-budget-test")
     build_dir.mkdir(parents=True, exist_ok=True)
-    (build_dir / "agent-bundle" / "runtime" / "runtimes" / "demo").mkdir(parents=True, exist_ok=True)
-    (build_dir / "agent-bundle" / "runtime" / "runtimes" / "demo" / "agent.py").write_text("graph = object()\n")
+    (build_dir / "agent-bundle" / "runtime" / "runtimes" / "demo").mkdir(
+        parents=True, exist_ok=True
+    )
+    (build_dir / "agent-bundle" / "runtime" / "runtimes" / "demo" / "agent.py").write_text(
+        "graph = object()\n"
+    )
 
     resolved_spec = draft.spec.model_dump(by_alias=True, exclude_none=True, mode="json")
     (build_dir / "agent-bundle" / "resolved-agent-spec.json").write_text(
@@ -123,8 +143,8 @@ def test_framework_run_resolver_includes_agent_budget(tmp_path):
 
     # 手动构造 BuildRecord
     from ksadk.studio.repository import BuildRecord, BuildRepository
+
     builds = BuildRepository(workspace)
-    import time
     record = BuildRecord(
         id="build-budget-test",
         agent_id="budget-test",

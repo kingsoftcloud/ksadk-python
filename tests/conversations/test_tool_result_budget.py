@@ -250,7 +250,12 @@ class _BigToolRunner:
 
     async def stream(self, _payload: dict[str, Any]):
         yield {"type": "tool_call", "tool_name": "read_huge", "tool_args": {}, "run_id": "r1"}
-        yield {"type": "tool_result", "tool_name": "read_huge", "tool_output": self._big, "run_id": "r1"}
+        yield {
+            "type": "tool_result",
+            "tool_name": "read_huge",
+            "tool_output": self._big,
+            "run_id": "r1",
+        }
         yield {"type": "final", "output": "done"}
 
 

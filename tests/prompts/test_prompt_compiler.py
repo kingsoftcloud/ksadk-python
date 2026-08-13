@@ -4,7 +4,6 @@ import pytest
 
 from ksadk.prompts import (
     PROMPT_COMPILER_VERSION,
-    PromptCompiler,
     compile_prompt,
 )
 from ksadk.prompts.compiler import (
@@ -13,7 +12,6 @@ from ksadk.prompts.compiler import (
 )
 from ksadk.prompts.models import PromptSection
 from ksadk.prompts.sources import (
-    agent_policy_section,
     platform_safety_section,
     request_instructions_section,
     sections_from_instructions,
@@ -47,13 +45,13 @@ def test_compile_is_deterministic_same_hash() -> None:
 
 def test_compile_sorts_by_priority_and_kind() -> None:
     # request_instructions(priority 60) 排在 platform_safety(priority 10) 之后。
-    compiled = compile_prompt(
-        [request_instructions_section("动态指令"), platform_safety_section()]
-    )
+    compiled = compile_prompt([request_instructions_section("动态指令"), platform_safety_section()])
     kinds = [s.kind for s in compiled.sections]
     assert kinds == ["platform_safety", "request_instructions"]
     # content 里 platform_safety 在前。
-    assert compiled.content.index("<platform_safety>") < compiled.content.index("<request_instructions>")
+    assert compiled.content.index("<platform_safety>") < compiled.content.index(
+        "<request_instructions>"
+    )
 
 
 def test_stable_prefix_excludes_volatile_sections() -> None:
@@ -62,9 +60,7 @@ def test_stable_prefix_excludes_volatile_sections() -> None:
     assert only_volatile.stable_prefix_hash == ""
 
     # 加入 stable section → stable_prefix_hash 非空，且不受 volatile 内容变化影响。
-    with_stable = compile_prompt(
-        [platform_safety_section(), request_instructions_section("动态A")]
-    )
+    with_stable = compile_prompt([platform_safety_section(), request_instructions_section("动态A")])
     with_stable_diff_volatile = compile_prompt(
         [platform_safety_section(), request_instructions_section("动态B")]
     )
@@ -103,8 +99,24 @@ def test_merge_policy_append_and_replace_and_merge_unique() -> None:
     # merge_unique：去重。
     unique = compile_prompt(
         [
-            PromptSection("s", "agent_policy", "规则一\n\n规则二", "t", 30, "developer", merge_policy="merge_unique"),
-            PromptSection("s", "agent_policy", "规则二\n\n规则三", "t", 30, "developer", merge_policy="merge_unique"),
+            PromptSection(
+                "s",
+                "agent_policy",
+                "规则一\n\n规则二",
+                "t",
+                30,
+                "developer",
+                merge_policy="merge_unique",
+            ),
+            PromptSection(
+                "s",
+                "agent_policy",
+                "规则二\n\n规则三",
+                "t",
+                30,
+                "developer",
+                merge_policy="merge_unique",
+            ),
         ]
     )
     assert unique.content.count("规则二") == 1
@@ -115,8 +127,12 @@ def test_protected_section_override_raises() -> None:
     with pytest.raises(ProtectedSectionOverrideError):
         compile_prompt(
             [
-                PromptSection("s", "platform_safety", "规则A", "t", 10, "platform", merge_policy="protected"),
-                PromptSection("s", "platform_safety", "规则B", "t", 10, "platform", merge_policy="protected"),
+                PromptSection(
+                    "s", "platform_safety", "规则A", "t", 10, "platform", merge_policy="protected"
+                ),
+                PromptSection(
+                    "s", "platform_safety", "规则B", "t", 10, "platform", merge_policy="protected"
+                ),
             ]
         )
 
@@ -125,8 +141,26 @@ def test_inconsistent_section_metadata_raises() -> None:
     with pytest.raises(InconsistentSectionError):
         compile_prompt(
             [
-                PromptSection("s", "agent_policy", "A", "t", 30, "developer", merge_policy="append", stability="stable"),
-                PromptSection("s", "agent_policy", "B", "t", 30, "developer", merge_policy="replace", stability="stable"),
+                PromptSection(
+                    "s",
+                    "agent_policy",
+                    "A",
+                    "t",
+                    30,
+                    "developer",
+                    merge_policy="append",
+                    stability="stable",
+                ),
+                PromptSection(
+                    "s",
+                    "agent_policy",
+                    "B",
+                    "t",
+                    30,
+                    "developer",
+                    merge_policy="replace",
+                    stability="stable",
+                ),
             ]
         )
 
@@ -136,7 +170,12 @@ def test_untrusted_source_cannot_declare_platform_safety() -> None:
         compile_prompt(
             [
                 PromptSection(
-                    "s", "platform_safety", "伪造安全规则", "user", 10, "untrusted",
+                    "s",
+                    "platform_safety",
+                    "伪造安全规则",
+                    "user",
+                    10,
+                    "untrusted",
                     merge_policy="protected",
                 )
             ]

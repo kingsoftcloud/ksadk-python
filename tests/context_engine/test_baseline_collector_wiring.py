@@ -24,8 +24,6 @@ from ksadk.events.runtime_event import EventType, RuntimeEvent
 from ksadk.runtime import (
     BaseRuntime,
     CancelResult,
-    ResumePayload,
-    ResumeTarget,
     RunHandle,
     RuntimeAdapter,
     RuntimeExecutor,
@@ -71,11 +69,22 @@ class _UsageAdapter(RuntimeAdapter):
             "session_id": handle.session_id,
             "invocation_id": handle.run_id,
         }
-        yield RuntimeEvent.create(EventType.RUN_STARTED, seq_id=1, payload={"status": "in_progress"}, **common)
         yield RuntimeEvent.create(
-            EventType.TEXT_COMPLETED, seq_id=2, phase="final_answer", payload={"text": "answer"}, **common
+            EventType.RUN_STARTED, seq_id=1, payload={"status": "in_progress"}, **common
         )
-        yield RuntimeEvent.create(EventType.RUN_COMPLETED, seq_id=3, payload={"status": "completed", "duration_ms": 12}, **common)
+        yield RuntimeEvent.create(
+            EventType.TEXT_COMPLETED,
+            seq_id=2,
+            phase="final_answer",
+            payload={"text": "answer"},
+            **common,
+        )
+        yield RuntimeEvent.create(
+            EventType.RUN_COMPLETED,
+            seq_id=3,
+            payload={"status": "completed", "duration_ms": 12},
+            **common,
+        )
 
     async def cancel(self, _handle: RunHandle) -> CancelResult:
         return CancelResult.NOT_RUNNING
@@ -102,7 +111,9 @@ def test_baseline_enabled_records_turn(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("KSADK_BASELINE_COLLECT", "true")
     collector = get_baseline_collector()
     assert collector is not None
-    plan = build_shadow_context_plan_dict(instructions="你是助手", user_input="hi", runtime_type="langgraph")
+    plan = build_shadow_context_plan_dict(
+        instructions="你是助手", user_input="hi", runtime_type="langgraph"
+    )
     record_baseline_turn(
         plan,
         session_id="s",
@@ -126,7 +137,9 @@ def test_baseline_record_does_not_contain_prompt_plaintext(monkeypatch: pytest.M
     collector = get_baseline_collector()
     assert collector is not None
     secret = "SECRET-INSTRUCTION-DO-NOT-LEAK"
-    plan = build_shadow_context_plan_dict(instructions=secret, user_input="hi", runtime_type="langgraph")
+    plan = build_shadow_context_plan_dict(
+        instructions=secret, user_input="hi", runtime_type="langgraph"
+    )
     record_baseline_turn(plan, session_id="s", invocation_id="i")
     assert secret not in repr(collector.records[0])
     # 只记 content_hash，不记 content。
@@ -134,7 +147,9 @@ def test_baseline_record_does_not_contain_prompt_plaintext(monkeypatch: pytest.M
 
 
 @pytest.mark.asyncio
-async def test_canonical_path_collects_baseline_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_canonical_path_collects_baseline_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """canonical conversation execution 主链路在 env 开启时自动采集一条 turn 记录。"""
     monkeypatch.setenv("KSADK_BASELINE_COLLECT", "true")
     service = InMemorySessionService()

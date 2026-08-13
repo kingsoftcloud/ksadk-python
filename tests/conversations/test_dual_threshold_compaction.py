@@ -15,9 +15,7 @@ from ksadk.conversations.model_context import (
     get_auto_compact_threshold_tokens,
 )
 from ksadk.conversations.runtime_compaction import _plan_compaction
-from ksadk.conversations.runtime_payloads import CompactionPlan
 from ksadk.sessions.base import SessionEvent
-
 
 _MODEL_METADATA = {"context_window_tokens": 200_000, "limits": {"max_output_tokens": 32_000}}
 
@@ -230,9 +228,7 @@ async def test_build_run_input_proactive_compact_threads_gate(monkeypatch) -> No
     # proactive compact 触发（超 soft）
     assert prepared.compaction_triggered is True
     events = await service.get_events("sess-d1")
-    checkpoint = next(
-        (e for e in reversed(events) if e.event_type == "context_checkpoint"), None
-    )
+    checkpoint = next((e for e in reversed(events) if e.event_type == "context_checkpoint"), None)
     assert checkpoint is not None
     meta = checkpoint.metadata or {}
     # trigger_band 审计字段存在且为 soft/hard（非 emergency，因为是 proactive 非 PTL）

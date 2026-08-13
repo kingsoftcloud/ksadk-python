@@ -431,6 +431,11 @@ async def test_completed_hosted_studio_turn_flushes_explicit_memory(
             request_config={
                 "prompt_integration_mode": "ksadk_hosted",
                 "memory_write_rollout": "enabled",
+                "memory_enabled": True,
+                "memory_write_mode": "candidate",
+                "memory_recall_enabled": True,
+                "flush_before_compaction": True,
+                "provider_ref": "local-default",
             },
         ),
         "请记住我的部署偏好：始终先执行 dry-run",

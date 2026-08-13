@@ -49,9 +49,7 @@ def test_product_protocol_and_web_entrypoints_depend_on_runtime_not_runners() ->
         candidates.extend((PACKAGE_ROOT / package).rglob("*.py"))
 
     violations = sorted(
-        str(path.relative_to(ROOT))
-        for path in candidates
-        if _imports_runner_layer(path)
+        str(path.relative_to(ROOT)) for path in candidates if _imports_runner_layer(path)
     )
 
     assert violations == []

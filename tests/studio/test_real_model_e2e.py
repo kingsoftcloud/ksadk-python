@@ -129,9 +129,7 @@ def test_real_model_create_build_run_and_cloud_contract(tmp_path: Path):
         ).json()
         first_completed = _wait(client, first_operation["id"])
         assert first_completed["status"] == "SUCCEEDED", first_completed
-        first_build = client.get(
-            f"/api/v1/builds/{first_completed['resourceId']}"
-        ).json()
+        first_build = client.get(f"/api/v1/builds/{first_completed['resourceId']}").json()
 
         second_operation = client.post(
             "/api/v1/agents/e2e-agent/builds",
@@ -140,9 +138,7 @@ def test_real_model_create_build_run_and_cloud_contract(tmp_path: Path):
         ).json()
         second_completed = _wait(client, second_operation["id"])
         assert second_completed["status"] == "SUCCEEDED", second_completed
-        second_build = client.get(
-            f"/api/v1/builds/{second_completed['resourceId']}"
-        ).json()
+        second_build = client.get(f"/api/v1/builds/{second_completed['resourceId']}").json()
         assert first_build["resolvedDigest"] == second_build["resolvedDigest"]
         assert first_build["bundleDigest"] == second_build["bundleDigest"]
 
@@ -180,9 +176,7 @@ def test_real_model_create_build_run_and_cloud_contract(tmp_path: Path):
                 },
                 "binding": {
                     "model": {"primary": f"cloud-model://{model}"},
-                    "secrets": {
-                        "model-api-key": "secret-manager://agentkit/e2e-model"
-                    },
+                    "secrets": {"model-api-key": "secret-manager://agentkit/e2e-model"},
                 },
                 "releasePolicy": {
                     "strategy": "rolling",

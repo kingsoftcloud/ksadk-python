@@ -15,6 +15,7 @@ import pytest
 from langgraph.graph import END, START, StateGraph
 from typing_extensions import TypedDict
 
+from ksadk.codex.runtime import CodexRuntimeAdapter
 from ksadk.context_engine.capabilities import (
     adk_context_capabilities,
     codex_context_capabilities,
@@ -22,7 +23,6 @@ from ksadk.context_engine.capabilities import (
     langchain_context_capabilities,
     langgraph_context_capabilities,
 )
-from ksadk.codex.runtime import CodexRuntimeAdapter
 from ksadk.runners.base_runner import BaseRunner
 from ksadk.runners.deepagents_runner import DeepAgentsRunner
 from ksadk.runners.langchain_runner import LangChainRunner
@@ -35,7 +35,9 @@ class _State(TypedDict, total=False):
 
 
 def _detection(value: str) -> SimpleNamespace:
-    return SimpleNamespace(entry_point="src/agent.py", agent_variable="root_agent", type=SimpleNamespace(value=value))
+    return SimpleNamespace(
+        entry_point="src/agent.py", agent_variable="root_agent", type=SimpleNamespace(value=value)
+    )
 
 
 def _langgraph_runner(value: str) -> LangGraphRunner:
@@ -130,7 +132,6 @@ def test_unknown_runner_falls_back_to_default() -> None:
 
 def test_adk_describe_matches_ownership_when_extra_installed() -> None:
     pytest.importorskip("google.adk", reason="ksadk[adk] extra 未安装，跳过 ADK 直接构造")
-    from ksadk.runners.adk_runner import ADKRunner
 
     # ADKRunner 构造较重；此处只验证 capability 工厂与 override 指向一致。
     expected = adk_context_capabilities()

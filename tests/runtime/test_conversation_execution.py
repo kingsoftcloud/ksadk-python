@@ -141,9 +141,10 @@ async def test_runtime_conversation_prepares_once_persists_and_closes_terminal_r
             runtime_type="fixture",
         )
     ]
-    assert executor.find_handle(
-        "fixture", request.metadata["invocation_id"], request.session_id
-    ) is None
+    assert (
+        executor.find_handle("fixture", request.metadata["invocation_id"], request.session_id)
+        is None
+    )
 
 
 @pytest.mark.asyncio
@@ -365,9 +366,7 @@ async def test_canonical_cloud_path_propagates_prompt_and_deployment_contract() 
     compiled_content = prepared["compiled_prompt"]["prompt_content"]
     assert "<agent_identity>\nYou are the cloud canary." in compiled_content
     assert "<agent_policy>\nAnswer deployment checks." in compiled_content
-    assert prepared["shadow_context_plan"]["deployment_mode"] == (
-        "ksadk_managed_cloud"
-    )
+    assert prepared["shadow_context_plan"]["deployment_mode"] == ("ksadk_managed_cloud")
 
 
 @pytest.mark.asyncio

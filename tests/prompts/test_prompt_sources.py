@@ -7,7 +7,6 @@ import pytest
 
 from ksadk.prompts.sources import (
     DEFAULT_RULE_FILE_MAX_TOKENS,
-    DEFAULT_RULE_FILES_MAX_TOKENS,
     PLATFORM_SAFETY_TEXT,
     discover_instruction_files,
     platform_safety_section,
@@ -49,7 +48,9 @@ def test_discover_disabled_by_default(tmp_path: Path) -> None:
         assert discover_instruction_files(tmp_path) == []
 
 
-def test_discovery_parent_to_child_dedup_and_budget(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_discovery_parent_to_child_dedup_and_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv("KSADK_PROMPT_AUTO_DISCOVERY", "true")
     parent = tmp_path / "parent"
     child = parent / "child"
@@ -60,12 +61,8 @@ def test_discovery_parent_to_child_dedup_and_budget(tmp_path: Path, monkeypatch:
     # 父级先进入，子级后进入（方案 7.6 第 3 条）。
     # 注意：按目录段定位，避免 tmp_path 目录名（含 "parent"/"child" 字样）干扰。
     sources = [s.source for s in sections]
-    parent_idx = next(
-        i for i, src in enumerate(sources) if src == str(parent / "AGENTS.md")
-    )
-    child_idx = next(
-        i for i, src in enumerate(sources) if src == str(child / "AGENTS.md")
-    )
+    parent_idx = next(i for i, src in enumerate(sources) if src == str(parent / "AGENTS.md"))
+    child_idx = next(i for i, src in enumerate(sources) if src == str(child / "AGENTS.md"))
     assert parent_idx < child_idx
     # 真实路径去重：同一文件不重复。
     assert len({s.metadata.get("path") for s in sections}) == len(sections)
@@ -86,6 +83,8 @@ def test_discovery_total_budget_caps(tmp_path: Path, monkeypatch: pytest.MonkeyP
     monkeypatch.setenv("KSADK_PROMPT_AUTO_DISCOVERY", "true")
     (tmp_path / "AGENTS.md").write_text("规则A" * 500, encoding="utf-8")
     (tmp_path / "CLAUDE.md").write_text("规则B" * 500, encoding="utf-8")
-    sections = discover_instruction_files(tmp_path, file_max_tokens=DEFAULT_RULE_FILE_MAX_TOKENS, total_max_tokens=50)
+    sections = discover_instruction_files(
+        tmp_path, file_max_tokens=DEFAULT_RULE_FILE_MAX_TOKENS, total_max_tokens=50
+    )
     total = sum(s.metadata["tokens"] for s in sections)
     assert total <= 50

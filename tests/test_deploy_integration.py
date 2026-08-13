@@ -164,7 +164,6 @@ class TestDeployLogic:
             ),
             patch("ksadk.common.auth.AWSV4Auth") as MockAuth,
         ):
-
             MockAuth.return_value.access_key = "test-ak"
             MockAuth.return_value.secret_key = "test-sk"
 
@@ -225,7 +224,6 @@ class TestDeployLogic:
             ),
             patch("ksadk.common.auth.AWSV4Auth") as MockAuth,
         ):
-
             MockAuth.return_value.access_key = "test-ak"
             MockAuth.return_value.secret_key = "test-sk"
 
@@ -287,7 +285,6 @@ class TestDeployLogic:
             patch("ksadk.deployment.providers.serverless.logger.warning") as mock_warning,
             patch("ksadk.common.auth.AWSV4Auth") as MockAuth,
         ):
-
             MockAuth.return_value.access_key = "test-ak"
             MockAuth.return_value.secret_key = "test-sk"
 
@@ -339,7 +336,6 @@ class TestDeployLogic:
             ),
             patch("ksadk.common.auth.AWSV4Auth") as MockAuth,
         ):
-
             MockAuth.return_value.access_key = "test-ak"
             MockAuth.return_value.secret_key = "test-sk"
 
@@ -407,7 +403,6 @@ class TestDeployLogic:
             ),
             patch("ksadk.common.auth.AWSV4Auth") as MockAuth,
         ):
-
             MockAuth.return_value.access_key = "test-ak"
             MockAuth.return_value.secret_key = "test-sk"
 
@@ -478,7 +473,6 @@ class TestDeployLogic:
             ),
             patch("ksadk.common.auth.AWSV4Auth") as MockAuth,
         ):
-
             MockAuth.return_value.access_key = "test-ak"
             MockAuth.return_value.secret_key = "test-sk"
 
@@ -618,7 +612,6 @@ class TestDeployLogic:
             ),
             patch("ksadk.common.auth.AWSV4Auth") as MockAuth,
         ):
-
             MockAuth.return_value.access_key = "test-ak"
             MockAuth.return_value.secret_key = "test-sk"
 
@@ -680,7 +673,6 @@ class TestDeployLogic:
             ),
             patch("ksadk.common.auth.AWSV4Auth") as MockAuth,
         ):
-
             MockAuth.return_value.access_key_id = "test-ak"
             MockAuth.return_value.secret_access_key = "test-sk"
 
@@ -737,7 +729,6 @@ class TestDeployLogic:
             ),
             patch("ksadk.common.auth.AWSV4Auth") as MockAuth,
         ):
-
             MockAuth.return_value.access_key_id = "test-ak"
             MockAuth.return_value.secret_access_key = "test-sk"
 
@@ -796,7 +787,6 @@ class TestDeployLogic:
             ),
             patch("ksadk.common.auth.AWSV4Auth") as MockAuth,
         ):
-
             MockAuth.return_value.access_key_id = "test-ak"
             MockAuth.return_value.secret_access_key = "test-sk"
 
@@ -1046,7 +1036,6 @@ class TestDeployLogic:
             ),
             patch("ksadk.common.auth.AWSV4Auth") as MockAuth,
         ):
-
             MockAuth.return_value.access_key_id = "test-ak"
             MockAuth.return_value.secret_access_key = "test-sk"
 
@@ -1096,7 +1085,6 @@ class TestDeployLogic:
             ),
             patch("ksadk.common.auth.AWSV4Auth") as MockAuth,
         ):
-
             MockAuth.return_value.access_key_id = "test-ak"
             MockAuth.return_value.secret_access_key = "test-sk"
 
@@ -1211,7 +1199,6 @@ class TestDeployLogic:
             ),
             patch("ksadk.common.auth.AWSV4Auth") as MockAuth,
         ):
-
             MockAuth.return_value.access_key_id = "test-ak"
             MockAuth.return_value.secret_access_key = "test-sk"
 

@@ -460,13 +460,15 @@ class CodexAgentService:
         saved = current or self.drafts.get(manifest.name)
         bindings = self._model_bindings(manifest)
         # 从 Manifest 恢复 PCM context/memory（方案 §5.1：Build 不可变）
-        # 从 Manifest 恢复 PCM context/memory（方案 §5.1：Build 不可变）
-        # 严格类型化：有字段但格式错误时抛 StudioError，不静默降级
-        from ksadk.studio.codex_manifest import _validate_pcm_field
+        # Manifest 已在 model_validate 时严格校验；这里直接恢复
         from ksadk.studio.contracts import ContextSpec, MemorySpec
 
-        context_spec = _validate_pcm_field(manifest.context, "context", ContextSpec)
-        memory_spec = _validate_pcm_field(manifest.memory, "memory", MemorySpec)
+        context_spec = (
+            ContextSpec.model_validate(manifest.context) if manifest.context else ContextSpec()
+        )
+        memory_spec = (
+            MemorySpec.model_validate(manifest.memory) if manifest.memory else MemorySpec()
+        )
         if saved is not None:
             draft = saved.model_copy(deep=True)
             draft.spec.runtime = RuntimeRef(

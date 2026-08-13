@@ -171,6 +171,7 @@ async def test_hosted_chain_fills_usage_into_plan(env_hosted):
         agent_task="用 uv",
         prompt_integration_mode="ksadk_hosted",
         runtime_type="langgraph",
+        memory_write_rollout="enabled",
         session_service_provider=lambda: service,
     )
     assert prepared.context_plan is not None, "V2 开 → 应产出真实 context_plan"
@@ -213,7 +214,7 @@ async def test_hosted_chain_off_by_default_is_byte_identical():
         instructions="q",
         agent_system="你是助手",
         agent_task="用 uv",
-        prompt_integration_mode="ksadk_hosted",  # 即使声明接管
+        prompt_integration_mode="ksadk_hosted",
         session_service_provider=lambda: service,
     )
     # 未开 Prompt Compiler/Context Engine → instructions 仍是旧拼接（无 XML section）
@@ -245,8 +246,9 @@ async def test_agent_rollout_enables_hosted_chain_without_process_env(
     )
     assert prepared.context_plan is not None
     assert prepared.assembled_input is not None
-    assert prepared.context_plan["projected_input_tokens"] == (
-        prepared.assembled_input["estimated_tokens"]
+    assert (
+        prepared.context_plan["projected_input_tokens"]
+        == (prepared.assembled_input["estimated_tokens"])
     )
 
 
@@ -287,7 +289,7 @@ async def test_managed_codex_native_not_taken_over(env_hosted):
         agent_system="你是助手",
         agent_task="",
         prompt_integration_mode="ksadk_hosted",
-        runtime_type="codex",  # native_runtime
+        runtime_type="codex",
         session_service_provider=lambda: service,
     )
     # native_runtime prompt_owner=native → hosted pipeline 不接管

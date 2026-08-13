@@ -22,9 +22,7 @@ from ksadk.server.terminal_sessions import TerminalSession
 
 def _make_app(*, runtime_type: str | None = None, executor=None):
     context = (
-        RuntimeLaunchContext(runtime_type=runtime_type, project_dir=".")
-        if runtime_type
-        else None
+        RuntimeLaunchContext(runtime_type=runtime_type, project_dir=".") if runtime_type else None
     )
     return create_runtime_app(
         RuntimeAppConfig(

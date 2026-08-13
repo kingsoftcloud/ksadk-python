@@ -188,6 +188,7 @@ async def test_run_agent_background_primes_session_title_before_detached_stream_
     bg_client, monkeypatch
 ):
     """Background=true 返回 job 句柄前先写入首轮 prompt/title，刷新列表不显示空标题。"""
+
     class _IdleDetachedStream:
         def __init__(
             self,
@@ -309,12 +310,10 @@ async def test_run_agent_background_writes_single_in_progress_status(bg_client):
         invocation_id = resp.json()["Data"]["InvocationId"]
         await runner.stream_finished.wait()
 
-    statuses = await _wait_for_terminal_statuses(
-        app, "sess-bg-single-start", invocation_id
+    statuses = await _wait_for_terminal_statuses(app, "sess-bg-single-start", invocation_id)
+    assert statuses.count("in_progress") == 1, (
+        f"期望同一 InvocationId 只有一个 in_progress，实际 statuses: {statuses}"
     )
-    assert (
-        statuses.count("in_progress") == 1
-    ), f"期望同一 InvocationId 只有一个 in_progress，实际 statuses: {statuses}"
     assert _terminal_statuses(statuses) == ["completed"]
 
 
@@ -354,9 +353,9 @@ async def test_detached_stream_does_not_write_duplicate_completed_status(monkeyp
     await detached._task
     # 查 session 里的 run_status 事件
     statuses = await _run_statuses(facade.app, session_id, invocation_id)
-    assert _terminal_statuses(statuses) == [
-        "completed"
-    ], f"期望只有 conversation stream 写入一个 completed，实际 statuses: {statuses}"
+    assert _terminal_statuses(statuses) == ["completed"], (
+        f"期望只有 conversation stream 写入一个 completed，实际 statuses: {statuses}"
+    )
 
 
 async def test_detached_stream_writes_failed_fallback_only_when_source_raises(
@@ -383,9 +382,9 @@ async def test_detached_stream_writes_failed_fallback_only_when_source_raises(
         await detached._task
 
     statuses = await _run_statuses(facade.app, session_id, invocation_id)
-    assert _terminal_statuses(statuses) == [
-        "failed"
-    ], f"期望 detached 异常兜底只写一个 failed，实际 statuses: {statuses}"
+    assert _terminal_statuses(statuses) == ["failed"], (
+        f"期望 detached 异常兜底只写一个 failed，实际 statuses: {statuses}"
+    )
 
 
 @pytest.mark.asyncio
@@ -463,9 +462,9 @@ async def test_run_agent_background_cancel_writes_cancelled_status(bg_client):
         for e in events
         if e.event_type == "run_status" and e.invocation_id == invocation_id
     ]
-    assert _terminal_statuses(statuses) == [
-        "cancelled"
-    ], f"期望同一 InvocationId 只有一个 cancelled 终态，实际 statuses: {statuses}"
+    assert _terminal_statuses(statuses) == ["cancelled"], (
+        f"期望同一 InvocationId 只有一个 cancelled 终态，实际 statuses: {statuses}"
+    )
 
 
 @pytest.mark.asyncio
@@ -488,9 +487,9 @@ async def test_run_agent_background_failure_writes_single_terminal_status(failin
         invocation_id = resp.json()["Data"]["InvocationId"]
 
     statuses = await _wait_for_terminal_statuses(app, "sess-bg-failed", invocation_id)
-    assert _terminal_statuses(statuses) == [
-        "failed"
-    ], f"期望同一 InvocationId 只有一个 failed 终态，实际 statuses: {statuses}"
+    assert _terminal_statuses(statuses) == ["failed"], (
+        f"期望同一 InvocationId 只有一个 failed 终态，实际 statuses: {statuses}"
+    )
 
 
 @pytest.mark.asyncio

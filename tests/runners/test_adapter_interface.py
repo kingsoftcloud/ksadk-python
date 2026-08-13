@@ -189,9 +189,7 @@ def test_registry_register_get_create():
     registry.register("fake", factory)
     assert registry.get("fake") is factory
     adapter = registry.create(
-        runtime_adapter_module.RuntimeLaunchContext(
-            runtime_type="fake", project_dir=Path.cwd()
-        )
+        runtime_adapter_module.RuntimeLaunchContext(runtime_type="fake", project_dir=Path.cwd())
     )
     assert isinstance(adapter, _FakeAdapter)
     assert "fake" in registry.registered_types()

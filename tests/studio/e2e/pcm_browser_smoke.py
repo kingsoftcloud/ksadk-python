@@ -22,7 +22,9 @@ BASE_URL = "http://127.0.0.1:18968"
 def _json(path: str, *, method: str = "GET", body: dict | None = None) -> dict:
     payload = None if body is None else json.dumps(body).encode()
     request = urllib.request.Request(
-        f"{BASE_URL}{path}", data=payload, method=method,
+        f"{BASE_URL}{path}",
+        data=payload,
+        method=method,
         headers={"Content-Type": "application/json", "Idempotency-Key": f"pcm-{time.time_ns()}"},
     )
     with urllib.request.urlopen(request) as response:
@@ -31,16 +33,24 @@ def _json(path: str, *, method: str = "GET", body: dict | None = None) -> dict:
 
 
 def _seed_agent() -> str:
-    created = _json("/api/v1/agents", method="POST", body={
-        "id": "pcm-browser-agent", "name": "PCM Browser Agent", "description": "PCM E2E",
-        "template": "blank",
-        "spec": {"runtime": {"type": "codex", "version": "0.144.4"},
-                 "description": "PCM E2E",
-                 "instructions": {"system": "你是助手", "task": "用 uv run"},
-                 "bindings": {},
-                 "context": {"ownership": "auto", "rollout": {"contextEngine": "shadow"}},
-                 "memory": {"enabled": False}},
-    })
+    created = _json(
+        "/api/v1/agents",
+        method="POST",
+        body={
+            "id": "pcm-browser-agent",
+            "name": "PCM Browser Agent",
+            "description": "PCM E2E",
+            "template": "blank",
+            "spec": {
+                "runtime": {"type": "codex", "version": "0.144.4"},
+                "description": "PCM E2E",
+                "instructions": {"system": "你是助手", "task": "用 uv run"},
+                "bindings": {},
+                "context": {"ownership": "auto", "rollout": {"contextEngine": "shadow"}},
+                "memory": {"enabled": False},
+            },
+        },
+    )
     return created["metadata"]["id"]
 
 

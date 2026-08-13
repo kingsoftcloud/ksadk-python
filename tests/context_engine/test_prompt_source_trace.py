@@ -47,7 +47,10 @@ def test_records_platform_policy_version_when_active() -> None:
     _set_prompt_source_attributes(
         span,
         {
-            "prompt_section_hashes": {"platform_safety": "sha256:safety", "agent_identity": "sha256:sys"},
+            "prompt_section_hashes": {
+                "platform_safety": "sha256:safety",
+                "agent_identity": "sha256:sys",
+            },
             "prompt_platform_policy_version": "env",
             "prompt_resolved_sources_version": "v1",
         },

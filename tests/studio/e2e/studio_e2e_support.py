@@ -38,9 +38,7 @@ def free_port() -> int:
 def studio_server(workspace: Path) -> Iterator[str]:
     port = free_port()
     app = create_studio_app(workspace, security_enabled=False)
-    server = uvicorn.Server(
-        uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
-    )
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
     base_url = f"http://127.0.0.1:{port}"

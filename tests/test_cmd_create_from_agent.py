@@ -58,12 +58,12 @@ def test_find_entry_file_ignores_config_when_agent_variable_missing(tmp_path: Pa
     src = tmp_path / "src" / "demo"
     src.mkdir(parents=True)
     (src / "main.py").write_text(
-        "from fastapi import FastAPI\n" "app = FastAPI()\n",
+        "from fastapi import FastAPI\napp = FastAPI()\n",
         encoding="utf-8",
     )
     entry = src / "agent.py"
     entry.write_text(
-        "from google.adk.agents import Agent\n" "root_agent = Agent(name='demo')\n",
+        "from google.adk.agents import Agent\nroot_agent = Agent(name='demo')\n",
         encoding="utf-8",
     )
     (tmp_path / "agentengine.yaml").write_text(
@@ -84,7 +84,7 @@ def test_find_entry_file_prefers_valid_langgraph_json(tmp_path: Path):
     src.mkdir(parents=True)
     entry = src / "graph.py"
     entry.write_text(
-        "from deepagents import create_deep_agent\n" "graph = create_deep_agent(model=None)\n",
+        "from deepagents import create_deep_agent\ngraph = create_deep_agent(model=None)\n",
         encoding="utf-8",
     )
     (tmp_path / "agentengine.yaml").write_text(
@@ -147,7 +147,7 @@ def test_wrap_agent_directory_ignores_venv_and_exports_nested_entry(tmp_path: Pa
     entry = source / "src" / "agentengine_adapter.py"
     entry.parent.mkdir(parents=True)
     entry.write_text(
-        "def build_agent():\n" '    return {"ok": True}\n' "root_agent = build_agent()\n",
+        'def build_agent():\n    return {"ok": True}\nroot_agent = build_agent()\n',
         encoding="utf-8",
     )
 
@@ -256,7 +256,7 @@ def test_wrap_langgraph_custom_state_directory_detects_state_outside_entry(
 def test_wrap_langgraph_ambiguous_file_generates_review_adapter(tmp_path: Path, monkeypatch):
     source = tmp_path / "agent.py"
     source.write_text(
-        "from langgraph.graph import StateGraph\n" "root_agent = object()\n",
+        "from langgraph.graph import StateGraph\nroot_agent = object()\n",
         encoding="utf-8",
     )
     monkeypatch.setattr("ksadk.configs.global_config.global_config_exists", lambda: False)
@@ -360,9 +360,7 @@ def test_wrap_deepagents_service_directory_ignores_langgraph_json_local_graph(
         encoding="utf-8",
     )
     (source / "agentengine.yaml").write_text(
-        "framework: deepagents\n"
-        "entry_point: src/bill_diagnosis/graph.py\n"
-        "agent_variable: graph\n",
+        "framework: deepagents\nentry_point: src/bill_diagnosis/graph.py\nagent_variable: graph\n",
         encoding="utf-8",
     )
     monkeypatch.setattr("ksadk.configs.global_config.global_config_exists", lambda: False)

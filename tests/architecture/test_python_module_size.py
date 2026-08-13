@@ -42,19 +42,15 @@ def test_production_python_modules_remain_reviewable() -> None:
         line_count = len(path.read_text(encoding="utf-8").splitlines())
         relative = path.relative_to(root.parent).as_posix()
         legacy_limit = _LEGACY_OVERSIZED_MAX.get(relative)
-        if line_count > _FAIL_LINES and (
-            legacy_limit is None or line_count > legacy_limit
-        ):
+        if line_count > _FAIL_LINES and (legacy_limit is None or line_count > legacy_limit):
             oversized.append(f"{relative}: {line_count}")
         elif line_count > _WARN_LINES:
             large.append(f"{relative}: {line_count}")
     if large:
         warnings.warn(
-            "Python 模块已超过 700 行，请在继续扩张前说明保留理由或拆分：\n"
-            + "\n".join(large),
+            "Python 模块已超过 700 行，请在继续扩张前说明保留理由或拆分：\n" + "\n".join(large),
             stacklevel=1,
         )
-    assert not oversized, (
-        "以下生产 Python 模块超过 1000 行，必须先按职责拆分：\n"
-        + "\n".join(oversized)
+    assert not oversized, "以下生产 Python 模块超过 1000 行，必须先按职责拆分：\n" + "\n".join(
+        oversized
     )

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from ksadk.context_engine.cache_observability import (
-    CacheBreakDiagnosis,
     CacheBreakRegistry,
     diagnose_cache_break,
     get_default_cache_break_registry,

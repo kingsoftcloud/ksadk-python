@@ -83,9 +83,7 @@ def test_load_agent_module_does_not_reuse_another_bundle_bare_entrypoint(
 
     try:
         first_agent, first_module = load_agent_module(str(first), "agent.py", "root_agent")
-        second_agent, second_module = load_agent_module(
-            str(second), "agent.py", "root_agent"
-        )
+        second_agent, second_module = load_agent_module(str(second), "agent.py", "root_agent")
     finally:
         _cleanup_module("agent")
 

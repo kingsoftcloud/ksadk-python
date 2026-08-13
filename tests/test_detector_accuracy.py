@@ -29,8 +29,7 @@ def _detect(project_dir: Path) -> FrameworkType:
 def test_deepagents_script_detected_without_config(tmp_path: Path):
     _write_script_agent(
         tmp_path,
-        "from deepagents import create_deep_agent\n"
-        "root_agent = create_deep_agent(model=None)\n",
+        "from deepagents import create_deep_agent\nroot_agent = create_deep_agent(model=None)\n",
     )
     assert _detect(tmp_path) == FrameworkType.DEEPAGENTS
 
@@ -114,8 +113,7 @@ def test_syntax_error_falls_back_to_string_classification(tmp_path: Path):
     """AST 解析失败时不抛异常，退化到字符串兜底判定。"""
     _write_script_agent(
         tmp_path,
-        "from langchain_openai import ChatOpenAI\n"
-        "root_agent =\n",  # 语法错误（不完整赋值）
+        "from langchain_openai import ChatOpenAI\nroot_agent =\n",  # 语法错误（不完整赋值）
     )
     assert _detect(tmp_path) == FrameworkType.LANGCHAIN
 
@@ -123,8 +121,7 @@ def test_syntax_error_falls_back_to_string_classification(tmp_path: Path):
 def test_adk_llm_agent_detected_without_config(tmp_path: Path):
     _write_script_agent(
         tmp_path,
-        "from google.adk.agents import LlmAgent\n"
-        "root_agent = LlmAgent(name='a', model='m')\n",
+        "from google.adk.agents import LlmAgent\nroot_agent = LlmAgent(name='a', model='m')\n",
     )
     assert _detect(tmp_path) == FrameworkType.ADK
 
@@ -148,9 +145,7 @@ def test_cmd_a2a_normalizes_langchain_family_to_langgraph_runtime_adapter(monkey
     )
     for framework, expected in expected_runtime_types:
         detection_type = type("Type", (), {"value": framework})()
-        detection = type(
-            "Detection", (), {"type": detection_type, "raw_config": {}}
-        )()
+        detection = type("Detection", (), {"type": detection_type, "raw_config": {}})()
         monkeypatch.setattr(mod, "_detect_project", lambda _path, value=detection: value)
         mod._load_runtime_adapter(tmp_path, no_trace=True)
         assert selected.pop() == expected

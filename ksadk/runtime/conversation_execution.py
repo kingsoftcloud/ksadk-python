@@ -269,6 +269,12 @@ async def _finalize_hosted_turn(
             ),
             prompt_integration_mode=str(getattr(prepared, "prompt_integration_mode", "")),
             memory_write_rollout=str(getattr(prepared, "memory_write_rollout", "") or ""),
+            memory_enabled=getattr(prepared, "memory_enabled", True),
+            memory_recall_enabled=getattr(prepared, "memory_recall_enabled", True),
+            memory_write_mode=str(getattr(prepared, "memory_write_mode", "candidate") or ""),
+            flush_before_compaction=getattr(prepared, "flush_before_compaction", True),
+            provider_ref=str(getattr(prepared, "provider_ref", "local-default") or ""),
+            emit_event=None,
         ),
         session_service_provider=session_service_provider,
     )

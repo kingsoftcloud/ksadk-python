@@ -44,7 +44,5 @@ def test_empty_instructions_no_system_message(monkeypatch) -> None:
     """framework 回退/无 instructions 时不产 SystemMessage（结构不变）。"""
     runner = _make_runner()
     state = runner._to_state({"input": "hi", "history": []}, [])
-    system_messages = [
-        m for m in state["messages"] if m.__class__.__name__ == "SystemMessage"
-    ]
+    system_messages = [m for m in state["messages"] if m.__class__.__name__ == "SystemMessage"]
     assert system_messages == []

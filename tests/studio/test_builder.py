@@ -38,9 +38,7 @@ def _build_in(
                 credential_ref=credential_ref,
             ),
             capabilities=CapabilitiesSpec(skills=skills or []),
-            security=SecuritySpec(
-                network=NetworkPolicy(allowed_hosts=["model.example.com"])
-            ),
+            security=SecuritySpec(network=NetworkPolicy(allowed_hosts=["model.example.com"])),
         ),
     )
     record = AgentBundleBuilder(workspace).build(draft)
@@ -81,9 +79,10 @@ def test_builder_is_byte_deterministic_across_workspaces(tmp_path: Path):
     assert first_record.id == second_record.id
     assert first_record.resolved_digest == second_record.resolved_digest
     assert first_record.bundle_digest == second_record.bundle_digest
-    assert hashlib.sha256(first_archive.read_bytes()).digest() == hashlib.sha256(
-        second_archive.read_bytes()
-    ).digest()
+    assert (
+        hashlib.sha256(first_archive.read_bytes()).digest()
+        == hashlib.sha256(second_archive.read_bytes()).digest()
+    )
 
 
 def test_zip_has_fixed_timestamps_and_modes(tmp_path: Path):

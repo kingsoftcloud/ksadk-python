@@ -615,6 +615,20 @@ class StudioRunService:
                         spec.request_config.get("prompt_integration_mode") or ""
                     ),
                     memory_write_rollout=str(spec.request_config.get("memory_write_rollout") or ""),
+                    memory_enabled=bool(spec.request_config.get("memory_enabled", False)),
+                    memory_recall_enabled=bool(
+                        spec.request_config.get("memory_recall_enabled", True)
+                    ),
+                    memory_write_mode=str(
+                        spec.request_config.get("memory_write_mode") or "candidate"
+                    ),
+                    flush_before_compaction=bool(
+                        spec.request_config.get("flush_before_compaction", True)
+                    ),
+                    provider_ref=str(spec.request_config.get("provider_ref") or "local-default"),
+                    emit_event=lambda d: self.event_store.append(
+                        record.id, d.get("type", "memory.event"), d
+                    ),
                     session_events=[turn_event],
                 ),
             )

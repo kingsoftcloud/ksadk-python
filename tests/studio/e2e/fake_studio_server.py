@@ -55,7 +55,7 @@ async def _browser_runtime_events(
                 "protocol": "responses-to-chat",
                 "stream": True,
             },
-        }
+        },
     )
     yield RuntimeEvent.create(
         EventType.RUN_PROGRESS,
@@ -67,7 +67,7 @@ async def _browser_runtime_events(
                 "requestId": "req_browser_smoke",
                 "statusCode": 200,
             },
-        }
+        },
     )
     yield RuntimeEvent.create(
         EventType.TOOL_CALL_BEGIN,
@@ -81,7 +81,7 @@ async def _browser_runtime_events(
                 "cwd": str(request.config.get("cwd") or ""),
                 "command_actions": [{"type": "read", "path": "src/demo.py"}],
             },
-        }
+        },
     )
     yield RuntimeEvent.create(
         EventType.RUN_PROGRESS,
@@ -102,7 +102,7 @@ async def _browser_runtime_events(
                     "reasoningOutputTokens": 8,
                 },
             },
-        }
+        },
     )
     yield RuntimeEvent.create(
         EventType.TOOL_CALL_END,
@@ -116,20 +116,20 @@ async def _browser_runtime_events(
                 "exit_code": 0,
                 "duration_ms": 210,
             },
-        }
+        },
     )
     yield RuntimeEvent.create(
         EventType.USAGE_REPORTED,
         **common,
         seq_id=8,
         payload={
-                "input_tokens": 128,
-                "output_tokens": 32,
-                "total_tokens": 160,
-                "cached_tokens": 16,
-                "reasoning_tokens": 8,
-                "source": "browser-fixture",
-        }
+            "input_tokens": 128,
+            "output_tokens": 32,
+            "total_tokens": 160,
+            "cached_tokens": 16,
+            "reasoning_tokens": 8,
+            "source": "browser-fixture",
+        },
     )
     yield RuntimeEvent.create(
         EventType.TEXT_DELTA,
@@ -148,7 +148,7 @@ async def _browser_runtime_events(
                 "## 审查结果\n\n**确定问题**：空列表会触发除零风险。\n\n"
                 "建议在计算平均值前处理空列表。"
             ),
-        }
+        },
     )
     yield RuntimeEvent.create(
         EventType.RUN_COMPLETED,

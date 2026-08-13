@@ -58,6 +58,12 @@ class FinalizeContext:
     prompt_integration_mode: str = ""
     session_events: Any = None  # 已取的 turn events（避免重复读 store）
     memory_write_rollout: str = ""
+    memory_enabled: bool = True  # 默认 True：env fallback 场景假定 memory 开启
+    memory_recall_enabled: bool = True
+    memory_write_mode: str = "candidate"
+    flush_before_compaction: bool = True
+    provider_ref: str = "local-default"
+    emit_event: Any = None
 
 
 async def finalize_hosted_turn(
@@ -85,17 +91,20 @@ async def finalize_hosted_turn(
     except Exception:  # noqa: BLE001
         pass
 
-    # 3. Memory Candidate 抽取 + flush（据 MemoryPolicy 门控）
-    # memory_write_rollout=enabled → 即使 env 没设也 flush（AgentVersion 级策略）
-    # memory_write_rollout=shadow/off → 不 flush（仅观测/关闭）
-    # memory_write_rollout 未设（空）→ fallback 到 env KSADK_MEMORY_FLUSH_ENABLED
-    should_flush = ctx.memory_write_rollout == "enabled" or (
-        not ctx.memory_write_rollout and _memory_extract_enabled()
+    # 3. Memory Candidate 抽取 + flush
+    # 统一解析 Memory 运行策略（方案 §2：ResolvedMemoryPolicy 统一入口）
+    from ksadk.memory.resolved_policy import resolve_memory_policy
+
+    policy = resolve_memory_policy(
+        memory_enabled=ctx.memory_enabled,
+        recall_enabled=ctx.memory_recall_enabled,
+        write_rollout=ctx.memory_write_rollout,
+        write_mode=ctx.memory_write_mode,
+        flush_before_compaction=ctx.flush_before_compaction,
+        provider_ref=ctx.provider_ref,
     )
-    if not should_flush:
+    if not policy.should_flush:
         return
-    # 不强制 prompt_integration_mode=ksadk_hosted：canonical 路径可能在非 hosted 也需 flush
-    # （如 framework_assisted 的显式"记住"），只要 Memory 开关开启即 flush（方案 §10.4）。
     try:
         from ksadk.memory.coordinator import MemoryCoordinator
         from ksadk.memory.events import (
@@ -131,26 +140,29 @@ async def finalize_hosted_turn(
         if candidates:
             coordinator = MemoryCoordinator(resolve_default_memory_provider())
             result = coordinator.flush_candidates(candidates)
-            _emit_memory_event(
+            _emit(
+                ctx,
                 candidate_created(
                     run_id=ctx.invocation_id,
                     session_id=ctx.session_id,
                     provider=provider_name,
                     rollout=rollout,
                     count=len(candidates),
-                )
+                ),
             )
             if result.rejected > 0:
-                _emit_memory_event(
+                _emit(
+                    ctx,
                     candidate_rejected(
                         run_id=ctx.invocation_id,
                         session_id=ctx.session_id,
                         provider=provider_name,
                         rollout=rollout,
                         count=result.rejected,
-                    )
+                    ),
                 )
-            _emit_memory_event(
+            _emit(
+                ctx,
                 flush_completed(
                     run_id=ctx.invocation_id,
                     session_id=ctx.session_id,
@@ -159,10 +171,11 @@ async def finalize_hosted_turn(
                     proposed=result.proposed,
                     committed=result.committed,
                     rejected=result.rejected,
-                )
+                ),
             )
     except Exception as exc:  # noqa: BLE001
-        _emit_memory_event(
+        _emit(
+            ctx,
             flush_failed(
                 run_id=ctx.invocation_id,
                 session_id=ctx.session_id,
@@ -171,7 +184,7 @@ async def finalize_hosted_turn(
                 error_code="flush_exception",
                 error_message=str(exc)[:200],
                 retryable=True,
-            )
+            ),
         )
 
 
@@ -204,16 +217,11 @@ __all__ = ["FinalizeContext", "finalize_hosted_turn"]
 
 
 # 内存事件收集器（best-effort，不阻断主链路）
-_memory_event_collector: list = []
-
-
-def _emit_memory_event(event: Any) -> None:
-    """收集 Memory 事件供调用方读取（方案 §3）。"""
-    _memory_event_collector.append(event)
-
-
-def drain_memory_events() -> list:
-    """取出并清空已收集的 Memory 事件。"""
-    events = list(_memory_event_collector)
-    _memory_event_collector.clear()
-    return events
+def _emit(ctx: Any, event: Any) -> None:
+    """发送 Memory 事件到 ctx.emit_event（方案 §3）。"""
+    sink = getattr(ctx, "emit_event", None)
+    if callable(sink):
+        try:
+            sink(event.to_dict())
+        except Exception:  # noqa: BLE001
+            pass

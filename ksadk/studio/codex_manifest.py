@@ -13,6 +13,7 @@ import yaml  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from ksadk.builders.managed_runtime_builder import serialize_managed_runtime_manifest
+from ksadk.studio.contracts import ContextSpec, MemorySpec
 from ksadk.studio.errors import StudioError, not_found
 from ksadk.studio.workspace import Workspace
 
@@ -46,8 +47,9 @@ class CodexAgentManifest(BaseModel):
     mcp_servers: list[dict[str, Any]] | None = None
     sandbox: str | None = None
     approval_mode: str | None = None
-    # PCM 策略（方案 §5.1）：随 Manifest 进入不可变 Artifact，Build 后修改 sidecar
-    # 不影响旧 Build 的运行行为。缺字段时走兼容默认（方案 §13.1）。
+    # PCM 策略（方案 §5.1）：严格类型化，Build 不可变。
+    # None = 旧 Manifest 缺字段（兼容默认值）；
+    # 有值但格式错误 → model_validate 时立即失败，不静默降级。
     context: dict[str, Any] | None = None
     memory: dict[str, Any] | None = None
 
@@ -97,6 +99,21 @@ class CodexAgentManifest(BaseModel):
                 mcp_seen.add(name)
                 mcp_deduped.append(server)
             self.mcp_servers = mcp_deduped
+        return self
+
+    @model_validator(mode="after")
+    def validate_pcm_fields(self) -> "CodexAgentManifest":
+        """严格校验 context/memory：有字段但格式错误时立即失败。"""
+        if self.context is not None:
+            try:
+                ContextSpec.model_validate(self.context)
+            except Exception as exc:
+                raise ValueError(f"Codex Manifest context 字段格式错误: {exc}") from exc
+        if self.memory is not None:
+            try:
+                MemorySpec.model_validate(self.memory)
+            except Exception as exc:
+                raise ValueError(f"Codex Manifest memory 字段格式错误: {exc}") from exc
         return self
 
     @property

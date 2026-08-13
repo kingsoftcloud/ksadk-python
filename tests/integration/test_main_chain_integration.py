@@ -218,6 +218,12 @@ async def test_evidence_driven_mismatch_triggers_circuit(monkeypatch):
             shadow_context_plan={"runtime_type": "codex"},
             usage=None,
             runtime_type="codex",
+            memory_write_rollout="enabled",
+            memory_enabled=True,
+            memory_write_mode="candidate",
+            memory_recall_enabled=True,
+            flush_before_compaction=True,
+            provider_ref="local-default",
         )
     )
     assert is_capability_circuit_open(runtime_type="codex")

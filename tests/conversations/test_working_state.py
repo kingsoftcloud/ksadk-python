@@ -8,16 +8,16 @@ content_hash 稳定。Prompt 明文不进 Trace（working_state 不进 shadow pl
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
 
-from ksadk.conversations.runtime_input import _build_runner_request_payload, _render_working_state_xml
+from ksadk.conversations.runtime_input import (
+    _build_runner_request_payload,
+    _render_working_state_xml,
+)
 from ksadk.conversations.runtime_payloads import PreparedConversationTurn
 from ksadk.conversations.semantic_summary import WorkingState, extract_working_state
 from ksadk.runtime_context import PlatformInvocationContext
 from ksadk.sessions.base import SessionEvent
-
 
 # --- WorkingState 数据模型 + 提取 ---
 
@@ -79,7 +79,12 @@ def test_extract_deterministic_from_facts() -> None:
 def test_content_hash_stable() -> None:
     """相同事件序列两次提取 hash 一致。"""
     events = [_user_event(1, "g"), _tool_call_event(2, "t", "p.py")]
-    pinned = {"current_user_goal": "g", "pending_approvals": [], "pending_tools": [], "attachment_refs": []}
+    pinned = {
+        "current_user_goal": "g",
+        "pending_approvals": [],
+        "pending_tools": [],
+        "attachment_refs": [],
+    }
     ws1 = extract_working_state(events, pinned_state=pinned, source_seq_range=(1, 2))
     ws2 = extract_working_state(events, pinned_state=pinned, source_seq_range=(1, 2))
     assert ws1.content_hash() == ws2.content_hash()
@@ -141,7 +146,9 @@ def _ctx(session_id: str) -> PlatformInvocationContext:
     )
 
 
-def _prepared(*, mode: str, working_state: dict | None, instructions: str = "本轮指令") -> PreparedConversationTurn:
+def _prepared(
+    *, mode: str, working_state: dict | None, instructions: str = "本轮指令"
+) -> PreparedConversationTurn:
     return PreparedConversationTurn(
         session_id="sess-ws",
         invocation_id="inv-1",

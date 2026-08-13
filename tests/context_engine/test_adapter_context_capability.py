@@ -12,17 +12,16 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
-import pytest
 from langgraph.graph import END, START, StateGraph
 from typing_extensions import TypedDict
 
+from ksadk.codex.runtime import CodexRuntimeAdapter
 from ksadk.context_engine.capabilities import (
     capabilities_for_runtime_type,
     capability_hash,
     codex_context_capabilities,
     langgraph_context_capabilities,
 )
-from ksadk.codex.runtime import CodexRuntimeAdapter
 from ksadk.runners.langgraph_runner import LangGraphRunner
 from ksadk.runtime.runner_adapter import RunnerRuntimeAdapter
 
@@ -37,7 +36,11 @@ def _langgraph_runner() -> LangGraphRunner:
     graph.add_edge(START, "finish")
     graph.add_edge("finish", END)
     runner = LangGraphRunner(
-        SimpleNamespace(entry_point="src/agent.py", agent_variable="root_agent", type=SimpleNamespace(value="langgraph")),
+        SimpleNamespace(
+            entry_point="src/agent.py",
+            agent_variable="root_agent",
+            type=SimpleNamespace(value="langgraph"),
+        ),
         ".",
     )
     runner._agent = graph.compile()
@@ -101,4 +104,6 @@ def test_adapter_capability_matches_runtime_type_dispatch() -> None:
     codex_adapter = CodexRuntimeAdapter(_FakeCodexClient(), sandbox_read_only=True)
     codex_dispatch = capabilities_for_runtime_type("codex")
     assert codex_adapter.describe_context_capabilities() == codex_dispatch
-    assert capability_hash(codex_adapter.describe_context_capabilities()) == capability_hash(codex_dispatch)
+    assert capability_hash(codex_adapter.describe_context_capabilities()) == capability_hash(
+        codex_dispatch
+    )

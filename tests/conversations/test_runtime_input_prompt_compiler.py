@@ -34,12 +34,16 @@ def _ctx(session_id: str) -> PlatformInvocationContext:
     )
 
 
-def _prepared(monkeypatch, *, mode: str, instructions: str = "本轮指令", compiled: bool = True) -> PreparedConversationTurn:
+def _prepared(
+    monkeypatch, *, mode: str, instructions: str = "本轮指令", compiled: bool = True
+) -> PreparedConversationTurn:
     monkeypatch.delenv("KSADK_PLATFORM_SAFETY_TEXT", raising=False)
     compiled_dict = None
     if compiled:
         compiled_dict = compile_resolved_prompt_dict(
-            ResolvedPromptSources(agent_system="你是助手", agent_task="用中文", request_instructions=instructions)
+            ResolvedPromptSources(
+                agent_system="你是助手", agent_task="用中文", request_instructions=instructions
+            )
         )
     return PreparedConversationTurn(
         session_id="sess-projection",
@@ -75,7 +79,10 @@ def test_flag_on_ksadk_hosted_langgraph_projects_compiled_content(monkeypatch) -
     monkeypatch.setenv("KSADK_PROMPT_COMPILER_ENABLED", "1")
     prepared = _prepared(monkeypatch, mode="ksadk_hosted")
     payload = _build_runner_request_payload(
-        prepared=prepared, model="m", runtime_context=_ctx(prepared.session_id), runner=_runner(True)
+        prepared=prepared,
+        model="m",
+        runtime_context=_ctx(prepared.session_id),
+        runner=_runner(True),
     )
     # 接管：instructions == CompiledPrompt.content（XML），agent_system/task 首次进输入
     assert payload["instructions"] == prepared.compiled_prompt["prompt_content"]
@@ -96,7 +103,10 @@ def test_flag_on_adk_runner_keeps_legacy(monkeypatch) -> None:
     monkeypatch.setenv("KSADK_PROMPT_COMPILER_ENABLED", "1")
     prepared = _prepared(monkeypatch, mode="ksadk_hosted")
     payload = _build_runner_request_payload(
-        prepared=prepared, model="m", runtime_context=_ctx(prepared.session_id), runner=_runner(False)
+        prepared=prepared,
+        model="m",
+        runtime_context=_ctx(prepared.session_id),
+        runner=_runner(False),
     )
     # adk runner → 接管错位，排除 → 旧逻辑
     assert payload["instructions"] == "本轮指令"
