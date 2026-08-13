@@ -222,6 +222,7 @@ def test_dispatcher_save_memory_accepts_key_value_arguments(monkeypatch):
                 "agent_id": "demo-agent",
                 "session_id": "sess-1",
                 "runner_type": "langgraph",
+                "flush": True,
             },
         )
     ]

@@ -94,6 +94,7 @@ def test_save_memory_persists_agent_and_session_metadata(monkeypatch):
                 "agent_id": "demo-agent",
                 "session_id": "sess-1",
                 "runner_type": "langgraph",
+                "flush": True,
             },
         )
     ]

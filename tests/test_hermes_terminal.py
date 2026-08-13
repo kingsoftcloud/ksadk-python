@@ -422,6 +422,31 @@ async def test_terminal_session_cancels_blocked_stdin_after_remote_exit(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_terminal_session_start_frame_preserves_session_id_for_resume(monkeypatch):
+    fake_ws = _FakeTerminalWebSocket()
+    captured_headers = {}
+
+    async def _fake_connect(_ws_url, headers, _ssl_context):
+        captured_headers.update(headers)
+        return _FakeTerminalConnection(fake_ws)
+
+    monkeypatch.setattr("ksadk.hermes_terminal._connect_websocket", _fake_connect)
+    monkeypatch.setattr(sys, "stdin", _NonTtyDefaultStdin())
+
+    exit_code = await run_hermes_terminal_session(
+        endpoint="https://agent.example.com",
+        session_id="session-123",
+        mode="exec",
+        argv=["status"],
+        stdout=io.BytesIO(),
+    )
+
+    assert exit_code == 0
+    assert captured_headers["X-Session-Id"] == "session-123"
+    assert json.loads(fake_ws.sent[0])["session_id"] == "session-123"
+
+
+@pytest.mark.asyncio
 async def test_exec_session_does_not_read_default_non_tty_stdin(monkeypatch):
     fake_ws = _FakeTerminalWebSocket()
 

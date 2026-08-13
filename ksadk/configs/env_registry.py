@@ -708,37 +708,10 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     EnvVarSpec(
         "CLOUD_MONITOR_APP_KEY",
         "tracing",
-        "CloudMonitor AppKey for optional OTLP ingestion.",
+        "Deprecated: CloudMonitor AppKey translated to Ksc-Appkey OTLP header only when "
+        "both CLOUD_MONITOR_OTLP_TRACES_HEADERS and CLOUD_MONITOR_OTLP_HEADERS are absent. "
+        "Server should inject OTLP headers directly.",
         sensitive=True,
-    ),
-    EnvVarSpec(
-        "CLOUD_MONITOR_LANGFUSE_ENABLED",
-        "tracing",
-        "Enable or disable the CloudMonitor Langfuse SDK callback; defaults to enabled "
-        "when keys and host are present.",
-    ),
-    EnvVarSpec(
-        "CLOUD_MONITOR_LANGFUSE_HOST",
-        "tracing",
-        "CloudMonitor AppMonitor Langfuse SDK host.",
-    ),
-    EnvVarSpec(
-        "CLOUD_MONITOR_LANGFUSE_PUBLIC_KEY",
-        "tracing",
-        "CloudMonitor AppMonitor Langfuse public key returned by the platform.",
-        sensitive=True,
-    ),
-    EnvVarSpec(
-        "CLOUD_MONITOR_LANGFUSE_SECRET_KEY",
-        "tracing",
-        "CloudMonitor AppMonitor Langfuse secret key returned by the platform.",
-        sensitive=True,
-    ),
-    EnvVarSpec(
-        "CLOUD_MONITOR_OTLP_ENABLED",
-        "tracing",
-        "Enable or disable the CloudMonitor OTLP exporter; defaults to enabled when "
-        "endpoint and AppKey are present.",
     ),
     EnvVarSpec(
         "CLOUD_MONITOR_OTLP_ENDPOINT",
@@ -749,7 +722,7 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     EnvVarSpec(
         "CLOUD_MONITOR_OTLP_HEADERS",
         "tracing",
-        "Additional CloudMonitor OTLP HTTP headers, comma-separated and URL-encoded.",
+        "CloudMonitor OTLP HTTP headers including Ksc-Appkey, comma-separated and URL-encoded.",
         sensitive=True,
     ),
     EnvVarSpec(
@@ -761,6 +734,12 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "CLOUD_MONITOR_OTLP_TRACES_ENDPOINT",
         "tracing",
         "CloudMonitor OTLP HTTP traces endpoint; takes precedence over the generic endpoint.",
+    ),
+    EnvVarSpec(
+        "CLOUD_MONITOR_OTLP_TRACES_HEADERS",
+        "tracing",
+        "CloudMonitor OTLP HTTP traces headers; takes precedence over generic headers.",
+        sensitive=True,
     ),
     EnvVarSpec(
         "CLOUD_MONITOR_OTLP_TRACES_PROTOCOL",
@@ -806,6 +785,12 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     ),
     EnvVarSpec("OTEL_SERVICE_NAME", "tracing", "OpenTelemetry service name."),
     EnvVarSpec(
+        "OPENCLAW_CONFIG_PATCH_JSON",
+        "openclaw",
+        "OpenClaw configuration patch JSON supplied at deployment time.",
+        sensitive=True,
+    ),
+    EnvVarSpec(
         "KSADK_OTLP_MAX_EXPORT_BATCH_SIZE",
         "tracing",
         "Maximum spans exported per OTLP batch to avoid oversized collector requests.",
@@ -816,6 +801,19 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
 ENV_VAR_REGISTRY: tuple[EnvVarSpec, ...] = tuple(
     sorted(_ENV_VAR_REGISTRY_ITEMS, key=lambda spec: spec.name)
 )
+_ENV_SENSITIVITY_BY_NAME = {spec.name: spec.sensitive for spec in ENV_VAR_REGISTRY}
+
+
+def is_sensitive_env_var(name: str) -> bool:
+    normalized = str(name or "").strip().upper()
+    if _ENV_SENSITIVITY_BY_NAME.get(normalized, False):
+        return True
+    if normalized.startswith("OTEL_EXPORTER_OTLP_") and normalized.endswith("_HEADERS"):
+        return True
+    return any(
+        token in normalized
+        for token in ("KEY", "TOKEN", "SECRET", "PASSWORD", "AUTHORIZATION", "SIGNATURE")
+    )
 
 
 def iter_env_vars() -> tuple[EnvVarSpec, ...]:

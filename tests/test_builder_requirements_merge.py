@@ -484,8 +484,10 @@ def test_code_builder_entrypoint_uses_otlp_direct_by_default_for_code_frameworks
     ):
         entrypoint = builder._generate_entrypoint(_full_detection_result(framework_type))
 
-        assert "LANGFUSE_USE_CALLBACK" in entrypoint
-        assert "use_callback_only=is_langchain" not in entrypoint
+        assert "LANGFUSE_USE_CALLBACK" not in entrypoint
+        assert "use_callback_only" not in entrypoint
+        assert "CLOUD_MONITOR_LANGFUSE" not in entrypoint
+        assert "CLOUD_MONITOR_OTLP_ENABLED" not in entrypoint
         assert 'in ("LANGCHAIN", "LANGGRAPH", "DEEPAGENTS")' not in entrypoint
 
 
@@ -522,8 +524,10 @@ def test_container_builder_entrypoint_uses_otlp_direct_by_default_for_code_frame
             "demo_agent",
         )
 
-        assert "LANGFUSE_USE_CALLBACK" in entrypoint
-        assert "use_callback_only=is_langchain" not in entrypoint
+        assert "LANGFUSE_USE_CALLBACK" not in entrypoint
+        assert "use_callback_only" not in entrypoint
+        assert "CLOUD_MONITOR_LANGFUSE" not in entrypoint
+        assert "CLOUD_MONITOR_OTLP_ENABLED" not in entrypoint
         assert 'in ("LANGCHAIN", "LANGGRAPH", "DEEPAGENTS")' not in entrypoint
 
 

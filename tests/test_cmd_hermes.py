@@ -376,30 +376,78 @@ def test_hermes_deploy_retries_transient_get_agent_not_found_without_showing_num
     assert "api_key: ak-ready-hermes" in state
 
 
-def test_hermes_exec_accepts_readonly_subcommand_and_uses_remote_terminal(monkeypatch):
+def test_hermes_exec_explicit_agent_resolves_name_and_uses_remote_terminal(monkeypatch):
     runner = CliRunner()
     captured = {}
+    resolved = {}
 
     async def _fake_exec(**kwargs):
         captured.update(kwargs)
 
-    monkeypatch.setattr(cmd_hermes, "run_hermes_terminal_session", _fake_exec)
-    monkeypatch.setattr(
-        cmd_hermes,
-        "_resolve_hermes_access",
-        lambda **_kwargs: {
+    def _fake_resolve(**kwargs):
+        resolved.update(kwargs)
+        return {
             "endpoint": "https://hermes.example.com",
             "api_key": "ak-hermes",
-        },
+        }
+
+    monkeypatch.setattr(cmd_hermes, "run_hermes_terminal_session", _fake_exec)
+    monkeypatch.setattr(cmd_hermes, "_resolve_hermes_access", _fake_resolve)
+
+    result = runner.invoke(
+        cmd_hermes.hermes,
+        ["exec", "--agent", "my-hermes", "--", "status"],
     )
 
-    result = runner.invoke(cmd_hermes.hermes, ["exec", "ar-hermes-1", "--", "status"])
-
     assert result.exit_code == 0, result.output
+    assert resolved["agent_ref"] == "my-hermes"
     assert captured["endpoint"] == "https://hermes.example.com"
     assert captured["api_key"] == "ak-hermes"
     assert captured["mode"] == "exec"
     assert captured["argv"] == ["status"]
+
+
+def test_hermes_exec_positional_ar_target_remains_compatible(monkeypatch):
+    runner = CliRunner()
+    captured = {}
+    resolved = {}
+
+    async def _fake_exec(**kwargs):
+        captured.update(kwargs)
+
+    def _fake_resolve(**kwargs):
+        resolved.update(kwargs)
+        return {
+            "endpoint": "https://hermes.example.com",
+            "api_key": "ak-hermes",
+        }
+
+    monkeypatch.setattr(cmd_hermes, "run_hermes_terminal_session", _fake_exec)
+    monkeypatch.setattr(cmd_hermes, "_resolve_hermes_access", _fake_resolve)
+
+    result = runner.invoke(cmd_hermes.hermes, ["exec", "ar-123", "--", "status"])
+
+    assert result.exit_code == 0, result.output
+    assert resolved["agent_ref"] == "ar-123"
+    assert captured["argv"] == ["status"]
+
+
+def test_hermes_exec_rejects_explicit_agent_with_positional_ar_target(monkeypatch):
+    runner = CliRunner()
+
+    async def _forbidden_exec(**_kwargs):
+        raise AssertionError("remote terminal should not be called")
+
+    monkeypatch.setattr(cmd_hermes, "run_hermes_terminal_session", _forbidden_exec)
+
+    result = runner.invoke(
+        cmd_hermes.hermes,
+        ["exec", "--agent", "my-hermes", "ar-123", "--", "status"],
+    )
+
+    assert result.exit_code != 0
+    assert "--agent" in result.output
+    assert "ar-123" in result.output
 
 
 def test_hermes_exec_rejects_mutating_subcommand_before_remote_call(monkeypatch):
@@ -569,7 +617,7 @@ def test_hermes_connect_enters_remote_gateway_setup(monkeypatch):
     assert captured["api_key"] == "ak-hermes"
 
 
-def test_hermes_exec_dry_run_does_not_resolve_or_connect(monkeypatch):
+def test_hermes_exec_dry_run_with_explicit_agent_does_not_resolve_or_connect(monkeypatch):
     runner = CliRunner()
 
     async def _forbidden_exec(**_kwargs):
@@ -586,7 +634,16 @@ def test_hermes_exec_dry_run_does_not_resolve_or_connect(monkeypatch):
 
     result = runner.invoke(
         cmd_hermes.hermes,
-        ["exec", "ar-hermes-1", "--dry-run", "--output", "json", "--", "status"],
+        [
+            "exec",
+            "--agent",
+            "my-hermes",
+            "--dry-run",
+            "--output",
+            "json",
+            "--",
+            "status",
+        ],
     )
 
     assert result.exit_code == 0, result.output
@@ -594,7 +651,78 @@ def test_hermes_exec_dry_run_does_not_resolve_or_connect(monkeypatch):
     assert payload["kind"] == "dry_run"
     assert payload["resource"] == "hermes"
     assert payload["action"] == "exec"
+    assert payload["request"]["agent_ref"] == "my-hermes"
     assert payload["request"]["argv"] == ["status"]
+
+
+@pytest.mark.parametrize("agent_value", ["", "   "])
+def test_hermes_exec_dry_run_rejects_blank_explicit_agent_without_remote_calls(
+    monkeypatch, agent_value
+):
+    runner = CliRunner()
+
+    async def _forbidden_exec(**_kwargs):
+        raise AssertionError("remote terminal should not be called")
+
+    monkeypatch.setattr(cmd_hermes, "run_hermes_terminal_session", _forbidden_exec)
+    monkeypatch.setattr(
+        cmd_hermes,
+        "_resolve_hermes_access",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("agent access should not be resolved")
+        ),
+    )
+
+    result = runner.invoke(
+        cmd_hermes.hermes,
+        [
+            "exec",
+            "--agent",
+            agent_value,
+            "--dry-run",
+            "--output",
+            "json",
+            "--",
+            "status",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "--agent" in result.output
+
+
+def test_hermes_exec_dry_run_rejects_blank_agent_before_positional_ar_target(monkeypatch):
+    runner = CliRunner()
+
+    async def _forbidden_exec(**_kwargs):
+        raise AssertionError("remote terminal should not be called")
+
+    monkeypatch.setattr(cmd_hermes, "run_hermes_terminal_session", _forbidden_exec)
+    monkeypatch.setattr(
+        cmd_hermes,
+        "_resolve_hermes_access",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("agent access should not be resolved")
+        ),
+    )
+
+    result = runner.invoke(
+        cmd_hermes.hermes,
+        [
+            "exec",
+            "--agent",
+            "",
+            "ar-123",
+            "--dry-run",
+            "--output",
+            "json",
+            "--",
+            "status",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "--agent" in result.output
 
 
 def test_hermes_connect_dry_run_does_not_resolve_or_connect(monkeypatch):
@@ -1161,7 +1289,7 @@ def test_hermes_deploy_uses_provider_context_length_for_configured_model(
     )
 
 
-def test_hermes_deploy_forwards_langfuse_env_when_configured(tmp_path: Path, monkeypatch):
+def test_hermes_deploy_does_not_forward_legacy_langfuse_env(tmp_path: Path, monkeypatch):
     runner = CliRunner()
     _FakeHermesClient.create_payload = None
     monkeypatch.chdir(tmp_path)
@@ -1179,13 +1307,8 @@ def test_hermes_deploy_forwards_langfuse_env_when_configured(tmp_path: Path, mon
 
     assert result.exit_code == 0, result.output
     env_vars = {item["Key"]: item for item in _FakeHermesClient.create_payload["env_vars"]}
-    assert env_vars["HERMES_LANGFUSE_PUBLIC_KEY"]["Value"] == "pk-lf-test"
-    assert env_vars["HERMES_LANGFUSE_PUBLIC_KEY"]["IsSensitive"] is True
-    assert env_vars["HERMES_LANGFUSE_SECRET_KEY"]["Value"] == "sk-lf-test"
-    assert env_vars["HERMES_LANGFUSE_SECRET_KEY"]["IsSensitive"] is True
-    assert env_vars["HERMES_LANGFUSE_BASE_URL"]["Value"] == "https://langfuse.pre.example.com"
-    assert env_vars["HERMES_LANGFUSE_ENV"]["Value"] == "pre"
-    assert env_vars["HERMES_LANGFUSE_SAMPLE_RATE"]["Value"] == "0.5"
+    assert not any(key.startswith("HERMES_LANGFUSE_") for key in env_vars)
+    assert not any(key.startswith("LANGFUSE_") for key in env_vars)
 
 
 def test_hermes_deploy_forwards_wpsxiezuo_env_when_configured(tmp_path: Path, monkeypatch):
@@ -1346,6 +1469,59 @@ def test_hermes_deploy_update_payload_preserves_existing_config_by_default(
     assert "env_vars" not in payload
     assert "storage" not in payload
     assert "network" not in payload
+
+
+def test_hermes_deploy_defaults_observability_on_for_existing_agent(
+    tmp_path: Path, monkeypatch
+):
+    runner = CliRunner()
+    _FakeHermesClient.create_payload = None
+    _FakeHermesClient.update_payload = None
+    _FakeHermesClient.updated_agent_id = None
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".agentengine.state").write_text(
+        "type: hermes\nframework: hermes\n"
+        "agent_id: ar-hermes-existing\nname: demo-hermes\n"
+        "endpoint: https://old.example.com\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://model.example.com/v1")
+    monkeypatch.setenv("OPENAI_MODEL_NAME", "glm-test")
+    monkeypatch.setattr(cmd_hermes, "AgentEngineClient", _FakeHermesClient)
+
+    result = runner.invoke(cmd_hermes.hermes, ["deploy", "--image", "registry/hermes:new"])
+
+    assert result.exit_code == 0, result.output
+    assert _FakeHermesClient.update_payload["enable_observability"] is True
+
+
+def test_hermes_deploy_can_explicitly_disable_observability(
+    tmp_path: Path, monkeypatch
+):
+    runner = CliRunner()
+    _FakeHermesClient.create_payload = None
+    _FakeHermesClient.update_payload = None
+    _FakeHermesClient.updated_agent_id = None
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".agentengine.state").write_text(
+        "type: hermes\nframework: hermes\n"
+        "agent_id: ar-hermes-existing\nname: demo-hermes\n"
+        "endpoint: https://old.example.com\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://model.example.com/v1")
+    monkeypatch.setenv("OPENAI_MODEL_NAME", "glm-test")
+    monkeypatch.setattr(cmd_hermes, "AgentEngineClient", _FakeHermesClient)
+
+    result = runner.invoke(
+        cmd_hermes.hermes,
+        ["deploy", "--image", "registry/hermes:new", "--no-observability"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _FakeHermesClient.update_payload["enable_observability"] is False
 
 
 def test_hermes_deploy_update_payload_includes_explicit_config(tmp_path: Path, monkeypatch):

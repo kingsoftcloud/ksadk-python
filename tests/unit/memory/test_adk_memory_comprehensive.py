@@ -267,7 +267,7 @@ class TestSdkLTMBackend:
             result = backend.save_memory(
                 "u1",
                 [event],
-                metadata={"agent_id": "agent-1", "session_id": "sess-1"},
+                metadata={"agent_id": "agent-1", "session_id": "sess-1", "flush": True},
             )
 
         assert result is True
@@ -279,6 +279,7 @@ class TestSdkLTMBackend:
         assert params["AgentUserId"] == "u1"
         assert params["AgentId"] == "agent-1"
         assert params["SessionId"] == "sess-1"
+        assert params["Flush"] is True
         assert params["SceneId"] == "_sys_general"
         assert params["DataType"] == "conversation"
         assert "Namespace" not in params
@@ -302,6 +303,7 @@ class TestSdkLTMBackend:
         assert "Conversation" in params["Data"]
         assert isinstance(params["Data"]["Conversation"], list)
         assert len(params["Data"]["Conversation"]) == 1
+        assert "Flush" not in params
 
     def test_save_conversation_item_fields(self):
         """每个 Conversation 项必须有 Role/CreatedAt/MessageId/Content"""

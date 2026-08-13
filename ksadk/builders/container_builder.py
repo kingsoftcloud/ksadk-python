@@ -404,12 +404,12 @@ CMD ["python", "entrypoint.py"]
             "pydantic>=2.0.0",
             "pyyaml>=6.0.0",
             "httpx>=0.24.0",
-            # Tracing
+            # Tracing — OTLP 双写收敛:只用 OTel + openinference 自动插桩,
+            # 不再安装 Langfuse SDK(callback 路径已删除,Langfuse 通过标准 OTLP 接收)。
             "opentelemetry-api>=1.37.0",
             "opentelemetry-sdk>=1.37.0",
             "opentelemetry-exporter-otlp>=1.37.0",
             "openinference-instrumentation-langchain>=0.1.0",
-            "langfuse>=2.0.0",
         ]
 
         framework = detection_result.type.value
@@ -489,15 +489,11 @@ except ImportError:
 
 env_keys = [
     "AGENT_RUNTIME_NAME", "AGENT_RUNTIME_ID", "ACCOUNT_ID", "PORT",
-    "LANGFUSE_BASE_URL", "LANGFUSE_HOST", "LANGFUSE_PUBLIC_KEY",
-    "LANGFUSE_SECRET_KEY", "LANGFUSE_USE_CALLBACK",
     "OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
     "OTEL_EXPORTER_OTLP_HEADERS", "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
-    "OTEL_SERVICE_NAME", "CLOUD_MONITOR_APP_KEY",
-    "CLOUD_MONITOR_OTLP_ENABLED", "CLOUD_MONITOR_OTLP_ENDPOINT",
-    "CLOUD_MONITOR_OTLP_TRACES_ENDPOINT", "CLOUD_MONITOR_OTLP_HEADERS",
-    "CLOUD_MONITOR_LANGFUSE_HOST", "CLOUD_MONITOR_LANGFUSE_PUBLIC_KEY",
-    "CLOUD_MONITOR_LANGFUSE_SECRET_KEY", "CLOUD_MONITOR_LANGFUSE_ENABLED",
+    "OTEL_SERVICE_NAME",
+    "CLOUD_MONITOR_OTLP_ENDPOINT", "CLOUD_MONITOR_OTLP_TRACES_ENDPOINT",
+    "CLOUD_MONITOR_OTLP_HEADERS", "CLOUD_MONITOR_OTLP_TRACES_HEADERS",
     "LANGCHAIN_TRACING_V2", "MODEL_NAME",
 ]
 for key in env_keys:
@@ -535,39 +531,25 @@ detection_result = DetectionResult(
 logger.info(f"框架: {{detection_result.name}}")
 logger.info(f"入口: {{detection_result.entry_point}}")
 
-# 初始化 Tracing (如果配置了 Langfuse、标准 OTLP HTTP 或 CloudMonitor OTLP)
+# 初始化 Tracing (如果配置了标准 OTLP HTTP 或 CloudMonitor OTLP)
 has_otlp = bool(
     os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
     or os.environ.get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
 )
 has_cloud_monitor_otlp = bool(
-    os.environ.get("CLOUD_MONITOR_APP_KEY")
+    os.environ.get("CLOUD_MONITOR_OTLP_TRACES_HEADERS")
+    or os.environ.get("CLOUD_MONITOR_OTLP_HEADERS")
     or os.environ.get("CLOUD_MONITOR_OTLP_ENDPOINT")
     or os.environ.get("CLOUD_MONITOR_OTLP_TRACES_ENDPOINT")
+    or os.environ.get("CLOUD_MONITOR_APP_KEY")
 )
-has_cloud_monitor_langfuse = bool(
-    os.environ.get("CLOUD_MONITOR_LANGFUSE_PUBLIC_KEY")
-    or os.environ.get("CLOUD_MONITOR_LANGFUSE_SECRET_KEY")
-    or os.environ.get("CLOUD_MONITOR_LANGFUSE_HOST")
-)
-if (
-    os.environ.get("LANGFUSE_PUBLIC_KEY")
-    or has_otlp
-    or has_cloud_monitor_otlp
-    or has_cloud_monitor_langfuse
-):
+if has_otlp or has_cloud_monitor_otlp:
     try:
         from ksadk.tracing import setup_tracing
-        use_callback_only = (
-            os.environ.get("LANGFUSE_USE_CALLBACK", "").strip().lower()
-            in ("1", "true", "yes", "on")
-        )
-        setup_tracing(use_callback_only=use_callback_only)
+        setup_tracing()
         logger.info(
             f"Tracing 已启用 (OTLP={{has_otlp}}, "
-            f"CloudMonitorOTLP={{has_cloud_monitor_otlp}}, "
-            f"CloudMonitorLangfuse={{has_cloud_monitor_langfuse}}, "
-            f"CallbackOnly={{use_callback_only}})"
+            f"CloudMonitorOTLP={{has_cloud_monitor_otlp}})"
         )
     except Exception as e:
         logger.warning(f"Tracing 初始化失败: {{e}}")

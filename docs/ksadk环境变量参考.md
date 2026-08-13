@@ -119,17 +119,18 @@
 | `KSADK_SESSION_PATH` | 否 | `KSADK_STM_PATH`、`KSADK_STM_DB_PATH` | 否 | 本地运行时 | 本地 SQLite 会话库路径。 |
 | `KSADK_SESSION_NAMESPACE` | 否 | `KSADK_WORKSPACE_ID`、`AGENTENGINE_WORKSPACE_ID`、`KSADK_TENANT_ID`、`AGENTENGINE_TENANT_ID` | 否 | 平台 / 开发者 | 会话命名空间。 |
 
-### 2.8 可观测性和 Langfuse
+### 2.8 可观测性和 OTLP
 
 | 变量 | 是否必传 | 别名/兼容 | 敏感 | 配置方/来源 | 说明 |
 | --- | --- | --- | --- | --- | --- |
-| `LANGFUSE_PUBLIC_KEY` | 条件必传 | 无 | 是 | 平台 Secret / 开发者 | 启用 Langfuse 时需要。 |
-| `LANGFUSE_SECRET_KEY` | 条件必传 | 无 | 是 | 平台 Secret / 开发者 | 启用 Langfuse 时需要。 |
-| `LANGFUSE_BASE_URL` | 否 | `LANGFUSE_HOST` | 否 | 平台 / 开发者 | Langfuse endpoint。 |
-| `LANGFUSE_USE_CALLBACK` | 否 | 无 | 否 | 开发者 | 控制是否启用 callback 集成。 |
-| `CLOUD_MONITOR_APP_KEY` | 条件必传 | 无 | 是 | 平台 Secret | 云监控 OTLP AppKey。 |
+| `CLOUD_MONITOR_APP_KEY` | 否 | 一个版本的过渡 fallback | 是 | 旧平台 Secret | 已废弃；仅当 traces 与通用 headers 变量都整体缺失时翻译为 `Ksc-Appkey`。 |
 | `CLOUD_MONITOR_OTLP_ENDPOINT` | 条件必传 | 无 | 否 | 平台 / 开发者 | CloudMonitor 通用 OTLP HTTP endpoint。 |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | 条件必传 | 无 | 否 | 平台 / 开发者 | OTel Collector endpoint；未设置 traces 专用 endpoint 时，KsADK 会派生 `/v1/traces`。 |
+| `CLOUD_MONITOR_OTLP_PROTOCOL` | 否 | 无 | 否 | 平台 / 开发者 | CloudMonitor 通用协议，当前支持 `http/protobuf`。 |
+| `CLOUD_MONITOR_OTLP_HEADERS` | 条件必传（与 traces headers 二选一） | 旧 AppKey fallback | 是 | 平台 | CloudMonitor 通用 headers，必须包含 `Ksc-Appkey`。 |
+| `CLOUD_MONITOR_OTLP_TRACES_ENDPOINT` | 否 | 无 | 否 | 平台 / 开发者 | traces 专用 endpoint，优先于通用 endpoint。 |
+| `CLOUD_MONITOR_OTLP_TRACES_PROTOCOL` | 否 | 无 | 否 | 平台 / 开发者 | traces 专用协议，优先于通用 protocol。 |
+| `CLOUD_MONITOR_OTLP_TRACES_HEADERS` | 条件必传（与通用 headers 二选一） | 无 | 是 | 平台 | traces 专用 headers，优先于通用 headers；设置后必须包含 `Ksc-Appkey`。 |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | 条件必传 | 无 | 否 | 平台 / 开发者 | 通用 OTLP HTTP backend endpoint；未设置 traces 专用 endpoint 时，KsADK 会派生 `/v1/traces`。 |
 | `OTEL_EXPORTER_OTLP_PROTOCOL` | 否 | 无 | 否 | 平台 / 开发者 | 通用 OTLP 协议；KsADK 自动 HTTP exporter 当前支持 `http/protobuf`。 |
 | `OTEL_EXPORTER_OTLP_HEADERS` | 否 | 无 | 是 | 平台 / 开发者 | 通用 OTLP headers，逗号分隔，值按 URL encoding；可能包含 `Authorization`。 |
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | 否 | 无 | 否 | 平台 / 开发者 | traces 专用 endpoint；设置后优先于通用 endpoint。 |
@@ -366,28 +367,20 @@
 
 ## 11. 可观测性
 
+托管 Agent 通过 CLI 或控制台创建时默认开启可观测性，由控制面注入 Langfuse 标准 OTLP 主路与 CloudMonitor 次路；只有显式 `--no-observability` 或在控制台关闭才禁用。以下 endpoint、headers 和 protocol 属于平台托管变量，不应通过业务 `--env` 覆盖。本地运行没有平台凭据时按需显式配置。
+
 | 变量 | 作用层级 | 是否必传 | 默认值 | 别名/兼容 | 敏感 | 配置方/来源 | 是否业务自定义 | 说明 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `LANGFUSE_PUBLIC_KEY` | Tracing / Runtime | 条件必传 | 未设置 | 无 | 是 | Secret | 否 | Langfuse public key。 |
-| `LANGFUSE_SECRET_KEY` | Tracing / Runtime | 条件必传 | 未设置 | 无 | 是 | Secret | 否 | Langfuse secret key。 |
-| `LANGFUSE_BASE_URL` | Tracing / Runtime | 否 | 未设置 | `LANGFUSE_HOST` | 否 | 平台 / 开发者 | 否 | Langfuse endpoint。 |
-| `LANGFUSE_HOST` | Tracing / Runtime | 否 | 未设置 | `LANGFUSE_BASE_URL` | 否 | 兼容旧配置 | 否 | Langfuse endpoint 旧变量。 |
-| `LANGFUSE_PROJECT_ID` | Tracing | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | Langfuse project id。 |
-| `LANGFUSE_USE_CALLBACK` | Tracing | 否 | 未设置 | 无 | 否 | 开发者 | 否 | 是否启用 Langfuse callback。 |
 | `LANGCHAIN_TRACING_V2` | LangChain tracing | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | LangChain v2 tracing 开关。 |
 | `LANGCHAIN_VERBOSE` | Runtime image | 否 | `true` | 无 | 否 | 开发者 / 平台 | 否 | 模板运行时 LangChain verbose 开关。 |
-| `CLOUD_MONITOR_APP_KEY` | CloudMonitor tracing | 条件必传 | 未设置 | 无 | 是 | 平台 Secret | 否 | 云监控 OTLP AppKey；启用 CloudMonitor OTLP 上报时需要。 |
-| `CLOUD_MONITOR_OTLP_ENABLED` | CloudMonitor tracing | 否 | 自动判断 | 无 | 否 | 平台 / 开发者 | 否 | 显式启用或禁用 CloudMonitor OTLP exporter。 |
+| `CLOUD_MONITOR_APP_KEY` | CloudMonitor tracing | 否 | 未设置 | 一个版本的过渡 fallback | 是 | 旧平台 Secret | 否 | 已废弃；仅当 traces 和通用 headers 变量都整体缺失时翻译为 `Ksc-Appkey`。 |
 | `CLOUD_MONITOR_OTLP_ENDPOINT` | CloudMonitor tracing | 条件必传 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | CloudMonitor 通用 OTLP HTTP endpoint；未设置 traces endpoint 时会派生 `/v1/traces`。 |
 | `CLOUD_MONITOR_OTLP_PROTOCOL` | CloudMonitor tracing | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | CloudMonitor 通用 OTLP 协议，当前支持 `http/protobuf`。 |
-| `CLOUD_MONITOR_OTLP_HEADERS` | CloudMonitor tracing | 否 | 未设置 | 无 | 是 | 平台 / 开发者 | 否 | CloudMonitor OTLP 附加 headers，逗号分隔且 URL encoded。 |
+| `CLOUD_MONITOR_OTLP_HEADERS` | CloudMonitor tracing | 条件必传（与 traces headers 二选一） | 未设置 | 旧 AppKey fallback | 是 | 平台 | 否 | CloudMonitor OTLP 通用 headers，逗号分隔且 RFC 3986 encoded；必须包含 `Ksc-Appkey`。 |
 | `CLOUD_MONITOR_OTLP_TRACES_ENDPOINT` | CloudMonitor tracing | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | CloudMonitor traces 专用 endpoint，优先于通用 endpoint。 |
+| `CLOUD_MONITOR_OTLP_TRACES_HEADERS` | CloudMonitor tracing | 条件必传（与通用 headers 二选一） | 未设置 | 无 | 是 | 平台 | 否 | CloudMonitor traces 专用 OTLP headers，优先于通用 headers；设置后必须包含 `Ksc-Appkey`，否则 fail closed。 |
 | `CLOUD_MONITOR_OTLP_TRACES_PROTOCOL` | CloudMonitor tracing | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | CloudMonitor traces 专用协议，优先于通用 protocol。 |
-| `CLOUD_MONITOR_LANGFUSE_ENABLED` | CloudMonitor Langfuse callback | 否 | 自动判断 | 无 | 否 | 平台 / 开发者 | 否 | 显式启用或禁用 CloudMonitor Langfuse SDK callback。 |
-| `CLOUD_MONITOR_LANGFUSE_HOST` | CloudMonitor Langfuse callback | 条件必传 | 未设置 | `CLOUD_MONITOR_OTLP_ENDPOINT` | 否 | 平台 / 开发者 | 否 | CloudMonitor AppMonitor Langfuse SDK host。 |
-| `CLOUD_MONITOR_LANGFUSE_PUBLIC_KEY` | CloudMonitor Langfuse callback | 条件必传 | 未设置 | 无 | 是 | 平台 Secret | 否 | CloudMonitor AppMonitor Langfuse public key。 |
-| `CLOUD_MONITOR_LANGFUSE_SECRET_KEY` | CloudMonitor Langfuse callback | 条件必传 | 未设置 | 无 | 是 | 平台 Secret | 否 | CloudMonitor AppMonitor Langfuse secret key。 |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTel | 条件必传 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | OTel Collector endpoint；未设置 traces 专用 endpoint 时，KsADK 会派生 `/v1/traces`。 |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTel | 条件必传 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 通用 OTLP HTTP backend endpoint；未设置 traces 专用 endpoint 时，KsADK 会派生 `/v1/traces`。 |
 | `OTEL_EXPORTER_OTLP_PROTOCOL` | OTel | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 通用 OTLP 协议；KsADK 自动 HTTP exporter 当前支持 `http/protobuf`。 |
 | `OTEL_EXPORTER_OTLP_HEADERS` | OTel | 否 | 未设置 | 无 | 是 | 平台 / 开发者 | 否 | 通用 OTLP headers，逗号分隔，值按 URL encoding；可能包含 `Authorization`。 |
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | OTel | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | traces 专用 endpoint；设置后优先于通用 endpoint。 |
@@ -613,7 +606,7 @@ Hermes / OpenClaw 有大量镜像启动和安全策略变量，本文只列常�
 | 业务代码读取的变量，例如 `APP_ENV`、`DATABASE_URL`、`REDIS_URL`、`MY_SERVICE_TOKEN` | 是 | 否 | 由业务方自己定义，KsADK 不做含义约束。 |
 | Agent 依赖的第三方工具变量，例如某业务 API token | 是 | 否 | 可以通过部署环境注入，但不属于 KsADK 标准契约。 |
 | SDK/镜像内置扩展读取的第三方 token，例如 `TAVILY_API_KEY`、`FIRECRAWL_API_KEY`、`MEM0_API_KEY` | 否 | 部分写入 | 只有被 KsADK runtime、Hermes/OpenClaw 模板或内置 skill 明确读取的变量才列入本文。 |
-| 平台或 SDK 读取的变量，例如 `KSADK_*`、`KSYUN_*`、`E2B_*`、`OPENAI_*`、`LANGFUSE_*` | 否 | 是 | 本文维护常见和核心变量。 |
+| 平台或 SDK 读取的变量，例如 `KSADK_*`、`KSYUN_*`、`E2B_*`、`OPENAI_*`、`OTEL_*` | 否 | 是 | 本文维护常见和核心变量。 |
 | 镜像模板内部变量，例如大量 `OPENCLAW_*` / `HERMES_*` 高级开关 | 否 | 部分写入 | 本文只列常见运行时可配置项，完整列表以对应模板 README/bootstrap 为准。 |
 
 ## 16. 配置建议

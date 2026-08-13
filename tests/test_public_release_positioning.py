@@ -18,6 +18,7 @@ ZH_DOC_URLS = {
     f"{DOCS_ROOT_URL}cn/docs/framework/guides/observability-tracing/",
     f"{DOCS_ROOT_URL}cn/docs/framework/guides/cloud-deployment/",
     f"{DOCS_ROOT_URL}cn/docs/framework/guides/hosted-ui-events/",
+    f"{DOCS_ROOT_URL}cn/docs/references/environment-variables/",
 }
 EN_DOC_URLS = {
     f"{DOCS_ROOT_URL}en/docs/framework/getting-started/quickstart/",
@@ -27,6 +28,7 @@ EN_DOC_URLS = {
     f"{DOCS_ROOT_URL}en/docs/framework/guides/observability-tracing/",
     f"{DOCS_ROOT_URL}en/docs/framework/guides/cloud-deployment/",
     f"{DOCS_ROOT_URL}en/docs/framework/guides/hosted-ui-events/",
+    f"{DOCS_ROOT_URL}en/docs/references/environment-variables/",
 }
 
 _DOCS_LINK_PATTERN = re.compile(
@@ -178,12 +180,9 @@ def test_docs_internal_links_resolve_to_rendered_pages():
             candidates = _docs_link_candidates(source, target)
             if candidates and not any(candidate.exists() for candidate in candidates):
                 display = " or ".join(
-                    candidate.relative_to(DOCS_CONTENT_ROOT).as_posix()
-                    for candidate in candidates
+                    candidate.relative_to(DOCS_CONTENT_ROOT).as_posix() for candidate in candidates
                 )
-                broken.append(
-                    f"{source.relative_to(DOCS_CONTENT_ROOT)} -> {target} ({display})"
-                )
+                broken.append(f"{source.relative_to(DOCS_CONTENT_ROOT)} -> {target} ({display})")
 
     assert not broken, "Broken internal documentation links:\n" + "\n".join(broken)
 
@@ -222,9 +221,12 @@ def test_public_metadata_uses_runtime_platform_positioning():
     pyproject = tomllib.loads(_read("pyproject.toml"))
     init_text = _read("ksadk/__init__.py")
     version_text = _read("ksadk/version.py")
+    changelog = _read("CHANGELOG.md")
 
-    assert pyproject["project"]["version"] == "0.8.0"
-    assert 'VERSION = "0.8.0"' in version_text
+    assert pyproject["project"]["version"] == "0.8.1"
+    assert 'VERSION = "0.8.1"' in version_text
+    assert "## [0.8.1] - 2026-08-10" in changelog
+    assert "`langchain-openai` 仅随" in changelog
     assert "Agent Runtime Platform" in pyproject["project"]["description"]
     assert "Agent Runtime Platform" in init_text
     assert "Agent Development Kit" not in pyproject["project"]["description"]

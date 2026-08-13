@@ -77,6 +77,7 @@ from ksadk.cli.ui import (
 from ksadk.cli.ui import (
     output_option as cli_output_option,
 )
+from ksadk.configs.env_registry import is_sensitive_env_var
 from ksadk.conversations.model_context import normalize_model_metadata
 from ksadk.deployment.agent_access import get_latest_agent_access
 from ksadk.model_policy import build_runtime_model_policy_env
@@ -3636,7 +3637,7 @@ async def _deploy_openclaw(
 
     # 构建环境变量列表
     env_list = [
-        {"Key": k, "Value": v, "IsSensitive": "KEY" in k or "TOKEN" in k or "SECRET" in k}
+        {"Key": k, "Value": v, "IsSensitive": is_sensitive_env_var(k)}
         for k, v in env_vars.items()
     ]
     # 资源规格（支持通过环境变量覆盖）

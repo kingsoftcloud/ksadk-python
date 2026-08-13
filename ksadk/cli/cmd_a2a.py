@@ -338,15 +338,8 @@ def _setup_tracing(framework_type: str) -> None:
 
         from ksadk.tracing import setup_tracing
 
-        use_callback_only = os.getenv("LANGFUSE_USE_CALLBACK", "").strip().lower() in (
-            "1",
-            "true",
-            "yes",
-            "on",
-        )
         setup_tracing(
             enable_inmemory=True,
-            use_callback_only=use_callback_only,
         )
     except Exception:
         return

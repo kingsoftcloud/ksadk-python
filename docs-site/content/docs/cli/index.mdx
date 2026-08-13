@@ -214,12 +214,44 @@ agentengine launch . --env KEY=VALUE --env-file ./runtime.env
 | `--env KEY=VALUE` | 额外运行时环境变量，可重复传入；显式 env 进入部署 payload `env_vars` |
 | `--env-file PATH` | 额外运行时环境变量文件，支持 `.env` 或 JSON 对象 |
 
+敏感凭证（包括通过 `--env` 传入的密钥）会在 `--dry-run` 输出中脱敏。
+
 <Callout type="info" title="env 文件边界">
   传入的 `--env-file` 用于显式注入运行时 env。真实的 `.env` / `.env.local`
   不会进入 Code、Container 或 MCP 构建上下文，构建只保留 `.env.example` /
   `.env.sample` / `.env.template` 模板文件。详见
   [环境变量参考](../references/environment-variables)。
 </Callout>
+
+### 默认可观测性与显式关闭
+
+托管 Agent 的 `deploy`、`launch` 和 `hermes deploy` 默认发送 `enable_observability=true`。CLI 与控制台使用同一个控制面开关；平台在开启时注入 Langfuse 标准 OTLP 主路和 CloudMonitor OTLP 次路，同一 span 在两端保持相同的 `trace_id` / `span_id`。
+
+```bash title="bash"
+# 默认开启
+agentengine deploy . --target serverless
+agentengine launch . --target serverless
+agentengine hermes deploy --name my-hermes
+
+# 用户显式关闭
+agentengine deploy . --target serverless --no-observability
+agentengine launch . --target serverless --no-observability
+agentengine hermes deploy --name my-hermes --no-observability
+```
+
+关闭后平台会清理托管 OTLP endpoint、headers 和 protocol；不要用 `--env` 覆盖平台托管的可观测变量。环境变量协议见[环境变量参考](../references/environment-variables)。
+
+### `agentengine hermes`
+
+Hermes exec 使用 argv 透传，不经过 shell 解析。支持以下目标形式：
+
+```bash title="bash"
+agentengine hermes exec --agent my-hermes -- status
+agentengine hermes exec ar-123 -- status
+agentengine hermes exec -- sessions list
+```
+
+`--agent` 用于显式指定名称；位置参数只兼容 `ar-*` Agent ID。未指定目标时，命令会使用当前项目的默认 Agent，普通 argv token 不会被猜测为 Agent 名称。传入 `--session` 的业务 session ID 会同时写入 terminal start frame（并保留兼容 header），以便运行时恢复会话。
 
 ### `agentengine openclaw`
 

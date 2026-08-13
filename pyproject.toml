@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ksadk"
-version = "0.8.0"
+version = "0.8.1"
 description = "KsADK Agent Runtime Platform - unified runtime, debugging, deployment and observability for AI agents"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -77,7 +77,6 @@ dependencies = [
     # ========= 核心框架依赖 (默认安装) =========
     # LangChain
     "langchain>=1.3.14,<2.0.0",
-    "langchain-openai>=1.4.0,<2.0.0",
     "langchain-core>=1.5.0,<2.0.0",
     # LangGraph - 使用兼容的版本范围
     "langgraph>=1.2.0,<1.3.0",
@@ -132,9 +131,10 @@ a2a-postgres = [
     "a2a-sdk[postgresql]==1.1.0",
 ]
 # 可观测性
+# goal-00: langfuse SDK 已删除(OTLP 双写收敛),tracing 只需 openinference 自动插桩。
+# Langfuse 现在通过标准 OTLP/HTTP exporter(OTEL_EXPORTER_OTLP_*)接收 span,不依赖 langfuse SDK。
 tracing = [
     "openinference-instrumentation-langchain>=0.1.0",
-    "langfuse>=3.0.0",
 ]
 # 知识库 & 记忆库支持
 kb = []

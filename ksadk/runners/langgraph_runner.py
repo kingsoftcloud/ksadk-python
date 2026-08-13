@@ -19,7 +19,7 @@ from ksadk.conversations.attachments import classify_attachment_kind, read_attac
 from ksadk.conversations.reasoning_markup import ReasoningMarkupParser, strip_reasoning_markup
 from ksadk.runners.base_runner import BaseRunner
 from ksadk.runners.usage_accumulator import accumulate_usage
-from ksadk.runners.utils import get_langfuse_callbacks, get_langfuse_metadata, load_agent_module
+from ksadk.runners.utils import load_agent_module
 from ksadk.sessions import resolve_persistence_topology
 from ksadk.sessions.continuity import LangGraphSessionAdapter
 
@@ -480,11 +480,6 @@ class LangGraphRunner(BaseRunner):
         config: dict[str, Any] = {"configurable": {"thread_id": session_id}}
         if self._managed_checkpoint_namespace:
             config["configurable"]["checkpoint_ns"] = self._managed_checkpoint_namespace
-        langfuse_callbacks = get_langfuse_callbacks()
-        if langfuse_callbacks:
-            config["callbacks"] = langfuse_callbacks
-            config["metadata"] = get_langfuse_metadata(session_id)
-
         return config
 
     @staticmethod
