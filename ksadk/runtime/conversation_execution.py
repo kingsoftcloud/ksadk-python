@@ -274,7 +274,7 @@ async def _finalize_hosted_turn(
             memory_write_mode=str(getattr(prepared, "memory_write_mode", "candidate") or ""),
             flush_before_compaction=getattr(prepared, "flush_before_compaction", True),
             provider_ref=str(getattr(prepared, "provider_ref", "local-default") or ""),
-            emit_event=None,
+            emit_event=None,  # canonical 路径暂不持久化 memory 事件（留后续 PR）
         ),
         session_service_provider=session_service_provider,
     )

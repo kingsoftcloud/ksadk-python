@@ -103,7 +103,9 @@ async def finalize_hosted_turn(
         flush_before_compaction=ctx.flush_before_compaction,
         provider_ref=ctx.provider_ref,
     )
-    if not policy.should_flush:
+    # shadow：生成 Candidate 和审计事件，但不提交 Provider（方案 §2）
+    # off/不启用：直接返回，连候选都不提取
+    if not policy.should_extract_candidates:
         return
     try:
         from ksadk.memory.coordinator import MemoryCoordinator
@@ -135,11 +137,26 @@ async def finalize_hosted_turn(
             scope="user",
             scope_id=str(ctx.user_id or ""),
         )
-        provider_name = "sqlite"
-        rollout = ctx.memory_write_rollout or "enabled"
+        # explicit_only：只保留用户明确要求记住的内容（方案 §2）
+        if policy.is_explicit_only:
+            candidates = [c for c in candidates if c.reason == "explicit_user_request"]
+        provider_name = ctx.provider_ref or "local-default"
+        rollout = policy.write_rollout
         if candidates:
-            coordinator = MemoryCoordinator(resolve_default_memory_provider())
-            result = coordinator.flush_candidates(candidates)
+            # shadow：生成候选和审计事件，但不提交 Provider（方案 §2）
+            if policy.should_flush:
+                coordinator = MemoryCoordinator(resolve_default_memory_provider())
+                result = coordinator.flush_candidates(candidates)
+            else:
+                # shadow：不提交，构造一个不落库的 result
+                from ksadk.memory.coordinator import FlushResult
+
+                result = FlushResult(
+                    status="shadow",
+                    proposed=len(candidates),
+                    committed=0,
+                    rejected=0,
+                )
             _emit(
                 ctx,
                 candidate_created(
@@ -161,18 +178,34 @@ async def finalize_hosted_turn(
                         count=result.rejected,
                     ),
                 )
-            _emit(
-                ctx,
-                flush_completed(
-                    run_id=ctx.invocation_id,
-                    session_id=ctx.session_id,
-                    provider=provider_name,
-                    rollout=rollout,
-                    proposed=result.proposed,
-                    committed=result.committed,
-                    rejected=result.rejected,
-                ),
-            )
+            # 检查 flush 结果：partial/failed 时发 flush.failed（方案 §3）
+            if result.status in ("succeeded", "shadow"):
+                _emit(
+                    ctx,
+                    flush_completed(
+                        run_id=ctx.invocation_id,
+                        session_id=ctx.session_id,
+                        provider=provider_name,
+                        rollout=rollout,
+                        proposed=result.proposed,
+                        committed=result.committed,
+                        rejected=result.rejected,
+                    ),
+                )
+            else:
+                # partial / failed → flush.failed
+                _emit(
+                    ctx,
+                    flush_failed(
+                        run_id=ctx.invocation_id,
+                        session_id=ctx.session_id,
+                        provider=provider_name,
+                        rollout=rollout,
+                        error_code=f"flush_{result.status}",
+                        error_message=f"{result.status}: {len(result.errors)} errors",
+                        retryable=True,
+                    ),
+                )
     except Exception as exc:  # noqa: BLE001
         _emit(
             ctx,
