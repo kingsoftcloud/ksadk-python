@@ -31,11 +31,11 @@ Record exactly one approved source publication strategy.
 The approved strategy must name the reviewed commit, tag, pull request, or
 export archive used for:
 
-- `ksadk-python`: reviewed public candidate commit `f17cf2d06985cabac456825391e37999c95dc8d0`, prepared from clean-export candidate `f14d5faafdb6e76dd6616a951cabe28ba3708075` using the repository's public export policy and updated only with the reviewed release-gate fixes.
-- `ksadk-web`: trusted npm package `@kingsoftcloud/ksadk-web@0.3.1`, source commit `b4e9f938828ef669347dadb7f0eb3f0a01747a6a`, integrity `sha512-p+PzgC/0ZcQXoEpoI5VezAB4FQkddstXiW1OQtfH/bPYOBAv4xyGMwBylEegae1IBcGlq9inUNuQRFez/IRRgQ==`; approval is bound to reviewed Python public candidate commit `f17cf2d06985cabac456825391e37999c95dc8d0`.
+- `ksadk-python`: reviewed public candidate commit `dc52438818dffae99ee4dbde2e3c30cfc2d9a877`, prepared from clean-export candidate `f14d5faafdb6e76dd6616a951cabe28ba3708075` using the repository's public export policy and updated only with the reviewed release-gate fixes.
+- `ksadk-web`: trusted npm package `@kingsoftcloud/ksadk-web@0.3.1`, source commit `b4e9f938828ef669347dadb7f0eb3f0a01747a6a`, integrity `sha512-p+PzgC/0ZcQXoEpoI5VezAB4FQkddstXiW1OQtfH/bPYOBAv4xyGMwBylEegae1IBcGlq9inUNuQRFez/IRRgQ==`; approval is bound to reviewed Python public candidate commit `dc52438818dffae99ee4dbde2e3c30cfc2d9a877`.
 
 Both approved source references include the reviewed public candidate SHA
-`f17cf2d06985cabac456825391e37999c95dc8d0`. This prevents a stale approval
+`dc52438818dffae99ee4dbde2e3c30cfc2d9a877`. This prevents a stale approval
 record from passing after candidate changes.
 
 ## Recorded Evidence for Approval
