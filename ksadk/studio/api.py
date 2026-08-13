@@ -484,8 +484,7 @@ def create_studio_app(
 
     @app.post("/api/v1/workspaces:open")
     async def open_workspace(payload: WorkspaceOpenRequest):
-        requested = Path(payload.path).expanduser().resolve()
-        if requested != studio.workspace.root:
+        if not studio.workspace.matches_configured_root_path(payload.path):
             raise StudioError(
                 "WORKSPACE_PATH_FORBIDDEN",
                 "当前 Daemon 不允许切换到启动 root 之外的工作区",

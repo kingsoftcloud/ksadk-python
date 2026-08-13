@@ -293,10 +293,13 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     assert "tests/test_server_session_app.py" not in ci_workflow
     assert 'KSADK_WEB_VERSION: "0.3.1"' in ci_workflow
     assert "PUBLIC_KSADK_WEB_VERSION" not in ci_workflow
+    assert ci_workflow.count('node-version: "22"') == 3
+    assert 'node-version: "20"' not in ci_workflow
     assert "KSADK_WEB_VERSION ?= 0.3.1" in makefile
     assert (
         "PUBLIC_TEST_TARGETS ?= tests/test_public_release_positioning.py "
-        "tests/test_config_env_registry.py tests/test_managed_runtime_builder.py "
+        "tests/test_public_security_regressions.py tests/test_config_env_registry.py "
+        "tests/test_managed_runtime_builder.py "
         "tests/test_managed_runtime_resolution.py tests/cli/test_cmd_create_codex.py "
         "tests/runners/test_adapter_contract.py" in makefile
     )
@@ -342,7 +345,10 @@ def test_public_release_candidate_tracks_current_version():
     version = tomllib.loads(_read("pyproject.toml"))["project"]["version"]
 
     assert f"| Python package version | {version} |" in approval_record
-    assert f"make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V={version}" in approval_record
+    assert (
+        f"make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V={version}"
+        in approval_record
+    )
 
 
 def test_0_8_changelog_is_ready_for_authorized_release():
@@ -370,6 +376,14 @@ def test_public_release_sync_compares_exported_file_contents():
     workflow = _read("docs/public-release-workflow.md")
 
     assert "rsync -a --checksum --delete --exclude .git" in workflow
+
+
+def test_public_studio_react_gate_does_not_call_excluded_internal_tests():
+    makefile = _read("Makefile")
+    target = makefile.split("studio-react-test:\n", 1)[1].split("\n\n", 1)[0]
+
+    assert "npm --prefix ksadk/studio/react-ui run test:ui" in target
+    assert "tests/studio/" not in target
 
 
 def test_source_repository_does_not_track_generated_ksadk_web_static():

@@ -32,7 +32,8 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          # The Studio lockfile includes jsdom/undici versions that require Node 22+.
+          node-version: "22"
           cache: pnpm
           cache-dependency-path: docs-site/pnpm-lock.yaml
 
@@ -77,7 +78,8 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          # The Studio lockfile includes jsdom/undici versions that require Node 22+.
+          node-version: "22"
           cache: npm
           cache-dependency-path: ksadk/studio/react-ui/package-lock.json
 
@@ -116,7 +118,8 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          # The Studio lockfile includes jsdom/undici versions that require Node 22+.
+          node-version: "22"
           cache: npm
           cache-dependency-path: ksadk/studio/react-ui/package-lock.json
 
