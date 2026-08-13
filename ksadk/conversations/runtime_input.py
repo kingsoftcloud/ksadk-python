@@ -18,6 +18,13 @@ from ksadk.runtime_context import (
     PlatformInvocationContext,
 )
 
+_recall_events: list = []
+
+
+def _append_recall_event(event: dict) -> None:
+    """Collect recall events (module-level, scheme S3)."""
+    _recall_events.append(event)
+
 
 def _is_prompt_too_long_error(exc: Exception) -> bool:
     """尽量用宽松规则识别 PTL，兼容不同 runtime/模型返回格式。"""
@@ -454,12 +461,12 @@ def _build_runner_ambient_contexts(
             )
             if not _ambient_context_has_error(memory_context):
                 contexts["memory_context"] = memory_context
-                _emit_recall_event("memory.recall.completed", count=1)
+                _append_recall_event({"type": "memory.recall.completed", "count": 1})
             else:
-                _emit_recall_event("memory.recall.empty")
+                _append_recall_event({"type": "memory.recall.empty"})
         except Exception as exc:
             logger.warning("Failed to build ambient memory context: %s", exc)
-            _emit_recall_event("memory.recall.failed", error=str(exc)[:200])
+            _append_recall_event({"type": "memory.recall.failed", "error": str(exc)[:200]})
 
     return contexts
 
@@ -823,31 +830,3 @@ def _merge_responses_history_with_session_history(
         *[dict(item) for item in request_history],
         *[dict(item) for item in session_history],
     ]
-
-
-# Recall 事件收集器（best-effort，方案 §3）
-_recall_event_collector: list = []
-
-
-def _emit_recall_event(event_type: str, count: int = 0, error: str = "") -> None:
-    """收集 Recall 事件供调用方读取。"""
-    from ksadk.memory.events import MemoryEvent
-
-    _recall_event_collector.append(
-        MemoryEvent(
-            type=event_type,
-            run_id="",
-            session_id="",
-            provider="longterm-service",
-            policy_rollout="recall",
-            candidate_count=count,
-            error_message=error if error else None,
-        )
-    )
-
-
-def drain_recall_events() -> list:
-    """取出并清空已收集的 Recall 事件。"""
-    events = list(_recall_event_collector)
-    _recall_event_collector.clear()
-    return events

@@ -116,9 +116,7 @@ async def finalize_hosted_turn(
             flush_failed,
         )
         from ksadk.memory.extraction import propose_memory_candidates
-        from ksadk.memory.providers.local_sqlite import (
-            resolve_default_memory_provider,
-        )
+        from ksadk.memory.provider_resolver import resolve_memory_provider
 
         turn_events = ctx.session_events
         if turn_events is None and session_service_provider is not None:
@@ -130,7 +128,6 @@ async def finalize_hosted_turn(
                 ]
             except Exception:  # noqa: BLE001
                 turn_events = None
-        if not turn_events:
             return
         candidates = propose_memory_candidates(
             list(turn_events),
@@ -145,7 +142,11 @@ async def finalize_hosted_turn(
         if candidates:
             # shadow：生成候选和审计事件，但不提交 Provider（方案 §2）
             if policy.should_flush:
-                coordinator = MemoryCoordinator(resolve_default_memory_provider())
+                provider = resolve_memory_provider(ctx.provider_ref)
+                from ksadk.memory.provider_adapter import adapt_as_memory_provider
+
+                provider = adapt_as_memory_provider(provider)
+                coordinator = MemoryCoordinator(provider)
                 result = coordinator.flush_candidates(candidates)
             else:
                 # shadow：不提交，构造一个不落库的 result

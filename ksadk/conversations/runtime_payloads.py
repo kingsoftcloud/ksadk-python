@@ -74,6 +74,7 @@ class PreparedConversationTurn:
     # PR E：真实 ContextPlan 与组装输入（仅 ksadk_hosted + KSADK_CONTEXT_ENGINE_V2_ENABLED 时
     # 由 hosted_pipeline 生成）。``context_plan`` 是 ``ContextPlan`` 的 plain dict 投影（含
     # selected/decisions/budget），``assembled_input`` 是 AssembledInput 的 plain dict
+    memory_recall_events: list[dict[str, Any]] = field(default_factory=list)
     # （system + messages）。二者都进 trace 与 runner payload 接管；非门控为 None，零影响。
     context_plan: dict[str, Any] | None = None
     assembled_input: dict[str, Any] | None = None

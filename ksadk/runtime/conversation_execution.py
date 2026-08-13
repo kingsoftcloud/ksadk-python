@@ -249,12 +249,23 @@ async def _finalize_hosted_turn(
     prepared: Any,
     usage: Mapping[str, Any] | None,
     session_service_provider: Callable[[], Any],
+    turn_events: Any = None,
 ) -> None:
     """PR E：hosted turn 收尾——委托共享 HostedTurnFinalizer（方案 §11.1 / P0 收敛）。
 
     Studio 与 canonical Runtime 共用同一收尾逻辑，避免两条路径漂移。
     """
     from ksadk.runtime.hosted_finalizer import FinalizeContext, finalize_hosted_turn
+
+    # 从 session store 取 turn events
+    _turn_events = None
+    try:
+        _svc = session_service_provider()
+        _all = await _svc.get_events(getattr(prepared, "session_id", ""))
+        _inv = getattr(prepared, "invocation_id", "")
+        _turn_events = [e for e in _all if getattr(e, "invocation_id", "") == _inv]
+    except Exception:  # noqa: BLE001
+        pass
 
     await finalize_hosted_turn(
         FinalizeContext(
@@ -274,7 +285,10 @@ async def _finalize_hosted_turn(
             memory_write_mode=str(getattr(prepared, "memory_write_mode", "candidate") or ""),
             flush_before_compaction=getattr(prepared, "flush_before_compaction", True),
             provider_ref=str(getattr(prepared, "provider_ref", "local-default") or ""),
-            emit_event=None,  # canonical 路径 memory 事件通过 Trace Span 记录（留后续 PR）
+            emit_event=None,
+            session_events=turn_events,
+            # emit_event=lambda d: _canonical_emit_memory_event(
+            #     d, session_service_provider, prepared
         ),
         session_service_provider=session_service_provider,
     )
@@ -703,3 +717,12 @@ __all__ = [
     "iter_runtime_conversation_events",
     "iter_runtime_conversation_semantic_events",
 ]
+
+
+def _canonical_emit_memory_event(
+    event_dict: dict,
+    session_service_provider: Any,
+    prepared: Any,
+) -> None:
+    """Canonical memory events: subsequent PR (OTLP trace)."""
+    pass
