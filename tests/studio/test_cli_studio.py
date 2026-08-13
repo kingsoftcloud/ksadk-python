@@ -40,7 +40,12 @@ def test_studio_cli_binds_loopback_and_initializes_workspace(
 
 
 def test_studio_cli_no_open_does_not_launch_browser(tmp_path: Path, monkeypatch):
-    monkeypatch.setattr("ksadk.cli.cmd_studio.uvicorn.run", lambda *_args, **_kwargs: None)
+    captured = {}
+
+    def fake_run(_app, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr("ksadk.cli.cmd_studio.uvicorn.run", fake_run)
     monkeypatch.setattr(
         "ksadk.cli.cmd_studio.webbrowser.open",
         lambda _url: (_ for _ in ()).throw(AssertionError("must not open")),
@@ -49,7 +54,8 @@ def test_studio_cli_no_open_does_not_launch_browser(tmp_path: Path, monkeypatch)
     result = CliRunner().invoke(studio, [str(tmp_path), "--no-open"])
 
     assert result.exit_code == 0
-    assert "127.0.0.1:7831" in result.output
+    assert captured["port"] == 8080
+    assert "127.0.0.1:8080" in result.output
     assert "#session=" in result.output
 
 

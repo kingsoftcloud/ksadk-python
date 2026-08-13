@@ -1,6 +1,7 @@
 ---
 title: AgentKit Local Studio
 description: The local Agent authoring, build, and conversation workspace added in 0.8.1.
+status: new
 ---
 
 <Callout type="info" title="New in 0.8.1">
@@ -21,11 +22,11 @@ mkdir my-agent-workspace
 agentengine studio ./my-agent-workspace
 ```
 
-Studio binds to `127.0.0.1:7831` by default. The command prints a local session URL and opens it in the browser. That URL is for local use only: do not share its `#session=...` fragment.
+Studio binds to `127.0.0.1:8080` by default. The command prints a local session URL and opens it in the browser. That URL is for local use only: do not share its `#session=...` fragment.
 
 ```bash title="shell"
 # Do not open a browser, and use a different port
-agentengine studio ./my-agent-workspace --port 7832 --no-open
+agentengine studio ./my-agent-workspace --port 8081 --no-open
 
 # Provide model settings for this launch
 agentengine studio ./my-agent-workspace --env-file ./model.env

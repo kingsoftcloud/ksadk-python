@@ -42,6 +42,7 @@
 - `all` extra 纳入 Codex 支持；Studio 运行与测试依赖补齐 MCP、Pillow 和 Playwright，wheel/sdist 继续只打包 React 生产静态资源而不包含 Node.js 源码依赖。
 - `agentengine hermes exec` 增加显式 `--agent` 目标并改为 argv 原样透传，由远端 Pod 执行最终命令策略；普通 argv 不再被猜测为 Agent 名称，`--session` 业务会话 ID 会写入 terminal start frame。
 - 用户显式调用 `save_memory` 时向 SDK 记忆后端发送 `flush=True`，保证本次数据完成抽取后再返回；自动轮次保存继续使用后端默认批处理语义。
+- `agentengine studio` 默认继续仅监听 loopback，但端口调整为 `8080`；可用 `--port` 覆盖。Studio 前端源码开发代理也使用同一默认端口。
 
 ### 修复与性能
 
@@ -67,7 +68,7 @@
 
 ### 文档
 
-- 同步中英文 README、Studio CLI、可观测性、环境变量、知识库与记忆库指南，补充首次 Studio 交付、React 源码/构建产物边界、运行控制与交互协议、默认 OTLP 双写、显式关闭、header 优先级、旧 AppKey 边界以及 Hermes session 语义。
+- 同步中英文 README、Studio CLI、可观测性、环境变量、知识库与记忆库指南；新增可从左侧导航进入的 AgentKit Local Studio 指南，补充首次 Studio 交付、React 源码/构建产物边界、运行控制与交互协议、默认 OTLP 双写、显式关闭、header 优先级、旧 AppKey 边界以及 Hermes session 语义。
 
 ### 发布记录
 

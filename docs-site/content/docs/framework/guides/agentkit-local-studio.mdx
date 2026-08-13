@@ -1,6 +1,7 @@
 ---
 title: AgentKit Local Studio
 description: 0.8.1 新增的本地 Agent 创作、构建与对话工作区。
+status: new
 ---
 
 <Callout type="info" title="0.8.1 新增">
@@ -21,11 +22,11 @@ mkdir my-agent-workspace
 agentengine studio ./my-agent-workspace
 ```
 
-默认监听 `127.0.0.1:7831`，命令会打印带本地 session 的访问地址并自动打开浏览器。这个地址只适合本机使用；不要把其中的 `#session=...` 片段分享给其他人。
+默认监听 `127.0.0.1:8080`，命令会打印带本地 session 的访问地址并自动打开浏览器。这个地址只适合本机使用；不要把其中的 `#session=...` 片段分享给其他人。
 
 ```bash title="shell"
 # 不自动打开浏览器，并改用其他端口
-agentengine studio ./my-agent-workspace --port 7832 --no-open
+agentengine studio ./my-agent-workspace --port 8081 --no-open
 
 # 为本次启动提供模型配置文件
 agentengine studio ./my-agent-workspace --env-file ./model.env
