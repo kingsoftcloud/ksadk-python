@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Literal, cast
 from urllib.parse import urlparse
+from uuid import uuid4
 
 from ksadk.evaluation import (
     EvaluationConfig as PublicEvaluationConfig,
@@ -71,7 +73,6 @@ from ksadk.studio.contracts import (
     RuntimeRef,
 )
 from ksadk.studio.errors import StudioError
-from ksadk.studio.evaluation import EvaluationRunner
 from ksadk.studio.event_store import RunEventStore
 from ksadk.studio.framework_run import FrameworkRunSpecResolver
 from ksadk.studio.mcp_runtime import MCPRuntimeAdapter
@@ -91,6 +92,11 @@ from ksadk.studio.templates import (
 )
 from ksadk.studio.validator import AgentValidator
 from ksadk.studio.workspace import Workspace
+
+
+@dataclass(frozen=True)
+class _OperationResource:
+    id: str
 
 
 class StudioService:
@@ -166,12 +172,6 @@ class StudioService:
         )
         self.model_client = runtime_model_client
         self.mcp_runtime = MCPRuntimeAdapter(self.workspace, credentials=self.credentials)
-        self.evaluations = EvaluationRunner(
-            self.workspace,
-            run_agent=self.run_build,
-            event_store=self.event_store,
-            build_repository=self.builds,
-        )
         self.cloud = CloudDeploymentService(
             self.workspace,
             gateway=cloud_gateway or UnavailableCloudGateway(),
@@ -795,7 +795,7 @@ class StudioService:
             )
         snapshot = draft.model_copy(deep=True)
 
-        async def runner():
+        async def runner(_operation_id: str):
             return await asyncio.to_thread(self.builder.build, snapshot)
 
         return self.operations.submit(
@@ -820,7 +820,7 @@ class StudioService:
         idempotency_key: str,
         on_event: Callable[[RunEvent], None] | None = None,
     ) -> Operation:
-        async def runner():
+        async def runner(_operation_id: str):
             return await self.run_build(
                 build_id,
                 user_input,
@@ -890,28 +890,6 @@ class StudioService:
             on_event=on_event,
         )
 
-    def submit_evaluation(
-        self,
-        build_id: str,
-        suite_refs: list[str],
-        *,
-        fail_fast: bool,
-        idempotency_key: str,
-    ) -> Operation:
-        async def runner():
-            return await self.evaluations.run(
-                build_id,
-                suite_refs,
-                fail_fast=fail_fast,
-            )
-
-        return self.operations.submit(
-            kind=OperationKind.EVALUATION,
-            resource_id=build_id,
-            idempotency_key=idempotency_key,
-            runner=runner,
-        )
-
     def submit_public_evaluation(
         self,
         evalset_file: str,
@@ -949,11 +927,21 @@ class StudioService:
             config=config,
             report_dir=str(self.evaluation_storage.root),
         )
+        evaluation_id = f"eval_{uuid4().hex}"
 
-        async def runner():
+        async def runner(operation_id: str):
             try:
                 adapter = self._public_evaluation_adapter(request)
-                report = await execute_evaluation(request, adapter=adapter)
+                report = await execute_evaluation(
+                    request,
+                    adapter=adapter,
+                    run_id=evaluation_id,
+                    on_case_started=lambda case_id, index, total: self.operations.append(
+                        operation_id,
+                        "evaluation.case.started",
+                        {"caseId": case_id, "index": index, "total": total},
+                    ),
+                )
             except EvaluationNotImplementedError as exc:
                 raise StudioError(
                     "EVALUATION_EXECUTOR_UNAVAILABLE",
@@ -966,11 +954,11 @@ class StudioService:
                     str(exc),
                     status_code=502,
                 ) from exc
-            return report
+            return _OperationResource(id=report.spec.id)
 
         return self.operations.submit(
             kind=OperationKind.EVALUATION,
-            resource_id=evalset.content_digest,
+            resource_id=evaluation_id,
             idempotency_key=idempotency_key,
             runner=runner,
         )
@@ -1131,7 +1119,7 @@ class StudioService:
         *,
         idempotency_key: str,
     ) -> Operation:
-        async def runner():
+        async def runner(_operation_id: str):
             return await self.cloud.deploy(build_id, request)
 
         return self.operations.submit(
@@ -1148,7 +1136,7 @@ class StudioService:
         target_build_id: str,
         idempotency_key: str,
     ) -> Operation:
-        async def runner():
+        async def runner(_operation_id: str):
             return await self.cloud.rollback(
                 deployment_id,
                 target_build_id=target_build_id,

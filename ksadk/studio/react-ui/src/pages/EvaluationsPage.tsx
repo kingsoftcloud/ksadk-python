@@ -57,7 +57,14 @@ interface EvaluationReport {
 interface Operation {
   id: string;
   status: string;
+  resourceId?: string | null;
   error?: { message?: string } | null;
+}
+
+interface OperationEvent {
+  id: number;
+  type: string;
+  data: { caseId?: string; index?: number; total?: number };
 }
 
 interface EvaluationCatalog {
@@ -108,8 +115,13 @@ async function errorMessage(response: Response, fallback: string): Promise<strin
   }
 }
 
-async function waitForOperation(operationId: string, signal: AbortSignal): Promise<Operation> {
+async function waitForOperation(
+  operationId: string,
+  signal: AbortSignal,
+  onEvent: (event: OperationEvent) => void,
+): Promise<Operation> {
   const deadline = Date.now() + OPERATION_POLL_TIMEOUT_MS;
+  let eventCursor = 0;
   for (;;) {
     signal.throwIfAborted();
     if (Date.now() >= deadline) throw new Error("评测任务等待超时，请稍后刷新报告查看最终状态");
@@ -117,6 +129,17 @@ async function waitForOperation(operationId: string, signal: AbortSignal): Promi
     if (!response.ok) throw new Error(await errorMessage(response, "评测任务状态读取失败"));
     const operation: Operation = await response.json();
     if (TERMINAL_OPERATION_STATES.has(operation.status)) return operation;
+    const eventsResponse = await apiFetch(
+      `/api/v1/operations/${encodeURIComponent(operationId)}/events?after=${eventCursor}`,
+      { signal, headers: { Accept: "application/json" } },
+    );
+    if (eventsResponse.ok) {
+      const payload = await eventsResponse.json();
+      for (const event of payload.items || []) {
+        eventCursor = Math.max(eventCursor, event.id || 0);
+        onEvent(event);
+      }
+    }
     await new Promise<void>((resolve, reject) => {
       const abort = () => {
         window.clearTimeout(timer);
@@ -142,6 +165,8 @@ export function EvaluationsPage({ refreshTick }: { refreshTick: number }) {
   const [formOpen, setFormOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [completionMessage, setCompletionMessage] = useState("");
+  const [activeOperation, setActiveOperation] = useState<Operation | null>(null);
+  const [currentCase, setCurrentCase] = useState<{ caseId: string; index: number; total: number } | null>(null);
   const [evalsetFile, setEvalsetFile] = useState("");
   const [targetKind, setTargetKind] = useState<TargetKind>("a2a");
   const [targetLocator, setTargetLocator] = useState("");
@@ -203,9 +228,10 @@ export function EvaluationsPage({ refreshTick }: { refreshTick: number }) {
     }
   }
 
-  const openReport = useCallback(async (report: EvaluationReport) => {
+  const openReportById = useCallback(async (reportId: string, allowMissing = false) => {
     try {
-      const response = await apiFetch(`/api/v1/evaluations/${encodeURIComponent(report.spec.id)}`);
+      const response = await apiFetch(`/api/v1/evaluations/${encodeURIComponent(reportId)}`);
+      if (allowMissing && response.status === 404) return;
       if (!response.ok) throw new Error(await errorMessage(response, "评测详情加载失败"));
       const detail: EvaluationReport = await response.json();
       setActiveReport(detail);
@@ -214,6 +240,10 @@ export function EvaluationsPage({ refreshTick }: { refreshTick: number }) {
       showToast("评测详情加载失败", error instanceof Error ? error.message : "请稍后重试", "error");
     }
   }, []);
+
+  const openReport = useCallback(async (report: EvaluationReport) => {
+    await openReportById(report.spec.id);
+  }, [openReportById]);
 
   const columns = useMemo<StudioDataColumn<EvaluationReport>[]>(() => [
     {
@@ -277,13 +307,28 @@ export function EvaluationsPage({ refreshTick }: { refreshTick: number }) {
       });
       if (!response.ok) throw new Error(await errorMessage(response, "评测任务创建失败"));
       const queued: Operation = await response.json();
-      const completed = await waitForOperation(queued.id, controller.signal);
+      setActiveOperation(queued);
+      const completed = await waitForOperation(queued.id, controller.signal, event => {
+        if (event.type !== "evaluation.case.started") return;
+        const { caseId, index, total } = event.data;
+        if (caseId && index && total) setCurrentCase({ caseId, index, total });
+      });
+      if (completed.status === "CANCELLED") {
+        setCompletionMessage("评测任务已取消");
+        showToast("评测已取消", "已完成的 Case 将保留在部分报告中");
+        await loadReports();
+        if (completed.resourceId) await openReportById(completed.resourceId, true);
+        setFormOpen(false);
+        return;
+      }
       if (completed.status !== "SUCCEEDED") {
         throw new Error(completed.error?.message || `评测任务状态：${completed.status}`);
       }
+      if (!completed.resourceId) throw new Error("评测任务已完成，但未返回报告 ID");
       setCompletionMessage("评测任务已完成");
       showToast("评测已完成", evalsetFile.trim());
       await loadReports();
+      await openReportById(completed.resourceId);
       setFormOpen(false);
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
@@ -292,7 +337,19 @@ export function EvaluationsPage({ refreshTick }: { refreshTick: number }) {
       if (operationController.current === controller) {
         operationController.current = null;
         setSubmitting(false);
+        setActiveOperation(null);
+        setCurrentCase(null);
       }
+    }
+  }
+
+  async function cancelEvaluation() {
+    if (!activeOperation || TERMINAL_OPERATION_STATES.has(activeOperation.status)) return;
+    const response = await apiFetch(`/api/v1/operations/${encodeURIComponent(activeOperation.id)}:cancel`, {
+      method: "POST",
+    });
+    if (!response.ok) {
+      showToast("取消评测失败", await errorMessage(response, "请稍后重试"), "error");
     }
   }
 
@@ -309,6 +366,13 @@ export function EvaluationsPage({ refreshTick }: { refreshTick: number }) {
           </button>
         </div>
       </header>
+
+      {activeOperation && (
+        <div className="evaluation-page__operation" role="status">
+          <span>{currentCase ? `Case ${currentCase.index} / ${currentCase.total}：${currentCase.caseId}` : "评测任务准备中"}</span>
+          <button className="button tertiary" type="button" onClick={() => void cancelEvaluation()}>取消评测</button>
+        </div>
+      )}
 
       {formOpen && (
         <form className="evaluation-page__create" onSubmit={submitEvaluation}>

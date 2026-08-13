@@ -19,14 +19,9 @@ from ksadk.studio.contracts import (
     Instructions,
     ModelSpec,
     NetworkPolicy,
-    RunEvent,
-    RunRecord,
-    RunStatus,
     SecuritySpec,
-    Usage,
 )
 from ksadk.studio.errors import StudioError
-from ksadk.studio.evaluation import EvaluationRunner
 from ksadk.studio.workspace import Workspace
 
 
@@ -48,127 +43,6 @@ def _workspace_and_build(tmp_path: Path):
         ),
     )
     return workspace, AgentBundleBuilder(workspace).build(draft)
-
-
-class FakeEventStore:
-    def events(self, run_id):
-        if run_id == "run_tool":
-            return [
-                RunEvent(
-                    id=1,
-                    run_id=run_id,
-                    type="tool.requested",
-                    data={"tool": "builtin.echo"},
-                )
-            ]
-        return []
-
-
-class FakeRuntime:
-    def __init__(self):
-        self.event_store = FakeEventStore()
-        self.calls = 0
-
-    async def run(self, build_id, user_input, session_id):
-        self.calls += 1
-        output = "AGENTKIT_OK" if "ok" in user_input.lower() else '{"ok":true}'
-        return RunRecord(
-            id="run_tool" if self.calls == 1 else f"run_{self.calls}",
-            build_id=build_id,
-            agent_id="demo-agent",
-            session_id=session_id,
-            trace_id=f"trace_{self.calls}",
-            status=RunStatus.COMPLETED,
-            input=user_input,
-            output=output,
-            usage=Usage(input_tokens=3, output_tokens=2, total_tokens=5),
-            duration_ms=10,
-        )
-
-
-@pytest.mark.asyncio
-async def test_evaluation_runs_assertions_and_persists_result(tmp_path: Path):
-    workspace, build = _workspace_and_build(tmp_path)
-    suite = workspace.root / "agents/demo-agent/evaluations/smoke.yaml"
-    suite.parent.mkdir(parents=True, exist_ok=True)
-    suite.write_text(
-        """
-apiVersion: agentkit.ksyun.com/v1alpha1
-kind: EvaluationSuite
-metadata:
-  name: smoke
-cases:
-  - id: answer
-    input: say ok
-    assertions:
-      - type: contains
-        value: AGENTKIT_OK
-      - type: maxLatencyMs
-        value: 100
-      - type: toolCalled
-        value: builtin.echo
-  - id: json
-    input: return json
-    assertions:
-      - type: jsonSchema
-        value:
-          type: object
-          required: [ok]
-""".strip()
-        + "\n",
-        encoding="utf-8",
-    )
-    runtime = FakeRuntime()
-    runner = EvaluationRunner(
-        workspace,
-        run_agent=runtime.run,
-        event_store=runtime.event_store,
-    )
-
-    result = await runner.run(build.id, ["evaluations/smoke.yaml"])
-
-    assert result.status == "COMPLETED"
-    assert result.total == 2
-    assert result.passed == 2
-    assert result.pass_rate == 1
-    assert runner.get(result.id) == result
-
-
-@pytest.mark.asyncio
-async def test_evaluation_reports_failed_assertion(tmp_path: Path):
-    workspace, build = _workspace_and_build(tmp_path)
-    suite = workspace.root / "agents/demo-agent/evaluations/fail.yaml"
-    suite.parent.mkdir(parents=True, exist_ok=True)
-    suite.write_text(
-        """
-apiVersion: agentkit.ksyun.com/v1alpha1
-kind: EvaluationSuite
-metadata:
-  name: fail
-cases:
-  - id: wrong
-    input: say ok
-    assertions:
-      - type: equals
-        value: OTHER
-""".strip()
-        + "\n",
-        encoding="utf-8",
-    )
-
-    runtime = FakeRuntime()
-    result = await EvaluationRunner(
-        workspace,
-        run_agent=runtime.run,
-        event_store=runtime.event_store,
-    ).run(
-        build.id,
-        ["evaluations/fail.yaml"],
-    )
-
-    assert result.status == "FAILED"
-    assert result.failed == 1
-    assert not result.results[0].assertions[0].passed
 
 
 @pytest.mark.asyncio

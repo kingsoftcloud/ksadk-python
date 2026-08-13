@@ -23,7 +23,6 @@ from ksadk.studio.api_contracts import (
     BuildRequest,
     ConversationAuthoringRequest,
     CreateAgentRequest,
-    EvaluationRequest,
     InteractionSubmitRequest,
     ProjectInspectRequest,
     QuickAuthoringRequest,
@@ -943,19 +942,6 @@ def create_studio_app(
     async def get_trace_otlp(trace_id: str):
         return studio.event_store.trace_otlp(trace_id)
 
-    @app.post("/api/v1/builds/{build_id}/evaluations", status_code=202)
-    async def create_evaluation(
-        build_id: str,
-        payload: EvaluationRequest,
-        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-    ):
-        return studio.submit_evaluation(
-            build_id,
-            payload.suite_refs,
-            fail_fast=payload.fail_fast,
-            idempotency_key=_require_idempotency_key(idempotency_key),
-        )
-
     @app.post("/api/v1/evaluations", status_code=202)
     async def create_public_evaluation(
         payload: StudioEvaluationCreate,
@@ -978,10 +964,7 @@ def create_studio_app(
 
     @app.get("/api/v1/evaluations/{evaluation_id}")
     async def get_evaluation(evaluation_id: str):
-        report_path = studio.evaluation_storage.report_path(evaluation_id)
-        if report_path.is_file():
-            return studio.get_public_evaluation(evaluation_id)
-        return studio.evaluations.get(evaluation_id)
+        return studio.get_public_evaluation(evaluation_id)
 
     @app.get("/api/v1/evaluations/{evaluation_id}/cases/{case_id}")
     async def get_public_evaluation_case(evaluation_id: str, case_id: str):
@@ -1040,7 +1023,10 @@ def create_studio_app(
     ):
         last = request.headers.get("Last-Event-ID")
         cursor = int(last) if last and last.isdigit() else after
-        return _sse(studio.operations.events(operation_id, after=cursor))
+        events = studio.operations.events(operation_id, after=cursor)
+        if "application/json" in request.headers.get("Accept", ""):
+            return {"items": events}
+        return _sse(events)
 
     register_catalog_routes(
         app,

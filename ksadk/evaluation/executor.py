@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from uuid import uuid4
 
@@ -33,6 +34,7 @@ async def execute_evaluation(
     *,
     on_case_started: Callable[[str, int, int], None] | None = None,
     adapter: TargetAdapter | None = None,
+    run_id: str | None = None,
 ) -> EvalRunReport:
     """Execute and persist one evaluation request."""
 
@@ -45,12 +47,27 @@ async def execute_evaluation(
     )
     snapshot = await target.snapshot()
     spec = EvalRunSpec(
-        id=f"eval_{uuid4().hex}",
+        id=run_id or f"eval_{uuid4().hex}",
         evalset=request.evalset,
         target=snapshot,
         config=request.config,
     )
-    case_runs = await _run_cases(target, spec, on_case_started=on_case_started)
+    case_runs: list[CaseRun] = []
+    try:
+        await _run_cases(
+            target,
+            spec,
+            case_runs=case_runs,
+            on_case_started=on_case_started,
+        )
+    except asyncio.CancelledError:
+        report = EvalRunReport(
+            spec=spec,
+            status=EvalRunStatus.CANCELLED,
+            case_runs=case_runs,
+        )
+        _persist_report(request, report)
+        raise
     report = EvalRunReport(
         spec=spec,
         status=_report_status(case_runs),
@@ -64,9 +81,9 @@ async def _run_cases(
     target: EvaluationTarget,
     spec: EvalRunSpec,
     *,
+    case_runs: list[CaseRun],
     on_case_started: Callable[[str, int, int], None] | None,
-) -> list[CaseRun]:
-    case_runs: list[CaseRun] = []
+) -> None:
     total_cases = len(spec.evalset.cases)
     for index, case in enumerate(spec.evalset.cases, start=1):
         _notify_case_started(on_case_started, case.id, index, total_cases)
@@ -86,7 +103,6 @@ async def _run_cases(
         case_runs.append(case_run)
         if spec.config.fail_fast and not case_run.passed:
             break
-    return case_runs
 
 
 def _notify_case_started(

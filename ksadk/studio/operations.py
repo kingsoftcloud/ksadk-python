@@ -33,7 +33,7 @@ class OperationManager:
         kind: OperationKind,
         resource_id: str,
         idempotency_key: str,
-        runner: Callable[[], Awaitable[object]],
+        runner: Callable[[str], Awaitable[object]],
     ) -> Operation:
         existing = self._find_by_idempotency_key(idempotency_key)
         if existing is not None:
@@ -57,14 +57,14 @@ class OperationManager:
     async def _run(
         self,
         operation_id: str,
-        runner: Callable[[], Awaitable[object]],
+        runner: Callable[[str], Awaitable[object]],
     ) -> None:
         operation = self.get(operation_id)
         operation.status = OperationStatus.RUNNING
         self._save_record(operation)
         self.append(operation_id, "operation.started", {})
         try:
-            result = await runner()
+            result = await runner(operation_id)
             result_id = getattr(result, "id", None)
             if result_id:
                 operation.resource_id = str(result_id)
@@ -133,7 +133,12 @@ class OperationManager:
         task = self._tasks.get(operation_id)
         if task is not None:
             task.cancel()
-        return operation
+        if operation.status == OperationStatus.QUEUED:
+            operation.status = OperationStatus.CANCELLED
+            operation.completed_at = datetime.now(timezone.utc)
+            self._save_record(operation)
+            self.append(operation_id, "operation.cancelled", {})
+        return self.get(operation_id)
 
     async def wait(self, operation_id: str, *, timeout: float = 30) -> Operation:
         deadline = asyncio.get_running_loop().time() + timeout

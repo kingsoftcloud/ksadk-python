@@ -21,6 +21,20 @@
   grid-column: 2 / -1;
 }
 
+.evaluation-page__operation {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 40px;
+  margin-bottom: 16px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-secondary);
+  color: var(--text-secondary);
+  font-size: var(--font-size-meta);
+}
+
 .evaluation-page__metrics {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

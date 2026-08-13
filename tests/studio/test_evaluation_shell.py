@@ -56,6 +56,13 @@ cases:
 
     assert completed.status == "SUCCEEDED", completed.error
     report = service.list_public_evaluations()[0]
+    assert completed.resource_id == report.spec.id
+    assert [event.type for event in service.operations.events(operation.id)] == [
+        "operation.queued",
+        "operation.started",
+        "evaluation.case.started",
+        "operation.succeeded",
+    ]
     assert report.case_runs[0].target_run.output == "studio local answer"
 
 
@@ -85,6 +92,45 @@ cases:
         assert response.status_code == 202, response.text
         assert response.json()["kind"] == "EVALUATION"
         assert client.get("/api/v1/evaluations").json() == {"items": []}
+        assert client.post(
+            "/api/v1/builds/build-old/evaluations",
+            headers={"Idempotency-Key": "obsolete-evaluation-api"},
+            json={"suiteRefs": ["smoke.yaml"]},
+        ).status_code == 404
+        missing = client.get("/api/v1/evaluations/eval_missing")
+        assert missing.status_code == 404
+        assert missing.json()["error"]["code"] == "EVALUATION_NOT_FOUND"
+
+
+@pytest.mark.asyncio
+async def test_operation_events_support_json_progress_reading(tmp_path: Path):
+    service = StudioService(tmp_path)
+    operation = service.operations.submit(
+        kind="EVALUATION",
+        resource_id="eval-progress",
+        idempotency_key="evaluation-progress-events",
+        runner=lambda _operation_id: __import__("asyncio").sleep(0),
+    )
+    service.operations.append(
+        operation.id,
+        "evaluation.case.started",
+        {"caseId": "case-1", "index": 1, "total": 2},
+    )
+    await service.operations.wait(operation.id)
+    app = create_studio_app(tmp_path, service=service, security_enabled=False)
+    with TestClient(app) as client:
+        response = client.get(
+            f"/api/v1/operations/{operation.id}/events?after=0",
+            headers={"Accept": "application/json"},
+        )
+
+    assert response.status_code == 200
+    event = next(
+        item
+        for item in response.json()["items"]
+        if item["type"] == "evaluation.case.started"
+    )
+    assert event["data"] == {"caseId": "case-1", "index": 1, "total": 2}
 
 
 def test_evaluation_catalog_lists_successful_builds_and_valid_evalsets(tmp_path: Path):

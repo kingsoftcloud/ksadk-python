@@ -28,7 +28,7 @@ async def test_operation_runs_persists_events_and_returns_resource_id(workspace)
         kind=OperationKind.BUILD,
         resource_id="demo-agent",
         idempotency_key="demo-r1",
-        runner=lambda: asyncio.sleep(0, result=Result()),
+        runner=lambda _operation_id: asyncio.sleep(0, result=Result()),
     )
     completed = await manager.wait(operation.id)
 
@@ -46,7 +46,7 @@ async def test_operation_idempotency_does_not_execute_twice(workspace):
     manager = OperationManager(workspace)
     calls = 0
 
-    async def runner():
+    async def runner(_operation_id):
         nonlocal calls
         calls += 1
         return object()
@@ -77,7 +77,7 @@ async def test_operation_cancel_is_terminal_and_idempotent(workspace):
         kind=OperationKind.RUN,
         resource_id="build_demo",
         idempotency_key="cancel-key",
-        runner=gate.wait,
+        runner=lambda _operation_id: gate.wait(),
     )
     await asyncio.sleep(0)
     manager.cancel(operation.id)
@@ -88,6 +88,45 @@ async def test_operation_cancel_is_terminal_and_idempotent(workspace):
 
 
 @pytest.mark.asyncio
+async def test_operation_cancel_before_task_start_is_terminal(workspace):
+    manager = OperationManager(workspace)
+    gate = asyncio.Event()
+    operation = manager.submit(
+        kind=OperationKind.RUN,
+        resource_id="build_demo",
+        idempotency_key="cancel-before-start",
+        runner=lambda _operation_id: gate.wait(),
+    )
+
+    cancelled = manager.cancel(operation.id)
+
+    assert cancelled.status == "CANCELLED"
+    assert [event.type for event in manager.events(operation.id)] == [
+        "operation.queued",
+        "operation.cancelled",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_operation_passes_id_to_runner(workspace):
+    manager = OperationManager(workspace)
+    received: list[str] = []
+
+    async def runner(operation_id: str):
+        received.append(operation_id)
+
+    operation = manager.submit(
+        kind=OperationKind.EVALUATION,
+        resource_id="eval_demo",
+        idempotency_key="runner-operation-id",
+        runner=runner,
+    )
+    await manager.wait(operation.id)
+
+    assert received == [operation.id]
+
+
+@pytest.mark.asyncio
 async def test_restart_marks_non_terminal_operation_interrupted(workspace):
     first = OperationManager(workspace)
     gate = asyncio.Event()
@@ -95,7 +134,7 @@ async def test_restart_marks_non_terminal_operation_interrupted(workspace):
         kind=OperationKind.BUILD,
         resource_id="demo-agent",
         idempotency_key="restart-key",
-        runner=gate.wait,
+        runner=lambda _operation_id: gate.wait(),
     )
     await asyncio.sleep(0)
 
