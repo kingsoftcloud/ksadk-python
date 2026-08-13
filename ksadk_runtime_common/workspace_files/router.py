@@ -139,7 +139,11 @@ def create_workspace_files_router(
                 archive.write(resolved_entry, resolved_entry.relative_to(root).as_posix())
 
         buf.seek(0)
-        zip_name = f"workspace-{normalized.replace('/', '-')}.zip" if normalized != "." else "workspace.zip"
+        zip_name = (
+            f"workspace-{normalized.replace('/', '-')}.zip"
+            if normalized != "."
+            else "workspace.zip"
+        )
         return StreamingResponse(
             buf,
             media_type="application/zip",
@@ -173,7 +177,9 @@ def create_workspace_files_router(
         if not target.exists() or not target.is_file():
             raise HTTPException(status_code=404, detail="workspace file not found")
         media_type, _ = mimetypes.guess_type(target.name)
-        is_html = (media_type or "").split(";")[0].lower() == "text/html" or target.suffix.lower() in {
+        is_html = (media_type or "").split(";")[
+            0
+        ].lower() == "text/html" or target.suffix.lower() in {
             ".html",
             ".htm",
         }

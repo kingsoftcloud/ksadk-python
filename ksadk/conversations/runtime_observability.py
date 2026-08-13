@@ -94,13 +94,25 @@ def _responses_usage_payload(usage: Mapping[str, Any] | None) -> dict[str, Any] 
     total_tokens = normalized.get("total_tokens", input_tokens + output_tokens)
     payload = {
         "input_tokens": input_tokens,
+        "input_tokens_details": {"cached_tokens": 0},
         "output_tokens": output_tokens,
+        "output_tokens_details": {"reasoning_tokens": 0},
         "total_tokens": total_tokens,
     }
-    if isinstance(normalized.get("input_token_details"), Mapping):
-        payload["input_token_details"] = dict(normalized["input_token_details"])
-    if isinstance(normalized.get("output_token_details"), Mapping):
-        payload["output_token_details"] = dict(normalized["output_token_details"])
+    input_details = normalized.get("input_token_details")
+    if isinstance(input_details, Mapping):
+        cached_tokens = input_details.get(
+            "cached_tokens",
+            input_details.get("cached", input_details.get("cache_read", 0)),
+        )
+        payload["input_tokens_details"]["cached_tokens"] = int(cached_tokens or 0)
+    output_details = normalized.get("output_token_details")
+    if isinstance(output_details, Mapping):
+        reasoning_tokens = output_details.get(
+            "reasoning_tokens",
+            output_details.get("reasoning", 0),
+        )
+        payload["output_tokens_details"]["reasoning_tokens"] = int(reasoning_tokens or 0)
     return payload
 
 

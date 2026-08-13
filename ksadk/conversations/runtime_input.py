@@ -431,7 +431,15 @@ def _build_runner_request_payload(
                 prepared.resume_input.get("checkpoint_metadata") or {}
             )
         else:
-            payload["input"] = prepared.resume_input
+            resume_input = dict(prepared.resume_input)
+            gateway_approval_resume = bool(
+                resume_input.pop("_ksadk_gateway_approval_resume", False)
+            )
+            if gateway_approval_resume and bool(
+                getattr(runner, "supports_gateway_approval_semantic_resume", False)
+            ):
+                resume_input["_ksadk_gateway_approval_resume"] = True
+            payload["input"] = resume_input
             payload["resume"] = True
     previous_response_id = prepared.request_metadata.get("previous_response_id")
     if previous_response_id:

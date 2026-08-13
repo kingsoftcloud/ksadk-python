@@ -9,7 +9,7 @@ on:
       ksadk_web_version:
         description: KsADK Web npm version to bundle
         required: false
-        default: "0.3.0"
+        default: "0.3.1"
       approved_source_commit:
         description: Reviewed source commit SHA recorded in docs/maintainer-approval-record.md
         required: false
@@ -37,7 +37,7 @@ jobs:
     environment:
       name: pypi
     env:
-      KSADK_WEB_VERSION: ${{ github.event.inputs.ksadk_web_version || '0.3.0' }}
+      KSADK_WEB_VERSION: ${{ github.event.inputs.ksadk_web_version || '0.3.1' }}
       KSADK_APPROVED_SOURCE_COMMIT: ${{ github.event.inputs.approved_source_commit || vars.KSADK_APPROVED_SOURCE_COMMIT }}
       PUBLISH_TARGET: ${{ github.event.inputs.publish_target || 'full' }}
     permissions:

@@ -270,6 +270,15 @@ def approval_interrupt_info_from_result(
     tool_args: Any = None,
     run_id: str | None = None,
 ) -> dict[str, Any] | None:
+    # LangGraph exposes ToolMessage.content as text in callback and graph-update
+    # streams.  Preserve the structured gateway contract when that text is a
+    # JSON object so an approval remains an interrupt instead of becoming a
+    # normal tool result followed by model-authored prose.
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except (TypeError, ValueError):
+            return None
     if not isinstance(result, Mapping):
         return None
     if str(result.get("type") or "") != "approval_required":

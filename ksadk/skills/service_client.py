@@ -18,6 +18,12 @@ _KOP_HOSTS = frozenset(
         "aicp.api.ksyun.com",
     }
 )
+_PRIVATE_KOP_HOSTS = frozenset(
+    {
+        "aicp.inner.api.ksyun.com",
+        "aicp.internal.api.ksyun.com",
+    }
+)
 
 
 class SkillServiceClient:
@@ -215,14 +221,18 @@ class SkillServiceClient:
         return self._requests_session
 
     def _is_kop_mode(self) -> bool:
-        """Match only exact, TLS-protected AICP control-plane endpoints.
+        """Match only exact AICP control-plane endpoints.
 
         A user-controlled URL such as ``aicp.api.ksyun.com.attacker.example``
-        must never receive KOP signing headers.
+        must never receive KOP signing headers. Public AICP requires TLS; the
+        private ``inner`` and ``internal`` endpoints also support their existing
+        in-cluster HTTP transport.
         """
         parsed = urlsplit(self.base_url)
         host = (parsed.hostname or "").lower()
-        return parsed.scheme == "https" and host in _KOP_HOSTS
+        return host in _KOP_HOSTS and (
+            parsed.scheme == "https" or (parsed.scheme == "http" and host in _PRIVATE_KOP_HOSTS)
+        )
 
     def _kop_base_url(self) -> str:
         parsed = urlsplit(self.base_url)

@@ -19,7 +19,7 @@ A2A route、TaskStore、task adapter 和 card 构造**只有一份实现**,普�
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Optional, Sequence
+from typing import Optional, Sequence
 
 from a2a.server.routes import add_a2a_routes_to_fastapi
 from a2a.server.tasks import TaskStore
@@ -57,7 +57,6 @@ class A2AConfig:
 
 def add_a2a_protocol_routes(
     app: FastAPI,
-    runner: Any,
     config: A2AConfig,
     *,
     task_adapter: A2ARuntimeTaskAdapter,
@@ -85,19 +84,27 @@ def add_a2a_protocol_routes(
         create_table=config.create_table,
     )
     server = A2AProtocolServer(
-        runner,
         agent_card=card,
         task_store=store,
         task_adapter=task_adapter,
         context_builder=context_builder,
-        prefer_stream=config.prefer_stream,
         include_reasoning=config.include_reasoning,
     )
+    rest = server.rest_routes()
+    # a2a-sdk REST routes 附带贪婪 Mount('/{tenant}')(多租户 catch-all),
+    # 它会拦截 /v1/responses、/agentengine/api/v1/*、/chat 等单段前缀路径导致 404。
+    # 只丢弃贪婪 Mount('/{tenant}')；保留其他 Mount（多租户显式路径如 /tenant-a/a2a/v1/*）。
+    from starlette.routing import Mount as _Mount
+
+    rest = [
+        route for route in rest
+        if not (isinstance(route, _Mount) and getattr(route, "path", "") == "/{tenant}")
+    ]
     add_a2a_routes_to_fastapi(
         app,
         agent_card_routes=server.agent_card_routes(),
         jsonrpc_routes=server.jsonrpc_routes(),
-        rest_routes=server.rest_routes(),
+        rest_routes=rest,
     )
     return server
 

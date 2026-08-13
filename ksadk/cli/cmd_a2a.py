@@ -32,10 +32,8 @@ from ksadk.a2a import (
 from ksadk.cli.local_runtime import reexec_with_project_venv_if_needed
 from ksadk.cli.resource_common import CONTEXT_SETTINGS
 from ksadk.detection import FrameworkDetector
-from ksadk.runners.factory import create_runner
-from ksadk.runtime.adapter import RuntimeAdapter
-from ksadk.runtime.framework_adapters import ADKRuntimeAdapter, LangGraphRuntimeAdapter
-from ksadk.runtime.runner_adapter import RunnerRuntimeAdapter
+from ksadk.runtime.factory import create_runtime_adapter
+from ksadk.runtime.launch import RuntimeLaunchContext
 
 _HELP = dict(help_option_names=["-h", "--help"])
 _DEFAULT_TASK_STORE_DSN = "sqlite+aiosqlite:///.agentengine/a2a_tasks.db"
@@ -121,7 +119,10 @@ def serve(
         command_args.append("--no-trace")
     reexec_with_project_venv_if_needed(agent_path, command_args)
     task_store_dsn = _resolve_task_store_dsn(task_store_dsn, agent_path)
-    detection_result, runner = _load_runner(agent_path, no_trace=no_trace)
+    detection_result, runtime_adapter = _load_runtime_adapter(
+        agent_path,
+        no_trace=no_trace,
+    )
     from fastapi import FastAPI
 
     app = FastAPI(title=f"ksadk A2A: {detection_result.name}")
@@ -135,12 +136,10 @@ def serve(
         include_reasoning=include_reasoning,
     )
     runtime_type = detection_result.type.value
-    runtime_adapter = _select_runtime_adapter(runtime_type, runner)
     from ksadk.a2a.task_adapter import A2ARuntimeTaskAdapter
 
     add_a2a_protocol_routes(
         app,
-        runner,
         config,
         task_adapter=A2ARuntimeTaskAdapter(runtime_adapter, runtime_type=runtime_type),
     )
@@ -212,7 +211,8 @@ def _space_client(space_id: str | None = None) -> A2ASpaceClient:
     except ValueError as exc:
         raise click.ClickException(
             f"A2A Space 未配置:{exc}。"
-            "请传 --space-id，或由 AgentEngine 部署注入 KSADK_A2A_SPACE_IDS；同时需要"
+            "请传 --space-id，或由 AgentEngine 部署注入 KSADK_A2A_SPACE_ID"
+            "（兼容 KSADK_A2A_SPACE_IDS）；同时需要"
             "KSADK_A2A_CONTROL_PLANE_URL 和 audience workload token。"
         ) from exc
 
@@ -312,40 +312,27 @@ def _detect_project(agent_path: Path, *, configure_environment: bool = True):
     return result
 
 
-def _load_runner(agent_path: Path, *, no_trace: bool):
+def _load_runtime_adapter(agent_path: Path, *, no_trace: bool):
     detection_result = _detect_project(agent_path)
+    runtime_type = detection_result.type.value
     if not no_trace:
-        _setup_tracing(detection_result.type.value)
-    runner = create_runner(detection_result, str(agent_path))
-    runner.load_agent()
-    return detection_result, runner
-
-
-def _select_runtime_adapter(runtime_type: str, runner) -> RuntimeAdapter:
-    # langchain create_agent 产物是 LangGraph CompiledStateGraph，
-    # 与 langgraph 共用 time-travel resume。
-    if runtime_type in ("langgraph", "langchain"):
-        return LangGraphRuntimeAdapter(runner)
-    if runtime_type == "adk":
-        return ADKRuntimeAdapter(runner)
-    return RunnerRuntimeAdapter(runner, runtime_type=runtime_type)
+        _setup_tracing(runtime_type)
+    context = RuntimeLaunchContext(
+        runtime_type=runtime_type,
+        project_dir=agent_path,
+        detection=detection_result,
+        config=dict(getattr(detection_result, "raw_config", None) or {}),
+    )
+    return detection_result, create_runtime_adapter(context)
 
 
 def _setup_tracing(framework_type: str) -> None:
     try:
-        import os
 
         from ksadk.tracing import setup_tracing
 
-        use_callback_only = os.getenv("LANGFUSE_USE_CALLBACK", "").strip().lower() in (
-            "1",
-            "true",
-            "yes",
-            "on",
-        )
         setup_tracing(
             enable_inmemory=True,
-            use_callback_only=use_callback_only,
         )
     except Exception:
         return

@@ -8,7 +8,7 @@
 - 因此必须**按 itemId 追踪相位,按解析出的相位路由 delta**;**不从文本内容推断相位**,
   不等 ``item/completed`` 才更新 UI。
 - 映射到 RuntimeEvent schema 的 ``phase`` 字段(commentary/final_answer),
-  **相位翻译独立成模块,不揉进 CodexRuntime 主逻辑,不混入最终答案**。
+  **相位翻译独立成模块,不揉进 CodexRuntimeAdapter 主逻辑,不混入最终答案**。
 
 Codex 相位:``commentary`` / ``analysis`` 属过程解说(process),``final_answer`` 是
 最终答案。映射到 RuntimeEvent:process → ``commentary``,final_answer → ``final_answer``。

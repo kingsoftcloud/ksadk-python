@@ -110,6 +110,7 @@ PUBLIC_TEST_FILES = {
     "tests/test_managed_runtime_resolution.py",
     "tests/test_tracing_setup_otlp.py",
     "tests/cli/test_cmd_create_codex.py",
+    "tests/runners/test_adapter_contract.py",
     "tests/runners/test_codex_runner.py",
 }
 

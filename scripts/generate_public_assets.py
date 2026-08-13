@@ -22,7 +22,6 @@ from rich.ansi import AnsiDecoder
 from rich.console import Console
 from rich.terminal_theme import TerminalTheme
 
-
 ROOT = Path(__file__).resolve().parents[1]
 ASSETS_DIR = ROOT / "docs-site" / "public" / "assets"
 ARCH_SVG = ASSETS_DIR / "ksadk-runtime-architecture.svg"
@@ -94,6 +93,7 @@ def render_architecture_png() -> None:
             ],
             check=True,
         )
+
 
 def _capture_cli_help_plain() -> str:
     env = os.environ.copy()
@@ -245,12 +245,14 @@ def _find_chromium_executable() -> str | None:
     for cache_root in cache_roots:
         candidates.extend(
             cache_root.glob(
-                "chromium-*/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
+                "chromium-*/chrome-mac-arm64/Google Chrome for Testing.app/"
+                "Contents/MacOS/Google Chrome for Testing"
             )
         )
         candidates.extend(
             cache_root.glob(
-                "chromium-*/chrome-mac/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
+                "chromium-*/chrome-mac/Google Chrome for Testing.app/"
+                "Contents/MacOS/Google Chrome for Testing"
             )
         )
         candidates.extend(cache_root.glob("chromium-*/chrome-linux/chrome"))
@@ -376,6 +378,7 @@ def _run_public_demo_server():
     import importlib
 
     import uvicorn
+
     from ksadk.sessions.in_memory import InMemorySessionService
 
     server_app_module = importlib.import_module("ksadk.server.app")

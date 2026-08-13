@@ -13,7 +13,7 @@ from ksadk.harness.reasoner import (
     HarnessToolCall,
     LiteLLMHarnessReasoner,
 )
-from ksadk.harness.runner import YamlAgentRunner
+from ksadk.harness.runtime import HarnessRuntime, HarnessRuntimeAdapter
 from ksadk.harness.sandbox import HarnessSandboxExecutor, SandboxPolicyDenied
 
 __all__ = [
@@ -23,6 +23,8 @@ __all__ = [
     "HarnessConfigError",
     "HarnessPlugin",
     "HarnessReasoner",
+    "HarnessRuntime",
+    "HarnessRuntimeAdapter",
     "HarnessReasoningTurn",
     "HarnessSandboxExecutor",
     "HarnessToolCall",
@@ -30,5 +32,4 @@ __all__ = [
     "McpToolSpec",
     "SandboxPolicy",
     "SandboxPolicyDenied",
-    "YamlAgentRunner",
 ]

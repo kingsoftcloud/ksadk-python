@@ -12,7 +12,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     env:
-      KSADK_WEB_VERSION: "0.3.0"
+      KSADK_WEB_VERSION: "0.3.1"
     steps:
       - uses: actions/checkout@v4
 
@@ -39,8 +39,8 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra all
 
-      - name: Sync KsADK Web static assets
-        run: make public-sync-ksadk-web-static
+      - name: Build frontend static assets
+        run: make build-frontend
 
       - name: Build package artifacts
         run: uv build
@@ -60,6 +60,36 @@ jobs:
       - name: Audit wheel and sdist file lists
         run: make open-source-audit-dist
 
+  test-studio-react:
+    name: React Studio responsive browser gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: ksadk/studio/react-ui/package-lock.json
+
+      - name: Install Python dependencies
+        run: uv sync --extra dev
+
+      - name: Install Chromium
+        run: uv run playwright install --with-deps chromium
+
+      - name: Run React Studio browser gate
+        run: make studio-react-test
+
   # goal-00: google-adk 多版本 matrix。依赖窗口 >=1.34.0,<3.0,
   # 对最低锚点 1.34.x 与最新 2.x(2.5.x)各跑一遍全量测试,防止任何一端回归。
   # 版本差异统一由 ksadk/compat/adk_compat.py 收口(见 docs/adk-multi-version-compat.md)。
@@ -67,7 +97,7 @@ jobs:
     name: full pytest (google-adk ${{ matrix.google-adk }})
     runs-on: ubuntu-latest
     env:
-      KSADK_WEB_VERSION: "0.3.0"
+      KSADK_WEB_VERSION: "0.3.1"
     strategy:
       fail-fast: false
       matrix:
@@ -83,6 +113,13 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: ksadk/studio/react-ui/package-lock.json
+
       - name: Install dependencies
         run: uv sync --extra all
 
@@ -92,10 +129,10 @@ jobs:
       - name: Verify google-adk version
         run: uv run --no-sync python -c "from importlib.metadata import version; print('google-adk', version('google-adk'))"
 
-      # Static web assets are deliberately not tracked in the Python source
-      # tree; fetch and verify the released npm payload before wheel build.
-      - name: Sync KsADK Web static assets
-        run: make public-sync-ksadk-web-static
+      # Static frontend assets are deliberately not tracked in the Python
+      # source tree; generate both payloads before wheel build.
+      - name: Build frontend static assets
+        run: make build-frontend
 
       # Packaging tests inspect the wheel itself; build it in each isolated ADK
       # environment rather than depending on an artifact from another job.

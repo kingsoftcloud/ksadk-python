@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ksadk"
-version = "0.8.0"
+version = "0.8.1"
 description = "KsADK Agent Runtime Platform - unified runtime, debugging, deployment and observability for AI agents"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -48,7 +48,7 @@ dependencies = [
     "httpcore>=1.0.9,<1.1.0",
     # A2A wire 1.0 清洁重写基线 (goal-00): 首期精确锁定 1.1.0。
     # 旧 0.3.x 与 wire 1.0 API 不兼容，不能与 KsADK 0.8 共用一个环境。
-    "a2a-sdk[fastapi,postgresql]==1.1.0",
+    "a2a-sdk[fastapi]==1.1.0",
     # A2UI:官方 Python 包(ag-ui-a2ui-toolkit 等)当前仍对齐 v0.9,v1.0(2026-06 Candidate)
     # 尚未进包。B 方案:守 G0.2 冻结 schema,前端已加 v1.0 消息名兼容层(createSurface/
     # updateComponents/deleteSurface),待官方包跟进 v1.0 后整体切换、撤自研 ksadk/a2ui/。
@@ -56,6 +56,7 @@ dependencies = [
     "a2ui-core==0.1.1",
     "httpx-sse>=0.4.0",
     "sse-starlette>=2.1.0",
+    "mcp>=1.26.0,<2.0.0",
     # HTTP 请求 + AWS 签名
     "requests>=2.28.0",
     "requests-aws4auth>=1.2.0",
@@ -74,10 +75,10 @@ dependencies = [
     "pypdf>=6.0.0",
     "beautifulsoup4>=4.12.0",
     "rapidocr-onnxruntime>=1.2.0",
+    "pillow>=11.0.0,<13.0.0",
     # ========= 核心框架依赖 (默认安装) =========
     # LangChain
     "langchain>=1.3.14,<2.0.0",
-    "langchain-openai>=1.4.0,<2.0.0",
     "langchain-core>=1.5.0,<2.0.0",
     # LangGraph - 使用兼容的版本范围
     "langgraph>=1.2.0,<1.3.0",
@@ -119,12 +120,24 @@ deepagents = [
 ]
 # A2A 协议集成 (goal-00: 与主依赖一致精确锁定 wire 1.0 SDK)
 a2a = [
-    "a2a-sdk[fastapi,postgresql]==1.1.0",
+    "a2a-sdk[fastapi]==1.1.0",
+    "SQLAlchemy[asyncio]>=2.0.0,<3.0.0",
+    "aiosqlite>=0.20.0,<1.0.0",
+]
+# A2A PostgreSQL TaskStore adapter. Discovery-only and in-memory/SQLite A2A
+# runtimes do not install this extra.
+a2a-postgres = [
+    "a2a-sdk[postgresql]==1.1.0",
 ]
 # 可观测性
+# goal-00: langfuse SDK 已删除(OTLP 双写收敛),tracing 只需 openinference 自动插桩。
+# Langfuse 现在通过标准 OTLP/HTTP exporter(OTEL_EXPORTER_OTLP_*)接收 span,不依赖 langfuse SDK。
 tracing = [
     "openinference-instrumentation-langchain>=0.1.0",
-    "langfuse>=3.0.0",
+]
+# LLM Judge 评测；默认不安装，避免本地评测隐式依赖或外发数据。
+judge = [
+    "deepeval>=3.2.6",
 ]
 # 知识库 & 记忆库支持
 kb = []
@@ -158,10 +171,11 @@ dev = [
     "types-python-dateutil>=2.9.0",
     "types-qrcode>=8.2.0",
     "types-requests>=2.32.0",
+    "playwright>=1.50.0",
 ]
 # 全部依赖
 all = [
-    "ksadk[a2a,adk,agui,langchain,langgraph,deepagents,kb,skills,tracing,dev]",
+    "ksadk[a2a,adk,agui,codex,langchain,langgraph,deepagents,kb,skills,tracing,judge,dev]",
 ]
 
 [project.scripts]
@@ -176,10 +190,10 @@ Documentation = "https://kingsoftcloud.github.io/ksadk-python/"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["ksadk*", "ksadk_runtime_common*"]
-exclude = ["ksadk.server.web-ui*"]
+exclude = ["ksadk.server.web-ui*", "ksadk.studio.react-ui*"]
 
 [tool.setuptools.package-data]
-ksadk = ["server/static/**/*"]
+ksadk = ["server/static/**/*", "studio/static/**/*"]
 ksadk_runtime_common = ["schemas/*.json"]
 
 [tool.black]

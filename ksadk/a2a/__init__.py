@@ -84,6 +84,7 @@ from ksadk.a2a.routes import A2AConfig, add_a2a_protocol_routes
 from ksadk.a2a.server import A2AProtocolServer
 from ksadk.a2a.space_client import (
     ENV_A2A_ENABLE_PUBLIC_EGRESS,
+    ENV_A2A_SPACE_ID,
     ENV_A2A_SPACE_IDS,
     ERR_PUBLIC_EGRESS_DISABLED,
     A2APlatformTask,
@@ -151,6 +152,7 @@ __all__ = [
     "ENV_A2A_CONTROL_PLANE_URL",
     "ENV_A2A_ENABLE_PUBLIC_EGRESS",
     "ENV_A2A_EVENT_OUTBOX_PATH",
+    "ENV_A2A_SPACE_ID",
     "ENV_A2A_SPACE_IDS",
     "ENV_A2A_TOKEN_DIR",
     "ERR_PUBLIC_EGRESS_DISABLED",

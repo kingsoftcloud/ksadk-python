@@ -126,7 +126,7 @@ class E2BSandboxBackend:
         sandbox_cls = self.sandbox_cls
         if sandbox_cls is None:
             try:
-                from e2b import Sandbox  # type: ignore[import-untyped]
+                from e2b import Sandbox  # type: ignore[import-not-found, import-untyped]
             except ImportError as exc:
                 raise SandboxError(
                     "e2b>=2.15.3,<2.25.0 is required for KSADK_SANDBOX_BACKEND=e2b"

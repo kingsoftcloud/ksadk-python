@@ -11,8 +11,8 @@ AgentEngine 统一配置管理
     print(settings.model.api_key)
     print(settings.model.api_base)
 
-    # 访问 Langfuse 配置
-    print(settings.langfuse.public_key)
+    # 访问标准 OpenTelemetry 配置
+    print(settings.otel.otlp_endpoint)
 
     # 访问 Agent 运行时信息
     print(settings.agent.agent_id)
@@ -264,73 +264,6 @@ class ModelConfig:
 
 
 # =============================================================================
-# Langfuse 配置
-# =============================================================================
-
-
-@dataclass
-class LangfuseConfig:
-    """Langfuse 可观测性配置
-
-    标准环境变量 (Langfuse 官方):
-        LANGFUSE_PUBLIC_KEY   - API Public Key
-        LANGFUSE_SECRET_KEY   - API Secret Key
-        LANGFUSE_HOST         - Langfuse 服务地址
-
-    Serverless 平台扩展:
-        LANGFUSE_PROJECT_ID   - 项目 ID (区分用户)
-        LANGCHAIN_TRACING_V2  - 启用 LangChain 追踪
-    """
-
-    @property
-    def public_key(self) -> Optional[str]:
-        return os.getenv("LANGFUSE_PUBLIC_KEY")
-
-    @property
-    def secret_key(self) -> Optional[str]:
-        return os.getenv("LANGFUSE_SECRET_KEY")
-
-    @property
-    def host(self) -> str:
-        return (
-            _get_env(
-                "LANGFUSE_HOST",
-                "LANGFUSE_BASE_URL",
-                default="http://localhost:3000",
-            )
-            or "http://localhost:3000"
-        )
-
-    @property
-    def project_id(self) -> Optional[str]:
-        """Langfuse 项目 ID (Serverless 平台扩展)"""
-        return os.getenv("LANGFUSE_PROJECT_ID")
-
-    @property
-    def tracing_enabled(self) -> bool:
-        """是否启用 LangChain tracing"""
-        return os.getenv("LANGCHAIN_TRACING_V2", "").lower() == "true"
-
-    @property
-    def is_enabled(self) -> bool:
-        """是否启用 Langfuse (有 public_key 就启用)"""
-        return bool(self.public_key)
-
-    @property
-    def is_configured(self) -> bool:
-        """是否完整配置"""
-        return bool(self.public_key and self.secret_key)
-
-    def to_dict(self) -> dict:
-        """转换为字典"""
-        return {
-            "public_key": self.public_key,
-            "secret_key": self.secret_key,
-            "host": self.host,
-        }
-
-
-# =============================================================================
 # Agent 配置
 # =============================================================================
 
@@ -437,39 +370,6 @@ class AgentConfig:
     def is_configured(self) -> bool:
         """是否有 Agent 信息"""
         return bool(self.agent_id or self.agent_name)
-
-    # ------------------
-    # Langfuse 集成方法
-    # ------------------
-
-    def to_langfuse_params(self) -> dict:
-        """转换为 Langfuse trace() 方法的原生参数"""
-        params: Dict[str, Any] = {}
-        if self.session_id:
-            params["session_id"] = self.session_id
-        if self.user_id:
-            params["user_id"] = self.user_id
-        if self.tags:
-            params["tags"] = self.tags
-        if self.version:
-            params["version"] = self.version
-        return params
-
-    def to_langfuse_metadata(self) -> dict:
-        """转换为 Langfuse metadata 字段"""
-        metadata = {}
-        if self.agent_id:
-            metadata["agent_id"] = self.agent_id
-        if self.agent_name:
-            metadata["agent_name"] = self.agent_name
-        if self.tenant_id:
-            metadata["tenant_id"] = self.tenant_id
-        if self.environment:
-            metadata["environment"] = self.environment
-        if self.extra_metadata:
-            metadata.update(self.extra_metadata)
-        return metadata
-
 
 # =============================================================================
 # 金山云配置
@@ -594,16 +494,15 @@ class Settings:
         if settings.model.is_configured:
             llm = LiteLLM(api_key=settings.model.api_key)
 
-        # Langfuse 配置
-        if settings.langfuse.is_enabled:
-            setup_tracing(langfuse_config=settings.langfuse.to_dict())
+        # 标准 OTLP 配置
+        if settings.otel.is_enabled:
+            setup_tracing()
 
         # Agent 信息
         print(settings.agent.agent_id)
     """
 
     model: ModelConfig = field(default_factory=ModelConfig)
-    langfuse: LangfuseConfig = field(default_factory=LangfuseConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
     cloud: KingsoftCloudConfig = field(default_factory=KingsoftCloudConfig)
     code: CodeModeConfig = field(default_factory=CodeModeConfig)
@@ -615,8 +514,6 @@ class Settings:
         lines.append(
             f"  Model:    {'✅ Configured' if self.model.is_configured else '❌ Not configured'}"
         )
-        lines.append(f"  Langfuse: {'✅ Enabled' if self.langfuse.is_enabled else '⚪ Disabled'}")
-
         agent_info = self.agent.agent_id or self.agent.agent_name
         lines.append(f"  Agent:    {'✅ ' + agent_info if agent_info else '⚪ No info'}")
 

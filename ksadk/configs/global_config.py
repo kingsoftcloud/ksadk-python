@@ -44,7 +44,7 @@ CONFIG_GROUPS = {
         "IDENTITY_CACHE",
     ],
     # 未来可扩展更多分组
-    # "observability": ["LANGFUSE_PUBLIC_KEY", ...],
+    # "observability": ["OTEL_EXPORTER_OTLP_ENDPOINT", ...],
     # "plugins": {...},
 }
 

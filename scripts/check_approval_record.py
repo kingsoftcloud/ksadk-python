@@ -17,7 +17,6 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Sequence
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_APPROVAL_RECORD = REPO_ROOT / "docs" / "maintainer-approval-record.md"
 REQUIRED_SIGNOFF_ROLES = ("Maintainer", "Security reviewer", "Release owner")
@@ -90,18 +89,12 @@ def _decision_map(text: str) -> dict[str, str]:
 
 def _strategy_map(text: str) -> dict[str, str]:
     return {
-        cells[0]: cells[1]
-        for cells in _table_rows(text, "Publication Strategy")
-        if len(cells) >= 2
+        cells[0]: cells[1] for cells in _table_rows(text, "Publication Strategy") if len(cells) >= 2
     }
 
 
 def _signoff_rows(text: str) -> dict[str, list[str]]:
-    return {
-        cells[0]: cells
-        for cells in _table_rows(text, "Approval Sign-Off")
-        if len(cells) >= 4
-    }
+    return {cells[0]: cells for cells in _table_rows(text, "Approval Sign-Off") if len(cells) >= 4}
 
 
 def _source_ref(text: str, name: str) -> str:
@@ -228,7 +221,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--expected-current-commit",
         default=None,
-        help="commit SHA that approved source references must include; defaults to git rev-parse HEAD",
+        help=(
+            "commit SHA that approved source references must include; "
+            "defaults to git rev-parse HEAD"
+        ),
     )
     parser.add_argument("--json", action="store_true", help="print JSON output")
     return parser.parse_args(argv)

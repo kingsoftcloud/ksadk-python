@@ -11,14 +11,15 @@ import sys
 from pathlib import Path
 
 import click
+import uvicorn
 
 from ksadk.cli.error_utils import ensure_json_output_supported, print_exception
 from ksadk.cli.local_runtime import reexec_with_project_venv_if_needed
+from ksadk.cli.runtime_bootstrap import create_runtime_web_app
 from ksadk.cli.ui import (
     print_error,
     print_info,
     print_kv,
-    print_rule,
     print_success,
     print_title,
     print_warn,
@@ -117,59 +118,45 @@ def run(
     configure_local_runtime_persistence(agent_path, result.type.value)
 
     # 2. 根据框架类型选择处理方式
-    # 所有框架统一使用 _run_custom() 以支持 Langfuse 自动插桩
-    # (Langfuse instrumentation 需要在同一进程内生效)
+    # 所有框架统一使用 _run_custom()，让 OTel instrumentation 在同一进程生效。
     _run_custom(
         result, agent_path, port, interactive, no_trace, show_thinking, no_stream, no_alt_screen
     )
 
 
 def _run_adk_cli(agent_path: Path, port: int = 8080, command: str = "run"):
-    """运行 ADK Agent，支持 Langfuse tracing
-
-    对于 Langfuse 集成，我们需要在同一进程内运行 ADK，
-    因为 OpenTelemetry instrumentation 只在进程内生效。
-    """
+    """运行 ADK Agent，使用标准 OTLP 配置。"""
     import os
 
-    has_langfuse = bool(os.getenv("LANGFUSE_PUBLIC_KEY"))
+    has_otlp = bool(
+        os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+        or os.getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
+        or os.getenv("CLOUD_MONITOR_OTLP_ENDPOINT")
+        or os.getenv("CLOUD_MONITOR_OTLP_TRACES_ENDPOINT")
+    )
 
     # 必须先初始化 Tracing（在导入 ADK 之前）
-    if has_langfuse:
+    if has_otlp:
         try:
             from ksadk.tracing import setup_tracing
 
             setup_tracing(
                 enable_inmemory=False,
-                enable_langfuse=True,
                 enable_adk_instrumentation=True,
             )
-            print_info("Tracing: Enabled (Langfuse + ADK Instrumentation)")
+            print_info("Tracing: Enabled (OTLP + ADK Instrumentation)")
         except Exception as e:
-            print_warn(f"Langfuse 初始化失败: {e}")
+            print_warn(f"OTLP tracing 初始化失败: {e}")
 
     print_kv("调用 ADK 原生 CLI", f"adk {command}")
 
-    # 使用 subprocess（Langfuse instrumentation 在子进程中不生效，但环境变量会传递）
-    # ADK CLI 本身不支持 Langfuse，需要用户在项目中集成
+    # 子进程继承标准 OTLP 环境变量；项目内 instrumentation 负责创建 spans。
     if command == "run":
         cmd = [sys.executable, "-m", "google.adk.cli", "run", "."]
     else:
         cmd = [sys.executable, "-m", "google.adk.cli", "web", ".", "--port", str(port)]
 
-    # 传递 Langfuse 环境变量
     env = os.environ.copy()
-    langfuse_vars = ["LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_BASE_URL"]
-    for var in langfuse_vars:
-        if var in os.environ:
-            env[var] = os.environ[var]
-
-    # 提示用户如何在 ADK 项目中启用 Langfuse
-    if has_langfuse:
-        print_rule("ADK 项目 Langfuse 集成提示")
-        print_info("在 agent.py 中添加以下代码:")
-        print_info("from openinference.instrumentation.google_adk import GoogleADKInstrumentor")
-        print_info("GoogleADKInstrumentor().instrument()")
 
     try:
         subprocess.run(cmd, cwd=str(agent_path), check=True, env=env)
@@ -191,8 +178,7 @@ def _run_custom(
     no_stream: bool = False,
     no_alt_screen: bool = False,
 ):
-    """使用自定义实现 (LangChain/LangGraph/DeepAgents)"""
-    from ksadk.runners.factory import create_runner
+    """Run one detected project through the canonical RuntimeAdapter composition."""
 
     # 初始化 Tracing
     if not no_trace:
@@ -201,62 +187,38 @@ def _run_custom(
 
             from ksadk.tracing import setup_tracing
 
-            has_langfuse = bool(os.getenv("LANGFUSE_PUBLIC_KEY"))
             has_otlp = bool(
                 os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
                 or os.getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
             )
 
-            use_callback_only = os.getenv("LANGFUSE_USE_CALLBACK", "").strip().lower() in (
-                "1",
-                "true",
-                "yes",
-                "on",
-            )
-
             setup_tracing(
                 enable_inmemory=True,
                 enable_langfuse=None,
-                use_callback_only=use_callback_only,
             )
 
             if has_otlp:
                 print_info("Tracing: Enabled (InMemory + OTLP HTTP)")
-            elif has_langfuse:
-                print_info(
-                    f"Tracing: Enabled (InMemory + Langfuse, CallbackOnly={use_callback_only})"
-                )
             else:
                 print_info("Tracing: Enabled")
         except Exception as e:
             print_warn(f"Tracing 初始化失败: {e}")
 
-    # 创建 Runner
+    if interactive:
+        del show_thinking, no_stream, no_alt_screen
+        print_error(
+            "RuntimeAdapter TUI 尚未接通；请使用 `ksadk web` 或不带 --interactive 启动"
+        )
+        raise SystemExit(2)
+
     try:
-        print_info("初始化 Runner...")
-        runner = create_runner(result, str(agent_path))
-        runner.load_agent()
-        print_success("Agent 加载成功")
+        runtime_app = create_runtime_web_app(result, agent_path)
     except Exception as e:
-        print_exception("Agent 加载失败", e)
-        # import traceback
-        # traceback.print_exc()
+        print_exception("RuntimeAdapter 初始化失败", e)
         raise SystemExit(1)
 
-    # 运行
-    if interactive:
-        # TUI 交互模式
-        from ksadk.tui.loop import run_tui
-
-        run_tui(
-            runner,
-            show_thinking=show_thinking,
-            project_dir=str(agent_path),
-            no_alt_screen=no_alt_screen,
-        )
-    else:
-        print_success(f"Server running at http://0.0.0.0:{port}")
-        print_kv("API Docs", f"http://0.0.0.0:{port}/docs")
-        print_kv("Chat API", f"http://0.0.0.0:{port}/chat")
-        print_info("Press Ctrl+C to stop")
-        runner.run_server(port=port)
+    print_success(f"Server running at http://127.0.0.1:{port}")
+    print_kv("API Docs", f"http://127.0.0.1:{port}/docs")
+    print_kv("Chat API", f"http://127.0.0.1:{port}/chat")
+    print_info("Press Ctrl+C to stop")
+    uvicorn.run(runtime_app, host="127.0.0.1", port=port)

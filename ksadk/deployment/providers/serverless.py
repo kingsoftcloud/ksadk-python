@@ -17,6 +17,7 @@ import click
 import yaml
 
 from ksadk.api import AgentEngineClient, DryRunExit
+from ksadk.builders.base import BaseBuilder
 from ksadk.builders.code_builder import CodeBuilder
 from ksadk.builders.container_builder import (
     ContainerBuilder,
@@ -193,19 +194,25 @@ class ServerlessProvider(BaseDeployProvider):
     ) -> tuple[Dict[str, str], bool, int]:
         """读取部署时注入到托管运行时的环境变量。
 
-        全局配置作为兜底，项目 .env 作为项目级覆盖；真实 .env 文件不会随
-        Code/Container 制品打包，只通过 deploy payload 注入到 Pod 环境变量。
+        优先级: --env/--env-file (explicit) > shell env (转发白名单前缀) > 项目 .env > 全局配置。
+        真实 .env 文件不会随 Code/Container 制品打包，只通过 deploy payload 注入到 Pod 环境变量。
         """
+        shell_keys = set(os.environ)
         env_vars: Dict[str, str] = dict(get_env_from_global_config())
         env_file = Path(project_dir) / ".env"
         project_env_count = 0
-        for key, value in sorted(os.environ.items()):
-            if value and _should_forward_process_env(key):
-                env_vars.setdefault(key, value)
         if env_file.exists():
             project_env = cls._load_project_env_vars(env_file)
             project_env_count = len(project_env)
-            env_vars.update(project_env)
+            # auto .env 覆盖 global_config，但不覆盖 shell (shell 优先于 auto .env)
+            for key, value in project_env.items():
+                if key not in shell_keys:
+                    env_vars[key] = value
+        # shell 转发 (仅 KSADK_/OPENAI_/KSYUN_/E2B_ 前缀 + 白名单)；shell 覆盖 auto .env 与全局配置
+        for key, value in sorted(os.environ.items()):
+            if value and _should_forward_process_env(key):
+                env_vars[key] = value
+        # explicit --env/--env-file (显式 CLI 意图最高)
         env_vars.update(explicit_env_vars or {})
         env_vars.setdefault("TZ", DEFAULT_RUNTIME_TIMEZONE)
         return env_vars, env_file.exists(), project_env_count
@@ -387,23 +394,9 @@ class ServerlessProvider(BaseDeployProvider):
         artifact_type = target.extra.get("artifact_type", "Code")
 
         if artifact_type == "ManagedRuntime":
-            # Declarative runtimes are delivered by Server -> Runtime Service as
-            # an inline manifest.  Keep a local bundle only for inspection; do
-            # not acquire credentials or upload it to KS3.
-            from ksadk.builders.managed_runtime_builder import ManagedRuntimeBuilder
+            from ksadk.deployment.managed_runtime import build_managed_runtime_package
 
-            builder = ManagedRuntimeBuilder(
-                Path(package_info.project_dir),
-                config=target.extra.copy(),
-                runtime_version=str(target.extra.get("runtime_version") or ""),
-            )
-            build_result = builder.build()
-            if not build_result.success:
-                raise Exception(f"构建失败: {build_result.error_message}")
-            package_info.metadata.update(build_result.metadata)
-            if build_result.artifact_path is not None:
-                package_info.metadata["managed_manifest_path"] = str(build_result.artifact_path)
-            return package_info
+            return build_managed_runtime_package(package_info, target)
 
         if artifact_type == "Code":
             # 1. 检查是否已有 KS3 路径
@@ -430,20 +423,24 @@ class ServerlessProvider(BaseDeployProvider):
             builder_config["no_cache"] = no_cache
             builder_config["repackage"] = repackage
 
+            artifact_builder: BaseBuilder
             if artifact_type == "ManagedRuntime":
                 from ksadk.builders.managed_runtime_builder import ManagedRuntimeBuilder
 
-                builder = ManagedRuntimeBuilder(
+                artifact_builder = ManagedRuntimeBuilder(
                     Path(package_info.project_dir),
                     config=builder_config,
                     runtime_version=str(target.extra.get("runtime_version") or ""),
                 )
             else:
                 # CodeBuilder 直接操作原始 project_dir。
-                builder = CodeBuilder(Path(package_info.project_dir), config=builder_config)
+                artifact_builder = CodeBuilder(
+                    Path(package_info.project_dir),
+                    config=builder_config,
+                )
 
             # 执行构建
-            build_result = builder.build()
+            build_result = artifact_builder.build()
 
             if not build_result.success:
                 raise Exception(f"构建失败: {build_result.error_message}")
@@ -692,6 +689,7 @@ class ServerlessProvider(BaseDeployProvider):
             runtime_config = {
                 "name": str(target.extra.get("runtime_name") or "").strip(),
                 "version": str(target.extra.get("runtime_version") or "").strip(),
+                "manifest_sha256": str(target.extra.get("manifest_sha256") or "").strip(),
             }
             missing = [key for key, value in runtime_config.items() if not value]
             if missing:
@@ -707,7 +705,71 @@ class ServerlessProvider(BaseDeployProvider):
             async with AgentEngineClient(region=target.region, dry_run=is_dry_run) as client:
                 agent_exists = False
 
-                if existing_agent_id:
+                # 显式 --agent-id：优先于本地 state，用于状态丢失后重新关联已有 Agent。
+                explicit_agent_id = (target.extra.get("agent_id") or "").strip() or None
+                if explicit_agent_id:
+                    if existing_agent_id and existing_agent_id != explicit_agent_id:
+                        click.secho(
+                            f"   ⚠️  --agent-id ({explicit_agent_id}) 与本地状态 "
+                            f"({existing_agent_id}) 不一致，以 --agent-id 为准",
+                            fg="yellow",
+                        )
+                    if is_dry_run:
+                        # DryRun 无法真实校验，假设存在并走更新路径
+                        existing_agent_id = explicit_agent_id
+                        agent_exists = True
+                        click.secho(
+                            f"   [Dry Run] 假设 Agent {explicit_agent_id} 存在", fg="cyan"
+                        )
+                    else:
+                        try:
+                            detail = await client.get_agent(
+                                explicit_agent_id, include_api_key=True
+                            )
+                        except Exception as e:
+                            return DeployResult(
+                                status=DeployStatus.FAILED,
+                                agent_id=explicit_agent_id,
+                                message=(
+                                    f"❌ 指定的 Agent ID '{explicit_agent_id}' 不存在，"
+                                    f"或当前凭证无权限访问。\n"
+                                    f"   详情: {e}\n"
+                                    "   👉 请确认 agent_id 正确，且当前 AK/SK / 账号"
+                                    "有该 Agent 的权限。"
+                                ),
+                            )
+
+                        # 校验通过 → 关联并回填 state，走热更新
+                        qa = detail.get("quick_access", {}) or {}
+                        basic = detail.get("basic", {}) or {}
+                        recovered_state = local_state.copy()
+                        recovered_state.update(
+                            {
+                                "agent_id": explicit_agent_id,
+                                "name": basic.get("name") or package_info.name,
+                                "region": target.region,
+                                "endpoint": qa.get("public_endpoint"),
+                                "updated_at": self._now_iso(),
+                            }
+                        )
+                        if qa.get("api_key"):
+                            recovered_state["api_key"] = qa["api_key"]
+                        # 去掉 None 值，避免覆盖掉旧的有效字段
+                        recovered_state = {
+                            k: v for k, v in recovered_state.items() if v is not None
+                        }
+                        self._save_state(state_file, recovered_state)
+                        local_state = recovered_state
+
+                        existing_agent_id = explicit_agent_id
+                        agent_exists = True
+                        click.secho(
+                            f"   🔗 已通过 --agent-id 关联 Agent: {explicit_agent_id} "
+                            f"(已回填 .agentengine.state)",
+                            fg="green",
+                        )
+
+                if existing_agent_id and not agent_exists:
                     # 有本地状态 → 先检查服务器上是否存在
                     click.echo(f"   检测到本地状态: {existing_agent_id}")
 

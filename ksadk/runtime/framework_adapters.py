@@ -6,7 +6,7 @@
 - ADK:**forward-only**,resume 经 ``invocation_id``;不支持 time-travel/fork。
 - LangGraph:**time-travel**,resume 经 ``checkpoint_id``;可按 turn 回滚/fork。
 
-并用 :func:`build_default_registry` 注册进 G0.3 ``RuntimeRegistry``。
+默认注册由 :mod:`ksadk.runtime.factory` 统一负责。
 """
 
 from __future__ import annotations
@@ -19,7 +19,6 @@ from ksadk.runtime.adapter import (
     ResumePayload,
     ResumeTarget,
     RunHandle,
-    RuntimeRegistry,
 )
 from ksadk.runtime.runner_adapter import RunnerRuntimeAdapter
 
@@ -88,10 +87,14 @@ class LangGraphRuntimeAdapter(RunnerRuntimeAdapter):
         # ``checkpoint_resume`` + ``framework_ref.langgraph.{checkpoint_id,thread_id}``。
         return {
             "checkpoint_resume": True,
+            "run_id": handle.run_id,
             "resume_payload_provided": payload is not None,
             "resume_interrupt_id": payload.call_id if payload else None,
             "framework_ref": {
-                "langgraph": {"checkpoint_id": target.id, "thread_id": handle.session_id}
+                "langgraph": {
+                    "checkpoint_id": target.id,
+                    "thread_id": str(handle.native_ref.get("thread_id") or handle.session_id),
+                }
             },
             "input": payload.data if payload else None,
         }
@@ -109,16 +112,7 @@ class LangGraphRuntimeAdapter(RunnerRuntimeAdapter):
         )
 
 
-def build_default_registry() -> RuntimeRegistry:
-    """构造默认 RuntimeRegistry 并注册 ADK/LangGraph adapter 类型。"""
-    registry = RuntimeRegistry()
-    registry.register("adk", ADKRuntimeAdapter)
-    registry.register("langgraph", LangGraphRuntimeAdapter)
-    return registry
-
-
 __all__ = [
     "ADKRuntimeAdapter",
     "LangGraphRuntimeAdapter",
-    "build_default_registry",
 ]
