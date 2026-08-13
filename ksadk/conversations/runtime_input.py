@@ -86,9 +86,7 @@ def _should_project_compiled_prompt(
     return _runner_type_name(runner) == "langgraph"
 
 
-def _should_use_hosted_assembly(
-    *, prepared: PreparedConversationTurn, runner: Any | None
-) -> bool:
+def _should_use_hosted_assembly(*, prepared: PreparedConversationTurn, runner: Any | None) -> bool:
     """PR E：判断本 turn 是否用 hosted pipeline 的 assembled_input 接管 payload。
 
     条件：``assembled_input`` 已生成（build_run_input 在 V2 门控下产出）且 runner 为
@@ -106,6 +104,7 @@ def _should_use_hosted_assembly(
 def _assembled_input(prepared: PreparedConversationTurn) -> Any:
     """把 prepared.assembled_input 的 plain dict 还原成 assembler 能消费的形式。"""
     from ksadk.context_engine.assembler import AssembledInput
+
     d = prepared.assembled_input
     return AssembledInput(
         format=d.get("format", "chat"),
@@ -455,8 +454,12 @@ def _build_runner_ambient_contexts(
             )
             if not _ambient_context_has_error(memory_context):
                 contexts["memory_context"] = memory_context
+                _emit_recall_event("memory.recall.completed", count=1)
+            else:
+                _emit_recall_event("memory.recall.empty")
         except Exception as exc:
             logger.warning("Failed to build ambient memory context: %s", exc)
+            _emit_recall_event("memory.recall.failed", error=str(exc)[:200])
 
     return contexts
 
@@ -498,6 +501,7 @@ def _build_runner_request_payload(
     # + planner 决策后的有序 messages。此分支满足后不再走 PR B/D2（避免双重注入）。
     if _should_use_hosted_assembly(prepared=prepared, runner=runner):
         from ksadk.context_engine.hosted_pipeline import assembled_to_payload
+
         override = assembled_to_payload(_assembled_input(prepared))
         if override["instructions"]:
             payload["instructions"] = override["instructions"]
@@ -819,3 +823,31 @@ def _merge_responses_history_with_session_history(
         *[dict(item) for item in request_history],
         *[dict(item) for item in session_history],
     ]
+
+
+# Recall 事件收集器（best-effort，方案 §3）
+_recall_event_collector: list = []
+
+
+def _emit_recall_event(event_type: str, count: int = 0, error: str = "") -> None:
+    """收集 Recall 事件供调用方读取。"""
+    from ksadk.memory.events import MemoryEvent
+
+    _recall_event_collector.append(
+        MemoryEvent(
+            type=event_type,
+            run_id="",
+            session_id="",
+            provider="longterm-service",
+            policy_rollout="recall",
+            candidate_count=count,
+            error_message=error if error else None,
+        )
+    )
+
+
+def drain_recall_events() -> list:
+    """取出并清空已收集的 Recall 事件。"""
+    events = list(_recall_event_collector)
+    _recall_event_collector.clear()
+    return events
