@@ -37,7 +37,7 @@ jobs:
 
       - name: Sync pinned KsADK Web static assets
         env:
-          KSADK_WEB_VERSION: "0.3.0"
+          KSADK_WEB_VERSION: "0.3.1"
         run: make public-sync-ksadk-web-static
 
       - name: Build artifacts

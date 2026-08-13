@@ -1,12 +1,12 @@
-"""CodexRuntime — 非 ADK 体系 runtime (goal-09)。"""
+"""CodexRuntimeAdapter — 非 ADK 体系 runtime (goal-09)。"""
 
 from ksadk.codex.client import AsyncCodexClient, CodexClient
 from ksadk.codex.phase import CodexPhaseTracker
-from ksadk.codex.runtime import CodexRuntime
+from ksadk.codex.runtime import CodexRuntimeAdapter
 
 __all__ = [
     "AsyncCodexClient",
     "CodexClient",
     "CodexPhaseTracker",
-    "CodexRuntime",
+    "CodexRuntimeAdapter",
 ]

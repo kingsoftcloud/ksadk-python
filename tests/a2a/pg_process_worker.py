@@ -250,7 +250,6 @@ async def _run(args: argparse.Namespace) -> None:
     )
     protocol = add_a2a_protocol_routes(
         app,
-        object(),
         A2AConfig(
             enabled=True,
             base_url=f"http://127.0.0.1:{port}",

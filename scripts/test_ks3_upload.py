@@ -6,6 +6,7 @@ KS3 上传调试脚本
 
 import os
 from pathlib import Path
+
 from dotenv import load_dotenv
 
 # 加载 .env (支持多种位置)
@@ -30,19 +31,19 @@ print(f"Bucket: {BUCKET_NAME}")
 
 try:
     from ks3.connection import Connection
-    
+
     conn = Connection(ak, sk, host=HOST)
-    print(f"\n✓ 连接成功")
-    
+    print("\n✓ 连接成功")
+
     # 列出所有 bucket
     print("\n现有 Buckets:")
     buckets = conn.get_all_buckets()
     for b in buckets:
         print(f"  - {b.name}")
-    
+
     # 检查目标 bucket 是否存在
     bucket_exists = any(b.name == BUCKET_NAME for b in buckets)
-    
+
     if not bucket_exists:
         print(f"\n⚠️  Bucket '{BUCKET_NAME}' 不存在，尝试创建...")
         try:
@@ -59,14 +60,14 @@ try:
                 print(f"✗ 仍然失败: {e2}")
     else:
         print(f"\n✓ Bucket '{BUCKET_NAME}' 已存在")
-    
+
     # 测试上传
     print("\n测试上传...")
     bucket = conn.get_bucket(BUCKET_NAME)
     test_key = bucket.new_key("test/hello.txt")
     result = test_key.set_contents_from_string("Hello from KsADK!")
     print(f"上传结果: {result}")
-    
+
     if result and result.status == 200:
         print("✓ 测试上传成功!")
         # 读取验证

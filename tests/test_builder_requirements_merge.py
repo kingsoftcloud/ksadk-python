@@ -305,7 +305,7 @@ def test_code_builder_uses_validated_langgraph_ecosystem_dependency_window(tmp_p
 
     deps = builder._build_requirements_list(_detection_result("deepagents"))
 
-    assert "fastapi>=0.100.0,<1.0.0" in deps
+    assert "fastapi>=0.136.0,<0.137.0" in deps
     assert "langchain>=1.3.14,<2.0.0" in deps
     assert "langchain-core>=1.5.0,<2.0.0" in deps
     assert "langchain-openai>=1.4.0,<2.0.0" in deps
@@ -319,7 +319,7 @@ def test_code_builder_uses_validated_adk_dependency_window(tmp_path):
 
     deps = builder._build_requirements_list(_detection_result("adk"))
 
-    assert "fastapi>=0.100.0,<1.0.0" in deps
+    assert "fastapi>=0.136.0,<0.137.0" in deps
     # goal-00: ADK 窗口放宽为 1.34.x 至 <3.0(支持 1.x 与 2.x)
     assert "google-adk>=1.34.0,<3.0.0" in deps
     assert "google-adk>=1.0.0" not in deps
@@ -362,7 +362,7 @@ def test_container_builder_uses_same_framework_dependency_windows(tmp_path):
         tmp_path,
     ).splitlines()
 
-    assert "fastapi>=0.100.0,<1.0.0" in deps
+    assert "fastapi>=0.136.0,<0.137.0" in deps
     assert "langchain>=1.3.14,<2.0.0" in deps
     assert "langchain-core>=1.5.0,<2.0.0" in deps
     assert "langchain-openai>=1.4.0,<2.0.0" in deps
@@ -375,7 +375,7 @@ def test_k8s_deployer_uses_same_framework_dependency_windows():
 
     deps = deployer._generate_requirements(_detection_result("deepagents")).splitlines()
 
-    assert "fastapi>=0.100.0,<1.0.0" in deps
+    assert "fastapi>=0.136.0,<0.137.0" in deps
     assert "langchain>=1.3.14,<2.0.0" in deps
     assert "langchain-core>=1.5.0,<2.0.0" in deps
     assert "langchain-openai>=1.4.0,<2.0.0" in deps
@@ -431,14 +431,14 @@ def test_code_builder_entrypoint_uses_otlp_direct_by_default_for_code_frameworks
         assert 'in ("LANGCHAIN", "LANGGRAPH", "DEEPAGENTS")' not in entrypoint
 
 
-def test_code_builder_entrypoint_patches_langchain_before_loading_user_agent(tmp_path):
+def test_code_builder_entrypoint_delegates_langchain_loading_to_runtime_adapter(tmp_path):
     builder = CodeBuilder(tmp_path)
 
     entrypoint = builder._generate_entrypoint(_full_detection_result(FrameworkType.LANGGRAPH))
 
-    patch_index = entrypoint.index("apply_langchain_patch()")
-    load_index = entrypoint.index("runner.load_agent()")
-    assert patch_index < load_index
+    assert "build_default_runtime_registry" in entrypoint
+    assert "apply_langchain_patch()" not in entrypoint
+    assert "runner.load_agent()" not in entrypoint
 
 
 def test_code_builder_entrypoint_adds_src_layout_to_pythonpath(tmp_path):
@@ -471,7 +471,7 @@ def test_container_builder_entrypoint_uses_otlp_direct_by_default_for_code_frame
         assert 'in ("LANGCHAIN", "LANGGRAPH", "DEEPAGENTS")' not in entrypoint
 
 
-def test_container_builder_entrypoint_patches_langchain_before_loading_user_agent(tmp_path):
+def test_container_builder_entrypoint_delegates_langchain_loading_to_runtime_adapter(tmp_path):
     builder = ContainerBuilder(tmp_path)
 
     entrypoint = builder._generate_entrypoint(
@@ -479,6 +479,6 @@ def test_container_builder_entrypoint_patches_langchain_before_loading_user_agen
         "demo_agent",
     )
 
-    patch_index = entrypoint.index("apply_langchain_patch()")
-    load_index = entrypoint.index("runner.load_agent()")
-    assert patch_index < load_index
+    assert "build_default_runtime_registry" in entrypoint
+    assert "apply_langchain_patch()" not in entrypoint
+    assert "runner.load_agent()" not in entrypoint

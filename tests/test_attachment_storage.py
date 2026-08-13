@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import importlib
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -8,7 +8,11 @@ import pytest
 from ksadk.conversations.attachment_storage import AttachmentStorageService
 from ksadk.conversations.attachments import resolve_attachment_storage_path
 from ksadk.conversations.normalize import normalize_parts_content
+from ksadk.runtime import RuntimeLaunchContext
 from ksadk.server.api_models import FileData, Part
+from ksadk.server.composition import configure_runtime_app
+from ksadk.server.factory import RuntimeAppConfig, create_runtime_app
+from tests.studio.runtime_adapter_fixtures import RuntimeFixture, standard_codex_events
 
 
 @pytest.mark.asyncio
@@ -16,7 +20,6 @@ async def test_runtime_upload_file_uses_ks3_metadata_and_attachment_content_read
     monkeypatch,
     tmp_path,
 ):
-    server_app_module = importlib.import_module("ksadk.server.app")
     ui_dir = tmp_path / ".agentengine" / "ui"
     monkeypatch.setenv("AGENTENGINE_UI_DIR", str(ui_dir))
     monkeypatch.setenv("KSYUN_ACCOUNT_ID", "acct-1")
@@ -36,7 +39,20 @@ async def test_runtime_upload_file_uses_ks3_metadata_and_attachment_content_read
     monkeypatch.setattr(AttachmentStorageService, "_put_ks3_object", fake_put)
     monkeypatch.setattr(AttachmentStorageService, "_read_ks3_object", fake_read)
 
-    transport = httpx.ASGITransport(app=server_app_module.app)
+    runtime = RuntimeFixture(standard_codex_events)
+    app = create_runtime_app(
+        RuntimeAppConfig(
+            runtime_executor=runtime.executor,
+            launch_context=RuntimeLaunchContext(
+                runtime_type="codex",
+                project_dir=tmp_path,
+                detection=SimpleNamespace(name="attachment-agent"),
+            ),
+            route_groups={"workspace"},
+        ),
+        configure_runtime_app,
+    )
+    transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
         upload_response = await client.post(
             "/agentengine/api/v1/UploadFile",

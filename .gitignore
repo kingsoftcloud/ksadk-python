@@ -83,8 +83,12 @@ webui
 
 # Generated from @kingsoftcloud/ksadk-web during release/build.
 ksadk/server/static/**
+ksadk/studio/web/node_modules/
+ksadk/studio/web/dist/
 site/
 
 # Legacy local UI source is owned by kingsoftcloud/ksadk-web.
 ksadk/server/web-ui/
 e2e-codex-agent/
+ksadk/studio/react-ui/node_modules/
+.agentkit/secrets.env

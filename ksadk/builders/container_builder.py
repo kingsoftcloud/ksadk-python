@@ -507,15 +507,9 @@ for key in env_keys:
 from ksadk.configs import setup_environment
 setup_environment(Path("/app"))
 
-try:
-    from ksadk.runners.patch_langchain import apply_patch as apply_langchain_patch
-    apply_langchain_patch()
-except ImportError:
-    pass
-
-from ksadk.runners import create_runner
 from ksadk.detection import DetectionResult, FrameworkType
-from ksadk.server import app, set_runner
+from ksadk.runtime import RuntimeExecutor, RuntimeLaunchContext, build_default_runtime_registry
+from ksadk.server import RuntimeAppConfig, configure_runtime_app, create_runtime_app
 import uvicorn
 
 # 检测结果 (构建时固化)
@@ -554,12 +548,56 @@ if has_otlp or has_cloud_monitor_otlp:
     except Exception as e:
         logger.warning(f"Tracing 初始化失败: {{e}}")
 
-# 创建 Runner 并加载 Agent
-logger.info("正在加载 Agent...")
-runner = create_runner(detection_result, "/app")
-runner.load_agent()
-set_runner(runner, loaded=True)
-logger.info("Agent 加载成功!")
+# 只装配统一 RuntimeAdapter 执行链；具体 Adapter 在请求开始时由 Registry 创建。
+runtime_context = RuntimeLaunchContext(
+    runtime_type=detection_result.type.value,
+    project_dir=Path("/app"),
+    detection=detection_result,
+    config=dict(getattr(detection_result, "raw_config", None) or {{}}),
+)
+# managed A2A:KSADK_A2A_RUNTIME_ID 非空时挂 discovery card + 完整数据面 route。
+# discovery card 让 server 探测；数据面 route 让 gateway 转发的 JSON-RPC/REST
+# 能真正落到本 runtime 的 A2A 协议端点（路线 C 直连）。
+_a2a_config = None
+_a2a_adapter = None
+if os.environ.get("KSADK_A2A_RUNTIME_ID", "").strip():
+    from ksadk.managed_a2a_card import build_managed_a2a_card_if_configured
+
+    _managed_a2a_card = build_managed_a2a_card_if_configured()
+    try:
+        from ksadk.a2a.routes import A2AConfig
+        from ksadk.runtime.factory import create_runtime_adapter
+
+        _a2a_adapter = create_runtime_adapter(runtime_context)
+        _base = (
+            os.environ.get("KSADK_A2A_INTERNAL_BASE_URL", "").strip()
+            or "http://localhost:8080"
+        )
+        _a2a_config = A2AConfig(
+            enabled=True,
+            base_url=_base,
+            agent_name=(
+                os.environ.get("KSADK_A2A_AGENT_NAME", "").strip()
+                or os.environ.get("KSADK_A2A_RUNTIME_ID", "").strip()
+            ),
+            streaming=True,
+            task_store_dsn="sqlite+aiosqlite:///.agentengine/a2a_tasks.db",
+        )
+    except Exception as _e:
+        logger.warning(f"managed A2A 数据面装配失败,回退 discovery-only: {{_e}}")
+        _a2a_config = None
+        _a2a_adapter = None
+app = create_runtime_app(
+    RuntimeAppConfig(
+        runtime_type=detection_result.type.value,
+        runtime_executor=RuntimeExecutor(build_default_runtime_registry()),
+        launch_context=runtime_context,
+        a2a=_a2a_config or _managed_a2a_card,
+        a2a_runtime_adapter=_a2a_adapter,
+    ),
+    configure_runtime_app,
+)
+logger.info("RuntimeAdapter 执行链装配成功!")
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))

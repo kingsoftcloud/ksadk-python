@@ -8,6 +8,7 @@ import pytest
 
 from ksadk.runners.base_runner import BaseRunner
 from ksadk.sessions.local_service import LocalSessionService
+from tests.test_server_session_app import _ExplicitRuntimeAppFixture
 
 
 class _ContinuityRunner(BaseRunner):
@@ -115,7 +116,6 @@ async def test_local_session_service_migrates_legacy_tables_to_namespaced_schema
 
 @pytest.mark.asyncio
 async def test_get_session_action_exposes_continuity_metadata(monkeypatch, tmp_path):
-    server_app_module = __import__("ksadk.server.app", fromlist=["app"])
     service = LocalSessionService(db_path=tmp_path / "sessions.sqlite")
     await service.create_session("demo-agent", "user", session_id="sess-1")
     await service.update_session_metadata(
@@ -128,10 +128,12 @@ async def test_get_session_action_exposes_continuity_metadata(monkeypatch, tmp_p
     )
     runner = _ContinuityRunner()
 
-    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
-    server_app_module.set_runner(runner)
+    facade = _ExplicitRuntimeAppFixture()
+    facade._session_service = service
+    facade.resolve_session_service = lambda: service
+    facade.set_runner(runner)
 
-    transport = httpx.ASGITransport(app=server_app_module.app)
+    transport = httpx.ASGITransport(app=facade.app)
     async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
         response = await client.post(
             "/agentengine/api/v1/GetSession",
@@ -142,26 +144,22 @@ async def test_get_session_action_exposes_continuity_metadata(monkeypatch, tmp_p
     continuity = response.json()["Data"]["Session"]["Continuity"]
     assert continuity["Level"] == "semantic"
     assert continuity["Path"] == "replay"
-    assert continuity["Runner"] == "langchain"
+    assert continuity["Runtime"] == "langgraph"
 
 
 @pytest.mark.asyncio
 async def test_bootstrap_exposes_session_backend_diagnostics(monkeypatch):
-    server_app_module = __import__("ksadk.server.app", fromlist=["app"])
     runner = _ContinuityRunner()
-    server_app_module.set_runner(runner)
-    monkeypatch.setattr(
-        server_app_module,
-        "describe_session_backend",
-        lambda: {
-            "Backend": "postgres",
-            "Shared": True,
-            "ProductionSafe": True,
-            "ContinuityDefault": "semantic/replay",
-        },
-    )
+    facade = _ExplicitRuntimeAppFixture()
+    facade.set_runner(runner)
+    facade.describe_session_backend = lambda: {
+        "Backend": "postgres",
+        "Shared": True,
+        "ProductionSafe": True,
+        "ContinuityDefault": "semantic/replay",
+    }
 
-    transport = httpx.ASGITransport(app=server_app_module.app)
+    transport = httpx.ASGITransport(app=facade.app)
     async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
         response = await client.post(
             "/agentengine/api/v1/GetAgentUiBootstrap",

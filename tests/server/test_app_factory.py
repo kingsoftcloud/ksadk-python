@@ -3,17 +3,14 @@
 验证:
 - 同一 factory + configure 回调,按 route_groups 分别装配出普通 app(全 group)
   与 Harness app(仅数据面),数据面行为一致,控制面只进普通 app。
-- 不同 app 实例的 per-app state 相互隔离(runner / stream_registry 不共享)。
-- 薄兼容壳:模块级 ``app`` 由 factory 产出,``set_runner`` 写入 app.state.runtime。
+- 不同 app 实例的 per-app state 相互隔离(executor / stream_registry 不共享)。
 """
 
 from __future__ import annotations
 
-import importlib
-
 from fastapi.testclient import TestClient
 
-from ksadk.server.app import _configure_runtime_app
+from ksadk.server.composition import configure_runtime_app
 from ksadk.server.factory import (
     ALL_GROUPS,
     CONTROL_PLANE_GROUPS,
@@ -21,10 +18,6 @@ from ksadk.server.factory import (
     RuntimeAppConfig,
     create_runtime_app,
 )
-
-# ksadk.server 包的 __init__ 把 FastAPI 实例绑到属性 ``app`` 上,遮蔽了子模块;
-# 用 importlib 拿到真正的 ksadk.server.app 模块(与其它测试一致)。
-server_app_module = importlib.import_module("ksadk.server.app")
 
 
 def _paths(app) -> set[str]:
@@ -48,7 +41,7 @@ def _paths(app) -> set[str]:
 def _make(route_groups) -> object:
     return create_runtime_app(
         RuntimeAppConfig(route_groups=set(route_groups)),
-        _configure_runtime_app,
+        configure_runtime_app,
     )
 
 
@@ -97,9 +90,9 @@ def test_apps_have_isolated_per_app_state():
     assert app_a.state.runtime.stream_registry is not app_b.state.runtime.stream_registry
 
     sentinel = object()
-    app_a.state.runtime.runner = sentinel
-    assert app_b.state.runtime.runner is None
-    assert app_a.state.runtime.runner is sentinel
+    app_a.state.runtime.executor = sentinel
+    assert app_b.state.runtime.executor is None
+    assert app_a.state.runtime.executor is sentinel
 
 
 def test_health_consistent_across_normal_and_harness():
@@ -109,26 +102,14 @@ def test_health_consistent_across_normal_and_harness():
         assert response.status_code == 200
 
 
-def test_compat_shell_app_and_set_runner():
-    # 模块级 app 由 factory 产出,且为完整普通 app(含控制面)。
-    paths = _paths(server_app_module.app)
-    assert "/agentengine/api/v1/CancelRun" in paths
-    # set_runner 写入该 app 的 per-app state(且重置 loaded 标记)。
-    sentinel = object()
-    server_app_module.set_runner(sentinel)  # type: ignore[arg-type]
-    try:
-        assert server_app_module.app.state.runtime.runner is sentinel
-        assert server_app_module.app.state.runtime.runner_loaded is False
-    finally:
-        server_app_module.app.state.runtime.runner = None
+def test_health_is_not_blocked_by_otel_context_extraction_failure(monkeypatch):
+    from opentelemetry import propagate
 
+    def fail_extract(_carrier):
+        raise RuntimeError("broken propagator")
 
-def test_compat_shell_set_runner_preserves_preloaded_state():
-    sentinel = object()
-    server_app_module.set_runner(sentinel, loaded=True)  # type: ignore[arg-type]
-    try:
-        assert server_app_module.app.state.runtime.runner is sentinel
-        assert server_app_module.app.state.runtime.runner_loaded is True
-    finally:
-        server_app_module.app.state.runtime.runner = None
-        server_app_module.app.state.runtime.runner_loaded = False
+    monkeypatch.setattr(propagate, "extract", fail_extract)
+
+    response = TestClient(_make(ALL_GROUPS)).get("/health")
+
+    assert response.status_code == 200

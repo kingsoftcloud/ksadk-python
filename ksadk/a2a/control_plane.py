@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import errno
@@ -9,6 +10,7 @@ import json
 import os
 import stat
 import time
+import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,6 +21,7 @@ from a2a.types import AgentCard
 from google.protobuf.json_format import ParseDict, ParseError
 
 from ksadk.a2a.ids import require_a2a_resource_id
+from ksadk.common.kop_client import KOPClient, KOPError
 
 ENV_A2A_CONTROL_PLANE_URL = "KSADK_A2A_CONTROL_PLANE_URL"
 ENV_A2A_TOKEN_DIR = "KSADK_A2A_TOKEN_DIR"
@@ -581,6 +584,232 @@ class InternalA2AControlPlaneClient(A2AControlPlane):
         return self._token_provider.get_token(AUDIENCE_GATEWAY)
 
 
+class A2AAgentCardClient(A2AControlPlane):
+    """Card-driven control-plane client for hosted/external A2A discovery.
+
+    发现面通过 KOP 调 server 对外 Action (ListAToASpaceAgents) 拿到 space 内
+    每个 agent 的完整投影后 AgentCard（含 callable url）；调用面直接用
+    card.url 发 A2A 请求，不回连 server 做 permit/credential。
+    runtime 只需一个 service_url（KOP 对外 API，默认 aicp.api.ksyun.com），
+    与 ksadk/skills 同款；card.url 由 server 投影，runtime 不需要知道 gateway 域名。
+
+    KOP 鉴权（AICP AK/SK 签名）复用 ksadk.common.kop_client.KOPClient，
+    和 skill/mcp 共用同一公共层。
+    """
+
+    def __init__(
+        self,
+        service_url: str,
+        *,
+        service_token: str = "",
+        httpx_client: httpx.AsyncClient | None = None,
+        timeout: float = 15.0,
+    ) -> None:
+        if not service_url:
+            raise ValueError("A2AAgentCardClient requires a non-empty service_url")
+        self._service_url = service_url.rstrip("/")
+        self._service_token = service_token
+        self._client = httpx_client
+        self._timeout = timeout
+        self._cards_by_agent: dict[str, tuple[AgentCard, str, str]] = {}
+        self._kop = KOPClient(base_url=service_url, service_token=service_token, timeout=timeout)
+
+    async def _post_action(self, action: str, payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return await asyncio.to_thread(self._kop.post_action, action, payload)
+        except KOPError as exc:
+            raise A2AControlPlaneError(
+                code=exc.code,
+                message=exc.message,
+                error_code=f"KOP_{exc.code}",
+                retryable=exc.code >= 500,
+                action=action,  # type: ignore[arg-type]
+            ) from exc
+
+    async def list_space_agents(
+        self,
+        space_id: str,
+        *,
+        prompt: str | None = None,
+        skill_id: str | None = None,
+        include_blocked: bool = False,
+        if_none_match: str | None = None,
+        cursor: str | None = None,
+        page_size: int = 50,
+    ) -> SpaceAgentPage:
+        _ = (prompt, skill_id, if_none_match)
+        payload: dict[str, Any] = {
+            "A2ASpaceId": space_id,
+            "Status": "available" if not include_blocked else "",
+            "PageSize": page_size,
+        }
+        if cursor:
+            payload["PageNumber"] = int(cursor) if str(cursor).isdigit() else 1
+        data = await self._post_action("ListAToASpaceAgents", payload)
+        agents: list[DiscoveredAgent] = []
+        for item in data.get("Agents") or []:
+            if not isinstance(item, dict):
+                continue
+            a2a_agent_id = str(item.get("A2AAgentId") or "").strip()
+            if not a2a_agent_id:
+                continue
+            # server 用纯 uuid,ksadk 内部要求 a2a-agent- 前缀;补前缀适配契约。
+            if not a2a_agent_id.startswith("a2a-agent-"):
+                a2a_agent_id = f"a2a-agent-{a2a_agent_id}"
+            invocation_status = str(item.get("InvocationStatus") or "")
+            if invocation_status and invocation_status != "available":
+                continue
+            card_payload = item.get("AgentCard")
+            if not isinstance(card_payload, dict):
+                continue
+            try:
+                card = _agent_card_from_wire(card_payload)
+            except A2AControlPlaneError:
+                continue
+            sha = str(item.get("CardSha256") or "")
+            version_id = str(item.get("VersionId") or "") or sha
+            if version_id and not version_id.startswith("a2a-version-"):
+                version_id = f"a2a-version-{version_id}"
+            source = str(item.get("Source") or "hosted")
+            self._cards_by_agent[a2a_agent_id] = (card, sha, version_id)
+            agents.append(
+                DiscoveredAgent(
+                    agent_id=a2a_agent_id,
+                    version_id=version_id,
+                    source=source if source in {"hosted", "external"} else "hosted",
+                    agent_card=card,
+                    card_sha256=sha,
+                    callable=True,
+                    route_kind="hosted_gateway" if source == "hosted" else "external_public",
+                )
+            )
+        return SpaceAgentPage(agents=agents)
+
+    async def _resolve_card(self, target_agent_id: str) -> tuple[AgentCard, str, str]:
+        cached = self._cards_by_agent.get(target_agent_id)
+        if cached is not None:
+            return cached
+        await self.list_space_agents(os.getenv("KSADK_A2A_SPACE_ID", ""), page_size=100)
+        cached = self._cards_by_agent.get(target_agent_id)
+        if cached is None:
+            raise A2AControlPlaneError(
+                code=404,
+                message=f"A2A agent {target_agent_id} not discoverable",
+                error_code="A2A_AGENT_NOT_FOUND",
+                action="PrepareA2ACall",  # type: ignore[arg-type]
+            )
+        return cached
+
+    async def _direct_prepared(
+        self,
+        *,
+        target_agent_id: str,
+        version_id: str,
+        card: AgentCard,
+        card_sha256: str,
+    ) -> PreparedA2AOperation:
+        interfaces = list(card.supported_interfaces or [])
+        interface = interfaces[0] if interfaces else None
+        if interface is None or not interface.url:
+            raise A2AControlPlaneError(
+                code=502,
+                message="discovered agent card has no callable interface url",
+                error_code="A2A_CONTROL_PLANE_INVALID_RESPONSE",
+                action="PrepareA2ACall",  # type: ignore[arg-type]
+            )
+        route = A2ARoute(
+            kind="hosted_gateway",
+            interface=A2ARouteInterface(
+                url=str(interface.url),
+                protocol_binding=str(interface.protocol_binding or "JSONRPC"),
+                protocol_version=str(interface.protocol_version or "1.0"),
+            ),
+        )
+        return PreparedA2AOperation(
+            platform_task_id=f"a2a-task-{uuid.uuid4().hex}",
+            target=A2ATarget(
+                agent_id=target_agent_id,
+                version_id=version_id,
+                card_sha256=card_sha256,
+            ),
+            route=route,
+            call_permit="",
+            call_permit_expires_at="",
+        )
+
+    async def prepare_call(
+        self,
+        *,
+        space_id: str,
+        target_agent_id: str,
+        expected_version_id: str | None,
+        message_id: str,
+        message_sha256: str,
+        idempotency_token: str,
+    ) -> PreparedA2AOperation:
+        _ = (space_id, expected_version_id, message_id, message_sha256, idempotency_token)
+        card, sha, version_id = await self._resolve_card(target_agent_id)
+        return await self._direct_prepared(
+            target_agent_id=target_agent_id,
+            version_id=version_id,
+            card=card,
+            card_sha256=sha,
+        )
+
+    async def prepare_task_operation(
+        self,
+        *,
+        platform_task_id: str,
+        operation: A2AOperation,
+        message_id: str | None = None,
+        message_sha256: str | None = None,
+        idempotency_token: str | None = None,
+        agent_id: str | None = None,
+    ) -> PreparedA2AOperation:
+        _ = (operation, message_id, message_sha256, idempotency_token)
+        target_id = agent_id or platform_task_id
+        card, sha, version_id = await self._resolve_card(target_id)
+        return await self._direct_prepared(
+            target_agent_id=target_id,
+            version_id=version_id,
+            card=card,
+            card_sha256=sha,
+        )
+
+    async def bind_remote_task(
+        self,
+        *,
+        platform_task_id: str,
+        remote_task_id: str,
+        remote_context_id: str | None,
+        observed_at: str,
+    ) -> dict[str, Any]:
+        _ = (platform_task_id, remote_context_id, observed_at)
+        return {"RemoteTaskId": remote_task_id, "Bound": True}
+
+    async def append_task_events(
+        self,
+        *,
+        platform_task_id: str,
+        events: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        _ = (platform_task_id, events)
+        return {"Appended": len(events)}
+
+    async def resolve_credential(
+        self,
+        *,
+        platform_task_id: str,
+        credential_handle: str | None,
+        call_permit: str,
+    ) -> CredentialInjection:
+        _ = (platform_task_id, credential_handle, call_permit)
+        return CredentialInjection()
+
+    def gateway_token(self) -> str:
+        return self._service_token
+
+
 def _credential_string_map(value: Any, *, field_name: str) -> dict[str, str]:
     if value is None:
         return {}
@@ -654,8 +883,16 @@ def _agent_card_from_wire(payload: Any) -> AgentCard:
             message="AgentCard must be an object",
             error_code="A2A_CONTROL_PLANE_INVALID_RESPONSE",
         )
+    # 兼容 0.3 card：顶层 url/preferredTransport 折叠进 supportedInterfaces[0]。
+    if not payload.get("supportedInterfaces") and payload.get("url"):
+        payload = dict(payload)
+        payload["supportedInterfaces"] = [{
+            "url": payload["url"],
+            "protocolBinding": payload.get("preferredTransport", "JSONRPC"),
+            "protocolVersion": payload.get("protocolVersion", "0.3"),
+        }]
     try:
-        return ParseDict(payload, AgentCard())
+        return ParseDict(payload, AgentCard(), ignore_unknown_fields=True)
     except (ParseError, TypeError, ValueError) as exc:
         raise A2AControlPlaneError(
             code=502,
@@ -798,6 +1035,7 @@ __all__ = [
     "A2AInternalAction",
     "A2A_INTERNAL_ACTIONS",
     "A2A_INTERNAL_PATH_PREFIX",
+    "A2AAgentCardClient",
     "A2AControlPlane",
     "A2AControlPlaneError",
     "A2AOperation",

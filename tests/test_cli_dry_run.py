@@ -1630,6 +1630,164 @@ def test_openclaw_deploy_forwards_custom_env_pairs(monkeypatch):
     assert captured["extra_env"] == ("FOO=bar", "OPENCLAW_GATEWAY_PORT=9090")
 
 
+def test_openclaw_deploy_env_file_flag_forwarded(monkeypatch):
+    runner = CliRunner()
+    captured: Dict[str, Any] = {}
+
+    async def _fake_deploy_openclaw(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw._deploy_openclaw", _fake_deploy_openclaw)
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_openclaw.run_async_with_dry_run",
+        lambda coro, dry_run: asyncio.run(coro),
+    )
+
+    result = runner.invoke(
+        openclaw,
+        ["deploy", "--env-file", "custom.env", "--env", "FOO=bar"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["env_file"] == "custom.env"
+    assert captured["extra_env"] == ("FOO=bar",)
+
+
+def test_openclaw_deploy_env_file_loads_extra_env(monkeypatch, tmp_path):
+    runner = CliRunner()
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawCreateClient)
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw._GLOBAL_ENV_CACHE", {})
+    monkeypatch.chdir(tmp_path)
+    for _k in ("FOO", "BAR", "BAZ"):
+        monkeypatch.delenv(_k, raising=False)
+    _FakeOpenClawCreateClient.create_payload = None
+    _FakeOpenClawCreateClient.update_payload = None
+    _FakeOpenClawCreateClient.get_agent_calls = 0
+    (tmp_path / "custom.env").write_text("FOO=from-file\nBAR=baz\n", encoding="utf-8")
+
+    result = runner.invoke(
+        openclaw,
+        [
+            "deploy",
+            "--name",
+            "demo-openclaw",
+            "--image",
+            "ghcr.io/openclaw:test",
+            "--env-file",
+            "custom.env",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    env_vars = {
+        item["Key"]: item["Value"] for item in _FakeOpenClawCreateClient.create_payload["env_vars"]
+    }
+    assert env_vars.get("FOO") == "from-file"
+    assert env_vars.get("BAR") == "baz"
+
+
+def test_openclaw_deploy_env_flag_overrides_shell(monkeypatch, tmp_path):
+    runner = CliRunner()
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawCreateClient)
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw._GLOBAL_ENV_CACHE", {})
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("FOO", "shell-value")
+    _FakeOpenClawCreateClient.create_payload = None
+    _FakeOpenClawCreateClient.update_payload = None
+    _FakeOpenClawCreateClient.get_agent_calls = 0
+
+    result = runner.invoke(
+        openclaw,
+        [
+            "deploy",
+            "--name",
+            "demo-openclaw",
+            "--image",
+            "ghcr.io/openclaw:test",
+            "--env",
+            "FOO=cli-value",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    env_vars = {
+        item["Key"]: item["Value"] for item in _FakeOpenClawCreateClient.create_payload["env_vars"]
+    }
+    assert env_vars.get("FOO") == "cli-value"
+
+
+def test_openclaw_deploy_auto_dotenv_does_not_override_shell(monkeypatch, tmp_path):
+    runner = CliRunner()
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawCreateClient)
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw._GLOBAL_ENV_CACHE", {})
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("FOO", "shell-value")
+    (tmp_path / ".env").write_text("FOO=from-dotenv\n", encoding="utf-8")
+    _FakeOpenClawCreateClient.create_payload = None
+    _FakeOpenClawCreateClient.update_payload = None
+    _FakeOpenClawCreateClient.get_agent_calls = 0
+
+    result = runner.invoke(
+        openclaw,
+        ["deploy", "--name", "demo-openclaw", "--image", "ghcr.io/openclaw:test"],
+    )
+
+    assert result.exit_code == 0, result.output
+    env_vars = {
+        item["Key"]: item["Value"] for item in _FakeOpenClawCreateClient.create_payload["env_vars"]
+    }
+    assert "FOO" not in env_vars
+
+
+def test_openclaw_deploy_default_dotenv_still_auto_loaded(monkeypatch, tmp_path):
+    runner = CliRunner()
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawCreateClient)
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw._GLOBAL_ENV_CACHE", {})
+    monkeypatch.chdir(tmp_path)
+    for _k in ("FOO", "BAR", "BAZ"):
+        monkeypatch.delenv(_k, raising=False)
+    (tmp_path / ".env").write_text("FOO=from-dotenv\n", encoding="utf-8")
+    _FakeOpenClawCreateClient.create_payload = None
+    _FakeOpenClawCreateClient.update_payload = None
+    _FakeOpenClawCreateClient.get_agent_calls = 0
+
+    result = runner.invoke(
+        openclaw,
+        ["deploy", "--name", "demo-openclaw", "--image", "ghcr.io/openclaw:test"],
+    )
+
+    assert result.exit_code == 0, result.output
+    env_vars = {
+        item["Key"]: item["Value"] for item in _FakeOpenClawCreateClient.create_payload["env_vars"]
+    }
+    assert env_vars.get("FOO") == "from-dotenv"
+
+
+def test_openclaw_deploy_explicit_env_file_missing_raises(monkeypatch, tmp_path):
+    runner = CliRunner()
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawCreateClient)
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw._GLOBAL_ENV_CACHE", {})
+    monkeypatch.chdir(tmp_path)
+    _FakeOpenClawCreateClient.create_payload = None
+    _FakeOpenClawCreateClient.update_payload = None
+    _FakeOpenClawCreateClient.get_agent_calls = 0
+
+    result = runner.invoke(
+        openclaw,
+        [
+            "deploy",
+            "--name",
+            "demo-openclaw",
+            "--image",
+            "ghcr.io/openclaw:test",
+            "--env-file",
+            "missing.env",
+        ],
+    )
+
+    assert result.exit_code != 0
+
+
 def test_openclaw_runtime_env_credentials_are_sensitive(monkeypatch, tmp_path):
     runner = CliRunner()
     monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawCreateClient)
@@ -2116,6 +2274,12 @@ def test_openclaw_deploy_persists_gateway_token_from_extra_env(monkeypatch, tmp_
     monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawCreateClient)
     monkeypatch.setattr("ksadk.cli.cmd_openclaw._GLOBAL_ENV_CACHE", {})
     monkeypatch.chdir(tmp_path)
+    # The deploy command intentionally injects explicit CLI env into the
+    # process for the duration of a real CLI invocation. Register these keys
+    # with monkeypatch first so this in-process test restores the host
+    # environment afterwards instead of leaking credentials to later tests.
+    monkeypatch.setenv("OPENCLAW_GATEWAY_AUTH_MODE", "anonymous")
+    monkeypatch.setenv("OPENCLAW_GATEWAY_TOKEN", "test-sentinel")
     _FakeOpenClawCreateClient.get_agent_calls = 0
 
     result = runner.invoke(

@@ -17,7 +17,11 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 for key in list(os.environ):
-    if key.startswith("OTEL_EXPORTER_OTLP") or key.startswith("LANGFUSE_"):
+    if (
+        key.startswith("OTEL_EXPORTER_OTLP")
+        or key.startswith("CLOUD_MONITOR_")
+        or key.startswith("LANGFUSE_")
+    ):
         os.environ.pop(key, None)
 
 received = []
@@ -87,7 +91,11 @@ print(
 """
     env = os.environ.copy()
     for key in list(env):
-        if key.startswith("OTEL_EXPORTER_OTLP") or key.startswith("LANGFUSE_"):
+        if (
+            key.startswith("OTEL_EXPORTER_OTLP")
+            or key.startswith("CLOUD_MONITOR_")
+            or key.startswith("LANGFUSE_")
+        ):
             env.pop(key, None)
     env["PYTHONPATH"] = f"{repo_root}{os.pathsep}{env.get('PYTHONPATH', '')}".rstrip(os.pathsep)
     env["NO_PROXY"] = "127.0.0.1,localhost"

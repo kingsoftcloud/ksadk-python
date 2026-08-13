@@ -129,42 +129,31 @@ def test_adk_llm_agent_detected_without_config(tmp_path: Path):
     assert _detect(tmp_path) == FrameworkType.ADK
 
 
-def test_cmd_a2a_langchain_uses_langgraph_runtime_adapter(monkeypatch):
-    """langchain 应与 langgraph 一样走 LangGraphRuntimeAdapter，保留 A2A time-travel resume。"""
+def test_cmd_a2a_normalizes_langchain_family_to_langgraph_runtime_adapter(monkeypatch, tmp_path):
+    """LangChain/DeepAgents 共享 LangGraph RuntimeAdapter，不另造顶层 runtime。"""
     import ksadk.cli.cmd_a2a as mod
 
-    selected: dict[str, object] = {}
+    selected: list[str] = []
+    monkeypatch.setattr(mod, "_setup_tracing", lambda _runtime_type: None)
+    monkeypatch.setattr(
+        mod,
+        "create_runtime_adapter",
+        lambda context: selected.append(context.runtime_type) or object(),
+    )
 
-    class SpyLG:
-        def __init__(self, runner):
-            selected["lg"] = runner
-
-    class SpyADK:
-        def __init__(self, runner):
-            selected["adk"] = runner
-
-    class SpyRunner:
-        def __init__(self, runner, runtime_type):
-            selected["generic"] = runtime_type
-
-    monkeypatch.setattr(mod, "LangGraphRuntimeAdapter", SpyLG)
-    monkeypatch.setattr(mod, "ADKRuntimeAdapter", SpyADK)
-    monkeypatch.setattr(mod, "RunnerRuntimeAdapter", SpyRunner)
-
-    mod._select_runtime_adapter("langchain", object())
-    assert "lg" in selected and "generic" not in selected
-
-    selected.clear()
-    mod._select_runtime_adapter("langgraph", object())
-    assert "lg" in selected
-
-    selected.clear()
-    mod._select_runtime_adapter("adk", object())
-    assert "adk" in selected
-
-    selected.clear()
-    mod._select_runtime_adapter("deepagents", object())
-    assert selected.get("generic") == "deepagents"
+    expected_runtime_types = (
+        ("langchain", "langgraph"),
+        ("deepagents", "langgraph"),
+        ("adk", "adk"),
+    )
+    for framework, expected in expected_runtime_types:
+        detection_type = type("Type", (), {"value": framework})()
+        detection = type(
+            "Detection", (), {"type": detection_type, "raw_config": {}}
+        )()
+        monkeypatch.setattr(mod, "_detect_project", lambda _path, value=detection: value)
+        mod._load_runtime_adapter(tmp_path, no_trace=True)
+        assert selected.pop() == expected
 
 
 def test_codex_yaml_detected(tmp_path: Path):

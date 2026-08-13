@@ -186,7 +186,6 @@ def build_app(*, port: int, name: str, database_path: str, required_token: str) 
     runner = EchoRunner()
     add_a2a_protocol_routes(
         app,
-        runner,
         A2AConfig(
             enabled=True,
             base_url=f"http://127.0.0.1:{port}",

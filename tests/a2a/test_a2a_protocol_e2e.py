@@ -34,11 +34,21 @@ from a2a.types import (
 )
 from fastapi import FastAPI
 
+import ksadk.evaluation.a2a_adapter as evaluation_a2a
 from ksadk.a2a import (
     A2AConfig,
     A2ARuntimeTaskAdapter,
     add_a2a_protocol_routes,
     build_agent_card,
+)
+from ksadk.evaluation import (
+    A2ATargetAdapter,
+    EvalCase,
+    EvalRunSpec,
+    EvalSetVersion,
+    TargetKind,
+    TargetRef,
+    TargetRunStatus,
 )
 from ksadk.events import EventPhase, EventType, RuntimeEvent
 from ksadk.runtime.adapter import (
@@ -103,7 +113,6 @@ def _build_app(task_dsn: str, runner=None) -> tuple[FastAPI, object]:
     )
     server = add_a2a_protocol_routes(
         app,
-        runner,
         config,
         task_adapter=A2ARuntimeTaskAdapter(
             RunnerRuntimeAdapter(runner, runtime_type="test"), runtime_type="test"
@@ -240,7 +249,7 @@ def test_production_routes_require_runtime_adapter(tmp_path):
     )
 
     with pytest.raises(TypeError, match="task_adapter"):
-        add_a2a_protocol_routes(app, _BlockingRunner(), config)
+        add_a2a_protocol_routes(app, config)
 
 
 @pytest.mark.asyncio
@@ -324,9 +333,9 @@ async def test_hosted_to_hosted(tmp_path):
     """hosted→hosted:hosted agent A 的 runner 经 A2A 协议调用 hosted agent B。"""
     # agent B(hosted,echo)
     app_b = FastAPI()
+    runner_b = _EchoRunner()
     add_a2a_protocol_routes(
         app_b,
-        (runner_b := _EchoRunner()),
         A2AConfig(
             enabled=True,
             base_url="http://agent-b",
@@ -342,9 +351,9 @@ async def test_hosted_to_hosted(tmp_path):
     card_b = build_agent_card(name="agent-b", base_url="http://agent-b", skills=["echo"])
     # agent A(hosted),runner 委托调 B
     app_a = FastAPI()
+    runner_a = _DelegatingRunner(app_b, card_b)
     add_a2a_protocol_routes(
         app_a,
-        (runner_a := _DelegatingRunner(app_b, card_b)),
         A2AConfig(
             enabled=True,
             base_url="http://agent-a",
@@ -495,7 +504,6 @@ async def test_input_required_then_resume(tmp_path):
     runtime_adapter = _HitlRuntimeAdapter()
     add_a2a_protocol_routes(
         app,
-        object(),
         A2AConfig(
             enabled=True,
             base_url="http://testserver",
@@ -599,7 +607,6 @@ class _NoopRuntime(BaseRuntime):
 @pytest.mark.asyncio
 async def test_cancel_routes_through_runtime_adapter(tmp_path):
     """goal-05 硬性要求:A2A cancel 走 RuntimeAdapter.cancel(G0.3),不在 executor 自造。"""
-    runner = _BlockingRunner()
     adapter = _RecordingRuntimeAdapter()
     task_adapter = A2ARuntimeTaskAdapter(adapter, runtime_type="test")
     app = FastAPI()
@@ -610,7 +617,7 @@ async def test_cancel_routes_through_runtime_adapter(tmp_path):
         task_store_dsn=f"sqlite+aiosqlite:///{tmp_path}/t.db",
         create_table=True,
     )
-    add_a2a_protocol_routes(app, runner, config, task_adapter=task_adapter)
+    add_a2a_protocol_routes(app, config, task_adapter=task_adapter)
     client, httpx_client = await _client_for(app)
 
     async def _consume():
@@ -660,3 +667,40 @@ async def test_taskstore_restart_recovery(tmp_path):
         assert fetched.id == task_id
     finally:
         await _close(client2, httpx_client2)
+
+
+@pytest.mark.asyncio
+async def test_evaluation_a2a_adapter_roundtrip(tmp_path, monkeypatch):
+    app, _ = _build_app(f"sqlite+aiosqlite:///{tmp_path}/evaluation.db")
+
+    def _evaluation_http_client(*, headers, timeout_seconds):
+        return httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://testserver",
+            headers=headers,
+            timeout=httpx.Timeout(timeout_seconds),
+            follow_redirects=False,
+        )
+
+    monkeypatch.setattr(evaluation_a2a, "_new_http_client", _evaluation_http_client)
+    adapter = A2ATargetAdapter(timeout_seconds=5)
+    target = TargetRef(kind=TargetKind.A2A, locator="http://testserver")
+
+    snapshot = await adapter.snapshot(target)
+    result = await adapter.run_case(
+        EvalRunSpec(
+            id="evaluation-e2e",
+            evalset=EvalSetVersion(
+                name="evaluation-e2e",
+                cases=[EvalCase(id="case-1", input="ping")],
+            ),
+            target=snapshot,
+        ),
+        EvalCase(id="case-1", input="ping"),
+        attempt=1,
+    )
+
+    assert snapshot.kind is TargetKind.A2A
+    assert result.status is TargetRunStatus.PASSED
+    assert result.output == "echo:ping"
+    assert result.metadata["remoteTaskIds"]

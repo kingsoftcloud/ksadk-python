@@ -25,6 +25,7 @@ agentengine --help
 agentengine init --help
 agentengine run --help
 agentengine web --help
+agentengine studio --help
 ```
 
 ## Command Groups
@@ -35,6 +36,7 @@ agentengine web --help
 | `config` | manage model and project settings | yes |
 | `run` | run terminal loop or local API server | yes |
 | `web` | start local browser UI | yes |
+| `studio` | start the local Agent authoring and debugging workspace | yes |
 | `a2a` | expose A2A surfaces where configured | yes |
 | `replay` | read and project RuntimeEvent history | yes |
 | `mcp` | build or manage MCP resources | depends on target |
@@ -133,6 +135,26 @@ agentengine web . --no-open
 Codex ManagedRuntime uses the same `agentengine web . --no-open` command. It
 validates the native Codex binary for the current operating system and reports
 when an offline Runtime version is not explicitly locked.
+
+### `agentengine studio`
+
+Start the loopback-only local Agent authoring workspace:
+
+```bash title="bash"
+agentengine studio .
+agentengine studio . --port 7831 --no-open
+agentengine studio . --env-file ./model.env --codex-proxy auto
+```
+
+Studio uses one React shell for Agents, conversations, builds, resources,
+traces, and orchestration. The root URL opens the workspace directly; there is
+no separately maintained `/chat` frontend. Model settings can come from the
+current process, global configuration, or an explicit `--env-file`. Browser
+writes are protected by the local session and CSRF tokens.
+
+`studio/static` contains the packaged React production build. Frontend sources
+and tests live in `ksadk/studio/react-ui`; run `make studio-react-test` after
+changing them to rebuild and verify the packaged assets.
 
 ### `ksadk replay` / `agentengine replay`
 
@@ -250,6 +272,22 @@ Disabling observability clears the managed OTLP endpoints, headers, and protocol
 
 ### `agentengine hermes`
 
+Hermes deploy accepts explicit runtime environment variables and, when
+`--env-file` is omitted, automatically reads `.env` from the current directory:
+
+```bash title="bash"
+agentengine hermes deploy --name my-hermes \
+  --env LOG_LEVEL=debug \
+  --env FEATURE_FLAG=on
+agentengine hermes deploy --name my-hermes --env-file ./hermes.env
+```
+
+`--env` is repeatable and `--env-file` accepts dotenv or a JSON object. The
+precedence is `--env` > `--env-file` > process environment > auto-discovered
+`.env`. Explicit environment options update `env_vars` on an existing Hermes;
+an image-only update does not overwrite the environment already stored by the
+service.
+
 Hermes exec passes argv directly and never parses it through a shell. The supported target forms are:
 
 ```bash title="bash"
@@ -298,7 +336,10 @@ Memory backend options (0.6.7):
 </Callout>
 
 <Callout type="info">
-  OpenClaw deploy also supports `--env KEY=VALUE` (repeatable) and `--env-file` for runtime environment variable pass-through, with the same semantics as the generic deploy/launch (0.6.5).
+  OpenClaw deploy also supports repeatable `--env KEY=VALUE`, `--env-file`, and
+  automatic discovery of `.env` in the current directory, with the same
+  precedence as Hermes. Generic `deploy` / `launch` only use explicit `--env`
+  or `--env-file` options and do not automatically load the project `.env`.
 </Callout>
 
 ## JSON Output

@@ -15,8 +15,9 @@ from ksadk.conversations.session_title import (
     build_fallback_title,
     build_heuristic_title,
 )
-from ksadk.server.factory import get_state
-from ksadk.sessions import ConversationSessionCore, Session, SessionEvent
+from ksadk.events.runtime_event import EventType
+from ksadk.server.factory import get_runtime_execution, get_state
+from ksadk.sessions import Session, SessionEvent
 
 from . import dependencies as deps
 from .common import _sanitize_session_state_for_action
@@ -52,7 +53,6 @@ async def _require_action_session(
 
 
 async def _session_to_action_payload(session: Session) -> dict[str, Any]:
-    runner = get_state().runner
     events = list(session.events or [])
     if not events:
         try:
@@ -106,18 +106,46 @@ async def _session_to_action_payload(session: Session) -> dict[str, Any]:
         "CreatedAt": session.created_at,
         "UpdatedAt": session.updated_at,
         "Version": session.version,
+        "Continuity": _runtime_continuity_payload(),
     }
-    if runner is not None:
-        try:
-            continuity = await runner.get_session_adapter().describe_continuity(
-                runner=runner,
-                session=session,
-                core=ConversationSessionCore(deps.resolve_session_service()),
-            )
-            payload["Continuity"] = continuity.to_payload()
-        except Exception as exc:
-            logger.debug("Failed to describe continuity for session %s: %s", session.id, exc)
     return payload
+
+
+def _runtime_continuity_payload() -> dict[str, Any]:
+    """Describe continuity from the active RuntimeAdapter capability contract."""
+
+    state = get_state()
+    if state.executor is None or state.launch_context is None:
+        # Session storage is independently useful in route-manifest and
+        # control-plane-only apps. Do not make a metadata projection require a
+        # live runtime execution binding.
+        return {
+            "Level": "semantic",
+            "Path": "replay",
+            "Runtime": "unbound",
+            "Details": {
+                "CheckpointSupported": False,
+                "Reason": "RuntimeAdapter is not bound to this app",
+            },
+        }
+    executor, launch_context = get_runtime_execution()
+    capabilities = executor.native_capabilities(launch_context)
+    continuity = capabilities.get("SessionContinuity")
+    continuity = continuity if isinstance(continuity, Mapping) else {}
+    checkpoint = capabilities.get("Checkpoint")
+    checkpoint = checkpoint if isinstance(checkpoint, Mapping) else {}
+    level = str(continuity.get("Level") or "semantic").strip().lower()
+    if level not in {"ui_only", "semantic", "runtime", "exact"}:
+        level = "semantic"
+    return {
+        "Level": level,
+        "Path": "checkpoint" if checkpoint.get("Supported") else "replay",
+        "Runtime": launch_context.runtime_type,
+        "Details": {
+            "CheckpointSupported": bool(checkpoint.get("Supported")),
+            "Reason": str(continuity.get("Reason") or ""),
+        },
+    }
 
 
 def _event_to_action_payload(event: SessionEvent) -> dict[str, Any]:
@@ -203,9 +231,34 @@ async def _iter_with_idle_heartbeat(source: AsyncIterator[Any]):
 
 
 def _checkpoint_event_to_action_payload(event: SessionEvent) -> dict[str, Any] | None:
-    if event.event_type != "run_checkpoint":
+    if event.event_type == "run_checkpoint":
+        metadata = event.metadata or {}
+    elif event.event_type == EventType.CHECKPOINT_CREATED:
+        content = event.content or {}
+        payload = content.get("payload") if isinstance(content, Mapping) else {}
+        if not isinstance(payload, Mapping):
+            return None
+        framework_ref = payload.get("framework_ref") or payload.get("resume_target") or {}
+        if not isinstance(framework_ref, Mapping):
+            framework_ref = {}
+        framework = str(payload.get("framework") or "").strip()
+        if not framework and len(framework_ref) == 1:
+            framework = str(next(iter(framework_ref)))
+        capability = payload.get("capability")
+        capability = capability if isinstance(capability, Mapping) else {}
+        metadata = {
+            **dict(event.metadata or {}),
+            "run_id": str(payload.get("run_id") or event.invocation_id or ""),
+            "checkpoint_id": str(payload.get("checkpoint_id") or ""),
+            "framework": framework,
+            "framework_ref": dict(framework_ref),
+            "backend": str(payload.get("backend") or capability.get("backend") or "unknown"),
+            "scope": str(payload.get("scope") or capability.get("scope") or "unknown"),
+            "durable": bool(payload.get("durable", capability.get("durable", False))),
+            "is_resumable": bool(payload.get("is_resumable", True)),
+        }
+    else:
         return None
-    metadata = event.metadata or {}
     run_id = str(metadata.get("run_id") or "").strip()
     checkpoint_id = str(metadata.get("checkpoint_id") or "").strip()
     framework = str(metadata.get("framework") or "").strip()

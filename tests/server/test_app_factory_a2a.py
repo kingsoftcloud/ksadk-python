@@ -8,12 +8,57 @@ JSONRPC / REST)装配进 app;不 enable 则不装配。runner 经惰性代理解
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+
 from fastapi.testclient import TestClient
 
 from ksadk.a2a.card import JSONRPC_PATH
 from ksadk.a2a.routes import A2AConfig
-from ksadk.server.app import _configure_runtime_app
+from ksadk.events import RuntimeEvent
+from ksadk.runtime import (
+    BaseRuntime,
+    CancelResult,
+    RunHandle,
+    RuntimeAdapter,
+    StartRequest,
+)
+from ksadk.server.composition import configure_runtime_app
 from ksadk.server.factory import RuntimeAppConfig, create_runtime_app
+
+
+class _Runtime(BaseRuntime):
+    runtime_type = "fixture"
+
+    def native_capabilities(self) -> dict[str, object]:
+        return {}
+
+
+class _Adapter(RuntimeAdapter):
+    def __init__(self) -> None:
+        super().__init__(_Runtime())
+
+    async def start(self, request: StartRequest) -> RunHandle:
+        return RunHandle(
+            run_id=str(request.metadata.get("invocation_id") or "run"),
+            session_id=request.session_id,
+            runtime_type="fixture",
+        )
+
+    async def stream(self, _handle: RunHandle) -> AsyncIterator[RuntimeEvent]:
+        if False:
+            yield  # pragma: no cover
+
+    async def cancel(self, _handle: RunHandle) -> CancelResult:
+        return CancelResult.NOT_RUNNING
+
+    async def resume(self, handle, _target, _payload):
+        return handle
+
+    async def checkpoint(self, _handle):
+        raise NotImplementedError
+
+    async def close(self, _handle):
+        return None
 
 
 def _paths(app) -> set[str]:
@@ -34,25 +79,30 @@ def _paths(app) -> set[str]:
 
 
 def test_factory_does_not_wire_a2a_when_disabled() -> None:
-    app = create_runtime_app(RuntimeAppConfig(a2a=None), _configure_runtime_app)
+    app = create_runtime_app(RuntimeAppConfig(a2a=None), configure_runtime_app)
     paths = _paths(app)
     assert JSONRPC_PATH not in paths
     assert app.state.runtime.a2a_server is None
 
 
 def test_factory_wires_a2a_when_enabled() -> None:
+    adapter = _Adapter()
     a2a_cfg = A2AConfig(
         enabled=True,
         agent_name="factory-agent",
         base_url="http://testserver",
         task_store_dsn="sqlite+aiosqlite:///:memory:",
     )
-    app = create_runtime_app(RuntimeAppConfig(a2a=a2a_cfg), _configure_runtime_app)
+    app = create_runtime_app(
+        RuntimeAppConfig(a2a=a2a_cfg, a2a_runtime_adapter=adapter),
+        configure_runtime_app,
+    )
     paths = _paths(app)
     # A2A 数据面端点已装配
     assert JSONRPC_PATH in paths
     assert any(p and p.startswith("/a2a/v1") for p in paths)
     assert app.state.runtime.a2a_server is not None
+    assert app.state.runtime.a2a_server.task_adapter.runtime_adapter is adapter
 
     # AgentCard 可访问(GET,无需真实 runner)
     client = TestClient(app)

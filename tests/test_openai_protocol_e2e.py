@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import importlib
 import json
 import os
 import shutil
@@ -21,6 +20,10 @@ import uvicorn
 import websockets
 
 from ksadk.runners.base_runner import BaseRunner
+from ksadk.runtime import RuntimeExecutor, RuntimeLaunchContext, RuntimeRegistry
+from ksadk.runtime.runner_adapter import RunnerRuntimeAdapter
+from ksadk.server.composition import configure_runtime_app
+from ksadk.server.factory import RuntimeAppConfig, create_runtime_app
 from ksadk.sessions.base import SessionEvent
 from ksadk.sessions.in_memory import InMemorySessionService
 
@@ -294,18 +297,33 @@ class _CdpPage:
 
 @pytest.fixture
 def real_http_runtime(monkeypatch, tmp_path):
-    server_app_module = importlib.import_module("ksadk.server.app")
-
     service = InMemorySessionService()
     runner = _E2ERunner()
     monkeypatch.setenv("AGENTENGINE_UI_DIR", str(tmp_path / ".agentengine" / "ui"))
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     monkeypatch.delenv("OPENAI_API_BASE", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
-    server_app_module.set_runner(runner)
 
-    with _run_real_http_server(server_app_module.app) as base_url:
+    registry = RuntimeRegistry()
+    registry.register(
+        "langgraph",
+        lambda _context: RunnerRuntimeAdapter(runner, runtime_type="langgraph"),
+    )
+    launch_context = RuntimeLaunchContext(
+        runtime_type="langgraph",
+        project_dir=tmp_path,
+        detection=runner.detection_result,
+    )
+    app = create_runtime_app(
+        RuntimeAppConfig(
+            runtime_executor=RuntimeExecutor(registry),
+            launch_context=launch_context,
+            session_service_provider=lambda: service,
+        ),
+        configure_runtime_app,
+    )
+
+    with _run_real_http_server(app) as base_url:
         yield base_url, runner, service
 
 

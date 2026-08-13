@@ -41,6 +41,10 @@ OPENAI_MODEL_NAME=my-model
 
 | Variable | Purpose |
 | --- | --- |
+| `KSADK_CODEX_APPROVAL` | Codex approval policy; Studio can select it for the next turn |
+| `KSADK_CODEX_HOME` | explicit native Codex HOME override; normally isolated automatically |
+| `KSADK_CODEX_ISOLATE_HOME` | defaults to `1`; set to `0` only when debugging with the process HOME |
+| `KSADK_CODEX_SANDBOX` | Codex sandbox mode: `read_only`, `workspace_write`, or `full_access` |
 | `KSADK_CODEX_USE_PROXY` | `1` forces the local Codex protocol proxy and `0` forces direct mode; unset performs a conservative probe for custom upstreams only |
 | `KSADK_PROXY_UPSTREAM_BASE` | Codex proxy upstream URL override; defaults to the OpenAI-compatible base URL |
 | `KSADK_PROXY_UPSTREAM_KEY` | Codex proxy upstream credential override (sensitive) |
@@ -49,6 +53,9 @@ OPENAI_MODEL_NAME=my-model
 | `KSADK_MODEL_PROXY_AGENTS` | comma-separated agent allowlist |
 | `KSADK_MODEL_PROXY_MODELS` | comma-separated model allowlist |
 | `KSADK_MODEL_PROXY_DENY` | comma-separated denylist for an emergency proxy disable |
+| `KSADK_STUDIO_NO_SECURITY` | controlled tests only; `1` disables the local session and CSRF checks |
+| `KSADK_STUDIO_SESSION_TOKEN` | local Studio browser session token (sensitive; generated randomly when unset) |
+| `KSADK_STUDIO_TRACE_CONTENT` | persist trace event content, default `1`; set to `0` to retain metadata only |
 
 ## Runtime, A2A, and A2UI in 0.8
 
@@ -312,7 +319,7 @@ KSADK_MCP_SERVERS='[{"name":"docs","url":"http://127.0.0.1:9000/mcp"}]'
 
 | Variable | Purpose |
 | --- | --- |
-| `KSADK_WEB_VERSION` | published `@kingsoftcloud/ksadk-web` npm version used by `make sync-ksadk-web-static`; the 0.8.x default is `0.3.0`. Publish and verify a new version before using it in a wheel build. |
+| `KSADK_WEB_VERSION` | published `@kingsoftcloud/ksadk-web` npm version used by `make sync-ksadk-web-static`; the 0.8.x default is `0.3.1`. Publish and verify a new version before using it in a wheel build. |
 | `KSADK_WEB_PACKAGE` | npm package name used for local UI static sync; default `@kingsoftcloud/ksadk-web` |
 | `KSADK_WEB_TARBALL_NAME` | saved filename when `KSADK_WEB_RELEASE_URL` is set; npm pack mode uses the real tarball filename returned by npm |
 | `KSADK_WEB_RELEASE_URL` | optional fallback; when set, skips npm pack and downloads from this tarball URL |

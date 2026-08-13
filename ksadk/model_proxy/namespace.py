@@ -23,6 +23,7 @@ chat completions 只认顶层 ``function`` 工具(chat 嵌套)和 ``function.nam
 from __future__ import annotations
 
 import hashlib
+import json
 from typing import Any
 
 CHAT_TOOL_NAME_MAX_LEN = 64
@@ -64,7 +65,19 @@ def build_restore_map(tools: list[Any] | None) -> dict[str, dict[str, str]]:
     if not tools:
         return restore
     for tool in tools:
-        if not isinstance(tool, dict) or tool.get("type") != "namespace":
+        if not isinstance(tool, dict):
+            continue
+        if tool.get("type") == "custom":
+            # custom 工具（如 apply_patch freeform）拍平为普通 function 转发，
+            # 响应侧据此把 function_call 还原成 custom_tool_call
+            custom_name = (tool.get("name") or "").strip()
+            if custom_name:
+                restore.setdefault(
+                    custom_name,
+                    {"custom": "true", "namespace": "", "name": custom_name},
+                )
+            continue
+        if tool.get("type") != "namespace":
             continue
         namespace = (tool.get("name") or "").strip()
         if not namespace:
@@ -168,6 +181,21 @@ def restore_function_call(item: dict, restore_map: dict[str, dict[str, str]]) ->
     flat = item.get("name")
     entry = restore_map.get(flat) if isinstance(flat, str) else None
     if entry:
+        if entry.get("custom") == "true":
+            # function_call(JSON arguments) -> custom_tool_call(原始文本 input)
+            raw_args = item.pop("arguments", "") or ""
+            try:
+                payload = json.loads(raw_args)
+                text_input = (
+                    payload.get("input", raw_args) if isinstance(payload, dict) else raw_args
+                )
+            except Exception:
+                text_input = raw_args
+            item["type"] = "custom_tool_call"
+            item["name"] = entry["name"]
+            item["input"] = text_input
+            item.pop("namespace", None)
+            return item
         item["name"] = entry["name"]
         item["namespace"] = entry["namespace"]
     return item

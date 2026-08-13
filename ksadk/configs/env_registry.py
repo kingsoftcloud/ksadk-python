@@ -93,6 +93,55 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "/var/run/secrets/agentengine/a2a",
     ),
     EnvVarSpec(
+        "KSADK_A2A_SERVICE_URL",
+        "a2a",
+        "A2A control plane service URL (KOP public API); auto-detected if unset.",
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_SERVICE_TOKEN",
+        "a2a",
+        "Bearer token for A2A control plane service authentication.",
+        sensitive=True,
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_SERVICE_ENDPOINT",
+        "a2a",
+        "A2A service endpoint hostname (used for auto-detection with scheme).",
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_SERVICE_SCHEME",
+        "a2a",
+        "A2A service URL scheme (http/https) for auto-detection.",
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_SERVICE_REGION",
+        "a2a",
+        "A2A service region for KOP signing.",
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_ACCESS_KEY",
+        "a2a",
+        "A2A KOP access key for signing; falls back to KSYUN_ACCESS_KEY.",
+        sensitive=True,
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_SECRET_KEY",
+        "a2a",
+        "A2A KOP secret key for signing; falls back to KSYUN_SECRET_KEY.",
+        sensitive=True,
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_SERVICE",
+        "a2a",
+        "A2A KOP signing service name (default: aicp).",
+    ),
+    EnvVarSpec(
+        "KSADK_EVAL_JUDGE_API_KEY",
+        "eval",
+        "API key for the LLM Judge evaluation backend.",
+        sensitive=True,
+    ),
+    EnvVarSpec(
         "KSADK_A2UI_GENERATION_TIMEOUT_SECONDS",
         "agui",
         "A2UI structured-generation deadline in seconds; values are clamped to 1 through 120.",
@@ -161,6 +210,47 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "codex",
         "Codex proxy override: 1 forces the local Responses-to-Chat proxy and "
         "0 forces direct mode.",
+    ),
+    EnvVarSpec(
+        "KSADK_CODEX_SANDBOX",
+        "codex",
+        "Codex sandbox mode: read_only (default, no writes) / workspace_write "
+        "(write inside workspace) / full_access (write anywhere).",
+    ),
+    EnvVarSpec(
+        "KSADK_CODEX_APPROVAL",
+        "codex",
+        "Codex approval mode: deny_all (default for read_only) / auto_review "
+        "(auto-approve with review log).",
+    ),
+    EnvVarSpec(
+        "KSADK_CODEX_HOME",
+        "codex",
+        "Explicit Codex home directory override for the native runtime.",
+    ),
+    EnvVarSpec(
+        "KSADK_CODEX_ISOLATE_HOME",
+        "codex",
+        "Isolate native Codex state under the project workspace; set to 0 for debugging only.",
+        "1",
+    ),
+    EnvVarSpec(
+        "KSADK_STUDIO_NO_SECURITY",
+        "studio",
+        "Disable Studio loopback session and CSRF checks for controlled tests only.",
+        "0",
+    ),
+    EnvVarSpec(
+        "KSADK_STUDIO_SESSION_TOKEN",
+        "studio",
+        "Explicit local Studio browser session token; generated randomly when unset.",
+        sensitive=True,
+    ),
+    EnvVarSpec(
+        "KSADK_STUDIO_TRACE_CONTENT",
+        "studio",
+        "Persist Studio trace event content; set to 0 to retain metadata only.",
+        "1",
     ),
     EnvVarSpec(
         "KSADK_COMMAND_", "sandbox", "Internal prefix for command policy environment controls."
@@ -654,7 +744,7 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "KSADK_WEB_VERSION",
         "web",
         "Published KsADK Web npm version used for a reproducible wheel build.",
-        "0.3.0",
+        "0.3.1",
     ),
     EnvVarSpec(
         "KSADK_WORKING_SET_MAX_FILES",

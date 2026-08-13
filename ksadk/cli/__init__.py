@@ -67,6 +67,7 @@ ROOT_HELP_COMMANDS = {
     "completion",
     "dashboard",
     "deploy",
+    "eval",
     "files",
     "init",
     "hermes",
@@ -74,6 +75,7 @@ ROOT_HELP_COMMANDS = {
     "mcp",
     "openclaw",
     "run",
+    "studio",
     "version",
     "web",
 }
@@ -87,6 +89,7 @@ SHORT_HELP_MAP = {
     "completion": "Shell 补全管理",
     "dashboard": "打开云端 Agent Dashboard",
     "deploy": "部署到云端",
+    "eval": "评测本地、A2A 或 Codex Agent",
     "files": "管理 workspace 文件",
     "hermes": "Hermes Agent 资源管理",
     "init": "创建新项目",
@@ -94,6 +97,7 @@ SHORT_HELP_MAP = {
     "mcp": "MCP 资源管理",
     "openclaw": "OpenClaw 资源管理",
     "run": "运行 Agent",
+    "studio": "启动本地 Agent 构建控制台",
     "version": "Agent 版本管理",
     "web": "本地调试 Agent Invoke UI",
     "config": "项目配置与模型设置",
@@ -173,6 +177,8 @@ class ColoredHelpGroup(click.Group):
         _write_colored_help_row(formatter, "agentengine init", "初始化项目")
         _write_colored_help_row(formatter, "agentengine run", "运行 API Server")
         _write_colored_help_row(formatter, "agentengine web", "本地调试 Agent Invoke UI")
+        _write_colored_help_row(formatter, "agentengine studio", "本地 Agent 构建控制台")
+        _write_colored_help_row(formatter, "agentengine eval", "评测本地、A2A 或 Codex Agent")
 
         # 云端部署
         formatter.write(click.style("  🚀  云端部署:\n\n", fg="blue", bold=True))
@@ -336,6 +342,8 @@ def _register_commands():
     _register_optional_command(cli, "ksadk.cli.cmd_config", "config")
     _register_optional_command(cli, "ksadk.cli.cmd_model", "model")
     _register_optional_command(cli, "ksadk.cli.cmd_build", "build")
+    _register_optional_command(cli, "ksadk.cli.cmd_studio", "studio")
+    _register_optional_command(cli, "ksadk.cli.cmd_eval", "eval")
     _register_optional_command(cli, "ksadk.cli.cmd_launch", "launch")
     _register_optional_command(cli, "ksadk.cli.cmd_agent", "agent")
     _register_optional_command(cli, "ksadk.cli.cmd_status", "status")

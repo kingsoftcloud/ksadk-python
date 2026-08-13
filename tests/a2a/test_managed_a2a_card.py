@@ -29,7 +29,7 @@ from ksadk.managed_a2a_card import (
     ManagedA2ACardMount,
     build_managed_a2a_card_if_configured,
 )
-from ksadk.server.app import _configure_runtime_app
+from ksadk.server.app import configure_runtime_app
 from ksadk.server.factory import RuntimeAppConfig, create_runtime_app
 
 
@@ -81,7 +81,7 @@ def test_mounts_card_without_a2a_agent_id(
     assert isinstance(mount, ManagedA2ACardMount)
     assert mount.config.base_url == "http://runtime.internal:8080"
 
-    app = create_runtime_app(RuntimeAppConfig(a2a=mount), _configure_runtime_app)
+    app = create_runtime_app(RuntimeAppConfig(a2a=mount), configure_runtime_app)
     paths = _paths(app)
     assert "/.well-known/agent-card.json" in paths
     # v1 scope: no JSON-RPC / REST task routes
@@ -99,7 +99,7 @@ def test_card_payload_uses_injected_name_version(
 
     mount = build_managed_a2a_card_if_configured()
     assert mount is not None
-    app = create_runtime_app(RuntimeAppConfig(a2a=mount), _configure_runtime_app)
+    app = create_runtime_app(RuntimeAppConfig(a2a=mount), configure_runtime_app)
 
     resp = TestClient(app).get("/.well-known/agent-card.json")
     assert resp.status_code == 200
@@ -150,13 +150,22 @@ def test_start_stop_are_noop(_clean_env: None, monkeypatch: pytest.MonkeyPatch) 
     assert asyncio.run(mount.stop()) is None
 
 
-def test_module_level_server_app_mounts_discovery_only_card_in_fresh_process() -> None:
-    """Code/Container entrypoints import ``ksadk.server.app:app`` directly."""
+def test_managed_entrypoint_composition_mounts_discovery_only_card_in_fresh_process() -> None:
+    """Managed entrypoints compose explicitly via ``RuntimeAppConfig.a2a``.
+
+    There is no module-level ``ksadk.server.app:app`` anymore; Code/Container
+    entrypoints call ``create_runtime_app`` with the env-derived card mount.
+    """
     probe = """
 import json
 from fastapi.testclient import TestClient
-from ksadk.server.app import app
+from ksadk.managed_a2a_card import build_managed_a2a_card_if_configured
+from ksadk.server.app import RuntimeAppConfig, configure_runtime_app, create_runtime_app
 
+app = create_runtime_app(
+    RuntimeAppConfig(a2a=build_managed_a2a_card_if_configured()),
+    configure_runtime_app,
+)
 paths = sorted(
     path
     for route in app.routes

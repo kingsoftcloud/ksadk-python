@@ -7,6 +7,8 @@ import pytest
 
 from ksadk.harness import HarnessApp, HarnessConfig
 from ksadk.harness.config import McpToolSpec
+from ksadk.harness.runtime import HarnessRuntimeAdapter
+from ksadk.runtime import StartRequest
 
 
 @pytest.mark.asyncio
@@ -38,7 +40,11 @@ async def test_production_reasoner_uses_model_tool_loop_without_echo(monkeypatch
         HarnessConfig(model="glm-5.2", prompt="read before answering"),
         workspace_root=tmp_path,
     )
-    result = await harness.build_runner().invoke({"input": "what is in facts?"})
+    adapter = harness.adapter()
+    assert isinstance(adapter, HarnessRuntimeAdapter)
+    result = await adapter.execute_request(
+        StartRequest(input="what is in facts?", user_id="u", session_id="s")
+    )
 
     assert result["output"] == "grounded final answer"
     assert result["output"] != "what is in facts?"
