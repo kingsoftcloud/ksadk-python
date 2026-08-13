@@ -1,7 +1,7 @@
 # AgentEngine Makefile
 # 用于同步 KsADK Web static 和管理项目
 
-.PHONY: help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-version-gate docs-site-build docs-site-dev public-test public-build-check public-build-alias-check public-preflight public-publish-check public-release-approval-check public-publish-gate public-release-tag public-review public-sync-ksadk-web-static open-source-audit-dist open-source-audit-alias-dist openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size sync-ksadk-web-static verify-ksadk-web-static verify-ksadk-web-wheel-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend
+.PHONY: help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-version-gate docs-site-build docs-site-dev public-test public-build-check public-build-alias-check public-preflight public-publish-check public-release-approval-check public-publish-gate public-release-tag public-review public-sync-ksadk-web-static open-source-audit-dist open-source-audit-alias-dist openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size sync-ksadk-web-static verify-ksadk-web-static verify-ksadk-web-wheel-static build-studio-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend
 
 # 默认目标
 help:
@@ -16,7 +16,8 @@ help:
 	@echo "  \033[1;32mWeb UI 构建:\033[0m"
 	@echo "    make sync-ksadk-web-static KSADK_WEB_VERSION=0.3.1"
 	@echo "                         从 @kingsoftcloud/ksadk-web npm 包同步 static"
-	@echo "    make build-frontend 同步 ksadk-web static"
+	@echo "    make build-frontend 准备 ksadk-web 与 React Studio static"
+	@echo "    make build-studio-static 编译 React Studio static"
 	@echo ""
 	@echo "  \033[1;32m版本管理:\033[0m"
 	@echo "    make version         显示当前版本"
@@ -185,7 +186,7 @@ subprocess.run(['sed', '-i', '', f's/^version = \".*\"/version = \"{new_v}\"/', 
 check-build-deps:
 	@python -c "import build" 2>/dev/null || (echo "📦 安装构建依赖..." && pip install build twine)
 
-build: check-build-deps sync-ksadk-web-static
+build: check-build-deps sync-ksadk-web-static build-studio-static
 	@echo "📦 构建 Python 包 v$(VERSION)..."
 	python -m build
 	@# 删除 tar.gz 和临时目录，只保留 whl
@@ -195,8 +196,8 @@ build: check-build-deps sync-ksadk-web-static
 	@ls -la dist/
 
 # 仅构建 Python 包（跳过 npm 同步，使用现有静态文件）
-build-only: check-build-deps
-	@echo "📦 构建 Python 包 v$(VERSION)（使用现有静态文件）..."
+build-only: check-build-deps build-studio-static
+	@echo "📦 构建 Python 包 v$(VERSION)（使用已同步 Web static）..."
 	@if [ ! -f "ksadk/server/static/index.html" ]; then \
 		echo "❌ 错误: ksadk/server/static/ 目录为空，请先运行 make sync-ksadk-web-static"; \
 		exit 1; \
@@ -387,7 +388,7 @@ public-test:
 
 public-sync-ksadk-web-static: sync-ksadk-web-static
 
-public-build-check: clean-dist sync-ksadk-web-static
+public-build-check: clean-dist sync-ksadk-web-static build-studio-static
 	@echo "==> build and twine check"
 	@uv build
 	@$(MAKE) verify-ksadk-web-wheel-static
@@ -576,6 +577,8 @@ openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size:
 # ============================================================
 
 STATIC_DIR := ksadk/server/static
+STUDIO_REACT_DIR := ksadk/studio/react-ui
+STUDIO_STATIC_DIR := ksadk/studio/static
 # The wheel must embed a published, reproducible Web bundle. 0.8.x is coupled
 # to the 0.3.1 Web release; the release job must fail rather than silently
 # substituting an older npm package when that release is not visible yet.
@@ -632,11 +635,17 @@ verify-ksadk-web-wheel-static:
 		--wheel "$$(ls dist/ksadk-*.whl)" \
 		--expected-version "$(patsubst v%,%,$(KSADK_WEB_VERSION))"
 
+build-studio-static:
+	@echo "Build React Studio static assets from $(STUDIO_REACT_DIR)"
+	npm --prefix "$(STUDIO_REACT_DIR)" ci
+	npm --prefix "$(STUDIO_REACT_DIR)" run build
+	@test -f "$(STUDIO_STATIC_DIR)/index.html" || (echo "ERROR: Studio static index.html missing after build" && exit 1)
+
 sync-hosted-ui: sync-ksadk-web-static
 	@echo "sync-hosted-ui is deprecated; static assets now come from $(KSADK_WEB_PACKAGE)."
 
-build-frontend: sync-ksadk-web-static
-	@echo "Frontend static assets synced from $(KSADK_WEB_VERSION)"
+build-frontend: sync-ksadk-web-static build-studio-static
+	@echo "Frontend static assets prepared for packaging"
 
 build-wheel: build-frontend
 	uv build
@@ -645,7 +654,7 @@ build-all: build-wheel
 	@echo "Build complete. Wheel is in dist/"
 
 clean-frontend:
-	rm -rf $(STATIC_DIR)
+	rm -rf $(STATIC_DIR) $(STUDIO_STATIC_DIR)
 
 # ============================================================
 # 清理
@@ -667,7 +676,7 @@ clean-cache:
 
 clean-static:
 	@echo "🧹 清理静态文件..."
-	rm -rf $(STATIC_DIR)/*
+	rm -rf $(STATIC_DIR)/* $(STUDIO_STATIC_DIR)
 	@echo "✅ 清理完成"
 
 clean-offline:
