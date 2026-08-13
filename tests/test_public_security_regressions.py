@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -7,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from ksadk.model_proxy.config import ProxyConfig
 from ksadk.model_proxy.server import create_app
+from ksadk.studio.authoring import AgentAuthoringService
 from ksadk.studio.errors import StudioError
 from ksadk.studio.workspace import Workspace
 
@@ -40,6 +42,15 @@ def test_workspace_resolve_preserves_containment_for_absolute_and_symlink_paths(
         workspace.resolve("outside-link/private.txt")
     with pytest.raises(StudioError, match="路径不在当前工作区内"):
         workspace.resolve(same_prefix_outside / "private.txt")
+
+
+def test_authoring_uses_an_opaque_filesystem_id_for_an_untrusted_slug(tmp_path: Path) -> None:
+    workspace = Workspace(tmp_path / "workspace")
+    workspace.initialize()
+
+    agent_id = AgentAuthoringService(workspace).allocate_agent_id("../../release-plan")
+
+    assert re.fullmatch(r"agentkit-[0-9a-f]{8}", agent_id)
 
 
 def test_responses_unsupported_tools_error_does_not_echo_request_payload() -> None:
