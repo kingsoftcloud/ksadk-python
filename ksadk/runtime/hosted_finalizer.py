@@ -128,6 +128,7 @@ async def finalize_hosted_turn(
                 ]
             except Exception:  # noqa: BLE001
                 turn_events = None
+        if not turn_events:
             return
         candidates = propose_memory_candidates(
             list(turn_events),

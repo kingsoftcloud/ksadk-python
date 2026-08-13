@@ -120,10 +120,19 @@ class LegacyMemoryAdapter:
             {"parts": [{"text": record.content}], "metadata": record.metadata},
             ensure_ascii=False,
         )
+        success = True
         if hasattr(self._backend, "save_memory"):
-            self._backend.save_memory(user_id=record.scope_id, event_strings=[event_str])
+            success = bool(
+                self._backend.save_memory(user_id=record.scope_id, event_strings=[event_str])
+            )
         elif hasattr(self._backend, "save_event_strings"):
-            self._backend.save_event_strings(user_id=record.scope_id, event_strings=[event_str])
+            success = bool(
+                self._backend.save_event_strings(user_id=record.scope_id, event_strings=[event_str])
+            )
+        if not success:
+            raise RuntimeError(
+                f"Memory Provider save returned False: {type(self._backend).__name__}"
+            )
         return record
 
     def delete(self, request: MemoryDeleteRequest) -> MemoryDeleteResult:

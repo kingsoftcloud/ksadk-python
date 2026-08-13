@@ -286,7 +286,7 @@ async def _finalize_hosted_turn(
             flush_before_compaction=getattr(prepared, "flush_before_compaction", True),
             provider_ref=str(getattr(prepared, "provider_ref", "local-default") or ""),
             emit_event=None,
-            session_events=turn_events,
+            session_events=_turn_events,
             # emit_event=lambda d: _canonical_emit_memory_event(
             #     d, session_service_provider, prepared
         ),

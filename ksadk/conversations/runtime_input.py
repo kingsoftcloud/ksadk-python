@@ -18,13 +18,6 @@ from ksadk.runtime_context import (
     PlatformInvocationContext,
 )
 
-_recall_events: list = []
-
-
-def _append_recall_event(event: dict) -> None:
-    """Collect recall events (module-level, scheme S3)."""
-    _recall_events.append(event)
-
 
 def _is_prompt_too_long_error(exc: Exception) -> bool:
     """尽量用宽松规则识别 PTL，兼容不同 runtime/模型返回格式。"""
@@ -432,6 +425,7 @@ def _build_runner_ambient_contexts(
     contexts: dict[str, Any] = {
         "kb_context": None,
         "memory_context": None,
+        "memory_recall_events": [],
     }
     normalized_input = str(user_input or "").strip()
     if not normalized_input or not _should_use_platform_ambient_context(runner):
@@ -461,12 +455,18 @@ def _build_runner_ambient_contexts(
             )
             if not _ambient_context_has_error(memory_context):
                 contexts["memory_context"] = memory_context
-                _append_recall_event({"type": "memory.recall.completed", "count": 1})
+                contexts.setdefault("_memory_recall_events", []).append(
+                    {"type": "memory.recall.completed", "count": 1}
+                )
             else:
-                _append_recall_event({"type": "memory.recall.empty"})
+                contexts.setdefault("_memory_recall_events", []).append(
+                    {"type": "memory.recall.empty"}
+                )
         except Exception as exc:
             logger.warning("Failed to build ambient memory context: %s", exc)
-            _append_recall_event({"type": "memory.recall.failed", "error": str(exc)[:200]})
+            contexts.setdefault("_memory_recall_events", []).append(
+                {"type": "memory.recall.failed", "error": str(exc)[:200]}
+            )
 
     return contexts
 
