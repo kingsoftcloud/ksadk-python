@@ -21,6 +21,8 @@ EvalSet -> TargetAdapter -> TargetSnapshot -> EvalRunSpec
 |---|---|---|
 | `LOCAL_SOURCE` | 开发中的本地源码快速评测 | CLI 或 Studio API 在当前进程内通过 `RuntimeExecutor` 执行 |
 | `STUDIO_BUILD` | 对不可变 Studio Build 做正式回归 | Studio 解析 Build artifact，再通过规范化运行接口执行 |
+
+当前 `STUDIO_BUILD` 仅开放已冻结源码 bundle 的 Framework Build。Codex Build 现阶段只冻结 manifest/runtime 元数据，执行仍依赖活动工作区，因此不会出现在评测 Target 列表中，直接提交也会返回 `CODEX_BUILD_NOT_IMMUTABLE`；待 Codex 构建产物包含源码或独立 worktree 快照后再开放。
 | `A2A` | 评测远端 Agent | `A2ATargetAdapter` 通过 A2A HTTP 协议调用远端服务 |
 
 `LOCAL_SOURCE` 不要求先启动 Studio。只有通过浏览器页面发起时才需要 Studio HTTP 服务；`A2A` 则要求目标 Agent 的 A2A 服务可访问。

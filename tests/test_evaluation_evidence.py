@@ -123,8 +123,42 @@ def test_evidence_store_applies_data_policy_and_returns_queryable_trace(
     }
 
 
+def test_redacted_trace_recursively_redacts_sensitive_fields(tmp_path) -> None:
+    event = _event(
+        EventType.TOOL_CALL_BEGIN,
+        1,
+        {
+            "call_id": "call-1",
+            "name": "lookup",
+            "request": {
+                "text": "private prompt",
+                "query": "private unrecognized field",
+                "context": [{"accessToken": "private token"}],
+            },
+            "items": [{"result": "private result"}, {"status": "ready"}],
+        },
+    )
+    store = EvidenceStore(tmp_path)
+
+    trace = store.read_trace(
+        store.write_trace("eval-1", [event], policy=DataPolicy.REDACTED_TRACE)
+    )
+
+    payload = trace["events"][0]["payload"]
+    assert payload["request"]["text"] == "[REDACTED]"
+    assert payload["request"]["query"] == "[REDACTED]"
+    assert payload["request"]["context"][0]["accessToken"] == "[REDACTED]"
+    assert payload["items"] == [{"result": "[REDACTED]"}, {"status": "ready"}]
+    assert "private" not in repr(trace)
+
+
 def test_evidence_store_rejects_unscoped_or_escaped_reads(tmp_path) -> None:
     store = EvidenceStore(tmp_path)
 
     with pytest.raises(EvidenceStoreError):
         store.write_trace("../outside", [_event(EventType.RUN_STARTED, 1, {"status": "x"})])
+
+    unsafe_event = _event(EventType.RUN_STARTED, 1, {"status": "x"})
+    unsafe_event.invocation_id = "stream:private"
+    with pytest.raises(EvidenceStoreError):
+        store.write_trace("eval-1", [unsafe_event])

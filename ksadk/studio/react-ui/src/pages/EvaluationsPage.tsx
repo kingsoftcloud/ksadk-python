@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Activity, ChevronDown, ChevronUp, Play, RefreshCw } from "lucide-react";
 import { apiFetch } from "../api";
 import { showToast } from "../components/Toast";
@@ -66,6 +66,7 @@ interface EvaluationCatalog {
 }
 
 const TERMINAL_OPERATION_STATES = new Set(["SUCCEEDED", "FAILED", "CANCELLED", "INTERRUPTED"]);
+const OPERATION_POLL_TIMEOUT_MS = 3_600_000;
 
 function formatDate(value: string): string {
   const date = new Date(value);
@@ -107,17 +108,31 @@ async function errorMessage(response: Response, fallback: string): Promise<strin
   }
 }
 
-async function waitForOperation(operationId: string): Promise<Operation> {
+async function waitForOperation(operationId: string, signal: AbortSignal): Promise<Operation> {
+  const deadline = Date.now() + OPERATION_POLL_TIMEOUT_MS;
   for (;;) {
-    const response = await apiFetch(`/api/v1/operations/${encodeURIComponent(operationId)}`);
+    signal.throwIfAborted();
+    if (Date.now() >= deadline) throw new Error("评测任务等待超时，请稍后刷新报告查看最终状态");
+    const response = await apiFetch(`/api/v1/operations/${encodeURIComponent(operationId)}`, { signal });
     if (!response.ok) throw new Error(await errorMessage(response, "评测任务状态读取失败"));
     const operation: Operation = await response.json();
     if (TERMINAL_OPERATION_STATES.has(operation.status)) return operation;
-    await new Promise(resolve => window.setTimeout(resolve, 350));
+    await new Promise<void>((resolve, reject) => {
+      const abort = () => {
+        window.clearTimeout(timer);
+        reject(new DOMException("Operation polling aborted", "AbortError"));
+      };
+      const timer = window.setTimeout(() => {
+        signal.removeEventListener("abort", abort);
+        resolve();
+      }, 350);
+      signal.addEventListener("abort", abort, { once: true });
+    });
   }
 }
 
 export function EvaluationsPage({ refreshTick }: { refreshTick: number }) {
+  const operationController = useRef<AbortController | null>(null);
   const [reports, setReports] = useState<EvaluationReport[]>([]);
   const [catalog, setCatalog] = useState<EvaluationCatalog>({ evalsets: [], builds: [] });
   const [activeReport, setActiveReport] = useState<EvaluationReport | null>(null);
@@ -170,6 +185,12 @@ export function EvaluationsPage({ refreshTick }: { refreshTick: number }) {
     void loadReports();
     void loadCatalog();
   }, [loadCatalog, loadReports, refreshTick]);
+
+  useEffect(() => () => {
+    const controller = operationController.current;
+    operationController.current = null;
+    controller?.abort();
+  }, []);
 
   function changeTargetKind(kind: TargetKind) {
     setTargetKind(kind);
@@ -233,6 +254,9 @@ export function EvaluationsPage({ refreshTick }: { refreshTick: number }) {
     event.preventDefault();
     setSubmitting(true);
     setCompletionMessage("");
+    operationController.current?.abort();
+    const controller = new AbortController();
+    operationController.current = controller;
     try {
       const response = await apiFetch("/api/v1/evaluations", {
         method: "POST",
@@ -253,7 +277,7 @@ export function EvaluationsPage({ refreshTick }: { refreshTick: number }) {
       });
       if (!response.ok) throw new Error(await errorMessage(response, "评测任务创建失败"));
       const queued: Operation = await response.json();
-      const completed = await waitForOperation(queued.id);
+      const completed = await waitForOperation(queued.id, controller.signal);
       if (completed.status !== "SUCCEEDED") {
         throw new Error(completed.error?.message || `评测任务状态：${completed.status}`);
       }
@@ -262,9 +286,13 @@ export function EvaluationsPage({ refreshTick }: { refreshTick: number }) {
       await loadReports();
       setFormOpen(false);
     } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
       showToast("评测执行失败", error instanceof Error ? error.message : "请稍后重试", "error");
     } finally {
-      setSubmitting(false);
+      if (operationController.current === controller) {
+        operationController.current = null;
+        setSubmitting(false);
+      }
     }
   }
 

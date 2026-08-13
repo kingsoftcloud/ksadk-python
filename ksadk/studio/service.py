@@ -966,14 +966,6 @@ class StudioService:
                     str(exc),
                     status_code=502,
                 ) from exc
-            try:
-                self.evaluation_storage.write_report(report)
-            except EvaluationStorageError as exc:
-                raise StudioError(
-                    "EVALUATION_REPORT_WRITE_FAILED",
-                    "评测报告写入失败",
-                    status_code=500,
-                ) from exc
             return report
 
         return self.operations.submit(
@@ -992,23 +984,12 @@ class StudioService:
                 "id": record.id,
                 "agentId": record.agent_id,
                 "runtime": record.runtime_type,
-                "digest": f"sha256:{record.bundle_digest}",
+                "digest": _sha256_digest(record.bundle_digest),
                 "createdAt": record.created_at.isoformat().replace("+00:00", "Z"),
             }
             for record in self.builds.list()
             if record.status == BuildStatus.SUCCEEDED and record.artifact_path
         ]
-        builds.extend(
-            {
-                "id": record.id,
-                "agentId": record.agent_name,
-                "runtime": record.runtime_name,
-                "digest": f"sha256:{record.manifest_sha256}",
-                "createdAt": record.created_at.isoformat().replace("+00:00", "Z"),
-            }
-            for record in self.codex_builds.list()
-            if record.status == "SUCCEEDED" and record.artifact_path
-        )
         builds.sort(key=lambda item: item["createdAt"], reverse=True)
 
         evalsets: list[dict] = []
@@ -1082,23 +1063,16 @@ class StudioService:
 
     def _resolve_evaluation_build(self, build_id: str) -> StudioBuildResolution:
         try:
-            codex_build = self.codex_builds.get(build_id)
+            self.codex_builds.get(build_id)
         except Exception as exc:
             if getattr(exc, "status_code", None) != 404:
                 raise
         else:
-            run_spec = self.codex_runs.resolve(build_id)
-            return StudioBuildResolution(
-                build_id=codex_build.id,
-                agent_id=codex_build.agent_name,
-                revision_digest=f"sha256:{codex_build.manifest_sha256}",
-                runtime="codex",
-                model=run_spec.model,
-                run_spec=run_spec,
-                metadata={
-                    "manifestSha256": codex_build.manifest_sha256,
-                    "runtimeVersion": codex_build.runtime_version,
-                },
+            raise StudioError(
+                "CODEX_BUILD_NOT_IMMUTABLE",
+                "Codex Build 尚未冻结工作区源码，不能作为不可变评测 Target",
+                status_code=422,
+                field="target.locator",
             )
 
         build = self.builds.get(build_id)
@@ -1131,17 +1105,17 @@ class StudioService:
 
     def _validate_evaluation_build(self, build_id: str) -> None:
         try:
-            codex_build = self.codex_builds.get(build_id)
+            self.codex_builds.get(build_id)
         except Exception as exc:
             if getattr(exc, "status_code", None) != 404:
                 raise
         else:
-            if not codex_build.artifact_path:
-                raise StudioBuildTargetError(
-                    "STUDIO_BUILD_NOT_READY",
-                    "Studio Build must be SUCCEEDED before evaluation",
-                )
-            return
+            raise StudioError(
+                "CODEX_BUILD_NOT_IMMUTABLE",
+                "Codex Build 尚未冻结工作区源码，不能作为不可变评测 Target",
+                status_code=422,
+                field="target.locator",
+            )
 
         build = self.builds.get(build_id)
         if build.status != BuildStatus.SUCCEEDED or not build.artifact_path:
@@ -1280,3 +1254,8 @@ class StudioService:
             item.model_dump(by_alias=True, exclude_none=True, mode="json")
             for item in self.catalog.list(kind=kind, query=query, limit=200)
         ]
+
+
+def _sha256_digest(value: str) -> str:
+    digest = str(value or "").strip()
+    return digest if digest.startswith("sha256:") else f"sha256:{digest}"

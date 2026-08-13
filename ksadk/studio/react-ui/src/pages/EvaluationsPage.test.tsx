@@ -75,6 +75,37 @@ describe("EvaluationsPage", () => {
       evalsetFile: "evalsets/smoke.yaml",
       target: { kind: "a2a", locator: "https://agent.example.test/a2a" },
     });
-    expect(mockedFetch).toHaveBeenCalledWith("/api/v1/operations/op_eval_1");
+    expect(mockedFetch).toHaveBeenCalledWith(
+      "/api/v1/operations/op_eval_1",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
+  it("aborts operation polling when the evaluation page unmounts", async () => {
+    const user = userEvent.setup();
+    let pollingSignal: AbortSignal | undefined;
+    mockedFetch.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === "/api/v1/evaluations" && init?.method === "POST") {
+        return response({ id: "op_eval_pending", status: "QUEUED" });
+      }
+      if (url === "/api/v1/operations/op_eval_pending") {
+        pollingSignal = init?.signal || undefined;
+        return response({ id: "op_eval_pending", status: "RUNNING" });
+      }
+      return url === "/api/v1/evaluation-targets"
+        ? response({ evalsets: [], builds: [] })
+        : response({ items: [] });
+    });
+    const page = render(<EvaluationsPage refreshTick={0} />);
+    await user.click(screen.getByRole("button", { name: "新建评测" }));
+    await user.type(screen.getByLabelText(/EvalSet 文件/), "evalsets/smoke.yaml");
+    await user.type(screen.getByLabelText(/Target locator/), "https://agent.example.test/a2a");
+    await user.click(screen.getByRole("button", { name: "开始评测" }));
+    await vi.waitFor(() => expect(pollingSignal).toBeDefined());
+
+    page.unmount();
+
+    expect(pollingSignal?.aborted).toBe(true);
   });
 });

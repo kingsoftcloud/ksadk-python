@@ -149,6 +149,7 @@ async def test_studio_build_runs_turns_in_one_attempt_session() -> None:
         reported=True,
     )
     assert first.trace_ref.trace_id == "trace-2"
+    assert [trace.trace_id for trace in first.trace_refs] == ["trace-1", "trace-2"]
     assert first.tool_calls[0].name == "lookup"
     assert service.calls[0][2] == service.calls[1][2]
     assert service.calls[0][2] != service.calls[2][2]

@@ -506,6 +506,33 @@ async def test_local_run_case_reuses_session_per_attempt_and_isolates_attempts(
 
 
 @pytest.mark.asyncio
+async def test_local_snapshot_excludes_common_credential_files(tmp_path: Path) -> None:
+    _write_langgraph_project(tmp_path)
+    (tmp_path / ".npmrc").write_text("//registry/:_authToken=secret\n", encoding="utf-8")
+    (tmp_path / "secrets.json").write_text('{"token":"secret"}\n', encoding="utf-8")
+    (tmp_path / ".aws").mkdir()
+    (tmp_path / ".aws" / "credentials").write_text("secret", encoding="utf-8")
+    captured: list[Path] = []
+
+    async def fake_invoke(**kwargs):
+        captured.append(kwargs["launch_context"].project_dir)
+        return kwargs["session_id"], {"output_text": "answer", "usage": {}, "metadata": {}}
+
+    adapter = LocalSourceTargetAdapter(timeout_seconds=5, invoke=fake_invoke)
+    snapshot = await adapter.snapshot(
+        TargetRef(kind=TargetKind.LOCAL_SOURCE, locator=str(tmp_path))
+    )
+    spec = _run_spec(snapshot)
+    result = await adapter.run_case(spec, spec.evalset.cases[0], attempt=1)
+
+    assert result.status is TargetRunStatus.PASSED
+    assert captured
+    assert not captured[0].joinpath(".npmrc").exists()
+    assert not captured[0].joinpath("secrets.json").exists()
+    assert not captured[0].joinpath(".aws").exists()
+
+
+@pytest.mark.asyncio
 async def test_local_run_case_cleans_private_session_after_result(tmp_path: Path) -> None:
     _write_langgraph_project(tmp_path)
     services = []

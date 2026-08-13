@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -6,6 +7,7 @@ from fastapi.testclient import TestClient
 from ksadk.evaluation import EvaluationConfig, TargetKind, TargetRef
 from ksadk.studio.api import create_studio_app
 from ksadk.studio.contracts import BuildRecord, BuildStatus
+from ksadk.studio.errors import StudioError
 from ksadk.studio.service import StudioService
 
 
@@ -139,3 +141,48 @@ def test_evaluation_catalog_exposes_studio_build_metadata(tmp_path: Path):
                 "createdAt": "2026-08-12T00:00:00Z",
             }
         ]
+
+
+def test_evaluation_catalog_does_not_duplicate_sha256_prefix(tmp_path: Path):
+    service = StudioService(tmp_path)
+    service.builds.save(
+        BuildRecord(
+            id="build_prefixed",
+            agentId="demo-agent",
+            sourceRevision=1,
+            status=BuildStatus.SUCCEEDED,
+            runtimeType="langgraph",
+            bundleDigest="sha256:abc123",
+            artifactPath=".agentkit/artifacts/build_prefixed/bundle.zip",
+            createdAt="2026-08-12T00:00:00Z",
+        )
+    )
+
+    assert service.evaluation_catalog()["builds"][0]["digest"] == "sha256:abc123"
+
+
+def test_evaluation_catalog_does_not_expose_mutable_codex_builds(tmp_path: Path):
+    service = StudioService(tmp_path)
+    codex_build = type(
+        "CodexBuild",
+        (),
+        {
+            "id": "build_codex",
+            "agent_name": "review-agent",
+            "runtime_name": "codex",
+            "manifest_sha256": "a" * 64,
+            "created_at": datetime.now(timezone.utc),
+            "status": "SUCCEEDED",
+            "artifact_path": ".agentkit/artifacts/build_codex.zip",
+        },
+    )()
+    service.codex_builds.list = lambda: [codex_build]
+
+    assert service.evaluation_catalog()["builds"] == []
+    service.codex_builds.get = lambda _build_id: codex_build
+    with pytest.raises(StudioError) as rejected:
+        service._normalize_public_evaluation_target(
+            TargetRef(kind=TargetKind.STUDIO_BUILD, locator="build_codex")
+        )
+    assert rejected.value.code == "CODEX_BUILD_NOT_IMMUTABLE"
+    assert rejected.value.status_code == 422

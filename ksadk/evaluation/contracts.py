@@ -340,6 +340,7 @@ class TargetRun(EvaluationModel):
     error_code: str | None = None
     error_message: str | None = None
     trace_ref: TraceRef | None = None
+    trace_refs: list[TraceRef] = Field(default_factory=list)
     tool_calls: list[ToolCallEvidence] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 

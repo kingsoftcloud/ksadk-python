@@ -141,6 +141,7 @@ class StudioBuildTargetAdapter:
         duration_ms = 0
         usage = UsageSnapshot()
         trace_ref: TraceRef | None = None
+        trace_refs: list[TraceRef] = []
         tool_calls: list[ToolCallEvidence] = []
         for turn in case.turns:
             record = await self._run_service.run(
@@ -161,6 +162,7 @@ class StudioBuildTargetAdapter:
                 trace_ref = persisted_ref.model_copy(
                     update={"trace_id": str(getattr(record, "trace_id", "") or "") or None}
                 )
+            trace_refs.append(trace_ref)
             duration_ms += max(0, int(getattr(record, "duration_ms", 0) or 0))
             usage = _add_usage(usage, getattr(record, "usage", None))
             status = _status_value(getattr(record, "status", ""))
@@ -177,6 +179,7 @@ class StudioBuildTargetAdapter:
                     error_code=str(error.get("code") or "STUDIO_BUILD_RUN_FAILED"),
                     error_message="Studio Build runtime failed",
                     trace_ref=trace_ref,
+                    trace_refs=trace_refs,
                     tool_calls=tool_calls,
                     metadata={"runtime": resolved.runtime, "turnCount": len(tool_calls)},
                 )
@@ -190,6 +193,7 @@ class StudioBuildTargetAdapter:
             error_code=None if output else "STUDIO_BUILD_OUTPUT_UNAVAILABLE",
             error_message=None if output else "Studio Build did not provide evaluable text output",
             trace_ref=trace_ref,
+            trace_refs=trace_refs,
             tool_calls=tool_calls,
             metadata={"runtime": resolved.runtime, "turnCount": len(case.turns)},
         )

@@ -43,11 +43,16 @@ _SUPPORTED_FRAMEWORKS = {
 _EXCLUDED_DIRECTORIES = {
     ".agentengine",
     ".agentkit",
+    ".aws",
+    ".azure",
+    ".docker",
     ".git",
     ".hg",
+    ".kube",
     ".mypy_cache",
     ".pytest_cache",
     ".ruff_cache",
+    ".ssh",
     ".tox",
     ".venv",
     "__pycache__",
@@ -59,11 +64,29 @@ _EXCLUDED_DIRECTORIES = {
 }
 _EXCLUDED_FILE_NAMES = {
     ".env",
+    ".netrc",
+    ".npmrc",
     ".pypirc",
+    "auth.json",
     "credentials.json",
+    "dockerconfigjson",
+    "kubeconfig",
+    "secrets.json",
     "service-account.json",
 }
-_EXCLUDED_SUFFIXES = {".db", ".key", ".log", ".pem", ".pyc", ".pyo", ".sqlite"}
+_EXCLUDED_SUFFIXES = {
+    ".db",
+    ".jks",
+    ".key",
+    ".keystore",
+    ".log",
+    ".p12",
+    ".pem",
+    ".pfx",
+    ".pyc",
+    ".pyo",
+    ".sqlite",
+}
 _MAX_SNAPSHOT_FILES = 10_000
 _MAX_SNAPSHOT_BYTES = 256 * 1024 * 1024
 _HASH_CHUNK_BYTES = 1024 * 1024
@@ -95,6 +118,7 @@ class _LocalCaseResult:
     error_code: str | None = None
     error_message: str | None = None
     trace_ref: TraceRef | None = None
+    trace_refs: tuple[TraceRef, ...] = ()
     tool_calls: tuple[ToolCallEvidence, ...] = ()
 
 
@@ -214,6 +238,7 @@ class LocalSourceTargetAdapter:
         session_id = _scoped_id("eval-session", spec.id, case.id, str(attempt))
         invocation_id: str | None = None
         trace_ref: TraceRef | None = None
+        trace_refs: list[TraceRef] = []
         tool_calls: list[ToolCallEvidence] = []
         try:
             for turn_index, turn in enumerate(case.turns, start=1):
@@ -256,6 +281,7 @@ class LocalSourceTargetAdapter:
                             events,
                             policy=spec.config.data_policy,
                         )
+                        trace_refs.append(trace_ref)
                         tool_calls.extend(project_tool_calls(events))
         except asyncio.CancelledError:
             raise
@@ -267,6 +293,7 @@ class LocalSourceTargetAdapter:
                 error_code="LOCAL_RUNTIME_TIMEOUT",
                 error_message="Local Agent runtime timed out",
                 trace_ref=trace_ref,
+                trace_refs=tuple(trace_refs),
                 tool_calls=tuple(tool_calls),
             )
             return _to_target_run(result, runtime=resolved.snapshot.runtime)
@@ -278,6 +305,7 @@ class LocalSourceTargetAdapter:
                 error_code="LOCAL_RUNTIME_ERROR",
                 error_message="Local Agent runtime failed",
                 trace_ref=trace_ref,
+                trace_refs=tuple(trace_refs),
                 tool_calls=tuple(tool_calls),
             )
             return _to_target_run(result, runtime=resolved.snapshot.runtime)
@@ -298,6 +326,7 @@ class LocalSourceTargetAdapter:
                 else "Local Agent did not provide evaluable text output"
             ),
             trace_ref=trace_ref,
+            trace_refs=tuple(trace_refs),
             tool_calls=tuple(tool_calls),
         )
         return _to_target_run(result, runtime=resolved.snapshot.runtime)
@@ -446,6 +475,7 @@ def _to_target_run(result: _LocalCaseResult, *, runtime: str) -> TargetRun:
         error_code=result.error_code,
         error_message=result.error_message,
         trace_ref=result.trace_ref,
+        trace_refs=list(result.trace_refs),
         tool_calls=list(result.tool_calls),
         metadata={
             "runtime": runtime,

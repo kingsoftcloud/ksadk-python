@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,8 @@ from typing import Any
 from ksadk.events.runtime_event import EventType, RuntimeEvent
 
 from .contracts import DataPolicy, ToolCallEvidence, TraceRef
+
+_SAFE_EVIDENCE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$")
 
 
 class EvidenceStoreError(RuntimeError):
@@ -90,7 +93,7 @@ class EvidenceStore:
 
     def _trace_path(self, run_id: str, session_id: str, invocation_id: str) -> Path:
         for value in (run_id, session_id, invocation_id):
-            if not value or Path(value).name != value or value in {".", ".."}:
+            if not _SAFE_EVIDENCE_ID.fullmatch(value) or value in {".", ".."}:
                 raise EvidenceStoreError("Evidence identifiers must be path-safe")
         return self.root / run_id / "evidence" / session_id / f"{invocation_id}.json"
 
@@ -168,7 +171,6 @@ def _metadata_payload(event_type: str, payload: dict[str, Any]) -> dict[str, Any
 
 
 def _redacted_payload(event_type: str, payload: dict[str, Any]) -> dict[str, Any]:
-    redacted = dict(payload)
     sensitive_keys = {
         "text",
         "summary",
@@ -178,10 +180,64 @@ def _redacted_payload(event_type: str, payload: dict[str, Any]) -> dict[str, Any
         "detail",
         "artifact",
         "data",
+        "content",
+        "prompt",
+        "input",
+        "output",
+        "message",
+        "messages",
+        "reasoning",
+        "headers",
     }
-    for key in sensitive_keys & redacted.keys():
-        redacted[key] = "[REDACTED]"
-    return redacted
+    safe_string_keys = {
+        "status",
+        "call_id",
+        "name",
+        "source",
+        "checkpoint_id",
+        "granularity",
+        "type",
+        "phase",
+        "role",
+        "finish_reason",
+    }
+
+    def sensitive(key: Any) -> bool:
+        normalized = str(key).strip().lower().replace("-", "_")
+        return normalized in sensitive_keys or any(
+            marker in normalized
+            for marker in ("secret", "password", "authorization", "credential", "api_key")
+        ) or normalized in {
+            "token",
+            "accesstoken",
+            "access_token",
+            "refreshtoken",
+            "refresh_token",
+            "authtoken",
+            "auth_token",
+            "bearer_token",
+            "id_token",
+            "api_token",
+        }
+
+    def redact_item(key: Any, value: Any) -> Any:
+        normalized = str(key).strip().lower().replace("-", "_")
+        if sensitive(key):
+            return "[REDACTED]"
+        if isinstance(value, str) and normalized not in safe_string_keys:
+            return "[REDACTED]"
+        return redact(value)
+
+    def redact(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {key: redact_item(key, item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [redact(item) for item in value]
+        if isinstance(value, tuple):
+            return [redact(item) for item in value]
+        return value
+
+    return redact(payload)
 
 
 __all__ = ["EvidenceStore", "EvidenceStoreError", "project_tool_calls"]
