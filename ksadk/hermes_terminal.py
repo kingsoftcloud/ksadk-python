@@ -90,6 +90,7 @@ def build_start_frame(
     argv: Sequence[str],
     cols: int,
     rows: int,
+    session_id: str | None = None,
     cwd: str | None = None,
     options: Mapping[str, Any] | None = None,
 ) -> str:
@@ -106,6 +107,9 @@ def build_start_frame(
     normalized_cwd = str(cwd or "").strip()
     if normalized_cwd:
         payload["cwd"] = normalized_cwd
+    normalized_session_id = str(session_id or "").strip()
+    if normalized_session_id:
+        payload["session_id"] = normalized_session_id
     if options:
         payload["options"] = dict(options)
     return json.dumps(payload, ensure_ascii=False)
@@ -415,6 +419,7 @@ async def run_hermes_terminal_session(
                 argv=normalized_argv,
                 cols=size.cols,
                 rows=size.rows,
+                session_id=session_id,
                 cwd=cwd,
                 options=options,
             )

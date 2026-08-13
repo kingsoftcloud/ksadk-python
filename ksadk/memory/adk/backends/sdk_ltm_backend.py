@@ -8,8 +8,9 @@
 
 环境变量:
     KSADK_LTM_BACKEND: sdk
-    KSADK_LTM_ACCESS_KEY: AK (可选，默认取 KSYUN_ACCESS_KEY)
-    KSADK_LTM_SECRET_KEY: SK (可选，默认取 KSYUN_SECRET_KEY)
+    KSADK_LTM_ACCESS_KEY: AK (可选，默认取 KSYUN_ACCESS_KEY / KSYUN_ACCESS_KEY_ID)
+    KSADK_LTM_SECRET_KEY: SK (可选，默认取 KSYUN_SECRET_KEY / KSYUN_SECRET_ACCESS_KEY)
+    KSADK_LTM_SESSION_TOKEN: STS 临时会话 token (可选，默认取 KSYUN_SESSION_TOKEN)
     KSADK_LTM_REGION: 区域 (默认 cn-beijing-6)
     KSADK_LTM_ENDPOINT: API 端点 (默认 aicp.api.ksyun.com)
     KSADK_LTM_SCHEME: http/https (默认 https)
@@ -42,6 +43,7 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
     Attributes:
         access_key: 访问密钥 ID (AK)
         secret_key: 访问密钥 (SK)
+        session_token: STS 临时会话 token
         region: API 区域
         endpoint: API 端点
         scheme: http 或 https
@@ -64,6 +66,7 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
 
     access_key: str = ""
     secret_key: str = ""
+    session_token: str = ""
     region: str = "cn-beijing-6"
     endpoint: str = "aicp.api.ksyun.com"
     scheme: str = "https"
@@ -137,7 +140,9 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
                 "Ensure kingsoftcloud-sdk-python>=1.5.8.94 is installed."
             )
 
-        cred = credential.Credential(self.access_key, self.secret_key)
+        cred = credential.Credential(
+            self.access_key, self.secret_key, self.session_token or None
+        )
 
         http_profile = HttpProfile()
         http_profile.endpoint = self.endpoint
@@ -240,6 +245,8 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
                 params["AgentId"] = agent_id
             if session_id:
                 params["SessionId"] = session_id
+            if metadata.get("flush") is True or kwargs.get("flush") is True:
+                params["Flush"] = True
 
             logger.info(
                 f"CreateMemorySdk: memory_collection_id={memory_collection_id}, "

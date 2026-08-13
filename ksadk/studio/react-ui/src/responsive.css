@@ -1,0 +1,642 @@
+/* React Studio 的最终响应式布局层。断点规则集中在此，避免复刻样式互相覆盖。 */
+
+html,
+body {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+body {
+  overflow-x: hidden;
+}
+
+.app-shell {
+  --studio-app-rail: 60px;
+  --studio-content-gutter: 40px;
+  --studio-page-max: 1760px;
+  --studio-workbench-max: 1360px;
+  width: 100%;
+  min-width: 0;
+}
+
+.app-shell .sidebar {
+  width: var(--studio-app-rail);
+}
+
+.app-shell .app-main {
+  min-width: 0;
+  margin-left: var(--studio-app-rail);
+}
+
+.app-shell main,
+.app-shell .page-container {
+  min-width: 0;
+}
+
+.app-shell .page-container {
+  width: min(100%, var(--studio-page-max));
+  margin-inline: auto;
+  padding-inline: var(--studio-content-gutter);
+}
+
+.app-shell .page-container[data-layout="document"] {
+  max-width: 1200px;
+}
+
+.app-shell .page-container[data-layout="workbench"] {
+  max-width: var(--studio-workbench-max);
+}
+
+.app-shell .page-container[data-layout="data"] {
+  max-width: 1760px;
+}
+
+.app-shell .data-scroll-region {
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+}
+
+.app-shell .data-scroll-region > table {
+  min-width: 720px;
+}
+
+.app-shell .runtime-overview-grid {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.app-shell[data-rail="compact"] {
+  --studio-app-rail: 60px;
+}
+
+.app-shell[data-rail="compact"] .product-copy,
+.app-shell[data-rail="compact"] .preview-label,
+.app-shell[data-rail="compact"] .workspace-copy,
+.app-shell[data-rail="compact"] .workspace-chevron,
+.app-shell[data-rail="compact"] .nav-label,
+.app-shell[data-rail="compact"] .nav-item > span,
+.app-shell[data-rail="compact"] .user-copy {
+  display: none;
+}
+
+.app-shell[data-rail="compact"] .product {
+  justify-content: center;
+  padding-inline: 0;
+}
+
+.app-shell[data-rail="compact"] .workspace-switcher,
+.app-shell[data-rail="compact"] .nav-item {
+  width: 44px;
+  justify-content: center;
+  margin-inline: 8px;
+  padding-inline: 0;
+}
+
+.app-shell[data-rail="compact"] .primary-nav {
+  padding-inline: 0;
+}
+
+.app-shell[data-rail="compact"] .sidebar-footer {
+  flex-direction: column;
+  justify-content: center;
+  padding-inline: 8px;
+}
+
+.compact-create-rail-trigger {
+  display: none;
+}
+
+.app-shell[data-view="conversations"] {
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.app-shell[data-view="conversations"] .app-main {
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: 64px minmax(0, 1fr);
+}
+
+.app-shell[data-view="conversations"] #mainContent,
+.app-shell[data-view="conversations"] .chat-wrap {
+  height: 100%;
+}
+
+.app-shell[data-view="conversations"] main,
+.app-shell[data-view="conversations"] .chat-wrap,
+.app-shell[data-view="conversations"] .chat-host {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.create-shell[data-scroll-mode="workbench"] {
+  height: calc(100dvh - 64px);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.create-shell[data-scroll-mode="workbench"] .create-header {
+  height: 104px;
+  min-height: 0;
+}
+
+.create-shell[data-scroll-mode="workbench"] .create-workbench {
+  height: calc(100% - 104px);
+  min-height: 0;
+}
+
+.create-shell[data-scroll-mode="workbench"] .create-rail,
+.create-shell[data-scroll-mode="workbench"] .create-stage,
+.create-shell[data-scroll-mode="workbench"] .authoring-mode-panel,
+.create-shell[data-scroll-mode="workbench"] .conversation-authoring-layout,
+.create-shell[data-scroll-mode="workbench"] .authoring-chat-column,
+.create-shell[data-scroll-mode="workbench"] .authoring-inspection-card {
+  min-height: 0;
+}
+
+.create-shell[data-scroll-mode="workbench"] .create-rail {
+  position: relative;
+  top: auto;
+  height: 100%;
+  overflow-y: auto;
+}
+
+.create-shell[data-scroll-mode="workbench"] .create-stage {
+  height: 100%;
+  overflow: hidden;
+}
+
+.create-shell[data-scroll-mode="workbench"] .authoring-mode-panel {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.create-shell[data-scroll-mode="workbench"] .authoring-panel-heading {
+  flex: 0 0 auto;
+}
+
+.create-shell[data-scroll-mode="workbench"] .conversation-authoring-layout {
+  flex: 1;
+  overflow: hidden;
+}
+
+.create-shell[data-scroll-mode="workbench"] .authoring-chat-column {
+  grid-template-rows: minmax(0, 1fr) auto auto auto;
+  overflow: hidden;
+}
+
+.create-shell[data-scroll-mode="workbench"] .authoring-transcript,
+.create-shell[data-scroll-mode="workbench"] .authoring-inspection-card {
+  overflow-y: auto;
+}
+
+.create-shell[data-scroll-mode="workbench"] .authoring-inspection-card > .button:last-child {
+  position: sticky;
+  bottom: 0;
+  box-shadow: 0 -8px 16px var(--surface);
+}
+
+.create-shell[data-scroll-mode="document"] {
+  min-height: calc(100dvh - 64px);
+  overflow: visible;
+}
+
+.app-shell .page-container[data-layout="data"][data-scroll-mode="data"] {
+  height: calc(100dvh - 64px);
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.app-shell .page-container[data-layout="data"] > .page-header {
+  flex: 0 0 auto;
+}
+
+.app-shell .data-page-body {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  overscroll-behavior-block: contain;
+  scrollbar-gutter: stable;
+}
+
+.app-shell .data-page-body.table-data-body {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.app-shell .table-data-body > .overview-strip,
+.app-shell .table-data-body > .section-toolbar {
+  flex: 0 0 auto;
+}
+
+.app-shell .table-data-body > .content-section {
+  min-height: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-shell .table-data-body .content-section > .section-toolbar {
+  flex: 0 0 auto;
+}
+
+.app-shell .table-data-body .studio-data-table {
+  min-height: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-shell .table-data-body .studio-data-table-scroll {
+  min-height: 0;
+  flex: 1;
+}
+
+.app-shell .table-data-body .data-scroll-region {
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.app-shell .table-data-body .data-scroll-region thead th {
+  position: sticky;
+  z-index: 4;
+  top: 0;
+  box-shadow: inset 0 -1px var(--border);
+}
+
+.app-shell .data-page-body .section-toolbar,
+.app-shell .data-page-body .trace-toolbar {
+  position: sticky;
+  z-index: 12;
+  top: 0;
+  background: var(--surface-subtle);
+}
+
+.app-shell .observability-page[data-scroll-mode="workbench"] {
+  height: calc(100dvh - 64px);
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding-block: 24px;
+  overflow: hidden;
+}
+
+.app-shell .observability-page[data-scroll-mode="workbench"] .observability-overview {
+  display: grid;
+  flex: 0 0 auto;
+}
+
+.app-shell .observability-page[data-scroll-mode="workbench"] .observability-body {
+  min-height: 0;
+  flex: 1;
+  display: block;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
+.app-shell .observability-page[data-scroll-mode="workbench"] .trace-workbench {
+  height: clamp(620px, calc(100dvh - 180px), 760px);
+  min-height: 620px;
+  overflow: hidden;
+}
+
+.app-shell .trace-workbench.detail-route {
+  grid-template-columns: minmax(420px, 1.22fr) minmax(340px, 0.78fr);
+}
+
+.app-shell .trace-workbench.detail-route.detail-collapsed,
+.app-shell .trace-workbench.detail-route.detail-expanded {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.app-shell .observability-page[data-scroll-mode="workbench"] .trace-list,
+.app-shell .observability-page[data-scroll-mode="workbench"] .trace-span-tree,
+.app-shell .observability-page[data-scroll-mode="workbench"] .trace-detail-body {
+  min-height: 0;
+  overflow: auto;
+}
+
+.overlay .drawer {
+  inset: 16px 16px 16px auto;
+  width: min(560px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  overflow: hidden;
+  border-radius: var(--radius-surface);
+}
+
+.overlay .drawer.wide {
+  width: min(840px, calc(100vw - 32px));
+}
+
+.overlay .drawer.compact {
+  width: min(380px, calc(100vw - 32px));
+}
+
+.overlay .drawer-header,
+.overlay .drawer-footer {
+  flex: 0 0 auto;
+}
+
+.overlay .drawer-body {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+@media (max-width: 1023px) {
+  .app-shell {
+    --studio-app-rail: 60px;
+    --studio-content-gutter: 16px;
+  }
+
+  .app-shell .product-copy,
+  .app-shell .preview-label,
+  .app-shell .workspace-copy,
+  .app-shell .workspace-chevron,
+  .app-shell .nav-label,
+  .app-shell .nav-item > span,
+  .app-shell .user-copy,
+  .app-shell .global-context,
+  .app-shell .runtime-state {
+    display: none;
+  }
+
+  .app-shell .product {
+    justify-content: center;
+    padding-inline: 0;
+  }
+
+  .app-shell .workspace-switcher,
+  .app-shell .nav-item {
+    width: 44px;
+    justify-content: center;
+    margin-inline: 8px;
+    padding-inline: 0;
+  }
+
+  .app-shell .primary-nav {
+    padding-inline: 0;
+  }
+
+  .app-shell .sidebar-footer {
+    flex-direction: column;
+    justify-content: center;
+    padding-inline: 8px;
+  }
+
+  .app-shell .global-header {
+    padding-inline: 16px;
+  }
+
+  .app-shell .breadcrumb {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .app-shell .page-container {
+    padding-inline: var(--studio-content-gutter);
+  }
+
+  .app-shell .overview-strip,
+  .app-shell .observability-overview,
+  .app-shell .orchestration-workbench,
+  .app-shell .runtime-resource-groups {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .app-shell .create-header {
+    min-height: 104px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 16px;
+    padding: 16px var(--studio-content-gutter);
+  }
+
+  .app-shell .create-header > .button:first-child,
+  .app-shell .create-header .draft-state {
+    display: none;
+  }
+
+  .app-shell .compact-create-rail-trigger {
+    display: inline-flex;
+  }
+
+  .app-shell .create-workbench {
+    width: 100%;
+    min-width: 0;
+    display: block;
+  }
+
+  .app-shell .create-stage,
+  .app-shell .authoring-mode-panel,
+  .app-shell .quick-create {
+    width: 100%;
+    max-width: none;
+  }
+
+  .app-shell .trace-workbench.detail-route {
+    height: auto;
+    min-height: 620px;
+    grid-template-columns: minmax(0, 1fr);
+    overflow: visible;
+  }
+
+  .app-shell .trace-workbench.detail-route .trace-span-panel,
+  .app-shell .trace-workbench.detail-route .trace-detail-panel {
+    grid-column: 1 / -1;
+  }
+
+  .app-shell .trace-workbench.detail-route .trace-detail-panel {
+    min-height: 480px;
+    border-top: 1px solid var(--border);
+  }
+
+  .skill-preview-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .skill-preview-sidebar {
+    max-height: 220px;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .markdown-preview-shell {
+    padding-inline: 16px;
+  }
+}
+
+@media (min-width: 1024px) and (max-width: 1439px) {
+  .app-shell {
+    --studio-app-rail: 60px;
+    --studio-content-gutter: 24px;
+  }
+
+  .app-shell .product-copy,
+  .app-shell .preview-label,
+  .app-shell .workspace-copy,
+  .app-shell .workspace-chevron,
+  .app-shell .nav-label,
+  .app-shell .nav-item > span,
+  .app-shell .user-copy,
+  .app-shell .global-context {
+    display: none;
+  }
+
+  .app-shell .product {
+    justify-content: center;
+    padding-inline: 0;
+  }
+
+  .app-shell .workspace-switcher,
+  .app-shell .nav-item {
+    width: 44px;
+    justify-content: center;
+    margin-inline: 8px;
+    padding-inline: 0;
+  }
+
+  .app-shell .primary-nav {
+    padding-inline: 0;
+  }
+
+  .app-shell .sidebar-footer {
+    flex-direction: column;
+    justify-content: center;
+    padding-inline: 8px;
+  }
+
+  .app-shell .overview-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .app-shell .orchestration-workbench {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .app-shell[data-view="create"] .create-workbench {
+    grid-template-columns: 196px minmax(0, 1fr);
+  }
+
+  .app-shell[data-view="create"] .create-header {
+    grid-template-columns: 196px minmax(0, 1fr) auto;
+  }
+
+  .app-shell[data-view="create"] .conversation-authoring-layout,
+  .app-shell[data-view="create"] .authoring-inspect-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .app-shell[data-view="create"] .create-shell[data-scroll-mode="workbench"] .conversation-authoring-layout {
+    grid-template-rows: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 768px) and (max-width: 1439px) {
+  .app-shell .orchestration-aside {
+    display: grid;
+    grid-template-columns: minmax(0, 0.86fr) minmax(0, 1.14fr);
+    gap: 28px;
+  }
+
+  .app-shell .orchestration-aside > .aside-divider { display: none; }
+}
+
+@media (max-width: 1439px) {
+  .app-shell .trace-detail-expand {
+    display: inline-flex;
+  }
+
+  .app-shell .trace-workbench.detail-expanded {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .app-shell .trace-workbench.detail-expanded .trace-list-panel,
+  .app-shell .trace-workbench.detail-expanded .trace-span-panel {
+    display: none;
+  }
+
+  .app-shell .trace-workbench.detail-expanded .trace-detail-panel {
+    min-height: 620px;
+    display: flex;
+    grid-column: 1 / -1;
+    border-top: 0;
+  }
+
+  .app-shell .orchestration-aside {
+    position: static;
+    width: auto;
+  }
+
+  .app-shell .chat-run-panel {
+    position: fixed;
+    z-index: 48;
+    top: 64px;
+    right: 0;
+    bottom: 0;
+    width: min(420px, calc(100vw - var(--studio-app-rail)));
+    height: auto;
+    box-shadow: var(--shadow-overlay);
+  }
+}
+
+/* 用户显式选择展开后，仅在有足够水平空间的断点生效。 */
+@media (min-width: 1024px) {
+  .app-shell[data-rail="expanded"] {
+    --studio-app-rail: 216px;
+  }
+
+  .app-shell[data-rail="expanded"] .product-copy,
+  .app-shell[data-rail="expanded"] .workspace-copy {
+    display: flex;
+  }
+
+  .app-shell[data-rail="expanded"] .nav-label,
+  .app-shell[data-rail="expanded"] .nav-item > span {
+    display: inline;
+  }
+
+  .app-shell[data-rail="expanded"] .product {
+    justify-content: flex-start;
+    padding-inline: 18px;
+  }
+
+  .app-shell[data-rail="expanded"] .workspace-switcher,
+  .app-shell[data-rail="expanded"] .nav-item {
+    width: auto;
+    justify-content: flex-start;
+    margin-inline: 0;
+    padding-inline: 13px;
+  }
+
+  .app-shell[data-rail="expanded"] .primary-nav {
+    padding-inline: 10px;
+  }
+
+  .app-shell[data-rail="expanded"] .sidebar-footer {
+    flex-direction: row;
+    justify-content: space-between;
+    padding-inline: 12px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-shell .create-rail {
+    transition-duration: 0s !important;
+  }
+
+  .overlay .drawer {
+    animation: none !important;
+  }
+}

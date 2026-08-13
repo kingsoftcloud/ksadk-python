@@ -37,6 +37,15 @@ agentengine run -i
 agentengine web . --no-open
 ```
 
+## 0.8.1 可观测性契约
+
+- 远端 trace 统一使用标准 OTLP/HTTP：Langfuse 读取 `OTEL_EXPORTER_OTLP_*`，CloudMonitor 读取 `CLOUD_MONITOR_OTLP_*`；同一 span 在两端保持相同的 `trace_id` / `span_id`。
+- 托管 Agent 通过 CLI 或控制台创建时默认开启可观测性并由平台注入双路配置；只有显式传入 `--no-observability` 或在控制台关闭才禁用。
+- `LANGFUSE_USE_CALLBACK`、Langfuse SDK CallbackHandler/exporter 已移除。`CLOUD_MONITOR_APP_KEY` 只保留一个版本的过渡 fallback，新配置应通过 OTLP headers 提供 `Ksc-Appkey`。
+- exporter 直接运行在 Agent 进程内，不会额外启动 OpenTelemetry Collector、sidecar、容器或 Pod。
+
+迁移与环境变量示例见[可观测指南](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/observability-tracing/)和[环境变量参考](https://kingsoftcloud.github.io/ksadk-python/cn/docs/references/environment-variables/)。
+
 <p align="center"><img alt="KsADK 真实 Web UI 调试截图" src="docs-site/public/assets/ksadk-web-ui-screenshot.png" width="860" /></p>
 
 <p align="center"><img alt="KsADK 真实本地 Web UI 演示" src="docs-site/public/assets/ksadk-local-debugging-demo.gif" width="860" /></p>

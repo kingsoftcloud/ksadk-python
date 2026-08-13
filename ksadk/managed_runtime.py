@@ -131,7 +131,9 @@ def validate_runtime_binary(resolved: ResolvedRuntime) -> str:
     if resolved.name != "codex":
         return ""
     try:
-        from codex_cli_bin import bundled_codex_path
+        from codex_cli_bin import (  # type: ignore[import-not-found, import-untyped]
+            bundled_codex_path,
+        )
 
         codex_bin = bundled_codex_path()
         completed = subprocess.run(
@@ -162,17 +164,22 @@ async def resolve_local_managed_runtime(
     """Resolve and verify the native runtime used by ``ksadk web``."""
     name, requested_version = runtime_config(config)
     if requested_version:
-        resolved = ResolvedRuntime(name=name, version=requested_version, source="manifest")
-        validate_installed_runtime(resolved)
-        return resolved
+        explicit_runtime = ResolvedRuntime(
+            name=name,
+            version=requested_version,
+            source="manifest",
+        )
+        validate_installed_runtime(explicit_runtime)
+        return explicit_runtime
 
+    catalog_runtime: ResolvedRuntime | None = None
     try:
-        resolved = await resolve_managed_runtime(config, region=region)
+        catalog_runtime = await resolve_managed_runtime(config, region=region)
     except ManagedRuntimeError:
-        resolved = None
-    if resolved is not None:
-        validate_installed_runtime(resolved)
-        return resolved
+        pass
+    if catalog_runtime is not None:
+        validate_installed_runtime(catalog_runtime)
+        return catalog_runtime
 
     installed = installed_runtime_version(name)
     if not installed:

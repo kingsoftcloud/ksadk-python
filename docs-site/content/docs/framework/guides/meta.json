@@ -4,6 +4,7 @@
     "frameworks",
     "harness-app",
     "local-web-ui",
+    "agentkit-local-studio",
     "hosted-ui-events",
     "agent-context",
     "attachments-multimodal",

@@ -976,7 +976,7 @@ def _generate_deepagents_service_adapter_content(analysis: dict) -> str:
         runnable_build = """        try:
             runnable_module = importlib.import_module(RUNNABLE_MODULE, __package__)
             deep_agent_runnable = getattr(runnable_module, "DeepAgentRunnable")
-            return deep_agent_runnable(agent, _NullLangfuseManager())
+            return deep_agent_runnable(agent, _NullObservabilityManager())
         except Exception:
             return None
 """
@@ -992,20 +992,11 @@ import asyncio
 import importlib
 from typing import Any
 
-try:
-    from langchain_core.callbacks import BaseCallbackHandler
-except Exception:  # pragma: no cover - dependency may be absent during static checks
-    BaseCallbackHandler = object
-
 INIT_MODULE = "{init_module}"
 {runnable_module_constant}
 
-class _NoopCallbackHandler(BaseCallbackHandler):
-    pass
-
-
-class _NullLangfuseManager:
-    callback_handler = _NoopCallbackHandler()
+class _NullObservabilityManager:
+    callback_handler = None
 
 
 class AgentEngineDeepAgentsServiceAdapter:
@@ -1591,16 +1582,16 @@ deploy:
 def _write_codex_project_config(project_path: Path, package_name: str) -> None:
     """Write the minimal codex runtime project:yaml 驱动,无 package/agent.py。
 
-    codex 的 agent 逻辑由 prompt 承载(CodexRunner.load_agent 是 no-op),所以只生成
+    codex 的 agent 逻辑由 prompt 承载，所以只生成
     canonical agentengine.yaml(framework: codex,model+prompt)+ requirements +
-    README。model/prompt 经 CodexRunner 传入 codex thread(开发者指令)。
+    README。model/prompt 经 CodexRuntimeAdapter 传入 codex thread(开发者指令)。
     """
     (project_path / "agentengine.yaml").write_text(
         f"""# AgentEngine codex runtime 项目配置
 name: {package_name}
 version: "1.0.0"
 
-# 框架:codex(开发态 CodexRunner → 部署态 codex-runtime)
+# 框架:codex（本地和部署统一使用 CodexRuntimeAdapter）
 framework: codex
 artifact_type: ManagedRuntime
 
@@ -1609,7 +1600,7 @@ artifact_type: ManagedRuntime
 runtime:
   name: codex
 
-# codex 的模型与开发者指令(CodexRunner 读取并传入 codex thread)
+# codex 的模型与开发者指令（CodexRuntimeAdapter 传入 codex thread）
 model: glm-5.2
 prompt: |
   你是 codex 编码助手。简洁回答,能跑命令验证就跑(shell 工具),中文回复。
@@ -1639,7 +1630,9 @@ ksadk web .
 - codex 自动探测模型协议:OpenAI 官方直连,星流 chat 模型自动启用转换代理。
 - `agentengine build .` 只生成 YAML manifest bundle，不打包本机 Codex 二进制。若
   `runtime.version` 未指定，build 需要连接到已配置 Runtime catalog；离线构建请显式锁定版本。
-- 部署时服务端解析 ManagedRuntime 版本和 Linux 镜像 digest。
+- 部署时服务端解析 ManagedRuntime 版本和 Linux 镜像 digest。云端必须已发布 Runtime
+  catalog、对应镜像和内联 manifest 控制面；未发布时请继续使用本地 `ksadk web`，不要把
+  `runtime.version` 随意改成开发机版本，KsADK 不回退为 Code 部署。
 """,
         encoding="utf-8-sig",
     )
@@ -1885,8 +1878,6 @@ PORT=8080
     elif framework == "codex":
         env_content = _generate_codex_env_content(global_env)
     else:
-        langfuse_url = global_env.get("LANGFUSE_BASE_URL", "")
-
         env_content = """# ======================
 # 模型配置 (必填, 可以从星流平台获取https://ksp.console.ksyun.com/#/apiKey)
 # ======================
@@ -1909,13 +1900,9 @@ PORT=8080
 # 可观测性 (可选)
 # ======================
 """
-        env_content += "# LANGFUSE_PUBLIC_KEY=pk-xxx\n"
-        env_content += "# LANGFUSE_SECRET_KEY=sk-xxx\n"
-
-        if langfuse_url:
-            env_content += f"LANGFUSE_BASE_URL={langfuse_url}\n"
-        else:
-            env_content += "# LANGFUSE_BASE_URL=https://cloud.langfuse.com\n"
+        env_content += "# OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf\n"
+        env_content += "# OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=https://collector.example.com/v1/traces\n"
+        env_content += "# OTEL_EXPORTER_OTLP_TRACES_HEADERS=Authorization=Bearer%20placeholder\n"
 
         env_content += """
 # ======================

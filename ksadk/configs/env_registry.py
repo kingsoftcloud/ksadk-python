@@ -20,6 +20,35 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "KSADK_ADK_SESSION_URL", "sessions", "ADK-native database session URL.", sensitive=True
     ),
     EnvVarSpec(
+        "KSADK_A2A_AGENT_ID",
+        "a2a",
+        "Opaque registered A2A Agent id injected post-registration; "
+        "required to wire full inbound JSON-RPC in v2. v1 discovery-only card "
+        "does not depend on it.",
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_ACCOUNT_ID",
+        "a2a",
+        "Runtime owner account id injected by the deploy layer (ar-* agent's account).",
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_RUNTIME_ID",
+        "a2a",
+        "Hosted Agent runtime resource id (ar-*) injected by the deploy layer; "
+        "the v1 discovery-only card mounts whenever this is non-empty.",
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_AGENT_NAME",
+        "a2a",
+        "AgentCard display name injected by the deploy layer; falls back to "
+        "AGENTENGINE_MANAGED_RUNTIME_NAME then to the agent id.",
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_AGENT_VERSION",
+        "a2a",
+        "AgentCard business version injected by the deploy layer; defaults to 0.1.0.",
+    ),
+    EnvVarSpec(
         "KSADK_A2A_CONTROL_PLANE_URL",
         "a2a",
         "AgentEngine A2A runtime control-plane base URL injected by the deploy layer.",
@@ -37,15 +66,80 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         ".agentengine/a2a_event_outbox.sqlite3",
     ),
     EnvVarSpec(
+        "KSADK_A2A_INTERNAL_BASE_URL",
+        "a2a",
+        "Internal HTTP(S) origin used as AgentCard base_url before the gateway rewrites it; "
+        "must be an absolute origin with no path/query/fragment.",
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_SPACE_ID",
+        "a2a",
+        "Primary A2A Space id configured for this Runtime Agent.",
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_SPACE_IDS",
+        "a2a",
+        "Compatibility JSON array of A2A Space ids configured for this Runtime Agent.",
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_TENANT_ID",
+        "a2a",
+        "Runtime tenant id injected by the deploy layer; falls back to account id.",
+    ),
+    EnvVarSpec(
         "KSADK_A2A_TOKEN_DIR",
         "a2a",
         "Directory containing audience-specific projected A2A workload JWT files.",
         "/var/run/secrets/agentengine/a2a",
     ),
     EnvVarSpec(
-        "KSADK_A2A_SPACE_IDS",
+        "KSADK_A2A_SERVICE_URL",
         "a2a",
-        "JSON array of A2A Space ids configured for this Runtime Agent.",
+        "A2A control plane service URL (KOP public API); auto-detected if unset.",
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_SERVICE_TOKEN",
+        "a2a",
+        "Bearer token for A2A control plane service authentication.",
+        sensitive=True,
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_SERVICE_ENDPOINT",
+        "a2a",
+        "A2A service endpoint hostname (used for auto-detection with scheme).",
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_SERVICE_SCHEME",
+        "a2a",
+        "A2A service URL scheme (http/https) for auto-detection.",
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_SERVICE_REGION",
+        "a2a",
+        "A2A service region for KOP signing.",
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_ACCESS_KEY",
+        "a2a",
+        "A2A KOP access key for signing; falls back to KSYUN_ACCESS_KEY.",
+        sensitive=True,
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_SECRET_KEY",
+        "a2a",
+        "A2A KOP secret key for signing; falls back to KSYUN_SECRET_KEY.",
+        sensitive=True,
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_SERVICE",
+        "a2a",
+        "A2A KOP signing service name (default: aicp).",
+    ),
+    EnvVarSpec(
+        "KSADK_EVAL_JUDGE_API_KEY",
+        "eval",
+        "API key for the LLM Judge evaluation backend.",
+        sensitive=True,
     ),
     EnvVarSpec(
         "KSADK_A2UI_GENERATION_TIMEOUT_SECONDS",
@@ -118,6 +212,47 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "0 forces direct mode.",
     ),
     EnvVarSpec(
+        "KSADK_CODEX_SANDBOX",
+        "codex",
+        "Codex sandbox mode: read_only (default, no writes) / workspace_write "
+        "(write inside workspace) / full_access (write anywhere).",
+    ),
+    EnvVarSpec(
+        "KSADK_CODEX_APPROVAL",
+        "codex",
+        "Codex approval mode: deny_all (default for read_only) / auto_review "
+        "(auto-approve with review log).",
+    ),
+    EnvVarSpec(
+        "KSADK_CODEX_HOME",
+        "codex",
+        "Explicit Codex home directory override for the native runtime.",
+    ),
+    EnvVarSpec(
+        "KSADK_CODEX_ISOLATE_HOME",
+        "codex",
+        "Isolate native Codex state under the project workspace; set to 0 for debugging only.",
+        "1",
+    ),
+    EnvVarSpec(
+        "KSADK_STUDIO_NO_SECURITY",
+        "studio",
+        "Disable Studio loopback session and CSRF checks for controlled tests only.",
+        "0",
+    ),
+    EnvVarSpec(
+        "KSADK_STUDIO_SESSION_TOKEN",
+        "studio",
+        "Explicit local Studio browser session token; generated randomly when unset.",
+        sensitive=True,
+    ),
+    EnvVarSpec(
+        "KSADK_STUDIO_TRACE_CONTENT",
+        "studio",
+        "Persist Studio trace event content; set to 0 to retain metadata only.",
+        "1",
+    ),
+    EnvVarSpec(
         "KSADK_COMMAND_", "sandbox", "Internal prefix for command policy environment controls."
     ),
     EnvVarSpec(
@@ -186,6 +321,12 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     EnvVarSpec(
         "KSADK_KB_SECRET_KEY", "knowledge_base", "Knowledge-base API secret key.", sensitive=True
     ),
+    EnvVarSpec(
+        "KSADK_KB_SESSION_TOKEN",
+        "knowledge_base",
+        "Knowledge-base STS session token.",
+        sensitive=True,
+    ),
     EnvVarSpec("KSADK_KB_TOP_K", "knowledge_base", "Knowledge-base retrieval result count.", "5"),
     EnvVarSpec(
         "KSADK_LANGGRAPH_CHECKPOINT_DSN",
@@ -223,6 +364,12 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     EnvVarSpec("KSADK_LTM_SCHEME", "memory", "Long-term-memory API scheme.", "https"),
     EnvVarSpec(
         "KSADK_LTM_SECRET_KEY", "memory", "Long-term-memory API secret key.", sensitive=True
+    ),
+    EnvVarSpec(
+        "KSADK_LTM_SESSION_TOKEN",
+        "memory",
+        "Long-term-memory STS session token.",
+        sensitive=True,
     ),
     EnvVarSpec("KSADK_LTM_TOP_K", "memory", "Long-term-memory retrieval result count.", "5"),
     EnvVarSpec(
@@ -609,7 +756,7 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "KSADK_WEB_VERSION",
         "web",
         "Published KsADK Web npm version used for a reproducible wheel build.",
-        "0.3.0",
+        "0.3.1",
     ),
     EnvVarSpec(
         "KSADK_WORKING_SET_MAX_FILES",
@@ -629,37 +776,10 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     EnvVarSpec(
         "CLOUD_MONITOR_APP_KEY",
         "tracing",
-        "CloudMonitor AppKey for optional OTLP ingestion.",
+        "Deprecated: CloudMonitor AppKey translated to Ksc-Appkey OTLP header only when "
+        "both CLOUD_MONITOR_OTLP_TRACES_HEADERS and CLOUD_MONITOR_OTLP_HEADERS are absent. "
+        "Server should inject OTLP headers directly.",
         sensitive=True,
-    ),
-    EnvVarSpec(
-        "CLOUD_MONITOR_LANGFUSE_ENABLED",
-        "tracing",
-        "Enable or disable the CloudMonitor Langfuse SDK callback; defaults to enabled "
-        "when keys and host are present.",
-    ),
-    EnvVarSpec(
-        "CLOUD_MONITOR_LANGFUSE_HOST",
-        "tracing",
-        "CloudMonitor AppMonitor Langfuse SDK host.",
-    ),
-    EnvVarSpec(
-        "CLOUD_MONITOR_LANGFUSE_PUBLIC_KEY",
-        "tracing",
-        "CloudMonitor AppMonitor Langfuse public key returned by the platform.",
-        sensitive=True,
-    ),
-    EnvVarSpec(
-        "CLOUD_MONITOR_LANGFUSE_SECRET_KEY",
-        "tracing",
-        "CloudMonitor AppMonitor Langfuse secret key returned by the platform.",
-        sensitive=True,
-    ),
-    EnvVarSpec(
-        "CLOUD_MONITOR_OTLP_ENABLED",
-        "tracing",
-        "Enable or disable the CloudMonitor OTLP exporter; defaults to enabled when "
-        "endpoint and AppKey are present.",
     ),
     EnvVarSpec(
         "CLOUD_MONITOR_OTLP_ENDPOINT",
@@ -670,7 +790,7 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     EnvVarSpec(
         "CLOUD_MONITOR_OTLP_HEADERS",
         "tracing",
-        "Additional CloudMonitor OTLP HTTP headers, comma-separated and URL-encoded.",
+        "CloudMonitor OTLP HTTP headers including Ksc-Appkey, comma-separated and URL-encoded.",
         sensitive=True,
     ),
     EnvVarSpec(
@@ -682,6 +802,12 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "CLOUD_MONITOR_OTLP_TRACES_ENDPOINT",
         "tracing",
         "CloudMonitor OTLP HTTP traces endpoint; takes precedence over the generic endpoint.",
+    ),
+    EnvVarSpec(
+        "CLOUD_MONITOR_OTLP_TRACES_HEADERS",
+        "tracing",
+        "CloudMonitor OTLP HTTP traces headers; takes precedence over generic headers.",
+        sensitive=True,
     ),
     EnvVarSpec(
         "CLOUD_MONITOR_OTLP_TRACES_PROTOCOL",
@@ -727,6 +853,12 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     ),
     EnvVarSpec("OTEL_SERVICE_NAME", "tracing", "OpenTelemetry service name."),
     EnvVarSpec(
+        "OPENCLAW_CONFIG_PATCH_JSON",
+        "openclaw",
+        "OpenClaw configuration patch JSON supplied at deployment time.",
+        sensitive=True,
+    ),
+    EnvVarSpec(
         "KSADK_OTLP_MAX_EXPORT_BATCH_SIZE",
         "tracing",
         "Maximum spans exported per OTLP batch to avoid oversized collector requests.",
@@ -737,6 +869,19 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
 ENV_VAR_REGISTRY: tuple[EnvVarSpec, ...] = tuple(
     sorted(_ENV_VAR_REGISTRY_ITEMS, key=lambda spec: spec.name)
 )
+_ENV_SENSITIVITY_BY_NAME = {spec.name: spec.sensitive for spec in ENV_VAR_REGISTRY}
+
+
+def is_sensitive_env_var(name: str) -> bool:
+    normalized = str(name or "").strip().upper()
+    if _ENV_SENSITIVITY_BY_NAME.get(normalized, False):
+        return True
+    if normalized.startswith("OTEL_EXPORTER_OTLP_") and normalized.endswith("_HEADERS"):
+        return True
+    return any(
+        token in normalized
+        for token in ("KEY", "TOKEN", "SECRET", "PASSWORD", "AUTHORIZATION", "SIGNATURE")
+    )
 
 
 def iter_env_vars() -> tuple[EnvVarSpec, ...]:

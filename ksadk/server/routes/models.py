@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from ksadk.conversations.run_kinds import RUN_MODE_UNKNOWN, RUN_TRIGGER_UNKNOWN
 from ksadk.conversations.run_status import RUN_STATUS_ACTIVE, RUN_STATUS_TERMINAL
-from ksadk.runners.base_runner import BaseRunner
+from ksadk.runtime.launch import RuntimeLaunchContext
 from ksadk.sessions import SessionEvent
 
 _RUN_TERMINAL_STATUSES = RUN_STATUS_TERMINAL
@@ -258,11 +258,11 @@ def _resolve_responses_session_and_user(request: ResponsesRequest) -> tuple[str 
     return resolved_session_id, resolved_user_id
 
 
-def _runtime_agent_id(active_runner: BaseRunner) -> str:
+def _runtime_agent_id(launch_context: RuntimeLaunchContext) -> str:
     runtime_id = _clean_optional_string(os.getenv("AGENT_RUNTIME_ID"))
     if runtime_id:
         return runtime_id
-    return str(getattr(active_runner.detection_result, "name", "") or "agent")
+    return str(getattr(launch_context.detection, "name", "") or "agent")
 
 
 def _metadata_invocation_id(metadata: Mapping[str, Any] | None) -> str | None:
@@ -425,9 +425,17 @@ def _latest_session_run_metadata(
             if not _is_run_lifecycle_event(event) or _event_run_id(event) != invocation_id:
                 continue
             metadata = event.metadata or {}
-            run_mode = str(metadata.get("run_mode") or RUN_MODE_UNKNOWN)
-            run_trigger = str(metadata.get("run_trigger") or RUN_TRIGGER_UNKNOWN)
-            break
+            candidate_mode = str(metadata.get("run_mode") or RUN_MODE_UNKNOWN)
+            candidate_trigger = str(metadata.get("run_trigger") or RUN_TRIGGER_UNKNOWN)
+            # Canonical RuntimeEvents and their legacy ``run_status`` projection
+            # coexist in the session log. RuntimeEvents intentionally carry only
+            # the transport-neutral marker, while the projection owns run kind
+            # metadata. Keep scanning past an unclassified RuntimeEvent so the UI
+            # does not downgrade a known background/foreground run to ``unknown``.
+            if candidate_mode != RUN_MODE_UNKNOWN or candidate_trigger != RUN_TRIGGER_UNKNOWN:
+                run_mode = candidate_mode
+                run_trigger = candidate_trigger
+                break
     return invocation_id, status, run_mode, run_trigger
 
 

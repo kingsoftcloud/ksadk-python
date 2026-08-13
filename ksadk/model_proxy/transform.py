@@ -122,6 +122,30 @@ def input_to_messages(inp):
                     },
                 }
             )
+        elif t == "custom_tool_call":
+            # 历史里的 custom_tool_call：还原为 function 调用（input 包进 JSON）
+            pending_tc.append(
+                {
+                    "id": item.get("call_id") or f"call_{len(pending_tc)}",
+                    "type": "function",
+                    "function": {
+                        "name": item.get("name"),
+                        "arguments": json.dumps(
+                            {"input": item.get("input") or ""}, ensure_ascii=False
+                        ),
+                    },
+                }
+            )
+        elif t == "custom_tool_call_output":
+            flush()
+            out = item.get("output")
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": item.get("call_id") or "",
+                    "content": out if isinstance(out, str) else json.dumps(out, ensure_ascii=False),
+                }
+            )
         elif t == "function_call_output":
             flush()
             out = item.get("output")
@@ -155,9 +179,29 @@ def convert_tools(tools):
             if "strict" in t:
                 fn["strict"] = t["strict"]
             out.append({"type": "function", "function": fn})
+        elif isinstance(t, dict) and t.get("type") == "custom" and t.get("name"):
+            # custom 工具（apply_patch 等 freeform 输入）转为单 input 字符串参数的 function
+            out.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": t.get("name"),
+                        "description": t.get("description", ""),
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"input": {"type": "string"}},
+                            "required": ["input"],
+                        },
+                    },
+                }
+            )
         else:
             t = t or {}
-            unsupported.append(t.get("type") or t.get("name") or "unknown")
+            import json as _json
+            try:
+                unsupported.append(_json.dumps(t, ensure_ascii=False)[:300])
+            except Exception:
+                unsupported.append(str(t.get("type") or t.get("name") or "unknown"))
     if unsupported:
         raise UnsupportedToolsError(
             f"不支持转换的 codex 工具类型: {unsupported};"

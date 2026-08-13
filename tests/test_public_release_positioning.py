@@ -18,6 +18,7 @@ ZH_DOC_URLS = {
     f"{DOCS_ROOT_URL}cn/docs/framework/guides/observability-tracing/",
     f"{DOCS_ROOT_URL}cn/docs/framework/guides/cloud-deployment/",
     f"{DOCS_ROOT_URL}cn/docs/framework/guides/hosted-ui-events/",
+    f"{DOCS_ROOT_URL}cn/docs/references/environment-variables/",
 }
 EN_DOC_URLS = {
     f"{DOCS_ROOT_URL}en/docs/framework/getting-started/quickstart/",
@@ -27,6 +28,7 @@ EN_DOC_URLS = {
     f"{DOCS_ROOT_URL}en/docs/framework/guides/observability-tracing/",
     f"{DOCS_ROOT_URL}en/docs/framework/guides/cloud-deployment/",
     f"{DOCS_ROOT_URL}en/docs/framework/guides/hosted-ui-events/",
+    f"{DOCS_ROOT_URL}en/docs/references/environment-variables/",
 }
 
 _DOCS_LINK_PATTERN = re.compile(
@@ -178,12 +180,9 @@ def test_docs_internal_links_resolve_to_rendered_pages():
             candidates = _docs_link_candidates(source, target)
             if candidates and not any(candidate.exists() for candidate in candidates):
                 display = " or ".join(
-                    candidate.relative_to(DOCS_CONTENT_ROOT).as_posix()
-                    for candidate in candidates
+                    candidate.relative_to(DOCS_CONTENT_ROOT).as_posix() for candidate in candidates
                 )
-                broken.append(
-                    f"{source.relative_to(DOCS_CONTENT_ROOT)} -> {target} ({display})"
-                )
+                broken.append(f"{source.relative_to(DOCS_CONTENT_ROOT)} -> {target} ({display})")
 
     assert not broken, "Broken internal documentation links:\n" + "\n".join(broken)
 
@@ -222,9 +221,12 @@ def test_public_metadata_uses_runtime_platform_positioning():
     pyproject = tomllib.loads(_read("pyproject.toml"))
     init_text = _read("ksadk/__init__.py")
     version_text = _read("ksadk/version.py")
+    changelog = _read("CHANGELOG.md")
 
-    assert pyproject["project"]["version"] == "0.8.0"
-    assert 'VERSION = "0.8.0"' in version_text
+    assert pyproject["project"]["version"] == "0.8.1"
+    assert 'VERSION = "0.8.1"' in version_text
+    assert "## [0.8.1] - 2026-08-10" in changelog
+    assert "`langchain-openai` 仅随" in changelog
     assert "Agent Runtime Platform" in pyproject["project"]["description"]
     assert "Agent Runtime Platform" in init_text
     assert "Agent Development Kit" not in pyproject["project"]["description"]
@@ -268,10 +270,10 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     assert "workflow_dispatch:" in workflow
     assert "publish_target:" in workflow
     assert "alias-only" in workflow
-    assert 'default: "0.3.0"' in workflow
+    assert 'default: "0.3.1"' in workflow
     assert "approved_source_commit:" in workflow
     assert "Reviewed source commit SHA recorded in docs/maintainer-approval-record.md" in workflow
-    assert "KSADK_WEB_VERSION: ${{ github.event.inputs.ksadk_web_version || '0.3.0' }}" in workflow
+    assert "KSADK_WEB_VERSION: ${{ github.event.inputs.ksadk_web_version || '0.3.1' }}" in workflow
     assert (
         "KSADK_APPROVED_SOURCE_COMMIT: "
         "${{ github.event.inputs.approved_source_commit || "
@@ -289,14 +291,17 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     assert "make public-test" in ci_workflow
     assert "tests/test_conversation_runtime.py" not in ci_workflow
     assert "tests/test_server_session_app.py" not in ci_workflow
-    assert 'KSADK_WEB_VERSION: "0.3.0"' in ci_workflow
+    assert 'KSADK_WEB_VERSION: "0.3.1"' in ci_workflow
     assert "PUBLIC_KSADK_WEB_VERSION" not in ci_workflow
-    assert "KSADK_WEB_VERSION ?= 0.3.0" in makefile
+    assert ci_workflow.count('node-version: "22"') == 3
+    assert 'node-version: "20"' not in ci_workflow
+    assert "KSADK_WEB_VERSION ?= 0.3.1" in makefile
     assert (
         "PUBLIC_TEST_TARGETS ?= tests/test_public_release_positioning.py "
-        "tests/test_config_env_registry.py tests/test_managed_runtime_builder.py "
+        "tests/test_public_security_regressions.py tests/test_config_env_registry.py "
+        "tests/test_managed_runtime_builder.py "
         "tests/test_managed_runtime_resolution.py tests/cli/test_cmd_create_codex.py "
-        "tests/runners/test_codex_runner.py" in makefile
+        "tests/runners/test_adapter_contract.py" in makefile
     )
     assert "public-sync-ksadk-web-static: sync-ksadk-web-static" in makefile
     assert "python3 scripts/open_source_audit.py --target public-repo" in makefile
@@ -332,14 +337,18 @@ def test_public_ci_runs_gitleaks_and_documents_branch_protection():
     assert "Secret Pattern Audit / scan" in branch_protection
     assert "CodeQL / analyze" in branch_protection
     assert "pypi environment" in branch_protection
-    assert "Branch protection and publish environment are configured" in approval_record
+    assert "required GitHub checks" in approval_record
 
 
 def test_public_release_candidate_tracks_current_version():
     approval_record = _read("docs/maintainer-approval-record.md")
+    version = tomllib.loads(_read("pyproject.toml"))["project"]["version"]
 
-    assert "| Python package version | 0.8.0 |" in approval_record
-    assert "make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=0.8.0" in approval_record
+    assert f"| Python package version | {version} |" in approval_record
+    assert (
+        f"make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V={version}"
+        in approval_record
+    )
 
 
 def test_0_8_changelog_is_ready_for_authorized_release():
@@ -355,10 +364,26 @@ def test_0_8_changelog_is_ready_for_authorized_release():
     assert "Codex ManagedRuntime" in release_section
 
 
+def test_0_8_1_changelog_pins_the_compatible_ksadk_web_release():
+    changelog = _read("CHANGELOG.md")
+    release_section = changelog.split("## [0.8.1]", 1)[1].split("## [0.8.0]", 1)[0]
+
+    assert "## [0.8.1] - 2026-08-10" in changelog
+    assert "@kingsoftcloud/ksadk-web@0.3.1" in release_section
+
+
 def test_public_release_sync_compares_exported_file_contents():
     workflow = _read("docs/public-release-workflow.md")
 
     assert "rsync -a --checksum --delete --exclude .git" in workflow
+
+
+def test_public_studio_react_gate_does_not_call_excluded_internal_tests():
+    makefile = _read("Makefile")
+    target = makefile.split("studio-react-test:\n", 1)[1].split("\n\n", 1)[0]
+
+    assert "npm --prefix ksadk/studio/react-ui run test:ui" in target
+    assert "tests/studio/" not in target
 
 
 def test_source_repository_does_not_track_generated_ksadk_web_static():

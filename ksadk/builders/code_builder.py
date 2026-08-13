@@ -30,6 +30,7 @@ from packaging.requirements import InvalidRequirement, Requirement
 from ksadk.builders.base import BaseBuilder, BuildResult
 from ksadk.builders.framework_requirements import (
     FASTAPI_REQUIREMENT,
+    STARLETTE_REQUIREMENT,
     code_requirements_for_framework,
 )
 from ksadk.builders.requirements_utils import (
@@ -111,10 +112,14 @@ class CodeBuilder(BaseBuilder):
     }
     BUNDLED_KSADK_CORE_RUNTIME_REQUIREMENTS = (
         "a2a-sdk>=0.3.22",
+        "culsans>=0.11.0",
         "httpx-sse>=0.4.0",
         "sse-starlette>=2.1.0",
         "python-multipart>=0.0.9,<1.0.0",
         "requests>=2.28.0",
+        "sqlalchemy>=2.0.0",
+        "aiosqlite>=0.19.0",
+        "greenlet>=3.0.0",
         "requests-aws4auth>=1.2.0",
         "kingsoftcloud-sdk-python>=1.5.8.94",
         "cryptography>=44.0.0",
@@ -796,17 +801,18 @@ class CodeBuilder(BaseBuilder):
         deps = [
             # Core
             FASTAPI_REQUIREMENT,
+            STARLETTE_REQUIREMENT,
             "uvicorn>=0.23.0",
             "python-dotenv>=1.0.0",
             "pydantic>=2.0.0",
             "pyyaml>=6.0.0",
             "httpx>=0.24.0",
-            # Tracing
+            # Tracing — OTLP 双写收敛:只用 OTel + openinference 自动插桩,
+            # 不再安装 Langfuse SDK(callback 路径已删除,Langfuse 通过标准 OTLP 接收)。
             "opentelemetry-api>=1.37.0",
             "opentelemetry-sdk>=1.37.0",
             "opentelemetry-exporter-otlp>=1.37.0",
             "openinference-instrumentation-langchain>=0.1.0",
-            "langfuse>=2.0.0",
         ]
 
         framework = detection_result.type.value
@@ -1808,15 +1814,11 @@ logger.info(f"PYTHONPATH: {{os.environ.get('PYTHONPATH', 'N/A')}}")
 # 打印关键环境变量 (隐藏敏感信息)
 env_keys = [
     "AGENT_RUNTIME_NAME", "AGENT_RUNTIME_ID", "ACCOUNT_ID", "PORT",
-    "LANGFUSE_BASE_URL", "LANGFUSE_HOST", "LANGFUSE_PUBLIC_KEY",
-    "LANGFUSE_SECRET_KEY", "LANGFUSE_USE_CALLBACK",
     "OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
     "OTEL_EXPORTER_OTLP_HEADERS", "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
-    "OTEL_SERVICE_NAME", "CLOUD_MONITOR_APP_KEY",
-    "CLOUD_MONITOR_OTLP_ENABLED", "CLOUD_MONITOR_OTLP_ENDPOINT",
-    "CLOUD_MONITOR_OTLP_TRACES_ENDPOINT", "CLOUD_MONITOR_OTLP_HEADERS",
-    "CLOUD_MONITOR_LANGFUSE_HOST", "CLOUD_MONITOR_LANGFUSE_PUBLIC_KEY",
-    "CLOUD_MONITOR_LANGFUSE_SECRET_KEY", "CLOUD_MONITOR_LANGFUSE_ENABLED",
+    "OTEL_SERVICE_NAME",
+    "CLOUD_MONITOR_OTLP_ENDPOINT", "CLOUD_MONITOR_OTLP_TRACES_ENDPOINT",
+    "CLOUD_MONITOR_OTLP_HEADERS", "CLOUD_MONITOR_OTLP_TRACES_HEADERS",
     "LANGCHAIN_TRACING_V2", "MODEL_NAME",
 ]
 for key in env_keys:
@@ -1833,15 +1835,9 @@ logger.info("=" * 60)
 from ksadk.configs import setup_environment
 setup_environment(Path(CODE_ROOT))
 
-try:
-    from ksadk.runners.patch_langchain import apply_patch as apply_langchain_patch
-    apply_langchain_patch()
-except ImportError:
-    pass
-
-from ksadk.runners import create_runner
 from ksadk.detection import DetectionResult, FrameworkType
-from ksadk.server import app, set_runner
+from ksadk.runtime import RuntimeExecutor, RuntimeLaunchContext, build_default_runtime_registry
+from ksadk.server import RuntimeAppConfig, configure_runtime_app, create_runtime_app
 import uvicorn
 
 # 检测结果 (构建时固化)
@@ -1851,57 +1847,84 @@ detection_result = DetectionResult(
     entry_point="{detection_result.entry_point}",
     package_path=os.path.join(CODE_ROOT, "{package_name}"),
     agent_variable="{detection_result.agent_variable}",
-    runner_class="{getattr(detection_result, 'runner_class', '')}"
+    runner_class="{getattr(detection_result, "runner_class", "")}"
 )
 
 logger.info(f"框架: {{detection_result.name}}")
 logger.info(f"入口: {{detection_result.entry_point}}")
 
-# 初始化 Tracing (如果配置了 Langfuse、标准 OTLP HTTP 或 CloudMonitor OTLP)
+# 初始化 Tracing (如果配置了标准 OTLP HTTP 或 CloudMonitor OTLP)
 has_otlp = bool(
     os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
     or os.environ.get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
 )
 has_cloud_monitor_otlp = bool(
-    os.environ.get("CLOUD_MONITOR_APP_KEY")
+    os.environ.get("CLOUD_MONITOR_OTLP_TRACES_HEADERS")
+    or os.environ.get("CLOUD_MONITOR_OTLP_HEADERS")
     or os.environ.get("CLOUD_MONITOR_OTLP_ENDPOINT")
     or os.environ.get("CLOUD_MONITOR_OTLP_TRACES_ENDPOINT")
+    or os.environ.get("CLOUD_MONITOR_APP_KEY")
 )
-has_cloud_monitor_langfuse = bool(
-    os.environ.get("CLOUD_MONITOR_LANGFUSE_PUBLIC_KEY")
-    or os.environ.get("CLOUD_MONITOR_LANGFUSE_SECRET_KEY")
-    or os.environ.get("CLOUD_MONITOR_LANGFUSE_HOST")
-)
-if (
-    os.environ.get("LANGFUSE_PUBLIC_KEY")
-    or has_otlp
-    or has_cloud_monitor_otlp
-    or has_cloud_monitor_langfuse
-):
+if has_otlp or has_cloud_monitor_otlp:
     try:
         from ksadk.tracing import setup_tracing
 
-        use_callback_only = (
-            os.environ.get("LANGFUSE_USE_CALLBACK", "").strip().lower()
-            in ("1", "true", "yes", "on")
-        )
-
-        setup_tracing(use_callback_only=use_callback_only)
+        setup_tracing()
         logger.info(
             f"Tracing 已启用 (OTLP={{has_otlp}}, "
-            f"CloudMonitorOTLP={{has_cloud_monitor_otlp}}, "
-            f"CloudMonitorLangfuse={{has_cloud_monitor_langfuse}}, "
-            f"CallbackOnly={{use_callback_only}})"
+            f"CloudMonitorOTLP={{has_cloud_monitor_otlp}})"
         )
     except Exception as e:
         logger.warning(f"Tracing 初始化失败: {{e}}")
 
-# 创建 Runner 并加载 Agent
-logger.info("正在加载 Agent...")
-runner = create_runner(detection_result, CODE_ROOT)
-runner.load_agent()
-set_runner(runner, loaded=True)
-logger.info("Agent 加载成功!")
+# 只装配统一 RuntimeAdapter 执行链；具体 Adapter 在请求开始时由 Registry 创建。
+runtime_context = RuntimeLaunchContext(
+    runtime_type=detection_result.type.value,
+    project_dir=Path(CODE_ROOT),
+    detection=detection_result,
+    config=dict(getattr(detection_result, "raw_config", None) or {{}}),
+)
+# managed A2A:KSADK_A2A_RUNTIME_ID 非空时挂 discovery card + 完整数据面 route。
+_a2a_config = None
+_a2a_adapter = None
+if os.environ.get("KSADK_A2A_RUNTIME_ID", "").strip():
+    from ksadk.managed_a2a_card import build_managed_a2a_card_if_configured
+
+    _managed_a2a_card = build_managed_a2a_card_if_configured()
+    try:
+        from ksadk.a2a.routes import A2AConfig
+        from ksadk.runtime.factory import create_runtime_adapter
+
+        _a2a_adapter = create_runtime_adapter(runtime_context)
+        _base = (
+            os.environ.get("KSADK_A2A_INTERNAL_BASE_URL", "").strip()
+            or "http://localhost:8080"
+        )
+        _a2a_config = A2AConfig(
+            enabled=True,
+            base_url=_base,
+            agent_name=(
+                os.environ.get("KSADK_A2A_AGENT_NAME", "").strip()
+                or os.environ.get("KSADK_A2A_RUNTIME_ID", "").strip()
+            ),
+            streaming=True,
+            task_store_dsn="sqlite+aiosqlite:///.agentengine/a2a_tasks.db",
+        )
+    except Exception as _e:
+        logger.warning(f"managed A2A 数据面装配失败,回退 discovery-only: {{_e}}")
+        _a2a_config = None
+        _a2a_adapter = None
+app = create_runtime_app(
+    RuntimeAppConfig(
+        runtime_type=detection_result.type.value,
+        runtime_executor=RuntimeExecutor(build_default_runtime_registry()),
+        launch_context=runtime_context,
+        a2a=_a2a_config or _managed_a2a_card,
+        a2a_runtime_adapter=_a2a_adapter,
+    ),
+    configure_runtime_app,
+)
+logger.info("RuntimeAdapter 执行链装配成功!")
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))

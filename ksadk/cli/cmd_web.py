@@ -6,10 +6,12 @@ import webbrowser
 from pathlib import Path
 
 import click
+import uvicorn
 import yaml
 
 from ksadk.cli.error_utils import ensure_json_output_supported, print_exception
 from ksadk.cli.local_runtime import reexec_with_project_venv_if_needed
+from ksadk.cli.runtime_bootstrap import create_runtime_web_app
 from ksadk.cli.ui import (
     print_error,
     print_info,
@@ -20,7 +22,6 @@ from ksadk.cli.ui import (
 )
 from ksadk.configs import setup_environment
 from ksadk.detection import FrameworkDetector
-from ksadk.runners.factory import create_runner
 
 _PERSISTENT_STM_FRAMEWORKS = {"adk", "langgraph", "langchain", "deepagents"}
 _STM_ENV_NAMES = (
@@ -340,10 +341,10 @@ def web(agent_dir: str, port: int, model: str, no_open: bool):
     launch_path = _configure_custom_ui_env(agent_path)
 
     try:
-        print_info("初始化 Runner...")
-        runner = create_runner(result, str(agent_path))
+        print_info("初始化 RuntimeAdapter...")
+        runtime_app = create_runtime_web_app(result, agent_path)
     except Exception as e:
-        print_exception("Runner 初始化失败", e)
+        print_exception("RuntimeAdapter 初始化失败", e)
         raise SystemExit(1)
 
     print_success("启动统一 Web UI")
@@ -356,7 +357,7 @@ def web(agent_dir: str, port: int, model: str, no_open: bool):
         webbrowser.open(launch_url)
 
     try:
-        runner.run_server(port=port)
+        uvicorn.run(runtime_app, host="127.0.0.1", port=port)
     except KeyboardInterrupt:
         raise SystemExit(0)
     except Exception as e:
