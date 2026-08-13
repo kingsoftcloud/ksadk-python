@@ -1,8 +1,9 @@
 # KsADK Public Release Approval Record
 
 This record approves the public `0.8.1` release from the reviewed clean-export
-candidate below. It is the evidence consumed by the release gate before GitHub
-tags, GitHub Releases, PyPI publication, or GitHub Pages deployment.
+candidate and release-gate fix below. It is the evidence consumed by the release
+gate before GitHub tags, GitHub Releases, PyPI publication, or GitHub Pages
+deployment.
 
 ## Required Approval Decisions
 
@@ -30,11 +31,12 @@ Record exactly one approved source publication strategy.
 The approved strategy must name the reviewed commit, tag, pull request, or
 export archive used for:
 
-- `ksadk-python`: clean-export candidate commit `f14d5faafdb6e76dd6616a951cabe28ba3708075`, prepared from the reviewed 0.8.1 source using the repository's public export policy.
-- `ksadk-web`: trusted npm package `@kingsoftcloud/ksadk-web@0.3.1`, source commit `b4e9f938828ef669347dadb7f0eb3f0a01747a6a`, integrity `sha512-p+PzgC/0ZcQXoEpoI5VezAB4FQkddstXiW1OQtfH/bPYOBAv4xyGMwBylEegae1IBcGlq9inUNuQRFez/IRRgQ==`; approval is bound to Python clean-export candidate commit `f14d5faafdb6e76dd6616a951cabe28ba3708075`.
+- `ksadk-python`: reviewed public candidate commit `f17cf2d06985cabac456825391e37999c95dc8d0`, prepared from clean-export candidate `f14d5faafdb6e76dd6616a951cabe28ba3708075` using the repository's public export policy and updated only with the reviewed release-gate fixes.
+- `ksadk-web`: trusted npm package `@kingsoftcloud/ksadk-web@0.3.1`, source commit `b4e9f938828ef669347dadb7f0eb3f0a01747a6a`, integrity `sha512-p+PzgC/0ZcQXoEpoI5VezAB4FQkddstXiW1OQtfH/bPYOBAv4xyGMwBylEegae1IBcGlq9inUNuQRFez/IRRgQ==`; approval is bound to reviewed Python public candidate commit `f17cf2d06985cabac456825391e37999c95dc8d0`.
 
-Both approved source references include the reviewed public candidate SHA. This
-prevents a stale approval record from passing after candidate changes.
+Both approved source references include the reviewed public candidate SHA
+`f17cf2d06985cabac456825391e37999c95dc8d0`. This prevents a stale approval
+record from passing after candidate changes.
 
 ## Recorded Evidence for Approval
 
@@ -43,7 +45,7 @@ prevents a stale approval record from passing after candidate changes.
   SHA-256 `33534137fdd48c8a44ce65640457f294bc04fe254212fae13178a7e3c89e6ad4`.
 - `make public-preflight` passed for the candidate: release-version, secret,
   public-source, docs, wheel, sdist, static-resource and package-metadata
-  audits passed; the public test set reported `76 passed` and the docs build
+  audits passed; the public test set reported `80 passed` and the docs build
   generated 197 static pages.
 - `make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=0.8.1` passed;
   neither public Python package already contains version `0.8.1`.
