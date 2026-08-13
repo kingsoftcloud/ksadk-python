@@ -82,10 +82,15 @@ class AgentAuthoringService:
             normalized = f"agent-{normalized}" if normalized else "agent"
         return normalized[:48].rstrip("-")
 
-    def allocate_agent_id(self, slug: str) -> str:
-        base = self.normalize_slug(slug)
+    def allocate_agent_id(self, _slug: str) -> str:
+        """Allocate a server-owned identifier without using a slug as a path segment.
+
+        Callers retain the normalized slug in Agent metadata for display and search,
+        while source directories only use this opaque identifier.
+        """
+
         for _attempt in range(100):
-            candidate = f"{base}-{uuid4().hex[:12]}"
+            candidate = f"agentkit-{uuid4().hex[:8]}"
             if not (self.workspace.resolve("agents") / candidate).exists():
                 return candidate
         raise StudioError(
