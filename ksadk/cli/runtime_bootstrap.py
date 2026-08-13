@@ -8,6 +8,7 @@ from typing import Any
 
 from fastapi import FastAPI
 
+from ksadk.agui.config import agui_config_for_detection
 from ksadk.runtime import RuntimeExecutor, RuntimeLaunchContext
 from ksadk.runtime.factory import build_default_runtime_registry
 from ksadk.server.composition import configure_runtime_app
@@ -40,6 +41,7 @@ def create_runtime_web_app(detection: Any, agent_path: Path) -> FastAPI:
         RuntimeAppConfig(
             runtime_executor=RuntimeExecutor(build_default_runtime_registry()),
             launch_context=context,
+            agui=agui_config_for_detection(detection),
             a2a=_managed_a2a_card(),
         ),
         configure_runtime_app,

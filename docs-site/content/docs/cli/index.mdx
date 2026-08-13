@@ -138,7 +138,7 @@ Codex ManagedRuntime 同样使用 `agentengine web . --no-open`。它会校验�
 
 ```bash title="bash"
 agentengine studio .
-agentengine studio . --port 7831 --no-open
+agentengine studio . --port 8081 --no-open
 agentengine studio . --env-file ./model.env --codex-proxy auto
 ```
 
@@ -149,6 +149,9 @@ Studio 使用单一 React shell 承载 Agent、会话、构建、资源、Trace 
 `studio/static` 是随 Python 包分发、但不进入 Git 的 React 生产构建产物；前端源码与测试位于
 `ksadk/studio/react-ui`。修改源码后使用 `make studio-react-test` 验证前端，发布构建通过
 `make build-wheel` 或 `make public-build-check` 重新生成并打包产物。
+
+从启动工作区到创建、构建和测试 Agent 的完整流程见
+[AgentKit Local Studio（0.8.1 新增）](/cn/docs/framework/guides/agentkit-local-studio)。
 
 ### `ksadk replay` / `agentengine replay`
 

@@ -240,6 +240,30 @@ async def test_runtime_real_transport_same_thread_resume_uses_payload(tmp_path: 
 
 
 @pytest.mark.asyncio
+async def test_runtime_events_preserve_the_caller_scope(tmp_path: Path):
+    client = AsyncCodexClient(config=_config(tmp_path))
+    runtime = CodexRuntimeAdapter(client)
+    request = StartRequest(
+        input="complete",
+        user_id="scope-user",
+        session_id="scope-session",
+        agent_id="scope-agent",
+        metadata={"invocation_id": "scope-invocation"},
+    )
+    handle = await runtime.start(request)
+    try:
+        events = [event async for event in runtime.stream(handle)]
+    finally:
+        await runtime.close(handle)
+
+    assert events
+    assert {
+        (event.agent_id, event.user_id, event.session_id, event.invocation_id)
+        for event in events
+    } == {("scope-agent", "scope-user", "scope-session", "scope-invocation")}
+
+
+@pytest.mark.asyncio
 async def test_runtime_external_thread_uses_real_backend_resume(tmp_path: Path):
     client = AsyncCodexClient(config=_config(tmp_path))
     runtime = CodexRuntimeAdapter(client)

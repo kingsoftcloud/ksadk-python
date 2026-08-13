@@ -42,9 +42,16 @@
 - `all` extra 纳入 Codex 支持；Studio 运行与测试依赖补齐 MCP、Pillow 和 Playwright，wheel/sdist 继续只打包 React 生产静态资源而不包含 Node.js 源码依赖。
 - `agentengine hermes exec` 增加显式 `--agent` 目标并改为 argv 原样透传，由远端 Pod 执行最终命令策略；普通 argv 不再被猜测为 Agent 名称，`--session` 业务会话 ID 会写入 terminal start frame。
 - 用户显式调用 `save_memory` 时向 SDK 记忆后端发送 `flush=True`，保证本次数据完成抽取后再返回；自动轮次保存继续使用后端默认批处理语义。
+- `agentengine studio` 默认继续仅监听 loopback，但端口调整为 `8080`；可用 `--port` 覆盖。Studio 前端源码开发代理也使用同一默认端口。
 
 ### 修复与性能
 
+- 修复 LangGraph 回调将 ToolGateway 结果序列化为 JSON 文本时，工具审批未被识别为可恢复交互的问题；Responses 客户端现在会收到标准审批项，批准后可继续原工具调用并执行真实副作用。
+- 修复 LangGraph 中 ToolGateway 审批完成后向已结束图发送原生 resume、导致副作用虽已执行却没有后续回复的问题；现在会基于已持久化的真实工具结果继续生成最终回答，同时保留原生 `interrupt()` 的 resume 语义。
+- 修复 Studio 快速创建向导与模板编排 API 的请求契约，并将 ADK/LangGraph 的源码路径和入口变量完全交由服务端生成；“创建后立即构建并打开会话”现在会实际提交 Build、等待成功后再进入会话。Codex、ADK、LangGraph 三种 Runtime 均按同一流程创建和构建。
+- 修复 Codex RuntimeAdapter 事件信封丢失调用方 `agent_id` / `user_id` / `invocation_id` 的问题，避免通过 `/v1/responses` 运行时因作用域校验不一致返回 500。
+- 修复通用 Agent 创建与更新部署 payload 未标记敏感环境变量的问题；模型 API Key、Token、Secret 等现在按统一规则写入 `IsSensitive`，避免控制面将其按普通变量处理。
+- 修复 Codex ManagedRuntime 的本地声明构建与请求组装：部署/`--dry-run` 会加载项目 YAML、计算 manifest SHA-256 并传给控制面，而不把部署参数误当作 Agent manifest。
 - 修复 Codex 中断后 SDK transport 残留后台等待任务，避免事件循环退出阶段挂起。
 - CloudMonitor traces 专用 endpoint、protocol 和 headers 分别优先于通用配置；`CLOUD_MONITOR_OTLP_TRACES_HEADERS` 与 `CLOUD_MONITOR_OTLP_HEADERS` 都支持 RFC 3986 percent-encoded values。
 - `CLOUD_MONITOR_APP_KEY` 降级为一个版本的过渡 fallback：仅当 traces 和通用 headers 环境变量都整体缺失时才翻译为 `Ksc-Appkey`。任一 headers 变量已提供但无有效 `Ksc-Appkey` 时 fail closed，不混入旧 AppKey。
@@ -59,10 +66,11 @@
 - 旧 `LANGFUSE_*` 凭证不再创建 SDK callback/exporter。迁移时把 Langfuse OTLP endpoint 与 Authorization header 配置到标准 `OTEL_EXPORTER_OTLP_*`。
 - 新部署使用 `CLOUD_MONITOR_OTLP_TRACES_HEADERS` 或 `CLOUD_MONITOR_OTLP_HEADERS` 提供 `Ksc-Appkey`；`CLOUD_MONITOR_APP_KEY` 仅用于旧控制面的短期兼容。
 - A2A 环境变量明确区分部署期 `KSADK_A2A_RUNTIME_ID` 与注册后 `KSADK_A2A_AGENT_ID`；v1 discovery card 只依赖前者。
+- Codex `ksadk init` 的本地 `web`/Responses 运行与 ManagedRuntime 请求组装已验证；真实云端部署仍依赖服务端发布 Runtime catalog、对应 Linux runtime image 和内联 manifest 的公开控制面契约。该服务端能力未在本次 SDK 发布中宣称可用，SDK 不会把 Codex 静默降级为 Code 部署。
 
 ### 文档
 
-- 同步中英文 README、Studio CLI、可观测性、环境变量、知识库与记忆库指南，补充首次 Studio 交付、React 源码/构建产物边界、运行控制与交互协议、默认 OTLP 双写、显式关闭、header 优先级、旧 AppKey 边界以及 Hermes session 语义。
+- 同步中英文 README、Studio CLI、可观测性、环境变量、知识库与记忆库指南；新增可从左侧导航进入的 AgentKit Local Studio 指南，补充首次 Studio 交付、React 源码/构建产物边界、运行控制与交互协议、默认 OTLP 双写、显式关闭、header 优先级、旧 AppKey 边界以及 Hermes session 语义。
 
 ### 发布记录
 
@@ -70,6 +78,7 @@
 - 内置 Web UI：`@kingsoftcloud/ksadk-web@0.3.1`（source `b4e9f938828ef669347dadb7f0eb3f0a01747a6a`）
 - AgentKit Studio：首次交付，React 单一前端随 Python wheel 分发生产构建产物
 - 当前状态：内部发版候选；相对 `0.8.0` 的 Studio、Runtime、Codex、可观测性、CLI、依赖与文档变更均记录于本节
+- 本地发版验证：Studio 快速创建、构建和会话入口已覆盖 Codex、ADK、LangGraph；`ksadk init -f <codex|adk|langgraph>` 生成的三套模板均已通过 `ksadk web`、`/v1/responses` 本地对话和 `ksadk deploy --dry-run` 请求规划验证。ADK、LangGraph 另已完成隔离环境中的真实部署和调用；Codex 真实云端部署待上述服务端 Runtime 上线后复验。
 - PyPI、tag、GitHub Release 与公开文档站仍须通过受信 workflow 和维护者批准后发布
 
 ## [0.8.0] - 2026-07-29

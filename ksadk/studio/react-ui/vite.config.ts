@@ -23,8 +23,8 @@ export default defineConfig(({ command }) => ({
     port: 5174,
     fs: { allow: [".."] },
     proxy: {
-      "/api": "http://127.0.0.1:7831",
-      "/agentengine": "http://127.0.0.1:7831",
+      "/api": "http://127.0.0.1:8080",
+      "/agentengine": "http://127.0.0.1:8080",
     },
   },
   build: {
