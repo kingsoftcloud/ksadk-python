@@ -67,6 +67,7 @@
 ### 发布记录
 
 - Python：`ksadk==0.8.1`
+- 内置 Web UI：`@kingsoftcloud/ksadk-web@0.3.1`（source `b4e9f938828ef669347dadb7f0eb3f0a01747a6a`）
 - AgentKit Studio：首次交付，React 单一前端随 Python wheel 分发生产构建产物
 - 当前状态：内部发版候选；相对 `0.8.0` 的 Studio、Runtime、Codex、可观测性、CLI、依赖与文档变更均记录于本节
 - PyPI、tag、GitHub Release 与公开文档站仍须通过受信 workflow 和维护者批准后发布

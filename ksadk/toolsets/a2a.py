@@ -14,9 +14,15 @@ call_a2a_agent。LLM 操作哪个远程 agent 通过参数动态指定。
 from __future__ import annotations
 
 import difflib
+import ipaddress
 import os
+import socket
 import uuid
 from typing import Any
+from urllib.parse import urlsplit
+
+import httpcore
+import httpx
 
 from ksadk.tools.gateway import ToolPolicy
 from ksadk.toolsets._langchain import as_tool
@@ -149,6 +155,139 @@ def _extract_reply_text(remote_task: Any) -> str:
     return "".join(parts_text)
 
 
+class _PinnedDNSNetworkBackend(httpcore.NetworkBackend):
+    """Dial the address selected by the URL validator while preserving TLS SNI."""
+
+    def __init__(
+        self,
+        delegate: httpcore.NetworkBackend,
+        *,
+        expected_hostname: str,
+        expected_port: int,
+        pinned_ip: str,
+    ) -> None:
+        self._delegate = delegate
+        self._expected_hostname = expected_hostname
+        self._expected_port = expected_port
+        self._pinned_ip = pinned_ip
+
+    def connect_tcp(
+        self,
+        host: str,
+        port: int,
+        timeout: float | None = None,
+        local_address: str | None = None,
+        socket_options: Any = None,
+    ) -> httpcore.NetworkStream:
+        if host.lower() != self._expected_hostname or port != self._expected_port:
+            raise RuntimeError("A2A tool transport attempted to dial an unapproved origin")
+        return self._delegate.connect_tcp(
+            self._pinned_ip,
+            port,
+            timeout=timeout,
+            local_address=local_address,
+            socket_options=socket_options,
+        )
+
+    def connect_unix_socket(
+        self,
+        path: str,
+        timeout: float | None = None,
+        socket_options: Any = None,
+    ) -> httpcore.NetworkStream:
+        return self._delegate.connect_unix_socket(
+            path,
+            timeout=timeout,
+            socket_options=socket_options,
+        )
+
+    def sleep(self, seconds: float) -> None:
+        self._delegate.sleep(seconds)
+
+
+def _validated_card_origin(url: str) -> tuple[str, int, str] | dict[str, Any]:
+    """Validate a card URL and pin one address from its all-public DNS result."""
+    parsed = urlsplit(url)
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.netloc.rsplit("@", 1)[-1].endswith(":")
+        or port is not None and not 1 <= port <= 65535
+    ):
+        return {
+            "ok": False,
+            "error_type": "invalid_card_url",
+            "error_message": "card url must be an HTTP(S) URL without userinfo",
+        }
+    try:
+        hostname = parsed.hostname.encode("idna").decode("ascii").lower()
+        effective_port = port or (443 if parsed.scheme == "https" else 80)
+        addresses = socket.getaddrinfo(
+            hostname,
+            effective_port,
+            type=socket.SOCK_STREAM,
+        )
+    except (UnicodeError, socket.gaierror) as exc:
+        return {
+            "ok": False,
+            "error_type": "dns_resolution_failed",
+            "error_message": str(exc),
+        }
+    public_addresses: list[str] = []
+    for address in addresses:
+        ip = ipaddress.ip_address(address[4][0])
+        if not ip.is_global:
+            return {
+                "ok": False,
+                "error_type": "blocked_by_ssrf_policy",
+                "error_message": f"blocked non-public card address: {ip}",
+            }
+        public_addresses.append(str(ip))
+    if not public_addresses:
+        return {
+            "ok": False,
+            "error_type": "dns_resolution_failed",
+            "error_message": "card hostname resolved to no addresses",
+        }
+    return hostname, effective_port, public_addresses[0]
+
+
+def _validate_card_url(url: str) -> dict[str, Any] | None:
+    validated = _validated_card_origin(url)
+    return validated if isinstance(validated, dict) else None
+
+
+def _pinned_http_client(*, hostname: str, port: int, pinned_ip: str) -> httpx.Client:
+    transport = httpx.HTTPTransport(
+        trust_env=False,
+        http1=True,
+        http2=False,
+        limits=httpx.Limits(max_connections=1, max_keepalive_connections=0),
+    )
+    pool = getattr(transport, "_pool", None)
+    if not isinstance(pool, httpcore.ConnectionPool):
+        transport.close()
+        raise RuntimeError("httpx direct sync transport is unavailable for A2A DNS pinning")
+    pool._network_backend = _PinnedDNSNetworkBackend(  # type: ignore[attr-defined]
+        pool._network_backend,
+        expected_hostname=hostname,
+        expected_port=port,
+        pinned_ip=pinned_ip,
+    )
+    return httpx.Client(
+        transport=transport,
+        follow_redirects=False,
+        trust_env=False,
+        timeout=120,
+    )
+
+
 def list_a2a_agents() -> dict[str, Any]:
     """List remote A2A agents in the configured A2A Space.
 
@@ -213,8 +352,6 @@ def call_a2a_agent(agent: str, message: str) -> dict[str, Any]:
             "available_agents": hint,
         }
     try:
-        import httpx
-
         card_url = str(matched.get("url") or "").strip()
         if not card_url:
             return {"ok": False, "error_message": f"agent {matched['agent_id']} card 无可用 url"}
@@ -244,28 +381,16 @@ def call_a2a_agent(agent: str, message: str) -> dict[str, Any]:
                 propagate.inject(headers)
             except Exception:
                 pass
-            # SSRF 防护：拒绝内网/环回/链路本地地址（与 ksadk.toolsets.web 同款）。
-            import ipaddress
-            from urllib.parse import urlsplit
-
-            _parsed = urlsplit(card_url)
-            _host = (_parsed.hostname or "").lower()
-            if _host and not _host.endswith(".ksyun.com"):
-                try:
-                    _ip = ipaddress.ip_address(_host)
-                    if _ip.is_private or _ip.is_loopback or _ip.is_link_local or _ip.is_reserved:
-                        return {
-                            "ok": False,
-                            "error_message": f"card url 指向内网地址，拒绝调用: {card_url}",
-                        }
-                except ValueError:
-                    pass  # 非 IP hostname（如 agent-pre.kspmas.ksyun.com），放行
-            resp = httpx.post(
-                card_url,
-                json=payload,
-                headers=headers,
-                timeout=120,
-            )
+            validated = _validated_card_origin(card_url)
+            if isinstance(validated, dict):
+                return validated
+            hostname, port, pinned_ip = validated
+            with _pinned_http_client(
+                hostname=hostname,
+                port=port,
+                pinned_ip=pinned_ip,
+            ) as client:
+                resp = client.post(card_url, json=payload, headers=headers)
             if resp.status_code != 200:
                 return {
                     "ok": False,

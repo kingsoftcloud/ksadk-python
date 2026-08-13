@@ -14,7 +14,7 @@ help:
 	@echo "    make test           运行测试"
 	@echo ""
 	@echo "  \033[1;32mWeb UI 构建:\033[0m"
-	@echo "    make sync-ksadk-web-static KSADK_WEB_VERSION=0.3.0"
+	@echo "    make sync-ksadk-web-static KSADK_WEB_VERSION=0.3.1"
 	@echo "                         从 @kingsoftcloud/ksadk-web npm 包同步 static"
 	@echo "    make build-frontend 同步 ksadk-web static"
 	@echo ""
@@ -577,9 +577,9 @@ openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size:
 
 STATIC_DIR := ksadk/server/static
 # The wheel must embed a published, reproducible Web bundle. 0.8.x is coupled
-# to the 0.3.0 Web release; the release job must fail rather than silently
+# to the 0.3.1 Web release; the release job must fail rather than silently
 # substituting an older npm package when that release is not visible yet.
-KSADK_WEB_VERSION ?= 0.3.0
+KSADK_WEB_VERSION ?= 0.3.1
 KSADK_WEB_PACKAGE ?= @kingsoftcloud/ksadk-web
 KSADK_WEB_TARBALL_NAME := kingsoftcloud-ksadk-web-$(patsubst v%,%,$(KSADK_WEB_VERSION)).tgz
 KSADK_WEB_RELEASE_URL ?=

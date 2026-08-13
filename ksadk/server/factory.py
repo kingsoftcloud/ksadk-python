@@ -397,24 +397,54 @@ def create_runtime_app(
                 _carrier = dict(request.headers)
                 _parent = propagate.extract(_carrier)
                 _parent_span_ctx = _otel_trace.get_current_span(_parent).get_span_context()
+            except Exception:
+                logger.exception("failed to initialize request tracing; continuing without OTel")
+                response = await call_next(request)
+            else:
                 if _parent_span_ctx.is_valid:
-                    _token = _otel_ctx.attach(_parent)
                     try:
+                        _token = _otel_ctx.attach(_parent)
+                    except Exception:
+                        logger.exception(
+                            "failed to attach inbound trace context; continuing without OTel"
+                        )
                         response = await call_next(request)
-                    finally:
-                        _otel_ctx.detach(_token)
+                    else:
+                        try:
+                            response = await call_next(request)
+                        finally:
+                            try:
+                                _otel_ctx.detach(_token)
+                            except Exception:
+                                logger.exception("failed to detach inbound trace context")
                 elif _is_agent_execution_path(request.url.path, request.method):
-                    _tracer = _otel_trace.get_tracer("ksadk.server")
-                    with _tracer.start_as_current_span(
-                        f"{request.method} {request.url.path}"
-                    ):
+                    try:
+                        _tracer = _otel_trace.get_tracer("ksadk.server")
+                        _span_scope = _tracer.start_as_current_span(
+                            f"{request.method} {request.url.path}"
+                        )
+                        _span_scope.__enter__()
+                    except Exception:
+                        logger.exception(
+                            "failed to start request span; continuing without OTel"
+                        )
                         response = await call_next(request)
+                    else:
+                        try:
+                            response = await call_next(request)
+                        except BaseException as exc:
+                            try:
+                                _span_scope.__exit__(type(exc), exc, exc.__traceback__)
+                            except Exception:
+                                logger.exception("failed to close request span after handler error")
+                            raise
+                        else:
+                            try:
+                                _span_scope.__exit__(None, None, None)
+                            except Exception:
+                                logger.exception("failed to close request span")
                 else:
                     response = await call_next(request)
-            except Exception:
-                # OTel 插桩异常不应导致 handler 重复执行（try 内已调 call_next）;
-                # 让异常向上抛由 Starlette exception handler 处理。
-                raise
             path = request.url.path
             if path == "/" or path.endswith(".html"):
                 response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"

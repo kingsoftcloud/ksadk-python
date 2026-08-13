@@ -20,9 +20,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.validate_checkpoint_resume_e2e import (
-    run_cancel_validation,
+from scripts.validate_checkpoint_resume_e2e import (  # noqa: E402
     run_cancel_then_resume_validation,
+    run_cancel_validation,
     run_validation,
 )
 
@@ -117,7 +117,8 @@ async def _build_single_pilot_report(
             },
             "notes": [
                 "DSN is intentionally omitted from this report.",
-                "Provider/tool deep cancellation support must be reported as accepted or unsupported per runner/tool.",
+                "Provider/tool deep cancellation support must be reported as accepted "
+                "or unsupported per runner/tool.",
             ],
         }
 
@@ -161,7 +162,9 @@ async def _build_single_pilot_report(
             "run_resume_event_count": checkpoint_result.get("run_resume_event_count"),
             "checkpoint_log_before_resume": checkpoint_result.get("checkpoint_log_before_resume"),
             "node_counts_after_resume": checkpoint_result.get("node_counts_after_resume"),
-            "resume_did_not_rerun_prior_nodes": checkpoint_result.get("resume_did_not_rerun_prior_nodes"),
+            "resume_did_not_rerun_prior_nodes": checkpoint_result.get(
+                "resume_did_not_rerun_prior_nodes"
+            ),
         }
     }
     if include_cancel:
@@ -173,7 +176,9 @@ async def _build_single_pilot_report(
             "invocation_id": cancel_result.get("invocation_id") if cancel_result else None,
             "cancel_found": cancel_result.get("cancel_found") if cancel_result else None,
             "cancel_status": cancel_result.get("cancel_status") if cancel_result else None,
-            "cancelled_event_count": cancel_result.get("cancelled_event_count") if cancel_result else None,
+            "cancelled_event_count": cancel_result.get("cancelled_event_count")
+            if cancel_result
+            else None,
             "post_cancel_extra_event_count": (
                 cancel_result.get("post_cancel_extra_event_count") if cancel_result else None
             ),
@@ -187,18 +192,26 @@ async def _build_single_pilot_report(
             "session_id": (
                 cancel_then_resume_result.get("session_id") if cancel_then_resume_result else None
             ),
-            "run_id": cancel_then_resume_result.get("run_id") if cancel_then_resume_result else None,
+            "run_id": cancel_then_resume_result.get("run_id")
+            if cancel_then_resume_result
+            else None,
             "invocation_id": (
-                cancel_then_resume_result.get("invocation_id") if cancel_then_resume_result else None
+                cancel_then_resume_result.get("invocation_id")
+                if cancel_then_resume_result
+                else None
             ),
             "checkpoint_id": (
-                cancel_then_resume_result.get("checkpoint_id") if cancel_then_resume_result else None
+                cancel_then_resume_result.get("checkpoint_id")
+                if cancel_then_resume_result
+                else None
             ),
             "cancel_found": (
                 cancel_then_resume_result.get("cancel_found") if cancel_then_resume_result else None
             ),
             "cancel_status": (
-                cancel_then_resume_result.get("cancel_status") if cancel_then_resume_result else None
+                cancel_then_resume_result.get("cancel_status")
+                if cancel_then_resume_result
+                else None
             ),
             "cancelled_event_count": (
                 cancel_then_resume_result.get("cancelled_event_count")
@@ -242,7 +255,8 @@ async def _build_single_pilot_report(
         }
 
     no_events_after_cancel = (
-        cancel_result is not None and int(cancel_result.get("post_cancel_extra_event_count") or 0) == 0
+        cancel_result is not None
+        and int(cancel_result.get("post_cancel_extra_event_count") or 0) == 0
     )
     cancel_then_resume_after_cancel = bool(cancel_then_resume_ok)
     return {
@@ -264,8 +278,12 @@ async def _build_single_pilot_report(
             ),
         },
         "acceptance": {
-            "same_run_id_resume": _pass_fail(bool(checkpoint_result.get("run_id")) and checkpoint_ok),
-            "checkpoint_list_visible": _pass_fail(int(checkpoint_result.get("checkpoint_count") or 0) >= 1),
+            "same_run_id_resume": _pass_fail(
+                bool(checkpoint_result.get("run_id")) and checkpoint_ok
+            ),
+            "checkpoint_list_visible": _pass_fail(
+                int(checkpoint_result.get("checkpoint_count") or 0) >= 1
+            ),
             "resume_does_not_restart": _pass_fail(
                 checkpoint_result.get("resume_did_not_rerun_prior_nodes") is True
             ),
@@ -281,7 +299,9 @@ async def _build_single_pilot_report(
             "resume_after_cancel_does_not_restart": (
                 _pass_fail(
                     cancel_then_resume_result is not None
-                    and cancel_then_resume_result.get("resume_after_cancel_did_not_rerun_prior_nodes")
+                    and cancel_then_resume_result.get(
+                        "resume_after_cancel_did_not_rerun_prior_nodes"
+                    )
                     is True
                 )
                 if include_cancel
@@ -290,7 +310,8 @@ async def _build_single_pilot_report(
         },
         "notes": [
             "DSN is intentionally omitted from this report.",
-            "Provider/tool deep cancellation support must be reported as accepted or unsupported per runner/tool.",
+            "Provider/tool deep cancellation support must be reported as accepted or "
+            "unsupported per runner/tool.",
         ],
     }
 
@@ -364,9 +385,7 @@ async def build_pilot_report(
     checkpoint_ok = checkpoint_passed == total_iterations
     cancel_ok = (cancel_passed == total_iterations) if include_cancel else True
     cancel_then_resume_ok = (
-        cancel_then_resume_passed == total_iterations
-        if include_cancel
-        else True
+        cancel_then_resume_passed == total_iterations if include_cancel else True
     )
 
     checkpoint_case = _first_nonpassing_case(iteration_reports, "checkpoint_resume")
@@ -407,22 +426,16 @@ async def build_pilot_report(
             "runtime_cancel_failed": (
                 total_iterations - int(cancel_passed or 0) if include_cancel else None
             ),
-            "cancel_then_resume_passed": (
-                cancel_then_resume_passed if include_cancel else None
-            ),
+            "cancel_then_resume_passed": (cancel_then_resume_passed if include_cancel else None),
             "cancel_then_resume_failed": (
-                total_iterations - int(cancel_then_resume_passed or 0)
-                if include_cancel
-                else None
+                total_iterations - int(cancel_then_resume_passed or 0) if include_cancel else None
             ),
             "checkpoint_resume_success_rate": checkpoint_passed / total_iterations,
             "runtime_cancel_success_rate": (
                 int(cancel_passed or 0) / total_iterations if include_cancel else None
             ),
             "cancel_then_resume_success_rate": (
-                int(cancel_then_resume_passed or 0) / total_iterations
-                if include_cancel
-                else None
+                int(cancel_then_resume_passed or 0) / total_iterations if include_cancel else None
             ),
             "max_post_cancel_extra_event_count": _max_metric(
                 iteration_reports,
@@ -444,7 +457,8 @@ async def build_pilot_report(
         },
         "notes": [
             "DSN is intentionally omitted from this report.",
-            "Provider/tool deep cancellation support must be reported as accepted or unsupported per runner/tool.",
+            "Provider/tool deep cancellation support must be reported as accepted or "
+            "unsupported per runner/tool.",
         ],
     }
 

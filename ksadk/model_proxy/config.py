@@ -16,7 +16,8 @@ class ProxyConfig:
     upstream_base: str = DEFAULT_UPSTREAM_BASE
     api_key: str = ""  # 上游凭证(proxy -> 上游)
     local_token: str = ""  # 本地 proxy 鉴权 token(codex -> proxy);空则不校验(仅本地调试)
-    upstream_model: str = ""  # 上游真实模型名;非空时 responses 转换路径强制改写 model(codex 会发内部伪模型名如 codex-auto-review)
+    # 非空时 responses 转换路径强制改写 model（Codex 可能发送内部伪模型名）。
+    upstream_model: str = ""
     timeout: float = 180.0
     event_callback: Callable[[str, dict[str, Any]], None] | None = field(
         default=None,

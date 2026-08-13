@@ -1451,7 +1451,15 @@ def test_hermes_deploy_env_file_loads_extra_env(tmp_path: Path, monkeypatch):
 
     result = runner.invoke(
         cmd_hermes.hermes,
-        ["deploy", "--name", "demo-hermes", "--image", "registry/hermes:test", "--env-file", "custom.env"],
+        [
+            "deploy",
+            "--name",
+            "demo-hermes",
+            "--image",
+            "registry/hermes:test",
+            "--env-file",
+            "custom.env",
+        ],
     )
 
     assert result.exit_code == 0, result.output
@@ -1471,7 +1479,15 @@ def test_hermes_deploy_env_flag_overrides_shell(tmp_path: Path, monkeypatch):
 
     result = runner.invoke(
         cmd_hermes.hermes,
-        ["deploy", "--name", "demo-hermes", "--image", "registry/hermes:test", "--env", "FOO=cli-value"],
+        [
+            "deploy",
+            "--name",
+            "demo-hermes",
+            "--image",
+            "registry/hermes:test",
+            "--env",
+            "FOO=cli-value",
+        ],
     )
 
     assert result.exit_code == 0, result.output
@@ -1528,7 +1544,15 @@ def test_hermes_deploy_explicit_env_file_missing_raises(tmp_path: Path, monkeypa
 
     result = runner.invoke(
         cmd_hermes.hermes,
-        ["deploy", "--name", "demo-hermes", "--image", "registry/hermes:test", "--env-file", "missing.env"],
+        [
+            "deploy",
+            "--name",
+            "demo-hermes",
+            "--image",
+            "registry/hermes:test",
+            "--env-file",
+            "missing.env",
+        ],
     )
 
     assert result.exit_code != 0

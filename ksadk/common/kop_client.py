@@ -72,6 +72,7 @@ class KOPClient:
         service: Optional[str] = None,
         api_version: Optional[str] = None,
         account_id: Optional[str] = None,
+        service_token: Optional[str] = None,
         timeout: float = 15.0,
     ) -> None:
         self.base_url = (base_url or os.getenv("KSADK_A2A_SERVICE_URL") or "").strip().rstrip("/")
@@ -96,6 +97,9 @@ class KOPClient:
             or os.getenv("KSADK_A2A_ACCOUNT_ID")
             or os.getenv("KSYUN_ACCOUNT_ID")
             or ""
+        ).strip()
+        self.service_token = (
+            service_token or os.getenv("KSADK_A2A_SERVICE_TOKEN") or ""
         ).strip()
         self.timeout = timeout
         self._kop_mode = is_kop_endpoint(self.base_url)
@@ -134,6 +138,8 @@ class KOPClient:
         headers = {"Accept": "application/json", "Content-Type": "application/json"}
         if self.account_id:
             headers["X-Ksc-Account-Id"] = self.account_id
+        if self.service_token:
+            headers["Authorization"] = f"Bearer {self.service_token}"
         if self._kop_mode:
             headers["Host"] = urlsplit(self.base_url).netloc
             headers["X-Ksc-Request-Id"] = str(uuid.uuid4())
@@ -163,7 +169,11 @@ class KOPClient:
         url = self._build_url(action)
         headers = self._headers(action)
         body = json.dumps(dict(payload or {}), ensure_ascii=False)
-        auth = self._auth.get_auth() if self._kop_mode and self._auth.is_enabled else None
+        auth = (
+            self._auth.get_auth()
+            if self._kop_mode and self._auth.is_enabled and not self.service_token
+            else None
+        )
         try:
             response = self._session_obj().post(
                 url,
@@ -178,10 +188,10 @@ class KOPClient:
                 message=f"KOP control plane unavailable: {exc}",
                 action=action,
             ) from exc
-        if response.status_code >= 500:
+        if not 200 <= response.status_code < 300:
             raise KOPError(
                 code=response.status_code,
-                message=f"KOP server error: {response.text[:200]}",
+                message=f"KOP HTTP error: {response.text[:200]}",
                 action=action,
             )
         try:

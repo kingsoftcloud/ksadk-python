@@ -41,7 +41,6 @@ from ksadk.a2a import (
     add_a2a_protocol_routes,
     build_agent_card,
 )
-from ksadk.events import EventPhase, EventType, RuntimeEvent
 from ksadk.evaluation import (
     A2ATargetAdapter,
     EvalCase,
@@ -51,6 +50,7 @@ from ksadk.evaluation import (
     TargetRef,
     TargetRunStatus,
 )
+from ksadk.events import EventPhase, EventType, RuntimeEvent
 from ksadk.runtime.adapter import (
     BaseRuntime,
     CancelResult,

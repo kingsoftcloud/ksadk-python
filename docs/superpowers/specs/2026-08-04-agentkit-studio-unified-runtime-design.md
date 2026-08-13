@@ -1,9 +1,9 @@
 # AgentKit Studio 与统一 Web RuntimeAdapter 收敛设计
 
-> 日期：2026-08-04  
-> 状态：已确认，进入实施规划  
-> 代码库：`ksadk-python`  
-> 开发分支：`agentkit-studio-codex-ld1`  
+> 日期：2026-08-04
+> 状态：已确认，进入实施规划
+> 代码库：`ksadk-python`
+> 开发分支：`agentkit-studio-codex-ld1`
 > 内部 eZone：`ssh://ezone.ksyun.com:23/ezone/bigdata-platform/ksadk-python.git`
 
 ## 1. 背景

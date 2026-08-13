@@ -573,7 +573,9 @@ def main() -> None:
                 workbench_page.locator(".primary-nav").get_by_role(
                     "button", name="会话", exact=True
                 ).click()
-                expect(workbench_page.locator(".app-shell")).to_have_attribute("data-view", "conversations")
+                expect(workbench_page.locator(".app-shell")).to_have_attribute(
+                    "data-view", "conversations"
+                )
                 expect(workbench_page.locator(".studio-chat-shell")).to_be_visible()
                 expect(workbench_page.locator(".chat-conversation")).to_be_visible()
                 expect(workbench_page.locator(".chat-composer")).to_be_visible()
@@ -667,7 +669,9 @@ def main() -> None:
                     workbench_page.get_by_text("正在继续生成可恢复的回答", exact=True)
                 ).to_be_visible()
                 workbench_page.reload(wait_until="domcontentloaded")
-                expect(workbench_page.locator(".app-shell")).to_have_attribute("data-view", "conversations")
+                expect(workbench_page.locator(".app-shell")).to_have_attribute(
+                    "data-view", "conversations"
+                )
                 expect(
                     workbench_page.get_by_text("正在继续生成可恢复的回答", exact=True)
                 ).to_be_visible()

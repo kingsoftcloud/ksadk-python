@@ -747,7 +747,8 @@ class ServerlessProvider(BaseDeployProvider):
                                     f"❌ 指定的 Agent ID '{explicit_agent_id}' 不存在，"
                                     f"或当前凭证无权限访问。\n"
                                     f"   详情: {e}\n"
-                                    "   👉 请确认 agent_id 正确，且当前 AK/SK / 账号有该 Agent 的权限。"
+                                    "   👉 请确认 agent_id 正确，且当前 AK/SK / 账号"
+                                    "有该 Agent 的权限。"
                                 ),
                             )
 

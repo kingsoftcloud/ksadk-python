@@ -181,7 +181,9 @@ def compose_blank_agent(
     mcps = [item for item in resources if item.kind == "mcp"]
 
     model = _select_model(models, request.model_profile_id)
-    selected_model_ids = _select_model_ids(models, request.model_profile_id, request.model_profile_ids)
+    selected_model_ids = _select_model_ids(
+        models, request.model_profile_id, request.model_profile_ids
+    )
     selected_tools = _select_resources(
         tools,
         request.tool_resource_ids,
@@ -277,7 +279,9 @@ def compose_research_agent(
     mcps = [item for item in resources if item.kind == "mcp"]
 
     model = _select_model(models, request.model_profile_id)
-    selected_model_ids = _select_model_ids(models, request.model_profile_id, request.model_profile_ids)
+    selected_model_ids = _select_model_ids(
+        models, request.model_profile_id, request.model_profile_ids
+    )
     research_skill = next(
         (
             item

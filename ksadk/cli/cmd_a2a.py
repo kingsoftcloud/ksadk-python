@@ -328,7 +328,6 @@ def _load_runtime_adapter(agent_path: Path, *, no_trace: bool):
 
 def _setup_tracing(framework_type: str) -> None:
     try:
-        import os
 
         from ksadk.tracing import setup_tracing
 

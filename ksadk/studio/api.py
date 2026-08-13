@@ -29,8 +29,8 @@ from ksadk.studio.api_contracts import (
     QuickAuthoringRequest,
     RollbackRequest,
     RunRequest,
-    StudioEvaluationCreate,
     SessionExchangeRequest,
+    StudioEvaluationCreate,
     ValidationRequest,
     WorkspaceOpenRequest,
 )

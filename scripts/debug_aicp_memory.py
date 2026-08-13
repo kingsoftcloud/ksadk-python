@@ -72,8 +72,7 @@ def build_client():
 
     if not access_key or not secret_key:
         raise SystemExit(
-            "Missing AK/SK. Set KSADK_LTM_ACCESS_KEY/SECRET_KEY "
-            "or KSYUN_ACCESS_KEY/SECRET_KEY."
+            "Missing AK/SK. Set KSADK_LTM_ACCESS_KEY/SECRET_KEY or KSYUN_ACCESS_KEY/SECRET_KEY."
         )
 
     cred = credential.Credential(access_key, secret_key)
@@ -301,12 +300,12 @@ def build_parser() -> argparse.ArgumentParser:
     session_memories_parser = subparsers.add_parser(
         "session-memories", help="Query extracted memories for one raw session"
     )
-    session_memories_parser.add_argument("--memory-id", "--namespace", dest="memory_id", required=True)
+    session_memories_parser.add_argument(
+        "--memory-id", "--namespace", dest="memory_id", required=True
+    )
     session_memories_parser.add_argument("--session-id", required=True)
 
-    metrics_parser = subparsers.add_parser(
-        "metrics", help="Query memory collection action metrics"
-    )
+    metrics_parser = subparsers.add_parser("metrics", help="Query memory collection action metrics")
     metrics_parser.add_argument("--memory-id", "--namespace", dest="memory_id", required=True)
     metrics_parser.add_argument("--start-time", type=int, default=0)
     metrics_parser.add_argument("--end-time", type=int, default=0)

@@ -94,9 +94,9 @@ class ManagedA2ACardMount:
                 always_print_fields_with_no_presence=True,
             )
 
+
         from fastapi import Response
         from fastapi.responses import JSONResponse
-        import json
 
         card_payload = _card_to_dict()
 

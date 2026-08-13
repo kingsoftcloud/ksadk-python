@@ -3571,7 +3571,8 @@ async def _deploy_openclaw(
     if explicit_agent_id:
         if existing_agent_id and existing_agent_id != explicit_agent_id:
             print_info(
-                f"--agent-id ({explicit_agent_id}) 与本地状态 ({existing_agent_id}) 不一致，以 --agent-id 为准"
+                f"--agent-id ({explicit_agent_id}) 与本地状态 "
+                f"({existing_agent_id}) 不一致，以 --agent-id 为准"
             )
         existing_agent_id = explicit_agent_id
 

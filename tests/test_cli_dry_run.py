@@ -1667,7 +1667,15 @@ def test_openclaw_deploy_env_file_loads_extra_env(monkeypatch, tmp_path):
 
     result = runner.invoke(
         openclaw,
-        ["deploy", "--name", "demo-openclaw", "--image", "ghcr.io/openclaw:test", "--env-file", "custom.env"],
+        [
+            "deploy",
+            "--name",
+            "demo-openclaw",
+            "--image",
+            "ghcr.io/openclaw:test",
+            "--env-file",
+            "custom.env",
+        ],
     )
 
     assert result.exit_code == 0, result.output
@@ -1690,7 +1698,15 @@ def test_openclaw_deploy_env_flag_overrides_shell(monkeypatch, tmp_path):
 
     result = runner.invoke(
         openclaw,
-        ["deploy", "--name", "demo-openclaw", "--image", "ghcr.io/openclaw:test", "--env", "FOO=cli-value"],
+        [
+            "deploy",
+            "--name",
+            "demo-openclaw",
+            "--image",
+            "ghcr.io/openclaw:test",
+            "--env",
+            "FOO=cli-value",
+        ],
     )
 
     assert result.exit_code == 0, result.output
@@ -1758,7 +1774,15 @@ def test_openclaw_deploy_explicit_env_file_missing_raises(monkeypatch, tmp_path)
 
     result = runner.invoke(
         openclaw,
-        ["deploy", "--name", "demo-openclaw", "--image", "ghcr.io/openclaw:test", "--env-file", "missing.env"],
+        [
+            "deploy",
+            "--name",
+            "demo-openclaw",
+            "--image",
+            "ghcr.io/openclaw:test",
+            "--env-file",
+            "missing.env",
+        ],
     )
 
     assert result.exit_code != 0

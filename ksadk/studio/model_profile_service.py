@@ -110,14 +110,28 @@ async def probe_model_endpoint(
     if credential:
         headers["Authorization"] = f"Bearer {credential}"
 
-    async def _post(client: httpx.AsyncClient, protocol: str, endpoint: str, probe_model: str) -> dict[str, Any]:
+    async def _post(
+        client: httpx.AsyncClient,
+        protocol: str,
+        endpoint: str,
+        probe_model: str,
+    ) -> dict[str, Any]:
         if network_guard is not None:
             await network_guard.check(
                 endpoint,
-                NetworkPolicy(mode="restricted", allowed_hosts=[host] if host else [], allow_private_network=False),
+                NetworkPolicy(
+                    mode="restricted",
+                    allowed_hosts=[host] if host else [],
+                    allow_private_network=False,
+                ),
             )
         payload: dict[str, Any] = (
-            {"model": probe_model, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1, "stream": False}
+            {
+                "model": probe_model,
+                "messages": [{"role": "user", "content": "ping"}],
+                "max_tokens": 1,
+                "stream": False,
+            }
             if protocol == "chat"
             else {"model": probe_model, "input": "ping", "max_output_tokens": 16}
         )
@@ -125,7 +139,12 @@ async def probe_model_endpoint(
         try:
             response = await client.post(endpoint, headers=headers, json=payload)
         except (httpx.TimeoutException, httpx.TransportError) as exc:
-            return {"protocol": protocol, "endpointUrl": endpoint, "status": "unreachable", "errorType": type(exc).__name__}
+            return {
+                "protocol": protocol,
+                "endpointUrl": endpoint,
+                "status": "unreachable",
+                "errorType": type(exc).__name__,
+            }
         return {
             "protocol": protocol,
             "endpointUrl": endpoint,
@@ -135,7 +154,12 @@ async def probe_model_endpoint(
         }
 
     async def _models(client: httpx.AsyncClient) -> list[str]:
-        for models_url in (f"{base}/models", f"{base}/v1/models") if not base.endswith("/v1") else (f"{base}/models",):
+        models_urls = (
+            (f"{base}/models", f"{base}/v1/models")
+            if not base.endswith("/v1")
+            else (f"{base}/models",)
+        )
+        for models_url in models_urls:
             try:
                 response = await client.get(models_url, headers=headers)
             except (httpx.TimeoutException, httpx.TransportError):
@@ -147,7 +171,11 @@ async def probe_model_endpoint(
             except ValueError:
                 continue
             items = data.get("data") or data.get("models") or []
-            names = [str(item.get("id") or item.get("name") or "") for item in items if isinstance(item, dict)]
+            names = [
+                str(item.get("id") or item.get("name") or "")
+                for item in items
+                if isinstance(item, dict)
+            ]
             names = [name for name in names if name]
             if names:
                 return sorted(set(names))[:100]
