@@ -394,23 +394,9 @@ class ServerlessProvider(BaseDeployProvider):
         artifact_type = target.extra.get("artifact_type", "Code")
 
         if artifact_type == "ManagedRuntime":
-            # Declarative runtimes are delivered by Server -> Runtime Service as
-            # an inline manifest.  Keep a local bundle only for inspection; do
-            # not acquire credentials or upload it to KS3.
-            from ksadk.builders.managed_runtime_builder import ManagedRuntimeBuilder
+            from ksadk.deployment.managed_runtime import build_managed_runtime_package
 
-            builder = ManagedRuntimeBuilder(
-                Path(package_info.project_dir),
-                config=target.extra.copy(),
-                runtime_version=str(target.extra.get("runtime_version") or ""),
-            )
-            build_result = builder.build()
-            if not build_result.success:
-                raise Exception(f"构建失败: {build_result.error_message}")
-            package_info.metadata.update(build_result.metadata)
-            if build_result.artifact_path is not None:
-                package_info.metadata["managed_manifest_path"] = str(build_result.artifact_path)
-            return package_info
+            return build_managed_runtime_package(package_info, target)
 
         if artifact_type == "Code":
             # 1. 检查是否已有 KS3 路径
@@ -703,6 +689,7 @@ class ServerlessProvider(BaseDeployProvider):
             runtime_config = {
                 "name": str(target.extra.get("runtime_name") or "").strip(),
                 "version": str(target.extra.get("runtime_version") or "").strip(),
+                "manifest_sha256": str(target.extra.get("manifest_sha256") or "").strip(),
             }
             missing = [key for key, value in runtime_config.items() if not value]
             if missing:
