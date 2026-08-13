@@ -41,6 +41,10 @@ OPENAI_MODEL_NAME=my-model
 
 | Variable | Purpose |
 | --- | --- |
+| `KSADK_CODEX_APPROVAL` | Codex approval policy; Studio can select it for the next turn |
+| `KSADK_CODEX_HOME` | explicit native Codex HOME override; normally isolated automatically |
+| `KSADK_CODEX_ISOLATE_HOME` | defaults to `1`; set to `0` only when debugging with the process HOME |
+| `KSADK_CODEX_SANDBOX` | Codex sandbox mode: `read_only`, `workspace_write`, or `full_access` |
 | `KSADK_CODEX_USE_PROXY` | `1` forces the local Codex protocol proxy and `0` forces direct mode; unset performs a conservative probe for custom upstreams only |
 | `KSADK_PROXY_UPSTREAM_BASE` | Codex proxy upstream URL override; defaults to the OpenAI-compatible base URL |
 | `KSADK_PROXY_UPSTREAM_KEY` | Codex proxy upstream credential override (sensitive) |
@@ -49,6 +53,9 @@ OPENAI_MODEL_NAME=my-model
 | `KSADK_MODEL_PROXY_AGENTS` | comma-separated agent allowlist |
 | `KSADK_MODEL_PROXY_MODELS` | comma-separated model allowlist |
 | `KSADK_MODEL_PROXY_DENY` | comma-separated denylist for an emergency proxy disable |
+| `KSADK_STUDIO_NO_SECURITY` | controlled tests only; `1` disables the local session and CSRF checks |
+| `KSADK_STUDIO_SESSION_TOKEN` | local Studio browser session token (sensitive; generated randomly when unset) |
+| `KSADK_STUDIO_TRACE_CONTENT` | persist trace event content, default `1`; set to `0` to retain metadata only |
 
 ## Runtime, A2A, and A2UI in 0.8
 
@@ -312,7 +319,7 @@ KSADK_MCP_SERVERS='[{"name":"docs","url":"http://127.0.0.1:9000/mcp"}]'
 
 | Variable | Purpose |
 | --- | --- |
-| `KSADK_WEB_VERSION` | published `@kingsoftcloud/ksadk-web` npm version used by `make sync-ksadk-web-static`; the 0.8.0 default is `0.3.0`. Publish and verify a new version before using it in a wheel build. |
+| `KSADK_WEB_VERSION` | published `@kingsoftcloud/ksadk-web` npm version used by `make sync-ksadk-web-static`; the 0.8.x default is `0.3.1`. Publish and verify a new version before using it in a wheel build. |
 | `KSADK_WEB_PACKAGE` | npm package name used for local UI static sync; default `@kingsoftcloud/ksadk-web` |
 | `KSADK_WEB_TARBALL_NAME` | saved filename when `KSADK_WEB_RELEASE_URL` is set; npm pack mode uses the real tarball filename returned by npm |
 | `KSADK_WEB_RELEASE_URL` | optional fallback; when set, skips npm pack and downloads from this tarball URL |
@@ -335,36 +342,29 @@ KSADK_MCP_SERVERS='[{"name":"docs","url":"http://127.0.0.1:9000/mcp"}]'
 | `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` | traces-specific OTLP protocol; takes precedence over the generic protocol |
 | `OTEL_EXPORTER_OTLP_TRACES_HEADERS` | traces-specific OTLP HTTP headers; takes precedence over generic headers and may contain auth data |
 | `KSADK_OTLP_MAX_EXPORT_BATCH_SIZE` | maximum spans exported per OTLP batch, default `64`, to avoid oversized collector requests |
-| `LANGFUSE_PUBLIC_KEY` | compatibility path for older Langfuse tracing auto-configuration |
-| `LANGFUSE_SECRET_KEY` | Langfuse secret |
-| `LANGFUSE_BASE_URL` | Langfuse base URL |
-| `LANGFUSE_HOST` | compatibility alias for Langfuse host |
-| `LANGFUSE_USE_CALLBACK` | use framework callback mode instead of direct OTLP path |
 | `SESSION_TITLE_MODEL` | model override for generated local session titles |
 | `COMPACTION_DISABLE_SEMANTIC` | disable semantic session summary compaction |
 | `COMPACTION_SUMMARY_TIMEOUT_MS` | timeout for summary generation |
 | `COMPACTION_SUMMARY_MAX_GROUPS` | maximum message groups summarized |
 | `COMPACTION_SUMMARY_MODEL` | model override for semantic summaries |
 
-### CloudMonitor Dual-Write (CLOUD_MONITOR_*)
+### CloudMonitor OTLP Dual-Write (CLOUD_MONITOR_*)
 
-From 0.6.7, `setup_tracing()` auto-detects `CLOUD_MONITOR_*` environment variables and mounts the CloudMonitor OTLP exporter and the CloudMonitor Langfuse SDK CallbackHandler in parallel; neither suppresses self-hosted Langfuse or standard OTLP, and a single span can be reported to both the self-hosted cluster and the CloudMonitor trace platform at once.
+`setup_tracing()` auto-detects `CLOUD_MONITOR_OTLP_*` variables and builds a CloudMonitor OTLP exporter writing in parallel with the primary Langfuse OTLP (standard `OTEL_EXPORTER_OTLP_*`). A single span enters both backends with the same `trace_id` and `span_id`. Managed Agents created from either the CLI or console receive both routes by default; use `--no-observability`, or turn observability off in the console, to disable them explicitly. The Langfuse CallbackHandler path has been removed.
 
 | Variable | Purpose |
 | --- | --- |
-| `CLOUD_MONITOR_APP_KEY` | CloudMonitor OTLP AppKey; injected as the `Ksc-Appkey` auth header (sensitive) |
-| `CLOUD_MONITOR_OTLP_ENABLED` | explicitly enable or disable the CloudMonitor OTLP exporter; auto-detected by default |
+| `CLOUD_MONITOR_APP_KEY` | **Deprecated** transition fallback; used as `Ksc-Appkey` only when both `CLOUD_MONITOR_OTLP_TRACES_HEADERS` and `CLOUD_MONITOR_OTLP_HEADERS` are entirely absent (sensitive) |
 | `CLOUD_MONITOR_OTLP_ENDPOINT` | CloudMonitor generic OTLP HTTP endpoint; derives `/v1/traces` when no traces endpoint is set |
 | `CLOUD_MONITOR_OTLP_PROTOCOL` | CloudMonitor generic OTLP protocol; currently supports `http/protobuf` |
-| `CLOUD_MONITOR_OTLP_HEADERS` | CloudMonitor OTLP extra headers, comma-separated and URL-encoded (sensitive) |
+| `CLOUD_MONITOR_OTLP_HEADERS` | CloudMonitor OTLP extra headers, comma-separated and RFC 3986 encoded (sensitive) |
 | `CLOUD_MONITOR_OTLP_TRACES_ENDPOINT` | CloudMonitor traces-specific endpoint; takes precedence over the generic endpoint |
+| `CLOUD_MONITOR_OTLP_TRACES_HEADERS` | CloudMonitor traces-specific headers; take precedence over generic headers and fail closed when present without `Ksc-Appkey` (sensitive) |
 | `CLOUD_MONITOR_OTLP_TRACES_PROTOCOL` | CloudMonitor traces-specific protocol; takes precedence over the generic protocol |
-| `CLOUD_MONITOR_LANGFUSE_ENABLED` | explicitly enable or disable the CloudMonitor Langfuse SDK callback; auto-detected by default |
-| `CLOUD_MONITOR_LANGFUSE_HOST` | CloudMonitor AppMonitor Langfuse SDK host; falls back to `CLOUD_MONITOR_OTLP_ENDPOINT` |
-| `CLOUD_MONITOR_LANGFUSE_PUBLIC_KEY` | CloudMonitor Langfuse public key (sensitive) |
-| `CLOUD_MONITOR_LANGFUSE_SECRET_KEY` | CloudMonitor Langfuse secret key (sensitive) |
 
-Set `CLOUD_MONITOR_OTLP_ENABLED=false` or `CLOUD_MONITOR_LANGFUSE_ENABLED=false` to disable the corresponding path.
+<Callout type="info">
+When one backend fails the other still works: primary failure keeps the secondary, secondary failure keeps the primary, Agent business is not blocked.
+</Callout>
 
 ## Safety Rules
 

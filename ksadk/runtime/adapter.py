@@ -30,12 +30,14 @@ adapter)。本模块定义三层结构与六动词签名,供 Runtime 产生端�
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from enum import Enum
 from typing import Any, AsyncIterator, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from ksadk.events.runtime_event import RuntimeEvent
+from ksadk.runtime.launch import RuntimeLaunchContext, RuntimeServices
 
 # ---------------------------------------------------------------------------
 # cancel 状态机
@@ -60,6 +62,19 @@ class CancelResult(str, Enum):
 
     FAILED = "failed"
     """取消动作本身失败(如底层 runtime 报错)。"""
+
+
+class PauseResult(str, Enum):
+    """Non-terminal pause capability result.
+
+    Pause is deliberately separate from :class:`CancelResult`: an adapter must
+    never claim a run is resumable after applying destructive cancel semantics.
+    """
+
+    PAUSED_ACTIVE_TURN = "paused_active_turn"
+    NOT_SUPPORTED = "not_supported"
+    NOT_RUNNING = "not_running"
+    FAILED = "failed"
 
 
 # ---------------------------------------------------------------------------
@@ -136,6 +151,9 @@ class CheckpointDescriptor(BaseModel):
 
 CONVERSATION_PREPROCESSING_METADATA_KEY = "conversation_request"
 """StartRequest metadata key for the shared conversation preprocessing contract."""
+
+RESUME_START_REQUEST_NATIVE_KEY = "_conversation_start_request"
+"""Ephemeral adapter-private key carrying current request context across attach/resume."""
 
 
 class ConversationPreprocessingRequest(BaseModel):
@@ -236,6 +254,18 @@ class RuntimeAdapter(ABC):
     def runtime(self) -> BaseRuntime:
         return self._runtime
 
+    async def preflight(self) -> None:
+        """Validate that this adapter can accept a new run without creating one.
+
+        This is deliberately an additive lifecycle hook rather than a seventh
+        platform verb.  HTTP streaming routes use it before committing a 200
+        response, so a lazy runner import or configuration failure is returned
+        as a normal request error instead of a detached, half-open SSE stream.
+        Implementations must not allocate a run handle or start model work.
+        """
+
+        return None
+
     @abstractmethod
     async def start(self, request: StartRequest) -> RunHandle:
         """启动一次 run,返回句柄。"""
@@ -254,6 +284,26 @@ class RuntimeAdapter(ABC):
     async def cancel(self, handle: RunHandle) -> CancelResult:
         """请求取消。返回状态机结果;成功 cancel 级联丢弃该 turn 的 pending 审批。"""
         raise NotImplementedError
+
+    async def pause(self, handle: RunHandle) -> PauseResult:
+        """Pause an active turn without invalidating its resumable state.
+
+        This additive hook defaults to an honest unsupported result.  It must
+        not fall back to ``cancel`` because cancellation is terminal for some
+        runtimes (notably Codex).
+        """
+
+        return PauseResult.NOT_SUPPORTED
+
+    async def submit(self, handle: RunHandle, payload: ResumePayload) -> None:
+        """Submit input to a live interaction without restarting the stream.
+
+        Runtimes whose HITL model ends the current stream should continue to
+        use :meth:`resume`; live JSON-RPC approval requests use this command
+        channel instead.
+        """
+
+        raise RuntimeError(f"{type(self).__name__} does not support live interaction input")
 
     @abstractmethod
     async def resume(
@@ -298,48 +348,65 @@ class RuntimeAdapter(ABC):
 # ---------------------------------------------------------------------------
 
 
+RuntimeAdapterFactory = Callable[[RuntimeLaunchContext], RuntimeAdapter]
+
+
 class RuntimeRegistry:
-    """按 ``runtime_type`` 注册/查找 :class:`RuntimeAdapter`。
+    """按 ``runtime_type`` 注册/创建 :class:`RuntimeAdapter`。
 
     替代 ``runners/factory.py`` 的 if/elif 分发:新 runtime 通过 ``register``
     注册,不再改 factory 分支。
     """
 
     def __init__(self) -> None:
-        self._adapters: dict[str, type[RuntimeAdapter]] = {}
+        self._factories: dict[str, RuntimeAdapterFactory] = {}
 
-    def register(self, runtime_type: str, adapter_cls: type[RuntimeAdapter]) -> None:
+    def register(self, runtime_type: str, factory: RuntimeAdapterFactory) -> None:
         if not isinstance(runtime_type, str) or not runtime_type.strip():
-            raise ValueError("runtime_type 必须是非空字符串")
-        if not (isinstance(adapter_cls, type) and issubclass(adapter_cls, RuntimeAdapter)):
-            raise TypeError(f"adapter_cls 必须是 RuntimeAdapter 子类: {adapter_cls!r}")
-        self._adapters[runtime_type.strip()] = adapter_cls
+            raise ValueError("runtime type must be a non-empty string")
+        key = runtime_type.strip().lower()
+        if key in self._factories:
+            raise ValueError(f"duplicate runtime type: {runtime_type!r}")
+        if not callable(factory):
+            raise TypeError(f"runtime factory must be callable: {factory!r}")
+        self._factories[key] = factory
 
-    def get(self, runtime_type: str) -> type[RuntimeAdapter]:
+    def get(self, runtime_type: str) -> RuntimeAdapterFactory:
+        key = runtime_type.strip().lower()
         try:
-            return self._adapters[runtime_type]
+            return self._factories[key]
         except KeyError:
             raise KeyError(
-                f"未注册的 runtime_type: {runtime_type!r}(已注册: {sorted(self._adapters)})"
+                f"missing runtime type: {runtime_type!r}; registered: {sorted(self._factories)}"
             ) from None
 
-    def create(self, runtime_type: str, runtime: BaseRuntime) -> RuntimeAdapter:
-        """按 runtime_type 实例化 adapter(注入原生 runtime)。"""
-        return self.get(runtime_type)(runtime)
+    def create(self, context: RuntimeLaunchContext) -> RuntimeAdapter:
+        """使用不可变启动上下文创建一个新的 Adapter 实例。"""
+
+        adapter = self.get(context.runtime_type)(context)
+        if not isinstance(adapter, RuntimeAdapter):
+            raise TypeError(
+                f"runtime factory must return RuntimeAdapter, got {type(adapter).__name__}"
+            )
+        return adapter
 
     def registered_types(self) -> list[str]:
-        return sorted(self._adapters)
+        return sorted(self._factories)
 
 
 __all__ = [
     "BaseRuntime",
     "CancelResult",
+    "PauseResult",
     "CheckpointCapability",
     "CheckpointDescriptor",
     "ResumePayload",
     "ResumeTarget",
     "RunHandle",
     "RuntimeAdapter",
+    "RuntimeAdapterFactory",
+    "RuntimeLaunchContext",
     "RuntimeRegistry",
+    "RuntimeServices",
     "StartRequest",
 ]

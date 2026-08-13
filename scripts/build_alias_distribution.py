@@ -15,7 +15,6 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ALIAS_PROJECT = "agentengine-sdk-python"
 DEFAULT_ALIAS_DESCRIPTION = "Kingsoft Cloud Agent Engine SDK alias package for ksadk"

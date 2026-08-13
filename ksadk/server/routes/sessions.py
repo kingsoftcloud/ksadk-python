@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
-from ksadk.server.factory import get_runner, get_state
+from ksadk.server.factory import get_runtime_execution, get_state
 from ksadk.sessions import SessionEvent
 from ksadk.tools.gateway import tool_approval_capability
 from ksadk.toolsets import describe_agentengine_tools
@@ -23,6 +23,7 @@ from .common import (
     _build_native_terminal_capability,
     _ensure_session,
     _hydrate_session,
+    _resolve_agent_ui_spec,
 )
 from .models import (
     CreateSessionActionRequest,
@@ -58,45 +59,41 @@ from .streaming import _cancel_detached_streams_for_session
 @ui_bootstrap_router.post("/agentengine/api/v1/GetAgentUiBootstrap")
 async def get_agent_ui_bootstrap(request: UiBootstrapRequest):
     state = get_state()
-    runner = state.runner
-    if runner is not None:
-        runner = get_runner()
-    agent_id = request.AgentId or (_runtime_agent_id(runner) if runner else "default-agent")
-    description = getattr(runner.detection_result, "description", "") if runner else ""
-    framework = ""
-    if runner:
-        detection_type = getattr(getattr(runner, "detection_result", None), "type", None)
-        framework = str(getattr(detection_type, "value", detection_type) or "").strip().lower()
+    executor, launch_context = get_runtime_execution()
+    detection = launch_context.detection
+    agent_id = request.AgentId or _runtime_agent_id(launch_context)
+    description = str(getattr(detection, "description", "") or "")
+    framework = launch_context.runtime_type.strip().lower()
     workspace_enabled = workspace_files_enabled(default=True)
-    ui_spec = deps.resolve_agent_ui_spec()
-    runtime_capabilities = (
-        runner.get_runtime_capabilities()
-        if runner and callable(getattr(runner, "get_runtime_capabilities", None))
-        else {}
+    ui_spec = _resolve_agent_ui_spec()
+    runtime_capabilities = executor.native_capabilities(launch_context)
+    resume_capability = (
+        runtime_capabilities.get("ResumeRun")
+        if isinstance(runtime_capabilities, Mapping)
+        else None
     )
+    resume_capability = resume_capability if isinstance(resume_capability, Mapping) else {}
+    checkpoint_capability = (
+        runtime_capabilities.get("Checkpoint")
+        if isinstance(runtime_capabilities, Mapping)
+        else None
+    )
+    checkpoint_capability = (
+        checkpoint_capability if isinstance(checkpoint_capability, Mapping) else {}
+    )
+    cancel_capability = (
+        runtime_capabilities.get("CancelRun")
+        if isinstance(runtime_capabilities, Mapping)
+        else None
+    )
+    cancel_capability = cancel_capability if isinstance(cancel_capability, Mapping) else {}
     checkpoint_resume_capability = {
-        "Supported": bool(
-            (runtime_capabilities.get("ResumeRun") or {}).get("Supported")
-            if isinstance(runtime_capabilities, Mapping)
-            else False
-        ),
-        "Checkpoint": (
-            (runtime_capabilities.get("Checkpoint") or {})
-            if isinstance(runtime_capabilities, Mapping)
-            else {}
-        ),
-        "ResumeRun": (
-            (runtime_capabilities.get("ResumeRun") or {})
-            if isinstance(runtime_capabilities, Mapping)
-            else {}
-        ),
+        "Supported": bool(resume_capability.get("Supported")),
+        "Checkpoint": checkpoint_capability,
+        "ResumeRun": resume_capability,
     }
     checkpoint_resume_supported = bool(checkpoint_resume_capability["Supported"])
-    cancel_run_supported = bool(
-        (runtime_capabilities.get("CancelRun") or {}).get("Supported")
-        if isinstance(runtime_capabilities, Mapping)
-        else False
-    )
+    cancel_run_supported = bool(cancel_capability.get("Supported"))
     responses_transport = {
         "Protocol": "responses",
         "Runtime": "ksadk",
@@ -137,7 +134,7 @@ async def get_agent_ui_bootstrap(request: UiBootstrapRequest):
         {
             "Agent": {
                 "AgentId": agent_id,
-                "Name": runner.detection_result.name if runner else agent_id,
+                "Name": str(getattr(detection, "name", "") or agent_id),
                 "Description": description or "",
                 "Framework": framework,
             },
@@ -258,15 +255,13 @@ async def delete_session_action(request: SessionIdRequest):
 
 @sessions_router.post("/agentengine/api/v1/ListSessionEvents")
 async def list_session_events_action(request: ListSessionEventsActionRequest):
-    runner = get_state().runner
+    _executor, launch_context = get_runtime_execution()
     service = deps.resolve_session_service()
     session_id = str(request.SessionId or "").strip()
     if not session_id:
         # 未传 SessionId：返回该 agent 全部会话的事件（存储层跨会话查询，真分页无截断；
         # seq 游标是会话内序号，跨会话模式下不适用，直接忽略）
-        agent_id = str(request.AgentId or "").strip() or (
-            _runtime_agent_id(runner) if runner else "default-agent"
-        )
+        agent_id = str(request.AgentId or "").strip() or _runtime_agent_id(launch_context)
         events = await service.get_events_for_agent(
             agent_id,
             user_id=request.UserId,

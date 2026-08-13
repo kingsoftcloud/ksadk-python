@@ -1,3 +1,5 @@
 prune ksadk/server/web-ui
 recursive-exclude ksadk/server/web-ui *
+prune ksadk/studio/react-ui
+recursive-exclude ksadk/studio/react-ui *
 recursive-include ksadk_runtime_common/schemas *.json

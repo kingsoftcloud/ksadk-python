@@ -37,6 +37,15 @@ Start the local debugging Web UI:
 agentengine web . --no-open
 ```
 
+## 0.8.1 Observability Contract
+
+- Remote traces use standard OTLP/HTTP only: Langfuse consumes `OTEL_EXPORTER_OTLP_*`, while CloudMonitor consumes `CLOUD_MONITOR_OTLP_*`. Both backends receive the same span with identical `trace_id` and `span_id` values.
+- Managed Agents created from either the CLI or console request observability by default and receive both routes from the platform. Use `--no-observability`, or turn observability off in the console, to disable it explicitly.
+- `LANGFUSE_USE_CALLBACK` and the Langfuse SDK CallbackHandler/exporter have been removed. `CLOUD_MONITOR_APP_KEY` remains only as a one-version transition fallback; new configurations provide `Ksc-Appkey` through OTLP headers.
+- Exporters run directly inside the Agent process. No OpenTelemetry Collector, sidecar, extra container, or extra Pod is started.
+
+See the [observability guide](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/observability-tracing/) and [environment variable reference](https://kingsoftcloud.github.io/ksadk-python/en/docs/references/environment-variables/) for migration details and examples.
+
 <p align="center"><img alt="Real KsADK Web UI debugging screenshot" src="docs-site/public/assets/ksadk-web-ui-screenshot.png" width="860" /></p>
 
 <p align="center"><img alt="Real local Web UI demo" src="docs-site/public/assets/ksadk-local-debugging-demo.gif" width="860" /></p>

@@ -1,0 +1,81 @@
+---
+title: AgentKit Local Studio
+description: The local Agent authoring, build, and conversation workspace added in 0.8.1.
+status: new
+---
+
+<Callout type="info" title="New in 0.8.1">
+  AgentKit Local Studio is a local-first workspace for authoring, building, and testing Agents in the browser. End users do not need a separate Node.js installation.
+</Callout>
+
+`agentengine studio` is KsADK's local-first workspace. It brings Agent definitions, build history, conversations, resources, traces, and orchestration into one browser surface, while model calls and builds still run through the local KsADK runtime.
+
+It does not replace `agentengine web`: use the Web UI to debug one existing project; use Studio to create and maintain several local Agents from an initial requirement.
+
+## Start a workspace
+
+After installing KsADK, start Studio in a directory that will hold your local Agents:
+
+```bash title="shell"
+pip install -U "ksadk[all]"
+mkdir my-agent-workspace
+agentengine studio ./my-agent-workspace
+```
+
+Studio binds to `127.0.0.1:8080` by default. The command prints a local session URL and opens it in the browser. That URL is for local use only: do not share its `#session=...` fragment.
+
+```bash title="shell"
+# Do not open a browser, and use a different port
+agentengine studio ./my-agent-workspace --port 8081 --no-open
+
+# Provide model settings for this launch
+agentengine studio ./my-agent-workspace --env-file ./model.env
+```
+
+`--env-file` reads only `OPENAI_API_BASE`, `OPENAI_API_KEY`, and `OPENAI_MODEL_NAME`. Existing process environment values take precedence and are not overwritten. When a Codex project needs Responses-to-Chat compatibility conversion, use `--codex-proxy auto`; see the full options in the [CLI reference](/en/docs/cli#agentengine-studio).
+
+<Callout type="warning" title="Local workspace only">
+  0.8.1 does not include cloud deployment or multi-user collaboration through Studio. To deploy an existing project, use `agentengine deploy` in that project directory and follow the [cloud deployment](cloud-deployment) guide.
+</Callout>
+
+## Create, build, and chat
+
+In Studio's **Create Agent** flow, choose a runtime, template, and model profile, then provide the Agent name and task. The runtimes currently available for local creation and execution are:
+
+- **Codex**: a declarative YAML Agent for debugging with the native local Codex Runtime.
+- **ADK**: a Python Agent that exports `root_agent`.
+- **LangGraph**: a Python Agent that exports a compiled graph.
+
+The flow creates an editable Agent definition and can build it immediately. After a successful build, open the Agent's conversation view to send a message and inspect its response, run history, and traces in the same workspace. Model credentials stay in the local environment or explicit configuration file; they are not written into the Agent definition.
+
+You can also keep using CLI templates and then debug the generated project in the local Web UI:
+
+```bash title="shell"
+ksadk init --framework langgraph my-langgraph-agent
+cd my-langgraph-agent
+agentengine web .
+```
+
+For generated files, runtime entry-point conventions, and deployment paths, see [Create a project](../getting-started/quickstart), [Codex Managed Runtime](managed-runtime), and [cloud deployment](cloud-deployment).
+
+## Studio and the local Web UI
+
+| Scenario | Command | Best for |
+| --- | --- | --- |
+| Create or maintain several local Agents | `agentengine studio <workspace>` | authoring, builds, resources, conversations, traces, and orchestration |
+| Debug an existing KsADK project | `agentengine web <project>` | messages, local sessions, attachments, and the OpenAI-compatible API |
+| Quickly validate a project from the terminal | `agentengine run <project> -i` | interactive execution and problem isolation |
+
+Both Studio and `agentengine web` bind to loopback only; neither browser UI calls a model provider directly. Browser writes are checked with local session and CSRF tokens, then the local runtime invokes the configured framework runner.
+
+## Local state and reset
+
+Workspace data and conversations are local development state, not source code to commit. To clear a local experiment, stop Studio and remove `.agentengine/` inside that workspace before starting it again.
+
+Do not remove Agent source files or `agentengine.yaml` to reset conversations. Those files define the project and should remain under version control.
+
+## UI package and source
+
+Wheel users do not need to build the Studio frontend: the wheel includes the production static assets. Studio contributors work in the tracked `ksadk/studio/react-ui` source directory. The generated `ksadk/studio/static` directory is not committed, but is generated and packaged automatically when a wheel is built.
+
+See [build and package](build-and-package) and the [Web UI source and release contract](web-ui-source) for details.

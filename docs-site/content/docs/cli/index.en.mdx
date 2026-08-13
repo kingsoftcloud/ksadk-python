@@ -25,6 +25,7 @@ agentengine --help
 agentengine init --help
 agentengine run --help
 agentengine web --help
+agentengine studio --help
 ```
 
 ## Command Groups
@@ -35,6 +36,7 @@ agentengine web --help
 | `config` | manage model and project settings | yes |
 | `run` | run terminal loop or local API server | yes |
 | `web` | start local browser UI | yes |
+| `studio` | start the local Agent authoring and debugging workspace | yes |
 | `a2a` | expose A2A surfaces where configured | yes |
 | `replay` | read and project RuntimeEvent history | yes |
 | `mcp` | build or manage MCP resources | depends on target |
@@ -134,6 +136,30 @@ Codex ManagedRuntime uses the same `agentengine web . --no-open` command. It
 validates the native Codex binary for the current operating system and reports
 when an offline Runtime version is not explicitly locked.
 
+### `agentengine studio`
+
+Start the loopback-only local Agent authoring workspace:
+
+```bash title="bash"
+agentengine studio .
+agentengine studio . --port 8081 --no-open
+agentengine studio . --env-file ./model.env --codex-proxy auto
+```
+
+Studio uses one React shell for Agents, conversations, builds, resources,
+traces, and orchestration. The root URL opens the workspace directly; there is
+no separately maintained `/chat` frontend. Model settings can come from the
+current process, global configuration, or an explicit `--env-file`. Browser
+writes are protected by the local session and CSRF tokens.
+
+`studio/static` contains the packaged React production build but is not tracked
+by Git. Frontend sources and tests live in `ksadk/studio/react-ui`; run
+`make studio-react-test` after changing them, then use `make build-wheel` or
+`make public-build-check` to regenerate and package the assets.
+
+For the full workflow from starting a workspace through creating, building, and
+testing an Agent, see [AgentKit Local Studio (New in 0.8.1)](/en/docs/framework/guides/agentkit-local-studio).
+
 ### `ksadk replay` / `agentengine replay`
 
 Project a session's persisted RuntimeEvent log into a readable transcript or JSON. Use it to investigate disconnected streams, restored approval state, A2UI activities, and event ordering across runners. It **never** calls a model, tool, or approval action again.
@@ -221,12 +247,60 @@ agentengine launch . --env KEY=VALUE --env-file ./runtime.env
 | `--env KEY=VALUE` | extra runtime environment variable, repeatable; explicit env goes into the deploy payload `env_vars`. |
 | `--env-file PATH` | extra runtime environment variable file, accepts `.env` or a JSON object. |
 
+Sensitive credentials, including secrets passed with `--env`, are redacted from `--dry-run` output.
+
 <Callout type="info" title="env file boundary">
   The `--env-file` you pass is for explicit runtime env injection. Real `.env`
   / `.env.local` files are excluded from Code, Container, and MCP build
   contexts; only `.env.example` / `.env.sample` / `.env.template` templates are
   kept. See [Environment Variables Reference](../references/environment-variables).
 </Callout>
+
+### Default observability and explicit opt-out
+
+Managed Agent `deploy`, `launch`, and `hermes deploy` commands send `enable_observability=true` by default. The CLI and console use the same control-plane switch. When enabled, the platform injects the standard Langfuse OTLP primary route and CloudMonitor OTLP secondary route, preserving the same `trace_id` and `span_id` for each span.
+
+```bash title="bash"
+# Enabled by default
+agentengine deploy . --target serverless
+agentengine launch . --target serverless
+agentengine hermes deploy --name my-hermes
+
+# Explicit user opt-out
+agentengine deploy . --target serverless --no-observability
+agentengine launch . --target serverless --no-observability
+agentengine hermes deploy --name my-hermes --no-observability
+```
+
+Disabling observability clears the managed OTLP endpoints, headers, and protocols. Do not use `--env` to override platform-managed observability variables. See the [Environment Variables Reference](../references/environment-variables) for the protocol contract.
+
+### `agentengine hermes`
+
+Hermes deploy accepts explicit runtime environment variables and, when
+`--env-file` is omitted, automatically reads `.env` from the current directory:
+
+```bash title="bash"
+agentengine hermes deploy --name my-hermes \
+  --env LOG_LEVEL=debug \
+  --env FEATURE_FLAG=on
+agentengine hermes deploy --name my-hermes --env-file ./hermes.env
+```
+
+`--env` is repeatable and `--env-file` accepts dotenv or a JSON object. The
+precedence is `--env` > `--env-file` > process environment > auto-discovered
+`.env`. Explicit environment options update `env_vars` on an existing Hermes;
+an image-only update does not overwrite the environment already stored by the
+service.
+
+Hermes exec passes argv directly and never parses it through a shell. The supported target forms are:
+
+```bash title="bash"
+agentengine hermes exec --agent my-hermes -- status
+agentengine hermes exec ar-123 -- status
+agentengine hermes exec -- sessions list
+```
+
+Use `--agent` to explicitly target an Agent by name; a positional target is retained only for `ar-*` Agent IDs. Without a target, the command uses the project default Agent, and ordinary argv tokens are never guessed to be Agent names. A business session ID passed with `--session` is sent in the terminal start frame (while retaining the compatibility header) so the runtime can resume the session.
 
 ### `agentengine openclaw`
 
@@ -266,7 +340,10 @@ Memory backend options (0.6.7):
 </Callout>
 
 <Callout type="info">
-  OpenClaw deploy also supports `--env KEY=VALUE` (repeatable) and `--env-file` for runtime environment variable pass-through, with the same semantics as the generic deploy/launch (0.6.5).
+  OpenClaw deploy also supports repeatable `--env KEY=VALUE`, `--env-file`, and
+  automatic discovery of `.env` in the current directory, with the same
+  precedence as Hermes. Generic `deploy` / `launch` only use explicit `--env`
+  or `--env-file` options and do not automatically load the project `.env`.
 </Callout>
 
 ## JSON Output

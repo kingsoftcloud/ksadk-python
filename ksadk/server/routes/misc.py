@@ -16,7 +16,6 @@ from ksadk.tracing import get_memory_exporter
 from . import dependencies as deps
 from .common import (
     _action_response,
-    _ensure_runner_loaded,
     _ensure_session,
     _hydrate_session,
     _resolve_ui_static_response,
@@ -393,39 +392,17 @@ async def delete_session(app_name: str, user_id: str, session_id: str):
     "/apps/{app_name}/users/{user_id}/sessions/{session_id}/save_memory"
 )
 async def save_session_to_memory(app_name: str, user_id: str, session_id: str):
-    """将指定 session 保存到长期记忆
+    """Fail closed until long-term memory is exposed as a Runtime capability."""
 
-    当配置了 KSADK_LTM_BACKEND 时，将 session 中的用户消息
-    持久化到长期记忆后端，供后续 session 通过 load_memory 工具检索。
-    """
-    active_runner = _ensure_runner_loaded()
-
-    # 检查 runner 是否支持长期记忆
-    from ksadk.runners.adk_runner import ADKRunner as _ADKRunner
-
-    if not isinstance(active_runner, _ADKRunner):
-        raise HTTPException(
-            status_code=400, detail="Long-term memory is only supported with ADK runner"
-        )
-
-    if not active_runner._long_term_memory:
-        raise HTTPException(
-            status_code=400,
-            detail="Long-term memory not configured. Set KSADK_LTM_BACKEND environment variable.",
-        )
-
-    # 查找 ADK 内部 session ID
-    internal_session_id = active_runner._session_map.get(session_id, session_id)
-
-    success = await active_runner.save_session_to_long_term_memory(
-        session_id=internal_session_id,
-        user_id=user_id,
+    del app_name, user_id, session_id
+    raise HTTPException(
+        status_code=501,
+        detail={
+            "code": "RUNTIME_NOT_SUPPORTED",
+            "message": "当前 RuntimeAdapter 未声明长期记忆写入能力",
+            "hint": "请通过 Runtime Catalog 检查长期记忆能力后重试",
+        },
     )
-
-    if success:
-        return {"status": "saved", "session_id": session_id}
-    else:
-        raise HTTPException(status_code=500, detail="Failed to save session to long-term memory")
 
 
 @sessions_adk_compat_router.get(

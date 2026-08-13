@@ -41,6 +41,7 @@ from ksadk.builders.container_builder import (
 )
 from ksadk.cli.agent_ref import resolve_openclaw_ref
 from ksadk.cli.dry_run import dry_run_option, effective_dry_run, run_async_with_dry_run
+from ksadk.cli.env_options import env_options, parse_env_pairs
 from ksadk.cli.error_utils import abort_with_cli_error, remote_error, resolution_error
 from ksadk.cli.model_catalog import fetch_provider_model_catalog, find_model_in_catalog
 from ksadk.cli.network_options import build_network_payload, network_cli_kwargs, network_options
@@ -77,6 +78,7 @@ from ksadk.cli.ui import (
 from ksadk.cli.ui import (
     output_option as cli_output_option,
 )
+from ksadk.configs.env_registry import is_sensitive_env_var
 from ksadk.conversations.model_context import normalize_model_metadata
 from ksadk.deployment.agent_access import get_latest_agent_access
 from ksadk.model_policy import build_runtime_model_policy_env
@@ -107,7 +109,6 @@ DEFAULT_TRUSTED_PROXY_CIDRS = [
 _GLOBAL_ENV_CACHE: Optional[Dict[str, str]] = None
 OPENCLAW_SECURITY_PROFILES = ("relaxed", "strict", "strictest")
 OPENCLAW_CHANNELS = ("weixin", "feishu", "wps-xiezuo")
-OPENCLAW_ENV_KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 WEIXIN_PLUGIN_ID = "openclaw-weixin"
 FEISHU_PLUGIN_ID = "openclaw-lark"
 FEISHU_CHANNEL_KEY = "feishu"
@@ -1055,22 +1056,13 @@ def _normalize_openclaw_gateway_auth_env(env: dict[str, str]) -> dict[str, str]:
 
 
 def _parse_extra_openclaw_env_pairs(items: tuple[str, ...] | list[str] | None) -> dict[str, str]:
-    """解析 deploy --env 传入的自定义环境变量。"""
-    parsed: dict[str, str] = {}
-    for raw_item in items or ():
-        item = str(raw_item or "").strip()
-        if not item or "=" not in item:
-            raise ValueError(f"自定义环境变量格式错误: {raw_item!r}，应为 KEY=VALUE")
-        key, value = item.split("=", 1)
-        key = key.strip()
-        if not OPENCLAW_ENV_KEY_PATTERN.fullmatch(key):
-            raise ValueError(f"自定义环境变量名不合法: {key!r}，请使用合法的环境变量名")
-        if key == "OPENCLAW_GATEWAY_AUTH_MODE":
-            normalized = value.strip().lower()
-            if normalized not in {"trusted-proxy", "token", "none"}:
-                raise ValueError("OPENCLAW_GATEWAY_AUTH_MODE 仅支持 trusted-proxy、token 或 none")
-            value = normalized
-        parsed[key] = value
+    """解析 deploy --env 传入的自定义环境变量，并对 gateway 鉴权模式做早期归一化。"""
+    parsed = parse_env_pairs(items)
+    if "OPENCLAW_GATEWAY_AUTH_MODE" in parsed:
+        normalized = parsed["OPENCLAW_GATEWAY_AUTH_MODE"].strip().lower()
+        if normalized not in {"trusted-proxy", "token", "none"}:
+            raise ValueError("OPENCLAW_GATEWAY_AUTH_MODE 仅支持 trusted-proxy、token 或 none")
+        parsed["OPENCLAW_GATEWAY_AUTH_MODE"] = normalized
     return parsed
 
 
@@ -3388,17 +3380,21 @@ def channel_doctor(
 @click.option("--mem0-instance-id", default=None, help="mem0 实例 ID")
 @click.option("--mem0-instance-name", default=None, help="mem0 实例名称（可选）")
 @click.option("--mem0-region", default=None, help="mem0 实例区域（可选）")
-@click.option(
-    "--env",
-    "extra_env",
-    multiple=True,
-    help="额外透传自定义环境变量，格式 KEY=VALUE，可重复传入",
-)
+@env_options
 @click.option("--storage-size-gi", type=int, default=20, show_default=True, help="PVC 容量（Gi）")
 @click.option(
     "--storage-mount-path", default=None, help="PVC 挂载目录（默认: /home/node/.openclaw）"
 )
 @click.option("--no-storage", is_flag=True, help="禁用默认 PVC 挂载")
+@click.option(
+    "--agent-id",
+    "agent_id_opt",
+    default=None,
+    help=(
+        "指定要更新的已有 Agent ID；当前凭证有权限时会自动回填 "
+        ".agentengine.state 并走热更新（用于本地状态丢失后重新关联）"
+    ),
+)
 @network_options
 @dry_run_option("仅显示请求，不实际部署")
 def deploy(
@@ -3414,9 +3410,11 @@ def deploy(
     mem0_instance_name: Optional[str],
     mem0_region: Optional[str],
     extra_env: tuple[str, ...],
+    env_file: Optional[str],
     storage_size_gi: int,
     storage_mount_path: Optional[str],
     no_storage: bool,
+    agent_id_opt: Optional[str],
     enable_public_access: Optional[bool],
     enable_vpc_access: bool,
     vpc_id: Optional[str],
@@ -3456,6 +3454,7 @@ def deploy(
             _option_was_explicit(ctx, "model_api_key"),
             _option_was_explicit(ctx, "default_model"),
             bool(extra_env),
+            _option_was_explicit(ctx, "env_file"),
         )
     )
     include_storage_on_update = any(
@@ -3486,9 +3485,11 @@ def deploy(
                 mem0_instance_name=mem0_instance_name,
                 mem0_region=mem0_region,
                 extra_env=extra_env,
+                env_file=env_file,
                 storage_size_gi=storage_size_gi,
                 storage_mount_path=storage_mount_path,
                 no_storage=no_storage,
+                agent_id_opt=agent_id_opt,
                 include_env_on_update=include_env_on_update,
                 include_storage_on_update=include_storage_on_update,
                 **network_cli_kwargs(
@@ -3521,9 +3522,11 @@ async def _deploy_openclaw(
     mem0_instance_name: Optional[str],
     mem0_region: Optional[str],
     extra_env: tuple[str, ...] = (),
+    env_file: Optional[str] = None,
     storage_size_gi: int = 20,
     storage_mount_path: Optional[str] = None,
     no_storage: bool = False,
+    agent_id_opt: Optional[str] = None,
     include_env_on_update: bool = False,
     include_storage_on_update: bool = False,
     enable_public_access: Optional[bool] = None,
@@ -3535,27 +3538,26 @@ async def _deploy_openclaw(
     dry_run: bool,
 ):
     """异步部署 OpenClaw"""
-    from dotenv import dotenv_values
-
     from ksadk.api import AgentEngineClient
+    from ksadk.cli.env_options import (
+        apply_explicit_env_with_shell_priority,
+        inject_env_to_environ,
+        resolve_runtime_env_overrides,
+    )
     from ksadk.deployment.state import clear_state, load_state, save_state
 
-    # 自动加载当前目录 .env（仅补充未导出的变量，不覆盖已导出的 shell 环境）
+    # 自动加载当前目录 .env 或 --env-file 指定文件（优先级: --env > --env-file > shell > .env）
     project_dir = Path(".").resolve()
-    env_file = project_dir / ".env"
-    if env_file.exists():
-        try:
-            loaded = 0
-            for k, v in dotenv_values(env_file).items():
-                if not k or v is None:
-                    continue
-                if os.getenv(k) is None:
-                    os.environ[k] = str(v)
-                    loaded += 1
-            if loaded:
-                print_info(f"已从 .env 注入环境变量: {loaded} 项")
-        except Exception as e:
-            print_warn(f"读取 .env 失败，将继续使用当前 shell 环境: {e}")
+    cli_env, auto_dotenv, shell_keys, env_source = resolve_runtime_env_overrides(
+        env_file=env_file,
+        extra_env=extra_env,
+        base_dir=project_dir,
+    )
+    loaded = inject_env_to_environ(cli_env, auto_dotenv, shell_keys)
+    if loaded:
+        print_info(f"已从 {env_source or '--env'} 注入环境变量: {loaded} 项")
+    if cli_env or auto_dotenv:
+        include_env_on_update = True
 
     # 读取本地状态 (判断创建 vs 更新)
     state = load_state(project_dir)
@@ -3565,6 +3567,14 @@ async def _deploy_openclaw(
     if state_kind == "openclaw":
         existing_agent_id = state.get("agent_id")
         state_name = str(state.get("name") or "").strip() or None
+    explicit_agent_id = (agent_id_opt or "").strip() or None
+    if explicit_agent_id:
+        if existing_agent_id and existing_agent_id != explicit_agent_id:
+            print_info(
+                f"--agent-id ({explicit_agent_id}) 与本地状态 "
+                f"({existing_agent_id}) 不一致，以 --agent-id 为准"
+            )
+        existing_agent_id = explicit_agent_id
 
     if name:
         openclaw_name = name
@@ -3592,9 +3602,8 @@ async def _deploy_openclaw(
         default_model=default_model,
         security_profile=security_profile,
     )
-    custom_env_vars = _parse_extra_openclaw_env_pairs(extra_env)
-    if custom_env_vars:
-        env_vars.update(custom_env_vars)
+    if cli_env or auto_dotenv:
+        apply_explicit_env_with_shell_priority(env_vars, cli_env, auto_dotenv, shell_keys)
     env_vars = _normalize_openclaw_gateway_auth_env(env_vars)
     if not str(env_vars.get("OPENCLAW_MODEL_CATALOG_JSON") or "").strip():
         catalog_api_base = model_base_url or _resolve_env(
@@ -3636,7 +3645,7 @@ async def _deploy_openclaw(
 
     # 构建环境变量列表
     env_list = [
-        {"Key": k, "Value": v, "IsSensitive": "KEY" in k or "TOKEN" in k or "SECRET" in k}
+        {"Key": k, "Value": v, "IsSensitive": is_sensitive_env_var(k)}
         for k, v in env_vars.items()
     ]
     # 资源规格（支持通过环境变量覆盖）
@@ -3744,6 +3753,37 @@ async def _deploy_openclaw(
         latest_status = None
         updated_existing_agent = False
         async with AgentEngineClient(region=region) as client:
+            if explicit_agent_id:
+                try:
+                    detail = await client.get_agent(
+                        explicit_agent_id, include_api_key=True
+                    )
+                except Exception as e:
+                    raise click.ClickException(
+                        f"指定的 Agent ID '{explicit_agent_id}' 不存在，或当前凭证无权限访问。\n"
+                        f"   详情: {e}\n"
+                        "   👉 请确认 agent_id 正确，且当前 AK/SK / 账号有该 Agent 的权限。"
+                    ) from e
+                qa = detail.get("quick_access", {}) or {}
+                basic = detail.get("basic", {}) or {}
+                recovered_state = state.copy()
+                recovered_state.update(
+                    {
+                        "agent_id": explicit_agent_id,
+                        "name": basic.get("name") or openclaw_name,
+                        "type": "openclaw",
+                        "region": region,
+                        "endpoint": qa.get("public_endpoint"),
+                    }
+                )
+                if qa.get("api_key"):
+                    recovered_state["api_key"] = qa["api_key"]
+                recovered_state = {
+                    k: v for k, v in recovered_state.items() if v is not None
+                }
+                save_state(project_dir, recovered_state)
+                state = recovered_state
+                print_info(f"已通过 --agent-id 关联已有 Agent: {explicit_agent_id}")
             if existing_agent_id:
                 print_info(f"检测到本地状态: {existing_agent_id}，执行更新...")
                 try:

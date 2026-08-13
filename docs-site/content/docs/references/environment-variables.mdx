@@ -41,6 +41,10 @@ OPENAI_MODEL_NAME=my-model
 
 | 变量 | 用途 |
 | --- | --- |
+| `KSADK_CODEX_APPROVAL` | Codex 审批策略；Studio 可按下一轮对话传入审批等级 |
+| `KSADK_CODEX_HOME` | 原生 Codex HOME 显式覆盖；通常由运行时自动隔离 |
+| `KSADK_CODEX_ISOLATE_HOME` | 默认 `1`；设为 `0` 仅用于调试复用进程 HOME |
+| `KSADK_CODEX_SANDBOX` | Codex 沙箱模式：`read_only`、`workspace_write` 或 `full_access` |
 | `KSADK_CODEX_USE_PROXY` | `1` 强制启用 Codex 本地协议代理，`0` 强制直连；未设置时只对自定义上游做保守探测 |
 | `KSADK_PROXY_UPSTREAM_BASE` | Codex proxy 上游 URL 覆盖，默认读取 OpenAI 兼容 base URL |
 | `KSADK_PROXY_UPSTREAM_KEY` | Codex proxy 上游凭据覆盖（敏感） |
@@ -49,6 +53,9 @@ OPENAI_MODEL_NAME=my-model
 | `KSADK_MODEL_PROXY_AGENTS` | 逗号分隔的 agent allowlist |
 | `KSADK_MODEL_PROXY_MODELS` | 逗号分隔的 model allowlist |
 | `KSADK_MODEL_PROXY_DENY` | 逗号分隔的 denylist，用于紧急关闭代理 |
+| `KSADK_STUDIO_NO_SECURITY` | 仅受控自动化测试使用；设为 `1` 会关闭本地 session/CSRF 校验 |
+| `KSADK_STUDIO_SESSION_TOKEN` | Studio 本地浏览器 session token（敏感；未设置时随机生成） |
+| `KSADK_STUDIO_TRACE_CONTENT` | 是否保存 Trace 事件正文，默认 `1`；设为 `0` 只保留元数据 |
 
 ## 0.8 Runtime、A2A 与 A2UI
 
@@ -309,7 +316,7 @@ KSADK_MCP_SERVERS='[{"name":"docs","url":"http://127.0.0.1:9000/mcp"}]'
 
 | 变量 | 用途 |
 | --- | --- |
-| `KSADK_WEB_VERSION` | `make sync-ksadk-web-static` 使用的已发布 `@kingsoftcloud/ksadk-web` npm 版本，0.8.0 默认 `0.3.0`；wheel 构建前必须先发布并验证新版本 |
+| `KSADK_WEB_VERSION` | `make sync-ksadk-web-static` 使用的已发布 `@kingsoftcloud/ksadk-web` npm 版本，0.8.x 默认 `0.3.1`；wheel 构建前必须先发布并验证新版本 |
 | `KSADK_WEB_PACKAGE` | 本地 UI static 同步使用的 npm 包名，默认 `@kingsoftcloud/ksadk-web` |
 | `KSADK_WEB_TARBALL_NAME` | 设置 `KSADK_WEB_RELEASE_URL` 时作为下载保存文件名；npm pack 模式使用 npm 返回的真实 tarball 文件名 |
 | `KSADK_WEB_RELEASE_URL` | 可选兜底；设置后跳过 npm pack，改从该 tarball URL 下载 |
@@ -332,36 +339,29 @@ KSADK_MCP_SERVERS='[{"name":"docs","url":"http://127.0.0.1:9000/mcp"}]'
 | `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` | traces 专用 OTLP protocol，优先于通用 protocol |
 | `OTEL_EXPORTER_OTLP_TRACES_HEADERS` | traces 专用 OTLP HTTP headers，优先于通用 headers，可能包含鉴权信息 |
 | `KSADK_OTLP_MAX_EXPORT_BATCH_SIZE` | OTLP 单次 export 最大 span 数，默认 `64`，用于避免 collector 请求过大 |
-| `LANGFUSE_PUBLIC_KEY` | 兼容旧 Langfuse tracing 自动配置 |
-| `LANGFUSE_SECRET_KEY` | Langfuse secret |
-| `LANGFUSE_BASE_URL` | Langfuse base URL |
-| `LANGFUSE_HOST` | Langfuse host 兼容别名 |
-| `LANGFUSE_USE_CALLBACK` | 使用框架 callback 模式，而不是直接 OTLP 路径 |
 | `SESSION_TITLE_MODEL` | 本地会话标题生成模型覆盖 |
 | `COMPACTION_DISABLE_SEMANTIC` | 禁用语义摘要压缩 |
 | `COMPACTION_SUMMARY_TIMEOUT_MS` | 摘要生成超时时间 |
 | `COMPACTION_SUMMARY_MAX_GROUPS` | 摘要消息分组上限 |
 | `COMPACTION_SUMMARY_MODEL` | 语义摘要模型覆盖 |
 
-### 云监控双写（CLOUD_MONITOR_*）
+### 云监控 OTLP 双写（CLOUD_MONITOR_OTLP_*）
 
-0.6.7 起 `setup_tracing()` 自动探测 `CLOUD_MONITOR_*` 环境变量，并行挂载 CloudMonitor OTLP exporter 和 CloudMonitor Langfuse SDK CallbackHandler，与自建 Langfuse / 标准 OTLP 互不压制，单条 span 可同时上报自建集群与云监控 trace 平台。
+`setup_tracing()` 自动探测 `CLOUD_MONITOR_OTLP_*` 环境变量，构建 CloudMonitor OTLP exporter，与主路 Langfuse OTLP（标准 `OTEL_EXPORTER_OTLP_*`）并行写入。单条 span 同时进入两个后端，共享同一 `trace_id` / `span_id`。托管 Agent 通过 CLI 或控制台创建时默认由平台注入双路配置；只有显式 `--no-observability` 或在控制台关闭才禁用。Langfuse CallbackHandler 路径已删除。
 
 | 变量 | 用途 |
 | --- | --- |
-| `CLOUD_MONITOR_APP_KEY` | 云监控 OTLP AppKey，注入 `Ksc-Appkey` 鉴权 header（敏感） |
-| `CLOUD_MONITOR_OTLP_ENABLED` | 显式启用或禁用 CloudMonitor OTLP exporter，默认自动判断 |
+| `CLOUD_MONITOR_APP_KEY` | 已废弃，过渡兼容。仅当 `CLOUD_MONITOR_OTLP_TRACES_HEADERS` 和 `CLOUD_MONITOR_OTLP_HEADERS` 都整体缺失时翻译为 `Ksc-Appkey` header（敏感） |
 | `CLOUD_MONITOR_OTLP_ENDPOINT` | CloudMonitor 通用 OTLP HTTP endpoint；未设 traces endpoint 时派生 `/v1/traces` |
 | `CLOUD_MONITOR_OTLP_PROTOCOL` | CloudMonitor 通用 OTLP 协议，当前支持 `http/protobuf` |
-| `CLOUD_MONITOR_OTLP_HEADERS` | CloudMonitor OTLP 附加 headers，逗号分隔且 URL encoded（敏感） |
+| `CLOUD_MONITOR_OTLP_HEADERS` | CloudMonitor OTLP 附加 headers，逗号分隔且 RFC 3986 encoded(敏感) |
 | `CLOUD_MONITOR_OTLP_TRACES_ENDPOINT` | CloudMonitor traces 专用 endpoint，优先于通用 endpoint |
+| `CLOUD_MONITOR_OTLP_TRACES_HEADERS` | CloudMonitor traces 专用 headers，优先于通用 headers；已提供但缺 `Ksc-Appkey` 时 fail closed（敏感） |
 | `CLOUD_MONITOR_OTLP_TRACES_PROTOCOL` | CloudMonitor traces 专用协议，优先于通用 protocol |
-| `CLOUD_MONITOR_LANGFUSE_ENABLED` | 显式启用或禁用 CloudMonitor Langfuse SDK callback，默认自动判断 |
-| `CLOUD_MONITOR_LANGFUSE_HOST` | CloudMonitor AppMonitor Langfuse SDK host，回退 `CLOUD_MONITOR_OTLP_ENDPOINT` |
-| `CLOUD_MONITOR_LANGFUSE_PUBLIC_KEY` | CloudMonitor Langfuse public key（敏感） |
-| `CLOUD_MONITOR_LANGFUSE_SECRET_KEY` | CloudMonitor Langfuse secret key（敏感） |
 
-显式设置 `CLOUD_MONITOR_OTLP_ENABLED=false` 或 `CLOUD_MONITOR_LANGFUSE_ENABLED=false` 可分别禁用对应路径。
+<Callout type="info">
+单后端故障时另一路仍可用:主路故障次路仍写,次路故障主路仍写,Agent 业务不阻断。
+</Callout>
 
 ## 安全规则
 

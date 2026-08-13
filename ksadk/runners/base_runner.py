@@ -7,6 +7,7 @@ BaseRunner - 运行时基类
 import inspect
 import os
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any, AsyncIterator, Dict, Mapping, Optional
 
 from ksadk.sessions.continuity import RunnerSessionAdapter, TranscriptReplayAdapter
@@ -310,13 +311,37 @@ class BaseRunner(ABC):
         import uvicorn
 
         from ksadk.agui.config import default_agui_config
+        from ksadk.managed_a2a_card import build_managed_a2a_card_if_configured
+        from ksadk.runtime import RuntimeExecutor, RuntimeLaunchContext, RuntimeRegistry
+        from ksadk.runtime.runner_adapter import RunnerRuntimeAdapter
         from ksadk.server.composition import configure_runtime_app
         from ksadk.server.factory import RuntimeAppConfig, create_runtime_app
 
-        # goal-01/16:经 create_runtime_app 注入 runner(per-app state),替代全局 ``app`` +
-        # ``set_runner`` 全局态。普通 runtime app 装配全部 route group。
+        detected_runtime_type = str(
+            getattr(getattr(self.detection_result, "type", None), "value", "runner")
+        )
+        launch_context = RuntimeLaunchContext(
+            runtime_type=detected_runtime_type,
+            project_dir=Path(self.project_dir),
+            detection=self.detection_result,
+        )
+        runtime_type = launch_context.runtime_type
+        registry = RuntimeRegistry()
+        registry.register(
+            runtime_type,
+            lambda _context: RunnerRuntimeAdapter(self, runtime_type=runtime_type),
+        )
+        # BaseRunner 仍可作为底层框架实现启动 Web，但 HTTP 层只消费 RuntimeAdapter。
+        # managed A2A discovery-only card:KSADK_A2A_RUNTIME_ID 非空时挂
+        # ``/.well-known/agent-card.json``;注册前即可被 server 探测(a2a-runtime-inbound-wiring)。
+        # KSADK_A2A_AGENT_ID 是注册后注入的不透明注册 ID；v2 JSON-RPC 绑定用，v1 card 不依赖。
         app = create_runtime_app(
-            RuntimeAppConfig(runner=self, agui=default_agui_config(self)),
+            RuntimeAppConfig(
+                runtime_executor=RuntimeExecutor(registry),
+                launch_context=launch_context,
+                agui=default_agui_config(self),
+                a2a=build_managed_a2a_card_if_configured(),
+            ),
             configure_runtime_app,
         )
         uvicorn.run(app, host="0.0.0.0", port=port)

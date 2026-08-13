@@ -46,15 +46,15 @@ def agui_dependencies_available() -> bool:
     return not agui_dependency_errors()
 
 
-def default_agui_config(runner: Any) -> AGUIConfig:
-    """Build the production AG-UI config without loading the user's agent.
+def agui_config_for_detection(detection: Any) -> AGUIConfig:
+    """Build the production AG-UI config from a detected framework.
 
     Goal 24's first production vertical is LangGraph.  An optional AG-UI install
     therefore enables the endpoint automatically only for a detected LangGraph
-    runner; explicit ``RuntimeAppConfig.agui`` remains available to harnesses and
-    future framework adapters.
+    runtime; explicit ``RuntimeAppConfig.agui`` remains available to harnesses and
+    future framework adapters.  CLI bootstraps have a detection result before a
+    runner is constructed, so they use this same policy directly.
     """
-    detection = getattr(runner, "detection_result", None)
     framework_type = getattr(detection, "type", None)
     runtime_type = str(getattr(framework_type, "value", framework_type) or "").lower()
     agent_name = str(getattr(detection, "name", None) or "ksadk")
@@ -63,6 +63,11 @@ def default_agui_config(runner: Any) -> AGUIConfig:
         agent_name=agent_name,
         runtime_type=runtime_type or "unknown",
     )
+
+
+def default_agui_config(runner: Any) -> AGUIConfig:
+    """Build the production AG-UI config without loading the user's agent."""
+    return agui_config_for_detection(getattr(runner, "detection_result", None))
 
 
 def require_agui_dependencies() -> None:
@@ -81,6 +86,7 @@ __all__ = [
     "COPILOTKIT_VERSION",
     "agui_dependencies_available",
     "agui_dependency_errors",
+    "agui_config_for_detection",
     "default_agui_config",
     "require_agui_dependencies",
 ]

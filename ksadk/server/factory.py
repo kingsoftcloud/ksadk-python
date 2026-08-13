@@ -5,7 +5,7 @@ H2 §4.2:这是三线公共装配入口,替代 `ksadk/server/app.py` 的模块�
 
 设计要点:
 
-- **per-app state**:runner / runner_loaded / detached-stream registry 全部挂在
+- **per-app state**:RuntimeExecutor / RuntimeLaunchContext / detached-stream registry 全部挂在
   `app.state.runtime`(:class:`RuntimeAppState`)上,每个 app 实例一份,普通 app 与
   HarnessApp 互不共享。不再有模块级 ``runner`` / ``_DETACHED_*`` 全局可变态。
 - **请求级桥接**:中间件把当前 app 的 state 写入 :data:`current_state` 的
@@ -26,11 +26,12 @@ import asyncio
 import contextvars
 import logging
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Any, Callable, Iterator, Optional, cast
+from typing import TYPE_CHECKING, Any, Callable, Iterator, Optional
 
 from fastapi import FastAPI
 
-from ksadk.runners.base_runner import BaseRunner
+from ksadk.runtime.adapter import RuntimeAdapter, RuntimeLaunchContext
+from ksadk.runtime.executor import RuntimeExecutor
 from ksadk.sandbox.registry import (
     SandboxRegistry,
     bind_sandbox_registry,
@@ -103,14 +104,15 @@ class RuntimeAppState:
 
     def __init__(
         self,
-        runner: Optional[BaseRunner] = None,
         *,
+        executor: RuntimeExecutor | None = None,
+        launch_context: RuntimeLaunchContext | None = None,
         session_service_provider: Callable[[], Any] | None = None,
         session_backend_provider: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         self.app: Optional[FastAPI] = None
-        self.runner: Optional[BaseRunner] = runner
-        self.runner_loaded: bool = False
+        self.executor = executor
+        self.launch_context = launch_context
         self.stream_registry = StreamRegistry()
         self.sandbox_registry = SandboxRegistry()
         self.session_service: Any = None
@@ -175,8 +177,8 @@ class RuntimeAppState:
 class RuntimeAppConfig:
     """create_runtime_app 的装配配置。
 
-    - ``runner``:依赖注入的 runner(替代 set_runner 全局态);可在装配后由
-      兼容壳 ``set_runner`` 再写入 ``app.state.runtime.runner``。
+    - ``runtime_executor``:统一 Runtime 生命周期入口。
+    - ``launch_context``:当前 Runtime 与项目的不可变启动上下文。
     - ``runtime_type``:runtime 类型标识(普通 / harness / codex ...)。
     - ``route_groups``:要装配的 route group 集合;默认 :data:`ALL_GROUPS`,
       HarnessApp 传 :data:`DATA_PLANE_GROUPS`。
@@ -184,17 +186,17 @@ class RuntimeAppConfig:
 
     def __init__(
         self,
-        runner: Optional[BaseRunner] = None,
         *,
         runtime_type: str = "local",
         route_groups: Optional[set[str]] = None,
         a2a: Optional[Any] = None,
-        runtime_adapter: Any = None,
+        a2a_runtime_adapter: RuntimeAdapter | None = None,
         agui: Optional[Any] = None,
+        runtime_executor: RuntimeExecutor | None = None,
+        launch_context: RuntimeLaunchContext | None = None,
         session_service_provider: Callable[[], Any] | None = None,
         session_backend_provider: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
-        self.runner = runner
         self.runtime_type = runtime_type
         self.route_groups: set[str] = (
             set(route_groups) if route_groups is not None else set(ALL_GROUPS)
@@ -202,8 +204,10 @@ class RuntimeAppConfig:
         # A2A 协议装配配置(``ksadk.a2a.routes.A2AConfig``);enabled 时 factory 装配
         # A2A 数据面端点(契约 §8)。用 Any 避免本模块硬依赖可选的 a2a-sdk。
         self.a2a = a2a
-        self.runtime_adapter = runtime_adapter
+        self.a2a_runtime_adapter = a2a_runtime_adapter
         self.agui = agui
+        self.runtime_executor = runtime_executor
+        self.launch_context = launch_context
         self.session_service_provider = session_service_provider
         self.session_backend_provider = session_backend_provider
 
@@ -234,6 +238,17 @@ def get_state() -> RuntimeAppState:
     return state if state is not None else _fallback_state
 
 
+def get_runtime_execution() -> tuple[RuntimeExecutor, RuntimeLaunchContext]:
+    """Resolve the current app's canonical runtime execution dependencies."""
+
+    from fastapi import HTTPException
+
+    state = get_state()
+    if state.executor is None or state.launch_context is None:
+        raise HTTPException(status_code=500, detail="RuntimeExecutor 未初始化")
+    return state.executor, state.launch_context
+
+
 @contextmanager
 def bind_runtime_state(state: RuntimeAppState) -> Iterator[None]:
     """Bind one app state for non-HTTP scopes such as WebSockets."""
@@ -243,26 +258,6 @@ def bind_runtime_state(state: RuntimeAppState) -> Iterator[None]:
             yield
     finally:
         _current_state.reset(token)
-
-
-def get_runner() -> BaseRunner:
-    """取当前 app 的 runner(懒加载 agent)。等价旧的 ``_resolve_active_runner``。"""
-    from fastapi import HTTPException
-
-    state = get_state()
-    runner = state.runner
-    if runner is None:
-        raise HTTPException(status_code=500, detail="Runner 未初始化")
-    if not state.runner_loaded:
-        try:
-            runner.load_agent()
-        except HTTPException:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Runner 加载失败: %s", exc)
-            raise HTTPException(status_code=500, detail=str(exc) or "Runner 加载失败") from exc
-        state.runner_loaded = True
-    return runner
 
 
 # ---------------------------------------------------------------------------
@@ -290,14 +285,11 @@ async def shutdown_runtime_resources(state: RuntimeAppState) -> None:
         await asyncio.gather(*pending_streams, return_exceptions=True)
     registry.clear()
 
-    active_runner = state.runner
-    if active_runner is not None:
-        close = getattr(active_runner, "close", None)
-        if callable(close):
-            try:
-                await close()
-            except Exception:
-                logger.exception("failed to close runner on shutdown")
+    if state.executor is not None:
+        try:
+            await state.executor.close_all()
+        except Exception:
+            logger.exception("failed to close runtime adapters on shutdown")
 
     for service in state.session_services():
         close = getattr(service, "aclose", None)
@@ -313,6 +305,26 @@ async def shutdown_runtime_resources(state: RuntimeAppState) -> None:
         logger.exception("failed to clear sandbox registry on shutdown")
 
 
+def _is_agent_execution_path(path: str, method: str) -> bool:
+    """是否 agent 执行类请求(需要 root span 兜底,让 tool 内 outbound 挂到该 trace)。
+
+    session 管理(GetAgentUiBootstrap/ListSessionMessages 等轮询)与 UI/health 不建 span。
+    """
+    m = (method or "").upper()
+    p = (path or "").strip()
+    if m == "POST" and p in {
+        "/v1/responses",
+        "/v1/chat/completions",
+        "/run",
+        "/run_sse",
+        "/agentengine/api/v1/RunAgent",
+    }:
+        return True
+    if m == "GET" and p in {"/agentengine/api/v1/SubscribeRunEvents"}:
+        return True
+    return False
+
+
 def create_runtime_app(
     config: RuntimeAppConfig,
     configure: Optional[ConfigureApp] = None,
@@ -320,7 +332,7 @@ def create_runtime_app(
     """装配一个 runtime app。
 
     参数:
-        config: :class:`RuntimeAppConfig`(runner / runtime_type / route_groups)。
+        config: :class:`RuntimeAppConfig`(executor / launch_context / route_groups)。
         configure: 路由装配回调 ``configure(app, state, route_groups)``;由
             ``ksadk/server/app.py`` 提供,负责按 group 把 domain router include 进 app。
             factory 自身只负责 FastAPI 实例、state、中间件、lifespan、异常处理器,
@@ -333,7 +345,8 @@ def create_runtime_app(
     from fastapi.responses import Response
 
     state = RuntimeAppState(
-        runner=config.runner,
+        executor=config.runtime_executor,
+        launch_context=config.launch_context,
         session_service_provider=config.session_service_provider,
         session_backend_provider=config.session_backend_provider,
     )
@@ -370,8 +383,68 @@ def create_runtime_app(
                 backend=state.describe_session_backend(),
             ),
         ):
-            # 保持旧行为:前端入口禁缓存。
-            response = await call_next(request)
+            # 提取 inbound OTel trace context(traceparent);无有效 inbound 时建一个
+            # 覆盖整个请求的 root server span,让 langchain/openinference 的 agent span 与
+            # tool 内 outbound(A2A)调用都挂到这条 trace 上(openinference 只在 LLM 调用
+            # 期间建 span,tool 执行时其 span 已 detach,需一个贯穿 span 兜底)。
+            # 只对 agent 执行类路径建 root span;session/UI 管理路径(GetAgentUiBootstrap/
+            # ListSessionMessages 等轮询)不建,避免一次问答产生一堆独立 trace。
+            try:
+                from opentelemetry import context as _otel_ctx
+                from opentelemetry import propagate
+                from opentelemetry import trace as _otel_trace
+
+                _carrier = dict(request.headers)
+                _parent = propagate.extract(_carrier)
+                _parent_span_ctx = _otel_trace.get_current_span(_parent).get_span_context()
+            except Exception:
+                logger.exception("failed to initialize request tracing; continuing without OTel")
+                response = await call_next(request)
+            else:
+                if _parent_span_ctx.is_valid:
+                    try:
+                        _token = _otel_ctx.attach(_parent)
+                    except Exception:
+                        logger.exception(
+                            "failed to attach inbound trace context; continuing without OTel"
+                        )
+                        response = await call_next(request)
+                    else:
+                        try:
+                            response = await call_next(request)
+                        finally:
+                            try:
+                                _otel_ctx.detach(_token)
+                            except Exception:
+                                logger.exception("failed to detach inbound trace context")
+                elif _is_agent_execution_path(request.url.path, request.method):
+                    try:
+                        _tracer = _otel_trace.get_tracer("ksadk.server")
+                        _span_scope = _tracer.start_as_current_span(
+                            f"{request.method} {request.url.path}"
+                        )
+                        _span_scope.__enter__()
+                    except Exception:
+                        logger.exception(
+                            "failed to start request span; continuing without OTel"
+                        )
+                        response = await call_next(request)
+                    else:
+                        try:
+                            response = await call_next(request)
+                        except BaseException as exc:
+                            try:
+                                _span_scope.__exit__(type(exc), exc, exc.__traceback__)
+                            except Exception:
+                                logger.exception("failed to close request span after handler error")
+                            raise
+                        else:
+                            try:
+                                _span_scope.__exit__(None, None, None)
+                            except Exception:
+                                logger.exception("failed to close request span")
+                else:
+                    response = await call_next(request)
             path = request.url.path
             if path == "/" or path.endswith(".html"):
                 response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
@@ -415,67 +488,39 @@ def create_runtime_app(
     return app
 
 
-class _LazyRunnerProxy:
-    """把 app.state 的 runner 以惰性方式暴露给 A2A executor/adapter。
-
-    兼容壳常在 factory 建 app 后才 ``set_runner`` 写入真实 runner,因此不能在装配期
-    固化 runner 引用。代理在每次调用时从 ``state`` 解析真实 runner 并懒加载,
-    接口与 ``BaseRunner`` 对齐(load_agent / stream / invoke,其余属性经 __getattr__
-    转发)。
-    """
-
-    def __init__(self, state: RuntimeAppState) -> None:
-        self.__dict__["_state"] = state
-
-    def _real(self) -> BaseRunner:
-        state: RuntimeAppState = self.__dict__["_state"]
-        runner = state.runner
-        if runner is None:
-            raise RuntimeError("A2A: runner 尚未装配(set_runner 未调用)")
-        if not state.runner_loaded:
-            runner.load_agent()
-            state.runner_loaded = True
-        return runner
-
-    def load_agent(self) -> BaseRunner:
-        return self._real()
-
-    def stream(self, input_data: Any) -> Any:
-        # 与普通方法(非 async def)返回真实 runner.stream 的结果(async gen 或 coroutine),
-        # 由 RunnerRuntimeAdapter/executor 按既有分支处理。
-        return self._real().stream(input_data)
-
-    async def invoke(self, input_data: Any) -> Any:
-        return await self._real().invoke(input_data)
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._real(), name)
-
-
 def _wire_a2a_if_enabled(app: FastAPI, state: RuntimeAppState, config: RuntimeAppConfig) -> None:
-    """契约 §8:``config.a2a.enabled`` 时把 A2A 协议端点装配进 app(数据面)。
+    """Mount A2A with an explicitly injected RuntimeAdapter.
 
-    runner 经 :class:`_LazyRunnerProxy` 惰性解析;RuntimeAdapter 用通用
-    ``RunnerRuntimeAdapter``(经 P0-2 后 cancel 走真实 asyncio 任务中断)。
+    The server composition root never resolves or wraps a Runner.  Framework
+    internals may still use one behind their adapter factory, but A2A only sees
+    the frozen RuntimeAdapter contract.
     """
     a2a_cfg = config.a2a
     if a2a_cfg is None:
         return
+    from ksadk.managed_a2a_card import ManagedA2ACardMount
+
+    if isinstance(a2a_cfg, ManagedA2ACardMount):
+        a2a_cfg.mount(app)
+        state.a2a_bootstrap = a2a_cfg
+        logger.info(
+            "managed A2A discovery card mounted(agent_name=%s base_url=%s)",
+            a2a_cfg.config.agent_name,
+            a2a_cfg.config.base_url,
+        )
+        return
     from ksadk.a2a.bootstrap import AgentEngineA2ABootstrap
 
-    if isinstance(a2a_cfg, AgentEngineA2ABootstrap):
-        from ksadk.runtime.runner_adapter import RunnerRuntimeAdapter
+    adapter = config.a2a_runtime_adapter
+    if adapter is None:
+        raise ValueError("A2A requires an explicitly injected RuntimeAdapter")
+    runtime_type = adapter.runtime.runtime_type or config.runtime_type
 
-        proxy = _LazyRunnerProxy(state)
-        runtime_adapter = config.runtime_adapter or RunnerRuntimeAdapter(
-            cast("BaseRunner", proxy),
-            runtime_type=config.runtime_type,
-        )
+    if isinstance(a2a_cfg, AgentEngineA2ABootstrap):
         server = a2a_cfg.mount(
             app,
-            runner=proxy,
-            runtime_adapter=runtime_adapter,
-            runtime_type=config.runtime_type,
+            runtime_adapter=adapter,
+            runtime_type=runtime_type,
         )
         state.a2a_bootstrap = a2a_cfg
         state.a2a_server = server
@@ -489,12 +534,9 @@ def _wire_a2a_if_enabled(app: FastAPI, state: RuntimeAppState, config: RuntimeAp
         return
     from ksadk.a2a.routes import add_a2a_protocol_routes
     from ksadk.a2a.task_adapter import A2ARuntimeTaskAdapter
-    from ksadk.runtime.runner_adapter import RunnerRuntimeAdapter
 
-    proxy = _LazyRunnerProxy(state)
-    adapter = RunnerRuntimeAdapter(cast("BaseRunner", proxy), runtime_type=config.runtime_type)
-    task_adapter = A2ARuntimeTaskAdapter(adapter, runtime_type=config.runtime_type)
-    server = add_a2a_protocol_routes(app, proxy, a2a_cfg, task_adapter=task_adapter)
+    task_adapter = A2ARuntimeTaskAdapter(adapter, runtime_type=runtime_type)
+    server = add_a2a_protocol_routes(app, a2a_cfg, task_adapter=task_adapter)
     state.a2a_server = server
     logger.info("A2A 协议端点已装配进 runtime app(agent=%s)", a2a_cfg.agent_name)
 
@@ -517,7 +559,8 @@ def _wire_agui_if_enabled(app: FastAPI, state: RuntimeAppState, config: RuntimeA
     from ksadk.events.store import RuntimeEventStore
     from ksadk.server.routes import dependencies as route_dependencies
 
-    proxy = _LazyRunnerProxy(state)
+    if state.executor is None or state.launch_context is None:
+        raise ValueError("AG-UI requires RuntimeExecutor and RuntimeLaunchContext")
 
     class _AutoSessionRuntimeEventStore:
         """Create a session on first AG-UI event when HttpAgent starts fresh."""
@@ -551,7 +594,8 @@ def _wire_agui_if_enabled(app: FastAPI, state: RuntimeAppState, config: RuntimeA
 
     agent = add_ksadk_agui_endpoint(
         app,
-        cast("BaseRunner", proxy),
+        state.executor,
+        state.launch_context,
         agui_cfg,
         event_store_factory=lambda: _AutoSessionRuntimeEventStore(
             route_dependencies.resolve_session_service()
@@ -563,51 +607,6 @@ def _wire_agui_if_enabled(app: FastAPI, state: RuntimeAppState, config: RuntimeA
     logger.info("AG-UI endpoint mounted at %s", agui_cfg.path)
 
 
-def wire_default_agui_for_runner(state: RuntimeAppState, runner: BaseRunner) -> None:
-    """Mount AG-UI for legacy ``app`` + ``set_runner`` production entrypoints.
-
-    Those entrypoints create the FastAPI app before the framework runner exists.
-    Mounting immediately after ``set_runner`` is still startup-time wiring.  New
-    protocol routes are moved ahead of the static catch-all to preserve routing
-    order exactly as the normal factory path does.
-    """
-    if state.app is None or state.agui_agent is not None:
-        return
-
-    from ksadk.agui.config import default_agui_config
-
-    agui_config = default_agui_config(runner)
-    if not agui_config.enabled:
-        return
-
-    app = state.app
-    routes = app.router.routes
-    previous_count = len(routes)
-    _wire_agui_if_enabled(
-        app,
-        state,
-        RuntimeAppConfig(
-            runner=runner,
-            runtime_type=agui_config.runtime_type,
-            route_groups={"agui"},
-            agui=agui_config,
-        ),
-    )
-    new_routes = routes[previous_count:]
-    if not new_routes:
-        return
-    del routes[previous_count:]
-    catch_all_index = next(
-        (
-            index
-            for index, route in enumerate(routes)
-            if getattr(route, "path", None) == "/{requested_path:path}"
-        ),
-        len(routes),
-    )
-    routes[catch_all_index:catch_all_index] = new_routes
-
-
 __all__ = [
     "ALL_GROUPS",
     "CONTROL_PLANE_GROUPS",
@@ -617,8 +616,7 @@ __all__ = [
     "bind_runtime_state",
     "StreamRegistry",
     "create_runtime_app",
-    "get_runner",
+    "get_runtime_execution",
     "get_state",
     "set_fallback_state",
-    "wire_default_agui_for_runner",
 ]
