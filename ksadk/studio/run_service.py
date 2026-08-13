@@ -697,6 +697,13 @@ class StudioRunService:
                 "plannedInputTokens": shadow.get("planned_input_tokens"),
             }
             record.working_state = prepared.working_state
+            # Recall 事件写入 Studio EventStore（方案 §3）
+            for evt in getattr(prepared, "memory_recall_events", []):
+                self.event_store.append(
+                    record.id,
+                    evt.get("type", "memory.recall.event"),
+                    evt,
+                )
             self.event_store.save(record)
             return prepared
         except Exception:  # noqa: BLE001 - evidence collection is best effort

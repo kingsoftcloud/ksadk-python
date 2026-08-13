@@ -241,6 +241,7 @@ async def iter_runtime_conversation_events(
         prepared=prepared,
         usage=_baseline_usage,
         session_service_provider=provider,
+        store=store,
     )
 
 
@@ -250,12 +251,32 @@ async def _finalize_hosted_turn(
     usage: Mapping[str, Any] | None,
     session_service_provider: Callable[[], Any],
     turn_events: Any = None,
+    store: Any = None,
 ) -> None:
     """PR E：hosted turn 收尾——委托共享 HostedTurnFinalizer（方案 §11.1 / P0 收敛）。
 
     Studio 与 canonical Runtime 共用同一收尾逻辑，避免两条路径漂移。
     """
     from ksadk.runtime.hosted_finalizer import FinalizeContext, finalize_hosted_turn
+
+    # Recall 事件写入 session store（方案 §3）
+    if store is not None:
+        for evt in getattr(prepared, "memory_recall_events", []):
+            try:
+                from ksadk.events.runtime_event import EventType, RuntimeEvent
+
+                recall_event = RuntimeEvent.create(
+                    EventType.RUN_PROGRESS,
+                    agent_id="",
+                    user_id="",
+                    session_id=getattr(prepared, "session_id", ""),
+                    invocation_id=getattr(prepared, "invocation_id", ""),
+                    seq_id=0,
+                    payload={"memory_event": evt},
+                )
+                await store.append_one(recall_event)
+            except Exception:  # noqa: BLE001
+                pass
 
     # 从 session store 取 turn events
     _turn_events = None
