@@ -98,10 +98,17 @@ async def finalize_hosted_turn(
     # （如 framework_assisted 的显式"记住"），只要 Memory 开关开启即 flush（方案 §10.4）。
     try:
         from ksadk.memory.coordinator import MemoryCoordinator
+        from ksadk.memory.events import (
+            candidate_created,
+            candidate_rejected,
+            flush_completed,
+            flush_failed,
+        )
         from ksadk.memory.extraction import propose_memory_candidates
-        from ksadk.memory.providers.local_sqlite import resolve_default_memory_provider
+        from ksadk.memory.providers.local_sqlite import (
+            resolve_default_memory_provider,
+        )
 
-        # 优先用已取的 turn events；否则从 session store 读
         turn_events = ctx.session_events
         if turn_events is None and session_service_provider is not None:
             try:
@@ -114,17 +121,58 @@ async def finalize_hosted_turn(
                 turn_events = None
         if not turn_events:
             return
-        # scope_id 由可信 user_id 决定（不硬编码 local-user，方案 §19）
         candidates = propose_memory_candidates(
             list(turn_events),
             scope="user",
             scope_id=str(ctx.user_id or ""),
         )
+        provider_name = "sqlite"
+        rollout = ctx.memory_write_rollout or "enabled"
         if candidates:
             coordinator = MemoryCoordinator(resolve_default_memory_provider())
-            coordinator.flush_candidates(candidates)
-    except Exception:  # noqa: BLE001 — memory flush 绝不阻断主链路
-        pass
+            result = coordinator.flush_candidates(candidates)
+            _emit_memory_event(
+                candidate_created(
+                    run_id=ctx.invocation_id,
+                    session_id=ctx.session_id,
+                    provider=provider_name,
+                    rollout=rollout,
+                    count=len(candidates),
+                )
+            )
+            if result.rejected > 0:
+                _emit_memory_event(
+                    candidate_rejected(
+                        run_id=ctx.invocation_id,
+                        session_id=ctx.session_id,
+                        provider=provider_name,
+                        rollout=rollout,
+                        count=result.rejected,
+                    )
+                )
+            _emit_memory_event(
+                flush_completed(
+                    run_id=ctx.invocation_id,
+                    session_id=ctx.session_id,
+                    provider=provider_name,
+                    rollout=rollout,
+                    proposed=result.proposed,
+                    committed=result.committed,
+                    rejected=result.rejected,
+                )
+            )
+    except Exception as exc:  # noqa: BLE001
+        _emit_memory_event(
+            flush_failed(
+                run_id=ctx.invocation_id,
+                session_id=ctx.session_id,
+                provider="sqlite",
+                rollout=ctx.memory_write_rollout or "enabled",
+                error_code="flush_exception",
+                error_message=str(exc)[:200],
+                retryable=True,
+            )
+        )
 
 
 def _maybe_detect_capability_mismatch(ctx: FinalizeContext) -> None:
@@ -153,3 +201,19 @@ def _maybe_detect_capability_mismatch(ctx: FinalizeContext) -> None:
 
 
 __all__ = ["FinalizeContext", "finalize_hosted_turn"]
+
+
+# 内存事件收集器（best-effort，不阻断主链路）
+_memory_event_collector: list = []
+
+
+def _emit_memory_event(event: Any) -> None:
+    """收集 Memory 事件供调用方读取（方案 §3）。"""
+    _memory_event_collector.append(event)
+
+
+def drain_memory_events() -> list:
+    """取出并清空已收集的 Memory 事件。"""
+    events = list(_memory_event_collector)
+    _memory_event_collector.clear()
+    return events

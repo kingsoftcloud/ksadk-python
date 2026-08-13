@@ -104,6 +104,24 @@ class CodexAgentManifest(BaseModel):
         return tuple(self.models or [self.model])
 
 
+def _validate_pcm_field(
+    raw: dict[str, Any] | None,
+    field_name: str,
+    model_cls: type,
+) -> Any:
+    """严格类型化校验 PCM context/memory 字段。
+
+    - None 或空 dict → 返回 model_cls 默认值（兼容旧 Manifest）
+    - 有字段但格式错误 → 抛 ValueError（不静默降级）
+    """
+    if not raw:
+        return model_cls()
+    try:
+        return model_cls.model_validate(raw)
+    except Exception as exc:
+        raise ValueError(f"Codex Manifest {field_name} 字段格式错误: {exc}") from exc
+
+
 def normalized_manifest_bytes(manifest: CodexAgentManifest) -> bytes:
     """生成构建、SHA 和磁盘写入共同使用的规范化 YAML。"""
 
