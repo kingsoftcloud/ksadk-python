@@ -152,9 +152,10 @@ no separately maintained `/chat` frontend. Model settings can come from the
 current process, global configuration, or an explicit `--env-file`. Browser
 writes are protected by the local session and CSRF tokens.
 
-`studio/static` contains the packaged React production build. Frontend sources
-and tests live in `ksadk/studio/react-ui`; run `make studio-react-test` after
-changing them to rebuild and verify the packaged assets.
+`studio/static` contains the packaged React production build but is not tracked
+by Git. Frontend sources and tests live in `ksadk/studio/react-ui`; run
+`make studio-react-test` after changing them, then use `make build-wheel` or
+`make public-build-check` to regenerate and package the assets.
 
 ### `ksadk replay` / `agentengine replay`
 

@@ -321,6 +321,12 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     EnvVarSpec(
         "KSADK_KB_SECRET_KEY", "knowledge_base", "Knowledge-base API secret key.", sensitive=True
     ),
+    EnvVarSpec(
+        "KSADK_KB_SESSION_TOKEN",
+        "knowledge_base",
+        "Knowledge-base STS session token.",
+        sensitive=True,
+    ),
     EnvVarSpec("KSADK_KB_TOP_K", "knowledge_base", "Knowledge-base retrieval result count.", "5"),
     EnvVarSpec(
         "KSADK_LANGGRAPH_CHECKPOINT_DSN",
@@ -358,6 +364,12 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     EnvVarSpec("KSADK_LTM_SCHEME", "memory", "Long-term-memory API scheme.", "https"),
     EnvVarSpec(
         "KSADK_LTM_SECRET_KEY", "memory", "Long-term-memory API secret key.", sensitive=True
+    ),
+    EnvVarSpec(
+        "KSADK_LTM_SESSION_TOKEN",
+        "memory",
+        "Long-term-memory STS session token.",
+        sensitive=True,
     ),
     EnvVarSpec("KSADK_LTM_TOP_K", "memory", "Long-term-memory retrieval result count.", "5"),
     EnvVarSpec(

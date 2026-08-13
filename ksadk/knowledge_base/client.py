@@ -5,8 +5,9 @@
 
 环境变量:
     KSADK_KB_DATASET_ID: 知识库 ID (必填，存在即启用)
-    KSADK_KB_ACCESS_KEY: AK (可选，默认取 KSYUN_ACCESS_KEY)
-    KSADK_KB_SECRET_KEY: SK (可选，默认取 KSYUN_SECRET_KEY)
+    KSADK_KB_ACCESS_KEY: AK (可选，默认取 KSYUN_ACCESS_KEY / KSYUN_ACCESS_KEY_ID)
+    KSADK_KB_SECRET_KEY: SK (可选，默认取 KSYUN_SECRET_KEY / KSYUN_SECRET_ACCESS_KEY)
+    KSADK_KB_SESSION_TOKEN: STS 临时会话 token (可选，默认取 KSYUN_SESSION_TOKEN)
     KSADK_KB_REGION: 区域 (默认 cn-beijing-6)
     KSADK_KB_ENDPOINT: API 端点 (默认 aicp.api.ksyun.com)
     KSADK_KB_TOP_K: 返回结果数 (默认 5)
@@ -59,6 +60,7 @@ class KnowledgeBaseClient(BaseModel):
         dataset_id: 知识库 ID (DatasetId)
         access_key: 访问密钥 ID (AK)
         secret_key: 访问密钥 (SK)
+        session_token: STS 临时会话 token
         region: API 区域
         endpoint: API 端点
         top_k: 返回结果数

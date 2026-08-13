@@ -101,8 +101,9 @@
 | 变量 | 是否必传 | 别名/兼容 | 敏感 | 配置方/来源 | 说明 |
 | --- | --- | --- | --- | --- | --- |
 | `KSADK_KB_DATASET_ID` | 条件必传 | 无 | 否 | 平台 / 开发者 | 配置后启用知识库检索。 |
-| `KSADK_KB_ACCESS_KEY` | 条件必传 | `KSYUN_ACCESS_KEY` | 是 | 平台 Secret | SDK 知识库 backend AK。 |
-| `KSADK_KB_SECRET_KEY` | 条件必传 | `KSYUN_SECRET_KEY` | 是 | 平台 Secret | SDK 知识库 backend SK。 |
+| `KSADK_KB_ACCESS_KEY` | 条件必传 | `KSYUN_ACCESS_KEY`、`KSYUN_ACCESS_KEY_ID` | 是 | 平台 Secret | SDK 知识库 backend AK。 |
+| `KSADK_KB_SECRET_KEY` | 条件必传 | `KSYUN_SECRET_KEY`、`KSYUN_SECRET_ACCESS_KEY` | 是 | 平台 Secret | SDK 知识库 backend SK。 |
+| `KSADK_KB_SESSION_TOKEN` | 否 | `KSYUN_SESSION_TOKEN` | 是 | 平台 Secret | SDK 知识库 backend 的 STS 临时会话 token。 |
 | `KSADK_KB_ENDPOINT` | 否 | 无 | 否 | 平台 / 开发者 | 默认 `aicp.api.ksyun.com`。 |
 | `KSADK_KB_REGION` | 否 | 无 | 否 | 平台 / 开发者 | 默认 `cn-beijing-6`。 |
 | `KSADK_KB_SCHEME` | 否 | 无 | 否 | 平台 / 开发者 | KB endpoint 协议。内网 endpoint 默认 `http`，其他默认 `https`。 |
@@ -110,8 +111,9 @@
 | `KSADK_LTM_BACKEND` | 否 | 无 | 否 | 开发者 | 长期记忆 backend，默认 `local`，可选 `http/sdk`。 |
 | `KSADK_LTM_HTTP_URL` | 条件必传 | 无 | 是 | 平台 Secret | `KSADK_LTM_BACKEND=http` 时需要。 |
 | `KSADK_LTM_HTTP_TOKEN` | 条件必传 | 无 | 是 | 平台 Secret | HTTP LTM 鉴权 token。 |
-| `KSADK_LTM_ACCESS_KEY` | 条件必传 | `KSYUN_ACCESS_KEY` | 是 | 平台 Secret | SDK LTM AK。 |
-| `KSADK_LTM_SECRET_KEY` | 条件必传 | `KSYUN_SECRET_KEY` | 是 | 平台 Secret | SDK LTM SK。 |
+| `KSADK_LTM_ACCESS_KEY` | 条件必传 | `KSYUN_ACCESS_KEY`、`KSYUN_ACCESS_KEY_ID` | 是 | 平台 Secret | SDK LTM AK。 |
+| `KSADK_LTM_SECRET_KEY` | 条件必传 | `KSYUN_SECRET_KEY`、`KSYUN_SECRET_ACCESS_KEY` | 是 | 平台 Secret | SDK LTM SK。 |
+| `KSADK_LTM_SESSION_TOKEN` | 否 | `KSYUN_SESSION_TOKEN` | 是 | 平台 Secret | SDK LTM backend 的 STS 临时会话 token。 |
 | `KSADK_LTM_AMBIENT_POLICY` | 否 | 无 | 否 | 平台 / 开发者 | runtime 自动注入长期记忆上下文策略：`on_demand/always/disabled`。 |
 | `KSADK_MEMORY_BACKEND` | 否 | 无 | 否 | 开发者 | 轻量 KV/消息历史 MemoryManager backend，默认 `memory`。 |
 | `KSADK_MEMORY_URL` | 条件必传 | 无 | 是 | 开发者 / Secret | `KSADK_MEMORY_BACKEND=redis` 等远端 backend 连接 URL。 |
@@ -286,8 +288,9 @@
 | `KSADK_LTM_BACKEND` | Long-term memory | 否 | `local` | 无 | 否 | 开发者 / 平台 | 否 | LTM backend。 |
 | `KSADK_LTM_HTTP_URL` | HTTP LTM | 条件必传 | 未设置 | 无 | 是 | Secret | 否 | HTTP LTM URL。 |
 | `KSADK_LTM_HTTP_TOKEN` | HTTP LTM | 条件必传 | 未设置 | 无 | 是 | Secret | 否 | HTTP LTM token。 |
-| `KSADK_LTM_ACCESS_KEY` | SDK LTM | 条件必传 | 未设置 | `KSYUN_ACCESS_KEY` | 是 | Secret | 否 | SDK LTM AK。 |
-| `KSADK_LTM_SECRET_KEY` | SDK LTM | 条件必传 | 未设置 | `KSYUN_SECRET_KEY` | 是 | Secret | 否 | SDK LTM SK。 |
+| `KSADK_LTM_ACCESS_KEY` | SDK LTM | 条件必传 | 未设置 | `KSYUN_ACCESS_KEY`、`KSYUN_ACCESS_KEY_ID` | 是 | Secret | 否 | SDK LTM AK。 |
+| `KSADK_LTM_SECRET_KEY` | SDK LTM | 条件必传 | 未设置 | `KSYUN_SECRET_KEY`、`KSYUN_SECRET_ACCESS_KEY` | 是 | Secret | 否 | SDK LTM SK。 |
+| `KSADK_LTM_SESSION_TOKEN` | SDK LTM | 否 | 未设置 | `KSYUN_SESSION_TOKEN` | 是 | Secret | 否 | SDK LTM STS 临时会话 token。 |
 | `KSADK_LTM_REGION` | SDK LTM | 否 | `cn-beijing-6` | 无 | 否 | 平台 / 开发者 | 否 | SDK LTM region。 |
 | `KSADK_LTM_ENDPOINT` | SDK LTM | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | SDK LTM endpoint。 |
 | `KSADK_LTM_SCHEME` | SDK LTM | 否 | `https` | 无 | 否 | 平台 / 开发者 | 否 | SDK LTM scheme。 |
@@ -311,8 +314,9 @@
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `KSADK_KB` | Knowledge base | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | AICP knowledge-base 连接配置前缀。 |
 | `KSADK_KB_DATASET_ID` | Knowledge base | 条件必传 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 存在时启用知识库。 |
-| `KSADK_KB_ACCESS_KEY` | Knowledge base | 条件必传 | 未设置 | `KSYUN_ACCESS_KEY` | 是 | Secret | 否 | KB AK。 |
-| `KSADK_KB_SECRET_KEY` | Knowledge base | 条件必传 | 未设置 | `KSYUN_SECRET_KEY` | 是 | Secret | 否 | KB SK。 |
+| `KSADK_KB_ACCESS_KEY` | Knowledge base | 条件必传 | 未设置 | `KSYUN_ACCESS_KEY`、`KSYUN_ACCESS_KEY_ID` | 是 | Secret | 否 | KB AK。 |
+| `KSADK_KB_SECRET_KEY` | Knowledge base | 条件必传 | 未设置 | `KSYUN_SECRET_KEY`、`KSYUN_SECRET_ACCESS_KEY` | 是 | Secret | 否 | KB SK。 |
+| `KSADK_KB_SESSION_TOKEN` | Knowledge base | 否 | 未设置 | `KSYUN_SESSION_TOKEN` | 是 | Secret | 否 | KB STS 临时会话 token。 |
 | `KSADK_KB_ENDPOINT` | Knowledge base | 否 | `aicp.api.ksyun.com` | 无 | 否 | 平台 / 开发者 | 否 | KB endpoint。 |
 | `KSADK_KB_REGION` | Knowledge base | 否 | `cn-beijing-6` | 无 | 否 | 平台 / 开发者 | 否 | KB region。 |
 | `KSADK_KB_SCHEME` | Knowledge base | 否 | 内网 endpoint 默认 `http`，其他默认 `https` | 无 | 否 | 平台 / 开发者 | 否 | KB endpoint scheme。 |
