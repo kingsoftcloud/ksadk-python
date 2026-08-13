@@ -28,6 +28,8 @@ def test_workspace_resolve_preserves_containment_for_absolute_and_symlink_paths(
     inside.mkdir()
     outside = tmp_path / "outside"
     outside.mkdir()
+    same_prefix_outside = tmp_path / "workspace-other"
+    same_prefix_outside.mkdir()
     (root / "outside-link").symlink_to(outside, target_is_directory=True)
     workspace = Workspace(root)
 
@@ -36,6 +38,8 @@ def test_workspace_resolve_preserves_containment_for_absolute_and_symlink_paths(
         workspace.resolve("missing", must_exist=True)
     with pytest.raises(StudioError, match="路径不在当前工作区内"):
         workspace.resolve("outside-link/private.txt")
+    with pytest.raises(StudioError, match="路径不在当前工作区内"):
+        workspace.resolve(same_prefix_outside / "private.txt")
 
 
 def test_responses_unsupported_tools_error_does_not_echo_request_payload() -> None:
