@@ -183,6 +183,7 @@ async def invoke_conversation_once(
         user_id=user_id,
         user_input=prepared.user_input,
     )
+    prepared.memory_recall_events = ambient_contexts.get("memory_recall_events", [])
     runtime_context = PlatformInvocationContext(
         agent_id=agent_id,
         user_id=user_id,
@@ -203,9 +204,7 @@ async def invoke_conversation_once(
         model_options=prepared.model_options,
         kb_context=ambient_contexts.get("kb_context"),
         memory_context=ambient_contexts.get("memory_context"),
-        tool_approval_mode=str(
-            prepared.request_metadata.get("tool_approval_mode") or ""
-        ),
+        tool_approval_mode=str(prepared.request_metadata.get("tool_approval_mode") or ""),
     )
     runner_name = _runner_name(runner)
     async with _conversation_span_scope(runner_name) as span:
@@ -286,8 +285,14 @@ async def invoke_conversation_once(
                             session_service_provider=provider,
                             # PR D1：PTL 路径仍 force=True（trigger_band=emergency），
                             # 透传 ownership 便于未来按门控调 PTL 策略；当前行为等价。
-                            prompt_integration_mode=getattr(prepared, "prompt_integration_mode", ""),
-                            compaction_owner=str((getattr(prepared, "shadow_context_plan", None) or {}).get("compaction_owner", "")),
+                            prompt_integration_mode=getattr(
+                                prepared, "prompt_integration_mode", ""
+                            ),
+                            compaction_owner=str(
+                                (getattr(prepared, "shadow_context_plan", None) or {}).get(
+                                    "compaction_owner", ""
+                                )
+                            ),
                         )
                     except RuntimeCircuitOpen as circuit_exc:
                         await append_run_status_event(

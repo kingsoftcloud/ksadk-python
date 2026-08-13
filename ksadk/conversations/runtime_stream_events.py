@@ -4,6 +4,7 @@ import asyncio
 import time
 from typing import Any, AsyncIterator, Callable, Dict, Mapping, Optional, Sequence
 
+from ksadk.conversations.context import budget_tool_result_for_event
 from ksadk.conversations.run_kinds import (
     RUN_MODE_FOREGROUND,
     trigger_from_resume_input,
@@ -24,7 +25,6 @@ from ksadk.conversations.runtime_governance import (
     _runtime_governance_from_env,
     _tool_observability_metadata,
 )
-from ksadk.conversations.context import budget_tool_result_for_event
 from ksadk.conversations.runtime_input import (
     _auto_save_ltm_turn,
     _build_runner_ambient_contexts,
@@ -223,6 +223,7 @@ async def _iter_conversation_turn_events(
         user_id=user_id,
         user_input=prepared.user_input,
     )
+    prepared.memory_recall_events = ambient_contexts.get("memory_recall_events", [])
     runtime_context = PlatformInvocationContext(
         agent_id=agent_id,
         user_id=user_id,
@@ -243,9 +244,7 @@ async def _iter_conversation_turn_events(
         model_options=prepared.model_options,
         kb_context=ambient_contexts.get("kb_context"),
         memory_context=ambient_contexts.get("memory_context"),
-        tool_approval_mode=str(
-            prepared.request_metadata.get("tool_approval_mode") or ""
-        ),
+        tool_approval_mode=str(prepared.request_metadata.get("tool_approval_mode") or ""),
     )
     if prepared.compaction_triggered:
         yield {
@@ -606,7 +605,7 @@ async def _iter_conversation_turn_events(
                                     chunk.get("call_id") or chunk.get("run_id") or tool_run_id
                                 ).strip()
                                 # PR C：tool_result 单项预算（仅 ksadk_hosted 门控）。
-                                # bound 进 content.parts[0].text（下一轮 history → 模型输入的那条），
+                                # bound 进 content.parts[0].text（下一轮 history → 模型输入的那条），  # noqa: E501
                                 # metadata.tool_output 保留原值（UI/Responses 读取方不受影响）。
                                 # enabled=False → (str(output), {}) 与旧逻辑字节级一致。
                                 _tool_output_raw = chunk.get("tool_output", "")
@@ -799,8 +798,14 @@ async def _iter_conversation_turn_events(
                             keep_tail_groups=PTL_RETRY_KEEP_TAIL_GROUPS,
                             session_service_provider=provider,
                             # PR D1：PTL 路径仍 force=True；透传 ownership 便于未来按门控调策略。
-                            prompt_integration_mode=getattr(prepared, "prompt_integration_mode", ""),
-                            compaction_owner=str((getattr(prepared, "shadow_context_plan", None) or {}).get("compaction_owner", "")),
+                            prompt_integration_mode=getattr(
+                                prepared, "prompt_integration_mode", ""
+                            ),
+                            compaction_owner=str(
+                                (getattr(prepared, "shadow_context_plan", None) or {}).get(
+                                    "compaction_owner", ""
+                                )
+                            ),
                         )
                     except RuntimeCircuitOpen as circuit_exc:
                         await append_run_status_event(

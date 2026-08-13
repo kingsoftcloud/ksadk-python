@@ -92,11 +92,9 @@ async def prepare_runtime_start(request: StartRequest, runner: Any) -> PreparedR
             # PR B：per-Build 接管标记（Studio resolver 据 prompt_ownership 注入）。
             # 非空（ksadk_hosted）→ ksadk 编译并接管 instructions（仅 ksadk-owned LangGraph）。
             prompt_integration_mode=str(request.config.get("prompt_integration_mode") or ""),
-            context_engine_rollout=str(request.config.get("context_engine_rollout") or "")
-            or None,
+            context_engine_rollout=str(request.config.get("context_engine_rollout") or "") or None,
             memory_recall_enabled=request.config.get("memory_recall_enabled"),
-            memory_write_rollout=str(request.config.get("memory_write_rollout") or "")
-            or None,
+            memory_write_rollout=str(request.config.get("memory_write_rollout") or "") or None,
         )
     _inject_runner_deferred_tools_for_request(runner, prepared)
     ambient_contexts = _build_runner_ambient_contexts(
@@ -104,6 +102,7 @@ async def prepare_runtime_start(request: StartRequest, runner: Any) -> PreparedR
         user_id=request.user_id,
         user_input=prepared.user_input,
     )
+    prepared.memory_recall_events = ambient_contexts.get("memory_recall_events", [])
     runtime_context = PlatformInvocationContext(
         agent_id=str(request.agent_id or "agent"),
         user_id=request.user_id,
@@ -124,9 +123,7 @@ async def prepare_runtime_start(request: StartRequest, runner: Any) -> PreparedR
         model_options=prepared.model_options,
         kb_context=ambient_contexts.get("kb_context"),
         memory_context=ambient_contexts.get("memory_context"),
-        tool_approval_mode=str(
-            prepared.request_metadata.get("tool_approval_mode") or ""
-        ),
+        tool_approval_mode=str(prepared.request_metadata.get("tool_approval_mode") or ""),
     )
     canonical_payload = _build_runner_request_payload(
         prepared=prepared,

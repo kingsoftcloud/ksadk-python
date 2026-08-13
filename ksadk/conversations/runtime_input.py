@@ -455,16 +455,16 @@ def _build_runner_ambient_contexts(
             )
             if not _ambient_context_has_error(memory_context):
                 contexts["memory_context"] = memory_context
-                contexts.setdefault("_memory_recall_events", []).append(
+                contexts.setdefault("memory_recall_events", []).append(
                     {"type": "memory.recall.completed", "count": 1}
                 )
             else:
-                contexts.setdefault("_memory_recall_events", []).append(
+                contexts.setdefault("memory_recall_events", []).append(
                     {"type": "memory.recall.empty"}
                 )
         except Exception as exc:
             logger.warning("Failed to build ambient memory context: %s", exc)
-            contexts.setdefault("_memory_recall_events", []).append(
+            contexts.setdefault("memory_recall_events", []).append(
                 {"type": "memory.recall.failed", "error": str(exc)[:200]}
             )
 
