@@ -345,6 +345,15 @@
 | `KSADK_A2A_RUNTIME_ID` | A2A Runtime | 条件必传 | 未设置 | 无 | 否 | 部署层 / 平台 | 否 | 托管 Agent runtime 资源 id（`ar-*`，即 `agents.id`）。v1 discovery-only card 只要此值非空即挂载，部署期注入、注册前可用。 |
 | `KSADK_A2A_TENANT_ID` | A2A Runtime | 否 | fallback `KSADK_A2A_ACCOUNT_ID` | 无 | 否 | 部署层 / 平台 | 否 | Runtime 租户 id；未注入时回退到 account id。 |
 | `KSADK_A2A_TOKEN_DIR` | A2A Runtime | 否 | `/var/run/secrets/agentengine/a2a` | 无 | 否 | 部署层 / token sidecar | 否 | audience JWT 目录，包含 `a2a-registry.jwt`、`a2a-task-sink.jwt`、`credential-broker.jwt`、`a2a-gateway.jwt`；文件必须为 regular、非 symlink、`0400`、最大 16 KiB。 |
+| `KSADK_A2A_ACCESS_KEY` | A2A Runtime / KOP | 条件必传 | 未设置 | 无 | 是 | 部署层 / 平台 | 否 | A2A KOP 签名 access key；未设置时回退 `KSYUN_ACCESS_KEY`。 |
+| `KSADK_A2A_SECRET_KEY` | A2A Runtime / KOP | 条件必传 | 未设置 | 无 | 是 | 部署层 / 平台 | 否 | A2A KOP 签名 secret key；未设置时回退 `KSYUN_SECRET_KEY`。 |
+| `KSADK_A2A_SERVICE` | A2A Runtime / KOP | 否 | `aicp` | 无 | 否 | 部署层 / 平台 | 否 | A2A KOP 签名 service 名称。 |
+| `KSADK_A2A_SERVICE_URL` | A2A Runtime / KOP | 否 | 自动探测（inner 优先，回落 public） | 无 | 否 | 部署层 / 平台 | 否 | A2A 控制面 service URL（KOP 公网 API）；未设置时按 AICP 探测默认值。 |
+| `KSADK_A2A_SERVICE_TOKEN` | A2A Runtime / KOP | 否 | 未设置 | 无 | 是 | 部署层 / 平台 | 否 | A2A 控制面 Bearer token；平台注入或留空走 AK/SK 签名。 |
+| `KSADK_A2A_SERVICE_ENDPOINT` | A2A Runtime / KOP | 否 | 未设置 | 无 | 否 | 部署层 / 平台 | 否 | A2A service endpoint hostname，配合 `KSADK_A2A_SERVICE_SCHEME` 构造 base URL。 |
+| `KSADK_A2A_SERVICE_SCHEME` | A2A Runtime / KOP | 否 | `https` | 无 | 否 | 部署层 / 平台 | 否 | A2A service URL scheme（`http`/`https`）。 |
+| `KSADK_A2A_SERVICE_REGION` | A2A Runtime / KOP | 否 | 回退 `KSYUN_REGION` → `cn-beijing-6` | 无 | 否 | 部署层 / 平台 | 否 | A2A KOP 签名 region。 |
+| `KSADK_EVAL_JUDGE_API_KEY` | 评测 / LLM Judge | 条件必传 | 未设置 | 无 | 是 | 开发者 / 平台 | 否 | LLM Judge 评测后端的 API key。 |
 | `KSADK_A2UI_GENERATION_TIMEOUT_SECONDS` | A2UI / AG-UI Runtime | 否 | `20` | 无 | 否 | 平台 / 开发者 | 否 | A2UI 结构化生成的超时秒数；有效值会被限制在 `1` 到 `120`。 |
 | `KSADK_AICP_ENDPOINT_MODE` | AICP resolver | 否 | `auto` | 无 | 否 | 平台 / 开发者 | 否 | AICP endpoint 选择策略，支持 `auto/detect/internal/inner/public`。内网环境可显式设为 `inner`，跳过自动探测。 |
 | `AGENTENGINE_MODEL_ALLOWLIST` | CLI model / OpenClaw | 否 | 未设置 | `OPENCLAW_MODEL_ALLOWLIST` | 否 | 平台 / 开发者 | 否 | 模型列表过滤。OpenClaw 场景优先使用 `OPENCLAW_MODEL_ALLOWLIST`。 |
