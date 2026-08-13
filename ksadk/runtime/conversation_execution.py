@@ -267,12 +267,15 @@ async def _finalize_hosted_turn(
 
                 recall_event = RuntimeEvent.create(
                     EventType.RUN_PROGRESS,
-                    agent_id="",
-                    user_id="",
+                    agent_id=str(getattr(prepared, "agent_id", "") or ""),
+                    user_id=str(getattr(prepared, "user_id", "") or ""),
                     session_id=getattr(prepared, "session_id", ""),
                     invocation_id=getattr(prepared, "invocation_id", ""),
                     seq_id=0,
-                    payload={"memory_event": evt},
+                    payload={
+                        "status": "memory_recall",
+                        "memory_event": evt,
+                    },
                 )
                 await store.append_one(recall_event)
             except Exception:  # noqa: BLE001
