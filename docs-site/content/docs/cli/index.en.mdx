@@ -157,6 +157,9 @@ by Git. Frontend sources and tests live in `ksadk/studio/react-ui`; run
 `make studio-react-test` after changing them, then use `make build-wheel` or
 `make public-build-check` to regenerate and package the assets.
 
+For the full workflow from starting a workspace through creating, building, and
+testing an Agent, see [AgentKit Local Studio (New in 0.8.1)](/en/docs/framework/guides/agentkit-local-studio).
+
 ### `ksadk replay` / `agentengine replay`
 
 Project a session's persisted RuntimeEvent log into a readable transcript or JSON. Use it to investigate disconnected streams, restored approval state, A2UI activities, and event ordering across runners. It **never** calls a model, tool, or approval action again.
