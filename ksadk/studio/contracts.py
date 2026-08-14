@@ -448,9 +448,23 @@ class AgentTemplateRecommendation(ContractModel):
     resource_id: str | None = None
 
 
+class AgentBehaviorDesign(ContractModel):
+    """Human-readable explanation of the generated Agent behavior contract."""
+
+    role: str
+    objective: str
+    operating_principles: list[str] = Field(default_factory=list)
+    workflow: list[str] = Field(default_factory=list)
+    explicit_boundaries: list[str] = Field(default_factory=list)
+    safety_boundaries: list[str] = Field(default_factory=list)
+    output_expectations: list[str] = Field(default_factory=list)
+    source_notes: list[str] = Field(default_factory=list)
+
+
 class AgentTemplateComposition(ContractModel):
     template_id: Literal["blank", "research"]
     spec: AgentSpec
+    behavior_design: AgentBehaviorDesign | None = None
     recommendations: list[AgentTemplateRecommendation] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
 

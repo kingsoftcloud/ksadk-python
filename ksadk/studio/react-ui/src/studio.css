@@ -6778,6 +6778,128 @@ body.create-mode .global-context {
 .pcm-policy-card > summary small { margin-top: 3px; color: var(--text-tertiary); }
 .pcm-policy-body { padding: 0 14px 14px; }
 
+.generated-prompt-card {
+  margin-top: 0;
+  background: var(--surface);
+}
+
+.generated-prompt-card > summary {
+  justify-content: space-between;
+  gap: 18px;
+  min-height: 72px;
+}
+
+.generated-prompt-card > summary span {
+  min-width: 0;
+}
+
+.generated-prompt-card > summary small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.generated-prompt-card > summary em {
+  flex: 0 0 auto;
+  color: var(--primary);
+  font-size: var(--font-size-meta);
+  font-style: normal;
+}
+
+.generated-prompt-card > summary em::after { content: "展开编辑"; }
+.generated-prompt-card[open] > summary em::after { content: "收起编辑"; }
+
+.generated-prompt-body {
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+
+.behavior-design-review {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--border-card);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.behavior-design-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.behavior-design-heading strong,
+.behavior-design-heading p {
+  display: block;
+  margin: 0;
+}
+
+.behavior-design-heading p {
+  margin-top: 4px;
+  color: var(--text-tertiary);
+  font-size: var(--font-size-meta);
+}
+
+.behavior-summary-main {
+  padding: 14px;
+  border-radius: 10px;
+  background: var(--primary-soft);
+}
+
+.behavior-summary-main > span {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--text-tertiary);
+  font-size: var(--font-size-caption);
+  font-weight: 600;
+}
+
+.behavior-summary-main strong {
+  display: block;
+  margin: 0;
+  color: var(--text-primary);
+  line-height: 1.55;
+}
+
+.behavior-boundary-summary {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-subtle);
+}
+
+.behavior-boundary-summary > svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  color: var(--success);
+}
+
+.behavior-boundary-summary strong,
+.behavior-boundary-summary p {
+  display: block;
+  margin: 0;
+}
+
+.behavior-boundary-summary p,
+.behavior-boundary-summary ul {
+  margin-top: 4px;
+  color: var(--text-secondary);
+  font-size: var(--font-size-meta);
+  line-height: 1.5;
+}
+
+.behavior-boundary-summary ul {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 0;
+  padding-left: 18px;
+}
+
 .pcm-memory-toggle {
   display: flex;
   align-items: flex-start;

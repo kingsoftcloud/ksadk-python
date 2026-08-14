@@ -167,10 +167,21 @@ def test_pcm_react_workspace_contains_policy_and_evidence_surfaces():
     assert "contextOwnership" in create_page
     assert "contextEngineRollout" in create_page
     assert "memoryWriteRollout" in create_page
-    assert "Context Engine" in create_page
+    assert 'goal: prompt' in create_page
+    assert "modelProfileIds: selectedModels" in create_page
+    assert "if (!res.ok)" in create_page
+    assert 'composition.spec?.instructions?.system || prompt.trim()' in create_page
+    assert "Agent 目标与要求" in create_page
+    assert "Agent 行为摘要" in create_page
+    assert "查看完整行为设计" not in create_page
+    assert "完整 Prompt 与任务契约" in create_page
+    assert "第 {step} 步，共 3 步" in create_page
+    assert '["Prompt 与策略", "检查并调整"]' not in create_page
+    assert "上下文优化" in create_page
+    assert "运行解释" in run_panel
     assert "/context`" in run_panel
     assert "/prompt`" in run_panel
-    assert "查看技术详情" in run_panel
+    assert "开发与排障信息" in run_panel
     assert "模型实际输入" in run_panel
 
 

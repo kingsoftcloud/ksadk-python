@@ -25,9 +25,9 @@ from ksadk.studio.api_contracts import (
     ConversationAuthoringRequest,
     CreateAgentRequest,
     EvaluationRequest,
+    ImportRootRequest,
     InteractionSubmitRequest,
     ProjectInspectRequest,
-    ImportRootRequest,
     PromptCompileRequest,
     QuickAuthoringRequest,
     RollbackRequest,
@@ -919,13 +919,14 @@ def create_studio_app(
 
     @app.get("/api/v1/runs/{run_id}/context")
     async def get_run_context(run_id: str):
-        """PR-S4：Runtime Context Evidence（方案 §6.3）。planned/projected/actual + 精度 + ownership。"""
+        """Runtime Context Evidence：planned/projected/actual + 精度 + ownership。"""
         record = studio.event_store.get(run_id)
         plan = record.context_plan or {}
         evidence = record.prompt_evidence or {}
         return {
             "planId": plan.get("plan_id"),
-            "accuracy": evidence.get("accountingAccuracy") or plan.get("accounting_accuracy", "opaque"),
+            "accuracy": evidence.get("accountingAccuracy")
+            or plan.get("accounting_accuracy", "opaque"),
             "policyVersion": plan.get("policy_version"),
             "tokensByKind": plan.get("tokens_by_kind", {}),
             "plannedInputTokens": plan.get("planned_input_tokens"),
@@ -945,11 +946,11 @@ def create_studio_app(
         }
 
     @app.get("/api/v1/runs/{run_id}/prompt")
-    async def get_run_prompt(run_id: str):
+    async def get_run_prompt(run_id: str, include_content: bool = Query(default=False)):
         """PR-S4：Prompt evidence（方案 §6.3 / §7.3）。section hash/版本，默认不返回正文。"""
         record = studio.event_store.get(run_id)
         evidence = record.prompt_evidence or {}
-        return {
+        result = {
             "contentHash": evidence.get("contentHash"),
             "stablePrefixHash": evidence.get("stablePrefixHash"),
             "sectionHashes": evidence.get("sectionHashes", {}),
@@ -959,6 +960,9 @@ def create_studio_app(
             "runtimeType": evidence.get("runtimeType"),
             "integrationMode": evidence.get("integrationMode"),
         }
+        if include_content:
+            result["reveal"] = studio.reveal_run_prompt(run_id)
+        return result
 
     @app.get("/api/v1/runs/{run_id}/working-state")
     async def get_run_working_state(run_id: str):

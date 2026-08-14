@@ -29,7 +29,7 @@ def _wait(client: TestClient, operation_id: str) -> dict:
 
 
 def _setup(tmp_path: Path):
-    """精确镜像 passing test（test_codex_studio_creates_lists_and_builds_multiple_yaml_agents）结构。"""
+    """镜像 multiple YAML agents passing test 的结构。"""
     service = StudioService(
         tmp_path,
         codex_runtime_inspector=_inspector,
@@ -82,7 +82,7 @@ def test_run_captures_pcm_evidence_into_record(tmp_path):
     run_done = _wait(c, run_op.json()["id"])
     run_id = run_done["resourceId"]
     record = c.get(f"/api/v1/runs/{run_id}").json()
-    # shadow evidence 被捕获（codex 是 native，compiled_prompt 可能为空，但 prompt_evidence 至少有 ownership）
+    # shadow evidence 被捕获；Codex native 的 compiled_prompt 可空，但至少有 ownership。
     assert (
         record["status"] == "COMPLETED"
     )  # run 成功（evidence 可能为空，codex native 无 compiled_prompt）
@@ -124,6 +124,33 @@ def test_run_prompt_endpoint_returns_hashes(tmp_path):
     prompt = c.get(f"/api/v1/runs/{run_id}/prompt").json()
     assert "contentHash" in prompt
     assert prompt["runtimeType"] == "codex"
+
+
+def test_run_prompt_content_is_only_rebuilt_on_explicit_request(tmp_path):
+    c, build_id = _setup(tmp_path)
+    run_op = c.post(
+        f"/api/v1/codex/builds/{build_id}/runs",
+        headers={"Idempotency-Key": "evidence-run-prompt-reveal"},
+        json={
+            "sessionId": "ses-ev-prompt-reveal",
+            "input": {"role": "user", "content": "审查"},
+            "environment": "local",
+            "stream": True,
+        },
+    )
+    run_id = _wait(c, run_op.json()["id"])["resourceId"]
+
+    default_evidence = c.get(f"/api/v1/runs/{run_id}/prompt").json()
+    assert "reveal" not in default_evidence
+    assert "执行资料研究。" not in str(default_evidence)
+
+    revealed = c.get(
+        f"/api/v1/runs/{run_id}/prompt", params={"include_content": "true"}
+    ).json()["reveal"]
+    assert revealed["available"] is True
+    assert revealed["sections"]
+    assert any(section["content"] == "执行资料研究。" for section in revealed["sections"])
+    assert [section["id"] for section in revealed["sections"]] == ["agent_identity"]
 
 
 def test_run_working_state_endpoint(tmp_path):

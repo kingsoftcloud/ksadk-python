@@ -663,7 +663,9 @@ class StudioRunService:
                     user_input,
                 ),
                 model=spec.model,
-                instructions=str(cfg.get("instructions") or cfg.get("base_instructions") or ""),
+                # ``instructions`` 是 request-level 来源；Runner 的 base_instructions
+                # 已分别通过 agent_system/agent_task 进入 Prompt Compiler，不能重复归类。
+                instructions=str(cfg.get("instructions") or ""),
                 agent_system=str(cfg.get("agent_system") or ""),
                 agent_task=str(cfg.get("agent_task") or ""),
                 prompt_integration_mode=str(cfg.get("prompt_integration_mode") or ""),

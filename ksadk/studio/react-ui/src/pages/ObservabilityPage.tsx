@@ -51,6 +51,24 @@ interface TraceOverview {
   totalTokens: number;
   buckets: Array<{ startedAt: string; runs: number; completed: number }>;
 }
+interface PcmTraceEvidence {
+  context: {
+    accuracy?: string;
+    plannedInputTokens?: number | null;
+    projectedInputTokens?: number | null;
+    runtimeReportedInputTokens?: number | null;
+    tokensByKind?: Record<string, number>;
+    decisions?: Array<{ decision?: string; kind?: string; reason?: string }>;
+    ownership?: { promptOwner?: string; historyOwner?: string; integrationMode?: string; runtimeType?: string };
+  } | null;
+  prompt: {
+    sectionCount?: number | null;
+    tokensBySection?: Record<string, number>;
+    contentHash?: string;
+    integrationMode?: string;
+  } | null;
+  memoryEvents: Array<{ type?: string }>;
+}
 
 /* ================= Trace 数据格式化 ================= */
 
@@ -72,6 +90,34 @@ function formatDuration(value: any): string {
 function formatTokenCount(value: any): string {
   if (value === null || value === undefined) return "未上报";
   return new Intl.NumberFormat("zh-CN").format(Number(value));
+}
+function pcmKindLabel(value: string): string {
+  const labels: Record<string, string> = {
+    platform_safety: "平台安全规则", agent_identity: "角色定义", agent_policy: "任务规则",
+    request_instructions: "本次请求指令", compiled_prompt: "规则", current_input: "当前问题",
+    recalled_memory: "召回记忆", history: "对话历史", history_round: "对话历史",
+    tool_result: "工具结果", working_state: "当前工作状态", context: "上下文材料",
+  };
+  return labels[value] || value;
+}
+function pcmDecisionLabel(value?: string): string {
+  return ({ selected: "已保留", compressed: "已压缩", replaced: "已替换", dropped: "已舍弃" } as Record<string, string>)[value || ""] || value || "已保留";
+}
+function pcmAccuracyLabel(value?: string): string {
+  return ({ exact: "精确", runtime_reported: "Runtime 上报", estimated: "平台估算", opaque: "Runtime 未公开" } as Record<string, string>)[value || ""] || "Runtime 未公开";
+}
+function pcmOwnershipLabel(value?: string): string {
+  return ({ ksadk_hosted: "KsADK 托管", framework_assisted: "框架协作", native_runtime: "原生 Runtime", ksadk: "KsADK", framework: "框架", native: "原生 Runtime" } as Record<string, string>)[value || ""] || value || "Runtime 默认";
+}
+function groupPcmDecisions(decisions: Array<{ decision?: string; kind?: string; reason?: string }>): Array<{ decision?: string; kind?: string; count: number }> {
+  const grouped = new Map<string, { decision?: string; kind?: string; count: number }>();
+  for (const item of decisions) {
+    const key = `${item.kind || "context"}|${item.decision || "selected"}`;
+    const existing = grouped.get(key);
+    if (existing) existing.count += 1;
+    else grouped.set(key, { decision: item.decision, kind: item.kind, count: 1 });
+  }
+  return [...grouped.values()];
 }
 function formatNanoseconds(value: any): string {
   try {
@@ -286,9 +332,10 @@ function KvList({ values }: { values: Record<string, any> }) {
 
 /* ================= 主页面 ================= */
 
-type DetailTab = "summary" | "attributes" | "events" | "resource" | "raw";
+type DetailTab = "summary" | "pcm" | "attributes" | "events" | "resource" | "raw";
 const DETAIL_TABS: Array<{ id: DetailTab; label: string }> = [
   { id: "summary", label: "概览" },
+  { id: "pcm", label: "运行解释" },
   { id: "attributes", label: "Attributes" },
   { id: "events", label: "Events" },
   { id: "resource", label: "Resource" },
@@ -306,6 +353,7 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
   const [range, setRange] = useState<"24h" | "7d">("24h");
   const [overview, setOverview] = useState<TraceOverview | null>(null);
   const [activeTrace, setActiveTrace] = useState<TraceDetail | null>(null);
+  const [pcmEvidence, setPcmEvidence] = useState<PcmTraceEvidence | null>(null);
   const [activeSpanId, setActiveSpanId] = useState<string | null>(null);
   const [tab, setTab] = useState<DetailTab>("summary");
   const [rawOtlp, setRawOtlp] = useState<any>(null);
@@ -340,6 +388,18 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
       setRawExpanded(true);
       setExpanded(false);
       setDetailCollapsed(false);
+      setPcmEvidence(null);
+      if (trace.runId) {
+        const [contextResponse, promptResponse, memoryResponse] = await Promise.all([
+          apiFetch(`/api/v1/runs/${encodeURIComponent(trace.runId)}/context`).then(response => response.ok ? response.json() : null).catch(() => null),
+          apiFetch(`/api/v1/runs/${encodeURIComponent(trace.runId)}/prompt`).then(response => response.ok ? response.json() : null).catch(() => null),
+          apiFetch(`/api/v1/runs/${encodeURIComponent(trace.runId)}/memory-events`).then(response => response.ok ? response.json() : null).catch(() => null),
+        ]);
+        if (requestSeq.current !== seq) return;
+        setPcmEvidence({ context: contextResponse, prompt: promptResponse, memoryEvents: memoryResponse?.items || [] });
+      } else {
+        setPcmEvidence(null);
+      }
     } catch { /* 保持当前选择 */ }
   }, []);
 
@@ -756,7 +816,44 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
           {!detailCollapsed && <div className={`trace-detail-body${tab === "raw" ? " raw-active" : ""}`}>
             {tab !== "raw" && (
               <div>
-                {!activeSpan && <div className="trace-stage-empty compact"><p>选择一个 Span 查看标准属性。</p></div>}
+                {!activeSpan && tab !== "pcm" && <div className="trace-stage-empty compact"><p>选择一个 Span 查看标准属性。</p></div>}
+                {tab === "pcm" && (
+                  <div className="trace-pcm-evidence">
+                    {!pcmEvidence ? <div className="trace-stage-empty compact"><p>该 Run 没有可用的运行解释证据。</p></div> : (
+                      <>
+                        <section>
+                          <h3>规则与来源</h3>
+                          <p>{pcmEvidence.prompt?.sectionCount ? `${pcmEvidence.prompt.sectionCount} 个规则来源已编译并投影到 Runtime。` : "Runtime 未提供结构化规则来源。"}</p>
+                          <dl>
+                            {Object.entries(pcmEvidence.prompt?.tokensBySection || {}).map(([kind, tokens]) => (
+                              <div key={kind}><dt>{pcmKindLabel(kind)}</dt><dd>{formatTokenCount(tokens)} tokens</dd></div>
+                            ))}
+                          </dl>
+                          {pcmEvidence.prompt?.contentHash && <small>内容指纹：{shortId(pcmEvidence.prompt.contentHash, 28)}</small>}
+                        </section>
+                        <section>
+                          <h3>上下文决策</h3>
+                          <dl>
+                            <div><dt>平台计划</dt><dd>{formatTokenCount(pcmEvidence.context?.plannedInputTokens)}</dd></div>
+                            <div><dt>投影给 Runtime</dt><dd>{formatTokenCount(pcmEvidence.context?.projectedInputTokens)}</dd></div>
+                            <div><dt>Runtime 上报</dt><dd>{formatTokenCount(pcmEvidence.context?.runtimeReportedInputTokens)}</dd></div>
+                            <div><dt>证据精度</dt><dd>{pcmAccuracyLabel(pcmEvidence.context?.accuracy)}</dd></div>
+                          </dl>
+                          <small>管理方式：{pcmOwnershipLabel(pcmEvidence.context?.ownership?.integrationMode || pcmEvidence.context?.ownership?.promptOwner)}</small>
+                        </section>
+                        <section>
+                          <h3>记忆与调整</h3>
+                          <p>{pcmEvidence.memoryEvents.length ? `记录到 ${pcmEvidence.memoryEvents.length} 个 Memory 生命周期事件。` : "本次 Run 没有 Memory 生命周期事件。"}</p>
+                          <dl>
+                            {groupPcmDecisions(pcmEvidence.context?.decisions || []).slice(0, 8).map((decision, index) => (
+                              <div key={`${decision.kind || "context"}-${index}`}><dt>{pcmKindLabel(decision.kind || "context")}{decision.count > 1 ? ` · ${decision.count} 项` : ""}</dt><dd>{pcmDecisionLabel(decision.decision)}</dd></div>
+                            ))}
+                          </dl>
+                        </section>
+                      </>
+                    )}
+                  </div>
+                )}
                 {activeSpan && tab === "summary" && (
                   <>
                     <SpanContentCards span={activeSpan} />

@@ -10,6 +10,9 @@ const runtimeType = z.enum(["codex", "adk", "langgraph"]);
 const agentPrompt = z.string().trim()
   .min(4, "系统提示词至少填写 4 个字符")
   .max(32768, "系统提示词不能超过 32768 个字符");
+const agentRequirement = z.string().trim()
+  .min(4, "Agent 目标与要求至少填写 4 个字符")
+  .max(32768, "Agent 目标与要求不能超过 32768 个字符");
 const description = z.string().trim().max(1024, "描述不能超过 1024 个字符").default("");
 
 export const quickAgentSchema = z.object({
@@ -17,13 +20,13 @@ export const quickAgentSchema = z.object({
   slug: agentSlug,
   runtimeType,
   template: z.enum(["blank", "research"]).default("blank"),
-  prompt: agentPrompt,
+  prompt: agentRequirement,
   description,
   audience: z.string().trim().max(256, "目标读者不能超过 256 个字符").default(""),
   language: z.enum(["zh-CN", "en-US"]).default("zh-CN"),
   depth: z.enum(["focused", "standard", "deep"]).default("deep"),
   format: z.enum(["report", "brief", "evidence-table"]).default("report"),
-  systemPrompt: z.string().max(32768, "系统提示词不能超过 32768 个字符").default(""),
+  systemPrompt: z.string().trim().min(4, "最终系统规则至少填写 4 个字符").max(32768, "最终系统规则不能超过 32768 个字符").default(""),
   taskPrompt: z.string().max(32768, "任务契约不能超过 32768 个字符").default(""),
   buildAfterCreate: z.boolean().default(true),
 }).superRefine((value, context) => {

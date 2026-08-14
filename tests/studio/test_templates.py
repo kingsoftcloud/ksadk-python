@@ -68,6 +68,38 @@ def test_blank_template_preserves_prompt_and_explicit_capabilities(tmp_path: Pat
     assert not (tmp_path / "capabilities/skills" / RESEARCH_SKILL_NAME).exists()
 
 
+def test_blank_template_compiles_goal_into_behavior_contract(tmp_path: Path):
+    workspace = Workspace(tmp_path)
+    workspace.initialize()
+    catalog = LocalResourceCatalog(workspace)
+    _register_model(catalog)
+    model_id = next(item.resource_id for item in catalog.list(limit=200) if item.kind == "model")
+    goal = "面向企业运维人员诊断故障；信息不足时先提问，涉及生产变更必须先确认。"
+
+    composition = compose_blank_agent(
+        workspace,
+        catalog,
+        AgentTemplateComposeRequest(
+            goal=goal,
+            policy_template="strict",
+            model_profile_ids=[model_id],
+        ),
+    )
+
+    assert composition.behavior_design is not None
+    assert composition.behavior_design.objective == goal
+    assert "企业运维人员诊断故障" in composition.behavior_design.role
+    assert composition.spec.bindings.model_profile_id == model_id
+    assert any(
+        "生产变更必须先确认" in item
+        for item in composition.behavior_design.safety_boundaries
+    )
+    assert "# 核心目标" in composition.spec.instructions.system
+    assert goal in composition.spec.instructions.system
+    assert "每次收到请求时遵循以下执行契约" in composition.spec.instructions.task
+    assert composition.spec.instructions.system != goal
+
+
 def test_research_template_installs_and_binds_methodology_skill(tmp_path: Path):
     workspace = Workspace(tmp_path)
     workspace.initialize()

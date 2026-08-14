@@ -448,6 +448,50 @@ class StudioService:
             result["content"] = compiled["prompt_content"]
         return result
 
+    def reveal_run_prompt(self, run_id: str) -> dict:
+        """按需重建某次运行的 Prompt Section 正文，不把正文写入运行证据。
+
+        使用 Run 锁定的不可变 Build 解析输入，并用已持久化 content hash 校验重建结果。
+        只有二者一致时才返回正文，避免把当前 Draft 误当作历史运行实际使用的 Prompt。
+        """
+        from ksadk.prompts.resolved import (
+            ResolvedPromptSources,
+            compile_resolved_prompt_dict,
+            get_default_platform_policy_source,
+            sections_from_resolved_sources,
+        )
+
+        record = self.event_store.get(run_id)
+        resolver = self.codex_runs if record.runtime_type == "codex" else self.framework_runs
+        spec = resolver.resolve(record.build_id, model=record.model or None)
+        config = dict(spec.request_config or {})
+        sources = ResolvedPromptSources(
+            agent_system=str(config.get("agent_system") or ""),
+            agent_task=str(config.get("agent_task") or ""),
+            request_instructions=str(config.get("instructions") or ""),
+            platform_policy_source=get_default_platform_policy_source(),
+        )
+        compiled = compile_resolved_prompt_dict(sources)
+        expected_hash = str((record.prompt_evidence or {}).get("contentHash") or "")
+        actual_hash = str((compiled or {}).get("prompt_content_hash") or "")
+        if not compiled or not expected_hash or actual_hash != expected_hash:
+            return {
+                "available": False,
+                "reason": "无法证明重建内容与本次运行一致，已拒绝展示正文。",
+            }
+        return {
+            "available": True,
+            "contentHash": actual_hash,
+            "sections": [
+                {
+                    "id": section.section_id,
+                    "source": section.source,
+                    "content": section.content,
+                }
+                for section in sections_from_resolved_sources(sources)
+            ],
+        }
+
     async def preview_context(
         self,
         agent_id: str,

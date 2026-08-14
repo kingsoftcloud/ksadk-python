@@ -111,10 +111,10 @@ def test_codex_build_then_run_check_memory_evidence(studio):
             "spec": {
                 "runtime": {"type": "codex", "version": "0.144.4"},
                 "description": "x",
-                "instructions": {
-                    "system": "你是助手",
-                    "task": "",
-                },
+                    "instructions": {
+                        "system": "你是助手",
+                        "task": "根据用户输入给出简洁、可执行的答复",
+                    },
                 "bindings": {},
                 "context": {
                     "rollout": {
@@ -670,7 +670,7 @@ def test_studio_recall_with_fake_provider(studio, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_canonical_recall_events_persisted(tmp_path, monkeypatch):
+async def test_canonical_recall_projects_memory_context_to_runner(tmp_path, monkeypatch):
     """invoke_conversation_once: 预置记忆 → recall 触发 →
     memory_context 进入 Runner + 含召回正文。"""
     from types import SimpleNamespace

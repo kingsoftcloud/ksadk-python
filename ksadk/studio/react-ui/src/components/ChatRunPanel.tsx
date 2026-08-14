@@ -4,6 +4,7 @@ import {
   ArrowRight,
   BrainCircuit,
   CheckCircle2,
+  ChevronDown,
   Clock3,
   Coins,
   Cpu,
@@ -88,6 +89,12 @@ interface PromptEvidence {
   integrationMode?: string;
 }
 
+interface PromptReveal {
+  available: boolean;
+  reason?: string;
+  sections?: Array<{ id: string; source?: string; content: string }>;
+}
+
 function fmtDuration(ms?: number | null): string {
   if (!Number.isFinite(ms) || Number(ms) < 0) return "未上报";
   if (Number(ms) < 1000) return `${Math.round(Number(ms))}ms`;
@@ -96,6 +103,71 @@ function fmtDuration(ms?: number | null): string {
 
 function fmtTokens(value?: number): string {
   return Number.isFinite(value) ? Number(value).toLocaleString() : "未上报";
+}
+
+function fmtTokenAmount(value?: number | null): string {
+  return Number.isFinite(value) ? `${Number(value).toLocaleString()} tokens` : "未上报";
+}
+
+function contextKindLabel(kind: string): string {
+  const labels: Record<string, string> = {
+    compiled_prompt: "Prompt 规则",
+    recalled_memory: "召回记忆",
+    current_input: "当前问题",
+    history: "对话历史",
+    history_round: "对话历史",
+    tool_result: "工具结果",
+    tool_schema: "工具说明",
+    skill: "Skill",
+    attachment: "附件",
+    working_state: "当前工作状态",
+    context: "上下文材料",
+  };
+  return labels[kind] || kind;
+}
+
+function promptSectionLabel(section: string): string {
+  const labels: Record<string, string> = {
+    platform_safety: "平台安全规则",
+    agent_identity: "角色定义",
+    agent_policy: "任务规则",
+    runtime_capabilities: "运行时能力说明",
+    resource_manifest: "工具与 Skill 说明",
+    request_instructions: "本次请求指令",
+  };
+  return labels[section] || section;
+}
+
+function promptSectionSourceLabel(section: string): string {
+  const labels: Record<string, string> = {
+    platform_safety: "平台策略",
+    agent_identity: "Agent Revision",
+    agent_policy: "Agent Revision",
+    runtime_capabilities: "Runtime Adapter",
+    resource_manifest: "构建资源清单",
+    request_instructions: "本次请求",
+  };
+  return labels[section] || "Prompt Compiler";
+}
+
+function decisionLabel(decision?: string): string {
+  const labels: Record<string, string> = {
+    selected: "已保留",
+    compressed: "已压缩",
+    replaced: "已替换",
+    dropped: "已舍弃",
+  };
+  return labels[decision || ""] || decision || "已保留";
+}
+
+function decisionReasonLabel(reason?: string): string {
+  const labels: Record<string, string> = {
+    required: "必需内容",
+    budget: "受上下文预算限制",
+    duplicate: "重复内容",
+    low_priority: "优先级较低",
+  };
+  return labels[reason || ""] || reason || "";
 }
 
 function shortId(id: string): string {
@@ -174,6 +246,8 @@ export function ChatRunPanel({ agentId, onOpenTrace, onClose }: { agentId: strin
   const [spans, setSpans] = useState<Span[]>([]);
   const [contextEvidence, setContextEvidence] = useState<ContextEvidence | null>(null);
   const [promptEvidence, setPromptEvidence] = useState<PromptEvidence | null>(null);
+  const [promptReveal, setPromptReveal] = useState<PromptReveal | null>(null);
+  const [promptRevealLoading, setPromptRevealLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [refreshKey, setRefreshKey] = useState(0);
 
@@ -224,6 +298,25 @@ export function ChatRunPanel({ agentId, onOpenTrace, onClose }: { agentId: strin
     };
   }, [agentId, refreshKey]);
 
+  useEffect(() => {
+    setPromptReveal(null);
+    setPromptRevealLoading(false);
+  }, [latest?.id]);
+
+  async function revealPrompt(runId: string) {
+    if (promptReveal || promptRevealLoading) return;
+    setPromptRevealLoading(true);
+    try {
+      const response = await apiFetch(`/api/v1/runs/${encodeURIComponent(runId)}/prompt?include_content=true`);
+      const payload = response.ok ? await response.json() : null;
+      setPromptReveal(payload?.reveal || { available: false, reason: "Prompt 详情读取失败。" });
+    } catch {
+      setPromptReveal({ available: false, reason: "Prompt 详情读取失败。" });
+    } finally {
+      setPromptRevealLoading(false);
+    }
+  }
+
   const running = latest?.status === "RUNNING" || latest?.status === "CREATED";
   const failed = latest ? /fail|error|interrupt|timed/i.test(latest.status) : false;
   const timeline = useMemo(() => projectRunInspectorTimeline(events), [events]);
@@ -232,13 +325,33 @@ export function ChatRunPanel({ agentId, onOpenTrace, onClose }: { agentId: strin
   const contextKinds = Object.entries(contextEvidence?.tokensByKind || {})
     .filter(([, value]) => Number(value) > 0)
     .sort((left, right) => Number(right[1]) - Number(left[1]));
-  const contextStatus = contextEvidence?.decisions?.some(item => item.decision === "compressed")
-    ? "已自动压缩"
-    : contextEvidence?.decisions?.some(item => item.decision === "dropped")
-      ? "部分内容已裁剪"
+  const decisions = contextEvidence?.decisions || [];
+  const contextStatus = decisions.some(item => item.decision === "dropped")
+    ? "部分内容已舍弃"
+    : decisions.some(item => item.decision === "compressed")
+      ? "已自动压缩"
+      : decisions.some(item => item.decision === "replaced")
+        ? "部分内容已替换"
       : contextEvidence
         ? "正常"
         : "等待证据";
+  const promptSectionNames = Object.keys(promptEvidence?.tokensBySection || {}).map(promptSectionLabel);
+  const recalledMemoryTokens = contextEvidence?.tokensByKind?.recalled_memory;
+  const projectedTokens = contextEvidence?.projectedInputTokens;
+  const plannedTokens = contextEvidence?.plannedInputTokens;
+  const reportedInputTokens = usageReported ? latest.usage?.inputTokens : contextEvidence?.runtimeReportedInputTokens;
+  const contextAdjusted = Number.isFinite(plannedTokens) && Number.isFinite(projectedTokens)
+    && Number(plannedTokens) !== Number(projectedTokens);
+  const decisionGroups = useMemo(() => {
+    const grouped = new Map<string, { decision?: string; kind?: string; reason?: string; count: number }>();
+    for (const item of contextEvidence?.decisions || []) {
+      const key = `${item.kind || "context"}|${item.decision || "selected"}|${item.reason || ""}`;
+      const existing = grouped.get(key);
+      if (existing) existing.count += 1;
+      else grouped.set(key, { ...item, count: 1 });
+    }
+    return [...grouped.values()].slice(0, 8);
+  }, [contextEvidence]);
 
   return (
     <aside className="chat-run-panel" aria-label="运行检查器">
@@ -292,31 +405,71 @@ export function ChatRunPanel({ agentId, onOpenTrace, onClose }: { agentId: strin
             </section>
 
             <section className="chat-run-section pcm-run-summary">
-              <div className="chat-run-section-title"><span>上下文</span><small>{contextStatus}</small></div>
-              <div className="pcm-run-summary-grid">
-                <div><span>Prompt</span><strong>{promptEvidence?.sectionCount ? `${promptEvidence.sectionCount} 个组成部分` : "未提供"}</strong></div>
-                <div><span>计划上下文</span><strong>{fmtTokens(contextEvidence?.plannedInputTokens ?? undefined)}</strong></div>
-                <div><span>交给 Runner</span><strong>{fmtTokens(contextEvidence?.projectedInputTokens ?? undefined)}</strong></div>
-                <div><span>模型实际输入</span><strong>{usageReported ? fmtTokens(latest.usage?.inputTokens) : fmtTokens(contextEvidence?.runtimeReportedInputTokens ?? undefined)}</strong></div>
+              <div className="chat-run-section-title"><span>运行解释</span><small>{contextStatus}</small></div>
+              <div className={`pcm-run-health ${contextStatus === "正常" ? "healthy" : contextStatus === "等待证据" ? "pending" : "adjusted"}`}>
+                {contextStatus === "正常" ? <CheckCircle2 size={16} /> : <Gauge size={16} />}
+                <div>
+                  <strong>{contextStatus === "正常" ? "本次运行依据已正常准备" : contextStatus}</strong>
+                  <span>{contextEvidence ? "规则、相关记忆和当前问题已按策略处理" : "正在收集本次运行依据"}</span>
+                </div>
               </div>
-              <div className="pcm-run-evidence-note">
-                <span>精度：{contextEvidence?.accuracy === "runtime_reported" ? "Runtime 上报" : contextEvidence?.accuracy === "exact" ? "精确" : contextEvidence?.accuracy === "estimated" ? "估算" : "不可见"}</span>
-                <span>管理方式：{contextEvidence?.ownership?.integrationMode || contextEvidence?.ownership?.promptOwner || "Runtime 默认"}</span>
+
+              <div className="pcm-run-signal-list">
+                <details className="pcm-run-signal" onToggle={event => {
+                  if (event.currentTarget.open) void revealPrompt(latest.id);
+                }}>
+                  <summary>
+                    <CheckCircle2 size={14} />
+                    <div><strong>规则已应用</strong><span>{promptSectionNames.length ? promptSectionNames.join(" · ") : promptEvidence?.sectionCount ? `${promptEvidence.sectionCount} 个规则来源` : "本次未提供规则来源证据"}</span></div>
+                    <ChevronDown className="pcm-run-signal-chevron" size={14} />
+                  </summary>
+                  <div className="pcm-run-signal-details">
+                    {promptRevealLoading ? <p>正在按本次不可变 Build 校验并读取 Prompt…</p>
+                      : promptReveal?.available && promptReveal.sections?.length ? promptReveal.sections.map(section => (
+                        <div className="pcm-run-prompt-section" key={section.id}>
+                          <span><strong>{promptSectionLabel(section.id)}</strong><small>来源：{promptSectionSourceLabel(section.id)}</small></span>
+                          <pre>{section.content}</pre>
+                        </div>
+                      )) : <p>{promptReveal?.reason || "展开后按需读取 Prompt 正文；正文不会写入 Trace。"}</p>}
+                  </div>
+                </details>
+                <div className="pcm-run-signal-static">
+                  <BrainCircuit size={14} />
+                  <div><strong>{Number(recalledMemoryTokens || 0) > 0 ? "已使用长期记忆" : "未使用长期记忆"}</strong><span>{Number(recalledMemoryTokens || 0) > 0 ? "已召回与当前问题相关的记忆" : "本次回答未选入长期记忆"}</span></div>
+                </div>
+                <div className={`pcm-run-signal-static ${contextStatus !== "正常" && contextStatus !== "等待证据" ? "attention" : ""}`}>
+                  <Gauge size={14} />
+                  <div>
+                    <strong>{contextAdjusted ? "上下文已按预算调整" : decisions.some(item => item.decision === "compressed" || item.decision === "dropped" || item.decision === "replaced") ? contextStatus : "上下文无需压缩"}</strong>
+                    <span>{contextAdjusted ? "关键规则与当前问题已优先保留" : "未检测到压缩、替换或舍弃"}</span>
+                  </div>
+                </div>
               </div>
+
               <details className="pcm-run-details">
-                <summary>查看技术详情</summary>
+                <summary>开发与排障信息</summary>
                 <div className="pcm-run-detail-body">
+                  <div className="pcm-run-summary-grid">
+                    <div><span>平台计划</span><strong>{fmtTokenAmount(plannedTokens)}</strong></div>
+                    <div><span>投影给 Runner</span><strong>{fmtTokenAmount(projectedTokens)}</strong></div>
+                    <div><span>模型实际输入</span><strong>{fmtTokenAmount(reportedInputTokens)}</strong></div>
+                    <div><span>Prompt 组成</span><strong>{promptEvidence?.sectionCount ? `${promptEvidence.sectionCount} 个 Section` : "未提供"}</strong></div>
+                  </div>
+                  <div className="pcm-run-evidence-note">
+                    <span>证据精度：{contextEvidence?.accuracy === "runtime_reported" ? "Runtime 上报" : contextEvidence?.accuracy === "exact" ? "精确" : contextEvidence?.accuracy === "estimated" ? "平台估算" : "Runtime 未公开"}</span>
+                    <span>上下文管理：{contextEvidence?.ownership?.integrationMode || contextEvidence?.ownership?.promptOwner || "Runtime 默认"}</span>
+                  </div>
                   <div className="pcm-run-kind-list">
                     {contextKinds.length ? contextKinds.map(([kind, tokens]) => (
-                      <div key={kind}><span>{kind}</span><strong>{fmtTokens(tokens)}</strong></div>
+                      <div key={kind}><span>{contextKindLabel(kind)}</span><strong>{fmtTokenAmount(tokens)}</strong></div>
                     )) : <span className="chat-run-inline-empty">暂无分类用量</span>}
                   </div>
                   <div className="pcm-run-decision-list">
-                    {(contextEvidence?.decisions || []).slice(0, 8).map((item, index) => (
+                    {decisionGroups.map((item, index) => (
                       <div key={`${item.kind || "item"}-${index}`}>
-                        <span>{item.kind || "context"}</span>
-                        <strong>{item.decision || "selected"}</strong>
-                        {item.reason && <small>{item.reason}</small>}
+                        <span>{contextKindLabel(item.kind || "context")}{item.count > 1 ? ` · ${item.count} 项` : ""}</span>
+                        <strong>{decisionLabel(item.decision)}</strong>
+                        {item.reason && <small>{decisionReasonLabel(item.reason)}</small>}
                       </div>
                     ))}
                   </div>

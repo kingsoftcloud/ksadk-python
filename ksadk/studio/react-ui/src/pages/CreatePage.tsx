@@ -30,7 +30,7 @@ import {
   type QuickAgentFormValues,
 } from "../schemas/agentForms";
 
-/* 四种创建方式；quick 模式即四步向导。 */
+/* 四种创建方式；quick 模式使用三步向导。 */
 type Mode = "quick" | "conversation" | "import" | "project";
 type Template = "blank" | "research";
 
@@ -76,10 +76,9 @@ const RUNTIME_OPTIONS = [
 ];
 
 const WIZARD_STEP_META = [
-  ["定义 Agent", "模板与系统提示词"],
+  ["定义 Agent", "角色目标与使用场景"],
   ["绑定能力", "Model · Tool · MCP · Skill"],
-  ["Prompt 与策略", "检查并调整"],
-  ["检查并创建", "构建与打开会话"],
+  ["检查并创建", "行为、治理与构建"],
 ];
 
 export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, onAgentsChanged }: {
@@ -161,12 +160,14 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
     ];
   }, [runtime]);
   const [promptStatus, setPromptStatus] = useState<"idle" | "composing" | "done">("idle");
+  const [behaviorDesign, setBehaviorDesign] = useState<any>(null);
   const [createError, setCreateError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [summaryOpen, setSummaryOpen] = useState(false);
   const [configModel, setConfigModel] = useState<ResItem | null>(null);
   const [showMcpConnect, setShowMcpConnect] = useState(false);
   const compositionRef = useRef<any>(null);
+  const composedPayloadRef = useRef("");
   const createRailTriggerRef = useRef<HTMLButtonElement>(null);
   const composeSeq = useRef(0);
   const conversationEntryInitialized = useRef(false);
@@ -283,9 +284,12 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
 
   /* 向导 compose */
   const wizardPayload = useCallback(() => ({
-    name, slug, runtimeType: runtime, description,
-    research: template === "research" ? { audience, language, depth, format } : undefined,
-    modelResourceIds: selectedModels,
+    description, goal: prompt,
+    audience,
+    language,
+    depth,
+    outputFormat: format,
+    modelProfileIds: selectedModels,
     toolResourceIds: selectedTools,
     skillResourceIds: selectedSkills,
     mcpResourceIds: selectedMcp,
@@ -293,7 +297,7 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
     executionStrategy: template === "research" ? "plan-act-observe" : "direct",
     maxSteps: template === "research" ? 28 : 12,
     timeoutSeconds: template === "research" ? 900 : 120,
-  }), [name, slug, runtime, description, template, audience, language, depth, format, selectedModels, selectedTools, selectedSkills, selectedMcp, policy]);
+  }), [description, prompt, template, audience, language, depth, format, selectedModels, selectedTools, selectedSkills, selectedMcp, policy]);
 
   const composeAgent = useCallback(async ({ preservePrompt = true } = {}) => {
     const seq = ++composeSeq.current;
@@ -304,9 +308,21 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(wizardPayload()),
       });
-      const composition = await res.json();
+      const responseText = await res.text();
+      let composition: any = null;
+      try {
+        composition = responseText ? JSON.parse(responseText) : null;
+      } catch {
+        composition = null;
+      }
+      if (!res.ok) {
+        throw new Error(composition?.error?.message || `运行规则生成失败（HTTP ${res.status}）`);
+      }
+      if (!composition?.spec) throw new Error("运行规则生成结果不完整，请重试。");
       if (seq !== composeSeq.current) return;
       compositionRef.current = composition;
+      composedPayloadRef.current = JSON.stringify(wizardPayload());
+      setBehaviorDesign(composition.behaviorDesign || null);
       const b = composition.spec?.bindings || {};
       setSelectedTools(runtime === "codex" ? [] : (b.tools || []).map((i: any) => i.resourceId));
       setSelectedSkills((b.skills || []).map((i: any) => i.resourceId));
@@ -314,19 +330,25 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
       const ids = b.modelProfileIds?.length ? b.modelProfileIds : b.modelProfileId ? [b.modelProfileId] : [];
       if (ids.length) setSelectedModels(ids);
       if (!preservePrompt || !systemPrompt.trim()) {
-        quickForm.setValue("systemPrompt", composition.spec?.instructions?.system || "", { shouldDirty: true });
+        quickForm.setValue("systemPrompt", composition.spec?.instructions?.system || prompt.trim(), { shouldDirty: true });
       }
       if (!preservePrompt || !taskPrompt.trim()) {
         quickForm.setValue("taskPrompt", composition.spec?.instructions?.task || "", { shouldDirty: true });
       }
       setPromptStatus("done");
-    } catch {
-      if (seq === composeSeq.current) setPromptStatus("idle");
+      return true;
+    } catch (error) {
+      if (seq === composeSeq.current) {
+        setPromptStatus("idle");
+        setBehaviorDesign(null);
+        setCreateError(error instanceof Error ? error.message : "运行规则生成失败，请重试。");
+      }
+      return false;
     }
-  }, [template, wizardPayload, runtime, systemPrompt, taskPrompt, quickForm]);
+  }, [template, wizardPayload, runtime, prompt, systemPrompt, taskPrompt, quickForm]);
 
   async function gotoStep(next: number) {
-    if (next < 1 || next > 4) return;
+    if (next < 1 || next > 3) return;
     if (next > step) {
       if (step === 1) {
         const valid = await quickForm.trigger(["name", "slug", "runtimeType", "prompt", "audience"]);
@@ -338,7 +360,11 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
       }
     }
     setCreateError("");
-    if (next === 3 && promptStatus === "idle") composeAgent({ preservePrompt: true });
+    if (step === 2 && next === 3) {
+      const inputsChanged = composedPayloadRef.current !== JSON.stringify(wizardPayload());
+      const generated = await composeAgent({ preservePrompt: !inputsChanged });
+      if (!generated) return;
+    }
     setStep(next);
     setMaxStep(m => Math.max(m, next));
     markDirty();
@@ -348,7 +374,10 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
     setCreateError("");
     setSubmitting(true);
     try {
-      if (!compositionRef.current) await composeAgent({ preservePrompt: false });
+      if (!compositionRef.current) {
+        const generated = await composeAgent({ preservePrompt: false });
+        if (!generated || !compositionRef.current) return;
+      }
       const spec = JSON.parse(JSON.stringify(compositionRef.current?.spec || {}));
       spec.instructions = { system: values.systemPrompt.trim(), task: values.taskPrompt.trim() };
       spec.runtime = runtimeRef(values.runtimeType);
@@ -643,7 +672,7 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
           <h1>{editingAgentId ? "编辑 Agent" : "创建 Agent"}</h1>
           <p>{editingAgentId
             ? "修改系统提示词与模型绑定；本地标识保持不变，避免破坏已有引用。"
-            : "从系统提示词开始，按需组合模型、Tool、MCP 与 Skill。"}</p>
+            : "描述一次业务目标，系统生成运行规则；再按需组合模型、Tool、MCP 与 Skill。"}</p>
         </div>
         <button
           ref={createRailTriggerRef}
@@ -880,7 +909,7 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
                     <div className="template-grid">
                       <button className={`template-card${template === "blank" ? " selected" : ""}`} type="button" onClick={() => { quickForm.setValue("template", "blank", { shouldDirty: true }); markDirty(); }}>
                         <span className="template-icon"><Bot size={18} /></span>
-                        <span><strong>空白 Agent</strong><small>输入系统提示词，自主选择能力和执行策略</small></span>
+                        <span><strong>空白 Agent</strong><small>描述角色目标，自主选择能力和执行策略</small></span>
                         <span className="choice-check"><Check size={14} /></span>
                       </button>
                       <button className={`template-card${template === "research" ? " selected" : ""}`} type="button" onClick={() => { quickForm.setValue("template", "research", { shouldDirty: true }); markDirty(); }}>
@@ -915,13 +944,10 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
                       }}
                     />
                   </FormField>
-                  <FormField label="描述" requirement="optional" htmlFor="quickDescription" error={quickForm.formState.errors.description?.message}>
-                    <input id="quickDescription" maxLength={1024} placeholder="简要说明这个 Agent 解决什么问题" {...quickForm.register("description", { onChange: markDirty })} />
-                  </FormField>
-                  <FormField label="系统提示词" requirement="required" htmlFor="quickPrompt" error={quickForm.formState.errors.prompt?.message}>
+                  <FormField label="Agent 目标与要求" requirement="required" htmlFor="quickPrompt" hint="只需在这里描述一次，系统会据此生成最终运行规则。" error={quickForm.formState.errors.prompt?.message}>
                     <div>
-                    <textarea id="quickPrompt" rows={7} maxLength={32768} placeholder="例如：你是一名企业技术支持助手。先识别问题类型，再结合知识库给出准确、可执行的处理步骤；信息不足时先提问，不要编造事实。" {...quickForm.register("prompt", { onChange: markDirty })} />
-                    <div className="field-footer"><span>写清角色、目标、工作边界和回答方式</span><span>{prompt.length} / 32768</span></div>
+                    <textarea id="quickPrompt" rows={6} maxLength={32768} placeholder="例如：面向企业运维人员处理技术支持问题；优先识别问题类型，信息不足时先提问，涉及生产变更必须确认。" {...quickForm.register("prompt", { onChange: markDirty })} />
+                    <div className="field-footer"><span>说明服务对象、业务目标、关键边界和期望结果；无需编写完整 Prompt</span><span>{prompt.length} / 32768</span></div>
                     </div>
                   </FormField>
                   {template === "research" && (
@@ -1081,92 +1107,24 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
                   </div>
                 </section>
 
-                {/* 第 3 步：Prompt 与策略 */}
+                {/* 第 3 步：检查并创建 */}
                 <section className={`wizard-panel${step === 3 ? " active" : ""}`} hidden={step !== 3}>
                   <div className="panel-heading">
                     <span className="panel-index">03</span>
-                    <div><h2>检查系统提示词与任务契约</h2><p>保存前可以继续编辑，创建时会完整写入 Agent Draft。</p></div>
+                    <div><h2>检查配置并创建</h2><p>确认系统对目标的理解、已绑定能力和创建后的动作；技术细节按需展开。</p></div>
                     <button className="button secondary small" type="button" onClick={() => composeAgent({ preservePrompt: false })}>
                       <RefreshCw size={14} /><span>重新生成</span>
                     </button>
                   </div>
                   <div className="prompt-status">
                     <span className={`status-dot ${promptStatus === "done" ? "success" : "info"}`} />
-                    <span>{promptStatus === "composing" ? "正在根据模板与能力生成 Agent 配置" : promptStatus === "done" ? "Agent 配置已根据当前选择生成" : "进入此步骤后生成 Prompt"}</span>
-                  </div>
-                  <FormField label="角色与系统提示词" requirement="required" htmlFor="composedSystemPrompt" hint="定义角色、目标、工作边界和回答原则" error={quickForm.formState.errors.systemPrompt?.message}>
-                    <textarea id="composedSystemPrompt" className="prompt-editor" rows={16} {...quickForm.register("systemPrompt", { onChange: markDirty })} />
-                  </FormField>
-                  <FormField label="任务契约" requirement="optional" htmlFor="composedTaskPrompt" hint="约束每次请求的执行步骤、工具使用和交付结构" error={quickForm.formState.errors.taskPrompt?.message}>
-                    <textarea id="composedTaskPrompt" className="prompt-editor" rows={10} {...quickForm.register("taskPrompt", { onChange: markDirty })} />
-                  </FormField>
-                  <details className="pcm-policy-card">
-                    <summary>
-                      <span><strong>上下文与记忆策略</strong><small>高级配置，默认以观察模式运行</small></span>
-                    </summary>
-                    <div className="pcm-policy-body">
-                      <div className="form-grid two-columns">
-                        <FormField label="上下文管理方式" requirement="optional" htmlFor="contextOwnership" hint="决定由 KsADK、框架或原生 Runtime 负责最终上下文。">
-                          <StudioSelect
-                            id="contextOwnership"
-                            ariaLabel="上下文管理方式"
-                            value={contextOwnership}
-                            options={contextOwnershipOptions}
-                            onValueChange={value => { setContextOwnership(value); markDirty(); }}
-                          />
-                        </FormField>
-                        <FormField label="Context Engine" requirement="optional" htmlFor="contextEngineRollout" hint="观察模式只记录计划，不改变 Runner 输入。">
-                          <StudioSelect
-                            id="contextEngineRollout"
-                            ariaLabel="Context Engine"
-                            value={contextEngineRollout}
-                            options={[
-                              { value: "off", label: "关闭", description: "使用原有上下文路径" },
-                              { value: "shadow", label: "观察模式（推荐）", description: "生成证据但不改变运行行为" },
-                              { value: "enabled", label: "启用", description: "按 ContextPlan 选择和压缩上下文" },
-                            ]}
-                            onValueChange={value => { setContextEngineRollout(value); markDirty(); }}
-                          />
-                        </FormField>
-                      </div>
-                      <label className="pcm-memory-toggle">
-                        <input
-                          type="checkbox"
-                          checked={memoryEnabled}
-                          onChange={event => { setMemoryEnabled(event.target.checked); markDirty(); }}
-                        />
-                        <span><strong>长期记忆召回</strong><small>允许在后续会话召回已保存的稳定事实；不是保存完整聊天记录。写入需在下方单独开启。</small></span>
-                      </label>
-                      {memoryEnabled && (
-                        <FormField label="记忆写入" requirement="optional" htmlFor="memoryWriteRollout" hint="建议先观察候选，确认质量后再正式写入。">
-                          <StudioSelect
-                            id="memoryWriteRollout"
-                            ariaLabel="记忆写入"
-                            value={memoryWriteRollout}
-                            options={[
-                              { value: "off", label: "不写入" },
-                              { value: "shadow", label: "仅观察候选（推荐）" },
-                              { value: "enabled", label: "正式写入" },
-                            ]}
-                            onValueChange={value => { setMemoryWriteRollout(value); markDirty(); }}
-                          />
-                        </FormField>
-                      )}
-                    </div>
-                  </details>
-                </section>
-
-                {/* 第 4 步：检查并创建 */}
-                <section className={`wizard-panel${step === 4 ? " active" : ""}`} hidden={step !== 4}>
-                  <div className="panel-heading">
-                    <span className="panel-index">04</span>
-                    <div><h2>检查配置并创建</h2><p>确认 Agent 身份、能力依赖和创建后的动作。</p></div>
+                    <span>{promptStatus === "composing" ? "正在根据目标、模板与能力生成 Agent 行为" : promptStatus === "done" ? "Agent 行为已生成，请检查后创建" : "进入此步骤前自动生成 Agent 行为"}</span>
                   </div>
                   <div className="review-block">
                     <div className="review-title"><span>Agent</span><button className="text-button" type="button" onClick={() => gotoStep(1)}>编辑</button></div>
                     <div className="review-agent">
                       <span className="agent-avatar">{template === "research" ? <Search size={16} /> : <Bot size={16} />}</span>
-                      <div><strong>{name}</strong><span>{slug} · {runtime} · {templateLabel}</span><p>{prompt || "等待填写系统提示词"}</p></div>
+                      <div><strong>{name}</strong><span>{slug} · {runtime} · {templateLabel}</span><p>{description || prompt || "Agent 身份与运行方式已配置"}</p></div>
                     </div>
                   </div>
                   <div className="review-block">
@@ -1178,18 +1136,104 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
                       <div className="review-capability"><Sparkles size={16} /><div><strong>{selectedSkills.length} 个 Skill</strong><span>{selectedSkills.length ? "已注入版本化能力" : "未绑定"}</span></div></div>
                     </div>
                   </div>
-                  <div className="review-block">
-                    <div className="review-title"><span>Prompt</span><button className="text-button" type="button" onClick={() => gotoStep(3)}>编辑</button></div>
-                    <div className="prompt-preview">{systemPrompt || prompt || "等待生成"}</div>
-                  </div>
-                  <div className="review-block">
-                    <div className="review-title"><span>上下文与记忆</span><button className="text-button" type="button" onClick={() => gotoStep(3)}>编辑</button></div>
-                    <div className="pcm-review-summary">
-                      <span>管理方式 <strong>{contextOwnership === "auto" ? "自动" : contextOwnership}</strong></span>
-                      <span>Context Engine <strong>{contextEngineRollout === "shadow" ? "观察" : contextEngineRollout === "enabled" ? "启用" : "关闭"}</strong></span>
-                      <span>长期记忆 <strong>{memoryEnabled ? (memoryWriteRollout === "enabled" ? "已启用" : "仅观察") : "关闭"}</strong></span>
+                  {behaviorDesign && (
+                    <div className="behavior-design-review">
+                      <div className="behavior-design-heading">
+                        <div><strong>Agent 行为摘要</strong><p>确认目标和特殊边界即可，通用运行规则由平台管理。</p></div>
+                        <span className="status-badge success">已生成</span>
+                      </div>
+                      <div className="behavior-summary-main">
+                        <span>Agent 目标</span>
+                        <strong>{behaviorDesign.objective}</strong>
+                      </div>
+                      <div className="behavior-boundary-summary">
+                        <ShieldCheck size={16} />
+                        <div>
+                          <strong>关键边界</strong>
+                          {(behaviorDesign.explicitBoundaries || []).length ? (
+                            <ul>{behaviorDesign.explicitBoundaries.map((item: string) => <li key={item}>{item}</li>)}</ul>
+                          ) : (
+                            <p>未识别到额外业务限制，采用企业默认安全策略。</p>
+                          )}
+                        </div>
+                      </div>
                     </div>
-                  </div>
+                  )}
+                  <details className="pcm-policy-card generated-prompt-card">
+                    <summary>
+                      <span>
+                        <strong>完整 Prompt 与任务契约</strong>
+                        <small>运行时实际使用的编译结果；高级用户可展开精确调整</small>
+                      </span>
+                      <em aria-hidden="true" />
+                    </summary>
+                    <div className="pcm-policy-body generated-prompt-body">
+                      <FormField label="系统级规则" requirement="optional" htmlFor="composedSystemPrompt" hint="已自动生成；仅在需要精确调整角色、边界或回答原则时修改。" error={quickForm.formState.errors.systemPrompt?.message}>
+                        <textarea id="composedSystemPrompt" className="prompt-editor" rows={16} {...quickForm.register("systemPrompt", { onChange: markDirty })} />
+                      </FormField>
+                      <FormField label="任务执行契约" requirement="optional" htmlFor="composedTaskPrompt" hint="按需约束每次请求的执行步骤、工具使用和交付结构。" error={quickForm.formState.errors.taskPrompt?.message}>
+                        <textarea id="composedTaskPrompt" className="prompt-editor" rows={10} {...quickForm.register("taskPrompt", { onChange: markDirty })} />
+                      </FormField>
+                    </div>
+                  </details>
+                  <details className="pcm-policy-card">
+                    <summary>
+                      <span><strong>运行上下文与长期记忆</strong><small>通常无需修改；高级用户可配置责任边界和灰度方式</small></span>
+                    </summary>
+                    <div className="pcm-policy-body">
+                      <div className="summary-note">
+                        <ShieldCheck size={16} />
+                        <div><strong>推荐使用自动模式</strong><p>平台会根据 Runtime 能力选择安全路径；观察模式只生成诊断证据，不改变 Agent 行为。</p></div>
+                      </div>
+                      <div className="form-grid two-columns">
+                        <FormField label="责任边界（高级）" requirement="optional" htmlFor="contextOwnership" hint="决定由平台、框架或原生 Runtime 负责最终输入。">
+                          <StudioSelect
+                            id="contextOwnership"
+                            ariaLabel="上下文管理方式"
+                            value={contextOwnership}
+                            options={contextOwnershipOptions}
+                            onValueChange={value => { setContextOwnership(value); markDirty(); }}
+                          />
+                        </FormField>
+                        <FormField label="上下文优化" requirement="optional" htmlFor="contextEngineRollout" hint="控制预算规划、压缩和降载能力的启用阶段。">
+                          <StudioSelect
+                            id="contextEngineRollout"
+                            ariaLabel="Context Engine"
+                            value={contextEngineRollout}
+                            options={[
+                              { value: "off", label: "使用 Runtime 默认行为", description: "不启用平台上下文优化" },
+                              { value: "shadow", label: "仅观察（推荐）", description: "生成诊断证据但不改变运行行为" },
+                              { value: "enabled", label: "正式启用", description: "在预算压力下选择、压缩和降载" },
+                            ]}
+                            onValueChange={value => { setContextEngineRollout(value); markDirty(); }}
+                          />
+                        </FormField>
+                      </div>
+                      <label className="pcm-memory-toggle">
+                        <input
+                          type="checkbox"
+                          checked={memoryEnabled}
+                          onChange={event => { setMemoryEnabled(event.target.checked); markDirty(); }}
+                        />
+                        <span><strong>在后续会话参考长期记忆</strong><small>只召回稳定事实和持续状态，不等于保存完整聊天记录；记忆写入需单独开启。</small></span>
+                      </label>
+                      {memoryEnabled && (
+                        <FormField label="长期记忆保存策略" requirement="optional" htmlFor="memoryWriteRollout" hint="企业环境建议先观察候选，确认敏感信息、冲突和质量策略后再正式保存。">
+                          <StudioSelect
+                            id="memoryWriteRollout"
+                            ariaLabel="记忆写入"
+                            value={memoryWriteRollout}
+                            options={[
+                              { value: "off", label: "不保存新记忆" },
+                              { value: "shadow", label: "仅生成候选（推荐）" },
+                              { value: "enabled", label: "通过策略检查后保存" },
+                            ]}
+                            onValueChange={value => { setMemoryWriteRollout(value); markDirty(); }}
+                          />
+                        </FormField>
+                      )}
+                    </div>
+                  </details>
                   <label className="post-create-option">
                     <input type="checkbox" {...quickForm.register("buildAfterCreate")} />
                     <span><strong>创建后立即构建并打开会话</strong><small>生成不可变 AgentBundle，完成后进入 Chat 工作台</small></span>
@@ -1210,16 +1254,16 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
                   <button className="button tertiary" type="button" onClick={saveDraft}>
                     <Copy size={16} /><span>保存草稿</span>
                   </button>
-                  <span className="wizard-progress">第 {step} 步，共 4 步</span>
+                  <span className="wizard-progress">第 {step} 步，共 3 步</span>
                   <button className="button tertiary" type="button" aria-expanded={summaryOpen} onClick={() => setSummaryOpen(v => !v)}>
                     <PanelRight size={16} /><span>配置摘要</span><span className="summary-count">{capCount}</span>
                   </button>
-                  {step < 4 && (
+                  {step < 3 && (
                     <button className="button accent" type="button" onClick={() => gotoStep(step + 1)}>
                       <span>继续</span><ArrowRight size={16} />
                     </button>
                   )}
-                  {step === 4 && (
+                  {step === 3 && (
                     <button className="button accent" type="submit" disabled={submitting}>
                       <Plus size={16} /><span>{submitting ? "正在创建" : "创建 Agent"}</span>
                     </button>
@@ -1244,6 +1288,8 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
                   <div><dt>MCP</dt><dd>{selectedMcp.length}</dd></div>
                   <div><dt>Tool</dt><dd>{selectedTools.length}</dd></div>
                   <div><dt>策略</dt><dd>{template === "research" ? "Plan-Act-Observe" : "Direct"}</dd></div>
+                  <div><dt>上下文优化</dt><dd>{contextEngineRollout === "shadow" ? "仅观察" : contextEngineRollout === "enabled" ? "正式启用" : "Runtime 默认"}</dd></div>
+                  <div><dt>长期记忆</dt><dd>{memoryEnabled ? (memoryWriteRollout === "enabled" ? "召回并保存" : "仅召回/观察") : "未启用"}</dd></div>
                 </dl>
                 <div className="summary-divider" />
                 <div className="summary-note">
