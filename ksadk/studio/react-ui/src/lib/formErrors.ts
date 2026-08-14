@@ -30,6 +30,9 @@ function collectFields(payload: unknown): FieldErrorMap | null {
   const error = root.error;
   if (error && typeof error === "object") {
     const err = error as Record<string, unknown>;
+    if (typeof err.field === "string" && typeof err.message === "string") {
+      return { [err.field]: err.message };
+    }
     const fields = err.fields;
     if (fields && typeof fields === "object" && !Array.isArray(fields)) {
       const map: FieldErrorMap = {};
