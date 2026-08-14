@@ -296,6 +296,7 @@ async def _finalize_hosted_turn(
             session_id=getattr(prepared, "session_id", ""),
             invocation_id=getattr(prepared, "invocation_id", ""),
             user_id=getattr(prepared, "user_id", "") or "local-user",
+            agent_id=getattr(prepared, "agent_id", "") or "",
             context_plan=getattr(prepared, "context_plan", None),
             shadow_context_plan=getattr(prepared, "shadow_context_plan", None),
             usage=usage,

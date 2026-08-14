@@ -125,6 +125,16 @@ def test_run_prompt_endpoint_returns_hashes(tmp_path):
     prompt = c.get(f"/api/v1/runs/{run_id}/prompt").json()
     assert "contentHash" in prompt
     assert prompt["runtimeType"] == "codex"
+    # Prompt shadow 的请求级计划不能在 Evidence API 层被丢弃；
+    # framework_assisted 无完整 ContextPlan 时，Studio 依赖它解释平台估算。
+    assert isinstance(prompt["plannedInputTokens"], int)
+    assert prompt["plannedInputTokens"] > 0
+    assert prompt["accountingAccuracy"] in {
+        "estimated",
+        "exact",
+        "opaque",
+        "runtime_reported",
+    }
 
 
 def test_run_prompt_content_is_only_rebuilt_on_explicit_request(tmp_path):

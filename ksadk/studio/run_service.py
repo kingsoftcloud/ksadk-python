@@ -89,16 +89,16 @@ class StudioRunService:
         self.event_store.create(record)
         prepared_turn = await self._capture_pcm_evidence(record, spec, user_input)
         effective_request_config = dict(spec.request_config)
-        if runtime_type == "codex" and bool(effective_request_config.get("memory_enabled")):
-            base_instructions = str(effective_request_config.get("base_instructions") or "")
+        memory_projection_event: dict[str, Any] | None = None
+        if bool(effective_request_config.get("memory_enabled")):
             memory_policy = (
                 '<platform_memory_policy trust="platform">\n'
                 "KsADK 平台长期记忆已启用。用户明确要求记住的稳定事实会在本轮结束后由平台策略保存；"
                 "不要声称当前 Agent 不具备跨会话记忆。\n"
                 "</platform_memory_policy>"
             )
-            projected_memory = ""
             memory_context = getattr(prepared_turn, "memory_context", None)
+            projected_memory = ""
             if isinstance(memory_context, Mapping):
                 recalled_text = str(memory_context.get("formatted_text") or "").strip()
                 if recalled_text:
@@ -108,9 +108,48 @@ class StudioRunService:
                         f"{html.escape(recalled_text)}\n"
                         "</recalled_memory>"
                     )
-            effective_request_config["base_instructions"] = (
-                f"{base_instructions}\n\n{memory_policy}{projected_memory}"
-            ).strip()
+            projection_target = ""
+            projection_field = ""
+            if runtime_type == "codex":
+                projection_field = "base_instructions"
+                projection_target = "codex.base_instructions"
+            elif runtime_type == "adk":
+                # ADK Runner 会把 request-level instructions 与当前用户输入一起交给
+                # agent；独立 memory_context 字段不会被 Google ADK 自动消费。
+                projection_field = "instructions"
+                projection_target = "adk.instructions"
+            elif runtime_type == "langgraph" and projected_memory:
+                # LangGraphRunner 会把 memory_context 显式组装为 SystemMessage。
+                projection_target = "langgraph.memory_context"
+
+            if projection_field:
+                existing = str(effective_request_config.get(projection_field) or "")
+                effective_request_config[projection_field] = (
+                    f"{existing}\n\n{memory_policy}{projected_memory}"
+                ).strip()
+
+            if projection_target and projected_memory:
+                from ksadk.memory.events import recall_projected
+
+                completed = next(
+                    (
+                        event
+                        for event in reversed(
+                            list(getattr(prepared_turn, "memory_recall_events", []) or [])
+                        )
+                        if event.get("type") == "memory.recall.completed"
+                    ),
+                    {},
+                )
+                memory_projection_event = recall_projected(
+                    run_id=record.id,
+                    session_id=record.session_id,
+                    provider=str(completed.get("provider") or "local-default"),
+                    rollout=str(completed.get("policy_rollout") or "enabled"),
+                    count=int(completed.get("candidate_count") or 0),
+                    runtime_type=runtime_type,
+                    target=projection_target,
+                ).to_dict()
         created = self.event_store.append(
             record.id,
             "run.created",
@@ -128,6 +167,14 @@ class StudioRunService:
         )
         if on_event is not None:
             on_event(created)
+        if memory_projection_event is not None:
+            projected = self.event_store.append(
+                record.id,
+                memory_projection_event["type"],
+                memory_projection_event,
+            )
+            if on_event is not None:
+                on_event(projected)
 
         started = time.monotonic()
         record.status = RunStatus.RUNNING
@@ -631,6 +678,7 @@ class StudioRunService:
                     session_id=record.session_id,
                     invocation_id=record.id,
                     user_id=_STUDIO_LOCAL_USER_ID,
+                    agent_id=spec.agent_id,
                     context_plan=record.context_plan,
                     shadow_context_plan=None,
                     usage=usage_dict,
@@ -761,6 +809,7 @@ class StudioRunService:
         try:
             from ksadk.memory.coordinator import (
                 MemoryCoordinator,
+                agent_user_scope_id,
                 build_search_request,
                 recall_to_context_item,
             )
@@ -773,8 +822,10 @@ class StudioRunService:
             result = coordinator.recall(
                 build_search_request(
                     query=user_input,
-                    user_id=_STUDIO_LOCAL_USER_ID,
-                    agent_id=spec.agent_id,
+                    user_id=agent_user_scope_id(
+                        agent_id=spec.agent_id,
+                        user_id=_STUDIO_LOCAL_USER_ID,
+                    ),
                     top_k=int(cfg.get("memory_recall_top_k") or 8),
                     max_tokens=int(cfg.get("memory_recall_max_tokens") or 1600),
                     min_score=float(cfg.get("memory_recall_min_score") or 0.45),

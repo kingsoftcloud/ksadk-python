@@ -30,6 +30,15 @@ from ksadk.memory.policy import MemoryEvaluation, MemoryPolicy
 logger = logging.getLogger(__name__)
 
 
+def agent_user_scope_id(*, agent_id: str, user_id: str) -> str:
+    """构造默认的 Agent × User 记忆命名空间，避免跨 Agent 或跨用户污染。"""
+    agent = str(agent_id or "").strip()
+    user = str(user_id or "").strip()
+    if not agent:
+        return user
+    return f"agent:{agent}:user:{user}"
+
+
 @dataclass(frozen=True)
 class FlushResult:
     """一次压缩前 Memory Flush 的结果（方案 §9.2）。"""
@@ -309,6 +318,7 @@ def recall_to_context_item(result: MemorySearchResult) -> dict[str, Any] | None:
 
 
 __all__ = [
+    "agent_user_scope_id",
     "FlushResult",
     "MemoryCoordinator",
     "build_search_request",

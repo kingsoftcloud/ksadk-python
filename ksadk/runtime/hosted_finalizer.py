@@ -55,6 +55,7 @@ class FinalizeContext:
     shadow_context_plan: dict[str, Any] | None
     usage: Mapping[str, Any] | None
     runtime_type: str
+    agent_id: str = ""
     prompt_integration_mode: str = ""
     session_events: Any = None  # 已取的 turn events（避免重复读 store）
     memory_write_rollout: str = ""
@@ -130,10 +131,15 @@ async def finalize_hosted_turn(
                 turn_events = None
         if not turn_events:
             return
+        from ksadk.memory.coordinator import agent_user_scope_id
+
         candidates = propose_memory_candidates(
             list(turn_events),
             scope="user",
-            scope_id=str(ctx.user_id or ""),
+            scope_id=agent_user_scope_id(
+                agent_id=ctx.agent_id,
+                user_id=ctx.user_id,
+            ),
         )
         # explicit_only：只保留用户明确要求记住的内容（方案 §2）
         if policy.is_explicit_only:

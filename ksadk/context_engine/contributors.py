@@ -174,12 +174,18 @@ class MemoryRecallContributor(ContextContributor):
         )
 
     async def contribute(self, request: ContextContributionRequest) -> list[ContextItem]:
-        from ksadk.memory.coordinator import build_search_request, recall_to_context_item
+        from ksadk.memory.coordinator import (
+            agent_user_scope_id,
+            build_search_request,
+            recall_to_context_item,
+        )
 
         req = build_search_request(
             query=request.user_input,
-            user_id=request.user_id,
-            agent_id=request.agent_id,
+            user_id=agent_user_scope_id(
+                agent_id=request.agent_id,
+                user_id=request.user_id,
+            ),
             top_k=self._top_k,
             max_tokens=self.capabilities.max_tokens,
             min_score=self._min_score,

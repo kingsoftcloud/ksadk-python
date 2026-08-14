@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { resolveMemoryRecallPresentation } from "./ChatRunPanel";
 
 describe("resolveMemoryRecallPresentation", () => {
-  it("prioritizes an actual recall event over missing native context token evidence", () => {
+  it("does not claim recalled memory was used until projection is confirmed", () => {
     expect(resolveMemoryRecallPresentation([
       {
         id: 1,
@@ -10,9 +10,20 @@ describe("resolveMemoryRecallPresentation", () => {
         data: { candidate_count: 2, provider: "local-default" },
       },
     ], 0)).toEqual({
+      status: "recalled",
+      title: "已召回长期记忆",
+      description: "已找到 2 条，但未确认交付 Runner",
+    });
+  });
+
+  it("shows memory as provided only when the runner projection event exists", () => {
+    expect(resolveMemoryRecallPresentation([
+      { id: 1, type: "memory.recall.completed", data: { candidate_count: 2 } },
+      { id: 2, type: "memory.recall.projected", data: { candidate_count: 2 } },
+    ], 0)).toEqual({
       status: "used",
-      title: "已使用长期记忆",
-      description: "已召回 2 条与当前问题相关的记忆",
+      title: "已提供长期记忆",
+      description: "2 条相关记忆已交付本次运行",
     });
   });
 

@@ -958,6 +958,8 @@ def create_studio_app(
             "tokensBySection": evidence.get("tokensBySection", {}),
             "estimatedTokens": evidence.get("estimatedTokens"),
             "sectionCount": evidence.get("sectionCount"),
+            "plannedInputTokens": evidence.get("plannedInputTokens"),
+            "accountingAccuracy": evidence.get("accountingAccuracy"),
             "runtimeType": evidence.get("runtimeType"),
             "integrationMode": evidence.get("integrationMode"),
         }

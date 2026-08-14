@@ -484,12 +484,110 @@ async def test_codex_platform_memory_is_recalled_and_projected_across_sessions(
     second_events = [event.type for event in service.event_store.events(second.id)]
     assert "memory.flush.completed" in first_events
     assert "memory.recall.completed" in second_events
+    assert "memory.recall.projected" in second_events
     start_requests = [value for name, value in calls if name == "start"]
     assert len(start_requests) == 2
     projected = start_requests[1].config["base_instructions"]
     assert "KsADK 平台长期记忆已启用" in projected
     assert '<recalled_memory trust="untrusted">' in projected
     assert "我喜欢吃大蒜" in projected
+
+
+@pytest.mark.asyncio
+async def test_adk_platform_memory_is_projected_via_request_instructions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ADK 不消费独立 memory_context，平台记忆必须投影到本轮 instructions。"""
+    memory_db = tmp_path / "adk-memory.db"
+    monkeypatch.setenv("KSADK_MEMORY_FLUSH_ENABLED", "1")
+    monkeypatch.setenv("KSADK_MEMORY_DB_PATH", str(memory_db))
+    calls: list[tuple[str, Any]] = []
+    registry = RuntimeRegistry()
+    registry.register("adk", lambda _context: _RecordingAdapter(calls, "adk"))
+    workspace = Workspace(tmp_path / "workspace")
+    workspace.initialize()
+    service = StudioRunService(workspace, RuntimeExecutor(registry))
+    spec = StudioRunSpec(
+        launch_context=RuntimeLaunchContext(runtime_type="adk", project_dir=tmp_path),
+        build_id="build-adk-memory",
+        agent_id="adk-memory-agent",
+        request_config={
+            "instructions": "遵守 Agent 的既有行为规则。",
+            "memory_write_rollout": "enabled",
+            "memory_enabled": True,
+            "memory_recall_enabled": True,
+            "memory_write_mode": "candidate",
+            "flush_before_compaction": True,
+            "provider_ref": "local-default",
+        },
+    )
+
+    first = await service.run(spec, "记住我喜欢吃大蒜", session_id="ses-adk-write")
+    second = await service.run(spec, "我喜欢吃什么", session_id="ses-adk-recall")
+
+    assert "memory.flush.completed" in [
+        event.type for event in service.event_store.events(first.id)
+    ]
+    second_events = [event.type for event in service.event_store.events(second.id)]
+    assert "memory.recall.completed" in second_events
+    assert "memory.recall.projected" in second_events
+    start_requests = [value for name, value in calls if name == "start"]
+    assert len(start_requests) == 2
+    projected = start_requests[1].config["instructions"]
+    assert "遵守 Agent 的既有行为规则" in projected
+    assert '<recalled_memory trust="untrusted">' in projected
+    assert "我喜欢吃大蒜" in projected
+
+
+@pytest.mark.asyncio
+async def test_platform_memory_is_isolated_by_agent_and_user(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """同一 Studio 用户创建的新 Agent 默认不能召回其他 Agent 的长期记忆。"""
+    memory_db = tmp_path / "isolated-memory.db"
+    monkeypatch.setenv("KSADK_MEMORY_FLUSH_ENABLED", "1")
+    monkeypatch.setenv("KSADK_MEMORY_DB_PATH", str(memory_db))
+    calls: list[tuple[str, Any]] = []
+    registry = RuntimeRegistry()
+    registry.register("adk", lambda _context: _RecordingAdapter(calls, "adk"))
+    workspace = Workspace(tmp_path / "workspace")
+    workspace.initialize()
+    service = StudioRunService(workspace, RuntimeExecutor(registry))
+
+    def spec(agent_id: str) -> StudioRunSpec:
+        return StudioRunSpec(
+            launch_context=RuntimeLaunchContext(runtime_type="adk", project_dir=tmp_path),
+            build_id=f"build-{agent_id}",
+            agent_id=agent_id,
+            request_config={
+                "memory_write_rollout": "enabled",
+                "memory_enabled": True,
+                "memory_recall_enabled": True,
+                "memory_write_mode": "candidate",
+                "flush_before_compaction": True,
+                "provider_ref": "local-default",
+            },
+        )
+
+    await service.run(spec("agent-a"), "记住我喜欢吃大蒜", session_id="ses-a-write")
+    other = await service.run(spec("agent-b"), "我喜欢吃什么", session_id="ses-b-recall")
+    own = await service.run(spec("agent-a"), "我喜欢吃什么", session_id="ses-a-recall")
+
+    other_types = [event.type for event in service.event_store.events(other.id)]
+    own_types = [event.type for event in service.event_store.events(own.id)]
+    assert "memory.recall.empty" in other_types
+    assert "memory.recall.projected" not in other_types
+    assert "memory.recall.completed" in own_types
+    assert "memory.recall.projected" in own_types
+    start_requests = [value for name, value in calls if name == "start"]
+    assert '<recalled_memory trust="untrusted">' not in start_requests[1].config["instructions"]
+    assert "我喜欢吃大蒜" in start_requests[2].config["instructions"]
+
+    with sqlite3.connect(memory_db) as connection:
+        rows = connection.execute("SELECT scope, scope_id FROM memory_records").fetchall()
+    assert rows == [("user", "agent:agent-a:user:local-user")]
 
 
 @pytest.mark.asyncio

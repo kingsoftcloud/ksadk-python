@@ -294,7 +294,7 @@ async def test_flush_failed_on_provider_error(tmp_path, monkeypatch):
 
 
 def test_memory_events_dont_leak_content():
-    from ksadk.memory.events import flush_failed, recall_completed
+    from ksadk.memory.events import flush_failed, recall_completed, recall_projected
 
     e = recall_completed(
         run_id="r1",
@@ -305,6 +305,21 @@ def test_memory_events_dont_leak_content():
     )
     d = e.to_dict()
     assert "content" not in d
+
+    projected = recall_projected(
+        run_id="r1",
+        session_id="s1",
+        provider="sqlite",
+        rollout="enabled",
+        count=3,
+        runtime_type="adk",
+        target="adk.instructions",
+    ).to_dict()
+    assert "content" not in projected
+    assert projected["metadata"] == {
+        "runtime_type": "adk",
+        "target": "adk.instructions",
+    }
 
     e2 = flush_failed(
         run_id="r1",

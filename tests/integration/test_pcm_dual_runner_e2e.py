@@ -657,6 +657,7 @@ def test_studio_recall_with_fake_provider(studio, monkeypatch):
         if t.startswith("memory."):
             assert t in (
                 "memory.recall.completed",
+                "memory.recall.projected",
                 "memory.recall.empty",
                 "memory.recall.failed",
                 "memory.candidate.created",

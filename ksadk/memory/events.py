@@ -11,6 +11,7 @@ from typing import Any, Literal
 
 MemoryEventType = Literal[
     "memory.recall.completed",
+    "memory.recall.projected",
     "memory.recall.empty",
     "memory.recall.failed",
     "memory.candidate.created",
@@ -61,6 +62,28 @@ def recall_completed(
         provider=provider,
         policy_rollout=rollout,
         candidate_count=count,
+    )
+
+
+def recall_projected(
+    *,
+    run_id: str,
+    session_id: str,
+    provider: str,
+    rollout: str,
+    count: int,
+    runtime_type: str,
+    target: str,
+) -> MemoryEvent:
+    """记录召回结果已交付 Runner；不代表模型一定采纳了相关事实。"""
+    return MemoryEvent(
+        type="memory.recall.projected",
+        run_id=run_id,
+        session_id=session_id,
+        provider=provider,
+        policy_rollout=rollout,
+        candidate_count=count,
+        metadata={"runtime_type": runtime_type, "target": target},
     )
 
 
@@ -175,4 +198,5 @@ __all__ = [
     "recall_completed",
     "recall_empty",
     "recall_failed",
+    "recall_projected",
 ]
