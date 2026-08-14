@@ -1557,6 +1557,34 @@ td.actions-column {
   padding: 24px;
 }
 
+.agent-edit-section {
+  display: grid;
+  gap: 20px;
+}
+
+.agent-edit-section[hidden] {
+  display: none;
+}
+
+.agent-edit-section-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.agent-edit-section-heading h3,
+.agent-edit-section-heading p {
+  margin: 0;
+}
+
+.agent-edit-section-heading p {
+  margin-top: 4px;
+  color: var(--text-tertiary);
+  font-size: var(--font-size-meta);
+}
+
 .quick-runtime-strip {
   min-height: 54px;
   display: flex;

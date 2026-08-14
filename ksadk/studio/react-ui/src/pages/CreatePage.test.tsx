@@ -45,6 +45,20 @@ describe("CreatePage quick authoring", () => {
       if (path === "/api/v1/credentials/OPENAI_API_KEY") {
         return response({ configured: true });
       }
+      if (path === "/api/v1/agents/agentkit-edit-test") {
+        return response({
+          draft: {
+            metadata: { id: "agentkit-edit-test", name: "Edit Test", revision: 1 },
+            spec: {
+              runtime: { type: "langgraph", projectPath: ".", entryPoint: "graph.py", agentVariable: "app" },
+              instructions: { system: "你是一个测试助手。", task: "" },
+              bindings: { modelProfileId: model.resourceId, modelProfileIds: [model.resourceId] },
+              context: { ownership: "ksadk", rollout: { contextEngine: "shadow", memoryWrite: "off" } },
+              memory: { enabled: false, recall: { enabled: false } },
+            },
+          },
+        });
+      }
       if (path === "/api/v1/agent-templates/blank:compose") {
         return response({
           templateId: "blank",
@@ -125,9 +139,18 @@ describe("CreatePage quick authoring", () => {
       });
     });
 
+    await user.click(screen.getByText("运行上下文与长期记忆"));
+    await user.click(screen.getByRole("checkbox", { name: /启用跨会话记忆/ }));
     await user.click(screen.getByRole("button", { name: "创建 Agent" }));
 
     await waitFor(() => {
+      const createCall = mockedFetch.mock.calls.find(
+        ([path]) => path === "/api/v1/authoring/quick",
+      );
+      const createRequest = JSON.parse(String(createCall?.[1]?.body));
+      expect(createRequest.spec.context.rollout.memoryWrite).toBe("enabled");
+      expect(createRequest.spec.memory.enabled).toBe(true);
+      expect(createRequest.spec.memory.recall.enabled).toBe(true);
       expect(mockedFetch).toHaveBeenCalledWith(
         "/api/v1/authoring/quick",
         expect.objectContaining({ method: "POST" }),
@@ -138,5 +161,34 @@ describe("CreatePage quick authoring", () => {
       );
       expect(onCreated).toHaveBeenCalledWith("codex-local-test", true);
     });
+  });
+
+  it("uses three freely switchable sections when editing an Agent", async () => {
+    const user = userEvent.setup();
+    render(
+      <CreatePage
+        editingAgentId="agentkit-edit-test"
+        viewportMode="desktop"
+        onBack={vi.fn()}
+        onCreated={vi.fn()}
+      />,
+    );
+
+    const basics = await screen.findByRole("button", { name: /基础与 Prompt/ });
+    const capabilities = screen.getByRole("button", { name: /能力绑定/ });
+    const policy = screen.getByRole("button", { name: /运行策略/ });
+    expect(basics).toBeEnabled();
+    expect(capabilities).toBeEnabled();
+    expect(policy).toBeEnabled();
+    expect(await screen.findByRole("region", { name: "基础与 Prompt" })).toBeVisible();
+
+    await user.click(capabilities);
+    expect(screen.getByRole("region", { name: "能力绑定" })).toBeVisible();
+    expect(screen.getByText("绑定模型")).toBeVisible();
+
+    await user.click(policy);
+    expect(screen.getByRole("region", { name: "运行策略" })).toBeVisible();
+    expect(screen.getByText("跨会话记忆")).toBeVisible();
+    expect(screen.queryByText("检查并创建")).not.toBeInTheDocument();
   });
 });

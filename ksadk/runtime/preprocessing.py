@@ -102,7 +102,14 @@ async def prepare_runtime_start(request: StartRequest, runner: Any) -> PreparedR
         user_id=request.user_id,
         user_input=prepared.user_input,
     )
-    prepared.memory_recall_events = ambient_contexts.get("memory_recall_events", [])
+    # Studio/平台控制面可以按 AgentVersion 的 providerRef 提前完成召回；它比仅依赖
+    # KSADK_LTM_* 环境变量的 ambient 结果更具体，不能被后者的空结果覆盖。
+    if prepared.memory_context is not None:
+        ambient_contexts["memory_context"] = prepared.memory_context
+    if prepared.memory_recall_events:
+        ambient_contexts["memory_recall_events"] = list(prepared.memory_recall_events)
+    else:
+        prepared.memory_recall_events = ambient_contexts.get("memory_recall_events", [])
     runtime_context = PlatformInvocationContext(
         agent_id=str(request.agent_id or "agent"),
         user_id=request.user_id,

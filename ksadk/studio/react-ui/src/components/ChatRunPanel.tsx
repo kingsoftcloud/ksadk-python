@@ -95,6 +95,58 @@ interface PromptReveal {
   sections?: Array<{ id: string; source?: string; content: string }>;
 }
 
+export interface MemoryRecallPresentation {
+  status: "used" | "empty" | "failed" | "unused";
+  title: string;
+  description: string;
+}
+
+/**
+ * 长期记忆的用户可见状态以 Runtime 真实事件为准。
+ * Native Runner 的 ContextPlan 只代表平台投影，可能不会精确回填 recalled_memory token。
+ */
+export function resolveMemoryRecallPresentation(
+  events: RunEvent[],
+  recalledMemoryTokens?: number | null,
+): MemoryRecallPresentation {
+  const recallEvents = events.filter(event => event.type.startsWith("memory.recall."));
+  const completed = [...recallEvents].reverse().find(event => event.type === "memory.recall.completed");
+  if (completed) {
+    const count = Number(completed.data?.candidate_count ?? completed.data?.count ?? 0);
+    return {
+      status: "used",
+      title: "已使用长期记忆",
+      description: count > 0 ? `已召回 ${count} 条与当前问题相关的记忆` : "已召回与当前问题相关的记忆",
+    };
+  }
+  if (recallEvents.some(event => event.type === "memory.recall.failed")) {
+    return {
+      status: "failed",
+      title: "长期记忆召回失败",
+      description: "本次未能读取长期记忆，可在 Trace 中查看原因",
+    };
+  }
+  if (recallEvents.some(event => event.type === "memory.recall.empty")) {
+    return {
+      status: "empty",
+      title: "未使用长期记忆",
+      description: "未找到与当前问题相关的记忆",
+    };
+  }
+  if (Number(recalledMemoryTokens || 0) > 0) {
+    return {
+      status: "used",
+      title: "已使用长期记忆",
+      description: "已召回与当前问题相关的记忆",
+    };
+  }
+  return {
+    status: "unused",
+    title: "未使用长期记忆",
+    description: "本次回答未选入长期记忆",
+  };
+}
+
 function fmtDuration(ms?: number | null): string {
   if (!Number.isFinite(ms) || Number(ms) < 0) return "未上报";
   if (Number(ms) < 1000) return `${Math.round(Number(ms))}ms`;
@@ -337,6 +389,10 @@ export function ChatRunPanel({ agentId, onOpenTrace, onClose }: { agentId: strin
         : "等待证据";
   const promptSectionNames = Object.keys(promptEvidence?.tokensBySection || {}).map(promptSectionLabel);
   const recalledMemoryTokens = contextEvidence?.tokensByKind?.recalled_memory;
+  const memoryRecall = useMemo(
+    () => resolveMemoryRecallPresentation(events, recalledMemoryTokens),
+    [events, recalledMemoryTokens],
+  );
   const projectedTokens = contextEvidence?.projectedInputTokens;
   const plannedTokens = contextEvidence?.plannedInputTokens;
   const reportedInputTokens = usageReported ? latest.usage?.inputTokens : contextEvidence?.runtimeReportedInputTokens;
@@ -433,9 +489,9 @@ export function ChatRunPanel({ agentId, onOpenTrace, onClose }: { agentId: strin
                       )) : <p>{promptReveal?.reason || "展开后按需读取 Prompt 正文；正文不会写入 Trace。"}</p>}
                   </div>
                 </details>
-                <div className="pcm-run-signal-static">
+                <div className={`pcm-run-signal-static ${memoryRecall.status === "failed" ? "attention" : ""}`}>
                   <BrainCircuit size={14} />
-                  <div><strong>{Number(recalledMemoryTokens || 0) > 0 ? "已使用长期记忆" : "未使用长期记忆"}</strong><span>{Number(recalledMemoryTokens || 0) > 0 ? "已召回与当前问题相关的记忆" : "本次回答未选入长期记忆"}</span></div>
+                  <div><strong>{memoryRecall.title}</strong><span>{memoryRecall.description}</span></div>
                 </div>
                 <div className={`pcm-run-signal-static ${contextStatus !== "正常" && contextStatus !== "等待证据" ? "attention" : ""}`}>
                   <Gauge size={14} />

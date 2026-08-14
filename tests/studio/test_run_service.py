@@ -448,6 +448,51 @@ async def test_completed_hosted_studio_turn_flushes_explicit_memory(
 
 
 @pytest.mark.asyncio
+async def test_codex_platform_memory_is_recalled_and_projected_across_sessions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex native thread 也必须消费 AgentVersion 指定的平台 Memory Provider。"""
+    memory_db = tmp_path / "codex-memory.db"
+    monkeypatch.setenv("KSADK_MEMORY_FLUSH_ENABLED", "1")
+    monkeypatch.setenv("KSADK_MEMORY_DB_PATH", str(memory_db))
+    calls: list[tuple[str, Any]] = []
+    registry = RuntimeRegistry()
+    registry.register("codex", lambda _context: _RecordingAdapter(calls, "codex"))
+    workspace = Workspace(tmp_path / "workspace")
+    workspace.initialize()
+    service = StudioRunService(workspace, RuntimeExecutor(registry))
+    spec = StudioRunSpec(
+        launch_context=RuntimeLaunchContext(runtime_type="codex", project_dir=tmp_path),
+        build_id="build-codex-memory",
+        agent_id="memory-agent",
+        request_config={
+            "base_instructions": "你是编程助手。",
+            "memory_write_rollout": "enabled",
+            "memory_enabled": True,
+            "memory_recall_enabled": True,
+            "memory_write_mode": "candidate",
+            "flush_before_compaction": True,
+            "provider_ref": "local-default",
+        },
+    )
+
+    first = await service.run(spec, "记住我喜欢吃大蒜", session_id="ses-memory-write")
+    second = await service.run(spec, "我喜欢吃什么", session_id="ses-memory-recall")
+
+    first_events = [event.type for event in service.event_store.events(first.id)]
+    second_events = [event.type for event in service.event_store.events(second.id)]
+    assert "memory.flush.completed" in first_events
+    assert "memory.recall.completed" in second_events
+    start_requests = [value for name, value in calls if name == "start"]
+    assert len(start_requests) == 2
+    projected = start_requests[1].config["base_instructions"]
+    assert "KsADK 平台长期记忆已启用" in projected
+    assert '<recalled_memory trust="untrusted">' in projected
+    assert "我喜欢吃大蒜" in projected
+
+
+@pytest.mark.asyncio
 async def test_framework_owned_studio_turn_does_not_flush_platform_memory(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

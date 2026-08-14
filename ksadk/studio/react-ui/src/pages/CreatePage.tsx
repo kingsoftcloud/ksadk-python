@@ -71,6 +71,12 @@ const WIZARD_STEP_META = [
   ["检查并创建", "行为、治理与构建"],
 ];
 
+const EDIT_SECTION_META = [
+  ["基础与 Prompt", "身份、Runtime 与系统提示词"],
+  ["能力绑定", "Model · Tool · MCP · Skill"],
+  ["运行策略", "Context · Memory · 保存构建"],
+];
+
 const TERMINAL_BUILD_OPERATION_STATES = new Set(["SUCCEEDED", "FAILED", "CANCELLED", "TIMED_OUT"]);
 
 async function waitForCreatedBuild(operationId: string) {
@@ -107,6 +113,7 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
   /* 向导状态 */
   const [step, setStep] = useState(1);
   const [maxStep, setMaxStep] = useState(1);
+  const [editSection, setEditSection] = useState(1);
   const quickForm = useForm<QuickAgentFormValues>({
     resolver: zodResolver(quickAgentSchema) as Resolver<QuickAgentFormValues>,
     defaultValues: {
@@ -148,7 +155,7 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
   const [contextOwnership, setContextOwnership] = useState("auto");
   const [contextEngineRollout, setContextEngineRollout] = useState("shadow");
   const [memoryEnabled, setMemoryEnabled] = useState(false);
-  const [memoryWriteRollout, setMemoryWriteRollout] = useState("shadow");
+  const [memoryWriteRollout, setMemoryWriteRollout] = useState("enabled");
   const contextOwnershipOptions = useMemo(() => {
     const automatic = { value: "auto", label: "自动（推荐）", description: "根据 Runtime 能力选择安全模式" };
     if (runtime === "codex") {
@@ -406,7 +413,7 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
         rollout: {
           ...(spec.context?.rollout || {}),
           contextEngine: contextEngineRollout,
-          memoryWrite: memoryEnabled ? memoryWriteRollout : "off",
+          memoryWrite: memoryEnabled ? "enabled" : "off",
         },
       };
       spec.memory = {
@@ -659,7 +666,7 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
 
   const renderCreateRailContent = (showModeLabel: boolean) => (
     <div className="create-rail-panel">
-      {showModeLabel && <div className="create-rail-label">创建方式</div>}
+      {showModeLabel && !editingAgentId && <div className="create-rail-label">创建方式</div>}
       {!editingAgentId && (
         <nav className="authoring-mode-tabs" aria-label="创建方式">
           {MODE_TABS.map(tab => {
@@ -672,7 +679,30 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
           })}
         </nav>
       )}
-      {(editingAgentId || mode === "quick") && (
+      {editingAgentId ? (
+        <>
+          <div className="create-rail-label wizard-step-label">编辑分区</div>
+          <nav className="wizard-steps" aria-label="编辑分区">
+            {EDIT_SECTION_META.map((meta, index) => {
+              const number = index + 1;
+              return (
+                <button
+                  key={number}
+                  className={`wizard-step${editSection === number ? " active" : ""}`}
+                  type="button"
+                  onClick={() => {
+                    setEditSection(number);
+                    if (viewportMode === "compact") closeCreateRail(true);
+                  }}
+                >
+                  <span className="step-number">{number}</span>
+                  <span><strong>{meta[0]}</strong><small>{meta[1]}</small></span>
+                </button>
+              );
+            })}
+          </nav>
+        </>
+      ) : mode === "quick" && (
         <>
           <div className="create-rail-divider" />
           <div className="create-rail-label wizard-step-label">配置步骤</div>
@@ -682,9 +712,9 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
               return (
                 <button
                   key={number}
-                  className={`wizard-step${(editingAgentId ? number === 1 : step === number) ? " active" : ""}${!editingAgentId && number < maxStep && number !== step ? " completed" : ""}`}
+                  className={`wizard-step${step === number ? " active" : ""}${number < maxStep && number !== step ? " completed" : ""}`}
                   type="button"
-                  disabled={Boolean(editingAgentId) || number > maxStep}
+                  disabled={number > maxStep}
                   onClick={() => gotoStep(number)}
                 >
                   <span className="step-number">{number}</span>
@@ -719,7 +749,7 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
           aria-controls="createRail"
           onClick={() => setCreateRailOpen(open => !open)}
         >
-          创建方式
+          {editingAgentId ? "编辑分区" : "创建方式"}
         </button>
         <div className="draft-state"><span className="status-dot neutral" /><span>{draftState}</span></div>
       </header>
@@ -735,8 +765,8 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
           <StudioDrawer
             open
             compact
-            title="创建方式"
-            subtitle="切换创建入口，或查看当前配置步骤。"
+            title={editingAgentId ? "编辑分区" : "创建方式"}
+            subtitle={editingAgentId ? "在三个配置分区间自由切换。" : "切换创建入口，或查看当前配置步骤。"}
             onOpenChange={open => {
               if (!open) closeCreateRail(true);
             }}
@@ -750,6 +780,7 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
             <AgentEditor
               agentId={editingAgentId}
               catalog={catalog}
+              activeSection={editSection}
               onSaved={(id, openChat) => onCreated(id, openChat)}
               onAppearanceSaved={onAgentsChanged}
             />
@@ -1250,25 +1281,14 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
                         <input
                           type="checkbox"
                           checked={memoryEnabled}
-                          onChange={event => { setMemoryEnabled(event.target.checked); markDirty(); }}
+                          onChange={event => {
+                            setMemoryEnabled(event.target.checked);
+                            setMemoryWriteRollout(event.target.checked ? "enabled" : "off");
+                            markDirty();
+                          }}
                         />
-                        <span><strong>在后续会话参考长期记忆</strong><small>只召回稳定事实和持续状态，不等于保存完整聊天记录；记忆写入需单独开启。</small></span>
+                        <span><strong>启用跨会话记忆</strong><small>保存通过策略检查的稳定事实，并在后续会话按需召回；不会保存完整聊天记录。</small></span>
                       </label>
-                      {memoryEnabled && (
-                        <FormField label="长期记忆保存策略" requirement="optional" htmlFor="memoryWriteRollout" hint="企业环境建议先观察候选，确认敏感信息、冲突和质量策略后再正式保存。">
-                          <StudioSelect
-                            id="memoryWriteRollout"
-                            ariaLabel="记忆写入"
-                            value={memoryWriteRollout}
-                            options={[
-                              { value: "off", label: "不保存新记忆" },
-                              { value: "shadow", label: "仅生成候选（推荐）" },
-                              { value: "enabled", label: "通过策略检查后保存" },
-                            ]}
-                            onValueChange={value => { setMemoryWriteRollout(value); markDirty(); }}
-                          />
-                        </FormField>
-                      )}
                     </div>
                   </details>
                   <label className="post-create-option">
@@ -1326,7 +1346,7 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
                   <div><dt>Tool</dt><dd>{selectedTools.length}</dd></div>
                   <div><dt>策略</dt><dd>{template === "research" ? "Plan-Act-Observe" : "Direct"}</dd></div>
                   <div><dt>上下文优化</dt><dd>{contextEngineRollout === "shadow" ? "仅观察" : contextEngineRollout === "enabled" ? "正式启用" : "Runtime 默认"}</dd></div>
-                  <div><dt>长期记忆</dt><dd>{memoryEnabled ? (memoryWriteRollout === "enabled" ? "召回并保存" : "仅召回/观察") : "未启用"}</dd></div>
+                  <div><dt>长期记忆</dt><dd>{memoryEnabled ? "召回并保存" : "未启用"}</dd></div>
                 </dl>
                 <div className="summary-divider" />
                 <div className="summary-note">
