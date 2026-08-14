@@ -314,6 +314,11 @@ class SqliteMemoryProvider:
             placeholders = ",".join("?" for _ in request.memory_types)
             where_parts.append(f"memory_type IN ({placeholders})")
             params.extend(request.memory_types)
+        slot_key = str(request.filters.get("slot_key") or "").strip()
+        if slot_key:
+            # JSON 路径固定、值参数化；仅选择相同事实槽位，不做正文模糊猜测。
+            where_parts.append("json_extract(metadata, '$.slot_key') = ?")
+            params.append(slot_key)
         # keyword 检索：ASCII 词项保持 AND；中文无空格，使用有界二元词组 OR。
         ascii_terms, cjk_terms = _keyword_query_terms(str(request.query or ""))
         for token in ascii_terms:

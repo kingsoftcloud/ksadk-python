@@ -11,8 +11,9 @@ Coordinator 是本地与云端一致的运行时编排层：负责召回（recal
 from __future__ import annotations
 
 import logging
+import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Mapping
 
 from ksadk.memory.models import (
@@ -157,9 +158,44 @@ class MemoryCoordinator:
         for candidate in candidates:
             try:
                 existing = None
+                conflicting_records: list[MemoryRecord] = []
                 if existing_index and candidate.conflicts_with:
                     existing = existing_index.get(candidate.conflicts_with[0])
-                evaluation = self._policy.evaluate(candidate, existing=existing)
+                effective_candidate = candidate
+                if existing is None and candidate.slot_key:
+                    slot_records = self._find_active_slot_records(candidate)
+                    from ksadk.memory.policy import content_hash
+
+                    candidate_hash = content_hash(candidate.content)
+                    same_record = next(
+                        (item for item in slot_records if item.content_hash == candidate_hash), None
+                    )
+                    conflicting_records = [
+                        item for item in slot_records if item.content_hash != candidate_hash
+                    ]
+                    if same_record is not None:
+                        if conflicting_records:
+                            self._mark_superseded(
+                                conflicting_records,
+                                superseded_by=same_record.memory_id,
+                                reason="conflict_supersede",
+                            )
+                            committed += 1
+                        else:
+                            # 同一槽位、同一事实重复声明：不新增重复记录。
+                            rejected += 1
+                        continue
+                    if conflicting_records:
+                        existing = max(
+                            conflicting_records,
+                            key=lambda item: (item.version, item.updated_at),
+                        )
+                        effective_candidate = replace(
+                            candidate,
+                            operation="update",
+                            conflicts_with=[item.memory_id for item in conflicting_records],
+                        )
+                evaluation = self._policy.evaluate(effective_candidate, existing=existing)
                 if evaluation.decision == "reject":
                     rejected += 1
                     continue
@@ -167,7 +203,12 @@ class MemoryCoordinator:
                     # pending 不在本轮 flush 提交（留 Coordinator 后台聚合）。
                     rejected += 1
                     continue
-                self._commit(candidate, evaluation, existing)
+                self._commit(
+                    effective_candidate,
+                    evaluation,
+                    existing,
+                    conflicting_records=conflicting_records,
+                )
                 committed += 1
             except Exception as exc:  # noqa: BLE001
                 errors.append(str(exc))
@@ -180,6 +221,54 @@ class MemoryCoordinator:
             rejected=rejected,
             errors=errors,
         )
+
+    def _find_active_slot_records(self, candidate: MemoryCandidate) -> list[MemoryRecord]:
+        """定位同槽位 active 事实；兼容尚无 slot metadata 的历史记录。"""
+        if not candidate.slot_key or not self.capabilities().metadata_filter:
+            return []
+        result = self._provider.search(
+            MemorySearchRequest(
+                query="",
+                scopes=[(candidate.scope, candidate.scope_id)],
+                memory_types=[candidate.memory_type],
+                top_k=8,
+                max_tokens=8192,
+                min_score=0.0,
+                filters={"slot_key": candidate.slot_key},
+            )
+        )
+        if result.status != "ok":
+            return []
+        matches = [
+            record
+            for record in result.records
+            if record.status == "active"
+            and str(record.metadata.get("slot_key") or "") == candidate.slot_key
+        ]
+        # 旧版本记录没有 slot_key：仅在同 scope/type 内检索，并再次用确定性槽位函数校验，
+        # 不因正文相似就覆盖无关事实。即使已有新格式记录，也继续清理同槽位 legacy active。
+        legacy_result = self._provider.search(
+            MemorySearchRequest(
+                query=candidate.content,
+                scopes=[(candidate.scope, candidate.scope_id)],
+                memory_types=[candidate.memory_type],
+                top_k=32,
+                max_tokens=32768,
+                min_score=0.0,
+            )
+        )
+        if legacy_result.status != "ok":
+            return matches
+        from ksadk.memory.extraction import derive_profile_slot_key
+
+        by_id = {record.memory_id: record for record in matches}
+        for record in legacy_result.records:
+            if (
+                record.status == "active"
+                and derive_profile_slot_key(record.content) == candidate.slot_key
+            ):
+                by_id[record.memory_id] = record
+        return list(by_id.values())
 
     def propose_and_commit(
         self,
@@ -217,6 +306,8 @@ class MemoryCoordinator:
         candidate: MemoryCandidate,
         evaluation: MemoryEvaluation,
         existing: MemoryRecord | None,
+        *,
+        conflicting_records: list[MemoryRecord] | None = None,
     ) -> None:
         from ksadk.memory.policy import content_hash
 
@@ -232,8 +323,15 @@ class MemoryCoordinator:
                 )
             return
 
-        now_iso = ""
-        memory_id = existing.memory_id if existing is not None else f"mem_{uuid.uuid4().hex[:24]}"
+        now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        memory_id = f"mem_{uuid.uuid4().hex[:24]}"
+        if evaluation.operation == "update" and existing is not None:
+            # 保留旧事实用于审计，但立即移出 active 召回集合；新事实使用新 memory_id。
+            self._mark_superseded(
+                conflicting_records or [existing],
+                superseded_by=memory_id,
+                reason=evaluation.reason,
+            )
         record = MemoryRecord(
             memory_id=memory_id,
             tenant_id=self._tenant_id,
@@ -253,15 +351,52 @@ class MemoryCoordinator:
             source_event_ids=list(candidate.source_event_ids),
             source_seq_range=None,
             content_hash=content_hash(candidate.content),
-            version=evaluation.new_version or 1,
-            metadata={"reason": candidate.reason, "operation": evaluation.operation},
+            version=(max((r.version for r in conflicting_records or [existing]), default=0) + 1)
+            if evaluation.operation == "update" and existing is not None
+            else evaluation.new_version or 1,
+            metadata={
+                "reason": candidate.reason,
+                "operation": evaluation.operation,
+                **({"slot_key": candidate.slot_key} if candidate.slot_key else {}),
+                **(
+                    {
+                        "supersedes": [
+                            item.memory_id for item in conflicting_records or [existing]
+                        ]
+                    }
+                    if evaluation.operation == "update" and existing is not None
+                    else {}
+                ),
+            },
             created_at=now_iso,
             updated_at=now_iso,
         )
         self._provider.upsert(
             record,
-            expected_version=(existing.version if existing is not None else None),
+            expected_version=None,
         )
+
+    def _mark_superseded(
+        self,
+        records: list[MemoryRecord],
+        *,
+        superseded_by: str,
+        reason: str,
+    ) -> None:
+        now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        for record in records:
+            superseded = replace(
+                record,
+                status="superseded",
+                valid_to=now_iso,
+                metadata={
+                    **record.metadata,
+                    "superseded_by": superseded_by,
+                    "superseded_reason": reason,
+                },
+                updated_at=now_iso,
+            )
+            self._provider.upsert(superseded, expected_version=record.version)
 
     def _provider_name(self) -> str:
         return type(self._provider).__name__

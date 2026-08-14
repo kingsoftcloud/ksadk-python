@@ -112,6 +112,9 @@ class MemoryCandidate:
     confidence: float
     importance: float
     source_event_ids: list[str]
+    # 同一类可变事实的稳定槽位，例如 ``profile.preference.food``。
+    # 仅在能够确定语义槽位时填写；Coordinator 据此做冲突替代，避免把无关事实互相覆盖。
+    slot_key: str = ""
     conflicts_with: list[str] = field(default_factory=list)
     sensitive_labels: list[SensitiveLabel] = field(default_factory=list)
     reason: str = ""

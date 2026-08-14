@@ -25,6 +25,15 @@ _EXPLICIT_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"(?i)remember\s+(?:that\s+)?(.+)", re.IGNORECASE),
     re.compile(r"(?i)请记[:：]?\s*(.+)"),
 )
+# 明确纠正同一偏好槽位。首期只覆盖语义边界清晰的动作型偏好，避免把
+# “喜欢音乐”和“喜欢运动”等无关事实误判为冲突。
+_PREFERENCE_CORRECTION = re.compile(
+    r"(?P<prefix>(?:我|本人)?喜欢(?P<action>吃|喝|用|看|听|玩))"
+    r"(?:的)?(?:是)?\s*(?P<new>.+?)\s*(?:，|,)?\s*(?:而)?不是\s*"
+    r"(?P<old>.+?)(?:[。.!！]|$)",
+    re.IGNORECASE,
+)
+_PREFERENCE_SLOT = re.compile(r"(?:我|本人)?喜欢(?P<action>吃|喝|用|看|听|玩)")
 # 工具稳定事实信号。
 _FACT_SIGNALS = ("confirmed", "最终确认", "final", "verified", "确认成功")
 
@@ -36,6 +45,23 @@ def _event_text(event: any) -> str:  # type: ignore[name-defined]
         return extract_event_text(event)
     except Exception:  # noqa: BLE001
         return str(getattr(event, "text", "") or "")
+
+
+def derive_profile_slot_key(content: str) -> str:
+    """为边界明确的可变偏好生成稳定槽位；无法确定时返回空串。"""
+    match = _PREFERENCE_SLOT.search(str(content or ""))
+    if not match:
+        return ""
+    action = match.group("action")
+    labels = {
+        "吃": "food",
+        "喝": "drink",
+        "用": "tool",
+        "看": "viewing",
+        "听": "listening",
+        "玩": "activity",
+    }
+    return f"profile.preference.{labels[action]}"
 
 
 def propose_memory_candidates(
@@ -62,6 +88,28 @@ def propose_memory_candidates(
 
         # 1. 用户显式记忆意图
         if author == "user" or event_type == "user_message":
+            correction = _PREFERENCE_CORRECTION.search(text)
+            if correction:
+                prefix = correction.group("prefix").strip()
+                new_value = correction.group("new").strip().strip("。.，, ")
+                if new_value:
+                    content = f"{prefix}{new_value}"
+                    candidates.append(
+                        MemoryCandidate(
+                            candidate_id=f"cand_{uuid.uuid4().hex[:16]}",
+                            operation="update",
+                            memory_type="profile",
+                            scope=scope,
+                            scope_id=scope_id,
+                            content=content[:1000],
+                            confidence=0.95,
+                            importance=0.9,
+                            source_event_ids=[event_id],
+                            slot_key=derive_profile_slot_key(content),
+                            reason="explicit_user_correction",
+                        )
+                    )
+                    continue
             for pattern in _EXPLICIT_PATTERNS:
                 m = pattern.search(text)
                 if m:
@@ -79,6 +127,7 @@ def propose_memory_candidates(
                             confidence=0.9,
                             importance=0.8,
                             source_event_ids=[event_id],
+                            slot_key=derive_profile_slot_key(content),
                             reason="explicit_user_request",
                         )
                     )
@@ -116,4 +165,4 @@ class MemoryExtractor:
         return propose_memory_candidates(events, scope=self._scope, scope_id=self._scope_id)
 
 
-__all__ = ["MemoryExtractor", "propose_memory_candidates"]
+__all__ = ["MemoryExtractor", "derive_profile_slot_key", "propose_memory_candidates"]

@@ -395,10 +395,17 @@ async def test_turn_memory_is_written_to_user_scope_for_cross_session_recall(
     )
 
     provider = SqliteMemoryProvider(db_path=memory_path)
+    from ksadk.memory.coordinator import agent_user_scope_id
+
     result = provider.search(
         MemorySearchRequest(
             query="Python",
-            scopes=[("user", "user-1")],
+            scopes=[
+                (
+                    "user",
+                    agent_user_scope_id(agent_id="agent-1", user_id="user-1"),
+                )
+            ],
             memory_types=["profile", "fact", "episode"],
         )
     )

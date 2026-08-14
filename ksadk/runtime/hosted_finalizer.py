@@ -143,7 +143,7 @@ async def finalize_hosted_turn(
         )
         # explicit_only：只保留用户明确要求记住的内容（方案 §2）
         if policy.is_explicit_only:
-            candidates = [c for c in candidates if c.reason == "explicit_user_request"]
+            candidates = [c for c in candidates if c.reason.startswith("explicit_user_")]
         provider_name = ctx.provider_ref or "local-default"
         rollout = policy.write_rollout
         if candidates:

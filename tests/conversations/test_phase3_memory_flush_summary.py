@@ -51,6 +51,24 @@ def test_extractor_remember_english():
     assert len(cands) == 1 and "master" in cands[0].content.lower()
 
 
+def test_extractor_assigns_stable_slot_to_explicit_food_preference():
+    events = [_user_event(1, "记住我喜欢吃芥末")]
+    cands = propose_memory_candidates(events, scope_id="u1")
+    assert len(cands) == 1
+    assert cands[0].content == "我喜欢吃芥末"
+    assert cands[0].slot_key == "profile.preference.food"
+
+
+def test_extractor_treats_explicit_preference_correction_as_update():
+    events = [_user_event(1, "我喜欢吃的是西红柿，不是芥末。")]
+    cands = propose_memory_candidates(events, scope_id="u1")
+    assert len(cands) == 1
+    assert cands[0].operation == "update"
+    assert cands[0].content == "我喜欢吃西红柿"
+    assert cands[0].slot_key == "profile.preference.food"
+    assert cands[0].reason == "explicit_user_correction"
+
+
 def test_extractor_tool_fact():
     events = [_assistant_event(2, "测试结果 confirmed: 全部通过")]
     cands = propose_memory_candidates(events, scope_id="u1")

@@ -176,6 +176,70 @@ async def test_finalize_does_not_duplicate_memory_on_reentry(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
+async def test_finalize_correction_supersedes_old_preference_across_turns(
+    tmp_path, monkeypatch
+):
+    db = tmp_path / "mem.db"
+    monkeypatch.setenv("KSADK_MEMORY_FLUSH_ENABLED", "true")
+    monkeypatch.setenv("KSADK_MEMORY_DB_PATH", str(db))
+
+    def context(invocation_id: str, text: str) -> FinalizeContext:
+        return FinalizeContext(
+            session_id=f"session-{invocation_id}",
+            invocation_id=invocation_id,
+            user_id="local-user",
+            agent_id="food-agent",
+            context_plan=None,
+            shadow_context_plan=None,
+            usage=None,
+            runtime_type="codex",
+            memory_enabled=True,
+            memory_write_rollout="enabled",
+            memory_write_mode="explicit_only",
+            memory_recall_enabled=True,
+            flush_before_compaction=True,
+            provider_ref="local-default",
+            session_events=[
+                SimpleNamespace(
+                    author="user",
+                    event_type="user_message",
+                    text=text,
+                    seq_id=1,
+                    id=f"event-{invocation_id}",
+                    invocation_id=invocation_id,
+                )
+            ],
+        )
+
+    await finalize_hosted_turn(context("old", "记住我喜欢吃芥末"))
+    provider = SqliteMemoryProvider(db_path=str(db))
+    from ksadk.memory.coordinator import agent_user_scope_id
+    from ksadk.memory.models import MemorySearchRequest
+
+    scope_id = agent_user_scope_id(agent_id="food-agent", user_id="local-user")
+    old_records = provider.search(
+        MemorySearchRequest(
+            query="喜欢吃",
+            scopes=[("user", scope_id)],
+            memory_types=["profile"],
+        )
+    ).records
+    assert [record.content for record in old_records] == ["我喜欢吃芥末"]
+    old_id = old_records[0].memory_id
+
+    await finalize_hosted_turn(context("new", "我喜欢吃的是西红柿，不是芥末"))
+    active = provider.search(
+        MemorySearchRequest(
+            query="喜欢吃",
+            scopes=[("user", scope_id)],
+            memory_types=["profile"],
+        )
+    ).records
+    assert [record.content for record in active] == ["我喜欢吃西红柿"]
+    assert provider.get(old_id).status == "superseded"
+
+
+@pytest.mark.asyncio
 async def test_finalize_failure_does_not_raise(tmp_path, monkeypatch):
     """finalizer 失败不阻断主链路（best-effort）。"""
     monkeypatch.setenv("KSADK_MEMORY_FLUSH_ENABLED", "true")

@@ -304,6 +304,99 @@ def test_policy_conflict_supersede():
     assert ev.decision == "commit" and ev.operation == "update" and ev.new_version == 2
 
 
+def test_coordinator_supersedes_previous_fact_in_same_slot(provider):
+    coord = MemoryCoordinator(provider)
+    old_candidate = MemoryCandidate(
+        candidate_id="old-candidate",
+        operation="add",
+        memory_type="profile",
+        scope="user",
+        scope_id="u1",
+        content="我喜欢吃芥末",
+        confidence=0.9,
+        importance=0.8,
+        source_event_ids=["e1"],
+        slot_key="profile.preference.food",
+        reason="explicit_user_request",
+    )
+    assert coord.flush_candidates([old_candidate]).committed == 1
+    old_result = provider.search(
+        MemorySearchRequest(
+            query="",
+            scopes=[("user", "u1")],
+            memory_types=["profile"],
+            filters={"slot_key": "profile.preference.food"},
+        )
+    )
+    assert len(old_result.records) == 1
+    old_record = old_result.records[0]
+
+    corrected = MemoryCandidate(
+        candidate_id="new-candidate",
+        operation="update",
+        memory_type="profile",
+        scope="user",
+        scope_id="u1",
+        content="我喜欢吃西红柿",
+        confidence=0.95,
+        importance=0.9,
+        source_event_ids=["e2"],
+        slot_key="profile.preference.food",
+        reason="explicit_user_correction",
+    )
+    assert coord.flush_candidates([corrected]).committed == 1
+
+    superseded = provider.get(old_record.memory_id)
+    assert superseded is not None
+    assert superseded.status == "superseded"
+    assert superseded.metadata["superseded_by"]
+
+    active = provider.search(
+        MemorySearchRequest(
+            query="喜欢吃",
+            scopes=[("user", "u1")],
+            memory_types=["profile"],
+            filters={"slot_key": "profile.preference.food"},
+        )
+    ).records
+    assert [record.content for record in active] == ["我喜欢吃西红柿"]
+    assert active[0].metadata["supersedes"] == [old_record.memory_id]
+
+
+def test_coordinator_supersedes_legacy_profile_without_slot_metadata(provider):
+    provider.upsert(
+        _record(
+            memory_id="legacy-mustard",
+            content="我喜欢吃芥末",
+            memory_type="profile",
+        ),
+        expected_version=None,
+    )
+    corrected = MemoryCandidate(
+        candidate_id="correction",
+        operation="update",
+        memory_type="profile",
+        scope="user",
+        scope_id="u1",
+        content="我喜欢吃西红柿",
+        confidence=0.95,
+        importance=0.9,
+        source_event_ids=["e2"],
+        slot_key="profile.preference.food",
+        reason="explicit_user_correction",
+    )
+    assert MemoryCoordinator(provider).flush_candidates([corrected]).committed == 1
+    assert provider.get("legacy-mustard").status == "superseded"
+    active = provider.search(
+        MemorySearchRequest(
+            query="喜欢吃",
+            scopes=[("user", "u1")],
+            memory_types=["profile"],
+        )
+    ).records
+    assert [record.content for record in active] == ["我喜欢吃西红柿"]
+
+
 # ---- Coordinator（方案 §9.2 / §10.6 / §10.8）----
 
 
