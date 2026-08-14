@@ -1,6 +1,12 @@
 """Public contracts and file loading for local Agent evaluation."""
 
 from .a2a_adapter import A2ATargetAdapter, A2ATargetError
+from .adapters import (
+    EvaluationNotImplementedError,
+    TargetAdapter,
+    TargetAdapterError,
+    create_target_adapter,
+)
 from .cloud_binding import CloudBinding, CloudBindingError, CloudBindingStore
 from .cloud_converter import (
     CloudDatasetColumn,
@@ -10,11 +16,10 @@ from .cloud_converter import (
     evalset_from_dataset_snapshot,
     evalset_to_dataset_snapshot,
 )
-from .adapters import (
-    EvaluationNotImplementedError,
-    TargetAdapter,
-    TargetAdapterError,
-    create_target_adapter,
+from .cloud_service import (
+    CloudEvalSetPreviewError,
+    CloudEvalSetPublishResult,
+    CloudEvalSetService,
 )
 from .contracts import (
     AssertionSpec,
@@ -62,6 +67,9 @@ __all__ = [
     "CloudDatasetColumn",
     "CloudDatasetRow",
     "CloudDatasetSnapshot",
+    "CloudEvalSetPreviewError",
+    "CloudEvalSetPublishResult",
+    "CloudEvalSetService",
     "CaseRun",
     "DataPolicy",
     "EvalCase",
