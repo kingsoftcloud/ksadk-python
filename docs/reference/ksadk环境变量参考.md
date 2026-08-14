@@ -4,6 +4,58 @@
 
 本文档覆盖 `ksadk/` 中已经注册或常见可配置的运行时变量，由 `tests/test_config_env_registry.py` 保证 `ENV_VAR_REGISTRY` 注册项与文档一致。测试专用变量、PID/marker/cache 等进程内部临时变量、镜像构建脚本内部常量不会逐项列入表格；如果要排查这些高级项，以对应脚本源码和模板 README 为准。
 
+### PCM（Prompt、Context 与 Memory）高级变量
+
+以下变量主要供平台灰度、诊断和高级部署使用，普通 Agent 通常应通过 Studio 或 AgentSpec 策略配置，不建议逐项手工设置。
+
+| 变量 | 模块 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `KSADK_BASELINE_COLLECT` | Context | `0` | 是否采集 PCM 基线。 |
+| `KSADK_BASELINE_EXECUTION_TARGET` | Context | 未设置 | 基线记录的执行目标标签。 |
+| `KSADK_BASELINE_FLUSH_EACH_TURN` | Context | `0` | 是否在每轮结束后立即写出基线。 |
+| `KSADK_BASELINE_PATH` | Context | 未设置 | 基线 JSONL 输出路径。 |
+| `KSADK_COMPACT_HARD_LIMIT_PCT` | Context | 未设置 | Compaction 硬阈值百分比。 |
+| `KSADK_COMPACT_HARD_LIMIT_PCT_DEFAULT` | Context | 未设置 | Compaction 默认硬阈值百分比。 |
+| `KSADK_COMPACT_SOFT_LIMIT_PCT` | Context | 未设置 | Compaction 软阈值百分比。 |
+| `KSADK_COMPACT_SOFT_LIMIT_PCT_DEFAULT` | Context | 未设置 | Compaction 默认软阈值百分比。 |
+| `KSADK_CONTEXT_CACHE_BREAK_OBSERVABILITY` | Context | `0` | 是否启用 Prompt cache-break 诊断。 |
+| `KSADK_CONTEXT_CONTRIBUTOR_ALLOW_PLATFORM_TRUST` | Context | `0` | 是否允许平台可信级 Context Contributor。 |
+| `KSADK_CONTEXT_CONTRIBUTOR_FAILURE_MODE` | Context | 未设置 | Contributor 失败策略。 |
+| `KSADK_CONTEXT_CONTRIBUTOR_TIMEOUT_MS` | Context | 未设置 | Contributor 超时时间（毫秒）。 |
+| `KSADK_CONTEXT_EMERGENCY_KEEP_TAIL_GROUPS` | Context | 未设置 | 紧急压缩时保留的最新事件组数。 |
+| `KSADK_CONTEXT_ENGINE_V2_ENABLED` | Context | `0` | 是否启用 PCM Context Planner。 |
+| `KSADK_CONTEXT_HARD_LIMIT_PERCENT` | Context | 未设置 | 请求级 Context 硬预算阈值。 |
+| `KSADK_CONTEXT_KEEP_TAIL_GROUPS` | Context | 未设置 | 常规压缩时保留的最新事件组数。 |
+| `KSADK_CONTEXT_MAX_RETRY_AFTER_PTL` | Context | 未设置 | Prompt Too Long 后最多受控重试次数。 |
+| `KSADK_CONTEXT_RULE_FILES_MAX_TOKENS` | Context | 未设置 | 规则文件合计 Token 预算。 |
+| `KSADK_CONTEXT_RULE_FILE_MAX_TOKENS` | Context | 未设置 | 单个规则文件 Token 预算。 |
+| `KSADK_CONTEXT_SAFETY_BUFFER_TOKENS` | Context | 未设置 | 上下文窗口安全预留 Token。 |
+| `KSADK_CONTEXT_SEMANTIC_ENABLED` | Context | `0` | 是否启用语义压缩。 |
+| `KSADK_CONTEXT_SEMANTIC_TIMEOUT_MS` | Context | 未设置 | 语义压缩超时时间（毫秒）。 |
+| `KSADK_CONTEXT_SOFT_LIMIT_PERCENT` | Context | 未设置 | 请求级 Context 软预算阈值。 |
+| `KSADK_CONTEXT_TOOL_RESULT_MAX_TOKENS` | Context | 未设置 | 单个 Tool Result 的最大 Token 预算。 |
+| `KSADK_CONTEXT_WORKING_STATE_ENABLED` | Context | `0` | 是否启用结构化 Working State。 |
+| `KSADK_CONTEXT_WORKING_STATE_EXTRACTION_TIMEOUT_MS` | Context | 未设置 | Working State 提取超时时间（毫秒）。 |
+| `KSADK_CONTEXT_WORKING_STATE_MAX_TOKENS` | Context | 未设置 | Working State Token 预算。 |
+| `KSADK_CONTEXT_WORKING_STATE_MIN_TOKEN_GROWTH` | Context | 未设置 | 刷新 Working State 前的最小 Token 增长量。 |
+| `KSADK_DEPLOYMENT_MODE` | Runtime | 未设置 | 部署模式及所有权声明。 |
+| `KSADK_EVAL_COMMIT` | Evaluation | 未设置 | 评测记录关联的源代码提交。 |
+| `KSADK_LTM_FORCE_INMEMORY` | Memory | `0` | 测试时强制使用内存长期记忆后端。 |
+| `KSADK_MEMORY_CORE_MAX_TOKENS` | Memory | 未设置 | Core Memory Token 预算。 |
+| `KSADK_MEMORY_DB_PATH` | Memory | 未设置 | 本地 PCM Memory 数据库路径。 |
+| `KSADK_MEMORY_ENABLED` | Memory | `0` | 是否启用平台 Memory Projection。 |
+| `KSADK_MEMORY_FLUSH_BEFORE_COMPACTION` | Memory | `0` | 压缩前是否刷新 Memory Candidate。 |
+| `KSADK_MEMORY_FLUSH_ENABLED` | Memory | `0` | 是否允许提交 Memory Candidate。 |
+| `KSADK_MEMORY_MIN_SCORE` | Memory | 未设置 | Memory Recall 最低相关性分数。 |
+| `KSADK_MEMORY_PROVIDER` | Memory | 未设置 | 平台 Memory Provider 选择器。 |
+| `KSADK_MEMORY_RECALL_MAX_TOKENS` | Memory | 未设置 | Memory Recall Token 预算。 |
+| `KSADK_MEMORY_RECALL_TOP_K` | Memory | 未设置 | 最多召回的 Memory 条目数。 |
+| `KSADK_MEMORY_WRITE_MODE` | Memory | 未设置 | Memory 写入模式：off、explicit-only 或 candidate。 |
+| `KSADK_PLATFORM_SAFETY_TEXT` | Prompt | 未设置 | Prompt Compiler 注入的平台安全规则。 |
+| `KSADK_PROMPT_AUTO_DISCOVERY` | Prompt | `0` | 是否自动发现项目 Prompt 来源。 |
+| `KSADK_PROMPT_COMPILER_ENABLED` | Prompt | `0` | 是否启用结构化 Prompt 编译。 |
+| `KSADK_TOKENIZER_PROVIDER` | Context | 未设置 | Context 计量使用的 Tokenizer Provider。 |
+
 ## 1. 阅读规则
 
 | 字段 | 含义 |
@@ -101,8 +153,9 @@
 | 变量 | 是否必传 | 别名/兼容 | 敏感 | 配置方/来源 | 说明 |
 | --- | --- | --- | --- | --- | --- |
 | `KSADK_KB_DATASET_ID` | 条件必传 | 无 | 否 | 平台 / 开发者 | 配置后启用知识库检索。 |
-| `KSADK_KB_ACCESS_KEY` | 条件必传 | `KSYUN_ACCESS_KEY` | 是 | 平台 Secret | SDK 知识库 backend AK。 |
-| `KSADK_KB_SECRET_KEY` | 条件必传 | `KSYUN_SECRET_KEY` | 是 | 平台 Secret | SDK 知识库 backend SK。 |
+| `KSADK_KB_ACCESS_KEY` | 条件必传 | `KSYUN_ACCESS_KEY`、`KSYUN_ACCESS_KEY_ID` | 是 | 平台 Secret | SDK 知识库 backend AK。 |
+| `KSADK_KB_SECRET_KEY` | 条件必传 | `KSYUN_SECRET_KEY`、`KSYUN_SECRET_ACCESS_KEY` | 是 | 平台 Secret | SDK 知识库 backend SK。 |
+| `KSADK_KB_SESSION_TOKEN` | 否 | `KSYUN_SESSION_TOKEN` | 是 | 平台 Secret | SDK 知识库 backend 的 STS 临时会话 token。 |
 | `KSADK_KB_ENDPOINT` | 否 | 无 | 否 | 平台 / 开发者 | 默认 `aicp.api.ksyun.com`。 |
 | `KSADK_KB_REGION` | 否 | 无 | 否 | 平台 / 开发者 | 默认 `cn-beijing-6`。 |
 | `KSADK_KB_SCHEME` | 否 | 无 | 否 | 平台 / 开发者 | KB endpoint 协议。内网 endpoint 默认 `http`，其他默认 `https`。 |
@@ -110,8 +163,9 @@
 | `KSADK_LTM_BACKEND` | 否 | 无 | 否 | 开发者 | 长期记忆 backend，默认 `local`，可选 `http/sdk`。 |
 | `KSADK_LTM_HTTP_URL` | 条件必传 | 无 | 是 | 平台 Secret | `KSADK_LTM_BACKEND=http` 时需要。 |
 | `KSADK_LTM_HTTP_TOKEN` | 条件必传 | 无 | 是 | 平台 Secret | HTTP LTM 鉴权 token。 |
-| `KSADK_LTM_ACCESS_KEY` | 条件必传 | `KSYUN_ACCESS_KEY` | 是 | 平台 Secret | SDK LTM AK。 |
-| `KSADK_LTM_SECRET_KEY` | 条件必传 | `KSYUN_SECRET_KEY` | 是 | 平台 Secret | SDK LTM SK。 |
+| `KSADK_LTM_ACCESS_KEY` | 条件必传 | `KSYUN_ACCESS_KEY`、`KSYUN_ACCESS_KEY_ID` | 是 | 平台 Secret | SDK LTM AK。 |
+| `KSADK_LTM_SECRET_KEY` | 条件必传 | `KSYUN_SECRET_KEY`、`KSYUN_SECRET_ACCESS_KEY` | 是 | 平台 Secret | SDK LTM SK。 |
+| `KSADK_LTM_SESSION_TOKEN` | 否 | `KSYUN_SESSION_TOKEN` | 是 | 平台 Secret | SDK LTM backend 的 STS 临时会话 token。 |
 | `KSADK_LTM_AMBIENT_POLICY` | 否 | 无 | 否 | 平台 / 开发者 | runtime 自动注入长期记忆上下文策略：`on_demand/always/disabled`。 |
 | `KSADK_MEMORY_BACKEND` | 否 | 无 | 否 | 开发者 | 轻量 KV/消息历史 MemoryManager backend，默认 `memory`。 |
 | `KSADK_MEMORY_URL` | 条件必传 | 无 | 是 | 开发者 / Secret | `KSADK_MEMORY_BACKEND=redis` 等远端 backend 连接 URL。 |
@@ -286,8 +340,9 @@
 | `KSADK_LTM_BACKEND` | Long-term memory | 否 | `local` | 无 | 否 | 开发者 / 平台 | 否 | LTM backend。 |
 | `KSADK_LTM_HTTP_URL` | HTTP LTM | 条件必传 | 未设置 | 无 | 是 | Secret | 否 | HTTP LTM URL。 |
 | `KSADK_LTM_HTTP_TOKEN` | HTTP LTM | 条件必传 | 未设置 | 无 | 是 | Secret | 否 | HTTP LTM token。 |
-| `KSADK_LTM_ACCESS_KEY` | SDK LTM | 条件必传 | 未设置 | `KSYUN_ACCESS_KEY` | 是 | Secret | 否 | SDK LTM AK。 |
-| `KSADK_LTM_SECRET_KEY` | SDK LTM | 条件必传 | 未设置 | `KSYUN_SECRET_KEY` | 是 | Secret | 否 | SDK LTM SK。 |
+| `KSADK_LTM_ACCESS_KEY` | SDK LTM | 条件必传 | 未设置 | `KSYUN_ACCESS_KEY`、`KSYUN_ACCESS_KEY_ID` | 是 | Secret | 否 | SDK LTM AK。 |
+| `KSADK_LTM_SECRET_KEY` | SDK LTM | 条件必传 | 未设置 | `KSYUN_SECRET_KEY`、`KSYUN_SECRET_ACCESS_KEY` | 是 | Secret | 否 | SDK LTM SK。 |
+| `KSADK_LTM_SESSION_TOKEN` | SDK LTM | 否 | 未设置 | `KSYUN_SESSION_TOKEN` | 是 | Secret | 否 | SDK LTM STS 临时会话 token。 |
 | `KSADK_LTM_REGION` | SDK LTM | 否 | `cn-beijing-6` | 无 | 否 | 平台 / 开发者 | 否 | SDK LTM region。 |
 | `KSADK_LTM_ENDPOINT` | SDK LTM | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | SDK LTM endpoint。 |
 | `KSADK_LTM_SCHEME` | SDK LTM | 否 | `https` | 无 | 否 | 平台 / 开发者 | 否 | SDK LTM scheme。 |
@@ -311,8 +366,9 @@
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `KSADK_KB` | Knowledge base | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | AICP knowledge-base 连接配置前缀。 |
 | `KSADK_KB_DATASET_ID` | Knowledge base | 条件必传 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 存在时启用知识库。 |
-| `KSADK_KB_ACCESS_KEY` | Knowledge base | 条件必传 | 未设置 | `KSYUN_ACCESS_KEY` | 是 | Secret | 否 | KB AK。 |
-| `KSADK_KB_SECRET_KEY` | Knowledge base | 条件必传 | 未设置 | `KSYUN_SECRET_KEY` | 是 | Secret | 否 | KB SK。 |
+| `KSADK_KB_ACCESS_KEY` | Knowledge base | 条件必传 | 未设置 | `KSYUN_ACCESS_KEY`、`KSYUN_ACCESS_KEY_ID` | 是 | Secret | 否 | KB AK。 |
+| `KSADK_KB_SECRET_KEY` | Knowledge base | 条件必传 | 未设置 | `KSYUN_SECRET_KEY`、`KSYUN_SECRET_ACCESS_KEY` | 是 | Secret | 否 | KB SK。 |
+| `KSADK_KB_SESSION_TOKEN` | Knowledge base | 否 | 未设置 | `KSYUN_SESSION_TOKEN` | 是 | Secret | 否 | KB STS 临时会话 token。 |
 | `KSADK_KB_ENDPOINT` | Knowledge base | 否 | `aicp.api.ksyun.com` | 无 | 否 | 平台 / 开发者 | 否 | KB endpoint。 |
 | `KSADK_KB_REGION` | Knowledge base | 否 | `cn-beijing-6` | 无 | 否 | 平台 / 开发者 | 否 | KB region。 |
 | `KSADK_KB_SCHEME` | Knowledge base | 否 | 内网 endpoint 默认 `http`，其他默认 `https` | 无 | 否 | 平台 / 开发者 | 否 | KB endpoint scheme。 |
@@ -345,6 +401,15 @@
 | `KSADK_A2A_RUNTIME_ID` | A2A Runtime | 条件必传 | 未设置 | 无 | 否 | 部署层 / 平台 | 否 | 托管 Agent runtime 资源 id（`ar-*`，即 `agents.id`）。v1 discovery-only card 只要此值非空即挂载，部署期注入、注册前可用。 |
 | `KSADK_A2A_TENANT_ID` | A2A Runtime | 否 | fallback `KSADK_A2A_ACCOUNT_ID` | 无 | 否 | 部署层 / 平台 | 否 | Runtime 租户 id；未注入时回退到 account id。 |
 | `KSADK_A2A_TOKEN_DIR` | A2A Runtime | 否 | `/var/run/secrets/agentengine/a2a` | 无 | 否 | 部署层 / token sidecar | 否 | audience JWT 目录，包含 `a2a-registry.jwt`、`a2a-task-sink.jwt`、`credential-broker.jwt`、`a2a-gateway.jwt`；文件必须为 regular、非 symlink、`0400`、最大 16 KiB。 |
+| `KSADK_A2A_ACCESS_KEY` | A2A Runtime / KOP | 条件必传 | 未设置 | 无 | 是 | 部署层 / 平台 | 否 | A2A KOP 签名 access key；未设置时回退 `KSYUN_ACCESS_KEY`。 |
+| `KSADK_A2A_SECRET_KEY` | A2A Runtime / KOP | 条件必传 | 未设置 | 无 | 是 | 部署层 / 平台 | 否 | A2A KOP 签名 secret key；未设置时回退 `KSYUN_SECRET_KEY`。 |
+| `KSADK_A2A_SERVICE` | A2A Runtime / KOP | 否 | `aicp` | 无 | 否 | 部署层 / 平台 | 否 | A2A KOP 签名 service 名称。 |
+| `KSADK_A2A_SERVICE_URL` | A2A Runtime / KOP | 否 | 自动探测（inner 优先，回落 public） | 无 | 否 | 部署层 / 平台 | 否 | A2A 控制面 service URL（KOP 公网 API）；未设置时按 AICP 探测默认值。 |
+| `KSADK_A2A_SERVICE_TOKEN` | A2A Runtime / KOP | 否 | 未设置 | 无 | 是 | 部署层 / 平台 | 否 | A2A 控制面 Bearer token；平台注入或留空走 AK/SK 签名。 |
+| `KSADK_A2A_SERVICE_ENDPOINT` | A2A Runtime / KOP | 否 | 未设置 | 无 | 否 | 部署层 / 平台 | 否 | A2A service endpoint hostname，配合 `KSADK_A2A_SERVICE_SCHEME` 构造 base URL。 |
+| `KSADK_A2A_SERVICE_SCHEME` | A2A Runtime / KOP | 否 | `https` | 无 | 否 | 部署层 / 平台 | 否 | A2A service URL scheme（`http`/`https`）。 |
+| `KSADK_A2A_SERVICE_REGION` | A2A Runtime / KOP | 否 | 回退 `KSYUN_REGION` → `cn-beijing-6` | 无 | 否 | 部署层 / 平台 | 否 | A2A KOP 签名 region。 |
+| `KSADK_EVAL_JUDGE_API_KEY` | 评测 / LLM Judge | 条件必传 | 未设置 | 无 | 是 | 开发者 / 平台 | 否 | LLM Judge 评测后端的 API key。 |
 | `KSADK_A2UI_GENERATION_TIMEOUT_SECONDS` | A2UI / AG-UI Runtime | 否 | `20` | 无 | 否 | 平台 / 开发者 | 否 | A2UI 结构化生成的超时秒数；有效值会被限制在 `1` 到 `120`。 |
 | `KSADK_AICP_ENDPOINT_MODE` | AICP resolver | 否 | `auto` | 无 | 否 | 平台 / 开发者 | 否 | AICP endpoint 选择策略，支持 `auto/detect/internal/inner/public`。内网环境可显式设为 `inner`，跳过自动探测。 |
 | `AGENTENGINE_MODEL_ALLOWLIST` | CLI model / OpenClaw | 否 | 未设置 | `OPENCLAW_MODEL_ALLOWLIST` | 否 | 平台 / 开发者 | 否 | 模型列表过滤。OpenClaw 场景优先使用 `OPENCLAW_MODEL_ALLOWLIST`。 |
@@ -353,7 +418,7 @@
 | `KSADK_UI_PATH` | 本地 Web UI / Runtime bootstrap | 否 | `/` | 无 | 否 | 开发者 / 平台 | 否 | 自定义 UI 挂载路径，例如 `/research`。 |
 | `KSADK_UI_URL` | Runtime bootstrap | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 外部自定义 UI URL。 |
 | `KSADK_UI_BUNDLE_PATH` | Runtime bootstrap | 否 | 自动探测 `research-ui/dist` | 无 | 否 | 开发者 / 平台 | 否 | 自定义 UI 静态 bundle 相对项目路径。 |
-| `KSADK_WEB_VERSION` | Hosted Web UI static sync | 否 | `0.3.0` | 可显式设置已发布版本 | 否 | 构建环境 / 发版负责人 | 否 | `make sync-ksadk-web-static` 使用的 `@kingsoftcloud/ksadk-web` npm 版本。wheel 构建必须固定一个已发布版本；升级此值前先发布并验证对应的 npm 包。 |
+| `KSADK_WEB_VERSION` | Hosted Web UI static sync | 否 | `0.3.1` | 可显式设置已发布版本 | 否 | 构建环境 / 发版负责人 | 否 | `make sync-ksadk-web-static` 使用的 `@kingsoftcloud/ksadk-web` npm 版本。wheel 构建必须固定一个已发布版本；升级此值前先发布并验证对应的 npm 包。 |
 | `KSADK_WEB_PACKAGE` | Hosted Web UI static sync | 否 | `@kingsoftcloud/ksadk-web` | 无 | 否 | 构建环境 / 开发者 | 否 | 本地 UI static 同步使用的 npm 包名。 |
 | `KSADK_WEB_TARBALL_NAME` | Hosted Web UI static sync | 否 | 根据 `KSADK_WEB_VERSION` 派生 | 无 | 否 | 构建环境 | 否 | 仅在设置 `KSADK_WEB_RELEASE_URL` 时作为下载保存文件名；npm pack 模式会使用 npm 返回的真实 tarball 文件名。 |
 | `KSADK_WEB_RELEASE_URL` | Hosted Web UI static sync | 否 | 未设置 | 无 | 否 | 构建环境 / 开发者 | 否 | 可选兼容兜底。设置后跳过 npm pack，改从该 tarball URL 下载。 |

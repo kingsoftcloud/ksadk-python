@@ -93,6 +93,55 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "/var/run/secrets/agentengine/a2a",
     ),
     EnvVarSpec(
+        "KSADK_A2A_SERVICE_URL",
+        "a2a",
+        "A2A control plane service URL (KOP public API); auto-detected if unset.",
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_SERVICE_TOKEN",
+        "a2a",
+        "Bearer token for A2A control plane service authentication.",
+        sensitive=True,
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_SERVICE_ENDPOINT",
+        "a2a",
+        "A2A service endpoint hostname (used for auto-detection with scheme).",
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_SERVICE_SCHEME",
+        "a2a",
+        "A2A service URL scheme (http/https) for auto-detection.",
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_SERVICE_REGION",
+        "a2a",
+        "A2A service region for KOP signing.",
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_ACCESS_KEY",
+        "a2a",
+        "A2A KOP access key for signing; falls back to KSYUN_ACCESS_KEY.",
+        sensitive=True,
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_SECRET_KEY",
+        "a2a",
+        "A2A KOP secret key for signing; falls back to KSYUN_SECRET_KEY.",
+        sensitive=True,
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_SERVICE",
+        "a2a",
+        "A2A KOP signing service name (default: aicp).",
+    ),
+    EnvVarSpec(
+        "KSADK_EVAL_JUDGE_API_KEY",
+        "eval",
+        "API key for the LLM Judge evaluation backend.",
+        sensitive=True,
+    ),
+    EnvVarSpec(
         "KSADK_A2UI_GENERATION_TIMEOUT_SECONDS",
         "agui",
         "A2UI structured-generation deadline in seconds; values are clamped to 1 through 120.",
@@ -229,6 +278,151 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "Enable L2 snip deterministic redundancy removal in compaction pipeline.",
         "true",
     ),
+    EnvVarSpec("KSADK_BASELINE_COLLECT", "context", "Enable PCM baseline collection.", "0"),
+    EnvVarSpec(
+        "KSADK_BASELINE_EXECUTION_TARGET", "context", "PCM baseline execution target label."
+    ),
+    EnvVarSpec(
+        "KSADK_BASELINE_FLUSH_EACH_TURN",
+        "context",
+        "Flush PCM baseline output after every turn.",
+        "0",
+    ),
+    EnvVarSpec("KSADK_BASELINE_PATH", "context", "PCM baseline JSONL output path."),
+    EnvVarSpec("KSADK_COMPACT_HARD_LIMIT_PCT", "context", "Hard compaction threshold percentage."),
+    EnvVarSpec(
+        "KSADK_COMPACT_HARD_LIMIT_PCT_DEFAULT",
+        "context",
+        "Default hard compaction threshold percentage.",
+    ),
+    EnvVarSpec("KSADK_COMPACT_SOFT_LIMIT_PCT", "context", "Soft compaction threshold percentage."),
+    EnvVarSpec(
+        "KSADK_COMPACT_SOFT_LIMIT_PCT_DEFAULT",
+        "context",
+        "Default soft compaction threshold percentage.",
+    ),
+    EnvVarSpec(
+        "KSADK_CONTEXT_CACHE_BREAK_OBSERVABILITY",
+        "context",
+        "Enable prompt cache-break diagnostics.",
+        "0",
+    ),
+    EnvVarSpec(
+        "KSADK_CONTEXT_CONTRIBUTOR_ALLOW_PLATFORM_TRUST",
+        "context",
+        "Allow trusted platform context contributors.",
+        "0",
+    ),
+    EnvVarSpec(
+        "KSADK_CONTEXT_CONTRIBUTOR_FAILURE_MODE", "context", "Context contributor failure policy."
+    ),
+    EnvVarSpec(
+        "KSADK_CONTEXT_CONTRIBUTOR_TIMEOUT_MS",
+        "context",
+        "Context contributor timeout in milliseconds.",
+    ),
+    EnvVarSpec(
+        "KSADK_CONTEXT_EMERGENCY_KEEP_TAIL_GROUPS",
+        "context",
+        "Recent event groups retained during emergency compaction.",
+    ),
+    EnvVarSpec(
+        "KSADK_CONTEXT_ENGINE_V2_ENABLED", "context", "Enable the PCM context planner.", "0"
+    ),
+    EnvVarSpec(
+        "KSADK_CONTEXT_HARD_LIMIT_PERCENT",
+        "context",
+        "Hard request-context budget threshold percentage.",
+    ),
+    EnvVarSpec(
+        "KSADK_CONTEXT_KEEP_TAIL_GROUPS",
+        "context",
+        "Recent event groups retained during normal compaction.",
+    ),
+    EnvVarSpec(
+        "KSADK_CONTEXT_MAX_RETRY_AFTER_PTL",
+        "context",
+        "Maximum controlled retries after prompt-too-long.",
+    ),
+    EnvVarSpec(
+        "KSADK_CONTEXT_RULE_FILES_MAX_TOKENS", "context", "Combined rule-file token budget."
+    ),
+    EnvVarSpec("KSADK_CONTEXT_RULE_FILE_MAX_TOKENS", "context", "Per rule-file token budget."),
+    EnvVarSpec(
+        "KSADK_CONTEXT_SAFETY_BUFFER_TOKENS", "context", "Reserved context-window safety buffer."
+    ),
+    EnvVarSpec("KSADK_CONTEXT_SEMANTIC_ENABLED", "context", "Enable semantic compaction.", "0"),
+    EnvVarSpec(
+        "KSADK_CONTEXT_SEMANTIC_TIMEOUT_MS",
+        "context",
+        "Semantic compaction timeout in milliseconds.",
+    ),
+    EnvVarSpec(
+        "KSADK_CONTEXT_SOFT_LIMIT_PERCENT",
+        "context",
+        "Soft request-context budget threshold percentage.",
+    ),
+    EnvVarSpec(
+        "KSADK_CONTEXT_TOOL_RESULT_MAX_TOKENS",
+        "context",
+        "Maximum token budget for one tool result.",
+    ),
+    EnvVarSpec(
+        "KSADK_CONTEXT_WORKING_STATE_ENABLED",
+        "context",
+        "Enable structured working-state extraction.",
+        "0",
+    ),
+    EnvVarSpec(
+        "KSADK_CONTEXT_WORKING_STATE_EXTRACTION_TIMEOUT_MS",
+        "context",
+        "Working-state extraction timeout in milliseconds.",
+    ),
+    EnvVarSpec("KSADK_CONTEXT_WORKING_STATE_MAX_TOKENS", "context", "Working-state token budget."),
+    EnvVarSpec(
+        "KSADK_CONTEXT_WORKING_STATE_MIN_TOKEN_GROWTH",
+        "context",
+        "Minimum growth before refreshing working state.",
+    ),
+    EnvVarSpec("KSADK_DEPLOYMENT_MODE", "runtime", "Deployment-mode ownership declaration."),
+    EnvVarSpec("KSADK_EVAL_COMMIT", "evaluation", "Source commit recorded by evaluation runs."),
+    EnvVarSpec(
+        "KSADK_LTM_FORCE_INMEMORY",
+        "memory",
+        "Force in-memory long-term-memory backend for tests.",
+        "0",
+    ),
+    EnvVarSpec("KSADK_MEMORY_CORE_MAX_TOKENS", "memory", "Core-memory token budget."),
+    EnvVarSpec("KSADK_MEMORY_DB_PATH", "memory", "Local PCM memory database path."),
+    EnvVarSpec("KSADK_MEMORY_ENABLED", "memory", "Enable platform memory projection.", "0"),
+    EnvVarSpec(
+        "KSADK_MEMORY_FLUSH_BEFORE_COMPACTION",
+        "memory",
+        "Flush memory candidates before compaction.",
+        "0",
+    ),
+    EnvVarSpec("KSADK_MEMORY_FLUSH_ENABLED", "memory", "Enable memory candidate commit.", "0"),
+    EnvVarSpec("KSADK_MEMORY_MIN_SCORE", "memory", "Minimum memory recall relevance score."),
+    EnvVarSpec("KSADK_MEMORY_PROVIDER", "memory", "Platform memory provider selector."),
+    EnvVarSpec("KSADK_MEMORY_RECALL_MAX_TOKENS", "memory", "Memory recall token budget."),
+    EnvVarSpec("KSADK_MEMORY_RECALL_TOP_K", "memory", "Maximum recalled memory items."),
+    EnvVarSpec(
+        "KSADK_MEMORY_WRITE_MODE", "memory", "Memory write mode: off, explicit-only, or candidate."
+    ),
+    EnvVarSpec(
+        "KSADK_PLATFORM_SAFETY_TEXT",
+        "prompt",
+        "Platform safety rules injected by the prompt compiler.",
+    ),
+    EnvVarSpec(
+        "KSADK_PROMPT_AUTO_DISCOVERY", "prompt", "Enable project prompt-source discovery.", "0"
+    ),
+    EnvVarSpec(
+        "KSADK_PROMPT_COMPILER_ENABLED", "prompt", "Enable structured prompt compilation.", "0"
+    ),
+    EnvVarSpec(
+        "KSADK_TOKENIZER_PROVIDER", "context", "Tokenizer provider used for context accounting."
+    ),
     EnvVarSpec(
         "KSADK_CORE_RUNTIME_REQUIREMENTS",
         "builders",
@@ -272,6 +466,12 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     EnvVarSpec(
         "KSADK_KB_SECRET_KEY", "knowledge_base", "Knowledge-base API secret key.", sensitive=True
     ),
+    EnvVarSpec(
+        "KSADK_KB_SESSION_TOKEN",
+        "knowledge_base",
+        "Knowledge-base STS session token.",
+        sensitive=True,
+    ),
     EnvVarSpec("KSADK_KB_TOP_K", "knowledge_base", "Knowledge-base retrieval result count.", "5"),
     EnvVarSpec(
         "KSADK_LANGGRAPH_CHECKPOINT_DSN",
@@ -309,6 +509,12 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     EnvVarSpec("KSADK_LTM_SCHEME", "memory", "Long-term-memory API scheme.", "https"),
     EnvVarSpec(
         "KSADK_LTM_SECRET_KEY", "memory", "Long-term-memory API secret key.", sensitive=True
+    ),
+    EnvVarSpec(
+        "KSADK_LTM_SESSION_TOKEN",
+        "memory",
+        "Long-term-memory STS session token.",
+        sensitive=True,
     ),
     EnvVarSpec("KSADK_LTM_TOP_K", "memory", "Long-term-memory retrieval result count.", "5"),
     EnvVarSpec(
@@ -695,7 +901,7 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "KSADK_WEB_VERSION",
         "web",
         "Published KsADK Web npm version used for a reproducible wheel build.",
-        "0.3.0",
+        "0.3.1",
     ),
     EnvVarSpec(
         "KSADK_WORKING_SET_MAX_FILES",

@@ -51,20 +51,21 @@ def _setup(tmp_path: Path):
             },
         }
 
-    with TestClient(app) as c:
-        c.post("/api/v1/agents", json=payload("review-helper", "执行代码审查。"))
-        c.post("/api/v1/agents", json=payload("research-helper", "执行资料研究。"))
-        # 镜像 passing test 的中间调用（保持 background task 生命周期一致）
-        c.get("/api/v1/agents").json()["items"]
-        c.get("/api/v1/agents/research-helper").json()
-        build_op = c.post(
-            "/api/v1/agents/research-helper/builds",
-            headers={"Idempotency-Key": "evidence-build"},
-            json={"revision": 1, "runEvaluation": False},
-        )
-        build_done = _wait(c, build_op.json()["id"])
-        assert build_done["status"] == "SUCCEEDED", build_done
-        return c, build_done["resourceId"]
+    c = TestClient(app)
+    c.__enter__()
+    c.post("/api/v1/agents", json=payload("review-helper", "执行代码审查。"))
+    c.post("/api/v1/agents", json=payload("research-helper", "执行资料研究。"))
+    # 保持 client 生命周期覆盖随后异步 Run，避免退出 context 时取消后台任务。
+    c.get("/api/v1/agents").json()["items"]
+    c.get("/api/v1/agents/research-helper").json()
+    build_op = c.post(
+        "/api/v1/agents/research-helper/builds",
+        headers={"Idempotency-Key": "evidence-build"},
+        json={"revision": 1, "runEvaluation": False},
+    )
+    build_done = _wait(c, build_op.json()["id"])
+    assert build_done["status"] == "SUCCEEDED", build_done
+    return c, build_done["resourceId"]
 
 
 def test_run_captures_pcm_evidence_into_record(tmp_path):

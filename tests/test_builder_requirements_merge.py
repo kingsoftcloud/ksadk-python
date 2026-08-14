@@ -305,7 +305,7 @@ def test_code_builder_uses_validated_langgraph_ecosystem_dependency_window(tmp_p
 
     deps = builder._build_requirements_list(_detection_result("deepagents"))
 
-    assert "fastapi>=0.100.0,<1.0.0" in deps
+    assert "fastapi>=0.136.0,<0.137.0" in deps
     assert "langchain>=1.3.14,<2.0.0" in deps
     assert "langchain-core>=1.5.0,<2.0.0" in deps
     assert "langchain-openai>=1.4.0,<2.0.0" in deps
@@ -319,7 +319,7 @@ def test_code_builder_uses_validated_adk_dependency_window(tmp_path):
 
     deps = builder._build_requirements_list(_detection_result("adk"))
 
-    assert "fastapi>=0.100.0,<1.0.0" in deps
+    assert "fastapi>=0.136.0,<0.137.0" in deps
     # goal-00: ADK 窗口放宽为 1.34.x 至 <3.0(支持 1.x 与 2.x)
     assert "google-adk>=1.34.0,<3.0.0" in deps
     assert "google-adk>=1.0.0" not in deps
@@ -362,7 +362,7 @@ def test_container_builder_uses_same_framework_dependency_windows(tmp_path):
         tmp_path,
     ).splitlines()
 
-    assert "fastapi>=0.100.0,<1.0.0" in deps
+    assert "fastapi>=0.136.0,<0.137.0" in deps
     assert "langchain>=1.3.14,<2.0.0" in deps
     assert "langchain-core>=1.5.0,<2.0.0" in deps
     assert "langchain-openai>=1.4.0,<2.0.0" in deps
@@ -375,7 +375,7 @@ def test_k8s_deployer_uses_same_framework_dependency_windows():
 
     deps = deployer._generate_requirements(_detection_result("deepagents")).splitlines()
 
-    assert "fastapi>=0.100.0,<1.0.0" in deps
+    assert "fastapi>=0.136.0,<0.137.0" in deps
     assert "langchain>=1.3.14,<2.0.0" in deps
     assert "langchain-core>=1.5.0,<2.0.0" in deps
     assert "langchain-openai>=1.4.0,<2.0.0" in deps

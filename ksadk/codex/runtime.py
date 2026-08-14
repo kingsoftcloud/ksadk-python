@@ -802,12 +802,21 @@ class CodexRuntimeAdapter(RuntimeAdapter):
         *,
         phase: Optional[str] = None,
     ) -> RuntimeEvent:
+        request = self._requests.get(handle.run_id)
         return RuntimeEvent.create(
             event_type,
-            agent_id="codex",
-            user_id=str(handle.native_ref.get("user_id") or "user"),
+            agent_id=str(request.agent_id or "codex") if request is not None else "codex",
+            user_id=(
+                request.user_id
+                if request is not None
+                else str(handle.native_ref.get("user_id") or "user")
+            ),
             session_id=handle.session_id,
-            invocation_id=handle.run_id,
+            invocation_id=(
+                str(request.metadata.get("invocation_id") or handle.run_id)
+                if request is not None
+                else handle.run_id
+            ),
             seq_id=self._next_seq(),
             phase=phase,
             payload=payload,

@@ -87,6 +87,10 @@ webui
 
 # Generated from @kingsoftcloud/ksadk-web during release/build.
 ksadk/server/static/**
+# Generated from the tracked React Studio source during release/build.
+ksadk/studio/static/**
+ksadk/studio/web/node_modules/
+ksadk/studio/web/dist/
 site/
 
 # Legacy local UI source is owned by kingsoftcloud/ksadk-web.

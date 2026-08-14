@@ -12,7 +12,6 @@ import zipfile
 from pathlib import Path
 from typing import Sequence
 
-
 REQUIRED_RUNTIME_COMMON_FILES = (
     "ksadk_runtime_common/__init__.py",
     "ksadk_runtime_common/workspace_files/__init__.py",

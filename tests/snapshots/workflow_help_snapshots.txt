@@ -53,6 +53,8 @@ Options:
   -t, --target [serverless|kcf|kce]
                                   部署目标 (default: serverless)
   -n, --name TEXT                 部署名称
+  --agent-id TEXT                 指定要更新的已有 Agent ID；当前凭证有权限时会自动回填
+                                  .agentengine.state 并走热更新（用于本地状态丢失后重新关联）
   -r, --region TEXT               区域 (default: cn-beijing-6)
   --account-id TEXT               金山云账号 ID（可选；未设置时从 AK/SK 反查）
   --artifact-type [ManagedRuntime|Code|Container]
@@ -115,6 +117,8 @@ Options:
   -t, --target [serverless|kcf|kce]
                                   部署目标 (default: serverless)
   -n, --name TEXT                 部署名称
+  --agent-id TEXT                 指定要更新的已有 Agent ID；当前凭证有权限时会自动回填
+                                  .agentengine.state 并走热更新（用于本地状态丢失后重新关联）
   -r, --region TEXT               区域 (serverless)
   --account-id TEXT               金山云账号 ID（可选；未设置时从 AK/SK 反查）
   --observability / --no-observability

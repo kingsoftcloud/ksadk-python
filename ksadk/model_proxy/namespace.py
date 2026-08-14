@@ -186,7 +186,9 @@ def restore_function_call(item: dict, restore_map: dict[str, dict[str, str]]) ->
             raw_args = item.pop("arguments", "") or ""
             try:
                 payload = json.loads(raw_args)
-                text_input = payload.get("input", raw_args) if isinstance(payload, dict) else raw_args
+                text_input = (
+                    payload.get("input", raw_args) if isinstance(payload, dict) else raw_args
+                )
             except Exception:
                 text_input = raw_args
             item["type"] = "custom_tool_call"

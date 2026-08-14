@@ -349,10 +349,10 @@ async def test_get_task_recovers_remote_task_reference_from_platform_task_id(tmp
 
     assert recovered.id == TASK_ID
     assert recovered.remote_task is not None
-    assert client._backend.task_operation_calls[-1] == {
-        "platform_task_id": TASK_ID,
-        "operation": "get_task",
-    }
+    last_call = client._backend.task_operation_calls[-1]
+    assert last_call["platform_task_id"] == TASK_ID
+    assert last_call["operation"] == "get_task"
+    assert last_call.get("agent_id") == HOSTED_AGENT_ID
 
 
 class _FakeTaskClient:

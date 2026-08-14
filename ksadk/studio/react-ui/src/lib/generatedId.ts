@@ -1,8 +1,8 @@
-export function generateAgentSlug(): string {
-  const bytes = new Uint8Array(4);
-  if (globalThis.crypto?.getRandomValues) {
+export function generateAgentSlug(randomBytes?: () => Uint8Array): string {
+  const bytes = randomBytes ? randomBytes() : new Uint8Array(4);
+  if (!randomBytes && globalThis.crypto?.getRandomValues) {
     globalThis.crypto.getRandomValues(bytes);
-  } else {
+  } else if (!randomBytes) {
     for (let index = 0; index < bytes.length; index += 1) {
       bytes[index] = Math.floor(Math.random() * 256);
     }

@@ -44,16 +44,6 @@ interface ResItem {
 
 const DRAFT_PREFIX = "agentkit.studio.agentDraft.v1";
 
-function runtimeRef(runtimeType: string) {
-  if (runtimeType === "codex") return { type: "codex" };
-  return {
-    type: runtimeType,
-    projectPath: ".",
-    entryPoint: runtimeType === "adk" ? "agent.py" : "graph.py",
-    agentVariable: runtimeType === "adk" ? "root_agent" : "app",
-  };
-}
-
 function credentialReference(item?: ResItem): string {
   return item?.requiredSecretRefs?.[0]
     || item?.contract?.credentialRef
@@ -80,6 +70,26 @@ const WIZARD_STEP_META = [
   ["绑定能力", "Model · Tool · MCP · Skill"],
   ["检查并创建", "行为、治理与构建"],
 ];
+
+const TERMINAL_BUILD_OPERATION_STATES = new Set(["SUCCEEDED", "FAILED", "CANCELLED", "TIMED_OUT"]);
+
+async function waitForCreatedBuild(operationId: string) {
+  for (let attempt = 0; attempt < 1200; attempt += 1) {
+    const response = await apiFetch(`/api/v1/operations/${encodeURIComponent(operationId)}`);
+    const operation = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(operation?.error?.message || `构建状态获取失败（${response.status}）`);
+    }
+    if (TERMINAL_BUILD_OPERATION_STATES.has(operation?.status)) {
+      if (operation.status !== "SUCCEEDED") {
+        throw new Error(operation.error?.message || "构建未完成");
+      }
+      return operation;
+    }
+    await new Promise(resolve => window.setTimeout(resolve, 200));
+  }
+  throw new Error("构建等待超时");
+}
 
 export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, onAgentsChanged }: {
   editingAgentId?: string;
@@ -284,11 +294,15 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
 
   /* 向导 compose */
   const wizardPayload = useCallback(() => ({
-    description, goal: prompt,
+    prompt,
+    goal: prompt,
+    description,
+    taskPrompt,
     audience,
     language,
     depth,
     outputFormat: format,
+    modelProfileId: selectedModels[0] || null,
     modelProfileIds: selectedModels,
     toolResourceIds: selectedTools,
     skillResourceIds: selectedSkills,
@@ -297,7 +311,7 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
     executionStrategy: template === "research" ? "plan-act-observe" : "direct",
     maxSteps: template === "research" ? 28 : 12,
     timeoutSeconds: template === "research" ? 900 : 120,
-  }), [description, prompt, template, audience, language, depth, format, selectedModels, selectedTools, selectedSkills, selectedMcp, policy]);
+  }), [prompt, description, taskPrompt, template, audience, language, depth, format, selectedModels, selectedTools, selectedSkills, selectedMcp, policy]);
 
   const composeAgent = useCallback(async ({ preservePrompt = true } = {}) => {
     const seq = ++composeSeq.current;
@@ -380,7 +394,6 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
       }
       const spec = JSON.parse(JSON.stringify(compositionRef.current?.spec || {}));
       spec.instructions = { system: values.systemPrompt.trim(), task: values.taskPrompt.trim() };
-      spec.runtime = runtimeRef(values.runtimeType);
       spec.description = values.description.trim() || spec.description;
       spec.context = {
         ...(spec.context || {}),
@@ -421,8 +434,32 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
         }
         throw new Error(d?.error?.message || `创建失败（${res.status}）`);
       }
-      window.localStorage.removeItem(draftKey());
-      onCreated(d?.metadata?.id);
+      const createdId = String(d?.metadata?.id || "");
+      if (!createdId) throw new Error("创建响应未返回 Agent 标识");
+      if (values.buildAfterCreate) {
+        const revision = Number(d?.metadata?.revision || 1);
+        const buildResponse = await apiFetch(`/api/v1/agents/${encodeURIComponent(createdId)}/builds`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Idempotency-Key": `build-${createdId}-r${revision}-${Date.now()}`,
+          },
+          body: JSON.stringify({ revision, runEvaluation: false }),
+        });
+        const operation = await buildResponse.json().catch(() => null);
+        if (!buildResponse.ok) {
+          throw new Error(operation?.error?.message || `构建提交失败（${buildResponse.status}）`);
+        }
+        const operationId = String(operation?.id || "");
+        if (!operationId) throw new Error("构建响应未返回操作标识");
+        await waitForCreatedBuild(operationId);
+      }
+      try {
+        window.localStorage.removeItem(draftKey());
+      } catch {
+        // 隐私模式下 localStorage 可能不可用；创建和进入会话不能因此失败。
+      }
+      onCreated(createdId, values.buildAfterCreate);
     } catch (e: any) {
       setCreateError(e.message || "创建失败");
     } finally {

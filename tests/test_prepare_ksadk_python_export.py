@@ -41,6 +41,7 @@ def test_export_plan_includes_public_preflight_contract_files():
         "scripts/open_source_audit.py",
         "scripts/public_secret_audit.py",
         "tests/test_config_env_registry.py",
+        "tests/runners/test_adapter_contract.py",
     }
 
     assert required_paths <= set(plan.export_paths)

@@ -270,10 +270,10 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     assert "workflow_dispatch:" in workflow
     assert "publish_target:" in workflow
     assert "alias-only" in workflow
-    assert 'default: "0.3.0"' in workflow
+    assert 'default: "0.3.1"' in workflow
     assert "approved_source_commit:" in workflow
     assert "Reviewed source commit SHA recorded in docs/maintainer-approval-record.md" in workflow
-    assert "KSADK_WEB_VERSION: ${{ github.event.inputs.ksadk_web_version || '0.3.0' }}" in workflow
+    assert "KSADK_WEB_VERSION: ${{ github.event.inputs.ksadk_web_version || '0.3.1' }}" in workflow
     assert (
         "KSADK_APPROVED_SOURCE_COMMIT: "
         "${{ github.event.inputs.approved_source_commit || "
@@ -291,9 +291,9 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     assert "make public-test" in ci_workflow
     assert "tests/test_conversation_runtime.py" not in ci_workflow
     assert "tests/test_server_session_app.py" not in ci_workflow
-    assert 'KSADK_WEB_VERSION: "0.3.0"' in ci_workflow
+    assert 'KSADK_WEB_VERSION: "0.3.1"' in ci_workflow
     assert "PUBLIC_KSADK_WEB_VERSION" not in ci_workflow
-    assert "KSADK_WEB_VERSION ?= 0.3.0" in makefile
+    assert "KSADK_WEB_VERSION ?= 0.3.1" in makefile
     assert (
         "PUBLIC_TEST_TARGETS ?= tests/test_public_release_positioning.py "
         "tests/test_config_env_registry.py tests/test_managed_runtime_builder.py "
@@ -355,6 +355,14 @@ def test_0_8_changelog_is_ready_for_authorized_release():
     assert "a76f2de7565ffe34d44a9d17257401fa805de0de" in release_section
     assert "@kingsoftcloud/ksadk-web@0.3.0" in release_section
     assert "Codex ManagedRuntime" in release_section
+
+
+def test_0_8_1_changelog_pins_the_compatible_ksadk_web_release():
+    changelog = _read("CHANGELOG.md")
+    release_section = changelog.split("## [0.8.1]", 1)[1].split("## [0.8.0]", 1)[0]
+
+    assert "## [0.8.1] - 2026-08-10" in changelog
+    assert "@kingsoftcloud/ksadk-web@0.3.1" in release_section
 
 
 def test_public_release_sync_compares_exported_file_contents():

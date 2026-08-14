@@ -3386,6 +3386,15 @@ def channel_doctor(
     "--storage-mount-path", default=None, help="PVC 挂载目录（默认: /home/node/.openclaw）"
 )
 @click.option("--no-storage", is_flag=True, help="禁用默认 PVC 挂载")
+@click.option(
+    "--agent-id",
+    "agent_id_opt",
+    default=None,
+    help=(
+        "指定要更新的已有 Agent ID；当前凭证有权限时会自动回填 "
+        ".agentengine.state 并走热更新（用于本地状态丢失后重新关联）"
+    ),
+)
 @network_options
 @dry_run_option("仅显示请求，不实际部署")
 def deploy(
@@ -3405,6 +3414,7 @@ def deploy(
     storage_size_gi: int,
     storage_mount_path: Optional[str],
     no_storage: bool,
+    agent_id_opt: Optional[str],
     enable_public_access: Optional[bool],
     enable_vpc_access: bool,
     vpc_id: Optional[str],
@@ -3479,6 +3489,7 @@ def deploy(
                 storage_size_gi=storage_size_gi,
                 storage_mount_path=storage_mount_path,
                 no_storage=no_storage,
+                agent_id_opt=agent_id_opt,
                 include_env_on_update=include_env_on_update,
                 include_storage_on_update=include_storage_on_update,
                 **network_cli_kwargs(
@@ -3515,6 +3526,7 @@ async def _deploy_openclaw(
     storage_size_gi: int = 20,
     storage_mount_path: Optional[str] = None,
     no_storage: bool = False,
+    agent_id_opt: Optional[str] = None,
     include_env_on_update: bool = False,
     include_storage_on_update: bool = False,
     enable_public_access: Optional[bool] = None,
@@ -3555,6 +3567,14 @@ async def _deploy_openclaw(
     if state_kind == "openclaw":
         existing_agent_id = state.get("agent_id")
         state_name = str(state.get("name") or "").strip() or None
+    explicit_agent_id = (agent_id_opt or "").strip() or None
+    if explicit_agent_id:
+        if existing_agent_id and existing_agent_id != explicit_agent_id:
+            print_info(
+                f"--agent-id ({explicit_agent_id}) 与本地状态 "
+                f"({existing_agent_id}) 不一致，以 --agent-id 为准"
+            )
+        existing_agent_id = explicit_agent_id
 
     if name:
         openclaw_name = name
@@ -3733,6 +3753,37 @@ async def _deploy_openclaw(
         latest_status = None
         updated_existing_agent = False
         async with AgentEngineClient(region=region) as client:
+            if explicit_agent_id:
+                try:
+                    detail = await client.get_agent(
+                        explicit_agent_id, include_api_key=True
+                    )
+                except Exception as e:
+                    raise click.ClickException(
+                        f"指定的 Agent ID '{explicit_agent_id}' 不存在，或当前凭证无权限访问。\n"
+                        f"   详情: {e}\n"
+                        "   👉 请确认 agent_id 正确，且当前 AK/SK / 账号有该 Agent 的权限。"
+                    ) from e
+                qa = detail.get("quick_access", {}) or {}
+                basic = detail.get("basic", {}) or {}
+                recovered_state = state.copy()
+                recovered_state.update(
+                    {
+                        "agent_id": explicit_agent_id,
+                        "name": basic.get("name") or openclaw_name,
+                        "type": "openclaw",
+                        "region": region,
+                        "endpoint": qa.get("public_endpoint"),
+                    }
+                )
+                if qa.get("api_key"):
+                    recovered_state["api_key"] = qa["api_key"]
+                recovered_state = {
+                    k: v for k, v in recovered_state.items() if v is not None
+                }
+                save_state(project_dir, recovered_state)
+                state = recovered_state
+                print_info(f"已通过 --agent-id 关联已有 Agent: {explicit_agent_id}")
             if existing_agent_id:
                 print_info(f"检测到本地状态: {existing_agent_id}，执行更新...")
                 try:

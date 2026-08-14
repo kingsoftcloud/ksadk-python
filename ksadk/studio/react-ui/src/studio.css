@@ -6853,14 +6853,14 @@ body.create-mode .global-context {
   margin-bottom: 6px;
   color: var(--text-tertiary);
   font-size: var(--font-size-caption);
-  font-weight: 600;
+  font-weight: var(--font-weight-semibold);
 }
 
 .behavior-summary-main strong {
   display: block;
   margin: 0;
   color: var(--text-primary);
-  line-height: 1.55;
+  line-height: var(--line-height-code-compact);
 }
 
 .behavior-boundary-summary {
@@ -6890,7 +6890,7 @@ body.create-mode .global-context {
   margin-top: 4px;
   color: var(--text-secondary);
   font-size: var(--font-size-meta);
-  line-height: 1.5;
+  line-height: var(--line-height-caption);
 }
 
 .behavior-boundary-summary ul {

@@ -23,9 +23,8 @@ from typing import Any
 
 import httpx
 
-from ksadk.runners.langgraph_runner import LangGraphRunner
 from ksadk.runners.base_runner import BaseRunner
-
+from ksadk.runners.langgraph_runner import LangGraphRunner
 
 AGENT_ID = "lt-w1-e2e-agent"
 USER_ID = "lt-w1-e2e-user"
@@ -191,9 +190,15 @@ async def _list_events(client: httpx.AsyncClient, session_id: str) -> list[dict[
     return _action_data(events_response.json())["Events"]
 
 
-async def _checkpoint_state_values(runner: LangGraphRunner, checkpoint: dict[str, Any]) -> dict[str, Any]:
-    framework_ref = checkpoint.get("FrameworkRef") if isinstance(checkpoint.get("FrameworkRef"), dict) else {}
-    langgraph_ref = framework_ref.get("langgraph") if isinstance(framework_ref.get("langgraph"), dict) else {}
+async def _checkpoint_state_values(
+    runner: LangGraphRunner, checkpoint: dict[str, Any]
+) -> dict[str, Any]:
+    framework_ref = (
+        checkpoint.get("FrameworkRef") if isinstance(checkpoint.get("FrameworkRef"), dict) else {}
+    )
+    langgraph_ref = (
+        framework_ref.get("langgraph") if isinstance(framework_ref.get("langgraph"), dict) else {}
+    )
     configurable = {
         key: value
         for key, value in {
@@ -231,7 +236,6 @@ def _summarize_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
 async def run_validation(*, dsn: str, keep_session: bool) -> dict[str, Any]:
     namespace = f"lt_w1_e2e_{uuid.uuid4().hex[:10]}"
     session_id = f"sess_{uuid.uuid4().hex}"
-    thread_prefix = f"{namespace}:{AGENT_ID}:{session_id}"
     os.environ["KSADK_SESSION_BACKEND"] = "postgres"
     os.environ["KSADK_SESSION_DSN"] = dsn
     os.environ["KSADK_SESSION_NAMESPACE"] = namespace
@@ -253,117 +257,113 @@ async def run_validation(*, dsn: str, keep_session: bool) -> dict[str, Any]:
             base_url="http://ksadk.local",
             timeout=60,
         ) as client:
-                run_response = await client.post(
-                    "/agentengine/api/v1/RunAgent",
-                    json={
-                        "AgentId": AGENT_ID,
-                        "UserId": USER_ID,
-                        "SessionId": session_id,
-                        "ApiFormat": "responses",
-                        "Stream": False,
-                        "ResponsesInput": [
-                            {
-                                "role": "user",
-                                "content": [
-                                    {
-                                        "type": "input_text",
-                                        "text": "run until checkpoint",
-                                    }
-                                ],
-                            }
-                        ],
-                    },
-                )
-                run_response.raise_for_status()
-                run_payload = run_response.json()
-                checkpoints_response = await client.post(
-                    "/agentengine/api/v1/ListSessionCheckpoints",
-                    json={"AgentId": AGENT_ID, "SessionId": session_id},
-                )
-                checkpoints_response.raise_for_status()
-                checkpoints = _action_data(checkpoints_response.json())["Checkpoints"]
-                if not checkpoints:
-                    events = await _list_events(client, session_id)
-                    raise AssertionError(
-                        "ListSessionCheckpoints returned no checkpoints\n"
-                        f"RunAgent payload: {json.dumps(run_payload, ensure_ascii=False)}\n"
-                        f"Events: {json.dumps(_summarize_events(events), ensure_ascii=False)}"
-                    )
-                checkpoint = checkpoints[0]
-                run_id = checkpoint["RunId"]
-                checkpoint_id = checkpoint["CheckpointId"]
-                checkpoint_state = await _checkpoint_state_values(runner, checkpoint)
-                checkpoint_log = list(checkpoint_state.get("log") or [])
-                if checkpoint_log != ["a", "b"]:
-                    raise AssertionError(
-                        "Checkpoint state before resume should contain exactly a,b; "
-                        f"got {checkpoint_log!r}"
-                    )
-                node_counts_before_resume = dict(E2E_NODE_COUNTS)
-
-                resume_response = await client.post(
-                    "/agentengine/api/v1/ResumeRun",
-                    json={
-                        "AgentId": AGENT_ID,
-                        "SessionId": session_id,
-                        "RunId": run_id,
-                        "CheckpointId": checkpoint_id,
-                        "Stream": False,
-                    },
-                )
-                resume_response.raise_for_status()
-                resume_payload = resume_response.json()
-                resume_data = _action_data(resume_payload)
-                output_text = str(resume_data.get("output_text") or "")
-                if output_text != "a,b,c":
-                    raise AssertionError(
-                        f"ResumeRun output should be 'a,b,c', got {output_text!r}"
-                    )
-                node_counts_after_resume = dict(E2E_NODE_COUNTS)
-                if node_counts_after_resume != {"a": 1, "b": 1, "c": 1}:
-                    raise AssertionError(
-                        "ResumeRun should not rerun completed nodes; "
-                        f"before={node_counts_before_resume}, after={node_counts_after_resume}"
-                    )
-
+            run_response = await client.post(
+                "/agentengine/api/v1/RunAgent",
+                json={
+                    "AgentId": AGENT_ID,
+                    "UserId": USER_ID,
+                    "SessionId": session_id,
+                    "ApiFormat": "responses",
+                    "Stream": False,
+                    "ResponsesInput": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "input_text",
+                                    "text": "run until checkpoint",
+                                }
+                            ],
+                        }
+                    ],
+                },
+            )
+            run_response.raise_for_status()
+            run_payload = run_response.json()
+            checkpoints_response = await client.post(
+                "/agentengine/api/v1/ListSessionCheckpoints",
+                json={"AgentId": AGENT_ID, "SessionId": session_id},
+            )
+            checkpoints_response.raise_for_status()
+            checkpoints = _action_data(checkpoints_response.json())["Checkpoints"]
+            if not checkpoints:
                 events = await _list_events(client, session_id)
-                run_checkpoint_count = sum(
-                    1 for event in events if event.get("EventType") == "run_checkpoint"
+                raise AssertionError(
+                    "ListSessionCheckpoints returned no checkpoints\n"
+                    f"RunAgent payload: {json.dumps(run_payload, ensure_ascii=False)}\n"
+                    f"Events: {json.dumps(_summarize_events(events), ensure_ascii=False)}"
                 )
-                run_resume_count = sum(
-                    1 for event in events if event.get("EventType") == "run_resume"
+            checkpoint = checkpoints[0]
+            run_id = checkpoint["RunId"]
+            checkpoint_id = checkpoint["CheckpointId"]
+            checkpoint_state = await _checkpoint_state_values(runner, checkpoint)
+            checkpoint_log = list(checkpoint_state.get("log") or [])
+            if checkpoint_log != ["a", "b"]:
+                raise AssertionError(
+                    "Checkpoint state before resume should contain exactly a,b; "
+                    f"got {checkpoint_log!r}"
                 )
-                if run_checkpoint_count < 2:
-                    raise AssertionError(
-                        f"Expected at least two run_checkpoint events, got {run_checkpoint_count}"
-                    )
-                if run_resume_count < 1:
-                    raise AssertionError("Expected a run_resume event")
+            node_counts_before_resume = dict(E2E_NODE_COUNTS)
 
-                if not keep_session:
-                    delete_response = await client.post(
-                        "/agentengine/api/v1/DeleteSession",
-                        json={"SessionId": session_id},
-                    )
-                    delete_response.raise_for_status()
+            resume_response = await client.post(
+                "/agentengine/api/v1/ResumeRun",
+                json={
+                    "AgentId": AGENT_ID,
+                    "SessionId": session_id,
+                    "RunId": run_id,
+                    "CheckpointId": checkpoint_id,
+                    "Stream": False,
+                },
+            )
+            resume_response.raise_for_status()
+            resume_payload = resume_response.json()
+            resume_data = _action_data(resume_payload)
+            output_text = str(resume_data.get("output_text") or "")
+            if output_text != "a,b,c":
+                raise AssertionError(f"ResumeRun output should be 'a,b,c', got {output_text!r}")
+            node_counts_after_resume = dict(E2E_NODE_COUNTS)
+            if node_counts_after_resume != {"a": 1, "b": 1, "c": 1}:
+                raise AssertionError(
+                    "ResumeRun should not rerun completed nodes; "
+                    f"before={node_counts_before_resume}, after={node_counts_after_resume}"
+                )
 
-                return {
-                    "namespace": namespace,
-                    "session_id": session_id,
-                    "run_id": run_id,
-                    "checkpoint_id": checkpoint_id,
-                    "output_text": output_text,
-                    "checkpoint_count": len(checkpoints),
-                    "run_checkpoint_event_count": run_checkpoint_count,
-                    "run_resume_event_count": run_resume_count,
-                    "checkpoint_log_before_resume": checkpoint_log,
-                    "node_counts_before_resume": node_counts_before_resume,
-                    "node_counts_after_resume": node_counts_after_resume,
-                    "resume_did_not_rerun_prior_nodes": True,
-                    "kept_session": keep_session,
-                    "run_action": run_payload.get("Code"),
-                    "resume_action": resume_payload.get("Code"),
-                }
+            events = await _list_events(client, session_id)
+            run_checkpoint_count = sum(
+                1 for event in events if event.get("EventType") == "run_checkpoint"
+            )
+            run_resume_count = sum(1 for event in events if event.get("EventType") == "run_resume")
+            if run_checkpoint_count < 2:
+                raise AssertionError(
+                    f"Expected at least two run_checkpoint events, got {run_checkpoint_count}"
+                )
+            if run_resume_count < 1:
+                raise AssertionError("Expected a run_resume event")
+
+            if not keep_session:
+                delete_response = await client.post(
+                    "/agentengine/api/v1/DeleteSession",
+                    json={"SessionId": session_id},
+                )
+                delete_response.raise_for_status()
+
+            return {
+                "namespace": namespace,
+                "session_id": session_id,
+                "run_id": run_id,
+                "checkpoint_id": checkpoint_id,
+                "output_text": output_text,
+                "checkpoint_count": len(checkpoints),
+                "run_checkpoint_event_count": run_checkpoint_count,
+                "run_resume_event_count": run_resume_count,
+                "checkpoint_log_before_resume": checkpoint_log,
+                "node_counts_before_resume": node_counts_before_resume,
+                "node_counts_after_resume": node_counts_after_resume,
+                "resume_did_not_rerun_prior_nodes": True,
+                "kept_session": keep_session,
+                "run_action": run_payload.get("Code"),
+                "resume_action": resume_payload.get("Code"),
+            }
     finally:
         await _close_runner(runner)
 
@@ -378,8 +378,8 @@ async def run_cancel_validation(*, dsn: str, keep_session: bool) -> dict[str, An
     os.environ["KSADK_SESSION_TENANT_ID"] = "lt_w25_cancel_tenant"
     os.environ["KSADK_SESSION_WORKSPACE_ID"] = "lt_w25_cancel_workspace"
 
-    from ksadk.sessions import reset_session_service
     import ksadk.conversations as conversation
+    from ksadk.sessions import reset_session_service
 
     server_app_module = importlib.import_module("ksadk.server.app")
     await reset_session_service()
@@ -543,8 +543,8 @@ async def run_cancel_then_resume_validation(*, dsn: str, keep_session: bool) -> 
 
     runner = await _build_cancel_then_resume_runner(dsn=dsn)
     try:
-        from ksadk.sessions import reset_session_service
         import ksadk.conversations as conversation
+        from ksadk.sessions import reset_session_service
 
         server_app_module = importlib.import_module("ksadk.server.app")
         await reset_session_service()
@@ -580,7 +580,8 @@ async def run_cancel_then_resume_validation(*, dsn: str, keep_session: bool) -> 
             checkpoint_id = checkpoint["CheckpointId"]
             if run_id != invocation_id:
                 raise AssertionError(
-                    f"Checkpoint run_id should match cancelled invocation_id; {run_id!r} != {invocation_id!r}"
+                    "Checkpoint run_id should match cancelled invocation_id; "
+                    f"{run_id!r} != {invocation_id!r}"
                 )
             checkpoint_state = await _checkpoint_state_values(runner, checkpoint)
             checkpoint_log = list(checkpoint_state.get("log") or [])
@@ -597,7 +598,9 @@ async def run_cancel_then_resume_validation(*, dsn: str, keep_session: bool) -> 
             cancel_response.raise_for_status()
             cancel_data = _action_data(cancel_response.json())
             if cancel_data.get("Found") is not True or cancel_data.get("Cancelled") is not True:
-                raise AssertionError(f"CancelRun did not hit checkpointed active run: {cancel_data}")
+                raise AssertionError(
+                    f"CancelRun did not hit checkpointed active run: {cancel_data}"
+                )
 
             cancelled_events = await _wait_for_status(
                 client,
@@ -663,7 +666,8 @@ async def run_cancel_then_resume_validation(*, dsn: str, keep_session: bool) -> 
             )
             if run_checkpoint_count < 2:
                 raise AssertionError(
-                    f"Expected at least two run_checkpoint events after resume, got {run_checkpoint_count}"
+                    "Expected at least two run_checkpoint events after resume, "
+                    f"got {run_checkpoint_count}"
                 )
             if run_resume_count < 1:
                 raise AssertionError("Expected a run_resume event after cancel")
@@ -722,6 +726,7 @@ def main() -> int:
     dsn = args.dsn.strip()
     if not dsn:
         raise SystemExit("--dsn or KSADK_SESSION_DSN is required")
+
     async def _run_all() -> dict[str, Any]:
         result: dict[str, Any] = {
             "checkpoint_resume": await run_validation(
