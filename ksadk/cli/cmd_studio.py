@@ -24,7 +24,7 @@ _MODEL_ENV_KEYS = (
 
 @click.command(context_settings=dict(help_option_names=["-h", "--help"]))
 @click.argument("workspace", default=".", type=click.Path())
-@click.option("--port", "-p", default=7831, type=click.IntRange(1, 65535))
+@click.option("--port", "-p", default=8080, type=click.IntRange(1, 65535))
 @click.option("--no-open", is_flag=True, help="仅打印 URL，不自动打开浏览器")
 @click.option(
     "--env-file",

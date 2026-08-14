@@ -2,6 +2,7 @@ import importlib
 import shutil
 import subprocess
 import sys
+import tarfile
 import zipfile
 from email.parser import BytesParser
 from pathlib import Path
@@ -162,6 +163,60 @@ def test_built_wheel_includes_react_studio_static_entrypoint():
     assert any(name.startswith("ksadk/studio/static/assets/") for name in names)
 
 
+def test_built_sdist_includes_react_studio_static_entrypoint():
+    sdists = sorted((REPO_ROOT / "dist").glob("ksadk-*.tar.gz"))
+    assert sdists, "请先运行受控构建生成 dist/ksadk-*.tar.gz"
+
+    with tarfile.open(sdists[-1]) as archive:
+        names = set(archive.getnames())
+
+    assert any(name.endswith("/ksadk/studio/static/index.html") for name in names)
+    assert any("/ksadk/studio/static/assets/" in name for name in names)
+
+
+def test_release_build_generates_ignored_react_studio_static_assets():
+    gitignore = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
+    makefile = (REPO_ROOT / "Makefile").read_text(encoding="utf-8")
+
+    assert "ksadk/studio/static/**" in gitignore
+    tracked_static_files = subprocess.run(
+        ["git", "ls-files", "ksadk/studio/static"],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    assert tracked_static_files == []
+    assert "STUDIO_REACT_DIR := ksadk/studio/react-ui" in makefile
+    assert "STUDIO_STATIC_DIR := ksadk/studio/static" in makefile
+    target = makefile.split("build-studio-static:\n", 1)[1].split("\n\n", 1)[0]
+    assert 'npm --prefix "$(STUDIO_REACT_DIR)" ci' in target
+    assert 'npm --prefix "$(STUDIO_REACT_DIR)" run build' in target
+    assert '$(STUDIO_STATIC_DIR)/index.html' in target
+    build_target = makefile.split("build: check-build-deps", 1)[1].split("\n", 1)[0]
+    public_build_target = makefile.split("public-build-check: clean-dist", 1)[1].split(
+        "\n", 1
+    )[0]
+    assert "build-studio-static" in build_target
+    assert "build-studio-static" in public_build_target
+    assert "build-studio-static" in makefile.split("build-frontend:", 1)[1].split("\n", 1)[0]
+
+
+def test_ci_installs_node_before_building_generated_studio_static_assets():
+    ci_workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    release_workflow = (REPO_ROOT / ".github/workflows/release-check.yml").read_text(
+        encoding="utf-8"
+    )
+
+    adk_matrix_job = ci_workflow.split("  test-adk-matrix:\n", 1)[1].split(
+        "  test-", 1
+    )[0]
+    assert "actions/setup-node@v4" in adk_matrix_job
+    assert "make build-frontend" in adk_matrix_job
+    assert "actions/setup-node@v4" in release_workflow
+    assert "make build-frontend" in release_workflow
+
+
 def test_built_wheel_excludes_legacy_web_ui_sources_and_build_outputs():
     wheels = sorted((REPO_ROOT / "dist").glob("ksadk-*.whl"))
     assert wheels, "请先运行 uv build 生成 dist/ksadk-*.whl"
@@ -172,11 +227,12 @@ def test_built_wheel_excludes_legacy_web_ui_sources_and_build_outputs():
     assert leaked == []
 
 
-def test_pyproject_keeps_only_synced_static_as_ksadk_web_package_data():
+def test_pyproject_keeps_generated_static_as_package_data():
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
     package_data = pyproject["tool"]["setuptools"]["package-data"]["ksadk"]
     assert "server/static/**/*" in package_data
+    assert "studio/static/**/*" in package_data
     assert all("server/web-ui" not in entry for entry in package_data)
 
 

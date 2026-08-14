@@ -100,3 +100,16 @@ def test_health_consistent_across_normal_and_harness():
         client = TestClient(_make(groups))
         response = client.get("/health")
         assert response.status_code == 200
+
+
+def test_health_is_not_blocked_by_otel_context_extraction_failure(monkeypatch):
+    from opentelemetry import propagate
+
+    def fail_extract(_carrier):
+        raise RuntimeError("broken propagator")
+
+    monkeypatch.setattr(propagate, "extract", fail_extract)
+
+    response = TestClient(_make(ALL_GROUPS)).get("/health")
+
+    assert response.status_code == 200

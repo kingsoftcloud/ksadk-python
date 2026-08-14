@@ -19,10 +19,8 @@ import time
 import uuid
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urljoin
 
 import httpx
-
 
 DEFAULT_PROMPT = "run until checkpoint"
 TERMINAL_STATUSES = {"completed", "failed", "cancelled", "resume_failed"}
@@ -71,9 +69,7 @@ class HostedClient:
     def action(self, name: str, payload: dict[str, Any]) -> dict[str, Any]:
         response = self.client.post(f"agentengine/api/v1/{name}", json=payload)
         if response.status_code >= 400:
-            raise HostedE2EError(
-                f"{name} HTTP {response.status_code}: {response.text[:1000]}"
-            )
+            raise HostedE2EError(f"{name} HTTP {response.status_code}: {response.text[:1000]}")
         try:
             body = response.json()
         except json.JSONDecodeError as exc:
@@ -124,9 +120,7 @@ def _assert_checkpoint_capability(capabilities: dict[str, Any]) -> None:
     if not isinstance(run_lifecycle, dict):
         raise HostedE2EError(f"Capabilities.RunLifecycle is missing: {capabilities}")
     missing = [
-        key
-        for key in ("Checkpoints", "CheckpointResume")
-        if run_lifecycle.get(key) is not True
+        key for key in ("Checkpoints", "CheckpointResume") if run_lifecycle.get(key) is not True
     ]
     if missing:
         raise HostedE2EError(
@@ -196,7 +190,9 @@ def _stream_run_agent_background(
     return thread, result
 
 
-def _list_checkpoints(client: HostedClient, *, session_id: str, run_id: str = "") -> list[dict[str, Any]]:
+def _list_checkpoints(
+    client: HostedClient, *, session_id: str, run_id: str = ""
+) -> list[dict[str, Any]]:
     payload: dict[str, Any] = {
         "AgentId": client.agent_id,
         "SessionId": session_id,
@@ -265,7 +261,9 @@ def _wait_for_checkpoint(
     )
 
 
-def _maybe_preview(client: HostedClient, *, session_id: str, run_id: str, checkpoint_id: str) -> dict[str, Any]:
+def _maybe_preview(
+    client: HostedClient, *, session_id: str, run_id: str, checkpoint_id: str
+) -> dict[str, Any]:
     try:
         return client.action(
             "GetCheckpointResumePreview",
@@ -502,7 +500,8 @@ def validate_cancel_then_resume(
         checkpoint_id = str(checkpoint.get("CheckpointId") or "").strip()
         if run_id != invocation_id:
             raise HostedE2EError(
-                f"Checkpoint RunId should match active invocation_id: {run_id!r} != {invocation_id!r}"
+                "Checkpoint RunId should match active invocation_id: "
+                f"{run_id!r} != {invocation_id!r}"
             )
         if not checkpoint_id:
             raise HostedE2EError(f"Checkpoint missing CheckpointId: {checkpoint}")
@@ -530,7 +529,9 @@ def validate_cancel_then_resume(
         if stream_thread.is_alive():
             raise HostedE2EError("RunAgent stream did not close after CancelRun")
         if stream_result.get("error") is not None:
-            raise HostedE2EError(f"RunAgent stream failed during cancel validation: {stream_result['error']}")
+            raise HostedE2EError(
+                f"RunAgent stream failed during cancel validation: {stream_result['error']}"
+            )
 
         post_cancel_events = _list_events(client, session_id=session_id)
         unexpected_post_cancel = [
@@ -563,13 +564,18 @@ def validate_cancel_then_resume(
         final_counts = _event_type_counts(final_events)
         resume_statuses = _event_statuses(final_events, invocation_id=resume_invocation_id)
         if final_counts.get("run_resume", 0) < 1:
-            raise HostedE2EError(f"ResumeRun after cancel did not create run_resume event: {final_counts}")
+            raise HostedE2EError(
+                f"ResumeRun after cancel did not create run_resume event: {final_counts}"
+            )
         if final_counts.get("run_checkpoint", 0) < 2:
             raise HostedE2EError(
-                f"ResumeRun after cancel should leave at least two checkpoint events: {final_counts}"
+                "ResumeRun after cancel should leave at least two checkpoint events: "
+                f"{final_counts}"
             )
         if resume_statuses and resume_statuses[-1] not in TERMINAL_STATUSES:
-            raise HostedE2EError(f"ResumeRun after cancel did not reach terminal status: {resume_statuses}")
+            raise HostedE2EError(
+                f"ResumeRun after cancel did not reach terminal status: {resume_statuses}"
+            )
 
         return {
             "status": "pass",
@@ -587,7 +593,9 @@ def validate_cancel_then_resume(
             "run_sse_line_count": len(
                 [line for line in str(stream_result.get("sse") or "").splitlines() if line.strip()]
             ),
-            "resume_sse_line_count": len([line for line in resume_sse.splitlines() if line.strip()]),
+            "resume_sse_line_count": len(
+                [line for line in resume_sse.splitlines() if line.strip()]
+            ),
         }
     finally:
         if stream_thread.is_alive():
@@ -602,7 +610,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="PublicEndpoint, e.g. https://ar-xxx.agent-pre.kspmas.ksyun.com",
     )
     parser.add_argument("--agent-id", required=True, help="Agent runtime ID, e.g. ar-...")
-    parser.add_argument("--api-key", default="", help="Optional runtime API key for public endpoint auth.")
+    parser.add_argument(
+        "--api-key", default="", help="Optional runtime API key for public endpoint auth."
+    )
     parser.add_argument(
         "--cookie",
         default="",

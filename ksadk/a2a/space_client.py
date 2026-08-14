@@ -32,13 +32,11 @@ from a2a.types import (
 from google.protobuf.json_format import MessageToDict, ParseDict
 
 from ksadk.a2a.control_plane import (
-    ENV_A2A_CONTROL_PLANE_URL,
+    A2AAgentCardClient,
     A2AControlPlane,
     A2ARouteInterface,
-    A2AAgentCardClient,
     CredentialInjection,
     DiscoveredAgent,
-    InternalA2AControlPlaneClient,
     PreparedA2AOperation,
     SpaceAgentPage,
 )
@@ -198,8 +196,8 @@ class A2ASpaceClient:
             selected_space_id = normalized_space_ids[0]
         if backend is None:
             from ksadk.a2a.service_env import (
-                resolve_a2a_service_url,
                 resolve_a2a_service_token,
+                resolve_a2a_service_url,
             )
             service_url = resolve_a2a_service_url()
             if not service_url:
@@ -691,9 +689,8 @@ class A2ASpaceClient:
             route_card = self._card_for_route(agent.agent_card, route)
             owned_http = None
             if http is None:
-                # 预发 gateway 使用自签证书;runtime 在集群内走内网 http 不验证。
                 # 外部调用方需自行传入已配置 verify 的 httpx_client。
-                owned_http = httpx.AsyncClient(trust_env=False, verify=False)
+                owned_http = httpx.AsyncClient(trust_env=False)
                 http = owned_http
             client = await create_client(
                 agent=route_card,

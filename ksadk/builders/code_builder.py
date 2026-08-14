@@ -30,6 +30,7 @@ from packaging.requirements import InvalidRequirement, Requirement
 from ksadk.builders.base import BaseBuilder, BuildResult
 from ksadk.builders.framework_requirements import (
     FASTAPI_REQUIREMENT,
+    STARLETTE_REQUIREMENT,
     code_requirements_for_framework,
 )
 from ksadk.builders.requirements_utils import (
@@ -800,6 +801,7 @@ class CodeBuilder(BaseBuilder):
         deps = [
             # Core
             FASTAPI_REQUIREMENT,
+            STARLETTE_REQUIREMENT,
             "uvicorn>=0.23.0",
             "python-dotenv>=1.0.0",
             "pydantic>=2.0.0",
@@ -1894,11 +1896,17 @@ if os.environ.get("KSADK_A2A_RUNTIME_ID", "").strip():
         from ksadk.runtime.factory import create_runtime_adapter
 
         _a2a_adapter = create_runtime_adapter(runtime_context)
-        _base = os.environ.get("KSADK_A2A_INTERNAL_BASE_URL", "").strip() or "http://localhost:8080"
+        _base = (
+            os.environ.get("KSADK_A2A_INTERNAL_BASE_URL", "").strip()
+            or "http://localhost:8080"
+        )
         _a2a_config = A2AConfig(
             enabled=True,
             base_url=_base,
-            agent_name=os.environ.get("KSADK_A2A_AGENT_NAME", "").strip() or os.environ.get("KSADK_A2A_RUNTIME_ID", "").strip(),
+            agent_name=(
+                os.environ.get("KSADK_A2A_AGENT_NAME", "").strip()
+                or os.environ.get("KSADK_A2A_RUNTIME_ID", "").strip()
+            ),
             streaming=True,
             task_store_dsn="sqlite+aiosqlite:///.agentengine/a2a_tasks.db",
         )

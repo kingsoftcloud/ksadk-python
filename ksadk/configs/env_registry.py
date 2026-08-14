@@ -93,6 +93,55 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "/var/run/secrets/agentengine/a2a",
     ),
     EnvVarSpec(
+        "KSADK_A2A_SERVICE_URL",
+        "a2a",
+        "A2A control plane service URL (KOP public API); auto-detected if unset.",
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_SERVICE_TOKEN",
+        "a2a",
+        "Bearer token for A2A control plane service authentication.",
+        sensitive=True,
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_SERVICE_ENDPOINT",
+        "a2a",
+        "A2A service endpoint hostname (used for auto-detection with scheme).",
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_SERVICE_SCHEME",
+        "a2a",
+        "A2A service URL scheme (http/https) for auto-detection.",
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_SERVICE_REGION",
+        "a2a",
+        "A2A service region for KOP signing.",
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_ACCESS_KEY",
+        "a2a",
+        "A2A KOP access key for signing; falls back to KSYUN_ACCESS_KEY.",
+        sensitive=True,
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_SECRET_KEY",
+        "a2a",
+        "A2A KOP secret key for signing; falls back to KSYUN_SECRET_KEY.",
+        sensitive=True,
+    ),
+    EnvVarSpec(
+        "KSADK_A2A_SERVICE",
+        "a2a",
+        "A2A KOP signing service name (default: aicp).",
+    ),
+    EnvVarSpec(
+        "KSADK_EVAL_JUDGE_API_KEY",
+        "eval",
+        "API key for the LLM Judge evaluation backend.",
+        sensitive=True,
+    ),
+    EnvVarSpec(
         "KSADK_A2UI_GENERATION_TIMEOUT_SECONDS",
         "agui",
         "A2UI structured-generation deadline in seconds; values are clamped to 1 through 120.",
@@ -272,6 +321,12 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     EnvVarSpec(
         "KSADK_KB_SECRET_KEY", "knowledge_base", "Knowledge-base API secret key.", sensitive=True
     ),
+    EnvVarSpec(
+        "KSADK_KB_SESSION_TOKEN",
+        "knowledge_base",
+        "Knowledge-base STS session token.",
+        sensitive=True,
+    ),
     EnvVarSpec("KSADK_KB_TOP_K", "knowledge_base", "Knowledge-base retrieval result count.", "5"),
     EnvVarSpec(
         "KSADK_LANGGRAPH_CHECKPOINT_DSN",
@@ -309,6 +364,12 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     EnvVarSpec("KSADK_LTM_SCHEME", "memory", "Long-term-memory API scheme.", "https"),
     EnvVarSpec(
         "KSADK_LTM_SECRET_KEY", "memory", "Long-term-memory API secret key.", sensitive=True
+    ),
+    EnvVarSpec(
+        "KSADK_LTM_SESSION_TOKEN",
+        "memory",
+        "Long-term-memory STS session token.",
+        sensitive=True,
     ),
     EnvVarSpec("KSADK_LTM_TOP_K", "memory", "Long-term-memory retrieval result count.", "5"),
     EnvVarSpec(
@@ -695,7 +756,7 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "KSADK_WEB_VERSION",
         "web",
         "Published KsADK Web npm version used for a reproducible wheel build.",
-        "0.3.0",
+        "0.3.1",
     ),
     EnvVarSpec(
         "KSADK_WORKING_SET_MAX_FILES",

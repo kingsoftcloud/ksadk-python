@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Iterable
 
-FASTAPI_REQUIREMENT = "fastapi>=0.100.0,<1.0.0"
+FASTAPI_REQUIREMENT = "fastapi>=0.136.0,<0.137.0"
+STARLETTE_REQUIREMENT = "starlette>=1.0,<1.4"
 
 ADK_REQUIREMENTS = (
     # goal-00: 与 ksadk 自身 adk extra 对齐,允许 1.34.x 与 2.x

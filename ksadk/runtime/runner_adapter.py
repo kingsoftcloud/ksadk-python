@@ -45,6 +45,7 @@ from ksadk.runtime.adapter import (
 from ksadk.runtime.preprocessing import PreparedRuntimeStart, prepare_runtime_start
 from ksadk.runtime.runner_loading import ensure_runner_loaded
 from ksadk.runtime_context import platform_invocation_scope
+from ksadk.tools.gateway import approval_interrupt_info_from_result
 
 logger = logging.getLogger(__name__)
 
@@ -826,41 +827,45 @@ class RunnerRuntimeAdapter(RuntimeAdapter):
                 or ""
             )
             name = str(chunk.get("tool_name") or chunk.get("name") or "tool")
+            tool_args = chunk.get("tool_args", chunk.get("args"))
+            result = chunk.get("tool_output", chunk.get("output"))
+            approval_detail = approval_interrupt_info_from_result(
+                result,
+                fallback_tool_name=name,
+                tool_args=tool_args,
+                run_id=call_id or None,
+            )
+            if approval_detail is not None:
+                return self._approval_requested_event(
+                    handle,
+                    run,
+                    detail=approval_detail,
+                    call_id=call_id,
+                )
             return self._event(
                 handle,
                 EventType.TOOL_CALL_END,
                 {
                     "call_id": call_id or name,
                     "name": name,
-                    "result": chunk.get("tool_output", chunk.get("output")),
+                    "result": result,
                     "error": chunk.get("error"),
                 },
             )
         if chunk_type in ("interrupt", "approval", "approval_required"):
-            detail = chunk.get("interrupt_info") or chunk.get("detail") or {}
-            detail_id = detail.get("approval_request_id") if isinstance(detail, dict) else None
+            raw_detail = chunk.get("interrupt_info") or chunk.get("detail") or {}
+            detail = dict(raw_detail) if isinstance(raw_detail, Mapping) else {}
             call_id = str(
                 chunk.get("call_id")
                 or chunk.get("approval_id")
                 or chunk.get("id")
-                or detail_id
                 or ""
             )
-            if run is not None and call_id:
-                run.pending_approvals.add(call_id)
-            if call_id:
-                pending_approval_ids = handle.native_ref.setdefault("pending_approval_ids", [])
-                if call_id not in pending_approval_ids:
-                    pending_approval_ids.append(call_id)
-            return self._event(
+            return self._approval_requested_event(
                 handle,
-                EventType.APPROVAL_REQUESTED,
-                {
-                    "approval_id": call_id,
-                    "call_id": call_id,
-                    "kind": "tool",
-                    "detail": detail,
-                },
+                run,
+                detail=detail,
+                call_id=call_id,
             )
         if chunk_type == "checkpoint":
             raw_metadata = chunk.get("metadata")
@@ -947,6 +952,37 @@ class RunnerRuntimeAdapter(RuntimeAdapter):
         if chunk.get("replace"):
             payload["replace"] = True
         return self._event(handle, EventType.TEXT_DELTA, payload, phase="commentary")
+
+    def _approval_requested_event(
+        self,
+        handle: RunHandle,
+        run: Optional[_ActiveRun],
+        *,
+        detail: Mapping[str, Any],
+        call_id: str,
+    ) -> RuntimeEvent:
+        """Convert one framework/tool approval to the canonical runtime event."""
+
+        approval_id = str(
+            detail.get("approval_request_id") or detail.get("id") or call_id or ""
+        )
+        resolved_call_id = str(call_id or approval_id)
+        if run is not None and approval_id:
+            run.pending_approvals.add(approval_id)
+        if approval_id:
+            pending_approval_ids = handle.native_ref.setdefault("pending_approval_ids", [])
+            if approval_id not in pending_approval_ids:
+                pending_approval_ids.append(approval_id)
+        return self._event(
+            handle,
+            EventType.APPROVAL_REQUESTED,
+            {
+                "approval_id": approval_id,
+                "call_id": resolved_call_id,
+                "kind": "tool",
+                "detail": dict(detail),
+            },
+        )
 
     def _event(
         self,

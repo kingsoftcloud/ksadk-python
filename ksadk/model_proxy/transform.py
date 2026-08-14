@@ -130,7 +130,9 @@ def input_to_messages(inp):
                     "type": "function",
                     "function": {
                         "name": item.get("name"),
-                        "arguments": json.dumps({"input": item.get("input") or ""}, ensure_ascii=False),
+                        "arguments": json.dumps(
+                            {"input": item.get("input") or ""}, ensure_ascii=False
+                        ),
                     },
                 }
             )

@@ -9,13 +9,13 @@ from typing import Any, AsyncIterator
 
 import anyio
 from mcp import ClientSession
+from mcp.client.sse import sse_client
 from mcp.client.stdio import (
     StdioServerParameters,
     get_default_environment,
     stdio_client,
 )
 from mcp.client.streamable_http import streamablehttp_client
-from mcp.client.sse import sse_client
 
 from ksadk.studio.contracts import MCPServerRef, ToolContract
 from ksadk.studio.errors import StudioError
@@ -142,11 +142,16 @@ class MCPRuntimeAdapter:
                 yield read_stream, write_stream
         elif transport in {"http", "streamable-http", "streamable_http"}:
             headers = self._http_headers(server)
-            async with streamablehttp_client(server.endpoint_url or "", headers=headers) as (read_stream, write_stream, _):
+            async with streamablehttp_client(
+                server.endpoint_url or "", headers=headers
+            ) as (read_stream, write_stream, _):
                 yield read_stream, write_stream
         elif transport == "sse":
             headers = self._http_headers(server)
-            async with sse_client(server.endpoint_url or "", headers=headers) as (read_stream, write_stream):
+            async with sse_client(server.endpoint_url or "", headers=headers) as (
+                read_stream,
+                write_stream,
+            ):
                 yield read_stream, write_stream
         else:
             raise StudioError(

@@ -1630,7 +1630,9 @@ ksadk web .
 - codex 自动探测模型协议:OpenAI 官方直连,星流 chat 模型自动启用转换代理。
 - `agentengine build .` 只生成 YAML manifest bundle，不打包本机 Codex 二进制。若
   `runtime.version` 未指定，build 需要连接到已配置 Runtime catalog；离线构建请显式锁定版本。
-- 部署时服务端解析 ManagedRuntime 版本和 Linux 镜像 digest。
+- 部署时服务端解析 ManagedRuntime 版本和 Linux 镜像 digest。云端必须已发布 Runtime
+  catalog、对应镜像和内联 manifest 控制面；未发布时请继续使用本地 `ksadk web`，不要把
+  `runtime.version` 随意改成开发机版本，KsADK 不回退为 Code 部署。
 """,
         encoding="utf-8-sig",
     )

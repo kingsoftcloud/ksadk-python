@@ -15,6 +15,7 @@ from ksadk.conversations.run_kinds import (
     validate_run_mode,
 )
 from ksadk.conversations.runtime_persistence import append_conversation_event
+from ksadk.events.runtime_event import EventType
 from ksadk.sessions import SessionEvent
 from ksadk.tools.gateway import (
     build_tool_receipt_idempotency_key,
@@ -24,11 +25,7 @@ from ksadk.tools.gateway import (
 def _has_pending_approval(events: Sequence[SessionEvent]) -> bool:
     pending = 0
     for event in events:
-        event_type = canonical_event_type(
-            event.event_type,
-            author=event.author,
-            role=str((event.content or {}).get("role") or ""),
-        )
+        event_type = _approval_lifecycle_event_type(event)
         if event_type == "approval_request":
             pending += 1
         elif event_type == "approval_response" and pending > 0:
@@ -37,23 +34,17 @@ def _has_pending_approval(events: Sequence[SessionEvent]) -> bool:
 
 
 def _approval_request_id_from_event(event: SessionEvent) -> str:
-    metadata = event.metadata or {}
-    interrupt_info = metadata.get("interrupt_info")
-    if isinstance(interrupt_info, Mapping):
-        value = interrupt_info.get("approval_request_id") or interrupt_info.get("id")
-        if value:
-            return str(value)
+    interrupt_info = _approval_interrupt_info_from_event(event)
+    value = interrupt_info.get("approval_request_id") or interrupt_info.get("id")
+    if value:
+        return str(value)
     return str(event.id or "")
 
 
 def _pending_approval_events(events: Sequence[SessionEvent]) -> list[SessionEvent]:
     pending: list[SessionEvent] = []
     for event in events:
-        event_type = canonical_event_type(
-            event.event_type,
-            author=event.author,
-            role=str((event.content or {}).get("role") or ""),
-        )
+        event_type = _approval_lifecycle_event_type(event)
         if event_type == "approval_request":
             pending.append(event)
             continue
@@ -79,15 +70,50 @@ def _pending_approval_events(events: Sequence[SessionEvent]) -> list[SessionEven
 
 def _approval_request_events(events: Sequence[SessionEvent]) -> list[SessionEvent]:
     return [
-        event
-        for event in events
-        if canonical_event_type(
-            event.event_type,
-            author=event.author,
-            role=str((event.content or {}).get("role") or ""),
-        )
-        == "approval_request"
+        event for event in events if _approval_lifecycle_event_type(event) == "approval_request"
     ]
+
+
+def _approval_lifecycle_event_type(event: SessionEvent) -> str:
+    """Classify approvals stored as either legacy session or RuntimeEvent rows."""
+
+    if event.event_type == EventType.APPROVAL_REQUESTED:
+        return "approval_request"
+    if event.event_type == EventType.APPROVAL_RESOLVED:
+        return "approval_response"
+    return canonical_event_type(
+        event.event_type,
+        author=event.author,
+        role=str((event.content or {}).get("role") or ""),
+    )
+
+
+def _approval_interrupt_info_from_event(event: SessionEvent) -> dict[str, Any]:
+    """Read the approval payload without downgrading canonical RuntimeEvents.
+
+    RuntimeExecutor persists ``approval.requested`` as a RuntimeEvent envelope,
+    whereas legacy runners write an ``approval_request`` SessionEvent.  Resume
+    accepts both forms so the durable runtime record remains the source of truth.
+    """
+
+    metadata = event.metadata or {}
+    legacy_detail = metadata.get("interrupt_info")
+    if isinstance(legacy_detail, Mapping):
+        return dict(legacy_detail)
+
+    content = event.content or {}
+    payload = content.get("payload")
+    if not isinstance(payload, Mapping):
+        return {}
+    raw_detail = payload.get("detail")
+    detail = dict(raw_detail) if isinstance(raw_detail, Mapping) else {}
+    approval_id = payload.get("approval_id") or payload.get("call_id")
+    if approval_id:
+        detail.setdefault("approval_request_id", approval_id)
+        detail.setdefault("id", approval_id)
+    if payload.get("call_id"):
+        detail.setdefault("run_id", payload.get("call_id"))
+    return detail
 
 
 def _approval_resume_run_mode(
@@ -167,11 +193,7 @@ def _approval_decision_from_resume(resume_input: Mapping[str, Any]) -> dict[str,
 def _consecutive_approval_denials_from_events(events: Sequence[SessionEvent]) -> int:
     denials = 0
     for event in reversed(events):
-        event_type = canonical_event_type(
-            event.event_type,
-            author=event.author,
-            role=str((event.content or {}).get("role") or ""),
-        )
+        event_type = _approval_lifecycle_event_type(event)
         if event_type != "approval_response":
             continue
         resume_input = (event.metadata or {}).get("resume_input")
@@ -210,9 +232,7 @@ def _normalize_approval_resume_input(
     if matched_event is None:
         return normalized
 
-    interrupt_info = (matched_event.metadata or {}).get("interrupt_info")
-    if not isinstance(interrupt_info, Mapping):
-        return normalized
+    interrupt_info = _approval_interrupt_info_from_event(matched_event)
     if not (interrupt_info.get("tool_name") or normalized.get("tool_name")):
         return normalized
 

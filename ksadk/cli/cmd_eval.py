@@ -221,7 +221,7 @@ def _render_report(report: EvalRunReport, *, report_dir: str | None = None) -> N
         emit_json(report.model_dump(mode="json", by_alias=True, exclude_none=True))
     else:
         print_title("Agent 评测完成")
-        get_console().print(f"[title][i]评测摘要[/i][/]")
+        get_console().print("[title][i]评测摘要[/i][/]")
         print_kv("运行状态", report.status.value)
         print_kv("Run ID", report.spec.id)
         if report_dir:

@@ -14,12 +14,14 @@ make public-review
 
 ## Web UI Artifacts
 
-The `ksadk-python` wheel ships `ksadk/server/static`, so users can open the
-local UI without a Node toolchain.
+The `ksadk-python` wheel ships `ksadk/server/static` and
+`ksadk/studio/static`, so users can open both local UIs without a Node
+toolchain.
 
 <Callout type="info">
-Editable UI source is not part of `ksadk-python`; it lives in the `ksadk-web`
-repo only.
+The hosted web UI source lives in the `ksadk-web` repo. The Studio source is
+the tracked `ksadk/studio/react-ui` project in this repository; only its
+compiled payload is ignored.
 </Callout>
 
 ## Local Project Build
@@ -47,15 +49,17 @@ agentengine --dry-run deploy .
 
 ## Release Gate
 
-`make public-build-check` runs wheel-content assertions between `uv build` and
-`twine check dist/*`, so a clean build is enforced before any upload.
+`make public-build-check` is the release build entrypoint. It generates both
+frontend payloads, then runs `uv build`, wheel/sdist content assertions, and
+`twine check dist/*`.
 
 <Steps>
   1. **clean-dist** clears the previous `dist/`
   2. **sync-ksadk-web-static** fetches the pinned, published UI static assets
-  3. **uv build** builds the sdist/wheel
-  4. **tests/test_runtime_common_packaging.py** inspects wheel contents
-  5. **twine check dist/*** final check
+  3. **build-studio-static** installs the locked Studio dependencies and builds its ignored static payload
+  4. **uv build** builds the sdist/wheel
+  5. **tests/test_runtime_common_packaging.py** inspects wheel and sdist contents
+  6. **twine check dist/*** final check
 </Steps>
 
 The assertions guarantee:
@@ -64,8 +68,9 @@ The assertions guarantee:
   outputs, or `node_modules/`.
 - the wheel does not contain historical build residue (stale `dist/` fragments,
   `.zread/`, `.pypirc`).
-- the wheel includes the synced `ksadk/server/static/index.html` and its
-  `assets/` entry, so the local UI opens right after install.
+- the wheel includes the synced `ksadk/server/static/index.html` and generated
+  `ksadk/studio/static/index.html`, with their `assets/` entries, so both local
+  UIs open right after install.
 
 <Callout type="info" title="Match the official release gate locally">
 `make public-preflight` layers `public-audit`, `public-test`, and
@@ -86,15 +91,17 @@ Release artifacts must not contain:
 - customer data, traces, logs, or screenshots.
 
 <Callout type="info">
-The Python package may include static UI assets needed by `agentengine web`.
-Editable UI source belongs to `ksadk-web`.
+The Python package may include static UI assets needed by `agentengine web` and
+Studio. The hosted web UI source belongs to `ksadk-web`; Studio source remains
+tracked in `ksadk/studio/react-ui`.
 </Callout>
 
 Official PyPI releases run through `.github/workflows/publish-pypi.yml`,
 triggered by a GitHub Release `published` event or `workflow_dispatch`. The
-workflow first runs `make sync-ksadk-web-static` (default
-the pinned published `@kingsoftcloud/ksadk-web` version; select another published version via the `ksadk_web_version`
-input), then `make public-preflight`, and finally uploads through OIDC Trusted
+workflow runs `make public-preflight`, which synchronizes the pinned
+`ksadk-web` static payload and generates the Studio payload (by default from
+the published `@kingsoftcloud/ksadk-web` version; select another published
+version via the `ksadk_web_version` input), then uploads through OIDC Trusted
 Publishing without relying on a long-lived PyPI token.
 
 <Callout type="info" title="New in 0.6.7">

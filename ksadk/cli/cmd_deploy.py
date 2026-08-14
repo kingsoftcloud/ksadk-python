@@ -555,7 +555,12 @@ async def _deploy_async(
             print_info("Dry Run: 仅生成本地构建计划，不执行真实构建/上传")
 
     if resolved_artifact_plan.will_build:
-        print_rule(f"Step 2/{total_steps} 构建与上传")
+        build_step = (
+            "构建运行时声明"
+            if effective_artifact_type == "ManagedRuntime"
+            else "构建与上传"
+        )
+        print_rule(f"Step 2/{total_steps} {build_step}")
         try:
             with capture_standard_output():
                 package_info = await provider.build(package_info, deploy_target)

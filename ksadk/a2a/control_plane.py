@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import errno
@@ -20,6 +21,7 @@ from a2a.types import AgentCard
 from google.protobuf.json_format import ParseDict, ParseError
 
 from ksadk.a2a.ids import require_a2a_resource_id
+from ksadk.common.kop_client import KOPClient, KOPError
 
 ENV_A2A_CONTROL_PLANE_URL = "KSADK_A2A_CONTROL_PLANE_URL"
 ENV_A2A_TOKEN_DIR = "KSADK_A2A_TOKEN_DIR"
@@ -610,14 +612,9 @@ class A2AAgentCardClient(A2AControlPlane):
         self._client = httpx_client
         self._timeout = timeout
         self._cards_by_agent: dict[str, tuple[AgentCard, str, str]] = {}
-        from ksadk.common.kop_client import KOPClient
-
-        self._kop = KOPClient(base_url=service_url, timeout=timeout)
+        self._kop = KOPClient(base_url=service_url, service_token=service_token, timeout=timeout)
 
     async def _post_action(self, action: str, payload: dict[str, Any]) -> dict[str, Any]:
-        import asyncio
-        from ksadk.common.kop_client import KOPError
-
         try:
             return await asyncio.to_thread(self._kop.post_action, action, payload)
         except KOPError as exc:

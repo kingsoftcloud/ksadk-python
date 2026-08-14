@@ -103,6 +103,29 @@ async def test_create_agent_forwards_network_configuration(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_create_and_update_agent_mark_sensitive_environment_variables(monkeypatch):
+    client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
+    calls = []
+
+    def fake_action(action: str, params: dict):
+        calls.append((action, params.copy()))
+        return {"agent_id": "ar-sensitive"}
+
+    monkeypatch.setattr(client, "_action", fake_action)
+    env_vars = {"OPENAI_API_KEY": "model-secret", "APP_MODE": "release"}
+
+    await client.create_agent({**_build_create_payload(), "env_vars": env_vars})
+    await client.update_agent("ar-sensitive", {"env_vars": env_vars})
+
+    expected = [
+        {"Key": "OPENAI_API_KEY", "Value": "model-secret", "IsSensitive": True},
+        {"Key": "APP_MODE", "Value": "release", "IsSensitive": False},
+    ]
+    assert calls[0][1]["Advanced"]["EnvironmentVariables"] == expected
+    assert calls[1][1]["EnvironmentVariables"] == expected
+
+
+@pytest.mark.asyncio
 async def test_create_agent_forwards_ui_config(monkeypatch):
     client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
     calls = []

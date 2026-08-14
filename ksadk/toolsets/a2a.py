@@ -13,10 +13,16 @@ call_a2a_agent。LLM 操作哪个远程 agent 通过参数动态指定。
 
 from __future__ import annotations
 
-import asyncio
 import difflib
+import ipaddress
 import os
+import socket
+import uuid
 from typing import Any
+from urllib.parse import urlsplit
+
+import httpcore
+import httpx
 
 from ksadk.tools.gateway import ToolPolicy
 from ksadk.toolsets._langchain import as_tool
@@ -47,29 +53,44 @@ def _normalize_agent_ref(value: str) -> str:
     return (value or "").strip().lower().removeprefix("a2a-agent-")
 
 
-async def _discover_agents() -> list[dict[str, Any]]:
-    from ksadk.a2a.space_client import A2ASpaceClient
+def _discover_agents() -> list[dict[str, Any]]:
+    """同步发现 space 下的可用 A2A agent（经 KOP ListAToASpaceAgents)。
+
+    用同步 KOPClient,不用 async A2ASpaceClient——这样 tool 可在 langgraph 的
+    async node 里安全调用(避免 sync 工具内部 asyncio.run 与运行中 event loop 冲突,
+    也保证 OTel traceparent contextvar 沿 event loop 传递不断链)。
+    """
+    from ksadk.common.kop_client import KOPClient
 
     space_id = _a2a_space_id()
     if not space_id:
         return []
     try:
-        async with A2ASpaceClient.from_env(space_id=space_id) as client:
-            agents = await client.discover()
+        kop = KOPClient()
+        data = kop.post_action(
+            "ListAToASpaceAgents",
+            {"A2ASpaceId": space_id, "Status": "available", "PageSize": 100},
+        )
     except Exception:
         return []
     result = []
-    for a in agents:
-        card = a.agent_card
-        name = str(getattr(card, "name", "") or "")
+    for item in data.get("Agents") or []:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("InvocationStatus") or "") not in {"", "available"}:
+            continue
+        card = item.get("AgentCard") if isinstance(item.get("AgentCard"), dict) else {}
+        ifaces = card.get("supportedInterfaces") or []
+        card_url = str(ifaces[0].get("url")) if ifaces and isinstance(ifaces[0], dict) else ""
         result.append(
             {
-                "agent_id": a.agent_id,
-                "name": name,
-                "description": str(getattr(card, "description", "") or ""),
-                "version_id": a.version_id,
-                "card_sha256": a.card_sha256,
-                "source": a.source,
+                "agent_id": str(item.get("A2AAgentId") or ""),
+                "name": str(card.get("name") or item.get("Name") or ""),
+                "description": str(card.get("description") or item.get("Description") or ""),
+                "version_id": str(item.get("VersionId") or item.get("LatestVersionId") or ""),
+                "card_sha256": str(item.get("CardSha256") or ""),
+                "source": str(item.get("Source") or "hosted"),
+                "url": card_url,
             }
         )
     return result
@@ -80,7 +101,9 @@ def _match_agent(agents: list[dict[str, Any]], ref: str) -> tuple[dict[str, Any]
     if not target:
         return None, [a["agent_id"] for a in agents]
     for a in agents:
-        if _normalize_agent_ref(a["agent_id"]) == target or _normalize_agent_ref(a["name"]) == target:
+        if _normalize_agent_ref(a["agent_id"]) == target or _normalize_agent_ref(
+            a["name"]
+        ) == target:
             return a, []
     available = [a["agent_id"] for a in agents]
     names = [_normalize_agent_ref(a["agent_id"]) for a in agents] + [
@@ -97,7 +120,25 @@ def _task_state_name(remote_task: Any) -> str:
 
 
 def _extract_reply_text(remote_task: Any) -> str:
-    """从 remote task 的 status.message.parts 与 artifacts 提取回复文本。"""
+    """从 task 的 status.message.parts 与 artifacts 提取回复文本。
+
+    兼容 proto Task 对象（属性访问）与 JSON dict（键访问）。
+    """
+    if isinstance(remote_task, dict):
+        status = remote_task.get("status") or {}
+        message = status.get("message") or {}
+        parts: list[str] = []
+        # 优先 status.message.parts（终态回复）；无则退到 artifacts 分片。
+        for part in (message.get("parts") or []):
+            if isinstance(part, dict) and part.get("text"):
+                parts.append(part["text"])
+        if parts:
+            return "".join(parts)
+        for artifact in (remote_task.get("artifacts") or []):
+            for part in (artifact.get("parts") or []):
+                if isinstance(part, dict) and part.get("text"):
+                    parts.append(part["text"])
+        return "".join(parts)
     parts_text: list[str] = []
     status = getattr(remote_task, "status", None)
     message = getattr(status, "message", None)
@@ -114,6 +155,139 @@ def _extract_reply_text(remote_task: Any) -> str:
     return "".join(parts_text)
 
 
+class _PinnedDNSNetworkBackend(httpcore.NetworkBackend):
+    """Dial the address selected by the URL validator while preserving TLS SNI."""
+
+    def __init__(
+        self,
+        delegate: httpcore.NetworkBackend,
+        *,
+        expected_hostname: str,
+        expected_port: int,
+        pinned_ip: str,
+    ) -> None:
+        self._delegate = delegate
+        self._expected_hostname = expected_hostname
+        self._expected_port = expected_port
+        self._pinned_ip = pinned_ip
+
+    def connect_tcp(
+        self,
+        host: str,
+        port: int,
+        timeout: float | None = None,
+        local_address: str | None = None,
+        socket_options: Any = None,
+    ) -> httpcore.NetworkStream:
+        if host.lower() != self._expected_hostname or port != self._expected_port:
+            raise RuntimeError("A2A tool transport attempted to dial an unapproved origin")
+        return self._delegate.connect_tcp(
+            self._pinned_ip,
+            port,
+            timeout=timeout,
+            local_address=local_address,
+            socket_options=socket_options,
+        )
+
+    def connect_unix_socket(
+        self,
+        path: str,
+        timeout: float | None = None,
+        socket_options: Any = None,
+    ) -> httpcore.NetworkStream:
+        return self._delegate.connect_unix_socket(
+            path,
+            timeout=timeout,
+            socket_options=socket_options,
+        )
+
+    def sleep(self, seconds: float) -> None:
+        self._delegate.sleep(seconds)
+
+
+def _validated_card_origin(url: str) -> tuple[str, int, str] | dict[str, Any]:
+    """Validate a card URL and pin one address from its all-public DNS result."""
+    parsed = urlsplit(url)
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.netloc.rsplit("@", 1)[-1].endswith(":")
+        or port is not None and not 1 <= port <= 65535
+    ):
+        return {
+            "ok": False,
+            "error_type": "invalid_card_url",
+            "error_message": "card url must be an HTTP(S) URL without userinfo",
+        }
+    try:
+        hostname = parsed.hostname.encode("idna").decode("ascii").lower()
+        effective_port = port or (443 if parsed.scheme == "https" else 80)
+        addresses = socket.getaddrinfo(
+            hostname,
+            effective_port,
+            type=socket.SOCK_STREAM,
+        )
+    except (UnicodeError, socket.gaierror) as exc:
+        return {
+            "ok": False,
+            "error_type": "dns_resolution_failed",
+            "error_message": str(exc),
+        }
+    public_addresses: list[str] = []
+    for address in addresses:
+        ip = ipaddress.ip_address(address[4][0])
+        if not ip.is_global:
+            return {
+                "ok": False,
+                "error_type": "blocked_by_ssrf_policy",
+                "error_message": f"blocked non-public card address: {ip}",
+            }
+        public_addresses.append(str(ip))
+    if not public_addresses:
+        return {
+            "ok": False,
+            "error_type": "dns_resolution_failed",
+            "error_message": "card hostname resolved to no addresses",
+        }
+    return hostname, effective_port, public_addresses[0]
+
+
+def _validate_card_url(url: str) -> dict[str, Any] | None:
+    validated = _validated_card_origin(url)
+    return validated if isinstance(validated, dict) else None
+
+
+def _pinned_http_client(*, hostname: str, port: int, pinned_ip: str) -> httpx.Client:
+    transport = httpx.HTTPTransport(
+        trust_env=False,
+        http1=True,
+        http2=False,
+        limits=httpx.Limits(max_connections=1, max_keepalive_connections=0),
+    )
+    pool = getattr(transport, "_pool", None)
+    if not isinstance(pool, httpcore.ConnectionPool):
+        transport.close()
+        raise RuntimeError("httpx direct sync transport is unavailable for A2A DNS pinning")
+    pool._network_backend = _PinnedDNSNetworkBackend(  # type: ignore[attr-defined]
+        pool._network_backend,
+        expected_hostname=hostname,
+        expected_port=port,
+        pinned_ip=pinned_ip,
+    )
+    return httpx.Client(
+        transport=transport,
+        follow_redirects=False,
+        trust_env=False,
+        timeout=120,
+    )
+
+
 def list_a2a_agents() -> dict[str, Any]:
     """List remote A2A agents in the configured A2A Space.
 
@@ -124,7 +298,7 @@ def list_a2a_agents() -> dict[str, Any]:
     if not space_id:
         return {"ok": False, "error_message": "A2A Space not configured"}
     try:
-        agents = asyncio.run(_discover_agents())
+        agents = _discover_agents()
     except Exception as exc:
         return {"ok": False, "error_type": type(exc).__name__, "error_message": str(exc)}
     return {"ok": True, "space_id": space_id, "agents": agents}
@@ -140,7 +314,7 @@ def get_a2a_agent_card(agent: str) -> dict[str, Any]:
     if not space_id:
         return {"ok": False, "error_message": "A2A Space not configured"}
     try:
-        agents = asyncio.run(_discover_agents())
+        agents = _discover_agents()
     except Exception as exc:
         return {"ok": False, "error_type": type(exc).__name__, "error_message": str(exc)}
     matched, hint = _match_agent(agents, agent)
@@ -167,7 +341,7 @@ def call_a2a_agent(agent: str, message: str) -> dict[str, Any]:
     if not (message or "").strip():
         return {"ok": False, "error_message": "message is required"}
     try:
-        agents = asyncio.run(_discover_agents())
+        agents = _discover_agents()
     except Exception as exc:
         return {"ok": False, "error_type": type(exc).__name__, "error_message": str(exc)}
     matched, hint = _match_agent(agents, agent)
@@ -178,35 +352,65 @@ def call_a2a_agent(agent: str, message: str) -> dict[str, Any]:
             "available_agents": hint,
         }
     try:
-        from ksadk.a2a.space_client import A2ASpaceClient
+        card_url = str(matched.get("url") or "").strip()
+        if not card_url:
+            return {"ok": False, "error_message": f"agent {matched['agent_id']} card 无可用 url"}
 
-        async def _call() -> dict[str, Any]:
-            import asyncio as _aio
+        def _send() -> dict[str, Any]:
+            # 直接对 card.url 发非流式 SendMessage(returnImmediately=false),同步拿终态回复。
+            # 不走 space_client 的流式 send_message/subscribe(其 task 状态跟踪在异步下不可靠)。
+            payload = {
+                "jsonrpc": "2.0",
+                "method": "SendMessage",
+                "id": "1",
+                "params": {
+                    "message": {
+                        "messageId": f"m-{uuid.uuid4().hex[:12]}",
+                        "role": "ROLE_USER",
+                        "parts": [{"text": message}],
+                    },
+                    "configuration": {"returnImmediately": False},
+                },
+            }
+            # 透传 OTel trace context：把当前 span 注入 traceparent header,
+            # 让被调 agent 的 span 挂到同一条分布式 trace 上。
+            headers = {"Content-Type": "application/json", "A2A-Version": "1.0"}
+            try:
+                from opentelemetry import propagate
 
-            async with A2ASpaceClient.from_env(space_id=space_id) as client:
-                task = await client.send_message(matched["agent_id"], message)
-                platform_task_id = task.id
-                remote_task = task.remote_task
-                # send_message 返回首个 task(SUBMITTED);轮询 get_task 到终态拿回复文本。
-                for _ in range(60):
-                    state = _task_state_name(remote_task)
-                    if state in {"TASK_STATE_COMPLETED", "TASK_STATE_FAILED", "TASK_STATE_CANCELED", "TASK_STATE_REJECTED"}:
-                        break
-                    await _aio.sleep(1)
-                    try:
-                        polled = await client.get_task(platform_task_id)
-                        remote_task = polled.remote_task
-                    except Exception:
-                        break
+                propagate.inject(headers)
+            except Exception:
+                pass
+            validated = _validated_card_origin(card_url)
+            if isinstance(validated, dict):
+                return validated
+            hostname, port, pinned_ip = validated
+            with _pinned_http_client(
+                hostname=hostname,
+                port=port,
+                pinned_ip=pinned_ip,
+            ) as client:
+                resp = client.post(card_url, json=payload, headers=headers)
+            if resp.status_code != 200:
                 return {
-                    "task_id": platform_task_id,
-                    "remote_task_id": str(getattr(remote_task, "id", "") or ""),
-                    "state": _task_state_name(remote_task),
-                    "reply": _extract_reply_text(remote_task),
+                    "ok": False,
+                    "error_type": "A2AClientError",
+                    "error_message": f"HTTP {resp.status_code}: {resp.text[:200]}",
                 }
+            data = resp.json()
+            if "error" in data and data["error"]:
+                err = str(data["error"])[:300]
+                return {"ok": False, "error_type": "A2AError", "error_message": err}
+            task = (data.get("result") or {}).get("task") or {}
+            return {
+                "ok": True,
+                "agent": matched["agent_id"],
+                "task_id": task.get("id", ""),
+                "state": str((task.get("status") or {}).get("state", "")),
+                "reply": _extract_reply_text(task),
+            }
 
-        result = asyncio.run(_call())
-        return {"ok": True, "agent": matched["agent_id"], **result}
+        return _send()
     except Exception as exc:
         return {"ok": False, "error_type": type(exc).__name__, "error_message": str(exc)}
 

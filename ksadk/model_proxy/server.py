@@ -274,7 +274,8 @@ async def _stream_gen(
                         started=started,
                     )
                     logger.warning(
-                        "responses upstream stream rejected: status=%s model=%s tools=%s msgs=%s bytes=%s has_text_format=%s",
+                        "responses upstream stream rejected: status=%s model=%s tools=%s "
+                        "msgs=%s bytes=%s has_text_format=%s",
                         r.status_code,
                         chat_req.get("model"),
                         len(chat_req.get("tools") or []),

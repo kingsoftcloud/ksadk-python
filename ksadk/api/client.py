@@ -20,6 +20,7 @@ from urllib.parse import quote, unquote, urlparse, urlsplit
 import requests
 import urllib3
 
+from ksadk.api.environment import environment_variables_payload
 from ksadk.common.auth import AWSV4Auth
 
 logger = logging.getLogger(__name__)
@@ -1380,14 +1381,11 @@ class AgentEngineClient:
                 image_credential=ic,
             )
 
-        env_vars = []
         envs = data.get("env_vars") or data.get("environment_variables")
         if envs:
-            if isinstance(envs, dict):
-                for k, v in envs.items():
-                    env_vars.append({"Key": k, "Value": str(v), "IsSensitive": False})
-            elif isinstance(envs, list):
-                env_vars = envs
+            env_vars = environment_variables_payload(envs)
+        else:
+            env_vars = []
 
         advanced = {
             "EnableObservability": True,
@@ -1681,13 +1679,7 @@ class AgentEngineClient:
 
         envs = data.get("env_vars") or data.get("environment_variables")
         if envs:
-            env_vars = []
-            if isinstance(envs, dict):
-                for k, v in envs.items():
-                    env_vars.append({"Key": k, "Value": str(v), "IsSensitive": False})
-            elif isinstance(envs, list):
-                env_vars = envs
-            params["EnvironmentVariables"] = env_vars
+            params["EnvironmentVariables"] = environment_variables_payload(envs)
 
         network_payload = self._normalize_network_payload(data.get("network"))
         if network_payload:

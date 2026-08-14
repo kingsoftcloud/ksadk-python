@@ -22,6 +22,7 @@ dist/
 downloads/
 eggs/
 lib/
+!ksadk/studio/react-ui/src/lib/
 lib64/
 !ksadk/studio/react-ui/src/lib/
 !ksadk/studio/react-ui/src/lib/**
@@ -85,6 +86,8 @@ webui
 
 # Generated from @kingsoftcloud/ksadk-web during release/build.
 ksadk/server/static/**
+# Generated from the tracked React Studio source during release/build.
+ksadk/studio/static/**
 ksadk/studio/web/node_modules/
 ksadk/studio/web/dist/
 site/

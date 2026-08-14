@@ -72,6 +72,7 @@ class KOPClient:
         service: Optional[str] = None,
         api_version: Optional[str] = None,
         account_id: Optional[str] = None,
+        service_token: Optional[str] = None,
         timeout: float = 15.0,
     ) -> None:
         self.base_url = (base_url or os.getenv("KSADK_A2A_SERVICE_URL") or "").strip().rstrip("/")
@@ -83,15 +84,43 @@ class KOPClient:
         if not self.base_url:
             # 默认探测：内网 inner 优先（runtime 在集群内），回落公网 public。
             self.base_url = self._detect_default_base_url()
-        self.region = (region or os.getenv("KSADK_A2A_SERVICE_REGION") or os.getenv("KSYUN_REGION") or DEFAULT_REGION).strip()
+        self.region = (
+            region
+            or os.getenv("KSADK_A2A_SERVICE_REGION")
+            or os.getenv("KSYUN_REGION")
+            or DEFAULT_REGION
+        ).strip()
         self.service = (service or DEFAULT_SERVICE).strip()
         self.api_version = (api_version or DEFAULT_API_VERSION).strip()
-        self.account_id = (account_id or os.getenv("KSADK_A2A_ACCOUNT_ID") or os.getenv("KSYUN_ACCOUNT_ID") or "").strip()
+        self.account_id = (
+            account_id
+            or os.getenv("KSADK_A2A_ACCOUNT_ID")
+            or os.getenv("KSYUN_ACCOUNT_ID")
+            or ""
+        ).strip()
+        self.service_token = (
+            service_token or os.getenv("KSADK_A2A_SERVICE_TOKEN") or ""
+        ).strip()
         self.timeout = timeout
         self._kop_mode = is_kop_endpoint(self.base_url)
-        ak = (access_key or os.getenv("KSADK_A2A_ACCESS_KEY") or os.getenv("KSYUN_ACCESS_KEY") or "").strip()
-        sk = (secret_key or os.getenv("KSADK_A2A_SECRET_KEY") or os.getenv("KSYUN_SECRET_KEY") or "").strip()
-        self._auth = AWSV4Auth(access_key_id=ak, secret_access_key=sk, region=self.region, service=self.service)
+        ak = (
+            access_key
+            or os.getenv("KSADK_A2A_ACCESS_KEY")
+            or os.getenv("KSYUN_ACCESS_KEY")
+            or ""
+        ).strip()
+        sk = (
+            secret_key
+            or os.getenv("KSADK_A2A_SECRET_KEY")
+            or os.getenv("KSYUN_SECRET_KEY")
+            or ""
+        ).strip()
+        self._auth = AWSV4Auth(
+            access_key_id=ak,
+            secret_access_key=sk,
+            region=self.region,
+            service=self.service,
+        )
         self._session: Optional[requests.Session] = None
 
     @property
@@ -109,6 +138,8 @@ class KOPClient:
         headers = {"Accept": "application/json", "Content-Type": "application/json"}
         if self.account_id:
             headers["X-Ksc-Account-Id"] = self.account_id
+        if self.service_token:
+            headers["Authorization"] = f"Bearer {self.service_token}"
         if self._kop_mode:
             headers["Host"] = urlsplit(self.base_url).netloc
             headers["X-Ksc-Request-Id"] = str(uuid.uuid4())
@@ -128,7 +159,9 @@ class KOPClient:
             return f"{self.base_url}/?Action={action}&Version={self.api_version}"
         return f"{self.base_url}/agentengine/api/v1/{action}"
 
-    def post_action(self, action: str, payload: Optional[Mapping[str, Any]] = None) -> dict[str, Any]:
+    def post_action(
+        self, action: str, payload: Optional[Mapping[str, Any]] = None
+    ) -> dict[str, Any]:
         """POST 一个 KOP Action，返回 Data 字段（已解包信封）。
 
         非KOP 模式走 ``/agentengine/api/v1/{action}``；KOP 模式走 ``?Action=&Version=`` + 签名。
@@ -136,19 +169,45 @@ class KOPClient:
         url = self._build_url(action)
         headers = self._headers(action)
         body = json.dumps(dict(payload or {}), ensure_ascii=False)
-        auth = self._auth.get_auth() if self._kop_mode and self._auth.is_enabled else None
+        auth = (
+            self._auth.get_auth()
+            if self._kop_mode and self._auth.is_enabled and not self.service_token
+            else None
+        )
         try:
-            response = self._session_obj().post(url, data=body.encode("utf-8"), headers=headers, auth=auth, timeout=self.timeout)
+            response = self._session_obj().post(
+                url,
+                data=body.encode("utf-8"),
+                headers=headers,
+                auth=auth,
+                timeout=self.timeout,
+            )
         except requests.RequestException as exc:
-            raise KOPError(code=503, message=f"KOP control plane unavailable: {exc}", action=action) from exc
-        if response.status_code >= 500:
-            raise KOPError(code=response.status_code, message=f"KOP server error: {response.text[:200]}", action=action)
+            raise KOPError(
+                code=503,
+                message=f"KOP control plane unavailable: {exc}",
+                action=action,
+            ) from exc
+        if not 200 <= response.status_code < 300:
+            raise KOPError(
+                code=response.status_code,
+                message=f"KOP HTTP error: {response.text[:200]}",
+                action=action,
+            )
         try:
             envelope = response.json()
         except ValueError as exc:
-            raise KOPError(code=response.status_code or 502, message="non-JSON response", action=action) from exc
+            raise KOPError(
+                code=response.status_code or 502,
+                message="non-JSON response",
+                action=action,
+            ) from exc
         if not isinstance(envelope, dict):
-            raise KOPError(code=response.status_code or 502, message="response not an object", action=action)
+            raise KOPError(
+                code=response.status_code or 502,
+                message="response not an object",
+                action=action,
+            )
         code = int(envelope.get("Code") or 0)
         if code and code != 200:
             raise KOPError(
