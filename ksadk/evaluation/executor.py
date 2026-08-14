@@ -51,6 +51,7 @@ async def execute_evaluation(
         evalset=request.evalset,
         target=snapshot,
         config=request.config,
+        cloud_dataset=request.cloud_dataset,
     )
     case_runs: list[CaseRun] = []
     try:

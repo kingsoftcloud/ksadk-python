@@ -200,6 +200,18 @@ class EvalSetVersion(EvaluationModel):
         return _content_digest(payload)
 
 
+class CloudDatasetRef(EvaluationModel):
+    """Immutable reference to the exact cloud Dataset snapshot used by a run."""
+
+    provider: str = Field(min_length=1, max_length=256)
+    project_id: str | None = Field(default=None, min_length=1, max_length=256)
+    dataset_id: str = Field(min_length=1, max_length=256)
+    version: int = Field(ge=1)
+    schema_hash: str = Field(min_length=64, max_length=64)
+    content_digest: str = Field(min_length=64, max_length=64)
+    row_count: int = Field(default=0, ge=0)
+
+
 # ---------------------------------------------------------------------------
 # Target identity & references
 # ---------------------------------------------------------------------------
@@ -262,6 +274,7 @@ class EvaluationRequest(EvaluationModel):
     target: TargetRef
     config: EvaluationConfig = Field(default_factory=EvaluationConfig)
     report_dir: str | None = Field(default=None, min_length=1, max_length=2048)
+    cloud_dataset: CloudDatasetRef | None = None
 
 
 class EvalRunSpec(EvaluationModel):
@@ -273,6 +286,7 @@ class EvalRunSpec(EvaluationModel):
     config: EvaluationConfig = Field(default_factory=EvaluationConfig)
     environment_digest: str = Field(default="", max_length=128)
     attempt: int = Field(default=1, ge=1)
+    cloud_dataset: CloudDatasetRef | None = None
 
 
 # ---------------------------------------------------------------------------

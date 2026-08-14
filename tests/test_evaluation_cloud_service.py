@@ -10,6 +10,7 @@ from ksadk.evaluation.cloud_service import (
     CloudEvalSetPublishResult,
     CloudEvalSetService,
 )
+from ksadk.evaluation.contracts import CloudDatasetRef
 from ksadk.evaluation.evalset import parse_evalset
 
 
@@ -34,6 +35,10 @@ class _FakeCloudClient:
             }
         )
 
+    async def read_snapshot(self, dataset_id, version, *, project_id=None):
+        del dataset_id, version, project_id
+        return evalset_to_dataset_snapshot(_evalset())
+
 
 def _evalset():
     return parse_evalset(
@@ -42,6 +47,31 @@ def _evalset():
             "name": "support-regression",
             "cases": [{"id": "case-001", "turns": [{"input": "如何修改密码？"}]}],
         }
+    )
+
+
+from ksadk.evaluation.cloud_converter import evalset_to_dataset_snapshot
+
+
+@pytest.mark.asyncio
+async def test_pull_reads_one_fixed_version_and_returns_traceable_ref(tmp_path: Path):
+    service = CloudEvalSetService(tmp_path, _FakeCloudClient())
+
+    result = await service.pull(
+        dataset_id="dataset_001",
+        version=4,
+        project_id="project_001",
+    )
+
+    assert result.evalset.content_digest == _evalset().content_digest
+    assert result.cloud_dataset == CloudDatasetRef(
+        provider="agent-eval/evalsmith",
+        project_id="project_001",
+        dataset_id="dataset_001",
+        version=4,
+        schema_hash=result.snapshot.schema_hash,
+        content_digest=result.snapshot.content_digest,
+        row_count=1,
     )
 
 

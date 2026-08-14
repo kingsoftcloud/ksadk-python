@@ -952,6 +952,7 @@ def create_studio_app(
             payload.target,
             payload.config,
             idempotency_key=_require_idempotency_key(idempotency_key),
+            cloud_dataset=payload.cloud_dataset,
         )
 
     @app.get("/api/v1/evaluations")
@@ -961,6 +962,13 @@ def create_studio_app(
     @app.get("/api/v1/evaluation-targets")
     async def list_evaluation_targets():
         return studio.evaluation_catalog()
+
+    @app.get("/api/v1/evaluation-cloud/catalog")
+    async def list_evaluation_cloud_catalog(
+        project_id: str | None = Query(default=None, alias="projectId"),
+    ):
+        items = await studio.evaluation_cloud_catalog(project_id=project_id)
+        return {"items": items}
 
     @app.get("/api/v1/evaluations/{evaluation_id}")
     async def get_evaluation(evaluation_id: str):

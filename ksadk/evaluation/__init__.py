@@ -18,13 +18,16 @@ from .cloud_converter import (
 )
 from .cloud_service import (
     CloudEvalSetPreviewError,
+    CloudEvalSetCatalogItem,
     CloudEvalSetPublishResult,
+    CloudEvalSetPullResult,
     CloudEvalSetService,
 )
 from .contracts import (
     AssertionSpec,
     AssertionType,
     CaseRun,
+    CloudDatasetRef,
     DataPolicy,
     EvalCase,
     EvalRunReport,
@@ -64,11 +67,14 @@ __all__ = [
     "CloudBinding",
     "CloudBindingError",
     "CloudBindingStore",
+    "CloudDatasetRef",
     "CloudDatasetColumn",
     "CloudDatasetRow",
     "CloudDatasetSnapshot",
     "CloudEvalSetPreviewError",
+    "CloudEvalSetCatalogItem",
     "CloudEvalSetPublishResult",
+    "CloudEvalSetPullResult",
     "CloudEvalSetService",
     "CaseRun",
     "DataPolicy",

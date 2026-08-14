@@ -49,6 +49,121 @@ describe("EvaluationsPage", () => {
     expect(screen.getByRole("combobox", { name: "Studio Build" })).toHaveTextContent("agent-1 · langgraph");
   });
 
+  it("offers immutable cloud Dataset versions as an evaluation source", async () => {
+    const user = userEvent.setup();
+    mockedFetch.mockImplementation(async input => {
+      const url = String(input);
+      if (url === "/api/v1/evaluation-targets") return response({ evalsets: [], builds: [] });
+      if (url === "/api/v1/evaluation-cloud/catalog") {
+        return response({
+          items: [{
+            datasetId: "dataset-1",
+            name: "support",
+            version: 4,
+            schemaHash: "a".repeat(64),
+            contentDigest: "b".repeat(64),
+            rowCount: 2,
+          }],
+        });
+      }
+      return response({ items: [] });
+    });
+    render(<EvaluationsPage refreshTick={0} />);
+
+    await user.click(screen.getByRole("button", { name: "新建评测" }));
+    await user.click(await screen.findByRole("combobox", { name: "Dataset source" }));
+    await user.click(await screen.findByRole("option", { name: "Cloud Dataset version" }));
+
+    expect(screen.getByRole("combobox", { name: "Cloud Dataset" })).toHaveTextContent("support - v4");
+    expect(document.querySelector("#evaluation-dataset-version")).toHaveValue(4);
+  });
+
+  it("selects an exact cloud Dataset version when a Dataset has multiple snapshots", async () => {
+    const user = userEvent.setup();
+    mockedFetch.mockImplementation(async input => {
+      const url = String(input);
+      if (url === "/api/v1/evaluation-targets") return response({ evalsets: [], builds: [] });
+      if (url === "/api/v1/evaluation-cloud/catalog") {
+        return response({
+          items: [
+            { datasetId: "dataset-1", name: "support", version: 4, schemaHash: "a".repeat(64), contentDigest: "b".repeat(64), rowCount: 2 },
+            { datasetId: "dataset-1", name: "support", version: 5, schemaHash: "c".repeat(64), contentDigest: "d".repeat(64), rowCount: 3 },
+          ],
+        });
+      }
+      return response({ items: [] });
+    });
+    render(<EvaluationsPage refreshTick={0} />);
+
+    await user.click(screen.getByRole("button", { name: "新建评测" }));
+    await user.click(await screen.findByRole("combobox", { name: "Dataset source" }));
+    await user.click(await screen.findByRole("option", { name: "Cloud Dataset version" }));
+    await vi.waitFor(() => {
+      expect(screen.getByRole("combobox", { name: "Cloud Dataset" })).toHaveTextContent("support - v4");
+    });
+    await user.click(screen.getByRole("combobox", { name: "Cloud Dataset" }));
+    const options = await screen.findAllByRole("option");
+    expect(options).toHaveLength(2);
+    expect(options[1]).toHaveTextContent("support - v5");
+    await user.click(options[1]);
+
+    expect(document.querySelector("#evaluation-dataset-version")).toHaveValue(5);
+  });
+
+  it("submits the selected immutable cloud Dataset reference", async () => {
+    const user = userEvent.setup();
+    mockedFetch.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === "/api/v1/evaluation-targets") return response({ evalsets: [], builds: [] });
+      if (url === "/api/v1/evaluation-cloud/catalog") {
+        return response({
+          items: [{
+            datasetId: "dataset-1",
+            name: "support",
+            projectId: "project-1",
+            version: 5,
+            schemaHash: "c".repeat(64),
+            contentDigest: "d".repeat(64),
+            rowCount: 3,
+          }],
+        });
+      }
+      if (url === "/api/v1/evaluations" && init?.method === "POST") {
+        return response({ id: "op_eval_cloud", status: "QUEUED" });
+      }
+      if (url === "/api/v1/operations/op_eval_cloud") {
+        return response({ id: "op_eval_cloud", status: "FAILED", error: { message: "test completion" } });
+      }
+      return response({ items: [] });
+    });
+    render(<EvaluationsPage refreshTick={0} />);
+
+    await user.click(screen.getByRole("button", { name: "新建评测" }));
+    await user.click(await screen.findByRole("combobox", { name: "Dataset source" }));
+    await user.click(await screen.findByRole("option", { name: "Cloud Dataset version" }));
+    await vi.waitFor(() => {
+      expect(screen.getByRole("combobox", { name: "Cloud Dataset" })).toHaveTextContent("support - v5");
+    });
+    await user.type(screen.getByLabelText(/Target locator/), "https://agent.example.test/a2a");
+    await user.click(screen.getByRole("button", { name: "开始评测" }));
+
+    await vi.waitFor(() => {
+      const post = mockedFetch.mock.calls.find(([, init]) => init?.method === "POST");
+      expect(post).toBeDefined();
+      expect(JSON.parse(String(post?.[1]?.body))).toMatchObject({
+        cloudDataset: {
+          provider: "agent-eval/evalsmith",
+          projectId: "project-1",
+          datasetId: "dataset-1",
+          version: 5,
+          schemaHash: "c".repeat(64),
+          contentDigest: "d".repeat(64),
+          rowCount: 3,
+        },
+      });
+    });
+  });
+
   it("submits the shared evaluation contract and waits for its operation", async () => {
     const user = userEvent.setup();
     const completedReport = {

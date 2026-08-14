@@ -4,11 +4,37 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from ksadk.evaluation import EvaluationConfig, TargetKind, TargetRef
+from ksadk.evaluation import (
+    CloudEvalSetCatalogItem,
+    EvaluationConfig,
+    TargetKind,
+    TargetRef,
+)
 from ksadk.studio.api import create_studio_app
 from ksadk.studio.contracts import BuildRecord, BuildStatus
 from ksadk.studio.errors import StudioError
 from ksadk.studio.service import StudioService
+
+
+class _CloudEvalClient:
+    async def list_datasets(self, *, project_id=None):
+        return [
+            CloudEvalSetCatalogItem(
+                dataset_id="dataset-1",
+                name="support",
+                project_id=project_id,
+                version=4,
+                schema_hash="a" * 64,
+                content_digest="b" * 64,
+                row_count=2,
+            )
+        ]
+
+    async def read_snapshot(self, dataset_id, version, *, project_id=None):
+        raise AssertionError("catalog test must not read a snapshot")
+
+    async def publish_snapshot(self, *args, **kwargs):
+        raise AssertionError("catalog test must not publish")
 
 
 @pytest.mark.asyncio
@@ -100,6 +126,102 @@ cases:
         missing = client.get("/api/v1/evaluations/eval_missing")
         assert missing.status_code == 404
         assert missing.json()["error"]["code"] == "EVALUATION_NOT_FOUND"
+
+
+def test_studio_cloud_catalog_exposes_immutable_dataset_versions(tmp_path: Path):
+    service = StudioService(tmp_path, cloud_evalset_client=_CloudEvalClient())
+    app = create_studio_app(tmp_path, service=service, security_enabled=False)
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/v1/evaluation-cloud/catalog",
+            params={"projectId": "project-1"},
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["items"][0]["datasetId"] == "dataset-1"
+    assert response.json()["items"][0]["version"] == 4
+
+
+def test_studio_evaluation_contract_accepts_a_cloud_dataset_source():
+    from ksadk.evaluation import CloudDatasetRef
+    from ksadk.studio.api_contracts import StudioEvaluationCreate
+
+    payload = StudioEvaluationCreate(
+        cloud_dataset=CloudDatasetRef(
+            provider="agent-eval/evalsmith",
+            dataset_id="dataset-1",
+            version=4,
+            schema_hash="a" * 64,
+            content_digest="b" * 64,
+        ),
+        target=TargetRef(kind=TargetKind.A2A, locator="https://agent.example.test"),
+    )
+
+    assert payload.evalset_file is None
+    assert payload.cloud_dataset.dataset_id == "dataset-1"
+
+
+@pytest.mark.asyncio
+async def test_studio_remote_dataset_operation_resolves_fixed_snapshot(tmp_path: Path, monkeypatch):
+    from ksadk.evaluation import CloudDatasetRef
+    from ksadk.evaluation.cloud_converter import evalset_to_dataset_snapshot
+    from ksadk.evaluation.evalset import parse_evalset
+
+    evalset = parse_evalset(
+        {
+            "schemaVersion": "ksadk.eval/v1",
+            "name": "remote",
+            "cases": [{"id": "one", "input": "hello"}],
+        }
+    )
+    snapshot = evalset_to_dataset_snapshot(evalset)
+
+    class Client(_CloudEvalClient):
+        async def read_snapshot(self, dataset_id, version, *, project_id=None):
+            assert (dataset_id, version, project_id) == ("dataset-1", 4, None)
+            return snapshot
+
+    captured = {}
+
+    async def fake_execute(request, **kwargs):
+        captured["request"] = request
+        from ksadk.evaluation import EvalRunReport, EvalRunSpec, TargetSnapshot
+
+        return EvalRunReport(
+            spec=EvalRunSpec(
+                id=kwargs["run_id"],
+                evalset=request.evalset,
+                target=TargetSnapshot(
+                    kind=TargetKind.A2A,
+                    entrypoint=request.target.locator,
+                    revision_digest="sha256:test",
+                ),
+                config=request.config,
+                cloud_dataset=request.cloud_dataset,
+            ),
+            status="PASSED",
+        )
+
+    monkeypatch.setattr("ksadk.studio.service.execute_evaluation", fake_execute)
+    service = StudioService(tmp_path, cloud_evalset_client=Client())
+    operation = service.submit_public_evaluation(
+        None,
+        TargetRef(kind=TargetKind.A2A, locator="https://agent.example.test"),
+        EvaluationConfig(),
+        idempotency_key="remote-evaluation-1",
+        cloud_dataset=CloudDatasetRef(
+            provider="agent-eval/evalsmith",
+            dataset_id="dataset-1",
+            version=4,
+            schema_hash=snapshot.schema_hash,
+            content_digest=snapshot.content_digest,
+        ),
+    )
+    completed = await service.operations.wait(operation.id)
+
+    assert completed.status == "SUCCEEDED", completed.error
+    assert captured["request"].cloud_dataset.dataset_id == "dataset-1"
 
 
 @pytest.mark.asyncio

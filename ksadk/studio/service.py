@@ -11,8 +11,12 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 from ksadk.evaluation import (
+    CloudDatasetRef,
+    CloudEvalSetService,
     EvaluationConfig as PublicEvaluationConfig,
 )
+from ksadk.evaluation.agent_eval_client import AgentEvalCloudDatasetClient
+from ksadk.evaluation.cloud_service import CloudDatasetClient, CloudEvalSetCatalogItem
 from ksadk.evaluation import (
     EvaluationExecutionError,
     EvaluationNotImplementedError,
@@ -107,6 +111,7 @@ class StudioService:
         model_client: OpenAICompatibleModelClient | None = None,
         credential_resolver: CredentialResolver | None = None,
         cloud_gateway: CloudDeploymentGateway | None = None,
+        cloud_evalset_client: CloudDatasetClient | None = None,
         codex_runtime_inspector: RuntimeInspector | None = None,
         runtime_executor: RuntimeExecutor | None = None,
     ) -> None:
@@ -180,6 +185,19 @@ class StudioService:
         self.operations = OperationManager(self.workspace)
         self.evaluation_storage = EvaluationStorage(
             self.workspace.resolve(".agentkit/evaluations")
+        )
+        if cloud_evalset_client is None:
+            agent_eval_url = os.environ.get("AGENT_EVAL_BASE_URL", "").strip()
+            if agent_eval_url:
+                cloud_evalset_client = AgentEvalCloudDatasetClient(
+                    agent_eval_url,
+                    api_token=os.environ.get("AGENT_EVAL_API_TOKEN"),
+                    account_id=os.environ.get("AGENT_EVAL_ACCOUNT_ID"),
+                )
+        self.cloud_evalsets = (
+            CloudEvalSetService(self.workspace.root, cloud_evalset_client)
+            if cloud_evalset_client is not None
+            else None
         )
         self.authoring = StudioAuthoringCoordinator(self)
         self.codex_agents = CodexAgentService(self)
@@ -892,45 +910,84 @@ class StudioService:
 
     def submit_public_evaluation(
         self,
-        evalset_file: str,
+        evalset_file: str | None,
         target: TargetRef,
         config: PublicEvaluationConfig,
         *,
         idempotency_key: str,
+        cloud_dataset: CloudDatasetRef | None = None,
     ) -> Operation:
         """Queue the public CLI/Studio handoff without exposing adapter internals."""
 
-        try:
-            path = self.workspace.resolve(evalset_file, must_exist=True)
-        except StudioError:
-            raise
-        if not path.is_file():
+        if (evalset_file is None) == (cloud_dataset is None):
             raise StudioError(
-                "EVALSET_FILE_INVALID",
-                "EvalSet 必须是工作区内的文件",
+                "EVALSET_SOURCE_INVALID",
+                "必须且只能指定本地 EvalSet 或云端 Dataset version",
                 status_code=422,
-                field="evalsetFile",
             )
-        try:
-            evalset = load_evalset(path)
-        except EvalSetParseError as exc:
-            raise StudioError(
-                exc.code,
-                str(exc),
-                status_code=422,
-                field="evalsetFile",
-            ) from exc
+        evalset = None
+        if evalset_file is not None:
+            try:
+                path = self.workspace.resolve(evalset_file, must_exist=True)
+            except StudioError:
+                raise
+            if not path.is_file():
+                raise StudioError(
+                    "EVALSET_FILE_INVALID",
+                    "EvalSet 必须是工作区内的文件",
+                    status_code=422,
+                    field="evalsetFile",
+                )
+            try:
+                evalset = load_evalset(path)
+            except EvalSetParseError as exc:
+                raise StudioError(
+                    exc.code,
+                    str(exc),
+                    status_code=422,
+                    field="evalsetFile",
+                ) from exc
         target = self._normalize_public_evaluation_target(target)
-        request = PublicEvaluationRequest(
-            evalset=evalset,
-            target=target,
-            config=config,
-            report_dir=str(self.evaluation_storage.root),
-        )
         evaluation_id = f"eval_{uuid4().hex}"
 
         async def runner(operation_id: str):
             try:
+                resolved_evalset = evalset
+                resolved_cloud_dataset = cloud_dataset
+                if cloud_dataset is not None:
+                    if self.cloud_evalsets is None:
+                        raise StudioError(
+                            "EVALUATION_CLOUD_UNAVAILABLE",
+                            "agent-eval 云端评测集服务未配置",
+                            status_code=503,
+                        )
+                    try:
+                        pulled = await self.cloud_evalsets.pull(
+                            dataset_id=cloud_dataset.dataset_id,
+                            version=cloud_dataset.version,
+                            project_id=cloud_dataset.project_id,
+                        )
+                    except Exception as exc:
+                        raise StudioError(
+                            "EVALUATION_CLOUD_READ_FAILED",
+                            "固定云端 Dataset version 读取失败",
+                            status_code=502,
+                        ) from exc
+                    resolved_evalset = pulled.evalset
+                    resolved_cloud_dataset = pulled.cloud_dataset
+                if resolved_evalset is None:
+                    raise StudioError(
+                        "EVALSET_SOURCE_INVALID",
+                        "未解析出可执行的 EvalSet",
+                        status_code=422,
+                    )
+                request = PublicEvaluationRequest(
+                    evalset=resolved_evalset,
+                    target=target,
+                    config=config,
+                    report_dir=str(self.evaluation_storage.root),
+                    cloud_dataset=resolved_cloud_dataset,
+                )
                 adapter = self._public_evaluation_adapter(request)
                 report = await execute_evaluation(
                     request,
@@ -1002,6 +1059,19 @@ class StudioService:
             )
         evalsets.sort(key=lambda item: item["path"])
         return {"builds": builds, "evalsets": evalsets}
+
+    async def evaluation_cloud_catalog(
+        self,
+        *,
+        project_id: str | None = None,
+    ) -> list[CloudEvalSetCatalogItem]:
+        if self.cloud_evalsets is None:
+            raise StudioError(
+                "EVALUATION_CLOUD_UNAVAILABLE",
+                "agent-eval 云端评测集服务未配置",
+                status_code=503,
+            )
+        return await self.cloud_evalsets.catalog(project_id=project_id)
 
     def get_public_evaluation(self, evaluation_id: str):
         try:

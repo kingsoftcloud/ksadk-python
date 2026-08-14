@@ -8,8 +8,12 @@ from typing import Protocol
 from pydantic import Field
 
 from .cloud_binding import CloudBinding, CloudBindingStore
-from .cloud_converter import CloudDatasetSnapshot, evalset_to_dataset_snapshot
-from .contracts import DataPolicy, EvalSetVersion, EvaluationModel
+from .cloud_converter import (
+    CloudDatasetSnapshot,
+    evalset_from_dataset_snapshot,
+    evalset_to_dataset_snapshot,
+)
+from .contracts import CloudDatasetRef, DataPolicy, EvalSetVersion, EvaluationModel
 
 
 class CloudEvalSetPreviewError(ValueError):
@@ -27,6 +31,26 @@ class CloudEvalSetPublishResult(EvaluationModel):
     row_count: int = Field(ge=0)
 
 
+class CloudEvalSetPullResult(EvaluationModel):
+    """One validated immutable cloud snapshot and its normalized local form."""
+
+    snapshot: CloudDatasetSnapshot
+    evalset: EvalSetVersion
+    cloud_dataset: CloudDatasetRef
+
+
+class CloudEvalSetCatalogItem(EvaluationModel):
+    """One immutable Dataset version exposed by the cloud catalog."""
+
+    dataset_id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    project_id: str | None = None
+    version: int = Field(ge=1)
+    schema_hash: str = Field(min_length=64, max_length=64)
+    content_digest: str = Field(min_length=64, max_length=64)
+    row_count: int = Field(ge=0)
+
+
 class CloudDatasetClient(Protocol):
     """Minimal provider contract required before a snapshot can be published."""
 
@@ -38,6 +62,20 @@ class CloudDatasetClient(Protocol):
         base_version: int | None,
         idempotency_key: str,
     ) -> CloudEvalSetPublishResult: ...
+
+    async def read_snapshot(
+        self,
+        dataset_id: str,
+        version: int,
+        *,
+        project_id: str | None = None,
+    ) -> CloudDatasetSnapshot: ...
+
+    async def list_datasets(
+        self,
+        *,
+        project_id: str | None = None,
+    ) -> list[CloudEvalSetCatalogItem]: ...
 
 
 class CloudEvalSetService:
@@ -105,3 +143,40 @@ class CloudEvalSetService:
             )
         )
         return result
+
+    async def pull(
+        self,
+        *,
+        dataset_id: str,
+        version: int,
+        project_id: str | None = None,
+    ) -> CloudEvalSetPullResult:
+        """Read and validate one immutable Dataset version before execution."""
+
+        if not dataset_id.strip() or version < 1:
+            raise ValueError("datasetId 和 version 必须有效")
+        snapshot = await self.client.read_snapshot(
+            dataset_id,
+            version,
+            project_id=project_id,
+        )
+        evalset = evalset_from_dataset_snapshot(snapshot)
+        if evalset.content_digest != snapshot.content_digest:
+            raise CloudEvalSetPreviewError("云端 snapshot 的 contentDigest 校验失败")
+        reference = CloudDatasetRef(
+            provider=self.provider,
+            project_id=project_id,
+            dataset_id=dataset_id,
+            version=version,
+            schema_hash=snapshot.schema_hash,
+            content_digest=snapshot.content_digest,
+            row_count=len(snapshot.rows),
+        )
+        return CloudEvalSetPullResult(
+            snapshot=snapshot,
+            evalset=evalset,
+            cloud_dataset=reference,
+        )
+
+    async def catalog(self, *, project_id: str | None = None) -> list[CloudEvalSetCatalogItem]:
+        return await self.client.list_datasets(project_id=project_id)

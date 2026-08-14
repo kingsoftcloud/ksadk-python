@@ -8,6 +8,21 @@ import { StudioSelect } from "../components/ui/StudioSelect";
 import "./evaluations.css";
 
 type TargetKind = "a2a" | "local_source" | "studio_build";
+type EvaluationSource = "local" | "cloud";
+
+interface CloudDatasetItem {
+  datasetId: string;
+  name: string;
+  projectId?: string | null;
+  version: number;
+  schemaHash: string;
+  contentDigest: string;
+  rowCount: number;
+}
+
+function cloudDatasetSelection(item: Pick<CloudDatasetItem, "datasetId" | "version">): string {
+  return JSON.stringify([item.datasetId, item.version]);
+}
 
 interface MetricResult {
   name: string;
@@ -34,6 +49,7 @@ interface EvaluationReport {
   spec: {
     id: string;
     evalset: { name: string; contentDigest?: string };
+    cloudDataset?: { datasetId: string; version: number; schemaHash: string; contentDigest: string } | null;
     target: {
       kind: string;
       entrypoint: string;
@@ -70,6 +86,7 @@ interface OperationEvent {
 interface EvaluationCatalog {
   evalsets: Array<{ path: string; name: string; caseCount: number }>;
   builds: Array<{ id: string; agentId: string; runtime: string }>;
+  cloudDatasets: CloudDatasetItem[];
 }
 
 const TERMINAL_OPERATION_STATES = new Set(["SUCCEEDED", "FAILED", "CANCELLED", "INTERRUPTED"]);
@@ -157,7 +174,7 @@ async function waitForOperation(
 export function EvaluationsPage({ refreshTick }: { refreshTick: number }) {
   const operationController = useRef<AbortController | null>(null);
   const [reports, setReports] = useState<EvaluationReport[]>([]);
-  const [catalog, setCatalog] = useState<EvaluationCatalog>({ evalsets: [], builds: [] });
+  const [catalog, setCatalog] = useState<EvaluationCatalog>({ evalsets: [], builds: [], cloudDatasets: [] });
   const [activeReport, setActiveReport] = useState<EvaluationReport | null>(null);
   const [activeCaseId, setActiveCaseId] = useState("");
   const [loading, setLoading] = useState(true);
@@ -172,6 +189,10 @@ export function EvaluationsPage({ refreshTick }: { refreshTick: number }) {
   const [targetLocator, setTargetLocator] = useState("");
   const [timeoutSeconds, setTimeoutSeconds] = useState(120);
   const [failFast, setFailFast] = useState(false);
+  const [evaluationSource, setEvaluationSource] = useState<EvaluationSource>("local");
+  const [cloudProjectId, setCloudProjectId] = useState("");
+  const [cloudDatasetId, setCloudDatasetId] = useState("");
+  const [cloudDatasetVersion, setCloudDatasetVersion] = useState("");
 
   const loadReports = useCallback(async () => {
     setLoading(true);
@@ -195,16 +216,23 @@ export function EvaluationsPage({ refreshTick }: { refreshTick: number }) {
       const response = await apiFetch("/api/v1/evaluation-targets");
       if (!response.ok) return;
       const payload = await response.json();
+      const cloudResponse = await apiFetch(
+        `/api/v1/evaluation-cloud/catalog${cloudProjectId ? `?projectId=${encodeURIComponent(cloudProjectId)}` : ""}`,
+      );
+      const cloudPayload = cloudResponse.ok ? await cloudResponse.json() : { items: [] };
       const next: EvaluationCatalog = {
         evalsets: payload.evalsets || [],
         builds: payload.builds || [],
+        cloudDatasets: cloudPayload.items || [],
       };
       setCatalog(next);
       setEvalsetFile(current => current || next.evalsets[0]?.path || "");
+      setCloudDatasetId(current => current || next.cloudDatasets[0]?.datasetId || "");
+      setCloudDatasetVersion(current => current || String(next.cloudDatasets[0]?.version || ""));
     } catch {
       // 目录不可用时保留手动输入，不影响评测报告列表。
     }
-  }, []);
+  }, [cloudProjectId]);
 
   useEffect(() => {
     void loadReports();
@@ -295,7 +323,22 @@ export function EvaluationsPage({ refreshTick }: { refreshTick: number }) {
           "Idempotency-Key": `evaluation-${Date.now()}`,
         },
         body: JSON.stringify({
-          evalsetFile: evalsetFile.trim(),
+          ...(evaluationSource === "cloud"
+            ? {
+              cloudDataset: (() => {
+                const selected = catalog.cloudDatasets.find(item => item.datasetId === cloudDatasetId && String(item.version) === cloudDatasetVersion);
+                return {
+                  provider: "agent-eval/evalsmith",
+                  projectId: cloudProjectId.trim() || selected?.projectId || undefined,
+                  datasetId: cloudDatasetId.trim(),
+                  version: Number(cloudDatasetVersion),
+                  schemaHash: selected?.schemaHash || "",
+                  contentDigest: selected?.contentDigest || "",
+                  rowCount: selected?.rowCount || 0,
+                };
+              })(),
+            }
+            : { evalsetFile: evalsetFile.trim() }),
           target: { kind: targetKind, locator: targetLocator.trim() },
           config: {
             timeoutSeconds,
@@ -376,7 +419,18 @@ export function EvaluationsPage({ refreshTick }: { refreshTick: number }) {
 
       {formOpen && (
         <form className="evaluation-page__create" onSubmit={submitEvaluation}>
-          <FormField label="EvalSet 文件" htmlFor="evaluation-evalset" requirement="required">
+          <FormField label="Dataset source" requirement="required">
+            <StudioSelect
+              ariaLabel="Dataset source"
+              value={evaluationSource}
+              options={[
+                { value: "local", label: "Local EvalSet" },
+                { value: "cloud", label: "Cloud Dataset version" },
+              ]}
+              onValueChange={value => setEvaluationSource(value as EvaluationSource)}
+            />
+          </FormField>
+          {evaluationSource === "local" ? <FormField label="EvalSet 文件" htmlFor="evaluation-evalset" requirement="required">
             {catalog.evalsets.length ? (
               <StudioSelect
                 id="evaluation-evalset"
@@ -392,7 +446,32 @@ export function EvaluationsPage({ refreshTick }: { refreshTick: number }) {
             ) : (
               <input id="evaluation-evalset" value={evalsetFile} onChange={event => setEvalsetFile(event.target.value)} required placeholder="evalsets/smoke.yaml" />
             )}
-          </FormField>
+          </FormField> : (
+            <>
+              <FormField label="Cloud Dataset" requirement="required">
+                <StudioSelect
+                  ariaLabel="Cloud Dataset"
+                  value={cloudDatasetId && cloudDatasetVersion
+                    ? cloudDatasetSelection({ datasetId: cloudDatasetId, version: Number(cloudDatasetVersion) })
+                    : ""}
+                  options={catalog.cloudDatasets.map(item => ({
+                    value: cloudDatasetSelection(item),
+                    label: `${item.name} - v${item.version}`,
+                    description: `${item.rowCount} Cases - ${item.datasetId}`,
+                  }))}
+                  onValueChange={value => {
+                    const selected = catalog.cloudDatasets.find(item => cloudDatasetSelection(item) === value);
+                    if (!selected) return;
+                    setCloudDatasetId(selected.datasetId);
+                    setCloudDatasetVersion(String(selected.version));
+                  }}
+                />
+              </FormField>
+              <FormField label="Dataset version" htmlFor="evaluation-dataset-version" requirement="required">
+                <input id="evaluation-dataset-version" type="number" min={1} value={cloudDatasetVersion} onChange={event => setCloudDatasetVersion(event.target.value)} required />
+              </FormField>
+            </>
+          )}
           <FormField label="Target 类型" requirement="required">
             <StudioSelect
               ariaLabel="Target 类型"

@@ -108,6 +108,54 @@ def test_eval_help_exposes_complete_target_shell():
         assert option in result.output
 
 
+def test_eval_accepts_an_immutable_remote_dataset_version(tmp_path, monkeypatch):
+    from ksadk.evaluation.cloud_converter import evalset_to_dataset_snapshot
+    from ksadk.evaluation.cloud_service import CloudEvalSetPullResult
+    from ksadk.evaluation.contracts import CloudDatasetRef
+
+    evalset = EvalSetVersion(name="remote", cases=[EvalCase(id="one", input="hello")])
+    snapshot = evalset_to_dataset_snapshot(evalset)
+    reference = CloudDatasetRef(
+        provider="agent-eval/evalsmith",
+        dataset_id="dataset-1",
+        version=4,
+        schema_hash=snapshot.schema_hash,
+        content_digest=snapshot.content_digest,
+        row_count=1,
+    )
+
+    async def fake_pull(self, *, dataset_id, version, project_id=None):
+        assert (dataset_id, version, project_id) == ("dataset-1", 4, None)
+        return CloudEvalSetPullResult(
+            snapshot=snapshot,
+            evalset=evalset,
+            cloud_dataset=reference,
+        )
+
+    monkeypatch.setattr("ksadk.evaluation.cloud_service.CloudEvalSetService.pull", fake_pull)
+    result = CliRunner().invoke(
+        eval,
+        [
+            "--dataset-id",
+            "dataset-1",
+            "--dataset-version",
+            "4",
+            "--agent-eval-url",
+            "https://agent-eval.example",
+            "--a2a-url",
+            "https://agent.example.invalid",
+            "--validate-only",
+            "--format",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["evalset"]["name"] == "remote"
+    assert payload["cloudDataset"]["datasetId"] == "dataset-1"
+
+
 def test_eval_help_lists_automatic_evaluators():
     result = CliRunner().invoke(eval, ["--help"])
 
