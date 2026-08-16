@@ -11,6 +11,7 @@ from langgraph.stream import AsyncGraphRunStream
 from ksadk.events.adapters._langgraph_support import (
     _LIFECYCLE_QUIET_TYPES,
     LangGraphAdapterContext,
+    LangGraphMappingError,
     _block_index,
     _envelope,
     _fail,
@@ -735,3 +736,10 @@ class LangGraphEventAdapter:
                 )
             )
         return tuple(events)
+
+
+__all__ = [
+    "LangGraphAdapterContext",
+    "LangGraphEventAdapter",
+    "LangGraphMappingError",
+]
