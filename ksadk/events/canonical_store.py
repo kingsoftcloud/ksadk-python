@@ -186,6 +186,14 @@ class RuntimeEventStore:
             events = events[-limit:]
         return events
 
+    async def list_run_ids(self, session_id: str) -> list[str]:
+        """Distinct run ids in session order of first appearance."""
+
+        seen: dict[str, None] = {}
+        for event in await self.list(session_id):
+            seen.setdefault(event.run_id, None)
+        return list(seen)
+
     async def subscribe_session(
         self,
         session_id: str,
