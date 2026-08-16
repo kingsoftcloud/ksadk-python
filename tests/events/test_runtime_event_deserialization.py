@@ -15,7 +15,7 @@ from a2a.types import TaskState, TaskStatus
 
 from ksadk.a2a.event_adapter import A2AEventAdapter
 from ksadk.events.canonical import RunFailed, RunStarted, SourceRef
-from ksadk.events.store import (
+from ksadk.events.canonical_store import (
     runtime_event_to_session_event,
     session_event_to_runtime_event,
 )
