@@ -236,3 +236,94 @@ async def test_replay_projection_settle_open_completes_dangling_stream() -> None
     settled = await replay_projection(store, "session-1", run_id="run-1", settle_open=True)
     assert settled.status == "interrupted"
     assert all(item.status != "open" for item in settled.items)
+
+
+@pytest.mark.asyncio
+async def test_owner_attempt_is_never_settled_by_itself() -> None:
+    """同 attempt 不自杀:恢复者就是最后 resume 属主时,run 交回正常 resume 路径。"""
+
+    from ksadk.events.canonical import ContinuationResumed
+
+    store = await _mk_store_with_open_run()
+    base = dict(
+        schema_version=2,
+        timestamp=1780000001.0,
+        run_id="run-1",
+        scope_id="scope_root",
+        source=_src(),
+    )
+    await store.append_one(
+        "session-1",
+        ContinuationCreated(
+            event_id="evt_cont",
+            seq=2,
+            continuation_id="cont-1",
+            continuation_kind="graph_checkpoint",
+            resumable=True,
+            ref={"checkpoint": "ck"},
+            **base,
+        ),
+    )
+    await store.append_one(
+        "session-1",
+        ContinuationResumed(
+            event_id="evt_resume",
+            seq=3,
+            continuation_id="cont-1",
+            continuation_kind="graph_checkpoint",
+            resume_attempt_id="attempt-mine",
+            **base,
+        ),
+    )
+
+    report = await recover_session(
+        store, "session-1", caller_attempt_id="attempt-mine", timestamp=1780000100.0
+    )
+
+    assert report.resumed_run_ids == ["run-1"]
+    assert report.written_events == []
+
+
+@pytest.mark.asyncio
+async def test_stale_attempt_is_settled() -> None:
+    """旧 attempt 存活证据不明(调用者是新 attempt)→ 合成确定性结局。"""
+
+    from ksadk.events.canonical import ContinuationResumed
+
+    store = await _mk_store_with_open_run()
+    base = dict(
+        schema_version=2,
+        timestamp=1780000001.0,
+        run_id="run-1",
+        scope_id="scope_root",
+        source=_src(),
+    )
+    await store.append_one(
+        "session-1",
+        ContinuationCreated(
+            event_id="evt_cont",
+            seq=2,
+            continuation_id="cont-1",
+            continuation_kind="graph_checkpoint",
+            resumable=False,
+            ref={},
+            **base,
+        ),
+    )
+    await store.append_one(
+        "session-1",
+        ContinuationResumed(
+            event_id="evt_resume",
+            seq=3,
+            continuation_id="cont-1",
+            continuation_kind="graph_checkpoint",
+            resume_attempt_id="attempt-stale",
+            **base,
+        ),
+    )
+
+    report = await recover_session(
+        store, "session-1", caller_attempt_id="attempt-new", timestamp=1780000100.0
+    )
+
+    assert report.interrupted_run_ids == ["run-1"]

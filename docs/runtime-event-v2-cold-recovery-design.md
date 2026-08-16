@@ -75,7 +75,7 @@ cold_recovery_scan(store, session_id) -> list[RecoveryFinding]
 
 1. **P0**:`cold_recovery_scan` + 结局合成 + `RecoveryReport`,纯数据面,单测覆盖每个结局分支(含双恢复者幂等);
 2. **P0**:`replay_projection` 接入裁决(开放 run 不再裸露给消费方);
-3. **P1**:`resume_attempt_id` 所有权裁决(执行层字段打通后启用,先留接口);
+3. ~~P1~~ 已落地:`recover_session(caller_attempt_id=...)` 同 attempt 不自杀,旧 attempt 合成结局;执行层字段本就贯通(server routes 生成→ContinuationResumed→studio 投影);
 4. **P1**:release gate 测试补冷恢复场景(崩溃中点 fixture → replay 必须产出完整流)。
 
 ## 8. Alternatives considered

@@ -47,6 +47,7 @@ class RecoveryFinding:
     scope_id: str
     resumable: bool
     continuation_id: str | None
+    resume_attempt_ids: list[str] = field(default_factory=list)
     open_items: list[OpenItem] = field(default_factory=list)
     last_seq: int = 0
 
@@ -81,8 +82,10 @@ async def scan_open_runs(
             continue
         resumable = False
         continuation_id: str | None = None
+        resume_attempt_ids: list[str] = []
         for continuation in projection.continuations:
             continuation_id = continuation.continuation_id
+            resume_attempt_ids.extend(continuation.resume_attempt_ids)
             if getattr(continuation, "resumable", False):
                 resumable = True
         findings.append(
@@ -91,6 +94,7 @@ async def scan_open_runs(
                 scope_id=_root_scope(projection),
                 resumable=resumable,
                 continuation_id=continuation_id,
+                resume_attempt_ids=resume_attempt_ids,
                 open_items=[
                     OpenItem(
                         scope_id=item.scope_id,
@@ -194,18 +198,31 @@ async def recover_session(
     store: RuntimeEventStore,
     session_id: str,
     *,
+    caller_attempt_id: str | None = None,
     allow_resume_for: "callable[[str], bool] | None" = None,
     timestamp: float = 0.0,
 ) -> RecoveryReport:
     """Scan a session and persist deterministic outcomes for orphaned runs.
 
-    Written events reuse the pipeline's persistence idempotency: a second
-    recoverer racing on the same session writes the same deterministic ids and
-    is rejected as duplicate facts, not as an error.
+    ``caller_attempt_id`` is the caller's own resume attempt (the id the
+    execution layer stamped on its ``continuation.resumed``). A run whose last
+    resume attempt is the caller's own is never settled by this call — the
+    caller is the owner and resumes through the normal path. Written events
+    reuse the pipeline's persistence idempotency: a second recoverer racing on
+    the same session writes the same deterministic ids and is rejected as a
+    duplicate fact, not as an error.
     """
 
     report = RecoveryReport()
     for finding in await scan_open_runs(store, session_id):
+        if (
+            caller_attempt_id is not None
+            and finding.resume_attempt_ids
+            and finding.resume_attempt_ids[-1] == caller_attempt_id
+        ):
+            # 同 attempt 不自杀:自己就是当前属主,走正常 resume 路径。
+            report.resumed_run_ids.append(finding.run_id)
+            continue
         allow = allow_resume_for(finding.run_id) if allow_resume_for else False
         events = settle_finding(
             finding, session_id, allow_resume=allow, timestamp=timestamp
