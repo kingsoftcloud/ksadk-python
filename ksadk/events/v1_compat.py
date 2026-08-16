@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from ksadk.events._v1_compat.models import (
     ALL_V1_EVENT_TYPES,
+    V1_EVENT_PAYLOAD_REQUIRED_KEYS,
     A2ATaskProjectionRef,
     A2UIInteractionProjectionRef,
     A2UISurfaceProjectionRef,
@@ -20,7 +21,6 @@ from ksadk.events._v1_compat.models import (
     RuntimeEventV1ProjectionContext,
     RuntimeEventV1ProjectionMode,
     V1ProjectionContextRequiredError,
-    V1_EVENT_PAYLOAD_REQUIRED_KEYS,
 )
 from ksadk.events._v1_compat.parser import RuntimeEventV1Parser
 from ksadk.events._v1_compat.projection import project_to_v1
