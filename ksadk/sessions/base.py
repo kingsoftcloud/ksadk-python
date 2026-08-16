@@ -5,7 +5,25 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Literal, Optional, TypeAlias
+
+SessionEventSeqBinding: TypeAlias = Literal["runtime_event.seq"]
+
+
+@dataclass(frozen=True)
+class SessionServiceStorageCapabilities:
+    """Typed storage guarantees required by canonical event persistence."""
+
+    atomic_seq_bindings: frozenset[SessionEventSeqBinding] = frozenset()
+    indexed_event_lookup: bool = False
+    indexed_invocation_lookup: bool = False
+
+
+CANONICAL_EVENT_STORAGE_CAPABILITIES = SessionServiceStorageCapabilities(
+    atomic_seq_bindings=frozenset({"runtime_event.seq"}),
+    indexed_event_lookup=True,
+    indexed_invocation_lookup=True,
+)
 
 
 def generate_id() -> str:
@@ -47,6 +65,31 @@ class SessionEvent:
     seq_id: int = 0
     invocation_id: Optional[str] = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    seq_binding: SessionEventSeqBinding | None = None
+
+    def bind_seq_id(self, seq_id: int) -> None:
+        """Bind a store-assigned cursor into an explicitly declared content field.
+
+        Most session events only need the physical ``seq_id`` column.  A typed
+        event envelope may additionally declare ``runtime_event.seq`` through
+        the transient ``seq_binding`` capability so the JSON fact and carrier
+        are written atomically with the same cursor.  The binding is consumed
+        before persistence and never appears in public metadata or content.
+        """
+
+        self.seq_id = int(seq_id)
+        binding = self.seq_binding
+        self.seq_binding = None
+        if binding is None:
+            return
+        if binding != "runtime_event.seq":
+            raise ValueError(f"unsupported SessionEvent seq binding {binding!r}")
+        runtime_event = self.content.get("runtime_event")
+        if not isinstance(runtime_event, dict):
+            raise ValueError("runtime_event.seq binding requires runtime_event content")
+        runtime_event = dict(runtime_event)
+        runtime_event["seq"] = self.seq_id
+        self.content = {**self.content, "runtime_event": runtime_event}
 
     @classmethod
     def from_dict(
@@ -251,6 +294,8 @@ def _infer_event_type(payload: dict[str, Any]) -> str:
 
 
 class BaseSessionService(abc.ABC):
+    storage_capabilities = SessionServiceStorageCapabilities()
+
     @abc.abstractmethod
     async def create_session(
         self,
@@ -310,6 +355,23 @@ class BaseSessionService(abc.ABC):
     @abc.abstractmethod
     async def append_event(self, session_id: str, event: SessionEvent) -> SessionEvent:
         raise NotImplementedError
+
+    async def get_event_by_id(self, session_id: str, event_id: str) -> Optional[SessionEvent]:
+        """Indexed physical-id lookup for idempotent event insertion."""
+
+        raise NotImplementedError("session backend does not support indexed event lookup")
+
+    async def get_events_by_invocation_id(
+        self,
+        session_id: str,
+        invocation_id: str,
+        *,
+        after_seq_id: Optional[int] = None,
+        before_seq_id: Optional[int] = None,
+    ) -> list[SessionEvent]:
+        """Indexed invocation read used by canonical run replay/recovery."""
+
+        raise NotImplementedError("session backend does not support indexed invocation lookup")
 
     @abc.abstractmethod
     async def get_events(

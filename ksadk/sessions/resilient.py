@@ -4,7 +4,12 @@ import asyncio
 import logging
 from typing import Any, Optional, cast
 
-from ksadk.sessions.base import BaseSessionService, Session, SessionEvent, SessionState
+from ksadk.sessions.base import (
+    BaseSessionService,
+    Session,
+    SessionEvent,
+    SessionState,
+)
 from ksadk.sessions.in_memory import InMemorySessionService
 from ksadk.sessions.resilience import is_session_backend_failure
 
@@ -39,6 +44,12 @@ class ResilientSessionService(BaseSessionService):
     @property
     def degraded(self) -> bool:
         return not self._primary_enabled
+
+    # This service is intentionally live-first and writes two independently
+    # sequenced stores.  Even when both children can atomically bind a local
+    # seq, the wrapper cannot guarantee one shared physical seq/fact across
+    # both writes, so it inherits BaseSessionService's empty canonical storage
+    # capabilities and RuntimeEventStore fails closed before either write.
 
     async def _call_primary(self, method_name: str, *args: Any, **kwargs: Any) -> tuple[bool, Any]:
         if not self._primary_enabled:
@@ -259,6 +270,29 @@ class ResilientSessionService(BaseSessionService):
         await self._ensure_primary_session(session_id)
         await self._call_primary("append_event", session_id, event)
         return live
+
+    async def get_event_by_id(self, session_id: str, event_id: str) -> Optional[SessionEvent]:
+        if await self.fallback.get_session_metadata(session_id) is None:
+            await self.get_session(session_id)
+        return await self.fallback.get_event_by_id(session_id, event_id)
+
+    async def get_events_by_invocation_id(
+        self,
+        session_id: str,
+        invocation_id: str,
+        *,
+        after_seq_id: Optional[int] = None,
+        before_seq_id: Optional[int] = None,
+    ) -> list[SessionEvent]:
+        # ResilientSessionService is explicitly live-first: hydrate any durable
+        # prefix, then read the indexed in-memory authority used by get_events.
+        await self.get_session(session_id)
+        return await self.fallback.get_events_by_invocation_id(
+            session_id,
+            invocation_id,
+            after_seq_id=after_seq_id,
+            before_seq_id=before_seq_id,
+        )
 
     async def get_events(
         self,

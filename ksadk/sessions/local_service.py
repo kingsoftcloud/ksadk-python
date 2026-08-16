@@ -14,6 +14,7 @@ from typing import Optional
 
 from ksadk.ids import new_session_id
 from ksadk.sessions.base import (
+    CANONICAL_EVENT_STORAGE_CAPABILITIES,
     BaseSessionService,
     Session,
     SessionEvent,
@@ -54,6 +55,8 @@ def resolve_local_session_path(project_dir: Optional[str] = None) -> Path:
 
 
 class LocalSessionService(BaseSessionService):
+    storage_capabilities = CANONICAL_EVENT_STORAGE_CAPABILITIES
+
     def __init__(self, db_path: Optional[Path] = None, *, project_dir: Optional[str] = None):
         self.db_path = (
             Path(db_path).expanduser().resolve()
@@ -137,6 +140,27 @@ class LocalSessionService(BaseSessionService):
     async def append_event(self, session_id: str, event: SessionEvent) -> SessionEvent:
         async with self._lock:
             return await asyncio.to_thread(self._append_event_sync, session_id, event)
+
+    async def get_event_by_id(self, session_id: str, event_id: str) -> Optional[SessionEvent]:
+        async with self._lock:
+            return await asyncio.to_thread(self._get_event_by_id_sync, session_id, event_id)
+
+    async def get_events_by_invocation_id(
+        self,
+        session_id: str,
+        invocation_id: str,
+        *,
+        after_seq_id: Optional[int] = None,
+        before_seq_id: Optional[int] = None,
+    ) -> list[SessionEvent]:
+        async with self._lock:
+            return await asyncio.to_thread(
+                self._get_events_by_invocation_id_sync,
+                session_id,
+                invocation_id,
+                after_seq_id,
+                before_seq_id,
+            )
 
     async def get_events(
         self,
@@ -385,6 +409,29 @@ class LocalSessionService(BaseSessionService):
         ):
             connection.execute(f"ALTER TABLE {LEGACY_STATES_TABLE} RENAME TO {KSADK_STATES_TABLE}")
 
+    @staticmethod
+    def _ensure_event_seq_unique_index(connection: sqlite3.Connection) -> None:
+        index_name = "idx_ksadk_events_session_seq"
+        existing = next(
+            (
+                row
+                for row in connection.execute(
+                    f"PRAGMA index_list('{KSADK_EVENTS_TABLE}')"
+                ).fetchall()
+                if str(row[1]) == index_name
+            ),
+            None,
+        )
+        if existing is not None and not bool(existing[2]):
+            # ``CREATE UNIQUE INDEX IF NOT EXISTS`` does not upgrade the old
+            # ordinary index with the same name.  Replace it explicitly so
+            # reopened pre-v2 databases gain the durable cursor invariant.
+            connection.execute(f"DROP INDEX {index_name}")
+        connection.execute(
+            f"CREATE UNIQUE INDEX IF NOT EXISTS {index_name} "
+            f"ON {KSADK_EVENTS_TABLE} (session_id, seq_id)"
+        )
+
     def _ensure_schema(self) -> None:
         with self._connection() as connection:
             self._migrate_legacy_schema(connection)
@@ -418,7 +465,7 @@ class LocalSessionService(BaseSessionService):
                     FOREIGN KEY(session_id) REFERENCES {KSADK_SESSIONS_TABLE}(id) ON DELETE CASCADE
                 );
 
-                CREATE INDEX IF NOT EXISTS idx_ksadk_events_session_seq
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_ksadk_events_session_seq
                 ON {KSADK_EVENTS_TABLE} (session_id, seq_id);
 
                 -- 跨会话事件查询（get_events_for_agent）JOIN sessions 按
@@ -426,6 +473,9 @@ class LocalSessionService(BaseSessionService):
                 -- s.id=e.session_id + 排序。
                 CREATE INDEX IF NOT EXISTS idx_ksadk_events_session_ts
                 ON {KSADK_EVENTS_TABLE} (session_id, timestamp, id);
+
+                CREATE INDEX IF NOT EXISTS idx_ksadk_events_session_invocation_seq
+                ON {KSADK_EVENTS_TABLE} (session_id, invocation_id, seq_id);
 
                 -- ListSessions 按 agent_id 过滤 + updated_at DESC 排序。
                 CREATE INDEX IF NOT EXISTS idx_ksadk_sessions_agent_updated
@@ -472,6 +522,7 @@ class LocalSessionService(BaseSessionService):
                     "updated_at": "REAL NOT NULL DEFAULT 0",
                 },
             )
+            self._ensure_event_seq_unique_index(connection)
             connection.commit()
 
     def _create_session_sync(
@@ -687,7 +738,9 @@ class LocalSessionService(BaseSessionService):
                 seq_id=next_seq,
                 invocation_id=event.invocation_id,
                 metadata=dict(event.metadata),
+                seq_binding=event.seq_binding,
             )
+            stored.bind_seq_id(next_seq)
             connection.execute(
                 f"""
                 INSERT INTO {KSADK_EVENTS_TABLE} (
@@ -896,6 +949,74 @@ class LocalSessionService(BaseSessionService):
         finally:
             if owns_connection:
                 connection.close()
+
+    def _get_event_by_id_sync(self, session_id: str, event_id: str) -> Optional[SessionEvent]:
+        with self._connection() as connection:
+            row = connection.execute(
+                f"""
+                SELECT id, session_id, author, event_type, content_json, timestamp,
+                       state_delta_json, seq_id, invocation_id, metadata_json
+                FROM {KSADK_EVENTS_TABLE}
+                WHERE session_id = ? AND id = ?
+                """,
+                (session_id, event_id),
+            ).fetchone()
+            if row is None:
+                return None
+            return SessionEvent(
+                id=row["id"],
+                session_id=row["session_id"],
+                author=row["author"],
+                event_type=row["event_type"],
+                content=json.loads(row["content_json"] or "{}"),
+                timestamp=row["timestamp"],
+                state_delta=json.loads(row["state_delta_json"] or "{}"),
+                seq_id=row["seq_id"],
+                invocation_id=row["invocation_id"],
+                metadata=json.loads(row["metadata_json"] or "{}"),
+            )
+
+    def _get_events_by_invocation_id_sync(
+        self,
+        session_id: str,
+        invocation_id: str,
+        after_seq_id: Optional[int] = None,
+        before_seq_id: Optional[int] = None,
+    ) -> list[SessionEvent]:
+        with self._connection() as connection:
+            conditions = ["session_id = ?", "invocation_id = ?"]
+            params: list[object] = [session_id, invocation_id]
+            if after_seq_id is not None:
+                conditions.append("seq_id > ?")
+                params.append(after_seq_id)
+            if before_seq_id is not None:
+                conditions.append("seq_id < ?")
+                params.append(before_seq_id)
+            rows = connection.execute(
+                f"""
+                SELECT id, session_id, author, event_type, content_json, timestamp,
+                       state_delta_json, seq_id, invocation_id, metadata_json
+                FROM {KSADK_EVENTS_TABLE}
+                WHERE {" AND ".join(conditions)}
+                ORDER BY seq_id ASC
+                """,
+                params,
+            ).fetchall()
+            return [
+                SessionEvent(
+                    id=row["id"],
+                    session_id=row["session_id"],
+                    author=row["author"],
+                    event_type=row["event_type"],
+                    content=json.loads(row["content_json"] or "{}"),
+                    timestamp=row["timestamp"],
+                    state_delta=json.loads(row["state_delta_json"] or "{}"),
+                    seq_id=row["seq_id"],
+                    invocation_id=row["invocation_id"],
+                    metadata=json.loads(row["metadata_json"] or "{}"),
+                )
+                for row in rows
+            ]
 
     def _count_events_sync(
         self,
