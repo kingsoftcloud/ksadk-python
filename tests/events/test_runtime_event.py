@@ -15,10 +15,10 @@ from pathlib import Path
 import jsonschema
 import pytest
 
-from ksadk.events.runtime_event import (
-    ALL_EVENT_TYPES,
-    EventType,
-    RuntimeEvent,
+from ksadk.events.v1_compat import (
+    ALL_V1_EVENT_TYPES as ALL_EVENT_TYPES,
+    EventTypeV1 as EventType,
+    RuntimeEventV1 as RuntimeEvent,
 )
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "runtime_event_v1.json"
@@ -137,7 +137,7 @@ def test_deserialize_itself_rejects_unknown_type():
 
 
 def test_missing_payload_required_key_rejected():
-    with pytest.raises(ValueError, match="缺必填键"):
+    with pytest.raises(ValueError, match="missing required keys"):
         RuntimeEvent.from_dict(
             _base_event(event_type=EventType.TOOL_CALL_BEGIN, phase=None, payload={"name": "x"})
         ).validate_conformance()
@@ -145,7 +145,7 @@ def test_missing_payload_required_key_rejected():
 
 def test_phase_only_allowed_on_text_and_reasoning():
     # tool 事件带 phase -> 拒绝
-    with pytest.raises(ValueError, match="phase 仅用于"):
+    with pytest.raises(ValueError, match="phase is only valid"):
         RuntimeEvent.from_dict(
             _base_event(
                 event_type=EventType.TOOL_CALL_BEGIN,

@@ -40,5 +40,47 @@
     {"event_type": "a2a.task.created", "payload": {"task_id": "t_1", "origin": "a2a://space/agent"}},
     {"event_type": "a2a.task.status", "payload": {"task_id": "t_1", "origin": "a2a://space/agent", "status": "working"}},
     {"event_type": "a2a.task.artifact", "payload": {"task_id": "t_1", "origin": "a2a://space/agent", "artifact": {"name": "out"}}}
+  ],
+  "identity_replace_events": [
+    {
+      "schema_version": 1,
+      "event_id": "event-message-update",
+      "event_type": "text.delta",
+      "timestamp": 1753257601.0,
+      "agent_id": "demo-agent",
+      "user_id": "user-1",
+      "session_id": "sess-1",
+      "invocation_id": "run-1",
+      "seq_id": 2,
+      "phase": "final_answer",
+      "payload": {
+        "text": "hel",
+        "scope_id": "scope-1",
+        "item_id": "item-1",
+        "part_id": "part-0",
+        "operation": "append",
+        "source_event_id": "native-message-update"
+      }
+    },
+    {
+      "schema_version": 1,
+      "event_id": "event-message-completed",
+      "event_type": "text.completed",
+      "timestamp": 1753257602.0,
+      "agent_id": "demo-agent",
+      "user_id": "user-1",
+      "session_id": "sess-1",
+      "invocation_id": "run-1",
+      "seq_id": 3,
+      "phase": "final_answer",
+      "payload": {
+        "text": "hello",
+        "scope_id": "scope-1",
+        "item_id": "item-1",
+        "part_id": "part-0",
+        "operation": "replace",
+        "source_event_id": "native-message-completed"
+      }
+    }
   ]
 }

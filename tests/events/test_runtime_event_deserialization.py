@@ -1,21 +1,25 @@
-"""RuntimeEvent external ingestion conformance regression tests (goal 19)."""
+"""RuntimeEvent external ingestion conformance regression tests (goal 19).
+
+v1 wire deserialization boundaries are tested through ``v1_compat`` (the only
+owner of the legacy v1 envelope).  A2A ingestion and store boundaries use the
+canonical schema-v2 types directly.
+"""
 
 from __future__ import annotations
 
 import json
-from typing import Any, Callable, cast
+from typing import Any, Callable
 
 import pytest
 from a2a.types import TaskState, TaskStatus
 
 from ksadk.a2a.event_adapter import A2AEventAdapter
-from ksadk.events.replay import replay_transcript
-from ksadk.events.runtime_event import EventType, RuntimeEvent
+from ksadk.events.canonical import RunFailed, RunStarted, SourceRef
 from ksadk.events.store import (
-    RuntimeEventStore,
     runtime_event_to_session_event,
     session_event_to_runtime_event,
 )
+from ksadk.events.v1_compat import EventTypeV1 as EventType, RuntimeEventV1 as RuntimeEvent
 
 
 def _event_data(**overrides: Any) -> dict[str, Any]:
@@ -62,7 +66,7 @@ def test_external_deserialization_rejects_phase_on_non_text_event(load):
 
 @pytest.mark.parametrize("load", LOADERS, ids=("from_dict", "from_json"))
 def test_external_deserialization_rejects_missing_required_payload_key(load):
-    with pytest.raises(ValueError, match="payload.*缺必填键"):
+    with pytest.raises(ValueError, match="missing required keys"):
         load(
             _event_data(
                 event_type=EventType.TOOL_CALL_BEGIN,
@@ -75,28 +79,26 @@ def test_external_deserialization_rejects_missing_required_payload_key(load):
 def test_store_write_boundary_rejects_unchecked_runtime_event():
     unchecked = RuntimeEvent(**_event_data(event_type="runtime.unknown"))
 
-    with pytest.raises(ValueError, match="unknown event_type"):
-        runtime_event_to_session_event(unchecked)
+    with pytest.raises(ValueError, match="schema_version=2 only"):
+        runtime_event_to_session_event("session-1", unchecked)
 
 
 def test_store_read_boundary_rejects_tampered_persisted_event():
-    valid = RuntimeEvent.from_dict(_event_data())
-    persisted = runtime_event_to_session_event(valid)
-    persisted.event_type = EventType.TOOL_CALL_BEGIN
-    persisted.content = {"phase": None, "payload": {"name": "search"}}
+    valid = RunStarted(
+        schema_version=2,
+        event_id="evt-1",
+        seq=0,
+        timestamp=1.0,
+        run_id="run-1",
+        scope_id="scope-1",
+        source=SourceRef(framework="adk"),
+        status="running",
+    )
+    persisted = runtime_event_to_session_event("session-1", valid)
+    persisted.event_type = "item.updated"  # tamper: envelope no longer matches content
 
-    with pytest.raises(ValueError, match="payload.*缺必填键"):
+    with pytest.raises(ValueError, match="envelope does not match"):
         session_event_to_runtime_event(persisted)
-
-
-@pytest.mark.asyncio
-async def test_replay_boundary_rejects_unchecked_store_event():
-    class UncheckedStore:
-        async def list(self, *args: Any, **kwargs: Any) -> list[RuntimeEvent]:
-            return [RuntimeEvent(**_event_data(event_type="runtime.unknown"))]
-
-    with pytest.raises(ValueError, match="unknown event_type"):
-        await replay_transcript(cast(RuntimeEventStore, UncheckedStore()), "session-1")
 
 
 @pytest.mark.parametrize(
@@ -114,13 +116,5 @@ def test_a2a_failed_status_ingestion_produces_conformant_runtime_event(state):
         seq_id=1,
     )
 
-    event.validate_conformance()
-    assert event.event_type == EventType.RUN_FAILED
-    assert event.payload["error"]
-
-
-def test_a2a_output_boundary_rejects_unchecked_runtime_event():
-    unchecked = RuntimeEvent(**_event_data(payload={}))
-
-    with pytest.raises(ValueError, match="payload.*缺必填键"):
-        A2AEventAdapter.event_to_text_part(unchecked)
+    assert isinstance(event, RunFailed)
+    assert event.error.message
