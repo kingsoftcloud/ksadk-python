@@ -305,6 +305,44 @@ def _event_type_for_model(model: type[EventEnvelope]) -> str:
 
 ALL_EVENT_TYPES = frozenset(_event_type_for_model(model) for model in _RUNTIME_EVENT_MODELS)
 
+_ENVELOPE_FIELDS = frozenset(EventEnvelope.model_fields)
+
+
+class UnknownCanonicalEvent(_CanonicalModel):
+    """Opaque carrier for an event whose envelope parses but whose type is unknown.
+
+    Envelope-first compatibility: a reader that predates an event type still
+    recovers the identity envelope (run/scope/seq/event ids) and keeps the
+    payload verbatim. Downstream projections decide independently whether to
+    skip or degrade unknown events; the store never rejects them for the type
+    alone. Structural envelope failures still fail loud in strict parsing.
+    """
+
+    schema_version: Literal[2]
+    event_id: str = Field(min_length=1)
+    seq: JsonInteger = Field(ge=0)
+    timestamp: float
+    run_id: str = Field(min_length=1)
+    run_seq: JsonInteger | None = Field(default=None, ge=0)
+    scope_id: str = Field(min_length=1)
+    parent_scope_id: str | None = Field(default=None, min_length=1)
+    source: SourceRef
+    event_type: str = Field(min_length=1)
+    payload: dict[str, JsonValue] = Field(default_factory=dict)
+
+
+def _extract_unknown(raw: dict[str, object]) -> UnknownCanonicalEvent:
+    event_type = raw.get("event_type")
+    if not isinstance(event_type, str) or not event_type:
+        raise ValueError("canonical event requires a non-empty event_type")
+    envelope = {key: raw[key] for key in _ENVELOPE_FIELDS if key in raw}
+    payload = {
+        key: value
+        for key, value in raw.items()
+        if key not in _ENVELOPE_FIELDS and key != "event_type"
+    }
+    return UnknownCanonicalEvent(event_type=event_type, payload=payload, **envelope)
+
 
 def parse_runtime_event(data: object) -> RuntimeEvent:
     """Validate a canonical event from a JSON string/bytes or Python value."""
@@ -312,6 +350,36 @@ def parse_runtime_event(data: object) -> RuntimeEvent:
     if isinstance(data, (str, bytes, bytearray)):
         return _RUNTIME_EVENT_ADAPTER.validate_json(data)
     return _RUNTIME_EVENT_ADAPTER.validate_python(data)
+
+
+def parse_runtime_event_lenient(
+    data: object,
+) -> RuntimeEvent | UnknownCanonicalEvent:
+    """Parse a canonical event, tolerating unknown event types.
+
+    Known types validate strictly — a known event_type with a broken payload
+    still raises. Only an unknown-but-well-formed event parses into an
+    ``UnknownCanonicalEvent`` that preserves the envelope and the remaining
+    payload verbatim; a broken envelope raises too. Callers that must not
+    tolerate unknown types (wire boundaries that publish the public schema)
+    keep using :func:`parse_runtime_event`.
+    """
+
+    import json
+
+    if isinstance(data, (str, bytes, bytearray)):
+        raw = json.loads(data)
+    else:
+        raw = data
+    if not isinstance(raw, dict):
+        raise ValueError("canonical event must be a JSON object")
+    event_type = raw.get("event_type")
+    if not isinstance(event_type, str) or not event_type:
+        raise ValueError("canonical event requires a non-empty event_type")
+    if event_type in ALL_EVENT_TYPES:
+        # 已知类型走严格解析,坏 payload 必须 fail loud。
+        return parse_runtime_event(raw)
+    return _extract_unknown(raw)
 
 
 def dump_runtime_event(event: RuntimeEvent) -> dict[str, JsonValue]:
@@ -364,7 +432,9 @@ __all__ = [
     "SourceRef",
     "StructuredInputRequest",
     "StructuredInputResponse",
+    "UnknownCanonicalEvent",
     "UsageReported",
     "dump_runtime_event",
     "parse_runtime_event",
+    "parse_runtime_event_lenient",
 ]
