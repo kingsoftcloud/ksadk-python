@@ -2060,9 +2060,7 @@ class ADKRunner(BaseRunner):
                                 # partial=False；这可能是一个此前 partial thought
                                 # 的终态快照。只补发新增内容，避免正文之后再显示一遍
                                 # 相同的思考块；若此前没有 partial thought，仍完整透传。
-                                previous_thought = sub_agent_thought_snapshots.get(
-                                    author_key, ""
-                                )
+                                previous_thought = sub_agent_thought_snapshots.get(author_key, "")
                                 if part.text.startswith(previous_thought):
                                     thought_delta = part.text[len(previous_thought) :]
                                     sub_agent_thought_snapshots[author_key] = part.text
@@ -2078,8 +2076,10 @@ class ADKRunner(BaseRunner):
                         snapshot = ""
                         replace_snapshot = False
                         for part in event.content.parts:
-                            if hasattr(part, "text") and part.text and not getattr(
-                                part, "thought", False
+                            if (
+                                hasattr(part, "text")
+                                and part.text
+                                and not getattr(part, "thought", False)
                             ):
                                 snapshot += part.text
                                 replace_snapshot = replace_snapshot or _part_metadata_flag(
