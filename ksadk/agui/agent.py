@@ -37,7 +37,7 @@ from ag_ui.core import (
     ToolCallStartEvent,
 )
 
-from ksadk.agui.a2ui_projection import project_a2ui_operations
+from ksadk.agui import _agent_helpers
 from ksadk.conversations.runtime_metadata import (
     _update_session_metadata_after_assistant_turn,
     prime_session_metadata_for_user_turn,
@@ -46,12 +46,11 @@ from ksadk.events.canonical import (
     ApprovalResponse,
     ContentSnapshot,
     ContinuationCreated,
-    ErrorInfo,
     InteractionRequested,
     InteractionResolved,
     ItemCompleted,
-    ItemStarted,
     ItemSnapshotReplaced,
+    ItemStarted,
     ItemUpdated,
     RunCanceled,
     RunCompleted,
@@ -62,7 +61,6 @@ from ksadk.events.canonical import (
     SourceRef,
 )
 from ksadk.events.content import (
-    DataContent,
     TextContent,
     ToolCallContent,
     ToolResultContent,
@@ -381,7 +379,9 @@ class KsadkAGUIAgent:
                 interaction_kind="approval",
                 response=ApprovalResponse(
                     response_type="approval",
-                    decision=decision if decision in ("approved", "rejected", "canceled") else "rejected",
+                    decision=(
+                        decision if decision in ("approved", "rejected", "canceled") else "rejected"
+                    ),
                     data={"call_id": entry.interrupt_id},
                 ),
             )
@@ -394,26 +394,6 @@ class KsadkAGUIAgent:
             else:
                 await self._persist(event, session_id=input.thread_id)
         return reservation_created
-
-    @staticmethod
-    def _approval_decision_for_audit(status: str, payload: Any) -> str:
-        """Persist a stable decision value while accepting official AG-UI envelopes."""
-
-        if status != "resolved":
-            return "rejected"
-        if payload is True:
-            return "approved"
-        if isinstance(payload, Mapping):
-            for key in ("approve", "approved"):
-                if key in payload:
-                    return "approved" if bool(payload[key]) else "rejected"
-            for key in ("decision", "type"):
-                if key in payload:
-                    return KsadkAGUIAgent._approval_decision_for_audit(status, payload[key])
-            return "rejected"
-        if isinstance(payload, str) and payload.strip().lower() in {"approve", "approved"}:
-            return "approved"
-        return "rejected"
 
     async def _project(
         self,
@@ -469,7 +449,10 @@ class KsadkAGUIAgent:
             return
 
         # ---- reasoning ----
-        if isinstance(event, (ItemUpdated, ItemSnapshotReplaced)) and event.item_kind == "reasoning":
+        if (
+            isinstance(event, (ItemUpdated, ItemSnapshotReplaced))
+            and event.item_kind == "reasoning"
+        ):
             if not wire.reasoning_open:
                 wire.reasoning_open = True
                 yield ReasoningStartEvent(message_id=wire.reasoning_id)
@@ -570,9 +553,7 @@ class KsadkAGUIAgent:
                 known = run.handle.native_ref.setdefault("known_checkpoint_ids", [])
                 if ckpt_id not in known:
                     known.append(ckpt_id)
-            yield StateSnapshotEvent(
-                snapshot={"checkpoint": copy.deepcopy(event.ref)}
-            )
+            yield StateSnapshotEvent(snapshot={"checkpoint": copy.deepcopy(event.ref)})
             return
 
         # ---- approval ----
@@ -683,7 +664,9 @@ class KsadkAGUIAgent:
         sid = str(event.source.metadata.get("session_id") or session_id or "")
         return cast(RuntimeEvent, await store.append_one(sid, event))
 
-    async def _reserve(self, event: RuntimeEvent, *, session_id: str = "") -> tuple[RuntimeEvent, bool]:
+    async def _reserve(
+        self, event: RuntimeEvent, *, session_id: str = ""
+    ) -> tuple[RuntimeEvent, bool]:
         factory = self._shared.event_store_factory
         if factory is None:
             return event, True
@@ -856,112 +839,6 @@ class KsadkAGUIAgent:
             return []
         return list(await list_events(session_id))
 
-    @staticmethod
-    def _durable_handle(handle: RunHandle) -> dict[str, Any]:
-        allowed = {
-            "agent_id",
-            "user_id",
-            "checkpoint_id",
-            "known_checkpoint_ids",
-            "pending_approval_ids",
-            "framework_ref",
-            "thread_id",
-            "checkpoint_ns",
-            "resume_thread_id",
-        }
-        native_ref = {key: value for key, value in handle.native_ref.items() if key in allowed}
-        return {
-            "run_id": handle.run_id,
-            "session_id": handle.session_id,
-            "runtime_type": handle.runtime_type,
-            "native_ref": KsadkAGUIAgent._json_safe(native_ref),
-        }
-
-    @staticmethod
-    def _interrupt_from_payload(payload: Mapping[str, Any]) -> Interrupt:
-        interrupt_id = str(payload.get("approval_id") or payload.get("call_id") or "")
-        raw_detail = payload.get("detail")
-        detail = raw_detail if isinstance(raw_detail, dict) else {}
-        return Interrupt(
-            id=interrupt_id,
-            reason=str(detail.get("reason") or payload.get("kind") or "approval"),
-            message=KsadkAGUIAgent._approval_message(detail, payload),
-            tool_call_id=str(payload.get("call_id") or "") or None,
-            response_schema=detail.get("response_schema"),
-            metadata=KsadkAGUIAgent._approval_metadata(detail, payload),
-        )
-
-    @staticmethod
-    def _interrupt_from_interaction(event: InteractionRequested) -> Interrupt:
-        detail = event.request.detail if isinstance(event.request.detail, dict) else {}
-        payload = {
-            "approval_id": event.interaction_id,
-            "call_id": event.request.call_id or "",
-            "kind": event.request.kind,
-            "detail": detail,
-        }
-        return KsadkAGUIAgent._interrupt_from_payload(payload)
-
-    @staticmethod
-    def _extract_text(snapshot: ContentSnapshot | None) -> str:
-        if snapshot is None:
-            return ""
-        for part in snapshot.parts:
-            if isinstance(part, TextContent):
-                return part.text
-        return ""
-
-    @staticmethod
-    def _first_part(snapshot: ContentSnapshot | None) -> Any:
-        if snapshot is None or not snapshot.parts:
-            return None
-        return snapshot.parts[0]
-
-    @staticmethod
-    def _a2ui_operations(
-        event: ItemStarted | ItemUpdated | ItemCompleted,
-        surface_id: str,
-    ) -> list[dict[str, Any]]:
-        if isinstance(event, ItemStarted):
-            part = KsadkAGUIAgent._first_part(event.initial)
-            if isinstance(part, DataContent):
-                if isinstance(part.data, list):
-                    return [dict(op) for op in part.data if isinstance(op, Mapping)]
-                if isinstance(part.data, Mapping):
-                    # Surface data dict (surface_id, catalog_id, components, etc.)
-                    # Use project_a2ui_operations to extract canonical operations.
-                    return project_a2ui_operations(
-                        "a2ui.surface.begin", dict(part.data)
-                    )
-            return []
-        if isinstance(event, ItemUpdated):
-            if isinstance(event.update, DataContent):
-                if isinstance(event.update.data, list):
-                    return [dict(op) for op in event.update.data if isinstance(op, Mapping)]
-                if isinstance(event.update.data, Mapping):
-                    return project_a2ui_operations(
-                        "a2ui.surface.update", dict(event.update.data)
-                    )
-            return []
-        # ItemCompleted (end): produce deleteSurface to preserve AG-UI wire
-        if surface_id:
-            return [{"version": "v0.9", "deleteSurface": {"surfaceId": surface_id}}]
-        return []
-
-    @staticmethod
-    def _duplicate_run(input: RunAgentInput) -> _ThreadRun:
-        return _ThreadRun(
-            handle=RunHandle(
-                run_id=input.run_id,
-                session_id=input.thread_id,
-                runtime_type="ag-ui-duplicate",
-            )
-        )
-
-    @staticmethod
-    def _json_safe(value: Any) -> Any:
-        return json.loads(json.dumps(value, ensure_ascii=False, default=str))
-
     async def _close_thread(self, thread_id: str, run: _ThreadRun) -> None:
         try:
             await self._shared.executor.close(run.handle)
@@ -986,79 +863,70 @@ class KsadkAGUIAgent:
         return result
 
     @staticmethod
+    def _approval_decision_for_audit(status: str, payload: Any) -> str:
+        return _agent_helpers.approval_decision_for_audit(status, payload)
+
+    @staticmethod
+    def _durable_handle(handle: RunHandle) -> dict[str, Any]:
+        return _agent_helpers.durable_handle(handle)
+
+    @staticmethod
+    def _interrupt_from_payload(payload: Mapping[str, Any]) -> Interrupt:
+        return _agent_helpers.interrupt_from_payload(payload)
+
+    @staticmethod
+    def _interrupt_from_interaction(event: InteractionRequested) -> Interrupt:
+        return _agent_helpers.interrupt_from_interaction(event)
+
+    @staticmethod
+    def _extract_text(snapshot: ContentSnapshot | None) -> str:
+        return _agent_helpers.extract_text(snapshot)
+
+    @staticmethod
+    def _first_part(snapshot: ContentSnapshot | None) -> Any:
+        return _agent_helpers.first_part(snapshot)
+
+    @staticmethod
+    def _a2ui_operations(
+        event: ItemStarted | ItemUpdated | ItemCompleted,
+        surface_id: str,
+    ) -> list[dict[str, Any]]:
+        return _agent_helpers.a2ui_operations(event, surface_id)
+
+    @staticmethod
+    def _duplicate_run(input: RunAgentInput) -> _ThreadRun:
+        return _agent_helpers.duplicate_run(input)
+
+    @staticmethod
+    def _json_safe(value: Any) -> Any:
+        return _agent_helpers.json_safe(value)
+
+    @staticmethod
     def _latest_user_input(input: RunAgentInput) -> Any:
-        for message in reversed(input.messages):
-            if getattr(message, "role", None) == "user":
-                return getattr(message, "content", "")
-        return ""
+        return _agent_helpers.latest_user_input(input)
 
     @staticmethod
     def _input_text(value: Any) -> str:
-        if isinstance(value, str):
-            return value.strip()
-        if isinstance(value, Mapping):
-            return str(value.get("text") or value.get("content") or "").strip()
-        return str(value or "").strip()
+        return _agent_helpers.input_text(value)
 
     @staticmethod
     def _approval_action(detail: Mapping[str, Any]) -> Mapping[str, Any]:
-        nested_request = detail.get("approval_requests")
-        actions = (
-            nested_request.get("action_requests")
-            if isinstance(nested_request, Mapping)
-            else detail.get("action_requests")
-        )
-        if isinstance(actions, list):
-            for action in actions:
-                if isinstance(action, Mapping):
-                    return action
-        return {}
+        return _agent_helpers.approval_action(detail)
 
     @staticmethod
     def _approval_metadata(
         detail: Mapping[str, Any],
         payload: Mapping[str, Any],
     ) -> dict[str, Any]:
-        action = KsadkAGUIAgent._approval_action(detail)
-        arguments = (
-            action.get("args")
-            or action.get("arguments")
-            or detail.get("arguments")
-            or detail.get("args")
-            or payload.get("args")
-        )
-        metadata: dict[str, Any] = {
-            "tool_name": str(
-                action.get("name")
-                or detail.get("tool_name")
-                or payload.get("name")
-                or payload.get("kind")
-                or "approval"
-            ),
-            "arguments": arguments if arguments is not None else {},
-        }
-        approval_level = (
-            action.get("approval_level")
-            or detail.get("approval_level")
-            or payload.get("approval_level")
-        )
-        if approval_level:
-            metadata["approval_level"] = str(approval_level)
-        return metadata
+        return _agent_helpers.approval_metadata(detail, payload)
 
     @staticmethod
     def _approval_message(detail: Mapping[str, Any], payload: Mapping[str, Any]) -> str:
-        action = KsadkAGUIAgent._approval_action(detail)
-        return str(
-            action.get("description")
-            or detail.get("message")
-            or payload.get("message")
-            or "Approval required"
-        )
+        return _agent_helpers.approval_message(detail, payload)
 
     @staticmethod
     def _resume_fingerprint(status: str, payload: Any) -> Any:
-        return json.dumps([status, payload], sort_keys=True, ensure_ascii=False, default=str)
+        return _agent_helpers.resume_fingerprint(status, payload)
 
 
 __all__ = ["KsadkAGUIAgent"]

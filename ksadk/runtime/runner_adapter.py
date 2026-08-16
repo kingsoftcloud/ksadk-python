@@ -55,6 +55,11 @@ from ksadk.runtime.runner_loading import ensure_runner_loaded
 
 logger = logging.getLogger(__name__)
 
+# 保留既有 monkeypatch patch 点:stream_mapping 在调用时经本模块属性解析。
+from ksadk.conversations.runtime_observability import (  # noqa: E402,F401
+    _conversation_span_scope,
+)
+
 # dict-chunk 退化路径的流竞速/事件映射实现拆至 _runner_adapter 子包(纯移动,行为不变)。
 from ksadk.runtime._runner_adapter.stream_mapping import (  # noqa: E402
     _STREAM_STOP,

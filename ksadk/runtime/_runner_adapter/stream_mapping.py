@@ -21,7 +21,6 @@ from pydantic import JsonValue
 
 from ksadk.conversations.runtime_input import _runner_name
 from ksadk.conversations.runtime_observability import (
-    _conversation_span_scope,
     _set_conversation_input_attributes,
     _set_conversation_output_attributes,
     _set_conversation_span_attributes,
@@ -206,7 +205,11 @@ class _RunnerStreamMappingMixin:
         accumulated_output = ""
         usage: dict[str, Any] = {}
         runner_gen: Optional[AsyncIterator[Any]] = None
-        async with _conversation_span_scope(runner_name) as span:
+        # span scope 经 runner_adapter 模块属性间接解析,保持既有 monkeypatch
+        # patch 点(tests/agui/test_runtime_preprocessing.py)继续生效。
+        from ksadk.runtime import runner_adapter as _runner_adapter_module
+
+        async with _runner_adapter_module._conversation_span_scope(runner_name) as span:
             if isinstance(prepared_start, PreparedRuntimeStart):
                 _set_conversation_span_attributes(
                     span,

@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+
 def project_a2ui_operations(event_type: str, payload: Mapping[str, Any]) -> list[dict[str, Any]]:
     """Return A2UI v0.9 operations carried by an AG-UI activity event.
 
