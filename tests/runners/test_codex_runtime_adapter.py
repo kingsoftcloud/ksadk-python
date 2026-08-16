@@ -504,13 +504,14 @@ async def test_cancel_cascades_pending_approvals():
     await adapter.cancel(handle)
     # 级联丢弃来自 runtime 自跟踪的 pending 审批集(真实 SDK 无独立 drain API)。
     # The canonical interaction_id is a stable hash of the codex scope/method/interaction id.
+    # 本分支的 pending 跟踪同时记录 canonical interaction_id(稳定 hash)
+    # 与 request.call_id(用于按 call_id 的 resolve 匹配/级联)。
     dropped = adapter.last_cancel_dropped_approvals
-    assert len(dropped) == 1, f"expected 1 dropped approval, got {dropped}"
-    # Verify the dropped id matches the InteractionRequested event's interaction_id.
+    # Verify the dropped ids match the InteractionRequested event's ids.
     requested_events = [e for e in events if hasattr(e, "event_type") and e.event_type == "interaction.requested"]
     assert len(requested_events) >= 1
     expected_id = requested_events[0].interaction_id
-    assert dropped == {expected_id}
+    assert dropped == {expected_id, "call-1"}
     await asyncio.wait_for(consume, timeout=2)
 
 
