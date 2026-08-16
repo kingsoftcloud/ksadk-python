@@ -6,7 +6,16 @@ from collections.abc import Mapping
 from typing import Any
 
 def project_a2ui_operations(event_type: str, payload: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Return A2UI v0.9 operations carried by an AG-UI activity event."""
+    """Return A2UI v0.9 operations carried by an AG-UI activity event.
+
+    公开承诺字段（契约声明见 ``ksadk/events/projections.py``）：
+    - 操作列表，每条形如 ``{"version": "v0.9", createSurface|updateComponents|
+      updateDataModel|deleteSurface: {...}}``，内层必含 ``surfaceId``；
+    - 无 surface 信息时返回空列表。
+
+    内部不保证字段：操作的构造来源（显式 operations vs 从 surface 推导）、
+    catalogId 缺省值之外的字段顺序与附加键。
+    """
 
     explicit = payload.get("operations", payload.get("a2ui_operations"))
     if isinstance(explicit, list):

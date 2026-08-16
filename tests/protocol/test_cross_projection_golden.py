@@ -343,3 +343,58 @@ def test_cross_protocol_item_ordering_consistent():
     assert "msg-legal-2" in reducer_ids
     assert reducer_ids.index("msg-legal-1") < reducer_ids.index("msg-legal-2")
     assert studio_message_ids.index("msg-legal-1") < studio_message_ids.index("msg-legal-2")
+
+
+# ---------------------------------------------------------------------------
+# Server checkpoint projection (REST action wire)
+# ---------------------------------------------------------------------------
+
+
+def test_server_checkpoint_projection_public_fields():
+    """_checkpoint_event_to_action_payload exposes the declared public fields
+    for a golden continuation.created event, and None for non-checkpoint events."""
+    from ksadk.events.canonical import ContinuationCreated, SourceRef
+    from ksadk.server.routes.projection import _checkpoint_event_to_action_payload
+
+    source = SourceRef(
+        framework="ksadk",
+        metadata={
+            "capability": {"backend": "filesystem", "scope": "session", "durable": True},
+            "next_node": "node-2",
+        },
+    )
+    base = dict(
+        schema_version=2,
+        timestamp=1780000000.0,
+        run_id="run-golden",
+        scope_id="scope_root",
+        source=source,
+    )
+    continuation = ContinuationCreated(
+        event_id="evt-cont-golden",
+        seq=99,
+        continuation_id="cont-golden",
+        continuation_kind="graph_checkpoint",
+        resumable=True,
+        ref={"checkpoint_id": "ck-golden"},
+        **base,
+    )
+    stored = runtime_event_to_session_event("golden-session", continuation)
+    payload = _checkpoint_event_to_action_payload(stored)
+    assert payload is not None
+    # 公开承诺字段（见 ksadk/events/projections.py）。
+    assert payload["RunId"] == "run-golden"
+    assert payload["CheckpointId"] == "cont-golden"
+    assert payload["Framework"] == "ksadk"
+    assert payload["FrameworkRef"] == {"ksadk": {"checkpoint_id": "ck-golden"}}
+    assert payload["IsResumable"] is True
+    assert payload["NextNode"] == "node-2"
+    assert payload["EventId"] == stored.id
+    assert payload["SessionId"] == "golden-session"
+
+    # 非 checkpoint 事件投影为 None。
+    run_started = next(
+        event for event in _golden_events() if isinstance(event, RunStarted)
+    )
+    other = runtime_event_to_session_event("golden-session", run_started)
+    assert _checkpoint_event_to_action_payload(other) is None

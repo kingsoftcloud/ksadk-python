@@ -430,6 +430,10 @@ def project_responses_history(events: List[SessionEvent]) -> List[dict[str, Any]
     from a text summary. Events without a reliable call id fall back to the
     existing explanatory message representation instead of emitting an invalid
     ``function_call_output`` item.
+
+    公开承诺（契约声明见 ``ksadk/events/projections.py``）：仅 OpenAI Responses
+    input item 形态（``type``/``call_id``/``output``/role 消息）；内部不保证
+    compacted 前缀的重放方式与占位消息的具体措辞。
     """
     projected: List[dict[str, Any]] = []
     projected_call_ids: set[str] = set()

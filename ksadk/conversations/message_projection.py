@@ -17,7 +17,18 @@ def project_session_messages(
     include_tool_events: bool = False,
     include_attachments: bool = True,
 ) -> list[dict[str, Any]]:
-    """Project persisted runtime events into the chat history contract."""
+    """Project persisted runtime events into the chat history contract.
+
+    公开承诺字段（契约声明见 ``ksadk/events/projections.py``，执行形态为
+    ``tests/protocol/test_cross_projection_golden.py``）：
+    - 每条消息含 ``Role``/``Content.text``/``SeqId``/``StartSeqId``；
+    - 开启 include_reasoning 时含 ``Reasoning``；开启 include_tool_events 时
+      含 ``ToolEvents``（approval 项含 ``ApprovalRequestId``）；
+    - A2UI 项以 ``Activities`` 携带（内含 ``surfaceId``）。
+
+    内部不保证字段：分组实现细节、事件归并产生的中间键、未经开关开启的
+    可选区块。
+    """
 
     agui_invocations = _agui_invocation_ids(events)
     normalized = [

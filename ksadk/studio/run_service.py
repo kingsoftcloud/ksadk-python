@@ -657,7 +657,18 @@ class StudioRunService:
 
 
 def project_runtime_event(event: RuntimeEvent) -> tuple[str, dict[str, Any]]:
-    """Project the canonical RuntimeEvent into Studio's persisted event view."""
+    """Project the canonical RuntimeEvent into Studio's persisted event view.
+
+    公开承诺字段（契约声明见 ``ksadk/events/projections.py``，执行形态为
+    ``tests/protocol/test_cross_projection_golden.py``）：
+    - 所有事件 payload 必含 ``runId``/``scopeId``；
+    - ``message.*``/``thinking.*`` 含 ``itemId``（delta 另含 ``partId``）；
+    - ``tool.*``/``command.*``/``approval.*``/``a2ui.*`` 含 ``itemId``；
+    - ``a2ui.surface.*`` 含 ``surfaceId`` 与 ``a2uiOperations`` 列表。
+
+    内部不保证字段：除上述外的 payload 附加键、事件类型枚举的完备性
+    （新增 canonical 事件类型在未适配前可能整条丢弃）。
+    """
 
     if isinstance(event, RunStarted):
         projected = "run.started"

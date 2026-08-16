@@ -1128,7 +1128,17 @@ def project_to_v1(
     mode: RuntimeEventV1ProjectionMode = "snapshot_only",
     context: RuntimeEventV1ProjectionContext | None = None,
 ) -> tuple[RuntimeEventV1, ...]:
-    """Project one canonical event to zero or more legacy v1 wire events."""
+    """Project one canonical event to zero or more legacy v1 wire events.
+
+    公开承诺字段（契约声明见 ``ksadk/events/projections.py``，执行形态为
+    ``tests/protocol/test_cross_projection_golden.py``）：
+    - RuntimeEventV1 事件类型与各类型 payload（approval_id/call_id/kind/detail、
+      surface_id/block_id/data、output_refs、status/error/reason 等）；
+    - 身份字段 run_id/scope_id/item_id。
+
+    内部不保证字段：seq/run_seq 的具体数值（仅保序）、source.native_* 游标、
+    source.metadata 原始键值。消费方不得依赖未列出的 payload 附加键。
+    """
 
     if mode not in {"snapshot_only", "identity_replace"}:
         raise ValueError(f"unknown RuntimeEvent v1 projection mode: {mode!r}")
