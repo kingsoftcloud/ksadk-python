@@ -68,6 +68,19 @@ from ksadk.events.identity import (
 
 ReconciliationReason = Literal["terminal", "reconnect", "subscription_rebuild"]
 
+_ACTIVE_STATES = frozenset({TaskState.TASK_STATE_SUBMITTED, TaskState.TASK_STATE_WORKING})
+_INTERACTION_STATES = frozenset(
+    {TaskState.TASK_STATE_INPUT_REQUIRED, TaskState.TASK_STATE_AUTH_REQUIRED}
+)
+_TERMINAL_STATES = frozenset(
+    {
+        TaskState.TASK_STATE_COMPLETED,
+        TaskState.TASK_STATE_FAILED,
+        TaskState.TASK_STATE_CANCELED,
+        TaskState.TASK_STATE_REJECTED,
+    }
+)
+
 
 class A2AMappingError(ValueError):
     """An A2A protobuf violates the native identity or content contract."""
@@ -77,6 +90,10 @@ class A2AMappingError(ValueError):
         self.code = code
         self.field_name = field_name
         self.source = "a2a"
+
+
+def _fail(code: str, field_name: str, message: str) -> None:
+    raise A2AMappingError(code, field_name, message)
 
 
 @dataclass
@@ -105,7 +122,7 @@ class A2AAdapterContext:
             return stable_scope_id("a2a", self.context_id, self.task_id)
         if self._direct_message_id is not None:
             return stable_scope_id("a2a", self.context_id, "message", self._direct_message_id)
-        raise A2AMappingError(
+        _fail(
             "missing_native_identity",
             "task_id/message_id",
             "A2A scope requires a task_id or direct message_id",
@@ -113,15 +130,14 @@ class A2AAdapterContext:
 
     @property
     def native_run_id(self) -> str:
-        value = self.task_id or self._direct_message_id
-        return _required_string(value, "task_id/message_id")
+        return _required_string(self.task_id or self._direct_message_id, "task_id/message_id")
 
     def bind_direct_message(self, message_id: str) -> None:
         native_message_id = _required_string(message_id, "message.message_id")
         if self.task_id is not None:
             return
         if self._direct_message_id not in {None, native_message_id}:
-            raise A2AMappingError(
+            _fail(
                 "direct_message_scope_collision",
                 "message.message_id",
                 "A2A direct response changed message scope",
@@ -185,6 +201,29 @@ class _Occurrence:
     duplicate: bool = False
 
 
+@dataclass
+class _SnapshotScope:
+    """Shared plumbing for one GetTask snapshot projection pass."""
+
+    task: Task
+    context: A2AAdapterContext
+    source: SourceRef
+    timestamp: float
+    occurrence: _Occurrence
+    terminal: bool
+    reason: ReconciliationReason
+    attempt_id: str
+    events: list[RuntimeEvent] = field(default_factory=list)
+    _output_refs: list[OutputRef] = field(default_factory=list)
+    _output_ref_keys: set[tuple[str, str]] = field(default_factory=set)
+
+    def add_output_ref(self, item_id: str) -> None:
+        key = (self.context.scope_id, item_id)
+        if key not in self._output_ref_keys:
+            self._output_ref_keys.add(key)
+            self._output_refs.append(OutputRef(scope_id=self.context.scope_id, item_id=item_id))
+
+
 class A2AEventAdapter:
     """Map A2A 1.1.0 typed protobuf delivery into canonical events.
 
@@ -234,7 +273,7 @@ class A2AEventAdapter:
         if isinstance(native_event, StreamResponse):
             payload_name = native_event.WhichOneof("payload")
             if payload_name is None:
-                raise A2AMappingError(
+                _fail(
                     "empty_stream_response",
                     "StreamResponse.payload",
                     "A2A StreamResponse has no payload",
@@ -251,11 +290,7 @@ class A2AEventAdapter:
             context.bind_direct_message(native_event.message_id)
             self._require_agent_message(native_event, field_name="Message.role")
             return self._map_message(
-                native_event,
-                context,
-                timestamp,
-                consistent=True,
-                direct_response=True,
+                native_event, context, timestamp, consistent=True, direct_response=True
             )
         if isinstance(native_event, Task):
             self._validate_identity(native_event.context_id, native_event.id, context)
@@ -268,7 +303,7 @@ class A2AEventAdapter:
                 native_item_id=native_event.id,
                 occurrence_payload=native_event,
             )
-        raise A2AMappingError(
+        _fail(
             "unsupported_event",
             "event",
             f"unsupported A2A event: {type(native_event).__name__}",
@@ -303,7 +338,7 @@ class A2AEventAdapter:
             task_fingerprint = _proto_fingerprint(task)
             if self._terminal_snapshot_fingerprint is not None:
                 if task_fingerprint != self._terminal_snapshot_fingerprint:
-                    raise A2AMappingError(
+                    _fail(
                         "terminal_snapshot_collision",
                         "Task",
                         "A2A terminal GetTask snapshot changed after completion",
@@ -317,11 +352,7 @@ class A2AEventAdapter:
             shadow = copy.deepcopy(self)
             shadow_context = copy.deepcopy(context)
             events = shadow._map_task_snapshot(
-                task,
-                shadow_context,
-                reason,
-                resolved_attempt_id,
-                timestamp,
+                task, shadow_context, reason, resolved_attempt_id, timestamp
             )
         except Exception as exc:  # the result must remain usable after a transport/mapping failure
             error = exc.code if isinstance(exc, A2AMappingError) else "get_task_failed"
@@ -359,6 +390,49 @@ class A2AEventAdapter:
         context._next_seq = shadow_context._next_seq
         context._direct_message_id = shadow_context._direct_message_id
 
+    def _ensure_run_started(
+        self,
+        events: list[RuntimeEvent],
+        context: A2AAdapterContext,
+        source: SourceRef,
+        timestamp: float,
+        occurrence: _Occurrence,
+    ) -> None:
+        if not self._run_started:
+            events.append(
+                self._run_started_event(context, source, timestamp, occurrence, len(events))
+            )
+            self._run_started = True
+
+    def _env_builder(
+        self,
+        context: A2AAdapterContext,
+        source: SourceRef,
+        timestamp: float,
+        occurrence: _Occurrence,
+    ) -> Any:
+        """Return a closure building envelope kwargs for one event burst."""
+
+        def env(
+            item_id: str,
+            event_type: str,
+            part_id: str,
+            ordinal: int,
+            src: SourceRef = source,
+        ) -> dict[str, Any]:
+            return self._envelope(
+                context,
+                src,
+                timestamp,
+                item_id=item_id,
+                event_type=event_type,
+                part_id=part_id,
+                occurrence=occurrence,
+                ordinal=ordinal,
+            )
+
+        return env
+
     def _map_artifact_update(
         self,
         update: TaskArtifactUpdateEvent,
@@ -367,11 +441,7 @@ class A2AEventAdapter:
     ) -> tuple[RuntimeEvent, ...]:
         self._validate_identity(update.context_id, update.task_id, context)
         if not update.HasField("artifact"):
-            raise A2AMappingError(
-                "missing_artifact",
-                "artifact",
-                "A2A artifact update requires artifact",
-            )
+            _fail("missing_artifact", "artifact", "A2A artifact update requires artifact")
         artifact = update.artifact
         artifact_id = _required_string(artifact.artifact_id, "artifact.artifact_id")
         occurrence = self._occurrence(
@@ -384,52 +454,41 @@ class A2AEventAdapter:
 
         state = self._artifacts.get(artifact_id)
         if update.append and (state is None or not state.present):
-            raise A2AMappingError(
+            _fail(
                 "artifact_missing",
                 "append",
                 "A2A artifact_missing: append=True requires an authoritative base",
             )
         if state is not None and state.closed:
-            raise A2AMappingError(
+            _fail(
                 "artifact_already_closed",
                 "artifact.artifact_id",
                 f"A2A artifact {artifact_id!r} is already closed",
             )
         item_id = stable_item_id(
-            "a2a",
-            context.context_id,
-            context.task_id,
-            "artifact",
-            artifact_id,
-        )
-        source_metadata = self._source_metadata(
-            provisional=occurrence.provisional,
-            consistent=False,
-            artifact_closed=bool(update.last_chunk),
-            artifact=artifact,
+            "a2a", context.context_id, context.task_id, "artifact", artifact_id
         )
         source = self._source(
             context,
             occurrence,
             native_item_id=artifact_id,
-            metadata=source_metadata,
+            metadata=self._source_metadata(
+                provisional=occurrence.provisional,
+                consistent=False,
+                artifact_closed=bool(update.last_chunk),
+                artifact=artifact,
+            ),
         )
+
+        env = self._env_builder(context, source, timestamp, occurrence)
+
         events: list[RuntimeEvent] = []
         if state is None:
             state = _ArtifactState(artifact_id=artifact_id, item_id=item_id)
             self._artifacts[artifact_id] = state
             events.append(
                 ItemStarted(
-                    **self._envelope(
-                        context,
-                        source,
-                        timestamp,
-                        item_id=item_id,
-                        event_type="item.started",
-                        part_id="artifact",
-                        occurrence=occurrence,
-                        ordinal=0,
-                    ),
+                    **env(item_id, "item.started", "artifact", 0),
                     item_id=item_id,
                     item_kind="artifact",
                     phase="final_answer",
@@ -439,7 +498,7 @@ class A2AEventAdapter:
         absolute_start = len(state.part_order) if update.append else 0
         converted = self._convert_parts(artifact, item_id, start_index=absolute_start)
         if not converted:
-            raise A2AMappingError(
+            _fail(
                 "empty_artifact",
                 "artifact.parts",
                 "A2A artifact requires at least one supported part",
@@ -449,7 +508,7 @@ class A2AEventAdapter:
         for part in converted:
             previous = previous_parts.get(part.part_id)
             if previous is not None and previous.content_type != part.content_type:
-                raise A2AMappingError(
+                _fail(
                     "part_identity_collision",
                     "artifact.parts",
                     f"A2A part {part.part_id!r} changed content type",
@@ -460,16 +519,7 @@ class A2AEventAdapter:
             state.part_order = [part.part_id for part in converted]
             events.append(
                 ItemSnapshotReplaced(
-                    **self._envelope(
-                        context,
-                        source,
-                        timestamp,
-                        item_id=item_id,
-                        event_type="item.snapshot_replaced",
-                        part_id="snapshot",
-                        occurrence=occurrence,
-                        ordinal=1,
-                    ),
+                    **env(item_id, "item.snapshot_replaced", "snapshot", 1),
                     item_id=item_id,
                     item_kind="artifact",
                     snapshot=state.snapshot(),
@@ -478,7 +528,7 @@ class A2AEventAdapter:
         else:
             for index, part in enumerate(converted):
                 if part.part_id in state.parts:
-                    raise A2AMappingError(
+                    _fail(
                         "part_identity_collision",
                         "artifact.parts",
                         f"A2A append reused existing part {part.part_id!r}",
@@ -487,16 +537,7 @@ class A2AEventAdapter:
                 state.part_order.append(part.part_id)
                 events.append(
                     ItemUpdated(
-                        **self._envelope(
-                            context,
-                            source,
-                            timestamp,
-                            item_id=item_id,
-                            event_type="item.updated",
-                            part_id=part.part_id,
-                            occurrence=occurrence,
-                            ordinal=index + 1,
-                        ),
+                        **env(item_id, "item.updated", part.part_id, index + 1),
                         item_id=item_id,
                         item_kind="artifact",
                         op="append",
@@ -513,11 +554,7 @@ class A2AEventAdapter:
     ) -> tuple[RuntimeEvent, ...]:
         self._validate_identity(update.context_id, update.task_id, context)
         if not update.HasField("status"):
-            raise A2AMappingError(
-                "missing_status",
-                "status",
-                "A2A status update requires status",
-            )
+            _fail("missing_status", "status", "A2A status update requires status")
         return self._map_status(
             update.status,
             _metadata(update.metadata),
@@ -538,9 +575,7 @@ class A2AEventAdapter:
         occurrence_payload: object,
     ) -> tuple[RuntimeEvent, ...]:
         occurrence = self._occurrence(
-            metadata,
-            provisional_key="status",
-            payload=occurrence_payload,
+            metadata, provisional_key="status", payload=occurrence_payload
         )
         if occurrence.duplicate:
             return ()
@@ -551,194 +586,50 @@ class A2AEventAdapter:
             metadata={"provisional": occurrence.provisional, "consistent": False},
         )
         state = status.state
-        events: list[RuntimeEvent] = []
-        if state in {TaskState.TASK_STATE_SUBMITTED, TaskState.TASK_STATE_WORKING}:
-            if self._active_interaction is not None:
-                interaction_id, continuation_id = self._active_interaction
-                events.append(
-                    InteractionResolved(
-                        **self._envelope(
-                            context,
-                            source,
-                            timestamp,
-                            item_id=interaction_id,
-                            event_type="interaction.resolved",
-                            part_id="interaction",
-                            occurrence=occurrence,
-                            ordinal=len(events),
-                        ),
-                        interaction_id=interaction_id,
-                        interaction_kind="structured_input",
-                        response=StructuredInputResponse(data={"state": TaskState.Name(state)}),
-                    )
-                )
-                events.append(
-                    ContinuationResumed(
-                        **self._envelope(
-                            context,
-                            source,
-                            timestamp,
-                            item_id=continuation_id,
-                            event_type="continuation.resumed",
-                            part_id="continuation",
-                            occurrence=occurrence,
-                            ordinal=len(events),
-                        ),
-                        continuation_id=continuation_id,
-                        continuation_kind="task_resume",
-                        resume_attempt_id=stable_item_id(
-                            "a2a",
-                            context.scope_id,
-                            continuation_id,
-                            occurrence.identity,
-                        ),
-                    )
-                )
-                self._active_interaction = None
-            if not self._run_started:
-                events.append(
-                    self._run_started_event(context, source, timestamp, occurrence, len(events))
-                )
-                self._run_started = True
-            else:
-                events.append(
-                    self._run_progress_event(
-                        context,
-                        source,
-                        timestamp,
-                        occurrence,
-                        len(events),
-                        message=TaskState.Name(state),
-                    )
-                )
-            self._run_interrupted = False
-            return tuple(events)
+        if state in _ACTIVE_STATES:
+            return self._map_active_status(state, context, source, timestamp, occurrence)
+        if state in _INTERACTION_STATES:
+            return self._map_interaction_status(
+                status, state, context, source, timestamp, occurrence
+            )
+        if state in _TERMINAL_STATES:
+            return self._map_awaiting_terminal_status(context, source, timestamp, occurrence)
+        _fail("unknown_task_state", "status.state", f"unsupported A2A TaskState {state}")
 
-        if state in {TaskState.TASK_STATE_INPUT_REQUIRED, TaskState.TASK_STATE_AUTH_REQUIRED}:
-            if not status.HasField("message"):
-                raise A2AMappingError(
-                    "missing_interaction_message",
-                    "status.message",
-                    "A2A input/auth required status requires a message identity",
-                )
-            message = self._normalize_nested_message(status.message, context)
-            message_id = _required_string(message.message_id, "status.message.message_id")
-            lifecycle_key = (state, message_id)
-            payload_fingerprint = _proto_fingerprint(message)
-            previous_fingerprint = self._interaction_payloads.get(lifecycle_key)
-            if previous_fingerprint is not None:
-                if previous_fingerprint == payload_fingerprint:
-                    return ()
-                raise A2AMappingError(
-                    "interaction_payload_collision",
-                    "status.message",
-                    f"A2A interaction payload changed for message {message_id!r}",
-                )
-            self._interaction_payloads[lifecycle_key] = payload_fingerprint
-            if self._active_interaction is not None:
-                previous_interaction_id, _ = self._active_interaction
-                events.append(
-                    InteractionResolved(
-                        **self._envelope(
-                            context,
-                            source,
-                            timestamp,
-                            item_id=previous_interaction_id,
-                            event_type="interaction.resolved",
-                            part_id="interaction",
-                            occurrence=occurrence,
-                            ordinal=len(events),
-                        ),
-                        interaction_id=previous_interaction_id,
-                        interaction_kind="structured_input",
-                        response=StructuredInputResponse(
-                            data={"state": "SUPERSEDED_BY_NEW_A2A_INTERACTION"}
-                        ),
-                    )
-                )
-                self._active_interaction = None
-            if not self._run_started:
-                events.append(
-                    self._run_started_event(context, source, timestamp, occurrence, len(events))
-                )
-                self._run_started = True
-            interaction_id = stable_item_id(
-                "a2a", context.scope_id, "interaction", TaskState.Name(state), message_id
-            )
-            continuation_id = stable_item_id(
-                "a2a", context.scope_id, "continuation", context.task_id, message_id
-            )
-            prompt = _parts_text(message.parts) or None
-            message_metadata = _metadata(message.metadata)
-            schema = message_metadata.get("input_schema")
-            if not isinstance(schema, dict):
-                schema = {
-                    "type": "object" if state == TaskState.TASK_STATE_AUTH_REQUIRED else "string"
-                }
+    def _map_active_status(
+        self,
+        state: TaskState,
+        context: A2AAdapterContext,
+        source: SourceRef,
+        timestamp: float,
+        occurrence: _Occurrence,
+    ) -> tuple[RuntimeEvent, ...]:
+        env = self._env_builder(context, source, timestamp, occurrence)
+        events: list[RuntimeEvent] = []
+        if self._active_interaction is not None:
+            interaction_id, continuation_id = self._active_interaction
             events.append(
-                InteractionRequested(
-                    **self._envelope(
-                        context,
-                        source,
-                        timestamp,
-                        item_id=interaction_id,
-                        event_type="interaction.requested",
-                        part_id="interaction",
-                        occurrence=occurrence,
-                        ordinal=len(events),
-                    ),
+                InteractionResolved(
+                    **env(interaction_id, "interaction.resolved", "interaction", len(events)),
                     interaction_id=interaction_id,
                     interaction_kind="structured_input",
-                    request=StructuredInputRequest(prompt=prompt, schema=schema),
+                    response=StructuredInputResponse(data={"state": TaskState.Name(state)}),
                 )
             )
             events.append(
-                ContinuationCreated(
-                    **self._envelope(
-                        context,
-                        source,
-                        timestamp,
-                        item_id=continuation_id,
-                        event_type="continuation.created",
-                        part_id="continuation",
-                        occurrence=occurrence,
-                        ordinal=len(events),
-                    ),
+                ContinuationResumed(
+                    **env(continuation_id, "continuation.resumed", "continuation", len(events)),
                     continuation_id=continuation_id,
                     continuation_kind="task_resume",
-                    resumable=True,
-                    ref={"context_id": context.context_id, "task_id": context.task_id},
+                    resume_attempt_id=stable_item_id(
+                        "a2a", context.scope_id, continuation_id, occurrence.identity
+                    ),
                 )
             )
-            if not self._run_interrupted:
-                events.append(
-                    RunInterrupted(
-                        **self._envelope(
-                            context,
-                            source,
-                            timestamp,
-                            item_id=context.run_id,
-                            event_type="run.interrupted",
-                            part_id="run",
-                            occurrence=occurrence,
-                            ordinal=len(events),
-                        ),
-                        status="interrupted",
-                        reason=TaskState.Name(state),
-                        interaction_id=interaction_id,
-                        continuation_id=continuation_id,
-                    )
-                )
-                self._run_interrupted = True
-            self._active_interaction = (interaction_id, continuation_id)
-            return tuple(events)
-
-        if state in _TERMINAL_STATES:
-            if not self._run_started:
-                events.append(
-                    self._run_started_event(context, source, timestamp, occurrence, len(events))
-                )
-                self._run_started = True
+            self._active_interaction = None
+        if not self._run_started:
+            self._ensure_run_started(events, context, source, timestamp, occurrence)
+        else:
             events.append(
                 self._run_progress_event(
                     context,
@@ -746,17 +637,122 @@ class A2AEventAdapter:
                     timestamp,
                     occurrence,
                     len(events),
-                    message="awaiting authoritative A2A GetTask snapshot",
+                    message=TaskState.Name(state),
                 )
             )
-            self._run_interrupted = False
-            return tuple(events)
+        self._run_interrupted = False
+        return tuple(events)
 
-        raise A2AMappingError(
-            "unknown_task_state",
-            "status.state",
-            f"unsupported A2A TaskState {state}",
+    def _map_interaction_status(
+        self,
+        status: TaskStatus,
+        state: TaskState,
+        context: A2AAdapterContext,
+        source: SourceRef,
+        timestamp: float,
+        occurrence: _Occurrence,
+    ) -> tuple[RuntimeEvent, ...]:
+        if not status.HasField("message"):
+            _fail(
+                "missing_interaction_message",
+                "status.message",
+                "A2A input/auth required status requires a message identity",
+            )
+        message = self._normalize_nested_message(status.message, context)
+        message_id = _required_string(message.message_id, "status.message.message_id")
+        lifecycle_key = (state, message_id)
+        payload_fingerprint = _proto_fingerprint(message)
+        previous_fingerprint = self._interaction_payloads.get(lifecycle_key)
+        if previous_fingerprint is not None:
+            if previous_fingerprint == payload_fingerprint:
+                return ()
+            _fail(
+                "interaction_payload_collision",
+                "status.message",
+                f"A2A interaction payload changed for message {message_id!r}",
+            )
+        self._interaction_payloads[lifecycle_key] = payload_fingerprint
+        env = self._env_builder(context, source, timestamp, occurrence)
+        events: list[RuntimeEvent] = []
+        if self._active_interaction is not None:
+            previous_interaction_id, _ = self._active_interaction
+            events.append(
+                InteractionResolved(
+                    **env(
+                        previous_interaction_id, "interaction.resolved", "interaction", len(events)
+                    ),
+                    interaction_id=previous_interaction_id,
+                    interaction_kind="structured_input",
+                    response=StructuredInputResponse(
+                        data={"state": "SUPERSEDED_BY_NEW_A2A_INTERACTION"}
+                    ),
+                )
+            )
+            self._active_interaction = None
+        self._ensure_run_started(events, context, source, timestamp, occurrence)
+        interaction_id = stable_item_id(
+            "a2a", context.scope_id, "interaction", TaskState.Name(state), message_id
         )
+        continuation_id = stable_item_id(
+            "a2a", context.scope_id, "continuation", context.task_id, message_id
+        )
+        prompt = _parts_text(message.parts) or None
+        message_metadata = _metadata(message.metadata)
+        schema = message_metadata.get("input_schema")
+        if not isinstance(schema, dict):
+            schema = {"type": "object" if state == TaskState.TASK_STATE_AUTH_REQUIRED else "string"}
+        events.append(
+            InteractionRequested(
+                **env(interaction_id, "interaction.requested", "interaction", len(events)),
+                interaction_id=interaction_id,
+                interaction_kind="structured_input",
+                request=StructuredInputRequest(prompt=prompt, schema=schema),
+            )
+        )
+        events.append(
+            ContinuationCreated(
+                **env(continuation_id, "continuation.created", "continuation", len(events)),
+                continuation_id=continuation_id,
+                continuation_kind="task_resume",
+                resumable=True,
+                ref={"context_id": context.context_id, "task_id": context.task_id},
+            )
+        )
+        if not self._run_interrupted:
+            events.append(
+                RunInterrupted(
+                    **env(context.run_id, "run.interrupted", "run", len(events)),
+                    status="interrupted",
+                    reason=TaskState.Name(state),
+                    interaction_id=interaction_id,
+                    continuation_id=continuation_id,
+                )
+            )
+            self._run_interrupted = True
+        self._active_interaction = (interaction_id, continuation_id)
+        return tuple(events)
+
+    def _map_awaiting_terminal_status(
+        self,
+        context: A2AAdapterContext,
+        source: SourceRef,
+        timestamp: float,
+        occurrence: _Occurrence,
+    ) -> tuple[RuntimeEvent, ...]:
+        events: list[RuntimeEvent] = []
+        self._ensure_run_started(events, context, source, timestamp, occurrence)
+        events.append(
+            self._run_progress_event(
+                context,
+                source,
+                timestamp,
+                occurrence,
+                len(events),
+                message="awaiting authoritative A2A GetTask snapshot",
+            )
+        )
+        self._run_interrupted = False
+        return tuple(events)
 
     def _map_task_snapshot(
         self,
@@ -767,58 +763,81 @@ class A2AEventAdapter:
         timestamp: float,
     ) -> tuple[RuntimeEvent, ...]:
         state = task.status.state
-        terminal = state in _TERMINAL_STATES
         occurrence = _Occurrence(
             native_event_id=None,
             native_cursor=None,
             identity=(
-                f"get-task:{reason}:{attempt_id}:{TaskState.Name(state)}:{_proto_fingerprint(task)}"
+                f"get-task:{reason}:{attempt_id}:"
+                f"{TaskState.Name(state)}:{_proto_fingerprint(task)}"
             ),
             provisional=False,
         )
-        metadata: dict[str, JsonValue] = {
-            "provisional": False,
-            "consistent": True,
-            "reconciliation_reason": reason,
-            "reconciliation_attempt_id": attempt_id,
-            "terminal": terminal,
-        }
-        source = self._source(
-            context,
-            occurrence,
-            native_item_id=task.id,
-            metadata=metadata,
+        scope = _SnapshotScope(
+            task=task,
+            context=context,
+            source=self._source(
+                context,
+                occurrence,
+                native_item_id=task.id,
+                metadata={
+                    "provisional": False,
+                    "consistent": True,
+                    "reconciliation_reason": reason,
+                    "reconciliation_attempt_id": attempt_id,
+                    "terminal": state in _TERMINAL_STATES,
+                },
+            ),
+            timestamp=timestamp,
+            occurrence=occurrence,
+            terminal=state in _TERMINAL_STATES,
+            reason=reason,
+            attempt_id=attempt_id,
         )
-        events: list[RuntimeEvent] = []
-        if not self._run_started:
-            events.append(
-                self._run_started_event(context, source, timestamp, occurrence, len(events))
+        self._ensure_run_started(scope.events, context, scope.source, timestamp, occurrence)
+        self._snapshot_artifacts(scope)
+        interaction_state = state in _INTERACTION_STATES
+        status_message_id = (
+            task.status.message.message_id if task.status.HasField("message") else ""
+        )
+        self._snapshot_messages(scope, interaction_state, status_message_id)
+        if interaction_state:
+            interaction_events = self._map_status(
+                task.status,
+                {"event_id": occurrence.identity},
+                context,
+                timestamp,
+                native_item_id=status_message_id or None,
+                occurrence_payload=task,
             )
-            self._run_started = True
-        snapshot_artifact_ids: set[str] = set()
-        output_refs: list[OutputRef] = []
-        output_ref_keys: set[tuple[str, str]] = set()
+            scope.events.extend(
+                event.model_copy(update={"source": scope.source}) for event in interaction_events
+            )
+            return tuple(scope.events)
+        self._snapshot_terminal_run(scope, state)
+        if scope.terminal:
+            self._run_interrupted = False
+            self._terminal_snapshot_fingerprint = _proto_fingerprint(task)
+        return tuple(scope.events)
 
-        def add_output_ref(item_id: str) -> None:
-            key = (context.scope_id, item_id)
-            if key in output_ref_keys:
-                return
-            output_ref_keys.add(key)
-            output_refs.append(OutputRef(scope_id=context.scope_id, item_id=item_id))
+    def _snapshot_artifacts(self, scope: _SnapshotScope) -> None:
+        task, context, source, occurrence = (
+            scope.task,
+            scope.context,
+            scope.source,
+            scope.occurrence,
+        )
+        env = self._env_builder(context, source, scope.timestamp, occurrence)
+        snapshot_artifact_ids: set[str] = set()
 
         for artifact in task.artifacts:
             artifact_id = _required_string(artifact.artifact_id, "task.artifacts.artifact_id")
             snapshot_artifact_ids.add(artifact_id)
             item_id = stable_item_id(
-                "a2a",
-                context.context_id,
-                context.task_id,
-                "artifact",
-                artifact_id,
+                "a2a", context.context_id, context.task_id, "artifact", artifact_id
             )
             parts = self._convert_parts(artifact, item_id, start_index=0)
             if not parts:
-                raise A2AMappingError(
+                _fail(
                     "empty_artifact_snapshot",
                     "task.artifacts.parts",
                     "A2A GetTask artifact snapshot requires supported parts",
@@ -830,17 +849,10 @@ class A2AEventAdapter:
             if artifact_state is None:
                 artifact_state = _ArtifactState(artifact_id=artifact_id, item_id=item_id)
                 self._artifacts[artifact_id] = artifact_state
-                events.append(
+                scope.events.append(
                     ItemStarted(
-                        **self._envelope(
-                            context,
-                            artifact_source,
-                            timestamp,
-                            item_id=item_id,
-                            event_type="item.started",
-                            part_id="artifact",
-                            occurrence=occurrence,
-                            ordinal=len(events),
+                        **env(
+                            item_id, "item.started", "artifact", len(scope.events), artifact_source
                         ),
                         item_id=item_id,
                         item_kind="artifact",
@@ -849,49 +861,43 @@ class A2AEventAdapter:
                 )
             elif artifact_state.closed:
                 if artifact_state.snapshot() != snapshot:
-                    raise A2AMappingError(
+                    _fail(
                         "trusted_snapshot_collision",
                         "task.artifacts",
                         f"GetTask changed already completed artifact {artifact_id!r}",
                     )
-                if terminal:
-                    add_output_ref(item_id)
+                if scope.terminal:
+                    scope.add_output_ref(item_id)
                 continue
             artifact_state.parts = {part.part_id: part for part in parts}
             artifact_state.part_order = [part.part_id for part in parts]
             artifact_state.present = True
-            if terminal:
+            if scope.terminal:
                 artifact_state.closed = True
-                events.append(
+                scope.events.append(
                     ItemCompleted(
-                        **self._envelope(
-                            context,
+                        **env(
+                            item_id,
+                            "item.completed",
+                            "snapshot",
+                            len(scope.events),
                             artifact_source,
-                            timestamp,
-                            item_id=item_id,
-                            event_type="item.completed",
-                            part_id="snapshot",
-                            occurrence=occurrence,
-                            ordinal=len(events),
                         ),
                         item_id=item_id,
                         item_kind="artifact",
                         snapshot=snapshot,
                     )
                 )
-                add_output_ref(item_id)
+                scope.add_output_ref(item_id)
             else:
-                events.append(
+                scope.events.append(
                     ItemSnapshotReplaced(
-                        **self._envelope(
-                            context,
+                        **env(
+                            item_id,
+                            "item.snapshot_replaced",
+                            "snapshot",
+                            len(scope.events),
                             artifact_source,
-                            timestamp,
-                            item_id=item_id,
-                            event_type="item.snapshot_replaced",
-                            part_id="snapshot",
-                            occurrence=occurrence,
-                            ordinal=len(events),
                         ),
                         item_id=item_id,
                         item_kind="artifact",
@@ -906,19 +912,16 @@ class A2AEventAdapter:
             artifact_state.present = False
             artifact_state.parts = {}
             artifact_state.part_order = []
-            if terminal:
+            if scope.terminal:
                 artifact_state.closed = True
-                events.append(
+                scope.events.append(
                     ItemFailed(
-                        **self._envelope(
-                            context,
+                        **env(
+                            artifact_state.item_id,
+                            "item.failed",
+                            "artifact",
+                            len(scope.events),
                             removed_source,
-                            timestamp,
-                            item_id=artifact_state.item_id,
-                            event_type="item.failed",
-                            part_id="artifact",
-                            occurrence=occurrence,
-                            ordinal=len(events),
                         ),
                         item_id=artifact_state.item_id,
                         item_kind="artifact",
@@ -935,17 +938,14 @@ class A2AEventAdapter:
                     )
                 )
             else:
-                events.append(
+                scope.events.append(
                     ItemSnapshotReplaced(
-                        **self._envelope(
-                            context,
+                        **env(
+                            artifact_state.item_id,
+                            "item.snapshot_replaced",
+                            "snapshot",
+                            len(scope.events),
                             removed_source,
-                            timestamp,
-                            item_id=artifact_state.item_id,
-                            event_type="item.snapshot_replaced",
-                            part_id="snapshot",
-                            occurrence=occurrence,
-                            ordinal=len(events),
                         ),
                         item_id=artifact_state.item_id,
                         item_kind="artifact",
@@ -953,13 +953,13 @@ class A2AEventAdapter:
                     )
                 )
 
-        interaction_state = state in {
-            TaskState.TASK_STATE_INPUT_REQUIRED,
-            TaskState.TASK_STATE_AUTH_REQUIRED,
-        }
-        status_message_id = (
-            task.status.message.message_id if task.status.HasField("message") else ""
-        )
+    def _snapshot_messages(
+        self,
+        scope: _SnapshotScope,
+        interaction_state: bool,
+        status_message_id: str,
+    ) -> None:
+        task = scope.task
         snapshot_messages = [
             message
             for message in task.history
@@ -975,104 +975,70 @@ class A2AEventAdapter:
         ):
             snapshot_messages.append(task.status.message)
         for nested_message in snapshot_messages:
-            message = self._normalize_nested_message(nested_message, context)
+            message = self._normalize_nested_message(nested_message, scope.context)
             if message.role != Role.ROLE_AGENT:
                 continue
-            message_events = self._map_message(
-                message,
-                context,
-                timestamp,
-                consistent=True,
-                occurrence_identity=(
-                    f"get-task:{reason}:{attempt_id}:message:{message.message_id}"
-                ),
+            scope.events.extend(
+                self._map_message(
+                    message,
+                    scope.context,
+                    scope.timestamp,
+                    consistent=True,
+                    occurrence_identity=(
+                        f"get-task:{scope.reason}:{scope.attempt_id}:message:{message.message_id}"
+                    ),
+                )
             )
-            events.extend(message_events)
             message_id = self._message_item_id(
-                context,
-                _required_string(message.message_id, "message.message_id"),
+                scope.context, _required_string(message.message_id, "message.message_id")
             )
-            if terminal:
-                add_output_ref(message_id)
+            if scope.terminal:
+                scope.add_output_ref(message_id)
 
-        if interaction_state:
-            interaction_events = self._map_status(
-                task.status,
-                {"event_id": occurrence.identity},
-                context,
-                timestamp,
-                native_item_id=status_message_id or None,
-                occurrence_payload=task,
-            )
-            for event in interaction_events:
-                events.append(event.model_copy(update={"source": source}))
-            return tuple(events)
+    def _snapshot_terminal_run(self, scope: _SnapshotScope, state: TaskState) -> None:
+        context, events = scope.context, scope.events
+        terminal_source = scope.source.model_copy(update={"native_item_id": scope.task.id})
+        env = self._env_builder(context, terminal_source, scope.timestamp, scope.occurrence)
 
-        terminal_source = source.model_copy(update={"native_item_id": task.id})
-        if terminal and self._active_interaction is not None:
+        if state in _TERMINAL_STATES and self._active_interaction is not None:
             interaction_id, _ = self._active_interaction
             events.append(
                 InteractionResolved(
-                    **self._envelope(
-                        context,
-                        terminal_source,
-                        timestamp,
-                        item_id=interaction_id,
-                        event_type="interaction.resolved",
-                        part_id="interaction",
-                        occurrence=occurrence,
-                        ordinal=len(events),
-                    ),
+                    **env(interaction_id, "interaction.resolved", "interaction", len(events)),
                     interaction_id=interaction_id,
                     interaction_kind="structured_input",
                     response=StructuredInputResponse(data={"state": TaskState.Name(state)}),
                 )
             )
             self._active_interaction = None
+
+        def status_text() -> str | None:
+            if not scope.task.status.HasField("message"):
+                return None
+            return _parts_text(
+                self._normalize_nested_message(scope.task.status.message, context).parts
+            )
+
         if state == TaskState.TASK_STATE_COMPLETED:
             events.append(
                 RunCompleted(
-                    **self._envelope(
-                        context,
-                        terminal_source,
-                        timestamp,
-                        item_id=context.run_id,
-                        event_type="run.completed",
-                        part_id="run",
-                        occurrence=occurrence,
-                        ordinal=len(events),
-                    ),
+                    **env(context.run_id, "run.completed", "run", len(events)),
                     status="completed",
-                    output_refs=tuple(output_refs),
+                    output_refs=tuple(scope._output_refs),
                 )
             )
         elif state in {TaskState.TASK_STATE_FAILED, TaskState.TASK_STATE_REJECTED}:
-            status_message = (
-                self._normalize_nested_message(task.status.message, context)
-                if task.status.HasField("message")
-                else None
-            )
-            failure_message = (
-                _parts_text(status_message.parts) if status_message is not None else None
-            )
             events.append(
                 RunFailed(
-                    **self._envelope(
-                        context,
-                        terminal_source,
-                        timestamp,
-                        item_id=context.run_id,
-                        event_type="run.failed",
-                        part_id="run",
-                        occurrence=occurrence,
-                        ordinal=len(events),
-                    ),
+                    **env(context.run_id, "run.failed", "run", len(events)),
                     status="failed",
                     error=ErrorInfo(
-                        code="a2a_task_rejected"
-                        if state == TaskState.TASK_STATE_REJECTED
-                        else "a2a_task_failed",
-                        message=failure_message,
+                        code=(
+                            "a2a_task_rejected"
+                            if state == TaskState.TASK_STATE_REJECTED
+                            else "a2a_task_failed"
+                        ),
+                        message=status_text(),
                         source="a2a",
                         scope_id=context.scope_id,
                         source_ref=terminal_source,
@@ -1080,27 +1046,11 @@ class A2AEventAdapter:
                 )
             )
         elif state == TaskState.TASK_STATE_CANCELED:
-            status_message = (
-                self._normalize_nested_message(task.status.message, context)
-                if task.status.HasField("message")
-                else None
-            )
             events.append(
                 RunCanceled(
-                    **self._envelope(
-                        context,
-                        terminal_source,
-                        timestamp,
-                        item_id=context.run_id,
-                        event_type="run.canceled",
-                        part_id="run",
-                        occurrence=occurrence,
-                        ordinal=len(events),
-                    ),
+                    **env(context.run_id, "run.canceled", "run", len(events)),
                     status="canceled",
-                    reason=_parts_text(status_message.parts)
-                    if status_message is not None
-                    else None,
+                    reason=status_text(),
                 )
             )
         else:
@@ -1108,16 +1058,12 @@ class A2AEventAdapter:
                 self._run_progress_event(
                     context,
                     terminal_source,
-                    timestamp,
-                    occurrence,
+                    scope.timestamp,
+                    scope.occurrence,
                     len(events),
                     message=f"authoritative {TaskState.Name(state)} snapshot",
                 )
             )
-        if terminal:
-            self._run_interrupted = False
-            self._terminal_snapshot_fingerprint = _proto_fingerprint(task)
-        return tuple(events)
 
     def _map_message(
         self,
@@ -1136,9 +1082,7 @@ class A2AEventAdapter:
         )
         if producer_event_id is not None:
             occurrence = self._occurrence(
-                message_metadata,
-                provisional_key=f"message:{message_id}",
-                payload=message,
+                message_metadata, provisional_key=f"message:{message_id}", payload=message
             )
             if occurrence.duplicate:
                 return ()
@@ -1154,7 +1098,7 @@ class A2AEventAdapter:
         existing = self._messages.get(message_id)
         if existing is not None:
             if existing.signature != signature:
-                raise A2AMappingError(
+                _fail(
                     "message_identity_collision",
                     "message.message_id",
                     f"A2A message {message_id!r} changed after completion",
@@ -1170,10 +1114,8 @@ class A2AEventAdapter:
         item_id = self._message_item_id(context, message_id)
         parts = self._convert_parts(message, item_id)
         if not parts:
-            raise A2AMappingError(
-                "empty_message",
-                "message.parts",
-                "A2A message requires at least one supported part",
+            _fail(
+                "empty_message", "message.parts", "A2A message requires at least one supported part"
             )
         _validate_unique_parts(parts, "message.parts")
         source = self._source(
@@ -1186,30 +1128,14 @@ class A2AEventAdapter:
                 "role": Role.Name(message.role),
             },
         )
+
+        env = self._env_builder(context, source, timestamp, occurrence)
         events: list[RuntimeEvent] = []
-        if direct_response and not self._run_started:
-            events.append(
-                self._run_started_event(
-                    context,
-                    source,
-                    timestamp,
-                    occurrence,
-                    len(events),
-                )
-            )
-            self._run_started = True
+        if direct_response:
+            self._ensure_run_started(events, context, source, timestamp, occurrence)
         events.append(
             ItemStarted(
-                **self._envelope(
-                    context,
-                    source,
-                    timestamp,
-                    item_id=item_id,
-                    event_type="item.started",
-                    part_id="message",
-                    occurrence=occurrence,
-                    ordinal=0,
-                ),
+                **env(item_id, "item.started", "message", 0),
                 item_id=item_id,
                 item_kind="message",
                 phase="final_answer",
@@ -1218,16 +1144,7 @@ class A2AEventAdapter:
         for index, part in enumerate(parts, start=1):
             events.append(
                 ItemUpdated(
-                    **self._envelope(
-                        context,
-                        source,
-                        timestamp,
-                        item_id=item_id,
-                        event_type="item.updated",
-                        part_id=part.part_id,
-                        occurrence=occurrence,
-                        ordinal=index,
-                    ),
+                    **env(item_id, "item.updated", part.part_id, index),
                     item_id=item_id,
                     item_kind="message",
                     op="replace",
@@ -1236,16 +1153,7 @@ class A2AEventAdapter:
             )
         events.append(
             ItemCompleted(
-                **self._envelope(
-                    context,
-                    source,
-                    timestamp,
-                    item_id=item_id,
-                    event_type="item.completed",
-                    part_id="snapshot",
-                    occurrence=occurrence,
-                    ordinal=len(parts) + 1,
-                ),
+                **env(item_id, "item.completed", "snapshot", len(parts) + 1),
                 item_id=item_id,
                 item_kind="message",
                 snapshot=ContentSnapshot(parts=parts),
@@ -1255,16 +1163,7 @@ class A2AEventAdapter:
         if direct_response:
             events.append(
                 RunCompleted(
-                    **self._envelope(
-                        context,
-                        source,
-                        timestamp,
-                        item_id=context.run_id,
-                        event_type="run.completed",
-                        part_id="run",
-                        occurrence=occurrence,
-                        ordinal=len(parts) + 2,
-                    ),
+                    **env(context.run_id, "run.completed", "run", len(parts) + 2),
                     status="completed",
                     output_refs=(OutputRef(scope_id=context.scope_id, item_id=item_id),),
                 )
@@ -1305,12 +1204,10 @@ class A2AEventAdapter:
             part_id = stable_part_id("a2a", item_id, native_part)
             value = cast(JsonValue, MessageToDict(part.data))
             if native_kind == "tool_call":
-                call_id = _required_metadata_string(metadata, "call_id")
-                name = _required_metadata_string(metadata, "name")
                 return ToolCallContent(
                     part_id=part_id,
-                    call_id=call_id,
-                    name=name,
+                    call_id=_required_metadata_string(metadata, "call_id"),
+                    name=_required_metadata_string(metadata, "name"),
                     arguments=value,
                 )
             if native_kind == "tool_result":
@@ -1321,7 +1218,7 @@ class A2AEventAdapter:
                     is_error=bool(metadata.get("is_error", False)),
                 )
             if native_kind != "data":
-                raise A2AMappingError(
+                _fail(
                     "unknown_part_kind",
                     "part.metadata.kind",
                     f"unsupported A2A data part kind {native_kind!r}",
@@ -1346,7 +1243,7 @@ class A2AEventAdapter:
                 uri=part.url if content_kind == "url" else None,
                 data=data,
             )
-        raise A2AMappingError(
+        _fail(
             "empty_part",
             "parts",
             f"A2A part at index {index} has no supported payload",
@@ -1366,7 +1263,7 @@ class A2AEventAdapter:
             previous = self._seen_occurrences.get(native_event_id)
             if previous is not None:
                 if previous != fingerprint:
-                    raise A2AMappingError(
+                    _fail(
                         "producer_event_id_collision",
                         "metadata.event_id",
                         f"A2A producer event_id {native_event_id!r} changed payload",
@@ -1441,7 +1338,7 @@ class A2AEventAdapter:
         native_task = _required_string(task_id, "task_id")
         expected_task = _required_string(context.task_id, "task_id")
         if native_context != context.context_id or native_task != expected_task:
-            raise A2AMappingError(
+            _fail(
                 "scope_identity_mismatch",
                 "context_id/task_id",
                 "A2A event identity does not match adapter context",
@@ -1454,20 +1351,20 @@ class A2AEventAdapter:
     ) -> None:
         native_context = _required_string(message.context_id, "message.context_id")
         if native_context != context.context_id:
-            raise A2AMappingError(
+            _fail(
                 "scope_identity_mismatch",
                 "message.context_id",
                 "A2A Message context_id does not match adapter context",
             )
         if context.task_id is None:
             if message.task_id:
-                raise A2AMappingError(
+                _fail(
                     "scope_identity_mismatch",
                     "message.task_id",
                     "taskless A2A direct Message must not introduce a task_id",
                 )
         elif message.task_id and message.task_id != context.task_id:
-            raise A2AMappingError(
+            _fail(
                 "scope_identity_mismatch",
                 "message.task_id",
                 "A2A Message task_id does not match adapter context",
@@ -1476,33 +1373,18 @@ class A2AEventAdapter:
     @staticmethod
     def _message_item_id(context: A2AAdapterContext, message_id: str) -> str:
         if context.task_id is not None:
-            return stable_item_id(
-                "a2a",
-                context.context_id,
-                context.task_id,
-                "message",
-                message_id,
-            )
-        return stable_item_id(
-            "a2a",
-            context.context_id,
-            "message",
-            message_id,
-        )
+            return stable_item_id("a2a", context.context_id, context.task_id, "message", message_id)
+        return stable_item_id("a2a", context.context_id, "message", message_id)
 
     @staticmethod
     def _require_task_status(task: Task) -> None:
         if not task.HasField("status"):
-            raise A2AMappingError(
-                "missing_task_status",
-                "Task.status",
-                "A2A Task.status is required",
-            )
+            _fail("missing_task_status", "Task.status", "A2A Task.status is required")
 
     @staticmethod
     def _require_agent_message(message: Message, *, field_name: str) -> None:
         if message.role != Role.ROLE_AGENT:
-            raise A2AMappingError(
+            _fail(
                 "unexpected_message_role",
                 field_name,
                 "A2A output Message.role must be ROLE_AGENT",
@@ -1514,13 +1396,13 @@ class A2AEventAdapter:
         context: A2AAdapterContext,
     ) -> Message:
         if message.context_id and message.context_id != context.context_id:
-            raise A2AMappingError(
+            _fail(
                 "nested_message_identity_mismatch",
                 "Task Message.context_id",
                 "nested A2A Message context_id does not match outer Task",
             )
         if message.task_id and message.task_id != context.task_id:
-            raise A2AMappingError(
+            _fail(
                 "nested_message_identity_mismatch",
                 "Task Message.task_id",
                 "nested A2A Message task_id does not match outer Task",
@@ -1569,19 +1451,8 @@ class A2AEventAdapter:
         occurrence: _Occurrence,
         ordinal: int,
     ) -> RunStarted:
-        return RunStarted(
-            **self._envelope(
-                context,
-                source,
-                timestamp,
-                item_id=context.run_id,
-                event_type="run.started",
-                part_id="run",
-                occurrence=occurrence,
-                ordinal=ordinal,
-            ),
-            status="running",
-        )
+        env = self._env_builder(context, source, timestamp, occurrence)
+        return RunStarted(**env(context.run_id, "run.started", "run", ordinal), status="running")
 
     def _run_progress_event(
         self,
@@ -1593,17 +1464,9 @@ class A2AEventAdapter:
         *,
         message: str,
     ) -> RunProgress:
+        env = self._env_builder(context, source, timestamp, occurrence)
         return RunProgress(
-            **self._envelope(
-                context,
-                source,
-                timestamp,
-                item_id=context.run_id,
-                event_type="run.progress",
-                part_id="run",
-                occurrence=occurrence,
-                ordinal=ordinal,
-            ),
+            **env(context.run_id, "run.progress", "run", ordinal),
             status="running",
             message=message,
         )
@@ -1658,18 +1521,10 @@ class A2AEventAdapter:
         )
 
 
-_TERMINAL_STATES = {
-    TaskState.TASK_STATE_COMPLETED,
-    TaskState.TASK_STATE_FAILED,
-    TaskState.TASK_STATE_CANCELED,
-    TaskState.TASK_STATE_REJECTED,
-}
-
-
 def _proto_fingerprint(value: object) -> str:
     serialize = getattr(value, "SerializeToString", None)
     if not callable(serialize):
-        raise A2AMappingError(
+        _fail(
             "invalid_protobuf_payload",
             "event",
             "A2A occurrence payload must be a protobuf message",
@@ -1682,7 +1537,7 @@ def _validate_unique_parts(parts: tuple[ContentValue, ...], field_name: str) -> 
     seen: set[str] = set()
     for part in parts:
         if part.part_id in seen:
-            raise A2AMappingError(
+            _fail(
                 "duplicate_part_id",
                 field_name,
                 f"A2A snapshot contains duplicate part_id {part.part_id!r}",
@@ -1715,7 +1570,7 @@ def _optional_metadata_string(
 def _required_metadata_string(metadata: Mapping[str, JsonValue], key: str) -> str:
     value = _optional_metadata_string(metadata, key)
     if value is None:
-        raise A2AMappingError(
+        _fail(
             "missing_part_metadata",
             f"part.metadata.{key}",
             f"A2A typed part requires metadata {key!r}",
@@ -1726,7 +1581,7 @@ def _required_metadata_string(metadata: Mapping[str, JsonValue], key: str) -> st
 def _required_string(value: object, field_name: str) -> str:
     text = str(value or "").strip()
     if not text:
-        raise A2AMappingError(
+        _fail(
             "missing_native_identity",
             field_name,
             f"A2A {field_name} must be non-empty",
@@ -1746,10 +1601,10 @@ def _parts_text(parts: Any) -> str:
 
 def _timestamp(value: float) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise A2AMappingError("invalid_timestamp", "timestamp", "timestamp must be finite")
+        _fail("invalid_timestamp", "timestamp", "timestamp must be finite")
     result = float(value)
     if not math.isfinite(result):
-        raise A2AMappingError("invalid_timestamp", "timestamp", "timestamp must be finite")
+        _fail("invalid_timestamp", "timestamp", "timestamp must be finite")
     return result
 
 
