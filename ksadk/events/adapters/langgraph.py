@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal, cast
+from typing import Any, Literal, NoReturn, cast
 
 from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.stream import AsyncGraphRunStream
@@ -40,6 +40,21 @@ from ksadk.events.identity import (
     stable_part_id,
     stable_scope_id,
 )
+
+# Native content-block types that carry a tool call identity.
+_TOOL_CALL_BLOCKS = frozenset(
+    "tool_call tool_call_chunk server_tool_call server_tool_call_chunk".split()
+)
+# Native tool-call delta shapes accepted without a payload translation.
+_TOOL_DELTA_TYPES = frozenset(
+    "tool_call tool_call_chunk tool_call-delta server_tool_call server_tool_call_chunk".split()
+)
+# Lifecycle native types that close the nested scope without a run-progress event.
+_LIFECYCLE_QUIET_TYPES = frozenset({"interrupted"})
+
+
+def _fail(code: str, field_name: str, message: str) -> NoReturn:
+    raise LangGraphMappingError(code, field_name, message)
 
 
 class LangGraphMappingError(ValueError):
@@ -81,6 +96,19 @@ class LangGraphAdapterContext:
         value = self._next_seq
         self._next_seq += 1
         return value
+
+
+@dataclass
+class _Frame:
+    """Per-ProtocolEvent routing facts shared by all method lanes."""
+
+    namespace: tuple[str, ...]
+    scope_id: str
+    parent_scope_id: str | None
+    source_seq: int
+    native_event_id: str | None
+    occurrence_key: str
+    timestamp: float
 
 
 @dataclass
@@ -146,18 +174,14 @@ class LangGraphEventAdapter:
                 open_calls = ", ".join(sorted(state.call_id for state in self._tools.values()))
                 open_scopes = ", ".join(sorted(self._lifecycles))
                 if self._messages and not self._tools and not self._lifecycles:
-                    code = "open_messages_at_stream_end"
-                    field_name = "messages metadata.run_id"
+                    code, field_name = "open_messages_at_stream_end", "messages metadata.run_id"
                 elif self._tools and not self._messages and not self._lifecycles:
-                    code = "open_tools_at_stream_end"
-                    field_name = "tools tool_call_id"
+                    code, field_name = "open_tools_at_stream_end", "tools tool_call_id"
                 elif self._lifecycles and not self._messages and not self._tools:
-                    code = "open_lifecycle_at_stream_end"
-                    field_name = "lifecycle namespace"
+                    code, field_name = "open_lifecycle_at_stream_end", "lifecycle namespace"
                 else:
-                    code = "open_items_at_stream_end"
-                    field_name = "ProtocolEvent"
-                raise LangGraphMappingError(
+                    code, field_name = "open_items_at_stream_end", "ProtocolEvent"
+                _fail(
                     code,
                     field_name,
                     "LangGraph stream ended with open native items: "
@@ -176,7 +200,7 @@ class LangGraphEventAdapter:
 
         event = _mapping(raw_event, "ProtocolEvent")
         if event.get("type") != "event":
-            raise LangGraphMappingError(
+            _fail(
                 "invalid_protocol_event",
                 "type",
                 "LangGraph ProtocolEvent.type must be 'event'",
@@ -184,59 +208,36 @@ class LangGraphEventAdapter:
         method = _required_string(event.get("method"), "ProtocolEvent.method")
         params = _mapping(event.get("params"), "ProtocolEvent.params")
         namespace = _namespace(params.get("namespace"))
-        scope_id = _scope_id(context.graph_run_id, namespace)
-        parent_scope_id = _parent_scope_id(context.graph_run_id, namespace)
         source_seq = _source_seq(event.get("seq"))
         native_event_id = _optional_string(event.get("event_id"))
-        timestamp = _protocol_timestamp(params.get("timestamp"))
-        occurrence_key = native_event_id or f"seq:{source_seq}"
-
-        if method == "messages":
-            return self._map_message_event(
-                params=params,
-                context=context,
-                namespace=namespace,
-                scope_id=scope_id,
-                parent_scope_id=parent_scope_id,
-                source_seq=source_seq,
-                native_event_id=native_event_id,
-                occurrence_key=occurrence_key,
-                timestamp=timestamp,
-            )
-
-        if method == "tools":
-            return self._map_tool_event(
-                params=params,
-                context=context,
-                namespace=namespace,
-                scope_id=scope_id,
-                parent_scope_id=parent_scope_id,
-                source_seq=source_seq,
-                native_event_id=native_event_id,
-                occurrence_key=occurrence_key,
-                timestamp=timestamp,
-            )
-
-        if method == "lifecycle":
-            return self._map_lifecycle_event(
-                params=params,
-                context=context,
-                emitter_namespace=namespace,
-                source_seq=source_seq,
-                native_event_id=native_event_id,
-                occurrence_key=occurrence_key,
-                timestamp=timestamp,
-            )
-
-        source = _protocol_source(
-            context=context,
-            method=method,
+        frame = _Frame(
             namespace=namespace,
+            scope_id=_scope_id(context.graph_run_id, namespace),
+            parent_scope_id=_parent_scope_id(context.graph_run_id, namespace),
             source_seq=source_seq,
             native_event_id=native_event_id,
+            occurrence_key=native_event_id or f"seq:{source_seq}",
+            timestamp=_protocol_timestamp(params.get("timestamp")),
+        )
+
+        method_lane = {
+            "messages": self._map_message_event,
+            "tools": self._map_tool_event,
+            "lifecycle": self._map_lifecycle_event,
+        }.get(method)
+        if method_lane is not None:
+            return method_lane(params=params, context=context, frame=frame)
+
+        source = _source_ref(
+            channel=method,
+            native_run_id=context.graph_run_id,
+            native_item_id=None,
+            source_seq=source_seq,
+            native_event_id=native_event_id,
+            extra={"namespace": list(namespace)},
         )
         if "data" not in params:
-            raise LangGraphMappingError(
+            _fail(
                 "missing_protocol_data",
                 "ProtocolEvent.params.data",
                 f"LangGraph {method} event requires params.data",
@@ -244,24 +245,10 @@ class LangGraphEventAdapter:
         interrupts = params.get("interrupts", ())
         if method == "values" and interrupts:
             return self._map_interrupt(
-                context=context,
-                scope_id=scope_id,
-                parent_scope_id=parent_scope_id,
-                source=source,
-                timestamp=timestamp,
-                occurrence_key=occurrence_key,
-                interrupts=interrupts,
+                context=context, frame=frame, source=source, interrupts=interrupts
             )
         return _map_data_channel(
-            context=context,
-            scope_id=scope_id,
-            parent_scope_id=parent_scope_id,
-            method=method,
-            source_seq=source_seq,
-            source=source,
-            timestamp=timestamp,
-            occurrence_key=occurrence_key,
-            value=params["data"],
+            context=context, frame=frame, method=method, source=source, value=params["data"]
         )
 
     def _map_lifecycle_event(
@@ -269,17 +256,14 @@ class LangGraphEventAdapter:
         *,
         params: Mapping[str, Any],
         context: LangGraphAdapterContext,
-        emitter_namespace: tuple[str, ...],
-        source_seq: int,
-        native_event_id: str | None,
-        occurrence_key: str,
-        timestamp: float,
+        frame: _Frame,
     ) -> tuple[RuntimeEvent, ...]:
+        env = _envelope(context, frame.occurrence_key, frame.timestamp)
         payload = _mapping(params.get("data"), "lifecycle data")
         native_type = _required_string(payload.get("event"), "lifecycle event")
         target_namespace = _namespace(payload.get("namespace"))
         if not target_namespace:
-            raise LangGraphMappingError(
+            _fail(
                 "unsupported_root_lifecycle",
                 "lifecycle namespace",
                 "LangGraph v3 lifecycle events must identify a nested target scope",
@@ -287,26 +271,30 @@ class LangGraphEventAdapter:
         scope_id = _scope_id(context.graph_run_id, target_namespace)
         parent_scope_id = _parent_scope_id(context.graph_run_id, target_namespace)
         item_id = stable_item_id(
-            "langgraph",
-            scope_id,
-            "lifecycle",
-            _namespace_identity(target_namespace),
+            "langgraph", scope_id, "lifecycle", _namespace_identity(target_namespace)
         )
-        source = _lifecycle_source(
-            context=context,
-            emitter_namespace=emitter_namespace,
-            target_namespace=target_namespace,
-            source_seq=source_seq,
-            native_event_id=native_event_id,
+        source = _source_ref(
+            channel="lifecycle",
+            native_run_id=context.graph_run_id,
+            native_item_id=target_namespace[-1],
+            source_seq=frame.source_seq,
+            native_event_id=frame.native_event_id,
+            extra={
+                "emitter_namespace": list(frame.namespace),
+                "target_namespace": list(target_namespace),
+            },
         )
         part = DataContent(
             part_id=_part_id(item_id, "lifecycle-status"),
             data=_json_value(payload),
         )
+        envelope = lambda event_type: env(  # noqa: E731
+            scope_id, parent_scope_id, item_id, event_type, part.part_id, source
+        )
 
         if native_type == "started":
             if scope_id in self._lifecycles:
-                raise LangGraphMappingError(
+                _fail(
                     "lifecycle_already_started",
                     "lifecycle namespace",
                     "LangGraph nested lifecycle started twice",
@@ -319,26 +307,13 @@ class LangGraphEventAdapter:
             )
             self._lifecycles[scope_id] = start_state
             return (
-                _lifecycle_progress(
-                    native_type=native_type,
-                    context=context,
-                    state=start_state,
-                    occurrence_key=occurrence_key,
-                    source=source,
-                    timestamp=timestamp,
+                RunProgress(
+                    **envelope("run.progress"),
+                    status="running",
+                    message=f"LangGraph subgraph {native_type}",
                 ),
                 ItemStarted(
-                    **_envelope(
-                        context=context,
-                        scope_id=scope_id,
-                        parent_scope_id=parent_scope_id,
-                        item_id=item_id,
-                        event_type="item.started",
-                        part_id=part.part_id,
-                        occurrence_key=occurrence_key,
-                        source=source,
-                        timestamp=timestamp,
-                    ),
+                    **envelope("item.started"),
                     item_id=item_id,
                     item_kind="status",
                     phase="commentary",
@@ -348,7 +323,7 @@ class LangGraphEventAdapter:
 
         terminal_state = self._lifecycles.get(scope_id)
         if terminal_state is None:
-            raise LangGraphMappingError(
+            _fail(
                 "lifecycle_not_started",
                 "lifecycle namespace",
                 "LangGraph nested lifecycle terminated before started",
@@ -358,17 +333,7 @@ class LangGraphEventAdapter:
             message = str(payload.get("error") or "LangGraph subgraph failed")
             return (
                 ItemFailed(
-                    **_envelope(
-                        context=context,
-                        scope_id=scope_id,
-                        parent_scope_id=parent_scope_id,
-                        item_id=item_id,
-                        event_type="item.failed",
-                        part_id=part.part_id,
-                        occurrence_key=occurrence_key,
-                        source=source,
-                        timestamp=timestamp,
-                    ),
+                    **envelope("item.failed"),
                     item_id=item_id,
                     item_kind="status",
                     error=ErrorInfo(
@@ -382,36 +347,23 @@ class LangGraphEventAdapter:
                 ),
             )
         if native_type not in {"completed", "interrupted", "drained"}:
-            raise LangGraphMappingError(
+            _fail(
                 "unsupported_lifecycle_event",
                 "lifecycle event",
                 f"Unsupported LangGraph lifecycle event: {native_type}",
             )
         del self._lifecycles[scope_id]
         progress = (
-            _lifecycle_progress(
-                native_type=native_type,
-                context=context,
-                state=terminal_state,
-                occurrence_key=occurrence_key,
-                source=source,
-                timestamp=timestamp,
+            RunProgress(
+                **envelope("run.progress"),
+                status="running",
+                message=f"LangGraph subgraph {native_type}",
             )
-            if native_type in {"completed", "drained"}
+            if native_type not in _LIFECYCLE_QUIET_TYPES
             else None
         )
         completed = ItemCompleted(
-            **_envelope(
-                context=context,
-                scope_id=scope_id,
-                parent_scope_id=parent_scope_id,
-                item_id=item_id,
-                event_type="item.completed",
-                part_id=part.part_id,
-                occurrence_key=occurrence_key,
-                source=source,
-                timestamp=timestamp,
-            ),
+            **envelope("item.completed"),
             item_id=item_id,
             item_kind="status",
             snapshot=ContentSnapshot(parts=(part,)),
@@ -425,54 +377,46 @@ class LangGraphEventAdapter:
         *,
         params: Mapping[str, Any],
         context: LangGraphAdapterContext,
-        namespace: tuple[str, ...],
-        scope_id: str,
-        parent_scope_id: str | None,
-        source_seq: int,
-        native_event_id: str | None,
-        occurrence_key: str,
-        timestamp: float,
+        frame: _Frame,
     ) -> tuple[RuntimeEvent, ...]:
+        env = _envelope(context, frame.occurrence_key, frame.timestamp)
         payload = _mapping(params.get("data"), "tools data")
         native_type = _required_string(payload.get("event"), "tools event")
         call_id = _required_string(payload.get("tool_call_id"), "tools tool_call_id")
-        state_key = (scope_id, call_id)
-        source = _tool_source(
-            context=context,
-            namespace=namespace,
-            call_id=call_id,
-            source_seq=source_seq,
-            native_event_id=native_event_id,
+        state_key = (frame.scope_id, call_id)
+        source = _source_ref(
+            channel="tools",
+            native_run_id=context.graph_run_id,
+            native_item_id=call_id,
+            source_seq=frame.source_seq,
+            native_event_id=frame.native_event_id,
+            extra={"namespace": list(frame.namespace)},
         )
-
         if native_type == "tool-started":
             if state_key in self._tools:
-                raise LangGraphMappingError(
+                _fail(
                     "tool_already_started",
                     "tools tool_call_id",
                     f"LangGraph tool call {call_id!r} started twice",
                 )
             name = _required_string(payload.get("tool_name"), "tools tool_name")
-            item_id = stable_item_id("langgraph", scope_id, "tool_result", call_id)
+            item_id = stable_item_id("langgraph", frame.scope_id, "tool_result", call_id)
             self._tools[state_key] = _ToolState(
-                scope_id=scope_id,
-                parent_scope_id=parent_scope_id,
+                scope_id=frame.scope_id,
+                parent_scope_id=frame.parent_scope_id,
                 call_id=call_id,
                 name=name,
                 item_id=item_id,
             )
             return (
                 ItemStarted(
-                    **_envelope(
-                        context=context,
-                        scope_id=scope_id,
-                        parent_scope_id=parent_scope_id,
-                        item_id=item_id,
-                        event_type="item.started",
-                        part_id="tool-result",
-                        occurrence_key=occurrence_key,
-                        source=source,
-                        timestamp=timestamp,
+                    **env(
+                        frame.scope_id,
+                        frame.parent_scope_id,
+                        item_id,
+                        "item.started",
+                        "tool-result",
+                        source,
                     ),
                     item_id=item_id,
                     item_kind="tool_result",
@@ -482,11 +426,15 @@ class LangGraphEventAdapter:
 
         state = self._tools.get(state_key)
         if state is None:
-            raise LangGraphMappingError(
+            _fail(
                 "tool_not_started",
                 "tools tool_call_id",
                 f"LangGraph tool call {call_id!r} mutated before tool-started",
             )
+        envelope = lambda event_type, part_id: env(  # noqa: E731
+            frame.scope_id, frame.parent_scope_id, state.item_id, event_type, part_id, source
+        )
+
         if native_type == "tool-output-delta":
             part = DataContent(
                 part_id=_part_id(state.item_id, "tool-output-deltas"),
@@ -494,17 +442,7 @@ class LangGraphEventAdapter:
             )
             return (
                 ItemUpdated(
-                    **_envelope(
-                        context=context,
-                        scope_id=scope_id,
-                        parent_scope_id=parent_scope_id,
-                        item_id=state.item_id,
-                        event_type="item.updated",
-                        part_id=part.part_id,
-                        occurrence_key=occurrence_key,
-                        source=source,
-                        timestamp=timestamp,
-                    ),
+                    **envelope("item.updated", part.part_id),
                     item_id=state.item_id,
                     item_kind="tool_result",
                     op="append",
@@ -524,17 +462,7 @@ class LangGraphEventAdapter:
             del self._tools[state_key]
             return (
                 ItemCompleted(
-                    **_envelope(
-                        context=context,
-                        scope_id=scope_id,
-                        parent_scope_id=parent_scope_id,
-                        item_id=state.item_id,
-                        event_type="item.completed",
-                        part_id=result.part_id,
-                        occurrence_key=occurrence_key,
-                        source=source,
-                        timestamp=timestamp,
-                    ),
+                    **envelope("item.completed", result.part_id),
                     item_id=state.item_id,
                     item_kind="tool_result",
                     snapshot=ContentSnapshot(parts=(result,)),
@@ -545,30 +473,20 @@ class LangGraphEventAdapter:
             message = str(payload.get("message") or "LangGraph tool call failed")
             return (
                 ItemFailed(
-                    **_envelope(
-                        context=context,
-                        scope_id=scope_id,
-                        parent_scope_id=parent_scope_id,
-                        item_id=state.item_id,
-                        event_type="item.failed",
-                        part_id="tool-result",
-                        occurrence_key=occurrence_key,
-                        source=source,
-                        timestamp=timestamp,
-                    ),
+                    **envelope("item.failed", "tool-result"),
                     item_id=state.item_id,
                     item_kind="tool_result",
                     error=ErrorInfo(
                         code="langgraph_tool_error",
                         message=message,
                         source="langgraph",
-                        scope_id=scope_id,
+                        scope_id=frame.scope_id,
                         item_id=state.item_id,
                         source_ref=source,
                     ),
                 ),
             )
-        raise LangGraphMappingError(
+        _fail(
             "unsupported_tools_event",
             "tools event",
             f"Unsupported LangGraph tools event: {native_type}",
@@ -579,13 +497,7 @@ class LangGraphEventAdapter:
         *,
         params: Mapping[str, Any],
         context: LangGraphAdapterContext,
-        namespace: tuple[str, ...],
-        scope_id: str,
-        parent_scope_id: str | None,
-        source_seq: int,
-        native_event_id: str | None,
-        occurrence_key: str,
-        timestamp: float,
+        frame: _Frame,
     ) -> tuple[RuntimeEvent, ...]:
         payload, metadata = _message_data(params.get("data"))
         node = _required_string(metadata.get("langgraph_node"), "messages metadata.langgraph_node")
@@ -594,277 +506,194 @@ class LangGraphEventAdapter:
                 payload=payload,
                 metadata=metadata,
                 context=context,
-                namespace=namespace,
-                scope_id=scope_id,
-                parent_scope_id=parent_scope_id,
-                source_seq=source_seq,
-                native_event_id=native_event_id,
-                occurrence_key=occurrence_key,
-                timestamp=timestamp,
+                frame=frame,
                 node=node,
             )
 
         payload = _mapping(payload, "params.data[0]")
         native_type = _required_string(payload.get("event"), "MessagesData.event")
         llm_run_id = _required_string(metadata.get("run_id"), "messages metadata.run_id")
-        state_key = (scope_id, llm_run_id)
+        state_key = (frame.scope_id, llm_run_id)
 
         if native_type == "message-start":
             message_id = _required_string(payload.get("id"), "message-start.id")
             if state_key in self._messages:
-                raise LangGraphMappingError(
+                _fail(
                     "message_already_started",
                     "messages metadata.run_id",
                     "LangGraph LLM run emitted a second message-start",
                 )
-            start_state = _MessageState(
-                scope_id=scope_id,
-                parent_scope_id=parent_scope_id,
+            self._messages[state_key] = _MessageState(
+                scope_id=frame.scope_id,
+                parent_scope_id=frame.parent_scope_id,
                 llm_run_id=llm_run_id,
                 message_id=message_id,
                 node=node,
             )
-            self._messages[state_key] = start_state
             return ()
 
         state = self._messages.get(state_key)
         if state is None:
-            raise LangGraphMappingError(
+            _fail(
                 "message_not_started",
                 "messages metadata.run_id",
                 "LangGraph message mutation arrived before message-start",
             )
         if state.node != node:
-            raise LangGraphMappingError(
+            _fail(
                 "conflicting_message_node",
                 "messages metadata.langgraph_node",
                 "LangGraph LLM run changed node during one message",
             )
-        source = _message_source(
-            context=context,
-            namespace=namespace,
-            state=state,
-            source_seq=source_seq,
-            native_event_id=native_event_id,
+        source = _source_ref(
+            channel="messages",
+            native_run_id=state.llm_run_id,
+            native_item_id=state.message_id,
+            source_seq=frame.source_seq,
+            native_event_id=frame.native_event_id,
+            extra={
+                "graph_run_id": context.graph_run_id,
+                "namespace": list(frame.namespace),
+                "node": state.node,
+            },
+        )
+        env = _envelope(context, frame.occurrence_key, frame.timestamp)
+        lane_env = lambda lane, event_type, part_id, ordinal=0: env(  # noqa: E731
+            state.scope_id,
+            state.parent_scope_id,
+            lane.item_id,
+            event_type,
+            part_id,
+            _lane_source(source, lane),
+            ordinal,
         )
 
-        if native_type in {
-            "content-block-start",
-            "content-block-delta",
-            "content-block-finish",
-        }:
-            index = _block_index(payload.get("index"))
-            if native_type == "content-block-start":
-                content = _mapping(payload.get("content"), "content-block-start.content")
-                lane, created = _lane_for_content(state, index, content)
-                lane_source = _lane_source(source, lane)
-                emitted: list[RuntimeEvent] = []
-                if created:
-                    emitted.append(
-                        _lane_started(
-                            lane=lane,
-                            context=context,
-                            state=state,
-                            occurrence_key=occurrence_key,
-                            source=lane_source,
-                            timestamp=timestamp,
-                        )
-                    )
-                if lane.item_kind in {"tool_call", "tool_result"}:
-                    return tuple(emitted)
-                update = _text_block_snapshot(lane.item_id, index, content)
-                lane.parts[index] = update
-                emitted.append(
-                    _lane_updated(
-                        lane=lane,
-                        state=state,
-                        context=context,
-                        update=update,
-                        op="replace",
-                        occurrence_key=occurrence_key,
-                        source=lane_source,
-                        timestamp=timestamp,
-                        ordinal=index,
-                    )
-                )
-                return tuple(emitted)
-
-            if index in state.finished_blocks:
-                raise LangGraphMappingError(
-                    "content_block_already_finished",
-                    f"{native_type}.index",
-                    f"LangGraph content block {index} mutated after native completion",
-                )
-            lane = _lane_for_index(state, index)
-            lane_source = _lane_source(source, lane)
-            if native_type == "content-block-delta":
-                delta = _mapping(payload.get("delta"), "content-block-delta.delta")
-                if lane.item_kind == "tool_call":
-                    _validate_tool_delta(delta)
-                    return ()
-                update = _text_block_delta(lane.item_id, index, delta, lane.item_kind)
-                return (
-                    _lane_updated(
-                        lane=lane,
-                        state=state,
-                        context=context,
-                        update=update,
-                        op="append",
-                        occurrence_key=occurrence_key,
-                        source=lane_source,
-                        timestamp=timestamp,
-                        ordinal=index,
-                    ),
-                )
-
-            content = _mapping(payload.get("content"), "content-block-finish.content")
-            if lane.item_kind == "tool_call":
-                tool_content = _tool_call_snapshot(lane.item_id, index, content)
-                lane.parts[index] = tool_content
-                lane.completed = True
-                state.finished_blocks.add(index)
-                return (
-                    _lane_completed(
-                        lane=lane,
-                        state=state,
-                        context=context,
-                        occurrence_key=occurrence_key,
-                        source=lane_source,
-                        timestamp=timestamp,
-                    ),
-                )
-            if lane.item_kind == "tool_result":
-                result_content = _server_tool_result_snapshot(lane.item_id, index, content)
-                lane.parts[index] = result_content
-                lane.completed = True
-                state.finished_blocks.add(index)
-                return (
-                    _lane_completed(
-                        lane=lane,
-                        state=state,
-                        context=context,
-                        occurrence_key=occurrence_key,
-                        source=lane_source,
-                        timestamp=timestamp,
-                    ),
-                )
-            update = _text_block_snapshot(lane.item_id, index, content)
-            lane.parts[index] = update
-            state.finished_blocks.add(index)
-            return (
-                _lane_updated(
-                    lane=lane,
-                    state=state,
-                    context=context,
-                    update=update,
-                    op="replace",
-                    occurrence_key=occurrence_key,
-                    source=lane_source,
-                    timestamp=timestamp,
-                    ordinal=index,
-                ),
+        if native_type in {"content-block-start", "content-block-delta", "content-block-finish"}:
+            return self._map_content_block_event(
+                payload=payload,
+                native_type=native_type,
+                state=state,
+                lane_env=lane_env,
+                source=source,
             )
 
         if native_type == "message-finish":
             unfinished_blocks = sorted(set(state.block_lanes).difference(state.finished_blocks))
             if unfinished_blocks:
-                raise LangGraphMappingError(
+                _fail(
                     "incomplete_content_block",
                     "content-block-finish",
                     "LangGraph message finished before native block completion: "
                     f"{unfinished_blocks}",
                 )
+            del self._messages[state_key]
             if not state.lanes:
                 lane = _new_lane(state, "message", state.message_id)
                 state.lanes["message"] = lane
-                started = _lane_started(
-                    lane=lane,
-                    context=context,
-                    state=state,
-                    occurrence_key=occurrence_key,
-                    source=source,
-                    timestamp=timestamp,
+                return (
+                    _lane_started(lane_env, lane),
+                    _lane_completed(lane_env, lane),
                 )
-                completed = _lane_completed(
-                    lane=lane,
-                    context=context,
-                    state=state,
-                    occurrence_key=occurrence_key,
-                    source=source,
-                    timestamp=timestamp,
-                )
-                del self._messages[state_key]
-                return (started, completed)
-
             completed_events: list[RuntimeEvent] = []
             for lane in state.lanes.values():
                 if lane.completed:
                     continue
                 lane.completed = True
-                completed_events.append(
-                    _lane_completed(
-                        lane=lane,
-                        context=context,
-                        state=state,
-                        occurrence_key=occurrence_key,
-                        source=_lane_source(source, lane),
-                        timestamp=timestamp,
-                    )
-                )
-            del self._messages[state_key]
+                completed_events.append(_lane_completed(lane_env, lane))
             return tuple(completed_events)
 
         if native_type == "error":
             del self._messages[state_key]
-            raise LangGraphMappingError(
+            _fail(
                 "message_stream_error",
                 "MessagesData.message",
                 str(payload.get("message") or "LangGraph message stream failed"),
             )
-        raise LangGraphMappingError(
+        _fail(
             "unsupported_messages_event",
             "MessagesData.event",
             f"Unsupported LangGraph MessagesData event: {native_type}",
         )
 
+    def _map_content_block_event(
+        self,
+        *,
+        payload: Mapping[str, Any],
+        native_type: str,
+        state: _MessageState,
+        lane_env: Callable[..., dict[str, Any]],
+        source: SourceRef,
+    ) -> tuple[RuntimeEvent, ...]:
+        index = _block_index(payload.get("index"))
+        if native_type == "content-block-start":
+            content = _mapping(payload.get("content"), "content-block-start.content")
+            lane, created = _lane_for_content(state, index, content)
+            emitted: list[RuntimeEvent] = []
+            if created:
+                emitted.append(_lane_started(lane_env, lane))
+            if lane.item_kind in {"tool_call", "tool_result"}:
+                return tuple(emitted)
+            update = _text_block_snapshot(lane.item_id, index, content)
+            lane.parts[index] = update
+            emitted.append(_lane_updated(lane_env, lane, update, "replace", index))
+            return tuple(emitted)
+
+        if index in state.finished_blocks:
+            _fail(
+                "content_block_already_finished",
+                f"{native_type}.index",
+                f"LangGraph content block {index} mutated after native completion",
+            )
+        lane = _lane_for_index(state, index)
+        if native_type == "content-block-delta":
+            delta = _mapping(payload.get("delta"), "content-block-delta.delta")
+            if lane.item_kind == "tool_call":
+                _validate_tool_delta(delta)
+                return ()
+            update = _text_block_delta(lane.item_id, index, delta, lane.item_kind)
+            return (_lane_updated(lane_env, lane, update, "append", index),)
+
+        content = _mapping(payload.get("content"), "content-block-finish.content")
+        if lane.item_kind in {"tool_call", "tool_result"}:
+            if lane.item_kind == "tool_call":
+                lane.parts[index] = _tool_call_snapshot(lane.item_id, index, content)
+            else:
+                lane.parts[index] = _server_tool_result_snapshot(lane.item_id, index, content)
+            lane.completed = True
+            state.finished_blocks.add(index)
+            return (_lane_completed(lane_env, lane),)
+        update = _text_block_snapshot(lane.item_id, index, content)
+        lane.parts[index] = update
+        state.finished_blocks.add(index)
+        return (_lane_updated(lane_env, lane, update, "replace", index),)
+
     def _map_interrupt(
         self,
         *,
         context: LangGraphAdapterContext,
-        scope_id: str,
-        parent_scope_id: str | None,
+        frame: _Frame,
         source: SourceRef,
-        timestamp: float,
-        occurrence_key: str,
         interrupts: Any,
     ) -> tuple[RuntimeEvent, ...]:
+        env = _envelope(context, frame.occurrence_key, frame.timestamp)
         reason = _interrupt_reason(interrupts)
         # Emit InteractionRequested events for each interrupt so downstream
         # consumers (e.g. agui agent) can track pending approvals before
         # RunInterrupted arrives.
         interaction_events = self._interaction_events_from_interrupts(
-            context=context,
-            scope_id=scope_id,
-            parent_scope_id=parent_scope_id,
-            source=source,
-            timestamp=timestamp,
-            occurrence_key=occurrence_key,
-            interrupts=interrupts,
+            context=context, frame=frame, source=source, env=env, interrupts=interrupts
         )
         if context.checkpoint_ref is None:
             return (
                 *interaction_events,
                 RunInterrupted(
-                    **_envelope(
-                        context=context,
-                        scope_id=scope_id,
-                        parent_scope_id=parent_scope_id,
-                        item_id=context.graph_run_id,
-                        event_type="run.interrupted",
-                        part_id="run",
-                        occurrence_key=occurrence_key,
-                        source=source,
-                        timestamp=timestamp,
+                    **env(
+                        frame.scope_id,
+                        frame.parent_scope_id,
+                        context.graph_run_id,
+                        "run.interrupted",
+                        "run",
+                        source,
                     ),
                     status="interrupted",
                     reason=reason,
@@ -875,7 +704,7 @@ class LangGraphEventAdapter:
         thread_id = _required_string(checkpoint.get("thread_id"), "checkpoint.thread_id")
         checkpoint_ns = checkpoint.get("checkpoint_ns")
         if not isinstance(checkpoint_ns, str):
-            raise LangGraphMappingError(
+            _fail(
                 "invalid_checkpoint_ref",
                 "checkpoint.checkpoint_ns",
                 "LangGraph checkpoint_ns must be a string; empty root namespace is valid",
@@ -885,7 +714,7 @@ class LangGraphEventAdapter:
         )
         continuation_id = stable_item_id(
             "langgraph",
-            scope_id,
+            frame.scope_id,
             "continuation",
             "graph-checkpoint",
             thread_id,
@@ -894,16 +723,13 @@ class LangGraphEventAdapter:
         )
         return (
             ContinuationCreated(
-                **_envelope(
-                    context=context,
-                    scope_id=scope_id,
-                    parent_scope_id=parent_scope_id,
-                    item_id=continuation_id,
-                    event_type="continuation.created",
-                    part_id="checkpoint",
-                    occurrence_key=occurrence_key,
-                    source=source,
-                    timestamp=timestamp,
+                **env(
+                    frame.scope_id,
+                    frame.parent_scope_id,
+                    continuation_id,
+                    "continuation.created",
+                    "checkpoint",
+                    source,
                 ),
                 continuation_id=continuation_id,
                 continuation_kind="graph_checkpoint",
@@ -916,16 +742,13 @@ class LangGraphEventAdapter:
             ),
             *interaction_events,
             RunInterrupted(
-                **_envelope(
-                    context=context,
-                    scope_id=scope_id,
-                    parent_scope_id=parent_scope_id,
-                    item_id=continuation_id,
-                    event_type="run.interrupted",
-                    part_id="run",
-                    occurrence_key=occurrence_key,
-                    source=source,
-                    timestamp=timestamp,
+                **env(
+                    frame.scope_id,
+                    frame.parent_scope_id,
+                    continuation_id,
+                    "run.interrupted",
+                    "run",
+                    source,
                 ),
                 status="interrupted",
                 reason=reason,
@@ -937,11 +760,9 @@ class LangGraphEventAdapter:
         self,
         *,
         context: LangGraphAdapterContext,
-        scope_id: str,
-        parent_scope_id: str | None,
+        frame: _Frame,
         source: SourceRef,
-        timestamp: float,
-        occurrence_key: str,
+        env: Callable[..., dict[str, Any]],
         interrupts: Any,
     ) -> tuple[RuntimeEvent, ...]:
         """Emit InteractionRequested for each langgraph interrupt."""
@@ -957,10 +778,8 @@ class LangGraphEventAdapter:
             else:
                 intr_id = str(getattr(intr, "id", "") or "")
                 detail_value = getattr(intr, "value", None)
-            interaction_id = intr_id or stable_item_id(
-                "langgraph", scope_id, "interaction", str(idx)
-            )
-            item_id = stable_item_id("langgraph", scope_id, "interaction", str(idx))
+            item_id = stable_item_id("langgraph", frame.scope_id, "interaction", str(idx))
+            interaction_id = intr_id or item_id
             detail_json: Any = (
                 detail_value
                 if isinstance(detail_value, (dict, list, str, int, float, bool, type(None)))
@@ -968,16 +787,13 @@ class LangGraphEventAdapter:
             )
             events.append(
                 InteractionRequested(
-                    **_envelope(
-                        context=context,
-                        scope_id=scope_id,
-                        parent_scope_id=parent_scope_id,
-                        item_id=item_id,
-                        event_type="interaction.requested",
-                        part_id="interaction",
-                        occurrence_key=occurrence_key,
-                        source=source,
-                        timestamp=timestamp,
+                    **env(
+                        frame.scope_id,
+                        frame.parent_scope_id,
+                        item_id,
+                        "interaction.requested",
+                        "interaction",
+                        source,
                     ),
                     interaction_id=interaction_id,
                     interaction_kind="approval",
@@ -994,47 +810,27 @@ class LangGraphEventAdapter:
 def _map_data_channel(
     *,
     context: LangGraphAdapterContext,
-    scope_id: str,
-    parent_scope_id: str | None,
+    frame: _Frame,
     method: str,
-    source_seq: int,
     source: SourceRef,
-    timestamp: float,
-    occurrence_key: str,
     value: Any,
 ) -> tuple[RuntimeEvent, ...]:
-    item_id = stable_item_id("langgraph", scope_id, "channel", method, source_seq)
+    env = _envelope(context, frame.occurrence_key, frame.timestamp)
+    item_id = stable_item_id("langgraph", frame.scope_id, "channel", method, frame.source_seq)
     part_id = _part_id(item_id, "channel", method)
     content = DataContent(part_id=part_id, data=_json_value(value))
+    envelope = lambda event_type: env(  # noqa: E731
+        frame.scope_id, frame.parent_scope_id, item_id, event_type, part_id, source
+    )
     return (
         ItemStarted(
-            **_envelope(
-                context=context,
-                scope_id=scope_id,
-                parent_scope_id=parent_scope_id,
-                item_id=item_id,
-                event_type="item.started",
-                part_id=part_id,
-                occurrence_key=occurrence_key,
-                source=source,
-                timestamp=timestamp,
-            ),
+            **envelope("item.started"),
             item_id=item_id,
             item_kind="data",
             phase="commentary",
         ),
         ItemCompleted(
-            **_envelope(
-                context=context,
-                scope_id=scope_id,
-                parent_scope_id=parent_scope_id,
-                item_id=item_id,
-                event_type="item.completed",
-                part_id=part_id,
-                occurrence_key=occurrence_key,
-                source=source,
-                timestamp=timestamp,
-            ),
+            **envelope("item.completed"),
             item_id=item_id,
             item_kind="data",
             snapshot=ContentSnapshot(parts=(content,)),
@@ -1088,37 +884,28 @@ def _lane_for_content(
     content: Mapping[str, Any],
 ) -> tuple[_ItemLane, bool]:
     if index in state.block_lanes:
-        raise LangGraphMappingError(
+        _fail(
             "content_block_already_started",
             "content-block-start.index",
             f"LangGraph content block {index} started twice",
         )
     block_type = _required_string(content.get("type"), "content block type")
-    if block_type == "text":
-        lane_key = "message"
-        item_kind: Literal["message", "reasoning", "tool_call", "tool_result"] = "message"
-        native_item_id = state.message_id
-    elif block_type == "reasoning":
-        lane_key = "reasoning"
-        item_kind = "reasoning"
-        native_item_id = state.message_id
-    elif block_type in {
-        "tool_call",
-        "tool_call_chunk",
-        "server_tool_call",
-        "server_tool_call_chunk",
-    }:
+    if block_type in _TOOL_CALL_BLOCKS:
         call_id = _required_string(content.get("id"), "tool_call.id")
-        lane_key = f"tool_call:{call_id}"
-        item_kind = "tool_call"
-        native_item_id = call_id
+        lane_key, item_kind, native_item_id = f"tool_call:{call_id}", "tool_call", call_id
     elif block_type == "server_tool_result":
         call_id = _required_string(content.get("tool_call_id"), "server_tool_result.tool_call_id")
-        lane_key = f"provider_tool_result:{call_id}"
-        item_kind = "tool_result"
-        native_item_id = call_id
+        lane_key, item_kind, native_item_id = (
+            f"provider_tool_result:{call_id}",
+            "tool_result",
+            call_id,
+        )
+    elif block_type == "text":
+        lane_key, item_kind, native_item_id = "message", "message", state.message_id
+    elif block_type == "reasoning":
+        lane_key, item_kind, native_item_id = "reasoning", "reasoning", state.message_id
     else:
-        raise LangGraphMappingError(
+        _fail(
             "unsupported_content_block",
             "content.type",
             f"Unsupported LangGraph content block type: {block_type}",
@@ -1135,7 +922,7 @@ def _lane_for_content(
 def _lane_for_index(state: _MessageState, index: int) -> _ItemLane:
     lane_key = state.block_lanes.get(index)
     if lane_key is None:
-        raise LangGraphMappingError(
+        _fail(
             "content_block_not_started",
             "content block index",
             f"LangGraph content block {index} mutated before start",
@@ -1151,26 +938,11 @@ def _lane_source(source: SourceRef, lane: _ItemLane) -> SourceRef:
 
 
 def _lane_started(
-    *,
+    lane_env: Callable[..., dict[str, Any]],
     lane: _ItemLane,
-    state: _MessageState,
-    context: LangGraphAdapterContext,
-    occurrence_key: str,
-    source: SourceRef,
-    timestamp: float,
 ) -> ItemStarted:
     return ItemStarted(
-        **_envelope(
-            context=context,
-            scope_id=state.scope_id,
-            parent_scope_id=state.parent_scope_id,
-            item_id=lane.item_id,
-            event_type="item.started",
-            part_id=lane.item_kind,
-            occurrence_key=occurrence_key,
-            source=source,
-            timestamp=timestamp,
-        ),
+        **lane_env(lane, "item.started", lane.item_kind),
         item_id=lane.item_id,
         item_kind=lane.item_kind,
         phase=lane.phase,
@@ -1178,30 +950,14 @@ def _lane_started(
 
 
 def _lane_updated(
-    *,
+    lane_env: Callable[..., dict[str, Any]],
     lane: _ItemLane,
-    state: _MessageState,
-    context: LangGraphAdapterContext,
     update: ContentValue,
     op: Literal["append", "replace"],
-    occurrence_key: str,
-    source: SourceRef,
-    timestamp: float,
     ordinal: int,
 ) -> ItemUpdated:
     return ItemUpdated(
-        **_envelope(
-            context=context,
-            scope_id=state.scope_id,
-            parent_scope_id=state.parent_scope_id,
-            item_id=lane.item_id,
-            event_type="item.updated",
-            part_id=update.part_id,
-            occurrence_key=occurrence_key,
-            source=source,
-            timestamp=timestamp,
-            ordinal=ordinal,
-        ),
+        **lane_env(lane, "item.updated", update.part_id, ordinal),
         item_id=lane.item_id,
         item_kind=lane.item_kind,
         op=op,
@@ -1210,26 +966,11 @@ def _lane_updated(
 
 
 def _lane_completed(
-    *,
+    lane_env: Callable[..., dict[str, Any]],
     lane: _ItemLane,
-    state: _MessageState,
-    context: LangGraphAdapterContext,
-    occurrence_key: str,
-    source: SourceRef,
-    timestamp: float,
 ) -> ItemCompleted:
     return ItemCompleted(
-        **_envelope(
-            context=context,
-            scope_id=state.scope_id,
-            parent_scope_id=state.parent_scope_id,
-            item_id=lane.item_id,
-            event_type="item.completed",
-            part_id="snapshot",
-            occurrence_key=occurrence_key,
-            source=source,
-            timestamp=timestamp,
-        ),
+        **lane_env(lane, "item.completed", "snapshot"),
         item_id=lane.item_id,
         item_kind=lane.item_kind,
         snapshot=ContentSnapshot(parts=tuple(lane.parts[index] for index in sorted(lane.parts))),
@@ -1241,31 +982,31 @@ def _map_whole_message(
     payload: AIMessage,
     metadata: Mapping[str, Any],
     context: LangGraphAdapterContext,
-    namespace: tuple[str, ...],
-    scope_id: str,
-    parent_scope_id: str | None,
-    source_seq: int,
-    native_event_id: str | None,
-    occurrence_key: str,
-    timestamp: float,
+    frame: _Frame,
     node: str,
 ) -> tuple[RuntimeEvent, ...]:
     message_id = _required_string(payload.id, "whole message.id")
     llm_run_id = _optional_string(metadata.get("run_id")) or context.graph_run_id
     state = _MessageState(
-        scope_id=scope_id,
-        parent_scope_id=parent_scope_id,
+        scope_id=frame.scope_id,
+        parent_scope_id=frame.parent_scope_id,
         llm_run_id=llm_run_id,
         message_id=message_id,
         node=node,
     )
-    source = _message_source(
-        context=context,
-        namespace=namespace,
-        state=state,
-        source_seq=source_seq,
-        native_event_id=native_event_id,
+    source = _source_ref(
+        channel="messages",
+        native_run_id=state.llm_run_id,
+        native_item_id=state.message_id,
+        source_seq=frame.source_seq,
+        native_event_id=frame.native_event_id,
+        extra={
+            "graph_run_id": context.graph_run_id,
+            "namespace": list(frame.namespace),
+            "node": state.node,
+        },
     )
+    env = _envelope(context, frame.occurrence_key, frame.timestamp)
 
     content = payload.content
     blocks: Sequence[Any]
@@ -1277,7 +1018,7 @@ def _map_whole_message(
     elif isinstance(content, Sequence) and not isinstance(content, (str, bytes)):
         blocks = content
     else:
-        raise LangGraphMappingError(
+        _fail(
             "unsupported_whole_message",
             "whole message.content",
             "LangGraph whole message content must be text or typed blocks",
@@ -1304,8 +1045,7 @@ def _map_whole_message(
                 "args": call.get("args"),
             }
             call_id = _required_string(normalized_call["id"], "tool_call.id")
-            lane_key = f"tool_call:{call_id}"
-            if lane_key in state.lanes:
+            if f"tool_call:{call_id}" in state.lanes:
                 continue
             lane, _ = _lane_for_content(state, offset, normalized_call)
             lane.parts[offset] = _tool_call_snapshot(lane.item_id, offset, normalized_call)
@@ -1315,199 +1055,107 @@ def _map_whole_message(
 
     emitted: list[RuntimeEvent] = []
     for lane in state.lanes.values():
-        lane_source = _lane_source(source, lane)
         emitted.append(
-            _lane_started(
-                lane=lane,
-                state=state,
-                context=context,
-                occurrence_key=occurrence_key,
-                source=lane_source,
-                timestamp=timestamp,
+            ItemStarted(
+                **env(
+                    state.scope_id,
+                    state.parent_scope_id,
+                    lane.item_id,
+                    "item.started",
+                    lane.item_kind,
+                    _lane_source(source, lane),
+                ),
+                item_id=lane.item_id,
+                item_kind=lane.item_kind,
+                phase=lane.phase,
             )
         )
         lane.completed = True
         emitted.append(
-            _lane_completed(
-                lane=lane,
-                state=state,
-                context=context,
-                occurrence_key=occurrence_key,
-                source=lane_source,
-                timestamp=timestamp,
+            ItemCompleted(
+                **env(
+                    state.scope_id,
+                    state.parent_scope_id,
+                    lane.item_id,
+                    "item.completed",
+                    "snapshot",
+                    _lane_source(source, lane),
+                ),
+                item_id=lane.item_id,
+                item_kind=lane.item_kind,
+                snapshot=ContentSnapshot(
+                    parts=tuple(lane.parts[index] for index in sorted(lane.parts))
+                ),
             )
         )
     return tuple(emitted)
 
 
-def _message_source(
-    *,
-    context: LangGraphAdapterContext,
-    namespace: tuple[str, ...],
-    state: _MessageState,
-    source_seq: int,
-    native_event_id: str | None,
-) -> SourceRef:
-    return SourceRef(
-        framework="langgraph",
-        native_event_id=native_event_id,
-        native_cursor=str(source_seq),
-        native_run_id=state.llm_run_id,
-        native_item_id=state.message_id,
-        metadata=cast(
-            dict[str, JsonValue],
-            {
-                "stream_version": "v3",
-                "channel": "messages",
-                "graph_run_id": context.graph_run_id,
-                "namespace": list(namespace),
-                "node": state.node,
-                "seq_semantics": "source_cursor",
-            },
-        ),
-    )
-
-
-def _tool_source(
-    *,
-    context: LangGraphAdapterContext,
-    namespace: tuple[str, ...],
-    call_id: str,
-    source_seq: int,
-    native_event_id: str | None,
-) -> SourceRef:
-    return SourceRef(
-        framework="langgraph",
-        native_event_id=native_event_id,
-        native_cursor=str(source_seq),
-        native_run_id=context.graph_run_id,
-        native_item_id=call_id,
-        metadata=cast(
-            dict[str, JsonValue],
-            {
-                "stream_version": "v3",
-                "channel": "tools",
-                "namespace": list(namespace),
-                "seq_semantics": "source_cursor",
-            },
-        ),
-    )
-
-
-def _lifecycle_source(
-    *,
-    context: LangGraphAdapterContext,
-    emitter_namespace: tuple[str, ...],
-    target_namespace: tuple[str, ...],
-    source_seq: int,
-    native_event_id: str | None,
-) -> SourceRef:
-    return SourceRef(
-        framework="langgraph",
-        native_event_id=native_event_id,
-        native_cursor=str(source_seq),
-        native_run_id=context.graph_run_id,
-        native_item_id=target_namespace[-1],
-        metadata=cast(
-            dict[str, JsonValue],
-            {
-                "stream_version": "v3",
-                "channel": "lifecycle",
-                "emitter_namespace": list(emitter_namespace),
-                "target_namespace": list(target_namespace),
-                "seq_semantics": "source_cursor",
-            },
-        ),
-    )
-
-
-def _lifecycle_progress(
-    *,
-    native_type: str,
-    context: LangGraphAdapterContext,
-    state: _LifecycleState,
-    occurrence_key: str,
-    source: SourceRef,
-    timestamp: float,
-) -> RunProgress:
-    return RunProgress(
-        **_envelope(
-            context=context,
-            scope_id=state.scope_id,
-            parent_scope_id=state.parent_scope_id,
-            item_id=state.item_id,
-            event_type="run.progress",
-            part_id=f"lifecycle:{native_type}",
-            occurrence_key=occurrence_key,
-            source=source,
-            timestamp=timestamp,
-        ),
-        status="running",
-        message=f"LangGraph subgraph {native_type}",
-    )
-
-
-def _protocol_source(
-    *,
-    context: LangGraphAdapterContext,
-    method: str,
-    namespace: tuple[str, ...],
-    source_seq: int,
-    native_event_id: str | None,
-) -> SourceRef:
-    return SourceRef(
-        framework="langgraph",
-        native_event_id=native_event_id,
-        native_cursor=str(source_seq),
-        native_run_id=context.graph_run_id,
-        metadata=cast(
-            dict[str, JsonValue],
-            {
-                "stream_version": "v3",
-                "channel": method,
-                "namespace": list(namespace),
-                "seq_semantics": "source_cursor",
-            },
-        ),
-    )
-
-
 def _envelope(
-    *,
     context: LangGraphAdapterContext,
-    scope_id: str,
-    parent_scope_id: str | None,
-    item_id: str,
-    event_type: str,
-    part_id: str,
     occurrence_key: str,
-    source: SourceRef,
     timestamp: float,
-    ordinal: int = 0,
-) -> dict[str, Any]:
-    return {
-        "schema_version": 2,
-        "event_id": stable_event_id(
-            "langgraph",
-            scope_id,
-            item_id,
-            event_type,
-            part_id,
-            occurrence_key,
-            ordinal,
-        ),
-        "seq": context.allocate_placeholder_seq(),
-        "timestamp": timestamp,
-        "run_id": context.run_id,
-        "scope_id": scope_id,
-        "parent_scope_id": parent_scope_id,
-        "source": source,
+) -> Callable[..., dict[str, Any]]:
+    def env(
+        scope_id: str,
+        parent_scope_id: str | None,
+        item_id: str,
+        event_type: str,
+        part_id: str,
+        source: SourceRef,
+        ordinal: int = 0,
+    ) -> dict[str, Any]:
+        return {
+            "schema_version": 2,
+            "event_id": stable_event_id(
+                "langgraph",
+                scope_id,
+                item_id,
+                event_type,
+                part_id,
+                occurrence_key,
+                ordinal,
+            ),
+            "seq": context.allocate_placeholder_seq(),
+            "timestamp": timestamp,
+            "run_id": context.run_id,
+            "scope_id": scope_id,
+            "parent_scope_id": parent_scope_id,
+            "source": source,
+        }
+
+    return env
+
+
+def _source_ref(
+    *,
+    channel: str,
+    native_run_id: str | None,
+    native_item_id: str | None,
+    source_seq: int,
+    native_event_id: str | None,
+    extra: Mapping[str, JsonValue] | None = None,
+) -> SourceRef:
+    metadata: dict[str, JsonValue] = {
+        "stream_version": "v3",
+        "channel": channel,
+        "seq_semantics": "source_cursor",
     }
+    if extra:
+        metadata.update(extra)
+    return SourceRef(
+        framework="langgraph",
+        native_event_id=native_event_id,
+        native_cursor=str(source_seq),
+        native_run_id=native_run_id,
+        native_item_id=native_item_id,
+        metadata=metadata,
+    )
 
 
 def _message_data(value: Any) -> tuple[Any, Mapping[str, Any]]:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes)) or len(value) != 2:
-        raise LangGraphMappingError(
+        _fail(
             "invalid_messages_data",
             "params.data",
             "LangGraph messages data must be (MessagesData, metadata)",
@@ -1530,7 +1178,7 @@ def _text_block_snapshot(
     elif block_type == "reasoning":
         field_name = "reasoning"
     else:
-        raise LangGraphMappingError(
+        _fail(
             "unsupported_content_block",
             "content.type",
             f"Unsupported LangGraph text-like block type: {block_type}",
@@ -1540,7 +1188,7 @@ def _text_block_snapshot(
     # snapshot; later deltas may append and finish may replace it again.
     text = content.get(field_name, "") if block_type == "reasoning" else content.get(field_name)
     if not isinstance(text, str):
-        raise LangGraphMappingError(
+        _fail(
             "invalid_content_block",
             f"content.{field_name}",
             f"LangGraph {block_type} block requires string {field_name}",
@@ -1556,13 +1204,11 @@ def _text_block_delta(
 ) -> TextContent:
     delta_type = _required_string(delta.get("type"), "content delta type")
     if item_kind == "message" and delta_type == "text-delta":
-        block_type = "text"
-        field_name = "text"
+        block_type, field_name = "text", "text"
     elif item_kind == "reasoning" and delta_type == "reasoning-delta":
-        block_type = "reasoning"
-        field_name = "reasoning"
+        block_type, field_name = "reasoning", "reasoning"
     else:
-        raise LangGraphMappingError(
+        _fail(
             "unsupported_content_delta",
             "delta.type",
             f"Unsupported LangGraph content delta type: {delta_type}",
@@ -1570,7 +1216,7 @@ def _text_block_delta(
     part_id = _part_id(item_id, "content-block", block_type, index)
     text = delta.get(field_name)
     if not isinstance(text, str):
-        raise LangGraphMappingError(
+        _fail(
             "invalid_content_delta",
             f"delta.{field_name}",
             f"LangGraph {delta_type} requires string {field_name}",
@@ -1582,23 +1228,11 @@ def _validate_tool_delta(delta: Mapping[str, Any]) -> None:
     delta_type = _required_string(delta.get("type"), "content delta type")
     if delta_type == "block-delta":
         fields = _mapping(delta.get("fields"), "block-delta.fields")
-        field_type = _required_string(fields.get("type"), "block-delta.fields.type")
-        if field_type in {
-            "tool_call",
-            "tool_call_chunk",
-            "server_tool_call",
-            "server_tool_call_chunk",
-        }:
+        if _required_string(fields.get("type"), "block-delta.fields.type") in _TOOL_CALL_BLOCKS:
             return
-    if delta_type in {
-        "tool_call",
-        "tool_call_chunk",
-        "tool_call-delta",
-        "server_tool_call",
-        "server_tool_call_chunk",
-    }:
+    if delta_type in _TOOL_DELTA_TYPES:
         return
-    raise LangGraphMappingError(
+    _fail(
         "unsupported_content_delta",
         "delta.type",
         f"Unsupported LangGraph tool call delta type: {delta_type}",
@@ -1611,13 +1245,8 @@ def _tool_call_snapshot(
     content: Mapping[str, Any],
 ) -> ToolCallContent:
     block_type = _required_string(content.get("type"), "content block type")
-    if block_type not in {
-        "tool_call",
-        "tool_call_chunk",
-        "server_tool_call",
-        "server_tool_call_chunk",
-    }:
-        raise LangGraphMappingError(
+    if block_type not in _TOOL_CALL_BLOCKS:
+        _fail(
             "unsupported_content_block",
             "content.type",
             f"Expected LangGraph tool call block, got: {block_type}",
@@ -1639,7 +1268,7 @@ def _server_tool_result_snapshot(
 ) -> ToolResultContent:
     block_type = _required_string(content.get("type"), "content block type")
     if block_type != "server_tool_result":
-        raise LangGraphMappingError(
+        _fail(
             "unsupported_content_block",
             "content.type",
             f"Expected LangGraph server tool result block, got: {block_type}",
@@ -1647,7 +1276,7 @@ def _server_tool_result_snapshot(
     call_id = _required_string(content.get("tool_call_id"), "server_tool_result.tool_call_id")
     status = _required_string(content.get("status"), "server_tool_result.status")
     if status not in {"success", "error"}:
-        raise LangGraphMappingError(
+        _fail(
             "invalid_content_block",
             "server_tool_result.status",
             f"Unsupported LangGraph server tool result status: {status}",
@@ -1665,7 +1294,7 @@ def _json_value(value: Any) -> JsonValue:
         return cast(JsonValue, value)
     if isinstance(value, float):
         if not math.isfinite(value):
-            raise LangGraphMappingError(
+            _fail(
                 "non_json_protocol_data",
                 "ProtocolEvent.params.data",
                 "LangGraph protocol data contains a non-finite float",
@@ -1673,7 +1302,7 @@ def _json_value(value: Any) -> JsonValue:
         return cast(JsonValue, value)
     if isinstance(value, Mapping):
         if any(not isinstance(key, str) for key in value):
-            raise LangGraphMappingError(
+            _fail(
                 "non_json_protocol_data",
                 "ProtocolEvent.params.data",
                 "LangGraph protocol data object keys must be strings",
@@ -1695,13 +1324,13 @@ def _json_value(value: Any) -> JsonValue:
                 "LangGraph protocol model could not be serialized to JSON",
             ) from exc
         if dumped is value:
-            raise LangGraphMappingError(
+            _fail(
                 "non_json_protocol_data",
                 "ProtocolEvent.params.data",
                 "LangGraph protocol model returned itself from model_dump",
             )
         return _json_value(dumped)
-    raise LangGraphMappingError(
+    _fail(
         "non_json_protocol_data",
         "ProtocolEvent.params.data",
         f"LangGraph protocol data is not stably JSON serializable: {type(value).__name__}",
@@ -1720,7 +1349,7 @@ def _parent_scope_id(graph_run_id: str, namespace: tuple[str, ...]) -> str | Non
 
 def _namespace(value: Any) -> tuple[str, ...]:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
-        raise LangGraphMappingError(
+        _fail(
             "invalid_namespace",
             "namespace",
             "LangGraph namespace must be an ordered string sequence",
@@ -1746,7 +1375,7 @@ def _part_id(item_id: str, *components: str | int) -> str:
 
 def _mapping(value: Any, field_name: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
-        raise LangGraphMappingError(
+        _fail(
             "invalid_event_shape",
             field_name,
             f"LangGraph {field_name} must be an object",
@@ -1756,7 +1385,7 @@ def _mapping(value: Any, field_name: str) -> Mapping[str, Any]:
 
 def _required_string(value: Any, field_name: str) -> str:
     if not isinstance(value, str) or not value.strip():
-        raise LangGraphMappingError(
+        _fail(
             "missing_native_identity",
             field_name,
             f"LangGraph {field_name} must be a non-empty string",
@@ -1770,7 +1399,7 @@ def _optional_string(value: Any) -> str | None:
 
 def _block_index(value: Any) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise LangGraphMappingError(
+        _fail(
             "invalid_block_index",
             "index",
             "LangGraph content block index must be a non-negative integer",
@@ -1780,7 +1409,7 @@ def _block_index(value: Any) -> int:
 
 def _source_seq(value: Any) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise LangGraphMappingError(
+        _fail(
             "missing_source_cursor",
             "seq",
             "LangGraph ProtocolEvent requires its non-negative root mux seq",
@@ -1790,7 +1419,7 @@ def _source_seq(value: Any) -> int:
 
 def _protocol_timestamp(value: Any) -> float:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise LangGraphMappingError(
+        _fail(
             "invalid_timestamp",
             "params.timestamp",
             "LangGraph ProtocolEvent timestamp must be epoch milliseconds",
@@ -1800,7 +1429,7 @@ def _protocol_timestamp(value: Any) -> float:
 
 def _interrupt_reason(interrupts: Any) -> str | None:
     if not isinstance(interrupts, Sequence) or isinstance(interrupts, (str, bytes)):
-        raise LangGraphMappingError(
+        _fail(
             "invalid_interrupts",
             "params.interrupts",
             "LangGraph interrupts must be a sequence",
