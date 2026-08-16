@@ -222,3 +222,17 @@ def test_written_events_are_runtime_events() -> None:
     )
     events = settle_finding(finding, "session-1", allow_resume=False, timestamp=1.0)
     assert all(event.event_type in ALL_EVENT_TYPES for event in events)
+
+
+@pytest.mark.asyncio
+async def test_replay_projection_settle_open_completes_dangling_stream() -> None:
+    """冷读者视角:settle_open=True 时开放流投影出确定性结局,不裸露悬空状态。"""
+
+    store = await _mk_store_with_open_run()
+
+    bare = await replay_projection(store, "session-1", run_id="run-1")
+    assert bare.status == "running"  # live 语义不变
+
+    settled = await replay_projection(store, "session-1", run_id="run-1", settle_open=True)
+    assert settled.status == "interrupted"
+    assert all(item.status != "open" for item in settled.items)

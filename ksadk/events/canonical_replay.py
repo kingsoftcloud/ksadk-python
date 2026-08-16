@@ -101,15 +101,58 @@ async def replay_projection(
     *,
     run_id: str,
     through_seq: int | None = None,
+    settle_open: bool = False,
 ) -> RunProjection:
-    """Rebuild one run exclusively through the live ``StreamReducer.apply`` path."""
+    """Rebuild one run exclusively through the live ``StreamReducer.apply`` path.
+
+    With ``settle_open`` the projection never exposes an unfinished stream to a
+    cold reader: an open run at the read boundary is completed in-memory with
+    the same deterministic outcomes :func:`ksadk.events.cold_recovery.settle_finding`
+    would persist, so live readers (run still executing) and cold readers
+    (process gone) both observe a conformant projection without consumers
+    special-casing a dangling stream. The synthesized events are applied to the
+    in-memory reducer only; persisting them is :func:`cold_recovery.recover_session`'s
+    job.
+    """
 
     reducer = StreamReducer()
     for event in await store.list(session_id, run_id=run_id):
         if through_seq is not None and event.seq > through_seq:
             break
         reducer.apply(event)
+    if settle_open and (snapshot := reducer.snapshot()).status in (None, "running"):
+        from ksadk.events.cold_recovery import OpenItem, RecoveryFinding, settle_finding
+
+        finding = RecoveryFinding(
+            run_id=run_id,
+            scope_id=_root_scope_for(run_id),
+            resumable=any(c.resumable for c in snapshot.continuations),
+            continuation_id=(
+                snapshot.continuations[-1].continuation_id
+                if snapshot.continuations
+                else None
+            ),
+            open_items=[
+                OpenItem(
+                    scope_id=item.scope_id,
+                    item_id=item.item_id,
+                    item_kind=item.item_kind,
+                )
+                for item in snapshot.items
+                if item.status == "open"
+            ],
+            last_seq=snapshot.last_seq or 0,
+        )
+        # 冷读者默认不允许接管执行(resume 裁决属执行层),只做确定性结算。
+        for event in settle_finding(
+            finding, session_id, allow_resume=False, timestamp=0.0
+        ):
+            reducer.apply(event)
     return reducer.snapshot()
+
+
+def _root_scope_for(run_id: str) -> str:
+    return f"run:{run_id}"
 
 
 async def list_legacy_session_events(

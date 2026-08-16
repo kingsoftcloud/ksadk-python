@@ -143,24 +143,27 @@ def settle_finding(
     events: list[RuntimeEvent] = []
     base = dict(
         schema_version=2,
-        seq=finding.last_seq,
         timestamp=timestamp,
         run_id=finding.run_id,
         run_seq=run_seq,
         scope_id=finding.scope_id,
         source=_recovery_source(finding.scope_id),
     )
+    # 结局事件占据 last_seq 之后的新 seq,reducer 要求 seq 严格单调。
+    next_seq = finding.last_seq
     for item in finding.open_items:
         code = (
             "tool_outcome_unknown"
             if item.item_kind == "tool_call"
             else f"{item.item_kind}_outcome_unknown"
         )
+        next_seq += 1
         events.append(
             ItemFailed(
                 event_id=_recovery_event_id(
                     item.scope_id, item.item_id, "item.failed", finding.run_id
                 ),
+                seq=next_seq,
                 item_id=item.item_id,
                 item_kind=item.item_kind,
                 error=ErrorInfo(
@@ -173,9 +176,11 @@ def settle_finding(
                 **{**base, "scope_id": item.scope_id},
             )
         )
+    next_seq += 1
     events.append(
         RunInterrupted(
             event_id=_recovery_event_id(finding.scope_id, "run", "run.interrupted", finding.run_id),
+            seq=next_seq,
             status="interrupted",
             reason="process_exit",
             continuation_id=finding.continuation_id,
