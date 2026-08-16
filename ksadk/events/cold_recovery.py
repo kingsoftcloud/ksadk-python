@@ -224,9 +224,7 @@ async def recover_session(
             report.resumed_run_ids.append(finding.run_id)
             continue
         allow = allow_resume_for(finding.run_id) if allow_resume_for else False
-        events = settle_finding(
-            finding, session_id, allow_resume=allow, timestamp=timestamp
-        )
+        events = settle_finding(finding, session_id, allow_resume=allow, timestamp=timestamp)
         if not events:
             report.resumed_run_ids.append(finding.run_id)
             continue

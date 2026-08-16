@@ -54,8 +54,7 @@ from ksadk.events.identity import stable_event_id, stable_item_id, stable_part_i
 
 # Exact `notification_registry.NOTIFICATION_MODELS` keys from openai-codex 0.144.4.
 # Keeping this source contract explicit makes a dependency upgrade fail its conformance test.
-_CODEX_0_144_4_NOTIFICATION_METHODS = frozenset(
-    """
+_CODEX_0_144_4_NOTIFICATION_METHODS = frozenset("""
     account/login/completed account/rateLimits/updated account/updated app/list/updated
     command/exec/outputDelta configWarning deprecationNotice error
     externalAgentConfig/import/completed externalAgentConfig/import/progress fs/changed
@@ -76,46 +75,35 @@ _CODEX_0_144_4_NOTIFICATION_METHODS = frozenset(
     thread/unarchived turn/completed turn/diff/updated turn/moderationMetadata
     turn/plan/updated turn/started warning windows/worldWritableWarning
     windowsSandbox/setupCompleted
-    """.split()
-)
+    """.split())
 
-_CODEX_0_144_4_DATA_ITEM_KINDS = frozenset(
-    """
+_CODEX_0_144_4_DATA_ITEM_KINDS = frozenset("""
     userMessage hookPrompt subAgentActivity imageView sleep enteredReviewMode
     exitedReviewMode contextCompaction
-    """.split()
-)
+    """.split())
 
-_CODEX_ERROR_INFO_VALUES = frozenset(
-    """
+_CODEX_ERROR_INFO_VALUES = frozenset("""
     contextWindowExceeded sessionBudgetExceeded usageLimitExceeded serverOverloaded
     cyberPolicy internalServerError unauthorized badRequest threadRollbackFailed
     sandboxError other
-    """.split()
-)
-_CODEX_ERROR_INFO_VARIANTS = frozenset(
-    """
+    """.split())
+_CODEX_ERROR_INFO_VARIANTS = frozenset("""
     httpConnectionFailed responseStreamConnectionFailed responseStreamDisconnected
     responseTooManyFailedAttempts activeTurnNotSteerable
-    """.split()
-)
+    """.split())
 
 # Methods that carry item-lifecycle semantics and need thread/turn scoping.
-_ITEM_METHODS = frozenset(
-    """
+_ITEM_METHODS = frozenset("""
     error item/started item/completed item/agentMessage/delta item/reasoning/textDelta
     item/reasoning/summaryPartAdded item/reasoning/summaryTextDelta
     item/commandExecution/outputDelta item/mcpToolCall/progress
     item/fileChange/patchUpdated item/fileChange/outputDelta item/plan/delta
-    """.split()
-)
-_INTERACTION_METHODS = frozenset(
-    """
+    """.split())
+_INTERACTION_METHODS = frozenset("""
     item/commandExecution/requestApproval item/fileChange/requestApproval
     item/permissions/requestApproval item/tool/call item/tool/requestUserInput
     mcpServer/elicitation/request
-    """.split()
-)
+    """.split())
 _CONTROL_INTERACTION_METHODS = frozenset(
     {"account/chatgptAuthTokens/refresh", "attestation/generate"}
 )
@@ -270,7 +258,8 @@ class CodexEventAdapter:
         if previous is not None:
             if previous.payload_digest != payload_digest:
                 _fail(
-                    "native_event_collision", "native_cursor",
+                    "native_event_collision",
+                    "native_cursor",
                     f"Codex native cursor {cursor!r} was reused with a different payload",
                 )
             self._replay_window.move_to_end(cursor)
@@ -312,7 +301,8 @@ class CodexEventAdapter:
             thread_id = _required_string(params.get("threadId"), "params.threadId")
             if thread_id in self._pending_resume_by_thread:
                 _fail(
-                    "thread_resume_already_pending", "params.threadId",
+                    "thread_resume_already_pending",
+                    "params.threadId",
                     f"Codex thread {thread_id!r} already has a pending resume",
                 )
             self._resume_requests[request_id] = thread_id
@@ -406,7 +396,8 @@ class CodexEventAdapter:
         ):
             return
         _fail(
-            "open_state_at_stream_end", "jsonl eof",
+            "open_state_at_stream_end",
+            "jsonl eof",
             "Codex JSONL ended with open items, turns, interactions, or resumes",
         )
 
@@ -508,7 +499,8 @@ class CodexEventAdapter:
 
         if scope_id not in self._active_turns:
             _fail(
-                "turn_not_started", "params.turn.id",
+                "turn_not_started",
+                "params.turn.id",
                 f"Codex turn {turn_id!r} completed before turn/started",
             )
         open_items = sorted(
@@ -516,7 +508,8 @@ class CodexEventAdapter:
         )
         if open_items:
             _fail(
-                "open_items_at_turn_end", "item/completed",
+                "open_items_at_turn_end",
+                "item/completed",
                 f"Codex turn ended with open items: {open_items}",
             )
         output_refs = tuple(self._completed_items.get(scope_id, ()))
@@ -553,7 +546,8 @@ class CodexEventAdapter:
             )
         else:
             _fail(
-                "invalid_turn_status", "params.turn.status",
+                "invalid_turn_status",
+                "params.turn.status",
                 f"Unsupported terminal Codex turn status: {status}",
             )
         self._active_turns.remove(scope_id)
@@ -573,7 +567,8 @@ class CodexEventAdapter:
     ) -> tuple[RuntimeEvent, ...]:
         if status != "inProgress":
             _fail(
-                "invalid_turn_status", "params.turn.status",
+                "invalid_turn_status",
+                "params.turn.status",
                 f"Codex turn/started requires inProgress, got: {status}",
             )
         if scope_id in self._active_turns:
@@ -639,7 +634,8 @@ class CodexEventAdapter:
         will_retry = params.get("willRetry")
         if not isinstance(will_retry, bool):
             _fail(
-                "invalid_protocol_message", "params.willRetry",
+                "invalid_protocol_message",
+                "params.willRetry",
                 "Codex params.willRetry must be a boolean",
             )
         base = _protocol_source(
@@ -698,7 +694,8 @@ class CodexEventAdapter:
         key = (scope_id, native_item_id)
         if key in self._items:
             _fail(
-                "item_already_started", "params.item.id",
+                "item_already_started",
+                "params.item.id",
                 f"Codex item {native_item_id!r} started twice",
             )
         self._items[key] = state
@@ -752,7 +749,8 @@ class CodexEventAdapter:
         native_kind = _required_string(item.get("type"), "params.item.type")
         if native_kind != state.native_item_kind:
             _fail(
-                "conflicting_item_kind", "params.item.type",
+                "conflicting_item_kind",
+                "params.item.type",
                 "Codex item changed type during its lifecycle",
             )
         snapshot = _completed_snapshot(state, item)
@@ -797,7 +795,8 @@ class CodexEventAdapter:
         state = self._items.get((scope_id, native_item_id))
         if state is None:
             _fail(
-                "item_not_started", "params.itemId",
+                "item_not_started",
+                "params.itemId",
                 f"Codex item {native_item_id!r} mutated before item/started",
             )
         return state
@@ -817,7 +816,8 @@ class CodexEventAdapter:
         request_id = _request_id(message.get("id"), "id")
         if request_id in self._interactions:
             _fail(
-                "interaction_already_pending", "id",
+                "interaction_already_pending",
+                "id",
                 f"Codex JSON-RPC request {request_id!r} is already pending",
             )
         thread_id = f"runtime:{context.run_id}"
@@ -879,7 +879,8 @@ class CodexEventAdapter:
             )
         if state.thread_id != thread_id:
             _fail(
-                "interaction_scope_mismatch", "params.threadId",
+                "interaction_scope_mismatch",
+                "params.threadId",
                 "Codex serverRequest/resolved threadId does not match the pending request",
             )
         resolved = self._resolve_interaction(
@@ -926,7 +927,8 @@ class CodexEventAdapter:
         request_id = _request_id(message.get("id"), "id")
         if request_id in self._interactions:
             _fail(
-                "interaction_already_pending", "id",
+                "interaction_already_pending",
+                "id",
                 f"Codex JSON-RPC request {request_id!r} is already pending",
             )
         if method == "item/tool/call":
@@ -1016,7 +1018,8 @@ class CodexEventAdapter:
                 thread_id = self._resume_requests.pop(request_id)
                 self._pending_resume_by_thread.pop(thread_id, None)
                 _fail(
-                    "thread_resume_failed", "error",
+                    "thread_resume_failed",
+                    "error",
                     "Codex thread/resume failed with a JSON-RPC error",
                 )
             _mapping(message.get("result"), "result")
@@ -1024,7 +1027,8 @@ class CodexEventAdapter:
         state = self._interactions.get(request_id)
         if state is None:
             _fail(
-                "unknown_jsonrpc_response", "id",
+                "unknown_jsonrpc_response",
+                "id",
                 f"Codex response has no pending request: {request_id}",
             )
         is_error_response = "error" in message
@@ -1035,7 +1039,8 @@ class CodexEventAdapter:
             code = error.get("code")
             if isinstance(code, bool) or not isinstance(code, int):
                 _fail(
-                    "invalid_interaction_response", "error.code",
+                    "invalid_interaction_response",
+                    "error.code",
                     "Codex JSON-RPC error.code must be an integer",
                 )
             _required_text(error.get("message"), "error.message")
@@ -1055,9 +1060,7 @@ class CodexEventAdapter:
             if state.interaction_kind == "approval":
                 response = _approval_response(state.method, result)
             else:
-                response = StructuredInputResponse(
-                    data=_structured_response_data(state, result)
-                )
+                response = StructuredInputResponse(data=_structured_response_data(state, result))
         source = _protocol_source(
             method="jsonrpc/response",
             cursor=cursor,
@@ -1077,16 +1080,12 @@ class CodexEventAdapter:
         if is_error_response:
             return (resolved,)
         resumes = (
-            (
-                isinstance(response, ApprovalResponse)
-                and response.decision in {"approved", "rejected"}
-            )
-            or (
-                isinstance(response, StructuredInputResponse)
-                and (
-                    state.method == "item/tool/requestUserInput"
-                    or result.get("action") in {"accept", "decline"}
-                )
+            isinstance(response, ApprovalResponse) and response.decision in {"approved", "rejected"}
+        ) or (
+            isinstance(response, StructuredInputResponse)
+            and (
+                state.method == "item/tool/requestUserInput"
+                or result.get("action") in {"accept", "decline"}
             )
         )
         if not resumes or not state.interrupts_run:
@@ -1144,7 +1143,8 @@ def _elicitation_request(params: Mapping[str, Any]) -> StructuredInputRequest:
         }
     else:
         _fail(
-            "invalid_interaction_request", "params.mode",
+            "invalid_interaction_request",
+            "params.mode",
             f"Unsupported MCP elicitation mode: {mode}",
         )
     return StructuredInputRequest(prompt=prompt, schema=schema)
@@ -1154,7 +1154,8 @@ def _control_refresh_request(params: Mapping[str, Any]) -> StructuredInputReques
     reason = _required_string(params.get("reason"), "params.reason")
     if reason != "unauthorized":
         _fail(
-            "invalid_interaction_request", "params.reason",
+            "invalid_interaction_request",
+            "params.reason",
             f"Unsupported ChatGPT token refresh reason: {reason}",
         )
     previous_account_id = params.get("previousAccountId")
@@ -1178,7 +1179,8 @@ def _control_refresh_request(params: Mapping[str, Any]) -> StructuredInputReques
 def _control_attestation_request(params: Mapping[str, Any]) -> StructuredInputRequest:
     if params:
         _fail(
-            "invalid_interaction_request", "params",
+            "invalid_interaction_request",
+            "params",
             "Codex attestation/generate params must be empty",
         )
     return StructuredInputRequest(
@@ -1191,9 +1193,7 @@ def _control_attestation_request(params: Mapping[str, Any]) -> StructuredInputRe
     )
 
 
-_CONTROL_REQUEST_BUILDERS: dict[
-    str, Callable[[Mapping[str, Any]], StructuredInputRequest]
-] = {
+_CONTROL_REQUEST_BUILDERS: dict[str, Callable[[Mapping[str, Any]], StructuredInputRequest]] = {
     "account/chatgptAuthTokens/refresh": _control_refresh_request,
     "attestation/generate": _control_attestation_request,
 }
@@ -1203,7 +1203,8 @@ def _approval_response(method: str, result: Mapping[str, Any]) -> ApprovalRespon
     if method in {"item/commandExecution/requestApproval", "item/fileChange/requestApproval"}:
         if result.get("decision") is None:
             _fail(
-                "missing_native_identity", "result.decision",
+                "missing_native_identity",
+                "result.decision",
                 "Codex approval result.decision is required",
             )
         return ApprovalResponse(
@@ -1216,7 +1217,8 @@ def _approval_response(method: str, result: Mapping[str, Any]) -> ApprovalRespon
     success = result.get("success")
     if not isinstance(success, bool):
         _fail(
-            "invalid_interaction_response", "result.success",
+            "invalid_interaction_response",
+            "result.success",
             "Codex dynamic tool result.success must be a boolean",
         )
     return ApprovalResponse(
@@ -1264,7 +1266,8 @@ def _item_state(
         item_kind, phase = rule
     else:
         _fail(
-            "unsupported_item_kind", "params.item.type",
+            "unsupported_item_kind",
+            "params.item.type",
             f"Unsupported Codex item type: {native_kind}",
         )
     return _ItemState(
@@ -1410,9 +1413,7 @@ def _generic_item_data(state: _ItemState, item: Mapping[str, Any]) -> DataConten
     return DataContent(part_id=_part_id(state, "native_item", "primary"), data=_json_value(item))
 
 
-def _additional_tool_call(
-    state: _ItemState, item: Mapping[str, Any]
-) -> ToolCallContent:
+def _additional_tool_call(state: _ItemState, item: Mapping[str, Any]) -> ToolCallContent:
     kind = state.native_item_kind
     if kind == "dynamicToolCall":
         name = _required_string(item.get("tool"), "params.item.tool")
@@ -1446,9 +1447,7 @@ def _additional_tool_call(
     )
 
 
-def _additional_tool_result(
-    state: _ItemState, item: Mapping[str, Any]
-) -> ToolResultContent:
+def _additional_tool_result(state: _ItemState, item: Mapping[str, Any]) -> ToolResultContent:
     kind = state.native_item_kind
     if kind in {"dynamicToolCall", "collabAgentToolCall"}:
         label = "Dynamic" if kind == "dynamicToolCall" else "Collab"
@@ -1551,7 +1550,6 @@ def _completed_snapshot(state: _ItemState, item: Mapping[str, Any]) -> ContentSn
     return _build_snapshot(state, item, completed=True)
 
 
-
 def _item_update(
     method: str,
     params: Mapping[str, Any],
@@ -1560,15 +1558,14 @@ def _item_update(
     rule = _ITEM_UPDATE_RULES.get(method)
     if rule is None or state.native_item_kind != rule[0]:
         _fail(
-            "unsupported_item_mutation", "method",
+            "unsupported_item_mutation",
+            "method",
             f"Codex method {method!r} does not match {state.native_item_kind!r}",
         )
     return rule[1](state, params)
 
 
-def _delta(
-    part_kind: str, field_name: str
-) -> Callable[..., tuple[Literal["append"], TextContent]]:
+def _delta(part_kind: str, field_name: str) -> Callable[..., tuple[Literal["append"], TextContent]]:
     def build(
         state: _ItemState, params: Mapping[str, Any]
     ) -> tuple[Literal["append"], TextContent]:
@@ -1687,9 +1684,7 @@ def _source(method: str, cursor: str, state: _ItemState) -> SourceRef:
         native_item_id=state.native_item_id,
     )
     return source.model_copy(
-        update={
-            "metadata": {**source.metadata, "native_item_kind": state.native_item_kind}
-        }
+        update={"metadata": {**source.metadata, "native_item_kind": state.native_item_kind}}
     )
 
 
@@ -1752,7 +1747,8 @@ def _envelope(
 def _request_id(value: Any, field_name: str) -> str:
     if isinstance(value, bool) or not isinstance(value, (str, int)):
         _fail(
-            "missing_native_identity", field_name,
+            "missing_native_identity",
+            field_name,
             "Codex JSON-RPC id must be a string or integer",
         )
     normalized = str(value)
@@ -1786,7 +1782,8 @@ def _validated_user_input_answers(
         question_id = _required_string(raw_question_id, "result.answers question id")
         if question_id not in question_ids:
             _fail(
-                "invalid_interaction_response", "result.answers",
+                "invalid_interaction_response",
+                "result.answers",
                 "Codex requestUserInput response contains an unknown question id",
             )
         answer = _mapping(raw_answer, f"result.answers.{question_id}")
@@ -1797,7 +1794,8 @@ def _validated_user_input_answers(
             or any(not isinstance(value, str) for value in values)
         ):
             _fail(
-                "invalid_interaction_response", f"result.answers.{question_id}.answers",
+                "invalid_interaction_response",
+                f"result.answers.{question_id}.answers",
                 "Codex requestUserInput answers must be a string array",
             )
         if question_id in secret_question_ids:
@@ -1814,7 +1812,8 @@ def _question_schema(
 ) -> tuple[str | None, dict[str, JsonValue], frozenset[str], frozenset[str]]:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
         _fail(
-            "invalid_interaction_request", "params.questions",
+            "invalid_interaction_request",
+            "params.questions",
             "Codex requestUserInput questions must be an array",
         )
     properties: dict[str, JsonValue] = {}
@@ -1826,13 +1825,15 @@ def _question_schema(
         question_id = _required_string(question.get("id"), f"params.questions[{index}].id")
         if question_id in properties:
             _fail(
-                "invalid_interaction_request", f"params.questions[{index}].id",
+                "invalid_interaction_request",
+                f"params.questions[{index}].id",
                 f"Codex requestUserInput question id {question_id!r} is duplicated",
             )
         is_secret = question.get("isSecret", False)
         if not isinstance(is_secret, bool):
             _fail(
-                "invalid_interaction_request", f"params.questions[{index}].isSecret",
+                "invalid_interaction_request",
+                f"params.questions[{index}].isSecret",
                 "Codex requestUserInput isSecret must be a boolean",
             )
         if is_secret:
@@ -1845,7 +1846,8 @@ def _question_schema(
         if options is not None:
             if not isinstance(options, Sequence) or isinstance(options, (str, bytes)):
                 _fail(
-                    "invalid_interaction_request", f"params.questions[{index}].options",
+                    "invalid_interaction_request",
+                    f"params.questions[{index}].options",
                     "Codex question options must be an array",
                 )
             for option_index, raw_option in enumerate(options):
@@ -1935,7 +1937,8 @@ def _approval_decision(value: Any) -> Literal["approved", "rejected", "canceled"
                 )
             return "approved"
     _fail(
-        "invalid_interaction_response", "result.decision",
+        "invalid_interaction_response",
+        "result.decision",
         f"Unsupported Codex approval decision: {value}",
     )
 
@@ -1949,7 +1952,8 @@ def _required_text(value: Any, field_name: str) -> str:
 def _nonnegative_int(value: Any, field_name: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
         _fail(
-            "invalid_protocol_message", field_name,
+            "invalid_protocol_message",
+            field_name,
             f"Codex {field_name} must be a non-negative integer",
         )
     return value
@@ -1977,21 +1981,24 @@ def _json_value(value: Any) -> JsonValue:
     if isinstance(value, float):
         if not math.isfinite(value):
             _fail(
-                "non_json_protocol_data", "protocol data",
+                "non_json_protocol_data",
+                "protocol data",
                 "Codex protocol data contains a non-finite float",
             )
         return cast(JsonValue, value)
     if isinstance(value, Mapping):
         if any(not isinstance(key, str) for key in value):
             _fail(
-                "non_json_protocol_data", "protocol data",
+                "non_json_protocol_data",
+                "protocol data",
                 "Codex protocol object keys must be strings",
             )
         return cast(JsonValue, {key: _json_value(item) for key, item in value.items()})
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
         return cast(JsonValue, [_json_value(item) for item in value])
     _fail(
-        "non_json_protocol_data", "protocol data",
+        "non_json_protocol_data",
+        "protocol data",
         f"Codex protocol value is not stably JSON serializable: {type(value).__name__}",
     )
 
@@ -1999,7 +2006,8 @@ def _json_value(value: Any) -> JsonValue:
 def _required_string(value: Any, field_name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         _fail(
-            "missing_native_identity", field_name,
+            "missing_native_identity",
+            field_name,
             f"Codex {field_name} must be a non-empty string",
         )
     return value
