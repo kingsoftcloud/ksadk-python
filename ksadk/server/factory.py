@@ -569,15 +569,17 @@ def _wire_agui_if_enabled(app: FastAPI, state: RuntimeAppState, config: RuntimeA
             self._service = service
             self._store = RuntimeEventStore(service)
 
-        async def append_one(self, event: Any) -> Any:
-            existing = await self._service.get_session(event.session_id)
+        async def append_one(self, session_id: str, event: Any) -> Any:
+            existing = await self._service.get_session(session_id)
             if existing is None:
+                metadata = getattr(event, "source", None)
+                meta = metadata.metadata if metadata is not None else {}
                 await self._service.create_session(
-                    event.agent_id,
-                    event.user_id,
-                    event.session_id,
+                    str(meta.get("agent_id") or "agent"),
+                    str(meta.get("user_id") or "user"),
+                    session_id,
                 )
-            return await self._store.append_one(event)
+            return await self._store.append_one(session_id, event)
 
         async def reserve_once(self, event: Any) -> Any:
             existing = await self._service.get_session(event.session_id)

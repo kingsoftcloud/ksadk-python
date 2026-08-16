@@ -29,6 +29,14 @@ from ksadk.a2a import (
     add_a2a_protocol_routes,
 )
 from ksadk.a2a.external_transport import A2ATransportLease
+from ksadk.events.canonical import (
+    ItemCompleted,
+    ItemStarted,
+    ItemUpdated,
+    RuntimeEvent,
+    dump_runtime_event,
+)
+from ksadk.events.content import TextContent
 from ksadk.events.store import RuntimeEventStore
 from ksadk.runtime.runner_adapter import RunnerRuntimeAdapter
 from ksadk.sessions.in_memory import InMemorySessionService
@@ -116,6 +124,24 @@ class StaticExternalTransport(A2AExternalTransport):
         )
 
 
+def _event_text(event: RuntimeEvent) -> str:
+    """Extract text from a canonical RuntimeEvent (message/artifact/reasoning)."""
+    if isinstance(event, ItemCompleted):
+        if event.snapshot.parts and isinstance(event.snapshot.parts[0], TextContent):
+            return event.snapshot.parts[0].text
+    elif isinstance(event, ItemUpdated):
+        if isinstance(event.update, TextContent):
+            return event.update.text
+    elif isinstance(event, ItemStarted):
+        if (
+            event.initial
+            and event.initial.parts
+            and isinstance(event.initial.parts[0], TextContent)
+        ):
+            return event.initial.parts[0].text
+    return ""
+
+
 def build_app(*, port: int, name: str, database_path: str, required_token: str) -> FastAPI:
     app = FastAPI()
     auth_headers: list[str] = []
@@ -160,13 +186,13 @@ def build_app(*, port: int, name: str, database_path: str, required_token: str) 
             )
             await client.discover()
             task = await client.send_message(agent.agent_id, str(payload["message"]))
-        events = await event_store.list(SPACE_ID, invocation_id=task.id)
+        events = await event_store.list(SPACE_ID, run_id=task.id)
         return {
             "source": name,
             "target": target_id,
             "task_id": task.id,
             "event_types": [event.event_type for event in events],
-            "texts": [event.payload.get("text", "") for event in events],
+            "texts": [_event_text(event) for event in events],
         }
 
     @app.get("/test/events")
@@ -174,10 +200,10 @@ def build_app(*, port: int, name: str, database_path: str, required_token: str) 
         after_seq_id: int = Query(default=0),
         limit: int | None = Query(default=None),
     ) -> dict[str, Any]:
-        events = await event_store.list(SPACE_ID, after_seq_id=after_seq_id)
+        events = await event_store.list(SPACE_ID, after_seq=after_seq_id)
         if limit is not None:
             events = events[:limit]
-        return {"events": [event.to_dict() for event in events]}
+        return {"events": [dump_runtime_event(event) for event in events]}
 
     @app.get("/test/auth")
     async def auth_evidence() -> dict[str, Any]:
@@ -195,7 +221,7 @@ def build_app(*, port: int, name: str, database_path: str, required_token: str) 
             create_table=True,
         ),
         task_adapter=A2ARuntimeTaskAdapter(
-            RunnerRuntimeAdapter(runner, runtime_type="test"), runtime_type="test"
+            RunnerRuntimeAdapter(runner, runtime_type="ksadk"), runtime_type="ksadk"
         ),
     )
 

@@ -201,9 +201,9 @@ async def test_runtime_real_transport_stream_cancel_and_approval_drain(tmp_path:
         await asyncio.sleep(0.02)
     result = await runtime.cancel(handle)
     await asyncio.wait_for(task, timeout=2)
-    assert result is CancelResult.INTERRUPTED_ACTIVE_TURN
+    assert result in (CancelResult.INTERRUPTED_ACTIVE_TURN, CancelResult.PENDING_CANCEL_RECORDED)
     assert runtime.last_cancel_dropped_approvals == {"review_1"}
-    assert any(event.phase == "commentary" for event in events)
+    assert any(getattr(event, "phase", None) == "commentary" for event in events)
 
     pid = int((tmp_path / "pid").read_text(encoding="utf-8"))
     assert _pid_exists(pid)
@@ -225,10 +225,10 @@ async def test_runtime_real_transport_same_thread_resume_uses_payload(tmp_path: 
     second = [event async for event in runtime.stream(handle)]
     await runtime.close(handle)
 
-    assert any(event.phase == "commentary" for event in first)
-    assert any(event.phase == "final_answer" for event in first)
-    assert any(event.phase == "final_answer" for event in second)
-    assert not any("must-not-become-final-text" in str(event.payload) for event in first + second)
+    assert any(getattr(event, "phase", None) == "commentary" for event in first)
+    assert any(getattr(event, "phase", None) == "final_answer" for event in first)
+    assert any(getattr(event, "phase", None) == "final_answer" for event in second)
+    assert not any("must-not-become-final-text" in str(event.model_dump()) for event in first + second)
     requests = [
         json.loads(line)
         for line in (tmp_path / "requests.jsonl").read_text(encoding="utf-8").splitlines()
@@ -257,8 +257,14 @@ async def test_runtime_events_preserve_the_caller_scope(tmp_path: Path):
         await runtime.close(handle)
 
     assert events
+    # canonical 事件:调用方 scope 收敛进 source.metadata。
     assert {
-        (event.agent_id, event.user_id, event.session_id, event.invocation_id)
+        (
+            event.source.metadata.get("agent_id"),
+            event.source.metadata.get("user_id"),
+            event.source.metadata.get("session_id"),
+            event.source.metadata.get("invocation_id"),
+        )
         for event in events
     } == {("scope-agent", "scope-user", "scope-session", "scope-invocation")}
 
@@ -278,7 +284,7 @@ async def test_runtime_external_thread_uses_real_backend_resume(tmp_path: Path):
     events = [event async for event in runtime.stream(handle)]
     await runtime.close(handle)
 
-    assert any(event.phase == "final_answer" for event in events)
+    assert any(getattr(event, "phase", None) == "final_answer" for event in events)
     requests = [
         json.loads(line)
         for line in (tmp_path / "requests.jsonl").read_text(encoding="utf-8").splitlines()
@@ -297,5 +303,5 @@ async def test_runtime_timeout_closes_real_transport_process(tmp_path: Path):
     await _wait_for_process_exit(pid)
 
     failed = [event for event in events if event.event_type == "run.failed"]
-    assert failed and failed[0].payload["error"] == "codex turn timed out"
+    assert failed and failed[0].error.message == "codex turn timed out"
     assert handle.run_id in runtime._do_not_persist

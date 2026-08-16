@@ -999,7 +999,7 @@ class AsyncCodexClient(CodexClient):
         """
         payload = notification.payload
         if hasattr(payload, "model_dump"):
-            params = payload.model_dump(mode="json")
+            params = payload.model_dump(mode="json", by_alias=True)
         else:
             params = getattr(payload, "params", None)
             if not isinstance(params, dict):

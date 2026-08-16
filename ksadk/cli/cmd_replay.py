@@ -17,8 +17,13 @@ import json
 import click
 
 from ksadk.cli.resource_common import CONTEXT_SETTINGS
-from ksadk.events.replay import replay_transcript
+from ksadk.events.reducer import StreamReducer
 from ksadk.events.store import RuntimeEventStore
+from ksadk.events.v1_compat import (
+    RuntimeEventV1Parser,
+    RuntimeEventV1ProjectionContext,
+    project_to_v1,
+)
 
 _HELP = dict(help_option_names=["-h", "--help"])
 
@@ -43,9 +48,28 @@ async def _run(session_id: str, *, after_seq_id: int, before_seq_id: int | None,
     from ksadk.sessions import resolve_session_service
 
     store = RuntimeEventStore(resolve_session_service())
-    parser = await replay_transcript(
-        store, session_id, after_seq_id=after_seq_id, before_seq_id=before_seq_id
-    )
+    service = resolve_session_service()
+    session = await service.get_session(session_id)
+    events = await store.list(session_id)
+    parser = RuntimeEventV1Parser()
+    reducers: dict[str, StreamReducer] = {}
+    for event in events:
+        reducer = reducers.get(event.run_id)
+        if reducer is not None and reducer.snapshot().status in {"completed", "failed", "canceled"}:
+            reducer = None
+        if reducer is None:
+            reducer = StreamReducer()
+            reducers[event.run_id] = reducer
+        reducer.apply(event)
+        projection = reducer.snapshot()
+        context = RuntimeEventV1ProjectionContext(
+            agent_id=session.agent_id if session else "",
+            user_id=session.user_id if session else "",
+            session_id=session_id,
+            projection=projection,
+        )
+        for v1_event in project_to_v1(event, mode="identity_replace", context=context):
+            parser.feed(v1_event)
     transcript = parser.transcript()
     if fmt == "json":
         click.echo(json.dumps(transcript, ensure_ascii=False, sort_keys=True))

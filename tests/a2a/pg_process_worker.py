@@ -35,7 +35,17 @@ from google.protobuf.json_format import MessageToDict
 from ksadk.a2a import A2AConfig, A2ARuntimeTaskAdapter, add_a2a_protocol_routes
 from ksadk.a2a.card import build_agent_card
 from ksadk.a2a.resume_store import SQLiteA2AResumeStateStore
-from ksadk.events import EventPhase, EventType, RuntimeEvent
+from ksadk.events.canonical import (
+    ApprovalRequest,
+    ContentSnapshot,
+    ContinuationCreated,
+    InteractionRequested,
+    ItemCompleted,
+    RunCompleted,
+    RunInterrupted,
+    SourceRef,
+)
+from ksadk.events.content import TextContent
 from ksadk.runtime import (
     BaseRuntime,
     CancelResult,
@@ -119,63 +129,79 @@ class _DurableProcessAdapter(RuntimeAdapter):
 
     def stream(self, handle: RunHandle) -> AsyncIterator[RuntimeEvent]:
         async def events() -> AsyncIterator[RuntimeEvent]:
+            # canonical common envelope fields
             common = {
-                "agent_id": "pg-recovery-agent",
-                "user_id": "a2a",
-                "session_id": handle.session_id,
-                "invocation_id": handle.run_id,
+                "schema_version": 2,
+                "run_id": handle.run_id,
+                "scope_id": "scope-1",
+                "source": SourceRef(framework="ksadk"),
             }
             if handle.run_id not in self._resumed:
-                yield RuntimeEvent.create(
-                    EventType.TEXT_COMPLETED,
-                    seq_id=1,
-                    phase=EventPhase.COMMENTARY.value,
-                    payload={"text": "durable draft"},
+                yield ItemCompleted(
                     **common,
+                    event_id="evt-text-draft",
+                    seq=1,
+                    timestamp=1.0,
+                    item_id="msg-1",
+                    item_kind="message",
+                    snapshot=ContentSnapshot(
+                        parts=(TextContent(part_id="text-0", text="durable draft"),)
+                    ),
                 )
-                yield RuntimeEvent.create(
-                    EventType.APPROVAL_REQUESTED,
-                    seq_id=2,
-                    payload={
-                        "approval_id": "approval-1",
-                        "call_id": "approval-1",
-                        "kind": "tool",
-                        "detail": {"prompt": "Approve the durable operation?"},
-                    },
+                yield InteractionRequested(
                     **common,
+                    event_id="evt-approval-1",
+                    seq=2,
+                    timestamp=2.0,
+                    interaction_id="approval-1",
+                    interaction_kind="approval",
+                    request=ApprovalRequest(
+                        call_id="approval-1",
+                        kind="tool",
+                        detail={"prompt": "Approve the durable operation?"},
+                    ),
                 )
-                yield RuntimeEvent.create(
-                    EventType.CHECKPOINT_CREATED,
-                    seq_id=3,
-                    payload={
-                        "checkpoint_id": str(handle.native_ref["checkpoint_id"]),
-                        "granularity": "snapshot",
-                    },
+                yield ContinuationCreated(
                     **common,
+                    event_id="evt-checkpoint-1",
+                    seq=3,
+                    timestamp=3.0,
+                    continuation_id=str(handle.native_ref["checkpoint_id"]),
+                    continuation_kind="graph_checkpoint",
+                    resumable=True,
+                    ref={"granularity": "snapshot"},
                 )
-                yield RuntimeEvent.create(
-                    EventType.RUN_INTERRUPTED,
-                    seq_id=4,
-                    payload={
-                        "status": "interrupted",
-                        "reason": "approval_required",
-                        "prompt": "Approve?",
-                    },
+                yield RunInterrupted(
                     **common,
+                    event_id="evt-interrupted-1",
+                    seq=4,
+                    timestamp=4.0,
+                    status="interrupted",
+                    reason="Approve?",
                 )
                 return
-            yield RuntimeEvent.create(
-                EventType.TEXT_COMPLETED,
-                seq_id=5,
-                phase=EventPhase.FINAL_ANSWER.value,
-                payload={"text": "continued by process B"},
+            yield ItemCompleted(
                 **common,
+                event_id="evt-text-continued",
+                seq=5,
+                timestamp=5.0,
+                item_id="msg-1",
+                item_kind="message",
+                snapshot=ContentSnapshot(
+                    parts=(
+                        TextContent(
+                            part_id="text-0", text="continued by process B"
+                        ),
+                    )
+                ),
             )
-            yield RuntimeEvent.create(
-                EventType.RUN_COMPLETED,
-                seq_id=6,
-                payload={"status": "completed"},
+            yield RunCompleted(
                 **common,
+                event_id="evt-run-completed",
+                seq=6,
+                timestamp=6.0,
+                status="completed",
+                output_refs=(),
             )
 
         return events()

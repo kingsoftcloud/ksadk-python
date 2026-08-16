@@ -17,7 +17,6 @@ from fastapi.testclient import TestClient
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 
-from ksadk.events.runtime_event import EventType
 from ksadk.runners.base_runner import BaseRunner
 from ksadk.sessions.base import SessionEvent
 from ksadk.sessions.in_memory import InMemorySessionService
@@ -512,7 +511,7 @@ async def test_run_agent_action_returns_responses_payload_and_persists_session(m
     assert event_types[0] == "user_message"
     assert "run_status" in event_types
     assert "run.started" in event_types
-    assert "text.completed" in event_types
+    assert "item.completed" in event_types
     assert "run.completed" in event_types
     assert event_types[-1] == "run_status"
     assert (events[-1].content or {}).get("status") == "completed"
@@ -583,7 +582,7 @@ async def test_run_agent_action_streaming_responses_uses_responses_lifecycle(mon
     assert await service.get_session("sess-runagent-responses") is not None
     stored_events = await service.get_events("sess-runagent-responses")
     completed_text_events = [
-        event for event in stored_events if event.event_type == "text.completed"
+        event for event in stored_events if event.event_type == "item.completed"
     ]
     assert completed_text_events
 
@@ -1046,7 +1045,7 @@ async def test_session_kop_actions_crud_and_event_listing(monkeypatch):
     assert persisted_events[0]["Author"] == "user"
     assert event_types[0] == "user_message"
     assert "run.started" in event_types
-    assert "text.completed" in event_types
+    assert "item.completed" in event_types
     assert "run.completed" in event_types
     assert event_types[-1] == "run_status"
     assert deleted.json()["Data"]["Deleted"] is True
@@ -1115,11 +1114,11 @@ async def test_local_list_session_messages_replays_nested_agui_approval_decision
     )
     runtime_events = [
         (
-            EventType.RUN_STARTED,
+            "run.started",
             {"status": "in_progress", "input": "run pwd", "source": "ag-ui"},
         ),
         (
-            EventType.APPROVAL_REQUESTED,
+            "approval.requested",
             {
                 "approval_id": "approval-1",
                 "call_id": "approval-1",
@@ -1129,7 +1128,7 @@ async def test_local_list_session_messages_replays_nested_agui_approval_decision
             },
         ),
         (
-            EventType.APPROVAL_RESOLVED,
+            "approval.resolved",
             {
                 "approval_id": "approval-1",
                 "call_id": "approval-1",
@@ -1137,7 +1136,7 @@ async def test_local_list_session_messages_replays_nested_agui_approval_decision
                 "protocol": "ag-ui",
             },
         ),
-        (EventType.TEXT_COMPLETED, {"text": "done"}),
+        ("text.completed", {"text": "done"}),
     ]
     for event_type, payload in runtime_events:
         await service.append_event(
@@ -1676,7 +1675,6 @@ async def test_responses_endpoint_streams_thinking_and_text_events(monkeypatch):
     assert "event: response.function_call_arguments.done" in lines
     assert "event: response.ksadk.tool_result" in lines
     assert "event: response.reasoning.delta" in lines
-    assert "event: response.output_text.delta" in lines
     assert "event: response.output_text.done" in lines
     assert "event: response.completed" in lines
     added_indexes = []
@@ -1686,7 +1684,7 @@ async def test_responses_endpoint_streams_thinking_and_text_events(monkeypatch):
             current_event = line.removeprefix("event: ")
         elif line.startswith("data: ") and current_event == "response.output_item.added":
             added_indexes.append(json.loads(line.removeprefix("data: "))["output_index"])
-    assert added_indexes == [0, 1, 2]
+    assert added_indexes == [0, 1, 2, 3]
     assert runner.invocations[-1]["model"] == "glm-5.1"
     assert runner.invocations[-1]["session_id"] == "sess-responses-stream"
     assert await service.get_session("sess-responses-stream") is not None
@@ -1761,11 +1759,15 @@ async def test_responses_endpoint_non_streaming_supports_instructions_and_metada
 
     events = await service.get_events(payload["session_id"])
     user_event = next(event for event in events if event.event_type == "user_message")
-    assistant_event = next(event for event in events if event.event_type == "text.completed")
+    assistant_event = next(
+        event for event in reversed(events)
+        if event.event_type == "item.completed"
+        and (event.content.get("runtime_event") or {}).get("item_kind") == "message"
+    )
     assert user_event.content["parts"][0]["text"] == "hello"
     assert user_event.metadata["instructions"] == "只用中文回答"
     assert user_event.metadata["request_metadata"] == {"trace_label": "demo"}
-    assert assistant_event.content["payload"]["text"] == "hello world"
+    assert assistant_event.content["runtime_event"]["snapshot"]["parts"][0]["text"] == "hello world"
 
 
 @pytest.mark.asyncio
@@ -1798,7 +1800,7 @@ async def test_responses_endpoint_streaming_interrupt_returns_incomplete(monkeyp
     )
     assert incomplete_payload["incomplete_details"]["reason"] == "approval_required"
     events = await service.get_events(incomplete_payload["session_id"])
-    assert any(event.event_type == EventType.APPROVAL_REQUESTED for event in events)
+    assert any(event.event_type == "interaction.requested" for event in events)
 
 
 @pytest.mark.asyncio

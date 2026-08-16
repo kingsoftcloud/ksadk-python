@@ -50,7 +50,18 @@ from ksadk.evaluation import (
     TargetRef,
     TargetRunStatus,
 )
-from ksadk.events import EventPhase, EventType, RuntimeEvent
+from ksadk.events.canonical import (
+    ApprovalRequest,
+    ContentSnapshot,
+    ContinuationCreated,
+    InteractionRequested,
+    ItemCompleted,
+    RunCanceled,
+    RunCompleted,
+    RunInterrupted,
+    SourceRef,
+)
+from ksadk.events.content import TextContent
 from ksadk.runtime.adapter import (
     BaseRuntime,
     CancelResult,
@@ -115,7 +126,7 @@ def _build_app(task_dsn: str, runner=None) -> tuple[FastAPI, object]:
         app,
         config,
         task_adapter=A2ARuntimeTaskAdapter(
-            RunnerRuntimeAdapter(runner, runtime_type="test"), runtime_type="test"
+            RunnerRuntimeAdapter(runner, runtime_type="ksadk"), runtime_type="ksadk"
         ),
     )
     return app, server
@@ -345,7 +356,7 @@ async def test_hosted_to_hosted(tmp_path):
             create_table=True,
         ),
         task_adapter=A2ARuntimeTaskAdapter(
-            RunnerRuntimeAdapter(runner_b, runtime_type="test"), runtime_type="test"
+            RunnerRuntimeAdapter(runner_b, runtime_type="ksadk"), runtime_type="ksadk"
         ),
     )
     card_b = build_agent_card(name="agent-b", base_url="http://agent-b", skills=["echo"])
@@ -362,7 +373,7 @@ async def test_hosted_to_hosted(tmp_path):
             create_table=True,
         ),
         task_adapter=A2ARuntimeTaskAdapter(
-            RunnerRuntimeAdapter(runner_a, runtime_type="test"), runtime_type="test"
+            RunnerRuntimeAdapter(runner_a, runtime_type="ksadk"), runtime_type="ksadk"
         ),
     )
     client, hc = await _client_for(
@@ -432,43 +443,60 @@ class _HitlRuntimeAdapter(RuntimeAdapter):
     def stream(self, handle: RunHandle):  # noqa: ANN201
         async def _events():
             if self.resume_payload is None:
-                yield RuntimeEvent.create(
-                    EventType.RUN_INTERRUPTED,
-                    agent_id="hitl-agent",
-                    user_id="tenant",
-                    session_id=handle.session_id,
-                    invocation_id=handle.run_id,
-                    seq_id=1,
-                    payload={"status": "input_required", "prompt": "需要审批才能继续"},
+                yield RunInterrupted(
+                    schema_version=2,
+                    event_id="evt-interrupted-1",
+                    seq=1,
+                    timestamp=1.0,
+                    run_id=handle.run_id,
+                    scope_id="scope-1",
+                    source=SourceRef(framework="ksadk"),
+                    status="interrupted",
+                    reason="需要审批才能继续",
                 )
-                yield RuntimeEvent.create(
-                    EventType.CHECKPOINT_CREATED,
-                    agent_id="hitl-agent",
-                    user_id="tenant",
-                    session_id=handle.session_id,
-                    invocation_id=handle.run_id,
-                    seq_id=2,
-                    payload={"checkpoint_id": "ck-1", "granularity": "snapshot"},
+                yield ContinuationCreated(
+                    schema_version=2,
+                    event_id="evt-checkpoint-1",
+                    seq=2,
+                    timestamp=2.0,
+                    run_id=handle.run_id,
+                    scope_id="scope-1",
+                    source=SourceRef(framework="ksadk"),
+                    continuation_id="ck-1",
+                    continuation_kind="graph_checkpoint",
+                    resumable=True,
+                    ref={"granularity": "snapshot"},
                 )
                 return
-            yield RuntimeEvent.create(
-                EventType.TEXT_COMPLETED,
-                agent_id="hitl-agent",
-                user_id="tenant",
-                session_id=handle.session_id,
-                invocation_id=handle.run_id,
-                seq_id=3,
-                phase=EventPhase.FINAL_ANSWER.value,
-                payload={"text": f"approved:{self.resume_payload.data}"},
+            yield ItemCompleted(
+                schema_version=2,
+                event_id="evt-text-completed-1",
+                seq=3,
+                timestamp=3.0,
+                run_id=handle.run_id,
+                scope_id="scope-1",
+                source=SourceRef(framework="ksadk"),
+                item_id="msg-1",
+                item_kind="message",
+                snapshot=ContentSnapshot(
+                    parts=(
+                        TextContent(
+                            part_id="text-0",
+                            text=f"approved:{self.resume_payload.data}",
+                        ),
+                    )
+                ),
             )
-            yield RuntimeEvent.create(
-                EventType.RUN_COMPLETED,
-                agent_id="hitl-agent",
-                user_id="tenant",
-                session_id=handle.session_id,
-                invocation_id=handle.run_id,
-                seq_id=4,
-                payload={"status": "completed"},
+            yield RunCompleted(
+                schema_version=2,
+                event_id="evt-run-completed-1",
+                seq=4,
+                timestamp=4.0,
+                run_id=handle.run_id,
+                scope_id="scope-1",
+                source=SourceRef(framework="ksadk"),
+                status="completed",
+                output_refs=(),
             )
 
         return _events()
@@ -570,14 +598,15 @@ class _RecordingRuntimeAdapter(RuntimeAdapter):
     def stream(self, handle):  # noqa: ANN201
         async def _events():
             await self.cancelled.wait()
-            yield RuntimeEvent.create(
-                EventType.RUN_CANCELED,
-                agent_id="echo-agent",
-                user_id="tenant",
-                session_id=handle.session_id,
-                invocation_id=handle.run_id,
-                seq_id=1,
-                payload={"status": "canceled"},
+            yield RunCanceled(
+                schema_version=2,
+                event_id="evt-canceled-1",
+                seq=1,
+                timestamp=1.0,
+                run_id=handle.run_id,
+                scope_id="scope-1",
+                source=SourceRef(framework="ksadk"),
+                status="canceled",
             )
 
         return _events()

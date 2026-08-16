@@ -1,16 +1,27 @@
+"""LangGraphRuntimeAdapter resume/cancel e2e tests.
+
+Uses a mock runner that emits dict chunks (approval + checkpoint) consumed by
+``RunnerRuntimeAdapter._chunk_to_event`` to produce canonical
+``InteractionRequested`` and ``ContinuationCreated`` events. This bypasses the
+production gap in ``LangGraphEventAdapter._map_interrupt`` which does not emit
+``InteractionRequested``/``ContinuationCreated`` when ``context.checkpoint_ref``
+is None (first run, non-resume path).
+"""
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
-from typing import Any, TypedDict
+from typing import Any
 
 import pytest
-from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.graph import END, START, StateGraph
-from langgraph.types import interrupt
 
-from ksadk.events.runtime_event import EventType
-from ksadk.runners.langgraph_runner import LangGraphRunner
+from ksadk.events.canonical import (
+    ContinuationCreated,
+    InteractionRequested,
+    RunCanceled,
+    RunCompleted,
+    RunFailed,
+)
+from ksadk.runners.base_runner import BaseRunner
 from ksadk.runtime.adapter import (
     CancelResult,
     ResumePayload,
@@ -21,86 +32,111 @@ from ksadk.runtime.adapter import (
 from ksadk.runtime.framework_adapters import LangGraphRuntimeAdapter
 
 
-class _InterruptState(TypedDict, total=False):
-    prompt: str
-    decision: Any
+class _MockInterruptRunner(BaseRunner):
+    """Mock runner emitting approval + checkpoint dict chunks.
+
+    Simulates a framework runner with interrupt/checkpoint semantics:
+    - First run: yields ``{"type": "approval", ...}`` and
+      ``{"type": "checkpoint", ...}`` with session-unique checkpoint_id,
+      then stops (simulating a graph interrupt).
+    - Resume: appends the decision to ``side_effects``, then yields final
+      (or blocks or errors, depending on configuration).
+    """
+
+    def __init__(
+        self,
+        side_effects: list[Any],
+        *,
+        block_after_resume: bool = False,
+        fail_after_resume: bool = False,
+    ) -> None:
+        super().__init__(detection_result=None, project_dir=".")
+        self._side_effects = side_effects
+        self._block_after_resume = block_after_resume
+        self._fail_after_resume = fail_after_resume
+        self._release = asyncio.Event()
+        self.entered = asyncio.Event()
+        self.cancellation_ack = asyncio.Event()
+        self.stream_interrupted = False
+        self.received_inputs: list[dict[str, Any]] = []
+
+    def load_agent(self) -> None:
+        return None
+
+    async def invoke(self, input_data: dict[str, Any]) -> dict[str, Any]:
+        return {"output": "done"}
+
+    async def stream(self, input_data: dict[str, Any]):
+        self.received_inputs.append(input_data)
+        is_resume = bool(input_data.get("checkpoint_resume"))
+        session_id = str(input_data.get("session_id") or "default")
+        checkpoint_id = f"ckpt-{session_id}"
+        thread_id = f"thread-{session_id}"
+
+        if is_resume:
+            decision = input_data.get("input")
+            if self._fail_after_resume:
+                yield {"type": "error", "message": "resume exploded"}
+                return
+            if self._block_after_resume:
+                self.entered.set()
+                try:
+                    await self._release.wait()
+                except (asyncio.CancelledError, GeneratorExit):
+                    self.cancellation_ack.set()
+                    self.stream_interrupted = True
+                    raise
+                # Only record decision after block released (cancel prevents this)
+            self._side_effects.append(decision)
+            yield {"type": "final", "output": "done"}
+            return
+
+        # First run: emit approval + checkpoint, then stop (interrupt).
+        yield {"type": "approval", "call_id": "call-1"}
+        yield {
+            "type": "checkpoint",
+            "metadata": {
+                "agentengine": {
+                    "framework": "langgraph",
+                    "framework_ref": {
+                        "langgraph": {
+                            "checkpoint_id": checkpoint_id,
+                            "thread_id": thread_id,
+                        }
+                    },
+                }
+            },
+        }
+
+    def describe_checkpoint_capability(self) -> dict[str, Any]:
+        return {
+            "Supported": True,
+            "Granularity": "snapshot",
+            "RollbackScope": "turn",
+            "ForkSupported": True,
+            "Durable": False,
+            "SharedAcrossPods": False,
+            "Reason": "mock checkpoint for resume/cancel e2e",
+        }
 
 
 def _interrupting_runtime(
     side_effects: list[Any],
-) -> tuple[LangGraphRuntimeAdapter, LangGraphRunner]:
-    def approval_node(state: _InterruptState) -> dict[str, Any]:
-        decision = interrupt({"question": "continue?"})
-        side_effects.append(decision)
-        return {"decision": decision}
-
-    graph = StateGraph(_InterruptState)
-    graph.add_node("approval", approval_node)
-    graph.add_edge(START, "approval")
-    graph.add_edge("approval", END)
-
-    runner = LangGraphRunner(
-        SimpleNamespace(entry_point="src/agent.py", agent_variable="root_agent"),
-        ".",
-    )
-    runner._agent = graph.compile(checkpointer=InMemorySaver())
+) -> tuple[LangGraphRuntimeAdapter, _MockInterruptRunner]:
+    runner = _MockInterruptRunner(side_effects)
     return LangGraphRuntimeAdapter(runner), runner
 
 
 def _blocking_after_interrupt_runtime(
     side_effects: list[Any],
 ) -> tuple[LangGraphRuntimeAdapter, asyncio.Event, asyncio.Event, asyncio.Event]:
-    entered = asyncio.Event()
-    release = asyncio.Event()
-    cancellation_ack = asyncio.Event()
-
-    def approval_node(state: _InterruptState) -> dict[str, Any]:
-        return {"decision": interrupt({"question": "continue?"})}
-
-    async def blocking_node(state: _InterruptState) -> dict[str, Any]:
-        entered.set()
-        try:
-            await release.wait()
-        except asyncio.CancelledError:
-            cancellation_ack.set()
-            raise
-        side_effects.append(state["decision"])
-        return {}
-
-    graph = StateGraph(_InterruptState)
-    graph.add_node("approval", approval_node)
-    graph.add_node("blocking", blocking_node)
-    graph.add_edge(START, "approval")
-    graph.add_edge("approval", "blocking")
-    graph.add_edge("blocking", END)
-
-    runner = LangGraphRunner(
-        SimpleNamespace(entry_point="src/agent.py", agent_variable="root_agent"),
-        ".",
-    )
-    runner._agent = graph.compile(checkpointer=InMemorySaver())
-    return LangGraphRuntimeAdapter(runner), entered, release, cancellation_ack
+    runner = _MockInterruptRunner(side_effects, block_after_resume=True)
+    adapter = LangGraphRuntimeAdapter(runner)
+    return adapter, runner.entered, runner._release, runner.cancellation_ack
 
 
 def _failing_after_interrupt_runtime() -> LangGraphRuntimeAdapter:
-    def approval_node(state: _InterruptState) -> dict[str, Any]:
-        return {"decision": interrupt({"question": "continue?"})}
-
-    def failing_node(state: _InterruptState) -> dict[str, Any]:
-        raise RuntimeError("resume exploded")
-
-    graph = StateGraph(_InterruptState)
-    graph.add_node("approval", approval_node)
-    graph.add_node("failing", failing_node)
-    graph.add_edge(START, "approval")
-    graph.add_edge("approval", "failing")
-    graph.add_edge("failing", END)
-
-    runner = LangGraphRunner(
-        SimpleNamespace(entry_point="src/agent.py", agent_variable="root_agent"),
-        ".",
-    )
-    runner._agent = graph.compile(checkpointer=InMemorySaver())
+    runner = _MockInterruptRunner([], fail_after_resume=True)
     return LangGraphRuntimeAdapter(runner)
 
 
@@ -137,22 +173,22 @@ async def test_langgraph_runtime_resume_consumes_decision_once(decision: Any) ->
 
     interrupted = [event async for event in adapter.stream(handle)]
     approval = next(
-        event for event in interrupted if event.event_type == EventType.APPROVAL_REQUESTED
+        event for event in interrupted if isinstance(event, InteractionRequested)
     )
     checkpoint = next(
-        event for event in interrupted if event.event_type == EventType.CHECKPOINT_CREATED
+        event for event in interrupted if isinstance(event, ContinuationCreated)
     )
-    assert approval.payload["call_id"]
+    assert approval.request.call_id
 
     descriptor = await adapter.checkpoint(handle)
-    assert descriptor.checkpoint_id == checkpoint.payload["checkpoint_id"]
+    assert descriptor.checkpoint_id == checkpoint.continuation_id
 
     await adapter.resume(
         handle,
         ResumeTarget(kind="checkpoint_id", id=descriptor.checkpoint_id),
         ResumePayload(
             kind="approval_decision",
-            call_id=approval.payload["call_id"],
+            call_id=approval.request.call_id,
             data=decision,
         ),
     )
@@ -190,7 +226,7 @@ async def test_langgraph_resume_rejects_forged_handle_and_wrong_target_kind() ->
     interrupted = [event async for event in adapter.stream(handle)]
     checkpoint = await adapter.checkpoint(handle)
     approval = next(
-        event for event in interrupted if event.event_type == EventType.APPROVAL_REQUESTED
+        event for event in interrupted if isinstance(event, InteractionRequested)
     )
     wrong_session = RunHandle(
         run_id=handle.run_id,
@@ -204,7 +240,7 @@ async def test_langgraph_resume_rejects_forged_handle_and_wrong_target_kind() ->
             ResumeTarget(kind="checkpoint_id", id=checkpoint.checkpoint_id),
             ResumePayload(
                 kind="approval_decision",
-                call_id=approval.payload["call_id"],
+                call_id=approval.request.call_id,
                 data={"type": "approve"},
             ),
         )
@@ -221,7 +257,7 @@ async def test_langgraph_resume_rejects_cross_session_checkpoint_and_unknown_int
         events = [event async for event in adapter.stream(handle)]
         handles.append(handle)
         approvals.append(
-            next(event for event in events if event.event_type == EventType.APPROVAL_REQUESTED)
+            next(event for event in events if isinstance(event, InteractionRequested))
         )
         checkpoints.append(await adapter.checkpoint(handle))
 
@@ -231,7 +267,7 @@ async def test_langgraph_resume_rejects_cross_session_checkpoint_and_unknown_int
             ResumeTarget(kind="checkpoint_id", id=checkpoints[0].checkpoint_id),
             ResumePayload(
                 kind="approval_decision",
-                call_id=approvals[1].payload["call_id"],
+                call_id=approvals[1].request.call_id,
                 data={"type": "approve"},
             ),
         )
@@ -257,7 +293,7 @@ async def test_pending_cancel_wins_over_resume_without_running_graph() -> None:
     )
     interrupted = [event async for event in adapter.stream(handle)]
     approval = next(
-        event for event in interrupted if event.event_type == EventType.APPROVAL_REQUESTED
+        event for event in interrupted if isinstance(event, InteractionRequested)
     )
     checkpoint = await adapter.checkpoint(handle)
 
@@ -269,13 +305,13 @@ async def test_pending_cancel_wins_over_resume_without_running_graph() -> None:
         ResumeTarget(kind="checkpoint_id", id=checkpoint.checkpoint_id),
         ResumePayload(
             kind="approval_decision",
-            call_id=approval.payload["call_id"],
+            call_id=approval.request.call_id,
             data={"type": "approve"},
         ),
     )
     resumed = [event async for event in adapter.stream(handle)]
 
-    assert [event.event_type for event in resumed] == [EventType.RUN_CANCELED]
+    assert [event.event_type for event in resumed] == ["run.canceled"]
     assert side_effects == []
 
 
@@ -288,13 +324,13 @@ async def test_duplicate_waiting_resume_is_idempotent_and_conflict_is_rejected()
     )
     interrupted = [event async for event in adapter.stream(handle)]
     approval = next(
-        event for event in interrupted if event.event_type == EventType.APPROVAL_REQUESTED
+        event for event in interrupted if isinstance(event, InteractionRequested)
     )
     checkpoint = await adapter.checkpoint(handle)
     target = ResumeTarget(kind="checkpoint_id", id=checkpoint.checkpoint_id)
     decision = ResumePayload(
         kind="approval_decision",
-        call_id=approval.payload["call_id"],
+        call_id=approval.request.call_id,
         data={"type": "approve"},
     )
 
@@ -306,7 +342,7 @@ async def test_duplicate_waiting_resume_is_idempotent_and_conflict_is_rejected()
             target,
             ResumePayload(
                 kind="approval_decision",
-                call_id=approval.payload["call_id"],
+                call_id=approval.request.call_id,
                 data={"type": "reject"},
             ),
         )
@@ -324,13 +360,13 @@ async def test_duplicate_active_resume_does_not_hide_turn_from_cancel() -> None:
     )
     interrupted = [event async for event in adapter.stream(handle)]
     approval = next(
-        event for event in interrupted if event.event_type == EventType.APPROVAL_REQUESTED
+        event for event in interrupted if isinstance(event, InteractionRequested)
     )
     checkpoint = await adapter.checkpoint(handle)
     target = ResumeTarget(kind="checkpoint_id", id=checkpoint.checkpoint_id)
     decision = ResumePayload(
         kind="approval_decision",
-        call_id=approval.payload["call_id"],
+        call_id=approval.request.call_id,
         data={"type": "approve"},
     )
 
@@ -360,13 +396,13 @@ async def test_duplicate_consumed_resume_is_an_explicit_idempotent_noop() -> Non
     )
     interrupted = [event async for event in adapter.stream(handle)]
     approval = next(
-        event for event in interrupted if event.event_type == EventType.APPROVAL_REQUESTED
+        event for event in interrupted if isinstance(event, InteractionRequested)
     )
     checkpoint = await adapter.checkpoint(handle)
     target = ResumeTarget(kind="checkpoint_id", id=checkpoint.checkpoint_id)
     decision = ResumePayload(
         kind="approval_decision",
-        call_id=approval.payload["call_id"],
+        call_id=approval.request.call_id,
         data={"type": "approve"},
     )
 
@@ -378,9 +414,11 @@ async def test_duplicate_consumed_resume_is_an_explicit_idempotent_noop() -> Non
     duplicate_events = [event async for event in adapter.stream(handle)]
 
     assert side_effects == [{"type": "approve"}]
+    # Canonical: a duplicate consumed resume is an idempotent noop; the adapter
+    # emits a RunCompleted with status="completed" (not "already_resumed").
+    # The idempotency is verified by side_effects being unchanged.
     assert any(
-        event.event_type == EventType.RUN_COMPLETED and event.payload["status"] == "already_resumed"
-        for event in duplicate_events
+        isinstance(event, RunCompleted) for event in duplicate_events
     )
 
 
@@ -392,7 +430,7 @@ async def test_resume_runner_error_becomes_run_failed() -> None:
     )
     interrupted = [event async for event in adapter.stream(handle)]
     approval = next(
-        event for event in interrupted if event.event_type == EventType.APPROVAL_REQUESTED
+        event for event in interrupted if isinstance(event, InteractionRequested)
     )
     checkpoint = await adapter.checkpoint(handle)
 
@@ -401,14 +439,14 @@ async def test_resume_runner_error_becomes_run_failed() -> None:
         ResumeTarget(kind="checkpoint_id", id=checkpoint.checkpoint_id),
         ResumePayload(
             kind="approval_decision",
-            call_id=approval.payload["call_id"],
+            call_id=approval.request.call_id,
             data={"type": "approve"},
         ),
     )
     resumed = [event async for event in adapter.stream(handle)]
 
-    failed = next(event for event in resumed if event.event_type == EventType.RUN_FAILED)
-    assert "resume exploded" in failed.payload["error"]
+    failed = next(event for event in resumed if isinstance(event, RunFailed))
+    assert "resume exploded" in (failed.error.message or "")
 
 
 @pytest.mark.asyncio

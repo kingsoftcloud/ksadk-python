@@ -11,7 +11,34 @@ from typing import Any
 from uuid import uuid4
 
 from ksadk.agui.a2ui_projection import project_a2ui_operations
-from ksadk.events.runtime_event import EventType, RuntimeEvent
+from ksadk.events.canonical import (
+    ContinuationCreated,
+    ContinuationResumed,
+    ErrorInfo,
+    InteractionRequested,
+    InteractionResolved,
+    ItemCompleted,
+    ItemFailed,
+    ItemStarted,
+    ItemUpdated,
+    RunCanceled,
+    RunCompleted,
+    RunFailed,
+    RunInterrupted,
+    RunProgress,
+    RunStarted,
+    RuntimeEvent,
+    SourceRef,
+    UsageReported,
+    dump_runtime_event,
+)
+from ksadk.events.content import (
+    ContentSnapshot,
+    DataContent,
+    TextContent,
+    ToolCallContent,
+    ToolResultContent,
+)
 from ksadk.runtime import (
     CONVERSATION_PREPROCESSING_METADATA_KEY,
     PauseResult,
@@ -119,6 +146,7 @@ class StudioRunService:
         final_text = ""
         streamed_final = ""
         runtime_duration_ms: int | None = None
+        item_phases: dict[tuple[str, str], str | None] = {}
         control_queue: asyncio.Queue[tuple[str, ResumePayload | None]] = asyncio.Queue()
         self._control_queues[run_id] = control_queue
         try:
@@ -158,60 +186,69 @@ class StudioRunService:
                     persist(event)
                     if self._cancel_flags.get(run_id):
                         raise asyncio.CancelledError()
-                    if event.event_type == EventType.TEXT_DELTA and event.phase == "final_answer":
-                        text = str(event.payload.get("text") or "")
-                        if event.payload.get("replace"):
+                    if isinstance(event, ItemStarted) and event.item_kind == "message":
+                        item_phases[(event.scope_id, event.item_id)] = event.phase
+                    elif (
+                        isinstance(event, ItemUpdated)
+                        and event.item_kind == "message"
+                        and item_phases.get(
+                            (event.scope_id, event.item_id), "final_answer"
+                        )
+                        == "final_answer"
+                    ):
+                        text = event.update.text if isinstance(event.update, TextContent) else ""
+                        if event.op == "replace":
                             streamed_final = text
                         else:
                             streamed_final += text
                     elif (
-                        event.event_type == EventType.TEXT_COMPLETED
-                        and event.phase == "final_answer"
-                    ):
-                        final_text = str(event.payload.get("text") or "")
-                    elif event.event_type == EventType.USAGE_REPORTED:
-                        record.usage = Usage(
-                            input_tokens=int(event.payload.get("input_tokens") or 0),
-                            output_tokens=int(event.payload.get("output_tokens") or 0),
-                            total_tokens=int(event.payload.get("total_tokens") or 0),
-                            cached_input_tokens=int(event.payload.get("cached_tokens") or 0),
-                            reasoning_output_tokens=int(event.payload.get("reasoning_tokens") or 0),
-                            reported=True,
-                            source=str(event.payload.get("source") or runtime_type),
+                        isinstance(event, ItemCompleted)
+                        and event.item_kind == "message"
+                        and item_phases.get(
+                            (event.scope_id, event.item_id), "final_answer"
                         )
-                    elif event.event_type in {
-                        EventType.APPROVAL_REQUESTED,
-                        EventType.A2UI_INTERACTION,
-                    }:
+                        == "final_answer"
+                    ):
+                        for part in event.snapshot.parts:
+                            if isinstance(part, TextContent):
+                                final_text = part.text
+                                break
+                    elif isinstance(event, UsageReported):
+                        record.usage = Usage(
+                            input_tokens=event.input_tokens,
+                            output_tokens=event.output_tokens,
+                            total_tokens=event.total_tokens,
+                            cached_input_tokens=event.cached_tokens,
+                            reasoning_output_tokens=event.reasoning_tokens,
+                            reported=True,
+                            source=str(event.source.framework or runtime_type),
+                        )
+                    elif isinstance(event, InteractionRequested):
                         record.status = RunStatus.WAITING_INPUT
                         self._waiting_modes[run_id] = "live"
                         self.event_store.save(record)
-                        if event.event_type == EventType.APPROVAL_REQUESTED:
+                        if event.interaction_kind == "approval":
                             self._persist_approval_surface(record, event, on_event=on_event)
-                    elif event.event_type in {
-                        EventType.APPROVAL_RESOLVED,
-                        EventType.A2UI_ACTION,
-                    }:
+                    elif isinstance(event, InteractionResolved):
                         record.status = RunStatus.RUNNING
                         self._waiting_modes.pop(run_id, None)
                         self.event_store.save(record)
-                    elif event.event_type == EventType.RUN_FAILED:
+                    elif isinstance(event, RunFailed):
                         terminal_seen = True
                         record.status = RunStatus.FAILED
                         record.error = {
                             "code": "RUNTIME_RUN_FAILED",
-                            "message": str(event.payload.get("error") or "Runtime 运行失败"),
+                            "message": str(event.error.message or "Runtime 运行失败"),
                         }
-                    elif event.event_type == EventType.RUN_CANCELED:
+                    elif isinstance(event, RunCanceled):
                         terminal_seen = True
                         record.status = RunStatus.CANCELLED
                         record.error = {
                             "code": "RUN_CANCELLED",
-                            "message": str(event.payload.get("status") or "运行已取消"),
+                            "message": str(event.reason or "运行已取消"),
                         }
-                    elif event.event_type == EventType.RUN_INTERRUPTED:
-                        interrupted_status = str(event.payload.get("status") or "")
-                        if interrupted_status == "paused":
+                    elif isinstance(event, RunInterrupted):
+                        if event.reason == "user_pause":
                             record.status = RunStatus.PAUSED
                             should_resume = True
                         elif record.status == RunStatus.WAITING_INPUT:
@@ -222,13 +259,17 @@ class StudioRunService:
                             record.status = RunStatus.INTERRUPTED
                             record.error = {
                                 "code": "RUN_INTERRUPTED",
-                                "message": interrupted_status or "运行已中断",
+                                "message": event.reason or "运行已中断",
                             }
                         self.event_store.save(record)
-                    elif event.event_type == EventType.RUN_COMPLETED:
+                    elif isinstance(event, RunCompleted):
                         terminal_seen = True
                         record.status = RunStatus.COMPLETED
-                        raw_duration = event.payload.get("duration_ms")
+                        raw_duration = event.source.metadata.get("duration_ms")
+                        if raw_duration is None:
+                            metrics = event.source.metadata.get("metrics")
+                            if isinstance(metrics, dict):
+                                raw_duration = metrics.get("duration_ms")
                         if raw_duration is not None:
                             runtime_duration_ms = max(0, int(raw_duration))
                 if terminal_seen:
@@ -282,28 +323,42 @@ class StudioRunService:
                     cancel_result = "cancel_failed"
             record.status = RunStatus.CANCELLED
             record.error = {"code": "RUN_CANCELLED", "message": "运行已取消"}
-            cancelled = RuntimeEvent.create(
-                EventType.RUN_CANCELED,
-                agent_id=spec.agent_id,
-                user_id="local-user",
-                session_id=session,
-                invocation_id=handle.run_id if handle is not None else run_id,
-                seq_id=len(self.event_store.events(run_id)) + 1,
-                payload={"status": "cancelled", "cancel_result": cancel_result},
+            cancelled_run_id = handle.run_id if handle is not None else run_id
+            cancelled = RunCanceled(
+                schema_version=2,
+                event_id=f"evt_cancel_{uuid4().hex}",
+                seq=len(self.event_store.events(run_id)) + 1,
+                timestamp=time.time(),
+                run_id=cancelled_run_id,
+                scope_id=cancelled_run_id,
+                source=SourceRef(
+                    framework="ksadk",
+                    metadata={"cancel_result": cancel_result},
+                ),
+                status="canceled",
+                reason="cancelled",
             )
             persist(cancelled)
             raise
         except Exception as exc:  # noqa: BLE001
             record.status = RunStatus.FAILED
             record.error = {"code": "RUNTIME_RUN_FAILED", "message": str(exc)}
-            failure = RuntimeEvent.create(
-                EventType.RUN_FAILED,
-                agent_id=spec.agent_id,
-                user_id="local-user",
-                session_id=session,
-                invocation_id=handle.run_id if handle is not None else run_id,
-                seq_id=len(self.event_store.events(run_id)) + 1,
-                payload={"status": "failed", "error": str(exc)},
+            failed_run_id = handle.run_id if handle is not None else run_id
+            failure = RunFailed(
+                schema_version=2,
+                event_id=f"evt_fail_{uuid4().hex}",
+                seq=len(self.event_store.events(run_id)) + 1,
+                timestamp=time.time(),
+                run_id=failed_run_id,
+                scope_id=failed_run_id,
+                source=SourceRef(framework="ksadk"),
+                status="failed",
+                error=ErrorInfo(
+                    code="RUNTIME_RUN_FAILED",
+                    message=str(exc),
+                    source="ksadk",
+                    scope_id=failed_run_id,
+                ),
             )
             persist(failure)
         finally:
@@ -491,18 +546,18 @@ class StudioRunService:
     def _persist_approval_surface(
         self,
         record: RunRecord,
-        event: RuntimeEvent,
+        event: InteractionRequested,
         *,
         on_event: Callable[[RunEvent], None] | None,
     ) -> None:
-        approval_id = str(event.payload.get("approval_id") or event.payload.get("call_id") or "")
+        approval_id = event.interaction_id
         if not approval_id:
             return
         surface_id = f"approval-{approval_id}"
-        detail = event.payload.get("detail")
-        detail = detail if isinstance(detail, dict) else {}
+        detail_value = event.request.detail
+        detail = detail_value if isinstance(detail_value, dict) else {}
         command = str(detail.get("command") or detail.get("reason") or "")
-        kind = str(event.payload.get("kind") or "tool")
+        kind = str(event.request.kind or "tool")
         components = [
             {
                 "id": "root",
@@ -604,104 +659,224 @@ class StudioRunService:
 def project_runtime_event(event: RuntimeEvent) -> tuple[str, dict[str, Any]]:
     """Project the canonical RuntimeEvent into Studio's persisted event view."""
 
-    payload = dict(event.payload)
-    event_type = event.event_type
-    if event_type == EventType.RUN_STARTED:
+    if isinstance(event, RunStarted):
         projected = "run.started"
-    elif event_type == EventType.RUN_PROGRESS:
-        projected = str(payload.get("native_event") or "run.progress")
-        native_data = payload.get("native_data")
-        if isinstance(native_data, dict):
-            payload = dict(native_data)
-    elif event_type in {EventType.REASONING_DELTA, EventType.REASONING_COMPLETED}:
-        projected = (
-            "thinking.delta" if event_type == EventType.REASONING_DELTA else "thinking.completed"
-        )
-    elif event_type == EventType.TEXT_DELTA:
-        projected = "message.delta" if event.phase == "final_answer" else "thinking.delta"
-    elif event_type == EventType.TEXT_COMPLETED:
-        projected = "message.completed" if event.phase == "final_answer" else "thinking.completed"
-    elif event_type == EventType.TOOL_CALL_BEGIN:
-        projected = "command.started" if payload.get("name") == "codex.command" else "tool.started"
-        if projected == "command.started":
-            raw_args = payload.get("args")
-            args: dict[str, Any] = raw_args if isinstance(raw_args, dict) else {}
+        payload: dict[str, Any] = {}
+    elif isinstance(event, RunProgress):
+        projected = "run.progress"
+        payload = {"progress": event.progress, "message": event.message}
+    elif isinstance(event, RunCompleted):
+        projected = "run.completed"
+        payload = {}
+    elif isinstance(event, RunFailed):
+        projected = "run.failed"
+        payload = {"error": event.error.message or ""}
+    elif isinstance(event, RunCanceled):
+        projected = "run.cancelled"
+        payload = {"reason": event.reason or ""}
+    elif isinstance(event, RunInterrupted):
+        projected = "run.paused" if event.reason == "user_pause" else "run.interrupted"
+        payload = {"reason": event.reason or ""}
+    elif isinstance(event, ItemUpdated) and event.item_kind in {"message", "reasoning"}:
+        text = event.update.text if isinstance(event.update, TextContent) else ""
+        is_thinking = event.item_kind == "reasoning"
+        projected = "thinking.delta" if is_thinking else "message.delta"
+        payload = {"text": text}
+    elif isinstance(event, ItemCompleted) and event.item_kind in {"message", "reasoning"}:
+        text = ""
+        for part in event.snapshot.parts:
+            if isinstance(part, TextContent):
+                text = part.text
+                break
+        is_thinking = event.item_kind == "reasoning"
+        projected = "thinking.completed" if is_thinking else "message.completed"
+        payload = {"text": text}
+    elif isinstance(event, ItemStarted) and event.item_kind == "tool_call":
+        tool_part = _first_content(event.initial, ToolCallContent) if event.initial else None
+        if tool_part is not None and tool_part.name == "codex.command":
+            projected = "command.started"
+            args = tool_part.arguments if isinstance(tool_part.arguments, dict) else {}
             payload = {
-                "callId": str(payload.get("call_id") or ""),
+                "callId": tool_part.call_id,
                 "command": str(args.get("command") or ""),
                 "cwd": str(args.get("cwd") or ""),
                 "commandActions": args.get("command_actions") or [],
             }
-        else:
+        elif tool_part is not None:
+            projected = "tool.started"
             payload = {
-                "callId": str(payload.get("call_id") or ""),
-                "tool": str(payload.get("name") or ""),
-                "args": payload.get("args"),
+                "callId": tool_part.call_id,
+                "tool": tool_part.name,
+                "args": tool_part.arguments,
             }
-    elif event_type == EventType.TOOL_CALL_END:
-        projected = (
-            "command.completed" if payload.get("name") == "codex.command" else "tool.completed"
-        )
-        if projected == "command.completed":
-            raw_result = payload.get("result")
-            result: dict[str, Any] = raw_result if isinstance(raw_result, dict) else {}
+        else:
+            projected = "tool.started"
+            payload = {}
+    elif isinstance(event, ItemCompleted) and event.item_kind == "tool_call":
+        tool_call = _first_content(event.snapshot, ToolCallContent)
+        tool_result = _first_content(event.snapshot, ToolResultContent)
+        if tool_call is not None and tool_call.name == "codex.command":
+            projected = "command.completed"
+            result = (
+                tool_result.result
+                if tool_result is not None and isinstance(tool_result.result, dict)
+                else {}
+            )
             payload = {
-                "callId": str(payload.get("call_id") or ""),
+                "callId": tool_call.call_id,
                 "status": str(result.get("status") or ""),
                 "exitCode": result.get("exit_code"),
                 "durationMs": result.get("duration_ms"),
                 "output": str(result.get("output") or ""),
             }
         else:
-            raw_tool_result = payload.get("result")
-            tool_result: dict[str, Any] = (
-                raw_tool_result if isinstance(raw_tool_result, dict) else {}
+            projected = "tool.completed"
+            result = (
+                tool_result.result
+                if tool_result is not None and isinstance(tool_result.result, dict)
+                else {}
             )
-            tool_status = str(tool_result.get("status") or "")
-            if tool_result.get("error"):
+            tool_status = str(result.get("status") or "")
+            if tool_result is not None and tool_result.is_error:
                 tool_status = "failed"
+            call_id = (tool_call or tool_result).call_id if (tool_call or tool_result) else ""
             payload = {
-                "callId": str(payload.get("call_id") or ""),
-                "tool": str(payload.get("name") or ""),
+                "callId": call_id,
+                "tool": tool_call.name if tool_call is not None else "",
                 "status": tool_status,
-                "durationMs": tool_result.get("duration_ms"),
-                "output": str(tool_result.get("output") or ""),
-                **({"error": str(tool_result["error"])} if tool_result.get("error") else {}),
+                "durationMs": result.get("duration_ms"),
+                "output": str(result.get("output") or ""),
             }
-    elif event_type == EventType.RUN_COMPLETED:
-        projected = "run.completed"
-    elif event_type == EventType.RUN_FAILED:
-        projected = "run.failed"
-    elif event_type == EventType.RUN_CANCELED:
-        projected = "run.cancelled"
-    elif event_type == EventType.RUN_INTERRUPTED:
-        projected = (
-            "run.paused" if str(payload.get("status") or "") == "paused" else "run.interrupted"
-        )
-    elif event_type in {
-        EventType.A2UI_SURFACE_BEGIN,
-        EventType.A2UI_SURFACE_UPDATE,
-        EventType.A2UI_SURFACE_END,
-        EventType.A2UI_INTERACTION,
-        EventType.A2UI_ACTION,
-    }:
-        projected = str(event_type)
-        surface_id = str(payload.get("surface_id") or payload.get("surfaceId") or "")
-        if surface_id:
-            payload["surfaceId"] = surface_id
-        interaction_id = str(payload.get("interaction_id") or payload.get("interactionId") or "")
-        if interaction_id:
-            payload["interactionId"] = interaction_id
-        schema = payload.get("input_schema", payload.get("inputSchema"))
-        if isinstance(schema, dict):
-            payload["inputSchema"] = schema
-        operations = project_a2ui_operations(event_type, payload)
-        if operations:
-            payload["a2uiOperations"] = operations
+            if tool_result is not None and tool_result.is_error:
+                payload["error"] = str(result.get("error") or "")
+    elif (
+        isinstance(event, (ItemStarted, ItemUpdated, ItemCompleted))
+        and event.item_kind == "data"
+        and event.source.protocol == "a2ui"
+    ):
+        projected, payload = _project_a2ui_surface(event)
+    elif isinstance(event, InteractionRequested):
+        if event.interaction_kind == "approval":
+            projected = "approval.requested"
+            payload = {
+                "approvalId": event.interaction_id,
+                "callId": event.request.call_id or "",
+                "kind": event.request.kind,
+                "detail": event.request.detail,
+            }
+        else:
+            projected = "a2ui.interaction"
+            payload = {
+                "interactionId": event.interaction_id,
+                "kind": "form",
+                "inputSchema": {},
+            }
+    elif isinstance(event, InteractionResolved):
+        if event.interaction_kind == "approval":
+            projected = "approval.resolved"
+            payload = {
+                "approvalId": event.interaction_id,
+                "callId": "",
+                "decision": "",
+            }
+        else:
+            projected = "a2ui.action"
+            payload = {"interactionId": event.interaction_id}
+    elif isinstance(event, ContinuationCreated):
+        projected = "checkpoint.created"
+        payload = {
+            "checkpointId": event.continuation_id,
+            "granularity": event.ref.get("granularity", "snapshot"),
+            "resumable": event.resumable,
+        }
+    elif isinstance(event, ContinuationResumed):
+        projected = "checkpoint.resumed"
+        payload = {
+            "checkpointId": event.continuation_id,
+            "resumeAttemptId": event.resume_attempt_id,
+        }
+    elif isinstance(event, UsageReported):
+        projected = "usage.reported"
+        payload = {
+            "inputTokens": event.input_tokens,
+            "outputTokens": event.output_tokens,
+            "totalTokens": event.total_tokens,
+            "cachedTokens": event.cached_tokens,
+            "reasoningTokens": event.reasoning_tokens,
+        }
     else:
-        projected = str(event_type)
-    payload["runtimeEvent"] = event.to_dict()
+        projected = event.event_type
+        payload = {}
+
+    _attach_studio_identity(payload, event)
+    payload["runtimeEvent"] = dump_runtime_event(event)
     return projected, payload
+
+
+def _first_content(
+    snapshot: ContentSnapshot | None, content_type: type
+) -> Any | None:
+    if snapshot is None:
+        return None
+    for part in snapshot.parts:
+        if isinstance(part, content_type):
+            return part
+    return None
+
+
+def _project_a2ui_surface(
+    event: ItemStarted | ItemUpdated | ItemCompleted,
+) -> tuple[str, dict[str, Any]]:
+    if isinstance(event, ItemStarted):
+        projected = "a2ui.surface.begin"
+        data_parts = event.initial.parts if event.initial is not None else ()
+    elif isinstance(event, ItemUpdated):
+        projected = "a2ui.surface.update"
+        data_parts = (event.update,) if isinstance(event.update, DataContent) else ()
+    else:
+        projected = "a2ui.surface.end"
+        data_parts = event.snapshot.parts
+
+    surface_id = str(event.source.metadata.get("surface_id") or "")
+    operations: list[dict[str, Any]] = []
+    for part in data_parts:
+        if isinstance(part, DataContent):
+            data = part.data
+            if isinstance(data, list):
+                operations.extend(dict(op) for op in data if isinstance(op, Mapping))
+    if not operations:
+        operations = project_a2ui_operations(projected, {"surface_id": surface_id})
+    payload: dict[str, Any] = {
+        "surfaceId": surface_id,
+        "a2uiOperations": operations,
+    }
+    return projected, payload
+
+
+def _attach_studio_identity(payload: dict[str, Any], event: RuntimeEvent) -> None:
+    """Attach §8.4 identity fields (runId/scopeId/itemId/partId/operation)."""
+    payload["runId"] = event.run_id
+    payload["scopeId"] = event.scope_id
+    if isinstance(event, (ItemStarted, ItemUpdated, ItemCompleted, ItemFailed)):
+        payload["itemId"] = event.item_id
+    if isinstance(event, ItemUpdated):
+        payload["operation"] = event.op
+    if isinstance(event, ItemUpdated) and hasattr(event.update, "part_id"):
+        payload["partId"] = event.update.part_id
+    if isinstance(event, ItemStarted) and event.initial is not None:
+        for part in event.initial.parts:
+            if hasattr(part, "part_id"):
+                payload["partId"] = part.part_id
+                break
+    if isinstance(event, ItemCompleted):
+        for part in event.snapshot.parts:
+            if hasattr(part, "part_id"):
+                payload["partId"] = part.part_id
+                break
+    if isinstance(event, (InteractionRequested, InteractionResolved)):
+        payload["itemId"] = event.interaction_id
+    if isinstance(event, (ContinuationCreated, ContinuationResumed)):
+        payload["itemId"] = event.continuation_id
 
 
 __all__ = ["StudioRunService", "StudioRunSpec", "project_runtime_event"]

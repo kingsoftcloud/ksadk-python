@@ -7,6 +7,7 @@ import copy
 import hashlib
 import json
 import logging
+import time
 from dataclasses import dataclass, field
 from importlib import import_module
 from typing import Any, AsyncIterator, Callable, Mapping, Optional, cast
@@ -36,12 +37,35 @@ from ag_ui.core import (
     ToolCallStartEvent,
 )
 
-from ksadk.agui.a2ui_projection import project_a2ui_operations
 from ksadk.conversations.runtime_metadata import (
     _update_session_metadata_after_assistant_turn,
     prime_session_metadata_for_user_turn,
 )
-from ksadk.events.runtime_event import EventType, RuntimeEvent
+from ksadk.events.canonical import (
+    ApprovalResponse,
+    ContentSnapshot,
+    ContinuationCreated,
+    ErrorInfo,
+    InteractionRequested,
+    InteractionResolved,
+    ItemCompleted,
+    ItemStarted,
+    ItemSnapshotReplaced,
+    ItemUpdated,
+    RunCanceled,
+    RunCompleted,
+    RunFailed,
+    RunInterrupted,
+    RunStarted,
+    RuntimeEvent,
+    SourceRef,
+)
+from ksadk.events.content import (
+    DataContent,
+    TextContent,
+    ToolCallContent,
+    ToolResultContent,
+)
 from ksadk.runtime.adapter import (
     CancelResult,
     ResumePayload,
@@ -105,6 +129,7 @@ class _WireState:
     reasoning_open: bool = False
     terminal: bool = False
     text_content: str = ""
+    reasoning_content: str = ""
 
 
 class KsadkAGUIAgent:
@@ -331,21 +356,30 @@ class KsadkAGUIAgent:
                 default=str,
             )
             decision = self._approval_decision_for_audit(entry.status, entry.payload)
-            event = RuntimeEvent.create(
-                EventType.APPROVAL_RESOLVED,
+            event = InteractionResolved(
+                schema_version=2,
                 event_id=f"evt_agui_resume_{hashlib.sha256(event_key.encode()).hexdigest()}",
-                agent_id=str(run.handle.native_ref.get("agent_id") or self.name),
-                user_id=str(run.handle.native_ref.get("user_id") or "agui-user"),
-                session_id=input.thread_id,
-                invocation_id=run.handle.run_id,
-                seq_id=0,
-                payload={
-                    "approval_id": entry.interrupt_id,
-                    "call_id": entry.interrupt_id,
-                    "decision": decision,
-                    "resume_fingerprint": fingerprint,
-                    "protocol": "ag-ui",
-                },
+                seq=0,
+                timestamp=time.time(),
+                run_id=run.handle.run_id,
+                scope_id=f"ksadk:{run.handle.run_id}",
+                source=SourceRef(
+                    framework="ksadk",
+                    metadata={
+                        "agent_id": str(run.handle.native_ref.get("agent_id") or self.name),
+                        "user_id": str(run.handle.native_ref.get("user_id") or "agui-user"),
+                        "session_id": input.thread_id,
+                        "protocol": "ag-ui",
+                        "resume_fingerprint": fingerprint,
+                    },
+                ),
+                interaction_id=entry.interrupt_id,
+                interaction_kind="approval",
+                response=ApprovalResponse(
+                    response_type="approval",
+                    decision=decision if decision in ("approved", "rejected", "canceled") else "rejected",
+                    data={"call_id": entry.interrupt_id},
+                ),
             )
             if index == 0:
                 _persisted, reservation_created = await self._reserve(event)
@@ -381,105 +415,137 @@ class KsadkAGUIAgent:
         wire: _WireState,
         run: _ThreadRun,
     ) -> AsyncIterator[BaseEvent]:
-        payload = event.payload
-        event_type = event.event_type
-
-        if event_type in (EventType.TEXT_DELTA, EventType.TEXT_COMPLETED):
+        # ---- message (text) ----
+        if isinstance(event, (ItemUpdated, ItemSnapshotReplaced)) and event.item_kind == "message":
             if not wire.text_open:
                 wire.text_open = True
                 yield TextMessageStartEvent(message_id=wire.message_id)
-            text = str(payload.get("text") or "")
-            if event_type == EventType.TEXT_COMPLETED and wire.text_content:
-                text = text[len(wire.text_content) :] if text.startswith(wire.text_content) else ""
+            if isinstance(event, ItemSnapshotReplaced):
+                # atomic snapshot replace: close and reopen with full text
+                wire.text_open = False
+                wire.text_content = ""
+                yield TextMessageEndEvent(message_id=wire.message_id)
+                wire.text_open = True
+                yield TextMessageStartEvent(message_id=wire.message_id)
+                text = self._extract_text(event.snapshot)
+            elif event.op == "replace":
+                wire.text_open = False
+                wire.text_content = ""
+                yield TextMessageEndEvent(message_id=wire.message_id)
+                wire.text_open = True
+                yield TextMessageStartEvent(message_id=wire.message_id)
+                text = event.update.text if isinstance(event.update, TextContent) else ""
+            else:
+                text = event.update.text if isinstance(event.update, TextContent) else ""
             if text:
                 yield TextMessageContentEvent(message_id=wire.message_id, delta=text)
                 wire.text_content += text
-            if event_type == EventType.TEXT_COMPLETED:
-                wire.text_open = False
-                yield TextMessageEndEvent(message_id=wire.message_id)
             return
 
-        if event_type in (EventType.REASONING_DELTA, EventType.REASONING_COMPLETED):
+        if isinstance(event, ItemCompleted) and event.item_kind == "message":
+            if not wire.text_open:
+                wire.text_open = True
+                yield TextMessageStartEvent(message_id=wire.message_id)
+            # ItemCompleted is the authoritative snapshot; do NOT re-append
+            # the full text when deltas already covered the content.
+            if not wire.text_content:
+                text = self._extract_text(event.snapshot)
+                if text:
+                    yield TextMessageContentEvent(message_id=wire.message_id, delta=text)
+                    wire.text_content += text
+            wire.text_open = False
+            yield TextMessageEndEvent(message_id=wire.message_id)
+            return
+
+        if isinstance(event, ItemStarted) and event.item_kind == "message":
+            # ItemStarted for messages is a tracking signal; the text message
+            # opens lazily on the first content delta or completed snapshot.
+            return
+
+        # ---- reasoning ----
+        if isinstance(event, (ItemUpdated, ItemSnapshotReplaced)) and event.item_kind == "reasoning":
             if not wire.reasoning_open:
                 wire.reasoning_open = True
                 yield ReasoningStartEvent(message_id=wire.reasoning_id)
                 yield ReasoningMessageStartEvent(message_id=wire.reasoning_id, role="reasoning")
-            text = str(payload.get("text") or "")
+            if isinstance(event, ItemSnapshotReplaced):
+                wire.reasoning_content = ""
+                text = self._extract_text(event.snapshot)
+            else:
+                text = event.update.text if isinstance(event.update, TextContent) else ""
             if text:
                 yield ReasoningMessageContentEvent(message_id=wire.reasoning_id, delta=text)
-            if event_type == EventType.REASONING_COMPLETED:
-                wire.reasoning_open = False
-                yield ReasoningMessageEndEvent(message_id=wire.reasoning_id)
-                yield ReasoningEndEvent(message_id=wire.reasoning_id)
+                wire.reasoning_content += text
             return
 
-        if event_type == EventType.TOOL_CALL_BEGIN:
-            call_id = str(payload.get("call_id") or "tool")
-            yield ToolCallStartEvent(
-                tool_call_id=call_id,
-                tool_call_name=str(payload.get("name") or "tool"),
-                parent_message_id=wire.message_id,
-            )
-            if "args" in payload:
+        if isinstance(event, ItemCompleted) and event.item_kind == "reasoning":
+            if not wire.reasoning_open:
+                wire.reasoning_open = True
+                yield ReasoningStartEvent(message_id=wire.reasoning_id)
+                yield ReasoningMessageStartEvent(message_id=wire.reasoning_id, role="reasoning")
+            if not wire.reasoning_content:
+                text = self._extract_text(event.snapshot)
+                if text:
+                    yield ReasoningMessageContentEvent(message_id=wire.reasoning_id, delta=text)
+                    wire.reasoning_content += text
+            wire.reasoning_open = False
+            yield ReasoningMessageEndEvent(message_id=wire.reasoning_id)
+            yield ReasoningEndEvent(message_id=wire.reasoning_id)
+            return
+
+        if isinstance(event, ItemStarted) and event.item_kind == "reasoning":
+            return
+
+        # ---- tool call ----
+        if isinstance(event, ItemStarted) and event.item_kind == "tool_call":
+            part = self._first_part(event.initial)
+            if isinstance(part, ToolCallContent):
+                call_id = part.call_id
+                yield ToolCallStartEvent(
+                    tool_call_id=call_id,
+                    tool_call_name=part.name,
+                    parent_message_id=wire.message_id,
+                )
                 yield ToolCallArgsEvent(
                     tool_call_id=call_id,
-                    delta=json.dumps(payload.get("args"), ensure_ascii=False, default=str),
+                    delta=json.dumps(part.arguments, ensure_ascii=False, default=str),
                 )
             return
 
-        if event_type == EventType.TOOL_CALL_END:
-            call_id = str(payload.get("call_id") or "tool")
-            content = (
-                payload.get("result") if payload.get("error") is None else payload.get("error")
-            )
-            # AG-UI closes the active call at TOOL_CALL_END.  Sending a result
-            # first makes official clients discard the call, then reject this
-            # end event as orphaned.
+        if isinstance(event, ItemCompleted) and event.item_kind == "tool_call":
+            part = self._first_part(event.snapshot)
+            call_id = part.call_id if isinstance(part, ToolCallContent) else "tool"
             yield ToolCallEndEvent(tool_call_id=call_id)
-            yield ToolCallResultEvent(
-                message_id=f"{wire.run_id}:tool:{call_id}",
-                tool_call_id=call_id,
-                content=json.dumps(content, ensure_ascii=False, default=str),
-                role="tool",
-            )
             return
 
-        if event_type == EventType.CHECKPOINT_CREATED:
-            yield StateSnapshotEvent(snapshot={"checkpoint": copy.deepcopy(payload)})
+        if isinstance(event, ItemCompleted) and event.item_kind == "tool_result":
+            part = self._first_part(event.snapshot)
+            if isinstance(part, ToolResultContent):
+                call_id = part.call_id
+                content = part.result
+                yield ToolCallResultEvent(
+                    message_id=f"{wire.run_id}:tool:{call_id}",
+                    tool_call_id=call_id,
+                    content=json.dumps(content, ensure_ascii=False, default=str),
+                    role="tool",
+                )
             return
 
-        if event_type == EventType.APPROVAL_REQUESTED:
-            interrupt_id = str(payload.get("approval_id") or payload.get("call_id") or "")
-            checkpoint_id = str(run.handle.native_ref.get("checkpoint_id") or "")
-            if not checkpoint_id:
-                known = run.handle.native_ref.get("known_checkpoint_ids") or []
-                checkpoint_id = str(known[-1]) if known else ""
-            raw_detail = payload.get("detail")
-            detail: dict[str, Any] = raw_detail if isinstance(raw_detail, dict) else {}
-            interrupt = Interrupt(
-                id=interrupt_id,
-                reason=str(detail.get("reason") or payload.get("kind") or "approval"),
-                message=self._approval_message(detail, payload),
-                tool_call_id=str(payload.get("call_id") or "") or None,
-                response_schema=detail.get("response_schema"),
-                metadata=self._approval_metadata(detail, payload),
-            )
-            run.pending[interrupt_id] = _PendingInterrupt(interrupt, checkpoint_id)
+        if isinstance(event, ItemStarted) and event.item_kind == "tool_result":
             return
 
-        if event_type in {
-            EventType.A2UI_SURFACE_BEGIN,
-            EventType.A2UI_SURFACE_UPDATE,
-            EventType.A2UI_SURFACE_END,
-        }:
-            operations = project_a2ui_operations(event_type, payload)
+        # ---- A2UI surface (item_kind="data" + source.protocol="a2ui") ----
+        if (
+            isinstance(event, (ItemStarted, ItemUpdated, ItemCompleted))
+            and event.item_kind == "data"
+            and event.source.protocol == "a2ui"
+        ):
+            surface_id = str(event.source.metadata.get("surface_id") or "")
+            operations = self._a2ui_operations(event, surface_id)
             if operations:
-                surface_id = str(payload.get("surface_id") or payload.get("surfaceId") or "")
                 yield ActivitySnapshotEvent(
                     message_id=f"{wire.run_id}:a2ui:{surface_id}",
                     activity_type="a2ui-surface",
-                    # The client renderer addresses a surface by this value.
-                    # ``message_id`` is a transport id, not the A2UI surface id.
                     content={
                         "surfaceId": surface_id,
                         "a2ui_operations": operations,
@@ -488,18 +554,64 @@ class KsadkAGUIAgent:
                 )
             return
 
-        if event_type == EventType.RUN_INTERRUPTED:
-            async for close_event in self._close_open_messages(wire):
-                yield close_event
-            if not run.pending:
-                raise ValueError("runtime interrupted without a pending approval")
+        # ---- checkpoint ----
+        if isinstance(event, ContinuationCreated):
+            # Track checkpoint id in handle native_ref for downstream approval
+            # resolution (pending interrupts need a resumable checkpoint_id).
+            ckpt_id = str(event.ref.get("checkpoint_id") or "")
+            if ckpt_id:
+                run.handle.native_ref["checkpoint_id"] = ckpt_id
+                known = run.handle.native_ref.setdefault("known_checkpoint_ids", [])
+                if ckpt_id not in known:
+                    known.append(ckpt_id)
+            yield StateSnapshotEvent(
+                snapshot={"checkpoint": copy.deepcopy(event.ref)}
+            )
+            return
+
+        # ---- approval ----
+        if isinstance(event, InteractionRequested):
+            interrupt = self._interrupt_from_interaction(event)
             checkpoint_id = str(run.handle.native_ref.get("checkpoint_id") or "")
             if not checkpoint_id:
                 known = run.handle.native_ref.get("known_checkpoint_ids") or []
                 checkpoint_id = str(known[-1]) if known else ""
-            for pending in run.pending.values():
-                if not pending.checkpoint_id:
-                    pending.checkpoint_id = checkpoint_id
+            run.pending[interrupt.id] = _PendingInterrupt(interrupt, checkpoint_id)
+            return
+
+        # ---- run lifecycle ----
+        if isinstance(event, RunInterrupted):
+            async for close_event in self._close_open_messages(wire):
+                yield close_event
+            if not run.pending:
+                raise ValueError("runtime interrupted without a pending approval")
+            # If checkpoint_id wasn't set by ContinuationCreated (e.g. langgraph
+            # canonical stream without checkpoint_ref on first run), try to
+            # extract it from the RunInterrupted event's continuation_id or
+            # the executor's checkpoint descriptor.
+            if event.continuation_id:
+                checkpoint_id = str(event.continuation_id)
+            else:
+                checkpoint_id = str(run.handle.native_ref.get("checkpoint_id") or "")
+            if not checkpoint_id:
+                known = run.handle.native_ref.get("known_checkpoint_ids") or []
+                checkpoint_id = str(known[-1]) if known else ""
+            if not checkpoint_id:
+                # Last resort: query the executor for the native checkpoint.
+                try:
+                    descriptor = await self._shared.executor.checkpoint(run.handle)
+                    checkpoint_id = str(descriptor.checkpoint_id or "")
+                    if checkpoint_id:
+                        run.handle.native_ref["checkpoint_id"] = checkpoint_id
+                        known = run.handle.native_ref.setdefault("known_checkpoint_ids", [])
+                        if checkpoint_id not in known:
+                            known.append(checkpoint_id)
+                except Exception:
+                    pass
+            if checkpoint_id:
+                for pending in run.pending.values():
+                    if not pending.checkpoint_id:
+                        pending.checkpoint_id = checkpoint_id
             run.interrupted = True
             wire.terminal = True
             yield RunFinishedEvent(
@@ -511,23 +623,30 @@ class KsadkAGUIAgent:
             )
             return
 
-        if event_type == EventType.RUN_COMPLETED:
+        if isinstance(event, RunCompleted):
             async for finish_event in self._finish_success(wire):
                 yield finish_event
             return
 
-        if event_type in (EventType.RUN_FAILED, EventType.RUN_CANCELED):
+        if isinstance(event, RunCanceled):
             async for close_event in self._close_open_messages(wire):
                 yield close_event
             wire.terminal = True
             yield RunErrorEvent(
-                message=(
-                    "Runtime run was cancelled"
-                    if event_type == EventType.RUN_CANCELED
-                    else "Runtime execution failed"
-                ),
-                code=("CANCELLED" if event_type == EventType.RUN_CANCELED else "RUNTIME_ERROR"),
+                message=event.reason or "Runtime run was cancelled",
+                code="CANCELLED",
             )
+            return
+
+        if isinstance(event, RunFailed):
+            async for close_event in self._close_open_messages(wire):
+                yield close_event
+            wire.terminal = True
+            yield RunErrorEvent(
+                message=event.error.message or "Runtime execution failed",
+                code="RUNTIME_ERROR",
+            )
+            return
 
     async def _finish_success(self, wire: _WireState) -> AsyncIterator[BaseEvent]:
         async for event in self._close_open_messages(wire):
@@ -555,7 +674,8 @@ class KsadkAGUIAgent:
         if factory is None:
             return event
         store = factory()
-        return cast(RuntimeEvent, await store.append_one(event))
+        session_id = str(event.source.metadata.get("session_id") or "")
+        return cast(RuntimeEvent, await store.append_one(session_id, event))
 
     async def _reserve(self, event: RuntimeEvent) -> tuple[RuntimeEvent, bool]:
         factory = self._shared.event_store_factory
@@ -566,7 +686,8 @@ class KsadkAGUIAgent:
         if callable(reserve):
             persisted, created = await reserve(event)
             return cast(RuntimeEvent, persisted), bool(created)
-        return cast(RuntimeEvent, await store.append_one(event)), True
+        session_id = str(event.source.metadata.get("session_id") or "")
+        return cast(RuntimeEvent, await store.append_one(session_id, event)), True
 
     async def _persist_user_input(
         self,
@@ -576,20 +697,25 @@ class KsadkAGUIAgent:
     ) -> None:
         event_key = json.dumps([input.thread_id, input.run_id, "user"], ensure_ascii=False)
         await self._persist(
-            RuntimeEvent.create(
-                EventType.RUN_STARTED,
+            RunStarted(
+                schema_version=2,
                 event_id=f"evt_agui_input_{hashlib.sha256(event_key.encode()).hexdigest()}",
-                agent_id=self.name,
-                user_id=request.user_id,
-                session_id=input.thread_id,
-                invocation_id=input.run_id,
-                seq_id=0,
-                payload={
-                    "status": "in_progress",
-                    "input": self._json_safe(request.input),
-                    "source": "ag-ui",
-                    "runtime_type": handle.runtime_type,
-                },
+                seq=0,
+                timestamp=time.time(),
+                run_id=input.run_id,
+                scope_id=f"ksadk:{input.run_id}",
+                source=SourceRef(
+                    framework="ksadk",
+                    metadata={
+                        "agent_id": self.name,
+                        "user_id": request.user_id,
+                        "session_id": input.thread_id,
+                        "input": self._json_safe(request.input),
+                        "source": "ag-ui",
+                        "runtime_type": handle.runtime_type,
+                    },
+                ),
+                status="running",
             )
         )
         await self._prime_session_metadata_for_user_turn(
@@ -638,21 +764,22 @@ class KsadkAGUIAgent:
             logger.debug("failed to update AG-UI session metadata", exc_info=True)
 
     def _event_for_persistence(self, event: RuntimeEvent, run: _ThreadRun) -> RuntimeEvent:
-        if event.event_type in {
-            EventType.APPROVAL_REQUESTED,
-            EventType.APPROVAL_RESOLVED,
-        }:
-            return event.model_copy(update={"payload": {**event.payload, "protocol": "ag-ui"}})
-        if event.event_type != EventType.RUN_INTERRUPTED:
+        if isinstance(event, (InteractionRequested, InteractionResolved)):
+            new_source = event.source.model_copy(
+                update={"metadata": {**event.source.metadata, "protocol": "ag-ui"}}
+            )
+            return event.model_copy(update={"source": new_source})
+        if not isinstance(event, RunInterrupted):
             return event
-        return event.model_copy(
+        new_source = event.source.model_copy(
             update={
-                "payload": {
-                    **event.payload,
+                "metadata": {
+                    **event.source.metadata,
                     "runtime_handle": self._durable_handle(run.handle),
                 }
             }
         )
+        return event.model_copy(update={"source": new_source})
 
     async def _restore_durable_run(
         self,
@@ -663,13 +790,15 @@ class KsadkAGUIAgent:
         if not events:
             return None, False
         resolved = {
-            str(event.payload.get("approval_id") or event.payload.get("call_id") or ""): event
+            str(event.interaction_id): event
             for event in events
-            if event.event_type == EventType.APPROVAL_RESOLVED
+            if isinstance(event, InteractionResolved)
         }
         if fingerprints and all(interrupt_id in resolved for interrupt_id in fingerprints):
             for interrupt_id, fingerprint in fingerprints.items():
-                persisted = str(resolved[interrupt_id].payload.get("resume_fingerprint") or "")
+                persisted = str(
+                    resolved[interrupt_id].source.metadata.get("resume_fingerprint") or ""
+                )
                 if persisted and persisted != fingerprint:
                     raise ValueError(f"interrupt {interrupt_id!r} was resolved differently")
             return None, True
@@ -677,22 +806,21 @@ class KsadkAGUIAgent:
             raise ValueError("resume set is only partially resolved")
 
         interrupted = next(
-            (event for event in reversed(events) if event.event_type == EventType.RUN_INTERRUPTED),
+            (event for event in reversed(events) if isinstance(event, RunInterrupted)),
             None,
         )
         if interrupted is None:
             return None, False
-        raw_handle = interrupted.payload.get("runtime_handle")
+        raw_handle = interrupted.source.metadata.get("runtime_handle")
         if not isinstance(raw_handle, dict):
             return None, False
         handle = RunHandle.model_validate(raw_handle)
         requests = [
             event
             for event in events
-            if event.invocation_id == interrupted.invocation_id
-            and event.event_type == EventType.APPROVAL_REQUESTED
-            and str(event.payload.get("approval_id") or event.payload.get("call_id") or "")
-            not in resolved
+            if isinstance(event, InteractionRequested)
+            and event.run_id == interrupted.run_id
+            and str(event.interaction_id) not in resolved
         ]
         pending: dict[str, _PendingInterrupt] = {}
         checkpoint_id = str(handle.native_ref.get("checkpoint_id") or "")
@@ -700,7 +828,7 @@ class KsadkAGUIAgent:
             known = handle.native_ref.get("known_checkpoint_ids") or []
             checkpoint_id = str(known[-1]) if known else ""
         for request in requests:
-            interrupt = self._interrupt_from_payload(request.payload)
+            interrupt = self._interrupt_from_interaction(request)
             pending[interrupt.id] = _PendingInterrupt(interrupt, checkpoint_id)
         if not pending:
             return None, False
@@ -755,6 +883,51 @@ class KsadkAGUIAgent:
             response_schema=detail.get("response_schema"),
             metadata=KsadkAGUIAgent._approval_metadata(detail, payload),
         )
+
+    @staticmethod
+    def _interrupt_from_interaction(event: InteractionRequested) -> Interrupt:
+        detail = event.request.detail if isinstance(event.request.detail, dict) else {}
+        payload = {
+            "approval_id": event.interaction_id,
+            "call_id": event.request.call_id or "",
+            "kind": event.request.kind,
+            "detail": detail,
+        }
+        return KsadkAGUIAgent._interrupt_from_payload(payload)
+
+    @staticmethod
+    def _extract_text(snapshot: ContentSnapshot | None) -> str:
+        if snapshot is None:
+            return ""
+        for part in snapshot.parts:
+            if isinstance(part, TextContent):
+                return part.text
+        return ""
+
+    @staticmethod
+    def _first_part(snapshot: ContentSnapshot | None) -> Any:
+        if snapshot is None or not snapshot.parts:
+            return None
+        return snapshot.parts[0]
+
+    @staticmethod
+    def _a2ui_operations(
+        event: ItemStarted | ItemUpdated | ItemCompleted,
+        surface_id: str,
+    ) -> list[dict[str, Any]]:
+        if isinstance(event, ItemStarted):
+            part = KsadkAGUIAgent._first_part(event.initial)
+            if isinstance(part, DataContent) and isinstance(part.data, list):
+                return [dict(op) for op in part.data if isinstance(op, Mapping)]
+            return []
+        if isinstance(event, ItemUpdated):
+            if isinstance(event.update, DataContent) and isinstance(event.update.data, list):
+                return [dict(op) for op in event.update.data if isinstance(op, Mapping)]
+            return []
+        # ItemCompleted (end): produce deleteSurface to preserve AG-UI wire
+        if surface_id:
+            return [{"version": "v0.9", "deleteSurface": {"surfaceId": surface_id}}]
+        return []
 
     @staticmethod
     def _duplicate_run(input: RunAgentInput) -> _ThreadRun:

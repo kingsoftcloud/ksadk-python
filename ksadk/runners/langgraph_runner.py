@@ -4,6 +4,8 @@ LangGraphRunner - LangGraph 框架运行时
 直接透传 LangGraph 原生能力，最小化封装
 """
 
+from __future__ import annotations
+
 import base64
 import inspect
 import os
@@ -1295,6 +1297,333 @@ class LangGraphRunner(BaseRunner):
         metadata = await self._latest_checkpoint_metadata(config)
         if metadata:
             yield {"type": "checkpoint", "metadata": metadata}
+
+    async def stream_canonical_events(
+        self, input_data: Dict[str, Any]
+    ) -> AsyncIterator[RuntimeEvent]:
+        """Emit canonical RuntimeEvent (schema_version=2) for a LangGraph run.
+
+        Emits RunStarted/RunCompleted/RunFailed lifecycle events and uses
+        LangGraphEventAdapter to map item.* events from the v3
+        AsyncGraphRunStream.  The old ``stream`` method (dict path) is
+        retained for backward compatibility; runner_adapter prefers this
+        canonical path when present.
+        """
+
+        import time as _time
+
+        from ksadk.events.adapters.langgraph import (
+            LangGraphAdapterContext,
+            LangGraphEventAdapter,
+            LangGraphMappingError,
+        )
+        from ksadk.events.canonical import (
+            ContinuationCreated,
+            ErrorInfo,
+            OutputRef,
+            RunCompleted,
+            RunFailed,
+            RunInterrupted,
+            RunStarted,
+            RuntimeEvent,
+            SourceRef,
+        )
+        from ksadk.events.identity import stable_event_id, stable_item_id, stable_scope_id
+        from ksadk.events.reducer import StreamReducer
+
+        # --- parse input (mirrors stream()) ---
+        payload = dict(input_data)
+        run_id = str(payload.pop("run_id", None) or payload.pop("invocation_id", None) or "").strip()
+        if not run_id:
+            raise ValueError(
+                "LangGraph canonical stream requires an explicit run_id or invocation_id"
+            )
+        payload.pop("_ksadk_force_graph_invoke", None)
+        session_id = payload.pop("session_id", None) or str(uuid.uuid4())[:8]
+        history = payload.pop("history", [])
+        is_resume = payload.pop("resume", False)
+        is_checkpoint_resume = bool(payload.pop("checkpoint_resume", False))
+        resume_payload_provided = bool(payload.pop("resume_payload_provided", False))
+        resume_interrupt_id = str(payload.pop("resume_interrupt_id", "") or "")
+        resume_value = payload.get("input")
+        checkpoint_ref = self._extract_langgraph_checkpoint_ref(payload)
+        native_context = self.build_native_context(payload.get("platform_context"))
+
+        config = self._get_config(session_id)
+        if is_checkpoint_resume:
+            config = self._apply_checkpoint_resume_config(
+                config,
+                session_id=session_id,
+                checkpoint_ref=checkpoint_ref,
+            )
+
+        # --- build state (same logic as stream()) ---
+        if is_checkpoint_resume:
+            state = resume_value
+        elif is_resume:
+            state = resume_value
+        elif self._has_prepare_state_hook():
+            state = self._prepare_state_with_hook(payload, session_id, history)
+        else:
+            state = self._to_state(payload, history)
+
+        stream_input = (
+            self._checkpoint_resume_input(
+                state,
+                payload_provided=resume_payload_provided,
+                interrupt_id=resume_interrupt_id,
+            )
+            if is_checkpoint_resume
+            else (Command(resume=state) if is_resume else state)
+        )
+
+        # --- identity ---
+        run_scope_id = stable_scope_id("langgraph", run_id, "$run")
+        run_item_id = stable_item_id("langgraph", run_id, "$run")
+
+        source_metadata: dict[str, Any] = {}
+        if session_id:
+            source_metadata["session_id"] = session_id
+        invocation_id = str(input_data.get("invocation_id") or "").strip()
+        if invocation_id:
+            source_metadata["invocation_id"] = invocation_id
+        agent_id = str(input_data.get("agent_id") or "").strip()
+        if agent_id:
+            source_metadata["agent_id"] = agent_id
+        user_id = str(input_data.get("user_id") or "").strip()
+        if user_id:
+            source_metadata["user_id"] = user_id
+
+        run_source = SourceRef(
+            framework="langgraph",
+            native_run_id=run_id,
+            metadata=source_metadata,
+        )
+
+        started_at = _time.time()
+        yield RunStarted(
+            schema_version=2,
+            event_id=stable_event_id(
+                "langgraph",
+                run_scope_id,
+                run_item_id,
+                "run.started",
+                "run",
+                run_id,
+                0,
+            ),
+            seq=0,
+            timestamp=started_at,
+            run_id=run_id,
+            scope_id=run_scope_id,
+            source=run_source,
+            status="running",
+        )
+
+        # --- check astream_events availability ---
+        if not hasattr(self._agent, "astream_events"):
+            terminal_source = SourceRef(
+                framework="langgraph",
+                native_run_id=run_id,
+                metadata={**source_metadata, "fallback": "no_astream_events"},
+            )
+            yield RunCompleted(
+                schema_version=2,
+                event_id=stable_event_id(
+                    "langgraph",
+                    run_scope_id,
+                    run_item_id,
+                    "run.completed",
+                    "run",
+                    run_id,
+                    0,
+                ),
+                seq=1,
+                timestamp=_time.time(),
+                run_id=run_id,
+                scope_id=run_scope_id,
+                source=terminal_source,
+                status="completed",
+                output_refs=(),
+            )
+            return
+
+        # --- build adapter context ---
+        adapter_checkpoint_ref: dict[str, Any] | None = None
+        if checkpoint_ref:
+            adapter_checkpoint_ref = dict(checkpoint_ref)
+            adapter_checkpoint_ref.setdefault("checkpoint_ns", "")
+
+        adapter_context = LangGraphAdapterContext(
+            run_id=run_id,
+            graph_run_id=run_id,
+            initial_seq=1,
+            checkpoint_ref=adapter_checkpoint_ref,
+        )
+        adapter = LangGraphEventAdapter()
+        reducer = StreamReducer()
+
+        # --- build stream kwargs (v3 rejects stream_mode/subgraphs) ---
+        stream_kwargs: dict[str, Any] = {"version": "v3", "config": config}
+        if native_context and self._callable_accepts_keyword(
+            self._agent.astream_events, "context"
+        ):
+            stream_kwargs["context"] = native_context
+
+        was_interrupted = False
+        last_timestamp = started_at
+
+        try:
+            run_stream = await self._agent.astream_events(stream_input, **stream_kwargs)
+            async for event in adapter.stream_run(run_stream, adapter_context):
+                if isinstance(event, RunInterrupted):
+                    was_interrupted = True
+                    # Extract checkpoint from graph state and emit
+                    # ContinuationCreated BEFORE RunInterrupted so downstream
+                    # consumers (agui agent) can resolve the resumable
+                    # checkpoint_id before processing the terminal interrupt.
+                    try:
+                        ckpt_state = self._agent.get_state(config)
+                        ckpt_config = getattr(ckpt_state, "config", {}) or {}
+                        ckpt_id = str(
+                            (ckpt_config.get("configurable") or {}).get(
+                                "checkpoint_id", ""
+                            )
+                            or ""
+                        )
+                        if ckpt_id:
+                            ckpt_ref = {
+                                "thread_id": str(
+                                    (ckpt_config.get("configurable") or {}).get(
+                                        "thread_id", session_id
+                                    )
+                                ),
+                                "checkpoint_ns": "",
+                                "checkpoint_id": ckpt_id,
+                            }
+                            continuation_id = stable_item_id(
+                                "langgraph",
+                                run_scope_id,
+                                "continuation",
+                                "graph-checkpoint",
+                                ckpt_ref["thread_id"],
+                                "checkpoint-ns:",
+                                ckpt_id,
+                            )
+                            cont_event = ContinuationCreated(
+                                schema_version=2,
+                                event_id=stable_event_id(
+                                    "langgraph",
+                                    run_scope_id,
+                                    continuation_id,
+                                    "continuation.created",
+                                    "checkpoint",
+                                    run_id,
+                                    0,
+                                ),
+                                seq=adapter_context.allocate_placeholder_seq(),
+                                timestamp=last_timestamp,
+                                run_id=run_id,
+                                scope_id=run_scope_id,
+                                source=SourceRef(
+                                    framework="langgraph",
+                                    native_run_id=run_id,
+                                    metadata={"checkpoint": True},
+                                ),
+                                continuation_id=continuation_id,
+                                continuation_kind="graph_checkpoint",
+                                resumable=True,
+                                ref=ckpt_ref,
+                            )
+                            reducer.apply(cont_event)
+                            yield cont_event
+                    except Exception:
+                        pass
+                    reducer.apply(event)
+                    last_timestamp = float(
+                        getattr(event, "timestamp", 0.0) or last_timestamp
+                    )
+                    yield event
+                    return
+                reducer.apply(event)
+                last_timestamp = float(
+                    getattr(event, "timestamp", 0.0) or last_timestamp
+                )
+                yield event
+        except Exception as exc:
+            error_source = SourceRef(
+                framework="langgraph",
+                native_run_id=run_id,
+                metadata={"error_type": type(exc).__name__},
+            )
+            error_code = (
+                exc.code
+                if isinstance(exc, LangGraphMappingError)
+                else "langgraph_failed"
+            )
+            yield RunFailed(
+                schema_version=2,
+                event_id=stable_event_id(
+                    "langgraph",
+                    run_scope_id,
+                    run_item_id,
+                    "run.failed",
+                    "run",
+                    run_id,
+                    0,
+                ),
+                seq=adapter_context.allocate_placeholder_seq(),
+                timestamp=_time.time(),
+                run_id=run_id,
+                scope_id=run_scope_id,
+                source=error_source,
+                status="failed",
+                error=ErrorInfo(
+                    code=error_code,
+                    message=str(exc) or type(exc).__name__,
+                    source="langgraph",
+                    scope_id=run_scope_id,
+                ),
+            )
+            return
+
+        # --- emit RunCompleted (skip if RunInterrupted was terminal) ---
+        if was_interrupted:
+            return
+
+        projection = reducer.snapshot()
+        output_refs = tuple(
+            OutputRef(scope_id=item.scope_id, item_id=item.item_id)
+            for item in projection.items
+            if item.status == "completed"
+            and item.item_kind == "message"
+            and item.phase == "final_answer"
+        )
+
+        terminal_source = SourceRef(
+            framework="langgraph",
+            native_run_id=run_id,
+            metadata=dict(source_metadata),
+        )
+        yield RunCompleted(
+            schema_version=2,
+            event_id=stable_event_id(
+                "langgraph",
+                run_scope_id,
+                run_item_id,
+                "run.completed",
+                "run",
+                run_id,
+                0,
+            ),
+            seq=adapter_context.allocate_placeholder_seq(),
+            timestamp=last_timestamp,
+            run_id=run_id,
+            scope_id=run_scope_id,
+            source=terminal_source,
+            status="completed",
+            output_refs=output_refs,
+        )
 
     def _filter_tool_tags(self, content: str) -> str:
         """过滤 <tool_call> 标签"""

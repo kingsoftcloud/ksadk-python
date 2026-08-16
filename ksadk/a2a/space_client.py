@@ -1060,7 +1060,8 @@ class A2ASpaceClient:
         if self._event_sink is not None:
             list_events = getattr(self._event_sink, "list", None)
             if callable(list_events) and events:
-                persisted_before = await list_events(events[0].session_id)
+                session_id = str(events[0].source.metadata.get("session_id") or self._space_id)
+                persisted_before = await list_events(session_id)
                 existing_ids.update(event.event_id for event in persisted_before)
         fresh = [event for event in events if event.event_id not in existing_ids]
         if not fresh:
@@ -1069,7 +1070,13 @@ class A2ASpaceClient:
             append = getattr(self._event_sink, "append", None)
             if append is None:
                 raise TypeError("event_sink must provide async append(events)")
-            persisted = await append(fresh)
+            # RuntimeEventStore.append(session_id, events) requires session_id;
+            # fall back to single-arg call for non-canonical sinks.
+            session_id_for_persist = str(events[0].source.metadata.get("session_id") or self._space_id) if events else self._space_id
+            try:
+                persisted = await append(session_id_for_persist, fresh)
+            except TypeError:
+                persisted = await append(fresh)
             if persisted is not None:
                 fresh = list(persisted)
         self._persisted_wire_events.update(event.event_id for event in fresh)

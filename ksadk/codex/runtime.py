@@ -21,12 +21,23 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Optional
 
 from ksadk.codex.client import CodexClient
-from ksadk.codex.phase import CodexPhaseTracker
-from ksadk.events.runtime_event import EventType, RuntimeEvent
+from ksadk.events.adapters.codex import CodexAdapterContext, CodexEventAdapter
+from ksadk.events.canonical import (
+    InteractionRequested,
+    InteractionResolved,
+    ErrorInfo,
+    RunCanceled,
+    RunFailed,
+    RunInterrupted,
+    RuntimeEvent,
+    SourceRef,
+)
+from ksadk.events.identity import stable_event_id, stable_item_id, stable_scope_id
 from ksadk.runtime.adapter import (
     BaseRuntime,
     CancelResult,
@@ -326,18 +337,12 @@ class CodexRuntimeAdapter(RuntimeAdapter):
 
         if handle.run_id in self._pending_cancels:
             self._pending_cancels.discard(handle.run_id)
-            yield self._event(
+            yield self._make_run_canceled(
                 handle,
-                EventType.RUN_CANCELED,
-                {
-                    "status": "cancelled",
-                    "cancel_result": CancelResult.PENDING_CANCEL_RECORDED.value,
-                },
+                reason=f"pending_cancel:{CancelResult.PENDING_CANCEL_RECORDED.value}",
             )
             return
 
-        yield self._event(handle, EventType.RUN_STARTED, {"status": "in_progress"})
-        tracker = CodexPhaseTracker()
         request = thread.__dict__.get("_start_request")
         resume_state = thread.__dict__.get("_resume")
         if request is not None:
@@ -350,21 +355,8 @@ class CodexRuntimeAdapter(RuntimeAdapter):
         thread.streaming = True
         thread.turn_id = thread.turn_id or f"turn_{thread.thread_id}"
         try:
-            async for event in self._map_codex_stream(handle, thread, tracker, run_input):
+            async for event in self._map_codex_stream(handle, thread, run_input):
                 yield event
-            # 正常结束(非 interrupt):补 RUN_COMPLETED(AGUI 投射器据此发 RunFinished success)
-            if not thread.interrupted:
-                completed_payload: dict[str, Any] = {
-                    "status": "completed",
-                    "source": "codex",
-                }
-                if thread.started_at is not None:
-                    completed_payload["started_at"] = thread.started_at
-                if thread.completed_at is not None:
-                    completed_payload["completed_at"] = thread.completed_at
-                if thread.duration_ms is not None:
-                    completed_payload["duration_ms"] = thread.duration_ms
-                yield self._event(handle, EventType.RUN_COMPLETED, completed_payload)
         except asyncio.CancelledError:
             thread.interrupted = True
             self._do_not_persist.add(handle.run_id)
@@ -377,18 +369,10 @@ class CodexRuntimeAdapter(RuntimeAdapter):
             # Closing the SDK transport terminates and waits for the app-server
             # child even when the stream is stuck between notifications.
             await self._client.close()
-            yield self._event(
-                handle,
-                EventType.RUN_FAILED,
-                {"status": "failed", "error": "codex turn timed out"},
-            )
-        except Exception as exc:  # noqa: BLE001  通用兜底:任何异常都发 RUN_FAILED
+            yield self._make_run_failed(handle, "codex turn timed out")
+        except Exception as exc:  # noqa: BLE001  通用兜底:任何异常都发 RunFailed
             self._do_not_persist.add(handle.run_id)
-            yield self._event(
-                handle,
-                EventType.RUN_FAILED,
-                {"status": "failed", "error": str(exc)},
-            )
+            yield self._make_run_failed(handle, str(exc))
         finally:
             thread.streaming = False
             thread.done = True
@@ -398,10 +382,11 @@ class CodexRuntimeAdapter(RuntimeAdapter):
         self,
         handle: RunHandle,
         thread: _CodexThread,
-        tracker: CodexPhaseTracker,
         prompt: Any,
     ) -> AsyncIterator[RuntimeEvent]:
         request = thread.__dict__.get("_start_request") or thread.__dict__.get("_request_config")
+        adapter = CodexEventAdapter()
+        context = CodexAdapterContext(run_id=handle.run_id)
         run_config: dict[str, Any] = {"sandbox_read_only": self._sandbox_read_only}
         if request is not None and request.config:
             for key in ("sandbox", "approval_mode", "summary", "collaboration_mode"):
@@ -496,14 +481,11 @@ class CodexRuntimeAdapter(RuntimeAdapter):
                         chunk_task = asyncio.ensure_future(_anext_or_stop(codex_gen))
                     chunk_task = None
                     thread.interrupted = True
-                    # AGUI 投射器对 RUN_INTERRUPTED 无兜底,必须显式发,否则 raise
-                    yield self._event(
+                    # Runtime interrupt (user pause) — adapter doesn't know;
+                    # emit canonical RunInterrupted explicitly.
+                    yield self._make_run_interrupted(
                         handle,
-                        EventType.RUN_INTERRUPTED,
-                        {
-                            "status": "paused" if thread.paused else "interrupted",
-                            "reason": "user_pause" if thread.paused else "runtime_interrupt",
-                        },
+                        reason="user_pause" if thread.paused else "runtime_interrupt",
                     )
                     return
                 for task in pending:
@@ -513,8 +495,46 @@ class CodexRuntimeAdapter(RuntimeAdapter):
                 chunk = chunk_task.result()
                 if chunk is _STREAM_STOP:
                     return
-                event = self._codex_chunk_to_event(handle, thread, tracker, chunk)
-                if event is not None:
+                # TODO(runtime-event-v2): use real native cursor from chunk if
+                # available; fallback to thread:seq for now.
+                native_cursor = f"{thread.thread_id}:{self._next_seq()}"
+                # autoApprovalReview 不产生 canonical 事件(adapter 静默),但
+                # cancel 级联丢弃审批的契约依赖 runtime 的 pending 跟踪。
+                chunk_method = str((chunk or {}).get("method") or "") if isinstance(chunk, dict) else ""
+                if chunk_method in {
+                    "item/autoApprovalReview/started",
+                    "item/autoApprovalReview/completed",
+                }:
+                    review_params = chunk.get("params") or {}
+                    review_id = str(
+                        review_params.get("reviewId")
+                        or review_params.get("review_id")
+                        or ""
+                    )
+                    if review_id:
+                        if chunk_method.endswith("started"):
+                            thread.pending_approvals.add(review_id)
+                        else:
+                            thread.pending_approvals.discard(review_id)
+                for event in adapter.map_protocol_message(
+                    chunk,
+                    context,
+                    native_cursor=native_cursor,
+                    timestamp=time.time(),
+                ):
+                    event = self._with_caller_scope(event, request)
+                    # 跟踪 pending 审批(cancel 级联丢弃契约依赖该集合)。
+                    if isinstance(event, InteractionRequested):
+                        if event.interaction_id:
+                            thread.pending_approvals.add(event.interaction_id)
+                        call_id = getattr(event.request, "call_id", None)
+                        if call_id:
+                            thread.pending_approvals.add(str(call_id))
+                    elif isinstance(event, InteractionResolved):
+                        thread.pending_approvals.discard(event.interaction_id)
+                        call_id = getattr(event.response, "call_id", None)
+                        if call_id:
+                            thread.pending_approvals.discard(str(call_id))
                     yield event
         finally:
             waiter_tasks = [task for task in (chunk_task, interrupt_task) if task is not None]
@@ -530,285 +550,138 @@ class CodexRuntimeAdapter(RuntimeAdapter):
                 except Exception:  # noqa: BLE001
                     pass
 
-    def _codex_chunk_to_event(
-        self,
-        handle: RunHandle,
-        thread: _CodexThread,
-        tracker: CodexPhaseTracker,
-        chunk: dict[str, Any],
-    ) -> Optional[RuntimeEvent]:
-        if not isinstance(chunk, dict):
-            return None
-        method = str(chunk.get("method") or chunk.get("type") or "")
-        params = chunk.get("params") or chunk
+    # ---- canonical run.* helpers (for runtime-owned lifecycle) ----
 
-        if method == "error":
-            raw_error = params.get("error") if isinstance(params, dict) else None
-            error = raw_error if isinstance(raw_error, dict) else {}
-            message = str(
-                error.get("message")
-                or (params.get("message") if isinstance(params, dict) else "")
-                or raw_error
-                or "Codex runtime transport failed"
-            )
-            if not bool(params.get("will_retry") or params.get("willRetry")) or "401" in message:
-                raise RuntimeError(message)
-            return None
-
-        if method == "thread/tokenUsage/updated":
-            token_usage = params.get("token_usage") or params.get("tokenUsage") or {}
-            last = token_usage.get("last") if isinstance(token_usage, dict) else {}
-            if not isinstance(last, dict):
-                last = {}
-            return self._event(
-                handle,
-                EventType.USAGE_REPORTED,
-                {
-                    "input_tokens": int(last.get("input_tokens", last.get("inputTokens", 0)) or 0),
-                    "cached_tokens": int(
-                        last.get("cached_input_tokens", last.get("cachedInputTokens", 0)) or 0
-                    ),
-                    "output_tokens": int(
-                        last.get("output_tokens", last.get("outputTokens", 0)) or 0
-                    ),
-                    "reasoning_tokens": int(
-                        last.get(
-                            "reasoning_output_tokens",
-                            last.get("reasoningOutputTokens", 0),
-                        )
-                        or 0
-                    ),
-                    "total_tokens": int(last.get("total_tokens", last.get("totalTokens", 0)) or 0),
-                    "source": "codex",
-                },
-            )
-        if method == "thread/goal/updated":
-            goal = params.get("goal") if isinstance(params, dict) else {}
-            goal = goal if isinstance(goal, dict) else {}
-            status = str(goal.get("status") or "").lower()
-            if status in {"paused", "blocked", "usage_limited", "budget_limited"}:
-                thread.paused = status == "paused"
-                thread.interrupted = True
-                return self._event(
-                    handle,
-                    EventType.RUN_INTERRUPTED,
-                    {"status": status, "reason": "goal_status", "goal": goal},
-                )
-            return self._event(
-                handle,
-                EventType.RUN_PROGRESS,
-                {"native_event": "goal.updated", "native_data": goal},
-            )
-        if method in {"turn/started", "turn/completed"}:
-            raw_turn = params.get("turn")
-            turn: dict[str, Any] = raw_turn if isinstance(raw_turn, dict) else {}
-            started_at = turn.get("started_at", turn.get("startedAt"))
-            completed_at = turn.get("completed_at", turn.get("completedAt"))
-            duration_ms = turn.get("duration_ms", turn.get("durationMs"))
-            if started_at is not None:
-                thread.started_at = int(started_at)
-            if completed_at is not None:
-                thread.completed_at = int(completed_at)
-            if duration_ms is not None:
-                thread.duration_ms = max(0, int(duration_ms))
-            return None
-
-        if method == "a2ui/surface":
-            surface_id = str(params.get("surface_id") or params.get("surfaceId") or "")
-            return self._event(
-                handle,
-                EventType.A2UI_SURFACE_BEGIN,
-                {
-                    "surface_id": surface_id,
-                    "surface": params.get("surface")
-                    if isinstance(params.get("surface"), dict)
-                    else {},
-                },
-            )
-        if method == "a2ui/interaction":
-            interaction_id = str(params.get("interaction_id") or params.get("interactionId") or "")
-            if interaction_id:
-                thread.pending_approvals.add(interaction_id)
-            return self._event(
-                handle,
-                EventType.A2UI_INTERACTION,
-                {
-                    "surface_id": str(params.get("surface_id") or params.get("surfaceId") or ""),
-                    "interaction_id": interaction_id,
-                    "kind": str(params.get("kind") or "form"),
-                    "input_schema": params.get("input_schema")
-                    if isinstance(params.get("input_schema"), dict)
-                    else {},
-                    "is_blocking": bool(params.get("is_blocking", True)),
-                },
-            )
-
-        if method == "item/started":
-            tracker.observe_item(params)
-            item = params.get("item") or params
-            if item.get("type") == "commandExecution":
-                call_id = str(item.get("id") or "")
-                return self._event(
-                    handle,
-                    EventType.TOOL_CALL_BEGIN,
-                    {
-                        "call_id": call_id,
-                        "name": "codex.command",
-                        "args": {
-                            "command": str(item.get("command") or ""),
-                            "cwd": str(item.get("cwd") or ""),
-                            "command_actions": item.get("commandActions")
-                            or item.get("command_actions")
-                            or [],
-                        },
-                    },
-                )
-            if item.get("type") == "mcpToolCall":
-                call_id = str(item.get("id") or "")
-                server = str(item.get("server") or "")
-                tool = str(item.get("tool") or "")
-                return self._event(
-                    handle,
-                    EventType.TOOL_CALL_BEGIN,
-                    {
-                        "call_id": call_id,
-                        "name": f"mcp.{server}.{tool}" if server else f"mcp.{tool}",
-                        "args": {
-                            "server": server,
-                            "tool": tool,
-                            "arguments": item.get("arguments"),
-                        },
-                    },
-                )
-            return None
-        if method == "item/completed":
-            item = params.get("item") or params
-            item_type = item.get("type")
-            if item_type == "commandExecution":
-                tracker.forget_item(params)
-                call_id = str(item.get("id") or "")
-                return self._event(
-                    handle,
-                    EventType.TOOL_CALL_END,
-                    {
-                        "call_id": call_id,
-                        "name": "codex.command",
-                        "result": {
-                            "status": str(item.get("status") or "completed"),
-                            "exit_code": item.get("exitCode", item.get("exit_code")),
-                            "duration_ms": item.get("durationMs", item.get("duration_ms")),
-                            "output": str(
-                                item.get("aggregatedOutput") or item.get("aggregated_output") or ""
-                            ),
-                        },
-                    },
-                )
-            if item_type == "mcpToolCall":
-                tracker.forget_item(params)
-                call_id = str(item.get("id") or "")
-                server = str(item.get("server") or "")
-                tool = str(item.get("tool") or "")
-                raw_result = item.get("result")
-                result_obj: dict[str, Any] = raw_result if isinstance(raw_result, dict) else {}
-                raw_error = item.get("error")
-                error_obj: dict[str, Any] = raw_error if isinstance(raw_error, dict) else {}
-                output = self._mcp_result_text(result_obj)
-                error_message = str(error_obj.get("message") or "")
-                if not output and error_message:
-                    output = error_message
-                return self._event(
-                    handle,
-                    EventType.TOOL_CALL_END,
-                    {
-                        "call_id": call_id,
-                        "name": f"mcp.{server}.{tool}" if server else f"mcp.{tool}",
-                        "result": {
-                            "status": str(item.get("status") or "completed"),
-                            "duration_ms": item.get("durationMs", item.get("duration_ms")),
-                            "output": output,
-                            **({"error": error_message} if error_message else {}),
-                        },
-                    },
-                )
-            if item_type != "agentMessage":
-                tracker.forget_item(params)
-                return None
-            phase = tracker.runtime_phase_for_item(params)
-            tracker.forget_item(params)
-            text = str(item.get("text") or "")
-            return self._event(
-                handle,
-                EventType.TEXT_COMPLETED,
-                {"text": text},
-                phase=phase or "final_answer",
-            )
-        if "delta" in method or "Delta" in method or method == "item/agentMessage/delta":
-            phase = tracker.runtime_phase_for_delta(params)
-            delta = str(params.get("delta") or "")
-            if not delta:
-                return None
-            return self._event(
-                handle, EventType.TEXT_DELTA, {"text": delta}, phase=phase or "commentary"
-            )
-        if method == "item/autoApprovalReview/started":
-            review_id = str(params.get("review_id") or params.get("reviewId") or "")
-            if review_id:
-                thread.pending_approvals.add(review_id)
-            return None
-        if method == "item/autoApprovalReview/completed":
-            review_id = str(params.get("review_id") or params.get("reviewId") or "")
-            thread.pending_approvals.discard(review_id)
-            return None
-        if (
-            "approval" in method.lower()
-            or "requestPermission" in method
-            or "approval" in str(chunk.get("type") or "").lower()
-        ):
-            call_id = str(
-                params.get("id") or params.get("call_id") or params.get("requestId") or ""
-            )
-            if call_id:
-                thread.pending_approvals.add(call_id)
-            return self._event(
-                handle,
-                EventType.APPROVAL_REQUESTED,
-                {
-                    "approval_id": call_id,
-                    "call_id": call_id,
-                    "kind": str(params.get("kind") or "tool"),
-                    "detail": params.get("detail")
-                    if isinstance(params.get("detail"), dict)
-                    else params,
-                },
-            )
-        return None
-
-    def _event(
-        self,
-        handle: RunHandle,
-        event_type: str,
-        payload: dict,
-        *,
-        phase: Optional[str] = None,
-    ) -> RuntimeEvent:
+    def _make_source(self, handle: RunHandle) -> SourceRef:
         request = self._requests.get(handle.run_id)
-        return RuntimeEvent.create(
-            event_type,
-            agent_id=str(request.agent_id or "codex") if request is not None else "codex",
-            user_id=(
-                request.user_id
-                if request is not None
-                else str(handle.native_ref.get("user_id") or "user")
+        return SourceRef(
+            framework="codex",
+            native_run_id=handle.run_id,
+            metadata={
+                "agent_id": (
+                    str(request.agent_id or "codex") if request is not None else "codex"
+                ),
+                "user_id": (
+                    request.user_id
+                    if request is not None
+                    else str(handle.native_ref.get("user_id") or "user")
+                ),
+                "session_id": handle.session_id,
+                "invocation_id": (
+                    str(request.metadata.get("invocation_id") or handle.run_id)
+                    if request is not None
+                    else handle.run_id
+                ),
+            },
+        )
+
+    def _with_caller_scope(self, event: RuntimeEvent, request: Any) -> RuntimeEvent:
+        """把调用方 scope(request 的 agent/user/session/invocation)并入事件 source。"""
+
+        if request is None:
+            return event
+        caller_scope = {
+            "agent_id": str(getattr(request, "agent_id", "") or "codex"),
+            "user_id": str(getattr(request, "user_id", "") or "user"),
+            "session_id": str(getattr(request, "session_id", "") or ""),
+            "invocation_id": str(
+                (getattr(request, "metadata", None) or {}).get("invocation_id")
+                or ""
             ),
-            session_id=handle.session_id,
-            invocation_id=(
-                str(request.metadata.get("invocation_id") or handle.run_id)
-                if request is not None
-                else handle.run_id
+        }
+        merged = {**caller_scope, **dict(event.source.metadata or {})}
+        # adapter 自身字段优先;仅补齐缺失的调用方 scope 键。
+        for key, value in caller_scope.items():
+            if not merged.get(key):
+                merged[key] = value
+        source = event.source.model_copy(update={"metadata": merged})
+        return event.model_copy(update={"source": source})
+
+    def _canonical_kwargs(
+        self,
+        handle: RunHandle,
+        *,
+        scope_id: str,
+        item_id: str,
+        event_type: str,
+        part_id: str,
+    ) -> dict[str, Any]:
+        framework = "codex"
+        run_id = handle.run_id
+        n = self._next_seq()
+        return {
+            "schema_version": 2,
+            "event_id": stable_event_id(
+                framework, scope_id, item_id, event_type, part_id, run_id, n
             ),
-            seq_id=self._next_seq(),
-            phase=phase,
-            payload=payload,
+            "seq": n,
+            "timestamp": time.time(),
+            "run_id": run_id,
+            "scope_id": scope_id,
+            "source": self._make_source(handle),
+        }
+
+    def _make_run_canceled(
+        self, handle: RunHandle, *, reason: str | None = None
+    ) -> RunCanceled:
+        framework = "codex"
+        run_id = handle.run_id
+        scope_id = stable_scope_id(framework, run_id)
+        item_id = stable_item_id(framework, run_id, "$run")
+        return RunCanceled(
+            **self._canonical_kwargs(
+                handle,
+                scope_id=scope_id,
+                item_id=item_id,
+                event_type="run.canceled",
+                part_id="run",
+            ),
+            status="canceled",
+            reason=reason,
+        )
+
+    def _make_run_interrupted(
+        self, handle: RunHandle, *, reason: str | None = None
+    ) -> RunInterrupted:
+        framework = "codex"
+        run_id = handle.run_id
+        scope_id = stable_scope_id(framework, run_id)
+        item_id = stable_item_id(framework, run_id, "$run")
+        return RunInterrupted(
+            **self._canonical_kwargs(
+                handle,
+                scope_id=scope_id,
+                item_id=item_id,
+                event_type="run.interrupted",
+                part_id="run",
+            ),
+            status="interrupted",
+            reason=reason,
+        )
+
+    def _make_run_failed(
+        self, handle: RunHandle, error_message: str
+    ) -> RunFailed:
+        framework = "codex"
+        run_id = handle.run_id
+        scope_id = stable_scope_id(framework, run_id)
+        item_id = stable_item_id(framework, run_id, "$run")
+        return RunFailed(
+            **self._canonical_kwargs(
+                handle,
+                scope_id=scope_id,
+                item_id=item_id,
+                event_type="run.failed",
+                part_id="run",
+            ),
+            status="failed",
+            error=ErrorInfo(
+                code="codex_runtime_failed",
+                message=error_message,
+                source="codex",
+                scope_id=scope_id,
+                source_ref=self._make_source(handle),
+            ),
         )
 
     @staticmethod

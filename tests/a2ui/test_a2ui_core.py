@@ -11,8 +11,7 @@ from __future__ import annotations
 import pytest
 
 from ksadk.a2ui import A2UICore, A2UIValidationError, Component, Surface
-from ksadk.events.replay import replay_transcript
-from ksadk.events.runtime_event import EventType
+from ksadk.events.canonical import InteractionRequested, ItemCompleted, ItemStarted, ItemUpdated
 from ksadk.events.store import RuntimeEventStore
 from ksadk.sessions.in_memory import InMemorySessionService
 
@@ -57,10 +56,15 @@ async def test_display_ui_emits_surface_begin_then_update():
     await core.display_ui(surface, invocation_id="inv1")
     await core.display_ui(surface, invocation_id="inv1")  # 重复显 → update
     events = await store.list("s1")
-    types = [e.event_type for e in events]
-    assert types == [EventType.A2UI_SURFACE_BEGIN, EventType.A2UI_SURFACE_UPDATE]
-    assert all(e.payload["surface_id"] == surface.surface_id for e in events)
-    assert events[0].payload["surface"]["components"][0]["type"] == "Card"
+    # canonical: ItemStarted(item_kind="data") + ItemUpdated(item_kind="data")
+    assert len(events) == 2
+    assert isinstance(events[0], ItemStarted) and events[0].item_kind == "data"
+    assert isinstance(events[1], ItemUpdated) and events[1].item_kind == "data"
+    assert all(e.source.protocol == "a2ui" for e in events)
+    assert all(e.source.metadata["surface_id"] == surface.surface_id for e in events)
+    # surface data in DataContent
+    surface_data = events[0].initial.parts[0].data
+    assert surface_data["components"][0]["type"] == "Card"
 
 
 @pytest.mark.asyncio
@@ -74,14 +78,16 @@ async def test_request_ui_input_emits_interaction_and_returns_pending():
     )
     assert interaction.status == "pending"
     assert interaction.kind == "form"
-    # 事件:surface.begin(展示) + a2ui.interaction(请求输入)
+    # 事件:surface.begin(展示) + interaction.requested(请求输入)
     events = await store.list("s1")
-    types = [e.event_type for e in events]
-    assert EventType.A2UI_SURFACE_BEGIN in types
-    assert EventType.A2UI_INTERACTION in types
-    interaction_event = [e for e in events if e.event_type == EventType.A2UI_INTERACTION][0]
-    assert interaction_event.payload["interaction_id"] == interaction.interaction_id
-    assert interaction_event.payload["kind"] == "form"
+    # ItemStarted(item_kind="data") for surface display + InteractionRequested for input
+    surface_events = [e for e in events if isinstance(e, ItemStarted) and e.item_kind == "data"]
+    interaction_events = [e for e in events if isinstance(e, InteractionRequested)]
+    assert len(surface_events) == 1
+    assert len(interaction_events) == 1
+    assert interaction_events[0].interaction_kind == "structured_input"
+    assert interaction_events[0].interaction_id == interaction.interaction_id
+    assert interaction_events[0].source.metadata["kind"] == "form"
     # pending 可查询
     assert core.pending_interaction(interaction.interaction_id) is interaction
 
@@ -96,10 +102,13 @@ async def test_submit_action_emits_action_and_returns_receipt():
     )
     assert receipt.status == "received"
     assert receipt.action_id == "act1"
-    action_event = [e for e in await store.list("s1") if e.event_type == EventType.A2UI_ACTION][0]
-    assert action_event.payload["action_id"] == "act1"
-    assert action_event.payload["name"] == "refresh"
-    assert action_event.invocation_id == "inv2"
+    action_event = [
+        e for e in await store.list("s1")
+        if isinstance(e, InteractionRequested) and e.interaction_kind == "approval"
+    ][0]
+    assert action_event.interaction_id == "act1"
+    assert action_event.request.detail["name"] == "refresh"
+    assert action_event.run_id == "inv2"
 
 
 @pytest.mark.asyncio
@@ -113,22 +122,23 @@ async def test_a2ui_events_land_in_runtime_event_store_not_bypassed():
         {"action_id": "a1", "surface_id": surface.surface_id, "name": "ok"}, invocation_id="inv2"
     )
 
-    # 全部 a2ui.* 事件都能从 store 按 cursor 读出(证明经 RuntimeEvent,未绕过)。
+    # 全部 A2UI 事件都能从 store 按 cursor 读出(证明经 RuntimeEvent,未绕过)。
     events = await store.list("s1")
-    a2ui_types = {e.event_type for e in events if e.event_type.startswith("a2ui.")}
-    assert {
-        EventType.A2UI_SURFACE_BEGIN,
-        EventType.A2UI_INTERACTION,
-        EventType.A2UI_ACTION,
-    } <= a2ui_types
-    # 经 goal-12 共享 parser/replay 回放:a2ui 事件进入 extras(保序,不丢)。
-    parser = await replay_transcript(store, "s1")
-    extras_types = {x["event_type"] for x in parser.transcript()["extras"]}
-    assert {
-        EventType.A2UI_SURFACE_BEGIN,
-        EventType.A2UI_INTERACTION,
-        EventType.A2UI_ACTION,
-    } <= extras_types
+    # canonical: surface = ItemStarted/Updated(item_kind="data", protocol="a2ui")
+    #            interaction = InteractionRequested(structured_input/approval, protocol="a2ui")
+    surface_events = [
+        e for e in events
+        if isinstance(e, (ItemStarted, ItemUpdated, ItemCompleted)) and e.item_kind == "data"
+    ]
+    interaction_events = [e for e in events if isinstance(e, InteractionRequested)]
+    assert len(surface_events) >= 1
+    assert len(interaction_events) >= 2  # request_ui_input + submit_action
+    # surface events have protocol="a2ui"
+    assert all(e.source.protocol == "a2ui" for e in surface_events)
+    # interaction kinds
+    interaction_kinds = {e.interaction_kind for e in interaction_events}
+    assert "structured_input" in interaction_kinds
+    assert "approval" in interaction_kinds
 
 
 def test_unknown_component_type_safely_rejected():

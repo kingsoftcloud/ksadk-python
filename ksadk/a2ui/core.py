@@ -13,6 +13,7 @@ action ``a2ui.action``。均带 ``surface_id``(G0.2 必填键)。
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from typing import Any, Optional
 
@@ -22,7 +23,21 @@ from ksadk.a2ui.models import (
     PendingInteraction,
     Surface,
 )
-from ksadk.events.runtime_event import EventType, RuntimeEvent
+from ksadk.events.canonical import (
+    ContentSnapshot,
+    InteractionRequested,
+    ItemCompleted,
+    ItemStarted,
+    ItemUpdated,
+    RuntimeEvent,
+    SourceRef,
+)
+from ksadk.events.content import DataContent
+from ksadk.events.identity import (
+    stable_event_id,
+    stable_item_id,
+    stable_scope_id,
+)
 from ksadk.events.store import RuntimeEventStore
 
 logger = logging.getLogger(__name__)
@@ -33,6 +48,9 @@ class A2UICore:
 
     所有 A2UI 事件经 :class:`RuntimeEventStore` 持久化(**不另开通道、不经 A2A 绕过**),
     供 session 级订阅 / replay / 审计消费。
+
+    Canonical 映射:surface = ``item_kind=data`` + ``source.protocol="a2ui"``;
+    user action / input request = ``InteractionRequested``。
     """
 
     def __init__(
@@ -53,23 +71,52 @@ class A2UICore:
         self._seen_surfaces: set[str] = set()
         self._pending: dict[str, PendingInteraction] = {}
 
-    # ---- 内部:产出并持久化一个 A2UI RuntimeEvent ----
+    # ---- 内部:canonical 身份/信封 ----
 
-    async def _emit(
-        self, event_type: str, invocation_id: str, payload: dict[str, Any]
-    ) -> RuntimeEvent:
-        self._seq += 1
-        event = RuntimeEvent.create(
-            event_type,
-            agent_id=self._agent_id,
-            user_id=self._user_id,
-            session_id=self._session_id,
-            invocation_id=invocation_id,
-            seq_id=self._seq,
-            payload=payload,
+    def _scope_id(self, invocation_id: str) -> str:
+        return stable_scope_id("ksadk", self._session_id, invocation_id)
+
+    def _surface_item_id(self, invocation_id: str, surface_id: str) -> str:
+        return stable_item_id("ksadk", self._session_id, invocation_id, "a2ui", surface_id)
+
+    def _source(self, invocation_id: str, surface_id: str) -> SourceRef:
+        return SourceRef(
+            framework="ksadk",
+            protocol="a2ui",
+            native_run_id=invocation_id,
+            metadata={
+                "agent_id": self._agent_id,
+                "user_id": self._user_id,
+                "session_id": self._session_id,
+                "invocation_id": invocation_id,
+                "surface_id": surface_id,
+            },
         )
-        # 经 RuntimeEvent 持久化(A7 store)——canonical,不绕过。
-        await self._store.append_one(event)
+
+    def _envelope(
+        self,
+        invocation_id: str,
+        item_id: str,
+        event_type: str,
+        part_id: str,
+        surface_id: str = "",
+    ) -> dict[str, Any]:
+        self._seq += 1
+        return {
+            "schema_version": 2,
+            "event_id": stable_event_id(
+                "ksadk", self._scope_id(invocation_id), item_id, event_type, part_id,
+                invocation_id, self._seq,
+            ),
+            "seq": self._seq,
+            "timestamp": time.time(),
+            "run_id": invocation_id,
+            "scope_id": self._scope_id(invocation_id),
+            "source": self._source(invocation_id, surface_id or item_id.split(":")[-1]),
+        }
+
+    async def _append(self, event: RuntimeEvent) -> RuntimeEvent:
+        await self._store.append_one(self._session_id, event)
         return event
 
     # ---- 三种交互 ----
@@ -81,24 +128,31 @@ class A2UICore:
         invocation_id: str,
         origin: str = "local",
     ) -> str:
-        """展示 surface(不阻塞)。首显发 surface.begin,重复显发 surface.update。"""
+        """展示 surface(不阻塞)。首显发 item.started,重复显发 item.updated。"""
         surface.validate(self._catalog)
-        event_type = (
-            EventType.A2UI_SURFACE_BEGIN
-            if surface.surface_id not in self._seen_surfaces
-            else EventType.A2UI_SURFACE_UPDATE
-        )
+        item_id = self._surface_item_id(invocation_id, surface.surface_id)
+        part_id = "a2ui-surface"
+        surface_data = surface.to_dict()
+        is_new = surface.surface_id not in self._seen_surfaces
         self._seen_surfaces.add(surface.surface_id)
-        await self._emit(
-            event_type,
-            invocation_id,
-            {
-                "surface_id": surface.surface_id,
-                "catalog_id": surface.catalog_id,
-                "surface": surface.to_dict(),
-                "origin": origin,
-            },
-        )
+        if is_new:
+            event = ItemStarted(
+                **self._envelope(invocation_id, item_id, "item.started", part_id, surface_id=surface.surface_id),
+                item_id=item_id,
+                item_kind="data",
+                initial=ContentSnapshot(
+                    parts=(DataContent(part_id=part_id, data=surface_data),)
+                ),
+            )
+        else:
+            event = ItemUpdated(
+                **self._envelope(invocation_id, item_id, "item.updated", part_id, surface_id=surface.surface_id),
+                item_id=item_id,
+                item_kind="data",
+                op="replace",
+                update=DataContent(part_id=part_id, data=surface_data),
+            )
+        await self._append(event)
         return surface.surface_id
 
     async def request_ui_input(
@@ -124,16 +178,23 @@ class A2UICore:
             input_schema=dict(schema),
         )
         self._pending[interaction.interaction_id] = interaction
-        await self._emit(
-            EventType.A2UI_INTERACTION,
-            invocation_id,
-            {
-                "surface_id": surface.surface_id,
-                "interaction_id": interaction.interaction_id,
-                "kind": kind,
-                "input_schema": dict(schema),
-            },
+        item_id = stable_item_id(
+            "ksadk", self._session_id, invocation_id, "a2ui-interaction", interaction.interaction_id
         )
+        from ksadk.events.canonical import StructuredInputRequest
+
+        request = StructuredInputRequest(prompt=None, schema=dict(schema))
+        event = InteractionRequested(
+            **self._envelope(
+                invocation_id, item_id, "interaction.requested", "a2ui-interaction"
+            ),
+            interaction_id=interaction.interaction_id,
+            interaction_kind="structured_input",
+            request=request,
+        )
+        event.source.metadata["surface_id"] = surface.surface_id
+        event.source.metadata["kind"] = kind
+        await self._append(event)
         return interaction
 
     async def submit_action(
@@ -154,27 +215,44 @@ class A2UICore:
             actor=str(action.get("actor") or "user"),
             status="received",
         )
-        await self._emit(
-            EventType.A2UI_ACTION,
-            invocation_id,
-            {
-                "surface_id": receipt.surface_id,
+        item_id = stable_item_id(
+            "ksadk", self._session_id, invocation_id, "a2ui-action", receipt.action_id
+        )
+        from ksadk.events.canonical import ApprovalRequest
+
+        request = ApprovalRequest(
+            call_id=None,
+            kind="a2ui_action",
+            detail={
                 "action_id": receipt.action_id,
+                "surface_id": receipt.surface_id,
                 "name": receipt.name,
                 "actor": receipt.actor,
                 "component_id": action.get("component_id"),
                 "origin": origin,
             },
         )
+        event = InteractionRequested(
+            **self._envelope(
+                invocation_id, item_id, "interaction.requested", "a2ui-action"
+            ),
+            interaction_id=receipt.action_id,
+            interaction_kind="approval",
+            request=request,
+        )
+        await self._append(event)
         return receipt
 
     async def end_surface(self, surface_id: str, *, invocation_id: str) -> None:
-        """结束 surface(surface.end)。"""
-        await self._emit(
-            EventType.A2UI_SURFACE_END,
-            invocation_id,
-            {"surface_id": surface_id},
+        """结束 surface(item.completed)。"""
+        item_id = self._surface_item_id(invocation_id, surface_id)
+        event = ItemCompleted(
+            **self._envelope(invocation_id, item_id, "item.completed", "a2ui-surface", surface_id=surface_id),
+            item_id=item_id,
+            item_kind="data",
+            snapshot=ContentSnapshot(parts=()),
         )
+        await self._append(event)
         self._seen_surfaces.discard(surface_id)
 
     # ---- 查询 ----

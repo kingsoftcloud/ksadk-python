@@ -94,7 +94,7 @@ def test_run_cancel_resume_replay_chain():
         cancel_result = await adapter.cancel(handle)
         assert cancel_result.value in ("interrupted_active_turn", "pending_cancel_recorded")
         await asyncio.wait_for(consume, timeout=2)
-        await store.append(seen)
+        await store.append("s1", seen)
         checkpoint = await adapter.checkpoint(handle)
         assert checkpoint.checkpoint_id == runner.checkpoint_id
         assert checkpoint.ref["invocation_id"] == runner.invocation_id
@@ -105,7 +105,9 @@ def test_run_cancel_resume_replay_chain():
             ResumePayload(kind="hitl_answer", call_id="c1", data={"answer": "继续"}),
         )
         resumed_events = [e async for e in adapter.stream(resumed)]
-        await store.append(resumed_events)
+        seen_ids = {e.event_id for e in seen}
+        unique_resumed = [e for e in resumed_events if e.event_id not in seen_ids]
+        await store.append("s1", unique_resumed)
 
     loop = asyncio.new_event_loop()
     try:
@@ -128,8 +130,9 @@ def test_run_cancel_resume_replay_chain():
         _sess.resolve_session_service = orig
 
     assert result.exit_code == 0, result.output
-    # 首段 + 续跑事件都可回放
-    assert "首段" in result.output
+    # 首段 + 续跑事件都可回放(commentary item 首段被 final snapshot 覆盖为空,
+    # 但 commentary 行存在;续跑 final_answer 文本可见)
+    assert "[text/commentary]" in result.output
     assert "续跑" in result.output
 
 

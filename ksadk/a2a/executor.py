@@ -23,7 +23,18 @@ from a2a.types import Part, Task, TaskState, TaskStatus
 from a2a.utils.errors import TaskNotCancelableError
 
 from ksadk.a2a.resume_store import A2AResumePayloadKind
-from ksadk.events import EventType, RuntimeEvent
+from ksadk.events.canonical import (
+    ContinuationCreated,
+    EventEnvelope,
+    InteractionRequested,
+    ItemCompleted,
+    ItemUpdated,
+    RunCanceled,
+    RunFailed,
+    RunInterrupted,
+    RuntimeEvent,
+)
+from ksadk.events.content import TextContent
 from ksadk.runtime import CancelResult, RunHandle
 
 logger = logging.getLogger(__name__)
@@ -278,7 +289,6 @@ class A2ARuntimeExecutor(AgentExecutor):
     ) -> str:
         output_text = ""
         artifacts = _ArtifactStreamEmitter(updater, str(context.task_id))
-        reasoning_text = ""
         input_required = False
         input_prompt = "Input required"
         checkpoint_id: str | None = None
@@ -286,92 +296,81 @@ class A2ARuntimeExecutor(AgentExecutor):
         payload_kind: A2AResumePayloadKind = "hitl_answer"
 
         async for event in self.task_adapter.stream_task(handle):
-            if not isinstance(event, RuntimeEvent):
+            if not isinstance(event, EventEnvelope):
                 raise TypeError("RuntimeAdapter.stream must yield RuntimeEvent")
-            if event.event_type == EventType.RUN_FAILED:
-                raise RuntimeError(self._coerce_text(event.payload.get("error")))
-            if event.event_type == EventType.RUN_CANCELED:
+            if isinstance(event, RunFailed):
+                raise RuntimeError(self._coerce_text(event.error.message))
+            if isinstance(event, RunCanceled):
                 await artifacts.close()
                 if not self._cancel_was_accepted(context, handle):
                     await updater.cancel(
                         message=updater.new_agent_message(parts=[Part(text="Request canceled")])
                     )
                 raise _RunCanceled()
-            if event.event_type == EventType.APPROVAL_REQUESTED:
+            if isinstance(event, InteractionRequested):
                 input_required = True
                 payload_kind = "approval_decision"
                 call_id = (
-                    str(event.payload.get("call_id") or event.payload.get("approval_id") or "")
+                    str(event.request.call_id or event.interaction_id or "")
                     or None
                 )
-                detail = event.payload.get("detail")
+                detail = event.request.detail
                 if isinstance(detail, dict):
                     input_prompt = self._coerce_text(
                         detail.get("prompt") or detail.get("message") or input_prompt
                     )
                 continue
-            if event.event_type == EventType.CHECKPOINT_CREATED:
-                checkpoint_id = str(event.payload.get("checkpoint_id") or "") or None
+            if isinstance(event, ContinuationCreated):
+                checkpoint_id = event.continuation_id
                 continue
-            if event.event_type == EventType.RUN_INTERRUPTED:
+            if isinstance(event, RunInterrupted):
                 input_required = True
-                input_prompt = self._coerce_text(
-                    event.payload.get("prompt") or event.payload.get("message") or input_prompt
-                )
+                input_prompt = self._coerce_text(event.reason or input_prompt)
                 continue
-            if event.event_type not in {
-                EventType.TEXT_DELTA,
-                EventType.TEXT_COMPLETED,
-                EventType.REASONING_DELTA,
-                EventType.REASONING_COMPLETED,
-            }:
-                continue
-            text = self._coerce_text(event.payload.get("text"))
-            if not text:
-                continue
-            if event.event_type == EventType.REASONING_COMPLETED:
-                if not self.include_reasoning:
+            if isinstance(event, ItemUpdated):
+                if event.item_kind == "reasoning":
+                    if not self.include_reasoning:
+                        continue
+                    if not isinstance(event.update, TextContent):
+                        continue
+                    text = event.update.text
+                    if not text:
+                        continue
+                    await artifacts.push(
+                        "thinking", text, replace_snapshot=(event.op == "replace")
+                    )
                     continue
-                if not reasoning_text:
-                    delta = text
-                    reasoning_text = text
-                elif text.startswith(reasoning_text):
-                    delta = text[len(reasoning_text) :]
-                    reasoning_text = text
-                else:
-                    delta = text
-                    reasoning_text += text
-                if delta:
-                    await artifacts.push("thinking", delta)
-                continue
-            if event.event_type == EventType.REASONING_DELTA:
-                if not self.include_reasoning:
+                if event.item_kind == "message":
+                    if not isinstance(event.update, TextContent):
+                        continue
+                    text = event.update.text
+                    if not text:
+                        continue
+                    replace_snapshot = event.op == "replace"
+                    if replace_snapshot:
+                        output_text = text
+                    else:
+                        output_text += text
+                    await artifacts.push("text", text, replace_snapshot=replace_snapshot)
                     continue
-                reasoning_text += text
-                await artifacts.push("thinking", text)
                 continue
-            # TEXT_COMPLETED 是累计全文,去重只发新增 suffix;TEXT_DELTA 默认是增量,
-            # 但 runner 显式标记 replace 时是权威快照。
-            if event.event_type == EventType.TEXT_COMPLETED:
-                if not output_text:
-                    delta = text
+            if isinstance(event, ItemCompleted):
+                if event.item_kind == "reasoning":
+                    if not self.include_reasoning:
+                        continue
+                    text = self._snapshot_text(event)
+                    if not text:
+                        continue
+                    await artifacts.push("thinking", text, replace_snapshot=True)
+                    continue
+                if event.item_kind == "message":
+                    text = self._snapshot_text(event)
+                    if not text:
+                        continue
                     output_text = text
-                    replace_snapshot = False
-                elif text.startswith(output_text):
-                    delta = text[len(output_text) :]
-                    output_text = text
-                    replace_snapshot = False
-                else:
-                    delta = text
-                    output_text = text
-                    replace_snapshot = True
-            else:
-                delta = text
-                replace_snapshot = bool(event.payload.get("replace"))
-                output_text = text if replace_snapshot else output_text + text
-            if not delta:
+                    await artifacts.push("text", text, replace_snapshot=True)
+                    continue
                 continue
-            await artifacts.push("text", delta, replace_snapshot=replace_snapshot)
         if self._cancel_was_accepted(context, handle):
             await artifacts.close()
             raise _RunCanceled()
@@ -406,6 +405,14 @@ class A2ARuntimeExecutor(AgentExecutor):
             result = forget_task(str(context.task_id or ""), context, handle)
             if inspect.isawaitable(result):
                 await result
+
+    @staticmethod
+    def _snapshot_text(event: ItemCompleted) -> str:
+        """Extract text from the first TextContent part of an ItemCompleted snapshot."""
+        if not event.snapshot.parts:
+            return ""
+        part = event.snapshot.parts[0]
+        return part.text if isinstance(part, TextContent) else ""
 
     @classmethod
     def _coerce_text(cls, payload: Any) -> str:

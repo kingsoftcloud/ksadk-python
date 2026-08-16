@@ -17,7 +17,9 @@ import click
 from click.testing import CliRunner
 
 from ksadk.cli import _register_commands, _register_optional_command, cli
-from ksadk.events.runtime_event import EventType, RuntimeEvent
+from ksadk.events.canonical import ItemStarted, RunStarted, SourceRef
+from ksadk.events.content import TextContent
+from ksadk.events.canonical import ItemUpdated
 from ksadk.events.store import RuntimeEventStore
 from ksadk.sessions.in_memory import InMemorySessionService
 
@@ -89,27 +91,44 @@ def test_replay_outputs_runtime_event_history(monkeypatch):
         await svc.create_session(agent_id="a", user_id="u", session_id="s1")
         store = RuntimeEventStore(svc)
         await store.append(
+            "s1",
             [
-                RuntimeEvent.create(
-                    EventType.RUN_STARTED,
-                    agent_id="a",
-                    user_id="u",
-                    session_id="s1",
-                    invocation_id="inv1",
-                    seq_id=1,
-                    payload={"status": "in_progress"},
+                RunStarted(
+                    schema_version=2,
+                    event_id="evt-1",
+                    seq=1,
+                    timestamp=1.0,
+                    run_id="inv1",
+                    scope_id="scope-inv1",
+                    source=SourceRef(framework="ksadk"),
+                    status="running",
                 ),
-                RuntimeEvent.create(
-                    EventType.TEXT_DELTA,
-                    agent_id="a",
-                    user_id="u",
-                    session_id="s1",
-                    invocation_id="inv1",
-                    seq_id=2,
-                    payload={"text": "你好"},
+                ItemStarted(
+                    schema_version=2,
+                    event_id="evt-1a",
+                    seq=2,
+                    timestamp=1.0,
+                    run_id="inv1",
+                    scope_id="scope-inv1",
+                    source=SourceRef(framework="ksadk"),
+                    item_id="msg-1",
+                    item_kind="message",
                     phase="final_answer",
                 ),
-            ]
+                ItemUpdated(
+                    schema_version=2,
+                    event_id="evt-2",
+                    seq=3,
+                    timestamp=1.0,
+                    run_id="inv1",
+                    scope_id="scope-inv1",
+                    source=SourceRef(framework="ksadk"),
+                    item_id="msg-1",
+                    item_kind="message",
+                    op="append",
+                    update=TextContent(part_id="text-0", text="你好"),
+                ),
+            ],
         )
 
     svc = InMemorySessionService()

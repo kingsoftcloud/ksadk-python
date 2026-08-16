@@ -18,7 +18,7 @@ from a2a.utils.errors import TaskNotCancelableError
 
 from ksadk.a2a.executor import A2ARuntimeExecutor
 from ksadk.a2a.task_adapter import A2ARuntimeTaskAdapter
-from ksadk.events import EventType, RuntimeEvent
+from ksadk.events.canonical import RunCanceled, SourceRef
 from ksadk.runtime import CancelResult, RunHandle
 
 
@@ -112,14 +112,15 @@ class _CancelableRuntimeAdapter:
             self.stream_started.set()
             await self.cancelled.wait()
             if self.emit_canceled_event:
-                yield RuntimeEvent.create(
-                    EventType.RUN_CANCELED,
-                    agent_id="agent-1",
-                    user_id="tenant-1",
-                    session_id=handle.session_id,
-                    invocation_id=handle.run_id,
-                    seq_id=1,
-                    payload={"status": "canceled"},
+                yield RunCanceled(
+                    schema_version=2,
+                    event_id="evt-cancel-emit",
+                    seq=1,
+                    timestamp=1.0,
+                    run_id=handle.run_id,
+                    scope_id="scope-1",
+                    source=SourceRef(framework="ksadk"),
+                    status="canceled",
                 )
 
         return _events()
@@ -218,14 +219,15 @@ async def test_runtime_canceled_event_is_terminal_and_never_completed() -> None:
     class _NaturalCanceledRuntimeAdapter(_CancelableRuntimeAdapter):
         def stream(self, handle: RunHandle):  # noqa: ANN201
             async def _events():
-                yield RuntimeEvent.create(
-                    EventType.RUN_CANCELED,
-                    agent_id="agent-1",
-                    user_id="tenant-1",
-                    session_id=handle.session_id,
-                    invocation_id=handle.run_id,
-                    seq_id=1,
-                    payload={"status": "canceled"},
+                yield RunCanceled(
+                    schema_version=2,
+                    event_id="evt-cancel-natural",
+                    seq=1,
+                    timestamp=1.0,
+                    run_id=handle.run_id,
+                    scope_id="scope-1",
+                    source=SourceRef(framework="ksadk"),
+                    status="canceled",
                 )
 
             return _events()

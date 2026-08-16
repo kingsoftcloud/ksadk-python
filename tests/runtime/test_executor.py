@@ -9,7 +9,8 @@ from types import SimpleNamespace
 import pytest
 
 import ksadk.runtime as runtime_api
-from ksadk.events.runtime_event import EventType, RuntimeEvent
+from ksadk.events.canonical import RunStarted, RuntimeEvent, SourceRef
+from ksadk.events.identity import stable_event_id, stable_item_id, stable_scope_id
 from ksadk.runtime import (
     BaseRuntime,
     CancelResult,
@@ -54,14 +55,19 @@ class _RecordingAdapter(RuntimeAdapter):
         )
 
     async def stream(self, handle: RunHandle) -> AsyncIterator[RuntimeEvent]:
-        yield RuntimeEvent.create(
-            EventType.RUN_STARTED,
-            agent_id="agent",
-            user_id="user",
-            session_id=handle.session_id,
-            invocation_id=handle.run_id,
-            seq_id=1,
-            payload={"status": "in_progress"},
+        framework = "ksadk"
+        run_id = handle.run_id
+        scope_id = stable_scope_id(framework, run_id)
+        item_id = stable_item_id(framework, run_id, "$run")
+        yield RunStarted(
+            schema_version=2,
+            event_id=stable_event_id(framework, scope_id, item_id, "run.started", "run", run_id, 0),
+            seq=1,
+            timestamp=1.0,
+            run_id=run_id,
+            scope_id=scope_id,
+            source=SourceRef(framework=framework),
+            status="running",
         )
 
     async def cancel(self, handle: RunHandle) -> CancelResult:
@@ -190,7 +196,7 @@ async def test_executor_routes_handle_to_owning_adapter_and_closes_it(tmp_path: 
     result = await executor.cancel(handle)
     await executor.close(handle)
 
-    assert [event.event_type for event in events] == [EventType.RUN_STARTED]
+    assert [event.event_type for event in events] == ["run.started"]
     assert result is CancelResult.NOT_RUNNING
     assert adapters[0].cancelled == [handle]
     assert adapters[0].closed == [handle]

@@ -4,7 +4,18 @@ from collections.abc import AsyncIterator
 
 import pytest
 
-from ksadk.events.runtime_event import EventType, RuntimeEvent
+from ksadk.events.canonical import (
+    ContentSnapshot,
+    ItemCompleted,
+    ItemStarted,
+    OutputRef,
+    RunCompleted,
+    RunStarted,
+    RuntimeEvent,
+    SourceRef,
+)
+from ksadk.events.content import TextContent
+from ksadk.events.identity import stable_event_id, stable_item_id, stable_scope_id
 from ksadk.runtime import (
     CONVERSATION_PREPROCESSING_METADATA_KEY,
     BaseRuntime,
@@ -48,30 +59,81 @@ class _Adapter(RuntimeAdapter):
         )
 
     async def stream(self, handle: RunHandle) -> AsyncIterator[RuntimeEvent]:
-        common = {
-            "agent_id": "agent-1",
-            "user_id": "user-1",
-            "session_id": handle.session_id,
-            "invocation_id": handle.run_id,
-        }
-        yield RuntimeEvent.create(
-            EventType.RUN_STARTED,
-            seq_id=1,
-            payload={"status": "in_progress"},
-            **common,
+        framework = "ksadk"
+        run_id = handle.run_id
+        scope_id = stable_scope_id(framework, run_id)
+        run_item_id = stable_item_id(framework, run_id, "$run")
+        message_item_id = stable_item_id(framework, run_id, "message", "final_answer")
+        source = SourceRef(
+            framework=framework,
+            native_run_id=run_id,
+            metadata={
+                "agent_id": "agent-1",
+                "user_id": "user-1",
+                "session_id": handle.session_id,
+                "invocation_id": run_id,
+            },
         )
-        yield RuntimeEvent.create(
-            EventType.TEXT_COMPLETED,
-            seq_id=2,
+        yield RunStarted(
+            schema_version=2,
+            event_id=stable_event_id(
+                framework, scope_id, run_item_id, "run.started", "run", run_id, 0
+            ),
+            seq=1,
+            timestamp=1.0,
+            run_id=run_id,
+            scope_id=scope_id,
+            source=source,
+            status="running",
+        )
+        # ItemStarted must precede ItemCompleted for the reducer invariant.
+        yield ItemStarted(
+            schema_version=2,
+            event_id=stable_event_id(
+                framework, scope_id, message_item_id, "item.started", "text-0", run_id, 0
+            ),
+            seq=2,
+            timestamp=2.0,
+            run_id=run_id,
+            scope_id=scope_id,
+            source=source,
+            item_id=message_item_id,
+            item_kind="message",
             phase="final_answer",
-            payload={"text": "answer"},
-            **common,
+            initial=None,
         )
-        yield RuntimeEvent.create(
-            EventType.RUN_COMPLETED,
-            seq_id=3,
-            payload={"status": "completed", "duration_ms": 12},
-            **common,
+        yield ItemCompleted(
+            schema_version=2,
+            event_id=stable_event_id(
+                framework, scope_id, message_item_id, "item.completed", "text-0", run_id, 0
+            ),
+            seq=3,
+            timestamp=3.0,
+            run_id=run_id,
+            scope_id=scope_id,
+            source=source,
+            item_id=message_item_id,
+            item_kind="message",
+            snapshot=ContentSnapshot(parts=(TextContent(part_id="text-0", text="answer"),)),
+        )
+        yield RunCompleted(
+            schema_version=2,
+            event_id=stable_event_id(
+                framework, scope_id, run_item_id, "run.completed", "run", run_id, 0
+            ),
+            seq=4,
+            timestamp=4.0,
+            run_id=run_id,
+            scope_id=scope_id,
+            source=source.model_copy(
+                update={"metadata": {**source.metadata, "duration_ms": 12}}
+            ),
+            status="completed",
+            output_refs=(
+                OutputRef(
+                    scope_id=scope_id, item_id=message_item_id, part_id="text-0"
+                ),
+            ),
         )
 
     async def cancel(self, _handle: RunHandle) -> CancelResult:
@@ -119,12 +181,13 @@ async def test_runtime_conversation_prepares_once_persists_and_closes_terminal_r
     assert prepared["session_id"] == request.session_id
     assert prepared["user_input"] == "hello"
     assert [event.event_type for event in events] == [
-        EventType.RUN_STARTED,
-        EventType.TEXT_COMPLETED,
-        EventType.RUN_COMPLETED,
+        "run.started",
+        "item.started",
+        "item.completed",
+        "run.completed",
     ]
     assert [event.event_type for event in stored].count("user_message") == 1
-    assert any(event.event_type == EventType.TEXT_COMPLETED for event in stored)
+    assert any(event.event_type == "item.completed" for event in stored)
     assert session is not None
     assert session.summary == "answer"
     assert session.state["active_run"] == {
@@ -234,4 +297,4 @@ async def test_checkpoint_resume_reuses_owned_handle_and_calls_executor_resume()
             None,
         )
     ]
-    assert {event.invocation_id for event in events} == {"original-run"}
+    assert {event.run_id for event in events} == {"original-run"}

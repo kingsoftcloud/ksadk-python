@@ -5,7 +5,17 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from ksadk.events.runtime_event import EventType, RuntimeEvent
+from ksadk.events.canonical import (
+    ContentSnapshot,
+    ItemCompleted,
+    ItemUpdated,
+    OutputRef,
+    RunCompleted,
+    RunStarted,
+    RuntimeEvent,
+    SourceRef,
+)
+from ksadk.events.content import TextContent
 from ksadk.studio.api import create_studio_app
 from ksadk.studio.contracts import ModelSpec, RunRecord, RunStatus, Usage
 from ksadk.studio.model_client import ModelResponse
@@ -81,36 +91,56 @@ async def _shared_runtime_events(request, handle):
     turn = int(handle.run_id.rsplit("-", 1)[-1])
     text = f"共享会话回复 {turn}"
     common = {
-        "agent_id": request.agent_id or "agent",
-        "user_id": request.user_id,
-        "session_id": request.session_id,
-        "invocation_id": handle.run_id,
+        "schema_version": 2,
+        "timestamp": 1.0,
+        "run_id": handle.run_id,
+        "scope_id": f"scope-{handle.run_id}",
     }
-    yield RuntimeEvent.create(
-        EventType.RUN_STARTED,
+    source = SourceRef(framework="langgraph")
+    yield RunStarted(
+        event_id="e1",
+        seq=1,
+        status="running",
+        source=source,
         **common,
-        seq_id=1,
-        payload={"status": "in_progress"},
     )
-    yield RuntimeEvent.create(
-        EventType.TEXT_DELTA,
+    yield ItemUpdated(
+        event_id="e2",
+        seq=2,
+        item_id="msg-1",
+        item_kind="message",
+        op="append",
+        update=TextContent(part_id="text-0", text=text),
+        source=source,
         **common,
-        seq_id=2,
-        phase="final_answer",
-        payload={"text": text},
     )
-    yield RuntimeEvent.create(
-        EventType.TEXT_COMPLETED,
+    yield ItemCompleted(
+        event_id="e3",
+        seq=3,
+        item_id="msg-1",
+        item_kind="message",
+        snapshot=ContentSnapshot(
+            parts=(TextContent(part_id="text-0", text=text),)
+        ),
+        source=source,
         **common,
-        seq_id=3,
-        phase="final_answer",
-        payload={"text": text},
     )
-    yield RuntimeEvent.create(
-        EventType.RUN_COMPLETED,
+    yield RunCompleted(
+        event_id="e4",
+        seq=4,
+        status="completed",
+        output_refs=(
+            OutputRef(
+                scope_id=common["scope_id"],
+                item_id="msg-1",
+                part_id="text-0",
+            ),
+        ),
+        source=SourceRef(
+            framework="langgraph",
+            metadata={"duration_ms": 9},
+        ),
         **common,
-        seq_id=4,
-        payload={"status": "completed", "duration_ms": 9},
     )
 
 

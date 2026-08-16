@@ -7,7 +7,16 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from ksadk.events.runtime_event import EventType, RuntimeEvent
+from ksadk.events.canonical import (
+    ContentSnapshot,
+    ItemCompleted,
+    OutputRef,
+    RunCompleted,
+    RunStarted,
+    RuntimeEvent,
+    SourceRef,
+)
+from ksadk.events.content import TextContent
 from ksadk.runtime import RunHandle, StartRequest
 from ksadk.studio.api import RunRequest, create_studio_app
 from ksadk.studio.codex_manifest import CodexAgentManifest
@@ -40,30 +49,44 @@ async def _slow_codex_events(
     handle: RunHandle,
 ):
     common = {
-        "agent_id": request.agent_id or "agent",
-        "user_id": request.user_id,
-        "session_id": request.session_id,
-        "invocation_id": handle.run_id,
+        "schema_version": 2,
+        "timestamp": 1.0,
+        "run_id": handle.run_id,
+        "scope_id": f"scope-{handle.run_id}",
     }
-    yield RuntimeEvent.create(
-        EventType.RUN_STARTED,
+    source = SourceRef(framework="codex")
+    yield RunStarted(
+        event_id="e1",
+        seq=1,
+        status="running",
+        source=source,
         **common,
-        seq_id=1,
-        payload={"status": "in_progress"},
     )
     await asyncio.sleep(0.1)
-    yield RuntimeEvent.create(
-        EventType.TEXT_COMPLETED,
+    yield ItemCompleted(
+        event_id="e2",
+        seq=2,
+        item_id="msg-1",
+        item_kind="message",
+        snapshot=ContentSnapshot(
+            parts=(TextContent(part_id="text-0", text="刷新不会中断。"),)
+        ),
+        source=source,
         **common,
-        seq_id=2,
-        phase="final_answer",
-        payload={"text": "刷新不会中断。"},
     )
-    yield RuntimeEvent.create(
-        EventType.RUN_COMPLETED,
+    yield RunCompleted(
+        event_id="e3",
+        seq=3,
+        status="completed",
+        output_refs=(
+            OutputRef(
+                scope_id=common["scope_id"],
+                item_id="msg-1",
+                part_id="text-0",
+            ),
+        ),
+        source=source,
         **common,
-        seq_id=3,
-        payload={"status": "completed"},
     )
 
 

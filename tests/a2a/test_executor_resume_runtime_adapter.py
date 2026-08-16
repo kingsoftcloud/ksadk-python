@@ -10,7 +10,17 @@ from google.protobuf.json_format import MessageToDict
 from ksadk.a2a.executor import A2ARuntimeExecutor
 from ksadk.a2a.resume_store import A2AResumeState
 from ksadk.a2a.task_adapter import A2ARuntimeTaskAdapter
-from ksadk.events import EventPhase, EventType, RuntimeEvent
+from ksadk.events.canonical import (
+    ApprovalRequest,
+    ContentSnapshot,
+    ContinuationCreated,
+    InteractionRequested,
+    ItemCompleted,
+    ItemUpdated,
+    RunCompleted,
+    SourceRef,
+)
+from ksadk.events.content import TextContent
 from ksadk.runtime import ResumePayload, ResumeTarget, RunHandle
 
 
@@ -84,51 +94,60 @@ class _RecordingRuntimeAdapter:
 
         async def _events():
             if not self.resume_calls:
-                yield RuntimeEvent.create(
-                    EventType.APPROVAL_REQUESTED,
-                    agent_id="agent-1",
-                    user_id="user-1",
-                    session_id=handle.session_id,
-                    invocation_id=handle.run_id,
-                    seq_id=1,
-                    payload={
-                        "approval_id": "call-1",
-                        "call_id": "call-1",
-                        "kind": "tool",
-                        "detail": {"prompt": "approve tool call"},
-                    },
+                yield InteractionRequested(
+                    schema_version=2,
+                    event_id="evt-approval-1",
+                    seq=1,
+                    timestamp=1.0,
+                    run_id=handle.run_id,
+                    scope_id="scope-1",
+                    source=SourceRef(framework="ksadk"),
+                    interaction_id="call-1",
+                    interaction_kind="approval",
+                    request=ApprovalRequest(
+                        call_id="call-1",
+                        kind="tool",
+                        detail={"prompt": "approve tool call"},
+                    ),
                 )
-                yield RuntimeEvent.create(
-                    EventType.CHECKPOINT_CREATED,
-                    agent_id="agent-1",
-                    user_id="user-1",
-                    session_id=handle.session_id,
-                    invocation_id=handle.run_id,
-                    seq_id=2,
-                    payload={
-                        "checkpoint_id": "checkpoint-1",
-                        "granularity": "snapshot",
-                    },
+                yield ContinuationCreated(
+                    schema_version=2,
+                    event_id="evt-checkpoint-1",
+                    seq=2,
+                    timestamp=2.0,
+                    run_id=handle.run_id,
+                    scope_id="scope-1",
+                    source=SourceRef(framework="ksadk"),
+                    continuation_id="checkpoint-1",
+                    continuation_kind="graph_checkpoint",
+                    resumable=True,
+                    ref={"granularity": "snapshot"},
                 )
                 return
-            yield RuntimeEvent.create(
-                EventType.TEXT_COMPLETED,
-                agent_id="agent-1",
-                user_id="user-1",
-                session_id=handle.session_id,
-                invocation_id=handle.run_id,
-                seq_id=1,
-                phase=EventPhase.FINAL_ANSWER.value,
-                payload={"text": "resumed"},
+            yield ItemCompleted(
+                schema_version=2,
+                event_id="evt-text-completed-resumed",
+                seq=1,
+                timestamp=1.0,
+                run_id=handle.run_id,
+                scope_id="scope-1",
+                source=SourceRef(framework="ksadk"),
+                item_id="msg-1",
+                item_kind="message",
+                snapshot=ContentSnapshot(
+                    parts=(TextContent(part_id="text-0", text="resumed"),)
+                ),
             )
-            yield RuntimeEvent.create(
-                EventType.RUN_COMPLETED,
-                agent_id="agent-1",
-                user_id="user-1",
-                session_id=handle.session_id,
-                invocation_id=handle.run_id,
-                seq_id=2,
-                payload={"status": "completed"},
+            yield RunCompleted(
+                schema_version=2,
+                event_id="evt-run-completed-resumed",
+                seq=2,
+                timestamp=2.0,
+                run_id=handle.run_id,
+                scope_id="scope-1",
+                source=SourceRef(framework="ksadk"),
+                status="completed",
+                output_refs=(),
             )
 
         return _events()
@@ -139,33 +158,45 @@ class _ReasoningRuntimeAdapter(_RecordingRuntimeAdapter):
         self.stream_handles.append(handle)
 
         async def _events():
-            yield RuntimeEvent.create(
-                EventType.REASONING_DELTA,
-                agent_id="agent-1",
-                user_id="user-1",
-                session_id=handle.session_id,
-                invocation_id=handle.run_id,
-                seq_id=1,
-                payload={"text": "internal-chain-of-thought"},
+            yield ItemUpdated(
+                schema_version=2,
+                event_id="evt-reasoning-delta-1",
+                seq=1,
+                timestamp=1.0,
+                run_id=handle.run_id,
+                scope_id="scope-1",
+                source=SourceRef(framework="ksadk"),
+                item_id="reasoning-1",
+                item_kind="reasoning",
+                op="append",
+                update=TextContent(
+                    part_id="text-0", text="internal-chain-of-thought"
+                ),
             )
-            yield RuntimeEvent.create(
-                EventType.TEXT_COMPLETED,
-                agent_id="agent-1",
-                user_id="user-1",
-                session_id=handle.session_id,
-                invocation_id=handle.run_id,
-                seq_id=2,
-                phase=EventPhase.FINAL_ANSWER.value,
-                payload={"text": "safe answer"},
+            yield ItemCompleted(
+                schema_version=2,
+                event_id="evt-text-completed-reasoning",
+                seq=2,
+                timestamp=2.0,
+                run_id=handle.run_id,
+                scope_id="scope-1",
+                source=SourceRef(framework="ksadk"),
+                item_id="msg-1",
+                item_kind="message",
+                snapshot=ContentSnapshot(
+                    parts=(TextContent(part_id="text-0", text="safe answer"),)
+                ),
             )
-            yield RuntimeEvent.create(
-                EventType.RUN_COMPLETED,
-                agent_id="agent-1",
-                user_id="user-1",
-                session_id=handle.session_id,
-                invocation_id=handle.run_id,
-                seq_id=3,
-                payload={"status": "completed"},
+            yield RunCompleted(
+                schema_version=2,
+                event_id="evt-run-completed-reasoning",
+                seq=3,
+                timestamp=3.0,
+                run_id=handle.run_id,
+                scope_id="scope-1",
+                source=SourceRef(framework="ksadk"),
+                status="completed",
+                output_refs=(),
             )
 
         return _events()

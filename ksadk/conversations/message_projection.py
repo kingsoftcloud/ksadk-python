@@ -5,9 +5,6 @@ from typing import Any
 from urllib.parse import quote
 
 from ksadk.agui.a2ui_projection import project_a2ui_operations
-from ksadk.events.runtime_event import EventType
-
-
 def _event_metadata(event: Mapping[str, Any]) -> Mapping[str, Any]:
     metadata = event.get("Metadata")
     return metadata if isinstance(metadata, Mapping) else {}
@@ -111,9 +108,9 @@ def _project_event_group(
                     "approval_request",
                     "tool_call",
                     "reasoning",
-                    EventType.A2UI_SURFACE_BEGIN,
-                    EventType.A2UI_SURFACE_UPDATE,
-                    EventType.A2UI_SURFACE_END,
+                    "a2ui.surface.begin",
+                    "a2ui.surface.update",
+                    "a2ui.surface.end",
                 }
             ),
             events[-1],
@@ -462,9 +459,9 @@ def _project_a2ui_activities(events: Sequence[Mapping[str, Any]]) -> list[dict[s
     for event in events:
         event_type = str(event.get("EventType") or "")
         if event_type not in {
-            EventType.A2UI_SURFACE_BEGIN,
-            EventType.A2UI_SURFACE_UPDATE,
-            EventType.A2UI_SURFACE_END,
+            "a2ui.surface.begin",
+            "a2ui.surface.update",
+            "a2ui.surface.end",
         }:
             continue
         content = event.get("Content")
@@ -492,7 +489,7 @@ def _agui_invocation_ids(events: Sequence[Mapping[str, Any]]) -> set[str]:
     """Locate AG-UI runs so history written before ``payload.protocol`` remains usable."""
     invocation_ids: set[str] = set()
     for event in events:
-        if str(event.get("EventType") or "") != EventType.RUN_STARTED:
+        if str(event.get("EventType") or "") != "run.started":
             continue
         if not _event_metadata(event).get("ksadk_runtime_event"):
             continue
@@ -505,16 +502,134 @@ def _agui_invocation_ids(events: Sequence[Mapping[str, Any]]) -> set[str]:
     return invocation_ids
 
 
+_CANONICAL_EVENT_TYPE_MAP = {
+    "run.started": "run.started",
+    "run.completed": "run.completed",
+    "run.failed": "run.failed",
+    "run.canceled": "run.canceled",
+    "run.interrupted": "run.interrupted",
+    "item.started": "item.started",
+    "item.updated": "item.updated",
+    "item.completed": "item.completed",
+    "interaction.requested": "approval.requested",
+}
+
+
+def _normalize_canonical_event(
+    event: Mapping[str, Any],
+    content: Mapping[str, Any],
+    metadata: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    """Project a canonical v2 SessionEvent into the legacy v1 wire shape."""
+    runtime_event = content.get("runtime_event")
+    if not isinstance(runtime_event, Mapping):
+        return event
+    event_type = str(runtime_event.get("event_type") or "")
+    item_kind = str(runtime_event.get("item_kind") or "")
+    normalized = dict(event)
+    normalized_metadata = dict(metadata)
+
+    if event_type == "run.started":
+        source = runtime_event.get("source") or {}
+        source_metadata = source.get("metadata") if isinstance(source, Mapping) else None
+        if isinstance(source_metadata, Mapping) and source_metadata.get("source") == "ag-ui":
+            normalized["EventType"] = "user_message"
+            normalized["Content"] = {"text": _input_text(source_metadata.get("input"))}
+            normalized["Author"] = "user"
+            normalized["Metadata"] = normalized_metadata
+            return normalized
+        normalized["EventType"] = "run.started"
+        normalized["Content"] = {"status": runtime_event.get("status", "running")}
+    elif event_type == "run.completed":
+        normalized["EventType"] = "run.completed"
+        normalized["Content"] = {"status": "completed"}
+    elif event_type == "run.failed":
+        normalized["EventType"] = "run.failed"
+        error = runtime_event.get("error") or {}
+        normalized["Content"] = {"status": "failed", "error": error.get("message", "")}
+    elif event_type == "run.canceled":
+        normalized["EventType"] = "run.canceled"
+        normalized["Content"] = {"status": "canceled"}
+    elif event_type == "run.interrupted":
+        normalized["EventType"] = "run.interrupted"
+        normalized["Content"] = {"status": "interrupted"}
+    elif event_type == "item.started":
+        if item_kind == "tool_call":
+            initial = runtime_event.get("initial") or {}
+            parts = initial.get("parts") if isinstance(initial, Mapping) else None
+            part = parts[0] if isinstance(parts, list) and parts else {}
+            call_id = part.get("call_id", "")
+            name = part.get("name", "")
+            args = part.get("arguments", {})
+            normalized["EventType"] = "tool_call"
+            normalized["Content"] = {"call_id": call_id, "name": name, "args": args}
+            normalized_metadata.update({"call_id": call_id, "tool_name": name, "tool_args": args})
+        else:
+            return event
+    elif event_type == "item.completed":
+        if item_kind == "message":
+            snapshot = runtime_event.get("snapshot") or {}
+            parts = snapshot.get("parts") if isinstance(snapshot, Mapping) else None
+            text = ""
+            if isinstance(parts, list):
+                for part in parts:
+                    if isinstance(part, Mapping) and part.get("content_type") == "text":
+                        text = part.get("text", "")
+                        break
+            if not text:
+                return event
+            normalized["EventType"] = "assistant_message"
+            normalized["Content"] = {"role": "model", "parts": [{"text": text}]}
+            normalized["Author"] = "assistant"
+        elif item_kind == "tool_call":
+            return event
+        elif item_kind == "tool_result":
+            snapshot = runtime_event.get("snapshot") or {}
+            parts = snapshot.get("parts") if isinstance(snapshot, Mapping) else None
+            part = parts[0] if isinstance(parts, list) and parts else {}
+            call_id = part.get("call_id", "")
+            result = part.get("result", "")
+            normalized["EventType"] = "tool_result"
+            normalized["Content"] = {"call_id": call_id, "name": "", "result": result}
+            normalized_metadata.update({"call_id": call_id, "tool_output": result})
+        else:
+            return event
+    elif event_type == "item.updated":
+        if item_kind == "message":
+            update = runtime_event.get("update") or {}
+            text = update.get("text", "") if isinstance(update, Mapping) else ""
+            normalized["EventType"] = "assistant_stream_delta"
+            normalized["Content"] = {"role": "model", "parts": [{"text": text}]}
+        elif item_kind == "reasoning":
+            update = runtime_event.get("update") or {}
+            text = update.get("text", "") if isinstance(update, Mapping) else ""
+            normalized["EventType"] = "reasoning"
+            normalized["Content"] = {"role": "model", "parts": [{"text": text}]}
+        else:
+            return event
+    elif event_type == "interaction.requested":
+        normalized["EventType"] = "approval_request"
+        normalized["Content"] = {"detail": runtime_event.get("request", {})}
+    else:
+        return event
+
+    normalized["Metadata"] = normalized_metadata
+    return normalized
+
+
 def _normalize_runtime_event(
     event: Mapping[str, Any],
     *,
     agui_invocations: set[str],
 ) -> Mapping[str, Any]:
     metadata = _event_metadata(event)
-    if not metadata.get("ksadk_runtime_event"):
+    is_canonical = metadata.get("ksadk_canonical_runtime_event")
+    if not metadata.get("ksadk_runtime_event") and not is_canonical:
         return event
     raw_content = event.get("Content")
     content = raw_content if isinstance(raw_content, Mapping) else {}
+    if is_canonical:
+        return _normalize_canonical_event(event, content, metadata)
     payload = content.get("payload")
     payload = payload if isinstance(payload, Mapping) else {}
     event_type = str(event.get("EventType") or "")
@@ -522,17 +637,17 @@ def _normalize_runtime_event(
     normalized["Content"] = dict(payload)
     normalized_metadata = dict(metadata)
 
-    if event_type == EventType.RUN_STARTED and payload.get("source") == "ag-ui":
+    if event_type == "run.started" and payload.get("source") == "ag-ui":
         normalized["EventType"] = "user_message"
         normalized["Content"] = {"text": _input_text(payload.get("input"))}
         normalized["Author"] = "user"
-    elif event_type == EventType.TEXT_COMPLETED:
+    elif event_type == "text.completed":
         normalized["EventType"] = "assistant_message"
-    elif event_type == EventType.TEXT_DELTA:
+    elif event_type == "text.delta":
         normalized["EventType"] = "assistant_stream_delta"
-    elif event_type in {EventType.REASONING_DELTA, EventType.REASONING_COMPLETED}:
+    elif event_type in {"reasoning.delta", "reasoning.completed"}:
         normalized["EventType"] = "reasoning"
-    elif event_type == EventType.TOOL_CALL_BEGIN:
+    elif event_type == "tool.call.begin":
         normalized["EventType"] = "tool_call"
         normalized_metadata.update(
             {
@@ -541,7 +656,7 @@ def _normalize_runtime_event(
                 "tool_args": payload.get("args"),
             }
         )
-    elif event_type == EventType.TOOL_CALL_END:
+    elif event_type == "tool.call.end":
         normalized["EventType"] = "tool_result"
         normalized_metadata.update(
             {
@@ -550,7 +665,7 @@ def _normalize_runtime_event(
                 "tool_output": payload.get("result", payload.get("error")),
             }
         )
-    elif event_type == EventType.APPROVAL_REQUESTED:
+    elif event_type == "approval.requested":
         detail = payload.get("detail")
         detail = detail if isinstance(detail, Mapping) else {}
         approval_request = detail.get("approval_requests")
@@ -593,7 +708,7 @@ def _normalize_runtime_event(
         )
         if is_agui_approval:
             normalized_metadata["protocol"] = "ag-ui"
-    elif event_type == EventType.APPROVAL_RESOLVED:
+    elif event_type == "approval.resolved":
         decision = payload.get("decision")
         normalized["EventType"] = "approval_response"
         normalized_metadata["resume_input"] = {

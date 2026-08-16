@@ -3,7 +3,18 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Callable
 from typing import Any
 
-from ksadk.events.runtime_event import EventType, RuntimeEvent
+from ksadk.events.canonical import (
+    ContentSnapshot,
+    ItemCompleted,
+    ItemStarted,
+    ItemUpdated,
+    OutputRef,
+    RunCompleted,
+    RunStarted,
+    RuntimeEvent,
+    SourceRef,
+)
+from ksadk.events.content import TextContent, ToolCallContent, ToolResultContent
 from ksadk.runtime import (
     BaseRuntime,
     CancelResult,
@@ -111,67 +122,114 @@ async def standard_codex_events(
     handle: RunHandle,
 ) -> AsyncIterator[RuntimeEvent]:
     common = {
-        "agent_id": request.agent_id or "agent",
-        "user_id": request.user_id,
-        "session_id": request.session_id,
-        "invocation_id": handle.run_id,
+        "schema_version": 2,
+        "timestamp": 1.0,
+        "run_id": handle.run_id,
+        "scope_id": f"scope-{handle.run_id}",
     }
-    yield RuntimeEvent.create(
-        EventType.RUN_STARTED,
+    codex_source = SourceRef(framework="codex")
+    yield RunStarted(
+        event_id="e1",
+        seq=1,
+        status="running",
+        source=codex_source,
         **common,
-        seq_id=1,
-        payload={"status": "in_progress"},
     )
-    yield RuntimeEvent.create(
-        EventType.REASONING_DELTA,
+    yield ItemUpdated(
+        event_id="e2",
+        seq=2,
+        item_id="reasoning-1",
+        item_kind="reasoning",
+        op="append",
+        update=TextContent(part_id="text-0", text="读取文件"),
+        source=codex_source,
         **common,
-        seq_id=2,
-        phase="commentary",
-        payload={"text": "读取文件"},
     )
-    yield RuntimeEvent.create(
-        EventType.TOOL_CALL_BEGIN,
+    tool_args = {
+        "command": "sed -n '1,80p' src/demo.py",
+        "cwd": str(request.config.get("cwd") or ""),
+        "command_actions": [{"type": "read", "path": "src/demo.py"}],
+    }
+    yield ItemStarted(
+        event_id="e3",
+        seq=3,
+        item_id="tool-cmd-1",
+        item_kind="tool_call",
+        initial=ContentSnapshot(
+            parts=(
+                ToolCallContent(
+                    part_id="tool-0",
+                    call_id="cmd-1",
+                    name="codex.command",
+                    arguments=tool_args,
+                ),
+            )
+        ),
+        source=codex_source,
         **common,
-        seq_id=3,
-        payload={
-            "call_id": "cmd-1",
-            "name": "codex.command",
-            "args": {
-                "command": "sed -n '1,80p' src/demo.py",
-                "cwd": str(request.config.get("cwd") or ""),
-                "command_actions": [{"type": "read", "path": "src/demo.py"}],
-            },
-        },
     )
-    yield RuntimeEvent.create(
-        EventType.TOOL_CALL_END,
+    yield ItemCompleted(
+        event_id="e4",
+        seq=4,
+        item_id="tool-cmd-1",
+        item_kind="tool_call",
+        snapshot=ContentSnapshot(
+            parts=(
+                ToolCallContent(
+                    part_id="tool-0",
+                    call_id="cmd-1",
+                    name="codex.command",
+                    arguments=tool_args,
+                ),
+                ToolResultContent(
+                    part_id="tool-0",
+                    call_id="cmd-1",
+                    result={"status": "completed", "exit_code": 0, "duration_ms": 10},
+                ),
+            )
+        ),
+        source=codex_source,
         **common,
-        seq_id=4,
-        payload={
-            "call_id": "cmd-1",
-            "name": "codex.command",
-            "result": {"status": "completed", "exit_code": 0, "duration_ms": 10},
-        },
     )
-    yield RuntimeEvent.create(
-        EventType.TEXT_DELTA,
+    yield ItemUpdated(
+        event_id="e5",
+        seq=5,
+        item_id="msg-1",
+        item_kind="message",
+        op="append",
+        update=TextContent(part_id="text-0", text="发现除零风险。"),
+        source=codex_source,
         **common,
-        seq_id=5,
-        phase="final_answer",
-        payload={"text": "发现除零风险。"},
     )
-    yield RuntimeEvent.create(
-        EventType.TEXT_COMPLETED,
+    yield ItemCompleted(
+        event_id="e6",
+        seq=6,
+        item_id="msg-1",
+        item_kind="message",
+        snapshot=ContentSnapshot(
+            parts=(
+                TextContent(
+                    part_id="text-0",
+                    text="发现除零风险。请先检查空列表。",
+                ),
+            )
+        ),
+        source=codex_source,
         **common,
-        seq_id=6,
-        phase="final_answer",
-        payload={"text": "发现除零风险。请先检查空列表。"},
     )
-    yield RuntimeEvent.create(
-        EventType.RUN_COMPLETED,
+    yield RunCompleted(
+        event_id="e7",
+        seq=7,
+        status="completed",
+        output_refs=(
+            OutputRef(
+                scope_id=common["scope_id"],
+                item_id="msg-1",
+                part_id="text-0",
+            ),
+        ),
+        source=SourceRef(framework="codex", metadata={"duration_ms": 25}),
         **common,
-        seq_id=7,
-        payload={"status": "completed", "duration_ms": 25},
     )
 
 

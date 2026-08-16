@@ -6,8 +6,24 @@ from types import SimpleNamespace
 
 import pytest
 
-from ksadk.events.runtime_event import EventType, RuntimeEvent
+from ksadk.events.canonical import RuntimeEvent  # noqa: F401
+from ksadk.events.v1_compat import EventTypeV1 as EventType
 from ksadk.runners.base_runner import BaseRunner
+from ksadk.events.canonical import (
+    ItemCompleted,
+    ItemStarted,
+    ItemUpdated,
+    OutputRef,
+    RunCompleted,
+    RunStarted,
+    RuntimeEvent,
+    SourceRef,
+    UsageReported,
+)
+from ksadk.events.canonical_replay import replay_projection
+from ksadk.events.canonical_store import RuntimeEventStore
+from ksadk.events.content import ContentSnapshot, TextContent
+from ksadk.events.reducer import StreamReducer
 from ksadk.runtime import (
     BaseRuntime,
     CancelResult,
@@ -43,41 +59,78 @@ class _Adapter(RuntimeAdapter):
 
     async def stream(self, handle: RunHandle) -> AsyncIterator[RuntimeEvent]:
         common = {
-            "agent_id": "agent-1",
-            "user_id": "user-1",
-            "session_id": handle.session_id,
-            "invocation_id": handle.run_id,
+            "schema_version": 2,
+            "timestamp": 1.0,
+            "run_id": handle.run_id,
+            "scope_id": "scope-1",
+            "source": SourceRef(framework="ksadk"),
         }
-        yield RuntimeEvent.create(
-            EventType.RUN_STARTED,
-            seq_id=1,
-            payload={"status": "in_progress"},
+        yield RunStarted(event_id="run-started", seq=1, status="running", **common)
+        yield ItemStarted(
+            event_id="commentary-started",
+            seq=2,
+            item_id="commentary",
+            item_kind="message",
+            phase="commentary",
             **common,
         )
-        yield RuntimeEvent.create(
-            EventType.TEXT_DELTA,
-            seq_id=2,
+        commentary = TextContent(part_id="text-0", text="commentary")
+        yield ItemUpdated(
+            event_id="commentary-updated",
+            seq=3,
+            item_id="commentary",
+            item_kind="message",
+            op="append",
+            update=commentary,
+            **common,
+        )
+        yield ItemCompleted(
+            event_id="commentary-completed",
+            seq=4,
+            item_id="commentary",
+            item_kind="message",
+            snapshot=ContentSnapshot(parts=(commentary,)),
+            **common,
+        )
+        yield ItemStarted(
+            event_id="selected-started",
+            seq=5,
+            item_id="selected",
+            item_kind="message",
             phase="final_answer",
-            payload={"text": "hel"},
             **common,
         )
-        yield RuntimeEvent.create(
-            EventType.TEXT_COMPLETED,
-            seq_id=3,
-            phase="final_answer",
-            payload={"text": "hello"},
+        selected = TextContent(part_id="text-0", text="selected answer")
+        yield ItemUpdated(
+            event_id="selected-updated",
+            seq=6,
+            item_id="selected",
+            item_kind="message",
+            op="append",
+            update=selected,
             **common,
         )
-        yield RuntimeEvent.create(
-            EventType.USAGE_REPORTED,
-            seq_id=4,
-            payload={"input_tokens": 7, "output_tokens": 2, "total_tokens": 9},
+        yield ItemCompleted(
+            event_id="selected-completed",
+            seq=7,
+            item_id="selected",
+            item_kind="message",
+            snapshot=ContentSnapshot(parts=(selected,)),
             **common,
         )
-        yield RuntimeEvent.create(
-            EventType.RUN_COMPLETED,
-            seq_id=5,
-            payload={"status": "completed", "duration_ms": 25},
+        yield UsageReported(
+            event_id="usage",
+            seq=8,
+            input_tokens=7,
+            output_tokens=2,
+            total_tokens=9,
+            **common,
+        )
+        yield RunCompleted(
+            event_id="run-completed",
+            seq=9,
+            status="completed",
+            output_refs=(OutputRef(scope_id="scope-1", item_id="selected", part_id="text-0"),),
             **common,
         )
 
@@ -188,6 +241,61 @@ def _decode_sse(chunks: list[str]) -> list[tuple[str, dict]]:
 
 
 @pytest.mark.asyncio
+async def test_runtime_event_live_and_replay_use_identical_projection():
+    from ksadk.runtime.conversation_execution import iter_runtime_conversation_events
+
+    service = InMemorySessionService()
+    registry = RuntimeRegistry()
+    registry.register("fixture", lambda _context: _Adapter())
+    live_reducer = StreamReducer()
+    persisted = [
+        event
+        async for event in iter_runtime_conversation_events(
+            executor=RuntimeExecutor(registry),
+            launch_context=RuntimeLaunchContext(runtime_type="fixture", project_dir="."),
+            agent_id="agent-1",
+            user_id="user-1",
+            messages=[{"role": "user", "content": "hi"}],
+            session_id="session-1",
+            model="fixture-model",
+            session_service_provider=lambda: service,
+        )
+    ]
+    for event in persisted:
+        live_reducer.apply(event)
+
+    replay = await replay_projection(
+        RuntimeEventStore(service),
+        "session-1",
+        run_id=persisted[0].run_id,
+    )
+
+    assert replay.model_dump() == live_reducer.snapshot().model_dump()
+
+
+@pytest.mark.asyncio
+async def test_runtime_event_final_output_uses_only_run_completed_output_refs():
+    from ksadk.runtime.conversation_execution import invoke_runtime_conversation_once
+
+    service = InMemorySessionService()
+    registry = RuntimeRegistry()
+    registry.register("fixture", lambda _context: _Adapter())
+    _session_id, response = await invoke_runtime_conversation_once(
+        executor=RuntimeExecutor(registry),
+        launch_context=RuntimeLaunchContext(runtime_type="fixture", project_dir="."),
+        agent_id="agent-1",
+        user_id="user-1",
+        messages=[{"role": "user", "content": "hi"}],
+        session_id=None,
+        model="fixture-model",
+        session_service_provider=lambda: service,
+    )
+
+    assert response["output_text"] == "selected answer"
+    assert "commentary" not in response["output_text"]
+
+
+@pytest.mark.asyncio
 async def test_runtime_events_use_the_existing_responses_serializer_without_duplicate_text():
     from ksadk.conversations.runtime_streaming import (
         stream_runtime_responses_conversation_turn,
@@ -214,8 +322,8 @@ async def test_runtime_events_use_the_existing_responses_serializer_without_dupl
     deltas = [data["delta"] for name, data in events if name == "response.output_text.delta"]
     completed = next(data for name, data in events if name == "response.completed")
 
-    assert deltas == ["hel", "lo"]
-    assert completed["output_text"] == "hello"
+    assert deltas == ["selected answer"]
+    assert completed["output_text"] == "selected answer"
     assert completed["usage"] == {
         "input_tokens": 7,
         "input_tokens_details": {"cached_tokens": 0},
@@ -386,10 +494,16 @@ async def test_runtime_gateway_approval_resume_writes_file_with_original_call_id
     session_id = incomplete["session_id"]
 
     persisted = await service.get_events(session_id)
+    # canonical 持久化:InteractionRequested 打包在 SessionEvent.content 里。
     approval_event = next(
-        event for event in persisted if event.event_type == EventType.APPROVAL_REQUESTED
+        event
+        for event in persisted
+        if event.event_type == "interaction.requested"
+        and (event.content or {}).get("runtime_event", {}).get("request", {}).get(
+            "detail", {}
+        ).get("run_id")
+        == "call-write"
     )
-    assert approval_event.content["payload"]["detail"]["run_id"] == "call-write"
 
     resumed_chunks = [
         chunk

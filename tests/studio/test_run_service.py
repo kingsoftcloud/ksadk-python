@@ -7,7 +7,29 @@ from typing import Any
 
 import pytest
 
-from ksadk.events.runtime_event import EventType, RuntimeEvent
+from ksadk.events.canonical import (
+    ContentSnapshot,
+    InteractionRequested,
+    ItemCompleted,
+    ItemStarted,
+    ItemUpdated,
+    OutputRef,
+    RunCompleted,
+    RunFailed,
+    RunInterrupted,
+    RunStarted,
+    RunCanceled,
+    RuntimeEvent,
+    SourceRef,
+    StructuredInputRequest,
+    UsageReported,
+)
+from ksadk.events.content import (
+    DataContent,
+    TextContent,
+    ToolCallContent,
+    ToolResultContent,
+)
 from ksadk.runtime import (
     BaseRuntime,
     CancelResult,
@@ -61,33 +83,52 @@ class _RecordingAdapter(RuntimeAdapter):
 
     async def stream(self, handle: RunHandle) -> AsyncIterator[RuntimeEvent]:
         self.calls.append(("stream", handle))
-        yield RuntimeEvent.create(
-            EventType.RUN_STARTED,
-            agent_id="review-helper",
-            user_id="local-user",
-            session_id=handle.session_id,
-            invocation_id=handle.run_id,
-            seq_id=1,
-            payload={"status": "in_progress"},
+        common = {
+            "schema_version": 2,
+            "timestamp": 1.0,
+            "run_id": handle.run_id,
+            "scope_id": f"scope-{handle.run_id}",
+        }
+        source = SourceRef(framework=self.runtime_type)
+        yield RunStarted(
+            event_id="e1",
+            seq=1,
+            status="running",
+            source=source,
+            **common,
         )
-        yield RuntimeEvent.create(
-            EventType.TEXT_COMPLETED,
-            agent_id="review-helper",
-            user_id="local-user",
-            session_id=handle.session_id,
-            invocation_id=handle.run_id,
-            seq_id=2,
-            phase="final_answer",
-            payload={"text": f"{self.runtime_type} answer"},
+        yield ItemCompleted(
+            event_id="e2",
+            seq=2,
+            item_id="msg-1",
+            item_kind="message",
+            snapshot=ContentSnapshot(
+                parts=(
+                    TextContent(
+                        part_id="text-0",
+                        text=f"{self.runtime_type} answer",
+                    ),
+                )
+            ),
+            source=source,
+            **common,
         )
-        yield RuntimeEvent.create(
-            EventType.RUN_COMPLETED,
-            agent_id="review-helper",
-            user_id="local-user",
-            session_id=handle.session_id,
-            invocation_id=handle.run_id,
-            seq_id=3,
-            payload={"status": "completed", "duration_ms": 42},
+        yield RunCompleted(
+            event_id="e3",
+            seq=3,
+            status="completed",
+            output_refs=(
+                OutputRef(
+                    scope_id=common["scope_id"],
+                    item_id="msg-1",
+                    part_id="text-0",
+                ),
+            ),
+            source=SourceRef(
+                framework=self.runtime_type,
+                metadata={"duration_ms": 42},
+            ),
+            **common,
         )
 
     async def cancel(self, handle: RunHandle) -> CancelResult:
@@ -275,30 +316,34 @@ async def test_runtime_reported_usage_and_duration_are_authoritative(
 ) -> None:
     class _MetricsAdapter(_RecordingAdapter):
         async def stream(self, handle: RunHandle) -> AsyncIterator[RuntimeEvent]:
-            yield RuntimeEvent.create(
-                EventType.USAGE_REPORTED,
-                agent_id="review-helper",
-                user_id="local-user",
-                session_id=handle.session_id,
-                invocation_id=handle.run_id,
-                seq_id=1,
-                payload={
-                    "input_tokens": 128,
-                    "cached_tokens": 16,
-                    "output_tokens": 32,
-                    "reasoning_tokens": 8,
-                    "total_tokens": 160,
-                    "source": "codex",
-                },
+            common = {
+                "schema_version": 2,
+                "timestamp": 1.0,
+                "run_id": handle.run_id,
+                "scope_id": f"scope-{handle.run_id}",
+            }
+            source = SourceRef(framework="codex")
+            yield UsageReported(
+                event_id="e1",
+                seq=1,
+                input_tokens=128,
+                cached_tokens=16,
+                output_tokens=32,
+                reasoning_tokens=8,
+                total_tokens=160,
+                source=source,
+                **common,
             )
-            yield RuntimeEvent.create(
-                EventType.RUN_COMPLETED,
-                agent_id="review-helper",
-                user_id="local-user",
-                session_id=handle.session_id,
-                invocation_id=handle.run_id,
-                seq_id=2,
-                payload={"status": "completed", "duration_ms": 1340},
+            yield RunCompleted(
+                event_id="e2",
+                seq=2,
+                status="completed",
+                output_refs=(),
+                source=SourceRef(
+                    framework="codex",
+                    metadata={"duration_ms": 1340},
+                ),
+                **common,
             )
 
     registry = RuntimeRegistry()
@@ -340,14 +385,15 @@ async def test_explicit_operation_cancellation_calls_executor_cancel_and_persist
 ) -> None:
     class _BlockingAdapter(_RecordingAdapter):
         async def stream(self, handle: RunHandle) -> AsyncIterator[RuntimeEvent]:
-            yield RuntimeEvent.create(
-                EventType.RUN_STARTED,
-                agent_id="review-helper",
-                user_id="local-user",
-                session_id=handle.session_id,
-                invocation_id=handle.run_id,
-                seq_id=1,
-                payload={"status": "in_progress"},
+            yield RunStarted(
+                event_id="e1",
+                seq=1,
+                status="running",
+                schema_version=2,
+                timestamp=1.0,
+                run_id=handle.run_id,
+                scope_id=f"scope-{handle.run_id}",
+                source=SourceRef(framework="codex"),
             )
             await asyncio.Event().wait()
 
@@ -393,14 +439,15 @@ async def test_cancel_request_is_bounded_when_runtime_interrupt_stalls(
 
     class _StalledCancelAdapter(_RecordingAdapter):
         async def stream(self, handle: RunHandle) -> AsyncIterator[RuntimeEvent]:
-            yield RuntimeEvent.create(
-                EventType.RUN_STARTED,
-                agent_id="review-helper",
-                user_id="local-user",
-                session_id=handle.session_id,
-                invocation_id=handle.run_id,
-                seq_id=1,
-                payload={"status": "in_progress"},
+            yield RunStarted(
+                event_id="e1",
+                seq=1,
+                status="running",
+                schema_version=2,
+                timestamp=1.0,
+                run_id=handle.run_id,
+                scope_id=f"scope-{handle.run_id}",
+                source=SourceRef(framework="codex"),
             )
             await asyncio.Event().wait()
 
@@ -443,14 +490,16 @@ async def test_runtime_interruption_is_not_reported_as_user_cancellation(
 ) -> None:
     class _InterruptedAdapter(_RecordingAdapter):
         async def stream(self, handle: RunHandle) -> AsyncIterator[RuntimeEvent]:
-            yield RuntimeEvent.create(
-                EventType.RUN_INTERRUPTED,
-                agent_id="review-helper",
-                user_id="local-user",
-                session_id=handle.session_id,
-                invocation_id=handle.run_id,
-                seq_id=1,
-                payload={"status": "attach_unavailable"},
+            yield RunInterrupted(
+                event_id="e1",
+                seq=1,
+                status="interrupted",
+                reason="attach_unavailable",
+                schema_version=2,
+                timestamp=1.0,
+                run_id=handle.run_id,
+                scope_id=f"scope-{handle.run_id}",
+                source=SourceRef(framework="codex"),
             )
 
     calls: list[tuple[str, Any]] = []
@@ -492,45 +541,60 @@ async def test_pause_preserves_run_and_resume_continues_same_runtime_handle(
 
         async def stream(self, handle: RunHandle) -> AsyncIterator[RuntimeEvent]:
             self.turn += 1
-            yield RuntimeEvent.create(
-                EventType.RUN_STARTED,
-                agent_id="review-helper",
-                user_id="local-user",
-                session_id=handle.session_id,
-                invocation_id=handle.run_id,
-                seq_id=self.turn * 10,
-                payload={"status": "in_progress"},
+            common = {
+                "schema_version": 2,
+                "timestamp": 1.0,
+                "run_id": handle.run_id,
+                "scope_id": f"scope-{handle.run_id}",
+            }
+            source = SourceRef(framework="codex")
+            yield RunStarted(
+                event_id=f"e{self.turn}0",
+                seq=self.turn * 10,
+                status="running",
+                source=source,
+                **common,
             )
             if self.turn == 1:
                 await self.interrupt.wait()
-                yield RuntimeEvent.create(
-                    EventType.RUN_INTERRUPTED,
-                    agent_id="review-helper",
-                    user_id="local-user",
-                    session_id=handle.session_id,
-                    invocation_id=handle.run_id,
-                    seq_id=self.turn * 10 + 1,
-                    payload={"status": "paused", "reason": "user_pause"},
+                yield RunInterrupted(
+                    event_id=f"e{self.turn}1",
+                    seq=self.turn * 10 + 1,
+                    status="interrupted",
+                    reason="user_pause",
+                    source=source,
+                    **common,
                 )
                 return
-            yield RuntimeEvent.create(
-                EventType.TEXT_COMPLETED,
-                agent_id="review-helper",
-                user_id="local-user",
-                session_id=handle.session_id,
-                invocation_id=handle.run_id,
-                seq_id=self.turn * 10 + 1,
-                phase="final_answer",
-                payload={"text": "resumed answer"},
+            yield ItemCompleted(
+                event_id=f"e{self.turn}1",
+                seq=self.turn * 10 + 1,
+                item_id="msg-1",
+                item_kind="message",
+                snapshot=ContentSnapshot(
+                    parts=(
+                        TextContent(
+                            part_id="text-0",
+                            text="resumed answer",
+                        ),
+                    )
+                ),
+                source=source,
+                **common,
             )
-            yield RuntimeEvent.create(
-                EventType.RUN_COMPLETED,
-                agent_id="review-helper",
-                user_id="local-user",
-                session_id=handle.session_id,
-                invocation_id=handle.run_id,
-                seq_id=self.turn * 10 + 2,
-                payload={"status": "completed"},
+            yield RunCompleted(
+                event_id=f"e{self.turn}2",
+                seq=self.turn * 10 + 2,
+                status="completed",
+                output_refs=(
+                    OutputRef(
+                        scope_id=common["scope_id"],
+                        item_id="msg-1",
+                        part_id="text-0",
+                    ),
+                ),
+                source=source,
+                **common,
             )
 
         async def pause(self, handle: RunHandle) -> PauseResult:
@@ -589,60 +653,84 @@ async def test_live_a2ui_interaction_submits_structured_answer_and_continues(
             self.answered = asyncio.Event()
 
         async def stream(self, handle: RunHandle) -> AsyncIterator[RuntimeEvent]:
-            yield RuntimeEvent.create(
-                EventType.A2UI_SURFACE_BEGIN,
-                agent_id="review-helper",
-                user_id="local-user",
-                session_id=handle.session_id,
-                invocation_id=handle.run_id,
-                seq_id=1,
-                payload={
-                    "surface_id": "surface-1",
-                    "surface": {
-                        "components": [
-                            {
-                                "id": "scope",
-                                "component": "CheckboxGroup",
-                                "name": "scope",
-                                "options": ["前端", "服务端"],
-                            }
-                        ]
-                    },
-                },
+            common = {
+                "schema_version": 2,
+                "timestamp": 1.0,
+                "run_id": handle.run_id,
+                "scope_id": f"scope-{handle.run_id}",
+            }
+            source = SourceRef(framework="codex")
+            yield ItemStarted(
+                event_id="e1",
+                seq=1,
+                item_id="surface-1",
+                item_kind="data",
+                initial=ContentSnapshot(
+                    parts=(
+                        DataContent(
+                            part_id="data-0",
+                            data={
+                                "surface_id": "surface-1",
+                                "surface": {
+                                    "components": [
+                                        {
+                                            "id": "scope",
+                                            "component": "CheckboxGroup",
+                                            "name": "scope",
+                                            "options": ["前端", "服务端"],
+                                        }
+                                    ]
+                                },
+                            },
+                        ),
+                    )
+                ),
+                source=SourceRef(
+                    framework="codex",
+                    protocol="a2ui",
+                    metadata={"surface_id": "surface-1"},
+                ),
+                **common,
             )
-            yield RuntimeEvent.create(
-                EventType.A2UI_INTERACTION,
-                agent_id="review-helper",
-                user_id="local-user",
-                session_id=handle.session_id,
-                invocation_id=handle.run_id,
-                seq_id=2,
-                payload={
-                    "surface_id": "surface-1",
-                    "interaction_id": "question-1",
-                    "kind": "form",
-                    "input_schema": {},
-                },
+            yield InteractionRequested(
+                event_id="e2",
+                seq=2,
+                interaction_id="question-1",
+                interaction_kind="structured_input",
+                request=StructuredInputRequest(prompt=None, schema={}),
+                source=source,
+                **common,
             )
             await self.answered.wait()
-            yield RuntimeEvent.create(
-                EventType.TEXT_COMPLETED,
-                agent_id="review-helper",
-                user_id="local-user",
-                session_id=handle.session_id,
-                invocation_id=handle.run_id,
-                seq_id=3,
-                phase="final_answer",
-                payload={"text": "已按选择继续"},
+            yield ItemCompleted(
+                event_id="e3",
+                seq=3,
+                item_id="msg-1",
+                item_kind="message",
+                snapshot=ContentSnapshot(
+                    parts=(
+                        TextContent(
+                            part_id="text-0",
+                            text="已按选择继续",
+                        ),
+                    )
+                ),
+                source=source,
+                **common,
             )
-            yield RuntimeEvent.create(
-                EventType.RUN_COMPLETED,
-                agent_id="review-helper",
-                user_id="local-user",
-                session_id=handle.session_id,
-                invocation_id=handle.run_id,
-                seq_id=4,
-                payload={"status": "completed"},
+            yield RunCompleted(
+                event_id="e4",
+                seq=4,
+                status="completed",
+                output_refs=(
+                    OutputRef(
+                        scope_id=common["scope_id"],
+                        item_id="msg-1",
+                        part_id="text-0",
+                    ),
+                ),
+                source=source,
+                **common,
             )
 
         async def submit(self, handle: RunHandle, payload: ResumePayload) -> None:
@@ -696,18 +784,53 @@ async def test_live_a2ui_interaction_submits_structured_answer_and_continues(
 
 def test_a2ui_runtime_events_are_persisted_as_official_operations() -> None:
     event_type, payload = project_runtime_event(
-        _runtime_event(
-            EventType.A2UI_SURFACE_BEGIN,
-            {
-                "surface_id": "surface-1",
-                "catalog_id": "catalog-1",
-                "surface": {
-                    "components": [
-                        {"component_id": "root", "type": "Text", "props": {"text": "Hello"}}
-                    ],
-                    "data_model": {"ready": True},
-                },
-            },
+        ItemStarted(
+            event_id="e1",
+            seq=1,
+            item_id="surface-1",
+            item_kind="data",
+            initial=ContentSnapshot(
+                parts=(
+                    DataContent(
+                        part_id="data-0",
+                        data=[
+                            {
+                                "version": "v0.9",
+                                "createSurface": {
+                                    "surfaceId": "surface-1",
+                                    "catalogId": "catalog-1",
+                                },
+                            },
+                            {
+                                "version": "v0.9",
+                                "updateComponents": {
+                                    "surfaceId": "surface-1",
+                                    "components": [
+                                        {"id": "root", "component": "Text", "text": "Hello"}
+                                    ],
+                                },
+                            },
+                            {
+                                "version": "v0.9",
+                                "updateDataModel": {
+                                    "surfaceId": "surface-1",
+                                    "path": "/",
+                                    "value": {"ready": True},
+                                },
+                            },
+                        ],
+                    ),
+                )
+            ),
+            schema_version=2,
+            timestamp=1.0,
+            run_id="run-1",
+            scope_id="scope-1",
+            source=SourceRef(
+                framework="ksadk",
+                protocol="a2ui",
+                metadata={"surface_id": "surface-1"},
+            ),
         )
     )
     assert event_type == "a2ui.surface.begin"
@@ -731,32 +854,34 @@ def service_event_types(workspace: Workspace, run_id: str) -> list[str]:
     ]
 
 
-def _runtime_event(event_type: str, payload: dict[str, Any]) -> RuntimeEvent:
-    return RuntimeEvent.create(
-        event_type,
-        agent_id="codex",
-        user_id="u",
-        session_id="s",
-        invocation_id="run-1",
-        seq_id=1,
-        payload=payload,
-    )
-
-
 def test_generic_tool_events_project_normalized_fields() -> None:
     """MCP 等非命令工具事件必须投影出 tool/args/output,trace 层才能成 span。"""
+    tool_args = {
+        "server": "metaso-inner",
+        "tool": "metaso_web_search",
+        "arguments": {"q": "x"},
+    }
     begin_type, begin_payload = project_runtime_event(
-        _runtime_event(
-            EventType.TOOL_CALL_BEGIN,
-            {
-                "call_id": "mcp-1",
-                "name": "mcp.metaso-inner.metaso_web_search",
-                "args": {
-                    "server": "metaso-inner",
-                    "tool": "metaso_web_search",
-                    "arguments": {"q": "x"},
-                },
-            },
+        ItemStarted(
+            event_id="e1",
+            seq=1,
+            item_id="tool-mcp-1",
+            item_kind="tool_call",
+            initial=ContentSnapshot(
+                parts=(
+                    ToolCallContent(
+                        part_id="tool-0",
+                        call_id="mcp-1",
+                        name="mcp.metaso-inner.metaso_web_search",
+                        arguments=tool_args,
+                    ),
+                )
+            ),
+            schema_version=2,
+            timestamp=1.0,
+            run_id="run-1",
+            scope_id="scope-1",
+            source=SourceRef(framework="ksadk"),
         )
     )
     assert begin_type == "tool.started"
@@ -766,13 +891,31 @@ def test_generic_tool_events_project_normalized_fields() -> None:
     assert "runtimeEvent" in begin_payload
 
     end_type, end_payload = project_runtime_event(
-        _runtime_event(
-            EventType.TOOL_CALL_END,
-            {
-                "call_id": "mcp-1",
-                "name": "mcp.metaso-inner.metaso_web_search",
-                "result": {"status": "completed", "duration_ms": 12, "output": "结果"},
-            },
+        ItemCompleted(
+            event_id="e2",
+            seq=2,
+            item_id="tool-mcp-1",
+            item_kind="tool_call",
+            snapshot=ContentSnapshot(
+                parts=(
+                    ToolCallContent(
+                        part_id="tool-0",
+                        call_id="mcp-1",
+                        name="mcp.metaso-inner.metaso_web_search",
+                        arguments=tool_args,
+                    ),
+                    ToolResultContent(
+                        part_id="tool-0",
+                        call_id="mcp-1",
+                        result={"status": "completed", "duration_ms": 12, "output": "结果"},
+                    ),
+                )
+            ),
+            schema_version=2,
+            timestamp=1.0,
+            run_id="run-1",
+            scope_id="scope-1",
+            source=SourceRef(framework="ksadk"),
         )
     )
     assert end_type == "tool.completed"
@@ -785,13 +928,32 @@ def test_generic_tool_events_project_normalized_fields() -> None:
 
 def test_generic_tool_error_marks_completed_event_failed() -> None:
     _, payload = project_runtime_event(
-        _runtime_event(
-            EventType.TOOL_CALL_END,
-            {
-                "call_id": "mcp-2",
-                "name": "mcp.metaso-inner.metaso_web_search",
-                "result": {"status": "failed", "error": "boom", "output": "boom"},
-            },
+        ItemCompleted(
+            event_id="e1",
+            seq=1,
+            item_id="tool-mcp-2",
+            item_kind="tool_call",
+            snapshot=ContentSnapshot(
+                parts=(
+                    ToolCallContent(
+                        part_id="tool-0",
+                        call_id="mcp-2",
+                        name="mcp.metaso-inner.metaso_web_search",
+                        arguments={},
+                    ),
+                    ToolResultContent(
+                        part_id="tool-0",
+                        call_id="mcp-2",
+                        result={"status": "failed", "error": "boom", "output": "boom"},
+                        is_error=True,
+                    ),
+                )
+            ),
+            schema_version=2,
+            timestamp=1.0,
+            run_id="run-1",
+            scope_id="scope-1",
+            source=SourceRef(framework="ksadk"),
         )
     )
     assert payload["status"] == "failed"
