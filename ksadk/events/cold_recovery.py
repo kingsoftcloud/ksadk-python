@@ -229,7 +229,16 @@ async def recover_session(
             report.resumed_run_ids.append(finding.run_id)
             continue
         for event in events:
-            persisted, _created = await store.persist_one(session_id, event)
+            try:
+                persisted, _created = await store.persist_one(session_id, event)
+            except ValueError as error:
+                # 并发竞态:另一恢复者已写入同 event_id 的结局(携带不同的
+                # 恢复时刻 timestamp,故 _assert_same_fact 视为冲突)。同一
+                # 确定性 id 的结局被抢先写入即本次恢复的目标已达成,吸收
+                # 而非报错;其他 id 冲突不是本模块产物,原样抛出。
+                if f"{event.event_id!r}" not in str(error):
+                    raise
+                continue
             report.written_events.append(persisted)
         report.interrupted_run_ids.append(finding.run_id)
     return report

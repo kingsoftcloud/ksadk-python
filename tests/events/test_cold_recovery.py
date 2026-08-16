@@ -327,3 +327,31 @@ async def test_stale_attempt_is_settled() -> None:
     )
 
     assert report.interrupted_run_ids == ["run-1"]
+
+
+@pytest.mark.asyncio
+async def test_racing_recoverers_with_different_timestamps_converge() -> None:
+    """真并发竞态:两恢复者各带不同 timestamp,第二个遇同 id 结局被吸收非报错。"""
+
+    from unittest.mock import patch
+
+    store = await _mk_store_with_open_run()
+
+    import ksadk.events.cold_recovery as cr
+
+    # 两个恢复者同时 scan:在第一次恢复前取快照。
+    first_scan_result = await cr.scan_open_runs(store, "session-1")
+    first = await recover_session(store, "session-1", timestamp=1780000100.0)
+
+    # 模拟第二个恢复者:scan 与第一个同时发生(仍看到开放 run),settle 后
+    # persist 时 event_by_id 命中第一个恢复者的同 id 事实(timestamp 不同)。
+    async def _fake_scan(_store, _session):
+        return first_scan_result
+
+    with patch.object(cr, "scan_open_runs", _fake_scan):
+        second = await recover_session(store, "session-1", timestamp=1780000900.0)
+
+    assert first.interrupted_run_ids == ["run-1"]
+    assert second.interrupted_run_ids == ["run-1"]
+    # 第二个恢复者没有新增事实(全部被吸收),但结算目标已达成。
+    assert second.written_events == []
