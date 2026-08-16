@@ -831,8 +831,7 @@ class PostgresSessionService(BaseSessionService):
 
     @staticmethod
     async def _core_schema_is_current(connection: Any) -> bool:
-        return bool(
-            await connection.fetchval(f"""
+        return bool(await connection.fetchval(f"""
                 SELECT
                     to_regclass('{KSADK_PG_SESSIONS_TABLE}') IS NOT NULL
                     AND to_regclass('{KSADK_PG_EVENTS_TABLE}') IS NOT NULL
@@ -935,8 +934,7 @@ class PostgresSessionService(BaseSessionService):
                                   '{KSADK_PG_SESSIONS_TABLE}(namespace, id) ON DELETE CASCADE'
                               )
                     )
-                """)
-        )
+                """))
 
     @staticmethod
     async def _create_core_schema(connection: Any) -> None:
