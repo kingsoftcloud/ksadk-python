@@ -472,6 +472,10 @@ class PostgresAgentKernelStore:
             row = await connection.fetchrow(
                 "SELECT * FROM kernel_inbox WHERE message_id=$1::uuid", str(message_id)
             )
+        return self._row_to_message(row)
+
+    @staticmethod
+    def _row_to_message(row: Any) -> InboxMessage | None:
         if row is None:
             return None
         return InboxMessage(
@@ -486,6 +490,251 @@ class PostgresAgentKernelStore:
                 int(row["claimed_fence"]) if row["claimed_fence"] is not None else None
             ),
             command=AgentControlCommand.model_validate_json(row["payload"]),
+        )
+
+    async def load_by_idempotency(
+        self, session_id: str, idempotency_key: str
+    ) -> InboxMessage | None:
+        async with self._connection() as connection:
+            row = await connection.fetchrow(
+                "SELECT * FROM kernel_inbox WHERE tenant_id=$1 AND session_id=$2"
+                " AND idempotency_key=$3",
+                self.tenant_id,
+                session_id,
+                idempotency_key,
+            )
+        return self._row_to_message(row)
+
+    async def reject_command(
+        self,
+        command: AgentControlCommand,
+        *,
+        status: str,
+        code: str,
+        message: str,
+        retryable: bool = False,
+    ) -> AgentControlReceipt:
+        """admission 拒绝（invalid_permit / unsupported / ...）的脱敏审计 + receipt。
+
+        与 InMemory 版语义一致：只追加 ``control.command_rejected`` 事实，
+        不写 Inbox 行。
+        """
+        async with self._connection() as connection:
+            async with connection.transaction():
+                await self._append_admission(
+                    connection,
+                    control_event(
+                        session_id=command.session_id,
+                        event_type="control.command_rejected",
+                        payload={
+                            "command_id": str(command.command_id),
+                            "status": status,
+                            "reason": code,
+                        },
+                        causation_id=str(command.command_id),
+                    ),
+                )
+        return self._receipt(
+            command,
+            status,
+            error=ControlError(code=code, message=message, retryable=retryable),
+        )
+
+    async def list_messages(
+        self, agent_instance_id: str, session_id: str | None = None
+    ) -> list[InboxMessage]:
+        async with self._connection() as connection:
+            rows = await connection.fetch(
+                "SELECT * FROM kernel_inbox WHERE agent_instance_id=$1"
+                + (" AND session_id=$2" if session_id else "")
+                + " ORDER BY accepted_seq",
+                agent_instance_id,
+                *([session_id] if session_id else []),
+            )
+        return [m for m in (self._row_to_message(r) for r in rows) if m is not None]
+
+    async def list_pending(
+        self,
+        agent_instance_id: str,
+        session_id: str | None = None,
+        *,
+        fencing_token: int | None = None,
+    ) -> list[InboxMessage]:
+        """按 accepted_seq 排序的待处理消息（CLAIMED 仅同 fence 自我重试可见）。"""
+        sql = (
+            "SELECT * FROM kernel_inbox WHERE agent_instance_id=$1"
+            + (" AND session_id=$2" if session_id else "")
+            + " AND (status='accepted'"
+            + (
+                f" OR (status='claimed' AND claimed_fence=${2 + (1 if session_id else 0)})"
+                ")"
+                if fencing_token is not None
+                else ")"
+            )
+            + " ORDER BY accepted_seq"
+        )
+        args: list[Any] = [agent_instance_id]
+        if session_id:
+            args.append(session_id)
+        if fencing_token is not None:
+            args.append(int(fencing_token))
+        async with self._connection() as connection:
+            rows = await connection.fetch(sql, *args)
+        return [m for m in (self._row_to_message(r) for r in rows) if m is not None]
+
+    async def claim_message(self, message_id: str, fencing_token: int) -> InboxMessage:
+        """按 message_id 认领（worker 选择性 FIFO）；同 fence 重复认领幂等。"""
+        message_id = str(message_id)
+        async with self._connection() as connection:
+            async with connection.transaction():
+                row = await connection.fetchrow(
+                    "SELECT * FROM kernel_inbox WHERE message_id=$1::uuid FOR UPDATE",
+                    message_id,
+                )
+                if row is None:
+                    raise InvalidCommandError(f"unknown message_id {message_id!r}")
+                if (
+                    row["status"] == InboxState.CLAIMED.value
+                    and int(row["claimed_fence"]) == int(fencing_token)
+                ):
+                    return self._row_to_message(row)  # type: ignore[return-value]
+                activation = await self._assert_fence(
+                    connection,
+                    row["agent_instance_id"],
+                    row["session_id"],
+                    fencing_token,
+                )
+                if row["status"] != InboxState.ACCEPTED.value:
+                    raise InvalidCommandError(
+                        f"message {message_id!r} is not claimable"
+                        f" at status {row['status']}"
+                    )
+                assert_inbox_transition(InboxState(row["status"]), InboxState.CLAIMED)
+                await connection.execute(
+                    "UPDATE kernel_inbox SET status='claimed', claimed_fence=$1"
+                    " WHERE message_id=$2::uuid",
+                    int(fencing_token),
+                    message_id,
+                )
+                await self._append_activation_fact(
+                    connection,
+                    control_event(
+                        session_id=row["session_id"],
+                        event_type="control.message_claimed",
+                        payload={
+                            "message_id": message_id,
+                            "fencing_token": int(fencing_token),
+                        },
+                    ),
+                    activation,
+                    fencing_token,
+                )
+        return await self.load_message(message_id)  # type: ignore[return-value]
+
+    async def discard_claim(self, message_id: str, *, expected_fence: int) -> None:
+        """typed rejection 的确定性收口：CLAIMED -> DISCARDED。"""
+        message_id = str(message_id)
+        async with self._connection() as connection:
+            async with connection.transaction():
+                row = await connection.fetchrow(
+                    "SELECT * FROM kernel_inbox WHERE message_id=$1::uuid FOR UPDATE",
+                    message_id,
+                )
+                if row is None:
+                    raise InvalidCommandError(f"unknown message_id {message_id!r}")
+                activation = await self._assert_fence(
+                    connection,
+                    row["agent_instance_id"],
+                    row["session_id"],
+                    expected_fence,
+                )
+                if (
+                    row["status"] != InboxState.CLAIMED.value
+                    or int(row["claimed_fence"]) != int(expected_fence)
+                ):
+                    raise StaleFenceError(
+                        f"message {message_id!r} is not claimed at fence {expected_fence}"
+                    )
+                assert_inbox_transition(InboxState(row["status"]), InboxState.DISCARDED)
+                await connection.execute(
+                    "UPDATE kernel_inbox SET status='discarded' WHERE message_id=$1::uuid",
+                    message_id,
+                )
+                await self._append_activation_fact(
+                    connection,
+                    control_event(
+                        session_id=row["session_id"],
+                        event_type="control.message_discarded",
+                        payload={
+                            "message_id": message_id,
+                            "fencing_token": int(expected_fence),
+                        },
+                    ),
+                    activation,
+                    expected_fence,
+                )
+
+    async def inbox_depth(
+        self, agent_instance_id: str, session_id: str | None = None
+    ) -> int:
+        async with self._connection() as connection:
+            return int(
+                await connection.fetchval(
+                    "SELECT COUNT(*) FROM kernel_inbox WHERE agent_instance_id=$1"
+                    + (" AND session_id=$2" if session_id else "")
+                    + " AND status='accepted'",
+                    agent_instance_id,
+                    *([session_id] if session_id else []),
+                )
+            )
+
+    async def find_active_run(
+        self, agent_instance_id: str, session_id: str | None = None
+    ) -> RunRecord | None:
+        async with self._connection() as connection:
+            rows = await connection.fetch(
+                "SELECT * FROM kernel_runs WHERE agent_instance_id=$1"
+                + (" AND session_id=$2" if session_id else "")
+                + " ORDER BY created_at",
+                agent_instance_id,
+                *([session_id] if session_id else []),
+            )
+        for row in rows:
+            if is_active_run(RunState(row["state"])):
+                return RunRecord(
+                    run_id=row["run_id"],
+                    agent_instance_id=row["agent_instance_id"],
+                    session_id=row["session_id"],
+                    state=row["state"],
+                    activation_fence=int(row["activation_fence"]),
+                    created_at=row["created_at"].isoformat(),
+                    updated_at=row["updated_at"].isoformat(),
+                    metadata=json.loads(row["metadata"]),
+                )
+        return None
+
+    async def current_lease(
+        self, agent_instance_id: str, session_id: str | None = None
+    ) -> ActivationLease | None:
+        async with self._connection() as connection:
+            row = await connection.fetchrow(
+                "SELECT * FROM kernel_activations WHERE agent_instance_id=$1"
+                + (" AND session_id=$2" if session_id else "")
+                + " AND released=FALSE AND lease_expires_at > now()"
+                + (" ORDER BY lease_expires_at DESC LIMIT 1"),
+                agent_instance_id,
+                *([session_id] if session_id else []),
+            )
+        if row is None:
+            return None
+        return ActivationLease(
+            agent_instance_id=row["agent_instance_id"],
+            activation_id=row["activation_id"],
+            fencing_token=int(row["fencing_token"]),
+            lease_expires_at=row["lease_expires_at"].isoformat(),
+            bundle_digest=row["bundle_digest"],
+            runtime_type=row["runtime_type"],
+            capability_digest=row["capability_digest"],
         )
 
     async def claim_next(
