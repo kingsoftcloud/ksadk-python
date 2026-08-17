@@ -1,0 +1,53 @@
+{
+  "environment": "preprod/agent-kernel-phase1",
+  "executed_at": "2026-08-18T02:20:00Z",
+  "checks": {
+    "audit": {
+      "status": "pass",
+      "detail": {
+        "path": "server-pod AgentControlService.submit (service-layer invocation via kubectl exec; real permit issuance + real runtime HTTP submit + real DB audit write; server image phase1-412fcffb 未含 HTTP route 暴露该入口时以 pod 内 service 层直调替代，其余环节全真实)",
+        "server_image": "hub.kce.ksyun.com/agentengine/agentengine-server:phase1-412fcffb",
+        "runtime_image": "hub.kce.ksyun.com/agentengine/agent-kernel-canary:phase1-canary-audit-021744",
+        "command_id": "f9ca0c95-f400-4fd3-ba2e-a7cc88d39f1d",
+        "permit_id": "permit-543e9b6c-f39b-41b0-a2ba-5c91bf0e442b",
+        "session_id": "audit-closure-e7d59627",
+        "command_type": "enqueue",
+        "receipt": {
+          "status": "accepted",
+          "accepted_seq": 1,
+          "message_id": "1619de0c-db2e-46c2-be42-97cdac2bb81f"
+        },
+        "audit_row": {
+          "table": "agent_control_audits",
+          "id": "audit-b00f2c7cb41c4bdd942f5f77",
+          "command_id": "f9ca0c95-f400-4fd3-ba2e-a7cc88d39f1d",
+          "permit_id": "permit-543e9b6c-f39b-41b0-a2ba-5c91bf0e442b",
+          "receipt_status": "accepted",
+          "principal_ref": "user:phase1-sre",
+          "command_type": "enqueue",
+          "accepted_seq": 1,
+          "redaction": "脱敏行：不含原始 payload/permit 签名/凭据；claims 只存 sha256 digest"
+        },
+        "runtime_events": {
+          "table": "ksadk_session_events_readable",
+          "counts": {
+            "control.command_accepted": 1,
+            "control.message_claimed": 1,
+            "control.run_transition": 3,
+            "control.message_completed": 1
+          },
+          "inbox_final_status": "completed"
+        },
+        "permit_trust": "server 以 ns 内专用 Ed25519 workload key（secret agent-control-signing-key 引用，private key 未落 evidence）签发 permit；runtime canary 新增 /agentengine/api/v1/agent-control/submit ingress，按 Server 合同 canonical JSON 验签 + 时效/TTL/claims 绑定（tenant/instance/session/operation/ref）后入 kernel",
+        "agent_instance": {
+          "id": "phase1-canary-1",
+          "tenant": "phase1-canary",
+          "runtime_endpoint": "http://agent-kernel-canary:8080",
+          "contract_digest": "69771d8df4a8811ed6623f26a152c869cfdfd8dbfdcad443b52a9b6403b267e8",
+          "note": "server 镜像未打包 tests/contracts fixture（server_contract_digest() 为空 digest），admission 的 contract digest 以构造参数显式传入并与 canary /v1/meta/contract-digest 实测值一致"
+        },
+        "migration": "agent_instances / agent_control_audits / conversation_events.source_session_seq 已存在（server 启动 create_all + 20260817_agent_instance.sql 语义等价），无需手工 DDL"
+      }
+    }
+  }
+}

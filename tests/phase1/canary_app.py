@@ -260,6 +260,102 @@ async def startup() -> None:
     _state["worker_task"] = asyncio.create_task(_worker_loop())
 
 
+def _b64url_decode(value: str) -> bytes:
+    import base64
+
+    return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+
+
+def _canonical(value: object) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+
+
+def _parse_rfc3339(value: str) -> datetime:
+    return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+
+
+@app.post("/agentengine/api/v1/agent-control/submit")
+async def server_agent_control_submit(body: dict) -> dict:
+    """Server AgentControlChannel/v1 ingress：接受 Server admission 签发的 permit。
+
+    body: {"command": {...}, "permit": {...}}（Server AgentControlRuntimeClient 格式）。
+    先按 Server 合同 canonicalization 验证 permit 的 Ed25519 签名（公钥来自
+    env AGENT_CONTROL_TRUSTED_JWKS，形如 {"keys":[{"kid","x"}]}），再校验时效与
+    claims 绑定（tenant/instance/session/operation/authorization_ref），通过后
+    进入本地 kernel（签名密钥桥接：Server permit 验签 + kernel 内部 permit）。
+    """
+    from cryptography.exceptions import InvalidSignature
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+    from fastapi import HTTPException
+
+    from ksadk.kernel.contracts import AgentControlCommand
+
+    command, permit = body["command"], body["permit"]
+
+    jwks_raw = os.environ.get("AGENT_CONTROL_TRUSTED_JWKS", "").strip()
+    if not jwks_raw:
+        raise HTTPException(status_code=503, detail="trusted jwks not configured")
+    keys = {k["kid"]: k["x"] for k in json.loads(jwks_raw).get("keys", [])}
+    key_x = keys.get(permit.get("key_id"))
+    if key_x is None:
+        raise HTTPException(status_code=403, detail="unknown permit key_id")
+    try:
+        public_key = Ed25519PublicKey.from_public_bytes(_b64url_decode(key_x))
+        unsigned = {k: v for k, v in permit.items() if k != "signature"}
+        public_key.verify(_b64url_decode(permit["signature"]), _canonical(unsigned))
+    except (InvalidSignature, ValueError) as exc:
+        raise HTTPException(status_code=403, detail="permit signature mismatch") from exc
+
+    now = datetime.now(timezone.utc)
+    issued = _parse_rfc3339(permit["issued_at"])
+    expires = _parse_rfc3339(permit["expires_at"])
+    if now >= expires or now < issued:
+        raise HTTPException(status_code=403, detail="permit expired or not yet valid")
+    if (expires - issued).total_seconds() > 300:
+        raise HTTPException(status_code=403, detail="permit ttl exceeds maximum")
+    if command.get("authorization_ref") != permit["permit_id"]:
+        raise HTTPException(status_code=403, detail="authorization_ref mismatch")
+    if command.get("tenant_id") != permit["tenant_id"]:
+        raise HTTPException(status_code=403, detail="tenant mismatch")
+    if command.get("agent_instance_id") != permit["agent_instance_id"] or str(
+        permit["agent_instance_id"]
+    ) != instance_id():
+        raise HTTPException(status_code=403, detail="instance mismatch")
+    if permit.get("session_id") and command.get("session_id") != permit["session_id"]:
+        raise HTTPException(status_code=403, detail="session mismatch")
+    if command.get("command_type") not in permit.get("allowed_operations", []):
+        raise HTTPException(status_code=403, detail="operation not allowed by permit")
+
+    service: PostgresSessionService = _state["session_service"]  # type: ignore[assignment]
+    session_id = str(command["session_id"])
+    if await service.get_session(session_id) is None:
+        await service.create_session(
+            agent_id=instance_id(), user_id="phase1-canary",
+            session_id=session_id,
+        )
+    kernel_command = AgentControlCommand(
+        command_id=uuid.UUID(str(command["command_id"])),
+        idempotency_key=str(command["idempotency_key"]),
+        tenant_id=str(command["tenant_id"]),
+        agent_instance_id=str(command["agent_instance_id"]),
+        session_id=session_id,
+        command_type=str(command["command_type"]),
+        payload=command.get("payload", {"content": {"text": "hi"}}),
+        source=command.get("source") or {"kind": "workflow", "ref": "server"},
+        authorization_ref=str(command["authorization_ref"]),
+        submitted_at=str(command["submitted_at"]),
+    )
+    kernel_permit = authority().permit(
+        agent_instance_id=instance_id(),
+        session_id=session_id,
+        operations=[kernel_command.command_type],
+    )
+    receipt = await kernel().submit(kernel_command, permit=kernel_permit)
+    out = receipt.model_dump(mode="json", by_alias=True)
+    out["request_id"] = f"req-{uuid.uuid4().hex[:16]}"
+    return out
+
+
 @app.post("/test/worker")
 async def toggle_worker(body: dict) -> dict:
     """测试用：临时停/启 per-session FIFO worker（queue_full 等场景需要）。"""

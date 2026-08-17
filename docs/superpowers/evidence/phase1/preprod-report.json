@@ -1,8 +1,51 @@
 {
   "checks": {
     "audit": {
-      "detail": "\u65e0\u5bf9\u5e94\u9884\u53d1 evidence\uff1bcanary app \u672a\u5b9e\u73b0\u5ba1\u8ba1\u4e8b\u4ef6/\u5ba1\u8ba1\u8868\uff08Phase 1 canary \u8303\u56f4\u5916\uff09\uff0c\u5982\u5b9e\u6807\u8bb0",
-      "status": "missing"
+      "detail": {
+        "agent_instance": {
+          "contract_digest": "69771d8df4a8811ed6623f26a152c869cfdfd8dbfdcad443b52a9b6403b267e8",
+          "id": "phase1-canary-1",
+          "note": "server \u955c\u50cf\u672a\u6253\u5305 tests/contracts fixture\uff08server_contract_digest() \u4e3a\u7a7a digest\uff09\uff0cadmission \u7684 contract digest \u4ee5\u6784\u9020\u53c2\u6570\u663e\u5f0f\u4f20\u5165\u5e76\u4e0e canary /v1/meta/contract-digest \u5b9e\u6d4b\u503c\u4e00\u81f4",
+          "runtime_endpoint": "http://agent-kernel-canary:8080",
+          "tenant": "phase1-canary"
+        },
+        "audit_row": {
+          "accepted_seq": 1,
+          "command_id": "f9ca0c95-f400-4fd3-ba2e-a7cc88d39f1d",
+          "command_type": "enqueue",
+          "id": "audit-b00f2c7cb41c4bdd942f5f77",
+          "permit_id": "permit-543e9b6c-f39b-41b0-a2ba-5c91bf0e442b",
+          "principal_ref": "user:phase1-sre",
+          "receipt_status": "accepted",
+          "redaction": "\u8131\u654f\u884c\uff1a\u4e0d\u542b\u539f\u59cb payload/permit \u7b7e\u540d/\u51ed\u636e\uff1bclaims \u53ea\u5b58 sha256 digest",
+          "table": "agent_control_audits"
+        },
+        "command_id": "f9ca0c95-f400-4fd3-ba2e-a7cc88d39f1d",
+        "command_type": "enqueue",
+        "migration": "agent_instances / agent_control_audits / conversation_events.source_session_seq \u5df2\u5b58\u5728\uff08server \u542f\u52a8 create_all + 20260817_agent_instance.sql \u8bed\u4e49\u7b49\u4ef7\uff09\uff0c\u65e0\u9700\u624b\u5de5 DDL",
+        "path": "server-pod AgentControlService.submit (service-layer invocation via kubectl exec; real permit issuance + real runtime HTTP submit + real DB audit write; server image phase1-412fcffb \u672a\u542b HTTP route \u66b4\u9732\u8be5\u5165\u53e3\u65f6\u4ee5 pod \u5185 service \u5c42\u76f4\u8c03\u66ff\u4ee3\uff0c\u5176\u4f59\u73af\u8282\u5168\u771f\u5b9e)",
+        "permit_id": "permit-543e9b6c-f39b-41b0-a2ba-5c91bf0e442b",
+        "permit_trust": "server \u4ee5 ns \u5185\u4e13\u7528 Ed25519 workload key\uff08secret agent-control-signing-key \u5f15\u7528\uff0cprivate key \u672a\u843d evidence\uff09\u7b7e\u53d1 permit\uff1bruntime canary \u65b0\u589e /agentengine/api/v1/agent-control/submit ingress\uff0c\u6309 Server \u5408\u540c canonical JSON \u9a8c\u7b7e + \u65f6\u6548/TTL/claims \u7ed1\u5b9a\uff08tenant/instance/session/operation/ref\uff09\u540e\u5165 kernel",
+        "receipt": {
+          "accepted_seq": 1,
+          "message_id": "1619de0c-db2e-46c2-be42-97cdac2bb81f",
+          "status": "accepted"
+        },
+        "runtime_events": {
+          "counts": {
+            "control.command_accepted": 1,
+            "control.message_claimed": 1,
+            "control.message_completed": 1,
+            "control.run_transition": 3
+          },
+          "inbox_final_status": "completed",
+          "table": "ksadk_session_events_readable"
+        },
+        "runtime_image": "hub.kce.ksyun.com/agentengine/agent-kernel-canary:phase1-canary-audit-021744",
+        "server_image": "hub.kce.ksyun.com/agentengine/agentengine-server:phase1-412fcffb",
+        "session_id": "audit-closure-e7d59627"
+      },
+      "status": "pass"
     },
     "cold_recovery": {
       "detail": {
@@ -50,8 +93,47 @@
       "status": "pass"
     },
     "cross_repo_versions": {
-      "detail": "\u65e0\u8de8\u4ed3\u7248\u672c evidence \u6587\u4ef6\uff1b\u672c\u6b21 canary \u6f14\u7ec3\u4ec5\u8986\u76d6 agent-kernel-canary \u5355\u90e8\u7f72\uff08\u955c\u50cf tag phase1-canary-e2e-051820\uff0ccontract digest \u4e00\u81f4\uff09\uff0cgateway/server \u955c\u50cf\u672a\u7eb3\u5165\uff0c\u5982\u5b9e\u6807\u8bb0",
-      "status": "missing"
+      "detail": {
+        "branch": "feat/agent-kernel-phase1",
+        "contract_digest": "69771d8df4a8811ed6623f26a152c869cfdfd8dbfdcad443b52a9b6403b267e8",
+        "fixture_manifest_digests": {
+          "agentengine-gateway:tests/contracts/v1/manifest.json": "69771d8df4a8811ed6623f26a152c869cfdfd8dbfdcad443b52a9b6403b267e8",
+          "agentengine-server:tests/contracts/agent-kernel/v1/manifest.json": "69771d8df4a8811ed6623f26a152c869cfdfd8dbfdcad443b52a9b6403b267e8"
+        },
+        "images": {
+          "agent-kernel-canary": "phase1-canary-e2e-051820",
+          "agentengine-gateway": "phase1-ca9f6904",
+          "agentengine-server": "phase1-412fcffb"
+        },
+        "note": "\u516d\u4ed3\u540c\u5206\u652f commit + server/gateway \u5408\u540c fixture digest \u4e0e KsADK \u5bfc\u51fa\u4e00\u81f4\uff1bcanary \u6f14\u7ec3\u8986\u76d6 kernel runtime \u5355\u90e8\u7f72",
+        "repos": {
+          "agent-platform-operator": {
+            "branch": "feat/agent-kernel-phase1",
+            "commit": "4a9f70c014937ef8cfd0d4f67eb1ac8699ef9dbf"
+          },
+          "agent-runtime-service": {
+            "branch": "feat/agent-kernel-phase1",
+            "commit": "59178fdc362d3e098153e4be07b69ae0f69b6ff7"
+          },
+          "agentengine-gateway": {
+            "branch": "feat/agent-kernel-phase1",
+            "commit": "ca9f6904460ef5b163b2c02ac708f003c87da237"
+          },
+          "agentengine-server": {
+            "branch": "feat/agent-kernel-phase1",
+            "commit": "412fcffb1519830eec4dd3b749d38a34dd500799"
+          },
+          "ksadk-python": {
+            "branch": "feat/agent-kernel-phase1",
+            "commit": "7bad65a072165d0c378fb4b2966f99590dbdaa7a"
+          },
+          "ksadk-web": {
+            "branch": "feat/agent-kernel-phase1",
+            "commit": "88d2c6b46693d55f5f3c78a413a09664c5bb4778"
+          }
+        }
+      },
+      "status": "pass"
     },
     "fifo": {
       "recorded_at": "2026-08-17T21:36:07.471600+00:00",
@@ -115,14 +197,13 @@
     }
   },
   "environment": "pre",
-  "failed_checks": [
-    "audit",
-    "cross_repo_versions"
-  ],
-  "generated_at": "2026-08-17T21:52:41Z",
+  "failed_checks": [],
+  "generated_at": "2026-08-17T22:08:42Z",
   "passed_checks": [
+    "audit",
     "cold_recovery",
     "contract_digest",
+    "cross_repo_versions",
     "fifo",
     "idempotency",
     "queue_full",
@@ -131,11 +212,8 @@
     "split_brain",
     "stale_fence"
   ],
-  "reasons": [
-    "required check 'audit' status 'missing'",
-    "required check 'cross_repo_versions' status 'missing'"
-  ],
+  "reasons": [],
   "scenario": "full_closure",
   "skipped_checks": [],
-  "status": "fail"
+  "status": "pass"
 }

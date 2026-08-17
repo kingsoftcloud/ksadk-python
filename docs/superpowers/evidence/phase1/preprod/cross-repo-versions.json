@@ -1,0 +1,54 @@
+{
+  "checks": {
+    "cross_repo_versions": {
+      "status": "pass",
+      "detail": {
+        "contract_digest": "69771d8df4a8811ed6623f26a152c869cfdfd8dbfdcad443b52a9b6403b267e8",
+        "branch": "feat/agent-kernel-phase1",
+        "repos": {
+          "ksadk-python": {
+            "branch": "feat/agent-kernel-phase1",
+            "commit": "7bad65a072165d0c378fb4b2966f99590dbdaa7a"
+          },
+          "agentengine-server": {
+            "branch": "feat/agent-kernel-phase1",
+            "commit": "412fcffb1519830eec4dd3b749d38a34dd500799"
+          },
+          "agent-runtime-service": {
+            "branch": "feat/agent-kernel-phase1",
+            "commit": "59178fdc362d3e098153e4be07b69ae0f69b6ff7"
+          },
+          "agent-platform-operator": {
+            "branch": "feat/agent-kernel-phase1",
+            "commit": "4a9f70c014937ef8cfd0d4f67eb1ac8699ef9dbf"
+          },
+          "agentengine-gateway": {
+            "branch": "feat/agent-kernel-phase1",
+            "commit": "ca9f6904460ef5b163b2c02ac708f003c87da237"
+          },
+          "ksadk-web": {
+            "branch": "feat/agent-kernel-phase1",
+            "commit": "88d2c6b46693d55f5f3c78a413a09664c5bb4778"
+          }
+        },
+        "fixture_manifest_digests": {
+          "agentengine-server:tests/contracts/agent-kernel/v1/manifest.json": "69771d8df4a8811ed6623f26a152c869cfdfd8dbfdcad443b52a9b6403b267e8",
+          "agentengine-gateway:tests/contracts/v1/manifest.json": "69771d8df4a8811ed6623f26a152c869cfdfd8dbfdcad443b52a9b6403b267e8"
+        },
+        "images": {
+          "agentengine-server": "phase1-412fcffb",
+          "agentengine-gateway": "phase1-ca9f6904",
+          "agent-kernel-canary": "phase1-canary-e2e-051820"
+        },
+        "note": "六仓同分支 commit + server/gateway 合同 fixture digest 与 KsADK 导出一致；canary 演练覆盖 kernel runtime 单部署"
+      }
+    },
+    "audit": {
+      "status": "fail",
+      "detail": {
+        "reason": "canary app 未实现审计事件/审计表面；Server 侧 agent_control_audits 已实现并有单测（tests/test_agent_control_service.py 审计脱敏用例），但预发 canary 未串联 Server admission 链路",
+        "followup": "Server canary 部署接入 AgentControlService 并产生真实 audit row 后补 evidence"
+      }
+    }
+  }
+}
