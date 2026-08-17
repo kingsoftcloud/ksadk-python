@@ -45,7 +45,20 @@ from ksadk.kernel.errors import (
     StaleFenceError,
     UnsupportedError,
 )
-from ksadk.kernel.worker import AgentKernelWorker, WorkResult
+
+# worker 依赖 ksadk.runtime.adapter；runtime.adapter 又经 ksadk.events 回指本包的
+# contracts，急切导入会成环，故用 PEP 562 惰性导出。
+
+_LAZY_EXPORTS = {"AgentKernelWorker": "ksadk.kernel.worker", "WorkResult": "ksadk.kernel.worker"}
+
+
+def __getattr__(name: str):  # noqa: ANN001
+    module_path = _LAZY_EXPORTS.get(name)
+    if module_path is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
+
+    return getattr(importlib.import_module(module_path), name)
 
 __all__ = [
     "AgentControlPermitVerifier",
