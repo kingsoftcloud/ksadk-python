@@ -1,26 +1,141 @@
 {
-  "environment": "pre",
-  "scenario": "full_closure",
-  "note": "placeholder template; regenerate via: uv run python scripts/phase1_preprod_gate.py --environment pre --output docs/superpowers/evidence/phase1/preprod-report.json --evidence <files>",
-  "status": "pending",
-  "generated_at": "1970-01-01T00:00:00Z",
-  "passed_checks": [],
-  "skipped_checks": [],
-  "failed_checks": [],
-  "reasons": [],
   "checks": {
-    "contract_digest": {
-      "status": "pending",
-      "refs": {"server": "digest-ref", "gateway": "digest-ref", "runtime_service": "digest-ref", "operator": "digest-ref", "runtime_health": "digest-ref", "web_build": "digest-ref", "schema_version": "ref", "clock_skew_seconds": 0.0}
+    "audit": {
+      "detail": "\u65e0\u5bf9\u5e94\u9884\u53d1 evidence\uff1bcanary app \u672a\u5b9e\u73b0\u5ba1\u8ba1\u4e8b\u4ef6/\u5ba1\u8ba1\u8868\uff08Phase 1 canary \u8303\u56f4\u5916\uff09\uff0c\u5982\u5b9e\u6807\u8bb0",
+      "status": "missing"
     },
-    "fifo": {"status": "pending", "refs": {"session_id_ref": "ref", "commands": 100}},
-    "idempotency": {"status": "pending", "refs": {"command_id_ref": "ref", "executions": 1}},
-    "queue_full": {"status": "pending", "refs": {"queue_limit": 100, "overflow_receipt_ref": "ref"}},
-    "reconnect": {"status": "pending", "refs": {"after_seq": 0, "gap_count": 0, "duplicate_count": 0}},
-    "cold_recovery": {"status": "pending", "refs": {"pod_ref": "ref", "terminal_event_count": 1}},
-    "stale_fence": {"status": "pending", "refs": {"old_activation_ref": "ref", "new_activation_ref": "ref", "stale_fence_total_delta": 0}},
-    "audit": {"status": "pending", "refs": {"audit_trail_ref": "ref"}},
-    "cross_repo_versions": {"status": "pending", "refs": {"image_digests": "sha256-ref-per-repo", "helm_revisions": "ref", "commit_shas": "ref"}},
-    "rollback": {"status": "pending", "refs": {"duration_seconds": 0, "data_loss_count": 0, "residual_resources": []}}
-  }
+    "cold_recovery": {
+      "detail": {
+        "echo_adapter_capability_note": "Echo adapter capabilities \u5168\u90e8 unavailable\uff08attach/durable_restore \u5747\u4e3a not_implemented\uff09\uff0c\u4e0e\u786e\u5b9a\u6027\u7ee7\u7eed\u6d88\u8d39\uff08Inbox \u4e8b\u5b9e\u4ecd\u5728\uff09\u800c\u975e attach/resume \u7684\u884c\u4e3a\u4e00\u81f4\u2014\u2014\u65b0 owner \u76f4\u63a5\u6d88\u8d39 durable Inbox\uff0c\u65e0\u4f2a\u88c5\u6062\u590d\u3002",
+        "run_a_running_state": {
+          "event_types": {
+            "control.command_accepted": 2,
+            "control.message_claimed": 2,
+            "control.message_completed": 2,
+            "control.run_transition": 6
+          },
+          "inbox_depth_after_recovery": 0,
+          "new_pod_ready_seconds": 5,
+          "no_message_lost": true,
+          "note_first_response_lost_client_side": "\u7b2c\u4e00\u4e2a submit \u54cd\u5e94\u4f53\u4e3a\u7a7a\uff08port-forward \u5076\u53d1\uff09\uff0cDB \u4e2d\u4e5f\u53ea\u6709 2 \u6761 accepted \u4e8b\u5b9e\uff0c\u65e0 lost-ack \u534a\u72b6\u6001",
+          "pod_kill": "kubectl delete pod\uff08Running\uff0cworker \u6d3b\u8dc3\u671f\uff09",
+          "receipts_observed": 2,
+          "replay_event_count": 12,
+          "seq_range": "1-12 unique, no duplicates",
+          "session": "cold-a-1787003090",
+          "submitted": 3
+        },
+        "run_b_backlog_state": {
+          "event_types": {
+            "control.command_accepted": 5,
+            "control.message_claimed": 5,
+            "control.message_completed": 5,
+            "control.run_transition": 15
+          },
+          "inbox_depth_after_recovery": 0,
+          "new_pod_ready_seconds": 5,
+          "no_message_lost": true,
+          "replay_event_count": 30,
+          "seq_unique": true,
+          "session": "cold-b-1787003299",
+          "setup": "/test/worker enabled=false \u540e enqueue 5 \u6761\uff0cdepth=5 \u65f6 delete pod"
+        },
+        "takeover_semantics_note": "canary worker \u7684 activation_id \u4e3a\u5b9e\u4f8b\u7ea7\u5e38\u91cf canary-worker-{instance_id}\uff08\u975e per-Pod\uff09\uff0c\u65b0 Pod \u901a\u8fc7\u540c activation re-acquire/renew \u7acb\u5373\u6062\u590d\uff08\u65e0\u9700\u7b49 120s TTL\uff09\uff1bfence token \u4e0d\u9012\u589e\uff0ccontrol.activation_taken_over \u4e8b\u4ef6\u5728\u8be5\u8def\u5f84\u4e0d\u4ea7\u751f\u3002\u8de8 activation \u7684 takeover/token+1/stale_fence \u884c\u4e3a\u5728 split_brain \u6f14\u7ec3\u4e2d\u9a8c\u8bc1\u3002"
+      },
+      "status": "pass"
+    },
+    "contract_digest": {
+      "recorded_at": "2026-08-17T21:33:42.336992+00:00",
+      "source": "step456-e2e.json#contract_precheck",
+      "status": "pass"
+    },
+    "cross_repo_versions": {
+      "detail": "\u65e0\u8de8\u4ed3\u7248\u672c evidence \u6587\u4ef6\uff1b\u672c\u6b21 canary \u6f14\u7ec3\u4ec5\u8986\u76d6 agent-kernel-canary \u5355\u90e8\u7f72\uff08\u955c\u50cf tag phase1-canary-e2e-051820\uff0ccontract digest \u4e00\u81f4\uff09\uff0cgateway/server \u955c\u50cf\u672a\u7eb3\u5165\uff0c\u5982\u5b9e\u6807\u8bb0",
+      "status": "missing"
+    },
+    "fifo": {
+      "recorded_at": "2026-08-17T21:36:07.471600+00:00",
+      "source": "step456-e2e.json#fifo_100",
+      "status": "pass"
+    },
+    "idempotency": {
+      "recorded_at": "2026-08-17T21:34:22.707110+00:00",
+      "source": "step456-e2e.json#idempotency",
+      "status": "pass"
+    },
+    "queue_full": {
+      "recorded_at": "2026-08-17T21:34:29.467060+00:00",
+      "source": "step456-e2e.json#queue_full",
+      "status": "pass"
+    },
+    "reconnect": {
+      "recorded_at": "2026-08-17T21:34:22.317898+00:00",
+      "source": "step456-e2e.json#reconnect",
+      "status": "pass"
+    },
+    "rollback": {
+      "detail": {
+        "baseline_contract_digest": "69771d8df4a8811ed6623f26a152c869cfdfd8dbfdcad443b52a9b6403b267e8\uff08\u4e0e e2e tag \u76f8\u540c\uff09",
+        "baseline_get_status_http": 500,
+        "baseline_healthz": "ok",
+        "baseline_pg_data": "\u65e0\u635f\uff08SSE replay \u4e0e inbox depth \u67e5\u8be2\u5747\u5728\uff09",
+        "baseline_pod_ready": "1/1 Running",
+        "baseline_sse_replay": "cold-b \u4f1a\u8bdd after_seq=0 replay 30 \u4e8b\u4ef6\u5b8c\u6574\uff1brb \u4f1a\u8bdd 5 \u4e8b\u4ef6\u5b8c\u6574\u53ef\u8bfb",
+        "baseline_submit_http": 500,
+        "procedure": "enqueue 5 \u6761 backlog\uff08worker disabled\uff09-> set image \u56de\u9000\u57fa\u7ebf -> \u9a8c\u8bc1 -> \u524d\u6eda e2e tag",
+        "residue": "\u65e0\uff1adeployment image \u56de\u5230 e2e tag\uff0cPod 1/1 Running\uff1b\u4ec5 drill \u4ea7\u751f\u7684\u6d4b\u8bd5 session \u6570\u636e\u7559\u5b58\u4e8e PG\uff08append-only\uff0c\u6309\u8bbe\u8ba1\u4e0d\u6e05\u7406\uff09",
+        "rollback_seconds": 11,
+        "rollforward_pending_recovery": "backlog 5 \u6761\u5728 26s \u5185\u6d88\u8d39\u5b8c\u6210\uff0cdepth=0\uff0creplay 30 \u4e8b\u4ef6 seq \u552f\u4e00\uff085 accepted + 5 claimed + 5 completed + 15 run_transition\uff09",
+        "rollforward_seconds": 20
+      },
+      "known_rollback_limitation": [
+        "\u57fa\u7ebf tag phase1-canary-043742 \u7684 SubmitAgentControl \u8fd4\u56de 500\uff08\u5df2\u77e5 bug\uff09",
+        "\u57fa\u7ebf tag \u7684 GetAgentStatus \u540c\u6837 500\uff08AttributeError: PostgresAgentKernelStore has no attribute find_active_run \u2014\u2014 \u57fa\u7ebf\u955c\u50cf\u7684 canary_app \u4e0e store API \u7248\u672c\u9519\u914d\uff09",
+        "canary \u672a\u66b4\u9732 stale_fence_total \u6307\u6807"
+      ],
+      "status": "pass"
+    },
+    "split_brain": {
+      "detail": {
+        "canonical_log": "2 events, seq unique & sorted, \u65e0\u810f\u6570\u636e/\u91cd\u590d",
+        "method": "\u672c\u5730 port-forward 15432 \u76f4\u8fde PG\uff0c\u7528 ksadk PostgresAgentKernelStore \u4ee5\u65e7/\u65b0 activation \u76f4\u63a5\u7ade\u4e89",
+        "new_owner_acquire_while_lease_held": "InvalidCommandError\uff08CAS \u62d2\u7edd\uff09",
+        "new_owner_append": "ok, seq=2",
+        "old_owner_append_after_takeover": "StaleFenceError\uff08\u62d2\u5199\uff09",
+        "old_owner_claim_after_takeover": "StaleFenceError\uff08\u62d2 claim\uff09",
+        "session": "sb-b949144e",
+        "stale_fence_metric": "canary \u672a\u66b4\u9732 stale_fence_total \u6307\u6807\u7aef\u70b9\uff08known limitation\uff09",
+        "takeover": "lease \u8fc7\u671f\uff08\u6545\u969c\u6ce8\u5165\u5c06 lease_expires_at \u7f6e\u4e3a\u8fc7\u53bb\uff09\u540e\u65b0 activation sb-new-990eff \u83b7\u5f97 fencing_token=2 = \u65e7 token+1"
+      },
+      "status": "pass"
+    },
+    "stale_fence": {
+      "detail": "\u89c1 split_brain check\uff1a\u65e7 fencing token \u7684 append_event \u4e0e claim_next \u5747\u88ab StaleFenceError \u62d2\u7edd\uff0c\u65b0 owner \u6b63\u5e38\u5199\u5165\uff0ccanonical log \u65e0\u810f\u6570\u636e\u3002",
+      "status": "pass"
+    }
+  },
+  "environment": "pre",
+  "failed_checks": [
+    "audit",
+    "cross_repo_versions"
+  ],
+  "generated_at": "2026-08-17T21:52:41Z",
+  "passed_checks": [
+    "cold_recovery",
+    "contract_digest",
+    "fifo",
+    "idempotency",
+    "queue_full",
+    "reconnect",
+    "rollback",
+    "split_brain",
+    "stale_fence"
+  ],
+  "reasons": [
+    "required check 'audit' status 'missing'",
+    "required check 'cross_repo_versions' status 'missing'"
+  ],
+  "scenario": "full_closure",
+  "skipped_checks": [],
+  "status": "fail"
 }

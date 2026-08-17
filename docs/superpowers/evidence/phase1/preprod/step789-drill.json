@@ -1,0 +1,90 @@
+{
+  "environment": "preprod/agent-kernel-phase1",
+  "namespace": "agent-kernel-phase1",
+  "canary_service": "agent-kernel-canary:8080",
+  "canary_image_before_after": "phase1-canary-e2e-051820",
+  "rollback_baseline_image": "phase1-canary-043742",
+  "executed_at": "2026-08-18T00:00:00Z",
+  "checks": {
+    "cold_recovery": {
+      "status": "pass",
+      "detail": {
+        "run_a_running_state": {
+          "session": "cold-a-1787003090",
+          "submitted": 3,
+          "receipts_observed": 2,
+          "note_first_response_lost_client_side": "第一个 submit 响应体为空（port-forward 偶发），DB 中也只有 2 条 accepted 事实，无 lost-ack 半状态",
+          "pod_kill": "kubectl delete pod（Running，worker 活跃期）",
+          "new_pod_ready_seconds": 5,
+          "inbox_depth_after_recovery": 0,
+          "replay_event_count": 12,
+          "seq_range": "1-12 unique, no duplicates",
+          "event_types": {
+            "control.command_accepted": 2,
+            "control.message_claimed": 2,
+            "control.run_transition": 6,
+            "control.message_completed": 2
+          },
+          "no_message_lost": true
+        },
+        "run_b_backlog_state": {
+          "session": "cold-b-1787003299",
+          "setup": "/test/worker enabled=false 后 enqueue 5 条，depth=5 时 delete pod",
+          "new_pod_ready_seconds": 5,
+          "inbox_depth_after_recovery": 0,
+          "replay_event_count": 30,
+          "seq_unique": true,
+          "event_types": {
+            "control.command_accepted": 5,
+            "control.message_claimed": 5,
+            "control.run_transition": 15,
+            "control.message_completed": 5
+          },
+          "no_message_lost": true
+        },
+        "takeover_semantics_note": "canary worker 的 activation_id 为实例级常量 canary-worker-{instance_id}（非 per-Pod），新 Pod 通过同 activation re-acquire/renew 立即恢复（无需等 120s TTL）；fence token 不递增，control.activation_taken_over 事件在该路径不产生。跨 activation 的 takeover/token+1/stale_fence 行为在 split_brain 演练中验证。",
+        "echo_adapter_capability_note": "Echo adapter capabilities 全部 unavailable（attach/durable_restore 均为 not_implemented），与确定性继续消费（Inbox 事实仍在）而非 attach/resume 的行为一致——新 owner 直接消费 durable Inbox，无伪装恢复。"
+      }
+    },
+    "split_brain": {
+      "status": "pass",
+      "detail": {
+        "session": "sb-b949144e",
+        "method": "本地 port-forward 15432 直连 PG，用 ksadk PostgresAgentKernelStore 以旧/新 activation 直接竞争",
+        "new_owner_acquire_while_lease_held": "InvalidCommandError（CAS 拒绝）",
+        "takeover": "lease 过期（故障注入将 lease_expires_at 置为过去）后新 activation sb-new-990eff 获得 fencing_token=2 = 旧 token+1",
+        "old_owner_append_after_takeover": "StaleFenceError（拒写）",
+        "old_owner_claim_after_takeover": "StaleFenceError（拒 claim）",
+        "new_owner_append": "ok, seq=2",
+        "canonical_log": "2 events, seq unique & sorted, 无脏数据/重复",
+        "stale_fence_metric": "canary 未暴露 stale_fence_total 指标端点（known limitation）"
+      }
+    },
+    "stale_fence": {
+      "status": "pass",
+      "detail": "见 split_brain check：旧 fencing token 的 append_event 与 claim_next 均被 StaleFenceError 拒绝，新 owner 正常写入，canonical log 无脏数据。"
+    },
+    "rollback": {
+      "status": "pass",
+      "known_rollback_limitation": [
+        "基线 tag phase1-canary-043742 的 SubmitAgentControl 返回 500（已知 bug）",
+        "基线 tag 的 GetAgentStatus 同样 500（AttributeError: PostgresAgentKernelStore has no attribute find_active_run —— 基线镜像的 canary_app 与 store API 版本错配）",
+        "canary 未暴露 stale_fence_total 指标"
+      ],
+      "detail": {
+        "procedure": "enqueue 5 条 backlog（worker disabled）-> set image 回退基线 -> 验证 -> 前滚 e2e tag",
+        "rollback_seconds": 11,
+        "rollforward_seconds": 20,
+        "baseline_pod_ready": "1/1 Running",
+        "baseline_healthz": "ok",
+        "baseline_contract_digest": "69771d8df4a8811ed6623f26a152c869cfdfd8dbfdcad443b52a9b6403b267e8（与 e2e tag 相同）",
+        "baseline_sse_replay": "cold-b 会话 after_seq=0 replay 30 事件完整；rb 会话 5 事件完整可读",
+        "baseline_pg_data": "无损（SSE replay 与 inbox depth 查询均在）",
+        "baseline_submit_http": 500,
+        "baseline_get_status_http": 500,
+        "rollforward_pending_recovery": "backlog 5 条在 26s 内消费完成，depth=0，replay 30 事件 seq 唯一（5 accepted + 5 claimed + 5 completed + 15 run_transition）",
+        "residue": "无：deployment image 回到 e2e tag，Pod 1/1 Running；仅 drill 产生的测试 session 数据留存于 PG（append-only，按设计不清理）"
+      }
+    }
+  }
+}
