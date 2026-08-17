@@ -167,6 +167,12 @@ class KsadkAGUIAgent:
         return type(self)(name=self.name, _shared=self._shared)
 
     async def run(self, input: RunAgentInput) -> AsyncIterator[BaseEvent]:
+        from ksadk.kernel import ingress as _kernel_ingress
+
+        if _kernel_ingress.kernel_route_active():
+            async for event in self._kernel_run(input):
+                yield event
+            return
         wire = _WireState(
             thread_id=input.thread_id,
             run_id=input.run_id,
@@ -228,6 +234,102 @@ class KsadkAGUIAgent:
         finally:
             if run is not None and not run.cancel_failed:
                 run.active = False
+
+    async def _kernel_run(self, input: RunAgentInput) -> AsyncIterator[BaseEvent]:
+        """kernel 路径（灰度 opt-in）：AG-UI run -> AgentControlCommand -> receipt。
+
+        mutation 只走 kernel.submit；AG-UI 事件 shape 保留，cursor 源自同一
+        Session seq（SessionEventSubscription.after_seq）。
+        """
+        from ksadk.kernel import ingress as _kernel_ingress
+
+        yield RunStartedEvent(
+            thread_id=input.thread_id,
+            run_id=input.run_id,
+            parent_run_id=input.parent_run_id,
+            input=input,
+        )
+        message_id = f"{input.run_id}:assistant"
+        text = ""
+        try:
+            trusted = _kernel_ingress.trusted_context(
+                source_kind="agui",
+                source_ref=input.run_id,
+                session_id=input.thread_id,
+                operations=("enqueue",),
+                launch_context=self._shared.launch_context,
+            )
+            command = _kernel_ingress.map_agui_request(
+                session_id=input.thread_id,
+                idempotency_key=input.run_id,
+                content=[
+                    {"role": "user", "content": _agui_user_text(input)}
+                ],
+                run_id=input.run_id,
+                trusted=trusted,
+            )
+            receipt = await _kernel_ingress.submit_command(
+                command, permit=trusted.permit
+            )
+            if receipt.status not in ("accepted", "duplicate"):
+                yield RunErrorEvent(
+                    message=f"agent kernel rejected command: {receipt.status}",
+                    code=receipt.status.upper(),
+                )
+                return
+            text_open = False
+            async for _seq, payload in _kernel_ingress.subscribe_projected(
+                input.thread_id,
+                trusted=trusted,
+                after_seq=int(receipt.accepted_seq or 0),
+                projector=_agui_envelope_payload,
+            ):
+                if payload is None:
+                    continue
+                kind, value = payload
+                if kind == "delta":
+                    if not text_open:
+                        text_open = True
+                        yield TextMessageStartEvent(message_id=message_id)
+                    text += value
+                    yield TextMessageContentEvent(message_id=message_id, delta=value)
+                elif kind == "completed":
+                    final = value or text
+                    if final and not text_open:
+                        text_open = True
+                        yield TextMessageStartEvent(message_id=message_id)
+                    if final.startswith(text) and len(final) > len(text):
+                        yield TextMessageContentEvent(
+                            message_id=message_id, delta=final[len(text):]
+                        )
+                    text = final
+                    if text_open:
+                        yield TextMessageEndEvent(message_id=message_id)
+                    yield RunFinishedEvent(
+                        thread_id=input.thread_id,
+                        run_id=input.run_id,
+                        outcome=RunFinishedSuccessOutcome(),
+                        result={"output_text": text},
+                    )
+                    return
+            if text_open:
+                yield TextMessageEndEvent(message_id=message_id)
+            yield RunFinishedEvent(
+                thread_id=input.thread_id,
+                run_id=input.run_id,
+                outcome=RunFinishedSuccessOutcome(),
+                result={"output_text": text},
+            )
+        except Exception:
+            logger.exception(
+                "AG-UI kernel ingress failed for thread=%s run=%s",
+                input.thread_id,
+                input.run_id,
+            )
+            yield RunErrorEvent(
+                message="Agent kernel ingress failed",
+                code="KERNEL_ERROR",
+            )
 
     async def _resolve_run(self, input: RunAgentInput) -> tuple[_ThreadRun, bool]:
         async with self._shared.lock:
@@ -930,3 +1032,25 @@ class KsadkAGUIAgent:
 
 
 __all__ = ["KsadkAGUIAgent"]
+
+def _agui_user_text(input: RunAgentInput) -> str:
+    parts = []
+    for message in input.messages or []:
+        content = getattr(message, "content", "")
+        if isinstance(content, str):
+            parts.append(content)
+        elif content is not None:
+            parts.append(str(content))
+    return "\n".join(parts)
+
+
+def _agui_envelope_payload(envelope) -> tuple[str, str] | None:
+    """Session envelope -> AG-UI 文本投影；cursor 仍用 envelope.seq。"""
+
+    payload = envelope.payload or {}
+    if envelope.event_type == "run.completed":
+        return "completed", str(payload.get("output_text") or "")
+    text = str(payload.get("delta") or payload.get("text") or "")
+    if text:
+        return "delta", text
+    return None

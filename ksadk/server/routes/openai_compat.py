@@ -25,6 +25,13 @@ from ksadk.server.factory import get_runtime_execution
 
 from . import dependencies as deps
 from .checkpoint_resolution import _resolve_checkpoint_resume_input_from_session
+from .kernel_ingress import (
+    _kernel_error_response,
+    _kernel_submit,
+    kernel_conversation_turn,
+    kernel_stream_response,
+)
+from ksadk.kernel.ingress import kernel_route_active
 from .models import (
     ResponsesRequest,
     _clean_optional_string,
@@ -72,6 +79,8 @@ async def list_openai_models():
 async def responses(request: ResponsesRequest):
     """OpenAI Responses 兼容接口。"""
     executor, launch_context = get_runtime_execution()
+    if kernel_route_active():
+        return await _kernel_responses(request, launch_context)
     resolved_session_id, resolved_user_id = _resolve_responses_session_and_user(request)
     agent_id = _runtime_agent_id(launch_context)
 
@@ -166,6 +175,62 @@ async def responses(request: ResponsesRequest):
         response_id=response_id,
         metadata=custom_metadata,
         usage=result.get("usage") if isinstance(result.get("usage"), Mapping) else None,
+    )
+
+
+async def _kernel_responses(request: ResponsesRequest, launch_context):
+    """kernel 路径（灰度 opt-in）：Responses -> AgentControlCommand -> receipt。"""
+
+    from ksadk.conversations.runtime_persistence import ensure_conversation_session
+
+    resolved_session_id, resolved_user_id = _resolve_responses_session_and_user(request)
+    session = await ensure_conversation_session(
+        agent_id=_runtime_agent_id(launch_context),
+        user_id=resolved_user_id,
+        session_id=resolved_session_id,
+        session_service_provider=deps.resolve_session_service,
+    )
+    session_id = session.id
+    metadata = request.metadata if isinstance(request.metadata, dict) else {}
+    idempotency_key = (
+        _clean_optional_string(metadata.get("idempotency_key"))
+        or _metadata_invocation_id(metadata)
+        or f"resp_{uuid.uuid4().hex}"
+    )
+    messages = normalize_responses_input(request.input)
+    response_id = f"resp_{uuid.uuid4().hex}"
+    receipt, trusted = await _kernel_submit(
+        mapper="map_responses_request",
+        session_id=session_id,
+        idempotency_key=idempotency_key,
+        content=messages,
+        correlation_ref=response_id,
+        source_kind="responses",
+    )
+    if receipt.status not in ("accepted", "duplicate"):
+        return _kernel_error_response(receipt)
+
+    def build_payload(output_text: str):
+        return build_responses_payload(
+            output_text=output_text,
+            model=request.model,
+            session_id=session_id,
+            response_id=response_id,
+            metadata=None,
+            usage=None,
+        )
+
+    if request.stream:
+        return kernel_stream_response(
+            receipt=receipt,
+            trusted=trusted,
+            session_id=session_id,
+        )
+    return await kernel_conversation_turn(
+        receipt=receipt,
+        trusted=trusted,
+        session_id=session_id,
+        build_payload=build_payload,
     )
 
 

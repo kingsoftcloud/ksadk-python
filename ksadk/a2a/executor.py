@@ -210,6 +210,12 @@ class A2ARuntimeExecutor(AgentExecutor):
             and getattr(getattr(current_task, "status", None), "state", None)
             == TaskState.TASK_STATE_INPUT_REQUIRED
         )
+        from ksadk.kernel.ingress import kernel_route_active
+
+        if kernel_route_active() and not is_resume:
+            await self._kernel_execute(context, updater)
+            return
+
         interaction_response: Any = None
         # Third-party/local adapters written before durable context mapping do not
         # necessarily provide this optional lifecycle hook.
@@ -274,6 +280,70 @@ class A2ARuntimeExecutor(AgentExecutor):
                 message=updater.new_agent_message(parts=[Part(text="A2A task execution failed")])
             )
             await self._forget_task(context, handle)
+
+    async def _kernel_execute(self, context: RequestContext, updater: TaskUpdater) -> None:
+        """kernel 路径（灰度 opt-in）：A2A task -> AgentControlCommand -> receipt。
+
+        mutation 只走 kernel.submit；A2A task 事件 shape 保留，cursor 源自同一
+        Session seq（SessionEventSubscription.after_seq）。
+        """
+        from ksadk.kernel import ingress as _kernel_ingress
+
+        task_id = str(context.task_id or "")
+        session_id = str(context.context_id or task_id)
+        try:
+            trusted = _kernel_ingress.trusted_context(
+                source_kind="a2a",
+                source_ref=task_id,
+                session_id=session_id,
+                operations=("enqueue",),
+            )
+            command = _kernel_ingress.map_a2a_task(
+                session_id=session_id,
+                idempotency_key=task_id,
+                content={"input": context.get_user_input()},
+                task_id=task_id,
+                trusted=trusted,
+            )
+            receipt = await _kernel_ingress.submit_command(command, permit=trusted.permit)
+            if receipt.status not in ("accepted", "duplicate"):
+                await updater.failed(
+                    message=updater.new_agent_message(
+                        parts=[Part(text=f"agent kernel rejected command: {receipt.status}")]
+                    )
+                )
+                return
+            await updater.update_status(
+                TaskState.TASK_STATE_WORKING,
+                metadata=dict(ADK_V2_INTEGRATION_METADATA),
+            )
+            output_text = ""
+            async for _seq, projected in _kernel_ingress.subscribe_projected(
+                session_id,
+                trusted=trusted,
+                after_seq=int(receipt.accepted_seq or 0),
+                projector=_a2a_envelope_projection,
+            ):
+                if projected is None:
+                    continue
+                kind, value = projected
+                if kind == "delta":
+                    output_text += value
+                elif kind == "completed":
+                    output_text = value or output_text
+            completion = (
+                updater.new_agent_message(parts=[Part(text=output_text)])
+                if output_text
+                else None
+            )
+            await updater.complete(message=completion)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("A2A kernel ingress failed (%s)", type(exc).__name__)
+            await updater.failed(
+                message=updater.new_agent_message(
+                    parts=[Part(text="A2A task execution failed")]
+                )
+            )
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         # §7.4:cancel 统一由 adapter 提供。有 RuntimeAdapter → 尊重其 CancelResult,
@@ -457,3 +527,15 @@ class A2ARuntimeExecutor(AgentExecutor):
 
 
 __all__ = ["A2ARuntimeExecutor"]
+
+
+def _a2a_envelope_projection(envelope) -> tuple[str, str] | None:
+    """Session envelope -> A2A 文本投影；cursor 仍用 envelope.seq。"""
+
+    payload = envelope.payload or {}
+    if envelope.event_type == "run.completed":
+        return "completed", str(payload.get("output_text") or "")
+    text = str(payload.get("delta") or payload.get("text") or "")
+    if text:
+        return "delta", text
+    return None

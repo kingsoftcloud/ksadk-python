@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -54,6 +55,9 @@ from ksadk.studio.event_store import RunEventStore
 from ksadk.studio.workspace import Workspace
 
 _CANCEL_TIMEOUT_SECONDS = 2.0
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -129,6 +133,13 @@ class StudioRunService:
         )
         if on_event is not None:
             on_event(created)
+
+        from ksadk.kernel.ingress import kernel_route_active
+
+        if kernel_route_active():
+            return await self._kernel_run(
+                spec, user_input, record=record, on_event=on_event
+            )
 
         started = time.monotonic()
         record.status = RunStatus.RUNNING
@@ -382,6 +393,90 @@ class StudioRunService:
                 record.duration_source = "studio"
             self.event_store.save(record)
         return record
+
+
+    async def _kernel_run(
+        self,
+        spec: StudioRunSpec,
+        user_input: str,
+        *,
+        record: RunRecord,
+        on_event: Callable[[RunEvent], None] | None,
+    ) -> RunRecord:
+        """kernel 路径（灰度 opt-in）：Studio run -> AgentControlCommand -> receipt。
+
+        mutation 只走 kernel.submit；Studio RunEvent shape 保留，cursor 源自
+        同一 Session seq（SessionEventSubscription.after_seq）。
+        """
+        from ksadk.kernel import ingress as _kernel_ingress
+
+        started = time.monotonic()
+        record.status = RunStatus.RUNNING
+        record.started_at = datetime.now(timezone.utc)
+        self.event_store.save(record)
+        try:
+            trusted = _kernel_ingress.trusted_context(
+                source_kind="studio",
+                source_ref=record.id,
+                session_id=record.session_id,
+                operations=("enqueue",),
+                launch_context=spec.launch_context,
+            )
+            idempotency_key = str(
+                (spec.request_config or {}).get("idempotency_key") or record.id
+            )
+            command = _kernel_ingress.map_studio_request(
+                session_id=record.session_id,
+                idempotency_key=idempotency_key,
+                content=user_input,
+                run_id=record.id,
+                trusted=trusted,
+            )
+            receipt = await _kernel_ingress.submit_command(
+                command, permit=trusted.permit
+            )
+            if receipt.status not in ("accepted", "duplicate"):
+                record.status = RunStatus.FAILED
+                record.error = {
+                    "code": "kernel_command_rejected",
+                    "message": f"agent kernel rejected command: {receipt.status}",
+                }
+                self.event_store.save(record)
+                return record
+            output_text = ""
+            async for _seq, projected in _kernel_ingress.subscribe_projected(
+                record.session_id,
+                trusted=trusted,
+                after_seq=int(receipt.accepted_seq or 0),
+                projector=_studio_envelope_projection,
+            ):
+                if projected is None:
+                    continue
+                event_type, data = projected
+                if event_type == "message.delta":
+                    output_text += str(data.get("delta") or "")
+                elif event_type == "run.completed":
+                    output_text = str(data.get("output_text") or output_text)
+                stored = self.event_store.append(record.id, event_type, data)
+                if on_event is not None:
+                    on_event(stored)
+            record.output = output_text
+            record.status = RunStatus.COMPLETED
+            record.completed_at = datetime.now(timezone.utc)
+            record.duration_ms = int((time.monotonic() - started) * 1000)
+            self.event_store.save(record)
+            return record
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Studio kernel ingress failed for run %s", record.id)
+            record.status = RunStatus.FAILED
+            record.error = {
+                "code": "kernel_ingress_failed",
+                "message": str(exc),
+            }
+            record.completed_at = datetime.now(timezone.utc)
+            record.duration_ms = int((time.monotonic() - started) * 1000)
+            self.event_store.save(record)
+            return record
 
     async def cancel_run(self, run_id: str) -> dict[str, str]:
         """Request cancellation; the flag and executor perform the actual stop."""
@@ -891,3 +986,18 @@ def _attach_studio_identity(payload: dict[str, Any], event: RuntimeEvent) -> Non
 
 
 __all__ = ["StudioRunService", "StudioRunSpec", "project_runtime_event"]
+
+
+def _studio_envelope_projection(envelope) -> tuple[str, dict[str, Any]] | None:
+    """Session envelope -> Studio RunEvent 投影；cursor 仍用 envelope.seq。"""
+
+    payload = envelope.payload or {}
+    if envelope.event_type == "run.completed":
+        return "run.completed", {
+            "runId": envelope.run_id or "",
+            "output_text": str(payload.get("output_text") or ""),
+        }
+    text = str(payload.get("delta") or payload.get("text") or "")
+    if text:
+        return "message.delta", {"delta": text}
+    return None
