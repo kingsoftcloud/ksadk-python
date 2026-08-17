@@ -37,6 +37,8 @@ from ksadk.events.identity import (
     stable_item_id,
     stable_scope_id,
 )
+from ksadk.kernel.contracts import RuntimeCapability, RuntimeCapabilityMatrix
+from ksadk.kernel.errors import UnsupportedControlError
 from ksadk.runners.base_runner import BaseRunner
 from ksadk.runtime.adapter import (
     RESUME_START_REQUEST_NATIVE_KEY,
@@ -135,6 +137,63 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
         self.last_cancel_dropped_approvals: set[str] = set()
 
     # ---- 框架钩子(子类按需 override) ----
+
+    def capabilities(self) -> RuntimeCapabilityMatrix:
+        """诚实矩阵:cancel 经 asyncio 任务打断(emulated,过 conformance);
+        resume/checkpoint 依赖 runner 声明的原生 checkpoint;attach/durable_restore
+        依赖 ``attach_runtime_handle`` seam 与跨进程持久化,内存表不算数。
+        """
+
+        def _unavailable(reason: str) -> RuntimeCapability:
+            return RuntimeCapability(supported=False, mode="unavailable", reason=reason)
+
+        checkpoint_capability = self._checkpoint_capability()
+        attach_seam = callable(getattr(self._runner, "attach_runtime_handle", None))
+        checkpoint_supported = bool(checkpoint_capability.supported)
+        durable_supported = bool(
+            checkpoint_capability.durable
+            and checkpoint_capability.shared_across_pods
+            and attach_seam
+        )
+        return RuntimeCapabilityMatrix(
+            cancel=RuntimeCapability(
+                supported=True,
+                mode="emulated",
+                reason="runner_stream_task_interrupt",
+            ),
+            pause=_unavailable("runtime_no_native_pause"),
+            resume=(
+                RuntimeCapability(supported=True, mode="native")
+                if checkpoint_supported
+                else _unavailable("runtime_no_native_checkpoint")
+            ),
+            submit_interaction=_unavailable("runtime_no_live_interaction_channel"),
+            attach=(
+                RuntimeCapability(supported=True, mode="native")
+                if attach_seam
+                else _unavailable("runner_no_durable_attach_seam")
+            ),
+            steer=_unavailable("runtime_no_native_steer"),
+            inject=_unavailable("runtime_no_native_inject"),
+            checkpoint=(
+                RuntimeCapability(supported=True, mode="native")
+                if checkpoint_supported
+                else _unavailable("runtime_no_native_checkpoint")
+            ),
+            durable_restore=(
+                RuntimeCapability(supported=True, mode="native")
+                if durable_supported
+                else _unavailable("durable_restore_requires_cross_process_checkpoint")
+            ),
+        )
+
+    async def durable_restore(self, handle: RunHandle) -> RunHandle:
+        if not self.capabilities().durable_restore.supported:
+            raise UnsupportedControlError(
+                f"{self._runtime_type} has no cross-process checkpoint backend for run "
+                f"{handle.run_id!r}"
+            )
+        return await self.attach(handle)
 
     def _checkpoint_capability(self) -> CheckpointCapability:
         """诚实暴露 checkpoint 粒度。默认读 runner.describe_checkpoint_capability。"""
@@ -239,7 +298,7 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
             )
         attach = getattr(self._runner, "attach_runtime_handle", None)
         if not callable(attach):
-            raise RuntimeError(
+            raise UnsupportedControlError(
                 f"runner for {self._runtime_type!r} has no durable "
                 "attach_runtime_handle capability"
             )
@@ -362,7 +421,7 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
         capability = self._require_native_checkpoint_capability()
         checkpoint_id = str(handle.native_ref.get("checkpoint_id") or "").strip()
         if not checkpoint_id:
-            raise RuntimeError(
+            raise UnsupportedControlError(
                 f"{self._runtime_type} runner has no native checkpoint for run "
                 f"{handle.run_id!r}"
             )
@@ -379,7 +438,7 @@ class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
         if capability.supported:
             return capability
         detail = capability.reason or "runner does not expose framework checkpoints"
-        raise RuntimeError(
+        raise UnsupportedControlError(
             f"{self._runtime_type} native checkpoint capability is unavailable: {detail}"
         )
 

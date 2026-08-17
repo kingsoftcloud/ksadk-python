@@ -154,6 +154,30 @@ class _RunCanceled(Exception):
     """Runtime 已取消本次执行,executor 不得再发 completed。"""
 
 
+def _require_resume_capability(task_adapter: Any) -> None:
+    """当 runtime adapter 显式声明 typed capability matrix 时,校验 resume 是否 supported。
+
+    只有 adapter **覆写**了 ``capabilities()`` 才执行强校验(声明 unsupported 必须
+    fail-closed);沿用基类默认矩阵的旧版/第三方 adapter 不受影响,避免把
+    "未迁移到 v1 matrix" 误判为 "声明不支持"。
+    """
+
+    from ksadk.runtime.adapter import RuntimeAdapter
+
+    runtime_adapter = getattr(task_adapter, "runtime_adapter", None)
+    declared = getattr(type(runtime_adapter), "capabilities", None)
+    if declared is None or declared is RuntimeAdapter.capabilities:
+        return
+    matrix = declared(runtime_adapter)
+    if not matrix.resume.supported:
+        from ksadk.kernel.errors import UnsupportedControlError
+
+        raise UnsupportedControlError(
+            "runtime capability matrix declares resume unsupported: "
+            f"{matrix.resume.reason}"
+        )
+
+
 class A2ARuntimeExecutor(AgentExecutor):
     """在 A2A 请求生命周期内执行 RuntimeAdapter。
 
@@ -201,6 +225,9 @@ class A2ARuntimeExecutor(AgentExecutor):
                 context,
                 answer=interaction_response,
             )
+            # 诚实 capability:runtime 声明 resume unsupported 时 fail-closed,
+            # 不允许协议层吞掉 matrix 并假装续跑成功。
+            _require_resume_capability(self.task_adapter)
 
         handle: RunHandle | None = None
         try:

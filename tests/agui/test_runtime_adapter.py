@@ -1116,3 +1116,54 @@ async def test_disconnect_cancels_and_closes_the_same_handle():
 
 async def _collect(events):
     return [event async for event in events]
+
+
+# ------------------------- typed capability matrix (agent-kernel Task 5) ----
+
+
+@pytest.mark.asyncio
+async def test_adapter_capability_matrix_defaults_to_honest_unavailable():
+    adapter = _Adapter()
+    matrix = adapter.capabilities()
+    for name in (
+        "cancel",
+        "pause",
+        "resume",
+        "submit_interaction",
+        "attach",
+        "steer",
+        "inject",
+        "checkpoint",
+        "durable_restore",
+    ):
+        capability = getattr(matrix, name)
+        assert capability.supported is False, name
+        assert capability.mode == "unavailable", name
+        expected_reason = "not_implemented"
+        if name == "steer":
+            expected_reason = "runtime_no_native_steer"
+        elif name == "inject":
+            expected_reason = "runtime_no_native_inject"
+        assert capability.reason == expected_reason, name
+
+
+@pytest.mark.asyncio
+async def test_adapter_unsupported_control_verbs_fail_closed():
+    from ksadk.kernel.errors import UnsupportedControlError
+
+    adapter = _Adapter()
+    handle = RunHandle(run_id="r", session_id="s", runtime_type="fake")
+    with pytest.raises(UnsupportedControlError):
+        await adapter.submit(handle, ResumePayload(kind="free_text"))
+    with pytest.raises(UnsupportedControlError):
+        await adapter.attach(handle)
+    with pytest.raises(UnsupportedControlError):
+        await adapter.steer(handle, {"text": "more"})
+    with pytest.raises(UnsupportedControlError):
+        await adapter.inject(handle, {"text": "more"})
+    with pytest.raises(UnsupportedControlError):
+        await adapter.durable_restore(handle)
+    # 旧 API 是 matrix 的单向投影(未覆写 capabilities 的 adapter 全 unavailable)。
+    legacy = adapter.native_capabilities()
+    assert legacy["cancel"] is False
+    assert legacy["steer"] is False

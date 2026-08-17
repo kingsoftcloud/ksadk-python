@@ -47,6 +47,17 @@ class UnsupportedError(AgentKernelError):
         super().__init__("unsupported", message, retryable=False, **kwargs)
 
 
+class UnsupportedControlError(AgentKernelError, RuntimeError):
+    """Control 动词在 capability matrix 中声明为 unsupported 时的 fail-closed 异常。
+
+    继承 ``RuntimeError`` 以保持既有 ``except RuntimeError`` 调用点兼容;
+    wire 错误码复用稳定的 ``unsupported``,不新增 code。
+    """
+
+    def __init__(self, message: str, **kwargs):
+        AgentKernelError.__init__(self, "unsupported", message, retryable=False, **kwargs)
+
+
 class QueueFullError(AgentKernelError):
     def __init__(self, message: str, **kwargs):
         super().__init__("queue_full", message, retryable=True, **kwargs)

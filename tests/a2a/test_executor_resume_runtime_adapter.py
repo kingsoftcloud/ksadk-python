@@ -443,3 +443,59 @@ async def test_start_uses_trusted_tenant_and_ignores_client_identity_metadata() 
     assert request.user_id == "trusted-tenant"
     assert request.agent_id is None
     assert request.metadata == {"trace_id": "trace-1", "invocation_id": "task-1"}
+
+
+# ------------------------- typed capability matrix (agent-kernel Task 5) ----
+
+
+class _NoResumeCapabilityAdapter(_RecordingRuntimeAdapter):
+    """声明 resume unsupported 的 adapter:executor 必须 fail-closed,不得假装续跑。"""
+
+    def capabilities(self):
+        from ksadk.kernel.contracts import RuntimeCapability, RuntimeCapabilityMatrix
+
+        def unavailable(reason: str) -> RuntimeCapability:
+            return RuntimeCapability(supported=False, mode="unavailable", reason=reason)
+
+        return RuntimeCapabilityMatrix(
+            cancel=unavailable("runtime_no_native_cancel"),
+            pause=unavailable("runtime_no_native_pause"),
+            resume=unavailable("runtime_no_native_checkpoint"),
+            submit_interaction=unavailable("runtime_no_live_interaction_channel"),
+            attach=unavailable("runner_no_durable_attach_seam"),
+            steer=unavailable("runtime_no_native_steer"),
+            inject=unavailable("runtime_no_native_inject"),
+            checkpoint=unavailable("runtime_no_native_checkpoint"),
+            durable_restore=unavailable("durable_restore_requires_cross_process_checkpoint"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_resume_fails_closed_when_matrix_declares_resume_unsupported() -> None:
+    from ksadk.kernel.errors import UnsupportedControlError
+
+    runtime_adapter = _NoResumeCapabilityAdapter()
+    task_adapter = A2ARuntimeTaskAdapter(runtime_adapter, runtime_type="test")  # type: ignore[arg-type]
+    executor = A2ARuntimeExecutor(task_adapter=task_adapter)
+
+    context = _ResumeContext("approve")
+    await _seed_resume_state(task_adapter, context)
+    with pytest.raises(UnsupportedControlError) as exc_info:
+        await executor.execute(context, _FakeEventQueue())  # type: ignore[arg-type]
+
+    assert "resume" in str(exc_info.value)
+    assert runtime_adapter.resume_calls == []
+
+
+@pytest.mark.asyncio
+async def test_resume_still_works_without_typed_matrix() -> None:
+    # 旧版 duck-typed adapter 没有 capabilities():向后兼容,不影响既有续跑路径。
+    runtime_adapter = _RecordingRuntimeAdapter()
+    task_adapter = A2ARuntimeTaskAdapter(runtime_adapter, runtime_type="test")  # type: ignore[arg-type]
+    executor = A2ARuntimeExecutor(task_adapter=task_adapter)
+    context = _ResumeContext("approve")
+    await _seed_resume_state(task_adapter, context)
+
+    await executor.execute(context, _FakeEventQueue())  # type: ignore[arg-type]
+
+    assert len(runtime_adapter.resume_calls) == 1

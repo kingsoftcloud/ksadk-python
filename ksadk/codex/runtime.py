@@ -38,6 +38,7 @@ from ksadk.events.canonical import (
     SourceRef,
 )
 from ksadk.events.identity import stable_event_id, stable_item_id, stable_scope_id
+from ksadk.kernel.contracts import RuntimeCapability, RuntimeCapabilityMatrix
 from ksadk.runtime.adapter import (
     BaseRuntime,
     CancelResult,
@@ -112,6 +113,29 @@ class CodexRuntimeAdapter(RuntimeAdapter):
         # 可观测:最近一次 cancel 级联丢弃的审批集(contract test 断言用)。
         self.last_cancel_dropped_approvals: set[str] = set()
         self._seq = 0
+
+    # ---- capability matrix(v1,诚实声明) ----
+
+    def capabilities(self) -> RuntimeCapabilityMatrix:
+        """Codex 真实矩阵:thread 级 cancel/pause/resume + 审批 submit + snapshot
+        checkpoint 均为后端原生能力;attach/durable_restore 未实现(线程表在本进程,
+        attach seam 缺失),steer/inject 无原生通道。
+        """
+
+        def _unavailable(reason: str) -> RuntimeCapability:
+            return RuntimeCapability(supported=False, mode="unavailable", reason=reason)
+
+        return RuntimeCapabilityMatrix(
+            cancel=RuntimeCapability(supported=True, mode="native"),
+            pause=RuntimeCapability(supported=True, mode="native"),
+            resume=RuntimeCapability(supported=True, mode="native"),
+            submit_interaction=RuntimeCapability(supported=True, mode="native"),
+            attach=_unavailable("codex_process_local_thread_table"),
+            steer=_unavailable("runtime_no_native_steer"),
+            inject=_unavailable("runtime_no_native_inject"),
+            checkpoint=RuntimeCapability(supported=True, mode="native"),
+            durable_restore=_unavailable("codex_durable_restore_requires_attach_seam"),
+        )
 
     # ---- 六动词 ----
 

@@ -37,6 +37,13 @@ from typing import Any, AsyncIterator, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 from ksadk.events.runtime_event import RuntimeEvent
+from ksadk.kernel.contracts import (
+    InjectPayload,
+    RuntimeCapability,
+    RuntimeCapabilityMatrix,
+    SteerPayload,
+)
+from ksadk.kernel.errors import UnsupportedControlError
 from ksadk.runtime.launch import RuntimeLaunchContext, RuntimeServices
 
 # ---------------------------------------------------------------------------
@@ -303,7 +310,9 @@ class RuntimeAdapter(ABC):
         channel instead.
         """
 
-        raise RuntimeError(f"{type(self).__name__} does not support live interaction input")
+        raise UnsupportedControlError(
+            f"{type(self).__name__} does not support live interaction input"
+        )
 
     @abstractmethod
     async def resume(
@@ -323,10 +332,93 @@ class RuntimeAdapter(ABC):
         cross-process recovery must implement this seam using their framework's
         durable checkpoint/session API.  The default deliberately fails closed.
         """
-        raise RuntimeError(
+        raise UnsupportedControlError(
             f"{type(self).__name__} does not support attaching persisted run "
             f"{handle.run_id!r}; durable runtime restore is unavailable"
         )
+
+    async def steer(self, handle: RunHandle, payload: SteerPayload) -> None:
+        """Mid-turn steering: adjust an in-flight run without ending the turn.
+
+        No runtime exposes a native steer channel today; start/stream never
+        implies steer.  Fails closed until a real implementation overrides it.
+        """
+
+        raise UnsupportedControlError(
+            f"{type(self).__name__} does not support steer: "
+            "runtime has no native mid-turn steering channel"
+        )
+
+    async def inject(self, handle: RunHandle, payload: InjectPayload) -> None:
+        """Inject ambient context into an in-flight run without a user turn."""
+
+        raise UnsupportedControlError(
+            f"{type(self).__name__} does not support inject: "
+            "runtime has no native mid-turn context injection channel"
+        )
+
+    async def durable_restore(self, handle: RunHandle) -> RunHandle:
+        """Cross-process restore of a persisted run from durable state.
+
+        Stronger than :meth:`attach`: requires the runtime's checkpoint /
+        continuation to be genuinely durable across processes.  Fails closed
+        by default; an in-memory run table is never evidence of durability.
+        """
+
+        raise UnsupportedControlError(
+            f"{type(self).__name__} does not support durable restore of run "
+            f"{handle.run_id!r}: no cross-process checkpoint backend"
+        )
+
+    def capabilities(self) -> RuntimeCapabilityMatrix:
+        """Typed/versioned capability matrix (``RuntimeCapabilityMatrix/v1``).
+
+        The base declaration is honest: every verb is unavailable with the
+        stable reason ``not_implemented``.  A subclass may only mark a verb
+        ``supported`` when it really overrides the method and the conformance
+        suite passes; unsupported verbs must raise
+        :class:`~ksadk.kernel.errors.UnsupportedControlError` (``pause`` is a
+        state machine and may return ``PauseResult.NOT_SUPPORTED``).
+        """
+
+        def _unavailable(reason: str = "not_implemented") -> RuntimeCapability:
+            return RuntimeCapability(
+                supported=False, mode="unavailable", reason=reason
+            )
+
+        return RuntimeCapabilityMatrix(
+            cancel=_unavailable(),
+            pause=_unavailable(),
+            resume=_unavailable(),
+            submit_interaction=_unavailable(),
+            attach=_unavailable(),
+            steer=_unavailable("runtime_no_native_steer"),
+            inject=_unavailable("runtime_no_native_inject"),
+            checkpoint=_unavailable(),
+            durable_restore=_unavailable(),
+        )
+
+    def native_capabilities(self) -> dict[str, object]:
+        """One-way legacy projection of the typed matrix.
+
+        New code (Server/Studio) must read :meth:`capabilities`; the returned
+        dict is a compatibility view for one release cycle and is never allowed
+        to flow back into the matrix.
+        """
+
+        matrix = self.capabilities()
+        names = (
+            "cancel",
+            "pause",
+            "resume",
+            "submit_interaction",
+            "attach",
+            "steer",
+            "inject",
+            "checkpoint",
+            "durable_restore",
+        )
+        return {name: getattr(matrix, name).supported for name in names}
 
     def is_handle_attached(self, handle: RunHandle) -> bool:
         """Return whether ``handle`` is already attached to this adapter process."""
@@ -405,8 +497,11 @@ __all__ = [
     "RunHandle",
     "RuntimeAdapter",
     "RuntimeAdapterFactory",
+    "RuntimeCapability",
+    "RuntimeCapabilityMatrix",
     "RuntimeLaunchContext",
     "RuntimeRegistry",
     "RuntimeServices",
     "StartRequest",
+    "UnsupportedControlError",
 ]
