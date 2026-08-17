@@ -1,0 +1,31 @@
+{
+  "environment": "local",
+  "scenario": "closure",
+  "note": "placeholder template; regenerate via tests/phase1/test_local_closure.py runs feeding scripts/phase1_preprod_gate.py",
+  "checks": {
+    "fifo": {
+      "status": "pending",
+      "refs": {"driver": "memory", "commands": 100, "assertion": "claim order == accepted_seq"}
+    },
+    "idempotency": {
+      "status": "pending",
+      "refs": {"driver": "memory", "assertion": "duplicate receipt, single execution"}
+    },
+    "queue_full": {
+      "status": "pending",
+      "refs": {"driver": "memory|sqlite", "assertion": "typed queue_full, no message loss"}
+    },
+    "reconnect": {
+      "status": "pending",
+      "refs": {"driver": "memory|sqlite", "assertion": "resume after_seq, no gap/duplicate"}
+    },
+    "cold_recovery": {
+      "status": "pending",
+      "refs": {"driver": "memory|sqlite", "assertion": "deterministic interrupted, single decision"}
+    },
+    "stale_fence": {
+      "status": "pending",
+      "refs": {"driver": "memory|sqlite", "assertion": "old writer rejected, new owner canonical"}
+    }
+  }
+}

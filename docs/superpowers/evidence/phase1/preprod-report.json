@@ -1,0 +1,26 @@
+{
+  "environment": "pre",
+  "scenario": "full_closure",
+  "note": "placeholder template; regenerate via: uv run python scripts/phase1_preprod_gate.py --environment pre --output docs/superpowers/evidence/phase1/preprod-report.json --evidence <files>",
+  "status": "pending",
+  "generated_at": "1970-01-01T00:00:00Z",
+  "passed_checks": [],
+  "skipped_checks": [],
+  "failed_checks": [],
+  "reasons": [],
+  "checks": {
+    "contract_digest": {
+      "status": "pending",
+      "refs": {"server": "digest-ref", "gateway": "digest-ref", "runtime_service": "digest-ref", "operator": "digest-ref", "runtime_health": "digest-ref", "web_build": "digest-ref", "schema_version": "ref", "clock_skew_seconds": 0.0}
+    },
+    "fifo": {"status": "pending", "refs": {"session_id_ref": "ref", "commands": 100}},
+    "idempotency": {"status": "pending", "refs": {"command_id_ref": "ref", "executions": 1}},
+    "queue_full": {"status": "pending", "refs": {"queue_limit": 100, "overflow_receipt_ref": "ref"}},
+    "reconnect": {"status": "pending", "refs": {"after_seq": 0, "gap_count": 0, "duplicate_count": 0}},
+    "cold_recovery": {"status": "pending", "refs": {"pod_ref": "ref", "terminal_event_count": 1}},
+    "stale_fence": {"status": "pending", "refs": {"old_activation_ref": "ref", "new_activation_ref": "ref", "stale_fence_total_delta": 0}},
+    "audit": {"status": "pending", "refs": {"audit_trail_ref": "ref"}},
+    "cross_repo_versions": {"status": "pending", "refs": {"image_digests": "sha256-ref-per-repo", "helm_revisions": "ref", "commit_shas": "ref"}},
+    "rollback": {"status": "pending", "refs": {"duration_seconds": 0, "data_loss_count": 0, "residual_resources": []}}
+  }
+}
