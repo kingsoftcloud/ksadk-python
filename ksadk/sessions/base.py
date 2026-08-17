@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal, Optional, TypeAlias
 
-SessionEventSeqBinding: TypeAlias = Literal["runtime_event.seq"]
+SessionEventSeqBinding: TypeAlias = Literal["runtime_event.seq", "session_event.seq"]
 
 
 @dataclass(frozen=True)
@@ -20,7 +20,7 @@ class SessionServiceStorageCapabilities:
 
 
 CANONICAL_EVENT_STORAGE_CAPABILITIES = SessionServiceStorageCapabilities(
-    atomic_seq_bindings=frozenset({"runtime_event.seq"}),
+    atomic_seq_bindings=frozenset({"runtime_event.seq", "session_event.seq"}),
     indexed_event_lookup=True,
     indexed_invocation_lookup=True,
 )
@@ -82,6 +82,14 @@ class SessionEvent:
         self.seq_binding = None
         if binding is None:
             return
+        if binding == "session_event.seq":
+            envelope = self.content.get("session_event")
+            if not isinstance(envelope, dict):
+                raise ValueError("session_event.seq binding requires session_event content")
+            envelope = dict(envelope)
+            envelope["seq"] = self.seq_id
+            self.content = {**self.content, "session_event": envelope}
+            return
         if binding != "runtime_event.seq":
             raise ValueError(f"unsupported SessionEvent seq binding {binding!r}")
         runtime_event = self.content.get("runtime_event")
@@ -89,7 +97,15 @@ class SessionEvent:
             raise ValueError("runtime_event.seq binding requires runtime_event content")
         runtime_event = dict(runtime_event)
         runtime_event["seq"] = self.seq_id
-        self.content = {**self.content, "runtime_event": runtime_event}
+        content = {**self.content, "runtime_event": runtime_event}
+        # Keep the embedded generic envelope dump consistent with the same
+        # cursor when both carriers are present.
+        envelope = content.get("session_event")
+        if isinstance(envelope, dict):
+            envelope = dict(envelope)
+            envelope["seq"] = self.seq_id
+            content["session_event"] = envelope
+        self.content = content
 
     @classmethod
     def from_dict(

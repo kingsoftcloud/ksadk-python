@@ -67,6 +67,15 @@ def test_duplicate_codex_and_studio_runtime_modules_are_removed() -> None:
     assert remaining == []
 
 
+def test_runtime_pipeline_has_one_canonical_writer() -> None:
+    """Runtime pipeline 只能依赖 RuntimeEventStore(SessionEventStore)，禁止双写。"""
+
+    source = (PACKAGE_ROOT / "events" / "pipeline.py").read_text(encoding="utf-8")
+    assert "RuntimeEventStore" in source
+    assert "session_service.append_event" not in source
+    assert ".append_event(" not in source
+
+
 def test_a2a_public_composition_accepts_runtime_adapter_not_runner() -> None:
     """A2A must not retain a second execution contract beside RuntimeAdapter."""
 

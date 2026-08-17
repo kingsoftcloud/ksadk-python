@@ -537,3 +537,35 @@ async def test_local_backend_has_indexed_invocation_read_contract(tmp_path):
     with sqlite3.connect(database) as connection:
         indexes = {row[1] for row in connection.execute("PRAGMA index_list('ksadk_events')")}
     assert "idx_ksadk_events_session_invocation_seq" in indexes
+
+
+# ---- Task 2: RuntimeEventStore 作为 SessionEventStore 的 typed view ----
+
+
+@pytest.mark.asyncio
+async def test_typed_view_shares_cursor_with_legacy_carrier_rows():
+    from ksadk.events.session_event import SessionServiceEventStore
+    from ksadk.kernel.contracts import ActivationWriteGuard
+
+    service = InMemorySessionService()
+    await service.create_session(agent_id="a", user_id="u", session_id="s1")
+    generic = SessionServiceEventStore(service)
+    typed = CanonicalRuntimeEventStore(generic, session_id="s1")
+    guard = ActivationWriteGuard(activation_id="act-1", fencing_token=1)
+
+    legacy_first = await typed.append_one(
+        "s1", _canonical_run_started(event_id="legacy-1")
+    )
+    typed_second = await typed.append(_canonical_run_started(event_id="typed-2"), guard=guard)
+    typed_replay = await typed.append(
+        _canonical_run_started(event_id="typed-2", seq=99), guard=guard
+    )
+
+    # 单日志：legacy carrier 与 typed envelope 共享同一物理 cursor
+    assert (legacy_first.seq, typed_second.seq) == (1, 2)
+    assert typed_replay.seq == typed_second.seq == 2
+    assert [event.seq for event in await typed.list("s1")] == [1, 2]
+    envelopes = await generic.read("s1", 0, 10)
+    # legacy carrier 行没有 envelope marker，generic read 跳过
+    assert [envelope.seq for envelope in envelopes] == [2]
+    assert envelopes[0].payload["seq"] == 2

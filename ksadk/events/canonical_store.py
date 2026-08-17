@@ -12,17 +12,57 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import uuid
 from collections.abc import AsyncIterator, Iterable
-from typing import Any
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Any
 
 from ksadk.events.canonical import RuntimeEvent, dump_runtime_event, parse_runtime_event
+from ksadk.kernel.contracts import ActivationWriteGuard, SessionEventEnvelope
 from ksadk.sessions.base import SessionEvent, SessionEventSeqBinding
+
+if TYPE_CHECKING:
+    from ksadk.events.session_event import SessionEventStore
 
 _CANONICAL_RUNTIME_MARKER = "ksadk_canonical_runtime_event"
 _CANONICAL_CONTENT_KEY = "runtime_event"
+_ENVELOPE_MARKER = "ksadk_session_event_envelope"
 _TERMINAL_EVENT_TYPES = frozenset({"run.completed", "run.failed", "run.canceled"})
 
 _REQUIRED_SEQ_BINDING: SessionEventSeqBinding = "runtime_event.seq"
+
+# Stable namespace for mapping free-form RuntimeEvent event ids onto the
+# UUID-typed ``SessionEventEnvelope.event_id`` contract.
+_RUNTIME_EVENT_UUID_NAMESPACE = uuid.UUID("6e9f0c5a-2f4d-4d8a-9b31-1c2a5f7e9b41")
+
+
+def runtime_event_envelope_id(session_id: str, event_id: str) -> uuid.UUID:
+    """UUID contract id for one runtime fact (deterministic per session)."""
+
+    try:
+        return uuid.UUID(str(event_id))
+    except (ValueError, AttributeError, TypeError):
+        return uuid.uuid5(_RUNTIME_EVENT_UUID_NAMESPACE, f"{session_id}|{event_id}")
+
+
+def runtime_event_envelope(session_id: str, event: RuntimeEvent) -> SessionEventEnvelope:
+    """Lift one canonical RuntimeEvent fact into a family=runtime/v2 envelope."""
+
+    if getattr(event, "schema_version", None) != 2:
+        raise ValueError("canonical RuntimeEventStore accepts schema_version=2 only")
+    timestamp = datetime.fromtimestamp(event.timestamp, tz=timezone.utc).isoformat()
+    return SessionEventEnvelope(
+        event_id=runtime_event_envelope_id(session_id, event.event_id),
+        session_id=session_id,
+        seq=0,  # overwritten with the store-allocated cursor on persistence
+        timestamp=timestamp,
+        family="runtime",
+        family_version=2,
+        event_type=event.event_type,
+        payload=dump_runtime_event(event),
+        run_id=event.run_id,
+        actor_ref=event.source.framework,
+    )
 
 
 def canonical_storage_id(session_id: str, event_id: str) -> str:
@@ -64,6 +104,15 @@ def session_event_to_runtime_event(event: SessionEvent) -> RuntimeEvent | None:
     """Restore a canonical fact, using the physical session cursor as ``seq``."""
 
     metadata = event.metadata or {}
+    if metadata.get(_ENVELOPE_MARKER) and metadata.get("family") == "runtime":
+        # Task 2 typed view rows: family=runtime/v2 written through the
+        # generic SessionEventStore envelope carrier.
+        payload = (event.content or {}).get(_CANONICAL_CONTENT_KEY)
+        if not isinstance(payload, dict):
+            raise ValueError("runtime family SessionEvent is missing runtime_event content")
+        if payload.get("seq") != event.seq_id:
+            raise ValueError("canonical RuntimeEvent seq does not match physical seq")
+        return parse_runtime_event(payload)
     if not metadata.get(_CANONICAL_RUNTIME_MARKER):
         return None
     if metadata.get("schema_version") != 2:
@@ -86,18 +135,78 @@ def session_event_to_runtime_event(event: SessionEvent) -> RuntimeEvent | None:
     return restored
 
 
-class RuntimeEventStore:
-    """Schema-v2-only canonical store with durable session-scoped idempotency."""
+def _is_session_event_store(candidate: Any) -> bool:
+    """Duck-type the generic SessionEventStore port without an import cycle."""
 
-    def __init__(self, session_service: Any) -> None:
-        self._service = session_service
+    return all(
+        callable(getattr(candidate, name, None)) for name in ("append", "read", "subscribe")
+    )
+
+
+class RuntimeEventStore:
+    """Schema-v2-only canonical store with durable session-scoped idempotency.
+
+    Task 2 起 ``RuntimeEventStore`` 是单一 SessionEvent Store 的 typed view：
+    传入 ``SessionEventStore`` 时走 envelope 写路径（只接受
+    ``ActivationWriteGuard``），传 session service 时保持旧 carrier 兼容路径。
+    """
+
+    def __init__(self, store: Any, *, session_id: str | None = None) -> None:
+        if _is_session_event_store(store):
+            self._event_store: SessionEventStore | None = store
+            self._service = getattr(store, "session_service", None)
+            self._typed_session_id = session_id
+        else:
+            self._event_store = None
+            self._service = store
+            self._typed_session_id = session_id
 
     @property
     def session_service(self) -> Any:
         return self._service
 
-    async def append(self, session_id: str, events: Iterable[RuntimeEvent]) -> list[RuntimeEvent]:
-        return [await self.append_one(session_id, event) for event in events]
+    @property
+    def event_store(self) -> "SessionEventStore | None":
+        return self._event_store
+
+    async def append(
+        self,
+        session_id_or_event: Any,
+        events: Iterable[RuntimeEvent] | None = None,
+        *,
+        guard: ActivationWriteGuard | None = None,
+    ) -> Any:
+        """Typed view append: ``append(event, *, guard=ActivationWriteGuard)``.
+
+        旧签名 ``append(session_id, events)`` 保持兼容（carrier 路径）。
+        """
+
+        if not isinstance(session_id_or_event, str):
+            if events is not None:
+                raise TypeError("typed append takes a single RuntimeEvent")
+            if not isinstance(guard, ActivationWriteGuard):
+                raise TypeError(
+                    "RuntimeEventStore typed append requires an ActivationWriteGuard"
+                )
+            return await self.append_typed(session_id_or_event, guard=guard)
+        if guard is not None:
+            raise TypeError("legacy append(session_id, events) does not take a guard")
+        return [await self.append_one(session_id_or_event, event) for event in events or ()]
+
+    async def append_typed(
+        self, event: RuntimeEvent, *, guard: ActivationWriteGuard
+    ) -> RuntimeEvent:
+        """Persist one fact through the generic SessionEventStore envelope."""
+
+        if self._event_store is None:
+            raise RuntimeError("typed append requires a SessionEventStore-backed runtime view")
+        if self._typed_session_id is None or not self._typed_session_id.strip():
+            raise ValueError("typed append requires a session_id bound at construction")
+        if not isinstance(guard, ActivationWriteGuard):
+            raise TypeError("RuntimeEventStore only accepts ActivationWriteGuard")
+        envelope = runtime_event_envelope(self._typed_session_id, event)
+        persisted = await self._event_store.append(envelope, guard=guard)
+        return parse_runtime_event(dict(persisted.payload) | {"seq": persisted.seq})
 
     async def append_one(self, session_id: str, event: RuntimeEvent) -> RuntimeEvent:
         persisted, _created = await self.persist_one(session_id, event)
@@ -271,4 +380,6 @@ __all__ = [
     "canonical_storage_id",
     "runtime_event_to_session_event",
     "session_event_to_runtime_event",
+    "runtime_event_envelope",
+    "runtime_event_envelope_id",
 ]

@@ -467,3 +467,22 @@ def _parts(event: dict) -> list[dict]:
 
 def _runtime_event_type_check(_: RuntimeEvent) -> None:
     """Make RuntimeEvent part of the import contract without changing runtime behavior."""
+
+
+def test_runtime_event_envelope_matches_envelope_v1_contract() -> None:
+    """Task 2: family=runtime/v2 envelope 的 seq/字段映射合同。"""
+
+    from ksadk.events.canonical_store import runtime_event_envelope
+    from ksadk.kernel.contracts import SessionEventEnvelope
+
+    event = parse_runtime_event(_fixtures()[0])
+    envelope = runtime_event_envelope("session-1", event)
+
+    assert isinstance(envelope, SessionEventEnvelope)
+    assert (envelope.family, envelope.family_version) == ("runtime", 2)
+    assert envelope.event_type == event.event_type
+    assert envelope.run_id == event.run_id
+    # producer seq is a placeholder; the store-allocated cursor wins later
+    assert envelope.seq == 0
+    roundtrip = parse_runtime_event(dict(envelope.payload) | {"seq": 1})
+    assert roundtrip.event_id == event.event_id
