@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ksadk.local/contracts/agent-kernel/v1/runtime-capability.schema.json",
+  "title": "RuntimeCapabilityMatrix/v1",
+  "type": "object",
+  "$defs": {
+    "runtimeCapability": {
+      "type": "object",
+      "properties": {
+        "supported": {"type": "boolean"},
+        "mode": {"enum": ["native", "emulated", "unavailable"]},
+        "reason": {"type": ["string", "null"]}
+      },
+      "required": ["supported", "mode"],
+      "if": {"properties": {"supported": {"const": false}}},
+      "then": {"properties": {"mode": {"const": "unavailable"}, "reason": {"type": "string", "minLength": 1}}}
+    }
+  },
+  "properties": {
+    "schema_version": {"const": 1},
+    "cancel": {"$ref": "#/$defs/runtimeCapability"},
+    "pause": {"$ref": "#/$defs/runtimeCapability"},
+    "resume": {"$ref": "#/$defs/runtimeCapability"},
+    "submit_interaction": {"$ref": "#/$defs/runtimeCapability"},
+    "attach": {"$ref": "#/$defs/runtimeCapability"},
+    "steer": {"$ref": "#/$defs/runtimeCapability"},
+    "inject": {"$ref": "#/$defs/runtimeCapability"},
+    "checkpoint": {"$ref": "#/$defs/runtimeCapability"},
+    "durable_restore": {"$ref": "#/$defs/runtimeCapability"}
+  },
+  "required": [
+    "schema_version", "cancel", "pause", "resume", "submit_interaction",
+    "attach", "steer", "inject", "checkpoint", "durable_restore"
+  ]
+}

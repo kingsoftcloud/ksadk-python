@@ -1,0 +1,103 @@
+{
+  "contract_set": "agent-kernel/v1",
+  "digest_algorithm": "sha256",
+  "canonicalization": "utf-8; json key sort; no whitespace; lf; path-sorted",
+  "aggregate_digest": "69771d8df4a8811ed6623f26a152c869cfdfd8dbfdcad443b52a9b6403b267e8",
+  "files": [
+    {
+      "path": "activation-lease.schema.json",
+      "sha256": "84625716852be6d054b144b4b7d2e79eaff61da7fae6f05882c4dd88cce68fbe",
+      "bytes": 734
+    },
+    {
+      "path": "agent-control.schema.json",
+      "sha256": "3d28c2ad8d9978117174da5ed8b3ab12caec5e62cc2b4644d32b090c340e5f5d",
+      "bytes": 7088
+    },
+    {
+      "path": "fixtures/activation-lease.json",
+      "sha256": "85d49ba61e8f09db53d7c71e587c88a03a2cc16408c212cdac6a12db83d58a67",
+      "bytes": 1087
+    },
+    {
+      "path": "fixtures/agent-control-enqueue.json",
+      "sha256": "5f38e44709ae26a01fb3c83e713c5b983e5a115ce8decd2424076690df4271f7",
+      "bytes": 407
+    },
+    {
+      "path": "fixtures/agent-control-inject.json",
+      "sha256": "42266f8d1905fafd47dc5432c4f79160d558d9485141b9bdeee012f46a19e384",
+      "bytes": 402
+    },
+    {
+      "path": "fixtures/agent-control-interrupt.json",
+      "sha256": "2efccab54c5c733c14aee72d68e0c3f6f65f992e33bdd38dde97f688dab85baa",
+      "bytes": 406
+    },
+    {
+      "path": "fixtures/agent-control-pause.json",
+      "sha256": "d2833d9f911cf4654c36b4d086809523ae7cfc8f3ded515f71f5916331460875",
+      "bytes": 398
+    },
+    {
+      "path": "fixtures/agent-control-permit.json",
+      "sha256": "ab52298d9d03dde66563b62b24d6576e4007e665b38cfd612d415d9d7362c981",
+      "bytes": 1503
+    },
+    {
+      "path": "fixtures/agent-control-receipts.json",
+      "sha256": "02ce480b675fb8e8f0a6653aa6bc3da08a9d60cf130f804524432996f9eff1e7",
+      "bytes": 1163
+    },
+    {
+      "path": "fixtures/agent-control-resume.json",
+      "sha256": "aee3b46f5bee27e211fd634ad746eb74415f1f5d4b0c05e5ddb08f29af45da2c",
+      "bytes": 430
+    },
+    {
+      "path": "fixtures/agent-control-steer.json",
+      "sha256": "8ea1808a0b3fb4b0ce62b089df9a3d99e9717f8b957a8eede8537d10192e6214",
+      "bytes": 410
+    },
+    {
+      "path": "fixtures/agent-control-submit_interaction.json",
+      "sha256": "0b7e22a7374798ab49ebb0658cc193e5f7d0c2736a6aeecabf8408168be6aad7",
+      "bytes": 492
+    },
+    {
+      "path": "fixtures/agent-control.json",
+      "sha256": "fae536523976b17ba082da29ffbfac31722f954a8978fa49929c76599765967b",
+      "bytes": 2953
+    },
+    {
+      "path": "fixtures/agent-status-snapshot.json",
+      "sha256": "ca1361c07de03f67b8fd2388afdde11eef156bfe2cb3f02e3cbc796186f581b2",
+      "bytes": 704
+    },
+    {
+      "path": "fixtures/runtime-capability.json",
+      "sha256": "de7011be8932ec765043ce0afd4196a478dfb064f8b8bd068e06d107f6ff2828",
+      "bytes": 976
+    },
+    {
+      "path": "fixtures/session-event-control.json",
+      "sha256": "1dc42ed299ed61ec637a2c99835b62de39b5eb046663321011daee880fe5b2b3",
+      "bytes": 3866
+    },
+    {
+      "path": "fixtures/session-event-runtime.json",
+      "sha256": "bb583b30db1d3584593f39422b27a5fcec170707801aa29f54b96f546f427561",
+      "bytes": 349
+    },
+    {
+      "path": "runtime-capability.schema.json",
+      "sha256": "7f3be06cb1826d7c3597757dade752e1b1cf373f35d6310ee0c314c2662a9a75",
+      "bytes": 1171
+    },
+    {
+      "path": "session-event.schema.json",
+      "sha256": "4b259985e129122d56abe34a01f6a444ae8631dac572f564beaf917873041092",
+      "bytes": 1118
+    }
+  ]
+}
