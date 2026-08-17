@@ -88,7 +88,9 @@ def load_phase0_gate(workspace_or_repo: Path) -> Phase0Gate:
     )
 
 
-def build_manifest(repo_roots: Mapping[str, Path]) -> Phase1Baseline:
+def build_manifest(
+    repo_roots: Mapping[str, Path], *, exclude: Mapping[str, Path] | None = None
+) -> Phase1Baseline:
     phase0 = load_phase0_gate(next(iter(repo_roots.values())))
     repositories: list[RepoBaseline] = []
     for repo, root in sorted(repo_roots.items()):
@@ -96,7 +98,9 @@ def build_manifest(repo_roots: Mapping[str, Path]) -> Phase1Baseline:
         commit_sha = _git(root, "rev-parse", "HEAD")
         remote = _git(root, "remote", "get-url", "origin")
         branch_base = _git(root, "rev-parse", "--abbrev-ref", "HEAD")
-        dirty = bool(_git(root, "status", "--porcelain=v1"))
+        dirty_lines = _git(root, "status", "--porcelain=v1").splitlines()
+        excluded = str((exclude or {}).get(repo, "")) if exclude else ""
+        dirty = any(not line[3:] == excluded for line in dirty_lines)
         repositories.append(
             RepoBaseline(
                 repo=repo,
