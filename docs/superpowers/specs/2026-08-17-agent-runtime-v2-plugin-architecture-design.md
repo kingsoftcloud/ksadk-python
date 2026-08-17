@@ -444,6 +444,53 @@ register -> attest -> lease -> heartbeat
 - 本地文件、Shell、桌面和凭据能力分别声明，不能因设备“在线”获得全权限；
 - 端侧断线后，云上根据任务策略选择等待、转移到兼容云 Runtime 或终止，不能静默改变执行环境。
 
+### 11.4 本地 Bundle 发布到云上的事务
+
+本地调试和云上部署必须消费同一个不可变 Bundle，但“本地运行成功”不等于“云上部署成功”。Studio
+只调用 AgentEngine 控制面，不直接操作 K8s、Pod、镜像仓库或 Runtime 内部接口：
+
+```mermaid
+sequenceDiagram
+    participant S as Local Studio
+    participant B as Bundle Builder
+    participant C as AgentEngine Control Plane
+    participant O as Deployment Operator
+    participant R as Runtime Activation
+
+    S->>B: validate + build AgentBundle
+    B-->>S: digest + manifest + SBOM + provenance
+    S->>B: run local conformance on the same digest
+    S->>C: create artifact upload (idempotency key)
+    C-->>S: signed upload target
+    S->>C: upload + create immutable AgentVersion
+    C->>C: admission (runtime/plugin/secret/resource/policy)
+    S->>C: create or update AgentDeployment
+    C->>O: reconcile desired state
+    O->>R: start Activation with version + fencing token
+    R->>C: register + readiness + capability snapshot
+    C-->>S: operation events + deployment status
+    S->>C: invoke smoke / promote or rollback
+```
+
+发布步骤必须独立记录 `BuildOperation`、`UploadOperation`、`VersionOperation`、`DeploymentOperation`
+和 `PromotionOperation`，并支持用同一个 idempotency key 重试。只有 Bundle admission、Runtime readiness 和
+真实调用冒烟都成功，Studio 才显示“已部署”；失败时保留上一个健康版本和完整错误，不得用本地记录或 Mock
+代替云端结果。
+
+云上只注入目标环境绑定，例如 Secret 引用、资源、网络、弹性和 Store Provider；不得重新解释 AgentProfile、
+漂移插件版本或修改 Bundle 内权限摘要。回滚切换到既有 AgentVersion/Bundle digest，不在回滚时重新构建。
+
+### 11.5 端云职责边界
+
+| 组件 | 负责 | 不负责 |
+| --- | --- | --- |
+| KsADK / Bundle Builder | 本地校验、Bundle、RuntimeAdapter、Session/RuntimeEvent、运行时 conformance | 云资源编排、租户级部署真相 |
+| AgentKit Studio | Profile 编辑、本地调试、发起部署、展示云端状态和控制命令 | 直接管理 Pod、伪造部署成功、保存云端资源真相 |
+| AgentEngine 控制面 | Agent/Version/Deployment/Instance、admission、Operation、rollout/rollback、RBAC/审计 | 执行模型 loop、在浏览器维护运行状态机 |
+| Deployment Operator | 将 Deployment 期望状态收敛为 Pod/Activation、健康和回滚 | Agent 会话语义、用户审批 |
+| Runtime Activation | 执行 Bundle、注册 capability、heartbeat、消费工作、产生事件 | 暴露租户管理 UI、修改 AgentVersion |
+| Gateway | 公网协议、可信身份、路由和限流 | 用一个长期 API Key 代替 workload/forward identity |
+
 ## 12. Agent 编排能力
 
 ### 12.1 Subagent
@@ -564,6 +611,37 @@ Studio 是 Agent Runtime 的本地控制面与云上控制台，不拥有执行�
 差异只能位于 Provider：SQLite/Postgres、本地 Sandbox/云 Sandbox、子进程/Pod、UDS/mTLS。Studio
 不得通过 Mock 成功掩盖云上未部署能力；目标不可用时显示真实 `unavailable` 和缺失 capability。
 
+### 14.4 云上管理入口
+
+云上需要管理界面，但它属于 **AgentKit Studio / AgentEngine 控制面**，不应在每个 Runtime Pod 中打开
+一套 `/admin` 或完整 Studio。Runtime Pod 只暴露业务数据面、health/metrics，以及经过 workload
+identity 或 mTLS 保护的内部 AgentControl/ExecutionChannel。
+
+管理入口分两种形态，共用同一套 API schema、ksadk-web 组件和 RBAC：
+
+1. **本地 Studio 连接云账号/项目**：适合作为首期入口。本地页面通过 AgentEngine 控制面 API 管理云上
+   Agent，不需要把本地 Workspace 上传成远程文件系统；
+2. **AgentEngine Console 内托管 Studio**：适合 7×24 运维和团队协作。它是同一 React 管理应用的云上
+   壳，不另造第二套 Session、Event 或审批逻辑。
+
+云上管理面至少覆盖 AgentDefinition/Version、Deployment、AgentInstance/Activation、Session/Run、
+Inbox、Plugin/Capability、Workflow/Schedule、ChannelBinding、Secret 引用、Trace/Audit 和 rollback。
+Hosted UI/Chat 仍是终端用户对话入口，不等于管理面。
+
+浏览器身份使用租户/项目/Space 范围的登录会话、RBAC 和 CSRF；CLI/本地 Studio 使用短期用户凭据或设备
+授权。管理面向 Runtime 下发命令时必须转成 AgentControl 命令并留下审计，不能把浏览器身份直接透传到 Pod。
+
+### 14.5 当前 Studio 基线与缺口
+
+截至本设计基线，Studio 已有 AgentBundle 构建、digest/provenance 校验、Deployment/rollback API、
+`HttpCloudDeploymentGateway` 合同和异步 Operation；CLI 也已有真实云部署 Provider。这些应复用，不能另造
+一套 `studio deploy` 协议。
+
+但默认 `ksadk studio` 尚未装配真实 Cloud Gateway，未配置时会返回
+`CLOUD_BUNDLE_ADMISSION_UNAVAILABLE`；测试主要使用 `InMemoryCloudGateway`，React “部署”页仍是空态入口。
+因此当前状态应表述为“合同和构建骨架已存在，产品链路未闭环”，不能宣称 Studio 已支持生产云部署或云上
+Agent 管理。
+
 ## 15. 安全、授权与审计
 
 - 外部 API Key、WPS 凭据、workload identity、forward identity 和第三方凭据分别管理，不共享信任根；
@@ -658,46 +736,41 @@ MCP、Channel、ExecutionChannel、外部 Subagent 和远端 Store 都需要统�
 - `/status` 不创建 Run，`/stop` 返回真实 cancel 状态；
 - Secret 不回显、错误脱敏、审批 fail closed。
 
-## 18. 交付切片
+## 18. 当前基线与分阶段交付
 
-本设计是一张架构地图，实施必须拆为独立 tracer bullet，不能一次大爆炸合并。
+本设计是一张架构地图，实施必须拆为独立 tracer bullet，不能一次大爆炸合并。特别是 0.8.2 先收稳
+RuntimeEvent v2，不把 Plugin、云管理、Workflow 和 Channel 全塞进同一个版本。
 
-### Slice A：V2 Kernel 收口
+### 18.1 当前 KsADK Runtime 基线
 
-- 保存现有 RuntimeEvent v2 分支作为行为样板和测试资产；
-- 从最新内部主线重写小型 canonical kernel；
-- 修复持久化 pipeline 的 resume/idempotency、生产 Adapter 接线和公开 projector；
-- 建立 SessionEvent envelope、durable Inbox 和 live==replay 门禁；
-- 当前 P0 和 lint 未清零前，不把现有候选称为 0.8.2 RC。
+| 能力 | 已有基础 | 发版前/后续缺口 |
+| --- | --- | --- |
+| Runtime 抽象 | `RuntimeAdapter` 已有 start/stream/cancel/pause/submit/resume/attach/checkpoint/close 与 Registry | capability 需 typed/versioned；不同框架必须用生产链路做诚实 conformance |
+| RuntimeEvent v2 | canonical schema、identity、store、reducer、pipeline、v1 projector 和四类 source adapter 候选已存在 | approval/checkpoint resume 经过真实持久化 pipeline 仍有 event id 冲突；live/replay/重启必须补齐 |
+| 框架接入 | ADK、LangGraph、Codex、A2A 均有 Runner/Adapter 资产 | ADK 与 A2A canonical adapter 尚未完整接入生产调用链；不能只以 adapter 单测判定完成 |
+| 本地运行 | CLI/Studio 已支持创建、构建和本地运行，Responses/Hosted UI 有既有数据面 | 本地 Studio 的运行事件仍需收敛到同一 SessionEvent/projector；审批、取消、恢复需要真实浏览器 E2E |
+| 云部署 | CLI 有真实 Provider；Studio 有 Bundle/CloudGateway/Operation 合同 | Studio 默认未接真实控制面，部署页为空态；缺 admission、状态订阅、readiness、冒烟和 rollback 闭环 |
+| 质量与安全 | 已有全量测试、release gate、public preflight 骨架 | 当前候选仍需清零 Ruff、移除 `verify=False`、修正 0.8.2 changelog/version，并把 v2/resume E2E 纳入公开门禁 |
 
-### Slice B：Plugin Host 与 Bundle
+### 18.2 阶段路线
 
-- PluginManifest、Capability Registry、生命周期、Inventory；
-- AgentProfile -> immutable AgentBundle；
-- 先迁移 Runtime、Store、Tool/Skill、MCP supervisor，不做动态插件市场。
+| 阶段 | 范围 | 关键交付 | 阶段验收 |
+| --- | --- | --- | --- |
+| Phase 0：0.8.2 稳定化 | 只收 RuntimeEvent v2 与发布质量 | 修复 pipeline resume/idempotency；接通 ADK/A2A 生产 Adapter；同步 ksadk-web/Hosted UI projector；清零 TLS、Ruff、版本与门禁问题 | 四框架生产链路、持久化/重启 resume、live==replay、公开 preflight 全绿；不改写 0.8.1 历史 |
+| Phase 1：Agent Kernel | 统一控制和会话事实 | SessionEvent envelope、durable Inbox、AgentControl、稳定 AgentInstance、Activation lease/fencing、typed capability | 同 Session FIFO、断点恢复、冷 attach、旧 owner 拒写、控制命令可审计 |
+| Phase 2：Plugin 与本地 Studio | 建立可组合本地产品 | PluginManifest/Host/Inventory、Profile->Bundle、MCP supervisor；Studio Plugin/Runtime/Session 工作台 | ADK/LangGraph/Codex 本地真实创建、对话、工具、审批、取消、恢复；Bundle digest 可重复 |
+| Phase 3：本地到云与云管理 MVP | 闭环端云发布和 7×24 管理 | Studio 装配 AgentEngine Cloud Gateway；Artifact/Version/Deployment admission；Operation 状态；Runtime 注册/heartbeat；本地连接云管理页 | 同一 Bundle digest 本地通过后发布云端；真实调用冒烟、实例/Run 可见、失败不假成功、可回滚 |
+| Phase 4：编排与调度 | 在稳定 Kernel 上增加组织能力 | Subagent、Job、声明式 Workflow、Studio canvas、local/cloud Scheduler | DAG 校验、等待/失败/恢复、冷 Agent 唤醒、幂等 schedule fire、跨重启继续 |
+| Phase 5：边缘接管与 Channel | 扩展执行位置和外部入口 | ExecutionChannel 的 edge lease/reconnect/permit；WPS 私聊插件与云 sidecar；移动端进度/停止 | 无 split-brain，断线 cursor 恢复；WPS 消息只进入 AgentControl，移除 Channel 不影响主路径 |
 
-### Slice C：AgentControl 与本地 Studio
+阶段依赖是 `0 -> 1 -> 2 -> 3 -> 4/5`。Phase 4 与 Phase 5 可在 Phase 3 之后并行；WPS 可以提前做
+本地 PoC 验证 AgentControl，但不作为 Phase 0-3 的架构依赖，也不改变 Kernel 优先级。
 
-- 稳定 AgentInstance、Inbox、AgentControl；
-- Studio Plugin/Runtime/Session 工作台；
-- ADK、LangGraph、Codex 本地真实创建、对话、审批、取消和恢复。
-- 并行接入 WPS 本地私聊 Adapter，作为 AgentControl 的外部入口验收，不阻塞 Kernel 主线。
+### 18.3 0.8.2 的明确边界
 
-### Slice D：编排
-
-- Subagent Provider 与 Agent 树；
-- Job Registry；
-- 声明式 Workflow 与 Studio canvas；
-- Scheduler 本地/云 Provider。
-
-### Slice E：端云与 Channel
-
-- ExecutionChannel、lease/fencing、edge/cloud activation；
-- 将 Slice C 的同一 WPS 插件部署为云上 sidecar，不重写 Session 或消息逻辑；
-- 云上 7×24、断线恢复和移动端验收；
-- 其后再扩展群聊、卡片审批、附件和其他 Channel。
-
-每个 Slice 独立设计、计划、实现和验收。Channel 是 Slice E 的一个 Adapter，不是 A-D 的依赖中心。
+0.8.2 可以交付 RuntimeEvent v2 的稳定内核和四框架生产接线，但不应对外承诺完整 Plugin Host、Studio
+云上部署、云 Agent 管理、Workflow/Scheduler 或端云接管。若 Phase 0 门禁不能清零，应继续作为候选分支，
+不能为了版本节奏跳过真实 resume、公开 projector 或安全门禁。
 
 ## 19. V2 完成定义
 
