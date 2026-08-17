@@ -43,6 +43,11 @@ CONFIG_GROUPS = {
         # 嵌套对象，get_env_from_global_config 跳过它（不当 env-var），build 保留它
         "IDENTITY_CACHE",
     ],
+    "evaluation": [
+        "AGENT_EVAL_BASE_URL",
+        "AGENT_EVAL_API_TOKEN",
+        "AGENT_EVAL_ACCOUNT_ID",
+    ],
     # 未来可扩展更多分组
     # "observability": ["OTEL_EXPORTER_OTLP_ENDPOINT", ...],
     # "plugins": {...},

@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from ksadk.evaluation import DataPolicy
+from ksadk.evaluation.cloud_converter import evalset_to_dataset_snapshot
 from ksadk.evaluation.cloud_service import (
     CloudEvalSetPreviewError,
     CloudEvalSetPublishResult,
@@ -50,9 +51,6 @@ def _evalset():
     )
 
 
-from ksadk.evaluation.cloud_converter import evalset_to_dataset_snapshot
-
-
 @pytest.mark.asyncio
 async def test_pull_reads_one_fixed_version_and_returns_traceable_ref(tmp_path: Path):
     service = CloudEvalSetService(tmp_path, _FakeCloudClient())
@@ -94,16 +92,96 @@ async def test_publish_writes_binding_only_after_cloud_publish_succeeds(tmp_path
     result = await service.publish(
         evalset,
         evalset_path="evaluations/support.yaml",
+        dataset_id="dataset_001",
         data_policy=DataPolicy.FULL_TRACE,
         idempotency_key="publish-001",
     )
 
     assert result.dataset_id == "dataset_001"
-    assert client.calls[0][1:] == (None, None, "publish-001")
+    assert client.calls[0][1:] == ("dataset_001", None, "publish-001")
     binding = service.bindings.read("evaluations/support.yaml")
     assert binding is not None
     assert binding.dataset_version == 2
     assert binding.content_digest == evalset.content_digest
+
+
+@pytest.mark.asyncio
+async def test_publish_requires_an_existing_dataset_on_first_upload(tmp_path: Path):
+    client = _FakeCloudClient()
+    service = CloudEvalSetService(tmp_path, client)
+
+    with pytest.raises(ValueError, match="datasetId"):
+        await service.publish(
+            _evalset(),
+            evalset_path="evaluations/support.yaml",
+            data_policy=DataPolicy.FULL_TRACE,
+        )
+
+    assert client.calls == []
+
+
+@pytest.mark.asyncio
+async def test_publish_reuses_binding_without_sending_base_version(tmp_path: Path):
+    client = _FakeCloudClient()
+    service = CloudEvalSetService(tmp_path, client)
+    await service.publish(
+        _evalset(),
+        evalset_path="evaluations/support.yaml",
+        dataset_id="dataset_001",
+        data_policy=DataPolicy.FULL_TRACE,
+    )
+    await service.publish(
+        _evalset(),
+        evalset_path="evaluations/support.yaml",
+        data_policy=DataPolicy.FULL_TRACE,
+    )
+
+    assert client.calls[1][1] == "dataset_001"
+    assert client.calls[1][2] is None
+    assert client.calls[1][3] == client.calls[0][3]
+
+
+@pytest.mark.asyncio
+async def test_publish_explicit_dataset_id_switches_existing_binding(tmp_path: Path):
+    client = _FakeCloudClient()
+    service = CloudEvalSetService(tmp_path, client)
+    await service.publish(
+        _evalset(),
+        evalset_path="evaluations/support.yaml",
+        dataset_id="dataset_001",
+        data_policy=DataPolicy.FULL_TRACE,
+    )
+    client.result = client.result.model_copy(update={"dataset_id": "dataset_other"})
+
+    await service.publish(
+        _evalset(),
+        evalset_path="evaluations/support.yaml",
+        dataset_id="dataset_other",
+        data_policy=DataPolicy.FULL_TRACE,
+    )
+
+    assert len(client.calls) == 2
+    assert client.calls[1][1] == "dataset_other"
+    binding = service.bindings.read("evaluations/support.yaml")
+    assert binding is not None
+    assert binding.dataset_id == "dataset_other"
+
+
+@pytest.mark.asyncio
+async def test_publish_rejects_cloud_result_for_a_different_dataset(tmp_path: Path):
+    client = _FakeCloudClient()
+    client.result = client.result.model_copy(update={"dataset_id": "dataset_other"})
+    service = CloudEvalSetService(tmp_path, client)
+
+    with pytest.raises(CloudEvalSetPreviewError, match="datasetId"):
+        await service.publish(
+            _evalset(),
+            evalset_path="evaluations/support.yaml",
+            dataset_id="dataset_001",
+            data_policy=DataPolicy.FULL_TRACE,
+        )
+
+    assert service.bindings.read("evaluations/support.yaml") is None
 
 
 @pytest.mark.asyncio
@@ -114,6 +192,7 @@ async def test_failed_publish_preserves_the_existing_binding(tmp_path: Path):
     await service.publish(
         evalset,
         evalset_path="evaluations/support.yaml",
+        dataset_id="dataset_001",
         data_policy=DataPolicy.FULL_TRACE,
         idempotency_key="publish-001",
     )

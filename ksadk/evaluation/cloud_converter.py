@@ -22,6 +22,7 @@ class CloudDatasetColumn(EvaluationModel):
     value_type: str = Field(min_length=1)
     required: bool = False
     description: str | None = None
+    text_schema: dict[str, Any] | None = None
 
 
 class CloudDatasetRow(EvaluationModel):
@@ -56,12 +57,31 @@ _COLUMNS = (
         name="case_id", value_type="String", required=True, description="KsADK Case ID"
     ),
     CloudDatasetColumn(
-        name="turns", value_type="Object", required=True, description="Ordered Eval turns"
+        name="turns",
+        value_type="Array",
+        required=True,
+        description="Ordered Eval turns",
+        text_schema={
+            "type": "array",
+            "items": {"type": "object", "additionalProperties": True},
+        },
     ),
     CloudDatasetColumn(
-        name="assertions", value_type="Object", required=True, description="Eval assertions"
+        name="assertions",
+        value_type="Array",
+        required=True,
+        description="Eval assertions",
+        text_schema={
+            "type": "array",
+            "items": {"type": "object", "additionalProperties": True},
+        },
     ),
-    CloudDatasetColumn(name="case_metadata", value_type="Object", description="Case metadata"),
+    CloudDatasetColumn(
+        name="case_metadata",
+        value_type="Object",
+        description="Case metadata",
+        text_schema={"type": "object", "additionalProperties": True},
+    ),
     CloudDatasetColumn(
         name="source_format", value_type="String", required=True, description="Source format"
     ),
@@ -168,7 +188,7 @@ def _schema_hash(columns: list[CloudDatasetColumn]) -> str:
     payload = [
         column.model_dump(mode="json", by_alias=True, exclude_none=True) for column in columns
     ]
-    encoded = json.dumps(
-        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+        "utf-8"
+    )
     return hashlib.sha256(encoded).hexdigest()

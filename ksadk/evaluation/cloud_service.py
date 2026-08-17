@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import Protocol
 
@@ -111,20 +112,31 @@ class CloudEvalSetService:
         *,
         evalset_path: str,
         data_policy: DataPolicy,
-        idempotency_key: str,
+        dataset_id: str | None = None,
+        idempotency_key: str | None = None,
     ) -> CloudEvalSetPublishResult:
-        """Publish one immutable snapshot and atomically advance its local binding."""
+        """Publish a full snapshot to an existing Dataset and advance its binding."""
 
-        if not idempotency_key.strip():
+        if idempotency_key is not None and not idempotency_key.strip():
             raise ValueError("Idempotency-Key 不能为空")
         snapshot = self.preview(evalset, data_policy=data_policy)
         existing = self.bindings.read(evalset_path)
+        requested_dataset_id = str(dataset_id or "").strip() or None
+        target_dataset_id = requested_dataset_id or (existing.dataset_id if existing else None)
+        if target_dataset_id is None:
+            raise ValueError("datasetId is required for the first publish of an EvalSet")
+        resolved_idempotency_key = idempotency_key or self._idempotency_key(
+            target_dataset_id,
+            snapshot.content_digest,
+        )
         result = await self.client.publish_snapshot(
             snapshot,
-            dataset_id=existing.dataset_id if existing else None,
-            base_version=existing.dataset_version if existing else None,
-            idempotency_key=idempotency_key,
+            dataset_id=target_dataset_id,
+            base_version=None,
+            idempotency_key=resolved_idempotency_key,
         )
+        if result.dataset_id != target_dataset_id:
+            raise CloudEvalSetPreviewError("云端返回的 datasetId 与目标 Dataset 不一致")
         if result.content_digest != snapshot.content_digest:
             raise CloudEvalSetPreviewError("云端返回的 contentDigest 与本地预检结果不一致")
         if result.schema_hash != snapshot.schema_hash:
@@ -143,6 +155,11 @@ class CloudEvalSetService:
             )
         )
         return result
+
+    @staticmethod
+    def _idempotency_key(dataset_id: str, content_digest: str) -> str:
+        identity = f"{dataset_id}:{content_digest}".encode("utf-8")
+        return f"ksadk-evalset-{hashlib.sha256(identity).hexdigest()}"
 
     async def pull(
         self,

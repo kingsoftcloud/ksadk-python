@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 from typing import Any
 
 import httpx
@@ -18,8 +20,9 @@ class AgentEvalCloudDatasetClient:
     """Publish immutable KsADK EvalSet snapshots through agent-eval and EvalSmith."""
 
     _PUBLISH_PATH = "/agentengine/eval/api/v1/PublishEvaluationSetSnapshot"
-    _READ_PATH = "/agentengine/eval/api/v1/DescribeEvaluationSetSnapshot"
+    _READ_PATH = "/agentengine/eval/api/v1/DescribeEvaluationSet"
     _LIST_PATH = "/agentengine/eval/api/v1/ListEvaluationSet"
+    _READ_PAGE_SIZE = 200
 
     def __init__(
         self,
@@ -35,7 +38,12 @@ class AgentEvalCloudDatasetClient:
             raise ValueError("agent-eval base URL cannot be empty")
         self._base_url = normalized_base_url
         self._api_token = str(api_token or "").strip()
-        self._account_id = str(account_id or "").strip()
+        self._account_id = str(
+            account_id
+            or os.environ.get("AGENT_EVAL_ACCOUNT_ID")
+            or os.environ.get("KSYUN_ACCOUNT_ID")
+            or ""
+        ).strip()
         self._timeout_seconds = timeout_seconds
         self._http_client = http_client
 
@@ -52,19 +60,23 @@ class AgentEvalCloudDatasetClient:
             headers["Authorization"] = f"Bearer {self._api_token}"
         if self._account_id:
             headers["X-Ksc-Account-Id"] = self._account_id
+        columns: list[dict[str, Any]] = []
+        for column in snapshot.columns:
+            item: dict[str, Any] = {
+                "Key": column.name,
+                "Name": column.name,
+                "ValueType": column.value_type,
+                "Required": column.required,
+                "Description": column.description,
+            }
+            if column.text_schema is not None:
+                item["TextSchema"] = column.text_schema
+            columns.append(item)
+
         payload: dict[str, Any] = {
             "Name": snapshot.name,
             "Description": snapshot.description,
-            "Columns": [
-                {
-                    "Key": column.name,
-                    "Name": column.name,
-                    "ValueType": column.value_type,
-                    "Required": column.required,
-                    "Description": column.description,
-                }
-                for column in snapshot.columns
-            ],
+            "Columns": columns,
             "Rows": [
                 {"values": row.values, "split": "default", "source": "ksadk"}
                 for row in snapshot.rows
@@ -133,51 +145,66 @@ class AgentEvalCloudDatasetClient:
     ) -> CloudDatasetSnapshot:
         if not dataset_id.strip() or version < 1:
             raise ValueError("datasetId and version must be valid")
-        payload: dict[str, Any] = {
-            "DatasetId": dataset_id,
-            "Version": version,
-        }
-        if project_id:
-            payload["ProjectId"] = project_id
-        envelope = await self._request(self._READ_PATH, payload)
-        data = envelope.get("Data")
-        if not isinstance(data, dict):
-            raise AgentEvalCloudClientError(
-                "agent-eval snapshot read returned no result"
+        del project_id  # DescribeEvaluationSet resolves the project from the account context.
+        page = 1
+        first_page: dict[str, Any] | None = None
+        raw_items: list[dict[str, Any]] = []
+        while True:
+            envelope = await self._request(
+                self._READ_PATH,
+                {
+                    "DatasetId": dataset_id,
+                    "DatasetVersion": version,
+                    "Page": page,
+                    "PageSize": self._READ_PAGE_SIZE,
+                },
             )
+            data = envelope.get("Data")
+            if not isinstance(data, dict):
+                raise AgentEvalCloudClientError("agent-eval snapshot read returned no result")
+            if first_page is None:
+                first_page = data
+            page_items = data.get("Items")
+            if not isinstance(page_items, list) or not all(
+                isinstance(item, dict) for item in page_items
+            ):
+                raise AgentEvalCloudClientError("agent-eval snapshot read returned invalid items")
+            raw_items.extend(page_items)
+            if not data.get("HasMore"):
+                break
+            page += 1
+
+        assert first_page is not None
         try:
-            raw_rows = data["Rows"]
-            rows = [
-                CloudDatasetRow(values=dict(row.get("Values", row.get("values", {}))))
-                for row in raw_rows
-                if isinstance(row, dict)
-            ]
+            current_version = int(first_page["CurrentVersion"])
+            if current_version != version:
+                raise ValueError("version mismatch")
+            raw_rows = [item["Row"] for item in raw_items]
+            rows = [CloudDatasetRow(values=dict(row)) for row in raw_rows if isinstance(row, dict)]
             if len(rows) != len(raw_rows):
                 raise ValueError("invalid row")
-            expected_row_count = data.get("RowCount")
+            expected_row_count = first_page.get("RowCount")
             if expected_row_count is not None and int(expected_row_count) != len(rows):
                 raise ValueError("row count mismatch")
-            columns = [
-                CloudDatasetColumn(
-                    name=column.get("name") or column.get("Key") or column.get("Name"),
-                    value_type=column.get("valueType") or column.get("ValueType"),
-                    required=column.get("required", column.get("Required", False)),
-                    description=column.get("description") or column.get("Description"),
-                )
-                for column in data["Columns"]
-            ]
-            source_format = data.get("SourceFormat") or data.get("sourceFormat")
-            if not source_format and rows:
-                source_format = rows[0].values.get("source_format", "native")
+            columns = [self._column_from_remote(column) for column in first_page["Columns"]]
+            content_digests = {
+                str(row.values.get("ksadk_content_digest") or "").strip() for row in rows
+            }
+            content_digests.discard("")
+            if len(content_digests) != 1:
+                raise ValueError("content digest mismatch")
+            source_formats = {str(row.values.get("source_format") or "").strip() for row in rows}
+            source_formats.discard("")
+            if len(source_formats) != 1:
+                raise ValueError("source format mismatch")
             return CloudDatasetSnapshot(
-                name=data["Name"],
-                description=data.get("Description"),
-                content_digest=data["ContentDigest"],
-                source_format=source_format or "native",
-                evalset_metadata=data.get("Metadata", data.get("metadata", {})),
+                name=first_page["Name"],
+                description=first_page.get("Description"),
+                content_digest=content_digests.pop(),
+                source_format=source_formats.pop(),
+                evalset_metadata={},
                 columns=columns,
                 rows=rows,
-                schema_hash=data["SchemaHash"],
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise AgentEvalCloudClientError(
@@ -214,7 +241,9 @@ class AgentEvalCloudDatasetClient:
                 if isinstance(item, dict)
             ]
         except (TypeError, ValueError) as exc:
-            raise AgentEvalCloudClientError("agent-eval dataset list returned invalid items") from exc
+            raise AgentEvalCloudClientError(
+                "agent-eval dataset list returned invalid items"
+            ) from exc
 
     async def _request(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         headers = {"Content-Type": "application/json"}
@@ -245,7 +274,48 @@ class AgentEvalCloudDatasetClient:
         try:
             envelope = response.json()
         except ValueError as exc:
-            raise AgentEvalCloudClientError("agent-eval snapshot request returned invalid JSON") from exc
+            raise AgentEvalCloudClientError(
+                "agent-eval snapshot request returned invalid JSON"
+            ) from exc
         if not isinstance(envelope, dict) or envelope.get("Code") != 0:
             raise AgentEvalCloudClientError("agent-eval snapshot request was rejected")
         return envelope
+
+    @staticmethod
+    def _parse_text_schema(value: Any) -> dict[str, Any] | None:
+        if value is None:
+            return None
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, str):
+            parsed = json.loads(value)
+            if isinstance(parsed, dict):
+                return parsed
+        raise ValueError("invalid text schema")
+
+    @staticmethod
+    def _normalize_value_type(value: Any) -> str:
+        normalized = str(value or "").strip()
+        if normalized.lower().startswith("array<"):
+            return "Array"
+        return normalized
+
+    @classmethod
+    def _column_from_remote(cls, column: dict[str, Any]) -> CloudDatasetColumn:
+        name = column.get("name") or column.get("Key") or column.get("Name")
+        text_schema = cls._parse_text_schema(
+            column.get("textSchema")
+            or column.get("TextSchema")
+            or column.get("textSchemaRaw")
+            or column.get("TextSchemaRaw")
+        )
+        value_type = cls._normalize_value_type(column.get("valueType") or column.get("ValueType"))
+        if text_schema == {"type": "string", "title": name}:
+            text_schema = None
+        return CloudDatasetColumn(
+            name=name,
+            value_type=value_type,
+            required=column.get("required", column.get("Required", False)),
+            description=column.get("description") or column.get("Description"),
+            text_schema=text_schema,
+        )

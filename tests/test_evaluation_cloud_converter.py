@@ -45,6 +45,26 @@ def test_evalset_snapshot_round_trip_preserves_multi_turn_cases_and_digest():
         "source_format",
         "ksadk_content_digest",
     ]
+    assert [column.value_type for column in snapshot.columns] == [
+        "String",
+        "Array",
+        "Array",
+        "Object",
+        "String",
+        "String",
+    ]
+    assert snapshot.columns[1].text_schema == {
+        "type": "array",
+        "items": {"type": "object", "additionalProperties": True},
+    }
+    assert snapshot.columns[2].text_schema == {
+        "type": "array",
+        "items": {"type": "object", "additionalProperties": True},
+    }
+    assert snapshot.columns[3].text_schema == {
+        "type": "object",
+        "additionalProperties": True,
+    }
     assert snapshot.rows[0].values["turns"][1]["input"] == "忘记旧密码怎么办？"
     assert restored.content_digest == original.content_digest
     assert restored.model_dump(mode="json") == original.model_dump(mode="json")
@@ -56,4 +76,3 @@ def test_snapshot_rejects_rows_that_do_not_match_the_fixed_schema():
 
     with pytest.raises(EvalSetCloudConversionError, match="turns"):
         evalset_from_dataset_snapshot(snapshot)
-
