@@ -738,8 +738,9 @@ MCP、Channel、ExecutionChannel、外部 Subagent 和远端 Store 都需要统�
 
 ## 18. 当前基线与分阶段交付
 
-本设计是一张架构地图，实施必须拆为独立 tracer bullet，不能一次大爆炸合并。特别是 0.8.2 先收稳
-RuntimeEvent v2，不把 Plugin、云管理、Workflow 和 Channel 全塞进同一个版本。
+本设计是一张架构地图，实施必须拆为独立 tracer bullet，不能一次大爆炸合并。0.8.2 不仅要收稳
+RuntimeEvent v2，还必须跑通一个可对外验证的“本地 Studio -> AgentEngine -> 云 Runtime”最小纵切；
+但不把完整 Plugin、Workflow、Scheduler、Channel 和端侧接管同时塞进该版本。
 
 ### 18.1 当前 KsADK Runtime 基线
 
@@ -756,21 +757,88 @@ RuntimeEvent v2，不把 Plugin、云管理、Workflow 和 Channel 全塞进同�
 
 | 阶段 | 范围 | 关键交付 | 阶段验收 |
 | --- | --- | --- | --- |
-| Phase 0：0.8.2 稳定化 | 只收 RuntimeEvent v2 与发布质量 | 修复 pipeline resume/idempotency；接通 ADK/A2A 生产 Adapter；同步 ksadk-web/Hosted UI projector；清零 TLS、Ruff、版本与门禁问题 | 四框架生产链路、持久化/重启 resume、live==replay、公开 preflight 全绿；不改写 0.8.1 历史 |
+| Phase 0：0.8.2 端云纵切 | RuntimeEvent v2 稳定化 + 最小云部署与管理闭环 | 修复 canonical pipeline 和四类 Adapter；同一 Bundle 从 Studio 部署到真实预发 Runtime；提供进度、就绪、对话、会话回看和回滚；同步 Web/Hosted UI 和发布门禁 | ADK、LangGraph、Codex 各完成本地构建、真实云部署、流式对话和回滚；A2A 完成云调用与终态对账；公开 preflight 全绿 |
 | Phase 1：Agent Kernel | 统一控制和会话事实 | SessionEvent envelope、durable Inbox、AgentControl、稳定 AgentInstance、Activation lease/fencing、typed capability | 同 Session FIFO、断点恢复、冷 attach、旧 owner 拒写、控制命令可审计 |
 | Phase 2：Plugin 与本地 Studio | 建立可组合本地产品 | PluginManifest/Host/Inventory、Profile->Bundle、MCP supervisor；Studio Plugin/Runtime/Session 工作台 | ADK/LangGraph/Codex 本地真实创建、对话、工具、审批、取消、恢复；Bundle digest 可重复 |
-| Phase 3：本地到云与云管理 MVP | 闭环端云发布和 7×24 管理 | Studio 装配 AgentEngine Cloud Gateway；Artifact/Version/Deployment admission；Operation 状态；Runtime 注册/heartbeat；本地连接云管理页 | 同一 Bundle digest 本地通过后发布云端；真实调用冒烟、实例/Run 可见、失败不假成功、可回滚 |
+| Phase 3：云管理增强 | 在 Phase 0 纵切上补齐团队和多环境治理 | hosted Studio/Console、环境提升、灰度、扩缩容、Secret/网络策略、团队 RBAC、审计和多实例诊断 | pre->online promotion 不重建 Bundle；多人协作、策略变更、灰度和回退可审计 |
 | Phase 4：编排与调度 | 在稳定 Kernel 上增加组织能力 | Subagent、Job、声明式 Workflow、Studio canvas、local/cloud Scheduler | DAG 校验、等待/失败/恢复、冷 Agent 唤醒、幂等 schedule fire、跨重启继续 |
 | Phase 5：边缘接管与 Channel | 扩展执行位置和外部入口 | ExecutionChannel 的 edge lease/reconnect/permit；WPS 私聊插件与云 sidecar；移动端进度/停止 | 无 split-brain，断线 cursor 恢复；WPS 消息只进入 AgentControl，移除 Channel 不影响主路径 |
 
-阶段依赖是 `0 -> 1 -> 2 -> 3 -> 4/5`。Phase 4 与 Phase 5 可在 Phase 3 之后并行；WPS 可以提前做
-本地 PoC 验证 AgentControl，但不作为 Phase 0-3 的架构依赖，也不改变 Kernel 优先级。
+Phase 0 使用现有 RuntimeAdapter、Studio Bundle 和 AgentEngine 部署能力完成纵切；Phase 1/2 再深化
+Kernel 与插件模型，不能要求尚未实现的 Plugin Host 成为 Phase 0 前置。Phase 3 依赖 Phase 0，Phase 4/5
+依赖 Phase 1 的 AgentControl 与 durable Session 语义。WPS 可以提前做本地 PoC，但不改变 Kernel 优先级。
 
-### 18.3 0.8.2 的明确边界
+Phase 0 使用“最小 AgentBundle v1”：只冻结 framework、runtime、entrypoint、artifact、digest、provenance
+和 capability snapshot。Phase 2 再以 additive 方式加入完整 PluginManifest、依赖图和 Inventory，不能反过来阻塞
+Phase 0 的部署纵切。
 
-0.8.2 可以交付 RuntimeEvent v2 的稳定内核和四框架生产接线，但不应对外承诺完整 Plugin Host、Studio
-云上部署、云 Agent 管理、Workflow/Scheduler 或端云接管。若 Phase 0 门禁不能清零，应继续作为候选分支，
-不能为了版本节奏跳过真实 resume、公开 projector 或安全门禁。
+### 18.3 Phase 0 工作包
+
+每个工作包都应成为独立 Issue/任务，指定一个直接 Owner；“协同”不能代替 Owner。任务完成必须同时提交
+实现、合同测试和验收证据，不能只提交接口或 Mock。
+
+| ID | 仓库 / Owner 角色 | 开发点 | 可验收输出 | 依赖 |
+| --- | --- | --- | --- | --- |
+| P0-00 | 跨仓库架构 Owner | 冻结 `AgentBundleManifest/v1`、`CloudDeploymentGateway/v1`、`DeploymentOperation/v1`、资源 ID 映射、错误码和幂等语义；提供跨语言 golden fixture | KsADK、Server、Studio 使用同一 fixture；未知字段兼容；合同变更有版本号 | 无 |
+| P0-01 | `ksadk-python` RuntimeEvent | 修复 resume 时重复 `run.started` 的 event id/timestamp 冲突；统一 start/resume/attach 的幂等规则；补冷恢复和旧 owner 写入拒绝 | 真实 `RuntimeExecutor -> canonical pipeline -> store -> replay` 首轮中断后可跨进程 resume，live/replay 一致 | P0-00 |
+| P0-02 | `ksadk-python` ADK Adapter | 将 ADK 生产 Runner 接入 canonical stream；删除 author/text 前缀推断；锁定并验证支持的 ADK 版本与 multi-agent/multi-LLM native identity | ADK 本地和云上事件 golden、cancel、final output E2E；interaction/resume 按 native capability 验收，不支持时返回 typed unsupported | P0-01 |
+| P0-03 | `ksadk-python` LangGraph Adapter | 接通 graph stream、checkpoint、interrupt/approval 和 durable resume；明确 thread/checkpoint 与 Session/Run 映射 | LangGraph checkpoint 在重启后恢复；审批只执行一次；最终输出引用正确 | P0-01 |
+| P0-04 | `ksadk-python` Codex Adapter | 接通 app-server live interaction、submit/cancel 和 canonical projector；将 Codex Studio build 适配到公共 deployable artifact 接口 | Codex 本地与 ManagedRuntime 云部署均能流式对话、授权后继续并产生唯一终态 | P0-01、P0-00 |
+| P0-05 | `ksadk-python` A2A Adapter | 让新 A2A canonical adapter 进入 `space_client` 生产路径；保留 native task/message/artifact identity；流结束后 GetTask 终态 reconcile | A2A stream、断线重连、终态对账和 v1 projection E2E；A2A 不伪装成本地 Bundle | P0-01 |
+| P0-06 | `ksadk-python` Bundle/Deploy | 让 ADK/LangGraph Code Bundle 与 Codex ManagedRuntime manifest 携带 digest、provenance、framework/runtime version、entrypoint 和最低 capability；云端不得重建源 Bundle | 两次构建 digest 可重复；上传前后校验；AgentVersion 能追溯 source bundle 和派生运行制品 | P0-00 |
+| P0-07 | `ksadk-python` Studio Backend | 把默认 `UnavailableCloudGateway` 替换为显式配置的真实 Adapter；复用 `AgentEngineClient`、预签名上传、Create/Update Agent、Create/Rollback Version；凭据只作为本地引用，不进入 Bundle/事件 | 未登录时 typed unavailable；登录后真实 Build/Upload/Version/Deployment Operation 可重试且不重复创建 | P0-00、P0-06、P0-09 |
+| P0-08 | `ksadk-python` Studio Frontend | 完成 Cloud Target、部署向导、Operation 时间线、Deployment 列表/详情、版本/digest、实例就绪、打开对话、失败原因和回滚确认；复用 ksadk-web 对话区 | 浏览器 E2E 覆盖成功、admission 拒绝、超时、刷新恢复、回滚；不显示 Mock 成功 | P0-07、P0-10、P0-15 |
+| P0-09 | `agentengine-server` 制品/版本 | 在既有预签名上传、Create/Update Agent、AgentVersion 上实现 Gateway 合同 Adapter；校验 digest/provenance/framework/runtime/资源/Secret 引用；保存 Bundle->Version->Runtime 映射 | 重复请求返回同一资源；digest 不符拒绝；版本可查且不可变；不强制新增猜测式 REST 路径 | P0-00、P0-06 |
+| P0-10 | `agentengine-server` 部署 Operation | 建立持久 DeploymentOperation 状态机：queued/uploaded/admitted/deploying/ready/smoke_passed/failed/rolled_back；消费 Runtime 状态事件；提供查询/订阅/取消、Server 侧真实调用 smoke 和回滚 | Server 重启后 Operation 可恢复；失败保留旧健康版本；终态 first-wins；Studio 可按 cursor 续看；`smoke_passed` 有 InvocationId/Trace 证据 | P0-09、P0-12 |
+| P0-11 | `agentengine-server` 云 Agent 管理 | 提供租户范围的 Agent/Version/Deployment/Instance/Session/Run 查询和最小控制面；生成 Studio 到云 Agent/对话/Trace 的安全 deep link | 本地 Studio 能管理自己项目的云 Agent；越权、跨租户、失效链接均被拒绝并审计 | P0-09、P0-10 |
+| P0-12 | `agent-runtime-service` | 承接 Server 的 AgentRuntime 创建/更新，传递 Bundle digest、AgentVersion 和 Runtime 版本；把 accepted/deploying/ready/failed、ready replica 和失败原因可靠回传 Server | Runtime 状态可幂等重放；Server 重启或事件重复不会倒退状态；运行版本可从 API 查询 | P0-00、P0-09 |
+| P0-13 | `agent-platform-operator` | 将 AgentRuntime 期望状态收敛为 Deployment/Pod；写入版本/digest annotation/env；完善 readiness、rollout、failed condition 和回滚收敛 | Pod 实际 digest 可核验；新版本未 Ready 不切流；回滚恢复旧 ReplicaSet 且状态回传 | P0-12 |
+| P0-14 | `agentengine-gateway` | 验证新部署 Agent 的路由注册、API Key/可信转发身份、SSE/WebSocket 长连接、会话亲和和滚动期间 drain；公网/VPC 地址均 fail closed | 部署 ready 后才能路由；未授权 401/403；长流不中途切 Pod；回滚后路由指向健康版本 | P0-10、P0-12、P0-13 |
+| P0-15 | `ksadk-web` | 消费 RuntimeEvent v2 的公开 projection，统一 live/replay/refresh；修复 approval 默认折叠、授权后运行态和 terminal output 展示 | 工具输入输出、审批、A2UI、thinking、final 在本地/云 Hosted UI 使用同一 golden fixture | P0-00、P0-01 至 P0-05 |
+| P0-16 | `agentengine-hosted-ui` | 升级并锁定通过验证的 ksadk-web 包；构建 hosted 镜像；验证 chat/tui/workspace 路径和 runtime 能力版本协商 | 预发 Hosted UI 对三种已部署框架完成 streaming、approval、刷新和历史回放 | P0-15、P0-14 |
+| P0-17 | 跨仓库 QA / 预发 Owner | 建立真实预发矩阵与自动清理：ADK Code、LangGraph Code、Codex ManagedRuntime；A2A 作为远端 Adapter 单独验收 | 每个 deployable framework 完成 build->deploy->ready->chat->history->rollback；失败留下 trace、operation 和资源快照 | P0-02 至 P0-16 |
+| P0-18 | `ksadk-python` Release Owner | 清零 Ruff、`verify=False`、版本/Changelog、锁文件和公开审计；将 v2、真实 resume、Bundle/Studio E2E 纳入 CI/public-preflight；记录各云组件镜像版本 | 0.8.2 wheel、公开 main、Server/Runtime/Operator/Gateway/Hosted UI 版本形成可追溯 release manifest | P0-17 |
+
+### 18.4 Phase 0 并行顺序
+
+```text
+Wave A  P0-00 合同 ─┬─ P0-01 canonical ─┬─ P0-02/03/04/05 adapters
+                    │                    └─ P0-15 web projection
+                    ├─ P0-06 bundle ─────── P0-07 Studio backend
+                    └─ P0-09 server admission ─ P0-10 operation
+
+Wave B  P0-12 runtime service ─ P0-13 operator ─ P0-14 gateway
+        P0-07 + P0-10 + P0-15 ─ P0-08 Studio frontend
+        P0-11 cloud management 可与 P0-08 并行
+
+Wave C  P0-16 hosted UI ─ P0-17 pre E2E ─ P0-18 release
+```
+
+Wave A 可拆成 Runtime、Studio、Server 和 Web 四组并行；P0-00 的 schema/golden fixture 是唯一共同前置。
+P0-17 之前必须冻结预发账号、地域、资源前缀、测试 Agent 名和清理脚本，避免 E2E 共享状态互相覆盖。
+
+### 18.5 Phase 0 验收矩阵
+
+| 目标 | 部署形态 | 必测路径 |
+| --- | --- | --- |
+| LangGraph | Code Bundle，经 Studio | 本地运行、checkpoint/approval、云部署、流式对话、历史回放、重启 resume、回滚 |
+| ADK | Code Bundle，经 Studio | 本地运行、multi-agent/multi-LLM identity、云部署、流式对话、历史回放、回滚 |
+| Codex | ManagedRuntime manifest，经 Studio | 本地 app-server、live approval/submit、云部署、流式对话、取消、历史回放、回滚 |
+| A2A | 远端 Runtime Adapter，不作为本地制品部署 | Card/metadata、stream、断线 cursor、GetTask terminal reconcile、A2A projection |
+
+云部署通过的最低定义是：Studio 收到 Server 持久 Operation 的 `smoke_passed`，且 smoke 使用正式 Gateway
+地址、正式鉴权和 `RunAgent/SubscribeRunEvents`（或对应公开 Responses 接口）完成一轮真实模型调用。仅 Pod Ready、
+仅 HTTP 200、仅本地 Mock 或只由 CLI 打印“部署成功”均不算通过。
+
+### 18.6 0.8.2 的明确边界
+
+0.8.2 交付 RuntimeEvent v2、四框架生产接线，以及 Studio 对云 Agent 的最小部署和管理闭环。云管理范围
+限定为目标选择、部署、Operation 进度、版本/digest、实例就绪、对话、会话回看和回滚；不承诺完整 Plugin
+Host、灰度/扩缩容编辑、Workflow/Scheduler、Channel 或端云接管。若 Phase 0 门禁不能清零，应继续作为候选
+分支，不能为了版本节奏跳过真实 resume、云上调用冒烟、公开 projector 或安全门禁。
+
+Phase 0 的产品管理入口是本地 Studio；现有内部 Dashboard 可用于运维核对，但不是终端用户管理面的替代。
+云上托管 Studio/Console 放到 Phase 3，Runtime Pod 在任何阶段都不承载完整管理界面。
 
 ## 19. V2 完成定义
 
