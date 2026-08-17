@@ -24,6 +24,7 @@ from ksadk.events.canonical import (
 from ksadk.events.canonical_store import RuntimeEventStore
 from ksadk.events.identity import stable_event_id
 from ksadk.events.reducer import StreamConformanceError, StreamReducer
+from ksadk.kernel.contracts import ActivationWriteGuard, WriteContext
 
 Publisher = Callable[[str, RuntimeEvent], Awaitable[None]]
 
@@ -76,6 +77,40 @@ class CanonicalEventPipeline:
 
         async with self._ingest_lock:
             return await self._ingest_locked(event)
+
+    async def emit(
+        self, event: RuntimeEvent, *, write_context: WriteContext
+    ) -> RuntimeEvent:
+        """Fenced typed append: persist (guard CAS) before publish.
+
+        与 :meth:`ingest` 的差异：``emit`` 是 owner 内部写入路径，要求
+        ``WriteContext(activation_id, fencing_token)``，通过 typed
+        ``RuntimeEventStore``（SessionEventStore envelope 视图）走
+        ``append(event, guard=write_context)``；Store 在事务内比较 fence 后
+        才分配 seq，旧 owner 在 takeover 后写入会得到
+        :class:`~ksadk.kernel.errors.StaleFenceError`。WriteContext 只作为
+        写权限 guard，不进入 RuntimeEvent payload，也不进入公网 projection。
+        """
+
+        if not isinstance(write_context, ActivationWriteGuard):
+            raise TypeError(
+                "emit requires a typed WriteContext(activation_id, fencing_token)"
+            )
+        if self.store.event_store is None:
+            raise RuntimeError(
+                "emit requires a SessionEventStore-backed typed RuntimeEventStore"
+            )
+        if getattr(self.store, "session_id", None) != self.session_id:
+            raise ValueError("typed RuntimeEventStore session does not match pipeline")
+        # 先在影子 reducer 上预检 conformance，非法事实绝不落库。
+        shadow = copy.deepcopy(self.reducer)
+        shadow.apply(event.model_copy(update={"seq": self._validation_seq(event)}))
+        persisted = await self.store.append(event, guard=write_context)
+        last_seq = self.reducer.snapshot().last_seq
+        if last_seq is None or persisted.seq > last_seq:
+            self.reducer.apply(persisted)
+        await self._publish(persisted)
+        return persisted
 
     async def _ingest_locked(self, event: RuntimeEvent) -> tuple[RuntimeEvent, ...]:
         await self._hydrate_run_if_needed(event.run_id)

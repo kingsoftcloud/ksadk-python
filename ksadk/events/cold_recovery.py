@@ -133,6 +133,7 @@ def settle_finding(
     allow_resume: bool,
     timestamp: float,
     run_seq: int | None = None,
+    reason: str = "process_exit",
 ) -> list[RuntimeEvent]:
     """Synthesize the deterministic outcome events for one open run.
 
@@ -140,6 +141,8 @@ def settle_finding(
     continuation facts say ``resumable`` and the caller allows takeover, no
     events are produced — the run is handed to the normal resume path.
     Otherwise every open item gets an outcome and the run is interrupted.
+    ``reason`` becomes the ``run.interrupted`` reason; recovery coordination
+    passes its own stable code (e.g. ``runtime_not_durably_attachable``).
     """
 
     if finding.resumable and allow_resume:
@@ -186,7 +189,7 @@ def settle_finding(
             event_id=_recovery_event_id(finding.scope_id, "run", "run.interrupted", finding.run_id),
             seq=next_seq,
             status="interrupted",
-            reason="process_exit",
+            reason=reason,
             continuation_id=finding.continuation_id,
             **base,
         )

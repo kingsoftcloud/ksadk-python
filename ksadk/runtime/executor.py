@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -236,6 +238,29 @@ class RuntimeExecutor:
         self._record_owner(adapter, restored)
         return restored
 
+    async def attach_record(
+        self,
+        run: "RunRecord",
+        context: RuntimeLaunchContext,
+    ) -> RunHandle:
+        """Attach a run from its durable record (cross-process recovery path).
+
+        一个新进程没有任何 ``_runs`` 缓存；durable Run 行的 ``handle`` +
+        ``handle_digest`` 是唯一恢复线索。digest 不匹配即拒绝——被篡改或
+        版本漂移的 handle 绝不能接回 live 执行。
+        """
+
+        handle_dump = run.metadata.get("handle")
+        digest = run.metadata.get("handle_digest")
+        if not isinstance(handle_dump, dict) or not isinstance(digest, str):
+            raise ValueError(
+                f"durable run {run.run_id!r} has no durably attachable handle"
+            )
+        handle = RunHandle.model_validate(handle_dump)
+        if handle_digest(handle) != digest:
+            raise ValueError(f"handle digest mismatch for run {run.run_id!r}")
+        return await self.attach(context, handle)
+
     def is_attached(self, handle: RunHandle) -> bool:
         owned = self._runs.get(_handle_key(handle))
         return owned is not None and owned.handle == handle
@@ -299,6 +324,18 @@ class RuntimeExecutor:
         return preparation.adapter
 
 
+def handle_digest(handle: RunHandle) -> str:
+    """Stable digest of one durable handle (cross-process recovery evidence)."""
+
+    payload = json.dumps(
+        handle.model_dump(mode="json"),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
 def _cache_only_record(handle: RunHandle) -> "RunRecord":
     from ksadk.kernel.state import RunState
     from ksadk.kernel.store import RunRecord
@@ -330,4 +367,5 @@ __all__ = [
     "RuntimeStartPreparation",
     "DurableRun",
     "RunNotFoundError",
+    "handle_digest",
 ]

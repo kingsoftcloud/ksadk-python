@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
@@ -151,10 +151,26 @@ def session_event_to_envelope(event: SessionEvent) -> SessionEventEnvelope | Non
 
 
 class SessionServiceEventStore:
-    """``SessionEventStore`` adapter over one ``BaseSessionService`` backend."""
+    """``SessionEventStore`` adapter over one ``BaseSessionService`` backend.
 
-    def __init__(self, session_service: BaseSessionService) -> None:
+    ``fence_validator`` 是可选的 ActivationWriteGuard 事务内 CAS seam：
+    提供时（典型为 ``AgentKernelStore.validate_write_fence``），每个
+    activation 写都在持久化之前比较当前 lease 的 fencing token，被
+    takeover 的旧 owner 得到 :class:`~ksadk.kernel.errors.StaleFenceError`。
+    validator 只看 guard，不向 envelope/payload 写入任何 fence 字段。
+    """
+
+    def __init__(
+        self,
+        session_service: BaseSessionService,
+        *,
+        fence_validator: Callable[
+            [SessionEventEnvelope, ActivationWriteGuard], Awaitable[None]
+        ]
+        | None = None,
+    ) -> None:
         self._service = session_service
+        self._fence_validator = fence_validator
 
     @property
     def session_service(self) -> BaseSessionService:
@@ -164,6 +180,11 @@ class SessionServiceEventStore:
         self, envelope: SessionEventEnvelope, *, guard: SessionEventWriteGuard
     ) -> SessionEventEnvelope:
         validate_write_guard(envelope, guard)
+        if (
+            isinstance(guard, ActivationWriteGuard)
+            and self._fence_validator is not None
+        ):
+            await self._fence_validator(envelope, guard)
         if not envelope.session_id.strip():
             raise ValueError("session_id must be nonempty")
         self._require_storage_capabilities(envelope)

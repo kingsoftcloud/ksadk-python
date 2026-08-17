@@ -621,6 +621,40 @@ class InMemoryAgentKernelStore:
 
     # ------------------------------------------------------------------ events
 
+    async def validate_write_fence(
+        self,
+        envelope: SessionEventEnvelope,
+        guard: ActivationWriteGuard,
+    ) -> None:
+        """SessionEventStore fence seam：guard 必须是当前未过期 lease 的 owner。
+
+        被 takeover（activation 行被替换/释放）或 token 滞后的旧 owner 得到
+        :class:`StaleFenceError`；不做任何写入。
+        """
+
+        row = next(
+            (
+                candidate
+                for candidate in self._activations.values()
+                if candidate["activation_id"] == guard.activation_id
+            ),
+            None,
+        )
+        if (
+            row is None
+            or row.get("released")
+            or self._lease_expired(row)
+            or row["fencing_token"] != int(guard.fencing_token)
+        ):
+            raise StaleFenceError(
+                "activation write guard does not match the current lease",
+                details={
+                    "activation_id": guard.activation_id,
+                    "fencing_token": int(guard.fencing_token),
+                    "session_id": envelope.session_id,
+                },
+            )
+
     async def append_event(
         self,
         envelope: SessionEventEnvelope,

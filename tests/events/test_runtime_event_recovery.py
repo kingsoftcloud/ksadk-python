@@ -700,3 +700,77 @@ async def test_completed_recovery_retry_point_reads_terminal_without_scanning_ru
     assert service.full_scans == 0
     assert service.run_scans == 0
     assert service.point_lookups >= 3
+
+
+# ------------------------------------------------ Task 7: fenced typed emit
+
+
+@pytest.mark.asyncio
+async def test_emit_is_fenced_and_write_context_never_leaks_into_payload():
+    from ksadk.events.canonical_store import RuntimeEventStore as TypedStore
+    from ksadk.events.session_event import SessionServiceEventStore
+    from ksadk.kernel.contracts import ActivationWriteGuard
+    from ksadk.kernel.errors import StaleFenceError
+
+    service = InMemorySessionService()
+    await service.create_session(agent_id="a", user_id="u", session_id="session-1")
+    fences = {"act-1": 1, "act-2": 2}
+
+    async def validator(_envelope, guard):
+        if fences.get(guard.activation_id) != guard.fencing_token:
+            raise StaleFenceError("stale activation write guard")
+
+    generic = SessionServiceEventStore(service, fence_validator=validator)
+    typed = TypedStore(generic, session_id="session-1")
+    published = []
+
+    async def publish(_sid, event):
+        published.append(event)
+
+    pipeline = CanonicalEventPipeline(typed, session_id="session-1", publisher=publish)
+    old_guard = ActivationWriteGuard(activation_id="act-1", fencing_token=1)
+    new_guard = ActivationWriteGuard(activation_id="act-2", fencing_token=2)
+
+    await pipeline.emit(_run_started(), write_context=old_guard)
+
+    # takeover：旧 owner 的写入被 fence 拒绝，且没有落库。
+    fences["act-1"] = 0  # 旧 activation 被 takeover
+    with pytest.raises(StaleFenceError):
+        await pipeline.emit(
+            RunProgress(**_base("stale-delta"), status="running", progress=0.5),
+            write_context=old_guard,
+        )
+    assert [event.event_id for event in await typed.list("session-1")] == ["run-start"]
+
+    await pipeline.emit(
+        RunProgress(**_base("fresh-delta"), status="running", progress=0.6),
+        write_context=new_guard,
+    )
+    persisted = await typed.list("session-1")
+    assert [event.event_id for event in persisted] == ["run-start", "fresh-delta"]
+    # WriteContext 不进 RuntimeEvent payload / envelope projection / 物理行。
+    for event in persisted:
+        dump = event.model_dump()
+        assert "activation_id" not in dump and "fencing_token" not in dump
+    for envelope in await generic.read("session-1", 0, 10):
+        assert "activation_id" not in envelope.payload
+        assert "fencing_token" not in envelope.payload
+    for row in await service.get_events("session-1"):
+        assert "fencing_token" not in json.dumps(row.content)
+    assert [event.event_id for event in published] == ["run-start", "fresh-delta"]
+
+
+@pytest.mark.asyncio
+async def test_emit_requires_typed_guard_and_typed_store():
+    service = InMemorySessionService()
+    await service.create_session(agent_id="a", user_id="u", session_id="session-1")
+    legacy = RuntimeEventStore(service)
+    pipeline = CanonicalEventPipeline(legacy, session_id="session-1")
+
+    from ksadk.kernel.contracts import ActivationWriteGuard
+
+    guard = ActivationWriteGuard(activation_id="act-1", fencing_token=1)
+    with pytest.raises(TypeError, match="WriteContext"):
+        await pipeline.emit(_run_started(), write_context="not-a-guard")  # type: ignore[arg-type]
+    with pytest.raises(RuntimeError, match="SessionEventStore-backed"):
+        await pipeline.emit(_run_started(), write_context=guard)

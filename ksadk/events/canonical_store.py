@@ -166,6 +166,12 @@ class RuntimeEventStore:
         return self._service
 
     @property
+    def session_id(self) -> str | None:
+        """Session bound at construction for the typed (envelope) write path."""
+
+        return self._typed_session_id
+
+    @property
     def event_store(self) -> "SessionEventStore | None":
         return self._event_store
 

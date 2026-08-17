@@ -4,18 +4,17 @@ from __future__ import annotations
 
 import pytest
 
-from ksadk.events.canonical import ALL_EVENT_TYPES
-from ksadk.events.canonical_store import RuntimeEventStore
-from ksadk.events.cold_recovery import recover_session, scan_open_runs, settle_finding
-from ksadk.events.canonical_replay import replay_projection
-from ksadk.sessions.in_memory import InMemorySessionService
-
 from ksadk.events.canonical import (
+    ALL_EVENT_TYPES,
     ContinuationCreated,
     ItemStarted,
     RunStarted,
     SourceRef,
 )
+from ksadk.events.canonical_replay import replay_projection
+from ksadk.events.canonical_store import RuntimeEventStore
+from ksadk.events.cold_recovery import recover_session, scan_open_runs, settle_finding
+from ksadk.sessions.in_memory import InMemorySessionService
 
 
 def _src() -> SourceRef:
@@ -355,3 +354,123 @@ async def test_racing_recoverers_with_different_timestamps_converge() -> None:
     assert second.interrupted_run_ids == ["run-1"]
     # 第二个恢复者没有新增事实(全部被吸收),但结算目标已达成。
     assert second.written_events == []
+
+
+# ------------------------------------------- Task 7: reason 透传与 fenced 收口
+
+
+def test_settle_finding_reason_is_carried_into_run_interrupted() -> None:
+    from ksadk.events.cold_recovery import RecoveryFinding
+
+    finding = RecoveryFinding(
+        run_id="run-x",
+        scope_id="scope_x",
+        resumable=False,
+        continuation_id=None,
+        open_items=[],
+        last_seq=3,
+    )
+    events = settle_finding(
+        finding,
+        "session-1",
+        allow_resume=False,
+        timestamp=1.0,
+        reason="runtime_not_durably_attachable",
+    )
+    assert events[-1].reason == "runtime_not_durably_attachable"
+    default = settle_finding(finding, "session-1", allow_resume=False, timestamp=1.0)
+    assert default[-1].reason == "process_exit"
+    # reason 不改变确定性 event id：同一 finding 的两次结算 id 相同。
+    assert [e.event_id for e in events] == [e.event_id for e in default]
+
+
+@pytest.mark.asyncio
+async def test_recovery_coordinator_writes_interrupted_through_fence() -> None:
+    """冷 attach 资格不具备时：唯一 run.interrupted + open item close，走 fenced emit。"""
+
+    from ksadk.events.canonical_store import RuntimeEventStore as TypedStore
+    from ksadk.events.pipeline import CanonicalEventPipeline
+    from ksadk.events.session_event import SessionServiceEventStore
+    from ksadk.kernel.contracts import ActivationWriteGuard
+    from ksadk.kernel.memory_store import InMemoryAgentKernelStore
+    from ksadk.kernel.store import ActivationLeaseRequest
+
+    service = InMemorySessionService()
+    await service.create_session(agent_id="a", user_id="u", session_id="session-9")
+    kernel: InMemoryAgentKernelStore | None = None
+
+    async def validator(envelope, guard):
+        await kernel.validate_write_fence(envelope, guard)
+
+    generic = SessionServiceEventStore(service, fence_validator=validator)
+    kernel = InMemoryAgentKernelStore(generic)
+    lease = await kernel.acquire_activation(
+        ActivationLeaseRequest(
+            agent_instance_id="ai-1", session_id="session-9", activation_id="act-1"
+        )
+    )
+    guard = ActivationWriteGuard(
+        activation_id=lease.activation_id, fencing_token=lease.fencing_token
+    )
+    typed = TypedStore(generic, session_id="session-9")
+    pipeline = CanonicalEventPipeline(typed, session_id="session-9")
+    base = dict(
+        schema_version=2,
+        timestamp=1780000000.0,
+        run_id="run-9",
+        scope_id="scope_root",
+        source=_src(),
+    )
+    await pipeline.emit(
+        RunStarted(event_id="evt_s9", seq=0, status="running", **base),
+        write_context=guard,
+    )
+    await pipeline.emit(
+        ItemStarted(
+            event_id="evt_i9", seq=0, item_id="item-9", item_kind="tool_call", **base
+        ),
+        write_context=guard,
+    )
+
+    # takeover 后旧 guard 写不进（fence 拒绝）。
+    await kernel.release_activation(
+        lease.activation_id, expected_fence=lease.fencing_token
+    )
+    new_lease = await kernel.acquire_activation(
+        ActivationLeaseRequest(
+            agent_instance_id="ai-1", session_id="session-9", activation_id="act-2"
+        )
+    )
+    from ksadk.kernel.errors import StaleFenceError
+
+    with pytest.raises(StaleFenceError):
+        await pipeline.emit(
+            ItemStarted(
+                event_id="evt_late", seq=0, item_id="item-late", item_kind="message", **base
+            ),
+            write_context=guard,
+        )
+
+    # 新 owner 冷恢复：确定性 interrupted，reason 为 runtime_not_durably_attachable。
+    report = await scan_open_runs(typed, "session-9")
+    assert len(report) == 1
+    events = settle_finding(
+        report[0],
+        "session-9",
+        allow_resume=False,
+        timestamp=1780000100.0,
+        reason="runtime_not_durably_attachable",
+    )
+    new_guard = ActivationWriteGuard(
+        activation_id=new_lease.activation_id,
+        fencing_token=new_lease.fencing_token,
+    )
+    for event in events:
+        await pipeline.emit(event, write_context=new_guard)
+
+    projection = await replay_projection(typed, "session-9", run_id="run-9")
+    assert projection.status == "interrupted"
+    assert all(item.status != "open" for item in projection.items)
+    terminal = [e for e in await typed.list("session-9") if e.event_type == "run.interrupted"]
+    assert len(terminal) == 1
+    assert terminal[0].reason == "runtime_not_durably_attachable"

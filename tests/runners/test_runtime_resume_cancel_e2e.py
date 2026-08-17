@@ -10,23 +10,29 @@ is None (first run, non-resume path).
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import pytest
 
 from ksadk.events.canonical import (
     ContinuationCreated,
     InteractionRequested,
-    RunCanceled,
     RunCompleted,
     RunFailed,
+    SourceRef,
 )
 from ksadk.runners.base_runner import BaseRunner
 from ksadk.runtime.adapter import (
+    BaseRuntime,
     CancelResult,
+    CheckpointCapability,
+    CheckpointDescriptor,
     ResumePayload,
     ResumeTarget,
     RunHandle,
+    RuntimeAdapter,
     StartRequest,
 )
 from ksadk.runtime.framework_adapters import LangGraphRuntimeAdapter
@@ -518,3 +524,176 @@ async def test_close_clears_resume_idempotency_state_for_reused_run_id() -> None
 
 async def _collect_runtime_events(adapter: LangGraphRuntimeAdapter, handle: RunHandle) -> list[Any]:
     return [event async for event in adapter.stream(handle)]
+
+
+# ---------------------------------------- Task 7: 跨进程恢复 E2E（真关旧 executor）
+
+
+class _DurableFakeRuntime(BaseRuntime):
+    runtime_type = "durable-fake"
+
+    def native_capabilities(self) -> dict[str, Any]:
+        return {"durable": True}
+
+
+class _DurableFakeAdapter(RuntimeAdapter):
+    """checkpoint/恢复状态放在进程外字典，模拟跨进程 durable runtime。"""
+
+    def __init__(self, durable_state: dict[str, dict[str, Any]]) -> None:
+        super().__init__(_DurableFakeRuntime())
+        self._durable = durable_state
+
+    async def preflight(self) -> None:
+        return None
+
+    async def start(self, request: StartRequest) -> RunHandle:
+        run_id = str(request.metadata.get("run_id") or f"run-{uuid4().hex[:8]}")
+        handle = RunHandle(
+            run_id=run_id,
+            session_id=request.session_id,
+            runtime_type="durable-fake",
+        )
+        self._durable[run_id] = {
+            "handle": handle.model_dump(mode="json"),
+            "interrupts": {"ck-1": "pending"},
+            "resumes": 0,
+        }
+        return handle
+
+    def stream(self, handle: RunHandle):
+        async def _gen():
+            yield RunCompleted(
+                schema_version=2,
+                event_id=f"{handle.run_id}-completed",
+                seq=0,
+                timestamp=1.0,
+                run_id=handle.run_id,
+                scope_id=f"run:{handle.run_id}",
+                status="completed",
+                output_refs=(),
+                source=SourceRef(framework="ksadk"),
+            )
+
+        return _gen()
+
+    async def cancel(self, handle: RunHandle) -> CancelResult:
+        return CancelResult.NOT_RUNNING
+
+    async def resume(self, handle, target, payload):
+        self._durable[handle.run_id]["resumes"] += 1
+        self._durable[handle.run_id]["last_target"] = target.id
+        return handle
+
+    async def checkpoint(self, handle: RunHandle):
+        return CheckpointDescriptor(
+            checkpoint_id="ck-1",
+            invocation_id=handle.run_id,
+            capability=CheckpointCapability(
+                supported=True,
+                granularity="snapshot",
+                rollback_scope="turn",
+                fork_supported=True,
+                durable=True,
+                shared_across_pods=True,
+            ),
+        )
+
+    async def close(self, handle: RunHandle) -> None:
+        # durable 状态进程外存活。
+        return None
+
+    async def attach(self, handle: RunHandle) -> RunHandle:
+        if handle.run_id not in self._durable:
+            raise ValueError(f"unknown run handle: {handle.run_id!r}")
+        return handle
+
+    async def durable_restore(self, handle: RunHandle) -> RunHandle:
+        return await self.attach(handle)
+
+
+@pytest.mark.asyncio
+async def test_crashed_executor_run_is_resumed_by_new_executor_process() -> None:
+    """旧 executor 真正 close_all 后，新 executor 只靠 durable run 行接回并 resume。"""
+    from ksadk.events.session_event import SessionServiceEventStore
+    from ksadk.kernel.memory_store import InMemoryAgentKernelStore
+    from ksadk.kernel.state import RunState
+    from ksadk.kernel.store import ActivationLeaseRequest, RunRecord
+    from ksadk.runtime.adapter import RuntimeRegistry
+    from ksadk.runtime.executor import RuntimeExecutor, handle_digest
+    from ksadk.runtime.launch import RuntimeLaunchContext
+    from ksadk.sessions.in_memory import InMemorySessionService
+    session_id = "cross-process-session"
+    agent_instance = "ai-cross"
+    service = InMemorySessionService()
+    await service.create_session(agent_id="a", user_id="u", session_id=session_id)
+    kernel_store = InMemoryAgentKernelStore(SessionServiceEventStore(service))
+    lease = await kernel_store.acquire_activation(
+        ActivationLeaseRequest(
+            agent_instance_id=agent_instance, session_id=session_id, activation_id="act-1"
+        )
+    )
+    durable_state: dict[str, dict[str, Any]] = {}
+    context = RuntimeLaunchContext(runtime_type="durable-fake", project_dir=Path("."))
+    registry_old = RuntimeRegistry()
+    registry_old.register(
+        "durable-fake", lambda _ctx: _DurableFakeAdapter(durable_state)
+    )
+
+    old_executor = RuntimeExecutor(registry_old, kernel_store=kernel_store)
+    preparation = await old_executor.prepare_start(context)
+    handle = await old_executor.start(
+        context,
+        StartRequest(
+            input="go",
+            user_id="u",
+            session_id=session_id,
+            metadata={"run_id": "run-cross"},
+        ),
+        preparation=preparation,
+    )
+    assert old_executor.is_attached(handle)
+
+    # durable run 行：pending -> running，携带 handle + digest。
+    pending = await kernel_store.save_run_transition(
+        RunRecord(
+            run_id=handle.run_id,
+            agent_instance_id=agent_instance,
+            session_id=session_id,
+            state=RunState.PENDING,
+        ),
+        expected_fence=lease.fencing_token,
+    )
+    running = pending.model_copy(
+        update={
+            "state": RunState.RUNNING,
+            "handle": handle.model_dump(mode="json"),
+        }
+    )
+    running.metadata["handle_digest"] = handle_digest(handle)
+    await kernel_store.save_run_transition(running, expected_fence=lease.fencing_token)
+
+    # 进程崩溃：真正关闭旧 executor，释放 lease（新进程更高 fence 接管）。
+    await old_executor.close_all()
+    assert not old_executor.is_attached(handle)
+    await kernel_store.release_activation(
+        lease.activation_id, expected_fence=lease.fencing_token
+    )
+
+    # 新 executor：不复用 _runs，也没有旧进程的任何内存状态。
+    registry_new = RuntimeRegistry()
+    registry_new.register(
+        "durable-fake", lambda _ctx: _DurableFakeAdapter(durable_state)
+    )
+    new_executor = RuntimeExecutor(registry_new, kernel_store=kernel_store)
+    assert new_executor.find_handle("durable-fake", handle.run_id, session_id) is None
+
+    restored = await new_executor.attach_record(
+        await kernel_store.load_run(handle.run_id), context
+    )
+    assert restored == handle
+    assert new_executor.is_attached(restored)
+    assert not old_executor.is_attached(restored)
+
+    await new_executor.resume(restored, ResumeTarget(kind="checkpoint_id", id="ck-1"), None)
+    assert durable_state[handle.run_id]["resumes"] == 1
+    assert durable_state[handle.run_id]["last_target"] == "ck-1"
