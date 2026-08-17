@@ -1,4 +1,10 @@
 # Agent Kernel v1 合同与稳定错误码的公开入口。
+from ksadk.kernel.authorization import (
+    AgentControlPermitVerifier,
+    JwksSource,
+    PermitExpiredError,
+    VerifiedAdmission,
+)
 from ksadk.kernel.contracts import (
     ActivationLease,
     ActivationWriteGuard,
@@ -27,6 +33,7 @@ from ksadk.kernel.contracts import (
     WireModel,
     WriteContext,
 )
+from ksadk.kernel.control import AgentKernel, default_capability_matrix
 from ksadk.kernel.errors import (
     ERROR_CODES,
     AgentKernelError,
@@ -38,8 +45,17 @@ from ksadk.kernel.errors import (
     StaleFenceError,
     UnsupportedError,
 )
+from ksadk.kernel.worker import AgentKernelWorker, WorkResult
 
 __all__ = [
+    "AgentControlPermitVerifier",
+    "AgentKernel",
+    "AgentKernelWorker",
+    "JwksSource",
+    "PermitExpiredError",
+    "VerifiedAdmission",
+    "WorkResult",
+    "default_capability_matrix",
     "ERROR_CODES",
     "AgentKernelError",
     "ContractMismatchError",

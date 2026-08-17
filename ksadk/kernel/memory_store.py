@@ -232,8 +232,205 @@ class InMemoryAgentKernelStore:
             )
 
     async def load_message(self, message_id: str) -> InboxMessage | None:
-        row = self._messages.get(message_id)
+        row = self._messages.get(str(message_id))
         return self._to_message(row) if row is not None else None
+
+    async def load_by_idempotency(
+        self, session_id: str, idempotency_key: str
+    ) -> InboxMessage | None:
+        message_id = self._idempotency.get((session_id, idempotency_key))
+        if message_id is None:
+            return None
+        return await self.load_message(message_id)
+
+    async def reject_command(
+        self,
+        command: AgentControlCommand,
+        *,
+        status: str,
+        code: str,
+        message: str,
+        retryable: bool = False,
+    ) -> AgentControlReceipt:
+        """admission 拒绝（invalid_permit / unsupported / ...）的脱敏审计 + receipt。
+
+        只在 SessionEventStore 里追加 ``control.command_rejected`` 事实，
+        不写 Inbox 行；payload 仅含 command_id/status/reason。
+        """
+        await self._emit(
+            control_event(
+                session_id=command.session_id,
+                event_type="control.command_rejected",
+                payload={
+                    "command_id": str(command.command_id),
+                    "status": status,
+                    "reason": code,
+                },
+                causation_id=str(command.command_id),
+            ),
+            activation_row=None,
+        )
+        return self._receipt(
+            command,
+            status,
+            error=ControlError(code=code, message=message, retryable=retryable),
+        )
+
+    def _session_rows(
+        self, agent_instance_id: str, session_id: str | None
+    ) -> list[dict[str, Any]]:
+        return [
+            row
+            for row in self._messages.values()
+            if row["agent_instance_id"] == agent_instance_id
+            and (session_id is None or row["session_id"] == session_id)
+        ]
+
+    async def list_messages(
+        self, agent_instance_id: str, session_id: str | None = None
+    ) -> list[InboxMessage]:
+        """全部状态的 Inbox 行（审计/测试视角），按 accepted_seq 排序。"""
+        rows = sorted(
+            self._session_rows(agent_instance_id, session_id),
+            key=lambda row: row["accepted_seq"],
+        )
+        return [self._to_message(row) for row in rows]
+
+    async def list_pending(
+        self,
+        agent_instance_id: str,
+        session_id: str | None = None,
+        *,
+        fencing_token: int | None = None,
+    ) -> list[InboxMessage]:
+        """按 accepted_seq 排序的待处理消息。
+
+        ACCEPTED 总是 pending；CLAIMED 只在传入相同 fencing_token（本 owner
+        自我重试视角）时可见，用于 retryable failure 后的恢复。
+        """
+        rows = []
+        for row in self._session_rows(agent_instance_id, session_id):
+            if row["status"] == InboxState.ACCEPTED:
+                rows.append(row)
+            elif (
+                fencing_token is not None
+                and row["status"] == InboxState.CLAIMED
+                and row["claimed_fence"] == int(fencing_token)
+            ):
+                rows.append(row)
+        rows.sort(key=lambda row: row["accepted_seq"])
+        return [self._to_message(row) for row in rows]
+
+    async def claim_message(
+        self, message_id: str, fencing_token: int
+    ) -> InboxMessage:
+        """按 message_id 认领（worker 选择性 FIFO 使用）。同 fence 重复认领幂等。"""
+        row = self._messages.get(str(message_id))
+        if row is None:
+            raise InvalidCommandError(f"unknown message_id {message_id!r}")
+        async with self._lock(row["agent_instance_id"], row["session_id"]):
+            fresh = self._messages[str(message_id)]
+            if (
+                fresh["status"] == InboxState.CLAIMED
+                and fresh["claimed_fence"] == int(fencing_token)
+            ):
+                return self._to_message(fresh)
+            activation = self._check_fence(
+                fresh["agent_instance_id"], fresh["session_id"], fencing_token
+            )
+            if fresh["status"] != InboxState.ACCEPTED:
+                raise InvalidCommandError(
+                    f"message {message_id!r} is not claimable at status {fresh['status']}"
+                )
+            assert_inbox_transition(InboxState(fresh["status"]), InboxState.CLAIMED)
+            fresh["status"] = InboxState.CLAIMED
+            fresh["claimed_fence"] = int(fencing_token)
+            await self._emit(
+                control_event(
+                    session_id=fresh["session_id"],
+                    event_type="control.message_claimed",
+                    payload={
+                        "message_id": fresh["message_id"],
+                        "fencing_token": int(fencing_token),
+                    },
+                ),
+                activation_row=activation,
+            )
+            return self._to_message(fresh)
+
+    async def discard_claim(self, message_id: str, *, expected_fence: int) -> None:
+        """typed rejection 的确定性收口：CLAIMED -> DISCARDED。"""
+        message_id = str(message_id)
+        row = self._messages.get(message_id)
+        if row is None:
+            raise InvalidCommandError(f"unknown message_id {message_id!r}")
+        async with self._lock(row["agent_instance_id"], row["session_id"]):
+            fresh = self._messages[message_id]
+            activation = self._check_fence(
+                fresh["agent_instance_id"], fresh["session_id"], expected_fence
+            )
+            if (
+                fresh["status"] != InboxState.CLAIMED
+                or fresh["claimed_fence"] != int(expected_fence)
+            ):
+                raise StaleFenceError(
+                    f"message {message_id!r} is not claimed at fence {expected_fence}"
+                )
+            assert_inbox_transition(InboxState(fresh["status"]), InboxState.DISCARDED)
+            fresh["status"] = InboxState.DISCARDED
+            await self._emit(
+                control_event(
+                    session_id=fresh["session_id"],
+                    event_type="control.message_discarded",
+                    payload={
+                        "message_id": message_id,
+                        "fencing_token": int(expected_fence),
+                    },
+                ),
+                activation_row=activation,
+            )
+
+    async def inbox_depth(
+        self, agent_instance_id: str, session_id: str | None = None
+    ) -> int:
+        return sum(
+            1
+            for row in self._session_rows(agent_instance_id, session_id)
+            if row["status"] == InboxState.ACCEPTED
+        )
+
+    async def find_active_run(
+        self, agent_instance_id: str, session_id: str | None = None
+    ) -> RunRecord | None:
+        for run in self._runs.values():
+            if run.agent_instance_id != agent_instance_id:
+                continue
+            if session_id is not None and run.session_id != session_id:
+                continue
+            if is_active_run(run.state):
+                return run
+        return None
+
+    async def current_lease(
+        self, agent_instance_id: str, session_id: str | None = None
+    ) -> ActivationLease | None:
+        for (agent, session), row in self._activations.items():
+            if agent != agent_instance_id:
+                continue
+            if session_id is not None and session != session_id:
+                continue
+            if row.get("released") or self._lease_expired(row):
+                continue
+            request = ActivationLeaseRequest(
+                agent_instance_id=agent,
+                session_id=session,
+                activation_id=row["activation_id"],
+                runtime_type=row["runtime_type"],
+                bundle_digest=row["bundle_digest"],
+                capability_digest=row["capability_digest"],
+            )
+            return self._lease(request, row)
+        return None
 
     @staticmethod
     def _to_message(row: dict[str, Any]) -> InboxMessage:

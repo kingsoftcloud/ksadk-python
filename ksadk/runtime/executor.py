@@ -1,9 +1,15 @@
-"""RuntimeAdapter 的统一生命周期路由与 Handle 所有权。"""
+"""RuntimeAdapter 的统一生命周期路由与 Handle 所有权。
+
+``_runs`` 只是当前进程的 handle cache：status、幂等、恢复资格和 owner 判断的
+真相在 ``AgentKernelStore`` 的 durable Run 行；cache miss 不能等价于 Run 不
+存在（见 :meth:`RuntimeExecutor.resolve_run`）。
+"""
 
 from __future__ import annotations
 
 from contextlib import suppress
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from ksadk.runtime.adapter import (
     CancelResult,
@@ -18,7 +24,26 @@ from ksadk.runtime.adapter import (
 )
 from ksadk.runtime.launch import RuntimeLaunchContext
 
+if TYPE_CHECKING:  # pragma: no cover - import cycle guard
+    from ksadk.kernel.store import AgentKernelStore, RunRecord
+
 _HandleKey = tuple[str, str, str]
+
+
+class RunNotFoundError(LookupError):
+    """durable Store 中不存在该 Run；cache miss 不是证据，必须查 Store。"""
+
+    def __init__(self, run_id: str) -> None:
+        super().__init__(f"durable run not found: {run_id!r}")
+        self.run_id = run_id
+
+
+@dataclass
+class DurableRun:
+    """Store 中的 Run 真相 + 本进程 live handle（可能未 attach）。"""
+
+    run: "RunRecord"
+    live_handle: RunHandle | None = None
 
 
 @dataclass
@@ -39,9 +64,47 @@ class RuntimeStartPreparation:
 class RuntimeExecutor:
     """让每个 Handle 始终回到创建或恢复它的 Adapter 实例。"""
 
-    def __init__(self, registry: RuntimeRegistry) -> None:
+    def __init__(
+        self,
+        registry: RuntimeRegistry,
+        *,
+        kernel_store: "AgentKernelStore | None" = None,
+    ) -> None:
         self._registry = registry
+        self._kernel_store = kernel_store
         self._runs: dict[_HandleKey, _OwnedRun] = {}
+
+    async def resolve_run(self, run_id: str) -> DurableRun:
+        """以 durable Store 为真相解析 Run；cache 只是 live handle 提示。"""
+
+        durable = None
+        if self._kernel_store is not None:
+            durable = await self._kernel_store.load_run(run_id)
+        if durable is None:
+            # 没有 Store 时只能退回 cache；cache miss 不等价于 Run 不存在，
+            # 因此未配置 kernel_store 的旧调用方仍需显式处理缺失。
+            if self._kernel_store is not None:
+                raise RunNotFoundError(run_id)
+            cached = next(
+                (
+                    owned.handle
+                    for (_, rid, _), owned in self._runs.items()
+                    if rid == run_id
+                ),
+                None,
+            )
+            if cached is None:
+                raise RunNotFoundError(run_id)
+            return DurableRun(run=_cache_only_record(cached), live_handle=cached)
+        live = next(
+            (
+                owned.handle
+                for (_, rid, _), owned in self._runs.items()
+                if rid == run_id
+            ),
+            None,
+        )
+        return DurableRun(run=durable, live_handle=live)
 
     async def prepare_start(self, context: RuntimeLaunchContext) -> RuntimeStartPreparation:
         """Preflight a fresh adapter and retain it for the matching ``start``.
@@ -236,6 +299,20 @@ class RuntimeExecutor:
         return preparation.adapter
 
 
+def _cache_only_record(handle: RunHandle) -> "RunRecord":
+    from ksadk.kernel.state import RunState
+    from ksadk.kernel.store import RunRecord
+
+    # 无 kernel_store 的旧调用方路径：state 只能标记 pending，真相以 Store 为准。
+    return RunRecord(
+        run_id=handle.run_id,
+        agent_instance_id="",
+        session_id=handle.session_id,
+        state=RunState.PENDING,
+        metadata={"source": "process_cache", "runtime_type": handle.runtime_type},
+    )
+
+
 def _normalize_runtime_type(runtime_type: str) -> str:
     return runtime_type.strip().lower()
 
@@ -248,4 +325,9 @@ def _handle_key(handle: RunHandle) -> _HandleKey:
     )
 
 
-__all__ = ["RuntimeExecutor", "RuntimeStartPreparation"]
+__all__ = [
+    "RuntimeExecutor",
+    "RuntimeStartPreparation",
+    "DurableRun",
+    "RunNotFoundError",
+]
