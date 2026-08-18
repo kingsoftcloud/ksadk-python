@@ -6,12 +6,43 @@ payload 按 command_type 判别为独立模型。
 """
 from __future__ import annotations
 
-from typing import Literal, Union
+from typing import Annotated, Any, Literal, Union
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
-type JsonValue = None | bool | int | float | str | list[JsonValue] | dict[str, JsonValue]
+
+def _validate_json_value(value: Any) -> Any:
+    """运行时校验 JsonValue（py3.10 兼容取舍）。
+
+    Pydantic 2 对旧式递归 Union alias 在类型求值阶段直接 RecursionError
+    （实测 3.10/3.11 + pydantic 2.13 均如此），PEP 695 ``type`` 语句又是
+    3.12+ 语法。因此 ``JsonValue = Annotated[Any, AfterValidator(...)]``：
+    静态上不再递归，运行时保证值是合法 JSON（str key / 基本类型递归）。
+    """
+
+    def walk(node: Any) -> None:
+        if node is None or isinstance(node, (str, bool, int, float)):
+            return
+        if isinstance(node, dict):
+            for key, item in node.items():
+                if not isinstance(key, str):
+                    raise ValueError(
+                        f"JsonValue dict keys must be str, got {type(key).__name__}"
+                    )
+                walk(item)
+            return
+        if isinstance(node, list):
+            for item in node:
+                walk(item)
+            return
+        raise ValueError(f"value is not JSON-serializable: {type(node).__name__}")
+
+    walk(value)
+    return value
+
+
+JsonValue = Annotated[Any, AfterValidator(_validate_json_value)]
 
 
 class WireModel(BaseModel):

@@ -216,3 +216,21 @@ def test_unsupported_with_native_mode_is_invalid():
 def test_status_snapshot_embeds_capability():
     parsed = AgentStatusSnapshot.model_validate(load_fixture("agent-status-snapshot.json"))
     assert parsed.capability.schema_version == 1
+
+
+def test_json_value_accepts_recursive_json_and_round_trips():
+    payload = {"a": [1, None, {"b": 1.5, "c": [True, "x"]}], "d": "e"}
+    raw = load_fixture("agent-control-enqueue.json")
+    raw["payload"]["content"] = payload
+    command = AgentControlCommand.model_validate(raw)
+    assert command.payload["content"] == payload
+    assert json.loads(command.model_dump_json())["payload"]["content"] == payload
+
+
+def test_json_value_rejects_non_json_values():
+    for bad in ({1: "non-str key"}, {"bad": object()}, ["nested", {"x": object()}]):
+        raw = load_fixture("agent-control-enqueue.json")
+        raw["idempotency_key"] = "json-value-reject"
+        raw["payload"]["content"] = bad
+        with pytest.raises(ValidationError):
+            AgentControlCommand.model_validate(raw)
