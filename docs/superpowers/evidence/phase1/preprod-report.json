@@ -197,23 +197,33 @@
     }
   },
   "environment": "pre",
-  "failed_checks": [],
-  "generated_at": "2026-08-17T22:08:42Z",
+  "failed_checks": [
+    "contract_digest",
+    "fifo",
+    "idempotency",
+    "phase0_baseline",
+    "queue_full",
+    "reconnect",
+    "stale_fence"
+  ],
+  "generated_at": "2026-08-18T01:12:45Z",
   "passed_checks": [
     "audit",
     "cold_recovery",
-    "contract_digest",
     "cross_repo_versions",
-    "fifo",
-    "idempotency",
-    "queue_full",
-    "reconnect",
     "rollback",
-    "split_brain",
-    "stale_fence"
+    "split_brain"
   ],
-  "reasons": [],
+  "reasons": [
+    "phase0_baseline requires an accepted manifest at 'docs/superpowers/evidence/phase0/manifest.json' (missing or accepted != true)",
+    "required check 'contract_digest' claims pass without a non-empty detail",
+    "required check 'fifo' claims pass without a non-empty detail",
+    "required check 'idempotency' claims pass without a non-empty detail",
+    "required check 'queue_full' claims pass without a non-empty detail",
+    "required check 'reconnect' claims pass without a non-empty detail",
+    "required check 'stale_fence' detail lacks a traceable identifier (allowed: ['command_id', 'event_id'], found: [])"
+  ],
   "scenario": "full_closure",
   "skipped_checks": [],
-  "status": "pass"
+  "status": "fail"
 }

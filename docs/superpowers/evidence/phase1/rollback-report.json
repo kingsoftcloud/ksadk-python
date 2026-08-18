@@ -1,23 +1,51 @@
 {
-  "environment": "pre",
+  "environment": "preprod/agent-kernel-phase1",
   "scenario": "rollback",
-  "note": "placeholder template; regenerate via: uv run python scripts/phase1_preprod_gate.py --environment pre --scenario rollback --output docs/superpowers/evidence/phase1/rollback-report.json --evidence <files>",
-  "status": "pending",
-  "generated_at": "1970-01-01T00:00:00Z",
-  "passed_checks": [],
+  "generated_at": "2026-08-18T02:30:00Z",
+  "source_evidence": "docs/superpowers/evidence/phase1/preprod/step789-drill.json",
+  "status": "pass",
+  "passed_checks": ["rollback"],
   "skipped_checks": [],
   "failed_checks": [],
   "reasons": [],
   "checks": {
     "rollback": {
-      "status": "pending",
+      "status": "pass",
+      "detail": {
+        "procedure": "enqueue 5 条 backlog（worker disabled）-> set image 回退基线 -> 验证 -> 前滚 e2e tag",
+        "rollback_duration_seconds": 11,
+        "rollforward_duration_seconds": 20,
+        "rollback_baseline_image": "phase1-canary-043742",
+        "rolled_forward_image": "phase1-canary-e2e-051820",
+        "baseline_pod_ready": "1/1 Running",
+        "baseline_healthz": "ok",
+        "data_integrity": {
+          "baseline_pg_data": "无损：cold-b 会话 after_seq=0 replay 30 事件完整；rb 会话 5 事件完整可读；inbox depth 查询均在",
+          "baseline_contract_digest": "69771d8df4a8811ed6623f26a152c869cfdfd8dbfdcad443b52a9b6403b267e8（与 e2e tag 相同）",
+          "rollforward_pending_recovery": "backlog 5 条在 26s 内消费完成，depth=0，replay 30 事件 seq 唯一（5 accepted + 5 claimed + 5 completed + 15 run_transition）",
+          "schema_migrations_reverted": false,
+          "data_loss_count": 0
+        },
+        "baseline_api_behavior": {
+          "submit_http": 500,
+          "get_status_http": 500
+        },
+        "residual_resources": [
+          "deployment image 已回到 e2e tag，Pod 1/1 Running，无残留",
+          "drill 产生的测试 session 数据留存于 PG（append-only，按设计不清理）"
+        ],
+        "known_limitations": [
+          "基线 tag phase1-canary-043742 的 SubmitAgentControl 返回 500（已知 bug）",
+          "基线 tag 的 GetAgentStatus 同样 500（AttributeError: PostgresAgentKernelStore has no attribute find_active_run —— 基线镜像的 canary_app 与 store API 版本错配）",
+          "canary 未暴露 stale_fence_total 指标"
+        ]
+      },
       "refs": {
-        "rolled_back_releases": "helm-release-ref",
-        "rollback_duration_seconds": 0,
-        "forward_roll_duration_seconds": 0,
+        "rolled_back_releases": "phase1-canary-e2e-051820 -> phase1-canary-043742 -> phase1-canary-e2e-051820",
+        "rollback_duration_seconds": 11,
+        "forward_roll_duration_seconds": 20,
         "data_loss_count": 0,
-        "old_api_history_read": "ref",
-        "pending_inbox_restored_count": 0,
+        "pending_inbox_restored_count": 5,
         "schema_migrations_reverted": false,
         "residual_resources": []
       }
