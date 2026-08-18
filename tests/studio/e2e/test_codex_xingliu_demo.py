@@ -71,7 +71,7 @@ async def test_codex_studio_reviews_source_through_real_xingliu(
     assert run.status == RunStatus.COMPLETED, run.error
     assert run.output
     assert run.manifest_sha256 == snapshot.manifest_sha256
-    events = run_service.event_store.events(run.id)
+    events = await run_service.events(run.id)
     event_types = [event.type for event in events]
     assert "proxy.requested" in event_types
     assert "proxy.upstream" in event_types

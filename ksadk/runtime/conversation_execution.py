@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import asdict
 from typing import Any
+from uuid import uuid4
 
 from ksadk.conversations.run_kinds import RUN_MODE_FOREGROUND
 from ksadk.conversations.runtime_compaction import preview_auto_compaction
@@ -118,6 +119,7 @@ async def iter_runtime_conversation_events(
         model=model,
         metadata={
             "invocation_id": prepared.invocation_id,
+            "trace_id": uuid4().hex,
             CONVERSATION_PREPROCESSING_METADATA_KEY: conversation_request,
         },
     )
@@ -338,9 +340,7 @@ def _resume_target(resume_input: Mapping[str, Any]) -> ResumeTarget:
     framework = str(resume_input.get("framework") or "").strip().lower()
     framework_ref = resume_input.get("framework_ref")
     raw_runtime_ref = framework_ref.get(framework) if isinstance(framework_ref, Mapping) else None
-    runtime_ref: Mapping[str, Any] = (
-        raw_runtime_ref if isinstance(raw_runtime_ref, Mapping) else {}
-    )
+    runtime_ref: Mapping[str, Any] = raw_runtime_ref if isinstance(raw_runtime_ref, Mapping) else {}
     checkpoint_id = str(resume_input.get("checkpoint_id") or "").strip()
     run_id = str(resume_input.get("run_id") or "").strip()
     if framework == "langgraph":

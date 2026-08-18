@@ -41,6 +41,8 @@ class EventPhase(str, Enum):
 class EventType:
     """v1 事件族清单(冻结)。按族分组;每族注释标明 payload 关键字段。"""
 
+    # user input. payload: text, message_id?
+    USER_MESSAGE = "user.message"
     # text(相位:commentary/final_answer)。payload: text, message_id
     TEXT_DELTA = "text.delta"
     TEXT_COMPLETED = "text.completed"
@@ -64,6 +66,14 @@ class EventType:
     RUN_COMPLETED = "run.completed"
     RUN_FAILED = "run.failed"
     RUN_CANCELED = "run.canceled"
+    # turn/step/model 生命周期。payload 关键字段见 EVENT_PAYLOAD_REQUIRED_KEYS
+    TURN_STARTED = "turn.started"
+    TURN_COMPLETED = "turn.completed"
+    STEP_STARTED = "step.started"
+    STEP_COMPLETED = "step.completed"
+    MODEL_CALL_BEGIN = "model.call.begin"
+    MODEL_CALL_FIRST_TOKEN = "model.call.first_token"
+    MODEL_CALL_END = "model.call.end"
     # context preprocessing. payload: phase, trigger; completed also carries cursor
     CONTEXT_COMPACTION_STARTED = "context.compaction.started"
     CONTEXT_COMPACTION_COMPLETED = "context.compaction.completed"
@@ -87,6 +97,7 @@ class EventType:
 #: 全部 v1 事件类型(供校验/枚举)。
 ALL_EVENT_TYPES: frozenset[str] = frozenset(
     {
+        EventType.USER_MESSAGE,
         EventType.TEXT_DELTA,
         EventType.TEXT_COMPLETED,
         EventType.REASONING_DELTA,
@@ -103,6 +114,13 @@ ALL_EVENT_TYPES: frozenset[str] = frozenset(
         EventType.RUN_COMPLETED,
         EventType.RUN_FAILED,
         EventType.RUN_CANCELED,
+        EventType.TURN_STARTED,
+        EventType.TURN_COMPLETED,
+        EventType.STEP_STARTED,
+        EventType.STEP_COMPLETED,
+        EventType.MODEL_CALL_BEGIN,
+        EventType.MODEL_CALL_FIRST_TOKEN,
+        EventType.MODEL_CALL_END,
         EventType.CONTEXT_COMPACTION_STARTED,
         EventType.CONTEXT_COMPACTION_COMPLETED,
         EventType.CHECKPOINT_CREATED,
@@ -122,6 +140,7 @@ ALL_EVENT_TYPES: frozenset[str] = frozenset(
 #: 各 event_type 的 payload 必填键(conformance 用;additive —— 只允许增键)。
 #: 信封字段是硬冻结;payload 必填键是 v1 最低契约,后续版本只能加可选键。
 EVENT_PAYLOAD_REQUIRED_KEYS: dict[str, frozenset[str]] = {
+    EventType.USER_MESSAGE: frozenset({"text"}),
     EventType.TEXT_DELTA: frozenset({"text"}),
     EventType.TEXT_COMPLETED: frozenset({"text"}),
     EventType.REASONING_DELTA: frozenset({"text"}),
@@ -138,6 +157,13 @@ EVENT_PAYLOAD_REQUIRED_KEYS: dict[str, frozenset[str]] = {
     EventType.RUN_COMPLETED: frozenset({"status"}),
     EventType.RUN_FAILED: frozenset({"status", "error"}),
     EventType.RUN_CANCELED: frozenset({"status"}),
+    EventType.TURN_STARTED: frozenset({"turn_index"}),
+    EventType.TURN_COMPLETED: frozenset({"turn_index", "status", "duration_ms"}),
+    EventType.STEP_STARTED: frozenset({"step_index"}),
+    EventType.STEP_COMPLETED: frozenset({"step_index", "status", "duration_ms"}),
+    EventType.MODEL_CALL_BEGIN: frozenset({"model_call_id", "model"}),
+    EventType.MODEL_CALL_FIRST_TOKEN: frozenset({"model_call_id", "ttft_ms"}),
+    EventType.MODEL_CALL_END: frozenset({"model_call_id", "status", "duration_ms"}),
     EventType.CONTEXT_COMPACTION_STARTED: frozenset({"phase", "trigger"}),
     EventType.CONTEXT_COMPACTION_COMPLETED: frozenset(
         {"phase", "trigger", "compacted_until_seq_id"}
@@ -182,6 +208,11 @@ class RuntimeEvent(BaseModel):
     session_id: str
     invocation_id: str
     seq_id: int
+    turn_id: Optional[str] = None
+    step_id: Optional[str] = None
+    parent_event_id: Optional[str] = None
+    trace_id: Optional[str] = None
+    span_id: Optional[str] = None
     phase: Optional[Literal["commentary", "final_answer"]] = None
     payload: dict[str, Any] = Field(default_factory=dict)
 
@@ -197,6 +228,11 @@ class RuntimeEvent(BaseModel):
         session_id: str,
         invocation_id: str,
         seq_id: int,
+        turn_id: Optional[str] = None,
+        step_id: Optional[str] = None,
+        parent_event_id: Optional[str] = None,
+        trace_id: Optional[str] = None,
+        span_id: Optional[str] = None,
         payload: Optional[dict[str, Any]] = None,
         phase: Optional[str] = None,
         event_id: Optional[str] = None,
@@ -212,6 +248,11 @@ class RuntimeEvent(BaseModel):
             session_id=session_id,
             invocation_id=invocation_id,
             seq_id=seq_id,
+            turn_id=turn_id,
+            step_id=step_id,
+            parent_event_id=parent_event_id,
+            trace_id=trace_id,
+            span_id=span_id,
             phase=phase,  # type: ignore[arg-type]
             payload=payload or {},
         )

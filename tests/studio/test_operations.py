@@ -127,6 +127,32 @@ async def test_operation_passes_id_to_runner(workspace):
 
 
 @pytest.mark.asyncio
+async def test_operation_list_filters_kind_and_persists_metadata(workspace):
+    manager = OperationManager(workspace)
+    evaluation = manager.submit(
+        kind=OperationKind.EVALUATION,
+        resource_id="eval_demo",
+        idempotency_key="evaluation-list",
+        metadata={"evalset": {"name": "smoke", "caseCount": 2}},
+        runner=lambda _operation_id: asyncio.sleep(0),
+    )
+    build = manager.submit(
+        kind=OperationKind.BUILD,
+        resource_id="build_demo",
+        idempotency_key="build-list",
+        runner=lambda _operation_id: asyncio.sleep(0),
+    )
+    await manager.wait(evaluation.id)
+    await manager.wait(build.id)
+
+    listed = manager.list(kind=OperationKind.EVALUATION)
+
+    assert [operation.id for operation in listed] == [evaluation.id]
+    assert listed[0].metadata == {"evalset": {"name": "smoke", "caseCount": 2}}
+    assert OperationManager(workspace).get(evaluation.id).metadata == listed[0].metadata
+
+
+@pytest.mark.asyncio
 async def test_restart_marks_non_terminal_operation_interrupted(workspace):
     first = OperationManager(workspace)
     gate = asyncio.Event()

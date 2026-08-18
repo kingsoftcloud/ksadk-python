@@ -124,14 +124,17 @@ async def test_conversation_preprocessing_preserves_history_in_codex_prompt() ->
         input="current",
         user_id="u",
         session_id="s",
+        agent_id="agent-1",
         metadata={
+            "invocation_id": "run-1",
+            "trace_id": "b" * 32,
             CONVERSATION_PREPROCESSING_METADATA_KEY: {
                 "messages": [
                     {"role": "user", "content": "previous"},
                     {"role": "assistant", "content": "answer"},
                     {"role": "user", "content": "current"},
                 ]
-            }
+            },
         },
     )
 
@@ -139,7 +142,17 @@ async def test_conversation_preprocessing_preserves_history_in_codex_prompt() ->
     events = [event async for event in adapter.stream(handle)]
 
     assert client.prompts == ["User: previous\n[上一轮已回复: answer]\nUser: current"]
-    assert events[-1].event_type == EventType.RUN_COMPLETED
+    assert [event.event_type for event in events[:2]] == [
+        EventType.RUN_STARTED,
+        EventType.TURN_STARTED,
+    ]
+    assert [event.event_type for event in events[-2:]] == [
+        EventType.TURN_COMPLETED,
+        EventType.RUN_COMPLETED,
+    ]
+    assert {event.trace_id for event in events} == {"b" * 32}
+    assert len({event.turn_id for event in events}) == 1
+    assert adapter.runtime.native_capabilities()["model_call_boundaries"] is False
 
 
 @pytest.mark.asyncio

@@ -118,6 +118,8 @@ async def test_runtime_conversation_prepares_once_persists_and_closes_terminal_r
 
     assert prepared["session_id"] == request.session_id
     assert prepared["user_input"] == "hello"
+    assert len(request.metadata["trace_id"]) == 32
+    assert request.metadata["trace_id"].isalnum()
     assert [event.event_type for event in events] == [
         EventType.RUN_STARTED,
         EventType.TEXT_COMPLETED,
@@ -140,9 +142,10 @@ async def test_runtime_conversation_prepares_once_persists_and_closes_terminal_r
             runtime_type="fixture",
         )
     ]
-    assert executor.find_handle(
-        "fixture", request.metadata["invocation_id"], request.session_id
-    ) is None
+    assert (
+        executor.find_handle("fixture", request.metadata["invocation_id"], request.session_id)
+        is None
+    )
 
 
 @pytest.mark.asyncio

@@ -11,12 +11,8 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 from ksadk.evaluation import (
-    CloudDatasetRef,
-    CloudEvalSetService,
     EvaluationConfig as PublicEvaluationConfig,
 )
-from ksadk.evaluation.agent_eval_client import AgentEvalCloudDatasetClient
-from ksadk.evaluation.cloud_service import CloudDatasetClient, CloudEvalSetCatalogItem
 from ksadk.evaluation import (
     EvaluationExecutionError,
     EvaluationNotImplementedError,
@@ -37,7 +33,11 @@ from ksadk.evaluation.studio_build_adapter import (
     StudioBuildTargetAdapter,
     StudioBuildTargetError,
 )
+from ksadk.events.store import RuntimeEventStore
+from ksadk.observability.session_log import SessionLogError, export_session_log
+from ksadk.observability.trajectory import encode_sse, project_trajectory_event
 from ksadk.runtime import RuntimeExecutor, build_default_runtime_registry
+from ksadk.sessions.local_service import LocalSessionService
 from ksadk.studio.agent_avatar_assets import AgentAvatarAssetStore
 from ksadk.studio.agent_lifecycle import delete_framework_agent
 from ksadk.studio.authoring_coordinator import StudioAuthoringCoordinator
@@ -97,6 +97,14 @@ from ksadk.studio.templates import (
 from ksadk.studio.validator import AgentValidator
 from ksadk.studio.workspace import Workspace
 
+_TRAJECTORY_KEEPALIVE_SECONDS = 15.0
+_EVALUATION_TARGET_LABELS = {
+    TargetKind.A2A: "A2A Agent",
+    TargetKind.LOCAL_SOURCE: "本地源码",
+    TargetKind.STUDIO_BUILD: "Studio Build",
+    TargetKind.CODEX_WORKTREE: "Codex Worktree",
+}
+
 
 @dataclass(frozen=True)
 class _OperationResource:
@@ -111,7 +119,6 @@ class StudioService:
         model_client: OpenAICompatibleModelClient | None = None,
         credential_resolver: CredentialResolver | None = None,
         cloud_gateway: CloudDeploymentGateway | None = None,
-        cloud_evalset_client: CloudDatasetClient | None = None,
         codex_runtime_inspector: RuntimeInspector | None = None,
         runtime_executor: RuntimeExecutor | None = None,
     ) -> None:
@@ -133,7 +140,8 @@ class StudioService:
             repository=self.builds,
         )
         self.event_store = RunEventStore(self.workspace)
-        self.event_store.recover_interrupted()
+        self.session_service = LocalSessionService(project_dir=str(self.workspace.root))
+        self.runtime_events = RuntimeEventStore(self.session_service)
         self.codex_manifests = CodexManifestRepository(self.workspace)
         self.codex_builds = CodexBuildRepository(self.workspace)
         self.codex_drafts = CodexDraftRepository(self.workspace)
@@ -155,6 +163,8 @@ class StudioService:
             self.workspace,
             self.runtime_executor,
             event_store=self.event_store,
+            session_service=self.session_service,
+            runtime_events=self.runtime_events,
         )
         self.credentials = (
             credential_resolver
@@ -183,12 +193,7 @@ class StudioService:
             build_repository=self.builds,
         )
         self.operations = OperationManager(self.workspace)
-        self.evaluation_storage = EvaluationStorage(
-            self.workspace.resolve(".agentkit/evaluations")
-        )
-        if cloud_evalset_client is None:
-            cloud_evalset_client = AgentEvalCloudDatasetClient()
-        self.cloud_evalsets = CloudEvalSetService(self.workspace.root, cloud_evalset_client)
+        self.evaluation_storage = EvaluationStorage(self.workspace.resolve(".agentkit/evaluations"))
         self.authoring = StudioAuthoringCoordinator(self)
         self.codex_agents = CodexAgentService(self)
 
@@ -296,6 +301,119 @@ class StudioService:
                 details={"sessionId": session_id},
             )
         self.event_store.delete_session(session_id)
+
+    async def _require_runtime_session(self, session_id: str) -> None:
+        if await self.session_service.get_session_metadata(session_id) is None:
+            raise StudioError(
+                "SESSION_NOT_FOUND",
+                "session 不存在",
+                status_code=404,
+                details={"id": session_id},
+            )
+
+    async def trajectory_page(
+        self,
+        session_id: str,
+        *,
+        before_seq_id: int | None = None,
+        invocation_id: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        await self._require_runtime_session(session_id)
+        events = await self.runtime_events.list(
+            session_id,
+            before_seq_id=before_seq_id,
+            invocation_id=invocation_id,
+            limit=limit,
+        )
+        oldest_seq_id = events[0].seq_id if events else None
+        latest_seq_id = events[-1].seq_id if events else None
+        older = (
+            await self.runtime_events.list(
+                session_id,
+                before_seq_id=oldest_seq_id,
+                invocation_id=invocation_id,
+                limit=1,
+            )
+            if oldest_seq_id is not None
+            else []
+        )
+        return {
+            "items": [project_trajectory_event(event) for event in events],
+            "page": {
+                "oldestSeqId": oldest_seq_id,
+                "latestSeqId": latest_seq_id,
+                "hasMore": bool(older),
+            },
+        }
+
+    async def stream_trajectory(
+        self,
+        session_id: str,
+        after_seq_id: int = 0,
+        *,
+        invocation_id: str | None = None,
+    ):
+        await self._require_runtime_session(session_id)
+        cursor = after_seq_id
+        while True:
+            async for event in self.runtime_events.subscribe_session(
+                session_id,
+                after_seq_id=cursor,
+                timeout=_TRAJECTORY_KEEPALIVE_SECONDS,
+            ):
+                cursor = event.seq_id
+                if invocation_id is not None and event.invocation_id != invocation_id:
+                    continue
+                yield encode_sse(project_trajectory_event(event), event_id=cursor)
+            yield ": keepalive\n\n"
+
+    async def export_runtime_session(
+        self,
+        session_id: str,
+        *,
+        filename: str,
+        invocation_id: str | None = None,
+    ) -> dict[str, Any]:
+        await self._require_runtime_session(session_id)
+        relative = Path(filename)
+        if (
+            not filename
+            or relative.is_absolute()
+            or len(relative.parts) != 1
+            or relative.name in {".", ".."}
+        ):
+            raise StudioError(
+                "SESSION_EXPORT_FILENAME_INVALID",
+                "导出文件名必须是普通文件名",
+                status_code=422,
+                field="filename",
+            )
+
+        export_dir = self.workspace.resolve(".agentkit/exports")
+        export_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        export_dir.chmod(0o700)
+        try:
+            result = await export_session_log(
+                self.session_service,
+                session_id,
+                export_dir / relative.name,
+                invocation_id=invocation_id,
+            )
+        except SessionLogError as exc:
+            code = str(exc).partition(":")[0]
+            raise StudioError(
+                code,
+                str(exc),
+                status_code=409 if code == "SESSION_LOG_TARGET_EXISTS" else 422,
+            ) from exc
+        return {
+            "path": result.path.relative_to(self.workspace.root).as_posix(),
+            "eventCount": result.event_count,
+            "firstSeqId": result.first_seq_id,
+            "lastSeqId": result.last_seq_id,
+            "exportedThroughSeqId": result.exported_through_seq_id,
+        }
 
     async def test_model_profile(self, resource_id: str) -> dict:
         return await test_model_profile_connection(
@@ -900,84 +1018,45 @@ class StudioService:
 
     def submit_public_evaluation(
         self,
-        evalset_file: str | None,
+        evalset_file: str,
         target: TargetRef,
         config: PublicEvaluationConfig,
         *,
         idempotency_key: str,
-        cloud_dataset: CloudDatasetRef | None = None,
     ) -> Operation:
         """Queue the public CLI/Studio handoff without exposing adapter internals."""
 
-        if (evalset_file is None) == (cloud_dataset is None):
+        try:
+            path = self.workspace.resolve(evalset_file, must_exist=True)
+        except StudioError:
+            raise
+        if not path.is_file():
             raise StudioError(
-                "EVALSET_SOURCE_INVALID",
-                "必须且只能指定本地 EvalSet 或云端 Dataset version",
+                "EVALSET_FILE_INVALID",
+                "EvalSet 必须是工作区内的文件",
                 status_code=422,
+                field="evalsetFile",
             )
-        evalset = None
-        if evalset_file is not None:
-            try:
-                path = self.workspace.resolve(evalset_file, must_exist=True)
-            except StudioError:
-                raise
-            if not path.is_file():
-                raise StudioError(
-                    "EVALSET_FILE_INVALID",
-                    "EvalSet 必须是工作区内的文件",
-                    status_code=422,
-                    field="evalsetFile",
-                )
-            try:
-                evalset = load_evalset(path)
-            except EvalSetParseError as exc:
-                raise StudioError(
-                    exc.code,
-                    str(exc),
-                    status_code=422,
-                    field="evalsetFile",
-                ) from exc
+        try:
+            evalset = load_evalset(path)
+        except EvalSetParseError as exc:
+            raise StudioError(
+                exc.code,
+                str(exc),
+                status_code=422,
+                field="evalsetFile",
+            ) from exc
         target = self._normalize_public_evaluation_target(target)
+        request = PublicEvaluationRequest(
+            evalset=evalset,
+            target=target,
+            config=config,
+            report_dir=str(self.evaluation_storage.root),
+        )
         evaluation_id = f"eval_{uuid4().hex}"
 
         async def runner(operation_id: str):
             try:
-                resolved_evalset = evalset
-                resolved_cloud_dataset = cloud_dataset
-                if cloud_dataset is not None:
-                    if self.cloud_evalsets is None:
-                        raise StudioError(
-                            "EVALUATION_CLOUD_UNAVAILABLE",
-                            "agent-eval 云端评测集服务未配置",
-                            status_code=503,
-                        )
-                    try:
-                        pulled = await self.cloud_evalsets.pull(
-                            dataset_id=cloud_dataset.dataset_id,
-                            version=cloud_dataset.version,
-                            project_id=cloud_dataset.project_id,
-                        )
-                    except Exception as exc:
-                        raise StudioError(
-                            "EVALUATION_CLOUD_READ_FAILED",
-                            "固定云端 Dataset version 读取失败",
-                            status_code=502,
-                        ) from exc
-                    resolved_evalset = pulled.evalset
-                    resolved_cloud_dataset = pulled.cloud_dataset
-                if resolved_evalset is None:
-                    raise StudioError(
-                        "EVALSET_SOURCE_INVALID",
-                        "未解析出可执行的 EvalSet",
-                        status_code=422,
-                    )
-                request = PublicEvaluationRequest(
-                    evalset=resolved_evalset,
-                    target=target,
-                    config=config,
-                    report_dir=str(self.evaluation_storage.root),
-                    cloud_dataset=resolved_cloud_dataset,
-                )
                 adapter = self._public_evaluation_adapter(request)
                 report = await execute_evaluation(
                     request,
@@ -1007,11 +1086,120 @@ class StudioService:
             kind=OperationKind.EVALUATION,
             resource_id=evaluation_id,
             idempotency_key=idempotency_key,
+            metadata={
+                "evalset": {"name": evalset.name, "caseCount": len(evalset.cases)},
+                "target": {
+                    "kind": target.kind.value,
+                    "label": self._evaluation_target_label(
+                        target.kind,
+                        build_id=target.locator,
+                    ),
+                },
+                "evaluators": list(config.evaluators),
+            },
             runner=runner,
         )
 
     def list_public_evaluations(self):
         return self.evaluation_storage.list_reports()
+
+    def list_public_evaluation_runs(self) -> list[dict[str, Any]]:
+        return [
+            self._public_evaluation_run(operation)
+            for operation in self.operations.list(kind=OperationKind.EVALUATION)
+        ]
+
+    def get_public_evaluation_run(self, evaluation_id: str) -> dict[str, Any]:
+        operation = next(
+            (
+                item
+                for item in self.operations.list(kind=OperationKind.EVALUATION)
+                if item.resource_id == evaluation_id
+            ),
+            None,
+        )
+        if operation is None:
+            raise StudioError(
+                "EVALUATION_RUN_NOT_FOUND",
+                "Evaluation Run 不存在",
+                status_code=404,
+                details={"id": evaluation_id},
+            )
+        return self._public_evaluation_run(operation, include_report=True)
+
+    def _public_evaluation_run(
+        self, operation: Operation, *, include_report: bool = False
+    ) -> dict[str, Any]:
+        try:
+            report = self.evaluation_storage.read_report(operation.resource_id)
+        except EvaluationStorageError:
+            report = None
+        progress = None
+        for event in self.operations.events(operation.id):
+            if event.type == "evaluation.case.started":
+                progress = {
+                    "current": event.data.get("index", 0),
+                    "total": event.data.get("total", 0),
+                    "caseId": event.data.get("caseId"),
+                }
+        metadata = operation.metadata or {}
+        evalset = metadata.get("evalset")
+        target = metadata.get("target")
+        evaluators = metadata.get("evaluators")
+        if report is not None:
+            if not evalset:
+                evalset = {
+                    "name": report.spec.evalset.name,
+                    "caseCount": len(report.spec.evalset.cases),
+                }
+            if not target:
+                target = {
+                    "kind": report.spec.target.kind.value,
+                    "label": self._evaluation_target_label(
+                        report.spec.target.kind,
+                        metadata=report.spec.target.metadata,
+                    ),
+                }
+            if not evaluators:
+                evaluators = list(report.spec.config.evaluators)
+        payload: dict[str, Any] = {
+            "id": operation.resource_id,
+            "operationId": operation.id,
+            "status": report.status.value if report else operation.status,
+            "createdAt": operation.created_at,
+            "completedAt": operation.completed_at,
+            "evalset": evalset or {},
+            "target": target or {},
+            "evaluators": evaluators or [],
+            "progress": progress,
+            "summary": report.summary if report else None,
+            "hasReport": report is not None,
+            "error": operation.error,
+        }
+        if include_report:
+            payload["report"] = report
+        return payload
+
+    def _evaluation_target_label(
+        self,
+        kind: TargetKind,
+        *,
+        build_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> str:
+        if kind is not TargetKind.STUDIO_BUILD:
+            return _EVALUATION_TARGET_LABELS[kind]
+        agent_id = str((metadata or {}).get("agentId") or "")
+        if not agent_id and build_id:
+            agent_id = self.builds.get(build_id).agent_id
+        if not agent_id:
+            return _EVALUATION_TARGET_LABELS[kind]
+        try:
+            return self.drafts.get(agent_id).metadata.name
+        except StudioError as exc:
+            if exc.status_code != 404:
+                raise
+            return agent_id
 
     def evaluation_catalog(self) -> dict[str, list[dict]]:
         builds = [
@@ -1050,18 +1238,42 @@ class StudioService:
         evalsets.sort(key=lambda item: item["path"])
         return {"builds": builds, "evalsets": evalsets}
 
-    async def evaluation_cloud_catalog(
-        self,
-        *,
-        project_id: str | None = None,
-    ) -> list[CloudEvalSetCatalogItem]:
-        if self.cloud_evalsets is None:
+    def import_evaluation_file(self, content: bytes, *, filename: str) -> dict:
+        if len(content) > 2 * 1024 * 1024:
             raise StudioError(
-                "EVALUATION_CLOUD_UNAVAILABLE",
-                "agent-eval 云端评测集服务未配置",
-                status_code=503,
+                "EVALSET_FILE_TOO_LARGE",
+                "EvalSet 文件不能超过 2 MiB",
+                status_code=413,
+                field="file",
             )
-        return await self.cloud_evalsets.catalog(project_id=project_id)
+        safe_name = Path(filename.replace("\\", "/")).name or "evalset.yaml"
+        if Path(safe_name).suffix.lower() not in {".yaml", ".yml", ".json"}:
+            raise StudioError(
+                "EVALSET_FILE_TYPE_INVALID",
+                "EvalSet 只支持 YAML 或 JSON 文件",
+                status_code=422,
+                field="file",
+            )
+        target = self.workspace.resolve(
+            Path("evaluations/uploads") / f"{uuid4().hex[:12]}-{safe_name}"
+        )
+        self.workspace.atomic_write_bytes(target, content)
+        try:
+            evalset = load_evalset(target)
+        except EvalSetParseError as exc:
+            target.unlink(missing_ok=True)
+            raise StudioError(
+                exc.code,
+                str(exc),
+                status_code=422,
+                field="file",
+            ) from exc
+        return {
+            "path": self.workspace.relative(target),
+            "name": evalset.name,
+            "caseCount": len(evalset.cases),
+            "contentDigest": evalset.content_digest,
+        }
 
     def get_public_evaluation(self, evaluation_id: str):
         try:

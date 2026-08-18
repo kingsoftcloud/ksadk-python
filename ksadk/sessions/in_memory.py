@@ -13,6 +13,7 @@ class InMemorySessionService(BaseSessionService):
     def __init__(self):
         self._sessions: dict[str, Session] = {}
         self._states: dict[tuple[str, str, str, str], SessionState] = {}
+        self._event_ids: set[str] = set()
         self._lock = asyncio.Lock()
 
     async def create_session(
@@ -91,6 +92,7 @@ class InMemorySessionService(BaseSessionService):
             session = self._sessions.pop(session_id, None)
             if not session:
                 return False
+            self._event_ids.difference_update(event.id for event in session.events)
             self._states.pop(
                 self._state_key(
                     "session",
@@ -140,7 +142,10 @@ class InMemorySessionService(BaseSessionService):
             stored.seq_id = len(session.events) + 1
             if not stored.id:
                 stored.id = generate_id()
+            if stored.id in self._event_ids:
+                raise ValueError(f"Event {stored.id} already exists")
             session.events.append(stored)
+            self._event_ids.add(stored.id)
             session.updated_at = time.time()
 
             if stored.state_delta:

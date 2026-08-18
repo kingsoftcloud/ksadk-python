@@ -51,6 +51,24 @@ _DEFAULT_STREAM_TIMEOUT = 5 * 60
 def runtime_event_to_session_event(event: RuntimeEvent) -> SessionEvent:
     """把 RuntimeEvent 打包为 SessionEvent(content/metadata 承载新 schema 字段,不改表)。"""
     event.validate_conformance()
+    correlation = {
+        field: value
+        for field, value in (
+            ("turn_id", event.turn_id),
+            ("step_id", event.step_id),
+            ("parent_event_id", event.parent_event_id),
+            ("trace_id", event.trace_id),
+            ("span_id", event.span_id),
+        )
+        if value is not None
+    }
+    metadata = {
+        _RUNTIME_MARKER: True,
+        "user_id": event.user_id,
+        "schema_version": event.schema_version,
+    }
+    if correlation:
+        metadata["correlation"] = correlation
     return SessionEvent(
         id=event.event_id,
         session_id=event.session_id,
@@ -60,11 +78,7 @@ def runtime_event_to_session_event(event: RuntimeEvent) -> SessionEvent:
         timestamp=event.timestamp,
         seq_id=event.seq_id,
         invocation_id=event.invocation_id,
-        metadata={
-            _RUNTIME_MARKER: True,
-            "user_id": event.user_id,
-            "schema_version": event.schema_version,
-        },
+        metadata=metadata,
     )
 
 
@@ -73,6 +87,8 @@ def session_event_to_runtime_event(event: SessionEvent) -> Optional[RuntimeEvent
     if not (event.metadata or {}).get(_RUNTIME_MARKER):
         return None
     content = event.content or {}
+    raw_correlation = event.metadata.get("correlation")
+    correlation = raw_correlation if isinstance(raw_correlation, dict) else {}
     return RuntimeEvent.create(
         event.event_type,
         agent_id=event.author,
@@ -80,6 +96,11 @@ def session_event_to_runtime_event(event: SessionEvent) -> Optional[RuntimeEvent
         session_id=event.session_id,
         invocation_id=event.invocation_id or "",
         seq_id=event.seq_id,
+        turn_id=correlation.get("turn_id"),
+        step_id=correlation.get("step_id"),
+        parent_event_id=correlation.get("parent_event_id"),
+        trace_id=correlation.get("trace_id"),
+        span_id=correlation.get("span_id"),
         payload=dict(content.get("payload") or {}),
         phase=content.get("phase"),
         event_id=event.id,
@@ -97,6 +118,8 @@ class RuntimeEventStore:
 
     def __init__(self, session_service: Any) -> None:
         self._service = session_service
+        self._session_revisions: dict[str, int] = {}
+        self._session_conditions: dict[str, asyncio.Condition] = {}
 
     # ---- append ----
 
@@ -125,10 +148,6 @@ class RuntimeEventStore:
         receives the existing identical fact with ``created=False`` and must
         not repeat the side effect.
         """
-        existing = await self._event_by_id(event.session_id, event.event_id)
-        if existing is not None:
-            self._assert_same_event(existing, event)
-            return existing, False
         try:
             stored = await self._service.append_event(
                 event.session_id, runtime_event_to_session_event(event)
@@ -145,7 +164,17 @@ class RuntimeEventStore:
         persisted = session_event_to_runtime_event(stored)
         if persisted is None:  # pragma: no cover - marker is set above by construction
             raise RuntimeError("RuntimeEvent 持久化后缺少 runtime marker")
+        await self._notify_session(event.session_id)
         return persisted, True
+
+    async def _notify_session(self, session_id: str) -> None:
+        condition = self._session_condition(session_id)
+        async with condition:
+            self._session_revisions[session_id] = self._session_revisions.get(session_id, 0) + 1
+            condition.notify_all()
+
+    def _session_condition(self, session_id: str) -> asyncio.Condition:
+        return self._session_conditions.setdefault(session_id, asyncio.Condition())
 
     async def _event_by_id(self, session_id: str, event_id: str) -> RuntimeEvent | None:
         raw = await self._service.get_events(session_id)
@@ -163,6 +192,11 @@ class RuntimeEventStore:
             "user_id",
             "session_id",
             "invocation_id",
+            "turn_id",
+            "step_id",
+            "parent_event_id",
+            "trace_id",
+            "span_id",
             "phase",
             "payload",
         )
@@ -220,6 +254,14 @@ class RuntimeEventStore:
         limit: Optional[int] = None,
     ) -> list[RuntimeEvent]:
         """按 seq cursor 读 RuntimeEvent(升序;可按 invocation 过滤 / before 上界回放)。"""
+        if invocation_id is not None and limit is not None:
+            return await self._list_invocation_page(
+                session_id,
+                invocation_id=invocation_id,
+                after_seq_id=after_seq_id,
+                before_seq_id=before_seq_id,
+                limit=limit,
+            )
         raw = await self._service.get_events(
             session_id,
             after_seq_id=after_seq_id,
@@ -231,6 +273,40 @@ class RuntimeEventStore:
             events = [e for e in events if e.invocation_id == invocation_id]
         events.sort(key=lambda e: e.seq_id)
         return events
+
+    async def _list_invocation_page(
+        self,
+        session_id: str,
+        *,
+        invocation_id: str,
+        after_seq_id: int,
+        before_seq_id: int | None,
+        limit: int,
+    ) -> list[RuntimeEvent]:
+        if limit <= 0:
+            return []
+        matches: list[RuntimeEvent] = []
+        cursor = before_seq_id
+        page_size = 500
+        while len(matches) < limit:
+            raw = await self._service.get_events(
+                session_id,
+                after_seq_id=after_seq_id,
+                before_seq_id=cursor,
+                limit=page_size,
+            )
+            if not raw:
+                break
+            events = [
+                event
+                for event in (session_event_to_runtime_event(stored) for stored in raw)
+                if event is not None and event.invocation_id == invocation_id
+            ]
+            matches = events + matches
+            if len(raw) < page_size:
+                break
+            cursor = raw[0].seq_id
+        return matches[-limit:]
 
     # ---- 两类订阅 ----
 
@@ -249,17 +325,20 @@ class RuntimeEventStore:
         不丢(>after 的全部重发)、不重(<=after 的不重发)。
         """
         last = int(after_seq_id or 0)
-        deadline = asyncio.get_event_loop().time() + timeout
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
         while True:
+            revision = self._session_revisions.get(session_id, 0)
             events = await self.list(session_id, after_seq_id=last, invocation_id=invocation_id)
             for event in events:
                 last = max(last, event.seq_id)
                 yield event
                 if event.event_type in _RUN_TERMINAL_EVENT_TYPES:
                     return
-            if asyncio.get_event_loop().time() > deadline:
+            if events:
+                continue
+            if not await self._wait_for_session_change(session_id, revision, deadline):
                 return
-            await asyncio.sleep(poll_interval)
 
     async def subscribe_session(
         self,
@@ -274,15 +353,38 @@ class RuntimeEventStore:
         支持 run 后 action 与跨 invocation replay(A2UI 依赖);断线续传同 subscribe_run。
         """
         last = int(after_seq_id or 0)
-        deadline = asyncio.get_event_loop().time() + timeout
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
         while True:
+            revision = self._session_revisions.get(session_id, 0)
             events = await self.list(session_id, after_seq_id=last)
             for event in events:
                 last = max(last, event.seq_id)
                 yield event
-            if asyncio.get_event_loop().time() > deadline:
+            if events:
+                continue
+            if not await self._wait_for_session_change(session_id, revision, deadline):
                 return
-            await asyncio.sleep(poll_interval)
+
+    async def _wait_for_session_change(
+        self,
+        session_id: str,
+        revision: int,
+        deadline: float,
+    ) -> bool:
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            return False
+
+        condition = self._session_condition(session_id)
+        async with condition:
+            if self._session_revisions.get(session_id, 0) != revision:
+                return True
+            try:
+                await asyncio.wait_for(condition.wait(), timeout=remaining)
+            except TimeoutError:
+                return False
+        return True
 
     # ---- projection / replay ----
 

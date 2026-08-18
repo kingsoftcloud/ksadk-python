@@ -33,6 +33,7 @@ class OperationManager:
         kind: OperationKind,
         resource_id: str,
         idempotency_key: str,
+        metadata: dict | None = None,
         runner: Callable[[str], Awaitable[object]],
     ) -> Operation:
         existing = self._find_by_idempotency_key(idempotency_key)
@@ -42,6 +43,7 @@ class OperationManager:
             id=f"op_{uuid4().hex}",
             kind=kind,
             resource_id=resource_id,
+            metadata=metadata or {},
         )
         self._write(operation, [], idempotency_key)
         self.append(operation.id, "operation.queued", {"kind": kind})
@@ -104,6 +106,18 @@ class OperationManager:
     def get(self, operation_id: str) -> Operation:
         operation, _, _ = self._read(operation_id)
         return operation
+
+    def list(self, *, kind: OperationKind | None = None) -> list[Operation]:
+        directory = self.workspace.resolve(".agentkit/operations")
+        operations: list[Operation] = []
+        for path in directory.glob("op_*.json"):
+            try:
+                operation = self.get(path.stem)
+            except StudioError:
+                continue
+            if kind is None or operation.kind == kind:
+                operations.append(operation)
+        return sorted(operations, key=lambda item: item.created_at, reverse=True)
 
     def events(self, operation_id: str, *, after: int = 0) -> list[OperationEvent]:
         _, events, _ = self._read(operation_id)

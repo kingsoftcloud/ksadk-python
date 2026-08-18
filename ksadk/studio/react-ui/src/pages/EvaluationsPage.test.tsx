@@ -7,9 +7,22 @@ import { EvaluationsPage } from "./EvaluationsPage";
 vi.mock("../api", () => ({ apiFetch: vi.fn() }));
 
 const mockedFetch = vi.mocked(apiFetch);
+const uploadedEvalsetPath = "evaluations/uploads/abc-smoke.yaml";
 
 function response(payload: unknown, ok = true): Response {
   return { ok, status: ok ? 200 : 422, json: async () => payload } as Response;
+}
+
+function isEvalsetUpload(input: Parameters<typeof apiFetch>[0], init?: Parameters<typeof apiFetch>[1]): boolean {
+  return String(input) === "/api/v1/evaluation-files" && init?.method === "POST";
+}
+
+async function uploadEvalset(user: ReturnType<typeof userEvent.setup>): Promise<void> {
+  await user.upload(
+    screen.getByLabelText("选择 EvalSet 文件"),
+    new File(["schemaVersion: ksadk.eval/v1"], "smoke.yaml", { type: "application/yaml" }),
+  );
+  await screen.findByText(uploadedEvalsetPath);
 }
 
 describe("EvaluationsPage", () => {
@@ -25,344 +38,158 @@ describe("EvaluationsPage", () => {
   it("loads reports when the evaluation page is mounted", async () => {
     render(<EvaluationsPage refreshTick={0} />);
 
-    expect(await screen.findByText("还没有评测报告")).toBeInTheDocument();
-    expect(mockedFetch).toHaveBeenCalledWith("/api/v1/evaluations");
+    expect(await screen.findByText("还没有评测任务")).toBeInTheDocument();
+    expect(mockedFetch).toHaveBeenCalledWith("/api/v1/evaluation-runs", expect.anything());
     expect(mockedFetch).toHaveBeenCalledWith("/api/v1/evaluation-targets");
   });
 
-  it("offers discovered EvalSets and immutable Studio Builds", async () => {
+  it("uploads a selected EvalSet and keeps its workspace path", async () => {
+    const user = userEvent.setup();
+    mockedFetch.mockImplementation(async (input, init) => (
+      isEvalsetUpload(input, init)
+        ? response({
+          path: uploadedEvalsetPath,
+          name: "smoke",
+          caseCount: 1,
+        })
+        : String(input) === "/api/v1/evaluation-targets"
+          ? response({ evalsets: [], builds: [] })
+          : response({ items: [] })
+    ));
+    render(<EvaluationsPage refreshTick={0} />);
+
+    await user.click(screen.getByRole("button", { name: "新建评测" }));
+    await user.upload(
+      screen.getByLabelText("选择 EvalSet 文件"),
+      new File(["schemaVersion: ksadk.eval/v1"], "smoke.yaml", { type: "application/yaml" }),
+    );
+
+    expect(await screen.findByText(uploadedEvalsetPath)).toBeInTheDocument();
+    expect(mockedFetch).toHaveBeenCalledWith(
+      "/api/v1/evaluation-files",
+      expect.objectContaining({ method: "POST", body: expect.any(FormData) }),
+    );
+  });
+
+  it("offers Studio Agents and immutable Studio Builds", async () => {
     const user = userEvent.setup();
     mockedFetch.mockImplementation(async input => (
-      String(input) === "/api/v1/evaluation-targets"
+      String(input) === "/api/v1/agents"
+        ? response({
+          items: [
+            { metadata: { id: "agent-1", name: "Agent One" } },
+            { metadata: { id: "agent-2", name: "Agent Two" } },
+          ],
+        })
+        : String(input) === "/api/v1/evaluation-targets"
         ? response({
           evalsets: [{ path: "evaluations/smoke.yaml", name: "smoke", caseCount: 2 }],
-          builds: [{ id: "build-1", agentId: "agent-1", runtime: "langgraph" }],
+          builds: [
+            { id: "build-2", agentId: "agent-1", runtime: "langgraph" },
+            { id: "build-1", agentId: "agent-1", runtime: "langgraph" },
+            { id: "build-3", agentId: "agent-2", runtime: "adk" },
+          ],
         })
         : response({ items: [] })
     ));
     render(<EvaluationsPage refreshTick={0} />);
 
     await user.click(screen.getByRole("button", { name: "新建评测" }));
-    expect(screen.getByLabelText(/Agent 地址/)).toBeInTheDocument();
-    expect(await screen.findByRole("combobox", { name: "EvalSet 文件" })).toHaveTextContent("smoke · 2 Cases");
-    await user.click(screen.getByRole("combobox", { name: "Target 类型" }));
-    await user.click(await screen.findByRole("option", { name: "本地源码" }));
-    expect(screen.getByLabelText(/Agent 源码目录/)).toBeInTheDocument();
     await user.click(screen.getByRole("combobox", { name: "Target 类型" }));
     await user.click(await screen.findByRole("option", { name: "Studio Build" }));
-    expect(screen.getByRole("combobox", { name: "Studio Build" })).toHaveTextContent("agent-1 · langgraph");
+    expect(screen.getByRole("combobox", { name: "Studio Agent" })).toHaveTextContent("Agent One");
+    expect(screen.getByRole("combobox", { name: "Studio Build" })).toHaveTextContent("build-2");
+
+    await user.click(screen.getByRole("combobox", { name: "Studio Agent" }));
+    await user.click(await screen.findByRole("option", { name: /Agent Two/ }));
+
+    expect(screen.getByRole("combobox", { name: "Studio Build" })).toHaveTextContent("build-3");
+    expect(mockedFetch).toHaveBeenCalledWith("/api/v1/agents");
   });
 
-  it("offers immutable cloud Dataset versions as an evaluation source", async () => {
+  it("submits the shared evaluation contract and returns to the run list", async () => {
     const user = userEvent.setup();
-    mockedFetch.mockImplementation(async input => {
-      const url = String(input);
-      if (url === "/api/v1/evaluation-targets") return response({ evalsets: [], builds: [] });
-      if (url === "/api/v1/evaluation-cloud/catalog") {
-        return response({
-          items: [{
-            datasetId: "dataset-1",
-            name: "support",
-            version: 4,
-            schemaHash: "a".repeat(64),
-            contentDigest: "b".repeat(64),
-            rowCount: 2,
-          }],
-        });
-      }
-      return response({ items: [] });
-    });
-    render(<EvaluationsPage refreshTick={0} />);
-
-    await user.click(screen.getByRole("button", { name: "新建评测" }));
-    await user.click(await screen.findByRole("combobox", { name: "Dataset source" }));
-    await user.click(await screen.findByRole("option", { name: "Cloud Dataset" }));
-
-    expect(screen.getByRole("combobox", { name: "Cloud Dataset" })).toHaveTextContent("support - v4");
-    expect(document.querySelector("#evaluation-dataset-version")).not.toBeInTheDocument();
-  });
-
-  it("shows the cloud catalog error instead of presenting an empty Dataset list", async () => {
-    const user = userEvent.setup();
-    mockedFetch.mockImplementation(async input => {
-      const url = String(input);
-      if (url === "/api/v1/evaluation-targets") return response({ evalsets: [], builds: [] });
-      if (url === "/api/v1/evaluation-cloud/catalog") {
-        return response({ error: { message: "Cloud Dataset directory is unavailable" } }, false);
-      }
-      return response({ items: [] });
-    });
-    render(<EvaluationsPage refreshTick={0} />);
-
-    await user.click(screen.getByRole("button", { name: "新建评测" }));
-    await user.click(await screen.findByRole("combobox", { name: "Dataset source" }));
-    await user.click(await screen.findByRole("option", { name: "Cloud Dataset" }));
-
-    expect(await screen.findByRole("alert")).toHaveTextContent("Cloud Dataset directory is unavailable");
-  });
-
-  it("selects an exact cloud Dataset version when a Dataset has multiple snapshots", async () => {
-    const user = userEvent.setup();
-    mockedFetch.mockImplementation(async input => {
-      const url = String(input);
-      if (url === "/api/v1/evaluation-targets") return response({ evalsets: [], builds: [] });
-      if (url === "/api/v1/evaluation-cloud/catalog") {
-        return response({
-          items: [
-            { datasetId: "dataset-1", name: "support", version: 4, schemaHash: "a".repeat(64), contentDigest: "b".repeat(64), rowCount: 2 },
-            { datasetId: "dataset-1", name: "support", version: 5, schemaHash: "c".repeat(64), contentDigest: "d".repeat(64), rowCount: 3 },
-          ],
-        });
-      }
-      return response({ items: [] });
-    });
-    render(<EvaluationsPage refreshTick={0} />);
-
-    await user.click(screen.getByRole("button", { name: "新建评测" }));
-    await user.click(await screen.findByRole("combobox", { name: "Dataset source" }));
-    await user.click(await screen.findByRole("option", { name: "Cloud Dataset" }));
-    await vi.waitFor(() => {
-      expect(screen.getByRole("combobox", { name: "Cloud Dataset" })).toHaveTextContent("support - v4");
-    });
-    await user.click(screen.getByRole("combobox", { name: "Cloud Dataset" }));
-    const options = await screen.findAllByRole("option");
-    expect(options).toHaveLength(2);
-    expect(options[1]).toHaveTextContent("support - v5");
-    await user.click(options[1]);
-
-    expect(document.querySelector("#evaluation-dataset-version")).not.toBeInTheDocument();
-  });
-
-  it("submits the selected immutable cloud Dataset reference", async () => {
-    const user = userEvent.setup();
-    mockedFetch.mockImplementation(async (input, init) => {
-      const url = String(input);
-      if (url === "/api/v1/evaluation-targets") return response({ evalsets: [], builds: [] });
-      if (url === "/api/v1/evaluation-cloud/catalog") {
-        return response({
-          items: [{
-            datasetId: "dataset-1",
-            name: "support",
-            projectId: "project-1",
-            version: 5,
-            schemaHash: "c".repeat(64),
-            contentDigest: "d".repeat(64),
-            rowCount: 3,
-          }],
-        });
-      }
-      if (url === "/api/v1/evaluations" && init?.method === "POST") {
-        return response({ id: "op_eval_cloud", status: "QUEUED" });
-      }
-      if (url === "/api/v1/operations/op_eval_cloud") {
-        return response({ id: "op_eval_cloud", status: "FAILED", error: { message: "test completion" } });
-      }
-      return response({ items: [] });
-    });
-    render(<EvaluationsPage refreshTick={0} />);
-
-    await user.click(screen.getByRole("button", { name: "新建评测" }));
-    await user.click(await screen.findByRole("combobox", { name: "Dataset source" }));
-    await user.click(await screen.findByRole("option", { name: "Cloud Dataset" }));
-    await vi.waitFor(() => {
-      expect(screen.getByRole("combobox", { name: "Cloud Dataset" })).toHaveTextContent("support - v5");
-    });
-    await user.type(screen.getByLabelText(/Agent 地址/), "https://agent.example.test/a2a");
-    await user.click(screen.getByRole("button", { name: "开始评测" }));
-
-    await vi.waitFor(() => {
-      const post = mockedFetch.mock.calls.find(([, init]) => init?.method === "POST");
-      expect(post).toBeDefined();
-      expect(JSON.parse(String(post?.[1]?.body))).toMatchObject({
-        cloudDataset: {
-          provider: "agent-eval/evalsmith",
-          projectId: "project-1",
-          datasetId: "dataset-1",
-          version: 5,
-          schemaHash: "c".repeat(64),
-          contentDigest: "d".repeat(64),
-          rowCount: 3,
-        },
-      });
-    });
-  });
-
-  it("submits the shared evaluation contract and waits for its operation", async () => {
-    const user = userEvent.setup();
-    const completedReport = {
-      schemaVersion: "ksadk.eval.report/v1",
-      spec: {
-        id: "eval_run_1",
-        evalset: { name: "smoke" },
-        target: { kind: "a2a", runtime: "a2a", revisionDigest: "sha256:test" },
-      },
-      status: "PASSED",
+    let submitted = false;
+    const queuedRun = {
+      id: "eval_run_1",
+      operationId: "op_eval_1",
+      status: "QUEUED",
       createdAt: "2026-08-13T00:00:00Z",
-      summary: {
-        totalCases: 1,
-        passedCases: 1,
-        failedCases: 0,
-        unavailableCases: 0,
-        errorCases: 0,
-        cancelledCases: 0,
-      },
-      caseRuns: [{
-        caseId: "one",
-        targetRun: { status: "PASSED", output: "answer", durationMs: 1, traceRefs: [] },
-        metrics: [],
-      }],
+      completedAt: null,
+      evalset: { name: "smoke", caseCount: 1 },
+      target: { kind: "a2a", label: "A2A Agent" },
+      evaluators: [],
+      progress: null,
+      summary: null,
+      hasReport: false,
+      error: null,
     };
     mockedFetch.mockImplementation(async (input, init) => {
       const url = String(input);
+      if (isEvalsetUpload(input, init)) return response({ path: uploadedEvalsetPath });
       if (url === "/api/v1/evaluations" && init?.method === "POST") {
-        return response({ id: "op_eval_1", status: "QUEUED" });
+        submitted = true;
+        return response({ id: "op_eval_1", status: "QUEUED", resourceId: "eval_run_1" });
       }
-      if (url === "/api/v1/operations/op_eval_1") {
-        return response({ id: "op_eval_1", status: "SUCCEEDED", resourceId: "eval_run_1" });
-      }
-      if (url === "/api/v1/evaluations/eval_run_1") {
-        return response(completedReport);
-      }
+      if (url === "/api/v1/evaluation-runs") return response({ items: submitted ? [queuedRun] : [] });
       return response({ items: [] });
     });
     render(<EvaluationsPage refreshTick={0} />);
 
     await user.click(screen.getByRole("button", { name: "新建评测" }));
-    await user.type(screen.getByLabelText(/EvalSet 文件/), "evalsets/smoke.yaml");
-    await user.type(screen.getByLabelText(/Agent 地址/), "https://agent.example.test/a2a");
+    expect(screen.getByRole("checkbox", { name: "响应契约" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "运行预算" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "工具轨迹" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "参考答案匹配" })).not.toBeChecked();
+    await user.click(screen.getByRole("checkbox", { name: "工具轨迹" }));
+    await user.click(screen.getByRole("checkbox", { name: "参考答案匹配" }));
+    await uploadEvalset(user);
+    await user.type(screen.getByLabelText(/Target locator/), "https://agent.example.test/a2a");
     await user.click(screen.getByRole("button", { name: "开始评测" }));
 
-    expect(await screen.findByText("评测任务已完成")).toBeInTheDocument();
-    const post = mockedFetch.mock.calls.find(([, init]) => init?.method === "POST");
+    expect(await screen.findByText("评测任务已创建")).toBeInTheDocument();
+    expect(await screen.findByText("smoke")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "新建评测" })).not.toBeInTheDocument();
+    const post = mockedFetch.mock.calls.find(([input, init]) => (
+      String(input) === "/api/v1/evaluations" && init?.method === "POST"
+    ));
     expect(post?.[0]).toBe("/api/v1/evaluations");
     expect(JSON.parse(String(post?.[1]?.body))).toMatchObject({
-      evalsetFile: "evalsets/smoke.yaml",
+      evalsetFile: uploadedEvalsetPath,
       target: { kind: "a2a", locator: "https://agent.example.test/a2a" },
+      config: {
+        evaluators: [
+          "response_contract@v1",
+          "runtime_budget@v1",
+          "reference_match@v1",
+        ],
+      },
     });
-    expect(mockedFetch).toHaveBeenCalledWith(
-      "/api/v1/operations/op_eval_1",
-      expect.objectContaining({ signal: expect.any(AbortSignal) }),
-    );
-    expect(mockedFetch).toHaveBeenCalledWith("/api/v1/evaluations/eval_run_1");
-    expect(await screen.findByText("answer")).toBeInTheDocument();
+    expect(mockedFetch.mock.calls.some(([input]) => String(input).includes("/api/v1/operations/"))).toBe(false);
   });
 
-  it("aborts operation polling when the evaluation page unmounts", async () => {
-    const user = userEvent.setup();
-    let pollingSignal: AbortSignal | undefined;
-    mockedFetch.mockImplementation(async (input, init) => {
-      const url = String(input);
-      if (url === "/api/v1/evaluations" && init?.method === "POST") {
-        return response({ id: "op_eval_pending", status: "QUEUED" });
-      }
-      if (url === "/api/v1/operations/op_eval_pending") {
-        pollingSignal = init?.signal || undefined;
-        return response({ id: "op_eval_pending", status: "RUNNING" });
-      }
-      return url === "/api/v1/evaluation-targets"
+  it("shows persisted progress for running evaluations", async () => {
+    mockedFetch.mockImplementation(async input => String(input) === "/api/v1/evaluation-runs"
+      ? response({ items: [{
+        id: "eval_progress",
+        operationId: "op_progress",
+        status: "RUNNING",
+        createdAt: "2026-08-13T00:00:00Z",
+        completedAt: null,
+        evalset: { name: "progress", caseCount: 3 },
+        target: { kind: "a2a", label: "A2A Agent" },
+        evaluators: [],
+        progress: { current: 2, total: 3, caseId: "case-2" },
+        summary: null,
+        hasReport: false,
+        error: null,
+      }] })
+      : String(input) === "/api/v1/evaluation-targets"
         ? response({ evalsets: [], builds: [] })
-        : response({ items: [] });
-    });
-    const page = render(<EvaluationsPage refreshTick={0} />);
-    await user.click(screen.getByRole("button", { name: "新建评测" }));
-    await user.type(screen.getByLabelText(/EvalSet 文件/), "evalsets/smoke.yaml");
-    await user.type(screen.getByLabelText(/Agent 地址/), "https://agent.example.test/a2a");
-    await user.click(screen.getByRole("button", { name: "开始评测" }));
-    await vi.waitFor(() => expect(pollingSignal).toBeDefined());
-
-    page.unmount();
-
-    expect(pollingSignal?.aborted).toBe(true);
-  });
-
-  it("shows the current evaluation case from operation events", async () => {
-    const user = userEvent.setup();
-    mockedFetch.mockImplementation(async (input, init) => {
-      const url = String(input);
-      if (url === "/api/v1/evaluations" && init?.method === "POST") {
-        return response({ id: "op_eval_progress", status: "QUEUED" });
-      }
-      if (url === "/api/v1/operations/op_eval_progress") {
-        return response({ id: "op_eval_progress", status: "RUNNING" });
-      }
-      if (url === "/api/v1/operations/op_eval_progress/events?after=0") {
-        return response({ items: [{ id: 3, type: "evaluation.case.started", data: { caseId: "case-2", index: 2, total: 3 } }] });
-      }
-      return url === "/api/v1/evaluation-targets"
-        ? response({ evalsets: [], builds: [] })
-        : response({ items: [] });
-    });
+        : response({ items: [] }));
     render(<EvaluationsPage refreshTick={0} />);
 
-    await user.click(screen.getByRole("button", { name: "新建评测" }));
-    await user.type(screen.getByLabelText(/EvalSet 文件/), "evalsets/smoke.yaml");
-    await user.type(screen.getByLabelText(/Agent 地址/), "https://agent.example.test/a2a");
-    await user.click(screen.getByRole("button", { name: "开始评测" }));
-
-    expect(await screen.findByText("Case 2 / 3：case-2")).toBeInTheDocument();
-  });
-
-  it("cancels the current evaluation operation", async () => {
-    const user = userEvent.setup();
-    let cancelled = false;
-    const cancelledReport = {
-      schemaVersion: "ksadk.eval.report/v1",
-      spec: {
-        id: "eval_cancelled",
-        evalset: { name: "smoke" },
-        target: { kind: "a2a", runtime: "a2a", revisionDigest: "sha256:test" },
-      },
-      status: "CANCELLED",
-      createdAt: "2026-08-13T00:00:00Z",
-      summary: {
-        totalCases: 1,
-        passedCases: 1,
-        failedCases: 0,
-        unavailableCases: 0,
-        errorCases: 0,
-        cancelledCases: 0,
-      },
-      caseRuns: [{
-        caseId: "one",
-        targetRun: { status: "PASSED", output: "partial answer", durationMs: 1, traceRefs: [] },
-        metrics: [],
-      }],
-    };
-    mockedFetch.mockImplementation(async (input, init) => {
-      const url = String(input);
-      if (url === "/api/v1/evaluations" && init?.method === "POST") {
-        return response({ id: "op_eval_cancel", status: "QUEUED" });
-      }
-      if (url === "/api/v1/operations/op_eval_cancel:cancel" && init?.method === "POST") {
-        cancelled = true;
-        return response({ id: "op_eval_cancel", status: "CANCELLED" });
-      }
-      if (url === "/api/v1/operations/op_eval_cancel") {
-        return response({
-          id: "op_eval_cancel",
-          status: cancelled ? "CANCELLED" : "RUNNING",
-          resourceId: "eval_cancelled",
-        });
-      }
-      if (url === "/api/v1/evaluations/eval_cancelled") return response(cancelledReport);
-      if (url.startsWith("/api/v1/operations/op_eval_cancel/events")) return response({ items: [] });
-      return url === "/api/v1/evaluation-targets"
-        ? response({ evalsets: [], builds: [] })
-        : response({ items: [] });
-    });
-    render(<EvaluationsPage refreshTick={0} />);
-
-    await user.click(screen.getByRole("button", { name: "新建评测" }));
-    await user.type(screen.getByLabelText(/EvalSet 文件/), "evalsets/smoke.yaml");
-    await user.type(screen.getByLabelText(/Agent 地址/), "https://agent.example.test/a2a");
-    await user.click(screen.getByRole("button", { name: "开始评测" }));
-    await user.click(await screen.findByRole("button", { name: "取消评测" }));
-
-    expect(mockedFetch).toHaveBeenCalledWith(
-      "/api/v1/operations/op_eval_cancel:cancel",
-      expect.objectContaining({ method: "POST" }),
-    );
-    expect(await screen.findByText("partial answer")).toBeInTheDocument();
-    expect(screen.queryByText(/评测任务状态：CANCELLED/)).not.toBeInTheDocument();
+    expect(await screen.findByText("2 / 3")).toBeInTheDocument();
+    expect(screen.getByText("case-2")).toBeInTheDocument();
   });
 });

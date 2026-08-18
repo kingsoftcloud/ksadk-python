@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import Field, SecretStr, model_validator
+from pydantic import Field, SecretStr
 
-from ksadk.evaluation import CloudDatasetRef, EvaluationConfig as PublicEvaluationConfig
+from ksadk.evaluation import EvaluationConfig as PublicEvaluationConfig
 from ksadk.evaluation import TargetRef
 from ksadk.studio.contracts import (
     AgentBindings,
@@ -99,16 +99,9 @@ class InteractionSubmitRequest(ContractModel):
 class StudioEvaluationCreate(ContractModel):
     """Request for the shared CLI/Studio evaluation executor."""
 
-    evalset_file: str | None = Field(default=None, min_length=1, max_length=4096)
-    cloud_dataset: CloudDatasetRef | None = None
+    evalset_file: str = Field(min_length=1, max_length=4096)
     target: TargetRef
     config: PublicEvaluationConfig = Field(default_factory=PublicEvaluationConfig)
-
-    @model_validator(mode="after")
-    def require_one_evalset_source(self) -> "StudioEvaluationCreate":
-        if (self.evalset_file is None) == (self.cloud_dataset is None):
-            raise ValueError("必须且只能指定 evalsetFile 或 cloudDataset")
-        return self
 
 
 class SecretReferenceCheckRequest(ContractModel):

@@ -5,44 +5,19 @@ import pytest
 from fastapi.testclient import TestClient
 
 from ksadk.evaluation import (
-    CloudEvalSetCatalogItem,
+    EvalCase,
+    EvalRunReport,
+    EvalRunSpec,
+    EvalSetVersion,
     EvaluationConfig,
     TargetKind,
     TargetRef,
+    TargetSnapshot,
 )
 from ksadk.studio.api import create_studio_app
 from ksadk.studio.contracts import BuildRecord, BuildStatus
 from ksadk.studio.errors import StudioError
 from ksadk.studio.service import StudioService
-
-
-class _CloudEvalClient:
-    async def list_datasets(self, *, project_id=None):
-        return [
-            CloudEvalSetCatalogItem(
-                dataset_id="dataset-1",
-                name="support",
-                project_id=project_id,
-                version=4,
-                schema_hash="a" * 64,
-                content_digest="b" * 64,
-                row_count=2,
-            )
-        ]
-
-    async def read_snapshot(self, dataset_id, version, *, project_id=None):
-        raise AssertionError("catalog test must not read a snapshot")
-
-    async def publish_snapshot(self, *args, **kwargs):
-        raise AssertionError("catalog test must not publish")
-
-
-def test_studio_constructs_cloud_eval_client_without_direct_url(tmp_path: Path, monkeypatch):
-    monkeypatch.delenv("AGENT_EVAL_BASE_URL", raising=False)
-
-    service = StudioService(tmp_path)
-
-    assert service.cloud_evalsets is not None
 
 
 @pytest.mark.asyncio
@@ -125,6 +100,14 @@ cases:
         )
         assert response.status_code == 202, response.text
         assert response.json()["kind"] == "EVALUATION"
+        run_id = response.json()["resourceId"]
+        run = client.get(f"/api/v1/evaluation-runs/{run_id}")
+        assert run.status_code == 200, run.text
+        assert run.json()["id"] == run_id
+        assert run.json()["evalset"] == {"name": "smoke", "caseCount": 1}
+        assert run.json()["target"] == {"kind": "a2a", "label": "A2A Agent"}
+        assert run.json()["hasReport"] is False
+        assert client.get("/api/v1/evaluation-runs").json()["items"][0]["id"] == run_id
         assert client.get("/api/v1/evaluations").json() == {"items": []}
         assert client.post(
             "/api/v1/builds/build-old/evaluations",
@@ -136,100 +119,42 @@ cases:
         assert missing.json()["error"]["code"] == "EVALUATION_NOT_FOUND"
 
 
-def test_studio_cloud_catalog_exposes_immutable_dataset_versions(tmp_path: Path):
-    service = StudioService(tmp_path, cloud_evalset_client=_CloudEvalClient())
-    app = create_studio_app(tmp_path, service=service, security_enabled=False)
-
-    with TestClient(app) as client:
-        response = client.get(
-            "/api/v1/evaluation-cloud/catalog",
-            params={"projectId": "project-1"},
-        )
-
-    assert response.status_code == 200, response.text
-    assert response.json()["items"][0]["datasetId"] == "dataset-1"
-    assert response.json()["items"][0]["version"] == 4
-
-
-def test_studio_evaluation_contract_accepts_a_cloud_dataset_source():
-    from ksadk.evaluation import CloudDatasetRef
-    from ksadk.studio.api_contracts import StudioEvaluationCreate
-
-    payload = StudioEvaluationCreate(
-        cloud_dataset=CloudDatasetRef(
-            provider="agent-eval/evalsmith",
-            dataset_id="dataset-1",
-            version=4,
-            schema_hash="a" * 64,
-            content_digest="b" * 64,
-        ),
-        target=TargetRef(kind=TargetKind.A2A, locator="https://agent.example.test"),
-    )
-
-    assert payload.evalset_file is None
-    assert payload.cloud_dataset.dataset_id == "dataset-1"
-
-
 @pytest.mark.asyncio
-async def test_studio_remote_dataset_operation_resolves_fixed_snapshot(tmp_path: Path, monkeypatch):
-    from ksadk.evaluation import CloudDatasetRef
-    from ksadk.evaluation.cloud_converter import evalset_to_dataset_snapshot
-    from ksadk.evaluation.evalset import parse_evalset
-
-    evalset = parse_evalset(
-        {
-            "schemaVersion": "ksadk.eval/v1",
-            "name": "remote",
-            "cases": [{"id": "one", "input": "hello"}],
-        }
-    )
-    snapshot = evalset_to_dataset_snapshot(evalset)
-
-    class Client(_CloudEvalClient):
-        async def read_snapshot(self, dataset_id, version, *, project_id=None):
-            assert (dataset_id, version, project_id) == ("dataset-1", 4, None)
-            return snapshot
-
-    captured = {}
-
-    async def fake_execute(request, **kwargs):
-        captured["request"] = request
-        from ksadk.evaluation import EvalRunReport, EvalRunSpec, TargetSnapshot
-
-        return EvalRunReport(
-            spec=EvalRunSpec(
-                id=kwargs["run_id"],
-                evalset=request.evalset,
-                target=TargetSnapshot(
-                    kind=TargetKind.A2A,
-                    entrypoint=request.target.locator,
-                    revision_digest="sha256:test",
-                ),
-                config=request.config,
-                cloud_dataset=request.cloud_dataset,
+async def test_evaluation_run_backfills_legacy_metadata_from_report(tmp_path: Path):
+    service = StudioService(tmp_path)
+    service.drafts.create(agent_id="legacy-agent", name="Legacy Agent")
+    report = EvalRunReport(
+        spec=EvalRunSpec(
+            id="eval-legacy",
+            evalset=EvalSetVersion(
+                name="legacy-smoke",
+                cases=[EvalCase(id="one", input="hello")],
             ),
-            status="PASSED",
-        )
-
-    monkeypatch.setattr("ksadk.studio.service.execute_evaluation", fake_execute)
-    service = StudioService(tmp_path, cloud_evalset_client=Client())
-    operation = service.submit_public_evaluation(
-        None,
-        TargetRef(kind=TargetKind.A2A, locator="https://agent.example.test"),
-        EvaluationConfig(),
-        idempotency_key="remote-evaluation-1",
-        cloud_dataset=CloudDatasetRef(
-            provider="agent-eval/evalsmith",
-            dataset_id="dataset-1",
-            version=4,
-            schema_hash=snapshot.schema_hash,
-            content_digest=snapshot.content_digest,
+            target=TargetSnapshot(
+                kind=TargetKind.STUDIO_BUILD,
+                entrypoint="build:build-legacy",
+                revision_digest="sha256:legacy",
+                runtime="langgraph",
+                metadata={"agentId": "legacy-agent"},
+            ),
+            config=EvaluationConfig(evaluators=["runtime_budget@v1"]),
         ),
+        status="PASSED",
     )
-    completed = await service.operations.wait(operation.id)
+    service.evaluation_storage.write_report(report)
+    operation = service.operations.submit(
+        kind="EVALUATION",
+        resource_id=report.spec.id,
+        idempotency_key="legacy-evaluation",
+        runner=lambda _operation_id: __import__("asyncio").sleep(0),
+    )
+    await service.operations.wait(operation.id)
 
-    assert completed.status == "SUCCEEDED", completed.error
-    assert captured["request"].cloud_dataset.dataset_id == "dataset-1"
+    run = service.get_public_evaluation_run(report.spec.id)
+
+    assert run["evalset"] == {"name": "legacy-smoke", "caseCount": 1}
+    assert run["target"] == {"kind": "studio_build", "label": "Legacy Agent"}
+    assert run["evaluators"] == ["runtime_budget@v1"]
 
 
 @pytest.mark.asyncio
@@ -289,6 +214,44 @@ cases:
                 "contentDigest": payload["evalsets"][0]["contentDigest"],
             }
         ]
+
+
+def test_evaluation_file_upload_imports_valid_evalset_into_workspace(tmp_path: Path):
+    app = create_studio_app(tmp_path, security_enabled=False)
+    content = b"""schemaVersion: ksadk.eval/v1
+name: uploaded-smoke
+cases:
+  - id: one
+    input: hello
+"""
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/evaluation-files",
+            files={"file": ("smoke.yaml", content, "application/yaml")},
+        )
+
+    assert response.status_code == 201, response.text
+    payload = response.json()
+    assert payload["path"].startswith("evaluations/uploads/")
+    assert payload["path"].endswith("-smoke.yaml")
+    assert payload["name"] == "uploaded-smoke"
+    assert payload["caseCount"] == 1
+    assert (tmp_path / payload["path"]).read_bytes() == content
+
+
+def test_evaluation_file_upload_rejects_invalid_evalset(tmp_path: Path):
+    app = create_studio_app(tmp_path, security_enabled=False)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/evaluation-files",
+            files={"file": ("broken.yaml", b"not: an evalset\n", "application/yaml")},
+        )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "UNSUPPORTED_EVALSET_FORMAT"
+    assert list((tmp_path / "evaluations" / "uploads").glob("*")) == []
 
 
 def test_evaluation_catalog_exposes_studio_build_metadata(tmp_path: Path):

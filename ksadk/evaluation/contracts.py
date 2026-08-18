@@ -417,7 +417,14 @@ class EvalRunReport(EvaluationModel):
         self.summary = self._summarize_cases()
         expected = self.compute_digest()
         if self.report_digest and self.report_digest != expected:
-            raise ValueError("reportDigest 与规范化报告内容不一致")
+            legacy_payload = self.model_dump(
+                mode="json", by_alias=False, exclude={"report_digest"}
+            )
+            legacy_payload["spec"].pop("cloud_dataset", None)
+            if self.spec.cloud_dataset is not None or self.report_digest != _content_digest(
+                legacy_payload
+            ):
+                raise ValueError("reportDigest 与规范化报告内容不一致")
         self.report_digest = expected
         return self
 

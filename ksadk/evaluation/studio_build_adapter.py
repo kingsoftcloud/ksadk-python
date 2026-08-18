@@ -37,6 +37,8 @@ class _StudioRunService(Protocol):
         on_event: Any = None,
     ) -> Any: ...
 
+    async def events(self, run_id: str, *, after: int = 0) -> list[Any]: ...
+
 
 @dataclass(frozen=True)
 class StudioBuildResolution:
@@ -149,7 +151,7 @@ class StudioBuildTargetAdapter:
                 turn.input,
                 session_id=session_id,
             )
-            events = _runtime_events(self._run_service.event_store.events(record.id))
+            events = _runtime_events(await self._run_service.events(record.id))
             if events:
                 tool_calls.extend(project_tool_calls(events))
             trace_ref = _trace_ref(spec.id, record, events)

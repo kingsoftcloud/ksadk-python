@@ -64,6 +64,9 @@ class _RunService:
         self.calls = []
         self.event_store = _EventStore()
 
+    async def events(self, run_id, *, after=0):
+        return [event for event in self.event_store.events(run_id) if event.id > after]
+
     async def run(self, spec, user_input, *, session_id, on_event=None):
         del on_event
         self.calls.append((spec, user_input, session_id))
@@ -78,7 +81,11 @@ class _RunService:
             payload={"call_id": "call-1", "name": "lookup", "args": {}},
         )
         self.event_store.by_run[run_id] = [
-            type("StoredEvent", (), {"data": {"runtimeEvent": event.to_dict()}})()
+            type(
+                "StoredEvent",
+                (),
+                {"id": event.seq_id, "data": {"runtimeEvent": event.to_dict()}},
+            )()
         ]
         return _Run(
             id=run_id,
@@ -251,6 +258,10 @@ cases:
         config=EvaluationConfig(),
         idempotency_key="studio-build-eval-1",
     )
+    assert operation.metadata["target"] == {
+        "kind": "studio_build",
+        "label": "Evaluation Graph",
+    }
     completed = await service.operations.wait(operation.id)
 
     assert completed.status == "SUCCEEDED", completed.error

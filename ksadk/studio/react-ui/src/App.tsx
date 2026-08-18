@@ -10,6 +10,7 @@ import { ObservabilityPage } from "./pages/ObservabilityPage";
 import { RuntimeResourcesPage } from "./pages/RuntimeResourcesPage";
 import { OrchestrationPage } from "./pages/OrchestrationPage";
 import { EvaluationsPage } from "./pages/EvaluationsPage";
+import { EvaluationDetailPage } from "./pages/EvaluationDetailPage";
 import { SettingsOverlay } from "./components/SettingsOverlay";
 import { ChatRunPanel } from "./components/ChatRunPanel";
 import { ChatWorkspace } from "./components/ChatWorkspace";
@@ -46,6 +47,18 @@ const VIEW_TITLE: Record<View, string> = {
 
 const VALID_VIEWS = Object.keys(VIEW_TITLE) as View[];
 
+function readHashRoute(): { view: View; evaluationRunId: string } {
+  const path = window.location.hash.replace(/^#\/?/, "");
+  const evaluationMatch = path.match(/^evaluations\/([^/]+)$/);
+  if (evaluationMatch) {
+    return { view: "evaluations", evaluationRunId: decodeURIComponent(evaluationMatch[1]) };
+  }
+  return {
+    view: VALID_VIEWS.includes(path as View) ? path as View : "agents",
+    evaluationRunId: "",
+  };
+}
+
 interface AgentSummary {
   metadata: { id: string; name: string; revision?: number; labels?: Record<string, string>; appearance?: AgentAppearance };
   spec?: { runtime?: { type?: string } };
@@ -55,10 +68,8 @@ interface AgentSummary {
 export default function App() {
   const viewportMode = useStudioViewportMode();
   const studioTheme = useStudioTheme();
-  const [view, setViewState] = useState<View>(() => {
-    const h = window.location.hash.replace(/^#\/?/, "");
-    return VALID_VIEWS.includes(h as View) ? (h as View) : "agents";
-  });
+  const [view, setViewState] = useState<View>(() => readHashRoute().view);
+  const [evaluationRunId, setEvaluationRunId] = useState(() => readHashRoute().evaluationRunId);
   const [resourceKind, setResourceKind] = useState<ResourceKind>("model");
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [agentsLoaded, setAgentsLoaded] = useState(false);
@@ -80,8 +91,9 @@ export default function App() {
 
   useEffect(() => {
     const syncViewFromHash = () => {
-      const hashView = window.location.hash.replace(/^#\/?/, "") as View;
-      if (VALID_VIEWS.includes(hashView)) setViewState(hashView);
+      const route = readHashRoute();
+      setViewState(route.view);
+      setEvaluationRunId(route.evaluationRunId);
     };
     window.addEventListener("hashchange", syncViewFromHash);
     window.addEventListener("popstate", syncViewFromHash);
@@ -94,7 +106,19 @@ export default function App() {
   // hash 深链：#/agents 等，便于刷新定位
   function setView(v: View) {
     setViewState(v);
+    setEvaluationRunId("");
     window.history.replaceState(null, "", `#/${v}`);
+  }
+
+  function openEvaluationRun(runId: string) {
+    setViewState("evaluations");
+    setEvaluationRunId(runId);
+    window.history.pushState(null, "", `#/evaluations/${encodeURIComponent(runId)}`);
+  }
+
+  function closeEvaluationRun() {
+    setEvaluationRunId("");
+    window.history.pushState(null, "", "#/evaluations");
   }
 
   const loadAgents = useCallback(async () => {
@@ -346,7 +370,8 @@ export default function App() {
             {view === "observability" && (
               <ObservabilityPage refreshTick={refreshTick} />
             )}
-            {view === "evaluations" && <EvaluationsPage refreshTick={refreshTick} />}
+            {view === "evaluations" && !evaluationRunId && <EvaluationsPage refreshTick={refreshTick} onOpenRun={openEvaluationRun} />}
+            {view === "evaluations" && evaluationRunId && <EvaluationDetailPage runId={evaluationRunId} onBack={closeEvaluationRun} />}
             {view === "runtime-resources" && <RuntimeResourcesPage refreshTick={refreshTick} />}
             {view === "orchestration" && <OrchestrationPage currentAgentId={currentAgentId} agents={agents} onSelectAgent={setCurrentAgentId} onCreate={openCreate} />}
           </div>

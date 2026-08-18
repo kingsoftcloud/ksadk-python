@@ -348,6 +348,7 @@ def _resolve_entrypoint(project_dir: Path, value: str) -> Path:
             "LOCAL_ENTRYPOINT_INVALID",
             "Local Agent entrypoint was not detected",
         )
+    project_dir = project_dir.resolve()
     candidate = (project_dir / Path(value.replace("\\", "/"))).resolve()
     try:
         relative = candidate.relative_to(project_dir)

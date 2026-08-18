@@ -418,7 +418,7 @@ class LocalSessionService(BaseSessionService):
                     FOREIGN KEY(session_id) REFERENCES {KSADK_SESSIONS_TABLE}(id) ON DELETE CASCADE
                 );
 
-                CREATE INDEX IF NOT EXISTS idx_ksadk_events_session_seq
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_ksadk_events_session_seq
                 ON {KSADK_EVENTS_TABLE} (session_id, seq_id);
 
                 -- 跨会话事件查询（get_events_for_agent）JOIN sessions 按
