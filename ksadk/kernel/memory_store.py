@@ -90,18 +90,40 @@ class InMemoryAgentKernelStore:
         return row
 
     async def _emit(
-        self, envelope: SessionEventEnvelope, *, activation_row: dict[str, Any] | None
+        self,
+        envelope: SessionEventEnvelope,
+        *,
+        activation_row: dict[str, Any] | None,
+        admission_command: AgentControlCommand | None = None,
     ) -> SessionEventEnvelope:
         if activation_row is not None:
             guard = ActivationWriteGuard(
                 activation_id=activation_row["activation_id"],
                 fencing_token=activation_row["fencing_token"],
             )
+        elif admission_command is not None:
+            # admission 事实的 guard 绑定提交方 permit 引用与 command_id。
+            guard = AdmissionWriteGuard(
+                authorization_ref=admission_command.authorization_ref,
+                command_id=admission_command.command_id,
+            )
         else:
             guard = AdmissionWriteGuard(
                 authorization_ref="agent-kernel", command_id=uuid4()
             )
         return await self._events.append(envelope, guard=guard)
+
+    async def _emit_admission(
+        self, envelope: SessionEventEnvelope, command: AgentControlCommand
+    ) -> None:
+        # admission 事实的 guard 绑定提交方 permit 引用与 command_id。
+        await self._events.append(
+            envelope,
+            guard=AdmissionWriteGuard(
+                authorization_ref=command.authorization_ref,
+                command_id=command.command_id,
+            ),
+        )
 
     @staticmethod
     def _receipt(
@@ -134,8 +156,8 @@ class InMemoryAgentKernelStore:
             if existing_id is not None:
                 existing = self._messages[existing_id]
                 if existing["request_digest"] != command_digest(command):
-                    await self._emit(
-                        control_event(
+                    await self._emit_admission(
+                            control_event(
                             session_id=command.session_id,
                             event_type="control.command_rejected",
                             payload={
@@ -144,9 +166,9 @@ class InMemoryAgentKernelStore:
                                 "reason": "idempotency_conflict",
                             },
                             causation_id=str(command.command_id),
-                        ),
-                        activation_row=None,
-                    )
+                            ),
+                            command,
+                        )
                     return self._receipt(
                         command,
                         "rejected",
@@ -171,8 +193,8 @@ class InMemoryAgentKernelStore:
                 and row["status"] == InboxState.ACCEPTED
             )
             if depth >= queue_limit:
-                await self._emit(
-                    control_event(
+                await self._emit_admission(
+                        control_event(
                         session_id=command.session_id,
                         event_type="control.command_rejected",
                         payload={
@@ -181,9 +203,9 @@ class InMemoryAgentKernelStore:
                             "queue_limit": queue_limit,
                         },
                         causation_id=str(command.command_id),
-                    ),
-                    activation_row=None,
-                )
+                        ),
+                        command,
+                    )
                 return self._receipt(
                     command,
                     "queue_full",
@@ -209,8 +231,8 @@ class InMemoryAgentKernelStore:
                 "command": command,
             }
             self._idempotency[(command.session_id, command.idempotency_key)] = message_id
-            await self._emit(
-                control_event(
+            await self._emit_admission(
+                    control_event(
                     session_id=command.session_id,
                     event_type="control.command_accepted",
                     payload={
@@ -221,9 +243,9 @@ class InMemoryAgentKernelStore:
                         "command_type": command.command_type,
                     },
                     causation_id=str(command.command_id),
-                ),
-                activation_row=None,
-            )
+                    ),
+                    command,
+                )
             return self._receipt(
                 command,
                 "accepted",
@@ -257,8 +279,8 @@ class InMemoryAgentKernelStore:
         只在 SessionEventStore 里追加 ``control.command_rejected`` 事实，
         不写 Inbox 行；payload 仅含 command_id/status/reason。
         """
-        await self._emit(
-            control_event(
+        await self._emit_admission(
+                control_event(
                 session_id=command.session_id,
                 event_type="control.command_rejected",
                 payload={
@@ -267,9 +289,9 @@ class InMemoryAgentKernelStore:
                     "reason": code,
                 },
                 causation_id=str(command.command_id),
-            ),
-            activation_row=None,
-        )
+                ),
+                command,
+            )
         return self._receipt(
             command,
             status,

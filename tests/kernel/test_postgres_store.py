@@ -354,3 +354,27 @@ async def test_kill_writer_before_commit_leaves_no_half_state(pg_store, pg_dsn):
     message = await pg_store.claim_next(AGENT, SESSION, lease.fencing_token)
     assert message is not None
     assert message.idempotency_key == cmd.idempotency_key
+
+
+@pytest.mark.asyncio
+async def test_postgres_nonce_store_is_durable_across_instances(pg_dsn):
+    """P0-4: nonce 去重跨 store 实例（等价跨 Pod / 重启）仍然生效。"""
+
+    from ksadk.kernel.postgres_store import PostgresNonceStore
+
+    from ksadk.sessions.postgres_service import PostgresSessionService
+
+    service = PostgresSessionService(dsn=pg_dsn)
+    pool = service._pool
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM kernel_permit_nonces")
+    store_a = PostgresNonceStore(pool)
+    store_b = PostgresNonceStore(pool)
+    # 首次注册成功。
+    assert await store_a.register("nonce-durable-1", "cmd-1", "idem-1") is True
+    # 同 identity 的网络重试可通过（另一实例）。
+    assert await store_b.register("nonce-durable-1", "cmd-1", "idem-1") is True
+    # 同 nonce 被其它 command 复用（重放）必须拒绝。
+    assert await store_b.register("nonce-durable-1", "cmd-2", "idem-2") is False
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM kernel_permit_nonces")

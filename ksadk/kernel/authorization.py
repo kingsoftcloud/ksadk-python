@@ -39,7 +39,41 @@ MUTATION_OPERATIONS = frozenset(
 )
 READ_OPERATIONS = frozenset({"get_status", "subscribe_events"})
 
+# permit 有效期上限（与 server ``PERMIT_MAX_TTL_SECONDS`` 对齐）。
+PERMIT_MAX_TTL_SECONDS = 300.0
+
 _TIMESTAMP_FIELDS = ("issued_at", "expires_at")
+
+
+@runtime_checkable
+class NonceStore(Protocol):
+    """mutation nonce 单次使用存储。
+
+    默认进程内实现只覆盖单 Pod；跨 Pod / 重启的 durable 语义由注入的
+    持久化实现提供（见 ``PostgresNonceStore``）。返回 True 表示记录成功
+    或同一 ``(command_id, idempotency_key)`` 的网络重试；False 表示同
+    nonce 被其它 command 复用（重放）。
+    """
+
+    async def register(
+        self, nonce: str, command_id: str, idempotency_key: str
+    ) -> bool: ...
+
+
+class InMemoryNonceStore:
+    """进程内默认实现（单 Pod；测试与本地运行）。"""
+
+    def __init__(self) -> None:
+        self._nonces: dict[str, tuple[str, str]] = {}
+
+    async def register(
+        self, nonce: str, command_id: str, idempotency_key: str
+    ) -> bool:
+        prior = self._nonces.get(nonce)
+        if prior is not None and prior != (command_id, idempotency_key):
+            return False
+        self._nonces[nonce] = (command_id, idempotency_key)
+        return True
 
 
 def b64url_encode(raw: bytes) -> str:
@@ -115,14 +149,15 @@ class AgentControlPermitVerifier:
         *,
         cache_max_age_seconds: float = 300.0,
         monotonic=time.monotonic,
+        nonce_store: NonceStore | None = None,
     ) -> None:
         self._jwks = jwks
         self._cache_max_age = float(cache_max_age_seconds)
         self._monotonic = monotonic
         self._keys: dict[str, Ed25519PublicKey] = {}
         self._fetched_at = float("-inf")
-        # nonce -> (command_id, idempotency_key)：mutation 单次使用。
-        self._nonces: dict[str, tuple[str, str]] = {}
+        # nonce 单次使用：默认进程内，durable 语义注入 NonceStore。
+        self._nonce_store: NonceStore = nonce_store or InMemoryNonceStore()
 
     async def _verification_key(self, key_id: str) -> Ed25519PublicKey:
         if key_id in self._keys and self._monotonic() - self._fetched_at < self._cache_max_age:
@@ -156,32 +191,44 @@ class AgentControlPermitVerifier:
             raise InvalidPermitError(
                 "operation_not_allowed", details={"operation": operation}
             )
+        # authorization_ref 必须绑定到 permit 本体：伪造 ref 不得通过。
+        if str(getattr(request, "authorization_ref", "")) != permit.permit_id:
+            raise InvalidPermitError(
+                "authorization_ref_mismatch",
+                details={"expected": "permit_id"},
+            )
         if (permit.tenant_id, permit.agent_instance_id) != (
             getattr(request, "tenant_id", None),
             getattr(request, "agent_instance_id", None),
         ):
             raise InvalidPermitError("resource_binding_mismatch")
+        # session-bound permit 只能用于同一 session；instance 级
+        # （session_id=None）请求不允许用 session permit 放大作用域。
         request_session = getattr(request, "session_id", None)
-        if (
-            permit.session_id is not None
-            and request_session is not None
-            and permit.session_id != request_session
-        ):
+        if permit.session_id is not None and request_session != permit.session_id:
             raise InvalidPermitError(
                 "resource_binding_mismatch", details={"field": "session_id"}
             )
+        issued_at = parse_rfc3339(permit.issued_at)
+        if issued_at > now:
+            raise InvalidPermitError("permit_not_yet_valid")
         if parse_rfc3339(permit.expires_at) <= now:
             raise PermitExpiredError("permit_expired")
+        if (
+            parse_rfc3339(permit.expires_at) - issued_at
+        ).total_seconds() > PERMIT_MAX_TTL_SECONDS:
+            raise InvalidPermitError(
+                "permit_ttl_exceeds_maximum",
+                details={"max_ttl_seconds": PERMIT_MAX_TTL_SECONDS},
+            )
 
         if operation in MUTATION_OPERATIONS:
-            identity = (
+            if not await self._nonce_store.register(
+                permit.nonce,
                 str(getattr(request, "command_id", "")),
                 str(getattr(request, "idempotency_key", "")),
-            )
-            prior = self._nonces.get(permit.nonce)
-            if prior is not None and prior != identity:
+            ):
                 raise InvalidPermitError("nonce_reuse")
-            self._nonces[permit.nonce] = identity
 
         return VerifiedAdmission(
             permit_id=permit.permit_id,
@@ -194,7 +241,10 @@ class AgentControlPermitVerifier:
 
 __all__ = [
     "AgentControlPermitVerifier",
+    "InMemoryNonceStore",
     "JwksSource",
+    "NonceStore",
+    "PERMIT_MAX_TTL_SECONDS",
     "PermitExpiredError",
     "VerifiedAdmission",
     "MUTATION_OPERATIONS",

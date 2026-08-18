@@ -48,10 +48,14 @@ from ksadk.sessions.in_memory import InMemorySessionService
 TENANT = "tenant-1"
 AGENT = "agent-1"
 KEY_ID = "key-1"
-CLOCK_AT = datetime(2026, 8, 18, 0, 10, 0, tzinfo=UTC)
+PERMIT_REF = f"permit-{KEY_ID}"
+# permit TTL 上限 300s（与 server PERMIT_MAX_TTL_SECONDS 对齐）。时间线：
+# issued 00:00:00 -> expires 00:05:00（恰好 300s），CLOCK_AT 00:03:00，
+# EXPIRED_AT 00:02:00。
+CLOCK_AT = datetime(2026, 8, 18, 0, 3, 0, tzinfo=UTC)
 ISSUED_AT = "2026-08-18T00:00:00Z"
-EXPIRES_AT = "2026-08-18T01:00:00Z"
-EXPIRED_AT = "2026-08-18T00:05:00Z"
+EXPIRES_AT = "2026-08-18T00:05:00Z"
+EXPIRED_AT = "2026-08-18T00:02:00Z"
 
 
 class StaticJwks:
@@ -86,8 +90,10 @@ class PermitAuthority:
         tenant_id: str = TENANT,
         agent_instance_id: str = AGENT,
         expires_at: str = EXPIRES_AT,
+        issued_at: str = ISSUED_AT,
         nonce: str | None = None,
         subject_ref: str = "user-1",
+        permit_id: str | None = None,
     ) -> AgentControlPermit:
         import hashlib
         import json
@@ -101,13 +107,13 @@ class PermitAuthority:
             json.dumps(claims, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
         unsigned = AgentControlPermit(
-            permit_id=f"permit-{uuid4().hex[:8]}",
+            permit_id=permit_id or f"permit-{self.key_id}",
             subject_ref=subject_ref,
             tenant_id=tenant_id,
             agent_instance_id=agent_instance_id,
             session_id=session_id,
             allowed_operations=list(operations),
-            issued_at=ISSUED_AT,
+            issued_at=issued_at,
             expires_at=expires_at,
             nonce=nonce or f"nonce-{uuid4().hex[:8]}",
             key_id=self.key_id,
@@ -126,6 +132,7 @@ def command(
     idempotency_key: str | None = None,
     content: str = "hello",
     tenant_id: str = TENANT,
+    authorization_ref: str = PERMIT_REF,
 ) -> AgentControlCommand:
     payload: dict = {"content": {"text": content}}
     if command_type == "inject":
@@ -150,7 +157,7 @@ def command(
         command_type=command_type,
         payload=payload,
         source=ControlSource(kind="studio", ref="local-studio"),
-        authorization_ref="permit-ref",
+        authorization_ref=authorization_ref,
         submitted_at="2026-08-18T00:09:00Z",
     )
 

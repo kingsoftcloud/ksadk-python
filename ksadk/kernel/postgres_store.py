@@ -65,6 +65,8 @@ SCHEMA_PATH = Path(__file__).parent / "sql" / "001_agent_kernel.sql"
 
 NAMESPACE = "default"
 
+NONCE_RETENTION_SECONDS = 24 * 3600.0
+
 ACTIVATION_FOR_SHARE_SQL = (
     "SELECT activation_id, fencing_token, lease_expires_at, released, runtime_type,"
     " bundle_digest, capability_digest, agent_instance_id, session_id"
@@ -222,6 +224,57 @@ class PostgresKernelEventLog:
         return envelopes
 
 
+class PostgresNonceStore:
+    """跨 Pod / 重启 durable 的 mutation nonce 单次使用存储。
+
+    单条 ``INSERT .. ON CONFLICT (nonce) DO NOTHING`` 原子占位；冲突时读回
+    既有 identity 比较：同 ``(command_id, idempotency_key)`` 是网络重试，
+    否则判为重放（返回 False）。注册成功时顺带清理超过 retention 的旧行。
+    """
+
+    def __init__(self, pool: Any, *, retention_seconds: float = NONCE_RETENTION_SECONDS) -> None:
+        self._pool = pool
+        self._retention = float(retention_seconds)
+
+    @asynccontextmanager
+    async def _connection(self):
+        if hasattr(self._pool, "acquire"):
+            async with self._pool.acquire() as conn:
+                yield conn
+        else:
+            yield self._pool
+
+    async def register(
+        self, nonce: str, command_id: str, idempotency_key: str
+    ) -> bool:
+        async with self._connection() as connection:
+            async with connection.transaction():
+                inserted = await connection.fetchval(
+                    "INSERT INTO kernel_permit_nonces (nonce, command_id,"
+                    " idempotency_key) VALUES ($1, $2, $3)"
+                    " ON CONFLICT (nonce) DO NOTHING RETURNING nonce",
+                    nonce,
+                    command_id,
+                    idempotency_key,
+                )
+                if inserted is not None:
+                    await connection.execute(
+                        "DELETE FROM kernel_permit_nonces"
+                        " WHERE created_at < now() - make_interval(secs => $1)",
+                        self._retention,
+                    )
+                    return True
+                existing = await connection.fetchrow(
+                    "SELECT command_id, idempotency_key FROM kernel_permit_nonces"
+                    " WHERE nonce=$1",
+                    nonce,
+                )
+                return existing is not None and (
+                    existing["command_id"] == command_id
+                    and existing["idempotency_key"] == idempotency_key
+                )
+
+
 class PostgresAgentKernelStore:
     def __init__(
         self,
@@ -307,12 +360,17 @@ class PostgresAgentKernelStore:
         )
 
     async def _append_admission(
-        self, connection: Any, envelope: SessionEventEnvelope
+        self, connection: Any, envelope: SessionEventEnvelope, command: AgentControlCommand
     ) -> None:
+        # accepted/rejected 事实的 write guard 绑定提交方的 permit 引用
+        # （server permit_id 或本地 authority），不落内核自造 ref。
         await self._events.append_on(
             connection,
             envelope,
-            AdmissionWriteGuard(authorization_ref="agent-kernel", command_id=envelope.event_id),
+            AdmissionWriteGuard(
+                authorization_ref=command.authorization_ref,
+                command_id=command.command_id,
+            ),
         )
 
     async def _append_activation_fact(
@@ -350,6 +408,7 @@ class PostgresAgentKernelStore:
                     if existing["request_digest"] != command_digest(command):
                         await self._append_admission(
                             connection,
+                            command,
                             control_event(
                                 session_id=command.session_id,
                                 event_type="control.command_rejected",
@@ -389,6 +448,7 @@ class PostgresAgentKernelStore:
                 if int(depth) >= queue_limit:
                     await self._append_admission(
                         connection,
+                        command,
                         control_event(
                             session_id=command.session_id,
                             event_type="control.command_rejected",
@@ -450,6 +510,7 @@ class PostgresAgentKernelStore:
                 # ControlEvent 与 inbox insert 同一事务（SQLite 版在事务外，此处按计划收进）。
                 await self._append_admission(
                     connection,
+                    command,
                     control_event(
                         session_id=command.session_id,
                         event_type="control.command_accepted",
@@ -523,6 +584,7 @@ class PostgresAgentKernelStore:
             async with connection.transaction():
                 await self._append_admission(
                     connection,
+                    command,
                     control_event(
                         session_id=command.session_id,
                         event_type="control.command_rejected",
@@ -1084,4 +1146,10 @@ class PostgresAgentKernelStore:
         return stored
 
 
-__all__ = ["PostgresAgentKernelStore", "PostgresKernelEventLog", "SCHEMA_PATH"]
+__all__ = [
+    "PostgresAgentKernelStore",
+    "PostgresKernelEventLog",
+    "PostgresNonceStore",
+    "SCHEMA_PATH",
+    "NONCE_RETENTION_SECONDS",
+]

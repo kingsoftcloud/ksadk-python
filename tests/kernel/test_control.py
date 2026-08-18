@@ -10,6 +10,7 @@ from ksadk.kernel.state import InboxState
 from tests.kernel.control_harness import (
     AGENT,
     EXPIRED_AT,
+    PERMIT_REF,
     TENANT,
     command,
     kernel_stack,
@@ -138,7 +139,7 @@ async def test_status_reads_store_without_creating_run():
     query = AgentStatusQuery(
         tenant_id=TENANT,
         agent_instance_id=AGENT,
-        authorization_ref="r",
+        authorization_ref=PERMIT_REF,
         session_id="s1",
     )
     snapshot = await stack.kernel.status(query, permit=stack.permit("get_status"))
@@ -166,7 +167,7 @@ async def test_subscribe_replays_committed_events_from_cursor():
         tenant_id=TENANT,
         agent_instance_id=AGENT,
         session_id="s1",
-        authorization_ref="r",
+        authorization_ref=PERMIT_REF,
         after_seq=0,
     )
     seen = []

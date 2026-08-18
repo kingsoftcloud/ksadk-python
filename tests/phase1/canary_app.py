@@ -91,7 +91,7 @@ class _CanaryAuthority:
         session_id: str | None,
         operations: list[str],
     ) -> AgentControlPermit:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(timezone.utc).replace(microsecond=0)
         claims = {
             "subject": "phase1-canary",
             "operations": operations,
@@ -108,7 +108,7 @@ class _CanaryAuthority:
             session_id=session_id,
             allowed_operations=operations,
             issued_at=now.isoformat(),
-            expires_at=(now + timedelta(minutes=10)).isoformat(),
+            expires_at=(now + timedelta(minutes=5)).isoformat(),
             nonce=f"nonce-{uuid.uuid4().hex[:8]}",
             key_id=self.key_id,
             claims_digest=claims_digest,
@@ -250,15 +250,30 @@ async def startup() -> None:
     event_log = PostgresKernelEventLog(service._pool)
     kstore = PostgresAgentKernelStore(service._pool, event_log)
     await kstore.ensure_schema()
+    from ksadk.kernel.postgres_store import PostgresNonceStore
+
     auth = _CanaryAuthority()
-    verifier = AgentControlPermitVerifier(auth.jwks())
-    _state["events"] = SessionServiceEventStore(service)
+    events = SessionServiceEventStore(service)
+    verifier = AgentControlPermitVerifier(
+        auth.jwks(), nonce_store=PostgresNonceStore(service._pool)
+    )
+    _state["events"] = events
     _state["kernel"] = AgentKernel(
         kstore,
-        SessionServiceEventStore(service),
+        events,
         verifier,
         queue_limit=100,
     )
+    # Server AgentControl ingress 验签器：trusted JWKS + durable nonce store。
+    jwks_raw = os.environ.get("AGENT_CONTROL_TRUSTED_JWKS", "").strip()
+    if jwks_raw:
+        keys = {k["kid"]: k["x"] for k in json.loads(jwks_raw).get("keys", [])}
+        server_verifier = AgentControlPermitVerifier(
+            StaticJwks(keys), nonce_store=PostgresNonceStore(service._pool)
+        )
+        _state["server_kernel"] = AgentKernel(
+            kstore, events, server_verifier, queue_limit=100
+        )
     _state["store"] = kstore
     _state["authority"] = auth
     _state["pool"] = service._pool
@@ -284,52 +299,29 @@ async def server_agent_control_submit(body: dict) -> dict:
     """Server AgentControlChannel/v1 ingress：接受 Server admission 签发的 permit。
 
     body: {"command": {...}, "permit": {...}}（Server AgentControlRuntimeClient 格式）。
-    先按 Server 合同 canonicalization 验证 permit 的 Ed25519 签名（公钥来自
-    env AGENT_CONTROL_TRUSTED_JWKS，形如 {"keys":[{"kid","x"}]}），再校验时效与
-    claims 绑定（tenant/instance/session/operation/authorization_ref），通过后
-    进入本地 kernel（签名密钥桥接：Server permit 验签 + kernel 内部 permit）。
+    验签走 AgentControlPermitVerifier（trusted JWKS 来自 env
+    AGENT_CONTROL_TRUSTED_JWKS，形如 {"keys":[{"kid","x"}]}）：签名、时效
+    （issued <= now、TTL <= 300s）、operation/tenant/instance/session/nonce
+    绑定与 authorization_ref == permit_id 全部在 verifier 内 fail closed。
+    通过后直接以 server permit 进入本地 kernel：accepted 事件的
+    AdmissionWriteGuard 绑定 server permit_id，receipt 保持 server 语义，
+    不再本地重签 permit。
     """
-    from cryptography.exceptions import InvalidSignature
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
     from fastapi import HTTPException
 
-    from ksadk.kernel.contracts import AgentControlCommand
+    from ksadk.kernel.contracts import AgentControlCommand, AgentControlPermit
+    from ksadk.kernel.errors import InvalidPermitError
 
-    command, permit = body["command"], body["permit"]
-
-    jwks_raw = os.environ.get("AGENT_CONTROL_TRUSTED_JWKS", "").strip()
-    if not jwks_raw:
+    if "server_kernel" not in _state:
         raise HTTPException(status_code=503, detail="trusted jwks not configured")
-    keys = {k["kid"]: k["x"] for k in json.loads(jwks_raw).get("keys", [])}
-    key_x = keys.get(permit.get("key_id"))
-    if key_x is None:
-        raise HTTPException(status_code=403, detail="unknown permit key_id")
-    try:
-        public_key = Ed25519PublicKey.from_public_bytes(_b64url_decode(key_x))
-        unsigned = {k: v for k, v in permit.items() if k != "signature"}
-        public_key.verify(_b64url_decode(permit["signature"]), _canonical(unsigned))
-    except (InvalidSignature, ValueError) as exc:
-        raise HTTPException(status_code=403, detail="permit signature mismatch") from exc
 
-    now = datetime.now(timezone.utc)
-    issued = _parse_rfc3339(permit["issued_at"])
-    expires = _parse_rfc3339(permit["expires_at"])
-    if now >= expires or now < issued:
-        raise HTTPException(status_code=403, detail="permit expired or not yet valid")
-    if (expires - issued).total_seconds() > 300:
-        raise HTTPException(status_code=403, detail="permit ttl exceeds maximum")
-    if command.get("authorization_ref") != permit["permit_id"]:
-        raise HTTPException(status_code=403, detail="authorization_ref mismatch")
-    if command.get("tenant_id") != permit["tenant_id"]:
-        raise HTTPException(status_code=403, detail="tenant mismatch")
-    if command.get("agent_instance_id") != permit["agent_instance_id"] or str(
-        permit["agent_instance_id"]
-    ) != instance_id():
+    command, permit_raw = body["command"], body["permit"]
+    try:
+        server_permit = AgentControlPermit.model_validate(permit_raw)
+    except Exception as exc:
+        raise HTTPException(status_code=403, detail="invalid permit payload") from exc
+    if str(server_permit.agent_instance_id) != instance_id():
         raise HTTPException(status_code=403, detail="instance mismatch")
-    if permit.get("session_id") and command.get("session_id") != permit["session_id"]:
-        raise HTTPException(status_code=403, detail="session mismatch")
-    if command.get("command_type") not in permit.get("allowed_operations", []):
-        raise HTTPException(status_code=403, detail="operation not allowed by permit")
 
     service: PostgresSessionService = _state["session_service"]  # type: ignore[assignment]
     session_id = str(command["session_id"])
@@ -347,15 +339,17 @@ async def server_agent_control_submit(body: dict) -> dict:
         command_type=str(command["command_type"]),
         payload=command.get("payload", {"content": {"text": "hi"}}),
         source=command.get("source") or {"kind": "workflow", "ref": "server"},
-        authorization_ref=str(command["authorization_ref"]),
+        authorization_ref=server_permit.permit_id,
         submitted_at=str(command["submitted_at"]),
     )
-    kernel_permit = authority().permit(
-        agent_instance_id=instance_id(),
-        session_id=session_id,
-        operations=[kernel_command.command_type],
-    )
-    receipt = await kernel().submit(kernel_command, permit=kernel_permit)
+    server_kernel: "AgentKernel" = _state["server_kernel"]  # type: ignore[assignment]
+    # kernel 内部 verifier：签名/时效/绑定/authorization_ref/nonce 一次收口。
+    try:
+        receipt = await server_kernel.submit(kernel_command, permit=server_permit)
+    except InvalidPermitError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if receipt.status == "rejected" and receipt.error is not None:
+        raise HTTPException(status_code=403, detail=receipt.error.message)
     out = receipt.model_dump(mode="json", by_alias=True)
     out["request_id"] = f"req-{uuid.uuid4().hex[:16]}"
     return out
@@ -390,6 +384,11 @@ async def submit_agent_control(body: dict) -> dict:
             agent_id=instance_id(), user_id="phase1-canary",
             session_id=body["session_id"],
         )
+    permit = authority().permit(
+        agent_instance_id=instance_id(),
+        session_id=body["session_id"],
+        operations=[body.get("command_type", "enqueue")],
+    )
     command = AgentControlCommand(
         command_id=uuid.uuid4(),
         idempotency_key=body.get("idempotency_key") or f"key-{uuid.uuid4().hex[:12]}",
@@ -399,13 +398,8 @@ async def submit_agent_control(body: dict) -> dict:
         command_type=body.get("command_type", "enqueue"),
         payload=body.get("payload", {"content": {"text": body.get("text", "hi")}}),
         source={"kind": "workflow", "ref": "canary"},
-        authorization_ref="canary-self",
+        authorization_ref=permit.permit_id,
         submitted_at=datetime.now(timezone.utc).isoformat(),
-    )
-    permit = authority().permit(
-        agent_instance_id=instance_id(),
-        session_id=body["session_id"],
-        operations=[command.command_type],
     )
     receipt = await kernel().submit(command, permit=permit)
     return receipt.model_dump(mode="json", by_alias=True)
@@ -413,16 +407,16 @@ async def submit_agent_control(body: dict) -> dict:
 
 @app.get("/v1/actions/GetAgentStatus")
 async def get_agent_status(session_id: str | None = None) -> dict:
-    query = AgentStatusQuery(
-        tenant_id=TENANT,
-        agent_instance_id=instance_id(),
-        authorization_ref="canary-self",
-        session_id=session_id,
-    )
     permit = authority().permit(
         agent_instance_id=instance_id(),
         session_id=session_id,
         operations=["get_status"],
+    )
+    query = AgentStatusQuery(
+        tenant_id=TENANT,
+        agent_instance_id=instance_id(),
+        authorization_ref=permit.permit_id,
+        session_id=session_id,
     )
     snapshot = await kernel().status(query, permit=permit)
     return snapshot.model_dump(mode="json", by_alias=True)
@@ -430,17 +424,17 @@ async def get_agent_status(session_id: str | None = None) -> dict:
 
 @app.get("/v1/actions/SubscribeSessionEvents")
 async def subscribe_session_events(session_id: str, after_seq: int = 0):
-    subscription = SessionEventSubscription(
-        tenant_id=TENANT,
-        agent_instance_id=instance_id(),
-        session_id=session_id,
-        authorization_ref="canary-self",
-        after_seq=after_seq,
-    )
     permit = authority().permit(
         agent_instance_id=instance_id(),
         session_id=session_id,
         operations=["subscribe_events"],
+    )
+    subscription = SessionEventSubscription(
+        tenant_id=TENANT,
+        agent_instance_id=instance_id(),
+        session_id=session_id,
+        authorization_ref=permit.permit_id,
+        after_seq=after_seq,
     )
 
     async def gen():

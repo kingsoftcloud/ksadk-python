@@ -32,6 +32,7 @@ from ksadk.sessions.local_service import LocalSessionService
 from tests.kernel.control_harness import (
     AGENT,
     CLOCK_AT,
+    PERMIT_REF,
     TENANT,
     FakeAdapter,
     PermitAuthority,
@@ -228,7 +229,7 @@ async def test_closure_sse_reconnect_resumes_after_seq_without_gap(tmp_path, dri
         tenant_id=TENANT,
         agent_instance_id=AGENT,
         session_id="s1",
-        authorization_ref="permit-ref",
+        authorization_ref=PERMIT_REF,
         after_seq=last_seen_seq,
     )
     replayed = []

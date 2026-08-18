@@ -189,11 +189,15 @@ class SQLiteAgentKernelStore:
             )
         return activation
 
-    async def _emit_admission(self, envelope: SessionEventEnvelope) -> None:
+    async def _emit_admission(
+        self, envelope: SessionEventEnvelope, command: AgentControlCommand
+    ) -> None:
+        # admission 事实的 guard 绑定提交方 permit 引用与 command_id。
         await self._events.append(
             envelope,
             guard=AdmissionWriteGuard(
-                authorization_ref="agent-kernel", command_id=uuid4()
+                authorization_ref=command.authorization_ref,
+                command_id=command.command_id,
             ),
         )
 
@@ -252,7 +256,8 @@ class SQLiteAgentKernelStore:
                                     "reason": "idempotency_conflict",
                                 },
                                 causation_id=str(command.command_id),
-                            )
+                            ),
+                            command,
                         )
                         return self._receipt(
                             command,
@@ -291,7 +296,8 @@ class SQLiteAgentKernelStore:
                                 "queue_limit": queue_limit,
                             },
                             causation_id=str(command.command_id),
-                        )
+                        ),
+                        command,
                     )
                     return self._receipt(
                         command,
@@ -348,7 +354,8 @@ class SQLiteAgentKernelStore:
                     "command_type": command.command_type,
                 },
                 causation_id=str(command.command_id),
-            )
+            ),
+            command,
         )
         return self._receipt(
             command, "accepted", message_id=message_id, accepted_seq=accepted_seq

@@ -60,3 +60,15 @@ CREATE TABLE IF NOT EXISTS kernel_accepted_seq (
   last_seq BIGINT NOT NULL DEFAULT 0,
   PRIMARY KEY (tenant_id, session_id)
 );
+
+-- Mutation permit nonce 单次使用（durable replay 防护，跨 Pod / 重启共享）。
+-- register 语义见 postgres_store.PostgresNonceStore：INSERT .. ON CONFLICT DO
+-- NOTHING，冲突时读回 (command_id, idempotency_key) 判定网络重试 vs 重放。
+CREATE TABLE IF NOT EXISTS kernel_permit_nonces (
+  nonce TEXT PRIMARY KEY,
+  command_id TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_kernel_permit_nonces_created
+  ON kernel_permit_nonces (created_at);

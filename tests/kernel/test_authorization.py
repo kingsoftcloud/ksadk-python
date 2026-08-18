@@ -6,6 +6,7 @@ from __future__ import annotations
 import pytest
 
 from ksadk.kernel.authorization import (
+    AgentControlPermitVerifier,
     PermitExpiredError,
     VerifiedAdmission,
     canonical_permit_bytes,
@@ -16,6 +17,7 @@ from tests.kernel.control_harness import (
     AGENT,
     CLOCK_AT,
     EXPIRED_AT,
+    PERMIT_REF,
     TENANT,
     PermitAuthority,
     command,
@@ -27,7 +29,7 @@ def status_query(session_id: str | None = "s1") -> AgentStatusQuery:
     return AgentStatusQuery(
         tenant_id=TENANT,
         agent_instance_id=AGENT,
-        authorization_ref="permit-ref",
+        authorization_ref=PERMIT_REF,
         session_id=session_id,
     )
 
@@ -134,3 +136,77 @@ def test_expired_error_is_invalid_permit_code():
     error = PermitExpiredError("permit_expired")
     assert isinstance(error, AgentKernelError)
     assert error.code == "invalid_permit"
+
+
+# ------------------------------------------- review P0: permit binding / TTL
+
+
+async def test_forged_authorization_ref_is_rejected():
+    """P0-1: request.authorization_ref 必须等于 permit.permit_id。"""
+
+    stack = await kernel_stack()
+    permit = stack.permit("enqueue")
+    forged = command(authorization_ref="permit-forged")
+    with pytest.raises(InvalidPermitError) as error:
+        await stack.verifier.verify(permit, forged, "enqueue", CLOCK_AT)
+    assert "authorization_ref" in str(error.value)
+
+
+async def test_permit_not_yet_valid_is_rejected():
+    """P0-2a: issued_at 在 now 之后（时间倒签）必须拒绝。"""
+
+    stack = await kernel_stack()
+    permit = stack.permit("enqueue", issued_at="2026-08-18T00:04:00Z")
+    with pytest.raises(InvalidPermitError) as error:
+        await stack.verifier.verify(permit, command(), "enqueue", CLOCK_AT)
+    assert "not_yet_valid" in str(error.value)
+
+
+async def test_permit_ttl_exceeds_maximum_is_rejected():
+    """P0-2b: expires_at - issued_at > 300s 必须拒绝。"""
+
+    stack = await kernel_stack()
+    permit = stack.permit("enqueue", expires_at="2026-08-18T00:06:00Z")
+    with pytest.raises(InvalidPermitError) as error:
+        await stack.verifier.verify(permit, command(), "enqueue", CLOCK_AT)
+    assert "ttl" in str(error.value)
+
+
+async def test_session_bound_permit_cannot_scope_up_to_instance_query():
+    """P0-3: session-bound permit 不能用于 session_id=None 的 instance 级查询。"""
+
+    stack = await kernel_stack()
+    permit = stack.permit("get_status", session_id="s1")
+    with pytest.raises(InvalidPermitError):
+        await stack.verifier.verify(permit, status_query(None), "get_status", CLOCK_AT)
+    # 显式匹配 session 的查询仍通过。
+    admission = await stack.verifier.verify(
+        permit, status_query("s1"), "get_status", CLOCK_AT
+    )
+    assert admission.permit_id == permit.permit_id
+
+
+# ----------------------------------------------- review P0: durable nonce store
+
+
+async def test_nonce_reuse_detected_across_verifiers_via_shared_nonce_store():
+    """P0-4: nonce 去重必须走注入的 nonce store（跨 Pod / 重启 durable）。"""
+
+    from ksadk.kernel.authorization import InMemoryNonceStore
+
+    stack = await kernel_stack()
+    store = InMemoryNonceStore()
+    verifier_a = AgentControlPermitVerifier(
+        stack.jwks, nonce_store=store, cache_max_age_seconds=300.0
+    )
+    verifier_b = AgentControlPermitVerifier(
+        stack.jwks, nonce_store=store, cache_max_age_seconds=300.0
+    )
+    permit = stack.permit("enqueue", nonce="shared-nonce")
+    await verifier_a.verify(permit, command(), "enqueue", CLOCK_AT)
+    # 另一个进程/实例的 verifier 共享同一 durable store 时必须拒绝重放。
+    with pytest.raises(InvalidPermitError) as error:
+        await verifier_b.verify(
+            permit, command(idempotency_key="replay"), "enqueue", CLOCK_AT
+        )
+    assert "nonce_reuse" in str(error.value)
