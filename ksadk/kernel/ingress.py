@@ -666,6 +666,13 @@ def _build_kernel_router() -> Any:
             session_id=query.session_id,
             operations=("get_status",),
         )
+        # permit 绑定校验必须对齐本地签发的 permit 本体：caller 自报的
+        # authorization_ref 指向 runtime 从未见过的 permit，直接送验只会
+        # authorization_ref_mismatch -> 恒 fail-closed（instance_state 永远
+        # unavailable）。与 submit 无 permit 分支的重写语义一致。
+        query = query.model_copy(
+            update={"authorization_ref": trusted.permit.permit_id}
+        )
         snapshot = await kernel.status(query, permit=trusted.permit)
         return JSONResponse(json.loads(snapshot.model_dump_json()))
 

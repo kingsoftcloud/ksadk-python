@@ -11,6 +11,7 @@ import uuid
 from typing import Any
 
 import pytest
+from fastapi import FastAPI
 
 from ksadk.kernel import ingress
 from ksadk.kernel.contracts import AgentControlReceipt
@@ -230,3 +231,120 @@ def test_kernel_ingress_enabled_accepts_platform_env(monkeypatch):
     assert ingress.kernel_ingress_enabled()
     monkeypatch.setenv("AGENT_KERNEL_ENABLED", "false")
     assert not ingress.kernel_ingress_enabled()
+
+
+# ---------------------------------------------------------------------------
+# GetAgentStatus / SubscribeSessionEvents：真实 in-process kernel 的 permit 绑定
+#
+# 预发回归：canonical ingress 的 status 用本地 trusted context 签 permit，
+# 但拿 caller 自报的 query.authorization_ref 做绑定校验 -> authorization_ref_mismatch
+# -> 恒 fail-closed，instance_state 永远 unavailable。必须用 StubKernel 之外
+# 的真实 kernel 断言（StubKernel 不跑 verifier，掩盖了该 bug）。
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def app_with_real_kernel(monkeypatch):
+    import httpx
+
+    monkeypatch.setenv("AGENT_KERNEL_ENABLED", "1")
+    monkeypatch.setenv("AGENT_KERNEL_STORE_DRIVER", "memory")
+    ingress.clear_agent_kernel()
+    kernel = await ingress.bootstrap_agent_kernel_from_env()
+    assert kernel is not None
+    # canonical ingress 不建 session（server bootstrap / canary middleware 负责），
+    # 测试里直接经 event store 的 session service 预建。
+    await kernel._events.session_service.create_session(
+        agent_id="local-agent", user_id="kernel-test", session_id="sess-1"
+    )
+    app = FastAPI()
+    app.include_router(ingress.agent_kernel_router())
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://runtime.test"
+    ) as client:
+        yield client, kernel
+    ingress.clear_agent_kernel()
+
+
+def _status_query_payload(*, authorization_ref: str = "caller-self-declared-ref") -> dict:
+    return {
+        "schema_version": 1,
+        "tenant_id": "local",
+        "agent_instance_id": "local-agent",
+        "session_id": "sess-1",
+        "authorization_ref": authorization_ref,
+    }
+
+
+async def test_get_agent_status_returns_real_state_not_fail_closed(app_with_real_kernel):
+    """status 必须返回真实 instance_state / inbox_depth，而不是恒 unavailable。"""
+    from ksadk.kernel.store import ActivationLeaseRequest
+
+    client, kernel = app_with_real_kernel
+
+    # 真实路径提交一个 enqueue -> inbox_depth = 1
+    submit = await client.post(
+        ingress.KERNEL_INGRESS_SUBMIT_PATH, json=_command_payload()
+    )
+    assert submit.status_code == 202, submit.text
+
+    # worker 持有 lease -> instance_state = ready（模拟 worker activation）
+    await kernel._store.acquire_activation(
+        ActivationLeaseRequest(
+            agent_instance_id="local-agent",
+            session_id="sess-1",
+            activation_id="act-status-1",
+            runtime_type="fake",
+            bundle_digest="phase1-test",
+            capability_digest="phase1-test",
+            lease_ttl_seconds=60.0,
+        )
+    )
+
+    response = await client.post(
+        ingress.KERNEL_INGRESS_STATUS_PATH,
+        json=_status_query_payload(authorization_ref="caller-self-declared-ref"),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["instance_state"] == "ready", body
+    assert body["inbox_depth"] == 1, body
+    assert body["activation_id"] == "act-status-1"
+
+
+async def test_get_agent_status_without_lease_reports_degraded_not_unavailable(
+    app_with_real_kernel,
+):
+    """无 lease 时是 degraded（真实状态），不得 fail-closed 成 unavailable。"""
+    client, _ = app_with_real_kernel
+    response = await client.post(
+        ingress.KERNEL_INGRESS_STATUS_PATH, json=_status_query_payload()
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["instance_state"] == "degraded", body
+    assert body["inbox_depth"] == 0
+
+
+async def test_subscribe_session_events_streams_with_local_permit(app_with_real_kernel):
+    """subscribe 的本地 permit 绑定自洽：SSE 正常产出事件而非 fail-closed。"""
+    client, _ = app_with_real_kernel
+    submit = await client.post(
+        ingress.KERNEL_INGRESS_SUBMIT_PATH, json=_command_payload()
+    )
+    assert submit.status_code == 202, submit.text
+
+    collected: list[str] = []
+    async with client.stream(
+        "GET",
+        ingress.KERNEL_INGRESS_SESSION_EVENTS_PATH,
+        params={"session_id": "sess-1", "after_seq": 0},
+    ) as response:
+        assert response.status_code == 200
+        async for line in response.aiter_lines():
+            if line.startswith("id:") or line.startswith("data:"):
+                collected.append(line)
+                if len(collected) >= 2:
+                    break
+    assert collected, "SSE 必须产出事件"
+    assert any(line.startswith("id: 1") for line in collected), collected
