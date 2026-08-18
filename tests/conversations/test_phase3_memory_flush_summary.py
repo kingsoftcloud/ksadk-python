@@ -69,6 +69,24 @@ def test_extractor_treats_explicit_preference_correction_as_update():
     assert cands[0].reason == "explicit_user_correction"
 
 
+def test_extractor_assigns_stable_slot_to_explicit_hobby():
+    events = [_user_event(1, "记住我的爱好是羽毛球")]
+    cands = propose_memory_candidates(events, scope_id="u1")
+    assert len(cands) == 1
+    assert cands[0].content == "我的爱好是羽毛球"
+    assert cands[0].slot_key == "profile.preference.hobby"
+
+
+def test_extractor_treats_hobby_restatement_as_correction():
+    events = [_user_event(1, "记住我的爱好其实是乒乓球")]
+    cands = propose_memory_candidates(events, scope_id="u1")
+    assert len(cands) == 1
+    assert cands[0].operation == "update"
+    assert cands[0].content == "我的爱好是乒乓球"
+    assert cands[0].slot_key == "profile.preference.hobby"
+    assert cands[0].reason == "explicit_user_correction"
+
+
 def test_extractor_tool_fact():
     events = [_assistant_event(2, "测试结果 confirmed: 全部通过")]
     cands = propose_memory_candidates(events, scope_id="u1")

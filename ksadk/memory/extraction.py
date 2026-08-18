@@ -34,6 +34,11 @@ _PREFERENCE_CORRECTION = re.compile(
     re.IGNORECASE,
 )
 _PREFERENCE_SLOT = re.compile(r"(?:我|本人)?喜欢(?P<action>吃|喝|用|看|听|玩)")
+_HOBBY_DECLARATION = re.compile(
+    r"(?:我|本人)?的?爱好(?P<correction>其实|现在|改)?(?:是|改成|变成)\s*(?P<value>.+?)"
+    r"(?:[。.!！]|$)",
+    re.IGNORECASE,
+)
 # 工具稳定事实信号。
 _FACT_SIGNALS = ("confirmed", "最终确认", "final", "verified", "确认成功")
 
@@ -49,6 +54,8 @@ def _event_text(event: any) -> str:  # type: ignore[name-defined]
 
 def derive_profile_slot_key(content: str) -> str:
     """为边界明确的可变偏好生成稳定槽位；无法确定时返回空串。"""
+    if _HOBBY_DECLARATION.search(str(content or "")):
+        return "profile.preference.hobby"
     match = _PREFERENCE_SLOT.search(str(content or ""))
     if not match:
         return ""
@@ -88,6 +95,27 @@ def propose_memory_candidates(
 
         # 1. 用户显式记忆意图
         if author == "user" or event_type == "user_message":
+            hobby = _HOBBY_DECLARATION.search(text)
+            if hobby and hobby.group("correction"):
+                new_value = hobby.group("value").strip().strip("。.，, ")
+                if new_value:
+                    content = f"我的爱好是{new_value}"
+                    candidates.append(
+                        MemoryCandidate(
+                            candidate_id=f"cand_{uuid.uuid4().hex[:16]}",
+                            operation="update",
+                            memory_type="profile",
+                            scope=scope,
+                            scope_id=scope_id,
+                            content=content[:1000],
+                            confidence=0.95,
+                            importance=0.9,
+                            source_event_ids=[event_id],
+                            slot_key=derive_profile_slot_key(content),
+                            reason="explicit_user_correction",
+                        )
+                    )
+                    continue
             correction = _PREFERENCE_CORRECTION.search(text)
             if correction:
                 prefix = correction.group("prefix").strip()
