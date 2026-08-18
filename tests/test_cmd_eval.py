@@ -106,6 +106,8 @@ def test_eval_help_exposes_complete_target_shell():
         "--format",
     ):
         assert option in result.output
+    assert "--agent-eval-url" not in result.output
+    assert "--api-token-env" not in result.output
 
 
 def test_eval_accepts_an_immutable_remote_dataset_version(tmp_path, monkeypatch):
@@ -140,8 +142,6 @@ def test_eval_accepts_an_immutable_remote_dataset_version(tmp_path, monkeypatch)
             "dataset-1",
             "--dataset-version",
             "4",
-            "--agent-eval-url",
-            "https://agent-eval.example",
             "--a2a-url",
             "https://agent.example.invalid",
             "--validate-only",

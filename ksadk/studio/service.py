@@ -187,18 +187,8 @@ class StudioService:
             self.workspace.resolve(".agentkit/evaluations")
         )
         if cloud_evalset_client is None:
-            agent_eval_url = os.environ.get("AGENT_EVAL_BASE_URL", "").strip()
-            if agent_eval_url:
-                cloud_evalset_client = AgentEvalCloudDatasetClient(
-                    agent_eval_url,
-                    api_token=os.environ.get("AGENT_EVAL_API_TOKEN"),
-                    account_id=os.environ.get("AGENT_EVAL_ACCOUNT_ID"),
-                )
-        self.cloud_evalsets = (
-            CloudEvalSetService(self.workspace.root, cloud_evalset_client)
-            if cloud_evalset_client is not None
-            else None
-        )
+            cloud_evalset_client = AgentEvalCloudDatasetClient()
+        self.cloud_evalsets = CloudEvalSetService(self.workspace.root, cloud_evalset_client)
         self.authoring = StudioAuthoringCoordinator(self)
         self.codex_agents = CodexAgentService(self)
 

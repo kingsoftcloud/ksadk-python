@@ -1,67 +1,57 @@
-# Agent-Eval Endpoint Resolution Design
+# Agent-Eval KOP Default Transport Design
 
-**Goal:** Keep the agent-eval service location out of normal KsADK evaluation commands while preserving explicit overrides for development and private deployments.
+**Goal:** Make signed AICP/KOP the default transport for cloud EvalSet commands while preserving an explicit direct-HTTP override for development and private deployments.
 
 ## Scope
 
-This change covers endpoint selection for `agentengine evalset push`, `agentengine evalset pull`, and `agentengine eval --dataset-id`. It does not change the Dataset API contract, cloud binding behavior, account selection, or agent-eval deployment topology.
+This change covers cloud EvalSet publish, pull, catalog, `agentengine eval --dataset-id`, and Studio cloud Dataset reads. It does not change the Dataset contract, CloudBinding format, immutable-version semantics, or agent-eval deployment topology.
 
-The phase-one delivery remains an internal-network workflow. Public gateway routing and signed external access are a later platform integration, not a blocker for the internal evaluation closed loop.
+The phase-one delivery uses the existing AICP/KOP gateway and KsADK's global AK/SK configuration. `PublishEvaluationSetSnapshot` must be registered in KOP before this client path can succeed in pre-release or online environments.
 
-## CLI Contract
+## User Contract
 
-- Users do not need to pass `--agent-eval-url` in normal commands.
-- The option is hidden and optional for backward compatibility.
-- `AGENT_EVAL_BASE_URL` remains an advanced override for local development, tests, and private deployments.
-- All three evaluation entry points use the same resolver and therefore cannot select different cloud environments accidentally.
+- Normal users do not pass an agent-eval endpoint.
+- The CLI does not expose `--agent-eval-url`.
+- Default calls use AICP KOP and KsADK's existing `KSYUN_ACCESS_KEY`, `KSYUN_SECRET_KEY`, `KSYUN_ACCOUNT_ID`, and region configuration.
+- `AGENT_EVAL_BASE_URL` remains an advanced direct-HTTP override for local development, Mock tests, and private deployments. It is neither required global configuration nor normal user documentation.
+- CLI and Studio construct the same client, so both choose the same default or explicit override.
 
-Example user flow:
+## Transport Resolution
 
-```powershell
-agentengine evalset push --file support.yaml --dataset-id ds_xxx
-agentengine evalset push --file support.yaml
-agentengine evalset pull --dataset-id ds_xxx --dataset-version 4 --output-file support-v4.yaml
-```
+1. A non-empty `AGENT_EVAL_BASE_URL` selects direct HTTP. KOP signing is never sent to that user-controlled URL.
+2. Without an override, KsADK resolves the AICP endpoint using `resolve_aicp_connection()` and calls the required KOP Action.
+3. `KSYUN_REGION=pre-online` remains the logical routing signal. Signing uses the standard AICP region, avoiding a synthetic pre-release region in the AWS V4 credential scope.
 
-## Endpoint Resolution
+The client maps its existing operations without changing request payloads:
 
-Resolution uses the following precedence:
-
-1. A non-empty explicit CLI value or `AGENT_EVAL_BASE_URL` override.
-2. The pre-release agent-eval endpoint when `KSYUN_REGION=pre-online`.
-3. The online internal agent-eval endpoint for other regions or when the region is absent.
-
-The resolver owns URL trimming and validation. An invalid override fails before any network request. Endpoint constants remain in internal implementation code and must not be copied into public README, changelog, package metadata, or release notes.
+| Operation | KOP Action |
+| --- | --- |
+| publish snapshot | `PublishEvaluationSetSnapshot` |
+| read fixed version | `DescribeEvaluationSet` |
+| list catalog | `ListEvaluationSet` |
 
 ## Authentication Boundary
 
-Phase one keeps the current client behavior:
+The KOP default authenticates the caller through AK/SK and provides verified account context to agent-eval. No agent-eval-specific API key is added.
 
-- account identity comes from `AGENT_EVAL_ACCOUNT_ID`, then falls back to `KSYUN_ACCOUNT_ID`;
-- the client sends the resolved account as `X-Ksc-Account-Id`;
-- an optional bearer token may still be supplied through `AGENT_EVAL_API_TOKEN`;
-- no new credential option is exposed by evaluation commands.
-
-This is acceptable only while access is limited to the trusted internal network. The current agent-eval application consumes the account header as request context; it does not establish that the caller owns that account. A public or customer-facing path therefore must go through a trusted gateway that authenticates the caller, rejects replayed or invalid requests, derives authoritative identity, strips spoofable identity headers, and supplies the verified account and region context to agent-eval.
-
-KsADK already has AK/SK configuration and AICP signing behavior for platform APIs. A later gateway integration should reuse those credentials rather than introduce an agent-eval-specific API key. Until that route exists, the internal direct endpoint remains the supported phase-one topology.
+Direct HTTP retains compatibility behavior only: `AGENT_EVAL_ACCOUNT_ID` falls back to `KSYUN_ACCOUNT_ID`, and `AGENT_EVAL_API_TOKEN` may provide a bearer token. That mode is opt-in because an application-provided account header is not a trustworthy public identity boundary.
 
 ## Failure Behavior
 
-- An invalid endpoint override produces a usage error before Dataset conversion or execution.
-- A valid endpoint that is unreachable retains the existing agent-eval client error behavior.
-- Missing account configuration is not silently replaced with a fabricated identity; agent-eval remains responsible for rejecting operations that require account context.
-- Local EvalSet evaluation does not resolve or contact agent-eval.
+- KOP transport errors are mapped into the existing `AgentEvalCloudClientError` surface with the Action name.
+- A direct endpoint failure preserves the existing HTTP error behavior.
+- Local EvalSet evaluation never constructs or contacts the cloud client.
+- KOP Action registration failure remains visible as its gateway error; the client must not fall back silently to direct HTTP.
 
 ## Verification
 
-1. CLI help does not expose `--agent-eval-url` for push, pull, or cloud Dataset evaluation.
-2. Commands without an endpoint override select pre-release for `KSYUN_REGION=pre-online`.
-3. Commands without an endpoint override select online for the normal production region and for an absent region.
-4. `AGENT_EVAL_BASE_URL` overrides automatic selection.
-5. Push, pull, and fixed-version evaluation construct the client with the same resolved endpoint.
-6. Existing account fallback, immutable-version pull, cloud binding, and local-only evaluation tests remain green.
+1. A client without `AGENT_EVAL_BASE_URL` uses a KOP client and passes the correct Action and payload.
+2. A client with `AGENT_EVAL_BASE_URL` keeps direct HTTP and never calls KOP.
+3. Existing direct HTTP mock tests, immutable pull, binding, and report tests remain green.
+4. CLI help contains no `--agent-eval-url` input.
+5. Studio constructs its default cloud client even when no direct URL exists.
+6. Pre-release verification uses an AK/SK-signed KOP `ListEvaluationSet`, then the full `push -> pull -> eval -> report` path after the new Publish Action is registered.
 
 ## Delivery Boundary
 
-This change is sufficient for the phase-one internal delivery because the deployed internal Ingress and Dataset APIs already complete the publish, fixed-version read, and local evaluation loop. It is not a claim that agent-eval is ready for direct public Internet access. Public delivery requires gateway routing and verified tenant identity as a separate cross-repository platform task.
+This completes the KsADK side of phase-one KOP integration. KOP registration of `PublishEvaluationSetSnapshot` is an external release prerequisite. Cloud Experiment, report/evidence upload, and direct public Internet access remain out of scope.

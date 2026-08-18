@@ -194,6 +194,17 @@ export function EvaluationsPage({ refreshTick }: { refreshTick: number }) {
   const [cloudDatasetId, setCloudDatasetId] = useState("");
   const [cloudDatasetVersion, setCloudDatasetVersion] = useState("");
 
+  const targetLocatorLabel = targetKind === "a2a"
+    ? "Agent 地址"
+    : targetKind === "local_source"
+      ? "Agent 源码目录"
+      : "Studio Build";
+  const targetLocatorPlaceholder = targetKind === "a2a"
+    ? "https://agent.example.test/a2a"
+    : targetKind === "local_source"
+      ? "."
+      : "build-id";
+
   const loadReports = useCallback(async () => {
     setLoading(true);
     setLoadError("");
@@ -467,9 +478,6 @@ export function EvaluationsPage({ refreshTick }: { refreshTick: number }) {
                   }}
                 />
               </FormField>
-              <FormField label="Dataset version" htmlFor="evaluation-dataset-version" requirement="required">
-                <input id="evaluation-dataset-version" type="number" min={1} value={cloudDatasetVersion} onChange={event => setCloudDatasetVersion(event.target.value)} required />
-              </FormField>
             </>
           )}
           <FormField label="Target 类型" requirement="required">
@@ -484,7 +492,7 @@ export function EvaluationsPage({ refreshTick }: { refreshTick: number }) {
               onValueChange={value => changeTargetKind(value as TargetKind)}
             />
           </FormField>
-          <FormField label="Target locator" htmlFor="evaluation-locator" requirement="required">
+          <FormField label={targetLocatorLabel} htmlFor="evaluation-locator" requirement="required">
             {targetKind === "studio_build" && catalog.builds.length ? (
               <StudioSelect
                 id="evaluation-locator"
@@ -498,7 +506,7 @@ export function EvaluationsPage({ refreshTick }: { refreshTick: number }) {
                 onValueChange={setTargetLocator}
               />
             ) : (
-              <input id="evaluation-locator" value={targetLocator} onChange={event => setTargetLocator(event.target.value)} required placeholder={targetKind === "a2a" ? "https://agent.example.test/a2a" : "."} />
+              <input id="evaluation-locator" value={targetLocator} onChange={event => setTargetLocator(event.target.value)} required placeholder={targetLocatorPlaceholder} />
             )}
           </FormField>
           <FormField label="超时（秒）" htmlFor="evaluation-timeout" requirement="required">

@@ -73,8 +73,6 @@ def test_evalset_push_updates_existing_dataset_with_simplified_options(tmp_path,
             "support.yaml",
             "--dataset-id",
             "dataset-existing",
-            "--agent-eval-url",
-            "https://agent-eval.example",
             "--format",
             "json",
         ],
@@ -107,7 +105,7 @@ def test_evalset_push_reuses_existing_binding_without_dataset_option(tmp_path, m
     monkeypatch.setattr(AgentEvalCloudDatasetClient, "publish_snapshot", fake_publish)
     _evalset(tmp_path)
     monkeypatch.chdir(tmp_path)
-    common = ["--file", "support.yaml", "--agent-eval-url", "https://agent-eval.example"]
+    common = ["--file", "support.yaml"]
 
     first = CliRunner().invoke(evalset, ["push", *common, "--dataset-id", "dataset-existing"])
     second = CliRunner().invoke(evalset, ["push", *common])
@@ -129,6 +127,20 @@ def test_evalset_push_help_exposes_only_simple_publish_inputs():
     assert "--base-version" not in result.output
     assert "--idempotency-key" not in result.output
     assert "--data-policy" not in result.output
+
+
+def test_evalset_help_does_not_expose_agent_eval_url():
+    from ksadk.cli.cmd_evalset import evalset
+
+    push_help = CliRunner().invoke(evalset, ["push", "--help"])
+    pull_help = CliRunner().invoke(evalset, ["pull", "--help"])
+
+    assert push_help.exit_code == 0, push_help.output
+    assert pull_help.exit_code == 0, pull_help.output
+    assert "--agent-eval-url" not in push_help.output
+    assert "--agent-eval-url" not in pull_help.output
+    assert "--api-token-env" not in push_help.output
+    assert "--api-token-env" not in pull_help.output
 
 
 def test_evalset_pull_exports_one_fixed_dataset_version(tmp_path, monkeypatch):
@@ -162,8 +174,6 @@ def test_evalset_pull_exports_one_fixed_dataset_version(tmp_path, monkeypatch):
             "4",
             "--project-id",
             "project-1",
-            "--agent-eval-url",
-            "https://agent-eval.example",
             "--output-file",
             "imported.yaml",
             "--format",

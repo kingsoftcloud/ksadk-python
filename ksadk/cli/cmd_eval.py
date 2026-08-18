@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from pathlib import Path
 
 import click
@@ -69,8 +68,6 @@ class EvaluationCliError(click.ClickException):
 @click.option("--dataset-id", type=str, help="云端 Dataset ID；必须配合固定版本使用")
 @click.option("--dataset-version", type=click.IntRange(1), help="云端 Dataset immutable version")
 @click.option("--dataset-project-id", type=str, help="云端 Dataset 所属项目 ID")
-@click.option("--agent-eval-url", envvar="AGENT_EVAL_BASE_URL", type=str, help="agent-eval 服务地址")
-@click.option("--api-token-env", default="AGENT_EVAL_API_TOKEN", show_default=True)
 @click.option(
     "--agent-dir",
     type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -133,8 +130,6 @@ def eval(
     dataset_id: str | None,
     dataset_version: int | None,
     dataset_project_id: str | None,
-    agent_eval_url: str | None,
-    api_token_env: str,
     agent_dir: Path | None,
     a2a_url: str | None,
     codex_worktree: Path | None,
@@ -169,8 +164,6 @@ def eval(
         dataset_id=dataset_id,
         dataset_version=dataset_version,
         dataset_project_id=dataset_project_id,
-        agent_eval_url=agent_eval_url,
-        api_token_env=api_token_env,
         target=target,
         evaluators=evaluators,
         judge_model=judge_model,
@@ -198,8 +191,6 @@ def _build_request(
     dataset_id: str | None,
     dataset_version: int | None,
     dataset_project_id: str | None,
-    agent_eval_url: str | None,
-    api_token_env: str,
     target: TargetRef,
     evaluators: tuple[str, ...],
     judge_model: str | None,
@@ -216,15 +207,10 @@ def _build_request(
             raise click.UsageError("--evalset-file 与 --dataset-id 不能同时使用")
         if dataset_version is None:
             raise click.UsageError("--dataset-id 必须同时指定 --dataset-version")
-        if not agent_eval_url:
-            raise click.UsageError("--dataset-id 必须同时指定 --agent-eval-url")
         try:
             service = CloudEvalSetService(
                 Path.cwd(),
-                AgentEvalCloudDatasetClient(
-                    agent_eval_url,
-                    api_token=os.environ.get(api_token_env),
-                ),
+                AgentEvalCloudDatasetClient(),
             )
             pulled = asyncio.run(
                 service.pull(
@@ -240,7 +226,7 @@ def _build_request(
     else:
         if evalset_file is None:
             raise click.UsageError("必须指定 --evalset-file 或 --dataset-id")
-        if dataset_version is not None or dataset_project_id or agent_eval_url:
+        if dataset_version is not None or dataset_project_id:
             raise click.UsageError("云端 Dataset 参数必须与 --dataset-id 一起使用")
         try:
             evalset = load_evalset(evalset_file)

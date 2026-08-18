@@ -2,18 +2,26 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
-from typing import Any
+from typing import Any, Protocol
 
 import httpx
 
+from ksadk.common.kop_client import KOPClient, KOPError
+
 from .cloud_converter import CloudDatasetColumn, CloudDatasetRow, CloudDatasetSnapshot
 from .cloud_service import CloudEvalSetCatalogItem, CloudEvalSetPublishResult
+from .service_env import resolve_agent_eval_direct_url, resolve_agent_eval_kop_connection
 
 
 class AgentEvalCloudClientError(RuntimeError):
     """The agent-eval cloud dataset API rejected or could not process a request."""
+
+
+class _KOPActionClient(Protocol):
+    def post_action(self, action: str, payload: dict[str, Any] | None = None) -> dict[str, Any]: ...
 
 
 class AgentEvalCloudDatasetClient:
@@ -23,21 +31,25 @@ class AgentEvalCloudDatasetClient:
     _READ_PATH = "/agentengine/eval/api/v1/DescribeEvaluationSet"
     _LIST_PATH = "/agentengine/eval/api/v1/ListEvaluationSet"
     _READ_PAGE_SIZE = 200
+    _LIST_PAGE_SIZE = 100
 
     def __init__(
         self,
-        base_url: str,
+        base_url: str | None = None,
         *,
         api_token: str | None = None,
         account_id: str | None = None,
         timeout_seconds: float = 30.0,
         http_client: httpx.AsyncClient | None = None,
+        kop_client: _KOPActionClient | None = None,
     ) -> None:
-        normalized_base_url = str(base_url or "").strip().rstrip("/")
-        if not normalized_base_url:
-            raise ValueError("agent-eval base URL cannot be empty")
-        self._base_url = normalized_base_url
-        self._api_token = str(api_token or "").strip()
+        explicit_base_url = str(base_url).strip().rstrip("/") if base_url is not None else None
+        if explicit_base_url is None:
+            explicit_base_url = resolve_agent_eval_direct_url()
+        self._base_url = explicit_base_url or ""
+        self._api_token = str(
+            api_token if api_token is not None else os.environ.get("AGENT_EVAL_API_TOKEN", "")
+        ).strip()
         self._account_id = str(
             account_id
             or os.environ.get("AGENT_EVAL_ACCOUNT_ID")
@@ -46,6 +58,25 @@ class AgentEvalCloudDatasetClient:
         ).strip()
         self._timeout_seconds = timeout_seconds
         self._http_client = http_client
+        self._kop_client: _KOPActionClient | None = None
+        if not self._base_url:
+            if http_client is not None:
+                raise ValueError("http_client requires AGENT_EVAL_BASE_URL direct mode")
+            connection = resolve_agent_eval_kop_connection()
+            self._kop_client = kop_client or KOPClient(
+                base_url=connection["base_url"],
+                access_key=os.environ.get("KSYUN_ACCESS_KEY"),
+                secret_key=os.environ.get("KSYUN_SECRET_KEY"),
+                account_id=os.environ.get("KSYUN_ACCOUNT_ID"),
+                region=connection["region"],
+                timeout=timeout_seconds,
+            )
+        elif kop_client is not None:
+            raise ValueError("kop_client cannot be used with AGENT_EVAL_BASE_URL direct mode")
+
+    @property
+    def uses_kop(self) -> bool:
+        return self._kop_client is not None
 
     async def publish_snapshot(
         self,
@@ -55,11 +86,6 @@ class AgentEvalCloudDatasetClient:
         base_version: int | None,
         idempotency_key: str,
     ) -> CloudEvalSetPublishResult:
-        headers = {"Content-Type": "application/json"}
-        if self._api_token:
-            headers["Authorization"] = f"Bearer {self._api_token}"
-        if self._account_id:
-            headers["X-Ksc-Account-Id"] = self._account_id
         columns: list[dict[str, Any]] = []
         for column in snapshot.columns:
             item: dict[str, Any] = {
@@ -89,39 +115,11 @@ class AgentEvalCloudDatasetClient:
             payload["DatasetId"] = dataset_id
         if base_version is not None:
             payload["BaseVersion"] = base_version
-
-        try:
-            if self._http_client is not None:
-                response = await self._http_client.post(
-                    f"{self._base_url}{self._PUBLISH_PATH}", headers=headers, json=payload
-                )
-            else:
-                async with httpx.AsyncClient(
-                    timeout=httpx.Timeout(self._timeout_seconds),
-                    follow_redirects=False,
-                    trust_env=False,
-                ) as client:
-                    response = await client.post(
-                        f"{self._base_url}{self._PUBLISH_PATH}", headers=headers, json=payload
-                    )
-        except httpx.HTTPError as exc:
-            raise AgentEvalCloudClientError("agent-eval snapshot publish request failed") from exc
-
-        if response.status_code >= 400:
-            raise AgentEvalCloudClientError(
-                f"agent-eval snapshot publish failed with HTTP {response.status_code}"
-            )
-        try:
-            envelope = response.json()
-        except ValueError as exc:
-            raise AgentEvalCloudClientError(
-                "agent-eval snapshot publish returned invalid JSON"
-            ) from exc
-        if not isinstance(envelope, dict) or envelope.get("Code") != 0:
-            raise AgentEvalCloudClientError("agent-eval snapshot publish was rejected")
-        data = envelope.get("Data")
-        if not isinstance(data, dict):
-            raise AgentEvalCloudClientError("agent-eval snapshot publish returned no result")
+        data = await self._request(
+            "PublishEvaluationSetSnapshot",
+            self._PUBLISH_PATH,
+            payload,
+        )
         try:
             return CloudEvalSetPublishResult(
                 dataset_id=data["DatasetId"],
@@ -150,7 +148,8 @@ class AgentEvalCloudDatasetClient:
         first_page: dict[str, Any] | None = None
         raw_items: list[dict[str, Any]] = []
         while True:
-            envelope = await self._request(
+            data = await self._request(
+                "DescribeEvaluationSet",
                 self._READ_PATH,
                 {
                     "DatasetId": dataset_id,
@@ -159,9 +158,6 @@ class AgentEvalCloudDatasetClient:
                     "PageSize": self._READ_PAGE_SIZE,
                 },
             )
-            data = envelope.get("Data")
-            if not isinstance(data, dict):
-                raise AgentEvalCloudClientError("agent-eval snapshot read returned no result")
             if first_page is None:
                 first_page = data
             page_items = data.get("Items")
@@ -216,36 +212,111 @@ class AgentEvalCloudDatasetClient:
         *,
         project_id: str | None = None,
     ) -> list[CloudEvalSetCatalogItem]:
-        payload: dict[str, Any] = {}
+        payload: dict[str, Any] = {
+            "Column": "ksadk_content_digest",
+            "Page": 1,
+            "PageSize": self._LIST_PAGE_SIZE,
+        }
         if project_id:
             payload["ProjectId"] = project_id
-        envelope = await self._request(self._LIST_PATH, payload)
-        data = envelope.get("Data")
-        if not isinstance(data, dict):
-            raise AgentEvalCloudClientError("agent-eval dataset list returned no result")
-        raw_items = data.get("Items", data.get("items", data.get("EvaluationSets", [])))
-        if not isinstance(raw_items, list):
-            raise AgentEvalCloudClientError("agent-eval dataset list returned invalid items")
-        try:
-            return [
-                CloudEvalSetCatalogItem(
-                    dataset_id=item.get("DatasetId", item.get("datasetId")),
-                    name=item.get("Name", item.get("name")),
-                    project_id=item.get("ProjectId", item.get("projectId")),
-                    version=item.get("Version", item.get("version")),
-                    schema_hash=item.get("SchemaHash", item.get("schemaHash")),
-                    content_digest=item.get("ContentDigest", item.get("contentDigest")),
-                    row_count=item.get("RowCount", item.get("rowCount", 0)),
-                )
-                for item in raw_items
-                if isinstance(item, dict)
-            ]
-        except (TypeError, ValueError) as exc:
-            raise AgentEvalCloudClientError(
-                "agent-eval dataset list returned invalid items"
-            ) from exc
+        raw_items: list[dict[str, Any]] = []
+        while True:
+            data = await self._request("ListEvaluationSet", self._LIST_PATH, payload)
+            page_items = data.get("Items", data.get("items", data.get("EvaluationSets", [])))
+            if not isinstance(page_items, list):
+                raise AgentEvalCloudClientError("agent-eval dataset list returned invalid items")
+            raw_items.extend(item for item in page_items if isinstance(item, dict))
 
-    async def _request(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+            page = data.get("Page", payload["Page"])
+            page_size = data.get("PageSize", payload["PageSize"])
+            total = data.get("Total")
+            try:
+                has_next_page = bool(data.get("HasMore")) or (
+                    total is not None and int(page) * int(page_size) < int(total)
+                )
+            except (TypeError, ValueError):
+                has_next_page = False
+            if not has_next_page:
+                break
+            payload["Page"] = int(payload["Page"]) + 1
+        items: list[CloudEvalSetCatalogItem] = []
+        for item in raw_items:
+            dataset_id = str(item.get("DatasetId", item.get("datasetId", ""))).strip()
+            version = item.get(
+                "Version",
+                item.get("version", item.get("CurrentVersion", item.get("currentVersion"))),
+            )
+            try:
+                version = int(version)
+            except (TypeError, ValueError):
+                continue
+            if not dataset_id or version < 1:
+                continue
+
+            schema_hash = item.get("SchemaHash", item.get("schemaHash"))
+            content_digest = item.get("ContentDigest", item.get("contentDigest"))
+            row_count = item.get("RowCount", item.get("rowCount"))
+            name = item.get("Name", item.get("name"))
+            item_project_id = item.get("ProjectId", item.get("projectId", project_id))
+            # Standard ListEvaluationSet omits KsADK's digest fields. Recover them
+            # from the immutable version and omit unrelated product datasets.
+            if not (
+                isinstance(schema_hash, str)
+                and len(schema_hash) == 64
+                and isinstance(content_digest, str)
+                and len(content_digest) == 64
+            ):
+                try:
+                    snapshot = await self.read_snapshot(
+                        dataset_id,
+                        version,
+                        project_id=item_project_id,
+                    )
+                except AgentEvalCloudClientError:
+                    continue
+                schema_hash = snapshot.schema_hash
+                content_digest = snapshot.content_digest
+                row_count = len(snapshot.rows)
+                name = name or snapshot.name
+            try:
+                items.append(
+                    CloudEvalSetCatalogItem(
+                        dataset_id=dataset_id,
+                        name=name,
+                        project_id=item_project_id,
+                        version=version,
+                        schema_hash=schema_hash,
+                        content_digest=content_digest,
+                        row_count=row_count,
+                    )
+                )
+            except (TypeError, ValueError):
+                continue
+        return items
+
+    async def _request(
+        self,
+        action: str,
+        path: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if self._kop_client is not None:
+            try:
+                data = await asyncio.to_thread(self._kop_client.post_action, action, payload)
+            except KOPError as exc:
+                raise AgentEvalCloudClientError(
+                    f"agent-eval KOP action {action} failed: {exc.message}"
+                ) from exc
+            except Exception as exc:
+                raise AgentEvalCloudClientError(
+                    f"agent-eval KOP action {action} failed"
+                ) from exc
+            if not isinstance(data, dict):
+                raise AgentEvalCloudClientError(
+                    f"agent-eval KOP action {action} returned invalid data"
+                )
+            return data
+
         headers = {"Content-Type": "application/json"}
         if self._api_token:
             headers["Authorization"] = f"Bearer {self._api_token}"
@@ -279,7 +350,10 @@ class AgentEvalCloudDatasetClient:
             ) from exc
         if not isinstance(envelope, dict) or envelope.get("Code") != 0:
             raise AgentEvalCloudClientError("agent-eval snapshot request was rejected")
-        return envelope
+        data = envelope.get("Data")
+        if not isinstance(data, dict):
+            raise AgentEvalCloudClientError("agent-eval request returned no result")
+        return data
 
     @staticmethod
     def _parse_text_schema(value: Any) -> dict[str, Any] | None:

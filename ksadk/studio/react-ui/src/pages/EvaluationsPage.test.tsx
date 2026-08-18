@@ -43,7 +43,11 @@ describe("EvaluationsPage", () => {
     render(<EvaluationsPage refreshTick={0} />);
 
     await user.click(screen.getByRole("button", { name: "新建评测" }));
+    expect(screen.getByLabelText(/Agent 地址/)).toBeInTheDocument();
     expect(await screen.findByRole("combobox", { name: "EvalSet 文件" })).toHaveTextContent("smoke · 2 Cases");
+    await user.click(screen.getByRole("combobox", { name: "Target 类型" }));
+    await user.click(await screen.findByRole("option", { name: "本地源码" }));
+    expect(screen.getByLabelText(/Agent 源码目录/)).toBeInTheDocument();
     await user.click(screen.getByRole("combobox", { name: "Target 类型" }));
     await user.click(await screen.findByRole("option", { name: "Studio Build" }));
     expect(screen.getByRole("combobox", { name: "Studio Build" })).toHaveTextContent("agent-1 · langgraph");
@@ -75,7 +79,7 @@ describe("EvaluationsPage", () => {
     await user.click(await screen.findByRole("option", { name: "Cloud Dataset version" }));
 
     expect(screen.getByRole("combobox", { name: "Cloud Dataset" })).toHaveTextContent("support - v4");
-    expect(document.querySelector("#evaluation-dataset-version")).toHaveValue(4);
+    expect(document.querySelector("#evaluation-dataset-version")).not.toBeInTheDocument();
   });
 
   it("selects an exact cloud Dataset version when a Dataset has multiple snapshots", async () => {
@@ -107,7 +111,7 @@ describe("EvaluationsPage", () => {
     expect(options[1]).toHaveTextContent("support - v5");
     await user.click(options[1]);
 
-    expect(document.querySelector("#evaluation-dataset-version")).toHaveValue(5);
+    expect(document.querySelector("#evaluation-dataset-version")).not.toBeInTheDocument();
   });
 
   it("submits the selected immutable cloud Dataset reference", async () => {
@@ -144,7 +148,7 @@ describe("EvaluationsPage", () => {
     await vi.waitFor(() => {
       expect(screen.getByRole("combobox", { name: "Cloud Dataset" })).toHaveTextContent("support - v5");
     });
-    await user.type(screen.getByLabelText(/Target locator/), "https://agent.example.test/a2a");
+    await user.type(screen.getByLabelText(/Agent 地址/), "https://agent.example.test/a2a");
     await user.click(screen.getByRole("button", { name: "开始评测" }));
 
     await vi.waitFor(() => {
@@ -206,7 +210,7 @@ describe("EvaluationsPage", () => {
 
     await user.click(screen.getByRole("button", { name: "新建评测" }));
     await user.type(screen.getByLabelText(/EvalSet 文件/), "evalsets/smoke.yaml");
-    await user.type(screen.getByLabelText(/Target locator/), "https://agent.example.test/a2a");
+    await user.type(screen.getByLabelText(/Agent 地址/), "https://agent.example.test/a2a");
     await user.click(screen.getByRole("button", { name: "开始评测" }));
 
     expect(await screen.findByText("评测任务已完成")).toBeInTheDocument();
@@ -243,7 +247,7 @@ describe("EvaluationsPage", () => {
     const page = render(<EvaluationsPage refreshTick={0} />);
     await user.click(screen.getByRole("button", { name: "新建评测" }));
     await user.type(screen.getByLabelText(/EvalSet 文件/), "evalsets/smoke.yaml");
-    await user.type(screen.getByLabelText(/Target locator/), "https://agent.example.test/a2a");
+    await user.type(screen.getByLabelText(/Agent 地址/), "https://agent.example.test/a2a");
     await user.click(screen.getByRole("button", { name: "开始评测" }));
     await vi.waitFor(() => expect(pollingSignal).toBeDefined());
 
@@ -273,7 +277,7 @@ describe("EvaluationsPage", () => {
 
     await user.click(screen.getByRole("button", { name: "新建评测" }));
     await user.type(screen.getByLabelText(/EvalSet 文件/), "evalsets/smoke.yaml");
-    await user.type(screen.getByLabelText(/Target locator/), "https://agent.example.test/a2a");
+    await user.type(screen.getByLabelText(/Agent 地址/), "https://agent.example.test/a2a");
     await user.click(screen.getByRole("button", { name: "开始评测" }));
 
     expect(await screen.findByText("Case 2 / 3：case-2")).toBeInTheDocument();
@@ -331,7 +335,7 @@ describe("EvaluationsPage", () => {
 
     await user.click(screen.getByRole("button", { name: "新建评测" }));
     await user.type(screen.getByLabelText(/EvalSet 文件/), "evalsets/smoke.yaml");
-    await user.type(screen.getByLabelText(/Target locator/), "https://agent.example.test/a2a");
+    await user.type(screen.getByLabelText(/Agent 地址/), "https://agent.example.test/a2a");
     await user.click(screen.getByRole("button", { name: "开始评测" }));
     await user.click(await screen.findByRole("button", { name: "取消评测" }));
 

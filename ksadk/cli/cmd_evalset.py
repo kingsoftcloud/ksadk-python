@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from pathlib import Path
 
 import click
@@ -79,8 +78,6 @@ def preview(evalset_file: Path, data_policy: str, output_format: str) -> None:
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
 )
 @click.option("--dataset-id")
-@click.option("--agent-eval-url", required=True, envvar="AGENT_EVAL_BASE_URL")
-@click.option("--api-token-env", default="AGENT_EVAL_API_TOKEN", hidden=True)
 @click.option("--account-id", envvar="AGENT_EVAL_ACCOUNT_ID", hidden=True)
 @click.option("--idempotency-key", hidden=True)
 @click.option(
@@ -93,8 +90,6 @@ def preview(evalset_file: Path, data_policy: str, output_format: str) -> None:
 def push(
     evalset_file: Path,
     dataset_id: str | None,
-    agent_eval_url: str,
-    api_token_env: str,
     account_id: str | None,
     idempotency_key: str | None,
     data_policy: str,
@@ -108,8 +103,6 @@ def push(
         raise click.UsageError("--file must be inside the current workspace") from exc
     evalset, _snapshot = _load_snapshot(evalset_file, data_policy)
     client = AgentEvalCloudDatasetClient(
-        agent_eval_url,
-        api_token=os.environ.get(api_token_env),
         account_id=account_id,
     )
     service = CloudEvalSetService(workspace, client)
@@ -142,16 +135,12 @@ def push(
 @click.option("--dataset-id", required=True)
 @click.option("--dataset-version", required=True, type=click.IntRange(1))
 @click.option("--project-id")
-@click.option("--agent-eval-url", required=True, envvar="AGENT_EVAL_BASE_URL")
-@click.option("--api-token-env", default="AGENT_EVAL_API_TOKEN", show_default=True)
 @click.option("--output-file", required=True, type=click.Path(dir_okay=False, path_type=Path))
 @click.option("--format", "output_format", type=click.Choice(["pretty", "json"]), default="pretty")
 def pull(
     dataset_id: str,
     dataset_version: int,
     project_id: str | None,
-    agent_eval_url: str,
-    api_token_env: str,
     output_file: Path,
     output_format: str,
 ) -> None:
@@ -165,10 +154,7 @@ def pull(
 
     service = CloudEvalSetService(
         workspace,
-        AgentEvalCloudDatasetClient(
-            agent_eval_url,
-            api_token=os.environ.get(api_token_env),
-        ),
+        AgentEvalCloudDatasetClient(),
     )
     try:
         result = asyncio.run(

@@ -37,6 +37,14 @@ class _CloudEvalClient:
         raise AssertionError("catalog test must not publish")
 
 
+def test_studio_constructs_cloud_eval_client_without_direct_url(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("AGENT_EVAL_BASE_URL", raising=False)
+
+    service = StudioService(tmp_path)
+
+    assert service.cloud_evalsets is not None
+
+
 @pytest.mark.asyncio
 async def test_studio_public_evaluation_shell_uses_shared_executor(tmp_path: Path):
     (tmp_path / "smoke.yaml").write_text(
