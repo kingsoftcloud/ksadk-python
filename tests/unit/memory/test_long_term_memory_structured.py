@@ -241,6 +241,18 @@ class TestSessionStateMapping:
             r = backend.delete_memory(user_id="u1", memory_id="mem-1")
         assert r.ok and r.status == "already_absent"
 
+    def test_repeat_delete_maps_real_aicp_deleted_message_to_already_absent(self):
+        """真实 AICP 契约：MemoryDeleteFailed / 记忆已被删除。"""
+        backend = _make_backend()
+        client = MagicMock()
+        client.call.side_effect = RuntimeError(
+            'KsyunSDKException: {"Error":{"Code":"MemoryDeleteFailed",'
+            '"Message":"记忆已被删除"}}'
+        )
+        with patch.object(backend, "_get_client", return_value=client):
+            r = backend.delete_memory(user_id="u1", memory_id="mem-1")
+        assert r.ok and r.status == "already_absent"
+
     def test_update_not_found_maps_to_not_found(self):
         backend = _make_backend()
         client = MagicMock()
