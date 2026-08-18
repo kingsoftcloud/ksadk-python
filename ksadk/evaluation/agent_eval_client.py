@@ -213,7 +213,7 @@ class AgentEvalCloudDatasetClient:
         project_id: str | None = None,
     ) -> list[CloudEvalSetCatalogItem]:
         payload: dict[str, Any] = {
-            "Column": "ksadk_content_digest",
+            "DatasetType": "Manual",
             "Page": 1,
             "PageSize": self._LIST_PAGE_SIZE,
         }

@@ -193,6 +193,7 @@ export function EvaluationsPage({ refreshTick }: { refreshTick: number }) {
   const [cloudProjectId, setCloudProjectId] = useState("");
   const [cloudDatasetId, setCloudDatasetId] = useState("");
   const [cloudDatasetVersion, setCloudDatasetVersion] = useState("");
+  const [cloudCatalogError, setCloudCatalogError] = useState("");
 
   const targetLocatorLabel = targetKind === "a2a"
     ? "Agent 地址"
@@ -230,18 +231,22 @@ export function EvaluationsPage({ refreshTick }: { refreshTick: number }) {
       const cloudResponse = await apiFetch(
         `/api/v1/evaluation-cloud/catalog${cloudProjectId ? `?projectId=${encodeURIComponent(cloudProjectId)}` : ""}`,
       );
-      const cloudPayload = cloudResponse.ok ? await cloudResponse.json() : { items: [] };
+      if (!cloudResponse.ok) {
+        throw new Error(await errorMessage(cloudResponse, "Cloud Dataset 加载失败"));
+      }
+      const cloudPayload = await cloudResponse.json();
       const next: EvaluationCatalog = {
         evalsets: payload.evalsets || [],
         builds: payload.builds || [],
         cloudDatasets: cloudPayload.items || [],
       };
       setCatalog(next);
+      setCloudCatalogError("");
       setEvalsetFile(current => current || next.evalsets[0]?.path || "");
       setCloudDatasetId(current => current || next.cloudDatasets[0]?.datasetId || "");
       setCloudDatasetVersion(current => current || String(next.cloudDatasets[0]?.version || ""));
-    } catch {
-      // 目录不可用时保留手动输入，不影响评测报告列表。
+    } catch (error) {
+      setCloudCatalogError(error instanceof Error ? error.message : "Cloud Dataset 加载失败");
     }
   }, [cloudProjectId]);
 
@@ -436,7 +441,7 @@ export function EvaluationsPage({ refreshTick }: { refreshTick: number }) {
               value={evaluationSource}
               options={[
                 { value: "local", label: "Local EvalSet" },
-                { value: "cloud", label: "Cloud Dataset version" },
+                { value: "cloud", label: "Cloud Dataset" },
               ]}
               onValueChange={value => setEvaluationSource(value as EvaluationSource)}
             />
@@ -459,7 +464,7 @@ export function EvaluationsPage({ refreshTick }: { refreshTick: number }) {
             )}
           </FormField> : (
             <>
-              <FormField label="Cloud Dataset" requirement="required">
+              <FormField label="Cloud Dataset" requirement="required" error={cloudCatalogError || undefined}>
                 <StudioSelect
                   ariaLabel="Cloud Dataset"
                   value={cloudDatasetId && cloudDatasetVersion

@@ -184,7 +184,8 @@ async def test_agent_eval_client_lists_dataset_versions_without_current_executio
         assert request.url.path.endswith("/ListEvaluationSet")
         payload = json.loads(request.content)
         assert payload["ProjectId"] == "project-001"
-        assert payload["Column"] == "ksadk_content_digest"
+        assert payload["DatasetType"] == "Manual"
+        assert "Column" not in payload
         return httpx.Response(
             200,
             json={
@@ -328,7 +329,7 @@ async def test_agent_eval_catalog_recovers_digest_from_current_version_when_list
         def post_action(self, action: str, payload: dict[str, object]):
             assert action == "ListEvaluationSet"
             assert payload == {
-                "Column": "ksadk_content_digest",
+                "DatasetType": "Manual",
                 "ProjectId": "project-001",
                 "Page": 1,
                 "PageSize": 100,

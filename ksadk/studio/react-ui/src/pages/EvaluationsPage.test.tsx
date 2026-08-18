@@ -76,10 +76,29 @@ describe("EvaluationsPage", () => {
 
     await user.click(screen.getByRole("button", { name: "新建评测" }));
     await user.click(await screen.findByRole("combobox", { name: "Dataset source" }));
-    await user.click(await screen.findByRole("option", { name: "Cloud Dataset version" }));
+    await user.click(await screen.findByRole("option", { name: "Cloud Dataset" }));
 
     expect(screen.getByRole("combobox", { name: "Cloud Dataset" })).toHaveTextContent("support - v4");
     expect(document.querySelector("#evaluation-dataset-version")).not.toBeInTheDocument();
+  });
+
+  it("shows the cloud catalog error instead of presenting an empty Dataset list", async () => {
+    const user = userEvent.setup();
+    mockedFetch.mockImplementation(async input => {
+      const url = String(input);
+      if (url === "/api/v1/evaluation-targets") return response({ evalsets: [], builds: [] });
+      if (url === "/api/v1/evaluation-cloud/catalog") {
+        return response({ error: { message: "Cloud Dataset directory is unavailable" } }, false);
+      }
+      return response({ items: [] });
+    });
+    render(<EvaluationsPage refreshTick={0} />);
+
+    await user.click(screen.getByRole("button", { name: "新建评测" }));
+    await user.click(await screen.findByRole("combobox", { name: "Dataset source" }));
+    await user.click(await screen.findByRole("option", { name: "Cloud Dataset" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Cloud Dataset directory is unavailable");
   });
 
   it("selects an exact cloud Dataset version when a Dataset has multiple snapshots", async () => {
@@ -101,7 +120,7 @@ describe("EvaluationsPage", () => {
 
     await user.click(screen.getByRole("button", { name: "新建评测" }));
     await user.click(await screen.findByRole("combobox", { name: "Dataset source" }));
-    await user.click(await screen.findByRole("option", { name: "Cloud Dataset version" }));
+    await user.click(await screen.findByRole("option", { name: "Cloud Dataset" }));
     await vi.waitFor(() => {
       expect(screen.getByRole("combobox", { name: "Cloud Dataset" })).toHaveTextContent("support - v4");
     });
@@ -144,7 +163,7 @@ describe("EvaluationsPage", () => {
 
     await user.click(screen.getByRole("button", { name: "新建评测" }));
     await user.click(await screen.findByRole("combobox", { name: "Dataset source" }));
-    await user.click(await screen.findByRole("option", { name: "Cloud Dataset version" }));
+    await user.click(await screen.findByRole("option", { name: "Cloud Dataset" }));
     await vi.waitFor(() => {
       expect(screen.getByRole("combobox", { name: "Cloud Dataset" })).toHaveTextContent("support - v5");
     });
