@@ -1,0 +1,235 @@
+{
+  "environment": "preprod/agent-kernel-phase1",
+  "executed_at": "2026-08-18T05:07:31Z",
+  "checks": {
+    "cold_recovery": {
+      "status": "pass",
+      "detail": {
+        "run_a_running_state": {
+          "session": "v2-cold-running-910a6e98",
+          "pod_kill_mode": "delete pod while worker active",
+          "submitted": 3,
+          "accepted_events": 3,
+          "completed_events": 3,
+          "no_message_lost": true,
+          "replay_event_count": 24,
+          "seq_range": [
+            1,
+            24
+          ],
+          "seq_unique": true,
+          "seq_contiguous": true,
+          "event_chain_complete": true,
+          "recovery_decision_events": [],
+          "inbox_depth_after": 0,
+          "instance_state_after": "ready",
+          "recovery_duration_seconds": 5.169,
+          "sample_runtime_event_ids": [
+            {
+              "seq": 7,
+              "event_id": "run-a0b4576d-started",
+              "event_type": "run.started",
+              "run_id": "6efb7c9a-26d6-438f-ac03-370cf5e1fe44"
+            },
+            {
+              "seq": 8,
+              "event_id": "run-a0b4576d-progress",
+              "event_type": "run.progress",
+              "run_id": "6efb7c9a-26d6-438f-ac03-370cf5e1fe44"
+            }
+          ],
+          "sample_command_ids": [
+            "46926749-b92e-4fd5-a0d7-98454bd0d9d3",
+            "699a446a-c84e-40a7-8b9e-da613b95433c"
+          ]
+        },
+        "run_b_backlog_state": {
+          "session": "v2-cold-backlog-fdaa6b27",
+          "pod_kill_mode": "delete pod with worker disabled (backlog)",
+          "submitted": 5,
+          "accepted_events": 5,
+          "completed_events": 5,
+          "no_message_lost": true,
+          "replay_event_count": 40,
+          "seq_range": [
+            1,
+            40
+          ],
+          "seq_unique": true,
+          "seq_contiguous": true,
+          "event_chain_complete": true,
+          "recovery_decision_events": [],
+          "inbox_depth_after": 0,
+          "instance_state_after": "ready",
+          "recovery_duration_seconds": 5.174,
+          "sample_runtime_event_ids": [
+            {
+              "seq": 9,
+              "event_id": "run-c58e8f47-started",
+              "event_type": "run.started",
+              "run_id": "a20281fc-3aa0-4a11-b233-998dd85c35a0"
+            },
+            {
+              "seq": 10,
+              "event_id": "run-c58e8f47-progress",
+              "event_type": "run.progress",
+              "run_id": "a20281fc-3aa0-4a11-b233-998dd85c35a0"
+            }
+          ],
+          "sample_command_ids": [
+            "aea45c12-1d4f-402f-afd4-96e85e7f0d03",
+            "0341e403-db1e-4fcd-b968-b554c2201b4f"
+          ]
+        },
+        "recovery_path_recorded_honestly": {
+          "outcome": "durable-inbox-replay (none of attach/resumed/interrupted RecoveryCoordinator paths)",
+          "echo_adapter_capabilities": "default_capability_matrix: attach/durable_restore/resume/cancel/pause all unavailable; EchoAdapter.resume exists but capability matrix is honest-unavailable, so RecoveryCoordinator (if invoked) would deterministically choose interrupted",
+          "coordinator_invoked": "canary worker loop does not invoke RecoveryCoordinator; it re-acquires the constant per-instance activation (canary-worker-phase1-canary-1, fence preserved) and re-consumes durable inbox facts",
+          "evidence": "zero control.recovery_decided / control.activation_taken_over events in both replays (see recovery_decision_events: []); echo turns are synchronous so no run was left open at kill time"
+        },
+        "assertions": {
+          "no_message_lost": true,
+          "seq_unique": true,
+          "event_chain_complete": true
+        }
+      }
+    },
+    "split_brain": {
+      "status": "pass",
+      "detail": {
+        "session": "v2-sb-d2a2ecd7",
+        "old_owner": {
+          "activation_id": "sb-old-f75d7a",
+          "fencing_token": 3
+        },
+        "new_owner_acquire_while_lease_held": "InvalidCommandError: invalid_command: activation lease is still held by another owner",
+        "old_owner_append": {
+          "ok": true,
+          "seq": 5,
+          "event_id": "ecd6e28c-8b7c-4683-bf01-c2060033b926"
+        },
+        "new_owner_takeover": {
+          "activation_id": "sb-new-2e3821",
+          "fencing_token": 4,
+          "token_incremented_by_one": true
+        },
+        "old_owner_append_after_takeover": "StaleFenceError",
+        "old_owner_claim_after_takeover": "StaleFenceError",
+        "new_owner_append": {
+          "ok": true,
+          "seq": 6,
+          "event_id": "f3a8064b-ebff-445c-ab11-82e42e385837"
+        },
+        "canonical_log": {
+          "event_count": 6,
+          "seq_sorted_unique": true,
+          "seq_range": [
+            1,
+            6
+          ]
+        },
+        "method": "local port-forward to PG, direct store writes with old/new activation ids via ksadk PostgresAgentKernelStore (worker disabled, same session)",
+        "command_ids_in_session": [
+          "6ef8e5fe-b7d8-44fb-bfa1-c716e1ce0045",
+          "b122c31f-772f-4dbd-a8b2-f9bacd9ab2b4"
+        ],
+        "production_worker_takeover_after_drill": {
+          "final_activation": "canary-worker-phase1-canary-1 at fencing_token=5 (progression old=3 -> new=4 -> worker=5)",
+          "inbox_depth_after_worker_reenable": 0,
+          "drill_events_in_sse_replay": [
+            3,
+            4,
+            5,
+            6
+          ]
+        }
+      }
+    },
+    "stale_fence": {
+      "status": "pass",
+      "detail": {
+        "session": "v2-sb-d2a2ecd7",
+        "old_owner_append_after_takeover": "StaleFenceError",
+        "old_owner_claim_after_takeover": "StaleFenceError",
+        "new_owner_append_event_id": "f3a8064b-ebff-445c-ab11-82e42e385837",
+        "old_owner_append_event_id": "ecd6e28c-8b7c-4683-bf01-c2060033b926",
+        "token_sequence": [
+          3,
+          4,
+          5
+        ],
+        "canonical_log": {
+          "event_count": 6,
+          "seq_sorted_unique": true,
+          "seq_range": [
+            1,
+            6
+          ]
+        },
+        "command_id_sample": "6ef8e5fe-b7d8-44fb-bfa1-c716e1ce0045"
+      }
+    },
+    "rollback": {
+      "status": "pass",
+      "detail": {
+        "procedure": "worker disabled + 5 backlog accepted via gateway -> set image back to phase1-canary-e2e-051820 -> probe -> roll forward to phase1-v2-60b61cdd8 -> verify",
+        "rollback_seconds": 21,
+        "rollforward_seconds": 11,
+        "rollback_image": "phase1-canary-e2e-051820",
+        "rollforward_image": "phase1-v2-60b61cdd8",
+        "rollback_image_commit_line": "ksadk-python feat/agent-kernel-phase1 pre-918be15e era canary (v1 e2e build)",
+        "digest": "69771d8df4a8811ed6623f26a152c869cfdfd8dbfdcad443b52a9b6403b267e8",
+        "on_rollback_image": {
+          "healthz": {
+            "http": 200,
+            "body": {
+              "ok": true,
+              "instance": "phase1-canary-1"
+            }
+          },
+          "contract_digest": {
+            "http": 200,
+            "digest": "69771d8df4a8811ed6623f26a152c869cfdfd8dbfdcad443b52a9b6403b267e8"
+          },
+          "canonical_ingress": {
+            "http": 404,
+            "body": "{\"detail\":\"Not Found\"}"
+          },
+          "legacy_sse_replay": {
+            "events": 30,
+            "seq_sorted_unique": true,
+            "seq_range": [
+              1,
+              30
+            ],
+            "accepted_events": 5,
+            "completed_events": 5
+          },
+          "gateway_status_http": 200,
+          "pg_schema_compatible": true,
+          "backlog_drained_by_rolled_back_image": true,
+          "note": "v1 image drained the 5-message backlog itself (kernel_inbox completed=5, 30 events) - no schema incompatibility; canonical /agent-kernel/v1 path is 404 on v1 (predates canonical ingress), so the gateway control chain is unavailable on the rolled-back image (recorded as rollback limitation for control plane, data plane and replay fully intact)"
+        },
+        "after_rollforward": {
+          "session": "v2-rb-7c98d1fb",
+          "backlog": 5,
+          "inbox_depth_after_rollforward": 0,
+          "completed_events": 5,
+          "accepted_events": 5,
+          "pending_recovered": true,
+          "replay_events": 30,
+          "seq_unique": true,
+          "seq_contiguous": true,
+          "drain_seconds": 0.062,
+          "sample_command_ids": [
+            "66c57116-09ee-4336-9e96-b56cc0eaed8c",
+            "8de865b1-3389-4254-b3d8-eb963bbafa6c"
+          ]
+        },
+        "pending_recovered": true,
+        "data_plane_loss": 0,
+        "residue": "deployment back on phase1-v2-60b61cdd8; drill sessions remain in PG (append-only by design)"
+      }
+    }
+  }
+}
