@@ -20,6 +20,7 @@ import asyncio
 import hashlib
 import json
 import os
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -73,6 +74,37 @@ CONTRACT_DIGEST = "69771d8df4a8811ed6623f26a152c869cfdfd8dbfdcad443b52a9b6403b26
 TENANT = "phase1-canary"
 
 app = FastAPI(title="agent-kernel-phase1-canary")
+
+# canonical kernel ingress (/agent-kernel/v1/*)：gateway 转发与 server runtime
+# client 的目标路径，通过 bootstrap_agent_kernel_from_env 装配的同一 kernel。
+from ksadk.kernel.ingress import agent_kernel_router, kernel_ingress_enabled
+
+if kernel_ingress_enabled():
+    app.include_router(agent_kernel_router())
+
+    from ksadk.kernel.ingress import KERNEL_INGRESS_SUBMIT_PATH
+
+    @app.middleware("http")
+    async def _ensure_kernel_session(request, call_next):
+        """canonical submit 前确保 session 存在（共享 event log 的前置条件）。"""
+        if request.method == "POST" and request.url.path == KERNEL_INGRESS_SUBMIT_PATH:
+            body = await request.body()
+            try:
+                session_id = str((json.loads(body) or {}).get("command", {}).get("session_id") or "")
+            except Exception:
+                session_id = ""
+            if session_id and _state.get("session_service") is not None:
+                service = _state["session_service"]
+                if await service.get_session(session_id) is None:
+                    await service.create_session(
+                        agent_id=instance_id(),
+                        user_id="phase1-canary",
+                        session_id=session_id,
+                    )
+            async def receive():
+                return {"type": "http.request", "body": body, "more_body": False}
+            request._receive = receive
+        return await call_next(request)
 
 
 class _CanaryAuthority:
@@ -149,11 +181,38 @@ class EchoAdapter(RuntimeAdapter):
         )
 
     def stream(self, handle: RunHandle) -> object:
-        async def _empty():
-            return
-            yield  # pragma: no cover
+        """产生 run.started/run.progress 事实流，供 worker 落 family=runtime/v2。"""
 
-        return _empty()
+        from ksadk.events.canonical import RunProgress, RunStarted, SourceRef
+
+        run_id = handle.run_id
+        source = SourceRef(framework="ksadk")
+
+        async def _events():
+            yield RunStarted(
+                schema_version=2,
+                event_id=f"{run_id}-started",
+                seq=0,
+                timestamp=time.time(),
+                run_id=run_id,
+                scope_id=f"run:{run_id}",
+                status="running",
+                source=source,
+            )
+            yield RunProgress(
+                schema_version=2,
+                event_id=f"{run_id}-progress",
+                seq=0,
+                timestamp=time.time(),
+                run_id=run_id,
+                scope_id=f"run:{run_id}",
+                status="running",
+                progress=1.0,
+                message="phase1 canary echo turn complete",
+                source=source,
+            )
+
+        return _events()
 
     async def cancel(self, handle: RunHandle) -> CancelResult:
         return CancelResult.INTERRUPTED_ACTIVE_TURN
@@ -200,6 +259,13 @@ async def _worker_loop() -> None:
             progressed = False
             for row in rows:
                 session_id = row["session_id"]
+                service = _state["session_service"]
+                if await service.get_session(session_id) is None:
+                    await service.create_session(
+                        agent_id=instance_id(),
+                        user_id="phase1-canary",
+                        session_id=session_id,
+                    )
                 try:
                     lease = await kstore.acquire_activation(
                         ActivationLeaseRequest(
@@ -278,6 +344,10 @@ async def startup() -> None:
     _state["authority"] = auth
     _state["pool"] = service._pool
     _state["worker_task"] = asyncio.create_task(_worker_loop())
+    # canonical /agent-kernel/v1/* ingress 使用的 kernel（同 PG store/events）。
+    from ksadk.kernel.ingress import bootstrap_agent_kernel_from_env
+
+    await bootstrap_agent_kernel_from_env()
 
 
 def _b64url_decode(value: str) -> bytes:

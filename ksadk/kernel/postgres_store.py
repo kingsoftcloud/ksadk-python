@@ -360,7 +360,7 @@ class PostgresAgentKernelStore:
         )
 
     async def _append_admission(
-        self, connection: Any, envelope: SessionEventEnvelope, command: AgentControlCommand
+        self, connection: Any, command: AgentControlCommand, envelope: SessionEventEnvelope
     ) -> None:
         # accepted/rejected 事实的 write guard 绑定提交方的 permit 引用
         # （server permit_id 或本地 authority），不落内核自造 ref。

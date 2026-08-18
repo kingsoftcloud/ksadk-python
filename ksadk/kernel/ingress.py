@@ -129,7 +129,9 @@ class InProcessPermitIssuer:
     SDK 本地灰度只需要一个诚实的、可被同一个 kernel verifier 验签的 issuer。
     """
 
-    def __init__(self, *, ttl_seconds: int = 3600, key_id: str = "ksadk-local-kernel") -> None:
+    # TTL 与 kernel verifier 的 PERMIT_MAX_TTL_SECONDS（300s）对齐；
+    # 超过 300s 的 permit 在严格 verifier 下必然被拒。
+    def __init__(self, *, ttl_seconds: int = 300, key_id: str = "ksadk-local-kernel") -> None:
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
         from ksadk.kernel.authorization import b64url_encode
@@ -499,30 +501,42 @@ async def bootstrap_agent_kernel_from_env() -> Any | None:
 
     driver = os.environ.get(ENV_KERNEL_STORE_DRIVER, "memory").strip().lower()
     dsn = os.environ.get(ENV_KERNEL_STORE_DSN, "").strip()
-    session_service = InMemorySessionService()
+    session_service: Any = InMemorySessionService()
     events = SessionServiceEventStore(session_service)
     store: Any = None
+    nonce_store: Any = None
 
     if driver == "postgres":
-        import asyncpg
-
-        from ksadk.kernel.postgres_store import PostgresAgentKernelStore
+        from ksadk.kernel.postgres_store import (
+            PostgresAgentKernelStore,
+            PostgresNonceStore,
+        )
+        from ksadk.sessions.postgres_service import PostgresSessionService
 
         if not dsn:
             raise RuntimeError("postgres kernel store requires AGENT_KERNEL_STORE_DSN")
-        pool = await asyncpg.create_pool(dsn)
-        store: Any = PostgresAgentKernelStore(pool, None, owns_pool=True)
+        # 事件与 session 走同一 PG（PG-backed SessionServiceEventStore），
+        # 使 worker 产生的 family=runtime/v2 事件对 canonical SSE 可见；
+        # nonce 用 PG durable 存储，跨 Pod / 重启防重放。
+        session_service = PostgresSessionService(dsn=dsn)
+        await session_service._ensure_pool()
+        events = SessionServiceEventStore(session_service)
+        pool = session_service._pool
+        store = PostgresAgentKernelStore(pool, None, owns_pool=True)
+        nonce_store = PostgresNonceStore(pool)
     elif driver == "sqlite":
-        from ksadk.kernel.sqlite_store import SQLiteAgentKernelStore
-
         if dsn:
-            store: Any = SQLiteAgentKernelStore(dsn, events)
+            from ksadk.kernel.sqlite_store import SQLiteAgentKernelStore
+
+            store = SQLiteAgentKernelStore(dsn, events)
     if store is None:
         from ksadk.kernel.memory_store import InMemoryAgentKernelStore
 
         store = InMemoryAgentKernelStore(events)
 
-    kernel = AgentKernel(store, events, permit_verifier=_env_permit_verifier())
+    kernel = AgentKernel(
+        store, events, permit_verifier=_env_permit_verifier(nonce_store=nonce_store)
+    )
     if hasattr(store, "ensure_schema"):
         try:
             await store.ensure_schema()
@@ -532,8 +546,14 @@ async def bootstrap_agent_kernel_from_env() -> Any | None:
     return kernel
 
 
-def _env_permit_verifier() -> Any:
-    """JWKS URL 配置时用远端 verifier；否则用进程内 issuer（本地/灰度）。"""
+def _env_permit_verifier(*, nonce_store: Any = None) -> Any:
+    """JWKS URL 配置时用远端 verifier；否则用进程内 issuer（本地/灰度）。
+
+    远端模式下 JWKS 源会合并进程内 issuer 的公钥：canonical ingress 的
+    status/subscribe 等本地 trusted-context permit（进程内签发）与 server
+    签发的 permit（远端 JWKS）都能被同一个 verifier 验签，fail closed 语义
+    不变（两把 key 都必须真实签名）。
+    """
 
     jwks_url = os.environ.get(ENV_JWKS_URL, "").strip()
     if jwks_url:
@@ -549,11 +569,24 @@ def _env_permit_verifier() -> Any:
                 async with httpx.AsyncClient(timeout=5.0, follow_redirects=False) as client:
                     response = await client.get(self._url)
                     response.raise_for_status()
-                    keys = response.json().get("keys") or {}
-                    return {str(k): str(v) for k, v in keys.items()}
+                    raw = response.json().get("keys") or {}
+                    if isinstance(raw, Mapping):
+                        merged = {str(k): str(v) for k, v in raw.items()}
+                    else:
+                        # 标准 JWKS shape：[{"kty","crv","kid","x"}, ...]
+                        merged = {
+                            str(j["kid"]): str(j["x"])
+                            for j in raw
+                            if "kid" in j and "x" in j
+                        }
+                local = _default_issuer()
+                merged[local.key_id] = local._public_b64
+                return merged
 
-        return AgentControlPermitVerifier(_HttpJwks(jwks_url))
-    return _default_issuer().verifier()
+        return AgentControlPermitVerifier(
+            _HttpJwks(jwks_url), nonce_store=nonce_store
+        )
+    return _default_issuer().verifier(nonce_store=nonce_store)
 
 
 def _build_kernel_router() -> Any:
@@ -660,7 +693,7 @@ def _build_kernel_router() -> Any:
             tenant_id=tenant_id,
             agent_instance_id=instance_id,
             session_id=session_id,
-            operations=("subscribe",),
+            operations=("subscribe_events",),
         )
 
         async def generator():
@@ -672,7 +705,19 @@ def _build_kernel_router() -> Any:
                     if isinstance(envelope, dict)
                     else getattr(envelope, "payload", {})
                 ) or {}
-                yield f"id: {seq}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                # SSE 消费方（gateway / hosted UI）需要 family/event_type/seq
+                # 判别事件流类别，payload 原样内嵌。
+                frame = dict(payload)
+                frame.setdefault("seq", seq)
+                if not isinstance(envelope, dict):
+                    frame.setdefault("family", getattr(envelope, "family", None))
+                    frame.setdefault(
+                        "family_version", getattr(envelope, "family_version", None)
+                    )
+                    frame.setdefault("event_type", getattr(envelope, "event_type", None))
+                    if getattr(envelope, "run_id", None):
+                        frame.setdefault("run_id", envelope.run_id)
+                yield f"id: {seq}\ndata: {json.dumps(frame, ensure_ascii=False)}\n\n"
 
         return StreamingResponse(generator(), media_type="text/event-stream")
 
