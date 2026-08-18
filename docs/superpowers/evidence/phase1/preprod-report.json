@@ -49,12 +49,14 @@
     },
     "capability": {
       "detail": {
+        "gateway_path_pass": true,
         "no_enqueue_execution": true,
         "pause_gateway": {
-          "body": {
-            "non_receipt_body": "{'raw': 'Internal Server Error'}"
-          },
-          "http": 500
+          "command_id": "f50ada6a-50cc-4600-8b9b-38a2cec94f63",
+          "error_code": "not_implemented",
+          "http": 409,
+          "status": "unsupported",
+          "verified_after_fix": "same gateway fix; re-verified 2026-08-18T06:08Z via gateway full chain"
         },
         "pause_rejected_events": [
           {
@@ -77,11 +79,11 @@
         "session_pause": "v2-cap2-d68c1273",
         "session_steer": "v2-cap-7f016d34",
         "steer_gateway": {
-          "body": {
-            "non_receipt_body": "{'raw': 'Internal Server Error'}"
-          },
-          "http": 500,
-          "note": "gateway turns runtime 409 into 500 (is_stale_fence reads unread streaming body)"
+          "command_id": "fcff1d64-b928-48ec-b058-37f1d869ea62",
+          "error_code": "runtime_no_native_steer",
+          "http": 409,
+          "status": "unsupported",
+          "verified_after_fix": "gateway 7840b09 streamed-409 aread fix; re-verified 2026-08-18T06:05Z via port-forwarded gateway router (SubmitAgentControl -> typed 409 receipt, no longer 500)"
         },
         "steer_rejected_events": [
           {
@@ -215,7 +217,8 @@
           "runtime_meta": {
             "digest": "69771d8df4a8811ed6623f26a152c869cfdfd8dbfdcad443b52a9b6403b267e8",
             "instance": "phase1-canary-1",
-            "method": "GET /v1/meta/contract-digest on canary runtime (phase1-v2-60b61cdd8)"
+            "method": "GET /v1/meta/contract-digest on canary runtime (phase1-v2-60b61cdd8)",
+            "recheck_after_fix": "canary redeployed at agent-kernel-canary:phase1-v3-91d0fb8 with AGENT_KERNEL_CONTRACT_DIGEST env set; /agent-kernel/v1/health now reports 69771d8df4a8811ed6623f26a152c869cfdfd8dbfdcad443b52a9b6403b267e8 (was empty)"
           },
           "server_internal_directory": {
             "agent_instance_id": "phase1-canary-1",
@@ -224,7 +227,7 @@
             "ready": true
           }
         },
-        "note": "canonical ingress /agent-kernel/v1/health reports empty contract_digest because AGENT_KERNEL_CONTRACT_DIGEST env is not set on the canary deployment (minor gap, meta endpoint carries the pinned digest)"
+        "note": "previous gap closed 2026-08-18: AGENT_KERNEL_CONTRACT_DIGEST env set on canary deployment (phase1-v3-91d0fb8); canonical ingress /agent-kernel/v1/health now reports the pinned digest"
       },
       "status": "pass"
     },
@@ -233,11 +236,11 @@
         "branch": "feat/agent-kernel-phase1",
         "digest": "69771d8df4a8811ed6623f26a152c869cfdfd8dbfdcad443b52a9b6403b267e8",
         "images": {
-          "agent-kernel-canary": "phase1-v2-60b61cdd8 (canary_app md5 matches worktree tests/phase1/canary_app.py at deb79dbc)",
-          "agentengine-gateway": "phase1-f6f7b16v3 (tag name lags branch tip; in-image code verified to contain c042791: AGENT_KERNEL_DIRECTORY_BASE_URL honored by router env, effective contract digest read in-pod, directory lookups succeed against server host)",
+          "agent-kernel-canary": "phase1-v3-91d0fb8 (ingress status permit-binding fix 91d0fb89; AGENT_KERNEL_CONTRACT_DIGEST env added)",
+          "agentengine-gateway": "phase1-7840b09 (tip 7840b09 = b8e30b9 streamed-409 stale-fence fix + 7840b09 readme build fix; deployed via helm upgrade --reuse-values, router env patch preserved)",
           "agentengine-server": "phase1-7afc70a (matches branch tip 7afc70a)"
         },
-        "note": "six repos on feat/agent-kernel-phase1 with current tips including deb79dbc (ksadk) and c042791 (gateway); drill exercised gateway+server+runtime images listed above",
+        "note": "six repos on feat/agent-kernel-phase1; ksadk tip 91d0fb89 (status permit binding fix) and gateway tip 7840b09 (streamed 409 body read fix b8e30b9 + readme build fix) deployed and re-verified via gateway full chain on 2026-08-18; every gateway SubmitAgentControl re-verification passed the pinned-digest directory gate",
         "repos": {
           "agent-platform-operator": {
             "commit": "26948cff87fdfdb150650183dc380046d3ed2620"
@@ -246,13 +249,13 @@
             "commit": "59178fdc362d3e098153e4be07b69ae0f69b6ff7"
           },
           "agentengine-gateway": {
-            "commit": "c042791b346ffd4cedc1bd35f33a36bbf1edc112"
+            "commit": "7840b093c4983d3a9ef72420d3b20fa5ee552166"
           },
           "agentengine-server": {
             "commit": "7afc70aa664755d14b6c478d70ed92b2c65cf671"
           },
           "ksadk-python": {
-            "commit": "deb79dbcf6cf52657b4bc749dc98af7d13cfc25b"
+            "commit": "91d0fb89985cfa04f418928d34a8cf6176dfd347"
           },
           "ksadk-web": {
             "commit": "f05f03983b66204bbca49b68ee5afd00d1a7978a"
@@ -729,13 +732,27 @@
         ]
       },
       "status": "pass"
+    },
+    "status_via_gateway": {
+      "detail": {
+        "activation_id": "canary-worker-phase1-canary-1",
+        "command_id": "fa5d9728-e742-406a-bc35-512d82182cab",
+        "http": 200,
+        "inbox_depth_after_drain": 0,
+        "inbox_depth_backlog": 1,
+        "instance_state_ready": "ready",
+        "instance_state_worker_paused": "degraded",
+        "note": "\u4fee\u590d\u524d canonical GetAgentStatus \u6052 fail-closed \u4e3a instance_state=unavailable\uff08ingress \u672c\u5730 permit \u4e0e caller \u81ea\u62a5 authorization_ref \u7ed1\u5b9a\u4e0d\u5339\u914d\uff09\uff1b\u4fee\u590d\u540e\u7ecf gateway \u8fd4\u56de\u771f\u5b9e\u72b6\u6001\uff1aworker \u6682\u505c\u65f6 depth=1/degraded\uff0c\u6d88\u8d39\u5b8c\u6210\u540e ready/depth=0\u3002\u590d\u9a8c\u8d70 gateway \u5168\u94fe\uff08port-forward router svc\uff09\uff0c\u8fd0\u884c\u65f6\u955c\u50cf phase1-v3-91d0fb8\uff0cgateway phase1-7840b09\u3002",
+        "session_backlog": "fix-sb-df5824c7"
+      },
+      "status": "pass"
     }
   },
   "environment": "pre",
   "failed_checks": [
     "phase0_baseline"
   ],
-  "generated_at": "2026-08-18T05:09:01Z",
+  "generated_at": "2026-08-18T06:08:56Z",
   "passed_checks": [
     "audit",
     "capability",
@@ -752,7 +769,8 @@
     "rollback",
     "runtime_events",
     "split_brain",
-    "stale_fence"
+    "stale_fence",
+    "status_via_gateway"
   ],
   "reasons": [
     "phase0_baseline requires an accepted manifest at 'docs/superpowers/evidence/phase0/manifest.json' (missing or accepted != true)"

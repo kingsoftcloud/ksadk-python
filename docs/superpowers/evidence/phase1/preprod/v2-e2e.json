@@ -1,6 +1,6 @@
 {
   "environment": "preprod/agent-kernel-phase1",
-  "executed_at": "2026-08-18T05:07:31Z",
+  "executed_at": "2026-08-18T06:08:00Z",
   "checks": {
     "contract_digest": {
       "status": "pass",
@@ -23,11 +23,12 @@
           "runtime_meta": {
             "method": "GET /v1/meta/contract-digest on canary runtime (phase1-v2-60b61cdd8)",
             "digest": "69771d8df4a8811ed6623f26a152c869cfdfd8dbfdcad443b52a9b6403b267e8",
-            "instance": "phase1-canary-1"
+            "instance": "phase1-canary-1",
+            "recheck_after_fix": "canary redeployed at agent-kernel-canary:phase1-v3-91d0fb8 with AGENT_KERNEL_CONTRACT_DIGEST env set; /agent-kernel/v1/health now reports 69771d8df4a8811ed6623f26a152c869cfdfd8dbfdcad443b52a9b6403b267e8 (was empty)"
           }
         },
         "all_three_match": true,
-        "note": "canonical ingress /agent-kernel/v1/health reports empty contract_digest because AGENT_KERNEL_CONTRACT_DIGEST env is not set on the canary deployment (minor gap, meta endpoint carries the pinned digest)"
+        "note": "previous gap closed 2026-08-18: AGENT_KERNEL_CONTRACT_DIGEST env set on canary deployment (phase1-v3-91d0fb8); canonical ingress /agent-kernel/v1/health now reports the pinned digest"
       }
     },
     "happy_path": {
@@ -267,11 +268,11 @@
         "session_steer": "v2-cap-7f016d34",
         "session_pause": "v2-cap2-d68c1273",
         "steer_gateway": {
-          "http": 500,
-          "body": {
-            "non_receipt_body": "{'raw': 'Internal Server Error'}"
-          },
-          "note": "gateway turns runtime 409 into 500 (is_stale_fence reads unread streaming body)"
+          "http": 409,
+          "status": "unsupported",
+          "command_id": "fcff1d64-b928-48ec-b058-37f1d869ea62",
+          "error_code": "runtime_no_native_steer",
+          "verified_after_fix": "gateway 7840b09 streamed-409 aread fix; re-verified 2026-08-18T06:05Z via port-forwarded gateway router (SubmitAgentControl -> typed 409 receipt, no longer 500)"
         },
         "steer_runtime_direct": {
           "http": 409,
@@ -280,10 +281,11 @@
           "error_code": "runtime_no_native_steer"
         },
         "pause_gateway": {
-          "http": 500,
-          "body": {
-            "non_receipt_body": "{'raw': 'Internal Server Error'}"
-          }
+          "http": 409,
+          "status": "unsupported",
+          "command_id": "f50ada6a-50cc-4600-8b9b-38a2cec94f63",
+          "error_code": "not_implemented",
+          "verified_after_fix": "same gateway fix; re-verified 2026-08-18T06:08Z via gateway full chain"
         },
         "pause_runtime_direct": {
           "http": 409,
@@ -319,7 +321,8 @@
             "reason": "not_implemented"
           }
         ],
-        "no_enqueue_execution": true
+        "no_enqueue_execution": true,
+        "gateway_path_pass": true
       }
     },
     "permit_negative": {
@@ -416,6 +419,20 @@
           }
         ],
         "runtime_v2_events": 200
+      }
+    },
+    "status_via_gateway": {
+      "status": "pass",
+      "detail": {
+        "session_backlog": "fix-sb-df5824c7",
+        "http": 200,
+        "instance_state_worker_paused": "degraded",
+        "inbox_depth_backlog": 1,
+        "instance_state_ready": "ready",
+        "inbox_depth_after_drain": 0,
+        "activation_id": "canary-worker-phase1-canary-1",
+        "command_id": "fa5d9728-e742-406a-bc35-512d82182cab",
+        "note": "修复前 canonical GetAgentStatus 恒 fail-closed 为 instance_state=unavailable（ingress 本地 permit 与 caller 自报 authorization_ref 绑定不匹配）；修复后经 gateway 返回真实状态：worker 暂停时 depth=1/degraded，消费完成后 ready/depth=0。复验走 gateway 全链（port-forward router svc），运行时镜像 phase1-v3-91d0fb8，gateway phase1-7840b09。"
       }
     }
   }
