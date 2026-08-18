@@ -33,6 +33,9 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Callable
 from uuid import UUID
 
+from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse, StreamingResponse
+
 from ksadk.kernel.authorization import (
     AgentControlPermitVerifier,
     JwksSource,
@@ -52,16 +55,25 @@ from ksadk.kernel.contracts import (
 # ---------------------------------------------------------------------------
 
 ENV_KERNEL_ENABLED = "KSADK_AGENT_KERNEL"
+# Operator 注入的开关名（AGENT_KERNEL_ENABLED=1）；与 SDK 本地灰度开关等价。
+ENV_KERNEL_ENABLED_PLATFORM = "AGENT_KERNEL_ENABLED"
+
+_TRUTHY = {"1", "true", "yes", "on"}
 
 _kernel: Any | None = None
 
 
 def kernel_ingress_enabled() -> bool:
-    """kernel 路径是灰度 opt-in：默认关闭，旧路径不变。"""
+    """kernel 路径是灰度 opt-in：默认关闭，旧路径不变。
 
-    return os.environ.get(ENV_KERNEL_ENABLED, "").strip().lower() in {
-        "1", "true", "yes", "on",
-    }
+    认 ``KSADK_AGENT_KERNEL``（SDK 本地）或 ``AGENT_KERNEL_ENABLED``
+    （Operator 平台注入）任一为真。
+    """
+
+    for name in (ENV_KERNEL_ENABLED, ENV_KERNEL_ENABLED_PLATFORM):
+        if os.environ.get(name, "").strip().lower() in _TRUTHY:
+            return True
+    return False
 
 
 def set_agent_kernel(kernel: Any) -> None:
@@ -452,11 +464,258 @@ async def subscribe_projected(
         yield int(envelope.seq), projected
 
 
+# ---------------------------------------------------------------------------
+# canonical kernel HTTP ingress: /agent-kernel/v1/*
+# ---------------------------------------------------------------------------
+
+# 三边（agentengine-gateway 转发、agentengine-server runtime client、KsADK
+# runtime）唯一一致的 kernel ingress 路径常量；契约测试锁定。
+KERNEL_INGRESS_BASE_PATH = "/agent-kernel/v1"
+KERNEL_INGRESS_SUBMIT_PATH = f"{KERNEL_INGRESS_BASE_PATH}/SubmitAgentControl"
+KERNEL_INGRESS_STATUS_PATH = f"{KERNEL_INGRESS_BASE_PATH}/GetAgentStatus"
+KERNEL_INGRESS_SESSION_EVENTS_PATH = f"{KERNEL_INGRESS_BASE_PATH}/SubscribeSessionEvents"
+KERNEL_INGRESS_HEALTH_PATH = f"{KERNEL_INGRESS_BASE_PATH}/health"
+
+ENV_KERNEL_STORE_DRIVER = "AGENT_KERNEL_STORE_DRIVER"
+ENV_KERNEL_STORE_DSN = "AGENT_KERNEL_STORE_DSN"
+ENV_JWKS_URL = "AGENT_CONTROL_JWKS_URL"
+
+
+async def bootstrap_agent_kernel_from_env() -> Any | None:
+    """``AGENT_KERNEL_ENABLED=1`` 且能装配 store 时自动 ``set_agent_kernel``。
+
+    避免"开了 env 也不生效"：server lifespan 启动时调用；装配失败抛异常
+    （fail loud），不静默降级。已注册 kernel 时幂等返回。
+    """
+
+    if get_agent_kernel() is not None:
+        return get_agent_kernel()
+    if not kernel_ingress_enabled():
+        return None
+
+    from ksadk.events.session_event import SessionServiceEventStore
+    from ksadk.kernel.control import AgentKernel
+    from ksadk.sessions.in_memory import InMemorySessionService
+
+    driver = os.environ.get(ENV_KERNEL_STORE_DRIVER, "memory").strip().lower()
+    dsn = os.environ.get(ENV_KERNEL_STORE_DSN, "").strip()
+    session_service = InMemorySessionService()
+    events = SessionServiceEventStore(session_service)
+    store: Any = None
+
+    if driver == "postgres":
+        import asyncpg
+
+        from ksadk.kernel.postgres_store import PostgresAgentKernelStore
+
+        if not dsn:
+            raise RuntimeError("postgres kernel store requires AGENT_KERNEL_STORE_DSN")
+        pool = await asyncpg.create_pool(dsn)
+        store: Any = PostgresAgentKernelStore(pool, None, owns_pool=True)
+    elif driver == "sqlite":
+        from ksadk.kernel.sqlite_store import SQLiteAgentKernelStore
+
+        if dsn:
+            store: Any = SQLiteAgentKernelStore(dsn, events)
+    if store is None:
+        from ksadk.kernel.memory_store import InMemoryAgentKernelStore
+
+        store = InMemoryAgentKernelStore(events)
+
+    kernel = AgentKernel(store, events, permit_verifier=_env_permit_verifier())
+    if hasattr(store, "ensure_schema"):
+        try:
+            await store.ensure_schema()
+        except Exception:  # pragma: no cover - schema 已存在等场景
+            pass
+    set_agent_kernel(kernel)
+    return kernel
+
+
+def _env_permit_verifier() -> Any:
+    """JWKS URL 配置时用远端 verifier；否则用进程内 issuer（本地/灰度）。"""
+
+    jwks_url = os.environ.get(ENV_JWKS_URL, "").strip()
+    if jwks_url:
+        from ksadk.kernel.authorization import AgentControlPermitVerifier
+
+        class _HttpJwks:
+            def __init__(self, url: str) -> None:
+                self._url = url
+
+            async def fetch_verification_keys(self) -> Mapping[str, str]:
+                import httpx
+
+                async with httpx.AsyncClient(timeout=5.0, follow_redirects=False) as client:
+                    response = await client.get(self._url)
+                    response.raise_for_status()
+                    keys = response.json().get("keys") or {}
+                    return {str(k): str(v) for k, v in keys.items()}
+
+        return AgentControlPermitVerifier(_HttpJwks(jwks_url))
+    return _default_issuer().verifier()
+
+
+def _build_kernel_router() -> Any:
+    from ksadk.kernel.contracts import (
+        AgentControlPermit,
+        AgentStatusQuery,
+        SessionEventSubscription,
+    )
+
+    router = APIRouter()
+
+    def _unavailable() -> JSONResponse:
+        return JSONResponse(
+            status_code=503,
+            content={"error": {"Code": "kernel_not_enabled", "Message": "agent kernel is not registered"}},
+        )
+
+    @router.post(KERNEL_INGRESS_SUBMIT_PATH)
+    async def submit_agent_control(request: Request) -> Any:
+        kernel = get_agent_kernel()
+        if kernel is None:
+            return _unavailable()
+        body = await request.json()
+        from ksadk.kernel.contracts import AgentControlCommand
+
+        permit_data = body.get("permit")
+        try:
+            command = AgentControlCommand.model_validate(body.get("command") or body)
+        except Exception as exc:
+            return JSONResponse(
+                status_code=400,
+                content={"error": {"Code": "invalid_command", "Message": str(exc)}},
+            )
+        if permit_data:
+            permit = AgentControlPermit.model_validate(permit_data)
+        else:
+            # 无 permit（gateway 内网转发 / 本地灰度）：trusted context 进程内签发。
+            trusted = trusted_context(
+                source_kind="system",
+                source_ref=str(command.command_id),
+                session_id=command.session_id or None,
+                operations=(command.command_type,),
+            )
+            permit = trusted.permit
+            command = command.model_copy(
+                update={
+                    "tenant_id": trusted.tenant_id,
+                    "agent_instance_id": trusted.agent_instance_id,
+                    "authorization_ref": permit.permit_id,
+                }
+            )
+        receipt = await kernel.submit(command, permit=permit)
+        return JSONResponse(
+            status_code=receipt_http_status(receipt),
+            content=json.loads(receipt.model_dump_json()),
+            headers=receipt_response_headers(receipt),
+        )
+
+    @router.post(KERNEL_INGRESS_STATUS_PATH)
+    async def get_agent_status(request: Request) -> Any:
+        kernel = get_agent_kernel()
+        if kernel is None:
+            return _unavailable()
+        body = await request.json()
+        try:
+            query = AgentStatusQuery.model_validate(body)
+        except Exception as exc:
+            return JSONResponse(
+                status_code=400,
+                content={"error": {"Code": "invalid_query", "Message": str(exc)}},
+            )
+        trusted = trusted_context(
+            source_kind="system",
+            source_ref="status",
+            tenant_id=query.tenant_id,
+            agent_instance_id=query.agent_instance_id,
+            session_id=query.session_id,
+            operations=("get_status",),
+        )
+        snapshot = await kernel.status(query, permit=trusted.permit)
+        return JSONResponse(json.loads(snapshot.model_dump_json()))
+
+    @router.get(KERNEL_INGRESS_SESSION_EVENTS_PATH)
+    async def subscribe_session_events(request: Request) -> Any:
+        kernel = get_agent_kernel()
+        if kernel is None:
+            return _unavailable()
+        params = request.query_params
+        session_id = str(params.get("session_id") or "")
+        if not session_id:
+            return JSONResponse(
+                status_code=400,
+                content={"error": {"Code": "missing_session_id", "Message": "session_id is required"}},
+            )
+        instance_id = str(params.get("agent_instance_id") or "local-agent")
+        tenant_id = str(params.get("tenant_id") or "local")
+        try:
+            after_seq = int(params.get("after_seq") or 0)
+        except ValueError:
+            after_seq = 0
+        trusted = trusted_context(
+            source_kind="system",
+            source_ref="events",
+            tenant_id=tenant_id,
+            agent_instance_id=instance_id,
+            session_id=session_id,
+            operations=("subscribe",),
+        )
+
+        async def generator():
+            async for seq, envelope in subscribe_projected(
+                session_id, trusted=trusted, after_seq=after_seq
+            ):
+                payload = (
+                    envelope.payload
+                    if isinstance(envelope, dict)
+                    else getattr(envelope, "payload", {})
+                ) or {}
+                yield f"id: {seq}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+        return StreamingResponse(generator(), media_type="text/event-stream")
+
+    @router.get(KERNEL_INGRESS_HEALTH_PATH)
+    async def kernel_health() -> Any:
+        kernel = get_agent_kernel()
+        return JSONResponse(
+            {
+                "enabled": kernel_ingress_enabled(),
+                "ready": kernel is not None,
+                "store_driver": os.environ.get(ENV_KERNEL_STORE_DRIVER, "memory"),
+                "contract_digest": os.environ.get("AGENT_KERNEL_CONTRACT_DIGEST", ""),
+                "capability_digest": os.environ.get("AGENT_KERNEL_CAPABILITY_DIGEST", ""),
+            }
+        )
+
+    return router
+
+
+_agent_kernel_router: Any | None = None
+
+
+def agent_kernel_router() -> Any:
+    """kernel ingress HTTP 路由（/agent-kernel/v1/*）；由 server 装配层 include。"""
+
+    global _agent_kernel_router
+    if _agent_kernel_router is None:
+        _agent_kernel_router = _build_kernel_router()
+    return _agent_kernel_router
+
+
 __all__ = [
     "ENV_KERNEL_ENABLED",
     "InProcessPermitIssuer",
+    "KERNEL_INGRESS_BASE_PATH",
+    "KERNEL_INGRESS_HEALTH_PATH",
+    "KERNEL_INGRESS_SESSION_EVENTS_PATH",
+    "KERNEL_INGRESS_STATUS_PATH",
+    "KERNEL_INGRESS_SUBMIT_PATH",
     "RECEIPT_HTTP_STATUS",
     "TrustedRuntimeContext",
+    "agent_kernel_router",
+    "bootstrap_agent_kernel_from_env",
     "clear_agent_kernel",
     "get_agent_kernel",
     "kernel_ingress_enabled",

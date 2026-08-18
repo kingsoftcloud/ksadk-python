@@ -21,6 +21,12 @@ def configure_runtime_app(app: FastAPI, state: RuntimeAppState, groups: set[str]
         if router is not None:
             app.include_router(router)
 
+    # Agent Kernel canonical ingress（/agent-kernel/v1/*）：灰度开关关闭时
+    # bootstrap 返回 None、路由统一回 503，不影响旧路径。
+    from ksadk.kernel import ingress as _kernel_ingress
+
+    app.include_router(_kernel_ingress.agent_kernel_router())
+
 
 def _configure_route_dependencies() -> None:
     """Install dynamic providers that always resolve the request-bound app state."""

@@ -353,6 +353,11 @@ def create_runtime_app(
 
     @asynccontextmanager
     async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+        # AGENT_KERNEL_ENABLED=1 且 store 可装配时自动 set_agent_kernel；
+        # 开关关闭时是 no-op，装配失败 fail loud（启动报错）。
+        from ksadk.kernel import ingress as _kernel_ingress
+
+        await _kernel_ingress.bootstrap_agent_kernel_from_env()
         try:
             if state.a2a_bootstrap is not None:
                 await state.a2a_bootstrap.start()
