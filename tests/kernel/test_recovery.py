@@ -81,6 +81,7 @@ class _AttachableAdapter(RuntimeAdapter):
         self._durable = durable_state
         self.attach_calls: list[str] = []
         self.resume_calls: list[tuple[str, str]] = []
+        self.streams: list[str] = []
 
     async def start(self, request: StartRequest) -> RunHandle:
         handle = RunHandle(
@@ -92,15 +93,19 @@ class _AttachableAdapter(RuntimeAdapter):
         return handle
 
     def stream(self, handle: RunHandle):
+        runtime_self = self
+
         async def _gen():
-            yield RunStarted(
+            runtime_self.streams.append(handle.run_id)
+            yield RunProgress(
                 schema_version=2,
-                event_id=f"{handle.run_id}-started",
+                event_id=f"{handle.run_id}-progress",
                 seq=0,
-                timestamp=1.0,
+                timestamp=1780000002.0,
                 run_id=handle.run_id,
                 scope_id=f"run:{handle.run_id}",
                 status="running",
+                progress=0.7,
                 source=_src(),
             )
 
@@ -366,13 +371,19 @@ class RecoveryHarness:
 
         await self.kernel_store.complete_claim(message.message_id, expected_fence=fence)
 
-    def coordinator(self, *, executor: RuntimeExecutor | None = None) -> RecoveryCoordinator:
+    def coordinator(
+        self,
+        *,
+        executor: RuntimeExecutor | None = None,
+        adapter_factory=None,
+    ) -> RecoveryCoordinator:
         return RecoveryCoordinator(
             self.kernel_store,
             self.event_store,
             self.capability_matrix,
             executor=executor,
             launch_context=self.launch_context if executor is not None else None,
+            adapter_factory=adapter_factory,
         )
 
     async def terminal_event_count(self) -> int:
@@ -700,3 +711,127 @@ async def test_cross_executor_recovery_really_closes_old_executor() -> None:
     third = RuntimeExecutor(registry_new, kernel_store=kernel_store)
     with pytest.raises(ValueError, match="digest"):
         await third.attach_record(tampered, context)
+
+
+# ------------------------------------- review P0: 真实 resume / attach 续消费
+
+
+class _NonResumableAdapter(_AttachableAdapter):
+    """声明不支持 resume 的 adapter：恢复必须确定性收口为 interrupted。"""
+
+    async def resume(self, handle, target, payload) -> RunHandle:
+        from ksadk.kernel.errors import UnsupportedControlError
+
+        raise UnsupportedControlError("resume not supported by this runtime")
+
+
+@pytest.mark.asyncio
+async def test_resume_branch_executes_adapter_and_consumes_stream() -> None:
+    attachable = RecoveryHarness(attachable=True)
+    activation = await attachable.acquire("act-old")
+    await attachable.submit_enqueue()
+    attachable.continuation_ref = "cont-1"
+    with pytest.raises(CrashPoint):
+        await attachable.drive(activation, crash_point="after_takeover")
+    run = await attachable.kernel_store.load_run(attachable.run_id)
+    attachable.durable_handles[attachable.run_id] = RunHandle.model_validate(
+        run.metadata["handle"]
+    )
+    await attachable.kernel_store.release_activation(
+        activation.activation_id, expected_fence=activation.fencing_token
+    )
+    new = await attachable.acquire("act-new")
+    attachable.capability_overrides = {"resume": True}
+
+    adapters: list[_AttachableAdapter] = []
+
+    def factory() -> _AttachableAdapter:
+        adapter = _AttachableAdapter(attachable.durable_handles)
+        adapters.append(adapter)
+        return adapter
+
+    report = await attachable.coordinator(adapter_factory=factory).recover(AGENT, new)
+
+    assert report.outcome == "resumed"
+    assert adapters[0].resume_calls == [(attachable.run_id, "cont-1")]
+    assert adapters[0].streams == [attachable.run_id]
+    run = await attachable.kernel_store.load_run(attachable.run_id)
+    assert run is not None and run.state is RunState.COMPLETED
+    # 续跑产生的新 runtime 事实被持久化。
+    store = RuntimeEventStore(attachable.event_store, session_id=SESSION)
+    assert any(
+        e.event_id == f"{attachable.run_id}-progress"
+        for e in await store.list(SESSION)
+    )
+
+
+@pytest.mark.asyncio
+async def test_unsupported_resume_adapter_interrupts_deterministically() -> None:
+    attachable = RecoveryHarness(attachable=True)
+    activation = await attachable.acquire("act-old")
+    await attachable.submit_enqueue()
+    attachable.continuation_ref = "cont-1"
+    with pytest.raises(CrashPoint):
+        await attachable.drive(activation, crash_point="after_takeover")
+    run = await attachable.kernel_store.load_run(attachable.run_id)
+    attachable.durable_handles[attachable.run_id] = RunHandle.model_validate(
+        run.metadata["handle"]
+    )
+    await attachable.kernel_store.release_activation(
+        activation.activation_id, expected_fence=activation.fencing_token
+    )
+    new = await attachable.acquire("act-new")
+    attachable.capability_overrides = {"resume": True}
+
+    report = await attachable.coordinator(
+        adapter_factory=lambda: _NonResumableAdapter(attachable.durable_handles)
+    ).recover(AGENT, new)
+
+    assert report.outcome == "interrupted"
+    assert report.reason == "runtime_not_durably_attachable"
+    run = await attachable.kernel_store.load_run(attachable.run_id)
+    assert run is not None and run.state is RunState.INTERRUPTED
+
+
+@pytest.mark.asyncio
+async def test_attach_branch_consumes_remaining_stream() -> None:
+    attachable = RecoveryHarness(attachable=True)
+    activation = await attachable.acquire("act-old")
+    await attachable.submit_enqueue()
+    with pytest.raises(CrashPoint):
+        await attachable.drive(activation, crash_point="after_takeover")
+    run = await attachable.kernel_store.load_run(attachable.run_id)
+    attachable.durable_handles[attachable.run_id] = RunHandle.model_validate(
+        run.metadata["handle"]
+    )
+    await attachable.kernel_store.release_activation(
+        activation.activation_id, expected_fence=activation.fencing_token
+    )
+    new = await attachable.acquire("act-new")
+    attachable.capability_overrides = {
+        "attach": True,
+        "durable_restore": True,
+    }
+
+    adapters: list[_AttachableAdapter] = []
+
+    def factory(_context):
+        adapter = _AttachableAdapter(attachable.durable_handles)
+        adapters.append(adapter)
+        return adapter
+
+    attachable.runtime_registry = RuntimeRegistry()
+    attachable.runtime_registry.register("fake", factory)
+    executor = attachable.runtime_executor()
+    report = await attachable.coordinator(executor=executor).recover(AGENT, new)
+
+    assert report.outcome == "attached"
+    # attach 之后剩余 stream 被重新消费，run 收口为终态。
+    assert adapters[0].streams == [attachable.run_id]
+    run = await attachable.kernel_store.load_run(attachable.run_id)
+    assert run is not None and run.state is RunState.COMPLETED
+    store = RuntimeEventStore(attachable.event_store, session_id=SESSION)
+    assert any(
+        e.event_id == f"{attachable.run_id}-progress"
+        for e in await store.list(SESSION)
+    )

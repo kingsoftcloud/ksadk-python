@@ -16,6 +16,7 @@ from typing import Literal
 
 from ksadk.kernel.contracts import (
     ActivationLease,
+    ActivationWriteGuard,
     AgentControlCommand,
 )
 from ksadk.kernel.contracts import (
@@ -74,9 +75,13 @@ class AgentKernelWorker:
         store: AgentKernelStore,
         *,
         adapter_factory: Callable[[], RuntimeAdapter],
+        session_events: object | None = None,
     ) -> None:
         self._store = store
         self._adapter_factory = adapter_factory
+        # SessionEventStore（typed RuntimeEventStore 的 envelope 写路径）。
+        # 缺省时不落 runtime 事件，仅保证 stream 被消费到自然结束。
+        self._session_events = session_events
         # 进程内 handle cache：owner 真相在 Store 的 RunRecord，cache miss
         # 不能等价于 Run 不存在（只能说明本进程未 attach）。
         self._handles: dict[str, RunHandle] = {}
@@ -188,7 +193,12 @@ class AgentKernelWorker:
     async def _start_run(
         self, command: AgentControlCommand, activation: ActivationLease
     ) -> str:
+        from ksadk.runtime.executor import handle_digest
+
         fence = activation.fencing_token
+        guard = ActivationWriteGuard(
+            activation_id=activation.activation_id, fencing_token=fence
+        )
         run_id = new_message_id()
         adapter = self._adapter_factory()
         pending = RunRecord(
@@ -205,22 +215,64 @@ class AgentKernelWorker:
                 input=command.payload.get("content"),
                 user_id="agent-kernel",
                 session_id=command.session_id,
-                metadata={"command_id": str(command.command_id)},
+                # durable run_id 优先传给 adapter；adapter 不认时以
+                # runtime_run_id 映射显式记录两个 ID 的对应关系。
+                metadata={"command_id": str(command.command_id), "run_id": run_id},
             )
         )
-        running = created.model_copy(
-            update={
-                "state": RunState.RUNNING,
-                "handle": handle.model_dump(mode="json"),
-            }
-        )
+        running_update: dict = {
+            "state": RunState.RUNNING,
+            "handle": handle.model_dump(mode="json"),
+            "handle_digest": handle_digest(handle),
+        }
+        if handle.run_id != run_id:
+            running_update["runtime_run_id"] = handle.run_id
+        running = created.model_copy(update=running_update)
         await self._store.save_run_transition(running, expected_fence=fence)
         self._handles[handle.run_id] = handle
-        # Phase 1：start 返回即视为该 turn 完成（事件流消费在 Task 7 接通）。
-        completed = running.model_copy(update={"state": RunState.COMPLETED})
-        await self._store.save_run_transition(completed, expected_fence=fence)
-        self._handles.pop(handle.run_id, None)
-        return handle.run_id
+        try:
+            # 消费整个事件流；只有自然结束才收口 COMPLETED，
+            # 异常交给 _execute_claim 做 retryable/terminal/typed 分类。
+            await self._consume_stream(adapter, handle, running, guard)
+        finally:
+            self._handles.pop(handle.run_id, None)
+        return run_id
+
+    async def _consume_stream(
+        self,
+        adapter: RuntimeAdapter,
+        handle: RunHandle,
+        run: RunRecord,
+        guard: ActivationWriteGuard,
+    ) -> None:
+        """消费 run 的事件流并把每个事实落为 family=runtime/v2 事件。
+
+        事件 run_id 统一改写为 durable run_id（adapter 私有 run_id 通过
+        RunRecord.metadata.runtime_run_id 记录映射）。stream 自然结束后
+        才把 run 收口为 COMPLETED；任何异常原样上抛。
+        """
+
+        runtime_store = None
+        if self._session_events is not None:
+            # 延迟导入：ksadk.events 反向依赖 kernel.contracts，避免模块环。
+            from ksadk.events.canonical_store import RuntimeEventStore
+
+            runtime_store = RuntimeEventStore(
+                self._session_events, session_id=run.session_id
+            )
+        async for event in adapter.stream(handle):
+            if runtime_store is None:
+                continue
+            if event.run_id != run.run_id:
+                update: dict = {"run_id": run.run_id}
+                if getattr(event, "scope_id", None) == f"run:{handle.run_id}":
+                    update["scope_id"] = f"run:{run.run_id}"
+                event = event.model_copy(update=update)
+            await runtime_store.append(event, guard=guard)
+        await self._store.save_run_transition(
+            run.model_copy(update={"state": RunState.COMPLETED}),
+            expected_fence=guard.fencing_token,
+        )
 
     # 控制命令必须作用于 active Run 且本进程持有 live handle。
     async def _control_active_run(
@@ -262,8 +314,24 @@ class AgentKernelWorker:
                 handle, target, AdapterResumePayload(kind="free_text")
             )
             self._handles[active.run_id] = resumed
+            await self._consume_stream(
+                adapter,
+                resumed,
+                active,
+                ActivationWriteGuard(
+                    activation_id=activation.activation_id, fencing_token=fence
+                ),
+            )
         elif verb == "submit":
             await adapter.submit(handle, AdapterResumePayload(kind="hitl_answer"))
+            await self._consume_stream(
+                adapter,
+                handle,
+                active,
+                ActivationWriteGuard(
+                    activation_id=activation.activation_id, fencing_token=fence
+                ),
+            )
         elif verb == "steer":
             await adapter.steer(
                 handle, ContractSteerPayload.model_validate(dict(command.payload))

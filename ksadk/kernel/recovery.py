@@ -79,6 +79,7 @@ class RecoveryCoordinator:
         *,
         executor: "RuntimeExecutor | None" = None,
         launch_context: "RuntimeLaunchContext | None" = None,
+        adapter_factory: Callable[[], object] | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self._store = store
@@ -86,6 +87,7 @@ class RecoveryCoordinator:
         self._capabilities = capabilities
         self._executor = executor
         self._launch_context = launch_context
+        self._adapter_factory = adapter_factory
         self._clock = clock
 
     async def recover(
@@ -129,7 +131,7 @@ class RecoveryCoordinator:
             and self._launch_context is not None
         ):
             try:
-                await self._executor.attach_record(run, self._launch_context)
+                handle = await self._executor.attach_record(run, self._launch_context)
             except Exception as error:
                 return await self._decide(
                     agent_instance_id,
@@ -137,6 +139,22 @@ class RecoveryCoordinator:
                     run,
                     outcome="failed",
                     reason=f"attach_failed:{type(error).__name__}",
+                    guard=guard,
+                )
+            # attach 成功后重新消费剩余 stream：事实继续落库，自然结束收口。
+            try:
+                await self._consume_remaining_stream(
+                    lambda: self._executor.stream(handle),  # type: ignore[union-attr]
+                    run,
+                    guard,
+                )
+            except Exception as error:
+                return await self._decide(
+                    agent_instance_id,
+                    activation,
+                    run,
+                    outcome="failed",
+                    reason=f"attach_stream_failed:{type(error).__name__}",
                     guard=guard,
                 )
             return await self._decide(
@@ -149,6 +167,11 @@ class RecoveryCoordinator:
             )
 
         if capabilities.resume.supported and run.metadata.get("continuation_ref"):
+            resumed_report = await self._try_real_resume(
+                agent_instance_id, activation, run, guard=guard
+            )
+            if resumed_report is not None:
+                return resumed_report
             return await self._decide(
                 agent_instance_id,
                 activation,
@@ -163,6 +186,91 @@ class RecoveryCoordinator:
         )
 
     # ------------------------------------------------------------- internals
+
+    async def _try_real_resume(
+        self,
+        agent_instance_id: str,
+        activation: ActivationLease,
+        run: RunRecord,
+        *,
+        guard: WriteContext,
+    ) -> RecoveryReport | None:
+        """用真实 adapter 从 continuation 恢复执行并继续消费 stream。
+
+        返回 ``None`` 表示没有可用 adapter（委托 worker 重放的旧路径）。
+        adapter 不支持 resume 时保持确定性收口（interrupted）。
+        """
+
+        from ksadk.kernel.errors import UnsupportedControlError
+        from ksadk.runtime.adapter import ResumeTarget, RunHandle
+
+        if self._adapter_factory is None:
+            return None
+        handle_dump = run.metadata.get("handle")
+        continuation_ref = run.metadata.get("continuation_ref")
+        if not isinstance(handle_dump, dict) or not continuation_ref:
+            return None
+        adapter = self._adapter_factory()
+        try:
+            handle = RunHandle.model_validate(handle_dump)
+            resumed = await adapter.resume(
+                handle,
+                ResumeTarget(kind="invocation_id", id=str(continuation_ref)),
+                None,
+            )
+        except UnsupportedControlError:
+            # EchoAdapter 等不支持 resume 的 runtime：确定性收口，不重试。
+            return await self._interrupt_deterministically(
+                agent_instance_id, activation, run, guard=guard
+            )
+        except Exception as error:
+            return await self._decide(
+                agent_instance_id,
+                activation,
+                run,
+                outcome="failed",
+                reason=f"resume_failed:{type(error).__name__}",
+                guard=guard,
+            )
+        try:
+            await self._consume_remaining_stream(
+                lambda: adapter.stream(resumed), run, guard
+            )
+        except Exception as error:
+            return await self._decide(
+                agent_instance_id,
+                activation,
+                run,
+                outcome="failed",
+                reason=f"resume_stream_failed:{type(error).__name__}",
+                guard=guard,
+            )
+        return await self._decide(
+            agent_instance_id,
+            activation,
+            run,
+            outcome="resumed",
+            reason="continuation_resumed",
+            guard=guard,
+        )
+
+    async def _consume_remaining_stream(
+        self, stream_factory, run: RunRecord, guard: WriteContext
+    ) -> None:
+        """消费剩余事件流（run_id 统一 durable id），自然结束收口 COMPLETED。"""
+
+        runtime_store = RuntimeEventStore(self._session_events, session_id=run.session_id)
+        async for event in stream_factory():
+            if event.run_id != run.run_id:
+                update: dict = {"run_id": run.run_id}
+                if getattr(event, "scope_id", None) == f"run:{event.run_id}":
+                    update["scope_id"] = f"run:{run.run_id}"
+                event = event.model_copy(update=update)
+            await runtime_store.append(event, guard=guard)  # type: ignore[arg-type]
+        await self._store.save_run_transition(
+            run.model_copy(update={"state": RunState.COMPLETED}),
+            expected_fence=guard.fencing_token,  # type: ignore[attr-defined]
+        )
 
     async def _load_run(
         self, agent_instance_id: str, run_id: str | None

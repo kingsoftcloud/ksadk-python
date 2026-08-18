@@ -181,7 +181,11 @@ async def _worker_loop() -> None:
 
     pool: asyncpg.Pool = _state["pool"]  # type: ignore[assignment]
     adapter = EchoAdapter()
-    worker = AgentKernelWorker(store(), adapter_factory=lambda: adapter)
+    worker = AgentKernelWorker(
+        store(),
+        adapter_factory=lambda: adapter,
+        session_events=_state["events"],
+    )
     kstore = store()
     while True:
         try:
@@ -248,6 +252,7 @@ async def startup() -> None:
     await kstore.ensure_schema()
     auth = _CanaryAuthority()
     verifier = AgentControlPermitVerifier(auth.jwks())
+    _state["events"] = SessionServiceEventStore(service)
     _state["kernel"] = AgentKernel(
         kstore,
         SessionServiceEventStore(service),

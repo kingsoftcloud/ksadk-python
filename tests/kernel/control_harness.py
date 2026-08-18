@@ -194,6 +194,10 @@ class FakeAdapter(RuntimeAdapter):
         self.calls: list[tuple[str, str]] = []
         self.start_delay = 0.0
         self.start_error: Exception | None = None
+        self.stream_events: list = []
+        self.stream_error: Exception | None = None
+        self.handle_run_id: str | None = None
+        self.streams: list[str] = []
         self.cancel_result = CancelResult.INTERRUPTED_ACTIVE_TURN
         self.pause_result = PauseResult.PAUSED_ACTIVE_TURN
 
@@ -211,17 +215,21 @@ class FakeAdapter(RuntimeAdapter):
             (request.session_id, entered, time.monotonic())
         )
         return RunHandle(
-            run_id=f"run-{uuid4().hex[:8]}",
+            run_id=self.handle_run_id or f"run-{uuid4().hex[:8]}",
             session_id=request.session_id,
             runtime_type="fake",
         )
 
     def stream(self, handle: RunHandle) -> AsyncIterator:
-        async def _empty():
-            return
-            yield  # pragma: no cover
+        self.streams.append(handle.run_id)
 
-        return _empty()
+        async def _gen():
+            for event in self.stream_events:
+                yield event
+            if self.stream_error is not None:
+                raise self.stream_error
+
+        return _gen()
 
     async def cancel(self, handle: RunHandle) -> CancelResult:
         self.calls.append(("cancel", handle.session_id))

@@ -7,7 +7,11 @@ import asyncio
 
 import pytest
 
-from ksadk.kernel.errors import AgentKernelError, StaleFenceError
+from ksadk.kernel.errors import (
+    AgentKernelError,
+    InvalidCommandError,
+    StaleFenceError,
+)
 from ksadk.kernel.state import InboxState, RunState
 from ksadk.kernel.store import RunRecord
 from ksadk.runtime.adapter import RunHandle
@@ -248,3 +252,143 @@ async def test_worker_requires_lease_to_claim():
     )
     with pytest.raises(StaleFenceError):
         await worker.run_once(AGENT, forged)
+
+
+# ------------------------------------------------ Task 7 review P0: stream 消费
+
+
+def _stream_events(run_id: str):
+    from ksadk.events.canonical import RunProgress, RunStarted
+
+    return [
+        RunStarted(
+            schema_version=2,
+            event_id=f"{run_id}-started",
+            seq=0,
+            timestamp=1780000000.0,
+            run_id=run_id,
+            scope_id=f"run:{run_id}",
+            status="running",
+            source=_fake_source(),
+        ),
+        RunProgress(
+            schema_version=2,
+            event_id=f"{run_id}-progress",
+            seq=0,
+            timestamp=1780000000.5,
+            run_id=run_id,
+            scope_id=f"run:{run_id}",
+            status="running",
+            progress=0.5,
+            source=_fake_source(),
+        ),
+    ]
+
+
+def _fake_source():
+    from ksadk.events.canonical import SourceRef
+
+    return SourceRef(framework="ksadk")
+
+
+async def test_enqueue_emits_runtime_event_stream_with_durable_run_id():
+    stack = await kernel_stack()
+    # adapter 侧 run_id 与 durable run_id 故意不同：事件必须统一用 durable id。
+    stack.adapter.handle_run_id = "adapter-run-9"
+    stack.adapter.stream_events = _stream_events("adapter-run-9")
+    lease = await stack.lease()
+    await stack.kernel.submit(
+        command(idempotency_key="evt-1"), permit=stack.permit("enqueue")
+    )
+    from ksadk.kernel.worker import AgentKernelWorker
+
+    worker = AgentKernelWorker(
+        stack.store,
+        adapter_factory=lambda: stack.adapter,
+        session_events=stack.events,
+    )
+    result = await worker.run_once(AGENT, lease)
+    assert result.outcome == "completed"
+    assert result.run_id not in (None, "adapter-run-9")
+
+    envelopes = await stack.events.read("s1", 0, 50)
+    runtime_events = [e for e in envelopes if e.family == "runtime"]
+    types = {e.event_type for e in runtime_events}
+    assert {"run.started", "run.progress"} <= types
+    assert all(e.run_id == result.run_id for e in runtime_events)
+    assert stack.adapter.streams == ["adapter-run-9"]
+
+    run = await stack.store.load_run(result.run_id)
+    assert run is not None and run.state == RunState.COMPLETED
+    # 显式记录 durable <-> adapter run id 映射。
+    assert run.metadata["runtime_run_id"] == "adapter-run-9"
+    # handle + digest 成对持久化，recovery attach 分支可判定。
+    handle = RunHandle.model_validate(run.metadata["handle"])
+    assert handle.run_id == "adapter-run-9"
+    from ksadk.runtime.executor import handle_digest
+
+    assert run.metadata["handle_digest"] == handle_digest(handle)
+
+
+async def test_stream_completes_only_after_natural_end():
+    stack = await kernel_stack()
+    stack.adapter.stream_events = _stream_events("any")
+    lease = await stack.lease()
+    await stack.kernel.submit(
+        command(idempotency_key="evt-2"), permit=stack.permit("enqueue")
+    )
+    from ksadk.kernel.worker import AgentKernelWorker
+
+    worker = AgentKernelWorker(
+        stack.store,
+        adapter_factory=lambda: stack.adapter,
+        session_events=stack.events,
+    )
+    result = await worker.run_once(AGENT, lease)
+    assert result.outcome == "completed"
+    run = await stack.store.load_run(result.run_id)
+    assert run is not None and run.state == RunState.COMPLETED
+
+
+async def test_stream_retryable_error_keeps_run_open():
+    stack = await kernel_stack()
+    stack.adapter.stream_error = AgentKernelError(
+        "persistence_uncertain", "flush failed", retryable=True
+    )
+    lease = await stack.lease()
+    await stack.kernel.submit(
+        command(idempotency_key="evt-3"), permit=stack.permit("enqueue")
+    )
+    from ksadk.kernel.worker import AgentKernelWorker
+
+    worker = AgentKernelWorker(
+        stack.store,
+        adapter_factory=lambda: stack.adapter,
+        session_events=stack.events,
+    )
+    result = await worker.run_once(AGENT, lease)
+    assert result.outcome == "retryable_failure"
+    run = await stack.store.find_active_run(AGENT, "s1")
+    assert run is not None and run.state == RunState.RUNNING
+
+
+async def test_stream_typed_rejection_is_discarded():
+    stack = await kernel_stack()
+    stack.adapter.stream_error = InvalidCommandError("stream payload invalid")
+    lease = await stack.lease()
+    await stack.kernel.submit(
+        command(idempotency_key="evt-4"), permit=stack.permit("enqueue")
+    )
+    from ksadk.kernel.worker import AgentKernelWorker
+
+    worker = AgentKernelWorker(
+        stack.store,
+        adapter_factory=lambda: stack.adapter,
+        session_events=stack.events,
+    )
+    result = await worker.run_once(AGENT, lease)
+    assert result.outcome == "completed"  # typed rejection 确定性收口
+    message = (await stack.store.list_messages(AGENT, "s1"))[0]
+    assert message.status == InboxState.DISCARDED
+    events = await stack.events.read("s1", 0, 20)
+    assert any(e.event_type == "control.command_rejected" for e in events)
