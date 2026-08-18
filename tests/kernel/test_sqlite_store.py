@@ -81,3 +81,55 @@ async def test_sqlite_store_control_events_share_session_log(store):
     assert "control.command_accepted" in types
     assert "control.message_claimed" in types
     assert all(event.family == "control" and event.family_version == 1 for event in events)
+
+
+class _FlakyEventStore:
+    """第一步成功、之后 append 全部抛错的 SessionEventStore 包装。"""
+
+    def __init__(self, inner, fail_on: int = 0):
+        self._inner = inner
+        self._fail_on = fail_on
+        self.calls = 0
+
+    async def append(self, envelope, *, guard=None):
+        if self.calls >= self._fail_on:
+            raise RuntimeError("session event store crashed mid-flight")
+        self.calls += 1
+        return await self._inner.append(envelope, guard=guard)
+
+    async def read(self, session_id, after_seq, limit):
+        return await self._inner.read(session_id, after_seq, limit)
+
+
+async def test_accept_command_rolls_back_inbox_when_event_append_fails(tmp_path):
+    """事件写入失败时 Inbox 必须回滚：不允许 persisted-but-untracked 半状态。"""
+
+    from tests.kernel.store_conformance import command
+
+    service = LocalSessionService(db_path=tmp_path / "sessions.sqlite")
+    await seed_session(service)()
+    flaky = _FlakyEventStore(SessionServiceEventStore(service), fail_on=0)
+    store = SQLiteAgentKernelStore(tmp_path / "kernel.sqlite", flaky)
+    await store.ensure_schema()
+
+    with pytest.raises(RuntimeError):
+        await store.accept_command(command("rb-1", "hello"), queue_limit=4)
+
+    import sqlite3
+
+    with sqlite3.connect(tmp_path / "kernel.sqlite") as connection:
+        rows = connection.execute("SELECT COUNT(*) FROM kernel_inbox").fetchone()[0]
+        seq = connection.execute(
+            "SELECT COUNT(*) FROM kernel_accepted_seq"
+        ).fetchone()[0]
+    assert rows == 0
+    assert seq == 0
+
+    # 重试（事件存储恢复后）能正常接受，无残留半状态。
+    good = SQLiteAgentKernelStore(tmp_path / "kernel.sqlite", SessionServiceEventStore(service))
+    await good.ensure_schema()
+    receipt = await good.accept_command(command("rb-1", "hello"), queue_limit=4)
+    assert receipt.status == "accepted"
+    assert receipt.accepted_seq == 1
+    await good.close()
+    await store.close()

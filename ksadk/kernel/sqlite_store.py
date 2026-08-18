@@ -5,7 +5,9 @@
 - WAL journal + 每次 mutation ``BEGIN IMMEDIATE`` 做跨进程 CAS；
 - schema migration 用 ``PRAGMA user_version`` 整数版本，重复启动幂等；
 - 所有 fence 比较都发生在同一个写事务内，不匹配抛 :class:`StaleFenceError`；
-- ControlEvent/v1 经注入的 SessionEventStore 追加，且只在事务 commit 之后。
+- ControlEvent/v1 经注入的 SessionEventStore 追加；accepted 事件在 kernel
+  事务 commit 之前追加（persist-before-ack，见 :meth:`accept_command`），
+  事件写入失败时回滚 Inbox。
 
 只面向单机本地部署（local dev / serverless pod 单写者场景）；预发多写者
 场景由 Task 4 的 PostgreSQL 适配器承接。
@@ -337,26 +339,33 @@ class SQLiteAgentKernelStore:
                         command.model_dump_json(),
                     ),
                 )
+                # persist-before-ack：session 事件库与 kernel 库是两个独立
+                # SQLite 文件，无法共享一个事务。诚实取舍是在 kernel 事务
+                # commit 之前追加 accepted 事件：事件写入失败 -> 回滚 Inbox，
+                # 不产生 "persisted-but-untracked" 半状态，客户端可安全重试。
+                # 残余窗口：事件已追加但 kernel commit 崩溃 -> 出现一条孤儿
+                # accepted 事件而无 Inbox 行；该窗口不返回 ack，重试会重新
+                # 走完整路径（seq 单调，可能产生一条重复 accepted 事件），
+                # 不存在已 ack 但未持久化的状态。
+                await self._emit_admission(
+                    control_event(
+                        session_id=command.session_id,
+                        event_type="control.command_accepted",
+                        payload={
+                            "command_id": str(command.command_id),
+                            "status": "accepted",
+                            "message_id": message_id,
+                            "accepted_seq": accepted_seq,
+                            "command_type": command.command_type,
+                        },
+                        causation_id=str(command.command_id),
+                    ),
+                    command,
+                )
                 await connection.commit()
             except BaseException:
                 await connection.rollback()
                 raise
-        # ControlEvent 只在事务 commit 之后追加。
-        await self._emit_admission(
-            control_event(
-                session_id=command.session_id,
-                event_type="control.command_accepted",
-                payload={
-                    "command_id": str(command.command_id),
-                    "status": "accepted",
-                    "message_id": message_id,
-                    "accepted_seq": accepted_seq,
-                    "command_type": command.command_type,
-                },
-                causation_id=str(command.command_id),
-            ),
-            command,
-        )
         return self._receipt(
             command, "accepted", message_id=message_id, accepted_seq=accepted_seq
         )
