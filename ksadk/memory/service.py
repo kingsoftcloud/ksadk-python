@@ -212,8 +212,12 @@ class LongTermMemoryService:
             confirm_searchable
             and status.status == "extracted"
             and CAP_STRUCTURED_SEARCH in self._backend.capabilities()
+            and expected_content.strip()
         ):
-            records = self.list_memory_records(user_id=user_id)
+            # 用 expected_content 作为 Query 语义过滤，避免大记忆库时目标不在首页。
+            records = self.list_memory_records(
+                user_id=user_id, query=expected_content, page_size=50
+            )
             if self._find_matching_record(records, expected_content) is not None:
                 status = MemoryExtractionStatus(
                     session_id=status.session_id,
@@ -228,10 +232,13 @@ class LongTermMemoryService:
     def _find_matching_record(
         records: list[LongTermMemoryRecord], expected_content: str
     ) -> LongTermMemoryRecord | None:
-        """按归一化正文等值/包含匹配目标记录（方案 N3：可见性判定规则）。"""
+        """按归一化正文等值/包含匹配目标记录（方案 N3：可见性判定规则）。
+
+        expected_content 为空时不作匹配（返回 None），避免误判任意记录为可见。
+        """
         normalized = _normalize_content(expected_content)
         if not normalized:
-            return records[0] if records else None
+            return None
         for record in records:
             if normalized == _normalize_content(record.content):
                 return record

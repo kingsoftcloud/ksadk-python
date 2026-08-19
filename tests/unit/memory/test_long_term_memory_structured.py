@@ -478,3 +478,49 @@ class TestServiceWriteConfirm:
                 user_id="u1", session_id="s1", confirm_searchable=True, expected_content="用户叫李建波"
             )
         assert st.searchable is False
+
+    def test_confirm_searchable_uses_query_filter(self):
+        """ListMemories 用 expected_content 作 Query 过滤，避免大库漏判。"""
+        backend = _make_backend()
+        client = MagicMock()
+        captured = {}
+
+        def fake_call(action, params, options=None):
+            if action == "ListSessions":
+                return json.dumps({"Data": {"Items": [{"SessionId": "s1", "State": 100}]}})
+            if action == "ListMemories":
+                captured["query"] = params.get("Query")
+                captured["page_size"] = params.get("PageSize")
+                return json.dumps(
+                    {"MemoryList": [{"MemoryId": "mem-1", "Memory": "用户叫李建波"}]}
+                )
+            raise AssertionError(action)
+
+        client.call.side_effect = fake_call
+        svc = LongTermMemoryService(backend=backend)
+        with patch.object(backend, "_get_client", return_value=client):
+            st = svc.get_extraction_status(
+                user_id="u1", session_id="s1", confirm_searchable=True, expected_content="用户叫李建波"
+            )
+        assert captured["query"] == "用户叫李建波"
+        assert st.searchable is True
+
+    def test_confirm_searchable_empty_content_not_searchable(self):
+        """expected_content 为空时不误判任意记录为可见。"""
+        backend = _make_backend()
+        client = MagicMock()
+
+        def fake_call(action, params, options=None):
+            if action == "ListSessions":
+                return json.dumps({"Data": {"Items": [{"SessionId": "s1", "State": 100}]}})
+            if action == "ListMemories":
+                return json.dumps({"MemoryList": [{"MemoryId": "mem-1", "Memory": "无关记录"}]})
+            raise AssertionError(action)
+
+        client.call.side_effect = fake_call
+        svc = LongTermMemoryService(backend=backend)
+        with patch.object(backend, "_get_client", return_value=client):
+            st = svc.get_extraction_status(
+                user_id="u1", session_id="s1", confirm_searchable=True, expected_content=""
+            )
+        assert st.searchable is False

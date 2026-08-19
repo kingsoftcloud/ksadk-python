@@ -1,0 +1,4 @@
+apiVersion: agentkit.ksyun.com/v1alpha1
+kind: AgentWorkspace
+metadata:
+  name: ksadk-python
