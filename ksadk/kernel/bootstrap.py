@@ -182,6 +182,9 @@ class AgentKernelReadiness:
                 lease_healthy = False
 
         worker_running = self.runtime.worker_running
+        capability_matrix = self.runtime.kernel.capabilities().model_dump(
+            mode="json"
+        )
         digests_match = bool(config.contract_digest)
         ready = store_ok and worker_running and lease_healthy and digests_match
         return {
@@ -192,6 +195,11 @@ class AgentKernelReadiness:
             "activation_id": activation_id,
             "contract_digest": config.contract_digest,
             "capability_digest": config.capability_digest,
+            # Runtime/Operator/Server readiness chain must carry the actual
+            # typed capability facts, not merely a digest supplied at deploy
+            # time. Server admission uses these to reject unsupported control
+            # operations before they enter the durable inbox.
+            "capabilities": capability_matrix,
             "bundle_digest": config.bundle_digest,
         }
 

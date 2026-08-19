@@ -130,6 +130,8 @@ async def test_bootstrap_readiness_reports_real_health():
         assert health["worker_running"] is True
         assert health["lease_healthy"] is True
         assert health["contract_digest"] == CONTRACT_DIGEST
+        assert health["capabilities"]["schema_version"] == 1
+        assert health["capabilities"]["cancel"]["supported"] is False
         assert health["bundle_digest"] == BUNDLE_DIGEST
     finally:
         await runtime.close()

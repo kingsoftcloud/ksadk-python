@@ -77,6 +77,16 @@ class AgentKernel:
         self._capabilities = capabilities or default_capability_matrix
         self._clock = clock
 
+    def capabilities(self) -> RuntimeCapabilityMatrix:
+        """Return the runtime's current typed capability snapshot.
+
+        Readiness propagation uses this same source as admission, so an
+        Operator/Server never treats a deploy-time digest as a substitute for
+        the actual operation support matrix.
+        """
+
+        return self._capabilities()
+
     # ---------------------------------------------------------------- submit
 
     async def submit(
