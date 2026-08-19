@@ -1,5 +1,55 @@
 {
   "checks": {
+    "approve_scenario": {
+      "interaction_requested": {
+        "event_id": "fa6c9def-3862-4ffb-ab01-e458cdf7dbd8",
+        "interaction_id": "item_4713dd4eec1ac2ca22be4589",
+        "kind": "approval",
+        "request_schema": {
+          "properties": {
+            "decision": {
+              "enum": [
+                "approve",
+                "reject"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "decision"
+          ],
+          "type": "object"
+        },
+        "seq": 6
+      },
+      "interaction_resolved": {
+        "actor_ref": "user",
+        "event_id": "fc7609cc-ef65-404d-9085-4500c5db841c",
+        "outcome": "approved",
+        "revision": 2,
+        "seq": 16
+      },
+      "ledger": "kernel_interactions item_4713dd4eec1ac2ca22be4589 status=resolved outcome=approved; kernel_interaction_submissions row with same idempotency_key, receipt event_id=fc7609cc-ef65-404d-9085-4500c5db841c accepted_seq=16",
+      "run_completed": {
+        "event_id": "a07765c0-6b85-5dae-b80a-8faee4a6e6fe",
+        "seq": 22
+      },
+      "run_enqueue": {
+        "accepted_seq": 1,
+        "command_id": "c4c0b863-55ee-4992-b411-ecacff3988d3",
+        "event_id": "8103156e-3ae0-461b-9149-53c38774fc1d"
+      },
+      "session": "codex-fake-approve-e2e-c8801ea6",
+      "status": "pass",
+      "submit_interaction": {
+        "accepted_seq": 13,
+        "action": "approve",
+        "command_id": "b8c9a571-a0b8-4fa7-9734-3de2fdc14c52",
+        "event_id": "aca9a984-09ff-47d3-b42a-8f579117371e",
+        "expected_revision": 1,
+        "idempotency_key": "interaction:item_4713dd4eec1ac2ca22be4589:revision-1"
+      }
+    },
     "audit": {
       "detail": {
         "audit_row": {
@@ -305,6 +355,10 @@
       },
       "status": "pass"
     },
+    "gateway_sse_early_close_note": {
+      "detail": "gateway SSE still closes before terminal events (known P1, events durable in PG; driver re-subscribes with advancing after_seq). Runtime-side SSE now bounded: ksadk commit de865a68 adds should_stop(request.is_disconnected) + ?timeout= seconds bound through ingress->AgentKernel.subscribe->SessionEventStore",
+      "status": "pass_with_known_issue"
+    },
     "happy_path": {
       "detail": {
         "accepted_seqs": [
@@ -572,6 +626,48 @@
       },
       "status": "pass"
     },
+    "refresh_replay": {
+      "detail": "after each terminal outcome a fresh SubscribeSessionEvents(after_seq=0) replayed the full durable event sequence (22 events per session) with the same interaction_id in interaction.requested and the same terminal interaction.resolved event_id; no second submit left the client",
+      "status": "pass"
+    },
+    "reject_scenario": {
+      "interaction_requested": {
+        "event_id": "aa11ac8b-8782-4064-bfae-ea619120d4d3",
+        "interaction_id": "item_a3135ffee2f7ee15cbdbb2ef",
+        "kind": "approval",
+        "seq": 6
+      },
+      "interaction_resolved": {
+        "actor_ref": "user",
+        "event_id": "8376fe02-afef-4fe4-b18a-25e168456de1",
+        "outcome": "rejected",
+        "revision": 2,
+        "seq": 16
+      },
+      "note": "exercised the reject->deny provider fix (public decision vocabulary normalized to codex-native deny)",
+      "run_completed": {
+        "event_id": "829b844a-d684-5614-abbf-f6234bf56812",
+        "seq": 22
+      },
+      "run_enqueue": {
+        "accepted_seq": 1,
+        "command_id": "b986c625-adb7-4e05-a591-87861e19818d",
+        "event_id": "da9b5a34-ccaf-4727-913a-241ea499f283"
+      },
+      "session": "codex-fake-reject-e2e-3a9adc33",
+      "status": "pass",
+      "submit_interaction": {
+        "accepted_seq": 13,
+        "action": "reject",
+        "command_id": "16da4052-7114-4195-88d3-a713fc32b326",
+        "event_id": "c483c8ae-4c73-4fee-8fa1-1a724f67b6c6",
+        "expected_revision": 1,
+        "idempotency_key": "interaction:item_a3135ffee2f7ee15cbdbb2ef:revision-1",
+        "response": {
+          "decision": "reject"
+        }
+      }
+    },
     "rollback": {
       "detail": {
         "after_rollforward": {
@@ -752,8 +848,9 @@
   "failed_checks": [
     "phase0_baseline"
   ],
-  "generated_at": "2026-08-18T06:08:56Z",
+  "generated_at": "2026-08-19T16:40:15Z",
   "passed_checks": [
+    "approve_scenario",
     "audit",
     "capability",
     "cold_recovery",
@@ -766,6 +863,8 @@
     "queue_full",
     "queue_full_recovery",
     "reconnect",
+    "refresh_replay",
+    "reject_scenario",
     "rollback",
     "runtime_events",
     "split_brain",
@@ -775,7 +874,7 @@
   "reasons": [
     "phase0_baseline requires an accepted manifest at 'docs/superpowers/evidence/phase0/manifest.json' (missing or accepted != true)"
   ],
-  "scenario": "full_closure",
+  "scenario": "interaction_web_0_3_2",
   "skipped_checks": [],
   "status": "fail"
 }
