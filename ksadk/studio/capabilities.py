@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Protocol, cast
 
 from ksadk.studio.contracts import (
+    BundleManifest,
     CapabilityRef,
     MCPServerRef,
     ModelSpec,
@@ -33,6 +34,22 @@ def canonical_json(payload: Any) -> bytes:
 
 def sha256_digest(payload: bytes) -> str:
     return f"sha256:{hashlib.sha256(payload).hexdigest()}"
+
+
+def compute_bundle_digest(manifest: BundleManifest) -> str:
+    """重算 BundleManifest 的 bundle_digest。
+
+    必须与 AgentBundleBuilder 产出时逐字一致：对去掉 bundle_digest 字段后的
+    canonical JSON 求 sha256。Runtime 加载 bundle 时据此校验 manifest 自身
+    未被篡改，避免 builder 与 runtime 各持一份易漂移的计算逻辑。
+    """
+    payload = manifest.model_dump(
+        by_alias=True,
+        exclude={"bundle_digest"},
+        exclude_none=True,
+        mode="json",
+    )
+    return sha256_digest(canonical_json(payload))
 
 
 def require_exact_version(version: str, *, field: str) -> None:

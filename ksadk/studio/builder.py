@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from ksadk.studio.capabilities import canonical_json, sha256_digest
+from ksadk.studio.capabilities import canonical_json, compute_bundle_digest, sha256_digest
 from ksadk.studio.compiler import AgentCompiler
 from ksadk.studio.contracts import (
     AgentDraft,
@@ -114,13 +114,7 @@ class AgentBundleBuilder:
                 hosted_kernel_requirement_digest=hosted_kernel_requirement_digest_value,
                 files=files,
             )
-            digest_payload = manifest.model_dump(
-                by_alias=True,
-                exclude={"bundle_digest"},
-                exclude_none=True,
-                mode="json",
-            )
-            manifest.bundle_digest = sha256_digest(canonical_json(digest_payload))
+            manifest.bundle_digest = compute_bundle_digest(manifest)
             self._write_json(bundle_root / "manifest.json", manifest.model_dump(by_alias=True))
             archive = staging / "agent-bundle.zip"
             self._write_zip(bundle_root, archive)

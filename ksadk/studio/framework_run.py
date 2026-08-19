@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+from pathlib import Path
 from typing import Any
 
 from ksadk.detection.detector import FrameworkDetector
 from ksadk.runtime import RuntimeLaunchContext
+from ksadk.studio.capabilities import compute_bundle_digest
+from ksadk.studio.contracts import BundleManifest
 from ksadk.studio.errors import StudioError
 from ksadk.studio.repository import BuildRepository
 from ksadk.studio.run_service import StudioRunSpec
@@ -82,6 +86,11 @@ def _resolved_memory_write_rollout(resolved: Any) -> str:
 
 
 class FrameworkRunSpecResolver:
+    # manifest.json 是 bundle 自身的描述文件，不进入 manifest.files 清单
+    # （builder 在扫描文件列表之后才写它），校验时排除。checksums.txt 在本仓
+    # bundle 格式中是 manifest 声明的普通成员，参与校验。
+    _BUNDLE_META_FILES = frozenset({"manifest.json"})
+
     def __init__(
         self,
         workspace: Workspace,
@@ -111,6 +120,9 @@ class FrameworkRunSpecResolver:
             raise StudioError("BUILD_NOT_READY", "Build 尚未生成制品", status_code=409)
         artifact_root = self.workspace.resolve(build.artifact_path, must_exist=True).parent
         bundle_root = artifact_root / "agent-bundle"
+        self._verify_bundle_integrity(
+            bundle_root, expected_bundle_digest=build.bundle_digest
+        )
         project_dir = bundle_root / "runtime"
         if not project_dir.is_dir():
             raise StudioError(
@@ -202,6 +214,92 @@ class FrameworkRunSpecResolver:
                 details={"model": selected, "allowedModels": allowed},
             )
         return selected
+
+    def _verify_bundle_integrity(
+        self,
+        bundle_dir: Path,
+        *,
+        expected_bundle_digest: str = "",
+    ) -> None:
+        """加载前校验 bundle 未被篡改：manifest 自身摘要、与 Build 记录一致、
+        文件清单无增删、每个文件 sha256/size 匹配。"""
+        try:
+            manifest = BundleManifest.model_validate_json(
+                (bundle_dir / "manifest.json").read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError) as exc:
+            raise StudioError(
+                "BUILD_ARTIFACT_INVALID",
+                "Build 缺少有效的 Bundle Manifest",
+                status_code=500,
+            ) from exc
+        if manifest.bundle_digest != compute_bundle_digest(manifest):
+            raise StudioError(
+                "BUILD_ARTIFACT_INVALID",
+                "Bundle Manifest 摘要不匹配，Bundle 可能已被篡改",
+                status_code=500,
+                details={"bundleDigest": manifest.bundle_digest},
+            )
+        if expected_bundle_digest and manifest.bundle_digest != expected_bundle_digest:
+            raise StudioError(
+                "BUILD_ARTIFACT_INVALID",
+                "Bundle 与 Build 记录的摘要不一致，Bundle 可能已被篡改",
+                status_code=500,
+                details={
+                    "expected": expected_bundle_digest,
+                    "actual": manifest.bundle_digest,
+                },
+            )
+        declared = {entry.path for entry in manifest.files}
+        actual: dict[str, Path] = {}
+        for path in bundle_dir.rglob("*"):
+            if not path.is_file():
+                continue
+            relative = path.relative_to(bundle_dir).as_posix()
+            if relative in self._BUNDLE_META_FILES:
+                continue
+            actual[relative] = path
+        extra = sorted(set(actual) - declared)
+        if extra:
+            raise StudioError(
+                "BUILD_ARTIFACT_INVALID",
+                "Bundle 含未在 Manifest 中声明的文件",
+                status_code=500,
+                details={"extraFiles": extra},
+            )
+        for entry in manifest.files:
+            file_path = actual.get(entry.path)
+            if file_path is None:
+                raise StudioError(
+                    "BUILD_ARTIFACT_INVALID",
+                    "Bundle 缺少 Manifest 声明的文件",
+                    status_code=500,
+                    details={"missingFile": entry.path},
+                )
+            content = file_path.read_bytes()
+            actual_sha = f"sha256:{hashlib.sha256(content).hexdigest()}"
+            if actual_sha != entry.sha256:
+                raise StudioError(
+                    "BUILD_ARTIFACT_INVALID",
+                    "Bundle 文件摘要不匹配",
+                    status_code=500,
+                    details={
+                        "path": entry.path,
+                        "expected": entry.sha256,
+                        "actual": actual_sha,
+                    },
+                )
+            if len(content) != entry.size:
+                raise StudioError(
+                    "BUILD_ARTIFACT_INVALID",
+                    "Bundle 文件大小不匹配",
+                    status_code=500,
+                    details={
+                        "path": entry.path,
+                        "expected": entry.size,
+                        "actual": len(content),
+                    },
+                )
 
 
 __all__ = ["FrameworkRunSpecResolver"]
