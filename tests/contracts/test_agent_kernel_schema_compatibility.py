@@ -10,6 +10,7 @@ import pytest
 CONTRACT_DIR = Path(__file__).resolve().parents[2] / "contracts" / "agent-kernel" / "v1"
 SCHEMA_FILES = [
     "agent-control.schema.json",
+    "interaction.schema.json",
     "session-event.schema.json",
     "activation-lease.schema.json",
     "runtime-capability.schema.json",
@@ -114,4 +115,6 @@ def _matching_schemas(fixture_name: str, data, schemas) -> list[str]:
         return ["runtime-capability.schema.json"]
     if fixture_name.startswith("agent-status"):
         return ["agent-control.schema.json"]
+    if fixture_name.startswith("interaction-"):
+        return ["interaction.schema.json"]
     return []

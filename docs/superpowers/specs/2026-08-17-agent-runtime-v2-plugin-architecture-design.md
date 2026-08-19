@@ -804,6 +804,16 @@ Phase 0 使用现有 RuntimeAdapter、Studio Bundle 和 AgentEngine 部署能力
 Kernel 与插件模型，不能要求尚未实现的 Plugin Host 成为 Phase 0 前置。Phase 3 依赖 Phase 0，Phase 4/5
 依赖 Phase 1 的 AgentControl 与 durable Session 语义。WPS 可以提前做本地 PoC，但不改变 Kernel 优先级。
 
+### 18.2.1 Interaction/v1 冻结补充（2026-08-19）
+
+Interaction 不是新的执行通道，而是同一 `SessionEvent` 流上的持久化等待/决议事实。公开
+`SubmitInteractionRequest` 仅包含 interaction ID、预期 revision、动作、响应与幂等键；Gateway
+认证后的 Server 准入负责附加 actor 与短期授权引用，Runtime 不接受浏览器携带 permit、checkpoint、
+secret 或框架 handle。`approval`、`structured_input`、`plan_review`、`custom` 是唯一 v1 kind；终态
+通过 `interaction.resolved`（含 rejected outcome）、`interaction.cancelled`、`interaction.expired`
+表达。A2UI 若存在，线协议固定 `0.9.1` 且必须携带 catalog digest 与 messages，无法校验时退回
+schema 表单，绝不将渲染失败解释成批准。
+
 Phase 0 使用“最小 AgentBundle v1”：只冻结 framework、runtime、entrypoint、artifact、digest、provenance
 和 capability snapshot。Phase 2 再以 additive 方式加入完整 PluginManifest、依赖图和 Inventory，不能反过来阻塞
 Phase 0 的部署纵切。

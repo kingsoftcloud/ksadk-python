@@ -9,7 +9,7 @@
     "session_id": {"type": "string", "minLength": 1},
     "seq": {"type": "integer", "minimum": 0},
     "timestamp": {"type": "string", "format": "date-time"},
-    "family": {"enum": ["control", "runtime", "workflow", "schedule", "job", "relationship"]},
+    "family": {"enum": ["control", "runtime", "interaction", "workflow", "schedule", "job", "relationship"]},
     "family_version": {"type": "integer", "minimum": 1},
     "event_type": {"type": "string", "minLength": 1},
     "payload": {"type": "object"},
@@ -30,6 +30,19 @@
     {
       "if": {"properties": {"family": {"const": "control"}}},
       "then": {"properties": {"family_version": {"const": 1}}}
+    },
+    {
+      "if": {"properties": {"family": {"const": "interaction"}}},
+      "then": {
+        "properties": {
+          "family_version": {"const": 1},
+          "event_type": {
+            "enum": [
+              "interaction.requested", "interaction.resolved", "interaction.cancelled", "interaction.expired"
+            ]
+          }
+        }
+      }
     }
   ]
 }

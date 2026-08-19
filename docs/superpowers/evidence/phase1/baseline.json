@@ -1,5 +1,15 @@
 {
   "schema_version": 1,
+  "interaction_v1_delivery": {
+    "ksadk_python": "bfd24805915d",
+    "agentengine_server": "7afc70aa6647",
+    "agentengine_gateway": "7840b093c498",
+    "agent_runtime_service": "59178fdc362d",
+    "agent_platform_operator": "26948cff87fd",
+    "ksadk_web_phase1": "f05f03983b66",
+    "ksadk_web_release_base": "b4e9f93",
+    "ksadk_web_target": "0.3.2"
+  },
   "repositories": [
     {
       "repo": "agent-platform-operator",
@@ -50,6 +60,6 @@
     "manifest_path": "docs/superpowers/evidence/phase0/manifest.json",
     "manifest_digest": null
   },
-  "contract_digest": null,
+  "contract_digest": "d4a66a7249e10375d32d6a83434fde1d16ee6721e3a09ea03ed71217ee742d62",
   "captured_at": "2026-08-17T15:31:00+00:00"
 }

@@ -7,6 +7,7 @@
     {"$ref": "#/$defs/agentControlCommand"},
     {"$ref": "#/$defs/agentControlPermit"},
     {"$ref": "#/$defs/agentControlReceipt"},
+    {"$ref": "#/$defs/interactionCommand"},
     {"$ref": "#/$defs/agentStatusQuery"},
     {"$ref": "#/$defs/sessionEventSubscription"},
     {"$ref": "#/$defs/agentStatusSnapshot"}
@@ -67,6 +68,38 @@
         "response": true
       },
       "required": ["run_id", "interaction_id", "token_ref", "response"]
+    },
+    "interactionCommand": {
+      "type": "object",
+      "properties": {
+        "schema_version": {"const": 1},
+        "command_id": {"type": "string", "format": "uuid"},
+        "tenant_id": {"type": "string", "minLength": 1},
+        "agent_instance_id": {"type": "string", "minLength": 1},
+        "session_id": {"type": "string", "minLength": 1},
+        "run_id": {"type": "string", "minLength": 1},
+        "interaction_id": {"type": "string", "minLength": 1},
+        "expected_revision": {"type": "integer", "minimum": 1},
+        "action": {"enum": ["approve", "reject", "submit", "cancel"]},
+        "response": true,
+        "idempotency_key": {"type": "string", "minLength": 1},
+        "actor": {
+          "type": "object",
+          "properties": {
+            "subject_ref": {"type": "string", "minLength": 1},
+            "kind": {"enum": ["user", "service", "system"]}
+          },
+          "required": ["subject_ref", "kind"],
+          "additionalProperties": false
+        },
+        "authorization_ref": {"type": "string", "minLength": 1}
+      },
+      "required": [
+        "schema_version", "command_id", "tenant_id", "agent_instance_id", "session_id",
+        "run_id", "interaction_id", "expected_revision", "action", "response",
+        "idempotency_key", "actor", "authorization_ref"
+      ],
+      "additionalProperties": false
     },
     "agentControlCommand": {
       "type": "object",

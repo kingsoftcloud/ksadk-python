@@ -27,6 +27,7 @@
     "inject": {"$ref": "#/$defs/runtimeCapability"},
     "checkpoint": {"$ref": "#/$defs/runtimeCapability"},
     "durable_restore": {"$ref": "#/$defs/runtimeCapability"}
+    ,"interaction_mode": {"enum": ["live_submit", "durable_resume", "unavailable"]}
   },
   "required": [
     "schema_version", "cancel", "pause", "resume", "submit_interaction",
