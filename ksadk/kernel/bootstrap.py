@@ -557,8 +557,10 @@ async def bootstrap_agent_kernel_runtime_from_env(
         store = InMemoryAgentKernelStore(session_events)
         nonce_store = None
 
+    agent_instance_id = os.environ.get("AGENT_INSTANCE_ID", "local-agent")
+    pod_uid = os.environ.get("POD_UID", "").strip()
     config = AgentKernelRuntimeConfig(
-        agent_instance_id=os.environ.get("AGENT_INSTANCE_ID", "local-agent"),
+        agent_instance_id=agent_instance_id,
         authority_mode=mode,
         driver=driver,
         dsn=dsn,
@@ -576,9 +578,10 @@ async def bootstrap_agent_kernel_runtime_from_env(
         launch_context=launch_context,
         pool=pool,
         owns_pool=owns_pool,
-        # Operator 通过 downward API 注入 POD_UID；hosted 少了它必须拒绝
-        # 启动，不能退回到所有副本共享的固定字符串。
-        activation_id=os.environ.get("POD_UID", "").strip() or None,
+        # Operator 通过 downward API 注入 POD_UID。与 stable instance id
+        # 组合才是 activation owner；hosted 少了它必须拒绝启动，不能退回到
+        # 所有副本共享的固定字符串。
+        activation_id=f"{agent_instance_id}:{pod_uid}" if pod_uid else None,
         lease_ttl_seconds=float(
             os.environ.get("AGENT_KERNEL_LEASE_TTL_SECONDS", "60") or "60"
         ),
