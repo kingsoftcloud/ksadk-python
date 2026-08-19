@@ -1,0 +1,166 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  annotations:
+    deployment.kubernetes.io/revision: "12"
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"apps/v1","kind":"Deployment","metadata":{"annotations":{},"labels":{"app":"agent-runtime-codex-kernel"},"name":"agent-runtime-codex-kernel","namespace":"agent-kernel-phase1"},"spec":{"replicas":1,"selector":{"matchLabels":{"app":"agent-runtime-codex-kernel"}},"template":{"metadata":{"labels":{"app":"agent-runtime-codex-kernel"}},"spec":{"containers":[{"env":[{"name":"AGENTENGINE_MANAGED_RUNTIME_NAME","value":"codex"},{"name":"AGENTENGINE_MANAGED_RUNTIME_VERSION","value":"0.147.0"},{"name":"AGENTENGINE_MANIFEST_PROTOCOL","value":"runtime-manifest/v1"},{"name":"AGENTENGINE_MANIFEST_SHA256","value":"c87147fa08b70733d29f00f5ab1bd30bda5453508a7b7a3fb4b905bc05fecb59"},{"name":"AGENT_KERNEL_ENABLED","value":"1"},{"name":"AGENT_KERNEL_STORE_DRIVER","value":"postgres"},{"name":"AGENT_KERNEL_STORE_DSN","valueFrom":{"secretKeyRef":{"key":"dsn","name":"agent-kernel-postgres"}}},{"name":"AGENT_INSTANCE_ID","value":"codex-kernel-1"},{"name":"AGENT_KERNEL_AUTHORITY_MODE","value":"hosted"},{"name":"AGENT_CONTROL_JWKS_URL","value":"http://agentengine-kernel.agent-kernel-phase1.svc.cluster.local:8081/agentengine/api/v1/agent-control/jwks"},{"name":"AGENT_CONTROL_PERMIT_ISSUER","value":"agentengine-server"},{"name":"AGENT_KERNEL_CONTRACT_DIGEST","value":"d4a66a7249e10375d32d6a83434fde1d16ee6721e3a09ea03ed71217ee742d62"},{"name":"AGENT_BUNDLE_DIGEST","value":"codex-0.147.0-kernel-phase1-805bcc5"},{"name":"AGENT_KERNEL_LEASE_TTL_SECONDS","value":"30"},{"name":"POD_UID","valueFrom":{"fieldRef":{"fieldPath":"metadata.uid"}}},{"name":"OPENAI_API_KEY","valueFrom":{"secretKeyRef":{"key":"OPENAI_API_KEY","name":"codex-model-creds"}}},{"name":"OPENAI_API_BASE","valueFrom":{"secretKeyRef":{"key":"OPENAI_API_BASE","name":"codex-model-creds"}}},{"name":"OPENAI_MODEL_NAME","valueFrom":{"secretKeyRef":{"key":"OPENAI_MODEL_NAME","name":"codex-model-creds"}}}],"image":"hub.kce.ksyun.com/agentengine/agent-runtime-codex:0.147.0-kernel-phase1-805bcc5","imagePullPolicy":"IfNotPresent","name":"runtime","ports":[{"containerPort":8080}],"readinessProbe":{"failureThreshold":60,"httpGet":{"path":"/health","port":8080},"initialDelaySeconds":10,"periodSeconds":5},"volumeMounts":[{"mountPath":"/app/code","name":"code"}]}],"initContainers":[{"command":["sh","-c","cp -L /manifest/* /app/code/"],"image":"hub.kce.ksyun.com/agentengine/agent-runtime-codex:0.147.0-kernel-phase1-805bcc5","imagePullPolicy":"IfNotPresent","name":"copy-manifest","volumeMounts":[{"mountPath":"/manifest","name":"manifest"},{"mountPath":"/app/code","name":"code"}]}],"volumes":[{"emptyDir":{},"name":"code"},{"configMap":{"name":"codex-kernel-manifest"},"name":"manifest"}]}}}}
+  creationTimestamp: "2026-08-19T09:47:25Z"
+  generation: 12
+  labels:
+    app: agent-runtime-codex-kernel
+  name: agent-runtime-codex-kernel
+  namespace: agent-kernel-phase1
+  resourceVersion: "275036932"
+  uid: f811c0aa-995d-4ce1-961c-b8e292184076
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: agent-runtime-codex-kernel
+  strategy:
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+    type: RollingUpdate
+  template:
+    metadata:
+      annotations:
+        kubectl.kubernetes.io/restartedAt: "2026-08-19T19:15:59+08:00"
+      creationTimestamp: null
+      labels:
+        app: agent-runtime-codex-kernel
+    spec:
+      containers:
+      - env:
+        - name: AGENTENGINE_MANAGED_RUNTIME_NAME
+          value: codex
+        - name: AGENTENGINE_MANAGED_RUNTIME_VERSION
+          value: 0.147.0
+        - name: AGENTENGINE_MANIFEST_PROTOCOL
+          value: runtime-manifest/v1
+        - name: AGENTENGINE_MANIFEST_SHA256
+          value: 01125e3c0cf13fc5cf2ccd671dd71e34feb927df02a4b4a0c4906dd5b9dbf35a
+        - name: AGENT_KERNEL_ENABLED
+          value: "1"
+        - name: AGENT_KERNEL_STORE_DRIVER
+          value: postgres
+        - name: AGENT_KERNEL_STORE_DSN
+          valueFrom:
+            secretKeyRef:
+              key: dsn
+              name: agent-kernel-postgres
+        - name: AGENT_INSTANCE_ID
+          value: codex-kernel-1
+        - name: AGENT_KERNEL_AUTHORITY_MODE
+          value: hosted
+        - name: AGENT_CONTROL_JWKS_URL
+          value: http://agentengine-kernel.agent-kernel-phase1.svc.cluster.local:8081/agentengine/api/v1/agent-control/jwks
+        - name: AGENT_CONTROL_PERMIT_ISSUER
+          value: agentengine-server
+        - name: AGENT_KERNEL_CONTRACT_DIGEST
+          value: d4a66a7249e10375d32d6a83434fde1d16ee6721e3a09ea03ed71217ee742d62
+        - name: AGENT_BUNDLE_DIGEST
+          value: codex-0.147.0-kernel-phase1-805bcc5
+        - name: AGENT_KERNEL_LEASE_TTL_SECONDS
+          value: "30"
+        - name: POD_UID
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.uid
+        - name: OPENAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              key: OPENAI_API_KEY
+              name: codex-model-creds
+        - name: OPENAI_API_BASE
+          valueFrom:
+            secretKeyRef:
+              key: OPENAI_API_BASE
+              name: codex-model-creds
+        - name: OPENAI_MODEL_NAME
+          valueFrom:
+            secretKeyRef:
+              key: OPENAI_MODEL_NAME
+              name: codex-model-creds
+        - name: KSADK_CODEX_USE_PROXY
+          value: "1"
+        image: hub.kce.ksyun.com/agentengine/agent-runtime-codex@sha256:c7e94f7a19ce73d60ef6cac820f02f8357cb237b10e107387e64f14d40cf4d31
+        imagePullPolicy: IfNotPresent
+        name: runtime
+        ports:
+        - containerPort: 8080
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 60
+          httpGet:
+            path: /health
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          successThreshold: 1
+          timeoutSeconds: 1
+        resources: {}
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /app/code
+          name: code
+      dnsPolicy: ClusterFirst
+      initContainers:
+      - command:
+        - sh
+        - -c
+        - cp -L /manifest/* /app/code/
+        env:
+        - name: KSADK_CODEX_USE_PROXY
+          value: "1"
+        - name: AGENTENGINE_MANIFEST_SHA256
+          value: 01125e3c0cf13fc5cf2ccd671dd71e34feb927df02a4b4a0c4906dd5b9dbf35a
+        image: hub.kce.ksyun.com/agentengine/agent-runtime-codex:0.147.0-kernel-phase1-805bcc5
+        imagePullPolicy: IfNotPresent
+        name: copy-manifest
+        resources: {}
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /manifest
+          name: manifest
+        - mountPath: /app/code
+          name: code
+      nodeSelector:
+        kubernetes.io/hostname: 10.0.2.11
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - emptyDir: {}
+        name: code
+      - configMap:
+          defaultMode: 420
+          name: codex-kernel-manifest
+        name: manifest
+status:
+  availableReplicas: 1
+  conditions:
+  - lastTransitionTime: "2026-08-19T09:47:25Z"
+    lastUpdateTime: "2026-08-19T11:16:15Z"
+    message: ReplicaSet "agent-runtime-codex-kernel-7c8997fb56" has successfully progressed.
+    reason: NewReplicaSetAvailable
+    status: "True"
+    type: Progressing
+  - lastTransitionTime: "2026-08-19T11:18:16Z"
+    lastUpdateTime: "2026-08-19T11:18:16Z"
+    message: Deployment has minimum availability.
+    reason: MinimumReplicasAvailable
+    status: "True"
+    type: Available
+  observedGeneration: 12
+  readyReplicas: 1
+  replicas: 1
+  updatedReplicas: 1
