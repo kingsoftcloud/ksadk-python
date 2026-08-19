@@ -15,6 +15,22 @@ from typing import Any
 from uuid import uuid4
 
 from ksadk.events.session_event import SessionEventStore
+from ksadk.interaction.contracts import (
+    InteractionRecord,
+    InteractionReceipt,
+    InteractionSubmission,
+    is_terminal,
+)
+from ksadk.interaction.ledger import (
+    ALREADY_RESOLVED,
+    REVISION_MISMATCH,
+    REQUEST_CONFLICT,
+    interaction_event,
+    request_digest,
+    requested_event_payload,
+    resolve_outcome,
+    submission_digest,
+)
 from ksadk.kernel.contracts import (
     ActivationLease,
     ActivationWriteGuard,
@@ -51,6 +67,9 @@ class InMemoryAgentKernelStore:
         self._accepted_seq: dict[str, int] = {}
         self._activations: dict[tuple[str, str], dict[str, Any]] = {}
         self._runs: dict[str, RunRecord] = {}
+        # Interaction ledger（Task 5）：(tenant_id, interaction_id) -> row。
+        self._interactions: dict[tuple[str, str], dict[str, Any]] = {}
+        self._interaction_submissions: dict[tuple[str, str, str], dict[str, Any]] = {}
 
     # ------------------------------------------------------------------ locks
 
@@ -538,6 +557,249 @@ class InMemoryAgentKernelStore:
                 ),
                 activation_row=activation,
             )
+
+    # -------------------------------------------------------------- interactions
+
+    def _check_interaction_guard(
+        self, agent_instance_id: str, session_id: str, guard: ActivationWriteGuard
+    ) -> dict[str, Any]:
+        """Interaction 台账的 fence CAS：guard 必须命中当前未过期 lease。"""
+
+        row = next(
+            (
+                candidate
+                for candidate in self._activations.values()
+                if candidate["activation_id"] == guard.activation_id
+            ),
+            None,
+        )
+        if (
+            row is None
+            or row.get("released")
+            or self._lease_expired(row)
+            or row["fencing_token"] != int(guard.fencing_token)
+            or row["agent_instance_id"] != agent_instance_id
+            or row["session_id"] != session_id
+        ):
+            raise StaleFenceError(
+                "interaction write guard does not match the current lease",
+                details={
+                    "activation_id": guard.activation_id,
+                    "fencing_token": int(guard.fencing_token),
+                    "session_id": session_id,
+                },
+            )
+        return row
+
+    def _find_interaction(self, interaction_id: str) -> dict[str, Any] | None:
+        return next(
+            (
+                row
+                for (tenant, key), row in self._interactions.items()
+                if key == interaction_id
+            ),
+            None,
+        )
+
+    @staticmethod
+    def _terminal_conflict(interaction_id: str, status: str) -> InvalidCommandError:
+        return InvalidCommandError(
+            f"interaction {interaction_id!r} already reached terminal status {status!r}",
+            details={"reason": ALREADY_RESOLVED, "interaction_id": interaction_id},
+        )
+
+    async def request(
+        self, record: InteractionRecord, *, guard: ActivationWriteGuard
+    ) -> InteractionRecord:
+        async with self._lock(record.agent_instance_id, record.session_id):
+            self._check_interaction_guard(
+                record.agent_instance_id, record.session_id, guard
+            )
+            key = (record.tenant_id, record.interaction_id)
+            existing = self._interactions.get(key)
+            digest = request_digest(record)
+            if existing is not None:
+                if existing["request_digest"] != digest:
+                    raise InvalidCommandError(
+                        "interaction_id reused with a different request digest",
+                        details={
+                            "reason": REQUEST_CONFLICT,
+                            "interaction_id": record.interaction_id,
+                        },
+                    )
+                return existing["record"]
+            # persist-before-ack：事件追加失败时不留下 pending 行。
+            await self._events.append(
+                requested_event_payload(record, now_iso()), guard=guard
+            )
+            self._interactions[key] = {"record": record, "request_digest": digest}
+            return record
+
+    async def resolve(
+        self, submission: InteractionSubmission, *, guard: ActivationWriteGuard
+    ) -> InteractionReceipt:
+        row = self._find_interaction(submission.interaction_id)
+        if row is None:
+            raise InvalidCommandError(
+                f"unknown interaction_id {submission.interaction_id!r}"
+            )
+        record = row["record"]
+        async with self._lock(record.agent_instance_id, record.session_id):
+            self._check_interaction_guard(
+                record.agent_instance_id, record.session_id, guard
+            )
+            fresh = self._interactions[(record.tenant_id, record.interaction_id)]
+            current: InteractionRecord = fresh["record"]
+            if is_terminal(current.status):
+                sub_key = (
+                    current.tenant_id,
+                    current.interaction_id,
+                    submission.idempotency_key,
+                )
+                existing_sub = self._interaction_submissions.get(sub_key)
+                if (
+                    existing_sub is not None
+                    and existing_sub["digest"] == submission_digest(submission)
+                ):
+                    return existing_sub["receipt"]
+                raise self._terminal_conflict(
+                    current.interaction_id, current.status
+                )
+            if current.revision != submission.expected_revision:
+                raise InvalidCommandError(
+                    "interaction revision does not match expected_revision",
+                    details={
+                        "reason": REVISION_MISMATCH,
+                        "interaction_id": current.interaction_id,
+                        "expected_revision": submission.expected_revision,
+                        "current_revision": current.revision,
+                    },
+                )
+            outcome = resolve_outcome(submission.action)
+            updated = current.model_copy(
+                update={
+                    "status": "resolved",
+                    "revision": current.revision + 1,
+                }
+            )
+            stored = await self._events.append(
+                interaction_event(
+                    updated,
+                    event_type="interaction.resolved",
+                    timestamp=now_iso(),
+                    outcome=outcome,
+                    response=submission.response,
+                    actor_ref="user",
+                ),
+                guard=guard,
+            )
+            receipt = InteractionReceipt(
+                interaction_id=updated.interaction_id,
+                revision=updated.revision,
+                status="resolved",
+                outcome=outcome,  # type: ignore[arg-type]
+                event_id=stored.event_id,
+                accepted_seq=stored.seq,
+            )
+            fresh["record"] = updated
+            self._interaction_submissions[
+                (updated.tenant_id, updated.interaction_id, submission.idempotency_key)
+            ] = {"digest": submission_digest(submission), "receipt": receipt}
+            return receipt
+
+    async def _terminal_command(
+        self,
+        interaction_id: str,
+        expected_revision: int,
+        *,
+        guard: ActivationWriteGuard,
+        status: str,
+        reason: str,
+    ) -> InteractionReceipt:
+        row = self._find_interaction(interaction_id)
+        if row is None:
+            raise InvalidCommandError(f"unknown interaction_id {interaction_id!r}")
+        record = row["record"]
+        async with self._lock(record.agent_instance_id, record.session_id):
+            self._check_interaction_guard(
+                record.agent_instance_id, record.session_id, guard
+            )
+            fresh = self._interactions[(record.tenant_id, record.interaction_id)]
+            current: InteractionRecord = fresh["record"]
+            if is_terminal(current.status):
+                raise self._terminal_conflict(current.interaction_id, current.status)
+            if current.revision != expected_revision:
+                raise InvalidCommandError(
+                    "interaction revision does not match expected_revision",
+                    details={
+                        "reason": REVISION_MISMATCH,
+                        "interaction_id": current.interaction_id,
+                        "expected_revision": expected_revision,
+                        "current_revision": current.revision,
+                    },
+                )
+            updated = current.model_copy(
+                update={"status": status, "revision": current.revision + 1}
+            )
+            event_type = (
+                "interaction.cancelled" if status == "cancelled" else "interaction.expired"
+            )
+            stored = await self._events.append(
+                interaction_event(
+                    updated,
+                    event_type=event_type,
+                    timestamp=now_iso(),
+                    reason=reason,
+                ),
+                guard=guard,
+            )
+            receipt = InteractionReceipt(
+                interaction_id=updated.interaction_id,
+                revision=updated.revision,
+                status=updated.status,  # type: ignore[arg-type]
+                outcome=updated.status,  # type: ignore[arg-type]
+                event_id=stored.event_id,
+                accepted_seq=stored.seq,
+            )
+            fresh["record"] = updated
+            return receipt
+
+    async def cancel(
+        self, interaction_id: str, expected_revision: int, *, guard: ActivationWriteGuard
+    ) -> InteractionReceipt:
+        return await self._terminal_command(
+            interaction_id,
+            expected_revision,
+            guard=guard,
+            status="cancelled",
+            reason="cancelled by owner",
+        )
+
+    async def expire(
+        self, interaction_id: str, expected_revision: int, *, guard: ActivationWriteGuard
+    ) -> InteractionReceipt:
+        return await self._terminal_command(
+            interaction_id,
+            expected_revision,
+            guard=guard,
+            status="expired",
+            reason="interaction expired",
+        )
+
+    async def get(self, interaction_id: str) -> InteractionRecord | None:
+        row = self._find_interaction(interaction_id)
+        return row["record"] if row is not None else None
+
+    async def list_pending_interactions(
+        self, tenant_id: str, session_id: str
+    ) -> list[InteractionRecord]:
+        return [
+            row["record"]
+            for (tenant, _), row in sorted(self._interactions.items())
+            if tenant == tenant_id
+            and row["record"].session_id == session_id
+            and row["record"].status == "pending"
+        ]
 
     # ------------------------------------------------------------- activations
 

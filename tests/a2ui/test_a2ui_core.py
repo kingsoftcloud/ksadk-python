@@ -160,3 +160,103 @@ def test_pinned_a2ui_core_version():
     from ksadk.a2ui.models import A2UI_CORE_VERSION
 
     assert A2UI_CORE_VERSION == "0.1.1"
+
+
+# ------------------------------------------------- Phase 1 Task 5 Step 6
+
+
+async def _kernel_backed_core():
+    """A2UICore + InMemoryAgentKernelStore ledger(durable interaction 权威)。"""
+    from ksadk.events.session_event import SessionServiceEventStore
+    from ksadk.kernel.contracts import ActivationWriteGuard
+    from ksadk.kernel.memory_store import InMemoryAgentKernelStore
+    from ksadk.kernel.store import ActivationLeaseRequest
+
+    svc = InMemorySessionService()
+    await svc.create_session(agent_id="a", user_id="u", session_id="s1")
+    kernel = InMemoryAgentKernelStore(SessionServiceEventStore(svc))
+    lease = await kernel.acquire_activation(
+        ActivationLeaseRequest(
+            agent_instance_id="a", session_id="s1", activation_id="act-a2ui"
+        )
+    )
+    guard = ActivationWriteGuard(
+        activation_id=lease.activation_id, fencing_token=lease.fencing_token
+    )
+    store = RuntimeEventStore(svc)
+    core = A2UICore(
+        store,
+        agent_id="a",
+        user_id="u",
+        session_id="s1",
+        interaction_ledger=kernel,
+        interaction_guard=guard,
+    )
+    return core, store, kernel
+
+
+@pytest.mark.asyncio
+async def test_request_ui_input_delegates_to_ledger():
+    core, store, kernel = await _kernel_backed_core()
+    interaction = await core.request_ui_input(
+        _form_surface(),
+        schema={"type": "object"},
+        kind="form",
+        invocation_id="inv1",
+    )
+    record = await kernel.get(interaction.interaction_id)
+    assert record is not None
+    assert record.status == "pending"
+    assert record.session_id == "s1"
+    assert record.run_id == "inv1"
+    assert [r.interaction_id for r in await kernel.list_pending_interactions("default", "s1")] == [
+        interaction.interaction_id
+    ]
+
+
+@pytest.mark.asyncio
+async def test_submit_action_resolves_original_interaction_without_second_requested():
+    core, store, kernel = await _kernel_backed_core()
+    interaction = await core.request_ui_input(
+        _form_surface(), schema={}, kind="form", invocation_id="inv1"
+    )
+    receipt = await core.submit_action(
+        {
+            "action_id": "act1",
+            "surface_id": interaction.surface_id,
+            "name": "submit",
+            "actor": "user",
+            "interaction_id": interaction.interaction_id,
+        },
+        invocation_id="inv1",
+    )
+    assert receipt.status == "resolved"
+
+    record = await kernel.get(interaction.interaction_id)
+    assert record is not None and record.status == "resolved"
+    assert record.revision == 2
+
+    # durable 路径不再发第二个 InteractionRequested。
+    requested = [
+        e
+        for e in await store.list("s1")
+        if isinstance(e, InteractionRequested)
+    ]
+    assert len(requested) == 1  # 只有 request_ui_input 的那一条
+    # pending 视图同步收口。
+    assert core.pending_interaction(interaction.interaction_id).status == "resolved"
+
+
+@pytest.mark.asyncio
+async def test_submit_action_without_interaction_id_keeps_legacy_path():
+    core, store, kernel = await _kernel_backed_core()
+    await core.display_ui(_card_surface(), invocation_id="inv1")
+    receipt = await core.submit_action(
+        {"action_id": "act1", "surface_id": "surf_x", "name": "refresh"},
+        invocation_id="inv2",
+    )
+    assert receipt.status == "received"
+    action_events = [
+        e for e in await store.list("s1") if isinstance(e, InteractionRequested)
+    ]
+    assert len(action_events) == 1

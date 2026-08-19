@@ -222,6 +222,7 @@ class SessionEventEnvelope(WireModel):
     timestamp: str
     family: Literal[
         "control", "runtime", "workflow", "schedule", "job", "relationship",
+        "interaction",
     ]
     family_version: int
     event_type: str
@@ -233,7 +234,7 @@ class SessionEventEnvelope(WireModel):
 
     @model_validator(mode="after")
     def _validate_family_version(self) -> "SessionEventEnvelope":
-        expected = {"control": 1, "runtime": 2}.get(self.family)
+        expected = {"control": 1, "runtime": 2, "interaction": 1}.get(self.family)
         if expected is not None and self.family_version != expected:
             raise ValueError(
                 f"family {self.family} requires family_version {expected}, got {self.family_version}"

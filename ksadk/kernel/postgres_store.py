@@ -30,6 +30,22 @@ from ksadk.events.session_event import (
     session_event_to_envelope,
     validate_write_guard,
 )
+from ksadk.interaction.contracts import (
+    InteractionRecord,
+    InteractionReceipt,
+    InteractionSubmission,
+    is_terminal,
+)
+from ksadk.interaction.ledger import (
+    ALREADY_RESOLVED,
+    REVISION_MISMATCH,
+    REQUEST_CONFLICT,
+    interaction_event,
+    request_digest,
+    requested_event_payload,
+    resolve_outcome,
+    submission_digest,
+)
 from ksadk.kernel.contracts import (
     ActivationLease,
     ActivationWriteGuard,
@@ -78,6 +94,15 @@ ACTIVATION_FOR_SHARE_SQL = (
 
 def _now() -> datetime:
     return datetime.now(UTC)
+
+
+def _parse_ts(value: str | None):
+    if value is None:
+        return None
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed
 
 
 class PostgresKernelEventLog:
@@ -309,6 +334,7 @@ class PostgresAgentKernelStore:
             await connection.execute(
                 "DELETE FROM kernel_inbox; DELETE FROM kernel_runs;"
                 " DELETE FROM kernel_activations; DELETE FROM kernel_accepted_seq;"
+                " DELETE FROM kernel_interactions; DELETE FROM kernel_interaction_submissions;"
                 " DELETE FROM ksadk_events WHERE namespace = 'default';"
             )
 
@@ -877,6 +903,375 @@ class PostgresAgentKernelStore:
                     activation,
                     expected_fence,
                 )
+
+    # -------------------------------------------------------------- interactions
+
+    async def _assert_interaction_guard(
+        self, connection: Any, agent_instance_id: str, session_id: str, guard: Any
+    ) -> dict[str, Any]:
+        row = await connection.fetchrow(
+            "SELECT activation_id, agent_instance_id, session_id, fencing_token,"
+            " lease_expires_at, released FROM kernel_activations"
+            " WHERE activation_id = $1 FOR SHARE",
+            guard.activation_id,
+        )
+        if (
+            row is None
+            or row["released"]
+            or row["lease_expires_at"] <= _now()
+            or int(row["fencing_token"]) != int(guard.fencing_token)
+            or row["agent_instance_id"] != agent_instance_id
+            or row["session_id"] != session_id
+        ):
+            raise StaleFenceError(
+                "interaction write guard does not match the current lease",
+                details={
+                    "activation_id": guard.activation_id,
+                    "fencing_token": int(guard.fencing_token),
+                    "session_id": session_id,
+                },
+            )
+        return dict(row)
+
+    @staticmethod
+    def _interaction_row_to_record(row: Any) -> InteractionRecord:
+        from ksadk.interaction.contracts import InteractionPresentation
+
+        presentation = None
+        if row["presentation"] is not None:
+            presentation = InteractionPresentation.model_validate(
+                json.loads(row["presentation"])
+            )
+        return InteractionRecord(
+            interaction_id=row["interaction_id"],
+            tenant_id=row["tenant_id"],
+            agent_instance_id=row["agent_instance_id"],
+            session_id=row["session_id"],
+            run_id=row["run_id"],
+            kind=row["kind"],
+            request_schema=json.loads(row["request_schema"]),
+            revision=int(row["revision"]),
+            status=row["status"],
+            created_at=row["created_at"].isoformat(),
+            expires_at=(
+                row["expires_at"].isoformat() if row["expires_at"] is not None else None
+            ),
+            presentation=presentation,
+            provider_id=row["provider_id"] or "",
+            native_target=(
+                json.loads(row["native_target"])
+                if row["native_target"] is not None
+                else None
+            ),
+            continuation_metadata=(
+                json.loads(row["continuation_metadata"])
+                if row["continuation_metadata"] is not None
+                else None
+            ),
+        )
+
+    async def request(
+        self, record: InteractionRecord, *, guard: Any
+    ) -> InteractionRecord:
+        digest = request_digest(record)
+        async with self._connection() as connection:
+            async with connection.transaction():
+                await self._assert_interaction_guard(
+                    connection, record.agent_instance_id, record.session_id, guard
+                )
+                existing = await connection.fetchrow(
+                    "SELECT * FROM kernel_interactions"
+                    " WHERE tenant_id=$1 AND interaction_id=$2",
+                    record.tenant_id,
+                    record.interaction_id,
+                )
+                if existing is not None:
+                    if existing["request_digest"] != digest:
+                        raise InvalidCommandError(
+                            "interaction_id reused with a different request digest",
+                            details={
+                                "reason": REQUEST_CONFLICT,
+                                "interaction_id": record.interaction_id,
+                            },
+                        )
+                    return self._interaction_row_to_record(existing)
+                await connection.execute(
+                    """
+                    INSERT INTO kernel_interactions (
+                        interaction_id, tenant_id, agent_instance_id, session_id,
+                        run_id, kind, request_schema, presentation, revision, status,
+                        created_at, expires_at, provider_id, native_target,
+                        continuation_metadata, request_digest, updated_at
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, 'pending',
+                        $10::timestamptz, $11::timestamptz, $12, $13::jsonb,
+                        $14::jsonb, $15, now()
+                    )
+                    """,
+                    record.interaction_id,
+                    record.tenant_id,
+                    record.agent_instance_id,
+                    record.session_id,
+                    record.run_id,
+                    record.kind,
+                    json.dumps(record.request_schema, ensure_ascii=False),
+                    (
+                        record.presentation.model_dump_json()
+                        if record.presentation is not None
+                        else None
+                    ),
+                    record.revision,
+                    _parse_ts(record.created_at),
+                    _parse_ts(record.expires_at),
+                    record.provider_id,
+                    (
+                        json.dumps(record.native_target, ensure_ascii=False)
+                        if record.native_target is not None
+                        else None
+                    ),
+                    (
+                        json.dumps(record.continuation_metadata, ensure_ascii=False)
+                        if record.continuation_metadata is not None
+                        else None
+                    ),
+                    digest,
+                )
+                # requested 事件与 pending 行同一事务：commit 前被 kill 无半状态。
+                await self._events.append_on(
+                    connection, requested_event_payload(record, now_iso()), guard
+                )
+        return record
+
+    async def resolve(
+        self, submission: InteractionSubmission, *, guard: Any
+    ) -> InteractionReceipt:
+        sub_digest = submission_digest(submission)
+        async with self._connection() as connection:
+            async with connection.transaction():
+                row = await connection.fetchrow(
+                    "SELECT * FROM kernel_interactions WHERE interaction_id=$1"
+                    " FOR UPDATE",
+                    submission.interaction_id,
+                )
+                if row is None:
+                    raise InvalidCommandError(
+                        f"unknown interaction_id {submission.interaction_id!r}"
+                    )
+                await self._assert_interaction_guard(
+                    connection, row["agent_instance_id"], row["session_id"], guard
+                )
+                current = self._interaction_row_to_record(row)
+                if is_terminal(current.status):
+                    existing_sub = await connection.fetchrow(
+                        "SELECT submission_digest, receipt FROM"
+                        " kernel_interaction_submissions WHERE tenant_id=$1"
+                        " AND interaction_id=$2 AND idempotency_key=$3",
+                        current.tenant_id,
+                        current.interaction_id,
+                        submission.idempotency_key,
+                    )
+                    if (
+                        existing_sub is not None
+                        and existing_sub["submission_digest"] == sub_digest
+                    ):
+                        return InteractionReceipt.model_validate(
+                            json.loads(existing_sub["receipt"])
+                        )
+                    raise InvalidCommandError(
+                        f"interaction already reached terminal status"
+                        f" {current.status!r}",
+                        details={
+                            "reason": ALREADY_RESOLVED,
+                            "interaction_id": current.interaction_id,
+                        },
+                    )
+                if current.revision != submission.expected_revision:
+                    raise InvalidCommandError(
+                        "interaction revision does not match expected_revision",
+                        details={
+                            "reason": REVISION_MISMATCH,
+                            "interaction_id": current.interaction_id,
+                            "expected_revision": submission.expected_revision,
+                            "current_revision": current.revision,
+                        },
+                    )
+                outcome = resolve_outcome(submission.action)
+                updated = current.model_copy(
+                    update={"status": "resolved", "revision": current.revision + 1}
+                )
+                stored = await self._events.append_on(
+                    connection,
+                    interaction_event(
+                        updated,
+                        event_type="interaction.resolved",
+                        timestamp=now_iso(),
+                        outcome=outcome,
+                        response=submission.response,
+                        actor_ref="user",
+                    ),
+                    guard,
+                )
+                receipt = InteractionReceipt(
+                    interaction_id=updated.interaction_id,
+                    revision=updated.revision,
+                    status="resolved",
+                    outcome=outcome,  # type: ignore[arg-type]
+                    event_id=str(stored.event_id),
+                    accepted_seq=stored.seq,
+                )
+                await connection.execute(
+                    "UPDATE kernel_interactions SET revision=$1, status='resolved',"
+                    " response=$2::jsonb, outcome=$3, actor=$4, event_id=$5::uuid,"
+                    " accepted_seq=$6, fencing_token=$7, updated_at=now()"
+                    " WHERE tenant_id=$8 AND interaction_id=$9",
+                    updated.revision,
+                    json.dumps(submission.response, ensure_ascii=False),
+                    outcome,
+                    "user",
+                    str(stored.event_id),
+                    stored.seq,
+                    int(guard.fencing_token),
+                    updated.tenant_id,
+                    updated.interaction_id,
+                )
+                await connection.execute(
+                    "INSERT INTO kernel_interaction_submissions (tenant_id,"
+                    " interaction_id, idempotency_key, submission_digest, receipt)"
+                    " VALUES ($1, $2, $3, $4, $5::jsonb) ON CONFLICT DO NOTHING",
+                    updated.tenant_id,
+                    updated.interaction_id,
+                    submission.idempotency_key,
+                    sub_digest,
+                    receipt.model_dump_json(),
+                )
+        return receipt
+
+    async def _terminal_command(
+        self,
+        interaction_id: str,
+        expected_revision: int,
+        *,
+        guard: Any,
+        status: str,
+        reason: str,
+    ) -> InteractionReceipt:
+        async with self._connection() as connection:
+            async with connection.transaction():
+                row = await connection.fetchrow(
+                    "SELECT * FROM kernel_interactions WHERE interaction_id=$1"
+                    " FOR UPDATE",
+                    interaction_id,
+                )
+                if row is None:
+                    raise InvalidCommandError(
+                        f"unknown interaction_id {interaction_id!r}"
+                    )
+                await self._assert_interaction_guard(
+                    connection, row["agent_instance_id"], row["session_id"], guard
+                )
+                current = self._interaction_row_to_record(row)
+                if is_terminal(current.status):
+                    raise InvalidCommandError(
+                        f"interaction already reached terminal status"
+                        f" {current.status!r}",
+                        details={
+                            "reason": ALREADY_RESOLVED,
+                            "interaction_id": current.interaction_id,
+                        },
+                    )
+                if current.revision != expected_revision:
+                    raise InvalidCommandError(
+                        "interaction revision does not match expected_revision",
+                        details={
+                            "reason": REVISION_MISMATCH,
+                            "interaction_id": current.interaction_id,
+                            "expected_revision": expected_revision,
+                            "current_revision": current.revision,
+                        },
+                    )
+                updated = current.model_copy(
+                    update={"status": status, "revision": current.revision + 1}
+                )
+                event_type = (
+                    "interaction.cancelled"
+                    if status == "cancelled"
+                    else "interaction.expired"
+                )
+                stored = await self._events.append_on(
+                    connection,
+                    interaction_event(
+                        updated,
+                        event_type=event_type,
+                        timestamp=now_iso(),
+                        reason=reason,
+                    ),
+                    guard,
+                )
+                receipt = InteractionReceipt(
+                    interaction_id=updated.interaction_id,
+                    revision=updated.revision,
+                    status=updated.status,  # type: ignore[arg-type]
+                    outcome=updated.status,  # type: ignore[arg-type]
+                    event_id=str(stored.event_id),
+                    accepted_seq=stored.seq,
+                )
+                await connection.execute(
+                    "UPDATE kernel_interactions SET revision=$1, status=$2,"
+                    " outcome=$3, event_id=$4::uuid, accepted_seq=$5,"
+                    " fencing_token=$6, updated_at=now()"
+                    " WHERE tenant_id=$7 AND interaction_id=$8",
+                    updated.revision,
+                    status,
+                    status,
+                    str(stored.event_id),
+                    stored.seq,
+                    int(guard.fencing_token),
+                    updated.tenant_id,
+                    updated.interaction_id,
+                )
+        return receipt
+
+    async def cancel(
+        self, interaction_id: str, expected_revision: int, *, guard: Any
+    ) -> InteractionReceipt:
+        return await self._terminal_command(
+            interaction_id,
+            expected_revision,
+            guard=guard,
+            status="cancelled",
+            reason="cancelled by owner",
+        )
+
+    async def expire(
+        self, interaction_id: str, expected_revision: int, *, guard: Any
+    ) -> InteractionReceipt:
+        return await self._terminal_command(
+            interaction_id,
+            expected_revision,
+            guard=guard,
+            status="expired",
+            reason="interaction expired",
+        )
+
+    async def get(self, interaction_id: str) -> InteractionRecord | None:
+        async with self._connection() as connection:
+            row = await connection.fetchrow(
+                "SELECT * FROM kernel_interactions WHERE interaction_id=$1 LIMIT 1",
+                interaction_id,
+            )
+        return self._interaction_row_to_record(row) if row is not None else None
+
+    async def list_pending_interactions(
+        self, tenant_id: str, session_id: str
+    ) -> list[InteractionRecord]:
+        async with self._connection() as connection:
+            rows = await connection.fetch(
+                "SELECT * FROM kernel_interactions WHERE tenant_id=$1 AND session_id=$2"
+                " AND status='pending' ORDER BY created_at",
+                tenant_id,
+                session_id,
+            )
+        return [self._interaction_row_to_record(row) for row in rows]
 
     # ------------------------------------------------------------- activations
 
