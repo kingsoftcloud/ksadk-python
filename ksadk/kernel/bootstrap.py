@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -168,6 +169,11 @@ class AgentKernelReadiness:
             if lease is None:
                 lease_healthy = False
                 continue
+            if lease.activation_id != self.runtime.lease_heartbeat.activation_id:
+                # lease 存在但已被其它 activation 接管：对本 runtime 而言
+                # 等价于丢失，必须如实上报 not-ready。
+                lease_healthy = False
+                continue
             activation_id = activation_id or lease.activation_id
             expires = getattr(lease, "lease_expires_at", "")
             try:
@@ -228,6 +234,7 @@ class AgentKernelRuntime:
         self._tasks: list[asyncio.Task] = []
         self._worker_running = False
         self._heartbeat_sessions: set[str] = set()
+        self._last_renewed: dict[str, float] = {}
         self._degraded = False
 
     # ------------------------------------------------------------ properties
@@ -282,6 +289,7 @@ class AgentKernelRuntime:
                 pass
             self.lease_heartbeat.forget(session_id)
         self._heartbeat_sessions.clear()
+        self._last_renewed.clear()
         if self._owns_pool and self._pool is not None and hasattr(self._pool, "close"):
             try:
                 await self._pool.close()
@@ -294,6 +302,9 @@ class AgentKernelRuntime:
         self._worker_running = True
         try:
             while True:
+                await self._renew_leased_sessions()
+                if self._degraded:
+                    return
                 progressed = False
                 try:
                     sessions = await self._pending_sessions()
@@ -304,6 +315,7 @@ class AgentKernelRuntime:
                         if lease is None:
                             continue
                         self._heartbeat_sessions.add(session_id)
+                        self._last_renewed[session_id] = time.monotonic()
                         if took_over:
                             # takeover：对 open run 做确定性收口（attach /
                             # resume / interrupted），再继续消费 inbox。
@@ -327,6 +339,41 @@ class AgentKernelRuntime:
                     await asyncio.sleep(self.config.poll_interval)
         finally:
             self._worker_running = False
+
+    async def _renew_leased_sessions(self) -> None:
+        """P0：已持有 lease 的 session 在固定间隔上持续续约。
+
+        之前续约只发生在有 pending inbox 工作（accepted/claimed 消息）时，
+        run 完成 / 等待审批的 session 不再续约但留在 heartbeat 集合里，
+        lease TTL 过后 readiness 误判 not-ready（预发需重启 pod 才恢复）。
+        readiness 语义应是 "runtime 存活且能服务"，不是 "正在忙"：只要
+        activation lease 仍由本 runtime 持有，就以 TTL/3 的节奏幂等续约。
+        """
+
+        interval = max(
+            self.config.lease_ttl_seconds / 3.0, self.config.poll_interval
+        )
+        now = time.monotonic()
+        for session_id in sorted(self._heartbeat_sessions):
+            if now - self._last_renewed.get(session_id, 0.0) < interval:
+                continue
+            self._last_renewed[session_id] = now
+            try:
+                lease, took_over = await self.lease_heartbeat.ensure_lease(
+                    session_id
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # 瞬时 store 错误：保留 session，下个续约周期重试。
+                continue
+            if lease is None:
+                # lease 被其它 activation 持有（真正丢失）：保留在集合里，
+                # readiness 如实上报 not-ready。
+                continue
+            if took_over and not await self._recover_safely(lease):
+                self._degraded = True
+                return
 
     async def _recover_safely(self, lease) -> bool:
         """takeover 后的安全恢复：失败必须持久化收口或显式降级。

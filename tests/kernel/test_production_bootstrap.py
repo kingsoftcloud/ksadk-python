@@ -137,6 +137,80 @@ async def test_bootstrap_readiness_reports_real_health():
         await runtime.close()
 
 
+async def test_readiness_stays_ready_across_idle_lease_ttl():
+    """P0：run 完成 / 等待审批（无 pending inbox 工作）期间心跳必须持续续约。
+
+    readiness 语义是 "runtime 存活且能服务"，不是 "正在忙"：lease TTL
+    过后只要 runtime 仍持有 activation，health 必须仍然 ready。"""
+
+    stack, runtime = await _runtime(lease_ttl_seconds=0.4, poll_interval=0.01)
+    try:
+        await runtime.start()
+        await stack.kernel.submit(
+            command(idempotency_key="idle-ttl-1"), permit=stack.permit("enqueue")
+        )
+        for _ in range(500):
+            if stack.adapter.calls.count(("start", "s1")) >= 1:
+                break
+            await asyncio.sleep(0.01)
+        assert stack.adapter.calls.count(("start", "s1")) == 1
+        # 空闲超过 3×TTL：心跳续约必须把 lease 一直顶在 TTL 窗口内。
+        await asyncio.sleep(1.2)
+        assert runtime.heartbeat_sessions() == {"s1"}
+        health = await runtime.readiness.check()
+        assert health["lease_healthy"] is True
+        assert health["ready"] is True
+        lease = await stack.store.current_lease(AGENT, "s1")
+        assert lease is not None
+        assert lease.activation_id == "kernel-pod-test"
+    finally:
+        await runtime.close()
+
+
+async def test_readiness_flips_not_ready_when_lease_truly_lost():
+    """lease 被其它 activation 接管（真正丢失）后必须 not-ready。"""
+
+    stack, runtime = await _runtime(lease_ttl_seconds=0.4, poll_interval=0.01)
+    try:
+        await runtime.start()
+        await stack.kernel.submit(
+            command(idempotency_key="lost-lease-1"), permit=stack.permit("enqueue")
+        )
+        for _ in range(500):
+            if stack.adapter.calls.count(("start", "s1")) >= 1:
+                break
+            await asyncio.sleep(0.01)
+        health = await runtime.readiness.check()
+        assert health["ready"] is True
+
+        # 模拟本 pod 失联后的 takeover：release 旧 lease，另一 activation 接管。
+        from ksadk.kernel.store import ActivationLeaseRequest
+
+        held = await stack.store.current_lease(AGENT, "s1")
+        assert held is not None
+        await stack.store.release_activation(
+            held.activation_id, expected_fence=held.fencing_token
+        )
+        await stack.store.acquire_activation(
+            ActivationLeaseRequest(
+                session_id="s1",
+                agent_instance_id=AGENT,
+                activation_id="kernel-pod-other",
+                runtime_type="ksadk-agent-kernel",
+                bundle_digest=BUNDLE_DIGEST,
+                capability_digest=CAPABILITY_DIGEST,
+                lease_ttl_seconds=60.0,
+            )
+        )
+        # 等待至少一次心跳续约周期 + readiness 判定。
+        await asyncio.sleep(0.3)
+        health = await runtime.readiness.check()
+        assert health["lease_healthy"] is False
+        assert health["ready"] is False
+    finally:
+        await runtime.close()
+
+
 async def test_bootstrap_close_stops_every_background_task():
     stack, runtime = await _runtime()
     await runtime.start()
