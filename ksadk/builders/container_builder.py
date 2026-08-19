@@ -564,6 +564,7 @@ runtime_context = RuntimeLaunchContext(
 # managed A2A:KSADK_A2A_RUNTIME_ID 非空时挂 discovery card + 完整数据面 route。
 # discovery card 让 server 探测；数据面 route 让 gateway 转发的 JSON-RPC/REST
 # 能真正落到本 runtime 的 A2A 协议端点（路线 C 直连）。
+_managed_a2a_card = None
 _a2a_config = None
 _a2a_adapter = None
 if os.environ.get("KSADK_A2A_RUNTIME_ID", "").strip():

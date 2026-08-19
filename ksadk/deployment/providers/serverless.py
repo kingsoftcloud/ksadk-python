@@ -25,10 +25,10 @@ from ksadk.builders.container_builder import (
     resolve_registry_credentials,
 )
 from ksadk.builders.ks3_uploader import KS3Uploader
-from ksadk.configs.env_registry import ENV_VAR_REGISTRY
 from ksadk.configs.global_config import get_env_from_global_config
 from ksadk.configs.settings import DEFAULT_RUNTIME_TIMEZONE
 from ksadk.deployment.agent_access import get_latest_agent_access
+from ksadk.deployment.env_forward import should_forward_process_env
 from ksadk.deployment.base import (
     BaseDeployProvider,
     DeployResult,
@@ -42,61 +42,9 @@ from ksadk.deployment.ui_config import resolve_ui_config, ui_config_to_state_fie
 logger = logging.getLogger(__name__)
 
 
-_DEPLOY_PROCESS_ENV_ALLOWLIST = frozenset(
-    {
-        spec.name
-        for spec in ENV_VAR_REGISTRY
-        if spec.module
-        not in {
-            "builders",
-            "cli",
-            "configs",
-            "web",
-        }
-    }
-) | frozenset(
-    {
-        "E2B_API_KEY",
-        "E2B_API_URL",
-        "OPENAI_API_BASE",
-        "OPENAI_API_KEY",
-        "OPENAI_BASE_URL",
-        "OPENAI_MODEL_NAME",
-        "SKILL_SPACE_ID",
-        "KSYUN_ACCESS_KEY",
-        "KSYUN_ACCOUNT_ID",
-        "KSYUN_REGION",
-        "KSYUN_SECRET_KEY",
-    }
-)
-_DEPLOY_PROCESS_ENV_PREFIXES = ("KSADK_", "OPENAI_", "KSYUN_", "E2B_")
-_CONTROL_PLANE_ONLY_ENV = frozenset(
-    {
-        "KCR_PASSWORD",
-        "KCR_REGISTRY",
-        "KCR_USERNAME",
-        "KS3_ACCESS_KEY",
-        "KS3_SECRET_KEY",
-        "KSYUN_ACCESS_KEY",
-        "KSYUN_ACCOUNT_ID",
-        "KSYUN_SECRET_KEY",
-    }
-)
-_DEPLOY_PROCESS_ENV_DENYLIST = frozenset(
-    {spec.name for spec in ENV_VAR_REGISTRY if spec.module in {"builders", "cli", "configs", "web"}}
-) | frozenset(
-    {
-        "KSADK_GLOBAL_CONFIG_ENV_KEYS",
-        "KSADK_UPDATED_AT",
-        "KSADK_VERSION",
-    }
-) | _CONTROL_PLANE_ONLY_ENV
-
-
-def _should_forward_process_env(name: str) -> bool:
-    if name in _DEPLOY_PROCESS_ENV_DENYLIST:
-        return False
-    return name in _DEPLOY_PROCESS_ENV_ALLOWLIST or name.startswith(_DEPLOY_PROCESS_ENV_PREFIXES)
+# 转发规则已迁移至 ksadk.deployment.env_forward（hermes/openclaw deploy 共用）；
+# 保留私有别名以兼容既有调用与测试。
+_should_forward_process_env = should_forward_process_env
 
 
 @DeployProviderRegistry.register("serverless")
@@ -209,44 +157,24 @@ class ServerlessProvider(BaseDeployProvider):
         优先级: --env/--env-file (explicit) > shell env (转发白名单前缀) > 项目 .env > 全局配置。
         真实 .env 文件不会随 Code/Container 制品打包，只通过 deploy payload 注入到 Pod 环境变量。
         """
-        # Cloud/KCR/KS3 credentials configure the local control-plane client and
-        # artifact publisher. They must not become Pod environment variables just
-        # because they exist in global config, the shell, or the implicit project
-        # .env. A caller that genuinely needs a runtime credential must opt in via
-        # --env/--env-file (explicit_env_vars), preferably with a service-specific
-        # least-privilege identity.
-        env_vars: Dict[str, str] = {
-            key: value
-            for key, value in get_env_from_global_config().items()
-            if key not in _CONTROL_PLANE_ONLY_ENV
-        }
+        shell_keys = set(os.environ)
+        env_vars: Dict[str, str] = dict(get_env_from_global_config())
         env_file = Path(project_dir) / ".env"
         project_env_count = 0
         if env_file.exists():
             project_env = cls._load_project_env_vars(env_file)
             project_env_count = len(project_env)
-            env_vars.update(
-                {
-                    key: value
-                    for key, value in project_env.items()
-                    if key not in _CONTROL_PLANE_ONLY_ENV
-                }
-            )
-        # Shell values override implicit project/global configuration, while
-        # control-plane credentials remain local unless explicitly requested.
+            # auto .env 覆盖 global_config，但不覆盖 shell (shell 优先于 auto .env)
+            for key, value in project_env.items():
+                if key not in shell_keys:
+                    env_vars[key] = value
+        # shell 转发 (仅 KSADK_/OPENAI_/KSYUN_/E2B_ 前缀 + 白名单)；shell 覆盖 auto .env 与全局配置
         for key, value in sorted(os.environ.items()):
-            if (
-                value
-                and key not in _CONTROL_PLANE_ONLY_ENV
-                and _should_forward_process_env(key)
-            ):
+            if value and _should_forward_process_env(key):
                 env_vars[key] = value
-        # Explicit --env/--env-file intent has the highest precedence.
+        # explicit --env/--env-file (显式 CLI 意图最高)
         env_vars.update(explicit_env_vars or {})
         env_vars.setdefault("TZ", DEFAULT_RUNTIME_TIMEZONE)
-        # Runtime observability must not infer deployment location from the Runner.
-        # The deployer is the authoritative boundary for this orthogonal dimension.
-        env_vars.setdefault("KSADK_DEPLOYMENT_MODE", "ksadk_managed_cloud")
         return env_vars, env_file.exists(), project_env_count
 
     @staticmethod

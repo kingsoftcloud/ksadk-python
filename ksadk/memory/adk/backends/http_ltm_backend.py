@@ -177,3 +177,11 @@ class HttpLTMBackend(BaseLongTermMemoryBackend):
         if self._client:
             self._client.close()
             self._client = None
+
+    # ------------------------------------------------------------------
+    # 扩展协议（方案 §7.3）：HTTP backend 为框架预留，结构化能力未定。
+    # 远程 API 对接细节待提供（见 save_memory TODO），因此不声明
+    # structured/update/delete/session_status 能力；search_records 也不降级
+    # 伪造 ID，保持 base 的 UnsupportedMemoryOperation 默认行为。
+    # 远端 schema 确认后，在此接入对应端点并覆写 capabilities()。
+    # ------------------------------------------------------------------

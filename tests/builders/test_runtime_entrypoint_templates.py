@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import os
 from pathlib import Path
 
 import pytest
@@ -51,29 +52,30 @@ def test_generated_runtime_entrypoints_only_compose_runtime_executor(
 
 
 @pytest.mark.parametrize("source", ["code", "container"])
-def test_generated_runtime_entrypoint_preserves_build_context_config(
+def test_generated_runtime_entrypoint_starts_without_managed_a2a(
     source: str,
     detection: DetectionResult,
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    (tmp_path / "agentengine.yaml").write_text(
-        """context:
-  prompt_ownership: ksadk
-  agent_system: 你是云端 Agent
-  agent_task: 保持简洁
-""",
-        encoding="utf-8",
-    )
+    """A normal deployment must not require managed A2A environment injection."""
+    monkeypatch.delenv("KSADK_A2A_RUNTIME_ID", raising=False)
+    monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
+    monkeypatch.delenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", raising=False)
+    monkeypatch.delenv("CLOUD_MONITOR_OTLP_TRACES_HEADERS", raising=False)
+    monkeypatch.delenv("CLOUD_MONITOR_OTLP_HEADERS", raising=False)
+    monkeypatch.delenv("CLOUD_MONITOR_OTLP_ENDPOINT", raising=False)
+    monkeypatch.delenv("CLOUD_MONITOR_OTLP_TRACES_ENDPOINT", raising=False)
+    monkeypatch.delenv("CLOUD_MONITOR_APP_KEY", raising=False)
+    monkeypatch.setenv("CODE_PATH", str(tmp_path))
+    monkeypatch.setattr(os, "chdir", lambda _path: None)
 
     if source == "code":
         entrypoint = CodeBuilder(tmp_path)._generate_entrypoint(detection)
     else:
-        entrypoint = ContainerBuilder(tmp_path)._generate_entrypoint(
-            detection,
-            "demo_agent",
-        )
+        entrypoint = ContainerBuilder(tmp_path)._generate_entrypoint(detection, "demo_agent")
 
-    ast.parse(entrypoint)
-    assert '"prompt_ownership":"ksadk"' in entrypoint
-    assert "你是云端 Agent" in entrypoint
-    assert "config=dict(runtime_build_config)" in entrypoint
+    namespace = {"__name__": "generated_entrypoint_probe"}
+    exec(compile(entrypoint, f"<{source}-entrypoint>", "exec"), namespace)
+
+    assert namespace["app"] is not None
