@@ -323,8 +323,10 @@ def extract_working_state(
     if not constraints_raw and summary_constraints:
         constraints_raw = list(summary_constraints)
     # completed_steps 优先用 pinned_state，缺失时用摘要解析
-    completed_steps = list(completed_steps_raw) if completed_steps_raw else (
-        list(summary_completed) if summary_completed else []
+    completed_steps = (
+        list(completed_steps_raw)
+        if completed_steps_raw
+        else (list(summary_completed) if summary_completed else [])
     )
 
     return WorkingState(
@@ -516,7 +518,8 @@ def extract_pinned_state(groups: Sequence[Sequence[SessionEvent]]) -> dict[str, 
     completed_patterns = [
         re.compile(
             r"([\u4e00-\u9fa5A-Za-z0-9 ]{2,30}"
-            r"(?:已构建|已完成|已成功|构建完成|构建好了))"
+            r"(?:已构建|已完成|已成功|构建完成|构建好了"
+            r"|做完了|搞定了|改完了|修好了|测完了|跑通了|部署完成|配置完成))"
         ),
     ]
 

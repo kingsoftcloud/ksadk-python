@@ -4,7 +4,7 @@
 覆盖 LongTermMemoryService.build_context 的三条分支：
 - 后端抛错（如 SDK 客户端初始化失败）→ ``formatted_text=""`` + 独立 ``error`` 字段。
 - 后端吞错返空列表（SDK/HTTP 网络失败，``last_error`` 非空）→ ``error`` 字段（堵路径 C）。
-- 真无记忆（返空且 ``last_error`` 空）→ ``formatted_text="未找到相关长期记忆。"``
+- 真无记忆（返空且 ``last_error`` 空）→ ``formatted_text=""  # Fix 12: empty → "" not "未找到"（方案 §10.8）``
   （语义真实，可注入；非失败，保持旧行为）。
 
 错误字符串绝不进 ``formatted_text``；``last_error`` property 暴露后端失败信号。
@@ -91,7 +91,7 @@ def test_build_context_backend_swallows_empty_returns_error_field(monkeypatch) -
     assert ctx is not None
     assert ctx["formatted_text"] == ""
     assert "swallowed" in ctx["error"]
-    # 关键：路径 C 之前会把"未找到相关长期记忆。"塞进 formatted_text，现在必须为空。
+    # 关键：路径 C 之前会把""  # Fix 12: empty → "" not "未找到"（方案 §10.8）塞进 formatted_text，现在必须为空。
     assert "未找到" not in ctx.get("formatted_text", "")
 
 
@@ -100,7 +100,7 @@ def test_build_context_genuine_empty_returns_not_found_text(monkeypatch) -> None
     monkeypatch.setenv("KSADK_LTM_BACKEND", "local")
     ctx = _service(_GenuineEmptyBackend()).build_context(user_id="u1", query="Python")
     assert ctx is not None
-    assert ctx["formatted_text"] == "未找到相关长期记忆。"
+    assert ctx["formatted_text"] == ""  # Fix 12: empty → "" not "未找到"（方案 §10.8）
     assert not ctx.get("error", "")
 
 

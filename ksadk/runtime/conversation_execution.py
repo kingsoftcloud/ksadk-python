@@ -282,12 +282,16 @@ async def _finalize_hosted_turn(
                 pass
 
     # 从 session store 取 turn events
+    # 同时匹配 prepared.invocation_id 和 handle.run_id（resume 路径可能不同）
     _turn_events = None
     try:
         _svc = session_service_provider()
         _all = await _svc.get_events(getattr(prepared, "session_id", ""))
         _inv = getattr(prepared, "invocation_id", "")
         _turn_events = [e for e in _all if getattr(e, "invocation_id", "") == _inv]
+        # fallback: 如果精确匹配为空，取最新 N 条 user events（避免丢 Memory candidate）
+        if not _turn_events:
+            _turn_events = [e for e in _all[-20:] if getattr(e, "event_type", "") == "user_message"]
     except Exception:  # noqa: BLE001
         pass
 

@@ -176,10 +176,10 @@ def estimate_text_tokens(text: str) -> int:
             or 0x4E00 <= codepoint <= 0x9FFF
             or 0xF900 <= codepoint <= 0xFAFF
         ):
-            cjk_tokens += 1
+            cjk_tokens += 1.5  # tiktoken cl100k_base: CJK ~1.5 tokens/char
         else:
             ascii_chars += 1
-    return max(1, cjk_tokens + math.ceil(ascii_chars / 4))
+    return max(1, int(cjk_tokens) + math.ceil(ascii_chars / 4))
 
 
 def get_context_window_tokens(model_metadata: Mapping[str, Any] | None = None) -> int:
@@ -251,7 +251,9 @@ def get_auto_compact_soft_limit_tokens(model_metadata: Mapping[str, Any] | None 
 
     百分比可由 env ``KSADK_COMPACT_SOFT_LIMIT_PCT`` 覆盖（1..100）。
     """
-    pct = _compact_limit_pct_env("KSADK_COMPACT_SOFT_LIMIT_PCT", KSADK_COMPACT_SOFT_LIMIT_PCT_DEFAULT)
+    pct = _compact_limit_pct_env(
+        "KSADK_COMPACT_SOFT_LIMIT_PCT", KSADK_COMPACT_SOFT_LIMIT_PCT_DEFAULT
+    )
     effective = get_effective_context_window_tokens(model_metadata)
     return max(1, math.floor(effective * pct / 100))
 
@@ -268,7 +270,6 @@ def get_auto_compact_hard_limit_tokens(model_metadata: Mapping[str, Any] | None 
         effective = get_effective_context_window_tokens(model_metadata)
         return max(1, math.floor(effective * pct_env / 100))
     return get_auto_compact_threshold_tokens(model_metadata)
-
 
 
 def normalize_model_metadata(raw_model: Mapping[str, Any] | str | None) -> dict[str, Any]:

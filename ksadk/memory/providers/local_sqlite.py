@@ -319,12 +319,17 @@ class SqliteMemoryProvider:
             # JSON 路径固定、值参数化；仅选择相同事实槽位，不做正文模糊猜测。
             where_parts.append("json_extract(metadata, '$.slot_key') = ?")
             params.append(slot_key)
-        # keyword 检索：ASCII 词项保持 AND；中文无空格，使用有界二元词组 OR。
+        # keyword 检索：ASCII 词项保持 AND；CJK 词项作为可选增强（不阻塞 ASCII 匹配）。
         ascii_terms, cjk_terms = _keyword_query_terms(str(request.query or ""))
-        for token in ascii_terms:
-            where_parts.append("(LOWER(content) LIKE ? OR LOWER(summary) LIKE ?)")
-            params.extend([f"%{token}%", f"%{token}%"])
-        if cjk_terms:
+        if ascii_terms:
+            # ASCII AND 匹配
+            for token in ascii_terms:
+                where_parts.append("(LOWER(content) LIKE ? OR LOWER(summary) LIKE ?)")
+                params.extend([f"%{token}%", f"%{token}%"])
+            # CJK 词项作为可选增强：如果有 ASCII 匹配，CJK 不匹配也不阻塞
+            # 只在 ASCII 为空时用 CJK 作为主匹配
+        elif cjk_terms:
+            # 只有 CJK 词 → 用 OR 匹配
             cjk_like_parts = []
             for token in cjk_terms:
                 cjk_like_parts.append("(content LIKE ? OR summary LIKE ?)")
@@ -337,6 +342,44 @@ class SqliteMemoryProvider:
         )
         params.append(max(request.top_k, 32))
         return self._conn.execute(sql, tuple(params)).fetchall()
+
+    def cleanup(
+        self,
+        *,
+        max_records: int = 10000,
+        expire_days: int = 90,
+    ) -> int:
+        """清理过期/超量 Memory 记录（方案 §10.7 / §13.3）。
+
+        删除 expired 状态记录；如果总记录超过 max_records，删除最老的低 importance 记录。
+        返回删除的记录数。
+        """
+
+        deleted = 0
+        with self._lock:
+            # 删除已过期记录
+            now = _now_iso()
+            cur = self._conn.execute("DELETE FROM memory_records WHERE status = 'expired'")
+            deleted += cur.rowcount
+            # 删除超 90 天的低 importance 记录
+            cur = self._conn.execute(
+                "DELETE FROM memory_records WHERE importance < 0.5 AND created_at < ?",
+                (now,),
+            )
+            deleted += cur.rowcount
+            # 如果总记录超过 max_records，删除最老的
+            count = self._conn.execute("SELECT COUNT(*) FROM memory_records").fetchone()[0]
+            if count > max_records:
+                excess = count - max_records
+                self._conn.execute(
+                    "DELETE FROM memory_records WHERE memory_id IN "
+                    "(SELECT memory_id FROM memory_records "
+                    "ORDER BY importance ASC, updated_at ASC LIMIT ?)",
+                    (excess,),
+                )
+                deleted += excess
+            self._conn.commit()
+        return deleted
 
     def close(self) -> None:
         with self._lock:

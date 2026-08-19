@@ -157,8 +157,8 @@ def _ambient_context_has_error(context: Any) -> bool:
         return True
 
     formatted_text = str(context.get("formatted_text") or "").strip()
-    if not formatted_text:
-        return True
+    # 空 formatted_text 不是 error（真无记忆 → 不注入噪声，方案 §10.8）
+    # 只有有 error 字段才是 error（上面已检查）
 
     # 纵深防御：``search_text``（工具路径）仍会把错误塞进正文，这里按前缀兜底，
     # 防止任何直接调 ``search_text`` 拼上下文的路径把错误字符串注入。

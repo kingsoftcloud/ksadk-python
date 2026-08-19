@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 def format_memory_entries(entries: list[str]) -> str:
     if not entries:
-        return "未找到相关长期记忆。"
+        return ""  # 不注入"未找到"噪声文本（方案 §10.8）
 
     formatted_entries: list[str] = []
     for index, entry in enumerate(entries, 1):

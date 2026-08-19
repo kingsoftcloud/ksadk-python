@@ -311,7 +311,10 @@ def _working_state_from_checkpoint(checkpoint: Any) -> Any:
 
 
 async def _maybe_memory_flush(
-    events: Sequence[SessionEvent], *, user_id: str = ""
+    events: Sequence[SessionEvent],
+    *,
+    user_id: str = "",
+    agent_id: str = "",
 ) -> dict[str, Any] | None:
     """压缩前 best-effort Memory Flush（方案 §9.2）。
 
@@ -341,9 +344,10 @@ async def _maybe_memory_flush(
         # LongTermMemoryService/HTTP/SDK Provider；本地默认 SQLite 文件库。
         provider = resolve_default_memory_provider()
         coordinator = MemoryCoordinator(provider)
-        candidates = propose_memory_candidates(
-            list(events), scope="user", scope_id=str(user_id or "")
-        )
+        from ksadk.memory.coordinator import agent_user_scope_id
+
+        _scope_id = agent_user_scope_id(agent_id=agent_id, user_id=str(user_id or ""))
+        candidates = propose_memory_candidates(list(events), scope="user", scope_id=_scope_id)
         if not candidates:
             return {"status": "skipped", "proposed": 0, "committed": 0, "rejected": 0}
         result = coordinator.flush_candidates(candidates)
@@ -456,7 +460,9 @@ async def compact_conversation_history(
         previous_ws = _working_state_from_checkpoint(latest_checkpoint)
         working_state.merge_missing_from(previous_ws)
         working_state_audit = working_state.to_audit_dict()
-        memory_flush_audit = await _maybe_memory_flush(compacted_events, user_id=memory_user_id)
+        memory_flush_audit = await _maybe_memory_flush(
+            compacted_events, user_id=memory_user_id, agent_id=author
+        )
 
     # PR D2.6：per-session compaction lock + stale guard（方案 §9.6）。同一 session 同时只
     # 允许一个 checkpoint/WorkingState 提交；拿不到锁则放弃本次提交避免并发覆盖。

@@ -977,12 +977,68 @@ def create_studio_app(
     async def get_run_memory_events(run_id: str):
         """PR-S4：Memory events（方案 §6.4）。从 run events 过滤 memory 相关事件。"""
         events = studio.event_store.events(run_id)
-        memory_events = [
-            {"id": e.id, "type": e.type, "data": e.data}
-            for e in events
-            if "memory" in e.type.lower() or "memory" in str(e.data).lower()[:200]
-        ]
+        memory_events = []
+        for e in events:
+            # 匹配 event type 含 memory
+            if "memory" in str(e.type or "").lower():
+                memory_events.append({"id": e.id, "type": e.type, "data": e.data})
+                continue
+            # 匹配 data 里含 memory_event 或 memory.* 类型
+            data = e.data or {}
+            if isinstance(data, dict):
+                if "memory_event" in data or any(
+                    str(v).startswith("memory.") if isinstance(v, str) else False
+                    for v in data.values()
+                ):
+                    memory_events.append({"id": e.id, "type": e.type, "data": data})
         return {"items": memory_events}
+
+    @app.get("/api/v1/memories")
+    async def list_memories(user_id: str | None = Query(default=None)):
+        """列出所有 Memory 记录（方案 §6.4：Memory 管理和调试）。"""
+        from ksadk.memory.models import MemorySearchRequest
+        from ksadk.memory.providers.local_sqlite import resolve_default_memory_provider
+
+        provider = resolve_default_memory_provider()
+        scopes = [("user", user_id)] if user_id else [("user", "")]
+        result = provider.search(
+            MemorySearchRequest(
+                query="",
+                scopes=scopes,
+                memory_types=["profile", "fact", "episode"],
+                top_k=100,
+                max_tokens=10000,
+                min_score=0.0,
+            )
+        )
+        return {
+            "items": [
+                {
+                    "memory_id": r.memory_id,
+                    "scope": r.scope,
+                    "scope_id": r.scope_id,
+                    "memory_type": r.memory_type,
+                    "content": r.content[:200],
+                    "summary": r.summary,
+                    "status": r.status,
+                    "confidence": r.confidence,
+                    "created_at": r.created_at,
+                }
+                for r in result.records
+            ],
+        }
+
+    @app.delete("/api/v1/memories/{memory_id}")
+    async def delete_memory(memory_id: str):
+        """删除指定 Memory 记录（方案 §6.4）。"""
+        from ksadk.memory.models import MemoryDeleteRequest
+        from ksadk.memory.providers.local_sqlite import resolve_default_memory_provider
+
+        provider = resolve_default_memory_provider()
+        result = provider.delete(
+            MemoryDeleteRequest(memory_id=memory_id, scope="user", scope_id="", hard=True)
+        )
+        return {"deleted": result.deleted, "status": result.status}
 
     @app.delete("/api/v1/sessions/{session_id}", status_code=204)
     async def delete_studio_session(session_id: str):

@@ -282,11 +282,7 @@ class ContextPlanner:
         def _reducible(item: ContextItem) -> bool:
             return bool(
                 item.truncatable
-                or (
-                    item.kind == "tool_result"
-                    and item.droppable
-                    and not item.required
-                )
+                or (item.kind == "tool_result" and item.droppable and not item.required)
             )
 
         remaining_total = budget.hard_limit_tokens - _tokens(selected)
@@ -645,10 +641,31 @@ def build_budget(
         reserved_output_tokens=reserved_output_tokens,
         reserved_reasoning_tokens=reserved_reasoning_tokens,
     )
-    section_limits = {
-        name: min(int(tokens["max_input_tokens"] * sb.percent / 100.0), sb.max_tokens)
-        for name, sb in policy.sections.items()
-    }
+    max_input = tokens["max_input_tokens"]
+    # 小窗口（≤8K）动态调整：Prompt 占比提高到 30%，History 降到 25%
+    if max_input <= 8192:
+        from dataclasses import replace as _replace
+
+        small_policy = _replace(
+            policy,
+            sections={
+                "prompt": _replace(policy.sections["prompt"], percent=30, max_tokens=24000),
+                "recent_history": _replace(
+                    policy.sections["recent_history"],
+                    percent=25,
+                    max_tokens=64000,
+                ),
+            },
+        )
+        section_limits = {
+            name: min(int(max_input * sb.percent / 100.0), sb.max_tokens)
+            for name, sb in small_policy.sections.items()
+        }
+    else:
+        section_limits = {
+            name: min(int(max_input * sb.percent / 100.0), sb.max_tokens)
+            for name, sb in policy.sections.items()
+        }
     return ContextBudget(
         context_window_tokens=context_window_tokens,
         reserved_output_tokens=reserved_output_tokens,
