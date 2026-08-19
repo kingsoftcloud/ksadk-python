@@ -93,6 +93,12 @@ class SubmitInteractionPayload(WireModel):
     # token_ref 是一次性 interaction 授权引用，不是可持久化的原始 token。
     token_ref: str
     response: JsonValue
+    # 以下为 additive 字段（Task 6）：允许 wire 侧携带完整 submitInteractionRequest；
+    # 缺省时 Worker 以权威 InteractionRecord 补齐（expected_revision=当前 revision，
+    # action=submit，idempotency_key=command.idempotency_key）。
+    action: str | None = None
+    expected_revision: int | None = None
+    idempotency_key: str | None = None
 
 
 PAYLOAD_MODELS: dict[str, type[WireModel]] = {

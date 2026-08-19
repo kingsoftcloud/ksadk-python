@@ -12,6 +12,7 @@ ERROR_CODES = frozenset(
         "stale_fence",
         "persistence_uncertain",
         "contract_mismatch",
+        "runtime_interaction_unavailable",
     }
 )
 

@@ -133,21 +133,23 @@ def command(
     content: str = "hello",
     tenant_id: str = TENANT,
     authorization_ref: str = PERMIT_REF,
+    payload: dict | None = None,
 ) -> AgentControlCommand:
-    payload: dict = {"content": {"text": content}}
-    if command_type == "inject":
-        payload = {"context": {"text": content}}
-    elif command_type == "resume":
-        payload = {"target": {"kind": "run", "id": "run-1"}, "input": None}
-    elif command_type == "submit_interaction":
-        payload = {
-            "run_id": "run-1",
-            "interaction_id": "it-1",
-            "token_ref": "tok-ref-1",
-            "response": {"ok": True},
-        }
-    elif command_type in ("interrupt", "pause"):
-        payload = {"run_id": None, "reason": None}
+    if payload is None:
+        payload = {"content": {"text": content}}
+        if command_type == "inject":
+            payload = {"context": {"text": content}}
+        elif command_type == "resume":
+            payload = {"target": {"kind": "run", "id": "run-1"}, "input": None}
+        elif command_type == "submit_interaction":
+            payload = {
+                "run_id": "run-1",
+                "interaction_id": "it-1",
+                "token_ref": "tok-ref-1",
+                "response": {"ok": True},
+            }
+        elif command_type in ("interrupt", "pause"):
+            payload = {"run_id": None, "reason": None}
     return AgentControlCommand(
         command_id=uuid4(),
         idempotency_key=idempotency_key or f"key-{uuid4().hex[:8]}",

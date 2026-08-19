@@ -81,6 +81,7 @@ class RecoveryCoordinator:
         launch_context: "RuntimeLaunchContext | None" = None,
         adapter_factory: Callable[[], object] | None = None,
         clock: Callable[[], float] = time.time,
+        execution_sink: Callable[..., None] | None = None,
     ) -> None:
         self._store = store
         self._session_events = session_events
@@ -89,6 +90,9 @@ class RecoveryCoordinator:
         self._launch_context = launch_context
         self._adapter_factory = adapter_factory
         self._clock = clock
+        # Task 6：takeover 重建的 ActiveExecution 只在 lease 获取 +
+        # provider 支持的 attach/resume 成功后回调注册（worker.adopt_execution）。
+        self._execution_sink = execution_sink
 
     async def recover(
         self,
@@ -141,6 +145,14 @@ class RecoveryCoordinator:
                     reason=f"attach_failed:{type(error).__name__}",
                     guard=guard,
                 )
+            # attach 成功即把 live execution 交还 worker（lease 已在调用方获取，
+            # attach 已证明 runtime 支持接管），stream 消费失败时仍保留。
+            self._register_execution(
+                run.run_id,
+                handle.run_id,
+                getattr(self._executor, "adapter", None),
+                handle,
+            )
             # attach 成功后重新消费剩余 stream：事实继续落库，自然结束收口。
             try:
                 await self._consume_remaining_stream(
@@ -187,6 +199,27 @@ class RecoveryCoordinator:
 
     # ------------------------------------------------------------- internals
 
+    def _register_execution(
+        self,
+        durable_run_id: str,
+        runtime_run_id: str,
+        adapter: object | None,
+        handle: object,
+    ) -> None:
+        """把 takeover 重建的 live execution 交还 worker（best-effort）。"""
+
+        if self._execution_sink is None or adapter is None:
+            return
+        try:
+            self._execution_sink(
+                durable_run_id=durable_run_id,
+                runtime_run_id=runtime_run_id,
+                adapter=adapter,
+                handle=handle,
+            )
+        except Exception:  # noqa: BLE001 - 审计/恢复路径绝不因 sink 失败中断
+            pass
+
     async def _try_real_resume(
         self,
         agent_instance_id: str,
@@ -232,6 +265,9 @@ class RecoveryCoordinator:
                 reason=f"resume_failed:{type(error).__name__}",
                 guard=guard,
             )
+        # lease 已获取 + provider 支持的 resume 已成功：takeover 重建
+        # ActiveExecution，后续控制命令/回包作用于同一 live execution。
+        self._register_execution(run.run_id, resumed.run_id, adapter, resumed)
         try:
             await self._consume_remaining_stream(
                 lambda: adapter.stream(resumed), run, guard

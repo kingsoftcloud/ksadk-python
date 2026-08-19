@@ -20,7 +20,9 @@ from ksadk.kernel.contracts import (
 from ksadk.kernel.errors import UnsupportedControlError
 from ksadk.kernel.store import control_event
 
-# command_type -> RuntimeAdapter 方法名（计划 Task 6 Step 5 冻结）。
+# command_type -> RuntimeAdapter 方法名。submit_interaction 不再静态映射到
+# adapter.submit：Worker 载入权威 InteractionRecord 并分发给其绑定的
+# InteractionProvider（live submit / durable resume / unavailable）。
 COMMAND_HANDLERS: dict[str, str] = {
     "enqueue": "start",
     "steer": "steer",
@@ -28,7 +30,7 @@ COMMAND_HANDLERS: dict[str, str] = {
     "interrupt": "cancel",
     "pause": "pause",
     "resume": "resume",
-    "submit_interaction": "submit",
+    "submit_interaction": "submit_interaction",
 }
 
 # command_type -> RuntimeCapabilityMatrix 字段；enqueue 无 capability 门槛。

@@ -464,6 +464,9 @@ def build_agent_kernel_runtime(
         executor=config.runtime_executor,
         launch_context=config.launch_context,
         adapter_factory=adapter_provider,
+        # takeover 重建的 live execution 交还 worker（ActiveExecution 归
+        # 当前 activation 持有，Interaction 回包才能打到同一 client 实例）。
+        execution_sink=worker.adopt_execution,
     )
     heartbeat = LeaseHeartbeat(
         store,
