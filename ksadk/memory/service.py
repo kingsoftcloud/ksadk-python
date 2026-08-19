@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 def format_memory_entries(entries: list[str]) -> str:
     if not entries:
-        return "未找到相关长期记忆。"
+        return ""  # empty → "" not "未找到"（§10.8）
 
     formatted_entries: list[str] = []
     for index, entry in enumerate(entries, 1):
@@ -205,9 +205,7 @@ class LongTermMemoryService:
             raise UnsupportedMemoryOperation(
                 f"{type(self._backend).__name__} does not support session status"
             )
-        status = self._backend.get_extraction_status(
-            user_id=user_id, session_id=session_id
-        )
+        status = self._backend.get_extraction_status(user_id=user_id, session_id=session_id)
         if (
             confirm_searchable
             and status.status == "extracted"
@@ -251,14 +249,29 @@ class LongTermMemoryService:
         """透传 backend 能力声明（§7.3）。"""
         return set(self._backend.capabilities())
 
+    @property
+    def last_error(self) -> str:
+        """最近一次后端失败原因（成功调用前置空，失败时填充）。
+
+        后端（SDK/HTTP）失败时可能吞掉异常返空列表而非抛错，这里把该信号暴露给
+        ``build_context``，以区分"后端吞错返空"与"真无记忆"。
+        """
+        return str(getattr(self._backend, "last_error", "") or "")
+
     def search_text(self, *, user_id: str, query: str, top_k: int | None = None) -> str:
+        """检索长期记忆并格式化为文本（方案 §10.8：错误不得混入正文）。
+
+        Provider 异常时返回空字符串而非错误文本——错误文本会被当作记忆正文注入模型上下文，
+        污染回答。需要区分"真无记忆"与"后端失败"的调用方应改用 ``build_context()``
+        或检查 ``self.last_error``。
+        """
         try:
             return format_memory_entries(
                 self.search_entries(user_id=user_id, query=query, top_k=top_k)
             )
         except Exception as exc:
             logger.error("load_memory failed: %s", exc)
-            return f"长期记忆检索失败: {exc}"
+            return ""
 
     def save_event_strings(
         self,
@@ -337,7 +350,15 @@ class LongTermMemoryService:
             return None
         if not self.is_configured():
             return None
+        try:
+            entries = self.search_entries(user_id=user_id, query=normalized, top_k=top_k)
+        except Exception as exc:
+            logger.error("load_memory failed: %s", exc)
+            return {"query": normalized, "formatted_text": "", "error": str(exc)}
+        backend_error = self.last_error
+        if not entries and backend_error:
+            return {"query": normalized, "formatted_text": "", "error": backend_error}
         return {
             "query": normalized,
-            "formatted_text": self.search_text(user_id=user_id, query=normalized, top_k=top_k),
+            "formatted_text": format_memory_entries(entries),
         }

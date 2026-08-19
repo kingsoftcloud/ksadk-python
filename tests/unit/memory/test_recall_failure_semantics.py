@@ -100,7 +100,7 @@ def test_build_context_genuine_empty_returns_not_found_text(monkeypatch) -> None
     monkeypatch.setenv("KSADK_LTM_BACKEND", "local")
     ctx = _service(_GenuineEmptyBackend()).build_context(user_id="u1", query="Python")
     assert ctx is not None
-    assert ctx["formatted_text"] == ""  # Fix 12: empty → "" not "未找到"（方案 §10.8）
+    assert ctx["formatted_text"] == ""  # empty → "" not "未找到"（§10.8）
     assert not ctx.get("error", "")
 
 

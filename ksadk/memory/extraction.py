@@ -207,6 +207,7 @@ def propose_memory_candidates(
                     confidence=0.7,
                     importance=0.6,
                     source_event_ids=[event_id],
+                    slot_key="",
                     reason="tool_fact",
                 )
             )

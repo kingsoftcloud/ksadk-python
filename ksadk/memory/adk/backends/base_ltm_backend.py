@@ -13,7 +13,7 @@
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, List, Set
+from typing import List, Set
 
 from pydantic import BaseModel
 
@@ -40,8 +40,7 @@ class BaseLongTermMemoryBackend(ABC, BaseModel):
     Attributes:
         index: 索引/集合名称，用于隔离不同应用的记忆数据
         last_error: 最近一次 search/save 失败的原因。成功调用前置空，失败时填充。
-            上层（LongTermMemoryService.build_context）据此区分"后端吞错返空"与
-            "真无记忆"——前者不得把错误伪装成"未找到"注入模型上下文。
+            上层（LongTermMemoryService.build_context）据此区分"后端吞错返空"与"真无记忆"。
     """
 
     index: str = ""
@@ -105,9 +104,7 @@ class BaseLongTermMemoryBackend(ABC, BaseModel):
         不支持的 backend 抛出 UnsupportedMemoryOperation，
         不得静默追加一条新记忆来模拟 update。
         """
-        raise UnsupportedMemoryOperation(
-            f"{type(self).__name__} does not support update"
-        )
+        raise UnsupportedMemoryOperation(f"{type(self).__name__} does not support update")
 
     def delete_memory(
         self,
@@ -120,9 +117,7 @@ class BaseLongTermMemoryBackend(ABC, BaseModel):
 
         不支持的 backend 抛出 UnsupportedMemoryOperation。
         """
-        raise UnsupportedMemoryOperation(
-            f"{type(self).__name__} does not support delete"
-        )
+        raise UnsupportedMemoryOperation(f"{type(self).__name__} does not support delete")
 
     def get_extraction_status(
         self,
@@ -134,9 +129,7 @@ class BaseLongTermMemoryBackend(ABC, BaseModel):
 
         不支持的 backend 抛出 UnsupportedMemoryOperation。
         """
-        raise UnsupportedMemoryOperation(
-            f"{type(self).__name__} does not support session status"
-        )
+        raise UnsupportedMemoryOperation(f"{type(self).__name__} does not support session status")
 
     def capabilities(self) -> Set[str]:
         """声明本 backend 支持的能力集合。

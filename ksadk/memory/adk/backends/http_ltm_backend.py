@@ -52,10 +52,10 @@ class HttpLTMBackend(BaseLongTermMemoryBackend):
     def model_post_init(self, __context) -> None:
         if not self.base_url:
             logger.warning(
-                "HttpLTMBackend: base_url is empty. " "Set KSADK_LTM_HTTP_URL environment variable."
+                "HttpLTMBackend: base_url is empty. Set KSADK_LTM_HTTP_URL environment variable."
             )
         logger.info(
-            f"HttpLTMBackend initialized: base_url={self.base_url[:50]}... " f"index={self.index}"
+            f"HttpLTMBackend initialized: base_url={self.base_url[:50]}... index={self.index}"
         )
 
     @property
@@ -101,13 +101,13 @@ class HttpLTMBackend(BaseLongTermMemoryBackend):
             response.raise_for_status()
 
             logger.info(
-                f"Saved {len(event_strings)} events to remote memory service " f"for user={user_id}"
+                f"Saved {len(event_strings)} events to remote memory service for user={user_id}"
             )
             return True
 
         except httpx.HTTPStatusError as e:
             logger.error(
-                f"HTTP error saving memory: {e.response.status_code} " f"{e.response.text[:200]}"
+                f"HTTP error saving memory: {e.response.status_code} {e.response.text[:200]}"
             )
             return False
         except Exception as e:
@@ -136,7 +136,6 @@ class HttpLTMBackend(BaseLongTermMemoryBackend):
             self.last_error = "base_url not configured"
             return []
 
-        self.last_error = ""
         try:
             payload = {
                 "index": self.index,
@@ -162,13 +161,11 @@ class HttpLTMBackend(BaseLongTermMemoryBackend):
             return memories
 
         except httpx.HTTPStatusError as e:
-            self.last_error = str(e)
             logger.error(
-                f"HTTP error searching memory: {e.response.status_code} " f"{e.response.text[:200]}"
+                f"HTTP error searching memory: {e.response.status_code} {e.response.text[:200]}"
             )
             return []
         except Exception as e:
-            self.last_error = str(e)
             logger.error(f"Error searching memory from remote service: {e}")
             return []
 

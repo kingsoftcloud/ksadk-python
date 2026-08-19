@@ -18,7 +18,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 __all__ = [
     "LongTermMemoryRecord",
@@ -167,3 +167,149 @@ class MemoryPermissionError(MemoryOperationError):
 
 class MemoryConflictError(MemoryOperationError):
     """并发修改冲突（如记录已被融合导致 ID 变化）。"""
+
+
+# ---- PCM v2 数据模型（feature-prompt-context-optimize 分支）----
+# 与 master 的 LongTermMemoryRecord 共存；PCM 模块用这些类型
+
+MEMORY_MODEL_VERSION = "v1"
+
+MemoryScope = Literal["user", "agent", "workspace", "org"]
+MemoryType = Literal["profile", "fact", "episode"]
+MemoryStatus = Literal["active", "superseded", "deleted", "expired"]
+MemoryOperation = Literal["add", "update", "delete", "ignore"]
+MemorySearchStatus = Literal["ok", "not_configured", "timeout", "unauthorized", "failed"]
+SensitiveLabel = Literal[
+    "api_key",
+    "secret_key",
+    "access_key",
+    "cookie",
+    "auth_header",
+    "signed_url",
+    "dsn",
+    "pii",
+    "token",
+    "binary",
+    "none",
+]
+
+
+@dataclass(frozen=True)
+class MemoryRecord:
+    memory_id: str
+    tenant_id: str
+    workspace_id: str
+    scope: MemoryScope
+    scope_id: str
+    memory_type: MemoryType
+    content: str
+    summary: str
+    status: MemoryStatus
+    confidence: float
+    importance: float
+    valid_from: str
+    valid_to: str
+    expires_at: str
+    source_session_id: str
+    source_event_ids: list[str]
+    source_seq_range: tuple[int, int] | None
+    content_hash: str
+    version: int
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = ""
+    updated_at: str = ""
+
+    def is_active_now(self, *, now_iso: str = "") -> bool:
+        if self.status != "active":
+            return False
+        if self.expires_at and now_iso and self.expires_at < now_iso:
+            return False
+        if self.valid_to and now_iso and self.valid_to < now_iso:
+            return False
+        return True
+
+
+@dataclass(frozen=True)
+class MemoryCandidate:
+    candidate_id: str
+    operation: MemoryOperation
+    memory_type: MemoryType
+    scope: MemoryScope
+    scope_id: str
+    content: str
+    confidence: float
+    importance: float
+    source_event_ids: list[str]
+    conflicts_with: list[str] = field(default_factory=list)
+    sensitive_labels: list[SensitiveLabel] = field(default_factory=list)
+    reason: str = ""
+    slot_key: str = ""
+
+    def is_hard_rejected(self) -> bool:
+        return any(label != "none" for label in self.sensitive_labels)
+
+
+@dataclass(frozen=True)
+class MemorySearchRequest:
+    query: str
+    scopes: list[tuple[MemoryScope, str]]
+    memory_types: list[MemoryType]
+    top_k: int = 8
+    max_tokens: int = 4000
+    min_score: float = 0.45
+    as_of: str = ""
+    filters: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class MemorySearchResult:
+    status: MemorySearchStatus
+    records: list[MemoryRecord]
+    error_code: str | None
+    provider: str
+    latency_ms: int
+    accounting_accuracy: str
+    truncated_by_budget: bool = False
+
+
+@dataclass(frozen=True)
+class MemoryCapabilities:
+    semantic_search: bool
+    keyword_search: bool
+    metadata_filter: bool
+    versioned_update: bool
+    hard_delete: bool
+    ttl: bool
+    max_record_chars: int
+
+
+@dataclass(frozen=True)
+class CoreMemoryBlock:
+    name: str
+    description: str
+    content: str
+    max_tokens: int
+    writable: bool
+    source_memory_ids: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class MemoryDeleteRequest:
+    memory_id: str
+    scope: MemoryScope
+    scope_id: str
+    hard: bool = False
+
+
+@dataclass(frozen=True)
+class MemoryDeleteResult:
+    status: MemorySearchStatus
+    deleted: bool
+    error_code: str | None = None
+
+
+@dataclass(frozen=True)
+class CoreMemoryRequest:
+    scopes: list[tuple[MemoryScope, str]]
+    max_blocks: int = 8
+    max_tokens: int = 4096
