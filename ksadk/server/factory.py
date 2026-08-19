@@ -194,6 +194,7 @@ class RuntimeAppConfig:
         agui: Optional[Any] = None,
         runtime_executor: RuntimeExecutor | None = None,
         launch_context: RuntimeLaunchContext | None = None,
+        kernel_adapter_provider: Callable[[], RuntimeAdapter] | None = None,
         session_service_provider: Callable[[], Any] | None = None,
         session_backend_provider: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
@@ -208,6 +209,9 @@ class RuntimeAppConfig:
         self.agui = agui
         self.runtime_executor = runtime_executor
         self.launch_context = launch_context
+        # 特殊 runtime 可显式提供 worker/recovery 的 adapter；常规部署从
+        # runtime_executor 的同一 registry 派生，见 _kernel_adapter_provider。
+        self.kernel_adapter_provider = kernel_adapter_provider
         self.session_service_provider = session_service_provider
         self.session_backend_provider = session_backend_provider
 
@@ -353,11 +357,21 @@ def create_runtime_app(
 
     @asynccontextmanager
     async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
-        # AGENT_KERNEL_ENABLED=1 且 store 可装配时自动 set_agent_kernel；
-        # 开关关闭时是 no-op，装配失败 fail loud（启动报错）。
+        # 生产 kernel 的 composition root 必须启动 worker/lease/recovery，
+        # 不能只注册一个可接收命令、却永远不会消费的 ingress kernel。
         from ksadk.kernel import ingress as _kernel_ingress
+        from ksadk.kernel.bootstrap import (
+            bootstrap_agent_kernel_runtime_from_env,
+            clear_agent_kernel_runtime,
+        )
 
-        await _kernel_ingress.bootstrap_agent_kernel_from_env()
+        adapter_provider = _kernel_adapter_provider(config)
+        kernel_runtime = await bootstrap_agent_kernel_runtime_from_env(
+            adapter_provider=adapter_provider,
+            runtime_executor=config.runtime_executor,
+            launch_context=config.launch_context,
+        )
+        app.state.agent_kernel_runtime = kernel_runtime
         try:
             if state.a2a_bootstrap is not None:
                 await state.a2a_bootstrap.start()
@@ -365,6 +379,10 @@ def create_runtime_app(
         finally:
             if state.a2a_bootstrap is not None:
                 await state.a2a_bootstrap.stop()
+            if kernel_runtime is not None:
+                await kernel_runtime.close()
+            clear_agent_kernel_runtime()
+            _kernel_ingress.clear_agent_kernel()
             await shutdown_runtime_resources(state)
 
     app = FastAPI(
@@ -491,6 +509,25 @@ def create_runtime_app(
         configure(app, state, set(config.route_groups))
 
     return app
+
+
+def _kernel_adapter_provider(
+    config: RuntimeAppConfig,
+) -> Callable[[], RuntimeAdapter] | None:
+    """Return the adapter source used by the durable kernel runtime.
+
+    Hosted startup deliberately fails when neither a provider nor a Runtime
+    launch context is available. It must never construct an unrelated local
+    adapter merely to make the ingress look healthy.
+    """
+
+    if config.kernel_adapter_provider is not None:
+        return config.kernel_adapter_provider
+    if config.a2a_runtime_adapter is not None:
+        return lambda: config.a2a_runtime_adapter
+    if config.runtime_executor is not None and config.launch_context is not None:
+        return lambda: config.runtime_executor.create_adapter(config.launch_context)
+    return None
 
 
 def _wire_a2a_if_enabled(app: FastAPI, state: RuntimeAppState, config: RuntimeAppConfig) -> None:

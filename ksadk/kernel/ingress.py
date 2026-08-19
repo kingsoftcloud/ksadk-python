@@ -25,13 +25,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import time
 import uuid
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Callable
-from uuid import UUID
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -578,6 +576,38 @@ async def bootstrap_agent_kernel_from_env() -> Any | None:
     return kernel
 
 
+class _HttpJwks:
+    """Server JWKS source used only in hosted deployments."""
+
+    def __init__(self, url: str) -> None:
+        self._url = url
+
+    async def fetch_verification_keys(self) -> Mapping[str, str]:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=5.0, follow_redirects=False) as client:
+            response = await client.get(self._url)
+            response.raise_for_status()
+            raw = response.json().get("keys") or {}
+        if isinstance(raw, Mapping):
+            return {str(k): str(v) for k, v in raw.items()}
+        # 标准 JWKS shape：[{"kty","crv","kid","x"}, ...]
+        return {
+            str(item["kid"]): str(item["x"])
+            for item in raw
+            if isinstance(item, Mapping) and "kid" in item and "x" in item
+        }
+
+
+def _remote_jwks_source(jwks_url: str | None = None) -> JwksSource:
+    """构造唯一的 Server JWKS source；空值绝不回退本地 authority。"""
+
+    url = (jwks_url or os.environ.get(ENV_JWKS_URL) or "").strip()
+    if not url:
+        raise RuntimeError("hosted agent kernel runtime requires AGENT_CONTROL_JWKS_URL")
+    return _HttpJwks(url)
+
+
 def _env_permit_verifier(*, nonce_store: Any = None) -> Any:
     """JWKS URL 配置时用远端 verifier；否则用进程内 issuer（本地/灰度）。
 
@@ -593,37 +623,21 @@ def _env_permit_verifier(*, nonce_store: Any = None) -> Any:
     jwks_url = os.environ.get(ENV_JWKS_URL, "").strip()
     if jwks_url:
         from ksadk.kernel.authorization import AgentControlPermitVerifier
+        source = _remote_jwks_source(jwks_url)
+        if _is_hosted():
+            # hosted 模式：server JWKS 是唯一信任源，绝不合并本地公钥。
+            return AgentControlPermitVerifier(source, nonce_store=nonce_store)
 
-        class _HttpJwks:
-            def __init__(self, url: str) -> None:
-                self._url = url
-
+        class _LocalCompatibleJwks:
             async def fetch_verification_keys(self) -> Mapping[str, str]:
-                import httpx
-
-                async with httpx.AsyncClient(timeout=5.0, follow_redirects=False) as client:
-                    response = await client.get(self._url)
-                    response.raise_for_status()
-                    raw = response.json().get("keys") or {}
-                    if isinstance(raw, Mapping):
-                        merged = {str(k): str(v) for k, v in raw.items()}
-                    else:
-                        # 标准 JWKS shape：[{"kty","crv","kid","x"}, ...]
-                        merged = {
-                            str(j["kid"]): str(j["x"])
-                            for j in raw
-                            if "kid" in j and "x" in j
-                        }
-                if _is_hosted():
-                    # hosted 模式：server JWKS 是唯一信任源，绝不合并本地公钥。
-                    return merged
+                merged = dict(await source.fetch_verification_keys())
                 local = _default_issuer()
                 merged[local.key_id] = local._public_b64
                 return merged
 
-        return AgentControlPermitVerifier(
-            _HttpJwks(jwks_url), nonce_store=nonce_store
-        )
+        return AgentControlPermitVerifier(_LocalCompatibleJwks(), nonce_store=nonce_store)
+    if _is_hosted():
+        raise RuntimeError("hosted agent kernel runtime requires AGENT_CONTROL_JWKS_URL")
     return _default_issuer().verifier(nonce_store=nonce_store)
 
 
@@ -631,7 +645,6 @@ def _build_kernel_router() -> Any:
     from ksadk.kernel.contracts import (
         AgentControlPermit,
         AgentStatusQuery,
-        SessionEventSubscription,
     )
 
     router = APIRouter()
@@ -639,8 +652,57 @@ def _build_kernel_router() -> Any:
     def _unavailable() -> JSONResponse:
         return JSONResponse(
             status_code=503,
-            content={"error": {"Code": "kernel_not_enabled", "Message": "agent kernel is not registered"}},
+            content={
+                "error": {
+                    "Code": "kernel_not_enabled",
+                    "Message": "agent kernel is not registered",
+                }
+            },
         )
+
+    def _hosted_permit(
+        request: Request, permit_data: Any | None = None
+    ) -> AgentControlPermit | JSONResponse:
+        """Hosted ingress accepts only a Server-issued permit.
+
+        POST actions use the wrapper ``permit`` object; GET SSE uses the
+        internal ``X-Agent-Control-Permit`` JSON header.  Gateway strips that
+        header at the public edge, so it can only originate from Server.
+        """
+
+        raw = permit_data
+        if raw is None:
+            raw_header = request.headers.get("x-agent-control-permit")
+            if raw_header:
+                try:
+                    raw = json.loads(raw_header)
+                except json.JSONDecodeError:
+                    return JSONResponse(
+                        status_code=403,
+                        content={
+                            "error": {
+                                "Code": "invalid_permit",
+                                "Message": "invalid permit header",
+                            }
+                        },
+                    )
+        if raw is None:
+            return JSONResponse(
+                status_code=401,
+                content={
+                    "error": {
+                        "Code": "missing_permit",
+                        "Message": "hosted authority requires a server-issued permit",
+                    }
+                },
+            )
+        try:
+            return AgentControlPermit.model_validate(raw)
+        except Exception as exc:
+            return JSONResponse(
+                status_code=403,
+                content={"error": {"Code": "invalid_permit", "Message": str(exc)}},
+            )
 
     @router.post(KERNEL_INGRESS_SUBMIT_PATH)
     async def submit_agent_control(request: Request) -> Any:
@@ -658,19 +720,18 @@ def _build_kernel_router() -> Any:
                 status_code=400,
                 content={"error": {"Code": "invalid_command", "Message": str(exc)}},
             )
-        if permit_data:
-            permit = AgentControlPermit.model_validate(permit_data)
-        elif _is_hosted():
-            # hosted fail closed：缺 permit 禁止进程内自签补发，一律 401。
-            return JSONResponse(
-                status_code=401,
-                content={
-                    "error": {
-                        "Code": "missing_permit",
-                        "Message": "hosted authority requires a server-issued permit",
-                    }
-                },
-            )
+        if _is_hosted():
+            permit = _hosted_permit(request, permit_data)
+            if isinstance(permit, JSONResponse):
+                return permit
+        elif permit_data:
+            try:
+                permit = AgentControlPermit.model_validate(permit_data)
+            except Exception as exc:
+                return JSONResponse(
+                    status_code=403,
+                    content={"error": {"Code": "invalid_permit", "Message": str(exc)}},
+                )
         else:
             # 无 permit（gateway 内网转发 / 本地灰度）：trusted context 进程内签发。
             trusted = trusted_context(
@@ -710,28 +771,32 @@ def _build_kernel_router() -> Any:
             return _unavailable()
         body = await request.json()
         try:
-            query = AgentStatusQuery.model_validate(body)
+            query = AgentStatusQuery.model_validate(body.get("query") or body)
         except Exception as exc:
             return JSONResponse(
                 status_code=400,
                 content={"error": {"Code": "invalid_query", "Message": str(exc)}},
             )
-        trusted = trusted_context(
-            source_kind="system",
-            source_ref="status",
-            tenant_id=query.tenant_id,
-            agent_instance_id=query.agent_instance_id,
-            session_id=query.session_id,
-            operations=("get_status",),
-        )
-        # permit 绑定校验必须对齐本地签发的 permit 本体：caller 自报的
-        # authorization_ref 指向 runtime 从未见过的 permit，直接送验只会
-        # authorization_ref_mismatch -> 恒 fail-closed（instance_state 永远
-        # unavailable）。与 submit 无 permit 分支的重写语义一致。
-        query = query.model_copy(
-            update={"authorization_ref": trusted.permit.permit_id}
-        )
-        snapshot = await kernel.status(query, permit=trusted.permit)
+        if _is_hosted():
+            permit = _hosted_permit(request, body.get("permit"))
+            if isinstance(permit, JSONResponse):
+                return permit
+        else:
+            trusted = trusted_context(
+                source_kind="system",
+                source_ref="status",
+                tenant_id=query.tenant_id,
+                agent_instance_id=query.agent_instance_id,
+                session_id=query.session_id,
+                operations=("get_status",),
+            )
+            # local 仅为开发便利自签，query 的 authorization_ref 必须同 permit
+            # 本体一致，避免错误地用 caller 自报值触发恒 fail-closed。
+            query = query.model_copy(
+                update={"authorization_ref": trusted.permit.permit_id}
+            )
+            permit = trusted.permit
+        snapshot = await kernel.status(query, permit=permit)
         return JSONResponse(json.loads(snapshot.model_dump_json()))
 
     @router.get(KERNEL_INGRESS_SESSION_EVENTS_PATH)
@@ -744,7 +809,12 @@ def _build_kernel_router() -> Any:
         if not session_id:
             return JSONResponse(
                 status_code=400,
-                content={"error": {"Code": "missing_session_id", "Message": "session_id is required"}},
+                content={
+                    "error": {
+                        "Code": "missing_session_id",
+                        "Message": "session_id is required",
+                    }
+                },
             )
         instance_id = str(params.get("agent_instance_id") or "local-agent")
         tenant_id = str(params.get("tenant_id") or "local")
@@ -752,14 +822,26 @@ def _build_kernel_router() -> Any:
             after_seq = int(params.get("after_seq") or 0)
         except ValueError:
             after_seq = 0
-        trusted = trusted_context(
-            source_kind="system",
-            source_ref="events",
-            tenant_id=tenant_id,
-            agent_instance_id=instance_id,
-            session_id=session_id,
-            operations=("subscribe_events",),
-        )
+        if _is_hosted():
+            permit = _hosted_permit(request)
+            if isinstance(permit, JSONResponse):
+                return permit
+            trusted = TrustedRuntimeContext(
+                tenant_id=tenant_id,
+                agent_instance_id=instance_id,
+                source=ControlSource(kind="system", ref="server-subscribe"),
+                permit=permit,
+                received_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            )
+        else:
+            trusted = trusted_context(
+                source_kind="system",
+                source_ref="events",
+                tenant_id=tenant_id,
+                agent_instance_id=instance_id,
+                session_id=session_id,
+                operations=("subscribe_events",),
+            )
 
         async def generator():
             async for seq, envelope in subscribe_projected(

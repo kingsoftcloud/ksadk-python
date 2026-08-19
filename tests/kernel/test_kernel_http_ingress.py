@@ -6,7 +6,6 @@ client、KsADK runtime）与 receipt 映射、health shape、env bootstrap。
 """
 from __future__ import annotations
 
-import os
 import uuid
 from typing import Any
 
@@ -512,6 +511,44 @@ async def test_hosted_valid_server_permit_is_accepted(hosted_kernel_app):
     )
     assert response.status_code == 202, response.text
     assert response.json()["status"] == "accepted"
+
+
+async def test_hosted_status_and_subscription_never_self_sign(hosted_kernel_app):
+    """read path 也必须由 Server permit 约束，不能借 status/SSE 绕过 RBAC。"""
+
+    client, _ = hosted_kernel_app
+    query = {
+        "schema_version": 1,
+        "tenant_id": "tenant-1",
+        "agent_instance_id": "agent-1",
+        "session_id": "s1",
+        "authorization_ref": "caller-forged",
+    }
+    status = await client.post(ingress.KERNEL_INGRESS_STATUS_PATH, json=query)
+    assert status.status_code == 401, status.text
+
+    events = await client.get(
+        ingress.KERNEL_INGRESS_SESSION_EVENTS_PATH,
+        params={"tenant_id": "tenant-1", "agent_instance_id": "agent-1", "session_id": "s1"},
+    )
+    assert events.status_code == 401, events.text
+
+
+async def test_hosted_status_accepts_server_permit(hosted_kernel_app):
+    client, stack = hosted_kernel_app
+    permit = stack.permit("get_status")
+    query = {
+        "schema_version": 1,
+        "tenant_id": "tenant-1",
+        "agent_instance_id": "agent-1",
+        "session_id": "s1",
+        "authorization_ref": permit.permit_id,
+    }
+    response = await client.post(
+        ingress.KERNEL_INGRESS_STATUS_PATH,
+        json={"query": query, "permit": permit.model_dump(mode="json")},
+    )
+    assert response.status_code == 200, response.text
 
 
 async def test_local_authority_mode_explicitly_allows_self_signed_permit(monkeypatch):

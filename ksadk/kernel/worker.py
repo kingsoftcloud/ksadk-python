@@ -35,7 +35,6 @@ from ksadk.kernel.mapping import COMMAND_HANDLERS, RESUME_TARGET_KINDS
 from ksadk.kernel.state import RunState
 from ksadk.kernel.store import (
     AgentKernelStore,
-    InboxMessage,
     RunRecord,
     control_event,
     new_message_id,
@@ -99,14 +98,12 @@ class AgentKernelWorker:
         if not pending:
             return WorkResult(outcome="idle")
 
-        # per-session FIFO：每个 session 只看队头，控制命令可越过被
-        # active Run 挡住的 enqueue；全局按 accepted_seq 取最早可执行者。
-        # 只处理当前 activation 持有 lease 的 session，避免跨 session 抢占。
-        heads: dict[str, InboxMessage] = {}
-        for message in pending:
-            heads.setdefault(message.session_id, message)
+        # per-session FIFO：通常按 accepted_seq 执行；但 active Run 会挡住
+        # enqueue，此时其后的 interrupt/pause/steer 等控制命令必须能越过
+        # 该 enqueue 作用于 active Run。只处理当前 activation 持有 lease 的
+        # session，避免跨 session 抢占。
         eligible = None
-        for message in sorted(heads.values(), key=lambda m: m.accepted_seq):
+        for message in sorted(pending, key=lambda m: m.accepted_seq):
             lease = await self._store.current_lease(
                 agent_instance_id, message.session_id
             )
@@ -229,13 +226,20 @@ class AgentKernelWorker:
             running_update["runtime_run_id"] = handle.run_id
         running = created.model_copy(update=running_update)
         await self._store.save_run_transition(running, expected_fence=fence)
-        self._handles[handle.run_id] = handle
+        # 控制面始终用 durable RunRecord.run_id 查询；adapter 可以拒绝调用方
+        # 指定的 run id，因此绝不能以 runtime 私有 id 作为 cache key。
+        self._handles[run_id] = handle
+        stream_completed = False
         try:
             # 消费整个事件流；只有自然结束才收口 COMPLETED，
             # 异常交给 _execute_claim 做 retryable/terminal/typed 分类。
             await self._consume_stream(adapter, handle, running, guard)
+            stream_completed = True
         finally:
-            self._handles.pop(handle.run_id, None)
+            # 流异常时 durable run 仍是 active；保留原 adapter/handle，控制
+            # 命令才能作用到同一个 live execution。只有自然 terminal 才移除。
+            if stream_completed:
+                self._handles.pop(run_id, None)
         return run_id
 
     async def _consume_stream(
@@ -300,6 +304,7 @@ class AgentKernelWorker:
             result = await adapter.cancel(handle)
             if result == CancelResult.INTERRUPTED_ACTIVE_TURN:
                 await self._transition_run(active, RunState.CANCELLED, fence)
+                self._handles.pop(active.run_id, None)
         elif verb == "pause":
             result = await adapter.pause(handle)
             if result == PauseResult.PAUSED_ACTIVE_TURN:

@@ -19,18 +19,24 @@ import asyncio
 from typing import Any
 
 import pytest
+from fastapi.testclient import TestClient
 
 from ksadk.kernel.authorization import InMemoryNonceStore
 from ksadk.kernel.bootstrap import (
     AgentKernelRuntimeConfig,
     build_agent_kernel_runtime,
+    clear_agent_kernel_runtime,
+    get_agent_kernel_runtime,
 )
 from ksadk.kernel.control import AgentKernel
 from ksadk.kernel.recovery import RecoveryCoordinator
 from ksadk.kernel.worker import AgentKernelWorker
+from ksadk.server.composition import configure_runtime_app
+from ksadk.server.factory import RuntimeAppConfig, create_runtime_app
 from tests.kernel.control_harness import (
     AGENT,
     CLOCK_AT,
+    FakeAdapter,
     command,
     kernel_stack,
 )
@@ -55,6 +61,7 @@ def _runtime_config(stack, **overrides: Any) -> AgentKernelRuntimeConfig:
         contract_digest=CONTRACT_DIGEST,
         capability_digest=CAPABILITY_DIGEST,
         bundle_digest=BUNDLE_DIGEST,
+        activation_id="kernel-pod-test",
         nonce_store=InMemoryNonceStore(),
         store=stack.store,
         session_events=stack.events,
@@ -148,6 +155,7 @@ async def test_bootstrap_close_stops_every_background_task():
         "adapter_provider",
         "contract_digest",
         "nonce_store",
+        "activation_id",
     ],
 )
 async def test_hosted_bootstrap_fails_closed_on_missing_dependencies(missing):
@@ -181,3 +189,40 @@ async def test_local_mode_bootstraps_without_server_authority():
         assert runtime.worker_running
     finally:
         await runtime.close()
+
+
+def test_runtime_app_lifespan_starts_and_stops_full_kernel_runtime(monkeypatch):
+    """生产 FastAPI lifespan 必须启动 worker/lease，不是只注册 ingress。"""
+
+    from ksadk.kernel import ingress
+
+    clear_agent_kernel_runtime()
+    ingress.clear_agent_kernel()
+    monkeypatch.setenv("AGENT_KERNEL_ENABLED", "1")
+    monkeypatch.setenv("AGENT_KERNEL_AUTHORITY_MODE", "local")
+    monkeypatch.setenv("AGENT_KERNEL_STORE_DRIVER", "memory")
+    monkeypatch.setenv("AGENT_INSTANCE_ID", AGENT)
+    monkeypatch.setenv("AGENT_KERNEL_CONTRACT_DIGEST", CONTRACT_DIGEST)
+    monkeypatch.setenv("AGENT_KERNEL_CAPABILITY_DIGEST", CAPABILITY_DIGEST)
+    monkeypatch.setenv("AGENT_BUNDLE_DIGEST", BUNDLE_DIGEST)
+
+    adapter = FakeAdapter()
+    app = create_runtime_app(
+        RuntimeAppConfig(kernel_adapter_provider=lambda: adapter),
+        configure_runtime_app,
+    )
+    try:
+        with TestClient(app):
+            runtime = app.state.agent_kernel_runtime
+            assert runtime is not None
+            assert runtime.worker_running is True
+            assert ingress.get_agent_kernel() is runtime.kernel
+            assert get_agent_kernel_runtime() is runtime
+    finally:
+        # TestClient 会执行 lifespan teardown；即便 startup 失败也清除进程级
+        # global，避免污染随后 ingress/worker 测试。
+        clear_agent_kernel_runtime()
+        ingress.clear_agent_kernel()
+
+    assert get_agent_kernel_runtime() is None
+    assert ingress.get_agent_kernel() is None

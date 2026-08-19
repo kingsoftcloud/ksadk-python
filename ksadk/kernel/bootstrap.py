@@ -64,6 +64,12 @@ class AgentKernelRuntimeConfig:
     store: AgentKernelStore | None = None
     session_events: Any | None = None
     session_service: Any | None = None
+    # Runtime App composition root supplies these so recovery can attach via
+    # the same RuntimeAdapter registry rather than creating an unrelated path.
+    runtime_executor: Any | None = None
+    launch_context: Any | None = None
+    pool: Any | None = None
+    owns_pool: bool = False
     # 生命周期参数
     queue_limit: int = 100
     lease_ttl_seconds: float = 60.0
@@ -354,6 +360,10 @@ def _validate_hosted(config: AgentKernelRuntimeConfig) -> None:
         missing.append("contract_digest")
     if config.nonce_store is None:
         missing.append("nonce_store")
+    # 租约的 owner 必须是实际 workload identity。固定的 instance-level
+    # fallback 会把多 Pod 误识别为同一个 activation，破坏 fencing/takeover。
+    if not config.activation_id:
+        missing.append("activation_id")
     if missing:
         raise RuntimeError(
             "hosted agent kernel runtime requires "
@@ -372,8 +382,8 @@ def build_agent_kernel_runtime(
     store = config.store
     session_events = config.session_events
     session_service = config.session_service
-    owns_pool = False
-    pool = None
+    owns_pool = config.owns_pool
+    pool = config.pool
 
     if store is None or session_events is None:
         if config.driver == "postgres":
@@ -381,7 +391,6 @@ def build_agent_kernel_runtime(
                 PostgresAgentKernelStore,
                 PostgresFencedSessionEventStore,
                 PostgresKernelEventLog,
-                PostgresNonceStore,
             )
             from ksadk.sessions.postgres_service import PostgresSessionService
 
@@ -444,6 +453,8 @@ def build_agent_kernel_runtime(
         store,
         session_events,
         capabilities,
+        executor=config.runtime_executor,
+        launch_context=config.launch_context,
         adapter_factory=adapter_provider,
     )
     heartbeat = LeaseHeartbeat(
@@ -476,7 +487,12 @@ def _no_adapter_provider() -> RuntimeAdapter:  # pragma: no cover - defensive
     raise RuntimeError("agent kernel runtime has no RuntimeAdapter provider")
 
 
-async def bootstrap_agent_kernel_runtime_from_env() -> AgentKernelRuntime | None:
+async def bootstrap_agent_kernel_runtime_from_env(
+    *,
+    adapter_provider: Callable[[], RuntimeAdapter] | None = None,
+    runtime_executor: Any | None = None,
+    launch_context: Any | None = None,
+) -> AgentKernelRuntime | None:
     """Operator env 投影 -> 生产 runtime（AGENT_KERNEL_ENABLED=1 时）。
 
     hosted 部署（AGENT_KERNEL_STORE_DRIVER=postgres + JWKS URL）装配并启动
@@ -485,7 +501,8 @@ async def bootstrap_agent_kernel_runtime_from_env() -> AgentKernelRuntime | None
 
     from ksadk.kernel.ingress import (
         ENV_JWKS_URL,
-        bootstrap_agent_kernel_from_env,
+        _remote_jwks_source,
+        authority_mode,
         set_agent_kernel,
     )
 
@@ -500,30 +517,68 @@ async def bootstrap_agent_kernel_runtime_from_env() -> AgentKernelRuntime | None
     if get_agent_kernel_runtime() is not None:
         return get_agent_kernel_runtime()
 
-    # 先复用 ingress 的 env bootstrap 装配 kernel/store/events（含 DSN 校验）。
-    kernel = await bootstrap_agent_kernel_from_env()
-    if kernel is None:  # pragma: no cover - defensive
-        return None
-
     driver = os.environ.get("AGENT_KERNEL_STORE_DRIVER", "memory").strip().lower()
     dsn = os.environ.get("AGENT_KERNEL_STORE_DSN", "").strip()
     jwks_url = os.environ.get(ENV_JWKS_URL, "").strip()
-    mode: AuthorityMode = "hosted" if jwks_url else "local"
+    mode: AuthorityMode = authority_mode()  # type: ignore[assignment]
+    if mode == "hosted" and driver != "postgres":
+        raise RuntimeError("hosted agent kernel runtime requires postgres store")
+
+    pool = None
+    owns_pool = False
+    if driver == "postgres":
+        from ksadk.kernel.postgres_store import (
+            PostgresAgentKernelStore,
+            PostgresFencedSessionEventStore,
+            PostgresKernelEventLog,
+            PostgresNonceStore,
+        )
+        from ksadk.sessions.postgres_service import PostgresSessionService
+
+        if not dsn:
+            raise RuntimeError("postgres kernel store requires AGENT_KERNEL_STORE_DSN")
+        session_service = PostgresSessionService(dsn=dsn)
+        await session_service._ensure_pool()
+        pool = session_service._pool
+        event_log = PostgresKernelEventLog(pool)
+        store: AgentKernelStore = PostgresAgentKernelStore(
+            pool, event_log, owns_pool=True
+        )
+        await store.ensure_schema()
+        session_events: Any = PostgresFencedSessionEventStore(store)
+        nonce_store: Any = PostgresNonceStore(pool)
+        owns_pool = True
+    else:
+        from ksadk.kernel.memory_store import InMemoryAgentKernelStore
+        from ksadk.sessions.in_memory import InMemorySessionService
+
+        session_service = InMemorySessionService()
+        session_events = SessionServiceEventStore(session_service)
+        store = InMemoryAgentKernelStore(session_events)
+        nonce_store = None
+
     config = AgentKernelRuntimeConfig(
         agent_instance_id=os.environ.get("AGENT_INSTANCE_ID", "local-agent"),
         authority_mode=mode,
         driver=driver,
         dsn=dsn,
-        jwks=kernel._permit_verifier._jwks if mode == "hosted" else None,
+        jwks=_remote_jwks_source(jwks_url) if mode == "hosted" else None,
         permit_issuer=os.environ.get("AGENT_CONTROL_PERMIT_ISSUER", ""),
-        nonce_store=kernel._permit_verifier._nonce_store,
-        adapter_provider=None,
+        nonce_store=nonce_store,
+        adapter_provider=adapter_provider,
         contract_digest=os.environ.get("AGENT_KERNEL_CONTRACT_DIGEST", ""),
         capability_digest=os.environ.get("AGENT_KERNEL_CAPABILITY_DIGEST", ""),
         bundle_digest=os.environ.get("AGENT_BUNDLE_DIGEST", ""),
-        store=kernel._store,
-        session_events=kernel._events,
-        session_service=getattr(kernel._events, "session_service", None),
+        store=store,
+        session_events=session_events,
+        session_service=session_service,
+        runtime_executor=runtime_executor,
+        launch_context=launch_context,
+        pool=pool,
+        owns_pool=owns_pool,
+        # Operator 通过 downward API 注入 POD_UID；hosted 少了它必须拒绝
+        # 启动，不能退回到所有副本共享的固定字符串。
+        activation_id=os.environ.get("POD_UID", "").strip() or None,
         lease_ttl_seconds=float(
             os.environ.get("AGENT_KERNEL_LEASE_TTL_SECONDS", "60") or "60"
         ),

@@ -76,6 +76,16 @@ class RuntimeExecutor:
         self._kernel_store = kernel_store
         self._runs: dict[_HandleKey, _OwnedRun] = {}
 
+    def create_adapter(self, context: RuntimeLaunchContext) -> RuntimeAdapter:
+        """从本 executor 的 registry 创建一个 adapter。
+
+        生产 composition root 需要为 AgentKernelWorker 提供 adapter factory。
+        暴露这个窄入口可避免其绕过当前 RuntimeExecutor、另建默认 registry，
+        从而让普通执行、worker 与恢复走同一套 runtime-type 注册表。
+        """
+
+        return self._registry.create(context)
+
     async def resolve_run(self, run_id: str) -> DurableRun:
         """以 durable Store 为真相解析 Run；cache 只是 live handle 提示。"""
 

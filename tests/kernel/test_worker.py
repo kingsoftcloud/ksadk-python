@@ -330,6 +330,39 @@ async def test_enqueue_emits_runtime_event_stream_with_durable_run_id():
     assert run.metadata["handle_digest"] == handle_digest(handle)
 
 
+async def test_control_uses_durable_run_id_when_adapter_returns_a_different_id():
+    """Adapter 的 runtime run_id 不能让 interrupt 丢失 live handle。"""
+
+    stack = await kernel_stack(
+        adapter=FakeAdapter(matrix=matrix_with(cancel=native()))
+    )
+    stack.adapter.handle_run_id = "runtime-private-run"
+    stack.adapter.stream_error = AgentKernelError(
+        "persistence_uncertain", "keep run open", retryable=True
+    )
+    lease = await stack.lease()
+    await stack.kernel.submit(
+        command(idempotency_key="durable-map-start"), permit=stack.permit("enqueue")
+    )
+    from ksadk.kernel.worker import AgentKernelWorker
+
+    worker = AgentKernelWorker(stack.store, adapter_factory=lambda: stack.adapter)
+    started = await worker.run_once(AGENT, lease)
+    assert started.outcome == "retryable_failure"
+    active = await stack.store.find_active_run(AGENT, "s1")
+    assert active is not None
+    assert active.metadata["runtime_run_id"] == "runtime-private-run"
+
+    stack.adapter.stream_error = None
+    await stack.kernel.submit(
+        command("interrupt", idempotency_key="durable-map-interrupt"),
+        permit=stack.permit("interrupt"),
+    )
+    completed = await worker.run_once(AGENT, lease)
+    assert completed.outcome == "completed"
+    assert ("cancel", "s1") in stack.adapter.calls
+
+
 async def test_stream_completes_only_after_natural_end():
     stack = await kernel_stack()
     stack.adapter.stream_events = _stream_events("any")
