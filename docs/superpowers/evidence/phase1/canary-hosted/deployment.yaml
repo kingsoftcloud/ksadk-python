@@ -1,0 +1,75 @@
+# Phase 1 Task 8 hosted-authority agent-kernel canary deployment (agent-kernel-phase1 ns).
+# DSN comes from Secret agent-kernel-postgres; Server JWKS via AGENT_CONTROL_JWKS_URL.
+# POD_UID downward API -> activation owner (hosted fail-closed requirement).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-kernel-canary
+  namespace: agent-kernel-phase1
+  labels:
+    app: agent-kernel-canary
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: agent-kernel-canary
+  template:
+    metadata:
+      labels:
+        app: agent-kernel-canary
+    spec:
+      containers:
+        - name: runtime
+          image: hub.kce.ksyun.com/agentengine/agent-kernel-canary:phase1-v4-fb9113a
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          env:
+            - name: AGENT_KERNEL_ENABLED
+              value: "1"
+            - name: AGENT_KERNEL_STORE_DRIVER
+              value: postgres
+            - name: AGENT_KERNEL_STORE_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: agent-kernel-postgres
+                  key: dsn
+            - name: AGENT_INSTANCE_ID
+              value: phase1-canary-1
+            - name: AGENT_KERNEL_AUTHORITY_MODE
+              value: hosted
+            - name: AGENT_CONTROL_JWKS_URL
+              value: http://agentengine-kernel.agent-kernel-phase1.svc.cluster.local:8081/agentengine/api/v1/agent-control/jwks
+            - name: AGENT_CONTROL_PERMIT_ISSUER
+              value: agentengine-server
+            - name: AGENT_KERNEL_CONTRACT_DIGEST
+              value: d4a66a7249e10375d32d6a83434fde1d16ee6721e3a09ea03ed71217ee742d62
+            - name: AGENT_BUNDLE_DIGEST
+              value: phase1-canary-v4
+            - name: AGENT_KERNEL_LEASE_TTL_SECONDS
+              value: "30"
+            - name: POD_UID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-kernel-canary
+  namespace: agent-kernel-phase1
+  labels:
+    app: agent-kernel-canary
+spec:
+  selector:
+    app: agent-kernel-canary
+  ports:
+    - port: 8080
+      targetPort: 8080
