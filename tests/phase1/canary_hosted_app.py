@@ -375,5 +375,42 @@ async def healthz() -> JSONResponse:
     )
 
 
+@app.post("/test/expire-interaction")
+async def expire_interaction(body: dict) -> dict:
+    """测试钩子：确定性演练 ledger expiry（生产 expiry sweep 不在 Phase 1 范围）。
+
+    直接在当前 activation guard 下调用 store.expire；仍走同一事务性
+    ledger transition + terminal SessionEvent 路径。
+    """
+    from ksadk.kernel.bootstrap import get_agent_kernel_runtime
+    from ksadk.kernel.store import ActivationLeaseRequest, ActivationWriteGuard
+
+    runtime = get_agent_kernel_runtime()
+    if runtime is None:
+        return JSONResponse(status_code=503, content={"error": "not_booted"})
+    store = runtime.kernel_store
+    session_id = str(body["session_id"])
+    lease = await store.current_lease(runtime.config.agent_instance_id, session_id)
+    if lease is None:
+        lease = await store.acquire_activation(
+            ActivationLeaseRequest(
+                agent_instance_id=runtime.config.agent_instance_id,
+                session_id=session_id,
+                activation_id=f"expire-hook-{uuid.uuid4().hex[:8]}",
+                runtime_type="canary-echo",
+                bundle_digest=BUNDLE_DIGEST,
+                capability_digest="phase1-canary",
+                lease_ttl_seconds=30.0,
+            )
+        )
+    guard = ActivationWriteGuard(
+        activation_id=lease.activation_id, fencing_token=lease.fencing_token
+    )
+    receipt = await store.expire(
+        str(body["interaction_id"]), int(body["expected_revision"]), guard=guard
+    )
+    return receipt.model_dump(mode="json")
+
+
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8080)
