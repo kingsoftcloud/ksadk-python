@@ -102,13 +102,29 @@ def test_ksadk_hosted_soft_band_triggers(monkeypatch) -> None:
     """ksadk_hosted + total > soft_limit + groups 充足 → should_compact, trigger_band=soft。"""
     monkeypatch.delenv("KSADK_COMPACT_SOFT_LIMIT_PCT", raising=False)
     monkeypatch.delenv("KSADK_COMPACT_HARD_LIMIT_PCT", raising=False)
-    # soft=90k（估算 ~5chars/token）。构造 ~120k tokens（超 soft 90k，未超 hard 167k），6 rounds > tail 4
+    # soft=90k。构造约 120k tokens（超 soft、未超 hard），且 6 rounds > tail 4。
     events = _many_rounds(6, chars_per_turn=40_000)  # ~120k
     plan = _plan_compaction(
         events, model_metadata=_MODEL_METADATA, prompt_integration_mode="ksadk_hosted"
     )
     assert plan.soft_limit_tokens == 90_000
     assert plan.hard_limit_tokens is not None
+    assert plan.should_compact is True
+    assert plan.trigger_band == "soft"
+
+
+def test_framework_assisted_uses_dual_threshold_when_ksadk_owns_compaction(
+    monkeypatch,
+) -> None:
+    events = _many_rounds(6, chars_per_turn=40_000)
+
+    plan = _plan_compaction(
+        events,
+        model_metadata=_MODEL_METADATA,
+        prompt_integration_mode="framework_assisted",
+        compaction_owner="ksadk",
+    )
+
     assert plan.should_compact is True
     assert plan.trigger_band == "soft"
 

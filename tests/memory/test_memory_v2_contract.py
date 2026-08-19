@@ -6,6 +6,8 @@ Coordinator 单测覆盖敏感信息拒绝、阈值、冲突、scope 隔离、�
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from ksadk.memory.coordinator import (
@@ -101,6 +103,23 @@ def test_sqlite_provider_recalls_chinese_natural_language_query(provider):
     assert [item.memory_id for item in result.records] == ["m-natural-cjk"]
 
 
+def test_sqlite_provider_mixed_cjk_query_does_not_block_ascii_fact(provider):
+    provider.upsert(
+        _record(memory_id="m-python", scope_id="u-python", content="用户偏好用 Python 3.12"),
+        expected_version=None,
+    )
+
+    result = provider.search(
+        MemorySearchRequest(
+            query="Python 3.12 是什么",
+            scopes=[("user", "u-python")],
+            memory_types=["fact"],
+        )
+    )
+
+    assert [item.memory_id for item in result.records] == ["m-python"]
+
+
 def test_provider_scope_isolation(provider):
     provider.upsert(_record(scope_id="u1"), expected_version=None)
     res = provider.search(
@@ -133,6 +152,38 @@ def test_provider_hard_delete(provider):
     r = provider.delete(MemoryDeleteRequest(memory_id="m1", scope="user", scope_id="u1", hard=True))
     assert r.deleted
     assert provider.get("m1") is None
+
+
+def test_provider_delete_enforces_scope(provider):
+    provider.upsert(_record(memory_id="m-scope", scope_id="u1"), expected_version=None)
+
+    result = provider.delete(
+        MemoryDeleteRequest(memory_id="m-scope", scope="user", scope_id="u2", hard=True)
+    )
+
+    assert result.deleted is False
+    assert provider.get("m-scope") is not None
+
+
+def test_provider_cleanup_honors_retention_and_ttl(provider):
+    old = replace(
+        _record(memory_id="m-old", content="old"),
+        created_at="2020-01-01T00:00:00Z",
+        importance=0.1,
+    )
+    recent = replace(_record(memory_id="m-recent", content="recent"), importance=0.1)
+    expired = replace(
+        _record(memory_id="m-expired", content="expired"),
+        expires_at="2020-01-01T00:00:00Z",
+    )
+    provider.upsert(old, expected_version=None)
+    provider.upsert(recent, expected_version=None)
+    provider.upsert(expired, expected_version=None)
+
+    assert provider.cleanup(expire_days=90) == 2
+    assert provider.get("m-old") is None
+    assert provider.get("m-expired") is None
+    assert provider.get("m-recent") is not None
 
 
 def test_provider_soft_delete_marks_deleted(provider):

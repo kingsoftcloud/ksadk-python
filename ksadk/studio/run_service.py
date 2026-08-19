@@ -25,6 +25,7 @@ from ksadk.runtime import (
 from ksadk.studio.contracts import RunEvent, RunRecord, RunStatus, Usage
 from ksadk.studio.errors import StudioError
 from ksadk.studio.event_store import RunEventStore
+from ksadk.studio.pcm_memory import recall_platform_memory
 from ksadk.studio.workspace import Workspace
 
 _CANCEL_TIMEOUT_SECONDS = 2.0
@@ -342,7 +343,7 @@ class StudioRunService:
                     on_event(resumed)
                 self.event_store.save(record)
             record.output = final_text or streamed_final
-            await self._finalize_via_shared(record, spec, user_input)
+            await self._finalize_via_shared(record, spec, user_input, prepared_turn=prepared_turn)
         except asyncio.CancelledError:
             cancel_result = "task_cancelled"
             if handle is not None and self.executor.is_attached(handle):
@@ -648,6 +649,8 @@ class StudioRunService:
         record: RunRecord,
         spec: StudioRunSpec,
         user_input: str,
+        *,
+        prepared_turn: Any | None = None,
     ) -> None:
         """Finalize hosted turns through the shared PCM lifecycle.
 
@@ -657,16 +660,18 @@ class StudioRunService:
         if record.status != RunStatus.COMPLETED:
             return
         try:
-            from types import SimpleNamespace
-
             from ksadk.runtime.hosted_finalizer import FinalizeContext, finalize_hosted_turn
+            from ksadk.sessions.base import SessionEvent
 
-            turn_event = SimpleNamespace(
+            turn_event = SessionEvent(
+                id=f"{record.id}:user",
+                session_id=record.session_id,
                 author="user",
                 event_type="user_message",
-                text=user_input,
+                content={"role": "user", "parts": [{"text": user_input}]},
                 seq_id=1,
-                id=f"{record.id}:user",
+                invocation_id=record.id,
+                metadata={},
             )
             usage_dict = (
                 record.usage.model_dump(by_alias=False, mode="json")
@@ -679,8 +684,10 @@ class StudioRunService:
                     invocation_id=record.id,
                     user_id=_STUDIO_LOCAL_USER_ID,
                     agent_id=spec.agent_id,
-                    context_plan=record.context_plan,
-                    shadow_context_plan=None,
+                    context_plan=(
+                        getattr(prepared_turn, "context_plan", None) or record.context_plan
+                    ),
+                    shadow_context_plan=getattr(prepared_turn, "shadow_context_plan", None),
                     usage=usage_dict,
                     runtime_type=record.runtime_type,
                     prompt_integration_mode=str(
@@ -751,10 +758,13 @@ class StudioRunService:
                 agent_max_input_tokens=cfg.get("max_input_tokens"),
                 agent_reserve_output_tokens=cfg.get("reserve_output_tokens"),
             )
-            memory_context, memory_events = self._recall_platform_memory(
-                record=record,
-                spec=spec,
+            memory_context, memory_events = recall_platform_memory(
+                run_id=record.id,
+                session_id=record.session_id,
+                agent_id=spec.agent_id,
+                user_id=_STUDIO_LOCAL_USER_ID,
                 user_input=user_input,
+                request_config=dict(spec.request_config or {}),
             )
             prepared.memory_context = memory_context
             prepared.memory_recall_events = memory_events
@@ -789,89 +799,6 @@ class StudioRunService:
             return prepared
         except Exception:  # noqa: BLE001 - evidence collection is best effort
             return None
-
-    def _recall_platform_memory(
-        self,
-        *,
-        record: RunRecord,
-        spec: StudioRunSpec,
-        user_input: str,
-    ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
-        """按 AgentVersion 的 providerRef 召回，供 native runtime 做显式投影。"""
-        cfg = dict(spec.request_config or {})
-        if not bool(cfg.get("memory_enabled")) or not bool(
-            cfg.get("memory_recall_enabled", True)
-        ):
-            return None, []
-
-        provider_ref = str(cfg.get("provider_ref") or "local-default")
-        rollout = str(cfg.get("memory_write_rollout") or "enabled")
-        try:
-            from ksadk.memory.coordinator import (
-                MemoryCoordinator,
-                agent_user_scope_id,
-                build_search_request,
-                recall_to_context_item,
-            )
-            from ksadk.memory.events import recall_completed, recall_empty, recall_failed
-            from ksadk.memory.provider_adapter import adapt_as_memory_provider
-            from ksadk.memory.provider_resolver import resolve_memory_provider
-
-            provider = adapt_as_memory_provider(resolve_memory_provider(provider_ref))
-            coordinator = MemoryCoordinator(provider)
-            result = coordinator.recall(
-                build_search_request(
-                    query=user_input,
-                    user_id=agent_user_scope_id(
-                        agent_id=spec.agent_id,
-                        user_id=_STUDIO_LOCAL_USER_ID,
-                    ),
-                    top_k=int(cfg.get("memory_recall_top_k") or 8),
-                    max_tokens=int(cfg.get("memory_recall_max_tokens") or 1600),
-                    min_score=float(cfg.get("memory_recall_min_score") or 0.45),
-                )
-            )
-            context = recall_to_context_item(result)
-            if context is not None:
-                event = recall_completed(
-                    run_id=record.id,
-                    session_id=record.session_id,
-                    provider=provider_ref,
-                    rollout=rollout,
-                    count=len(result.records),
-                )
-            elif result.status == "ok":
-                event = recall_empty(
-                    run_id=record.id,
-                    session_id=record.session_id,
-                    provider=provider_ref,
-                    rollout=rollout,
-                )
-            else:
-                event = recall_failed(
-                    run_id=record.id,
-                    session_id=record.session_id,
-                    provider=provider_ref,
-                    rollout=rollout,
-                    error_code=str(result.error_code or result.status),
-                    error_message="平台长期记忆召回失败",
-                    retryable=result.status in {"timeout", "failed"},
-                )
-            return context, [event.to_dict()]
-        except Exception as exc:  # noqa: BLE001 - recall failure must not break a run
-            from ksadk.memory.events import recall_failed
-
-            return None, [
-                recall_failed(
-                    run_id=record.id,
-                    session_id=record.session_id,
-                    provider=provider_ref,
-                    rollout=rollout,
-                    error_code="recall_exception",
-                    error_message=str(exc)[:200],
-                    retryable=True,
-                ).to_dict()
-            ]
 
     def _conversation_messages(
         self,

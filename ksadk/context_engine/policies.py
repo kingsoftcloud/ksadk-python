@@ -58,7 +58,9 @@ class PromptPolicy:
             rule_file_max_tokens=_env_int("KSADK_CONTEXT_RULE_FILE_MAX_TOKENS", 4000),
             rule_files_max_tokens=_env_int("KSADK_CONTEXT_RULE_FILES_MAX_TOKENS", 12000),
             cache_observability=os.environ.get("KSADK_CONTEXT_CACHE_BREAK_OBSERVABILITY", "true")
-            .strip().lower() not in ("0", "false", "off"),
+            .strip()
+            .lower()
+            not in ("0", "false", "off"),
         )
 
 
@@ -128,16 +130,21 @@ class CompactionPolicy:
             keep_tail_groups=_env_int("KSADK_CONTEXT_KEEP_TAIL_GROUPS", 8),
             emergency_keep_tail_groups=_env_int("KSADK_CONTEXT_EMERGENCY_KEEP_TAIL_GROUPS", 3),
             semantic_enabled=os.environ.get("KSADK_CONTEXT_SEMANTIC_ENABLED", "true")
-            .strip().lower() not in ("0", "false", "off"),
+            .strip()
+            .lower()
+            not in ("0", "false", "off"),
             semantic_timeout_ms=_env_int("KSADK_CONTEXT_SEMANTIC_TIMEOUT_MS", 45000),
-            max_retry_after_prompt_too_long=_env_int(
-                "KSADK_CONTEXT_MAX_RETRY_AFTER_PTL", 1
-            ),
+            max_retry_after_prompt_too_long=_env_int("KSADK_CONTEXT_MAX_RETRY_AFTER_PTL", 1),
             flush_memory_before_compaction=os.environ.get(
                 "KSADK_MEMORY_FLUSH_BEFORE_COMPACTION", "true"
-            ).strip().lower() not in ("0", "false", "off"),
+            )
+            .strip()
+            .lower()
+            not in ("0", "false", "off"),
             working_state_enabled=os.environ.get("KSADK_CONTEXT_WORKING_STATE_ENABLED", "true")
-            .strip().lower() not in ("0", "false", "off"),
+            .strip()
+            .lower()
+            not in ("0", "false", "off"),
             working_state_max_tokens=_env_int("KSADK_CONTEXT_WORKING_STATE_MAX_TOKENS", 8000),
             working_state_update_min_token_growth=_env_int(
                 "KSADK_CONTEXT_WORKING_STATE_MIN_TOKEN_GROWTH", 5000
@@ -175,12 +182,16 @@ class ContributorPolicy:
     def from_env(cls) -> "ContributorPolicy":
         return cls(
             default_timeout_ms=_env_int("KSADK_CONTEXT_CONTRIBUTOR_TIMEOUT_MS", 3000),
-            default_failure_mode=os.environ.get(
-                "KSADK_CONTEXT_CONTRIBUTOR_FAILURE_MODE", "skip"
-            ).strip().lower() or "skip",
+            default_failure_mode=os.environ.get("KSADK_CONTEXT_CONTRIBUTOR_FAILURE_MODE", "skip")
+            .strip()
+            .lower()
+            or "skip",
             allow_external_platform_trust=os.environ.get(
                 "KSADK_CONTEXT_CONTRIBUTOR_ALLOW_PLATFORM_TRUST", "false"
-            ).strip().lower() in ("1", "true", "yes"),
+            )
+            .strip()
+            .lower()
+            in ("1", "true", "yes"),
         )
 
 
@@ -200,10 +211,14 @@ class MemoryPolicyConfig:
     def from_env(cls) -> "MemoryPolicyConfig":
         # 旧变量映射（方案 §13）：KSADK_LTM_BACKEND → provider
         provider = (
-            os.environ.get("KSADK_MEMORY_PROVIDER")
-            or os.environ.get("KSADK_LTM_BACKEND")
-            or "local_sqlite"
-        ).strip().lower()
+            (
+                os.environ.get("KSADK_MEMORY_PROVIDER")
+                or os.environ.get("KSADK_LTM_BACKEND")
+                or "local_sqlite"
+            )
+            .strip()
+            .lower()
+        )
         return cls(
             enabled=os.environ.get("KSADK_MEMORY_ENABLED", "true").strip().lower()
             not in ("0", "false", "off"),
@@ -265,6 +280,12 @@ def compute_budget_tokens(
 
     ``reserved_output``/``reserved_reasoning`` 为 0 时按传入值；safety_buffer 从 policy。
     """
+    # 默认 8K safety buffer 面向大窗口模型。对 4K/8K 小窗口若直接扣除会把
+    # max_input 压成 0，因此将安全余量限制在窗口的 10%（至少 256 tokens）。
+    effective_safety_buffer = min(
+        policy.safety_buffer_tokens,
+        max(256, int(context_window_tokens * 0.10)),
+    )
     max_input = max(
         0,
         min(
@@ -272,7 +293,7 @@ def compute_budget_tokens(
             context_window_tokens
             - reserved_output_tokens
             - reserved_reasoning_tokens
-            - policy.safety_buffer_tokens,
+            - effective_safety_buffer,
         ),
     )
     soft = int(max_input * policy.soft_limit_percent / 100.0)
@@ -281,7 +302,7 @@ def compute_budget_tokens(
         "max_input_tokens": max_input,
         "soft_limit_tokens": soft,
         "hard_limit_tokens": hard,
-        "safety_buffer_tokens": policy.safety_buffer_tokens,
+        "safety_buffer_tokens": effective_safety_buffer,
     }
 
 

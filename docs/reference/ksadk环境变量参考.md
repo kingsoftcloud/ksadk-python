@@ -46,10 +46,12 @@
 | `KSADK_MEMORY_ENABLED` | Memory | `0` | 是否启用平台 Memory Projection。 |
 | `KSADK_MEMORY_FLUSH_BEFORE_COMPACTION` | Memory | `0` | 压缩前是否刷新 Memory Candidate。 |
 | `KSADK_MEMORY_FLUSH_ENABLED` | Memory | `0` | 是否允许提交 Memory Candidate。 |
+| `KSADK_MEMORY_MAX_RECORDS` | Memory | `10000` | 本地 PCM Memory 最多保留的记录数。 |
 | `KSADK_MEMORY_MIN_SCORE` | Memory | 未设置 | Memory Recall 最低相关性分数。 |
 | `KSADK_MEMORY_PROVIDER` | Memory | 未设置 | 平台 Memory Provider 选择器。 |
 | `KSADK_MEMORY_RECALL_MAX_TOKENS` | Memory | 未设置 | Memory Recall Token 预算。 |
 | `KSADK_MEMORY_RECALL_TOP_K` | Memory | 未设置 | 最多召回的 Memory 条目数。 |
+| `KSADK_MEMORY_RETENTION_DAYS` | Memory | `90` | 本地 PCM Memory 的默认保留天数。 |
 | `KSADK_MEMORY_WRITE_MODE` | Memory | 未设置 | Memory 写入模式：off、explicit-only 或 candidate。 |
 | `KSADK_PLATFORM_SAFETY_TEXT` | Prompt | 未设置 | Prompt Compiler 注入的平台安全规则。 |
 | `KSADK_PROMPT_AUTO_DISCOVERY` | Prompt | `0` | 是否自动发现项目 Prompt 来源。 |
@@ -334,6 +336,8 @@
 | `KSADK_ADK_SESSION_URL` | ADK Memory | 条件必传 | 未设置 | `KSADK_SESSION_DSN` | 是 | Secret | 否 | ADK 原生 session 数据库 URL。统一 session DSN 也可兜底。 |
 | `KSADK_ADK_RESUMABLE` | ADK Runner resume | 否 | `false` | 无 | 否 | 开发者 / 平台 | 否 | 显式启用 ADK invocation resume。平台 checkpoint 恢复仍要求共享 database session backend。 |
 | `KSADK_MEMORY_BACKEND` | MemoryManager | 否 | `memory` | 无 | 否 | 开发者 / 平台 | 否 | 轻量 KV/消息历史 backend。当前内置 `memory`，注册 Redis backend 后可用 `redis`。 |
+| `KSADK_MEMORY_MAX_RECORDS` | Platform Memory | 否 | `10000` | 无 | 否 | 平台 | 否 | 本地 SQLite PCM Provider 的最大保留记录数，启动时执行清理。 |
+| `KSADK_MEMORY_RETENTION_DAYS` | Platform Memory | 否 | `90` | 无 | 否 | 平台 | 否 | 本地 SQLite PCM Provider 的保留天数，启动时清理过期记录。 |
 | `KSADK_MEMORY_URL` | MemoryManager | 条件必传 | 未设置 | 无 | 是 | Secret | 否 | 远端 MemoryManager backend 连接 URL，例如 Redis URL。 |
 | `KSADK_MEMORY_PREFIX` | MemoryManager | 否 | `ksadk:memory:` | 无 | 否 | 开发者 / 平台 | 否 | MemoryManager key prefix。 |
 | `KSADK_MEMORY_TTL` | MemoryManager | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | MemoryManager 默认 TTL 秒数。 |

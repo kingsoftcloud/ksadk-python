@@ -403,9 +403,21 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     ),
     EnvVarSpec("KSADK_MEMORY_FLUSH_ENABLED", "memory", "Enable memory candidate commit.", "0"),
     EnvVarSpec("KSADK_MEMORY_MIN_SCORE", "memory", "Minimum memory recall relevance score."),
+    EnvVarSpec(
+        "KSADK_MEMORY_MAX_RECORDS",
+        "memory",
+        "Maximum retained records for the local PCM memory provider.",
+        "10000",
+    ),
     EnvVarSpec("KSADK_MEMORY_PROVIDER", "memory", "Platform memory provider selector."),
     EnvVarSpec("KSADK_MEMORY_RECALL_MAX_TOKENS", "memory", "Memory recall token budget."),
     EnvVarSpec("KSADK_MEMORY_RECALL_TOP_K", "memory", "Maximum recalled memory items."),
+    EnvVarSpec(
+        "KSADK_MEMORY_RETENTION_DAYS",
+        "memory",
+        "Retention period in days for the local PCM memory provider.",
+        "90",
+    ),
     EnvVarSpec(
         "KSADK_MEMORY_WRITE_MODE", "memory", "Memory write mode: off, explicit-only, or candidate."
     ),

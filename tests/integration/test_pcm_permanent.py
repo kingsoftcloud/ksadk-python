@@ -144,7 +144,8 @@ def test_manifest_context_validates_on_create():
         prompt="p",
         context={"maxInputTokens": 4096, "reserveOutputTokens": 512},
     )
-    assert m.context["maxInputTokens"] == 4096
+    assert m.context is not None
+    assert m.context.max_input_tokens == 4096
 
     m2 = CodexAgentManifest(
         name="test-old",
@@ -155,7 +156,7 @@ def test_manifest_context_validates_on_create():
     )
     assert m2.context is None
 
-    with pytest.raises(Exception, match="格式错误"):
+    with pytest.raises(Exception, match="maxInputTokens"):
         CodexAgentManifest(
             name="test-err",
             version="1.0.0",
@@ -165,7 +166,7 @@ def test_manifest_context_validates_on_create():
             context={"maxInputTokens": "not_a_number"},
         )
 
-    with pytest.raises(Exception, match="格式错误"):
+    with pytest.raises(Exception, match="enabled"):
         CodexAgentManifest(
             name="test-err2",
             version="1.0.0",
@@ -369,10 +370,10 @@ def test_build_immutability_codex_manifest():
         },
         memory={"enabled": False},
     )
-    assert manifest1.context["maxInputTokens"] == 4096
-    assert manifest2.context["maxInputTokens"] == 32000
-    assert manifest1.memory["enabled"] is True
-    assert manifest2.memory["enabled"] is False
+    assert manifest1.context is not None and manifest1.context.max_input_tokens == 4096
+    assert manifest2.context is not None and manifest2.context.max_input_tokens == 32000
+    assert manifest1.memory is not None and manifest1.memory.enabled is True
+    assert manifest2.memory is not None and manifest2.memory.enabled is False
 
 
 # ---- 9. memory.enabled=false 不召回不写入 ----

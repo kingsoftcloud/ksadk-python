@@ -59,14 +59,13 @@ def _plan_compaction(
 ) -> CompactionPlan:
     """根据当前 transcript 计算是否需要做 checkpoint compaction。
 
-    PR D1：``prompt_integration_mode=="ksadk_hosted"`` 时走双阈值（soft 50% / hard ~84%），
-    命中且 ``len(groups) > tail_groups`` 时触发 proactive compact（soft=整理，hard=强制止血）。
-    非 ksadk_hosted 走旧单阈值 ``auto_compact_threshold_tokens``，行为字节级一致。
+    ``compaction_owner=="ksadk"`` 时走双阈值（soft 50% / hard ~84%），命中且
+    ``len(groups) > tail_groups`` 时触发 proactive compact（soft=整理，hard=强制止血）。
+    未显式提供 owner 的旧调用继续以 ``ksadk_hosted`` 作为兼容判据。
     ``force=True``（PTL）始终绕过阈值，``trigger_band="emergency"``。
 
-    compaction_owner 硬门控（方案 §6.2）：``compaction_owner!="ksadk"`` 时，即使
-    ``prompt_integration_mode=="ksadk_hosted"`` 也不走 KsADK 双阈值——native/assisted runtime
-    的 compaction 由原生 Runtime 拥有，KsADK 不运行第二套压缩链路（ADR-008 / PCM-RUNNER-001）。
+    compaction_owner 硬门控（方案 §6.2）：native/framework owner 不运行 KsADK 第二套
+    压缩；framework-assisted Runner 可显式声明 owner=ksadk 使用平台压缩。
     """
 
     compacted_until = compacted_until_seq_id(list(events))
@@ -101,13 +100,11 @@ def _plan_compaction(
     total_estimated_tokens = sum(
         estimate_text_tokens(extract_event_text(event)) for event in combined_events
     )
-    # PR D1：双阈值仅在 ksadk_hosted 启用。非门控 → None（旧单阈值分支）。
-    # compaction_owner 硬门控（方案 §6.2）：compaction_owner!=ksadk 时不走 KsADK 双阈值。
-    # native/assisted runtime 的 compaction 由原生 Runtime 拥有，KsADK 不运行第二套压缩（ADR-008）。
-    is_ksadk_hosted = (
-        prompt_integration_mode == "ksadk_hosted"
-        and compaction_owner != "native"
-        and compaction_owner != "framework"
+    # 是否启用双阈值由 compaction ownership 决定，而不是由 Prompt 接管模式决定。
+    # framework-assisted LangGraph 也可以把压缩明确交给 KsADK；native/framework
+    # owner 则继续使用各自原生机制，避免双重压缩。
+    is_ksadk_hosted = compaction_owner == "ksadk" or (
+        not compaction_owner and prompt_integration_mode == "ksadk_hosted"
     )
     soft_limit_tokens = (
         get_auto_compact_soft_limit_tokens(resolved_model_metadata) if is_ksadk_hosted else None
@@ -440,11 +437,9 @@ async def compact_conversation_history(
     # 提取候选并提交；失败不阻止 compaction（§9.2 失败语义）。非门控不执行（向后兼容）。
     memory_flush_audit: dict[str, Any] | None = None
     if (
-        prompt_integration_mode == "ksadk_hosted"
-        and compaction_owner != "native"
-        and compaction_owner != "framework"
-        and plan.groups_to_compact
-    ):
+        compaction_owner == "ksadk"
+        or (not compaction_owner and prompt_integration_mode == "ksadk_hosted")
+    ) and plan.groups_to_compact:
         compacted_events = [event for group in plan.groups_to_compact for event in group]
         seq_range = (
             int(plan.groups_to_compact[0][0].seq_id or 0),

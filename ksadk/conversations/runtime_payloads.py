@@ -86,6 +86,11 @@ class PreparedConversationTurn:
     agent_id: str = ""
     # AgentVersion 级 Memory 写入灰度。None=旧环境策略；off/shadow=不写；enabled=写入。
     memory_write_rollout: str | None = None
+    memory_enabled: bool | None = None
+    memory_recall_enabled: bool | None = None
+    memory_write_mode: str = "candidate"
+    flush_before_compaction: bool = True
+    provider_ref: str = "local-default"
 
 
 @dataclass

@@ -102,6 +102,15 @@ async def iter_runtime_conversation_events(
         agent_system=prompt_config["agent_system"],
         agent_task=prompt_config["agent_task"],
         prompt_integration_mode=prompt_config["prompt_integration_mode"],
+        context_engine_rollout=prompt_config["context_engine_rollout"] or None,
+        memory_write_rollout=prompt_config["memory_write_rollout"] or None,
+        memory_enabled=prompt_config["memory_enabled"],
+        memory_recall_enabled=prompt_config["memory_recall_enabled"],
+        memory_write_mode=prompt_config["memory_write_mode"],
+        flush_before_compaction=prompt_config["flush_before_compaction"],
+        provider_ref=prompt_config["provider_ref"],
+        agent_max_input_tokens=prompt_config["max_input_tokens"],
+        agent_reserve_output_tokens=prompt_config["reserve_output_tokens"],
     )
     canonical_messages = prepared.responses_history or [dict(item) for item in messages]
     conversation_request = {
@@ -242,6 +251,7 @@ async def iter_runtime_conversation_events(
         usage=_baseline_usage,
         session_service_provider=provider,
         store=store,
+        runtime_invocation_id=handle.run_id,
     )
 
 
@@ -252,6 +262,7 @@ async def _finalize_hosted_turn(
     session_service_provider: Callable[[], Any],
     turn_events: Any = None,
     store: Any = None,
+    runtime_invocation_id: str | None = None,
 ) -> None:
     """PR E：hosted turn 收尾——委托共享 HostedTurnFinalizer（方案 §11.1 / P0 收敛）。
 
@@ -281,20 +292,27 @@ async def _finalize_hosted_turn(
             except Exception:  # noqa: BLE001
                 pass
 
-    # 从 session store 取 turn events
-    # 同时匹配 prepared.invocation_id 和 handle.run_id（resume 路径可能不同）
-    _turn_events = None
-    try:
-        _svc = session_service_provider()
-        _all = await _svc.get_events(getattr(prepared, "session_id", ""))
-        _inv = getattr(prepared, "invocation_id", "")
-        _turn_events = [e for e in _all if getattr(e, "invocation_id", "") == _inv]
-        # fallback: 如果精确匹配为空，取最新 N 条 user events（避免丢 Memory candidate）
-        if not _turn_events:
-            _turn_events = [e for e in _all[-20:] if getattr(e, "event_type", "") == "user_message"]
-    except Exception:  # noqa: BLE001
-        pass
+    # 从 session store 取当前 turn events。预处理事件使用 prepared invocation，
+    # resume/native runtime 事件可能使用 handle.run_id；只接受这两个明确 id，
+    # 不得回退到 session 最近消息，以免跨 turn 写错长期记忆。
+    _turn_events = turn_events
+    if _turn_events is None:
+        try:
+            _svc = session_service_provider()
+            _all = await _svc.get_events(getattr(prepared, "session_id", ""))
+            invocation_ids = {
+                str(getattr(prepared, "invocation_id", "") or ""),
+                str(runtime_invocation_id or ""),
+            } - {""}
+            _turn_events = [
+                event
+                for event in _all
+                if str(getattr(event, "invocation_id", "") or "") in invocation_ids
+            ]
+        except Exception:  # noqa: BLE001
+            _turn_events = []
 
+    emitted_memory_events: list[dict[str, Any]] = []
     await finalize_hosted_turn(
         FinalizeContext(
             session_id=getattr(prepared, "session_id", ""),
@@ -309,21 +327,39 @@ async def _finalize_hosted_turn(
             ),
             prompt_integration_mode=str(getattr(prepared, "prompt_integration_mode", "")),
             memory_write_rollout=str(getattr(prepared, "memory_write_rollout", "") or ""),
-            memory_enabled=getattr(prepared, "memory_enabled", True),
-            memory_recall_enabled=getattr(prepared, "memory_recall_enabled", True),
+            memory_enabled=getattr(prepared, "memory_enabled", None),
+            memory_recall_enabled=getattr(prepared, "memory_recall_enabled", None),
             memory_write_mode=str(getattr(prepared, "memory_write_mode", "candidate") or ""),
             flush_before_compaction=getattr(prepared, "flush_before_compaction", True),
             provider_ref=str(getattr(prepared, "provider_ref", "local-default") or ""),
-            emit_event=None,
+            emit_event=emitted_memory_events.append,
             session_events=_turn_events,
             # emit_event=lambda d: _canonical_emit_memory_event(
             #     d, session_service_provider, prepared
         ),
         session_service_provider=session_service_provider,
     )
+    if store is not None:
+        for memory_event in emitted_memory_events:
+            try:
+                from ksadk.events.runtime_event import EventType, RuntimeEvent
+
+                await store.append_one(
+                    RuntimeEvent.create(
+                        EventType.RUN_PROGRESS,
+                        agent_id=str(getattr(prepared, "agent_id", "") or ""),
+                        user_id=str(getattr(prepared, "user_id", "") or ""),
+                        session_id=getattr(prepared, "session_id", ""),
+                        invocation_id=getattr(prepared, "invocation_id", ""),
+                        seq_id=0,
+                        payload={"status": "memory", "memory_event": memory_event},
+                    )
+                )
+            except Exception:  # noqa: BLE001
+                pass
 
 
-def _resolve_runtime_prompt_config(config: Mapping[str, Any] | None) -> dict[str, str]:
+def _resolve_runtime_prompt_config(config: Mapping[str, Any] | None) -> dict[str, Any]:
     """Resolve the per-build Prompt ownership contract from ``agentengine.yaml``.
 
     Standard Code/Container deployments only carry ``RuntimeLaunchContext.config``;
@@ -335,6 +371,14 @@ def _resolve_runtime_prompt_config(config: Mapping[str, Any] | None) -> dict[str
     raw = dict(config or {})
     nested_value = raw.get("context")
     nested = dict(nested_value) if isinstance(nested_value, Mapping) else {}
+    memory_value = raw.get("memory")
+    memory = dict(memory_value) if isinstance(memory_value, Mapping) else {}
+    rollout_value = nested.get("rollout")
+    rollout = dict(rollout_value) if isinstance(rollout_value, Mapping) else {}
+    recall_value = memory.get("recall")
+    recall = dict(recall_value) if isinstance(recall_value, Mapping) else {}
+    write_value = memory.get("write")
+    write = dict(write_value) if isinstance(write_value, Mapping) else {}
     ownership = (
         str(
             nested.get("prompt_ownership")
@@ -371,6 +415,42 @@ def _resolve_runtime_prompt_config(config: Mapping[str, Any] | None) -> dict[str
             nested.get("agent_task") or nested.get("agentTask") or raw.get("agent_task") or ""
         ),
         "prompt_integration_mode": mode,
+        "context_engine_rollout": str(
+            rollout.get("contextEngine")
+            or rollout.get("context_engine")
+            or raw.get("context_engine_rollout")
+            or ""
+        ),
+        "memory_write_rollout": str(
+            rollout.get("memoryWrite")
+            or rollout.get("memory_write")
+            or raw.get("memory_write_rollout")
+            or ""
+        ),
+        "memory_enabled": (
+            memory.get("enabled") if "enabled" in memory else raw.get("memory_enabled")
+        ),
+        "memory_recall_enabled": (
+            recall.get("enabled") if "enabled" in recall else raw.get("memory_recall_enabled")
+        ),
+        "memory_write_mode": str(write.get("mode") or raw.get("memory_write_mode") or "candidate"),
+        "flush_before_compaction": bool(
+            write.get("flushBeforeCompaction", write.get("flush_before_compaction", True))
+            if write
+            else raw.get("flush_before_compaction", True)
+        ),
+        "provider_ref": str(
+            memory.get("providerRef")
+            or memory.get("provider_ref")
+            or raw.get("provider_ref")
+            or "local-default"
+        ),
+        "max_input_tokens": nested.get("maxInputTokens")
+        or nested.get("max_input_tokens")
+        or raw.get("max_input_tokens"),
+        "reserve_output_tokens": nested.get("reserveOutputTokens")
+        or nested.get("reserve_output_tokens")
+        or raw.get("reserve_output_tokens"),
     }
 
 

@@ -103,6 +103,10 @@ async def build_run_input(
     context_engine_rollout: str | None = None,
     memory_recall_enabled: bool | None = None,
     memory_write_rollout: str | None = None,
+    memory_enabled: bool | None = None,
+    memory_write_mode: str = "candidate",
+    flush_before_compaction: bool = True,
+    provider_ref: str = "local-default",
     deployment_mode: str = "local",
     agent_max_input_tokens: int | None = None,
     agent_reserve_output_tokens: int | None = None,
@@ -227,6 +231,12 @@ async def build_run_input(
                     runner=runner, runtime_type=runtime_type, deployment_mode=deployment_mode
                 ),
                 compiled_prompt=None,
+                memory_write_rollout=memory_write_rollout,
+                memory_enabled=memory_enabled,
+                memory_recall_enabled=memory_recall_enabled,
+                memory_write_mode=memory_write_mode,
+                flush_before_compaction=flush_before_compaction,
+                provider_ref=provider_ref,
             )
 
         is_approval_resume = _is_approval_resume_input(normalized_resume_input)
@@ -341,6 +351,12 @@ async def build_run_input(
                 deployment_mode=deployment_mode,
             ),
             compiled_prompt=None,
+            memory_write_rollout=memory_write_rollout,
+            memory_enabled=memory_enabled,
+            memory_recall_enabled=memory_recall_enabled,
+            memory_write_mode=memory_write_mode,
+            flush_before_compaction=flush_before_compaction,
+            provider_ref=provider_ref,
         )
 
     normalized_messages = _normalized_conversation_messages(messages)
@@ -510,6 +526,12 @@ async def build_run_input(
         compiled_prompt=compiled_prompt,
         prompt_integration_mode=prompt_integration_mode,
         working_state=working_state,
+        memory_write_rollout=memory_write_rollout,
+        memory_enabled=memory_enabled,
+        memory_recall_enabled=memory_recall_enabled,
+        memory_write_mode=memory_write_mode,
+        flush_before_compaction=flush_before_compaction,
+        provider_ref=provider_ref,
     )
     # PR E：ksadk_hosted + V2 开关时运行真实 hosted 链路，回填 context_plan/assembled_input。
     # 失败回退空字段（prepared 字段语义完整），不阻断主链路。
@@ -531,7 +553,6 @@ async def build_run_input(
         agent_max_input_tokens=agent_max_input_tokens,
         agent_reserve_output_tokens=agent_reserve_output_tokens,
     )
-    prepared.memory_write_rollout = memory_write_rollout
     return prepared
 
 

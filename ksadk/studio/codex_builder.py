@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Literal, cast
 
+import yaml  # type: ignore[import-untyped]
 from pydantic import ValidationError
 
 from ksadk.builders.managed_runtime_builder import ManagedRuntimeBuilder
@@ -215,7 +216,9 @@ class CodexStudioBuilder:
 
         result = ManagedRuntimeBuilder(
             self.workspace.root,
-            config=snapshot.manifest.model_dump(mode="python", exclude_none=True),
+            # 使用仓储已经规范化并计算摘要的同一份 wire payload；不能再次从
+            # Pydantic model_dump 生成，否则嵌套 ContractModel 的 alias 会改变字节。
+            config=yaml.safe_load(snapshot.source_bytes),
             runtime_version=runtime.version,
         ).build()
         if not result.success or result.artifact_path is None:

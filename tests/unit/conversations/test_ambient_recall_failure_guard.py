@@ -7,7 +7,7 @@ build_context 层的失败分支（error 字段 / last_error）已由
 两个未被覆盖的环节：
 
 - 守卫：``error`` 字段非空 → 丢弃（核心不变式）；前缀兜底保留；
-  真无记忆正文、非 dict、空正文各自判定。
+  非 dict 和空正文同样不得进入模型上下文。
 - 环境构建器：build_context 返 error 字段（后端抛错/吞错）→ 上下文被丢弃，
   不进 payload；真无记忆正文 → 保留（旧行为，语义真实）。
 """
@@ -132,11 +132,11 @@ def test_ambient_builder_drops_memory_error_on_swallowed_empty(monkeypatch) -> N
     assert contexts["memory_context"] is None
 
 
-def test_ambient_builder_keeps_truthful_not_found(monkeypatch) -> None:
-    """真无记忆（返空且无 last_error）→ "未找到…"正文保留（语义真实，旧行为）。"""
+def test_ambient_builder_drops_truthful_empty_recall(monkeypatch) -> None:
+    """真无记忆不会伪装成可用上下文，但保留 empty 观测事件。"""
     _patch_ltm(monkeypatch, _GenuineEmptyBackend())
     contexts = _build_runner_ambient_contexts(
         runner=_StubRunner(), user_id="u", user_input="回忆一下我之前的偏好"
     )
-    assert contexts["memory_context"] is not None
-    assert contexts["memory_context"]["formatted_text"] == "未找到相关长期记忆。"
+    assert contexts["memory_context"] is None
+    assert contexts["memory_recall_events"] == [{"type": "memory.recall.empty"}]

@@ -98,6 +98,15 @@ def test_extractor_no_candidate_for_normal_message():
     assert propose_memory_candidates(events, scope_id="u1") == []
 
 
+def test_extractor_proposes_implicit_preference_without_treating_it_as_explicit():
+    cands = propose_memory_candidates([_user_event(1, "我喜欢吃土豆。")], scope_id="u1")
+
+    assert len(cands) == 1
+    assert cands[0].reason == "implicit_user_preference"
+    assert cands[0].slot_key == "profile.preference.food"
+    assert cands[0].confidence < 0.85
+
+
 def test_extractor_empty_events():
     assert propose_memory_candidates([], scope_id="u1") == []
 

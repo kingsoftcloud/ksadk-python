@@ -463,12 +463,8 @@ class CodexAgentService:
         # Manifest 已在 model_validate 时严格校验；这里直接恢复
         from ksadk.studio.contracts import ContextSpec, MemorySpec
 
-        context_spec = (
-            ContextSpec.model_validate(manifest.context) if manifest.context else ContextSpec()
-        )
-        memory_spec = (
-            MemorySpec.model_validate(manifest.memory) if manifest.memory else MemorySpec()
-        )
+        context_spec = manifest.context or ContextSpec()
+        memory_spec = manifest.memory or MemorySpec()
         if saved is not None:
             draft = saved.model_copy(deep=True)
             draft.spec.runtime = RuntimeRef(

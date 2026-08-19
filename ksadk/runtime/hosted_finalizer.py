@@ -59,8 +59,8 @@ class FinalizeContext:
     prompt_integration_mode: str = ""
     session_events: Any = None  # 已取的 turn events（避免重复读 store）
     memory_write_rollout: str = ""
-    memory_enabled: bool = True  # 默认 True：env fallback 场景假定 memory 开启
-    memory_recall_enabled: bool = True
+    memory_enabled: bool | None = None
+    memory_recall_enabled: bool | None = None
     memory_write_mode: str = "candidate"
     flush_before_compaction: bool = True
     provider_ref: str = "local-default"

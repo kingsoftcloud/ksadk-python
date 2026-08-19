@@ -11,10 +11,12 @@ HTTP/SDK Provider。Provider 异常返回结构化 ``MemorySearchResult(status="
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -147,6 +149,11 @@ class SqliteMemoryProvider:
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
         self.last_error: str = ""
+        # 每次 Provider 启动执行一次有界清理；不在每次 recall/upsert 热路径扫描全表。
+        self.cleanup(
+            max_records=_positive_env_int("KSADK_MEMORY_MAX_RECORDS", 10000),
+            expire_days=_positive_env_int("KSADK_MEMORY_RETENTION_DAYS", 90),
+        )
 
     # ---- MemoryProvider Protocol ----
 
@@ -265,18 +272,22 @@ class SqliteMemoryProvider:
     def delete(self, request: MemoryDeleteRequest) -> MemoryDeleteResult:
         with self._lock:
             row = self._conn.execute(
-                "SELECT version FROM memory_records WHERE memory_id = ?", (request.memory_id,)
+                "SELECT version FROM memory_records "
+                "WHERE memory_id = ? AND scope = ? AND scope_id = ?",
+                (request.memory_id, request.scope, request.scope_id),
             ).fetchone()
             if row is None:
                 return MemoryDeleteResult(status="ok", deleted=False, error_code="not_found")
             if request.hard:
                 self._conn.execute(
-                    "DELETE FROM memory_records WHERE memory_id = ?", (request.memory_id,)
+                    "DELETE FROM memory_records WHERE memory_id = ? AND scope = ? AND scope_id = ?",
+                    (request.memory_id, request.scope, request.scope_id),
                 )
             else:
                 self._conn.execute(
-                    "UPDATE memory_records SET status='deleted', updated_at=? WHERE memory_id=?",
-                    (_now_iso(), request.memory_id),
+                    "UPDATE memory_records SET status='deleted', updated_at=? "
+                    "WHERE memory_id=? AND scope=? AND scope_id=?",
+                    (_now_iso(), request.memory_id, request.scope, request.scope_id),
                 )
             self._conn.commit()
         return MemoryDeleteResult(status="ok", deleted=True)
@@ -357,14 +368,21 @@ class SqliteMemoryProvider:
 
         deleted = 0
         with self._lock:
-            # 删除已过期记录
+            # 删除显式过期和 TTL 已到期记录。
             now = _now_iso()
-            cur = self._conn.execute("DELETE FROM memory_records WHERE status = 'expired'")
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=max(0, expire_days))).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            )
+            cur = self._conn.execute(
+                "DELETE FROM memory_records WHERE status = 'expired' "
+                "OR (expires_at != '' AND expires_at <= ?)",
+                (now,),
+            )
             deleted += cur.rowcount
             # 删除超 90 天的低 importance 记录
             cur = self._conn.execute(
                 "DELETE FROM memory_records WHERE importance < 0.5 AND created_at < ?",
-                (now,),
+                (cutoff,),
             )
             deleted += cur.rowcount
             # 如果总记录超过 max_records，删除最老的
@@ -388,6 +406,13 @@ class SqliteMemoryProvider:
 
 class VersionConflict(RuntimeError):
     """``upsert`` 的 ``expected_version`` 乐观锁冲突。"""
+
+
+def _positive_env_int(name: str, default: int) -> int:
+    try:
+        return max(1, int(os.environ.get(name, str(default))))
+    except (TypeError, ValueError):
+        return default
 
 
 def _scope_where(scopes: list[tuple[MemoryScope, str]]) -> tuple[str, list[Any]]:

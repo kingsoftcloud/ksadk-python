@@ -39,6 +39,13 @@ _HOBBY_DECLARATION = re.compile(
     r"(?:[。.!！]|$)",
     re.IGNORECASE,
 )
+_IMPLICIT_PREFERENCE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"(?:我|本人)?的?偏好(?:是|为)\s*(.+?)(?:[。.!！]|$)", re.IGNORECASE),
+    re.compile(
+        r"(?:我|本人)?(?:平时)?(?:喜欢|习惯)(吃|喝|用|看|听|玩)\s*(.+?)(?:[。.!！]|$)",
+        re.IGNORECASE,
+    ),
+)
 # 工具稳定事实信号。
 _FACT_SIGNALS = ("confirmed", "最终确认", "final", "verified", "确认成功")
 
@@ -157,6 +164,30 @@ def propose_memory_candidates(
                             source_event_ids=[event_id],
                             slot_key=derive_profile_slot_key(content),
                             reason="explicit_user_request",
+                        )
+                    )
+                    break
+            else:
+                # 隐式偏好只生成低置信候选；MemoryPolicy 仍要求达到观察次数阈值，
+                # explicit_only 模式也会过滤它，避免一次闲聊直接成为长期事实。
+                for pattern in _IMPLICIT_PREFERENCE_PATTERNS:
+                    match = pattern.search(text)
+                    if not match:
+                        continue
+                    content = match.group(0).strip().strip("。.，,")
+                    candidates.append(
+                        MemoryCandidate(
+                            candidate_id=f"cand_{uuid.uuid4().hex[:16]}",
+                            operation="add",
+                            memory_type="profile",
+                            scope=scope,
+                            scope_id=scope_id,
+                            content=content[:1000],
+                            confidence=0.75,
+                            importance=0.65,
+                            source_event_ids=[event_id],
+                            slot_key=derive_profile_slot_key(content),
+                            reason="implicit_user_preference",
                         )
                     )
                     break

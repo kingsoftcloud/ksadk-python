@@ -89,8 +89,8 @@ class CodexRunSpecResolver:
         agent_task = str(manifest.task_prompt or "").strip()
         # PCM 策略从不可变 Manifest 读取（方案 §5.1：Build 锁定后 sidecar 修改不影响旧 Build）
         # manifest.context/memory 由 _manifest() 从 AgentSpec 写入，随 Build 进入 Artifact
-        resolved_context = manifest.context if isinstance(manifest.context, dict) else {}
-        resolved_memory = manifest.memory if isinstance(manifest.memory, dict) else {}
+        resolved_context = manifest.context
+        resolved_memory = manifest.memory
         base_instructions = manifest.prompt
         if agent_task:
             base_instructions = f"{manifest.prompt}\n\n{agent_task}"
@@ -109,22 +109,30 @@ class CodexRunSpecResolver:
             # Studio sessions resume the same native Codex thread across turns.
             "ephemeral": False,
             # PCM 配置（方案 §5.1）：从 Manifest 读取预算和 rollout
-            "max_input_tokens": resolved_context.get("maxInputTokens")
-            or resolved_context.get("max_input_tokens"),
-            "reserve_output_tokens": resolved_context.get("reserveOutputTokens")
-            or resolved_context.get("reserve_output_tokens"),
-            "context_engine_rollout": resolved_context.get("rollout", {}).get("contextEngine"),
-            "memory_recall_enabled": resolved_memory.get("recall", {}).get("enabled"),
-            "memory_recall_top_k": resolved_memory.get("recall", {}).get("topK"),
-            "memory_recall_max_tokens": resolved_memory.get("recall", {}).get("maxTokens"),
-            "memory_recall_min_score": resolved_memory.get("recall", {}).get("minScore"),
-            "memory_write_rollout": resolved_context.get("rollout", {}).get("memoryWrite"),
-            "memory_enabled": resolved_memory.get("enabled", False),
-            "memory_write_mode": resolved_memory.get("write", {}).get("mode", "candidate"),
-            "flush_before_compaction": resolved_memory.get("write", {}).get(
-                "flushBeforeCompaction", True
+            "max_input_tokens": resolved_context.max_input_tokens if resolved_context else None,
+            "reserve_output_tokens": (
+                resolved_context.reserve_output_tokens if resolved_context else None
             ),
-            "provider_ref": resolved_memory.get("providerRef", "local-default"),
+            "context_engine_rollout": (
+                resolved_context.rollout.context_engine if resolved_context else None
+            ),
+            "memory_recall_enabled": (resolved_memory.recall.enabled if resolved_memory else None),
+            "memory_recall_top_k": resolved_memory.recall.top_k if resolved_memory else None,
+            "memory_recall_max_tokens": (
+                resolved_memory.recall.max_tokens if resolved_memory else None
+            ),
+            "memory_recall_min_score": (
+                resolved_memory.recall.min_score if resolved_memory else None
+            ),
+            "memory_write_rollout": (
+                resolved_context.rollout.memory_write if resolved_context else None
+            ),
+            "memory_enabled": resolved_memory.enabled if resolved_memory else False,
+            "memory_write_mode": resolved_memory.write.mode if resolved_memory else "candidate",
+            "flush_before_compaction": (
+                resolved_memory.write.flush_before_compaction if resolved_memory else True
+            ),
+            "provider_ref": resolved_memory.provider_ref if resolved_memory else "local-default",
         }
         if approval_profile:
             request_config["tool_approval_mode"] = approval_profile

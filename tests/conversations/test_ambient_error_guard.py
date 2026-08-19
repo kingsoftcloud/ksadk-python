@@ -37,9 +37,9 @@ def test_guard_genuine_text_not_failure() -> None:
     assert not _ambient_context_has_error({"formatted_text": "[1] 用户喜欢 Python"})
 
 
-def test_guard_empty_formatted_text_without_error_is_not_failure() -> None:
-    """formatted_text 空且无 error → 不判失败（真无记忆，不注入噪声，方案 §10.8）。"""
-    assert not _ambient_context_has_error({"formatted_text": ""})
+def test_guard_empty_formatted_text_is_not_projected() -> None:
+    """真无记忆不是后端失败，但同样不能作为“已召回记忆”投影。"""
+    assert _ambient_context_has_error({"formatted_text": ""})
     # 非法类型仍然判失败
     # {} 可能是合法空 context（无 error 无 formatted_text）
 

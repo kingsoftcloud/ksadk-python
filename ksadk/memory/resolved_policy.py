@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
 
@@ -60,12 +61,12 @@ class ResolvedMemoryPolicy:
 
 def resolve_memory_policy(
     *,
-    memory_enabled: bool,
-    recall_enabled: bool,
-    write_rollout: str,
-    write_mode: str,
-    flush_before_compaction: bool,
-    provider_ref: str,
+    memory_enabled: bool | None = None,
+    recall_enabled: bool | None = None,
+    write_rollout: str | None = None,
+    write_mode: str | None = None,
+    flush_before_compaction: bool | None = None,
+    provider_ref: str | None = None,
 ) -> ResolvedMemoryPolicy:
     """统一解析 Memory 运行策略。
 
@@ -77,14 +78,27 @@ def resolve_memory_policy(
         flush_before_compaction: MemorySpec.write.flushBeforeCompaction
         provider_ref: MemorySpec.providerRef
     """
-    if not memory_enabled:
+    legacy_flush_enabled = str(
+        os.environ.get("KSADK_MEMORY_FLUSH_ENABLED", "")
+    ).strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    enabled = legacy_flush_enabled if memory_enabled is None else memory_enabled
+    recall = enabled if recall_enabled is None else recall_enabled
+    flush_before = True if flush_before_compaction is None else flush_before_compaction
+    provider = str(provider_ref or "local-default")
+
+    if not enabled:
         return ResolvedMemoryPolicy(
             enabled=False,
             recall_enabled=False,
             write_rollout="off",
             write_mode="off",
             flush_before_compaction=False,
-            provider_ref=provider_ref,
+            provider_ref=provider,
         )
 
     # rollout 优先于 write_mode
@@ -92,29 +106,26 @@ def resolve_memory_policy(
     mode = str(write_mode or "").strip().lower()
 
     if rollout not in ("off", "shadow", "enabled"):
-        import os
-
-        env = str(os.environ.get("KSADK_MEMORY_FLUSH_ENABLED", "")).strip().lower()
-        rollout = "enabled" if env in ("1", "true", "yes", "on") else "off"
+        rollout = "enabled" if legacy_flush_enabled else "off"
 
     if rollout == "off":
         return ResolvedMemoryPolicy(
             enabled=True,
-            recall_enabled=recall_enabled,
+            recall_enabled=recall,
             write_rollout="off",
             write_mode="off",
-            flush_before_compaction=flush_before_compaction,
-            provider_ref=provider_ref,
+            flush_before_compaction=flush_before,
+            provider_ref=provider,
         )
 
     if rollout == "shadow":
         return ResolvedMemoryPolicy(
             enabled=True,
-            recall_enabled=recall_enabled,
+            recall_enabled=recall,
             write_rollout="shadow",
             write_mode=mode if mode in ("explicit_only", "candidate") else "candidate",
-            flush_before_compaction=flush_before_compaction,
-            provider_ref=provider_ref,
+            flush_before_compaction=flush_before,
+            provider_ref=provider,
         )
 
     # rollout == "enabled"
@@ -123,11 +134,11 @@ def resolve_memory_policy(
 
     return ResolvedMemoryPolicy(
         enabled=True,
-        recall_enabled=recall_enabled,
+        recall_enabled=recall,
         write_rollout="enabled",
         write_mode=mode,
-        flush_before_compaction=flush_before_compaction,
-        provider_ref=provider_ref,
+        flush_before_compaction=flush_before,
+        provider_ref=provider,
     )
 
 

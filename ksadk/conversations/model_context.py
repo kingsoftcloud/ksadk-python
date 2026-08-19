@@ -156,7 +156,7 @@ def estimate_text_tokens(text: str) -> int:
     """轻量 token 估算。
 
     当前先做一层比 `len/4` 更稳的启发式：
-    - CJK 字符按 1 token 估算，避免中文场景长期卡在 0% / 1%
+    - CJK 字符按约 1.5 token 估算，降低中文场景的系统性低估
     - 其他字符继续按 4 chars ~= 1 token 估算
 
     这仍然不是真实 tokenizer，但比纯英文口径更接近本地中文使用体验。

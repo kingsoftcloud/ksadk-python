@@ -50,8 +50,8 @@ class CodexAgentManifest(BaseModel):
     # PCM 策略（方案 §5.1）：严格类型化，Build 不可变。
     # None = 旧 Manifest 缺字段（兼容默认值）；
     # 有值但格式错误 → model_validate 时立即失败，不静默降级。
-    context: dict[str, Any] | None = None
-    memory: dict[str, Any] | None = None
+    context: ContextSpec | None = None
+    memory: MemorySpec | None = None
 
     @model_validator(mode="after")
     def validate_models(self) -> "CodexAgentManifest":
@@ -101,48 +101,19 @@ class CodexAgentManifest(BaseModel):
             self.mcp_servers = mcp_deduped
         return self
 
-    @model_validator(mode="after")
-    def validate_pcm_fields(self) -> "CodexAgentManifest":
-        """严格校验 context/memory：有字段但格式错误时立即失败。"""
-        if self.context is not None:
-            try:
-                ContextSpec.model_validate(self.context)
-            except Exception as exc:
-                raise ValueError(f"Codex Manifest context 字段格式错误: {exc}") from exc
-        if self.memory is not None:
-            try:
-                MemorySpec.model_validate(self.memory)
-            except Exception as exc:
-                raise ValueError(f"Codex Manifest memory 字段格式错误: {exc}") from exc
-        return self
-
     @property
     def allowed_models(self) -> tuple[str, ...]:
         return tuple(self.models or [self.model])
-
-
-def _validate_pcm_field(
-    raw: dict[str, Any] | None,
-    field_name: str,
-    model_cls: type,
-) -> Any:
-    """严格类型化校验 PCM context/memory 字段。
-
-    - None 或空 dict → 返回 model_cls 默认值（兼容旧 Manifest）
-    - 有字段但格式错误 → 抛 ValueError（不静默降级）
-    """
-    if not raw:
-        return model_cls()
-    try:
-        return model_cls.model_validate(raw)
-    except Exception as exc:
-        raise ValueError(f"Codex Manifest {field_name} 字段格式错误: {exc}") from exc
 
 
 def normalized_manifest_bytes(manifest: CodexAgentManifest) -> bytes:
     """生成构建、SHA 和磁盘写入共同使用的规范化 YAML。"""
 
     payload = manifest.model_dump(mode="python", exclude_none=True)
+    if manifest.context is not None:
+        payload["context"] = manifest.context.model_dump(mode="python", by_alias=True)
+    if manifest.memory is not None:
+        payload["memory"] = manifest.memory.model_dump(mode="python", by_alias=True)
     return serialize_managed_runtime_manifest(payload)
 
 

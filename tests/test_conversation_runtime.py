@@ -803,8 +803,8 @@ def _disable_session_title_ai(monkeypatch):
 def test_estimate_text_tokens_is_less_optimistic_for_cjk():
     assert estimate_text_tokens("") == 0
     assert estimate_text_tokens("hello world") == 3
-    assert estimate_text_tokens("你好世界") == 4
-    assert estimate_text_tokens("Agent平台设计") == 6
+    assert estimate_text_tokens("你好世界") == 6
+    assert estimate_text_tokens("Agent平台设计") == 8
 
 
 def test_build_compaction_sse_event_returns_str_with_millisecond_timestamp():

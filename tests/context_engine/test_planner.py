@@ -80,6 +80,18 @@ def test_compute_budget_tokens():
     assert t["hard_limit_tokens"] == int(t["max_input_tokens"] * 0.85)
 
 
+def test_compute_budget_tokens_keeps_small_window_usable():
+    t = compute_budget_tokens(
+        ContextBudgetPolicy(),
+        context_window_tokens=4096,
+        reserved_output_tokens=512,
+        reserved_reasoning_tokens=0,
+    )
+
+    assert t["safety_buffer_tokens"] == 409
+    assert t["max_input_tokens"] == 3175
+
+
 def test_build_budget_section_limits():
     p = ContextBudgetPolicy()
     b = build_budget(policy=p, context_window_tokens=200000, reserved_output_tokens=8000)

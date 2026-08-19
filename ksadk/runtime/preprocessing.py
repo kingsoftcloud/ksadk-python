@@ -95,6 +95,10 @@ async def prepare_runtime_start(request: StartRequest, runner: Any) -> PreparedR
             context_engine_rollout=str(request.config.get("context_engine_rollout") or "") or None,
             memory_recall_enabled=request.config.get("memory_recall_enabled"),
             memory_write_rollout=str(request.config.get("memory_write_rollout") or "") or None,
+            memory_enabled=request.config.get("memory_enabled"),
+            memory_write_mode=str(request.config.get("memory_write_mode") or "candidate"),
+            flush_before_compaction=bool(request.config.get("flush_before_compaction", True)),
+            provider_ref=str(request.config.get("provider_ref") or "local-default"),
         )
     _inject_runner_deferred_tools_for_request(runner, prepared)
     ambient_contexts = _build_runner_ambient_contexts(
@@ -103,7 +107,7 @@ async def prepare_runtime_start(request: StartRequest, runner: Any) -> PreparedR
         user_input=prepared.user_input,
     )
     # Studio/平台控制面可以按 AgentVersion 的 providerRef 提前完成召回；它比仅依赖
-    # KSADK_LTM_* 环境变量的 ambient 结果更具体，不能被后者的空结果覆盖。
+    # 长期记忆环境变量产生的 ambient 结果更具体，不能被后者的空结果覆盖。
     if prepared.memory_context is not None:
         ambient_contexts["memory_context"] = prepared.memory_context
     if prepared.memory_recall_events:

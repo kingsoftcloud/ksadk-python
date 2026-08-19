@@ -27,7 +27,7 @@ class TokenCounter(Protocol):
 class HeuristicTokenCounter:
     """复用 ``ksadk.conversations.model_context.estimate_text_tokens`` 的启发式计数器。
 
-    CJK 字符按 1 token，其他按 4 chars ~= 1 token。不是真实 tokenizer，但比纯英文
+    CJK 字符按约 1.5 token，其他按 4 chars ~= 1 token。不是真实 tokenizer，但比纯英文
     口径更接近本地中文使用体验。第一个 PR 的 shadow ContextPlan 只用它做可观测估算，
     不进任何决策路径。
     """
@@ -97,8 +97,6 @@ class _TiktokenTokenCounter:
     tokenizer，供 ContextPlan ``tokenizer`` 字段如实标注。
     """
 
-    name = "tiktoken"
-
     def __init__(self, encoding_name: str = "cl100k_base") -> None:
         try:
             import tiktoken  # type: ignore
@@ -108,6 +106,12 @@ class _TiktokenTokenCounter:
         except Exception:  # noqa: BLE001
             self._enc = None
             self._encoding_name = encoding_name
+
+    @property
+    def name(self) -> str:
+        if self._enc is None:
+            return HEURISTIC_TOKENIZER_NAME
+        return f"tiktoken:{self._encoding_name}"
 
     def count_text(self, text: str, *, model: str | None = None) -> int:
         if self._enc is None:
@@ -144,8 +148,6 @@ def get_default_token_counter() -> TokenCounter:
     global _PROVIDER_COUNTER
     if _provider_counter_enabled() and _PROVIDER_COUNTER is None:
         _PROVIDER_COUNTER = _TiktokenTokenCounter()
-        # 若 tiktoken 不可用，name 仍是 tiktoken 但行为回退 heuristic；这里如实保留，调用方可
-        # 通过对比 runtime_reported 发现偏差并调整 mapping。
     if _PROVIDER_COUNTER is not None and _provider_counter_enabled():
         return _PROVIDER_COUNTER
     global _DEFAULT_COUNTER

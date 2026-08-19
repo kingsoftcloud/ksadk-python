@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from types import SimpleNamespace
 
 import pytest
 
@@ -308,11 +309,37 @@ def test_resolve_runtime_prompt_config_prefers_nested_build_contract() -> None:
         }
     )
 
-    assert resolved == {
-        "agent_system": "cloud system",
-        "agent_task": "cloud task",
-        "prompt_integration_mode": "ksadk_hosted",
-    }
+    assert resolved["agent_system"] == "cloud system"
+    assert resolved["agent_task"] == "cloud task"
+    assert resolved["prompt_integration_mode"] == "ksadk_hosted"
+
+
+def test_resolve_runtime_prompt_config_projects_pcm_policy() -> None:
+    resolved = _resolve_runtime_prompt_config(
+        {
+            "context": {
+                "maxInputTokens": 4096,
+                "reserveOutputTokens": 512,
+                "rollout": {"contextEngine": "enabled", "memoryWrite": "shadow"},
+            },
+            "memory": {
+                "enabled": True,
+                "providerRef": "http://memory",
+                "recall": {"enabled": False},
+                "write": {"mode": "explicit_only", "flushBeforeCompaction": False},
+            },
+        }
+    )
+
+    assert resolved["context_engine_rollout"] == "enabled"
+    assert resolved["memory_write_rollout"] == "shadow"
+    assert resolved["memory_enabled"] is True
+    assert resolved["memory_recall_enabled"] is False
+    assert resolved["memory_write_mode"] == "explicit_only"
+    assert resolved["flush_before_compaction"] is False
+    assert resolved["provider_ref"] == "http://memory"
+    assert resolved["max_input_tokens"] == 4096
+    assert resolved["reserve_output_tokens"] == 512
 
 
 @pytest.mark.asyncio
@@ -412,6 +439,121 @@ async def test_turn_memory_is_written_to_user_scope_for_cross_session_recall(
     assert result.status == "ok"
     assert any("Python 3.12" in record.content for record in result.records)
     assert all(record.scope_id != session_id for record in result.records)
+
+
+@pytest.mark.asyncio
+async def test_finalize_does_not_fallback_to_another_invocation(monkeypatch) -> None:
+    from ksadk.runtime import conversation_execution
+    from ksadk.sessions.base import SessionEvent
+
+    service = InMemorySessionService()
+    await service.create_session(agent_id="agent-1", user_id="user-1", session_id="session-1")
+    await service.append_event(
+        "session-1",
+        SessionEvent(
+            id="other-user",
+            author="user",
+            event_type="user_message",
+            content={"role": "user", "parts": [{"text": "记住：不属于当前 turn"}]},
+            invocation_id="other-invocation",
+        ),
+    )
+    captured = []
+
+    async def capture(ctx, **_kwargs):
+        captured.append(ctx)
+
+    monkeypatch.setattr("ksadk.runtime.hosted_finalizer.finalize_hosted_turn", capture)
+    await conversation_execution._finalize_hosted_turn(
+        prepared=SimpleNamespace(
+            session_id="session-1",
+            invocation_id="current-invocation",
+            user_id="user-1",
+            agent_id="agent-1",
+        ),
+        usage=None,
+        session_service_provider=lambda: service,
+    )
+
+    assert captured[0].session_events == []
+
+
+@pytest.mark.asyncio
+async def test_finalize_accepts_explicit_runtime_invocation_id(monkeypatch) -> None:
+    from ksadk.runtime import conversation_execution
+    from ksadk.sessions.base import SessionEvent
+
+    service = InMemorySessionService()
+    await service.create_session(agent_id="agent-1", user_id="user-1", session_id="session-1")
+    for event_id, invocation_id in (
+        ("prepared-user", "prepared-invocation"),
+        ("runtime-result", "runtime-invocation"),
+        ("other-user", "other-invocation"),
+    ):
+        await service.append_event(
+            "session-1",
+            SessionEvent(
+                id=event_id,
+                author="user",
+                event_type="user_message",
+                content={"role": "user", "parts": [{"text": event_id}]},
+                invocation_id=invocation_id,
+            ),
+        )
+    captured = []
+
+    async def capture(ctx, **_kwargs):
+        captured.append(ctx)
+
+    monkeypatch.setattr("ksadk.runtime.hosted_finalizer.finalize_hosted_turn", capture)
+    await conversation_execution._finalize_hosted_turn(
+        prepared=SimpleNamespace(
+            session_id="session-1",
+            invocation_id="prepared-invocation",
+            user_id="user-1",
+            agent_id="agent-1",
+        ),
+        usage=None,
+        session_service_provider=lambda: service,
+        runtime_invocation_id="runtime-invocation",
+    )
+
+    assert {event.id for event in captured[0].session_events} == {
+        "prepared-user",
+        "runtime-result",
+    }
+
+
+@pytest.mark.asyncio
+async def test_finalize_persists_memory_lifecycle_events(monkeypatch) -> None:
+    from ksadk.events.store import RuntimeEventStore
+    from ksadk.runtime import conversation_execution
+
+    service = InMemorySessionService()
+    await service.create_session(agent_id="agent-1", user_id="user-1", session_id="session-1")
+
+    async def emit_fixture(ctx, **_kwargs):
+        ctx.emit_event({"type": "memory.flush.completed", "metadata": {"committed": 1}})
+
+    monkeypatch.setattr("ksadk.runtime.hosted_finalizer.finalize_hosted_turn", emit_fixture)
+    await conversation_execution._finalize_hosted_turn(
+        prepared=SimpleNamespace(
+            session_id="session-1",
+            invocation_id="invocation-1",
+            user_id="user-1",
+            agent_id="agent-1",
+        ),
+        usage=None,
+        session_service_provider=lambda: service,
+        store=RuntimeEventStore(service),
+    )
+
+    stored = await service.get_events("session-1")
+    payloads = [(event.content or {}).get("payload", {}) for event in stored]
+    assert any(
+        payload.get("memory_event", {}).get("type") == "memory.flush.completed"
+        for payload in payloads
+    )
 
 
 @pytest.mark.asyncio
