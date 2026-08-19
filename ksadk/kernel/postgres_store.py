@@ -912,8 +912,11 @@ class PostgresAgentKernelStore:
         row = await connection.fetchrow(
             "SELECT activation_id, agent_instance_id, session_id, fencing_token,"
             " lease_expires_at, released FROM kernel_activations"
-            " WHERE activation_id = $1 FOR SHARE",
+            " WHERE activation_id = $1 AND agent_instance_id = $2"
+            " AND session_id = $3 FOR SHARE",
             guard.activation_id,
+            agent_instance_id,
+            session_id,
         )
         if (
             row is None

@@ -570,6 +570,8 @@ class InMemoryAgentKernelStore:
                 candidate
                 for candidate in self._activations.values()
                 if candidate["activation_id"] == guard.activation_id
+                and candidate["agent_instance_id"] == agent_instance_id
+                and candidate["session_id"] == session_id
             ),
             None,
         )
