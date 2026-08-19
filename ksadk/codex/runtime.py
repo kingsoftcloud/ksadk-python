@@ -764,6 +764,30 @@ def _resume_prompt(payload: Optional[ResumePayload]) -> Any:
     return json.dumps(payload.data, ensure_ascii=False, sort_keys=True)
 
 
+def _coerce_prompt_text(value: Any) -> Any:
+    """把 canonical message 形态的 input 压成 SDK 可接受的文本。
+
+    ``openai-codex`` 0.147 的 run input 只接受 TextInput/str;请求侧没有
+    conversation preprocessing 时 ``request.input`` 可能是
+    ``[{role, content}]`` 历史列表,直接透传会 ``unsupported input item``。
+    """
+    if isinstance(value, str) or value is None:
+        return value
+    if isinstance(value, dict):
+        content = value.get("content") if "role" in value else value.get("text")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, dict):
+            text = content.get("text") or content.get("content")
+            if isinstance(text, str):
+                return text
+        return str(value)
+    if isinstance(value, list):
+        texts = [t for t in (_coerce_prompt_text(item) for item in value) if isinstance(t, str) and t]
+        return "\n".join(texts) if texts else str(value)
+    return str(value)
+
+
 def _request_prompt(request: StartRequest) -> Any:
     """Render canonical conversation history for a native Codex turn.
 
@@ -773,11 +797,11 @@ def _request_prompt(request: StartRequest) -> Any:
     # A resumed Codex thread already owns its transcript. Re-sending Studio's
     # transport-neutral history would duplicate every prior turn after refresh.
     if str(request.metadata.get("thread_id") or "").strip():
-        return request.input
+        return _coerce_prompt_text(request.input)
 
     conversation = request.conversation_preprocessing()
     if conversation is None or not conversation.messages:
-        return request.input
+        return _coerce_prompt_text(request.input)
 
     lines: list[str] = []
     for message in conversation.messages:
@@ -819,6 +843,10 @@ def _build_run_input(request: Optional[StartRequest], prompt: Any) -> Any:
             if not isinstance(item, dict):
                 continue
             kind = str(item.get("type") or "")
+            if not kind and "role" in item:
+                # canonical conversation message({role, content});当前 input
+                # 已由 prompt(或 conversation preprocessing)承载,跳过历史项。
+                continue
             if kind == "text":
                 text = str(
                     prompt

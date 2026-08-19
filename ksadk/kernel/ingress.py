@@ -641,6 +641,35 @@ def _env_permit_verifier(*, nonce_store: Any = None) -> Any:
     return _default_issuer().verifier(nonce_store=nonce_store)
 
 
+async def _ensure_shared_log_session(command: Any) -> None:
+    """canonical submit 前确保 session 存在（共享 event log 前置条件）。
+
+    hosted 链路里会话目录由 server/runtime service 维护；对直接落到本
+    runtime ingress 的首个命令（RunAgent enqueue 等），用 kernel runtime 的
+    session service 幂等补齐，否则 postgres store 的 accept_command 会在
+    第一个事件上以 ``invalid_command: session does not exist`` 拒绝。
+    失败时静默放行——store 的显式错误仍是最终裁决。
+    """
+    session_id = str(getattr(command, "session_id", "") or "")
+    if not session_id:
+        return
+    from ksadk.kernel.bootstrap import get_agent_kernel_runtime
+
+    runtime = get_agent_kernel_runtime()
+    service = getattr(getattr(runtime, "config", None), "session_service", None)
+    if service is None:
+        return
+    try:
+        if await service.get_session(session_id) is None:
+            await service.create_session(
+                agent_id=str(getattr(command, "agent_instance_id", "") or "runtime"),
+                user_id=str(getattr(command, "tenant_id", "") or "tenant"),
+                session_id=session_id,
+            )
+    except Exception:
+        pass
+
+
 def _build_kernel_router() -> Any:
     from ksadk.kernel.contracts import (
         AgentControlPermit,
@@ -748,6 +777,7 @@ def _build_kernel_router() -> Any:
                     "authorization_ref": permit.permit_id,
                 }
             )
+        await _ensure_shared_log_session(command)
         receipt = await kernel.submit(command, permit=permit)
         status = receipt_http_status(receipt)
         if (
