@@ -1,6 +1,6 @@
 # Phase 1 Agent Kernel + Interaction/Web 0.3.2 — Review 交接记录
 
-> 交接时间：2026-08-20。分支均未 push。两份计划：
+> 更新：2026-08-20（终版，所有已知 P0 修复完毕，gate 全绿）两份计划：
 > - `docs/superpowers/plans/2026-08-17-agent-runtime-v2-phase1-agent-kernel.md`（Phase 1，14 任务）
 > - `/Users/xiayu/kingsoft/code/agent-sdk/docs/superpowers/plans/2026-08-19-agent-kernel-interaction-web-0.3.2.md`（Interaction/Web，8 任务）
 
@@ -34,7 +34,28 @@ digest 三端一致 / runtime+control 事件流 / 重连 / 100 FIFO / 幂等双�
 - c Pod kill：**PASS 有缺口**（消息零丢失；孤儿 run 卡 session 需人工 interrupted）
 - d 真实 capability：**PASS**（codex native cancel/pause/resume/submit/checkpoint，attach unavailable）
 
-## 四、已知未修问题（review 重点）
+## 四、前次 review 阻塞项处理结果（2026-08-20 全部关闭）
+
+1. ✅ 孤儿 run 收口：`ee970222`（durable interrupted + degraded 降级）
+2. ✅ readiness 翻转：`bb2fe85c`+`8891ebd4`+`663e5363`+`0bdbb62e`（独立心跳任务续约 + typed store 降级读 + interaction guard session 级 scope，共挖出 4 个关联 bug）；预发实测审批挂起 75s（>2×TTL）全程 ready，approve 后 70s 仍 ready，新 pod 即起即 ready
+3. ✅ Web receipt 终态真相：`e8fddf7`（receipt→resolving，终态唯一来自 interaction.resolved/cancelled/expired 事件；rejected→failed 可重试）
+4. ✅ Task 8：Hosted UI 0.3.2-beta.1（`1f5434a`+镜像 v0.3.2-beta.1-7c523f0）、interaction-v1-e2e.json（approve/reject/replay 三场景全链）、gate 刷新、Operator 定向绿、SSE 断开感知修复（`de865a68`，304s→8s）
+5. ✅ 真实审批闭环：real-interaction-closure.json（真实 SDK transport，call_id 原样回包，seq6 requested→seq16 resolved→seq22 completed）
+6. ✅ Phase 0 manifest：`ae520de5`（依据：0.8.1 release 计划 Task 10 交付于 ff6247b3、release gate 8 tests 复核绿、0.8.1 已公开上线）
+7. ✅ 合同不一致阻流演练：contract-mismatch-drill.json（`986f7a3b`，双路径注入均 409 阻流+审计留痕+恢复）
+8. ✅ gate 终态：**pass，27 checks / 0 failed**
+
+## 四-b、已知遗留（非阻塞，如实列出）
+
+- [P1] glm-5.3 经 model_proxy 转换不触发工具调用（真实审批演示用 fake app-server；chat 接口带 tools 有 tool_calls，缺口在 codex→proxy 工具面）
+- [P1] Server 未实现 SubmitAgentControl/GetAgentStatus/SubscribeSessionEvents 三个公共 Action 的完整 HTTP 面（gateway 已按此转发）
+- [P1] `agent_kernel_contract_mismatch_total` 指标在 canary 不可得（以请求级 409+审计行为证据）
+- [P1] server chart 无 extraEnv（canary env 为 kubectl patch）；同 tag 重推需按 digest 拉镜像；uv build 复用 stale build/ 需先删
+- Studio 一键部署 Codex/LangGraph 上云不在计划内（无 Bundle admission API）；多副本未开；Codex workspace 持久化（PVC/KS3FS）未做
+- 六仓分支均未 push（等 review 通过 + 用户批准）
+- Web 0.3.2 正式 npm 发布未执行（等用户批准，走 Trusted Publishing）
+
+## 五、原第四节（历史遗留问题存档）
 
 1. **[P0] 孤儿 run takeover 不确定性收口**：Pod kill 后 open run 卡 session，RecoveryCoordinator 吞异常（真实代码 bug，非环境）
 2. **[P0] readiness 翻转**：完成 run 的 session 留 heartbeat 集合不续约，TTL 后误报 not-ready（预发多次 503 的元凶）
