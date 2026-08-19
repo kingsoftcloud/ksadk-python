@@ -248,11 +248,48 @@ class RuntimeEventStore:
         self._assert_same_fact(persisted, event)
         return persisted, True
 
+    async def _read_rows(self, session_id: str, after_seq: int, before_seq: int | None):
+        """Typed envelope 路径的读取兜底。
+
+        hosted PG 的 ``PostgresFencedSessionEventStore`` 只包 kernel store，
+        没有 ``session_service``（``_service is None``）。冷恢复
+        (scan_open_runs -> list) 在此之前会 AttributeError，导致 takeover
+        recovery 双路径失败 -> runtime degraded。改走 event store 自己的
+        ``read``（envelope 语义）再转 SessionEvent 行。
+        """
+
+        if self._service is not None:
+            return await self._service.get_events(
+                session_id,
+                after_seq_id=after_seq,
+                before_seq_id=before_seq,
+            )
+        if self._event_store is None:
+            raise RuntimeError(
+                "RuntimeEventStore has neither a session service nor an event store"
+            )
+        rows = []
+        from ksadk.events.session_event import envelope_to_session_event
+
+        for envelope in await self._event_store.read(
+            session_id, int(after_seq), 100_000
+        ):
+            row = envelope_to_session_event(envelope)
+            if int(row.seq_id or 0) != int(envelope.seq):
+                row.seq_id = int(envelope.seq)
+            rows.append(row)
+        return rows
+
     async def event_by_id(self, session_id: str, event_id: str) -> RuntimeEvent | None:
-        self._require_storage_capabilities()
-        storage_id = canonical_storage_id(session_id, event_id)
-        stored = await self._service.get_event_by_id(session_id, storage_id)
-        return session_event_to_runtime_event(stored) if stored is not None else None
+        if self._service is not None:
+            self._require_storage_capabilities()
+            storage_id = canonical_storage_id(session_id, event_id)
+            stored = await self._service.get_event_by_id(session_id, storage_id)
+            return session_event_to_runtime_event(stored) if stored is not None else None
+        for event in await self.list(session_id):
+            if event.event_id == event_id:
+                return event
+        return None
 
     async def resolve_existing(
         self, session_id: str, candidate: RuntimeEvent
@@ -275,12 +312,10 @@ class RuntimeEventStore:
     ) -> list[RuntimeEvent]:
         # Run replay uses the backend's invocation index; session replay still
         # reads the shared physical cursor log and filters legacy rows here.
-        if run_id is None:
-            raw = await self._service.get_events(
-                session_id,
-                after_seq_id=after_seq,
-                before_seq_id=before_seq,
-            )
+        if run_id is None or self._service is None:
+            # run 过滤在 typed envelope 兜底路径上退化为全量读取后按
+            # run_id 过滤（fenced store 没有按 invocation 的索引查询）。
+            raw = await self._read_rows(session_id, after_seq, before_seq)
         else:
             self._require_storage_capabilities()
             raw = await self._service.get_events_by_invocation_id(

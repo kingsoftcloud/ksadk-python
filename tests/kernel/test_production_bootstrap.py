@@ -211,6 +211,61 @@ async def test_readiness_flips_not_ready_when_lease_truly_lost():
         await runtime.close()
 
 
+async def test_typed_runtime_store_reads_without_session_service():
+    """hosted PG fenced store 没有 session_service：typed 读取不能炸。
+
+    冷恢复 (RecoveryCoordinator -> scan_open_runs -> RuntimeEventStore.list)
+    之前对 ``_service is None`` 的 typed store 直接 AttributeError，导致
+    takeover recovery 双路径失败、runtime degraded。"""
+
+    from ksadk.events.canonical import RunProgress, SourceRef
+    from ksadk.events.canonical_store import RuntimeEventStore
+    from ksadk.kernel.contracts import ActivationWriteGuard
+
+    class FakeTypedEventStore:
+        """只有 envelope append/read，没有 session_service（fenced 形状）。"""
+
+        def __init__(self) -> None:
+            self.rows: list = []
+
+        async def append(self, envelope, *, guard):
+            seq = len(self.rows) + 1
+            stored = envelope.model_copy(
+                update={"seq": seq, "payload": {**envelope.payload, "seq": seq}}
+            )
+            self.rows.append(stored)
+            return stored
+
+        async def read(self, session_id, after_seq, limit):
+            return [e for e in self.rows if int(e.seq) > int(after_seq)][:limit]
+
+        def subscribe(self, session_id, after_seq, **kwargs):  # pragma: no cover
+            raise NotImplementedError
+
+    events = FakeTypedEventStore()
+    runtime_store = RuntimeEventStore(events, session_id="s1")
+    guard = ActivationWriteGuard(activation_id="act-1", fencing_token=1)
+    progress = RunProgress(
+        schema_version=2,
+        event_id="evt-typed-1",
+        seq=0,
+        timestamp=1_000.0,
+        run_id="run-typed-1",
+        scope_id="run:run-typed-1",
+        status="running",
+        progress=0.5,
+        message="typed read",
+        source=SourceRef(framework="ksadk"),
+    )
+    written = await runtime_store.append(progress, guard=guard)
+    assert written.seq >= 1
+    listed = await runtime_store.list("s1")
+    assert [e.event_id for e in listed] == ["evt-typed-1"]
+    by_id = await runtime_store.event_by_id("s1", "evt-typed-1")
+    assert by_id is not None and by_id.run_id == "run-typed-1"
+    assert await runtime_store.event_by_id("s1", "missing") is None
+
+
 async def test_bootstrap_close_stops_every_background_task():
     stack, runtime = await _runtime()
     await runtime.start()
