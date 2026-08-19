@@ -1,5 +1,77 @@
 {
   "checks": {
+    "a_interaction_requested": {
+      "command_id_enqueue": "3177bc3b-bd4a-4af8-bd10-54719865c1b7",
+      "event": {
+        "event_id": "cev_58120957ec7c1f5d98a8d1541c132261d70be2ac",
+        "event_type": "interaction.requested",
+        "seq": 6
+      },
+      "gateway_request_id": "req-20260819210307-dyvuhu",
+      "ledger_record": {
+        "interaction_id": "item_b40b0dcc3087afa422d9e987",
+        "kind": "approval",
+        "native_target": {
+          "call_id": "tool_cmd_1",
+          "thread_id": "019f0000-0000-7000-8000-0000000000aa"
+        },
+        "provider_id": "codex",
+        "status_after_request": "pending"
+      },
+      "message_id_enqueue": "c57c1174-e30d-451c-8e5a-f70225f68590",
+      "run_id": "0dfb37dc-c6d0-491f-807a-5bbd3bcb14fc",
+      "run_state_after_request": "waiting (seq 7 control.run_transition), run.interrupted seq 8 - inbox not blocked for control commands",
+      "session": "codex-fake-appr-1787144587",
+      "status": "pass"
+    },
+    "a_real_model_run": {
+      "command_id": "98d47131-0c8b-454b-a51a-7ddbc4ea6c94",
+      "event_sample": [
+        {
+          "accepted_seq": 1,
+          "event_type": "control.command_accepted",
+          "seq": 1
+        },
+        {
+          "event_type": "control.run_transition",
+          "seq": 4,
+          "state": "running"
+        },
+        {
+          "event_type": "run.started",
+          "native_method": "turn/started",
+          "seq": 6,
+          "thread_id": "01a019af-bc08-7370-869a-28e68a0d3676"
+        },
+        {
+          "event_type": "item.updated",
+          "native_method": "item/reasoning/summaryTextDelta",
+          "seq": 12
+        },
+        {
+          "event_type": "item.updated",
+          "native_method": "item/agentMessage/delta",
+          "phase": "final_answer",
+          "seq": 53
+        },
+        {
+          "event_type": "run.completed",
+          "native_method": "turn/completed",
+          "seq": 71
+        },
+        {
+          "event_type": "control.run_transition",
+          "seq": 72,
+          "state": "completed"
+        }
+      ],
+      "final_state": "kernel_runs.state=completed after 71 runtime/v2 events (real token deltas incl. Chinese final answer)",
+      "message_id": "aac68922-e06e-40cb-964e-55793daabde9",
+      "note_sse": "gateway SSE stream closes early (before terminal) while events keep persisting; verified completion via DB seq space",
+      "run_id": "351187a3-a0ea-4702-ac3d-cbe5e9ae9a5f",
+      "session": "codex-18645263a872",
+      "status": "pass"
+    },
     "approve_scenario": {
       "interaction_requested": {
         "event_id": "fa6c9def-3862-4ffb-ab01-e458cdf7dbd8",
@@ -50,52 +122,113 @@
         "idempotency_key": "interaction:item_4713dd4eec1ac2ca22be4589:revision-1"
       }
     },
+    "attempts_real_model": {
+      "detail": "2 prompts against the existing codex-kernel-1 deployment (glm-5.3 via kspmas + model_proxy responses->chat conversion, KSADK_CODEX_USE_PROXY=1) did not produce any commandCall item: the model's own reasoning said 'call shell' and it replied 'I will run that now', but no tool call materialized (sessions codex-appr-1787141299, codex-appr2-1787143*; runs completed text-only). A direct in-pod chat-completions probe with an explicit shell function tool DID return tool_calls, so the gap is in the codex->proxy tool surface, out of this task's scope. Per the fallback plan the fake app-server path above was used and is labeled truthfully.",
+      "status": "not_achieved_recorded_for_honesty"
+    },
     "audit": {
       "detail": {
-        "agent_instance": {
-          "contract_digest": "69771d8df4a8811ed6623f26a152c869cfdfd8dbfdcad443b52a9b6403b267e8",
-          "id": "phase1-canary-1",
-          "note": "server \u955c\u50cf\u672a\u6253\u5305 tests/contracts fixture\uff08server_contract_digest() \u4e3a\u7a7a digest\uff09\uff0cadmission \u7684 contract digest \u4ee5\u6784\u9020\u53c2\u6570\u663e\u5f0f\u4f20\u5165\u5e76\u4e0e canary /v1/meta/contract-digest \u5b9e\u6d4b\u503c\u4e00\u81f4",
-          "runtime_endpoint": "http://agent-kernel-canary:8080",
-          "tenant": "phase1-canary"
-        },
         "audit_row": {
-          "accepted_seq": 1,
-          "command_id": "f9ca0c95-f400-4fd3-ba2e-a7cc88d39f1d",
+          "claims_digest": "cfbcb70e9c6463cbbc77bb32ba157bd3f685f37857e473866c7851ba044a550d",
+          "command_id": "90321243-e0c3-4364-b827-63cbaf5a22be",
           "command_type": "enqueue",
-          "id": "audit-b00f2c7cb41c4bdd942f5f77",
-          "permit_id": "permit-543e9b6c-f39b-41b0-a2ba-5c91bf0e442b",
+          "details": {
+            "accepted_seq": 1,
+            "message_id": "dba59199-ce28-4456-8432-2c250c21ab59"
+          },
+          "id": "audit-18d1239b57e14d1fab4e0395",
+          "permit_id": "permit-6809bfc8-7ba7-4173-be1b-b5a68e2a1db9",
           "principal_ref": "user:phase1-sre",
           "receipt_status": "accepted",
-          "redaction": "\u8131\u654f\u884c\uff1a\u4e0d\u542b\u539f\u59cb payload/permit \u7b7e\u540d/\u51ed\u636e\uff1bclaims \u53ea\u5b58 sha256 digest",
+          "session_id": "v2-audit-84f315ba",
           "table": "agent_control_audits"
         },
-        "command_id": "f9ca0c95-f400-4fd3-ba2e-a7cc88d39f1d",
-        "command_type": "enqueue",
-        "migration": "agent_instances / agent_control_audits / conversation_events.source_session_seq \u5df2\u5b58\u5728\uff08server \u542f\u52a8 create_all + 20260817_agent_instance.sql \u8bed\u4e49\u7b49\u4ef7\uff09\uff0c\u65e0\u9700\u624b\u5de5 DDL",
-        "path": "server-pod AgentControlService.submit (service-layer invocation via kubectl exec; real permit issuance + real runtime HTTP submit + real DB audit write; server image phase1-412fcffb \u672a\u542b HTTP route \u66b4\u9732\u8be5\u5165\u53e3\u65f6\u4ee5 pod \u5185 service \u5c42\u76f4\u8c03\u66ff\u4ee3\uff0c\u5176\u4f59\u73af\u8282\u5168\u771f\u5b9e)",
-        "permit_id": "permit-543e9b6c-f39b-41b0-a2ba-5c91bf0e442b",
-        "permit_trust": "server \u4ee5 ns \u5185\u4e13\u7528 Ed25519 workload key\uff08secret agent-control-signing-key \u5f15\u7528\uff0cprivate key \u672a\u843d evidence\uff09\u7b7e\u53d1 permit\uff1bruntime canary \u65b0\u589e /agentengine/api/v1/agent-control/submit ingress\uff0c\u6309 Server \u5408\u540c canonical JSON \u9a8c\u7b7e + \u65f6\u6548/TTL/claims \u7ed1\u5b9a\uff08tenant/instance/session/operation/ref\uff09\u540e\u5165 kernel",
+        "audit_row_written": true,
+        "gateway_chain_accepted_event": {
+          "accepted_seq": 1,
+          "command_id": "90321243-e0c3-4364-b827-63cbaf5a22be",
+          "message_id": "dba59199-ce28-4456-8432-2c250c21ab59",
+          "seq": 1
+        },
+        "gateway_chain_contains_command": true,
+        "path": "server-pod service layer AgentControlService.submit -> runtime /agent-kernel/v1/SubmitAgentControl (server-signed permit) -> agent_control_audits row; gateway SSE replay correlation",
         "receipt": {
           "accepted_seq": 1,
-          "message_id": "1619de0c-db2e-46c2-be42-97cdac2bb81f",
+          "command_id": "90321243-e0c3-4364-b827-63cbaf5a22be",
+          "message_id": "dba59199-ce28-4456-8432-2c250c21ab59",
           "status": "accepted"
         },
-        "runtime_events": {
-          "counts": {
-            "control.command_accepted": 1,
-            "control.message_claimed": 1,
-            "control.message_completed": 1,
-            "control.run_transition": 3
-          },
-          "inbox_final_status": "completed",
-          "table": "ksadk_session_events_readable"
+        "receipt_matches_audit": true,
+        "runtime_event_types": {
+          "control/v1:control.command_accepted": 1,
+          "control/v1:control.message_claimed": 1,
+          "control/v1:control.message_completed": 1,
+          "control/v1:control.run_transition": 3,
+          "runtime/v2:run.progress": 1,
+          "runtime/v2:run.started": 1
         },
-        "runtime_image": "hub.kce.ksyun.com/agentengine/agent-kernel-canary:phase1-canary-audit-021744",
-        "server_image": "hub.kce.ksyun.com/agentengine/agentengine-server:phase1-412fcffb",
-        "session_id": "audit-closure-e7d59627"
+        "server_contract_digest_passed": "69771d8df4a8811ed6623f26a152c869cfdfd8dbfdcad443b52a9b6403b267e8",
+        "session": "v2-audit-84f315ba",
+        "submit_seconds": 0.114
       },
       "status": "pass"
+    },
+    "b_interaction_approve": {
+      "detail": {
+        "manual_ledger_path": {
+          "interaction_id": "it-phase1-manual-1",
+          "kind": "approval",
+          "native_target": {
+            "call_id": "call-phase1-manual"
+          },
+          "outcome": "worker submit_interaction handler rejected with typed control.command_rejected reason=unsupported (seq 46) because the target run had already completed - no live codex approval existed to answer; ledger row left pending/cancelled manually",
+          "provider_id": "codex",
+          "submit": "SubmitInteraction approve accepted (receipt accepted, message_id d2465868-dfaa-4ca7-96f7-079cf5f730c2)"
+        },
+        "real_model_initiated_approval": "not achieved - glm-5.3 (via proxy chat conversion) answered directly without invoking the shell tool despite sandbox_mode=read-only + approval_policy=on-request overrides and an explicit execute-command prompt; no requestApproval item materialized",
+        "wiring_proven": "public SubmitInteraction -> server admission -> durable inbox -> kernel worker submit_interaction handler (typed rejection), i.e. the full control chain is wired; live approve->resume continuation not demonstrated end-to-end"
+      },
+      "status": "partial"
+    },
+    "b_submit_interaction_approve": {
+      "accepted_seq": 2,
+      "action": "approve",
+      "command_id": "046739e6-526d-450d-8044-269da66129ea",
+      "gateway_request_id": "req-20260819210332-iftmsa",
+      "idempotency_key": "interaction:item_b40b0dcc3087afa422d9e987:revision-1",
+      "message_id": "6eb10ff3-5b78-4e6f-81fe-e243c4761eb1",
+      "note": "SubmitInteraction admission accepted through the same gateway->server permit chain as the enqueue; no manual ledger row was involved",
+      "status": "pass"
+    },
+    "c_live_submit_via_original_call_id_and_closure": {
+      "event": {
+        "event_id": "cev_237b37bcbdcd55bb506621c9a004c318a61479ed",
+        "event_type": "interaction.resolved",
+        "seq": 16
+      },
+      "evidence_chain": [
+        "seq 15 run.progress: provider accepted the approve and delivered the JSON-RPC response to the app-server child over the ORIGINAL request id (fake server unblocks its turn only after receiving that response)",
+        "seq 16 interaction.resolved + kernel_interactions.status=resolved",
+        "seq 17-21 remaining turn items persisted after resume (commandExecution output, final agentMessage)",
+        "seq 22 run.completed + kernel_runs.state=completed",
+        "both inbox messages (enqueue + submit_interaction) reached status=completed"
+      ],
+      "run_completed": {
+        "event_id": "cev_24ff798ea20007581032ae573314df86b29c732a",
+        "event_type": "run.completed",
+        "seq": 22
+      },
+      "status": "pass"
+    },
+    "c_pod_kill_durability": {
+      "detail": {
+        "gap": "orphaned open run a1342633 wedged the session: takeover did NOT deterministically close it (RecoveryCoordinator failures are swallowed; codex attach seam is unavailable and ephemeral threads cannot resume), so the next accepted message (seq 10) sat unconsumed for minutes",
+        "kill": "pod deleted <1s after RunAgent receipt accepted (message_id 94436bde-9e4b-4ca9-822c-21716c8dc92c)",
+        "no_loss": "old pod persisted seq 1-9 (accept/claim/run_transition x2/message_completed/run.started/continuation/items) before dying - message claimed, nothing lost",
+        "recovery_after_ops": "after manually marking the orphan run interrupted, the worker immediately claimed the follow-up (seq 11-14) and completed a real model run 6cfc99b5 (run.progress deltas through completed)"
+      },
+      "session": "codex-kill-1787138279",
+      "status": "pass_with_gap"
     },
     "capability": {
       "detail": {
@@ -281,49 +414,205 @@
       },
       "status": "pass"
     },
+    "contract_mismatch_drill": {
+      "audit_row_command_ids": [
+        "0ec897a7-ceb0-480e-8b88-b665ebd3b43f",
+        "482dc84c-a166-4f01-b9c4-9acabd7dae93",
+        "683533c4-eee2-4cf4-8b60-7beb442a9c02",
+        "c2279721-a207-4bfb-ad21-a6daac9e3cbc",
+        "ed0f3264-e15d-4174-8bd3-84ce095124f6",
+        "72675629-3cc8-4390-96c2-8dffd120f9cb"
+      ],
+      "baseline": {
+        "canary_healthz": "ok=true ready=true lease_healthy=true digest=d4a66a...",
+        "note_submitagentcontrol": "SubmitAgentControl/GetAgentStatus \u7ecf\u8be5 api key \u89e3\u6790\u5230 tenant='' \u7684 auto-created instance ai-f5628db865884d0fabab\uff08bundle unknown\uff09\uff0c\u57fa\u7ebf\u5373\u8fd4\u56de runtime_not_ready 503\u2014\u2014\u9884\u5b58\u73af\u5883\u4e8b\u5b9e\uff0c\u4e0e\u672c\u6b21\u6ce8\u5165\u65e0\u5173\uff0c\u5df2\u5982\u5b9e\u8bb0\u5f55\uff1bdigest \u963b\u6d41\u8bc1\u636e\u4ee5 RunAgent + \u6ce8\u5165\u671f\u4e09\u52a8\u4f5c\u5bf9\u6bd4\u4e3a\u51c6",
+        "runagent": {
+          "code": 0,
+          "http": 200,
+          "inbox_state": "completed accepted_seq=1 agent_instance_id=phase1-canary-1",
+          "message_id": "1596828e-3917-41b1-be5b-091037fdf899",
+          "receipt_status": "accepted",
+          "recorded_at": "2026-08-19T18:08:44Z",
+          "request_id": "req-20260820020844-axhnck",
+          "session": "cm-drill-base-1787162924"
+        }
+      },
+      "digest": "d4a66a7249e10375d32d6a83434fde1d16ee7421e3a09ea03ed71217ee742d62",
+      "injection_a_server_pg_row": {
+        "forwarded_to_runtime": "\u65e0\uff08server logs \u663e\u793a\u96f6\u6b21 /agent-kernel/v1 \u8f6c\u53d1\uff0c\u547d\u4ee4\u672a\u8fdb\u5165 kernel inbox\uff09",
+        "getagentstatus": {
+          "code": 409,
+          "command_id": "482dc84c-a166-4f01-b9c4-9acabd7dae93",
+          "error_code": "contract_digest_mismatch",
+          "request_id": "req-20260820021301-skhdaj"
+        },
+        "injected_at": "2026-08-19T18:12:56Z",
+        "method": "UPDATE agent_instances SET contract_digest=64*'0' WHERE id='phase1-canary-1'\uff08psql via ak-pg-0\uff0c\u53ef\u6062\u590d\uff09",
+        "runagent": {
+          "code": 409,
+          "command_id": "0ec897a7-ceb0-480e-8b88-b665ebd3b43f",
+          "command_type": "enqueue",
+          "error_code": "contract_digest_mismatch",
+          "http": 200,
+          "message": "contract digest mismatch between server and agent instance",
+          "request_id": "req-20260820021301-zdcrar"
+        },
+        "submitagentcontrol": {
+          "code": 409,
+          "command_id": "683533c4-eee2-4cf4-8b60-7beb442a9c02",
+          "command_type": "interrupt",
+          "error_code": "contract_digest_mismatch",
+          "request_id": "req-20260820021306-yidupj"
+        }
+      },
+      "injection_b_runtime_report": {
+        "getagentstatus": {
+          "code": 409,
+          "command_id": "ed0f3264-e15d-4174-8bd3-84ce095124f6",
+          "request_id": "req-20260820021954-vdsdsl"
+        },
+        "injected_at": "2026-08-19T18:19:30Z",
+        "method": "kubectl set env deploy/agent-kernel-canary AGENT_KERNEL_CONTRACT_DIGEST=64*'0' + rollout\uff08\u66f4\u8d34\u8fd1\u771f\u5b9e\u8def\u5f84\uff1aruntime health/reporter \u94fe\u8def\u4e0a\u62a5\u574f digest\uff09",
+        "runagent": {
+          "code": 409,
+          "command_id": "c2279721-a207-4bfb-ad21-a6daac9e3cbc",
+          "error_code": "contract_digest_mismatch",
+          "message": "runtime contract digest does not match server contract",
+          "request_id": "req-20260820021954-qwiiso"
+        },
+        "runtime_report": "redis agent_status:agent-kernel-canary -> agent_kernel_runtime.contract_digest=0000... (observed_at=2026-08-19T18:19:45Z, ready=true)",
+        "submitagentcontrol": {
+          "code": 409,
+          "command_id": "72675629-3cc8-4390-96c2-8dffd120f9cb",
+          "request_id": "req-20260820021954-cybcpx"
+        },
+        "which_layer_first": "\u4e24\u5c42\u6ce8\u5165\u5747\u88ab\u540c\u4e00\u5c42\uff08server admission\uff09\u62e6\u622a\uff1aA \u547d\u4e2d instance-vs-server \u5206\u652f\uff0cB \u547d\u4e2d runtime-report-vs-server \u5206\u652f\uff1bruntime \u4e0d\u81ea\u62e6\uff0cgateway \u4e0d\u6821\u9a8c"
+      },
+      "metrics": {
+        "agent_kernel_contract_mismatch_total": "\u4e0d\u53ef\u5f97\uff1agateway router /metrics \u9700 auth context\uff08curl \u8fd4\u56de 400/\u62d2\u7edd\uff09\uff0cgateway-api \u65e0 metrics \u8def\u7531\uff0cserver /metrics \u65e0 contract/kernel \u6307\u6807\u65cf\u3002\u4ee5\u8bf7\u6c42\u7ea7 409 \u9519\u8bef\u4f53 + agent_control_audits \u516d\u6761 error_code=contract_digest_mismatch \u5ba1\u8ba1\u884c\u4e3a\u8bc1\u636e"
+      },
+      "recovery": {
+        "a_restore": {
+          "action": "UPDATE contract_digest \u56de canonical \u503c @18:14:01Z",
+          "complication": "\u6062\u590d\u540e readiness \u77ed\u6682 false\uff08lease_healthy=false\uff09\u2014\u2014deployed \u955c\u50cf fb9113a \u65e9\u4e8e\u4fee\u590d commit bb2fe85c\u300erenew heartbeat across waiting runs\u300f\u7684\u5df2\u77e5 bug\uff1awaiting run \u7559\u5728 heartbeat \u96c6\u5408\u4e14\u4e0d\u518d\u7eed\u7ea6\uff1bdelete pod \u91cd\u542f\u540e\u7acb\u5373\u6062\u590d\uff08\u4fee\u590d commit \u63cf\u8ff0\u5373\u300e\u9884\u53d1\u9700\u91cd\u542f pod \u624d\u6062\u590d\u300f\uff09",
+          "pod_restart_at": "2026-08-19T18:18:30Z",
+          "post_recovery_runagent": {
+            "code": 0,
+            "inbox_state": "completed",
+            "message_id": "5a137704-ef49-4093-945b-6dcf50274633",
+            "receipt_status": "accepted",
+            "request_id": "req-20260820021922-hpqago",
+            "session": "cm-drill-recA3"
+          }
+        },
+        "b_restore": {
+          "action": "set env \u56de canonical digest + rollout @18:20:20Z\uff0crollout \u5b8c\u6210 @18:20:29Z",
+          "canary_healthz_after": "ok=true ready=true digest=d4a66a...",
+          "deployment_env_final": "AGENT_KERNEL_CONTRACT_DIGEST=d4a66a7249e10375d32d6a83434fde1d16ee7421e3a09ea03ed71217ee742d62",
+          "post_recovery_runagent": {
+            "code": 0,
+            "inbox_state": "completed accepted_seq=1",
+            "message_id": "f1843e47-4b42-41f8-a381-cd289de53690",
+            "receipt_status": "accepted",
+            "request_id": "req-20260820022052-bgfntc",
+            "session": "cm-drill-recB"
+          }
+        },
+        "residue": "\u65e0\u73af\u5883\u6b8b\u7559\uff1adeployment env \u4e0e PG agent_instances \u884c\u5747\u56de\u5230 canonical \u503c\uff1bdrill \u4f1a\u8bdd\u6570\u636e\uff08cm-drill-*\uff09\u7559\u5b58\u5728 append-only kernel \u8868\uff08\u6309\u8bbe\u8ba1\u4e0d\u6e05\u7406\uff09\uff1bcanary pod \u56e0\u5df2\u77e5 heartbeat bug \u91cd\u542f\u8fc7\u4e00\u6b21"
+      },
+      "status": "pass",
+      "timeline": [
+        "18:08:44Z baseline RunAgent accepted/completed (message_id 1596828e)",
+        "18:12:56Z \u6ce8\u5165A\uff1aagent_instances.contract_digest -> 64*'0'",
+        "18:13:01Z RunAgent 409 / GetAgentStatus 409 contract_digest_mismatch\uff08\u672a\u8f6c\u53d1 runtime\uff09",
+        "18:13:06Z SubmitAgentControl 409 contract_digest_mismatch",
+        "18:14:01Z \u6062\u590dA\uff1aPG \u884c\u6539\u56de canonical\uff1breadiness \u56e0\u5df2\u77e5 waiting-run heartbeat bug\uff08fb9113a<bb2fe85c\uff09\u8dcc false",
+        "18:18:30Z delete pod \u6062\u590d readiness",
+        "18:19:22Z RunAgent \u590d\u6d4b accepted (cm-drill-recA3 completed)",
+        "18:19:30Z \u6ce8\u5165B\uff1acanary env digest -> 64*'0' + rollout",
+        "18:19:45Z reporter \u4e0a\u62a5\u574f digest\uff08ready=true\uff09",
+        "18:19:54Z RunAgent/GetAgentStatus/SubmitAgentControl \u5168\u90e8 409 contract_digest_mismatch",
+        "18:20:29Z \u6062\u590dB rollout \u5b8c\u6210",
+        "18:20:52Z RunAgent \u590d\u6d4b accepted (cm-drill-recB completed)\uff1b\u73af\u5883\u65e0\u6b8b\u7559",
+        "18:27:49Z \u6536\u5c3e\uff1a\u6062\u590d\u9a8c\u8bc1\u4ea7\u751f\u7684 waiting run\uff08recA3/recB\uff09\u518d\u6b21\u89e6\u53d1\u540c\u4e00\u5df2\u77e5 heartbeat bug \u4f7f readiness \u8dcc false\uff0cdelete pod \u540e ok=true ready=true\uff1b\u6f14\u7ec3\u540e\u73af\u5883\u5065\u5eb7"
+      ]
+    },
     "cross_repo_versions": {
       "detail": {
         "branch": "feat/agent-kernel-phase1",
-        "contract_digest": "d4a66a7249e10375d32d6a83434fde1d16ee6721e3a09ea03ed71217ee742d62",
-        "fixture_manifest_digests": {
-          "agentengine-gateway:tests/contracts/v1/manifest.json": "895baa342b09367ced2956336fe7ba9d52fdf06604bbcfd996e800fc8705c631",
-          "agentengine-server:tests/contracts/agent-kernel/v1/manifest.json": "895baa342b09367ced2956336fe7ba9d52fdf06604bbcfd996e800fc8705c631",
-          "ksadk-python:contracts/agent-kernel/v1/manifest.json": "895baa342b09367ced2956336fe7ba9d52fdf06604bbcfd996e800fc8705c631"
-        },
+        "digest": "69771d8df4a8811ed6623f26a152c869cfdfd8dbfdcad443b52a9b6403b267e8",
         "images": {
-          "agent-runtime-codex-fake": "hub.kce.ksyun.com/agentengine/agent-runtime-codex:0.147.0-kernel-phase1-fake-approval-v4 (digest sha256:959015bae2649cb37361c33eacf09cc9cacad9a5a3f704f265abe9bbade980a7; ksadk wheel from de865a68)",
-          "agentengine-hosted-ui": "hub.kce.ksyun.com/bigdata-ai/agentengine-hosted-ui:v0.3.2-beta.1-7c523f0 (digest sha256:ffe7eb5b9a5a804170e07cf64ed1af102ed515860828580b06e79452d129b737; ksadk-web 0.3.2-beta.1 local tarball overlay)"
+          "agent-kernel-canary": "phase1-v3-91d0fb8 (ingress status permit-binding fix 91d0fb89; AGENT_KERNEL_CONTRACT_DIGEST env added)",
+          "agentengine-gateway": "phase1-7840b09 (tip 7840b09 = b8e30b9 streamed-409 stale-fence fix + 7840b09 readme build fix; deployed via helm upgrade --reuse-values, router env patch preserved)",
+          "agentengine-server": "phase1-7afc70a (matches branch tip 7afc70a)"
         },
-        "note": "\u516d\u4ed3 + hosted-ui/web \u540c\u5206\u652f commit\uff1b\u4e09\u7aef manifest \u6587\u4ef6 sha \u4e00\u81f4\u4e14 aggregate_digest=d4a66a72\u2026\u4e0e\u9884\u53d1 runtime env AGENT_KERNEL_CONTRACT_DIGEST \u4e00\u81f4",
+        "note": "six repos on feat/agent-kernel-phase1; ksadk tip 91d0fb89 (status permit binding fix) and gateway tip 7840b09 (streamed 409 body read fix b8e30b9 + readme build fix) deployed and re-verified via gateway full chain on 2026-08-18; every gateway SubmitAgentControl re-verification passed the pinned-digest directory gate",
         "repos": {
           "agent-platform-operator": {
-            "branch": "feat/agent-kernel-phase1",
-            "commit": "260b3532dda1df12e56533c5ef796f35b27d0125"
+            "commit": "26948cff87fdfdb150650183dc380046d3ed2620"
           },
           "agent-runtime-service": {
-            "branch": "feat/agent-kernel-phase1",
-            "commit": "dfb4f563823de2d28c92c923b6b781aee925b17d"
+            "commit": "59178fdc362d3e098153e4be07b69ae0f69b6ff7"
           },
           "agentengine-gateway": {
-            "branch": "feat/agent-kernel-phase1",
-            "commit": "1f3b020b03cc730bc65d27663c6623ceb649b876"
-          },
-          "agentengine-hosted-ui": {
-            "branch": "feat/hosted-ui-0.3.2-beta",
-            "commit": "1f5434adb65456661e110767e410b437bff1d07c"
+            "commit": "7840b093c4983d3a9ef72420d3b20fa5ee552166"
           },
           "agentengine-server": {
-            "branch": "feat/agent-kernel-phase1",
-            "commit": "b72947b6fa4b6714d49c159a41fcff82748ccdf2"
+            "commit": "7afc70aa664755d14b6c478d70ed92b2c65cf671"
           },
           "ksadk-python": {
-            "branch": "feat/agent-kernel-phase1",
-            "commit": "de865a68b17bcb3e6f654e5269d1c4d637859508"
+            "commit": "91d0fb89985cfa04f418928d34a8cf6176dfd347"
           },
           "ksadk-web": {
-            "branch": "feat/interaction-v1-web-0.3.2",
-            "commit": "7c523f02f86f7e5c4ee311e5abaaa4f794f57e00"
+            "commit": "f05f03983b66204bbca49b68ee5afd00d1a7978a"
           }
+        },
+        "three_leg_digest_match": {
+          "gateway": "69771d8df4a8811ed6623f26a152c869cfdfd8dbfdcad443b52a9b6403b267e8",
+          "runtime_meta": "69771d8df4a8811ed6623f26a152c869cfdfd8dbfdcad443b52a9b6403b267e8",
+          "server_internal_directory": "69771d8df4a8811ed6623f26a152c869cfdfd8dbfdcad443b52a9b6403b267e8"
+        }
+      },
+      "status": "pass"
+    },
+    "d_get_agent_status": {
+      "detail": {
+        "path": "gateway /agentengine/api/v1/GetAgentStatus (api-key auth)",
+        "sample": {
+          "agent_instance_id": "codex-kernel-1",
+          "capability": {
+            "attach": {
+              "mode": "unavailable",
+              "reason": "codex_process_local_thread_table",
+              "supported": false
+            },
+            "cancel": {
+              "mode": "native",
+              "supported": true
+            },
+            "checkpoint": {
+              "mode": "native",
+              "supported": true
+            },
+            "pause": {
+              "mode": "native",
+              "supported": true
+            },
+            "resume": {
+              "mode": "native",
+              "supported": true
+            },
+            "steer": {
+              "reason": "runtime_no_native_steer",
+              "supported": false
+            },
+            "submit_interaction": {
+              "mode": "native",
+              "supported": true
+            }
+          },
+          "inbox_depth": 0,
+          "instance_state": "ready"
         }
       },
       "status": "pass"
@@ -863,14 +1152,20 @@
   },
   "environment": "pre",
   "failed_checks": [],
-  "generated_at": "2026-08-19T17:56:44Z",
+  "generated_at": "2026-08-19T18:28:19Z",
   "passed_checks": [
+    "a_interaction_requested",
+    "a_real_model_run",
     "approve_scenario",
     "audit",
+    "b_submit_interaction_approve",
+    "c_live_submit_via_original_call_id_and_closure",
     "capability",
     "cold_recovery",
     "contract_digest",
+    "contract_mismatch_drill",
     "cross_repo_versions",
+    "d_get_agent_status",
     "fifo",
     "happy_path",
     "idempotency",
