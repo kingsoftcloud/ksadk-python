@@ -19,6 +19,7 @@ execution（同一 client 实例）；control lookup 永远按 durable run id。
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -73,6 +74,9 @@ from ksadk.runtime.adapter import (
 from ksadk.runtime.adapter import (
     ResumeTarget as AdapterResumeTarget,
 )
+
+logger = logging.getLogger(__name__)
+
 
 WorkOutcome = Literal[
     "idle", "claimed", "completed", "retryable_failure", "terminal_failure"
@@ -394,6 +398,12 @@ class AgentKernelWorker:
         except asyncio.CancelledError:  # pragma: no cover - defensive
             return
         if error is not None:
+            logger.error(
+                "background stream for run %s failed: %s: %s",
+                run_id,
+                type(error).__name__,
+                error,
+            )
             self._background_stream_errors[run_id] = error
 
     async def _consume_stream(
