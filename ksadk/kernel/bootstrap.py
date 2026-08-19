@@ -263,6 +263,12 @@ class AgentKernelRuntime:
             return
         self._worker_running = True
         self._tasks.append(asyncio.create_task(self._run_loop(), name="kernel-runtime"))
+        # 心跳续约必须是独立任务：run loop 可能长时间阻塞在某个 session 的
+        # adapter.start()（hosted pod 上 codex 握手可超过 lease TTL），内联
+        # 续约会把其它已持有 lease 的 session 拖过期（stream guard StaleFence）。
+        self._tasks.append(
+            asyncio.create_task(self._heartbeat_loop(), name="kernel-heartbeat")
+        )
 
     async def close(self) -> None:
         for task in self._tasks:
@@ -302,7 +308,6 @@ class AgentKernelRuntime:
         self._worker_running = True
         try:
             while True:
-                await self._renew_leased_sessions()
                 if self._degraded:
                     return
                 progressed = False
@@ -339,6 +344,18 @@ class AgentKernelRuntime:
                     await asyncio.sleep(self.config.poll_interval)
         finally:
             self._worker_running = False
+
+    async def _heartbeat_loop(self) -> None:
+        """独立心跳任务：按 TTL/3 节奏续约所有已持有的 lease。"""
+
+        interval = max(
+            self.config.lease_ttl_seconds / 3.0, self.config.poll_interval
+        )
+        while True:
+            await asyncio.sleep(interval / 2.0)
+            await self._renew_leased_sessions()
+            if self._degraded:
+                return
 
     async def _renew_leased_sessions(self) -> None:
         """P0：已持有 lease 的 session 在固定间隔上持续续约。

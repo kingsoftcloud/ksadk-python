@@ -266,6 +266,42 @@ async def test_typed_runtime_store_reads_without_session_service():
     assert await runtime_store.event_by_id("s1", "missing") is None
 
 
+async def test_heartbeat_renews_while_run_loop_blocked_in_slow_start():
+    """续约不能被 worker 的慢 start 阻塞。
+
+    run loop 串行处理 session；某个 session 的 adapter.start() 慢于 lease
+    TTL 时（hosted pod 上 codex 握手可 >30s），其它已持有 lease 的 session
+    若靠 run loop 内联续约会过期 -> stream guard StaleFence -> run 卡死。
+    续约必须跑在独立后台任务上。"""
+
+    stack = await kernel_stack()
+    adapter = stack.adapter
+    adapter.start_delay = 0.6  # > TTL 0.4
+    config = _runtime_config(
+        stack, lease_ttl_seconds=0.4, poll_interval=0.01
+    )
+    runtime = build_agent_kernel_runtime(config)
+    try:
+        await runtime.start()
+        await stack.kernel.submit(
+            command(idempotency_key="slow-start-1"), permit=stack.permit("enqueue")
+        )
+        for _ in range(500):
+            if runtime.heartbeat_sessions():
+                break
+            await asyncio.sleep(0.01)
+        assert runtime.heartbeat_sessions() == {"s1"}
+        # 空闲 + run loop 可能被慢 start 阻塞，等待远超 TTL。
+        await asyncio.sleep(1.5)
+        health = await runtime.readiness.check()
+        assert health["lease_healthy"] is True, health
+        assert health["ready"] is True, health
+        lease = await stack.store.current_lease(AGENT, "s1")
+        assert lease is not None
+    finally:
+        await runtime.close()
+
+
 async def test_bootstrap_close_stops_every_background_task():
     stack, runtime = await _runtime()
     await runtime.start()
