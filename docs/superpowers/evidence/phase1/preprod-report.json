@@ -52,48 +52,48 @@
     },
     "audit": {
       "detail": {
+        "agent_instance": {
+          "contract_digest": "69771d8df4a8811ed6623f26a152c869cfdfd8dbfdcad443b52a9b6403b267e8",
+          "id": "phase1-canary-1",
+          "note": "server \u955c\u50cf\u672a\u6253\u5305 tests/contracts fixture\uff08server_contract_digest() \u4e3a\u7a7a digest\uff09\uff0cadmission \u7684 contract digest \u4ee5\u6784\u9020\u53c2\u6570\u663e\u5f0f\u4f20\u5165\u5e76\u4e0e canary /v1/meta/contract-digest \u5b9e\u6d4b\u503c\u4e00\u81f4",
+          "runtime_endpoint": "http://agent-kernel-canary:8080",
+          "tenant": "phase1-canary"
+        },
         "audit_row": {
-          "claims_digest": "cfbcb70e9c6463cbbc77bb32ba157bd3f685f37857e473866c7851ba044a550d",
-          "command_id": "90321243-e0c3-4364-b827-63cbaf5a22be",
+          "accepted_seq": 1,
+          "command_id": "f9ca0c95-f400-4fd3-ba2e-a7cc88d39f1d",
           "command_type": "enqueue",
-          "details": {
-            "accepted_seq": 1,
-            "message_id": "dba59199-ce28-4456-8432-2c250c21ab59"
-          },
-          "id": "audit-18d1239b57e14d1fab4e0395",
-          "permit_id": "permit-6809bfc8-7ba7-4173-be1b-b5a68e2a1db9",
+          "id": "audit-b00f2c7cb41c4bdd942f5f77",
+          "permit_id": "permit-543e9b6c-f39b-41b0-a2ba-5c91bf0e442b",
           "principal_ref": "user:phase1-sre",
           "receipt_status": "accepted",
-          "session_id": "v2-audit-84f315ba",
+          "redaction": "\u8131\u654f\u884c\uff1a\u4e0d\u542b\u539f\u59cb payload/permit \u7b7e\u540d/\u51ed\u636e\uff1bclaims \u53ea\u5b58 sha256 digest",
           "table": "agent_control_audits"
         },
-        "audit_row_written": true,
-        "gateway_chain_accepted_event": {
-          "accepted_seq": 1,
-          "command_id": "90321243-e0c3-4364-b827-63cbaf5a22be",
-          "message_id": "dba59199-ce28-4456-8432-2c250c21ab59",
-          "seq": 1
-        },
-        "gateway_chain_contains_command": true,
-        "path": "server-pod service layer AgentControlService.submit -> runtime /agent-kernel/v1/SubmitAgentControl (server-signed permit) -> agent_control_audits row; gateway SSE replay correlation",
+        "command_id": "f9ca0c95-f400-4fd3-ba2e-a7cc88d39f1d",
+        "command_type": "enqueue",
+        "migration": "agent_instances / agent_control_audits / conversation_events.source_session_seq \u5df2\u5b58\u5728\uff08server \u542f\u52a8 create_all + 20260817_agent_instance.sql \u8bed\u4e49\u7b49\u4ef7\uff09\uff0c\u65e0\u9700\u624b\u5de5 DDL",
+        "path": "server-pod AgentControlService.submit (service-layer invocation via kubectl exec; real permit issuance + real runtime HTTP submit + real DB audit write; server image phase1-412fcffb \u672a\u542b HTTP route \u66b4\u9732\u8be5\u5165\u53e3\u65f6\u4ee5 pod \u5185 service \u5c42\u76f4\u8c03\u66ff\u4ee3\uff0c\u5176\u4f59\u73af\u8282\u5168\u771f\u5b9e)",
+        "permit_id": "permit-543e9b6c-f39b-41b0-a2ba-5c91bf0e442b",
+        "permit_trust": "server \u4ee5 ns \u5185\u4e13\u7528 Ed25519 workload key\uff08secret agent-control-signing-key \u5f15\u7528\uff0cprivate key \u672a\u843d evidence\uff09\u7b7e\u53d1 permit\uff1bruntime canary \u65b0\u589e /agentengine/api/v1/agent-control/submit ingress\uff0c\u6309 Server \u5408\u540c canonical JSON \u9a8c\u7b7e + \u65f6\u6548/TTL/claims \u7ed1\u5b9a\uff08tenant/instance/session/operation/ref\uff09\u540e\u5165 kernel",
         "receipt": {
           "accepted_seq": 1,
-          "command_id": "90321243-e0c3-4364-b827-63cbaf5a22be",
-          "message_id": "dba59199-ce28-4456-8432-2c250c21ab59",
+          "message_id": "1619de0c-db2e-46c2-be42-97cdac2bb81f",
           "status": "accepted"
         },
-        "receipt_matches_audit": true,
-        "runtime_event_types": {
-          "control/v1:control.command_accepted": 1,
-          "control/v1:control.message_claimed": 1,
-          "control/v1:control.message_completed": 1,
-          "control/v1:control.run_transition": 3,
-          "runtime/v2:run.progress": 1,
-          "runtime/v2:run.started": 1
+        "runtime_events": {
+          "counts": {
+            "control.command_accepted": 1,
+            "control.message_claimed": 1,
+            "control.message_completed": 1,
+            "control.run_transition": 3
+          },
+          "inbox_final_status": "completed",
+          "table": "ksadk_session_events_readable"
         },
-        "server_contract_digest_passed": "69771d8df4a8811ed6623f26a152c869cfdfd8dbfdcad443b52a9b6403b267e8",
-        "session": "v2-audit-84f315ba",
-        "submit_seconds": 0.114
+        "runtime_image": "hub.kce.ksyun.com/agentengine/agent-kernel-canary:phase1-canary-audit-021744",
+        "server_image": "hub.kce.ksyun.com/agentengine/agentengine-server:phase1-412fcffb",
+        "session_id": "audit-closure-e7d59627"
       },
       "status": "pass"
     },
@@ -284,37 +284,46 @@
     "cross_repo_versions": {
       "detail": {
         "branch": "feat/agent-kernel-phase1",
-        "digest": "69771d8df4a8811ed6623f26a152c869cfdfd8dbfdcad443b52a9b6403b267e8",
-        "images": {
-          "agent-kernel-canary": "phase1-v3-91d0fb8 (ingress status permit-binding fix 91d0fb89; AGENT_KERNEL_CONTRACT_DIGEST env added)",
-          "agentengine-gateway": "phase1-7840b09 (tip 7840b09 = b8e30b9 streamed-409 stale-fence fix + 7840b09 readme build fix; deployed via helm upgrade --reuse-values, router env patch preserved)",
-          "agentengine-server": "phase1-7afc70a (matches branch tip 7afc70a)"
+        "contract_digest": "d4a66a7249e10375d32d6a83434fde1d16ee6721e3a09ea03ed71217ee742d62",
+        "fixture_manifest_digests": {
+          "agentengine-gateway:tests/contracts/v1/manifest.json": "895baa342b09367ced2956336fe7ba9d52fdf06604bbcfd996e800fc8705c631",
+          "agentengine-server:tests/contracts/agent-kernel/v1/manifest.json": "895baa342b09367ced2956336fe7ba9d52fdf06604bbcfd996e800fc8705c631",
+          "ksadk-python:contracts/agent-kernel/v1/manifest.json": "895baa342b09367ced2956336fe7ba9d52fdf06604bbcfd996e800fc8705c631"
         },
-        "note": "six repos on feat/agent-kernel-phase1; ksadk tip 91d0fb89 (status permit binding fix) and gateway tip 7840b09 (streamed 409 body read fix b8e30b9 + readme build fix) deployed and re-verified via gateway full chain on 2026-08-18; every gateway SubmitAgentControl re-verification passed the pinned-digest directory gate",
+        "images": {
+          "agent-runtime-codex-fake": "hub.kce.ksyun.com/agentengine/agent-runtime-codex:0.147.0-kernel-phase1-fake-approval-v4 (digest sha256:959015bae2649cb37361c33eacf09cc9cacad9a5a3f704f265abe9bbade980a7; ksadk wheel from de865a68)",
+          "agentengine-hosted-ui": "hub.kce.ksyun.com/bigdata-ai/agentengine-hosted-ui:v0.3.2-beta.1-7c523f0 (digest sha256:ffe7eb5b9a5a804170e07cf64ed1af102ed515860828580b06e79452d129b737; ksadk-web 0.3.2-beta.1 local tarball overlay)"
+        },
+        "note": "\u516d\u4ed3 + hosted-ui/web \u540c\u5206\u652f commit\uff1b\u4e09\u7aef manifest \u6587\u4ef6 sha \u4e00\u81f4\u4e14 aggregate_digest=d4a66a72\u2026\u4e0e\u9884\u53d1 runtime env AGENT_KERNEL_CONTRACT_DIGEST \u4e00\u81f4",
         "repos": {
           "agent-platform-operator": {
-            "commit": "26948cff87fdfdb150650183dc380046d3ed2620"
+            "branch": "feat/agent-kernel-phase1",
+            "commit": "260b3532dda1df12e56533c5ef796f35b27d0125"
           },
           "agent-runtime-service": {
-            "commit": "59178fdc362d3e098153e4be07b69ae0f69b6ff7"
+            "branch": "feat/agent-kernel-phase1",
+            "commit": "dfb4f563823de2d28c92c923b6b781aee925b17d"
           },
           "agentengine-gateway": {
-            "commit": "7840b093c4983d3a9ef72420d3b20fa5ee552166"
+            "branch": "feat/agent-kernel-phase1",
+            "commit": "1f3b020b03cc730bc65d27663c6623ceb649b876"
+          },
+          "agentengine-hosted-ui": {
+            "branch": "feat/hosted-ui-0.3.2-beta",
+            "commit": "1f5434adb65456661e110767e410b437bff1d07c"
           },
           "agentengine-server": {
-            "commit": "7afc70aa664755d14b6c478d70ed92b2c65cf671"
+            "branch": "feat/agent-kernel-phase1",
+            "commit": "b72947b6fa4b6714d49c159a41fcff82748ccdf2"
           },
           "ksadk-python": {
-            "commit": "91d0fb89985cfa04f418928d34a8cf6176dfd347"
+            "branch": "feat/agent-kernel-phase1",
+            "commit": "de865a68b17bcb3e6f654e5269d1c4d637859508"
           },
           "ksadk-web": {
-            "commit": "f05f03983b66204bbca49b68ee5afd00d1a7978a"
+            "branch": "feat/interaction-v1-web-0.3.2",
+            "commit": "7c523f02f86f7e5c4ee311e5abaaa4f794f57e00"
           }
-        },
-        "three_leg_digest_match": {
-          "gateway": "69771d8df4a8811ed6623f26a152c869cfdfd8dbfdcad443b52a9b6403b267e8",
-          "runtime_meta": "69771d8df4a8811ed6623f26a152c869cfdfd8dbfdcad443b52a9b6403b267e8",
-          "server_internal_directory": "69771d8df4a8811ed6623f26a152c869cfdfd8dbfdcad443b52a9b6403b267e8"
         }
       },
       "status": "pass"
@@ -546,6 +555,14 @@
           "session": "v2-neg-ref-01f7af6c",
           "status": "rejected"
         }
+      },
+      "status": "pass"
+    },
+    "phase0_baseline": {
+      "detail": {
+        "accepted": true,
+        "manifest": "docs/superpowers/evidence/phase0/manifest.json",
+        "manifest_digest": "2237156b1c0a0d75cff921a523a694ce35a6258dd198f10a2c79eeff449b025f"
       },
       "status": "pass"
     },
@@ -845,10 +862,8 @@
     }
   },
   "environment": "pre",
-  "failed_checks": [
-    "phase0_baseline"
-  ],
-  "generated_at": "2026-08-19T16:40:15Z",
+  "failed_checks": [],
+  "generated_at": "2026-08-19T17:56:44Z",
   "passed_checks": [
     "approve_scenario",
     "audit",
@@ -860,6 +875,7 @@
     "happy_path",
     "idempotency",
     "permit_negative",
+    "phase0_baseline",
     "queue_full",
     "queue_full_recovery",
     "reconnect",
@@ -871,10 +887,8 @@
     "stale_fence",
     "status_via_gateway"
   ],
-  "reasons": [
-    "phase0_baseline requires an accepted manifest at 'docs/superpowers/evidence/phase0/manifest.json' (missing or accepted != true)"
-  ],
-  "scenario": "interaction_web_0_3_2",
+  "reasons": [],
+  "scenario": "full_closure",
   "skipped_checks": [],
-  "status": "fail"
+  "status": "pass"
 }
