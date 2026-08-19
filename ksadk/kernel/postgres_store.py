@@ -1146,8 +1146,88 @@ class PostgresAgentKernelStore:
         return stored
 
 
+class PostgresFencedSessionEventStore:
+    """事务级 fenced ``SessionEventStore``（Task 4 Step 5）。
+
+    typed RuntimeEvent 写路径（``RuntimeEventStore.append -> append(envelope,
+    guard=ActivationWriteGuard)``）的缺口修复：每个 ActivationWriteGuard
+    append 都在**同一个 PostgreSQL 事务**里先对 activation 行做
+    ``FOR SHARE`` compare-fence（activation_id / fencing_token / 未过期 /
+    未 released），再执行 event insert——被 takeover 的旧 owner 在写出任何
+    runtime/progress/terminal 事实之前就被 :class:`StaleFenceError` 回滚。
+
+    AdmissionWriteGuard（accepted/rejected admission 事实）继续由
+    :class:`PostgresAgentKernelStore` 的 writer 事务内联处理；独立调用时
+    走 event log 自开事务。
+    """
+
+    def __init__(self, store: "PostgresAgentKernelStore") -> None:
+        self._store = store
+        self._log = store._events
+
+    @asynccontextmanager
+    async def _connection(self):
+        async with self._store._connection() as connection:
+            yield connection
+
+    async def append(
+        self, envelope: SessionEventEnvelope, *, guard: Any
+    ) -> SessionEventEnvelope:
+        from ksadk.events.session_event import validate_write_guard
+
+        validate_write_guard(envelope, guard)
+        if isinstance(guard, ActivationWriteGuard):
+            async with self._connection() as connection:
+                async with connection.transaction():
+                    await self._assert_activation_fence(connection, guard)
+                    return await self._log.append_on(connection, envelope, guard)
+        return await self._log.append(envelope, guard=guard)
+
+    async def _assert_activation_fence(
+        self, connection: Any, guard: ActivationWriteGuard
+    ) -> None:
+        row = await connection.fetchrow(
+            "SELECT activation_id, fencing_token, lease_expires_at, released"
+            " FROM kernel_activations WHERE activation_id = $1"
+            " FOR SHARE",
+            guard.activation_id,
+        )
+        if (
+            row is None
+            or row["released"]
+            or row["lease_expires_at"] <= _now()
+            or int(row["fencing_token"]) != int(guard.fencing_token)
+        ):
+            raise StaleFenceError(
+                "activation lease does not match runtime event write guard",
+                details={
+                    "activation_id": guard.activation_id,
+                    "expected_fence": int(guard.fencing_token),
+                },
+            )
+
+    async def read(
+        self, session_id: str, after_seq: int, limit: int
+    ) -> list[SessionEventEnvelope]:
+        return await self._log.read(session_id, after_seq, limit)
+
+    async def subscribe(
+        self, session_id: str, after_seq: int, *, poll_interval: float = 0.25
+    ):
+        import asyncio
+
+        cursor = int(after_seq or 0)
+        while True:
+            envelopes = await self._log.read(session_id, cursor, 1000)
+            for envelope in envelopes:
+                cursor = max(cursor, int(envelope.seq))
+                yield envelope
+            await asyncio.sleep(poll_interval)
+
+
 __all__ = [
     "PostgresAgentKernelStore",
+    "PostgresFencedSessionEventStore",
     "PostgresKernelEventLog",
     "PostgresNonceStore",
     "SCHEMA_PATH",

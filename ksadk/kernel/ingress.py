@@ -481,6 +481,35 @@ KERNEL_INGRESS_HEALTH_PATH = f"{KERNEL_INGRESS_BASE_PATH}/health"
 ENV_KERNEL_STORE_DRIVER = "AGENT_KERNEL_STORE_DRIVER"
 ENV_KERNEL_STORE_DSN = "AGENT_KERNEL_STORE_DSN"
 ENV_JWKS_URL = "AGENT_CONTROL_JWKS_URL"
+ENV_AUTHORITY_MODE = "AGENT_KERNEL_AUTHORITY_MODE"
+
+_AUTHORITY_LOCAL = "local"
+_AUTHORITY_HOSTED = "hosted"
+
+
+def authority_mode() -> str:
+    """当前 permit authority 模式。
+
+    - ``AGENT_KERNEL_AUTHORITY_MODE=local``：显式本地授权（开发 / 灰度 /
+      canary）。允许进程内 issuer 自签 trusted-context permit，且 JWKS
+      合并本地公钥。
+    - ``AGENT_KERNEL_AUTHORITY_MODE=hosted``：托管模式，fail closed——缺
+      permit 一律 401，本地自签 / 未知 key 一律 403，JWKS 不得合并本地
+      公钥。
+    - 未显式配置时：配置了 ``AGENT_CONTROL_JWKS_URL`` 视为 hosted（server
+      签发是唯一信任源），否则默认 local（保持本地灰度行为）。
+    """
+
+    explicit = os.environ.get(ENV_AUTHORITY_MODE, "").strip().lower()
+    if explicit in (_AUTHORITY_LOCAL, _AUTHORITY_HOSTED):
+        return explicit
+    if os.environ.get(ENV_JWKS_URL, "").strip():
+        return _AUTHORITY_HOSTED
+    return _AUTHORITY_LOCAL
+
+
+def _is_hosted() -> bool:
+    return authority_mode() == _AUTHORITY_HOSTED
 
 
 async def bootstrap_agent_kernel_from_env() -> Any | None:
@@ -509,6 +538,7 @@ async def bootstrap_agent_kernel_from_env() -> Any | None:
     if driver == "postgres":
         from ksadk.kernel.postgres_store import (
             PostgresAgentKernelStore,
+            PostgresFencedSessionEventStore,
             PostgresNonceStore,
         )
         from ksadk.sessions.postgres_service import PostgresSessionService
@@ -520,9 +550,11 @@ async def bootstrap_agent_kernel_from_env() -> Any | None:
         # nonce 用 PG durable 存储，跨 Pod / 重启防重放。
         session_service = PostgresSessionService(dsn=dsn)
         await session_service._ensure_pool()
-        events = SessionServiceEventStore(session_service)
         pool = session_service._pool
         store = PostgresAgentKernelStore(pool, None, owns_pool=True)
+        # typed RuntimeEvent 写路径走 fenced store：ActivationWriteGuard
+        # append 与 activation 行验证同一事务（Task 4 Step 5）。
+        events = PostgresFencedSessionEventStore(store)
         nonce_store = PostgresNonceStore(pool)
     elif driver == "sqlite":
         if dsn:
@@ -549,10 +581,13 @@ async def bootstrap_agent_kernel_from_env() -> Any | None:
 def _env_permit_verifier(*, nonce_store: Any = None) -> Any:
     """JWKS URL 配置时用远端 verifier；否则用进程内 issuer（本地/灰度）。
 
-    远端模式下 JWKS 源会合并进程内 issuer 的公钥：canonical ingress 的
-    status/subscribe 等本地 trusted-context permit（进程内签发）与 server
-    签发的 permit（远端 JWKS）都能被同一个 verifier 验签，fail closed 语义
-    不变（两把 key 都必须真实签名）。
+    authority mode 决定是否合并进程内 issuer 公钥：
+
+    - local：合并本地公钥——canonical ingress 的 status/subscribe 等本地
+      trusted-context permit 与 server permit 都能被同一个 verifier 验签，
+      fail closed 语义不变（两把 key 都必须真实签名）。
+    - hosted：禁止合并本地公钥/自签。JWKS 内的 server key 是唯一信任源，
+      本地签发的 permit 得到 unknown_signing_key -> fail closed。
     """
 
     jwks_url = os.environ.get(ENV_JWKS_URL, "").strip()
@@ -579,6 +614,9 @@ def _env_permit_verifier(*, nonce_store: Any = None) -> Any:
                             for j in raw
                             if "kid" in j and "x" in j
                         }
+                if _is_hosted():
+                    # hosted 模式：server JWKS 是唯一信任源，绝不合并本地公钥。
+                    return merged
                 local = _default_issuer()
                 merged[local.key_id] = local._public_b64
                 return merged
@@ -622,6 +660,17 @@ def _build_kernel_router() -> Any:
             )
         if permit_data:
             permit = AgentControlPermit.model_validate(permit_data)
+        elif _is_hosted():
+            # hosted fail closed：缺 permit 禁止进程内自签补发，一律 401。
+            return JSONResponse(
+                status_code=401,
+                content={
+                    "error": {
+                        "Code": "missing_permit",
+                        "Message": "hosted authority requires a server-issued permit",
+                    }
+                },
+            )
         else:
             # 无 permit（gateway 内网转发 / 本地灰度）：trusted context 进程内签发。
             trusted = trusted_context(
@@ -639,8 +688,17 @@ def _build_kernel_router() -> Any:
                 }
             )
         receipt = await kernel.submit(command, permit=permit)
+        status = receipt_http_status(receipt)
+        if (
+            _is_hosted()
+            and status != 202
+            and receipt.error is not None
+            and receipt.error.code == "invalid_permit"
+        ):
+            # hosted 模式 permit 验证失败是鉴权失败（403），不是普通 400。
+            status = 403
         return JSONResponse(
-            status_code=receipt_http_status(receipt),
+            status_code=status,
             content=json.loads(receipt.model_dump_json()),
             headers=receipt_response_headers(receipt),
         )
@@ -731,15 +789,23 @@ def _build_kernel_router() -> Any:
     @router.get(KERNEL_INGRESS_HEALTH_PATH)
     async def kernel_health() -> Any:
         kernel = get_agent_kernel()
-        return JSONResponse(
-            {
-                "enabled": kernel_ingress_enabled(),
-                "ready": kernel is not None,
-                "store_driver": os.environ.get(ENV_KERNEL_STORE_DRIVER, "memory"),
-                "contract_digest": os.environ.get("AGENT_KERNEL_CONTRACT_DIGEST", ""),
-                "capability_digest": os.environ.get("AGENT_KERNEL_CAPABILITY_DIGEST", ""),
-            }
-        )
+        payload: dict[str, Any] = {
+            "enabled": kernel_ingress_enabled(),
+            "ready": kernel is not None,
+            "store_driver": os.environ.get(ENV_KERNEL_STORE_DRIVER, "memory"),
+            "contract_digest": os.environ.get("AGENT_KERNEL_CONTRACT_DIGEST", ""),
+            "capability_digest": os.environ.get("AGENT_KERNEL_CAPABILITY_DIGEST", ""),
+            "authority_mode": authority_mode(),
+        }
+        from ksadk.kernel.bootstrap import get_agent_kernel_runtime
+
+        runtime = get_agent_kernel_runtime()
+        if runtime is not None:
+            # 生产 composition root 注册后，health 报告真实运行态：
+            # 真实 store 查询 / worker 运行态 / activation lease 健康 / digest。
+            health = await runtime.readiness.check()
+            payload.update(health)
+        return JSONResponse(payload)
 
     return router
 
@@ -767,6 +833,7 @@ __all__ = [
     "RECEIPT_HTTP_STATUS",
     "TrustedRuntimeContext",
     "agent_kernel_router",
+    "authority_mode",
     "bootstrap_agent_kernel_from_env",
     "clear_agent_kernel",
     "get_agent_kernel",

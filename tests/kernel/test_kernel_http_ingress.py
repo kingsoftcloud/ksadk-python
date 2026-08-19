@@ -326,6 +326,245 @@ async def test_get_agent_status_without_lease_reports_degraded_not_unavailable(
     assert body["inbox_depth"] == 0
 
 
+# ---------------------------------------------------------------------------
+# Task 4 Step 1: hosted 模式 fail-closed ingress。
+#
+# hosted authority（AGENT_KERNEL_AUTHORITY_MODE=hosted / JWKS 配置时推断）：
+# - 缺 permit 一律 401，禁止进程内自签补发；
+# - 本地自签 / 未知 key / 错 issuer / 过期 / session 绑定不符 / operation
+#   越权 / nonce 重放一律 403（kernel 内 fail-closed，HTTP 层不得 200/400 放行）。
+# 只有显式 AGENT_KERNEL_AUTHORITY_MODE=local 才允许本地授权（开发/灰度）。
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def hosted_kernel_app(monkeypatch):
+    import httpx
+
+    from ksadk.kernel.control import AgentKernel
+    from tests.kernel.control_harness import CLOCK_AT, kernel_stack
+
+    monkeypatch.setenv("AGENT_KERNEL_AUTHORITY_MODE", "hosted")
+    stack = await kernel_stack()
+    ingress.clear_agent_kernel()
+    kernel = AgentKernel(stack.store, stack.events, stack.verifier, clock=lambda: CLOCK_AT)
+    ingress.set_agent_kernel(kernel)
+    app = FastAPI()
+    app.include_router(ingress.agent_kernel_router())
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://runtime.test"
+    ) as client:
+        yield client, stack
+    ingress.clear_agent_kernel()
+
+
+def _hosted_command_payload(*, session_id: str = "s1", command_type: str = "enqueue"):
+    payload = _command_payload()
+    payload.update(
+        {
+            "tenant_id": "tenant-1",
+            "agent_instance_id": "agent-1",
+            "session_id": session_id,
+            "command_type": command_type,
+        }
+    )
+    return payload
+
+
+async def test_hosted_missing_permit_is_401(hosted_kernel_app):
+    client, _ = hosted_kernel_app
+    response = await client.post(
+        ingress.KERNEL_INGRESS_SUBMIT_PATH, json=_hosted_command_payload()
+    )
+    assert response.status_code == 401, response.text
+
+
+async def test_hosted_locally_signed_permit_is_403(hosted_kernel_app):
+    """进程内 issuer（本地 authority）签的 permit 在 hosted 模式必须被拒。"""
+
+    client, _ = hosted_kernel_app
+    trusted = ingress.trusted_context(
+        source_kind="system",
+        source_ref="local",
+        tenant_id="tenant-1",
+        agent_instance_id="agent-1",
+        session_id="s1",
+        operations=("enqueue",),
+    )
+    payload = _hosted_command_payload()
+    payload["authorization_ref"] = trusted.permit.permit_id
+    response = await client.post(
+        ingress.KERNEL_INGRESS_SUBMIT_PATH,
+        json={"command": payload, "permit": trusted.permit.model_dump(mode="json")},
+    )
+    assert response.status_code == 403, response.text
+
+
+async def test_hosted_wrong_issuer_permit_is_403(hosted_kernel_app):
+    """非 server JWKS 内的第三方 key 签发（wrong issuer / 未知 key）一律 403。"""
+
+    from tests.kernel.control_harness import PermitAuthority
+
+    client, _ = hosted_kernel_app
+    rogue = PermitAuthority(key_id="rogue-key")
+    permit = rogue.permit(
+        operations=("enqueue",),
+        tenant_id="tenant-1",
+        agent_instance_id="agent-1",
+        session_id="s1",
+    )
+    payload = _hosted_command_payload()
+    payload["authorization_ref"] = permit.permit_id
+    response = await client.post(
+        ingress.KERNEL_INGRESS_SUBMIT_PATH,
+        json={"command": payload, "permit": permit.model_dump(mode="json")},
+    )
+    assert response.status_code == 403, response.text
+
+
+async def test_hosted_unknown_key_permit_is_403(hosted_kernel_app):
+    client, stack = hosted_kernel_app
+    permit = stack.permit("enqueue")
+    forged = permit.model_copy(update={"key_id": "no-such-key"})
+    payload = _hosted_command_payload()
+    payload["authorization_ref"] = forged.permit_id
+    response = await client.post(
+        ingress.KERNEL_INGRESS_SUBMIT_PATH,
+        json={"command": payload, "permit": forged.model_dump(mode="json")},
+    )
+    assert response.status_code == 403, response.text
+
+
+async def test_hosted_expired_permit_is_403(hosted_kernel_app):
+    from tests.kernel.control_harness import EXPIRED_AT
+
+    client, stack = hosted_kernel_app
+    permit = stack.permit("enqueue", expires_at=EXPIRED_AT)
+    payload = _hosted_command_payload()
+    payload["authorization_ref"] = permit.permit_id
+    response = await client.post(
+        ingress.KERNEL_INGRESS_SUBMIT_PATH,
+        json={"command": payload, "permit": permit.model_dump(mode="json")},
+    )
+    assert response.status_code == 403, response.text
+
+
+async def test_hosted_session_mismatch_permit_is_403(hosted_kernel_app):
+    client, stack = hosted_kernel_app
+    permit = stack.permit("enqueue", session_id="s2")
+    payload = _hosted_command_payload(session_id="s1")
+    payload["authorization_ref"] = permit.permit_id
+    response = await client.post(
+        ingress.KERNEL_INGRESS_SUBMIT_PATH,
+        json={"command": payload, "permit": permit.model_dump(mode="json")},
+    )
+    assert response.status_code == 403, response.text
+
+
+async def test_hosted_operation_mismatch_permit_is_403(hosted_kernel_app):
+    client, stack = hosted_kernel_app
+    permit = stack.permit("get_status")
+    payload = _hosted_command_payload()  # enqueue command
+    payload["authorization_ref"] = permit.permit_id
+    response = await client.post(
+        ingress.KERNEL_INGRESS_SUBMIT_PATH,
+        json={"command": payload, "permit": permit.model_dump(mode="json")},
+    )
+    assert response.status_code == 403, response.text
+
+
+async def test_hosted_replayed_nonce_is_403(hosted_kernel_app):
+    """同 nonce 被另一条 command 复用（重放攻击）必须 403。
+
+    完全相同的 command（同 command_id/idempotency_key）重放是网络重试语义
+    （duplicate receipt）；攻击是 permit nonce 换绑新 command。
+    """
+
+    client, stack = hosted_kernel_app
+    permit = stack.permit("enqueue")
+    payload = _hosted_command_payload()
+    payload["authorization_ref"] = permit.permit_id
+    first = await client.post(
+        ingress.KERNEL_INGRESS_SUBMIT_PATH,
+        json={"command": payload, "permit": permit.model_dump(mode="json")},
+    )
+    assert first.status_code == 202, first.text
+    replay_payload = _hosted_command_payload()
+    replay_payload["idempotency_key"] = "idem-replay-attack"
+    replay_payload["authorization_ref"] = permit.permit_id
+    replay = await client.post(
+        ingress.KERNEL_INGRESS_SUBMIT_PATH,
+        json={"command": replay_payload, "permit": permit.model_dump(mode="json")},
+    )
+    assert replay.status_code == 403, replay.text
+
+
+async def test_hosted_valid_server_permit_is_accepted(hosted_kernel_app):
+    """fail-closed 不是全封：server JWKS 内合法 permit 正常 accepted。"""
+
+    client, stack = hosted_kernel_app
+    permit = stack.permit("enqueue")
+    payload = _hosted_command_payload()
+    payload["authorization_ref"] = permit.permit_id
+    response = await client.post(
+        ingress.KERNEL_INGRESS_SUBMIT_PATH,
+        json={"command": payload, "permit": permit.model_dump(mode="json")},
+    )
+    assert response.status_code == 202, response.text
+    assert response.json()["status"] == "accepted"
+
+
+async def test_local_authority_mode_explicitly_allows_self_signed_permit(monkeypatch):
+    """AGENT_KERNEL_AUTHORITY_MODE=local 显式声明时才允许本地授权（开发模式）。"""
+    import httpx
+
+    from ksadk.kernel.control import AgentKernel
+    from tests.kernel.control_harness import kernel_stack
+
+    monkeypatch.setenv("AGENT_KERNEL_AUTHORITY_MODE", "local")
+    stack = await kernel_stack()
+    ingress.clear_agent_kernel()
+    # local 模式 verifier 认本地 issuer 公钥（合并 JWKS 语义保持）。
+    from ksadk.kernel.ingress import InProcessPermitIssuer
+
+    issuer = InProcessPermitIssuer()
+    verifier = issuer.verifier()
+    kernel = AgentKernel(stack.store, stack.events, verifier)
+    ingress.set_agent_kernel(kernel)
+    app = FastAPI()
+    app.include_router(ingress.agent_kernel_router())
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://runtime.test"
+        ) as client:
+            trusted = ingress.trusted_context(
+                source_kind="system",
+                source_ref="local-dev",
+                tenant_id="tenant-1",
+                agent_instance_id="agent-1",
+                session_id="s1",
+                operations=("enqueue",),
+                issuer=issuer,
+            )
+            payload = _hosted_command_payload()
+            payload["authorization_ref"] = trusted.permit.permit_id
+            response = await client.post(
+                ingress.KERNEL_INGRESS_SUBMIT_PATH,
+                json={"command": payload},
+            )
+            # 本地自签 permit 直接附带也被接受。
+            response = await client.post(
+                ingress.KERNEL_INGRESS_SUBMIT_PATH,
+                json={
+                    "command": payload,
+                    "permit": trusted.permit.model_dump(mode="json"),
+                },
+            )
+            assert response.status_code == 202, response.text
+    finally:
+        ingress.clear_agent_kernel()
+
+
 async def test_subscribe_session_events_streams_with_local_permit(app_with_real_kernel):
     """subscribe 的本地 permit 绑定自洽：SSE 正常产出事件而非 fail-closed。"""
     client, _ = app_with_real_kernel

@@ -365,6 +365,7 @@ async def test_postgres_nonce_store_is_durable_across_instances(pg_dsn):
     from ksadk.sessions.postgres_service import PostgresSessionService
 
     service = PostgresSessionService(dsn=pg_dsn)
+    await service._ensure_pool()
     pool = service._pool
     async with pool.acquire() as conn:
         await conn.execute("DELETE FROM kernel_permit_nonces")
@@ -378,3 +379,118 @@ async def test_postgres_nonce_store_is_durable_across_instances(pg_dsn):
     assert await store_b.register("nonce-durable-1", "cmd-2", "idem-2") is False
     async with pool.acquire() as conn:
         await conn.execute("DELETE FROM kernel_permit_nonces")
+    await service.aclose()
+
+
+# ------------------------------------------------------- Task 4 Step 5 tests
+# 事务级 RuntimeEvent fencing：typed RuntimeEventStore（family=runtime/v2）
+# 写入必须与 activation 行验证发生在同一个 PG 事务。被 takeover 的旧 owner
+# 经 fenced SessionEventStore append 一律 StaleFenceError 且不落事件。
+
+
+async def _fenced_events(pg_store):
+    from ksadk.kernel.postgres_store import PostgresFencedSessionEventStore
+
+    return PostgresFencedSessionEventStore(pg_store)
+
+
+async def test_fenced_runtime_event_store_rejects_stale_owner(pg_store):
+    events = await _fenced_events(pg_store)
+    old = await pg_store.acquire_activation(lease_request("pod-stale-owner"))
+    await expire_lease(pg_store, old)
+    new = await pg_store.acquire_activation(lease_request("pod-new-owner"))
+
+    from ksadk.events.canonical_store import RuntimeEventStore
+    from ksadk.kernel.contracts import ActivationWriteGuard
+
+    runtime_store = RuntimeEventStore(events, session_id=SESSION)
+    stale_guard = ActivationWriteGuard(
+        activation_id=old.activation_id, fencing_token=old.fencing_token
+    )
+    live_guard = ActivationWriteGuard(
+        activation_id=new.activation_id, fencing_token=new.fencing_token
+    )
+    from ksadk.events.canonical import RunProgress, SourceRef
+
+    def progress(event_id: str) -> RunProgress:
+        return RunProgress(
+            schema_version=2,
+            event_id=event_id,
+            seq=0,
+            timestamp=time.time(),
+            run_id="run-fence-1",
+            scope_id="run:run-fence-1",
+            status="running",
+            progress=0.5,
+            message="stale owner write",
+            source=SourceRef(framework="ksadk"),
+        )
+
+    with pytest.raises(StaleFenceError):
+        await runtime_store.append(progress("evt_stale_1"), guard=stale_guard)
+    # 旧 owner 的事件没有落库。
+    persisted = await events.read(SESSION, 0, 1000)
+    assert all(e.event_id != "evt_stale_1" for e in persisted), persisted
+    # 新 owner（当前 unexpired activation）正常写入。
+    written = await runtime_store.append(progress("evt_live_1"), guard=live_guard)
+    assert written.seq >= 1
+
+
+async def test_fenced_runtime_event_store_rejects_released_activation(pg_store):
+    events = await _fenced_events(pg_store)
+    lease = await pg_store.acquire_activation(lease_request("pod-release"))
+    await pg_store.release_activation(
+        lease.activation_id, expected_fence=lease.fencing_token
+    )
+    from ksadk.events.canonical_store import RuntimeEventStore
+    from ksadk.kernel.contracts import ActivationWriteGuard
+
+    runtime_store = RuntimeEventStore(events, session_id=SESSION)
+    guard = ActivationWriteGuard(
+        activation_id=lease.activation_id, fencing_token=lease.fencing_token
+    )
+    from ksadk.events.canonical import RunProgress, SourceRef
+
+    event = RunProgress(
+        schema_version=2,
+        event_id="evt_released_1",
+        seq=0,
+        timestamp=time.time(),
+        run_id="run-fence-2",
+        scope_id="run:run-fence-2",
+        status="running",
+        progress=1.0,
+        message="released owner write",
+        source=SourceRef(framework="ksadk"),
+    )
+    with pytest.raises(StaleFenceError):
+        await runtime_store.append(event, guard=guard)
+
+
+async def test_fenced_runtime_event_store_rejects_foreign_activation_id(pg_store):
+    """guard 的 activation_id 与 lease 行不符（同 token 也不行）时拒绝。"""
+    events = await _fenced_events(pg_store)
+    lease = await pg_store.acquire_activation(lease_request("pod-foreign"))
+    from ksadk.events.canonical_store import RuntimeEventStore
+    from ksadk.kernel.contracts import ActivationWriteGuard
+
+    runtime_store = RuntimeEventStore(events, session_id=SESSION)
+    guard = ActivationWriteGuard(
+        activation_id="not-the-held-activation", fencing_token=lease.fencing_token
+    )
+    from ksadk.events.canonical import RunProgress, SourceRef
+
+    event = RunProgress(
+        schema_version=2,
+        event_id="evt_foreign_1",
+        seq=0,
+        timestamp=time.time(),
+        run_id="run-fence-3",
+        scope_id="run:run-fence-3",
+        status="running",
+        progress=1.0,
+        message="foreign activation write",
+        source=SourceRef(framework="ksadk"),
+    )
+    with pytest.raises(StaleFenceError):
+        await runtime_store.append(event, guard=guard)
