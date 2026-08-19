@@ -197,6 +197,43 @@ class RecoveryCoordinator:
             agent_instance_id, activation, run, guard=guard
         )
 
+    async def settle_interrupted(
+        self,
+        agent_instance_id: str,
+        activation: ActivationLease,
+        *,
+        reason: str = "recover_error_settled_interrupted",
+    ) -> RecoveryReport:
+        """P0-1 兜底收口：``recover`` 抛错后的确定性 interrupted 决策。
+
+        不依赖任何 runtime 能力：直接对 open run 写唯一
+        ``run.interrupted`` + open item close，并以当前 fencing 追加
+        ``control.recovery_decided`` 审计事实。没有 open run 时退化为
+        ``no_op``。持久化失败向上抛出，由调用方决定 degraded。
+        """
+
+        guard: WriteContext = ActivationWriteGuard(
+            activation_id=activation.activation_id,
+            fencing_token=activation.fencing_token,
+        )
+        run = await self._load_run(agent_instance_id, None)
+        if run is None or is_terminal_run(run.state):
+            return await self._decide(
+                agent_instance_id,
+                activation,
+                run,
+                outcome="no_op",
+                reason=(
+                    "run_already_terminal"
+                    if run is not None
+                    else "no_open_run_for_agent_instance"
+                ),
+                guard=guard,
+            )
+        return await self._interrupt_deterministically(
+            agent_instance_id, activation, run, guard=guard, reason=reason
+        )
+
     # ------------------------------------------------------------- internals
 
     def _register_execution(
@@ -325,6 +362,7 @@ class RecoveryCoordinator:
         run: RunRecord,
         *,
         guard: WriteContext,
+        reason: str = "runtime_not_durably_attachable",
     ) -> RecoveryReport:
         fence = activation.fencing_token
         runtime_store = RuntimeEventStore(self._session_events, session_id=run.session_id)
@@ -338,7 +376,7 @@ class RecoveryCoordinator:
                 run.session_id,
                 allow_resume=False,
                 timestamp=self._clock(),
-                reason="runtime_not_durably_attachable",
+                reason=reason,
             )
             pipeline = CanonicalEventPipeline(runtime_store, session_id=run.session_id)
             for event in events:
@@ -354,7 +392,7 @@ class RecoveryCoordinator:
             activation,
             run,
             outcome="interrupted",
-            reason="runtime_not_durably_attachable",
+            reason=reason,
             guard=guard,
             written=written,
             last_seq=last_seq,

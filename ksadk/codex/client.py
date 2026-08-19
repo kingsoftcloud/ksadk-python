@@ -304,24 +304,29 @@ class AsyncCodexClient(CodexClient):
                 # active run; never fall back to the SDK's auto-accept default.
                 return {"decision": "decline"}
             self._pending_approvals[approval_id] = pending
+            # 下发原生 JSON-RPC requestApproval 消息（synthetic id=approval_id）：
+            # canonical mapper 只认原生方法（unsupported_method fail-closed），
+            # 旧合成 ``item/approval/requested`` 事件会让整个 run 失败。
             approval_queue.put(
                 {
-                    "method": "item/approval/requested",
-                    "params": {
-                        "id": approval_id,
-                        "threadId": thread_id,
-                        "kind": (
-                            "command"
-                            if method == "item/commandExecution/requestApproval"
-                            else "file_change"
-                        ),
-                        "detail": raw,
-                    },
+                    "id": approval_id,
+                    "method": method,
+                    "params": raw,
                 }
             )
         pending.resolved.wait()
         with self._approval_lock:
             self._pending_approvals.pop(approval_id, None)
+        # 回包也以 JSON-RPC response 形态下发，mapper 才会产出
+        # InteractionResolved（原 call_id 闭环）并释放 continuation。
+        response = pending.response or {"decision": "decline"}
+        if approval_queue is not None:
+            approval_queue.put(
+                {
+                    "id": approval_id,
+                    "result": dict(response),
+                }
+            )
         return pending.response or {"decision": "decline"}
 
     def _handle_user_input_request(
@@ -460,13 +465,17 @@ class AsyncCodexClient(CodexClient):
           - ``unknown``(故障/超时)→ **保守直连**,不 silent 改变接入方式
         - 凭证闭合:codex 子进程只拿随机 KSADK_PROXY_TOKEN;上游 key 留父进程。
         - 互斥:launch_args_override 已设时 raise(override 整体覆盖命令行)。
+        - P1:直连分支(探测 supported/unknown、env=0)遇到自定义 base 也注入
+          ``ksadk_direct`` provider——否则 codex 子进程回落默认 OpenAI 官方
+          端点,自定义上游(OPENAI_API_BASE)静默失效。已显式设
+          ``model_provider=`` 的 config 不覆盖;官方 base 不注入。
 
         返回 (新 config, ProxyServer | None)。staticmethod 便于单测。
         """
         runtime_env = {**os.environ, **(getattr(config, "env", None) or {})}
         env_val = runtime_env.get("KSADK_CODEX_USE_PROXY")
         if env_val == "0":
-            return config, None
+            return AsyncCodexClient._inject_direct_provider(config), None
         if env_val == "1":
             return AsyncCodexClient._start_proxy_and_inject(
                 config,
@@ -488,7 +497,44 @@ class AsyncCodexClient(CodexClient):
                 config,
                 proxy_observer=proxy_observer,
             )
-        return config, None
+        # 探测 supported/unknown:直连,但必须把自定义 base 配成 provider。
+        return AsyncCodexClient._inject_direct_provider(config), None
+
+    @staticmethod
+    def _inject_direct_provider(config: Any) -> Any:
+        """直连模式注入 ``ksadk_direct`` provider(P1:非 proxy 不丢自定义 base)。
+
+        - 无自定义 base / 官方 OpenAI base / 已设 ``model_provider=`` → 原样返回。
+        - 否则追加 ``model_provider=ksadk_direct`` + base_url/env_key/wire_api
+          (responses;该分支只在探测确认或保守直连时到达,chat 模型走 proxy)。
+        """
+        import dataclasses
+
+        from openai_codex import CodexConfig  # type: ignore[import-not-found]
+
+        cfg = config if isinstance(config, CodexConfig) else CodexConfig()
+        overrides = list(cfg.config_overrides or ())
+        if any(str(o).startswith("model_provider=") for o in overrides):
+            return config
+        runtime_env = {**os.environ, **(cfg.env or {})}
+        base = (
+            runtime_env.get("KSADK_PROXY_UPSTREAM_BASE")
+            or runtime_env.get("OPENAI_BASE_URL")
+            or runtime_env.get("OPENAI_API_BASE")
+            or ""
+        )
+        if not base or _is_openai_official(base):
+            return config
+        base = _upgrade_http_to_https(base)
+        overrides += [
+            "model_provider=ksadk_direct",
+            "model_providers.ksadk_direct.name=ksadk_direct",
+            f"model_providers.ksadk_direct.base_url={base}",
+            "model_providers.ksadk_direct.env_key=OPENAI_API_KEY",
+            "model_providers.ksadk_direct.wire_api=responses",
+            "model_providers.ksadk_direct.supports_websockets=false",
+        ]
+        return dataclasses.replace(cfg, config_overrides=tuple(overrides))
 
     @staticmethod
     def _start_proxy_and_inject(

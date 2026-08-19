@@ -182,15 +182,20 @@ class AgentKernelReadiness:
                 lease_healthy = False
 
         worker_running = self.runtime.worker_running
+        degraded = self.runtime.degraded
         capability_matrix = self.runtime.kernel.capabilities().model_dump(
             mode="json"
         )
         digests_match = bool(config.contract_digest)
-        ready = store_ok and worker_running and lease_healthy and digests_match
+        ready = (
+            store_ok and worker_running and lease_healthy and digests_match
+            and not degraded
+        )
         return {
             "ready": ready,
             "store_ok": store_ok,
             "worker_running": worker_running,
+            "degraded": degraded,
             "lease_healthy": lease_healthy,
             "activation_id": activation_id,
             "contract_digest": config.contract_digest,
@@ -223,12 +228,19 @@ class AgentKernelRuntime:
         self._tasks: list[asyncio.Task] = []
         self._worker_running = False
         self._heartbeat_sessions: set[str] = set()
+        self._degraded = False
 
     # ------------------------------------------------------------ properties
 
     @property
     def worker_running(self) -> bool:
         return self._worker_running
+
+    @property
+    def degraded(self) -> bool:
+        """P0-1：takeover 收口彻底失败后 runtime 显式降级（停止消费 Inbox）。"""
+
+        return self._degraded
 
     def heartbeat_sessions(self) -> set[str]:
         return set(self._heartbeat_sessions)
@@ -295,12 +307,12 @@ class AgentKernelRuntime:
                         if took_over:
                             # takeover：对 open run 做确定性收口（attach /
                             # resume / interrupted），再继续消费 inbox。
-                            try:
-                                await self.recovery.recover(
-                                    self.config.agent_instance_id, lease
-                                )
-                            except Exception:
-                                pass
+                            # P0-1：recover 抛错不得静默吞掉——先尝试
+                            # durable 兜底收口；连收口都失败则停止接管并
+                            # 显式 degraded，绝不再消费后续 Inbox。
+                            if not await self._recover_safely(lease):
+                                self._degraded = True
+                                return
                         result = await self.worker.run_once(
                             self.config.agent_instance_id, lease
                         )
@@ -315,6 +327,27 @@ class AgentKernelRuntime:
                     await asyncio.sleep(self.config.poll_interval)
         finally:
             self._worker_running = False
+
+    async def _recover_safely(self, lease) -> bool:
+        """takeover 后的安全恢复：失败必须持久化收口或显式降级。
+
+        返回 True 表示恢复路径已收口（含 durable interrupted 兜底），
+        可以继续消费 Inbox；False 表示连兜底收口都失败，调用方必须
+        停止接管并 degraded。
+        """
+
+        try:
+            await self.recovery.recover(self.config.agent_instance_id, lease)
+            return True
+        except Exception:
+            pass
+        try:
+            await self.recovery.settle_interrupted(
+                self.config.agent_instance_id, lease
+            )
+            return True
+        except Exception:
+            return False
 
     async def _pending_sessions(self) -> set[str]:
         messages = await self.kernel_store.list_messages(

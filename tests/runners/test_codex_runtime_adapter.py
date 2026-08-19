@@ -650,14 +650,19 @@ async def test_sdk_approval_bridge_waits_for_explicit_ui_decision():
     worker = threading.Thread(target=request)
     worker.start()
     approval_event = await asyncio.to_thread(client._approval_queues["thread-1"].get)
-    assert approval_event["method"] == "item/approval/requested"
-    assert approval_event["params"]["detail"]["command"] == "git status"
+    # P0-2：bridge 下发原生 requestApproval JSON-RPC 消息（mapper 只认原生方法）。
+    assert approval_event["method"] == "item/commandExecution/requestApproval"
+    assert approval_event["params"]["command"] == "git status"
+    assert approval_event["id"] == "approval-1"
     assert worker.is_alive()
 
     assert await client.resolve_approval("approval-1", "approve_session") is True
     worker.join(timeout=1)
     assert not worker.is_alive()
     assert result == {"decision": "acceptForSession"}
+    # resolve 后同队列下发 JSON-RPC response（原 id 闭环）。
+    response_event = await asyncio.to_thread(client._approval_queues["thread-1"].get)
+    assert response_event == {"id": "approval-1", "result": {"decision": "acceptForSession"}}
 
 
 @pytest.mark.asyncio

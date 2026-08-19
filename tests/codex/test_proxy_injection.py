@@ -228,3 +228,82 @@ def test_proxy_observer_is_forwarded_to_proxy_config(monkeypatch):
         assert proxy.config.event_callback is observer
     finally:
         proxy.stop()
+
+
+def test_probe_supported_custom_base_injects_direct_provider(monkeypatch):
+    """P1：探测 supported（直连）分支也要把自定义 OPENAI_API_BASE 配成 provider。
+
+    否则 codex 子进程回落到默认 OpenAI 官方端点，自定义上游静默失效。
+    """
+    from openai_codex import CodexConfig
+
+    monkeypatch.delenv("KSADK_CODEX_USE_PROXY", raising=False)
+    monkeypatch.setenv("OPENAI_API_BASE", "http://kspmas.ksyun.com/v1")
+    monkeypatch.setenv("OPENAI_MODEL_NAME", "glm-5.3")
+    monkeypatch.setattr(
+        "ksadk.codex.client._probe_requires_proxy",
+        lambda *a, **k: False,  # supported → 直连
+    )
+    out, proxy = AsyncCodexClient._maybe_apply_proxy(CodexConfig(codex_bin="/x"))
+    assert proxy is None
+    ov = list(out.config_overrides)
+    assert "model_provider=ksadk_direct" in ov
+    assert (
+        "model_providers.ksadk_direct.base_url=https://kspmas.ksyun.com/v1" in ov
+    )
+    assert "model_providers.ksadk_direct.env_key=OPENAI_API_KEY" in ov
+    assert "model_providers.ksadk_direct.wire_api=responses" in ov
+    assert "model_providers.ksadk_direct.supports_websockets=false" in ov
+
+
+def test_probe_unknown_custom_base_also_injects_direct_provider(monkeypatch):
+    """unknown（探测故障）保守直连：同样要注入自定义 provider。"""
+    from openai_codex import CodexConfig
+
+    monkeypatch.delenv("KSADK_CODEX_USE_PROXY", raising=False)
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://x.example.com/v1")
+    monkeypatch.setattr(
+        "ksadk.codex.client._probe_requires_proxy",
+        lambda *a, **k: False,
+    )
+    out, proxy = AsyncCodexClient._maybe_apply_proxy(CodexConfig(codex_bin="/x"))
+    assert proxy is None
+    assert any(o == "model_provider=ksadk_direct" for o in out.config_overrides)
+    assert any(
+        o == "model_providers.ksadk_direct.base_url=https://x.example.com/v1"
+        for o in out.config_overrides
+    )
+
+
+def test_direct_provider_injection_respects_existing_model_provider(monkeypatch):
+    """用户 config_overrides 已显式设 model_provider 时不覆盖。"""
+    from openai_codex import CodexConfig
+
+    monkeypatch.delenv("KSADK_CODEX_USE_PROXY", raising=False)
+    monkeypatch.setenv("OPENAI_API_BASE", "https://x.example.com/v1")
+    monkeypatch.setattr(
+        "ksadk.codex.client._probe_requires_proxy",
+        lambda *a, **k: False,
+    )
+    cfg = CodexConfig(
+        codex_bin="/x", config_overrides=("model_provider=my_own",)
+    )
+    out, proxy = AsyncCodexClient._maybe_apply_proxy(cfg)
+    assert proxy is None
+    assert list(out.config_overrides) == ["model_provider=my_own"]
+
+
+def test_direct_provider_skipped_for_official_openai_base(monkeypatch):
+    """官方 OpenAI base：不注入（codex 默认行为正确）。"""
+    from openai_codex import CodexConfig
+
+    monkeypatch.delenv("KSADK_CODEX_USE_PROXY", raising=False)
+    monkeypatch.setenv("OPENAI_API_BASE", "https://api.openai.com/v1")
+    monkeypatch.setattr(
+        "ksadk.codex.client._probe_requires_proxy",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("官方 base 不应探测")),
+    )
+    cfg = CodexConfig(codex_bin="/x")
+    out, proxy = AsyncCodexClient._maybe_apply_proxy(cfg)
+    assert proxy is None
+    assert out is cfg
