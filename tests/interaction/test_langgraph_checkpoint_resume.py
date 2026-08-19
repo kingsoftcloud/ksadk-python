@@ -12,13 +12,16 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 
+from ksadk.events.canonical import RunProgress, RunStarted, SourceRef
 from ksadk.interaction.contracts import InteractionRecord, InteractionSubmission
 from ksadk.interaction.provider import InteractionResolveContext
 from ksadk.interaction.providers.langgraph import LangGraphInteractionProvider
 from ksadk.kernel.contracts import ActivationWriteGuard
-from ksadk.kernel.errors import AgentKernelError
+from ksadk.kernel.state import RunState
 from ksadk.runtime.adapter import ResumePayload, ResumeTarget, RunHandle
 from tests.interaction.test_provider_dispatch import (
     LangGraphLikeAdapter,
@@ -26,6 +29,47 @@ from tests.interaction.test_provider_dispatch import (
     _seed_active_run,
 )
 from tests.kernel.control_harness import AGENT, command, kernel_stack
+
+
+async def _wait_until(
+    predicate: Callable[[], Awaitable[bool]], *, timeout: float = 2.0
+) -> None:
+    """让出事件循环直到 background stream 任务达成条件（确定性收口）。"""
+
+    async with asyncio.timeout(timeout):
+        while not await predicate():
+            await asyncio.sleep(0)
+
+
+def _resumed_stream_events(run_id: str) -> list:
+    """resume 后新 handle 的 stream 产出的 runtime/v2 事件。"""
+
+    def _src() -> SourceRef:
+        return SourceRef(framework="langgraph")
+
+    return [
+        RunStarted(
+            schema_version=2,
+            event_id=f"{run_id}-started",
+            seq=0,
+            timestamp=1780000000.0,
+            run_id=run_id,
+            scope_id=f"run:{run_id}",
+            status="running",
+            source=_src(),
+        ),
+        RunProgress(
+            schema_version=2,
+            event_id=f"{run_id}-progress",
+            seq=0,
+            timestamp=1780000000.5,
+            run_id=run_id,
+            scope_id=f"run:{run_id}",
+            status="running",
+            progress=0.5,
+            source=_src(),
+        ),
+    ]
 
 
 def _record(native_target: dict) -> InteractionRecord:
@@ -114,6 +158,8 @@ async def test_worker_dispatch_resumes_stored_checkpoint_then_resolves():
         ),
         permit=stack.permit("submit_interaction"),
     )
+    # resume 后的新 handle 的 stream 要产出 fenced runtime/v2 事实。
+    adapter.stream_events = _resumed_stream_events("lg-resumed")
     adapter.stream_error = None  # resume 后 stream 自然结束
     result = await worker.run_once(AGENT, lease)
     assert result.outcome == "completed"
@@ -132,8 +178,24 @@ async def test_worker_dispatch_resumes_stored_checkpoint_then_resolves():
     events = await stack.events.read("s1", 0, 200)
     assert [e for e in events if e.event_type == "interaction.resolved"]
 
-    # resume 返回的新 handle 被用于后续 stream 消费（同 thread 续跑）。
-    assert "lg-resumed" in adapter.streams
+    # resume 返回的新 handle 被 background stream 真正消费（同 thread 续跑），
+    # 且事件以 durable run id 落为 family=runtime/v2 的 fenced 事实。
+    async def _stream_consumed() -> bool:
+        return "lg-resumed" in adapter.streams
+
+    async def _run_finished() -> bool:
+        run = await stack.store.load_run(run_id)
+        return run is not None and run.state == RunState.COMPLETED
+
+    await _wait_until(_stream_consumed)
+    await _wait_until(_run_finished)
+    run = await stack.store.load_run(run_id)
+    assert run is not None and run.state == RunState.COMPLETED
+    events = await stack.events.read("s1", 0, 200)
+    runtime_events = [e for e in events if e.family == "runtime"]
+    assert runtime_events
+    assert all(e.run_id == run_id for e in runtime_events)
+    assert {"run.started", "run.progress"} <= {e.event_type for e in runtime_events}
 
 
 async def test_missing_checkpoint_target_is_typed_rejection():
@@ -168,11 +230,3 @@ async def test_missing_checkpoint_target_is_typed_rejection():
     assert adapter.resumes == []
     record = await stack.store.get("it-lg-bad")
     assert record is not None and record.status == "pending"
-
-
-def _unused_guard() -> ActivationWriteGuard:  # pragma: no cover - typing helper
-    return ActivationWriteGuard(activation_id="act-1", fencing_token=1)
-
-
-def _unused_error() -> AgentKernelError:  # pragma: no cover - typing helper
-    return AgentKernelError("unsupported", "unused")

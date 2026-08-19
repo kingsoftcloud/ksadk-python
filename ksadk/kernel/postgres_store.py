@@ -933,6 +933,45 @@ class PostgresAgentKernelStore:
             )
         return dict(row)
 
+    async def _interaction_row_for_guard(
+        self, connection: Any, interaction_id: str, guard: Any
+    ) -> Any | None:
+        """Resolve a public interaction id within its fenced activation scope.
+
+        Interaction ids are opaque browser-visible handles, not tenant grants.
+        A Runtime mutation already has the Server-admitted activation guard, so
+        select the row by that trusted AgentInstance/session before taking the
+        row lock.  This prevents a same-id record in another tenant from being
+        selected and then rejected only after information has been consulted.
+        """
+
+        activation = await connection.fetchrow(
+            "SELECT activation_id, agent_instance_id, session_id, fencing_token,"
+            " lease_expires_at, released FROM kernel_activations"
+            " WHERE activation_id=$1 FOR SHARE",
+            guard.activation_id,
+        )
+        if (
+            activation is None
+            or activation["released"]
+            or activation["lease_expires_at"] <= _now()
+            or int(activation["fencing_token"]) != int(guard.fencing_token)
+        ):
+            raise StaleFenceError(
+                "interaction write guard does not match the current lease",
+                details={
+                    "activation_id": guard.activation_id,
+                    "fencing_token": int(guard.fencing_token),
+                },
+            )
+        return await connection.fetchrow(
+            "SELECT * FROM kernel_interactions WHERE interaction_id=$1"
+            " AND agent_instance_id=$2 AND session_id=$3 FOR UPDATE",
+            interaction_id,
+            activation["agent_instance_id"],
+            activation["session_id"],
+        )
+
     @staticmethod
     def _interaction_row_to_record(row: Any) -> InteractionRecord:
         from ksadk.interaction.contracts import InteractionPresentation
@@ -1048,10 +1087,8 @@ class PostgresAgentKernelStore:
         sub_digest = submission_digest(submission)
         async with self._connection() as connection:
             async with connection.transaction():
-                row = await connection.fetchrow(
-                    "SELECT * FROM kernel_interactions WHERE interaction_id=$1"
-                    " FOR UPDATE",
-                    submission.interaction_id,
+                row = await self._interaction_row_for_guard(
+                    connection, submission.interaction_id, guard
                 )
                 if row is None:
                     raise InvalidCommandError(
@@ -1157,10 +1194,8 @@ class PostgresAgentKernelStore:
     ) -> InteractionReceipt:
         async with self._connection() as connection:
             async with connection.transaction():
-                row = await connection.fetchrow(
-                    "SELECT * FROM kernel_interactions WHERE interaction_id=$1"
-                    " FOR UPDATE",
-                    interaction_id,
+                row = await self._interaction_row_for_guard(
+                    connection, interaction_id, guard
                 )
                 if row is None:
                     raise InvalidCommandError(
@@ -1253,13 +1288,46 @@ class PostgresAgentKernelStore:
             reason="interaction expired",
         )
 
-    async def get(self, interaction_id: str) -> InteractionRecord | None:
+    async def get(
+        self,
+        interaction_id: str,
+        *,
+        tenant_id: str | None = None,
+        agent_instance_id: str | None = None,
+        session_id: str | None = None,
+        run_id: str | None = None,
+    ) -> InteractionRecord | None:
+        """Read public ids only through a complete trusted execution scope."""
+
+        scope = (tenant_id, agent_instance_id, session_id, run_id)
         async with self._connection() as connection:
-            row = await connection.fetchrow(
-                "SELECT * FROM kernel_interactions WHERE interaction_id=$1 LIMIT 1",
+            if any(value is not None for value in scope):
+                if not all(value is not None for value in scope):
+                    raise InvalidCommandError(
+                        "interaction lookup requires a complete trusted scope",
+                        details={"interaction_id": interaction_id},
+                    )
+                row = await connection.fetchrow(
+                    "SELECT * FROM kernel_interactions WHERE interaction_id=$1"
+                    " AND tenant_id=$2 AND agent_instance_id=$3 AND session_id=$4"
+                    " AND run_id=$5",
+                    interaction_id,
+                    tenant_id,
+                    agent_instance_id,
+                    session_id,
+                    run_id,
+                )
+                return self._interaction_row_to_record(row) if row is not None else None
+            rows = await connection.fetch(
+                "SELECT * FROM kernel_interactions WHERE interaction_id=$1 LIMIT 2",
                 interaction_id,
             )
-        return self._interaction_row_to_record(row) if row is not None else None
+        if len(rows) > 1:
+            raise InvalidCommandError(
+                f"interaction_id {interaction_id!r} is ambiguous without trusted scope",
+                details={"reason": REQUEST_CONFLICT, "interaction_id": interaction_id},
+            )
+        return self._interaction_row_to_record(rows[0]) if rows else None
 
     async def list_pending_interactions(
         self, tenant_id: str, session_id: str

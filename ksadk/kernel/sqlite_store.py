@@ -25,7 +25,14 @@ from uuid import uuid4
 
 import aiosqlite
 
-from ksadk.events.session_event import SessionEventStore
+from ksadk.events.session_event import (
+    SessionEventStore,
+    SessionServiceEventStore,
+    envelope_to_session_event,
+    session_event_storage_id,
+    session_event_to_envelope,
+    validate_write_guard,
+)
 from ksadk.interaction.contracts import (
     InteractionRecord,
     InteractionReceipt,
@@ -67,6 +74,9 @@ from ksadk.kernel.store import (
     new_message_id,
     now_iso,
 )
+from ksadk.sessions._local_tables import KSADK_EVENTS_TABLE, KSADK_SESSIONS_TABLE
+from ksadk.sessions.base import SessionEvent
+from ksadk.sessions.local_service import LocalSessionService
 
 SCHEMA_VERSION = 2
 
@@ -172,7 +182,7 @@ class SQLiteAgentKernelStore:
         db_path: str | Path,
         session_event_store: SessionEventStore,
     ) -> None:
-        self.db_path = Path(db_path)
+        self.db_path = Path(db_path).expanduser().resolve()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._events = session_event_store
         self._write_lock = asyncio.Lock()
@@ -571,6 +581,147 @@ class SQLiteAgentKernelStore:
             )
         return activation
 
+    def _require_local_transactional_event_store(self) -> None:
+        """Ensure an Interaction fact shares this store's SQLite transaction.
+
+        ``SessionServiceEventStore(LocalSessionService)`` normally owns the
+        canonical local SessionEvent log.  Giving the kernel a different file
+        would make a ledger row and its event independently committable, so it
+        is an invalid Interaction/v1 configuration rather than a best-effort
+        fallback.  Other session backends remain usable for the pre-existing
+        non-transactional local control path, but not for durable interactions.
+        """
+
+        service = (
+            self._events.session_service
+            if isinstance(self._events, SessionServiceEventStore)
+            else None
+        )
+        if not isinstance(service, LocalSessionService) or service.db_path != self.db_path.resolve():
+            raise RuntimeError(
+                "SQLite InteractionLedger requires SessionEventStore backed by the "
+                "same SQLite database"
+            )
+
+    async def _append_interaction_event_on(
+        self,
+        connection: aiosqlite.Connection,
+        envelope: SessionEventEnvelope,
+        guard: ActivationWriteGuard,
+    ) -> SessionEventEnvelope:
+        """Append the canonical SessionEvent in the ledger writer transaction."""
+
+        self._require_local_transactional_event_store()
+        validate_write_guard(envelope, guard)
+        packed = envelope_to_session_event(envelope)
+        storage_id = session_event_storage_id(envelope.session_id, str(envelope.event_id))
+        session_row = await self._fetchone(
+            connection,
+            f"SELECT id FROM {KSADK_SESSIONS_TABLE} WHERE id=?",
+            (envelope.session_id,),
+        )
+        if session_row is None:
+            raise InvalidCommandError(
+                f"session {envelope.session_id!r} does not exist in the shared event log"
+            )
+        existing = await self._fetchone(
+            connection,
+            f"SELECT id, author, event_type, content_json, timestamp, seq_id,"
+            f" invocation_id, metadata_json FROM {KSADK_EVENTS_TABLE}"
+            " WHERE session_id=? AND id=?",
+            (envelope.session_id, storage_id),
+        )
+        if existing is not None:
+            stored = SessionEvent(
+                id=existing["id"],
+                session_id=envelope.session_id,
+                author=existing["author"],
+                event_type=existing["event_type"],
+                content=json.loads(existing["content_json"]),
+                timestamp=float(existing["timestamp"]),
+                seq_id=int(existing["seq_id"]),
+                invocation_id=existing["invocation_id"],
+                metadata=json.loads(existing["metadata_json"]),
+            )
+            persisted = session_event_to_envelope(stored)
+            if persisted is None:  # pragma: no cover - only our packed rows use this id
+                raise RuntimeError("kernel interaction event lost its envelope marker")
+            SessionServiceEventStore._assert_same_fact(persisted, envelope)
+            return persisted
+
+        next_seq_row = await self._fetchone(
+            connection,
+            f"SELECT COALESCE(MAX(seq_id), 0) + 1 AS next_seq FROM {KSADK_EVENTS_TABLE}"
+            " WHERE session_id=?",
+            (envelope.session_id,),
+        )
+        next_seq = int(next_seq_row["next_seq"])
+        packed.bind_seq_id(next_seq)
+        await connection.execute(
+            f"INSERT INTO {KSADK_EVENTS_TABLE} ("
+            "id, session_id, author, event_type, content_json, timestamp, "
+            "state_delta_json, seq_id, invocation_id, metadata_json"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                storage_id,
+                envelope.session_id,
+                packed.author,
+                packed.event_type,
+                json.dumps(packed.content, ensure_ascii=False),
+                packed.timestamp,
+                json.dumps(packed.state_delta, ensure_ascii=False),
+                next_seq,
+                packed.invocation_id,
+                json.dumps(packed.metadata, ensure_ascii=False),
+            ),
+        )
+        await connection.execute(
+            f"UPDATE {KSADK_SESSIONS_TABLE} SET updated_at=? WHERE id=?",
+            (time.time(), envelope.session_id),
+        )
+        persisted = session_event_to_envelope(packed)
+        if persisted is None:  # pragma: no cover - packed by this method
+            raise RuntimeError("kernel interaction event lost its envelope marker")
+        return persisted
+
+    async def _interaction_row_for_guard(
+        self,
+        connection: aiosqlite.Connection,
+        interaction_id: str,
+        guard: ActivationWriteGuard,
+    ) -> aiosqlite.Row | None:
+        """Find a public id through the trusted activation scope, not by id alone."""
+
+        activation_row = await self._fetchone(
+            connection,
+            "SELECT * FROM kernel_activations WHERE activation_id=?",
+            (guard.activation_id,),
+        )
+        activation = self._activation_row(activation_row)
+        if (
+            activation is None
+            or activation["released"]
+            or activation["lease_expires_at"] <= time.time()
+            or activation["fencing_token"] != int(guard.fencing_token)
+        ):
+            raise StaleFenceError(
+                "interaction write guard does not match the current lease",
+                details={
+                    "activation_id": guard.activation_id,
+                    "fencing_token": int(guard.fencing_token),
+                },
+            )
+        return await self._fetchone(
+            connection,
+            "SELECT * FROM kernel_interactions WHERE interaction_id=?"
+            " AND agent_instance_id=? AND session_id=?",
+            (
+                interaction_id,
+                activation["agent_instance_id"],
+                activation["session_id"],
+            ),
+        )
+
     @staticmethod
     def _row_to_record(row: aiosqlite.Row | None) -> InteractionRecord | None:
         if row is None:
@@ -677,9 +828,9 @@ class SQLiteAgentKernelStore:
                     " request_digest, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     self._record_values(record, request_digest_=digest),
                 )
-                # persist-before-ack：事件追加失败时回滚 pending 行。
-                await self._events.append(
-                    requested_event_payload(record, now_iso()), guard=guard
+                # pending 行与 canonical requested 事实共用同一 SQLite commit。
+                await self._append_interaction_event_on(
+                    connection, requested_event_payload(record, now_iso()), guard
                 )
                 await connection.commit()
             except BaseException:
@@ -694,10 +845,8 @@ class SQLiteAgentKernelStore:
         async with self._write_lock:
             connection = await self._begin()
             try:
-                row = await self._fetchone(
-                    connection,
-                    "SELECT * FROM kernel_interactions WHERE interaction_id=?",
-                    (submission.interaction_id,),
+                row = await self._interaction_row_for_guard(
+                    connection, submission.interaction_id, guard
                 )
                 if row is None:
                     raise InvalidCommandError(
@@ -749,7 +898,8 @@ class SQLiteAgentKernelStore:
                 updated = current.model_copy(
                     update={"status": "resolved", "revision": current.revision + 1}
                 )
-                stored = await self._events.append(
+                stored = await self._append_interaction_event_on(
+                    connection,
                     interaction_event(
                         updated,
                         event_type="interaction.resolved",
@@ -758,7 +908,7 @@ class SQLiteAgentKernelStore:
                         response=submission.response,
                         actor_ref="user",
                     ),
-                    guard=guard,
+                    guard,
                 )
                 receipt = InteractionReceipt(
                     interaction_id=updated.interaction_id,
@@ -816,10 +966,8 @@ class SQLiteAgentKernelStore:
         async with self._write_lock:
             connection = await self._begin()
             try:
-                row = await self._fetchone(
-                    connection,
-                    "SELECT * FROM kernel_interactions WHERE interaction_id=?",
-                    (interaction_id,),
+                row = await self._interaction_row_for_guard(
+                    connection, interaction_id, guard
                 )
                 if row is None:
                     raise InvalidCommandError(
@@ -857,14 +1005,15 @@ class SQLiteAgentKernelStore:
                     if status == "cancelled"
                     else "interaction.expired"
                 )
-                stored = await self._events.append(
+                stored = await self._append_interaction_event_on(
+                    connection,
                     interaction_event(
                         updated,
                         event_type=event_type,
                         timestamp=now_iso(),
                         reason=reason,
                     ),
-                    guard=guard,
+                    guard,
                 )
                 receipt = InteractionReceipt(
                     interaction_id=updated.interaction_id,
@@ -918,13 +1067,49 @@ class SQLiteAgentKernelStore:
             reason="interaction expired",
         )
 
-    async def get(self, interaction_id: str) -> InteractionRecord | None:
-        row = await self._fetchone(
-            await self._connect(),
-            "SELECT * FROM kernel_interactions WHERE interaction_id=?",
+    async def get(
+        self,
+        interaction_id: str,
+        *,
+        tenant_id: str | None = None,
+        agent_instance_id: str | None = None,
+        session_id: str | None = None,
+        run_id: str | None = None,
+    ) -> InteractionRecord | None:
+        """Return an interaction only inside a complete trusted scope.
+
+        An omitted scope is retained for local compatibility but is fail-closed
+        when the opaque id exists in more than one tenant.  Partial scope is
+        never sufficient for a security-sensitive worker lookup.
+        """
+
+        scope = (tenant_id, agent_instance_id, session_id, run_id)
+        connection = await self._connect()
+        if any(value is not None for value in scope):
+            if not all(value is not None for value in scope):
+                raise InvalidCommandError(
+                    "interaction lookup requires a complete trusted scope",
+                    details={"interaction_id": interaction_id},
+                )
+            row = await self._fetchone(
+                connection,
+                "SELECT * FROM kernel_interactions WHERE interaction_id=?"
+                " AND tenant_id=? AND agent_instance_id=? AND session_id=? AND run_id=?",
+                (interaction_id, tenant_id, agent_instance_id, session_id, run_id),
+            )
+            return self._row_to_record(row)
+        cursor = await connection.execute(
+            "SELECT * FROM kernel_interactions WHERE interaction_id=? LIMIT 2",
             (interaction_id,),
         )
-        return self._row_to_record(row)
+        rows = await cursor.fetchall()
+        await cursor.close()
+        if len(rows) > 1:
+            raise InvalidCommandError(
+                f"interaction_id {interaction_id!r} is ambiguous without trusted scope",
+                details={"reason": REQUEST_CONFLICT, "interaction_id": interaction_id},
+            )
+        return self._row_to_record(rows[0]) if rows else None
 
     async def list_pending_interactions(
         self, tenant_id: str, session_id: str

@@ -159,7 +159,15 @@ class InteractionLedger(Protocol):
         self, interaction_id: str, expected_revision: int, *, guard: ActivationWriteGuard
     ) -> InteractionReceipt: ...
 
-    async def get(self, interaction_id: str) -> InteractionRecord | None: ...
+    async def get(
+        self,
+        interaction_id: str,
+        *,
+        tenant_id: str | None = None,
+        agent_instance_id: str | None = None,
+        session_id: str | None = None,
+        run_id: str | None = None,
+    ) -> InteractionRecord | None: ...
 
     async def list_pending_interactions(
         self, tenant_id: str, session_id: str

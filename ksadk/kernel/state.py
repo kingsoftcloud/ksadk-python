@@ -74,6 +74,9 @@ RUN_TRANSITIONS: dict[RunState, frozenset[RunState]] = {
     ),
     RunState.WAITING: frozenset(
         {
+            # A durable InteractionResolved returns the run to active execution
+            # before its adapter produces the next runtime event.
+            RunState.RUNNING,
             RunState.PAUSED,
             RunState.COMPLETED,
             RunState.FAILED,

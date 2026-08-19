@@ -591,15 +591,61 @@ class InMemoryAgentKernelStore:
             )
         return row
 
-    def _find_interaction(self, interaction_id: str) -> dict[str, Any] | None:
-        return next(
+    def _find_interaction(
+        self,
+        interaction_id: str,
+        *,
+        agent_instance_id: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Resolve an opaque public id only inside an activation-owned scope.
+
+        ``kernel_interactions`` is tenant-keyed, while a public submission
+        intentionally does not carry a tenant.  The trusted activation guard
+        is consequently the lookup boundary for mutations.  An unscoped read
+        is permitted only when the id is globally unambiguous; it must never
+        return an arbitrary tenant's row.
+        """
+
+        matches = [
+            row
+            for (_, key), row in self._interactions.items()
+            if key == interaction_id
+            and (agent_instance_id is None or row["record"].agent_instance_id == agent_instance_id)
+            and (session_id is None or row["record"].session_id == session_id)
+        ]
+        if len(matches) > 1:
+            raise InvalidCommandError(
+                f"interaction_id {interaction_id!r} is ambiguous without trusted scope",
+                details={"reason": REQUEST_CONFLICT, "interaction_id": interaction_id},
+            )
+        return matches[0] if matches else None
+
+    def _interaction_scope_for_guard(
+        self, guard: ActivationWriteGuard
+    ) -> tuple[str, str]:
+        row = next(
             (
-                row
-                for (tenant, key), row in self._interactions.items()
-                if key == interaction_id
+                candidate
+                for candidate in self._activations.values()
+                if candidate["activation_id"] == guard.activation_id
             ),
             None,
         )
+        if (
+            row is None
+            or row.get("released")
+            or self._lease_expired(row)
+            or row["fencing_token"] != int(guard.fencing_token)
+        ):
+            raise StaleFenceError(
+                "interaction write guard does not match the current lease",
+                details={
+                    "activation_id": guard.activation_id,
+                    "fencing_token": int(guard.fencing_token),
+                },
+            )
+        return str(row["agent_instance_id"]), str(row["session_id"])
 
     @staticmethod
     def _terminal_conflict(interaction_id: str, status: str) -> InvalidCommandError:
@@ -638,7 +684,12 @@ class InMemoryAgentKernelStore:
     async def resolve(
         self, submission: InteractionSubmission, *, guard: ActivationWriteGuard
     ) -> InteractionReceipt:
-        row = self._find_interaction(submission.interaction_id)
+        agent_instance_id, session_id = self._interaction_scope_for_guard(guard)
+        row = self._find_interaction(
+            submission.interaction_id,
+            agent_instance_id=agent_instance_id,
+            session_id=session_id,
+        )
         if row is None:
             raise InvalidCommandError(
                 f"unknown interaction_id {submission.interaction_id!r}"
@@ -716,7 +767,12 @@ class InMemoryAgentKernelStore:
         status: str,
         reason: str,
     ) -> InteractionReceipt:
-        row = self._find_interaction(interaction_id)
+        agent_instance_id, session_id = self._interaction_scope_for_guard(guard)
+        row = self._find_interaction(
+            interaction_id,
+            agent_instance_id=agent_instance_id,
+            session_id=session_id,
+        )
         if row is None:
             raise InvalidCommandError(f"unknown interaction_id {interaction_id!r}")
         record = row["record"]
@@ -786,7 +842,45 @@ class InMemoryAgentKernelStore:
             reason="interaction expired",
         )
 
-    async def get(self, interaction_id: str) -> InteractionRecord | None:
+    async def get(
+        self,
+        interaction_id: str,
+        *,
+        tenant_id: str | None = None,
+        agent_instance_id: str | None = None,
+        session_id: str | None = None,
+        run_id: str | None = None,
+    ) -> InteractionRecord | None:
+        """Read an opaque id only when it is unique or fully trusted-scoped.
+
+        Public interaction ids are not tenant grants.  The worker always has
+        the Server-admitted command scope and must pass all four dimensions;
+        legacy local callers may omit all dimensions only while the id is
+        globally unambiguous.
+        """
+
+        scope = (tenant_id, agent_instance_id, session_id, run_id)
+        if any(value is not None for value in scope):
+            if not all(value is not None for value in scope):
+                raise InvalidCommandError(
+                    "interaction lookup requires a complete trusted scope",
+                    details={"interaction_id": interaction_id},
+                )
+            matches = [
+                row
+                for (_, key), row in self._interactions.items()
+                if key == interaction_id
+                and row["record"].tenant_id == tenant_id
+                and row["record"].agent_instance_id == agent_instance_id
+                and row["record"].session_id == session_id
+                and row["record"].run_id == run_id
+            ]
+            if len(matches) > 1:  # pragma: no cover - backend key prevents it
+                raise InvalidCommandError(
+                    f"interaction_id {interaction_id!r} is ambiguous in trusted scope",
+                    details={"reason": REQUEST_CONFLICT, "interaction_id": interaction_id},
+                )
+            return matches[0]["record"] if matches else None
         row = self._find_interaction(interaction_id)
         return row["record"] if row is not None else None
 

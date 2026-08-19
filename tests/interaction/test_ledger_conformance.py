@@ -43,6 +43,8 @@ def now_iso() -> str:
 def make_record(
     interaction_id: str,
     *,
+    tenant_id: str = TENANT,
+    agent_instance_id: str = AGENT,
     session_id: str = SESSION,
     kind: str = "approval",
     request_schema: dict | None = None,
@@ -50,8 +52,8 @@ def make_record(
 ) -> InteractionRecord:
     return InteractionRecord(
         interaction_id=interaction_id,
-        tenant_id=TENANT,
-        agent_instance_id=AGENT,
+        tenant_id=tenant_id,
+        agent_instance_id=agent_instance_id,
         session_id=session_id,
         run_id="run-1",
         kind=kind,  # type: ignore[arg-type]
@@ -81,10 +83,15 @@ def make_submission(
     )
 
 
-async def acquire_guard(store, activation_id: str = "act-int-1", session_id: str = SESSION):
+async def acquire_guard(
+    store,
+    activation_id: str = "act-int-1",
+    session_id: str = SESSION,
+    agent_instance_id: str = AGENT,
+):
     lease = await store.acquire_activation(
         ActivationLeaseRequest(
-            agent_instance_id=AGENT,
+            agent_instance_id=agent_instance_id,
             session_id=session_id,
             activation_id=activation_id,
             lease_ttl_seconds=60.0,
@@ -255,6 +262,69 @@ async def assert_tenant_session_binding(store, event_store):
     assert await store.get("int-unknown-xyz") is None
 
 
+async def assert_guard_scope_prevents_cross_tenant_interaction_lookup(store, event_store):
+    """The public id is not a tenant authorization boundary.
+
+    A Server-admitted command reaches the ledger with an activation guard for
+    one concrete AgentInstance/session.  Two tenants are allowed to have the
+    same opaque interaction id in their durable indexes; resolving tenant B's
+    item must therefore first bind lookup to that activation rather than pick
+    an arbitrary row by id.
+    """
+
+    shared_id = "int-shared-across-tenants"
+    # "s-tenant-two" 由各 backend fixture 预先 seed（PG 事件日志没有
+    # session_service 属性，check 内部不能自行建会话）。
+    first_guard = await acquire_guard(
+        store,
+        activation_id="act-tenant-one",
+        agent_instance_id="agent-one",
+    )
+    second_guard = await acquire_guard(
+        store,
+        activation_id="act-tenant-two",
+        session_id="s-tenant-two",
+        agent_instance_id="agent-two",
+    )
+    await store.request(
+        make_record(shared_id, tenant_id="tenant-one", agent_instance_id="agent-one"),
+        guard=first_guard,
+    )
+    await store.request(
+        make_record(
+            shared_id,
+            tenant_id="tenant-two",
+            agent_instance_id="agent-two",
+            session_id="s-tenant-two",
+        ),
+        guard=second_guard,
+    )
+
+    receipt = await store.resolve(make_submission(shared_id), guard=second_guard)
+    assert receipt.status == "resolved"
+
+    first_pending = await store.list_pending_interactions("tenant-one", SESSION)
+    assert [record.interaction_id for record in first_pending] == [shared_id]
+    second_pending = await store.list_pending_interactions("tenant-two", "s-tenant-two")
+    assert second_pending == []
+
+    # A worker resolves public ids with its Server-admitted command scope.  An
+    # unscoped read must not silently return whichever tenant happened to be
+    # inserted first, while the full trusted scope retrieves the right row.
+    with pytest.raises(InvalidCommandError):
+        await store.get(shared_id)
+    scoped = await store.get(
+        shared_id,
+        tenant_id="tenant-two",
+        agent_instance_id="agent-two",
+        session_id="s-tenant-two",
+        run_id="run-1",
+    )
+    assert scoped is not None
+    assert scoped.tenant_id == "tenant-two"
+    assert scoped.agent_instance_id == "agent-two"
+
+
 async def assert_stale_fence_is_rejected(store, event_store):
     guard = await acquire_guard(store, activation_id="act-fence")
     await store.request(make_record("int-fence"), guard=guard)
@@ -324,6 +394,7 @@ LEDGER_CONFORMANCE_CHECKS = (
     assert_cancel_is_terminal_and_fenced_by_revision,
     assert_expire_is_terminal,
     assert_tenant_session_binding,
+    assert_guard_scope_prevents_cross_tenant_interaction_lookup,
     assert_stale_fence_is_rejected,
     assert_public_events_omit_internal_fields,
     assert_concurrent_resolves_have_single_winner,
@@ -349,6 +420,7 @@ async def memory_backend():
     service = InMemorySessionService()
     await _seed(service, SESSION)
     await _seed(service, OTHER_SESSION)
+    await _seed(service, "s-tenant-two")
     event_store = SessionServiceEventStore(service)
     yield InMemoryAgentKernelStore(event_store), event_store
 
@@ -358,11 +430,13 @@ async def sqlite_backend(tmp_path):
     from ksadk.kernel.sqlite_store import SQLiteAgentKernelStore
     from ksadk.sessions.local_service import LocalSessionService
 
-    service = LocalSessionService(db_path=tmp_path / "sessions.sqlite")
+    shared_db = tmp_path / "kernel-and-sessions.sqlite"
+    service = LocalSessionService(db_path=shared_db)
     await _seed(service, SESSION)
     await _seed(service, OTHER_SESSION)
+    await _seed(service, "s-tenant-two")
     event_store = SessionServiceEventStore(service)
-    store = SQLiteAgentKernelStore(tmp_path / "kernel.sqlite", event_store)
+    store = SQLiteAgentKernelStore(shared_db, event_store)
     await store.ensure_schema()
     yield store, event_store
     await store.close()
@@ -388,6 +462,7 @@ async def postgres_backend():
     service = PostgresSessionService(dsn=dsn)
     await _seed(service, SESSION)
     await _seed(service, OTHER_SESSION)
+    await _seed(service, "s-tenant-two")
     event_log = PostgresKernelEventLog(service._pool)
     store = PostgresAgentKernelStore(service._pool, event_log)
     await store.ensure_schema()
@@ -471,3 +546,55 @@ async def test_sqlite_store_satisfies_ledger_protocol(sqlite_backend):
 
     store, _ = sqlite_backend
     assert isinstance(store, InteractionLedger)
+
+
+async def test_sqlite_ledger_rejects_split_session_event_database(tmp_path):
+    """A local ledger cannot claim atomicity across two SQLite files."""
+
+    from ksadk.kernel.sqlite_store import SQLiteAgentKernelStore
+    from ksadk.sessions.local_service import LocalSessionService
+
+    session_service = LocalSessionService(tmp_path / "sessions.sqlite")
+    await _seed(session_service, SESSION)
+    event_store = SessionServiceEventStore(session_service)
+    store = SQLiteAgentKernelStore(tmp_path / "kernel.sqlite", event_store)
+    await store.ensure_schema()
+    try:
+        guard = await acquire_guard(store)
+        with pytest.raises(RuntimeError, match="same SQLite database"):
+            await store.request(make_record("int-split-db"), guard=guard)
+        assert await store.get("int-split-db") is None
+        assert await event_store.read(SESSION, 0, 100) == []
+    finally:
+        await store.close()
+
+
+async def test_sqlite_ledger_commit_failure_rolls_back_row_and_event(tmp_path, monkeypatch):
+    """The local interaction index and fact append share exactly one commit."""
+
+    from ksadk.kernel.sqlite_store import SQLiteAgentKernelStore
+    from ksadk.sessions.local_service import LocalSessionService
+
+    shared_db = tmp_path / "kernel-and-sessions.sqlite"
+    session_service = LocalSessionService(shared_db)
+    await _seed(session_service, SESSION)
+    event_store = SessionServiceEventStore(session_service)
+    store = SQLiteAgentKernelStore(shared_db, event_store)
+    await store.ensure_schema()
+    try:
+        guard = await acquire_guard(store)
+        connection = await store._connect()
+        original_commit = connection.commit
+
+        async def fail_commit():
+            raise RuntimeError("simulated SQLite commit failure")
+
+        monkeypatch.setattr(connection, "commit", fail_commit)
+        with pytest.raises(RuntimeError, match="simulated SQLite commit failure"):
+            await store.request(make_record("int-commit-failure"), guard=guard)
+        monkeypatch.setattr(connection, "commit", original_commit)
+
+        assert await store.get("int-commit-failure") is None
+        assert await event_store.read(SESSION, 0, 100) == []
+    finally:
+        await store.close()

@@ -651,8 +651,12 @@ class AgentKernelWorker:
         )
         # A durable response returns a waiting run to execution.  The old live
         # stream usually remains open (Codex); checkpoint providers normally
-        # returned a fresh handle and need a new background stream.
-        resumed_run = await self._transition_run(active, RunState.RUNNING, fence)
+        # returned a fresh handle and need a new background stream.  RUNNING is
+        # already the active-execution state (RUNNING -> RUNNING is not a legal
+        # transition), so only WAITING/PAUSED runs move back to RUNNING.
+        resumed_run = active
+        if active.state != RunState.RUNNING:
+            resumed_run = await self._transition_run(active, RunState.RUNNING, fence)
         task = execution.stream_task
         if task is None or task.done():
             self._start_stream(

@@ -162,7 +162,11 @@ async def _seed_active_run(stack, adapter):
     )
     from ksadk.kernel.worker import AgentKernelWorker
 
-    worker = AgentKernelWorker(stack.store, adapter_factory=lambda: stack.adapter)
+    worker = AgentKernelWorker(
+        stack.store,
+        adapter_factory=lambda: stack.adapter,
+        session_events=stack.events,
+    )
     result = await worker.run_once(AGENT, lease)
     assert result.outcome == "retryable_failure"
     active = await stack.store.find_active_run(AGENT, "s1")
