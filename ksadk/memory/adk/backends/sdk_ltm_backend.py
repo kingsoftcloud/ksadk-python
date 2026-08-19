@@ -452,16 +452,43 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
             )
 
         data = self._parse_json_response(response)
-        new_memory_id = self._parse_new_memory_id(data)
+        response_memory_id = self._parse_new_memory_id(data)
+        new_memory_id = response_memory_id
+        if not response_memory_id or response_memory_id == memory_id:
+            # The service can merge an edited memory into another record while
+            # returning no new ID (or echoing the old one).  Do not expose that
+            # stale handle to callers: confirm the current handle by listing
+            # records whose final content exactly matches the update.
+            try:
+                matches = [
+                    record
+                    for record in self.list_memory_records(
+                        user_id=user_id,
+                        query=content,
+                        page=1,
+                        page_size=100,
+                    )
+                    if record.content.strip() == content.strip()
+                ]
+            except Exception as exc:
+                logger.warning(
+                    "ListMemories failed while reconciling updated memory ID: %s",
+                    type(exc).__name__,
+                )
+                matches = []
+            unique_ids = {record.memory_id for record in matches}
+            new_memory_id = unique_ids.pop() if len(unique_ids) == 1 else ""
+
         if new_memory_id and new_memory_id != memory_id:
             message = f"更新成功，新记忆 ID: {new_memory_id}"
-        else:
-            # §17.3："未发生 ID 变化"时的返回方式待确认；此时保留旧 ID 语义。
+        elif new_memory_id == memory_id:
             message = "更新成功，记忆 ID 未变化"
+        else:
+            message = "更新成功，但未能唯一确认更新后的记忆 ID，请重新搜索后再操作"
         return MemoryMutationResult(
             ok=True,
             memory_id=memory_id,
-            new_memory_id=new_memory_id or memory_id,
+            new_memory_id=new_memory_id,
             status="updated",
             message=message,
         )
@@ -572,7 +599,8 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
     def _parse_new_memory_id(data: Any) -> str:
         """从 UpdateMemory 响应解析 new_memory_id（§7.4.1）。
 
-        兼容 snake/camel 两种命名；都不存在时返回空串（ID 未变化语义）。
+        兼容 snake/camel 两种命名；都不存在时返回空串，由调用方通过
+        ListMemories 核验当前句柄，不能据此推断 ID 未变化。
         """
         if not isinstance(data, dict):
             return ""

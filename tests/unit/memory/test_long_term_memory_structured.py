@@ -182,11 +182,42 @@ class TestMutationRequests:
             r = backend.update_memory(user_id="u1", memory_id="mem-1", content="x")
         assert r.ok and r.status == "updated"
         assert r.new_memory_id == "mem-9"
-        # id 未变化时保留旧 id
-        client.call.return_value = '{"RequestId": "r"}'
+        # 响应未提供可信 ID 时，以 ListMemories 的精确正文匹配为准。
+        client.call.side_effect = [
+            '{"RequestId": "r"}',
+            json.dumps(
+                {
+                    "MemoryList": [
+                        {"MemoryId": "mem-10", "Memory": "x", "AgentUserId": "u1"}
+                    ]
+                }
+            ),
+        ]
         with patch.object(backend, "_get_client", return_value=client):
             r = backend.update_memory(user_id="u1", memory_id="mem-1", content="x")
-        assert r.ok and r.new_memory_id == "mem-1"
+        assert r.ok and r.new_memory_id == "mem-10"
+        assert client.call.call_args_list[-1].args[0] == "ListMemories"
+
+    def test_update_does_not_fabricate_old_id_when_reconciliation_is_ambiguous(self):
+        """服务端未返回 ID 且精确正文不唯一时，不把旧 ID 冒充新句柄。"""
+        backend = _make_backend()
+        client = MagicMock()
+        client.call.side_effect = [
+            '{"Data": {"NewMemoryId": "mem-1"}}',
+            json.dumps(
+                {
+                    "MemoryList": [
+                        {"MemoryId": "mem-2", "Memory": "x"},
+                        {"MemoryId": "mem-3", "Memory": "x"},
+                    ]
+                }
+            ),
+        ]
+        with patch.object(backend, "_get_client", return_value=client):
+            r = backend.update_memory(user_id="u1", memory_id="mem-1", content="x")
+        assert r.ok and r.status == "updated"
+        assert r.new_memory_id == ""
+        assert "重新搜索" in r.message
 
     def test_delete_request_contains_scope_and_ids(self):
         """§11.1.6：delete 请求含 collection/user/memory ID。"""
