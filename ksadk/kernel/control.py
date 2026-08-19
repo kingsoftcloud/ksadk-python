@@ -12,8 +12,9 @@
 """
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import datetime
+from typing import Any
 
 from ksadk.events.session_event import SessionEventStore
 from ksadk.kernel.authorization import (
@@ -182,15 +183,37 @@ class AgentKernel:
     # ------------------------------------------------------------- subscribe
 
     async def subscribe(
-        self, subscription: SessionEventSubscription, *, permit: AgentControlPermit
+        self,
+        subscription: SessionEventSubscription,
+        *,
+        permit: AgentControlPermit,
+        should_stop: Callable[[], Awaitable[bool]] | None = None,
+        timeout: float | None = None,
     ) -> AsyncIterator[SessionEventEnvelope]:
         await self._permit_verifier.verify(
             permit, subscription, "subscribe_events", self._clock()
         )
-        async for envelope in self._events.subscribe(
-            subscription.session_id, subscription.after_seq
+        subscribe = self._events.subscribe
+        kwargs: dict[str, Any] = {}
+        try:
+            signature = signature_of(subscribe)
+        except (TypeError, ValueError):
+            signature = None
+        parameters = getattr(signature, "parameters", {}) or {}
+        if should_stop is not None and "should_stop" in parameters:
+            kwargs["should_stop"] = should_stop
+        if timeout is not None and "timeout" in parameters:
+            kwargs["timeout"] = timeout
+        async for envelope in subscribe(
+            subscription.session_id, subscription.after_seq, **kwargs
         ):
             yield envelope
+
+
+def signature_of(func: Any) -> Any:
+    import inspect
+
+    return inspect.signature(func)
 
 
 __all__ = ["AgentKernel", "default_capability_matrix"]

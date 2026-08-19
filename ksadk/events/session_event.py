@@ -235,6 +235,7 @@ class SessionServiceEventStore:
         *,
         poll_interval: float = 0.25,
         timeout: float = 5 * 60,
+        should_stop: Callable[[], Awaitable[bool]] | None = None,
     ) -> AsyncIterator[SessionEventEnvelope]:
         """Replay ``seq > after_seq`` first, then follow live with the same cursor.
 
@@ -254,6 +255,9 @@ class SessionServiceEventStore:
                     _validate_runtime_payload(envelope)
                     yield envelope
             if asyncio.get_running_loop().time() >= deadline:
+                return
+            if should_stop is not None and await should_stop():
+                # 客户端断开：及时收口，而不是继续轮询到 timeout。
                 return
             await asyncio.sleep(poll_interval)
 

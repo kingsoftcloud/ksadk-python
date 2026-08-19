@@ -26,7 +26,7 @@ import hashlib
 import json
 import os
 import uuid
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Callable
@@ -441,6 +441,8 @@ async def subscribe_projected(
     trusted: TrustedRuntimeContext,
     after_seq: int = 0,
     projector: Callable[[SessionEventEnvelope], Any] | None = None,
+    should_stop: Callable[[], Awaitable[bool]] | None = None,
+    timeout: float | None = None,
 ) -> AsyncIterator[tuple[int, Any]]:
     """统一 cursor 订阅：所有 SSE 的 reconnect cursor 都源自同一 Session seq。
 
@@ -457,7 +459,21 @@ async def subscribe_projected(
         authorization_ref=trusted.permit.permit_id,
         after_seq=after_seq,
     )
-    async for envelope in kernel.subscribe(subscription, permit=trusted.permit):
+    # 兼容不同 AgentKernel 实现（含测试替身）：只传其实际支持的参数。
+    import inspect as _inspect
+
+    subscribe_kwargs: dict[str, Any] = {}
+    try:
+        _params = _inspect.signature(kernel.subscribe).parameters
+    except (TypeError, ValueError):  # pragma: no cover - defensive
+        _params = {}
+    if "should_stop" in _params:
+        subscribe_kwargs["should_stop"] = should_stop
+    if "timeout" in _params:
+        subscribe_kwargs["timeout"] = timeout
+    async for envelope in kernel.subscribe(
+        subscription, permit=trusted.permit, **subscribe_kwargs
+    ):
         projected = envelope if projector is None else projector(envelope)
         if projected is None:
             continue
@@ -852,6 +868,11 @@ def _build_kernel_router() -> Any:
             after_seq = int(params.get("after_seq") or 0)
         except ValueError:
             after_seq = 0
+        # 可选订阅时长上限（秒）：调用方（网关/测试）可显式限定 SSE 生命周期。
+        try:
+            subscribe_timeout = float(params.get("timeout") or 0) or None
+        except ValueError:
+            subscribe_timeout = None
         if _is_hosted():
             permit = _hosted_permit(request)
             if isinstance(permit, JSONResponse):
@@ -873,9 +894,20 @@ def _build_kernel_router() -> Any:
                 operations=("subscribe_events",),
             )
 
+        async def _client_disconnected() -> bool:
+            # 客户端断开后及时收口 SSE，而不是轮询到订阅 timeout。
+            try:
+                return await request.is_disconnected()
+            except Exception:  # pragma: no cover - defensive
+                return False
+
         async def generator():
             async for seq, envelope in subscribe_projected(
-                session_id, trusted=trusted, after_seq=after_seq
+                session_id,
+                trusted=trusted,
+                after_seq=after_seq,
+                should_stop=_client_disconnected,
+                timeout=subscribe_timeout,
             ):
                 payload = (
                     envelope.payload

@@ -602,6 +602,53 @@ async def test_local_authority_mode_explicitly_allows_self_signed_permit(monkeyp
         ingress.clear_agent_kernel()
 
 
+async def test_subscribe_session_events_stops_when_client_disconnects(app_with_real_kernel):
+    """客户端断开后 SSE 必须及时收口，而不是继续轮询到 5 分钟超时。"""
+    import asyncio
+    import time
+
+    client, kernel = app_with_real_kernel
+    await client.post(ingress.KERNEL_INGRESS_SUBMIT_PATH, json=_command_payload())
+
+    started = time.monotonic()
+
+    async def consume_and_disconnect() -> None:
+        async with client.stream(
+            "GET",
+            ingress.KERNEL_INGRESS_SESSION_EVENTS_PATH,
+            params={"session_id": "sess-1", "after_seq": 0, "timeout": 2},
+        ) as response:
+            assert response.status_code == 200
+            async for line in response.aiter_lines():
+                if line.startswith("id:"):
+                    break
+        # 客户端主动断开（取消仍在推送的订阅请求）。
+        await response.aclose()
+
+    # 断开后订阅协程必须随请求取消而终止（不再阻塞到 5 分钟 timeout）。
+    await asyncio.wait_for(consume_and_disconnect(), timeout=10)
+
+    # store 级别：should_stop 回调触发后订阅立即收口。
+    stop = [False]
+
+    async def should_stop() -> bool:
+        return stop[0]
+
+    async def consume_store() -> int:
+        count = 0
+        async for _ in kernel._events.subscribe(
+            "sess-1", 0, should_stop=should_stop
+        ):
+            count += 1
+            stop[0] = True
+        return count
+
+    count = await asyncio.wait_for(consume_store(), timeout=10)
+    assert count >= 1
+    elapsed = time.monotonic() - started
+    assert elapsed < 30, f"subscription should stop promptly, took {elapsed:.1f}s"
+
+
 async def test_subscribe_session_events_streams_with_local_permit(app_with_real_kernel):
     """subscribe 的本地 permit 绑定自洽：SSE 正常产出事件而非 fail-closed。"""
     client, _ = app_with_real_kernel
@@ -614,7 +661,7 @@ async def test_subscribe_session_events_streams_with_local_permit(app_with_real_
     async with client.stream(
         "GET",
         ingress.KERNEL_INGRESS_SESSION_EVENTS_PATH,
-        params={"session_id": "sess-1", "after_seq": 0},
+        params={"session_id": "sess-1", "after_seq": 0, "timeout": 2},
     ) as response:
         assert response.status_code == 200
         async for line in response.aiter_lines():

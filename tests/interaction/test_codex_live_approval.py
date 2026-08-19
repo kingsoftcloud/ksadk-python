@@ -137,6 +137,27 @@ async def test_reject_maps_to_native_deny_decision():
     assert client.resolved_approvals == [("call_9f2", "deny")]
 
 
+async def test_reject_with_public_decision_vocabulary_maps_to_deny():
+    """The runtime advertises decision enum [approve, reject]; a client that
+    echoes that public vocabulary (Response={"decision": "reject"}) must be
+    normalized to the codex-native "deny", not rejected by the client's
+    vocab check."""
+    client = RecordingCodexClient()
+    adapter = CodexRuntimeAdapter(client)
+    handle = await _live_handle(adapter)
+    submission = InteractionSubmission(
+        interaction_id="it-codex-1",
+        expected_revision=1,
+        action="reject",
+        response={"decision": "reject"},
+        idempotency_key="idem-2b",
+    )
+    await CodexInteractionProvider().resolve(
+        await _context(adapter, handle), _record(), submission
+    )
+    assert client.resolved_approvals == [("call_9f2", "deny")]
+
+
 async def test_structured_input_uses_live_interaction_channel():
     client = RecordingCodexClient()
     adapter = CodexRuntimeAdapter(client)

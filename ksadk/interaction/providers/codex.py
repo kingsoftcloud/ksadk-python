@@ -73,6 +73,14 @@ class CodexInteractionProvider:
             }
             if not any(key in data for key in ("decision", "name")):
                 data["decision"] = decision
+            elif "decision" in data:
+                # The runtime advertises the public Interaction vocabulary
+                # (decision enum approve/reject) in request_schema; a client
+                # echoing it must be normalized to the codex-native word
+                # instead of failing the client vocab check fail-closed.
+                data["decision"] = _CODEX_APPROVAL_DECISIONS.get(
+                    str(data["decision"]), str(data["decision"])
+                )
             return data
         return {"decision": decision}
 
