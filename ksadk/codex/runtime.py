@@ -410,7 +410,7 @@ class CodexRuntimeAdapter(RuntimeAdapter):
     ) -> AsyncIterator[RuntimeEvent]:
         request = thread.__dict__.get("_start_request") or thread.__dict__.get("_request_config")
         adapter = CodexEventAdapter()
-        context = CodexAdapterContext(run_id=handle.run_id)
+        context = CodexAdapterContext(run_id=self._event_run_id(handle))
         run_config: dict[str, Any] = {"sandbox_read_only": self._sandbox_read_only}
         if request is not None and request.config:
             for key in ("sandbox", "approval_mode", "summary", "collaboration_mode"):
@@ -576,6 +576,23 @@ class CodexRuntimeAdapter(RuntimeAdapter):
 
     # ---- canonical run.* helpers (for runtime-owned lifecycle) ----
 
+    def _event_run_id(self, handle: RunHandle) -> str:
+        """事件的 canonical run_id:调用方 invocation_id 优先,退回 thread id。
+
+        ``handle.run_id`` 是 codex 原生 thread id(resume/cancel 按 thread 寻址);
+        但 canonical RuntimeEvent 的 run_id 必须与调用方
+        ``StartRequest.metadata['invocation_id']`` 一致(conversation kernel 的
+        event scope 校验),否则 hosted/web 执行路径会在首个事件上 fail。
+        """
+        request = self._requests.get(handle.run_id)
+        if request is not None:
+            invocation_id = str(
+                (getattr(request, "metadata", None) or {}).get("invocation_id") or ""
+            ).strip()
+            if invocation_id:
+                return invocation_id
+        return handle.run_id
+
     def _make_source(self, handle: RunHandle) -> SourceRef:
         request = self._requests.get(handle.run_id)
         return SourceRef(
@@ -631,7 +648,7 @@ class CodexRuntimeAdapter(RuntimeAdapter):
         part_id: str,
     ) -> dict[str, Any]:
         framework = "codex"
-        run_id = handle.run_id
+        run_id = self._event_run_id(handle)
         n = self._next_seq()
         return {
             "schema_version": 2,
@@ -649,7 +666,7 @@ class CodexRuntimeAdapter(RuntimeAdapter):
         self, handle: RunHandle, *, reason: str | None = None
     ) -> RunCanceled:
         framework = "codex"
-        run_id = handle.run_id
+        run_id = self._event_run_id(handle)
         scope_id = stable_scope_id(framework, run_id)
         item_id = stable_item_id(framework, run_id, "$run")
         return RunCanceled(
@@ -668,7 +685,7 @@ class CodexRuntimeAdapter(RuntimeAdapter):
         self, handle: RunHandle, *, reason: str | None = None
     ) -> RunInterrupted:
         framework = "codex"
-        run_id = handle.run_id
+        run_id = self._event_run_id(handle)
         scope_id = stable_scope_id(framework, run_id)
         item_id = stable_item_id(framework, run_id, "$run")
         return RunInterrupted(
@@ -687,7 +704,7 @@ class CodexRuntimeAdapter(RuntimeAdapter):
         self, handle: RunHandle, error_message: str
     ) -> RunFailed:
         framework = "codex"
-        run_id = handle.run_id
+        run_id = self._event_run_id(handle)
         scope_id = stable_scope_id(framework, run_id)
         item_id = stable_item_id(framework, run_id, "$run")
         return RunFailed(
