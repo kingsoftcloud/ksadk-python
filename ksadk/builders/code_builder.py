@@ -2076,6 +2076,7 @@ runtime_context = RuntimeLaunchContext(
     config=dict(getattr(detection_result, "raw_config", None) or {{}}),
 )
 # managed A2A:KSADK_A2A_RUNTIME_ID 非空时挂 discovery card + 完整数据面 route。
+_managed_a2a_card = None
 _a2a_config = None
 _a2a_adapter = None
 if os.environ.get("KSADK_A2A_RUNTIME_ID", "").strip():
