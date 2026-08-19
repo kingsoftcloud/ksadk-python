@@ -325,6 +325,55 @@ async def test_submit_interaction_dispatches_to_bound_provider_with_full_respons
     assert len(adapter.streams) >= 1  # 回包后 stream 继续被消费
 
 
+async def test_submit_interaction_rejects_record_provider_mismatched_to_active_execution():
+    """回包只能交给 activation 当前持有的 framework provider。
+
+    InteractionRecord 是 durable state，但它不能成为跨 framework dispatch 的
+    授权：恢复/迁移时若 record 的 provider 与当前 ActiveExecution 不一致，
+    Worker 必须拒绝，而不能以 Codex handle 去调用 LangGraph resume（或反过来）。
+    """
+
+    stack = await kernel_stack(adapter=CodexLikeAdapter())
+    adapter = stack.adapter
+    lease = await stack.lease()
+    run_id, worker = await _seed_active_run(stack, adapter)
+    await _request_interaction(
+        stack,
+        lease,
+        interaction_id="it-provider-mismatch",
+        provider_id="langgraph",
+        run_id=run_id,
+        native_target={"checkpoint_id": "ckpt-1", "thread_id": "lg-thread"},
+    )
+
+    await stack.kernel.submit(
+        command(
+            "submit_interaction",
+            idempotency_key="resolve-provider-mismatch",
+            payload={
+                "run_id": run_id,
+                "interaction_id": "it-provider-mismatch",
+                "token_ref": "tok-provider-mismatch",
+                "response": {"approved": True},
+                "action": "approve",
+                "expected_revision": 1,
+            },
+        ),
+        permit=stack.permit("submit_interaction"),
+    )
+
+    result = await worker.run_once(AGENT, lease)
+    assert result.outcome == "completed"
+    assert adapter.submits == []
+    record = await stack.store.get("it-provider-mismatch")
+    assert record is not None and record.status == "pending"
+    events = await stack.events.read("s1", 0, 200)
+    rejected = [e for e in events if e.event_type == "control.command_rejected"]
+    assert any(
+        e.payload["reason"] == "runtime_interaction_unavailable" for e in rejected
+    )
+
+
 async def test_unavailable_provider_is_typed_rejection_and_keeps_interaction_pending():
     stack = await kernel_stack(adapter=LangGraphLikeAdapter())
     adapter = stack.adapter

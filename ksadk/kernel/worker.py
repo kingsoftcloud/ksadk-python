@@ -860,16 +860,26 @@ class AgentKernelWorker:
                     "active_run_id": active.run_id,
                 },
             )
-        provider = self._providers.get(record.provider_id)
-        if provider is None or provider.mode == "unavailable":
+        # ``ActiveExecution`` owns the adapter, live handle *and* provider for
+        # this activation.  The durable record tells us what was requested,
+        # but it must not redirect a response into another framework provider:
+        # e.g. calling LangGraph checkpoint resume with a Codex live handle
+        # would acknowledge a response that can never reach the original run.
+        provider = execution.interaction_provider
+        if (
+            provider.provider_id != record.provider_id
+            or provider.mode == "unavailable"
+        ):
             raise AgentKernelError(
                 RUNTIME_INTERACTION_UNAVAILABLE,
                 f"interaction provider {record.provider_id!r} cannot deliver "
-                "the response with native framework identity",
+                "the response through the active execution's native framework "
+                "identity",
                 retryable=False,
                 details={
                     "provider_id": record.provider_id,
-                    "mode": "unavailable" if provider else "missing",
+                    "active_provider_id": provider.provider_id,
+                    "mode": provider.mode,
                     "interaction_id": record.interaction_id,
                 },
             )
