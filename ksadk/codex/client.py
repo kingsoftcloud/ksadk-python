@@ -11,7 +11,7 @@
 - 测试实现:用 fake(见 tests/runners/test_codex_runtime.py / test_adapter_contract.py),
   不需要真 CLI 二进制。
 
-诚实边界:本模块的 SDK **方法面**已对安装的 ``openai-codex==0.144.4`` 实证(方法存在性 +
+诚实边界:本模块的 SDK **方法面**已对安装的 ``openai-codex==0.147.0`` 实证(方法存在性 +
 协程/asyncgen 形态);Notification → RuntimeEvent 的**字段级** phase 映射需在接真实 codex
 后端时按实况对齐(结构已按生成的 payload 类型映射,见 ``_notification_to_event_dict``)。
 """
@@ -220,7 +220,7 @@ class AsyncCodexClient(CodexClient):
                     f"{owner.__name__}.{method_name}(版本不兼容)"
                 )
 
-        # AsyncCodex 0.144.4 only accepts one CodexConfig positional/keyword.
+        # AsyncCodex 0.147.0 only accepts one CodexConfig positional/keyword.
         config, self._proxy = self._maybe_apply_proxy(
             config,
             proxy_observer=proxy_observer,
@@ -239,7 +239,7 @@ class AsyncCodexClient(CodexClient):
     def _install_approval_bridge(self) -> None:
         """Replace the SDK's unconditional accept handler with a HITL bridge.
 
-        ``openai-codex==0.144.4`` exposes approval callbacks only on its sync
+        ``openai-codex==0.147.0`` exposes approval callbacks only on its sync
         JSON-RPC client.  The public ``AsyncCodex`` wrapper owns that client, so
         this pinned compatibility seam is validated eagerly instead of silently
         auto-accepting tool and file changes.
@@ -587,7 +587,7 @@ class AsyncCodexClient(CodexClient):
     async def _start_manual_thread(self, config: Optional[dict[str, Any]]) -> Any:
         """Start a thread whose native approvals are reviewed by Studio users.
 
-        ``openai-codex==0.144.4`` exposes ``ApprovalsReviewer.user`` on the
+        ``openai-codex==0.147.0`` exposes ``ApprovalsReviewer.user`` on the
         generated app-server contract but omits it from the public
         ``ApprovalMode`` enum. Use that pinned wire contract explicitly rather
         than falling back to ``auto_review``.

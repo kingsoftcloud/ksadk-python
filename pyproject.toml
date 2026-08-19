@@ -148,7 +148,7 @@ skills = [
 # Codex Runtime (goal-09): OpenAI 官方 openai-codex SDK,自带 pin 版 CLI 二进制。
 # 可选 extra,不进默认依赖(二进制几十 MB);缺依赖时 CodexRuntime 显式报错。
 codex = [
-    "openai-codex==0.144.4",
+    "openai-codex==0.147.0",
 ]
 # Official AG-UI transport. Optional until Hosted UI selects it from bootstrap.
 agui = [
