@@ -1015,6 +1015,7 @@ def _build_kernel_router() -> Any:
         from ksadk.kernel.contract_fingerprints import (
             AGENT_KERNEL_V1_AGGREGATE_DIGEST,
         )
+        from ksadk.kernel.runtime_identity import runtime_identity
 
         kernel = get_agent_kernel()
         payload: dict[str, Any] = {
@@ -1026,6 +1027,7 @@ def _build_kernel_router() -> Any:
             "contract_digest": AGENT_KERNEL_V1_AGGREGATE_DIGEST,
             "capability_digest": "",
             "authority_mode": authority_mode(),
+            "runtime_identity": runtime_identity(),
         }
         from ksadk.kernel.bootstrap import get_agent_kernel_runtime
 

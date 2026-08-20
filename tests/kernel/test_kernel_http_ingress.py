@@ -236,9 +236,11 @@ def test_kernel_health_shape(app_without_kernel, monkeypatch):
         "store_driver",
         "contract_digest",
         "capability_digest",
+        "runtime_identity",
     }
     assert body["contract_digest"] == AGENT_KERNEL_V1_AGGREGATE_DIGEST
     assert body["capability_digest"] == ""
+    assert body["runtime_identity"]["ksadk_version"]
 
 
 # ---------------------------------------------------------------------------

@@ -40,6 +40,7 @@ from ksadk.kernel.contracts import RuntimeCapabilityMatrix
 from ksadk.kernel.control import AgentKernel, default_capability_matrix
 from ksadk.kernel.errors import InvalidCommandError
 from ksadk.kernel.recovery import RecoveryCoordinator
+from ksadk.kernel.runtime_identity import runtime_identity
 from ksadk.kernel.store import AgentKernelStore, now_utc
 from ksadk.kernel.worker import AgentKernelWorker
 from ksadk.runtime.adapter import RuntimeAdapter
@@ -263,6 +264,9 @@ class AgentKernelReadiness:
             # operations before they enter the durable inbox.
             "capabilities": capability_matrix,
             "bundle_digest": config.bundle_digest,
+            # Identity is derived from the KsADK source Python imported, not
+            # ``importlib.metadata`` for the base image distribution.
+            "runtime_identity": runtime_identity(),
         }
         # 诊断字段（additive，runtime 内部端点非 wire 冻结合同）：
         # degraded 时必须能从 health 直接回答 "为什么降级、何时降级"，
