@@ -49,11 +49,15 @@ class _EvaluatorDefinition:
 
 REFERENCE_MATCH_EVALUATOR = "reference_match@v1"
 LLM_JUDGE_EVALUATOR = "llm_judge@v1"
-DEFAULT_EVALUATORS = (
+BUSINESS_STANDARD_EVALUATOR = "business_standard@v1"
+LEGACY_ASSERTION_EVALUATORS = (
     "response_contract@v1",
     "runtime_budget@v1",
     "tool_trajectory@v1",
 )
+# Kept for external imports only. Empty evaluator selection uses the
+# data-derived automatic plan in _automatic_evaluator_names instead.
+DEFAULT_EVALUATORS = LEGACY_ASSERTION_EVALUATORS
 _RESPONSE_MATCH_THRESHOLD = 0.8
 _TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]")
 
@@ -67,7 +71,7 @@ def evaluate_case(
     """Run selected evaluators in request order."""
 
     context = _EvaluationContext(case, target_run, config or EvaluationConfig())
-    evaluators = _resolve_evaluators(evaluator_names)
+    evaluators = _resolve_evaluators(evaluator_names, context)
     return _run_evaluators(context, evaluators)
 
 
@@ -82,12 +86,56 @@ async def evaluate_case_async(
     return await asyncio.to_thread(evaluate_case, case, target_run, evaluator_names, config)
 
 
-def _resolve_evaluators(evaluator_names: list[str]) -> list[_EvaluatorDefinition]:
-    selected_names = evaluator_names or DEFAULT_EVALUATORS
+def _resolve_evaluators(
+    evaluator_names: list[str], context: _EvaluationContext
+) -> list[_EvaluatorDefinition]:
+    selected_names = evaluator_names or _automatic_evaluator_names(context.case, context.config)
     unsupported_names = [name for name in selected_names if name not in _EVALUATOR_REGISTRY]
     if unsupported_names:
         raise ValueError(f"不支持的评估器: {', '.join(unsupported_names)}")
     return [_EVALUATOR_REGISTRY[name] for name in selected_names]
+
+
+def resolve_evaluator_plan(
+    cases: list[EvalCase],
+    evaluator_names: list[str],
+    config: EvaluationConfig,
+) -> list[str]:
+    """Return the explicit or data-derived evaluator plan for an EvalSet."""
+
+    if evaluator_names:
+        unsupported_names = [name for name in evaluator_names if name not in _EVALUATOR_REGISTRY]
+        if unsupported_names:
+            raise ValueError(f"不支持的评估器: {', '.join(unsupported_names)}")
+        return list(evaluator_names)
+
+    plan: list[str] = []
+    for case in cases:
+        for evaluator_name in _automatic_evaluator_names(case, config):
+            if evaluator_name not in plan:
+                plan.append(evaluator_name)
+    return plan
+
+
+def _automatic_evaluator_names(case: EvalCase, config: EvaluationConfig) -> list[str]:
+    """Select only the evaluators whose business standard is present in a Case."""
+
+    names: list[str] = []
+    if _response_assertions(case):
+        names.append("response_contract@v1")
+    if _runtime_assertions(case):
+        names.append("runtime_budget@v1")
+    if _tool_requirements(case):
+        names.append("tool_trajectory@v1")
+
+    if _final_expected_output(case):
+        if _judge_unavailable_reason(config) is None:
+            names.insert(0, LLM_JUDGE_EVALUATOR)
+        else:
+            names.insert(0, REFERENCE_MATCH_EVALUATOR)
+    elif not _response_assertions(case):
+        names.insert(0, BUSINESS_STANDARD_EVALUATOR)
+    return names
 
 
 def _run_evaluators(
@@ -159,6 +207,21 @@ def _evaluate_llm_judge(
     return [_judge_score_metric(score, context.config.judge_model)]
 
 
+def _evaluate_business_standard(context: _EvaluationContext) -> list[MetricResult]:
+    """Prevent execution-only Cases from being reported as business-quality passes."""
+
+    return [
+        MetricResult(
+            name="response_quality",
+            status=MetricStatus.UNAVAILABLE,
+            evidence={
+                "evaluator": BUSINESS_STANDARD_EVALUATOR,
+                "reason": "Case 未提供响应业务标准",
+            },
+        )
+    ]
+
+
 def _evaluate_response_contract(
     context: _EvaluationContext,
 ) -> list[MetricResult]:
@@ -198,31 +261,88 @@ def _evaluate_tool_trajectory(
                 required=required,
                 evidence={
                     "assertion": assertion_type,
-                    "tool": tool_name,
+                    "tool": expected,
                     "reason": "Target 未提供可查询的标准化工具轨迹",
                 },
             )
-            for assertion_type, tool_name, required, _expected_called in requirements
+            for assertion_type, expected, required in requirements
         ]
 
     results: list[MetricResult] = []
-    for assertion_type, tool_name, required, expected_called in requirements:
-        matched = [call.call_id for call in context.target_run.tool_calls if call.name == tool_name]
-        passed = bool(matched) is expected_called
+    for assertion_type, expected, required in requirements:
         results.append(
-            MetricResult(
-                name="tool_trajectory",
-                status=MetricStatus.PASS if passed else MetricStatus.FAIL,
-                score=1.0 if passed else 0.0,
-                required=required,
-                evidence={
-                    "assertion": assertion_type,
-                    "tool": tool_name,
-                    "matchedCallIds": matched,
-                },
+            _tool_metric(
+                assertion_type,
+                expected,
+                required,
+                context.target_run.tool_calls,
             )
         )
     return results
+
+
+def _tool_metric(
+    assertion_type: str,
+    expected: str | list[str],
+    required: bool,
+    tool_calls: list[Any],
+) -> MetricResult:
+    if assertion_type == AssertionType.TOOL_SEQUENCE.value:
+        expected_sequence = list(expected) if isinstance(expected, list) else []
+        ordered_calls = sorted(
+            (call for call in tool_calls if call.status == "SUCCEEDED"),
+            key=lambda call: call.seq_start if call.seq_start is not None else float("inf"),
+        )
+        actual_sequence = [call.name for call in ordered_calls]
+        matched_calls = _ordered_tool_subsequence(ordered_calls, expected_sequence)
+        passed = len(matched_calls) == len(expected_sequence)
+        return MetricResult(
+            name="tool_trajectory",
+            status=MetricStatus.PASS if passed else MetricStatus.FAIL,
+            score=1.0 if passed else 0.0,
+            required=required,
+            evidence={
+                "assertion": assertion_type,
+                "expectedSequence": expected_sequence,
+                "actualSequence": actual_sequence,
+                "matchedCallIds": matched_calls,
+            },
+        )
+
+    tool_name = str(expected)
+    matched = [call for call in tool_calls if call.name == tool_name]
+    if assertion_type == AssertionType.TOOL_NOT_CALLED.value:
+        passed = not matched
+        matched_ids = [call.call_id for call in matched]
+    elif assertion_type == AssertionType.TOOL_SUCCEEDED.value:
+        matched_ids = [call.call_id for call in matched if call.status == "SUCCEEDED"]
+        passed = bool(matched_ids)
+    else:
+        matched_ids = [call.call_id for call in matched]
+        passed = bool(matched_ids)
+    return MetricResult(
+        name="tool_trajectory",
+        status=MetricStatus.PASS if passed else MetricStatus.FAIL,
+        score=1.0 if passed else 0.0,
+        required=required,
+        evidence={
+            "assertion": assertion_type,
+            "tool": tool_name,
+            "matchedCallIds": matched_ids,
+        },
+    )
+
+
+def _ordered_tool_subsequence(tool_calls: list[Any], expected_sequence: list[str]) -> list[str]:
+    matched_call_ids: list[str] = []
+    expected_index = 0
+    for call in tool_calls:
+        if expected_index == len(expected_sequence):
+            break
+        if call.name == expected_sequence[expected_index]:
+            matched_call_ids.append(call.call_id)
+            expected_index += 1
+    return matched_call_ids
 
 
 def _response_assertions(case: EvalCase) -> list[AssertionSpec]:
@@ -241,19 +361,24 @@ def _runtime_assertions(case: EvalCase) -> list[AssertionSpec]:
     ]
 
 
-def _tool_requirements(case: EvalCase) -> list[tuple[str, str, bool, bool]]:
+def _tool_requirements(case: EvalCase) -> list[tuple[str, str | list[str], bool]]:
     requirements = [
         (
             assertion.type.value,
-            str(assertion.value),
+            assertion.value,
             assertion.required,
-            assertion.type is AssertionType.TOOL_CALLED,
         )
         for assertion in case.assertions
-        if assertion.type in {AssertionType.TOOL_CALLED, AssertionType.TOOL_NOT_CALLED}
+        if assertion.type
+        in {
+            AssertionType.TOOL_CALLED,
+            AssertionType.TOOL_NOT_CALLED,
+            AssertionType.TOOL_SUCCEEDED,
+            AssertionType.TOOL_SEQUENCE,
+        }
     ]
     requirements.extend(
-        ("tool.expected", str(tool.get("name") or ""), True, True)
+        ("tool.expected", str(tool.get("name") or ""), True)
         for turn in case.turns
         for tool in turn.expected_tools
         if str(tool.get("name") or "").strip()
@@ -299,6 +424,8 @@ def _runtime_metric(assertion: AssertionSpec, target_run: TargetRun) -> MetricRe
         actual = None
     elif assertion.type is AssertionType.RUNTIME_MAX_INPUT_TOKENS:
         actual = target_run.usage.input_tokens
+    elif assertion.type is AssertionType.RUNTIME_MAX_TOTAL_TOKENS:
+        actual = target_run.usage.total_tokens
     else:
         actual = target_run.usage.output_tokens
 
@@ -487,6 +614,9 @@ def _run_llm_judge(
 
 
 _EVALUATORS = (
+    _EvaluatorDefinition(
+        BUSINESS_STANDARD_EVALUATOR, "response_quality", _evaluate_business_standard
+    ),
     _EvaluatorDefinition("response_contract@v1", "response_contract", _evaluate_response_contract),
     _EvaluatorDefinition("runtime_budget@v1", "runtime_budget", _evaluate_runtime_budget),
     _EvaluatorDefinition("tool_trajectory@v1", "tool_trajectory", _evaluate_tool_trajectory),

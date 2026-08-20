@@ -162,3 +162,26 @@ def test_evidence_store_rejects_unscoped_or_escaped_reads(tmp_path) -> None:
     unsafe_event.invocation_id = "stream:private"
     with pytest.raises(EvidenceStoreError):
         store.write_trace("eval-1", [unsafe_event])
+
+
+def test_evidence_store_keeps_trace_paths_within_windows_path_budget(tmp_path) -> None:
+    root = tmp_path / ("workspace-" + "x" * 30)
+    root.mkdir()
+    store = EvidenceStore(root)
+    event = _event(EventType.RUN_STARTED, 1, {"status": "started"})
+
+    trace = store.read_trace(
+        store.write_trace(
+            "eval-" + "r" * 32,
+            [
+                event.model_copy(
+                    update={
+                        "session_id": "eval-build-session-" + "s" * 24,
+                        "invocation_id": "run_" + "i" * 32,
+                    }
+                )
+            ],
+        )
+    )
+
+    assert trace["seqEnd"] == 1

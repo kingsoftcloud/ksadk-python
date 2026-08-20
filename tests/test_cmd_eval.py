@@ -13,7 +13,9 @@ from ksadk.evaluation.contracts import (
     TargetKind,
     TargetRun,
     TargetSnapshot,
+    TraceRef,
 )
+from ksadk.evaluation.evidence import EvidenceStore
 
 
 def _evalset(tmp_path):
@@ -28,6 +30,22 @@ cases:
     assertions:
       - type: response.contains
         value: hell
+""",
+        encoding="utf-8",
+    )
+    return path
+
+
+def _reference_evalset(tmp_path):
+    path = tmp_path / "reference-suite.yaml"
+    path.write_text(
+        """\
+schemaVersion: ksadk.eval/v1
+name: reference-smoke
+cases:
+  - id: capital
+    input: 中国的首都是哪里？
+    reference_output: 北京
 """,
         encoding="utf-8",
     )
@@ -191,11 +209,28 @@ def test_eval_validate_only_returns_normalized_summary(tmp_path):
     assert payload["evalset"]["sourceFormat"] == "native"
     assert payload["evalset"]["caseCount"] == 1
     assert payload["target"]["kind"] == "local_source"
-    assert payload["config"]["evaluators"] == [
-        "response_contract@v1",
-        "runtime_budget@v1",
-        "tool_trajectory@v1",
-    ]
+    assert payload["config"]["evaluators"] == []
+    assert payload["evaluationPlan"] == ["response_contract@v1"]
+
+
+def test_eval_validate_only_reports_automatic_reference_plan(tmp_path):
+    result = CliRunner().invoke(
+        eval,
+        [
+            "--evalset-file",
+            str(_reference_evalset(tmp_path)),
+            "--agent-dir",
+            str(tmp_path),
+            "--validate-only",
+            "--format",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["config"]["evaluators"] == []
+    assert payload["evaluationPlan"] == ["reference_match@v1"]
 
 
 def test_eval_accepts_canonical_a2a_parameters(tmp_path):
@@ -397,10 +432,5 @@ def test_eval_local_source_executes_and_persists_report(tmp_path):
     assert payload["caseRuns"][0]["targetRun"]["output"] == "hello from local graph"
     assert (report_dir / payload["spec"]["id"] / "report.json").is_file()
     trace_ref = payload["caseRuns"][0]["targetRun"]["traceRef"]
-    assert (
-        report_dir
-        / trace_ref["runId"]
-        / "evidence"
-        / trace_ref["sessionId"]
-        / f"{trace_ref['invocationId']}.json"
-    ).is_file()
+    trace = EvidenceStore(report_dir).read_trace(TraceRef.model_validate(trace_ref))
+    assert trace["invocationId"] == trace_ref["invocationId"]

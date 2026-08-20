@@ -39,6 +39,20 @@ def test_parse_native_evalset_maps_compact_expected_output_to_final_turn():
     assert result.cases[0].turns[-1].expected_output == "pong"
 
 
+def test_parse_native_evalset_maps_reference_output_alias_to_final_turn():
+    result = parse_evalset(
+        {
+            "schemaVersion": "ksadk.eval/v1",
+            "name": "reference-output",
+            "cases": [
+                {"id": "capital", "input": "中国的首都是哪里？", "reference_output": "北京"},
+            ],
+        }
+    )
+
+    assert result.cases[0].turns[-1].expected_output == "北京"
+
+
 def test_parse_studio_suite_maps_old_assertion_names():
     result = parse_evalset(
         {

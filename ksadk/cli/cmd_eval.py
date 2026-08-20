@@ -47,10 +47,9 @@ from ksadk.evaluation.contracts import (
     TargetRunStatus,
 )
 from ksadk.evaluation.evalset import EvalSetParseError
-from ksadk.evaluation.evaluators import DEFAULT_EVALUATORS, SUPPORTED_EVALUATORS
+from ksadk.evaluation.evaluators import SUPPORTED_EVALUATORS, resolve_evaluator_plan
 from ksadk.evaluation.storage import EvaluationStorage
 
-_DEFAULT_EVALUATORS = tuple(DEFAULT_EVALUATORS)
 _DATA_POLICIES = tuple(policy.value for policy in DataPolicy)
 
 
@@ -239,7 +238,7 @@ def _build_request(
         config=EvaluationConfig(
             timeout_seconds=timeout_seconds,
             fail_fast=fail_fast,
-            evaluators=list(evaluators) or list(_DEFAULT_EVALUATORS),
+            evaluators=list(evaluators),
             data_policy=data_policy,
             judge_model=judge_model,
             judge_api_base=judge_api_base,
@@ -403,6 +402,14 @@ def _target_ref(
 
 
 def _render_validation(request: EvaluationRequest) -> None:
+    try:
+        evaluation_plan = resolve_evaluator_plan(
+            request.evalset.cases,
+            request.config.evaluators,
+            request.config,
+        )
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
     payload = {
         "valid": True,
         "evalset": {
@@ -413,6 +420,7 @@ def _render_validation(request: EvaluationRequest) -> None:
         },
         "target": request.target.model_dump(mode="json", by_alias=True, exclude_none=True),
         "config": request.config.model_dump(mode="json", by_alias=True),
+        "evaluationPlan": evaluation_plan,
         "reportDir": request.report_dir,
     }
     if request.cloud_dataset is not None:

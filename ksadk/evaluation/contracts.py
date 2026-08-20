@@ -58,8 +58,11 @@ class AssertionType(str, Enum):
     RUNTIME_MAX_LATENCY_MS = "runtime.maxLatencyMs"
     RUNTIME_MAX_INPUT_TOKENS = "runtime.maxInputTokens"
     RUNTIME_MAX_OUTPUT_TOKENS = "runtime.maxOutputTokens"
+    RUNTIME_MAX_TOTAL_TOKENS = "runtime.maxTotalTokens"
     TOOL_CALLED = "tool.called"
     TOOL_NOT_CALLED = "tool.notCalled"
+    TOOL_SUCCEEDED = "tool.succeeded"
+    TOOL_SEQUENCE = "tool.sequence"
 
 
 class DataPolicy(str, Enum):
@@ -134,6 +137,13 @@ class AssertionSpec(EvaluationModel):
                 raise ValueError(f"{self.type} 的 value 必须是非负数字")
             if self.value < 0:
                 raise ValueError(f"{self.type} 的 value 必须是非负数字")
+        elif self.type is AssertionType.TOOL_SEQUENCE:
+            if (
+                not isinstance(self.value, list)
+                or not self.value
+                or any(not isinstance(item, str) or not item.strip() for item in self.value)
+            ):
+                raise ValueError("tool.sequence 的 value 必须是非空工具名称数组")
         elif not isinstance(self.value, str):
             raise ValueError(f"{self.type} 的 value 必须是字符串")
         return self
@@ -155,9 +165,21 @@ class EvalCase(EvaluationModel):
         data = dict(value)
         if "input" in data and "turns" not in data:
             turn = {"input": data.pop("input")}
-            for field in ("expected_output", "expectedOutput", "expected_tools", "expectedTools"):
+            for field in (
+                "expected_output",
+                "expectedOutput",
+                "reference_output",
+                "referenceOutput",
+                "expected_tools",
+                "expectedTools",
+            ):
                 if field in data:
-                    turn[field] = data.pop(field)
+                    normalized_field = (
+                        "expected_output"
+                        if field in {"reference_output", "referenceOutput"}
+                        else field
+                    )
+                    turn[normalized_field] = data.pop(field)
             data["turns"] = [turn]
         return data
 

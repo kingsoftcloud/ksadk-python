@@ -3,16 +3,19 @@ from dataclasses import dataclass, field
 import pytest
 
 from ksadk.evaluation.contracts import (
+    AssertionSpec,
     EvalCase,
     EvalRunSpec,
     EvalSetVersion,
     EvalTurn,
     EvaluationConfig,
+    EvaluationRequest,
     TargetKind,
     TargetRef,
     TargetRunStatus,
     UsageSnapshot,
 )
+from ksadk.evaluation.executor import execute_evaluation
 from ksadk.evaluation.studio_build_adapter import (
     StudioBuildResolution,
     StudioBuildTargetAdapter,
@@ -80,12 +83,26 @@ class _RunService:
             seq_id=1,
             payload={"call_id": "call-1", "name": "lookup", "args": {}},
         )
+        completed_event = RuntimeEvent.create(
+            EventType.TOOL_CALL_END,
+            agent_id="agent-1",
+            user_id="eval-user",
+            session_id=session_id,
+            invocation_id=run_id,
+            seq_id=2,
+            payload={"call_id": "call-1", "name": "lookup", "result": {"ok": True}},
+        )
         self.event_store.by_run[run_id] = [
             type(
                 "StoredEvent",
                 (),
                 {"id": event.seq_id, "data": {"runtimeEvent": event.to_dict()}},
-            )()
+            )(),
+            type(
+                "StoredEvent",
+                (),
+                {"id": completed_event.seq_id, "data": {"runtimeEvent": completed_event.to_dict()}},
+            )(),
         ]
         return _Run(
             id=run_id,
@@ -160,6 +177,46 @@ async def test_studio_build_runs_turns_in_one_attempt_session() -> None:
     assert first.tool_calls[0].name == "lookup"
     assert service.calls[0][2] == service.calls[1][2]
     assert service.calls[0][2] != service.calls[2][2]
+
+
+@pytest.mark.asyncio
+async def test_studio_build_evaluation_executes_v2_tool_and_total_token_gates(tmp_path) -> None:
+    service = _RunService()
+    adapter = StudioBuildTargetAdapter(
+        timeout_seconds=5,
+        resolve_build=lambda build_id: _resolution(),
+        run_service=service,
+    )
+    request = EvaluationRequest(
+        evalset=EvalSetVersion(
+            name="build-v2-gates",
+            cases=[
+                EvalCase(
+                    id="lookup",
+                    input="lookup",
+                    expectedOutput="answer-1",
+                    assertions=[
+                        AssertionSpec(type="tool.succeeded", value="lookup"),
+                        AssertionSpec(type="tool.sequence", value=["lookup"]),
+                        AssertionSpec(type="runtime.maxTotalTokens", value=5),
+                    ],
+                )
+            ],
+        ),
+        target=TargetRef(kind=TargetKind.STUDIO_BUILD, locator="build-1"),
+        config=EvaluationConfig(),
+        reportDir=str(tmp_path / "reports"),
+    )
+
+    report = await execute_evaluation(request, adapter=adapter)
+
+    assert report.status.value == "PASSED"
+    assert [metric.status.value for metric in report.case_runs[0].metrics] == [
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+    ]
 
 
 def test_studio_build_rejects_resolution_for_another_build() -> None:

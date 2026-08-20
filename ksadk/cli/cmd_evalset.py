@@ -15,9 +15,77 @@ from ksadk.evaluation.agent_eval_client import (
 )
 from ksadk.evaluation.cloud_service import CloudEvalSetPreviewError, CloudEvalSetService
 from ksadk.evaluation.contracts import DataPolicy
-from ksadk.evaluation.evalset import EvalSetParseError, load_evalset
+from ksadk.evaluation.evalset import EvalSetParseError, load_evalset, parse_evalset
 
 _DATA_POLICIES = tuple(policy.value for policy in DataPolicy)
+_TEMPLATE_NAMES = ("knowledge-qa", "structured-output", "tool-routing", "service-sla")
+_TEMPLATES: dict[str, dict] = {
+    "knowledge-qa": {
+        "schemaVersion": "ksadk.eval/v1",
+        "name": "knowledge-qa",
+        "cases": [
+            {
+                "id": "capital",
+                "input": "中国的首都是哪里？",
+                "reference_output": "北京",
+            }
+        ],
+    },
+    "structured-output": {
+        "schemaVersion": "ksadk.eval/v1",
+        "name": "structured-output",
+        "cases": [
+            {
+                "id": "extract-order",
+                "input": "从‘订单 A123，金额 99 元’提取订单信息，并只返回 JSON。",
+                "assertions": [
+                    {
+                        "type": "response.jsonSchema",
+                        "value": {
+                            "type": "object",
+                            "required": ["orderId", "amount"],
+                            "properties": {
+                                "orderId": {"type": "string"},
+                                "amount": {"type": "number"},
+                            },
+                        },
+                    }
+                ],
+            }
+        ],
+    },
+    "tool-routing": {
+        "schemaVersion": "ksadk.eval/v1",
+        "name": "tool-routing",
+        "cases": [
+            {
+                "id": "weather-lookup",
+                "input": "查询北京明天的天气，并给出出行建议。",
+                "reference_output": "根据天气查询结果回答北京明天的天气，并给出出行建议。",
+                "expectedTools": [{"name": "weather_lookup"}],
+                "assertions": [
+                    {"type": "tool.succeeded", "value": "weather_lookup"},
+                    {"type": "tool.sequence", "value": ["weather_lookup"]},
+                ],
+            }
+        ],
+    },
+    "service-sla": {
+        "schemaVersion": "ksadk.eval/v1",
+        "name": "service-sla",
+        "cases": [
+            {
+                "id": "password-reset",
+                "input": "如何重置密码？",
+                "reference_output": "可通过登录页的忘记密码入口重置密码。",
+                "assertions": [
+                    {"type": "runtime.maxLatencyMs", "value": 3000},
+                    {"type": "runtime.maxTotalTokens", "value": 300},
+                ],
+            }
+        ],
+    },
+}
 
 
 def _render(value: dict, output_format: str) -> None:
@@ -48,6 +116,33 @@ class _PreviewOnlyCloudClient:
 @click.group()
 def evalset() -> None:
     """Inspect or publish versioned cloud EvalSet snapshots."""
+
+
+@evalset.command("init")
+@click.option("--template", "template_name", type=click.Choice(_TEMPLATE_NAMES), required=True)
+@click.option("--output-file", required=True, type=click.Path(dir_okay=False, path_type=Path))
+@click.option("--force", is_flag=True, help="覆盖已有文件")
+@click.option("--format", "output_format", type=click.Choice(["pretty", "json"]), default="pretty")
+def init(template_name: str, output_file: Path, force: bool, output_format: str) -> None:
+    """Create a native EvalSet template without accessing cloud services."""
+
+    template = _TEMPLATES[template_name]
+    try:
+        parse_evalset(template)
+    except EvalSetParseError as exc:  # pragma: no cover - protects static templates
+        raise click.ClickException(f"内置模板无效: {exc}") from exc
+
+    output = output_file.expanduser().resolve()
+    if output.exists() and not force:
+        raise click.UsageError("输出文件已存在；如需覆盖请指定 --force")
+    if output.exists() and output.is_dir():
+        raise click.UsageError("--output-file 必须是文件路径")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(
+        yaml.safe_dump(template, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+    _render({"template": template_name, "outputFile": str(output)}, output_format)
 
 
 @evalset.command("preview")

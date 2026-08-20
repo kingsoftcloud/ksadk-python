@@ -50,8 +50,15 @@ async def test_case_started_callback_is_best_effort(monkeypatch):
     report = await execute_evaluation(request, on_case_started=record)
 
     assert events == [("one", 1, 2), ("two", 2, 2)]
-    assert report.status.value == "PASSED"
+    assert report.status.value == "FAILED"
     assert [case.case_id for case in report.case_runs] == ["one", "two"]
+    assert report.summary.unavailable_cases == 2
+    assert all(
+        case.metrics[0].name == "response_quality"
+        and case.metrics[0].status.value == "UNAVAILABLE"
+        and case.metrics[0].required
+        for case in report.case_runs
+    )
 
 
 @pytest.mark.asyncio

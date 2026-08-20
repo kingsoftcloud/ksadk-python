@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from click.testing import CliRunner
 
 from ksadk.cli import _register_commands, cli
@@ -141,6 +142,62 @@ def test_evalset_help_does_not_expose_agent_eval_url():
     assert "--agent-eval-url" not in pull_help.output
     assert "--api-token-env" not in push_help.output
     assert "--api-token-env" not in pull_help.output
+
+
+@pytest.mark.parametrize(
+    ("template", "expected_case", "expected_fragment"),
+    [
+        ("knowledge-qa", "capital", "reference_output: 北京"),
+        ("structured-output", "extract-order", "response.jsonSchema"),
+        ("tool-routing", "weather-lookup", "tool.succeeded"),
+        ("service-sla", "password-reset", "runtime.maxTotalTokens"),
+    ],
+)
+def test_evalset_init_writes_valid_official_template(
+    tmp_path, template, expected_case, expected_fragment
+):
+    from ksadk.cli.cmd_evalset import evalset
+
+    output = tmp_path / f"{template}.yaml"
+    result = CliRunner().invoke(
+        evalset,
+        ["init", "--template", template, "--output-file", str(output), "--format", "json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["template"] == template
+    assert output.is_file()
+    assert expected_case in output.read_text(encoding="utf-8")
+    assert expected_fragment in output.read_text(encoding="utf-8")
+
+    preview = CliRunner().invoke(
+        evalset,
+        ["preview", "--evalset-file", str(output), "--format", "json"],
+    )
+    assert preview.exit_code == 0, preview.output
+
+
+def test_evalset_init_requires_force_to_overwrite_a_file(tmp_path):
+    from ksadk.cli.cmd_evalset import evalset
+
+    output = tmp_path / "knowledge.yaml"
+    output.write_text("keep this content\n", encoding="utf-8")
+    runner = CliRunner()
+
+    rejected = runner.invoke(
+        evalset,
+        ["init", "--template", "knowledge-qa", "--output-file", str(output)],
+    )
+    assert rejected.exit_code != 0
+    assert output.read_text(encoding="utf-8") == "keep this content\n"
+
+    written = runner.invoke(
+        evalset,
+        ["init", "--template", "knowledge-qa", "--output-file", str(output), "--force"],
+    )
+    assert written.exit_code == 0, written.output
+    assert "schemaVersion: ksadk.eval/v1" in output.read_text(encoding="utf-8")
 
 
 def test_evalset_pull_exports_one_fixed_dataset_version(tmp_path, monkeypatch):

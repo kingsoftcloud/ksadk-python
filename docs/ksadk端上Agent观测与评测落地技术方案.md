@@ -101,14 +101,16 @@ cases:
 
 支持响应、预算和工具轨迹断言。旧 Studio Suite 和 ADK EvalSet JSON 可以导入；不支持的字段必须报错，不能静默丢弃。
 
-`expectedOutput` 是自动评分的参考答案，不是断言。可以与 `input` 使用同一层级的紧凑格式：
+`expectedOutput` 是自动评分的参考答案，不是断言。`reference_output` / `referenceOutput` 是面向常见评测集的同义输入，加载后统一归一化为 `expectedOutput`。可以与 `input` 使用同一层级的紧凑格式：
 
 ```yaml
 cases:
   - id: echo
     input: ping
-    expectedOutput: pong
+    reference_output: pong
 ```
+
+当调用方未显式传入 `--evaluator` 时，KsADK 根据每个 Case 的数据自动生成评测计划：有参考答案时使用已配置的 LLM Judge，否则使用本地 `reference_match@v1`；有 `expectedTools` 时增加 `tool_trajectory@v1`；响应、工具或运行预算断言仍作为高级的显式门禁。只有 `input`、既无参考答案也无响应断言的 Case 会生成必需的 `response_quality=UNAVAILABLE`，不能因 Agent 成功返回而显示为业务评测通过。
 
 ## 4. 模块与边界
 
@@ -156,15 +158,15 @@ P1 先支持单机串行执行；并发、重试和批量调度不放入首版�
 
 ### 4.2 评估器怎么实现（P1）
 
-评估器只消费 `TargetRun` 和可用的 RuntimeEvent/Trace，不参与 Agent 调用。默认采用确定性评估，先保证结果可复现；模型评审必须单独显式启用。
+评估器只消费 `TargetRun` 和可用的 RuntimeEvent/Trace，不参与 Agent 调用。未指定 `--evaluator` 时，评测器由 EvalSet 数据自动推导；显式选择的评估器始终覆盖自动计划。
 
-1. `evaluators.py` 按断言类型分发：响应包含/相等、JSON Schema、最大延迟、Token 预算、工具调用和工具未调用。
-2. 每条断言返回一个 `MetricResult`，至少包含 `metric_id`、状态、实际值、阈值和简短 evidence；状态统一为 `PASS`、`FAIL`、`UNAVAILABLE` 或 `ERROR`。
-3. 响应和预算直接读取 `TargetRun`；工具断言读取同一次运行的事件索引；没有对应事件或 Trace 时返回 `UNAVAILABLE`，不重新查询其他运行。
-4. Case 结果由断言结果聚合：所有必需断言通过才算 Case 通过；运行总结果同时保留通过数、失败数、不可用数和错误数，不用平均分掩盖关键失败。
-5. `reference_match@v1` 不是默认评估器。调用方显式选择 `--evaluator reference_match@v1` 后，才会在最终 Turn 有 `expectedOutput` 时使用本地 Rouge-1 F1 参考答案评分，阈值为 `0.8`；没有参考答案时不产生该指标。
-6. `llm_judge@v1` 不是默认评估器。它要求执行 `uv sync --extra judge`、显式选择 `--evaluator llm_judge@v1`、`--data-policy full_trace`、`--judge-model`、`--judge-api-base` 和密钥环境变量；任一条件缺失时返回 `UNAVAILABLE`，不发起 Judge 调用。当前实现使用 DeepEval 作为 Judge 执行引擎，但评估器名称不绑定具体供应商。报告不保存 Judge 的输入、自然语言理由或远端异常文本。
-7. Judge 结果不覆盖确定性断言、工具轨迹或运行预算门禁。
+1. 有 `expectedOutput`（包括 `reference_output` 别名）时自动评估响应质量：Judge 配置完整时使用 `llm_judge@v1`，否则回退为本地 Rouge-1 F1 `reference_match@v1`，阈值为 `0.8`。
+2. 有 `expectedTools` 或工具断言时自动执行 `tool_trajectory@v1`；没有可查询的 Trace 时返回 `UNAVAILABLE`，不根据最终文本猜测工具调用。
+3. `runtime_budget@v1` 保留为显式 SLA 门禁，仅在最大延迟或 Token 断言存在时执行；所有运行的实际耗时和 usage 仍记录在 `TargetRun`，但没有预算时不虚构 PASS/FAIL。
+4. 响应包含/相等、JSON Schema、工具禁止调用等 assertions 保留为高级约束。它们可以与自动质量评测并行，但不是普通参考答案评测的必填输入。
+5. 既无参考答案也无响应断言的 Case 返回必需 `response_quality=UNAVAILABLE`。Case 不会因 Agent 成功执行而被报告为业务质量 `PASSED`。
+6. 每个指标返回 `MetricResult`，至少包含状态、得分和简短 evidence；Case 只有 Target 成功且所有必需指标通过才算通过。
+7. `llm_judge@v1` 需要执行 `uv sync --extra judge`、显式 `dataPolicy=full_trace`、Judge 模型、API Base 和密钥环境变量。当前实现以 DeepEval 为执行引擎；条件不完整时自动模式选择本地参考答案匹配，显式指定 Judge 时才返回 `UNAVAILABLE`。Judge 不覆盖确定性断言、工具轨迹或运行预算门禁。
 
 评估器的输入是 EvalSet 中的 assertion、参考答案和 `TargetRun`，输出写入 `EvalRunReport.results`；不保存完整 Prompt、Reasoning、Judge 理由或敏感工具返回。测试重点覆盖边界值、类型错误、缺失证据和多断言聚合。
 
@@ -174,7 +176,7 @@ CLI 只负责把命令行参数转换成 `EvalRunSpec`，不在 CLI 内复制执
 
 1. 解析 `--evalset-file`、`--agent-dir`、`--a2a-url`、`--report-dir`、`--format` 和超时参数，并校验 target 参数互斥。
 2. 调用 `EvaluationExecutor.run()`；默认输出简短进度，结束后从 `report.json` 渲染结果。
-3. 需要参考答案匹配时，调用方显式设置 `--evaluator reference_match@v1`；需要语义 Judge 时，调用方显式设置 `--evaluator llm_judge@v1 --data-policy full_trace --judge-model <model> --judge-api-base <url>`，并通过 `--judge-api-key-env` 引用环境变量；命令行和报告均不接收密钥值。
+3. 不传 `--evaluator` 时，CLI 在 `--validate-only` 输出中给出由 EvalSet 推导的 `evaluationPlan`。只提供 `input + reference_output` 会自动使用本地参考答案匹配；配置 `--data-policy full_trace --judge-model <model> --judge-api-base <url>` 和密钥环境变量后自动改用语义 Judge。也可显式设置 `--evaluator` 覆盖自动计划；命令行和报告均不接收密钥值。
 4. `--format pretty|text` 输出通过率、失败 Case 和错误摘要；`--format json` 输出完整 `EvalRunReport`，供 CI 或脚本读取。`text` 是 `pretty` 的兼容别名。
 5. 根据报告状态返回固定退出码：全部通过为 `0`，质量失败为 `1`，配置/执行错误为 `2`，必需证据缺失为 `3`。
 6. CLI 只输出脱敏摘要；详细 artifact 通过 `--report-dir` 指定的报告目录保存，不把 token、环境变量或完整异常栈写到终端。
@@ -501,3 +503,36 @@ Codex 专项由独立负责人完成，不占下面三人组的任务。
 
 - [Codex 非交互 JSONL 输出](https://learn.chatgpt.com/docs/non-interactive-mode#make-output-machine-readable)
 - [Codex `exec` 参数](https://learn.chatgpt.com/docs/developer-commands#codex-exec)
+
+## 11. 2026-08-20 实施状态与验收记录
+
+本轮没有修改 Studio UI。公共执行器仍是唯一执行入口，Local Source、Studio Build 和 A2A 都输出同一 `TargetRun -> MetricResult -> EvalRunReport` 合同。
+
+### 自动标准与 V2 门槛
+
+当 CLI 未指定 `--evaluator` 时，执行器从 EvalSet 行自动推导所需评估器：参考答案优先使用已配置的 `llm_judge@v1`，否则使用确定性的 `reference_match@v1`；响应、运行时和工具标准分别启用 `response_contract@v1`、`runtime_budget@v1` 和 `tool_trajectory@v1`。没有响应质量标准的 Case 产生必填 `response_quality=UNAVAILABLE`，因此“请求可执行”不会被记成“业务质量通过”。显式评估器选择仍是覆盖语义。
+
+新增而不破坏 V1 的门槛：
+
+- `runtime.maxTotalTokens`：usage 已报告时约束总 token；未报告则 `UNAVAILABLE`。
+- `tool.succeeded`：要求同名工具至少成功完成一次。
+- `tool.sequence`：要求成功工具调用在 RuntimeEvent 序号上满足有序子序列。
+
+`tool.called` 与 `tool.notCalled` 保持既有“是否发生调用”的语义，错误调用仍满足前者，不满足新 `tool.succeeded`。
+
+### 可发现的 EvalSet 起点
+
+`agentengine evalset init` 提供 `knowledge-qa`、`structured-output`、`tool-routing`、`service-sla` 四种本地模板；模板在写入前经过原生 parser 校验，默认拒绝覆盖已有文件。`evalset preview` 可验证规范化结果，不访问云端。
+
+### 端到端验收
+
+| Target | 真实验证 | 结果 |
+| --- | --- | --- |
+| Local Source | LangGraph 本地 Agent 产生 `knowledge_search -> cite_source` RuntimeEvent 工具轨迹 | `eval_868b3a9cbe9342e8bc8084d8db95ca5d` PASSED；参考答案、延迟、工具成功/顺序/期望工具均 PASS |
+| Studio Build | 冻结构建产物执行，之后将可变源码改成抛错；经 Studio Operation 持久化报告和 evidence | `tests/studio/test_evaluation_build_target.py`：6 passed |
+| A2A | 读取 `http://127.0.0.1:8808/.well-known/agent-card.json`，以 A2A 1.0 JSON-RPC 调用本地监听 Agent | `eval_32ac957d1f72491c9b04106d812a5581` PASSED；远端 Task 为 COMPLETED，参考答案和延迟均 PASS |
+| 预发 `ar-20260707174402-be8182f1` | 使用 `--region pre-online` 的控制面查询及 CLI runtime 调用 | `hush-eval_agent` 为 RUNNING、1/1 ready；精确文本、约束文本、JSON 调用成功。Endpoint 未提供 A2A Card，尚不能由当前 EvalSet executor 生成报告 |
+
+报告根目录为 `D:\agent\ksadk-python\tmp\evalset-v2-final-validation-20260820`。Evidence 的公开读取方式是 `EvidenceStore.read_trace(TraceRef)`；内部路径改用稳定哈希文件名，避免 Windows 长路径导致 Studio Operation 在报告落盘后失败。
+
+下一阶段应新增 AgentEngine Runtime Target adapter：控制面解析固定 Endpoint/访问参数，chat runtime 执行 EvalSet，生成 TargetSnapshot/TargetRun/Report，并让 Studio 合并 CLI 的 report-only Run。工具参数/结果语义、成本、时延分段和分位数聚合属于后续评估器能力，不能用当前三个工具/预算门槛替代。

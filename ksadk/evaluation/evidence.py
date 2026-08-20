@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections.abc import Iterable
@@ -95,7 +96,8 @@ class EvidenceStore:
         for value in (run_id, session_id, invocation_id):
             if not _SAFE_EVIDENCE_ID.fullmatch(value) or value in {".", ".."}:
                 raise EvidenceStoreError("Evidence identifiers must be path-safe")
-        return self.root / run_id / "evidence" / session_id / f"{invocation_id}.json"
+        identity = "\0".join((run_id, session_id, invocation_id)).encode("utf-8")
+        return self.root / "evidence" / f"{hashlib.sha256(identity).hexdigest()}.json"
 
 
 def project_tool_calls(events: Iterable[RuntimeEvent]) -> list[ToolCallEvidence]:

@@ -18,6 +18,7 @@ from ksadk.evaluation.contracts import (
     TargetRef,
     TargetRunStatus,
 )
+from ksadk.evaluation.evidence import EvidenceStore
 from ksadk.evaluation.local_adapter import LocalSourceTargetAdapter, LocalTargetError
 
 
@@ -599,7 +600,16 @@ root_agent = DeterministicAgent(name="local_adk")
     )
     report_root = tmp_path / "reports"
     request = EvaluationRequest(
-        evalset=EvalSetVersion(name="adk-smoke", cases=[EvalCase(id="one", input="hello")]),
+        evalset=EvalSetVersion(
+            name="adk-smoke",
+            cases=[
+                EvalCase(
+                    id="one",
+                    input="hello",
+                    expectedOutput="hello from real adk",
+                )
+            ],
+        ),
         target=TargetRef(kind=TargetKind.LOCAL_SOURCE, locator=str(project)),
         config=EvaluationConfig(),
         reportDir=str(report_root),
@@ -615,10 +625,5 @@ root_agent = DeterministicAgent(name="local_adk")
     assert trace_ref.session_id
     assert trace_ref.invocation_id
     assert (report_root / report.spec.id / "report.json").is_file()
-    assert (
-        report_root
-        / report.spec.id
-        / "evidence"
-        / trace_ref.session_id
-        / f"{trace_ref.invocation_id}.json"
-    ).is_file()
+    trace = EvidenceStore(report_root).read_trace(trace_ref)
+    assert trace["invocationId"] == trace_ref.invocation_id
