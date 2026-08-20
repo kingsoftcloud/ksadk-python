@@ -31,7 +31,7 @@ from datetime import datetime
 from typing import Any, Literal
 
 from ksadk.events.session_event import SessionServiceEventStore
-from ksadk.kernel.authorization import AgentControlPermitVerifier
+from ksadk.kernel.authorization import AgentControlPermitVerifier, InMemoryNonceStore
 from ksadk.kernel.contract_fingerprints import (
     AGENT_KERNEL_V1_AGGREGATE_DIGEST,
     runtime_capability_matrix_digest,
@@ -46,6 +46,7 @@ from ksadk.kernel.worker import AgentKernelWorker
 from ksadk.runtime.adapter import RuntimeAdapter
 
 AuthorityMode = Literal["local", "hosted"]
+DurabilityTier = Literal["durable", "ephemeral"]
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +58,9 @@ class AgentKernelRuntimeConfig:
     agent_instance_id: str
     authority_mode: AuthorityMode = "local"
     driver: str = "memory"  # postgres | sqlite | memory
+    # durable: PG-backed inbox/lease/nonce + recovery; ephemeral: one-pod
+    # runtime that intentionally loses kernel state on restart.
+    durability_tier: DurabilityTier = "durable"
     dsn: str = ""
     # server authority（hosted 必填）
     jwks: Any | None = None
@@ -264,6 +268,7 @@ class AgentKernelReadiness:
             # operations before they enter the durable inbox.
             "capabilities": capability_matrix,
             "bundle_digest": config.bundle_digest,
+            "durability_tier": config.durability_tier,
             # Identity is derived from the KsADK source Python imported, not
             # ``importlib.metadata`` for the base image distribution.
             "runtime_identity": runtime_identity(),
@@ -693,8 +698,14 @@ def _validate_hosted(config: AgentKernelRuntimeConfig) -> None:
     missing: list[str] = []
     if not config.agent_instance_id or config.agent_instance_id == "local-agent":
         missing.append("agent_instance_id")
-    if not config.dsn:
+    if config.driver not in {"postgres", "memory"}:
+        missing.append("driver(postgres|memory)")
+    if config.driver == "postgres" and not config.dsn:
         missing.append("dsn")
+    if config.driver == "postgres" and config.durability_tier != "durable":
+        missing.append("durability_tier=durable for postgres")
+    if config.driver == "memory" and config.durability_tier != "ephemeral":
+        missing.append("durability_tier=ephemeral for memory")
     if config.jwks is None:
         missing.append("jwks")
     if not config.permit_issuer:
@@ -928,8 +939,9 @@ async def bootstrap_agent_kernel_runtime_from_env(
         or "default"
     ).strip()
     mode: AuthorityMode = authority_mode()  # type: ignore[assignment]
-    if mode == "hosted" and driver != "postgres":
-        raise RuntimeError("hosted agent kernel runtime requires postgres store")
+    durability_tier: DurabilityTier = os.environ.get(
+        "AGENT_KERNEL_DURABILITY_TIER", "durable"
+    ).strip().lower()  # type: ignore[assignment]
     injected_contract_digest = os.environ.get(
         "AGENT_KERNEL_CONTRACT_DIGEST", ""
     ).strip()
@@ -983,7 +995,9 @@ async def bootstrap_agent_kernel_runtime_from_env(
         session_service = InMemorySessionService()
         session_events = SessionServiceEventStore(session_service)
         store = InMemoryAgentKernelStore(session_events)
-        nonce_store = None
+        # Explicit ephemeral hosted mode still needs replay protection while
+        # this process lives. It does not promise restart durability.
+        nonce_store = InMemoryNonceStore()
 
     agent_instance_id = os.environ.get("AGENT_INSTANCE_ID", "").strip()
     if not agent_instance_id and mode != "hosted":
@@ -993,6 +1007,7 @@ async def bootstrap_agent_kernel_runtime_from_env(
         agent_instance_id=agent_instance_id,
         authority_mode=mode,
         driver=driver,
+        durability_tier=durability_tier,
         dsn=dsn,
         jwks=_remote_jwks_source(jwks_url) if mode == "hosted" else None,
         permit_issuer=os.environ.get("AGENT_CONTROL_PERMIT_ISSUER", ""),

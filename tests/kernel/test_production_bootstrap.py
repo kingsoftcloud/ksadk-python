@@ -457,6 +457,34 @@ async def test_local_mode_bootstraps_without_server_authority():
         await runtime.close()
 
 
+async def test_hosted_ephemeral_memory_runtime_does_not_require_postgres():
+    """A single-pod hosted Agent may opt into explicit ephemeral semantics."""
+    stack = await kernel_stack()
+    runtime = build_agent_kernel_runtime(
+        _runtime_config(
+            stack,
+            driver="memory",
+            dsn="",
+            durability_tier="ephemeral",
+        )
+    )
+    try:
+        await runtime.start()
+        health = await runtime.readiness.check()
+        assert health["ready"] is True
+        assert health["durability_tier"] == "ephemeral"
+    finally:
+        await runtime.close()
+
+
+async def test_hosted_memory_runtime_requires_explicit_ephemeral_tier():
+    stack = await kernel_stack()
+    with pytest.raises(RuntimeError, match="durability_tier=ephemeral"):
+        build_agent_kernel_runtime(
+            _runtime_config(stack, driver="memory", dsn="")
+        )
+
+
 def test_runtime_app_lifespan_starts_and_stops_full_kernel_runtime(monkeypatch):
     """生产 FastAPI lifespan 必须启动 worker/lease，不是只注册 ingress。"""
 
