@@ -2,7 +2,10 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Deliver a truthful Studio React workflow for deterministic Bundle build, preproduction admission/deployment, instance status and rollback.
+**Goal:** Deliver a truthful Studio React workbench: every existing module uses the
+unified `origin/agentkit-studio-phase1` visual/interaction baseline while Bundle
+build, preproduction admission/deployment, instance status and rollback remain
+backed by real APIs.
 
 **Architecture:** The Studio Python API remains the UI's only backend. It reads local deployment receipts, asks the existing `CloudDeploymentGateway` for Server-projected instance state, and dispatches existing deployment/rollback operations. React renders those receipts in the absorbed Soft Block system; it never constructs cloud Agent requests or reports a lifecycle state that the API did not return.
 
@@ -12,7 +15,7 @@
 
 - The only cloud creation actions are `CreateAgentArtifact` and existing `CreateAgentProduct`.
 - Target environment is exactly `preproduction`; all status labels come from API records.
-- Use the Soft Block system from `origin/agentkit-studio-phase1` selectively, with only `document` and `workbench` layouts.
+- Use the Soft Block system from `origin/agentkit-studio-phase1` selectively, with only `document` and `workbench` layouts. Its entire React workbench is in scope: Agent list/detail/create/edit, conversations, project and runtime resources, orchestration, observability, settings and global navigation—not only Builds and Deployments.
 - Do not expose or persist control-plane tokens, credential material, private headers or artifact URLs.
 - Final acceptance requires a real authenticated browser deployment to preproduction, then a cloud runtime call and lifecycle status refresh.
 
@@ -209,7 +212,56 @@ git add ksadk/studio/react-ui/src/pages/DeploymentsPage.tsx ksadk/studio/react-u
 git commit -m "feat(studio): manage preproduction deployment lifecycle"
 ```
 
-### Task 5: Verify the visual contract and real preproduction flow
+### Task 5: Bring every existing Studio module onto the unified workbench baseline
+
+**Files:**
+- Modify: `ksadk/studio/react-ui/src/App.tsx`
+- Modify: `ksadk/studio/react-ui/src/components/{NavigationRail,ChatWorkspace,SettingsOverlay}.tsx`
+- Modify: `ksadk/studio/react-ui/src/components/ui/*`
+- Modify: `ksadk/studio/react-ui/src/pages/{AgentsPage,CreatePage,AgentEditor,ResourcesPage,RuntimeResourcesPage,OrchestrationPage,ObservabilityPage}.tsx`
+- Modify: `ksadk/studio/react-ui/src/{index,studio,responsive,soft-block,theme}.css`
+- Test: focused existing React tests for every affected page
+
+**Interfaces:**
+- Retains all existing API requests, mutation payloads and hash deep links.
+- Every route uses the global Header, Navigation Rail, a page Header portal and
+  one of `document` / `workbench` layouts.
+- Does not import source changes to `builder.py`, `framework_run.py`,
+  `capabilities.py` or cloud-control behavior from the reference branch.
+
+- [ ] **Step 1: Inventory UI-only differences against the reference branch**
+
+Group the change by global shell, list/detail/form pages, workbench pages and
+responsive/accessibility rules. Explicitly reject any non-React or behavior-only
+files from the reference branch.
+
+- [ ] **Step 2: Port global primitives and resource/navigation surfaces**
+
+Apply the reference visual language to navigation, settings, Agent list,
+create/edit and the two resource surfaces while preserving present requests and
+route parser. Add or update focused tests for deep links and mutation payloads.
+
+- [ ] **Step 3: Port workbench surfaces**
+
+Apply it to conversations, orchestration and observability. Existing stream,
+operation and error states must remain real API-derived values; add no optimistic
+"ready" state.
+
+- [ ] **Step 4: Verify complete local visual and behavior regression**
+
+Run: `npm --prefix ksadk/studio/react-ui run test:ui && npm --prefix ksadk/studio/react-ui run build`
+
+Expected: all React tests and production build pass; generated static assets are
+updated with the source change.
+
+- [ ] **Step 5: Commit the UI-only absorption**
+
+```bash
+git add ksadk/studio/react-ui/src ksadk/studio/static
+git commit -m "feat(studio): unify every workbench surface"
+```
+
+### Task 6: Verify the visual contract and real preproduction flow
 
 **Files:**
 - Test: `tests/studio/test_style_system.py`

@@ -3,9 +3,10 @@
 ## 目标
 
 让 Studio 用户在同一 React 工作台中完成并看见真实的本地构建、预发 Bundle
-准入、云端实例启动、状态刷新、重部署和回滚。页面不是第二套控制面：它只能
-调用 Studio API，由 Studio 使用既有 Server Action 完成 Artifact admission 与
-`CreateAgentProduct`。
+准入、云端实例启动、状态刷新、重部署和回滚；同时把已有 Agent、创建/编辑、会话、
+资源、运行资源、任务编排和可观测页面统一到同一套 React 信息架构与视觉契约。
+页面不是第二套控制面：它只能调用 Studio API，由 Studio 使用既有 Server Action
+完成 Artifact admission 与 `CreateAgentProduct`。
 
 ## 范围与边界
 
@@ -18,6 +19,9 @@
   `DeleteAgent` Action 后再进入范围。
 - 每一条部署记录保存在 Studio workspace 的 `.agentkit/deployments/`，并由 Server
   实例状态刷新；记录缺失或刷新失败必须显式显示未知/失败，不能显示 Ready。
+- `origin/agentkit-studio-phase1` 是视觉和交互的参考实现，不是可直接合并的功能
+  分支。只吸纳其 React、样式和可复用 UI 原语；不得覆盖本分支已接入的 Bundle
+  admission、部署 receipt、运行时兼容性或 Server API 语义。
 
 ## 视觉与信息架构
 
@@ -28,7 +32,8 @@
 
 页面的特征元素是“交付事实链”：`Bundle → 准入 → 云端实例` 三段状态，不把它画成
 不可验证的百分比进度。每段显示从后端得到的 ID、digest 或实例状态；没有事实的
-段显示“未开始”或“未知”。
+段显示“未开始”或“未知”。同一套 Header、导航、页面标题、表单、数据表、空状态、
+错误状态和窄屏规则覆盖所有既有模块，不能仅让构建/部署页采用新样式。
 
 ```text
 全局 Header: 当前页面 | [构建当前 Agent] / [刷新]
@@ -46,6 +51,17 @@
 
 页面级主要动作通过 Header portal 注入；行操作使用 MoreActionsMenu。所有图标操作有
 可访问名称，窄屏按现有 responsive.css 收缩成单列，不另造布局类型。
+
+## 全工作台吸纳矩阵
+
+| 模块 | 必须保留的事实/行为 | 统一后的界面要求 |
+| --- | --- | --- |
+| Agent 列表、详情、创建和编辑 | 本地 Agent 定义、revision、Build/Deploy 入口 | 信息层级、空状态、表单、详情动作和深链接统一 |
+| 构建和部署 | immutable Bundle、admission、实例状态、回滚 | document 布局、事实链、状态与操作日志 |
+| 会话与运行面板 | 实际 session、事件、运行错误 | workbench 布局、可见运行状态和可恢复错误 |
+| 工程资源与运行资源 | model/tool/MCP/skill 的既有 CRUD 和路由 | 统一资源导航、表格、详情与表单反馈 |
+| 任务编排与可观测 | 既有只读/编排 API 返回值 | 同样的空、加载、失败和窄屏体验，不能用静态假数据 |
+| 设置与全局导航 | workspace、主题、连接状态 | 全局 Header、Navigation Rail 和 PageHeaderActions 一致 |
 
 ## 数据与错误语义
 
