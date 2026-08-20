@@ -522,6 +522,27 @@ details[open] > summary .details-chevron { transform: rotate(180deg); }
   background: var(--surface);
 }
 
+.chat-pending-interactions {
+  max-width: 800px;
+  margin: 0 auto 10px;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--accent-border) 62%, var(--border));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--accent-soft) 42%, var(--surface));
+  box-shadow: 0 8px 24px rgb(24 88 155 / 8%);
+}
+
+.chat-pending-interactions-heading {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0 2px 8px;
+  color: var(--text);
+}
+
+.chat-pending-interactions-heading svg { color: var(--accent); }
+.chat-pending-interactions-heading span { color: var(--text-secondary); font-size: var(--font-size-caption); }
+
 .runtime-mode-bar {
   width: min(800px, 100%);
   min-height: 42px;

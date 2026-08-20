@@ -44,6 +44,7 @@ import {
   latestReportedInputTokens,
   type ChatRun,
   type ChatStreamState,
+  type A2UISurface,
   type RunActivity,
   type RunEvent,
 } from "../chatProtocol";
@@ -439,6 +440,75 @@ function ActivityCard({ activity }: { activity: RunActivity }) {
   );
 }
 
+/** Pending interactions belong immediately above the blocked composer. */
+function ComposerInteractionTray({
+  surfaces,
+  onInteraction,
+}: {
+  surfaces: A2UISurface[];
+  onInteraction: (interactionId: string, name: string, data: Record<string, unknown>) => Promise<void>;
+}) {
+  const pending = surfaces.filter(surface => surface.interaction?.status === "pending");
+  if (!pending.length) return null;
+  return (
+    <div className="chat-pending-interactions" aria-label="待处理确认" data-ui="interaction-tray">
+      <div className="chat-pending-interactions-heading">
+        <ShieldAlert size={16} />
+        <strong>等待你的确认</strong>
+        <span>处理后将继续当前对话</span>
+      </div>
+      {pending.map(surface => (
+        <A2UIRenderer key={surface.id} surface={surface} onSubmit={onInteraction} />
+      ))}
+    </div>
+  );
+}
+
+function PersistedInteractionTray({
+  runId,
+  status,
+  onInteraction,
+}: {
+  runId: string;
+  status?: string;
+  onInteraction: (runId: string, interactionId: string, name: string, data: Record<string, unknown>) => Promise<void>;
+}) {
+  const [events, setEvents] = useState<RunEvent[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      try {
+        const response = await apiFetch(`/api/v1/runs/${encodeURIComponent(runId)}/events`);
+        if (!response.ok) return;
+        const parsed: RunEvent[] = [];
+        const parser = createResponseSseParser(event => {
+          const { type, ...data } = event;
+          parsed.push({ id: parsed.length + 1, type, data });
+        });
+        parser.push(await response.text());
+        parser.finish();
+        if (!cancelled) setEvents(parsed);
+      } catch {
+        // Never invent an action if the enhanced event feed is unavailable.
+      }
+    }
+    void load();
+    const timer = status === "WAITING_INPUT" ? window.setInterval(load, 500) : null;
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearInterval(timer);
+    };
+  }, [runId, status]);
+
+  return (
+    <ComposerInteractionTray
+      surfaces={projectA2UISurfaces(events)}
+      onInteraction={(interactionId, name, data) => onInteraction(runId, interactionId, name, data)}
+    />
+  );
+}
+
 function RunActivityCards({
   runId,
   status,
@@ -483,6 +553,7 @@ function RunActivityCards({
 
   const projection = useMemo(() => projectRunActivities(events), [events]);
   const surfaces = useMemo(() => projectA2UISurfaces(events), [events]);
+  const inlineSurfaces = surfaces.filter(surface => surface.interaction?.status !== "pending");
   if (!loaded && ["RUNNING", "PAUSED", "WAITING_INPUT"].includes(String(status))) {
     return <div className="chat-activity-loading"><Loader2 size={13} className="animate-spin" /> 正在读取运行事件</div>;
   }
@@ -494,7 +565,7 @@ function RunActivityCards({
   return (
     <>
       <ProcessingGroup reasoning={projection.reasoning} activities={projection.activities} streaming={status === "RUNNING"} />
-      {surfaces.map(surface => (
+      {inlineSurfaces.map(surface => (
         <A2UIRenderer
           key={surface.id}
           surface={surface}
@@ -612,7 +683,7 @@ function StreamingTurn({
         </div>
         <div className="message-content">
           <ProcessingGroup reasoning={stream.reasoning} activities={stream.activities} streaming={stream.status === "streaming"} />
-          {stream.surfaces.map(surface => (
+          {stream.surfaces.filter(surface => surface.interaction?.status !== "pending").map(surface => (
             <A2UIRenderer
               key={surface.id}
               surface={surface}
@@ -707,6 +778,9 @@ export function ChatWorkspace({
     || "";
   const activeModeStartedAt = stream?.startedAt || persistedActiveRun?.startedAt;
   const activeModeElapsedMs = activeStatus === "paused" ? persistedActiveRun?.durationMs : undefined;
+  const waitingPersistedRuns = !stream
+    ? displayRuns.filter(run => String(run.status) === "WAITING_INPUT")
+    : [];
   const selectedModel = models.find(item => item.id === model);
   const streamUsage = stream?.usage as Record<string, number> | undefined;
   const contextUsage = contextUsageState(
@@ -1198,6 +1272,19 @@ export function ChatWorkspace({
         </div>
 
         <footer className="chat-composer-wrap">
+          {stream && stream.sessionId === currentSessionId ? (
+            <ComposerInteractionTray
+              surfaces={stream.surfaces}
+              onInteraction={(interactionId, name, data) => submitInteraction(stream.runId, interactionId, name, data)}
+            />
+          ) : waitingPersistedRuns.map(run => (
+            <PersistedInteractionTray
+              key={run.id}
+              runId={run.id}
+              status={run.status}
+              onInteraction={submitInteraction}
+            />
+          ))}
           {isGenerating && activeMode && (
             <RuntimeModeBar
               mode={activeMode}
