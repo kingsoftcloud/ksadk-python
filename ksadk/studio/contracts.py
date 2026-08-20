@@ -257,7 +257,7 @@ class RuntimeRef(ContractModel):
     project entrypoint that is snapshotted by its Build.
     """
 
-    type: Literal["codex", "adk", "langgraph"]
+    type: Literal["agentkit", "codex", "adk", "langgraph"]
     project_path: str | None = Field(default=None, min_length=1, max_length=1024)
     entry_point: str | None = Field(default=None, min_length=1, max_length=1024)
     agent_variable: str = Field(default="root_agent", min_length=1, max_length=256)
@@ -287,6 +287,8 @@ class RuntimeRef(ContractModel):
                 raise ValueError(f"{self.type} Runtime 必须配置 projectPath")
             if self.detection == "declared" and not self.entry_point:
                 raise ValueError(f"{self.type} Runtime 使用 declared 检测时必须配置 entryPoint")
+        if self.type == "agentkit" and (self.project_path or self.entry_point):
+            raise ValueError("agentkit Bundle Runtime 不接受用户代码 projectPath 或 entryPoint")
         return self
 
 

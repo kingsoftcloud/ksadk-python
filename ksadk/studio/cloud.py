@@ -28,10 +28,10 @@ from ksadk.studio.workspace import Workspace
 
 logger = logging.getLogger(__name__)
 
-_STUDIO_CODE_COMMAND = (
+_STUDIO_BUNDLE_CODE_COMMAND = (
     "ksadk",
     "web",
-    "/app/code/runtime",
+    "/app/code",
     "--port",
     "8080",
     "--host",
@@ -314,7 +314,7 @@ class DirectAgentEngineCloudDeploymentGateway:
                 "artifact_type": "Code",
                 "artifact_path": bundle_uri,
                 "code_checksum": bundle["archive_sha"],
-                "code_command": list(_STUDIO_CODE_COMMAND),
+                "code_command": list(_STUDIO_BUNDLE_CODE_COMMAND),
                 "ks3": self._code_config(bundle["bucket"]),
             },
         )
@@ -376,7 +376,7 @@ class DirectAgentEngineCloudDeploymentGateway:
             "artifact_type": "Code",
             "artifact_path": bundle_uri,
             "code_checksum": bundle["archive_sha"],
-            "code_command": list(_STUDIO_CODE_COMMAND),
+            "code_command": list(_STUDIO_BUNDLE_CODE_COMMAND),
             "region": request.target.region,
             "ks3": self._code_config(bundle["bucket"]),
             "resources": {"cpu": 2, "memory": "4Gi"},
@@ -499,6 +499,16 @@ class CloudDeploymentService:
                 "BUILD_NOT_READY",
                 "只有成功 Build 可以部署",
                 status_code=409,
+            )
+        if build.runtime_type != "agentkit":
+            raise StudioError(
+                "HIGH_CODE_DEPLOYMENT_MANAGED_EXTERNALLY",
+                (
+                    "Studio 只部署原生 YAML Bundle；高代码 Agent 请使用 "
+                    "ksadk build/deploy，Studio 可继续管理其生命周期"
+                ),
+                status_code=422,
+                details={"runtimeType": build.runtime_type},
             )
         archive = self.workspace.resolve(build.artifact_path, must_exist=True)
         bundle = archive.read_bytes()

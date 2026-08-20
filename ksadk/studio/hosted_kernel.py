@@ -26,7 +26,7 @@ HOSTED_KERNEL_REQUIREMENTS_PATH = "hosted-kernel-requirements.json"
 HOSTED_KERNEL_REQUIREMENTS_FORMAT = "agentkit.hosted-kernel-requirements/v1"
 HOSTED_KERNEL_RUNTIME_CONTRACT = "agentkit.runtime/v1"
 HOSTED_KERNEL_BUNDLE_FORMAT = "agentkit.bundle/v2"
-_RUNTIME_TYPES = frozenset({"adk", "codex", "langgraph"})
+_RUNTIME_TYPES = frozenset({"agentkit", "adk", "codex", "langgraph"})
 
 
 @dataclass(frozen=True)
@@ -45,6 +45,7 @@ def build_hosted_kernel_requirement(
     entry_point: str | None,
     agent_variable: str | None,
     launch_config: bytes | None,
+    launch_config_path: str = "runtime/agentengine.yaml",
 ) -> dict[str, Any]:
     """Build the immutable local requirement embedded into every Studio ZIP."""
 
@@ -60,7 +61,7 @@ def build_hosted_kernel_requirement(
             "type": runtime_type,
             "entryPoint": entry_point or "",
             "agentVariable": agent_variable or "",
-            "launchConfig": "runtime/agentengine.yaml" if launch_config is not None else "",
+            "launchConfig": launch_config_path if launch_config is not None else "",
             "launchConfigSha256": sha256_digest(launch_config) if launch_config is not None else "",
         },
     }
@@ -215,13 +216,33 @@ def _validate_requirement(
         raise _incompatible_error(
             "Bundle runtime 类型不受 Hosted Agent Kernel 支持", reason="runtime_type"
         )
-    if (
-        runtime_type != str(manifest.get("runtimeType") or "").strip().lower()
-        or not entry_point
-        or not agent_variable
-        or launch_path != "runtime/agentengine.yaml"
-        or not launch_digest
-    ):
+    if runtime_type != str(manifest.get("runtimeType") or "").strip().lower() or not launch_digest:
+        raise _incompatible_error("Bundle 缺少可验证的 runtime 启动配置", reason="runtime_launch")
+    if runtime_type == "agentkit":
+        if entry_point or agent_variable or launch_path != "agentengine.yaml":
+            raise _incompatible_error("agentkit Bundle 启动描述无效", reason="runtime_launch")
+        launch_bytes = entries.get(launch_path)
+        if launch_bytes is None or sha256_digest(launch_bytes) != launch_digest:
+            raise _incompatible_error(
+                "Bundle runtime 启动配置 digest 不一致", reason="launch_digest"
+            )
+        launch = _json_object(entries, launch_path)
+        if (
+            launch.get("framework") != "agentkit"
+            or launch.get("bundle") != "resolved-agent-spec.json"
+            or launch.get("bundle_format") != HOSTED_KERNEL_BUNDLE_FORMAT
+        ):
+            raise _incompatible_error(
+                "agentkit Bundle 启动描述与合同不一致", reason="launch_config"
+            )
+        runtime_lock = _json_object(entries, "runtime-lock.json")
+        if (
+            runtime_lock.get("type") != "agentkit"
+            or runtime_lock.get("bundle") != "resolved-agent-spec.json"
+        ):
+            raise _incompatible_error("agentkit Bundle runtime lock 不一致", reason="runtime_lock")
+        return
+    if not entry_point or not agent_variable or launch_path != "runtime/agentengine.yaml":
         raise _incompatible_error("Bundle 缺少可验证的 runtime 启动配置", reason="runtime_launch")
     if not _safe_relative_file(entry_point) or f"runtime/{entry_point}" not in entries:
         raise _incompatible_error("Bundle runtime entryPoint 不存在或不安全", reason="entry_point")

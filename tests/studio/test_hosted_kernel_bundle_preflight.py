@@ -34,9 +34,6 @@ from ksadk.studio.workspace import Workspace
 def _build_hosted_bundle(tmp_path: Path):
     workspace = Workspace(tmp_path / "workspace")
     workspace.initialize()
-    source = workspace.root / "runtime"
-    source.mkdir()
-    (source / "agent.py").write_text("graph = object()\n", encoding="utf-8")
     record = AgentBundleBuilder(workspace).build(
         AgentDraft(
             metadata=AgentMetadata(id="studio-graph", name="Studio Graph"),
@@ -47,12 +44,7 @@ def _build_hosted_bundle(tmp_path: Path):
                     endpoint_url="https://model.example.test/v1/chat/completions",
                     credential_ref="env://MODEL_API_KEY",
                 ),
-                runtime=RuntimeRef(
-                    type="langgraph",
-                    project_path="runtime",
-                    entry_point="agent.py",
-                    agent_variable="graph",
-                ),
+                runtime=RuntimeRef(type="agentkit"),
                 security=SecuritySpec(network=NetworkPolicy(allowed_hosts=["model.example.test"])),
             ),
         )
@@ -72,10 +64,10 @@ def test_builder_embeds_current_kernel_contract_requirement_in_the_uploaded_zip(
         "digest": AGENT_KERNEL_V1_CONTRACT_DIGEST,
     }
     assert checked.requirement["runtime"] == {
-        "type": "langgraph",
-        "entryPoint": "agent.py",
-        "agentVariable": "graph",
-        "launchConfig": "runtime/agentengine.yaml",
+        "type": "agentkit",
+        "entryPoint": "",
+        "agentVariable": "",
+        "launchConfig": "agentengine.yaml",
         "launchConfigSha256": checked.requirement["runtime"]["launchConfigSha256"],
     }
     assert checked.provenance["hostedKernel"]["requirementDigest"] == checked.requirement_digest

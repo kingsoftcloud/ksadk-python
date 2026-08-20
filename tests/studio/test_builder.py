@@ -5,6 +5,7 @@ import json
 import zipfile
 from pathlib import Path
 
+from ksadk.detection import FrameworkDetector, FrameworkType
 from ksadk.studio.builder import AgentBundleBuilder
 from ksadk.studio.contracts import (
     AgentDraft,
@@ -18,7 +19,6 @@ from ksadk.studio.contracts import (
     RuntimeRef,
     SecuritySpec,
 )
-from ksadk.detection import FrameworkDetector, FrameworkType
 from ksadk.studio.workspace import Workspace
 
 
@@ -82,6 +82,25 @@ def test_builder_creates_complete_bundle(tmp_path: Path):
         "instructions/system.md",
     }
     assert workspace.relative(archive) == record.artifact_path
+
+
+def test_yaml_bundle_uses_the_fixed_agentkit_interpreter_without_runtime_source(tmp_path: Path):
+    _workspace, record, archive = _build_in(tmp_path / "native-bundle")
+
+    with zipfile.ZipFile(archive) as bundle:
+        launch = json.loads(bundle.read("agentengine.yaml"))
+        runtime_lock = json.loads(bundle.read("runtime-lock.json"))
+
+        assert record.runtime_type == "agentkit"
+        assert launch == {
+            "bundle": "resolved-agent-spec.json",
+            "bundle_format": "agentkit.bundle/v2",
+            "framework": "agentkit",
+            "name": "demo-agent",
+        }
+        assert runtime_lock["type"] == "agentkit"
+        assert runtime_lock["bundle"] == "resolved-agent-spec.json"
+        assert not any(path.startswith("runtime/") for path in bundle.namelist())
 
 
 def test_builder_is_byte_deterministic_across_workspaces(tmp_path: Path):

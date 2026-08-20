@@ -73,12 +73,17 @@ class AgentBundleBuilder:
         try:
             self._copy_runtime_source(bundle_root, draft)
             self._write_runtime_launch_config(bundle_root, draft)
-            launch_config = bundle_root / "runtime" / "agentengine.yaml"
+            self._write_bundle_runtime_launch_config(bundle_root, draft)
+            launch_config_path = (
+                "agentengine.yaml" if runtime_type == "agentkit" else "runtime/agentengine.yaml"
+            )
+            launch_config = bundle_root / launch_config_path
             hosted_kernel_requirement = build_hosted_kernel_requirement(
                 runtime_type=runtime_type,
                 entry_point=runtime_lock.get("entryPoint"),
                 agent_variable=runtime_lock.get("agentVariable"),
                 launch_config=launch_config.read_bytes() if launch_config.is_file() else None,
+                launch_config_path=launch_config_path,
             )
             hosted_kernel_requirement_digest_value = hosted_kernel_requirement_digest(
                 hosted_kernel_requirement
@@ -251,7 +256,10 @@ class AgentBundleBuilder:
 
     def _runtime_snapshot(self, draft: AgentDraft, compiled) -> tuple[str, str, dict]:
         runtime = draft.spec.runtime
-        runtime_type = runtime.type if runtime is not None else ""
+        # RuntimeRef was introduced after the first YAML-only Studio drafts.
+        # A missing ref is therefore a compatibility spelling of the native
+        # Bundle interpreter, never an implicit high-code framework.
+        runtime_type = runtime.type if runtime is not None else "agentkit"
         source_digest = ""
         source_files: list[dict[str, object]] = []
         if runtime is not None and runtime.project_path:
@@ -281,6 +289,12 @@ class AgentBundleBuilder:
             "model": compiled.resolved.model.model,
             "models": list(dict.fromkeys(bound_models)),
         }
+        if runtime_type == "agentkit":
+            lock["projectPath"] = None
+            lock["entryPoint"] = None
+            lock["agentVariable"] = None
+            lock["bundle"] = "resolved-agent-spec.json"
+            lock["bundleFormat"] = "agentkit.bundle/v2"
         return runtime_type, source_digest, {
             key: value for key, value in lock.items() if value is not None
         }
@@ -317,6 +331,22 @@ class AgentBundleBuilder:
                 "entry_point": runtime.entry_point or "agent.py",
                 "agent_variable": runtime.agent_variable or "root_agent",
                 "package": ".",
+            },
+        )
+
+    def _write_bundle_runtime_launch_config(self, bundle_root: Path, draft: AgentDraft) -> None:
+        """Describe a YAML-only Studio agent for the image-owned interpreter."""
+
+        runtime = draft.spec.runtime
+        if runtime is not None and runtime.type != "agentkit":
+            return
+        self._write_json(
+            bundle_root / "agentengine.yaml",
+            {
+                "name": draft.metadata.id,
+                "framework": "agentkit",
+                "bundle": "resolved-agent-spec.json",
+                "bundle_format": "agentkit.bundle/v2",
             },
         )
 

@@ -21,6 +21,7 @@ from ksadk.studio.contracts import (
     RuntimeRef,
     SecuritySpec,
 )
+from ksadk.studio.errors import StudioError
 from ksadk.studio.workspace import Workspace
 
 
@@ -78,7 +79,7 @@ async def test_direct_gateway_uses_ks3_and_existing_agent_actions_only() -> None
     bundle_uri = await gateway.upload_bundle(
         bundle=bundle,
         bundle_digest=bundle_digest,
-        provenance={"agentId": "studio-graph", "runtimeType": "langgraph"},
+        provenance={"agentId": "studio-graph", "runtimeType": "agentkit"},
     )
     version = await gateway.create_version(
         agent_id="studio-graph",
@@ -100,14 +101,14 @@ async def test_direct_gateway_uses_ks3_and_existing_agent_actions_only() -> None
         {
             "name": "studio-graph",
             "description": "Created by AgentKit Studio",
-            "framework": "langgraph",
+                "framework": "agentkit",
             "artifact_type": "Code",
             "artifact_path": bundle_uri,
             "code_checksum": archive_sha,
             "code_command": [
                 "ksadk",
                 "web",
-                "/app/code/runtime",
+                "/app/code",
                 "--port",
                 "8080",
                 "--host",
@@ -151,7 +152,7 @@ async def test_direct_gateway_uses_ks3_and_existing_agent_actions_only() -> None
                 "code_command": [
                     "ksadk",
                     "web",
-                    "/app/code/runtime",
+                    "/app/code",
                     "--port",
                     "8080",
                     "--host",
@@ -173,9 +174,6 @@ async def test_direct_gateway_uses_ks3_and_existing_agent_actions_only() -> None
 
 
 def _build_bundle(workspace: Workspace, *, revision: int, instruction: str):
-    source = workspace.root / "runtime"
-    source.mkdir(exist_ok=True)
-    (source / "agent.py").write_text("graph = object()\n", encoding="utf-8")
     return AgentBundleBuilder(workspace).build(
         AgentDraft(
             metadata=AgentMetadata(id="studio-graph", name="Studio Graph", revision=revision),
@@ -186,12 +184,7 @@ def _build_bundle(workspace: Workspace, *, revision: int, instruction: str):
                     endpoint_url="https://model.example.test/v1/chat/completions",
                     credential_ref="env://MODEL_API_KEY",
                 ),
-                runtime=RuntimeRef(
-                    type="langgraph",
-                    project_path="runtime",
-                    entry_point="agent.py",
-                    agent_variable="graph",
-                ),
+                runtime=RuntimeRef(type="agentkit"),
                 security=SecuritySpec(
                     network=NetworkPolicy(allowed_hosts=["model.example.test"])
                 ),
@@ -226,3 +219,53 @@ async def test_direct_service_rolls_back_by_updating_the_existing_agent(tmp_path
     assert rolled_back.agent_id == deployed.agent_id
     assert rolled_back.instance_id == deployed.instance_id
     assert rolled_back.build_id == previous.id
+
+
+@pytest.mark.asyncio
+async def test_cloud_deploy_refuses_a_high_code_framework_build(tmp_path: Path) -> None:
+    workspace = Workspace(tmp_path / "workspace")
+    workspace.initialize()
+    source = workspace.root / "runtime"
+    source.mkdir()
+    (source / "agent.py").write_text("graph = object()\n", encoding="utf-8")
+    high_code = AgentBundleBuilder(workspace).build(
+        AgentDraft(
+            metadata=AgentMetadata(id="external-graph", name="External Graph"),
+            spec=AgentSpec(
+                instructions=Instructions(system="Keep source external."),
+                model=ModelSpec(
+                    model="glm-5.1",
+                    endpoint_url="https://model.example.test/v1/chat/completions",
+                    credential_ref="env://MODEL_API_KEY",
+                ),
+                runtime=RuntimeRef(
+                    type="langgraph",
+                    project_path="runtime",
+                    entry_point="agent.py",
+                    agent_variable="graph",
+                ),
+                security=SecuritySpec(
+                    network=NetworkPolicy(allowed_hosts=["model.example.test"])
+                ),
+            ),
+        )
+    )
+    service = CloudDeploymentService(
+        workspace,
+        gateway=DirectAgentEngineCloudDeploymentGateway(
+            region="pre-online",
+            client=_Client(),
+            uploader_factory=_Uploader,
+            ks3_credentials={"access_key": "test-access", "secret_key": "test-secret"},
+        ),
+    )
+
+    with pytest.raises(StudioError) as raised:
+        await service.deploy(
+            high_code.id,
+            DeploymentRequest(
+                target=DeploymentTarget(region="pre-online", environment="preproduction")
+            ),
+        )
+
+    assert raised.value.code == "HIGH_CODE_DEPLOYMENT_MANAGED_EXTERNALLY"
