@@ -63,12 +63,17 @@ class KnowledgeBaseService:
             logger.error("search_knowledge failed: %s", exc)
             return f"知识库检索失败: {exc}"
 
-    def build_context(self, query: str, top_k: Optional[int] = None) -> dict[str, str] | None:
+    def build_context(
+        self,
+        query: str,
+        top_k: Optional[int] = None,
+    ) -> dict[str, str] | None:
         """构造环境知识库上下文。失败时返回 ``formatted_text=""`` + 独立 ``error`` 字段，
         不把错误字符串塞进 ``formatted_text``（避免错误伪装成知识库正文注入模型）。
 
         - 检索抛错（网络/鉴权失败）→ except 捕获，返 ``error`` 字段。
-        - 响应解析失败返空列表（``_parse_response``）→ client ``last_error`` 非空，返 ``error`` 字段。
+        - 响应解析失败返空列表（``_parse_response``）→ client ``last_error`` 非空，
+          返回 ``error`` 字段。
         - 真无结果（检索正常返空）→ ``formatted_text`` 为"未找到…"（语义真实，可注入）。
         """
         normalized = str(query or "").strip()

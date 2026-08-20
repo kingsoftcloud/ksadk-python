@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Iterable
 
 from ksadk.context_engine.tokenizer import get_default_token_counter
-from ksadk.prompts.models import PromptSection, PromptSectionKind, PromptTrustLevel
+from ksadk.prompts.models import PromptSection
 
 # 默认平台安全规则。这是 shadow 用的稳定常量，PR2 不注入给 Runner（行为不变）；
 # 供 stable_prefix_hash 与 cache-break 诊断建立稳定前缀基线。后续 PR 切换发送时再接管。

@@ -6,8 +6,8 @@
 
 from ksadk.prompts.compiler import (
     InconsistentSectionError,
-    ProtectedSectionOverrideError,
     PromptCompiler,
+    ProtectedSectionOverrideError,
     compile_prompt,
 )
 from ksadk.prompts.models import (

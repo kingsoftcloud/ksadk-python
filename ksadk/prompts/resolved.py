@@ -100,7 +100,9 @@ def sections_from_resolved_sources(sources: ResolvedPromptSources) -> list[Promp
     if policy_source is not None:
         policy_text = policy_source.resolve()
         if policy_text:
-            sections.append(platform_safety_section(content=policy_text, source=policy_source.source))
+            sections.append(
+                platform_safety_section(content=policy_text, source=policy_source.source)
+            )
     return sections
 
 

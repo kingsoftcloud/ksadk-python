@@ -28,7 +28,6 @@ from ksadk.builders.ks3_uploader import KS3Uploader
 from ksadk.configs.global_config import get_env_from_global_config
 from ksadk.configs.settings import DEFAULT_RUNTIME_TIMEZONE
 from ksadk.deployment.agent_access import get_latest_agent_access
-from ksadk.deployment.env_forward import should_forward_process_env
 from ksadk.deployment.base import (
     BaseDeployProvider,
     DeployResult,
@@ -36,6 +35,7 @@ from ksadk.deployment.base import (
     DeployTarget,
     PackageInfo,
 )
+from ksadk.deployment.env_forward import should_forward_process_env
 from ksadk.deployment.registry import DeployProviderRegistry
 from ksadk.deployment.ui_config import resolve_ui_config, ui_config_to_state_fields
 
@@ -45,6 +45,21 @@ logger = logging.getLogger(__name__)
 # 转发规则已迁移至 ksadk.deployment.env_forward（hermes/openclaw deploy 共用）；
 # 保留私有别名以兼容既有调用与测试。
 _should_forward_process_env = should_forward_process_env
+
+# These values authenticate or configure the local deploy/build control plane.
+# They must never enter an Agent runtime merely because they exist in global
+# config, the caller's shell, or a project .env file. A caller can still opt in
+# deliberately through explicit ``--env`` / ``--env-file`` values.
+_CONTROL_PLANE_ONLY_ENV_KEYS = frozenset(
+    {
+        "KCR_PASSWORD",
+        "KCR_REGISTRY",
+        "KCR_USERNAME",
+        "KSYUN_ACCESS_KEY",
+        "KSYUN_ACCOUNT_ID",
+        "KSYUN_SECRET_KEY",
+    }
+)
 
 
 @DeployProviderRegistry.register("serverless")
@@ -172,9 +187,14 @@ class ServerlessProvider(BaseDeployProvider):
         for key, value in sorted(os.environ.items()):
             if value and _should_forward_process_env(key):
                 env_vars[key] = value
-        # explicit --env/--env-file (显式 CLI 意图最高)
-        env_vars.update(explicit_env_vars or {})
+        explicit = dict(explicit_env_vars or {})
+        for key in _CONTROL_PLANE_ONLY_ENV_KEYS:
+            if key not in explicit:
+                env_vars.pop(key, None)
+        # explicit --env/--env-file (显式 CLI 意图最高，可选择性注入运行时凭证)
+        env_vars.update(explicit)
         env_vars.setdefault("TZ", DEFAULT_RUNTIME_TIMEZONE)
+        env_vars.setdefault("KSADK_DEPLOYMENT_MODE", "ksadk_managed_cloud")
         return env_vars, env_file.exists(), project_env_count
 
     @staticmethod

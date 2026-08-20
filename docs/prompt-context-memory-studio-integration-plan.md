@@ -1,8 +1,8 @@
 # KsADK Prompt、Context 与 Memory Studio 产品化与全链路技术方案
 
-> 适用分支：`feature-prompt-context-optimize`  
-> 文档定位：指导 Prompt、Context、Memory 从 Runtime 能力走向 Studio 可配置、可调试、可评测和可部署  
-> 当前状态：实施方案，不代表文中新增页面和 API 已经完成  
+> 适用分支：`feature-prompt-context-optimize`
+> 文档定位：指导 Prompt、Context、Memory 从 Runtime 能力走向 Studio 可配置、可调试、可评测和可部署
+> 当前状态：实施方案，不代表文中新增页面和 API 已经完成
 > 关联文档：[统一建设方案](./prompt-context-memory-unified-proposal.md)、[技术实现方案](./prompt-context-memory-implementation.md)、[评测方案](./prompt-context-memory-evaluation-plan.md)、[云端验证手册](./prompt-context-memory-cloud-validation.md)
 
 ## 1. 结论与建设重点

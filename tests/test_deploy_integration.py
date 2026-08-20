@@ -873,6 +873,7 @@ class TestDeployLogic:
             "KSYUN_ACCESS_KEY=project-ak\n"
             "KSYUN_SECRET_KEY=project-sk\n"
             "KCR_REGISTRY=registry.example.com/ns\n"
+            "KCR_PASSWORD=project-registry-password\n"
             "OPENAI_API_KEY=project-model-key\n",
             encoding="utf-8",
         )
@@ -905,6 +906,7 @@ class TestDeployLogic:
             "KSYUN_ACCESS_KEY",
             "KSYUN_SECRET_KEY",
             "KSYUN_ACCOUNT_ID",
+            "KCR_PASSWORD",
             "KCR_REGISTRY",
             "KCR_USERNAME",
         }.intersection(env_vars)

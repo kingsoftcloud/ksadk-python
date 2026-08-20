@@ -402,7 +402,13 @@ async def test_closing_stream_does_not_cancel_background_run(tmp_path: Path) -> 
 
     for _ in range(100):
         runs = service.event_store.list_runs(session_id="ses-refresh")
-        if runs and runs[0].status != RunStatus.RUNNING:
+        if runs and runs[0].status in {
+            RunStatus.COMPLETED,
+            RunStatus.FAILED,
+            RunStatus.CANCELLED,
+            RunStatus.INTERRUPTED,
+            RunStatus.TIMED_OUT,
+        }:
             break
         await asyncio.sleep(0.01)
     assert runs[0].status == RunStatus.COMPLETED
@@ -445,7 +451,13 @@ async def test_reloading_after_first_responses_event_keeps_run_recoverable(
     runs = []
     for _ in range(120):
         runs = service.event_store.list_runs(session_id="ses-responses-refresh")
-        if runs and runs[0].status != RunStatus.RUNNING:
+        if runs and runs[0].status in {
+            RunStatus.COMPLETED,
+            RunStatus.FAILED,
+            RunStatus.CANCELLED,
+            RunStatus.INTERRUPTED,
+            RunStatus.TIMED_OUT,
+        }:
             break
         await asyncio.sleep(0.01)
     assert runs[0].status == RunStatus.COMPLETED

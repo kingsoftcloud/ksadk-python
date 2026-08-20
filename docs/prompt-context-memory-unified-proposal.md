@@ -1,9 +1,9 @@
 # KsADK Prompt、Context 与 Memory 统一建设方案
 
-> 文档定位：面向产品汇报、架构评审和研发实施的统一总方案  
-> 适用分支：`feature-prompt-context-optimize`  
-> 当前基础：基于最新 `agentkit-studio-phase1` 的 RuntimeAdapter/Studio 架构  
-> 建设范围：Prompt、运行时上下文、Session 连续性和长期 Memory  
+> 文档定位：面向产品汇报、架构评审和研发实施的统一总方案
+> 适用分支：`feature-prompt-context-optimize`
+> 当前基础：基于最新 `agentkit-studio-phase1` 的 RuntimeAdapter/Studio 架构
+> 建设范围：Prompt、运行时上下文、Session 连续性和长期 Memory
 > 当前状态：方案讨论稿，不代表已完成实现或正式排期
 
 ## 阅读摘要

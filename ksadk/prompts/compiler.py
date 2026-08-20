@@ -19,7 +19,6 @@ from ksadk.context_engine.tokenizer import get_default_token_counter
 from ksadk.prompts.models import (
     PROMPT_COMPILER_VERSION,
     CompiledPrompt,
-    PromptMergePolicy,
     PromptSection,
     PromptSectionKind,
 )
@@ -38,7 +37,8 @@ _KIND_ORDER: tuple[PromptSectionKind, ...] = (
 
 def _section_sort_key(section: PromptSection) -> tuple[int, str, str]:
     kind_rank = _KIND_ORDER.index(section.kind) if section.kind in _KIND_ORDER else len(_KIND_ORDER)
-    return (section.priority, _KIND_ORDER[kind_rank] if kind_rank < len(_KIND_ORDER) else section.kind, section.section_id)
+    kind_key = _KIND_ORDER[kind_rank] if kind_rank < len(_KIND_ORDER) else section.kind
+    return (section.priority, kind_key, section.section_id)
 
 
 def _normalize_text(text: str) -> str:

@@ -5,7 +5,8 @@
 - LongTermMemoryRecord: 结构化记忆记录（memory_id 来自服务端返回值）
 - MemoryWriteResult: 写入受理结果（accepted + queued/failed）
 - MemoryMutationResult: update/delete 结果（updated/deleted/already_absent/not_found/failed）
-- MemoryExtractionStatus: 后台提取状态（queued/extracting/extracted/duplicate_skipped/failed/unknown）
+- MemoryExtractionStatus: 后台提取状态
+  （queued/extracting/extracted/duplicate_skipped/failed/unknown）
 - MemoryOperationError 族: 稳定异常类型，供上层归一化处理
 
 设计要点：

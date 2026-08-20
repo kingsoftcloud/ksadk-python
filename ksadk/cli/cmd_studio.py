@@ -76,7 +76,9 @@ def studio(
                     os.environ[key] = value
             # 别名归一（方案 §2.4 第 5 点）：OPENAI_BASE_URL 与 OPENAI_API_BASE 互为别名。
             # 加载后任一有值则把另一个也设上，保证下游无论读哪个都命中；OPENAI_BASE_URL 优先。
-            resolved_base_url = os.environ.get("OPENAI_BASE_URL") or os.environ.get("OPENAI_API_BASE")
+            resolved_base_url = os.environ.get("OPENAI_BASE_URL") or os.environ.get(
+                "OPENAI_API_BASE"
+            )
             if resolved_base_url:
                 os.environ["OPENAI_BASE_URL"] = resolved_base_url
                 os.environ["OPENAI_API_BASE"] = resolved_base_url

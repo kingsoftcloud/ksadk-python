@@ -1,8 +1,8 @@
 # KsADK Prompt、Context 与 Memory 评测 Case 与实施方案
 
-> 文档定位：Prompt、Context 与 Memory 改造的前后效果评测方案  
-> 适用场景：方案评审、研发验收、回归测试、灰度上线和效果汇报  
-> 关联文档：[统一建设方案](./prompt-context-memory-unified-proposal.md)、[技术实现方案](./prompt-context-memory-implementation.md)  
+> 文档定位：Prompt、Context 与 Memory 改造的前后效果评测方案
+> 适用场景：方案评审、研发验收、回归测试、灰度上线和效果汇报
+> 关联文档：[统一建设方案](./prompt-context-memory-unified-proposal.md)、[技术实现方案](./prompt-context-memory-implementation.md)
 > 当前状态：评测设计稿；Runtime 旁路基线采集能力已落地，业务目标值需在真实本地/云端样本采集后冻结
 
 ## 1. 文档目的
