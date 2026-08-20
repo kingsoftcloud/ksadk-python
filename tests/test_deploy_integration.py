@@ -353,6 +353,47 @@ class TestDeployLogic:
         mock_client.create_agent.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_deploy_explicit_agent_id_updates_the_resolved_agent(
+        self, temp_project_dir, sample_package_info, sample_deploy_target
+    ):
+        """``--agent-id`` must use UpdateAgent after its existence check."""
+        provider = ServerlessProvider()
+        sample_deploy_target.extra["agent_id"] = "ar-20260119-explicit"
+
+        mock_client = AsyncMock()
+        mock_client.get_agent = AsyncMock(
+            return_value={
+                "basic": {"agent_id": "ar-20260119-explicit", "name": "test-agent"},
+                "quick_access": {"public_endpoint": "https://explicit.example.com"},
+            }
+        )
+        mock_client.update_agent = AsyncMock(
+            return_value={
+                "agent_id": "ar-20260119-explicit",
+                "name": "test-agent",
+                "endpoint": "https://explicit.example.com",
+            }
+        )
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock()
+
+        with (
+            patch.dict(os.environ, {"AGENTENGINE_SERVER_URL": "http://localhost:8080"}),
+            patch(
+                "ksadk.deployment.providers.serverless.AgentEngineClient", return_value=mock_client
+            ),
+            patch("ksadk.common.auth.AWSV4Auth") as MockAuth,
+        ):
+            MockAuth.return_value.access_key_id = "test-ak"
+            MockAuth.return_value.secret_access_key = "test-sk"
+            result = await provider.deploy(sample_package_info, sample_deploy_target)
+
+        assert result.status == DeployStatus.DEPLOYING
+        mock_client.update_agent.assert_called_once()
+        assert mock_client.update_agent.await_args.args[0] == "ar-20260119-explicit"
+        mock_client.create_agent.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_deploy_uses_project_yaml_ui_bundle_path(
         self,
         temp_project_dir,

@@ -769,34 +769,36 @@ class ServerlessProvider(BaseDeployProvider):
                             fg="green",
                         )
 
-                if existing_agent_id and not agent_exists:
-                    # 有本地状态 → 先检查服务器上是否存在
-                    click.echo(f"   检测到本地状态: {existing_agent_id}")
-
-                    try:
-                        # 尝试获取 agent，确认是否存在
-                        existing_agent = await client.get_agent(existing_agent_id)
-                        if existing_agent:
-                            agent_exists = True
-                    except Exception as e:
-                        # Agent 不存在或查询失败
-                        err_msg = str(e).lower()
-                        if "not found" in err_msg or "404" in err_msg or "不存在" in err_msg:
-                            click.secho(
-                                f"   ⚠️  服务器上未找到 Agent {existing_agent_id}，将创建新 Agent",
-                                fg="yellow",
-                            )
-                            agent_exists = False
-                        # DryRun 异常表示真实请求被拦截，无法确认 Agent 是否存在。
-                        # 为安全起见，DryRun 假设它存在并走更新路径。
-                        elif "Dry Run" in str(e):
-                            click.secho(
-                                f"   [Dry Run] 假设 Agent {existing_agent_id} 存在", fg="cyan"
-                            )
-                            agent_exists = True
-                        else:
-                            # 其他错误，重新抛出
-                            raise
+                # ``agent_exists`` means the target has already been resolved
+                # (including an explicit ``--agent-id``). Both that path and
+                # the normal state-file lookup must enter the same hot-update
+                # branch. The explicit path must not need a second GetAgent
+                # request merely to enter that branch.
+                if existing_agent_id:
+                    if not agent_exists:
+                        # 有本地状态 → 先检查服务器上是否存在
+                        click.echo(f"   检测到本地状态: {existing_agent_id}")
+                        try:
+                            existing_agent = await client.get_agent(existing_agent_id)
+                            if existing_agent:
+                                agent_exists = True
+                        except Exception as e:
+                            err_msg = str(e).lower()
+                            if "not found" in err_msg or "404" in err_msg or "不存在" in err_msg:
+                                click.secho(
+                                    f"   ⚠️  服务器上未找到 Agent {existing_agent_id}，将创建新 Agent",
+                                    fg="yellow",
+                                )
+                                agent_exists = False
+                            # DryRun 异常表示真实请求被拦截，无法确认 Agent 是否存在。
+                            # 为安全起见，DryRun 假设它存在并走更新路径。
+                            elif "Dry Run" in str(e):
+                                click.secho(
+                                    f"   [Dry Run] 假设 Agent {existing_agent_id} 存在", fg="cyan"
+                                )
+                                agent_exists = True
+                            else:
+                                raise
 
                     if agent_exists:
                         # Agent 存在 → 执行更新
