@@ -7,6 +7,7 @@ client、KsADK runtime）与 receipt 映射、health shape、env bootstrap。
 from __future__ import annotations
 
 import uuid
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -56,6 +57,72 @@ class StubKernel:
                 return json.dumps({"agent_instance_id": query.agent_instance_id})
 
         return _Snap()
+
+
+def test_local_trusted_context_uses_runtime_agent_instance(monkeypatch):
+    """Local web compatibility routes must target the worker's instance id."""
+    monkeypatch.setenv("AGENT_INSTANCE_ID", "instance-from-runtime")
+    trusted = ingress.trusted_context(source_kind="system", source_ref="test")
+    assert trusted.agent_instance_id == "instance-from-runtime"
+    assert trusted.permit.agent_instance_id == "instance-from-runtime"
+
+
+def test_response_projector_resolves_completed_output_refs():
+    from ksadk.server.routes.kernel_ingress import _new_responses_projector
+
+    projector = _new_responses_projector()
+    assert projector(
+        SimpleNamespace(
+            event_type="item.updated",
+            payload={
+                "item_id": "draft",
+                "update": {"text": "discarded commentary", "op": "append"},
+            },
+        )
+    ) is None
+    assert projector(
+        SimpleNamespace(
+            event_type="item.completed",
+            payload={
+                "item_id": "final",
+                "snapshot": {"parts": [{"text": "durable answer"}]},
+            },
+        )
+    ) is None
+    projected = projector(
+        SimpleNamespace(
+            event_type="run.completed",
+            payload={"output_refs": [{"item_id": "final", "part_id": "text-0"}]},
+        )
+    )
+    assert projected is not None
+    assert projected[1]["output_text"] == "durable answer"
+
+
+@pytest.mark.asyncio
+async def test_submit_command_creates_the_session_in_the_kernel_shared_log(monkeypatch):
+    """A direct runtime ingress must not rely on a separate HTTP session service."""
+    from ksadk.kernel.bootstrap import clear_agent_kernel_runtime, set_agent_kernel_runtime
+    from ksadk.kernel.contracts import AgentControlCommand
+    from ksadk.sessions.in_memory import InMemorySessionService
+
+    shared_sessions = InMemorySessionService()
+    stub = StubKernel()
+    ingress.set_agent_kernel(stub)
+    set_agent_kernel_runtime(
+        SimpleNamespace(config=SimpleNamespace(session_service=shared_sessions))
+    )
+    try:
+        command = AgentControlCommand.model_validate(_command_payload())
+        receipt = await ingress.submit_command(command, permit=object())
+
+        assert receipt.status == "accepted"
+        session = await shared_sessions.get_session(command.session_id)
+        assert session is not None
+        assert session.agent_id == command.agent_instance_id
+    finally:
+        clear_agent_kernel_runtime()
+        ingress.clear_agent_kernel()
 
 
 @pytest.fixture

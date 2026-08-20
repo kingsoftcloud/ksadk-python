@@ -36,8 +36,9 @@ export function SettingsOverlay({ themePreference, onThemePreferenceChange, onCl
       sandbox: "read-only",
       buildAfterCreate: true,
       codexProxy: "auto",
-      cloudAccessKey: "",
-      cloudSecretKey: "",
+      agentEngineControlPlaneUrl: "",
+      agentEngineAccountId: "",
+      agentEngineRuntimeProfileId: "",
       cloudRegion: "",
     },
   });
@@ -80,8 +81,9 @@ export function SettingsOverlay({ themePreference, onThemePreferenceChange, onCl
           sandbox: s.sandbox || "read_only",
           buildAfterCreate: s.buildAfterCreate !== false,
           codexProxy: s.codexProxy || "auto",
-          cloudAccessKey: "",
-          cloudSecretKey: "",
+          agentEngineControlPlaneUrl: s.agentEngineControlPlaneUrl || "",
+          agentEngineAccountId: s.agentEngineAccountId || "",
+          agentEngineRuntimeProfileId: s.agentEngineRuntimeProfileId || "",
           cloudRegion: s.cloudRegion || "",
         });
       } catch { setSettings({}); }
@@ -105,8 +107,9 @@ export function SettingsOverlay({ themePreference, onThemePreferenceChange, onCl
         buildAfterCreate: values.buildAfterCreate,
         codexProxy: values.codexProxy,
       };
-      if (values.cloudAccessKey.trim()) payload.cloudAccessKey = values.cloudAccessKey.trim();
-      if (values.cloudSecretKey.trim()) payload.cloudSecretKey = values.cloudSecretKey.trim();
+      if (values.agentEngineControlPlaneUrl.trim()) payload.agentEngineControlPlaneUrl = values.agentEngineControlPlaneUrl.trim();
+      if (values.agentEngineAccountId.trim()) payload.agentEngineAccountId = values.agentEngineAccountId.trim();
+      if (values.agentEngineRuntimeProfileId.trim()) payload.agentEngineRuntimeProfileId = values.agentEngineRuntimeProfileId.trim();
       if (values.cloudRegion.trim()) payload.cloudRegion = values.cloudRegion.trim();
       const res = await apiFetch("/api/v1/system/settings", {
         method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
@@ -223,27 +226,25 @@ export function SettingsOverlay({ themePreference, onThemePreferenceChange, onCl
       </section>
 
       <section className="settings-group">
-        <h3>云基础信息凭证</h3>
-        <p className="helper">用于 Agent 部署/销毁到金山云；自动从环境变量 KINGSOFTCLOUD_ACCESS_KEY/KINGSOFTCLOUD_SECRET_KEY/KSYUN_REGION 读取，留空保持环境值。</p>
+        <h3>云端控制面</h3>
+        <p className="helper">Studio 只调用 AgentEngine Gateway/Server 的 Bundle 准入和现有创建 Action。短期用户 Token 由启动 Studio 的环境注入，绝不会写进工作区。</p>
         <div className="form-grid two-columns">
-          <FormField label="Access Key" requirement="optional" htmlFor="settingCloudAk" error={settingsForm.formState.errors.cloudAccessKey?.message}>
-            <input
-              id="settingCloudAk" type="password" autoComplete="new-password"
-              placeholder={settings?.cloudAccessKey ? "已配置（输入新值覆盖）" : "从 KINGSOFTCLOUD_ACCESS_KEY 读取"}
-              {...settingsForm.register("cloudAccessKey")}
-            />
+          <FormField label="控制面 URL" requirement="optional" htmlFor="settingControlPlaneUrl" error={settingsForm.formState.errors.agentEngineControlPlaneUrl?.message}>
+            <input id="settingControlPlaneUrl" placeholder="https://gateway.example.com" {...settingsForm.register("agentEngineControlPlaneUrl")} />
           </FormField>
-          <FormField label="Secret Key" requirement="optional" htmlFor="settingCloudSk" error={settingsForm.formState.errors.cloudSecretKey?.message}>
-            <input
-              id="settingCloudSk" type="password" autoComplete="new-password"
-              placeholder={settings?.cloudSecretKey ? "已配置（输入新值覆盖）" : "从 KINGSOFTCLOUD_SECRET_KEY 读取"}
-              {...settingsForm.register("cloudSecretKey")}
-            />
+          <FormField label="Account ID" requirement="optional" htmlFor="settingControlPlaneAccount" error={settingsForm.formState.errors.agentEngineAccountId?.message}>
+            <input id="settingControlPlaneAccount" placeholder="账户 ID" {...settingsForm.register("agentEngineAccountId")} />
           </FormField>
         </div>
-        <FormField label="Region" requirement="optional" htmlFor="settingCloudRegion" error={settingsForm.formState.errors.cloudRegion?.message}>
-          <input id="settingCloudRegion" placeholder="cn-beijing-6" {...settingsForm.register("cloudRegion")} />
-        </FormField>
+        <div className="form-grid two-columns">
+          <FormField label="Region" requirement="optional" htmlFor="settingCloudRegion" error={settingsForm.formState.errors.cloudRegion?.message}>
+            <input id="settingCloudRegion" placeholder="cn-beijing-6" {...settingsForm.register("cloudRegion")} />
+          </FormField>
+          <FormField label="Runtime Profile ID" requirement="optional" htmlFor="settingRuntimeProfile" hint="留空时按 Bundle runtime 自动匹配唯一 Profile。" error={settingsForm.formState.errors.agentEngineRuntimeProfileId?.message}>
+            <input id="settingRuntimeProfile" placeholder="langgraph-v1" {...settingsForm.register("agentEngineRuntimeProfileId")} />
+          </FormField>
+        </div>
+        <p className="helper">控制面 Token：{settings?.agentEngineControlPlaneTokenConfigured ? "已由启动环境配置" : "未配置；部署会明确失败，不会回退为云 AK/SK 直连"}。</p>
       </section>
 
       <section className="settings-group">

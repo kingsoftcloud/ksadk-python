@@ -24,6 +24,7 @@ from fastapi.testclient import TestClient
 from ksadk.kernel.authorization import InMemoryNonceStore
 from ksadk.kernel.bootstrap import (
     AgentKernelRuntimeConfig,
+    LeaseHeartbeat,
     build_agent_kernel_runtime,
     clear_agent_kernel_runtime,
     get_agent_kernel_runtime,
@@ -45,6 +46,23 @@ FAKE_DSN = "postgres://kernel-test:user@fake-host/kernel"
 CONTRACT_DIGEST = "c" * 64
 CAPABILITY_DIGEST = "p" * 64
 BUNDLE_DIGEST = "b" * 64
+
+
+def test_lease_heartbeat_derives_distinct_owner_ids_per_session():
+    heartbeat = LeaseHeartbeat(
+        object(),  # type: ignore[arg-type]
+        agent_instance_id=AGENT,
+        activation_id="pod-uid",
+        runtime_type="test",
+        bundle_digest=BUNDLE_DIGEST,
+        capability_digest=CAPABILITY_DIGEST,
+        lease_ttl_seconds=60,
+    )
+    first = heartbeat.activation_id_for_session("session-a")
+    second = heartbeat.activation_id_for_session("session-b")
+    assert first != second
+    assert heartbeat.activation_id_for_session("session-a") == first
+    assert first.startswith("pod-uid:s:")
 
 
 def _runtime_config(stack, **overrides: Any) -> AgentKernelRuntimeConfig:
@@ -110,6 +128,57 @@ async def test_bootstrap_starts_worker_and_lease_heartbeat():
         assert lease is not None
         assert lease.lease_expires_at > CLOCK_AT.isoformat()
     finally:
+        await runtime.close()
+
+
+async def test_runtime_renews_lease_while_stream_outlives_inbox_claim():
+    """A live stream must not lose its fence just because Inbox was acked."""
+    from ksadk.events.canonical import RunStarted, SourceRef
+
+    stack = await kernel_stack()
+    release_stream = asyncio.Event()
+
+    async def live_stream(handle):
+        yield RunStarted(
+            schema_version=2,
+            event_id="live-stream-started",
+            seq=0,
+            timestamp=1.0,
+            run_id=handle.run_id,
+            scope_id=f"run:{handle.run_id}",
+            source=SourceRef(framework="ksadk"),
+            status="running",
+        )
+        await release_stream.wait()
+
+    stack.adapter.stream = live_stream  # type: ignore[method-assign]
+    runtime = build_agent_kernel_runtime(
+        _runtime_config(
+            stack,
+            lease_ttl_seconds=0.08,
+            poll_interval=0.01,
+        )
+    )
+    try:
+        await runtime.start()
+        await stack.kernel.submit(
+            command(idempotency_key="keep-live-lease"), permit=stack.permit("enqueue")
+        )
+        for _ in range(100):
+            active = await stack.store.find_active_run(AGENT, "s1")
+            if active is not None and runtime.worker.active_session_ids() == {"s1"}:
+                break
+            await asyncio.sleep(0.01)
+        else:
+            raise AssertionError("worker never started the live stream")
+        first = await stack.store.current_lease(AGENT, "s1")
+        assert first is not None
+        await asyncio.sleep(0.11)
+        renewed = await stack.store.current_lease(AGENT, "s1")
+        assert renewed is not None
+        assert renewed.lease_expires_at > first.lease_expires_at
+    finally:
+        release_stream.set()
         await runtime.close()
 
 

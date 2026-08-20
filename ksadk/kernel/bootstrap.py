@@ -21,6 +21,7 @@ RuntimeAdapter provider、contract digest 或 durable nonce store 时
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import time
 from collections.abc import Callable
@@ -60,6 +61,11 @@ class AgentKernelRuntimeConfig:
     contract_digest: str = ""
     capability_digest: str = ""
     bundle_digest: str = ""
+    # Session log 的 scope 必须与普通 SessionService、canonical event log
+    # 完全一致；否则 worker 可启动却会在首条 command 后看不到 session。
+    session_namespace: str = "default"
+    tenant_id: str = "default"
+    workspace_id: str = "default"
     # 测试注入的 fake PG provider：提供时不再从 dsn 建真实连接，
     # 但 hosted 模式的 dsn 必填校验仍然生效。
     store: AgentKernelStore | None = None
@@ -83,9 +89,11 @@ class AgentKernelRuntimeConfig:
 class LeaseHeartbeat:
     """activation lease 的获取 / 续约 / takeover 检测。
 
-    同一 ``activation_id`` 的 ``acquire`` 是幂等续约（token 不变、租期
-    重置）；token 变化（> 已知值）说明发生过 takeover，调用方应触发
-    RecoveryCoordinator 对 open run 做确定性收口。
+    同一 workload activation 在每个 session 有一个派生且稳定的
+    ``activation_id``。这样 Store 的 ``renew_activation(id)`` / fenced event
+    guard 可以无歧义定位一行 lease；不能把单个 Pod id 原样复用于多行
+    session activation。token 变化（> 已知值）说明发生过 takeover，调用方
+    应触发 RecoveryCoordinator 对 open run 做确定性收口。
     """
 
     def __init__(
@@ -104,13 +112,23 @@ class LeaseHeartbeat:
         self.activation_id = activation_id
         self._request = dict(
             agent_instance_id=agent_instance_id,
-            activation_id=activation_id,
             runtime_type=runtime_type,
             bundle_digest=bundle_digest or "unknown",
             capability_digest=capability_digest or "unknown",
             lease_ttl_seconds=lease_ttl_seconds,
         )
         self._last_tokens: dict[str, int] = {}
+
+    def activation_id_for_session(self, session_id: str) -> str:
+        """Return the opaque per-session lease owner id for this workload."""
+
+        digest = hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:16]
+        return f"{self.activation_id}:s:{digest}"
+
+    def owns_lease(self, session_id: str, lease: Any) -> bool:
+        return str(getattr(lease, "activation_id", "")) == self.activation_id_for_session(
+            session_id
+        )
 
     async def ensure_lease(self, session_id: str) -> tuple[Any, bool]:
         """获取（或幂等续约）session 的 lease。
@@ -124,7 +142,11 @@ class LeaseHeartbeat:
 
         try:
             lease = await self._store.acquire_activation(
-                ActivationLeaseRequest(session_id=session_id, **self._request)
+                ActivationLeaseRequest(
+                    session_id=session_id,
+                    activation_id=self.activation_id_for_session(session_id),
+                    **self._request,
+                )
             )
         except InvalidCommandError:
             return None, False
@@ -287,7 +309,9 @@ class AgentKernelRuntime:
                 lease = await self.kernel_store.current_lease(
                     self.config.agent_instance_id, session_id
                 )
-                if lease is not None and lease.activation_id == self.lease_heartbeat.activation_id:
+                if lease is not None and self.lease_heartbeat.owns_lease(
+                    session_id, lease
+                ):
                     await self.kernel_store.release_activation(
                         lease.activation_id, expected_fence=lease.fencing_token
                     )
@@ -417,11 +441,18 @@ class AgentKernelRuntime:
         messages = await self.kernel_store.list_messages(
             self.config.agent_instance_id
         )
-        return {
+        inbox_sessions = {
             message.session_id
             for message in messages
             if message.status.value in ("accepted", "claimed")
         }
+        # Inbox is completed as soon as a stream is launched.  Keep renewing
+        # the owning lease for the independent live execution (and a WAITING
+        # interaction) or its next runtime event will be fenced after TTL.
+        active_sessions = self.worker.active_session_ids()
+        desired = inbox_sessions | active_sessions
+        self._heartbeat_sessions.intersection_update(desired)
+        return desired
 
 
 # ---------------------------------------------------------------------------
@@ -504,9 +535,19 @@ def build_agent_kernel_runtime(
                     "postgres agent kernel runtime requires a store DSN"
                 )
             if session_service is None:
-                session_service = PostgresSessionService(dsn=config.dsn)
+                session_service = PostgresSessionService(
+                    dsn=config.dsn,
+                    namespace=config.session_namespace,
+                    tenant_id=config.tenant_id,
+                    workspace_id=config.workspace_id,
+                )
             pool = getattr(session_service, "_pool", None)
-            event_log = PostgresKernelEventLog(pool)
+            event_log = PostgresKernelEventLog(
+                pool,
+                namespace=session_service.namespace,
+                tenant_id=session_service.tenant_id,
+                workspace_id=session_service.workspace_id,
+            )
             kernel_store: AgentKernelStore = PostgresAgentKernelStore(
                 pool, event_log
             )
@@ -628,6 +669,19 @@ async def bootstrap_agent_kernel_runtime_from_env(
     driver = os.environ.get("AGENT_KERNEL_STORE_DRIVER", "memory").strip().lower()
     dsn = os.environ.get("AGENT_KERNEL_STORE_DSN", "").strip()
     jwks_url = os.environ.get(ENV_JWKS_URL, "").strip()
+    session_namespace = (
+        os.environ.get("KSADK_SESSION_NAMESPACE", "default").strip() or "default"
+    )
+    tenant_id = (
+        os.environ.get("KSADK_TENANT_ID")
+        or os.environ.get("AGENTENGINE_TENANT_ID")
+        or "default"
+    ).strip()
+    workspace_id = (
+        os.environ.get("KSADK_WORKSPACE_ID")
+        or os.environ.get("AGENTENGINE_WORKSPACE_ID")
+        or "default"
+    ).strip()
     mode: AuthorityMode = authority_mode()  # type: ignore[assignment]
     if mode == "hosted" and driver != "postgres":
         raise RuntimeError("hosted agent kernel runtime requires postgres store")
@@ -645,10 +699,20 @@ async def bootstrap_agent_kernel_runtime_from_env(
 
         if not dsn:
             raise RuntimeError("postgres kernel store requires AGENT_KERNEL_STORE_DSN")
-        session_service = PostgresSessionService(dsn=dsn)
+        session_service = PostgresSessionService(
+            dsn=dsn,
+            namespace=session_namespace,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+        )
         await session_service._ensure_pool()
         pool = session_service._pool
-        event_log = PostgresKernelEventLog(pool)
+        event_log = PostgresKernelEventLog(
+            pool,
+            namespace=session_service.namespace,
+            tenant_id=session_service.tenant_id,
+            workspace_id=session_service.workspace_id,
+        )
         store: AgentKernelStore = PostgresAgentKernelStore(
             pool, event_log, owns_pool=True
         )
@@ -679,6 +743,9 @@ async def bootstrap_agent_kernel_runtime_from_env(
         contract_digest=os.environ.get("AGENT_KERNEL_CONTRACT_DIGEST", ""),
         capability_digest=os.environ.get("AGENT_KERNEL_CAPABILITY_DIGEST", ""),
         bundle_digest=os.environ.get("AGENT_BUNDLE_DIGEST", ""),
+        session_namespace=session_namespace,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
         store=store,
         session_events=session_events,
         session_service=session_service,

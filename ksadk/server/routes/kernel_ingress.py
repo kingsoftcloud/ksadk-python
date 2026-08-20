@@ -38,7 +38,10 @@ async def _kernel_submit(
         source_kind=source_kind,
         source_ref=idempotency_key,
         session_id=session_id,
-        operations=("enqueue",),
+        # A foreground compatibility request admits a mutation and then reads
+        # the same session's canonical stream.  It remains session-bound, but
+        # needs explicit authority for both operations.
+        operations=("enqueue", "subscribe_events"),
     )
     correlation_kwarg = {
         "map_run_request": "invocation_id",
@@ -88,12 +91,18 @@ def kernel_stream_response(
             session_id,
             trusted=trusted,
             after_seq=after_seq,
-            projector=_responses_projector,
+            projector=_new_responses_projector(),
         ):
             if projected is None:
                 continue
             kind, payload = projected
             yield _sse_chunk(payload, event=kind, seq=seq)
+            # A foreground response stream is scoped to one admitted run.
+            # SessionEventStore subscriptions are deliberately long-lived for
+            # replay/SSE clients, so do not leave this HTTP response open after
+            # the terminal fact has been projected.
+            if kind in {"response.completed", "response.failed", "response.canceled"}:
+                return
 
     return StreamingResponse(generator(), media_type="text/event-stream")
 
@@ -110,6 +119,16 @@ def _responses_projector(envelope: Any) -> tuple[str, dict[str, Any]] | None:
             "output_text": text,
             "delta": text,
         }
+    if event_type == "run.failed":
+        return "response.failed", {
+            "type": "response.failed",
+            "error": payload.get("error") or {"code": "runtime_failed"},
+        }
+    if event_type in {"run.canceled", "run.interrupted"}:
+        return "response.canceled", {
+            "type": "response.canceled",
+            "reason": payload.get("reason") or event_type,
+        }
     text = _envelope_text(payload)
     if text:
         return "response.output_text.delta", {
@@ -117,6 +136,60 @@ def _responses_projector(envelope: Any) -> tuple[str, dict[str, Any]] | None:
             "delta": text,
         }
     return None
+
+
+def _new_responses_projector():
+    """Create a session-scoped canonical RuntimeEvent -> Responses projector.
+
+    ``run.completed.output_refs`` deliberately point at canonical items instead
+    of duplicating answer text.  A projector therefore keeps only the small
+    item snapshot needed for this one HTTP/SSE response and resolves those
+    refs when the terminal fact arrives.
+    """
+
+    item_text: dict[str, str] = {}
+
+    def project(envelope: Any) -> tuple[str, dict[str, Any]] | None:
+        payload = envelope.payload or {}
+        event_type = envelope.event_type
+        if event_type == "item.updated":
+            item_id = str(payload.get("item_id") or "")
+            update = payload.get("update") or {}
+            text = str(update.get("text") or "")
+            if item_id and text:
+                item_text[item_id] = (
+                    text
+                    if payload.get("op") == "replace"
+                    else item_text.get(item_id, "") + text
+                )
+            return None
+        if event_type == "item.completed":
+            item_id = str(payload.get("item_id") or "")
+            parts = ((payload.get("snapshot") or {}).get("parts") or [])
+            if item_id and isinstance(parts, list):
+                item_text[item_id] = "".join(
+                    str(part.get("text") or "")
+                    for part in parts
+                    if isinstance(part, dict)
+                )
+            return None
+        if event_type == "run.completed":
+            refs = payload.get("output_refs") or []
+            output = "".join(
+                item_text.get(str(ref.get("item_id") or ""), "")
+                for ref in refs
+                if isinstance(ref, dict)
+            )
+            projected_payload = dict(payload)
+            projected_payload["output_text"] = output or str(
+                payload.get("output_text") or ""
+            )
+            return _responses_projector(
+                type("Envelope", (), {"event_type": event_type, "payload": projected_payload})()
+            )
+        return _responses_projector(envelope)
+
+    return project
 
 
 async def kernel_conversation_turn(
@@ -135,10 +208,16 @@ async def kernel_conversation_turn(
         session_id,
         trusted=trusted,
         after_seq=int(receipt.accepted_seq or 0),
-        projector=_responses_projector,
+        projector=_new_responses_projector(),
     ):
         if projected and projected[0] == "response.completed":
             output_text = str(projected[1].get("output_text") or output_text)
+            break
+        if projected and projected[0] in {"response.failed", "response.canceled"}:
+            return JSONResponse(
+                status_code=502,
+                content={"error": projected[1]},
+            )
         elif projected:
             output_text += str(projected[1].get("delta") or "")
     payload = build_payload(output_text)

@@ -15,8 +15,10 @@ from ksadk.studio.contracts import (
     Instructions,
     ModelSpec,
     NetworkPolicy,
+    RuntimeRef,
     SecuritySpec,
 )
+from ksadk.detection import FrameworkDetector, FrameworkType
 from ksadk.studio.workspace import Workspace
 
 
@@ -59,16 +61,24 @@ def test_builder_creates_complete_bundle(tmp_path: Path):
     assert (bundle_dir / "manifest.json").is_file()
     assert (bundle_dir / "resolved-agent-spec.json").is_file()
     assert (bundle_dir / "agentkit.lock").is_file()
+    assert (bundle_dir / "plugin-lock.json").is_file()
     assert (bundle_dir / "sbom.spdx.json").is_file()
     assert (bundle_dir / "provenance.json").is_file()
     assert (bundle_dir / "checksums.txt").is_file()
 
     manifest = json.loads((bundle_dir / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["bundleDigest"] == record.bundle_digest
+    assert manifest["bundleFormat"] == "agentkit.bundle/v2"
     assert manifest["runtimeContract"] == "agentkit.runtime/v1"
+    assert manifest["pluginLockDigest"].startswith("sha256:")
+    assert json.loads((bundle_dir / "plugin-lock.json").read_text(encoding="utf-8")) == {
+        "lockFormat": "agentkit.plugin-lock/v1",
+        "plugins": [],
+    }
     assert {item["path"] for item in manifest["files"]} >= {
         "resolved-agent-spec.json",
         "agentkit.lock",
+        "checksums.txt",
         "instructions/system.md",
     }
     assert workspace.relative(archive) == record.artifact_path
@@ -132,3 +142,42 @@ def test_builder_packages_skill_content_into_immutable_bundle(tmp_path: Path):
             bundle.read("capabilities/skills/research/SKILL.md")
             == b"Always cite primary sources.\n"
         )
+
+
+def test_runtime_bundle_contains_a_detectable_launch_project(tmp_path: Path):
+    workspace = Workspace(tmp_path / "workspace")
+    workspace.initialize()
+    source = workspace.root / "runtime"
+    source.mkdir()
+    (source / "agent.py").write_text("graph = object()\n", encoding="utf-8")
+    draft = AgentDraft(
+        metadata=AgentMetadata(id="studio-graph", name="Studio Graph"),
+        spec=AgentSpec(
+            instructions=Instructions(system="Be concise.", task="Reply OK."),
+            model=ModelSpec(
+                model="glm-5.1",
+                endpoint_url="https://model.example.com/v1/chat/completions",
+                credential_ref="env://MODEL_API_KEY",
+            ),
+            runtime=RuntimeRef(
+                type="langgraph",
+                project_path="runtime",
+                entry_point="agent.py",
+                agent_variable="graph",
+            ),
+            security=SecuritySpec(
+                network=NetworkPolicy(allowed_hosts=["model.example.com"])
+            ),
+        ),
+    )
+
+    record = AgentBundleBuilder(workspace).build(draft)
+    archive = workspace.resolve(record.artifact_path or "")
+    extracted = tmp_path / "extracted"
+    with zipfile.ZipFile(archive) as bundle:
+        bundle.extractall(extracted)
+
+    detection = FrameworkDetector(str(extracted / "runtime")).detect()
+    assert detection.type == FrameworkType.LANGGRAPH
+    assert detection.entry_point == "agent.py"
+    assert detection.agent_variable == "graph"

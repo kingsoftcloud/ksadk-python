@@ -81,8 +81,9 @@ export const settingsSchema = z.object({
   sandbox: z.enum(["read-only", "read_only", "workspace-write", "workspace-write-auto", "full-access"]),
   buildAfterCreate: z.boolean(),
   codexProxy: z.enum(["auto", "forced", "direct"]),
-  cloudAccessKey: z.string().max(1024, "Access Key 不能超过 1024 个字符").default(""),
-  cloudSecretKey: z.string().max(4096, "Secret Key 不能超过 4096 个字符").default(""),
+  agentEngineControlPlaneUrl: z.string().trim().url("请输入有效的控制面 URL").max(1024, "控制面 URL 不能超过 1024 个字符").or(z.literal("")).default(""),
+  agentEngineAccountId: z.string().trim().max(128, "Account ID 不能超过 128 个字符").default(""),
+  agentEngineRuntimeProfileId: z.string().trim().max(128, "Runtime Profile ID 不能超过 128 个字符").default(""),
   cloudRegion: z.string().trim().max(128, "Region 不能超过 128 个字符").default(""),
 });
 

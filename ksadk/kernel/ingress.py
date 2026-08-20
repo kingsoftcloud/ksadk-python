@@ -197,6 +197,16 @@ def trusted_context(
 ) -> TrustedRuntimeContext:
     """从 trusted runtime 侧（env / launch config）构造上下文并签 permit。"""
 
+    # Local web is still a real per-AgentInstance kernel runtime.  Without
+    # this projection its compatibility routes self-sign commands for the
+    # synthetic ``local-agent`` while the worker owns ``AGENT_INSTANCE_ID``;
+    # accepted Inbox rows would then never be leased or consumed.  In hosted
+    # mode the local signature remains unverifiable against Server JWKS, so
+    # this does not create a Server-admission bypass.
+    if agent_instance_id == "local-agent":
+        agent_instance_id = (
+            os.environ.get("AGENT_INSTANCE_ID", "").strip() or agent_instance_id
+        )
     if launch_context is not None:
         config = getattr(launch_context, "config", None) or {}
         tenant_id = str(config.get("tenant_id") or tenant_id)
@@ -432,6 +442,11 @@ async def submit_command(
     kernel = get_agent_kernel()
     if kernel is None:
         raise RuntimeError("agent kernel ingress is active but no kernel is registered")
+    # The admitted event is written through the Kernel's fenced shared log.
+    # Do not assume a legacy HTTP session service used the same namespace or
+    # connection pool; direct ingress (and the first RunAgent request) needs
+    # the session row in this exact log before the transactional admission.
+    await _ensure_shared_log_session(command)
     return await kernel.submit(command, permit=permit)
 
 
@@ -553,19 +568,42 @@ async def bootstrap_agent_kernel_from_env() -> Any | None:
         from ksadk.kernel.postgres_store import (
             PostgresAgentKernelStore,
             PostgresFencedSessionEventStore,
+            PostgresKernelEventLog,
             PostgresNonceStore,
         )
         from ksadk.sessions.postgres_service import PostgresSessionService
 
         if not dsn:
             raise RuntimeError("postgres kernel store requires AGENT_KERNEL_STORE_DSN")
+        namespace = str(os.environ.get("KSADK_SESSION_NAMESPACE") or "default").strip()
+        tenant_id = str(
+            os.environ.get("KSADK_TENANT_ID")
+            or os.environ.get("AGENTENGINE_TENANT_ID")
+            or "default"
+        ).strip()
+        workspace_id = str(
+            os.environ.get("KSADK_WORKSPACE_ID")
+            or os.environ.get("AGENTENGINE_WORKSPACE_ID")
+            or "default"
+        ).strip()
         # 事件与 session 走同一 PG（PG-backed SessionServiceEventStore），
         # 使 worker 产生的 family=runtime/v2 事件对 canonical SSE 可见；
         # nonce 用 PG durable 存储，跨 Pod / 重启防重放。
-        session_service = PostgresSessionService(dsn=dsn)
+        session_service = PostgresSessionService(
+            dsn=dsn,
+            namespace=namespace or "default",
+            tenant_id=tenant_id or "default",
+            workspace_id=workspace_id or "default",
+        )
         await session_service._ensure_pool()
         pool = session_service._pool
-        store = PostgresAgentKernelStore(pool, None, owns_pool=True)
+        event_log = PostgresKernelEventLog(
+            pool,
+            namespace=session_service.namespace,
+            tenant_id=session_service.tenant_id,
+            workspace_id=session_service.workspace_id,
+        )
+        store = PostgresAgentKernelStore(pool, event_log, owns_pool=True)
         # typed RuntimeEvent 写路径走 fenced store：ActivationWriteGuard
         # append 与 activation 行验证同一事务（Task 4 Step 5）。
         events = PostgresFencedSessionEventStore(store)

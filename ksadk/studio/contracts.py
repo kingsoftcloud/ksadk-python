@@ -446,13 +446,17 @@ class FileEntry(ContractModel):
 
 
 class BundleManifest(ContractModel):
-    bundle_format: Literal["agentkit.bundle/v1"] = "agentkit.bundle/v1"
+    # v1 remains readable for existing local Build records. Every new Studio
+    # build uses v2 because Server admission requires a deterministic plugin
+    # lock even when the lock is empty.
+    bundle_format: Literal["agentkit.bundle/v1", "agentkit.bundle/v2"] = "agentkit.bundle/v1"
     agent_id: str
     source_revision: int
     resolved_digest: str
     runtime_type: str = ""
     source_digest: str = ""
     runtime_contract: Literal["agentkit.runtime/v1"] = "agentkit.runtime/v1"
+    plugin_lock_digest: str = ""
     files: list[FileEntry]
     created_at: str = "1970-01-01T00:00:00Z"
     bundle_digest: str = ""
@@ -642,3 +646,8 @@ class DeploymentRecord(ContractModel):
     version_id: str
     status: Literal["ADMITTING", "DEPLOYING", "READY", "FAILED", "ROLLED_BACK"]
     target: DeploymentTarget
+    # These are receipts from the existing Agent creation control plane, not
+    # Studio-generated deployment identities.
+    agent_id: str | None = None
+    instance_id: str | None = None
+    artifact_id: str | None = None

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from ksadk.studio.cloud import AgentEngineCloudDeploymentGateway, UnavailableCloudGateway
 from ksadk.studio.service import StudioService
 
 
@@ -44,3 +45,29 @@ def test_missing_settings_file_keeps_env_untouched(tmp_path: Path, monkeypatch) 
     StudioService(tmp_path / "ws")
 
     assert "KSADK_CODEX_SANDBOX" not in os.environ
+
+
+def test_control_plane_settings_use_short_lived_token_without_persisting_it(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("AGENTENGINE_CONTROL_PLANE_TOKEN", "short-lived-user-token")
+    monkeypatch.delenv("AGENTENGINE_CONTROL_PLANE_URL", raising=False)
+    monkeypatch.delenv("AGENTENGINE_ACCOUNT_ID", raising=False)
+    monkeypatch.delenv("AGENTENGINE_REGION", raising=False)
+
+    studio = StudioService(tmp_path / "ws")
+    assert isinstance(studio.cloud.gateway, UnavailableCloudGateway)
+
+    settings = studio.update_settings(
+        {
+            "agentEngineControlPlaneUrl": "https://gateway.example.test",
+            "agentEngineAccountId": "account-1",
+            "agentEngineRuntimeProfileId": "langgraph-v1",
+            "cloudRegion": "cn-beijing-6",
+        }
+    )
+
+    assert settings["agentEngineControlPlaneTokenConfigured"] is True
+    assert isinstance(studio.cloud.gateway, AgentEngineCloudDeploymentGateway)
+    persisted = (tmp_path / "ws" / ".agentkit" / "settings.yaml").read_text(encoding="utf-8")
+    assert "short-lived-user-token" not in persisted

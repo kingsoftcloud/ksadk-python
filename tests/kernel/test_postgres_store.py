@@ -111,8 +111,55 @@ async def test_takeover_fences_old_owner(pg_store):
     with pytest.raises(StaleFenceError):
         await pg_store.claim_next(AGENT, SESSION, old.fencing_token)
     # 新 owner 正常写。
-    persisted = await pg_store.append_event(runtime_envelope(), expected_fence=new.fencing_token)
+    persisted = await pg_store.append_event(
+        runtime_envelope(), expected_fence=new.fencing_token
+    )
     assert persisted.seq >= 1
+
+
+async def test_shared_event_log_uses_the_session_service_scope(pg_dsn):
+    """Kernel accepted/runtime events must share the deployed session scope.
+
+    A default-scoped event log lets bootstrap succeed but rejects the first
+    command from an AgentInstance-scoped SessionService.  Exercise the real
+    Postgres tables rather than asserting constructor arguments.
+    """
+    from ksadk.kernel.postgres_store import PostgresKernelEventLog
+    from ksadk.sessions.postgres_service import PostgresSessionService
+
+    namespace = f"pytest_kernel_scope_{uuid.uuid4().hex}"
+    session_id = "scope-session"
+    service = PostgresSessionService(
+        dsn=pg_dsn,
+        namespace=namespace,
+        tenant_id="tenant-scope",
+        workspace_id="workspace-scope",
+    )
+    try:
+        await service.create_session(
+            agent_id=AGENT, user_id="kernel-user", session_id=session_id
+        )
+        event_log = PostgresKernelEventLog(
+            service._pool,
+            namespace=service.namespace,
+            tenant_id=service.tenant_id,
+            workspace_id=service.workspace_id,
+        )
+        stored = await event_log.append(runtime_envelope(session_id))
+        assert stored.session_id == session_id
+        assert (await event_log.read(session_id, after_seq=0, limit=10))[0].event_id == stored.event_id
+        row = await service._pool.fetchrow(
+            "SELECT tenant_id, workspace_id FROM ksadk_events "
+            "WHERE namespace=$1 AND session_id=$2",
+            namespace,
+            session_id,
+        )
+        assert dict(row) == {"tenant_id": "tenant-scope", "workspace_id": "workspace-scope"}
+    finally:
+        if service._pool is not None:
+            await service._pool.execute("DELETE FROM ksadk_events WHERE namespace=$1", namespace)
+            await service._pool.execute("DELETE FROM ksadk_sessions WHERE namespace=$1", namespace)
+        await service.aclose()
 
 
 async def test_append_with_stale_fence_writes_no_event(pg_store):

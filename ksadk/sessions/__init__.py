@@ -143,14 +143,28 @@ def _create_postgres_backend(
     from ksadk.sessions.postgres_service import PostgresSessionService
     from ksadk.sessions.resilient import ResilientSessionService
 
-    return ResilientSessionService(
-        PostgresSessionService(
-            dsn=config.dsn,
-            namespace=config.namespace,
-            tenant_id=config.tenant_id,
-            workspace_id=config.workspace_id,
-            connect_timeout=_postgres_connect_timeout_seconds(),
-        )
+    primary = PostgresSessionService(
+        dsn=config.dsn,
+        namespace=config.namespace,
+        tenant_id=config.tenant_id,
+        workspace_id=config.workspace_id,
+        connect_timeout=_postgres_connect_timeout_seconds(),
+    )
+    # A Kernel runtime writes canonical RuntimeEvents whose sequence and
+    # idempotency belong to one Postgres transaction.  A fail-open wrapper
+    # would dual-write a separately sequenced in-memory copy, so it must not
+    # advertise the primary's atomic capabilities (and cannot safely serve
+    # those events).  Deployed AgentKernel pods therefore fail closed when the
+    # store is unavailable; local/non-kernel web remains live-first.
+    if _agent_kernel_durable_mode():
+        return primary
+    return ResilientSessionService(primary)
+
+
+def _agent_kernel_durable_mode() -> bool:
+    return any(
+        str(os.getenv(name) or "").strip().lower() in {"1", "true", "yes", "on"}
+        for name in ("AGENT_KERNEL_ENABLED", "KSADK_AGENT_KERNEL")
     )
 
 
@@ -175,7 +189,10 @@ def describe_session_backend(*, backend: str | None = None) -> dict[str, object]
         "ContinuityDefault": "semantic/replay" if config.backend == "postgres" else "local_only",
     }
     if config.backend == "postgres":
-        payload.update({"FailureMode": "fail_open", "FallbackBackend": "memory"})
+        if _agent_kernel_durable_mode():
+            payload.update({"FailureMode": "fail_closed"})
+        else:
+            payload.update({"FailureMode": "fail_open", "FallbackBackend": "memory"})
     return payload
 
 

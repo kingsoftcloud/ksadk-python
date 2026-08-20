@@ -96,16 +96,23 @@ describe("resource schemas", () => {
     }
   });
 
-  it("keeps credential and settings secrets bounded without requiring persisted values", () => {
+  it("keeps credential values bounded and accepts non-secret control-plane settings", () => {
     expect(credentialValueSchema.safeParse({ value: "" }).success).toBe(true);
     expect(credentialValueSchema.safeParse({ value: "x".repeat(16_385) }).success).toBe(false);
-    expect(settingsSchema.safeParse({
+    const settings = settingsSchema.safeParse({
       sandbox: "workspace-write",
       buildAfterCreate: true,
       codexProxy: "auto",
-      cloudAccessKey: "",
-      cloudSecretKey: "",
+      agentEngineControlPlaneUrl: "https://gateway.example.test",
+      agentEngineAccountId: "account-1",
+      agentEngineRuntimeProfileId: "langgraph-v1",
       cloudRegion: "cn-beijing-6",
-    }).success).toBe(true);
+    });
+    expect(settings.success).toBe(true);
+    if (settings.success) {
+      expect(settings.data.agentEngineControlPlaneUrl).toBe("https://gateway.example.test");
+      expect(settings.data.agentEngineAccountId).toBe("account-1");
+      expect(settings.data.agentEngineRuntimeProfileId).toBe("langgraph-v1");
+    }
   });
 });

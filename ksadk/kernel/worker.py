@@ -68,6 +68,8 @@ from ksadk.runtime.adapter import (
     RuntimeAdapter,
     StartRequest,
 )
+
+logger = logging.getLogger(__name__)
 from ksadk.runtime.adapter import (
     ResumePayload as AdapterResumePayload,
 )
@@ -188,6 +190,20 @@ class AgentKernelWorker:
         """control lookup 入口：永远按 durable run id 查 live execution。"""
 
         return self._executions.get(durable_run_id)
+
+    def active_session_ids(self) -> set[str]:
+        """Sessions whose activation must stay alive after Inbox ack.
+
+        An enqueue is acknowledged once ``adapter.start`` returns, while its
+        RuntimeEvent stream may continue for minutes.  The composition root
+        uses this set to renew the lease during that interval; relying only on
+        accepted/claimed Inbox messages opens a stale-fence window mid-stream.
+        """
+
+        return {
+            execution.handle.session_id
+            for execution in self._executions.values()
+        }
 
     async def run_once(
         self, agent_instance_id: str, activation: ActivationLease
@@ -405,6 +421,16 @@ class AgentKernelWorker:
                 error,
             )
             self._background_stream_errors[run_id] = error
+            # A background stream has already left the Inbox claim path.  Do
+            # not turn its failure into an invisible hung UI; keep the full
+            # traceback in workload logs while recovery turns the durable run
+            # into a terminal fact.
+            logger.exception(
+                "agent-kernel runtime stream failed for durable run %s (details=%s)",
+                run_id,
+                getattr(error, "details", {}),
+                exc_info=error,
+            )
 
     async def _consume_stream(
         self,
@@ -419,7 +445,12 @@ class AgentKernelWorker:
         才把 run 收口为 COMPLETED；任何异常原样上抛。
         """
 
-        from ksadk.events.canonical import InteractionRequested, InteractionResolved
+        from ksadk.events.canonical import (
+            InteractionRequested,
+            InteractionResolved,
+            RunCompleted,
+            SourceRef,
+        )
 
         runtime_store = None
         if self._session_events is not None:
@@ -430,6 +461,8 @@ class AgentKernelWorker:
                 self._session_events, session_id=run.session_id
             )
         current_run = run
+        terminal_state: RunState | None = None
+        last_source: SourceRef | None = None
         async for event in execution.adapter.stream(execution.handle):
             if isinstance(event, InteractionRequested):
                 current_run = await self._record_interaction_request(
@@ -449,13 +482,53 @@ class AgentKernelWorker:
                 if getattr(event, "scope_id", None) == f"run:{execution.handle.run_id}":
                     update["scope_id"] = f"run:{run.run_id}"
                 event = event.model_copy(update=update)
+            last_source = event.source
             await runtime_store.append(event, guard=guard)
-        await self._store.save_run_transition(
-            current_run.model_copy(update={"state": RunState.COMPLETED}),
-            expected_fence=guard.fencing_token,
-        )
+            terminal_state = {
+                "run.completed": RunState.COMPLETED,
+                "run.failed": RunState.FAILED,
+                "run.canceled": RunState.CANCELLED,
+                "run.interrupted": RunState.INTERRUPTED,
+            }.get(event.event_type)
+
+        # ``RuntimeAdapter`` is expected to emit a terminal RuntimeEvent, but
+        # a number of framework streams naturally exhaust after their last
+        # progress/item event.  The Kernel is the lifecycle owner, so it must
+        # publish a fenced ``run.completed`` fact before recording COMPLETED.
+        # Otherwise foreground callers and Studio SSE wait forever even though
+        # the durable RunRecord says completion succeeded.
+        if terminal_state is None and current_run.state is not RunState.WAITING:
+            terminal_state = RunState.COMPLETED
+            if runtime_store is not None:
+                source = last_source or SourceRef(
+                    framework="ksadk",
+                    native_run_id=execution.runtime_run_id,
+                )
+                await runtime_store.append(
+                    RunCompleted(
+                        schema_version=2,
+                        event_id=f"{current_run.run_id}:kernel-completed",
+                        seq=0,
+                        timestamp=datetime.now(UTC).timestamp(),
+                        run_id=current_run.run_id,
+                        scope_id=f"run:{current_run.run_id}",
+                        source=source,
+                        status="completed",
+                        output_refs=(),
+                    ),
+                    guard=guard,
+                )
+        if terminal_state is not None:
+            current_run = await self._store.save_run_transition(
+                current_run.model_copy(update={"state": terminal_state}),
+                expected_fence=guard.fencing_token,
+            )
         current = self._executions.get(execution.durable_run_id)
-        if current is not None and current.handle == execution.handle:
+        if (
+            terminal_state is not None
+            and current is not None
+            and current.handle == execution.handle
+        ):
             self._executions.pop(execution.durable_run_id, None)
 
     async def _record_interaction_request(

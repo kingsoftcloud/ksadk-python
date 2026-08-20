@@ -79,8 +79,6 @@ from ksadk.sessions._postgres_tables import (
 
 SCHEMA_PATH = Path(__file__).parent / "sql" / "001_agent_kernel.sql"
 
-NAMESPACE = "default"
-
 NONCE_RETENTION_SECONDS = 24 * 3600.0
 
 ACTIVATION_FOR_SHARE_SQL = (
@@ -112,8 +110,18 @@ class PostgresKernelEventLog:
     打开的 kernel writer 事务；``append`` 则自开事务。
     """
 
-    def __init__(self, pool: Any) -> None:
+    def __init__(
+        self,
+        pool: Any,
+        *,
+        namespace: str = "default",
+        tenant_id: str = "default",
+        workspace_id: str = "default",
+    ) -> None:
         self._pool = pool
+        self._namespace = namespace.strip() or "default"
+        self._tenant_id = tenant_id.strip() or "default"
+        self._workspace_id = workspace_id.strip() or "default"
 
     @asynccontextmanager
     async def _connection(self):
@@ -138,7 +146,7 @@ class PostgresKernelEventLog:
         # 锁 session 行串行化 seq 分配，与 PostgresSessionService.append_event 相同。
         session_row = await connection.fetchrow(
             f"SELECT id FROM {KSADK_PG_SESSIONS_TABLE} WHERE namespace=$1 AND id=$2 FOR UPDATE",
-            NAMESPACE,
+            self._namespace,
             envelope.session_id,
         )
         if session_row is None:
@@ -148,7 +156,7 @@ class PostgresKernelEventLog:
         next_seq = await connection.fetchval(
             f"SELECT COALESCE(MAX(seq_id), 0) + 1 FROM {KSADK_PG_EVENTS_TABLE}"
             " WHERE namespace=$1 AND session_id=$2",
-            NAMESPACE,
+            self._namespace,
             envelope.session_id,
         )
         seq = int(next_seq or 1)
@@ -160,12 +168,14 @@ class PostgresKernelEventLog:
                 event_type, content_json, timestamp, state_delta_json,
                 seq_id, invocation_id, metadata_json
             ) VALUES (
-                $1, 'default', 'default', $2, $3, $4, $5, $6::jsonb, $7,
-                '{{}}'::jsonb, $8, $9, $10::jsonb
+                $1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9,
+                '{{}}'::jsonb, $10, $11, $12::jsonb
             )
             ON CONFLICT (namespace, id) DO NOTHING
             """,
-            NAMESPACE,
+            self._namespace,
+            self._tenant_id,
+            self._workspace_id,
             storage_id,
             envelope.session_id,
             packed.author,
@@ -187,7 +197,7 @@ class PostgresKernelEventLog:
         row = await connection.fetchrow(
             f"SELECT content_json, metadata_json, seq_id, timestamp FROM {KSADK_PG_EVENTS_TABLE}"
             " WHERE namespace=$1 AND session_id=$2 AND id=$3",
-            NAMESPACE,
+            self._namespace,
             session_id,
             storage_id,
         )
@@ -223,7 +233,7 @@ class PostgresKernelEventLog:
                 f" event_type, invocation_id FROM {KSADK_PG_EVENTS_TABLE}"
                 " WHERE namespace=$1 AND session_id=$2 AND seq_id > $3"
                 " ORDER BY seq_id LIMIT $4",
-                NAMESPACE,
+                self._namespace,
                 session_id,
                 int(after_seq),
                 int(limit),
@@ -1645,18 +1655,21 @@ class PostgresFencedSessionEventStore:
         if isinstance(guard, ActivationWriteGuard):
             async with self._connection() as connection:
                 async with connection.transaction():
-                    await self._assert_activation_fence(connection, guard)
+                    await self._assert_activation_fence(
+                        connection, guard, envelope.session_id
+                    )
                     return await self._log.append_on(connection, envelope, guard)
         return await self._log.append(envelope, guard=guard)
 
     async def _assert_activation_fence(
-        self, connection: Any, guard: ActivationWriteGuard
+        self, connection: Any, guard: ActivationWriteGuard, session_id: str
     ) -> None:
         row = await connection.fetchrow(
             "SELECT activation_id, fencing_token, lease_expires_at, released"
-            " FROM kernel_activations WHERE activation_id = $1"
+            " FROM kernel_activations WHERE activation_id = $1 AND session_id = $2"
             " FOR SHARE",
             guard.activation_id,
+            session_id,
         )
         if (
             row is None
@@ -1669,6 +1682,16 @@ class PostgresFencedSessionEventStore:
                 details={
                     "activation_id": guard.activation_id,
                     "expected_fence": int(guard.fencing_token),
+                    "observed_activation_id": (
+                        str(row["activation_id"]) if row is not None else None
+                    ),
+                    "observed_fence": (
+                        int(row["fencing_token"]) if row is not None else None
+                    ),
+                    "released": bool(row["released"]) if row is not None else None,
+                    "lease_expires_at": (
+                        row["lease_expires_at"].isoformat() if row is not None else None
+                    ),
                 },
             )
 

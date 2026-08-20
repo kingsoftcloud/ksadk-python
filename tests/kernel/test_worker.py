@@ -314,7 +314,10 @@ async def test_enqueue_emits_runtime_event_stream_with_durable_run_id():
     envelopes = await stack.events.read("s1", 0, 50)
     runtime_events = [e for e in envelopes if e.family == "runtime"]
     types = {e.event_type for e in runtime_events}
-    assert {"run.started", "run.progress"} <= types
+    # Adapters are allowed to end after progress without emitting their own
+    # final fact.  The Kernel owns the public lifecycle and must synthesize a
+    # canonical terminal event before marking the durable run completed.
+    assert {"run.started", "run.progress", "run.completed"} <= types
     assert all(e.run_id == result.run_id for e in runtime_events)
     assert stack.adapter.streams == ["adapter-run-9"]
 

@@ -127,6 +127,24 @@ async def test_configured_postgres_backend_fails_open_when_asyncpg_is_missing(
     assert "session persistence degraded" in caplog.text
 
 
+async def test_agent_kernel_postgres_backend_does_not_wrap_durable_events_in_fail_open_memory(
+    monkeypatch,
+):
+    """Kernel RuntimeEvents require one durable fact store, not a dual-write wrapper."""
+    from ksadk.sessions.postgres_service import PostgresSessionService
+
+    monkeypatch.setenv("AGENT_KERNEL_ENABLED", "1")
+    monkeypatch.setenv("KSADK_SESSION_BACKEND", "postgres")
+    monkeypatch.setenv("KSADK_SESSION_DSN", "postgresql://ksadk:secret@db.example.test:5432/session")
+
+    service = create_session_service()
+
+    assert isinstance(service, PostgresSessionService)
+    assert service.storage_capabilities.atomic_seq_bindings == frozenset(
+        {"runtime_event.seq", "session_event.seq"}
+    )
+
+
 async def test_postgres_schema_creates_readable_session_event_view(monkeypatch):
     executed: list[str] = []
     shape_results = iter((False, False, True))
