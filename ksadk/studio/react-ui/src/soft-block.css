@@ -178,6 +178,54 @@
 .delivery-empty-state h2 { margin: 0; color: var(--text); font-size: var(--font-size-card-metric); }
 .delivery-empty-state p { margin: 0; color: var(--text-tertiary); }
 
+.delivery-table-scroll {
+  overflow-x: auto;
+  margin-top: 16px;
+  border-radius: var(--radius-inset);
+  outline: 1px solid var(--studio-outline-inset);
+  outline-offset: -1px;
+}
+
+.delivery-table {
+  width: 100%;
+  min-width: 880px;
+  border-collapse: collapse;
+  background: var(--surface);
+  font-size: var(--font-size-meta);
+}
+
+.delivery-table th,
+.delivery-table td {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--studio-outline-inset);
+  color: var(--text-secondary);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.delivery-table th {
+  color: var(--text-tertiary);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
+  letter-spacing: .02em;
+}
+
+.delivery-table tbody tr:last-child td { border-bottom: 0; }
+.delivery-table td code { color: var(--text); font-size: var(--font-size-caption); }
+.delivery-table td small { display: block; margin-top: 3px; color: var(--text-tertiary); font-size: var(--font-size-caption); }
+.delivery-row-actions { display: flex; justify-content: flex-end; gap: 6px; white-space: nowrap; }
+
+.rollback-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, .62fr) auto;
+  align-items: end;
+  gap: 20px;
+}
+
+.rollback-panel label { display: grid; gap: 6px; color: var(--text-secondary); font-size: var(--font-size-meta); }
+.rollback-panel select { min-height: 36px; padding: 0 10px; border: 0; border-radius: var(--radius-chip); background: var(--surface-subtle); color: var(--text); outline: 1px solid var(--studio-outline-inset); outline-offset: -1px; }
+.rollback-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
 .more-actions-menu {
   min-width: 176px;
   padding: 4px;
@@ -208,6 +256,8 @@
   .delivery-page { padding: 20px; }
   .delivery-stat-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .delivery-fact-chain { grid-template-columns: 1fr; }
+  .rollback-panel { grid-template-columns: 1fr; align-items: stretch; }
+  .rollback-actions { justify-content: flex-start; }
 }
 
 @media (max-width: 620px) {

@@ -40,6 +40,7 @@ describe("AgentDetailPage cloud deployment", () => {
         onChat={vi.fn()}
         onBuild={vi.fn()}
         onEdit={vi.fn()}
+        onOpenDeployments={vi.fn()}
         onChanged={vi.fn()}
       />,
     );
