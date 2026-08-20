@@ -7,8 +7,9 @@
 期望行为：
 - recover 抛错 → 必须持久化收口（durable ``run.interrupted`` transition +
   fenced ``control.recovery_decided`` 审计事实），后续 Inbox 消息可消费；
-- 连收口都失败 → runtime loop 停止接管，运行态显式 degraded
-  （不再静默消费后续 Inbox）。
+- 连收口都失败 → 该 session 被隔离（quarantine），运行态如实上报
+  （P0-1 粒度修正：不再因单个 session 拖垮整个 runtime；进程级
+  degraded 只保留给全局性故障，见 test_session_quarantine.py）。
 """
 
 from __future__ import annotations
@@ -156,7 +157,7 @@ async def test_takeover_recover_failure_settles_interrupted_and_unblocks_inbox()
         await runtime.close()
 
 
-async def test_takeover_settlement_failure_degrades_runtime():
+async def test_takeover_settlement_failure_quarantines_session():
     stack, runtime = await _build()
 
     run_id = await _seed_orphan_run(stack)
@@ -171,15 +172,16 @@ async def test_takeover_settlement_failure_degrades_runtime():
     runtime.recovery.settle_interrupted = _settle_boom  # type: ignore[method-assign]
     try:
         await runtime.start()
-        await _wait_until(lambda: runtime.degraded)
-        # loop 停止接管：worker 不再运行，也不再消费 Inbox。
-        assert not runtime.worker_running
-        assert runtime.degraded
+        await _wait_until(lambda: "s1" in runtime.quarantined_sessions())
+        # 单个 session 收口失败只隔离它：runtime 继续服务其它 session，
+        # 但隔离 session 的 Inbox 不再被消费、孤儿 run 保持 RUNNING。
+        assert not runtime.degraded
+        assert runtime.worker_running
         await asyncio.sleep(0.1)
         assert stack.adapter.calls.count(("start", "s1")) == 0
         assert stack.store._runs[run_id].state is RunState.RUNNING
         readiness = await runtime.readiness.check()
-        assert readiness["degraded"] is True
-        assert readiness["ready"] is False
+        assert readiness["degraded"] is False
+        assert readiness["quarantined_sessions"] == 1
     finally:
         await runtime.close()

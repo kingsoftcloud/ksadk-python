@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import os
 import time
 from collections.abc import Callable
@@ -40,6 +41,8 @@ from ksadk.kernel.worker import AgentKernelWorker
 from ksadk.runtime.adapter import RuntimeAdapter
 
 AuthorityMode = Literal["local", "hosted"]
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -84,6 +87,10 @@ class AgentKernelRuntimeConfig:
     activation_id: str | None = None
     runtime_type: str = "ksadk-agent-kernel"
     clock: Callable[[], datetime] = now_utc
+    # 容错粒度：连续多少个不同 session 恢复失败才认为全局性故障（进程级
+    # degraded）；store 连续多少个 poll 周期不可达才整体降级。
+    quarantine_degrade_threshold: int = 5
+    store_failure_degrade_threshold: int = 10
 
 
 class LeaseHeartbeat:
@@ -211,6 +218,7 @@ class AgentKernelReadiness:
 
         worker_running = self.runtime.worker_running
         degraded = self.runtime.degraded
+        quarantined = self.runtime.quarantined_sessions()
         capability_matrix = self.runtime.kernel.capabilities().model_dump(
             mode="json"
         )
@@ -224,6 +232,9 @@ class AgentKernelReadiness:
             "store_ok": store_ok,
             "worker_running": worker_running,
             "degraded": degraded,
+            # additive：被隔离（恢复失败）的 session 数量；隔离本身不影响
+            # ready，其余 session 照常服务。
+            "quarantined_sessions": len(quarantined),
             "lease_healthy": lease_healthy,
             "activation_id": activation_id,
             "contract_digest": config.contract_digest,
@@ -258,6 +269,10 @@ class AgentKernelRuntime:
         self._heartbeat_sessions: set[str] = set()
         self._last_renewed: dict[str, float] = {}
         self._degraded = False
+        # P0-1 粒度修正：单个 session 恢复失败不再拖垮整个 runtime。
+        self._quarantined: set[str] = set()
+        self._recovery_failed_sessions: set[str] = set()
+        self._store_failures = 0
 
     # ------------------------------------------------------------ properties
 
@@ -273,6 +288,11 @@ class AgentKernelRuntime:
 
     def heartbeat_sessions(self) -> set[str]:
         return set(self._heartbeat_sessions)
+
+    def quarantined_sessions(self) -> set[str]:
+        """被隔离的 session：恢复失败且不再被本 runtime 消费。"""
+
+        return set(self._quarantined)
 
     @property
     def background_tasks(self) -> list[asyncio.Task]:
@@ -304,7 +324,7 @@ class AgentKernelRuntime:
         self._tasks.clear()
         self._worker_running = False
         # best-effort 释放持有的 activation（不阻塞关闭）。
-        for session_id in list(self._heartbeat_sessions):
+        for session_id in list(self._heartbeat_sessions | self._quarantined):
             try:
                 lease = await self.kernel_store.current_lease(
                     self.config.agent_instance_id, session_id
@@ -338,6 +358,10 @@ class AgentKernelRuntime:
                 try:
                     sessions = await self._pending_sessions()
                     for session_id in sorted(sessions):
+                        if session_id in self._quarantined:
+                            # 隔离中的 session：不 claim inbox、不恢复、
+                            # 不写任何 canonical 事件（等待人工清理）。
+                            continue
                         lease, took_over = await self.lease_heartbeat.ensure_lease(
                             session_id
                         )
@@ -349,19 +373,40 @@ class AgentKernelRuntime:
                             # takeover：对 open run 做确定性收口（attach /
                             # resume / interrupted），再继续消费 inbox。
                             # P0-1：recover 抛错不得静默吞掉——先尝试
-                            # durable 兜底收口；连收口都失败则停止接管并
-                            # 显式 degraded，绝不再消费后续 Inbox。
-                            if not await self._recover_safely(lease):
-                                self._degraded = True
-                                return
+                            # durable 兜底收口；连收口都失败则隔离该
+                            # session 并上报，其余 session 继续服务；只有
+                            # 全局性故障（store 不可达或失败扩散到阈值）
+                            # 才进程级 degraded。
+                            failure = await self._recover_safely(lease)
+                            if failure is not None:
+                                if not await self._quarantine_session(
+                                    session_id, failure
+                                ):
+                                    return
+                                continue
                         result = await self.worker.run_once(
                             self.config.agent_instance_id, lease
                         )
                         if result.outcome != "idle":
                             progressed = True
+                    self._store_failures = 0
                 except asyncio.CancelledError:
                     raise
                 except Exception:
+                    self._store_failures += 1
+                    if (
+                        self._store_failures
+                        >= self.config.store_failure_degrade_threshold
+                        and not await self._store_reachable()
+                    ):
+                        # store 持续不可达是全局性故障：宁降级不静默。
+                        logger.error(
+                            "agent kernel store unreachable after %d failures; "
+                            "degrading runtime",
+                            self._store_failures,
+                        )
+                        self._degraded = True
+                        return
                     await asyncio.sleep(self.config.poll_interval * 4)
                     continue
                 if not progressed:
@@ -396,6 +441,8 @@ class AgentKernelRuntime:
         )
         now = time.monotonic()
         for session_id in sorted(self._heartbeat_sessions):
+            if session_id in self._quarantined:
+                continue
             if now - self._last_renewed.get(session_id, 0.0) < interval:
                 continue
             self._last_renewed[session_id] = now
@@ -412,30 +459,88 @@ class AgentKernelRuntime:
                 # lease 被其它 activation 持有（真正丢失）：保留在集合里，
                 # readiness 如实上报 not-ready。
                 continue
-            if took_over and not await self._recover_safely(lease):
-                self._degraded = True
-                return
+            failure = None
+            if took_over:
+                failure = await self._recover_safely(lease)
+            if failure is not None:
+                if not await self._quarantine_session(session_id, failure):
+                    self._degraded = True
+                    return
 
-    async def _recover_safely(self, lease) -> bool:
-        """takeover 后的安全恢复：失败必须持久化收口或显式降级。
+    async def _recover_safely(self, lease) -> Exception | None:
+        """takeover 后的安全恢复：失败必须持久化收口，否则返回失败原因。
 
-        返回 True 表示恢复路径已收口（含 durable interrupted 兜底），
-        可以继续消费 Inbox；False 表示连兜底收口都失败，调用方必须
-        停止接管并 degraded。
+        返回 None 表示恢复路径已收口（含 durable interrupted 兜底），
+        可以继续消费 Inbox；返回异常表示连兜底收口都失败，由调用方决定
+        隔离该 session 还是进程级 degraded。
         """
 
         try:
             await self.recovery.recover(self.config.agent_instance_id, lease)
-            return True
-        except Exception:
-            pass
+            return None
+        except Exception as exc:
+            first_failure = exc
         try:
             await self.recovery.settle_interrupted(
                 self.config.agent_instance_id, lease
             )
-            return True
+            return None
+        except Exception as exc:
+            return first_failure or exc
+
+    async def _store_reachable(self) -> bool:
+        """store 是否仍可用：用于区分 session 级故障与全局连接故障。"""
+
+        try:
+            await self.kernel_store.list_messages(self.config.agent_instance_id)
         except Exception:
             return False
+        return True
+
+    async def _quarantine_session(self, session_id: str, exc: Exception) -> bool:
+        """隔离一个恢复失败的 session；返回 False 表示已触发进程级降级。
+
+        被隔离的 session 不再被本 runtime claim / 恢复 / 续约，其 inbox
+        消息保持 accepted（人工清理后可被新 activation 恢复）；不写任何
+        canonical 事件，避免污染日志。只有全局性故障——store 不可达或
+        恢复失败扩散到 ``quarantine_degrade_threshold`` 个不同 session——
+        才升级为进程级 degraded。
+        """
+
+        if not await self._store_reachable():
+            # store 本身不可达：这不是单个 session 的问题。
+            logger.error(
+                "agent kernel store unreachable while handling recovery "
+                "failure for session %s; degrading runtime",
+                session_id,
+            )
+            self._degraded = True
+            return False
+        self._quarantined.add(session_id)
+        self._recovery_failed_sessions.add(session_id)
+        self._heartbeat_sessions.discard(session_id)
+        self._last_renewed.pop(session_id, None)
+        self.lease_heartbeat.forget(session_id)
+        logger.warning(
+            "session %s quarantined after takeover recovery failed: "
+            "%s: %s",
+            session_id,
+            type(exc).__name__,
+            exc,
+        )
+        if (
+            len(self._recovery_failed_sessions)
+            >= self.config.quarantine_degrade_threshold
+        ):
+            logger.error(
+                "takeover recovery failed for %d distinct sessions "
+                "(threshold %d); degrading runtime",
+                len(self._recovery_failed_sessions),
+                self.config.quarantine_degrade_threshold,
+            )
+            self._degraded = True
+            return False
+        return True
 
     async def _pending_sessions(self) -> set[str]:
         messages = await self.kernel_store.list_messages(
