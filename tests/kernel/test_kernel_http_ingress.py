@@ -279,6 +279,35 @@ async def test_bootstrap_enabled_requires_dsn_for_postgres(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_hosted_legacy_ingress_bootstrap_refuses_half_runtime(monkeypatch):
+    """hosted 必须由完整 composition root 启动，不能只注册 ingress facade。"""
+
+    monkeypatch.setenv("AGENT_KERNEL_ENABLED", "1")
+    monkeypatch.setenv("AGENT_KERNEL_AUTHORITY_MODE", "hosted")
+    ingress.clear_agent_kernel()
+    with pytest.raises(RuntimeError, match="full production composition root"):
+        await ingress.bootstrap_agent_kernel_from_env()
+    assert ingress.get_agent_kernel() is None
+
+
+@pytest.mark.asyncio
+async def test_hosted_legacy_ingress_rejects_pre_registered_bare_kernel(monkeypatch):
+    """已提前注册的 facade 同样不能绕过 hosted composition-root 约束。"""
+
+    from ksadk.kernel.bootstrap import clear_agent_kernel_runtime
+
+    monkeypatch.setenv("AGENT_KERNEL_ENABLED", "1")
+    monkeypatch.setenv("AGENT_KERNEL_AUTHORITY_MODE", "hosted")
+    clear_agent_kernel_runtime()
+    ingress.set_agent_kernel(object())
+    try:
+        with pytest.raises(RuntimeError, match="bare kernel is not allowed"):
+            await ingress.bootstrap_agent_kernel_from_env()
+    finally:
+        ingress.clear_agent_kernel()
+
+
+@pytest.mark.asyncio
 async def test_bootstrap_idempotent(monkeypatch):
     monkeypatch.setenv("AGENT_KERNEL_ENABLED", "1")
     monkeypatch.setenv("AGENT_KERNEL_STORE_DRIVER", "memory")
@@ -599,6 +628,107 @@ async def test_hosted_status_and_subscription_never_self_sign(hosted_kernel_app)
         params={"tenant_id": "tenant-1", "agent_instance_id": "agent-1", "session_id": "s1"},
     )
     assert events.status_code == 401, events.text
+
+
+async def test_hosted_subscription_requires_explicit_resource_identity(hosted_kernel_app):
+    """hosted SSE 不得把缺失的 tenant/instance 降级成 local identity。"""
+
+    client, stack = hosted_kernel_app
+    permit = stack.permit("subscribe_events")
+    response = await client.get(
+        ingress.KERNEL_INGRESS_SESSION_EVENTS_PATH,
+        params={"session_id": "s1", "timeout": 0.01},
+        headers={"X-Agent-Control-Permit": permit.model_dump_json()},
+    )
+    assert response.status_code == 400, response.text
+    assert response.json()["error"]["Code"] == "missing_resource_identity"
+
+
+@pytest.mark.asyncio
+async def test_remote_jwks_parses_server_standard_keys_list(monkeypatch):
+    """Server JWKS 是标准 ``{keys: [{kid, x}]}``，不能误当旧 dict 形状。"""
+
+    import httpx
+
+    class _Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, list[dict[str, str]]]:
+            return {
+                "keys": [
+                    {
+                        "kty": "OKP",
+                        "crv": "Ed25519",
+                        "kid": "server-key-current",
+                        "x": "server-public-current",
+                    },
+                    {
+                        "kty": "OKP",
+                        "crv": "Ed25519",
+                        "kid": "server-key-rotating",
+                        "x": "server-public-rotating",
+                    },
+                ]
+            }
+
+    class _AsyncClient:
+        def __init__(self, **_kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args: Any) -> None:
+            return None
+
+        async def get(self, _url: str) -> _Response:
+            return _Response()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _AsyncClient)
+    source = ingress._remote_jwks_source("https://server.internal/agent-control/jwks")
+    assert await source.fetch_verification_keys() == {
+        "server-key-current": "server-public-current",
+        "server-key-rotating": "server-public-rotating",
+    }
+
+
+@pytest.mark.asyncio
+async def test_hosted_env_verifier_never_merges_local_public_key(monkeypatch):
+    """hosted verifier 只信 Server JWKS；本地 issuer 即使同进程也必须未知。"""
+
+    from ksadk.kernel.authorization import InvalidPermitError
+    from tests.kernel.control_harness import CLOCK_AT, PermitAuthority, command
+
+    server = PermitAuthority(key_id="server-signing-key")
+    monkeypatch.setenv("AGENT_KERNEL_AUTHORITY_MODE", "hosted")
+    monkeypatch.setenv("AGENT_CONTROL_JWKS_URL", "https://server.internal/jwks")
+    monkeypatch.setattr(ingress, "_remote_jwks_source", lambda _url: server.jwks())
+    verifier = ingress._env_permit_verifier()
+
+    server_permit = server.permit()
+    await verifier.verify(
+        server_permit,
+        command(authorization_ref=server_permit.permit_id),
+        "enqueue",
+        CLOCK_AT,
+    )
+
+    local = ingress.InProcessPermitIssuer()
+    local_permit = local.issue(
+        tenant_id="tenant-1",
+        agent_instance_id="agent-1",
+        session_id="s1",
+        operations=("enqueue",),
+        now=CLOCK_AT,
+    )
+    with pytest.raises(InvalidPermitError, match="unknown_signing_key"):
+        await verifier.verify(
+            local_permit,
+            command(authorization_ref=local_permit.permit_id),
+            "enqueue",
+            CLOCK_AT,
+        )
 
 
 async def test_hosted_status_accepts_server_permit(hosted_kernel_app):

@@ -29,7 +29,7 @@ import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, Callable
+from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -548,10 +548,35 @@ async def bootstrap_agent_kernel_from_env() -> Any | None:
     （fail loud），不静默降级。已注册 kernel 时幂等返回。
     """
 
-    if get_agent_kernel() is not None:
-        return get_agent_kernel()
+    existing = get_agent_kernel()
+    if existing is not None:
+        if _is_hosted():
+            # A caller may have registered a bare AgentKernel before entering
+            # this helper.  Treat that exactly like a fresh half-runtime: an
+            # ingress facade without the production owner loops is not a
+            # healthy hosted deployment.
+            from ksadk.kernel.bootstrap import get_agent_kernel_runtime
+
+            runtime = get_agent_kernel_runtime()
+            if runtime is None or runtime.kernel is not existing:
+                raise RuntimeError(
+                    "hosted agent kernel ingress requires the full production "
+                    "composition root; a bare kernel is not allowed"
+                )
+        return existing
     if not kernel_ingress_enabled():
         return None
+    # This legacy helper only has enough context to build the ingress facade.
+    # In a hosted workload that would create a dangerous half-runtime: it can
+    # accept a Server permit, but no worker, lease owner or recovery loop will
+    # ever consume the durable command.  Hosted applications must enter via
+    # ``bootstrap_agent_kernel_runtime_from_env`` from the FastAPI lifespan,
+    # where the real RuntimeAdapter provider is available.
+    if _is_hosted():
+        raise RuntimeError(
+            "hosted agent kernel ingress requires the full production "
+            "composition root; use bootstrap_agent_kernel_runtime_from_env"
+        )
 
     from ksadk.events.session_event import SessionServiceEventStore
     from ksadk.kernel.control import AgentKernel
@@ -900,8 +925,25 @@ def _build_kernel_router() -> Any:
                     }
                 },
             )
-        instance_id = str(params.get("agent_instance_id") or "local-agent")
-        tenant_id = str(params.get("tenant_id") or "local")
+        instance_id = str(params.get("agent_instance_id") or "").strip()
+        tenant_id = str(params.get("tenant_id") or "").strip()
+        if _is_hosted() and (not instance_id or not tenant_id):
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": {
+                        "Code": "missing_resource_identity",
+                        "Message": (
+                            "hosted subscription requires tenant_id and "
+                            "agent_instance_id"
+                        ),
+                    }
+                },
+            )
+        # Local development has no Server-issued identity projection.  Keep
+        # its explicit compatibility defaults out of the hosted branch above.
+        instance_id = instance_id or "local-agent"
+        tenant_id = tenant_id or "local"
         try:
             after_seq = int(params.get("after_seq") or 0)
         except ValueError:

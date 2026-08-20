@@ -222,7 +222,17 @@ class AgentKernelReadiness:
         capability_matrix = self.runtime.kernel.capabilities().model_dump(
             mode="json"
         )
-        digests_match = bool(config.contract_digest)
+        # The control plane compares all three digests before declaring an
+        # AgentInstance ready.  Reporting ready with only a contract digest
+        # would conceal a missing bundle/capability projection and make the
+        # runtime's health endpoint more optimistic than Server readiness.
+        digests_match = all(
+            (
+                config.contract_digest,
+                config.capability_digest,
+                config.bundle_digest,
+            )
+        )
         ready = (
             store_ok and worker_running and lease_healthy and digests_match
             and not degraded
@@ -669,6 +679,8 @@ def _validate_hosted(config: AgentKernelRuntimeConfig) -> None:
     if config.authority_mode != "hosted":
         return
     missing: list[str] = []
+    if not config.agent_instance_id or config.agent_instance_id == "local-agent":
+        missing.append("agent_instance_id")
     if not config.dsn:
         missing.append("dsn")
     if config.jwks is None:
@@ -679,6 +691,10 @@ def _validate_hosted(config: AgentKernelRuntimeConfig) -> None:
         missing.append("adapter_provider")
     if not config.contract_digest:
         missing.append("contract_digest")
+    if not config.capability_digest:
+        missing.append("capability_digest")
+    if not config.bundle_digest:
+        missing.append("bundle_digest")
     if config.nonce_store is None:
         missing.append("nonce_store")
     # 租约的 owner 必须是实际 workload identity。固定的 instance-level
@@ -914,7 +930,9 @@ async def bootstrap_agent_kernel_runtime_from_env(
         store = InMemoryAgentKernelStore(session_events)
         nonce_store = None
 
-    agent_instance_id = os.environ.get("AGENT_INSTANCE_ID", "local-agent")
+    agent_instance_id = os.environ.get("AGENT_INSTANCE_ID", "").strip()
+    if not agent_instance_id and mode != "hosted":
+        agent_instance_id = "local-agent"
     pod_uid = os.environ.get("POD_UID", "").strip()
     config = AgentKernelRuntimeConfig(
         agent_instance_id=agent_instance_id,

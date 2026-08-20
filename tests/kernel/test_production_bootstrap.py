@@ -390,14 +390,19 @@ async def test_bootstrap_close_stops_every_background_task():
         "permit_issuer",
         "adapter_provider",
         "contract_digest",
+        "capability_digest",
+        "bundle_digest",
         "nonce_store",
         "activation_id",
+        "agent_instance_id",
     ],
 )
 async def test_hosted_bootstrap_fails_closed_on_missing_dependencies(missing):
     overrides: dict[str, Any] = {missing: None}
     if missing == "dsn":
         overrides["dsn"] = ""
+    if missing in {"capability_digest", "bundle_digest", "agent_instance_id"}:
+        overrides[missing] = ""
     with pytest.raises(RuntimeError, match=missing):
         await _runtime(**overrides)
 
