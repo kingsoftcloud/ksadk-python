@@ -7,6 +7,7 @@ LangGraphRunner - LangGraph 框架运行时
 from __future__ import annotations
 
 import base64
+import asyncio
 import os
 import re
 import uuid
@@ -31,6 +32,14 @@ class LangGraphRunner(_LangGraphStreamMixin, BaseRunner):
     # this runner opts into the runtime's semantic follow-up continuation.
     supports_gateway_approval_semantic_resume = True
 
+    def __init__(self, detection_result: Any, project_dir: str):
+        super().__init__(detection_result, project_dir)
+        self._managed_checkpoint_lock = asyncio.Lock()
+        self._managed_checkpoint_prepared = False
+        self._managed_checkpoint_error: tuple[str, str] | None = None
+        self._managed_checkpoint_pool: Any = None
+        self._managed_checkpoint_namespace = ""
+
     def load_agent(self) -> None:
         self._load_agent(force_reload=False)
 
@@ -53,7 +62,13 @@ class LangGraphRunner(_LangGraphStreamMixin, BaseRunner):
         normalized = self.sync_process_model_env(model)
         if normalized is None or self._agent is None:
             return
-        if normalized == getattr(self, "_loaded_model_name", None):
+        # Studio's generated graph reads the model environment while building
+        # each model turn.  Reloading it here would discard the managed
+        # PostgreSQL checkpointer that was installed asynchronously below.
+        if (
+            normalized == getattr(self, "_loaded_model_name", None)
+            or self._managed_checkpoint_pool is not None
+        ):
             return
         self._load_agent(force_reload=True)
 
@@ -66,24 +81,23 @@ class LangGraphRunner(_LangGraphStreamMixin, BaseRunner):
         if checkpointer is None:
             checkpointer = getattr(agent, "_checkpointer", None)
         if checkpointer is None:
+            error_code, error_reason = self._managed_checkpoint_error or ("", "")
             return {
                 "Supported": False,
                 "Backend": "none",
                 "Scope": "unknown",
                 "Durable": False,
                 "SharedAcrossPods": False,
-                "Reason": "LangGraph graph has no configured checkpointer",
+                "ResumeMode": "none",
+                **({"ReasonCode": error_code} if error_code else {}),
+                "Reason": error_reason or "LangGraph graph has no configured checkpointer",
             }
 
-        checkpointer_type = type(checkpointer)
-        type_name = f"{checkpointer_type.__module__}.{checkpointer_type.__name__}".lower()
-        if "memory" in type_name or "inmemory" in type_name:
-            backend = "memory"
-        elif "sqlite" in type_name:
-            backend = "sqlite"
-        elif "postgres" in type_name:
-            backend = "postgres"
-        else:
+        backend = self._checkpoint_backend_from_saver(checkpointer)
+        if backend == "unknown":
+            # Some third-party savers hide their concrete type.  Preserve the
+            # explicit legacy declaration for those cases, but never let it
+            # override a detectable in-memory saver.
             backend = str(os.getenv("KSADK_CHECKPOINT_BACKEND") or "").strip().lower()
         if backend == "local":
             backend = "sqlite"
@@ -112,17 +126,27 @@ class LangGraphRunner(_LangGraphStreamMixin, BaseRunner):
             reason = "In-memory checkpoint cannot be recovered after process restart or across pods"
 
         return {
-            "Supported": True,
+            # A local saver may be useful for interactive development, but it
+            # is not a native durable-resume capability in a hosted runtime.
+            "Supported": backend not in {"memory", "inmemory", "unknown", ""},
             "Backend": backend,
             "Scope": scope,
             "Durable": durable,
             "SharedAcrossPods": shared,
-            "ResumeMode": "time_travel",
+            "ResumeMode": "time_travel" if durable else "none",
+            **(
+                {"ReasonCode": "CHECKPOINTER_NOT_DURABLE"}
+                if backend in {"memory", "inmemory", "unknown", ""}
+                else {}
+            ),
             "Reason": reason,
         }
 
     def get_runtime_capabilities(self) -> dict[str, Any]:
         capabilities = super().get_runtime_capabilities()
+        reason_code = str(capabilities["Checkpoint"].get("ReasonCode") or "")
+        if reason_code:
+            capabilities["ResumeRun"]["ReasonCode"] = reason_code
         capabilities["SessionContinuity"] = {
             "Supported": True,
             "Type": (
@@ -133,9 +157,149 @@ class LangGraphRunner(_LangGraphStreamMixin, BaseRunner):
         }
         return capabilities
 
+    @staticmethod
+    def _checkpoint_backend_from_saver(checkpointer: Any) -> str:
+        if checkpointer is None:
+            return "unknown"
+        for saver_type in type(checkpointer).__mro__:
+            qualified_name = f"{saver_type.__module__}.{saver_type.__name__}".lower()
+            if "checkpoint.postgres" in qualified_name or "postgressaver" in qualified_name:
+                return "postgres"
+            if "checkpoint.sqlite" in qualified_name or "sqlitesaver" in qualified_name:
+                return "sqlite"
+            if "checkpoint.memory" in qualified_name or saver_type.__name__.lower() in {
+                "memorysaver",
+                "inmemorysaver",
+            }:
+                return "memory"
+        return "unknown"
+
+    @staticmethod
+    def _env_flag(name: str) -> bool:
+        return str(os.getenv(name) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _resolve_checkpoint_namespace() -> str:
+        session_namespace = str(os.getenv("KSADK_SESSION_NAMESPACE") or "").strip()
+        if session_namespace:
+            return session_namespace
+        agent_id = str(
+            os.getenv("AGENTENGINE_AGENT_ID") or os.getenv("KSADK_AGENT_ID") or "default"
+        ).strip()
+        return f"agent:{agent_id}"
+
+    async def _create_managed_postgres_saver(self, dsn: str) -> tuple[Any, Any]:
+        from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+        from psycopg.rows import dict_row
+        from psycopg_pool import AsyncConnectionPool
+
+        timeout = max(0.1, float(os.getenv("KSADK_SESSION_CONNECT_TIMEOUT") or "5"))
+        pool = AsyncConnectionPool(
+            conninfo=dsn,
+            min_size=1,
+            max_size=10,
+            open=False,
+            timeout=timeout,
+            kwargs={
+                "autocommit": True,
+                "prepare_threshold": 0,
+                "row_factory": dict_row,
+            },
+        )
+        try:
+            await pool.open(wait=True, timeout=timeout)
+            saver = AsyncPostgresSaver(pool)
+            await saver.setup()
+            return saver, pool
+        except Exception:
+            await pool.close()
+            raise
+
+    async def prepare_runtime_capabilities(self) -> None:
+        """Install the managed saver before a graph can begin an interaction.
+
+        The graph module must opt into this seam by exporting
+        ``ksadk_graph_factory(*, checkpointer)``.  We never mutate a compiled
+        graph's private attributes: failed configuration remains fail-closed
+        and capability discovery honestly reports why native resume is absent.
+        """
+        if self._managed_checkpoint_prepared:
+            return
+        async with self._managed_checkpoint_lock:
+            if self._managed_checkpoint_prepared:
+                return
+
+            checkpointer = getattr(self._agent, "checkpointer", None)
+            if checkpointer is None:
+                checkpointer = getattr(self._agent, "_checkpointer", None)
+            if self._checkpoint_backend_from_saver(checkpointer) == "postgres":
+                self._managed_checkpoint_namespace = self._resolve_checkpoint_namespace()
+                self._managed_checkpoint_prepared = True
+                return
+
+            dsn = str(
+                os.getenv("KSADK_LANGGRAPH_CHECKPOINT_DSN")
+                or os.getenv("KSADK_SESSION_DSN")
+                or ""
+            ).strip()
+            if not self._env_flag("KSADK_LANGGRAPH_AUTO_CHECKPOINT") or not dsn:
+                self._managed_checkpoint_prepared = True
+                return
+
+            factory = getattr(self._module, "ksadk_graph_factory", None)
+            if not callable(factory):
+                self._managed_checkpoint_error = (
+                    "LANGGRAPH_FACTORY_REQUIRED",
+                    "LangGraph graph has no durable checkpointer; export "
+                    "ksadk_graph_factory(*, checkpointer) for managed PostgreSQL checkpoints",
+                )
+                self._managed_checkpoint_prepared = True
+                return
+
+            pool = None
+            try:
+                saver, pool = await self._create_managed_postgres_saver(dsn)
+                managed_graph = factory(checkpointer=saver)
+                if not callable(getattr(managed_graph, "invoke", None)):
+                    raise TypeError("ksadk_graph_factory must return a compiled LangGraph graph")
+                self._agent = managed_graph
+                self._managed_checkpoint_pool = pool
+                self._managed_checkpoint_namespace = self._resolve_checkpoint_namespace()
+                self._managed_checkpoint_error = None
+            except (ModuleNotFoundError, ImportError):
+                self._managed_checkpoint_error = (
+                    "DEPENDENCY_MISSING",
+                    "langgraph-checkpoint-postgres and psycopg are required for managed checkpoints",
+                )
+            except Exception as exc:  # noqa: BLE001
+                error_name = type(exc).__name__.lower()
+                self._managed_checkpoint_error = (
+                    "SCHEMA_PERMISSION_DENIED"
+                    if "privilege" in error_name or "permission" in error_name
+                    else "DB_UNREACHABLE",
+                    "Managed LangGraph PostgreSQL checkpointer initialization failed",
+                )
+            finally:
+                if pool is not None and self._managed_checkpoint_pool is None:
+                    try:
+                        await pool.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+                self._managed_checkpoint_prepared = True
+
+    async def close(self) -> None:
+        pool = self._managed_checkpoint_pool
+        self._managed_checkpoint_pool = None
+        if pool is not None:
+            await pool.close()
+        await super().close()
+
     def _get_config(self, session_id: str) -> dict:
         """获取运行配置"""
-        return {"configurable": {"thread_id": session_id}}
+        config = {"configurable": {"thread_id": session_id}}
+        if self._managed_checkpoint_namespace:
+            config["configurable"]["checkpoint_ns"] = self._managed_checkpoint_namespace
+        return config
 
     @staticmethod
     def _extract_langgraph_checkpoint_ref(payload: Dict[str, Any]) -> dict[str, Any]:
@@ -604,6 +768,7 @@ class LangGraphRunner(_LangGraphStreamMixin, BaseRunner):
         1. 简化格式: {"input": "hello"} - 自动转换为 messages
         2. 原生格式: {"messages": [...]} 或自定义 State - 直接透传
         """
+        await self.prepare_runtime_capabilities()
         payload = dict(input_data)
         force_graph_invoke = bool(payload.pop("_ksadk_force_graph_invoke", False))
         if not force_graph_invoke and hasattr(self._agent, "astream_events"):
@@ -885,3 +1050,9 @@ class LangGraphRunner(_LangGraphStreamMixin, BaseRunner):
         content = re.sub(r"<tool_call>.*?</tool_call>", "", content, flags=re.DOTALL)
         content = re.sub(r"</?(?:tool_call|arg_key|arg_value)>", "", content)
         return content
+
+    async def stream(self, input_data: Dict[str, Any]) -> AsyncIterator[Dict[str, Any]]:
+        """Prepare the managed checkpoint before yielding the first event."""
+        await self.prepare_runtime_capabilities()
+        async for event in super().stream(input_data):
+            yield event

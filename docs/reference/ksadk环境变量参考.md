@@ -270,6 +270,9 @@
 | `KSADK_CHECKPOINT_BACKEND` | LangGraph checkpoint | 否 | `local` | `local` 等价本地 SQLite；也支持 `sqlite`、`memory`、`postgres` | 否 | 开发者 / 平台 | 否 | LangGraph checkpoint backend。`agentengine web` 本地调试默认优先使用 SQLite。 |
 | `KSADK_CHECKPOINT_PATH` | LangGraph checkpoint | 否 | 项目目录下 `.agentengine/ui/checkpoints.sqlite` | 无 | 否 | 开发者 / 本地运行时 | 否 | 本地 SQLite checkpoint 文件路径。 |
 | `KSADK_LANGGRAPH_CHECKPOINT_DSN` | LangGraph checkpoint | 条件必传 | 未设置 | 无 | 是 | Secret | 否 | `KSADK_CHECKPOINT_BACKEND=postgres` 时的 LangGraph checkpointer PostgreSQL DSN。 |
+| `KSADK_LANGGRAPH_AUTO_CHECKPOINT` | LangGraph checkpoint | 否 | `false` | 无 | 否 | Operator / 平台 | 否 | 为 `true` 时，托管 LangGraph runner 仅对导出 `ksadk_graph_factory(*, checkpointer)` 的图注入受控 PostgreSQL saver；失败不回退到内存 checkpoint。 |
+| `KSADK_AGENT_ID` | 平台身份 | 否 | 未设置 | `AGENTENGINE_AGENT_ID` 优先 | 否 | Operator / 平台 | 否 | 稳定 Agent 身份；仅作为未配置 `KSADK_SESSION_NAMESPACE` 时 checkpoint namespace 的 fallback。 |
+| `KSADK_AGENT_KERNEL` | Agent Kernel | 否 | `false` | `AGENT_KERNEL_ENABLED` | 否 | 本地调试 / Operator | 否 | 启用 Kernel ingress。本地灰度使用该变量；托管部署由 Operator 投射 `AGENT_KERNEL_ENABLED`。 |
 | `KSADK_TENANT_ID` | Sessions | 否 | 未设置 | `AGENTENGINE_TENANT_ID` | 否 | 平台 | 否 | 租户 id。 |
 | `KSADK_WORKSPACE_ID` | Sessions | 否 | 未设置 | `AGENTENGINE_WORKSPACE_ID` | 否 | 平台 | 否 | workspace id。 |
 | `KSADK_STM_BACKEND` | 旧 STM / Sessions fallback | 否 | 未设置 | `KSADK_SESSION_BACKEND` | 否 | 兼容旧部署 | 否 | 旧变量。新部署优先 `KSADK_SESSION_BACKEND`，但 ADK/STM 仍可读。 |

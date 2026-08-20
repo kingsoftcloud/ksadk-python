@@ -263,6 +263,37 @@ def test_generated_framework_binds_and_executes_selected_builtin_tool(
     assert result
 
 
+def test_generated_langgraph_runtime_exports_a_managed_checkpoint_factory(tmp_path: Path) -> None:
+    """Studio source keeps local authoring convenient without fixing production to memory."""
+    studio = StudioService(tmp_path)
+    draft = studio.create_studio_agent(
+        agent_id="managed-checkpoint-graph",
+        name="Managed checkpoint graph",
+        spec=AgentSpec(
+            runtime=RuntimeRef(
+                type="langgraph",
+                project_path="agents/managed-checkpoint-graph/source",
+                entry_point="agent.py",
+                agent_variable="graph",
+            ),
+            model=ModelSpec(
+                model="glm-5.1",
+                endpoint_url="https://model.example.com/v1/chat/completions",
+                credential_ref="env://OPENAI_API_KEY",
+            ),
+            instructions=Instructions(system="Answer concisely."),
+            security=SecuritySpec(network=NetworkPolicy(allowed_hosts=["model.example.com"])),
+        ),
+    )
+
+    source = (tmp_path / draft.spec.runtime.project_path / "agent.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "def ksadk_graph_factory(*, checkpointer):" in source
+    assert "graph = ksadk_graph_factory(checkpointer=MemorySaver())" in source
+
+
 @pytest.mark.parametrize("runtime_type", ["adk", "langgraph"])
 def test_generated_framework_injects_confirmed_skill_instructions(
     tmp_path: Path,

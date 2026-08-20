@@ -877,11 +877,96 @@ def test_langgraph_runner_reports_actual_memory_checkpointer_over_backend_env(mo
 
     capability = runner.describe_checkpoint_capability()
 
-    assert capability["Supported"] is True
+    assert capability["Supported"] is False
     assert capability["Backend"] == "memory"
     assert capability["Scope"] == "process_local"
     assert capability["Durable"] is False
     assert capability["SharedAcrossPods"] is False
+    assert capability["ResumeMode"] == "none"
+    assert capability["ReasonCode"] == "CHECKPOINTER_NOT_DURABLE"
+
+
+@pytest.mark.asyncio
+async def test_langgraph_runner_rebuilds_studio_graph_with_managed_postgres_checkpoint(
+    monkeypatch,
+):
+    """Hosted Studio LangGraph agents must replace their local saver before a run.
+
+    The generated module deliberately starts with ``MemorySaver`` for local
+    authoring.  In a managed runtime it exports a factory so the runner can
+    rebuild it with the shared PostgreSQL saver; merely reporting the DSN is
+    not sufficient for an interrupt to survive a pod replacement.
+    """
+    from ksadk.runners.langgraph_runner import LangGraphRunner
+
+    class AsyncPostgresSaver:
+        pass
+
+    AsyncPostgresSaver.__module__ = "langgraph.checkpoint.postgres.aio"
+
+    class _Pool:
+        closed = False
+
+        async def close(self):
+            self.closed = True
+
+    saver = AsyncPostgresSaver()
+    pool = _Pool()
+    captured: dict[str, object] = {}
+
+    class _ManagedRunner(LangGraphRunner):
+        async def _create_managed_postgres_saver(self, dsn):
+            captured["dsn"] = dsn
+            return saver, pool
+
+    module = ModuleType("studio_graph")
+
+    def ksadk_graph_factory(*, checkpointer):
+        captured["checkpointer"] = checkpointer
+        return SimpleNamespace(invoke=lambda *_args, **_kwargs: None, checkpointer=checkpointer)
+
+    module.ksadk_graph_factory = ksadk_graph_factory
+    runner = _ManagedRunner(_write_detection(FrameworkType.LANGGRAPH), "/workspace/demo")
+    runner._module = module
+    runner._agent = SimpleNamespace(invoke=lambda *_args, **_kwargs: None)
+    monkeypatch.setenv("KSADK_LANGGRAPH_AUTO_CHECKPOINT", "1")
+    monkeypatch.setenv("KSADK_LANGGRAPH_CHECKPOINT_DSN", "postgresql://checkpoint.test/app")
+    monkeypatch.setenv("KSADK_SESSION_NAMESPACE", "tenant:acct:agent:studio-graph")
+
+    await runner.prepare_runtime_capabilities()
+
+    assert captured == {
+        "dsn": "postgresql://checkpoint.test/app",
+        "checkpointer": saver,
+    }
+    assert runner.describe_checkpoint_capability()["Backend"] == "postgres"
+    assert runner._get_config("session-1")["configurable"]["checkpoint_ns"] == (
+        "tenant:acct:agent:studio-graph"
+    )
+
+    await runner.close()
+    assert pool.closed is True
+
+
+@pytest.mark.asyncio
+async def test_langgraph_runner_fails_closed_when_managed_checkpoint_factory_is_missing(
+    monkeypatch,
+):
+    from ksadk.runners.langgraph_runner import LangGraphRunner
+
+    original_graph = SimpleNamespace(invoke=lambda *_args, **_kwargs: None)
+    runner = LangGraphRunner(_write_detection(FrameworkType.LANGGRAPH), "/workspace/demo")
+    runner._module = ModuleType("graph_without_checkpoint_factory")
+    runner._agent = original_graph
+    monkeypatch.setenv("KSADK_LANGGRAPH_AUTO_CHECKPOINT", "1")
+    monkeypatch.setenv("KSADK_LANGGRAPH_CHECKPOINT_DSN", "postgresql://checkpoint.test/app")
+
+    await runner.prepare_runtime_capabilities()
+
+    capability = runner.describe_checkpoint_capability()
+    assert runner._agent is original_graph
+    assert capability["Supported"] is False
+    assert capability["ReasonCode"] == "LANGGRAPH_FACTORY_REQUIRED"
 
 
 def test_create_runner_uses_custom_runner_class(monkeypatch, tmp_path):

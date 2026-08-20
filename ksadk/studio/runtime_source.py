@@ -323,16 +323,26 @@ def _call_model(state: AgentState):
     return {{"messages": [runnable.invoke(messages)]}}
 
 
-_builder = StateGraph(AgentState)
-_builder.add_node("model", _call_model)
-_builder.add_edge(START, "model")
-if _tools:
-    _builder.add_node("tools", ToolNode(_tools))
-    _builder.add_conditional_edges("model", tools_condition)
-    _builder.add_edge("tools", "model")
-else:
-    _builder.add_edge("model", END)
-{variable} = _builder.compile(checkpointer=MemorySaver())
+def ksadk_graph_factory(*, checkpointer):
+    """Compile the graph with a caller-owned checkpoint backend.
+
+    Studio uses ``MemorySaver`` for local authoring.  The hosted KsADK runner
+    rebuilds this graph through the same factory with its admitted PostgreSQL
+    saver before the first turn, so an interrupt can resume after a Pod move.
+    """
+    builder = StateGraph(AgentState)
+    builder.add_node("model", _call_model)
+    builder.add_edge(START, "model")
+    if _tools:
+        builder.add_node("tools", ToolNode(_tools))
+        builder.add_conditional_edges("model", tools_condition)
+        builder.add_edge("tools", "model")
+    else:
+        builder.add_edge("model", END)
+    return builder.compile(checkpointer=checkpointer)
+
+
+{variable} = ksadk_graph_factory(checkpointer=MemorySaver())
 '''
 
 

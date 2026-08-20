@@ -335,6 +335,12 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         sensitive=True,
     ),
     EnvVarSpec(
+        "KSADK_LANGGRAPH_AUTO_CHECKPOINT",
+        "sessions",
+        "Allow a hosted LangGraph runner to rebuild a factory-exported graph with the managed PostgreSQL saver.",
+        "false",
+    ),
+    EnvVarSpec(
         "KSADK_LOCAL_SKILLS_DIR", "skills", "Local directory containing extracted Skill packages."
     ),
     EnvVarSpec("KSADK_LTM", "memory", "AICP long-term-memory connection prefix."),
@@ -589,6 +595,17 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "KSADK_SESSION_DSN", "sessions", "Conversation session database DSN.", sensitive=True
     ),
     EnvVarSpec("KSADK_SESSION_NAMESPACE", "sessions", "Conversation session namespace."),
+    EnvVarSpec(
+        "KSADK_AGENT_ID",
+        "platform",
+        "Stable AgentEngine agent identity used only as a fallback checkpoint namespace.",
+    ),
+    EnvVarSpec(
+        "KSADK_AGENT_KERNEL",
+        "kernel",
+        "Opt in to Agent Kernel ingress locally; managed deployment may use AGENT_KERNEL_ENABLED instead.",
+        "false",
+    ),
     EnvVarSpec("KSADK_SESSION_PATH", "sessions", "Conversation local SQLite database path."),
     EnvVarSpec(
         "KSADK_SESSION_PG_CONNECT_TIMEOUT",
