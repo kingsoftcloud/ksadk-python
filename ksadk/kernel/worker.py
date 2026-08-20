@@ -68,8 +68,6 @@ from ksadk.runtime.adapter import (
     RuntimeAdapter,
     StartRequest,
 )
-
-logger = logging.getLogger(__name__)
 from ksadk.runtime.adapter import (
     ResumePayload as AdapterResumePayload,
 )
@@ -490,6 +488,20 @@ class AgentKernelWorker:
                 "run.canceled": RunState.CANCELLED,
                 "run.interrupted": RunState.INTERRUPTED,
             }.get(event.event_type)
+
+        # ``submit_interaction`` may resolve a live provider while this task is
+        # blocked in the framework stream.  It transitions the durable run
+        # WAITING -> RUNNING, but ``current_run`` above is deliberately a
+        # local snapshot used to preserve event ordering.  Refresh it before
+        # deciding whether natural stream exhaustion can settle the run;
+        # otherwise a Codex approval continuation finishes successfully but
+        # remains permanently WAITING because this task still sees its stale
+        # pre-response snapshot.
+        latest_run = await self._store.find_active_run(
+            run.agent_instance_id, run.session_id
+        )
+        if latest_run is not None and latest_run.run_id == current_run.run_id:
+            current_run = latest_run
 
         # ``RuntimeAdapter`` is expected to emit a terminal RuntimeEvent, but
         # a number of framework streams naturally exhaust after their last
