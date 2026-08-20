@@ -4,6 +4,7 @@ CLI 部署集成测试
 测试 Agent 部署的本地状态文件机制
 """
 
+import hashlib
 import json
 import os
 import tempfile
@@ -43,7 +44,10 @@ def sample_package_info(temp_project_dir):
         framework="langgraph",
         build_dir=str(temp_project_dir / ".agentengine" / "build"),
         project_dir=str(temp_project_dir),
-        metadata={"ks3_path": "ks3://test-bucket/agents/test-agent/code.zip"},
+        metadata={
+            "ks3_path": "ks3://test-bucket/agents/test-agent/code.zip",
+            "code_checksum": "a" * 64,
+        },
     )
 
 
@@ -175,6 +179,17 @@ class TestDeployLogic:
         assert "首次部署" in result.message
         create_payload = mock_client.create_agent.await_args.args[0]
         assert create_payload["network"] == {"enable_public_access": True}
+        assert create_payload["code_checksum"] == "a" * 64
+        assert create_payload["code_command"] == [
+            "ksadk",
+            "web",
+            "/app/code/runtime",
+            "--port",
+            "8080",
+            "--host",
+            "0.0.0.0",
+            "--no-open",
+        ]
 
         # 验证状态文件已创建
         state_file = temp_project_dir / ".agentengine.state"
@@ -351,6 +366,9 @@ class TestDeployLogic:
         # 验证调用了 update_agent 而不是 create_agent
         mock_client.update_agent.assert_called_once()
         mock_client.create_agent.assert_not_called()
+        update_payload = mock_client.update_agent.await_args.args[1]
+        assert update_payload["code_checksum"] == "a" * 64
+        assert update_payload["code_command"][:3] == ["ksadk", "web", "/app/code/runtime"]
 
     @pytest.mark.asyncio
     async def test_deploy_explicit_agent_id_updates_the_resolved_agent(
@@ -1083,9 +1101,12 @@ class TestDeployLogic:
             extra={"artifact_type": "Code", "no_cache": False},
         )
 
+        archive = temp_project_dir / ".agentengine" / "code_build" / "test-agent.zip"
+        archive.parent.mkdir(parents=True)
+        archive.write_bytes(b"hosted-code-archive")
         fake_build_result = BuildResult(
             success=True,
-            artifact_path=temp_project_dir / ".agentengine" / "code_build" / "test-agent.zip",
+            artifact_path=archive,
             artifact_size=1234,
             metadata={"agent_name": "test-agent", "framework": "langgraph"},
         )
@@ -1107,6 +1128,9 @@ class TestDeployLogic:
         assert metadata_file.exists()
         metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
         assert metadata["metadata"]["ks3_path"] == result.metadata["ks3_path"]
+        assert metadata["metadata"]["code_checksum"] == hashlib.sha256(
+            b"hosted-code-archive"
+        ).hexdigest()
 
         class _PackageDetectionType:
             value = "langgraph"

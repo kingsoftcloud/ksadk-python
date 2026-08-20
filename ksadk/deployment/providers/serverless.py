@@ -6,6 +6,7 @@ Serverless Provider - 金山云 Serverless 计算引擎 (AgentEngine 托管)
 - Deploy 阶段: 客户端调用 AgentEngine Server API 发起部署
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -40,6 +41,21 @@ from ksadk.deployment.registry import DeployProviderRegistry
 from ksadk.deployment.ui_config import resolve_ui_config, ui_config_to_state_fields
 
 logger = logging.getLogger(__name__)
+
+# CodeBuilder archives put the runnable application below ``runtime/``.  The
+# command and checksum travel together: sending the command for an arbitrary
+# legacy ``--ks3-path`` archive could change its launch semantics, while a
+# fresh locally built archive can be attested and safely admitted as v1.
+_HOSTED_CODE_COMMAND = (
+    "ksadk",
+    "web",
+    "/app/code/runtime",
+    "--port",
+    "8080",
+    "--host",
+    "0.0.0.0",
+    "--no-open",
+)
 
 
 _DEPLOY_PROCESS_ENV_ALLOWLIST = frozenset(
@@ -265,6 +281,18 @@ class ServerlessProvider(BaseDeployProvider):
             json.dump(payload, f, indent=2, ensure_ascii=False)
 
     @staticmethod
+    def _sha256_file(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    @staticmethod
+    def _is_sha256_digest(value: str) -> bool:
+        return len(value) == 64 and all(char in "0123456789abcdef" for char in value.lower())
+
+    @staticmethod
     def _serialize_network_config(
         target: DeployTarget, *, is_update: bool = False
     ) -> Optional[Dict[str, Any]]:
@@ -412,9 +440,20 @@ class ServerlessProvider(BaseDeployProvider):
                 return package_info
 
             # 如果没有 no_cache 且有缓存，才使用缓存
-            if not no_cache and not repackage and cached_ks3_path:
+            cached_checksum = str(package_info.metadata.get("code_checksum") or "").strip()
+            if (
+                not no_cache
+                and not repackage
+                and cached_ks3_path
+                and self._is_sha256_digest(cached_checksum)
+            ):
                 logger.info(f"Using cached bundle: {cached_ks3_path}")
                 return package_info
+            if cached_ks3_path and not no_cache and not repackage:
+                # Older metadata had only a KS3 URI.  Re-upload instead of
+                # silently creating a legacy agent that cannot be admitted to
+                # the hosted Kernel path.
+                click.echo("   缓存代码包缺少 SHA-256，重新打包并上传以启用 Kernel 准入")
 
             # 2. 构建 ZIP 包
 
@@ -449,6 +488,7 @@ class ServerlessProvider(BaseDeployProvider):
             if zip_path is None:
                 raise RuntimeError("代码构建成功但未生成 artifact_path")
             package_info.metadata.update(build_result.metadata)
+            package_info.metadata["code_checksum"] = self._sha256_file(zip_path)
             if build_result.metadata.get("manifest_sha256"):
                 target.extra["manifest_sha256"] = build_result.metadata["manifest_sha256"]
             # click.echo(f"   ✅ ZIP 已生成: {zip_path}")
@@ -698,6 +738,11 @@ class ServerlessProvider(BaseDeployProvider):
                     + ", ".join(f"runtime_config.{key}" for key in missing)
                 )
 
+        code_checksum = str(package_info.metadata.get("code_checksum") or "").strip()
+        if not self._is_sha256_digest(code_checksum):
+            code_checksum = ""
+        code_command = list(_HOSTED_CODE_COMMAND) if code_backed and code_checksum else None
+
         try:
             # 获取 dry_run 标识
             is_dry_run = target.extra.get("dry_run", False)
@@ -786,7 +831,8 @@ class ServerlessProvider(BaseDeployProvider):
                             err_msg = str(e).lower()
                             if "not found" in err_msg or "404" in err_msg or "不存在" in err_msg:
                                 click.secho(
-                                    f"   ⚠️  服务器上未找到 Agent {existing_agent_id}，将创建新 Agent",
+                                    "   ⚠️  服务器上未找到 Agent "
+                                    f"{existing_agent_id}，将创建新 Agent",
                                     fg="yellow",
                                 )
                                 agent_exists = False
@@ -830,6 +876,9 @@ class ServerlessProvider(BaseDeployProvider):
 
                         if ks3_config:
                             update_data["ks3"] = ks3_config
+                        if code_checksum:
+                            update_data["code_checksum"] = code_checksum
+                            update_data["code_command"] = code_command
                         elif artifact_type == "Container":
                             image_credential = self._image_credential_from_env(artifact_path)
                             if image_credential:
@@ -953,6 +1002,9 @@ class ServerlessProvider(BaseDeployProvider):
 
                     if ks3_config:
                         request_data["ks3"] = ks3_config
+                    if code_checksum:
+                        request_data["code_checksum"] = code_checksum
+                        request_data["code_command"] = code_command
 
                     # Container 模式: 传递镜像凭证
                     if artifact_type == "Container":
