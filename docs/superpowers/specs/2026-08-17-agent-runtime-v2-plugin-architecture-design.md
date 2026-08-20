@@ -669,14 +669,15 @@ Hosted UI/Chat 仍是终端用户对话入口，不等于管理面。
 
 ### 14.5 当前 Studio 基线与缺口
 
-截至本设计基线，Studio 已有 AgentBundle 构建、digest/provenance 校验、Deployment/rollback API、
-`HttpCloudDeploymentGateway` 合同和异步 Operation；CLI 也已有真实云部署 Provider。这些应复用，不能另造
-一套 `studio deploy` 协议。
+Studio 已有 AgentBundle 构建、digest/provenance 校验、Deployment/rollback API、异步 Operation，CLI
+也已有真实云部署 Provider。Studio 复用同一条既有路径：本机的 `DirectAgentEngineCloudDeploymentGateway`
+将不可变 ZIP 传至 KS3，创建时调用既有 `CreateAgent(Code)`，回滚调用既有 `UpdateAgent`，状态使用
+`GetAgent` 的 Server readiness 投影；不能另造一套 `studio deploy` 协议或新增 Artifact Action。
 
-但默认 `ksadk studio` 尚未装配真实 Cloud Gateway，未配置时会返回
-`CLOUD_BUNDLE_ADMISSION_UNAVAILABLE`；测试主要使用 `InMemoryCloudGateway`，React “部署”页仍是空态入口。
-因此当前状态应表述为“合同和构建骨架已存在，产品链路未闭环”，不能宣称 Studio 已支持生产云部署或云上
-Agent 管理。
+默认 `ksadk studio` 只会在启动环境提供签名 AK/SK 和 Region 时装配这条路径；否则显式返回
+`CLOUD_BUNDLE_DEPLOYMENT_UNAVAILABLE`。该本地链路及 React loading/receipt 已有回归覆盖，但它不等于
+预发验收：在 Code 模式的 AgentInstance/Kernel 投射、真实 readiness 和浏览器端到端调用完成前，不能宣称
+Studio 已支持云上生命周期闭环。
 
 ## 15. 安全、授权与审计
 

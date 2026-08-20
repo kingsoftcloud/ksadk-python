@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 const { apiFetch } = vi.hoisted(() => ({ apiFetch: vi.fn() }));
+let operationPolls = 0;
 
 apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
   if (path.startsWith("/api/v1/agents/")) {
@@ -22,7 +23,14 @@ apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
     });
     return new Response(JSON.stringify({ id: "operation-1", status: "RUNNING" }));
   }
-  if (path === "/api/v1/operations/operation-1") return new Response(JSON.stringify({ status: "SUCCEEDED", resourceId: "dep-1" }));
+  if (path === "/api/v1/operations/operation-1") {
+    operationPolls += 1;
+    return new Response(JSON.stringify(
+      operationPolls === 1
+        ? { status: "RUNNING" }
+        : { status: "SUCCEEDED", resourceId: "dep-1" },
+    ));
+  }
   if (path === "/api/v1/deployments/dep-1") return new Response(JSON.stringify({ instanceId: "instance-1" }));
   throw new Error(path);
 });
@@ -33,6 +41,7 @@ import { AgentDetailPage } from "./AgentDetailPage";
 
 describe("AgentDetailPage cloud deployment", () => {
   it("submits the latest successful Bundle to the preproduction target", async () => {
+    operationPolls = 0;
     render(
       <AgentDetailPage
         agentId="demo-agent"
@@ -53,5 +62,6 @@ describe("AgentDetailPage cloud deployment", () => {
         expect.objectContaining({ method: "POST" }),
       );
     });
+    expect(await screen.findByText("云端处理中：上传 Bundle 与创建 Agent")).toBeInTheDocument();
   });
 });

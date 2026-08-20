@@ -32,9 +32,9 @@ from ksadk.studio.authoring_coordinator import StudioAuthoringCoordinator
 from ksadk.studio.builder import AgentBundleBuilder
 from ksadk.studio.capabilities import builtin_tool_contracts
 from ksadk.studio.cloud import (
-    AgentEngineCloudDeploymentGateway,
     CloudDeploymentGateway,
     CloudDeploymentService,
+    DirectAgentEngineCloudDeploymentGateway,
     UnavailableCloudGateway,
 )
 from ksadk.studio.codex_agent_service import CodexAgentService, CodexDraftRepository
@@ -1060,22 +1060,23 @@ class StudioService:
             "sandbox": os.environ.get("KSADK_CODEX_SANDBOX", "read_only"),
             "buildAfterCreate": True,
             "codexProxy": os.environ.get("KSADK_CODEX_USE_PROXY", "auto"),
-            "agentEngineControlPlaneUrl": os.environ.get(
-                "AGENTENGINE_CONTROL_PLANE_URL", ""
-            ),
-            "agentEngineAccountId": os.environ.get("AGENTENGINE_ACCOUNT_ID", ""),
-            "agentEngineControlPlaneTokenConfigured": bool(
-                os.environ.get("AGENTENGINE_CONTROL_PLANE_TOKEN", "").strip()
-            ),
-            "agentEngineRuntimeProfileId": os.environ.get(
-                "AGENTENGINE_RUNTIME_PROFILE_ID", ""
-            ),
             "cloudRegion": os.environ.get(
                 "AGENTENGINE_REGION", os.environ.get("KSYUN_REGION", "cn-beijing-6")
             ),
+            "cloudBucket": os.environ.get("KS3_BUCKET", ""),
+            "cloudSignedAccountConfigured": bool(
+                (
+                    os.environ.get("KSYUN_ACCESS_KEY")
+                    or os.environ.get("KS3_ACCESS_KEY", "")
+                ).strip()
+                and (
+                    os.environ.get("KSYUN_SECRET_KEY")
+                    or os.environ.get("KS3_SECRET_KEY", "")
+                ).strip()
+            ),
             "traceContent": os.environ.get("KSADK_STUDIO_TRACE_CONTENT", "1") != "0",
         }
-        defaults.update({k: v for k, v in data.items() if v is not None})
+        defaults.update({k: v for k, v in data.items() if k in defaults and v is not None})
         return defaults
 
     def update_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -1083,10 +1084,8 @@ class StudioService:
             "sandbox",
             "buildAfterCreate",
             "codexProxy",
-            "agentEngineControlPlaneUrl",
-            "agentEngineAccountId",
-            "agentEngineRuntimeProfileId",
             "cloudRegion",
+            "cloudBucket",
             "traceContent",
         }
         data = {k: payload[k] for k in allowed if k in payload}
@@ -1131,41 +1130,31 @@ class StudioService:
             os.environ["KSADK_CODEX_SANDBOX"] = data["sandbox"]
         if data.get("codexProxy"):
             os.environ["KSADK_CODEX_USE_PROXY"] = data["codexProxy"]
-        if data.get("agentEngineControlPlaneUrl"):
-            os.environ["AGENTENGINE_CONTROL_PLANE_URL"] = data[
-                "agentEngineControlPlaneUrl"
-            ]
-        if data.get("agentEngineAccountId"):
-            os.environ["AGENTENGINE_ACCOUNT_ID"] = data["agentEngineAccountId"]
-        if data.get("agentEngineRuntimeProfileId"):
-            os.environ["AGENTENGINE_RUNTIME_PROFILE_ID"] = data[
-                "agentEngineRuntimeProfileId"
-            ]
         if data.get("cloudRegion"):
             os.environ["AGENTENGINE_REGION"] = data["cloudRegion"]
+        if data.get("cloudBucket"):
+            os.environ["KS3_BUCKET"] = data["cloudBucket"]
         if "traceContent" in data:
             os.environ["KSADK_STUDIO_TRACE_CONTENT"] = "1" if data["traceContent"] else "0"
 
     @staticmethod
     def _configured_cloud_gateway() -> CloudDeploymentGateway:
-        """Compose the controlled Gateway adapter without persisting its token."""
+        """Compose the existing signed Code deployment path from process-only credentials."""
 
-        base_url = os.environ.get("AGENTENGINE_CONTROL_PLANE_URL", "").strip()
-        token = os.environ.get("AGENTENGINE_CONTROL_PLANE_TOKEN", "").strip()
-        account_id = os.environ.get("AGENTENGINE_ACCOUNT_ID", "").strip()
+        access_key = (
+            os.environ.get("KSYUN_ACCESS_KEY") or os.environ.get("KS3_ACCESS_KEY", "")
+        ).strip()
+        secret_key = (
+            os.environ.get("KSYUN_SECRET_KEY") or os.environ.get("KS3_SECRET_KEY", "")
+        ).strip()
         region = os.environ.get(
             "AGENTENGINE_REGION", os.environ.get("KSYUN_REGION", "")
         ).strip()
-        if not all((base_url, token, account_id, region)):
+        if not all((access_key, secret_key, region)):
             return UnavailableCloudGateway()
-        return AgentEngineCloudDeploymentGateway(
-            base_url=base_url,
-            control_plane_token=token,
-            account_id=account_id,
+        return DirectAgentEngineCloudDeploymentGateway(
             region=region,
-            runtime_profile_id=os.environ.get(
-                "AGENTENGINE_RUNTIME_PROFILE_ID", ""
-            ).strip(),
+            bucket=os.environ.get("KS3_BUCKET", "").strip() or None,
         )
 
     @staticmethod

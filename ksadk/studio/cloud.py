@@ -1,18 +1,22 @@
-"""Cloud Artifact Admission and Deployment gateway contracts."""
+"""Studio Bundle upload and existing Agent lifecycle gateway contracts."""
 
 from __future__ import annotations
 
 import hashlib
 import json
 import logging
+import os
+import tempfile
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import Any, Callable, Protocol, cast
 from uuid import uuid4
 
-import httpx
 from pydantic import ValidationError
 
+from ksadk.api import AgentEngineClient
+from ksadk.builders.ks3_uploader import KS3Uploader
 from ksadk.studio.contracts import (
+    BuildRecord,
     BuildStatus,
     DeploymentRecord,
     DeploymentRequest,
@@ -20,7 +24,6 @@ from ksadk.studio.contracts import (
 from ksadk.studio.errors import StudioError
 from ksadk.studio.repository import BuildRepository
 from ksadk.studio.workspace import Workspace
-
 
 logger = logging.getLogger(__name__)
 
@@ -52,14 +55,24 @@ class CloudDeploymentGateway(Protocol):
         request: DeploymentRequest,
     ) -> DeploymentRecord: ...
 
+    async def replace_deployment(
+        self,
+        deployment: DeploymentRecord,
+        *,
+        build_id: str,
+        version_id: str,
+        bundle_digest: str,
+        request: DeploymentRequest,
+    ) -> DeploymentRecord: ...
+
     async def get_deployment_status(self, deployment: DeploymentRecord) -> DeploymentRecord: ...
 
 
 class UnavailableCloudGateway:
     async def upload_bundle(self, **_kwargs) -> str:
         raise StudioError(
-            "CLOUD_BUNDLE_ADMISSION_UNAVAILABLE",
-            "当前未配置支持 AgentBundle Admission 的云端控制面",
+            "CLOUD_BUNDLE_DEPLOYMENT_UNAVAILABLE",
+            "当前未配置可用的云端签名账号，不能上传 Bundle",
             status_code=501,
         )
 
@@ -67,6 +80,13 @@ class UnavailableCloudGateway:
         raise AssertionError("upload_bundle must fail first")
 
     async def create_deployment(self, **_kwargs) -> DeploymentRecord:
+        raise AssertionError("upload_bundle must fail first")
+
+    async def replace_deployment(
+        self,
+        _deployment: DeploymentRecord,
+        **_kwargs,
+    ) -> DeploymentRecord:
         raise AssertionError("upload_bundle must fail first")
 
 
@@ -98,315 +118,300 @@ class InMemoryCloudGateway:
         self.deployments.append(record)
         return record
 
+    async def replace_deployment(
+        self,
+        deployment: DeploymentRecord,
+        **kwargs,
+    ) -> DeploymentRecord:
+        record = DeploymentRecord(
+            id=f"dep_{uuid4().hex}",
+            build_id=kwargs["build_id"],
+            bundle_digest=kwargs["bundle_digest"],
+            version_id=kwargs["version_id"],
+            status="READY",
+            target=kwargs["request"].target,
+            agent_id=deployment.agent_id,
+            instance_id=deployment.instance_id,
+        )
+        self.deployments.append(record)
+        return record
+
     async def get_deployment_status(self, deployment: DeploymentRecord) -> DeploymentRecord:
         return deployment
 
 
-class HttpCloudDeploymentGateway:
-    def __init__(self, *, base_url: str, bearer_token: str) -> None:
-        self.base_url = base_url.rstrip("/")
-        self.bearer_token = bearer_token
+class DirectAgentEngineCloudDeploymentGateway:
+    """Deploy a Studio Bundle with the established KS3 and signed Agent APIs.
 
-    async def upload_bundle(self, **kwargs) -> str:
-        headers = {"Authorization": f"Bearer {self.bearer_token}"}
-        async with httpx.AsyncClient(follow_redirects=False, timeout=60) as client:
-            create = await client.post(
-                f"{self.base_url}/v1/artifact-uploads",
-                headers=headers,
-                json={
-                    "bundleDigest": kwargs["bundle_digest"],
-                    "size": len(kwargs["bundle"]),
-                    "provenance": kwargs["provenance"],
-                },
-            )
-            self._raise(create)
-            upload = create.json()
-            put = await client.put(
-                upload["uploadUrl"],
-                content=kwargs["bundle"],
-                headers=upload.get("headers") or {},
-            )
-            self._raise(put)
-            return str(upload["artifactUri"])
-
-    async def create_version(self, **kwargs) -> str:
-        async with httpx.AsyncClient(follow_redirects=False, timeout=30) as client:
-            response = await client.post(
-                f"{self.base_url}/v1/agents/{kwargs['agent_id']}/versions",
-                headers={"Authorization": f"Bearer {self.bearer_token}"},
-                json={
-                    "bundle": {
-                        "uri": kwargs["bundle_uri"],
-                        "digest": kwargs["bundle_digest"],
-                    },
-                    "provenance": kwargs["provenance"],
-                },
-            )
-        self._raise(response)
-        return str(response.json()["versionId"])
-
-    async def create_deployment(self, **kwargs) -> DeploymentRecord:
-        request: DeploymentRequest = kwargs["request"]
-        async with httpx.AsyncClient(follow_redirects=False, timeout=30) as client:
-            response = await client.post(
-                f"{self.base_url}/v1/deployments",
-                headers={"Authorization": f"Bearer {self.bearer_token}"},
-                json={
-                    "versionId": kwargs["version_id"],
-                    "bundleDigest": kwargs["bundle_digest"],
-                    **request.model_dump(by_alias=True, mode="json"),
-                },
-            )
-        self._raise(response)
-        return cast(DeploymentRecord, DeploymentRecord.model_validate(response.json()))
-
-    @staticmethod
-    def _raise(response: httpx.Response) -> None:
-        if response.status_code < 400:
-            return
-        raise StudioError(
-            "CLOUD_ADMISSION_REJECTED",
-            "云端拒绝 AgentBundle 或 Deployment",
-            status_code=422,
-            details={"upstreamStatus": response.status_code},
-        )
-
-
-class AgentEngineCloudDeploymentGateway:
-    """Studio adapter for admitted Bundles and the existing Agent create Action.
-
-    The only instance lifecycle call here is ``CreateAgentProduct``.  The
-    preliminary Artifact request exists solely to give Server an untrusted ZIP
-    stream it can re-hash, validate and place under a controlled KS3 key.  It
-    must never become a parallel deployment API.
+    A local Studio has the user's existing AK/SK and therefore uses the same
+    two-step path as ``agentengine build --push`` then ``agentengine deploy``:
+    upload an immutable ZIP to KS3, then call ``CreateAgent`` (or
+    ``UpdateAgent`` for rollback) through :class:`AgentEngineClient`.  It does
+    not introduce an Artifact Action, a browser-provided trusted header, or a
+    second account-control authentication scheme.
     """
-
-    _ACTION_PREFIX = "/agentengine/api/v1"
 
     def __init__(
         self,
         *,
-        base_url: str,
-        control_plane_token: str,
-        account_id: str,
         region: str,
-        runtime_profile_id: str = "",
-        transport: httpx.AsyncBaseTransport | None = None,
+        client: Any | None = None,
+        uploader_factory: Callable[..., Any] = KS3Uploader,
+        bucket: str | None = None,
+        ks3_credentials: dict[str, str] | None = None,
     ) -> None:
-        self.base_url = base_url.rstrip("/")
-        self.control_plane_token = control_plane_token.strip()
-        self.account_id = account_id.strip()
         self.region = region.strip()
-        self.runtime_profile_id = runtime_profile_id.strip()
-        self.transport = transport
-        self._admissions: dict[str, dict[str, str]] = {}
-        if not all((self.base_url, self.control_plane_token, self.account_id, self.region)):
-            raise ValueError("AgentEngine cloud gateway requires URL, token, account and region")
+        self.ks3_region = "cn-beijing-6" if self.region.lower() == "pre-online" else self.region
+        self.client = client or AgentEngineClient(region=self.region)
+        self.uploader_factory = uploader_factory
+        self.bucket = bucket or os.environ.get("KS3_BUCKET", "").strip() or None
+        supplied_credentials = ks3_credentials or {}
+        self._ks3_credentials = {
+            "access_key": str(
+                supplied_credentials.get("access_key")
+                or os.environ.get("KSYUN_ACCESS_KEY")
+                or os.environ.get("KS3_ACCESS_KEY")
+                or ""
+            ).strip(),
+            "secret_key": str(
+                supplied_credentials.get("secret_key")
+                or os.environ.get("KSYUN_SECRET_KEY")
+                or os.environ.get("KS3_SECRET_KEY")
+                or ""
+            ).strip(),
+        }
+        if not all(self._ks3_credentials.values()):
+            raise ValueError("Studio cloud gateway requires process-only KS3 credentials")
+        self._bundles: dict[str, dict[str, str]] = {}
 
     async def upload_bundle(self, **kwargs) -> str:
-        bundle = kwargs["bundle"]
+        bundle = bytes(kwargs["bundle"])
         provenance = dict(kwargs["provenance"])
         bundle_digest = str(kwargs["bundle_digest"])
-        archive_sha256 = f"sha256:{hashlib.sha256(bundle).hexdigest()}"
-        runtime_type = str(provenance.get("runtimeType") or "").strip()
         agent_id = str(provenance.get("agentId") or "").strip()
-        source_revision = str(provenance.get("sourceRevision") or "").strip()
-        if not agent_id or not source_revision:
+        runtime_type = str(provenance.get("runtimeType") or "").strip().lower()
+        if not agent_id or not runtime_type:
             raise StudioError(
                 "CLOUD_BUNDLE_METADATA_INVALID",
-                "本地 Bundle 缺少 agentId 或 sourceRevision，不能上云",
+                "本地 Bundle 缺少 agentId 或 runtimeType，不能上云",
                 status_code=422,
             )
-        profile_id = await self._runtime_profile_id(runtime_type)
-        payload = await self._post_multipart(
-            f"{self._ACTION_PREFIX}/CreateAgentArtifact",
-            data={
-                "AgentSourceId": agent_id,
-                "SourceRevision": source_revision,
-                "Region": self.region,
-                "ClientToken": f"studio-admit-{archive_sha256.removeprefix('sha256:')}",
-                "SourceArchiveSha256": archive_sha256,
-                "BundleDigest": bundle_digest,
-                "RuntimeProfileId": profile_id,
-            },
-            files={"SourceArchive": ("agent-bundle.zip", bundle, "application/zip")},
-        )
-        artifact_id = str(payload.get("AgentArtifactId") or "").strip()
-        runtime_family = str(payload.get("RuntimeFamily") or runtime_type).strip()
-        if not artifact_id:
+        archive_sha = hashlib.sha256(bundle).hexdigest()
+        if not bundle_digest.startswith("sha256:"):
             raise StudioError(
-                "CLOUD_ADMISSION_PROTOCOL_INVALID",
-                "云端 Admission 未返回 AgentArtifactId",
+                "CLOUD_BUNDLE_METADATA_INVALID",
+                "本地 Bundle 缺少 sha256 digest，不能上云",
+                status_code=422,
+            )
+        object_key = f"studio-bundles/{_safe_object_component(agent_id)}/{archive_sha}/bundle.zip"
+        uploader = self.uploader_factory(region=self.ks3_region, bucket=self.bucket)
+        local_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="wb", prefix="agentkit-studio-", suffix=".zip", delete=False
+            ) as output:
+                output.write(bundle)
+                local_path = Path(output.name)
+            bundle_uri = await uploader.upload(local_path, object_key)
+        finally:
+            if local_path is not None:
+                local_path.unlink(missing_ok=True)
+        if not bundle_uri:
+            raise StudioError(
+                "CLOUD_BUNDLE_UPLOAD_FAILED",
+                "Bundle 上传到 KS3 失败，未创建云端 Agent",
                 status_code=502,
             )
-        self._admissions[artifact_id] = {
-            "agentId": agent_id,
-            "runtimeFamily": runtime_family,
-            "bundleDigest": bundle_digest,
+        uri = str(bundle_uri)
+        self._bundles[uri] = {
+            "agent_id": agent_id,
+            "archive_sha": archive_sha,
+            "bundle_digest": bundle_digest,
+            "runtime_type": runtime_type,
+            "bucket": str(getattr(uploader, "bucket_name", self.bucket or "")),
         }
-        return f"agentartifact://{artifact_id}"
+        return uri
 
     async def create_version(self, **kwargs) -> str:
-        uri = str(kwargs["bundle_uri"])
-        if not uri.startswith("agentartifact://"):
+        bundle_uri = str(kwargs["bundle_uri"])
+        bundle = self._bundles.get(bundle_uri)
+        if bundle is None:
             raise StudioError(
-                "CLOUD_ADMISSION_PROTOCOL_INVALID",
-                "Studio 未获得受控 AgentArtifact 引用",
+                "CLOUD_BUNDLE_REFERENCE_INVALID",
+                "未知的 KS3 Bundle 引用",
                 status_code=502,
             )
-        artifact_id = uri.removeprefix("agentartifact://")
-        admission = self._admissions.get(artifact_id)
-        if admission is None or admission["agentId"] != kwargs["agent_id"]:
+        if bundle["agent_id"] != str(kwargs["agent_id"]):
             raise StudioError(
-                "CLOUD_ADMISSION_PROTOCOL_INVALID",
-                "AgentArtifact 与当前 Agent 不匹配",
+                "CLOUD_BUNDLE_REFERENCE_INVALID",
+                "Bundle 与当前 Agent 不匹配",
                 status_code=502,
             )
-        if admission["bundleDigest"] != kwargs["bundle_digest"]:
+        if bundle["bundle_digest"] != str(kwargs["bundle_digest"]):
             raise StudioError(
-                "CLOUD_ADMISSION_PROTOCOL_INVALID",
-                "AgentArtifact 与本地 Bundle digest 不匹配",
+                "CLOUD_BUNDLE_REFERENCE_INVALID",
+                "Bundle digest 不匹配",
                 status_code=502,
             )
-        return artifact_id
+        return bundle_uri
 
     async def create_deployment(self, **kwargs) -> DeploymentRecord:
-        artifact_id = str(kwargs["version_id"])
-        admission = self._admissions.get(artifact_id)
-        if admission is None:
-            raise StudioError("CLOUD_ADMISSION_PROTOCOL_INVALID", "未知 AgentArtifact", status_code=502)
-        framework = admission["runtimeFamily"].lower()
-        if framework not in {"adk", "langgraph"}:
-            raise StudioError(
-                "CLOUD_RUNTIME_UNSUPPORTED",
-                f"云端尚不支持 runtime={framework or '(empty)'} 的 Bundle 部署",
-                status_code=422,
-            )
+        bundle_uri = str(kwargs["version_id"])
+        bundle = self._bundle_for_deployment(bundle_uri, kwargs["bundle_digest"])
         request: DeploymentRequest = kwargs["request"]
-        payload = await self._post_json(
-            f"{self._ACTION_PREFIX}/CreateAgentProduct",
-            {
-                "Name": _server_agent_name(admission["agentId"]),
-                "Description": "Created by AgentKit Studio",
-                "Framework": framework,
-                "Region": request.target.region,
-                "DeploymentType": "Code",
-                "AgentArtifactId": artifact_id,
-                "AutoPay": True,
-            },
+        result = await self.client.create_agent(
+            self._create_payload(bundle_uri=bundle_uri, bundle=bundle, request=request)
         )
-        agent_id = str(payload.get("AgentId") or "").strip()
-        instance_id = str(payload.get("InstanceId") or "").strip()
-        if not agent_id or not instance_id:
+        agent_id = str(result.get("agent_id") or "").strip()
+        instance_id = str(result.get("instance_id") or "").strip() or None
+        if not agent_id:
             raise StudioError(
                 "CLOUD_DEPLOYMENT_PROTOCOL_INVALID",
-                "云端创建订单未返回 AgentId / InstanceId",
+                "CreateAgentProduct 未返回 AgentId",
                 status_code=502,
             )
-        return DeploymentRecord(
-            id=f"dep_{instance_id}",
-            build_id=kwargs["build_id"],
-            bundle_digest=kwargs["bundle_digest"],
-            version_id=agent_id,
-            status="DEPLOYING",
-            target=request.target,
+        return self._receipt(
+            build_id=str(kwargs["build_id"]),
+            bundle_digest=str(kwargs["bundle_digest"]),
+            bundle_uri=bundle_uri,
             agent_id=agent_id,
             instance_id=instance_id,
-            artifact_id=artifact_id,
+            target=request.target,
+            status="DEPLOYING",
+        )
+
+    async def replace_deployment(
+        self,
+        deployment: DeploymentRecord,
+        **kwargs,
+    ) -> DeploymentRecord:
+        if not deployment.agent_id:
+            raise StudioError(
+                "DEPLOYMENT_PROTOCOL_INVALID",
+                "部署 receipt 缺少 AgentId",
+                status_code=502,
+            )
+        bundle_uri = str(kwargs["version_id"])
+        bundle = self._bundle_for_deployment(bundle_uri, kwargs["bundle_digest"])
+        request: DeploymentRequest = kwargs["request"]
+        await self.client.update_agent(
+            deployment.agent_id,
+            {
+                "artifact_type": "Code",
+                "artifact_path": bundle_uri,
+                "ks3": self._code_config(bundle["bucket"]),
+            },
+        )
+        return self._receipt(
+            build_id=str(kwargs["build_id"]),
+            bundle_digest=str(kwargs["bundle_digest"]),
+            bundle_uri=bundle_uri,
+            agent_id=deployment.agent_id,
+            instance_id=deployment.instance_id,
+            target=request.target,
+            status="DEPLOYING",
         )
 
     async def get_deployment_status(self, deployment: DeploymentRecord) -> DeploymentRecord:
-        if not deployment.instance_id:
+        if not deployment.agent_id:
             return deployment
-        payload = await self._post_json(
-            f"{self._ACTION_PREFIX}/FetchAgentInstanceStatus",
-            {"InstanceId": deployment.instance_id},
+        payload = await self.client.get_agent(agent_id=deployment.agent_id)
+        kernel_ready = bool(payload.get("agent_kernel_ready"))
+        status = str(
+            payload.get("status")
+            or (payload.get("basic") or {}).get("status")
+            or (payload.get("deployment") or {}).get("status")
+            or ""
+        ).strip().upper()
+        projected = (
+            "FAILED"
+            if status in {"FAILED", "TERMINATED", "ERROR"}
+            else "READY"
+            if kernel_ready
+            else "DEPLOYING"
         )
-        status = str(payload.get("Status") or "").upper()
-        projected = {
-            "RUNNING": "READY",
-            "FAILED": "FAILED",
-            "TERMINATED": "FAILED",
-            "STARTING": "DEPLOYING",
-            "CREATING": "DEPLOYING",
-            "UPDATING": "DEPLOYING",
-            "SCALING": "DEPLOYING",
-        }.get(status, "DEPLOYING")
         return deployment.model_copy(update={"status": projected})
 
-    async def _runtime_profile_id(self, runtime_type: str) -> str:
-        if self.runtime_profile_id:
-            return self.runtime_profile_id
-        payload = await self._post_json(f"{self._ACTION_PREFIX}/ListAgentRuntimeProfiles", {})
-        profiles = payload.get("RuntimeProfiles")
-        matches = [
-            item for item in profiles if isinstance(item, dict)
-            and str(item.get("RuntimeFamily") or "").strip().lower() == runtime_type.lower()
-        ] if isinstance(profiles, list) else []
-        if len(matches) != 1:
+    def _bundle_for_deployment(self, bundle_uri: str, bundle_digest: Any) -> dict[str, str]:
+        bundle = self._bundles.get(bundle_uri)
+        if bundle is None or bundle["bundle_digest"] != str(bundle_digest):
             raise StudioError(
-                "CLOUD_RUNTIME_PROFILE_UNAVAILABLE",
-                "云端没有唯一匹配的不可变 RuntimeProfile",
-                status_code=503,
-                details={"runtimeType": runtime_type, "matches": len(matches)},
+                "CLOUD_BUNDLE_REFERENCE_INVALID",
+                "Bundle 引用或 digest 不匹配",
+                status_code=502,
             )
-        profile_id = str(matches[0].get("RuntimeProfileId") or "").strip()
-        if not profile_id:
-            raise StudioError("CLOUD_PROFILE_PROTOCOL_INVALID", "云端 RuntimeProfile 返回无效", status_code=502)
-        return profile_id
+        return bundle
 
-    async def _post_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-        async with self._client() as client:
-            response = await client.post(path, headers=self._headers(), json=payload)
-        return self._action_payload(response)
-
-    async def _post_multipart(
-        self, path: str, *, data: dict[str, str], files: dict[str, tuple[str, bytes, str]]
+    def _create_payload(
+        self,
+        *,
+        bundle_uri: str,
+        bundle: dict[str, str],
+        request: DeploymentRequest,
     ) -> dict[str, Any]:
-        async with self._client() as client:
-            response = await client.post(path, headers=self._headers(), data=data, files=files)
-        return self._action_payload(response)
-
-    def _client(self) -> httpx.AsyncClient:
-        return httpx.AsyncClient(
-            base_url=self.base_url, follow_redirects=False, timeout=60, transport=self.transport
-        )
-
-    def _headers(self) -> dict[str, str]:
-        # The public edge validates this short-lived user credential then strips
-        # it and injects X-Auth-*; Gateway itself never trusts client identity
-        # headers. Account/region stay client-side correlation only.
         return {
-            "Authorization": f"Bearer {self.control_plane_token}",
-            "X-Ksc-Account-Id": self.account_id,
-            "X-Ksc-Region": self.region,
+            "name": _server_agent_name(bundle["agent_id"]),
+            "description": "Created by AgentKit Studio",
+            "framework": bundle["runtime_type"],
+            "artifact_type": "Code",
+            "artifact_path": bundle_uri,
+            "region": request.target.region,
+            "ks3": self._code_config(bundle["bucket"]),
+            "resources": {"cpu": 2, "memory": "4Gi"},
+            "scaling": {"min_replicas": 1, "max_replicas": 1, "concurrency": 20},
+            "auth_type": "ApiKey",
+        }
+
+    def _code_config(self, bucket: str) -> dict[str, str]:
+        return {
+            **self._ks3_credentials,
+            "region": self.ks3_region,
+            "bucket": bucket,
         }
 
     @staticmethod
-    def _action_payload(response: httpx.Response) -> dict[str, Any]:
-        try:
-            body = response.json()
-        except ValueError as exc:
-            raise StudioError("CLOUD_CONTROL_PLANE_PROTOCOL_INVALID", "云端返回非 JSON 响应", status_code=502) from exc
-        if response.status_code >= 400 or not isinstance(body, dict) or int(body.get("Code") or 0) != 0:
-            raise StudioError(
-                "CLOUD_CONTROL_PLANE_UNAVAILABLE" if response.status_code >= 500 else "CLOUD_ADMISSION_REJECTED",
-                "云端拒绝 Bundle 准入或 Agent 创建请求",
-                status_code=503 if response.status_code >= 500 else 422,
-                details={"upstreamStatus": response.status_code},
-            )
-        data = body.get("Data")
-        if not isinstance(data, dict):
-            raise StudioError("CLOUD_CONTROL_PLANE_PROTOCOL_INVALID", "云端 Action 未返回 Data 对象", status_code=502)
-        return data
+    def _receipt(
+        *,
+        build_id: str,
+        bundle_digest: str,
+        bundle_uri: str,
+        agent_id: str,
+        instance_id: str | None,
+        target,
+        status: str,
+    ) -> DeploymentRecord:
+        return DeploymentRecord(
+            id=f"dep_{uuid4().hex}",
+            build_id=build_id,
+            bundle_digest=bundle_digest,
+            version_id=f"bundle-{hashlib.sha256(bundle_uri.encode('utf-8')).hexdigest()[:16]}",
+            status=cast(Any, status),
+            target=target,
+            agent_id=agent_id,
+            instance_id=instance_id,
+            bundle_uri=bundle_uri,
+        )
 
 
 def _server_agent_name(agent_id: str) -> str:
-    normalized = "".join(char if char.isalnum() or char == "-" else "-" for char in agent_id.lower())
+    normalized = "".join(
+        char if char.isalnum() or char == "-" else "-" for char in agent_id.lower()
+    )
     normalized = normalized.strip("-") or "agent"
     if not normalized[0].isalpha():
         normalized = f"agent-{normalized}"
-    return f"studio-{normalized}"[:63].rstrip("-")
+    if not normalized.startswith("studio-"):
+        normalized = f"studio-{normalized}"
+    return normalized[:63].rstrip("-")
+
+
+def _safe_object_component(value: str) -> str:
+    """Keep an immutable KS3 key below the Studio-owned prefix."""
+
+    normalized = "".join(
+        char if char.isalnum() or char in {"-", "_"} else "-" for char in value.lower()
+    ).strip("-")
+    return normalized[:96] or "agent"
 
 
 class CloudDeploymentService:
@@ -426,6 +431,46 @@ class CloudDeploymentService:
         build_id: str,
         request: DeploymentRequest,
     ) -> DeploymentRecord:
+        return await self._deploy_build(build_id, request)
+
+    async def _deploy_build(
+        self,
+        build_id: str,
+        request: DeploymentRequest,
+        *,
+        replacing: DeploymentRecord | None = None,
+    ) -> DeploymentRecord:
+        build, bundle, provenance = self._prepared_build(build_id)
+        bundle_uri = await self.gateway.upload_bundle(
+            bundle=bundle,
+            bundle_digest=build.bundle_digest,
+            provenance=provenance,
+        )
+        version_id = await self.gateway.create_version(
+            agent_id=build.agent_id,
+            bundle_uri=bundle_uri,
+            bundle_digest=build.bundle_digest,
+            provenance=provenance,
+        )
+        if replacing is None:
+            record = await self.gateway.create_deployment(
+                build_id=build_id,
+                version_id=version_id,
+                bundle_digest=build.bundle_digest,
+                request=request,
+            )
+        else:
+            record = await self.gateway.replace_deployment(
+                replacing,
+                build_id=build_id,
+                version_id=version_id,
+                bundle_digest=build.bundle_digest,
+                request=request,
+            )
+        self._save(record, request)
+        return record
+
+    def _prepared_build(self, build_id: str) -> tuple[BuildRecord, bytes, dict[str, Any]]:
         build = self.build_repository.get(build_id)
         if build.status != BuildStatus.SUCCEEDED or not build.artifact_path:
             raise StudioError(
@@ -452,25 +497,7 @@ class CloudDeploymentService:
         provenance["runtimeType"] = str(
             manifest.get("runtimeType") or build.runtime_type
         )
-        bundle_uri = await self.gateway.upload_bundle(
-            bundle=bundle,
-            bundle_digest=build.bundle_digest,
-            provenance=provenance,
-        )
-        version_id = await self.gateway.create_version(
-            agent_id=build.agent_id,
-            bundle_uri=bundle_uri,
-            bundle_digest=build.bundle_digest,
-            provenance=provenance,
-        )
-        record = await self.gateway.create_deployment(
-            build_id=build_id,
-            version_id=version_id,
-            bundle_digest=build.bundle_digest,
-            request=request,
-        )
-        self._save(record, request)
-        return record
+        return build, bundle, provenance
 
     def get(self, deployment_id: str) -> DeploymentRecord:
         path = self.workspace.resolve(
@@ -553,7 +580,12 @@ class CloudDeploymentService:
             self.get(deployment_id)
         payload = json.loads(path.read_text(encoding="utf-8"))
         request = DeploymentRequest.model_validate(payload["request"])
-        return await self.deploy(target_build_id, request)
+        deployment = DeploymentRecord.model_validate(payload["record"])
+        return await self._deploy_build(
+            target_build_id,
+            request,
+            replacing=deployment,
+        )
 
     def _save(
         self,

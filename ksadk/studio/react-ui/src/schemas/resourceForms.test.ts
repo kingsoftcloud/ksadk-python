@@ -96,23 +96,21 @@ describe("resource schemas", () => {
     }
   });
 
-  it("keeps credential values bounded and accepts non-secret control-plane settings", () => {
+  it("keeps credential values bounded and accepts non-secret signed-deploy settings", () => {
     expect(credentialValueSchema.safeParse({ value: "" }).success).toBe(true);
     expect(credentialValueSchema.safeParse({ value: "x".repeat(16_385) }).success).toBe(false);
     const settings = settingsSchema.safeParse({
       sandbox: "workspace-write",
       buildAfterCreate: true,
       codexProxy: "auto",
-      agentEngineControlPlaneUrl: "https://gateway.example.test",
-      agentEngineAccountId: "account-1",
-      agentEngineRuntimeProfileId: "langgraph-v1",
-      cloudRegion: "cn-beijing-6",
+      cloudRegion: "pre-online",
+      cloudBucket: "agentengine-test",
     });
     expect(settings.success).toBe(true);
     if (settings.success) {
-      expect(settings.data.agentEngineControlPlaneUrl).toBe("https://gateway.example.test");
-      expect(settings.data.agentEngineAccountId).toBe("account-1");
-      expect(settings.data.agentEngineRuntimeProfileId).toBe("langgraph-v1");
+      expect(settings.data.cloudRegion).toBe("pre-online");
+      expect(settings.data.cloudBucket).toBe("agentengine-test");
+      expect(settings.data).not.toHaveProperty("agentEngineControlPlaneUrl");
     }
   });
 });

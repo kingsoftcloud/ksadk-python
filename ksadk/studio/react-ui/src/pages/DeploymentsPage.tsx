@@ -179,12 +179,12 @@ export function DeploymentsPage({ onCreate }: { onCreate: () => void }) {
       {loading ? <div className="delivery-empty-state"><p>正在读取部署 receipt…</p></div> : !deployments.length ? (
         <div className="delivery-empty-state">
           <CloudUpload size={24} /><h2>还没有预发部署</h2>
-          <p>先构建 AgentBundle，再从 Agent 详情发起受控准入和云端创建。</p>
+          <p>先构建 AgentBundle，再从 Agent 详情上传不可变 Bundle 并创建云端 Agent。</p>
           <button className="button accent" type="button" onClick={onCreate}>创建 Agent</button>
         </div>
       ) : (
         <section className="delivery-block" aria-label="部署生命周期">
-          <h2>部署生命周期</h2><p>Bundle、准入与云端实例的每一行都有独立 receipt。</p>
+          <h2>部署生命周期</h2><p>Bundle、既有 Agent 生命周期与云端实例的每一行都有独立 receipt。</p>
           <div className="delivery-table-scroll">
             <table className="delivery-table">
               <thead><tr><th>状态</th><th>云端实例</th><th>Build</th><th>Bundle digest</th><th>目标</th><th><span className="sr-only">操作</span></th></tr></thead>

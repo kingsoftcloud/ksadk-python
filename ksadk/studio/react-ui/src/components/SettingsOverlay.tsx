@@ -63,10 +63,8 @@ export function SettingsOverlay({ themePreference, onThemePreferenceChange, init
       sandbox: "read-only",
       buildAfterCreate: true,
       codexProxy: "auto",
-      agentEngineControlPlaneUrl: "",
-      agentEngineAccountId: "",
-      agentEngineRuntimeProfileId: "",
       cloudRegion: "",
+      cloudBucket: "",
     },
   });
   const [credRows, setCredRows] = useState<Array<{ ref: string; name: string; configured: boolean; source: string; model: ResItem }>>([]);
@@ -119,10 +117,8 @@ export function SettingsOverlay({ themePreference, onThemePreferenceChange, init
           sandbox: normalizeSandbox(s.sandbox),
           buildAfterCreate: s.buildAfterCreate !== false,
           codexProxy: s.codexProxy || "auto",
-          agentEngineControlPlaneUrl: s.agentEngineControlPlaneUrl || "",
-          agentEngineAccountId: s.agentEngineAccountId || "",
-          agentEngineRuntimeProfileId: s.agentEngineRuntimeProfileId || "",
           cloudRegion: s.cloudRegion || "",
+          cloudBucket: s.cloudBucket || "",
         });
       } catch { setSettings({}); }
       await loadCredentials();
@@ -145,10 +141,8 @@ export function SettingsOverlay({ themePreference, onThemePreferenceChange, init
         buildAfterCreate: values.buildAfterCreate,
         codexProxy: values.codexProxy,
       };
-      if (values.agentEngineControlPlaneUrl.trim()) payload.agentEngineControlPlaneUrl = values.agentEngineControlPlaneUrl.trim();
-      if (values.agentEngineAccountId.trim()) payload.agentEngineAccountId = values.agentEngineAccountId.trim();
-      if (values.agentEngineRuntimeProfileId.trim()) payload.agentEngineRuntimeProfileId = values.agentEngineRuntimeProfileId.trim();
       if (values.cloudRegion.trim()) payload.cloudRegion = values.cloudRegion.trim();
+      if (values.cloudBucket.trim()) payload.cloudBucket = values.cloudBucket.trim();
       const res = await apiFetch("/api/v1/system/settings", {
         method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
       });
@@ -278,25 +272,17 @@ export function SettingsOverlay({ themePreference, onThemePreferenceChange, init
       </section>
 
       <section id="settings-cloud" className="settings-group" tabIndex={-1}>
-        <h3>云端控制面</h3>
-        <p className="helper">Studio 只调用 AgentEngine Gateway/Server 的 Bundle 准入和现有创建 Action。短期用户 Token 由启动 Studio 的环境注入，绝不会写进工作区。</p>
-        <div className="form-grid two-columns">
-          <FormField label="控制面 URL" requirement="optional" htmlFor="settingControlPlaneUrl" error={settingsForm.formState.errors.agentEngineControlPlaneUrl?.message}>
-            <input id="settingControlPlaneUrl" placeholder="https://gateway.example.com" {...settingsForm.register("agentEngineControlPlaneUrl")} />
-          </FormField>
-          <FormField label="Account ID" requirement="optional" htmlFor="settingControlPlaneAccount" error={settingsForm.formState.errors.agentEngineAccountId?.message}>
-            <input id="settingControlPlaneAccount" placeholder="账户 ID" {...settingsForm.register("agentEngineAccountId")} />
-          </FormField>
-        </div>
+        <h3>云端部署</h3>
+        <p className="helper">部署时 Studio 将不可变 Bundle 直传 KS3，再调用既有 CreateAgent / UpdateAgent。AK/SK 只从启动 Studio 的环境读取，绝不会写入工作区、页面或 deployment receipt。</p>
         <div className="form-grid two-columns">
           <FormField label="Region" requirement="optional" htmlFor="settingCloudRegion" error={settingsForm.formState.errors.cloudRegion?.message}>
-            <input id="settingCloudRegion" placeholder="cn-beijing-6" {...settingsForm.register("cloudRegion")} />
+            <input id="settingCloudRegion" placeholder="pre-online" {...settingsForm.register("cloudRegion")} />
           </FormField>
-          <FormField label="Runtime Profile ID" requirement="optional" htmlFor="settingRuntimeProfile" hint="留空时按 Bundle runtime 自动匹配唯一 Profile。" error={settingsForm.formState.errors.agentEngineRuntimeProfileId?.message}>
-            <input id="settingRuntimeProfile" placeholder="langgraph-v1" {...settingsForm.register("agentEngineRuntimeProfileId")} />
+          <FormField label="KS3 Bucket" requirement="optional" htmlFor="settingCloudBucket" hint="留空时复用启动环境或 SDK 默认 Bucket。" error={settingsForm.formState.errors.cloudBucket?.message}>
+            <input id="settingCloudBucket" placeholder="agentengine-<account>-cn-beijing-6" {...settingsForm.register("cloudBucket")} />
           </FormField>
         </div>
-        <p className="helper">控制面 Token：{settings?.agentEngineControlPlaneTokenConfigured ? "已由启动环境配置" : "未配置；部署会明确失败，不会回退为云 AK/SK 直连"}。</p>
+        <p className="helper">签名账号：{settings?.cloudSignedAccountConfigured ? "已由启动环境配置，可以发起预发部署。" : "未配置；部署会明确失败，不会降级到浏览器凭证或伪造身份。"}</p>
       </section>
 
       <section id="settings-about" className="settings-group" tabIndex={-1}>

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { SquarePen, Package, MessagesSquare, Check, ShieldCheck, CloudUpload } from "lucide-react";
+import { SquarePen, Package, MessagesSquare, Check, ShieldCheck, CloudUpload, Loader2 } from "lucide-react";
 import { type AgentAppearance } from "../components/AgentAvatar";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { Drawer } from "../components/Drawer";
@@ -122,6 +122,7 @@ export function AgentDetailPage({ agentId, onBack, onChat, onBuild, onEdit, onOp
   const [invocationOpen, setInvocationOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deploying, setDeploying] = useState(false);
+  const [deploymentPhase, setDeploymentPhase] = useState<"idle" | "submitting" | "processing" | "receipting">("idle");
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -152,13 +153,14 @@ export function AgentDetailPage({ agentId, onBack, onChat, onBuild, onEdit, onOp
     const build = (detail?.builds || []).find(item => item.status === "SUCCEEDED");
     if (!build || deploying) return;
     setDeploying(true);
+    setDeploymentPhase("submitting");
     setError("");
     try {
       const settingsResponse = await apiFetch("/api/v1/system/settings");
       if (!settingsResponse.ok) throw new Error(`读取部署设置失败（${settingsResponse.status}）`);
       const settings = await settingsResponse.json();
       const region = String(settings?.cloudRegion || "").trim();
-      if (!region) throw new Error("请先在设置中填写云端控制面的 Region");
+      if (!region) throw new Error("请先在设置中填写预发部署 Region");
       const response = await apiFetch(`/api/v1/builds/${encodeURIComponent(build.id)}/deployments`, {
         method: "POST",
         headers: {
@@ -175,6 +177,7 @@ export function AgentDetailPage({ agentId, onBack, onChat, onBuild, onEdit, onOp
         throw new Error(payload?.error?.message || `部署提交失败（${response.status}）`);
       }
       const operation = await response.json();
+      setDeploymentPhase("processing");
       let completed: any = null;
       for (let attempt = 0; attempt < 150; attempt += 1) {
         await new Promise(resolve => setTimeout(resolve, 200));
@@ -185,8 +188,9 @@ export function AgentDetailPage({ agentId, onBack, onChat, onBuild, onEdit, onOp
           break;
         }
       }
-      if (!completed) throw new Error("等待云端准入超时");
-      if (completed.status !== "SUCCEEDED") throw new Error(completed.error?.message || "云端部署未受理");
+      if (!completed) throw new Error("等待云端部署任务超时");
+      if (completed.status !== "SUCCEEDED") throw new Error(completed.error?.message || "云端部署任务未完成");
+      setDeploymentPhase("receipting");
       const deploymentResponse = await apiFetch(`/api/v1/deployments/${encodeURIComponent(completed.resourceId)}`);
       if (!deploymentResponse.ok) throw new Error(`读取部署状态失败（${deploymentResponse.status}）`);
       const deployment = await deploymentResponse.json();
@@ -201,6 +205,7 @@ export function AgentDetailPage({ agentId, onBack, onChat, onBuild, onEdit, onOp
       showToast("部署失败", message, "error");
     } finally {
       setDeploying(false);
+      setDeploymentPhase("idle");
     }
   }
 
@@ -240,7 +245,7 @@ export function AgentDetailPage({ agentId, onBack, onChat, onBuild, onEdit, onOp
             <Package size={15} /><span>构建</span>
           </button>
           <button className="button secondary" type="button" onClick={deployLatestBuild} disabled={!latestBuild || deploying}>
-            <CloudUpload size={15} /><span>{deploying ? "正在准入…" : "部署到预发环境"}</span>
+            {deploying ? <Loader2 size={15} className="animate-spin" /> : <CloudUpload size={15} />}<span>{deploying ? "部署处理中…" : "部署到预发环境"}</span>
           </button>
           <MoreActionsMenu
             label={`${draft.metadata.name} 的更多操作`}
@@ -252,6 +257,19 @@ export function AgentDetailPage({ agentId, onBack, onChat, onBuild, onEdit, onOp
       </PageHeaderActions>
 
       {error && <div className="form-error" style={{ marginBottom: 16 }}>{error}</div>}
+      {deploying && (
+        <div className="callout" role="status" aria-live="polite" style={{ marginBottom: 16 }}>
+          <Loader2 size={16} className="animate-spin" />
+          <div>
+            <strong>{({
+              submitting: "正在提交预发部署任务",
+              processing: "云端处理中：上传 Bundle 与创建 Agent",
+              receipting: "Agent 已受理：正在读取云端实例 receipt",
+            } as Record<string, string>)[deploymentPhase]}</strong>
+            <p>实例启动完成并不等于 Kernel 已就绪；部署列表会以 Server 的 readiness 投影为准。</p>
+          </div>
+        </div>
+      )}
 
       <div className="detail-layout">
         <div className="detail-main">

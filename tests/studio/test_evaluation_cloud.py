@@ -194,7 +194,7 @@ async def test_cloud_deploy_uploads_exact_local_bundle_digest(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_unconfigured_cloud_admission_fails_explicitly(tmp_path: Path):
+async def test_unconfigured_cloud_deployment_fails_explicitly(tmp_path: Path):
     workspace, build = _workspace_and_build(tmp_path)
     service = CloudDeploymentService(
         workspace,
@@ -212,7 +212,7 @@ async def test_unconfigured_cloud_admission_fails_explicitly(tmp_path: Path):
             ),
         )
 
-    assert captured.value.code == "CLOUD_BUNDLE_ADMISSION_UNAVAILABLE"
+    assert captured.value.code == "CLOUD_BUNDLE_DEPLOYMENT_UNAVAILABLE"
 
 
 @pytest.mark.asyncio

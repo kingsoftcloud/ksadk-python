@@ -1,5 +1,11 @@
 # Studio Cloud Lifecycle UI Implementation Plan
 
+> **已替代（2026-08-20）**：本文件的视觉迁移任务已完成，但其中 `CreateAgentArtifact`
+> 及短期控制面 Token 假设已被
+> [`2026-08-20-studio-bundle-deploy-v1.md`](2026-08-20-studio-bundle-deploy-v1.md)
+> 取代。当前实现只允许“KS3 直传 + 既有 `CreateAgent(Code)` / `UpdateAgent`”；以下
+> 历史步骤保留用于追溯，不得作为部署实现依据。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Deliver a truthful Studio React workbench: every existing module uses the
@@ -13,7 +19,8 @@ backed by real APIs.
 
 ## Global Constraints
 
-- The only cloud creation actions are `CreateAgentArtifact` and existing `CreateAgentProduct`.
+- The only cloud lifecycle calls are existing signed `CreateAgent(Code)`, `UpdateAgent`,
+  `GetAgent` and `DeleteAgent`; ZIP is uploaded through the existing KS3 uploader.
 - Target environment is exactly `preproduction`; all status labels come from API records.
 - Use the Soft Block system from `origin/agentkit-studio-phase1` selectively, with only `document` and `workbench` layouts. Its entire React workbench is in scope: Agent list/detail/create/edit, conversations, project and runtime resources, orchestration, observability, settings and global navigation—not only Builds and Deployments.
 - Do not expose or persist control-plane tokens, credential material, private headers or artifact URLs.
