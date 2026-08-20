@@ -25,11 +25,7 @@ from ksadk.studio.api_contracts import (
     ContextPreviewRequest,
     ConversationAuthoringRequest,
     CreateAgentRequest,
-<<<<<<< HEAD
-    EvaluationRequest,
     ImportRootRequest,
-=======
->>>>>>> origin/master
     InteractionSubmitRequest,
     ProjectInspectRequest,
     PromptCompileRequest,

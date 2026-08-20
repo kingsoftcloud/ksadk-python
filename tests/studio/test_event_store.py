@@ -59,4 +59,6 @@ def test_event_store_reads_legacy_events_but_drops_them_on_save(tmp_path: Path) 
 
     assert store.get(record.id) == record
     store.save(record)
-    assert set(json.loads(path.read_text())) == {"record"}
+    # PCM 保留 Studio lifecycle events (memory.recall.*, …) 以便跨重启读取；
+    # legacy 事件同样被保留。
+    assert set(json.loads(path.read_text())) == {"record", "events"}

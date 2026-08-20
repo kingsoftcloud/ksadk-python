@@ -6,6 +6,7 @@ import json
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from pydantic import ValidationError
 
@@ -31,9 +32,31 @@ class RunEventStore:
         return record
 
     def save(self, record: RunRecord) -> RunRecord:
-        self._read(record.id)
-        self._write(record)
+        _, events = self._read(record.id)
+        self._write(record, events or None)
         return record
+
+    def append(self, run_id: str, event_type: str, data: dict) -> RunEvent:
+        """Persist a Studio lifecycle RunEvent (run.created, memory.recall.projected, …).
+
+        These Studio-level events (as opposed to RuntimeEvents) are durably
+        stored in the run JSON so the Studio events timeline survives restarts.
+        Runs that never call ``append`` keep ``set(run_payload) == {"record"}``.
+        """
+        record, events = self._read(run_id)
+        event = RunEvent(
+            id=len(events) + 1,
+            run_id=run_id,
+            type=event_type,
+            data=data,
+        )
+        events.append(event)
+        self._write(record, events)
+        return event
+
+    def events(self, run_id: str, *, after: int = 0) -> list[RunEvent]:
+        _, events = self._read(run_id)
+        return [event for event in events if event.id > after]
 
     def get(self, run_id: str) -> RunRecord:
         record, _ = self._read(run_id)
@@ -177,8 +200,14 @@ class RunEventStore:
                 details={"id": run_id},
             ) from exc
 
-    def _write(self, record: RunRecord) -> None:
-        payload = {"record": record.model_dump(by_alias=True, exclude_none=True, mode="json")}
+    def _write(self, record: RunRecord, events: list[RunEvent] | None = None) -> None:
+        payload: dict[str, Any] = {
+            "record": record.model_dump(by_alias=True, exclude_none=True, mode="json")
+        }
+        if events is not None:
+            payload["events"] = [
+                event.model_dump(by_alias=True, exclude_none=True, mode="json") for event in events
+            ]
         self.workspace.atomic_write_text(
             self._path(record.id),
             json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n",

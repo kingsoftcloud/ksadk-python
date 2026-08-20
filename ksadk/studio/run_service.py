@@ -98,6 +98,49 @@ class StudioRunService:
         )
         await self.session_service.create_session(spec.agent_id, "local-user", session)
         self.event_store.create(record)
+
+        async def persist(runtime_event: RuntimeEvent) -> RunEvent:
+            return await self._persist_event(record, runtime_event, on_event=on_event)
+
+        await persist(
+            RuntimeEvent.create(
+                EventType.RUN_PROGRESS,
+                agent_id=spec.agent_id,
+                user_id="local-user",
+                session_id=session,
+                invocation_id=run_id,
+                seq_id=0,
+                trace_id=record.trace_id,
+                payload={
+                    "status": "created",
+                    "native_event": "run.created",
+                    "native_data": {
+                        "runId": record.id,
+                        "buildId": spec.build_id,
+                        "sessionId": session,
+                        "traceId": record.trace_id,
+                        "runtimeType": runtime_type,
+                        "manifestSha256": spec.manifest_sha256,
+                        "model": record.model,
+                        "collaborationMode": record.collaboration_mode,
+                        "goalObjective": record.goal_objective,
+                    },
+                },
+            )
+        )
+        await persist(
+            RuntimeEvent.create(
+                EventType.USER_MESSAGE,
+                agent_id=spec.agent_id,
+                user_id="local-user",
+                session_id=session,
+                invocation_id=run_id,
+                seq_id=0,
+                turn_id=f"turn_{run_id}",
+                trace_id=record.trace_id,
+                payload={"message_id": f"user:{run_id}", "text": user_input},
+            )
+        )
         prepared_turn = await self._capture_pcm_evidence(record, spec, user_input)
         effective_request_config = dict(spec.request_config)
         memory_projection_event: dict[str, Any] | None = None
@@ -161,23 +204,11 @@ class StudioRunService:
                     runtime_type=runtime_type,
                     target=projection_target,
                 ).to_dict()
-        created = self.event_store.append(
-            record.id,
-            "run.created",
-            {
-                "runId": record.id,
-                "buildId": spec.build_id,
-                "sessionId": session,
-                "traceId": record.trace_id,
-                "runtimeType": runtime_type,
-                "manifestSha256": spec.manifest_sha256,
-                "model": record.model,
-                "collaborationMode": record.collaboration_mode,
-                "goalObjective": record.goal_objective,
-            },
-        )
-        if on_event is not None:
-            on_event(created)
+        started = time.monotonic()
+        record.status = RunStatus.RUNNING
+        record.started_at = datetime.now(timezone.utc)
+        self.event_store.save(record)
+
         if memory_projection_event is not None:
             projected = self.event_store.append(
                 record.id,
@@ -187,17 +218,13 @@ class StudioRunService:
             if on_event is not None:
                 on_event(projected)
 
-        started = time.monotonic()
-        record.status = RunStatus.RUNNING
-        record.started_at = datetime.now(timezone.utc)
-        self.event_store.save(record)
-
         handle = None
         final_text = ""
         streamed_final = ""
         runtime_duration_ms: int | None = None
         control_queue: asyncio.Queue[tuple[str, ResumePayload | None]] = asyncio.Queue()
         self._control_queues[run_id] = control_queue
+
         try:
             tool_approval_mode = str(spec.request_config.get("tool_approval_mode") or "")
             conversation_request: dict[str, Any] = {
@@ -535,11 +562,11 @@ class StudioRunService:
         if event.session_id != record.session_id:
             raise ValueError("RuntimeEvent session_id does not match Studio RunRecord")
         if event.invocation_id != record.id:
-            raise ValueError("RuntimeEvent invocation_id does not match Studio RunRecord")
+            event = event.model_copy(update={"invocation_id": record.id})
         if event.trace_id is None:
             event = event.model_copy(update={"trace_id": record.trace_id})
         elif event.trace_id != record.trace_id:
-            raise ValueError("RuntimeEvent trace_id does not match Studio RunRecord")
+            event = event.model_copy(update={"trace_id": record.trace_id})
         stored = await self.runtime_events.append_one(event)
         projected = self._project_event(record.id, stored)
         if on_event is not None:
@@ -977,6 +1004,7 @@ class StudioRunService:
                 "plannedInputTokens": shadow.get("planned_input_tokens"),
             }
             record.working_state = prepared.working_state
+            self.event_store.save(record)
             # Recall 事件写入 Studio EventStore（方案 §3）
             for evt in getattr(prepared, "memory_recall_events", []):
                 self.event_store.append(
@@ -984,7 +1012,6 @@ class StudioRunService:
                     evt.get("type", "memory.recall.event"),
                     evt,
                 )
-            self.event_store.save(record)
             return prepared
         except Exception:  # noqa: BLE001 - evidence collection is best effort
             return None
