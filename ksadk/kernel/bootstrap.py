@@ -227,7 +227,7 @@ class AgentKernelReadiness:
             store_ok and worker_running and lease_healthy and digests_match
             and not degraded
         )
-        return {
+        health = {
             "ready": ready,
             "store_ok": store_ok,
             "worker_running": worker_running,
@@ -246,6 +246,18 @@ class AgentKernelReadiness:
             "capabilities": capability_matrix,
             "bundle_digest": config.bundle_digest,
         }
+        # 诊断字段（additive，runtime 内部端点非 wire 冻结合同）：
+        # degraded 时必须能从 health 直接回答 "为什么降级、何时降级"，
+        # 出问题的 session 明细同样可见，运维不必再对着布尔值猜。
+        if quarantined:
+            health["quarantined_session_ids"] = sorted(quarantined)
+        if degraded:
+            health["degradation_reason"] = self.runtime._degradation_reason
+            health["degraded_at"] = self.runtime._degraded_at
+            health["degradation_last_error"] = (
+                self.runtime._degraded_last_error
+            )
+        return health
 
 
 @dataclass
@@ -273,6 +285,39 @@ class AgentKernelRuntime:
         self._quarantined: set[str] = set()
         self._recovery_failed_sessions: set[str] = set()
         self._store_failures = 0
+        # 诊断状态：degraded 必须能回答 "为什么、什么时候、哪些 session"，
+        # 让 kubectl logs 与 health 端点一眼可见（此前只有 degraded 布尔值）。
+        self._degradation_reason: str | None = None
+        self._degraded_at: str | None = None
+        self._degraded_last_error: str | None = None
+
+    # ------------------------------------------------------------ degradation
+
+    def _mark_degraded(
+        self, reason: str, exc: BaseException | None = None
+    ) -> None:
+        """统一降级入口：醒目 ERROR 日志 + 可供 health 端点回读的诊断状态。"""
+
+        self._degraded = True
+        if self._degradation_reason is None:
+            self._degradation_reason = reason
+        last_error = (
+            f"{type(exc).__name__}: {exc}" if exc is not None else "n/a"
+        )
+        self._degraded_last_error = last_error
+        try:
+            self._degraded_at = self.config.clock().isoformat()
+        except Exception:  # pragma: no cover - clock 异常不应影响降级本身
+            self._degraded_at = None
+        logger.error(
+            "agent kernel degraded: agent_instance_id=%s reason=%s "
+            "failed_sessions=%d quarantined=%d last_error=%s",
+            self.config.agent_instance_id,
+            self._degradation_reason,
+            len(self._recovery_failed_sessions),
+            len(self._quarantined),
+            last_error,
+        )
 
     # ------------------------------------------------------------ properties
 
@@ -377,7 +422,9 @@ class AgentKernelRuntime:
                             # session 并上报，其余 session 继续服务；只有
                             # 全局性故障（store 不可达或失败扩散到阈值）
                             # 才进程级 degraded。
-                            failure = await self._recover_safely(lease)
+                            failure = await self._recover_safely(
+                                lease, session_id
+                            )
                             if failure is not None:
                                 if not await self._quarantine_session(
                                     session_id, failure
@@ -400,12 +447,7 @@ class AgentKernelRuntime:
                         and not await self._store_reachable()
                     ):
                         # store 持续不可达是全局性故障：宁降级不静默。
-                        logger.error(
-                            "agent kernel store unreachable after %d failures; "
-                            "degrading runtime",
-                            self._store_failures,
-                        )
-                        self._degraded = True
+                        self._mark_degraded("store_unreachable")
                         return
                     await asyncio.sleep(self.config.poll_interval * 4)
                     continue
@@ -461,13 +503,18 @@ class AgentKernelRuntime:
                 continue
             failure = None
             if took_over:
-                failure = await self._recover_safely(lease)
+                failure = await self._recover_safely(lease, session_id)
             if failure is not None:
                 if not await self._quarantine_session(session_id, failure):
-                    self._degraded = True
+                    if not self._degraded:
+                        self._mark_degraded(
+                            "renew_recovery_failure", failure
+                        )
                     return
 
-    async def _recover_safely(self, lease) -> Exception | None:
+    async def _recover_safely(
+        self, lease, session_id: str | None = None
+    ) -> Exception | None:
         """takeover 后的安全恢复：失败必须持久化收口，否则返回失败原因。
 
         返回 None 表示恢复路径已收口（含 durable interrupted 兜底），
@@ -480,12 +527,46 @@ class AgentKernelRuntime:
             return None
         except Exception as exc:
             first_failure = exc
+            # 恢复主路径失败：降级/quarantine 决策前必须先留下完整现场
+            # （此前这里静默吞掉，坏 session 全程零日志）。
+            logger.exception(
+                "agent kernel takeover recovery failed: "
+                "agent_instance_id=%s session_id=%s activation_id=%s "
+                "error=%s: %s",
+                self.config.agent_instance_id,
+                session_id or getattr(lease, "session_id", None),
+                getattr(lease, "activation_id", None),
+                type(exc).__name__,
+                exc,
+            )
         try:
             await self.recovery.settle_interrupted(
                 self.config.agent_instance_id, lease
             )
+            # 主恢复失败但 durable interrupted 兜底收口成功：半恢复状态，
+            # 运维需要可见（事件流里会出现确定性的 interrupted 收口）。
+            logger.warning(
+                "agent kernel settled interrupted after recovery failure: "
+                "agent_instance_id=%s session_id=%s activation_id=%s "
+                "recovery_error=%s: %s",
+                self.config.agent_instance_id,
+                session_id or getattr(lease, "session_id", None),
+                getattr(lease, "activation_id", None),
+                type(first_failure).__name__,
+                first_failure,
+            )
             return None
         except Exception as exc:
+            logger.exception(
+                "agent kernel interrupted-settlement fallback failed: "
+                "agent_instance_id=%s session_id=%s activation_id=%s "
+                "error=%s: %s",
+                self.config.agent_instance_id,
+                session_id or getattr(lease, "session_id", None),
+                getattr(lease, "activation_id", None),
+                type(exc).__name__,
+                exc,
+            )
             return first_failure or exc
 
     async def _store_reachable(self) -> bool:
@@ -509,12 +590,9 @@ class AgentKernelRuntime:
 
         if not await self._store_reachable():
             # store 本身不可达：这不是单个 session 的问题。
-            logger.error(
-                "agent kernel store unreachable while handling recovery "
-                "failure for session %s; degrading runtime",
-                session_id,
+            self._mark_degraded(
+                "store_unreachable_during_recovery", exc
             )
-            self._degraded = True
             return False
         self._quarantined.add(session_id)
         self._recovery_failed_sessions.add(session_id)
@@ -522,9 +600,10 @@ class AgentKernelRuntime:
         self._last_renewed.pop(session_id, None)
         self.lease_heartbeat.forget(session_id)
         logger.warning(
-            "session %s quarantined after takeover recovery failed: "
-            "%s: %s",
+            "agent kernel session %s quarantined after takeover recovery "
+            "failed: agent_instance_id=%s error=%s: %s",
             session_id,
+            self.config.agent_instance_id,
             type(exc).__name__,
             exc,
         )
@@ -532,13 +611,12 @@ class AgentKernelRuntime:
             len(self._recovery_failed_sessions)
             >= self.config.quarantine_degrade_threshold
         ):
-            logger.error(
-                "takeover recovery failed for %d distinct sessions "
-                "(threshold %d); degrading runtime",
-                len(self._recovery_failed_sessions),
-                self.config.quarantine_degrade_threshold,
+            self._mark_degraded(
+                "recovery_failures_spread_to_%d_sessions" % len(
+                    self._recovery_failed_sessions
+                ),
+                exc,
             )
-            self._degraded = True
             return False
         return True
 
