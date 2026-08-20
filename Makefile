@@ -1,7 +1,7 @@
 # AgentEngine Makefile
 # 用于同步 KsADK Web static 和管理项目
 
-.PHONY: help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-version-gate docs-site-build docs-site-dev public-test public-build-check public-build-alias-check public-preflight public-publish-check public-release-approval-check public-publish-gate public-release-tag public-review public-sync-ksadk-web-static open-source-audit-dist open-source-audit-alias-dist openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size sync-ksadk-web-static verify-ksadk-web-static verify-ksadk-web-wheel-static build-studio-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend
+.PHONY: help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-version-gate docs-site-build docs-site-dev public-test public-build-check public-build-alias-check public-preflight public-publish-check public-release-approval-check public-publish-gate public-release-tag public-review public-sync-ksadk-web-static open-source-audit-dist open-source-audit-alias-dist openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size sync-ksadk-web-static verify-ksadk-web-static verify-ksadk-web-wheel-static build-studio-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend print-build-provenance
 
 # 默认目标
 help:
@@ -192,6 +192,7 @@ build: check-build-deps sync-ksadk-web-static build-studio-static
 	@# 删除 tar.gz 和临时目录，只保留 whl
 	@rm -f dist/*.tar.gz
 	@rm -rf build/ *.egg-info/
+	@$(MAKE) --no-print-directory print-build-provenance
 	@echo "✅ 构建完成: dist/"
 	@ls -la dist/
 
@@ -205,8 +206,14 @@ build-only: check-build-deps build-studio-static
 	python -m build
 	@rm -f dist/*.tar.gz
 	@rm -rf build/ *.egg-info/
+	@$(MAKE) --no-print-directory print-build-provenance
 	@echo "✅ 构建完成: dist/"
 	@ls -la dist/
+
+# Print provenance for the artifact that will actually be uploaded.  The Git
+# state is deliberately included: a commit alone must not imply a clean tree.
+print-build-provenance:
+	@python -c 'import glob,hashlib,pathlib,subprocess; from ksadk.version import VERSION; wheels=sorted(glob.glob("dist/ksadk-*.whl")); wheel=pathlib.Path(wheels[-1]) if wheels else None; commit=subprocess.run(["git","rev-parse","HEAD"],capture_output=True,text=True,check=False).stdout.strip() or "unavailable"; dirty=bool(subprocess.run(["git","status","--porcelain"],capture_output=True,text=True,check=False).stdout.strip()); print("   KsADK: version=" + VERSION); print("   KsADK source: commit=" + commit + ", tree=" + ("dirty" if dirty else "clean")); print("   Wheel: " + (wheel.name if wheel else "unavailable")); print("   Wheel digest: sha256=" + (hashlib.sha256(wheel.read_bytes()).hexdigest() if wheel else "unavailable"))'
 
 # 带版本号构建: make release V=0.2.0
 release:
