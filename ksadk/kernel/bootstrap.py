@@ -32,6 +32,10 @@ from typing import Any, Literal
 
 from ksadk.events.session_event import SessionServiceEventStore
 from ksadk.kernel.authorization import AgentControlPermitVerifier
+from ksadk.kernel.contract_fingerprints import (
+    AGENT_KERNEL_V1_AGGREGATE_DIGEST,
+    runtime_capability_matrix_digest,
+)
 from ksadk.kernel.contracts import RuntimeCapabilityMatrix
 from ksadk.kernel.control import AgentKernel, default_capability_matrix
 from ksadk.kernel.errors import InvalidCommandError
@@ -219,17 +223,17 @@ class AgentKernelReadiness:
         worker_running = self.runtime.worker_running
         degraded = self.runtime.degraded
         quarantined = self.runtime.quarantined_sessions()
-        capability_matrix = self.runtime.kernel.capabilities().model_dump(
-            mode="json"
-        )
+        capability = self.runtime.kernel.capabilities()
+        capability_matrix = capability.model_dump(mode="json")
+        computed_capability_digest = runtime_capability_matrix_digest(capability)
         # The control plane compares all three digests before declaring an
         # AgentInstance ready.  Reporting ready with only a contract digest
         # would conceal a missing bundle/capability projection and make the
         # runtime's health endpoint more optimistic than Server readiness.
         digests_match = all(
             (
-                config.contract_digest,
-                config.capability_digest,
+                config.contract_digest == AGENT_KERNEL_V1_AGGREGATE_DIGEST,
+                config.capability_digest == computed_capability_digest,
                 config.bundle_digest,
             )
         )
@@ -247,8 +251,12 @@ class AgentKernelReadiness:
             "quarantined_sessions": len(quarantined),
             "lease_healthy": lease_healthy,
             "activation_id": activation_id,
-            "contract_digest": config.contract_digest,
-            "capability_digest": config.capability_digest,
+            # Contract support is packaged with this KsADK image; never echo
+            # an unverified control-plane environment value as evidence.
+            "contract_digest": AGENT_KERNEL_V1_AGGREGATE_DIGEST,
+            # Likewise derive capabilities from the actual Adapter matrix,
+            # rather than trusting the requested deployment digest.
+            "capability_digest": computed_capability_digest,
             # Runtime/Operator/Server readiness chain must carry the actual
             # typed capability facts, not merely a digest supplied at deploy
             # time. Server admission uses these to reject unsupported control
@@ -707,6 +715,11 @@ def _validate_hosted(config: AgentKernelRuntimeConfig) -> None:
             + ", ".join(missing)
             + "; refusing to bootstrap (fail closed)"
         )
+    if config.contract_digest != AGENT_KERNEL_V1_AGGREGATE_DIGEST:
+        raise RuntimeError(
+            "contract_digest_mismatch: hosted agent kernel runtime image "
+            "does not support the control-plane contract digest"
+        )
 
 
 def build_agent_kernel_runtime(
@@ -776,7 +789,32 @@ def build_agent_kernel_runtime(
 
     adapter_provider = config.adapter_provider or _no_adapter_provider
     capabilities = config.capabilities
-    if capabilities is None:
+    if config.authority_mode == "hosted":
+        # Snapshot the actual adapter declaration before accepting work.  A
+        # hosted pod must not downgrade to the default matrix if its adapter
+        # fails to describe itself: that could make Server's capability
+        # admission disagree with the execution owner.
+        try:
+            capability_snapshot = (
+                capabilities() if capabilities is not None else adapter_provider().capabilities()
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                "hosted agent kernel runtime cannot determine adapter capabilities"
+            ) from exc
+        computed_capability_digest = runtime_capability_matrix_digest(
+            capability_snapshot
+        )
+        if config.capability_digest != computed_capability_digest:
+            raise RuntimeError(
+                "capability_digest_mismatch: hosted adapter capabilities do not "
+                "match the control-plane deployment digest"
+            )
+
+        def capabilities() -> RuntimeCapabilityMatrix:  # type: ignore[misc]
+            return capability_snapshot
+
+    elif capabilities is None:
         probe = adapter_provider()
 
         def capabilities() -> RuntimeCapabilityMatrix:  # type: ignore[misc]
@@ -814,7 +852,9 @@ def build_agent_kernel_runtime(
         or f"{config.agent_instance_id}:kernel-runtime",
         runtime_type=config.runtime_type,
         bundle_digest=config.bundle_digest,
-        capability_digest=config.capability_digest,
+        # Lease metadata must represent the exact matrix this owner executes,
+        # not an unverified environment projection.
+        capability_digest=runtime_capability_matrix_digest(capabilities()),
         lease_ttl_seconds=config.lease_ttl_seconds,
     )
     runtime = AgentKernelRuntime(
@@ -886,6 +926,17 @@ async def bootstrap_agent_kernel_runtime_from_env(
     mode: AuthorityMode = authority_mode()  # type: ignore[assignment]
     if mode == "hosted" and driver != "postgres":
         raise RuntimeError("hosted agent kernel runtime requires postgres store")
+    injected_contract_digest = os.environ.get(
+        "AGENT_KERNEL_CONTRACT_DIGEST", ""
+    ).strip()
+    if (
+        mode == "hosted"
+        and injected_contract_digest != AGENT_KERNEL_V1_AGGREGATE_DIGEST
+    ):
+        raise RuntimeError(
+            "contract_digest_mismatch: hosted agent kernel runtime image "
+            "does not support the control-plane contract digest"
+        )
 
     pool = None
     owns_pool = False
@@ -943,7 +994,11 @@ async def bootstrap_agent_kernel_runtime_from_env(
         permit_issuer=os.environ.get("AGENT_CONTROL_PERMIT_ISSUER", ""),
         nonce_store=nonce_store,
         adapter_provider=adapter_provider,
-        contract_digest=os.environ.get("AGENT_KERNEL_CONTRACT_DIGEST", ""),
+        contract_digest=(
+            AGENT_KERNEL_V1_AGGREGATE_DIGEST
+            if mode == "hosted"
+            else injected_contract_digest
+        ),
         capability_digest=os.environ.get("AGENT_KERNEL_CAPABILITY_DIGEST", ""),
         bundle_digest=os.environ.get("AGENT_BUNDLE_DIGEST", ""),
         session_namespace=session_namespace,

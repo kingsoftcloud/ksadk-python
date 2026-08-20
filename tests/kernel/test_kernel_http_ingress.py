@@ -222,6 +222,8 @@ def test_kernel_routes_503_when_not_registered(app_without_kernel):
 
 
 def test_kernel_health_shape(app_without_kernel, monkeypatch):
+    from ksadk.kernel.contract_fingerprints import AGENT_KERNEL_V1_AGGREGATE_DIGEST
+
     client = app_without_kernel
     monkeypatch.setenv("AGENT_KERNEL_CONTRACT_DIGEST", "c" * 64)
     monkeypatch.setenv("AGENT_KERNEL_CAPABILITY_DIGEST", "p" * 64)
@@ -235,8 +237,8 @@ def test_kernel_health_shape(app_without_kernel, monkeypatch):
         "contract_digest",
         "capability_digest",
     }
-    assert body["contract_digest"] == "c" * 64
-    assert body["capability_digest"] == "p" * 64
+    assert body["contract_digest"] == AGENT_KERNEL_V1_AGGREGATE_DIGEST
+    assert body["capability_digest"] == ""
 
 
 # ---------------------------------------------------------------------------

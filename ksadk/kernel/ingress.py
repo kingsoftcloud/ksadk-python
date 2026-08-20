@@ -1012,13 +1012,19 @@ def _build_kernel_router() -> Any:
 
     @router.get(KERNEL_INGRESS_HEALTH_PATH)
     async def kernel_health() -> Any:
+        from ksadk.kernel.contract_fingerprints import (
+            AGENT_KERNEL_V1_AGGREGATE_DIGEST,
+        )
+
         kernel = get_agent_kernel()
         payload: dict[str, Any] = {
             "enabled": kernel_ingress_enabled(),
             "ready": kernel is not None,
             "store_driver": os.environ.get(ENV_KERNEL_STORE_DRIVER, "memory"),
-            "contract_digest": os.environ.get("AGENT_KERNEL_CONTRACT_DIGEST", ""),
-            "capability_digest": os.environ.get("AGENT_KERNEL_CAPABILITY_DIGEST", ""),
+            # A process without the full runtime cannot calculate Adapter
+            # capabilities, so do not echo a caller-controlled env value.
+            "contract_digest": AGENT_KERNEL_V1_AGGREGATE_DIGEST,
+            "capability_digest": "",
             "authority_mode": authority_mode(),
         }
         from ksadk.kernel.bootstrap import get_agent_kernel_runtime

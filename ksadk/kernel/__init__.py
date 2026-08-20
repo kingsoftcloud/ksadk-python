@@ -5,6 +5,11 @@ from ksadk.kernel.authorization import (
     PermitExpiredError,
     VerifiedAdmission,
 )
+from ksadk.kernel.contract_fingerprints import (
+    AGENT_KERNEL_V1_AGGREGATE_DIGEST,
+    AGENT_KERNEL_V1_CONTRACT_SET,
+    runtime_capability_matrix_digest,
+)
 from ksadk.kernel.contracts import (
     ActivationLease,
     ActivationWriteGuard,
@@ -69,6 +74,9 @@ __all__ = [
     "VerifiedAdmission",
     "WorkResult",
     "default_capability_matrix",
+    "AGENT_KERNEL_V1_AGGREGATE_DIGEST",
+    "AGENT_KERNEL_V1_CONTRACT_SET",
+    "runtime_capability_matrix_digest",
     "ERROR_CODES",
     "AgentKernelError",
     "ContractMismatchError",

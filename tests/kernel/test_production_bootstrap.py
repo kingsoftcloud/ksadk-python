@@ -29,6 +29,10 @@ from ksadk.kernel.bootstrap import (
     clear_agent_kernel_runtime,
     get_agent_kernel_runtime,
 )
+from ksadk.kernel.contract_fingerprints import (
+    AGENT_KERNEL_V1_AGGREGATE_DIGEST,
+    runtime_capability_matrix_digest,
+)
 from ksadk.kernel.control import AgentKernel
 from ksadk.kernel.recovery import RecoveryCoordinator
 from ksadk.kernel.worker import AgentKernelWorker
@@ -39,12 +43,13 @@ from tests.kernel.control_harness import (
     CLOCK_AT,
     FakeAdapter,
     command,
+    default_matrix,
     kernel_stack,
 )
 
 FAKE_DSN = "postgres://kernel-test:user@fake-host/kernel"
-CONTRACT_DIGEST = "c" * 64
-CAPABILITY_DIGEST = "p" * 64
+CONTRACT_DIGEST = AGENT_KERNEL_V1_AGGREGATE_DIGEST
+CAPABILITY_DIGEST = runtime_capability_matrix_digest(default_matrix())
 BUNDLE_DIGEST = "b" * 64
 
 
@@ -127,6 +132,7 @@ async def test_bootstrap_starts_worker_and_lease_heartbeat():
         lease = await stack.store.current_lease(AGENT, "s1")
         assert lease is not None
         assert lease.lease_expires_at > CLOCK_AT.isoformat()
+        assert lease.capability_digest == CAPABILITY_DIGEST
     finally:
         await runtime.close()
 
@@ -199,6 +205,7 @@ async def test_bootstrap_readiness_reports_real_health():
         assert health["worker_running"] is True
         assert health["lease_healthy"] is True
         assert health["contract_digest"] == CONTRACT_DIGEST
+        assert health["capability_digest"] == CAPABILITY_DIGEST
         assert health["capabilities"]["schema_version"] == 1
         assert health["capabilities"]["cancel"]["supported"] is False
         assert health["bundle_digest"] == BUNDLE_DIGEST
@@ -405,6 +412,23 @@ async def test_hosted_bootstrap_fails_closed_on_missing_dependencies(missing):
         overrides[missing] = ""
     with pytest.raises(RuntimeError, match=missing):
         await _runtime(**overrides)
+
+
+async def test_hosted_bootstrap_rejects_incompatible_contract_digest():
+    with pytest.raises(RuntimeError, match="contract_digest_mismatch"):
+        await _runtime(contract_digest="0" * 64)
+
+
+async def test_hosted_bootstrap_rejects_adapter_capability_digest_mismatch():
+    from tests.kernel.control_harness import default_matrix, native
+
+    incompatible_matrix = default_matrix().model_copy(
+        update={"cancel": native()}
+    )
+    stack = await kernel_stack(adapter=FakeAdapter(matrix=incompatible_matrix))
+    config = _runtime_config(stack)
+    with pytest.raises(RuntimeError, match="capability_digest_mismatch"):
+        build_agent_kernel_runtime(config)
 
 
 async def test_local_mode_bootstraps_without_server_authority():
