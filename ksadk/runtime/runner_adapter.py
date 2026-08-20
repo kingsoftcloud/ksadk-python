@@ -14,10 +14,12 @@ import copy
 import inspect
 import json
 import logging
+import time
 from collections.abc import Mapping
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Dict, Optional, cast
+from uuid import uuid4
 
 from ksadk.conversations.runtime_input import _runner_name
 from ksadk.conversations.runtime_observability import (
@@ -48,6 +50,31 @@ from ksadk.runtime_context import platform_invocation_scope
 from ksadk.tools.gateway import approval_interrupt_info_from_result
 
 logger = logging.getLogger(__name__)
+
+_STEP_SCOPED_EVENTS = {
+    EventType.MODEL_CALL_BEGIN,
+    EventType.MODEL_CALL_FIRST_TOKEN,
+    EventType.MODEL_CALL_END,
+    EventType.REASONING_DELTA,
+    EventType.REASONING_COMPLETED,
+    EventType.TEXT_DELTA,
+    EventType.TEXT_COMPLETED,
+    EventType.TOOL_CALL_BEGIN,
+    EventType.TOOL_CALL_END,
+    EventType.USAGE_REPORTED,
+    EventType.APPROVAL_REQUESTED,
+    EventType.APPROVAL_RESOLVED,
+}
+_MODEL_SCOPED_EVENTS = {
+    EventType.MODEL_CALL_BEGIN,
+    EventType.MODEL_CALL_FIRST_TOKEN,
+    EventType.MODEL_CALL_END,
+    EventType.REASONING_DELTA,
+    EventType.REASONING_COMPLETED,
+    EventType.TEXT_DELTA,
+    EventType.TEXT_COMPLETED,
+    EventType.USAGE_REPORTED,
+}
 
 _STREAM_STOP = object()
 _ResumeKey = tuple[str, str, str, str, str]
@@ -167,6 +194,9 @@ class _ActiveRun:
     skip_runner: bool = False
     done: bool = False
     completion_metrics: dict[str, Any] = field(default_factory=dict)
+    turn_id: str = ""
+    turn_started_at: float | None = None
+    turn_completed: bool = False
 
 
 class RunnerRuntimeAdapter(RuntimeAdapter):
@@ -249,11 +279,16 @@ class RunnerRuntimeAdapter(RuntimeAdapter):
         ensure_runner_loaded(self._runner, runtime_type=self._runtime_type)
         run_id = str(request.metadata.get("invocation_id") or self._next_invocation_id())
         prepared_start = await prepare_runtime_start(request, self._runner)
+        trace_id = str(request.metadata.get("trace_id") or uuid4().hex)
         handle = RunHandle(
             run_id=run_id,
             session_id=request.session_id,
             runtime_type=self._runtime_type,
-            native_ref={"user_id": request.user_id, "agent_id": request.agent_id},
+            native_ref={
+                "user_id": request.user_id,
+                "agent_id": request.agent_id,
+                "trace_id": trace_id,
+            },
         )
         self._known_runs.add(run_id)
         self._run_sessions[run_id] = request.session_id
@@ -524,7 +559,15 @@ class RunnerRuntimeAdapter(RuntimeAdapter):
         if run.resume_key is not None:
             self._consumed_resumes.add(run.resume_key)
 
+        run.turn_id = f"turn_{handle.run_id}"
+        run.turn_started_at = time.monotonic()
+        handle.native_ref["turn_id"] = run.turn_id
         yield self._event(handle, EventType.RUN_STARTED, {"status": "in_progress"})
+        yield self._event(
+            handle,
+            EventType.TURN_STARTED,
+            {"turn_index": 1},
+        )
 
         request = run.__dict__.get("_start_request")
         runner_input = self._build_runner_input(handle, request)
@@ -535,7 +578,6 @@ class RunnerRuntimeAdapter(RuntimeAdapter):
             gen = self._map_runner_stream(handle, runner_input)
             run.stream = gen
             async for event in gen:
-                yield event
                 if event.event_type == EventType.APPROVAL_REQUESTED:
                     approval_interrupted = True
                 if event.event_type in {
@@ -545,10 +587,21 @@ class RunnerRuntimeAdapter(RuntimeAdapter):
                     EventType.RUN_INTERRUPTED,
                 }:
                     terminal_event_seen = True
+                    turn_completed = self._turn_completed_event(
+                        handle,
+                        run,
+                        self._turn_status(event.event_type),
+                    )
+                    if turn_completed is not None:
+                        yield turn_completed
+                yield event
                 if event.event_type in {EventType.RUN_FAILED, EventType.RUN_CANCELED}:
                     return
 
             if run.interrupt_event.is_set() and not terminal_event_seen:
+                turn_completed = self._turn_completed_event(handle, run, "cancelled")
+                if turn_completed is not None:
+                    yield turn_completed
                 yield self._event(
                     handle,
                     EventType.RUN_CANCELED,
@@ -558,12 +611,18 @@ class RunnerRuntimeAdapter(RuntimeAdapter):
                     },
                 )
             elif approval_interrupted and not terminal_event_seen:
+                turn_completed = self._turn_completed_event(handle, run, "interrupted")
+                if turn_completed is not None:
+                    yield turn_completed
                 yield self._event(
                     handle,
                     EventType.RUN_INTERRUPTED,
                     {"status": "input_required"},
                 )
             elif not terminal_event_seen:
+                turn_completed = self._turn_completed_event(handle, run, "completed")
+                if turn_completed is not None:
+                    yield turn_completed
                 yield self._event(
                     handle,
                     EventType.RUN_COMPLETED,
@@ -591,15 +650,17 @@ class RunnerRuntimeAdapter(RuntimeAdapter):
                 else {}
             )
             base_metadata = merged.get("metadata")
-            merged.update({
-                "input": override.get("input"),
-                "session_id": handle.session_id,
-                "invocation_id": handle.run_id,
-                "metadata": {
-                    **(dict(base_metadata) if isinstance(base_metadata, Mapping) else {}),
-                    **dict(override.get("metadata") or {}),
-                },
-            })
+            merged.update(
+                {
+                    "input": override.get("input"),
+                    "session_id": handle.session_id,
+                    "invocation_id": handle.run_id,
+                    "metadata": {
+                        **(dict(base_metadata) if isinstance(base_metadata, Mapping) else {}),
+                        **dict(override.get("metadata") or {}),
+                    },
+                }
+            )
             for key, value in override.items():
                 if key not in ("input", "metadata"):
                     merged[key] = value
@@ -704,10 +765,14 @@ class RunnerRuntimeAdapter(RuntimeAdapter):
                         if chunk is _STREAM_STOP:
                             return
                         if isinstance(chunk, RuntimeEvent):
-                            if chunk.event_type in {
-                                EventType.TEXT_DELTA,
-                                EventType.TEXT_COMPLETED,
-                            } and chunk.phase == "final_answer":
+                            if (
+                                chunk.event_type
+                                in {
+                                    EventType.TEXT_DELTA,
+                                    EventType.TEXT_COMPLETED,
+                                }
+                                and chunk.phase == "final_answer"
+                            ):
                                 text = self._coerce(chunk.payload.get("text"))
                                 if chunk.event_type == EventType.TEXT_COMPLETED:
                                     accumulated_output = text
@@ -784,6 +849,18 @@ class RunnerRuntimeAdapter(RuntimeAdapter):
             # to the public handle without flattening their payloads.
             if chunk.event_type == EventType.RUN_STARTED:
                 return None
+            if chunk.step_id and chunk.event_type in {
+                EventType.STEP_STARTED,
+                EventType.MODEL_CALL_BEGIN,
+            }:
+                handle.native_ref["step_id"] = chunk.step_id
+            payload = dict(chunk.payload)
+            if chunk.event_type == EventType.MODEL_CALL_BEGIN and payload.get("model_call_id"):
+                handle.native_ref["model_call_id"] = str(payload["model_call_id"])
+            if chunk.event_type in _MODEL_SCOPED_EVENTS and not payload.get("model_call_id"):
+                model_call_id = str(handle.native_ref.get("model_call_id") or "")
+                if model_call_id:
+                    payload["model_call_id"] = model_call_id
             return RuntimeEvent.create(
                 chunk.event_type,
                 agent_id=str(handle.native_ref.get("agent_id") or "agent"),
@@ -791,8 +868,18 @@ class RunnerRuntimeAdapter(RuntimeAdapter):
                 session_id=handle.session_id,
                 invocation_id=handle.run_id,
                 seq_id=self._next_seq(),
+                turn_id=chunk.turn_id or str(handle.native_ref.get("turn_id") or "") or None,
+                step_id=chunk.step_id
+                or (
+                    str(handle.native_ref.get("step_id") or "") or None
+                    if chunk.event_type in _STEP_SCOPED_EVENTS
+                    else None
+                ),
+                parent_event_id=chunk.parent_event_id,
+                trace_id=str(handle.native_ref.get("trace_id") or chunk.trace_id or "") or None,
+                span_id=chunk.span_id,
                 phase=chunk.phase,
-                payload=dict(chunk.payload),
+                payload=payload,
                 event_id=chunk.event_id,
                 timestamp=chunk.timestamp,
             )
@@ -801,6 +888,65 @@ class RunnerRuntimeAdapter(RuntimeAdapter):
                 handle, EventType.TEXT_DELTA, {"text": str(chunk)}, phase="commentary"
             )
         chunk_type = chunk.get("type")
+        if chunk_type == "step_start":
+            step_id = str(chunk.get("step_id") or "")
+            if step_id:
+                handle.native_ref["step_id"] = step_id
+            handle.native_ref.pop("model_call_id", None)
+            return self._event(
+                handle,
+                EventType.STEP_STARTED,
+                {"step_index": int(chunk.get("step_index") or 0)},
+                step_id=step_id,
+            )
+        if chunk_type == "step_end":
+            return self._event(
+                handle,
+                EventType.STEP_COMPLETED,
+                {
+                    "step_index": int(chunk.get("step_index") or 0),
+                    "status": str(chunk.get("status") or "completed"),
+                    "duration_ms": int(chunk.get("duration_ms") or 0),
+                },
+                step_id=str(chunk.get("step_id") or ""),
+            )
+        if chunk_type == "model_call_begin":
+            step_id = str(chunk.get("step_id") or "")
+            model_call_id = str(chunk.get("model_call_id") or "")
+            if step_id:
+                handle.native_ref["step_id"] = step_id
+            if model_call_id:
+                handle.native_ref["model_call_id"] = model_call_id
+            return self._event(
+                handle,
+                EventType.MODEL_CALL_BEGIN,
+                {
+                    "model_call_id": model_call_id,
+                    "model": str(chunk.get("model") or "chat-model"),
+                },
+                step_id=step_id,
+            )
+        if chunk_type == "model_call_first_token":
+            return self._event(
+                handle,
+                EventType.MODEL_CALL_FIRST_TOKEN,
+                {
+                    "model_call_id": str(chunk.get("model_call_id") or ""),
+                    "ttft_ms": int(chunk.get("ttft_ms") or 0),
+                },
+                step_id=str(chunk.get("step_id") or ""),
+            )
+        if chunk_type == "model_call_end":
+            return self._event(
+                handle,
+                EventType.MODEL_CALL_END,
+                {
+                    "model_call_id": str(chunk.get("model_call_id") or ""),
+                    "status": str(chunk.get("status") or "completed"),
+                    "duration_ms": int(chunk.get("duration_ms") or 0),
+                },
+                step_id=str(chunk.get("step_id") or ""),
+            )
         if chunk_type in ("reasoning", "reasoning_delta", "thinking"):
             text = self._coerce(
                 chunk.get("delta")
@@ -876,12 +1022,7 @@ class RunnerRuntimeAdapter(RuntimeAdapter):
         if chunk_type in ("interrupt", "approval", "approval_required"):
             raw_detail = chunk.get("interrupt_info") or chunk.get("detail") or {}
             detail = dict(raw_detail) if isinstance(raw_detail, Mapping) else {}
-            call_id = str(
-                chunk.get("call_id")
-                or chunk.get("approval_id")
-                or chunk.get("id")
-                or ""
-            )
+            call_id = str(chunk.get("call_id") or chunk.get("approval_id") or chunk.get("id") or "")
             return self._approval_requested_event(
                 handle,
                 run,
@@ -977,9 +1118,7 @@ class RunnerRuntimeAdapter(RuntimeAdapter):
     ) -> RuntimeEvent:
         """Convert one framework/tool approval to the canonical runtime event."""
 
-        approval_id = str(
-            detail.get("approval_request_id") or detail.get("id") or call_id or ""
-        )
+        approval_id = str(detail.get("approval_request_id") or detail.get("id") or call_id or "")
         resolved_call_id = str(call_id or approval_id)
         if run is not None and approval_id:
             run.pending_approvals.add(approval_id)
@@ -1005,7 +1144,14 @@ class RunnerRuntimeAdapter(RuntimeAdapter):
         payload: dict,
         *,
         phase: Optional[str] = None,
+        step_id: Optional[str] = None,
     ) -> RuntimeEvent:
+        if step_id is None and event_type in _STEP_SCOPED_EVENTS:
+            step_id = str(handle.native_ref.get("step_id") or "") or None
+        if event_type in _MODEL_SCOPED_EVENTS and not payload.get("model_call_id"):
+            model_call_id = str(handle.native_ref.get("model_call_id") or "")
+            if model_call_id:
+                payload = {**payload, "model_call_id": model_call_id}
         return RuntimeEvent.create(
             event_type,
             agent_id=str(handle.native_ref.get("agent_id") or "agent"),
@@ -1013,9 +1159,37 @@ class RunnerRuntimeAdapter(RuntimeAdapter):
             session_id=handle.session_id,
             invocation_id=handle.run_id,
             seq_id=self._next_seq(),
+            turn_id=str(handle.native_ref.get("turn_id") or "") or None,
+            step_id=step_id,
+            trace_id=str(handle.native_ref.get("trace_id") or "") or None,
             phase=phase,
             payload=payload,
         )
+
+    def _turn_completed_event(
+        self,
+        handle: RunHandle,
+        run: _ActiveRun,
+        status: str,
+    ) -> RuntimeEvent | None:
+        if run.turn_completed or run.turn_started_at is None:
+            return None
+        run.turn_completed = True
+        duration_ms = int((time.monotonic() - run.turn_started_at) * 1000)
+        return self._event(
+            handle,
+            EventType.TURN_COMPLETED,
+            {"turn_index": 1, "status": status, "duration_ms": duration_ms},
+        )
+
+    @staticmethod
+    def _turn_status(event_type: str) -> str:
+        return {
+            EventType.RUN_COMPLETED: "completed",
+            EventType.RUN_FAILED: "failed",
+            EventType.RUN_CANCELED: "cancelled",
+            EventType.RUN_INTERRUPTED: "interrupted",
+        }[event_type]
 
     def _completion_payload(
         self,

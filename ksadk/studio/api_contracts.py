@@ -118,12 +118,6 @@ class InteractionSubmitRequest(ContractModel):
     data: dict[str, Any] = Field(default_factory=dict)
 
 
-class EvaluationRequest(ContractModel):
-    suite_refs: list[str] = Field(min_length=1)
-    concurrency: int = Field(default=1, ge=1, le=4)
-    fail_fast: bool = False
-
-
 class StudioEvaluationCreate(ContractModel):
     """Request for the shared CLI/Studio evaluation executor."""
 

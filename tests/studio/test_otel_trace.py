@@ -177,6 +177,107 @@ def test_otlp_store_persists_standard_spans_and_exact_metrics(tmp_path: Path, mo
         assert forbidden not in serialized
 
 
+def test_otlp_store_aggregates_content_chunks_into_logical_events(tmp_path: Path) -> None:
+    store, record, _ = _fixture(tmp_path)
+    events = [
+        _event(1, "run.started", 0, {}),
+        _event(
+            2,
+            "thinking.delta",
+            10,
+            {"text": "分", "runtimeEvent": {"turn_id": "turn-1", "step_id": "step-1"}},
+        ),
+        _event(
+            3,
+            "thinking.delta",
+            20,
+            {"text": "析", "runtimeEvent": {"turn_id": "turn-1", "step_id": "step-1"}},
+        ),
+        _event(
+            4,
+            "thinking.completed",
+            30,
+            {"text": "分析", "runtimeEvent": {"turn_id": "turn-1", "step_id": "step-1"}},
+        ),
+        _event(
+            5,
+            "message.delta",
+            40,
+            {"text": "答", "runtimeEvent": {"turn_id": "turn-1", "step_id": "step-1"}},
+        ),
+        _event(
+            6,
+            "message.completed",
+            50,
+            {"text": "答案", "runtimeEvent": {"turn_id": "turn-1", "step_id": "step-1"}},
+        ),
+        _event(7, "run.completed", 60, {"status": "completed"}),
+    ]
+
+    store.sync(record, events)
+
+    raw = store.get_otlp(TRACE_ID)
+    root = next(
+        span
+        for span in raw["resourceSpans"][0]["scopeSpans"][0]["spans"]
+        if not span.get("parentSpanId")
+    )
+    content = [
+        event for event in root["events"] if event["name"].startswith(("thinking", "message"))
+    ]
+
+    assert [event["name"] for event in content] == ["thinking.completed", "message.completed"]
+    assert _attrs(content[0]["attributes"])["agentkit.event.text"] == "分析"
+    assert _attrs(content[0]["attributes"])["agentkit.event.delta_count"] == "2"
+    assert _attrs(content[1]["attributes"])["agentkit.event.text"] == "答案"
+    assert _attrs(content[1]["attributes"])["agentkit.event.delta_count"] == "1"
+
+
+def test_otlp_store_keeps_partial_content_separate_by_step(tmp_path: Path) -> None:
+    store, record, _ = _fixture(tmp_path)
+    events = [
+        _event(1, "run.started", 0, {}),
+        _event(
+            2,
+            "thinking.delta",
+            10,
+            {"text": "步", "runtimeEvent": {"turn_id": "turn-1", "step_id": "step-1"}},
+        ),
+        _event(
+            3,
+            "thinking.delta",
+            20,
+            {"text": "骤一", "runtimeEvent": {"turn_id": "turn-1", "step_id": "step-1"}},
+        ),
+        _event(
+            4,
+            "thinking.delta",
+            30,
+            {"text": "步骤二", "runtimeEvent": {"turn_id": "turn-1", "step_id": "step-2"}},
+        ),
+        _event(5, "run.failed", 40, {"status": "failed"}),
+    ]
+
+    store.sync(record, events)
+
+    raw = store.get_otlp(TRACE_ID)
+    root = next(
+        span
+        for span in raw["resourceSpans"][0]["scopeSpans"][0]["spans"]
+        if not span.get("parentSpanId")
+    )
+    thinking = [event for event in root["events"] if event["name"] == "thinking.delta"]
+
+    assert [_attrs(event["attributes"])["agentkit.event.text"] for event in thinking] == [
+        "步骤一",
+        "步骤二",
+    ]
+    assert [_attrs(event["attributes"])["agentkit.event.delta_count"] for event in thinking] == [
+        "2",
+        "1",
+    ]
+
+
 def test_otlp_store_includes_tool_io_when_trace_content_enabled(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -399,9 +500,19 @@ def test_trace_api_returns_explorer_view_and_raw_otlp_without_chat_redirect(
     # validate assignments, so the OTLP adapter must normalize str enums.
     record.status = RunStatus.COMPLETED
     service.event_store.create(record)
-    service.event_store.append(record.id, "run.started", {})
-    service.event_store.append(record.id, "run.completed", {"status": "completed"})
     service.event_store.save(record)
+    service.event_store.trace_store.sync(
+        record,
+        [
+            RunEvent(id=1, run_id=record.id, type="run.started"),
+            RunEvent(
+                id=2,
+                run_id=record.id,
+                type="run.completed",
+                data={"status": "completed"},
+            ),
+        ],
+    )
     app = create_studio_app(
         tmp_path,
         service=StudioService(tmp_path),

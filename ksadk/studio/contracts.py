@@ -575,6 +575,7 @@ class Operation(ContractModel):
     kind: OperationKind
     status: OperationStatus = OperationStatus.QUEUED
     resource_id: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
     error: dict[str, Any] | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     completed_at: datetime | None = None

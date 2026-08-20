@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity, ArrowLeft, Brain, Check, CircleCheckBig, Clock3, Coins, Copy, MessageSquare,
-  ChevronDown, ChevronUp, Maximize2, Minimize2, Network, RefreshCw, Search,
+  ChevronDown, ChevronUp, Download, Maximize2, Minimize2, Network, RefreshCw, Search,
 } from "lucide-react";
 import { allExpanded, collapseAllNested, JsonView } from "react-json-view-lite";
 import { showToast } from "../components/Toast";
@@ -12,6 +12,8 @@ import {
 } from "../components/ui/StudioDataTable";
 import { StudioSelect } from "../components/ui/StudioSelect";
 import { apiFetch } from "../api";
+import { TrajectoryDetail, TrajectoryView } from "./TrajectoryView";
+import type { TrajectoryRecord } from "./trajectory";
 
 /* ================= 类型 ================= */
 
@@ -75,6 +77,11 @@ interface PcmTraceEvidence {
 function shortId(value: any, length = 18): string {
   const text = String(value || "");
   return text.length > length ? `${text.slice(0, length)}…` : text;
+}
+function sessionLogFilename(trace: TraceDetail): string {
+  const base = `${trace.sessionId}-${trace.runId || "session"}`
+    .replace(/[^a-zA-Z0-9._-]+/g, "-");
+  return `${base}-${new Date().toISOString().replace(/[.:]/g, "-")}.jsonl`;
 }
 function formatField(value: any, fallback = "-"): string {
   if (value === null || value === undefined || value === "") return fallback;
@@ -358,9 +365,12 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
   const [tab, setTab] = useState<DetailTab>("summary");
   const [rawOtlp, setRawOtlp] = useState<any>(null);
   const [rawLoading, setRawLoading] = useState(false);
+  const [sessionExporting, setSessionExporting] = useState(false);
   const [rawExpanded, setRawExpanded] = useState(true);
   const [expanded, setExpanded] = useState(false);
   const [detailCollapsed, setDetailCollapsed] = useState(false);
+  const [traceViewMode, setTraceViewMode] = useState<"spans" | "trajectory">("spans");
+  const [activeTrajectoryRecord, setActiveTrajectoryRecord] = useState<TrajectoryRecord | null>(null);
   const [listPage, setListPage] = useState(0);
   const [cursorStack, setCursorStack] = useState<Array<string | null>>([null]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
@@ -388,18 +398,8 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
       setRawExpanded(true);
       setExpanded(false);
       setDetailCollapsed(false);
-      setPcmEvidence(null);
-      if (trace.runId) {
-        const [contextResponse, promptResponse, memoryResponse] = await Promise.all([
-          apiFetch(`/api/v1/runs/${encodeURIComponent(trace.runId)}/context`).then(response => response.ok ? response.json() : null).catch(() => null),
-          apiFetch(`/api/v1/runs/${encodeURIComponent(trace.runId)}/prompt`).then(response => response.ok ? response.json() : null).catch(() => null),
-          apiFetch(`/api/v1/runs/${encodeURIComponent(trace.runId)}/memory-events`).then(response => response.ok ? response.json() : null).catch(() => null),
-        ]);
-        if (requestSeq.current !== seq) return;
-        setPcmEvidence({ context: contextResponse, prompt: promptResponse, memoryEvents: memoryResponse?.items || [] });
-      } else {
-        setPcmEvidence(null);
-      }
+      setTraceViewMode("spans");
+      setActiveTrajectoryRecord(null);
     } catch { /* 保持当前选择 */ }
   }, []);
 
@@ -580,6 +580,70 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
     await writeClipboard(JSON.stringify(raw, null, 2));
     showToast("Raw OTLP 已复制", shortId(activeTrace.traceId, 24));
   }
+  async function exportSessionLog() {
+    if (!activeTrace || sessionExporting) return;
+    setSessionExporting(true);
+    try {
+      const filename = sessionLogFilename(activeTrace);
+      const showSaveFilePicker = (window as any).showSaveFilePicker?.bind(window);
+      let fileHandle: any = null;
+      if (showSaveFilePicker) {
+        try {
+          fileHandle = await showSaveFilePicker({
+            suggestedName: filename,
+            types: [{
+              description: "Session Log",
+              accept: { "application/x-ndjson": [".jsonl"] },
+            }],
+          });
+        } catch (error) {
+          if (error instanceof DOMException && error.name === "AbortError") return;
+          throw error;
+        }
+      }
+      const response = await apiFetch(
+        `/api/v1/sessions/${encodeURIComponent(activeTrace.sessionId)}:export`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            filename,
+            ...(activeTrace.runId ? { invocationId: activeTrace.runId } : {}),
+            download: true,
+          }),
+        },
+      );
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload?.error?.message || `Session Log 导出失败（${response.status}）`);
+      }
+      const blob = await response.blob();
+      if (fileHandle) {
+        const writable = await fileHandle.createWritable();
+        await writable.write(blob);
+        await writable.close();
+      } else {
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = filename;
+        anchor.click();
+        URL.revokeObjectURL(url);
+      }
+      showToast(
+        "Session Log 已导出",
+        `${fileHandle?.name || filename} · ${response.headers.get("X-Session-Event-Count") || 0} 条事件`,
+      );
+    } catch (error) {
+      showToast(
+        "Session Log 导出失败",
+        error instanceof Error ? error.message : "请稍后重试",
+        "error",
+      );
+    } finally {
+      setSessionExporting(false);
+    }
+  }
 
   return (
     <div
@@ -598,6 +662,7 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
               setActiveSpanId(null);
               setExpanded(false);
               setDetailCollapsed(false);
+              setTraceViewMode("spans");
             }}>
               <ArrowLeft size={15} /><span>返回 Trace 列表</span>
             </button>
@@ -700,7 +765,7 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
 
         {activeTrace && <div className={`trace-workbench detail-route${expanded ? " detail-expanded" : ""}${detailCollapsed ? " detail-collapsed" : ""}`}>
 
-        <section className="trace-span-panel" aria-label="Span 时间瀑布">
+        <section className="trace-span-panel" aria-label={traceViewMode === "spans" ? "Span 时间瀑布" : "实时轨迹"}>
           <div className="trace-panel-header trace-span-header">
             <AgentAvatar
               name={activeTraceAgent?.name || activeTrace.agentId || "Agent"}
@@ -714,14 +779,51 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
             <button className="button tertiary small" type="button" disabled={!activeTrace} onClick={copyTraceparent}>
               <Copy size={14} /><span>复制 traceparent</span>
             </button>
+            <button
+              className="button tertiary small"
+              type="button"
+              disabled={!activeTrace || sessionExporting}
+              onClick={() => void exportSessionLog()}
+              title="导出当前运行的 Session Log"
+            >
+              <Download size={14} /><span>{sessionExporting ? "导出中…" : "导出 Session Log"}</span>
+            </button>
+            <div className="segmented-control trace-view-tabs" role="tablist" aria-label="Trace 视图">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={traceViewMode === "spans"}
+                className={traceViewMode === "spans" ? "selected" : ""}
+                onClick={() => {
+                  setActiveTrajectoryRecord(null);
+                  setTraceViewMode("spans");
+                }}
+              >
+                Spans
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={traceViewMode === "trajectory"}
+                className={traceViewMode === "trajectory" ? "selected" : ""}
+                onClick={() => {
+                  setExpanded(false);
+                  setActiveTrajectoryRecord(null);
+                  setTraceViewMode("trajectory");
+                }}
+              >
+                轨迹
+              </button>
+            </div>
             {detailCollapsed && (
               <button className="button secondary small trace-detail-reopen" type="button" onClick={() => setDetailCollapsed(false)}>
                 <ChevronUp size={14} /><span>展开详情</span>
               </button>
             )}
           </div>
-          <div className="trace-axis" aria-hidden="true"><span>Span</span><span>0%</span><span>50%</span><span>100%</span><span>耗时</span></div>
-          <div className="trace-span-tree">
+          {traceViewMode === "spans" ? <>
+            <div className="trace-axis" aria-hidden="true"><span>Span</span><span>0%</span><span>50%</span><span>100%</span><span>耗时</span></div>
+            <div className="trace-span-tree">
             {orderedSpans.length === 0 ? (
               <div className="trace-stage-empty">
                 <Network size={20} />
@@ -757,21 +859,32 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
                 </button>
               );
             })}
-          </div>
+            </div>
+          </> : (
+            <TrajectoryView
+              sessionId={activeTrace.sessionId}
+              invocationId={activeTrace.runId}
+              onSelectionChange={setActiveTrajectoryRecord}
+            />
+          )}
         </section>
 
-        <aside className={`trace-detail-panel${detailCollapsed ? " is-collapsed" : ""}`} aria-label="Span 详情">
+        <aside className={`trace-detail-panel${detailCollapsed ? " is-collapsed" : ""}`} aria-label={traceViewMode === "spans" ? "Span 详情" : "轨迹详情"}>
           <div className="trace-panel-header">
             <div>
-              <strong>{activeSpan ? formatField(activeSpan.name) : "Span 详情"}</strong>
-              <span>{activeSpan ? `${formatField(activeSpan.kind)} · ${formatField(activeSpan.status)}` : "尚未选择 Span"}</span>
+              <strong>{traceViewMode === "spans" ? (activeSpan ? formatField(activeSpan.name) : "Span 详情") : (activeTrajectoryRecord?.summary || "轨迹详情")}</strong>
+              <span>{traceViewMode === "spans"
+                ? (activeSpan ? `${formatField(activeSpan.kind)} · ${formatField(activeSpan.status)}` : "尚未选择 Span")
+                : (activeTrajectoryRecord ? `${activeTrajectoryRecord.category} · #${activeTrajectoryRecord.firstSeqId}-${activeTrajectoryRecord.lastSeqId}` : "尚未选择轨迹节点")}</span>
             </div>
             <div className="trace-detail-actions">
               {!detailCollapsed && (
                 <>
-                  <button className="button tertiary small" type="button" disabled={!activeTrace} onClick={copyRawOtlp}>
-                    <Copy size={14} /><span>复制 Raw OTLP</span>
-                  </button>
+                  {traceViewMode === "spans" && (
+                    <button className="button tertiary small" type="button" disabled={!activeTrace} onClick={copyRawOtlp}>
+                      <Copy size={14} /><span>复制 Raw OTLP</span>
+                    </button>
+                  )}
                   <button
                     className="button tertiary small trace-detail-expand"
                     type="button"
@@ -784,22 +897,22 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
                   </button>
                 </>
               )}
-              <button
+              {!detailCollapsed && <button
                 className="button tertiary small trace-detail-collapse"
                 type="button"
                 aria-expanded={!detailCollapsed}
-                title={detailCollapsed ? "展开 Trace 详情" : "收起 Trace 详情"}
+                title="收起详情"
                 onClick={() => {
-                  setDetailCollapsed(value => !value);
-                  if (!detailCollapsed) setExpanded(false);
+                  setDetailCollapsed(true);
+                  setExpanded(false);
                 }}
               >
-                {detailCollapsed ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-                <span>{detailCollapsed ? "展开详情" : "收起详情"}</span>
-              </button>
+                <ChevronDown size={14} />
+                <span>收起详情</span>
+              </button>}
             </div>
           </div>
-          {!detailCollapsed && <div className="trace-tabs" role="tablist" aria-label="Trace 详情分类">
+          {!detailCollapsed && traceViewMode === "spans" && <div className="trace-tabs" role="tablist" aria-label="Trace 详情分类">
             {DETAIL_TABS.map(t => (
               <button
                 key={t.id}
@@ -813,7 +926,7 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
               </button>
             ))}
           </div>}
-          {!detailCollapsed && <div className={`trace-detail-body${tab === "raw" ? " raw-active" : ""}`}>
+          {!detailCollapsed && traceViewMode === "spans" && <div className={`trace-detail-body${tab === "raw" ? " raw-active" : ""}`}>
             {tab !== "raw" && (
               <div>
                 {!activeSpan && tab !== "pcm" && <div className="trace-stage-empty compact"><p>选择一个 Span 查看标准属性。</p></div>}
@@ -904,6 +1017,9 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
               {tab === "raw" && !rawLoading && !rawOtlp && <div className="trace-raw-loading">没有可显示的 OTLP JSON。</div>}
             </div>
           </div>}
+          {!detailCollapsed && traceViewMode === "trajectory" && (activeTrajectoryRecord
+            ? <TrajectoryDetail key={activeTrajectoryRecord.recordId} record={activeTrajectoryRecord} />
+            : <div className="trace-stage-empty compact"><p>选择一个轨迹节点查看详情。</p></div>)}
         </aside>
         </div>}
       </div>

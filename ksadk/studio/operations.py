@@ -33,7 +33,8 @@ class OperationManager:
         kind: OperationKind,
         resource_id: str,
         idempotency_key: str,
-        runner: Callable[[], Awaitable[object]],
+        metadata: dict | None = None,
+        runner: Callable[[str], Awaitable[object]],
     ) -> Operation:
         existing = self._find_by_idempotency_key(idempotency_key)
         if existing is not None:
@@ -42,6 +43,7 @@ class OperationManager:
             id=f"op_{uuid4().hex}",
             kind=kind,
             resource_id=resource_id,
+            metadata=metadata or {},
         )
         self._write(operation, [], idempotency_key)
         self.append(operation.id, "operation.queued", {"kind": kind})
@@ -57,14 +59,14 @@ class OperationManager:
     async def _run(
         self,
         operation_id: str,
-        runner: Callable[[], Awaitable[object]],
+        runner: Callable[[str], Awaitable[object]],
     ) -> None:
         operation = self.get(operation_id)
         operation.status = OperationStatus.RUNNING
         self._save_record(operation)
         self.append(operation_id, "operation.started", {})
         try:
-            result = await runner()
+            result = await runner(operation_id)
             result_id = getattr(result, "id", None)
             if result_id:
                 operation.resource_id = str(result_id)
@@ -105,6 +107,18 @@ class OperationManager:
         operation, _, _ = self._read(operation_id)
         return operation
 
+    def list(self, *, kind: OperationKind | None = None) -> list[Operation]:
+        directory = self.workspace.resolve(".agentkit/operations")
+        operations: list[Operation] = []
+        for path in directory.glob("op_*.json"):
+            try:
+                operation = self.get(path.stem)
+            except StudioError:
+                continue
+            if kind is None or operation.kind == kind:
+                operations.append(operation)
+        return sorted(operations, key=lambda item: item.created_at, reverse=True)
+
     def events(self, operation_id: str, *, after: int = 0) -> list[OperationEvent]:
         _, events, _ = self._read(operation_id)
         return [event for event in events if event.id > after]
@@ -133,7 +147,12 @@ class OperationManager:
         task = self._tasks.get(operation_id)
         if task is not None:
             task.cancel()
-        return operation
+        if operation.status == OperationStatus.QUEUED:
+            operation.status = OperationStatus.CANCELLED
+            operation.completed_at = datetime.now(timezone.utc)
+            self._save_record(operation)
+            self.append(operation_id, "operation.cancelled", {})
+        return self.get(operation_id)
 
     async def wait(self, operation_id: str, *, timeout: float = 30) -> Operation:
         deadline = asyncio.get_running_loop().time() + timeout

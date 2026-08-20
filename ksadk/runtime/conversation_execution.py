@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import asdict
 from typing import Any
+from uuid import uuid4
 
 from ksadk.conversations.run_kinds import RUN_MODE_FOREGROUND
 from ksadk.conversations.runtime_compaction import preview_auto_compaction
@@ -134,6 +135,7 @@ async def iter_runtime_conversation_events(
         config=dict(launch_context.config),
         metadata={
             "invocation_id": prepared.invocation_id,
+            "trace_id": uuid4().hex,
             CONVERSATION_PREPROCESSING_METADATA_KEY: conversation_request,
         },
     )

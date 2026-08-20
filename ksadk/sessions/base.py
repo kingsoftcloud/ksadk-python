@@ -309,6 +309,7 @@ class BaseSessionService(abc.ABC):
 
     @abc.abstractmethod
     async def append_event(self, session_id: str, event: SessionEvent) -> SessionEvent:
+        """Append an event with a backend-unique ID and session-unique cursor."""
         raise NotImplementedError
 
     @abc.abstractmethod

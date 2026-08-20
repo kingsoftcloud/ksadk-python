@@ -170,6 +170,16 @@ def test_additive_extra_payload_keys_allowed():
     assert event.payload["future_new_field"] == 123
 
 
+def test_old_v1_event_defaults_trajectory_correlation_to_none():
+    event = RuntimeEvent.from_dict(_base_event())
+
+    assert event.turn_id is None
+    assert event.step_id is None
+    assert event.parent_event_id is None
+    assert event.trace_id is None
+    assert event.span_id is None
+
+
 def test_approval_is_first_class_event_type():
     assert EventType.APPROVAL_REQUESTED in ALL_EVENT_TYPES
     assert EventType.APPROVAL_RESOLVED in ALL_EVENT_TYPES

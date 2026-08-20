@@ -394,7 +394,7 @@ class CodexAgentService:
         resolved_id = self.studio.codex_manifests.load(agent_id).manifest.name
         revision = self._project(self.studio.codex_manifests.load(resolved_id)).metadata.revision
 
-        async def runner():
+        async def runner(_operation_id: str):
             return await asyncio.to_thread(
                 self.studio.codex_builder.build,
                 resolved_id,
@@ -426,7 +426,7 @@ class CodexAgentService:
         goal_objective: str | None = None,
         runtime_input: Any = None,
     ) -> Operation:
-        async def runner():
+        async def runner(_operation_id: str):
             return await self.studio.run_build(
                 build_id,
                 user_input,

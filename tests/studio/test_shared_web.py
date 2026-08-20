@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from ksadk.events.runtime_event import EventType, RuntimeEvent
@@ -84,7 +85,8 @@ async def _shared_runtime_events(request, handle):
         "agent_id": request.agent_id or "agent",
         "user_id": request.user_id,
         "session_id": request.session_id,
-        "invocation_id": handle.run_id,
+        "invocation_id": str(request.metadata["invocation_id"]),
+        "trace_id": str(request.metadata["trace_id"]),
     }
     yield RuntimeEvent.create(
         EventType.RUN_STARTED,
@@ -328,7 +330,8 @@ def test_shared_chat_runs_and_replays_two_turn_session(tmp_path: Path):
         assert sessions_after_delete["Total"] == 0
 
 
-def test_shared_chat_history_preserves_a2ui_activity(tmp_path: Path):
+@pytest.mark.asyncio
+async def test_shared_chat_history_preserves_a2ui_activity(tmp_path: Path):
     service = StudioService(tmp_path)
     service.create_agent(agent_id="demo-agent", name="Demo Agent")
     record = RunRecord(
@@ -344,6 +347,7 @@ def test_shared_chat_history_preserves_a2ui_activity(tmp_path: Path):
         completed_at=datetime.now(timezone.utc),
     )
     service.event_store.create(record)
+    await service.session_service.create_session("demo-agent", "local-user", record.session_id)
     operations = [
         {
             "version": "v0.9",
@@ -353,21 +357,28 @@ def test_shared_chat_history_preserves_a2ui_activity(tmp_path: Path):
             },
         }
     ]
-    service.event_store.append(
-        record.id,
-        "a2ui.surface.created",
-        {
-            "surfaceId": "surface-config",
-            "a2ui_operations": operations,
-        },
+    await service.runtime_events.append_one(
+        RuntimeEvent.create(
+            EventType.A2UI_SURFACE_BEGIN,
+            agent_id=record.agent_id,
+            user_id="local-user",
+            session_id=record.session_id,
+            invocation_id=record.id,
+            seq_id=0,
+            trace_id=record.trace_id,
+            payload={
+                "surface_id": "surface-config",
+                "surface": {"components": []},
+            },
+        )
     )
 
-    messages = StudioSharedWebBridge(service).list_messages("ses_a2ui")
+    messages = await StudioSharedWebBridge(service).list_messages("ses_a2ui")
     assistant = messages["Messages"][1]
     assert assistant["Activities"] == [
         {
             "SeqId": 1,
-            "Type": "a2ui.surface.created",
+            "Type": "a2ui.surface.begin",
             "MessageId": "run_a2ui:assistant",
             "SurfaceId": "surface-config",
             "Content": {"a2ui_operations": operations},

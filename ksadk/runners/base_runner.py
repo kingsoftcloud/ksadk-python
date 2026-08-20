@@ -118,6 +118,7 @@ class BaseRunner(ABC):
         cancel_supported = type(self).request_cancel is not BaseRunner.request_cancel
         return {
             "Framework": framework or self.__class__.__name__,
+            "model_call_boundaries": False,
             "CancelRun": {
                 "Supported": cancel_supported,
                 "RequestResults": (

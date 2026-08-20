@@ -21,8 +21,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Optional
+from uuid import uuid4
 
 from ksadk.codex.client import CodexClient
 from ksadk.codex.phase import CodexPhaseTracker
@@ -59,6 +61,7 @@ class _CodexAsBaseRuntime(BaseRuntime):
             "pause": "interrupt_then_resume_thread",
             "resume": "thread_id",
             "live_interaction": True,
+            "model_call_boundaries": False,
         }
 
 
@@ -149,7 +152,11 @@ class CodexRuntimeAdapter(RuntimeAdapter):
             run_id=thread_id,
             session_id=request.session_id,
             runtime_type="codex",
-            native_ref={"thread_id": thread_id, "user_id": request.user_id},
+            native_ref={
+                "thread_id": thread_id,
+                "user_id": request.user_id,
+                "trace_id": str(request.metadata.get("trace_id") or uuid4().hex),
+            },
         )
 
     def stream(self, handle: RunHandle) -> AsyncIterator[RuntimeEvent]:
@@ -347,7 +354,12 @@ class CodexRuntimeAdapter(RuntimeAdapter):
             )
             return
 
+        thread.turn_id = thread.turn_id or f"turn_{thread.thread_id}"
+        handle.native_ref["turn_id"] = thread.turn_id
+        turn_started_at = time.monotonic()
+        turn_completed = False
         yield self._event(handle, EventType.RUN_STARTED, {"status": "in_progress"})
+        yield self._event(handle, EventType.TURN_STARTED, {"turn_index": 1})
         tracker = CodexPhaseTracker()
         request = thread.__dict__.get("_start_request")
         resume_state = thread.__dict__.get("_resume")
@@ -359,9 +371,11 @@ class CodexRuntimeAdapter(RuntimeAdapter):
             prompt = ""
         run_input = _build_run_input(request, prompt)
         thread.streaming = True
-        thread.turn_id = thread.turn_id or f"turn_{thread.thread_id}"
         try:
             async for event in self._map_codex_stream(handle, thread, tracker, run_input):
+                if event.event_type == EventType.RUN_INTERRUPTED:
+                    yield self._turn_completed_event(handle, turn_started_at, "interrupted")
+                    turn_completed = True
                 yield event
             # 正常结束(非 interrupt):补 RUN_COMPLETED(AGUI 投射器据此发 RunFinished success)
             if not thread.interrupted:
@@ -375,6 +389,8 @@ class CodexRuntimeAdapter(RuntimeAdapter):
                     completed_payload["completed_at"] = thread.completed_at
                 if thread.duration_ms is not None:
                     completed_payload["duration_ms"] = thread.duration_ms
+                yield self._turn_completed_event(handle, turn_started_at, "completed")
+                turn_completed = True
                 yield self._event(handle, EventType.RUN_COMPLETED, completed_payload)
         except asyncio.CancelledError:
             thread.interrupted = True
@@ -388,6 +404,8 @@ class CodexRuntimeAdapter(RuntimeAdapter):
             # Closing the SDK transport terminates and waits for the app-server
             # child even when the stream is stuck between notifications.
             await self._client.close()
+            if not turn_completed:
+                yield self._turn_completed_event(handle, turn_started_at, "failed")
             yield self._event(
                 handle,
                 EventType.RUN_FAILED,
@@ -395,6 +413,8 @@ class CodexRuntimeAdapter(RuntimeAdapter):
             )
         except Exception as exc:  # noqa: BLE001  通用兜底:任何异常都发 RUN_FAILED
             self._do_not_persist.add(handle.run_id)
+            if not turn_completed:
+                yield self._turn_completed_event(handle, turn_started_at, "failed")
             yield self._event(
                 handle,
                 EventType.RUN_FAILED,
@@ -482,8 +502,7 @@ class CodexRuntimeAdapter(RuntimeAdapter):
                     # finish promptly, close the transport *before* awaiting
                     # the waiter so MessageRouter.fail_all can release it.
                     drain_deadline = (
-                        asyncio.get_running_loop().time()
-                        + _INTERRUPT_DRAIN_TIMEOUT_SECONDS
+                        asyncio.get_running_loop().time() + _INTERRUPT_DRAIN_TIMEOUT_SECONDS
                     )
                     while True:
                         drain_remaining = max(
@@ -631,9 +650,9 @@ class CodexRuntimeAdapter(RuntimeAdapter):
                 EventType.A2UI_SURFACE_BEGIN,
                 {
                     "surface_id": surface_id,
-                    "surface": params.get("surface")
-                    if isinstance(params.get("surface"), dict)
-                    else {},
+                    "surface": (
+                        params.get("surface") if isinstance(params.get("surface"), dict) else {}
+                    ),
                 },
             )
         if method == "a2ui/interaction":
@@ -647,9 +666,11 @@ class CodexRuntimeAdapter(RuntimeAdapter):
                     "surface_id": str(params.get("surface_id") or params.get("surfaceId") or ""),
                     "interaction_id": interaction_id,
                     "kind": str(params.get("kind") or "form"),
-                    "input_schema": params.get("input_schema")
-                    if isinstance(params.get("input_schema"), dict)
-                    else {},
+                    "input_schema": (
+                        params.get("input_schema")
+                        if isinstance(params.get("input_schema"), dict)
+                        else {}
+                    ),
                     "is_blocking": bool(params.get("is_blocking", True)),
                 },
             )
@@ -787,9 +808,9 @@ class CodexRuntimeAdapter(RuntimeAdapter):
                     "approval_id": call_id,
                     "call_id": call_id,
                     "kind": str(params.get("kind") or "tool"),
-                    "detail": params.get("detail")
-                    if isinstance(params.get("detail"), dict)
-                    else params,
+                    "detail": (
+                        params.get("detail") if isinstance(params.get("detail"), dict) else params
+                    ),
                 },
             )
         return None
@@ -818,8 +839,26 @@ class CodexRuntimeAdapter(RuntimeAdapter):
                 else handle.run_id
             ),
             seq_id=self._next_seq(),
+            turn_id=str(handle.native_ref.get("turn_id") or "") or None,
+            trace_id=str(handle.native_ref.get("trace_id") or "") or None,
             phase=phase,
             payload=payload,
+        )
+
+    def _turn_completed_event(
+        self,
+        handle: RunHandle,
+        started_at: float,
+        status: str,
+    ) -> RuntimeEvent:
+        return self._event(
+            handle,
+            EventType.TURN_COMPLETED,
+            {
+                "turn_index": 1,
+                "status": status,
+                "duration_ms": int((time.monotonic() - started_at) * 1000),
+            },
         )
 
     @staticmethod

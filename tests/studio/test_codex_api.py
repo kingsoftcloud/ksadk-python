@@ -43,7 +43,8 @@ async def _slow_codex_events(
         "agent_id": request.agent_id or "agent",
         "user_id": request.user_id,
         "session_id": request.session_id,
-        "invocation_id": handle.run_id,
+        "invocation_id": str(request.metadata["invocation_id"]),
+        "trace_id": str(request.metadata["trace_id"]),
     }
     yield RuntimeEvent.create(
         EventType.RUN_STARTED,

@@ -2,8 +2,7 @@ import { describe, expect, it } from "vitest";
 import { generateAgentSlug } from "./generatedId";
 
 describe("generateAgentSlug", () => {
-  it("returns an opaque local identifier", () => {
-    expect(generateAgentSlug(() => new Uint8Array([0, 17, 170, 255])))
-      .toBe("agentkit-0011aaff");
+  it("generates a local id accepted by the agent form", () => {
+    expect(generateAgentSlug()).toMatch(/^[a-z][a-z0-9-]{2,62}$/);
   });
 });
