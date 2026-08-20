@@ -191,7 +191,7 @@ class AgentKernelReadiness:
             if lease is None:
                 lease_healthy = False
                 continue
-            if lease.activation_id != self.runtime.lease_heartbeat.activation_id:
+            if not self.runtime.lease_heartbeat.owns_lease(session_id, lease):
                 # lease 存在但已被其它 activation 接管：对本 runtime 而言
                 # 等价于丢失，必须如实上报 not-ready。
                 lease_healthy = False
@@ -447,12 +447,14 @@ class AgentKernelRuntime:
             if message.status.value in ("accepted", "claimed")
         }
         # Inbox is completed as soon as a stream is launched.  Keep renewing
-        # the owning lease for the independent live execution (and a WAITING
-        # interaction) or its next runtime event will be fenced after TTL.
+        # the owning lease after the independent live execution finishes too:
+        # this runtime remains the session's activation owner while the Pod is
+        # healthy, so a later control command stays on the same fenced owner
+        # and readiness can truthfully detect an external takeover.  ``close``
+        # releases the retained leases; an ungraceful stop lets their TTL
+        # expire for recovery by a new activation.
         active_sessions = self.worker.active_session_ids()
-        desired = inbox_sessions | active_sessions
-        self._heartbeat_sessions.intersection_update(desired)
-        return desired
+        return inbox_sessions | active_sessions
 
 
 # ---------------------------------------------------------------------------

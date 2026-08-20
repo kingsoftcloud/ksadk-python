@@ -231,7 +231,7 @@ async def test_readiness_stays_ready_across_idle_lease_ttl():
         assert health["ready"] is True
         lease = await stack.store.current_lease(AGENT, "s1")
         assert lease is not None
-        assert lease.activation_id == "kernel-pod-test"
+        assert lease.activation_id == runtime.lease_heartbeat.activation_id_for_session("s1")
     finally:
         await runtime.close()
 
