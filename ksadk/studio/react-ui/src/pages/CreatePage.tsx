@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ArrowLeft, ArrowRight, Zap, MessagesSquare, Upload, Folder, Check, Copy,
+  ArrowLeft, ArrowRight, Zap, MessagesSquare, Upload, Folder, Check,
   PanelRight, Plus, Search, Cpu, Wrench, Network, Sparkles, Package, Bot,
   RefreshCw, Send, CircleAlert, ShieldCheck,
 } from "lucide-react";
@@ -18,6 +18,7 @@ import { FileDropzone } from "../components/ui/FileDropzone";
 import { FormField } from "../components/ui/FormField";
 import { StudioDrawer } from "../components/ui/StudioDialog";
 import { CodeViewer } from "../components/ui/CodeViewer";
+import { PageHeaderActions } from "../components/PageHeaderPortal";
 import { applyApiFieldErrors } from "../lib/formErrors";
 import {
   agentImportSchema,
@@ -318,7 +319,7 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
     if (next < 1 || next > 4) return;
     if (next > step) {
       if (step === 1) {
-        const valid = await quickForm.trigger(["name", "slug", "runtimeType", "prompt", "audience"]);
+        const valid = await quickForm.trigger(["name", "slug", "runtimeType", "prompt", "audience"], { shouldFocus: true });
         if (!valid) { setCreateError("请修正标记字段后继续。"); return; }
       }
       if (step === 2 && !selectedModels.length) {
@@ -555,7 +556,6 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
   const runtimeLabel = ({ codex: "Codex", adk: "ADK", langgraph: "LangGraph" } as Record<string, string>)[runtime] || runtime;
   const policyMeta = POLICY_META[policy];
   const reviewModel = selectedModels.map(id => resourceById(id)?.displayName || id).join("、") || "待选择";
-  const capCount = selectedTools.length + selectedMcp.length + selectedSkills.length;
   const selectedModelItems = selectedModels.map(resourceById).filter((item): item is ResItem => Boolean(item));
   const selectedModelStatus = selectedModelItems.length === 0
     ? "未选择模型；Agent 可以先构建，但运行前需要配置。"
@@ -585,17 +585,27 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
     { id: "import", icon: Upload, label: "导入", sub: "YAML / Agent ZIP" },
     { id: "project", icon: Folder, label: "项目识别", sub: "检测 ADK / LangGraph" },
   ];
-  const scrollMode = !editingAgentId && mode === "conversation" ? "workbench" : "document";
+  const layout = !editingAgentId && mode === "conversation" ? "workbench" : "document";
 
   const renderCreateRailContent = (showModeLabel: boolean) => (
     <div className="create-rail-panel">
       {showModeLabel && <div className="create-rail-label">创建方式</div>}
       {!editingAgentId && (
-        <nav className="authoring-mode-tabs" aria-label="创建方式">
+        <nav className="authoring-mode-tabs" aria-label="创建方式" role="tablist">
           {MODE_TABS.map(tab => {
             const Icon = tab.icon;
             return (
-              <button key={tab.id} className={mode === tab.id ? "active" : ""} type="button" onClick={() => selectMode(tab.id)}>
+              <button
+                key={tab.id}
+                id={`authoring-tab-${tab.id}`}
+                className={mode === tab.id ? "active" : ""}
+                type="button"
+                role="tab"
+                aria-selected={mode === tab.id}
+                aria-controls={`authoring-panel-${tab.id}`}
+                title={`${tab.label}：${tab.sub}`}
+                onClick={() => selectMode(tab.id)}
+              >
                 <Icon size={16} /><span><strong>{tab.label}</strong><small>{tab.sub}</small></span>
               </button>
             );
@@ -609,15 +619,16 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
           <nav className="wizard-steps" aria-label="创建步骤">
             {WIZARD_STEP_META.map((meta, index) => {
               const number = index + 1;
+              const completed = !editingAgentId && number < maxStep && number !== step;
               return (
                 <button
                   key={number}
-                  className={`wizard-step${(editingAgentId ? number === 1 : step === number) ? " active" : ""}${!editingAgentId && number < maxStep && number !== step ? " completed" : ""}`}
+                  className={`wizard-step${(editingAgentId ? number === 1 : step === number) ? " active" : ""}${completed ? " completed" : ""}`}
                   type="button"
                   disabled={Boolean(editingAgentId) || number > maxStep}
                   onClick={() => gotoStep(number)}
                 >
-                  <span className="step-number">{number}</span>
+                  <span className="step-number">{completed ? <Check size={13} strokeWidth={3} /> : number}</span>
                   <span><strong>{meta[0]}</strong><small>{meta[1]}</small></span>
                 </button>
               );
@@ -629,39 +640,50 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
   );
 
   return (
-    <div className="create-shell" data-scroll-mode={scrollMode}>
-      <header className="create-header">
+    <div className="create-shell page-container" data-layout={layout} data-authoring-mode={mode} data-editing={editingAgentId ? "true" : "false"}>
+      <PageHeaderActions>
         <button className="button tertiary" type="button" onClick={onBack}>
           <ArrowLeft size={16} /><span>返回 Agent</span>
         </button>
-        <div className="create-heading">
-          <span className="eyebrow">Agent Builder</span>
-          <h1>{editingAgentId ? "编辑 Agent" : "创建 Agent"}</h1>
-          <p>{editingAgentId
-            ? "修改系统提示词与模型绑定；本地标识保持不变，避免破坏已有引用。"
-            : "从系统提示词开始，按需组合模型、Tool、MCP 与 Skill。"}</p>
-        </div>
-        <button
-          ref={createRailTriggerRef}
-          className="button secondary compact-create-rail-trigger"
-          type="button"
-          aria-expanded={createRailOpen}
-          aria-controls="createRail"
-          onClick={() => setCreateRailOpen(open => !open)}
-        >
-          创建方式
-        </button>
-        <div className="draft-state"><span className="status-dot neutral" /><span>{draftState}</span></div>
-      </header>
+        {!editingAgentId && viewportMode === "compact" && (
+          <button
+            ref={createRailTriggerRef}
+            className="icon-button compact-create-rail-trigger"
+            type="button"
+            aria-label="查看创建入口与配置步骤"
+            title="查看创建入口与配置步骤"
+            aria-expanded={createRailOpen}
+            aria-controls="createRail"
+            onClick={() => setCreateRailOpen(open => !open)}
+          >
+            <PanelRight size={16} />
+          </button>
+        )}
+        {!editingAgentId && mode === "quick" && (
+          <>
+            <span className="tag">{draftState}</span>
+            <button className="button secondary" type="button" onClick={saveDraft}>保存草稿</button>
+            {step < 4 ? (
+              <button className="button accent" type="button" onClick={() => gotoStep(step + 1)}>
+                <span>继续</span><ArrowRight size={16} />
+              </button>
+            ) : (
+              <button className="button accent" type="submit" form="quickAgentForm" disabled={submitting}>
+                <Plus size={16} /><span>{submitting ? "正在创建" : "创建 Agent"}</span>
+              </button>
+            )}
+          </>
+        )}
+      </PageHeaderActions>
 
       <div className="create-workbench">
-        {viewportMode !== "compact" && (
+        {!editingAgentId && viewportMode !== "compact" && (
           <aside id="createRail" className="create-rail" aria-label="创建方式与步骤">
             {renderCreateRailContent(true)}
           </aside>
         )}
 
-        {viewportMode === "compact" && createRailOpen && (
+        {!editingAgentId && viewportMode === "compact" && createRailOpen && (
           <StudioDrawer
             open
             compact
@@ -685,13 +707,22 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
             />
           )}
           {!editingAgentId && mode === "conversation" && (
-            <section className="authoring-mode-panel">
+            <section
+              id="authoring-panel-conversation"
+              className="authoring-mode-panel"
+              role="tabpanel"
+              aria-labelledby="authoring-tab-conversation"
+            >
               <div className="authoring-panel-heading">
                 <div><span className="eyebrow">Conversation authoring</span><h2>通过多轮对话设计 Agent</h2><p>模型只返回结构化 Draft Patch；确认前不会写入工作区。</p></div>
-                <span className="status-badge neutral">Inspect → Confirm</span>
+                <span className="tag">Inspect → Confirm</span>
               </div>
               <div className="conversation-authoring-layout">
                 <div className="authoring-chat-column">
+                  <div className="authoring-section-heading">
+                    <span className="authoring-section-index">01</span>
+                    <div><strong>描述需求</strong><p>通过多轮输入澄清职责、边界、Runtime 与期望能力。</p></div>
+                  </div>
                   <div className="authoring-transcript">
                     {convMessages.length === 0 && <div className="trace-stage-empty compact"><p>说明 Agent 的职责、边界、Runtime 和期望能力。</p></div>}
                     {convMessages.map((m, i) => (
@@ -702,7 +733,7 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
                     ))}
                   </div>
                   <div className="authoring-composer"><textarea rows={3} placeholder="例如：做一个 ADK 发布评审 Agent，只输出阻断项和证据" value={convInput} onChange={e => setConvInput(e.target.value)} /></div>
-                  <div className="authoring-composer-actions">
+                  <div className="authoring-card-actions">
                     <button className="button accent" type="button" disabled={convBusy} onClick={sendConversation}>
                       <Send size={16} /><span>{convBusy ? "正在生成" : "生成方案"}</span>
                     </button>
@@ -725,9 +756,12 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
                 </div>
                 <FormProvider {...conversationForm}>
                 <form className="authoring-inspection-card" onSubmit={conversationForm.handleSubmit(confirmConversation)} noValidate>
-                  <div className="authoring-preview-heading">
-                    <div><strong>Draft Patch</strong><span>必须确认后才创建</span></div>
-                    <span className={`status-dot ${proposal ? "success" : "neutral"}`} />
+                  <div className="authoring-section-heading">
+                    <span className="authoring-section-index">02</span>
+                    <div><strong>检查 Draft Patch</strong><p>核对结构化方案；只有确认后才会创建 Revision。</p></div>
+                    <span className="badge" data-state={proposal ? "ready" : "pending"} aria-live="polite">
+                      {proposal ? "方案已生成" : "等待生成"}
+                    </span>
                   </div>
                   <div className="form-grid two-columns">
                     <FormField label="显示名称" requirement="required" htmlFor="conversationName" error={conversationForm.formState.errors.name?.message}>
@@ -759,7 +793,9 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
                     showLineNumbers={Boolean(proposal)}
                     wrap={!proposal}
                   />
-                  <button className="button accent" type="submit" disabled={!proposal || convBusy}><Check size={16} /><span>确认并创建 Revision</span></button>
+                  <div className="authoring-card-actions">
+                    <button className="button accent" type="submit" disabled={!proposal || convBusy}><Check size={16} /><span>确认并创建 Revision</span></button>
+                  </div>
                 </form>
                 </FormProvider>
               </div>
@@ -767,13 +803,22 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
           )}
 
           {!editingAgentId && mode === "import" && (
-            <section className="authoring-mode-panel">
+            <section
+              id="authoring-panel-import"
+              className="authoring-mode-panel"
+              role="tabpanel"
+              aria-labelledby="authoring-tab-import"
+            >
               <div className="authoring-panel-heading">
                 <div><span className="eyebrow">Agent import</span><h2>检查并导入 Agent</h2><p>先解析格式、Runtime、文件清单和 SHA-256，确认后再写入。</p></div>
-                <span className="status-badge neutral">YAML / ZIP</span>
+                <span className="tag">YAML / ZIP</span>
               </div>
               <div className="authoring-inspect-grid">
                 <form className="authoring-input-card" onSubmit={e => { e.preventDefault(); inspectImport(); }}>
+                  <div className="authoring-section-heading">
+                    <span className="authoring-section-index">01</span>
+                    <div><strong>选择 Agent 文件</strong><p>支持 YAML 或 ZIP；检查过程不会写入 Catalog。</p></div>
+                  </div>
                   <FormField label="Agent 文件" requirement="required" hint="拖放 Agent YAML / ZIP，或点击选择">
                     <div>
                     <FileDropzone
@@ -790,10 +835,19 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
                     />
                     </div>
                   </FormField>
-                  <button className="button accent" type="submit" disabled={inspectBusy}><Search size={16} /><span>{inspectBusy ? "检查中" : "只读检查"}</span></button>
+                  <div className="authoring-card-actions">
+                    <button className="button accent" type="submit" disabled={inspectBusy}><Search size={16} /><span>{inspectBusy ? "检查中" : "只读检查"}</span></button>
+                  </div>
                 </form>
                 <FormProvider {...importForm}>
                 <form className="authoring-inspection-card" onSubmit={importForm.handleSubmit(commitImport)} noValidate>
+                  <div className="authoring-section-heading">
+                    <span className="authoring-section-index">02</span>
+                    <div><strong>检查并确认</strong><p>核对解析结果、警告与 RuntimeRef，再执行导入。</p></div>
+                    <span className="badge" data-state={importInspection ? "ready" : "pending"} aria-live="polite">
+                      {importInspection ? "检查完成" : "等待检查"}
+                    </span>
+                  </div>
                   <div className="form-grid two-columns">
                     <FormField label="显示名称" requirement="required" htmlFor="importName" error={importForm.formState.errors.name?.message}>
                       <input id="importName" {...importForm.register("name")} />
@@ -812,7 +866,9 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
                     showLineNumbers={Boolean(importInspection)}
                     wrap={!importInspection}
                   />
-                  <button className="button accent" type="submit" disabled={!importInspection || inspectBusy}><Check size={16} /><span>确认导入</span></button>
+                  <div className="authoring-card-actions">
+                    <button className="button accent" type="submit" disabled={!importInspection || inspectBusy}><Check size={16} /><span>确认导入</span></button>
+                  </div>
                 </form>
                 </FormProvider>
               </div>
@@ -821,20 +877,38 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
           )}
 
           {!editingAgentId && mode === "project" && (
-            <section className="authoring-mode-panel">
+            <section
+              id="authoring-panel-project"
+              className="authoring-mode-panel"
+              role="tabpanel"
+              aria-labelledby="authoring-tab-project"
+            >
               <div className="authoring-panel-heading">
                 <div><span className="eyebrow">Project detection</span><h2>识别现有项目</h2><p>复用 FrameworkDetector 展示证据和置信度；确认前不修改源码。</p></div>
-                <span className="status-badge neutral">Workspace only</span>
+                <span className="tag">Workspace only</span>
               </div>
               <FormProvider {...projectForm}>
               <div className="authoring-inspect-grid">
                 <form className="authoring-input-card" onSubmit={e => { e.preventDefault(); inspectProject(); }}>
+                  <div className="authoring-section-heading">
+                    <span className="authoring-section-index">01</span>
+                    <div><strong>指定项目路径</strong><p>仅识别当前工作区内的目录，不会修改项目源码。</p></div>
+                  </div>
                   <FormField label="工作区相对路径" requirement="required" htmlFor="projectPath" hint="仅检查当前工作区内的目录，不会修改项目源码。" error={projectForm.formState.errors.path?.message}>
                     <input id="projectPath" {...projectForm.register("path")} />
                   </FormField>
-                  <button className="button accent" type="submit" disabled={inspectBusy}><Search size={16} /><span>{inspectBusy ? "检测中" : "检测项目"}</span></button>
+                  <div className="authoring-card-actions">
+                    <button className="button accent" type="submit" disabled={inspectBusy}><Search size={16} /><span>{inspectBusy ? "检测中" : "检测项目"}</span></button>
+                  </div>
                 </form>
                 <form className="authoring-inspection-card" onSubmit={projectForm.handleSubmit(commitProject)} noValidate>
+                  <div className="authoring-section-heading">
+                    <span className="authoring-section-index">02</span>
+                    <div><strong>检查并确认</strong><p>核对 FrameworkDetector 证据与置信度，再创建 Revision。</p></div>
+                    <span className="badge" data-state={projectInspection ? "ready" : "pending"} aria-live="polite">
+                      {projectInspection ? "检测完成" : "等待检测"}
+                    </span>
+                  </div>
                   <div className="form-grid two-columns">
                     <FormField label="显示名称" requirement="required" htmlFor="projectName" error={projectForm.formState.errors.name?.message}>
                       <input id="projectName" {...projectForm.register("name")} />
@@ -853,7 +927,9 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
                     showLineNumbers={Boolean(projectInspection)}
                     wrap={!projectInspection}
                   />
-                  <button className="button accent" type="submit" disabled={!projectInspection || inspectBusy}><Check size={16} /><span>确认创建 Revision</span></button>
+                  <div className="authoring-card-actions">
+                    <button className="button accent" type="submit" disabled={!projectInspection || inspectBusy}><Check size={16} /><span>确认创建 Revision</span></button>
+                  </div>
                 </form>
               </div>
               </FormProvider>
@@ -862,9 +938,14 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
           )}
 
           {!editingAgentId && mode === "quick" && (
-            <div className="wizard-layout">
+            <div
+              id="authoring-panel-quick"
+              className="wizard-layout"
+              role="tabpanel"
+              aria-labelledby="authoring-tab-quick"
+            >
               <FormProvider {...quickForm}>
-              <form className="wizard-content" onSubmit={quickForm.handleSubmit(submitWizard)} noValidate>
+              <form id="quickAgentForm" className="wizard-content" onSubmit={quickForm.handleSubmit(submitWizard)} noValidate>
                 {/* 第 1 步：定义 Agent */}
                 <section className={`wizard-panel${step === 1 ? " active" : ""}`} hidden={step !== 1}>
                   <div className="panel-heading">
@@ -914,11 +995,15 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
                   <FormField label="描述" requirement="optional" htmlFor="quickDescription" error={quickForm.formState.errors.description?.message}>
                     <input id="quickDescription" maxLength={1024} placeholder="简要说明这个 Agent 解决什么问题" {...quickForm.register("description", { onChange: markDirty })} />
                   </FormField>
-                  <FormField label="系统提示词" requirement="required" htmlFor="quickPrompt" error={quickForm.formState.errors.prompt?.message}>
-                    <div>
+                  <FormField
+                    label="系统提示词"
+                    requirement="required"
+                    htmlFor="quickPrompt"
+                    hint="写清角色、目标、工作边界和回答方式。"
+                    error={quickForm.formState.errors.prompt?.message}
+                    footer={<div className="field-footer"><span>角色 · 目标 · 边界 · 回答方式</span><span>{prompt.length} / 32768</span></div>}
+                  >
                     <textarea id="quickPrompt" rows={7} maxLength={32768} placeholder="例如：你是一名企业技术支持助手。先识别问题类型，再结合知识库给出准确、可执行的处理步骤；信息不足时先提问，不要编造事实。" {...quickForm.register("prompt", { onChange: markDirty })} />
-                    <div className="field-footer"><span>写清角色、目标、工作边界和回答方式</span><span>{prompt.length} / 32768</span></div>
-                    </div>
                   </FormField>
                   {template === "research" && (
                     <div className="template-specific">
@@ -986,8 +1071,10 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
                   <div className="capability-section">
                     <div className="capability-heading">
                       <span className="capability-icon"><Cpu size={15} /></span>
-                      <div><h3>Model Profile</h3><p>负责理解请求、规划执行和生成回答；可多选</p></div>
-                      <span className="required-badge">必需</span>
+                      <div>
+                        <h3>Model Profile <span className="studio-field-requirement required" aria-hidden="true">*</span><span className="sr-only">必填</span></h3>
+                        <p>负责理解请求、规划执行和生成回答；可多选</p>
+                      </div>
                     </div>
                     <div className="model-profile-control">
                       <button
@@ -1141,23 +1228,18 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
                   <button className="button secondary" type="button" disabled={step === 1} onClick={() => gotoStep(step - 1)}>
                     <ArrowLeft size={16} /><span>上一步</span>
                   </button>
-                  <button className="button tertiary" type="button" onClick={saveDraft}>
-                    <Copy size={16} /><span>保存草稿</span>
-                  </button>
                   <span className="wizard-progress">第 {step} 步，共 4 步</span>
-                  <button className="button tertiary" type="button" aria-expanded={summaryOpen} onClick={() => setSummaryOpen(v => !v)}>
-                    <PanelRight size={16} /><span>配置摘要</span><span className="summary-count">{capCount}</span>
+                  <dl className="summary-chips" aria-label="配置摘要">
+                    <div><dt>模板</dt><dd>{templateLabel}</dd></div>
+                    <div><dt>Runtime</dt><dd>{runtimeLabel}</dd></div>
+                    <div><dt>模型</dt><dd>{reviewModel}</dd></div>
+                    <div><dt>Tool</dt><dd>{selectedTools.length}</dd></div>
+                    <div><dt>MCP</dt><dd>{selectedMcp.length}</dd></div>
+                    <div><dt>Skill</dt><dd>{selectedSkills.length}</dd></div>
+                  </dl>
+                  <button className="button tertiary summary-toggle" type="button" aria-expanded={summaryOpen} onClick={() => setSummaryOpen(v => !v)}>
+                    <PanelRight size={16} /><span>完整摘要</span>
                   </button>
-                  {step < 4 && (
-                    <button className="button accent" type="button" onClick={() => gotoStep(step + 1)}>
-                      <span>继续</span><ArrowRight size={16} />
-                    </button>
-                  )}
-                  {step === 4 && (
-                    <button className="button accent" type="submit" disabled={submitting}>
-                      <Plus size={16} /><span>{submitting ? "正在创建" : "创建 Agent"}</span>
-                    </button>
-                  )}
                 </footer>
               </form>
               </FormProvider>

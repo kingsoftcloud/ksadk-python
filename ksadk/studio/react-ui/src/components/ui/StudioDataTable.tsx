@@ -105,8 +105,8 @@ export function StudioDataTable<TData extends RowData>({
     : 0;
 
   return (
-    <div className="studio-data-table" aria-busy={loading || undefined}>
-      <div className="studio-data-table-scroll data-scroll-region">
+    <div className="studio-data-table" aria-busy={loading || undefined} data-state={loading ? "loading" : error ? "error" : data.length ? "ready" : "empty"}>
+      <div className="studio-data-table-scroll">
         {!loading && !error && (
           <table style={{ minWidth: cssSize(minWidth) }}>
             {caption && <caption className="sr-only">{caption}</caption>}
@@ -152,10 +152,16 @@ export function StudioDataTable<TData extends RowData>({
         )}
 
         {loading && (
-          <div className="studio-data-table-state" role="status">
-            <LoaderCircle className="animate-spin" size={20} />
-            <strong>正在加载</strong>
-            <span>正在同步最新数据…</span>
+          <div className="studio-data-table-state is-loading" role="status">
+            <span className="sr-only">正在加载</span>
+            <div className="studio-table-skeleton" aria-hidden="true">
+              {[0, 1, 2, 3].map(row => (
+                <div key={row} className="studio-table-skeleton-row">
+                  <i /><i /><i /><i />
+                </div>
+              ))}
+            </div>
+            <span className="studio-table-loading-copy"><LoaderCircle className="animate-spin" size={14} /> 正在加载</span>
           </div>
         )}
 
@@ -173,10 +179,10 @@ export function StudioDataTable<TData extends RowData>({
         )}
 
         {!loading && !error && data.length === 0 && (
-          <div className="studio-data-table-state is-empty">
+          <div className={`studio-data-table-state empty-state${empty.action ? "" : " inline"}`}>
             {empty.icon && <span className="empty-icon">{empty.icon}</span>}
-            <strong>{empty.title}</strong>
-            {empty.description && <span>{empty.description}</span>}
+            <h2>{empty.title}</h2>
+            {empty.description && <p>{empty.description}</p>}
             {empty.action}
           </div>
         )}

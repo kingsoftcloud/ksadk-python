@@ -2,6 +2,7 @@
 @import "./studio.css";
 @import "./theme.css";
 @import "./responsive.css";
+@import "./soft-block.css";
 
 /* ============================================================
    React 组件专用补充

@@ -9,10 +9,10 @@ import { ResourcesPage, type ResourceKind } from "./pages/ResourcesPage";
 import { ObservabilityPage } from "./pages/ObservabilityPage";
 import { RuntimeResourcesPage } from "./pages/RuntimeResourcesPage";
 import { OrchestrationPage } from "./pages/OrchestrationPage";
-import { SettingsOverlay } from "./components/SettingsOverlay";
+import { SettingsOverlay, type SettingsSection } from "./components/SettingsOverlay";
 import { ChatRunPanel } from "./components/ChatRunPanel";
 import { ChatWorkspace } from "./components/ChatWorkspace";
-import type { AgentAppearance } from "./components/AgentAvatar";
+import { AgentAvatar, type AgentAppearance } from "./components/AgentAvatar";
 import { ToastRegion } from "./components/Toast";
 import { StudioSelect } from "./components/ui/StudioSelect";
 import { useStudioViewportMode } from "./useStudioViewportMode";
@@ -23,9 +23,7 @@ import {
   writeNavigationRailPreference,
   type NavigationView,
 } from "./components/NavigationRail";
-import {
-  Bot, ChevronDown, RefreshCw, PanelLeftClose, PanelLeftOpen, PanelRight,
-} from "lucide-react";
+import { Bot, RefreshCw, PanelLeftClose, PanelLeftOpen, PanelRight } from "lucide-react";
 
 type View = NavigationView;
 
@@ -44,6 +42,7 @@ const VIEW_TITLE: Record<View, string> = {
 
 const VALID_VIEWS = Object.keys(VIEW_TITLE) as View[];
 const RESOURCE_KINDS: ResourceKind[] = ["model", "tool", "mcp", "skill"];
+const AGENT_SCOPED_VIEWS = new Set<View>(["conversations", "builds", "observability", "orchestration"]);
 
 export function parseStudioLocationHash(hash: string): {
   view: View;
@@ -86,12 +85,14 @@ export default function App() {
   const [resourceKind, setResourceKind] = useState<ResourceKind>(initialRoute.resourceKind);
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [agentsLoaded, setAgentsLoaded] = useState(false);
-  const [currentAgentId, setCurrentAgentId] = useState(initialRoute.detailAgentId || initialRoute.editingAgentId);
+  const [currentAgentId, setCurrentAgentId] = useState(initialRoute.detailAgentId || initialRoute.editingAgentId || "");
   const [detailAgentId, setDetailAgentId] = useState(initialRoute.detailAgentId);
   const [editingAgentId, setEditingAgentId] = useState(initialRoute.editingAgentId);
   const [workspace, setWorkspace] = useState<{ name?: string; path?: string } | null>(null);
   const [runtimeReady, setRuntimeReady] = useState(false);
+  const [runtimeChecked, setRuntimeChecked] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
   const [chatMounted, setChatMounted] = useState(view === "conversations");
   const [runPanelOpen, setRunPanelOpen] = useState(false);
   const [refreshTick, setRefreshTick] = useState(0);
@@ -163,14 +164,12 @@ export default function App() {
     apiFetch("/api/v1/system/bootstrap").then(r => r.json()).then(d => {
       setWorkspace(d.workspace || null);
       setRuntimeReady(Boolean(d.workspace));
-    }).catch(() => setRuntimeReady(false));
+    }).catch(() => setRuntimeReady(false)).finally(() => setRuntimeChecked(true));
   }, [refreshTick]);
 
   const currentAgent = agents.find(a => a.metadata.id === currentAgentId);
-  const runtimeType = (currentAgent as any)?.spec?.runtime?.type
-    || currentAgent?.metadata.labels?.["agentkit.ksyun.com/framework"]
-    || "";
-  const runtimeState = runtimeReady ? "Ready" : "Connecting";
+  const runtimeState = !runtimeChecked ? "pending" : runtimeReady ? "ready" : "failed";
+  const runtimeStateLabel = !runtimeChecked ? "检查中" : runtimeReady ? "运行正常" : "连接失败";
 
   function switchAgent(id: string) {
     if (!id) return;
@@ -216,7 +215,7 @@ export default function App() {
   }
 
   const breadcrumbParent = view === "create" || view === "agent-detail" ? "Agent" : null;
-  const breadcrumbTitle = VIEW_TITLE[view];
+  const breadcrumbTitle = view === "create" && editingAgentId ? "编辑 Agent" : VIEW_TITLE[view];
 
   const workspaceName = workspace?.name || "Workspace";
   const workspacePath = workspace?.path || (runtimeReady ? "本地工作区" : "正在连接本地工作区");
@@ -224,7 +223,7 @@ export default function App() {
     || view === "conversations"
     || view === "observability";
   const railCanExpand = viewportMode !== "compact";
-  const railExpanded = railCanExpand && (railExpandedPreference ?? false);
+  const railExpanded = railCanExpand && (railExpandedPreference ?? true);
 
   function toggleRail() {
     if (!railCanExpand) return;
@@ -251,11 +250,14 @@ export default function App() {
         workspacePath={workspacePath}
         runtimeReady={runtimeReady}
         onNavigate={navigateFromRail}
-        onOpenSettings={() => setSettingsOpen(true)}
+        onOpenSettings={() => {
+          setSettingsSection("general");
+          setSettingsOpen(true);
+        }}
       />
 
       <div className="app-main">
-        <header className={`global-header${breadcrumbParent ? " nested" : ""}`}>
+        <header className={`global-header${breadcrumbParent ? " nested" : ""}`} aria-label="当前页面">
           {railCanExpand && (
             <button
               className="icon-button tertiary rail-toggle"
@@ -268,59 +270,58 @@ export default function App() {
             </button>
           )}
           {breadcrumbParent && (
-            <div className="breadcrumb" aria-label="当前位置">
-              <span className="muted">{breadcrumbParent}</span>
-              <ChevronDown size={13} style={{ transform: "rotate(-90deg)", color: "var(--text-tertiary)" }} />
-              <span>{breadcrumbTitle}</span>
+            <div className="header-identity-inline" aria-label="当前位置">
+              <button className="crumb" type="button" onClick={() => setView("agents")}>{breadcrumbParent}</button>
+              <span className="crumb-sep">/</span>
+              {view === "agent-detail" && currentAgent && (
+                <AgentAvatar
+                  name={currentAgent.metadata.name}
+                  appearance={currentAgent.metadata.appearance}
+                  template={currentAgent.metadata.labels?.["agentkit.ksyun.com/template"]}
+                  size="sm"
+                />
+              )}
+              <strong>{view === "agent-detail" && currentAgent ? currentAgent.metadata.name : breadcrumbTitle}</strong>
+              {view === "agent-detail" && currentAgent && (
+                <span className="mono">{currentAgent.metadata.id} · r{currentAgent.metadata.revision || 1}</span>
+              )}
             </div>
           )}
-          <div className="header-spacer" />
-          <div className="global-context" aria-label="全局工作上下文">
-            <div className="context-field">
-              <span>Agent</span>
+          {!breadcrumbParent && (
+            <div className="header-identity">
+              <span>工作区 · {workspaceName}</span>
+              <strong>{breadcrumbTitle}</strong>
+            </div>
+          )}
+          <div className="header-actions">
+            <div id="pageHeaderTools" className="page-header-tools" data-testid="page-header-tools" />
+            {AGENT_SCOPED_VIEWS.has(view) && (
               <StudioSelect
+                className="header-agent-selector"
                 ariaLabel="切换当前 Agent"
                 value={currentAgentId}
                 placeholder="未选择"
                 options={agents.map(agent => ({ value: agent.metadata.id, label: agent.metadata.name }))}
                 onValueChange={switchAgent}
               />
-            </div>
-            <div className="context-field">
-              <span>目标</span>
-              <StudioSelect
-                ariaLabel="切换执行目标"
-                value="local"
-                options={[
-                  { value: "local", label: "Local" },
-                  { value: "cloud-unconnected", label: "金山云 · 未连接", disabled: true },
-                ]}
-                onValueChange={() => undefined}
-              />
-            </div>
-            <span className="runtime-badge">{runtimeType ? `${runtimeType} RuntimeAdapter` : "Runtime 未选择"}</span>
-          </div>
-          <button className="runtime-indicator" type="button" disabled={!runtimeReady}>
-            <span className={`status-dot ${runtimeReady ? "success" : "warning"}`} />
-            <span>Local</span>
-            <span className="runtime-state">{runtimeState}</span>
-            <ChevronDown size={13} />
-          </button>
-          <button className="icon-button tertiary" type="button" aria-label="刷新" title="刷新" onClick={() => setRefreshTick(t => t + 1)}>
-            <RefreshCw size={16} />
-          </button>
-          {view === "conversations" && chatMounted && currentAgentId && (
-            <button className="icon-button tertiary" type="button" aria-label="运行详情" title="运行详情" onClick={() => setRunPanelOpen(v => !v)}>
-              <PanelRight size={16} />
+            )}
+            <span className="tag">本地</span>
+            <span className="badge" data-state={runtimeState}>{runtimeStateLabel}</span>
+            <button className="icon-button tertiary global-refresh-button" type="button" aria-label="刷新" title="刷新" onClick={() => setRefreshTick(t => t + 1)}>
+              <RefreshCw size={16} />
             </button>
-          )}
-          <div id="pageHeaderTools" className="page-header-tools" data-testid="page-header-tools" />
-          <div id="pageHeaderActions" className="page-header-actions" data-testid="page-header-actions" />
+            {view === "conversations" && chatMounted && currentAgentId && (
+              <button className="icon-button tertiary" type="button" aria-label="运行详情" title="运行详情" onClick={() => setRunPanelOpen(v => !v)}>
+                <PanelRight size={16} />
+              </button>
+            )}
+            <div id="pageHeaderActions" className="page-header-page-actions" data-testid="page-header-actions" />
+          </div>
         </header>
 
         <main id="mainContent">
           {/* 会话页常驻挂载（display 切换），来回切换不重建工作台 */}
-          <div className="chat-wrap" data-scroll-mode="workbench" style={{ display: view === "conversations" ? "flex" : "none" }}>
+          <div className="chat-wrap" data-layout="workbench" style={{ display: view === "conversations" ? "flex" : "none" }}>
             <div className="chat-host">
               {chatMounted && currentAgentId && (
                 <ChatWorkspace
@@ -328,6 +329,12 @@ export default function App() {
                   agentId={currentAgentId}
                   agentName={currentAgent?.metadata.name || "Agent"}
                   agentAppearance={currentAgent?.metadata.appearance}
+                  active={view === "conversations"}
+                  onConfigureAgent={() => openEdit(currentAgentId)}
+                  onOpenSettings={() => {
+                    setSettingsSection("credentials");
+                    setSettingsOpen(true);
+                  }}
                 />
               )}
               {chatMounted && !currentAgentId && (
@@ -349,6 +356,7 @@ export default function App() {
               <AgentsPage
                 agents={agents}
                 runtimeReady={runtimeReady}
+                runtimeChecked={runtimeChecked}
                 workspaceName={workspace?.name || ""}
                 onCreate={openCreate}
                 onDetail={openDetail}
@@ -383,13 +391,13 @@ export default function App() {
                 onChanged={loadAgents}
               />
             )}
-            {view === "resources" && <ResourcesPage kind={resourceKind} onKindChange={setResourceKind} refreshTick={refreshTick} />}
+            {view === "resources" && <ResourcesPage kind={resourceKind} onKindChange={openResources} refreshTick={refreshTick} />}
             {view === "builds" && <BuildsPage currentAgentId={currentAgentId} agents={agents} onSelectAgent={setCurrentAgentId} onCreate={openCreate} />}
             {view === "deployments" && <DeploymentsPage onCreate={openCreate} />}
             {view === "observability" && (
               <ObservabilityPage refreshTick={refreshTick} />
             )}
-            {view === "runtime-resources" && <RuntimeResourcesPage refreshTick={refreshTick} />}
+            {view === "runtime-resources" && <RuntimeResourcesPage refreshTick={refreshTick} onOpenResources={openResources} />}
             {view === "orchestration" && <OrchestrationPage currentAgentId={currentAgentId} agents={agents} onSelectAgent={setCurrentAgentId} onCreate={openCreate} />}
           </div>
         </main>
@@ -399,6 +407,7 @@ export default function App() {
           <SettingsOverlay
             themePreference={studioTheme.preference}
             onThemePreferenceChange={studioTheme.setPreference}
+            initialSection={settingsSection}
             onClose={() => setSettingsOpen(false)}
           />
         )}

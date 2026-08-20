@@ -55,6 +55,6 @@ describe("OrchestrationPage graph canvas", () => {
     expect(screen.getByRole("button", { name: "适应画布" })).toBeVisible();
     expect(screen.getByText("任务输入")).toBeInTheDocument();
     expect(screen.getByText("2 个能力绑定")).toBeInTheDocument();
-    await waitFor(() => expect(mockedFetch).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(mockedFetch).toHaveBeenCalledTimes(4));
   });
 });

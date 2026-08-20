@@ -5,7 +5,6 @@ import { initializeStudioSession } from "./api";
 import { initializeStudioTheme } from "./studioTheme";
 import "./index.css";
 import "./kingdesign.css";
-import "./soft-block.css";
 
 async function main() {
   initializeStudioTheme();

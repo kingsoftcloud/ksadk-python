@@ -35,6 +35,28 @@
 段显示“未开始”或“未知”。同一套 Header、导航、页面标题、表单、数据表、空状态、
 错误状态和窄屏规则覆盖所有既有模块，不能仅让构建/部署页采用新样式。
 
+## 参考来源与归属
+
+本工作台视觉吸纳自 `origin/agentkit-studio-phase1` 上 Liubin 的两个提交：
+
+- `bffda8fe1593aea97b98cc64b75981daf47880e5`
+  `feat(studio): 完善生产级 WebUI 与运行完整性校验`
+- `cdc2b1733bee51cb9cc896398067e1dd80c186a3`
+  `feat(studio): 统一工作台视觉与交互层级`
+
+它们不是可直接 cherry-pick 的提交：其中同时包含 builder、runtime、capability、cloud
+和 Studio API 行为，直接合并会覆盖本分支已经接入的 Bundle admission、部署 receipt
+以及 Server 投射状态。实现应在新提交中以 `Co-authored-by: liubin9
+<liubin9@kingsoft.com>` 和 `Portions-from` trailers 记录来源，保留代码归属与可追溯性。
+
+| 参考内容 | 吸纳方式 | 明确不吸纳的行为 |
+| --- | --- | --- |
+| Soft Block 基础层、KingCloud 视觉层、响应式和焦点规则 | 原样保留 token/组件选择器，再以交付事实链作最小扩展 | 任何把 UI 状态写成运行时事实的规则 |
+| 全局 Header、导航分组、PageHeader portal、表单/表格/更多操作原语 | 保留 React 结构、可访问性和交互层级 | 改写当前 hash 深链接、既有资源 CRUD 请求或本地 Agent 选择逻辑 |
+| Agent、创建/编辑、资源、会话、运行资源、编排、可观测和设置页面 | 逐页迁移视觉、空/错/加载态和真实错误可恢复体验 | `builder.py`、`framework_run.py`、`capabilities.py`、`cloud.py`、`api.py`、凭证收集与控制面调用语义 |
+
+其中设置页仍只展示当前 Studio 已有的控制面配置，不引入参考分支的 AK/SK 录入；运行资源和部署页只显示 API 返回的 receipt/实例事实，不把“本地配置存在”描述为预发可用。
+
 ```text
 全局 Header: 当前页面 | [构建当前 Agent] / [刷新]
 

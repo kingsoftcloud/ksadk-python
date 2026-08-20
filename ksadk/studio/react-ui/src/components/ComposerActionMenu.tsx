@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { Command } from "cmdk";
 import { Check, ListTodo, Paperclip, Plus, Target, Undo2 } from "lucide-react";
@@ -15,6 +15,7 @@ interface ComposerActionMenuProps {
   onTogglePlan: () => void;
   onStartGoal: () => void;
   onFiles: (files: File[]) => void;
+  active?: boolean;
 }
 
 function CommandIcon({ id }: { id: ComposerCommand["id"] }) {
@@ -29,8 +30,13 @@ export function ComposerActionMenu({
   onTogglePlan,
   onStartGoal,
   onFiles,
+  active = true,
 }: ComposerActionMenuProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!active) setOpen(false);
+  }, [active]);
   return (
     <>
       <input
@@ -46,7 +52,7 @@ export function ComposerActionMenu({
           if (files.length) onFiles(files);
         }}
       />
-      <DropdownMenu.Root>
+      <DropdownMenu.Root open={open} onOpenChange={setOpen}>
         <DropdownMenu.Trigger asChild>
           <button
             className="chat-plus-trigger"

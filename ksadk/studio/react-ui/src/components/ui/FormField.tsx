@@ -1,4 +1,5 @@
 import * as Label from "@radix-ui/react-label";
+import * as Tooltip from "@radix-ui/react-tooltip";
 import {
   cloneElement,
   isValidElement,
@@ -6,12 +7,13 @@ import {
   type ReactElement,
   type ReactNode,
 } from "react";
+import { CircleHelp } from "lucide-react";
 
 export type FieldRequirement = "required" | "optional" | "generated";
 
 const REQUIREMENT_COPY: Record<FieldRequirement, string> = {
-  required: "必填",
-  optional: "选填",
+  required: "*",
+  optional: "",
   generated: "自动生成",
 };
 
@@ -19,20 +21,47 @@ export function FormLabel({
   children,
   htmlFor,
   requirement,
+  hint,
 }: {
   children: ReactNode;
   htmlFor?: string;
   requirement?: FieldRequirement;
+  hint?: string;
 }) {
   return (
-    <Label.Root className="studio-field-label" htmlFor={htmlFor}>
-      <span>{children}</span>
-      {requirement ? (
-        <span className={`studio-field-requirement ${requirement}`}>
-          {REQUIREMENT_COPY[requirement]}
-        </span>
+    <div className="studio-field-label-row">
+      <Label.Root className="studio-field-label" htmlFor={htmlFor}>
+        <span>{children}</span>
+        {requirement && REQUIREMENT_COPY[requirement] ? (
+          <span className={`studio-field-requirement ${requirement}`}>
+            <span aria-hidden="true">{REQUIREMENT_COPY[requirement]}</span>
+            {requirement === "required" && <span className="sr-only">必填</span>}
+          </span>
+        ) : null}
+      </Label.Root>
+      {hint ? (
+        <Tooltip.Provider delayDuration={240}>
+          <Tooltip.Root>
+            <Tooltip.Trigger asChild>
+              <button
+                className="field-help-trigger"
+                type="button"
+                aria-label={`${String(children)}说明`}
+                onClick={event => event.preventDefault()}
+              >
+                <CircleHelp size={14} />
+              </button>
+            </Tooltip.Trigger>
+            <Tooltip.Portal>
+              <Tooltip.Content className="studio-tooltip field-help-tooltip" side="top" sideOffset={7}>
+                {hint}
+                <Tooltip.Arrow className="studio-tooltip-arrow" />
+              </Tooltip.Content>
+            </Tooltip.Portal>
+          </Tooltip.Root>
+        </Tooltip.Provider>
       ) : null}
-    </Label.Root>
+    </div>
   );
 }
 
@@ -52,6 +81,7 @@ export interface FormFieldProps {
   htmlFor?: string;
   children: ReactNode;
   className?: string;
+  footer?: ReactNode;
 }
 
 export function FormField({
@@ -62,6 +92,7 @@ export function FormField({
   htmlFor,
   children,
   className,
+  footer,
 }: FormFieldProps) {
   const generatedId = useId();
   const hintId = hint ? `${generatedId}-hint` : undefined;
@@ -82,9 +113,10 @@ export function FormField({
 
   return (
     <div className={`studio-form-field${error ? " has-error" : ""}${className ? ` ${className}` : ""}`}>
-      <FormLabel htmlFor={htmlFor} requirement={requirement}>{label}</FormLabel>
+      <FormLabel htmlFor={htmlFor} requirement={requirement} hint={hint}>{label}</FormLabel>
       <div className="studio-field-control">{control}</div>
-      {hint ? <FieldHint id={hintId}>{hint}</FieldHint> : null}
+      {footer ? <div className="studio-field-footer">{footer}</div> : null}
+      {hint ? <span className="sr-only" id={hintId}>{hint}</span> : null}
       {error ? <FieldError id={errorId}>{error}</FieldError> : null}
     </div>
   );

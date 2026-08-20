@@ -293,11 +293,11 @@ export function AgentEditor({
         <div className="quick-runtime-strip">
           <span className="runtime-logo"><Code size={17} /></span>
           <div><strong>{runtimeTitle(runtime)}</strong><span>一 Agent 一 YAML · 不可变 Bundle</span></div>
-          <span className="status-badge success">本地可运行</span>
+          <span className="badge" data-state="ready">本地可运行</span>
         </div>
         <div className="quick-create-heading">
           <span className="eyebrow">YAML-first</span>
-          <h2>编辑 {slug}</h2>
+          <h2 title={slug}>编辑 {name || detail.draft.metadata.name}</h2>
           <p>保存会直接回写该 Agent 的 agentengine.yaml；旧构建会标记为过期。</p>
         </div>
         <AgentAppearanceEditor

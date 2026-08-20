@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Activity, ArrowLeft, Brain, Check, CircleCheckBig, Clock3, Coins, Copy, MessageSquare,
-  ChevronDown, ChevronUp, Maximize2, Minimize2, Network, RefreshCw, Search,
+  ChevronDown, ChevronUp, Maximize2, Minimize2, Network, Search,
 } from "lucide-react";
 import { allExpanded, collapseAllNested, JsonView } from "react-json-view-lite";
 import { showToast } from "../components/Toast";
@@ -11,6 +11,7 @@ import {
   type StudioDataColumn,
 } from "../components/ui/StudioDataTable";
 import { StudioSelect } from "../components/ui/StudioSelect";
+import { PageHeaderActions, PageHeaderTools } from "../components/PageHeaderPortal";
 import { apiFetch } from "../api";
 
 /* ================= 类型 ================= */
@@ -61,6 +62,15 @@ function shortId(value: any, length = 18): string {
 function formatField(value: any, fallback = "-"): string {
   if (value === null || value === undefined || value === "") return fallback;
   return String(value);
+}
+function statusLabel(value: any): string {
+  const status = String(value || "").toUpperCase();
+  if (status === "COMPLETED" || status === "SUCCEEDED" || status === "OK") return "成功";
+  if (status === "RUNNING") return "运行中";
+  if (status === "PAUSED") return "已暂停";
+  if (status === "FAILED" || status === "ERROR" || status === "INTERNAL") return "失败";
+  if (status === "CANCELLED") return "已取消";
+  return status || "未知";
 }
 function formatDuration(value: any): string {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return "未上报";
@@ -210,7 +220,7 @@ function CopyButton({ text, className }: { text: string; className?: string }) {
 /* ================= 内容卡片 ================= */
 
 function IoBlock({ label, text, tone, icon, meta }: {
-  label: string; text: string; tone: "message" | "thinking" | "tool"; icon?: React.ReactNode; meta?: string;
+  label: string; text: string; tone: "message" | "thinking" | "tool"; icon?: ReactNode; meta?: string;
 }) {
   const [expanded, setExpanded] = useState(false);
   const long = text.length > 600;
@@ -445,7 +455,7 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
       id: "status",
       header: "状态",
       width: 130,
-      cell: trace => <span className={`trace-table-status ${trace.status}`}><span className={`trace-list-status ${trace.status}`} />{trace.status}</span>,
+      cell: trace => <span className={`trace-table-status ${trace.status}`} title={trace.status}><span className={`trace-list-status ${trace.status}`} />{statusLabel(trace.status)}</span>,
     },
     {
       id: "identity",
@@ -525,37 +535,34 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
     <div
       className="page-container observability-page"
       id="traceExplorer"
-      data-layout="data"
-      data-scroll-mode={activeTrace ? "workbench" : "data"}
+      data-layout="workbench"
     >
-      <header className="page-header trace-page-header">
-        <div><h1>Trace Explorer</h1><p>基于 OpenTelemetry 检查 Agent、模型与 Tool 的完整调用链。</p></div>
-        <div className="header-actions">
-          {activeTrace && (
-            <button className="button tertiary" type="button" onClick={() => {
-              requestSeq.current += 1;
-              setActiveTrace(null);
-              setActiveSpanId(null);
-              setExpanded(false);
-              setDetailCollapsed(false);
-            }}>
-              <ArrowLeft size={15} /><span>返回 Trace 列表</span>
-            </button>
-          )}
-          <button className="button secondary" type="button" onClick={refreshTraces}>
-            <RefreshCw size={15} /><span>刷新</span>
-          </button>
+      <PageHeaderTools>
+        <div className="search-field header-search-field">
+          <Search size={14} />
+          <input type="search" aria-label="搜索 Trace、Run 或 Session" placeholder="搜索 Trace、Run 或 Session" value={search} onChange={e => setSearch(e.target.value)} />
         </div>
-      </header>
+        <div className="segmented-control compact" aria-label="可观测时间范围">
+          <button type="button" className={range === "24h" ? "selected" : ""} onClick={() => setRange("24h")}>24 小时</button>
+          <button type="button" className={range === "7d" ? "selected" : ""} onClick={() => setRange("7d")}>7 天</button>
+        </div>
+      </PageHeaderTools>
+      {activeTrace && <PageHeaderActions>
+        <button className="button tertiary" type="button" onClick={() => {
+          requestSeq.current += 1;
+          setActiveTrace(null);
+          setActiveSpanId(null);
+          setExpanded(false);
+          setDetailCollapsed(false);
+        }}>
+          <ArrowLeft size={15} /><span>返回 Trace 列表</span>
+        </button>
+      </PageHeaderActions>}
 
       <div className="data-page-body observability-body">
         <OverviewSection overview={overview} range={range} onRangeChange={setRange} />
 
         {!activeTrace && <div className="trace-toolbar" aria-label="Trace 筛选">
-        <div className="search-field trace-search-field">
-          <Search size={14} />
-          <input type="search" placeholder="搜索 Trace、Run 或 Session" value={search} onChange={e => setSearch(e.target.value)} />
-        </div>
         <StudioSelect
           className="compact-select"
           ariaLabel="按 Agent 筛选"
@@ -581,13 +588,13 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
         <span className="trace-standard-label">OTLP · W3C Trace Context</span>
         </div>}
 
-        {activeTrace && <section className="trace-metrics" aria-label="Trace 指标">
+        {activeTrace && <section className="stat-strip" aria-label="Trace 指标">
         <div>
           <span>Trace 状态</span>
-          <strong>{activeTrace?.status || "未选择"}</strong>
+          <strong>{activeTrace ? statusLabel(activeTrace.status) : "未选择"}</strong>
           <small>{activeTrace ? `${activeTrace.spans?.length || 0} Span · ${activeTrace.target?.name || "本地工作区"}` : "选择一条 Trace 查看"}</small>
         </div>
-        <div>
+        <div className="emphasis" data-state={activeTrace?.status === "FAILED" ? "failed" : activeTrace?.status === "COMPLETED" ? "ready" : "running"}>
           <span>总耗时</span>
           <strong>{activeTrace ? formatDuration(metrics.durationMs) : "未上报"}</strong>
           <small>{!activeTrace ? "等待 Runtime 上报" : metrics.durationMs === null || metrics.durationMs === undefined ? "Runtime 未上报" : metrics.durationSource === "runtime" ? "Runtime 精确上报" : "Studio 时钟回退"}</small>
@@ -639,6 +646,21 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
         )}
 
         {activeTrace && <div className={`trace-workbench detail-route${expanded ? " detail-expanded" : ""}${detailCollapsed ? " detail-collapsed" : ""}`}>
+
+        <aside className="trace-run-panel" aria-label="本页 Trace">
+          <div className="trace-panel-header"><div><strong>Traces</strong><span>{traceTotal} 条结果</span></div></div>
+          <div className="trace-run-list">
+            {traces.map(trace => {
+              const agent = agents.find(item => item.id === trace.agentId);
+              return (
+                <button key={trace.traceId} type="button" className={trace.traceId === activeTrace.traceId ? "active" : ""} onClick={() => openTrace(trace.traceId)}>
+                  <span className="trace-run-identity"><AgentAvatar name={agent?.name || trace.agentId || "Agent"} appearance={agent?.appearance} size="xs" /><span><strong>{agent?.name || trace.agentId || "Agent"}</strong><small>{shortId(trace.runId || trace.traceId, 22)}</small></span></span>
+                  <span className="trace-run-meta"><span className="mono">{formatDuration(trace.durationMs)}</span><span className="badge" data-state={trace.status === "FAILED" ? "failed" : trace.status === "COMPLETED" ? "ready" : "running"} title={trace.status}>{statusLabel(trace.status)}</span></span>
+                </button>
+              );
+            })}
+          </div>
+        </aside>
 
         <section className="trace-span-panel" aria-label="Span 时间瀑布">
           <div className="trace-panel-header trace-span-header">
@@ -704,7 +726,7 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
           <div className="trace-panel-header">
             <div>
               <strong>{activeSpan ? formatField(activeSpan.name) : "Span 详情"}</strong>
-              <span>{activeSpan ? `${formatField(activeSpan.kind)} · ${formatField(activeSpan.status)}` : "尚未选择 Span"}</span>
+              <span>{activeSpan ? `${formatField(activeSpan.kind)} · ${statusLabel(activeSpan.status)}` : "尚未选择 Span"}</span>
             </div>
             <div className="trace-detail-actions">
               {!detailCollapsed && (
@@ -765,7 +787,7 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
                       <div><dt>Span ID</dt><dd>{activeSpan.spanId}</dd></div>
                       <div><dt>Parent</dt><dd>{activeSpan.parentSpanId || "Root"}</dd></div>
                       <div><dt>Kind</dt><dd>{activeSpan.kind}</dd></div>
-                      <div><dt>Status</dt><dd>{activeSpan.status}</dd></div>
+                      <div><dt>状态</dt><dd title={activeSpan.status}>{statusLabel(activeSpan.status)}</dd></div>
                       <div><dt>开始</dt><dd>{formatNanoseconds(activeSpan.startTimeUnixNano)}</dd></div>
                       <div><dt>耗时</dt><dd>{formatDuration(activeSpan.durationMs)}</dd></div>
                     </dl>
@@ -814,12 +836,12 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
   );
 }
 
-/* ================= 概览区（指标卡 + 趋势图） ================= */
+/* ================= 概览区 ================= */
 
 function OverviewSection({ overview, range, onRangeChange }: {
   overview: TraceOverview | null;
   range: "24h" | "7d";
-  onRangeChange: (r: "24h" | "7d") => void;
+  onRangeChange: (range: "24h" | "7d") => void;
 }) {
   const total = overview?.total || 0;
   const completed = overview?.completed || 0;
@@ -857,7 +879,7 @@ function OverviewSection({ overview, range, onRangeChange }: {
 }
 
 function OverviewMetric({ icon, label, value, note, tone = "neutral" }: {
-  icon: React.ReactNode;
+  icon: ReactNode;
   label: string;
   value: string;
   note: string;
@@ -883,36 +905,35 @@ function OverviewChart({ buckets: rawBuckets, range }: {
       : `${String(date.getHours()).padStart(2, "0")}:00`;
     return { ...bucket, label, success: bucket.completed };
   });
-  if (!buckets.length) {
-    return <div className="trace-stage-empty compact"><p>正在读取运行趋势…</p></div>;
-  }
-  const maxRuns = Math.max(1, ...buckets.map(b => b.runs));
+  if (!buckets.length) return <div className="trace-stage-empty compact"><p>正在读取运行趋势…</p></div>;
+
+  const maxRuns = Math.max(1, ...buckets.map(bucket => bucket.runs));
   const W = 800, H = 118, pad = { l: 30, r: 10, t: 10, b: 22 };
   const innerW = W - pad.l - pad.r;
   const innerH = H - pad.t - pad.b;
   const stepX = innerW / Math.max(1, buckets.length - 1);
-  const yScale = (v: number) => pad.t + innerH - (v / maxRuns) * innerH;
-  const runsPoints = buckets.map((b, i) => `${pad.l + i * stepX},${yScale(b.runs)}`).join(" ");
-  const successPoints = buckets.map((b, i) => `${pad.l + i * stepX},${yScale(b.success)}`).join(" ");
+  const yScale = (value: number) => pad.t + innerH - (value / maxRuns) * innerH;
+  const runsPoints = buckets.map((bucket, index) => `${pad.l + index * stepX},${yScale(bucket.runs)}`).join(" ");
+  const successPoints = buckets.map((bucket, index) => `${pad.l + index * stepX},${yScale(bucket.success)}`).join(" ");
   const areaPath = `M ${pad.l},${pad.t + innerH} L ${runsPoints.split(" ").join(" L ")} L ${pad.l + (buckets.length - 1) * stepX},${pad.t + innerH} Z`;
   const labelEvery = Math.ceil(buckets.length / 6);
 
   return (
     <svg className="overview-chart" viewBox="0 0 800 118" preserveAspectRatio="none" aria-label="运行趋势曲线">
-      {[0, 0.25, 0.5, 0.75, 1].map(p => {
-        const y = pad.t + innerH - p * innerH;
-        return <line key={p} x1={pad.l} y1={y} x2={W - pad.r} y2={y} stroke="var(--border)" strokeWidth="1" strokeDasharray={p === 0 ? "0" : "3 3"} />;
+      {[0, 0.25, 0.5, 0.75, 1].map(proportion => {
+        const y = pad.t + innerH - proportion * innerH;
+        return <line key={proportion} x1={pad.l} y1={y} x2={W - pad.r} y2={y} stroke="var(--border)" strokeWidth="1" strokeDasharray={proportion === 0 ? "0" : "3 3"} />;
       })}
       <path d={areaPath} fill="var(--accent-soft)" opacity="0.6" />
       <polyline points={runsPoints} fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
       <polyline points={successPoints} fill="none" stroke="var(--success)" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" strokeDasharray="4 3" />
-      {buckets.map((b, i) => (
-        <circle key={i} cx={pad.l + i * stepX} cy={yScale(b.runs)} r="2.5" fill="var(--accent)">
-          <title>{`${b.label}：${b.runs} 次运行，${b.success} 次成功`}</title>
+      {buckets.map((bucket, index) => (
+        <circle key={bucket.startedAt} cx={pad.l + index * stepX} cy={yScale(bucket.runs)} r="2.5" fill="var(--accent)">
+          <title>{`${bucket.label}：${bucket.runs} 次运行，${bucket.success} 次成功`}</title>
         </circle>
       ))}
-      {buckets.map((b, i) => (i % labelEvery === 0 || i === buckets.length - 1) && (
-        <text key={`l${i}`} x={pad.l + i * stepX} y={H - 8} textAnchor="middle" fill="var(--text-tertiary)" fontSize="11">{b.label}</text>
+      {buckets.map((bucket, index) => (index % labelEvery === 0 || index === buckets.length - 1) && (
+        <text key={`label-${bucket.startedAt}`} x={pad.l + index * stepX} y={H - 8} textAnchor="middle" fill="var(--text-tertiary)" fontSize="11">{bucket.label}</text>
       ))}
     </svg>
   );

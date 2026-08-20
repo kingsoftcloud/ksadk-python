@@ -21,7 +21,6 @@ const BACKGROUND_SELECTORS = [
   ".sidebar",
   ".global-header",
   "#mainContent",
-  ".page-header",
 ];
 
 function setStudioBackgroundInert(inert: boolean) {

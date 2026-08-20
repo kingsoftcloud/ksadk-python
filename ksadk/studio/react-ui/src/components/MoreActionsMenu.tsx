@@ -21,7 +21,7 @@ export function MoreActionsMenu({
   return (
     <DropdownMenu.Root>
       <DropdownMenu.Trigger asChild>
-        <button className="icon-button tertiary more-actions-trigger" type="button" aria-label={label} title={label}>
+        <button className="icon-button more-actions-trigger" type="button" aria-label={label} title={label}>
           <Ellipsis size={16} />
         </button>
       </DropdownMenu.Trigger>

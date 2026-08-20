@@ -23,10 +23,37 @@ const APPEARANCE_OPTIONS: Array<{
   { value: "dark", label: "深色", description: "始终使用暗色界面", icon: Moon },
 ];
 
+export type SettingsSection = "general" | "credentials" | "cloud" | "runtime" | "about";
+
+const SETTINGS_SECTIONS: Array<{ id: SettingsSection; label: string }> = [
+  { id: "general", label: "通用" },
+  { id: "credentials", label: "模型与凭证" },
+  { id: "cloud", label: "云端连接" },
+  { id: "runtime", label: "运行与沙箱" },
+  { id: "about", label: "关于" },
+];
+
+function credentialSourceLabel(source: string): string {
+  if (source === "workspace" || source === "session") return "工作区";
+  if (source === "environment") return "启动环境";
+  return source === "missing" ? "未配置" : source;
+}
+
+export function normalizeSandbox(value?: string): SettingsFormValues["sandbox"] {
+  const normalized = (value || "read-only").replaceAll("_", "-");
+  if (
+    normalized === "workspace-write"
+    || normalized === "workspace-write-auto"
+    || normalized === "full-access"
+  ) return normalized;
+  return "read-only";
+}
+
 /** 工作区级设置抽屉。 */
-export function SettingsOverlay({ themePreference, onThemePreferenceChange, onClose }: {
+export function SettingsOverlay({ themePreference, onThemePreferenceChange, initialSection = "general", onClose }: {
   themePreference: StudioThemePreference;
   onThemePreferenceChange: (preference: StudioThemePreference) => void;
+  initialSection?: SettingsSection;
   onClose: () => void;
 }) {
   const [settings, setSettings] = useState<any>(null);
@@ -46,6 +73,17 @@ export function SettingsOverlay({ themePreference, onThemePreferenceChange, onCl
   const [about, setAbout] = useState<Array<[string, string]>>([]);
   const [saving, setSaving] = useState(false);
   const [configModel, setConfigModel] = useState<ResItem | null>(null);
+  const [activeSection, setActiveSection] = useState<SettingsSection>(initialSection);
+
+  const scrollToSection = useCallback((section: SettingsSection) => {
+    setActiveSection(section);
+    document.getElementById(`settings-${section}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, []);
+
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => scrollToSection(initialSection));
+    return () => cancelAnimationFrame(frame);
+  }, [initialSection, scrollToSection]);
 
   const loadCredentials = useCallback(async () => {
     try {
@@ -78,7 +116,7 @@ export function SettingsOverlay({ themePreference, onThemePreferenceChange, onCl
         const s = await apiFetch("/api/v1/system/settings").then(r => r.json());
         setSettings(s);
         settingsForm.reset({
-          sandbox: s.sandbox || "read_only",
+          sandbox: normalizeSandbox(s.sandbox),
           buildAfterCreate: s.buildAfterCreate !== false,
           codexProxy: s.codexProxy || "auto",
           agentEngineControlPlaneUrl: s.agentEngineControlPlaneUrl || "",
@@ -146,7 +184,21 @@ export function SettingsOverlay({ themePreference, onThemePreferenceChange, onCl
         </>
       }
     >
-      <section className="settings-group">
+      <div className="settings-layout">
+      <nav className="settings-section-nav" aria-label="设置分类">
+        {SETTINGS_SECTIONS.map(section => (
+          <button
+            key={section.id}
+            className={activeSection === section.id ? "active" : ""}
+            type="button"
+            onClick={() => scrollToSection(section.id)}
+          >
+            {section.label}
+          </button>
+        ))}
+      </nav>
+      <div className="settings-sections">
+      <section id="settings-general" className="settings-group" tabIndex={-1}>
         <h3>外观</h3>
         <div className="appearance-options" role="radiogroup" aria-label="颜色模式">
           {APPEARANCE_OPTIONS.map(option => {
@@ -169,7 +221,7 @@ export function SettingsOverlay({ themePreference, onThemePreferenceChange, onCl
         <p className="appearance-note">外观仅保存到当前浏览器，并会立即应用到 Studio 与会话工作台。</p>
       </section>
 
-      <section className="settings-group">
+      <section id="settings-runtime" className="settings-group" tabIndex={-1}>
         <h3>执行与沙箱</h3>
         <FormField label="默认执行权限（Codex）" requirement="required" htmlFor="settingSandbox" hint="新 Agent 默认值；会话页可单次覆盖，下一轮对话生效。" error={settingsForm.formState.errors.sandbox?.message}>
           <StudioSelect
@@ -193,7 +245,7 @@ export function SettingsOverlay({ themePreference, onThemePreferenceChange, onCl
         </div>
       </section>
 
-      <section className="settings-group">
+      <section id="settings-credentials" className="settings-group" tabIndex={-1}>
         <h3>凭证</h3>
         {credRows.length === 0 ? (
           <div className="settings-empty">暂无凭证</div>
@@ -201,14 +253,14 @@ export function SettingsOverlay({ themePreference, onThemePreferenceChange, onCl
           <div key={row.ref} className="settings-credential">
             <span>
               <strong>{row.name}</strong>
-              <small>{row.configured ? `已配置 · ${row.source}` : "未配置"}</small>
+              <small>{row.configured ? `已配置 · ${credentialSourceLabel(row.source)}` : "未配置"}</small>
             </span>
             <button className="button secondary small" type="button" onClick={() => setConfigModel(row.model)}>配置</button>
           </div>
         ))}
       </section>
 
-      <section className="settings-group">
+      <section id="settings-runtime-proxy" className="settings-group" tabIndex={-1}>
         <h3>运行时</h3>
         <FormField label="Codex Responses→Chat 代理" requirement="required" htmlFor="settingCodexProxy" hint="非原生 Responses 上游可启用兼容代理。" error={settingsForm.formState.errors.codexProxy?.message}>
           <StudioSelect
@@ -225,7 +277,7 @@ export function SettingsOverlay({ themePreference, onThemePreferenceChange, onCl
         </FormField>
       </section>
 
-      <section className="settings-group">
+      <section id="settings-cloud" className="settings-group" tabIndex={-1}>
         <h3>云端控制面</h3>
         <p className="helper">Studio 只调用 AgentEngine Gateway/Server 的 Bundle 准入和现有创建 Action。短期用户 Token 由启动 Studio 的环境注入，绝不会写进工作区。</p>
         <div className="form-grid two-columns">
@@ -247,12 +299,14 @@ export function SettingsOverlay({ themePreference, onThemePreferenceChange, onCl
         <p className="helper">控制面 Token：{settings?.agentEngineControlPlaneTokenConfigured ? "已由启动环境配置" : "未配置；部署会明确失败，不会回退为云 AK/SK 直连"}。</p>
       </section>
 
-      <section className="settings-group">
+      <section id="settings-about" className="settings-group" tabIndex={-1}>
         <h3>关于</h3>
         <dl className="trace-detail-grid">
           {about.map(([k, v]) => <div key={k}><dt>{k}</dt><dd>{v}</dd></div>)}
         </dl>
       </section>
+      </div>
+      </div>
 
       {configModel && (
         <ModelCredentialDrawer
