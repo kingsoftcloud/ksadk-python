@@ -129,6 +129,30 @@ def test_code_builder_embeds_ksadk_runtime_identity_in_the_archive(tmp_path):
     assert len(identity["ksadk_commit"]) in {0, 40, 64}
 
 
+def test_code_builder_prints_identity_from_the_actual_zip(tmp_path, capsys):
+    (tmp_path / "agent.py").write_text("print('ok')\n", encoding="utf-8")
+    builder = CodeBuilder(tmp_path)
+    builder.build_dir.mkdir(parents=True, exist_ok=True)
+    builder.deps_dir.mkdir(parents=True, exist_ok=True)
+    detection_result = SimpleNamespace(
+        package_path=str(tmp_path),
+        type=_FakeType(),
+        name="demo_agent",
+        entry_point="agent.py",
+        agent_variable="root_agent",
+    )
+    zip_path = tmp_path / "demo.zip"
+    builder._package_zip(zip_path, detection_result)
+    capsys.readouterr()
+
+    builder._emit_bundled_ksadk_identity(zip_path)
+
+    output = capsys.readouterr().out
+    assert "KsADK: version=" in output
+    assert "KsADK source: commit=" in output
+    assert "KsADK source digest: sha256=" in output
+
+
 def test_code_builder_excludes_real_dotenv_files_but_keeps_example(tmp_path):
     (tmp_path / "agent.py").write_text("print('ok')\n", encoding="utf-8")
     (tmp_path / ".env").write_text("OPENAI_API_KEY=secret\n", encoding="utf-8")
