@@ -11,7 +11,6 @@ stale-fence 拒绝，以及公共事件省略内部 provider/native/continuation
 from __future__ import annotations
 
 import asyncio
-import uuid
 from datetime import UTC, datetime
 
 import pytest
@@ -23,8 +22,8 @@ from ksadk.interaction.contracts import (
 )
 from ksadk.interaction.ledger import (
     ALREADY_RESOLVED,
-    REVISION_MISMATCH,
     REQUEST_CONFLICT,
+    REVISION_MISMATCH,
 )
 from ksadk.kernel.contracts import ActivationWriteGuard
 from ksadk.kernel.errors import AgentKernelError, InvalidCommandError, StaleFenceError
@@ -442,24 +441,42 @@ async def sqlite_backend(tmp_path):
     await store.close()
 
 
-@pytest.fixture
-async def postgres_backend():
+@pytest.fixture(scope="module")
+async def postgres_dsn():
+    """One temporary database per pytest module, never one per parameter.
+
+    The conformance table is parametrized.  Creating its Docker fixture at
+    function scope silently left one live ``postgres:16`` container for every
+    check, while only the final container name was retained for cleanup.
+    """
+
     import os
 
     dsn = os.environ.get("KSADK_TEST_POSTGRES_DSN")
+    temporary = False
     if not dsn and os.environ.get("KSADK_TEST_POSTGRES_DOCKER") == "1":
         dsn = await start_temporary_postgres()
+        temporary = True
     if not dsn:
         pytest.skip(
             "KSADK_TEST_POSTGRES_DSN not set; Postgres ledger tests require a live database"
         )
+    try:
+        yield dsn
+    finally:
+        if temporary:
+            stop_temporary_postgres()
+
+
+@pytest.fixture
+async def postgres_backend(postgres_dsn):
     from ksadk.kernel.postgres_store import (
         PostgresAgentKernelStore,
         PostgresKernelEventLog,
     )
     from ksadk.sessions.postgres_service import PostgresSessionService
 
-    service = PostgresSessionService(dsn=dsn)
+    service = PostgresSessionService(dsn=postgres_dsn)
     await _seed(service, SESSION)
     await _seed(service, OTHER_SESSION)
     await _seed(service, "s-tenant-two")
@@ -480,7 +497,6 @@ async def start_temporary_postgres() -> str | None:
     import asyncio
     import socket
     import subprocess
-    import time
 
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
@@ -511,6 +527,17 @@ async def start_temporary_postgres() -> str | None:
             await asyncio.sleep(0.5)
     subprocess.run(["docker", "kill", container], check=False, capture_output=True)
     pytest.fail("temporary postgres:16 container did not become ready")
+
+
+def stop_temporary_postgres() -> None:
+    """Idempotently remove the test-owned ``--rm`` container."""
+
+    import subprocess
+
+    container = _TEMP_CONTAINER[0]
+    if container:
+        subprocess.run(["docker", "kill", container], check=False, capture_output=True)
+        _TEMP_CONTAINER[0] = ""
 
 
 BACKENDS = ["memory", "sqlite", "postgres"]

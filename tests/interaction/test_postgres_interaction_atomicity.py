@@ -11,20 +11,17 @@ import os
 
 import pytest
 
-from ksadk.interaction.contracts import InteractionRecord, InteractionSubmission
 from ksadk.kernel.contracts import ActivationWriteGuard
 from ksadk.kernel.errors import AgentKernelError
-from ksadk.kernel.store import ActivationLeaseRequest
-
 from tests.interaction.test_ledger_conformance import (
     AGENT,
     SESSION,
-    _TEMP_CONTAINER,
     acquire_guard,
     interaction_events,
     make_record,
     make_submission,
     start_temporary_postgres,
+    stop_temporary_postgres,
 )
 
 
@@ -44,11 +41,7 @@ async def pg_dsn():
         )
     yield dsn
     if os.environ.get("KSADK_TEST_POSTGRES_DOCKER") == "1" and _dsn() is None:
-        import subprocess
-
-        subprocess.run(
-            ["docker", "kill", _TEMP_CONTAINER[0]], check=False, capture_output=True
-        )
+        stop_temporary_postgres()
 
 
 @pytest.fixture
