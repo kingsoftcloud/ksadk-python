@@ -52,7 +52,10 @@ class _Client:
 
     async def get_agent(self, *, agent_id: str) -> dict:
         assert agent_id == "ar-studio-1"
-        return {"status": "Running", "agent_kernel_ready": self.kernel_ready}
+        return {
+            "status": "Running",
+            "deployment": {"agent_kernel_ready": self.kernel_ready},
+        }
 
 
 @pytest.mark.asyncio
@@ -100,6 +103,7 @@ async def test_direct_gateway_uses_ks3_and_existing_agent_actions_only() -> None
             "framework": "langgraph",
             "artifact_type": "Code",
             "artifact_path": bundle_uri,
+            "code_checksum": archive_sha,
             "region": "pre-online",
             "ks3": {
                 "access_key": "test-access",
@@ -133,6 +137,7 @@ async def test_direct_gateway_uses_ks3_and_existing_agent_actions_only() -> None
             {
                 "artifact_type": "Code",
                 "artifact_path": bundle_uri,
+                "code_checksum": archive_sha,
                 "ks3": {
                     "access_key": "test-access",
                     "secret_key": "test-secret",

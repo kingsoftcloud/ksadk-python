@@ -35,6 +35,31 @@ async def test_create_agent_preserves_deepagents_when_server_supports_it(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_create_and_update_code_agent_forward_archive_checksum(monkeypatch):
+    client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
+    calls = []
+
+    def fake_action(action: str, params: dict):
+        calls.append((action, params.copy()))
+        return {"agent_id": "ar-checksum"}
+
+    monkeypatch.setattr(client, "_action", fake_action)
+    checksum = "a" * 64
+    await client.create_agent({**_build_create_payload(), "code_checksum": checksum})
+    await client.update_agent(
+        "ar-checksum",
+        {
+            "artifact_type": "Code",
+            "artifact_path": "ks3://bucket/path/next.zip",
+            "code_checksum": checksum,
+        },
+    )
+
+    assert calls[0][1]["CodeConfig"]["Checksum"] == checksum
+    assert calls[1][1]["CodeConfig"]["Checksum"] == checksum
+
+
+@pytest.mark.asyncio
 async def test_create_agent_forwards_managed_runtime_contract(monkeypatch):
     client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
     calls = []

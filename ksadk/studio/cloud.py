@@ -299,6 +299,7 @@ class DirectAgentEngineCloudDeploymentGateway:
             {
                 "artifact_type": "Code",
                 "artifact_path": bundle_uri,
+                "code_checksum": bundle["archive_sha"],
                 "ks3": self._code_config(bundle["bucket"]),
             },
         )
@@ -316,7 +317,11 @@ class DirectAgentEngineCloudDeploymentGateway:
         if not deployment.agent_id:
             return deployment
         payload = await self.client.get_agent(agent_id=deployment.agent_id)
-        kernel_ready = bool(payload.get("agent_kernel_ready"))
+        deployment_detail = payload.get("deployment") or {}
+        kernel_ready = bool(
+            payload.get("agent_kernel_ready")
+            or deployment_detail.get("agent_kernel_ready")
+        )
         status = str(
             payload.get("status")
             or (payload.get("basic") or {}).get("status")
@@ -355,6 +360,7 @@ class DirectAgentEngineCloudDeploymentGateway:
             "framework": bundle["runtime_type"],
             "artifact_type": "Code",
             "artifact_path": bundle_uri,
+            "code_checksum": bundle["archive_sha"],
             "region": request.target.region,
             "ks3": self._code_config(bundle["bucket"]),
             "resources": {"cpu": 2, "memory": "4Gi"},
