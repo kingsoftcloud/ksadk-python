@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from ksadk.agui.a2ui_projection import project_a2ui_operations
 from ksadk.events.runtime_event import EventType, RuntimeEvent
+from ksadk.events.store import RuntimeEventStore
 from ksadk.runtime import (
     CONVERSATION_PREPROCESSING_METADATA_KEY,
     PauseResult,
@@ -21,6 +22,8 @@ from ksadk.runtime import (
     RuntimeLaunchContext,
     StartRequest,
 )
+from ksadk.sessions.base import BaseSessionService
+from ksadk.sessions.local_service import LocalSessionService
 from ksadk.studio.contracts import RunEvent, RunRecord, RunStatus, Usage
 from ksadk.studio.errors import StudioError
 from ksadk.studio.event_store import RunEventStore
@@ -50,10 +53,16 @@ class StudioRunService:
         executor: RuntimeExecutor,
         *,
         event_store: RunEventStore | None = None,
+        session_service: BaseSessionService | None = None,
+        runtime_events: RuntimeEventStore | None = None,
     ) -> None:
         self.workspace = workspace
         self.executor = executor
         self.event_store = event_store or RunEventStore(workspace)
+        self.session_service = session_service or LocalSessionService(
+            project_dir=str(workspace.root)
+        )
+        self.runtime_events = runtime_events or RuntimeEventStore(self.session_service)
         self._active_handles: dict[str, Any] = {}
         self._cancel_flags: dict[str, bool] = {}
         self._control_queues: dict[str, asyncio.Queue[tuple[str, ResumePayload | None]]] = {}
@@ -84,36 +93,56 @@ class StudioRunService:
             goal_objective=str(spec.request_config.get("goal_objective") or ""),
             input=user_input,
         )
+        await self.session_service.create_session(spec.agent_id, "local-user", session)
         self.event_store.create(record)
-        created = self.event_store.append(
-            record.id,
-            "run.created",
-            {
-                "runId": record.id,
-                "buildId": spec.build_id,
-                "sessionId": session,
-                "traceId": record.trace_id,
-                "runtimeType": runtime_type,
-                "manifestSha256": spec.manifest_sha256,
-                "model": record.model,
-                "collaborationMode": record.collaboration_mode,
-                "goalObjective": record.goal_objective,
-            },
+
+        async def persist(runtime_event: RuntimeEvent) -> RunEvent:
+            return await self._persist_event(record, runtime_event, on_event=on_event)
+
+        await persist(
+            RuntimeEvent.create(
+                EventType.RUN_PROGRESS,
+                agent_id=spec.agent_id,
+                user_id="local-user",
+                session_id=session,
+                invocation_id=run_id,
+                seq_id=0,
+                trace_id=record.trace_id,
+                payload={
+                    "status": "created",
+                    "native_event": "run.created",
+                    "native_data": {
+                        "runId": record.id,
+                        "buildId": spec.build_id,
+                        "sessionId": session,
+                        "traceId": record.trace_id,
+                        "runtimeType": runtime_type,
+                        "manifestSha256": spec.manifest_sha256,
+                        "model": record.model,
+                        "collaborationMode": record.collaboration_mode,
+                        "goalObjective": record.goal_objective,
+                    },
+                },
+            )
         )
-        if on_event is not None:
-            on_event(created)
+        await persist(
+            RuntimeEvent.create(
+                EventType.USER_MESSAGE,
+                agent_id=spec.agent_id,
+                user_id="local-user",
+                session_id=session,
+                invocation_id=run_id,
+                seq_id=0,
+                turn_id=f"turn_{run_id}",
+                trace_id=record.trace_id,
+                payload={"message_id": f"user:{run_id}", "text": user_input},
+            )
+        )
 
         started = time.monotonic()
         record.status = RunStatus.RUNNING
         record.started_at = datetime.now(timezone.utc)
         self.event_store.save(record)
-
-        def persist(runtime_event: RuntimeEvent) -> RunEvent:
-            event_type, data = project_runtime_event(runtime_event)
-            stored = self.event_store.append(record.id, event_type, data)
-            if on_event is not None:
-                on_event(stored)
-            return stored
 
         handle = None
         final_text = ""
@@ -143,6 +172,7 @@ class StudioRunService:
                 config=dict(spec.request_config),
                 metadata={
                     "invocation_id": run_id,
+                    "trace_id": record.trace_id,
                     CONVERSATION_PREPROCESSING_METADATA_KEY: conversation_request,
                     **self._native_session_metadata(spec.agent_id, session, runtime_type),
                 },
@@ -155,7 +185,7 @@ class StudioRunService:
                 terminal_seen = False
                 should_resume = False
                 async for event in self.executor.stream(handle):
-                    persist(event)
+                    await persist(event)
                     if self._cancel_flags.get(run_id):
                         raise asyncio.CancelledError()
                     if event.event_type == EventType.TEXT_DELTA and event.phase == "final_answer":
@@ -187,7 +217,11 @@ class StudioRunService:
                         self._waiting_modes[run_id] = "live"
                         self.event_store.save(record)
                         if event.event_type == EventType.APPROVAL_REQUESTED:
-                            self._persist_approval_surface(record, event, on_event=on_event)
+                            await self._persist_approval_surface(
+                                record,
+                                event,
+                                on_event=on_event,
+                            )
                     elif event.event_type in {
                         EventType.APPROVAL_RESOLVED,
                         EventType.A2UI_ACTION,
@@ -258,13 +292,25 @@ class StudioRunService:
                 record.status = RunStatus.RUNNING
                 record.error = None
                 self._waiting_modes.pop(run_id, None)
-                resumed = self.event_store.append(
-                    run_id,
-                    "run.resumed",
-                    {"runId": run_id, "runtimeHandle": record.runtime_handle},
+                await persist(
+                    RuntimeEvent.create(
+                        EventType.RUN_PROGRESS,
+                        agent_id=spec.agent_id,
+                        user_id="local-user",
+                        session_id=session,
+                        invocation_id=run_id,
+                        seq_id=0,
+                        trace_id=record.trace_id,
+                        payload={
+                            "status": "running",
+                            "native_event": "run.resumed",
+                            "native_data": {
+                                "runId": run_id,
+                                "runtimeHandle": record.runtime_handle,
+                            },
+                        },
+                    )
                 )
-                if on_event is not None:
-                    on_event(resumed)
                 self.event_store.save(record)
             record.output = final_text or streamed_final
         except asyncio.CancelledError:
@@ -287,11 +333,12 @@ class StudioRunService:
                 agent_id=spec.agent_id,
                 user_id="local-user",
                 session_id=session,
-                invocation_id=handle.run_id if handle is not None else run_id,
-                seq_id=len(self.event_store.events(run_id)) + 1,
+                invocation_id=run_id,
+                seq_id=0,
+                trace_id=record.trace_id,
                 payload={"status": "cancelled", "cancel_result": cancel_result},
             )
-            persist(cancelled)
+            await persist(cancelled)
             raise
         except Exception as exc:  # noqa: BLE001
             record.status = RunStatus.FAILED
@@ -301,11 +348,12 @@ class StudioRunService:
                 agent_id=spec.agent_id,
                 user_id="local-user",
                 session_id=session,
-                invocation_id=handle.run_id if handle is not None else run_id,
-                seq_id=len(self.event_store.events(run_id)) + 1,
+                invocation_id=run_id,
+                seq_id=0,
+                trace_id=record.trace_id,
                 payload={"status": "failed", "error": str(exc)},
             )
-            persist(failure)
+            await persist(failure)
         finally:
             if handle is not None and self.executor.is_attached(handle):
                 try:
@@ -326,7 +374,141 @@ class StudioRunService:
                 record.duration_ms = int((time.monotonic() - started) * 1000)
                 record.duration_source = "studio"
             self.event_store.save(record)
+            await self._sync_trace(record)
         return record
+
+    async def events(self, run_id: str, *, after: int = 0) -> list[RunEvent]:
+        record = self.event_store.get(run_id)
+        events = await self.runtime_events.list(
+            record.session_id,
+            after_seq_id=after,
+            invocation_id=run_id,
+        )
+        return [self._project_event(run_id, event) for event in events]
+
+    async def recover_interrupted(self) -> int:
+        recovered = 0
+        active_statuses = {
+            RunStatus.CREATED,
+            RunStatus.RUNNING,
+            RunStatus.PAUSED,
+            RunStatus.WAITING_INPUT,
+        }
+        for record in self.event_store.list_runs():
+            if record.status not in active_statuses:
+                continue
+            await self.session_service.create_session(
+                record.agent_id,
+                "local-user",
+                record.session_id,
+            )
+            events = await self.runtime_events.list(
+                record.session_id,
+                invocation_id=record.id,
+            )
+            terminal = next(
+                (
+                    event
+                    for event in reversed(events)
+                    if event.event_type
+                    in {
+                        EventType.RUN_COMPLETED,
+                        EventType.RUN_FAILED,
+                        EventType.RUN_CANCELED,
+                        EventType.RUN_INTERRUPTED,
+                    }
+                    and not (
+                        event.event_type == EventType.RUN_INTERRUPTED
+                        and event.payload.get("status") == "paused"
+                    )
+                ),
+                None,
+            )
+            if terminal is None:
+                terminal_event = RuntimeEvent.create(
+                    EventType.RUN_INTERRUPTED,
+                    agent_id=record.agent_id,
+                    user_id="local-user",
+                    session_id=record.session_id,
+                    invocation_id=record.id,
+                    seq_id=0,
+                    trace_id=record.trace_id,
+                    payload={
+                        "status": "interrupted",
+                        "reason": "studio_restarted",
+                    },
+                )
+                await self._persist_event(record, terminal_event)
+            else:
+                terminal_event = terminal
+
+            if terminal_event.event_type == EventType.RUN_COMPLETED:
+                record.status = RunStatus.COMPLETED
+                record.error = None
+            elif terminal_event.event_type == EventType.RUN_FAILED:
+                record.status = RunStatus.FAILED
+                record.error = {
+                    "code": "RUNTIME_RUN_FAILED",
+                    "message": str(terminal_event.payload.get("error") or "Agent 运行失败"),
+                }
+            elif terminal_event.event_type == EventType.RUN_CANCELED:
+                record.status = RunStatus.CANCELLED
+                record.error = {"code": "RUN_CANCELLED", "message": "运行已取消"}
+            else:
+                record.status = RunStatus.INTERRUPTED
+                record.error = {
+                    "code": "RUN_INTERRUPTED",
+                    "message": "Studio 重启后无法重新 attach 上一次本地运行",
+                }
+            record.completed_at = datetime.fromtimestamp(
+                terminal_event.timestamp,
+                tz=timezone.utc,
+            )
+            if record.started_at is not None:
+                record.duration_ms = max(
+                    0,
+                    int((record.completed_at - record.started_at).total_seconds() * 1000),
+                )
+            self.event_store.save(record)
+            await self._sync_trace(record)
+            recovered += 1
+        return recovered
+
+    async def _persist_event(
+        self,
+        record: RunRecord,
+        event: RuntimeEvent,
+        *,
+        on_event: Callable[[RunEvent], None] | None = None,
+    ) -> RunEvent:
+        if event.session_id != record.session_id:
+            raise ValueError("RuntimeEvent session_id does not match Studio RunRecord")
+        if event.invocation_id != record.id:
+            raise ValueError("RuntimeEvent invocation_id does not match Studio RunRecord")
+        if event.trace_id is None:
+            event = event.model_copy(update={"trace_id": record.trace_id})
+        elif event.trace_id != record.trace_id:
+            raise ValueError("RuntimeEvent trace_id does not match Studio RunRecord")
+        stored = await self.runtime_events.append_one(event)
+        projected = self._project_event(record.id, stored)
+        if on_event is not None:
+            on_event(projected)
+        return projected
+
+    @staticmethod
+    def _project_event(run_id: str, event: RuntimeEvent) -> RunEvent:
+        event_type, data = project_runtime_event(event)
+        return RunEvent(
+            id=event.seq_id,
+            run_id=run_id,
+            type=event_type,
+            data=data,
+            created_at=datetime.fromtimestamp(event.timestamp, tz=timezone.utc),
+        )
+
+    async def _sync_trace(self, record: RunRecord) -> None:
+        events = await self.events(record.id)
+        self.event_store.trace_store.sync(record, events)
 
     async def cancel_run(self, run_id: str) -> dict[str, str]:
         """Request cancellation; the flag and executor perform the actual stop."""
@@ -402,9 +584,10 @@ class StudioRunService:
                 "该 Run 当前没有等待中的交互",
                 status_code=409,
             )
+        events = await self.events(run_id)
         prior = [
             event
-            for event in self.event_store.events(run_id)
+            for event in events
             if event.type == "a2ui.action"
             and str(event.data.get("interactionId") or event.data.get("interaction_id") or "")
             == interaction_id
@@ -415,7 +598,7 @@ class StudioRunService:
         interaction = next(
             (
                 event
-                for event in reversed(self.event_store.events(run_id))
+                for event in reversed(events)
                 if event.type == "a2ui.interaction"
                 and str(event.data.get("interactionId") or event.data.get("interaction_id") or "")
                 == interaction_id
@@ -452,30 +635,64 @@ class StudioRunService:
         else:
             raise StudioError("INTERACTION_EXPIRED", "运行时交互已失效", status_code=409)
 
-        resolved = self.event_store.append(
-            run_id,
-            "approval.resolved" if kind == "approval" else "interaction.resolved",
-            {
-                "runId": run_id,
-                "interactionId": interaction_id,
-                "callId": interaction_id,
-                "name": name,
-                "data": dict(data or {}),
-            },
+        resolved_type = (
+            EventType.APPROVAL_RESOLVED if kind == "approval" else EventType.RUN_PROGRESS
         )
-        action = self.event_store.append(
-            run_id,
-            "a2ui.action",
+        resolved_payload = (
             {
-                "runId": run_id,
-                "surfaceId": str(
-                    interaction.data.get("surfaceId") or interaction.data.get("surface_id") or ""
-                ),
-                "interactionId": interaction_id,
-                "actionId": f"action-{interaction_id}",
-                "name": name,
+                "approval_id": interaction_id,
+                "call_id": interaction_id,
+                "decision": name,
                 "data": dict(data or {}),
-            },
+            }
+            if kind == "approval"
+            else {
+                "status": "running",
+                "native_event": "interaction.resolved",
+                "native_data": {
+                    "runId": run_id,
+                    "interactionId": interaction_id,
+                    "callId": interaction_id,
+                    "name": name,
+                    "data": dict(data or {}),
+                },
+            }
+        )
+        resolved = await self._persist_event(
+            record,
+            RuntimeEvent.create(
+                resolved_type,
+                agent_id=record.agent_id,
+                user_id="local-user",
+                session_id=record.session_id,
+                invocation_id=record.id,
+                seq_id=0,
+                trace_id=record.trace_id,
+                payload=resolved_payload,
+            ),
+        )
+        surface_id = str(
+            interaction.data.get("surfaceId") or interaction.data.get("surface_id") or ""
+        )
+        action = await self._persist_event(
+            record,
+            RuntimeEvent.create(
+                EventType.A2UI_ACTION,
+                agent_id=record.agent_id,
+                user_id="local-user",
+                session_id=record.session_id,
+                invocation_id=record.id,
+                seq_id=0,
+                trace_id=record.trace_id,
+                payload={
+                    "run_id": run_id,
+                    "surface_id": surface_id,
+                    "interaction_id": interaction_id,
+                    "action_id": f"action-{interaction_id}",
+                    "name": name,
+                    "data": dict(data or {}),
+                },
+            ),
         )
         record.status = RunStatus.RUNNING
         self.event_store.save(record)
@@ -488,7 +705,7 @@ class StudioRunService:
             "resolutionEventId": resolved.id,
         }
 
-    def _persist_approval_surface(
+    async def _persist_approval_surface(
         self,
         record: RunRecord,
         event: RuntimeEvent,
@@ -519,53 +736,51 @@ class StudioRunService:
                 "deny_label": "拒绝",
             },
         ]
-        begin = self.event_store.append(
-            record.id,
-            "a2ui.surface.begin",
-            {
-                "runId": record.id,
-                "surfaceId": surface_id,
-                "a2uiOperations": [
-                    {
-                        "version": "v0.9",
-                        "createSurface": {
-                            "surfaceId": surface_id,
-                            "catalogId": "https://a2ui.org/specification/v0_9/basic_catalog.json",
-                        },
-                    },
-                    {
-                        "version": "v0.9",
-                        "updateComponents": {
-                            "surfaceId": surface_id,
-                            "components": components,
-                        },
-                    },
-                ],
-            },
-        )
-        interaction = self.event_store.append(
-            record.id,
-            "a2ui.interaction",
-            {
-                "runId": record.id,
-                "surfaceId": surface_id,
-                "interactionId": approval_id,
-                "kind": "approval",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "decision": {
-                            "type": "string",
-                            "enum": ["approve", "approve_session", "deny"],
-                        }
-                    },
-                    "required": ["decision"],
+        await self._persist_event(
+            record,
+            RuntimeEvent.create(
+                EventType.A2UI_SURFACE_BEGIN,
+                agent_id=record.agent_id,
+                user_id="local-user",
+                session_id=record.session_id,
+                invocation_id=record.id,
+                seq_id=0,
+                trace_id=record.trace_id,
+                payload={
+                    "surface_id": surface_id,
+                    "surface": {"components": components},
                 },
-            },
+            ),
+            on_event=on_event,
         )
-        if on_event is not None:
-            on_event(begin)
-            on_event(interaction)
+        await self._persist_event(
+            record,
+            RuntimeEvent.create(
+                EventType.A2UI_INTERACTION,
+                agent_id=record.agent_id,
+                user_id="local-user",
+                session_id=record.session_id,
+                invocation_id=record.id,
+                seq_id=0,
+                trace_id=record.trace_id,
+                payload={
+                    "surface_id": surface_id,
+                    "interaction_id": approval_id,
+                    "kind": "approval",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "decision": {
+                                "type": "string",
+                                "enum": ["approve", "approve_session", "deny"],
+                            }
+                        },
+                        "required": ["decision"],
+                    },
+                },
+            ),
+            on_event=on_event,
+        )
 
     def _conversation_messages(
         self,

@@ -8,6 +8,7 @@ import base64
 import inspect
 import os
 import re
+import time
 import uuid
 from typing import Any, AsyncIterator, Dict, Mapping
 
@@ -123,6 +124,7 @@ class LangGraphRunner(BaseRunner):
 
     def get_runtime_capabilities(self) -> dict[str, Any]:
         capabilities = super().get_runtime_capabilities()
+        capabilities["model_call_boundaries"] = True
         capabilities["SessionContinuity"] = {
             "Supported": True,
             "Type": (
@@ -945,6 +947,10 @@ class LangGraphRunner(BaseRunner):
         model_run_order: list[str] = []
         stream_usage_run_keys: set[str] = set()
         latest_stream_usage: dict[str, Any] = {}
+        model_started_at: dict[str, float] = {}
+        model_step_indexes: dict[str, int] = {}
+        first_token_seen: set[str] = set()
+        next_step_index = 0
 
         def model_run_key(
             event: Mapping[str, Any],
@@ -1044,10 +1050,44 @@ class LangGraphRunner(BaseRunner):
             async for event in self._agent.astream_events(stream_input, **stream_kwargs):
                 event_kind = event.get("event", "")
 
-                if event_kind == "on_chat_model_stream":
+                if event_kind == "on_chat_model_start":
+                    model_call_id = str(event.get("run_id") or "")
+                    if model_call_id:
+                        next_step_index += 1
+                        step_id = f"step_{model_call_id}"
+                        model_started_at[model_call_id] = time.monotonic()
+                        model_step_indexes[model_call_id] = next_step_index
+                        yield {
+                            "type": "step_start",
+                            "step_id": step_id,
+                            "step_index": next_step_index,
+                        }
+                        yield {
+                            "type": "model_call_begin",
+                            "step_id": step_id,
+                            "model_call_id": model_call_id,
+                            "model": str(event.get("name") or "chat-model"),
+                        }
+
+                elif event_kind == "on_chat_model_stream":
                     chunk = event.get("data", {}).get("chunk")
                     if not chunk:
                         continue
+                    model_call_id = str(event.get("run_id") or "")
+                    if model_call_id in model_started_at and model_call_id not in first_token_seen:
+                        reasoning_content = getattr(chunk, "reasoning_content", None)
+                        if not reasoning_content and hasattr(chunk, "additional_kwargs"):
+                            reasoning_content = chunk.additional_kwargs.get("reasoning_content")
+                        if getattr(chunk, "content", None) or reasoning_content:
+                            first_token_seen.add(model_call_id)
+                            yield {
+                                "type": "model_call_first_token",
+                                "step_id": f"step_{model_call_id}",
+                                "model_call_id": model_call_id,
+                                "ttft_ms": int(
+                                    (time.monotonic() - model_started_at[model_call_id]) * 1000
+                                ),
+                            }
                     chunk_usage = self._extract_usage(chunk)
                     if chunk_usage:
                         # Some LangChain providers attach cumulative usage to
@@ -1098,6 +1138,26 @@ class LangGraphRunner(BaseRunner):
                     run_key = model_run_key(event)
                     if run_key not in stream_usage_run_keys:
                         record_model_usage(event, last_usage or usage)
+                    model_call_id = str(event.get("run_id") or "")
+                    started_at = model_started_at.pop(model_call_id, None)
+                    step_index = model_step_indexes.pop(model_call_id, None)
+                    if started_at is not None and step_index is not None:
+                        duration_ms = int((time.monotonic() - started_at) * 1000)
+                        step_id = f"step_{model_call_id}"
+                        yield {
+                            "type": "model_call_end",
+                            "step_id": step_id,
+                            "model_call_id": model_call_id,
+                            "status": "completed",
+                            "duration_ms": duration_ms,
+                        }
+                        yield {
+                            "type": "step_end",
+                            "step_id": step_id,
+                            "step_index": step_index,
+                            "status": "completed",
+                            "duration_ms": duration_ms,
+                        }
 
                 elif event_kind == "on_chain_stream":
                     # node 内 get_stream_writer() 写入的自定义数据,经 stream_mode 含

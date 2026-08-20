@@ -2,6 +2,7 @@ import * as Tooltip from "@radix-ui/react-tooltip";
 import type { ReactNode } from "react";
 import {
   Activity,
+  BadgeCheck,
   Bot,
   CloudUpload,
   Cpu,
@@ -27,6 +28,7 @@ export type NavigationView =
   | "builds"
   | "deployments"
   | "observability"
+  | "evaluations"
   | "runtime-resources"
   | "orchestration";
 
@@ -60,6 +62,7 @@ const NAVIGATION_GROUPS: Array<{ group: string; items: NavigationItem[] }> = [
     group: "治理",
     items: [
       { id: "observability", label: "可观测", icon: Activity },
+      { id: "evaluations", label: "评测", icon: BadgeCheck },
       { id: "runtime-resources", label: "运行资源", icon: Cpu },
       { id: "orchestration", label: "任务编排", icon: Network },
     ],

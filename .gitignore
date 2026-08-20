@@ -24,6 +24,8 @@ eggs/
 lib/
 !ksadk/studio/react-ui/src/lib/
 lib64/
+!ksadk/studio/react-ui/src/lib/
+!ksadk/studio/react-ui/src/lib/**
 parts/
 sdist/
 var/

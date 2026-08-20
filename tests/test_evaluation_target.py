@@ -13,6 +13,7 @@ from ksadk.evaluation import (
     TargetSnapshot,
     create_target_adapter,
 )
+from ksadk.evaluation.local_adapter import LocalSourceTargetAdapter
 
 
 def test_a2a_target_routes_to_a2a_adapter():
@@ -22,6 +23,15 @@ def test_a2a_target_routes_to_a2a_adapter():
     )
 
     assert isinstance(adapter, A2ATargetAdapter)
+
+
+def test_local_source_target_routes_to_local_adapter():
+    adapter = create_target_adapter(
+        TargetRef(kind=TargetKind.LOCAL_SOURCE, locator="."),
+        timeout_seconds=5,
+    )
+
+    assert isinstance(adapter, LocalSourceTargetAdapter)
 
 
 @pytest.mark.asyncio
@@ -61,3 +71,20 @@ async def test_target_owns_common_adapter_lifecycle(monkeypatch):
     result = await target.run_case(spec, spec.evalset.cases[0])
 
     assert result.output == "done"
+
+
+def test_target_accepts_preconstructed_studio_adapter(monkeypatch):
+    sentinel = object()
+
+    def fail_factory(*_args, **_kwargs):
+        raise AssertionError("registry must not resolve Studio-owned dependencies")
+
+    monkeypatch.setattr("ksadk.evaluation.target.create_target_adapter", fail_factory)
+
+    target = EvaluationTarget(
+        TargetRef(kind=TargetKind.STUDIO_BUILD, locator="build-1"),
+        EvaluationConfig(timeout_seconds=5),
+        adapter=sentinel,
+    )
+
+    assert target._adapter is sentinel

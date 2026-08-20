@@ -43,7 +43,8 @@ async def _slow_codex_events(
         "agent_id": request.agent_id or "agent",
         "user_id": request.user_id,
         "session_id": request.session_id,
-        "invocation_id": handle.run_id,
+        "invocation_id": str(request.metadata["invocation_id"]),
+        "trace_id": str(request.metadata["trace_id"]),
     }
     yield RuntimeEvent.create(
         EventType.RUN_STARTED,
@@ -402,7 +403,7 @@ async def test_closing_stream_does_not_cancel_background_run(tmp_path: Path) -> 
 
     for _ in range(100):
         runs = service.event_store.list_runs(session_id="ses-refresh")
-        if runs and runs[0].status != RunStatus.RUNNING:
+        if runs and runs[0].status == RunStatus.COMPLETED:
             break
         await asyncio.sleep(0.01)
     assert runs[0].status == RunStatus.COMPLETED
@@ -445,7 +446,7 @@ async def test_reloading_after_first_responses_event_keeps_run_recoverable(
     runs = []
     for _ in range(120):
         runs = service.event_store.list_runs(session_id="ses-responses-refresh")
-        if runs and runs[0].status != RunStatus.RUNNING:
+        if runs and runs[0].status == RunStatus.COMPLETED:
             break
         await asyncio.sleep(0.01)
     assert runs[0].status == RunStatus.COMPLETED

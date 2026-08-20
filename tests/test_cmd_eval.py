@@ -13,7 +13,9 @@ from ksadk.evaluation.contracts import (
     TargetKind,
     TargetRun,
     TargetSnapshot,
+    TraceRef,
 )
+from ksadk.evaluation.evidence import EvidenceStore
 
 
 def _evalset(tmp_path):
@@ -28,6 +30,22 @@ cases:
     assertions:
       - type: response.contains
         value: hell
+""",
+        encoding="utf-8",
+    )
+    return path
+
+
+def _reference_evalset(tmp_path):
+    path = tmp_path / "reference-suite.yaml"
+    path.write_text(
+        """\
+schemaVersion: ksadk.eval/v1
+name: reference-smoke
+cases:
+  - id: capital
+    input: 中国的首都是哪里？
+    reference_output: 北京
 """,
         encoding="utf-8",
     )
@@ -56,6 +74,33 @@ def _report() -> EvalRunReport:
     )
 
 
+def _local_agent(tmp_path):
+    project = tmp_path / "local-agent"
+    project.mkdir()
+    (project / "agentengine.yaml").write_text(
+        "name: cli-local-agent\n"
+        "framework: langgraph\n"
+        "entry_point: agent.py\n"
+        "agent_variable: graph\n",
+        encoding="utf-8",
+    )
+    (project / "agent.py").write_text(
+        """from langgraph.graph import END, START, StateGraph
+
+def answer(_state):
+    return {'output': 'hello from local graph'}
+
+builder = StateGraph(dict)
+builder.add_node('answer', answer)
+builder.add_edge(START, 'answer')
+builder.add_edge('answer', END)
+graph = builder.compile()
+""",
+        encoding="utf-8",
+    )
+    return project
+
+
 def test_eval_help_exposes_complete_target_shell():
     result = CliRunner().invoke(eval, ["--help"])
     assert result.exit_code == 0, result.output
@@ -79,6 +124,54 @@ def test_eval_help_exposes_complete_target_shell():
         "--format",
     ):
         assert option in result.output
+    assert "--agent-eval-url" not in result.output
+    assert "--api-token-env" not in result.output
+
+
+def test_eval_accepts_an_immutable_remote_dataset_version(tmp_path, monkeypatch):
+    from ksadk.evaluation.cloud_converter import evalset_to_dataset_snapshot
+    from ksadk.evaluation.cloud_service import CloudEvalSetPullResult
+    from ksadk.evaluation.contracts import CloudDatasetRef
+
+    evalset = EvalSetVersion(name="remote", cases=[EvalCase(id="one", input="hello")])
+    snapshot = evalset_to_dataset_snapshot(evalset)
+    reference = CloudDatasetRef(
+        provider="agent-eval/evalsmith",
+        dataset_id="dataset-1",
+        version=4,
+        schema_hash=snapshot.schema_hash,
+        content_digest=snapshot.content_digest,
+        row_count=1,
+    )
+
+    async def fake_pull(self, *, dataset_id, version, project_id=None):
+        assert (dataset_id, version, project_id) == ("dataset-1", 4, None)
+        return CloudEvalSetPullResult(
+            snapshot=snapshot,
+            evalset=evalset,
+            cloud_dataset=reference,
+        )
+
+    monkeypatch.setattr("ksadk.evaluation.cloud_service.CloudEvalSetService.pull", fake_pull)
+    result = CliRunner().invoke(
+        eval,
+        [
+            "--dataset-id",
+            "dataset-1",
+            "--dataset-version",
+            "4",
+            "--a2a-url",
+            "https://agent.example.invalid",
+            "--validate-only",
+            "--format",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["evalset"]["name"] == "remote"
+    assert payload["cloudDataset"]["datasetId"] == "dataset-1"
 
 
 def test_eval_help_lists_automatic_evaluators():
@@ -116,11 +209,28 @@ def test_eval_validate_only_returns_normalized_summary(tmp_path):
     assert payload["evalset"]["sourceFormat"] == "native"
     assert payload["evalset"]["caseCount"] == 1
     assert payload["target"]["kind"] == "local_source"
-    assert payload["config"]["evaluators"] == [
-        "response_contract@v1",
-        "runtime_budget@v1",
-        "tool_trajectory@v1",
-    ]
+    assert payload["config"]["evaluators"] == []
+    assert payload["evaluationPlan"] == ["response_contract@v1"]
+
+
+def test_eval_validate_only_reports_automatic_reference_plan(tmp_path):
+    result = CliRunner().invoke(
+        eval,
+        [
+            "--evalset-file",
+            str(_reference_evalset(tmp_path)),
+            "--agent-dir",
+            str(tmp_path),
+            "--validate-only",
+            "--format",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["config"]["evaluators"] == []
+    assert payload["evaluationPlan"] == ["reference_match@v1"]
 
 
 def test_eval_accepts_canonical_a2a_parameters(tmp_path):
@@ -285,7 +395,7 @@ def test_eval_json_output_does_not_render_progress(tmp_path, monkeypatch):
     assert payload["spec"]["id"] == "eval-preview"
 
 
-def test_eval_unimplemented_executor_uses_execution_exit_code(tmp_path):
+def test_eval_invalid_local_source_uses_execution_exit_code(tmp_path):
     result = CliRunner().invoke(
         eval,
         [
@@ -296,4 +406,31 @@ def test_eval_unimplemented_executor_uses_execution_exit_code(tmp_path):
         ],
     )
     assert result.exit_code == 2
-    assert "尚未实现" in result.output
+    assert "LOCAL_FRAMEWORK_UNSUPPORTED" in result.output
+
+
+def test_eval_local_source_executes_and_persists_report(tmp_path):
+    project = _local_agent(tmp_path)
+    report_dir = tmp_path / "reports"
+    result = CliRunner().invoke(
+        eval,
+        [
+            "--evalset-file",
+            str(_evalset(tmp_path)),
+            "--agent-dir",
+            str(project),
+            "--report-dir",
+            str(report_dir),
+            "--format",
+            "json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["status"] == "PASSED"
+    assert payload["spec"]["target"]["kind"] == "local_source"
+    assert payload["caseRuns"][0]["targetRun"]["output"] == "hello from local graph"
+    assert (report_dir / payload["spec"]["id"] / "report.json").is_file()
+    trace_ref = payload["caseRuns"][0]["targetRun"]["traceRef"]
+    trace = EvidenceStore(report_dir).read_trace(TraceRef.model_validate(trace_ref))
+    assert trace["invocationId"] == trace_ref["invocationId"]

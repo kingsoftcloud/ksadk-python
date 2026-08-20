@@ -120,7 +120,8 @@ async def _runtime_events(request, handle):
         "agent_id": request.agent_id or "agent",
         "user_id": request.user_id,
         "session_id": request.session_id,
-        "invocation_id": handle.run_id,
+        "invocation_id": str(request.metadata["invocation_id"]),
+        "trace_id": str(request.metadata["trace_id"]),
     }
     yield RuntimeEvent.create(
         EventType.RUN_STARTED,
@@ -519,7 +520,10 @@ def test_api_workspace_connection_is_bound_to_daemon_root(tmp_path: Path):
         assert rejected.json()["error"]["code"] == "WORKSPACE_PATH_FORBIDDEN"
 
 
-def test_api_session_credential_lifecycle_and_model_connection(tmp_path: Path):
+def test_api_session_credential_lifecycle_and_model_connection(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("AGENTKIT_MODEL_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
     class CredentialAwareModelClient:
         def __init__(self):
             self.credential_resolver = CredentialResolver()

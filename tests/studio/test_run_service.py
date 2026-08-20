@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from ksadk.events.runtime_event import EventType, RuntimeEvent
+from ksadk.events.store import RuntimeEventStore
 from ksadk.runtime import (
     BaseRuntime,
     CancelResult,
@@ -23,7 +26,8 @@ from ksadk.runtime import (
     RuntimeRegistry,
     StartRequest,
 )
-from ksadk.studio.contracts import RunStatus
+from ksadk.sessions.local_service import LocalSessionService
+from ksadk.studio.contracts import RunRecord, RunStatus
 from ksadk.studio.run_service import (
     StudioRunService,
     StudioRunSpec,
@@ -49,9 +53,13 @@ class _RecordingAdapter(RuntimeAdapter):
         super().__init__(_FixtureRuntime(runtime_type))
         self.calls = calls
         self.runtime_type = runtime_type
+        self.invocation_id = ""
+        self.trace_id = ""
 
     async def start(self, request: StartRequest) -> RunHandle:
         self.calls.append(("start", request))
+        self.invocation_id = str(request.metadata["invocation_id"])
+        self.trace_id = str(request.metadata["trace_id"])
         return RunHandle(
             run_id=f"native-{self.runtime_type}",
             session_id=request.session_id,
@@ -66,8 +74,9 @@ class _RecordingAdapter(RuntimeAdapter):
             agent_id="review-helper",
             user_id="local-user",
             session_id=handle.session_id,
-            invocation_id=handle.run_id,
+            invocation_id=self.invocation_id,
             seq_id=1,
+            trace_id=self.trace_id,
             payload={"status": "in_progress"},
         )
         yield RuntimeEvent.create(
@@ -75,8 +84,9 @@ class _RecordingAdapter(RuntimeAdapter):
             agent_id="review-helper",
             user_id="local-user",
             session_id=handle.session_id,
-            invocation_id=handle.run_id,
+            invocation_id=self.invocation_id,
             seq_id=2,
+            trace_id=self.trace_id,
             phase="final_answer",
             payload={"text": f"{self.runtime_type} answer"},
         )
@@ -85,8 +95,9 @@ class _RecordingAdapter(RuntimeAdapter):
             agent_id="review-helper",
             user_id="local-user",
             session_id=handle.session_id,
-            invocation_id=handle.run_id,
+            invocation_id=self.invocation_id,
             seq_id=3,
+            trace_id=self.trace_id,
             payload={"status": "completed", "duration_ms": 42},
         )
 
@@ -164,12 +175,174 @@ async def test_studio_run_service_uses_core_executor_and_persists_runtime_events
     request = calls[0][1]
     assert request.model == "glm-5.2"
     assert request.config == {"entrypoint": "agent:graph"}
-    assert [event.type for event in service.event_store.events(record.id)] == [
-        "run.created",
-        "run.started",
-        "message.completed",
-        "run.completed",
+    events = await service.runtime_events.list(record.session_id, invocation_id=record.id)
+    assert [event.event_type for event in events] == [
+        EventType.RUN_PROGRESS,
+        EventType.USER_MESSAGE,
+        EventType.RUN_STARTED,
+        EventType.TEXT_COMPLETED,
+        EventType.RUN_COMPLETED,
     ]
+    assert {event.trace_id for event in events} == {record.trace_id}
+
+
+@pytest.mark.asyncio
+async def test_studio_appends_runtime_events_without_rewriting_run_or_trace_files(
+    tmp_path: Path,
+) -> None:
+    class _DeltaAdapter(_RecordingAdapter):
+        async def stream(self, handle: RunHandle) -> AsyncIterator[RuntimeEvent]:
+            trace_path = tmp_path / ".agentkit/traces" / f"{self.trace_id}.otlp.json"
+            for seq_id in range(1, 101):
+                assert not trace_path.exists()
+                yield RuntimeEvent.create(
+                    EventType.TEXT_DELTA,
+                    agent_id="review-helper",
+                    user_id="local-user",
+                    session_id=handle.session_id,
+                    invocation_id=self.invocation_id,
+                    seq_id=seq_id,
+                    trace_id=self.trace_id,
+                    phase="final_answer",
+                    payload={"text": "x"},
+                )
+            yield RuntimeEvent.create(
+                EventType.RUN_COMPLETED,
+                agent_id="review-helper",
+                user_id="local-user",
+                session_id=handle.session_id,
+                invocation_id=self.invocation_id,
+                seq_id=101,
+                trace_id=self.trace_id,
+                payload={"status": "completed"},
+            )
+
+    registry = RuntimeRegistry()
+    registry.register("langgraph", lambda _context: _DeltaAdapter([]))
+    workspace = Workspace(tmp_path)
+    workspace.initialize()
+    sessions = LocalSessionService(tmp_path / "sessions.sqlite")
+    runtime_events = RuntimeEventStore(sessions)
+    service = StudioRunService(
+        workspace,
+        RuntimeExecutor(registry),
+        session_service=sessions,
+        runtime_events=runtime_events,
+    )
+
+    record = await service.run(
+        StudioRunSpec(
+            launch_context=RuntimeLaunchContext(runtime_type="langgraph", project_dir=tmp_path),
+            build_id="build-lg",
+            agent_id="review-helper",
+        ),
+        "stream",
+        session_id="ses-stream",
+    )
+
+    events = await runtime_events.list(record.session_id, invocation_id=record.id)
+    assert [event.seq_id for event in events] == list(range(1, 104))
+    run_payload = json.loads((tmp_path / ".agentkit/runs" / f"{record.id}.json").read_text())
+    assert set(run_payload) == {"record"}
+    assert (tmp_path / ".agentkit/traces" / f"{record.trace_id}.otlp.json").is_file()
+
+
+@pytest.mark.asyncio
+async def test_studio_binds_missing_runtime_trace_id_to_the_run(tmp_path: Path) -> None:
+    workspace = Workspace(tmp_path)
+    workspace.initialize()
+    service = StudioRunService(workspace, RuntimeExecutor(RuntimeRegistry()))
+    record = RunRecord(
+        id="run-bind-trace",
+        build_id="build-1",
+        agent_id="agent-1",
+        session_id="session-bind-trace",
+        trace_id="a" * 32,
+        input="test",
+    )
+    service.event_store.create(record)
+    await service.session_service.create_session(record.agent_id, "local-user", record.session_id)
+    source = RuntimeEvent.create(
+        EventType.RUN_STARTED,
+        agent_id=record.agent_id,
+        user_id="local-user",
+        session_id=record.session_id,
+        invocation_id=record.id,
+        seq_id=1,
+        payload={"status": "in_progress"},
+    )
+
+    await service._persist_event(record, source)
+
+    stored = await service.runtime_events.list(record.session_id, invocation_id=record.id)
+    assert stored[0].trace_id == record.trace_id
+
+
+@pytest.mark.asyncio
+async def test_recovery_uses_canonical_terminal_event(tmp_path: Path) -> None:
+    workspace = Workspace(tmp_path)
+    workspace.initialize()
+    service = StudioRunService(workspace, RuntimeExecutor(RuntimeRegistry()))
+    record = RunRecord(
+        id="run_recover_cancelled",
+        build_id="build-1",
+        agent_id="review-helper",
+        session_id="ses-recover-cancelled",
+        trace_id="1" * 32,
+        status=RunStatus.RUNNING,
+        input="resume",
+        started_at=datetime.now(timezone.utc),
+    )
+    service.event_store.create(record)
+    await service.session_service.create_session(
+        record.agent_id,
+        "local-user",
+        record.session_id,
+    )
+    await service.runtime_events.append_one(
+        RuntimeEvent.create(
+            EventType.RUN_CANCELED,
+            agent_id=record.agent_id,
+            user_id="local-user",
+            session_id=record.session_id,
+            invocation_id=record.id,
+            seq_id=0,
+            trace_id=record.trace_id,
+            payload={"status": "cancelled"},
+        )
+    )
+
+    assert await service.recover_interrupted() == 1
+    recovered = service.event_store.get(record.id)
+    assert recovered.status == RunStatus.CANCELLED
+    assert recovered.error == {"code": "RUN_CANCELLED", "message": "运行已取消"}
+
+
+@pytest.mark.asyncio
+async def test_recovery_creates_missing_session_before_marking_interrupted(
+    tmp_path: Path,
+) -> None:
+    workspace = Workspace(tmp_path)
+    workspace.initialize()
+    service = StudioRunService(workspace, RuntimeExecutor(RuntimeRegistry()))
+    record = RunRecord(
+        id="run_recover_orphan",
+        build_id="build-1",
+        agent_id="review-helper",
+        session_id="ses-recover-orphan",
+        trace_id="2" * 32,
+        status=RunStatus.RUNNING,
+        input="resume",
+        started_at=datetime.now(timezone.utc),
+    )
+    service.event_store.create(record)
+
+    assert await service.recover_interrupted() == 1
+    recovered = service.event_store.get(record.id)
+    assert recovered.status == RunStatus.INTERRUPTED
+    events = await service.runtime_events.list(record.session_id, invocation_id=record.id)
+    assert events[-1].event_type == EventType.RUN_INTERRUPTED
+    assert events[-1].payload["reason"] == "studio_restarted"
 
 
 @pytest.mark.asyncio
@@ -280,8 +453,9 @@ async def test_runtime_reported_usage_and_duration_are_authoritative(
                 agent_id="review-helper",
                 user_id="local-user",
                 session_id=handle.session_id,
-                invocation_id=handle.run_id,
+                invocation_id=self.invocation_id,
                 seq_id=1,
+                trace_id=self.trace_id,
                 payload={
                     "input_tokens": 128,
                     "cached_tokens": 16,
@@ -296,8 +470,9 @@ async def test_runtime_reported_usage_and_duration_are_authoritative(
                 agent_id="review-helper",
                 user_id="local-user",
                 session_id=handle.session_id,
-                invocation_id=handle.run_id,
+                invocation_id=self.invocation_id,
                 seq_id=2,
+                trace_id=self.trace_id,
                 payload={"status": "completed", "duration_ms": 1340},
             )
 
@@ -345,8 +520,9 @@ async def test_explicit_operation_cancellation_calls_executor_cancel_and_persist
                 agent_id="review-helper",
                 user_id="local-user",
                 session_id=handle.session_id,
-                invocation_id=handle.run_id,
+                invocation_id=self.invocation_id,
                 seq_id=1,
+                trace_id=self.trace_id,
                 payload={"status": "in_progress"},
             )
             await asyncio.Event().wait()
@@ -380,7 +556,7 @@ async def test_explicit_operation_cancellation_calls_executor_cancel_and_persist
     record = service.event_store.list_runs(session_id="ses-cancel")[0]
     assert record.status == "CANCELLED"
     assert record.completed_at is not None
-    assert service.event_store.events(record.id)[-1].type == "run.cancelled"
+    assert (await service.events(record.id))[-1].type == "run.cancelled"
     assert [name for name, _value in calls][-2:] == ["cancel", "close"]
 
 
@@ -398,8 +574,9 @@ async def test_cancel_request_is_bounded_when_runtime_interrupt_stalls(
                 agent_id="review-helper",
                 user_id="local-user",
                 session_id=handle.session_id,
-                invocation_id=handle.run_id,
+                invocation_id=self.invocation_id,
                 seq_id=1,
+                trace_id=self.trace_id,
                 payload={"status": "in_progress"},
             )
             await asyncio.Event().wait()
@@ -448,8 +625,9 @@ async def test_runtime_interruption_is_not_reported_as_user_cancellation(
                 agent_id="review-helper",
                 user_id="local-user",
                 session_id=handle.session_id,
-                invocation_id=handle.run_id,
+                invocation_id=self.invocation_id,
                 seq_id=1,
+                trace_id=self.trace_id,
                 payload={"status": "attach_unavailable"},
             )
 
@@ -459,7 +637,8 @@ async def test_runtime_interruption_is_not_reported_as_user_cancellation(
     workspace = Workspace(tmp_path)
     workspace.initialize()
 
-    record = await StudioRunService(workspace, RuntimeExecutor(registry)).run(
+    service = StudioRunService(workspace, RuntimeExecutor(registry))
+    record = await service.run(
         StudioRunSpec(
             launch_context=RuntimeLaunchContext(
                 runtime_type="codex",
@@ -477,7 +656,7 @@ async def test_runtime_interruption_is_not_reported_as_user_cancellation(
         "code": "RUN_INTERRUPTED",
         "message": "attach_unavailable",
     }
-    assert service_event_types(workspace, record.id)[-1] == "run.interrupted"
+    assert (await service_event_types(service, record.id))[-1] == "run.interrupted"
 
 
 @pytest.mark.asyncio
@@ -497,8 +676,9 @@ async def test_pause_preserves_run_and_resume_continues_same_runtime_handle(
                 agent_id="review-helper",
                 user_id="local-user",
                 session_id=handle.session_id,
-                invocation_id=handle.run_id,
+                invocation_id=self.invocation_id,
                 seq_id=self.turn * 10,
+                trace_id=self.trace_id,
                 payload={"status": "in_progress"},
             )
             if self.turn == 1:
@@ -508,8 +688,9 @@ async def test_pause_preserves_run_and_resume_continues_same_runtime_handle(
                     agent_id="review-helper",
                     user_id="local-user",
                     session_id=handle.session_id,
-                    invocation_id=handle.run_id,
+                    invocation_id=self.invocation_id,
                     seq_id=self.turn * 10 + 1,
+                    trace_id=self.trace_id,
                     payload={"status": "paused", "reason": "user_pause"},
                 )
                 return
@@ -518,8 +699,9 @@ async def test_pause_preserves_run_and_resume_continues_same_runtime_handle(
                 agent_id="review-helper",
                 user_id="local-user",
                 session_id=handle.session_id,
-                invocation_id=handle.run_id,
+                invocation_id=self.invocation_id,
                 seq_id=self.turn * 10 + 1,
+                trace_id=self.trace_id,
                 phase="final_answer",
                 payload={"text": "resumed answer"},
             )
@@ -528,8 +710,9 @@ async def test_pause_preserves_run_and_resume_continues_same_runtime_handle(
                 agent_id="review-helper",
                 user_id="local-user",
                 session_id=handle.session_id,
-                invocation_id=handle.run_id,
+                invocation_id=self.invocation_id,
                 seq_id=self.turn * 10 + 2,
+                trace_id=self.trace_id,
                 payload={"status": "completed"},
             )
 
@@ -574,8 +757,9 @@ async def test_pause_preserves_run_and_resume_continues_same_runtime_handle(
     record = await asyncio.wait_for(task, timeout=2)
     assert record.status == RunStatus.COMPLETED
     assert record.output == "resumed answer"
-    assert [event.type for event in service.event_store.events(record.id)].count("run.paused") == 1
-    assert "run.resumed" in [event.type for event in service.event_store.events(record.id)]
+    event_types = await service_event_types(service, record.id)
+    assert event_types.count("run.paused") == 1
+    assert "run.resumed" in event_types
     assert [name for name, _ in calls] == ["start", "pause", "resume", "close"]
 
 
@@ -594,8 +778,9 @@ async def test_live_a2ui_interaction_submits_structured_answer_and_continues(
                 agent_id="review-helper",
                 user_id="local-user",
                 session_id=handle.session_id,
-                invocation_id=handle.run_id,
+                invocation_id=self.invocation_id,
                 seq_id=1,
+                trace_id=self.trace_id,
                 payload={
                     "surface_id": "surface-1",
                     "surface": {
@@ -615,8 +800,9 @@ async def test_live_a2ui_interaction_submits_structured_answer_and_continues(
                 agent_id="review-helper",
                 user_id="local-user",
                 session_id=handle.session_id,
-                invocation_id=handle.run_id,
+                invocation_id=self.invocation_id,
                 seq_id=2,
+                trace_id=self.trace_id,
                 payload={
                     "surface_id": "surface-1",
                     "interaction_id": "question-1",
@@ -630,8 +816,9 @@ async def test_live_a2ui_interaction_submits_structured_answer_and_continues(
                 agent_id="review-helper",
                 user_id="local-user",
                 session_id=handle.session_id,
-                invocation_id=handle.run_id,
+                invocation_id=self.invocation_id,
                 seq_id=3,
+                trace_id=self.trace_id,
                 phase="final_answer",
                 payload={"text": "已按选择继续"},
             )
@@ -640,8 +827,9 @@ async def test_live_a2ui_interaction_submits_structured_answer_and_continues(
                 agent_id="review-helper",
                 user_id="local-user",
                 session_id=handle.session_id,
-                invocation_id=handle.run_id,
+                invocation_id=self.invocation_id,
                 seq_id=4,
+                trace_id=self.trace_id,
                 payload={"status": "completed"},
             )
 
@@ -691,7 +879,7 @@ async def test_live_a2ui_interaction_submits_structured_answer_and_continues(
         "scope": ["前端", "服务端"],
         "note": "忽略生成文件",
     }
-    assert "a2ui.action" in service_event_types(workspace, run.id)
+    assert "a2ui.action" in await service_event_types(service, run.id)
 
 
 def test_a2ui_runtime_events_are_persisted_as_official_operations() -> None:
@@ -721,14 +909,8 @@ def test_a2ui_runtime_events_are_persisted_as_official_operations() -> None:
     ]
 
 
-def service_event_types(workspace: Workspace, run_id: str) -> list[str]:
-    return [
-        event.type
-        for event in StudioRunService(
-            workspace,
-            RuntimeExecutor(RuntimeRegistry()),
-        ).event_store.events(run_id)
-    ]
+async def service_event_types(service: StudioRunService, run_id: str) -> list[str]:
+    return [event.type for event in await service.events(run_id)]
 
 
 def _runtime_event(event_type: str, payload: dict[str, Any]) -> RuntimeEvent:

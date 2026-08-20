@@ -8,12 +8,33 @@ SubscribeSessionEvents session 级 cursor stream 跨 invocation)/ projection rep
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from ksadk.events.runtime_event import EventType, RuntimeEvent
-from ksadk.events.store import RuntimeEventStore
+from ksadk.events.store import (
+    RuntimeEventStore,
+    runtime_event_to_session_event,
+    session_event_to_runtime_event,
+)
 from ksadk.sessions.base import SessionEvent
 from ksadk.sessions.in_memory import InMemorySessionService
+
+
+class CountingInMemorySessionService(InMemorySessionService):
+    def __init__(self):
+        super().__init__()
+        self.get_events_calls = 0
+
+    async def get_events(self, *args, **kwargs):
+        self.get_events_calls += 1
+        return await super().get_events(*args, **kwargs)
+
+
+class FailingAppendSessionService(InMemorySessionService):
+    async def append_event(self, session_id, event):
+        raise RuntimeError("write failed")
 
 
 def _ev(
@@ -72,6 +93,27 @@ async def test_append_and_list_roundtrip(store):
     assert [e.seq_id for e in events] == sorted(e.seq_id for e in events)
 
 
+def test_trajectory_correlation_roundtrips_through_session_event():
+    event = RuntimeEvent.create(
+        EventType.MODEL_CALL_BEGIN,
+        agent_id="agent-1",
+        user_id="user-1",
+        session_id="session-1",
+        invocation_id="run-1",
+        seq_id=0,
+        turn_id="turn-1",
+        step_id="step-1",
+        parent_event_id="evt-parent",
+        trace_id="0" * 32,
+        span_id="1" * 16,
+        payload={"model_call_id": "model-call-1", "model": "demo-model"},
+    )
+
+    restored = session_event_to_runtime_event(runtime_event_to_session_event(event))
+
+    assert restored == event
+
+
 @pytest.mark.asyncio
 async def test_append_returns_store_assigned_session_cursor(store):
     st, svc = store
@@ -105,6 +147,33 @@ async def test_append_is_idempotent_by_durable_event_id(store):
 
     assert replay.seq_id == first.seq_id
     assert [item.event_id for item in await st.list("s1")] == ["wire-event-1"]
+
+
+@pytest.mark.asyncio
+async def test_new_event_append_does_not_scan_session_history():
+    service = CountingInMemorySessionService()
+    await service.create_session(agent_id="a", user_id="u", session_id="s1")
+    store = RuntimeEventStore(service)
+
+    first = _ev(
+        EventType.TEXT_DELTA,
+        "s1",
+        "inv1",
+        1,
+        {"text": "first"},
+        phase="commentary",
+        event_id="wire-event-1",
+    )
+    second = first.model_copy(update={"event_id": "wire-event-2", "payload": {"text": "second"}})
+
+    await store.append_one(first)
+    await store.append_one(second)
+
+    assert service.get_events_calls == 0
+
+    replay = await store.append_one(first)
+    assert replay.event_id == first.event_id
+    assert service.get_events_calls == 1
 
 
 @pytest.mark.asyncio
@@ -158,6 +227,26 @@ async def test_event_id_collision_does_not_drop_distinct_content(store):
                 event_id="wire-event-1",
             )
         )
+
+
+@pytest.mark.asyncio
+async def test_event_id_collision_detects_distinct_trajectory_correlation(store):
+    st, _ = store
+    original = RuntimeEvent.create(
+        EventType.RUN_STARTED,
+        agent_id="a",
+        user_id="u",
+        session_id="s1",
+        invocation_id="inv1",
+        seq_id=1,
+        trace_id="0" * 32,
+        payload={"status": "in_progress"},
+        event_id="wire-event-trajectory",
+    )
+    await st.append_one(original)
+
+    with pytest.raises(ValueError, match="id collision"):
+        await st.append_one(original.model_copy(update={"trace_id": "1" * 32}))
 
 
 @pytest.mark.asyncio
@@ -227,6 +316,85 @@ async def test_subscribe_session_cross_invocation(store):
     got = [e async for e in st.subscribe_session("s1", timeout=0.6)]
     # 跨 invocation:inv1 与 inv2 都产
     assert {e.invocation_id for e in got} == {"inv1", "inv2"}
+
+
+@pytest.mark.asyncio
+async def test_subscribe_session_is_woken_after_reserve_commit(store):
+    st, _ = store
+    subscriber = asyncio.create_task(anext(st.subscribe_session("s1", poll_interval=60, timeout=1)))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    stored, created = await st.reserve_once(
+        _ev(
+            EventType.RUN_STARTED,
+            "s1",
+            "inv1",
+            1,
+            {"status": "in_progress"},
+            event_id="live-event-1",
+        )
+    )
+
+    assert created is True
+    assert await asyncio.wait_for(subscriber, timeout=0.2) == stored
+
+
+@pytest.mark.asyncio
+async def test_subscribe_session_does_not_lose_query_wait_race(store, monkeypatch):
+    st, _ = store
+    queried = asyncio.Event()
+    release_query = asyncio.Event()
+    original_list = st.list
+    first_query = True
+
+    async def paused_list(*args, **kwargs):
+        nonlocal first_query
+        events = await original_list(*args, **kwargs)
+        if first_query:
+            first_query = False
+            queried.set()
+            await release_query.wait()
+        return events
+
+    monkeypatch.setattr(st, "list", paused_list)
+    subscriber = asyncio.create_task(anext(st.subscribe_session("s1", poll_interval=60, timeout=1)))
+    await queried.wait()
+
+    stored = await st.append_one(
+        _ev(
+            EventType.RUN_STARTED,
+            "s1",
+            "inv1",
+            1,
+            {"status": "in_progress"},
+            event_id="racing-event-1",
+        )
+    )
+    release_query.set()
+
+    assert await asyncio.wait_for(subscriber, timeout=0.2) == stored
+
+
+@pytest.mark.asyncio
+async def test_failed_append_does_not_advance_session_revision():
+    service = FailingAppendSessionService()
+    await service.create_session(agent_id="a", user_id="u", session_id="s1")
+    store = RuntimeEventStore(service)
+
+    with pytest.raises(RuntimeError, match="write failed"):
+        await store.append_one(
+            _ev(
+                EventType.RUN_STARTED,
+                "s1",
+                "inv1",
+                1,
+                {"status": "in_progress"},
+                event_id="failed-event-1",
+            )
+        )
+
+    assert store._session_revisions.get("s1", 0) == 0
 
 
 # ---- cursor 断线续传:不丢、无重复终态 ----
