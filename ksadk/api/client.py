@@ -1365,6 +1365,7 @@ class AgentEngineClient:
                 "SecretKey": ks3.get("secret_key"),
                 "Region": self._normalize_payload_region(ks3.get("region", "cn-beijing-6")),
                 "Bucket": ks3.get("bucket"),
+                "Command": data.get("code_command"),
                 "Checksum": data.get("code_checksum"),
             }
             if params["DeploymentType"] == "ManagedRuntime":
@@ -1656,6 +1657,7 @@ class AgentEngineClient:
                     "SecretKey": ks3.get("secret_key"),
                     "Region": self._normalize_payload_region(ks3.get("region", "cn-beijing-6")),
                     "Bucket": ks3.get("bucket"),
+                    "Command": data.get("code_command"),
                     "Checksum": data.get("code_checksum"),
                 }
                 if artifact_type == "ManagedRuntime":

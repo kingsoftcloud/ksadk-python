@@ -28,6 +28,17 @@ from ksadk.studio.workspace import Workspace
 
 logger = logging.getLogger(__name__)
 
+_STUDIO_CODE_COMMAND = (
+    "ksadk",
+    "web",
+    "/app/code/runtime",
+    "--port",
+    "8080",
+    "--host",
+    "0.0.0.0",
+    "--no-open",
+)
+
 
 class CloudDeploymentGateway(Protocol):
     async def upload_bundle(
@@ -303,6 +314,7 @@ class DirectAgentEngineCloudDeploymentGateway:
                 "artifact_type": "Code",
                 "artifact_path": bundle_uri,
                 "code_checksum": bundle["archive_sha"],
+                "code_command": list(_STUDIO_CODE_COMMAND),
                 "ks3": self._code_config(bundle["bucket"]),
             },
         )
@@ -364,6 +376,7 @@ class DirectAgentEngineCloudDeploymentGateway:
             "artifact_type": "Code",
             "artifact_path": bundle_uri,
             "code_checksum": bundle["archive_sha"],
+            "code_command": list(_STUDIO_CODE_COMMAND),
             "region": request.target.region,
             "ks3": self._code_config(bundle["bucket"]),
             "resources": {"cpu": 2, "memory": "4Gi"},

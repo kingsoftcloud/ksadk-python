@@ -104,6 +104,16 @@ async def test_direct_gateway_uses_ks3_and_existing_agent_actions_only() -> None
             "artifact_type": "Code",
             "artifact_path": bundle_uri,
             "code_checksum": archive_sha,
+            "code_command": [
+                "ksadk",
+                "web",
+                "/app/code/runtime",
+                "--port",
+                "8080",
+                "--host",
+                "0.0.0.0",
+                "--no-open",
+            ],
             "region": "pre-online",
             "ks3": {
                 "access_key": "test-access",
@@ -138,6 +148,16 @@ async def test_direct_gateway_uses_ks3_and_existing_agent_actions_only() -> None
                 "artifact_type": "Code",
                 "artifact_path": bundle_uri,
                 "code_checksum": archive_sha,
+                "code_command": [
+                    "ksadk",
+                    "web",
+                    "/app/code/runtime",
+                    "--port",
+                    "8080",
+                    "--host",
+                    "0.0.0.0",
+                    "--no-open",
+                ],
                 "ks3": {
                     "access_key": "test-access",
                     "secret_key": "test-secret",

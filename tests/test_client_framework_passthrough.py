@@ -45,18 +45,28 @@ async def test_create_and_update_code_agent_forward_archive_checksum(monkeypatch
 
     monkeypatch.setattr(client, "_action", fake_action)
     checksum = "a" * 64
-    await client.create_agent({**_build_create_payload(), "code_checksum": checksum})
+    command = ["ksadk", "web", "/app/code/runtime", "--port", "8080"]
+    await client.create_agent(
+        {
+            **_build_create_payload(),
+            "code_checksum": checksum,
+            "code_command": command,
+        }
+    )
     await client.update_agent(
         "ar-checksum",
         {
             "artifact_type": "Code",
             "artifact_path": "ks3://bucket/path/next.zip",
             "code_checksum": checksum,
+            "code_command": command,
         },
     )
 
     assert calls[0][1]["CodeConfig"]["Checksum"] == checksum
     assert calls[1][1]["CodeConfig"]["Checksum"] == checksum
+    assert calls[0][1]["CodeConfig"]["Command"] == command
+    assert calls[1][1]["CodeConfig"]["Command"] == command
 
 
 @pytest.mark.asyncio
