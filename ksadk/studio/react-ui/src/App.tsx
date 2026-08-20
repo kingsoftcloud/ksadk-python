@@ -43,6 +43,34 @@ const VIEW_TITLE: Record<View, string> = {
 };
 
 const VALID_VIEWS = Object.keys(VIEW_TITLE) as View[];
+const RESOURCE_KINDS: ResourceKind[] = ["model", "tool", "mcp", "skill"];
+
+export function parseStudioLocationHash(hash: string): {
+  view: View;
+  resourceKind: ResourceKind;
+  editingAgentId: string;
+  detailAgentId: string;
+} {
+  const parts = hash.replace(/^#\/?/, "").split("/").filter(Boolean);
+  const editingAgentId = parts[0] === "agents" && parts[1] && parts[2] === "edit"
+    ? decodeURIComponent(parts[1])
+    : "";
+  const detailAgentId = parts[0] === "agents" && parts[1] && !parts[2]
+    ? decodeURIComponent(parts[1])
+    : "";
+  const candidate = parts[0] as View;
+  const view = editingAgentId
+    ? "create"
+    : detailAgentId
+      ? "agent-detail"
+      : VALID_VIEWS.includes(candidate)
+        ? candidate
+        : "agents";
+  const resourceKind = view === "resources" && RESOURCE_KINDS.includes(parts[1] as ResourceKind)
+    ? parts[1] as ResourceKind
+    : "model";
+  return { view, resourceKind, editingAgentId, detailAgentId };
+}
 
 interface AgentSummary {
   metadata: { id: string; name: string; revision?: number; labels?: Record<string, string>; appearance?: AgentAppearance };
@@ -53,16 +81,14 @@ interface AgentSummary {
 export default function App() {
   const viewportMode = useStudioViewportMode();
   const studioTheme = useStudioTheme();
-  const [view, setViewState] = useState<View>(() => {
-    const h = window.location.hash.replace(/^#\/?/, "");
-    return VALID_VIEWS.includes(h as View) ? (h as View) : "agents";
-  });
-  const [resourceKind, setResourceKind] = useState<ResourceKind>("model");
+  const initialRoute = parseStudioLocationHash(window.location.hash);
+  const [view, setViewState] = useState<View>(initialRoute.view);
+  const [resourceKind, setResourceKind] = useState<ResourceKind>(initialRoute.resourceKind);
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [agentsLoaded, setAgentsLoaded] = useState(false);
-  const [currentAgentId, setCurrentAgentId] = useState("");
-  const [detailAgentId, setDetailAgentId] = useState("");
-  const [editingAgentId, setEditingAgentId] = useState("");
+  const [currentAgentId, setCurrentAgentId] = useState(initialRoute.detailAgentId || initialRoute.editingAgentId);
+  const [detailAgentId, setDetailAgentId] = useState(initialRoute.detailAgentId);
+  const [editingAgentId, setEditingAgentId] = useState(initialRoute.editingAgentId);
   const [workspace, setWorkspace] = useState<{ name?: string; path?: string } | null>(null);
   const [runtimeReady, setRuntimeReady] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -78,8 +104,15 @@ export default function App() {
 
   useEffect(() => {
     const syncViewFromHash = () => {
-      const hashView = window.location.hash.replace(/^#\/?/, "") as View;
-      if (VALID_VIEWS.includes(hashView)) setViewState(hashView);
+      const route = parseStudioLocationHash(window.location.hash);
+      setViewState(route.view);
+      setResourceKind(route.resourceKind);
+      setEditingAgentId(route.editingAgentId);
+      setDetailAgentId(route.detailAgentId);
+      if (route.editingAgentId || route.detailAgentId) {
+        setCurrentAgentId(route.editingAgentId || route.detailAgentId);
+      }
+      if (route.view === "conversations") setChatMounted(true);
     };
     window.addEventListener("hashchange", syncViewFromHash);
     window.addEventListener("popstate", syncViewFromHash);
@@ -92,7 +125,10 @@ export default function App() {
   // hash 深链：#/agents 等，便于刷新定位
   function setView(v: View) {
     setViewState(v);
-    window.history.replaceState(null, "", `#/${v}`);
+    if (v === "conversations") setChatMounted(true);
+    if (v !== "create") setEditingAgentId("");
+    const nextHash = v === "resources" ? `#/resources/${resourceKind}` : `#/${v}`;
+    if (window.location.hash !== nextHash) window.history.pushState(null, "", nextHash);
   }
 
   const loadAgents = useCallback(async () => {
@@ -154,7 +190,9 @@ export default function App() {
     setEditingAgentId("");
     setDetailAgentId(agentId);
     setCurrentAgentId(agentId);
-    setView("agent-detail");
+    setViewState("agent-detail");
+    const nextHash = `#/agents/${encodeURIComponent(agentId)}`;
+    if (window.location.hash !== nextHash) window.history.pushState(null, "", nextHash);
   }
 
   function openCreate() {
@@ -165,12 +203,16 @@ export default function App() {
   function openEdit(agentId: string) {
     setEditingAgentId(agentId);
     setCurrentAgentId(agentId);
-    setView("create");
+    setViewState("create");
+    const nextHash = `#/agents/${encodeURIComponent(agentId)}/edit`;
+    if (window.location.hash !== nextHash) window.history.pushState(null, "", nextHash);
   }
 
   function openResources(kind: ResourceKind) {
     setResourceKind(kind);
-    setView("resources");
+    setViewState("resources");
+    const nextHash = `#/resources/${kind}`;
+    if (window.location.hash !== nextHash) window.history.pushState(null, "", nextHash);
   }
 
   const breadcrumbParent = view === "create" || view === "agent-detail" ? "Agent" : null;
@@ -272,6 +314,8 @@ export default function App() {
               <PanelRight size={16} />
             </button>
           )}
+          <div id="pageHeaderTools" className="page-header-tools" data-testid="page-header-tools" />
+          <div id="pageHeaderActions" className="page-header-actions" data-testid="page-header-actions" />
         </header>
 
         <main id="mainContent">
