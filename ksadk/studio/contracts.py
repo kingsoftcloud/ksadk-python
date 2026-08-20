@@ -457,6 +457,7 @@ class BundleManifest(ContractModel):
     source_digest: str = ""
     runtime_contract: Literal["agentkit.runtime/v1"] = "agentkit.runtime/v1"
     plugin_lock_digest: str = ""
+    hosted_kernel_requirement_digest: str = ""
     files: list[FileEntry]
     created_at: str = "1970-01-01T00:00:00Z"
     bundle_digest: str = ""

@@ -22,6 +22,7 @@ from ksadk.studio.contracts import (
     DeploymentRequest,
 )
 from ksadk.studio.errors import StudioError
+from ksadk.studio.hosted_kernel import preflight_hosted_kernel_bundle
 from ksadk.studio.repository import BuildRepository
 from ksadk.studio.workspace import Workspace
 
@@ -150,6 +151,8 @@ class DirectAgentEngineCloudDeploymentGateway:
     not introduce an Artifact Action, a browser-provided trusted header, or a
     second account-control authentication scheme.
     """
+
+    requires_hosted_kernel_bundle_preflight = True
 
     def __init__(
         self,
@@ -485,18 +488,39 @@ class CloudDeploymentService:
                 status_code=409,
             )
         archive = self.workspace.resolve(build.artifact_path, must_exist=True)
-        manifest_path = archive.parent / "agent-bundle" / "manifest.json"
-        provenance_path = archive.parent / "agent-bundle" / "provenance.json"
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        bundle = archive.read_bytes()
+        checked_bundle = (
+            preflight_hosted_kernel_bundle(bundle)
+            if getattr(self.gateway, "requires_hosted_kernel_bundle_preflight", False)
+            else None
+        )
+        manifest = (
+            checked_bundle.manifest
+            if checked_bundle is not None
+            else json.loads(
+                (archive.parent / "agent-bundle" / "manifest.json").read_text(encoding="utf-8")
+            )
+        )
         if manifest.get("bundleDigest") != build.bundle_digest:
             raise StudioError(
                 "BUILD_DIGEST_MISMATCH",
                 "上传前 Bundle digest 校验失败",
                 status_code=422,
             )
-        bundle = archive.read_bytes()
+        if checked_bundle is not None and manifest.get("agentId") != build.agent_id:
+            raise StudioError(
+                "BUILD_AGENT_MISMATCH",
+                "上传 Bundle 的 AgentId 与 Build 记录不一致",
+                status_code=422,
+            )
         archive_sha256 = f"sha256:{hashlib.sha256(bundle).hexdigest()}"
-        provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+        provenance = (
+            dict(checked_bundle.provenance)
+            if checked_bundle is not None
+            else json.loads(
+                (archive.parent / "agent-bundle" / "provenance.json").read_text(encoding="utf-8")
+            )
+        )
         provenance["archiveSha256"] = archive_sha256
         # The Server owns the profile-to-image mapping, but it must select the
         # profile for the concrete framework the deterministic build produced.

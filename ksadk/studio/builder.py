@@ -18,6 +18,10 @@ from ksadk.studio.contracts import (
     BundleManifest,
     FileEntry,
 )
+from ksadk.studio.hosted_kernel import (
+    build_hosted_kernel_requirement,
+    hosted_kernel_requirement_digest,
+)
 from ksadk.studio.repository import BuildRepository
 from ksadk.studio.workspace import Workspace
 
@@ -67,6 +71,18 @@ class AgentBundleBuilder:
         bundle_root = staging / "agent-bundle"
         bundle_root.mkdir(parents=True, exist_ok=False)
         try:
+            self._copy_runtime_source(bundle_root, draft)
+            self._write_runtime_launch_config(bundle_root, draft)
+            launch_config = bundle_root / "runtime" / "agentengine.yaml"
+            hosted_kernel_requirement = build_hosted_kernel_requirement(
+                runtime_type=runtime_type,
+                entry_point=runtime_lock.get("entryPoint"),
+                agent_variable=runtime_lock.get("agentVariable"),
+                launch_config=launch_config.read_bytes() if launch_config.is_file() else None,
+            )
+            hosted_kernel_requirement_digest_value = hosted_kernel_requirement_digest(
+                hosted_kernel_requirement
+            )
             self._write_payload(
                 bundle_root,
                 draft,
@@ -74,9 +90,13 @@ class AgentBundleBuilder:
                 runtime_lock=runtime_lock,
                 resolved_digest=resolved_digest,
                 plugin_lock=plugin_lock,
+                hosted_kernel_requirement=hosted_kernel_requirement,
+                hosted_kernel_requirement_digest_value=hosted_kernel_requirement_digest_value,
             )
-            self._copy_runtime_source(bundle_root, draft)
-            self._write_runtime_launch_config(bundle_root, draft)
+            self._write_json(
+                bundle_root / "hosted-kernel-requirements.json",
+                hosted_kernel_requirement,
+            )
             # The manifest is a complete content declaration. Write this
             # auxiliary checksum file first, then include it in the manifest
             # entries; otherwise a Server-side full-membership check correctly
@@ -91,6 +111,7 @@ class AgentBundleBuilder:
                 runtime_type=runtime_type,
                 source_digest=source_digest,
                 plugin_lock_digest=plugin_lock_digest,
+                hosted_kernel_requirement_digest=hosted_kernel_requirement_digest_value,
                 files=files,
             )
             digest_payload = manifest.model_dump(
@@ -136,6 +157,8 @@ class AgentBundleBuilder:
         runtime_lock: dict,
         resolved_digest: str,
         plugin_lock: dict,
+        hosted_kernel_requirement: dict,
+        hosted_kernel_requirement_digest_value: str,
     ) -> None:
         definition_digest = compiled.resolved.resolved_digest
         resolved_payload = compiled.resolved.model_dump(
@@ -217,6 +240,12 @@ class AgentBundleBuilder:
                 "resolvedDigest": resolved_digest,
                 "compilerVersion": compiled.resolved.compiler_version,
                 "runtimeContract": "agentkit.runtime/v1",
+                "hostedKernel": {
+                    "requirementsPath": "hosted-kernel-requirements.json",
+                    "requirementDigest": hosted_kernel_requirement_digest_value,
+                    "contractSet": hosted_kernel_requirement["kernelContract"]["set"],
+                    "contractDigest": hosted_kernel_requirement["kernelContract"]["digest"],
+                },
             },
         )
 
