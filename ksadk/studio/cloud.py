@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from pathlib import Path
 from typing import Any, Protocol, cast
 from uuid import uuid4
 
 import httpx
+from pydantic import ValidationError
 
 from ksadk.studio.contracts import (
     BuildStatus,
@@ -18,6 +20,9 @@ from ksadk.studio.contracts import (
 from ksadk.studio.errors import StudioError
 from ksadk.studio.repository import BuildRepository
 from ksadk.studio.workspace import Workspace
+
+
+logger = logging.getLogger(__name__)
 
 
 class CloudDeploymentGateway(Protocol):
@@ -483,6 +488,39 @@ class CloudDeploymentService:
             DeploymentRecord,
             DeploymentRecord.model_validate(payload["record"]),
         )
+
+    def list(self) -> list[DeploymentRecord]:
+        """List only valid, workspace-local deployment receipts.
+
+        This is deliberately a local receipt read.  Refreshing every row here
+        would turn opening the Studio page into unbounded control-plane calls;
+        callers refresh a named receipt explicitly instead.
+        """
+
+        directory = self.workspace.resolve(".agentkit/deployments")
+        if not directory.is_dir():
+            return []
+        resolved_directory = directory.resolve()
+        records: list[DeploymentRecord] = []
+        for path in sorted(directory.glob("dep_*.json"), key=lambda item: item.name, reverse=True):
+            try:
+                resolved_path = path.resolve(strict=True)
+                resolved_path.relative_to(resolved_directory)
+                payload = json.loads(resolved_path.read_text(encoding="utf-8"))
+                record = DeploymentRecord.model_validate(payload["record"])
+                if resolved_path.name != f"{record.id}.json":
+                    raise ValueError("deployment receipt filename does not match record id")
+            except (
+                OSError,
+                ValueError,
+                KeyError,
+                json.JSONDecodeError,
+                ValidationError,
+            ):
+                logger.warning("Ignoring invalid Studio deployment receipt: %s", path.name)
+                continue
+            records.append(record)
+        return records
 
     async def refresh(self, deployment_id: str) -> DeploymentRecord:
         """Refresh only from the Server-owned instance status projection."""

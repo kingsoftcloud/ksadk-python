@@ -1004,6 +1004,12 @@ def create_studio_app(
             idempotency_key=_require_idempotency_key(idempotency_key),
         )
 
+    @app.get("/api/v1/deployments")
+    async def list_deployments():
+        """Read local deployment receipts without implicit cloud refreshes."""
+
+        return {"items": studio.cloud.list()}
+
     @app.get("/api/v1/deployments/{deployment_id}")
     async def get_deployment(deployment_id: str):
         return await studio.cloud.refresh(deployment_id)

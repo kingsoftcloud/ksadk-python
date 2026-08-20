@@ -327,6 +327,13 @@ def test_api_complete_create_build_run_and_deploy_flow(tmp_path: Path):
         assert completed_deployment["status"] == "SUCCEEDED"
         deployment = client.get(f"/api/v1/deployments/{completed_deployment['resourceId']}").json()
         assert deployment["bundleDigest"] == build["bundleDigest"]
+        receipt_dir = tmp_path / ".agentkit" / "deployments"
+        (receipt_dir / "dep-malformed.json").write_text("not-json", encoding="utf-8")
+        deployments = client.get("/api/v1/deployments")
+        assert deployments.status_code == 200
+        assert [item["id"] for item in deployments.json()["items"]] == [
+            completed_deployment["resourceId"]
+        ]
         assert len(cloud.uploads) == 1
 
 
