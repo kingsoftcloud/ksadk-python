@@ -226,3 +226,48 @@ async def test_direct_service_rolls_back_by_updating_the_existing_agent(tmp_path
     assert rolled_back.agent_id == deployed.agent_id
     assert rolled_back.instance_id == deployed.instance_id
     assert rolled_back.build_id == previous.id
+
+
+@pytest.mark.asyncio
+async def test_direct_gateway_deploys_yaml_managed_runtime_without_uploading_bundle() -> None:
+    _Uploader.calls.clear()
+    client = _Client()
+    gateway = DirectAgentEngineCloudDeploymentGateway(
+        region="pre-online",
+        client=client,
+        uploader_factory=_Uploader,
+        ks3_credentials={"access_key": "test-access", "secret_key": "test-secret"},
+    )
+    request = DeploymentRequest(
+        target=DeploymentTarget(region="pre-online", environment="preproduction")
+    )
+    deployment = await gateway.create_managed_runtime_deployment(
+        build_id="build_yaml",
+        agent_name="yaml-agent",
+        manifest="name: yaml-agent\nframework: codex\n",
+        runtime_name="codex",
+        runtime_version="0.144.4",
+        manifest_digest="a" * 64,
+        request=request,
+    )
+
+    assert _Uploader.calls == []
+    assert client.created == [
+        {
+            "name": "studio-yaml-agent",
+            "description": "Created by AgentKit Studio",
+            "framework": "codex",
+            "artifact_type": "ManagedRuntime",
+            "runtime_config": {
+                "name": "codex",
+                "version": "0.144.4",
+                "manifest": "name: yaml-agent\nframework: codex\n",
+            },
+            "region": "pre-online",
+            "resources": {"cpu": 2, "memory": "4Gi"},
+            "scaling": {"min_replicas": 1, "max_replicas": 1, "concurrency": 20},
+            "auth_type": "ApiKey",
+        }
+    ]
+    assert deployment.artifact_id == "managed-runtime"
+    assert deployment.bundle_uri is None

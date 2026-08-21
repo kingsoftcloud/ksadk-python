@@ -79,6 +79,30 @@ class CloudDeploymentGateway(Protocol):
 
     async def get_deployment_status(self, deployment: DeploymentRecord) -> DeploymentRecord: ...
 
+    async def create_managed_runtime_deployment(
+        self,
+        *,
+        build_id: str,
+        agent_name: str,
+        manifest: str,
+        runtime_name: str,
+        runtime_version: str,
+        manifest_digest: str,
+        request: DeploymentRequest,
+    ) -> DeploymentRecord: ...
+
+    async def replace_managed_runtime_deployment(
+        self,
+        deployment: DeploymentRecord,
+        *,
+        build_id: str,
+        manifest: str,
+        runtime_name: str,
+        runtime_version: str,
+        manifest_digest: str,
+        request: DeploymentRequest,
+    ) -> DeploymentRecord: ...
+
 
 class UnavailableCloudGateway:
     async def upload_bundle(self, **_kwargs) -> str:
@@ -100,6 +124,18 @@ class UnavailableCloudGateway:
         **_kwargs,
     ) -> DeploymentRecord:
         raise AssertionError("upload_bundle must fail first")
+
+    async def create_managed_runtime_deployment(self, **_kwargs) -> DeploymentRecord:
+        raise StudioError(
+            "CLOUD_MANAGED_RUNTIME_DEPLOYMENT_UNAVAILABLE",
+            "当前未配置可用的云端签名账号，不能部署声明式 Agent",
+            status_code=501,
+        )
+
+    async def replace_managed_runtime_deployment(
+        self, _deployment: DeploymentRecord, **_kwargs
+    ) -> DeploymentRecord:
+        raise AssertionError("managed runtime deployment must fail first")
 
 
 class InMemoryCloudGateway:
@@ -150,6 +186,38 @@ class InMemoryCloudGateway:
 
     async def get_deployment_status(self, deployment: DeploymentRecord) -> DeploymentRecord:
         return deployment
+
+    async def create_managed_runtime_deployment(self, **kwargs) -> DeploymentRecord:
+        digest = str(kwargs["manifest_digest"])
+        record = DeploymentRecord(
+            id=f"dep_{uuid4().hex}",
+            build_id=str(kwargs["build_id"]),
+            bundle_digest=f"sha256:{digest}",
+            version_id=f"managed-{digest[:16]}",
+            status="READY",
+            target=kwargs["request"].target,
+            artifact_id="managed-runtime",
+        )
+        self.deployments.append(record)
+        return record
+
+    async def replace_managed_runtime_deployment(
+        self, deployment: DeploymentRecord, **kwargs
+    ) -> DeploymentRecord:
+        digest = str(kwargs["manifest_digest"])
+        record = DeploymentRecord(
+            id=f"dep_{uuid4().hex}",
+            build_id=str(kwargs["build_id"]),
+            bundle_digest=f"sha256:{digest}",
+            version_id=f"managed-{digest[:16]}",
+            status="READY",
+            target=kwargs["request"].target,
+            agent_id=deployment.agent_id,
+            instance_id=deployment.instance_id,
+            artifact_id="managed-runtime",
+        )
+        self.deployments.append(record)
+        return record
 
 
 class DirectAgentEngineCloudDeploymentGateway:
@@ -352,6 +420,71 @@ class DirectAgentEngineCloudDeploymentGateway:
         )
         return deployment.model_copy(update={"status": projected})
 
+    async def create_managed_runtime_deployment(self, **kwargs) -> DeploymentRecord:
+        request: DeploymentRequest = kwargs["request"]
+        digest = str(kwargs["manifest_digest"])
+        result = await self.client.create_agent(
+            self._managed_runtime_payload(
+                agent_name=str(kwargs["agent_name"]),
+                manifest=str(kwargs["manifest"]),
+                runtime_name=str(kwargs["runtime_name"]),
+                runtime_version=str(kwargs["runtime_version"]),
+                request=request,
+            )
+        )
+        agent_id = str(result.get("agent_id") or "").strip()
+        if not agent_id:
+            raise StudioError(
+                "CLOUD_DEPLOYMENT_PROTOCOL_INVALID",
+                "CreateAgentProduct 未返回 AgentId",
+                status_code=502,
+            )
+        return DeploymentRecord(
+            id=f"dep_{uuid4().hex}",
+            build_id=str(kwargs["build_id"]),
+            bundle_digest=f"sha256:{digest}",
+            version_id=f"managed-{digest[:16]}",
+            status="DEPLOYING",
+            target=request.target,
+            agent_id=agent_id,
+            instance_id=str(result.get("instance_id") or "").strip() or None,
+            artifact_id="managed-runtime",
+        )
+
+    async def replace_managed_runtime_deployment(
+        self, deployment: DeploymentRecord, **kwargs
+    ) -> DeploymentRecord:
+        if not deployment.agent_id:
+            raise StudioError(
+                "DEPLOYMENT_PROTOCOL_INVALID",
+                "部署 receipt 缺少 AgentId",
+                status_code=502,
+            )
+        request: DeploymentRequest = kwargs["request"]
+        digest = str(kwargs["manifest_digest"])
+        await self.client.update_agent(
+            deployment.agent_id,
+            {
+                "artifact_type": "ManagedRuntime",
+                "runtime_config": {
+                    "name": str(kwargs["runtime_name"]),
+                    "version": str(kwargs["runtime_version"]),
+                    "manifest": str(kwargs["manifest"]),
+                },
+            },
+        )
+        return DeploymentRecord(
+            id=f"dep_{uuid4().hex}",
+            build_id=str(kwargs["build_id"]),
+            bundle_digest=f"sha256:{digest}",
+            version_id=f"managed-{digest[:16]}",
+            status="DEPLOYING",
+            target=request.target,
+            agent_id=deployment.agent_id,
+            instance_id=deployment.instance_id,
+            artifact_id="managed-runtime",
+        )
+
     def _bundle_for_deployment(self, bundle_uri: str, bundle_digest: Any) -> dict[str, str]:
         bundle = self._bundles.get(bundle_uri)
         if bundle is None or bundle["bundle_digest"] != str(bundle_digest):
@@ -379,6 +512,31 @@ class DirectAgentEngineCloudDeploymentGateway:
             "code_command": list(_STUDIO_CODE_COMMAND),
             "region": request.target.region,
             "ks3": self._code_config(bundle["bucket"]),
+            "resources": {"cpu": 2, "memory": "4Gi"},
+            "scaling": {"min_replicas": 1, "max_replicas": 1, "concurrency": 20},
+            "auth_type": "ApiKey",
+        }
+
+    @staticmethod
+    def _managed_runtime_payload(
+        *,
+        agent_name: str,
+        manifest: str,
+        runtime_name: str,
+        runtime_version: str,
+        request: DeploymentRequest,
+    ) -> dict[str, Any]:
+        return {
+            "name": _server_agent_name(agent_name),
+            "description": "Created by AgentKit Studio",
+            "framework": runtime_name,
+            "artifact_type": "ManagedRuntime",
+            "runtime_config": {
+                "name": runtime_name,
+                "version": runtime_version,
+                "manifest": manifest,
+            },
+            "region": request.target.region,
             "resources": {"cpu": 2, "memory": "4Gi"},
             "scaling": {"min_replicas": 1, "max_replicas": 1, "concurrency": 20},
             "auth_type": "ApiKey",
@@ -454,6 +612,41 @@ class CloudDeploymentService:
         request: DeploymentRequest,
     ) -> DeploymentRecord:
         return await self._deploy_build(build_id, request)
+
+    async def deploy_managed_runtime(
+        self,
+        *,
+        build_id: str,
+        agent_name: str,
+        manifest: str,
+        runtime_name: str,
+        runtime_version: str,
+        manifest_digest: str,
+        request: DeploymentRequest,
+        replacing: DeploymentRecord | None = None,
+    ) -> DeploymentRecord:
+        if replacing is None:
+            record = await self.gateway.create_managed_runtime_deployment(
+                build_id=build_id,
+                agent_name=agent_name,
+                manifest=manifest,
+                runtime_name=runtime_name,
+                runtime_version=runtime_version,
+                manifest_digest=manifest_digest,
+                request=request,
+            )
+        else:
+            record = await self.gateway.replace_managed_runtime_deployment(
+                replacing,
+                build_id=build_id,
+                manifest=manifest,
+                runtime_name=runtime_name,
+                runtime_version=runtime_version,
+                manifest_digest=manifest_digest,
+                request=request,
+            )
+        self._save(record, request)
+        return record
 
     async def _deploy_build(
         self,

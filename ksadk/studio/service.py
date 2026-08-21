@@ -1018,6 +1018,41 @@ class StudioService:
         *,
         idempotency_key: str,
     ) -> Operation:
+        try:
+            codex_build = self.codex_builds.get(build_id)
+        except StudioError as exc:
+            if exc.status_code != 404:
+                raise
+        else:
+            snapshot = self.codex_manifests.load(codex_build.agent_name)
+            if not self.codex_builder.is_current(codex_build):
+                raise StudioError(
+                    "BUILD_NOT_CURRENT",
+                    "Codex YAML 已变更，请重新 Build 后再部署",
+                    status_code=409,
+                    details={"buildId": build_id},
+                )
+
+            async def managed_runtime_runner():
+                return await self.cloud.deploy_managed_runtime(
+                    build_id=build_id,
+                    agent_name=codex_build.agent_name,
+                    manifest=snapshot.source_bytes.decode("utf-8"),
+                    runtime_name=codex_build.runtime_name,
+                    runtime_version=codex_build.runtime_version,
+                    # Server canonicalizes and records its own digest. This
+                    # source digest remains the immutable Studio Build receipt.
+                    manifest_digest=codex_build.manifest_sha256,
+                    request=request,
+                )
+
+            return self.operations.submit(
+                kind=OperationKind.DEPLOYMENT,
+                resource_id=build_id,
+                idempotency_key=idempotency_key,
+                runner=managed_runtime_runner,
+            )
+
         async def runner():
             return await self.cloud.deploy(build_id, request)
 
