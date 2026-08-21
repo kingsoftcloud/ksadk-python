@@ -563,6 +563,9 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
       ? `已选 ${selectedModelItems.length} 个模型 · 凭证已配置`
       : "部分模型凭证未配置；Agent 可以先构建，但运行前需要配置 API Key。";
   const isManagedRuntime = runtime === "codex";
+  const wizardStepMeta = isManagedRuntime
+    ? [...WIZARD_STEP_META.slice(0, 3), ["检查并创建", "校验声明与打开会话"]]
+    : WIZARD_STEP_META;
 
   const closeCreateRail = useCallback((restoreFocus = false) => {
     setCreateRailOpen(false);
@@ -618,7 +621,7 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
           <div className="create-rail-divider" />
           <div className="create-rail-label wizard-step-label">配置步骤</div>
           <nav className="wizard-steps" aria-label="创建步骤">
-            {WIZARD_STEP_META.map((meta, index) => {
+            {wizardStepMeta.map((meta, index) => {
               const number = index + 1;
               const completed = !editingAgentId && number < maxStep && number !== step;
               return (
