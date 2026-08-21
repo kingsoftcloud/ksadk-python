@@ -11,7 +11,6 @@ from ksadk.codex.client import AsyncCodexClient
 from ksadk.codex.runtime import CodexRuntimeAdapter
 from ksadk.runners.base_runner import BaseRunner
 from ksadk.runtime.adapter import RuntimeAdapter, RuntimeRegistry
-from ksadk.runtime.agentkit_bundle import AgentkitBundleRuntimeAdapter
 from ksadk.runtime.framework_adapters import ADKRuntimeAdapter, LangGraphRuntimeAdapter
 from ksadk.runtime.launch import RuntimeLaunchContext
 
@@ -138,15 +137,10 @@ def _create_langgraph(context: RuntimeLaunchContext) -> RuntimeAdapter:
     return LangGraphRuntimeAdapter(_create_framework_runner(context, "langgraph"))
 
 
-def _create_agentkit(context: RuntimeLaunchContext) -> RuntimeAdapter:
-    return AgentkitBundleRuntimeAdapter(context)
-
-
 def build_default_runtime_registry() -> RuntimeRegistry:
-    """注册内置 AgentKit Bundle、Codex、ADK 和 LangGraph Runtime Factory。"""
+    """注册内置 Codex、ADK 和 LangGraph Runtime Factory。"""
 
     registry = RuntimeRegistry()
-    registry.register("agentkit", _create_agentkit)
     registry.register("codex", _create_codex)
     registry.register("adk", _create_adk)
     registry.register("langgraph", _create_langgraph)

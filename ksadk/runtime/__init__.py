@@ -6,10 +6,6 @@ from importlib import import_module
 from typing import Any
 
 _EXPORTS = {
-    "AgentkitBundleRuntimeAdapter": (
-        "ksadk.runtime.agentkit_bundle",
-        "AgentkitBundleRuntimeAdapter",
-    ),
     "ADKRuntimeAdapter": ("ksadk.runtime.framework_adapters", "ADKRuntimeAdapter"),
     "BaseRuntime": ("ksadk.runtime.adapter", "BaseRuntime"),
     "CancelResult": ("ksadk.runtime.adapter", "CancelResult"),

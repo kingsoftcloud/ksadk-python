@@ -228,7 +228,7 @@ async def test_conversation_authoring_uses_bound_real_model_and_returns_patch_on
         {
             "name": "Release Reviewer",
             "slug": "release-reviewer",
-            "runtimeType": "agentkit",
+            "runtimeType": "adk",
             "description": "Checks release readiness.",
             "instructions": {
                 "system": "You review release evidence.",
@@ -245,17 +245,17 @@ async def test_conversation_authoring_uses_bound_real_model_and_returns_patch_on
         messages=[
             {"role": "user", "content": "做一个发布评审 Agent"},
             {"role": "assistant", "content": "你希望用哪个 Runtime？"},
-            {"role": "user", "content": "输出阻断项和证据"},
+            {"role": "user", "content": "ADK，输出阻断项和证据"},
         ],
         model_profile_id=model_profile.resource_id,
     )
 
-    assert proposal["proposal"]["runtimeType"] == "agentkit"
+    assert proposal["proposal"]["runtimeType"] == "adk"
     assert proposal["proposal"]["instructions"]["system"] == "You review release evidence."
     assert proposal["requiresConfirmation"] is True
     assert proposal["usage"]["reported"] is False
     assert studio.list_agents() == []
-    assert model_client.messages[0][-1]["content"].endswith("输出阻断项和证据")
+    assert model_client.messages[0][-1]["content"].endswith("ADK，输出阻断项和证据")
 
 
 def test_authoring_api_exposes_four_real_modes(tmp_path: Path) -> None:
@@ -264,7 +264,7 @@ def test_authoring_api_exposes_four_real_modes(tmp_path: Path) -> None:
             {
                 "name": "Conversation Agent",
                 "slug": "conversation-agent",
-                "runtimeType": "agentkit",
+                "runtimeType": "codex",
                 "description": "Built through conversation.",
                 "instructions": {"system": "Help reliably.", "task": "Answer."},
             }

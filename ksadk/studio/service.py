@@ -460,13 +460,8 @@ class StudioService:
         resolved_spec = (spec or default_agent_spec(template, description=description)).model_copy(
             deep=True
         )
-        # The generic draft API remains backward compatible: callers that do
-        # not select a Runtime may still declare one in their first update.
-        # Studio authoring/conversation explicitly selects ``agentkit`` for a
-        # source-free cloud Bundle.
-        selected = runtime or resolved_spec.runtime
-        if selected is not None:
-            resolved_spec.runtime = selected
+        selected = runtime or resolved_spec.runtime or RuntimeRef(type="agentkit")
+        resolved_spec.runtime = selected
         if selected is not None and selected.type == "codex":
             return cast(
                 AgentDraft,
@@ -510,20 +505,6 @@ class StudioService:
         if spec.runtime is None:
             spec.runtime = current.spec.runtime
         elif current.spec.runtime is not None and spec.runtime.type != current.spec.runtime.type:
-            # Compatibility for the generic blank-draft API: before a first
-            # Build, a caller may turn its implicit AgentKit placeholder into
-            # an explicitly imported/local high-code Runtime. Once a Build
-            # exists the runtime is part of the immutable artifact contract.
-            may_replace_unbuilt_default = (
-                current.spec.runtime.type == "agentkit"
-                and current.metadata.revision == 1
-                and not self.builds.list_for_agent(agent_id)
-            )
-            if may_replace_unbuilt_default:
-                return cast(
-                    AgentDraft,
-                    self.update_agent(agent_id, spec, expected_revision=expected_revision),
-                )
             from ksadk.studio.errors import StudioError
 
             raise StudioError(

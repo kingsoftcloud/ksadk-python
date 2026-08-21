@@ -334,7 +334,6 @@ def web(agent_dir: str, port: int, host: str, model: str, no_open: bool):
         "langchain": "LangChain",
         "langgraph": "LangGraph",
         "deepagents": "DeepAgents",
-        "agentkit": "AgentKit Bundle Runtime",
         "codex": "Codex",
     }
     display_name = framework_map.get(result.type.value, result.name)

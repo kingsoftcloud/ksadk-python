@@ -56,7 +56,7 @@ class MessageInput(ContractModel):
 class QuickAuthoringRequest(ContractModel):
     name: str = Field(min_length=1, max_length=128)
     slug: str | None = Field(default=None, min_length=1, max_length=63)
-    runtime_type: Literal["agentkit", "codex", "adk", "langgraph"]
+    runtime_type: Literal["codex", "adk", "langgraph"]
     template: Literal["blank", "research"] = "blank"
     description: str = Field(default="", max_length=1024)
     spec: AgentSpec | None = None

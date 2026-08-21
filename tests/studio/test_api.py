@@ -15,6 +15,7 @@ from ksadk.events.canonical import (
     OutputRef,
     RunCompleted,
     RunStarted,
+    RuntimeEvent,
     SourceRef,
     UsageReported,
 )
@@ -323,12 +324,17 @@ def test_api_complete_create_build_run_and_deploy_flow(tmp_path: Path):
             },
         )
         completed_deployment = _wait(client, deployment_operation.json()["id"])
-        # High-code LangGraph remains runnable locally and manageable in
-        # Studio, but its deployment ownership is KsADK build/deploy rather
-        # than the declarative Studio Bundle path.
-        assert completed_deployment["status"] == "FAILED"
-        assert completed_deployment["error"]["code"] == "HIGH_CODE_DEPLOYMENT_MANAGED_EXTERNALLY"
-        assert cloud.uploads == []
+        assert completed_deployment["status"] == "SUCCEEDED"
+        deployment = client.get(f"/api/v1/deployments/{completed_deployment['resourceId']}").json()
+        assert deployment["bundleDigest"] == build["bundleDigest"]
+        receipt_dir = tmp_path / ".agentkit" / "deployments"
+        (receipt_dir / "dep-malformed.json").write_text("not-json", encoding="utf-8")
+        deployments = client.get("/api/v1/deployments")
+        assert deployments.status_code == 200
+        assert [item["id"] for item in deployments.json()["items"]] == [
+            completed_deployment["resourceId"]
+        ]
+        assert len(cloud.uploads) == 1
 
 
 def test_framework_stream_forwards_created_event_to_the_browser(tmp_path: Path):
