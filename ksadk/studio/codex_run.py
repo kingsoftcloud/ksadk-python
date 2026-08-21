@@ -338,8 +338,14 @@ class CodexRunSpecResolver:
     def _load_build_manifest(self, artifact_path: str) -> CodexAgentManifest:
         archive_path = self.workspace.resolve(artifact_path, must_exist=True)
         try:
-            with zipfile.ZipFile(archive_path) as archive:
-                payload = yaml.safe_load(archive.read("agentengine.yaml"))
+            if archive_path.suffix == ".zip":
+                # Compatibility for historical local audit receipts.  New
+                # YAML-only builds keep the declaration as a plain immutable
+                # file, so they cannot be mistaken for a user-code package.
+                with zipfile.ZipFile(archive_path) as archive:
+                    payload = yaml.safe_load(archive.read("agentengine.yaml"))
+            else:
+                payload = yaml.safe_load(archive_path.read_bytes())
             return cast(CodexAgentManifest, CodexAgentManifest.model_validate(payload))
         except (OSError, KeyError, ValueError, zipfile.BadZipFile) as exc:
             raise StudioError(

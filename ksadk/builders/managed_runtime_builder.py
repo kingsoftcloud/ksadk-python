@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +26,18 @@ _MANIFEST_KEYS = (
     "sandbox",
     "approval_mode",
 )
+
+
+def managed_runtime_lock_path(manifest_path: Path) -> Path:
+    """Return the immutable lock that accompanies a YAML-only declaration.
+
+    ``ManagedRuntime`` is not a user-code artifact.  Keeping its two small
+    declaration files next to one another makes that visible in both the
+    workspace and the build receipt, while still preserving a historical
+    manifest for rollback.
+    """
+
+    return manifest_path.with_suffix(".lock.json")
 
 
 class _RuntimeManifestDumper(yaml.SafeDumper):
@@ -109,23 +120,21 @@ class ManagedRuntimeBuilder(BaseBuilder):
         self.build_dir.mkdir(parents=True, exist_ok=True)
         name = str(config.get("name") or self.project_dir.name).strip() or self.project_dir.name
         project_version = str(config.get("version") or "1.0.0").strip() or "1.0.0"
-        # This local audit receipt is retained for Studio rollback.  Version
-        # alone is mutable in an editable YAML Agent, so it cannot identify a
-        # historical declaration safely.
+        # This local declaration receipt is retained for Studio rollback.
+        # It is deliberately *not* a ZIP: YAML agents have no user code, no
+        # KS3 artifact and no code-downloader path.  Version alone is mutable
+        # in an editable Agent, so retain the exact canonical YAML plus its
+        # lock under the content digest.
         artifact_path = self.build_dir / (
-            f"{name}-{project_version}-{manifest_sha256[:16]}-runtime.zip"
+            f"{name}-{project_version}-{manifest_sha256[:16]}-runtime.yaml"
         )
-        self._write_bundle(
-            artifact_path,
-            {
-                "agentengine.yaml": manifest_bytes,
-                "runtime-lock.json": lock_bytes,
-            },
-        )
+        lock_path = managed_runtime_lock_path(artifact_path)
+        artifact_path.write_bytes(manifest_bytes)
+        lock_path.write_bytes(lock_bytes)
         return BuildResult(
             success=True,
             artifact_path=artifact_path,
-            artifact_size=artifact_path.stat().st_size,
+            artifact_size=artifact_path.stat().st_size + lock_path.stat().st_size,
             metadata={
                 "agent_name": name,
                 "framework": str(config.get("framework") or ""),
@@ -166,13 +175,3 @@ class ManagedRuntimeBuilder(BaseBuilder):
             elif key in config:
                 normalized[key] = config[key]
         return normalized
-
-    @staticmethod
-    def _write_bundle(path: Path, files: dict[str, bytes]) -> None:
-        with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-            for name in sorted(files):
-                info = zipfile.ZipInfo(name)
-                info.date_time = (1980, 1, 1, 0, 0, 0)
-                info.compress_type = zipfile.ZIP_DEFLATED
-                info.external_attr = 0o100644 << 16
-                archive.writestr(info, files[name])

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import zipfile
 from pathlib import Path
 
 from ksadk.builders.managed_runtime_builder import ManagedRuntimeBuilder
@@ -28,13 +27,11 @@ def build_managed_runtime_package(
         target.extra["manifest_sha256"] = manifest_sha256
     if result.artifact_path is not None:
         package_info.metadata["managed_manifest_path"] = str(result.artifact_path)
-        # The deterministic ZIP is a local build receipt only.  ManagedRuntime
-        # deployment submits this exact YAML declaration to Server; it must not
-        # be uploaded to KS3 or converted into a CodeConfig.
-        with zipfile.ZipFile(result.artifact_path) as archive:
-            package_info.metadata["managed_runtime_manifest"] = archive.read(
-                "agentengine.yaml"
-            ).decode("utf-8")
+        # ManagedRuntime deployment submits this exact YAML declaration to
+        # Server; it has no code ZIP, KS3 upload or CodeConfig.
+        package_info.metadata["managed_runtime_manifest"] = result.artifact_path.read_text(
+            encoding="utf-8"
+        )
     return package_info
 
 

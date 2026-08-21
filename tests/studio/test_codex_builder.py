@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from ksadk.builders.managed_runtime_builder import managed_runtime_lock_path
 from ksadk.managed_runtime import ManagedRuntimeError
 from ksadk.studio.codex_builder import CodexStudioBuilder
 from ksadk.studio.codex_manifest import CodexAgentManifest, CodexManifestRepository
@@ -31,7 +32,7 @@ def _inspector(_runtime) -> tuple[str, str, str]:
     return "0.8.0", "0.144.4", "codex-cli 0.144.4"
 
 
-def test_build_is_a_two_file_audit_zip_with_runtime_supply_chain_metadata(
+def test_build_is_a_yaml_declaration_with_runtime_supply_chain_metadata(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -43,12 +44,13 @@ def test_build_is_a_two_file_audit_zip_with_runtime_supply_chain_metadata(
 
     record = CodexStudioBuilder(workspace, runtime_inspector=_inspector).build()
 
-    archive = workspace.resolve(record.artifact_path, must_exist=True)
-    with zipfile.ZipFile(archive) as bundle:
-        assert bundle.namelist() == ["agentengine.yaml", "runtime-lock.json"]
-        manifest_bytes = bundle.read("agentengine.yaml")
-        lock = json.loads(bundle.read("runtime-lock.json"))
-        all_bytes = manifest_bytes + bundle.read("runtime-lock.json")
+    declaration = workspace.resolve(record.artifact_path, must_exist=True)
+    assert declaration.name.endswith("-runtime.yaml")
+    assert not list(declaration.parent.glob("*.zip"))
+    manifest_bytes = declaration.read_bytes()
+    lock_bytes = managed_runtime_lock_path(declaration).read_bytes()
+    lock = json.loads(lock_bytes)
+    all_bytes = manifest_bytes + lock_bytes
 
     assert manifest_bytes == snapshot.source_bytes
     assert lock == {
@@ -86,6 +88,31 @@ def test_editing_manifest_invalidates_latest_build_and_new_build_uses_new_sha(
     assert second.id != first.id
     assert first.manifest_sha256 == first_snapshot.manifest_sha256
     assert builder.is_current(second) is True
+
+
+def test_legacy_two_file_zip_receipt_remains_readable_after_yaml_only_upgrade(
+    tmp_path: Path,
+) -> None:
+    workspace = Workspace(tmp_path)
+    workspace.initialize()
+    snapshot = CodexManifestRepository(workspace).save(_manifest())
+    builder = CodexStudioBuilder(workspace, runtime_inspector=_inspector)
+    current = builder.build()
+    declaration = workspace.resolve(current.artifact_path, must_exist=True)
+    legacy = declaration.with_suffix(".zip")
+    with zipfile.ZipFile(legacy, "w") as archive:
+        archive.writestr("agentengine.yaml", declaration.read_bytes())
+        archive.writestr(
+            "runtime-lock.json", managed_runtime_lock_path(declaration).read_bytes()
+        )
+
+    legacy_record = current.model_copy(
+        update={"id": "build_legacy", "artifact_path": workspace.relative(legacy)}
+    )
+
+    assert builder.repository.manifest_text(legacy_record) == snapshot.source_bytes.decode(
+        "utf-8"
+    )
 
 
 def test_build_surfaces_local_runtime_mismatch_as_actionable_studio_error(tmp_path: Path) -> None:

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import zipfile
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -13,7 +12,10 @@ from ksadk.builders.framework_requirements import (
     code_requirements_for_framework,
     requirements_for_framework,
 )
-from ksadk.builders.managed_runtime_builder import ManagedRuntimeBuilder
+from ksadk.builders.managed_runtime_builder import (
+    ManagedRuntimeBuilder,
+    managed_runtime_lock_path,
+)
 from ksadk.cli.cmd_build import build as build_command
 from ksadk.cli.cmd_deploy import _resolve_artifact_type_input
 from ksadk.cli.workflow_common import plan_artifact_build, resolve_artifact_build_plan
@@ -45,7 +47,7 @@ def _write_codex_project(tmp_path, *, runtime_version: str | None = "0.144.4"):
     return config
 
 
-def test_managed_runtime_builder_emits_manifest_only_bundle(tmp_path):
+def test_managed_runtime_builder_emits_yaml_declaration_and_lock_without_code_zip(tmp_path):
     _write_codex_project(tmp_path)
 
     result = ManagedRuntimeBuilder(tmp_path).build()
@@ -53,12 +55,12 @@ def test_managed_runtime_builder_emits_manifest_only_bundle(tmp_path):
     assert result.success is True
     assert result.artifact_path is not None
     assert result.artifact_path.name.startswith("managed-codex-1.2.3-")
-    assert result.artifact_path.name.endswith("-runtime.zip")
-    with zipfile.ZipFile(result.artifact_path) as archive:
-        assert archive.namelist() == ["agentengine.yaml", "runtime-lock.json"]
-        manifest_bytes = archive.read("agentengine.yaml")
-        manifest = yaml.safe_load(manifest_bytes)
-        lock = json.loads(archive.read("runtime-lock.json"))
+    assert result.artifact_path.name.endswith("-runtime.yaml")
+    assert result.artifact_path.read_bytes()
+    assert not list((tmp_path / ".agentengine" / "managed_runtime").glob("*.zip"))
+    manifest_bytes = result.artifact_path.read_bytes()
+    manifest = yaml.safe_load(manifest_bytes)
+    lock = json.loads(managed_runtime_lock_path(result.artifact_path).read_bytes())
 
     assert set(manifest) == {
         "name",
@@ -202,7 +204,7 @@ def test_build_command_auto_selects_managed_runtime(tmp_path):
     assert result.exit_code == 0, result.output
     artifacts = list(
         (tmp_path / ".agentengine" / "managed_runtime").glob(
-            "managed-codex-1.2.3-*-runtime.zip"
+            "managed-codex-1.2.3-*-runtime.yaml"
         )
     )
     assert len(artifacts) == 1

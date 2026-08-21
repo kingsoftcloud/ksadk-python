@@ -950,7 +950,10 @@ def test_codex_agent_can_be_edited_then_recoverably_deleted_with_local_state(
         assert list(trash[0].rglob("agentengine.yaml"))
         assert list(trash[0].rglob(f"{build_id}.json"))
         assert list(trash[0].rglob(f"{run_id}.json"))
-        assert list(trash[0].rglob("*.zip"))
+        declarations = list(trash[0].rglob("*-runtime.yaml"))
+        assert len(declarations) == 1
+        assert declarations[0].with_suffix(".lock.json").is_file()
+        assert not list(trash[0].rglob("*.zip"))
         assert client.delete("/api/v1/agents/delete-helper").status_code == 404
 
 

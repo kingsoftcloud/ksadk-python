@@ -13,7 +13,10 @@ from typing import Any, Callable, Literal, cast
 
 from pydantic import ValidationError
 
-from ksadk.builders.managed_runtime_builder import ManagedRuntimeBuilder
+from ksadk.builders.managed_runtime_builder import (
+    ManagedRuntimeBuilder,
+    managed_runtime_lock_path,
+)
 from ksadk.managed_runtime import (
     ManagedRuntimeError,
     ResolvedRuntime,
@@ -90,18 +93,23 @@ class CodexBuildRepository:
         """Read the exact declaration retained by a successful local build.
 
         A ManagedRuntime rollback must use the target build's immutable
-        declaration, rather than today's editable Agent YAML.  The tiny local
-        ZIP is an audit receipt only; it is never uploaded to KS3 for this
-        deployment path.
+        declaration, rather than today's editable Agent YAML.  New builds
+        retain canonical YAML plus a sibling lock, never a code ZIP or a KS3
+        artifact.  Pre-existing two-file ZIP receipts remain readable so an
+        upgrade does not make historical declaration rollbacks impossible.
         """
 
         artifact = self.workspace.resolve(record.artifact_path, must_exist=True)
         try:
-            with zipfile.ZipFile(artifact) as archive:
-                if set(archive.namelist()) != {"agentengine.yaml", "runtime-lock.json"}:
-                    raise ValueError("unexpected managed runtime bundle entries")
-                manifest = archive.read("agentengine.yaml")
-                lock = json.loads(archive.read("runtime-lock.json"))
+            if artifact.suffix == ".zip":
+                with zipfile.ZipFile(artifact) as archive:
+                    if set(archive.namelist()) != {"agentengine.yaml", "runtime-lock.json"}:
+                        raise ValueError("unexpected managed runtime bundle entries")
+                    manifest = archive.read("agentengine.yaml")
+                    lock = json.loads(archive.read("runtime-lock.json"))
+            else:
+                manifest = artifact.read_bytes()
+                lock = json.loads(managed_runtime_lock_path(artifact).read_bytes())
         except (OSError, ValueError, zipfile.BadZipFile, KeyError, json.JSONDecodeError) as exc:
             raise StudioError(
                 "CODEX_BUILD_ARTIFACT_INVALID",
@@ -157,15 +165,16 @@ class CodexBuildRepository:
             self.workspace.resolve(item.artifact_path) for item in records if item.artifact_path
         }
         for artifact in artifacts:
-            self._remove_file(
-                artifact,
-                purge=purge,
-                destination=(
-                    None
-                    if trash_directory is None
-                    else trash_directory / "artifacts" / artifact.name
-                ),
-            )
+            for receipt_file in self._receipt_files(artifact):
+                self._remove_file(
+                    receipt_file,
+                    purge=purge,
+                    destination=(
+                        None
+                        if trash_directory is None
+                        else trash_directory / "artifacts" / receipt_file.name
+                    ),
+                )
         for record in records:
             path = self._path(record.id)
             self._remove_file(
@@ -194,6 +203,14 @@ class CodexBuildRepository:
         target = self.workspace.resolve(destination)
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(source), str(target))
+
+    @staticmethod
+    def _receipt_files(artifact: Path) -> tuple[Path, ...]:
+        """Return declaration files for a new receipt or one legacy ZIP."""
+
+        if artifact.suffix == ".zip":
+            return (artifact,)
+        return (artifact, managed_runtime_lock_path(artifact))
 
 
 def current_proxy_mode() -> Literal["forced", "auto", "direct"]:
@@ -368,10 +385,10 @@ class CodexStudioBuilder:
 
     @staticmethod
     def _runtime_lock(artifact_path: Path) -> dict:
-        import zipfile
-
-        with zipfile.ZipFile(artifact_path) as archive:
-            return cast(dict, json.loads(archive.read("runtime-lock.json")))
+        if artifact_path.suffix == ".zip":
+            with zipfile.ZipFile(artifact_path) as archive:
+                return cast(dict, json.loads(archive.read("runtime-lock.json")))
+        return cast(dict, json.loads(managed_runtime_lock_path(artifact_path).read_bytes()))
 
 
 __all__ = [
