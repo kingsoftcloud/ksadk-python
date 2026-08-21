@@ -22,6 +22,7 @@ from ksadk.studio.contracts import (
     RuntimeRef,
     SecuritySpec,
 )
+from ksadk.studio.errors import StudioError
 from ksadk.studio.workspace import Workspace
 
 
@@ -296,6 +297,49 @@ async def test_direct_gateway_deploys_yaml_managed_runtime_without_uploading_bun
     ]
     assert deployment.artifact_id == "managed-runtime"
     assert deployment.bundle_uri is None
+
+
+@pytest.mark.asyncio
+async def test_yaml_managed_runtime_cannot_replace_a_high_code_deployment(
+    tmp_path: Path,
+) -> None:
+    """Studio may manage Code Agents, but must never redeploy them as YAML."""
+    client = _Client()
+    gateway = DirectAgentEngineCloudDeploymentGateway(
+        region="pre-online",
+        client=client,
+        uploader_factory=_Uploader,
+        ks3_credentials={"access_key": "test-access", "secret_key": "test-secret"},
+    )
+    service = CloudDeploymentService(Workspace(tmp_path), gateway=gateway)
+    request = DeploymentRequest(
+        target=DeploymentTarget(region="pre-online", environment="preproduction")
+    )
+    high_code = DeploymentRecord(
+        id="dep_high_code",
+        build_id="build_high_code",
+        bundle_digest="sha256:" + "a" * 64,
+        version_id="version-high-code",
+        status="READY",
+        target=request.target,
+        agent_id="ar-existing-code-agent",
+        artifact_id="code",
+    )
+
+    with pytest.raises(StudioError, match="不能覆盖高代码 Agent") as exc_info:
+        await service.deploy_managed_runtime(
+            build_id="build_yaml",
+            agent_name="yaml-agent",
+            manifest="name: yaml-agent\\nframework: codex\\n",
+            runtime_name="codex",
+            runtime_version="0.147.0",
+            manifest_digest="a" * 64,
+            request=request,
+            replacing=high_code,
+        )
+
+    assert exc_info.value.status_code == 409
+    assert client.updated == []
 
 
 @pytest.mark.asyncio

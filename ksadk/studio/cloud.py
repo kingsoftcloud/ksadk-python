@@ -643,6 +643,19 @@ class CloudDeploymentService:
         runtime_environment: dict[str, str] | None = None,
         replacing: DeploymentRecord | None = None,
     ) -> DeploymentRecord:
+        # A YAML/ManagedRuntime revision is deliberately not a migration
+        # mechanism for a user-code Agent.  In particular, Studio may manage
+        # the lifecycle of an existing Code deployment, but it must never
+        # replace that deployment's artifact with a generated declaration.
+        # The receipt is the local proof that this Agent was created through
+        # the ManagedRuntime path in the first place.
+        if replacing is not None and replacing.artifact_id != "managed-runtime":
+            raise StudioError(
+                "MANAGED_RUNTIME_REPLACEMENT_FORBIDDEN",
+                "声明式 YAML 只能更新由 Studio 声明式路径创建的 Agent，不能覆盖高代码 Agent",
+                status_code=409,
+                details={"deploymentId": replacing.id},
+            )
         if replacing is None:
             record = await self.gateway.create_managed_runtime_deployment(
                 build_id=build_id,
