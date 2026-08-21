@@ -110,7 +110,7 @@ export function BuildsPage({ currentAgentId, agents, onSelectAgent, onCreate }: 
       ? [
         `${isManagedRuntime ? "Declaration" : "Build"}       ${latestBuild.id}`,
         `Revision    ${latestBuild.sourceRevision ?? draft?.metadata?.revision ?? "-"}`,
-        `${isManagedRuntime ? "Manifest" : "Bundle"}      ${latestBuild.bundleDigest || "-"}`,
+        `${isManagedRuntime ? "YAML digest" : "Bundle"}   ${latestBuild.bundleDigest || "-"}`,
         `Resolved    ${latestBuild.resolvedDigest || "-"}`,
         `Status      ${latestBuild.status}`,
       ].join("\n")
@@ -193,7 +193,7 @@ export function BuildsPage({ currentAgentId, agents, onSelectAgent, onCreate }: 
       {agents.length === 0 ? (
         <div className="delivery-empty-state">
           <Package size={24} /><h2>还没有可构建的 Agent</h2>
-          <p>先创建 Agent，再构建可部署到预发的 Bundle。</p>
+          <p>先创建 Agent，再生成可部署到预发的交付记录。</p>
           <button className="button accent" type="button" onClick={onCreate}><Plus size={15} /><span>创建 Agent</span></button>
         </div>
       ) : (
@@ -202,11 +202,11 @@ export function BuildsPage({ currentAgentId, agents, onSelectAgent, onCreate }: 
             <div><span className="stat-label">当前 Agent</span><strong>{selectedAgent?.metadata.name || draft?.metadata?.name || "未选择"}</strong><small>{currentAgentId || "选择 Agent"}</small></div>
             <div><span className="stat-label">Revision</span><strong>{draft ? `r${draft.metadata.revision}` : "-"}</strong><small>构建输入</small></div>
             <div><span className="stat-label">{isManagedRuntime ? "校验状态" : "构建状态"}</span><strong>{deliveryLabel(status)}</strong><small>{operationId || "最近记录"}</small></div>
-            <div><span className="stat-label">{isManagedRuntime ? "YAML 摘要" : "Bundle digest"}</span><strong className="mono">{shortId(latestBuild?.bundleDigest || "-")}</strong><small>内容摘要</small></div>
+            <div><span className="stat-label">{isManagedRuntime ? "YAML 摘要" : "Bundle digest"}</span><strong className="mono">{shortId(latestBuild?.bundleDigest || "-")}</strong><small>{isManagedRuntime ? "声明内容摘要" : "内容摘要"}</small></div>
             <div><span className="stat-label">Runtime</span><strong>{runtime}</strong><small>锁定 Profile</small></div>
           </section>
 
-          <section className="delivery-block" aria-label="Bundle 事实链">
+          <section className="delivery-block" aria-label={isManagedRuntime ? "声明事实链" : "Bundle 事实链"}>
             <h2>{isManagedRuntime ? "声明事实链" : "构建事实链"}</h2><p>每一步都来自本地交付记录；云端状态不在这里推断。</p>
             <div className="delivery-fact-chain">
               <div className="delivery-fact-step" data-state={draft ? "ready" : "idle"}><span>{isManagedRuntime ? "输入 YAML Revision" : "输入 Revision"}</span><strong>{draft ? `r${draft.metadata.revision}` : "未选择"}</strong><code>{draft?.metadata?.id || "-"}</code></div>
