@@ -18,6 +18,7 @@
     "guides/harness-app",
     "guides/local-web-ui",
     "guides/agentkit-local-studio",
+    "guides/evaluation-observability",
     "guides/hosted-ui-events",
     "---[Blocks]运行时能力---",
     "guides/agent-context",
