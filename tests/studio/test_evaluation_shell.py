@@ -119,6 +119,25 @@ cases:
         assert missing.json()["error"]["code"] == "EVALUATION_NOT_FOUND"
 
 
+def test_evaluation_catalog_works_after_local_session_bootstrap(tmp_path: Path):
+    """The production Studio shell reads these APIs after the root page sets its cookie."""
+
+    app = create_studio_app(
+        tmp_path,
+        session_token="evaluation-local-session",
+        csrf_token="evaluation-local-csrf",
+    )
+    with TestClient(app) as client:
+        assert client.get("/").status_code == 200
+        runs = client.get("/api/v1/evaluation-runs")
+        catalog = client.get("/api/v1/evaluation-targets")
+
+    assert runs.status_code == 200, runs.text
+    assert runs.json() == {"items": []}
+    assert catalog.status_code == 200, catalog.text
+    assert catalog.json() == {"builds": [], "evalsets": []}
+
+
 @pytest.mark.asyncio
 async def test_evaluation_run_backfills_legacy_metadata_from_report(tmp_path: Path):
     service = StudioService(tmp_path)

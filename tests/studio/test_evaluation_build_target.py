@@ -21,7 +21,8 @@ from ksadk.evaluation.studio_build_adapter import (
     StudioBuildTargetAdapter,
     StudioBuildTargetError,
 )
-from ksadk.events.runtime_event import EventType, RuntimeEvent
+from ksadk.events.canonical import ContentSnapshot, ItemCompleted, ItemStarted, SourceRef
+from ksadk.events.content import ToolCallContent, ToolResultContent
 from ksadk.studio.contracts import (
     AgentSpec,
     BuildRecord,
@@ -74,34 +75,36 @@ class _RunService:
         del on_event
         self.calls.append((spec, user_input, session_id))
         run_id = f"run-{len(self.calls)}"
-        event = RuntimeEvent.create(
-            EventType.TOOL_CALL_BEGIN,
-            agent_id="agent-1",
-            user_id="eval-user",
-            session_id=session_id,
-            invocation_id=run_id,
-            seq_id=1,
-            payload={"call_id": "call-1", "name": "lookup", "args": {}},
+        event = ItemStarted(
+            **_event_envelope(run_id, seq=1),
+            item_id="tool-call-1",
+            item_kind="tool_call",
+            initial=ContentSnapshot(parts=(
+                ToolCallContent(part_id="call-1", call_id="call-1", name="lookup", arguments={}),
+            )),
         )
-        completed_event = RuntimeEvent.create(
-            EventType.TOOL_CALL_END,
-            agent_id="agent-1",
-            user_id="eval-user",
-            session_id=session_id,
-            invocation_id=run_id,
-            seq_id=2,
-            payload={"call_id": "call-1", "name": "lookup", "result": {"ok": True}},
+        completed_event = ItemCompleted(
+            **_event_envelope(run_id, seq=2),
+            item_id="tool-call-1",
+            item_kind="tool_call",
+            snapshot=ContentSnapshot(parts=(
+                ToolCallContent(part_id="call-1", call_id="call-1", name="lookup", arguments={}),
+                ToolResultContent(part_id="result-1", call_id="call-1", result={"ok": True}),
+            )),
         )
         self.event_store.by_run[run_id] = [
             type(
                 "StoredEvent",
                 (),
-                {"id": event.seq_id, "data": {"runtimeEvent": event.to_dict()}},
+                {"id": event.seq, "data": {"runtimeEvent": event.model_dump(mode="json")}},
             )(),
             type(
                 "StoredEvent",
                 (),
-                {"id": completed_event.seq_id, "data": {"runtimeEvent": completed_event.to_dict()}},
+                {
+                    "id": completed_event.seq,
+                    "data": {"runtimeEvent": completed_event.model_dump(mode="json")},
+                },
             )(),
         ]
         return _Run(
@@ -110,6 +113,18 @@ class _RunService:
             trace_id=f"trace-{len(self.calls)}",
             output=f"answer-{len(self.calls)}",
         )
+
+
+def _event_envelope(run_id: str, *, seq: int) -> dict:
+    return {
+        "schema_version": 2,
+        "event_id": f"evt-{run_id}-{seq}",
+        "seq": seq,
+        "timestamp": float(seq),
+        "run_id": run_id,
+        "scope_id": "eval-scope",
+        "source": SourceRef(framework="ksadk"),
+    }
 
 
 def _resolution() -> StudioBuildResolution:
