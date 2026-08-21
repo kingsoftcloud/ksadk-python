@@ -15,6 +15,7 @@ from pydantic import ValidationError
 
 from ksadk.builders.managed_runtime_builder import ManagedRuntimeBuilder
 from ksadk.managed_runtime import (
+    ManagedRuntimeError,
     ResolvedRuntime,
     validate_installed_runtime,
     validate_runtime_binary,
@@ -253,7 +254,15 @@ class CodexStudioBuilder:
             version=snapshot.manifest.runtime.version,
             source="manifest",
         )
-        sdk_version, installed_runtime, cli_version = self.runtime_inspector(runtime)
+        try:
+            sdk_version, installed_runtime, cli_version = self.runtime_inspector(runtime)
+        except ManagedRuntimeError as exc:
+            raise StudioError(
+                "CODEX_RUNTIME_UNAVAILABLE",
+                str(exc),
+                status_code=422,
+                details={"runtime": runtime.name, "expected": runtime.version},
+            ) from exc
         if installed_runtime != runtime.version:
             raise StudioError(
                 "CODEX_RUNTIME_VERSION_MISMATCH",

@@ -24,6 +24,7 @@ import yaml  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from ksadk.detection.detector import FrameworkDetector
+from ksadk.managed_runtime import installed_runtime_version
 from ksadk.studio.capabilities import canonical_json, sha256_digest
 from ksadk.studio.codex_manifest import CodexAgentManifest
 from ksadk.studio.contracts import (
@@ -106,7 +107,13 @@ class AgentAuthoringService:
                 details={"runtimeType": normalized},
             )
         if normalized == "codex":
-            return RuntimeRef(type="codex", version="0.144.4")
+            # A new YAML Agent must lock the CLI actually installed on this
+            # Studio host. Cloud admission resolves that explicit version via
+            # the Server-owned catalog instead of accepting a client image.
+            return RuntimeRef(
+                type="codex",
+                version=installed_runtime_version("codex") or "0.144.4",
+            )
         return RuntimeRef(
             type=cast(Any, normalized),
             project_path=f"agents/{agent_id}/source",

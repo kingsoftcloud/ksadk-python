@@ -19,6 +19,7 @@ from typing import Any, Callable, cast
 
 from pydantic import ValidationError
 
+from ksadk.managed_runtime import installed_runtime_version
 from ksadk.studio.codex_builder import CodexBuildRecord
 from ksadk.studio.codex_manifest import (
     CodexAgentManifest,
@@ -519,7 +520,11 @@ class CodexAgentService:
     ) -> str:
         if spec.runtime is not None and spec.runtime.version:
             return spec.runtime.version
-        return current.runtime.version if current is not None else "0.144.4"
+        return (
+            current.runtime.version
+            if current is not None
+            else (installed_runtime_version("codex") or "0.144.4")
+        )
 
     def _model_name(self, spec: AgentSpec, *, agent_id: str | None = None) -> str:
         resolved = self.studio.catalog.resolve_model(spec.bindings)

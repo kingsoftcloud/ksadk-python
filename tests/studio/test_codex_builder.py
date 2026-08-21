@@ -4,8 +4,12 @@ import json
 import zipfile
 from pathlib import Path
 
+import pytest
+
+from ksadk.managed_runtime import ManagedRuntimeError
 from ksadk.studio.codex_builder import CodexStudioBuilder
 from ksadk.studio.codex_manifest import CodexAgentManifest, CodexManifestRepository
+from ksadk.studio.errors import StudioError
 from ksadk.studio.workspace import Workspace
 
 
@@ -82,3 +86,19 @@ def test_editing_manifest_invalidates_latest_build_and_new_build_uses_new_sha(
     assert second.id != first.id
     assert first.manifest_sha256 == first_snapshot.manifest_sha256
     assert builder.is_current(second) is True
+
+
+def test_build_surfaces_local_runtime_mismatch_as_actionable_studio_error(tmp_path: Path) -> None:
+    workspace = Workspace(tmp_path)
+    workspace.initialize()
+    CodexManifestRepository(workspace).save(_manifest())
+
+    def unavailable_runtime(_runtime):
+        raise ManagedRuntimeError("本地 codex runtime 版本为 0.147.0，配置要求 0.144.4")
+
+    with pytest.raises(StudioError) as exc_info:
+        CodexStudioBuilder(workspace, runtime_inspector=unavailable_runtime).build()
+
+    assert exc_info.value.code == "CODEX_RUNTIME_UNAVAILABLE"
+    assert exc_info.value.status_code == 422
+    assert "0.147.0" in exc_info.value.message
