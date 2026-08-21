@@ -378,6 +378,9 @@ class LangGraphRunner(BaseRunner):
             for msg in history:
                 role = msg.get("role")
                 content = msg.get("content", "")
+                # 跳过纯文本格式的 tool_call/tool_result，避免模型学到错误格式
+                if isinstance(content, str) and content.startswith(("[tool_call]", "[tool_result]", "[approval_request]", "[approval_response]")):
+                    continue
                 if role == "user":
                     messages.append(HumanMessage(content=content))
                 elif role in ("assistant", "model"):
@@ -1239,9 +1242,13 @@ class LangGraphRunner(BaseRunner):
             yield {"type": "checkpoint", "metadata": metadata}
 
     def _filter_tool_tags(self, content: str) -> str:
-        """过滤 <tool_call> 标签"""
+        """过滤 tool_call 标签（支持尖括号和方括号格式）"""
         if not isinstance(content, str):
             return content
+        # 过滤 <tool_call>...</tool_call>
         content = re.sub(r"<tool_call>.*?</tool_call>", "", content, flags=re.DOTALL)
         content = re.sub(r"</?(?:tool_call|arg_key|arg_value)>", "", content)
+        # 过滤 [tool_call]... 和 [tool_result]... 格式（整行或到下一个标记前）
+        content = re.sub(r"\[tool_call\]\[?.*?($|\[tool_result\]|\[approval)", "", content, flags=re.DOTALL)
+        content = re.sub(r"\[tool_result\]\[?.*?($|\[tool_call\]|\[approval)", "", content, flags=re.DOTALL)
         return content
