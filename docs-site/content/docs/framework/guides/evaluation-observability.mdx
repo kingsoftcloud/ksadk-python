@@ -1,0 +1,327 @@
+---
+title: "评测与观测使用指南"
+description: "使用 EvalSet、agentengine eval、Studio、OTLP 和 RuntimeEvent 评估 Agent 质量并定位运行问题。"
+---
+
+评测回答“结果是否符合预期”，观测回答“执行了什么、耗时在哪里、为什么失败”。KsADK 提供本地或云端 EvalSet、统一评测报告、Studio 评测与 Trace Explorer、标准 OTLP 导出和 RuntimeEvent 回放。它们可独立使用，也可用报告中的 `TraceRef`、run 和 session 标识关联排查。
+
+## 功能总览
+
+| 能力 | 入口 | 用途 |
+| --- | --- | --- |
+| EvalSet 模板与校验 | `agentengine evalset init`、`agentengine eval --validate-only` | 生成模板、校验 Case 和查看自动评估计划 |
+| EvalSet 端云同步 | `agentengine evalset preview/push/pull` | 预览固定 payload、发布或拉取不可变 Dataset version |
+| 本地源码评测 | `agentengine eval --agent-dir ...` | 在隔离源码快照中运行本地 Agent 并保存 RuntimeEvent 证据 |
+| A2A Agent 评测 | `agentengine eval --a2a-url ...` | 调用远端 A2A Agent Card，执行单轮或多轮 Case |
+| Studio 评测 | Studio -> **评测** | 评测本地源码、A2A Agent 或成功的 Studio Build |
+| 评估器 | `--evaluator ...` | 检查回复、参考答案、时延与 Token、工具轨迹，或使用 LLM Judge |
+| 本地 Trace 查看 | Studio -> **可观测** | 查看 Trace、Span 树、瀑布图、属性、事件和 Raw OTLP |
+| OTLP 导出 | `OTEL_EXPORTER_OTLP_*` | 向 Langfuse、OTel Collector 等兼容后端发送 Span |
+| CloudMonitor 双写 | `CLOUD_MONITOR_OTLP_*` | 在同一进程中向第二个 OTLP 后端发送同一批 Span |
+| 运行事件回放 | `agentengine replay` | 只读还原文本、推理、工具、产物和运行状态 |
+
+<Callout type="warning" title="当前 Target 边界">
+CLI 可实际执行本地 `--agent-dir` 和远端 `--a2a-url`。`--codex-worktree` 目前只可配合 `--validate-only` 校验，执行会明确返回“评测执行尚未实现”。Studio 额外支持已成功构建且具有不可变 digest 的 Studio Build。
+</Callout>
+
+## 安装与快速开始
+
+常规评测、A2A 和 OTLP 能力包含在完整安装中：
+
+```bash
+pip install -U "ksadk[all]"
+```
+
+先生成一个模板，并查看其校验结果和自动评估计划：
+
+```bash
+agentengine evalset init \
+  --template tool-routing \
+  --output-file ./evals/tool-routing.yaml
+
+agentengine eval \
+  --evalset-file ./evals/tool-routing.yaml \
+  --agent-dir ./my-agent \
+  --validate-only \
+  --format json
+```
+
+`--validate-only` 不会调用 Agent。JSON 输出中的 `evaluationPlan` 是本次 EvalSet 将使用的评估器列表，可在执行前用于 CI 审核。
+
+## 编写 EvalSet
+
+推荐使用原生 `ksadk.eval/v1` YAML。一个 Case 可以是单轮 `input`，也可以是按顺序执行的 `turns`；最后一轮可设置 `expectedOutput` 或 `reference_output`。
+
+```yaml title="smoke.evalset.yaml"
+schemaVersion: ksadk.eval/v1
+name: agent-smoke
+cases:
+  - id: ping
+    input: "只回答 PONG"
+    expectedOutput: "PONG"
+    assertions:
+      - type: response.equals
+        value: "PONG"
+      - type: runtime.maxLatencyMs
+        value: 10000
+
+  - id: weather
+    input: "查询北京明天天气，并给出建议"
+    reference_output: "根据天气查询结果给出北京明天天气和出行建议。"
+    assertions:
+      - type: tool.succeeded
+        value: weather_lookup
+      - type: tool.sequence
+        value: [weather_lookup]
+```
+
+KsADK 也能识别既有 Studio `EvaluationSuite` 和 ADK `eval_cases`，加载后会转换为统一的 `ksadk.eval/v1` 并计算 `contentDigest`。Case ID 必须唯一。
+
+### 内置模板
+
+| 模板 | 场景 |
+| --- | --- |
+| `knowledge-qa` | 知识问答与参考答案 |
+| `structured-output` | JSON 输出和 Schema 校验 |
+| `tool-routing` | 工具调用成功与顺序 |
+| `service-sla` | 延迟与总 Token 预算 |
+
+```bash
+agentengine evalset init \
+  --template structured-output \
+  --output-file ./evals/structured-output.yaml
+```
+
+### 支持的断言
+
+| 类型 | `value` | 说明 |
+| --- | --- | --- |
+| `response.equals` | 字符串 | 回复完全相等 |
+| `response.contains` / `response.notContains` | 字符串 | 回复包含或不包含指定内容 |
+| `response.jsonSchema` | JSON Schema 对象 | 回复可解析为 JSON 且满足 Schema |
+| `runtime.maxLatencyMs` | 非负数字 | 最大执行耗时 |
+| `runtime.maxInputTokens` / `runtime.maxOutputTokens` / `runtime.maxTotalTokens` | 非负数字 | 最大输入、输出或总 Token |
+| `tool.called` / `tool.notCalled` | 工具名 | 要求调用或禁止调用工具 |
+| `tool.succeeded` | 工具名 | 要求指定工具调用成功 |
+| `tool.sequence` | 非空工具名数组 | 要求工具调用顺序 |
+
+没有足够证据时，断言结果为 `UNAVAILABLE`，不会把未知值当作 `0` 或通过。A2A Target 未提供标准化工具轨迹时，工具断言通常为 `UNAVAILABLE`；本地源码和 Studio Build 会从 RuntimeEvent 形成工具调用投影。
+
+## 发布与复用云端 EvalSet
+
+`preview` 不访问云端，输出将要发布的固定 schema payload；`push` 发布当前工作区内的 EvalSet；`pull` 按固定 Dataset ID 与版本取回本地文件。
+
+```bash
+# 发布前检查 payload；端云发布需要 full_trace 数据策略
+agentengine evalset preview \
+  --evalset-file ./evals/tool-routing.yaml \
+  --data-policy full_trace \
+  --format json
+
+# 发布为新的或指定 Dataset 的不可变版本
+agentengine evalset push \
+  --file ./evals/tool-routing.yaml \
+  --dataset-id <dataset-id>
+
+# 拉取一个固定版本，便于复现
+agentengine evalset pull \
+  --dataset-id <dataset-id> \
+  --dataset-version 3 \
+  --project-id <project-id> \
+  --output-file ./evals/imported-v3.yaml
+```
+
+`push` 和 `pull` 需要已配置的 Agent Eval 服务访问权限。不要将返回的临时下载地址、账号凭据或 Token 写入 EvalSet 或仓库。
+
+## 执行评测
+
+每次执行必须二选一使用本地文件 `--evalset-file`，或不可变云端数据集 `--dataset-id --dataset-version`；每次也必须且只能选择一个 Target。
+
+### 本地源码
+
+本地 Target 会复制项目到隔离快照，记录 revision 和 Git 状态，再通过支持的 ADK、LangGraph、LangChain 或 DeepAgents 入口运行。可用 `--entrypoint` 覆盖自动探测。
+
+```bash
+agentengine eval \
+  --evalset-file ./evals/tool-routing.yaml \
+  --agent-dir ./my-agent \
+  --timeout-seconds 120 \
+  --report-dir ./.agentkit/evaluations \
+  --format json
+```
+
+### A2A Agent
+
+Case 按文件顺序串行执行；多轮 Case 复用同一个 A2A `context_id`。鉴权只接受 `env://` 凭据引用，实际值不写入命令参数或报告。
+
+```bash
+export A2A_EVAL_TOKEN="<your-token>"
+
+agentengine eval \
+  --evalset-file ./evals/tool-routing.yaml \
+  --a2a-url https://agent.example.test/.well-known/agent-card.json \
+  --credential-ref env://A2A_EVAL_TOKEN \
+  --fail-fast
+```
+
+### 云端 Dataset version
+
+使用固定版本而不是活动数据集，可使后续运行可复现：
+
+```bash
+agentengine eval \
+  --dataset-id <dataset-id> \
+  --dataset-version 3 \
+  --dataset-project-id <project-id> \
+  --agent-dir ./my-agent
+```
+
+### 常用执行选项
+
+| 选项 | 作用 |
+| --- | --- |
+| `--timeout-seconds 120` | 设置每个 Case 的超时，范围为 1 到 3600 秒 |
+| `--fail-fast` | 第一个失败 Case 后停止 |
+| `--report-dir <dir>` | 指定本地报告根目录 |
+| `--format pretty\|json` | 选择终端输出格式；JSON 适合 CI |
+| `--data-policy <policy>` | 控制评测证据保存和允许的数据外发范围 |
+| `--evaluator <id>` | 显式指定评估器，可重复传入 |
+
+`DataPolicy` 可为 `local_only`、`metadata_only`、`redacted_trace`、`full_trace`。它控制评测 evidence 的内容：`metadata_only` 不保存文本和属性，`redacted_trace` 保存脱敏后的内容，其他策略按其语义保存。选择该参数不会自动上传报告或 Trace；远端 Trace 导出仍由独立的 OTLP 环境变量控制。
+
+## 评估器与自动计划
+
+未传 `--evaluator` 时，KsADK 按 EvalSet 内容生成计划：有参考答案时，优先选择已完整配置的 `llm_judge@v1`，否则选择 `reference_match@v1`；有回复、运行预算或工具断言时，分别加入对应的确定性评估器；既没有参考答案也没有回复断言时，加入 `business_standard@v1` 并返回质量证据不可用，避免“Agent 能运行”被误判为业务通过。
+
+| 评估器 | 用途 |
+| --- | --- |
+| `business_standard@v1` | 标记缺少业务质量标准的 Case |
+| `response_contract@v1` | 执行 `response.*` 断言 |
+| `runtime_budget@v1` | 执行 `runtime.*` 断言 |
+| `tool_trajectory@v1` | 执行 `tool.*` 断言 |
+| `reference_match@v1` | 用参考答案计算词元重叠分数 |
+| `llm_judge@v1` | 使用显式配置的 OpenAI 兼容模型评价质量 |
+
+显式指定 `--evaluator` 会覆盖自动计划：
+
+```bash
+agentengine eval \
+  --evalset-file ./evals/structured-output.yaml \
+  --agent-dir ./my-agent \
+  --evaluator response_contract@v1 \
+  --evaluator runtime_budget@v1
+```
+
+LLM Judge 需要 `ksadk[judge]`、参考答案、`full_trace`、模型、API 地址和仅含密钥名称的环境变量配置：
+
+```bash
+export KSADK_EVAL_JUDGE_API_KEY="<your-api-key>"
+
+agentengine eval \
+  --evalset-file ./evals/knowledge-qa.yaml \
+  --agent-dir ./my-agent \
+  --evaluator llm_judge@v1 \
+  --judge-model <judge-model> \
+  --judge-api-base https://judge.example.test/v1 \
+  --data-policy full_trace
+```
+
+## 读取评测结果
+
+默认报告位置为：
+
+```text
+.agentkit/evaluations/<eval-run-id>/report.json
+```
+
+报告格式为 `ksadk.eval.report/v1`，其中保存 EvalSet、Target、云端 Dataset（如使用）、评测配置的快照，以及每个 Case 的 Target 状态、耗时、用量、指标、`TraceRef` 和汇总状态。本地 Target 的 RuntimeEvent evidence 位于同一运行目录下的 `evidence/`。
+
+| 退出码 | 含义 |
+| --- | --- |
+| `0` | 评测通过 |
+| `1` | Agent 已执行，但至少一个 Case 或必需指标失败 |
+| `2` | 参数、执行器或运行过程错误，或运行被取消 |
+| `3` | Target 或必需指标缺少可用证据 |
+
+运行成功只代表 Target 调用成功。请同时查看 `EvalRunReport.status` 与每条必需指标的状态。
+
+## 使用 Studio
+
+启动 Studio 后，进入左侧 **评测**：
+
+```bash
+agentengine studio ./my-agent-workspace
+```
+
+在 **新建评测** 中上传 YAML 或 JSON EvalSet，选择 A2A Agent、本地源码或 Studio Build，设置超时、Fail fast 和评估器，然后启动后台任务。评测列表显示状态和汇总；详情页展示 Case、指标、Target 用量与 `TraceRef`，运行中的任务可取消。
+
+选择 Studio Build 时，必须先完成 Build。Studio 只会评测成功且带不可变 digest 的构建产物，不会把尚未冻结源码的 Codex Build 当作可复现 Target。
+
+进入 **可观测** 可打开 Trace Explorer，查看本地 Trace 列表、Span 父子树、耗时瀑布图、属性、事件、Resource、instrumentation scope、Raw OTLP JSON 和 `traceparent`。本地 OTLP 文件位于工作区 `.agentkit/traces/`，仅用于本地诊断。
+
+## 导出到 OTLP 后端
+
+标准 OTLP HTTP 配置适用于 Langfuse、OTel Collector 和其他兼容后端：
+
+```bash
+export OTEL_EXPORTER_OTLP_PROTOCOL="http/protobuf"
+export OTEL_EXPORTER_OTLP_ENDPOINT="https://otel.example.test/otel"
+export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20<your-token>"
+
+agentengine run .
+```
+
+也可以使用优先级更高的 traces 专用变量：
+
+```bash
+export OTEL_EXPORTER_OTLP_TRACES_PROTOCOL="http/protobuf"
+export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="https://otel.example.test/otel/v1/traces"
+export OTEL_EXPORTER_OTLP_TRACES_HEADERS="Authorization=Bearer%20<your-token>"
+```
+
+仅配置通用 endpoint 时，KsADK 会派生 `/v1/traces`。Headers 使用逗号分隔，value 应按 RFC 3986 编码。需要第二路 CloudMonitor 时，另配 `CLOUD_MONITOR_OTLP_ENDPOINT` 或 `CLOUD_MONITOR_OTLP_TRACES_ENDPOINT` 及对应 headers；两个 exporter 读取同一批 Span，保持相同的 `trace_id` / `span_id`。变量全集见 [可观测与链路追踪](observability-tracing)。
+
+## 回放 RuntimeEvent
+
+OTel Span 用于拓扑、耗时和诊断；RuntimeEvent 用于还原 Agent 的语义执行顺序和评测证据。它们可以关联，但一条 RuntimeEvent 不等于一个 Span。
+
+```bash
+# 可读文本
+agentengine replay <session-id>
+
+# 读取指定 cursor 区间并输出 JSON
+agentengine replay <session-id> \
+  --after-seq-id 120 \
+  --before-seq-id 260 \
+  --format json
+```
+
+回放可投影 text、reasoning、tool、artifact 和 run status；不会调用模型、重跑工具或再次执行审批。只有已持久化 RuntimeEvent v1 的 session 可被读取，旧式 SessionEvent 不会自动转换。
+
+## 如何选择
+
+| 问题 | 优先使用 |
+| --- | --- |
+| 需要快速建立评测集 | `agentengine evalset init` |
+| 需要复现某一版测试数据 | `evalset pull` 或 `eval --dataset-id --dataset-version` |
+| 回复是否满足固定规则 | `response_contract@v1` |
+| 回复是否接近参考答案 | `reference_match@v1` |
+| 需要模型判断业务答案 | `llm_judge@v1`，先确认数据外发策略 |
+| 需要验证工具是否按预期调用 | 本地源码或 Studio Build + `tool_trajectory@v1` |
+| 哪一步最慢或哪一个 Span 报错 | Studio Trace Explorer 或远端 OTLP 后端 |
+| 工具、审批和回复的真实顺序 | `agentengine replay` |
+| 评测结果如何回溯执行证据 | 从报告的 `TraceRef` 查 Trace 或 RuntimeEvent |
+
+## 常见问题
+
+| 现象 | 检查 |
+| --- | --- |
+| Codex worktree 提示执行尚未实现 | 当前仅支持 `--validate-only`；改用本地源码或 A2A Target 执行 |
+| 工具断言为 `UNAVAILABLE` | 检查 Target 是否提供 RuntimeEvent 工具证据；A2A 常缺少标准化工具轨迹 |
+| Token 预算为 `UNAVAILABLE` | Target 没有上报用量；KsADK 不会把未知值伪装为 `0` |
+| 结果是质量不可用 | Case 缺少参考答案和回复断言；补充业务标准或使用显式评估器 |
+| LLM Judge 为 `UNAVAILABLE` | 检查 `ksadk[judge]`、`full_trace`、参考答案、模型、API 地址和密钥环境变量 |
+| Studio Build 不可选 | 先完成 Build，并确认产物状态为成功且存在不可变 digest |
+| Studio 中没有 Trace | 确认在该工作区运行过 Agent，且 tracing 未禁用 |
+| 远端后端没有 Span | 检查 endpoint、protocol、headers、TLS 和鉴权；不要把凭据写进源码 |
+| replay 没有历史 | 确认 session 使用 RuntimeEvent v1 持久化，并检查 cursor 范围 |
