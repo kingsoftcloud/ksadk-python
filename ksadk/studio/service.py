@@ -314,10 +314,6 @@ class StudioService:
             template,
             description=description,
         )
-        if resolved_spec.runtime is None:
-            # Native Studio agents are declarative Bundles.  Imported/high-code
-            # projects carry an explicit ADK/LangGraph/Codex RuntimeRef instead.
-            resolved_spec.runtime = RuntimeRef(type="agentkit")
         self._validate_bindings(resolved_spec.bindings)
         draft = self.drafts.create(
             agent_id=agent_id,
@@ -327,8 +323,7 @@ class StudioService:
             spec=resolved_spec,
             labels=labels,
         )
-        if draft.spec.runtime is not None and draft.spec.runtime.type != "agentkit":
-            materialize_generated_runtime_source(self.workspace, draft)
+        materialize_generated_runtime_source(self.workspace, draft)
         return draft
 
     def create_authored_agent(
@@ -460,7 +455,7 @@ class StudioService:
         resolved_spec = (spec or default_agent_spec(template, description=description)).model_copy(
             deep=True
         )
-        selected = runtime or resolved_spec.runtime or RuntimeRef(type="agentkit")
+        selected = runtime or resolved_spec.runtime
         resolved_spec.runtime = selected
         if selected is not None and selected.type == "codex":
             return cast(
@@ -739,8 +734,7 @@ class StudioService:
             spec,
             expected_revision=expected_revision,
         )
-        if updated.spec.runtime is not None and updated.spec.runtime.type != "agentkit":
-            materialize_generated_runtime_source(self.workspace, updated)
+        materialize_generated_runtime_source(self.workspace, updated)
         return updated
 
     def update_agent_bindings(
