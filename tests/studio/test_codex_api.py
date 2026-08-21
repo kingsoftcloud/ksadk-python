@@ -13,12 +13,12 @@ from ksadk.events.canonical import (
     OutputRef,
     RunCompleted,
     RunStarted,
-    RuntimeEvent,
     SourceRef,
 )
 from ksadk.events.content import TextContent
 from ksadk.runtime import RunHandle, StartRequest
 from ksadk.studio.api import RunRequest, create_studio_app
+from ksadk.studio.cloud import InMemoryCloudGateway
 from ksadk.studio.codex_manifest import CodexAgentManifest
 from ksadk.studio.contracts import RunStatus
 from ksadk.studio.service import StudioService
@@ -161,6 +161,57 @@ def test_codex_api_create_validate_build_run_and_trace_flow(tmp_path: Path) -> N
         assert any(span["name"] == "execute_tool codex.command" for span in trace["spans"])
         root = next(span for span in trace["spans"] if span["parentSpanId"] is None)
         assert root["attributes"]["agentkit.manifest.sha256"] == source_sha
+
+
+def test_codex_managed_runtime_rollback_reuses_target_build_declaration(
+    tmp_path: Path,
+) -> None:
+    """Rollback is an UpdateAgent declaration replacement, never a ZIP upload."""
+
+    cloud = InMemoryCloudGateway()
+    service = StudioService(
+        tmp_path,
+        cloud_gateway=cloud,
+        codex_runtime_inspector=_inspector,
+        runtime_executor=RuntimeFixture(standard_codex_events).executor,
+    )
+    app = create_studio_app(tmp_path, service=service, security_enabled=False)
+    target = {"target": {"region": "pre-online", "environment": "preproduction"}}
+
+    with TestClient(app) as client:
+        first = client.put("/api/v1/codex/manifest", json=_manifest("first prompt\n"))
+        assert first.status_code == 200
+        build_one_op = client.post(
+            "/api/v1/codex/builds", headers={"Idempotency-Key": "rollback-build-one"}
+        ).json()
+        build_one = _wait(client, build_one_op["id"])["resourceId"]
+
+        second = client.put("/api/v1/codex/manifest", json=_manifest("second prompt\n"))
+        assert second.status_code == 200
+        build_two_op = client.post(
+            "/api/v1/codex/builds", headers={"Idempotency-Key": "rollback-build-two"}
+        ).json()
+        build_two = _wait(client, build_two_op["id"])["resourceId"]
+
+        deployed_op = client.post(
+            f"/api/v1/builds/{build_two}/deployments",
+            json=target,
+            headers={"Idempotency-Key": "rollback-deploy-two"},
+        ).json()
+        deployment_id = _wait(client, deployed_op["id"])["resourceId"]
+
+        rollback_op = client.post(
+            f"/api/v1/deployments/{deployment_id}:rollback",
+            json={"targetBuildId": build_one},
+            headers={"Idempotency-Key": "rollback-to-one"},
+        ).json()
+        assert "id" in rollback_op, rollback_op
+        completed = _wait(client, rollback_op["id"])
+        assert completed["status"] == "SUCCEEDED"
+        rolled_back = client.get(f"/api/v1/deployments/{completed['resourceId']}").json()
+        assert rolled_back["buildId"] == build_one
+        assert rolled_back["artifactId"] == "managed-runtime"
+        assert len(cloud.deployments) == 2
 
 
 def test_original_studio_routes_drive_the_codex_manifest_build_and_runtime(

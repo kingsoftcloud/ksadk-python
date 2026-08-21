@@ -109,7 +109,12 @@ class ManagedRuntimeBuilder(BaseBuilder):
         self.build_dir.mkdir(parents=True, exist_ok=True)
         name = str(config.get("name") or self.project_dir.name).strip() or self.project_dir.name
         project_version = str(config.get("version") or "1.0.0").strip() or "1.0.0"
-        artifact_path = self.build_dir / f"{name}-{project_version}-runtime.zip"
+        # This local audit receipt is retained for Studio rollback.  Version
+        # alone is mutable in an editable YAML Agent, so it cannot identify a
+        # historical declaration safely.
+        artifact_path = self.build_dir / (
+            f"{name}-{project_version}-{manifest_sha256[:16]}-runtime.zip"
+        )
         self._write_bundle(
             artifact_path,
             {

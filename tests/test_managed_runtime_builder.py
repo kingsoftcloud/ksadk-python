@@ -52,7 +52,8 @@ def test_managed_runtime_builder_emits_manifest_only_bundle(tmp_path):
 
     assert result.success is True
     assert result.artifact_path is not None
-    assert result.artifact_path.name == "managed-codex-1.2.3-runtime.zip"
+    assert result.artifact_path.name.startswith("managed-codex-1.2.3-")
+    assert result.artifact_path.name.endswith("-runtime.zip")
     with zipfile.ZipFile(result.artifact_path) as archive:
         assert archive.namelist() == ["agentengine.yaml", "runtime-lock.json"]
         manifest_bytes = archive.read("agentengine.yaml")
@@ -199,9 +200,12 @@ def test_build_command_auto_selects_managed_runtime(tmp_path):
     result = CliRunner().invoke(build_command, [str(tmp_path)])
 
     assert result.exit_code == 0, result.output
-    assert (
-        tmp_path / ".agentengine" / "managed_runtime" / "managed-codex-1.2.3-runtime.zip"
-    ).exists()
+    artifacts = list(
+        (tmp_path / ".agentengine" / "managed_runtime").glob(
+            "managed-codex-1.2.3-*-runtime.zip"
+        )
+    )
+    assert len(artifacts) == 1
 
 
 def test_build_command_rejects_forced_code_mode_for_codex(tmp_path):

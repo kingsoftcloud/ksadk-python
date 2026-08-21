@@ -752,6 +752,25 @@ class CloudDeploymentService:
             DeploymentRecord.model_validate(payload["record"]),
         )
 
+    def request_for(self, deployment_id: str) -> DeploymentRequest:
+        """Return the immutable target stored with a deployment receipt."""
+
+        path = self.workspace.resolve(
+            Path(".agentkit/deployments") / f"{deployment_id}.json"
+        )
+        if not path.is_file():
+            self.get(deployment_id)
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            return DeploymentRequest.model_validate(payload["request"])
+        except (OSError, ValueError, KeyError, json.JSONDecodeError, ValidationError) as exc:
+            raise StudioError(
+                "DEPLOYMENT_RECEIPT_INVALID",
+                "Deployment 回执损坏，不能执行回滚",
+                status_code=409,
+                details={"id": deployment_id},
+            ) from exc
+
     def list(self) -> list[DeploymentRecord]:
         """List only valid, workspace-local deployment receipts.
 
@@ -814,8 +833,8 @@ class CloudDeploymentService:
         )
         if not path.is_file():
             self.get(deployment_id)
+        request = self.request_for(deployment_id)
         payload = json.loads(path.read_text(encoding="utf-8"))
-        request = DeploymentRequest.model_validate(payload["request"])
         deployment = DeploymentRecord.model_validate(payload["record"])
         return await self._deploy_build(
             target_build_id,

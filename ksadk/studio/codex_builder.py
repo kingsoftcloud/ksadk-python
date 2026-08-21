@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Literal, cast
@@ -81,6 +83,53 @@ class CodexBuildRepository:
                 "Codex Build 记录损坏",
                 status_code=500,
                 details={"id": build_id},
+            ) from exc
+
+    def manifest_text(self, record: CodexBuildRecord) -> str:
+        """Read the exact declaration retained by a successful local build.
+
+        A ManagedRuntime rollback must use the target build's immutable
+        declaration, rather than today's editable Agent YAML.  The tiny local
+        ZIP is an audit receipt only; it is never uploaded to KS3 for this
+        deployment path.
+        """
+
+        artifact = self.workspace.resolve(record.artifact_path, must_exist=True)
+        try:
+            with zipfile.ZipFile(artifact) as archive:
+                if set(archive.namelist()) != {"agentengine.yaml", "runtime-lock.json"}:
+                    raise ValueError("unexpected managed runtime bundle entries")
+                manifest = archive.read("agentengine.yaml")
+                lock = json.loads(archive.read("runtime-lock.json"))
+        except (OSError, ValueError, zipfile.BadZipFile, KeyError, json.JSONDecodeError) as exc:
+            raise StudioError(
+                "CODEX_BUILD_ARTIFACT_INVALID",
+                "Codex Build 的声明式运行时审计产物不可用",
+                status_code=409,
+                details={"id": record.id},
+            ) from exc
+
+        digest = hashlib.sha256(manifest).hexdigest()
+        if digest != record.manifest_sha256 or str(lock.get("manifest_sha256") or "") != digest:
+            raise StudioError(
+                "CODEX_BUILD_DIGEST_MISMATCH",
+                "Codex Build 审计产物与记录摘要不一致",
+                status_code=409,
+                details={
+                    "id": record.id,
+                    "expected": record.manifest_sha256,
+                    "actual": digest,
+                    "lock": str(lock.get("manifest_sha256") or ""),
+                },
+            )
+        try:
+            return manifest.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise StudioError(
+                "CODEX_BUILD_ARTIFACT_INVALID",
+                "Codex Build 的声明不是 UTF-8 文本",
+                status_code=409,
+                details={"id": record.id},
             ) from exc
 
     def list(self) -> list[CodexBuildRecord]:

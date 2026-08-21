@@ -1070,6 +1070,42 @@ class StudioService:
         target_build_id: str,
         idempotency_key: str,
     ) -> Operation:
+        deployment = self.cloud.get(deployment_id)
+        if deployment.artifact_id == "managed-runtime":
+            deployed_build = self.codex_builds.get(deployment.build_id)
+            target_build = self.codex_builds.get(target_build_id)
+            if target_build.agent_name != deployed_build.agent_name:
+                raise StudioError(
+                    "MANAGED_RUNTIME_ROLLBACK_AGENT_MISMATCH",
+                    "声明式 Agent 只能回滚到同一 Agent 的 Build",
+                    status_code=409,
+                    details={
+                        "deploymentId": deployment_id,
+                        "targetBuildId": target_build_id,
+                    },
+                )
+            manifest = self.codex_builds.manifest_text(target_build)
+            request = self.cloud.request_for(deployment_id)
+
+            async def managed_runtime_runner():
+                return await self.cloud.deploy_managed_runtime(
+                    build_id=target_build.id,
+                    agent_name=target_build.agent_name,
+                    manifest=manifest,
+                    runtime_name=target_build.runtime_name,
+                    runtime_version=target_build.runtime_version,
+                    manifest_digest=target_build.manifest_sha256,
+                    request=request,
+                    replacing=deployment,
+                )
+
+            return self.operations.submit(
+                kind=OperationKind.DEPLOYMENT,
+                resource_id=deployment_id,
+                idempotency_key=idempotency_key,
+                runner=managed_runtime_runner,
+            )
+
         async def runner():
             return await self.cloud.rollback(
                 deployment_id,
