@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Awaitable, Callable, cast
@@ -19,6 +20,8 @@ from ksadk.studio.contracts import (
 )
 from ksadk.studio.errors import StudioError, not_found
 from ksadk.studio.workspace import Workspace
+
+logger = logging.getLogger(__name__)
 
 
 class OperationManager:
@@ -91,12 +94,22 @@ class OperationManager:
             operation.completed_at = datetime.now(timezone.utc)
             self._save_record(operation)
             self.append(operation_id, "operation.failed", operation.error)
-        except Exception:
+        except Exception as exc:
+            # Keep the browser response generic so an exception cannot leak a
+            # credential, but retain the traceback in the local Studio log for
+            # an operator to diagnose a failed deployment.
+            logger.exception("Studio operation failed: operation_id=%s", operation_id)
             operation.status = OperationStatus.FAILED
             operation.error = {
                 "code": "INTERNAL_ERROR",
                 "message": "本地操作执行失败",
+                "exceptionType": type(exc).__name__,
             }
+            # TypeError carries only Python call-shape information and is safe
+            # to surface to the local operator.  Do not expose arbitrary
+            # exception text: it may include provider request data.
+            if isinstance(exc, TypeError):
+                operation.error["exceptionMessage"] = str(exc)
             operation.completed_at = datetime.now(timezone.utc)
             self._save_record(operation)
             self.append(operation_id, "operation.failed", operation.error)
