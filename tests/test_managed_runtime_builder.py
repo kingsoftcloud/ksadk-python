@@ -189,6 +189,8 @@ async def test_serverless_managed_runtime_deploy_forwards_the_built_manifest_sha
 
     runtime_config = client.create_agent.await_args.args[0]["runtime_config"]
     assert runtime_config["manifest_sha256"] == package.metadata["manifest_sha256"]
+    assert "artifact_type: ManagedRuntime" in runtime_config["manifest"]
+    assert "ks3" not in client.create_agent.await_args.args[0]
 
 
 def test_build_command_auto_selects_managed_runtime(tmp_path):

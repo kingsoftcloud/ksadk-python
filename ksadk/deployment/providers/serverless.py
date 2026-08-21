@@ -730,6 +730,9 @@ class ServerlessProvider(BaseDeployProvider):
                 "name": str(target.extra.get("runtime_name") or "").strip(),
                 "version": str(target.extra.get("runtime_version") or "").strip(),
                 "manifest_sha256": str(target.extra.get("manifest_sha256") or "").strip(),
+                "manifest": str(
+                    package_info.metadata.get("managed_runtime_manifest") or ""
+                ),
             }
             missing = [key for key, value in runtime_config.items() if not value]
             if missing:
