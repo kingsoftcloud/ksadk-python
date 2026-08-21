@@ -586,12 +586,15 @@ openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size:
 STATIC_DIR := ksadk/server/static
 STUDIO_REACT_DIR := ksadk/studio/react-ui
 STUDIO_STATIC_DIR := ksadk/studio/static
-# The wheel must embed a published, reproducible Web bundle. 0.8.x is coupled
-# to the 0.3.1 Web release; the release job must fail rather than silently
-# substituting an older npm package when that release is not visible yet.
-KSADK_WEB_VERSION ?= 0.3.1
+# The wheel must embed a reproducible Web bundle. 0.8.x is coupled to the
+# Interaction/v1 Web 0.3.2 release; a normal release build must fail rather
+# than silently substituting an older npm package when that release is not
+# visible.  A reviewed local tarball is permitted for a pre-release image
+# build, but remains explicit in the command and provenance output.
+KSADK_WEB_VERSION ?= 0.3.2
 KSADK_WEB_PACKAGE ?= @kingsoftcloud/ksadk-web
 KSADK_WEB_TARBALL_NAME := kingsoftcloud-ksadk-web-$(patsubst v%,%,$(KSADK_WEB_VERSION)).tgz
+KSADK_WEB_TARBALL ?=
 KSADK_WEB_RELEASE_URL ?=
 KSADK_WEB_CACHE_DIR ?= .cache/ksadk-web
 KSADK_WEB_REGISTRY ?= https://registry.npmjs.org
@@ -600,7 +603,12 @@ sync-ksadk-web-static:
 	@echo "Sync KsADK Web static assets from $(KSADK_WEB_PACKAGE)@$(KSADK_WEB_VERSION)"
 	@rm -rf "$(KSADK_WEB_CACHE_DIR)/package"
 	@mkdir -p "$(KSADK_WEB_CACHE_DIR)" "$(STATIC_DIR)"
-	@if [ -f "$(KSADK_WEB_CACHE_DIR)/$(KSADK_WEB_TARBALL_NAME)" ]; then \
+	@if [ -n "$(KSADK_WEB_TARBALL)" ]; then \
+		test -f "$(KSADK_WEB_TARBALL)" || { echo "ERROR: KSADK_WEB_TARBALL does not exist: $(KSADK_WEB_TARBALL)" >&2; exit 1; }; \
+		echo "Using explicit KSADK_WEB_TARBALL=$(KSADK_WEB_TARBALL)"; \
+		cp "$(KSADK_WEB_TARBALL)" "$(KSADK_WEB_CACHE_DIR)/$(KSADK_WEB_TARBALL_NAME)"; \
+		echo "$(KSADK_WEB_TARBALL_NAME)" > "$(KSADK_WEB_CACHE_DIR)/.tarball-name"; \
+	elif [ -f "$(KSADK_WEB_CACHE_DIR)/$(KSADK_WEB_TARBALL_NAME)" ]; then \
 		echo "Using cached tarball $(KSADK_WEB_TARBALL_NAME)"; \
 		echo "$(KSADK_WEB_TARBALL_NAME)" > "$(KSADK_WEB_CACHE_DIR)/.tarball-name"; \
 	elif [ -n "$(KSADK_WEB_RELEASE_URL)" ]; then \
@@ -627,6 +635,8 @@ sync-ksadk-web-static:
 	@mkdir -p "$(STATIC_DIR)"
 	cp -R "$(KSADK_WEB_CACHE_DIR)/package/dist-ksadk/." "$(STATIC_DIR)/"
 	@$(MAKE) verify-ksadk-web-static
+	@printf 'KsADK Web static provenance: version=%s, tarball_sha256=%s\n' \
+		"$(patsubst v%,%,$(KSADK_WEB_VERSION))" "$$(shasum -a 256 "$(KSADK_WEB_CACHE_DIR)/$$(cat "$(KSADK_WEB_CACHE_DIR)/.tarball-name")" | awk '{print $$1}')"
 	@echo "Synced KsADK Web $(KSADK_WEB_VERSION) static assets into $(STATIC_DIR)"
 
 verify-ksadk-web-static:
