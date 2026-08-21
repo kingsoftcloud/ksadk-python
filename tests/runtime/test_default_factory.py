@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 from collections.abc import AsyncIterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,6 +15,7 @@ from ksadk.codex.client import CodexClient
 from ksadk.codex.runtime import CodexRuntimeAdapter
 from ksadk.runners.base_runner import BaseRunner
 from ksadk.runtime import ADKRuntimeAdapter, LangGraphRuntimeAdapter
+from ksadk.runtime import factory as runtime_factory
 
 
 class _FactoryCodexClient(CodexClient):
@@ -151,6 +153,31 @@ def test_codex_factory_enables_structured_user_input_in_default_mode(tmp_path: P
     runtime_api.create_runtime_adapter(context)
 
     assert "features.default_mode_request_user_input=true" in captured["config"].config_overrides
+
+
+def test_codex_home_uses_runtime_state_when_code_bundle_is_read_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Managed Code bundles are read-only, but Codex still needs isolated state."""
+
+    project_dir = tmp_path / "read-only-code"
+    blocked_home = project_dir / ".agentkit" / "codex-home"
+    state_dir = tmp_path / "runtime-state"
+    original_mkdir = Path.mkdir
+
+    def reject_bundle_write(path: Path, *args: Any, **kwargs: Any) -> None:
+        if path == blocked_home:
+            raise OSError(errno.EROFS, "Read-only file system", str(path))
+        original_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", reject_bundle_write)
+    monkeypatch.delenv("KSADK_CODEX_HOME", raising=False)
+    monkeypatch.delenv("KSADK_RUNTIME_STATE_DIR", raising=False)
+    monkeypatch.setenv("KSADK_SESSION_PATH", str(state_dir / "sessions.sqlite"))
+
+    assert runtime_factory._isolated_codex_home(project_dir) == state_dir / "codex-home"
+    assert (state_dir / "codex-home").is_dir()
 
 
 def test_framework_factory_requires_detection_without_injected_runner(

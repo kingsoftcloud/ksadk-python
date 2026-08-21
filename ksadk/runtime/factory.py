@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -76,10 +77,36 @@ def _isolated_codex_home(project_dir: Any) -> Path:
     """
     override = os.environ.get("KSADK_CODEX_HOME")
     if override:
-        return Path(override).expanduser()
-    home = Path(str(project_dir)) / ".agentkit" / "codex-home"
-    home.mkdir(parents=True, exist_ok=True)
-    return home
+        home = Path(override).expanduser()
+        home.mkdir(parents=True, exist_ok=True)
+        return home
+
+    # Source bundles are deliberately mounted read-only in managed runtimes.
+    # Keep the preferred workspace-local isolation for local development, but
+    # never make a Codex turn depend on being able to mutate that bundle.
+    workspace_home = Path(str(project_dir)) / ".agentkit" / "codex-home"
+    try:
+        workspace_home.mkdir(parents=True, exist_ok=True)
+        return workspace_home
+    except OSError:
+        pass
+
+    # The managed runtime already provides a per-workload writable state
+    # volume.  Derive from its explicit directory first, then from the
+    # session-store path for backward-compatible images.  /tmp is a final
+    # process-local fallback for custom read-only launchers.
+    state_dir = os.environ.get("KSADK_RUNTIME_STATE_DIR")
+    session_path = os.environ.get("KSADK_SESSION_PATH")
+    fallback_root = (
+        Path(state_dir)
+        if state_dir
+        else Path(session_path).expanduser().parent
+        if session_path
+        else Path(tempfile.gettempdir()) / "ksadk-runtime-state"
+    )
+    fallback_home = fallback_root / "codex-home"
+    fallback_home.mkdir(parents=True, exist_ok=True)
+    return fallback_home
 
 
 def _apply_codex_overrides(client: Any, overrides: Any) -> None:
