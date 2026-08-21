@@ -656,6 +656,7 @@ build-frontend: sync-ksadk-web-static build-studio-static
 
 build-wheel: build-frontend
 	uv build
+	@$(MAKE) --no-print-directory print-build-provenance
 
 build-all: build-wheel
 	@echo "Build complete. Wheel is in dist/"
