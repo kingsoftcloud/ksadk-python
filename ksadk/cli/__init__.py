@@ -72,6 +72,7 @@ ROOT_HELP_COMMANDS = {
     "init",
     "hermes",
     "launch",
+    "managed-runtime",
     "mcp",
     "openclaw",
     "run",
@@ -94,6 +95,7 @@ SHORT_HELP_MAP = {
     "hermes": "Hermes Agent 资源管理",
     "init": "创建新项目",
     "launch": "一键构建+部署",
+    "managed-runtime": "启动平台托管的 YAML Agent",
     "mcp": "MCP 资源管理",
     "openclaw": "OpenClaw 资源管理",
     "run": "运行 Agent",
@@ -325,6 +327,7 @@ def _register_optional_command(cli: click.Group, module_path: str, *cmd_names: s
 def _register_commands():
     from ksadk.cli.cmd_create import create
     from ksadk.cli.cmd_deploy import deploy
+    from ksadk.cli.cmd_managed_runtime import managed_runtime
     from ksadk.cli.cmd_run import run
     from ksadk.cli.cmd_web import web
 
@@ -332,6 +335,7 @@ def _register_commands():
     _add_command_once(cli, run)
     _add_command_once(cli, deploy)
     _add_command_once(cli, web)
+    _add_command_once(cli, managed_runtime)
 
     # init 作为主命令 (PRD 规范)
     _add_command_once(cli, create, name="init")
