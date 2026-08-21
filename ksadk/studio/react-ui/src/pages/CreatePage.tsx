@@ -562,6 +562,7 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
     : selectedModelItems.every(item => credentialOf(item)?.configured)
       ? `已选 ${selectedModelItems.length} 个模型 · 凭证已配置`
       : "部分模型凭证未配置；Agent 可以先构建，但运行前需要配置 API Key。";
+  const isManagedRuntime = runtime === "codex";
 
   const closeCreateRail = useCallback((restoreFocus = false) => {
     setCreateRailOpen(false);
@@ -1213,7 +1214,7 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
                   </div>
                   <label className="post-create-option">
                     <input type="checkbox" {...quickForm.register("buildAfterCreate")} />
-                    <span><strong>创建后立即构建并打开会话</strong><small>生成不可变 AgentBundle，完成后进入 Chat 工作台</small></span>
+                    <span><strong>{isManagedRuntime ? "创建后立即校验 YAML 声明并打开会话" : "创建后立即构建并打开会话"}</strong><small>{isManagedRuntime ? "只冻结 YAML 和 runtime 摘要；部署时不会上传代码包。" : "生成不可变 AgentBundle，完成后进入 Chat 工作台"}</small></span>
                   </label>
                 </section>
 
@@ -1268,7 +1269,7 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
                 </div>
                 <div className="summary-note">
                   <Package size={16} />
-                  <div><strong>不可变构建</strong><p>Skill、MCP 和 Tool 将锁定版本与摘要。</p></div>
+                  <div><strong>{isManagedRuntime ? "声明校验" : "不可变构建"}</strong><p>{isManagedRuntime ? "冻结 YAML 与 runtime 摘要；云端部署不使用代码包。" : "Skill、MCP 和 Tool 将锁定版本与摘要。"}</p></div>
                 </div>
                 </div>
               </StudioDrawer>

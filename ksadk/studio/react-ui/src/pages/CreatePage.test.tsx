@@ -72,7 +72,7 @@ describe("CreatePage quick authoring", () => {
     });
   });
 
-  it("composes, creates, and builds the selected runtime before opening its chat", async () => {
+  it("validates a YAML declaration before opening its local chat without claiming a code bundle", async () => {
     const user = userEvent.setup();
     const onCreated = vi.fn();
     render(
@@ -122,6 +122,8 @@ describe("CreatePage quick authoring", () => {
     });
 
     await user.click(screen.getByRole("button", { name: "继续" }));
+    expect(screen.getByText("创建后立即校验 YAML 声明并打开会话")).toBeInTheDocument();
+    expect(screen.getByText("只冻结 YAML 和 runtime 摘要；部署时不会上传代码包。")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "创建 Agent" }));
 
     await waitFor(() => {

@@ -17,6 +17,12 @@ interface AgentItem {
   builds?: Array<{ id: string; status: string }>;
 }
 
+function isDeclarativeAgent(agent: AgentItem): boolean {
+  // The Studio-owned Codex runtime is deployed as a ManagedRuntime: its
+  // delivery record fingerprints YAML, it is not a user code bundle.
+  return agent.spec?.runtime?.type === "codex";
+}
+
 export function AgentsPage({ agents, runtimeReady, runtimeChecked = true, workspaceName, onCreate, onDetail, onChat, onBuild, onChanged }: {
   agents: AgentItem[];
   runtimeReady: boolean;
@@ -112,10 +118,10 @@ export function AgentsPage({ agents, runtimeReady, runtimeChecked = true, worksp
     { id: "revision", header: "Revision", width: 100, cell: agent => <span className="mono">r{agent.metadata.revision}</span> },
     {
       id: "build",
-      header: "最近构建",
+      header: "最近校验 / 构建",
       width: 120,
       cell: agent => agent.builds?.some(build => build.status === "SUCCEEDED")
-        ? <span className="badge" data-state="ready">已构建</span>
+        ? <span className="badge" data-state="ready">{isDeclarativeAgent(agent) ? "声明已校验" : "已构建"}</span>
         : <span className="badge" data-state="idle">草稿</span>,
     },
     {
@@ -131,7 +137,7 @@ export function AgentsPage({ agents, runtimeReady, runtimeChecked = true, worksp
             label={`${agent.metadata.name} 的更多操作`}
             items={[
               { label: "配置", onSelect: () => onDetail(agent.metadata.id) },
-              { label: "构建", onSelect: onBuild },
+              { label: isDeclarativeAgent(agent) ? "校验声明" : "构建", onSelect: onBuild },
               { label: "删除", danger: true, onSelect: () => setPendingDelete(agent) },
             ]}
           />
@@ -192,7 +198,7 @@ export function AgentsPage({ agents, runtimeReady, runtimeChecked = true, worksp
           <header className="agents-catalog-header">
             <div>
               <h2 id="agents-catalog-title">Agent 列表</h2>
-              <p>Revision、能力绑定与构建状态</p>
+              <p>Revision、能力绑定与交付状态；YAML Agent 只校验声明，不产生代码包。</p>
             </div>
             <div className="agents-catalog-meta">
               <span>{filtered.length === agents.length ? `${agents.length} 个 Agent` : `${filtered.length} / ${agents.length} 个 Agent`}</span>
