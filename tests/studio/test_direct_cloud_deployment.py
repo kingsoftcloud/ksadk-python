@@ -315,7 +315,13 @@ async def test_direct_gateway_creates_private_receipt_bound_dashboard_link() -> 
 
     access = await gateway.get_deployment_dashboard_access(deployment)
 
-    assert client.dashboard_links == [{"agent_id": "ar-dashboard", "link_type": "private"}]
+    assert client.dashboard_links == [
+        {
+            "agent_id": "ar-dashboard",
+            "link_type": "private",
+            "path": "/hosted-ui/chat",
+        }
+    ]
     assert access == {
         "access_url": "https://dashboard.example.test/ar-dashboard",
         "agent_id": "ar-dashboard",

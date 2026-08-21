@@ -38,6 +38,10 @@ _STUDIO_CODE_COMMAND = (
     "0.0.0.0",
     "--no-open",
 )
+# A Dashboard access link is both the user/session credential and the Agent
+# binding.  Keep the hosted surface in that same link instead of opening the
+# Agent image's legacy `/chat` static bundle after authentication.
+_HOSTED_AGENT_UI_PATH = "/hosted-ui/chat"
 
 
 class CloudDeploymentGateway(Protocol):
@@ -473,6 +477,7 @@ class DirectAgentEngineCloudDeploymentGateway:
         link = await self.client.create_dashboard_access_link(
             agent_id=deployment.agent_id,
             link_type="private",
+            path=_HOSTED_AGENT_UI_PATH,
         )
         access_url = str(link.get("access_url") or "").strip()
         if not access_url:
