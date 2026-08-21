@@ -26,6 +26,15 @@ interface AgentDetail {
   builds?: Array<{ id: string; status: string; bundleDigest?: string }>;
 }
 
+interface DeploymentReceipt {
+  id: string;
+  buildId: string;
+  agentId?: string;
+  instanceId?: string;
+  status: "ADMITTING" | "DEPLOYING" | "READY" | "FAILED" | "ROLLED_BACK";
+  target?: { region?: string };
+}
+
 function shortId(id: string, max = 28) {
   return id.length > max ? `${id.slice(0, max)}…` : id;
 }
@@ -118,6 +127,7 @@ export function AgentDetailPage({ agentId, onBack, onChat, onBuild, onEdit, onOp
 }) {
   const [detail, setDetail] = useState<AgentDetail | null>(null);
   const [catalog, setCatalog] = useState<CatalogItem[]>([]);
+  const [deployments, setDeployments] = useState<DeploymentReceipt[]>([]);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [invocationOpen, setInvocationOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -128,6 +138,7 @@ export function AgentDetailPage({ agentId, onBack, onChat, onBuild, onEdit, onOp
   useEffect(() => {
     apiFetch(`/api/v1/agents/${encodeURIComponent(agentId)}`).then(r => r.json()).then(setDetail).catch(() => setDetail(null));
     apiFetch("/api/v1/catalog/resources?limit=200").then(r => r.json()).then(d => setCatalog(d.items || [])).catch(() => {});
+    apiFetch("/api/v1/deployments").then(r => r.json()).then(d => setDeployments(d.items || [])).catch(() => {});
   }, [agentId]);
 
   async function doDelete() {
@@ -221,6 +232,10 @@ export function AgentDetailPage({ agentId, onBack, onChat, onBuild, onEdit, onOp
     ? bindings.modelProfileIds
     : bindings.modelProfileId ? [bindings.modelProfileId] : manifestModels.length ? manifestModels : labels["agentkit.ksyun.com/model"] ? [labels["agentkit.ksyun.com/model"]] : [];
   const latestBuild = (detail.builds || []).find(b => b.status === "SUCCEEDED");
+  const latestDeployment = latestBuild
+    ? deployments.find(deployment => deployment.buildId === latestBuild.id)
+    : undefined;
+  const deploymentIsReady = latestDeployment?.status === "READY";
   const nameOf = (id: string) => catalog.find(c => c.resourceId === id)?.displayName || shortId(id);
   const toolIds = (bindings.tools || []).map(t => typeof t === "string" ? t : t.resourceId);
 
@@ -244,8 +259,8 @@ export function AgentDetailPage({ agentId, onBack, onChat, onBuild, onEdit, onOp
           <button className="button secondary" type="button" onClick={onBuild}>
             <Package size={15} /><span>校验并构建</span>
           </button>
-          <button className="button secondary" type="button" onClick={deployLatestBuild} disabled={!latestBuild || deploying}>
-            {deploying ? <Loader2 size={15} className="animate-spin" /> : <CloudUpload size={15} />}<span>{deploying ? "部署处理中…" : "部署到云端"}</span>
+          <button className="button secondary" type="button" onClick={deploymentIsReady ? onOpenDeployments : deployLatestBuild} disabled={!latestBuild || deploying}>
+            {deploying ? <Loader2 size={15} className="animate-spin" /> : <CloudUpload size={15} />}<span>{deploying ? "部署处理中…" : deploymentIsReady ? "查看云端部署" : "部署到云端"}</span>
           </button>
           <MoreActionsMenu
             label={`${draft.metadata.name} 的更多操作`}
@@ -320,6 +335,15 @@ export function AgentDetailPage({ agentId, onBack, onChat, onBuild, onEdit, onOp
               </>
             )}
           </div>
+          {latestDeployment && (
+            <div className="build-state notice" data-state={deploymentIsReady ? "ready" : "idle"}>
+              <span className={`status-dot ${deploymentIsReady ? "success" : "neutral"}`} />
+              <div>
+                <strong>{deploymentIsReady ? "云端实例运行中" : `云端部署：${latestDeployment.status}`}</strong>
+                <span>{latestDeployment.agentId || latestDeployment.instanceId || latestDeployment.id}</span>
+              </div>
+            </div>
+          )}
         </aside>
       </div>
 

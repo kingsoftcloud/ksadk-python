@@ -52,6 +52,13 @@
   --accent-hover: #ddeeff;
   --accent-active: #cfe4fc;
   --accent-border: #bfd7f3;
+  /* Primary actions must keep a concrete fill.  Kingdesign and Soft Block
+     deliberately consume these semantic aliases rather than their own color
+     literals; leaving them undefined makes the cascade discard background and
+     border while retaining white text (an invisible but still clickable CTA). */
+  --button-primary-bg: #3b82d7;
+  --button-primary-bg-hover: #2f73c4;
+  --button-primary-bg-active: #2865ad;
   --button-primary-text: #ffffff;
   --success: #28745a;
   --success-soft: #ecf7f1;
