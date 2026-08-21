@@ -4,60 +4,6 @@
 
 本文档覆盖 `ksadk/` 中已经注册或常见可配置的运行时变量，由 `tests/test_config_env_registry.py` 保证 `ENV_VAR_REGISTRY` 注册项与文档一致。测试专用变量、PID/marker/cache 等进程内部临时变量、镜像构建脚本内部常量不会逐项列入表格；如果要排查这些高级项，以对应脚本源码和模板 README 为准。
 
-### PCM（Prompt、Context 与 Memory）高级变量
-
-以下变量主要供平台灰度、诊断和高级部署使用，普通 Agent 通常应通过 Studio 或 AgentSpec 策略配置，不建议逐项手工设置。
-
-| 变量 | 模块 | 默认值 | 说明 |
-| --- | --- | --- | --- |
-| `KSADK_BASELINE_COLLECT` | Context | `0` | 是否采集 PCM 基线。 |
-| `KSADK_BASELINE_EXECUTION_TARGET` | Context | 未设置 | 基线记录的执行目标标签。 |
-| `KSADK_BASELINE_FLUSH_EACH_TURN` | Context | `0` | 是否在每轮结束后立即写出基线。 |
-| `KSADK_BASELINE_PATH` | Context | 未设置 | 基线 JSONL 输出路径。 |
-| `KSADK_COMPACT_HARD_LIMIT_PCT` | Context | 未设置 | Compaction 硬阈值百分比。 |
-| `KSADK_COMPACT_HARD_LIMIT_PCT_DEFAULT` | Context | 未设置 | Compaction 默认硬阈值百分比。 |
-| `KSADK_COMPACT_SOFT_LIMIT_PCT` | Context | 未设置 | Compaction 软阈值百分比。 |
-| `KSADK_COMPACT_SOFT_LIMIT_PCT_DEFAULT` | Context | 未设置 | Compaction 默认软阈值百分比。 |
-| `KSADK_CONTEXT_CACHE_BREAK_OBSERVABILITY` | Context | `0` | 是否启用 Prompt cache-break 诊断。 |
-| `KSADK_CONTEXT_CONTRIBUTOR_ALLOW_PLATFORM_TRUST` | Context | `0` | 是否允许平台可信级 Context Contributor。 |
-| `KSADK_CONTEXT_CONTRIBUTOR_FAILURE_MODE` | Context | 未设置 | Contributor 失败策略。 |
-| `KSADK_CONTEXT_CONTRIBUTOR_TIMEOUT_MS` | Context | 未设置 | Contributor 超时时间（毫秒）。 |
-| `KSADK_CONTEXT_EMERGENCY_KEEP_TAIL_GROUPS` | Context | 未设置 | 紧急压缩时保留的最新事件组数。 |
-| `KSADK_CONTEXT_ENGINE_V2_ENABLED` | Context | `0` | 是否启用 PCM Context Planner。 |
-| `KSADK_CONTEXT_HARD_LIMIT_PERCENT` | Context | 未设置 | 请求级 Context 硬预算阈值。 |
-| `KSADK_CONTEXT_KEEP_TAIL_GROUPS` | Context | 未设置 | 常规压缩时保留的最新事件组数。 |
-| `KSADK_CONTEXT_MAX_RETRY_AFTER_PTL` | Context | 未设置 | Prompt Too Long 后最多受控重试次数。 |
-| `KSADK_CONTEXT_RULE_FILES_MAX_TOKENS` | Context | 未设置 | 规则文件合计 Token 预算。 |
-| `KSADK_CONTEXT_RULE_FILE_MAX_TOKENS` | Context | 未设置 | 单个规则文件 Token 预算。 |
-| `KSADK_CONTEXT_SAFETY_BUFFER_TOKENS` | Context | 未设置 | 上下文窗口安全预留 Token。 |
-| `KSADK_CONTEXT_SEMANTIC_ENABLED` | Context | `0` | 是否启用语义压缩。 |
-| `KSADK_CONTEXT_SEMANTIC_TIMEOUT_MS` | Context | 未设置 | 语义压缩超时时间（毫秒）。 |
-| `KSADK_CONTEXT_SOFT_LIMIT_PERCENT` | Context | 未设置 | 请求级 Context 软预算阈值。 |
-| `KSADK_CONTEXT_TOOL_RESULT_MAX_TOKENS` | Context | 未设置 | 单个 Tool Result 的最大 Token 预算。 |
-| `KSADK_CONTEXT_WORKING_STATE_ENABLED` | Context | `0` | 是否启用结构化 Working State。 |
-| `KSADK_CONTEXT_WORKING_STATE_EXTRACTION_TIMEOUT_MS` | Context | 未设置 | Working State 提取超时时间（毫秒）。 |
-| `KSADK_CONTEXT_WORKING_STATE_MAX_TOKENS` | Context | 未设置 | Working State Token 预算。 |
-| `KSADK_CONTEXT_WORKING_STATE_MIN_TOKEN_GROWTH` | Context | 未设置 | 刷新 Working State 前的最小 Token 增长量。 |
-| `KSADK_DEPLOYMENT_MODE` | Runtime | 未设置 | 部署模式及所有权声明。 |
-| `KSADK_EVAL_COMMIT` | Evaluation | 未设置 | 评测记录关联的源代码提交。 |
-| `KSADK_LTM_FORCE_INMEMORY` | Memory | `0` | 测试时强制使用内存长期记忆后端。 |
-| `KSADK_MEMORY_CORE_MAX_TOKENS` | Memory | 未设置 | Core Memory Token 预算。 |
-| `KSADK_MEMORY_DB_PATH` | Memory | 未设置 | 本地 PCM Memory 数据库路径。 |
-| `KSADK_MEMORY_ENABLED` | Memory | `0` | 是否启用平台 Memory Projection。 |
-| `KSADK_MEMORY_FLUSH_BEFORE_COMPACTION` | Memory | `0` | 压缩前是否刷新 Memory Candidate。 |
-| `KSADK_MEMORY_FLUSH_ENABLED` | Memory | `0` | 是否允许提交 Memory Candidate。 |
-| `KSADK_MEMORY_MAX_RECORDS` | Memory | `10000` | 本地 PCM Memory 最多保留的记录数。 |
-| `KSADK_MEMORY_MIN_SCORE` | Memory | 未设置 | Memory Recall 最低相关性分数。 |
-| `KSADK_MEMORY_PROVIDER` | Memory | 未设置 | 平台 Memory Provider 选择器。 |
-| `KSADK_MEMORY_RECALL_MAX_TOKENS` | Memory | 未设置 | Memory Recall Token 预算。 |
-| `KSADK_MEMORY_RECALL_TOP_K` | Memory | 未设置 | 最多召回的 Memory 条目数。 |
-| `KSADK_MEMORY_RETENTION_DAYS` | Memory | `90` | 本地 PCM Memory 的默认保留天数。 |
-| `KSADK_MEMORY_WRITE_MODE` | Memory | 未设置 | Memory 写入模式：off、explicit-only 或 candidate。 |
-| `KSADK_PLATFORM_SAFETY_TEXT` | Prompt | 未设置 | Prompt Compiler 注入的平台安全规则。 |
-| `KSADK_PROMPT_AUTO_DISCOVERY` | Prompt | `0` | 是否自动发现项目 Prompt 来源。 |
-| `KSADK_PROMPT_COMPILER_ENABLED` | Prompt | `0` | 是否启用结构化 Prompt 编译。 |
-| `KSADK_TOKENIZER_PROVIDER` | Context | 未设置 | Context 计量使用的 Tokenizer Provider。 |
-
 ## 1. 阅读规则
 
 | 字段 | 含义 |
@@ -336,8 +282,6 @@
 | `KSADK_ADK_SESSION_URL` | ADK Memory | 条件必传 | 未设置 | `KSADK_SESSION_DSN` | 是 | Secret | 否 | ADK 原生 session 数据库 URL。统一 session DSN 也可兜底。 |
 | `KSADK_ADK_RESUMABLE` | ADK Runner resume | 否 | `false` | 无 | 否 | 开发者 / 平台 | 否 | 显式启用 ADK invocation resume。平台 checkpoint 恢复仍要求共享 database session backend。 |
 | `KSADK_MEMORY_BACKEND` | MemoryManager | 否 | `memory` | 无 | 否 | 开发者 / 平台 | 否 | 轻量 KV/消息历史 backend。当前内置 `memory`，注册 Redis backend 后可用 `redis`。 |
-| `KSADK_MEMORY_MAX_RECORDS` | Platform Memory | 否 | `10000` | 无 | 否 | 平台 | 否 | 本地 SQLite PCM Provider 的最大保留记录数，启动时执行清理。 |
-| `KSADK_MEMORY_RETENTION_DAYS` | Platform Memory | 否 | `90` | 无 | 否 | 平台 | 否 | 本地 SQLite PCM Provider 的保留天数，启动时清理过期记录。 |
 | `KSADK_MEMORY_URL` | MemoryManager | 条件必传 | 未设置 | 无 | 是 | Secret | 否 | 远端 MemoryManager backend 连接 URL，例如 Redis URL。 |
 | `KSADK_MEMORY_PREFIX` | MemoryManager | 否 | `ksadk:memory:` | 无 | 否 | 开发者 / 平台 | 否 | MemoryManager key prefix。 |
 | `KSADK_MEMORY_TTL` | MemoryManager | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | MemoryManager 默认 TTL 秒数。 |
