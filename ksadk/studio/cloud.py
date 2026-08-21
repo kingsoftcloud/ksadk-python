@@ -429,6 +429,7 @@ class DirectAgentEngineCloudDeploymentGateway:
                 manifest=str(kwargs["manifest"]),
                 runtime_name=str(kwargs["runtime_name"]),
                 runtime_version=str(kwargs["runtime_version"]),
+                manifest_sha256=digest,
                 request=request,
             )
         )
@@ -470,6 +471,7 @@ class DirectAgentEngineCloudDeploymentGateway:
                     "name": str(kwargs["runtime_name"]),
                     "version": str(kwargs["runtime_version"]),
                     "manifest": str(kwargs["manifest"]),
+                    "manifest_sha256": digest,
                 },
             },
         )
@@ -524,6 +526,7 @@ class DirectAgentEngineCloudDeploymentGateway:
         manifest: str,
         runtime_name: str,
         runtime_version: str,
+        manifest_sha256: str,
         request: DeploymentRequest,
     ) -> dict[str, Any]:
         return {
@@ -535,6 +538,7 @@ class DirectAgentEngineCloudDeploymentGateway:
                 "name": runtime_name,
                 "version": runtime_version,
                 "manifest": manifest,
+                "manifest_sha256": manifest_sha256,
             },
             "region": request.target.region,
             "resources": {"cpu": 2, "memory": "4Gi"},
