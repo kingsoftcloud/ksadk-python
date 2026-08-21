@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from ksadk.api import AgentEngineAPIError
 from ksadk.studio.builder import AgentBundleBuilder
 from ksadk.studio.cloud import CloudDeploymentService, DirectAgentEngineCloudDeploymentGateway
 from ksadk.studio.contracts import (
@@ -58,6 +59,11 @@ class _Client:
             "status": "Running",
             "deployment": {"agent_kernel_ready": self.kernel_ready},
         }
+
+
+class _MissingAgentClient(_Client):
+    async def get_agent(self, *, agent_id: str) -> dict:
+        raise AgentEngineAPIError(404, "未找到对应的 Agent")
 
 
 @pytest.mark.asyncio
@@ -252,6 +258,30 @@ async def test_managed_runtime_status_uses_normal_runtime_readiness_not_kernel()
     )
 
     assert (await gateway.get_deployment_status(deployment)).status == "READY"
+
+
+@pytest.mark.asyncio
+async def test_direct_gateway_marks_deleted_cloud_agent_as_failed_receipt() -> None:
+    """A deleted Agent must not strand a Studio receipt in DEPLOYING."""
+
+    gateway = DirectAgentEngineCloudDeploymentGateway(
+        region="pre-online",
+        client=_MissingAgentClient(),
+        uploader_factory=_Uploader,
+        ks3_credentials={"access_key": "test-access", "secret_key": "test-secret"},
+    )
+    deployment = DeploymentRecord(
+        id="dep_missing_agent",
+        build_id="build_missing_agent",
+        bundle_digest="sha256:" + "b" * 64,
+        version_id="managed-bbbbbbbbbbbbbbbb",
+        status="DEPLOYING",
+        target=DeploymentTarget(region="pre-online", environment="preproduction"),
+        agent_id="ar-deleted",
+        artifact_id="managed-runtime",
+    )
+
+    assert (await gateway.get_deployment_status(deployment)).status == "FAILED"
 
 
 @pytest.mark.asyncio

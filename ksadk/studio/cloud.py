@@ -13,7 +13,7 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
-from ksadk.api import AgentEngineClient
+from ksadk.api import AgentEngineAPIError, AgentEngineClient
 from ksadk.builders.ks3_uploader import KS3Uploader
 from ksadk.studio.contracts import (
     BuildRecord,
@@ -399,7 +399,15 @@ class DirectAgentEngineCloudDeploymentGateway:
     async def get_deployment_status(self, deployment: DeploymentRecord) -> DeploymentRecord:
         if not deployment.agent_id:
             return deployment
-        payload = await self.client.get_agent(agent_id=deployment.agent_id)
+        try:
+            payload = await self.client.get_agent(agent_id=deployment.agent_id)
+        except AgentEngineAPIError as exc:
+            # A receipt can outlive the cloud Agent it originally created.  Do
+            # not leave that receipt in DEPLOYING forever: the Server's 404 is
+            # an authoritative terminal fact, not a transient readiness gap.
+            if exc.code == 404 or exc.details.get("http_status") == 404:
+                return deployment.model_copy(update={"status": "FAILED"})
+            raise
         deployment_detail = payload.get("deployment") or {}
         kernel_ready = bool(
             payload.get("agent_kernel_ready")
