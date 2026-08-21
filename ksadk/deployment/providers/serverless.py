@@ -26,10 +26,10 @@ from ksadk.builders.container_builder import (
     resolve_registry_credentials,
 )
 from ksadk.builders.ks3_uploader import KS3Uploader
-from ksadk.configs.env_registry import ENV_VAR_REGISTRY
 from ksadk.configs.global_config import get_env_from_global_config
 from ksadk.configs.settings import DEFAULT_RUNTIME_TIMEZONE
 from ksadk.deployment.agent_access import get_latest_agent_access
+from ksadk.deployment.env_forward import should_forward_process_env
 from ksadk.deployment.base import (
     BaseDeployProvider,
     DeployResult,
@@ -58,49 +58,9 @@ _HOSTED_CODE_COMMAND = (
 )
 
 
-_DEPLOY_PROCESS_ENV_ALLOWLIST = frozenset(
-    {
-        spec.name
-        for spec in ENV_VAR_REGISTRY
-        if spec.module
-        not in {
-            "builders",
-            "cli",
-            "configs",
-            "web",
-        }
-    }
-) | frozenset(
-    {
-        "E2B_API_KEY",
-        "E2B_API_URL",
-        "OPENAI_API_BASE",
-        "OPENAI_API_KEY",
-        "OPENAI_BASE_URL",
-        "OPENAI_MODEL_NAME",
-        "SKILL_SPACE_ID",
-        "KSYUN_ACCESS_KEY",
-        "KSYUN_ACCOUNT_ID",
-        "KSYUN_REGION",
-        "KSYUN_SECRET_KEY",
-    }
-)
-_DEPLOY_PROCESS_ENV_PREFIXES = ("KSADK_", "OPENAI_", "KSYUN_", "E2B_")
-_DEPLOY_PROCESS_ENV_DENYLIST = frozenset(
-    {spec.name for spec in ENV_VAR_REGISTRY if spec.module in {"builders", "cli", "configs", "web"}}
-) | frozenset(
-    {
-        "KSADK_GLOBAL_CONFIG_ENV_KEYS",
-        "KSADK_UPDATED_AT",
-        "KSADK_VERSION",
-    }
-)
-
-
-def _should_forward_process_env(name: str) -> bool:
-    if name in _DEPLOY_PROCESS_ENV_DENYLIST:
-        return False
-    return name in _DEPLOY_PROCESS_ENV_ALLOWLIST or name.startswith(_DEPLOY_PROCESS_ENV_PREFIXES)
+# 转发规则已迁移至 ksadk.deployment.env_forward（hermes/openclaw deploy 共用）；
+# 保留私有别名以兼容既有调用与测试。
+_should_forward_process_env = should_forward_process_env
 
 
 @DeployProviderRegistry.register("serverless")
