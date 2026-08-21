@@ -9,6 +9,7 @@ uses this entrypoint for ``ArtifactType=ManagedRuntime`` workloads.
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +47,31 @@ def _load_managed_runtime_manifest(manifest_path: Path) -> dict[str, Any]:
     return payload
 
 
+def _prepare_writable_runtime_dir(manifest_path: Path) -> Path:
+    """Copy the verified ConfigMap declaration into a writable runtime home.
+
+    Kubernetes projects ConfigMaps read-only.  The RuntimeAdapter intentionally
+    persists local session/UI state below its project directory, so pointing it
+    straight at ``/etc/agentkit`` makes even ``/health`` fail.  ManagedRuntime
+    has no user code or auxiliary files: the verified declaration is the sole
+    input copied into an ephemeral (or PVC-mounted) working directory.
+    """
+
+    work_dir = Path(
+        os.getenv("AGENTENGINE_MANAGED_RUNTIME_WORKDIR", "/tmp/agentengine-managed-runtime")
+    ).resolve()
+    try:
+        work_dir.mkdir(parents=True, exist_ok=True)
+        target = work_dir / "agentengine.yaml"
+        shutil.copyfile(manifest_path, target)
+        _load_managed_runtime_manifest(target)
+    except OSError as exc:
+        raise click.ClickException(
+            f"unable to prepare writable managed runtime directory: {exc}"
+        ) from exc
+    return work_dir
+
+
 @click.command("managed-runtime", context_settings=dict(help_option_names=["-h", "--help"]))
 @click.argument(
     "manifest_path",
@@ -58,11 +84,12 @@ def managed_runtime(manifest_path: Path, port: int, host: str) -> None:
 
     manifest_path = manifest_path.resolve()
     _load_managed_runtime_manifest(manifest_path)
+    work_dir = _prepare_writable_runtime_dir(manifest_path)
     # The command is a production process entrypoint, never a local UI action.
     # ``web`` owns the RuntimeAdapter composition, while no_open prevents an
     # accidental browser launch if this container is ever run with a display.
     os.environ["AGENTENGINE_MANAGED_RUNTIME"] = "1"
-    web.callback(str(manifest_path.parent), port, host, None, True)
+    web.callback(str(work_dir), port, host, None, True)
 
 
 __all__ = ["managed_runtime"]

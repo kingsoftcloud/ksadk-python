@@ -37,6 +37,8 @@ def test_managed_runtime_delegates_mounted_manifest_to_runtime_web(monkeypatch, 
         lambda *args: calls.append(args),
     )
     manifest = _manifest(tmp_path)
+    runtime_dir = tmp_path / "runtime-state"
+    monkeypatch.setenv("AGENTENGINE_MANAGED_RUNTIME_WORKDIR", str(runtime_dir))
 
     result = CliRunner().invoke(
         managed_runtime,
@@ -44,7 +46,10 @@ def test_managed_runtime_delegates_mounted_manifest_to_runtime_web(monkeypatch, 
     )
 
     assert result.exit_code == 0, result.output
-    assert calls == [(str(tmp_path.resolve()), 8088, "0.0.0.0", None, True)]
+    assert calls == [(str(runtime_dir.resolve()), 8088, "0.0.0.0", None, True)]
+    assert (runtime_dir / "agentengine.yaml").read_text(encoding="utf-8") == manifest.read_text(
+        encoding="utf-8"
+    )
 
 
 def test_managed_runtime_rejects_non_declarative_manifest(monkeypatch, tmp_path):
