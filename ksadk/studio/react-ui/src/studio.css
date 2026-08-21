@@ -56,9 +56,9 @@
      deliberately consume these semantic aliases rather than their own color
      literals; leaving them undefined makes the cascade discard background and
      border while retaining white text (an invisible but still clickable CTA). */
-  --button-primary-bg: #3b82d7;
-  --button-primary-bg-hover: #2f73c4;
-  --button-primary-bg-active: #2865ad;
+  --button-primary-bg: #4d8fe8;
+  --button-primary-bg-hover: #5d9ef1;
+  --button-primary-bg-active: #3e7fd3;
   --button-primary-text: #ffffff;
   --success: #28745a;
   --success-soft: #ecf7f1;
