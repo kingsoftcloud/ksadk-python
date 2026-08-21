@@ -38,7 +38,7 @@ from ksadk.studio.workspace import Workspace
 _SLUG = re.compile(r"[^a-z0-9]+")
 _MAX_IMPORT_BYTES = 100 * 1024 * 1024
 _MAX_IMPORT_FILES = 2000
-_SUPPORTED_RUNTIMES = frozenset({"codex", "adk", "langgraph"})
+_SUPPORTED_RUNTIMES = frozenset({"agentkit", "codex", "adk", "langgraph"})
 
 
 class ConversationProposal(BaseModel):
@@ -46,7 +46,8 @@ class ConversationProposal(BaseModel):
 
     name: str = Field(min_length=1, max_length=128)
     slug: str = Field(min_length=1, max_length=63)
-    runtimeType: Literal["codex", "adk", "langgraph"]
+    # Conversation creation always produces the source-free Studio Bundle.
+    runtimeType: Literal["agentkit"]
     description: str = Field(default="", max_length=1024)
     instructions: Instructions
 
@@ -100,11 +101,13 @@ class AgentAuthoringService:
         if normalized not in _SUPPORTED_RUNTIMES:
             raise StudioError(
                 "RUNTIME_NOT_SUPPORTED",
-                "创建方式仅支持 Codex、ADK 和 LangGraph",
+                "创建方式仅支持 AgentKit Bundle、Codex、ADK 和 LangGraph",
                 status_code=422,
                 field="runtimeType",
                 details={"runtimeType": normalized},
             )
+        if normalized == "agentkit":
+            return RuntimeRef(type="agentkit")
         if normalized == "codex":
             return RuntimeRef(type="codex", version="0.144.4")
         return RuntimeRef(
@@ -227,7 +230,7 @@ class AgentAuthoringService:
         if not detection.is_valid or runtime_type not in _SUPPORTED_RUNTIMES:
             raise StudioError(
                 "PROJECT_RUNTIME_UNSUPPORTED",
-                "没有识别到可由 Studio 管理的 Codex、ADK 或 LangGraph Runtime",
+                "没有识别到可由 Studio 管理的 AgentKit、Codex、ADK 或 LangGraph Runtime",
                 status_code=422,
                 details={"detected": runtime_type},
             )
@@ -322,7 +325,7 @@ class AgentAuthoringService:
                 "content": (
                     "你是 AgentKit Studio 的 Agent 设计助手。根据对话生成一个 JSON Draft Patch，"
                     "不得输出 Markdown。字段必须且只能包含 name、slug、runtimeType、description、"
-                    "instructions；runtimeType 只能是 codex、adk、langgraph；instructions 必须包含"
+                    "instructions；runtimeType 必须是 agentkit；instructions 必须包含"
                     " system 和 task。只提出配置，不写文件、不宣称已经创建。"
                 ),
             }

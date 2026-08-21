@@ -9,6 +9,17 @@ from ksadk.managed_runtime import installed_runtime_version
 from ksadk.runtime import RuntimeExecutor
 
 _RUNTIMES = {
+    "agentkit": {
+        "package": "ksadk",
+        "displayName": "AgentKit Bundle Runtime",
+        "adapter": "AgentkitBundleRuntimeAdapter",
+        "capabilities": {
+            "session": True,
+            "cancel": True,
+            "resume": False,
+            "checkpoint": False,
+        },
+    },
     "codex": {
         "package": "openai-codex",
         "displayName": "Codex",

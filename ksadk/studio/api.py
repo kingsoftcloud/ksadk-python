@@ -465,7 +465,7 @@ def create_studio_app(
                 "build": True,
                 "run": True,
                 "runtimeRegistry": True,
-                "runtimeTypes": ["codex", "adk", "langgraph"],
+                "runtimeTypes": ["agentkit", "codex", "adk", "langgraph"],
                 "evaluation": True,
                 "deployment": True,
                 "cloudRebuild": False,

@@ -23,6 +23,9 @@ class RuntimeServices:
 
     codex_client_factory: Callable[[], Any] | None = None
     runner_factory: Callable[[Any, str], Any] | None = None
+    # Test/host integration seam for the fixed declarative AgentKit Bundle
+    # Runtime. It receives (ResolvedModel, OpenAI chat payload) and returns text.
+    agentkit_completion: Callable[[Any, dict[str, Any]], Any] | None = None
 
 
 @dataclass(frozen=True)

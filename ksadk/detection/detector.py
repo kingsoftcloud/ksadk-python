@@ -21,6 +21,7 @@ class FrameworkType(Enum):
     DEEPAGENTS = "deepagents"
     HERMES = "hermes"
     FASTMCP = "fastmcp"
+    AGENTKIT = "agentkit"
     CODEX = "codex"
     UNKNOWN = "unknown"
 
@@ -122,6 +123,7 @@ class FrameworkDetector:
                 "langgraph": FrameworkType.LANGGRAPH,
                 "deepagents": FrameworkType.DEEPAGENTS,
                 "hermes": FrameworkType.HERMES,
+                "agentkit": FrameworkType.AGENTKIT,
                 "codex": FrameworkType.CODEX,
             }.get(framework, FrameworkType.UNKNOWN)
 
@@ -129,8 +131,12 @@ class FrameworkDetector:
             is_hermes_container = (
                 framework_type == FrameworkType.HERMES and artifact_type == "container"
             )
-            # codex 无 root_agent 变量(agent 逻辑在 prompt),跳过 entry_exposes_variable 校验
-            is_codex = framework_type == FrameworkType.CODEX
+            # codex 与 agentkit 不执行用户入口文件：前者逻辑在 prompt，后者由
+            # 固定 Bundle Runtime 解释 resolved-agent-spec.json。
+            is_managed_bundle = framework_type in {
+                FrameworkType.CODEX,
+                FrameworkType.AGENTKIT,
+            }
             default_entry_point = (
                 "runtime/app.py"
                 if is_hermes_container and (self.project_dir / "runtime" / "app.py").is_file()
@@ -140,17 +146,25 @@ class FrameworkDetector:
             agent_variable = config.get("agent_variable", "root_agent")
             runner_class = str(config.get("runner_class") or "").strip()
             entry_path = self.project_dir / str(entry_point).replace("\\", "/")
-            # codex 无 agent.py(逻辑在 prompt),容忍 entry_point 不存在
-            if not is_codex and (not entry_path.exists() or not entry_path.is_file()):
+            if framework_type == FrameworkType.AGENTKIT:
+                if config.get("bundle") != "resolved-agent-spec.json":
+                    return None
+                entry_point = ""
+                agent_variable = ""
+                package_path = self.project_dir
+            # managed bundles 无 agent.py，容忍 entry_point 不存在。
+            elif not is_managed_bundle and (not entry_path.exists() or not entry_path.is_file()):
                 return None
             if (
-                not is_codex
+                not is_managed_bundle
                 and not is_hermes_container
                 and not self._entry_exposes_variable(entry_path, agent_variable)
             ):
                 return None
             package = str(config.get("package") or "").strip()
-            if package:
+            if framework_type == FrameworkType.AGENTKIT:
+                pass
+            elif package:
                 package_path = self.project_dir / package
             elif is_hermes_container:
                 package_path = entry_path.parent
