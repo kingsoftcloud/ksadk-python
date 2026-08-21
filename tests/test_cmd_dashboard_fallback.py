@@ -27,7 +27,7 @@ async def _fake_create_access_link(*_args, **_kwargs):
     }
 
 
-def test_dashboard_uses_access_link_by_default(monkeypatch):
+def test_dashboard_uses_hosted_interaction_ui_by_default(monkeypatch):
     opened = {}
     captured = {}
     runner = CliRunner()
@@ -45,7 +45,7 @@ def test_dashboard_uses_access_link_by_default(monkeypatch):
     result = runner.invoke(cmd_dashboard.dashboard, ["ar-test"])
     assert result.exit_code == 0, result.output
     assert opened == {}
-    assert captured["path"] is None
+    assert captured["path"] == "/hosted-ui/chat"
     assert "http://demo.example.com/s/lnk-1" in result.output
 
 
