@@ -1032,6 +1032,14 @@ class StudioService:
                     status_code=409,
                     details={"buildId": build_id},
                 )
+            # The deployed YAML records only the selected model identity.  Its
+            # credential stays in the local resolver and is materialized for
+            # this outbound control-plane request only, never in the Build or
+            # deployment receipt.
+            launch = self.codex_runs.resolve(build_id)
+            runtime_environment = dict(
+                (launch.launch_context.config or {}).get("env") or {}
+            )
 
             async def managed_runtime_runner():
                 return await self.cloud.deploy_managed_runtime(
@@ -1044,6 +1052,7 @@ class StudioService:
                     # source digest remains the immutable Studio Build receipt.
                     manifest_digest=codex_build.manifest_sha256,
                     request=request,
+                    runtime_environment=runtime_environment,
                 )
 
             return self.operations.submit(

@@ -423,6 +423,7 @@ class DirectAgentEngineCloudDeploymentGateway:
     async def create_managed_runtime_deployment(self, **kwargs) -> DeploymentRecord:
         request: DeploymentRequest = kwargs["request"]
         digest = str(kwargs["manifest_digest"])
+        runtime_environment = dict(kwargs.get("runtime_environment") or {})
         result = await self.client.create_agent(
             self._managed_runtime_payload(
                 agent_name=str(kwargs["agent_name"]),
@@ -430,6 +431,7 @@ class DirectAgentEngineCloudDeploymentGateway:
                 runtime_name=str(kwargs["runtime_name"]),
                 runtime_version=str(kwargs["runtime_version"]),
                 request=request,
+                runtime_environment=runtime_environment,
             ),
             provision_instance=True,
         )
@@ -526,8 +528,9 @@ class DirectAgentEngineCloudDeploymentGateway:
         runtime_name: str,
         runtime_version: str,
         request: DeploymentRequest,
+        runtime_environment: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        return {
+        payload = {
             "name": _server_agent_name(agent_name),
             "description": "Created by AgentKit Studio",
             "framework": runtime_name,
@@ -542,6 +545,12 @@ class DirectAgentEngineCloudDeploymentGateway:
             "scaling": {"min_replicas": 1, "max_replicas": 1, "concurrency": 20},
             "auth_type": "ApiKey",
         }
+        if runtime_environment:
+            # Model credentials are resolved only for this in-memory deployment
+            # request.  They are never written into the YAML build or local
+            # deployment receipt.
+            payload["environment_variables"] = dict(runtime_environment)
+        return payload
 
     def _code_config(self, bucket: str) -> dict[str, str]:
         return {

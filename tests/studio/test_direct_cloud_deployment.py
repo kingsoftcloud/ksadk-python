@@ -274,3 +274,33 @@ async def test_direct_gateway_deploys_yaml_managed_runtime_without_uploading_bun
     assert deployment.artifact_id == "managed-runtime"
     assert deployment.bundle_uri is None
     assert client.provision_instance == [True]
+
+
+def test_managed_runtime_payload_keeps_model_env_out_of_yaml_contract() -> None:
+    request = DeploymentRequest(
+        target=DeploymentTarget(region="pre-online", environment="preproduction")
+    )
+
+    payload = DirectAgentEngineCloudDeploymentGateway._managed_runtime_payload(
+        agent_name="yaml-agent",
+        manifest="name: yaml-agent\nframework: codex\n",
+        runtime_name="codex",
+        runtime_version="0.147.0",
+        request=request,
+        runtime_environment={
+            "OPENAI_API_KEY": "resolved-only-for-request",
+            "OPENAI_BASE_URL": "https://model.example.com/v1",
+        },
+    )
+
+    assert payload["artifact_type"] == "ManagedRuntime"
+    assert "CodeConfig" not in payload
+    assert payload["runtime_config"] == {
+        "name": "codex",
+        "version": "0.147.0",
+        "manifest": "name: yaml-agent\nframework: codex\n",
+    }
+    assert payload["environment_variables"] == {
+        "OPENAI_API_KEY": "resolved-only-for-request",
+        "OPENAI_BASE_URL": "https://model.example.com/v1",
+    }
