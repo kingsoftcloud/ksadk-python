@@ -39,11 +39,13 @@ class _Uploader:
 class _Client:
     def __init__(self) -> None:
         self.created: list[dict] = []
+        self.provision_instance: list[bool] = []
         self.updated: list[tuple[str, dict]] = []
         self.kernel_ready = True
 
-    async def create_agent(self, payload: dict) -> dict:
+    async def create_agent(self, payload: dict, *, provision_instance: bool = False) -> dict:
         self.created.append(payload)
+        self.provision_instance.append(provision_instance)
         return {"agent_id": "ar-studio-1", "instance_id": "instance-studio-1"}
 
     async def update_agent(self, agent_id: str, payload: dict) -> dict:
@@ -271,3 +273,4 @@ async def test_direct_gateway_deploys_yaml_managed_runtime_without_uploading_bun
     ]
     assert deployment.artifact_id == "managed-runtime"
     assert deployment.bundle_uri is None
+    assert client.provision_instance == [True]
