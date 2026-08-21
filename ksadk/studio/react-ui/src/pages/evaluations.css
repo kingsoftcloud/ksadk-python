@@ -5,8 +5,19 @@
 
 .evaluation-page__form-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  align-items: start;
   gap: 16px;
+}
+
+.evaluation-page__form-grid > .studio-form-field {
+  grid-column: span 6;
+  align-self: start;
+  min-width: 0;
+}
+
+.evaluation-page__form-grid > .studio-form-field:last-child:nth-child(odd) {
+  grid-column: 1 / span 6;
 }
 
 .evaluation-page__fail-fast {
