@@ -12,6 +12,7 @@ class EnvVarSpec:
     purpose: str
     default: str = ""
     sensitive: bool = False
+    documented: bool = True
 
 
 __all__ = ["EnvVarSpec"]

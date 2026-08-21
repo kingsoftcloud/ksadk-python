@@ -32,7 +32,20 @@ def test_env_registry_docs_cover_registered_names():
     doc_text = Path("docs/reference/ksadk环境变量参考.md").read_text(encoding="utf-8")
 
     for item in ENV_VAR_REGISTRY:
-        assert item.name in doc_text
+        if item.documented:
+            assert item.name in doc_text
+
+
+def test_internal_env_registry_items_do_not_expand_the_public_reference():
+    specs = {item.name: item for item in ENV_VAR_REGISTRY}
+
+    assert specs["KSADK_AGENT_EVAL"].documented is False
+    assert specs["KSADK_BASELINE_COLLECT"].documented is False
+    assert specs["KSADK_DEPLOYMENT_MODE"].documented is False
+    assert specs["KSADK_EVAL_COMMIT"].documented is False
+    assert specs["KSADK_PROMPT_COMPILER_ENABLED"].documented is False
+    assert specs["KSADK_CONTEXT_ENGINE_V2_ENABLED"].documented is False
+    assert specs["KSADK_MEMORY_ENABLED"].documented is False
 
 
 def test_env_registry_pins_ksadk_web_static_sync_to_a_published_npm_release():

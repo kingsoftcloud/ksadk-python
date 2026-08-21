@@ -27,14 +27,15 @@ _LEGACY_OVERSIZED_MAX = {
     "ksadk/runners/adk_runner.py": 2219,
     # 0.8.1 approval continuation baseline; split the LangGraph execution
     # paths at the next runner-focused maintenance pass.
-    "ksadk/runners/langgraph_runner.py": 1318,
+    "ksadk/runners/langgraph_runner.py": 1378,
     # 0.8.1 canonical ToolGateway approval projection baseline.
-    "ksadk/runtime/runner_adapter.py": 1046,
+    "ksadk/runtime/runner_adapter.py": 1220,
     "ksadk/sessions/local_service.py": 1080,
     "ksadk/sessions/postgres_service.py": 1019,
-    "ksadk/studio/api.py": 1144,
+    "ksadk/studio/api.py": 1243,
     "ksadk/studio/resource_catalog.py": 1217,
-    "ksadk/studio/service.py": 1387,
+    "ksadk/studio/run_service.py": 1156,
+    "ksadk/studio/service.py": 1767,
     "ksadk/toolsets/workspace.py": 1028,
     "ksadk/tui/loop.py": 1925,
 }

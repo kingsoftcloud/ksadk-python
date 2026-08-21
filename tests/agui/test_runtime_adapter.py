@@ -203,11 +203,13 @@ async def test_runner_runtime_adapter_emits_reasoning_tool_and_terminal_contract
 
     assert [event.event_type for event in events] == [
         EventType.RUN_STARTED,
+        EventType.TURN_STARTED,
         EventType.REASONING_DELTA,
         EventType.TOOL_CALL_BEGIN,
         EventType.TOOL_CALL_END,
         EventType.RUN_PROGRESS,
         EventType.TEXT_COMPLETED,
+        EventType.TURN_COMPLETED,
         EventType.RUN_COMPLETED,
     ]
     assert runner.received[0]["ag-ui"] == {"inject_a2ui_tool": True}
@@ -300,7 +302,9 @@ async def test_runner_runtime_adapter_prefers_canonical_runtime_event_stream():
 
     assert [event.event_type for event in events] == [
         EventType.RUN_STARTED,
+        EventType.TURN_STARTED,
         EventType.TEXT_COMPLETED,
+        EventType.TURN_COMPLETED,
         EventType.RUN_COMPLETED,
     ]
     assert all(event.invocation_id == "outer-run" for event in events)

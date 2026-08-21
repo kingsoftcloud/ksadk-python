@@ -615,17 +615,21 @@ async def test_run_sse_uses_new_session_service(monkeypatch):
         "demo-agent",
         "demo-agent",
         "demo-agent",
+        "demo-agent",
+        "demo-agent",
     ]
     assert [event.event_type for event in events] == [
         "user_message",
         "run.started",
         "run_status",
+        "turn.started",
         "text.completed",
+        "turn.completed",
         "run.completed",
         "run_status",
     ]
     assert events[0].content["parts"][0]["text"] == "hello"
-    assert events[3].content["payload"]["text"] == "assistant says hi"
+    assert events[4].content["payload"]["text"] == "assistant says hi"
     assert events[0].metadata["agent_input"] == "hello"
 
     assert len(runner.calls) == 1
@@ -1609,18 +1613,20 @@ async def test_run_sse_stream_emits_authoritative_final_event_when_output_overri
 
     session_id = payloads[0]["sessionId"]
     events = await service.get_events(session_id)
-    assert [event.author for event in events] == ["user"] + ["demo-agent"] * 7
+    assert [event.author for event in events] == ["user"] + ["demo-agent"] * 9
     assert [event.event_type for event in events] == [
         "user_message",
         "run.started",
         "run_status",
+        "turn.started",
         "text.delta",
         "text.delta",
         "text.completed",
+        "turn.completed",
         "run.completed",
         "run_status",
     ]
-    assert events[5].content["payload"]["text"] == "goodbye"
+    assert events[6].content["payload"]["text"] == "goodbye"
 
 
 @pytest.mark.asyncio
@@ -1703,9 +1709,11 @@ async def test_run_sse_stream_emits_compaction_status_events(monkeypatch):
         "context.compaction.completed",
         "run.started",
         "run_status",
+        "turn.started",
         "text.delta",
         "text.delta",
         "text.completed",
+        "turn.completed",
         "run.completed",
         "run_status",
     ]
@@ -1739,13 +1747,15 @@ async def test_run_sse_stream_completes_and_persists_reasoning_when_no_text_delt
         "user_message",
         "run.started",
         "run_status",
+        "turn.started",
         "reasoning.delta",
         "text.completed",
+        "turn.completed",
         "run.completed",
         "run_status",
     ]
-    assert events[3].content["payload"]["text"] == "先想一下"
-    assert events[4].content["payload"]["text"] == "final answer"
+    assert events[4].content["payload"]["text"] == "先想一下"
+    assert events[5].content["payload"]["text"] == "final answer"
     assert events[-1].content["status"] == "completed"
 
 
@@ -2532,7 +2542,9 @@ async def test_responses_accepts_agentengine_checkpoint_resume_input(monkeypatch
         "run_status",
         "run.started",
         "run_status",
+        "turn.started",
         "text.completed",
+        "turn.completed",
         "run.completed",
         "run_status",
     ]
@@ -5540,13 +5552,15 @@ async def test_run_agent_stream_continues_after_client_disconnect(monkeypatch):
         "user_message",
         "run.started",
         "run_status",
+        "turn.started",
         "text.delta",
         "text.delta",
         "text.completed",
+        "turn.completed",
         "run.completed",
         "run_status",
     ]
-    assert events[5].content["payload"]["text"] == "hello"
+    assert events[6].content["payload"]["text"] == "hello"
     assert events[-1].content["status"] == "completed"
 
 

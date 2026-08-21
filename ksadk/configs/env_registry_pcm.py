@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from ksadk.configs.env_var_spec import EnvVarSpec
 
-PCM_ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
+_PCM_ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     EnvVarSpec("KSADK_BASELINE_COLLECT", "context", "Enable PCM baseline collection.", "0"),
     EnvVarSpec(
         "KSADK_BASELINE_EXECUTION_TARGET", "context", "PCM baseline execution target label."
@@ -166,6 +168,13 @@ PCM_ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     EnvVarSpec(
         "KSADK_TOKENIZER_PROVIDER", "context", "Tokenizer provider used for context accounting."
     ),
+)
+
+# PCM rollout, budget and diagnostic environment variables are internal runtime
+# controls. Public users configure the same behavior through AgentSpec policies,
+# so these names intentionally do not expand the public environment reference.
+PCM_ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = tuple(
+    replace(item, documented=False) for item in _PCM_ENV_VAR_REGISTRY_ITEMS
 )
 
 
