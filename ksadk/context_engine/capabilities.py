@@ -1,8 +1,7 @@
 """Runner Context Capabilities —— Prompt/Context/Memory 的 ownership 合同。
 
-对齐 ``docs/prompt-context-memory-implementation.md`` 第 6 节。能力声明是可执行合同，
-不是展示标签：Runtime 按 ``ContextCapabilities`` 决定是否编译/投影 Prompt、是否注入
-History/Memory、是否执行 compaction。
+能力声明是可执行合同，不是展示标签：Runtime 按 ``ContextCapabilities`` 决定是否
+编译/投影 Prompt、是否注入 History/Memory、是否执行 compaction。
 
 本模块只落地数据模型与已知 Runner 的显式默认值；任何行为型接入（实际改写 Runner 输入、
 按 capability 切换 ambient 注入、双阈值等）都在后续 PR，第一个 PR 仅做声明与 shadow 观测，

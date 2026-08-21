@@ -1,8 +1,7 @@
 """Context Engine 数据模型 —— ContextItem / ContextBudget / ContextPlan / ContextDecision。
 
-对齐 ``docs/prompt-context-memory-implementation.md`` 第 8 节。第一个 PR 只落地稳定数据
-结构（公开类型从第一批开始版本化），不实现 planner/assembler/contributors/policies 的
-实际逻辑；``ContextPlan`` 目前仅由 ``shadow_plan`` 旁路填充用于可观测基线，不进决策路径。
+这些公开类型用于稳定表达请求级上下文的预算、选择、裁剪和投影决策，并由
+``shadow_plan`` 旁路及正式规划链路共同消费。
 """
 
 from __future__ import annotations
