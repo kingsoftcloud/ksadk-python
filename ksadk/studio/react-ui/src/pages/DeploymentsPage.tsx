@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { CloudUpload, RefreshCw, RotateCcw } from "lucide-react";
+import { CloudUpload, ExternalLink, RefreshCw, RotateCcw } from "lucide-react";
 import { apiFetch } from "../api";
 import { PageHeaderActions } from "../components/PageHeaderPortal";
 import { showToast } from "../components/Toast";
@@ -96,6 +96,23 @@ export function DeploymentsPage({ onCreate }: { onCreate: () => void }) {
 
   async function refreshAll() {
     await Promise.all(deployments.map(deployment => refresh(deployment)));
+  }
+
+  async function openHostedUi(deployment: Deployment) {
+    setError("");
+    try {
+      const response = await apiFetch(
+        `/api/v1/deployments/${encodeURIComponent(deployment.id)}:dashboard`,
+        { method: "POST" },
+      );
+      if (!response.ok) throw new Error(`创建云端 UI 访问链接失败（${response.status}）`);
+      const payload = await response.json();
+      const accessUrl = String(payload?.accessUrl || payload?.access_url || "").trim();
+      if (!accessUrl) throw new Error("云端未返回 Agent UI 地址");
+      window.open(accessUrl, "_blank", "noopener,noreferrer");
+    } catch (caught: any) {
+      setError(`${deployment.instanceId || deployment.id}：${caught?.message || "无法打开云端 UI"}`);
+    }
   }
 
   async function openRollback(deployment: Deployment) {
@@ -198,6 +215,7 @@ export function DeploymentsPage({ onCreate }: { onCreate: () => void }) {
                   <td>{deployment.target.region}<small>{deployment.target.environment}</small></td>
                   <td className="delivery-row-actions">
                     <button className="button tertiary compact" type="button" aria-label="刷新部署状态" title="刷新部署状态" disabled={refreshingThis} onClick={() => void refresh(deployment)}><RefreshCw size={15} /></button>
+                    {deployment.status === "READY" && deployment.agentId && <button className="button tertiary compact" type="button" aria-label="打开该 Agent 的云端 UI" title={`打开云端 UI：${deployment.agentId}`} onClick={() => void openHostedUi(deployment)}><ExternalLink size={15} /><span>云端 UI</span></button>}
                     <button className="button tertiary compact" type="button" aria-label="选择回滚 Build" onClick={() => void openRollback(deployment)}><RotateCcw size={15} /><span>回滚</span></button>
                   </td>
                 </tr>;

@@ -1128,6 +1128,11 @@ class StudioService:
             runner=runner,
         )
 
+    async def deployment_dashboard_access(self, deployment_id: str) -> dict[str, str | None]:
+        """Return a receipt-bound private Hosted UI link on explicit user request."""
+
+        return await self.cloud.dashboard_access(deployment_id)
+
     def get_settings(self) -> dict[str, Any]:
         path = self.workspace.resolve(".agentkit/settings.yaml")
         data: dict[str, Any] = {}

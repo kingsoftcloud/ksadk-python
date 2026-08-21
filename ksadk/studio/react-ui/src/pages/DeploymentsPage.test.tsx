@@ -12,6 +12,7 @@ apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
       versionId: "cloud-agent-1",
       status: "READY",
       target: { region: "cn-beijing-6", environment: "preproduction" },
+      agentId: "ar-cloud-ui",
       instanceId: "instance-1",
     }] }));
   }
@@ -33,6 +34,10 @@ apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
     expect(init?.method).toBe("POST");
     expect(JSON.parse(String(init?.body))).toEqual({ targetBuildId: "build-previous" });
     return new Response(JSON.stringify({ id: "operation-rollback" }));
+  }
+  if (path === "/api/v1/deployments/dep-instance-1:dashboard") {
+    expect(init?.method).toBe("POST");
+    return new Response(JSON.stringify({ accessUrl: "https://dashboard.example.test/private-link" }));
   }
   if (path === "/api/v1/operations/operation-rollback") {
     return new Response(JSON.stringify({ status: "SUCCEEDED", resourceId: "dep-instance-2" }));
@@ -61,5 +66,24 @@ describe("DeploymentsPage", () => {
       "/api/v1/deployments/dep-instance-1:rollback",
       expect.objectContaining({ method: "POST" }),
     ));
+  });
+
+  it("opens only the receipt-bound Agent Hosted UI link", async () => {
+    const open = vi.fn();
+    vi.stubGlobal("open", open);
+    render(<DeploymentsPage onCreate={vi.fn()} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "打开该 Agent 的云端 UI" }));
+
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith(
+      "/api/v1/deployments/dep-instance-1:dashboard",
+      { method: "POST" },
+    ));
+    expect(open).toHaveBeenCalledWith(
+      "https://dashboard.example.test/private-link",
+      "_blank",
+      "noopener,noreferrer",
+    );
+    vi.unstubAllGlobals();
   });
 });

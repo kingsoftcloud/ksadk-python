@@ -43,6 +43,7 @@ class _Client:
     def __init__(self) -> None:
         self.created: list[dict] = []
         self.updated: list[tuple[str, dict]] = []
+        self.dashboard_links: list[dict] = []
         self.kernel_ready = True
 
     async def create_agent(self, payload: dict) -> dict:
@@ -58,6 +59,13 @@ class _Client:
         return {
             "status": "Running",
             "deployment": {"agent_kernel_ready": self.kernel_ready},
+        }
+
+    async def create_dashboard_access_link(self, **kwargs) -> dict:
+        self.dashboard_links.append(kwargs)
+        return {
+            "access_url": f"https://dashboard.example.test/{kwargs['agent_id']}",
+            "expires_at": "2026-08-22T00:00:00Z",
         }
 
 
@@ -282,6 +290,38 @@ async def test_direct_gateway_marks_deleted_cloud_agent_as_failed_receipt() -> N
     )
 
     assert (await gateway.get_deployment_status(deployment)).status == "FAILED"
+
+
+@pytest.mark.asyncio
+async def test_direct_gateway_creates_private_receipt_bound_dashboard_link() -> None:
+    client = _Client()
+    gateway = DirectAgentEngineCloudDeploymentGateway(
+        region="pre-online",
+        client=client,
+        uploader_factory=_Uploader,
+        ks3_credentials={"access_key": "test-access", "secret_key": "test-secret"},
+    )
+    deployment = DeploymentRecord(
+        id="dep_dashboard",
+        build_id="build_dashboard",
+        bundle_digest="sha256:" + "c" * 64,
+        version_id="managed-cccccccccccccccc",
+        status="READY",
+        target=DeploymentTarget(region="pre-online", environment="preproduction"),
+        agent_id="ar-dashboard",
+        instance_id="instance-dashboard",
+        artifact_id="managed-runtime",
+    )
+
+    access = await gateway.get_deployment_dashboard_access(deployment)
+
+    assert client.dashboard_links == [{"agent_id": "ar-dashboard", "link_type": "private"}]
+    assert access == {
+        "access_url": "https://dashboard.example.test/ar-dashboard",
+        "agent_id": "ar-dashboard",
+        "instance_id": "instance-dashboard",
+        "expires_at": "2026-08-22T00:00:00Z",
+    }
 
 
 @pytest.mark.asyncio

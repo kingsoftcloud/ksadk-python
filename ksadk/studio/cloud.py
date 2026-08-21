@@ -79,6 +79,10 @@ class CloudDeploymentGateway(Protocol):
 
     async def get_deployment_status(self, deployment: DeploymentRecord) -> DeploymentRecord: ...
 
+    async def get_deployment_dashboard_access(
+        self, deployment: DeploymentRecord
+    ) -> dict[str, str | None]: ...
+
     async def create_managed_runtime_deployment(
         self,
         *,
@@ -137,6 +141,15 @@ class UnavailableCloudGateway:
     ) -> DeploymentRecord:
         raise AssertionError("managed runtime deployment must fail first")
 
+    async def get_deployment_dashboard_access(
+        self, _deployment: DeploymentRecord
+    ) -> dict[str, str | None]:
+        raise StudioError(
+            "CLOUD_DASHBOARD_UNAVAILABLE",
+            "当前未配置可用的云端签名账号，不能打开云端 Agent UI",
+            status_code=501,
+        )
+
 
 class InMemoryCloudGateway:
     """Contract-test gateway; it records exactly what would cross the cloud boundary."""
@@ -186,6 +199,22 @@ class InMemoryCloudGateway:
 
     async def get_deployment_status(self, deployment: DeploymentRecord) -> DeploymentRecord:
         return deployment
+
+    async def get_deployment_dashboard_access(
+        self, deployment: DeploymentRecord
+    ) -> dict[str, str | None]:
+        if not deployment.agent_id:
+            raise StudioError(
+                "DEPLOYMENT_DASHBOARD_UNAVAILABLE",
+                "Deployment receipt 缺少云端 Agent 标识",
+                status_code=409,
+            )
+        return {
+            "access_url": f"memory://dashboard/{deployment.agent_id}",
+            "agent_id": deployment.agent_id,
+            "instance_id": deployment.instance_id,
+            "expires_at": None,
+        }
 
     async def create_managed_runtime_deployment(self, **kwargs) -> DeploymentRecord:
         digest = str(kwargs["manifest_digest"])
@@ -431,6 +460,33 @@ class DirectAgentEngineCloudDeploymentGateway:
             else "DEPLOYING"
         )
         return deployment.model_copy(update={"status": projected})
+
+    async def get_deployment_dashboard_access(
+        self, deployment: DeploymentRecord
+    ) -> dict[str, str | None]:
+        if not deployment.agent_id:
+            raise StudioError(
+                "DEPLOYMENT_DASHBOARD_UNAVAILABLE",
+                "Deployment receipt 缺少云端 Agent 标识",
+                status_code=409,
+            )
+        link = await self.client.create_dashboard_access_link(
+            agent_id=deployment.agent_id,
+            link_type="private",
+        )
+        access_url = str(link.get("access_url") or "").strip()
+        if not access_url:
+            raise StudioError(
+                "DEPLOYMENT_DASHBOARD_UNAVAILABLE",
+                "云端未返回可用的 Agent UI 地址",
+                status_code=502,
+            )
+        return {
+            "access_url": access_url,
+            "agent_id": deployment.agent_id,
+            "instance_id": deployment.instance_id,
+            "expires_at": str(link.get("expires_at") or "").strip() or None,
+        }
 
     async def create_managed_runtime_deployment(self, **kwargs) -> DeploymentRecord:
         request: DeploymentRequest = kwargs["request"]
@@ -861,6 +917,19 @@ class CloudDeploymentService:
             DeploymentRequest.model_validate(payload["request"]),
         )
         return refreshed
+
+    async def dashboard_access(self, deployment_id: str) -> dict[str, str | None]:
+        """Create a private, receipt-bound Hosted UI link on explicit request."""
+
+        deployment = self.get(deployment_id)
+        dashboard_reader = getattr(self.gateway, "get_deployment_dashboard_access", None)
+        if dashboard_reader is None:
+            raise StudioError(
+                "DEPLOYMENT_DASHBOARD_UNAVAILABLE",
+                "当前云端网关不支持打开 Agent UI",
+                status_code=501,
+            )
+        return await dashboard_reader(deployment)
 
     async def rollback(
         self,

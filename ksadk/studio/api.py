@@ -1014,6 +1014,10 @@ def create_studio_app(
     async def get_deployment(deployment_id: str):
         return await studio.cloud.refresh(deployment_id)
 
+    @app.post("/api/v1/deployments/{deployment_id}:dashboard")
+    async def open_deployment_dashboard(deployment_id: str):
+        return await studio.deployment_dashboard_access(deployment_id)
+
     @app.post("/api/v1/deployments/{deployment_id}:rollback", status_code=202)
     async def rollback_deployment(
         deployment_id: str,
