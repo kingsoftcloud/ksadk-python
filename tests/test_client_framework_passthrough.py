@@ -85,22 +85,23 @@ async def test_create_agent_forwards_managed_runtime_contract(monkeypatch):
             "name": "managed-codex",
             "framework": "codex",
             "artifact_type": "ManagedRuntime",
-            "artifact_path": "ks3://bucket/managed-codex-runtime.zip",
             "runtime_config": {
                 "name": "codex",
                 "version": "0.144.4",
                 "manifest_sha256": "a" * 64,
+                "manifest": "name: managed-codex\n",
             },
         }
     )
 
     payload = calls[0][1]
     assert payload["DeploymentType"] == "ManagedRuntime"
-    assert payload["CodeConfig"]["Path"] == "ks3://bucket/managed-codex-runtime.zip"
-    assert payload["RuntimeConfig"] == {
-        "Name": "codex",
-        "Version": "0.144.4",
-        "ManifestSha256": "a" * 64,
+    assert "CodeConfig" not in payload
+    assert payload["ManagedRuntimeConfig"] == {
+        "Manifest": "name: managed-codex",
+        "ManifestSHA256": "a" * 64,
+        "RuntimeName": "codex",
+        "RuntimeVersion": "0.144.4",
     }
 
 
@@ -321,21 +322,23 @@ async def test_update_agent_forwards_managed_runtime_contract(monkeypatch):
         "ar-managed",
         {
             "artifact_type": "ManagedRuntime",
-            "artifact_path": "ks3://bucket/managed-codex-runtime.zip",
             "runtime_config": {
                 "name": "codex",
                 "version": "0.144.4",
                 "manifest_sha256": "b" * 64,
+                "manifest": "name: managed-codex\n",
             },
         },
     )
 
     payload = calls[0][1]
     assert payload["DeploymentType"] == "ManagedRuntime"
-    assert payload["RuntimeConfig"] == {
-        "Name": "codex",
-        "Version": "0.144.4",
-        "ManifestSha256": "b" * 64,
+    assert "CodeConfig" not in payload
+    assert payload["ManagedRuntimeConfig"] == {
+        "Manifest": "name: managed-codex",
+        "ManifestSHA256": "b" * 64,
+        "RuntimeName": "codex",
+        "RuntimeVersion": "0.144.4",
     }
 
 

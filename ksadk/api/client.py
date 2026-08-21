@@ -1357,7 +1357,7 @@ class AgentEngineClient:
                 "IamRole": data.get("iam_role", "KsyunAgentEngineDefaultRole"),
             }
 
-        if params["DeploymentType"] in {"Code", "ManagedRuntime"}:
+        if params["DeploymentType"] == "Code":
             ks3 = data.get("ks3", {})
             params["CodeConfig"] = {
                 "Path": data.get("artifact_path", ""),
@@ -1368,13 +1368,17 @@ class AgentEngineClient:
                 "Command": data.get("code_command"),
                 "Checksum": data.get("code_checksum"),
             }
-            if params["DeploymentType"] == "ManagedRuntime":
-                runtime_config = data.get("runtime_config") or {}
-                params["RuntimeConfig"] = {
-                    "Name": runtime_config.get("name"),
-                    "Version": runtime_config.get("version"),
-                    "ManifestSha256": runtime_config.get("manifest_sha256"),
-                }
+        elif params["DeploymentType"] == "ManagedRuntime":
+            runtime_config = data.get("runtime_config") or {}
+            manifest = str(runtime_config.get("manifest") or "").strip()
+            if not manifest:
+                raise ValueError("ManagedRuntime requires runtime_config.manifest")
+            params["ManagedRuntimeConfig"] = {
+                "Manifest": manifest,
+                "ManifestSHA256": runtime_config.get("manifest_sha256"),
+                "RuntimeName": runtime_config.get("name"),
+                "RuntimeVersion": runtime_config.get("version"),
+            }
         else:
             ic = data.get("image_credential", {}) or {}
             artifact = (data.get("artifact_path", "") or "").strip()
@@ -1641,7 +1645,18 @@ class AgentEngineClient:
         if data.get("description"):
             params["Description"] = data["description"]
 
-        if data.get("artifact_path"):
+        if artifact_type == "ManagedRuntime":
+            runtime_config = data.get("runtime_config") or {}
+            manifest = str(runtime_config.get("manifest") or "").strip()
+            if not manifest:
+                raise ValueError("ManagedRuntime requires runtime_config.manifest")
+            params["ManagedRuntimeConfig"] = {
+                "Manifest": manifest,
+                "ManifestSHA256": runtime_config.get("manifest_sha256"),
+                "RuntimeName": runtime_config.get("name"),
+                "RuntimeVersion": runtime_config.get("version"),
+            }
+        elif data.get("artifact_path"):
             artifact = (data.get("artifact_path", "") or "").strip()
             if (artifact_type or "").lower() == "container":
                 ic = data.get("image_credential", {}) or {}
@@ -1660,13 +1675,6 @@ class AgentEngineClient:
                     "Command": data.get("code_command"),
                     "Checksum": data.get("code_checksum"),
                 }
-                if artifact_type == "ManagedRuntime":
-                    runtime_config = data.get("runtime_config") or {}
-                    params["RuntimeConfig"] = {
-                        "Name": runtime_config.get("name"),
-                        "Version": runtime_config.get("version"),
-                        "ManifestSha256": runtime_config.get("manifest_sha256"),
-                    }
 
         if data.get("resources"):
             params["Resource"] = {
