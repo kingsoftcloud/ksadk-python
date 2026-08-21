@@ -432,8 +432,7 @@ class DirectAgentEngineCloudDeploymentGateway:
                 runtime_version=str(kwargs["runtime_version"]),
                 request=request,
                 runtime_environment=runtime_environment,
-            ),
-            provision_instance=True,
+            )
         )
         agent_id = str(result.get("agent_id") or "").strip()
         if not agent_id:

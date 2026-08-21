@@ -1310,19 +1310,12 @@ class AgentEngineClient:
                 payload[key] = text
         return payload
 
-    async def create_agent(
-        self,
-        data: Dict[str, Any],
-        *,
-        provision_instance: bool = False,
-    ) -> Dict[str, Any]:
-        """Create an order, and optionally provision it through CreateAgent.
+    async def create_agent(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Create an Agent through the established order workflow.
 
-        ``CreateAgentProduct`` is the existing billing/order Action.  Some
-        control-plane environments do not call ``CreateAgent`` back after a
-        successful auto-pay order, so declarative Studio deployments request
-        the established second Action explicitly.  This is not a new API and
-        keeps the billing and runtime lifecycle steps visible and retryable.
+        The control plane invokes the existing ``CreateAgent`` callback after
+        ``CreateAgentProduct``.  Calling it a second time from Studio races
+        that callback and can create an inconsistent lifecycle result.
         """
         framework = self._normalize_framework_name(data.get("framework"))
         params = {
@@ -1416,24 +1409,7 @@ class AgentEngineClient:
             advanced["ProjectId"] = project_id
         params["Advanced"] = advanced
 
-        product = self._action("CreateAgentProduct", params)
-        if not provision_instance:
-            return product
-
-        agent_id = str(product.get("agent_id") or "").strip()
-        instance_id = str(product.get("instance_id") or "").strip()
-        if not agent_id or not instance_id:
-            raise AgentEngineAPIError(
-                502,
-                "CreateAgentProduct did not return AgentId and InstanceId for provisioning",
-            )
-        provision_params = dict(params)
-        provision_params["AgentId"] = agent_id
-        provision_params["InstanceId"] = instance_id
-        order_id = str(product.get("order_id") or "").strip()
-        if order_id:
-            provision_params["OrderId"] = order_id
-        return self._action("CreateAgent", provision_params)
+        return self._action("CreateAgentProduct", params)
 
     async def get_agent(
         self,

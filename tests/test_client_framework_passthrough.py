@@ -105,45 +105,6 @@ async def test_create_agent_forwards_managed_runtime_contract(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_create_agent_can_provision_existing_product_with_create_agent(monkeypatch):
-    client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
-    calls = []
-
-    def fake_action(action: str, params: dict):
-        calls.append((action, params.copy()))
-        if action == "CreateAgentProduct":
-            return {
-                "agent_id": "ar-managed",
-                "instance_id": "instance-managed",
-                "order_id": "order-managed",
-            }
-        return {"agent_id": "ar-managed"}
-
-    monkeypatch.setattr(client, "_action", fake_action)
-
-    result = await client.create_agent(
-        {
-            "name": "managed-codex",
-            "framework": "codex",
-            "artifact_type": "ManagedRuntime",
-            "runtime_config": {
-                "name": "codex",
-                "version": "0.147.0",
-                "manifest": "name: managed-codex\n",
-            },
-        },
-        provision_instance=True,
-    )
-
-    assert result == {"agent_id": "ar-managed"}
-    assert [action for action, _ in calls] == ["CreateAgentProduct", "CreateAgent"]
-    assert calls[1][1]["AgentId"] == "ar-managed"
-    assert calls[1][1]["InstanceId"] == "instance-managed"
-    assert calls[1][1]["OrderId"] == "order-managed"
-    assert "CodeConfig" not in calls[1][1]
-
-
-@pytest.mark.asyncio
 async def test_create_agent_forwards_network_configuration(monkeypatch):
     client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
     calls = []
