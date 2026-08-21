@@ -13,6 +13,7 @@ from ksadk.studio.contracts import (
     AgentDraft,
     AgentMetadata,
     AgentSpec,
+    DeploymentRecord,
     DeploymentRequest,
     DeploymentTarget,
     Instructions,
@@ -271,6 +272,52 @@ async def test_direct_gateway_deploys_yaml_managed_runtime_without_uploading_bun
     ]
     assert deployment.artifact_id == "managed-runtime"
     assert deployment.bundle_uri is None
+
+
+@pytest.mark.asyncio
+async def test_cloud_service_forwards_bound_model_environment_only_to_deploy_request(
+    tmp_path: Path,
+) -> None:
+    """YAML deployment forwards the transient model env without creating a ZIP."""
+    class _Gateway:
+        received: dict | None = None
+
+        async def create_managed_runtime_deployment(self, **kwargs):
+            self.received = kwargs
+            return DeploymentRecord(
+                id="dep_yaml",
+                build_id="build_yaml",
+                bundle_digest="sha256:" + "a" * 64,
+                version_id="managed-aaaaaaaaaaaaaaaa",
+                status="DEPLOYING",
+                target=kwargs["request"].target,
+                artifact_id="managed-runtime",
+            )
+
+    from ksadk.studio.cloud import CloudDeploymentService
+
+    workspace = Workspace(tmp_path)
+    gateway = _Gateway()
+    service = CloudDeploymentService(workspace=workspace, gateway=gateway)
+    request = DeploymentRequest(
+        target=DeploymentTarget(region="pre-online", environment="preproduction")
+    )
+
+    await service.deploy_managed_runtime(
+        build_id="build_yaml",
+        agent_name="yaml-agent",
+        manifest="name: yaml-agent\nframework: codex\n",
+        runtime_name="codex",
+        runtime_version="0.147.0",
+        manifest_digest="a" * 64,
+        request=request,
+        runtime_environment={"OPENAI_MODEL_NAME": "qwen3.7-flash"},
+    )
+
+    assert gateway.received is not None
+    assert gateway.received["runtime_environment"] == {
+        "OPENAI_MODEL_NAME": "qwen3.7-flash"
+    }
 
 
 def test_managed_runtime_payload_keeps_model_env_out_of_yaml_contract() -> None:

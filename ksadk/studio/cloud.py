@@ -632,6 +632,7 @@ class CloudDeploymentService:
         runtime_version: str,
         manifest_digest: str,
         request: DeploymentRequest,
+        runtime_environment: dict[str, str] | None = None,
         replacing: DeploymentRecord | None = None,
     ) -> DeploymentRecord:
         if replacing is None:
@@ -643,6 +644,7 @@ class CloudDeploymentService:
                 runtime_version=runtime_version,
                 manifest_digest=manifest_digest,
                 request=request,
+                runtime_environment=runtime_environment,
             )
         else:
             record = await self.gateway.replace_managed_runtime_deployment(
