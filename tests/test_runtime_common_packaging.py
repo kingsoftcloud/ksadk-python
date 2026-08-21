@@ -158,7 +158,7 @@ def test_built_wheel_includes_react_studio_static_entrypoint():
         studio_index = archive.read("ksadk/studio/static/index.html").decode("utf-8")
 
     assert '<div id="root"></div>' in studio_index
-    assert '/static/assets/' in studio_index
+    assert "/static/assets/" in studio_index
     assert "ksadk/studio/static/shared-chat.css" not in names
     assert any(name.startswith("ksadk/studio/static/assets/") for name in names)
 

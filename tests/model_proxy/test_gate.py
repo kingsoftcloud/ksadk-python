@@ -22,9 +22,7 @@ def test_denylist_overrides_global_on():
 
 
 def test_allowlist_grayscale_when_global_off():
-    g = ProxyGate(
-        agent_allowlist={"alpha-agent"}, model_allowlist={"glm-5.2"}
-    )
+    g = ProxyGate(agent_allowlist={"alpha-agent"}, model_allowlist={"glm-5.2"})
     assert g.is_on("alpha-agent", None)  # agent 白名单
     assert g.is_on(None, "glm-5.2")  # model 白名单
     assert not g.is_on("other-agent", "other-model")

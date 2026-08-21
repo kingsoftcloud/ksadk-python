@@ -9,6 +9,8 @@ import { ResourcesPage, type ResourceKind } from "./pages/ResourcesPage";
 import { ObservabilityPage } from "./pages/ObservabilityPage";
 import { RuntimeResourcesPage } from "./pages/RuntimeResourcesPage";
 import { OrchestrationPage } from "./pages/OrchestrationPage";
+import { EvaluationsPage } from "./pages/EvaluationsPage";
+import { EvaluationDetailPage } from "./pages/EvaluationDetailPage";
 import { SettingsOverlay, type SettingsSection } from "./components/SettingsOverlay";
 import { ChatRunPanel } from "./components/ChatRunPanel";
 import { ChatWorkspace } from "./components/ChatWorkspace";
@@ -36,6 +38,7 @@ const VIEW_TITLE: Record<View, string> = {
   builds: "构建",
   deployments: "部署",
   observability: "可观测",
+  evaluations: "评测",
   "runtime-resources": "运行资源",
   orchestration: "任务编排",
 };
@@ -49,12 +52,16 @@ export function parseStudioLocationHash(hash: string): {
   resourceKind: ResourceKind;
   editingAgentId: string;
   detailAgentId: string;
+  evaluationRunId: string;
 } {
   const parts = hash.replace(/^#\/?/, "").split("/").filter(Boolean);
   const editingAgentId = parts[0] === "agents" && parts[1] && parts[2] === "edit"
     ? decodeURIComponent(parts[1])
     : "";
   const detailAgentId = parts[0] === "agents" && parts[1] && !parts[2]
+    ? decodeURIComponent(parts[1])
+    : "";
+  const evaluationRunId = parts[0] === "evaluations" && parts[1]
     ? decodeURIComponent(parts[1])
     : "";
   const candidate = parts[0] as View;
@@ -68,7 +75,7 @@ export function parseStudioLocationHash(hash: string): {
   const resourceKind = view === "resources" && RESOURCE_KINDS.includes(parts[1] as ResourceKind)
     ? parts[1] as ResourceKind
     : "model";
-  return { view, resourceKind, editingAgentId, detailAgentId };
+  return { view, resourceKind, editingAgentId, detailAgentId, evaluationRunId };
 }
 
 interface AgentSummary {
@@ -82,6 +89,7 @@ export default function App() {
   const studioTheme = useStudioTheme();
   const initialRoute = parseStudioLocationHash(window.location.hash);
   const [view, setViewState] = useState<View>(initialRoute.view);
+  const [evaluationRunId, setEvaluationRunId] = useState(initialRoute.evaluationRunId);
   const [resourceKind, setResourceKind] = useState<ResourceKind>(initialRoute.resourceKind);
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [agentsLoaded, setAgentsLoaded] = useState(false);
@@ -110,6 +118,7 @@ export default function App() {
       setResourceKind(route.resourceKind);
       setEditingAgentId(route.editingAgentId);
       setDetailAgentId(route.detailAgentId);
+      setEvaluationRunId(route.evaluationRunId);
       if (route.editingAgentId || route.detailAgentId) {
         setCurrentAgentId(route.editingAgentId || route.detailAgentId);
       }
@@ -128,8 +137,20 @@ export default function App() {
     setViewState(v);
     if (v === "conversations") setChatMounted(true);
     if (v !== "create") setEditingAgentId("");
+    setEvaluationRunId("");
     const nextHash = v === "resources" ? `#/resources/${resourceKind}` : `#/${v}`;
     if (window.location.hash !== nextHash) window.history.pushState(null, "", nextHash);
+  }
+
+  function openEvaluationRun(runId: string) {
+    setViewState("evaluations");
+    setEvaluationRunId(runId);
+    window.history.pushState(null, "", `#/evaluations/${encodeURIComponent(runId)}`);
+  }
+
+  function closeEvaluationRun() {
+    setEvaluationRunId("");
+    window.history.pushState(null, "", "#/evaluations");
   }
 
   const loadAgents = useCallback(async () => {
@@ -330,6 +351,7 @@ export default function App() {
                   agentName={currentAgent?.metadata.name || "Agent"}
                   agentAppearance={currentAgent?.metadata.appearance}
                   active={view === "conversations"}
+                  refreshTick={refreshTick}
                   onConfigureAgent={() => openEdit(currentAgentId)}
                   onOpenSettings={() => {
                     setSettingsSection("credentials");
@@ -396,6 +418,12 @@ export default function App() {
             {view === "deployments" && <DeploymentsPage onCreate={openCreate} />}
             {view === "observability" && (
               <ObservabilityPage refreshTick={refreshTick} />
+            )}
+            {view === "evaluations" && !evaluationRunId && (
+              <EvaluationsPage refreshTick={refreshTick} onOpenRun={openEvaluationRun} />
+            )}
+            {view === "evaluations" && evaluationRunId && (
+              <EvaluationDetailPage runId={evaluationRunId} onBack={closeEvaluationRun} />
             )}
             {view === "runtime-resources" && <RuntimeResourcesPage refreshTick={refreshTick} onOpenResources={openResources} />}
             {view === "orchestration" && <OrchestrationPage currentAgentId={currentAgentId} agents={agents} onSelectAgent={setCurrentAgentId} onCreate={openCreate} />}

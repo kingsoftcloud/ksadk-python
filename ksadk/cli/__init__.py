@@ -68,12 +68,14 @@ ROOT_HELP_COMMANDS = {
     "dashboard",
     "deploy",
     "eval",
+    "evalset",
     "files",
     "init",
     "hermes",
     "launch",
     "managed-runtime",
     "mcp",
+    "observe",
     "openclaw",
     "run",
     "studio",
@@ -91,12 +93,14 @@ SHORT_HELP_MAP = {
     "dashboard": "打开云端 Agent Dashboard",
     "deploy": "部署到云端",
     "eval": "评测本地、A2A 或 Codex Agent",
+    "evalset": "预览或上传 EvalSet 云端快照",
     "files": "管理 workspace 文件",
     "hermes": "Hermes Agent 资源管理",
     "init": "创建新项目",
     "launch": "一键构建+部署",
     "managed-runtime": "启动平台托管的 YAML Agent",
     "mcp": "MCP 资源管理",
+    "observe": "导出本地 Agent 观测数据",
     "openclaw": "OpenClaw 资源管理",
     "run": "运行 Agent",
     "studio": "启动本地 Agent 构建控制台",
@@ -181,6 +185,8 @@ class ColoredHelpGroup(click.Group):
         _write_colored_help_row(formatter, "agentengine web", "本地调试 Agent Invoke UI")
         _write_colored_help_row(formatter, "agentengine studio", "本地 Agent 构建控制台")
         _write_colored_help_row(formatter, "agentengine eval", "评测本地、A2A 或 Codex Agent")
+        _write_colored_help_row(formatter, "agentengine evalset", "预览或上传 EvalSet 云端快照")
+        _write_colored_help_row(formatter, "agentengine observe", "导出本地 Agent 观测数据")
 
         # 云端部署
         formatter.write(click.style("  🚀  云端部署:\n\n", fg="blue", bold=True))
@@ -348,6 +354,8 @@ def _register_commands():
     _register_optional_command(cli, "ksadk.cli.cmd_build", "build")
     _register_optional_command(cli, "ksadk.cli.cmd_studio", "studio")
     _register_optional_command(cli, "ksadk.cli.cmd_eval", "eval")
+    _register_optional_command(cli, "ksadk.cli.cmd_evalset", "evalset")
+    _register_optional_command(cli, "ksadk.cli.cmd_observe", "observe")
     _register_optional_command(cli, "ksadk.cli.cmd_launch", "launch")
     _register_optional_command(cli, "ksadk.cli.cmd_agent", "agent")
     _register_optional_command(cli, "ksadk.cli.cmd_status", "status")

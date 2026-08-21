@@ -65,7 +65,6 @@ from ksadk.studio.contracts import (
     RuntimeRef,
 )
 from ksadk.studio.errors import StudioError
-from ksadk.studio.evaluation import EvaluationRunner
 from ksadk.studio.event_store import RunEventStore
 from ksadk.studio.framework_run import FrameworkRunSpecResolver
 from ksadk.studio.mcp_runtime import MCPRuntimeAdapter
@@ -116,7 +115,6 @@ class StudioService:
             repository=self.builds,
         )
         self.event_store = RunEventStore(self.workspace)
-        self.event_store.recover_interrupted()
         self.codex_manifests = CodexManifestRepository(self.workspace)
         self.codex_builds = CodexBuildRepository(self.workspace)
         self.codex_drafts = CodexDraftRepository(self.workspace)
@@ -160,12 +158,6 @@ class StudioService:
         )
         self.model_client = runtime_model_client
         self.mcp_runtime = MCPRuntimeAdapter(self.workspace, credentials=self.credentials)
-        self.evaluations = EvaluationRunner(
-            self.workspace,
-            run_agent=self.run_build,
-            event_store=self.event_store,
-            build_repository=self.builds,
-        )
         self._cloud_gateway_override = cloud_gateway
         self.cloud = CloudDeploymentService(
             self.workspace,
@@ -212,11 +204,13 @@ class StudioService:
         spec: AgentSpec,
         *,
         expected_revision: int,
+        name: str | None = None,
     ) -> AgentDraft:
         return self.codex_agents.update(
             agent_id,
             spec,
             expected_revision=expected_revision,
+            name=name,
         )
 
     def delete_codex_agent(self, agent_id: str, *, purge: bool = False) -> None:
@@ -408,6 +402,30 @@ class StudioService:
             return framework.strip().lower() or "adk"
         return runtime.type
 
+    def detect_importable_project(self) -> dict | None:
+        """Expose a root framework project for explicit Studio import only."""
+        from ksadk.studio.manifest_resolver import detect_manifest_kind
+
+        result = detect_manifest_kind(self.workspace.root)
+        if result.kind != "framework":
+            return None
+        import yaml
+
+        try:
+            payload = yaml.safe_load(result.path.read_text(encoding="utf-8-sig")) or {}
+        except Exception:  # noqa: BLE001
+            return None
+        return {
+            "kind": "framework",
+            "runtimeType": result.framework or result.runtime_type,
+            "name": str(payload.get("name") or self.workspace.root.name or "imported-agent"),
+            "model": str(payload.get("model") or ""),
+            "prompt": str(payload.get("prompt") or payload.get("instruction") or ""),
+            "task": str(payload.get("task") or ""),
+            "manifestPath": "agentengine.yaml",
+            "requiresConfirmation": True,
+        }
+
     def list_agents(self, *, query: str = "", limit: int = 50) -> list[AgentDraft]:
         """List all local Agents from one registry view across runtime types."""
 
@@ -485,6 +503,7 @@ class StudioService:
         spec: AgentSpec,
         *,
         expected_revision: int,
+        name: str | None = None,
     ) -> AgentDraft:
         if self.is_codex_agent(agent_id):
             spec.runtime = self.agent_detail(agent_id)["draft"].spec.runtime
@@ -494,6 +513,7 @@ class StudioService:
                     agent_id,
                     spec,
                     expected_revision=expected_revision,
+                    name=name,
                 ),
             )
         current = self.drafts.get(agent_id)
@@ -510,7 +530,12 @@ class StudioService:
             )
         return cast(
             AgentDraft,
-            self.update_agent(agent_id, spec, expected_revision=expected_revision),
+            self.update_agent(
+                agent_id,
+                spec,
+                expected_revision=expected_revision,
+                name=name,
+            ),
         )
 
     def update_studio_agent_bindings(
@@ -727,12 +752,14 @@ class StudioService:
         spec: AgentSpec,
         *,
         expected_revision: int,
+        name: str | None = None,
     ):
         self._validate_bindings(spec.bindings)
         updated = self.drafts.update(
             agent_id,
             spec,
             expected_revision=expected_revision,
+            name=name,
         )
         materialize_generated_runtime_source(self.workspace, updated)
         return updated
@@ -789,7 +816,7 @@ class StudioService:
             )
         snapshot = draft.model_copy(deep=True)
 
-        async def runner():
+        async def runner(_operation_id: str):
             return await asyncio.to_thread(self.builder.build, snapshot)
 
         return self.operations.submit(
@@ -814,7 +841,7 @@ class StudioService:
         idempotency_key: str,
         on_event: Callable[[RunEvent], None] | None = None,
     ) -> Operation:
-        async def runner():
+        async def runner(_operation_id: str):
             return await self.run_build(
                 build_id,
                 user_input,
@@ -884,28 +911,6 @@ class StudioService:
             on_event=on_event,
         )
 
-    def submit_evaluation(
-        self,
-        build_id: str,
-        suite_refs: list[str],
-        *,
-        fail_fast: bool,
-        idempotency_key: str,
-    ) -> Operation:
-        async def runner():
-            return await self.evaluations.run(
-                build_id,
-                suite_refs,
-                fail_fast=fail_fast,
-            )
-
-        return self.operations.submit(
-            kind=OperationKind.EVALUATION,
-            resource_id=build_id,
-            idempotency_key=idempotency_key,
-            runner=runner,
-        )
-
     def submit_public_evaluation(
         self,
         evalset_file: str,
@@ -944,7 +949,7 @@ class StudioService:
             report_dir=str(self.evaluation_storage.root),
         )
 
-        async def runner():
+        async def runner(_operation_id: str):
             try:
                 report = await execute_evaluation(request)
             except EvaluationNotImplementedError as exc:
@@ -1041,7 +1046,7 @@ class StudioService:
                 (launch.launch_context.config or {}).get("env") or {}
             )
 
-            async def managed_runtime_runner():
+            async def managed_runtime_runner(_operation_id: str):
                 return await self.cloud.deploy_managed_runtime(
                     build_id=build_id,
                     agent_name=codex_build.agent_name,
@@ -1062,7 +1067,7 @@ class StudioService:
                 runner=managed_runtime_runner,
             )
 
-        async def runner():
+        async def runner(_operation_id: str):
             return await self.cloud.deploy(build_id, request)
 
         return self.operations.submit(
@@ -1096,7 +1101,7 @@ class StudioService:
             manifest = self.codex_builds.manifest_text(target_build)
             request = self.cloud.request_for(deployment_id)
 
-            async def managed_runtime_runner():
+            async def managed_runtime_runner(_operation_id: str):
                 return await self.cloud.deploy_managed_runtime(
                     build_id=target_build.id,
                     agent_name=target_build.agent_name,
@@ -1115,7 +1120,7 @@ class StudioService:
                 runner=managed_runtime_runner,
             )
 
-        async def runner():
+        async def runner(_operation_id: str):
             return await self.cloud.rollback(
                 deployment_id,
                 target_build_id=target_build_id,

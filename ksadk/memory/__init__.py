@@ -54,4 +54,65 @@ def __getattr__(name):
         from ksadk.memory.service import LongTermMemoryService
 
         return LongTermMemoryService
+    # Memory v2（方案 §10）：lazy import，避免在仅用旧 API 时强制加载 SQLite/tiktoken 依赖。
+    _v2_names = {
+        "MemoryRecord",
+        "MemoryCandidate",
+        "MemorySearchRequest",
+        "MemorySearchResult",
+        "MemoryCapabilities",
+        "CoreMemoryBlock",
+        "MemoryDeleteRequest",
+        "MemoryDeleteResult",
+        "MemoryProvider",
+        "MemoryPolicy",
+        "MemoryCoordinator",
+        "MemoryExtractor",
+        "SqliteMemoryProvider",
+        "build_search_request",
+        "recall_to_context_item",
+        "propose_memory_candidates",
+    }
+    if name in _v2_names:
+        if name in {
+            "MemoryRecord",
+            "MemoryCandidate",
+            "MemorySearchRequest",
+            "MemorySearchResult",
+            "MemoryCapabilities",
+            "CoreMemoryBlock",
+            "MemoryDeleteRequest",
+            "MemoryDeleteResult",
+        }:
+            from ksadk.memory import models as _models
+
+            return getattr(_models, name)
+        if name == "MemoryProvider":
+            from ksadk.memory.provider import MemoryProvider
+
+            return MemoryProvider
+        if name == "MemoryPolicy":
+            from ksadk.memory.policy import MemoryPolicy
+
+            return MemoryPolicy
+        if name == "MemoryCoordinator":
+            from ksadk.memory.coordinator import MemoryCoordinator
+
+            return MemoryCoordinator
+        if name in {"build_search_request", "recall_to_context_item"}:
+            from ksadk.memory import coordinator as _coord
+
+            return getattr(_coord, name)
+        if name == "MemoryExtractor":
+            from ksadk.memory.extraction import MemoryExtractor
+
+            return MemoryExtractor
+        if name == "propose_memory_candidates":
+            from ksadk.memory.extraction import propose_memory_candidates
+
+            return propose_memory_candidates
+        if name == "SqliteMemoryProvider":
+            from ksadk.memory.providers.local_sqlite import SqliteMemoryProvider
+
+            return SqliteMemoryProvider
     raise AttributeError(f"module 'ksadk.memory' has no attribute {name!r}")

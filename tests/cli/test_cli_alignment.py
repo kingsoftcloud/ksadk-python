@@ -82,6 +82,18 @@ def test_a2a_command_registered_and_help_works():
         assert sub in result.output
 
 
+def test_observe_command_is_registered_and_visible_in_plain_help(monkeypatch):
+    monkeypatch.setenv("AGENTENGINE_OUTPUT_MODE", "json")
+    _register_commands()
+
+    assert "observe" in cli.commands
+    result = CliRunner().invoke(cli, ["--help"])
+
+    assert result.exit_code == 0
+    assert "agentengine observe" in result.output
+    assert "导出本地 Agent 观测数据" in result.output
+
+
 # ---- replay ----
 
 

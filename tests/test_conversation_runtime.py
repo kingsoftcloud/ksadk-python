@@ -704,6 +704,7 @@ def test_runtime_context_reset_is_safe_after_an_async_stream_context_switch():
     )
     token = set_current_invocation_context(context)
     try:
+
         def reset_from_descendant_context():
             reset_current_invocation_context(token)
             return get_current_invocation_context()
@@ -802,8 +803,8 @@ def _disable_session_title_ai(monkeypatch):
 def test_estimate_text_tokens_is_less_optimistic_for_cjk():
     assert estimate_text_tokens("") == 0
     assert estimate_text_tokens("hello world") == 3
-    assert estimate_text_tokens("你好世界") == 4
-    assert estimate_text_tokens("Agent平台设计") == 6
+    assert estimate_text_tokens("你好世界") == 6
+    assert estimate_text_tokens("Agent平台设计") == 8
 
 
 def test_build_compaction_sse_event_returns_str_with_millisecond_timestamp():
@@ -2482,7 +2483,11 @@ def test_build_runner_ambient_contexts_skips_memory_when_disabled(monkeypatch):
         user_input="hello",
     )
 
-    assert contexts == {"kb_context": None, "memory_context": None}
+    assert contexts == {
+        "kb_context": None,
+        "memory_context": None,
+        "memory_recall_events": [],
+    }
 
 
 def test_build_runner_ambient_contexts_skips_kb_when_disabled(monkeypatch):
@@ -2506,7 +2511,7 @@ def test_build_runner_ambient_contexts_skips_kb_when_disabled(monkeypatch):
         user_input="hello",
     )
 
-    assert contexts == {"kb_context": None, "memory_context": None}
+    assert contexts == {"kb_context": None, "memory_context": None, "memory_recall_events": []}
 
 
 def test_build_runner_ambient_contexts_default_on_demand_skips_chitchat(monkeypatch):
@@ -2541,7 +2546,7 @@ def test_build_runner_ambient_contexts_default_on_demand_skips_chitchat(monkeypa
         user_input="你好，请介绍一下你自己",
     )
 
-    assert contexts == {"kb_context": None, "memory_context": None}
+    assert contexts == {"kb_context": None, "memory_context": None, "memory_recall_events": []}
 
 
 def test_build_runner_ambient_contexts_non_adk_runner_name_does_not_disable_ambient(monkeypatch):
@@ -2643,7 +2648,7 @@ def test_build_runner_ambient_contexts_default_on_demand_skips_memory_for_short_
         user_input="把前面的回答翻译成英文",
     )
 
-    assert contexts == {"kb_context": None, "memory_context": None}
+    assert contexts == {"kb_context": None, "memory_context": None, "memory_recall_events": []}
 
 
 def test_build_runner_ambient_contexts_default_on_demand_skips_memory_for_mixed_short_term_prompt(
@@ -2673,7 +2678,7 @@ def test_build_runner_ambient_contexts_default_on_demand_skips_memory_for_mixed_
         user_input="你还记得刚才的回答吗",
     )
 
-    assert contexts == {"kb_context": None, "memory_context": None}
+    assert contexts == {"kb_context": None, "memory_context": None, "memory_recall_events": []}
 
 
 def test_build_runner_ambient_contexts_default_on_demand_loads_memory_for_profile_prompt(
@@ -2794,7 +2799,7 @@ def test_build_runner_ambient_contexts_drops_kb_error_text_returned_by_service(m
         user_input="帮我总结一下 AgentEngine 部署步骤",
     )
 
-    assert contexts == {"kb_context": None, "memory_context": None}
+    assert contexts == {"kb_context": None, "memory_context": None, "memory_recall_events": []}
 
 
 def test_build_runner_ambient_contexts_drops_memory_error_text_returned_by_service(monkeypatch):
@@ -2822,7 +2827,11 @@ def test_build_runner_ambient_contexts_drops_memory_error_text_returned_by_servi
         user_input="按照我的风格来写",
     )
 
-    assert contexts == {"kb_context": None, "memory_context": None}
+    assert contexts == {
+        "kb_context": None,
+        "memory_context": None,
+        "memory_recall_events": [{"type": "memory.recall.empty"}],
+    }
 
 
 def test_build_runner_ambient_contexts_ambient_failures_degrade_quietly(monkeypatch):
@@ -2859,7 +2868,10 @@ def test_build_runner_ambient_contexts_ambient_failures_degrade_quietly(monkeypa
         user_input="你还记得我上次说过的偏好吗？",
     )
 
-    assert contexts == {"kb_context": None, "memory_context": None}
+    assert contexts["kb_context"] is None
+    assert contexts["memory_context"] is None
+    assert contexts["memory_recall_events"][0]["type"] == "memory.recall.failed"
+    assert "memory boom" in contexts["memory_recall_events"][0]["error"]
 
 
 def test_build_runner_ambient_contexts_always_policy_preserves_legacy_behavior(monkeypatch):
@@ -4065,8 +4077,7 @@ async def test_invoke_conversation_once_uses_heuristic_title_for_architecture_at
             self.calls.append(input_data)
             return {
                 "output": (
-                    "这张图展示了典型的微服务分层架构，"
-                    "包含网关、业务服务、数据库和异步消息链路。"
+                    "这张图展示了典型的微服务分层架构，包含网关、业务服务、数据库和异步消息链路。"
                 )
             }
 

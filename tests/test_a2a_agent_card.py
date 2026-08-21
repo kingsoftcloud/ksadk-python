@@ -48,9 +48,7 @@ def test_agent_card_uses_the_official_a2a_1_wire_shape():
 
     payload = MessageToDict(card, preserving_proto_field_name=False)
 
-    assert {
-        field.json_name for field in AgentCard.DESCRIPTOR.fields
-    } == _A2A_MAIN_AGENT_CARD_FIELDS
+    assert {field.json_name for field in AgentCard.DESCRIPTOR.fields} == _A2A_MAIN_AGENT_CARD_FIELDS
     assert payload == {
         "name": "research-agent",
         "description": "Answers research questions.",

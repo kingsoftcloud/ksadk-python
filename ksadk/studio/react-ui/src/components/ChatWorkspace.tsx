@@ -82,6 +82,7 @@ interface ChatWorkspaceProps {
   agentName: string;
   agentAppearance?: AgentAppearance;
   active?: boolean;
+  refreshTick?: number;
   onRunChanged?: () => void;
   onConfigureAgent?: () => void;
   onOpenSettings?: () => void;
@@ -713,6 +714,7 @@ export function ChatWorkspace({
   agentName,
   agentAppearance,
   active = true,
+  refreshTick = 0,
   onRunChanged,
   onConfigureAgent,
   onOpenSettings,
@@ -832,7 +834,7 @@ export function ChatWorkspace({
       cancelled = true;
       abortRef.current?.abort();
     };
-  }, [agentId, loadWorkspace]); // 只在切换 Agent 时重置；运行中的刷新由下方轮询负责。
+  }, [agentId, loadWorkspace, refreshTick]); // Agent/Build 变更后同步最新模型锁定；运行中的刷新由下方轮询负责。
 
   useEffect(() => {
     setApprovalMode(normalizeApprovalMode(localStorage.getItem(approvalModeStorageKey(agentId))));

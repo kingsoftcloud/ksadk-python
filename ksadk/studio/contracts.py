@@ -218,18 +218,82 @@ class ExecutionSpec(ContractModel):
 class CompactionSpec(ContractModel):
     enabled: bool = True
     threshold_ratio: float = Field(default=0.8, gt=0, le=1)
+    # PCM：双阈值（方案 §8.2 / §9.1）。soft=主动整理，hard=强制压缩。
+    soft_threshold_ratio: float = Field(default=0.50, gt=0, le=1)
+    hard_threshold_ratio: float = Field(default=0.85, gt=0, le=1)
+    preserve_working_state: bool = True
+    flush_memory_before_compaction: bool = True
+
+    @model_validator(mode="after")
+    def validate_ratios(self) -> "CompactionSpec":
+        if self.soft_threshold_ratio >= self.hard_threshold_ratio:
+            raise ValueError("softThresholdRatio 必须小于 hardThresholdRatio")
+        return self
+
+
+class ContextContributorsSpec(ContractModel):
+    """ContextContributor 开关与预算（方案 §5.1 / §8.7）。默认按 policy，可显式开关。"""
+    workspace_rules: bool | None = None
+    skill_manifest: bool | None = None
+    memory_recall: bool | None = None
+
+
+class RolloutSpec(ContractModel):
+    """AgentVersion 级灰度/回退状态（方案 §8.5）。替代环境变量控制正式灰度。"""
+    context_engine: Literal["off", "shadow", "enabled"] = "shadow"
+    memory_write: Literal["off", "shadow", "enabled"] = "shadow"
 
 
 class ContextSpec(ContractModel):
     max_input_tokens: int = Field(default=32000, ge=1024)
     reserve_output_tokens: int = Field(default=4096, ge=1)
     compaction: CompactionSpec = Field(default_factory=CompactionSpec)
+    # prompt_ownership：标记本 Agent 的 system prompt 归属。
+    # framework（默认）= 框架自带 SystemMessage，ksadk 不接管 Runner 输入；
+    # ksadk = 由 ksadk 的 PromptCompiler 编译 CompiledPrompt 并接管 instructions。
+    prompt_ownership: Literal["framework", "ksadk"] = "framework"
+    # PCM：ownership 高阶字段（方案 §5.1）。auto=按 capability 推导，向后兼容现有
+    # prompt_ownership；显式 ksadk/framework/native 时覆盖。Studio 据 capability 限制选项。
+    ownership: Literal["auto", "ksadk", "framework", "native"] = "auto"
+    tokenizer: Literal["auto", "heuristic"] = "auto"
+    policy_version: str = Field(default="context-v2", max_length=64)
+    contributors: ContextContributorsSpec = Field(default_factory=ContextContributorsSpec)
+    rollout: RolloutSpec = Field(default_factory=RolloutSpec)
 
     @model_validator(mode="after")
     def validate_budget(self) -> "ContextSpec":
         if self.reserve_output_tokens >= self.max_input_tokens:
             raise ValueError("reserveOutputTokens 必须小于 maxInputTokens")
+        # ownership 与 prompt_ownership 一致性：显式 ownership 收窄 prompt_ownership（§5.2）。
+        if self.ownership == "ksadk":
+            self.prompt_ownership = "ksadk"
+        elif self.ownership == "framework":
+            self.prompt_ownership = "framework"
+        # native 不收窄 prompt_ownership（native runtime 的 prompt 投影由 Adapter 决定）。
         return self
+
+
+class MemoryRecallSpec(ContractModel):
+    enabled: bool = True
+    max_tokens: int = Field(default=1600, ge=0)
+    top_k: int = Field(default=8, ge=1, le=64)
+    min_score: float = Field(default=0.45, ge=0, le=1)
+
+
+class MemoryWriteSpec(ContractModel):
+    mode: Literal["off", "explicit_only", "candidate"] = "candidate"
+    flush_before_compaction: bool = True
+
+
+class MemorySpec(ContractModel):
+    """AgentVersion 级 Memory 策略（方案 §5.1 / §10）。Build 只存 providerRef，不存凭证。"""
+    enabled: bool = False
+    provider_ref: str = Field(default="local-default", max_length=128)
+    recall: MemoryRecallSpec = Field(default_factory=MemoryRecallSpec)
+    write: MemoryWriteSpec = Field(default_factory=MemoryWriteSpec)
+    scopes: list[Literal["tenant", "workspace", "agent", "user"]] = Field(
+        default_factory=lambda: ["workspace", "agent", "user"]
+    )
 
 
 class NetworkPolicy(ContractModel):
@@ -299,6 +363,7 @@ class AgentSpec(ContractModel):
     bindings: AgentBindings = Field(default_factory=AgentBindings)
     execution: ExecutionSpec = Field(default_factory=ExecutionSpec)
     context: ContextSpec = Field(default_factory=ContextSpec)
+    memory: MemorySpec = Field(default_factory=MemorySpec)
     security: SecuritySpec = Field(default_factory=SecuritySpec)
     evaluation: EvaluationSpec = Field(default_factory=EvaluationSpec)
 
@@ -383,9 +448,23 @@ class AgentTemplateRecommendation(ContractModel):
     resource_id: str | None = None
 
 
+class AgentBehaviorDesign(ContractModel):
+    """Human-readable explanation of the generated Agent behavior contract."""
+
+    role: str
+    objective: str
+    operating_principles: list[str] = Field(default_factory=list)
+    workflow: list[str] = Field(default_factory=list)
+    explicit_boundaries: list[str] = Field(default_factory=list)
+    safety_boundaries: list[str] = Field(default_factory=list)
+    output_expectations: list[str] = Field(default_factory=list)
+    source_notes: list[str] = Field(default_factory=list)
+
+
 class AgentTemplateComposition(ContractModel):
     template_id: Literal["blank", "research"]
     spec: AgentSpec
+    behavior_design: AgentBehaviorDesign | None = None
     recommendations: list[AgentTemplateRecommendation] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
 
@@ -415,6 +494,7 @@ class ResolvedAgentSpec(ContractModel):
     capabilities: ResolvedCapabilities
     execution: ExecutionSpec
     context: ContextSpec
+    memory: MemorySpec
     security: SecuritySpec
     evaluation: EvaluationSpec
     source_digest: str
@@ -500,6 +580,7 @@ class Operation(ContractModel):
     kind: OperationKind
     status: OperationStatus = OperationStatus.QUEUED
     resource_id: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
     error: dict[str, Any] | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     completed_at: datetime | None = None
@@ -556,6 +637,11 @@ class RunRecord(ContractModel):
     completed_at: datetime | None = None
     duration_ms: int | None = None
     duration_source: Literal["runtime", "studio"] | None = None
+    # PR-S4：PCM evidence（方案 §6.3）。由 run_service 以 shadow 方式捕获（不进真实输入），
+    # 供 Context Inspector 展示 planned/projected/actual + 精度。默认空（未捕获）。
+    context_plan: dict[str, Any] | None = None
+    prompt_evidence: dict[str, Any] | None = None
+    working_state: dict[str, Any] | None = None
 
 
 class RunEvent(ContractModel):

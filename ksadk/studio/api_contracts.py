@@ -48,6 +48,28 @@ class BuildRequest(ContractModel):
     evaluation_suite_refs: list[str] = Field(default_factory=list)
 
 
+class ImportRootRequest(ContractModel):
+    """一键导入根 Framework 项目（方案 §6.1）。"""
+    name: str | None = None
+    slug: str | None = None
+
+
+class PromptCompileRequest(ContractModel):
+    """PR-S2：Prompt 编译预览请求（方案 §6.2）。只读，不写 Session/Trace。"""
+    revision: int = Field(default=1, ge=1)
+    request_instructions: str = Field(default="", max_length=32768)
+    include_content: bool = False  # local debug 显式请求正文
+
+
+class ContextPreviewRequest(ContractModel):
+    """PR-S2：Context 预览请求（方案 §6.2）。复用真实 Planner，不调模型。"""
+    revision: int = Field(default=1, ge=1)
+    user_input: str = Field(default="", max_length=1_000_000)
+    request_instructions: str = Field(default="", max_length=32768)
+    simulated_history: list[MessageInput] = Field(default_factory=list)
+    include_content: bool = False
+
+
 class MessageInput(ContractModel):
     role: str = "user"
     content: str = Field(min_length=1, max_length=1_000_000)
@@ -94,12 +116,6 @@ class RunRequest(ContractModel):
 class InteractionSubmitRequest(ContractModel):
     name: str = Field(min_length=1, max_length=64)
     data: dict[str, Any] = Field(default_factory=dict)
-
-
-class EvaluationRequest(ContractModel):
-    suite_refs: list[str] = Field(min_length=1)
-    concurrency: int = Field(default=1, ge=1, le=4)
-    fail_fast: bool = False
 
 
 class StudioEvaluationCreate(ContractModel):

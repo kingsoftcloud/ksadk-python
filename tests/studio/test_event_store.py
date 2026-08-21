@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -27,40 +28,37 @@ def _record(run_id: str, *, status: RunStatus = RunStatus.CREATED) -> RunRecord:
     )
 
 
-def test_event_store_supports_last_event_id_semantics(tmp_path: Path) -> None:
+def test_event_store_writes_only_run_record(tmp_path: Path) -> None:
     store = _store(tmp_path)
     record = _record("run_demo")
     store.create(record)
-    store.append(record.id, "run.created", {})
-    store.append(record.id, "run.started", {})
 
-    assert [event.id for event in store.events(record.id, after=1)] == [2]
+    payload = json.loads((tmp_path / ".agentkit/runs/run_demo.json").read_text())
+    assert set(payload) == {"record"}
 
 
-def test_event_store_recovers_persisted_terminal_event(tmp_path: Path) -> None:
+def test_event_store_reads_legacy_events_but_drops_them_on_save(tmp_path: Path) -> None:
     store = _store(tmp_path)
-    record = _record("run_refresh", status=RunStatus.RUNNING)
-    store.create(record)
-    store.append(record.id, "run.cancelled", {"status": "cancelled"})
+    record = _record("run_legacy")
+    path = tmp_path / ".agentkit/runs/run_legacy.json"
+    path.write_text(
+        json.dumps(
+            {
+                "record": record.model_dump(by_alias=True, mode="json"),
+                "events": [
+                    {
+                        "id": 1,
+                        "runId": record.id,
+                        "type": "run.started",
+                        "data": {},
+                    }
+                ],
+            }
+        )
+    )
 
-    assert store.recover_interrupted() == 1
-    recovered = store.get(record.id)
-    assert recovered.status == RunStatus.CANCELLED
-    assert recovered.completed_at is not None
-    assert recovered.error == {"code": "RUN_CANCELLED", "message": "运行已取消"}
-
-
-def test_event_store_marks_orphaned_running_run_interrupted(tmp_path: Path) -> None:
-    store = _store(tmp_path)
-    record = _record("run_orphaned", status=RunStatus.RUNNING)
-    store.create(record)
-    store.append(record.id, "run.started", {})
-
-    assert store.recover_interrupted() == 1
-    recovered = store.get(record.id)
-    assert recovered.status == RunStatus.INTERRUPTED
-    assert recovered.error == {
-        "code": "RUN_INTERRUPTED",
-        "message": "Studio 重启后无法重新 attach 上一次本地运行",
-    }
-    assert store.events(record.id)[-1].type == "run.interrupted"
+    assert store.get(record.id) == record
+    store.save(record)
+    # PCM 保留 Studio lifecycle events (memory.recall.*, …) 以便跨重启读取；
+    # legacy 事件同样被保留。
+    assert set(json.loads(path.read_text())) == {"record", "events"}

@@ -31,6 +31,11 @@ from ksadk.evaluation import (
     execute_evaluation,
     load_evalset,
 )
+from ksadk.evaluation.agent_eval_client import (
+    AgentEvalCloudClientError,
+    AgentEvalCloudDatasetClient,
+)
+from ksadk.evaluation.cloud_service import CloudEvalSetPreviewError, CloudEvalSetService
 from ksadk.evaluation.contracts import (
     DataPolicy,
     EvalRunReport,
@@ -42,10 +47,9 @@ from ksadk.evaluation.contracts import (
     TargetRunStatus,
 )
 from ksadk.evaluation.evalset import EvalSetParseError
-from ksadk.evaluation.evaluators import DEFAULT_EVALUATORS, SUPPORTED_EVALUATORS
+from ksadk.evaluation.evaluators import SUPPORTED_EVALUATORS, resolve_evaluator_plan
 from ksadk.evaluation.storage import EvaluationStorage
 
-_DEFAULT_EVALUATORS = tuple(DEFAULT_EVALUATORS)
 _DATA_POLICIES = tuple(policy.value for policy in DataPolicy)
 
 
@@ -56,10 +60,13 @@ class EvaluationCliError(click.ClickException):
 @click.command(context_settings=dict(help_option_names=["-h", "--help"]))
 @click.option(
     "--evalset-file",
-    required=True,
+    required=False,
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
     help="本地 EvalSet YAML/JSON 文件",
 )
+@click.option("--dataset-id", type=str, help="云端 Dataset ID；必须配合固定版本使用")
+@click.option("--dataset-version", type=click.IntRange(1), help="云端 Dataset immutable version")
+@click.option("--dataset-project-id", type=str, help="云端 Dataset 所属项目 ID")
 @click.option(
     "--agent-dir",
     type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -119,6 +126,9 @@ class EvaluationCliError(click.ClickException):
 )
 def eval(
     evalset_file: Path,
+    dataset_id: str | None,
+    dataset_version: int | None,
+    dataset_project_id: str | None,
     agent_dir: Path | None,
     a2a_url: str | None,
     codex_worktree: Path | None,
@@ -150,6 +160,9 @@ def eval(
     )
     request = _build_request(
         evalset_file=evalset_file,
+        dataset_id=dataset_id,
+        dataset_version=dataset_version,
+        dataset_project_id=dataset_project_id,
         target=target,
         evaluators=evaluators,
         judge_model=judge_model,
@@ -173,7 +186,10 @@ def eval(
 
 def _build_request(
     *,
-    evalset_file: Path,
+    evalset_file: Path | None,
+    dataset_id: str | None,
+    dataset_version: int | None,
+    dataset_project_id: str | None,
     target: TargetRef,
     evaluators: tuple[str, ...],
     judge_model: str | None,
@@ -184,10 +200,37 @@ def _build_request(
     data_policy: str,
     report_dir: Path | None,
 ) -> EvaluationRequest:
-    try:
-        evalset = load_evalset(evalset_file)
-    except EvalSetParseError as exc:
-        raise click.UsageError(f"{exc.code}: {exc}") from exc
+    cloud_dataset = None
+    if dataset_id:
+        if evalset_file is not None:
+            raise click.UsageError("--evalset-file 与 --dataset-id 不能同时使用")
+        if dataset_version is None:
+            raise click.UsageError("--dataset-id 必须同时指定 --dataset-version")
+        try:
+            service = CloudEvalSetService(
+                Path.cwd(),
+                AgentEvalCloudDatasetClient(),
+            )
+            pulled = asyncio.run(
+                service.pull(
+                    dataset_id=dataset_id,
+                    version=dataset_version,
+                    project_id=dataset_project_id,
+                )
+            )
+        except (AgentEvalCloudClientError, CloudEvalSetPreviewError, ValueError) as exc:
+            raise click.UsageError(str(exc)) from exc
+        evalset = pulled.evalset
+        cloud_dataset = pulled.cloud_dataset
+    else:
+        if evalset_file is None:
+            raise click.UsageError("必须指定 --evalset-file 或 --dataset-id")
+        if dataset_version is not None or dataset_project_id:
+            raise click.UsageError("云端 Dataset 参数必须与 --dataset-id 一起使用")
+        try:
+            evalset = load_evalset(evalset_file)
+        except EvalSetParseError as exc:
+            raise click.UsageError(f"{exc.code}: {exc}") from exc
 
     return EvaluationRequest(
         evalset=evalset,
@@ -195,13 +238,14 @@ def _build_request(
         config=EvaluationConfig(
             timeout_seconds=timeout_seconds,
             fail_fast=fail_fast,
-            evaluators=list(evaluators) or list(_DEFAULT_EVALUATORS),
+            evaluators=list(evaluators),
             data_policy=data_policy,
             judge_model=judge_model,
             judge_api_base=judge_api_base,
             judge_api_key_env=judge_api_key_env,
         ),
         report_dir=str((report_dir or Path.cwd() / ".agentkit/evaluations").resolve()),
+        cloud_dataset=cloud_dataset,
     )
 
 
@@ -358,6 +402,14 @@ def _target_ref(
 
 
 def _render_validation(request: EvaluationRequest) -> None:
+    try:
+        evaluation_plan = resolve_evaluator_plan(
+            request.evalset.cases,
+            request.config.evaluators,
+            request.config,
+        )
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
     payload = {
         "valid": True,
         "evalset": {
@@ -368,8 +420,13 @@ def _render_validation(request: EvaluationRequest) -> None:
         },
         "target": request.target.model_dump(mode="json", by_alias=True, exclude_none=True),
         "config": request.config.model_dump(mode="json", by_alias=True),
+        "evaluationPlan": evaluation_plan,
         "reportDir": request.report_dir,
     }
+    if request.cloud_dataset is not None:
+        payload["cloudDataset"] = request.cloud_dataset.model_dump(
+            mode="json", by_alias=True, exclude_none=True
+        )
     if is_json_output():
         emit_json(payload)
         return

@@ -1,18 +1,16 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-
-
-@dataclass(frozen=True)
-class EnvVarSpec:
-    name: str
-    module: str
-    purpose: str
-    default: str = ""
-    sensitive: bool = False
-
+from ksadk.configs.env_registry_pcm import PCM_ENV_VAR_REGISTRY_ITEMS
+from ksadk.configs.env_var_spec import EnvVarSpec
 
 _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
+    EnvVarSpec(
+        "KSADK_AGENT_EVAL",
+        "evaluation",
+        "Enable internal Agent evaluation integration.",
+        "0",
+        documented=False,
+    ),
     EnvVarSpec("KSADK_ADK_RESUMABLE", "runners", "Enable ADK invocation resume support.", "false"),
     EnvVarSpec("KSADK_ADK_SESSION_BACKEND", "sessions", "ADK-native session backend selector."),
     EnvVarSpec("KSADK_ADK_SESSION_PATH", "sessions", "ADK-native SQLite session database path."),
@@ -277,6 +275,19 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "runtime",
         "Enable L2 snip deterministic redundancy removal in compaction pipeline.",
         "true",
+    ),
+    *PCM_ENV_VAR_REGISTRY_ITEMS,
+    EnvVarSpec(
+        "KSADK_DEPLOYMENT_MODE",
+        "runtime",
+        "Deployment-mode ownership declaration.",
+        documented=False,
+    ),
+    EnvVarSpec(
+        "KSADK_EVAL_COMMIT",
+        "evaluation",
+        "Source commit recorded by evaluation runs.",
+        documented=False,
     ),
     EnvVarSpec(
         "KSADK_CORE_RUNTIME_REQUIREMENTS",

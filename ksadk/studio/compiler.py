@@ -81,6 +81,7 @@ class AgentCompiler:
             ),
             execution=materialized.spec.execution,
             context=materialized.spec.context,
+            memory=materialized.spec.memory,
             security=materialized.spec.security,
             evaluation=materialized.spec.evaluation,
             source_digest=source_digest,

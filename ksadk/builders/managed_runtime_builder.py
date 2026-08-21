@@ -21,10 +21,13 @@ _MANIFEST_KEYS = (
     "model",
     "models",
     "prompt",
+    "task_prompt",
     "skills",
     "mcp_servers",
     "sandbox",
     "approval_mode",
+    "context",
+    "memory",
 )
 
 
@@ -113,9 +116,9 @@ class ManagedRuntimeBuilder(BaseBuilder):
             "runtime": runtime,
             "manifest_sha256": manifest_sha256,
         }
-        lock_bytes = (
-            json.dumps(lock, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-        ).encode("utf-8")
+        lock_bytes = (json.dumps(lock, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode(
+            "utf-8"
+        )
 
         self.build_dir.mkdir(parents=True, exist_ok=True)
         name = str(config.get("name") or self.project_dir.name).strip() or self.project_dir.name

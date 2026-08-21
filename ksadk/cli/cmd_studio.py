@@ -15,11 +15,17 @@ from ksadk.cli.ui import print_info, print_kv, print_success, print_title
 from ksadk.studio.api import create_studio_app
 from ksadk.studio.service import StudioService
 
+# 模型环境变量白名单。OPENAI_BASE_URL 与 OPENAI_API_BASE 互为别名，两者都接受；
+# 加载时做别名归一（见 studio()），运行时统一 OPENAI_BASE_URL 优先（与 cmd_config/cmd_model
+# /api.py 一致，方案 §2.4 第 5 点）。
 _MODEL_ENV_KEYS = (
+    "OPENAI_BASE_URL",
     "OPENAI_API_BASE",
     "OPENAI_API_KEY",
     "OPENAI_MODEL_NAME",
 )
+# 别名归一：两者任一有值时，把另一个也设上，保证下游无论读哪个都命中。
+_MODEL_BASE_URL_ALIASES = ("OPENAI_BASE_URL", "OPENAI_API_BASE")
 
 
 @click.command(context_settings=dict(help_option_names=["-h", "--help"]))
@@ -29,7 +35,7 @@ _MODEL_ENV_KEYS = (
 @click.option(
     "--env-file",
     type=click.Path(exists=True, dir_okay=False),
-    help="模型环境文件；只读取 OPENAI_API_BASE/API_KEY/MODEL_NAME",
+    help="模型环境文件；只读取 OPENAI_BASE_URL/API_BASE/API_KEY/MODEL_NAME",
 )
 @click.option(
     "--codex-proxy",
@@ -68,6 +74,15 @@ def studio(
                 loaded += 1
                 if key not in os.environ:
                     os.environ[key] = value
+            # 别名归一（方案 §2.4 第 5 点）：OPENAI_BASE_URL 与 OPENAI_API_BASE 互为别名。
+            # 加载后任一有值则把另一个也设上，保证下游无论读哪个都命中；OPENAI_BASE_URL 优先。
+            resolved_base_url = os.environ.get("OPENAI_BASE_URL") or os.environ.get(
+                "OPENAI_API_BASE"
+            )
+            if resolved_base_url:
+                os.environ["OPENAI_BASE_URL"] = resolved_base_url
+                os.environ["OPENAI_API_BASE"] = resolved_base_url
+                loaded = max(loaded, 2)  # base_url 至少算一次，避免显示 0/4 误导
             print_kv("模型环境", f"已安全加载 {loaded}/{len(_MODEL_ENV_KEYS)} 个字段")
         if codex_proxy == "forced":
             os.environ["KSADK_CODEX_USE_PROXY"] = "1"

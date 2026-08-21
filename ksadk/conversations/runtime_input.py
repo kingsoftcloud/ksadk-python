@@ -48,6 +48,74 @@ def _env_flag(name: str, default: bool = True) -> bool:
     return normalized not in {"0", "false", "no", "off"}
 
 
+def _prompt_compiler_enabled() -> bool:
+    """PR B：全局 kill switch。默认关——关闭时 Runner 输入与旧逻辑字节级一致。
+
+    接管由三重门控共同决定：本 flag × per-Agent ``prompt_integration_mode``
+    （由 ``prompt_ownership=ksadk`` 标记的 per-Build）× runner 类型限定 LangGraph。
+    任一不满足 → ``_should_project_compiled_prompt`` 返回 False → 走旧 ``instructions`` 分支。
+    """
+    return _env_flag("KSADK_PROMPT_COMPILER_ENABLED", False)
+
+
+def _should_project_compiled_prompt(
+    *, prepared: PreparedConversationTurn, runner: Any | None
+) -> bool:
+    """PR B：判断本 turn 是否用 ``compiled_prompt`` 接管 ``payload["instructions"]``。
+
+    满足全部条件才接管：
+    1. 全局 flag 开（``KSADK_PROMPT_COMPILER_ENABLED``）；
+    2. per-Build 接管标记 ``prompt_integration_mode=="ksadk_hosted"``
+       （仅 ``prompt_ownership=ksadk``）；
+    3. 已编译出真实 CompiledPrompt 且含非空 ``prompt_content``（agent_system/agent_task 非空，
+       非 resume 旁路）；
+    4. runner 类型为 langgraph（ADK/Codex 接管错位，排除）。
+
+    任一不满足 → 返回 False → 调用方走 ``elif`` 分支 == 旧 ``if``，字节级一致。
+    """
+    if not _prompt_compiler_enabled():
+        return False
+    if prepared.prompt_integration_mode != "ksadk_hosted":
+        return False
+    compiled = prepared.compiled_prompt
+    if not isinstance(compiled, Mapping):
+        return False
+    content = compiled.get("prompt_content")
+    if not isinstance(content, str) or not content.strip():
+        return False
+    return _runner_type_name(runner) == "langgraph"
+
+
+def _should_use_hosted_assembly(*, prepared: PreparedConversationTurn, runner: Any | None) -> bool:
+    """PR E：判断本 turn 是否用 hosted pipeline 的 assembled_input 接管 payload。
+
+    条件：``assembled_input`` 已生成（build_run_input 在 V2 门控下产出）且 runner 为
+    langgraph 系（prompt_owner=ksadk）。该分支优先于 PR B/D2；满足时直接 return，不双重注入。
+    native_runtime（codex）的 ``assembled_input`` 恒为 None（build_run_input 不为它生成），
+    故 Managed Codex 不受影响（方案 §6.2 / PCM-RUNNER-003）。
+    """
+    if not isinstance(prepared.assembled_input, Mapping):
+        return False
+    if not str(prepared.assembled_input.get("system") or "").strip():
+        return False
+    return _runner_type_name(runner) == "langgraph"
+
+
+def _assembled_input(prepared: PreparedConversationTurn) -> Any:
+    """把 prepared.assembled_input 的 plain dict 还原成 assembler 能消费的形式。"""
+    from ksadk.context_engine.assembler import AssembledInput
+
+    d = prepared.assembled_input
+    return AssembledInput(
+        format=d.get("format", "chat"),
+        system=str(d.get("system") or ""),
+        messages=list(d.get("messages") or []),
+        responses_items=[],
+        estimated_tokens=int(d.get("estimated_tokens") or 0),
+        warnings=tuple(d.get("warnings") or ()),
+    )
+
+
 def _ltm_auto_save_enabled() -> bool:
     backend = str(os.getenv("KSADK_LTM_BACKEND") or "").strip().lower()
     namespace = str(os.getenv("KSADK_LTM_NAMESPACE") or "").strip()
@@ -83,10 +151,19 @@ def _ambient_context_has_error(context: Any) -> bool:
     if not isinstance(context, dict):
         return True
 
+    # 显式 error 字段（PR：Memory Recall 失败语义）：build_context 失败时把原因放
+    # 独立 ``error`` 字段、``formatted_text`` 置空，错误不进模型上下文。
+    if str(context.get("error") or "").strip():
+        return True
+
     formatted_text = str(context.get("formatted_text") or "").strip()
+    # 真无记忆不是可注入的上下文。它不是 provider failure，但对投影层而言
+    # 同样应被丢弃，避免 UI 和审计把空召回误报成“已使用长期记忆”。
     if not formatted_text:
         return True
 
+    # 纵深防御：``search_text``（工具路径）仍会把错误塞进正文，这里按前缀兜底，
+    # 防止任何直接调 ``search_text`` 拼上下文的路径把错误字符串注入。
     failure_prefixes = (
         "知识库检索失败",
         "长期记忆检索失败",
@@ -350,6 +427,7 @@ def _build_runner_ambient_contexts(
     contexts: dict[str, Any] = {
         "kb_context": None,
         "memory_context": None,
+        "memory_recall_events": [],
     }
     normalized_input = str(user_input or "").strip()
     if not normalized_input or not _should_use_platform_ambient_context(runner):
@@ -379,8 +457,18 @@ def _build_runner_ambient_contexts(
             )
             if not _ambient_context_has_error(memory_context):
                 contexts["memory_context"] = memory_context
+                contexts.setdefault("memory_recall_events", []).append(
+                    {"type": "memory.recall.completed", "count": 1}
+                )
+            else:
+                contexts.setdefault("memory_recall_events", []).append(
+                    {"type": "memory.recall.empty"}
+                )
         except Exception as exc:
             logger.warning("Failed to build ambient memory context: %s", exc)
+            contexts.setdefault("memory_recall_events", []).append(
+                {"type": "memory.recall.failed", "error": str(exc)[:200]}
+            )
 
     return contexts
 
@@ -417,7 +505,31 @@ def _build_runner_request_payload(
         # (for example, its conversation approval profile) without leaking
         # caller public metadata into the agent payload.
         payload["request_metadata"] = dict(prepared.request_metadata)
-    if prepared.instructions:
+    # PR E：hosted pipeline 接管（最高优先级）。当 build_run_input 产出 assembled_input 时，
+    # 用组装好的 system/input/history 直接覆盖 payload——它已含 compiled_prompt + working_state
+    # + planner 决策后的有序 messages。此分支满足后不再走 PR B/D2（避免双重注入）。
+    if _should_use_hosted_assembly(prepared=prepared, runner=runner):
+        from ksadk.context_engine.hosted_pipeline import assembled_to_payload
+
+        override = assembled_to_payload(_assembled_input(prepared))
+        if override["instructions"]:
+            payload["instructions"] = override["instructions"]
+        if override["input"]:
+            payload["input"] = override["input"]
+        # An empty assembled history is authoritative: on the first turn the
+        # just-persisted user event must not survive from ``prepared.history``
+        # and be injected alongside the canonical current input.
+        payload["history"] = override["history"]
+        payload["context_plan_id"] = (
+            prepared.context_plan.get("plan_id") if prepared.context_plan else None
+        )
+        return payload
+    # PR B：LangGraph CompiledPrompt→instructions 接管。三重门控满足时，把
+    # payload["instructions"] 替换为 CompiledPrompt.content（XML），使 agent_system/
+    # agent_task 首次进模型输入。任一门控不满足 → elif == 旧逻辑（字节级一致）。
+    if _should_project_compiled_prompt(prepared=prepared, runner=runner):
+        payload["instructions"] = prepared.compiled_prompt["prompt_content"]
+    elif prepared.instructions:
         payload["instructions"] = prepared.instructions
     if prepared.resume_input is not None:
         if _is_checkpoint_resume_input(prepared.resume_input):
@@ -454,7 +566,72 @@ def _build_runner_request_payload(
     deferred_tool_names = _extract_deferred_tool_names(prepared.request_metadata)
     if deferred_tool_names:
         payload["deferred_tool_names"] = deferred_tool_names
+    # PR D2：WorkingState 门控重注入。仅 ksadk_hosted + 有 working_state 时，把结构化工作面
+    # 渲染成 XML 段追加进 instructions（与 CompiledPrompt.content 风格一致，LangGraph _to_state
+    # 能消费 instructions 字符串）。非门控或有 CompiledPrompt 接管时仍由前者决定 instructions。
+    _maybe_inject_working_state(payload, prepared)
     return payload
+
+
+def _maybe_inject_working_state(
+    payload: dict[str, Any], prepared: PreparedConversationTurn
+) -> None:
+    """PR D2：把 working_state 渲染成 <working_state> XML 段追加进 payload instructions。
+
+    门控：仅 ``prompt_integration_mode=="ksadk_hosted"`` 且 ``working_state`` 非空时注入。
+    与 PR B 的 CompiledPrompt 接管叠加：若 instructions 已被 CompiledPrompt 接管（XML），
+    WorkingState 段追加在其后；否则追加在 request instructions 后。非门控零注入。
+    Prompt 明文不进 Trace（working_state 不进 shadow plan/trace）。
+    """
+    if prepared.prompt_integration_mode != "ksadk_hosted":
+        return
+    ws = prepared.working_state
+    if not isinstance(ws, Mapping) or not ws:
+        return
+    xml = _render_working_state_xml(ws)
+    if not xml:
+        return
+    existing = str(payload.get("instructions") or "").strip()
+    if existing:
+        payload["instructions"] = f"{existing}\n\n{xml}"
+    else:
+        payload["instructions"] = xml
+
+
+def _render_working_state_xml(ws: Mapping[str, Any]) -> str:
+    """把 working_state 审计 dict 渲染成 <working_state> XML 段（供模型理解当前工作面）。"""
+    current_goal = str(ws.get("current_goal") or "").strip()
+    next_action = str(ws.get("next_action") or "").strip()
+    active_files = ws.get("active_files") or []
+    pending_tools = ws.get("pending_tools") or []
+    pending_approvals = ws.get("pending_approvals") or []
+    lines: list[str] = []
+    if current_goal:
+        lines.append(f"当前目标：{current_goal}")
+    if next_action:
+        lines.append(f"下一步：{next_action}")
+    if isinstance(active_files, list) and active_files:
+        files = ", ".join(
+            str((f.get("path") if isinstance(f, Mapping) else "") or "") for f in active_files
+        ).strip(", ")
+        if files:
+            lines.append(f"活跃文件：{files}")
+    if isinstance(pending_tools, list) and pending_tools:
+        tools = "; ".join(
+            str((t.get("text") if isinstance(t, Mapping) else "") or "") for t in pending_tools
+        ).strip("; ")
+        if tools:
+            lines.append(f"未完成工具：{tools}")
+    if isinstance(pending_approvals, list) and pending_approvals:
+        approvals = "; ".join(
+            str((a.get("text") if isinstance(a, Mapping) else "") or "") for a in pending_approvals
+        ).strip("; ")
+        if approvals:
+            lines.append(f"待审批：{approvals}")
+    if not lines:
+        return ""
+    body = "\n".join(lines)
+    return f"<working_state>\n{body}\n</working_state>"
 
 
 def _inject_runner_deferred_tools_for_request(
@@ -571,7 +748,12 @@ async def _auto_save_ltm_turn(
     runner_type: str,
     model: str | None,
 ) -> None:
-    if prepared.resume_input is not None or not _ltm_auto_save_enabled():
+    if prepared.resume_input is not None:
+        return
+    memory_rollout = str(prepared.memory_write_rollout or "").strip().lower()
+    if memory_rollout in {"off", "shadow"}:
+        return
+    if not memory_rollout and not _ltm_auto_save_enabled():
         return
 
     metadata: dict[str, Any] = {

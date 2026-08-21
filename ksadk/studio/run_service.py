@@ -90,6 +90,34 @@ class StudioRunService:
         self._control_queues: dict[str, asyncio.Queue[tuple[str, ResumePayload | None]]] = {}
         self._waiting_modes: dict[str, str] = {}
 
+    async def recover_interrupted(self) -> None:
+        """Settle local runs left active across a Studio restart.
+
+        An in-process handle cannot be resumed safely.  Keep its durable event
+        history and record an explicit interruption; lease-backed hosted
+        recovery remains owned by the Kernel composition root.
+        """
+        active = {RunStatus.RUNNING, RunStatus.WAITING_INPUT}
+        for record in self.event_store.list_runs():
+            if record.status not in active:
+                continue
+            record.status = RunStatus.INTERRUPTED
+            record.completed_at = datetime.now(timezone.utc)
+            record.error = {
+                "code": "LOCAL_STUDIO_RESTARTED",
+                "message": "本地 Studio 重启，运行未在本地恢复。",
+            }
+            self.event_store.save(record)
+            self.event_store.append(
+                record.id,
+                "run.interrupted",
+                {"reason": "local_studio_restarted", "recoverable": False},
+            )
+
+    async def events(self, run_id: str, *, after: int = 0) -> list[RunEvent]:
+        """Read the durable Studio event timeline for API/SSE replay."""
+        return self.event_store.events(run_id, after=after)
+
     async def run(
         self,
         spec: StudioRunSpec,
@@ -392,7 +420,11 @@ class StudioRunService:
                 record.duration_ms = int((time.monotonic() - started) * 1000)
                 record.duration_source = "studio"
             self.event_store.save(record)
+            await self._sync_trace(record)
         return record
+
+    async def _sync_trace(self, record: RunRecord) -> None:
+        self.event_store.trace_store.sync(record, await self.events(record.id))
 
 
     async def _kernel_run(
@@ -465,6 +497,7 @@ class StudioRunService:
             record.completed_at = datetime.now(timezone.utc)
             record.duration_ms = int((time.monotonic() - started) * 1000)
             self.event_store.save(record)
+            await self._sync_trace(record)
             return record
         except Exception as exc:  # noqa: BLE001
             logger.exception("Studio kernel ingress failed for run %s", record.id)
@@ -476,6 +509,7 @@ class StudioRunService:
             record.completed_at = datetime.now(timezone.utc)
             record.duration_ms = int((time.monotonic() - started) * 1000)
             self.event_store.save(record)
+            await self._sync_trace(record)
             return record
 
     async def cancel_run(self, run_id: str) -> dict[str, str]:

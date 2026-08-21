@@ -24,10 +24,14 @@ def test_flatten_long_name_truncated_with_hash():
 
 def test_build_restore_map_and_collision_first_wins():
     tools = [
-        {"type": "namespace", "name": "mcp__fs", "tools": [
-            {"type": "function", "name": "read"},
-            {"type": "function", "name": "write"},
-        ]},
+        {
+            "type": "namespace",
+            "name": "mcp__fs",
+            "tools": [
+                {"type": "function", "name": "read"},
+                {"type": "function", "name": "write"},
+            ],
+        },
         {"type": "function", "name": "shell"},  # 非 namespace 不进 map
     ]
     m = build_restore_map(tools)
@@ -41,15 +45,29 @@ def test_flatten_request_lifts_children_and_rewrites_input():
         "model": "m",
         "input": [
             {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "go"}]},
-            {"type": "function_call", "name": "read", "namespace": "mcp__fs",
-             "call_id": "c1", "arguments": "{}"},
+            {
+                "type": "function_call",
+                "name": "read",
+                "namespace": "mcp__fs",
+                "call_id": "c1",
+                "arguments": "{}",
+            },
             {"type": "function_call_output", "call_id": "c1", "output": "ok"},
         ],
         "tools": [
-            {"type": "namespace", "name": "mcp__fs", "tools": [
-                {"type": "function", "name": "read", "description": "d",
-                 "parameters": {"type": "object"}, "strict": True},
-            ]},
+            {
+                "type": "namespace",
+                "name": "mcp__fs",
+                "tools": [
+                    {
+                        "type": "function",
+                        "name": "read",
+                        "description": "d",
+                        "parameters": {"type": "object"},
+                        "strict": True,
+                    },
+                ],
+            },
         ],
         "tool_choice": {"type": "namespace", "name": "mcp__fs"},
     }
@@ -66,13 +84,19 @@ def test_flatten_request_lifts_children_and_rewrites_input():
 
 
 def test_flatten_collision_raises():
-    body = {"tools": [
-        {"type": "namespace", "name": "ns", "tools": [
-            {"type": "function", "name": "x"},
-            # 同 ns 同 name -> 同 flat,撞名
-            {"type": "function", "name": "x"},
-        ]},
-    ]}
+    body = {
+        "tools": [
+            {
+                "type": "namespace",
+                "name": "ns",
+                "tools": [
+                    {"type": "function", "name": "x"},
+                    # 同 ns 同 name -> 同 flat,撞名
+                    {"type": "function", "name": "x"},
+                ],
+            },
+        ]
+    }
     import pytest
 
     with pytest.raises(ValueError, match="撞名"):
@@ -85,23 +109,51 @@ def test_responses_to_chat_then_restore_roundtrip():
         "model": "m",
         "input": "call fs.read",
         "tools": [
-            {"type": "namespace", "name": "mcp__fs", "tools": [
-                {"type": "function", "name": "read", "description": "d",
-                 "parameters": {"type": "object"}},
-            ]},
+            {
+                "type": "namespace",
+                "name": "mcp__fs",
+                "tools": [
+                    {
+                        "type": "function",
+                        "name": "read",
+                        "description": "d",
+                        "parameters": {"type": "object"},
+                    },
+                ],
+            },
         ],
     }
     chat_req, restore_map = responses_to_chat(body)
     # chat tools 是嵌套 function,name=flat
-    assert chat_req["tools"] == [{"type": "function", "function": {
-        "name": "mcp__fs__read", "description": "d", "parameters": {"type": "object"}}}]
+    assert chat_req["tools"] == [
+        {
+            "type": "function",
+            "function": {
+                "name": "mcp__fs__read",
+                "description": "d",
+                "parameters": {"type": "object"},
+            },
+        }
+    ]
     # chat 返回 function_call name=flat
     chat = {
-        "id": "c1", "model": "m",
-        "choices": [{"finish_reason": "tool_calls", "message": {
-            "content": None,
-            "tool_calls": [{"id": "call_1", "type": "function",
-                            "function": {"name": "mcp__fs__read", "arguments": "{}"}}]}}],
+        "id": "c1",
+        "model": "m",
+        "choices": [
+            {
+                "finish_reason": "tool_calls",
+                "message": {
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "mcp__fs__read", "arguments": "{}"},
+                        }
+                    ],
+                },
+            }
+        ],
         "usage": {},
     }
     resp = chat_to_response(chat, "r", restore_map)

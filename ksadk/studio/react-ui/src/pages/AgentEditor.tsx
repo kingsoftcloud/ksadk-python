@@ -11,7 +11,7 @@ import { StudioMultiSelect } from "../components/ui/StudioMultiSelect";
 import { StudioSelect } from "../components/ui/StudioSelect";
 import { CodeViewer } from "../components/ui/CodeViewer";
 import { applyApiFieldErrors } from "../lib/formErrors";
-import { quickAgentSchema, type QuickAgentFormValues } from "../schemas/agentForms";
+import { agentEditSchema, type AgentEditFormValues } from "../schemas/agentForms";
 
 export interface EditorCatalogItem {
   resourceId: string;
@@ -32,6 +32,18 @@ interface AgentDetail {
       runtime?: { type?: string; projectPath?: string; entryPoint?: string; agentVariable?: string };
       instructions?: { system?: string; task?: string };
       execution?: { strategy?: string; maxSteps?: number; timeoutSeconds?: number };
+      context?: {
+        ownership?: string;
+        promptOwnership?: string;
+        rollout?: { contextEngine?: string; memoryWrite?: string; [key: string]: unknown };
+        [key: string]: unknown;
+      };
+      memory?: {
+        enabled?: boolean;
+        recall?: { enabled?: boolean; [key: string]: unknown };
+        write?: { mode?: string; [key: string]: unknown };
+        [key: string]: unknown;
+      };
       bindings?: {
         modelProfileId?: string | null;
         modelProfileIds?: string[];
@@ -84,18 +96,20 @@ async function waitForBuild(operationId: string) {
 export function AgentEditor({
   agentId,
   catalog,
+  activeSection = 1,
   onSaved,
   onAppearanceSaved,
 }: {
   agentId: string;
   catalog: EditorCatalogItem[];
+  activeSection?: number;
   onSaved: (agentId: string, openChat: boolean) => void;
   onAppearanceSaved?: () => void;
 }) {
   const [detail, setDetail] = useState<AgentDetail | null>(null);
   const [loadError, setLoadError] = useState("");
-  const agentForm = useForm<QuickAgentFormValues>({
-    resolver: zodResolver(quickAgentSchema) as Resolver<QuickAgentFormValues>,
+  const agentForm = useForm<AgentEditFormValues>({
+    resolver: zodResolver(agentEditSchema) as Resolver<AgentEditFormValues>,
     defaultValues: {
       name: "",
       slug: agentId,
@@ -104,11 +118,16 @@ export function AgentEditor({
       description: "",
     },
   });
+  const resetAgentForm = agentForm.reset;
   const { name, slug, runtimeType: runtime, prompt } = agentForm.watch();
   const [defaultModel, setDefaultModel] = useState("");
   const [selectedModels, setSelectedModels] = useState<string[]>([]);
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
   const [selectedMcp, setSelectedMcp] = useState<string[]>([]);
+  const [contextOwnership, setContextOwnership] = useState("auto");
+  const [contextEngineRollout, setContextEngineRollout] = useState("shadow");
+  const [memoryEnabled, setMemoryEnabled] = useState(false);
+  const [memoryWriteRollout, setMemoryWriteRollout] = useState("off");
   const [buildAfterSave, setBuildAfterSave] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
@@ -133,7 +152,7 @@ export function AgentEditor({
           ? bindings.modelProfileIds
           : bindings.modelProfileId ? [bindings.modelProfileId] : [];
         setDetail(payload);
-        agentForm.reset({
+        resetAgentForm({
           name: draft.metadata.name || "",
           slug: draft.metadata.id || agentId,
           runtimeType: draft.spec?.runtime?.type || draft.metadata.labels?.["agentkit.ksyun.com/framework"] || "codex",
@@ -144,10 +163,14 @@ export function AgentEditor({
         setDefaultModel(bindings.modelProfileId || ids[0] || "");
         setSelectedSkills((bindings.skills || []).map((item: { resourceId: string }) => item.resourceId));
         setSelectedMcp((bindings.mcpServers || []).map((item: { resourceId: string }) => item.resourceId));
+        setContextOwnership(String(draft.spec?.context?.ownership || "auto"));
+        setContextEngineRollout(String(draft.spec?.context?.rollout?.contextEngine || "shadow"));
+        setMemoryEnabled(Boolean(draft.spec?.memory?.enabled && draft.spec?.memory?.recall?.enabled));
+        setMemoryWriteRollout(String(draft.spec?.context?.rollout?.memoryWrite || "off"));
       })
       .catch(error => { if (active) setLoadError(error.message || "Agent 加载失败"); });
     return () => { active = false; };
-  }, [agentId, agentForm]);
+  }, [agentId, resetAgentForm]);
 
   useEffect(() => {
     if (!detail || selectedModels.length || !models.length) return;
@@ -166,6 +189,21 @@ export function AgentEditor({
 
   const primaryModel = models.find(item => item.resourceId === defaultModel)
     || selectedModelItems[0];
+  const contextOwnershipOptions = runtime === "codex"
+    ? [
+      { value: "auto", label: "自动（推荐）", description: "按 Codex Runtime 能力选择安全投影方式" },
+      { value: "native", label: "原生 Runtime 管理", description: "由 Codex 管理最终模型上下文" },
+    ]
+    : runtime === "langgraph"
+      ? [
+        { value: "auto", label: "自动（推荐）", description: "按 Runtime 能力选择安全模式" },
+        { value: "framework", label: "框架管理", description: "保留 LangGraph 原有上下文行为" },
+        { value: "ksadk", label: "KsADK 管理", description: "统一规划、压缩和投影上下文" },
+      ]
+      : [
+        { value: "auto", label: "自动（推荐）", description: "按 Runtime 能力选择安全模式" },
+        { value: "framework", label: "框架管理", description: "保留 ADK 原有上下文行为" },
+      ];
   const fallbackModel = detail?.draft.metadata.labels?.["agentkit.ksyun.com/model"] || "glm-5.1";
   const manifestModels = selectedModelItems.map(modelName).filter(Boolean);
   const manifest = runtime === "codex" ? [
@@ -196,8 +234,13 @@ export function AgentEditor({
     ...prompt.split("\n").map(line => `      ${line}`),
   ].join("\n");
 
-  async function save(values: QuickAgentFormValues) {
+  async function save(values: AgentEditFormValues) {
     if (!detail || saving) return;
+    const resolvedDefaultModel = defaultModel || selectedModels[0] || "";
+    if (!resolvedDefaultModel) {
+      setSaveError("请至少绑定一个模型并设置为默认模型");
+      return;
+    }
     setSaving(true);
     setSaveError("");
     try {
@@ -216,19 +259,42 @@ export function AgentEditor({
       };
       spec.bindings = {
         ...(original.bindings || {}),
-        modelProfileId: defaultModel || null,
+        modelProfileId: resolvedDefaultModel,
         modelProfileIds: selectedModels,
         skills: selectedSkills.map(resourceId => ({ resourceId, enabled: true })),
         mcpServers: selectedMcp.map(resourceId => ({ resourceId, enabled: true })),
       };
-      const response = await apiFetch(`/api/v1/agents/${encodeURIComponent(agentId)}`, {
+      spec.context = {
+        ...(original.context || {}),
+        ownership: contextOwnership,
+        promptOwnership: contextOwnership === "ksadk"
+          ? "ksadk"
+          : contextOwnership === "framework"
+            ? "framework"
+            : original.context?.promptOwnership || "framework",
+        rollout: {
+          ...(original.context?.rollout || {}),
+          contextEngine: contextEngineRollout,
+          memoryWrite: memoryEnabled ? "enabled" : "off",
+        },
+      };
+      spec.memory = {
+        ...(original.memory || {}),
+        enabled: memoryEnabled,
+        recall: { ...(original.memory?.recall || {}), enabled: memoryEnabled },
+        write: { ...(original.memory?.write || {}), mode: "candidate" },
+      };
+      const response = await apiFetch(
+        `/api/v1/agents/${encodeURIComponent(agentId)}?name=${encodeURIComponent(values.name.trim())}`,
+        {
         method: "PUT",
         headers: {
           "Content-Type": "application/json",
           "If-Match": String(detail.draft.metadata.revision),
         },
         body: JSON.stringify(spec),
-      });
+        },
+      );
       const saved = await response.json().catch(() => null);
       if (!response.ok) {
         if (applyApiFieldErrors(saved, agentForm.setError)) return;
@@ -289,7 +355,14 @@ export function AgentEditor({
   return (
     <div className="quick-create">
       <FormProvider {...agentForm}>
-      <form className="quick-create-form" onSubmit={agentForm.handleSubmit(save)} noValidate>
+      <form
+        className="quick-create-form"
+        onSubmit={agentForm.handleSubmit(save, errors => {
+          const firstError = Object.values(errors).find(error => typeof error?.message === "string");
+          setSaveError(String(firstError?.message || "请检查必填配置后重试"));
+        })}
+        noValidate
+      >
         <div className="quick-runtime-strip">
           <span className="runtime-logo"><Code size={17} /></span>
           <div><strong>{runtimeTitle(runtime)}</strong><span>一 Agent 一 YAML · 不可变 Bundle</span></div>
@@ -299,6 +372,11 @@ export function AgentEditor({
           <span className="eyebrow">YAML-first</span>
           <h2 title={slug}>编辑 {name || detail.draft.metadata.name}</h2>
           <p>保存会直接回写该 Agent 的 agentengine.yaml；旧构建会标记为过期。</p>
+        </div>
+        <section className="agent-edit-section" hidden={activeSection !== 1} aria-label="基础与 Prompt">
+        <div className="agent-edit-section-heading">
+          <span className="eyebrow">01</span>
+          <div><h3>基础与 Prompt</h3><p>维护 Agent 身份、Runtime 与系统提示词。</p></div>
         </div>
         <AgentAppearanceEditor
           name={name || detail.draft.metadata.name}
@@ -343,6 +421,13 @@ export function AgentEditor({
         >
           <textarea id="editAgentPrompt" maxLength={32768} rows={10} {...agentForm.register("prompt")} />
         </FormField>
+        </section>
+
+        <section className="agent-edit-section" hidden={activeSection !== 2} aria-label="能力绑定">
+        <div className="agent-edit-section-heading">
+          <span className="eyebrow">02</span>
+          <div><h3>能力绑定</h3><p>配置模型、Skill 与 MCP；切换分区不会丢失未保存修改。</p></div>
+        </div>
         <div className="form-grid two-columns">
           <FormField label="默认模型" requirement="required" htmlFor="editDefaultModel" hint="每轮未指定模型时使用">
             <StudioSelect
@@ -375,7 +460,7 @@ export function AgentEditor({
           />
         </div>
         <div className="field quick-model-binding-field">
-          <div className="field-heading"><label>绑定 Skill / MCP</label><span className="helper">Skill 以原生 SkillInput 注入；MCP 经 codex config_overrides 注入</span></div>
+          <div className="field-heading"><label>绑定 Skill / MCP</label><span className="helper">Skill 与 MCP 由 Runtime Adapter 按能力投影。</span></div>
           <div className="quick-capability-bindings">
             <StudioMultiSelect
               ariaLabel="选择绑定 Skill"
@@ -401,6 +486,66 @@ export function AgentEditor({
             />
           </div>
         </div>
+        </section>
+
+        <section className="agent-edit-section" hidden={activeSection !== 3} aria-label="运行策略">
+        <div className="agent-edit-section-heading">
+          <span className="eyebrow">03</span>
+          <div><h3>运行策略</h3><p>配置跨会话记忆；Context 高级选项通常保持默认即可。</p></div>
+        </div>
+        <div className="field quick-model-binding-field">
+          <div className="field-heading"><label>跨会话记忆</label><span className="helper">保存稳定事实，并在后续会话按需召回</span></div>
+          <label className="pcm-memory-toggle">
+            <input
+              type="checkbox"
+              checked={memoryEnabled}
+              onChange={event => {
+                setMemoryEnabled(event.target.checked);
+                setMemoryWriteRollout(event.target.checked ? "enabled" : "off");
+              }}
+            />
+            <span>
+              <strong>{memoryEnabled ? "已启用跨会话记忆" : "未启用跨会话记忆"}</strong>
+              <small>{memoryEnabled
+                ? memoryWriteRollout === "enabled"
+                  ? "新记忆会通过策略检查后保存。"
+                  : "当前旧配置仅召回或观察；保存修改后将正式启用记忆写入。"
+                : "当前会话内容不会写入长期记忆。"}</small>
+            </span>
+          </label>
+        </div>
+        <details className="pcm-policy-card">
+          <summary>
+            <span><strong>运行上下文（高级）</strong><small>调整 Context 责任边界和优化策略；不确定时保持自动与仅观察</small></span>
+          </summary>
+          <div className="pcm-policy-body">
+            <div className="form-grid two-columns">
+              <FormField label="上下文管理方式" requirement="optional" htmlFor="editContextOwnership" hint="决定由平台、框架或原生 Runtime 负责最终模型输入。">
+                <StudioSelect
+                  id="editContextOwnership"
+                  ariaLabel="上下文管理方式"
+                  value={contextOwnership}
+                  options={contextOwnershipOptions}
+                  onValueChange={setContextOwnership}
+                />
+              </FormField>
+              <FormField label="上下文优化" requirement="optional" htmlFor="editContextEngineRollout" hint="仅观察只生成诊断证据；正式启用会执行预算、压缩和降载。">
+                <StudioSelect
+                  id="editContextEngineRollout"
+                  ariaLabel="Context Engine"
+                  value={contextEngineRollout}
+                  options={[
+                    { value: "off", label: "使用 Runtime 默认行为" },
+                    { value: "shadow", label: "仅观察（推荐）" },
+                    { value: "enabled", label: "正式启用" },
+                  ]}
+                  onValueChange={setContextEngineRollout}
+                />
+              </FormField>
+            </div>
+          </div>
+        </details>
+        </section>
         <div className="quick-create-actions">
           <label className="checkbox-row">
             <input type="checkbox" checked={buildAfterSave} onChange={event => setBuildAfterSave(event.target.checked)} />

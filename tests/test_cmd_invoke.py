@@ -1739,8 +1739,9 @@ def test_run_invoke_command_builds_verbose_workspace_sync_emitter(monkeypatch, t
     monkeypatch.setattr("ksadk.cli.cmd_invoke._invoke_hermes_terminal_tui", lambda **_kwargs: None)
     monkeypatch.setattr(
         "ksadk.cli.cmd_invoke._build_workspace_sync_progress_emitter",
-        lambda verbose: captured.setdefault("verbose_workspace_sync", verbose)
-        or (lambda _event: None),
+        lambda verbose: (
+            captured.setdefault("verbose_workspace_sync", verbose) or (lambda _event: None)
+        ),
     )
 
     run_invoke_command(

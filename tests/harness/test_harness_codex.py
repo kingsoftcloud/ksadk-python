@@ -18,9 +18,7 @@ def _write(tmp_path, text):
 
 
 def test_config_runtime_codex_parsed():
-    cfg = HarnessConfig.from_dict(
-        {"model": "glm-5.2", "prompt": "你是助手", "runtime": "codex"}
-    )
+    cfg = HarnessConfig.from_dict({"model": "glm-5.2", "prompt": "你是助手", "runtime": "codex"})
     assert cfg.runtime == "codex"
 
 
@@ -31,9 +29,7 @@ def test_config_runtime_default_yaml():
 
 def test_config_runtime_invalid_rejected(tmp_path):
     with pytest.raises(HarnessConfigError, match="runtime"):
-        HarnessApp.from_yaml(
-            _write(tmp_path, "model: m\nprompt: p\nruntime: bogus\n")
-        )
+        HarnessApp.from_yaml(_write(tmp_path, "model: m\nprompt: p\nruntime: bogus\n"))
 
 
 def test_build_adapter_codex(tmp_path):

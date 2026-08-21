@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 
 import yaml  # type: ignore[import-untyped]
 
 from ksadk.studio.contracts import (
+    AgentBehaviorDesign,
     AgentBindings,
     AgentSpec,
     AgentTemplateComposeRequest,
@@ -25,6 +27,87 @@ from ksadk.studio.workspace import Workspace
 
 RESEARCH_SKILL_NAME = "deep-research-methodology"
 RESEARCH_SKILL_VERSION = "1.0.0"
+
+
+def _explicit_boundaries(goal: str) -> list[str]:
+    clauses = [item.strip() for item in re.split(r"[。；;\n]+", goal) if item.strip()]
+    boundary_markers = (
+        "必须",
+        "不得",
+        "不要",
+        "禁止",
+        "仅限",
+        "只能",
+        "确认",
+        "审批",
+        "敏感",
+        "隐私",
+    )
+    return [
+        clause
+        for clause in clauses
+        if any(marker in clause for marker in boundary_markers)
+    ][:4]
+
+
+def _blank_behavior_design(goal: str, policy_template: str) -> AgentBehaviorDesign:
+    primary_goal = next(
+        (item.strip() for item in re.split(r"[。；;\n]+", goal) if item.strip()),
+        goal,
+    )
+    explicit = _explicit_boundaries(goal)
+    safety = list(explicit)
+    policy_boundary = (
+        "执行外部写入、生产变更或其他高风险操作前，说明影响并取得用户确认。"
+        if policy_template == "strict"
+        else "调用工具和外部服务时遵守当前权限策略，不宣称未实际完成的操作。"
+    )
+    if policy_boundary not in safety:
+        safety.append(policy_boundary)
+    return AgentBehaviorDesign(
+        role=f"以“{primary_goal[:80]}”为核心职责的智能助手",
+        objective=goal,
+        operating_principles=[
+            "优先理解当前目标、已知事实和成功标准，不把假设表述为事实。",
+            "信息不足或存在关键歧义时，先提出最少必要问题。",
+            "只在确有需要时调用已绑定能力，并检查工具输入与返回结果。",
+        ],
+        workflow=[
+            "识别本次请求、约束条件和期望结果",
+            "检查信息是否充分并澄清关键缺口",
+            "制定并执行必要步骤，使用可用 Tool、MCP 或 Skill",
+            "核对结果、说明限制并按约定结构交付",
+        ],
+        explicit_boundaries=explicit,
+        safety_boundaries=safety,
+        output_expectations=[
+            "回答准确、清晰、可执行，并区分事实、判断和建议。",
+            "涉及风险、假设或未完成事项时明确说明，不伪造执行结果。",
+        ],
+        source_notes=[
+            "用户输入：核心目标和明确提出的边界",
+            "模板补充：通用执行流程、澄清原则和交付要求",
+            "平台策略：工具权限与高风险操作边界",
+        ],
+    )
+
+
+def _blank_system_prompt(design: AgentBehaviorDesign) -> str:
+    principles = "\n".join(f"- {item}" for item in design.operating_principles)
+    boundaries = "\n".join(f"- {item}" for item in design.safety_boundaries)
+    outputs = "\n".join(f"- {item}" for item in design.output_expectations)
+    return (
+        f"# 角色\n{design.role}\n\n"
+        f"# 核心目标\n{design.objective}\n\n"
+        f"# 工作原则\n{principles}\n\n"
+        f"# 安全与边界\n{boundaries}\n\n"
+        f"# 回答要求\n{outputs}"
+    )
+
+
+def _blank_task_prompt(design: AgentBehaviorDesign) -> str:
+    workflow = "\n".join(f"{index}. {item}" for index, item in enumerate(design.workflow, 1))
+    return f"每次收到请求时遵循以下执行契约：\n{workflow}"
 
 _RESEARCH_SKILL_MANIFEST = {
     "name": RESEARCH_SKILL_NAME,
@@ -180,7 +263,10 @@ def compose_blank_agent(
     skills = [item for item in resources if item.kind == "skill"]
     mcps = [item for item in resources if item.kind == "mcp"]
 
-    model = _select_model(models, request.model_profile_id)
+    requested_primary_model = request.model_profile_id or next(
+        iter(request.model_profile_ids), None
+    )
+    model = _select_model(models, requested_primary_model)
     selected_model_ids = _select_model_ids(
         models, request.model_profile_id, request.model_profile_ids
     )
@@ -199,12 +285,14 @@ def compose_blank_agent(
         request.mcp_resource_ids,
         kind="mcp",
     )
-    system_prompt = request.prompt.strip() or request.goal.strip()
-    task_prompt = request.task_prompt.strip() or (
-        "理解用户目标并给出准确、可执行的回答。调用 Tool 前检查输入，"
-        "对外部操作遵守权限策略；信息不足时说明假设并请求必要补充。"
-    )
-    description = request.description.strip() or system_prompt[:160]
+    goal = request.goal.strip() or request.prompt.strip()
+    behavior_design = _blank_behavior_design(goal, request.policy_template)
+    # Explicit ``prompt`` is a compatibility path for callers that already own the
+    # final system instructions. Studio quick-create sends ``goal`` and therefore
+    # receives the compiled, reviewable behavior contract below.
+    system_prompt = request.prompt.strip() or _blank_system_prompt(behavior_design)
+    task_prompt = request.task_prompt.strip() or _blank_task_prompt(behavior_design)
+    description = request.description.strip() or goal[:160]
     bindings = AgentBindings(
         model_profile_id=model.resource_id,
         model_profile_ids=selected_model_ids,
@@ -261,6 +349,7 @@ def compose_blank_agent(
     return AgentTemplateComposition(
         template_id="blank",
         spec=spec,
+        behavior_design=behavior_design,
         recommendations=recommendations,
         warnings=[],
     )
@@ -278,7 +367,10 @@ def compose_research_agent(
     skills = [item for item in resources if item.kind == "skill"]
     mcps = [item for item in resources if item.kind == "mcp"]
 
-    model = _select_model(models, request.model_profile_id)
+    requested_primary_model = request.model_profile_id or next(
+        iter(request.model_profile_ids), None
+    )
+    model = _select_model(models, requested_primary_model)
     selected_model_ids = _select_model_ids(
         models, request.model_profile_id, request.model_profile_ids
     )

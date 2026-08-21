@@ -19,10 +19,7 @@ def test_studio_serves_the_react_shell_and_resolvable_production_assets(
 
     with TestClient(app) as client:
         page = client.get("/")
-        assets = {
-            path: client.get(path)
-            for path in _local_assets(page.text)
-        }
+        assets = {path: client.get(path) for path in _local_assets(page.text)}
 
     assert page.status_code == 200
     assert '<div id="root"></div>' in page.text

@@ -316,10 +316,15 @@ def _call_model(state: AgentState):
     client = ChatOpenAI(
         model=selected,
         api_key=os.environ["OPENAI_API_KEY"],
-        base_url=os.getenv("OPENAI_API_BASE") or os.getenv("OPENAI_BASE_URL"),
+        base_url=os.getenv("OPENAI_BASE_URL") or os.getenv("OPENAI_API_BASE"),
+        stream_usage=True,
     )
     runnable = client.bind_tools(_tools) if _tools else client
-    messages = [SystemMessage(content={json.dumps(prompt)}), *state["messages"]]
+    messages = list(state["messages"])
+    # KsADK Runtime 已投影 CompiledPrompt/ContextPlan 时，state 中存在 SystemMessage，
+    # 不再重复注入模板 Prompt；直接调用 graph 时仍保留独立运行能力。
+    if not any(isinstance(message, SystemMessage) for message in messages):
+        messages.insert(0, SystemMessage(content={json.dumps(prompt)}))
     return {{"messages": [runnable.invoke(messages)]}}
 
 

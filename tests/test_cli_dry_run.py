@@ -1827,9 +1827,7 @@ def test_openclaw_runtime_env_credentials_are_sensitive(monkeypatch, tmp_path):
     )
 
     assert result.exit_code == 0, result.output
-    env_vars = {
-        item["Key"]: item for item in _FakeOpenClawCreateClient.create_payload["env_vars"]
-    }
+    env_vars = {item["Key"]: item for item in _FakeOpenClawCreateClient.create_payload["env_vars"]}
     for name in (
         "OTEL_EXPORTER_OTLP_HEADERS",
         "OTEL_EXPORTER_OTLP_METRICS_HEADERS",

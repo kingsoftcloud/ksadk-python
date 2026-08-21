@@ -168,7 +168,6 @@ class TestDeployLogic:
             ),
             patch("ksadk.common.auth.AWSV4Auth") as MockAuth,
         ):
-
             MockAuth.return_value.access_key = "test-ak"
             MockAuth.return_value.secret_key = "test-sk"
 
@@ -240,7 +239,6 @@ class TestDeployLogic:
             ),
             patch("ksadk.common.auth.AWSV4Auth") as MockAuth,
         ):
-
             MockAuth.return_value.access_key = "test-ak"
             MockAuth.return_value.secret_key = "test-sk"
 
@@ -302,7 +300,6 @@ class TestDeployLogic:
             patch("ksadk.deployment.providers.serverless.logger.warning") as mock_warning,
             patch("ksadk.common.auth.AWSV4Auth") as MockAuth,
         ):
-
             MockAuth.return_value.access_key = "test-ak"
             MockAuth.return_value.secret_key = "test-sk"
 
@@ -354,7 +351,6 @@ class TestDeployLogic:
             ),
             patch("ksadk.common.auth.AWSV4Auth") as MockAuth,
         ):
-
             MockAuth.return_value.access_key = "test-ak"
             MockAuth.return_value.secret_key = "test-sk"
 
@@ -466,7 +462,6 @@ class TestDeployLogic:
             ),
             patch("ksadk.common.auth.AWSV4Auth") as MockAuth,
         ):
-
             MockAuth.return_value.access_key = "test-ak"
             MockAuth.return_value.secret_key = "test-sk"
 
@@ -537,7 +532,6 @@ class TestDeployLogic:
             ),
             patch("ksadk.common.auth.AWSV4Auth") as MockAuth,
         ):
-
             MockAuth.return_value.access_key = "test-ak"
             MockAuth.return_value.secret_key = "test-sk"
 
@@ -677,7 +671,6 @@ class TestDeployLogic:
             ),
             patch("ksadk.common.auth.AWSV4Auth") as MockAuth,
         ):
-
             MockAuth.return_value.access_key = "test-ak"
             MockAuth.return_value.secret_key = "test-sk"
 
@@ -739,7 +732,6 @@ class TestDeployLogic:
             ),
             patch("ksadk.common.auth.AWSV4Auth") as MockAuth,
         ):
-
             MockAuth.return_value.access_key_id = "test-ak"
             MockAuth.return_value.secret_access_key = "test-sk"
 
@@ -796,7 +788,6 @@ class TestDeployLogic:
             ),
             patch("ksadk.common.auth.AWSV4Auth") as MockAuth,
         ):
-
             MockAuth.return_value.access_key_id = "test-ak"
             MockAuth.return_value.secret_access_key = "test-sk"
 
@@ -855,7 +846,6 @@ class TestDeployLogic:
             ),
             patch("ksadk.common.auth.AWSV4Auth") as MockAuth,
         ):
-
             MockAuth.return_value.access_key_id = "test-ak"
             MockAuth.return_value.secret_access_key = "test-sk"
 
@@ -931,6 +921,93 @@ class TestDeployLogic:
             env_vars, _, _ = provider._load_deploy_env_vars(temp_project_dir)
 
         assert env_vars["TZ"] == "Asia/Shanghai"
+        assert env_vars["KSADK_DEPLOYMENT_MODE"] == "ksadk_managed_cloud"
+
+    def test_deploy_env_vars_do_not_implicitly_forward_control_plane_credentials(
+        self,
+        temp_project_dir,
+    ):
+        provider = ServerlessProvider()
+        (temp_project_dir / ".env").write_text(
+            "KSYUN_ACCESS_KEY=project-ak\n"
+            "KSYUN_SECRET_KEY=project-sk\n"
+            "KCR_REGISTRY=registry.example.com/ns\n"
+            "KCR_PASSWORD=project-registry-password\n"
+            "OPENAI_API_KEY=project-model-key\n",
+            encoding="utf-8",
+        )
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "KSYUN_ACCESS_KEY": "shell-ak",
+                    "KSYUN_SECRET_KEY": "shell-sk",
+                    "KCR_USERNAME": "shell-user",
+                },
+                clear=True,
+            ),
+            patch(
+                "ksadk.deployment.providers.serverless.get_env_from_global_config",
+                return_value={
+                    "KSYUN_ACCESS_KEY": "global-ak",
+                    "KSYUN_SECRET_KEY": "global-sk",
+                    "KSYUN_ACCOUNT_ID": "global-account",
+                    "OPENAI_BASE_URL": "https://model.example.com/v1",
+                },
+            ),
+        ):
+            env_vars, _, _ = provider._load_deploy_env_vars(temp_project_dir)
+
+        assert env_vars["OPENAI_API_KEY"] == "project-model-key"
+        assert env_vars["OPENAI_BASE_URL"] == "https://model.example.com/v1"
+        assert not {
+            "KSYUN_ACCESS_KEY",
+            "KSYUN_SECRET_KEY",
+            "KSYUN_ACCOUNT_ID",
+            "KCR_PASSWORD",
+            "KCR_REGISTRY",
+            "KCR_USERNAME",
+        }.intersection(env_vars)
+
+    def test_deploy_env_vars_allow_explicit_runtime_credential_opt_in(
+        self,
+        temp_project_dir,
+    ):
+        provider = ServerlessProvider()
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch(
+                "ksadk.deployment.providers.serverless.get_env_from_global_config",
+                return_value={},
+            ),
+        ):
+            env_vars, _, _ = provider._load_deploy_env_vars(
+                temp_project_dir,
+                {"KSYUN_ACCESS_KEY": "dedicated-runtime-ak"},
+            )
+
+        assert env_vars["KSYUN_ACCESS_KEY"] == "dedicated-runtime-ak"
+
+    def test_deploy_env_vars_preserve_explicit_deployment_mode(
+        self,
+        temp_project_dir,
+    ):
+        provider = ServerlessProvider()
+
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch(
+                "ksadk.deployment.providers.serverless.get_env_from_global_config",
+                return_value={},
+            ),
+        ):
+            env_vars, _, _ = provider._load_deploy_env_vars(
+                temp_project_dir,
+                {"KSADK_DEPLOYMENT_MODE": "external_managed"},
+            )
+
+        assert env_vars["KSADK_DEPLOYMENT_MODE"] == "external_managed"
 
     def test_deploy_env_vars_preserve_explicit_timezone(
         self,
@@ -1020,7 +1097,6 @@ class TestDeployLogic:
             ),
             patch("ksadk.common.auth.AWSV4Auth") as MockAuth,
         ):
-
             MockAuth.return_value.access_key_id = "test-ak"
             MockAuth.return_value.secret_access_key = "test-sk"
 
@@ -1070,7 +1146,6 @@ class TestDeployLogic:
             ),
             patch("ksadk.common.auth.AWSV4Auth") as MockAuth,
         ):
-
             MockAuth.return_value.access_key_id = "test-ak"
             MockAuth.return_value.secret_access_key = "test-sk"
 
@@ -1191,7 +1266,6 @@ class TestDeployLogic:
             ),
             patch("ksadk.common.auth.AWSV4Auth") as MockAuth,
         ):
-
             MockAuth.return_value.access_key_id = "test-ak"
             MockAuth.return_value.secret_access_key = "test-sk"
 

@@ -1,5 +1,6 @@
 from ksadk.evaluation.contracts import (
     CaseRun,
+    CloudDatasetRef,
     DataPolicy,
     EvalCase,
     EvalRunReport,
@@ -82,3 +83,19 @@ def test_optional_metric_error_does_not_fail_case():
     assert case_run.passed is True
     assert report.summary.passed_cases == 1
     assert report.summary.error_cases == 0
+
+
+def test_cloud_dataset_ref_is_preserved_in_run_spec_and_report_wire_contract():
+    reference = CloudDatasetRef(
+        provider="agent-eval/evalsmith",
+        project_id="project-1",
+        dataset_id="dataset-1",
+        version=7,
+        schema_hash="a" * 64,
+        content_digest="b" * 64,
+    )
+    spec = _spec().model_copy(update={"cloud_dataset": reference})
+    payload = spec.model_dump(mode="json", by_alias=True)
+
+    assert payload["cloudDataset"]["datasetId"] == "dataset-1"
+    assert payload["cloudDataset"]["version"] == 7

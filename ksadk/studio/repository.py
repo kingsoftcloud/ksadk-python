@@ -109,7 +109,14 @@ class AgentDraftRepository:
             raise not_found("agent", agent_id)
         return self._read(path)
 
-    def update(self, agent_id: str, spec: AgentSpec, *, expected_revision: int) -> AgentDraft:
+    def update(
+        self,
+        agent_id: str,
+        spec: AgentSpec,
+        *,
+        expected_revision: int,
+        name: str | None = None,
+    ) -> AgentDraft:
         current = self.get(agent_id)
         if current.metadata.revision != expected_revision:
             raise StudioError(
@@ -124,6 +131,8 @@ class AgentDraftRepository:
             )
         updated = cast(AgentDraft, current.model_copy(deep=True))
         updated.metadata.revision += 1
+        if name is not None:
+            updated.metadata = updated.metadata.model_copy(update={"name": name})
         updated.spec = spec
         self._write(self._agent_file(agent_id), updated)
         return updated
@@ -245,7 +254,19 @@ class BuildRepository:
                 continue
             if record.agent_id == agent_id:
                 records.append(record)
-        return records
+        return sorted(records, key=lambda item: item.created_at, reverse=True)
+
+    def list(self) -> list[BuildRecord]:
+        records: list[BuildRecord] = []
+        directory = self.workspace.resolve(".agentkit/builds")
+        for path in directory.glob("build_*.json"):
+            try:
+                records.append(
+                    BuildRecord.model_validate_json(path.read_text(encoding="utf-8"))
+                )
+            except (OSError, ValidationError):
+                continue
+        return sorted(records, key=lambda item: item.created_at, reverse=True)
 
     def delete_for_agent(
         self,

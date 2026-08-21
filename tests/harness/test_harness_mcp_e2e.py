@@ -106,9 +106,7 @@ async def test_mcp_startup_failure_identifies_server(tmp_path):
     adapter = app.adapter()
     assert isinstance(adapter, HarnessRuntimeAdapter)
     with pytest.raises(RuntimeError, match="weather.*127.0.0.1:1"):
-        await adapter.execute_request(
-            StartRequest(input="weather?", user_id="u", session_id="s")
-        )
+        await adapter.execute_request(StartRequest(input="weather?", user_id="u", session_id="s"))
 
 
 @pytest.mark.asyncio

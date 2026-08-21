@@ -99,9 +99,7 @@ def test_validator_checks_tool_schema_permission_and_approval():
     assert "TOOL_SCHEMA_INVALID" in codes
     assert "TOOL_PERMISSION_DENIED" in codes
     assert "TOOL_AUTO_APPROVAL_RISK" in codes
-    warning = next(
-        item for item in result.diagnostics if item.code == "TOOL_AUTO_APPROVAL_RISK"
-    )
+    warning = next(item for item in result.diagnostics if item.code == "TOOL_AUTO_APPROVAL_RISK")
     assert warning.severity == "warning"
 
 
@@ -151,9 +149,7 @@ def test_compiler_normalizes_endpoint_and_is_deterministic(tmp_path: Path):
         )
     )
 
-    assert first.resolved.model.endpoint_url == (
-        "https://model.example.com/v1/chat/completions"
-    )
+    assert first.resolved.model.endpoint_url == ("https://model.example.com/v1/chat/completions")
     assert first.resolved.resolved_digest == second.resolved.resolved_digest
     assert first.dependency_lock == second.dependency_lock
 
@@ -183,6 +179,4 @@ def test_validator_rejects_mcp_tool_without_enabled_server():
     result = AgentValidator().validate(_draft(tools=[tool]))
 
     assert not result.valid
-    assert any(
-        item.code == "CAPABILITY_UNRESOLVED" for item in result.diagnostics
-    )
+    assert any(item.code == "CAPABILITY_UNRESOLVED" for item in result.diagnostics)

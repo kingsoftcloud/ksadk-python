@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from ksadk.events.canonical import (
@@ -358,7 +359,8 @@ def test_shared_chat_runs_and_replays_two_turn_session(tmp_path: Path):
         assert sessions_after_delete["Total"] == 0
 
 
-def test_shared_chat_history_preserves_a2ui_activity(tmp_path: Path):
+@pytest.mark.asyncio
+async def test_shared_chat_history_preserves_a2ui_activity(tmp_path: Path):
     service = StudioService(tmp_path)
     service.create_agent(agent_id="demo-agent", name="Demo Agent")
     record = RunRecord(
@@ -392,7 +394,7 @@ def test_shared_chat_history_preserves_a2ui_activity(tmp_path: Path):
         },
     )
 
-    messages = StudioSharedWebBridge(service).list_messages("ses_a2ui")
+    messages = await StudioSharedWebBridge(service).list_messages("ses_a2ui")
     assistant = messages["Messages"][1]
     assert assistant["Activities"] == [
         {

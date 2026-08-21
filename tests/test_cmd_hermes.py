@@ -289,7 +289,7 @@ class _FakeHermesBootstrapImageClient(_FakeHermesClient):
         return {
             "configs": {
                 "bootstrap.default_image": (
-                    "registry.example.com/agentengine-public/" "hermes-agent:db-meta"
+                    "registry.example.com/agentengine-public/hermes-agent:db-meta"
                 )
             }
         }
@@ -1412,9 +1412,7 @@ def test_hermes_deploy_env_flag_forwards_extra_env_to_create_payload(tmp_path: P
     )
 
     assert result.exit_code == 0, result.output
-    env_vars = {
-        item["Key"]: item["Value"] for item in _FakeHermesClient.create_payload["env_vars"]
-    }
+    env_vars = {item["Key"]: item["Value"] for item in _FakeHermesClient.create_payload["env_vars"]}
     assert env_vars.get("FOO") == "bar"
 
 
@@ -1463,9 +1461,7 @@ def test_hermes_deploy_env_file_loads_extra_env(tmp_path: Path, monkeypatch):
     )
 
     assert result.exit_code == 0, result.output
-    env_vars = {
-        item["Key"]: item["Value"] for item in _FakeHermesClient.create_payload["env_vars"]
-    }
+    env_vars = {item["Key"]: item["Value"] for item in _FakeHermesClient.create_payload["env_vars"]}
     assert env_vars.get("FOO") == "from-file"
     assert env_vars.get("BAR") == "baz"
 
@@ -1491,9 +1487,7 @@ def test_hermes_deploy_env_flag_overrides_shell(tmp_path: Path, monkeypatch):
     )
 
     assert result.exit_code == 0, result.output
-    env_vars = {
-        item["Key"]: item["Value"] for item in _FakeHermesClient.create_payload["env_vars"]
-    }
+    env_vars = {item["Key"]: item["Value"] for item in _FakeHermesClient.create_payload["env_vars"]}
     assert env_vars.get("FOO") == "cli-value"
 
 
@@ -1511,9 +1505,7 @@ def test_hermes_deploy_auto_dotenv_does_not_override_shell(tmp_path: Path, monke
     )
 
     assert result.exit_code == 0, result.output
-    env_vars = {
-        item["Key"]: item["Value"] for item in _FakeHermesClient.create_payload["env_vars"]
-    }
+    env_vars = {item["Key"]: item["Value"] for item in _FakeHermesClient.create_payload["env_vars"]}
     assert "FOO" not in env_vars
 
 
@@ -1530,9 +1522,7 @@ def test_hermes_deploy_default_dotenv_auto_loaded_with_only_image(tmp_path: Path
     )
 
     assert result.exit_code == 0, result.output
-    env_vars = {
-        item["Key"]: item["Value"] for item in _FakeHermesClient.create_payload["env_vars"]
-    }
+    env_vars = {item["Key"]: item["Value"] for item in _FakeHermesClient.create_payload["env_vars"]}
     assert env_vars.get("HERMES_UI_LOCALE") == "zh"
 
 
@@ -1654,9 +1644,7 @@ def test_hermes_deploy_update_payload_preserves_existing_config_by_default(
     assert "network" not in payload
 
 
-def test_hermes_deploy_defaults_observability_on_for_existing_agent(
-    tmp_path: Path, monkeypatch
-):
+def test_hermes_deploy_defaults_observability_on_for_existing_agent(tmp_path: Path, monkeypatch):
     runner = CliRunner()
     _FakeHermesClient.create_payload = None
     _FakeHermesClient.update_payload = None
@@ -1679,9 +1667,7 @@ def test_hermes_deploy_defaults_observability_on_for_existing_agent(
     assert _FakeHermesClient.update_payload["enable_observability"] is True
 
 
-def test_hermes_deploy_can_explicitly_disable_observability(
-    tmp_path: Path, monkeypatch
-):
+def test_hermes_deploy_can_explicitly_disable_observability(tmp_path: Path, monkeypatch):
     runner = CliRunner()
     _FakeHermesClient.create_payload = None
     _FakeHermesClient.update_payload = None

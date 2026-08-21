@@ -241,6 +241,19 @@ class BaseRuntime(ABC):
         """原生能力声明(cancel / checkpoint / resume / session continuity 等)。"""
         raise NotImplementedError
 
+    def describe_context_capabilities(self) -> Any:
+        """Context ownership 合同（方案 6.1）：默认按 ``runtime_type`` 显式分派已知 Runner
+        capability，未知走保守 ``framework_assisted + opaque``。
+
+        合同放在 ``BaseRuntime``/``RuntimeAdapter``（平台边界），不再依赖 Runner 类名猜测。
+        ``RunnerRuntimeAdapter`` 经 ``_RunnerAsBaseRuntime`` 汇总内部 ``BaseRunner`` 的声明；
+        Codex 等 native adapter 自带 override。第一个 PR+shadow 接线修正阶段仅供 shadow
+        ContextPlan / conformance 测试消费，不改变真实输入。
+        """
+        from ksadk.context_engine.capabilities import capabilities_for_runtime_type
+
+        return capabilities_for_runtime_type(self.runtime_type)
+
 
 # ---------------------------------------------------------------------------
 # RuntimeAdapter:平台六动词
@@ -260,6 +273,14 @@ class RuntimeAdapter(ABC):
     @property
     def runtime(self) -> BaseRuntime:
         return self._runtime
+
+    def describe_context_capabilities(self) -> Any:
+        """平台边界的 Context ownership 合同入口：委托给底层 ``BaseRuntime``。
+
+        ``RunnerRuntimeAdapter`` 经 ``_RunnerAsBaseRuntime`` 汇总内部 Runner 的声明；
+        CodexRuntimeAdapter 自带 override。不在本方法里做类名猜测。
+        """
+        return self._runtime.describe_context_capabilities()
 
     async def preflight(self) -> None:
         """Validate that this adapter can accept a new run without creating one.

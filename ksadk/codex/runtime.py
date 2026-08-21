@@ -797,11 +797,13 @@ def _request_prompt(request: StartRequest) -> Any:
     # A resumed Codex thread already owns its transcript. Re-sending Studio's
     # transport-neutral history would duplicate every prior turn after refresh.
     if str(request.metadata.get("thread_id") or "").strip():
-        return _coerce_prompt_text(request.input)
+        return request.input if _is_structured_turn_input(request.input) else _coerce_prompt_text(request.input)
 
     conversation = request.conversation_preprocessing()
     if conversation is None or not conversation.messages:
-        return _coerce_prompt_text(request.input)
+        # Keep native text/image/mention parts intact for _build_run_input().
+        # Flattening this list turns an image dict into user-visible text.
+        return request.input if _is_structured_turn_input(request.input) else _coerce_prompt_text(request.input)
 
     lines: list[str] = []
     for message in conversation.messages:
@@ -816,6 +818,13 @@ def _request_prompt(request: StartRequest) -> Any:
         elif role == "user":
             lines.append(f"User: {content}")
     return "\n".join(lines) or request.input
+
+
+def _is_structured_turn_input(value: Any) -> bool:
+    return isinstance(value, list) and any(
+        isinstance(item, dict) and isinstance(item.get("type"), str)
+        for item in value
+    )
 
 
 def _build_run_input(request: Optional[StartRequest], prompt: Any) -> Any:

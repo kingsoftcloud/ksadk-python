@@ -36,9 +36,9 @@ def test_code_builder_packages_web_static_assets(tmp_path):
     assert any(n.endswith(".html") for n in static_files), "应包含 html 入口"
     assert any(n.endswith(".js") for n in static_files), "应包含 js 资源"
     assert any(n.endswith(".css") for n in static_files), "应包含 css 资源"
-    assert not any(
-        n.startswith("ksadk/server/web-ui/") for n in names
-    ), "runtime 产物不应包含前端源码/node_modules"
+    assert not any(n.startswith("ksadk/server/web-ui/") for n in names), (
+        "runtime 产物不应包含前端源码/node_modules"
+    )
 
 
 def test_code_builder_packages_project_custom_ui_dist(tmp_path):
@@ -98,9 +98,9 @@ def test_code_builder_packages_runtime_common_sources(tmp_path):
     with zipfile.ZipFile(zip_path) as zf:
         names = zf.namelist()
 
-    assert any(
-        n.startswith("ksadk_runtime_common/") for n in names
-    ), "应包含 ksadk_runtime_common 共享运行时代码"
+    assert any(n.startswith("ksadk_runtime_common/") for n in names), (
+        "应包含 ksadk_runtime_common 共享运行时代码"
+    )
 
 
 def test_code_builder_embeds_ksadk_runtime_identity_in_the_archive(tmp_path):

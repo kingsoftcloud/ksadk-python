@@ -14,7 +14,9 @@ from ksadk.studio.contracts import (
     AgentBindings,
     AgentDraft,
     AgentSpec,
+    ContextSpec,
     Instructions,
+    MemorySpec,
     ModelSpec,
     RuntimeRef,
 )
@@ -171,13 +173,44 @@ class StudioAuthoringCoordinator:
             ),
             detection="auto",
         )
+        # 方案 §6.1：完整保留 Runtime、Prompt、Model、Tool、Context 配置
+        task = str(config.get("task") or "")
+        model_name = str(config.get("model") or "")
+        model_spec = None
+        if model_name:
+            # import 时无显式 credential，用占位 ref（部署时由 env/控制面注入）
+            model_spec = ModelSpec(
+                model=model_name,
+                credential_ref="env://OPENAI_API_KEY",
+                endpoint_url="env://OPENAI_BASE_URL",
+            )
+        # context/memory 若 manifest 显式声明则保留（缺字段走默认，方案 §13.1 兼容）
+        context_spec = None
+        context_cfg = config.get("context")
+        if isinstance(context_cfg, dict) and context_cfg:
+            from ksadk.studio.contracts import ContextSpec as _ContextSpec
+            try:
+                context_spec = _ContextSpec.model_validate(context_cfg)
+            except Exception:  # noqa: BLE001 — 兼容旧 manifest，校验失败走默认
+                context_spec = None
+        memory_spec = None
+        memory_cfg = config.get("memory")
+        if isinstance(memory_cfg, dict) and memory_cfg:
+            from ksadk.studio.contracts import MemorySpec as _MemorySpec
+            try:
+                memory_spec = _MemorySpec.model_validate(memory_cfg)
+            except Exception:  # noqa: BLE001
+                memory_spec = None
         created = self.studio.create_agent(
             agent_id=agent_id,
             name=display_name,
             spec=AgentSpec(
                 runtime=runtime,
-                instructions=Instructions(system=prompt),
+                instructions=Instructions(system=prompt, task=task),
+                model=model_spec,
                 bindings=AgentBindings(model_profile_id=model_profile_id),
+                context=context_spec or ContextSpec(),
+                memory=memory_spec or MemorySpec(),
             ),
             labels={
                 "agentkit.ksyun.com/slug": self.backend.normalize_slug(resolved_slug),

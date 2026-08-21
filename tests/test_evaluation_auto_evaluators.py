@@ -1,7 +1,14 @@
 import pytest
 
-from ksadk.evaluation import DataPolicy, EvalCase, EvaluationConfig, TargetRun, evaluators
-from ksadk.evaluation.evaluators import evaluate_case
+from ksadk.evaluation import (
+    AssertionSpec,
+    DataPolicy,
+    EvalCase,
+    EvaluationConfig,
+    TargetRun,
+    evaluators,
+)
+from ksadk.evaluation.evaluators import evaluate_case, resolve_evaluator_plan
 
 
 def test_reference_match_scores_expected_output_without_assertions():
@@ -19,24 +26,81 @@ def test_reference_match_scores_expected_output_without_assertions():
     assert metrics[0].evidence["threshold"] == 0.8
 
 
-def test_default_evaluators_skip_reference_match():
+def test_default_evaluators_use_reference_match_without_assertions():
     metrics = evaluate_case(
         EvalCase(id="echo", turns=[{"input": "ping", "expectedOutput": "pong"}]),
         TargetRun(status="PASSED", output="pong"),
         [],
     )
 
-    assert metrics == []
+    assert [(metric.name, metric.status) for metric in metrics] == [
+        ("response_match", "PASS"),
+    ]
 
 
-def test_default_evaluators_preserve_cases_without_reference_output():
+def test_default_evaluators_mark_cases_without_a_business_standard_unavailable():
     metrics = evaluate_case(
         EvalCase(id="echo", input="ping"),
         TargetRun(status="PASSED", output="pong"),
         [],
     )
 
-    assert metrics == []
+    assert len(metrics) == 1
+    assert metrics[0].name == "response_quality"
+    assert metrics[0].status == "UNAVAILABLE"
+    assert metrics[0].required is True
+    assert metrics[0].evidence["reason"] == "Case 未提供响应业务标准"
+
+
+def test_default_evaluators_keep_expected_tool_trajectory_without_assertions():
+    metrics = evaluate_case(
+        EvalCase(
+            id="lookup",
+            turns=[
+                {
+                    "input": "查询北京",
+                    "expectedOutput": "北京",
+                    "expectedTools": [{"name": "knowledge_search"}],
+                }
+            ],
+        ),
+        TargetRun(
+            status="PASSED",
+            output="北京",
+            traceRef={"runId": "run-1"},
+            toolCalls=[{"callId": "call-1", "name": "knowledge_search", "status": "SUCCEEDED"}],
+        ),
+        [],
+    )
+
+    assert [(metric.name, metric.status) for metric in metrics] == [
+        ("response_match", "PASS"),
+        ("tool_trajectory", "PASS"),
+    ]
+
+
+def test_automatic_plan_selects_v2_tool_and_runtime_gates():
+    plan = resolve_evaluator_plan(
+        [
+            EvalCase(
+                id="v2-gates",
+                input="research",
+                assertions=[
+                    AssertionSpec(type="tool.succeeded", value="knowledge_search"),
+                    AssertionSpec(type="tool.sequence", value=["knowledge_search", "cite_source"]),
+                    AssertionSpec(type="runtime.maxTotalTokens", value=500),
+                ],
+            )
+        ],
+        [],
+        EvaluationConfig(),
+    )
+
+    assert plan == [
+        "business_standard@v1",
+        "runtime_budget@v1",
+        "tool_trajectory@v1",
+    ]
 
 
 def test_evaluator_dispatch_preserves_requested_order():

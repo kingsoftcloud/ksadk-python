@@ -16,16 +16,19 @@ from fastapi import FastAPI, File, Header, Query, Request, Response, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.background import BackgroundTask
 
 from ksadk.studio.api_catalog_routes import register_catalog_routes
 from ksadk.studio.api_contracts import (
     AuthoringCommitRequest,
     BuildRequest,
+    ContextPreviewRequest,
     ConversationAuthoringRequest,
     CreateAgentRequest,
-    EvaluationRequest,
+    ImportRootRequest,
     InteractionSubmitRequest,
     ProjectInspectRequest,
+    PromptCompileRequest,
     QuickAuthoringRequest,
     RollbackRequest,
     RunRequest,
@@ -58,6 +61,7 @@ from ksadk.studio.api_helpers import (
 from ksadk.studio.api_helpers import (
     sse as _sse,
 )
+from ksadk.studio.api_memory_routes import register_memory_routes
 from ksadk.studio.codex_manifest import CodexAgentManifest
 from ksadk.studio.contracts import (
     AgentAppearance,
@@ -94,6 +98,7 @@ def create_studio_app(
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         try:
+            await studio.run_service.recover_interrupted()
             yield
         finally:
             studio.credentials.clear_session()
@@ -143,6 +148,7 @@ def create_studio_app(
         large_upload_paths = {
             "/api/v1/catalog/skills:import": 52 * 1024 * 1024,
             "/api/v1/authoring/imports:inspect": 102 * 1024 * 1024,
+            "/api/v1/evaluation-files": 2 * 1024 * 1024 + 64 * 1024,
         }
         request_limit = large_upload_paths.get(request.url.path, 2 * 1024 * 1024)
         if content_length and int(content_length) > request_limit:
@@ -364,14 +370,14 @@ def create_studio_app(
             elif action == "DeleteSession":
                 data = shared_web.delete_session(str(payload.get("SessionId") or ""))
             elif action == "ListSessionMessages":
-                data = shared_web.list_messages(
+                data = await shared_web.list_messages(
                     str(payload.get("SessionId") or ""),
                     after_seq_id=_optional_int(payload.get("AfterSeqId")),
                     before_seq_id=_optional_int(payload.get("BeforeSeqId")),
                     limit=int(payload.get("Limit") or 50),
                 )
             elif action == "ListSessionEvents":
-                data = shared_web.list_session_events(str(payload.get("SessionId") or ""))
+                data = await shared_web.list_session_events(str(payload.get("SessionId") or ""))
             elif action == "RunAgent":
                 return StreamingResponse(
                     shared_web.stream_run(payload),
@@ -472,6 +478,7 @@ def create_studio_app(
                 "reactChat": True,
             },
             "runtimes": studio.runtime_catalog(),
+            "importableProject": studio.detect_importable_project(),
         }
 
     @app.get("/api/v1/system/settings")
@@ -741,6 +748,7 @@ def create_studio_app(
         agent_id: str,
         spec: AgentSpec,
         if_match: str | None = Header(default=None, alias="If-Match"),
+        name: str | None = Query(default=None, min_length=1, max_length=128),
     ):
         if not if_match:
             raise StudioError(
@@ -760,6 +768,7 @@ def create_studio_app(
             agent_id,
             spec,
             expected_revision=revision,
+            name=name,
         )
 
     @app.put("/api/v1/agents/{agent_id}/bindings")
@@ -798,6 +807,33 @@ def create_studio_app(
             agent_id,
             revision=payload.revision,
             level=payload.level,
+        )
+
+    @app.post("/api/v1/workspace:import-root", status_code=201)
+    async def import_root_project(payload: ImportRootRequest):
+        """PR-S6：一键导入根 Framework 项目（方案 §6.1）。"""
+        return studio.import_root_project(name=payload.name, slug=payload.slug)
+
+    @app.post("/api/v1/agents/{agent_id}/prompt:compile")
+    async def compile_prompt(agent_id: str, payload: PromptCompileRequest):
+        """PR-S2：Prompt 编译预览（方案 §6.2）。只读，不写 Session/Trace/Build。"""
+        return studio.compile_prompt_preview(
+            agent_id,
+            request_instructions=payload.request_instructions,
+            include_content=payload.include_content,
+        )
+
+    @app.post("/api/v1/agents/{agent_id}/context:preview")
+    async def preview_context(agent_id: str, payload: ContextPreviewRequest):
+        """PR-S2：Context 预览（方案 §6.2）。复用真实 Planner，不调模型。"""
+        return await studio.preview_context(
+            agent_id,
+            user_input=payload.user_input,
+            request_instructions=payload.request_instructions,
+            simulated_history=[
+                {"role": m.role, "content": m.content} for m in payload.simulated_history
+            ],
+            include_content=payload.include_content,
         )
 
     @app.post("/api/v1/agents/{agent_id}/builds", status_code=202)
@@ -885,10 +921,156 @@ def create_studio_app(
             data=payload.data,
         )
 
+    @app.get("/api/v1/runs/{run_id}/context")
+    async def get_run_context(run_id: str):
+        """Runtime Context Evidence：planned/projected/actual + 精度 + ownership。"""
+        record = studio.event_store.get(run_id)
+        plan = record.context_plan or {}
+        evidence = record.prompt_evidence or {}
+        return {
+            "planId": plan.get("plan_id"),
+            "accuracy": evidence.get("accountingAccuracy")
+            or plan.get("accounting_accuracy", "opaque"),
+            "policyVersion": plan.get("policy_version"),
+            "tokensByKind": plan.get("tokens_by_kind", {}),
+            "plannedInputTokens": plan.get("planned_input_tokens"),
+            "projectedInputTokens": plan.get("projected_input_tokens"),
+            "runtimeReportedInputTokens": plan.get("runtime_reported_input_tokens"),
+            "selected": plan.get("selected", []),
+            "decisions": plan.get("decisions", []),
+            "ownership": {
+                "promptOwner": evidence.get("promptOwner"),
+                "historyOwner": (plan.get("history_owner") if isinstance(plan, dict) else None),
+                "integrationMode": evidence.get("integrationMode"),
+                "runtimeType": evidence.get("runtimeType"),
+                "deploymentMode": evidence.get("deploymentMode"),
+                "capabilityHash": evidence.get("capabilityHash"),
+            },
+            "warnings": [],
+        }
+
+    @app.get("/api/v1/runs/{run_id}/prompt")
+    async def get_run_prompt(run_id: str, include_content: bool = Query(default=False)):
+        """PR-S4：Prompt evidence（方案 §6.3 / §7.3）。section hash/版本，默认不返回正文。"""
+        record = studio.event_store.get(run_id)
+        evidence = record.prompt_evidence or {}
+        result = {
+            "contentHash": evidence.get("contentHash"),
+            "stablePrefixHash": evidence.get("stablePrefixHash"),
+            "sectionHashes": evidence.get("sectionHashes", {}),
+            "tokensBySection": evidence.get("tokensBySection", {}),
+            "estimatedTokens": evidence.get("estimatedTokens"),
+            "sectionCount": evidence.get("sectionCount"),
+            "plannedInputTokens": evidence.get("plannedInputTokens"),
+            "accountingAccuracy": evidence.get("accountingAccuracy"),
+            "runtimeType": evidence.get("runtimeType"),
+            "integrationMode": evidence.get("integrationMode"),
+        }
+        if include_content:
+            result["reveal"] = studio.reveal_run_prompt(run_id)
+        return result
+
+    @app.get("/api/v1/runs/{run_id}/working-state")
+    async def get_run_working_state(run_id: str):
+        """PR-S4：Working State evidence（方案 §6.5）。从 checkpoint/read record 读取。"""
+        record = studio.event_store.get(run_id)
+        return {"workingState": record.working_state}
+
     @app.delete("/api/v1/sessions/{session_id}", status_code=204)
     async def delete_studio_session(session_id: str):
         studio.delete_session(session_id)
         return Response(status_code=204)
+
+    @app.get("/api/v1/sessions/{session_id}/events")
+    async def session_events(
+        session_id: str,
+        before_seq_id: int | None = Query(default=None, ge=1, alias="beforeSeqId"),
+        invocation_id: str | None = Query(default=None, alias="invocationId"),
+        limit: int = Query(default=100, ge=1, le=500),
+    ):
+        return await studio.trajectory_page(
+            session_id,
+            before_seq_id=before_seq_id,
+            invocation_id=invocation_id,
+            limit=limit,
+        )
+
+    @app.get("/api/v1/sessions/{session_id}/events/stream")
+    async def session_event_stream(
+        session_id: str,
+        request: Request,
+        after_seq_id: int = Query(default=0, ge=0, alias="afterSeqId"),
+        invocation_id: str | None = Query(default=None, alias="invocationId"),
+    ):
+        await studio._require_runtime_session(session_id)
+        last = request.headers.get("Last-Event-ID")
+        cursor = int(last) if last and last.isdigit() else after_seq_id
+        stream = studio.stream_trajectory(
+            session_id,
+            cursor,
+            invocation_id=invocation_id,
+        )
+
+        async def frames():
+            try:
+                async for frame in stream:
+                    if await request.is_disconnected():
+                        return
+                    yield frame
+            finally:
+                await stream.aclose()
+
+        return StreamingResponse(
+            frames(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-store",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    @app.post("/api/v1/sessions/{session_id}:export")
+    async def export_session(session_id: str, payload: dict[str, Any]):
+        filename = payload.get("filename")
+        invocation_id = payload.get("invocationId")
+        download = payload.get("download", False)
+        if not isinstance(filename, str):
+            raise StudioError(
+                "SESSION_EXPORT_FILENAME_INVALID",
+                "filename 必须是字符串",
+                status_code=422,
+                field="filename",
+            )
+        if invocation_id is not None and not isinstance(invocation_id, str):
+            raise StudioError(
+                "SESSION_EXPORT_INVOCATION_INVALID",
+                "invocationId 必须是字符串",
+                status_code=422,
+                field="invocationId",
+            )
+        if not isinstance(download, bool):
+            raise StudioError(
+                "SESSION_EXPORT_DOWNLOAD_INVALID",
+                "download 必须是布尔值",
+                status_code=422,
+                field="download",
+            )
+        result = await studio.export_runtime_session(
+            session_id,
+            filename=filename,
+            invocation_id=invocation_id,
+        )
+        if not download:
+            return result
+
+        path = studio.workspace.resolve(result["path"])
+        return FileResponse(
+            path,
+            filename=filename,
+            media_type="application/x-ndjson",
+            headers={"X-Session-Event-Count": str(result["eventCount"])},
+            background=BackgroundTask(path.unlink, missing_ok=True),
+        )
 
     @app.get("/api/v1/runs")
     async def list_runs(session_id: str | None = Query(default=None, alias="sessionId")):
@@ -902,7 +1084,7 @@ def create_studio_app(
     ):
         last = request.headers.get("Last-Event-ID")
         cursor = int(last) if last and last.isdigit() else after
-        events = studio.event_store.events(run_id, after=cursor)
+        events = await studio.run_service.events(run_id, after=cursor)
         return _sse(events)
 
     @app.get("/api/v1/traces/overview")
@@ -943,19 +1125,6 @@ def create_studio_app(
     async def get_trace_otlp(trace_id: str):
         return studio.event_store.trace_otlp(trace_id)
 
-    @app.post("/api/v1/builds/{build_id}/evaluations", status_code=202)
-    async def create_evaluation(
-        build_id: str,
-        payload: EvaluationRequest,
-        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-    ):
-        return studio.submit_evaluation(
-            build_id,
-            payload.suite_refs,
-            fail_fast=payload.fail_fast,
-            idempotency_key=_require_idempotency_key(idempotency_key),
-        )
-
     @app.post("/api/v1/evaluations", status_code=202)
     async def create_public_evaluation(
         payload: StudioEvaluationCreate,
@@ -968,16 +1137,39 @@ def create_studio_app(
             idempotency_key=_require_idempotency_key(idempotency_key),
         )
 
+    @app.post("/api/v1/evaluation-files", status_code=201)
+    async def import_evaluation_file(file: UploadFile = File(...)):
+        return studio.import_evaluation_file(
+            await file.read(2 * 1024 * 1024 + 1),
+            filename=file.filename or "evalset.yaml",
+        )
+
     @app.get("/api/v1/evaluations")
     async def list_public_evaluations():
         return {"items": studio.list_public_evaluations()}
 
+    @app.get("/api/v1/evaluation-runs")
+    async def list_public_evaluation_runs():
+        return {"items": studio.list_public_evaluation_runs()}
+
+    @app.get("/api/v1/evaluation-runs/{evaluation_id}")
+    async def get_public_evaluation_run(evaluation_id: str):
+        return studio.get_public_evaluation_run(evaluation_id)
+
+    @app.get("/api/v1/evaluation-targets")
+    async def list_evaluation_targets():
+        return studio.evaluation_catalog()
+
+    @app.get("/api/v1/evaluation-cloud/catalog")
+    async def list_evaluation_cloud_catalog(
+        project_id: str | None = Query(default=None, alias="projectId"),
+    ):
+        items = await studio.evaluation_cloud_catalog(project_id=project_id)
+        return {"items": items}
+
     @app.get("/api/v1/evaluations/{evaluation_id}")
     async def get_evaluation(evaluation_id: str):
-        report_path = studio.evaluation_storage.report_path(evaluation_id)
-        if report_path.is_file():
-            return studio.get_public_evaluation(evaluation_id)
-        return studio.evaluations.get(evaluation_id)
+        return studio.get_public_evaluation(evaluation_id)
 
     @app.get("/api/v1/evaluations/{evaluation_id}/cases/{case_id}")
     async def get_public_evaluation_case(evaluation_id: str, case_id: str):
@@ -1046,12 +1238,16 @@ def create_studio_app(
     ):
         last = request.headers.get("Last-Event-ID")
         cursor = int(last) if last and last.isdigit() else after
-        return _sse(studio.operations.events(operation_id, after=cursor))
+        events = studio.operations.events(operation_id, after=cursor)
+        if "application/json" in request.headers.get("Accept", ""):
+            return {"items": events}
+        return _sse(events)
 
     register_catalog_routes(
         app,
         studio,
         runtime_model_catalog=runtime_model_catalog,
     )
+    register_memory_routes(app, studio)
 
     return app

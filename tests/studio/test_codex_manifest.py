@@ -37,15 +37,15 @@ def test_repository_uses_root_agentengine_yaml_as_the_only_agent_source(
     snapshot = repository.save(_manifest())
 
     expected = (
-        'name: review-helper\n'
-        'version: 1.0.0\n'
-        'framework: codex\n'
-        'artifact_type: ManagedRuntime\n'
-        'runtime:\n'
-        '  name: codex\n'
-        '  version: 0.144.4\n'
-        'model: glm-5.2\n'
-        'prompt: |\n'
+        "name: review-helper\n"
+        "version: 1.0.0\n"
+        "framework: codex\n"
+        "artifact_type: ManagedRuntime\n"
+        "runtime:\n"
+        "  name: codex\n"
+        "  version: 0.144.4\n"
+        "model: glm-5.2\n"
+        "prompt: |\n"
         "  读取目标文件，指出一个确定的问题并给出修复建议。\n"
     ).encode()
     source = tmp_path / "agentengine.yaml"
@@ -81,9 +81,7 @@ def test_manifest_freezes_default_and_allowed_models_without_changing_legacy_yam
     repository = CodexManifestRepository(workspace)
 
     legacy = repository.save(_manifest())
-    multi = repository.save(
-        _manifest(models=["glm-5.2", "kimi-k2-code", "qwen3-coder"])
-    )
+    multi = repository.save(_manifest(models=["glm-5.2", "kimi-k2-code", "qwen3-coder"]))
 
     assert legacy.manifest.allowed_models == ("glm-5.2",)
     assert "models:" not in legacy.source_bytes.decode("utf-8")
@@ -112,9 +110,7 @@ def test_repository_keeps_one_yaml_manifest_per_local_agent(tmp_path: Path) -> N
     repository = CodexManifestRepository(workspace)
 
     first = repository.save(_manifest(name="review-helper"))
-    second = repository.save(
-        _manifest(name="research-helper", prompt="执行资料研究。\n")
-    )
+    second = repository.save(_manifest(name="research-helper", prompt="执行资料研究。\n"))
 
     assert first.source_path == tmp_path / "agentengine.yaml"
     assert second.source_path == tmp_path / "agents/research-helper/agentengine.yaml"

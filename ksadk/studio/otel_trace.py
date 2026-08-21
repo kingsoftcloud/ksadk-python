@@ -451,11 +451,11 @@ class OtlpTraceStore:
         root_end = (
             root_start + record.duration_ms * 1_000_000
             if record.duration_ms is not None
-            else _unix_nano(record.completed_at)
-            if record.completed_at is not None
-            else _unix_nano(events[-1].created_at)
-            if events
-            else root_start
+            else (
+                _unix_nano(record.completed_at)
+                if record.completed_at is not None
+                else _unix_nano(events[-1].created_at) if events else root_start
+            )
         )
         run_status = _enum_string(record.status)
         root_attributes: dict[str, Any] = {
@@ -498,9 +498,7 @@ class OtlpTraceStore:
                 "code": (
                     1
                     if run_status == "COMPLETED"
-                    else 2
-                    if run_status in {"FAILED", "TIMED_OUT", "CANCELLED"}
-                    else 0
+                    else 2 if run_status in {"FAILED", "TIMED_OUT", "CANCELLED"} else 0
                 )
             },
         }
@@ -546,15 +544,76 @@ class OtlpTraceStore:
             "tool.requested",
             "tool.completed",
         }
-        return [
-            {
-                "timeUnixNano": str(_unix_nano(event.created_at)),
-                "name": event.type,
-                "attributes": _attributes(_safe_event_attributes(event.data)),
-            }
-            for event in events
-            if event.type not in excluded
-        ]
+        content_families = {
+            "thinking.delta": "thinking",
+            "thinking.completed": "thinking",
+            "message.delta": "message",
+            "message.completed": "message",
+        }
+        projected: list[dict[str, Any]] = []
+        content_groups: dict[tuple[str, str, str, str], list[RunEvent]] = {}
+        current_turn = ""
+        current_step = ""
+
+        for event in events:
+            runtime_event = event.data.get("runtimeEvent")
+            correlation = runtime_event if isinstance(runtime_event, dict) else {}
+            turn_id = str(correlation.get("turn_id") or "")
+            step_id = str(correlation.get("step_id") or "")
+            if turn_id:
+                current_turn = turn_id
+            if step_id and event.type in {"step.started", "model.call.begin"}:
+                current_step = step_id
+
+            family = content_families.get(event.type)
+            if family:
+                key = (
+                    event.run_id,
+                    turn_id or current_turn,
+                    step_id or current_step,
+                    family,
+                )
+                content_groups.setdefault(key, []).append(event)
+                continue
+            if event.type in excluded:
+                continue
+            projected.append(
+                {
+                    "timeUnixNano": str(_unix_nano(event.created_at)),
+                    "name": event.type,
+                    "attributes": _attributes(_safe_event_attributes(event.data)),
+                }
+            )
+
+        for grouped in content_groups.values():
+            completed = next(
+                (event for event in reversed(grouped) if event.type.endswith(".completed")),
+                None,
+            )
+            source = completed or grouped[-1]
+            completed_text = source.data.get("text") if completed is not None else None
+            text = (
+                completed_text
+                if isinstance(completed_text, str) and completed_text
+                else "".join(
+                    str(event.data.get("text") or "")
+                    for event in grouped
+                    if event.type.endswith(".delta")
+                )
+            )
+            data = dict(source.data)
+            data["text"] = text
+            data["delta_count"] = sum(event.type.endswith(".delta") for event in grouped)
+            projected.append(
+                {
+                    "timeUnixNano": str(_unix_nano(source.created_at)),
+                    "name": source.type,
+                    "attributes": _attributes(_safe_event_attributes(data)),
+                }
+            )
+
+        projected.sort(key=lambda event: int(event["timeUnixNano"]))
+        return projected
 
     def _model_spans(
         self, trace_id: str, root_id: str, events: list[RunEvent], root_end: int
@@ -599,9 +658,7 @@ class OtlpTraceStore:
         end_ns = (
             start_ns + duration * 1_000_000
             if duration is not None
-            else _unix_nano(end.created_at)
-            if end is not None
-            else root_end
+            else _unix_nano(end.created_at) if end is not None else root_end
         )
         attrs: dict[str, Any] = {
             "gen_ai.operation.name": "chat",
@@ -672,9 +729,7 @@ class OtlpTraceStore:
         end_ns = (
             start_ns + duration * 1_000_000
             if duration is not None
-            else _unix_nano(end.created_at)
-            if end is not None
-            else root_end
+            else _unix_nano(end.created_at) if end is not None else root_end
         )
         exit_code = end.data.get("exitCode") if end is not None else None
         status = str(end.data.get("status") or "") if end is not None else ""
