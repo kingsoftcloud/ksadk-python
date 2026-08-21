@@ -289,7 +289,7 @@ async def test_direct_gateway_deploys_yaml_managed_runtime_without_uploading_bun
                 "manifest": "name: yaml-agent\nframework: codex\n",
             },
             "region": "pre-online",
-            "resources": {"cpu": 2, "memory": "4Gi"},
+            "resources": {"cpu": 1, "memory": "2Gi"},
             "scaling": {"min_replicas": 1, "max_replicas": 1, "concurrency": 20},
             "auth_type": "ApiKey",
         }

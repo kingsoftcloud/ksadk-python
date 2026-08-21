@@ -544,7 +544,11 @@ class DirectAgentEngineCloudDeploymentGateway:
                 "manifest": manifest,
             },
             "region": request.target.region,
-            "resources": {"cpu": 2, "memory": "4Gi"},
+            # YAML agents run from a platform-owned runtime image and have no
+            # user code bundle to build or unpack.  Keep their default small;
+            # high-code deployments retain their separate 2 CPU / 4 GiB
+            # profile in _create_payload above.
+            "resources": {"cpu": 1, "memory": "2Gi"},
             "scaling": {"min_replicas": 1, "max_replicas": 1, "concurrency": 20},
             "auth_type": "ApiKey",
         }
