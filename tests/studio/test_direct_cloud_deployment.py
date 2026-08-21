@@ -230,6 +230,30 @@ async def test_direct_service_rolls_back_by_updating_the_existing_agent(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_managed_runtime_status_uses_normal_runtime_readiness_not_kernel() -> None:
+    client = _Client()
+    client.kernel_ready = False
+    gateway = DirectAgentEngineCloudDeploymentGateway(
+        region="pre-online",
+        client=client,
+        uploader_factory=_Uploader,
+        ks3_credentials={"access_key": "test-access", "secret_key": "test-secret"},
+    )
+    deployment = DeploymentRecord(
+        id="dep_yaml_status",
+        build_id="build_yaml_status",
+        bundle_digest="sha256:" + "a" * 64,
+        version_id="managed-aaaaaaaaaaaaaaaa",
+        status="DEPLOYING",
+        target=DeploymentTarget(region="pre-online", environment="preproduction"),
+        agent_id="ar-studio-1",
+        artifact_id="managed-runtime",
+    )
+
+    assert (await gateway.get_deployment_status(deployment)).status == "READY"
+
+
+@pytest.mark.asyncio
 async def test_direct_gateway_deploys_yaml_managed_runtime_without_uploading_bundle() -> None:
     _Uploader.calls.clear()
     client = _Client()

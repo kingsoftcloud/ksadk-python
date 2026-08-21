@@ -416,6 +416,10 @@ class DirectAgentEngineCloudDeploymentGateway:
             if status in {"FAILED", "TERMINATED", "ERROR"}
             else "READY"
             if kernel_ready
+            or (
+                deployment.artifact_id == "managed-runtime"
+                and status in {"RUNNING", "READY"}
+            )
             else "DEPLOYING"
         )
         return deployment.model_copy(update={"status": projected})
