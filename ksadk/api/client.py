@@ -1375,7 +1375,6 @@ class AgentEngineClient:
                 raise ValueError("ManagedRuntime requires runtime_config.manifest")
             params["ManagedRuntimeConfig"] = {
                 "Manifest": manifest,
-                "ManifestSHA256": runtime_config.get("manifest_sha256"),
                 "RuntimeName": runtime_config.get("name"),
                 "RuntimeVersion": runtime_config.get("version"),
             }
@@ -1652,7 +1651,6 @@ class AgentEngineClient:
                 raise ValueError("ManagedRuntime requires runtime_config.manifest")
             params["ManagedRuntimeConfig"] = {
                 "Manifest": manifest,
-                "ManifestSHA256": runtime_config.get("manifest_sha256"),
                 "RuntimeName": runtime_config.get("name"),
                 "RuntimeVersion": runtime_config.get("version"),
             }

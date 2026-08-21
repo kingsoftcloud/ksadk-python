@@ -262,7 +262,6 @@ async def test_direct_gateway_deploys_yaml_managed_runtime_without_uploading_bun
                 "name": "codex",
                 "version": "0.144.4",
                 "manifest": "name: yaml-agent\nframework: codex\n",
-                "manifest_sha256": "a" * 64,
             },
             "region": "pre-online",
             "resources": {"cpu": 2, "memory": "4Gi"},
