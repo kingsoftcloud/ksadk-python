@@ -4,6 +4,29 @@
 > - `docs/superpowers/plans/2026-08-17-agent-runtime-v2-phase1-agent-kernel.md`（Phase 1，14 任务）
 > - `/Users/xiayu/kingsoft/code/agent-sdk/docs/superpowers/plans/2026-08-19-agent-kernel-interaction-web-0.3.2.md`（Interaction/Web，8 任务）
 
+## 2026-08-21 运行态补充（以本节为准）
+
+- `docs/superpowers/evidence/phase0/manifest.json` 已存在且 `accepted=true`。以该
+  manifest 和既有 `preprod-report.json` 重跑
+  `scripts/phase1_preprod_gate.py`，得到 **27 checks / 0 failed**（本次本地
+  report 仅写入 `/tmp/phase1-current-gate.json`，不覆写历史证据）。因此下文中
+  “17 pass / 1 fail” 与 “Phase 0 manifest 未产出”均为历史快照，不再代表当前
+  gate 结论。
+- 独立 Hosted UI 已由集群的 `ksadk-web 0.3.1` 滚动至
+  `0.3.2-beta.3-e41710a`，镜像 digest 为
+  `sha256:0b8e3e9746afbe4a76faf33f6b3d871f83943d6a90127c2a51bae9873dcff35c`。
+  三个保留 Studio 样本的 `/hosted-ui/chat/` 均返回同一已验证 bundle；Web
+  Interaction E2E 的 10 个场景通过，包括“审批托盘位于输入框上方且不遮挡”。
+- **不得把上面的 Hosted UI 与 Studio 样本状态混为 Kernel 端到端证据。** 现网
+  Server 的部署组合根未注入 `AGENT_KERNEL_DEPLOYMENT_ENABLED` 与其配套的
+  signing/JWKS/capability 配置；因此当前三个声明式 Studio Agent 的 `RUNNING`
+  只证明既有 CreateAgent/ManagedRuntime 生命周期。它们不会获得 AgentKernel
+  projection，也不能用于证明 Gateway → Server admission → Runtime Kernel
+  的真实链路。开启该组合根前必须完成受控的签名 Secret、runtime capability
+  pin、JWKS 可达性和 AgentInstance migration 验收；不能以空配置降级开启。
+- 当前仍缺一次私有 Dashboard 的真实浏览器会话验证（新建短期访问链接和发送
+  测试消息会产生外部会话记录，需操作人确认）。
+
 ## 一、交付范围与状态
 
 ### Phase 1（Task 0-13）：全部完成，预发 gate 17 pass / 1 fail（phase0_baseline，Phase 0 manifest 未产出，硬前置如实红灯）
