@@ -184,10 +184,10 @@ export function DeploymentsPage({ onCreate }: { onCreate: () => void }) {
         </div>
       ) : (
         <section className="delivery-block" aria-label="部署生命周期">
-          <h2>部署生命周期</h2><p>Bundle、既有 Agent 生命周期与云端实例的每一行都有独立 receipt。</p>
+          <h2>部署生命周期</h2><p>YAML 部署声明、既有 Agent 生命周期与云端实例的每一行都有独立 receipt。</p>
           <div className="delivery-table-scroll">
             <table className="delivery-table">
-              <thead><tr><th>状态</th><th>云端实例</th><th>Build</th><th>Bundle digest</th><th>目标</th><th><span className="sr-only">操作</span></th></tr></thead>
+              <thead><tr><th>状态</th><th>云端实例</th><th>Build</th><th>声明摘要</th><th>目标</th><th><span className="sr-only">操作</span></th></tr></thead>
               <tbody>{deployments.map(deployment => {
                 const refreshingThis = refreshing.has(deployment.id);
                 return <tr key={deployment.id}>

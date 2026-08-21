@@ -1409,7 +1409,21 @@ class AgentEngineClient:
             advanced["ProjectId"] = project_id
         params["Advanced"] = advanced
 
-        return self._action("CreateAgentProduct", params)
+        # ManagedRuntime is an already-paid, platform-owned YAML runtime.  It
+        # has no Code/Container order callback to materialize later, so use
+        # the existing CreateAgent action to create its Agent/Runtime now.
+        # Code and Container keep the established CreateAgentProduct flow.
+        action = (
+            "CreateAgent"
+            if params["DeploymentType"] == "ManagedRuntime"
+            else "CreateAgentProduct"
+        )
+        if action == "CreateAgent":
+            # CreateAgent is also used as an order callback and therefore
+            # requires an InstanceId.  A declarative runtime has no order to
+            # allocate one for us, so the SDK supplies a stable request UUID.
+            params["InstanceId"] = str(data.get("instance_id") or uuid.uuid4())
+        return self._action(action, params)
 
     async def get_agent(
         self,

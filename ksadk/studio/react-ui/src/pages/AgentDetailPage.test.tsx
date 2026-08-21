@@ -62,6 +62,6 @@ describe("AgentDetailPage cloud deployment", () => {
         expect.objectContaining({ method: "POST" }),
       );
     });
-    expect(await screen.findByText("云端处理中：上传 Bundle 与创建 Agent")).toBeInTheDocument();
+    expect(await screen.findByText("云端处理中：校验 YAML 声明并创建 Agent")).toBeInTheDocument();
   });
 });

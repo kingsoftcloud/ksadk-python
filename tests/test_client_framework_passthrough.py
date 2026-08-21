@@ -95,6 +95,8 @@ async def test_create_agent_forwards_managed_runtime_contract(monkeypatch):
     )
 
     payload = calls[0][1]
+    assert calls[0][0] == "CreateAgent"
+    assert isinstance(payload["InstanceId"], str) and payload["InstanceId"]
     assert payload["DeploymentType"] == "ManagedRuntime"
     assert "CodeConfig" not in payload
     assert payload["ManagedRuntimeConfig"] == {

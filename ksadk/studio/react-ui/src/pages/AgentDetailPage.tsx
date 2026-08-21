@@ -242,7 +242,7 @@ export function AgentDetailPage({ agentId, onBack, onChat, onBuild, onEdit, onOp
             <SquarePen size={15} /><span>编辑</span>
           </button>
           <button className="button secondary" type="button" onClick={onBuild}>
-            <Package size={15} /><span>构建</span>
+            <Package size={15} /><span>校验并构建</span>
           </button>
           <button className="button secondary" type="button" onClick={deployLatestBuild} disabled={!latestBuild || deploying}>
             {deploying ? <Loader2 size={15} className="animate-spin" /> : <CloudUpload size={15} />}<span>{deploying ? "部署处理中…" : "部署到预发环境"}</span>
@@ -263,10 +263,10 @@ export function AgentDetailPage({ agentId, onBack, onChat, onBuild, onEdit, onOp
           <div>
             <strong>{({
               submitting: "正在提交预发部署任务",
-              processing: "云端处理中：上传 Bundle 与创建 Agent",
+              processing: "云端处理中：校验 YAML 声明并创建 Agent",
               receipting: "Agent 已受理：正在读取云端实例 receipt",
             } as Record<string, string>)[deploymentPhase]}</strong>
-            <p>实例启动完成并不等于 Kernel 已就绪；部署列表会以 Server 的 readiness 投影为准。</p>
+            <p>此路径不上传代码包；实例启动状态由 Server 投影。需要持久会话与恢复能力的 Kernel Agent 会单独显示其 readiness。</p>
           </div>
         </div>
       )}
@@ -279,7 +279,7 @@ export function AgentDetailPage({ agentId, onBack, onChat, onBuild, onEdit, onOp
             <div className="readonly-field"><span>任务契约</span><pre>{draft.spec.instructions?.task || "未配置任务契约"}</pre></div>
           </section>
           <section className="detail-section block">
-            <div className="section-heading"><div><h2>能力绑定</h2><p>构建时锁定版本和内容摘要</p></div></div>
+            <div className="section-heading"><div><h2>能力绑定</h2><p>构建时锁定 YAML 声明、版本和内容摘要</p></div></div>
             {boundGroups.length ? <div className="binding-groups">
               {boundGroups.map(([gname, ids]) => (
                 <div className="binding-group" key={gname}>
@@ -311,12 +311,12 @@ export function AgentDetailPage({ agentId, onBack, onChat, onBuild, onEdit, onOp
             {latestBuild ? (
               <>
                 <span className="status-dot success" />
-                <div><strong>Bundle 已就绪</strong><span>{shortId(latestBuild.bundleDigest || latestBuild.id)}</span></div>
+                <div><strong>部署声明已就绪</strong><span>{shortId(latestBuild.bundleDigest || latestBuild.id)}</span></div>
               </>
             ) : (
               <>
                 <span className="status-dot neutral" />
-                <div><strong>尚未构建</strong><span>创建 Bundle 后即可对话</span></div>
+                <div><strong>尚未构建</strong><span>校验 YAML 声明后即可部署或本地对话</span></div>
               </>
             )}
           </div>
