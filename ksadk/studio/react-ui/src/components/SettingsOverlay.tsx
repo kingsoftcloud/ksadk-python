@@ -282,7 +282,7 @@ export function SettingsOverlay({ themePreference, onThemePreferenceChange, init
             <input id="settingCloudBucket" placeholder="agentengine-<account>-cn-beijing-6" {...settingsForm.register("cloudBucket")} />
           </FormField>
         </div>
-        <p className="helper">签名账号：{settings?.cloudSignedAccountConfigured ? "已由启动环境配置，可以发起预发部署。" : "未配置；部署会明确失败，不会降级到浏览器凭证或伪造身份。"}</p>
+        <p className="helper">签名账号：{settings?.cloudSignedAccountConfigured ? "已由启动环境配置，可以发起云端部署。" : "未配置；部署会明确失败，不会降级到浏览器凭证或伪造身份。"}</p>
       </section>
 
       <section id="settings-about" className="settings-group" tabIndex={-1}>

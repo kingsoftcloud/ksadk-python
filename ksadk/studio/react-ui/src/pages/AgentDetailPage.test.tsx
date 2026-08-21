@@ -40,7 +40,7 @@ vi.mock("../api", () => ({ apiFetch }));
 import { AgentDetailPage } from "./AgentDetailPage";
 
 describe("AgentDetailPage cloud deployment", () => {
-  it("submits the latest successful Bundle to the preproduction target", async () => {
+  it("submits the latest successful Bundle to the cloud target", async () => {
     operationPolls = 0;
     render(
       <AgentDetailPage
@@ -54,7 +54,7 @@ describe("AgentDetailPage cloud deployment", () => {
       />,
     );
 
-    fireEvent.click(await screen.findByRole("button", { name: "部署到预发环境" }));
+    fireEvent.click(await screen.findByRole("button", { name: "部署到云端" }));
 
     await waitFor(() => {
       expect(apiFetch).toHaveBeenCalledWith(

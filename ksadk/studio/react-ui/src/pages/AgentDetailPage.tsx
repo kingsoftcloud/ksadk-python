@@ -160,7 +160,7 @@ export function AgentDetailPage({ agentId, onBack, onChat, onBuild, onEdit, onOp
       if (!settingsResponse.ok) throw new Error(`读取部署设置失败（${settingsResponse.status}）`);
       const settings = await settingsResponse.json();
       const region = String(settings?.cloudRegion || "").trim();
-      if (!region) throw new Error("请先在设置中填写预发部署 Region");
+      if (!region) throw new Error("请先在设置中填写云端部署 Region");
       const response = await apiFetch(`/api/v1/builds/${encodeURIComponent(build.id)}/deployments`, {
         method: "POST",
         headers: {
@@ -195,7 +195,7 @@ export function AgentDetailPage({ agentId, onBack, onChat, onBuild, onEdit, onOp
       if (!deploymentResponse.ok) throw new Error(`读取部署状态失败（${deploymentResponse.status}）`);
       const deployment = await deploymentResponse.json();
       showToast(
-        "已提交预发环境部署",
+        "已提交云端部署",
         deployment.instanceId ? `实例 ${deployment.instanceId} 正在启动` : "云端实例正在启动",
       );
       onOpenDeployments();
@@ -245,7 +245,7 @@ export function AgentDetailPage({ agentId, onBack, onChat, onBuild, onEdit, onOp
             <Package size={15} /><span>校验并构建</span>
           </button>
           <button className="button secondary" type="button" onClick={deployLatestBuild} disabled={!latestBuild || deploying}>
-            {deploying ? <Loader2 size={15} className="animate-spin" /> : <CloudUpload size={15} />}<span>{deploying ? "部署处理中…" : "部署到预发环境"}</span>
+            {deploying ? <Loader2 size={15} className="animate-spin" /> : <CloudUpload size={15} />}<span>{deploying ? "部署处理中…" : "部署到云端"}</span>
           </button>
           <MoreActionsMenu
             label={`${draft.metadata.name} 的更多操作`}
@@ -262,7 +262,7 @@ export function AgentDetailPage({ agentId, onBack, onChat, onBuild, onEdit, onOp
           <Loader2 size={16} className="animate-spin" />
           <div>
             <strong>{({
-              submitting: "正在提交预发部署任务",
+              submitting: "正在提交云端部署任务",
               processing: "云端处理中：校验 YAML 声明并创建 Agent",
               receipting: "Agent 已受理：正在读取云端实例 receipt",
             } as Record<string, string>)[deploymentPhase]}</strong>

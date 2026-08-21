@@ -193,7 +193,7 @@ export function BuildsPage({ currentAgentId, agents, onSelectAgent, onCreate }: 
       {agents.length === 0 ? (
         <div className="delivery-empty-state">
           <Package size={24} /><h2>还没有可构建的 Agent</h2>
-          <p>先创建 Agent，再生成可部署到预发的交付记录。</p>
+          <p>先创建 Agent，再生成可部署到云端的交付记录。</p>
           <button className="button accent" type="button" onClick={onCreate}><Plus size={15} /><span>创建 Agent</span></button>
         </div>
       ) : (
@@ -211,7 +211,7 @@ export function BuildsPage({ currentAgentId, agents, onSelectAgent, onCreate }: 
             <div className="delivery-fact-chain">
               <div className="delivery-fact-step" data-state={draft ? "ready" : "idle"}><span>{isManagedRuntime ? "输入 YAML Revision" : "输入 Revision"}</span><strong>{draft ? `r${draft.metadata.revision}` : "未选择"}</strong><code>{draft?.metadata?.id || "-"}</code></div>
               <div className="delivery-fact-step" data-state={state}><span>{isManagedRuntime ? "声明摘要" : "不可变 Bundle"}</span><strong>{latestBuild?.status === "SUCCEEDED" ? (isManagedRuntime ? "已校验" : "已生成") : deliveryLabel(status)}</strong><code>{latestBuild?.bundleDigest || "尚无 digest"}</code></div>
-              <div className="delivery-fact-step" data-state="idle"><span>预发部署</span><strong>尚未部署</strong><code>请从部署页提交准入</code></div>
+              <div className="delivery-fact-step" data-state="idle"><span>云端部署</span><strong>尚未部署</strong><code>请从部署页提交准入</code></div>
             </div>
           </section>
 

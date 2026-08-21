@@ -180,7 +180,7 @@ export function DeploymentsPage({ onCreate }: { onCreate: () => void }) {
       </PageHeaderActions>
 
       <div className="delivery-intro">
-        <div><h2>预发部署</h2><p>显示 Studio receipt 与 Server 投影的实例状态；刷新才会读取云端状态。</p></div>
+        <div><h2>云端部署</h2><p>显示 Studio receipt 与 Server 投影的实例状态；刷新才会读取云端状态。</p></div>
       </div>
 
       {error && <div className="form-error" role="alert">{error}</div>}
@@ -190,12 +190,12 @@ export function DeploymentsPage({ onCreate }: { onCreate: () => void }) {
         <div><span className="stat-label">云端已就绪</span><strong>{summary.ready}</strong><small>Server 状态投影</small></div>
         <div><span className="stat-label">进行中</span><strong>{summary.pending}</strong><small>准入或实例启动</small></div>
         <div><span className="stat-label">失败或已回滚</span><strong>{summary.failed}</strong><small>需要查看操作结果</small></div>
-        <div><span className="stat-label">目标</span><strong>预发</strong><small>preproduction</small></div>
+        <div><span className="stat-label">目标</span><strong>云端</strong><small>云端环境</small></div>
       </section>
 
       {loading ? <div className="delivery-empty-state"><p>正在读取部署 receipt…</p></div> : !deployments.length ? (
         <div className="delivery-empty-state">
-          <CloudUpload size={24} /><h2>还没有预发部署</h2>
+          <CloudUpload size={24} /><h2>还没有云端部署</h2>
           <p>先构建 AgentBundle，再从 Agent 详情上传不可变 Bundle 并创建云端 Agent。</p>
           <button className="button accent" type="button" onClick={onCreate}>创建 Agent</button>
         </div>
@@ -227,7 +227,7 @@ export function DeploymentsPage({ onCreate }: { onCreate: () => void }) {
 
       {rollback && (
         <section className="delivery-block rollback-panel" aria-label="选择回滚 Build">
-          <div><h2>选择历史 Build</h2><p>将创建新的预发 deployment receipt，现有 receipt 不会被改写。</p></div>
+          <div><h2>选择历史 Build</h2><p>将创建新的云端交付记录，现有 receipt 不会被改写。</p></div>
           <label>
             <span>回滚目标</span>
             <select aria-label="选择回滚目标 Build" value={rollback.targetBuildId} onChange={event => setRollback({ ...rollback, targetBuildId: event.target.value })}>

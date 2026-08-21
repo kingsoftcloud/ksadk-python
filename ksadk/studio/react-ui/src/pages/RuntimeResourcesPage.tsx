@@ -125,7 +125,7 @@ export function RuntimeResourcesPage({ refreshTick, onOpenResources }: {
           <small className="stat-foot">{workspacePath || "本地工作区"}</small>
         </div>
         <div>
-          <span className="stat-label">预发实例</span>
+          <span className="stat-label">云端实例</span>
           <strong className="stat-value" data-state={deploymentState}>{deploymentLabel}</strong>
           <small className="stat-foot">Studio deployment receipt</small>
         </div>
