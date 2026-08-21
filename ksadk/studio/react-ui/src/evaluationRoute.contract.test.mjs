@@ -5,10 +5,10 @@ import test from "node:test";
 const appSource = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
 
 test("evaluation page is registered as a conditional view", () => {
-  assert.match(appSource, /view === "evaluations".*<EvaluationsPage/);
+  assert.match(appSource, /const evaluationRunId = parts\[0\] === "evaluations" && parts\[1\]/);
+  assert.match(appSource, /view === "evaluations" && !evaluationRunId[\s\S]*<EvaluationsPage/);
   assert.match(appSource, /<EvaluationDetailPage/);
-  assert.match(appSource, /evaluationMatch = path\.match/);
-  assert.match(appSource, /evaluationRunId: decodeURIComponent/);
+  assert.match(appSource, /window\.history\.pushState\(null, "", `#\/evaluations\/\$\{encodeURIComponent\(runId\)\}`\)/);
 });
 
 test("App does not load evaluation data for existing views", () => {

@@ -13,6 +13,9 @@
 .evaluation-page__form-grid > .studio-form-field {
   grid-column: span 6;
   align-self: start;
+  /* The legacy stacked-form selector gives adjacent fields a top margin.
+   * In this two-column grid that would push the right column down. */
+  margin-top: 0;
   min-width: 0;
 }
 
