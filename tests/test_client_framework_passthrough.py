@@ -99,6 +99,7 @@ async def test_create_agent_forwards_managed_runtime_contract(monkeypatch):
     assert "CodeConfig" not in payload
     assert payload["ManagedRuntimeConfig"] == {
         "Manifest": "name: managed-codex",
+        "ManifestSHA256": "a" * 64,
         "RuntimeName": "codex",
         "RuntimeVersion": "0.144.4",
     }
@@ -335,6 +336,7 @@ async def test_update_agent_forwards_managed_runtime_contract(monkeypatch):
     assert "CodeConfig" not in payload
     assert payload["ManagedRuntimeConfig"] == {
         "Manifest": "name: managed-codex",
+        "ManifestSHA256": "b" * 64,
         "RuntimeName": "codex",
         "RuntimeVersion": "0.144.4",
     }
