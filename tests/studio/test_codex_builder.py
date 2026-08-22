@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -88,6 +89,44 @@ def test_editing_manifest_invalidates_latest_build_and_new_build_uses_new_sha(
     assert second.id != first.id
     assert first.manifest_sha256 == first_snapshot.manifest_sha256
     assert builder.is_current(second) is True
+
+
+def test_build_with_immutable_model_snapshot_survives_removed_live_catalog_resource(
+    tmp_path: Path,
+) -> None:
+    workspace = Workspace(tmp_path)
+    workspace.initialize()
+    CodexManifestRepository(workspace).save(_manifest())
+    builder = CodexStudioBuilder(workspace, runtime_inspector=_inspector)
+    build = builder.build().model_copy(
+        update={
+            "model_profiles": {
+                "glm-5.2": {
+                    "model": "glm-5.2",
+                    "endpointUrl": "https://model.example.com/v1/responses",
+                    "credentialRef": "env://OPENAI_API_KEY",
+                }
+            }
+        }
+    )
+
+    class RemovedCatalog:
+        def get(self, _resource_id):
+            raise StudioError("RESOURCE_NOT_FOUND", "Catalog Resource 不存在", status_code=404)
+
+    builder.catalog = RemovedCatalog()
+    builder.drafts = SimpleNamespace(
+        get=lambda _agent_id: SimpleNamespace(
+            spec=SimpleNamespace(
+                bindings=SimpleNamespace(
+                    model_profile_id="model:removed",
+                    model_profile_ids=["model:removed"],
+                )
+            )
+        )
+    )
+
+    assert builder.is_current(build) is True
 
 
 def test_legacy_two_file_zip_receipt_remains_readable_after_yaml_only_upgrade(

@@ -333,10 +333,19 @@ class CodexStudioBuilder:
             return False
         if record.model_profiles is None:
             return True
-        return record.model_profiles == self._model_profile_snapshot(
-            snapshot.manifest.name,
-            allowed_models=snapshot.manifest.allowed_models,
-        )
+        try:
+            current_profiles = self._model_profile_snapshot(
+                snapshot.manifest.name,
+                allowed_models=snapshot.manifest.allowed_models,
+            )
+        except StudioError as exc:
+            if exc.code == "RESOURCE_NOT_FOUND":
+                # A completed Build owns its connection snapshot.  A later
+                # Catalog cleanup must not make that immutable Build
+                # undeployable; launch resolution reads the snapshot instead.
+                return True
+            raise
+        return record.model_profiles == current_profiles
 
     @staticmethod
     def _build_id(
