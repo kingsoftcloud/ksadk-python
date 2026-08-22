@@ -47,6 +47,10 @@ function valueText(value: unknown): string {
   return "";
 }
 
+function scalarText(value: unknown): string {
+  return typeof value === "string" || typeof value === "number" ? String(value) : "";
+}
+
 function normalizeSession(value: unknown): CloudSession | null {
   if (!value || typeof value !== "object") return null;
   const item = value as Record<string, unknown>;
@@ -55,8 +59,8 @@ function normalizeSession(value: unknown): CloudSession | null {
   return {
     id,
     title: valueText(item.title ?? item.summary ?? item.first_prompt ?? "") || "新会话",
-    updatedAt: String(item.updated_at ?? item.updatedAt ?? item.created_at ?? ""),
-    state: String(item.state ?? item.active_run_status ?? ""),
+    updatedAt: scalarText(item.updated_at ?? item.updatedAt ?? item.created_at),
+    state: scalarText(item.active_run_status ?? item.state),
   };
 }
 
