@@ -59,7 +59,7 @@ def test_studio_cli_no_open_does_not_launch_browser(tmp_path: Path, monkeypatch)
     assert "#session=" in result.output
 
 
-def test_studio_cli_loads_only_model_env_subset_and_forces_codex_proxy(
+def test_studio_cli_loads_allowlisted_model_and_cloud_control_env_and_forces_codex_proxy(
     tmp_path: Path,
     monkeypatch,
 ):
@@ -68,6 +68,9 @@ def test_studio_cli_loads_only_model_env_subset_and_forces_codex_proxy(
         "OPENAI_API_BASE=https://models.example/v1\n"
         "OPENAI_API_KEY=top-secret-value\n"
         "OPENAI_MODEL_NAME=glm-5.2\n"
+        "KSYUN_ACCESS_KEY=cloud-access\n"
+        "KSYUN_SECRET_KEY=cloud-secret\n"
+        "KSYUN_REGION=cn-beijing-6\n"
         "UNRELATED_SECRET=must-not-be-loaded\n",
         encoding="utf-8",
     )
@@ -76,6 +79,9 @@ def test_studio_cli_loads_only_model_env_subset_and_forces_codex_proxy(
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_MODEL_NAME", raising=False)
     monkeypatch.delenv("UNRELATED_SECRET", raising=False)
+    monkeypatch.delenv("KSYUN_ACCESS_KEY", raising=False)
+    monkeypatch.delenv("KSYUN_SECRET_KEY", raising=False)
+    monkeypatch.delenv("KSYUN_REGION", raising=False)
     monkeypatch.delenv("KSADK_CODEX_USE_PROXY", raising=False)
     active_environment = {}
 
@@ -88,6 +94,9 @@ def test_studio_cli_loads_only_model_env_subset_and_forces_codex_proxy(
                     "OPENAI_BASE_URL",
                     "OPENAI_API_KEY",
                     "OPENAI_MODEL_NAME",
+                    "KSYUN_ACCESS_KEY",
+                    "KSYUN_SECRET_KEY",
+                    "KSYUN_REGION",
                     "KSADK_CODEX_USE_PROXY",
                 )
             }
@@ -114,9 +123,14 @@ def test_studio_cli_loads_only_model_env_subset_and_forces_codex_proxy(
     assert active_environment["OPENAI_BASE_URL"] == "https://models.example/v1"
     assert active_environment["OPENAI_API_KEY"] == "top-secret-value"
     assert active_environment["OPENAI_MODEL_NAME"] == "glm-5.2"
+    assert active_environment["KSYUN_ACCESS_KEY"] == "cloud-access"
+    assert active_environment["KSYUN_SECRET_KEY"] == "cloud-secret"
+    assert active_environment["KSYUN_REGION"] == "cn-beijing-6"
     # 白名单仍挡住非模型 env
     assert active_environment.get("KSADK_CODEX_USE_PROXY") == "1"
     assert "top-secret-value" not in result.output
+    assert "cloud-access" not in result.output
+    assert "cloud-secret" not in result.output
     assert "must-not-be-loaded" not in result.output
     assert "models.example" not in result.output
     assert active_environment == {
@@ -124,17 +138,27 @@ def test_studio_cli_loads_only_model_env_subset_and_forces_codex_proxy(
         "OPENAI_BASE_URL": "https://models.example/v1",
         "OPENAI_API_KEY": "top-secret-value",
         "OPENAI_MODEL_NAME": "glm-5.2",
+        "KSYUN_ACCESS_KEY": "cloud-access",
+        "KSYUN_SECRET_KEY": "cloud-secret",
+        "KSYUN_REGION": "cn-beijing-6",
         "KSADK_CODEX_USE_PROXY": "1",
     }
     assert "OPENAI_API_BASE" not in __import__("os").environ
     assert "OPENAI_BASE_URL" not in __import__("os").environ
     assert "OPENAI_API_KEY" not in __import__("os").environ
     assert "OPENAI_MODEL_NAME" not in __import__("os").environ
+    assert "KSYUN_ACCESS_KEY" not in __import__("os").environ
+    assert "KSYUN_SECRET_KEY" not in __import__("os").environ
+    assert "KSYUN_REGION" not in __import__("os").environ
     assert "UNRELATED_SECRET" not in __import__("os").environ
     assert "KSADK_CODEX_USE_PROXY" not in __import__("os").environ
     for path in (tmp_path / "workspace").rglob("*"):
         if path.is_file():
             assert "top-secret-value" not in path.read_text(
+                encoding="utf-8",
+                errors="ignore",
+            )
+            assert "cloud-secret" not in path.read_text(
                 encoding="utf-8",
                 errors="ignore",
             )

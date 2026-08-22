@@ -24,6 +24,21 @@ _MODEL_ENV_KEYS = (
     "OPENAI_API_KEY",
     "OPENAI_MODEL_NAME",
 )
+# Cloud-control credentials are intentionally process-only as well.  Studio
+# needs them to use the Server Action API for a deployed Agent, but they must
+# never become browser settings, workspace files, or runtime environment.
+_CLOUD_CONTROL_ENV_KEYS = (
+    "KSYUN_ACCESS_KEY",
+    "KSYUN_SECRET_KEY",
+    "KSYUN_REGION",
+    "AGENTENGINE_REGION",
+    "AGENTENGINE_SERVER_URL",
+    "AGENTENGINE_SIGN_SERVICE",
+    "KS3_BUCKET",
+    "KS3_ACCESS_KEY",
+    "KS3_SECRET_KEY",
+)
+_STUDIO_ENV_FILE_KEYS = (*_MODEL_ENV_KEYS, *_CLOUD_CONTROL_ENV_KEYS)
 # 别名归一：两者任一有值时，把另一个也设上，保证下游无论读哪个都命中。
 _MODEL_BASE_URL_ALIASES = ("OPENAI_BASE_URL", "OPENAI_API_BASE")
 
@@ -35,7 +50,10 @@ _MODEL_BASE_URL_ALIASES = ("OPENAI_BASE_URL", "OPENAI_API_BASE")
 @click.option(
     "--env-file",
     type=click.Path(exists=True, dir_okay=False),
-    help="模型环境文件；只读取 OPENAI_BASE_URL/API_BASE/API_KEY/MODEL_NAME",
+    help=(
+        "本地模型与云端控制环境文件；只读取允许的 OPENAI/KSYUN/KS3 "
+        "字段，且仅保留在 Studio 进程"
+    ),
 )
 @click.option(
     "--codex-proxy",
@@ -58,7 +76,7 @@ def studio(
     """
 
     root = Path(workspace).expanduser().resolve()
-    managed_keys = (*_MODEL_ENV_KEYS, "KSADK_CODEX_USE_PROXY")
+    managed_keys = (*_STUDIO_ENV_FILE_KEYS, "KSADK_CODEX_USE_PROXY")
     previous = {key: os.environ.get(key) for key in managed_keys}
     previously_present = {key for key in managed_keys if key in os.environ}
     try:
@@ -67,11 +85,15 @@ def studio(
                 values = load_env_file(env_file)
             except ValueError as exc:
                 raise click.ClickException(str(exc)) from exc
-            loaded = 0
+            loaded_models = 0
+            loaded_cloud_control = 0
             for key, value in values.items():
-                if key not in _MODEL_ENV_KEYS or not value:
+                if key not in _STUDIO_ENV_FILE_KEYS or not value:
                     continue
-                loaded += 1
+                if key in _MODEL_ENV_KEYS:
+                    loaded_models += 1
+                else:
+                    loaded_cloud_control += 1
                 if key not in os.environ:
                     os.environ[key] = value
             # 别名归一（方案 §2.4 第 5 点）：OPENAI_BASE_URL 与 OPENAI_API_BASE 互为别名。
@@ -82,8 +104,17 @@ def studio(
             if resolved_base_url:
                 os.environ["OPENAI_BASE_URL"] = resolved_base_url
                 os.environ["OPENAI_API_BASE"] = resolved_base_url
-                loaded = max(loaded, 2)  # base_url 至少算一次，避免显示 0/4 误导
-            print_kv("模型环境", f"已安全加载 {loaded}/{len(_MODEL_ENV_KEYS)} 个字段")
+                # base_url 至少算一次，避免显示 0/4 误导。
+                loaded_models = max(loaded_models, 2)
+            print_kv(
+                "模型环境",
+                f"已安全加载 {loaded_models}/{len(_MODEL_ENV_KEYS)} 个字段",
+            )
+            if loaded_cloud_control:
+                print_kv(
+                    "云端控制",
+                    f"已安全加载 {loaded_cloud_control}/{len(_CLOUD_CONTROL_ENV_KEYS)} 个字段（仅本地进程）",
+                )
         if codex_proxy == "forced":
             os.environ["KSADK_CODEX_USE_PROXY"] = "1"
         elif codex_proxy == "direct":
