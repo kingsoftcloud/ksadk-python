@@ -1443,15 +1443,29 @@ class StudioService:
             # receipt already created.  CreateAgent can have succeeded before
             # a downstream Runtime-Service start failed; creating again would
             # leave duplicate cloud Agents and make the retry path non-idempotent.
-            replacing = next(
-                (
-                    deployment
-                    for deployment in self.cloud.list()
-                    if deployment.artifact_id == "managed-runtime"
-                    and deployment.build_id == build_id
-                    and deployment.agent_id
-                ),
-                None,
+            # A YAML edit necessarily produces a new immutable Build.  Match
+            # the prior receipt through that Build's immutable agent_name,
+            # rather than by build_id, otherwise every edit attempts a second
+            # CreateAgent and Server correctly rejects the duplicate name.
+            replacement_candidates = []
+            for deployment in self.cloud.list():
+                if deployment.artifact_id != "managed-runtime" or not deployment.agent_id:
+                    continue
+                try:
+                    deployed_build = self.codex_builds.get(deployment.build_id)
+                except StudioError:
+                    # A malformed/legacy local receipt cannot establish
+                    # ownership of this Agent and must not block a new deploy.
+                    continue
+                if deployed_build.agent_name == codex_build.agent_name:
+                    replacement_candidates.append((deployed_build, deployment))
+            replacing = (
+                max(
+                    replacement_candidates,
+                    key=lambda item: (item[0].source_revision, item[0].created_at),
+                )[1]
+                if replacement_candidates
+                else None
             )
 
             async def managed_runtime_runner(_operation_id: str):
