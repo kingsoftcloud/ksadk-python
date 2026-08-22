@@ -316,7 +316,10 @@ export function AgentEditor({
         const operation = await buildResponse.json().catch(() => null);
         if (!buildResponse.ok) throw new Error(operation?.error?.message || `构建提交失败（${buildResponse.status}）`);
         await waitForBuild(operation.id);
-        showToast(`${values.runtimeType} Bundle 构建完成`, savedId);
+        showToast(
+          values.runtimeType === "codex" ? "YAML 声明已校验" : `${values.runtimeType} Bundle 构建完成`,
+          savedId,
+        );
       }
       onSaved(savedId, buildAfterSave);
     } catch (error: any) {
