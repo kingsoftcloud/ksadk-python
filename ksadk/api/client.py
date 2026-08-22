@@ -1815,6 +1815,57 @@ class AgentEngineClient:
             params["CursorSource"] = cursor_source
         return self._action("ListSessionMessages", params)
 
+    async def list_session_events(
+        self,
+        *,
+        agent_id: str,
+        session_id: str,
+        after_seq_id: int | None = None,
+        limit: int = 100,
+    ) -> Dict[str, Any]:
+        """Read canonical cloud session events through the Server Action API."""
+
+        params: Dict[str, Any] = {
+            "AgentId": agent_id,
+            "SessionId": session_id,
+            "Limit": limit,
+        }
+        if after_seq_id is not None:
+            params["AfterSeqId"] = after_seq_id
+        return self._action("ListSessionEvents", params)
+
+    async def submit_interaction(
+        self,
+        *,
+        agent_id: str,
+        session_id: str,
+        run_id: str,
+        interaction_id: str,
+        expected_revision: int,
+        action: str,
+        response: Dict[str, Any] | None = None,
+        idempotency_key: str,
+    ) -> Dict[str, Any]:
+        """Submit one Interaction/v1 response via Server admission.
+
+        The caller supplies only public interaction fields.  Tenant,
+        principal, AgentInstance and permit remain Server-derived.
+        """
+
+        return self._action(
+            "SubmitInteraction",
+            {
+                "AgentId": agent_id,
+                "SessionId": session_id,
+                "RunId": run_id,
+                "InteractionId": interaction_id,
+                "ExpectedRevision": expected_revision,
+                "Action": action,
+                "Response": response or {},
+                "IdempotencyKey": idempotency_key,
+            },
+        )
+
     async def list_workspace_files(
         self,
         *,

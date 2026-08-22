@@ -563,6 +563,23 @@ class DirectAgentEngineCloudDeploymentGateway:
             )
         return True
 
+    async def list_deployment_chat_events(
+        self,
+        deployment: DeploymentRecord,
+        *,
+        session_id: str,
+        after_seq_id: int | None = None,
+        limit: int = 200,
+    ) -> dict[str, Any]:
+        """Read canonical events, including public Interaction/v1 frames."""
+
+        return await self.client.list_session_events(
+            agent_id=self._chat_agent_id(deployment),
+            session_id=session_id,
+            after_seq_id=after_seq_id,
+            limit=limit,
+        )
+
     async def send_deployment_chat_message(
         self,
         deployment: DeploymentRecord,
@@ -579,6 +596,31 @@ class DirectAgentEngineCloudDeploymentGateway:
 
         return await self.client.chat(
             self._chat_agent_id(deployment), content, session_id=session_id
+        )
+
+    async def submit_deployment_chat_interaction(
+        self,
+        deployment: DeploymentRecord,
+        *,
+        session_id: str,
+        run_id: str,
+        interaction_id: str,
+        expected_revision: int,
+        action: str,
+        response: dict[str, Any],
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        """Forward only Interaction/v1's caller-visible response fields."""
+
+        return await self.client.submit_interaction(
+            agent_id=self._chat_agent_id(deployment),
+            session_id=session_id,
+            run_id=run_id,
+            interaction_id=interaction_id,
+            expected_revision=expected_revision,
+            action=action,
+            response=response,
+            idempotency_key=idempotency_key,
         )
 
     async def create_managed_runtime_deployment(self, **kwargs) -> DeploymentRecord:
@@ -1071,6 +1113,29 @@ class CloudDeploymentService:
             limit=limit,
         )
 
+    async def list_cloud_chat_events(
+        self,
+        deployment_id: str,
+        *,
+        session_id: str,
+        after_seq_id: int | None = None,
+        limit: int = 200,
+    ) -> dict[str, Any]:
+        deployment = self.get(deployment_id)
+        reader = getattr(self.gateway, "list_deployment_chat_events", None)
+        if reader is None:
+            raise StudioError(
+                "CLOUD_CHAT_UNAVAILABLE",
+                "当前云端网关不支持本地会话代理",
+                status_code=501,
+            )
+        return await reader(
+            deployment,
+            session_id=session_id,
+            after_seq_id=after_seq_id,
+            limit=limit,
+        )
+
     async def send_cloud_chat_message(
         self,
         deployment_id: str,
@@ -1087,6 +1152,37 @@ class CloudDeploymentService:
                 status_code=501,
             )
         return await sender(deployment, session_id=session_id, content=content)
+
+    async def submit_cloud_chat_interaction(
+        self,
+        deployment_id: str,
+        *,
+        session_id: str,
+        run_id: str,
+        interaction_id: str,
+        expected_revision: int,
+        action: str,
+        response: dict[str, Any],
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        deployment = self.get(deployment_id)
+        submitter = getattr(self.gateway, "submit_deployment_chat_interaction", None)
+        if submitter is None:
+            raise StudioError(
+                "CLOUD_CHAT_UNAVAILABLE",
+                "当前云端网关不支持本地会话代理",
+                status_code=501,
+            )
+        return await submitter(
+            deployment,
+            session_id=session_id,
+            run_id=run_id,
+            interaction_id=interaction_id,
+            expected_revision=expected_revision,
+            action=action,
+            response=response,
+            idempotency_key=idempotency_key,
+        )
 
     async def delete_cloud_chat_session(
         self, deployment_id: str, *, session_id: str

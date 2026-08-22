@@ -128,6 +128,17 @@ class CloudChatMessageRequest(ContractModel):
     content: str = Field(min_length=1, max_length=1_000_000)
 
 
+class CloudChatInteractionSubmitRequest(ContractModel):
+    """Public Interaction/v1 fields accepted by the local cloud-chat proxy."""
+
+    run_id: str = Field(min_length=1, max_length=256)
+    interaction_id: str = Field(min_length=1, max_length=256)
+    expected_revision: int = Field(ge=1)
+    action: Literal["approve", "reject", "submit", "cancel"]
+    response: dict[str, Any] = Field(default_factory=dict)
+    idempotency_key: str = Field(min_length=1, max_length=256)
+
+
 class StudioEvaluationCreate(ContractModel):
     """Request for the shared CLI/Studio evaluation executor."""
 

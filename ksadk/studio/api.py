@@ -21,6 +21,7 @@ from starlette.background import BackgroundTask
 from ksadk.studio.api_catalog_routes import register_catalog_routes
 from ksadk.studio.api_contracts import (
     AuthoringCommitRequest,
+    CloudChatInteractionSubmitRequest,
     BuildRequest,
     CloudChatMessageRequest,
     ContextPreviewRequest,
@@ -1248,6 +1249,22 @@ def create_studio_app(
             limit=limit,
         )
 
+    @app.get(
+        "/api/v1/deployments/{deployment_id}/cloud-chat/sessions/{session_id}/events"
+    )
+    async def list_cloud_chat_events(
+        deployment_id: str,
+        session_id: str,
+        after_seq_id: int | None = Query(default=None, alias="afterSeqId", ge=0),
+        limit: int = Query(default=200, ge=1, le=1000),
+    ):
+        return await studio.cloud.list_cloud_chat_events(
+            deployment_id,
+            session_id=session_id,
+            after_seq_id=after_seq_id,
+            limit=limit,
+        )
+
     @app.delete(
         "/api/v1/deployments/{deployment_id}/cloud-chat/sessions/{session_id}",
         status_code=204,
@@ -1273,6 +1290,26 @@ def create_studio_app(
             deployment_id,
             session_id=session_id,
             content=payload.content,
+        )
+
+    @app.post(
+        "/api/v1/deployments/{deployment_id}/cloud-chat/sessions/{session_id}/interactions",
+        status_code=202,
+    )
+    async def submit_cloud_chat_interaction(
+        deployment_id: str,
+        session_id: str,
+        payload: CloudChatInteractionSubmitRequest,
+    ):
+        return await studio.cloud.submit_cloud_chat_interaction(
+            deployment_id,
+            session_id=session_id,
+            run_id=payload.run_id,
+            interaction_id=payload.interaction_id,
+            expected_revision=payload.expected_revision,
+            action=payload.action,
+            response=payload.response,
+            idempotency_key=payload.idempotency_key,
         )
 
     @app.post("/api/v1/deployments/{deployment_id}:rollback", status_code=202)

@@ -147,6 +147,57 @@ async def test_list_session_messages_uses_server_owned_cursor_contract(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_cloud_interaction_actions_keep_principal_fields_server_owned(monkeypatch):
+    client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
+    calls = []
+
+    def fake_action(action: str, params: dict):
+        calls.append((action, params.copy()))
+        return {"ok": True}
+
+    monkeypatch.setattr(client, "_action", fake_action)
+
+    await client.list_session_events(
+        agent_id="ar-cloud", session_id="sess-cloud", after_seq_id=7, limit=200
+    )
+    await client.submit_interaction(
+        agent_id="ar-cloud",
+        session_id="sess-cloud",
+        run_id="run-cloud",
+        interaction_id="int-cloud",
+        expected_revision=2,
+        action="approve",
+        response={"decision": "approve"},
+        idempotency_key="idem-cloud",
+    )
+
+    assert calls == [
+        (
+            "ListSessionEvents",
+            {
+                "AgentId": "ar-cloud",
+                "SessionId": "sess-cloud",
+                "AfterSeqId": 7,
+                "Limit": 200,
+            },
+        ),
+        (
+            "SubmitInteraction",
+            {
+                "AgentId": "ar-cloud",
+                "SessionId": "sess-cloud",
+                "RunId": "run-cloud",
+                "InteractionId": "int-cloud",
+                "ExpectedRevision": 2,
+                "Action": "approve",
+                "Response": {"decision": "approve"},
+                "IdempotencyKey": "idem-cloud",
+            },
+        ),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_create_agent_forwards_network_configuration(monkeypatch):
     client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
     calls = []

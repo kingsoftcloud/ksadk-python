@@ -28,6 +28,10 @@ class _CloudClient:
         self.calls.append(("ListSessionMessages", kwargs))
         return {"messages": [{"message_id": "msg-1", "role": "assistant", "content": "已收到"}]}
 
+    async def list_session_events(self, **kwargs) -> dict:
+        self.calls.append(("ListSessionEvents", kwargs))
+        return {"events": [{"event_type": "interaction.requested", "seq_id": 5}]}
+
     async def chat(self, agent_id: str, message: str, *, session_id: str | None = None) -> dict:
         self.calls.append(("RunAgent", {"AgentId": agent_id, "SessionId": session_id, "Message": message}))
         return {"receipt_status": "accepted", "run_id": "run-1"}
@@ -35,6 +39,10 @@ class _CloudClient:
     async def delete_session(self, session_id: str) -> bool:
         self.calls.append(("DeleteSession", {"SessionId": session_id}))
         return True
+
+    async def submit_interaction(self, **kwargs) -> dict:
+        self.calls.append(("SubmitInteraction", kwargs))
+        return {"receipt_status": "accepted"}
 
 
 class _Uploader:
@@ -80,9 +88,24 @@ def test_cloud_chat_routes_keep_agent_scope_in_the_local_receipt(tmp_path: Path)
             "/api/v1/deployments/dep-cloud-chat/cloud-chat/sessions/sess-existing/messages",
             params={"afterSeqId": 4},
         )
+        events = client.get(
+            "/api/v1/deployments/dep-cloud-chat/cloud-chat/sessions/sess-existing/events",
+            params={"afterSeqId": 4},
+        )
         sent = client.post(
             "/api/v1/deployments/dep-cloud-chat/cloud-chat/sessions/sess-existing/messages",
             json={"content": "你好"},
+        )
+        interaction = client.post(
+            "/api/v1/deployments/dep-cloud-chat/cloud-chat/sessions/sess-existing/interactions",
+            json={
+                "runId": "run-1",
+                "interactionId": "int-1",
+                "expectedRevision": 1,
+                "action": "approve",
+                "response": {"decision": "approve"},
+                "idempotencyKey": "idem-1",
+            },
         )
         deleted = client.delete(
             "/api/v1/deployments/dep-cloud-chat/cloud-chat/sessions/sess-existing"
@@ -94,8 +117,12 @@ def test_cloud_chat_routes_keep_agent_scope_in_the_local_receipt(tmp_path: Path)
     assert created.json()["session"]["session_id"] == "sess-created"
     assert messages.status_code == 200
     assert messages.json()["messages"][0]["content"] == "已收到"
+    assert events.status_code == 200
+    assert events.json()["events"][0]["event_type"] == "interaction.requested"
     assert sent.status_code == 202
     assert sent.json()["receipt_status"] == "accepted"
+    assert interaction.status_code == 202
+    assert interaction.json()["receipt_status"] == "accepted"
     assert deleted.status_code == 204
     assert cloud.calls == [
         ("ListSessions", {"AgentId": "ar-receipt-bound", "Page": 1, "PageSize": 50}),
@@ -110,11 +137,33 @@ def test_cloud_chat_routes_keep_agent_scope_in_the_local_receipt(tmp_path: Path)
             },
         ),
         (
+            "ListSessionEvents",
+            {
+                "agent_id": "ar-receipt-bound",
+                "session_id": "sess-existing",
+                "after_seq_id": 4,
+                "limit": 200,
+            },
+        ),
+        (
             "RunAgent",
             {
                 "AgentId": "ar-receipt-bound",
                 "SessionId": "sess-existing",
                 "Message": "你好",
+            },
+        ),
+        (
+            "SubmitInteraction",
+            {
+                "agent_id": "ar-receipt-bound",
+                "session_id": "sess-existing",
+                "run_id": "run-1",
+                "interaction_id": "int-1",
+                "expected_revision": 1,
+                "action": "approve",
+                "response": {"decision": "approve"},
+                "idempotency_key": "idem-1",
             },
         ),
         ("DeleteSession", {"SessionId": "sess-existing"}),

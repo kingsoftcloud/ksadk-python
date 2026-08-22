@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Bot, Loader2, MessageSquarePlus, Send, Trash2 } from "lucide-react";
+import { Bot, Loader2, MessageSquarePlus, Send, ShieldAlert, ShieldCheck, Trash2, X } from "lucide-react";
 import { apiFetch } from "../api";
 import { showToast } from "./Toast";
 
@@ -26,6 +26,14 @@ interface CloudMessage {
   content: string;
   timestamp: string;
   pending?: boolean;
+}
+
+interface CloudInteraction {
+  id: string;
+  runId: string;
+  revision: number;
+  kind: string;
+  title: string;
 }
 
 function valueText(value: unknown): string {
@@ -77,6 +85,35 @@ function normalizeMessage(value: unknown): CloudMessage | null {
   };
 }
 
+function pendingInteractions(events: unknown[]): CloudInteraction[] {
+  const requested = new Map<string, CloudInteraction>();
+  for (const event of events) {
+    if (!event || typeof event !== "object") continue;
+    const frame = event as Record<string, unknown>;
+    const payload = frame.payload && typeof frame.payload === "object"
+      ? frame.payload as Record<string, unknown>
+      : frame;
+    const eventType = String(frame.event_type ?? frame.eventType ?? payload.event_type ?? payload.eventType ?? "");
+    const interactionId = String(payload.interaction_id ?? payload.interactionId ?? "").trim();
+    if (!interactionId) continue;
+    if (eventType === "interaction.requested") {
+      const request = payload.request && typeof payload.request === "object"
+        ? payload.request as Record<string, unknown>
+        : {};
+      requested.set(interactionId, {
+        id: interactionId,
+        runId: String(payload.run_id ?? payload.runId ?? frame.run_id ?? frame.runId ?? ""),
+        revision: Number(payload.revision ?? 1) || 1,
+        kind: String(payload.kind ?? request.kind ?? "input"),
+        title: valueText(request.title ?? request.message ?? request.kind ?? "需要你的确认") || "需要你的确认",
+      });
+    } else if (["interaction.resolved", "interaction.cancelled", "interaction.expired"].includes(eventType)) {
+      requested.delete(interactionId);
+    }
+  }
+  return [...requested.values()];
+}
+
 async function responseError(response: Response): Promise<string> {
   try {
     const body = await response.json();
@@ -96,10 +133,12 @@ export function CloudChatWorkspace({
   const [sessions, setSessions] = useState<CloudSession[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState("");
   const [messages, setMessages] = useState<CloudMessage[]>([]);
+  const [interactions, setInteractions] = useState<CloudInteraction[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [deleting, setDeleting] = useState("");
+  const [resolvingInteractionId, setResolvingInteractionId] = useState("");
   const messageListRef = useRef<HTMLDivElement>(null);
 
   const base = useMemo(
@@ -132,12 +171,24 @@ export function CloudChatWorkspace({
     setMessages(rows);
   }, [base]);
 
+  const refreshInteractions = useCallback(async (sessionId: string) => {
+    if (!sessionId) {
+      setInteractions([]);
+      return;
+    }
+    const response = await apiFetch(`${base}/sessions/${encodeURIComponent(sessionId)}/events`);
+    if (!response.ok) throw new Error(await responseError(response));
+    const payload = await response.json();
+    setInteractions(pendingInteractions(payload.events || []));
+  }, [base]);
+
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setSessions([]);
     setCurrentSessionId("");
     setMessages([]);
+    setInteractions([]);
     refreshSessions()
       .catch(error => { if (!cancelled) showToast("云端会话加载失败", error.message, "error"); })
       .finally(() => { if (!cancelled) setLoading(false); });
@@ -148,16 +199,20 @@ export function CloudChatWorkspace({
     refreshMessages(currentSessionId).catch(error => {
       showToast("云端消息加载失败", error.message, "error");
     });
-  }, [currentSessionId, refreshMessages]);
+    refreshInteractions(currentSessionId).catch(error => {
+      showToast("云端交互加载失败", error.message, "error");
+    });
+  }, [currentSessionId, refreshInteractions, refreshMessages]);
 
   useEffect(() => {
     if (!sending || !currentSessionId) return;
     const timer = window.setInterval(() => {
       refreshMessages(currentSessionId).catch(() => {});
+      refreshInteractions(currentSessionId).catch(() => {});
       refreshSessions().catch(() => {});
     }, 1200);
     return () => window.clearInterval(timer);
-  }, [currentSessionId, refreshMessages, refreshSessions, sending]);
+  }, [currentSessionId, refreshInteractions, refreshMessages, refreshSessions, sending]);
 
   useEffect(() => {
     const list = messageListRef.current;
@@ -235,6 +290,36 @@ export function CloudChatWorkspace({
     }
   }
 
+  async function submitInteraction(interaction: CloudInteraction, action: "approve" | "reject" | "submit") {
+    if (!currentSessionId || resolvingInteractionId) return;
+    if (!interaction.runId) {
+      showToast("交互缺少运行标识", "请刷新会话后重试。", "error");
+      return;
+    }
+    setResolvingInteractionId(interaction.id);
+    try {
+      const response = await apiFetch(`${base}/sessions/${encodeURIComponent(currentSessionId)}/interactions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          runId: interaction.runId,
+          interactionId: interaction.id,
+          expectedRevision: interaction.revision,
+          action,
+          response: action === "approve" ? { decision: "approve" } : action === "reject" ? { decision: "reject" } : {},
+          idempotencyKey: `studio-cloud-${interaction.id}-${interaction.revision}-${action}`,
+        }),
+      });
+      if (!response.ok) throw new Error(await responseError(response));
+      await Promise.all([refreshInteractions(currentSessionId), refreshMessages(currentSessionId)]);
+      showToast("已提交确认", "云端 Agent 将继续当前对话。", "success");
+    } catch (error) {
+      showToast("提交确认失败", error instanceof Error ? error.message : String(error), "error");
+    } finally {
+      setResolvingInteractionId("");
+    }
+  }
+
   return (
     <section className="studio-chat-shell cloud-chat-shell" aria-label="云端会话">
       <aside className="chat-session-sidebar">
@@ -271,6 +356,20 @@ export function CloudChatWorkspace({
           {sending && <div className="cloud-chat-pending"><Loader2 size={15} /> 正在等待云端响应…</div>}
         </div>
         <div className="chat-composer-wrap">
+          {interactions.length > 0 && (
+            <div className="chat-pending-interactions" aria-label="待处理确认" data-ui="interaction-tray">
+              <div className="chat-pending-interactions-heading"><ShieldAlert size={16} /><strong>等待你的确认</strong><span>处理后将继续当前云端对话</span></div>
+              {interactions.map(interaction => (
+                <div className="cloud-interaction-card" key={interaction.id}>
+                  <div><strong>{interaction.kind === "approval" ? "工具操作需要批准" : interaction.title}</strong><span>{interaction.title}</span></div>
+                  <div className="cloud-interaction-actions">
+                    {interaction.kind === "approval" && <button className="secondary-button" type="button" disabled={Boolean(resolvingInteractionId)} onClick={() => submitInteraction(interaction, "reject")}><X size={15} />拒绝</button>}
+                    <button className="primary-button" type="button" disabled={Boolean(resolvingInteractionId)} onClick={() => submitInteraction(interaction, interaction.kind === "approval" ? "approve" : "submit")}><ShieldCheck size={15} />{interaction.kind === "approval" ? "允许执行" : "提交"}</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
           <div className="chat-composer">
             <textarea value={input} onChange={event => setInput(event.target.value)} placeholder="发送到云端 Agent" disabled={!active || sending} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); sendMessage(); } }} />
             <div className="chat-composer-footer"><span>AK/SK 仅保留在本地 Studio 进程</span><button className="icon-button primary" type="button" disabled={!input.trim() || sending || !active} onClick={sendMessage} aria-label="发送"><Send size={17} /></button></div>
