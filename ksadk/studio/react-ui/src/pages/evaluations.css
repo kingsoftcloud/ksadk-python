@@ -19,6 +19,13 @@
   min-width: 0;
 }
 
+/* `soft-block.css` is intentionally loaded after this page stylesheet and
+ * applies `.studio-form-field + .studio-form-field { margin-top: 22px; }`.
+ * Keep this override more specific so adjacent columns share the same row. */
+.evaluation-page__form-grid > .studio-form-field + .studio-form-field {
+  margin-top: 0;
+}
+
 .evaluation-page__form-grid > .studio-form-field:last-child:nth-child(odd) {
   grid-column: 1 / span 6;
 }
