@@ -674,9 +674,12 @@ class DirectAgentEngineCloudDeploymentGateway:
             deployment.agent_id,
             {
                 "artifact_type": "ManagedRuntime",
-                "runtime_config": {
-                    "name": str(kwargs["runtime_name"]),
-                    "version": str(kwargs["runtime_version"]),
+                # UpdateAgent resolves a fresh immutable runtime image from the
+                # complete YAML declaration.  RuntimeConfig is the resolved
+                # read-model and cannot be used as an input for a retry.
+                "managed_runtime_config": {
+                    "runtime_name": str(kwargs["runtime_name"]),
+                    "runtime_version": str(kwargs["runtime_version"]),
                     "manifest": str(kwargs["manifest"]),
                 },
             },
@@ -741,9 +744,11 @@ class DirectAgentEngineCloudDeploymentGateway:
             "description": "Created by AgentKit Studio",
             "framework": runtime_name,
             "artifact_type": "ManagedRuntime",
-            "runtime_config": {
-                "name": runtime_name,
-                "version": runtime_version,
+            # ManagedRuntimeConfig is the public declaration accepted by
+            # CreateAgent.  RuntimeConfig is only the Server-resolved state.
+            "managed_runtime_config": {
+                "runtime_name": runtime_name,
+                "runtime_version": runtime_version,
                 "manifest": manifest,
             },
             "region": request.target.region,

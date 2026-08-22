@@ -412,9 +412,9 @@ async def test_direct_gateway_deploys_yaml_managed_runtime_without_uploading_bun
             "description": "Created by AgentKit Studio",
             "framework": "codex",
             "artifact_type": "ManagedRuntime",
-            "runtime_config": {
-                "name": "codex",
-                "version": "0.144.4",
+            "managed_runtime_config": {
+                "runtime_name": "codex",
+                "runtime_version": "0.144.4",
                 "manifest": "name: yaml-agent\nframework: codex\n",
             },
             "region": "pre-online",
@@ -534,15 +534,63 @@ def test_managed_runtime_payload_keeps_model_env_out_of_yaml_contract() -> None:
 
     assert payload["artifact_type"] == "ManagedRuntime"
     assert "CodeConfig" not in payload
-    assert payload["runtime_config"] == {
-        "name": "codex",
-        "version": "0.147.0",
+    assert payload["managed_runtime_config"] == {
+        "runtime_name": "codex",
+        "runtime_version": "0.147.0",
         "manifest": "name: yaml-agent\nframework: codex\n",
     }
+    assert "runtime_config" not in payload
     assert payload["environment_variables"] == {
         "OPENAI_API_KEY": "resolved-only-for-request",
         "OPENAI_BASE_URL": "https://model.example.com/v1",
     }
+
+
+@pytest.mark.asyncio
+async def test_replacing_managed_runtime_uses_complete_declaration() -> None:
+    client = _Client()
+    gateway = DirectAgentEngineCloudDeploymentGateway(
+        region="pre-online",
+        client=client,
+        uploader_factory=_Uploader,
+        ks3_credentials={"access_key": "test-access", "secret_key": "test-secret"},
+    )
+    request = DeploymentRequest(
+        target=DeploymentTarget(region="pre-online", environment="preproduction")
+    )
+    deployment = DeploymentRecord(
+        id="dep-retry",
+        build_id="build-old",
+        bundle_digest="sha256:" + "a" * 64,
+        version_id="managed-old",
+        status="FAILED",
+        target=request.target,
+        agent_id="ar-studio-1",
+    )
+
+    await gateway.replace_managed_runtime_deployment(
+        deployment,
+        build_id="build-new",
+        manifest="name: yaml-agent\nframework: codex\n",
+        manifest_digest="b" * 64,
+        runtime_name="codex",
+        runtime_version="0.147.0",
+        request=request,
+    )
+
+    assert client.updated == [
+        (
+            "ar-studio-1",
+            {
+                "artifact_type": "ManagedRuntime",
+                "managed_runtime_config": {
+                    "runtime_name": "codex",
+                    "runtime_version": "0.147.0",
+                    "manifest": "name: yaml-agent\nframework: codex\n",
+                },
+            },
+        )
+    ]
 
 
 @pytest.mark.asyncio
