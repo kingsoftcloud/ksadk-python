@@ -90,9 +90,7 @@ class _Client:
             "latest_seq_id": 4,
         }
 
-    async def chat(
-        self, agent_id: str, message: str, *, session_id: str | None = None
-    ) -> dict:
+    async def chat(self, agent_id: str, message: str, *, session_id: str | None = None) -> dict:
         self.session_calls.append(
             ("RunAgent", {"AgentId": agent_id, "SessionId": session_id, "Message": message})
         )
@@ -139,9 +137,7 @@ async def test_direct_gateway_uses_ks3_and_existing_agent_actions_only() -> None
         request=request,
     )
 
-    assert _Uploader.calls == [
-        (bundle, f"studio-bundles/studio-graph/{archive_sha}/bundle.zip")
-    ]
+    assert _Uploader.calls == [(bundle, f"studio-bundles/studio-graph/{archive_sha}/bundle.zip")]
     assert client.created == [
         {
             "name": "studio-graph",
@@ -175,6 +171,7 @@ async def test_direct_gateway_uses_ks3_and_existing_agent_actions_only() -> None
     assert deployment.agent_id == "ar-studio-1"
     assert deployment.instance_id == "instance-studio-1"
     assert deployment.bundle_uri == bundle_uri
+    assert deployment.requires_kernel is True
 
     assert (await gateway.get_deployment_status(deployment)).status == "READY"
     client.kernel_ready = False
@@ -238,9 +235,7 @@ def _build_bundle(workspace: Workspace, *, revision: int, instruction: str):
                     entry_point="agent.py",
                     agent_variable="graph",
                 ),
-                security=SecuritySpec(
-                    network=NetworkPolicy(allowed_hosts=["model.example.test"])
-                ),
+                security=SecuritySpec(network=NetworkPolicy(allowed_hosts=["model.example.test"])),
             ),
         )
     )
@@ -275,7 +270,7 @@ async def test_direct_service_rolls_back_by_updating_the_existing_agent(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_managed_runtime_status_uses_normal_runtime_readiness_not_kernel() -> None:
+async def test_legacy_managed_runtime_receipt_uses_normal_runtime_readiness() -> None:
     client = _Client()
     client.kernel_ready = False
     gateway = DirectAgentEngineCloudDeploymentGateway(
@@ -295,6 +290,33 @@ async def test_managed_runtime_status_uses_normal_runtime_readiness_not_kernel()
         artifact_id="managed-runtime",
     )
 
+    assert (await gateway.get_deployment_status(deployment)).status == "READY"
+
+
+@pytest.mark.asyncio
+async def test_new_managed_runtime_receipt_requires_kernel_readiness() -> None:
+    client = _Client()
+    client.kernel_ready = False
+    gateway = DirectAgentEngineCloudDeploymentGateway(
+        region="pre-online",
+        client=client,
+        uploader_factory=_Uploader,
+        ks3_credentials={"access_key": "test-access", "secret_key": "test-secret"},
+    )
+    deployment = DeploymentRecord(
+        id="dep_yaml_kernel_status",
+        build_id="build_yaml_kernel_status",
+        bundle_digest="sha256:" + "d" * 64,
+        version_id="managed-dddddddddddddddd",
+        status="DEPLOYING",
+        target=DeploymentTarget(region="pre-online", environment="preproduction"),
+        agent_id="ar-studio-1",
+        artifact_id="managed-runtime",
+        requires_kernel=True,
+    )
+
+    assert (await gateway.get_deployment_status(deployment)).status == "DEPLOYING"
+    client.kernel_ready = True
     assert (await gateway.get_deployment_status(deployment)).status == "READY"
 
 
@@ -453,6 +475,7 @@ async def test_cloud_service_forwards_bound_model_environment_only_to_deploy_req
     tmp_path: Path,
 ) -> None:
     """YAML deployment forwards the transient model env without creating a ZIP."""
+
     class _Gateway:
         received: dict | None = None
 
@@ -489,9 +512,7 @@ async def test_cloud_service_forwards_bound_model_environment_only_to_deploy_req
     )
 
     assert gateway.received is not None
-    assert gateway.received["runtime_environment"] == {
-        "OPENAI_MODEL_NAME": "qwen3.7-flash"
-    }
+    assert gateway.received["runtime_environment"] == {"OPENAI_MODEL_NAME": "qwen3.7-flash"}
 
 
 def test_managed_runtime_payload_keeps_model_env_out_of_yaml_contract() -> None:
@@ -559,9 +580,7 @@ async def test_cloud_chat_is_bound_to_the_deployment_receipt_agent() -> None:
         "messages": [{"role": "assistant", "content": "云端回复"}],
         "latest_seq_id": 4,
     }
-    assert await gateway.delete_deployment_chat_session(
-        deployment, session_id="sess-cloud"
-    ) is True
+    assert await gateway.delete_deployment_chat_session(deployment, session_id="sess-cloud") is True
     assert await gateway.send_deployment_chat_message(
         deployment, session_id="sess-cloud", content="你好"
     ) == {"receipt_status": "accepted", "run_id": "run-cloud"}

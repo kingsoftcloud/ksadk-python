@@ -233,6 +233,7 @@ class CompactionSpec(ContractModel):
 
 class ContextContributorsSpec(ContractModel):
     """ContextContributor 开关与预算（方案 §5.1 / §8.7）。默认按 policy，可显式开关。"""
+
     workspace_rules: bool | None = None
     skill_manifest: bool | None = None
     memory_recall: bool | None = None
@@ -240,6 +241,7 @@ class ContextContributorsSpec(ContractModel):
 
 class RolloutSpec(ContractModel):
     """AgentVersion 级灰度/回退状态（方案 §8.5）。替代环境变量控制正式灰度。"""
+
     context_engine: Literal["off", "shadow", "enabled"] = "shadow"
     memory_write: Literal["off", "shadow", "enabled"] = "shadow"
 
@@ -287,6 +289,7 @@ class MemoryWriteSpec(ContractModel):
 
 class MemorySpec(ContractModel):
     """AgentVersion 级 Memory 策略（方案 §5.1 / §10）。Build 只存 providerRef，不存凭证。"""
+
     enabled: bool = False
     provider_ref: str = Field(default="local-default", max_length=128)
     recall: MemoryRecallSpec = Field(default_factory=MemoryRecallSpec)
@@ -741,3 +744,6 @@ class DeploymentRecord(ContractModel):
     # not a browser-supplied credential or a mutable "latest" alias.
     bundle_uri: str | None = None
     artifact_id: str | None = None
+    # New direct-cloud receipts are expected to pass AgentKernel/v1 admission.
+    # Older receipts intentionally default to false for read compatibility.
+    requires_kernel: bool = False

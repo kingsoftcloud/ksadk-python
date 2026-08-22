@@ -443,22 +443,26 @@ class DirectAgentEngineCloudDeploymentGateway:
             raise
         deployment_detail = payload.get("deployment") or {}
         kernel_ready = bool(
-            payload.get("agent_kernel_ready")
-            or deployment_detail.get("agent_kernel_ready")
+            payload.get("agent_kernel_ready") or deployment_detail.get("agent_kernel_ready")
         )
-        status = str(
-            payload.get("status")
-            or (payload.get("basic") or {}).get("status")
-            or (payload.get("deployment") or {}).get("status")
-            or ""
-        ).strip().upper()
+        status = (
+            str(
+                payload.get("status")
+                or (payload.get("basic") or {}).get("status")
+                or (payload.get("deployment") or {}).get("status")
+                or ""
+            )
+            .strip()
+            .upper()
+        )
         projected = (
             "FAILED"
             if status in {"FAILED", "TERMINATED", "ERROR"}
             else "READY"
             if kernel_ready
             or (
-                deployment.artifact_id == "managed-runtime"
+                not deployment.requires_kernel
+                and deployment.artifact_id == "managed-runtime"
                 and status in {"RUNNING", "READY"}
             )
             else "DEPLOYING"
@@ -522,9 +526,7 @@ class DirectAgentEngineCloudDeploymentGateway:
             self._chat_agent_id(deployment), page=page, size=size
         )
 
-    async def create_deployment_chat_session(
-        self, deployment: DeploymentRecord
-    ) -> dict[str, Any]:
+    async def create_deployment_chat_session(self, deployment: DeploymentRecord) -> dict[str, Any]:
         """Create one Server-owned session before its first cloud message."""
 
         return await self.client.create_session(self._chat_agent_id(deployment))
@@ -654,6 +656,7 @@ class DirectAgentEngineCloudDeploymentGateway:
             agent_id=agent_id,
             instance_id=str(result.get("instance_id") or "").strip() or None,
             artifact_id="managed-runtime",
+            requires_kernel=True,
         )
 
     async def replace_managed_runtime_deployment(
@@ -688,6 +691,7 @@ class DirectAgentEngineCloudDeploymentGateway:
             agent_id=deployment.agent_id,
             instance_id=deployment.instance_id,
             artifact_id="managed-runtime",
+            requires_kernel=True,
         )
 
     def _bundle_for_deployment(self, bundle_uri: str, bundle_digest: Any) -> dict[str, str]:
@@ -786,6 +790,7 @@ class DirectAgentEngineCloudDeploymentGateway:
             agent_id=agent_id,
             instance_id=instance_id,
             bundle_uri=bundle_uri,
+            requires_kernel=True,
         )
 
 
@@ -961,15 +966,11 @@ class CloudDeploymentService:
         provenance["archiveSha256"] = archive_sha256
         # The Server owns the profile-to-image mapping, but it must select the
         # profile for the concrete framework the deterministic build produced.
-        provenance["runtimeType"] = str(
-            manifest.get("runtimeType") or build.runtime_type
-        )
+        provenance["runtimeType"] = str(manifest.get("runtimeType") or build.runtime_type)
         return build, bundle, provenance
 
     def get(self, deployment_id: str) -> DeploymentRecord:
-        path = self.workspace.resolve(
-            Path(".agentkit/deployments") / f"{deployment_id}.json"
-        )
+        path = self.workspace.resolve(Path(".agentkit/deployments") / f"{deployment_id}.json")
         if not path.is_file():
             raise StudioError(
                 "DEPLOYMENT_NOT_FOUND",
@@ -986,9 +987,7 @@ class CloudDeploymentService:
     def request_for(self, deployment_id: str) -> DeploymentRequest:
         """Return the immutable target stored with a deployment receipt."""
 
-        path = self.workspace.resolve(
-            Path(".agentkit/deployments") / f"{deployment_id}.json"
-        )
+        path = self.workspace.resolve(Path(".agentkit/deployments") / f"{deployment_id}.json")
         if not path.is_file():
             self.get(deployment_id)
         try:
@@ -1043,9 +1042,7 @@ class CloudDeploymentService:
         if status_reader is None:
             return deployment
         refreshed = await status_reader(deployment)
-        path = self.workspace.resolve(
-            Path(".agentkit/deployments") / f"{deployment_id}.json"
-        )
+        path = self.workspace.resolve(Path(".agentkit/deployments") / f"{deployment_id}.json")
         payload = json.loads(path.read_text(encoding="utf-8"))
         self._save(
             refreshed,
@@ -1184,9 +1181,7 @@ class CloudDeploymentService:
             idempotency_key=idempotency_key,
         )
 
-    async def delete_cloud_chat_session(
-        self, deployment_id: str, *, session_id: str
-    ) -> bool:
+    async def delete_cloud_chat_session(self, deployment_id: str, *, session_id: str) -> bool:
         deployment = self.get(deployment_id)
         deleter = getattr(self.gateway, "delete_deployment_chat_session", None)
         if deleter is None:
@@ -1203,9 +1198,7 @@ class CloudDeploymentService:
         *,
         target_build_id: str,
     ) -> DeploymentRecord:
-        path = self.workspace.resolve(
-            Path(".agentkit/deployments") / f"{deployment_id}.json"
-        )
+        path = self.workspace.resolve(Path(".agentkit/deployments") / f"{deployment_id}.json")
         if not path.is_file():
             self.get(deployment_id)
         request = self.request_for(deployment_id)
@@ -1228,12 +1221,8 @@ class CloudDeploymentService:
             directory / f"{record.id}.json",
             json.dumps(
                 {
-                    "record": record.model_dump(
-                        by_alias=True, exclude_none=True, mode="json"
-                    ),
-                    "request": request.model_dump(
-                        by_alias=True, exclude_none=True, mode="json"
-                    ),
+                    "record": record.model_dump(by_alias=True, exclude_none=True, mode="json"),
+                    "request": request.model_dump(by_alias=True, exclude_none=True, mode="json"),
                 },
                 ensure_ascii=False,
                 sort_keys=True,
