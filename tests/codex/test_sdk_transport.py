@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import sys
+from importlib.metadata import version
 from pathlib import Path
 
 import pytest
@@ -178,7 +180,8 @@ async def _consume(events) -> list[dict]:
 
 def test_client_surface_failure_reports_installed_version(monkeypatch):
     monkeypatch.delattr(openai_codex.AsyncTurnHandle, "interrupt")
-    with pytest.raises(RuntimeError, match=r"0\.144\.4.*AsyncTurnHandle\.interrupt"):
+    installed = re.escape(version("openai-codex"))
+    with pytest.raises(RuntimeError, match=rf"{installed}.*AsyncTurnHandle\.interrupt"):
         AsyncCodexClient(config=None)
 
 
