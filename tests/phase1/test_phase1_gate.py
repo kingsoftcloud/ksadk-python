@@ -187,7 +187,10 @@ def test_gate_cli_fails_and_exits_nonzero_on_missing_evidence(tmp_path):
     assert code == 1
     payload = json.loads(output.read_text())
     assert payload["status"] == "fail"
-    assert set(REQUIRED_CHECKS) <= set(payload["failed_checks"])
+    # Phase 0 is a separately accepted manifest now; a missing scenario file
+    # must still fail every behaviour check instead of regressing that fact.
+    assert set(REQUIRED_CHECKS - {"phase0_baseline"}) <= set(payload["failed_checks"])
+    assert payload["checks"]["phase0_baseline"]["status"] == "pass"
 
 
 def test_gate_rejects_pass_without_detail():
