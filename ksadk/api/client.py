@@ -1310,6 +1310,38 @@ class AgentEngineClient:
                 payload[key] = text
         return payload
 
+    @staticmethod
+    def _managed_runtime_config_payload(data: Dict[str, Any]) -> Dict[str, Any]:
+        """Build the public declaration accepted by Server Create/UpdateAgent.
+
+        ``runtime_config`` remains readable for older SDK callers, but it is a
+        resolved read-model.  New callers must send ``managed_runtime_config``
+        so retries carry the complete YAML declaration Server needs to resolve
+        a compatible immutable runtime image.
+        """
+        declaration = data.get("managed_runtime_config")
+        if isinstance(declaration, dict):
+            manifest = str(declaration.get("manifest") or "").strip()
+            runtime_name = declaration.get("runtime_name")
+            runtime_version = declaration.get("runtime_version")
+            manifest_sha256 = declaration.get("manifest_sha256")
+        else:
+            legacy = data.get("runtime_config") or {}
+            manifest = str(legacy.get("manifest") or "").strip()
+            runtime_name = legacy.get("name")
+            runtime_version = legacy.get("version")
+            manifest_sha256 = legacy.get("manifest_sha256")
+        if not manifest:
+            raise ValueError("ManagedRuntime requires managed_runtime_config.manifest")
+        payload: Dict[str, Any] = {
+            "Manifest": manifest,
+            "RuntimeName": runtime_name,
+            "RuntimeVersion": runtime_version,
+        }
+        if manifest_sha256:
+            payload["ManifestSHA256"] = manifest_sha256
+        return payload
+
     async def create_agent(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Create an Agent through the established order workflow.
 
@@ -1374,15 +1406,7 @@ class AgentEngineClient:
                 "Checksum": data.get("code_checksum"),
             }
         elif params["DeploymentType"] == "ManagedRuntime":
-            runtime_config = data.get("runtime_config") or {}
-            manifest = str(runtime_config.get("manifest") or "").strip()
-            if not manifest:
-                raise ValueError("ManagedRuntime requires runtime_config.manifest")
-            params["ManagedRuntimeConfig"] = {
-                "Manifest": manifest,
-                "RuntimeName": runtime_config.get("name"),
-                "RuntimeVersion": runtime_config.get("version"),
-            }
+            params["ManagedRuntimeConfig"] = self._managed_runtime_config_payload(data)
         else:
             ic = data.get("image_credential", {}) or {}
             artifact = (data.get("artifact_path", "") or "").strip()
@@ -1674,15 +1698,7 @@ class AgentEngineClient:
             params["Description"] = data["description"]
 
         if artifact_type == "ManagedRuntime":
-            runtime_config = data.get("runtime_config") or {}
-            manifest = str(runtime_config.get("manifest") or "").strip()
-            if not manifest:
-                raise ValueError("ManagedRuntime requires runtime_config.manifest")
-            params["ManagedRuntimeConfig"] = {
-                "Manifest": manifest,
-                "RuntimeName": runtime_config.get("name"),
-                "RuntimeVersion": runtime_config.get("version"),
-            }
+            params["ManagedRuntimeConfig"] = self._managed_runtime_config_payload(data)
         elif data.get("artifact_path"):
             artifact = (data.get("artifact_path", "") or "").strip()
             if (artifact_type or "").lower() == "container":

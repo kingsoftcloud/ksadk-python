@@ -107,9 +107,9 @@ async def test_create_agent_forwards_managed_runtime_contract(monkeypatch):
             "name": "managed-codex",
             "framework": "codex",
             "artifact_type": "ManagedRuntime",
-            "runtime_config": {
-                "name": "codex",
-                "version": "0.144.4",
+            "managed_runtime_config": {
+                "runtime_name": "codex",
+                "runtime_version": "0.144.4",
                 "manifest_sha256": "a" * 64,
                 "manifest": "name: managed-codex\n",
             },
@@ -125,6 +125,7 @@ async def test_create_agent_forwards_managed_runtime_contract(monkeypatch):
         "Manifest": "name: managed-codex",
         "RuntimeName": "codex",
         "RuntimeVersion": "0.144.4",
+        "ManifestSHA256": "a" * 64,
     }
 
 
@@ -436,9 +437,9 @@ async def test_update_agent_forwards_managed_runtime_contract(monkeypatch):
         "ar-managed",
         {
             "artifact_type": "ManagedRuntime",
-            "runtime_config": {
-                "name": "codex",
-                "version": "0.144.4",
+            "managed_runtime_config": {
+                "runtime_name": "codex",
+                "runtime_version": "0.144.4",
                 "manifest_sha256": "b" * 64,
                 "manifest": "name: managed-codex\n",
             },
@@ -449,6 +450,37 @@ async def test_update_agent_forwards_managed_runtime_contract(monkeypatch):
     assert payload["DeploymentType"] == "ManagedRuntime"
     assert "CodeConfig" not in payload
     assert payload["ManagedRuntimeConfig"] == {
+        "Manifest": "name: managed-codex",
+        "RuntimeName": "codex",
+        "RuntimeVersion": "0.144.4",
+        "ManifestSHA256": "b" * 64,
+    }
+
+
+@pytest.mark.asyncio
+async def test_update_agent_accepts_legacy_managed_runtime_read_model(monkeypatch):
+    client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
+    calls = []
+
+    def fake_action(action: str, params: dict):
+        calls.append((action, params.copy()))
+        return {"agent_id": "ar-managed"}
+
+    monkeypatch.setattr(client, "_action", fake_action)
+
+    await client.update_agent(
+        "ar-managed",
+        {
+            "artifact_type": "ManagedRuntime",
+            "runtime_config": {
+                "name": "codex",
+                "version": "0.144.4",
+                "manifest": "name: managed-codex\n",
+            },
+        },
+    )
+
+    assert calls[0][1]["ManagedRuntimeConfig"] == {
         "Manifest": "name: managed-codex",
         "RuntimeName": "codex",
         "RuntimeVersion": "0.144.4",
