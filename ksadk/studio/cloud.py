@@ -546,6 +546,23 @@ class DirectAgentEngineCloudDeploymentGateway:
             limit=limit,
         )
 
+    async def delete_deployment_chat_session(
+        self, deployment: DeploymentRecord, *, session_id: str
+    ) -> bool:
+        """Delete only a session that Server scopes to the signed caller."""
+
+        # The Server resolves session ownership from the authenticated caller;
+        # the receipt binding above only establishes the enclosing Agent scope.
+        self._chat_agent_id(deployment)
+        deleted = await self.client.delete_session(session_id)
+        if not deleted:
+            raise StudioError(
+                "CLOUD_CHAT_SESSION_DELETE_FAILED",
+                "云端会话删除失败，请刷新后重试",
+                status_code=502,
+            )
+        return True
+
     async def send_deployment_chat_message(
         self,
         deployment: DeploymentRecord,
@@ -1070,6 +1087,19 @@ class CloudDeploymentService:
                 status_code=501,
             )
         return await sender(deployment, session_id=session_id, content=content)
+
+    async def delete_cloud_chat_session(
+        self, deployment_id: str, *, session_id: str
+    ) -> bool:
+        deployment = self.get(deployment_id)
+        deleter = getattr(self.gateway, "delete_deployment_chat_session", None)
+        if deleter is None:
+            raise StudioError(
+                "CLOUD_CHAT_UNAVAILABLE",
+                "当前云端网关不支持本地会话代理",
+                status_code=501,
+            )
+        return await deleter(deployment, session_id=session_id)
 
     async def rollback(
         self,

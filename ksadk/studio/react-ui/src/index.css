@@ -240,6 +240,34 @@
   display: none;
 }
 
+.chat-list-loading,
+.chat-sidebar-empty {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 16px;
+  color: var(--text-tertiary);
+  font-size: var(--font-size-meta);
+}
+
+.chat-sidebar-empty { display: block; line-height: 1.55; }
+
+.cloud-chat-shell .message-content > :first-child { margin-top: 0; }
+.cloud-chat-shell .message-content > :last-child { margin-bottom: 0; }
+.cloud-chat-shell .message.pending { opacity: .72; }
+
+.cloud-chat-pending {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  color: var(--text-secondary);
+  font-size: var(--font-size-meta);
+}
+
+.cloud-chat-pending svg,
+.chat-list-loading svg { animation: chat-running-pulse 1.2s ease-in-out infinite; }
+
 .chat-conversation {
   min-width: 0;
   min-height: 0;

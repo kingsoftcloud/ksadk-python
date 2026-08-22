@@ -1248,6 +1248,16 @@ def create_studio_app(
             limit=limit,
         )
 
+    @app.delete(
+        "/api/v1/deployments/{deployment_id}/cloud-chat/sessions/{session_id}",
+        status_code=204,
+    )
+    async def delete_cloud_chat_session(deployment_id: str, session_id: str):
+        await studio.cloud.delete_cloud_chat_session(
+            deployment_id, session_id=session_id
+        )
+        return Response(status_code=204)
+
     @app.post(
         "/api/v1/deployments/{deployment_id}/cloud-chat/sessions/{session_id}/messages",
         status_code=202,

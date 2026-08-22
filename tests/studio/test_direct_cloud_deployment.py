@@ -79,6 +79,10 @@ class _Client:
         self.session_calls.append(("CreateSession", {"AgentId": agent_id}))
         return {"session": {"id": "sess-new"}}
 
+    async def delete_session(self, session_id: str) -> bool:
+        self.session_calls.append(("DeleteSession", {"SessionId": session_id}))
+        return True
+
     async def list_session_messages(self, **kwargs) -> dict:
         self.session_calls.append(("ListSessionMessages", kwargs))
         return {
@@ -555,6 +559,9 @@ async def test_cloud_chat_is_bound_to_the_deployment_receipt_agent() -> None:
         "messages": [{"role": "assistant", "content": "云端回复"}],
         "latest_seq_id": 4,
     }
+    assert await gateway.delete_deployment_chat_session(
+        deployment, session_id="sess-cloud"
+    ) is True
     assert await gateway.send_deployment_chat_message(
         deployment, session_id="sess-cloud", content="你好"
     ) == {"receipt_status": "accepted", "run_id": "run-cloud"}
@@ -570,6 +577,7 @@ async def test_cloud_chat_is_bound_to_the_deployment_receipt_agent() -> None:
                 "limit": 100,
             },
         ),
+        ("DeleteSession", {"SessionId": "sess-cloud"}),
         (
             "RunAgent",
             {

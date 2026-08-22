@@ -1,0 +1,278 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import { Bot, Loader2, MessageSquarePlus, Send, Trash2 } from "lucide-react";
+import { apiFetch } from "../api";
+import { showToast } from "./Toast";
+
+interface CloudChatWorkspaceProps {
+  deploymentId: string;
+  agentId: string;
+  agentName: string;
+  active?: boolean;
+  refreshTick?: number;
+}
+
+interface CloudSession {
+  id: string;
+  title: string;
+  updatedAt: string;
+  state: string;
+}
+
+interface CloudMessage {
+  id: string;
+  role: "user" | "assistant" | "system";
+  content: string;
+  timestamp: string;
+  pending?: boolean;
+}
+
+function valueText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    return value.map(item => {
+      if (typeof item === "string") return item;
+      if (item && typeof item === "object") {
+        const candidate = item as Record<string, unknown>;
+        return valueText(candidate.text ?? candidate.content ?? candidate.value ?? "");
+      }
+      return "";
+    }).filter(Boolean).join("\n");
+  }
+  if (value && typeof value === "object") {
+    const candidate = value as Record<string, unknown>;
+    return valueText(candidate.text ?? candidate.content ?? candidate.value ?? "");
+  }
+  return "";
+}
+
+function normalizeSession(value: unknown): CloudSession | null {
+  if (!value || typeof value !== "object") return null;
+  const item = value as Record<string, unknown>;
+  const id = String(item.session_id ?? item.sessionId ?? item.id ?? "").trim();
+  if (!id) return null;
+  return {
+    id,
+    title: valueText(item.title ?? item.summary ?? item.first_prompt ?? "") || "新会话",
+    updatedAt: String(item.updated_at ?? item.updatedAt ?? item.created_at ?? ""),
+    state: String(item.state ?? item.active_run_status ?? ""),
+  };
+}
+
+function normalizeMessage(value: unknown): CloudMessage | null {
+  if (!value || typeof value !== "object") return null;
+  const item = value as Record<string, unknown>;
+  const rawRole = String(item.role ?? "assistant").toLowerCase();
+  const role = rawRole === "user" || rawRole === "system" ? rawRole : "assistant";
+  return {
+    id: String(item.message_id ?? item.messageId ?? item.seq_id ?? crypto.randomUUID()),
+    role,
+    content: valueText(item.content),
+    timestamp: String(item.timestamp ?? ""),
+  };
+}
+
+async function responseError(response: Response): Promise<string> {
+  try {
+    const body = await response.json();
+    return String(body?.error?.message || body?.message || body?.detail || `请求失败 (${response.status})`);
+  } catch {
+    return `请求失败 (${response.status})`;
+  }
+}
+
+export function CloudChatWorkspace({
+  deploymentId,
+  agentId,
+  agentName,
+  active = true,
+  refreshTick = 0,
+}: CloudChatWorkspaceProps) {
+  const [sessions, setSessions] = useState<CloudSession[]>([]);
+  const [currentSessionId, setCurrentSessionId] = useState("");
+  const [messages, setMessages] = useState<CloudMessage[]>([]);
+  const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [sending, setSending] = useState(false);
+  const [deleting, setDeleting] = useState("");
+  const messageListRef = useRef<HTMLDivElement>(null);
+
+  const base = useMemo(
+    () => `/api/v1/deployments/${encodeURIComponent(deploymentId)}/cloud-chat`,
+    [deploymentId],
+  );
+
+  const refreshSessions = useCallback(async () => {
+    const response = await apiFetch(`${base}/sessions`);
+    if (!response.ok) throw new Error(await responseError(response));
+    const payload = await response.json();
+    const rows = (payload.sessions || payload.items || [])
+      .map(normalizeSession)
+      .filter((item: CloudSession | null): item is CloudSession => Boolean(item));
+    setSessions(rows);
+    setCurrentSessionId(previous => rows.some(item => item.id === previous) ? previous : rows[0]?.id || "");
+  }, [base]);
+
+  const refreshMessages = useCallback(async (sessionId: string) => {
+    if (!sessionId) {
+      setMessages([]);
+      return;
+    }
+    const response = await apiFetch(`${base}/sessions/${encodeURIComponent(sessionId)}/messages`);
+    if (!response.ok) throw new Error(await responseError(response));
+    const payload = await response.json();
+    const rows = (payload.messages || [])
+      .map(normalizeMessage)
+      .filter((item: CloudMessage | null): item is CloudMessage => Boolean(item));
+    setMessages(rows);
+  }, [base]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setSessions([]);
+    setCurrentSessionId("");
+    setMessages([]);
+    refreshSessions()
+      .catch(error => { if (!cancelled) showToast("云端会话加载失败", error.message, "error"); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [refreshSessions, refreshTick]);
+
+  useEffect(() => {
+    refreshMessages(currentSessionId).catch(error => {
+      showToast("云端消息加载失败", error.message, "error");
+    });
+  }, [currentSessionId, refreshMessages]);
+
+  useEffect(() => {
+    if (!sending || !currentSessionId) return;
+    const timer = window.setInterval(() => {
+      refreshMessages(currentSessionId).catch(() => {});
+      refreshSessions().catch(() => {});
+    }, 1200);
+    return () => window.clearInterval(timer);
+  }, [currentSessionId, refreshMessages, refreshSessions, sending]);
+
+  useEffect(() => {
+    const list = messageListRef.current;
+    if (list) list.scrollTop = list.scrollHeight;
+  }, [messages, sending]);
+
+  async function createSession(): Promise<string> {
+    const response = await apiFetch(`${base}/sessions`, { method: "POST" });
+    if (!response.ok) throw new Error(await responseError(response));
+    const payload = await response.json();
+    const raw = payload.session ?? payload.Session ?? payload;
+    const session = normalizeSession(raw);
+    if (!session) throw new Error("云端未返回有效会话标识");
+    setSessions(previous => [session, ...previous.filter(item => item.id !== session.id)]);
+    setCurrentSessionId(session.id);
+    return session.id;
+  }
+
+  async function startNewSession() {
+    if (sending) return;
+    try {
+      await createSession();
+    } catch (error) {
+      showToast("新建云端会话失败", error instanceof Error ? error.message : String(error), "error");
+    }
+  }
+
+  async function sendMessage() {
+    const content = input.trim();
+    if (!content || sending) return;
+    setSending(true);
+    setInput("");
+    try {
+      const sessionId = currentSessionId || await createSession();
+      const optimistic: CloudMessage = {
+        id: `local-${crypto.randomUUID()}`,
+        role: "user",
+        content,
+        timestamp: new Date().toISOString(),
+        pending: true,
+      };
+      setMessages(previous => [...previous, optimistic]);
+      const response = await apiFetch(`${base}/sessions/${encodeURIComponent(sessionId)}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content }),
+      });
+      if (!response.ok) throw new Error(await responseError(response));
+      await refreshSessions();
+      window.setTimeout(() => { refreshMessages(sessionId).catch(() => {}); }, 250);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setMessages(previous => previous.map(item => item.pending ? { ...item, pending: false } : item));
+      showToast("云端消息发送失败", message, "error");
+    } finally {
+      window.setTimeout(() => setSending(false), 600);
+    }
+  }
+
+  async function deleteSession(sessionId: string) {
+    if (deleting || !window.confirm("确定删除这个云端会话吗？")) return;
+    setDeleting(sessionId);
+    try {
+      const response = await apiFetch(`${base}/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
+      if (!response.ok) throw new Error(await responseError(response));
+      setSessions(previous => previous.filter(item => item.id !== sessionId));
+      if (currentSessionId === sessionId) {
+        setCurrentSessionId("");
+        setMessages([]);
+      }
+    } catch (error) {
+      showToast("删除云端会话失败", error instanceof Error ? error.message : String(error), "error");
+    } finally {
+      setDeleting("");
+    }
+  }
+
+  return (
+    <section className="studio-chat-shell cloud-chat-shell" aria-label="云端会话">
+      <aside className="chat-session-sidebar">
+        <div className="chat-session-header">
+          <div><strong>云端会话</strong><span>{agentName}</span></div>
+          <button className="icon-button tertiary" type="button" onClick={startNewSession} disabled={sending} aria-label="新建云端会话" title="新建云端会话"><MessageSquarePlus size={17} /></button>
+        </div>
+        <div className="chat-session-list" role="list">
+          {loading && <div className="chat-list-loading"><Loader2 size={16} /> 正在同步…</div>}
+          {!loading && !sessions.length && <p className="chat-sidebar-empty">还没有云端会话</p>}
+          {sessions.map(session => (
+            <div className={`chat-session-item${session.id === currentSessionId ? " active" : ""}`} key={session.id} role="listitem">
+              <button className="chat-session-main" type="button" onClick={() => setCurrentSessionId(session.id)}>
+                <strong>{session.title}</strong>
+                <span>{session.state || session.updatedAt || "云端"}</span>
+              </button>
+              <button className="chat-session-delete" type="button" aria-label={`删除会话 ${session.title}`} title="删除会话" disabled={deleting === session.id} onClick={() => deleteSession(session.id)}><Trash2 size={15} /></button>
+            </div>
+          ))}
+        </div>
+      </aside>
+      <div className="chat-conversation">
+        <header className="chat-conversation-header">
+          <div><strong>{agentName}</strong><span>云端 Agent · {agentId}</span></div>
+        </header>
+        <div ref={messageListRef} className="chat-message-list" aria-live="polite">
+          {!currentSessionId && !loading && <div className="chat-empty"><span className="chat-empty-icon"><Bot /></span><h2>开始一段云端会话</h2><p>消息会由本地 Studio 通过受权的云端控制面发送。</p></div>}
+          {messages.map(message => (
+            <article key={message.id} className={`message ${message.role}${message.pending ? " pending" : ""}`}>
+              <div className="message-meta">{message.role === "user" ? "你" : agentName}</div>
+              <div className="message-content"><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content || "…"}</ReactMarkdown></div>
+            </article>
+          ))}
+          {sending && <div className="cloud-chat-pending"><Loader2 size={15} /> 正在等待云端响应…</div>}
+        </div>
+        <div className="chat-composer-wrap">
+          <div className="chat-composer">
+            <textarea value={input} onChange={event => setInput(event.target.value)} placeholder="发送到云端 Agent" disabled={!active || sending} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); sendMessage(); } }} />
+            <div className="chat-composer-footer"><span>AK/SK 仅保留在本地 Studio 进程</span><button className="icon-button primary" type="button" disabled={!input.trim() || sending || !active} onClick={sendMessage} aria-label="发送"><Send size={17} /></button></div>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}

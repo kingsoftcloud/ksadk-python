@@ -14,6 +14,7 @@ import { EvaluationDetailPage } from "./pages/EvaluationDetailPage";
 import { SettingsOverlay, type SettingsSection } from "./components/SettingsOverlay";
 import { ChatRunPanel } from "./components/ChatRunPanel";
 import { ChatWorkspace } from "./components/ChatWorkspace";
+import { CloudChatWorkspace } from "./components/CloudChatWorkspace";
 import { AgentAvatar, type AgentAppearance } from "./components/AgentAvatar";
 import { ToastRegion } from "./components/Toast";
 import { StudioSelect } from "./components/ui/StudioSelect";
@@ -84,6 +85,12 @@ interface AgentSummary {
   builds?: Array<{ id: string; status: string }>;
 }
 
+interface CloudDeploymentSummary {
+  id: string;
+  agentId?: string;
+  status?: string;
+}
+
 export default function App() {
   const viewportMode = useStudioViewportMode();
   const studioTheme = useStudioTheme();
@@ -102,6 +109,8 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
   const [chatMounted, setChatMounted] = useState(view === "conversations");
+  const [cloudDeployments, setCloudDeployments] = useState<CloudDeploymentSummary[]>([]);
+  const [cloudDeploymentId, setCloudDeploymentId] = useState("");
   const [runPanelOpen, setRunPanelOpen] = useState(false);
   const [refreshTick, setRefreshTick] = useState(0);
   const [railExpandedPreference, setRailExpandedPreference] = useState<boolean | null>(readNavigationRailPreference);
@@ -181,6 +190,21 @@ export default function App() {
 
   useEffect(() => { loadAgents(); }, [loadAgents, refreshTick]);
 
+  const loadCloudDeployments = useCallback(async () => {
+    try {
+      const response = await apiFetch("/api/v1/deployments");
+      if (!response.ok) return;
+      const payload = await response.json();
+      const items = (payload.items || []).filter((item: CloudDeploymentSummary) => Boolean(item.agentId));
+      setCloudDeployments(items);
+      setCloudDeploymentId(previous => items.some((item: CloudDeploymentSummary) => item.id === previous) ? previous : "");
+    } catch {
+      // Deployment receipts are optional for a local-only workspace.
+    }
+  }, []);
+
+  useEffect(() => { loadCloudDeployments(); }, [loadCloudDeployments, refreshTick]);
+
   useEffect(() => {
     apiFetch("/api/v1/system/bootstrap").then(r => r.json()).then(d => {
       setWorkspace(d.workspace || null);
@@ -196,6 +220,35 @@ export default function App() {
     if (!id) return;
     setCurrentAgentId(id);
     if (view === "conversations") setChatMounted(true);
+  }
+
+  const selectedCloudDeployment = cloudDeployments.find(item => item.id === cloudDeploymentId);
+  const isCloudChat = view === "conversations" && Boolean(selectedCloudDeployment);
+  const chatTargetOptions = [
+    ...agents.map(agent => ({ value: `local:${agent.metadata.id}`, label: `本地 · ${agent.metadata.name}` })),
+    ...cloudDeployments.map(deployment => ({
+      value: `cloud:${deployment.id}`,
+      label: `云端 · ${deployment.agentId}`,
+    })),
+  ];
+  const chatTargetValue = selectedCloudDeployment
+    ? `cloud:${selectedCloudDeployment.id}`
+    : currentAgentId
+      ? `local:${currentAgentId}`
+      : "";
+
+  function switchChatTarget(value: string) {
+    const [kind, id] = value.split(":", 2);
+    if (kind === "cloud" && id) {
+      setCloudDeploymentId(id);
+      setRunPanelOpen(false);
+      setChatMounted(true);
+      return;
+    }
+    if (kind === "local" && id) {
+      setCloudDeploymentId("");
+      switchAgent(id);
+    }
   }
 
   function enterChat(agentId?: string) {
@@ -316,7 +369,16 @@ export default function App() {
           )}
           <div className="header-actions">
             <div id="pageHeaderTools" className="page-header-tools" data-testid="page-header-tools" />
-            {AGENT_SCOPED_VIEWS.has(view) && (
+            {view === "conversations" ? (
+              <StudioSelect
+                className="header-agent-selector"
+                ariaLabel="切换会话目标"
+                value={chatTargetValue}
+                placeholder="选择会话目标"
+                options={chatTargetOptions}
+                onValueChange={switchChatTarget}
+              />
+            ) : AGENT_SCOPED_VIEWS.has(view) && (
               <StudioSelect
                 className="header-agent-selector"
                 ariaLabel="切换当前 Agent"
@@ -326,12 +388,12 @@ export default function App() {
                 onValueChange={switchAgent}
               />
             )}
-            <span className="tag">本地</span>
+            <span className="tag">{isCloudChat ? "云端部署" : "本地"}</span>
             <span className="badge" data-state={runtimeState}>{runtimeStateLabel}</span>
             <button className="icon-button tertiary global-refresh-button" type="button" aria-label="刷新" title="刷新" onClick={() => setRefreshTick(t => t + 1)}>
               <RefreshCw size={16} />
             </button>
-            {view === "conversations" && chatMounted && currentAgentId && (
+            {view === "conversations" && chatMounted && currentAgentId && !isCloudChat && (
               <button className="icon-button tertiary" type="button" aria-label="运行详情" title="运行详情" onClick={() => setRunPanelOpen(v => !v)}>
                 <PanelRight size={16} />
               </button>
@@ -344,7 +406,17 @@ export default function App() {
           {/* 会话页常驻挂载（display 切换），来回切换不重建工作台 */}
           <div className="chat-wrap" data-layout="workbench" style={{ display: view === "conversations" ? "flex" : "none" }}>
             <div className="chat-host">
-              {chatMounted && currentAgentId && (
+              {chatMounted && isCloudChat && selectedCloudDeployment && (
+                <CloudChatWorkspace
+                  key={selectedCloudDeployment.id}
+                  deploymentId={selectedCloudDeployment.id}
+                  agentId={selectedCloudDeployment.agentId || "Agent"}
+                  agentName={selectedCloudDeployment.agentId || "云端 Agent"}
+                  active={view === "conversations"}
+                  refreshTick={refreshTick}
+                />
+              )}
+              {chatMounted && !isCloudChat && currentAgentId && (
                 <ChatWorkspace
                   key={currentAgentId}
                   agentId={currentAgentId}
@@ -359,7 +431,7 @@ export default function App() {
                   }}
                 />
               )}
-              {chatMounted && !currentAgentId && (
+              {chatMounted && !isCloudChat && !currentAgentId && (
                 <div className="empty-state chat-agent-empty" role="status">
                   <span className="empty-icon"><Bot /></span>
                   <h2>{agentsLoaded ? "先创建 Agent 才能开始会话" : "正在载入 Agent"}</h2>
@@ -368,7 +440,7 @@ export default function App() {
                 </div>
               )}
             </div>
-            {runPanelOpen && chatMounted && currentAgentId && (
+            {runPanelOpen && chatMounted && currentAgentId && !isCloudChat && (
               <ChatRunPanel agentId={currentAgentId} onClose={() => setRunPanelOpen(false)} onOpenTrace={() => setView("observability")} />
             )}
           </div>
