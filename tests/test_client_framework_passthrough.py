@@ -107,6 +107,46 @@ async def test_create_agent_forwards_managed_runtime_contract(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_list_session_messages_uses_server_owned_cursor_contract(monkeypatch):
+    client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
+    calls = []
+
+    def fake_action(action: str, params: dict):
+        calls.append((action, params.copy()))
+        return {"messages": []}
+
+    monkeypatch.setattr(client, "_action", fake_action)
+
+    result = await client.list_session_messages(
+        agent_id="ar-cloud",
+        session_id="sess-cloud",
+        after_seq_id=12,
+        cursor_source="runtime",
+        limit=20,
+        include_reasoning=True,
+        include_tool_events=True,
+        include_attachments=False,
+    )
+
+    assert result == {"messages": []}
+    assert calls == [
+        (
+            "ListSessionMessages",
+            {
+                "AgentId": "ar-cloud",
+                "SessionId": "sess-cloud",
+                "AfterSeqId": 12,
+                "CursorSource": "runtime",
+                "Limit": 20,
+                "IncludeReasoning": True,
+                "IncludeToolEvents": True,
+                "IncludeAttachments": False,
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
 async def test_create_agent_forwards_network_configuration(monkeypatch):
     client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
     calls = []

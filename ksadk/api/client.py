@@ -1778,6 +1778,43 @@ class AgentEngineClient:
         except Exception:
             return False
 
+    async def list_session_messages(
+        self,
+        *,
+        agent_id: str,
+        session_id: str,
+        after_seq_id: int | None = None,
+        before_seq_id: int | None = None,
+        cursor_source: str | None = None,
+        limit: int = 50,
+        include_reasoning: bool = False,
+        include_tool_events: bool = False,
+        include_attachments: bool = True,
+    ) -> Dict[str, Any]:
+        """Read the Server-owned message projection for one cloud session.
+
+        This is intentionally an AgentEngine Action client method rather than
+        a Hosted UI shortcut.  Local Studio can retain AK/SK in its backend,
+        call the same authenticated Server read path as the cloud console, and
+        keep cursor ownership on the Server/Runtime boundary.
+        """
+
+        params: Dict[str, Any] = {
+            "AgentId": agent_id,
+            "SessionId": session_id,
+            "Limit": limit,
+            "IncludeReasoning": include_reasoning,
+            "IncludeToolEvents": include_tool_events,
+            "IncludeAttachments": include_attachments,
+        }
+        if after_seq_id is not None:
+            params["AfterSeqId"] = after_seq_id
+        if before_seq_id is not None:
+            params["BeforeSeqId"] = before_seq_id
+        if cursor_source is not None:
+            params["CursorSource"] = cursor_source
+        return self._action("ListSessionMessages", params)
+
     async def list_workspace_files(
         self,
         *,
