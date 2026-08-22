@@ -69,6 +69,7 @@ _COMMAND_ID_KEYS = ("command_id",)
 _DURATION_KEYS = ("duration_seconds", "rollback_seconds", "rollforward_seconds", "duration", "耗时")
 
 DEFAULT_PHASE0_MANIFEST = "docs/superpowers/evidence/phase0/manifest.json"
+DEFAULT_CONTRACT_MANIFEST = "contracts/agent-kernel/v1/manifest.json"
 
 # evidence 值里出现这些模式即视为疑似凭据/DSN 泄露。
 FORBIDDEN_VALUE_PATTERNS: tuple[re.Pattern[str], ...] = (
@@ -202,12 +203,31 @@ def _load_phase0_manifest(path: Path) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+def _load_contract_digest(path: Path | None) -> str | None:
+    """Read the frozen aggregate contract digest from the checked-out source.
+
+    Evidence is only meaningful for the contract currently being released.  A
+    traceable but old drill must not turn green after the aggregate manifest
+    has changed.
+    """
+
+    if path is None or not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    digest = payload.get("aggregate_digest") if isinstance(payload, dict) else None
+    return str(digest).strip() or None
+
+
 def evaluate_evidence(
     evidence: dict[str, Any],
     *,
     environment: str,
     scenario: str,
     phase0_manifest: Path | None = None,
+    contract_manifest: Path | None = None,
 ) -> GateReport:
     """把 evidence dict 折叠成 GateReport。
 
@@ -296,6 +316,39 @@ def evaluate_evidence(
             elif status in ("skip", "skipped"):
                 skipped.add(name)
 
+    expected_contract_digest = _load_contract_digest(contract_manifest)
+    if contract_manifest is not None and expected_contract_digest is None:
+        for name in ("contract_digest", "cross_repo_versions"):
+            passed.discard(name)
+            failed.add(name)
+        reasons.append(
+            f"contract manifest '{contract_manifest}' is missing, invalid, or has no aggregate_digest"
+        )
+    elif expected_contract_digest is not None:
+        contract_detail = checks.get("contract_digest", {}).get("detail") or {}
+        version_detail = checks.get("cross_repo_versions", {}).get("detail") or {}
+        claimed_contract_digest = (
+            contract_detail.get("digest") or contract_detail.get("contract_digest")
+            if isinstance(contract_detail, dict)
+            else None
+        )
+        claimed_version_digest = (
+            version_detail.get("contract_digest")
+            if isinstance(version_detail, dict)
+            else None
+        )
+        for name, claimed in (
+            ("contract_digest", claimed_contract_digest),
+            ("cross_repo_versions", claimed_version_digest),
+        ):
+            if claimed != expected_contract_digest:
+                passed.discard(name)
+                failed.add(name)
+                reasons.append(
+                    f"required check '{name}' contract digest does not match "
+                    f"checked-out manifest ({expected_contract_digest})"
+                )
+
     findings = _scan_forbidden(checks)
     if findings:
         reasons.append(
@@ -345,6 +398,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="path to the phase0 baseline manifest (must have accepted=true)",
     )
     parser.add_argument(
+        "--contract-manifest",
+        default=DEFAULT_CONTRACT_MANIFEST,
+        help="path to the frozen Agent Kernel contract manifest",
+    )
+    parser.add_argument(
         "--output",
         default=None,
         help="path to write the machine-readable gate report JSON",
@@ -372,6 +430,7 @@ def main(argv: list[str] | None = None) -> int:
         environment=args.environment,
         scenario=args.scenario,
         phase0_manifest=Path(args.phase0_manifest),
+        contract_manifest=Path(args.contract_manifest),
     )
 
     text = report.to_json()

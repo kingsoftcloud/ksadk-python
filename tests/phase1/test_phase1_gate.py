@@ -63,20 +63,33 @@ def phase0_manifest(tmp_path):
     return manifest
 
 
-def evaluate(evidence: dict, *, phase0_manifest=None):
+@pytest.fixture
+def contract_manifest(tmp_path):
+    manifest = tmp_path / "contracts" / "manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(json.dumps({"aggregate_digest": _HEX64}), encoding="utf-8")
+    return manifest
+
+
+def evaluate(evidence: dict, *, phase0_manifest=None, contract_manifest=None):
     return evaluate_evidence(
         evidence,
         environment="fake",
         scenario="closure",
         phase0_manifest=phase0_manifest,
+        contract_manifest=contract_manifest,
     )
 
 
 @pytest.fixture
-def report(phase0_manifest):
+def report(phase0_manifest, contract_manifest):
     """验收矩阵里的 report fixture：完整 fake evidence 的 gate 结果。"""
 
-    return evaluate(complete_fake_evidence(), phase0_manifest=phase0_manifest)
+    return evaluate(
+        complete_fake_evidence(),
+        phase0_manifest=phase0_manifest,
+        contract_manifest=contract_manifest,
+    )
 
 
 async def test_gate_requires_every_closed_loop_evidence(report):
@@ -154,7 +167,7 @@ def test_gate_report_is_machine_readable(report):
     assert set(payload["passed_checks"]) == set(REQUIRED_CHECKS)
 
 
-def test_gate_cli_writes_report_and_exits_zero(tmp_path, phase0_manifest):
+def test_gate_cli_writes_report_and_exits_zero(tmp_path, phase0_manifest, contract_manifest):
     evidence_path = tmp_path / "evidence.json"
     evidence_path.write_text(json.dumps(complete_fake_evidence()))
     output = tmp_path / "report.json"
@@ -164,6 +177,7 @@ def test_gate_cli_writes_report_and_exits_zero(tmp_path, phase0_manifest):
             "--scenario", "closure",
             "--evidence", str(evidence_path),
             "--phase0-manifest", str(phase0_manifest),
+            "--contract-manifest", str(contract_manifest),
             "--output", str(output),
         ]
     )
@@ -191,6 +205,21 @@ def test_gate_cli_fails_and_exits_nonzero_on_missing_evidence(tmp_path):
     # must still fail every behaviour check instead of regressing that fact.
     assert set(REQUIRED_CHECKS - {"phase0_baseline"}) <= set(payload["failed_checks"])
     assert payload["checks"]["phase0_baseline"]["status"] == "pass"
+
+
+def test_gate_rejects_evidence_for_a_different_frozen_contract(
+    phase0_manifest, contract_manifest
+):
+    evidence = complete_fake_evidence()
+    evidence["checks"]["contract_digest"]["detail"]["digest"] = "b" * 64
+    report = evaluate(
+        evidence,
+        phase0_manifest=phase0_manifest,
+        contract_manifest=contract_manifest,
+    )
+    assert not report.ok
+    assert "contract_digest" in report.failed_checks
+    assert any("does not match" in reason for reason in report.reasons)
 
 
 def test_gate_rejects_pass_without_detail():
