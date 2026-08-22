@@ -180,6 +180,7 @@ export function CloudChatWorkspace({
   const messageListRef = useRef<HTMLDivElement>(null);
   const messageCountBeforeSendRef = useRef(0);
   const awaitingRunIdRef = useRef("");
+  const sendInFlightRef = useRef(false);
 
   const base = useMemo(
     () => `/api/v1/deployments/${encodeURIComponent(deploymentId)}/cloud-chat`,
@@ -301,7 +302,11 @@ export function CloudChatWorkspace({
 
   async function sendMessage() {
     const content = input.trim();
-    if (!content || sending || waitingForResponse) return;
+    // React state is committed after the handler returns.  The ref closes the
+    // small gap in which Enter and a click could both create an initial cloud
+    // session before `sending` has rendered as true.
+    if (!content || sending || waitingForResponse || sendInFlightRef.current) return;
+    sendInFlightRef.current = true;
     setSending(true);
     setWaitingForResponse(true);
     setInput("");
@@ -335,6 +340,7 @@ export function CloudChatWorkspace({
       showToast("云端消息发送失败", message, "error");
     } finally {
       setSending(false);
+      sendInFlightRef.current = false;
     }
   }
 

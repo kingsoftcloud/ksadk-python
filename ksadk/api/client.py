@@ -1783,8 +1783,11 @@ class AgentEngineClient:
     async def delete_session(self, session_id: str) -> bool:
         """删除会话"""
         try:
-            self._action("DeleteSession", {"Id": session_id})
-            return True
+            result = self._action("DeleteSession", {"Id": session_id})
+            # Server may accept the request but retain the control-plane
+            # record when runtime-side deletion is still pending.  Do not
+            # present that state as a completed delete to Studio callers.
+            return bool(result.get("deleted"))
         except Exception:
             return False
 
