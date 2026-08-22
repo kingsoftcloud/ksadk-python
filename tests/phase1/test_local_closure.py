@@ -89,6 +89,13 @@ class ClosureStack:
     def worker(self) -> AgentKernelWorker:
         return AgentKernelWorker(self.store, adapter_factory=lambda: self.adapter)
 
+    async def close(self) -> None:
+        """Release durable-store resources before pytest closes its event loop."""
+
+        close = getattr(self.store, "close", None)
+        if close is not None:
+            await close()
+
 
 async def _drain(stack: ClosureStack, lease: ActivationLease, limit: int = 120):
     worker = stack.worker()
@@ -101,37 +108,49 @@ async def _drain(stack: ClosureStack, lease: ActivationLease, limit: int = 120):
     return outcomes, worker
 
 
-async def _build_stack(tmp_path, driver: str, *, adapter=None, queue_limit=100):
-    adapter = adapter or FakeAdapter()
-    authority = PermitAuthority()
-    if driver == "memory":
-        service = InMemorySessionService()
-        for session_id in SESSIONS:
-            await service.create_session(
-                agent_id=AGENT, user_id="kernel-user", session_id=session_id
-            )
-        events = SessionServiceEventStore(service)
-        store = InMemoryAgentKernelStore(events)
-    else:
-        service = LocalSessionService(db_path=tmp_path / "sessions.sqlite")
-        for session_id in SESSIONS:
-            await service.create_session(
-                agent_id=AGENT, user_id="kernel-user", session_id=session_id
-            )
-        events = SessionServiceEventStore(service)
-        store = SQLiteAgentKernelStore(tmp_path / "kernel.sqlite", events)
-        await store.ensure_schema()
-    stack = ClosureStack(store, events, authority, adapter, queue_limit=queue_limit)
-    return stack
+@pytest.fixture
+async def stack_factory(tmp_path):
+    """Build closure stacks and always close durable connections after a test."""
+
+    stacks: list[ClosureStack] = []
+
+    async def build(driver: str, *, adapter=None, queue_limit=100) -> ClosureStack:
+        resolved_adapter = adapter or FakeAdapter()
+        authority = PermitAuthority()
+        if driver == "memory":
+            service = InMemorySessionService()
+            for session_id in SESSIONS:
+                await service.create_session(
+                    agent_id=AGENT, user_id="kernel-user", session_id=session_id
+                )
+            events = SessionServiceEventStore(service)
+            store = InMemoryAgentKernelStore(events)
+        else:
+            service = LocalSessionService(db_path=tmp_path / "sessions.sqlite")
+            for session_id in SESSIONS:
+                await service.create_session(
+                    agent_id=AGENT, user_id="kernel-user", session_id=session_id
+                )
+            events = SessionServiceEventStore(service)
+            store = SQLiteAgentKernelStore(tmp_path / "kernel.sqlite", events)
+            await store.ensure_schema()
+        stack = ClosureStack(store, events, authority, resolved_adapter, queue_limit=queue_limit)
+        stacks.append(stack)
+        return stack
+
+    yield build
+
+    for stack in reversed(stacks):
+        await stack.close()
 
 
 # --------------------------------------------------------------- FIFO
 
 
-async def test_closure_fifo_hundred_commands_in_accepted_seq_order(tmp_path):
+async def test_closure_fifo_hundred_commands_in_accepted_seq_order(stack_factory):
     # FIFO 走 AgentKernelWorker（list_pending/claim_message 语义），当前
     # SQLite store 只交付 claim_next 子集，本地等价物用 InMemory 驱动。
-    stack = await _build_stack(tmp_path, "memory")
+    stack = await stack_factory("memory")
     lease = await stack.lease()
     keys = []
     for index in range(100):
@@ -154,8 +173,8 @@ async def test_closure_fifo_hundred_commands_in_accepted_seq_order(tmp_path):
 # --------------------------------------------------------------- idempotency
 
 
-async def test_closure_idempotent_retry_executes_only_once(tmp_path):
-    stack = await _build_stack(tmp_path, "memory")
+async def test_closure_idempotent_retry_executes_only_once(stack_factory):
+    stack = await stack_factory("memory")
     lease = await stack.lease()
     cmd = command(idempotency_key="dup-1", content="hello")
     first = await stack.kernel.submit(cmd, permit=stack.permit("enqueue"))
@@ -182,8 +201,8 @@ async def test_closure_idempotent_retry_executes_only_once(tmp_path):
 
 
 @pytest.mark.parametrize("driver", ["memory", "sqlite"])
-async def test_closure_backpressure_returns_typed_queue_full(tmp_path, driver):
-    stack = await _build_stack(tmp_path, driver, queue_limit=3)
+async def test_closure_backpressure_returns_typed_queue_full(stack_factory, driver):
+    stack = await stack_factory(driver, queue_limit=3)
     for index in range(3):
         receipt = await stack.kernel.submit(
             command(idempotency_key=f"q-{index}"), permit=stack.permit("enqueue")
@@ -214,8 +233,8 @@ async def test_closure_backpressure_returns_typed_queue_full(tmp_path, driver):
 
 
 @pytest.mark.parametrize("driver", ["memory", "sqlite"])
-async def test_closure_sse_reconnect_resumes_after_seq_without_gap(tmp_path, driver):
-    stack = await _build_stack(tmp_path, driver)
+async def test_closure_sse_reconnect_resumes_after_seq_without_gap(stack_factory, driver):
+    stack = await stack_factory(driver)
     for index in range(5):
         receipt = await stack.kernel.submit(
             command(idempotency_key=f"r-{index}"), permit=stack.permit("enqueue")
@@ -250,8 +269,8 @@ async def test_closure_sse_reconnect_resumes_after_seq_without_gap(tmp_path, dri
 
 
 @pytest.mark.parametrize("driver", ["memory", "sqlite"])
-async def test_closure_cold_recovery_deterministic_interrupt(tmp_path, driver):
-    stack = await _build_stack(tmp_path, driver)
+async def test_closure_cold_recovery_deterministic_interrupt(stack_factory, driver):
+    stack = await stack_factory(driver)
     old = await stack.lease(activation_id="act-old")
     run = await stack.store.save_run_transition(
         RunRecord(
@@ -297,8 +316,8 @@ async def test_closure_cold_recovery_deterministic_interrupt(tmp_path, driver):
 
 
 @pytest.mark.parametrize("driver", ["memory", "sqlite"])
-async def test_closure_stale_fence_rejects_old_writer(tmp_path, driver):
-    stack = await _build_stack(tmp_path, driver)
+async def test_closure_stale_fence_rejects_old_writer(stack_factory, driver):
+    stack = await stack_factory(driver)
     old = await stack.lease(activation_id="act-old")
     new_owner_run = RunRecord(
         run_id="run-fence",
