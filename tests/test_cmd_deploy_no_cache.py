@@ -59,6 +59,28 @@ class _FakeProvider:
         )
 
 
+def test_deploy_cli_describes_deploying_as_submitted(tmp_path: Path, monkeypatch):
+    provider = _FakeProvider()
+    runner = CliRunner()
+
+    monkeypatch.setattr(
+        "ksadk.detection.FrameworkDetector",
+        lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})(),
+    )
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_deploy._load_config", lambda *_args, **_kwargs: {"name": "demo-agent"}
+    )
+    monkeypatch.setattr(
+        "ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider
+    )
+
+    result = runner.invoke(cmd_deploy.deploy, [str(tmp_path), "--no-version"])
+
+    assert result.exit_code == 0, result.output
+    assert "部署请求已提交，等待实例就绪" in result.output
+    assert "部署成功" not in result.output
+
+
 def test_deploy_no_cache_triggers_build_and_clears_metadata(tmp_path: Path, monkeypatch):
     provider = _FakeProvider()
     metadata_dir = tmp_path / ".agentengine"

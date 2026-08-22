@@ -328,7 +328,7 @@ async def _deploy_async(
     agent_id: str | None = None,
 ):
     """异步部署流程"""
-    from ksadk.deployment import DeploymentManager, DeployTarget
+    from ksadk.deployment import DeploymentManager, DeployStatus, DeployTarget
     from ksadk.detection import FrameworkDetector
 
     agent_path = Path(agent_dir).resolve()
@@ -606,7 +606,15 @@ async def _deploy_async(
             result = await provider.deploy(package_info, deploy_target)
 
         if result.is_success():
-            print_success("部署成功")
+            # ``DEPLOYING`` only acknowledges that the control plane accepted
+            # the request.  Runtime creation and the asynchronous
+            # CreateAgent callback may still be pending, so presenting it as a
+            # completed deployment is misleading (and hides a broken
+            # callback/data-plane handoff).
+            if result.status == DeployStatus.RUNNING:
+                print_success("部署成功")
+            else:
+                print_info("部署请求已提交，等待实例就绪")
             print_rule()
             print_kv("名称", result.agent_name or deploy_name)
             if result.agent_id:
