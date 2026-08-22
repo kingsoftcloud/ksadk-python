@@ -35,6 +35,28 @@ async def test_create_agent_preserves_deepagents_when_server_supports_it(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_create_agent_forwards_explicit_observability_configuration(monkeypatch):
+    client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
+    calls = []
+
+    def fake_action(action: str, params: dict):
+        calls.append((action, params.copy()))
+        return {"agent_id": "ar-observable"}
+
+    monkeypatch.setattr(client, "_action", fake_action)
+
+    await client.create_agent(
+        {
+            **_build_create_payload(),
+            "observability": {"langfuse_enabled": False},
+        }
+    )
+
+    assert calls[0][0] == "CreateAgentProduct"
+    assert calls[0][1]["Advanced"]["EnableObservability"] is False
+
+
+@pytest.mark.asyncio
 async def test_create_and_update_code_agent_forward_archive_checksum(monkeypatch):
     client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
     calls = []

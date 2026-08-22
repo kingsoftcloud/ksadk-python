@@ -1397,8 +1397,18 @@ class AgentEngineClient:
         else:
             env_vars = []
 
+        # Keep create and update semantics aligned.  In particular, an
+        # explicit ``--no-observability`` must not be silently rewritten to
+        # true while the order is being created.
+        observability = data.get("observability")
+        if isinstance(observability, dict) and "langfuse_enabled" in observability:
+            enable_observability = bool(observability.get("langfuse_enabled"))
+        elif "enable_observability" in data:
+            enable_observability = bool(data.get("enable_observability"))
+        else:
+            enable_observability = True
         advanced = {
-            "EnableObservability": True,
+            "EnableObservability": enable_observability,
             "EnvironmentVariables": env_vars,
         }
         inbound_identity_auth = data.get("inbound_identity_auth")
