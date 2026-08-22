@@ -138,6 +138,22 @@ body {
   color: var(--text);
 }
 
+/* At laptop widths the fixed navigation rail leaves a narrower main canvas.
+   Preserve room for the page action instead of allowing the header's last
+   control to create a horizontal document overflow. */
+@media (max-width: 1280px) {
+  .global-header {
+    padding-inline: 16px;
+  }
+
+  /* Page actions are actionable; the ambient local status can be read from
+     the page and must not push the last action outside the viewport. */
+  .header-actions > .tag,
+  .header-actions > .badge {
+    display: none;
+  }
+}
+
 .page-container {
   max-width: 1440px;
   padding: 24px;

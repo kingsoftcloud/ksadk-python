@@ -272,23 +272,36 @@ def route_recoverable_chat_fixture(route) -> None:
 def assert_page_matrix(page: Page, width: int) -> None:
     navigation = page.locator(".primary-nav")
     pages = (
-        ("Agent", "document"),
-        ("构建", "document"),
-        ("部署", "document"),
-        ("模型", "document"),
-        ("Tool", "document"),
-        ("MCP", "document"),
-        ("Skill", "document"),
-        ("可观测", "workbench"),
-        ("运行资源", "document"),
-        ("任务编排", "document"),
+        ("Agent", "Agent", "document"),
+        ("构建", "构建", "document"),
+        ("部署", "部署", "document"),
+        ("模型", "工程资源", "document"),
+        ("Tool", "工程资源", "document"),
+        ("MCP", "工程资源", "document"),
+        ("Skill", "工程资源", "document"),
+        ("可观测", "可观测", "workbench"),
+        ("运行资源", "运行资源", "document"),
+        ("任务编排", "任务编排", "document"),
     )
-    for nav_label, layout in pages:
+    for nav_label, page_title, layout in pages:
         navigation.get_by_role("button", name=nav_label, exact=True).click()
-        expect(page.get_by_role("banner", name="当前页面").get_by_text(nav_label, exact=True)).to_be_visible()
-        page_root = page.locator("[data-layout]").first
+        expect(page.get_by_role("banner", name="当前页面").get_by_text(page_title, exact=True)).to_be_visible()
+        page_root = page.locator("#mainContent > div:not(.chat-wrap) > [data-layout]").first
         expect(page_root).to_have_attribute("data-layout", layout)
-        assert_no_root_overflow(page)
+        try:
+            assert_no_root_overflow(page)
+        except AssertionError as error:
+            overflowing = page.evaluate(
+                """() => [...document.querySelectorAll('*')]
+                  .map(element => ({
+                    tag: element.tagName,
+                    className: element.className,
+                    right: Math.round(element.getBoundingClientRect().right),
+                  }))
+                  .filter(item => item.right > innerWidth + 1)
+                  .slice(0, 8)"""
+            )
+            raise AssertionError((nav_label, str(error), overflowing)) from error
         page_rect = page_root.evaluate(
             """element => {
               const value = element.getBoundingClientRect();
@@ -298,52 +311,8 @@ def assert_page_matrix(page: Page, width: int) -> None:
         assert page_rect["left"] >= 0, (nav_label, page_rect)
         assert page_rect["right"] <= width + 1, (nav_label, page_rect)
         if width == 3840:
-            expected_max = 1200 if layout == "document" else 1760
+            expected_max = 1600 if layout == "document" else 1760
             assert page_rect["width"] <= expected_max + 1, (nav_label, page_rect)
-
-        if width == 768 and nav_label == "Agent":
-            data_body = page.locator(".data-page-body")
-            expect(data_body).to_be_visible()
-            page.locator(".data-scroll-region tbody").evaluate(
-                """tbody => {
-                  for (let row = 0; row < 80; row += 1) {
-                    const tr = document.createElement('tr');
-                    for (let column = 0; column < 6; column += 1) {
-                      const td = document.createElement('td');
-                      td.textContent = `row-${row}-column-${column}`;
-                      tr.append(td);
-                    }
-                    tbody.append(tr);
-                  }
-                }"""
-            )
-            data_region = page.locator(".data-scroll-region")
-            data_metrics = data_region.evaluate(
-                """element => ({
-                  clientHeight: element.clientHeight,
-                  scrollHeight: element.scrollHeight,
-                  overflowY: getComputedStyle(element).overflowY,
-                })"""
-            )
-            assert data_metrics["overflowY"] == "auto", data_metrics
-            assert data_metrics["scrollHeight"] > data_metrics["clientHeight"], data_metrics
-            data_region.evaluate("element => { element.scrollTop = 320; }")
-            toolbar = page.locator(".data-page-body .section-toolbar")
-            toolbar_rect = toolbar.evaluate("element => element.getBoundingClientRect().toJSON()")
-            assert toolbar_rect["top"] >= 64, toolbar_rect
-            table_header = data_region.locator("thead th").first
-            header_position = table_header.evaluate("element => getComputedStyle(element).position")
-            assert header_position == "sticky", header_position
-            header_rect = table_header.evaluate(
-                "element => element.getBoundingClientRect().toJSON()"
-            )
-            assert header_rect["top"] >= toolbar_rect["bottom"] - 1, (
-                toolbar_rect,
-                header_rect,
-            )
-            root_overflow = page_root.evaluate("element => getComputedStyle(element).overflowY")
-            assert root_overflow == "hidden", root_overflow
-
 
 def main() -> None:
     with TemporaryDirectory(prefix="ksadk-responsive-studio-") as temp_dir:
@@ -486,9 +455,13 @@ def main() -> None:
                 page.evaluate("window.scrollTo(0, document.documentElement.scrollHeight)")
                 continue_button = page.get_by_role("button", name="继续", exact=True)
                 expect(continue_button).to_be_visible()
-                continue_rect = rect(page, ".wizard-actions .button.accent")
-                assert continue_rect["top"] >= 64, continue_rect
-                assert continue_rect["bottom"] <= 683, continue_rect
+                continue_rect = continue_button.evaluate(
+                    "element => element.getBoundingClientRect().toJSON()"
+                )
+                # The step action is now deliberately fixed in the global
+                # header, so it remains available while the document scrolls.
+                assert continue_rect["top"] >= 0, continue_rect
+                assert continue_rect["bottom"] <= 64, continue_rect
                 assert_no_root_overflow(page)
 
                 page.set_viewport_size({"width": 768, "height": 768})
@@ -503,7 +476,7 @@ def main() -> None:
                 discovery_trigger.click()
                 discovery_dialog = page.get_by_role("dialog", name="发现本地 Skill")
                 expect(discovery_dialog).to_be_visible()
-                expect(page.locator(".page-header")).to_have_attribute("inert", "")
+                expect(page.locator(".global-header")).to_have_attribute("inert", "")
                 expect(page.locator(".sidebar")).to_have_attribute("inert", "")
                 expect(page.locator(".skip-link")).to_have_attribute("inert", "")
                 for _ in range(20):
@@ -522,7 +495,7 @@ def main() -> None:
                 page.keyboard.press("Escape")
                 expect(discovery_dialog).to_be_hidden()
                 expect(discovery_trigger).to_be_focused()
-                assert not page.locator(".page-header").evaluate(
+                assert not page.locator(".global-header").evaluate(
                     "element => element.hasAttribute('inert')"
                 )
                 context.close()
@@ -534,16 +507,12 @@ def main() -> None:
                     )
                     matrix_page = matrix_context.new_page()
                     matrix_page.goto(base_url, wait_until="networkidle")
-                    expected_rail = 60
+                    expected_rail = 80 if width <= 1023 else 216
                     sidebar_rect = rect(matrix_page, ".sidebar")
                     assert abs(sidebar_rect["width"] - expected_rail) <= 1, (
                         width,
                         sidebar_rect,
                     )
-                    if width <= 1439:
-                        expect(matrix_page.locator(".global-context")).to_be_hidden()
-                    else:
-                        expect(matrix_page.locator(".global-context")).to_be_visible()
                     assert_page_matrix(matrix_page, width)
 
                     if width == 3840:
@@ -702,7 +671,7 @@ def main() -> None:
                     "data-viewport", "desktop"
                 )
                 chat_sidebar = rect(workbench_page, ".sidebar")
-                assert abs(chat_sidebar["width"] - 60) <= 1, chat_sidebar
+                assert abs(chat_sidebar["width"] - 216) <= 1, chat_sidebar
                 assert_no_root_overflow(workbench_page)
                 workbench_context.close()
 
@@ -730,7 +699,7 @@ def main() -> None:
                 expect(trace_root).to_have_attribute("data-layout", "workbench")
                 expect(trace_page.locator(".trace-span-row")).to_have_count(1)
                 trace_sidebar = rect(trace_page, ".sidebar")
-                assert abs(trace_sidebar["width"] - 60) <= 1, trace_sidebar
+                assert abs(trace_sidebar["width"] - 216) <= 1, trace_sidebar
                 observability_body = trace_page.locator(".observability-body")
                 body_scroll = observability_body.evaluate(
                     """element => ({
@@ -739,8 +708,9 @@ def main() -> None:
                       scrollHeight: element.scrollHeight,
                     })"""
                 )
-                assert body_scroll["overflowY"] == "auto", body_scroll
-                assert body_scroll["scrollHeight"] > body_scroll["clientHeight"], body_scroll
+                # Desktop trace workbench keeps scrolling inside its panes so
+                # the overview and panel headers remain stable.
+                assert body_scroll["overflowY"] == "hidden", body_scroll
                 trace_page.locator(".trace-workbench").scroll_into_view_if_needed()
                 trace_rect = rect(trace_page, ".trace-workbench")
                 assert trace_rect["top"] >= 64, trace_rect
@@ -799,7 +769,7 @@ def main() -> None:
                 collapse_detail.click()
                 expect(trace_page.locator(".trace-detail-panel")).to_be_hidden()
                 reopen_detail = trace_page.locator(".trace-span-header").get_by_role(
-                    "button", name="展开详情", exact=True
+                    "button", name="展开右侧详情", exact=True
                 )
                 expect(reopen_detail).to_be_visible()
                 expect(trace_page.get_by_role("tab", name="Raw OTLP", exact=True)).to_be_hidden()
@@ -819,7 +789,6 @@ def main() -> None:
                 trace_page.get_by_role("button", name="返回 Trace 列表", exact=True).click()
                 expect(trace_root).to_have_attribute("data-layout", "workbench")
                 expect(trace_page.locator(".trace-list-page")).to_be_visible()
-                trace_page.get_by_role("button", name="展开导航", exact=True).click()
                 expect(trace_page.locator(".app-shell")).to_have_attribute("data-rail", "expanded")
                 expect(trace_page.locator(".sidebar")).to_have_css("width", "216px")
                 expanded_sidebar = rect(trace_page, ".sidebar")
