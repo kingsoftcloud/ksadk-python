@@ -17,7 +17,11 @@ def _candidate(page: Page, name: str):
 
 def _open_skill_discovery(page: Page) -> None:
     page.get_by_role("button", name="Skill", exact=True).click()
-    expect(page.get_by_role("heading", name="Skill", exact=True)).to_be_visible()
+    # The current workspace groups resources under tabs; Skill is a selected
+    # resource-type tab rather than a duplicate page heading.
+    expect(page.get_by_role("tab").filter(has_text="Skill")).to_have_attribute(
+        "aria-selected", "true"
+    )
     page.get_by_role("button", name="发现 Skill", exact=True).click()
     expect(page.get_by_role("dialog", name="发现本地 Skill")).to_be_visible()
     page.get_by_label("扫描目录（逗号分隔；留空扫描安全默认目录）").fill("skills")
@@ -73,16 +77,18 @@ def _assert_multi_import_and_partial_failure(page: Page, workspace: Path) -> Non
 
 
 def _assert_core_navigation(page: Page) -> None:
-    for label, heading in (
-        ("Agent", "Agent"),
-        ("构建", "构建"),
-        ("部署", "部署"),
-        ("可观测", "Trace Explorer"),
-        ("运行资源", "运行资源"),
-        ("任务编排", "任务编排"),
+    # The global header is the stable page identity.  Body headings vary based
+    # on whether the workspace contains an Agent or deployment yet.
+    for label in (
+        "Agent",
+        "构建",
+        "部署",
+        "可观测",
+        "运行资源",
+        "任务编排",
     ):
         page.get_by_role("button", name=label, exact=True).click()
-        expect(page.get_by_role("heading", name=heading, exact=True)).to_be_visible()
+        expect(page.get_by_role("banner", name="当前页面").get_by_text(label, exact=True)).to_be_visible()
         page.wait_for_load_state("networkidle")
 
 

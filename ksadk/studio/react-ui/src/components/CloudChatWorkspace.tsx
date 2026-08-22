@@ -169,7 +169,7 @@ export function CloudChatWorkspace({
   const refreshSessions = useCallback(async () => {
     const response = await apiFetch(`${base}/sessions`);
     if (!response.ok) throw new Error(await responseError(response));
-    const payload = await response.json();
+    const payload = await response.json() as { sessions?: unknown[]; items?: unknown[] };
     const rows = (payload.sessions || payload.items || [])
       .map(normalizeSession)
       .filter((item: CloudSession | null): item is CloudSession => Boolean(item));
@@ -184,7 +184,7 @@ export function CloudChatWorkspace({
     }
     const response = await apiFetch(`${base}/sessions/${encodeURIComponent(sessionId)}/messages`);
     if (!response.ok) throw new Error(await responseError(response));
-    const payload = await response.json();
+    const payload = await response.json() as { messages?: unknown[] };
     const rows = (payload.messages || [])
       .map(normalizeMessage)
       .filter((item: CloudMessage | null): item is CloudMessage => Boolean(item));

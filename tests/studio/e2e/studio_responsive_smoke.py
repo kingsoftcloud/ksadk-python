@@ -272,24 +272,22 @@ def route_recoverable_chat_fixture(route) -> None:
 def assert_page_matrix(page: Page, width: int) -> None:
     navigation = page.locator(".primary-nav")
     pages = (
-        ("Agent", "Agent", "data"),
-        ("构建", "构建", "data"),
-        ("部署", "部署", "data"),
-        ("模型", "模型", "data"),
-        ("Tool", "Tool", "data"),
-        ("MCP", "MCP", "data"),
-        ("Skill", "Skill", "data"),
-        ("可观测", "Trace Explorer", "data"),
-        ("运行资源", "运行资源", "data"),
-        ("任务编排", "任务编排", "document"),
+        ("Agent", "document"),
+        ("构建", "document"),
+        ("部署", "document"),
+        ("模型", "document"),
+        ("Tool", "document"),
+        ("MCP", "document"),
+        ("Skill", "document"),
+        ("可观测", "workbench"),
+        ("运行资源", "document"),
+        ("任务编排", "document"),
     )
-    for nav_label, heading, layout in pages:
+    for nav_label, layout in pages:
         navigation.get_by_role("button", name=nav_label, exact=True).click()
-        expect(page.get_by_role("heading", name=heading, exact=True)).to_be_visible()
-        page_root = page.locator(".page-container").first
+        expect(page.get_by_role("banner", name="当前页面").get_by_text(nav_label, exact=True)).to_be_visible()
+        page_root = page.locator("[data-layout]").first
         expect(page_root).to_have_attribute("data-layout", layout)
-        if layout == "data":
-            expect(page_root).to_have_attribute("data-scroll-mode", "data")
         assert_no_root_overflow(page)
         page_rect = page_root.evaluate(
             """element => {
@@ -397,7 +395,9 @@ def main() -> None:
                 assert main_rect["right"] <= 769, main_rect
 
                 page.get_by_role("button", name="创建 Agent", exact=True).first.click()
-                compact_trigger = page.get_by_role("button", name="创建方式", exact=True)
+                compact_trigger = page.get_by_role(
+                    "button", name="查看创建入口与配置步骤", exact=True
+                )
                 expect(compact_trigger).to_be_visible()
                 expect(page.locator(".app-shell")).to_have_attribute("data-viewport", "compact")
                 compact_create_drawer = page.get_by_role("dialog", name="创建方式", exact=True)
@@ -427,9 +427,9 @@ def main() -> None:
                 assert not page.locator(".create-rail").evaluate(
                     "element => element.hasAttribute('inert')"
                 )
-                expect(page.locator(".create-rail")).to_have_css("width", "196px")
+                expect(page.locator(".create-rail")).to_have_css("width", "212px")
                 laptop_rail = rect(page, ".create-rail")
-                assert abs(laptop_rail["width"] - 196) <= 1, laptop_rail
+                assert abs(laptop_rail["width"] - 212) <= 1, laptop_rail
                 expect(conversation_input).to_have_value("保留这段构建说明")
                 assert_no_root_overflow(page)
 
@@ -454,7 +454,7 @@ def main() -> None:
                 ):
                     page.set_viewport_size(viewport)
                     expect(page.locator(".create-shell")).to_have_attribute(
-                        "data-scroll-mode", "workbench"
+                        "data-layout", "workbench"
                     )
                     height_metrics = page.evaluate(
                         """() => ({
@@ -481,7 +481,7 @@ def main() -> None:
                 page.set_viewport_size({"width": 1024, "height": 682})
                 page.locator(".authoring-mode-tabs button").filter(has_text="快速创建").click()
                 expect(page.locator(".create-shell")).to_have_attribute(
-                    "data-scroll-mode", "document"
+                    "data-layout", "document"
                 )
                 page.evaluate("window.scrollTo(0, document.documentElement.scrollHeight)")
                 continue_button = page.get_by_role("button", name="继续", exact=True)
@@ -496,7 +496,9 @@ def main() -> None:
                     "button", name="Skill", exact=True
                 )
                 skill_trigger.click()
-                expect(page.get_by_role("heading", name="Skill", exact=True)).to_be_visible()
+                expect(page.get_by_role("tab").filter(has_text="Skill")).to_have_attribute(
+                    "aria-selected", "true"
+                )
                 discovery_trigger = page.get_by_role("button", name="发现 Skill", exact=True)
                 discovery_trigger.click()
                 discovery_dialog = page.get_by_role("dialog", name="发现本地 Skill")
@@ -715,7 +717,7 @@ def main() -> None:
                     "button", name="可观测", exact=True
                 ).click()
                 trace_root = trace_page.locator(".observability-page")
-                expect(trace_root).to_have_attribute("data-scroll-mode", "data")
+                expect(trace_root).to_have_attribute("data-layout", "workbench")
                 assert trace_page.url.endswith("#/observability"), trace_page.url
                 expect(trace_page.locator(".observability-overview")).to_be_visible()
                 expect(trace_page.locator(".overview-chart")).to_be_visible()
@@ -725,7 +727,7 @@ def main() -> None:
                     trace_page.locator(".trace-list-page .studio-data-table tbody tr")
                 ).to_have_count(1)
                 trace_page.get_by_role("button", name="查看详情", exact=True).click()
-                expect(trace_root).to_have_attribute("data-scroll-mode", "workbench")
+                expect(trace_root).to_have_attribute("data-layout", "workbench")
                 expect(trace_page.locator(".trace-span-row")).to_have_count(1)
                 trace_sidebar = rect(trace_page, ".sidebar")
                 assert abs(trace_sidebar["width"] - 60) <= 1, trace_sidebar
@@ -815,7 +817,7 @@ def main() -> None:
                     trace_page.get_by_role("button", name="放大详情", exact=True)
                 ).to_be_visible()
                 trace_page.get_by_role("button", name="返回 Trace 列表", exact=True).click()
-                expect(trace_root).to_have_attribute("data-scroll-mode", "data")
+                expect(trace_root).to_have_attribute("data-layout", "workbench")
                 expect(trace_page.locator(".trace-list-page")).to_be_visible()
                 trace_page.get_by_role("button", name="展开导航", exact=True).click()
                 expect(trace_page.locator(".app-shell")).to_have_attribute("data-rail", "expanded")

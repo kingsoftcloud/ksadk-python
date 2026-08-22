@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
-  Activity, ArrowLeft, Brain, Check, CircleCheckBig, Clock3, Coins, Copy, MessageSquare,
+  Activity, Archive, ArrowLeft, Brain, Check, CircleCheckBig, Clock3, Coins, Copy, MessageSquare,
   ChevronDown, ChevronUp, Maximize2, Minimize2, Network, Search,
 } from "lucide-react";
 import { allExpanded, collapseAllNested, JsonView } from "react-json-view-lite";
@@ -13,6 +13,8 @@ import {
 import { StudioSelect } from "../components/ui/StudioSelect";
 import { PageHeaderActions, PageHeaderTools } from "../components/PageHeaderPortal";
 import { apiFetch } from "../api";
+import { TrajectoryDetail, TrajectoryView } from "./TrajectoryView";
+import type { TrajectoryRecord } from "./trajectory";
 
 /* ================= 类型 ================= */
 
@@ -296,9 +298,10 @@ function KvList({ values }: { values: Record<string, any> }) {
 
 /* ================= 主页面 ================= */
 
-type DetailTab = "summary" | "attributes" | "events" | "resource" | "raw";
+type DetailTab = "spans" | "trajectory" | "attributes" | "events" | "resource" | "raw";
 const DETAIL_TABS: Array<{ id: DetailTab; label: string }> = [
-  { id: "summary", label: "概览" },
+  { id: "spans", label: "Spans" },
+  { id: "trajectory", label: "轨迹" },
   { id: "attributes", label: "Attributes" },
   { id: "events", label: "Events" },
   { id: "resource", label: "Resource" },
@@ -317,7 +320,8 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
   const [overview, setOverview] = useState<TraceOverview | null>(null);
   const [activeTrace, setActiveTrace] = useState<TraceDetail | null>(null);
   const [activeSpanId, setActiveSpanId] = useState<string | null>(null);
-  const [tab, setTab] = useState<DetailTab>("summary");
+  const [tab, setTab] = useState<DetailTab>("spans");
+  const [selectedTrajectory, setSelectedTrajectory] = useState<TrajectoryRecord | null>(null);
   const [rawOtlp, setRawOtlp] = useState<any>(null);
   const [rawLoading, setRawLoading] = useState(false);
   const [rawExpanded, setRawExpanded] = useState(true);
@@ -345,7 +349,8 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
       if (requestSeq.current !== seq) return;
       setActiveTrace(trace);
       setActiveSpanId(trace.rootSpanId || trace.spans?.[0]?.spanId || null);
-      setTab("summary");
+      setTab("spans");
+      setSelectedTrajectory(null);
       setRawOtlp(null);
       setRawExpanded(true);
       setExpanded(false);
@@ -531,6 +536,56 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
     showToast("Raw OTLP 已复制", shortId(activeTrace.traceId, 24));
   }
 
+  async function exportSessionLog() {
+    if (!activeTrace?.sessionId) return;
+    type SaveFileHandle = {
+      name: string;
+      createWritable: () => Promise<{ write: (content: Blob) => Promise<void>; close: () => Promise<void> }>;
+    };
+    type SaveFilePicker = (options: {
+      suggestedName: string;
+      types: Array<{ description: string; accept: Record<string, string[]> }>;
+    }) => Promise<SaveFileHandle>;
+    const picker = (window as Window & { showSaveFilePicker?: SaveFilePicker }).showSaveFilePicker;
+    if (!picker) {
+      showToast("浏览器不支持导出", "请使用支持文件保存的 Chromium 浏览器。", "error");
+      return;
+    }
+    let handle: SaveFileHandle;
+    try {
+      handle = await picker({
+        suggestedName: `${activeTrace.sessionId}-${activeTrace.runId || "session"}-session-log.jsonl`,
+        types: [{ description: "Session Log", accept: { "application/x-ndjson": [".jsonl"] } }],
+      });
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      showToast("Session Log 导出失败", error instanceof Error ? error.message : "无法选择保存位置", "error");
+      return;
+    }
+    try {
+      const response = await apiFetch(
+        `/api/v1/sessions/${encodeURIComponent(activeTrace.sessionId)}:export`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            filename: handle.name,
+            invocationId: activeTrace.runId || undefined,
+            download: true,
+          }),
+        },
+      );
+      if (!response.ok) throw new Error(`导出失败（${response.status}）`);
+      const writable = await handle.createWritable();
+      await writable.write(await response.blob());
+      await writable.close();
+      const count = response.headers.get("X-Session-Event-Count") || "0";
+      showToast("Session Log 已导出", `${handle.name} · ${count} 条事件`);
+    } catch (error) {
+      showToast("Session Log 导出失败", error instanceof Error ? error.message : "未知错误", "error");
+    }
+  }
+
   return (
     <div
       className="page-container observability-page"
@@ -548,6 +603,9 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
         </div>
       </PageHeaderTools>
       {activeTrace && <PageHeaderActions>
+        <button className="button tertiary" type="button" onClick={() => void exportSessionLog()}>
+          <Archive size={15} /><span>导出 Session Log</span>
+        </button>
         <button className="button tertiary" type="button" onClick={() => {
           requestSeq.current += 1;
           setActiveTrace(null);
@@ -678,7 +736,7 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
             </button>
             {detailCollapsed && (
               <button className="button secondary small trace-detail-reopen" type="button" onClick={() => setDetailCollapsed(false)}>
-                <ChevronUp size={14} /><span>展开详情</span>
+                <ChevronUp size={14} /><span>展开右侧详情</span>
               </button>
             )}
           </div>
@@ -705,7 +763,7 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
                   className={`trace-span-row${span.spanId === activeSpanId ? " active" : ""}`}
                   data-kind={span.kind}
                   data-status={span.status}
-                  onClick={() => { setActiveSpanId(span.spanId); setTab("summary"); }}
+                  onClick={() => { setActiveSpanId(span.spanId); setTab("spans"); }}
                 >
                   <span className="trace-span-name">
                     <span className="trace-span-guides">{Array.from({ length: depth }, (_, i) => <span key={i} className="trace-span-guide" />)}</span>
@@ -776,10 +834,26 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
             ))}
           </div>}
           {!detailCollapsed && <div className={`trace-detail-body${tab === "raw" ? " raw-active" : ""}`}>
-            {tab !== "raw" && (
+            {tab === "trajectory" && (
+              <div className="trace-trajectory-layout">
+                <TrajectoryView
+                  sessionId={activeTrace.sessionId}
+                  invocationId={activeTrace.runId || undefined}
+                  onSelectionChange={setSelectedTrajectory}
+                />
+                <aside className="trajectory-selection" aria-label="轨迹详情">
+                  {selectedTrajectory ? (
+                    <TrajectoryDetail record={selectedTrajectory} />
+                  ) : (
+                    <div className="trace-stage-empty compact"><p>选择一条轨迹事件查看详情。</p></div>
+                  )}
+                </aside>
+              </div>
+            )}
+            {tab !== "raw" && tab !== "trajectory" && (
               <div>
                 {!activeSpan && <div className="trace-stage-empty compact"><p>选择一个 Span 查看标准属性。</p></div>}
-                {activeSpan && tab === "summary" && (
+                {activeSpan && tab === "spans" && (
                   <>
                     <SpanContentCards span={activeSpan} />
                     <dl className="trace-detail-grid" style={{ marginTop: 14 }}>

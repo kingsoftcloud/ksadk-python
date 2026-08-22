@@ -4305,6 +4305,28 @@ ksadk-message {
   overflow: hidden;
 }
 
+.trace-trajectory-layout {
+  min-height: 420px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(240px, 32%);
+}
+
+.trajectory-selection {
+  min-width: 0;
+  overflow: auto;
+  border-left: 1px solid var(--border);
+  background: var(--surface-subtle);
+}
+
+@media (max-width: 1040px) {
+  .trace-trajectory-layout { grid-template-columns: 1fr; }
+  .trajectory-selection {
+    min-height: 180px;
+    border-top: 1px solid var(--border);
+    border-left: 0;
+  }
+}
+
 /* Canonical RuntimeEvent trajectory */
 .trajectory-view {
   position: relative;
@@ -4574,6 +4596,17 @@ ksadk-message {
   border-bottom: 1px solid var(--border);
   background: var(--surface);
 }
+
+.trajectory-detail-heading {
+  display: grid;
+  gap: 3px;
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.trajectory-detail-heading strong { color: var(--text); font-size: var(--font-size-meta); }
+.trajectory-detail-heading span { color: var(--text-tertiary); font-size: var(--font-size-caption); }
 
 .trajectory-detail-tabs button {
   padding: 8px 10px;

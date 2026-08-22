@@ -99,14 +99,14 @@ async def _shared_runtime_events(request, handle):
     }
     source = SourceRef(framework="langgraph")
     yield RunStarted(
-        event_id="e1",
+        event_id=f"{handle.run_id}:e1",
         seq=1,
         status="running",
         source=source,
         **common,
     )
     yield ItemUpdated(
-        event_id="e2",
+        event_id=f"{handle.run_id}:e2",
         seq=2,
         item_id="msg-1",
         item_kind="message",
@@ -116,7 +116,7 @@ async def _shared_runtime_events(request, handle):
         **common,
     )
     yield ItemCompleted(
-        event_id="e3",
+        event_id=f"{handle.run_id}:e3",
         seq=3,
         item_id="msg-1",
         item_kind="message",
@@ -127,7 +127,7 @@ async def _shared_runtime_events(request, handle):
         **common,
     )
     yield RunCompleted(
-        event_id="e4",
+        event_id=f"{handle.run_id}:e4",
         seq=4,
         status="completed",
         output_refs=(

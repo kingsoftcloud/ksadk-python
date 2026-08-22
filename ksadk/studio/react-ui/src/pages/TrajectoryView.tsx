@@ -102,6 +102,10 @@ export function TrajectoryDetail({ record: selected }: { record: TrajectoryRecor
   );
   return (
     <div className="trajectory-detail">
+      <header className="trajectory-detail-heading">
+        <strong>{rowName(selected)}</strong>
+        <span>{categoryLabel(selected.category)} · {selected.status || "未上报"}</span>
+      </header>
       <div className="trajectory-detail-tabs" role="tablist" aria-label="节点详情">
         {(["summary", "preview", "raw", "source"] as const).map((tab) => <button key={tab} type="button" role="tab" aria-selected={detailTab === tab} onClick={() => setDetailTab(tab)}>{tab === "summary" ? "Summary" : tab === "preview" ? "Preview" : tab === "raw" ? "Raw Events" : "Source"}</button>)}
       </div>
