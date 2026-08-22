@@ -493,6 +493,77 @@ class DirectAgentEngineCloudDeploymentGateway:
             "expires_at": str(link.get("expires_at") or "").strip() or None,
         }
 
+    def _chat_agent_id(self, deployment: DeploymentRecord) -> str:
+        """Bind local cloud chat to an immutable Studio deployment receipt.
+
+        In particular, the browser cannot provide an arbitrary AgentId and
+        turn the loopback Studio process into a signed control-plane proxy.
+        """
+
+        agent_id = str(deployment.agent_id or "").strip()
+        if not agent_id:
+            raise StudioError(
+                "DEPLOYMENT_CLOUD_CHAT_UNAVAILABLE",
+                "部署 receipt 缺少云端 Agent 标识",
+                status_code=409,
+            )
+        return agent_id
+
+    async def list_deployment_chat_sessions(
+        self,
+        deployment: DeploymentRecord,
+        *,
+        page: int = 1,
+        size: int = 50,
+    ) -> dict[str, Any]:
+        """Read sessions through the authenticated Server projection."""
+
+        return await self.client.list_sessions(
+            self._chat_agent_id(deployment), page=page, size=size
+        )
+
+    async def create_deployment_chat_session(
+        self, deployment: DeploymentRecord
+    ) -> dict[str, Any]:
+        """Create one Server-owned session before its first cloud message."""
+
+        return await self.client.create_session(self._chat_agent_id(deployment))
+
+    async def list_deployment_chat_messages(
+        self,
+        deployment: DeploymentRecord,
+        *,
+        session_id: str,
+        after_seq_id: int | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        """Return the Server/Runtime message projection for a bound session."""
+
+        return await self.client.list_session_messages(
+            agent_id=self._chat_agent_id(deployment),
+            session_id=session_id,
+            after_seq_id=after_seq_id,
+            limit=limit,
+        )
+
+    async def send_deployment_chat_message(
+        self,
+        deployment: DeploymentRecord,
+        *,
+        session_id: str,
+        content: str,
+    ) -> dict[str, Any]:
+        """Submit a foreground message via RunAgent and Server admission.
+
+        Kernel-enabled Agents return a durable receipt immediately; clients
+        then read the canonical message/session event stream rather than
+        treating a synchronous proxy body as the source of truth.
+        """
+
+        return await self.client.chat(
+            self._chat_agent_id(deployment), content, session_id=session_id
+        )
+
     async def create_managed_runtime_deployment(self, **kwargs) -> DeploymentRecord:
         request: DeploymentRequest = kwargs["request"]
         digest = str(kwargs["manifest_digest"])
@@ -935,6 +1006,70 @@ class CloudDeploymentService:
                 status_code=501,
             )
         return await dashboard_reader(deployment)
+
+    async def list_cloud_chat_sessions(
+        self, deployment_id: str, *, page: int = 1, size: int = 50
+    ) -> dict[str, Any]:
+        deployment = self.get(deployment_id)
+        reader = getattr(self.gateway, "list_deployment_chat_sessions", None)
+        if reader is None:
+            raise StudioError(
+                "CLOUD_CHAT_UNAVAILABLE",
+                "当前云端网关不支持本地会话代理",
+                status_code=501,
+            )
+        return await reader(deployment, page=page, size=size)
+
+    async def create_cloud_chat_session(self, deployment_id: str) -> dict[str, Any]:
+        deployment = self.get(deployment_id)
+        creator = getattr(self.gateway, "create_deployment_chat_session", None)
+        if creator is None:
+            raise StudioError(
+                "CLOUD_CHAT_UNAVAILABLE",
+                "当前云端网关不支持本地会话代理",
+                status_code=501,
+            )
+        return await creator(deployment)
+
+    async def list_cloud_chat_messages(
+        self,
+        deployment_id: str,
+        *,
+        session_id: str,
+        after_seq_id: int | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        deployment = self.get(deployment_id)
+        reader = getattr(self.gateway, "list_deployment_chat_messages", None)
+        if reader is None:
+            raise StudioError(
+                "CLOUD_CHAT_UNAVAILABLE",
+                "当前云端网关不支持本地会话代理",
+                status_code=501,
+            )
+        return await reader(
+            deployment,
+            session_id=session_id,
+            after_seq_id=after_seq_id,
+            limit=limit,
+        )
+
+    async def send_cloud_chat_message(
+        self,
+        deployment_id: str,
+        *,
+        session_id: str,
+        content: str,
+    ) -> dict[str, Any]:
+        deployment = self.get(deployment_id)
+        sender = getattr(self.gateway, "send_deployment_chat_message", None)
+        if sender is None:
+            raise StudioError(
+                "CLOUD_CHAT_UNAVAILABLE",
+                "当前云端网关不支持本地会话代理",
+                status_code=501,
+            )
+        return await sender(deployment, session_id=session_id, content=content)
 
     async def rollback(
         self,

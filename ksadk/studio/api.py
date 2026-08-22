@@ -22,6 +22,7 @@ from ksadk.studio.api_catalog_routes import register_catalog_routes
 from ksadk.studio.api_contracts import (
     AuthoringCommitRequest,
     BuildRequest,
+    CloudChatMessageRequest,
     ContextPreviewRequest,
     ConversationAuthoringRequest,
     CreateAgentRequest,
@@ -1209,6 +1210,60 @@ def create_studio_app(
     @app.post("/api/v1/deployments/{deployment_id}:dashboard")
     async def open_deployment_dashboard(deployment_id: str):
         return await studio.deployment_dashboard_access(deployment_id)
+
+    @app.get("/api/v1/deployments/{deployment_id}/cloud-chat/sessions")
+    async def list_cloud_chat_sessions(
+        deployment_id: str,
+        page: int = Query(default=1, ge=1),
+        size: int = Query(default=50, ge=1, le=100),
+    ):
+        """List Server-owned sessions for this local deployment receipt only."""
+
+        return await studio.cloud.list_cloud_chat_sessions(
+            deployment_id, page=page, size=size
+        )
+
+    @app.post(
+        "/api/v1/deployments/{deployment_id}/cloud-chat/sessions",
+        status_code=201,
+    )
+    async def create_cloud_chat_session(deployment_id: str):
+        """Create a cloud session via loopback-held AK/SK; no secret reaches JS."""
+
+        return await studio.cloud.create_cloud_chat_session(deployment_id)
+
+    @app.get(
+        "/api/v1/deployments/{deployment_id}/cloud-chat/sessions/{session_id}/messages"
+    )
+    async def list_cloud_chat_messages(
+        deployment_id: str,
+        session_id: str,
+        after_seq_id: int | None = Query(default=None, alias="afterSeqId", ge=0),
+        limit: int = Query(default=100, ge=1, le=200),
+    ):
+        return await studio.cloud.list_cloud_chat_messages(
+            deployment_id,
+            session_id=session_id,
+            after_seq_id=after_seq_id,
+            limit=limit,
+        )
+
+    @app.post(
+        "/api/v1/deployments/{deployment_id}/cloud-chat/sessions/{session_id}/messages",
+        status_code=202,
+    )
+    async def send_cloud_chat_message(
+        deployment_id: str,
+        session_id: str,
+        payload: CloudChatMessageRequest,
+    ):
+        """Admit one cloud message through Server; response is a durable receipt."""
+
+        return await studio.cloud.send_cloud_chat_message(
+            deployment_id,
+            session_id=session_id,
+            content=payload.content,
+        )
 
     @app.post("/api/v1/deployments/{deployment_id}:rollback", status_code=202)
     async def rollback_deployment(

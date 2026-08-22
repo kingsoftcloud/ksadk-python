@@ -118,6 +118,16 @@ class InteractionSubmitRequest(ContractModel):
     data: dict[str, Any] = Field(default_factory=dict)
 
 
+class CloudChatMessageRequest(ContractModel):
+    """A local Studio browser submits only message content to its loopback API.
+
+    The loopback process, never the browser, owns the AK/SK used to admit the
+    message through the cloud control plane.
+    """
+
+    content: str = Field(min_length=1, max_length=1_000_000)
+
+
 class StudioEvaluationCreate(ContractModel):
     """Request for the shared CLI/Studio evaluation executor."""
 

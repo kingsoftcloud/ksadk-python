@@ -44,6 +44,7 @@ class _Client:
         self.created: list[dict] = []
         self.updated: list[tuple[str, dict]] = []
         self.dashboard_links: list[dict] = []
+        self.session_calls: list[tuple[str, dict]] = []
         self.kernel_ready = True
 
     async def create_agent(self, payload: dict) -> dict:
@@ -67,6 +68,31 @@ class _Client:
             "access_url": f"https://dashboard.example.test/{kwargs['agent_id']}",
             "expires_at": "2026-08-22T00:00:00Z",
         }
+
+    async def list_sessions(self, agent_id: str, *, page: int, size: int) -> dict:
+        self.session_calls.append(
+            ("ListSessions", {"AgentId": agent_id, "Page": page, "PageSize": size})
+        )
+        return {"sessions": [{"id": "sess-cloud"}], "total": 1}
+
+    async def create_session(self, agent_id: str) -> dict:
+        self.session_calls.append(("CreateSession", {"AgentId": agent_id}))
+        return {"session": {"id": "sess-new"}}
+
+    async def list_session_messages(self, **kwargs) -> dict:
+        self.session_calls.append(("ListSessionMessages", kwargs))
+        return {
+            "messages": [{"role": "assistant", "content": "云端回复"}],
+            "latest_seq_id": 4,
+        }
+
+    async def chat(
+        self, agent_id: str, message: str, *, session_id: str | None = None
+    ) -> dict:
+        self.session_calls.append(
+            ("RunAgent", {"AgentId": agent_id, "SessionId": session_id, "Message": message})
+        )
+        return {"receipt_status": "accepted", "run_id": "run-cloud"}
 
 
 class _MissingAgentClient(_Client):
@@ -492,3 +518,87 @@ def test_managed_runtime_payload_keeps_model_env_out_of_yaml_contract() -> None:
         "OPENAI_API_KEY": "resolved-only-for-request",
         "OPENAI_BASE_URL": "https://model.example.com/v1",
     }
+
+
+@pytest.mark.asyncio
+async def test_cloud_chat_is_bound_to_the_deployment_receipt_agent() -> None:
+    client = _Client()
+    gateway = DirectAgentEngineCloudDeploymentGateway(
+        region="pre-online",
+        client=client,
+        uploader_factory=_Uploader,
+        ks3_credentials={"access_key": "test-access", "secret_key": "test-secret"},
+    )
+    request = DeploymentRequest(
+        target=DeploymentTarget(region="pre-online", environment="preproduction")
+    )
+    deployment = DeploymentRecord(
+        id="dep_cloud_chat",
+        build_id="build_cloud_chat",
+        bundle_digest="sha256:" + "a" * 64,
+        version_id="version-cloud-chat",
+        status="READY",
+        target=request.target,
+        agent_id="ar-receipt-bound",
+    )
+
+    assert await gateway.list_deployment_chat_sessions(deployment) == {
+        "sessions": [{"id": "sess-cloud"}],
+        "total": 1,
+    }
+    assert await gateway.create_deployment_chat_session(deployment) == {
+        "session": {"id": "sess-new"}
+    }
+    assert await gateway.list_deployment_chat_messages(
+        deployment, session_id="sess-cloud", after_seq_id=4
+    ) == {
+        "messages": [{"role": "assistant", "content": "云端回复"}],
+        "latest_seq_id": 4,
+    }
+    assert await gateway.send_deployment_chat_message(
+        deployment, session_id="sess-cloud", content="你好"
+    ) == {"receipt_status": "accepted", "run_id": "run-cloud"}
+    assert client.session_calls == [
+        ("ListSessions", {"AgentId": "ar-receipt-bound", "Page": 1, "PageSize": 50}),
+        ("CreateSession", {"AgentId": "ar-receipt-bound"}),
+        (
+            "ListSessionMessages",
+            {
+                "agent_id": "ar-receipt-bound",
+                "session_id": "sess-cloud",
+                "after_seq_id": 4,
+                "limit": 100,
+            },
+        ),
+        (
+            "RunAgent",
+            {
+                "AgentId": "ar-receipt-bound",
+                "SessionId": "sess-cloud",
+                "Message": "你好",
+            },
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_cloud_chat_rejects_receipts_without_an_agent_id() -> None:
+    gateway = DirectAgentEngineCloudDeploymentGateway(
+        region="pre-online",
+        client=_Client(),
+        uploader_factory=_Uploader,
+        ks3_credentials={"access_key": "test-access", "secret_key": "test-secret"},
+    )
+    deployment = DeploymentRecord(
+        id="dep_missing_agent",
+        build_id="build_missing_agent",
+        bundle_digest="sha256:" + "a" * 64,
+        version_id="version-missing-agent",
+        status="READY",
+        target=DeploymentTarget(region="pre-online", environment="preproduction"),
+    )
+
+    with pytest.raises(StudioError, match="缺少云端 Agent 标识") as exc_info:
+        await gateway.list_deployment_chat_sessions(deployment)
+
+    assert exc_info.value.status_code == 409
