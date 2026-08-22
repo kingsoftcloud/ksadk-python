@@ -10,11 +10,16 @@ test("cloud chat keeps polling until an admitted run reaches a terminal response
   assert.match(source, /if \(!active \|\| !currentSessionId\) return/);
   assert.match(source, /sending \|\| waitingForResponse \? 1200 : 4000/);
   assert.match(source, /terminalRunEvent\(events, awaitingRunIdRef\.current\)/);
+  assert.match(source, /payload\.invocation_id/);
+  assert.match(source, /frame\.invocation_id/);
+  assert.match(source, /\["run_status", "run\.status"\]/);
+  assert.match(source, /content\.status/);
   assert.match(source, /rows\.slice\(messageCountBeforeSendRef\.current\)\.some\(message => message\.role === "assistant"\)/);
 });
 
 test("cloud chat exposes a failed run and keeps its credentials in the Studio backend", () => {
   assert.match(source, /cloud-chat-run-warning/);
   assert.match(source, /这次云端运行未完成/);
+  assert.doesNotMatch(source, /可查看运行详情/);
   assert.match(source, /AK\/SK 仅保留在本地 Studio 进程/);
 });

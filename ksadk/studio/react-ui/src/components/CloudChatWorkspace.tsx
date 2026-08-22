@@ -122,11 +122,31 @@ function terminalRunEvent(events: unknown[], runId: string): "completed" | "fail
     const payload = frame.payload && typeof frame.payload === "object"
       ? frame.payload as Record<string, unknown>
       : frame;
-    const eventRunId = String(payload.run_id ?? payload.runId ?? frame.run_id ?? frame.runId ?? "");
+    // RuntimeEvent v2 uses run_id. Older Server event history uses
+    // invocation_id together with a run_status envelope; accept both while
+    // the Server history endpoint is being migrated.
+    const eventRunId = String(
+      payload.run_id ?? payload.runId ?? payload.invocation_id ?? payload.invocationId
+      ?? frame.run_id ?? frame.runId ?? frame.invocation_id ?? frame.invocationId ?? "",
+    );
     if (eventRunId !== runId) continue;
     const eventType = String(frame.event_type ?? frame.eventType ?? payload.event_type ?? payload.eventType ?? "").toLowerCase();
     if (["run.completed", "run.complete", "run.succeeded"].includes(eventType)) return "completed";
     if (["run.failed", "run.cancelled", "run.expired", "run.error"].includes(eventType)) return "failed";
+    if (["run_status", "run.status"].includes(eventType)) {
+      const content = payload.content && typeof payload.content === "object"
+        ? payload.content as Record<string, unknown>
+        : {};
+      const stateDelta = payload.state_delta && typeof payload.state_delta === "object"
+        ? payload.state_delta as Record<string, unknown>
+        : {};
+      const activeRun = stateDelta.active_run && typeof stateDelta.active_run === "object"
+        ? stateDelta.active_run as Record<string, unknown>
+        : {};
+      const status = String(payload.status ?? content.status ?? activeRun.status ?? "").toLowerCase();
+      if (["completed", "complete", "succeeded", "success"].includes(status)) return "completed";
+      if (["failed", "cancelled", "canceled", "expired", "error", "aborted"].includes(status)) return "failed";
+    }
   }
   return null;
 }
@@ -213,7 +233,7 @@ export function CloudChatWorkspace({
       setWaitingForResponse(false);
       awaitingRunIdRef.current = "";
       if (terminal === "failed") {
-        showToast("云端运行未完成", "请查看运行详情，或新建会话后重试。", "error");
+        showToast("云端运行未完成", "本次请求已结束，未得到回复。可新建会话后重试；若持续失败，请到可观测页面按会话查看记录。", "error");
       }
     }
     setInteractions(pendingInteractions(events));
@@ -393,7 +413,7 @@ export function CloudChatWorkspace({
         </header>
         <div ref={messageListRef} className="chat-message-list" aria-live="polite">
           {!currentSessionId && !loading && <div className="chat-empty"><span className="chat-empty-icon"><Bot /></span><h2>开始一段云端会话</h2><p>消息会由本地 Studio 通过受权的云端控制面发送。</p></div>}
-          {sessions.find(session => session.id === currentSessionId)?.state === "failed" && <div className="cloud-chat-run-warning"><ShieldAlert size={15} />这次云端运行未完成；可查看运行详情，或新建会话后重试。</div>}
+          {sessions.find(session => session.id === currentSessionId)?.state === "failed" && <div className="cloud-chat-run-warning"><ShieldAlert size={15} />这次云端运行未完成；可新建会话后重试。若持续失败，请到可观测页面按会话查看记录。</div>}
           {messages.map(message => (
             <article key={message.id} className={`message ${message.role}${message.pending ? " pending" : ""}`}>
               <div className="message-meta">{message.role === "user" ? "你" : agentName}</div>
