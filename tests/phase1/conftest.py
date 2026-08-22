@@ -20,6 +20,7 @@ PREPROD_ENV_VARS = (
     "KSADK_PHASE1_SERVER_URL",
     "KSADK_PHASE1_GATEWAY_URL",
     "KSADK_PHASE1_AGENT_INSTANCE_ID",
+    "KSADK_PHASE1_AUTHORIZATION_HEADER",
 )
 
 
@@ -51,12 +52,14 @@ class PreprodConfig:
     server_url: str
     gateway_url: str
     agent_instance_id: str
+    authorization_header: str
 
     def __repr__(self) -> str:  # 防止意外打印凭据形态内容
         return (
             f"PreprodConfig(server_url={self.server_url!r}, "
             f"gateway_url={self.gateway_url!r}, "
-            f"agent_instance_id={self.agent_instance_id!r})"
+            f"agent_instance_id={self.agent_instance_id!r}, "
+            "authorization_header='<redacted>')"
         )
 
     @classmethod
@@ -70,6 +73,7 @@ class PreprodConfig:
             server_url=os.environ["KSADK_PHASE1_SERVER_URL"],
             gateway_url=os.environ["KSADK_PHASE1_GATEWAY_URL"],
             agent_instance_id=os.environ["KSADK_PHASE1_AGENT_INSTANCE_ID"],
+            authorization_header=os.environ["KSADK_PHASE1_AUTHORIZATION_HEADER"],
         )
 
 

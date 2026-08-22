@@ -31,7 +31,14 @@ class PreprodClient:
 
     def __init__(self, config: PreprodConfig) -> None:
         self.config = config
-        self._client = httpx.AsyncClient(base_url=config.gateway_url, timeout=30.0)
+        self._client = httpx.AsyncClient(
+            base_url=config.gateway_url,
+            timeout=30.0,
+            # This is the public Gateway authentication leg.  The test-only
+            # header is supplied by the isolated environment, never embedded
+            # in source or evidence.
+            headers={"Authorization": config.authorization_header},
+        )
 
     async def aclose(self) -> None:
         await self._client.aclose()
