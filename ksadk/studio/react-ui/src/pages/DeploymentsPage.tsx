@@ -212,7 +212,7 @@ export function DeploymentsPage({ onCreate }: { onCreate: () => void }) {
                   <td><code title={deployment.instanceId || deployment.id}>{deployment.instanceId || deployment.id}</code></td>
                   <td><code title={deployment.buildId}>{shortId(deployment.buildId)}</code></td>
                   <td><code title={deployment.bundleDigest}>{shortId(deployment.bundleDigest)}</code></td>
-                  <td>{deployment.target.region}<small>{deployment.target.environment}</small></td>
+                  <td><strong>云端</strong><small>由当前部署配置决定</small></td>
                   <td className="delivery-row-actions">
                     <button className="button tertiary compact" type="button" aria-label="刷新部署状态" title="刷新部署状态" disabled={refreshingThis} onClick={() => void refresh(deployment)}><RefreshCw size={15} /></button>
                     {deployment.status === "READY" && deployment.agentId && <button className="button tertiary compact" type="button" aria-label="打开该 Agent 的云端 UI" title={`打开云端 UI：${deployment.agentId}`} onClick={() => void openHostedUi(deployment)}><ExternalLink size={15} /><span>云端 UI</span></button>}

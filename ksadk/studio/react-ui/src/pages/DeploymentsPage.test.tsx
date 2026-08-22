@@ -54,6 +54,8 @@ describe("DeploymentsPage", () => {
     render(<DeploymentsPage onCreate={vi.fn()} />);
 
     expect(await screen.findByText("instance-1")).toBeInTheDocument();
+    expect(screen.queryByText("preproduction")).not.toBeInTheDocument();
+    expect(screen.queryByText("cn-beijing-6")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "刷新部署状态" }));
     await waitFor(() => expect(apiFetch).toHaveBeenCalledWith("/api/v1/deployments/dep-instance-1"));
     expect(await screen.findByText("部署中")).toBeInTheDocument();

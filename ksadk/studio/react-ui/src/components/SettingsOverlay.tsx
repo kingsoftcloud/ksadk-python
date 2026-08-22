@@ -276,7 +276,7 @@ export function SettingsOverlay({ themePreference, onThemePreferenceChange, init
         <p className="helper">部署时 Studio 将不可变 Bundle 直传 KS3，再调用既有 CreateAgent / UpdateAgent。AK/SK 只从启动 Studio 的环境读取，绝不会写入工作区、页面或 deployment receipt。</p>
         <div className="form-grid two-columns">
           <FormField label="Region" requirement="optional" htmlFor="settingCloudRegion" error={settingsForm.formState.errors.cloudRegion?.message}>
-            <input id="settingCloudRegion" placeholder="pre-online" {...settingsForm.register("cloudRegion")} />
+            <input id="settingCloudRegion" placeholder="cn-beijing-6" {...settingsForm.register("cloudRegion")} />
           </FormField>
           <FormField label="KS3 Bucket" requirement="optional" htmlFor="settingCloudBucket" hint="留空时复用启动环境或 SDK 默认 Bucket。" error={settingsForm.formState.errors.cloudBucket?.message}>
             <input id="settingCloudBucket" placeholder="agentengine-<account>-cn-beijing-6" {...settingsForm.register("cloudBucket")} />
