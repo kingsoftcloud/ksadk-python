@@ -1439,6 +1439,20 @@ class StudioService:
             runtime_environment = dict(
                 (launch.launch_context.config or {}).get("env") or {}
             )
+            # Retrying a YAML deployment must update the Agent that the prior
+            # receipt already created.  CreateAgent can have succeeded before
+            # a downstream Runtime-Service start failed; creating again would
+            # leave duplicate cloud Agents and make the retry path non-idempotent.
+            replacing = next(
+                (
+                    deployment
+                    for deployment in self.cloud.list()
+                    if deployment.artifact_id == "managed-runtime"
+                    and deployment.build_id == build_id
+                    and deployment.agent_id
+                ),
+                None,
+            )
 
             async def managed_runtime_runner(_operation_id: str):
                 return await self.cloud.deploy_managed_runtime(
@@ -1452,6 +1466,7 @@ class StudioService:
                     manifest_digest=codex_build.manifest_sha256,
                     request=request,
                     runtime_environment=runtime_environment,
+                    replacing=replacing,
                 )
 
             return self.operations.submit(
