@@ -33,7 +33,11 @@ from ksadk.evaluation.studio_build_adapter import (
     StudioBuildTargetAdapter,
     StudioBuildTargetError,
 )
+from ksadk.events.store import RuntimeEventStore
+from ksadk.observability.session_log import SessionLogError, export_session_log
+from ksadk.observability.trajectory import encode_sse, project_trajectory_event
 from ksadk.runtime import RuntimeExecutor, build_default_runtime_registry
+from ksadk.sessions.local_service import LocalSessionService
 from ksadk.studio.agent_avatar_assets import AgentAvatarAssetStore
 from ksadk.studio.agent_lifecycle import delete_framework_agent
 from ksadk.studio.authoring_coordinator import StudioAuthoringCoordinator
@@ -94,6 +98,7 @@ from ksadk.studio.templates import (
 from ksadk.studio.validator import AgentValidator
 from ksadk.studio.workspace import Workspace
 
+_TRAJECTORY_KEEPALIVE_SECONDS = 15.0
 _EVALUATION_TARGET_LABELS = {
     TargetKind.A2A: "A2A Agent",
     TargetKind.LOCAL_SOURCE: "本地源码",
@@ -136,6 +141,8 @@ class StudioService:
             repository=self.builds,
         )
         self.event_store = RunEventStore(self.workspace)
+        self.session_service = LocalSessionService(project_dir=str(self.workspace.root))
+        self.runtime_events = RuntimeEventStore(self.session_service)
         self.codex_manifests = CodexManifestRepository(self.workspace)
         self.codex_builds = CodexBuildRepository(self.workspace)
         self.codex_drafts = CodexDraftRepository(self.workspace)
@@ -157,6 +164,8 @@ class StudioService:
             self.workspace,
             self.runtime_executor,
             event_store=self.event_store,
+            session_service=self.session_service,
+            runtime_events=self.runtime_events,
         )
         self.credentials = (
             credential_resolver
@@ -284,7 +293,7 @@ class StudioService:
             on_event=on_event,
         )
 
-    def delete_session(self, session_id: str) -> None:
+    async def delete_session(self, session_id: str) -> None:
         from ksadk.studio.errors import not_found
 
         runs = self.event_store.list_runs(session_id=session_id)
@@ -297,7 +306,123 @@ class StudioService:
                 status_code=409,
                 details={"sessionId": session_id},
             )
+        await self.session_service.delete_session(session_id)
         self.event_store.delete_session(session_id)
+
+    async def _require_runtime_session(self, session_id: str) -> None:
+        if await self.session_service.get_session_metadata(session_id) is None:
+            raise StudioError(
+                "SESSION_NOT_FOUND",
+                "session 不存在",
+                status_code=404,
+                details={"id": session_id},
+            )
+
+    async def trajectory_page(
+        self,
+        session_id: str,
+        *,
+        before_seq_id: int | None = None,
+        invocation_id: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        """Return the bounded, canonical RuntimeEvent trajectory for a session."""
+
+        await self._require_runtime_session(session_id)
+        events = await self.runtime_events.list(
+            session_id,
+            before_seq=before_seq_id,
+            run_id=invocation_id,
+            limit=limit,
+        )
+        oldest_seq_id = events[0].seq if events else None
+        latest_seq_id = events[-1].seq if events else None
+        older = (
+            await self.runtime_events.list(
+                session_id,
+                before_seq=oldest_seq_id,
+                run_id=invocation_id,
+                limit=1,
+            )
+            if oldest_seq_id is not None
+            else []
+        )
+        return {
+            "items": [project_trajectory_event(event) for event in events],
+            "page": {
+                "oldestSeqId": oldest_seq_id,
+                "latestSeqId": latest_seq_id,
+                "hasMore": bool(older),
+            },
+        }
+
+    async def stream_trajectory(
+        self,
+        session_id: str,
+        after_seq_id: int = 0,
+        *,
+        invocation_id: str | None = None,
+    ):
+        await self._require_runtime_session(session_id)
+        cursor = after_seq_id
+        while True:
+            async for event in self.runtime_events.subscribe_session(
+                session_id,
+                after_seq=cursor,
+                poll_interval=min(0.25, _TRAJECTORY_KEEPALIVE_SECONDS),
+                timeout=_TRAJECTORY_KEEPALIVE_SECONDS,
+            ):
+                cursor = event.seq
+                if invocation_id is not None and event.run_id != invocation_id:
+                    continue
+                yield encode_sse(project_trajectory_event(event), event_id=cursor)
+            yield ": keepalive\n\n"
+
+    async def export_runtime_session(
+        self,
+        session_id: str,
+        *,
+        filename: str,
+        invocation_id: str | None = None,
+    ) -> dict[str, Any]:
+        await self._require_runtime_session(session_id)
+        relative = Path(filename)
+        if (
+            not filename
+            or relative.is_absolute()
+            or len(relative.parts) != 1
+            or relative.name in {".", ".."}
+        ):
+            raise StudioError(
+                "SESSION_EXPORT_FILENAME_INVALID",
+                "导出文件名必须是普通文件名",
+                status_code=422,
+                field="filename",
+            )
+        export_dir = self.workspace.resolve(".agentkit/exports")
+        export_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        export_dir.chmod(0o700)
+        try:
+            result = await export_session_log(
+                self.session_service,
+                session_id,
+                export_dir / relative.name,
+                invocation_id=invocation_id,
+            )
+        except SessionLogError as exc:
+            code = str(exc).partition(":")[0]
+            raise StudioError(
+                code,
+                str(exc),
+                status_code=409 if code == "SESSION_LOG_TARGET_EXISTS" else 422,
+            ) from exc
+        return {
+            "path": result.path.relative_to(self.workspace.root).as_posix(),
+            "eventCount": result.event_count,
+            "firstSeqId": result.first_seq_id,
+            "lastSeqId": result.last_seq_id,
+            "exportedThroughSeqId": result.exported_through_seq_id,
+        }
 
     async def test_model_profile(self, resource_id: str) -> dict:
         return await test_model_profile_connection(

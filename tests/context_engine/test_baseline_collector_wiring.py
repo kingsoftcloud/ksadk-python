@@ -20,7 +20,16 @@ from ksadk.context_engine.baseline import (
     reset_baseline_collector_for_tests,
 )
 from ksadk.context_engine.shadow_plan import build_shadow_context_plan_dict
-from ksadk.events.runtime_event import EventType, RuntimeEvent
+from ksadk.events.canonical import (
+    ContentSnapshot,
+    ItemCompleted,
+    ItemStarted,
+    RunCompleted,
+    RunStarted,
+    RuntimeEvent,
+    SourceRef,
+)
+from ksadk.events.content import TextContent
 from ksadk.runtime import (
     BaseRuntime,
     CancelResult,
@@ -64,25 +73,36 @@ class _UsageAdapter(RuntimeAdapter):
 
     async def stream(self, handle: RunHandle) -> AsyncIterator[RuntimeEvent]:
         common = {
-            "agent_id": "agent-1",
-            "user_id": "user-1",
-            "session_id": handle.session_id,
-            "invocation_id": handle.run_id,
+            "schema_version": 2,
+            "timestamp": 1.0,
+            "run_id": handle.run_id,
+            "scope_id": "scope-1",
+            "source": SourceRef(framework="langgraph"),
         }
-        yield RuntimeEvent.create(
-            EventType.RUN_STARTED, seq_id=1, payload={"status": "in_progress"}, **common
+        yield RunStarted(
+            event_id="evt-start", seq=1, status="running", **common
         )
-        yield RuntimeEvent.create(
-            EventType.TEXT_COMPLETED,
-            seq_id=2,
-            phase="final_answer",
-            payload={"text": "answer"},
+        yield ItemStarted(
+            event_id="evt-message-start",
+            seq=2,
+            item_id="message-1",
+            item_kind="message",
+            initial=ContentSnapshot(parts=()),
             **common,
         )
-        yield RuntimeEvent.create(
-            EventType.RUN_COMPLETED,
-            seq_id=3,
-            payload={"status": "completed", "duration_ms": 12},
+        yield ItemCompleted(
+            event_id="evt-message",
+            seq=3,
+            item_id="message-1",
+            item_kind="message",
+            snapshot=ContentSnapshot(parts=(TextContent(part_id="text-1", text="answer"),)),
+            **common,
+        )
+        yield RunCompleted(
+            event_id="evt-completed",
+            seq=4,
+            status="completed",
+            output_refs=(),
             **common,
         )
 
@@ -174,9 +194,10 @@ async def test_canonical_path_collects_baseline_when_enabled(
         )
     ]
     assert [event.event_type for event in events] == [
-        EventType.RUN_STARTED,
-        EventType.TEXT_COMPLETED,
-        EventType.RUN_COMPLETED,
+        "run.started",
+        "item.started",
+        "item.completed",
+        "run.completed",
     ]
     collector = get_baseline_collector()
     assert collector is not None and len(collector.records) == 1

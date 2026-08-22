@@ -6,8 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from ksadk.events.runtime_event import EventType, RuntimeEvent
+from ksadk.events.canonical import RunCompleted, RunProgress, RunStarted, RuntimeEvent, SourceRef, dump_runtime_event
 from ksadk.events.store import RuntimeEventStore, runtime_event_to_session_event
+from ksadk.events.v1_compat import EventTypeV1, RuntimeEventV1
 from ksadk.observability.session_log import (
     SESSION_LOG_SCHEMA,
     SessionLogError,
@@ -19,20 +20,24 @@ from ksadk.sessions.in_memory import InMemorySessionService
 
 def make_event(
     event_id: str,
-    event_type: str = EventType.RUN_PROGRESS,
+    event_type: str = "run.progress",
     *,
     invocation_id: str = "run-1",
 ) -> RuntimeEvent:
-    return RuntimeEvent.create(
-        event_type,
-        agent_id="agent-1",
-        user_id="user-1",
-        session_id="session-1",
-        invocation_id=invocation_id,
-        seq_id=0,
-        event_id=event_id,
-        payload={"status": "completed" if event_type == EventType.RUN_COMPLETED else "running"},
-    )
+    envelope = {
+        "schema_version": 2,
+        "event_id": event_id,
+        "seq": 0,
+        "timestamp": 1.0,
+        "run_id": invocation_id,
+        "scope_id": "scope-1",
+        "source": SourceRef(framework="ksadk"),
+    }
+    if event_type == "run.started":
+        return RunStarted(status="running", **envelope)
+    if event_type == "run.completed":
+        return RunCompleted(status="completed", output_refs=(), **envelope)
+    return RunProgress(status="running", **envelope)
 
 
 async def make_store(service: InMemorySessionService | None = None):
@@ -44,8 +49,8 @@ async def make_store(service: InMemorySessionService | None = None):
 @pytest.mark.asyncio
 async def test_export_session_log_is_ordered_and_verifiable(tmp_path: Path):
     service, store = await make_store()
-    await store.append_one(make_event("evt-1", EventType.RUN_STARTED))
-    await store.append_one(make_event("evt-2", EventType.RUN_COMPLETED))
+    await store.append_one("session-1", make_event("evt-1", "run.started"))
+    await store.append_one("session-1", make_event("evt-2", "run.completed"))
 
     target = tmp_path / "session.jsonl"
     result = await export_session_log(service, "session-1", target)
@@ -56,54 +61,37 @@ async def test_export_session_log_is_ordered_and_verifiable(tmp_path: Path):
     assert result.first_seq_id == verified.first_seq_id == 1
     assert result.last_seq_id == verified.last_seq_id == 2
     assert lines[0]["type"] == "session"
-    assert lines[0]["schema"] == SESSION_LOG_SCHEMA == "ksadk.session-log/v1"
-    assert lines[0]["version"] == 1
+    assert lines[0]["schema"] == SESSION_LOG_SCHEMA == "ksadk.session-log/v2"
+    assert lines[0]["version"] == 2
     assert lines[0]["exported_through_seq_id"] == 2
     assert [line["event_id"] for line in lines[1:]] == ["evt-1", "evt-2"]
     assert target.stat().st_mode & 0o777 == 0o600
 
 
 @pytest.mark.asyncio
-async def test_export_session_log_packs_consecutive_delta_events(tmp_path: Path):
+async def test_export_session_log_keeps_canonical_progress_events_lossless(tmp_path: Path):
     service, store = await make_store()
-    for index, text in enumerate(["先", "分析", "再", "回答"], start=1):
-        await store.append_one(
-            RuntimeEvent.create(
-                EventType.REASONING_DELTA,
-                agent_id="agent-1",
-                user_id="user-1",
-                session_id="session-1",
-                invocation_id="run-1",
-                seq_id=0,
-                event_id=f"evt-{index}",
-                turn_id="turn-1",
-                step_id="step-1",
-                phase="commentary",
-                payload={"text": text},
-            )
-        )
+    for index in range(1, 5):
+        await store.append_one("session-1", make_event(f"evt-{index}"))
 
     target = tmp_path / "session.jsonl"
     result = await export_session_log(service, "session-1", target)
     lines = [json.loads(line) for line in target.read_text().splitlines()]
 
     assert result.event_count == verify_session_log(target).event_count == 4
-    assert len(lines) == 2
-    assert lines[1]["type"] == "reasoning-chunks"
-    assert lines[1]["seq0"] == 1
-    assert lines[1]["data"]["event_ids"] == ["evt-1", "evt-2", "evt-3", "evt-4"]
-    assert lines[1]["data"]["texts"] == ["先", "分析", "再", "回答"]
+    assert [line["event_id"] for line in lines[1:]] == ["evt-1", "evt-2", "evt-3", "evt-4"]
+    assert all(line["schema_version"] == 2 for line in lines[1:])
 
 
-def test_verify_session_log_accepts_raw_v1_runtime_event_rows(tmp_path: Path):
+def test_verify_session_log_accepts_raw_v2_runtime_event_rows(tmp_path: Path):
     target = tmp_path / "raw.jsonl"
-    event = make_event("evt-1").model_copy(update={"seq_id": 1})
+    event = make_event("evt-1").model_copy(update={"seq": 1})
     write_log(
         target,
         {
             "type": "session",
-            "schema": "ksadk.session-log/v1",
-            "version": 1,
+            "schema": "ksadk.session-log/v2",
+            "version": 2,
             "session_id": "session-1",
             "agent_id": "agent-1",
             "user_id": "user-1",
@@ -115,6 +103,44 @@ def test_verify_session_log_accepts_raw_v1_runtime_event_rows(tmp_path: Path):
     assert verify_session_log(target).event_count == 1
 
 
+def test_verify_session_log_retains_legacy_v1_read_compatibility(tmp_path: Path):
+    target = tmp_path / "legacy-v1.jsonl"
+    event = RuntimeEventV1.create(
+        EventTypeV1.RUN_STARTED,
+        agent_id="agent-1",
+        user_id="user-1",
+        session_id="session-1",
+        invocation_id="run-1",
+        seq_id=1,
+        payload={"status": "running"},
+        event_id="legacy-evt-1",
+        timestamp=1.0,
+    )
+    target.write_text(
+        "\n".join(
+            json.dumps(value)
+            for value in (
+                {
+                    "type": "session",
+                    "schema": "ksadk.session-log/v1",
+                    "version": 1,
+                    "session_id": "session-1",
+                    "agent_id": "agent-1",
+                    "user_id": "user-1",
+                    "exported_through_seq_id": 1,
+                },
+                event.to_dict(),
+            )
+        )
+        + "\n"
+    )
+
+    verified = verify_session_log(target)
+
+    assert verified.event_count == 1
+    assert verified.first_seq_id == verified.last_seq_id == 1
+
+
 @pytest.mark.asyncio
 async def test_export_session_log_uses_fixed_watermark(tmp_path: Path):
     class AppendAfterCutoffService(InMemorySessionService):
@@ -122,17 +148,21 @@ async def test_export_session_log_uses_fixed_watermark(tmp_path: Path):
 
         async def get_events(self, session_id, *args, **kwargs):
             events = await super().get_events(session_id, *args, **kwargs)
-            if kwargs.get("limit") == 1 and not self.appended_after_cutoff:
+            if (
+                kwargs.get("after_seq_id") == 0
+                and kwargs.get("before_seq_id") is None
+                and not self.appended_after_cutoff
+            ):
                 self.appended_after_cutoff = True
                 await self.append_event(
                     session_id,
-                    runtime_event_to_session_event(make_event("evt-late")),
+                    runtime_event_to_session_event(session_id, make_event("evt-late")),
                 )
             return events
 
     service, store = await make_store(AppendAfterCutoffService())
-    await store.append_one(make_event("evt-1", EventType.RUN_STARTED))
-    await store.append_one(make_event("evt-2", EventType.RUN_COMPLETED))
+    await store.append_one("session-1", make_event("evt-1", "run.started"))
+    await store.append_one("session-1", make_event("evt-2", "run.completed"))
 
     target = tmp_path / "session.jsonl"
     result = await export_session_log(service, "session-1", target)
@@ -159,7 +189,7 @@ async def test_export_session_log_reads_at_most_500_events_per_page(tmp_path: Pa
 
     service, store = await make_store(PagingService())
     for index in range(10_000):
-        await store.append_one(make_event(f"evt-{index}"))
+        await store.append_one("session-1", make_event(f"evt-{index}"))
 
     result = await export_session_log(service, "session-1", tmp_path / "large.jsonl")
 
@@ -171,9 +201,9 @@ async def test_export_session_log_reads_at_most_500_events_per_page(tmp_path: Pa
 @pytest.mark.asyncio
 async def test_export_session_log_filters_invocation_without_renumbering(tmp_path: Path):
     service, store = await make_store()
-    await store.append_one(make_event("evt-1", invocation_id="run-1"))
-    await store.append_one(make_event("evt-2", invocation_id="run-2"))
-    await store.append_one(make_event("evt-3", invocation_id="run-1"))
+    await store.append_one("session-1", make_event("evt-1", invocation_id="run-1"))
+    await store.append_one("session-1", make_event("evt-2", invocation_id="run-2"))
+    await store.append_one("session-1", make_event("evt-3", invocation_id="run-1"))
 
     target = tmp_path / "run-1.jsonl"
     result = await export_session_log(
@@ -185,7 +215,7 @@ async def test_export_session_log_filters_invocation_without_renumbering(tmp_pat
     lines = [json.loads(line) for line in target.read_text().splitlines()]
 
     assert result.event_count == 2
-    assert [line["seq_id"] for line in lines[1:]] == [1, 3]
+    assert [line["seq"] for line in lines[1:]] == [1, 3]
     assert lines[0]["invocation_id"] == "run-1"
     assert verify_session_log(target).last_seq_id == 3
 
@@ -193,7 +223,7 @@ async def test_export_session_log_filters_invocation_without_renumbering(tmp_pat
 @pytest.mark.asyncio
 async def test_export_session_log_rejects_missing_session_and_existing_target(tmp_path: Path):
     service, store = await make_store()
-    await store.append_one(make_event("evt-1"))
+    await store.append_one("session-1", make_event("evt-1"))
     target = tmp_path / "existing.jsonl"
     target.write_text("keep")
 
@@ -211,7 +241,7 @@ async def test_export_session_log_removes_partial_file_when_publish_fails(
     monkeypatch: pytest.MonkeyPatch,
 ):
     service, store = await make_store()
-    await store.append_one(make_event("evt-1"))
+    await store.append_one("session-1", make_event("evt-1"))
     target = tmp_path / "failed.jsonl"
 
     def fail_link(source, destination):
@@ -227,7 +257,7 @@ async def test_export_session_log_removes_partial_file_when_publish_fails(
 
 
 def write_log(path: Path, header: dict, events: list[RuntimeEvent]) -> None:
-    values = [header, *(event.to_dict() for event in events)]
+    values = [header, *(dump_runtime_event(event) for event in events)]
     path.write_text("".join(json.dumps(value) + "\n" for value in values))
 
 
@@ -236,15 +266,15 @@ def write_log(path: Path, header: dict, events: list[RuntimeEvent]) -> None:
     [
         ({"schema": "unsupported/v2"}, [], "unsupported schema"),
         (
-            {},
-            [make_event("evt-1").model_copy(update={"session_id": "other"})],
-            "session id",
+            {"invocation_id": "run-1"},
+            [make_event("evt-1", invocation_id="other").model_copy(update={"seq": 1})],
+            "run id",
         ),
         (
             {"exported_through_seq_id": 3},
             [
-                make_event("evt-1").model_copy(update={"seq_id": 1}),
-                make_event("evt-3").model_copy(update={"seq_id": 3}),
+                make_event("evt-1").model_copy(update={"seq": 1}),
+                make_event("evt-3").model_copy(update={"seq": 3}),
             ],
             "continuous",
         ),
@@ -259,7 +289,7 @@ def test_verify_session_log_rejects_invalid_contract(
     header = {
         "type": "session",
         "schema": SESSION_LOG_SCHEMA,
-        "version": 1,
+        "version": 2,
         "session_id": "session-1",
         "agent_id": "agent-1",
         "user_id": "user-1",

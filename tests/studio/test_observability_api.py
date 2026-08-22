@@ -7,29 +7,31 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from ksadk.events.runtime_event import EventType, RuntimeEvent
+from ksadk.events.canonical import RunProgress, RuntimeEvent, SourceRef
 from ksadk.observability.trajectory import encode_sse
 from ksadk.studio.api import create_studio_app
 from ksadk.studio.service import StudioService
 
 
 def runtime_event(index: int, *, invocation_id: str = "run-1") -> RuntimeEvent:
-    return RuntimeEvent.create(
-        EventType.RUN_PROGRESS,
-        agent_id="agent-1",
-        user_id="user-1",
-        session_id="session-1",
-        invocation_id=invocation_id,
-        seq_id=0,
+    return RunProgress(
+        schema_version=2,
         event_id=f"evt-{index}",
-        payload={"status": "running", "progress": index},
+        seq=0,
+        timestamp=float(index),
+        run_id=invocation_id,
+        scope_id="scope-1",
+        source=SourceRef(framework="ksadk"),
+        status="running",
+        progress=float(index),
+        message=f"progress {index}",
     )
 
 
 async def seed(service: StudioService, count: int = 10) -> None:
     await service.session_service.create_session("agent-1", "user-1", "session-1")
     for index in range(1, count + 1):
-        await service.runtime_events.append_one(runtime_event(index))
+        await service.runtime_events.append_one("session-1", runtime_event(index))
 
 
 def test_session_events_returns_tail_page_and_older_page(tmp_path: Path):
@@ -63,7 +65,7 @@ def test_session_events_filters_invocation_before_applying_limit(tmp_path: Path)
             start=1,
         ):
             await service.runtime_events.append_one(
-                runtime_event(index, invocation_id=invocation_id)
+                "session-1", runtime_event(index, invocation_id=invocation_id)
             )
 
     asyncio.run(seed_interleaved())
@@ -100,12 +102,7 @@ def test_session_event_stream_prefers_last_event_id(tmp_path: Path, monkeypatch)
     asyncio.run(seed(service, count=1))
     cursors: list[int] = []
 
-    async def finite_stream(
-        session_id: str,
-        after_seq_id: int,
-        *,
-        invocation_id: str | None = None,
-    ):
+    async def finite_stream(session_id: str, after_seq_id: int, *, invocation_id: str | None = None):
         cursors.append(after_seq_id)
         yield encode_sse({"seqId": after_seq_id + 1}, event_id=after_seq_id + 1)
 
@@ -131,12 +128,18 @@ async def test_stream_trajectory_filters_invocation_and_advances_session_cursor(
 ):
     service = StudioService(tmp_path)
     await service.session_service.create_session("agent-1", "user-1", "session-1")
-    first = await service.runtime_events.append_one(runtime_event(1, invocation_id="run-1"))
-    other = await service.runtime_events.append_one(runtime_event(2, invocation_id="run-2"))
+    first = await service.runtime_events.append_one(
+        "session-1", runtime_event(1, invocation_id="run-1")
+    )
+    other = await service.runtime_events.append_one(
+        "session-1", runtime_event(2, invocation_id="run-2")
+    )
     cursors: list[int] = []
 
-    async def finite_subscription(session_id: str, *, after_seq_id: int, timeout: float):
-        cursors.append(after_seq_id)
+    async def finite_subscription(
+        session_id: str, *, after_seq: int, poll_interval: float, timeout: float
+    ):
+        cursors.append(after_seq)
         if not cursors[:-1]:
             yield first
             yield other
@@ -149,9 +152,9 @@ async def test_stream_trajectory_filters_invocation_and_advances_session_cursor(
     next_keepalive = await anext(stream)
     await stream.aclose()
 
-    assert frame.startswith(f"id: {first.seq_id}\n")
+    assert frame.startswith(f"id: {first.seq}\n")
     assert keepalive == next_keepalive == ": keepalive\n\n"
-    assert cursors == [0, other.seq_id]
+    assert cursors == [0, other.seq]
 
 
 @pytest.mark.asyncio
@@ -162,12 +165,12 @@ async def test_stream_trajectory_keeps_cursor_across_keepalive(tmp_path: Path, m
     stream = service.stream_trajectory("session-1", after_seq_id=1)
 
     assert await asyncio.wait_for(anext(stream), timeout=0.2) == ": keepalive\n\n"
-    stored = await service.runtime_events.append_one(runtime_event(2))
+    stored = await service.runtime_events.append_one("session-1", runtime_event(2))
     frame = await asyncio.wait_for(anext(stream), timeout=0.2)
     await stream.aclose()
 
-    assert frame.startswith(f"id: {stored.seq_id}\n")
-    assert json.loads(frame.split("data: ", 1)[1])["seqId"] == stored.seq_id
+    assert frame.startswith(f"id: {stored.seq}\n")
+    assert json.loads(frame.split("data: ", 1)[1])["seqId"] == stored.seq
 
 
 def test_session_export_api_restricts_target_to_workspace_exports(tmp_path: Path):
@@ -218,7 +221,7 @@ def test_session_export_api_downloads_jsonl_without_leaving_staging_file(tmp_pat
     assert response.headers["content-type"] == "application/x-ndjson"
     assert response.headers["x-session-event-count"] == "2"
     assert "attachment" in response.headers["content-disposition"]
-    assert lines[0]["schema"] == "ksadk.session-log/v1"
-    assert lines[0]["version"] == 1
+    assert lines[0]["schema"] == "ksadk.session-log/v2"
+    assert lines[0]["version"] == 2
     assert [line["event_id"] for line in lines[1:]] == ["evt-1", "evt-2"]
     assert not (tmp_path / ".agentkit/exports/session-1.jsonl").exists()

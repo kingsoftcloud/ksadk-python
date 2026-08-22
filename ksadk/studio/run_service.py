@@ -40,6 +40,7 @@ from ksadk.events.content import (
     ToolCallContent,
     ToolResultContent,
 )
+from ksadk.events.store import RuntimeEventStore
 from ksadk.runtime import (
     CONVERSATION_PREPROCESSING_METADATA_KEY,
     PauseResult,
@@ -49,6 +50,8 @@ from ksadk.runtime import (
     RuntimeLaunchContext,
     StartRequest,
 )
+from ksadk.sessions.base import BaseSessionService
+from ksadk.sessions.local_service import LocalSessionService
 from ksadk.studio.contracts import RunEvent, RunRecord, RunStatus, Usage
 from ksadk.studio.errors import StudioError
 from ksadk.studio.event_store import RunEventStore
@@ -81,10 +84,16 @@ class StudioRunService:
         executor: RuntimeExecutor,
         *,
         event_store: RunEventStore | None = None,
+        session_service: BaseSessionService | None = None,
+        runtime_events: RuntimeEventStore | None = None,
     ) -> None:
         self.workspace = workspace
         self.executor = executor
         self.event_store = event_store or RunEventStore(workspace)
+        self.session_service = session_service or LocalSessionService(
+            project_dir=str(workspace.root)
+        )
+        self.runtime_events = runtime_events or RuntimeEventStore(self.session_service)
         self._active_handles: dict[str, Any] = {}
         self._cancel_flags: dict[str, bool] = {}
         self._control_queues: dict[str, asyncio.Queue[tuple[str, ResumePayload | None]]] = {}
@@ -143,6 +152,7 @@ class StudioRunService:
             goal_objective=str(spec.request_config.get("goal_objective") or ""),
             input=user_input,
         )
+        await self.session_service.create_session(spec.agent_id, "local-user", session)
         self.event_store.create(record)
         created = self.event_store.append(
             record.id,
@@ -174,8 +184,9 @@ class StudioRunService:
         record.started_at = datetime.now(timezone.utc)
         self.event_store.save(record)
 
-        def persist(runtime_event: RuntimeEvent) -> RunEvent:
-            event_type, data = project_runtime_event(runtime_event)
+        async def persist(runtime_event: RuntimeEvent) -> RunEvent:
+            persisted = await self.runtime_events.append_one(record.session_id, runtime_event)
+            event_type, data = project_runtime_event(persisted)
             stored = self.event_store.append(record.id, event_type, data)
             if on_event is not None:
                 on_event(stored)
@@ -222,7 +233,7 @@ class StudioRunService:
                 terminal_seen = False
                 should_resume = False
                 async for event in self.executor.stream(handle):
-                    persist(event)
+                    await persist(event)
                     if self._cancel_flags.get(run_id):
                         raise asyncio.CancelledError()
                     if isinstance(event, ItemStarted) and event.item_kind == "message":
@@ -377,7 +388,7 @@ class StudioRunService:
                 status="canceled",
                 reason="cancelled",
             )
-            persist(cancelled)
+            await persist(cancelled)
             raise
         except Exception as exc:  # noqa: BLE001
             record.status = RunStatus.FAILED
@@ -399,7 +410,7 @@ class StudioRunService:
                     scope_id=failed_run_id,
                 ),
             )
-            persist(failure)
+            await persist(failure)
         finally:
             if handle is not None and self.executor.is_attached(handle):
                 try:

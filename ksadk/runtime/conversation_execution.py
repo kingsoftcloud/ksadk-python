@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import asdict
 from typing import Any
-import time
 
 from ksadk.conversations.run_kinds import RUN_MODE_FOREGROUND
 from ksadk.conversations.runtime_compaction import preview_auto_compaction
@@ -90,6 +90,7 @@ async def iter_runtime_conversation_events(
 ) -> AsyncIterator[RuntimeEvent]:
     """Prepare once, execute through RuntimeExecutor, and persist RuntimeEvents."""
 
+    turn_started_monotonic = time.monotonic()
     provider = session_service_provider or resolve_session_service
     compaction_preview = await preview_auto_compaction(
         agent_id=agent_id,
@@ -116,6 +117,7 @@ async def iter_runtime_conversation_events(
         invocation_id=invocation_id,
         session_service_provider=provider,
         run_mode=run_mode,
+        runtime_type=launch_context.runtime_type,
     )
     if _execution_context is not None:
         _execution_context["session_id"] = prepared.session_id
@@ -171,6 +173,7 @@ async def iter_runtime_conversation_events(
     terminal = False
     interrupted = False
     completed_assistant_text = ""
+    usage: dict[str, int] | None = None
     try:
         for context_event in _compaction_runtime_events(
             prepared=prepared,
@@ -195,6 +198,14 @@ async def iter_runtime_conversation_events(
                     completed_assistant_text = _selected_output_text(
                         pipeline.reducer.snapshot(), persisted
                     )
+                elif isinstance(persisted, UsageReported):
+                    usage = {
+                        "input_tokens": persisted.input_tokens,
+                        "output_tokens": persisted.output_tokens,
+                        "total_tokens": persisted.total_tokens,
+                        "cached_tokens": persisted.cached_tokens,
+                        "reasoning_tokens": persisted.reasoning_tokens,
+                    }
                 yield persisted
         if not terminal and not interrupted:
             raise RuntimeError("runtime stream ended without a terminal or interrupted event")
@@ -237,6 +248,13 @@ async def iter_runtime_conversation_events(
                 model=model,
             )
         if terminal:
+            _record_canonical_baseline_turn(
+                prepared=prepared,
+                model=model,
+                usage=usage,
+                turn_started_monotonic=turn_started_monotonic,
+            )
+        if terminal:
             await executor.close(handle)
 
 
@@ -277,6 +295,29 @@ def _compaction_runtime_events(
             **common,
         ),
     ]
+
+
+def _record_canonical_baseline_turn(
+    *,
+    prepared: Any,
+    model: str | None,
+    usage: Mapping[str, int] | None,
+    turn_started_monotonic: float,
+) -> None:
+    """Keep v2 execution on the same env-gated measurement path as legacy runs."""
+
+    from ksadk.context_engine.baseline import record_baseline_turn
+
+    record_baseline_turn(
+        getattr(prepared, "shadow_context_plan", None),
+        session_id=prepared.session_id,
+        invocation_id=prepared.invocation_id,
+        model=str(model or ""),
+        usage=usage,
+        compaction_triggered=bool(getattr(prepared, "compaction_triggered", False)),
+        compaction_trigger=str(getattr(prepared, "compaction_trigger", "") or ""),
+        turn_latency_ms=int((time.monotonic() - turn_started_monotonic) * 1000),
+    )
 
 
 async def _project_runtime_run_status(
@@ -544,7 +585,9 @@ def _selected_output_text(projection: RunProjection, completed: RunCompleted) ->
         if item is None:
             continue
         for part in item.parts:
-            if isinstance(part, TextContent) and (ref.part_id is None or ref.part_id == part.part_id):
+            if isinstance(part, TextContent) and (
+                ref.part_id is None or ref.part_id == part.part_id
+            ):
                 chunks.append(part.text)
     return "".join(chunks)
 

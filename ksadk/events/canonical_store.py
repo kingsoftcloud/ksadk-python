@@ -248,7 +248,14 @@ class RuntimeEventStore:
         self._assert_same_fact(persisted, event)
         return persisted, True
 
-    async def _read_rows(self, session_id: str, after_seq: int, before_seq: int | None):
+    async def _read_rows(
+        self,
+        session_id: str,
+        after_seq: int,
+        before_seq: int | None,
+        *,
+        limit: int | None = None,
+    ):
         """Typed envelope 路径的读取兜底。
 
         hosted PG 的 ``PostgresFencedSessionEventStore`` 只包 kernel store，
@@ -261,6 +268,7 @@ class RuntimeEventStore:
         if self._service is not None:
             return await self._service.get_events(
                 session_id,
+                limit=limit,
                 after_seq_id=after_seq,
                 before_seq_id=before_seq,
             )
@@ -272,13 +280,47 @@ class RuntimeEventStore:
         from ksadk.events.session_event import envelope_to_session_event
 
         for envelope in await self._event_store.read(
-            session_id, int(after_seq), 100_000
+            session_id, int(after_seq), int(limit or 100_000)
         ):
+            if before_seq is not None and int(envelope.seq) >= int(before_seq):
+                break
             row = envelope_to_session_event(envelope)
             if int(row.seq_id or 0) != int(envelope.seq):
                 row.seq_id = int(envelope.seq)
             rows.append(row)
         return rows
+
+    async def page(
+        self,
+        session_id: str,
+        *,
+        after_seq: int = 0,
+        before_seq: int | None = None,
+        limit: int = 500,
+    ) -> list[RuntimeEvent]:
+        """Read the next canonical page in ascending physical cursor order.
+
+        ``list(..., limit=...)`` is a compatibility tail projection.  Durable
+        export and replay callers that need bounded forward pagination must use
+        this explicit method, otherwise a large session can be read wholesale
+        before Python applies its limit.
+        """
+
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        raw = await self._read_rows(
+            session_id,
+            int(after_seq),
+            before_seq,
+            limit=limit,
+        )
+        events = [
+            canonical
+            for canonical in (session_event_to_runtime_event(item) for item in raw)
+            if canonical is not None
+        ]
+        events.sort(key=lambda event: event.seq)
+        return events[:limit]
 
     async def event_by_id(self, session_id: str, event_id: str) -> RuntimeEvent | None:
         if self._service is not None:

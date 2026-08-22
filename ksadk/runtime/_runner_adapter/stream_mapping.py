@@ -708,10 +708,15 @@ class _RunnerStreamMappingMixin:
             if run is not None:
                 run.final_answer_item_id = item_id
             text_content = TextContent(part_id="text-0", text=output)
-            events = ensure_started(item_id=item_id, item_kind="message", phase="final_answer")
             # Auto-close any open commentary/reasoning item before emitting final_answer.
             # Text/thinking deltas create items that are never ItemCompleted;
             # without this, RunCompleted fails _ensure_no_open_items.
+            #
+            # Close them *before* allocating the final-answer item.  Event
+            # constructors allocate ``seq`` eagerly, so inserting a later
+            # completion at index zero would otherwise return an event list
+            # whose physical order disagrees with its sequence numbers.
+            events: list[RuntimeEvent] = []
             for close_kind, close_part_id, close_components in (
                 ("message", "text-0", ("message", "commentary")),
                 ("reasoning", "reasoning-text", ("reasoning",)),
@@ -720,8 +725,7 @@ class _RunnerStreamMappingMixin:
                 close_key = (scope_id, close_item_id)
                 if close_key in started:
                     started.discard(close_key)
-                    events.insert(
-                        0,
+                    events.append(
                         ItemCompleted(
                             **self._canonical_kwargs(  # type: ignore[attr-defined]
                                 handle,
@@ -737,6 +741,9 @@ class _RunnerStreamMappingMixin:
                             ),
                         ),
                     )
+            events.extend(
+                ensure_started(item_id=item_id, item_kind="message", phase="final_answer")
+            )
             events.append(
                 ItemCompleted(
                     **self._canonical_kwargs(  # type: ignore[attr-defined]

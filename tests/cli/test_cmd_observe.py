@@ -7,7 +7,7 @@ from pathlib import Path
 from click.testing import CliRunner
 
 from ksadk.cli.cmd_observe import observe
-from ksadk.events.runtime_event import EventType, RuntimeEvent
+from ksadk.events.canonical import RunProgress, SourceRef
 from ksadk.events.store import RuntimeEventStore
 from ksadk.sessions.local_service import LocalSessionService
 
@@ -22,15 +22,16 @@ async def seed_session(workspace: Path) -> None:
         ("evt-3", "run-1"),
     ):
         await store.append_one(
-            RuntimeEvent.create(
-                EventType.RUN_PROGRESS,
-                agent_id="agent-1",
-                user_id="user-1",
-                session_id="session-1",
-                invocation_id=invocation_id,
-                seq_id=0,
+            "session-1",
+            RunProgress(
+                schema_version=2,
                 event_id=event_id,
-                payload={"status": "running"},
+                seq=0,
+                timestamp=1.0,
+                run_id=invocation_id,
+                scope_id="scope-1",
+                source=SourceRef(framework="ksadk"),
+                status="running",
             )
         )
 
@@ -85,7 +86,7 @@ def test_observe_export_filters_invocation(tmp_path: Path, monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert json.loads(result.output)["eventCount"] == 2
-    assert [json.loads(line)["seq_id"] for line in target.read_text().splitlines()[1:]] == [
+    assert [json.loads(line)["seq"] for line in target.read_text().splitlines()[1:]] == [
         1,
         3,
     ]

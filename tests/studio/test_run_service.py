@@ -211,6 +211,14 @@ async def test_studio_run_service_uses_core_executor_and_persists_runtime_events
         "message.completed",
         "run.completed",
     ]
+    canonical = await service.runtime_events.list("ses-lg")
+    assert [event.event_type for event in canonical] == [
+        "run.started",
+        "item.completed",
+        "run.completed",
+    ]
+    assert [event.seq for event in canonical] == [1, 2, 3]
+    assert {event.run_id for event in canonical} == {"native-langgraph"}
 
 
 @pytest.mark.asyncio

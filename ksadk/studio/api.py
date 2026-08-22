@@ -980,7 +980,7 @@ def create_studio_app(
 
     @app.delete("/api/v1/sessions/{session_id}", status_code=204)
     async def delete_studio_session(session_id: str):
-        studio.delete_session(session_id)
+        await studio.delete_session(session_id)
         return Response(status_code=204)
 
     @app.get("/api/v1/sessions/{session_id}/events")

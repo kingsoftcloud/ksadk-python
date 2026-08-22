@@ -1,135 +1,99 @@
-"""Stable UI projection for canonical RuntimeEvents."""
+"""Stable UI trajectory projection for canonical RuntimeEvents.
+
+The durable store owns only RuntimeEvent/v2 facts. This module derives its
+compact trajectory shape from the Studio v2 projection; it must not reach into
+the read-only RuntimeEvent/v1 compatibility model.
+"""
 
 from __future__ import annotations
 
 import json
 from typing import Any
 
-from ksadk.events.runtime_event import EventType, RuntimeEvent
+from ksadk.events.canonical import RuntimeEvent, dump_runtime_event
+from ksadk.studio.run_service import project_runtime_event
 
 PROJECTION_VERSION = 1
 
-_TOOL_EVENTS = {EventType.TOOL_CALL_BEGIN, EventType.TOOL_CALL_END}
-_APPROVAL_EVENTS = {EventType.APPROVAL_REQUESTED, EventType.APPROVAL_RESOLVED}
-_ARTIFACT_EVENTS = {EventType.ARTIFACT_CREATED, EventType.ARTIFACT_UPDATED}
-_MODEL_EVENTS = {
-    EventType.MODEL_CALL_BEGIN,
-    EventType.MODEL_CALL_FIRST_TOKEN,
-    EventType.MODEL_CALL_END,
-}
-_TEXT_EVENTS = {EventType.TEXT_DELTA, EventType.TEXT_COMPLETED}
-_REASONING_EVENTS = {EventType.REASONING_DELTA, EventType.REASONING_COMPLETED}
-_MESSAGE_EVENTS = _MODEL_EVENTS | _TEXT_EVENTS | _REASONING_EVENTS | {EventType.USAGE_REPORTED}
-_TURN_EVENTS = {EventType.TURN_STARTED, EventType.TURN_COMPLETED}
-_STEP_EVENTS = {EventType.STEP_STARTED, EventType.STEP_COMPLETED}
-_CONTEXT_EVENTS = {
-    EventType.REASONING_DELTA,
-    EventType.REASONING_COMPLETED,
-    EventType.CONTEXT_COMPACTION_STARTED,
-    EventType.CONTEXT_COMPACTION_COMPLETED,
-}
 
-
-def _record_id(event: RuntimeEvent) -> str:
-    if event.event_type == EventType.USER_MESSAGE:
-        scope = event.payload.get("message_id") or event.event_id
-        return f"user:{scope}"
-    if event.event_type in _TOOL_EVENTS and event.payload.get("call_id"):
-        return f"tool:{event.payload['call_id']}"
-    if event.event_type in _MESSAGE_EVENTS:
-        scope = (
-            event.payload.get("model_call_id")
-            or event.step_id
-            or event.payload.get("message_id")
-            or event.turn_id
-            or event.invocation_id
-        )
-        return f"assistant:{scope}"
-    if event.event_type in _CONTEXT_EVENTS:
-        scope = event.step_id or event.turn_id or event.invocation_id
-        return f"context:{scope}:compaction"
-    if event.event_type in _APPROVAL_EVENTS and event.payload.get("approval_id"):
-        return f"approval:{event.payload['approval_id']}"
-    if event.event_type in _ARTIFACT_EVENTS and event.payload.get("name"):
-        return f"artifact:{event.payload['name']}:{event.payload.get('version', '')}"
-    if event.event_type in _TURN_EVENTS and event.turn_id:
-        return f"turn:{event.turn_id}"
-    if event.event_type in _STEP_EVENTS and event.step_id:
-        return f"step:{event.step_id}"
+def _record_id(event: RuntimeEvent, event_type: str, data: dict[str, Any]) -> str:
+    if event_type.startswith(("message.", "thinking.")):
+        return f"assistant:{data.get('itemId') or event.scope_id}"
+    if event_type.startswith(("tool.", "command.")):
+        return f"tool:{data.get('callId') or data.get('itemId') or event.event_id}"
+    if event_type.startswith("approval."):
+        return f"approval:{data.get('approvalId') or data.get('itemId') or event.event_id}"
+    if event_type.startswith("checkpoint."):
+        return f"checkpoint:{data.get('checkpointId') or data.get('itemId') or event.event_id}"
+    if event_type.startswith("a2ui.surface."):
+        return f"surface:{data.get('surfaceId') or data.get('itemId') or event.event_id}"
+    if event_type.startswith("context.compaction."):
+        return f"context:{event.scope_id}:compaction"
     return f"system:{event.event_id}"
 
 
 def _category(event_type: str) -> str:
-    if event_type == EventType.USER_MESSAGE:
-        return "user"
-    if event_type in _TOOL_EVENTS:
-        return "tool"
-    if event_type in _MESSAGE_EVENTS:
+    if event_type.startswith(("message.", "thinking.")):
         return "assistant"
-    if event_type in _CONTEXT_EVENTS:
-        return "context"
-    if event_type in _APPROVAL_EVENTS:
+    if event_type.startswith(("tool.", "command.")):
+        return "tool"
+    if event_type.startswith("approval."):
         return "approval"
-    if event_type in _ARTIFACT_EVENTS:
+    if event_type.startswith("context.compaction."):
+        return "context"
+    if event_type.startswith("artifact."):
         return "artifact"
     return "system"
 
 
-def _status(event: RuntimeEvent) -> str | None:
-    payload_status = event.payload.get("status")
-    if isinstance(payload_status, str) and payload_status:
-        return payload_status
-    if event.event_type.endswith((".begin", ".started", ".requested")):
+def _status(event_type: str, data: dict[str, Any]) -> str | None:
+    value = data.get("status")
+    if isinstance(value, str) and value:
+        return value
+    if event_type.endswith((".started", ".delta", ".requested", ".progress")):
         return "running"
-    if event.event_type.endswith((".end", ".completed", ".resolved")):
+    if event_type.endswith((".completed", ".resolved")):
         return "completed"
-    if event.event_type == EventType.RUN_FAILED:
+    if event_type.endswith(".failed"):
         return "failed"
-    if event.event_type == EventType.RUN_CANCELED:
+    if event_type.endswith(".cancelled"):
         return "canceled"
-    if event.event_type == EventType.RUN_INTERRUPTED:
+    if event_type.endswith(".interrupted"):
         return "interrupted"
-    if event.event_type == EventType.MODEL_CALL_FIRST_TOKEN:
-        return "running"
     return None
 
 
-def _duration_ms(event: RuntimeEvent) -> float | int | None:
-    value = event.payload.get("duration_ms")
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    return value
-
-
-def _summary(event: RuntimeEvent) -> str:
-    if event.event_type == EventType.USER_MESSAGE:
-        return str(event.payload["text"])
-    if event.event_type in _MESSAGE_EVENTS:
+def _summary(event_type: str, data: dict[str, Any]) -> str:
+    if event_type.startswith(("message.", "thinking.")):
         return "Message"
-    for key in ("name", "model", "summary", "text", "status"):
-        value = event.payload.get(key)
+    for key in ("tool", "command", "message", "reason", "error"):
+        value = data.get(key)
         if isinstance(value, str) and value:
             return value
-    return event.event_type
+    return event_type
 
 
 def project_trajectory_event(event: RuntimeEvent) -> dict[str, Any]:
-    """Project one immutable fact into the versioned Studio display contract."""
+    """Project one immutable v2 fact into the stable trajectory display shape."""
+
+    event_type, data = project_runtime_event(event)
+    details = dict(data)
+    details.pop("runtimeEvent", None)
     return {
         "projectionVersion": PROJECTION_VERSION,
-        "seqId": event.seq_id,
+        "seqId": event.seq,
         "eventId": event.event_id,
-        "recordId": _record_id(event),
-        "type": event.event_type,
-        "category": _category(event.event_type),
-        "turnId": event.turn_id,
-        "stepId": event.step_id,
+        "recordId": _record_id(event, event_type, details),
+        "type": event_type,
+        "category": _category(event_type),
+        "turnId": None,
+        "stepId": None,
         "timestamp": event.timestamp,
-        "status": _status(event),
-        "durationMs": _duration_ms(event),
-        "summary": _summary(event),
-        "details": dict(event.payload),
-        "source": event.to_dict(),
+        "status": _status(event_type, details),
+        "durationMs": details.get("durationMs"),
+        "summary": _summary(event_type, details),
+        "details": details,
+        "source": dump_runtime_event(event),
     }
 
 
