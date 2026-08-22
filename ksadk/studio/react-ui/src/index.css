@@ -268,6 +268,22 @@
 .cloud-chat-pending svg,
 .chat-list-loading svg { animation: chat-running-pulse 1.2s ease-in-out infinite; }
 
+.cloud-chat-run-warning {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 800px;
+  margin: 0 auto 12px;
+  padding: 9px 11px;
+  border: 1px solid color-mix(in srgb, var(--warning) 44%, var(--border));
+  border-radius: var(--radius-md);
+  color: var(--warning-deep);
+  background: var(--warning-soft);
+  font-size: var(--font-size-meta);
+}
+
+.cloud-chat-run-warning svg { flex: 0 0 auto; }
+
 .cloud-interaction-card {
   display: flex;
   align-items: center;

@@ -114,6 +114,23 @@ function pendingInteractions(events: unknown[]): CloudInteraction[] {
   return [...requested.values()];
 }
 
+function terminalRunEvent(events: unknown[], runId: string): "completed" | "failed" | null {
+  if (!runId) return null;
+  for (const event of events) {
+    if (!event || typeof event !== "object") continue;
+    const frame = event as Record<string, unknown>;
+    const payload = frame.payload && typeof frame.payload === "object"
+      ? frame.payload as Record<string, unknown>
+      : frame;
+    const eventRunId = String(payload.run_id ?? payload.runId ?? frame.run_id ?? frame.runId ?? "");
+    if (eventRunId !== runId) continue;
+    const eventType = String(frame.event_type ?? frame.eventType ?? payload.event_type ?? payload.eventType ?? "").toLowerCase();
+    if (["run.completed", "run.complete", "run.succeeded"].includes(eventType)) return "completed";
+    if (["run.failed", "run.cancelled", "run.expired", "run.error"].includes(eventType)) return "failed";
+  }
+  return null;
+}
+
 async function responseError(response: Response): Promise<string> {
   try {
     const body = await response.json();
@@ -137,9 +154,12 @@ export function CloudChatWorkspace({
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
+  const [waitingForResponse, setWaitingForResponse] = useState(false);
   const [deleting, setDeleting] = useState("");
   const [resolvingInteractionId, setResolvingInteractionId] = useState("");
   const messageListRef = useRef<HTMLDivElement>(null);
+  const messageCountBeforeSendRef = useRef(0);
+  const awaitingRunIdRef = useRef("");
 
   const base = useMemo(
     () => `/api/v1/deployments/${encodeURIComponent(deploymentId)}/cloud-chat`,
@@ -169,7 +189,15 @@ export function CloudChatWorkspace({
       .map(normalizeMessage)
       .filter((item: CloudMessage | null): item is CloudMessage => Boolean(item));
     setMessages(rows);
-  }, [base]);
+    if (
+      waitingForResponse
+      && rows.length > messageCountBeforeSendRef.current
+      && rows.slice(messageCountBeforeSendRef.current).some(message => message.role === "assistant")
+    ) {
+      setWaitingForResponse(false);
+      awaitingRunIdRef.current = "";
+    }
+  }, [base, waitingForResponse]);
 
   const refreshInteractions = useCallback(async (sessionId: string) => {
     if (!sessionId) {
@@ -179,7 +207,16 @@ export function CloudChatWorkspace({
     const response = await apiFetch(`${base}/sessions/${encodeURIComponent(sessionId)}/events`);
     if (!response.ok) throw new Error(await responseError(response));
     const payload = await response.json();
-    setInteractions(pendingInteractions(payload.events || []));
+    const events = payload.events || [];
+    const terminal = terminalRunEvent(events, awaitingRunIdRef.current);
+    if (terminal) {
+      setWaitingForResponse(false);
+      awaitingRunIdRef.current = "";
+      if (terminal === "failed") {
+        showToast("云端运行未完成", "请查看运行详情，或新建会话后重试。", "error");
+      }
+    }
+    setInteractions(pendingInteractions(events));
   }, [base]);
 
   useEffect(() => {
@@ -189,6 +226,8 @@ export function CloudChatWorkspace({
     setCurrentSessionId("");
     setMessages([]);
     setInteractions([]);
+    setWaitingForResponse(false);
+    awaitingRunIdRef.current = "";
     refreshSessions()
       .catch(error => { if (!cancelled) showToast("云端会话加载失败", error.message, "error"); })
       .finally(() => { if (!cancelled) setLoading(false); });
@@ -205,19 +244,19 @@ export function CloudChatWorkspace({
   }, [currentSessionId, refreshInteractions, refreshMessages]);
 
   useEffect(() => {
-    if (!sending || !currentSessionId) return;
+    if (!active || !currentSessionId) return;
     const timer = window.setInterval(() => {
       refreshMessages(currentSessionId).catch(() => {});
       refreshInteractions(currentSessionId).catch(() => {});
       refreshSessions().catch(() => {});
-    }, 1200);
+    }, sending || waitingForResponse ? 1200 : 4000);
     return () => window.clearInterval(timer);
-  }, [currentSessionId, refreshInteractions, refreshMessages, refreshSessions, sending]);
+  }, [active, currentSessionId, refreshInteractions, refreshMessages, refreshSessions, sending, waitingForResponse]);
 
   useEffect(() => {
     const list = messageListRef.current;
     if (list) list.scrollTop = list.scrollHeight;
-  }, [messages, sending]);
+  }, [messages, sending, waitingForResponse]);
 
   async function createSession(): Promise<string> {
     const response = await apiFetch(`${base}/sessions`, { method: "POST" });
@@ -232,7 +271,7 @@ export function CloudChatWorkspace({
   }
 
   async function startNewSession() {
-    if (sending) return;
+    if (sending || waitingForResponse) return;
     try {
       await createSession();
     } catch (error) {
@@ -242,11 +281,14 @@ export function CloudChatWorkspace({
 
   async function sendMessage() {
     const content = input.trim();
-    if (!content || sending) return;
+    if (!content || sending || waitingForResponse) return;
     setSending(true);
+    setWaitingForResponse(true);
     setInput("");
     try {
       const sessionId = currentSessionId || await createSession();
+      messageCountBeforeSendRef.current = messages.filter(message => !message.pending).length;
+      awaitingRunIdRef.current = "";
       const optimistic: CloudMessage = {
         id: `local-${crypto.randomUUID()}`,
         role: "user",
@@ -261,14 +303,18 @@ export function CloudChatWorkspace({
         body: JSON.stringify({ content }),
       });
       if (!response.ok) throw new Error(await responseError(response));
+      const receipt = await response.json() as Record<string, unknown>;
+      awaitingRunIdRef.current = String(receipt.run_id ?? receipt.runId ?? receipt.RunId ?? "");
       await refreshSessions();
       window.setTimeout(() => { refreshMessages(sessionId).catch(() => {}); }, 250);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setMessages(previous => previous.map(item => item.pending ? { ...item, pending: false } : item));
+      setWaitingForResponse(false);
+      awaitingRunIdRef.current = "";
       showToast("云端消息发送失败", message, "error");
     } finally {
-      window.setTimeout(() => setSending(false), 600);
+      setSending(false);
     }
   }
 
@@ -325,7 +371,7 @@ export function CloudChatWorkspace({
       <aside className="chat-session-sidebar">
         <div className="chat-session-header">
           <div><strong>云端会话</strong><span>{agentName}</span></div>
-          <button className="icon-button tertiary" type="button" onClick={startNewSession} disabled={sending} aria-label="新建云端会话" title="新建云端会话"><MessageSquarePlus size={17} /></button>
+          <button className="icon-button tertiary" type="button" onClick={startNewSession} disabled={sending || waitingForResponse} aria-label="新建云端会话" title="新建云端会话"><MessageSquarePlus size={17} /></button>
         </div>
         <div className="chat-session-list" role="list">
           {loading && <div className="chat-list-loading"><Loader2 size={16} /> 正在同步…</div>}
@@ -347,13 +393,14 @@ export function CloudChatWorkspace({
         </header>
         <div ref={messageListRef} className="chat-message-list" aria-live="polite">
           {!currentSessionId && !loading && <div className="chat-empty"><span className="chat-empty-icon"><Bot /></span><h2>开始一段云端会话</h2><p>消息会由本地 Studio 通过受权的云端控制面发送。</p></div>}
+          {sessions.find(session => session.id === currentSessionId)?.state === "failed" && <div className="cloud-chat-run-warning"><ShieldAlert size={15} />这次云端运行未完成；可查看运行详情，或新建会话后重试。</div>}
           {messages.map(message => (
             <article key={message.id} className={`message ${message.role}${message.pending ? " pending" : ""}`}>
               <div className="message-meta">{message.role === "user" ? "你" : agentName}</div>
               <div className="message-content"><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content || "…"}</ReactMarkdown></div>
             </article>
           ))}
-          {sending && <div className="cloud-chat-pending"><Loader2 size={15} /> 正在等待云端响应…</div>}
+          {(sending || waitingForResponse) && <div className="cloud-chat-pending"><Loader2 size={15} /> 正在等待云端响应…</div>}
         </div>
         <div className="chat-composer-wrap">
           {interactions.length > 0 && (
@@ -371,8 +418,8 @@ export function CloudChatWorkspace({
             </div>
           )}
           <div className="chat-composer">
-            <textarea value={input} onChange={event => setInput(event.target.value)} placeholder="发送到云端 Agent" disabled={!active || sending} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); sendMessage(); } }} />
-            <div className="chat-composer-footer"><span>AK/SK 仅保留在本地 Studio 进程</span><button className="icon-button primary" type="button" disabled={!input.trim() || sending || !active} onClick={sendMessage} aria-label="发送"><Send size={17} /></button></div>
+            <textarea value={input} onChange={event => setInput(event.target.value)} placeholder="发送到云端 Agent" disabled={!active || sending || waitingForResponse} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); sendMessage(); } }} />
+            <div className="chat-composer-footer"><span>AK/SK 仅保留在本地 Studio 进程</span><button className="icon-button primary" type="button" disabled={!input.trim() || sending || waitingForResponse || !active} onClick={sendMessage} aria-label="发送"><Send size={17} /></button></div>
           </div>
         </div>
       </div>
