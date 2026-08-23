@@ -2351,6 +2351,11 @@ class AgentEngineClient:
         """调用 Agent"""
         params = {
             "AgentId": agent_id,
+            # The public KOP contract validates ApiFormat before forwarding the
+            # request to Server.  Keep this legacy string helper on the chat
+            # completions shape instead of relying on Server's newer Responses
+            # default, otherwise KOP rejects an otherwise valid request.
+            "ApiFormat": "chat_completions",
             "Messages": [{"role": "user", "content": message}],
             "Stream": False,
         }
