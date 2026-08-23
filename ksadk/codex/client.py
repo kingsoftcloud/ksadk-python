@@ -492,7 +492,13 @@ class AsyncCodexClient(CodexClient):
             return config, None  # OpenAI 官方:直连,不探测
         model = runtime_env.get("OPENAI_MODEL_NAME") or runtime_env.get("MODEL_NAME") or ""
         key = runtime_env.get("KSADK_PROXY_UPSTREAM_KEY") or runtime_env.get("OPENAI_API_KEY") or ""
-        if _probe_requires_proxy(model, base, key):
+        # Probe the exact URL scheme that Codex/proxy will use.  Managed
+        # runtimes discover KSPMAS through its historical ``http://`` internal
+        # URL, while the provider is upgraded to HTTPS before execution.  A
+        # probe against HTTP can see only a redirect and incorrectly classify
+        # an HTTPS ``/responses`` 404 as unknown, causing a broken direct path.
+        probe_base = _upgrade_http_to_https(base)
+        if _probe_requires_proxy(model, probe_base, key):
             return AsyncCodexClient._start_proxy_and_inject(
                 config,
                 proxy_observer=proxy_observer,

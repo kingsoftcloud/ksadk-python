@@ -43,28 +43,25 @@ def managed_runtime_lock_path(manifest_path: Path) -> Path:
     return manifest_path.with_suffix(".lock.json")
 
 
-class _RuntimeManifestDumper(yaml.SafeDumper):
-    """Keep multi-line prompts readable while preserving deterministic bytes."""
-
-
-def _represent_manifest_string(dumper: yaml.SafeDumper, value: str):
-    style = "|" if "\n" in value else None
-    return dumper.represent_scalar("tag:yaml.org,2002:str", value, style=style)
-
-
-_RuntimeManifestDumper.add_representer(str, _represent_manifest_string)
-
-
 def serialize_managed_runtime_manifest(manifest: dict[str, Any]) -> bytes:
-    """Serialize the canonical ManagedRuntime manifest used by every client."""
+    """Serialize the Server-canonical ManagedRuntime declaration.
 
-    return yaml.dump(
+    The Server validates ``ManifestSHA256`` after parsing and re-dumping YAML
+    with sorted keys.  Clients must hash those exact canonical bytes instead
+    of the editable source formatting, otherwise a valid Studio/CLI build is
+    rejected during ``CreateAgent``/``UpdateAgent`` admission.
+    """
+
+    canonical = yaml.safe_dump(
         manifest,
-        Dumper=_RuntimeManifestDumper,
         allow_unicode=True,
-        sort_keys=False,
+        sort_keys=True,
         default_flow_style=False,
-    ).encode("utf-8")
+        width=10_000,
+    )
+    if not canonical.endswith("\n"):
+        canonical += "\n"
+    return canonical.encode("utf-8")
 
 
 class ManagedRuntimeBuilder(BaseBuilder):

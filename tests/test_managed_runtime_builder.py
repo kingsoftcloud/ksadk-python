@@ -15,6 +15,7 @@ from ksadk.builders.framework_requirements import (
 from ksadk.builders.managed_runtime_builder import (
     ManagedRuntimeBuilder,
     managed_runtime_lock_path,
+    serialize_managed_runtime_manifest,
 )
 from ksadk.cli.cmd_build import build as build_command
 from ksadk.cli.cmd_deploy import _resolve_artifact_type_input
@@ -78,6 +79,33 @@ def test_managed_runtime_builder_emits_yaml_declaration_and_lock_without_code_zi
         "runtime": {"name": "codex", "version": "0.144.4"},
         "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
     }
+
+
+def test_managed_runtime_manifest_digest_matches_server_canonical_yaml():
+    """Formatting and input key order must not change the admission digest."""
+
+    first = {
+        "name": "managed-codex",
+        "prompt": "回答用户问题。\n",
+        "runtime": {"version": "0.147.0", "name": "codex"},
+    }
+    second = {
+        "runtime": {"name": "codex", "version": "0.147.0"},
+        "prompt": "回答用户问题。\n",
+        "name": "managed-codex",
+    }
+
+    first_bytes = serialize_managed_runtime_manifest(first)
+    second_bytes = serialize_managed_runtime_manifest(second)
+
+    assert first_bytes == second_bytes
+    assert first_bytes == yaml.safe_dump(
+        first,
+        sort_keys=True,
+        allow_unicode=True,
+        default_flow_style=False,
+        width=10_000,
+    ).encode("utf-8")
 
 
 def test_managed_runtime_builder_requires_resolved_version(tmp_path):

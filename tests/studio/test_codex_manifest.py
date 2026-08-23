@@ -37,16 +37,17 @@ def test_repository_uses_root_agentengine_yaml_as_the_only_agent_source(
     snapshot = repository.save(_manifest())
 
     expected = (
-        "name: review-helper\n"
-        "version: 1.0.0\n"
-        "framework: codex\n"
         "artifact_type: ManagedRuntime\n"
+        "framework: codex\n"
+        "model: glm-5.2\n"
+        "name: review-helper\n"
+        "prompt: '读取目标文件，指出一个确定的问题并给出修复建议。\n"
+        "\n"
+        "  '\n"
         "runtime:\n"
         "  name: codex\n"
         "  version: 0.144.4\n"
-        "model: glm-5.2\n"
-        "prompt: |\n"
-        "  读取目标文件，指出一个确定的问题并给出修复建议。\n"
+        "version: 1.0.0\n"
     ).encode()
     source = tmp_path / "agentengine.yaml"
     assert source.read_bytes() == expected

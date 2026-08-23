@@ -144,6 +144,37 @@ def test_probe_uses_launch_config_environment(monkeypatch):
     }
 
 
+def test_probe_uses_the_same_https_url_as_managed_runtime_execution(monkeypatch):
+    """An HTTP redirect must not hide an HTTPS /responses 404 from detection."""
+    from openai_codex import CodexConfig
+
+    monkeypatch.delenv("KSADK_CODEX_USE_PROXY", raising=False)
+    observed = {}
+
+    def probe(model, base, key):
+        observed.update(model=model, base=base, key=key)
+        return False
+
+    monkeypatch.setattr("ksadk.codex.client._probe_requires_proxy", probe)
+    out, proxy = AsyncCodexClient._maybe_apply_proxy(
+        CodexConfig(
+            env={
+                "OPENAI_BASE_URL": "http://kspmas-internal.sdns.ksyun.com/v1",
+                "OPENAI_API_KEY": "workspace-model-key",
+                "OPENAI_MODEL_NAME": "qwen3.7-flash",
+            }
+        )
+    )
+
+    assert proxy is None
+    assert out is not None
+    assert observed == {
+        "model": "qwen3.7-flash",
+        "base": "https://kspmas-internal.sdns.ksyun.com/v1",
+        "key": "workspace-model-key",
+    }
+
+
 def test_probe_supported_direct(monkeypatch):
     """自定义上游探测 supported:直连。"""
     from openai_codex import CodexConfig
