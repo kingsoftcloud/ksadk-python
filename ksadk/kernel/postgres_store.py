@@ -707,6 +707,30 @@ class PostgresAgentKernelStore:
                         f"message {message_id!r} is not claimable"
                         f" at status {row['status']}"
                     )
+                command = AgentControlCommand.model_validate_json(row["payload"])
+                if command.command_type == "enqueue":
+                    # Strict per-session FIFO is a database invariant, not a
+                    # scheduler convention.  A second worker may have listed
+                    # pending rows before the first worker committed its
+                    # claim.  Never let it skip an earlier enqueue that is
+                    # still accepted/claimed; the query also observes an
+                    # uncommitted earlier update as ``accepted`` under READ
+                    # COMMITTED, so the later claim fails closed.
+                    earlier = await connection.fetchval(
+                        "SELECT EXISTS (SELECT 1 FROM kernel_inbox"
+                        " WHERE tenant_id=$1 AND agent_instance_id=$2"
+                        " AND session_id=$3 AND accepted_seq < $4"
+                        " AND status IN ('accepted','claimed')"
+                        " AND payload->>'command_type'='enqueue')",
+                        self.tenant_id,
+                        row["agent_instance_id"],
+                        row["session_id"],
+                        int(row["accepted_seq"]),
+                    )
+                    if earlier:
+                        raise InvalidCommandError(
+                            f"message {message_id!r} is not the FIFO enqueue head"
+                        )
                 assert_inbox_transition(InboxState(row["status"]), InboxState.CLAIMED)
                 await connection.execute(
                     "UPDATE kernel_inbox SET status='claimed', claimed_fence=$1"
@@ -721,6 +745,7 @@ class PostgresAgentKernelStore:
                         event_type="control.message_claimed",
                         payload={
                             "message_id": message_id,
+                            "accepted_seq": int(row["accepted_seq"]),
                             "fencing_token": int(fencing_token),
                         },
                     ),

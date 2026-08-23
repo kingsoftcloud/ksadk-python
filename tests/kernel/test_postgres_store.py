@@ -202,6 +202,23 @@ async def test_postgres_store_concurrency(pg_store):
     await assert_concurrent_accepts_have_no_loss_or_duplicate(pg_store)
 
 
+async def test_postgres_claim_message_rejects_fifo_skip(pg_store):
+    first = await pg_store.accept_command(command("fifo-1", "first"), queue_limit=4)
+    second = await pg_store.accept_command(command("fifo-2", "second"), queue_limit=4)
+    lease = await pg_store.acquire_activation(lease_request("act-fifo"))
+
+    with pytest.raises(InvalidCommandError, match="FIFO enqueue head"):
+        await pg_store.claim_message(str(second.message_id), lease.fencing_token)
+
+    claimed = await pg_store.claim_message(str(first.message_id), lease.fencing_token)
+    assert claimed.accepted_seq == 1
+    await pg_store.complete_claim(str(first.message_id), expected_fence=lease.fencing_token)
+    claimed_second = await pg_store.claim_message(
+        str(second.message_id), lease.fencing_token
+    )
+    assert claimed_second.accepted_seq == 2
+
+
 async def test_postgres_store_control_events_share_session_log(pg_store):
     await pg_store.accept_command(command("k1", "hello"), queue_limit=4)
     lease = await pg_store.acquire_activation(lease_request("act-log"))
