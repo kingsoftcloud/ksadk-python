@@ -1,4 +1,4 @@
-"""Codex app-server 0.144.4 JSONL to canonical RuntimeEvent tests."""
+"""Codex app-server 0.147.0 JSONL to canonical RuntimeEvent tests."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ from openai_codex.generated.v2_all import (
 from pydantic import ValidationError
 
 from ksadk.events.adapters.codex import (
-    _CODEX_0_144_4_NOTIFICATION_METHODS,
+    _CODEX_0_147_0_NOTIFICATION_METHODS,
     CodexAdapterContext,
     CodexEventAdapter,
     CodexMappingError,
@@ -727,9 +727,9 @@ def test_nonretry_error_is_diagnostic_until_authoritative_turn_failure() -> None
 
 
 def test_complete_generated_notification_registry_has_lossless_data_fallback() -> None:
-    """The locked 0.144.4 registry cannot drift into silent drops as methods grow."""
+    """The locked 0.147.0 registry cannot drift into silent drops as methods grow."""
 
-    assert _CODEX_0_144_4_NOTIFICATION_METHODS == frozenset(NOTIFICATION_MODELS)
+    assert _CODEX_0_147_0_NOTIFICATION_METHODS == frozenset(NOTIFICATION_MODELS)
     warning = _wire(
         WarningServerNotification,
         {

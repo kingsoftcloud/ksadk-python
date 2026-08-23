@@ -200,6 +200,7 @@ class FakeAdapter(RuntimeAdapter):
         super().__init__(_FakeRuntime())
         self._matrix = matrix or default_matrix()
         self.start_intervals: list[tuple[str, float, float]] = []
+        self.start_requests: list[StartRequest] = []
         self.calls: list[tuple[str, str]] = []
         self.start_delay = 0.0
         self.start_error: Exception | None = None
@@ -215,6 +216,7 @@ class FakeAdapter(RuntimeAdapter):
 
     async def start(self, request: StartRequest) -> RunHandle:
         entered = time.monotonic()
+        self.start_requests.append(request)
         self.calls.append(("start", request.session_id))
         if self.start_delay:
             await asyncio.sleep(self.start_delay)

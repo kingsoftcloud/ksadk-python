@@ -341,6 +341,9 @@ class AgentKernelWorker:
         created = await self._store.save_run_transition(
             pending, expected_fence=fence
         )
+        continuation_metadata = await self._session_continuation_metadata(
+            command.session_id
+        )
         handle = await adapter.start(
             StartRequest(
                 input=command.payload.get("content"),
@@ -348,7 +351,11 @@ class AgentKernelWorker:
                 session_id=command.session_id,
                 # durable run_id 优先传给 adapter；adapter 不认时以
                 # runtime_run_id 映射显式记录两个 ID 的对应关系。
-                metadata={"command_id": str(command.command_id), "run_id": run_id},
+                metadata={
+                    "command_id": str(command.command_id),
+                    "run_id": run_id,
+                    **continuation_metadata,
+                },
             )
         )
         running_update: dict = {
@@ -378,6 +385,34 @@ class AgentKernelWorker:
         if execution.stream_task is not None and execution.stream_task.done():
             execution.stream_task.result()
         return run_id
+
+    async def _session_continuation_metadata(self, session_id: str) -> dict[str, str]:
+        """Recover the latest native thread identity for a follow-up turn.
+
+        A durable Session owns multiple terminal Runs.  Starting each enqueue
+        without the previous ``thread_resume`` continuation silently creates a
+        fresh provider conversation, so the UI appears multi-turn while the
+        model has no prior context.  The canonical SessionEvent log is the
+        authority for this mapping and survives worker/process replacement.
+        """
+
+        if self._session_events is None:
+            return {}
+        from ksadk.events.canonical import ContinuationCreated, ContinuationResumed
+        from ksadk.events.canonical_store import RuntimeEventStore
+
+        events = await RuntimeEventStore(self._session_events).list(
+            session_id, limit=256
+        )
+        for event in reversed(events):
+            if not isinstance(event, (ContinuationCreated, ContinuationResumed)):
+                continue
+            if event.continuation_kind != "thread_resume":
+                continue
+            thread_id = str(event.ref.get("thread_id") or "").strip()
+            if thread_id:
+                return {"thread_id": thread_id}
+        return {}
 
     def _start_stream(
         self,

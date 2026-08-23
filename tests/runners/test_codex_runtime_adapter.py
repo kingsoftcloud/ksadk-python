@@ -23,6 +23,7 @@ from ksadk.codex.client import CodexClient
 from ksadk.codex.phase import CodexPhaseTracker
 from ksadk.codex.runtime import CodexRuntimeAdapter
 from ksadk.events.canonical import (
+    ContinuationCreated,
     InteractionRequested,
     ItemCompleted,
     ItemFailed,
@@ -269,6 +270,7 @@ async def test_resumed_native_thread_does_not_duplicate_transport_history() -> N
 
     assert handle.run_id == "codex_thread_existing"
     assert client.prompts == ["current"]
+    assert not any(isinstance(event, ContinuationCreated) for event in _events)
 
 
 @pytest.mark.asyncio

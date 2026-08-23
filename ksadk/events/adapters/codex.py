@@ -1,4 +1,4 @@
-"""Codex app-server 0.144.4 JSONL messages to RuntimeEvent schema v2."""
+"""Codex app-server 0.147.0 JSONL messages to RuntimeEvent schema v2."""
 
 from __future__ import annotations
 
@@ -6,12 +6,12 @@ import copy
 import hashlib
 import json
 from collections import OrderedDict
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, Callable
 
 from ksadk.events.adapters._codex_interactions import _CodexInteractionMixin
 from ksadk.events.adapters._codex_items import (
-    _CODEX_0_144_4_NOTIFICATION_METHODS,
+    _CODEX_0_147_0_NOTIFICATION_METHODS,
     _CONTROL_INTERACTION_METHODS,
     _FAILURE_CODE_KINDS,
     _INTERACTION_METHODS,
@@ -72,12 +72,16 @@ class CodexEventAdapter(_CodexInteractionMixin):
 
     _REPLAY_WINDOW_LIMIT = 1024
 
-    def __init__(self) -> None:
+    def __init__(self, *, known_thread_ids: Iterable[str] = ()) -> None:
         self._items: dict[tuple[str, str], _ItemState] = {}
         self._active_turns: set[str] = set()
         self._completed_items: dict[str, list[OutputRef]] = {}
         self._interactions: dict[str, _InteractionState] = {}
-        self._thread_continuations: dict[str, str] = {}
+        self._thread_continuations: dict[str, str] = {
+            thread_id: _thread_continuation_identity(thread_id)[1]
+            for thread_id in known_thread_ids
+            if thread_id
+        }
         self._resume_requests: dict[str, str] = {}
         self._pending_resume_by_thread: dict[str, str] = {}
         self._replay_window: OrderedDict[str, _ReplayRecord] = OrderedDict()
@@ -236,7 +240,7 @@ class CodexEventAdapter(_CodexInteractionMixin):
                 scope_id=scope_id,
                 interrupts_run=interrupts_run,
             )
-        if method in _CODEX_0_144_4_NOTIFICATION_METHODS:
+        if method in _CODEX_0_147_0_NOTIFICATION_METHODS:
             return self._map_known_notification(
                 method=method, params=params, context=context, cursor=cursor, timestamp=timestamp
             )

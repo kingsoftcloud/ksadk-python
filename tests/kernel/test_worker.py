@@ -333,6 +333,48 @@ async def test_enqueue_emits_runtime_event_stream_with_durable_run_id():
     assert run.metadata["handle_digest"] == handle_digest(handle)
 
 
+async def test_follow_up_enqueue_resumes_native_thread_from_session_log():
+    from ksadk.events.canonical import ContinuationCreated
+    from ksadk.kernel.worker import AgentKernelWorker
+
+    stack = await kernel_stack()
+    stack.adapter.stream_events = [
+        ContinuationCreated(
+            schema_version=2,
+            event_id="continuation-thread-1",
+            seq=0,
+            timestamp=1780000000.0,
+            run_id="adapter-run-1",
+            scope_id="thread-scope-1",
+            source=_fake_source(),
+            continuation_id="continuation-1",
+            continuation_kind="thread_resume",
+            resumable=True,
+            ref={"thread_id": "native-thread-1", "turn_id": "turn-1"},
+        )
+    ]
+    lease = await stack.lease()
+    worker = AgentKernelWorker(
+        stack.store,
+        adapter_factory=lambda: stack.adapter,
+        session_events=stack.events,
+    )
+
+    await stack.kernel.submit(
+        command(idempotency_key="follow-up-first"), permit=stack.permit("enqueue")
+    )
+    assert (await worker.run_once(AGENT, lease)).outcome == "completed"
+
+    stack.adapter.stream_events = []
+    await stack.kernel.submit(
+        command(idempotency_key="follow-up-second"), permit=stack.permit("enqueue")
+    )
+    assert (await worker.run_once(AGENT, lease)).outcome == "completed"
+    assert len(stack.adapter.start_requests) == 2
+    assert "thread_id" not in stack.adapter.start_requests[0].metadata
+    assert stack.adapter.start_requests[1].metadata["thread_id"] == "native-thread-1"
+
+
 async def test_control_uses_durable_run_id_when_adapter_returns_a_different_id():
     """Adapter 的 runtime run_id 不能让 interrupt 丢失 live handle。"""
 

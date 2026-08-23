@@ -88,6 +88,7 @@ class _CodexThread:
     completed_at: int | None = None
     duration_ms: int | None = None
     goal_mode: bool = False
+    continuation_preexisting: bool = False
 
 
 class CodexRuntimeAdapter(RuntimeAdapter):
@@ -165,7 +166,10 @@ class CodexRuntimeAdapter(RuntimeAdapter):
                 thread_config["cwd"] = str(cwd)
             thread_id = await self._client.start_thread(thread_config)
         self._known_threads.add(thread_id)
-        thread = _CodexThread(thread_id=thread_id)
+        thread = _CodexThread(
+            thread_id=thread_id,
+            continuation_preexisting=bool(provided),
+        )
         thread.__dict__["_start_request"] = request
         self._threads[thread_id] = thread
         self._requests[thread_id] = request
@@ -280,7 +284,10 @@ class CodexRuntimeAdapter(RuntimeAdapter):
             raise ValueError(f"thread {handle.run_id} 已被中断/杀进程,不持久化,不可 resume")
         self._pending_cancels.discard(handle.run_id)
         self._known_threads.add(target.id)
-        thread = _CodexThread(thread_id=target.id)
+        thread = _CodexThread(
+            thread_id=target.id,
+            continuation_preexisting=True,
+        )
         thread.__dict__["_resume"] = {"target": target, "payload": payload}
         request = self._requests.get(handle.run_id)
         if request is not None:
@@ -409,7 +416,11 @@ class CodexRuntimeAdapter(RuntimeAdapter):
         prompt: Any,
     ) -> AsyncIterator[RuntimeEvent]:
         request = thread.__dict__.get("_start_request") or thread.__dict__.get("_request_config")
-        adapter = CodexEventAdapter()
+        adapter = CodexEventAdapter(
+            known_thread_ids=(thread.thread_id,)
+            if thread.continuation_preexisting
+            else (),
+        )
         context = CodexAdapterContext(run_id=self._event_run_id(handle))
         run_config: dict[str, Any] = {"sandbox_read_only": self._sandbox_read_only}
         if request is not None and request.config:

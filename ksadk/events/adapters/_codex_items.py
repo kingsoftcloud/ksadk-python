@@ -38,7 +38,7 @@ from ksadk.events.content import (
 )
 from ksadk.events.identity import stable_event_id, stable_item_id, stable_part_id, stable_scope_id
 
-_CODEX_0_144_4_NOTIFICATION_METHODS = frozenset("""
+_CODEX_0_147_0_NOTIFICATION_METHODS = frozenset("""
     account/login/completed account/rateLimits/updated account/updated app/list/updated
     command/exec/outputDelta configWarning deprecationNotice error
     externalAgentConfig/import/completed externalAgentConfig/import/progress fs/changed
@@ -52,6 +52,7 @@ _CODEX_0_144_4_NOTIFICATION_METHODS = frozenset("""
     model/rerouted model/safetyBuffering/updated model/verification process/exited
     process/outputDelta remoteControl/status/changed serverRequest/resolved skills/changed
     thread/archived thread/closed thread/compacted thread/deleted thread/goal/cleared
+    thread/environment/connected thread/environment/disconnected
     thread/goal/updated thread/name/updated thread/realtime/closed thread/realtime/error
     thread/realtime/itemAdded thread/realtime/outputAudio/delta thread/realtime/sdp
     thread/realtime/started thread/realtime/transcript/delta thread/realtime/transcript/done
