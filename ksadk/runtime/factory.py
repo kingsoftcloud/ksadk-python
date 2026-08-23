@@ -126,9 +126,11 @@ def _create_codex(context: RuntimeLaunchContext) -> RuntimeAdapter:
         if overrides:
             _apply_codex_overrides(client, overrides)
     timeout = context.config.get("turn_timeout_seconds")
+    request_defaults = kernel_start_request_defaults(context)
+    request_config = request_defaults.get("config") or {}
     return CodexRuntimeAdapter(
         client,
-        sandbox_read_only=bool(context.config.get("sandbox_read_only", True)),
+        sandbox_read_only=bool(request_config.get("sandbox_read_only", True)),
         turn_timeout_seconds=float(timeout) if timeout is not None else None,
     )
 

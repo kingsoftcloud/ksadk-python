@@ -46,6 +46,68 @@ def _event_id(event: dict[str, Any]) -> str | None:
     return str(value) if value else None
 
 
+def _diagnostic_shape(value: Any, *, depth: int = 0) -> Any:
+    """Expose event structure without leaking prompts, arguments or output."""
+
+    if depth >= 3:
+        return type(value).__name__
+    if isinstance(value, dict):
+        shaped: dict[str, Any] = {}
+        for key, child in value.items():
+            normalized = str(key).replace("_", "").lower()
+            if any(
+                token in normalized
+                for token in ("argument", "input", "output", "text", "content", "reason")
+            ):
+                shaped[str(key)] = "<redacted>"
+            elif normalized in {
+                "name",
+                "toolname",
+                "status",
+                "phase",
+                "code",
+                "type",
+                "kind",
+                "itemid",
+                "callid",
+            } and isinstance(child, (str, int, float, bool, type(None))):
+                shaped[str(key)] = child
+            else:
+                shaped[str(key)] = _diagnostic_shape(child, depth=depth + 1)
+        return shaped
+    if isinstance(value, list):
+        return [_diagnostic_shape(child, depth=depth + 1) for child in value[:3]]
+    return type(value).__name__
+
+
+def _tool_event_summary(event: dict[str, Any]) -> dict[str, Any]:
+    content = (
+        event.get("Content")
+        or event.get("content")
+        or event.get("Payload")
+        or event.get("payload")
+        or event.get("Data")
+        or event.get("data")
+        or {}
+    )
+    if not isinstance(content, dict):
+        content = {}
+    item = content.get("item") if isinstance(content.get("item"), dict) else content
+    error = item.get("error") if isinstance(item.get("error"), dict) else {}
+    return {
+        "event_id": _event_id(event),
+        "seq_id": _event_seq(event),
+        "event_keys": sorted(str(key) for key in event),
+        "content_keys": sorted(str(key) for key in content),
+        "item_keys": sorted(str(key) for key in item),
+        "name": item.get("name") or item.get("tool_name") or item.get("toolName"),
+        "status": item.get("status") or content.get("status"),
+        "error_code": error.get("code") or item.get("error_code"),
+        "metadata_shape": _diagnostic_shape(event.get("Metadata")),
+        "state_delta_shape": _diagnostic_shape(event.get("StateDelta")),
+    }
+
+
 def _session_id(created: dict[str, Any]) -> str:
     session = created.get("session") or created.get("Session") or created
     value = (
@@ -161,11 +223,31 @@ async def _run(args: argparse.Namespace) -> int:
             "accepted_seq": receipt.get("accepted_seq") or receipt.get("AcceptedSeq"),
             "message_id": receipt.get("message_id") or receipt.get("MessageId"),
             "event_types": [_event_type(event) for event in events],
+            "tool_events": [
+                _tool_event_summary(event)
+                for event in events
+                if _event_type(event) == "tool_call"
+            ],
             "assistant_message_ids": [
                 message.get("message_id") or message.get("MessageId")
                 for message in messages
                 if str(message.get("role") or message.get("Role")) == "assistant"
             ],
+            "assistant_previews": (
+                [
+                    str(
+                        message.get("content")
+                        or message.get("Content")
+                        or message.get("text")
+                        or message.get("Text")
+                        or ""
+                    )[: args.preview_chars]
+                    for message in messages
+                    if str(message.get("role") or message.get("Role")) == "assistant"
+                ]
+                if args.preview_chars > 0
+                else []
+            ),
             "terminal_event_ids": [
                 _event_id(event)
                 for event in events
@@ -196,6 +278,12 @@ def main() -> int:
     parser.add_argument("--wait-seconds", type=float, default=20.0)
     parser.add_argument("--poll-seconds", type=float, default=1.0)
     parser.add_argument("--request-timeout", type=float, default=120.0)
+    parser.add_argument(
+        "--preview-chars",
+        type=int,
+        default=0,
+        help="include a bounded assistant preview for diagnosis (default: disabled)",
+    )
     return asyncio.run(_run(parser.parse_args()))
 
 
