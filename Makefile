@@ -1,15 +1,20 @@
 # AgentEngine Makefile
 # 用于同步 KsADK Web static 和管理项目
 
-.PHONY: help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-version-gate docs-site-build docs-site-dev public-test public-build-check public-build-alias-check public-preflight public-publish-check public-release-approval-check public-publish-gate public-release-tag public-review public-sync-ksadk-web-static open-source-audit-dist open-source-audit-alias-dist openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size sync-ksadk-web-static verify-ksadk-web-static verify-ksadk-web-wheel-static build-studio-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend print-build-provenance phase1-canary-build phase1-canary-push phase1-canary-deploy phase1-canary-status phase1-canary-delete
+.PHONY: help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-version-gate docs-site-build docs-site-dev public-test public-build-check public-build-alias-check public-preflight public-publish-check public-release-approval-check public-publish-gate public-release-tag public-review public-sync-ksadk-web-static open-source-audit-dist open-source-audit-alias-dist openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size sync-ksadk-web-static verify-ksadk-web-static verify-ksadk-web-wheel-static build-studio-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend print-build-provenance phase1-canary-build phase1-canary-push phase1-canary-deploy phase1-canary-matrix phase1-canary-status phase1-canary-delete
 
 PHASE1_CANARY_NAMESPACE ?= agent-kernel-phase1
-PHASE1_CANARY_KUBECONFIG ?= $(HOME)/.kube/agentengine-pre
+# Phase 1 runtime drills must run beside real Agent workloads in the preprod
+# compute cluster. The management-cluster kubeconfig cannot reach the managed PG.
+PHASE1_CANARY_KUBECONFIG ?= $(HOME)/.kube/config-2fc1210d
 PHASE1_CANARY_PLATFORM ?= linux/amd64
 PHASE1_CANARY_REGISTRY ?= hub.kce.ksyun.com/agentengine
 PHASE1_CANARY_TAG ?= phase1-contract-$(shell git rev-parse --short=8 HEAD)
 PHASE1_CANARY_IMAGE := $(PHASE1_CANARY_REGISTRY)/agent-kernel-canary:$(PHASE1_CANARY_TAG)
 PHASE1_CANARY_KUBECTL := kubectl --kubeconfig=$(PHASE1_CANARY_KUBECONFIG)
+PHASE1_CANARY_INSTANCE_ID ?= phase1-canary-managed-pg
+PHASE1_CANARY_STORE_NAMESPACE ?= default
+PHASE1_CANARY_EVIDENCE_OUTPUT ?= /tmp/phase1-managed-pg-matrix.json
 
 # 默认目标
 help:
@@ -28,6 +33,7 @@ help:
 	@echo "    make build-studio-static 编译 React Studio static"
 	@echo "    make phase1-canary-push   构建并推送当前合同 PG canary 镜像"
 	@echo "    make phase1-canary-deploy 使用外部云 PostgreSQL 部署隔离验证 runtime"
+	@echo "    make phase1-canary-matrix 执行托管 PG/Pod kill/fencing/rollback 并自动清理"
 	@echo "    make phase1-canary-delete 删除隔离 canary namespace"
 	@echo ""
 	@echo "  \033[1;32m版本管理:\033[0m"
@@ -139,8 +145,33 @@ phase1-canary-deploy:
 	@$(PHASE1_CANARY_KUBECTL) create secret generic agent-kernel-store -n $(PHASE1_CANARY_NAMESPACE) \
 		--from-literal=dsn="$$PHASE1_CANARY_POSTGRES_DSN" --dry-run=client -o yaml | $(PHASE1_CANARY_KUBECTL) apply -f - >/dev/null
 	$(PHASE1_CANARY_KUBECTL) apply -f docs/superpowers/evidence/phase1/canary-hosted/deployment.yaml
-	$(PHASE1_CANARY_KUBECTL) set image deployment/agent-kernel-canary runtime=$(PHASE1_CANARY_IMAGE) -n $(PHASE1_CANARY_NAMESPACE)
+	@image="$(PHASE1_CANARY_IMAGE)"; \
+		digest=$$(docker buildx imagetools inspect "$$image" | awk '/^Digest:/ { print $$2; exit }'); \
+		test -n "$$digest" || { echo "ERROR: cannot resolve immutable digest for $(PHASE1_CANARY_IMAGE)"; exit 2; }; \
+		repository=$${image%:*}; \
+		$(PHASE1_CANARY_KUBECTL) set image deployment/agent-kernel-canary runtime="$${repository}@$${digest}" -n $(PHASE1_CANARY_NAMESPACE)
+	$(PHASE1_CANARY_KUBECTL) set env deployment/agent-kernel-canary -n $(PHASE1_CANARY_NAMESPACE) \
+		AGENT_INSTANCE_ID=$(PHASE1_CANARY_INSTANCE_ID) \
+		AGENT_KERNEL_STORE_NAMESPACE=$(PHASE1_CANARY_STORE_NAMESPACE) \
+		PHASE1_CANARY_TEST_HOOKS=1
 	$(PHASE1_CANARY_KUBECTL) rollout status deployment/agent-kernel-canary -n $(PHASE1_CANARY_NAMESPACE) --timeout=180s
+
+phase1-canary-matrix:
+	@test -n "$$PHASE1_CANARY_POSTGRES_DSN" || { echo "ERROR: PHASE1_CANARY_POSTGRES_DSN must reference an external managed PostgreSQL instance"; exit 2; }
+	@test -n "$$PHASE1_CANARY_ROLLBACK_IMAGE" || { echo "ERROR: PHASE1_CANARY_ROLLBACK_IMAGE must be a digest-pinned prior image"; exit 2; }
+	@case "$$PHASE1_CANARY_ROLLBACK_IMAGE" in *@sha256:*) ;; *) echo "ERROR: PHASE1_CANARY_ROLLBACK_IMAGE must contain @sha256:"; exit 2;; esac
+	@set -eu; \
+		cleanup() { $(MAKE) phase1-canary-delete; }; \
+		trap cleanup EXIT INT TERM; \
+		$(MAKE) phase1-canary-push; \
+		PHASE1_CANARY_POSTGRES_DSN="$$PHASE1_CANARY_POSTGRES_DSN" $(MAKE) phase1-canary-deploy; \
+		uv run python scripts/run_phase1_managed_pg_matrix.py \
+			--kubeconfig "$(PHASE1_CANARY_KUBECONFIG)" \
+			--namespace "$(PHASE1_CANARY_NAMESPACE)" \
+			--expected-contract-digest "$$(python -c 'from ksadk.kernel.contract_fingerprints import AGENT_KERNEL_V1_AGGREGATE_DIGEST; print(AGENT_KERNEL_V1_AGGREGATE_DIGEST)')" \
+			--source-commit "$$(git rev-parse HEAD)" \
+			--rollback-image "$$PHASE1_CANARY_ROLLBACK_IMAGE" \
+			--output "$(PHASE1_CANARY_EVIDENCE_OUTPUT)"
 
 phase1-canary-status:
 	@$(PHASE1_CANARY_KUBECTL) get deployment,pod,service -n $(PHASE1_CANARY_NAMESPACE) -o wide

@@ -40,6 +40,10 @@ spec:
                   key: dsn
             - name: AGENT_INSTANCE_ID
               value: phase1-canary-1
+            - name: AGENT_KERNEL_STORE_NAMESPACE
+              value: default
+            - name: PHASE1_CANARY_TEST_HOOKS
+              value: "1"
             - name: AGENT_KERNEL_AUTHORITY_MODE
               value: local
             - name: AGENT_KERNEL_CONTRACT_DIGEST

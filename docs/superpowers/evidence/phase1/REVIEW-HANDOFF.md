@@ -25,9 +25,10 @@
 > 删除整个 `agent-kernel-phase1` namespace，并删除对应内部镜像仓库 artifact；
 > 没有触碰共享预发主流程。现在 `phase1-canary-deploy` 强制要求
 > `PHASE1_CANARY_POSTGRES_DSN` 指向外部托管云 PostgreSQL，并仅通过临时 Secret
-> 注入。`long_task_pg_e2e/.env` 中现有 DSN 从本机和预发算力节点均连接超时，且其
-> `.agentengine.state` 指向的历史 Agent 已不存在，因此当前 PG/HA gate 仍待一套
-> 可达的托管云 PG 凭据/网络白名单后重跑；不得据此把 Phase 1 标绿。
+> 注入。`long_task_pg_e2e/.env` 中现有 DSN 从本机及预发管理集群连接超时，但已
+> 从真实预发算力集群 `config-2fc1210d` 内的 Agent Runtime Pod 验证 TCP 可达；
+> `.agentengine.state` 指向的历史 Agent 虽已不存在，但该托管云 PG 可以用于当前
+> 临时验证 runtime。PG/HA gate 必须在算力集群重跑通过后才能标绿。
 
 > 更新：2026-08-20（终版，所有已知 P0 修复完毕，gate 全绿）两份计划：
 > - `docs/superpowers/plans/2026-08-17-agent-runtime-v2-phase1-agent-kernel.md`（Phase 1，14 任务）
