@@ -38,7 +38,7 @@ def _event_type(event: dict[str, Any]) -> str:
 
 
 def _event_seq(event: dict[str, Any]) -> int | None:
-    value = event.get("SeqId") or event.get("seq_id")
+    value = event.get("SeqId") or event.get("seq_id") or event.get("seq")
     return int(value) if value is not None else None
 
 
@@ -222,18 +222,42 @@ def _session_id(created: dict[str, Any]) -> str:
 def _read_runtime_events(
     *, endpoint: str, api_key: str, agent_id: str, session_id: str
 ) -> list[dict[str, Any]]:
-    response = requests.post(
-        endpoint.rstrip("/") + "/agentengine/api/v1/ListSessionEvents",
+    """Read a bounded snapshot from the canonical AgentKernel SSE stream.
+
+    ``ListSessionEvents`` is the compatibility/UI projection and may lag the
+    Interaction/v1 ledger after an approval response.  Release evidence must
+    therefore use ``SubscribeSessionEvents``: it carries the authoritative
+    control/interaction/runtime families through Gateway -> Server admission.
+    The endpoint is intentionally long-lived, so a short read timeout closes
+    each polling snapshot after all currently buffered frames have arrived.
+    """
+
+    response = requests.get(
+        endpoint.rstrip("/") + "/agentengine/api/v1/SubscribeSessionEvents",
         headers={
             "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
         },
-        json={"AgentId": agent_id, "SessionId": session_id, "Limit": 300},
-        timeout=30,
+        params={"AgentId": agent_id, "SessionId": session_id, "AfterSeq": 0},
+        stream=True,
+        timeout=(30, 1),
     )
     response.raise_for_status()
-    payload = response.json().get("Data") or {}
-    return list(payload.get("Events") or payload.get("events") or [])
+    events: list[dict[str, Any]] = []
+    try:
+        for line in response.iter_lines(chunk_size=1, decode_unicode=True):
+            if not line or not line.startswith("data: "):
+                continue
+            payload = json.loads(line[6:])
+            if isinstance(payload, dict):
+                events.append(payload)
+    except requests.exceptions.RequestException:
+        # A read timeout is the normal snapshot boundary for a long-lived SSE
+        # response.  A failure before any frame arrived is a real gate error.
+        if not events:
+            raise
+    finally:
+        response.close()
+    return events
 
 
 async def _run(args: argparse.Namespace) -> int:
