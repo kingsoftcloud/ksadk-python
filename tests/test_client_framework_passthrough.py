@@ -2,7 +2,7 @@
 
 import pytest
 
-from ksadk.api.client import AgentEngineClient
+from ksadk.api.client import AgentEngineAPIError, AgentEngineClient
 
 
 def _build_create_payload() -> dict:
@@ -212,11 +212,60 @@ async def test_cloud_interaction_actions_keep_principal_fields_server_owned(monk
                 "RunId": "run-cloud",
                 "InteractionId": "int-cloud",
                 "ExpectedRevision": 2,
-                "Action": "approve",
+                "InteractionAction": "approve",
                 "Response": {"decision": "approve"},
                 "IdempotencyKey": "idem-cloud",
             },
         ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_submit_interaction_falls_back_to_authenticated_agent_gateway_when_kop_is_unpublished(
+    monkeypatch,
+):
+    client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
+    calls: list[tuple[str, dict]] = []
+
+    async def unpublished(action: str, params: dict):
+        raise AgentEngineAPIError(
+            400,
+            "The action SubmitInteraction or version 2024-06-12 is not valid for this web service",
+        )
+
+    async def runtime_action(**kwargs):
+        calls.append((str(kwargs["action"]), dict(kwargs["params"])))
+        return {"receipt_status": "accepted"}
+
+    monkeypatch.setattr(client, "_action_async", unpublished)
+    monkeypatch.setattr(client, "_runtime_action_for_agent", runtime_action)
+
+    result = await client.submit_interaction(
+        agent_id="ar-cloud",
+        session_id="sess-cloud",
+        run_id="run-cloud",
+        interaction_id="int-cloud",
+        expected_revision=1,
+        action="reject",
+        response={"decision": "reject"},
+        idempotency_key="idem-runtime-fallback",
+    )
+
+    assert result == {"receipt_status": "accepted"}
+    assert calls == [
+        (
+            "SubmitInteraction",
+            {
+                "AgentId": "ar-cloud",
+                "SessionId": "sess-cloud",
+                "RunId": "run-cloud",
+                "InteractionId": "int-cloud",
+                "ExpectedRevision": 1,
+                "InteractionAction": "reject",
+                "Response": {"decision": "reject"},
+                "IdempotencyKey": "idem-runtime-fallback",
+            },
+        )
     ]
 
 

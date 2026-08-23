@@ -134,6 +134,10 @@ class AgentEngineClient:
         # requests.Session must not be used by several worker threads at once.
         self._async_action_lock = asyncio.Lock()
         self._http_error_log_suppressors: list[HttpErrorLogSuppressor] = []
+        # A Server Action can be deployed before the external KOP publication
+        # finishes.  Remember that result per client so an approval retry does
+        # not repeatedly hit the known-unpublished control-plane route.
+        self._unpublished_kop_actions: set[str] = set()
         # 反查身份的实例缓存（避免同会话重复调 IAM）；None=未尝试，ResolvedIdentity|None=已反查
         self._resolved_identity: Any = None
         self._identity_resolve_attempted: bool = False
@@ -928,6 +932,83 @@ class AgentEngineClient:
                 str(payload.get("detail") or payload.get("Message") or message).strip() or message
             )
         return AgentEngineAPIError(response.status_code, message)
+
+    @staticmethod
+    def _is_unregistered_kop_action(error: AgentEngineAPIError, action: str) -> bool:
+        """Return whether KOP rejected an otherwise valid Server Action.
+
+        Public Action publication is an infrastructure step independent of a
+        Server rollout.  During that window the per-Agent Gateway route is
+        already authenticated and still forwards the exact same Action to
+        Server admission, so callers can safely use it as the data-plane
+        fallback instead of losing an approval response.
+        """
+
+        message = str(error.message or "").strip().lower()
+        return (
+            error.code == 400
+            and f"action {action.lower()}" in message
+            and "not valid for this web service" in message
+        )
+
+    def _runtime_action(
+        self,
+        *,
+        access: Dict[str, Any],
+        action: str,
+        params: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        endpoint = str(access.get("endpoint") or "").strip().rstrip("/")
+        api_key = str(access.get("api_key") or "").strip()
+        if not endpoint or not api_key:
+            raise AgentEngineAPIError(404, "Agent runtime access is not ready")
+        response = self._get_session().request(
+            method="POST",
+            url=f"{endpoint}/agentengine/api/v1/{action}",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json=params,
+            timeout=self.timeout,
+            verify=self._ssl_verify_enabled(),
+        )
+        if response.status_code >= 400:
+            raise self._workspace_runtime_error(response)
+        try:
+            result = response.json()
+        except Exception as exc:
+            raise AgentEngineAPIError(502, "Runtime Action returned invalid JSON") from exc
+        if not isinstance(result, dict):
+            raise AgentEngineAPIError(502, "Runtime Action returned a non-object payload")
+        code = result.get("Code", 0)
+        if code != 0:
+            raise AgentEngineAPIError(
+                code,
+                str(result.get("Message") or "Unknown API error"),
+                details={
+                    "request_id": result.get("RequestId"),
+                    "action": result.get("Action") or action,
+                },
+            )
+        data = result.get("Data") if result.get("Data") is not None else result
+        normalized = self._to_snake_case(data)
+        if not isinstance(normalized, dict):
+            raise AgentEngineAPIError(502, "Runtime Action returned non-object Data")
+        return normalized
+
+    async def _runtime_action_for_agent(
+        self,
+        *,
+        agent_id: str,
+        action: str,
+        params: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        detail = await self.get_agent(agent_id, include_api_key=True)
+        access = self._extract_runtime_access(detail)
+        return await asyncio.to_thread(
+            self._runtime_action,
+            access=access,
+            action=action,
+            params=params,
+        )
 
     @staticmethod
     def _compact_params(params: Dict[str, Any] | None) -> Dict[str, Any]:
@@ -1900,19 +1981,37 @@ class AgentEngineClient:
         principal, AgentInstance and permit remain Server-derived.
         """
 
-        return await self._action_async(
-            "SubmitInteraction",
-            {
-                "AgentId": agent_id,
-                "SessionId": session_id,
-                "RunId": run_id,
-                "InteractionId": interaction_id,
-                "ExpectedRevision": expected_revision,
-                "Action": action,
-                "Response": response or {},
-                "IdempotencyKey": idempotency_key,
-            },
-        )
+        params = {
+            "AgentId": agent_id,
+            "SessionId": session_id,
+            "RunId": run_id,
+            "InteractionId": interaction_id,
+            "ExpectedRevision": expected_revision,
+            # ``Action`` is reserved by the KOP envelope for the API operation
+            # name.  Keep the SDK argument ergonomic while using an
+            # unambiguous public wire field.
+            "InteractionAction": action,
+            "Response": response or {},
+            "IdempotencyKey": idempotency_key,
+        }
+        if "SubmitInteraction" not in self._unpublished_kop_actions:
+            try:
+                return await self._action_async("SubmitInteraction", params)
+            except AgentEngineAPIError as exc:
+                if not self._is_unregistered_kop_action(exc, "SubmitInteraction"):
+                    raise
+                self._unpublished_kop_actions.add("SubmitInteraction")
+        if "SubmitInteraction" in self._unpublished_kop_actions:
+            # KOP publication can lag the Server/Gateway rollout.  The
+            # per-Agent endpoint is authenticated with the API key returned by
+            # signed GetAgent and still traverses Gateway -> Server admission;
+            # it never submits directly to Runtime.
+            return await self._runtime_action_for_agent(
+                agent_id=agent_id,
+                action="SubmitInteraction",
+                params=params,
+            )
+        raise AssertionError("unreachable SubmitInteraction transport state")
 
     async def list_workspace_files(
         self,
