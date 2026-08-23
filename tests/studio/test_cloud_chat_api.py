@@ -32,9 +32,37 @@ class _CloudClient:
         self.calls.append(("ListSessionEvents", kwargs))
         return {"events": [{"event_type": "interaction.requested", "seq_id": 5}]}
 
-    async def chat(self, agent_id: str, message: str, *, session_id: str | None = None) -> dict:
-        self.calls.append(("RunAgent", {"AgentId": agent_id, "SessionId": session_id, "Message": message}))
+    async def chat(
+        self,
+        agent_id: str,
+        message,
+        *,
+        session_id: str | None = None,
+        model: str | None = None,
+        model_options: dict | None = None,
+        tool_approval_mode: str | None = None,
+    ) -> dict:
+        self.calls.append(
+            (
+                "RunAgent",
+                {
+                    "AgentId": agent_id,
+                    "SessionId": session_id,
+                    "Message": message,
+                    "Model": model,
+                    "ModelOptions": model_options,
+                    "ToolApprovalMode": tool_approval_mode,
+                },
+            )
+        )
         return {"receipt_status": "accepted", "run_id": "run-1"}
+
+    async def list_agent_models(self, *, agent_id: str) -> dict:
+        self.calls.append(("ListAgentModels", {"AgentId": agent_id}))
+        return {
+            "models": [{"id": "qwen3-coder-plus", "name": "Qwen3 Coder Plus"}],
+            "current": "qwen3-coder-plus",
+        }
 
     async def delete_session(self, session_id: str) -> bool:
         self.calls.append(("DeleteSession", {"SessionId": session_id}))
@@ -83,6 +111,7 @@ def test_cloud_chat_routes_keep_agent_scope_in_the_local_receipt(tmp_path: Path)
     client, cloud = _client_with_receipt(tmp_path)
     with client:
         sessions = client.get("/api/v1/deployments/dep-cloud-chat/cloud-chat/sessions")
+        models = client.get("/api/v1/deployments/dep-cloud-chat/cloud-chat/models")
         created = client.post("/api/v1/deployments/dep-cloud-chat/cloud-chat/sessions")
         messages = client.get(
             "/api/v1/deployments/dep-cloud-chat/cloud-chat/sessions/sess-existing/messages",
@@ -94,7 +123,18 @@ def test_cloud_chat_routes_keep_agent_scope_in_the_local_receipt(tmp_path: Path)
         )
         sent = client.post(
             "/api/v1/deployments/dep-cloud-chat/cloud-chat/sessions/sess-existing/messages",
-            json={"content": "你好"},
+            json={
+                "content": [
+                    {"type": "input_text", "text": "检查附件"},
+                    {
+                        "type": "input_file",
+                        "filename": "note.txt",
+                        "file_data": "data:text/plain;base64,aGVsbG8=",
+                    },
+                ],
+                "model": "qwen3-coder-plus",
+                "toolApprovalMode": "ask",
+            },
         )
         interaction = client.post(
             "/api/v1/deployments/dep-cloud-chat/cloud-chat/sessions/sess-existing/interactions",
@@ -113,6 +153,8 @@ def test_cloud_chat_routes_keep_agent_scope_in_the_local_receipt(tmp_path: Path)
 
     assert sessions.status_code == 200
     assert sessions.json()["sessions"][0]["session_id"] == "sess-existing"
+    assert models.status_code == 200
+    assert models.json()["current"] == "qwen3-coder-plus"
     assert created.status_code == 201
     assert created.json()["session"]["session_id"] == "sess-created"
     assert messages.status_code == 200
@@ -126,6 +168,7 @@ def test_cloud_chat_routes_keep_agent_scope_in_the_local_receipt(tmp_path: Path)
     assert deleted.status_code == 204
     assert cloud.calls == [
         ("ListSessions", {"AgentId": "ar-receipt-bound", "Page": 1, "PageSize": 50}),
+        ("ListAgentModels", {"AgentId": "ar-receipt-bound"}),
         ("CreateSession", {"AgentId": "ar-receipt-bound"}),
         (
             "ListSessionMessages",
@@ -150,7 +193,17 @@ def test_cloud_chat_routes_keep_agent_scope_in_the_local_receipt(tmp_path: Path)
             {
                 "AgentId": "ar-receipt-bound",
                 "SessionId": "sess-existing",
-                "Message": "你好",
+                "Message": [
+                    {"type": "input_text", "text": "检查附件"},
+                    {
+                        "type": "input_file",
+                        "filename": "note.txt",
+                        "file_data": "data:text/plain;base64,aGVsbG8=",
+                    },
+                ],
+                "Model": "qwen3-coder-plus",
+                "ModelOptions": None,
+                "ToolApprovalMode": "ask",
             },
         ),
         (
@@ -179,4 +232,30 @@ def test_cloud_chat_route_does_not_accept_browser_agent_override(tmp_path: Path)
         )
 
     assert response.status_code == 422
+    assert cloud.calls == []
+
+
+def test_cloud_chat_route_rejects_unbounded_or_unknown_attachment_parts(tmp_path: Path) -> None:
+    client, cloud = _client_with_receipt(tmp_path)
+    with client:
+        unknown = client.post(
+            "/api/v1/deployments/dep-cloud-chat/cloud-chat/sessions/sess-existing/messages",
+            json={"content": [{"type": "internal_policy", "sandbox": "full-access"}]},
+        )
+        too_many = client.post(
+            "/api/v1/deployments/dep-cloud-chat/cloud-chat/sessions/sess-existing/messages",
+            json={
+                "content": [
+                    {
+                        "type": "input_file",
+                        "filename": f"note-{index}.txt",
+                        "file_data": "data:text/plain;base64,aA==",
+                    }
+                    for index in range(9)
+                ]
+            },
+        )
+
+    assert unknown.status_code == 422
+    assert too_many.status_code == 422
     assert cloud.calls == []

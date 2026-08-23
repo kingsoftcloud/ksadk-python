@@ -59,6 +59,60 @@ async def test_fifo_order_is_stable_within_session():
         assert message.status == InboxState.COMPLETED
 
 
+@pytest.mark.parametrize(
+    ("requested_model", "approval_mode", "expected_model", "expected_approval"),
+    [
+        ("qwen3-coder-plus", "ask", "qwen3-coder-plus", "manual"),
+        ("not-deployed", "risk", "default-model", "auto_review"),
+    ],
+)
+async def test_turn_model_and_approval_are_bounded_by_deployment_defaults(
+    requested_model, approval_mode, expected_model, expected_approval
+):
+    stack = await kernel_stack()
+    lease = await stack.lease()
+    await stack.kernel.submit(
+        command(
+            idempotency_key=f"runtime-options-{approval_mode}",
+            payload={
+                "content": [{"type": "input_text", "text": "hello"}],
+                "runtime_options": {
+                    "model": requested_model,
+                    "tool_approval_mode": approval_mode,
+                    # An untrusted turn must never be able to replace the
+                    # deployment-owned sandbox.
+                    "sandbox": "full-access",
+                },
+            },
+        ),
+        permit=stack.permit("enqueue"),
+    )
+    from ksadk.kernel.worker import AgentKernelWorker
+
+    worker = AgentKernelWorker(
+        stack.store,
+        adapter_factory=lambda: stack.adapter,
+        start_request_defaults={
+            "model": "default-model",
+            "allowed_models": ["default-model", "qwen3-coder-plus"],
+            "config": {
+                "sandbox": "workspace-write",
+                "sandbox_read_only": False,
+                "approval_mode": "deny_all",
+            },
+        },
+    )
+
+    result = await worker.run_once(AGENT, lease)
+
+    assert result.outcome == "completed"
+    request = stack.adapter.start_requests[-1]
+    assert request.model == expected_model
+    assert request.config["approval_mode"] == expected_approval
+    assert request.config["sandbox"] == "workspace-write"
+    assert request.config["sandbox_read_only"] is False
+
+
 async def test_enqueue_stays_queued_while_run_is_active():
     stack = await kernel_stack()
     lease = await stack.lease()

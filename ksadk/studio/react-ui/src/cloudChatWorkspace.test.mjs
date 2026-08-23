@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const source = readFileSync(resolve(import.meta.dirname, "components/CloudChatWorkspace.tsx"), "utf8");
+const settingsSource = readFileSync(resolve(import.meta.dirname, "components/SettingsOverlay.tsx"), "utf8");
 
 test("cloud chat keeps polling until an admitted run reaches a terminal response", () => {
   assert.match(source, /const \[waitingForResponse, setWaitingForResponse\] = useState\(false\)/);
@@ -34,11 +35,23 @@ test("cloud chat keeps polling until an admitted run reaches a terminal response
   assert.match(source, /waitingForResponseRef\.current = false/);
 });
 
-test("cloud chat exposes a failed run and keeps its credentials in the Studio backend", () => {
+test("cloud chat exposes a failed run without implementation or credential copy", () => {
   assert.match(source, /cloud-chat-run-warning/);
   assert.match(source, /这次云端运行未完成/);
   assert.doesNotMatch(source, /可查看运行详情/);
-  assert.match(source, /AK\/SK 仅保留在本地 Studio 进程/);
+  assert.doesNotMatch(source, /AK\/SK/);
+  assert.doesNotMatch(settingsSource, /AK\/SK/);
+  assert.doesNotMatch(settingsSource, /不可变 Bundle|deployment receipt|伪造身份/);
+});
+
+test("cloud composer stays limited to attachments, model and approval controls", () => {
+  assert.match(source, /aria-label="上传附件"/);
+  assert.match(source, /aria-label="选择模型"/);
+  assert.match(source, /aria-label="审批级别"/);
+  assert.match(source, /toolApprovalMode: approvalMode/);
+  assert.match(source, /type: "input_image"/);
+  assert.match(source, /type: "input_file"/);
+  assert.doesNotMatch(source, /option value="full"/);
 });
 
 test("cloud chat normalizes projected approval lifecycle events", () => {

@@ -21,8 +21,8 @@ from starlette.background import BackgroundTask
 from ksadk.studio.api_catalog_routes import register_catalog_routes
 from ksadk.studio.api_contracts import (
     AuthoringCommitRequest,
-    CloudChatInteractionSubmitRequest,
     BuildRequest,
+    CloudChatInteractionSubmitRequest,
     CloudChatMessageRequest,
     ContextPreviewRequest,
     ConversationAuthoringRequest,
@@ -1224,6 +1224,12 @@ def create_studio_app(
             deployment_id, page=page, size=size
         )
 
+    @app.get("/api/v1/deployments/{deployment_id}/cloud-chat/models")
+    async def list_cloud_chat_models(deployment_id: str):
+        """List models through Studio's signed Server client."""
+
+        return await studio.cloud.list_cloud_chat_models(deployment_id)
+
     @app.post(
         "/api/v1/deployments/{deployment_id}/cloud-chat/sessions",
         status_code=201,
@@ -1290,6 +1296,9 @@ def create_studio_app(
             deployment_id,
             session_id=session_id,
             content=payload.content,
+            model=payload.model,
+            model_options=payload.model_options,
+            tool_approval_mode=payload.tool_approval_mode,
         )
 
     @app.post(

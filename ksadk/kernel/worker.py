@@ -127,10 +127,10 @@ class AgentKernelWorker:
         # SessionEventStore（typed RuntimeEventStore 的 envelope 写路径）。
         # 缺省时不落 runtime 事件，仅保证 stream 被消费到自然结束。
         self._session_events = session_events
-        # Deployment-owned defaults (model, prompt, sandbox and approval
-        # policy) come from the admitted immutable manifest.  They are not
-        # accepted from the public enqueue payload: callers may choose input,
-        # but cannot widen the runtime's tool authority.
+        # Deployment-owned defaults (model, prompt and sandbox) come from the
+        # admitted immutable manifest. Server may attach a bounded per-turn
+        # model/approval selector to the signed command; the worker validates
+        # the model allow-list and never lets that selector replace sandbox.
         self._start_request_defaults = dict(start_request_defaults or {})
         # Task 6：activation 拥有 Adapter/RunHandle/Provider 的 live 表。
         # key 永远是 durable run id；cache miss 不能等价于 Run 不存在
@@ -384,6 +384,33 @@ class AgentKernelWorker:
             command.session_id
         )
         defaults = self._start_request_defaults
+        runtime_options = command.payload.get("runtime_options")
+        if not isinstance(runtime_options, Mapping):
+            runtime_options = {}
+        default_model = (
+            str(defaults["model"])
+            if defaults.get("model") is not None
+            else None
+        )
+        requested_model = str(runtime_options.get("model") or "").strip()
+        allowed_models = {
+            str(item).strip()
+            for item in (defaults.get("allowed_models") or [])
+            if str(item).strip()
+        }
+        selected_model = (
+            requested_model
+            if requested_model and requested_model in allowed_models
+            else default_model
+        )
+        request_config = dict(defaults.get("config") or {})
+        approval_mode = str(runtime_options.get("tool_approval_mode") or "").strip().lower()
+        approval_overrides = {
+            "ask": "manual",
+            "risk": "auto_review",
+        }
+        if approval_mode in approval_overrides:
+            request_config["approval_mode"] = approval_overrides[approval_mode]
         handle = await adapter.start(
             StartRequest(
                 input=command.payload.get("content"),
@@ -392,12 +419,8 @@ class AgentKernelWorker:
                 agent_id=str(
                     defaults.get("agent_id") or command.agent_instance_id
                 ),
-                model=(
-                    str(defaults["model"])
-                    if defaults.get("model") is not None
-                    else None
-                ),
-                config=dict(defaults.get("config") or {}),
+                model=selected_model,
+                config=request_config,
                 # durable run_id 优先传给 adapter；adapter 不认时以
                 # runtime_run_id 映射显式记录两个 ID 的对应关系。
                 metadata={

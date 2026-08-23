@@ -33,6 +33,16 @@ def kernel_start_request_defaults(context: RuntimeLaunchContext) -> dict[str, An
     model = str(config.get("model") or "").strip()
     if model:
         defaults["model"] = model
+    raw_allowed_models = config.get("allowed_models") or config.get("allowedModels") or []
+    allowed_models = (
+        {str(item).strip() for item in raw_allowed_models if str(item).strip()}
+        if isinstance(raw_allowed_models, (list, tuple, set))
+        else set()
+    )
+    if model:
+        allowed_models.add(model)
+    if allowed_models:
+        defaults["allowed_models"] = sorted(allowed_models)
     if context.runtime_type != "codex":
         return defaults
 

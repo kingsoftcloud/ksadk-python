@@ -607,7 +607,10 @@ class DirectAgentEngineCloudDeploymentGateway:
         deployment: DeploymentRecord,
         *,
         session_id: str,
-        content: str,
+        content: Any,
+        model: str | None = None,
+        model_options: dict[str, Any] | None = None,
+        tool_approval_mode: str | None = None,
     ) -> dict[str, Any]:
         """Submit a foreground message via RunAgent and Server admission.
 
@@ -617,7 +620,21 @@ class DirectAgentEngineCloudDeploymentGateway:
         """
 
         return await self.client.chat(
-            self._chat_agent_id(deployment), content, session_id=session_id
+            self._chat_agent_id(deployment),
+            content,
+            session_id=session_id,
+            model=model,
+            model_options=model_options,
+            tool_approval_mode=tool_approval_mode,
+        )
+
+    async def list_deployment_chat_models(
+        self, deployment: DeploymentRecord
+    ) -> dict[str, Any]:
+        """Read the Server-authoritative model catalog for this Agent."""
+
+        return await self.client.list_agent_models(
+            agent_id=self._chat_agent_id(deployment)
         )
 
     async def submit_deployment_chat_interaction(
@@ -1163,7 +1180,10 @@ class CloudDeploymentService:
         deployment_id: str,
         *,
         session_id: str,
-        content: str,
+        content: Any,
+        model: str | None = None,
+        model_options: dict[str, Any] | None = None,
+        tool_approval_mode: str | None = None,
     ) -> dict[str, Any]:
         deployment = self.get(deployment_id)
         sender = getattr(self.gateway, "send_deployment_chat_message", None)
@@ -1173,7 +1193,28 @@ class CloudDeploymentService:
                 "当前云端网关不支持本地会话代理",
                 status_code=501,
             )
-        return await sender(deployment, session_id=session_id, content=content)
+        kwargs: dict[str, Any] = {
+            "session_id": session_id,
+            "content": content,
+        }
+        if model is not None:
+            kwargs["model"] = model
+        if model_options:
+            kwargs["model_options"] = model_options
+        if tool_approval_mode is not None:
+            kwargs["tool_approval_mode"] = tool_approval_mode
+        return await sender(deployment, **kwargs)
+
+    async def list_cloud_chat_models(self, deployment_id: str) -> dict[str, Any]:
+        deployment = self.get(deployment_id)
+        reader = getattr(self.gateway, "list_deployment_chat_models", None)
+        if reader is None:
+            raise StudioError(
+                "CLOUD_CHAT_UNAVAILABLE",
+                "当前云端网关不支持模型目录代理",
+                status_code=501,
+            )
+        return await reader(deployment)
 
     async def submit_cloud_chat_interaction(
         self,

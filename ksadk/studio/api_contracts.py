@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, field_validator
 
 from ksadk.evaluation import EvaluationConfig as PublicEvaluationConfig
 from ksadk.evaluation import TargetRef
@@ -119,13 +119,57 @@ class InteractionSubmitRequest(ContractModel):
 
 
 class CloudChatMessageRequest(ContractModel):
-    """A local Studio browser submits only message content to its loopback API.
+    """One cloud turn submitted through Studio's loopback control plane.
 
     The loopback process, never the browser, owns the AK/SK used to admit the
-    message through the cloud control plane.
+    message through the cloud control plane.  ``content`` uses the same
+    OpenAI-compatible text/image/file part shape as RunAgent; execution-policy
+    fields remain bounded enums and are revalidated by Server/Runtime.
     """
 
-    content: str = Field(min_length=1, max_length=1_000_000)
+    content: str | list[dict[str, Any]]
+    model: str | None = Field(default=None, min_length=1, max_length=256)
+    model_options: dict[str, Any] = Field(default_factory=dict)
+    tool_approval_mode: Literal["ask", "risk"] = "risk"
+
+    @field_validator("content")
+    @classmethod
+    def validate_content(cls, value):
+        if isinstance(value, str):
+            if not value.strip():
+                raise ValueError("content must not be empty")
+            if len(value) > 1_000_000:
+                raise ValueError("text content is too large")
+            return value
+        if not 1 <= len(value) <= 9:
+            raise ValueError("content must contain between 1 and 9 parts")
+        attachment_count = 0
+        for part in value:
+            kind = str(part.get("type") or "")
+            if kind == "input_text":
+                text = part.get("text")
+                if not isinstance(text, str) or not text.strip() or len(text) > 1_000_000:
+                    raise ValueError("input_text must contain bounded non-empty text")
+                continue
+            if kind == "input_image":
+                attachment_count += 1
+                url = part.get("image_url")
+                if not isinstance(url, str) or not url or len(url) > 14_000_000:
+                    raise ValueError("input_image must contain a bounded image_url")
+                continue
+            if kind == "input_file":
+                attachment_count += 1
+                filename = part.get("filename")
+                data = part.get("file_data") or part.get("file_url")
+                if not isinstance(filename, str) or not filename.strip():
+                    raise ValueError("input_file must contain a filename")
+                if not isinstance(data, str) or not data or len(data) > 14_000_000:
+                    raise ValueError("input_file must contain bounded file data")
+                continue
+            raise ValueError(f"unsupported content part: {kind or '<missing>'}")
+        if attachment_count > 8:
+            raise ValueError("a turn supports at most 8 attachments")
+        return value
 
 
 class CloudChatInteractionSubmitRequest(ContractModel):

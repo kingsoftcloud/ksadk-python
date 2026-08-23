@@ -138,11 +138,34 @@ class _Client:
         self.session_calls.append(("ListSessionEvents", kwargs))
         return {"events": [{"event_type": "run.completed"}]}
 
-    async def chat(self, agent_id: str, message: str, *, session_id: str | None = None) -> dict:
+    async def chat(
+        self,
+        agent_id: str,
+        message,
+        *,
+        session_id: str | None = None,
+        model: str | None = None,
+        model_options: dict | None = None,
+        tool_approval_mode: str | None = None,
+    ) -> dict:
         self.session_calls.append(
-            ("RunAgent", {"AgentId": agent_id, "SessionId": session_id, "Message": message})
+            (
+                "RunAgent",
+                {
+                    "AgentId": agent_id,
+                    "SessionId": session_id,
+                    "Message": message,
+                    "Model": model,
+                    "ModelOptions": model_options,
+                    "ToolApprovalMode": tool_approval_mode,
+                },
+            )
         )
         return {"receipt_status": "accepted", "run_id": "run-cloud"}
+
+    async def list_agent_models(self, *, agent_id: str) -> dict:
+        self.session_calls.append(("ListAgentModels", {"AgentId": agent_id}))
+        return {"models": [{"id": "qwen3-coder-plus"}], "current": "qwen3-coder-plus"}
 
 
 class _MissingAgentClient(_Client):
@@ -686,8 +709,16 @@ async def test_cloud_chat_is_bound_to_the_deployment_receipt_agent() -> None:
     }
     assert await gateway.delete_deployment_chat_session(deployment, session_id="sess-cloud") is True
     assert await gateway.send_deployment_chat_message(
-        deployment, session_id="sess-cloud", content="你好"
+        deployment,
+        session_id="sess-cloud",
+        content="你好",
+        model="qwen3-coder-plus",
+        tool_approval_mode="risk",
     ) == {"receipt_status": "accepted", "run_id": "run-cloud"}
+    assert await gateway.list_deployment_chat_models(deployment) == {
+        "models": [{"id": "qwen3-coder-plus"}],
+        "current": "qwen3-coder-plus",
+    }
     assert client.session_calls == [
         ("ListSessions", {"AgentId": "ar-receipt-bound", "Page": 1, "PageSize": 50}),
         ("CreateSession", {"AgentId": "ar-receipt-bound"}),
@@ -707,8 +738,12 @@ async def test_cloud_chat_is_bound_to_the_deployment_receipt_agent() -> None:
                 "AgentId": "ar-receipt-bound",
                 "SessionId": "sess-cloud",
                 "Message": "你好",
+                "Model": "qwen3-coder-plus",
+                "ModelOptions": None,
+                "ToolApprovalMode": "risk",
             },
         ),
+        ("ListAgentModels", {"AgentId": "ar-receipt-bound"}),
     ]
 
 

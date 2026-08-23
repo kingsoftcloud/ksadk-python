@@ -2464,7 +2464,14 @@ class AgentEngineClient:
     # ===== Chat Actions =====
 
     async def chat(
-        self, agent_id: str, message: str, session_id: Optional[str] = None
+        self,
+        agent_id: str,
+        message: Any,
+        session_id: Optional[str] = None,
+        *,
+        model: Optional[str] = None,
+        model_options: Optional[Dict[str, Any]] = None,
+        tool_approval_mode: Optional[str] = None,
     ) -> Dict[str, Any]:
         """调用 Agent"""
         params = {
@@ -2479,6 +2486,14 @@ class AgentEngineClient:
         }
         if session_id:
             params["SessionId"] = session_id
+        if model:
+            params["Model"] = model
+        if model_options:
+            params["ModelOptions"] = dict(model_options)
+        if tool_approval_mode:
+            params["Metadata"] = {
+                "agentengine": {"tool_approval_mode": tool_approval_mode}
+            }
         return await self._action_async("RunAgent", params)
 
     # ===== Version Actions =====

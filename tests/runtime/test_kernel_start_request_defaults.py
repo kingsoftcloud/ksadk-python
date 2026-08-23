@@ -22,6 +22,7 @@ def test_codex_manifest_ask_profile_becomes_native_manual_approval():
 
     assert defaults["agent_id"] == "managed-agent"
     assert defaults["model"] == "qwen-test"
+    assert defaults["allowed_models"] == ["qwen-test"]
     assert defaults["config"] == {
         "sandbox_read_only": False,
         "sandbox": "workspace-write",
@@ -44,6 +45,22 @@ def test_codex_manifest_without_approval_stays_fail_closed():
 
     assert defaults["config"]["sandbox"] == "read-only"
     assert defaults["config"]["approval_mode"] == "deny_all"
+
+
+def test_manifest_projects_an_additive_model_allow_list():
+    context = RuntimeLaunchContext(
+        runtime_type="codex",
+        project_dir=Path("/tmp/managed-agent"),
+        config={
+            "model": "default-model",
+            "allowedModels": ["qwen3-coder-plus", "default-model", ""],
+        },
+    )
+
+    defaults = kernel_start_request_defaults(context)
+
+    assert defaults["model"] == "default-model"
+    assert defaults["allowed_models"] == ["default-model", "qwen3-coder-plus"]
 
 
 def test_codex_adapter_uses_the_same_manifest_sandbox_projection():

@@ -19,10 +19,15 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
+import hashlib
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, AsyncIterator, Optional
 
 from ksadk.codex.client import CodexClient
@@ -889,7 +894,7 @@ def _build_run_input(request: Optional[StartRequest], prompt: Any) -> Any:
                 # canonical conversation message({role, content});当前 input
                 # 已由 prompt(或 conversation preprocessing)承载,跳过历史项。
                 continue
-            if kind == "text":
+            if kind in {"text", "input_text"}:
                 text = str(
                     prompt
                     if not text_replaced and isinstance(prompt, str)
@@ -898,10 +903,26 @@ def _build_run_input(request: Optional[StartRequest], prompt: Any) -> Any:
                 text_replaced = True
                 if text:
                     native_items.append(TextInput(text=text))
-            elif kind == "image" and item.get("url"):
-                native_items.append(ImageInput(url=str(item["url"])))
+            elif kind in {"image", "input_image"} and (
+                item.get("url") or item.get("image_url")
+            ):
+                native_items.append(
+                    ImageInput(url=str(item.get("url") or item.get("image_url")))
+                )
             elif kind == "localImage" and item.get("path"):
                 native_items.append(LocalImageInput(path=str(item["path"])))
+            elif kind == "input_file" and (
+                item.get("file_data")
+                or str(item.get("file_url") or "").startswith("data:")
+            ):
+                file_path = _materialize_inline_file(
+                    str(item.get("file_data") or item.get("file_url")),
+                    str(item.get("filename") or "attachment"),
+                )
+                if file_path is not None:
+                    native_items.append(
+                        MentionInput(name=file_path.name, path=str(file_path))
+                    )
             elif kind == "mention" and item.get("path"):
                 native_items.append(
                     MentionInput(
@@ -919,6 +940,28 @@ def _build_run_input(request: Optional[StartRequest], prompt: Any) -> Any:
     if len(combined) == 1 and isinstance(combined[0], TextInput) and not skills:
         return combined[0].text
     return combined
+
+
+def _materialize_inline_file(data_url: str, filename: str) -> Path | None:
+    """Materialize a bounded Studio inline attachment for native Codex."""
+
+    match = re.fullmatch(r"data:([^;,]+)?;base64,([A-Za-z0-9+/=\s]+)", data_url)
+    if match is None:
+        return None
+    try:
+        payload = base64.b64decode(match.group(2), validate=True)
+    except (ValueError, binascii.Error):
+        return None
+    if not payload or len(payload) > 10 * 1024 * 1024:
+        return None
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "-", Path(filename).name).strip(".-")
+    safe_name = safe_name[:120] or "attachment"
+    digest = hashlib.sha256(payload).hexdigest()
+    path = Path("/tmp/ksadk-codex-attachments") / digest / safe_name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        path.write_bytes(payload)
+    return path
 
 
 __all__ = ["CodexRuntimeAdapter"]

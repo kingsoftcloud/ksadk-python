@@ -945,6 +945,74 @@ button:disabled {
   border-top: 1px solid var(--border);
 }
 
+.cloud-chat-composer-footer {
+  justify-content: space-between;
+  padding-top: 7px;
+}
+
+.cloud-chat-composer-tools {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cloud-chat-composer-tools label.icon-button {
+  display: inline-grid;
+  flex: 0 0 auto;
+  cursor: pointer;
+}
+
+.cloud-chat-composer-tools select {
+  max-width: 180px;
+  height: 30px;
+  padding: 0 26px 0 9px;
+  border: 0;
+  border-radius: 7px;
+  color: var(--text-secondary);
+  background-color: transparent;
+  font-size: var(--font-size-meta);
+}
+
+.cloud-chat-composer-tools select:hover,
+.cloud-chat-composer-tools select:focus {
+  color: var(--text);
+  background-color: var(--surface-hover);
+  outline: 0;
+}
+
+.cloud-chat-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px 10px 8px;
+}
+
+.cloud-chat-attachments > span {
+  max-width: 240px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 7px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--text-secondary);
+  background: var(--surface-subtle);
+  font-size: var(--font-size-caption);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cloud-chat-attachments button {
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  color: var(--text-tertiary);
+  background: transparent;
+}
+
 .chat-send-button {
   width: 30px;
   height: 30px;

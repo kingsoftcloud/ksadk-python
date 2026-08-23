@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Bot, Loader2, MessageSquarePlus, Send, ShieldAlert, ShieldCheck, Trash2, X } from "lucide-react";
+import { Bot, Loader2, MessageSquarePlus, Paperclip, Send, ShieldAlert, ShieldCheck, Trash2, X } from "lucide-react";
 import { apiFetch } from "../api";
 import { showToast } from "./Toast";
 
@@ -35,6 +35,13 @@ interface CloudInteraction {
   kind: string;
   title: string;
 }
+
+interface CloudModel {
+  id: string;
+  label: string;
+}
+
+type ApprovalMode = "ask" | "risk";
 
 function valueText(value: unknown): string {
   if (typeof value === "string") return value;
@@ -203,6 +210,16 @@ async function responseError(response: Response): Promise<string> {
   }
 }
 
+async function fileDataUrl(file: File): Promise<string> {
+  if (file.size > 10 * 1024 * 1024) throw new Error(`${file.name} 超过 10 MB 限制`);
+  return await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error(`${file.name} 读取失败`));
+    reader.readAsDataURL(file);
+  });
+}
+
 export function CloudChatWorkspace({
   deploymentId,
   agentId,
@@ -215,6 +232,10 @@ export function CloudChatWorkspace({
   const [messages, setMessages] = useState<CloudMessage[]>([]);
   const [interactions, setInteractions] = useState<CloudInteraction[]>([]);
   const [input, setInput] = useState("");
+  const [attachments, setAttachments] = useState<File[]>([]);
+  const [models, setModels] = useState<CloudModel[]>([]);
+  const [selectedModel, setSelectedModel] = useState("");
+  const [approvalMode, setApprovalMode] = useState<ApprovalMode>("risk");
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [waitingForResponse, setWaitingForResponse] = useState(false);
@@ -319,6 +340,33 @@ export function CloudChatWorkspace({
   }, [refreshSessions, refreshTick]);
 
   useEffect(() => {
+    let cancelled = false;
+    apiFetch(`${base}/models`)
+      .then(async response => {
+        if (!response.ok) throw new Error(await responseError(response));
+        return await response.json() as Record<string, unknown>;
+      })
+      .then(payload => {
+        if (cancelled) return;
+        const rawModels = Array.isArray(payload.models) ? payload.models : Array.isArray(payload.items) ? payload.items : [];
+        const normalized = rawModels.map(item => {
+          if (typeof item === "string") return { id: item, label: item };
+          if (!item || typeof item !== "object") return null;
+          const model = item as Record<string, unknown>;
+          const id = String(model.id ?? model.model ?? model.name ?? "").trim();
+          return id ? { id, label: String(model.display_name ?? model.displayName ?? model.label ?? id) } : null;
+        }).filter((item): item is CloudModel => Boolean(item));
+        const current = String(payload.current ?? payload.configured_model ?? payload.configuredModel ?? "").trim();
+        setModels(normalized);
+        setSelectedModel(previous => previous || (normalized.some(item => item.id === current) ? current : normalized[0]?.id || current));
+      })
+      .catch(() => {
+        // Model discovery is optional; the deployed manifest default remains authoritative.
+      });
+    return () => { cancelled = true; };
+  }, [base]);
+
+  useEffect(() => {
     refreshMessages(currentSessionId).catch(error => {
       showToast("云端消息加载失败", error.message, "error");
     });
@@ -372,13 +420,20 @@ export function CloudChatWorkspace({
     // React state is committed after the handler returns.  The ref closes the
     // small gap in which Enter and a click could both create an initial cloud
     // session before `sending` has rendered as true.
-    if (!content || sending || waitingForResponse || sendInFlightRef.current) return;
+    if ((!content && attachments.length === 0) || sending || waitingForResponse || sendInFlightRef.current) return;
     sendInFlightRef.current = true;
     setSending(true);
     waitingForResponseRef.current = true;
     setWaitingForResponse(true);
-    setInput("");
     try {
+      const contentParts: Array<Record<string, unknown>> = [];
+      if (content) contentParts.push({ type: "input_text", text: content });
+      for (const file of attachments) {
+        const dataUrl = await fileDataUrl(file);
+        contentParts.push(file.type.startsWith("image/")
+          ? { type: "input_image", image_url: dataUrl }
+          : { type: "input_file", filename: file.name, file_data: dataUrl });
+      }
       const sessionId = currentSessionIdRef.current || await createSession();
       assistantIdsBeforeSendRef.current = new Set(
         messages
@@ -390,7 +445,7 @@ export function CloudChatWorkspace({
       const optimistic: CloudMessage = {
         id: `local-${crypto.randomUUID()}`,
         role: "user",
-        content,
+        content: content || `已上传 ${attachments.length} 个附件`,
         timestamp: new Date().toISOString(),
         pending: true,
       };
@@ -398,9 +453,15 @@ export function CloudChatWorkspace({
       const response = await apiFetch(`${base}/sessions/${encodeURIComponent(sessionId)}/messages`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content }),
+        body: JSON.stringify({
+          content: contentParts,
+          model: selectedModel || undefined,
+          toolApprovalMode: approvalMode,
+        }),
       });
       if (!response.ok) throw new Error(await responseError(response));
+      setInput("");
+      setAttachments([]);
       const receipt = await response.json() as Record<string, unknown>;
       awaitingRunIdRef.current = String(receipt.run_id ?? receipt.runId ?? receipt.RunId ?? "");
       awaitingAcceptedSeqRef.current = Number(
@@ -534,7 +595,28 @@ export function CloudChatWorkspace({
           )}
           <div className="chat-composer">
             <textarea value={input} onChange={event => setInput(event.target.value)} placeholder="发送到云端 Agent" disabled={!active || sending || waitingForResponse} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); sendMessage(); } }} />
-            <div className="chat-composer-footer"><span>AK/SK 仅保留在本地 Studio 进程</span><button className="icon-button primary" type="button" disabled={!input.trim() || sending || waitingForResponse || !active} onClick={sendMessage} aria-label="发送"><Send size={17} /></button></div>
+            {attachments.length > 0 && <div className="cloud-chat-attachments">{attachments.map((file, index) => <span key={`${file.name}-${file.size}-${index}`}><Paperclip size={13} />{file.name}<button type="button" aria-label={`移除附件 ${file.name}`} onClick={() => setAttachments(previous => previous.filter((_, itemIndex) => itemIndex !== index))}><X size={12} /></button></span>)}</div>}
+            <div className="chat-composer-footer cloud-chat-composer-footer">
+              <div className="cloud-chat-composer-tools">
+                <label className="icon-button tertiary" title="上传附件" aria-label="上传附件"><input type="file" multiple hidden onChange={event => {
+                  const files = Array.from(event.target.files || []);
+                  const oversized = files.find(file => file.size > 10 * 1024 * 1024);
+                  if (oversized) showToast("附件过大", `${oversized.name} 超过 10 MB 限制`, "error");
+                  setAttachments(previous => {
+                    const accepted = files.filter(file => file.size <= 10 * 1024 * 1024);
+                    if (previous.length + accepted.length > 8) showToast("附件过多", "每轮最多上传 8 个附件", "error");
+                    return [...previous, ...accepted].slice(0, 8);
+                  });
+                  event.target.value = "";
+                }} /><Paperclip size={17} /></label>
+                {models.length > 0 && <select aria-label="选择模型" value={selectedModel} onChange={event => setSelectedModel(event.target.value)}>{models.map(model => <option key={model.id} value={model.id}>{model.label}</option>)}</select>}
+                <select aria-label="审批级别" value={approvalMode} onChange={event => setApprovalMode(event.target.value as ApprovalMode)}>
+                  <option value="ask">请求批准</option>
+                  <option value="risk">风险操作需确认</option>
+                </select>
+              </div>
+              <button className="icon-button primary" type="button" disabled={(!input.trim() && attachments.length === 0) || sending || waitingForResponse || !active} onClick={sendMessage} aria-label="发送"><Send size={17} /></button>
+            </div>
           </div>
         </div>
       </div>
