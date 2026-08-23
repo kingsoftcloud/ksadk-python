@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM hub.kce.ksyun.com/cbd-serverless/python:3.12-slim
 ARG KSADK_SOURCE_COMMIT=unknown
 ENV KSADK_RUNTIME_IMAGE_SOURCE_COMMIT=${KSADK_SOURCE_COMMIT}
 WORKDIR /app
