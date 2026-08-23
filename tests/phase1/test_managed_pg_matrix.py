@@ -164,3 +164,27 @@ def test_rollbacks_must_use_an_immutable_image() -> None:
     )
     with pytest.raises(MatrixFailure, match="not digest pinned"):
         driver.set_image("registry.example/canary:mutable")
+
+
+def test_pod_replacement_waits_for_ready_before_port_forward(monkeypatch) -> None:
+    driver = KubeDriver(
+        kubeconfig="/does/not/matter",
+        namespace="phase1",
+        deployment="canary",
+    )
+    calls: list[tuple[str, ...]] = []
+
+    def fake_run(*args: str, timeout: float = 180.0) -> str:
+        calls.append(args)
+        return ""
+
+    monkeypatch.setattr(driver, "_run", fake_run)
+    monkeypatch.setattr(driver, "current_pod", lambda: ("new-pod", "new-uid"))
+    name, uid, _ = driver.delete_pod_and_wait_replacement(
+        "old-pod", "old-uid", timeout=30.0
+    )
+    assert (name, uid) == ("new-pod", "new-uid")
+    assert any(
+        "wait" in call and "--for=condition=Ready" in call and "pod/new-pod" in call
+        for call in calls
+    )

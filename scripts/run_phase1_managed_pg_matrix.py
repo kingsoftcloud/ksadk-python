@@ -188,6 +188,21 @@ class KubeDriver:
                 time.sleep(0.5)
                 continue
             if uid != old_uid:
+                remaining = max(1, int(deadline - time.monotonic()))
+                # ``current_pod`` deliberately falls back to a non-ready
+                # candidate so callers can observe rollout progress.  A new
+                # UID alone is not enough for port-forward: kubelet may have
+                # created the sandbox while uvicorn is still starting, which
+                # yields a misleading localhost:8080 connection refusal.
+                self._run(
+                    "-n",
+                    self.namespace,
+                    "wait",
+                    "--for=condition=Ready",
+                    f"pod/{name}",
+                    f"--timeout={remaining}s",
+                    timeout=remaining + 10,
+                )
                 return name, uid, time.monotonic() - started
             time.sleep(0.5)
         raise MatrixFailure("replacement canary pod did not become ready")
