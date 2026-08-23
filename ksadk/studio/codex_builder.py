@@ -257,6 +257,7 @@ class CodexStudioBuilder:
         model_profiles = self._model_profile_snapshot(
             snapshot.manifest.name,
             allowed_models=snapshot.manifest.allowed_models,
+            ignore_missing=True,
         )
         build_id = self._build_id(snapshot.manifest_sha256, model_profiles)
         try:
@@ -370,6 +371,7 @@ class CodexStudioBuilder:
         agent_id: str,
         *,
         allowed_models: tuple[str, ...],
+        ignore_missing: bool = False,
     ) -> dict[str, dict[str, Any]]:
         if self.catalog is None or self.drafts is None:
             return {}
@@ -383,7 +385,18 @@ class CodexStudioBuilder:
             resource_ids = [default_id]
         profiles: dict[str, dict[str, Any]] = {}
         for resource_id in resource_ids:
-            descriptor = self.catalog.get(resource_id)
+            try:
+                descriptor = self.catalog.get(resource_id)
+            except StudioError as exc:
+                if exc.code == "RESOURCE_NOT_FOUND" and ignore_missing:
+                    # Provider-discovered model profiles are process-local. A
+                    # YAML-managed Agent may therefore retain a stale draft
+                    # binding after Studio restarts even though its manifest
+                    # still has a complete model declaration. In that case the
+                    # runtime falls back to the configured model environment;
+                    # the missing snapshot must not make a new Build impossible.
+                    continue
+                raise
             profile = ModelSpec.model_validate(descriptor.contract)
             if profile.model not in allowed_models or profile.model in profiles:
                 continue

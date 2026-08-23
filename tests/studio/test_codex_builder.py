@@ -129,6 +129,39 @@ def test_build_with_immutable_model_snapshot_survives_removed_live_catalog_resou
     assert builder.is_current(build) is True
 
 
+def test_rebuild_skips_stale_provider_model_binding_after_catalog_restart(
+    tmp_path: Path,
+) -> None:
+    workspace = Workspace(tmp_path)
+    workspace.initialize()
+    CodexManifestRepository(workspace).save(_manifest("更新后的提示词。\n"))
+
+    class RestartedCatalog:
+        def get(self, _resource_id):
+            raise StudioError("RESOURCE_NOT_FOUND", "Catalog Resource 不存在", status_code=404)
+
+    builder = CodexStudioBuilder(
+        workspace,
+        runtime_inspector=_inspector,
+        resource_catalog=RestartedCatalog(),
+        draft_repository=SimpleNamespace(
+            get=lambda _agent_id: SimpleNamespace(
+                spec=SimpleNamespace(
+                    bindings=SimpleNamespace(
+                        model_profile_id="model:provider:glm-5-2:live",
+                        model_profile_ids=["model:provider:glm-5-2:live"],
+                    )
+                )
+            )
+        ),
+    )
+
+    build = builder.build()
+
+    assert build.status == "SUCCEEDED"
+    assert build.model_profiles == {}
+
+
 def test_legacy_two_file_zip_receipt_remains_readable_after_yaml_only_upgrade(
     tmp_path: Path,
 ) -> None:
