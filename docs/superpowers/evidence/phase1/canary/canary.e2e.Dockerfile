@@ -1,6 +1,4 @@
 FROM hub.kce.ksyun.com/cbd-serverless/python:3.12-slim
-ARG KSADK_SOURCE_COMMIT=unknown
-ENV KSADK_RUNTIME_IMAGE_SOURCE_COMMIT=${KSADK_SOURCE_COMMIT}
 WORKDIR /app
 # The durability harness exercises the Kernel/Session/runtime contracts only.
 # Installing KsADK with its complete default dependency graph pulled OCR,
@@ -9,6 +7,8 @@ WORKDIR /app
 # exact harness runtime, then the checked-out package without optional deps.
 RUN pip install --no-cache-dir \
       fastapi uvicorn asyncpg cryptography httpx jsonschema
+ARG KSADK_SOURCE_COMMIT=unknown
+ENV KSADK_RUNTIME_IMAGE_SOURCE_COMMIT=${KSADK_SOURCE_COMMIT}
 COPY . .
 RUN pip install --no-cache-dir --no-deps -e .
 EXPOSE 8080
