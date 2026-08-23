@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import asyncio
 
-from ksadk.kernel.contracts import AgentStatusQuery, SessionEventSubscription
+from ksadk.kernel.contracts import AgentStatusQuery, ControlSource, SessionEventSubscription
 from ksadk.kernel.state import InboxState
 from tests.kernel.control_harness import (
     AGENT,
@@ -106,7 +106,7 @@ async def test_interaction_retry_ignores_fresh_admission_credentials():
             "idempotency_key": "interaction-retry-1",
             "response": {"approved": True},
         },
-    )
+    ).model_copy(update={"source": ControlSource(kind="studio", ref="http-request-2")})
     duplicate = await stack.kernel.submit(retry, permit=retry_permit)
 
     assert accepted.status == "accepted"

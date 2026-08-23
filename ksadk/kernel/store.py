@@ -43,26 +43,28 @@ def command_digest(command: AgentControlCommand) -> str:
     legitimate retry can resolve to the original receipt.
     """
 
-    payload = dict(command.payload)
+    canonical = command.model_dump(mode="json")
+    canonical.pop("command_id", None)
+    canonical.pop("submitted_at", None)
+    canonical.pop("authorization_ref", None)
+    # ``source.kind`` identifies the ingress semantics; ``source.ref`` is the
+    # Server HTTP request id and therefore changes on every transport retry.
+    source = dict(canonical.get("source") or {})
+    source.pop("ref", None)
+    canonical["source"] = source
+
+    payload = dict(canonical.get("payload") or {})
     if command.command_type == "submit_interaction":
         payload.pop("token_ref", None)
+    canonical["payload"] = payload
 
-    canonical = json.dumps(
-        command.model_dump(
-            mode="json",
-            exclude={"command_id", "submitted_at", "authorization_ref", "payload"},
-        ),
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-    )
-    canonical = json.dumps(
-        {**json.loads(canonical), "payload": payload},
+    encoded = json.dumps(
+        canonical,
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
     ).encode("utf-8")
-    return hashlib.sha256(canonical).hexdigest()
+    return hashlib.sha256(encoded).hexdigest()
 
 
 @dataclass(frozen=True)
