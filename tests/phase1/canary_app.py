@@ -282,7 +282,9 @@ async def _worker_loop() -> None:
                     )
                 except Exception:
                     continue  # lease 被其它 owner 持有（split-brain 场景预期）
-                result = await worker.run_once(instance_id(), lease)
+                result = await worker.run_once(
+                    instance_id(), lease, session_id=session_id
+                )
                 if result.outcome != "idle":
                     progressed = True
             if not progressed:

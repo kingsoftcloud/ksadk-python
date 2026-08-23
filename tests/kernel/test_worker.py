@@ -231,6 +231,39 @@ async def test_distinct_sessions_overlap_and_keep_per_session_order():
     assert s1[0] < s2[1] and s2[0] < s1[1]
 
 
+async def test_same_session_reentrant_ticks_are_serialized():
+    """A single owner cannot claim later FIFO rows through concurrent ticks."""
+
+    stack = await kernel_stack()
+    stack.adapter.start_delay = 0.05
+    lease = await stack.lease("s1", "shared-pod-uid")
+    for index in range(5):
+        await stack.kernel.submit(
+            command(idempotency_key=f"same-{index}", session_id="s1", content=str(index)),
+            permit=stack.permit("enqueue", session_id="s1"),
+        )
+    from ksadk.kernel.worker import AgentKernelWorker
+
+    worker = AgentKernelWorker(stack.store, adapter_factory=lambda: stack.adapter)
+
+    async def tick():
+        while True:
+            result = await worker.run_once(AGENT, lease, session_id="s1")
+            if result.outcome == "completed":
+                return
+            if result.outcome != "idle":
+                raise AssertionError(result)
+            await asyncio.sleep(0)
+
+    await asyncio.gather(*(tick() for _ in range(5)))
+    messages = await stack.store.list_messages(AGENT, "s1")
+    assert [message.accepted_seq for message in messages] == [1, 2, 3, 4, 5]
+    assert all(message.status == InboxState.COMPLETED for message in messages)
+    assert [call[1] for call in stack.adapter.start_intervals] == sorted(
+        call[1] for call in stack.adapter.start_intervals
+    )
+
+
 async def test_worker_requires_lease_to_claim():
     stack = await kernel_stack()
     await stack.kernel.submit(

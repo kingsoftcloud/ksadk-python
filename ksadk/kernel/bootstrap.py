@@ -459,7 +459,9 @@ class AgentKernelRuntime:
                                     return
                                 continue
                         result = await self.worker.run_once(
-                            self.config.agent_instance_id, lease
+                            self.config.agent_instance_id,
+                            lease,
+                            session_id=session_id,
                         )
                         if result.outcome != "idle":
                             progressed = True

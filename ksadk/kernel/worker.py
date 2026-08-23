@@ -139,6 +139,14 @@ class AgentKernelWorker:
         # the exception observable to diagnostics without leaving an unhandled
         # Task warning; the durable run remains open for recovery/takeover.
         self._background_stream_errors: dict[str, Exception] = {}
+        # ``ActivationLease`` is a frozen wire contract and intentionally does
+        # not carry ``session_id``.  Production composition roots therefore
+        # pass the session scope to ``run_once`` explicitly.  Serialize that
+        # scope in-process as well: two scheduler ticks for the same Session
+        # must never both list/claim the Inbox head before either claim has
+        # completed.  The durable activation/fence remains the cross-process
+        # authority; this lock closes the same-owner re-entrancy window.
+        self._session_locks: dict[tuple[str, str], asyncio.Lock] = {}
 
     def attach_handle(
         self,
@@ -204,11 +212,34 @@ class AgentKernelWorker:
         }
 
     async def run_once(
-        self, agent_instance_id: str, activation: ActivationLease
+        self,
+        agent_instance_id: str,
+        activation: ActivationLease,
+        *,
+        session_id: str | None = None,
+    ) -> WorkResult:
+        if session_id is not None:
+            key = (agent_instance_id, session_id)
+            lock = self._session_locks.setdefault(key, asyncio.Lock())
+            async with lock:
+                return await self._run_once(
+                    agent_instance_id, activation, session_id=session_id
+                )
+        # Compatibility for direct/test callers written before the internal
+        # scheduler API became session-scoped.  Production callers below all
+        # provide ``session_id``; the frozen ActivationLease JSON is unchanged.
+        return await self._run_once(agent_instance_id, activation, session_id=None)
+
+    async def _run_once(
+        self,
+        agent_instance_id: str,
+        activation: ActivationLease,
+        *,
+        session_id: str | None,
     ) -> WorkResult:
         fence = activation.fencing_token
         pending = await self._store.list_pending(
-            agent_instance_id, fencing_token=fence
+            agent_instance_id, session_id=session_id, fencing_token=fence
         )
         if not pending:
             return WorkResult(outcome="idle")
@@ -219,6 +250,8 @@ class AgentKernelWorker:
         # session，避免跨 session 抢占。
         eligible = None
         for message in sorted(pending, key=lambda m: m.accepted_seq):
+            if session_id is not None and message.session_id != session_id:
+                continue
             lease = await self._store.current_lease(
                 agent_instance_id, message.session_id
             )
