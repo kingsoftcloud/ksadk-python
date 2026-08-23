@@ -127,16 +127,21 @@ async def standard_codex_events(
         "run_id": handle.run_id,
         "scope_id": f"scope-{handle.run_id}",
     }
+    # Canonical RuntimeEvent identity is session-scoped.  A fixture may be
+    # reused for several turns in the same session, so model the real adapters
+    # (whose stable ids include the execution scope) instead of reusing e1-e7.
+    def event_id(ordinal: int) -> str:
+        return f"{handle.run_id}:e{ordinal}"
     codex_source = SourceRef(framework="codex")
     yield RunStarted(
-        event_id="e1",
+        event_id=event_id(1),
         seq=1,
         status="running",
         source=codex_source,
         **common,
     )
     yield ItemUpdated(
-        event_id="e2",
+        event_id=event_id(2),
         seq=2,
         item_id="reasoning-1",
         item_kind="reasoning",
@@ -151,7 +156,7 @@ async def standard_codex_events(
         "command_actions": [{"type": "read", "path": "src/demo.py"}],
     }
     yield ItemStarted(
-        event_id="e3",
+        event_id=event_id(3),
         seq=3,
         item_id="tool-cmd-1",
         item_kind="tool_call",
@@ -169,7 +174,7 @@ async def standard_codex_events(
         **common,
     )
     yield ItemCompleted(
-        event_id="e4",
+        event_id=event_id(4),
         seq=4,
         item_id="tool-cmd-1",
         item_kind="tool_call",
@@ -192,7 +197,7 @@ async def standard_codex_events(
         **common,
     )
     yield ItemUpdated(
-        event_id="e5",
+        event_id=event_id(5),
         seq=5,
         item_id="msg-1",
         item_kind="message",
@@ -202,7 +207,7 @@ async def standard_codex_events(
         **common,
     )
     yield ItemCompleted(
-        event_id="e6",
+        event_id=event_id(6),
         seq=6,
         item_id="msg-1",
         item_kind="message",
@@ -218,7 +223,7 @@ async def standard_codex_events(
         **common,
     )
     yield RunCompleted(
-        event_id="e7",
+        event_id=event_id(7),
         seq=7,
         status="completed",
         output_refs=(

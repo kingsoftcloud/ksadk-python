@@ -175,12 +175,12 @@ def test_pcm_react_workspace_contains_policy_and_evidence_surfaces():
     assert "if (!res.ok)" in create_page
     assert 'composition.spec?.instructions?.system || prompt.trim()' in create_page
     assert "Agent 目标与要求" in create_page
-    assert "Agent 行为摘要" in create_page
-    assert "查看完整行为设计" not in create_page
-    assert "完整 Prompt 与任务契约" in create_page
-    assert "第 {step} 步，共 3 步" in create_page
-    assert '["Prompt 与策略", "检查并调整"]' not in create_page
+    assert "角色与系统提示词" in create_page
+    assert "上下文与记忆策略" in create_page
+    assert "第 {step} 步，共 4 步" in create_page
     assert "上下文优化" in create_page
+    assert "启用长期记忆" in create_page
+    assert "memoryWrite: memoryEnabled ? memoryWriteRollout : \"off\"" in create_page
     assert "运行解释" in run_panel
     assert "/context`" in run_panel
     assert "/prompt`" in run_panel
@@ -188,7 +188,7 @@ def test_pcm_react_workspace_contains_policy_and_evidence_surfaces():
     assert "开发与排障信息" not in run_panel
     assert "打开完整 Trace" in run_panel
     assert "模型实际输入" not in run_panel
-    assert "平台计划" in observability_page
+    assert "OTLP · W3C Trace Context" in observability_page
     assert "Runtime 上报" in observability_page
 
 

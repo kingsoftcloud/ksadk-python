@@ -603,7 +603,7 @@ def test_openai_responses_endpoint_is_the_public_runtime_contract(tmp_path: Path
                 "previous_response_id": "resp-openai-stream",
             },
         )
-        assert non_stream.status_code == 200
+        assert non_stream.status_code == 200, non_stream.text
         payload = non_stream.json()
         assert payload["object"] == "response"
         assert payload["status"] == "completed"

@@ -6,7 +6,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
@@ -154,6 +154,7 @@ class StudioRunService:
         )
         await self.session_service.create_session(spec.agent_id, "local-user", session)
         self.event_store.create(record)
+        prepared_turn = await self._capture_pcm_evidence(record, spec, user_input)
         created = self.event_store.append(
             record.id,
             "run.created",
@@ -212,6 +213,8 @@ class StudioRunService:
                 conversation_request["request_metadata"] = {
                     "tool_approval_mode": tool_approval_mode,
                 }
+            if prepared_turn is not None:
+                conversation_request["prepared_turn"] = asdict(prepared_turn)
             request = StartRequest(
                 input=runtime_input if runtime_input is not None else user_input,
                 user_id="local-user",
@@ -682,6 +685,88 @@ class StudioRunService:
             "eventId": action.id,
             "resolutionEventId": resolved.id,
         }
+
+    async def _capture_pcm_evidence(
+        self,
+        record: RunRecord,
+        spec: StudioRunSpec,
+        user_input: str,
+    ) -> Any | None:
+        """Prepare once and persist the exact prompt/context input sent to Runtime."""
+
+        try:
+            from ksadk.conversations.runtime_preparation import build_run_input
+            from ksadk.sessions.in_memory import InMemorySessionService
+
+            temporary_sessions = InMemorySessionService()
+            await temporary_sessions.create_session(
+                agent_id=spec.agent_id,
+                user_id="local-user",
+                session_id=record.session_id,
+            )
+            config = dict(spec.request_config or {})
+            prepared = await build_run_input(
+                agent_id=spec.agent_id,
+                user_id="local-user",
+                session_id=record.session_id,
+                messages=self._conversation_messages(
+                    spec.agent_id,
+                    record.session_id,
+                    user_input,
+                ),
+                model=spec.model,
+                instructions=str(config.get("instructions") or ""),
+                agent_system=str(config.get("agent_system") or ""),
+                agent_task=str(config.get("agent_task") or ""),
+                prompt_integration_mode=str(config.get("prompt_integration_mode") or ""),
+                context_engine_rollout=str(config.get("context_engine_rollout") or "") or None,
+                memory_recall_enabled=config.get("memory_recall_enabled"),
+                memory_write_rollout=str(config.get("memory_write_rollout") or "") or None,
+                memory_enabled=config.get("memory_enabled"),
+                memory_write_mode=str(config.get("memory_write_mode") or "candidate"),
+                flush_before_compaction=bool(config.get("flush_before_compaction", True)),
+                provider_ref=str(config.get("provider_ref") or "local-default"),
+                runtime_type=spec.launch_context.runtime_type,
+                deployment_mode=spec.launch_context.deployment_mode,
+                invocation_id=record.id,
+                session_service_provider=lambda: temporary_sessions,
+                agent_max_input_tokens=config.get("max_input_tokens"),
+                agent_reserve_output_tokens=config.get("reserve_output_tokens"),
+            )
+            record.context_plan = prepared.context_plan
+            compiled = prepared.compiled_prompt
+            shadow = prepared.shadow_context_plan or {}
+            record.prompt_evidence = {
+                "contentHash": (compiled or {}).get("prompt_content_hash"),
+                "stablePrefixHash": (compiled or {}).get("prompt_stable_prefix_hash"),
+                "sectionHashes": (compiled or {}).get("prompt_section_hashes", {}),
+                "tokensBySection": (compiled or {}).get("prompt_tokens_by_section", {}),
+                "estimatedTokens": (compiled or {}).get("prompt_estimated_tokens"),
+                "sectionCount": (compiled or {}).get("prompt_section_count"),
+                "integrationMode": shadow.get("integration_mode")
+                or config.get("prompt_integration_mode")
+                or "native",
+                "accountingAccuracy": shadow.get("accounting_accuracy") or "opaque",
+                "promptOwner": shadow.get("prompt_owner") or "runtime",
+                "runtimeType": shadow.get("runtime_type") or spec.launch_context.runtime_type,
+                "deploymentMode": shadow.get("deployment_mode")
+                or spec.launch_context.deployment_mode,
+                "capabilityHash": shadow.get("capability_hash"),
+                "tokensByKind": shadow.get("tokens_by_kind", {}),
+                "plannedInputTokens": shadow.get("planned_input_tokens"),
+            }
+            record.working_state = prepared.working_state
+            for event in getattr(prepared, "memory_recall_events", []):
+                self.event_store.append(
+                    record.id,
+                    event.get("type", "memory.recall.event"),
+                    event,
+                )
+            self.event_store.save(record)
+            return prepared
+        except Exception:  # noqa: BLE001 - evidence collection is best effort
+            logger.exception("Studio PCM evidence capture failed for run %s", record.id)
+            return None
 
     def _persist_approval_surface(
         self,

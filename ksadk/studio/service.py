@@ -549,6 +549,195 @@ class StudioService:
             return framework.strip().lower() or "adk"
         return runtime.type
 
+    def _agent_prompt_sources(self, agent_id: str) -> tuple[str, str, str]:
+        """Resolve the canonical prompt inputs used by preview and execution."""
+
+        if self.is_codex_agent(agent_id):
+            snapshot = self.codex_manifests.load(agent_id)
+            return (
+                snapshot.manifest.prompt or "",
+                snapshot.manifest.task_prompt or "",
+                "codex",
+            )
+        draft = self.drafts.get(agent_id)
+        instructions = draft.spec.instructions
+        return (
+            str(instructions.system or ""),
+            str(instructions.task or ""),
+            self.agent_runtime_type(agent_id),
+        )
+
+    def compile_prompt_preview(
+        self,
+        agent_id: str,
+        *,
+        request_instructions: str = "",
+        include_content: bool = False,
+    ) -> dict:
+        """Compile the real prompt without creating a Session, Trace, or Build."""
+
+        from ksadk.prompts.resolved import (
+            ResolvedPromptSources,
+            compile_resolved_prompt_dict,
+            get_default_platform_policy_source,
+        )
+
+        agent_system, agent_task, runtime_type = self._agent_prompt_sources(agent_id)
+        compiled = compile_resolved_prompt_dict(
+            ResolvedPromptSources(
+                agent_system=agent_system,
+                agent_task=agent_task,
+                request_instructions=str(request_instructions or "").strip(),
+                platform_policy_source=get_default_platform_policy_source(),
+            )
+        )
+        if compiled is None:
+            return {
+                "promptVersion": "v1",
+                "contentHash": "",
+                "stablePrefixHash": "",
+                "sections": [],
+                "runtimeType": runtime_type,
+                "warnings": ["no prompt content to compile"],
+            }
+        result: dict[str, Any] = {
+            "promptVersion": compiled["prompt_compiler_version"],
+            "contentHash": compiled["prompt_content_hash"],
+            "stablePrefixHash": compiled["prompt_stable_prefix_hash"],
+            "sectionHashes": compiled["prompt_section_hashes"],
+            "tokensBySection": compiled["prompt_tokens_by_section"],
+            "estimatedTokens": compiled["prompt_estimated_tokens"],
+            "sectionCount": compiled["prompt_section_count"],
+            "runtimeType": runtime_type,
+            "platformPolicyVersion": compiled.get("prompt_platform_policy_version"),
+            "warnings": [],
+        }
+        if include_content:
+            result["content"] = compiled["prompt_content"]
+        return result
+
+    def reveal_run_prompt(self, run_id: str) -> dict:
+        """Rebuild immutable Run prompt sections and reveal only on hash match."""
+
+        from ksadk.prompts.resolved import (
+            ResolvedPromptSources,
+            compile_resolved_prompt_dict,
+            get_default_platform_policy_source,
+            sections_from_resolved_sources,
+        )
+
+        record = self.event_store.get(run_id)
+        resolver = self.codex_runs if record.runtime_type == "codex" else self.framework_runs
+        spec = resolver.resolve(record.build_id, model=record.model or None)
+        config = dict(spec.request_config or {})
+        sources = ResolvedPromptSources(
+            agent_system=str(config.get("agent_system") or ""),
+            agent_task=str(config.get("agent_task") or ""),
+            request_instructions=str(config.get("instructions") or ""),
+            platform_policy_source=get_default_platform_policy_source(),
+        )
+        compiled = compile_resolved_prompt_dict(sources)
+        expected_hash = str((record.prompt_evidence or {}).get("contentHash") or "")
+        actual_hash = str((compiled or {}).get("prompt_content_hash") or "")
+        if not compiled or not expected_hash or actual_hash != expected_hash:
+            return {
+                "available": False,
+                "reason": "无法证明重建内容与本次运行一致，已拒绝展示正文。",
+            }
+        return {
+            "available": True,
+            "contentHash": actual_hash,
+            "sections": [
+                {
+                    "id": section.section_id,
+                    "source": section.source,
+                    "content": section.content,
+                }
+                for section in sections_from_resolved_sources(sources)
+            ],
+        }
+
+    async def preview_context(
+        self,
+        agent_id: str,
+        *,
+        user_input: str = "",
+        request_instructions: str = "",
+        simulated_history: list[dict[str, str]] | None = None,
+        include_content: bool = False,
+    ) -> dict:
+        """Run the production context planner without model or persistence side effects."""
+
+        from ksadk.context_engine.capabilities import capabilities_for_runtime_type
+        from ksadk.context_engine.hosted_pipeline import run_hosted_pipeline
+        from ksadk.prompts.resolved import (
+            ResolvedPromptSources,
+            compile_resolved_prompt_dict,
+            get_default_platform_policy_source,
+        )
+
+        agent_system, agent_task, runtime_type = self._agent_prompt_sources(agent_id)
+        capabilities = capabilities_for_runtime_type(runtime_type)
+        compiled_prompt = compile_resolved_prompt_dict(
+            ResolvedPromptSources(
+                agent_system=agent_system,
+                agent_task=agent_task,
+                request_instructions=str(request_instructions or "").strip(),
+                platform_policy_source=get_default_platform_policy_source(),
+            )
+        )
+        history = [
+            {
+                "role": item.get("role", "user"),
+                "content": item.get("content", ""),
+            }
+            for item in (simulated_history or [])
+        ]
+        pipeline = await run_hosted_pipeline(
+            compiled_prompt=compiled_prompt,
+            user_input=str(user_input or "").strip(),
+            history=history,
+            working_state=None,
+            model_metadata={
+                "context_window_tokens": 200_000,
+                "max_output_tokens": 32_000,
+            },
+            contributors=None,
+            integration_mode=capabilities.integration_mode,
+            accounting_accuracy="estimated",
+            session_id=f"preview-{agent_id}",
+            invocation_id=f"preview-{agent_id}",
+        )
+        if pipeline is None:
+            return {
+                "accuracy": "estimated",
+                "warnings": ["no content to plan"],
+                "items": [],
+            }
+        plan = pipeline.plan
+        assembled = pipeline.assembled
+        return {
+            "accuracy": plan.get("accounting_accuracy", "estimated"),
+            "policyVersion": plan.get("policy_version"),
+            "planId": plan.get("plan_id"),
+            "budget": {
+                "maxInputTokens": (plan.get("budget") or {}).get("max_input_tokens"),
+                "softLimitTokens": (plan.get("budget") or {}).get("soft_limit_tokens"),
+                "hardLimitTokens": (plan.get("budget") or {}).get("hard_limit_tokens"),
+            },
+            "items": plan.get("selected", []),
+            "decisions": plan.get("decisions", []),
+            "totalsByKind": plan.get("tokens_by_kind", {}),
+            "plannedInputTokens": plan.get("planned_input_tokens"),
+            "warnings": list(assembled.warnings),
+            "projection": {
+                "runtimeType": runtime_type,
+                "integrationMode": capabilities.integration_mode,
+                "promptOwner": capabilities.prompt_owner,
+            },
+            **({"system": assembled.system} if include_content else {}),
+        }
+
     def detect_importable_project(self) -> dict | None:
         """Expose a root framework project for explicit Studio import only."""
         from ksadk.studio.manifest_resolver import detect_manifest_kind
@@ -572,6 +761,28 @@ class StudioService:
             "manifestPath": "agentengine.yaml",
             "requiresConfirmation": True,
         }
+
+    def import_root_project(
+        self,
+        *,
+        name: str | None = None,
+        slug: str | None = None,
+    ) -> AgentDraft:
+        """Import an explicitly detected root Framework project as a Studio draft."""
+
+        importable = self.detect_importable_project()
+        if importable is None:
+            raise StudioError(
+                "PROJECT_NOT_IMPORTABLE",
+                "当前工作区根没有可导入的 Framework 项目",
+                status_code=422,
+            )
+        inspection = self.inspect_agent_project(".")
+        return self.commit_agent_project(
+            inspection["inspectionToken"],
+            name=name or importable.get("name"),
+            slug=slug or importable.get("name"),
+        )
 
     def list_agents(self, *, query: str = "", limit: int = 50) -> list[AgentDraft]:
         """List all local Agents from one registry view across runtime types."""
