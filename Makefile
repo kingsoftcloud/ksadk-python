@@ -27,7 +27,7 @@ help:
 	@echo "    make build-frontend 准备 ksadk-web 与 React Studio static"
 	@echo "    make build-studio-static 编译 React Studio static"
 	@echo "    make phase1-canary-push   构建并推送当前合同 PG canary 镜像"
-	@echo "    make phase1-canary-deploy 部署隔离 PG canary（不写入凭据文件）"
+	@echo "    make phase1-canary-deploy 使用外部云 PostgreSQL 部署隔离验证 runtime"
 	@echo "    make phase1-canary-delete 删除隔离 canary namespace"
 	@echo ""
 	@echo "  \033[1;32m版本管理:\033[0m"
@@ -134,15 +134,10 @@ phase1-canary-push: phase1-canary-build
 
 phase1-canary-deploy:
 	@test -f "$(PHASE1_CANARY_KUBECONFIG)" || { echo "ERROR: kubeconfig not found: $(PHASE1_CANARY_KUBECONFIG)"; exit 2; }
+	@test -n "$$PHASE1_CANARY_POSTGRES_DSN" || { echo "ERROR: PHASE1_CANARY_POSTGRES_DSN must reference an external managed PostgreSQL instance"; exit 2; }
 	@$(PHASE1_CANARY_KUBECTL) create namespace $(PHASE1_CANARY_NAMESPACE) --dry-run=client -o yaml | $(PHASE1_CANARY_KUBECTL) apply -f -
-	@if ! $(PHASE1_CANARY_KUBECTL) get secret agent-kernel-postgres -n $(PHASE1_CANARY_NAMESPACE) >/dev/null 2>&1; then \
-		password=$$(openssl rand -hex 24); \
-		dsn="postgresql://kernel:$${password}@agent-kernel-postgres.$(PHASE1_CANARY_NAMESPACE).svc.cluster.local:5432/kernel"; \
-		$(PHASE1_CANARY_KUBECTL) create secret generic agent-kernel-postgres -n $(PHASE1_CANARY_NAMESPACE) \
-			--from-literal=password="$${password}" --from-literal=dsn="$${dsn}" >/dev/null; \
-	fi
-	$(PHASE1_CANARY_KUBECTL) apply -f docs/superpowers/evidence/phase1/canary/postgres.yaml
-	$(PHASE1_CANARY_KUBECTL) rollout status deployment/agent-kernel-postgres -n $(PHASE1_CANARY_NAMESPACE) --timeout=180s
+	@$(PHASE1_CANARY_KUBECTL) create secret generic agent-kernel-store -n $(PHASE1_CANARY_NAMESPACE) \
+		--from-literal=dsn="$$PHASE1_CANARY_POSTGRES_DSN" --dry-run=client -o yaml | $(PHASE1_CANARY_KUBECTL) apply -f - >/dev/null
 	$(PHASE1_CANARY_KUBECTL) apply -f docs/superpowers/evidence/phase1/canary-hosted/deployment.yaml
 	$(PHASE1_CANARY_KUBECTL) set image deployment/agent-kernel-canary runtime=$(PHASE1_CANARY_IMAGE) -n $(PHASE1_CANARY_NAMESPACE)
 	$(PHASE1_CANARY_KUBECTL) rollout status deployment/agent-kernel-canary -n $(PHASE1_CANARY_NAMESPACE) --timeout=180s

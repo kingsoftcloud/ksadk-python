@@ -19,6 +19,15 @@
 > 镜像重新跑 PostgreSQL/FIFO/reconnect/recovery/stale-fence/audit/rollback 矩阵。
 > 当前共享 Agent 显式使用 memory store、单副本，只证明非 HA 产品闭环，不能替代
 > PG durable/HA 验收。
+>
+> 2026-08-24 PG 验证边界修正：预发验收不得在 Serverless/Kubernetes 内自建
+> PostgreSQL。一次隔离验证部署曾短暂创建 PostgreSQL Pod，发现架构边界错误后已
+> 删除整个 `agent-kernel-phase1` namespace，并删除对应内部镜像仓库 artifact；
+> 没有触碰共享预发主流程。现在 `phase1-canary-deploy` 强制要求
+> `PHASE1_CANARY_POSTGRES_DSN` 指向外部托管云 PostgreSQL，并仅通过临时 Secret
+> 注入。`long_task_pg_e2e/.env` 中现有 DSN 从本机和预发算力节点均连接超时，且其
+> `.agentengine.state` 指向的历史 Agent 已不存在，因此当前 PG/HA gate 仍待一套
+> 可达的托管云 PG 凭据/网络白名单后重跑；不得据此把 Phase 1 标绿。
 
 > 更新：2026-08-20（终版，所有已知 P0 修复完毕，gate 全绿）两份计划：
 > - `docs/superpowers/plans/2026-08-17-agent-runtime-v2-phase1-agent-kernel.md`（Phase 1，14 任务）
@@ -120,4 +129,4 @@ digest 三端一致 / runtime+control 事件流 / 重连 / 100 FIFO / 幂等双�
 
 ## 六、证据目录
 
-`docs/superpowers/evidence/phase1/`（ksadk worktree）：baseline.json、preprod/（step456/step789/v2-e2e/v2-drill/v2-audit/v2-versions/real-codex-closure.json）、preprod-report.json、rollback-report.json、canary/（部署材料，含密码明文待脱敏决策）
+`docs/superpowers/evidence/phase1/`（ksadk worktree）：baseline.json、preprod/（step456/step789/v2-e2e/v2-drill/v2-audit/v2-versions/real-codex-closure.json）、preprod-report.json、rollback-report.json、canary/（仅外部托管 PG 的验证 runtime 材料，不含凭据）

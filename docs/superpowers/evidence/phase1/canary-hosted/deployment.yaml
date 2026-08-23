@@ -1,5 +1,6 @@
 # Phase 1 Task 8 hosted-authority agent-kernel canary deployment (agent-kernel-phase1 ns).
-# DSN comes from Secret agent-kernel-postgres; Server JWKS via AGENT_CONTROL_JWKS_URL.
+# DSN comes from Secret agent-kernel-store, populated from an externally managed
+# cloud PostgreSQL instance. This validation harness never runs its own database.
 # POD_UID downward API -> activation owner (hosted fail-closed requirement).
 apiVersion: apps/v1
 kind: Deployment
@@ -35,7 +36,7 @@ spec:
             - name: AGENT_KERNEL_STORE_DSN
               valueFrom:
                 secretKeyRef:
-                  name: agent-kernel-postgres
+                  name: agent-kernel-store
                   key: dsn
             - name: AGENT_INSTANCE_ID
               value: phase1-canary-1
