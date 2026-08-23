@@ -28,9 +28,9 @@ from typing import Any, AsyncIterator, Optional
 from ksadk.codex.client import CodexClient
 from ksadk.events.adapters.codex import CodexAdapterContext, CodexEventAdapter
 from ksadk.events.canonical import (
+    ErrorInfo,
     InteractionRequested,
     InteractionResolved,
-    ErrorInfo,
     RunCanceled,
     RunFailed,
     RunInterrupted,
@@ -164,6 +164,12 @@ class CodexRuntimeAdapter(RuntimeAdapter):
             cwd = request.config.get("cwd")
             if cwd:
                 thread_config["cwd"] = str(cwd)
+            # AgentKernel creates one adapter/transport per durable turn and
+            # closes it after the canonical terminal event.  The next turn
+            # therefore resumes the native thread from a new app-server
+            # process; an ephemeral Codex thread has no rollout and cannot be
+            # resumed across that transport boundary.
+            thread_config.setdefault("ephemeral", False)
             thread_id = await self._client.start_thread(thread_config)
         self._known_threads.add(thread_id)
         thread = _CodexThread(
@@ -341,8 +347,8 @@ class CodexRuntimeAdapter(RuntimeAdapter):
         if thread is not None:
             thread.interrupt_event.set()
         try:
-            active_thread_id = thread.thread_id if thread is not None else handle.run_id
-            await self._client.interrupt_active_turn(active_thread_id)
+            if thread is not None and thread.streaming:
+                await self._client.interrupt_active_turn(thread.thread_id)
         finally:
             # AsyncCodex.close owns terminate/wait/kill for the app-server child.
             await self._client.close()
@@ -535,7 +541,11 @@ class CodexRuntimeAdapter(RuntimeAdapter):
                 native_cursor = f"{thread.thread_id}:{self._next_seq()}"
                 # autoApprovalReview 不产生 canonical 事件(adapter 静默),但
                 # cancel 级联丢弃审批的契约依赖 runtime 的 pending 跟踪。
-                chunk_method = str((chunk or {}).get("method") or "") if isinstance(chunk, dict) else ""
+                chunk_method = (
+                    str((chunk or {}).get("method") or "")
+                    if isinstance(chunk, dict)
+                    else ""
+                )
                 if chunk_method in {
                     "item/autoApprovalReview/started",
                     "item/autoApprovalReview/completed",
@@ -794,7 +804,11 @@ def _coerce_prompt_text(value: Any) -> Any:
                 return text
         return str(value)
     if isinstance(value, list):
-        texts = [t for t in (_coerce_prompt_text(item) for item in value) if isinstance(t, str) and t]
+        texts = [
+            text
+            for text in (_coerce_prompt_text(item) for item in value)
+            if isinstance(text, str) and text
+        ]
         return "\n".join(texts) if texts else str(value)
     return str(value)
 
@@ -808,13 +822,21 @@ def _request_prompt(request: StartRequest) -> Any:
     # A resumed Codex thread already owns its transcript. Re-sending Studio's
     # transport-neutral history would duplicate every prior turn after refresh.
     if str(request.metadata.get("thread_id") or "").strip():
-        return request.input if _is_structured_turn_input(request.input) else _coerce_prompt_text(request.input)
+        return (
+            request.input
+            if _is_structured_turn_input(request.input)
+            else _coerce_prompt_text(request.input)
+        )
 
     conversation = request.conversation_preprocessing()
     if conversation is None or not conversation.messages:
         # Keep native text/image/mention parts intact for _build_run_input().
         # Flattening this list turns an image dict into user-visible text.
-        return request.input if _is_structured_turn_input(request.input) else _coerce_prompt_text(request.input)
+        return (
+            request.input
+            if _is_structured_turn_input(request.input)
+            else _coerce_prompt_text(request.input)
+        )
 
     lines: list[str] = []
     for message in conversation.messages:

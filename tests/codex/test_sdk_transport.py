@@ -231,13 +231,18 @@ async def test_runtime_real_transport_same_thread_resume_uses_payload(tmp_path: 
     assert any(getattr(event, "phase", None) == "commentary" for event in first)
     assert any(getattr(event, "phase", None) == "final_answer" for event in first)
     assert any(getattr(event, "phase", None) == "final_answer" for event in second)
-    assert not any("must-not-become-final-text" in str(event.model_dump()) for event in first + second)
+    assert not any(
+        "must-not-become-final-text" in str(event.model_dump())
+        for event in first + second
+    )
     requests = [
         json.loads(line)
         for line in (tmp_path / "requests.jsonl").read_text(encoding="utf-8").splitlines()
     ]
     turns = [row for row in requests if row["method"] == "turn/start"]
+    starts = [row for row in requests if row["method"] == "thread/start"]
     assert len(turns) == 2
+    assert starts[0]["params"]["ephemeral"] is False
     assert "resume payload" in json.dumps(turns[1]["params"]["input"])
     assert all(row["params"]["threadId"] == handle.run_id for row in turns)
 

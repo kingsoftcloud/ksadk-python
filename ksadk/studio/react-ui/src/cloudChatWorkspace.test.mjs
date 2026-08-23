@@ -9,7 +9,9 @@ test("cloud chat keeps polling until an admitted run reaches a terminal response
   assert.match(source, /const \[waitingForResponse, setWaitingForResponse\] = useState\(false\)/);
   assert.match(source, /if \(!active \|\| !currentSessionId\) return/);
   assert.match(source, /sending \|\| waitingForResponse \? 1200 : 4000/);
-  assert.match(source, /terminalRunEvent\(events, awaitingRunIdRef\.current\)/);
+  assert.match(source, /awaitingAcceptedSeqRef\.current/);
+  assert.match(source, /eventSeq <= afterSeq/);
+  assert.match(source, /receipt\.accepted_seq/);
   assert.match(source, /const sendInFlightRef = useRef\(false\)/);
   assert.match(source, /const currentSessionIdRef = useRef\(""\)/);
   assert.match(source, /const waitingForResponseRef = useRef\(false\)/);

@@ -114,8 +114,8 @@ function pendingInteractions(events: unknown[]): CloudInteraction[] {
   return [...requested.values()];
 }
 
-function terminalRunEvent(events: unknown[], runId: string): "completed" | "failed" | null {
-  if (!runId) return null;
+function terminalRunEvent(events: unknown[], runId: string, afterSeq: number): "completed" | "failed" | null {
+  if (!runId && afterSeq <= 0) return null;
   for (const event of events) {
     if (!event || typeof event !== "object") continue;
     const frame = event as Record<string, unknown>;
@@ -129,7 +129,11 @@ function terminalRunEvent(events: unknown[], runId: string): "completed" | "fail
       payload.run_id ?? payload.runId ?? payload.invocation_id ?? payload.invocationId
       ?? frame.run_id ?? frame.runId ?? frame.invocation_id ?? frame.invocationId ?? "",
     );
-    if (eventRunId !== runId) continue;
+    const eventSeq = Number(
+      payload.seq ?? payload.seq_id ?? payload.source_session_seq
+      ?? frame.seq ?? frame.seq_id ?? frame.source_session_seq ?? 0,
+    ) || 0;
+    if (runId ? eventRunId !== runId : eventSeq <= afterSeq) continue;
     const eventType = String(frame.event_type ?? frame.eventType ?? payload.event_type ?? payload.eventType ?? "").toLowerCase();
     if (["run.completed", "run.complete", "run.succeeded"].includes(eventType)) return "completed";
     if (["run.failed", "run.cancelled", "run.expired", "run.error"].includes(eventType)) return "failed";
@@ -182,6 +186,7 @@ export function CloudChatWorkspace({
   const waitingForResponseRef = useRef(false);
   const assistantCountBeforeSendRef = useRef(0);
   const awaitingRunIdRef = useRef("");
+  const awaitingAcceptedSeqRef = useRef(0);
   const sendInFlightRef = useRef(false);
 
   const base = useMemo(
@@ -235,11 +240,16 @@ export function CloudChatWorkspace({
     if (!response.ok) throw new Error(await responseError(response));
     const payload = await response.json();
     const events = payload.events || [];
-    const terminal = terminalRunEvent(events, awaitingRunIdRef.current);
+    const terminal = terminalRunEvent(
+      events,
+      awaitingRunIdRef.current,
+      awaitingAcceptedSeqRef.current,
+    );
     if (terminal) {
       waitingForResponseRef.current = false;
       setWaitingForResponse(false);
       awaitingRunIdRef.current = "";
+      awaitingAcceptedSeqRef.current = 0;
       if (terminal === "failed") {
         showToast("云端运行未完成", "本次请求已结束，未得到回复。可新建会话后重试；若持续失败，请到可观测页面按会话查看记录。", "error");
       }
@@ -258,6 +268,7 @@ export function CloudChatWorkspace({
     waitingForResponseRef.current = false;
     setWaitingForResponse(false);
     awaitingRunIdRef.current = "";
+    awaitingAcceptedSeqRef.current = 0;
     refreshSessions()
       .catch(error => { if (!cancelled) showToast("云端会话加载失败", error.message, "error"); })
       .finally(() => { if (!cancelled) setLoading(false); });
@@ -330,6 +341,7 @@ export function CloudChatWorkspace({
         message => !message.pending && message.role === "assistant",
       ).length;
       awaitingRunIdRef.current = "";
+      awaitingAcceptedSeqRef.current = 0;
       const optimistic: CloudMessage = {
         id: `local-${crypto.randomUUID()}`,
         role: "user",
@@ -346,6 +358,9 @@ export function CloudChatWorkspace({
       if (!response.ok) throw new Error(await responseError(response));
       const receipt = await response.json() as Record<string, unknown>;
       awaitingRunIdRef.current = String(receipt.run_id ?? receipt.runId ?? receipt.RunId ?? "");
+      awaitingAcceptedSeqRef.current = Number(
+        receipt.accepted_seq ?? receipt.acceptedSeq ?? receipt.AcceptedSeq ?? 0,
+      ) || 0;
       await refreshSessions();
       window.setTimeout(() => { refreshMessages(sessionId).catch(() => {}); }, 250);
     } catch (error) {
@@ -354,6 +369,7 @@ export function CloudChatWorkspace({
       waitingForResponseRef.current = false;
       setWaitingForResponse(false);
       awaitingRunIdRef.current = "";
+      awaitingAcceptedSeqRef.current = 0;
       showToast("云端消息发送失败", message, "error");
     } finally {
       setSending(false);
