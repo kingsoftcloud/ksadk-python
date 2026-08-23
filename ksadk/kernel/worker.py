@@ -409,7 +409,14 @@ class AgentKernelWorker:
                 continue
             if event.continuation_kind != "thread_resume":
                 continue
-            thread_id = str(event.ref.get("thread_id") or "").strip()
+            ref = getattr(event, "ref", None)
+            thread_id = (
+                str(ref.get("thread_id") or "").strip()
+                if isinstance(ref, dict)
+                else ""
+            )
+            if not thread_id:
+                thread_id = str(event.source.metadata.get("thread_id") or "").strip()
             if thread_id:
                 return {"thread_id": thread_id}
         return {}

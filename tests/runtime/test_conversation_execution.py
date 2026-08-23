@@ -6,6 +6,7 @@ import pytest
 
 from ksadk.events.canonical import (
     ContentSnapshot,
+    ContinuationCreated,
     ItemCompleted,
     ItemStarted,
     OutputRef,
@@ -16,6 +17,7 @@ from ksadk.events.canonical import (
 )
 from ksadk.events.content import TextContent
 from ksadk.events.identity import stable_event_id, stable_item_id, stable_scope_id
+from ksadk.events.store import RuntimeEventStore
 from ksadk.runtime import (
     CONVERSATION_PREPROCESSING_METADATA_KEY,
     BaseRuntime,
@@ -150,6 +152,12 @@ class _Adapter(RuntimeAdapter):
         self.closed.append(handle)
 
 
+class _CodexAdapter(_Adapter):
+    async def start(self, request: StartRequest) -> RunHandle:
+        handle = await super().start(request)
+        return handle.model_copy(update={"runtime_type": "codex"})
+
+
 @pytest.mark.asyncio
 async def test_runtime_conversation_prepares_once_persists_and_closes_terminal_run() -> None:
     service = InMemorySessionService()
@@ -231,6 +239,47 @@ async def test_invoke_runtime_conversation_collects_canonical_result() -> None:
         "duration_ms": 12,
         "runtime_type": "fixture",
     }
+
+
+@pytest.mark.asyncio
+async def test_codex_follow_up_reuses_latest_native_thread_from_session_events() -> None:
+    service = InMemorySessionService()
+    await service.create_session("agent-1", "user-1", "session-1")
+    await RuntimeEventStore(service).append_one(
+        "session-1",
+        ContinuationCreated(
+            schema_version=2,
+            event_id="continuation-event-1",
+            seq=1,
+            timestamp=1.0,
+            run_id="run-1",
+            scope_id="scope-1",
+            source=SourceRef(
+                framework="codex",
+                metadata={"thread_id": "thread-native-1"},
+            ),
+            continuation_id="continuation-1",
+            continuation_kind="thread_resume",
+            resumable=True,
+            ref={"thread_id": "thread-native-1"},
+        ),
+    )
+    adapter = _CodexAdapter()
+    registry = RuntimeRegistry()
+    registry.register("codex", lambda _context: adapter)
+
+    await invoke_runtime_conversation_once(
+        executor=RuntimeExecutor(registry),
+        launch_context=RuntimeLaunchContext(runtime_type="codex", project_dir="."),
+        agent_id="agent-1",
+        user_id="user-1",
+        messages=[{"role": "user", "content": "follow up"}],
+        session_id="session-1",
+        model="fixture-model",
+        session_service_provider=lambda: service,
+    )
+
+    assert adapter.requests[0].metadata["thread_id"] == "thread-native-1"
 
 
 @pytest.mark.asyncio

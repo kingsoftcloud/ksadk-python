@@ -923,6 +923,28 @@ class TestDeployLogic:
         assert env_vars["TZ"] == "Asia/Shanghai"
         assert env_vars["KSADK_DEPLOYMENT_MODE"] == "ksadk_managed_cloud"
 
+    def test_managed_runtime_manifest_model_overrides_reused_credential_env(self):
+        provider = ServerlessProvider()
+
+        env_vars = provider._bind_managed_runtime_contract_env(
+            {
+                "OPENAI_API_KEY": "credential-only",
+                "OPENAI_MODEL_NAME": "stale-model-from-shared-env",
+            },
+            {
+                "manifest": (
+                    "artifact_type: ManagedRuntime\n"
+                    "framework: codex\n"
+                    "model: qwen3.7-flash\n"
+                )
+            },
+        )
+
+        assert env_vars == {
+            "OPENAI_API_KEY": "credential-only",
+            "OPENAI_MODEL_NAME": "qwen3.7-flash",
+        }
+
     def test_deploy_env_vars_do_not_implicitly_forward_control_plane_credentials(
         self,
         temp_project_dir,

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from functools import lru_cache
+from importlib.metadata import PackageNotFoundError, version
 from typing import Any, Callable, Literal, cast
 
 from pydantic import JsonValue
@@ -751,7 +753,7 @@ def _protocol_source(
         metadata=cast(
             dict[str, JsonValue],
             {
-                "app_server_version": "0.144.4",
+                "app_server_version": _installed_app_server_version(),
                 "method": method,
                 "thread_id": thread_id,
                 "turn_id": turn_id,
@@ -759,6 +761,16 @@ def _protocol_source(
             },
         ),
     )
+
+
+@lru_cache(maxsize=1)
+def _installed_app_server_version() -> str:
+    """Report the packaged Codex runtime version instead of a stale constant."""
+
+    try:
+        return version("openai-codex")
+    except PackageNotFoundError:
+        return "unknown"
 
 
 def _thread_continuation_identity(thread_id: str) -> tuple[str, str]:

@@ -214,6 +214,35 @@ class ServerlessProvider(BaseDeployProvider):
         return env_vars, env_file.exists(), project_env_count
 
     @staticmethod
+    def _bind_managed_runtime_contract_env(
+        env_vars: Dict[str, str],
+        runtime_config: Optional[Dict[str, str]],
+    ) -> Dict[str, str]:
+        """Keep the deployed provider model aligned with the admitted manifest.
+
+        Credential env files are reusable across projects and commonly contain
+        ``OPENAI_MODEL_NAME``. For a ManagedRuntime declaration, however, the
+        manifest's ``model`` is the admitted source of truth. Letting a generic
+        credential file override it makes capability probing and the actual
+        provider request select different upstream protocols.
+        """
+
+        if not runtime_config:
+            return env_vars
+        try:
+            manifest = yaml.safe_load(str(runtime_config.get("manifest") or ""))
+        except yaml.YAMLError:
+            return env_vars
+        if not isinstance(manifest, dict):
+            return env_vars
+        model = str(manifest.get("model") or "").strip()
+        if not model:
+            return env_vars
+        bound = dict(env_vars)
+        bound["OPENAI_MODEL_NAME"] = model
+        return bound
+
+    @staticmethod
     def _inject_ui_runtime_env(
         env_vars: Dict[str, str],
         ui_state: Dict[str, Any],
@@ -877,6 +906,10 @@ class ServerlessProvider(BaseDeployProvider):
                             project_dir,
                             target.extra.get("env_vars") or {},
                         )
+                        env_vars = self._bind_managed_runtime_contract_env(
+                            env_vars,
+                            runtime_config,
+                        )
                         env_vars = self._inject_ui_runtime_env(env_vars, ui_state, local_state)
                         if env_vars:
                             update_data["env_vars"] = env_vars
@@ -1003,6 +1036,10 @@ class ServerlessProvider(BaseDeployProvider):
                     env_vars, env_file_exists, project_env_count = self._load_deploy_env_vars(
                         project_dir,
                         target.extra.get("env_vars") or {},
+                    )
+                    env_vars = self._bind_managed_runtime_contract_env(
+                        env_vars,
+                        runtime_config,
                     )
                     env_vars = self._inject_ui_runtime_env(env_vars, ui_state, local_state)
                     if env_vars:

@@ -18,6 +18,8 @@ from ksadk.conversations.runtime_preparation import build_run_input
 from ksadk.events.canonical import (
     ContextCompactionCompleted,
     ContextCompactionStarted,
+    ContinuationCreated,
+    ContinuationResumed,
     InteractionRequested,
     ItemCompleted,
     ItemStarted,
@@ -134,6 +136,11 @@ async def iter_runtime_conversation_events(
         "response_id": response_id,
         "prepared_turn": asdict(prepared),
     }
+    native_session_metadata = await _session_native_metadata(
+        runtime_type=launch_context.runtime_type,
+        session_id=prepared.session_id,
+        session_service_provider=provider,
+    )
     request = StartRequest(
         input=prepared.user_input,
         user_id=user_id,
@@ -143,6 +150,7 @@ async def iter_runtime_conversation_events(
         metadata={
             "invocation_id": prepared.invocation_id,
             CONVERSATION_PREPROCESSING_METADATA_KEY: conversation_request,
+            **native_session_metadata,
         },
     )
     checkpoint_resume = _checkpoint_resume_input(prepared.resume_input)
@@ -256,6 +264,44 @@ async def iter_runtime_conversation_events(
             )
         if terminal:
             await executor.close(handle)
+
+
+async def _session_native_metadata(
+    *,
+    runtime_type: str,
+    session_id: str,
+    session_service_provider: Callable[[], Any],
+) -> dict[str, str]:
+    """Resolve a provider-native continuation from the canonical Session log.
+
+    The HTTP conversation path creates a fresh adapter transport for every
+    terminal turn. Codex therefore needs the prior native thread id on the
+    next ``StartRequest``; otherwise one AgentEngine Session becomes unrelated
+    one-turn Codex threads.
+    """
+
+    if str(runtime_type or "").strip().lower() != "codex":
+        return {}
+    events = await RuntimeEventStore(session_service_provider()).list(
+        session_id,
+        limit=512,
+    )
+    for event in reversed(events):
+        if not isinstance(event, (ContinuationCreated, ContinuationResumed)):
+            continue
+        if event.continuation_kind != "thread_resume":
+            continue
+        ref = getattr(event, "ref", None)
+        thread_id = (
+            str(ref.get("thread_id") or "").strip()
+            if isinstance(ref, Mapping)
+            else ""
+        )
+        if not thread_id:
+            thread_id = str(event.source.metadata.get("thread_id") or "").strip()
+        if thread_id:
+            return {"thread_id": thread_id}
+    return {}
 
 
 def _compaction_runtime_events(
