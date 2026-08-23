@@ -571,6 +571,7 @@ class AgentKernelWorker:
             InteractionRequested,
             InteractionResolved,
             RunCompleted,
+            RunInterrupted,
             SourceRef,
         )
 
@@ -596,6 +597,21 @@ class AgentKernelWorker:
             if isinstance(event, InteractionResolved):
                 # The submitted command's ledger transition is first-wins and
                 # already emitted interaction.resolved; ignore framework echo.
+                continue
+            if (
+                isinstance(event, RunInterrupted)
+                and event.interaction_id
+                and current_run.state is RunState.WAITING
+            ):
+                # Codex emits this immediately after InteractionRequested to
+                # describe a *temporarily blocked native turn*.  The durable
+                # Kernel state for that condition is WAITING and the
+                # Interaction/v1 ledger is its authority.  Treating the
+                # companion run.interrupted event as a terminal fact closes the
+                # process-local adapter before a human can answer, so the later
+                # SubmitInteraction receipt can never resolve.  Do not publish
+                # a contradictory terminal runtime event; preserve the live
+                # execution until InteractionResolved resumes the same stream.
                 continue
             if runtime_store is None:
                 continue

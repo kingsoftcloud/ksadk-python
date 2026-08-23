@@ -154,6 +154,67 @@ class BlockingCodexAdapter(CodexLikeAdapter):
         self.response_received.set()
 
 
+class InterruptingApprovalCodexAdapter(BlockingCodexAdapter):
+    """Mirror Codex's real approval sequence: request, interrupted, resume."""
+
+    def stream(self, handle: RunHandle):
+        from ksadk.events.canonical import (
+            ApprovalRequest,
+            InteractionRequested,
+            RunCompleted,
+            RunInterrupted,
+            SourceRef,
+        )
+
+        self.streams.append(handle.run_id)
+
+        async def _gen():
+            source = SourceRef(framework="codex")
+            yield InteractionRequested(
+                schema_version=2,
+                event_id="codex-approval-interrupt-1",
+                seq=0,
+                timestamp=1.0,
+                run_id=handle.run_id,
+                scope_id=f"run:{handle.run_id}",
+                source=source,
+                interaction_id="approval-interrupt-1",
+                interaction_kind="approval",
+                request=ApprovalRequest(
+                    call_id="call-approval-interrupt-1", kind="tool"
+                ),
+            )
+            yield RunInterrupted(
+                schema_version=2,
+                event_id="codex-run-interrupted-1",
+                seq=0,
+                timestamp=1.1,
+                run_id=handle.run_id,
+                scope_id=f"run:{handle.run_id}",
+                source=source,
+                status="interrupted",
+                reason="Codex requires user interaction",
+                interaction_id="approval-interrupt-1",
+                continuation_id="thread-continuation-1",
+            )
+            self.interaction_seen.set()
+            await self.response_received.wait()
+            self.stream_finished.set()
+            yield RunCompleted(
+                schema_version=2,
+                event_id="codex-completed-after-interrupt-1",
+                seq=0,
+                timestamp=2.0,
+                run_id=handle.run_id,
+                scope_id=f"run:{handle.run_id}",
+                source=source,
+                status="completed",
+                output_refs=(),
+            )
+
+        return _gen()
+
+
 async def _seed_active_run(stack, adapter):
     """enqueue 一个 run 并让 stream 以 retryable 错误停住（run 保持 RUNNING，
     execution 保留在 worker 内）。返回 durable run id。"""
@@ -181,7 +242,15 @@ async def _seed_active_run(stack, adapter):
     return active.run_id, worker
 
 
-async def _request_interaction(stack, lease, *, interaction_id: str, provider_id: str, run_id: str, native_target: dict) -> InteractionRecord:
+async def _request_interaction(
+    stack,
+    lease,
+    *,
+    interaction_id: str,
+    provider_id: str,
+    run_id: str,
+    native_target: dict,
+) -> InteractionRecord:
     record = InteractionRecord(
         interaction_id=interaction_id,
         tenant_id="tenant-1",
@@ -470,3 +539,68 @@ async def test_live_interaction_does_not_block_worker_and_resumes_the_same_strea
         for event in events
         if event.family == "runtime" and event.event_type == "interaction.requested"
     ]
+
+
+async def test_interaction_interruption_keeps_waiting_run_and_live_execution():
+    """A native approval interruption is a wait marker, not a terminal run.
+
+    Codex emits ``InteractionRequested`` immediately followed by
+    ``RunInterrupted`` before its JSON-RPC callback blocks.  Production has
+    enough scheduling latency for both events to be consumed before the user
+    can answer, so the worker must keep the durable run WAITING and preserve
+    the same process-local adapter/handle for the later response.
+    """
+
+    stack = await kernel_stack(adapter=InterruptingApprovalCodexAdapter())
+    adapter = stack.adapter
+    lease = await stack.lease()
+    from ksadk.kernel.worker import AgentKernelWorker
+
+    worker = AgentKernelWorker(
+        stack.store,
+        adapter_factory=lambda: adapter,
+        session_events=stack.events,
+    )
+    await stack.kernel.submit(
+        command(idempotency_key="interrupting-interaction-start"),
+        permit=stack.permit("enqueue"),
+    )
+    started = await worker.run_once(AGENT, lease)
+    assert started.run_id is not None
+
+    # The adapter has advanced past its companion RunInterrupted frame and is
+    # now genuinely blocked on the native approval callback.
+    await asyncio.wait_for(adapter.interaction_seen.wait(), timeout=0.2)
+
+    run = await stack.store.load_run(started.run_id)
+    assert run is not None and run.state == RunState.WAITING
+    assert worker.execution_for(started.run_id) is not None
+    assert ("close", "s1") not in adapter.calls
+    events = await stack.events.read("s1", 0, 100)
+    assert not any(event.event_type == "run.interrupted" for event in events)
+
+    await stack.kernel.submit(
+        command(
+            "submit_interaction",
+            idempotency_key="interrupting-interaction-response",
+            payload={
+                "run_id": started.run_id,
+                "interaction_id": "approval-interrupt-1",
+                "token_ref": "server-permit-ref",
+                "response": {"decision": "approve"},
+                "action": "approve",
+                "expected_revision": 1,
+            },
+        ),
+        permit=stack.permit("submit_interaction"),
+    )
+    resolved = await worker.run_once(AGENT, lease)
+    assert resolved.outcome == "completed"
+    await asyncio.wait_for(adapter.stream_finished.wait(), timeout=0.2)
+
+    for _ in range(20):
+        run = await stack.store.load_run(started.run_id)
+        if run is not None and run.state == RunState.COMPLETED:
+            break
+        await asyncio.sleep(0)
+    assert run is not None and run.state == RunState.COMPLETED
