@@ -548,12 +548,20 @@ class DirectAgentEngineCloudDeploymentGateway:
     ) -> dict[str, Any]:
         """Return the Server/Runtime message projection for a bound session."""
 
-        return await self.client.list_session_messages(
-            agent_id=self._chat_agent_id(deployment),
-            session_id=session_id,
-            after_seq_id=after_seq_id,
-            limit=limit,
-        )
+        try:
+            return await self.client.list_session_messages(
+                agent_id=self._chat_agent_id(deployment),
+                session_id=session_id,
+                after_seq_id=after_seq_id,
+                limit=limit,
+            )
+        except AgentEngineAPIError as exc:
+            # A poll already in flight can complete after DeleteSession.  The
+            # deleted projection is an empty terminal view for Studio, not a
+            # local API failure that should surface as a 500/toast.
+            if exc.code == 404 or exc.details.get("http_status") == 404:
+                return {"messages": [], "session_deleted": True}
+            raise
 
     async def delete_deployment_chat_session(
         self, deployment: DeploymentRecord, *, session_id: str
@@ -582,12 +590,17 @@ class DirectAgentEngineCloudDeploymentGateway:
     ) -> dict[str, Any]:
         """Read canonical events, including public Interaction/v1 frames."""
 
-        return await self.client.list_session_events(
-            agent_id=self._chat_agent_id(deployment),
-            session_id=session_id,
-            after_seq_id=after_seq_id,
-            limit=limit,
-        )
+        try:
+            return await self.client.list_session_events(
+                agent_id=self._chat_agent_id(deployment),
+                session_id=session_id,
+                after_seq_id=after_seq_id,
+                limit=limit,
+            )
+        except AgentEngineAPIError as exc:
+            if exc.code == 404 or exc.details.get("http_status") == 404:
+                return {"events": [], "session_deleted": True}
+            raise
 
     async def send_deployment_chat_message(
         self,

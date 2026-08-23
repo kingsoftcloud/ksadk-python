@@ -134,6 +134,10 @@ class _Client:
             "latest_seq_id": 4,
         }
 
+    async def list_session_events(self, **kwargs) -> dict:
+        self.session_calls.append(("ListSessionEvents", kwargs))
+        return {"events": [{"event_type": "run.completed"}]}
+
     async def chat(self, agent_id: str, message: str, *, session_id: str | None = None) -> dict:
         self.session_calls.append(
             ("RunAgent", {"AgentId": agent_id, "SessionId": session_id, "Message": message})
@@ -144,6 +148,14 @@ class _Client:
 class _MissingAgentClient(_Client):
     async def get_agent(self, *, agent_id: str) -> dict:
         raise AgentEngineAPIError(404, "未找到对应的 Agent")
+
+
+class _DeletedSessionClient(_Client):
+    async def list_session_messages(self, **kwargs) -> dict:
+        raise AgentEngineAPIError(404, "Session not found")
+
+    async def list_session_events(self, **kwargs) -> dict:
+        raise AgentEngineAPIError(404, "Session not found")
 
 
 @pytest.mark.asyncio
@@ -698,6 +710,32 @@ async def test_cloud_chat_is_bound_to_the_deployment_receipt_agent() -> None:
             },
         ),
     ]
+
+
+@pytest.mark.asyncio
+async def test_cloud_chat_poll_after_delete_returns_empty_terminal_views() -> None:
+    gateway = DirectAgentEngineCloudDeploymentGateway(
+        region="pre-online",
+        client=_DeletedSessionClient(),
+        uploader_factory=_Uploader,
+        ks3_credentials={"access_key": "test-access", "secret_key": "test-secret"},
+    )
+    deployment = DeploymentRecord(
+        id="dep_deleted_session",
+        build_id="build_deleted_session",
+        bundle_digest="sha256:" + "a" * 64,
+        version_id="version-deleted-session",
+        status="READY",
+        target=DeploymentTarget(region="pre-online", environment="preproduction"),
+        agent_id="ar-receipt-bound",
+    )
+
+    assert await gateway.list_deployment_chat_messages(
+        deployment, session_id="sess-deleted"
+    ) == {"messages": [], "session_deleted": True}
+    assert await gateway.list_deployment_chat_events(
+        deployment, session_id="sess-deleted"
+    ) == {"events": [], "session_deleted": True}
 
 
 @pytest.mark.asyncio
