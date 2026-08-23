@@ -59,6 +59,7 @@ describe("EvaluationsPage", () => {
     render(<EvaluationsPage refreshTick={0} />);
 
     await user.click(screen.getByRole("button", { name: "新建评测" }));
+    expect(screen.getByText("运行策略")).toBeInTheDocument();
     await user.upload(
       screen.getByLabelText("选择 EvalSet 文件"),
       new File(["schemaVersion: ksadk.eval/v1"], "smoke.yaml", { type: "application/yaml" }),

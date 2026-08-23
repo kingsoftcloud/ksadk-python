@@ -385,12 +385,13 @@ export function EvaluationsPage({
               <FormField label="超时（秒）" htmlFor="evaluation-timeout" requirement="required">
                 <input id="evaluation-timeout" type="number" min={1} max={3600} value={timeoutSeconds} onChange={event => setTimeoutSeconds(Number(event.target.value))} required />
               </FormField>
+              <FormField label="运行策略">
+                <label className="checkbox-row evaluation-page__fail-fast">
+                  <input type="checkbox" checked={failFast} onChange={event => setFailFast(event.target.checked)} />
+                  <span><strong>Fail fast</strong><small>首个失败 Case 后停止</small></span>
+                </label>
+              </FormField>
             </div>
-
-            <label className="checkbox-row evaluation-page__fail-fast">
-              <input type="checkbox" checked={failFast} onChange={event => setFailFast(event.target.checked)} />
-              <span><strong>Fail fast</strong><small>首个失败 Case 后停止</small></span>
-            </label>
 
             <FormField label="评估器" requirement="required">
               <div className="evaluation-page__evaluator-options" role="group" aria-label="评估器">

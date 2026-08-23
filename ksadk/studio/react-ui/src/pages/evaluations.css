@@ -26,12 +26,18 @@
   margin-top: 0;
 }
 
-.evaluation-page__form-grid > .studio-form-field:last-child:nth-child(odd) {
-  grid-column: 1 / span 6;
+.evaluation-page__fail-fast {
+  box-sizing: border-box;
+  min-height: 42px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--surface);
 }
 
-.evaluation-page__fail-fast {
-  align-self: center;
+.evaluation-page__fail-fast input {
+  margin-top: 0;
 }
 
 .evaluation-page__evaluator-options {
