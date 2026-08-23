@@ -21,6 +21,10 @@ import { StudioSelect } from "./components/ui/StudioSelect";
 import { useStudioViewportMode } from "./useStudioViewportMode";
 import { useStudioTheme } from "./useStudioTheme";
 import {
+  selectCloudChatDeployments,
+  type CloudDeploymentSummary,
+} from "./cloudDeployments";
+import {
   NavigationRail,
   readNavigationRailPreference,
   writeNavigationRailPreference,
@@ -83,12 +87,6 @@ interface AgentSummary {
   metadata: { id: string; name: string; revision?: number; labels?: Record<string, string>; appearance?: AgentAppearance };
   spec?: { runtime?: { type?: string } };
   builds?: Array<{ id: string; status: string }>;
-}
-
-interface CloudDeploymentSummary {
-  id: string;
-  agentId?: string;
-  status?: string;
 }
 
 export default function App() {
@@ -195,7 +193,7 @@ export default function App() {
       const response = await apiFetch("/api/v1/deployments");
       if (!response.ok) return;
       const payload = await response.json();
-      const items = (payload.items || []).filter((item: CloudDeploymentSummary) => Boolean(item.agentId));
+      const items = selectCloudChatDeployments(payload.items || []);
       setCloudDeployments(items);
       setCloudDeploymentId(previous => items.some((item: CloudDeploymentSummary) => item.id === previous) ? previous : "");
     } catch {
