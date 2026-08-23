@@ -129,6 +129,12 @@ class BlockingCodexAdapter(CodexLikeAdapter):
             )
             self.interaction_seen.set()
             await self.response_received.wait()
+            # Signal that the original blocked generator resumed before it
+            # hands the terminal fact to the worker.  The worker deliberately
+            # stops requesting frames after a canonical terminal event because
+            # app-server transports can keep their channel open across turns;
+            # code placed after this yield is therefore not observable.
+            self.stream_finished.set()
             yield RunCompleted(
                 schema_version=2,
                 event_id="codex-completed-1",
@@ -140,7 +146,6 @@ class BlockingCodexAdapter(CodexLikeAdapter):
                 status="completed",
                 output_refs=(),
             )
-            self.stream_finished.set()
 
         return _gen()
 
