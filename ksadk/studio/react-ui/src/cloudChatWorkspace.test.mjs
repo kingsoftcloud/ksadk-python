@@ -10,7 +10,9 @@ test("cloud chat keeps polling until an admitted run reaches a terminal response
   assert.match(source, /if \(!active \|\| !currentSessionId\) return/);
   assert.match(source, /sending \|\| waitingForResponse \? 1200 : 4000/);
   assert.match(source, /awaitingAcceptedSeqRef\.current/);
-  assert.match(source, /eventSeq <= afterSeq/);
+  assert.match(source, /const matchesRun = Boolean\(runId\) && eventRunId === runId/);
+  assert.match(source, /const matchesAcceptedWindow = afterSeq > 0 && eventSeq > afterSeq/);
+  assert.match(source, /if \(!matchesRun && !matchesAcceptedWindow\) continue/);
   assert.match(source, /receipt\.accepted_seq/);
   assert.match(source, /const sendInFlightRef = useRef\(false\)/);
   assert.match(source, /const currentSessionIdRef = useRef\(""\)/);
@@ -22,8 +24,10 @@ test("cloud chat keeps polling until an admitted run reaches a terminal response
   assert.match(source, /frame\.invocation_id/);
   assert.match(source, /\["run_status", "run\.status"\]/);
   assert.match(source, /content\.status/);
-  assert.match(source, /rows\.filter\(message => message\.role === "assistant"\)\.length > assistantCountBeforeSendRef\.current/);
-  assert.match(source, /message => !message\.pending && message\.role === "assistant"/);
+  assert.match(source, /const assistantIdsBeforeSendRef = useRef<Set<string>>\(new Set\(\)\)/);
+  assert.match(source, /!assistantIdsBeforeSendRef\.current\.has\(message\.id\)/);
+  assert.match(source, /\.map\(message => message\.id\)/);
+  assert.match(source, /refreshSessions\(\)\.catch\(\(\) => \{\}\)/);
   assert.match(source, /const sessionId = currentSessionIdRef\.current \|\| await createSession\(\)/);
   assert.match(source, /currentSessionIdRef\.current = session\.id/);
   assert.match(source, /waitingForResponseRef\.current = true/);

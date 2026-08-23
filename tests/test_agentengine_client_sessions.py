@@ -1,3 +1,6 @@
+import asyncio
+import threading
+
 import pytest
 
 from ksadk.api.client import AgentEngineClient
@@ -44,3 +47,25 @@ async def test_chat_declares_chat_completions_format_for_kop(monkeypatch) -> Non
             "SessionId": "sess-test",
         },
     }
+
+
+@pytest.mark.asyncio
+async def test_session_actions_do_not_block_the_calling_event_loop(monkeypatch) -> None:
+    client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
+    release = threading.Event()
+    entered = threading.Event()
+
+    def blocking_action(action: str, params: dict[str, object]) -> dict[str, object]:
+        entered.set()
+        assert release.wait(timeout=2)
+        return {"sessions": []}
+
+    monkeypatch.setattr(client, "_action", blocking_action)
+    request = asyncio.create_task(client.list_sessions("ar-test"))
+    assert await asyncio.to_thread(entered.wait, 1)
+
+    # If the requests transport were still running on this thread, this sleep
+    # could not complete until ``release`` was set.
+    await asyncio.wait_for(asyncio.sleep(0), timeout=0.1)
+    release.set()
+    assert await request == {"sessions": []}

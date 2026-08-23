@@ -4,6 +4,7 @@ AgentEngine Server API 客户端
 支持 AWS V4 签名认证，用于通过 KOP 网关访问 AgentEngine Server。
 """
 
+import asyncio
 import json
 import logging
 import mimetypes
@@ -127,6 +128,11 @@ class AgentEngineClient:
             logger.debug("AgentEngineClient: No credentials, signing disabled")
 
         self._session: Optional[requests.Session] = None
+        # The public client keeps synchronous ``requests`` transport for CLI
+        # compatibility.  Async callers (notably Studio's FastAPI process)
+        # must not run that transport on the event-loop thread, and the shared
+        # requests.Session must not be used by several worker threads at once.
+        self._async_action_lock = asyncio.Lock()
         self._http_error_log_suppressors: list[HttpErrorLogSuppressor] = []
         # 反查身份的实例缓存（避免同会话重复调 IAM）；None=未尝试，ResolvedIdentity|None=已反查
         self._resolved_identity: Any = None
@@ -707,6 +713,17 @@ class AgentEngineClient:
         if self._session:
             self._session.close()
             self._session = None
+
+    async def _action_async(
+        self,
+        action: str,
+        params: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Run the legacy blocking Action transport without freezing an event loop."""
+
+        async with self._async_action_lock:
+            return await asyncio.to_thread(self._action, action, params, **kwargs)
 
     async def __aenter__(self):
         return self
@@ -1784,22 +1801,24 @@ class AgentEngineClient:
         self, agent_id: str, user_id: Optional[str] = None, expires_hours: int = 24
     ) -> Dict[str, Any]:
         """创建会话"""
-        return self._action(
+        return await self._action_async(
             "CreateSession", {"AgentId": agent_id, "UserId": user_id, "ExpiresHours": expires_hours}
         )
 
     async def get_session(self, session_id: str) -> Dict[str, Any]:
         """获取会话详情"""
-        return self._action("GetSession", {"Id": session_id})
+        return await self._action_async("GetSession", {"Id": session_id})
 
     async def list_sessions(self, agent_id: str, page: int = 1, size: int = 20) -> Dict[str, Any]:
         """列出会话"""
-        return self._action("ListSessions", {"AgentId": agent_id, "Page": page, "PageSize": size})
+        return await self._action_async(
+            "ListSessions", {"AgentId": agent_id, "Page": page, "PageSize": size}
+        )
 
     async def delete_session(self, session_id: str) -> bool:
         """删除会话"""
         try:
-            result = self._action("DeleteSession", {"Id": session_id})
+            result = await self._action_async("DeleteSession", {"Id": session_id})
             # Server may accept the request but retain the control-plane
             # record when runtime-side deletion is still pending.  Do not
             # present that state as a completed delete to Studio callers.
@@ -1842,7 +1861,7 @@ class AgentEngineClient:
             params["BeforeSeqId"] = before_seq_id
         if cursor_source is not None:
             params["CursorSource"] = cursor_source
-        return self._action("ListSessionMessages", params)
+        return await self._action_async("ListSessionMessages", params)
 
     async def list_session_events(
         self,
@@ -1861,7 +1880,7 @@ class AgentEngineClient:
         }
         if after_seq_id is not None:
             params["AfterSeqId"] = after_seq_id
-        return self._action("ListSessionEvents", params)
+        return await self._action_async("ListSessionEvents", params)
 
     async def submit_interaction(
         self,
@@ -1881,7 +1900,7 @@ class AgentEngineClient:
         principal, AgentInstance and permit remain Server-derived.
         """
 
-        return self._action(
+        return await self._action_async(
             "SubmitInteraction",
             {
                 "AgentId": agent_id,
@@ -2361,7 +2380,7 @@ class AgentEngineClient:
         }
         if session_id:
             params["SessionId"] = session_id
-        return self._action("RunAgent", params)
+        return await self._action_async("RunAgent", params)
 
     # ===== Version Actions =====
 

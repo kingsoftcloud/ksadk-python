@@ -133,7 +133,14 @@ function terminalRunEvent(events: unknown[], runId: string, afterSeq: number): "
       payload.seq ?? payload.seq_id ?? payload.source_session_seq
       ?? frame.seq ?? frame.seq_id ?? frame.source_session_seq ?? 0,
     ) || 0;
-    if (runId ? eventRunId !== runId : eventSeq <= afterSeq) continue;
+    // The current pre-production Server projection exposes the admitted
+    // Runtime run id in the receipt but still labels historical events with
+    // the outer invocation id.  Prefer an exact id match, then fall back to
+    // the receipt's accepted Session sequence.  The composer admits one run
+    // at a time, so the sequence window remains unambiguous for this client.
+    const matchesRun = Boolean(runId) && eventRunId === runId;
+    const matchesAcceptedWindow = afterSeq > 0 && eventSeq > afterSeq;
+    if (!matchesRun && !matchesAcceptedWindow) continue;
     const eventType = String(frame.event_type ?? frame.eventType ?? payload.event_type ?? payload.eventType ?? "").toLowerCase();
     if (["run.completed", "run.complete", "run.succeeded"].includes(eventType)) return "completed";
     if (["run.failed", "run.cancelled", "run.expired", "run.error"].includes(eventType)) return "failed";
@@ -184,7 +191,7 @@ export function CloudChatWorkspace({
   const messageListRef = useRef<HTMLDivElement>(null);
   const currentSessionIdRef = useRef("");
   const waitingForResponseRef = useRef(false);
-  const assistantCountBeforeSendRef = useRef(0);
+  const assistantIdsBeforeSendRef = useRef<Set<string>>(new Set());
   const awaitingRunIdRef = useRef("");
   const awaitingAcceptedSeqRef = useRef(0);
   const sendInFlightRef = useRef(false);
@@ -223,11 +230,15 @@ export function CloudChatWorkspace({
     setMessages(rows);
     if (
       waitingForResponseRef.current
-      && rows.filter(message => message.role === "assistant").length > assistantCountBeforeSendRef.current
+      && rows.some(
+        message => message.role === "assistant" && !assistantIdsBeforeSendRef.current.has(message.id),
+      )
     ) {
       waitingForResponseRef.current = false;
       setWaitingForResponse(false);
       awaitingRunIdRef.current = "";
+      awaitingAcceptedSeqRef.current = 0;
+      assistantIdsBeforeSendRef.current = new Set();
     }
   }, [base]);
 
@@ -311,7 +322,7 @@ export function CloudChatWorkspace({
     setCurrentSessionId(session.id);
     setMessages([]);
     setInteractions([]);
-    assistantCountBeforeSendRef.current = 0;
+    assistantIdsBeforeSendRef.current = new Set();
     return session.id;
   }
 
@@ -337,9 +348,11 @@ export function CloudChatWorkspace({
     setInput("");
     try {
       const sessionId = currentSessionIdRef.current || await createSession();
-      assistantCountBeforeSendRef.current = messages.filter(
-        message => !message.pending && message.role === "assistant",
-      ).length;
+      assistantIdsBeforeSendRef.current = new Set(
+        messages
+          .filter(message => !message.pending && message.role === "assistant")
+          .map(message => message.id),
+      );
       awaitingRunIdRef.current = "";
       awaitingAcceptedSeqRef.current = 0;
       const optimistic: CloudMessage = {
@@ -361,8 +374,14 @@ export function CloudChatWorkspace({
       awaitingAcceptedSeqRef.current = Number(
         receipt.accepted_seq ?? receipt.acceptedSeq ?? receipt.AcceptedSeq ?? 0,
       ) || 0;
-      await refreshSessions();
-      window.setTimeout(() => { refreshMessages(sessionId).catch(() => {}); }, 250);
+      // Admission is complete once the receipt arrives. Session-list refresh
+      // is metadata work and must not keep the composer in `sending` while
+      // the runtime response is already available.
+      refreshSessions().catch(() => {});
+      window.setTimeout(() => {
+        refreshMessages(sessionId).catch(() => {});
+        refreshInteractions(sessionId).catch(() => {});
+      }, 250);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setMessages(previous => previous.map(item => item.pending ? { ...item, pending: false } : item));
@@ -370,6 +389,7 @@ export function CloudChatWorkspace({
       setWaitingForResponse(false);
       awaitingRunIdRef.current = "";
       awaitingAcceptedSeqRef.current = 0;
+      assistantIdsBeforeSendRef.current = new Set();
       showToast("云端消息发送失败", message, "error");
     } finally {
       setSending(false);
