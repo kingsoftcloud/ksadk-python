@@ -35,6 +35,27 @@ def test_gate_on_redirects_base(monkeypatch):
     assert bootstrap._proxy is None
 
 
+def test_teardown_does_not_leak_missing_base_alias(monkeypatch):
+    """Redirect cleanup restores each base alias to its original presence."""
+
+    monkeypatch.setenv("KSADK_MODEL_PROXY_ENABLED", "1")
+    monkeypatch.setenv("OPENAI_MODEL_NAME", "glm-5.2")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://original.example/v1")
+    monkeypatch.delenv("OPENAI_API_BASE", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk")
+    bootstrap._proxy = None
+    bootstrap._original_base = None
+    bootstrap._original_base_env = None
+    try:
+        assert bootstrap.setup_proxy_redirect_if_enabled() is not None
+        assert "OPENAI_API_BASE" in os.environ
+    finally:
+        bootstrap.teardown_proxy_redirect()
+
+    assert os.environ["OPENAI_BASE_URL"] == "https://original.example/v1"
+    assert "OPENAI_API_BASE" not in os.environ
+
+
 def test_idempotent_multiple_calls(monkeypatch):
     monkeypatch.setenv("KSADK_MODEL_PROXY_ENABLED", "1")
     monkeypatch.setenv("OPENAI_MODEL_NAME", "glm-5.2")

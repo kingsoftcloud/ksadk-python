@@ -73,6 +73,67 @@ def test_convert_tools_keeps_strict_and_nests():
     ]
 
 
+def test_codex_additional_tools_input_is_promoted_to_chat_tools():
+    """Codex Harness 0.147 carries dynamic tools as an input item."""
+
+    body = {
+        "model": "gpt-5.6-terra",
+        "input": [
+            {
+                "type": "additional_tools",
+                "role": "developer",
+                "tools": [
+                    {
+                        "type": "namespace",
+                        "name": "functions",
+                        "description": "Runtime tools",
+                        "tools": [
+                            {
+                                "type": "function",
+                                "name": "exec_command",
+                                "description": "Run a command",
+                                "parameters": {
+                                    "type": "object",
+                                    "properties": {"cmd": {"type": "string"}},
+                                    "required": ["cmd"],
+                                },
+                            }
+                        ],
+                    }
+                ],
+            },
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "run it"}],
+            },
+        ],
+        "tool_choice": "auto",
+    }
+
+    out, restore = responses_to_chat(body)
+
+    assert out["messages"] == [{"role": "user", "content": "run it"}]
+    assert out["tools"] == [
+        {
+            "type": "function",
+            "function": {
+                "name": "functions__exec_command",
+                "description": "Run a command",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"cmd": {"type": "string"}},
+                    "required": ["cmd"],
+                },
+            },
+        }
+    ]
+    assert restore["functions__exec_command"] == {
+        "namespace": "functions",
+        "name": "exec_command",
+    }
+
+
 def test_named_tool_choice_nested():
     assert convert_tool_choice({"type": "function", "name": "shell"}) == {
         "type": "function",

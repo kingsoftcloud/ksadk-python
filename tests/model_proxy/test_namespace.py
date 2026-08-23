@@ -162,6 +162,103 @@ def test_responses_to_chat_then_restore_roundtrip():
     assert fc["name"] == "read" and fc["namespace"] == "mcp__fs"
 
 
+def test_namespaced_custom_tool_roundtrip():
+    """Codex namespace custom tools survive the Responses -> Chat roundtrip."""
+
+    body = {
+        "model": "m",
+        "input": [
+            {"type": "message", "role": "user", "content": "run it"},
+            {
+                "type": "custom_tool_call",
+                "namespace": "functions",
+                "name": "exec",
+                "call_id": "call_previous",
+                "input": "pwd",
+            },
+            {
+                "type": "custom_tool_call_output",
+                "call_id": "call_previous",
+                "output": "ok",
+            },
+        ],
+        "tools": [
+            {
+                "type": "namespace",
+                "name": "functions",
+                "tools": [
+                    {
+                        "type": "custom",
+                        "name": "exec",
+                        "description": "Execute JavaScript orchestration code",
+                        "format": {
+                            "type": "grammar",
+                            "syntax": "lark",
+                            "definition": "start: /.+/",
+                        },
+                    }
+                ],
+            }
+        ],
+    }
+
+    chat_req, restore_map = responses_to_chat(body)
+
+    assert chat_req["tools"] == [
+        {
+            "type": "function",
+            "function": {
+                "name": "functions__exec",
+                "description": "Execute JavaScript orchestration code",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"input": {"type": "string"}},
+                    "required": ["input"],
+                },
+            },
+        }
+    ]
+    assert chat_req["messages"][1]["tool_calls"][0]["function"] == {
+        "name": "functions__exec",
+        "arguments": '{"input": "pwd"}',
+    }
+    assert restore_map["functions__exec"] == {
+        "namespace": "functions",
+        "name": "exec",
+        "custom": "true",
+    }
+
+    chat = {
+        "id": "c1",
+        "model": "m",
+        "choices": [
+            {
+                "finish_reason": "tool_calls",
+                "message": {
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": "functions__exec",
+                                "arguments": '{"input":"pwd"}',
+                            },
+                        }
+                    ],
+                },
+            }
+        ],
+        "usage": {},
+    }
+
+    response = chat_to_response(chat, "r", restore_map)
+    call = next(item for item in response["output"] if item["type"] == "custom_tool_call")
+    assert call["namespace"] == "functions"
+    assert call["name"] == "exec"
+    assert call["input"] == "pwd"
+
+
 def test_restore_function_call_no_map_passthrough():
     item = {"type": "function_call", "name": "shell", "call_id": "c"}
     assert restore_function_call(item, {}) is item  # 无映射原样
