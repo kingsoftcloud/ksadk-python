@@ -135,6 +135,27 @@ def test_http_matrix_produces_all_store_behavior_checks() -> None:
     assert all(check["status"] == "pass" for check in checks.values())
 
 
+def test_http_matrix_preserves_completed_checks_on_late_failure() -> None:
+    class _FailsAtFence(_FakeCanaryClient):
+        def stale_fence(self, session_id: str) -> dict[str, Any]:
+            raise MatrixFailure("synthetic late failure")
+
+    checks: dict[str, dict[str, Any]] = {}
+    with pytest.raises(MatrixFailure, match="synthetic late failure"):
+        run_http_matrix(
+            _FailsAtFence(),  # type: ignore[arg-type]
+            expected_digest="d" * 64,
+            checks=checks,
+        )
+    assert set(checks) == {
+        "contract_digest",
+        "fifo",
+        "idempotency",
+        "queue_full",
+        "reconnect",
+    }
+
+
 def test_rollbacks_must_use_an_immutable_image() -> None:
     driver = KubeDriver(
         kubeconfig="/does/not/matter",

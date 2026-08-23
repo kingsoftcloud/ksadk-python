@@ -310,10 +310,18 @@ def _completed(snapshot: dict[str, Any], expected: int) -> bool:
     return len(inbox) == expected and all(row.get("status") == "completed" for row in inbox)
 
 
-def run_http_matrix(client: CanaryClient, *, expected_digest: str) -> dict[str, dict[str, Any]]:
+def run_http_matrix(
+    client: CanaryClient,
+    *,
+    expected_digest: str,
+    checks: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, dict[str, Any]]:
     """Run deterministic HTTP/store checks that do not restart the Pod."""
 
-    checks: dict[str, dict[str, Any]] = {}
+    # Mutate the caller-owned result as each scenario closes.  If a later
+    # drill fails, the raw report must retain the already verified checks
+    # instead of misleadingly publishing ``checks: {}``.
+    checks = checks if checks is not None else {}
     contract = client.contract()
     _require(contract.get("digest") == expected_digest, "runtime contract digest mismatch")
     checks["contract_digest"] = {
@@ -615,7 +623,11 @@ def main(argv: list[str] | None = None) -> int:
     failure: str | None = None
     try:
         client = CanaryClient(forward.start())
-        checks.update(run_http_matrix(client, expected_digest=args.expected_contract_digest))
+        run_http_matrix(
+            client,
+            expected_digest=args.expected_contract_digest,
+            checks=checks,
+        )
         client, cold = run_cold_recovery(
             client=client,
             forward=forward,

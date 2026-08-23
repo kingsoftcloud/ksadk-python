@@ -568,6 +568,14 @@ async def test_stale_fence(body: dict) -> dict:
     old_owner = f"old-{uuid.uuid4().hex[:12]}"
     new_owner = f"new-{uuid.uuid4().hex[:12]}"
 
+    service: PostgresSessionService = _state["session_service"]  # type: ignore[assignment]
+    if await service.get_session(session_id) is None:
+        await service.create_session(
+            agent_id=instance_id(),
+            user_id="phase1-canary",
+            session_id=session_id,
+        )
+
     def request(owner: str) -> ActivationLeaseRequest:
         return ActivationLeaseRequest(
             agent_instance_id=instance_id(),
