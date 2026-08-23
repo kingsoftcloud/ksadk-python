@@ -562,6 +562,12 @@ async def test_stream_retryable_error_keeps_run_open():
     assert result.outcome == "retryable_failure"
     run = await stack.store.find_active_run(AGENT, "s1")
     assert run is not None and run.state == RunState.RUNNING
+    for _ in range(10):
+        if ("close", "s1") in stack.adapter.calls:
+            break
+        await asyncio.sleep(0)
+    assert ("close", "s1") in stack.adapter.calls
+    assert worker.execution_for(result.run_id) is None
 
 
 async def test_stream_typed_rejection_is_discarded():

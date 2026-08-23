@@ -11,11 +11,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol, runtime_checkable
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 from ksadk.kernel.contracts import (
     ActivationLease,
@@ -35,13 +34,30 @@ def now_iso() -> str:
 
 
 def command_digest(command: AgentControlCommand) -> str:
-    """Stable digest of the idempotency domain (excluding command_id/timestamps)."""
+    """Stable digest of the caller's idempotency domain.
+
+    Server admission deliberately issues a fresh permit for every network
+    attempt.  ``authorization_ref`` and the interaction ``token_ref`` therefore
+    authenticate an attempt, but are not part of the business mutation.  They
+    must be verified before this digest is consulted, then excluded here so a
+    legitimate retry can resolve to the original receipt.
+    """
+
+    payload = dict(command.payload)
+    if command.command_type == "submit_interaction":
+        payload.pop("token_ref", None)
 
     canonical = json.dumps(
         command.model_dump(
             mode="json",
-            exclude={"command_id", "submitted_at"},
+            exclude={"command_id", "submitted_at", "authorization_ref", "payload"},
         ),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    canonical = json.dumps(
+        {**json.loads(canonical), "payload": payload},
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,

@@ -520,6 +520,39 @@ class AgentKernelWorker:
                 getattr(error, "details", {}),
                 exc_info=error,
             )
+            # The failure happened after the Inbox claim had already been
+            # acknowledged, so no foreground owner remains to close this
+            # adapter.  Leaving it in the live table leaks provider processes
+            # (notably one Codex app-server per failed turn) and makes later
+            # sessions stall behind stale transports.  Preserve the durable
+            # open Run for recovery, but release this failed process-local
+            # attachment immediately.
+            execution = self._executions.get(run_id)
+            if execution is not None and execution.stream_task is task:
+                self._executions.pop(run_id, None)
+                cleanup = asyncio.create_task(
+                    self._close_failed_execution(execution),
+                    name=f"kernel-stream-cleanup:{run_id}",
+                )
+                cleanup.add_done_callback(self._observe_cleanup_task)
+
+    async def _close_failed_execution(self, execution: ActiveExecution) -> None:
+        try:
+            await execution.adapter.close(execution.handle)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "failed to close adapter after runtime stream error for durable run %s",
+                execution.durable_run_id,
+            )
+
+    @staticmethod
+    def _observe_cleanup_task(task: asyncio.Task[None]) -> None:
+        if task.cancelled():
+            return
+        try:
+            task.exception()
+        except asyncio.CancelledError:  # pragma: no cover - defensive
+            return
 
     async def _consume_stream(
         self,

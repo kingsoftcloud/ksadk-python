@@ -12,9 +12,17 @@ from tests.kernel.control_harness import (
     EXPIRED_AT,
     PERMIT_REF,
     TENANT,
+    FakeAdapter,
     command,
+    default_matrix,
     kernel_stack,
+    native,
 )
+
+
+def interaction_adapter() -> FakeAdapter:
+    matrix = default_matrix().model_copy(update={"submit_interaction": native()})
+    return FakeAdapter(matrix=matrix)
 
 
 async def test_submit_acks_only_after_inbox_and_event_commit():
@@ -57,6 +65,101 @@ async def test_submit_is_idempotent_for_network_retry():
     assert retry.status == "duplicate"
     assert retry.message_id == first.message_id
     assert retry.accepted_seq == first.accepted_seq
+
+
+async def test_interaction_retry_ignores_fresh_admission_credentials():
+    """A retry gets a new Server permit without becoming a new mutation."""
+
+    stack = await kernel_stack(adapter=interaction_adapter())
+    first_permit = stack.permit(
+        "submit_interaction", nonce="interaction-n1", permit_id="permit-attempt-1"
+    )
+    first = command(
+        "submit_interaction",
+        idempotency_key="interaction-retry-1",
+        authorization_ref=first_permit.permit_id,
+        payload={
+            "run_id": "run-1",
+            "interaction_id": "it-1",
+            "token_ref": first_permit.permit_id,
+            "action": "approve",
+            "expected_revision": 1,
+            "idempotency_key": "interaction-retry-1",
+            "response": {"approved": True},
+        },
+    )
+    accepted = await stack.kernel.submit(first, permit=first_permit)
+
+    retry_permit = stack.permit(
+        "submit_interaction", nonce="interaction-n2", permit_id="permit-attempt-2"
+    )
+    retry = command(
+        "submit_interaction",
+        idempotency_key="interaction-retry-1",
+        authorization_ref=retry_permit.permit_id,
+        payload={
+            "run_id": "run-1",
+            "interaction_id": "it-1",
+            "token_ref": retry_permit.permit_id,
+            "action": "approve",
+            "expected_revision": 1,
+            "idempotency_key": "interaction-retry-1",
+            "response": {"approved": True},
+        },
+    )
+    duplicate = await stack.kernel.submit(retry, permit=retry_permit)
+
+    assert accepted.status == "accepted"
+    assert duplicate.status == "duplicate"
+    assert duplicate.message_id == accepted.message_id
+    assert duplicate.accepted_seq == accepted.accepted_seq
+
+
+async def test_interaction_retry_still_rejects_changed_business_response():
+    stack = await kernel_stack(adapter=interaction_adapter())
+    first_permit = stack.permit(
+        "submit_interaction", nonce="interaction-change-n1", permit_id="permit-change-1"
+    )
+    base_payload = {
+        "run_id": "run-1",
+        "interaction_id": "it-1",
+        "token_ref": first_permit.permit_id,
+        "action": "approve",
+        "expected_revision": 1,
+        "idempotency_key": "interaction-change-1",
+        "response": {"approved": True},
+    }
+    await stack.kernel.submit(
+        command(
+            "submit_interaction",
+            idempotency_key="interaction-change-1",
+            authorization_ref=first_permit.permit_id,
+            payload=base_payload,
+        ),
+        permit=first_permit,
+    )
+
+    retry_permit = stack.permit(
+        "submit_interaction", nonce="interaction-change-n2", permit_id="permit-change-2"
+    )
+    changed_payload = {
+        **base_payload,
+        "token_ref": retry_permit.permit_id,
+        "response": {"approved": False},
+    }
+    conflict = await stack.kernel.submit(
+        command(
+            "submit_interaction",
+            idempotency_key="interaction-change-1",
+            authorization_ref=retry_permit.permit_id,
+            payload=changed_payload,
+        ),
+        permit=retry_permit,
+    )
+
+    assert conflict.status == "rejected"
+    assert conflict.error is not None
+    assert conflict.error.code == "idempotency_conflict"
 
 
 async def test_idempotency_key_conflict_is_rejected():
