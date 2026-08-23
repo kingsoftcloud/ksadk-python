@@ -206,6 +206,7 @@ class FakeAdapter(RuntimeAdapter):
         self.start_error: Exception | None = None
         self.stream_events: list = []
         self.stream_error: Exception | None = None
+        self.block_after_stream_events = False
         self.handle_run_id: str | None = None
         self.streams: list[str] = []
         self.cancel_result = CancelResult.INTERRUPTED_ACTIVE_TURN
@@ -237,6 +238,8 @@ class FakeAdapter(RuntimeAdapter):
         async def _gen():
             for event in self.stream_events:
                 yield event
+            if self.block_after_stream_events:
+                await asyncio.Event().wait()
             if self.stream_error is not None:
                 raise self.stream_error
 

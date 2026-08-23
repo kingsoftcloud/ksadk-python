@@ -429,6 +429,50 @@ async def test_stream_completes_only_after_natural_end():
     assert run is not None and run.state == RunState.COMPLETED
 
 
+async def test_terminal_event_closes_run_without_waiting_for_provider_eof():
+    from ksadk.events.canonical import RunCompleted
+    from ksadk.kernel.worker import AgentKernelWorker
+
+    stack = await kernel_stack()
+    stack.adapter.stream_events = [
+        RunCompleted(
+            schema_version=2,
+            event_id="provider-terminal-with-open-stream",
+            seq=0,
+            timestamp=1780000001.0,
+            run_id="provider-run",
+            scope_id="run:provider-run",
+            source=_fake_source(),
+            status="completed",
+            output_refs=(),
+        )
+    ]
+    stack.adapter.block_after_stream_events = True
+    lease = await stack.lease()
+    await stack.kernel.submit(
+        command(idempotency_key="terminal-open-stream"),
+        permit=stack.permit("enqueue"),
+    )
+    worker = AgentKernelWorker(
+        stack.store,
+        adapter_factory=lambda: stack.adapter,
+        session_events=stack.events,
+    )
+
+    result = await worker.run_once(AGENT, lease)
+    assert result.run_id is not None
+
+    async def wait_for_terminal() -> None:
+        while True:
+            run = await stack.store.load_run(result.run_id)
+            if run is not None and run.state == RunState.COMPLETED:
+                return
+            await asyncio.sleep(0)
+
+    await asyncio.wait_for(wait_for_terminal(), timeout=0.5)
+    assert ("close", "s1") in stack.adapter.calls
+
+
 async def test_stream_retryable_error_keeps_run_open():
     stack = await kernel_stack()
     stack.adapter.stream_error = AgentKernelError(

@@ -523,6 +523,13 @@ class AgentKernelWorker:
                 "run.canceled": RunState.CANCELLED,
                 "run.interrupted": RunState.INTERRUPTED,
             }.get(event.event_type)
+            if terminal_state is not None:
+                # App-server style providers keep their notification channel
+                # open across turns.  A canonical terminal RuntimeEvent closes
+                # this run even when the transport itself does not produce
+                # EOF; waiting for EOF here leaves the durable run RUNNING and
+                # every later FIFO command queued forever.
+                break
 
         # ``submit_interaction`` may resolve a live provider while this task is
         # blocked in the framework stream.  It transitions the durable run
