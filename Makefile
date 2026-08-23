@@ -1,7 +1,15 @@
 # AgentEngine Makefile
 # 用于同步 KsADK Web static 和管理项目
 
-.PHONY: help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-version-gate docs-site-build docs-site-dev public-test public-build-check public-build-alias-check public-preflight public-publish-check public-release-approval-check public-publish-gate public-release-tag public-review public-sync-ksadk-web-static open-source-audit-dist open-source-audit-alias-dist openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size sync-ksadk-web-static verify-ksadk-web-static verify-ksadk-web-wheel-static build-studio-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend print-build-provenance
+.PHONY: help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-version-gate docs-site-build docs-site-dev public-test public-build-check public-build-alias-check public-preflight public-publish-check public-release-approval-check public-publish-gate public-release-tag public-review public-sync-ksadk-web-static open-source-audit-dist open-source-audit-alias-dist openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size sync-ksadk-web-static verify-ksadk-web-static verify-ksadk-web-wheel-static build-studio-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend print-build-provenance phase1-canary-build phase1-canary-push phase1-canary-deploy phase1-canary-status phase1-canary-delete
+
+PHASE1_CANARY_NAMESPACE ?= agent-kernel-phase1
+PHASE1_CANARY_KUBECONFIG ?= $(HOME)/.kube/agentengine-pre
+PHASE1_CANARY_PLATFORM ?= linux/amd64
+PHASE1_CANARY_REGISTRY ?= hub.kce.ksyun.com/agentengine
+PHASE1_CANARY_TAG ?= phase1-contract-$(shell git rev-parse --short=8 HEAD)
+PHASE1_CANARY_IMAGE := $(PHASE1_CANARY_REGISTRY)/agent-kernel-canary:$(PHASE1_CANARY_TAG)
+PHASE1_CANARY_KUBECTL := kubectl --kubeconfig=$(PHASE1_CANARY_KUBECONFIG)
 
 # 默认目标
 help:
@@ -18,6 +26,9 @@ help:
 	@echo "                         从 @kingsoftcloud/ksadk-web npm 包同步 static"
 	@echo "    make build-frontend 准备 ksadk-web 与 React Studio static"
 	@echo "    make build-studio-static 编译 React Studio static"
+	@echo "    make phase1-canary-push   构建并推送当前合同 PG canary 镜像"
+	@echo "    make phase1-canary-deploy 部署隔离 PG canary（不写入凭据文件）"
+	@echo "    make phase1-canary-delete 删除隔离 canary namespace"
 	@echo ""
 	@echo "  \033[1;32m版本管理:\033[0m"
 	@echo "    make version         显示当前版本"
@@ -102,6 +113,45 @@ dev-backend:
 test:
 	@echo "🧪 运行 Python 测试..."
 	uv run --extra all pytest tests/ -v
+
+# ============================================================
+# Phase 1 preproduction canary
+# ============================================================
+
+phase1-canary-build:
+	@test -z "$$(git status --porcelain --untracked-files=no)" || { echo "ERROR: tracked source tree is dirty"; exit 2; }
+	@echo "Building Phase 1 canary: $(PHASE1_CANARY_IMAGE)"
+	docker build --platform $(PHASE1_CANARY_PLATFORM) \
+		--build-arg KSADK_SOURCE_COMMIT=$$(git rev-parse HEAD) \
+		--label org.opencontainers.image.revision=$$(git rev-parse HEAD) \
+		-f docs/superpowers/evidence/phase1/canary/canary.e2e.Dockerfile \
+		-t $(PHASE1_CANARY_IMAGE) .
+
+phase1-canary-push: phase1-canary-build
+	docker push $(PHASE1_CANARY_IMAGE)
+	@echo "Canary source: commit=$$(git rev-parse HEAD), contract=$$(python -c 'from ksadk.kernel.contract_fingerprints import AGENT_KERNEL_V1_AGGREGATE_DIGEST; print(AGENT_KERNEL_V1_AGGREGATE_DIGEST)')"
+	@docker buildx imagetools inspect $(PHASE1_CANARY_IMAGE) 2>/dev/null | awk '/^Digest:/ { print "Canary OCI digest: " $$2; exit }' || true
+
+phase1-canary-deploy:
+	@test -f "$(PHASE1_CANARY_KUBECONFIG)" || { echo "ERROR: kubeconfig not found: $(PHASE1_CANARY_KUBECONFIG)"; exit 2; }
+	@$(PHASE1_CANARY_KUBECTL) create namespace $(PHASE1_CANARY_NAMESPACE) --dry-run=client -o yaml | $(PHASE1_CANARY_KUBECTL) apply -f -
+	@if ! $(PHASE1_CANARY_KUBECTL) get secret agent-kernel-postgres -n $(PHASE1_CANARY_NAMESPACE) >/dev/null 2>&1; then \
+		password=$$(openssl rand -hex 24); \
+		dsn="postgresql://kernel:$${password}@agent-kernel-postgres.$(PHASE1_CANARY_NAMESPACE).svc.cluster.local:5432/kernel"; \
+		$(PHASE1_CANARY_KUBECTL) create secret generic agent-kernel-postgres -n $(PHASE1_CANARY_NAMESPACE) \
+			--from-literal=password="$${password}" --from-literal=dsn="$${dsn}" >/dev/null; \
+	fi
+	$(PHASE1_CANARY_KUBECTL) apply -f docs/superpowers/evidence/phase1/canary/postgres.yaml
+	$(PHASE1_CANARY_KUBECTL) rollout status deployment/agent-kernel-postgres -n $(PHASE1_CANARY_NAMESPACE) --timeout=180s
+	$(PHASE1_CANARY_KUBECTL) apply -f docs/superpowers/evidence/phase1/canary-hosted/deployment.yaml
+	$(PHASE1_CANARY_KUBECTL) set image deployment/agent-kernel-canary runtime=$(PHASE1_CANARY_IMAGE) -n $(PHASE1_CANARY_NAMESPACE)
+	$(PHASE1_CANARY_KUBECTL) rollout status deployment/agent-kernel-canary -n $(PHASE1_CANARY_NAMESPACE) --timeout=180s
+
+phase1-canary-status:
+	@$(PHASE1_CANARY_KUBECTL) get deployment,pod,service -n $(PHASE1_CANARY_NAMESPACE) -o wide
+
+phase1-canary-delete:
+	$(PHASE1_CANARY_KUBECTL) delete namespace $(PHASE1_CANARY_NAMESPACE) --ignore-not-found --wait=true --timeout=180s
 
 studio-react-install-browser:
 	uv run playwright install chromium

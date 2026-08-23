@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-kernel-postgres
+  namespace: agent-kernel-phase1
+  labels:
+    app: agent-kernel-postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: agent-kernel-postgres
+  template:
+    metadata:
+      labels:
+        app: agent-kernel-postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: kernel
+            - name: POSTGRES_USER
+              value: kernel
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: agent-kernel-postgres
+                  key: password
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U kernel -d kernel"]
+            initialDelaySeconds: 3
+            periodSeconds: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-kernel-postgres
+  namespace: agent-kernel-phase1
+spec:
+  selector:
+    app: agent-kernel-postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432

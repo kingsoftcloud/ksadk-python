@@ -20,13 +20,16 @@ spec:
     spec:
       containers:
         - name: runtime
-          image: hub.kce.ksyun.com/agentengine/agent-kernel-canary:phase1-v4-fb9113a
-          imagePullPolicy: IfNotPresent
+          image: hub.kce.ksyun.com/agentengine/agent-kernel-canary:phase1-contract-current
+          imagePullPolicy: Always
           ports:
             - containerPort: 8080
           env:
+            # The direct canary actions below use their own explicit local
+            # Ed25519 authority. Hosted fail-closed is verified by the shared
+            # main-flow runtime; this harness isolates PG/fencing behavior.
             - name: AGENT_KERNEL_ENABLED
-              value: "1"
+              value: "0"
             - name: AGENT_KERNEL_STORE_DRIVER
               value: postgres
             - name: AGENT_KERNEL_STORE_DSN
@@ -37,11 +40,7 @@ spec:
             - name: AGENT_INSTANCE_ID
               value: phase1-canary-1
             - name: AGENT_KERNEL_AUTHORITY_MODE
-              value: hosted
-            - name: AGENT_CONTROL_JWKS_URL
-              value: http://agentengine-kernel.agent-kernel-phase1.svc.cluster.local:8081/agentengine/api/v1/agent-control/jwks
-            - name: AGENT_CONTROL_PERMIT_ISSUER
-              value: agentengine-server
+              value: local
             - name: AGENT_KERNEL_CONTRACT_DIGEST
               value: d4a66a7249e10375d32d6a83434fde1d16ee6721e3a09ea03ed71217ee742d62
             - name: AGENT_BUNDLE_DIGEST

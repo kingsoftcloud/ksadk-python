@@ -64,13 +64,14 @@ from ksadk.runtime.adapter import (
     StartRequest,
 )
 from ksadk.kernel.contracts import RuntimeCapabilityMatrix
+from ksadk.kernel.contract_fingerprints import AGENT_KERNEL_V1_AGGREGATE_DIGEST
 from ksadk.kernel.postgres_store import (
     PostgresAgentKernelStore,
     PostgresKernelEventLog,
 )
 from ksadk.sessions.postgres_service import PostgresSessionService
 
-CONTRACT_DIGEST = "69771d8df4a8811ed6623f26a152c869cfdfd8dbfdcad443b52a9b6403b267e8"
+CONTRACT_DIGEST = AGENT_KERNEL_V1_AGGREGATE_DIGEST
 TENANT = "phase1-canary"
 
 app = FastAPI(title="agent-kernel-phase1-canary")
@@ -271,11 +272,11 @@ async def _worker_loop() -> None:
                         ActivationLeaseRequest(
                             agent_instance_id=instance_id(),
                             session_id=session_id,
-                            activation_id=f"canary-worker-{instance_id()}",
+                            activation_id=activation_id(),
                             runtime_type="canary-echo",
                             bundle_digest="phase1-canary",
                             capability_digest="phase1-canary",
-                            lease_ttl_seconds=120.0,
+                            lease_ttl_seconds=lease_ttl_seconds(),
                         )
                     )
                 except Exception:
@@ -305,6 +306,21 @@ def authority() -> _CanaryAuthority:
 
 def instance_id() -> str:
     return os.environ.get("AGENT_INSTANCE_ID", "phase1-canary-1")
+
+
+def activation_id() -> str:
+    """Return the workload owner identity used by fencing drills.
+
+    A constant per-instance value makes a replacement Pod look like the old
+    owner and turns Pod-kill into a same-owner renew. Hosted canaries therefore
+    require the downward-API Pod UID; local runs use a process-scoped fallback.
+    """
+
+    return os.environ.get("POD_UID") or f"local-canary-{os.getpid()}"
+
+
+def lease_ttl_seconds() -> float:
+    return float(os.environ.get("AGENT_KERNEL_LEASE_TTL_SECONDS", "30"))
 
 
 @app.on_event("startup")
