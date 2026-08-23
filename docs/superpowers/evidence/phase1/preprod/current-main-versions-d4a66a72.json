@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "environment": "preproduction",
+  "scenario": "shared_main_flow_and_managed_pg_versions",
+  "observed_at": "2026-08-23T17:52:26Z",
+  "checks": {
+    "cross_repo_versions": {
+      "status": "pass",
+      "detail": {
+        "contract_digest": "d4a66a7249e10375d32d6a83434fde1d16ee6721e3a09ea03ed71217ee742d62",
+        "branch": "feat/agent-kernel-phase1",
+        "source_commits": {
+          "ksadk_managed_pg_gate": "3a44c815108ab47f226450f259a8efbcbf180dfd",
+          "agentengine_server": "a6eedbee4c36ec883f09b6370542d2e8f4719cf7",
+          "agentengine_gateway": "79fc4feab26619605237f8ed5378a04700220392",
+          "agent_runtime_service": "09f9569a8fcfee1886ea925ae9f546a989fbc870",
+          "agent_platform_operator": "60b6925307a0791afba4d15d022c61407b8d969a",
+          "ksadk_web_0_3_2": "12ada9592cf5cab178a4ddd7add44cde24ef9ac1"
+        },
+        "contract_fixture_sha256": {
+          "ksadk_python": "895baa342b09367ced2956336fe7ba9d52fdf06604bbcfd996e800fc8705c631",
+          "agentengine_server": "895baa342b09367ced2956336fe7ba9d52fdf06604bbcfd996e800fc8705c631",
+          "agentengine_gateway": "895baa342b09367ced2956336fe7ba9d52fdf06604bbcfd996e800fc8705c631"
+        },
+        "shared_main_images": {
+          "agentengine_server": "hub.kce.ksyun.com/bigdata-ai/agentengine-server@sha256:d609f934b76f25752d7036d8cc51d7ac758a5212b8bcf96d51d2150321aeb5a7",
+          "agentengine_gateway": "hub.kce.ksyun.com/bigdata-ai/agentengine-gateway@sha256:dad1e84244e03399c772fd199c34f576accd6804796f9a4dac47478e9ec6274a",
+          "agent_runtime_service": "hub.kce.ksyun.com/agentengine/agent-runtime-service@sha256:28f82c31abfc38a26cb3c25294784d3b92ac5a5a22a5908e1b5f6b5e5a52288d",
+          "agent_platform_operator": "hub.kce.ksyun.com/agentengine/agent-platform-operator@sha256:25068cb63aa00677ddfc9c8bf7a25db15a9ac35879ca5e6cf2b9ee3d3e96d7da",
+          "agentengine_hosted_ui": "hub.kce.ksyun.com/bigdata-ai/agentengine-hosted-ui@sha256:d8c7be412e674c873040d786d9463fc6f4cd931919cab89de50296fb15542daf",
+          "managed_runtime": "hub-vpc-cn-beijing-6.kce.ksyun.com/agentengine-public/agent-runtime-codex@sha256:fd5ae845e48962da671d27e64c77ff43a52d943eb729354c7bcef8165d859b95",
+          "managed_pg_gate": "hub.kce.ksyun.com/agentengine/agent-kernel-canary@sha256:636a7cd469ed9a7a3407a0ec2b080c8881cfc146845ae3fb1d61b0def9af826f"
+        },
+        "runtime_identity": {
+          "agent_id": "ar-20260823075542-cce1df89",
+          "pod_uid": "a4b68ee3-db6e-4734-bb40-eae46cd62c0c",
+          "ksadk_version": "0.8.1",
+          "ksadk_commit": "7bbb491d79fba87460eff10d9dfebb834cc5a78c",
+          "ksadk_wheel_sha256": "525340bcd957bbb41df2876f5a900c0a1f6018698e448a760a319705f8b75525"
+        },
+        "note": "The three frozen contract fixtures have identical file digests; the shared main runtime and the managed PostgreSQL gate both report the d4a66a72 aggregate contract."
+      }
+    }
+  },
+  "status": "pass"
+}

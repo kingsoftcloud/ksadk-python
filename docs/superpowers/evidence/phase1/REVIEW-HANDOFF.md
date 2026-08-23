@@ -1,6 +1,20 @@
 # Phase 1 Agent Kernel + Interaction/Web 0.3.2 — Review 交接记录
 
-> 2026-08-23 当前结论（优先于下方历史章节）：Studio 声明式 Agent 已进入共享预发
+> 2026-08-24 最终结论（优先于下方所有历史章节）：**Phase 1 release gate 已
+> 11/11 PASS**。最终报告为 `preprod-report.json`，输入是三份彼此独立的 raw
+> evidence：`preprod/managed-pg-matrix-d4a66a72.json`、
+> `preprod/main-flow-audit-d4a66a72.json`、
+> `preprod/current-main-versions-d4a66a72.json`。合同 digest 为
+> `d4a66a7249e10375d32d6a83434fde1d16ee6721e3a09ea03ed71217ee742d62`；
+> Phase 0 manifest 已验收。托管云 PostgreSQL 矩阵实测通过幂等、严格 FIFO
+> 1..100、101 queue_full、SSE cursor 续传、stale writer 拒写、真实 Pod kill
+> 冷恢复 token+1、digest-pinned rollback/rollforward 和 backlog 5→0，且临时
+> namespace 已清理。共享预发主流程的 Gateway→Server admission→AgentInstance
+> →managed runtime 审计行已从 Server 数据库回读，当前各组件 commit、镜像 digest
+> 和 runtime 三元组也已固化。下方红灯、旧 digest、旧 tip、旧 canary 数字仅为
+> 历史问题记录，不再代表当前 release 结论。
+>
+> 2026-08-23 主流程结论：Studio 声明式 Agent 已进入共享预发
 > 主流程，不再依赖 `agent-kernel-phase1` canary。现有 Agent
 > `ar-20260823075542-cce1df89` 已通过 Studio 原地 UpdateAgent 到带来源证明的
 > Codex Runtime；Operator 观测到 KsADK `0.8.1`、commit `7bbb491d…`、wheel
@@ -12,13 +26,14 @@
 > 明确的旧测试 Agent。完整、脱敏的当前事实见
 > `preprod/studio-main-flow-closure.json`。
 >
-> **但完整 Phase 1 release gate 当前仍是红灯。** 用 raw evidence（而非历史聚合
+> **历史阻塞（已于 2026-08-24 关闭）：** 用 raw evidence（而非历史聚合
 > report）重跑 gate 时，durability/fencing/rollback 证据仍绑定旧 aggregate
 > digest `69771d8d…`，当前冻结合同为 `d4a66a72…`。因此下文 2026-08-21 的
 > “27 checks / 0 failed”不能继续作为当前 release 结论；必须用报告中列出的当前
 > 镜像重新跑 PostgreSQL/FIFO/reconnect/recovery/stale-fence/audit/rollback 矩阵。
 > 当前共享 Agent 显式使用 memory store、单副本，只证明非 HA 产品闭环，不能替代
-> PG durable/HA 验收。
+> PG durable/HA 验收。现已用当前 `d4a66a72…` 合同和 digest-pinned 镜像在外部
+> 托管云 PostgreSQL 上重跑通过，详见顶部最终结论。
 >
 > 2026-08-24 PG 验证边界修正：预发验收不得在 Serverless/Kubernetes 内自建
 > PostgreSQL。一次隔离验证部署曾短暂创建 PostgreSQL Pod，发现架构边界错误后已
@@ -28,13 +43,14 @@
 > 注入。`long_task_pg_e2e/.env` 中现有 DSN 从本机及预发管理集群连接超时，但已
 > 从真实预发算力集群 `config-2fc1210d` 内的 Agent Runtime Pod 验证 TCP 可达；
 > `.agentengine.state` 指向的历史 Agent 虽已不存在，但该托管云 PG 可以用于当前
-> 临时验证 runtime。PG/HA gate 必须在算力集群重跑通过后才能标绿。
+> 临时验证 runtime。PG/HA gate 已在该算力集群使用托管云 PostgreSQL 重跑通过，
+> 且临时 runtime 与 namespace 已清理。
 
 > 更新：2026-08-20（终版，所有已知 P0 修复完毕，gate 全绿）两份计划：
 > - `docs/superpowers/plans/2026-08-17-agent-runtime-v2-phase1-agent-kernel.md`（Phase 1，14 任务）
 > - `/Users/xiayu/kingsoft/code/agent-sdk/docs/superpowers/plans/2026-08-19-agent-kernel-interaction-web-0.3.2.md`（Interaction/Web，8 任务）
 
-## 2026-08-21 运行态补充（以本节为准）
+## 2026-08-21 运行态补充（历史快照）
 
 - `docs/superpowers/evidence/phase0/manifest.json` 已存在且 `accepted=true`。以该
   manifest 和既有 `preprod-report.json` 重跑
@@ -59,10 +75,10 @@
 
 ## 一、交付范围与状态
 
-### Phase 1（Task 0-13）：全部完成，预发 gate 17 pass / 1 fail（phase0_baseline，Phase 0 manifest 未产出，硬前置如实红灯）
-### Interaction/Web 0.3.2（IT-1~8）：全部完成，含真实 Codex 预发闭环（一项 PARTIAL）
+### Phase 1（Task 0-13）：全部完成，当前预发 gate 11/11 PASS
+### Interaction/Web 0.3.2（IT-1~8）：全部完成，真实 Studio/Hosted UI 主流程与评测闭环通过
 
-## 二、六仓 commit（feat/agent-kernel-phase1，均未 push）
+## 二、六仓 commit（历史快照；当前交付以顶部最终结论为准）
 
 | 仓库 | worktree | tip | 说明 |
 |---|---|---|---|

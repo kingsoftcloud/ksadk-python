@@ -1,0 +1,103 @@
+{
+  "checks": {
+    "cold_recovery": {
+      "detail": {
+        "command_id": "0f009f42-4978-4c14-a684-03dffae40c1f",
+        "duration_seconds": 32.343,
+        "event_id": "de5dd236-98bb-43db-8764-f4a4d9b0492f",
+        "new_fencing_token": 2,
+        "new_pod": "agent-kernel-canary-64c9cb6c8-jwhvq",
+        "new_pod_uid": "c75bc95c-59c1-425c-9415-726db9445d27",
+        "old_fencing_token": 1,
+        "old_pod": "agent-kernel-canary-64c9cb6c8-vsvg8",
+        "old_pod_uid": "1e2174d3-9593-4d64-be89-8cd775dc58a8",
+        "terminal_count": 6
+      },
+      "status": "pass"
+    },
+    "contract_digest": {
+      "detail": {
+        "digest": "d4a66a7249e10375d32d6a83434fde1d16ee6721e3a09ea03ed71217ee742d62",
+        "instance_id": "phase1-canary-managed-pg"
+      },
+      "status": "pass"
+    },
+    "fifo": {
+      "detail": {
+        "accepted_seq_range": [
+          1,
+          100
+        ],
+        "claimed_in_order": true,
+        "completed_in_order": true,
+        "event_id": "2a10d980-11c9-4351-94ed-4daa80f4a5dd"
+      },
+      "status": "pass"
+    },
+    "idempotency": {
+      "detail": {
+        "accepted_seq": 1,
+        "command_id": "e64c02c8-a9d5-4daa-833e-047217bfad07",
+        "message_id": "f1c232ab-8dfb-4276-84b8-30309d4203d9"
+      },
+      "status": "pass"
+    },
+    "queue_full": {
+      "detail": {
+        "accepted_count": 100,
+        "command_id": "5d66823e-daee-41f3-88ee-59d650541e5e",
+        "error_code": "queue_full",
+        "event_id": "d75dd6f8-501b-4aae-a9cd-1caa04328cf2"
+      },
+      "status": "pass"
+    },
+    "reconnect": {
+      "detail": {
+        "disconnect_after_seq": 1,
+        "duration_seconds": 0.055,
+        "event_id": "e3de4da3-7314-44ba-9dba-c1b670adc3d3",
+        "resumed_seq_range": [
+          2,
+          9
+        ]
+      },
+      "status": "pass"
+    },
+    "rollback": {
+      "detail": {
+        "backlog_after": 0,
+        "backlog_before": 5,
+        "command_id": "c35722bb-afdd-4be5-8c32-084eb8aae544",
+        "commit": "3a44c815108ab47f226450f259a8efbcbf180dfd",
+        "event_id": "f4f0157d-d3bb-4eea-9c2b-0f0bb6e8ab09",
+        "rollback_image": "hub.kce.ksyun.com/agentengine/agent-kernel-canary@sha256:043073b03b8f856b9d6c0a119b94062baeeba6485649dc9700eee28aec6afc82",
+        "rollback_seconds": 10.857,
+        "rollforward_image": "hub.kce.ksyun.com/agentengine/agent-kernel-canary@sha256:636a7cd469ed9a7a3407a0ec2b080c8881cfc146845ae3fb1d61b0def9af826f",
+        "rollforward_seconds": 10.875
+      },
+      "status": "pass"
+    },
+    "stale_fence": {
+      "detail": {
+        "command_id": "run-05c1ae1da127",
+        "event_id": "run-05c1ae1da127",
+        "new_activation_id": "new-0b885b39b9eb",
+        "new_fencing_token": 2,
+        "old_activation_id": "old-adef4e28c605",
+        "old_fencing_token": 1,
+        "session_id": "phase1-fence-f94e73ea2230",
+        "stale_writer_rejected": true
+      },
+      "status": "pass"
+    }
+  },
+  "contract_digest": "d4a66a7249e10375d32d6a83434fde1d16ee6721e3a09ea03ed71217ee742d62",
+  "current_image": "hub.kce.ksyun.com/agentengine/agent-kernel-canary@sha256:636a7cd469ed9a7a3407a0ec2b080c8881cfc146845ae3fb1d61b0def9af826f",
+  "duration_seconds": 280.355,
+  "environment": "preproduction",
+  "generated_at": "2026-08-23T17:52:26Z",
+  "scenario": "managed_postgres_durability_matrix",
+  "schema_version": 1,
+  "source_commit": "3a44c815108ab47f226450f259a8efbcbf180dfd",
+  "status": "pass"
+}
