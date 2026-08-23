@@ -162,3 +162,51 @@ def test_studio_cli_loads_allowlisted_model_and_cloud_control_env_and_forces_cod
                 encoding="utf-8",
                 errors="ignore",
             )
+
+
+def test_explicit_env_file_overrides_inherited_cloud_identity_only_for_studio_process(
+    tmp_path: Path,
+    monkeypatch,
+):
+    env_file = tmp_path / "studio.env"
+    env_file.write_text(
+        "OPENAI_API_KEY=file-model-key\n"
+        "KSYUN_ACCESS_KEY=file-cloud-access\n"
+        "KSYUN_SECRET_KEY=file-cloud-secret\n"
+        "KSYUN_REGION=pre-online\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "shell-model-key")
+    monkeypatch.setenv("KSYUN_ACCESS_KEY", "shell-cloud-access")
+    monkeypatch.setenv("KSYUN_SECRET_KEY", "shell-cloud-secret")
+    monkeypatch.setenv("KSYUN_REGION", "online")
+    active_environment: dict[str, str | None] = {}
+
+    def capture_runtime_environment(*_args, **_kwargs):
+        active_environment.update(
+            {
+                "OPENAI_API_KEY": __import__("os").environ.get("OPENAI_API_KEY"),
+                "KSYUN_ACCESS_KEY": __import__("os").environ.get("KSYUN_ACCESS_KEY"),
+                "KSYUN_SECRET_KEY": __import__("os").environ.get("KSYUN_SECRET_KEY"),
+                "KSYUN_REGION": __import__("os").environ.get("KSYUN_REGION"),
+            }
+        )
+
+    monkeypatch.setattr("ksadk.cli.cmd_studio.uvicorn.run", capture_runtime_environment)
+
+    result = CliRunner().invoke(
+        studio,
+        [str(tmp_path / "workspace"), "--no-open", "--env-file", str(env_file)],
+    )
+
+    assert result.exit_code == 0
+    assert active_environment == {
+        "OPENAI_API_KEY": "shell-model-key",
+        "KSYUN_ACCESS_KEY": "file-cloud-access",
+        "KSYUN_SECRET_KEY": "file-cloud-secret",
+        "KSYUN_REGION": "pre-online",
+    }
+    assert __import__("os").environ["OPENAI_API_KEY"] == "shell-model-key"
+    assert __import__("os").environ["KSYUN_ACCESS_KEY"] == "shell-cloud-access"
+    assert __import__("os").environ["KSYUN_SECRET_KEY"] == "shell-cloud-secret"
+    assert __import__("os").environ["KSYUN_REGION"] == "online"

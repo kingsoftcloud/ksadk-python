@@ -10,6 +10,7 @@ from typing import Any, Callable, Literal, cast
 from urllib.parse import urlparse
 from uuid import uuid4
 
+from ksadk.api import AgentEngineClient
 from ksadk.evaluation import (
     EvaluationConfig as PublicEvaluationConfig,
 )
@@ -1665,9 +1666,19 @@ class StudioService:
         ).strip()
         if not all((access_key, secret_key, region)):
             return UnavailableCloudGateway()
+        control_client = AgentEngineClient(
+            region=region,
+            access_key=access_key,
+            secret_key=secret_key,
+        )
         return DirectAgentEngineCloudDeploymentGateway(
             region=region,
+            client=control_client,
             bucket=os.environ.get("KS3_BUCKET", "").strip() or None,
+            ks3_credentials={
+                "access_key": access_key,
+                "secret_key": secret_key,
+            },
         )
 
     @staticmethod

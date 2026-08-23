@@ -27,6 +27,50 @@ from ksadk.studio.errors import StudioError
 from ksadk.studio.workspace import Workspace
 
 
+def test_direct_gateway_signs_control_actions_with_process_credentials(monkeypatch) -> None:
+    captured: dict[str, str] = {}
+
+    class _CapturedClient:
+        def __init__(self, **kwargs) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr("ksadk.studio.cloud.AgentEngineClient", _CapturedClient)
+    DirectAgentEngineCloudDeploymentGateway(
+        region="pre-online",
+        ks3_credentials={"access_key": "test-access", "secret_key": "test-secret"},
+    )
+
+    assert captured == {
+        "region": "pre-online",
+        "access_key": "test-access",
+        "secret_key": "test-secret",
+    }
+
+
+def test_studio_composition_explicitly_builds_a_signed_control_client(monkeypatch) -> None:
+    from ksadk.studio.service import StudioService
+
+    captured: dict[str, str] = {}
+
+    class _CapturedClient:
+        def __init__(self, **kwargs) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setenv("KSYUN_ACCESS_KEY", "studio-access")
+    monkeypatch.setenv("KSYUN_SECRET_KEY", "studio-secret")
+    monkeypatch.setenv("KSYUN_REGION", "pre-online")
+    monkeypatch.setattr("ksadk.studio.service.AgentEngineClient", _CapturedClient)
+
+    gateway = StudioService._configured_cloud_gateway()
+
+    assert isinstance(gateway, DirectAgentEngineCloudDeploymentGateway)
+    assert captured == {
+        "region": "pre-online",
+        "access_key": "studio-access",
+        "secret_key": "studio-secret",
+    }
+
+
 class _Uploader:
     calls: list[tuple[bytes, str]] = []
 

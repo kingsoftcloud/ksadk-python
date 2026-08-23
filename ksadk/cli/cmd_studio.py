@@ -94,7 +94,11 @@ def studio(
                     loaded_models += 1
                 else:
                     loaded_cloud_control += 1
-                if key not in os.environ:
+                # An explicit --env-file is the operator's selected cloud
+                # identity.  Do not silently reuse inherited AK/SK from the
+                # shell, which can point Studio at another tenant.  Model
+                # values keep their historical shell-first precedence.
+                if key in _CLOUD_CONTROL_ENV_KEYS or key not in os.environ:
                     os.environ[key] = value
             # 别名归一（方案 §2.4 第 5 点）：OPENAI_BASE_URL 与 OPENAI_API_BASE 互为别名。
             # 加载后任一有值则把另一个也设上，保证下游无论读哪个都命中；OPENAI_BASE_URL 优先。
@@ -113,7 +117,9 @@ def studio(
             if loaded_cloud_control:
                 print_kv(
                     "云端控制",
-                    f"已安全加载 {loaded_cloud_control}/{len(_CLOUD_CONTROL_ENV_KEYS)} 个字段（仅本地进程）",
+                    "已安全加载 "
+                    f"{loaded_cloud_control}/{len(_CLOUD_CONTROL_ENV_KEYS)} 个字段"
+                    "（仅本地进程）",
                 )
         if codex_proxy == "forced":
             os.environ["KSADK_CODEX_USE_PROXY"] = "1"

@@ -277,7 +277,6 @@ class DirectAgentEngineCloudDeploymentGateway:
     ) -> None:
         self.region = region.strip()
         self.ks3_region = "cn-beijing-6" if self.region.lower() == "pre-online" else self.region
-        self.client = client or AgentEngineClient(region=self.region)
         self.uploader_factory = uploader_factory
         self.bucket = bucket or os.environ.get("KS3_BUCKET", "").strip() or None
         supplied_credentials = ks3_credentials or {}
@@ -297,6 +296,14 @@ class DirectAgentEngineCloudDeploymentGateway:
         }
         if not all(self._ks3_credentials.values()):
             raise ValueError("Studio cloud gateway requires process-only KS3 credentials")
+        # The same process-only AK/SK signs AgentEngine control-plane actions.
+        # Never let Studio silently fall through to an unsigned client just
+        # because an internal development ingress happens to be reachable.
+        self.client = client or AgentEngineClient(
+            region=self.region,
+            access_key=self._ks3_credentials["access_key"],
+            secret_key=self._ks3_credentials["secret_key"],
+        )
         self._bundles: dict[str, dict[str, str]] = {}
 
     async def upload_bundle(self, **kwargs) -> str:
