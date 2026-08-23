@@ -118,19 +118,23 @@ async def _run(args: argparse.Namespace) -> int:
             )
             if requested is not None:
                 break
-            message_page = await client.list_session_messages(
-                agent_id=args.agent_id,
-                session_id=session_id,
-                limit=100,
-                include_reasoning=False,
-                include_tool_events=False,
-            )
-            messages = list(message_page.get("messages") or message_page.get("Messages") or [])
-            if any(
-                str(message.get("role") or message.get("Role")) == "assistant"
-                for message in messages
-            ):
-                break
+            # Message projection is informative only.  While a turn is paused
+            # on approval the public projection can legitimately lag or time
+            # out, so it must never decide whether the durable interaction
+            # stream passed the gate.
+            try:
+                message_page = await client.list_session_messages(
+                    agent_id=args.agent_id,
+                    session_id=session_id,
+                    limit=100,
+                    include_reasoning=False,
+                    include_tool_events=False,
+                )
+                messages = list(
+                    message_page.get("messages") or message_page.get("Messages") or []
+                )
+            except Exception:
+                messages = []
             terminal = any(
                 _event_type(event) in {"run.completed", "run.failed", "run.cancelled"}
                 or (

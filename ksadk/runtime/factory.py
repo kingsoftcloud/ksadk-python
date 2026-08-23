@@ -16,6 +16,71 @@ from ksadk.runtime.framework_adapters import ADKRuntimeAdapter, LangGraphRuntime
 from ksadk.runtime.launch import RuntimeLaunchContext
 
 
+def kernel_start_request_defaults(context: RuntimeLaunchContext) -> dict[str, Any]:
+    """Project an admitted launch manifest into immutable Kernel turn defaults.
+
+    The durable Kernel owns enqueue ordering, while the deployment manifest
+    owns model, instructions, sandbox and approval policy.  Keeping this
+    projection beside the RuntimeAdapter factory prevents the Kernel ingress
+    from trusting caller-supplied execution policy.
+    """
+
+    config = dict(context.config)
+    defaults: dict[str, Any] = {}
+    detection_name = str(getattr(context.detection, "name", "") or "").strip()
+    if detection_name:
+        defaults["agent_id"] = detection_name
+    model = str(config.get("model") or "").strip()
+    if model:
+        defaults["model"] = model
+    if context.runtime_type != "codex":
+        return defaults
+
+    prompt = str(config.get("prompt") or "").strip()
+    task_prompt = str(config.get("task_prompt") or "").strip()
+    base_instructions = prompt
+    if task_prompt:
+        base_instructions = f"{prompt}\n\n{task_prompt}" if prompt else task_prompt
+
+    raw_sandbox = str(config.get("sandbox") or "read_only").strip().lower()
+    raw_approval = str(config.get("approval_mode") or "").strip().lower()
+    approval_profiles = {
+        "ask": ("workspace-write", "manual"),
+        "risk": ("workspace-write", "auto_review"),
+        "full": ("full-access", "deny_all"),
+    }
+    sandbox_profiles = {
+        "read_only": ("read-only", "deny_all"),
+        "read-only": ("read-only", "deny_all"),
+        "workspace_write": ("workspace-write", "deny_all"),
+        "workspace-write": ("workspace-write", "deny_all"),
+        "workspace_write_auto": ("workspace-write", "auto_review"),
+        "workspace-write-auto": ("workspace-write", "auto_review"),
+        "full_access": ("full-access", "deny_all"),
+        "full-access": ("full-access", "deny_all"),
+    }
+    if raw_approval in approval_profiles:
+        sandbox, approval = approval_profiles[raw_approval]
+    else:
+        sandbox, default_approval = sandbox_profiles.get(
+            raw_sandbox, ("read-only", "deny_all")
+        )
+        approval = raw_approval or default_approval
+
+    request_config: dict[str, Any] = {
+        "sandbox_read_only": sandbox == "read-only",
+        "sandbox": sandbox,
+        "approval_mode": approval,
+        "cwd": str(context.project_dir),
+        "summary": "auto",
+        "ephemeral": False,
+    }
+    if base_instructions:
+        request_config["base_instructions"] = base_instructions
+    defaults["config"] = request_config
+    return defaults
+
+
 def _create_codex(context: RuntimeLaunchContext) -> RuntimeAdapter:
     client_factory = context.services.codex_client_factory or AsyncCodexClient
     overrides = list(context.config.get("codex_overrides") or [])

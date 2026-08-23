@@ -364,12 +364,19 @@ def create_runtime_app(
             bootstrap_agent_kernel_runtime_from_env,
             clear_agent_kernel_runtime,
         )
+        from ksadk.runtime.factory import kernel_start_request_defaults
 
         adapter_provider = _kernel_adapter_provider(config)
+        request_defaults = (
+            kernel_start_request_defaults(config.launch_context)
+            if config.launch_context is not None
+            else {}
+        )
         kernel_runtime = await bootstrap_agent_kernel_runtime_from_env(
             adapter_provider=adapter_provider,
             runtime_executor=config.runtime_executor,
             launch_context=config.launch_context,
+            start_request_defaults=request_defaults,
         )
         app.state.agent_kernel_runtime = kernel_runtime
         try:

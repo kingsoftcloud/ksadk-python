@@ -69,6 +69,7 @@ class AgentKernelRuntimeConfig:
     # 运行时
     adapter_provider: Callable[[], RuntimeAdapter] | None = None
     capabilities: Callable[[], RuntimeCapabilityMatrix] | None = None
+    start_request_defaults: dict[str, Any] = field(default_factory=dict)
     # 契约 digest（hosted 必填 contract_digest）
     contract_digest: str = ""
     capability_digest: str = ""
@@ -849,7 +850,10 @@ def build_agent_kernel_runtime(
         clock=config.clock,
     )
     worker = AgentKernelWorker(
-        store, adapter_factory=adapter_provider, session_events=session_events
+        store,
+        adapter_factory=adapter_provider,
+        session_events=session_events,
+        start_request_defaults=config.start_request_defaults,
     )
     recovery = RecoveryCoordinator(
         store,
@@ -899,6 +903,7 @@ async def bootstrap_agent_kernel_runtime_from_env(
     adapter_provider: Callable[[], RuntimeAdapter] | None = None,
     runtime_executor: Any | None = None,
     launch_context: Any | None = None,
+    start_request_defaults: dict[str, Any] | None = None,
 ) -> AgentKernelRuntime | None:
     """Operator env 投影 -> 生产 runtime（AGENT_KERNEL_ENABLED=1 时）。
 
@@ -1015,6 +1020,7 @@ async def bootstrap_agent_kernel_runtime_from_env(
         permit_issuer=os.environ.get("AGENT_CONTROL_PERMIT_ISSUER", ""),
         nonce_store=nonce_store,
         adapter_provider=adapter_provider,
+        start_request_defaults=dict(start_request_defaults or {}),
         contract_digest=(
             AGENT_KERNEL_V1_AGGREGATE_DIGEST
             if mode == "hosted"

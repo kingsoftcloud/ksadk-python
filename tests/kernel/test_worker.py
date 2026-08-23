@@ -367,6 +367,42 @@ async def test_enqueue_emits_runtime_event_stream_with_durable_run_id():
     assert ("close", "s1") in stack.adapter.calls
 
 
+async def test_enqueue_uses_deployment_owned_start_request_defaults():
+    """Public payload cannot replace manifest-owned model or approval policy."""
+
+    stack = await kernel_stack()
+    lease = await stack.lease()
+    await stack.kernel.submit(
+        command(idempotency_key="manifest-defaults"),
+        permit=stack.permit("enqueue"),
+    )
+    from ksadk.kernel.worker import AgentKernelWorker
+
+    worker = AgentKernelWorker(
+        stack.store,
+        adapter_factory=lambda: stack.adapter,
+        session_events=stack.events,
+        start_request_defaults={
+            "agent_id": "manifest-agent",
+            "model": "manifest-model",
+            "config": {
+                "approval_mode": "manual",
+                "sandbox": "workspace-write",
+                "base_instructions": "manifest-owned",
+            },
+        },
+    )
+    assert (await worker.run_once(AGENT, lease)).outcome == "completed"
+    request = stack.adapter.start_requests[-1]
+    assert request.agent_id == "manifest-agent"
+    assert request.model == "manifest-model"
+    assert request.config == {
+        "approval_mode": "manual",
+        "sandbox": "workspace-write",
+        "base_instructions": "manifest-owned",
+    }
+
+
 async def test_follow_up_enqueue_resumes_native_thread_from_session_log():
     from ksadk.events.canonical import ContinuationCreated
     from ksadk.kernel.worker import AgentKernelWorker

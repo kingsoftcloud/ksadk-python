@@ -120,12 +120,18 @@ class AgentKernelWorker:
         adapter_factory: Callable[[], RuntimeAdapter],
         session_events: object | None = None,
         interaction_providers: Mapping[str, InteractionProvider] | None = None,
+        start_request_defaults: Mapping[str, object] | None = None,
     ) -> None:
         self._store = store
         self._adapter_factory = adapter_factory
         # SessionEventStore（typed RuntimeEventStore 的 envelope 写路径）。
         # 缺省时不落 runtime 事件，仅保证 stream 被消费到自然结束。
         self._session_events = session_events
+        # Deployment-owned defaults (model, prompt, sandbox and approval
+        # policy) come from the admitted immutable manifest.  They are not
+        # accepted from the public enqueue payload: callers may choose input,
+        # but cannot widen the runtime's tool authority.
+        self._start_request_defaults = dict(start_request_defaults or {})
         # Task 6：activation 拥有 Adapter/RunHandle/Provider 的 live 表。
         # key 永远是 durable run id；cache miss 不能等价于 Run 不存在
         # （只能说明本进程未 attach，takeover 后由 adopt_execution 重建）。
@@ -377,11 +383,21 @@ class AgentKernelWorker:
         continuation_metadata = await self._session_continuation_metadata(
             command.session_id
         )
+        defaults = self._start_request_defaults
         handle = await adapter.start(
             StartRequest(
                 input=command.payload.get("content"),
-                user_id="agent-kernel",
+                user_id=str(command.tenant_id or "agent-kernel"),
                 session_id=command.session_id,
+                agent_id=str(
+                    defaults.get("agent_id") or command.agent_instance_id
+                ),
+                model=(
+                    str(defaults["model"])
+                    if defaults.get("model") is not None
+                    else None
+                ),
+                config=dict(defaults.get("config") or {}),
                 # durable run_id 优先传给 adapter；adapter 不认时以
                 # runtime_run_id 映射显式记录两个 ID 的对应关系。
                 metadata={
