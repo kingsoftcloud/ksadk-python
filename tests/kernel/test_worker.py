@@ -331,6 +331,7 @@ async def test_enqueue_emits_runtime_event_stream_with_durable_run_id():
     from ksadk.runtime.executor import handle_digest
 
     assert run.metadata["handle_digest"] == handle_digest(handle)
+    assert ("close", "s1") in stack.adapter.calls
 
 
 async def test_follow_up_enqueue_resumes_native_thread_from_session_log():

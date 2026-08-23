@@ -577,6 +577,23 @@ class AgentKernelWorker:
             and current.handle == execution.handle
         ):
             self._executions.pop(execution.durable_run_id, None)
+        if terminal_state is not None:
+            # Each enqueue owns the adapter instance created in ``_start_run``.
+            # Once its stream is terminal there is no live interaction left to
+            # preserve, so release the provider transport as part of that same
+            # lifecycle.  Codex otherwise leaves one app-server child alive per
+            # turn; a later process trying to resume the persisted thread can
+            # then block behind the stale owner indefinitely.
+            try:
+                await execution.adapter.close(execution.handle)
+            except Exception:  # noqa: BLE001
+                # The durable terminal event and RunRecord are already fenced
+                # and committed.  A transport cleanup failure is observable but
+                # must not rewrite a successful run into a retryable command.
+                logger.exception(
+                    "failed to close terminal runtime transport for durable run %s",
+                    execution.durable_run_id,
+                )
 
     async def _record_interaction_request(
         self,
