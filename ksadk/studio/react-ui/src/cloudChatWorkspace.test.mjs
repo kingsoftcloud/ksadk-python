@@ -40,3 +40,11 @@ test("cloud chat exposes a failed run and keeps its credentials in the Studio ba
   assert.doesNotMatch(source, /可查看运行详情/);
   assert.match(source, /AK\/SK 仅保留在本地 Studio 进程/);
 });
+
+test("cloud chat normalizes projected approval lifecycle events", () => {
+  assert.match(source, /interruptInfo\.approval_request_id/);
+  assert.match(source, /resumeInput\.approval_request_id/);
+  assert.match(source, /\["interaction\.requested", "approval_request"\]/);
+  assert.match(source, /frame\.InvocationId/);
+  assert.match(source, /"approval_response"/);
+});

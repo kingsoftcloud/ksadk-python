@@ -94,20 +94,52 @@ function pendingInteractions(events: unknown[]): CloudInteraction[] {
       ? frame.payload as Record<string, unknown>
       : frame;
     const eventType = String(frame.event_type ?? frame.eventType ?? payload.event_type ?? payload.eventType ?? "");
-    const interactionId = String(payload.interaction_id ?? payload.interactionId ?? "").trim();
+    const metadata = frame.Metadata && typeof frame.Metadata === "object"
+      ? frame.Metadata as Record<string, unknown>
+      : frame.metadata && typeof frame.metadata === "object"
+        ? frame.metadata as Record<string, unknown>
+        : {};
+    const interruptInfo = metadata.interrupt_info && typeof metadata.interrupt_info === "object"
+      ? metadata.interrupt_info as Record<string, unknown>
+      : {};
+    const resumeInput = metadata.resume_input && typeof metadata.resume_input === "object"
+      ? metadata.resume_input as Record<string, unknown>
+      : {};
+    const interactionId = String(
+      payload.interaction_id
+      ?? payload.interactionId
+      ?? interruptInfo.approval_request_id
+      ?? resumeInput.approval_request_id
+      ?? "",
+    ).trim();
     if (!interactionId) continue;
-    if (eventType === "interaction.requested") {
+    if (["interaction.requested", "approval_request"].includes(eventType)) {
       const request = payload.request && typeof payload.request === "object"
         ? payload.request as Record<string, unknown>
         : {};
       requested.set(interactionId, {
         id: interactionId,
-        runId: String(payload.run_id ?? payload.runId ?? frame.run_id ?? frame.runId ?? ""),
+        runId: String(
+          payload.run_id
+          ?? payload.runId
+          ?? frame.run_id
+          ?? frame.runId
+          ?? frame.InvocationId
+          ?? frame.invocation_id
+          ?? "",
+        ),
         revision: Number(payload.revision ?? 1) || 1,
-        kind: String(payload.kind ?? request.kind ?? "input"),
-        title: valueText(request.title ?? request.message ?? request.kind ?? "需要你的确认") || "需要你的确认",
+        kind: String(payload.kind ?? request.kind ?? (eventType === "approval_request" ? "approval" : "input")),
+        title: valueText(
+          request.title
+          ?? request.message
+          ?? interruptInfo.approval_message
+          ?? interruptInfo.tool_name
+          ?? request.kind
+          ?? "需要你的确认",
+        ) || "需要你的确认",
       });
-    } else if (["interaction.resolved", "interaction.cancelled", "interaction.expired"].includes(eventType)) {
+    } else if (["interaction.resolved", "interaction.cancelled", "interaction.expired", "approval_response"].includes(eventType)) {
       requested.delete(interactionId);
     }
   }
