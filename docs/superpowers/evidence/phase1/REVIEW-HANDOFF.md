@@ -1,5 +1,25 @@
 # Phase 1 Agent Kernel + Interaction/Web 0.3.2 — Review 交接记录
 
+> 2026-08-23 当前结论（优先于下方历史章节）：Studio 声明式 Agent 已进入共享预发
+> 主流程，不再依赖 `agent-kernel-phase1` canary。现有 Agent
+> `ar-20260823075542-cce1df89` 已通过 Studio 原地 UpdateAgent 到带来源证明的
+> Codex Runtime；Operator 观测到 KsADK `0.8.1`、commit `7bbb491d…`、wheel
+> SHA `525340bc…`，`AgentKernelRuntimeIdentityReady=True` 且
+> `AgentKernelReady=True`。共享预发 Server/Gateway/Runtime-Service/Operator/
+> Hosted UI 已滚动，Gateway 最新为 `79fc4fe`（Helm revision 82）。本地 Agent、
+> Studio 云端 Agent 和 Hosted UI 的真实模型多轮、会话删除均通过；评测已有
+> 1/1 PASS 报告。测试会话为 0，旧 canary namespace 已删除，另删除 11 个名称
+> 明确的旧测试 Agent。完整、脱敏的当前事实见
+> `preprod/studio-main-flow-closure.json`。
+>
+> **但完整 Phase 1 release gate 当前仍是红灯。** 用 raw evidence（而非历史聚合
+> report）重跑 gate 时，durability/fencing/rollback 证据仍绑定旧 aggregate
+> digest `69771d8d…`，当前冻结合同为 `d4a66a72…`。因此下文 2026-08-21 的
+> “27 checks / 0 failed”不能继续作为当前 release 结论；必须用报告中列出的当前
+> 镜像重新跑 PostgreSQL/FIFO/reconnect/recovery/stale-fence/audit/rollback 矩阵。
+> 当前共享 Agent 显式使用 memory store、单副本，只证明非 HA 产品闭环，不能替代
+> PG durable/HA 验收。
+
 > 更新：2026-08-20（终版，所有已知 P0 修复完毕，gate 全绿）两份计划：
 > - `docs/superpowers/plans/2026-08-17-agent-runtime-v2-phase1-agent-kernel.md`（Phase 1，14 任务）
 > - `/Users/xiayu/kingsoft/code/agent-sdk/docs/superpowers/plans/2026-08-19-agent-kernel-interaction-web-0.3.2.md`（Interaction/Web，8 任务）
