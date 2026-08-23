@@ -178,7 +178,9 @@ export function CloudChatWorkspace({
   const [deleting, setDeleting] = useState("");
   const [resolvingInteractionId, setResolvingInteractionId] = useState("");
   const messageListRef = useRef<HTMLDivElement>(null);
-  const messageCountBeforeSendRef = useRef(0);
+  const currentSessionIdRef = useRef("");
+  const waitingForResponseRef = useRef(false);
+  const assistantCountBeforeSendRef = useRef(0);
   const awaitingRunIdRef = useRef("");
   const sendInFlightRef = useRef(false);
 
@@ -195,7 +197,11 @@ export function CloudChatWorkspace({
       .map(normalizeSession)
       .filter((item: CloudSession | null): item is CloudSession => Boolean(item));
     setSessions(rows);
-    setCurrentSessionId(previous => rows.some(item => item.id === previous) ? previous : rows[0]?.id || "");
+    setCurrentSessionId(previous => {
+      const next = rows.some(item => item.id === previous) ? previous : rows[0]?.id || "";
+      currentSessionIdRef.current = next;
+      return next;
+    });
   }, [base]);
 
   const refreshMessages = useCallback(async (sessionId: string) => {
@@ -211,14 +217,14 @@ export function CloudChatWorkspace({
       .filter((item: CloudMessage | null): item is CloudMessage => Boolean(item));
     setMessages(rows);
     if (
-      waitingForResponse
-      && rows.length > messageCountBeforeSendRef.current
-      && rows.slice(messageCountBeforeSendRef.current).some(message => message.role === "assistant")
+      waitingForResponseRef.current
+      && rows.filter(message => message.role === "assistant").length > assistantCountBeforeSendRef.current
     ) {
+      waitingForResponseRef.current = false;
       setWaitingForResponse(false);
       awaitingRunIdRef.current = "";
     }
-  }, [base, waitingForResponse]);
+  }, [base]);
 
   const refreshInteractions = useCallback(async (sessionId: string) => {
     if (!sessionId) {
@@ -231,6 +237,7 @@ export function CloudChatWorkspace({
     const events = payload.events || [];
     const terminal = terminalRunEvent(events, awaitingRunIdRef.current);
     if (terminal) {
+      waitingForResponseRef.current = false;
       setWaitingForResponse(false);
       awaitingRunIdRef.current = "";
       if (terminal === "failed") {
@@ -245,8 +252,10 @@ export function CloudChatWorkspace({
     setLoading(true);
     setSessions([]);
     setCurrentSessionId("");
+    currentSessionIdRef.current = "";
     setMessages([]);
     setInteractions([]);
+    waitingForResponseRef.current = false;
     setWaitingForResponse(false);
     awaitingRunIdRef.current = "";
     refreshSessions()
@@ -287,7 +296,11 @@ export function CloudChatWorkspace({
     const session = normalizeSession(raw);
     if (!session) throw new Error("云端未返回有效会话标识");
     setSessions(previous => [session, ...previous.filter(item => item.id !== session.id)]);
+    currentSessionIdRef.current = session.id;
     setCurrentSessionId(session.id);
+    setMessages([]);
+    setInteractions([]);
+    assistantCountBeforeSendRef.current = 0;
     return session.id;
   }
 
@@ -308,11 +321,14 @@ export function CloudChatWorkspace({
     if (!content || sending || waitingForResponse || sendInFlightRef.current) return;
     sendInFlightRef.current = true;
     setSending(true);
+    waitingForResponseRef.current = true;
     setWaitingForResponse(true);
     setInput("");
     try {
-      const sessionId = currentSessionId || await createSession();
-      messageCountBeforeSendRef.current = messages.filter(message => !message.pending).length;
+      const sessionId = currentSessionIdRef.current || await createSession();
+      assistantCountBeforeSendRef.current = messages.filter(
+        message => !message.pending && message.role === "assistant",
+      ).length;
       awaitingRunIdRef.current = "";
       const optimistic: CloudMessage = {
         id: `local-${crypto.randomUUID()}`,
@@ -335,6 +351,7 @@ export function CloudChatWorkspace({
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setMessages(previous => previous.map(item => item.pending ? { ...item, pending: false } : item));
+      waitingForResponseRef.current = false;
       setWaitingForResponse(false);
       awaitingRunIdRef.current = "";
       showToast("云端消息发送失败", message, "error");
@@ -352,6 +369,7 @@ export function CloudChatWorkspace({
       if (!response.ok) throw new Error(await responseError(response));
       setSessions(previous => previous.filter(item => item.id !== sessionId));
       if (currentSessionId === sessionId) {
+        currentSessionIdRef.current = "";
         setCurrentSessionId("");
         setMessages([]);
       }
@@ -404,7 +422,10 @@ export function CloudChatWorkspace({
           {!loading && !sessions.length && <p className="chat-sidebar-empty">还没有云端会话</p>}
           {sessions.map(session => (
             <div className={`chat-session-item${session.id === currentSessionId ? " active" : ""}`} key={session.id} role="listitem">
-              <button className="chat-session-main" type="button" onClick={() => setCurrentSessionId(session.id)}>
+              <button className="chat-session-main" type="button" onClick={() => {
+                currentSessionIdRef.current = session.id;
+                setCurrentSessionId(session.id);
+              }}>
                 <strong>{session.title}</strong>
                 <span>{session.state || session.updatedAt || "云端"}</span>
               </button>
