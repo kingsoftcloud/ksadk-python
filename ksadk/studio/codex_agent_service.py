@@ -350,11 +350,21 @@ class CodexAgentService:
             purge=purge,
             trash_directory=trash_directory,
         )
-        self.studio.codex_manifests.delete(
-            agent_id,
-            purge=purge,
-            trash_directory=trash_directory,
-        )
+        # 早期 Studio 会把首个 Codex Agent 同时保存在根 agentengine.yaml 与
+        # agents/<id>/agentengine.yaml。Repository.load() 会优先返回根文件；只删
+        # 一次会让同一个 Agent 在刷新列表后从副本“复活”。最多消费这两个兼容
+        # 位置，且始终使用同一 recoverable trash 目录。
+        for _ in range(2):
+            try:
+                self.studio.codex_manifests.delete(
+                    agent_id,
+                    purge=purge,
+                    trash_directory=trash_directory,
+                )
+            except StudioError as exc:
+                if exc.status_code == 404:
+                    break
+                raise
 
     def detail(self, agent_id: str | None = None) -> dict:
         snapshot = self.studio.codex_manifests.load(agent_id)

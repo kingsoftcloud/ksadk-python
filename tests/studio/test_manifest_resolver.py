@@ -132,6 +132,31 @@ def test_codex_repo_still_lists_real_codex_root(tmp_path):
     assert snapshots[0].manifest.name == "codex-a"
 
 
+def test_delete_codex_agent_removes_legacy_root_and_nested_sources(tmp_path):
+    """一次删除必须回收早期版本留下的同 ID 双份 manifest。"""
+
+    source = (
+        "name: codex-a\n"
+        "version: '1.0.0'\n"
+        "framework: codex\n"
+        "artifact_type: ManagedRuntime\n"
+        "runtime:\n  name: codex\n  version: '0.144.4'\n"
+        "model: m\n"
+        "prompt: p\n"
+    )
+    _write_root_manifest(tmp_path, source)
+    nested = tmp_path / "agents/codex-a/agentengine.yaml"
+    nested.parent.mkdir(parents=True)
+    nested.write_text(source, encoding="utf-8")
+    service = StudioService(tmp_path)
+
+    service.delete_studio_agent("codex-a")
+
+    assert not (tmp_path / "agentengine.yaml").exists()
+    assert not nested.exists()
+    assert service.list_agents() == []
+
+
 def test_codex_repo_save_preserves_non_codex_root_manifest(tmp_path):
     """Codex Agent 与根 LangGraph manifest 共存，不解析或覆盖根文件。"""
     root_source = "framework: langgraph\nentry_point: agent.py\n"
