@@ -601,10 +601,16 @@ async def test_stale_fence(body: dict) -> dict:
         run_id=f"run-{uuid.uuid4().hex[:12]}",
         agent_instance_id=instance_id(),
         session_id=session_id,
-        state=RunState.RUNNING,
+        state=RunState.PENDING,
         activation_fence=new_lease.fencing_token,
     )
-    stored = await store().save_run_transition(new_run, expected_fence=new_lease.fencing_token)
+    pending = await store().save_run_transition(
+        new_run, expected_fence=new_lease.fencing_token
+    )
+    stored = await store().save_run_transition(
+        pending.model_copy(update={"state": RunState.RUNNING}),
+        expected_fence=new_lease.fencing_token,
+    )
     stale_rejected = False
     try:
         await store().save_run_transition(
