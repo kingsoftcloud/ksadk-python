@@ -658,24 +658,25 @@ class PostgresAgentKernelStore:
         *,
         fencing_token: int | None = None,
     ) -> list[InboxMessage]:
-        """按 accepted_seq 排序的待处理消息（CLAIMED 仅同 fence 自我重试可见）。"""
+        """按 accepted_seq 返回可恢复消息。
+
+        传入当前 fence 时，旧 fence 留下的 ``claimed`` 也必须可见；真正的
+        owner 校验与 token 改写由 ``claim_message`` 在事务内完成。否则 Pod
+        恰好在 claim 后退出，会让 stale claimed 永久挡住 FIFO 头。
+        """
         sql = (
             "SELECT * FROM kernel_inbox WHERE agent_instance_id=$1"
             + (" AND session_id=$2" if session_id else "")
-            + " AND (status='accepted'"
             + (
-                f" OR (status='claimed' AND claimed_fence=${2 + (1 if session_id else 0)})"
-                ")"
+                " AND status IN ('accepted','claimed')"
                 if fencing_token is not None
-                else ")"
+                else " AND status='accepted'"
             )
             + " ORDER BY accepted_seq"
         )
         args: list[Any] = [agent_instance_id]
         if session_id:
             args.append(session_id)
-        if fencing_token is not None:
-            args.append(int(fencing_token))
         async with self._connection() as connection:
             rows = await connection.fetch(sql, *args)
         return [m for m in (self._row_to_message(r) for r in rows) if m is not None]
@@ -702,7 +703,10 @@ class PostgresAgentKernelStore:
                     row["session_id"],
                     fencing_token,
                 )
-                if row["status"] != InboxState.ACCEPTED.value:
+                if row["status"] not in (
+                    InboxState.ACCEPTED.value,
+                    InboxState.CLAIMED.value,
+                ):
                     raise InvalidCommandError(
                         f"message {message_id!r} is not claimable"
                         f" at status {row['status']}"
@@ -731,7 +735,10 @@ class PostgresAgentKernelStore:
                         raise InvalidCommandError(
                             f"message {message_id!r} is not the FIFO enqueue head"
                         )
-                assert_inbox_transition(InboxState(row["status"]), InboxState.CLAIMED)
+                if row["status"] == InboxState.ACCEPTED.value:
+                    assert_inbox_transition(
+                        InboxState(row["status"]), InboxState.CLAIMED
+                    )
                 await connection.execute(
                     "UPDATE kernel_inbox SET status='claimed', claimed_fence=$1"
                     " WHERE message_id=$2::uuid",

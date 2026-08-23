@@ -219,6 +219,33 @@ async def test_postgres_claim_message_rejects_fifo_skip(pg_store):
     assert claimed_second.accepted_seq == 2
 
 
+async def test_postgres_claim_message_reclaims_stale_fence_head(pg_store):
+    receipt = await pg_store.accept_command(command("reclaim-1", "first"), queue_limit=4)
+    old = await pg_store.acquire_activation(lease_request("old-owner"))
+    claimed = await pg_store.claim_message(str(receipt.message_id), old.fencing_token)
+    assert claimed.claimed_fence == old.fencing_token
+
+    async with pg_store._connection() as connection:
+        await connection.execute(
+            "UPDATE kernel_activations SET lease_expires_at=now()-interval '1 second'"
+            " WHERE agent_instance_id=$1 AND session_id=$2",
+            AGENT,
+            SESSION,
+        )
+    new = await pg_store.acquire_activation(lease_request("new-owner"))
+    pending = await pg_store.list_pending(
+        AGENT, SESSION, fencing_token=new.fencing_token
+    )
+    assert [message.message_id for message in pending] == [str(receipt.message_id)]
+    reclaimed = await pg_store.claim_message(
+        str(receipt.message_id), new.fencing_token
+    )
+    assert reclaimed.claimed_fence == new.fencing_token
+    await pg_store.complete_claim(
+        str(receipt.message_id), expected_fence=new.fencing_token
+    )
+
+
 async def test_postgres_store_control_events_share_session_log(pg_store):
     await pg_store.accept_command(command("k1", "hello"), queue_limit=4)
     lease = await pg_store.acquire_activation(lease_request("act-log"))
