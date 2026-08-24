@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import asdict
 from typing import Any
@@ -14,7 +15,27 @@ from ksadk.conversations.runtime_metadata import (
 )
 from ksadk.conversations.runtime_persistence import append_run_status_event
 from ksadk.conversations.runtime_preparation import build_run_input
-from ksadk.events.runtime_event import EventType, RuntimeEvent
+from ksadk.events.canonical import (
+    ContextCompactionCompleted,
+    ContextCompactionStarted,
+    ContinuationCreated,
+    ContinuationResumed,
+    InteractionRequested,
+    ItemCompleted,
+    ItemStarted,
+    ItemUpdated,
+    RunCanceled,
+    RunCompleted,
+    RunFailed,
+    RunInterrupted,
+    RunStarted,
+    RuntimeEvent,
+    SourceRef,
+    UsageReported,
+)
+from ksadk.events.content import TextContent, ToolCallContent, ToolResultContent
+from ksadk.events.pipeline import CanonicalEventPipeline
+from ksadk.events.reducer import RunProjection, StreamReducer
 from ksadk.events.store import RuntimeEventStore
 from ksadk.runtime.adapter import (
     CONVERSATION_PREPROCESSING_METADATA_KEY,
@@ -30,18 +51,18 @@ from ksadk.sessions import resolve_session_service
 
 _TERMINAL_EVENTS = frozenset(
     {
-        EventType.RUN_COMPLETED,
-        EventType.RUN_FAILED,
-        EventType.RUN_CANCELED,
+        "run.completed",
+        "run.failed",
+        "run.canceled",
     }
 )
 
 _RUN_STATUS_BY_EVENT = {
-    EventType.RUN_STARTED: "in_progress",
-    EventType.RUN_INTERRUPTED: "interrupted",
-    EventType.RUN_COMPLETED: "completed",
-    EventType.RUN_FAILED: "failed",
-    EventType.RUN_CANCELED: "cancelled",
+    "run.started": "in_progress",
+    "run.interrupted": "interrupted",
+    "run.completed": "completed",
+    "run.failed": "failed",
+    "run.canceled": "cancelled",
 }
 
 
@@ -67,9 +88,11 @@ async def iter_runtime_conversation_events(
     session_service_provider: Callable[[], Any] | None = None,
     run_mode: str = RUN_MODE_FOREGROUND,
     runtime_preparation: RuntimeStartPreparation | None = None,
+    _execution_context: dict[str, str] | None = None,
 ) -> AsyncIterator[RuntimeEvent]:
     """Prepare once, execute through RuntimeExecutor, and persist RuntimeEvents."""
 
+    turn_started_monotonic = time.monotonic()
     provider = session_service_provider or resolve_session_service
     compaction_preview = await preview_auto_compaction(
         agent_id=agent_id,
@@ -96,7 +119,10 @@ async def iter_runtime_conversation_events(
         invocation_id=invocation_id,
         session_service_provider=provider,
         run_mode=run_mode,
+        runtime_type=launch_context.runtime_type,
     )
+    if _execution_context is not None:
+        _execution_context["session_id"] = prepared.session_id
     canonical_messages = prepared.responses_history or [dict(item) for item in messages]
     conversation_request = {
         "messages": canonical_messages,
@@ -110,6 +136,11 @@ async def iter_runtime_conversation_events(
         "response_id": response_id,
         "prepared_turn": asdict(prepared),
     }
+    native_session_metadata = await _session_native_metadata(
+        runtime_type=launch_context.runtime_type,
+        session_id=prepared.session_id,
+        session_service_provider=provider,
+    )
     request = StartRequest(
         input=prepared.user_input,
         user_id=user_id,
@@ -119,6 +150,7 @@ async def iter_runtime_conversation_events(
         metadata={
             "invocation_id": prepared.invocation_id,
             CONVERSATION_PREPROCESSING_METADATA_KEY: conversation_request,
+            **native_session_metadata,
         },
     )
     checkpoint_resume = _checkpoint_resume_input(prepared.resume_input)
@@ -145,53 +177,66 @@ async def iter_runtime_conversation_events(
             }
         )
     store = RuntimeEventStore(provider())
+    pipeline = CanonicalEventPipeline(store, session_id=prepared.session_id)
     terminal = False
     interrupted = False
     completed_assistant_text = ""
+    usage: dict[str, int] | None = None
     try:
         for context_event in _compaction_runtime_events(
             prepared=prepared,
             preview=compaction_preview,
-            agent_id=agent_id,
-            user_id=user_id,
         ):
-            yield await store.append_one(context_event)
+            for persisted in await pipeline.ingest(context_event):
+                yield persisted
         async for event in executor.stream(handle):
             _validate_event_scope(event, request)
-            persisted = await store.append_one(event)
-            await _project_runtime_run_status(
-                persisted,
-                run_mode=prepared.run_mode,
-                run_trigger=prepared.run_trigger,
-                session_service_provider=provider,
-            )
-            if (
-                persisted.event_type == EventType.TEXT_COMPLETED
-                and persisted.phase == "final_answer"
-            ):
-                completed_assistant_text = str(persisted.payload.get("text") or "")
-            terminal = persisted.event_type in _TERMINAL_EVENTS
-            interrupted = persisted.event_type == EventType.RUN_INTERRUPTED
-            yield persisted
+            for persisted in await pipeline.ingest(event):
+                await _project_runtime_run_status(
+                    persisted,
+                    session_id=prepared.session_id,
+                    author=agent_id,
+                    run_mode=prepared.run_mode,
+                    run_trigger=prepared.run_trigger,
+                    session_service_provider=provider,
+                )
+                terminal = persisted.event_type in _TERMINAL_EVENTS
+                interrupted = persisted.event_type == "run.interrupted"
+                if isinstance(persisted, RunCompleted):
+                    completed_assistant_text = _selected_output_text(
+                        pipeline.reducer.snapshot(), persisted
+                    )
+                elif isinstance(persisted, UsageReported):
+                    usage = {
+                        "input_tokens": persisted.input_tokens,
+                        "output_tokens": persisted.output_tokens,
+                        "total_tokens": persisted.total_tokens,
+                        "cached_tokens": persisted.cached_tokens,
+                        "reasoning_tokens": persisted.reasoning_tokens,
+                    }
+                yield persisted
         if not terminal and not interrupted:
             raise RuntimeError("runtime stream ended without a terminal or interrupted event")
     except asyncio.CancelledError:
         cancel_result = await executor.cancel(handle)
-        cancelled_event = RuntimeEvent.create(
-            EventType.RUN_CANCELED,
-            agent_id=str(request.agent_id or ""),
-            user_id=request.user_id,
-            session_id=request.session_id,
-            invocation_id=str(request.metadata["invocation_id"]),
-            seq_id=0,
-            payload={
-                "status": "cancelled",
-                "cancel_result": cancel_result.value,
-            },
+        cancelled_event = RunCanceled(
+            schema_version=2,
+            event_id=f"cancel:{handle.run_id}:{cancel_result.value}",
+            seq=0,
+            timestamp=time.time(),
+            run_id=handle.run_id,
+            scope_id=handle.run_id,
+            source=SourceRef(
+                framework="ksadk", metadata={"cancel_result": cancel_result.value}
+            ),
+            status="canceled",
+            reason=cancel_result.value,
         )
-        persisted_cancelled = await store.append_one(cancelled_event)
+        persisted_cancelled = (await pipeline.ingest(cancelled_event))[-1]
         await _project_runtime_run_status(
             persisted_cancelled,
+            session_id=prepared.session_id,
+            author=agent_id,
             run_mode=prepared.run_mode,
             run_trigger=prepared.run_trigger,
             session_service_provider=provider,
@@ -211,57 +256,121 @@ async def iter_runtime_conversation_events(
                 model=model,
             )
         if terminal:
+            _record_canonical_baseline_turn(
+                prepared=prepared,
+                model=model,
+                usage=usage,
+                turn_started_monotonic=turn_started_monotonic,
+            )
+        if terminal:
             await executor.close(handle)
+
+
+async def _session_native_metadata(
+    *,
+    runtime_type: str,
+    session_id: str,
+    session_service_provider: Callable[[], Any],
+) -> dict[str, str]:
+    """Resolve a provider-native continuation from the canonical Session log.
+
+    The HTTP conversation path creates a fresh adapter transport for every
+    terminal turn. Codex therefore needs the prior native thread id on the
+    next ``StartRequest``; otherwise one AgentEngine Session becomes unrelated
+    one-turn Codex threads.
+    """
+
+    if str(runtime_type or "").strip().lower() != "codex":
+        return {}
+    events = await RuntimeEventStore(session_service_provider()).list(
+        session_id,
+        limit=512,
+    )
+    for event in reversed(events):
+        if not isinstance(event, (ContinuationCreated, ContinuationResumed)):
+            continue
+        if event.continuation_kind != "thread_resume":
+            continue
+        ref = getattr(event, "ref", None)
+        thread_id = (
+            str(ref.get("thread_id") or "").strip()
+            if isinstance(ref, Mapping)
+            else ""
+        )
+        if not thread_id:
+            thread_id = str(event.source.metadata.get("thread_id") or "").strip()
+        if thread_id:
+            return {"thread_id": thread_id}
+    return {}
 
 
 def _compaction_runtime_events(
     *,
     prepared: Any,
     preview: Any,
-    agent_id: str,
-    user_id: str,
 ) -> list[RuntimeEvent]:
     if not prepared.compaction_triggered:
         return []
     trigger = str(prepared.compaction_trigger or "auto")
-    scope = {
-        "agent_id": agent_id,
-        "user_id": user_id,
-        "session_id": prepared.session_id,
-        "invocation_id": prepared.invocation_id,
-    }
-    preview_payload = {
-        "phase": "start",
+    source = SourceRef(
+        framework="ksadk",
+        metadata={
+            "total_chars": preview.total_chars,
+            "total_estimated_tokens": preview.total_estimated_tokens,
+            "group_count": preview.group_count,
+            "threshold_percentage": preview.auto_compact_threshold_percentage,
+        },
+    )
+    common = {
+        "schema_version": 2,
+        "seq": 0,
+        "timestamp": time.time(),
+        "run_id": prepared.invocation_id,
+        "scope_id": prepared.invocation_id,
+        "source": source,
         "trigger": trigger,
-        "total_chars": preview.total_chars,
-        "total_estimated_tokens": preview.total_estimated_tokens,
-        "group_count": preview.group_count,
-        "threshold_percentage": preview.auto_compact_threshold_percentage,
-    }
-    completed_payload = {
-        **preview_payload,
-        "phase": "done",
-        "compacted_until_seq_id": int(prepared.compacted_until_seq_id or 0),
     }
     return [
-        RuntimeEvent.create(
-            EventType.CONTEXT_COMPACTION_STARTED,
-            seq_id=0,
-            payload=preview_payload,
-            **scope,
+        ContextCompactionStarted(
+            event_id=f"compaction-start:{prepared.invocation_id}",
+            **common,
         ),
-        RuntimeEvent.create(
-            EventType.CONTEXT_COMPACTION_COMPLETED,
-            seq_id=0,
-            payload=completed_payload,
-            **scope,
+        ContextCompactionCompleted(
+            event_id=f"compaction-completed:{prepared.invocation_id}",
+            compacted_until_seq=int(prepared.compacted_until_seq_id or 0),
+            **common,
         ),
     ]
+
+
+def _record_canonical_baseline_turn(
+    *,
+    prepared: Any,
+    model: str | None,
+    usage: Mapping[str, int] | None,
+    turn_started_monotonic: float,
+) -> None:
+    """Keep v2 execution on the same env-gated measurement path as legacy runs."""
+
+    from ksadk.context_engine.baseline import record_baseline_turn
+
+    record_baseline_turn(
+        getattr(prepared, "shadow_context_plan", None),
+        session_id=prepared.session_id,
+        invocation_id=prepared.invocation_id,
+        model=str(model or ""),
+        usage=usage,
+        compaction_triggered=bool(getattr(prepared, "compaction_triggered", False)),
+        compaction_trigger=str(getattr(prepared, "compaction_trigger", "") or ""),
+        turn_latency_ms=int((time.monotonic() - turn_started_monotonic) * 1000),
+    )
 
 
 async def _project_runtime_run_status(
     event: RuntimeEvent,
     *,
+    session_id: str,
+    author: str,
     run_mode: str,
     run_trigger: str,
     session_service_provider: Callable[[], Any],
@@ -271,12 +380,12 @@ async def _project_runtime_run_status(
     status = _RUN_STATUS_BY_EVENT.get(event.event_type)
     if status is None:
         return
-    detail = event.payload.get("error") or event.payload.get("detail")
+    detail = event.error.message if isinstance(event, RunFailed) else None
     await append_run_status_event(
-        session_id=event.session_id,
-        author=event.agent_id,
+        session_id=session_id,
+        author=author,
         status=status,
-        invocation_id=event.invocation_id,
+        invocation_id=event.run_id,
         detail=str(detail) if detail else None,
         metadata={
             "runtime_event_id": event.event_id,
@@ -367,19 +476,12 @@ def _persisted_resume_native_ref(resume_input: Mapping[str, Any]) -> dict[str, A
 
 
 def _validate_event_scope(event: RuntimeEvent, request: StartRequest) -> None:
-    expected = {
-        "agent_id": str(request.agent_id or ""),
-        "user_id": request.user_id,
-        "session_id": request.session_id,
-        "invocation_id": str(request.metadata["invocation_id"]),
-    }
-    mismatches = {
-        field: (expected_value, getattr(event, field))
-        for field, expected_value in expected.items()
-        if getattr(event, field) != expected_value
-    }
-    if mismatches:
-        raise ValueError(f"runtime event scope does not match request: {mismatches!r}")
+    expected_run_id = str(request.metadata["invocation_id"])
+    if event.schema_version != 2 or event.run_id != expected_run_id:
+        raise ValueError(
+            "runtime event scope does not match request: "
+            f"expected run_id={expected_run_id!r}, got {event.run_id!r}"
+        )
 
 
 async def iter_runtime_conversation_semantic_events(
@@ -387,104 +489,102 @@ async def iter_runtime_conversation_semantic_events(
 ) -> AsyncIterator[dict[str, Any]]:
     """Project canonical RuntimeEvents into the transport-neutral serializer input."""
 
-    accumulated_text = ""
-    usage: dict[str, Any] = {}
+    reducer = StreamReducer()
     approval: dict[str, Any] | None = None
-    async for event in iter_runtime_conversation_events(**kwargs):
-        payload = event.payload
-        event_type = event.event_type
-        if event_type == EventType.RUN_STARTED:
+    execution_context: dict[str, str] = {}
+    async for event in iter_runtime_conversation_events(
+        **kwargs, _execution_context=execution_context
+    ):
+        patch = reducer.apply(event)
+        if not patch.applied:
+            continue
+        projection = reducer.snapshot()
+        if isinstance(event, RunStarted):
             yield {
                 "type": "started",
-                "session_id": event.session_id,
-                "metadata": dict(payload.get("metadata") or {}),
+                "session_id": execution_context.get("session_id", ""),
+                "metadata": dict(event.source.metadata),
             }
-        elif event_type in {
-            EventType.CONTEXT_COMPACTION_STARTED,
-            EventType.CONTEXT_COMPACTION_COMPLETED,
-        }:
-            yield {
-                "type": "compaction",
-                **dict(payload),
+        elif isinstance(event, (ContextCompactionStarted, ContextCompactionCompleted)):
+            semantic = {"type": "compaction", "trigger": event.trigger}
+            # Distinguish start vs done for SSE projection (response.compaction.start/done)
+            if isinstance(event, ContextCompactionStarted):
+                semantic["phase"] = "start"
+            else:
+                semantic["phase"] = "done"
+                semantic["compacted_until_seq_id"] = event.compacted_until_seq
+            yield semantic
+        elif isinstance(event, ItemUpdated) and isinstance(event.update, TextContent):
+            item = next(
+                candidate
+                for candidate in projection.items
+                if candidate.scope_id == event.scope_id and candidate.item_id == event.item_id
+            )
+            semantic_type = (
+                "thinking"
+                if item.item_kind == "reasoning" or item.phase == "commentary"
+                else "text"
+            )
+            semantic: dict[str, Any] = {
+                "type": semantic_type,
+                "delta": event.update.text,
+                "scope_id": event.scope_id,
+                "item_id": event.item_id,
+                "part_id": event.update.part_id,
+                "operation": event.op,
             }
-        elif event_type == EventType.TEXT_DELTA:
-            delta = str(payload.get("text") or "")
-            replace = bool(payload.get("replace"))
-            accumulated_text = delta if replace else accumulated_text + delta
-            semantic: dict[str, Any] = {"type": "text", "delta": delta}
-            if replace:
+            if event.op == "replace":
                 semantic["replace"] = True
             yield semantic
-        elif event_type == EventType.TEXT_COMPLETED:
-            snapshot = str(payload.get("text") or "")
-            if snapshot != accumulated_text:
-                if snapshot.startswith(accumulated_text):
-                    delta = snapshot[len(accumulated_text) :]
-                    if delta:
-                        yield {"type": "text", "delta": delta}
-                else:
-                    yield {"type": "text", "delta": snapshot, "replace": True}
-            accumulated_text = snapshot
-        elif event_type == EventType.REASONING_DELTA:
-            yield {"type": "thinking", "delta": str(payload.get("text") or "")}
-        elif event_type == EventType.TOOL_CALL_BEGIN:
-            yield {
-                "type": "tool_call",
-                "name": payload.get("name"),
-                "args": dict(payload.get("args") or {}),
-                "run_id": payload.get("call_id"),
-                "stage": payload.get("stage"),
-                "event_kind": payload.get("event_kind"),
-                "display_title": payload.get("display_title"),
-                "display_summary": payload.get("display_summary"),
-            }
-        elif event_type == EventType.TOOL_CALL_END:
-            yield {
-                "type": "tool_result",
-                "name": payload.get("name"),
-                "output": payload.get("result", payload.get("error", "")),
-                "run_id": payload.get("call_id"),
-            }
-        elif event_type == EventType.APPROVAL_REQUESTED:
-            detail = payload.get("detail")
-            approval = dict(detail) if isinstance(detail, Mapping) else {}
-            approval.setdefault("approval_request_id", payload.get("approval_id"))
-            approval.setdefault("id", payload.get("approval_id"))
-            approval.setdefault("call_id", payload.get("call_id"))
-            # ``kind=tool`` only describes the interrupt category.  It is not
-            # a concrete tool name: inventing one would serialize a generic
-            # interrupt as an MCP approval request and lose the extension
-            # event that clients use to render a human-input prompt.
-            if payload.get("tool_name"):
-                approval.setdefault("tool_name", payload.get("tool_name"))
-        elif event_type == EventType.USAGE_REPORTED:
-            usage = dict(payload)
-        elif event_type == EventType.RUN_INTERRUPTED:
+        elif isinstance(event, ItemStarted) and event.initial is not None:
+            for part in event.initial.parts:
+                if isinstance(part, ToolCallContent):
+                    yield _tool_call_semantic(part)
+        elif isinstance(event, ItemCompleted):
+            for part in event.snapshot.parts:
+                if isinstance(part, ToolCallContent):
+                    yield _tool_call_semantic(part)
+                elif isinstance(part, ToolResultContent):
+                    yield {
+                        "type": "tool_result",
+                        "name": "",
+                        "output": part.result,
+                        "run_id": part.call_id,
+                    }
+        elif isinstance(event, InteractionRequested):
+            if event.interaction_kind == "approval" and event.request.request_type == "approval":
+                detail = event.request.detail
+                approval = dict(detail) if isinstance(detail, Mapping) else {}
+                approval.setdefault("approval_request_id", event.interaction_id)
+                approval.setdefault("id", event.interaction_id)
+                approval.setdefault("call_id", event.request.call_id)
+                approval.setdefault("kind", event.request.kind)
+        elif isinstance(event, RunInterrupted):
             yield {
                 "type": "interrupt",
-                "interrupt_info": approval or dict(payload),
-                "session_id": event.session_id,
+                "interrupt_info": approval
+                or {
+                    "reason": event.reason,
+                    "interaction_id": event.interaction_id,
+                    "continuation_id": event.continuation_id,
+                },
+                "session_id": execution_context.get("session_id", ""),
             }
-        elif event_type == EventType.RUN_FAILED:
+        elif isinstance(event, RunFailed):
             yield {
                 "type": "error",
-                "message": str(payload.get("error") or "Agent 运行失败"),
-                "session_id": event.session_id,
-                "usage": usage,
+                "message": event.error.message or "Agent 运行失败",
+                "session_id": execution_context.get("session_id", ""),
+                "usage": projection.usage.model_dump(),
             }
-        elif event_type == EventType.RUN_CANCELED:
+        elif isinstance(event, RunCanceled):
             yield {
                 "type": "cancelled",
-                "session_id": event.session_id,
-                "usage": usage,
+                "session_id": execution_context.get("session_id", ""),
+                "usage": projection.usage.model_dump(),
             }
-        elif event_type == EventType.RUN_COMPLETED:
-            raw_completion_metadata = payload.get("metadata")
-            completion_metadata = (
-                dict(raw_completion_metadata)
-                if isinstance(raw_completion_metadata, Mapping)
-                else {}
-            )
+        elif isinstance(event, RunCompleted):
+            completion_metadata = dict(event.source.metadata)
             request_metadata = kwargs.get("request_metadata")
             requested_agentengine = (
                 request_metadata.get("agentengine")
@@ -493,19 +593,49 @@ async def iter_runtime_conversation_semantic_events(
             )
             if isinstance(requested_agentengine, Mapping):
                 completion_metadata["agentengine"] = dict(requested_agentengine)
-            if isinstance(payload.get("agentengine"), Mapping):
-                completion_metadata["agentengine"] = dict(payload["agentengine"])
             completion_metadata["runtime"] = {
-                "duration_ms": payload.get("duration_ms"),
+                "duration_ms": event.source.metadata.get("duration_ms"),
                 "runtime_type": kwargs["launch_context"].runtime_type,
             }
             yield {
                 "type": "completed",
-                "output_text": accumulated_text,
-                "session_id": event.session_id,
-                "usage": usage,
+                "output_text": _selected_output_text(projection, event),
+                "session_id": execution_context.get("session_id", ""),
+                "usage": projection.usage.model_dump(),
                 "metadata": completion_metadata,
             }
+
+
+def _tool_call_semantic(part: ToolCallContent) -> dict[str, Any]:
+    return {
+        "type": "tool_call",
+        "name": part.name,
+        "args": part.arguments if isinstance(part.arguments, dict) else {},
+        "run_id": part.call_id,
+    }
+
+
+def _selected_output_text(projection: RunProjection, completed: RunCompleted) -> str:
+    """Resolve final text exclusively through authoritative run output refs."""
+
+    chunks: list[str] = []
+    for ref in completed.output_refs:
+        item = next(
+            (
+                candidate
+                for candidate in projection.items
+                if candidate.scope_id == ref.scope_id and candidate.item_id == ref.item_id
+            ),
+            None,
+        )
+        if item is None:
+            continue
+        for part in item.parts:
+            if isinstance(part, TextContent) and (
+                ref.part_id is None or ref.part_id == part.part_id
+            ):
+                chunks.append(part.text)
+    return "".join(chunks)
 
 
 async def invoke_runtime_conversation_once(

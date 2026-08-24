@@ -10,7 +10,6 @@ describe("ComposerActionMenu", () => {
     const startGoal = vi.fn();
     render(
       <ComposerActionMenu
-        mode="default"
         disabled={false}
         onTogglePlan={togglePlan}
         onStartGoal={startGoal}
@@ -33,5 +32,21 @@ describe("ComposerActionMenu", () => {
     expect(screen.queryByText("计划模式")).not.toBeInTheDocument();
     await user.click(screen.getByText("设定长期目标"));
     expect(select).toHaveBeenCalledWith("goal");
+  });
+
+  it("closes its portal when the conversation route becomes inactive", async () => {
+    const user = userEvent.setup();
+    const props = {
+      disabled: false,
+      onTogglePlan: vi.fn(),
+      onStartGoal: vi.fn(),
+      onFiles: vi.fn(),
+    };
+    const { rerender } = render(<ComposerActionMenu {...props} active />);
+    await user.click(screen.getByRole("button", { name: "添加附件或运行控制" }));
+    expect(screen.getByText("添加图片或文本")).toBeInTheDocument();
+
+    rerender(<ComposerActionMenu {...props} active={false} />);
+    expect(screen.queryByText("添加图片或文本")).not.toBeInTheDocument();
   });
 });

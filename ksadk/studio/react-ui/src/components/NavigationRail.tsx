@@ -2,6 +2,7 @@ import * as Tooltip from "@radix-ui/react-tooltip";
 import type { ReactNode } from "react";
 import {
   Activity,
+  BadgeCheck,
   Bot,
   CloudUpload,
   Cpu,
@@ -27,6 +28,7 @@ export type NavigationView =
   | "builds"
   | "deployments"
   | "observability"
+  | "evaluations"
   | "runtime-resources"
   | "orchestration";
 
@@ -39,29 +41,30 @@ interface NavigationItem {
 
 const NAVIGATION_GROUPS: Array<{ group: string; items: NavigationItem[] }> = [
   {
-    group: "构建与运行",
+    group: "创作",
     items: [
       { id: "agents", label: "Agent", icon: Bot },
       { id: "conversations", label: "会话", icon: MessagesSquare },
-      { id: "builds", label: "构建", icon: Package },
-      { id: "deployments", label: "部署", icon: CloudUpload },
     ],
   },
   {
-    group: "工程资源",
+    group: "资源",
     items: [
       { id: "resources", label: "模型", icon: Cpu, kind: "model" },
       { id: "resources", label: "Tool", icon: Wrench, kind: "tool" },
       { id: "resources", label: "MCP", icon: Network, kind: "mcp" },
       { id: "resources", label: "Skill", icon: Sparkles, kind: "skill" },
+      { id: "runtime-resources", label: "运行资源", icon: Cpu },
     ],
   },
   {
-    group: "治理",
+    group: "交付与运行",
     items: [
-      { id: "observability", label: "可观测", icon: Activity },
-      { id: "runtime-resources", label: "运行资源", icon: Cpu },
+      { id: "builds", label: "构建", icon: Package },
+      { id: "deployments", label: "部署", icon: CloudUpload },
       { id: "orchestration", label: "任务编排", icon: Network },
+      { id: "observability", label: "可观测", icon: Activity },
+      { id: "evaluations", label: "评测", icon: BadgeCheck },
     ],
   },
 ];

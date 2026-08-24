@@ -101,3 +101,72 @@ export async function initializeStudioSession(): Promise<void> {
 export function currentCsrfToken(): string {
   return csrfToken;
 }
+
+// ---------------------------------------------------------------------------
+// agent-kernel/v1 control surface. Contract decoders live in chatProtocol.ts
+// and mirror @kingsoftcloud/ksadk-web's runtime bundle; the stream reducer is
+// never duplicated.
+// ---------------------------------------------------------------------------
+
+import type { AgentControlReceipt } from "./chatProtocol.ts";
+
+export interface SubmitAgentControlParams {
+  commandType:
+    | "enqueue" | "steer" | "inject" | "interrupt"
+    | "pause" | "resume" | "submit_interaction";
+  idempotencyKey: string;
+  payload: Record<string, unknown>;
+}
+
+/** Submit an AgentControlCommand/v1 and strictly decode the receipt. */
+export async function submitAgentControl(
+  params: SubmitAgentControlParams,
+  options?: { signal?: AbortSignal },
+): Promise<AgentControlReceipt> {
+  const response = await apiFetch("/api/v1/agent-control/submit", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      schema_version: 1,
+      command_type: params.commandType,
+      idempotency_key: params.idempotencyKey,
+      payload: params.payload,
+      source: { kind: "studio", ref: "studio-react-ui" },
+    }),
+    credentials: "same-origin",
+    signal: options?.signal,
+  });
+  if (!response.ok) {
+    throw new Error(`SubmitAgentControl failed: HTTP ${response.status}`);
+  }
+  const payload = await response.json();
+  // Deferred import keeps api.ts loadable in the node --test harness, which
+  // evaluates this module from a data: URL where relative specifiers cannot
+  // resolve. Vite bundles it as a normal chunk split.
+  const { decodeReceipt } = await import("./chatProtocol.ts");
+  return decodeReceipt(payload.Receipt ?? payload);
+}
+
+/**
+ * Subscribe to session events from the last unified Session seq.
+ * `afterSeq` comes from SessionEventCursor.reconnectAfterSeq().
+ */
+export async function subscribeSessionEvents(
+  sessionId: string,
+  afterSeq: number,
+  options?: { signal?: AbortSignal },
+): Promise<ReadableStream<Uint8Array>> {
+  const params = new URLSearchParams({ SessionId: sessionId, AfterSeq: String(afterSeq) });
+  const response = await apiFetch(`/api/v1/agent-control/events?${params}`, {
+    headers: { Accept: "text/event-stream" },
+    credentials: "same-origin",
+    signal: options?.signal,
+  });
+  if (!response.ok) {
+    throw new Error(`SubscribeSessionEvents failed: HTTP ${response.status}`);
+  }
+  if (!response.body) {
+    throw new Error("SubscribeSessionEvents 返回了空响应流");
+  }
+  return response.body;
+}

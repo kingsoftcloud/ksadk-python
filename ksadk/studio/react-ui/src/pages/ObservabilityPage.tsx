@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
-  Activity, ArrowLeft, Brain, Check, CircleCheckBig, Clock3, Coins, Copy, MessageSquare,
-  ChevronDown, ChevronUp, Maximize2, Minimize2, Network, RefreshCw, Search,
+  Activity, Archive, ArrowLeft, Brain, Check, CircleCheckBig, Clock3, Coins, Copy, MessageSquare,
+  ChevronDown, ChevronUp, Maximize2, Minimize2, Network, Search,
 } from "lucide-react";
 import { allExpanded, collapseAllNested, JsonView } from "react-json-view-lite";
 import { showToast } from "../components/Toast";
@@ -11,15 +11,19 @@ import {
   type StudioDataColumn,
 } from "../components/ui/StudioDataTable";
 import { StudioSelect } from "../components/ui/StudioSelect";
+import { PageHeaderActions, PageHeaderTools } from "../components/PageHeaderPortal";
 import { apiFetch } from "../api";
+import { TrajectoryDetail, TrajectoryView } from "./TrajectoryView";
+import type { TrajectoryRecord } from "./trajectory";
 
 /* ================= 类型 ================= */
 
 interface TraceSummary {
   traceId: string; runId: string; agentId: string; sessionId: string;
   runtimeType: string; model: string; status: string; startedAt: string;
-  durationMs: number | null; totalTokens: number | null; usageReported: boolean;
+  durationMs: number | null; totalTokens: number | null; usageReported?: boolean;
   inputTokens?: number | null; outputTokens?: number | null;
+  usageCompleteness?: TokenUsageCompleteness;
   spanCount: number;
 }
 interface SpanEvent { name: string; timeUnixNano: string; attributes?: Record<string, any> }
@@ -34,6 +38,7 @@ interface TraceDetail extends TraceSummary {
     durationMs?: number | null; durationSource?: string | null;
     inputTokens?: number | null; outputTokens?: number | null; totalTokens?: number | null;
     usageReported?: boolean; usageSource?: string | null;
+    usageCompleteness?: TokenUsageCompleteness;
   };
   target?: { name?: string };
   resource?: Record<string, any>;
@@ -62,6 +67,15 @@ function formatField(value: any, fallback = "-"): string {
   if (value === null || value === undefined || value === "") return fallback;
   return String(value);
 }
+function statusLabel(value: any): string {
+  const status = String(value || "").toUpperCase();
+  if (status === "COMPLETED" || status === "SUCCEEDED" || status === "OK") return "成功";
+  if (status === "RUNNING") return "运行中";
+  if (status === "PAUSED") return "已暂停";
+  if (status === "FAILED" || status === "ERROR" || status === "INTERNAL") return "失败";
+  if (status === "CANCELLED") return "已取消";
+  return status || "未知";
+}
 function formatDuration(value: any): string {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return "未上报";
   const ms = Number(value);
@@ -72,6 +86,70 @@ function formatDuration(value: any): string {
 function formatTokenCount(value: any): string {
   if (value === null || value === undefined) return "未上报";
   return new Intl.NumberFormat("zh-CN").format(Number(value));
+}
+type TokenUsage = {
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+  totalTokens?: number | null;
+  usageReported?: boolean;
+  usageCompleteness?: TokenUsageCompleteness;
+};
+type TokenUsageCompleteness = {
+  inputTokens?: boolean;
+  outputTokens?: boolean;
+  totalTokens?: boolean;
+  cachedInputTokens?: boolean;
+  reasoningOutputTokens?: boolean;
+};
+function tokenCounter(value: unknown): number | null {
+  if (value === null || value === undefined || typeof value === "boolean") return null;
+  const counter = Number(value);
+  return Number.isFinite(counter) && counter >= 0 ? counter : null;
+}
+function normalizedTokenTotal(usage: TokenUsage): number | null {
+  const total = tokenCounter(usage.totalTokens);
+  if (total !== null && usage.usageCompleteness?.totalTokens !== false) return total;
+  const input = tokenCounter(usage.inputTokens);
+  const output = tokenCounter(usage.outputTokens);
+  return input !== null
+    && output !== null
+    && usage.usageCompleteness?.inputTokens !== false
+    && usage.usageCompleteness?.outputTokens !== false
+    ? input + output
+    : null;
+}
+function hasTokenUsage(usage: TokenUsage): boolean {
+  return [usage.inputTokens, usage.outputTokens, usage.totalTokens]
+    .some(value => tokenCounter(value) !== null);
+}
+function tokenUsageHeadline(usage: TokenUsage): string {
+  const total = normalizedTokenTotal(usage);
+  if (total !== null) return formatTokenCount(total);
+  return hasTokenUsage(usage) ? "部分上报" : "未上报";
+}
+function tokenUsageBreakdown(usage: TokenUsage): string {
+  const input = tokenCounter(usage.inputTokens);
+  const output = tokenCounter(usage.outputTokens);
+  const inputLabel = input === null
+    ? "—"
+    : `${usage.usageCompleteness?.inputTokens === false ? "≥" : ""}${formatTokenCount(input)}`;
+  const outputLabel = output === null
+    ? "—"
+    : `${usage.usageCompleteness?.outputTokens === false ? "≥" : ""}${formatTokenCount(output)}`;
+  return `${inputLabel} 输入 · ${outputLabel} 输出`;
+}
+function tokenUsageListLabel(usage: TokenUsage): string {
+  const total = normalizedTokenTotal(usage);
+  if (total !== null) return formatTokenCount(total);
+  if (tokenCounter(usage.totalTokens) !== null) return "部分上报";
+  const input = tokenCounter(usage.inputTokens);
+  const output = tokenCounter(usage.outputTokens);
+  if (input !== null && output !== null) return "部分上报";
+  if (input !== null && usage.usageCompleteness?.inputTokens === false) return "部分上报";
+  if (output !== null && usage.usageCompleteness?.outputTokens === false) return "部分上报";
+  if (input !== null) return `${formatTokenCount(input)} 输入`;
+  if (output !== null) return `${formatTokenCount(output)} 输出`;
+  return "未上报";
 }
 function formatNanoseconds(value: any): string {
   try {
@@ -210,7 +288,7 @@ function CopyButton({ text, className }: { text: string; className?: string }) {
 /* ================= 内容卡片 ================= */
 
 function IoBlock({ label, text, tone, icon, meta }: {
-  label: string; text: string; tone: "message" | "thinking" | "tool"; icon?: React.ReactNode; meta?: string;
+  label: string; text: string; tone: "message" | "thinking" | "tool"; icon?: ReactNode; meta?: string;
 }) {
   const [expanded, setExpanded] = useState(false);
   const long = text.length > 600;
@@ -286,9 +364,10 @@ function KvList({ values }: { values: Record<string, any> }) {
 
 /* ================= 主页面 ================= */
 
-type DetailTab = "summary" | "attributes" | "events" | "resource" | "raw";
+type DetailTab = "spans" | "trajectory" | "attributes" | "events" | "resource" | "raw";
 const DETAIL_TABS: Array<{ id: DetailTab; label: string }> = [
-  { id: "summary", label: "概览" },
+  { id: "spans", label: "Spans" },
+  { id: "trajectory", label: "轨迹" },
   { id: "attributes", label: "Attributes" },
   { id: "events", label: "Events" },
   { id: "resource", label: "Resource" },
@@ -307,7 +386,8 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
   const [overview, setOverview] = useState<TraceOverview | null>(null);
   const [activeTrace, setActiveTrace] = useState<TraceDetail | null>(null);
   const [activeSpanId, setActiveSpanId] = useState<string | null>(null);
-  const [tab, setTab] = useState<DetailTab>("summary");
+  const [tab, setTab] = useState<DetailTab>("spans");
+  const [selectedTrajectory, setSelectedTrajectory] = useState<TrajectoryRecord | null>(null);
   const [rawOtlp, setRawOtlp] = useState<any>(null);
   const [rawLoading, setRawLoading] = useState(false);
   const [rawExpanded, setRawExpanded] = useState(true);
@@ -335,7 +415,8 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
       if (requestSeq.current !== seq) return;
       setActiveTrace(trace);
       setActiveSpanId(trace.rootSpanId || trace.spans?.[0]?.spanId || null);
-      setTab("summary");
+      setTab("spans");
+      setSelectedTrajectory(null);
       setRawOtlp(null);
       setRawExpanded(true);
       setExpanded(false);
@@ -438,14 +519,20 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
 
   /* ---------- 渲染 ---------- */
 
-  const metrics = activeTrace?.metrics || {};
+  const metrics: NonNullable<TraceDetail["metrics"]> = activeTrace?.metrics || {
+    durationMs: activeTrace?.durationMs,
+    inputTokens: activeTrace?.inputTokens,
+    outputTokens: activeTrace?.outputTokens,
+    totalTokens: activeTrace?.totalTokens,
+    usageReported: activeTrace?.usageReported,
+  };
   const activeTraceAgent = agents.find(agent => agent.id === activeTrace?.agentId);
   const traceColumns = useMemo<StudioDataColumn<TraceSummary>[]>(() => [
     {
       id: "status",
       header: "状态",
       width: 130,
-      cell: trace => <span className={`trace-table-status ${trace.status}`}><span className={`trace-list-status ${trace.status}`} />{trace.status}</span>,
+      cell: trace => <span className={`trace-table-status ${trace.status}`} title={trace.status}><span className={`trace-list-status ${trace.status}`} />{statusLabel(trace.status)}</span>,
     },
     {
       id: "identity",
@@ -465,7 +552,7 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
     { id: "startedAt", header: "开始时间", minWidth: 140, cell: trace => formatDate(trace.startedAt) },
     { id: "duration", header: "耗时", width: 110, cell: trace => formatDuration(trace.durationMs) },
     { id: "model", header: "模型", minWidth: 140, cell: trace => trace.model || "-" },
-    { id: "tokens", header: "Token", width: 110, cell: trace => trace.usageReported ? formatTokenCount(trace.totalTokens) : "未上报" },
+    { id: "tokens", header: "Token", width: 110, cell: trace => tokenUsageListLabel(trace) },
     { id: "spans", header: "Span", width: 80, cell: trace => trace.spanCount || 0 },
     {
       id: "actions",
@@ -521,41 +608,91 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
     showToast("Raw OTLP 已复制", shortId(activeTrace.traceId, 24));
   }
 
+  async function exportSessionLog() {
+    if (!activeTrace?.sessionId) return;
+    type SaveFileHandle = {
+      name: string;
+      createWritable: () => Promise<{ write: (content: Blob) => Promise<void>; close: () => Promise<void> }>;
+    };
+    type SaveFilePicker = (options: {
+      suggestedName: string;
+      types: Array<{ description: string; accept: Record<string, string[]> }>;
+    }) => Promise<SaveFileHandle>;
+    const picker = (window as Window & { showSaveFilePicker?: SaveFilePicker }).showSaveFilePicker;
+    if (!picker) {
+      showToast("浏览器不支持导出", "请使用支持文件保存的 Chromium 浏览器。", "error");
+      return;
+    }
+    let handle: SaveFileHandle;
+    try {
+      handle = await picker({
+        suggestedName: `${activeTrace.sessionId}-${activeTrace.runId || "session"}-session-log.jsonl`,
+        types: [{ description: "Session Log", accept: { "application/x-ndjson": [".jsonl"] } }],
+      });
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      showToast("Session Log 导出失败", error instanceof Error ? error.message : "无法选择保存位置", "error");
+      return;
+    }
+    try {
+      const response = await apiFetch(
+        `/api/v1/sessions/${encodeURIComponent(activeTrace.sessionId)}:export`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            filename: handle.name,
+            invocationId: activeTrace.runId || undefined,
+            download: true,
+          }),
+        },
+      );
+      if (!response.ok) throw new Error(`导出失败（${response.status}）`);
+      const writable = await handle.createWritable();
+      await writable.write(await response.blob());
+      await writable.close();
+      const count = response.headers.get("X-Session-Event-Count") || "0";
+      showToast("Session Log 已导出", `${handle.name} · ${count} 条事件`);
+    } catch (error) {
+      showToast("Session Log 导出失败", error instanceof Error ? error.message : "未知错误", "error");
+    }
+  }
+
   return (
     <div
       className="page-container observability-page"
       id="traceExplorer"
-      data-layout="data"
-      data-scroll-mode={activeTrace ? "workbench" : "data"}
+      data-layout="workbench"
     >
-      <header className="page-header trace-page-header">
-        <div><h1>Trace Explorer</h1><p>基于 OpenTelemetry 检查 Agent、模型与 Tool 的完整调用链。</p></div>
-        <div className="header-actions">
-          {activeTrace && (
-            <button className="button tertiary" type="button" onClick={() => {
-              requestSeq.current += 1;
-              setActiveTrace(null);
-              setActiveSpanId(null);
-              setExpanded(false);
-              setDetailCollapsed(false);
-            }}>
-              <ArrowLeft size={15} /><span>返回 Trace 列表</span>
-            </button>
-          )}
-          <button className="button secondary" type="button" onClick={refreshTraces}>
-            <RefreshCw size={15} /><span>刷新</span>
-          </button>
+      <PageHeaderTools>
+        <div className="search-field header-search-field">
+          <Search size={14} />
+          <input type="search" aria-label="搜索 Trace、Run 或 Session" placeholder="搜索 Trace、Run 或 Session" value={search} onChange={e => setSearch(e.target.value)} />
         </div>
-      </header>
+        <div className="segmented-control compact" aria-label="可观测时间范围">
+          <button type="button" className={range === "24h" ? "selected" : ""} onClick={() => setRange("24h")}>24 小时</button>
+          <button type="button" className={range === "7d" ? "selected" : ""} onClick={() => setRange("7d")}>7 天</button>
+        </div>
+      </PageHeaderTools>
+      {activeTrace && <PageHeaderActions>
+        <button className="button tertiary" type="button" onClick={() => void exportSessionLog()}>
+          <Archive size={15} /><span>导出 Session Log</span>
+        </button>
+        <button className="button tertiary" type="button" onClick={() => {
+          requestSeq.current += 1;
+          setActiveTrace(null);
+          setActiveSpanId(null);
+          setExpanded(false);
+          setDetailCollapsed(false);
+        }}>
+          <ArrowLeft size={15} /><span>返回 Trace 列表</span>
+        </button>
+      </PageHeaderActions>}
 
       <div className="data-page-body observability-body">
         <OverviewSection overview={overview} range={range} onRangeChange={setRange} />
 
         {!activeTrace && <div className="trace-toolbar" aria-label="Trace 筛选">
-        <div className="search-field trace-search-field">
-          <Search size={14} />
-          <input type="search" placeholder="搜索 Trace、Run 或 Session" value={search} onChange={e => setSearch(e.target.value)} />
-        </div>
         <StudioSelect
           className="compact-select"
           ariaLabel="按 Agent 筛选"
@@ -581,21 +718,21 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
         <span className="trace-standard-label">OTLP · W3C Trace Context</span>
         </div>}
 
-        {activeTrace && <section className="trace-metrics" aria-label="Trace 指标">
+        {activeTrace && <section className="stat-strip" aria-label="Trace 指标">
         <div>
           <span>Trace 状态</span>
-          <strong>{activeTrace?.status || "未选择"}</strong>
+          <strong>{activeTrace ? statusLabel(activeTrace.status) : "未选择"}</strong>
           <small>{activeTrace ? `${activeTrace.spans?.length || 0} Span · ${activeTrace.target?.name || "本地工作区"}` : "选择一条 Trace 查看"}</small>
         </div>
-        <div>
+        <div className="emphasis" data-state={activeTrace?.status === "FAILED" ? "failed" : activeTrace?.status === "COMPLETED" ? "ready" : "running"}>
           <span>总耗时</span>
           <strong>{activeTrace ? formatDuration(metrics.durationMs) : "未上报"}</strong>
           <small>{!activeTrace ? "等待 Runtime 上报" : metrics.durationMs === null || metrics.durationMs === undefined ? "Runtime 未上报" : metrics.durationSource === "runtime" ? "Runtime 精确上报" : "Studio 时钟回退"}</small>
         </div>
         <div>
           <span>Token</span>
-          <strong>{activeTrace && metrics.usageReported ? formatTokenCount(metrics.totalTokens) : "未上报"}</strong>
-          <small>{activeTrace && metrics.usageReported ? `${formatTokenCount(metrics.inputTokens)} 输入 · ${formatTokenCount(metrics.outputTokens)} 输出` : "输入 / 输出"}</small>
+          <strong>{activeTrace ? tokenUsageHeadline(metrics) : "未上报"}</strong>
+          <small>{activeTrace && hasTokenUsage(metrics) ? tokenUsageBreakdown(metrics) : "输入 / 输出"}</small>
         </div>
         <div>
           <span>模型</span>
@@ -640,6 +777,21 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
 
         {activeTrace && <div className={`trace-workbench detail-route${expanded ? " detail-expanded" : ""}${detailCollapsed ? " detail-collapsed" : ""}`}>
 
+        <aside className="trace-run-panel" aria-label="本页 Trace">
+          <div className="trace-panel-header"><div><strong>Traces</strong><span>{traceTotal} 条结果</span></div></div>
+          <div className="trace-run-list">
+            {traces.map(trace => {
+              const agent = agents.find(item => item.id === trace.agentId);
+              return (
+                <button key={trace.traceId} type="button" className={trace.traceId === activeTrace.traceId ? "active" : ""} onClick={() => openTrace(trace.traceId)}>
+                  <span className="trace-run-identity"><AgentAvatar name={agent?.name || trace.agentId || "Agent"} appearance={agent?.appearance} size="xs" /><span><strong>{agent?.name || trace.agentId || "Agent"}</strong><small>{shortId(trace.runId || trace.traceId, 22)}</small></span></span>
+                  <span className="trace-run-meta"><span className="mono">{formatDuration(trace.durationMs)}</span><span className="badge" data-state={trace.status === "FAILED" ? "failed" : trace.status === "COMPLETED" ? "ready" : "running"} title={trace.status}>{statusLabel(trace.status)}</span></span>
+                </button>
+              );
+            })}
+          </div>
+        </aside>
+
         <section className="trace-span-panel" aria-label="Span 时间瀑布">
           <div className="trace-panel-header trace-span-header">
             <AgentAvatar
@@ -656,7 +808,7 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
             </button>
             {detailCollapsed && (
               <button className="button secondary small trace-detail-reopen" type="button" onClick={() => setDetailCollapsed(false)}>
-                <ChevronUp size={14} /><span>展开详情</span>
+                <ChevronUp size={14} /><span>展开右侧详情</span>
               </button>
             )}
           </div>
@@ -683,7 +835,7 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
                   className={`trace-span-row${span.spanId === activeSpanId ? " active" : ""}`}
                   data-kind={span.kind}
                   data-status={span.status}
-                  onClick={() => { setActiveSpanId(span.spanId); setTab("summary"); }}
+                  onClick={() => { setActiveSpanId(span.spanId); setTab("spans"); }}
                 >
                   <span className="trace-span-name">
                     <span className="trace-span-guides">{Array.from({ length: depth }, (_, i) => <span key={i} className="trace-span-guide" />)}</span>
@@ -704,7 +856,7 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
           <div className="trace-panel-header">
             <div>
               <strong>{activeSpan ? formatField(activeSpan.name) : "Span 详情"}</strong>
-              <span>{activeSpan ? `${formatField(activeSpan.kind)} · ${formatField(activeSpan.status)}` : "尚未选择 Span"}</span>
+              <span>{activeSpan ? `${formatField(activeSpan.kind)} · ${statusLabel(activeSpan.status)}` : "尚未选择 Span"}</span>
             </div>
             <div className="trace-detail-actions">
               {!detailCollapsed && (
@@ -754,10 +906,26 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
             ))}
           </div>}
           {!detailCollapsed && <div className={`trace-detail-body${tab === "raw" ? " raw-active" : ""}`}>
-            {tab !== "raw" && (
+            {tab === "trajectory" && (
+              <div className="trace-trajectory-layout">
+                <TrajectoryView
+                  sessionId={activeTrace.sessionId}
+                  invocationId={activeTrace.runId || undefined}
+                  onSelectionChange={setSelectedTrajectory}
+                />
+                <aside className="trajectory-selection" aria-label="轨迹详情">
+                  {selectedTrajectory ? (
+                    <TrajectoryDetail record={selectedTrajectory} />
+                  ) : (
+                    <div className="trace-stage-empty compact"><p>选择一条轨迹事件查看详情。</p></div>
+                  )}
+                </aside>
+              </div>
+            )}
+            {tab !== "raw" && tab !== "trajectory" && (
               <div>
                 {!activeSpan && <div className="trace-stage-empty compact"><p>选择一个 Span 查看标准属性。</p></div>}
-                {activeSpan && tab === "summary" && (
+                {activeSpan && tab === "spans" && (
                   <>
                     <SpanContentCards span={activeSpan} />
                     <dl className="trace-detail-grid" style={{ marginTop: 14 }}>
@@ -765,7 +933,7 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
                       <div><dt>Span ID</dt><dd>{activeSpan.spanId}</dd></div>
                       <div><dt>Parent</dt><dd>{activeSpan.parentSpanId || "Root"}</dd></div>
                       <div><dt>Kind</dt><dd>{activeSpan.kind}</dd></div>
-                      <div><dt>Status</dt><dd>{activeSpan.status}</dd></div>
+                      <div><dt>状态</dt><dd title={activeSpan.status}>{statusLabel(activeSpan.status)}</dd></div>
                       <div><dt>开始</dt><dd>{formatNanoseconds(activeSpan.startTimeUnixNano)}</dd></div>
                       <div><dt>耗时</dt><dd>{formatDuration(activeSpan.durationMs)}</dd></div>
                     </dl>
@@ -814,12 +982,12 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
   );
 }
 
-/* ================= 概览区（指标卡 + 趋势图） ================= */
+/* ================= 概览区 ================= */
 
 function OverviewSection({ overview, range, onRangeChange }: {
   overview: TraceOverview | null;
   range: "24h" | "7d";
-  onRangeChange: (r: "24h" | "7d") => void;
+  onRangeChange: (range: "24h" | "7d") => void;
 }) {
   const total = overview?.total || 0;
   const completed = overview?.completed || 0;
@@ -857,7 +1025,7 @@ function OverviewSection({ overview, range, onRangeChange }: {
 }
 
 function OverviewMetric({ icon, label, value, note, tone = "neutral" }: {
-  icon: React.ReactNode;
+  icon: ReactNode;
   label: string;
   value: string;
   note: string;
@@ -883,36 +1051,35 @@ function OverviewChart({ buckets: rawBuckets, range }: {
       : `${String(date.getHours()).padStart(2, "0")}:00`;
     return { ...bucket, label, success: bucket.completed };
   });
-  if (!buckets.length) {
-    return <div className="trace-stage-empty compact"><p>正在读取运行趋势…</p></div>;
-  }
-  const maxRuns = Math.max(1, ...buckets.map(b => b.runs));
+  if (!buckets.length) return <div className="trace-stage-empty compact"><p>正在读取运行趋势…</p></div>;
+
+  const maxRuns = Math.max(1, ...buckets.map(bucket => bucket.runs));
   const W = 800, H = 118, pad = { l: 30, r: 10, t: 10, b: 22 };
   const innerW = W - pad.l - pad.r;
   const innerH = H - pad.t - pad.b;
   const stepX = innerW / Math.max(1, buckets.length - 1);
-  const yScale = (v: number) => pad.t + innerH - (v / maxRuns) * innerH;
-  const runsPoints = buckets.map((b, i) => `${pad.l + i * stepX},${yScale(b.runs)}`).join(" ");
-  const successPoints = buckets.map((b, i) => `${pad.l + i * stepX},${yScale(b.success)}`).join(" ");
+  const yScale = (value: number) => pad.t + innerH - (value / maxRuns) * innerH;
+  const runsPoints = buckets.map((bucket, index) => `${pad.l + index * stepX},${yScale(bucket.runs)}`).join(" ");
+  const successPoints = buckets.map((bucket, index) => `${pad.l + index * stepX},${yScale(bucket.success)}`).join(" ");
   const areaPath = `M ${pad.l},${pad.t + innerH} L ${runsPoints.split(" ").join(" L ")} L ${pad.l + (buckets.length - 1) * stepX},${pad.t + innerH} Z`;
   const labelEvery = Math.ceil(buckets.length / 6);
 
   return (
     <svg className="overview-chart" viewBox="0 0 800 118" preserveAspectRatio="none" aria-label="运行趋势曲线">
-      {[0, 0.25, 0.5, 0.75, 1].map(p => {
-        const y = pad.t + innerH - p * innerH;
-        return <line key={p} x1={pad.l} y1={y} x2={W - pad.r} y2={y} stroke="var(--border)" strokeWidth="1" strokeDasharray={p === 0 ? "0" : "3 3"} />;
+      {[0, 0.25, 0.5, 0.75, 1].map(proportion => {
+        const y = pad.t + innerH - proportion * innerH;
+        return <line key={proportion} x1={pad.l} y1={y} x2={W - pad.r} y2={y} stroke="var(--border)" strokeWidth="1" strokeDasharray={proportion === 0 ? "0" : "3 3"} />;
       })}
       <path d={areaPath} fill="var(--accent-soft)" opacity="0.6" />
       <polyline points={runsPoints} fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
       <polyline points={successPoints} fill="none" stroke="var(--success)" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" strokeDasharray="4 3" />
-      {buckets.map((b, i) => (
-        <circle key={i} cx={pad.l + i * stepX} cy={yScale(b.runs)} r="2.5" fill="var(--accent)">
-          <title>{`${b.label}：${b.runs} 次运行，${b.success} 次成功`}</title>
+      {buckets.map((bucket, index) => (
+        <circle key={bucket.startedAt} cx={pad.l + index * stepX} cy={yScale(bucket.runs)} r="2.5" fill="var(--accent)">
+          <title>{`${bucket.label}：${bucket.runs} 次运行，${bucket.success} 次成功`}</title>
         </circle>
       ))}
-      {buckets.map((b, i) => (i % labelEvery === 0 || i === buckets.length - 1) && (
-        <text key={`l${i}`} x={pad.l + i * stepX} y={H - 8} textAnchor="middle" fill="var(--text-tertiary)" fontSize="11">{b.label}</text>
+      {buckets.map((bucket, index) => (index % labelEvery === 0 || index === buckets.length - 1) && (
+        <text key={`label-${bucket.startedAt}`} x={pad.l + index * stepX} y={H - 8} textAnchor="middle" fill="var(--text-tertiary)" fontSize="11">{bucket.label}</text>
       ))}
     </svg>
   );

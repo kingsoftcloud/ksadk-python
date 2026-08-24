@@ -144,7 +144,7 @@ class StudioSharedWebBridge:
         self.studio.event_store.delete_session(session_id)
         return {}
 
-    def list_messages(
+    async def list_messages(
         self,
         session_id: str,
         *,
@@ -176,7 +176,7 @@ class StudioSharedWebBridge:
                     "Timestamp": self._timestamp(run.completed_at or run.started_at),
                     "SeqId": sequence,
                     "InvocationId": run.id,
-                    "Activities": self._run_activities(run),
+                    "Activities": await self._run_activities(run),
                 }
             )
 
@@ -195,12 +195,12 @@ class StudioSharedWebBridge:
             "NextCursor": selected[0]["SeqId"] if has_more and selected else None,
         }
 
-    def list_session_events(self, session_id: str) -> dict[str, Any]:
+    async def list_session_events(self, session_id: str) -> dict[str, Any]:
         runs = self.studio.event_store.list_runs(session_id=session_id)
         events: list[dict[str, Any]] = []
         sequence = 0
         for run in runs:
-            for event in self.studio.event_store.events(run.id):
+            for event in await self.studio.run_service.events(run.id):
                 sequence += 1
                 events.append(
                     {
@@ -250,6 +250,7 @@ class StudioSharedWebBridge:
         approval_mode = str(payload.get("ApprovalMode") or "")
         collaboration_mode = str(payload.get("CollaborationMode") or "")
         goal_objective = str(payload.get("GoalObjective") or "")
+        reasoning_effort = str(payload.get("ReasoningEffort") or "")
         execution = asyncio.create_task(
             self._execute_run(
                 agent_id=agent_id,
@@ -261,6 +262,7 @@ class StudioSharedWebBridge:
                 approval_mode=approval_mode,
                 collaboration_mode=collaboration_mode,
                 goal_objective=goal_objective,
+                reasoning_effort=reasoning_effort,
             )
         )
 
@@ -290,7 +292,7 @@ class StudioSharedWebBridge:
             emitted_text = ""
             idle_polls = 0
             while not execution.done():
-                projected = self._project_response_events(
+                projected = await self._project_response_events(
                     session_id=session_id,
                     agent_id=agent_id,
                     invocation_id=invocation_id,
@@ -309,7 +311,7 @@ class StudioSharedWebBridge:
                         yield ": keep-alive\n\n"
                 await asyncio.sleep(0.05)
             run = await execution
-            for event_name, event_payload in self._project_response_events(
+            for event_name, event_payload in await self._project_response_events(
                 session_id=session_id,
                 agent_id=agent_id,
                 invocation_id=invocation_id,
@@ -356,6 +358,7 @@ class StudioSharedWebBridge:
         approval_mode = str(payload.get("ApprovalMode") or "")
         collaboration_mode = str(payload.get("CollaborationMode") or "")
         goal_objective = str(payload.get("GoalObjective") or "")
+        reasoning_effort = str(payload.get("ReasoningEffort") or "")
         try:
             run = await self._execute_run(
                 agent_id=agent_id,
@@ -367,6 +370,7 @@ class StudioSharedWebBridge:
                 approval_mode=approval_mode,
                 collaboration_mode=collaboration_mode,
                 goal_objective=goal_objective,
+                reasoning_effort=reasoning_effort,
             )
             return self._response_payload(
                 run,
@@ -388,6 +392,7 @@ class StudioSharedWebBridge:
         approval_mode: str = "",
         collaboration_mode: str = "",
         goal_objective: str = "",
+        reasoning_effort: str = "",
     ) -> RunRecord:
         build = await self._ensure_build(agent_id)
 
@@ -405,6 +410,7 @@ class StudioSharedWebBridge:
             approval_mode=approval_mode or None,
             collaboration_mode=collaboration_mode or None,
             goal_objective=goal_objective or None,
+            reasoning_effort=reasoning_effort or None,
             runtime_input=runtime_input or None,
             idempotency_key=f"responses:{invocation_id}",
             on_event=observe,
@@ -434,7 +440,7 @@ class StudioSharedWebBridge:
             "output": [],
         }
 
-    def _project_response_events(
+    async def _project_response_events(
         self,
         *,
         session_id: str,
@@ -449,7 +455,7 @@ class StudioSharedWebBridge:
         for run in self.studio.event_store.list_runs(session_id=session_id):
             if run.agent_id != agent_id or run.id != current_run_id:
                 continue
-            events = self.studio.event_store.events(run.id)
+            events = await self.studio.run_service.events(run.id)
             starts = {
                 str(event.data.get("callId") or event.data.get("call_id") or ""): event.data
                 for event in events
@@ -541,11 +547,11 @@ class StudioSharedWebBridge:
                 "id": call_id or f"shell_{uuid4().hex}",
                 "call_id": call_id,
                 "type": "shell_call",
-                "status": "failed"
-                if event_type.endswith("failed") or data.get("exitCode") not in {None, 0}
-                else "completed"
-                if done
-                else "in_progress",
+                "status": (
+                    "failed"
+                    if event_type.endswith("failed") or data.get("exitCode") not in {None, 0}
+                    else "completed" if done else "in_progress"
+                ),
                 "action": {
                     "commands": [command],
                     "cwd": data.get("cwd") or started.get("cwd") or "",
@@ -562,11 +568,11 @@ class StudioSharedWebBridge:
                 "type": "function_call",
                 "name": name,
                 "arguments": json.dumps(args, ensure_ascii=False) if args is not None else "",
-                "status": "failed"
-                if event_type.endswith("failed")
-                else "completed"
-                if done
-                else "in_progress",
+                "status": (
+                    "failed"
+                    if event_type.endswith("failed")
+                    else "completed" if done else "in_progress"
+                ),
                 "output": data.get("output") or data.get("result") or "",
             }
         elif event_type == "approval.requested":
@@ -862,10 +868,14 @@ class StudioSharedWebBridge:
     def _draft(self, agent_id: str):
         return self.studio.agent_detail(agent_id)["draft"]
 
-    def _run_activities(self, run: RunRecord) -> list[dict[str, Any]]:
+    async def _run_activities(self, run: RunRecord) -> list[dict[str, Any]]:
         activities: list[dict[str, Any]] = []
-        for event in self.studio.event_store.events(run.id):
-            operations = event.data.get("a2ui_operations") or event.data.get("operations")
+        for event in await self.studio.run_service.events(run.id):
+            operations = (
+                event.data.get("a2uiOperations")
+                or event.data.get("a2ui_operations")
+                or event.data.get("operations")
+            )
             if not isinstance(operations, list):
                 continue
             surface_id = str(

@@ -1,20 +1,20 @@
-import { useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { Command } from "cmdk";
-import { Check, ListTodo, Paperclip, Plus, Target, Undo2 } from "lucide-react";
+import { ListTodo, Paperclip, Plus, Target, Undo2 } from "lucide-react";
 import {
   COMPOSER_ATTACHMENT_ACCEPT,
   visibleComposerCommands,
-  type CollaborationMode,
   type ComposerCommand,
 } from "../composerActions";
 
 interface ComposerActionMenuProps {
-  mode: CollaborationMode;
   disabled: boolean;
   onTogglePlan: () => void;
   onStartGoal: () => void;
   onFiles: (files: File[]) => void;
+  active?: boolean;
+  attachmentAccept?: string;
 }
 
 function CommandIcon({ id }: { id: ComposerCommand["id"] }) {
@@ -24,13 +24,18 @@ function CommandIcon({ id }: { id: ComposerCommand["id"] }) {
 }
 
 export function ComposerActionMenu({
-  mode,
   disabled,
   onTogglePlan,
   onStartGoal,
   onFiles,
+  active = true,
+  attachmentAccept = COMPOSER_ATTACHMENT_ACCEPT,
 }: ComposerActionMenuProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!active) setOpen(false);
+  }, [active]);
   return (
     <>
       <input
@@ -39,14 +44,14 @@ export function ComposerActionMenu({
         type="file"
         tabIndex={-1}
         multiple
-        accept={COMPOSER_ATTACHMENT_ACCEPT}
+        accept={attachmentAccept || undefined}
         onChange={event => {
           const files = [...(event.target.files || [])];
           event.target.value = "";
           if (files.length) onFiles(files);
         }}
       />
-      <DropdownMenu.Root>
+      <DropdownMenu.Root open={open} onOpenChange={setOpen}>
         <DropdownMenu.Trigger asChild>
           <button
             className="chat-plus-trigger"
@@ -66,15 +71,14 @@ export function ComposerActionMenu({
               <span><strong>添加图片或文本</strong><small>最多 4 个附件</small></span>
             </DropdownMenu.Item>
             <DropdownMenu.Separator className="composer-action-separator" />
-            <DropdownMenu.Label className="composer-action-heading">运行控制</DropdownMenu.Label>
+            <DropdownMenu.Label className="composer-action-heading">运行方式</DropdownMenu.Label>
             <DropdownMenu.Item className="composer-action-item" onSelect={onTogglePlan}>
               <ListTodo size={16} />
               <span><strong>计划模式</strong><small>下一轮使用 Codex Plan</small></span>
-              {mode === "plan" && <Check className="composer-action-check" size={15} />}
             </DropdownMenu.Item>
             <DropdownMenu.Item className="composer-action-item" onSelect={onStartGoal}>
               <Target size={16} />
-              <span><strong>设定长期目标</strong><small>启动持久 Goal</small></span>
+              <span><strong>设定长期目标</strong><small>朝可验证的停止条件持续推进</small></span>
             </DropdownMenu.Item>
           </DropdownMenu.Content>
         </DropdownMenu.Portal>

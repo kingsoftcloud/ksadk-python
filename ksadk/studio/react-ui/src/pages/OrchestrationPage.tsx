@@ -15,6 +15,7 @@ import "@xyflow/react/dist/style.css";
 import { CheckCircle2, Code2, Cpu, Maximize2, MessagesSquare, Network, Plus } from "lucide-react";
 import { apiFetch } from "../api";
 import { AgentAvatar, type AgentAppearance } from "../components/AgentAvatar";
+import { PageHeaderActions } from "../components/PageHeaderPortal";
 
 interface AgentSummary { metadata: { id: string; name: string; revision?: number; appearance?: AgentAppearance } }
 interface RunItem { id: string; agentId: string; status: string; startedAt?: string; input?: string }
@@ -26,11 +27,13 @@ interface PipelineStep {
   subtitle: string;
   icon: PipelineIcon;
   incomingLabel?: string;
+  fullTitle?: string;
 }
 interface PipelineNodeData extends Record<string, unknown> {
   title: string;
   subtitle: string;
   icon: PipelineIcon;
+  fullTitle?: string;
 }
 type PipelineGraphNode = Node<PipelineNodeData, "pipeline">;
 type PipelineGraphEdge = Edge<Record<string, never>, "smoothstep">;
@@ -52,6 +55,19 @@ function shortId(value: string, head = 34): string {
   if (!value) return "-";
   return value.length <= head ? value : `${value.slice(0, head)}…`;
 }
+export function modelDisplayNameFromResourceId(resourceId?: string): string {
+  if (!resourceId) return "未绑定模型";
+  const parts = resourceId.split(":");
+  const rawName = parts[0] === "model" && parts.length >= 4
+    ? parts.slice(2, -1).join(":")
+    : resourceId;
+  const normalizedVersion = rawName.replace(/-(\d+)$/, ".$1");
+  return normalizedVersion
+    .replace(/^glm/i, "GLM")
+    .replace(/^gpt/i, "GPT")
+    .replace(/^qwen/i, "Qwen")
+    .replace(/^deepseek/i, "DeepSeek");
+}
 function formatDate(value?: string): string {
   if (!value) return "刚刚";
   const d = new Date(value);
@@ -63,11 +79,18 @@ function formatDate(value?: string): string {
     minute: "2-digit",
   }).format(d);
 }
+function runStatusLabel(value: string): string {
+  if (value === "COMPLETED" || value === "SUCCEEDED") return "成功";
+  if (value === "RUNNING") return "运行中";
+  if (value === "FAILED") return "失败";
+  if (value === "PAUSED") return "已暂停";
+  return value || "未知";
+}
 
 function PipelineGraphCard({ data }: NodeProps<PipelineGraphNode>) {
   const Icon = pipelineIcons[data.icon];
   return (
-    <div className="pipeline-node-card">
+    <div className="pipeline-node-card" title={data.fullTitle || data.title}>
       <Handle id="top" type="target" position={Position.Top} />
       <Handle id="top-out" type="source" position={Position.Top} />
       <Handle id="right" type="source" position={Position.Right} />
@@ -109,7 +132,7 @@ function layoutPipeline(steps: PipelineStep[], width: number): {
     id: step.id,
     type: "pipeline" as const,
     position: { x: positions[index].x, y: positions[index].y },
-    data: { title: step.title, subtitle: step.subtitle, icon: step.icon },
+    data: { title: step.title, subtitle: step.subtitle, icon: step.icon, fullTitle: step.fullTitle || step.title },
     style: { width: NODE_WIDTH, height: NODE_HEIGHT },
   }));
 
@@ -215,8 +238,17 @@ export function OrchestrationPage({ currentAgentId, agents, onSelectAgent, onCre
   const [catalog, setCatalog] = useState<any[]>([]);
 
   useEffect(() => {
-    apiFetch("/api/v1/catalog/resources?limit=200").then(r => r.json())
-      .then(d => setCatalog(d.items || [])).catch(() => {});
+    Promise.all([
+      apiFetch("/api/v1/catalog/resources?limit=200").then(r => r.json()),
+      apiFetch("/api/v1/catalog/models").then(r => r.json()).catch(() => null),
+    ]).then(([resources, discovered]) => {
+      const items = resources.items || [];
+      const providerModels = discovered?.items || [];
+      setCatalog([
+        ...items.filter((item: any) => item.kind !== "model" || item.source === "local" || item.source === "market"),
+        ...providerModels,
+      ]);
+    }).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -242,20 +274,26 @@ export function OrchestrationPage({ currentAgentId, agents, onSelectAgent, onCre
   const capCount = (bindings.tools?.length || 0) + (bindings.mcpServers?.length || 0) + (bindings.skills?.length || 0);
   const recentRuns = runs.slice(-5).reverse();
   const pipelineSteps = useMemo<PipelineStep[]>(() => {
+    const runtimeLabel = runtimeType === "codex" ? "Codex Runtime"
+      : runtimeType === "adk" ? "ADK Runtime"
+        : runtimeType === "langgraph" ? "LangGraph Runtime" : `${runtimeType} Runtime`;
+    const modelIdentity = model?.displayName || model?.name || modelDisplayNameFromResourceId(bindings.modelProfileId);
     const steps: PipelineStep[] = [
       { id: "input", icon: "input", title: "任务输入", subtitle: "用户消息与会话上下文" },
       {
         id: "runtime",
         icon: "runtime",
-        title: `${runtimeType} RuntimeAdapter`,
+        title: runtimeLabel,
+        fullTitle: `${runtimeType} RuntimeAdapter`,
         subtitle: `${strategy} · 本地执行`,
         incomingLabel: "调度",
       },
       {
         id: "model",
         icon: "model",
-        title: model?.displayName || bindings.modelProfileId || "未绑定模型",
-        subtitle: "Model Profile",
+        title: shortId(modelIdentity, 24),
+        fullTitle: bindings.modelProfileId ? `${modelIdentity} · ${bindings.modelProfileId}` : modelIdentity,
+        subtitle: "模型配置",
         incomingLabel: "调用模型",
       },
     ];
@@ -279,20 +317,26 @@ export function OrchestrationPage({ currentAgentId, agents, onSelectAgent, onCre
   }, [bindings, capCount, model?.displayName, runtimeType, strategy]);
 
   return (
-    <div className="page-container orchestration-page" data-layout={draft ? "workbench" : "document"}>
-      <header className="page-header">
-        <div><h1>任务编排</h1><p>把当前 Agent 的声明式配置映射为可检查的执行链路与端云路由。</p></div>
-      </header>
+    <div className="page-container orchestration-page" data-layout="document">
+      {!draft && <PageHeaderActions>
+        <button className="button accent" type="button" onClick={onCreate}><Plus size={15} /><span>创建 Agent</span></button>
+      </PageHeaderActions>}
       {!draft ? (
-        <div className="orchestration-empty">
+        <div className="orchestration-empty empty-state block">
           <span className="empty-icon"><Network size={24} /></span>
           <h2>先选择或创建一个 Agent</h2>
           <p>编排视图会读取 Agent Revision、RuntimeRef 和能力绑定生成真实执行链路。</p>
-          <button className="button accent" type="button" onClick={onCreate}><Plus size={15} /><span>创建 Agent</span></button>
         </div>
       ) : (
+        <>
+        <section className="stat-strip" aria-label="编排概览">
+          <div><span>Revision</span><strong>r{draft.metadata?.revision || 1}</strong><small>{draft.metadata?.id}</small></div>
+          <div><span>Runtime</span><strong>{runtimeType}</strong><small>{strategy} · Edge</small></div>
+          <div><span>能力绑定</span><strong>{capCount}</strong><small>{bindings.tools?.length || 0} Tool · {bindings.mcpServers?.length || 0} MCP · {bindings.skills?.length || 0} Skill</small></div>
+          <div className="emphasis"><span>最近调度</span><strong>{runs.length}</strong><small>{recentRuns[0] ? runStatusLabel(recentRuns[0].status) : "暂无运行"}</small></div>
+        </section>
         <div className="orchestration-workbench">
-          <section className="orchestration-canvas">
+          <section className="orchestration-canvas block">
             <div className="section-heading">
               <AgentAvatar name={draft.metadata?.name || "Agent"} appearance={draft.metadata?.appearance} size="md" />
               <div className="section-heading-copy">
@@ -302,7 +346,7 @@ export function OrchestrationPage({ currentAgentId, agents, onSelectAgent, onCre
             </div>
             <PipelineCanvas steps={pipelineSteps} />
           </section>
-          <aside className="orchestration-aside">
+          <aside className="orchestration-aside block">
             <section className="orchestration-aside-section">
               <div className="aside-title">路由与约束</div>
               <dl>
@@ -323,13 +367,14 @@ export function OrchestrationPage({ currentAgentId, agents, onSelectAgent, onCre
                 ) : recentRuns.map(run => (
                   <div key={run.id} className="dispatch-log-row">
                     <span className={`dispatch-status ${String(run.status).toLowerCase()}`} />
-                    <span><strong>{shortId(run.input || "Run")}</strong><small>{formatDate(run.startedAt)} · {run.status}</small></span>
+                    <span><strong>{shortId(run.input || "运行")}</strong><small>{formatDate(run.startedAt)} · {runStatusLabel(run.status)}</small></span>
                   </div>
                 ))}
               </div>
             </section>
           </aside>
         </div>
+        </>
       )}
     </div>
   );

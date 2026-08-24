@@ -91,9 +91,21 @@ export interface RunActivity {
   data: Record<string, unknown>;
 }
 
+export interface RuntimeTextItem {
+  runId: string;
+  scopeId: string;
+  itemId: string;
+  partId: string;
+  phase: string;
+  kind: "message" | "thinking";
+  text: string;
+  completed: boolean;
+}
+
 export interface RunActivityProjection {
   reasoning: string;
   output: string;
+  textItems: RuntimeTextItem[];
   activities: RunActivity[];
 }
 
@@ -531,22 +543,69 @@ function responseItemActivity(item: Record<string, unknown>, done: boolean): Run
   };
 }
 
+function textItemKey(data: Record<string, unknown>): string {
+  return [
+    String(data.runId || ""),
+    String(data.scopeId || ""),
+    String(data.itemId || ""),
+    String(data.partId || ""),
+  ].join("/");
+}
+
+function outputRefsFrom(event: RunEvent): Array<Record<string, unknown>> {
+  const runtimeEvent = recordOf(event.data?.runtimeEvent);
+  const raw = runtimeEvent.output_refs ?? runtimeEvent.outputRefs;
+  return Array.isArray(raw) ? raw.map(recordOf) : [];
+}
+
 export function projectRunActivities(events: RunEvent[]): RunActivityProjection {
-  let reasoning = "";
-  let output = "";
+  const textItems: RuntimeTextItem[] = [];
+  const textByKey = new Map<string, number>();
   const activities: RunActivity[] = [];
   const byKey = new Map<string, number>();
+  let terminalOutputRefs: Array<Record<string, unknown>> | null = null;
 
   for (const event of events) {
     const data = event.data || {};
-    if (event.type === "thinking.delta" || event.type === "thinking.completed") {
+    const isThinking = event.type === "thinking.delta" || event.type === "thinking.completed";
+    const isMessage = event.type === "message.delta" || event.type === "message.completed";
+    if (isThinking || isMessage) {
+      const kind: RuntimeTextItem["kind"] = isThinking ? "thinking" : "message";
+      const completed = event.type.endsWith(".completed");
+      const operation = completed ? "complete" : String(data.operation || "append");
       const text = String(data.text || data.delta || "");
-      reasoning = event.type === "thinking.completed" && text ? text : reasoning + text;
+      const key = `${kind}:${textItemKey(data)}`;
+      const existingIndex = textByKey.get(key);
+      const runtimeEvent = recordOf(data.runtimeEvent);
+      const phase = String(data.phase || runtimeEvent.phase || "");
+      if (existingIndex === undefined) {
+        textByKey.set(key, textItems.length);
+        textItems.push({
+          runId: String(data.runId || ""),
+          scopeId: String(data.scopeId || ""),
+          itemId: String(data.itemId || ""),
+          partId: String(data.partId || ""),
+          phase,
+          kind,
+          text,
+          completed,
+        });
+      } else {
+        const previous = textItems[existingIndex];
+        const nextText = operation === "append" ? previous.text + text : text || previous.text;
+        textItems[existingIndex] = {
+          ...previous,
+          phase: previous.phase || phase,
+          text: nextText,
+          completed: completed || previous.completed,
+        };
+      }
       continue;
     }
-    if (event.type === "message.delta" || event.type === "message.completed") {
-      const text = String(data.text || data.delta || "");
-      output = event.type === "message.completed" && text ? text : output + text;
+
+    if (["run.completed", "run.failed", "run.interrupted", "run.cancelled", "run.canceled"].includes(event.type)) {
+      const refs = outputRefsFrom(event);
+      if (refs.length) terminalOutputRefs = refs;
       continue;
     }
 
@@ -590,7 +649,25 @@ export function projectRunActivities(events: RunEvent[]): RunActivityProjection 
     }
   }
 
-  return { reasoning, output, activities };
+  const messageItems = textItems.filter(item => item.kind === "message");
+  const thinkingItems = textItems.filter(item => item.kind === "thinking");
+  const reasoning = thinkingItems.map(item => item.text).join("");
+
+  let output: string;
+  if (terminalOutputRefs && terminalOutputRefs.length) {
+    const byIdentity = new Map<string, RuntimeTextItem>();
+    for (const item of messageItems) byIdentity.set(`${item.scopeId}/${item.itemId}`, item);
+    output = terminalOutputRefs
+      .map(ref => byIdentity.get(`${String(ref.scope_id ?? ref.scopeId ?? "")}/${String(ref.item_id ?? ref.itemId ?? "")}`))
+      .filter((item): item is RuntimeTextItem => Boolean(item))
+      .map(item => item.text)
+      .join("\n\n");
+  } else {
+    const completed = messageItems.filter(item => item.completed);
+    output = (completed.length ? completed : messageItems).map(item => item.text).join("");
+  }
+
+  return { reasoning, output, textItems, activities };
 }
 
 function tokenSummary(data: Record<string, unknown>): string {
@@ -741,4 +818,329 @@ export function projectRunInspectorTimeline(events: RunEvent[]): RunInspectorTim
     }
   }
   return timeline;
+}
+
+// ---------------------------------------------------------------------------
+// agent-kernel/v1 contracts (digest 69771d8d…)
+//
+// Hand-written from contracts/agent-kernel/v1/*.schema.json and kept in sync
+// with @kingsoftcloud/ksadk-web's decoder (src/types/agent-control.ts).
+// Studio cannot depend on the npm package yet, so only the contract types and
+// strict decoders live here; stream reducers stay in chatProtocol.ts and are
+// never duplicated from ksadk-web.
+// ---------------------------------------------------------------------------
+
+export class ContractMismatchError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ContractMismatchError";
+  }
+}
+
+export type AgentControlCommandType =
+  | "enqueue" | "steer" | "inject" | "interrupt"
+  | "pause" | "resume" | "submit_interaction";
+
+export type AgentControlReceiptStatus =
+  | "accepted" | "duplicate" | "rejected" | "unsupported"
+  | "queue_full" | "persistence_uncertain";
+
+export interface AgentControlError {
+  code: string;
+  message: string;
+  retryable: boolean;
+  details?: Record<string, unknown>;
+}
+
+export interface AgentControlReceipt {
+  schema_version: 1;
+  command_id: string;
+  status: AgentControlReceiptStatus;
+  message_id?: string | null;
+  run_id?: string | null;
+  accepted_seq?: number | null;
+  error?: AgentControlError | null;
+  /** Unknown optional fields kept verbatim for forward compatibility. */
+  extensions: Record<string, unknown>;
+}
+
+const RECEIPT_STATUSES: ReadonlySet<string> = new Set([
+  "accepted", "duplicate", "rejected", "unsupported",
+  "queue_full", "persistence_uncertain",
+]);
+
+const RECEIPT_KNOWN_KEYS: ReadonlySet<string> = new Set([
+  "schema_version", "command_id", "status", "message_id", "run_id",
+  "accepted_seq", "error",
+]);
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function decodeControlError(raw: unknown): AgentControlError {
+  const value = asRecord(raw);
+  if (
+    !value
+    || typeof value.code !== "string" || !value.code
+    || typeof value.message !== "string"
+    || typeof value.retryable !== "boolean"
+  ) {
+    throw new ContractMismatchError("AgentControlReceipt/v1 mismatch: malformed control error");
+  }
+  const details = asRecord(value.details) || undefined;
+  return {
+    code: value.code,
+    message: value.message,
+    retryable: value.retryable,
+    ...(details ? { details } : {}),
+  };
+}
+
+/** Strict decoder for AgentControlReceipt/v1; unknown optional fields go to extensions. */
+export function decodeReceipt(raw: unknown): AgentControlReceipt {
+  const value = asRecord(raw);
+  if (!value) {
+    throw new ContractMismatchError("AgentControlReceipt/v1 mismatch: not an object");
+  }
+  if (value.schema_version !== 1) {
+    throw new ContractMismatchError("AgentControlReceipt/v1 mismatch: schema_version must be 1");
+  }
+  if (typeof value.command_id !== "string" || !value.command_id) {
+    throw new ContractMismatchError("AgentControlReceipt/v1 mismatch: command_id required");
+  }
+  if (typeof value.status !== "string" || !RECEIPT_STATUSES.has(value.status)) {
+    throw new ContractMismatchError("AgentControlReceipt/v1 mismatch: unknown status");
+  }
+  const status = value.status as AgentControlReceiptStatus;
+  if (
+    (status === "rejected" || status === "unsupported"
+      || status === "queue_full" || status === "persistence_uncertain")
+    && value.error == null
+  ) {
+    throw new ContractMismatchError(
+      `AgentControlReceipt/v1 mismatch: status ${status} requires error`,
+    );
+  }
+  const extensions: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (!RECEIPT_KNOWN_KEYS.has(key)) {
+      extensions[key] = entry;
+    }
+  }
+  return {
+    schema_version: 1,
+    command_id: value.command_id,
+    status,
+    message_id: (value.message_id as string | null) ?? null,
+    run_id: (value.run_id as string | null) ?? null,
+    accepted_seq: (value.accepted_seq as number | null) ?? null,
+    error: value.error == null ? null : decodeControlError(value.error),
+    extensions,
+  };
+}
+
+export interface RuntimeCapability {
+  supported: boolean;
+  mode: "native" | "emulated" | "unavailable";
+  reason?: string | null;
+}
+
+export interface RuntimeCapabilityMatrix {
+  schema_version: 1;
+  cancel: RuntimeCapability;
+  pause: RuntimeCapability;
+  resume: RuntimeCapability;
+  submit_interaction: RuntimeCapability;
+  attach: RuntimeCapability;
+  steer: RuntimeCapability;
+  inject: RuntimeCapability;
+  checkpoint: RuntimeCapability;
+  durable_restore: RuntimeCapability;
+  goal?: RuntimeCapability | null;
+  loop?: RuntimeCapability | null;
+  plan?: RuntimeCapability | null;
+}
+
+const CAPABILITY_KEYS = [
+  "cancel", "pause", "resume", "submit_interaction", "attach",
+  "steer", "inject", "checkpoint", "durable_restore",
+] as const;
+
+const EXECUTION_MODE_KEYS = ["goal", "loop", "plan"] as const;
+
+function decodeRuntimeCapability(raw: unknown, path: string): RuntimeCapability {
+  const capability = asRecord(raw);
+  if (
+    !capability
+    || typeof capability.supported !== "boolean"
+    || (capability.mode !== "native" && capability.mode !== "emulated" && capability.mode !== "unavailable")
+  ) {
+    throw new ContractMismatchError(`RuntimeCapabilityMatrix/v1 mismatch at ${path}`);
+  }
+  if (!capability.supported && (capability.mode !== "unavailable" || typeof capability.reason !== "string" || !capability.reason)) {
+    throw new ContractMismatchError(
+      `RuntimeCapabilityMatrix/v1 mismatch at ${path}: unsupported capability requires mode=unavailable and reason`,
+    );
+  }
+  return {
+    supported: capability.supported,
+    mode: capability.mode,
+    reason: (capability.reason as string | null) ?? null,
+  };
+}
+
+/** Strict decoder for RuntimeCapabilityMatrix/v1. */
+export function decodeCapabilityMatrix(raw: unknown): RuntimeCapabilityMatrix {
+  const value = asRecord(raw);
+  if (!value || value.schema_version !== 1) {
+    throw new ContractMismatchError("RuntimeCapabilityMatrix/v1 mismatch: schema_version must be 1");
+  }
+  const matrix = { schema_version: 1 as const } as RuntimeCapabilityMatrix;
+  for (const key of CAPABILITY_KEYS) {
+    matrix[key] = decodeRuntimeCapability(value[key], key);
+  }
+  for (const key of EXECUTION_MODE_KEYS) {
+    if (value[key] !== undefined && value[key] !== null) {
+      matrix[key] = decodeRuntimeCapability(value[key], key);
+    }
+  }
+  return matrix;
+}
+
+export interface SessionEventEnvelope {
+  schema_version: 1;
+  event_id: string;
+  session_id: string;
+  seq: number;
+  timestamp: string;
+  family: string;
+  family_version: number;
+  event_type: string;
+  payload: Record<string, unknown>;
+  run_id?: string | null;
+  extensions: Record<string, unknown>;
+}
+
+const ENVELOPE_KNOWN_KEYS: ReadonlySet<string> = new Set([
+  "schema_version", "event_id", "session_id", "seq", "timestamp",
+  "family", "family_version", "event_type", "payload", "run_id",
+  "causation_id", "correlation_id", "actor_ref",
+]);
+
+const KNOWN_FAMILIES: ReadonlyMap<string, number> = new Map([
+  ["control", 1],
+  ["runtime", 2],
+]);
+
+/**
+ * Decode a SessionEventEnvelope/v1. Unknown families decode successfully so
+ * the session cursor can still advance; structural violations fail.
+ */
+export function decodeSessionEventEnvelope(
+  raw: unknown,
+): { ok: true; value: SessionEventEnvelope } | { ok: false; error: ContractMismatchError } {
+  const value = asRecord(raw);
+  const fail = (message: string) => ({
+    ok: false as const,
+    error: new ContractMismatchError(message),
+  });
+  if (!value || value.schema_version !== 1) {
+    return fail("SessionEventEnvelope/v1 mismatch: schema_version must be 1");
+  }
+  if (
+    typeof value.event_id !== "string" || !value.event_id
+    || typeof value.session_id !== "string" || !value.session_id
+    || typeof value.timestamp !== "string" || !value.timestamp
+    || typeof value.event_type !== "string" || !value.event_type
+    || !asRecord(value.payload)
+  ) {
+    return fail("SessionEventEnvelope/v1 mismatch: required field missing");
+  }
+  if (typeof value.seq !== "number" || !Number.isInteger(value.seq) || value.seq < 0) {
+    return fail("SessionEventEnvelope/v1 mismatch: seq must be a non-negative integer");
+  }
+  if (typeof value.family !== "string" || !value.family
+    || typeof value.family_version !== "number"
+    || !Number.isInteger(value.family_version) || value.family_version < 1
+  ) {
+    return fail("SessionEventEnvelope/v1 mismatch: family/family_version invalid");
+  }
+  const expectedVersion = KNOWN_FAMILIES.get(value.family);
+  if (expectedVersion !== undefined && value.family_version !== expectedVersion) {
+    return fail(`SessionEventEnvelope/v1 mismatch: family ${value.family} requires family_version ${expectedVersion}`);
+  }
+  const extensions: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (!ENVELOPE_KNOWN_KEYS.has(key)) {
+      extensions[key] = entry;
+    }
+  }
+  return {
+    ok: true,
+    value: {
+      schema_version: 1,
+      event_id: value.event_id,
+      session_id: value.session_id,
+      seq: value.seq,
+      timestamp: value.timestamp,
+      family: value.family,
+      family_version: value.family_version,
+      event_type: value.event_type,
+      payload: asRecord(value.payload)!,
+      run_id: (value.run_id as string | null) ?? null,
+      extensions,
+    },
+  };
+}
+
+/** Two events sharing a seq but differing in content are a protocol error. */
+export class SessionEventConflictError extends Error {
+  constructor(public readonly seq: number) {
+    super(`Session event seq ${seq} was received twice with conflicting content`);
+    this.name = "SessionEventConflictError";
+  }
+}
+
+const DISPLAYABLE_FAMILIES: ReadonlySet<string> = new Set(["runtime"]);
+
+/**
+ * Unified session cursor: dedupes/orders strictly by the Session seq.
+ * Responses/AG-UI/A2A internal event ids are never used as a reconnect
+ * cursor; unknown families advance the cursor but are not displayed.
+ */
+export class SessionEventCursor {
+  private eventsBySeq = new Map<number, SessionEventEnvelope>();
+  private lastSeqValue = 0;
+
+  accept(raw: unknown): void {
+    const decoded = decodeSessionEventEnvelope(raw);
+    if (!decoded.ok) throw decoded.error;
+    const incoming = decoded.value;
+    const existing = this.eventsBySeq.get(incoming.seq);
+    if (existing) {
+      if (JSON.stringify(existing) !== JSON.stringify(incoming)) {
+        throw new SessionEventConflictError(incoming.seq);
+      }
+      return;
+    }
+    this.eventsBySeq.set(incoming.seq, incoming);
+    this.lastSeqValue = Math.max(this.lastSeqValue, incoming.seq);
+  }
+
+  get lastSeq(): number {
+    return this.lastSeqValue;
+  }
+
+  reconnectAfterSeq(): number {
+    return this.lastSeqValue;
+  }
+
+  displayableEvents(): SessionEventEnvelope[] {
+    return [...this.eventsBySeq.values()]
+      .filter(event => DISPLAYABLE_FAMILIES.has(event.family))
+      .sort((left, right) => left.seq - right.seq);
+  }
 }

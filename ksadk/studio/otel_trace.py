@@ -149,6 +149,270 @@ def _enum_string(value: Any) -> str:
     return str(getattr(value, "value", value))
 
 
+def _token_value(attributes: dict[str, Any], *keys: str) -> int | None:
+    """Read one non-negative token counter from known OTLP attribute names."""
+
+    for key in keys:
+        value = attributes.get(key)
+        if value is None or isinstance(value, bool):
+            continue
+        try:
+            normalized = int(value)
+        except (TypeError, ValueError):
+            continue
+        if normalized >= 0:
+            return normalized
+    return None
+
+
+def _usage_from_attributes(attributes: dict[str, Any]) -> dict[str, Any]:
+    """Normalize AgentKit and standard GenAI usage without trusting a side flag."""
+
+    input_tokens = _token_value(
+        attributes,
+        "gen_ai.usage.input_tokens",
+        "agentkit.usage.input_tokens",
+    )
+    output_tokens = _token_value(
+        attributes,
+        "gen_ai.usage.output_tokens",
+        "agentkit.usage.output_tokens",
+    )
+    total_tokens = _token_value(
+        attributes,
+        "agentkit.usage.total_tokens",
+        "gen_ai.usage.total_tokens",
+    )
+    cached_input_tokens = _token_value(
+        attributes,
+        "gen_ai.usage.cache_read.input_tokens",
+        "gen_ai.usage.cached_input_tokens",
+        "llm.usage.cache_read.input_tokens",
+        "agentkit.usage.cached_input_tokens",
+    )
+    reasoning_output_tokens = _token_value(
+        attributes,
+        "gen_ai.usage.reasoning.output_tokens",
+        "gen_ai.usage.reasoning_tokens",
+        "gen_ai.usage.reasoning_output_tokens",
+        "llm.usage.reasoning_tokens",
+        "agentkit.usage.reasoning_output_tokens",
+    )
+    if total_tokens is None and input_tokens is not None and output_tokens is not None:
+        total_tokens = input_tokens + output_tokens
+    reported = any(
+        value is not None
+        for value in (
+            input_tokens,
+            output_tokens,
+            total_tokens,
+            cached_input_tokens,
+            reasoning_output_tokens,
+        )
+    )
+    source = attributes.get("agentkit.usage.source")
+    if not source and reported:
+        source = "gen_ai.usage"
+    return {
+        "inputTokens": input_tokens,
+        "outputTokens": output_tokens,
+        "totalTokens": total_tokens,
+        "cachedInputTokens": cached_input_tokens,
+        "reasoningOutputTokens": reasoning_output_tokens,
+        "usageCompleteness": {
+            "inputTokens": input_tokens is not None,
+            "outputTokens": output_tokens is not None,
+            "totalTokens": total_tokens is not None,
+            "cachedInputTokens": cached_input_tokens is not None,
+            "reasoningOutputTokens": reasoning_output_tokens is not None,
+        },
+        "usageReported": reported,
+        "usageSource": source,
+    }
+
+
+def _aggregate_span_usage(spans: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    """Aggregate billing spans and collapse only exact compatibility wrappers."""
+
+    span_list = list(spans)
+    usage_by_id: dict[str, dict[str, Any]] = {}
+    children_by_parent: dict[str, list[str]] = {}
+    parent_by_id: dict[str, str] = {}
+    anonymous_usages: list[dict[str, Any]] = []
+    for span in span_list:
+        span_id = str(span.get("spanId") or "")
+        parent_id = str(span.get("parentSpanId") or "")
+        usage = _usage_from_attributes(_decoded_attributes(span.get("attributes", [])))
+        if span_id:
+            usage_by_id[span_id] = usage
+            parent_by_id[span_id] = parent_id
+            if parent_id:
+                children_by_parent.setdefault(parent_id, []).append(span_id)
+        elif usage["usageReported"]:
+            anonymous_usages.append(usage)
+
+    usage_fields = (
+        "inputTokens",
+        "outputTokens",
+        "totalTokens",
+        "cachedInputTokens",
+        "reasoningOutputTokens",
+    )
+
+    def empty_aggregate() -> dict[str, Any]:
+        return {
+            **{key: None for key in usage_fields},
+            "usageCompleteness": {key: False for key in usage_fields},
+            "billingSpanCount": 0,
+            "usageReported": False,
+            "usageSource": None,
+        }
+
+    def billed_usage(usage: dict[str, Any]) -> dict[str, Any]:
+        return {
+            **{key: usage[key] for key in usage_fields},
+            "usageCompleteness": dict(usage["usageCompleteness"]),
+            "billingSpanCount": 1,
+            "usageReported": True,
+            "usageSource": usage["usageSource"],
+        }
+
+    def combine(parts: Iterable[dict[str, Any]]) -> dict[str, Any]:
+        billed_parts = [part for part in parts if part["billingSpanCount"] > 0]
+        if not billed_parts:
+            return empty_aggregate()
+        aggregate = empty_aggregate()
+        aggregate["billingSpanCount"] = sum(part["billingSpanCount"] for part in billed_parts)
+        aggregate["usageReported"] = True
+        aggregate["usageSource"] = next(
+            (part["usageSource"] for part in billed_parts if part["usageSource"]),
+            "gen_ai.usage",
+        )
+        for key in usage_fields:
+            values = [part[key] for part in billed_parts if part[key] is not None]
+            aggregate[key] = sum(values) if values else None
+            aggregate["usageCompleteness"][key] = all(
+                part["usageCompleteness"][key] for part in billed_parts
+            )
+        return aggregate
+
+    def is_compatibility_wrapper(
+        own_usage: dict[str, Any], descendant_usage: dict[str, Any]
+    ) -> bool:
+        if descendant_usage["billingSpanCount"] == 0:
+            return False
+        if own_usage["inputTokens"] is None or own_usage["outputTokens"] is None:
+            return False
+        return all(
+            descendant_usage["usageCompleteness"][key] and descendant_usage[key] == own_usage[key]
+            for key in ("inputTokens", "outputTokens")
+        ) and all(
+            own_usage[key] is None
+            or (
+                descendant_usage["usageCompleteness"][key]
+                and descendant_usage[key] == own_usage[key]
+            )
+            for key in ("inputTokens", "outputTokens", "totalTokens")
+        )
+
+    memo: dict[str, dict[str, Any]] = {}
+
+    def aggregate_subtree(span_id: str, visiting: set[str] | None = None) -> dict[str, Any]:
+        if span_id in memo:
+            return memo[span_id]
+        active = set() if visiting is None else visiting
+        if span_id in active:
+            return empty_aggregate()
+        active.add(span_id)
+        descendants = combine(
+            aggregate_subtree(child_id, active) for child_id in children_by_parent.get(span_id, [])
+        )
+        active.remove(span_id)
+        own_usage = usage_by_id[span_id]
+        if not own_usage["usageReported"]:
+            result = descendants
+        elif is_compatibility_wrapper(own_usage, descendants):
+            result = descendants
+            for key in usage_fields:
+                if own_usage[key] is not None:
+                    result[key] = own_usage[key]
+                    result["usageCompleteness"][key] = True
+        else:
+            result = combine((billed_usage(own_usage), descendants))
+        memo[span_id] = result
+        return result
+
+    roots = [
+        span_id
+        for span_id in usage_by_id
+        if not parent_by_id[span_id] or parent_by_id[span_id] not in usage_by_id
+    ]
+    aggregate = combine(aggregate_subtree(span_id) for span_id in roots)
+    for span_id in usage_by_id:
+        if span_id not in memo:
+            aggregate = combine((aggregate, aggregate_subtree(span_id)))
+    aggregate = combine((aggregate, *(billed_usage(usage) for usage in anonymous_usages)))
+    if aggregate["billingSpanCount"] == 0:
+        return _usage_from_attributes({})
+    if not aggregate["usageCompleteness"]["totalTokens"]:
+        aggregate["totalTokens"] = None
+    aggregate.pop("billingSpanCount", None)
+    return aggregate
+
+
+def _merge_usage(primary: dict[str, Any], fallback: dict[str, Any]) -> dict[str, Any]:
+    """Keep explicit root counters and fill only absent fields from leaf usage."""
+
+    merged: dict[str, Any] = {
+        key: primary[key] if primary[key] is not None else fallback[key]
+        for key in (
+            "inputTokens",
+            "outputTokens",
+            "cachedInputTokens",
+            "reasoningOutputTokens",
+        )
+    }
+    completeness = {
+        key: (
+            primary["usageCompleteness"][key]
+            if primary[key] is not None
+            else fallback["usageCompleteness"][key]
+        )
+        for key in (
+            "inputTokens",
+            "outputTokens",
+            "cachedInputTokens",
+            "reasoningOutputTokens",
+        )
+    }
+    if primary["totalTokens"] is not None:
+        merged["totalTokens"] = primary["totalTokens"]
+        completeness["totalTokens"] = primary["usageCompleteness"]["totalTokens"]
+    elif (
+        merged["inputTokens"] is not None
+        and merged["outputTokens"] is not None
+        and completeness["inputTokens"]
+        and completeness["outputTokens"]
+    ):
+        merged["totalTokens"] = merged["inputTokens"] + merged["outputTokens"]
+        completeness["totalTokens"] = True
+    elif primary["inputTokens"] is None and primary["outputTokens"] is None:
+        merged["totalTokens"] = (
+            fallback["totalTokens"] if fallback["usageCompleteness"]["totalTokens"] else None
+        )
+        completeness["totalTokens"] = fallback["usageCompleteness"]["totalTokens"]
+    else:
+        merged["totalTokens"] = None
+        completeness["totalTokens"] = False
+    reported = primary["usageReported"] or fallback["usageReported"]
+    return {
+        **merged,
+        "usageCompleteness": completeness,
+        "usageReported": reported,
+        "usageSource": primary["usageSource"] or fallback["usageSource"],
+    }
+
+
 class OtlpTraceStore:
     """Persist one canonical OTLP JSON document per local Trace."""
 
@@ -188,37 +452,15 @@ class OtlpTraceStore:
         root_attributes = _decoded_attributes(root.get("attributes", []))
         canonical = root["traceId"]
         duration = root_attributes.get("agentkit.duration.ms")
-        usage_reported = bool(root_attributes.get("agentkit.usage.reported", False))
+        root_usage = _usage_from_attributes(root_attributes)
+        leaf_usage = _aggregate_span_usage(
+            span for span in spans if span.get("spanId") != root.get("spanId")
+        )
+        usage = _merge_usage(root_usage, leaf_usage)
         metrics = {
             "durationMs": int(duration) if duration is not None else None,
             "durationSource": root_attributes.get("agentkit.duration.source"),
-            "inputTokens": (
-                int(root_attributes["gen_ai.usage.input_tokens"])
-                if usage_reported and "gen_ai.usage.input_tokens" in root_attributes
-                else None
-            ),
-            "outputTokens": (
-                int(root_attributes["gen_ai.usage.output_tokens"])
-                if usage_reported and "gen_ai.usage.output_tokens" in root_attributes
-                else None
-            ),
-            "totalTokens": (
-                int(root_attributes["agentkit.usage.total_tokens"])
-                if usage_reported and "agentkit.usage.total_tokens" in root_attributes
-                else None
-            ),
-            "cachedInputTokens": (
-                int(root_attributes.get("gen_ai.usage.cached_input_tokens", 0))
-                if usage_reported
-                else None
-            ),
-            "reasoningOutputTokens": (
-                int(root_attributes.get("gen_ai.usage.reasoning_tokens", 0))
-                if usage_reported
-                else None
-            ),
-            "usageReported": usage_reported,
-            "usageSource": root_attributes.get("agentkit.usage.source"),
+            **usage,
         }
         first_resource = (raw.get("resourceSpans") or [{}])[0]
         first_scope = (first_resource.get("scopeSpans") or [{}])[0]
@@ -343,6 +585,7 @@ class OtlpTraceStore:
                     "outputTokens": metrics["outputTokens"],
                     "totalTokens": metrics["totalTokens"],
                     "usageReported": metrics["usageReported"],
+                    "usageCompleteness": metrics["usageCompleteness"],
                     "spanCount": len(view["spans"]),
                     "target": view["target"],
                 }
@@ -451,11 +694,13 @@ class OtlpTraceStore:
         root_end = (
             root_start + record.duration_ms * 1_000_000
             if record.duration_ms is not None
-            else _unix_nano(record.completed_at)
-            if record.completed_at is not None
-            else _unix_nano(events[-1].created_at)
-            if events
-            else root_start
+            else (
+                _unix_nano(record.completed_at)
+                if record.completed_at is not None
+                else _unix_nano(events[-1].created_at)
+                if events
+                else root_start
+            )
         )
         run_status = _enum_string(record.status)
         root_attributes: dict[str, Any] = {
@@ -546,15 +791,76 @@ class OtlpTraceStore:
             "tool.requested",
             "tool.completed",
         }
-        return [
-            {
-                "timeUnixNano": str(_unix_nano(event.created_at)),
-                "name": event.type,
-                "attributes": _attributes(_safe_event_attributes(event.data)),
-            }
-            for event in events
-            if event.type not in excluded
-        ]
+        content_families = {
+            "thinking.delta": "thinking",
+            "thinking.completed": "thinking",
+            "message.delta": "message",
+            "message.completed": "message",
+        }
+        projected: list[dict[str, Any]] = []
+        content_groups: dict[tuple[str, str, str, str], list[RunEvent]] = {}
+        current_turn = ""
+        current_step = ""
+
+        for event in events:
+            runtime_event = event.data.get("runtimeEvent")
+            correlation = runtime_event if isinstance(runtime_event, dict) else {}
+            turn_id = str(correlation.get("turn_id") or "")
+            step_id = str(correlation.get("step_id") or "")
+            if turn_id:
+                current_turn = turn_id
+            if step_id and event.type in {"step.started", "model.call.begin"}:
+                current_step = step_id
+
+            family = content_families.get(event.type)
+            if family:
+                key = (
+                    event.run_id,
+                    turn_id or current_turn,
+                    step_id or current_step,
+                    family,
+                )
+                content_groups.setdefault(key, []).append(event)
+                continue
+            if event.type in excluded:
+                continue
+            projected.append(
+                {
+                    "timeUnixNano": str(_unix_nano(event.created_at)),
+                    "name": event.type,
+                    "attributes": _attributes(_safe_event_attributes(event.data)),
+                }
+            )
+
+        for grouped in content_groups.values():
+            completed = next(
+                (event for event in reversed(grouped) if event.type.endswith(".completed")),
+                None,
+            )
+            source = completed or grouped[-1]
+            completed_text = source.data.get("text") if completed is not None else None
+            text = (
+                completed_text
+                if isinstance(completed_text, str) and completed_text
+                else "".join(
+                    str(event.data.get("text") or "")
+                    for event in grouped
+                    if event.type.endswith(".delta")
+                )
+            )
+            data = dict(source.data)
+            data["text"] = text
+            data["delta_count"] = sum(event.type.endswith(".delta") for event in grouped)
+            projected.append(
+                {
+                    "timeUnixNano": str(_unix_nano(source.created_at)),
+                    "name": source.type,
+                    "attributes": _attributes(_safe_event_attributes(data)),
+                }
+            )
+
+        projected.sort(key=lambda event: int(event["timeUnixNano"]))
+        return projected
 
     def _model_spans(
         self, trace_id: str, root_id: str, events: list[RunEvent], root_end: int

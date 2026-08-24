@@ -4,8 +4,10 @@ LangGraphRunner - LangGraph 框架运行时
 直接透传 LangGraph 原生能力，最小化封装
 """
 
+from __future__ import annotations
+
+import asyncio
 import base64
-import inspect
 import os
 import re
 import uuid
@@ -14,14 +16,13 @@ from typing import Any, AsyncIterator, Dict, Mapping
 from langgraph.types import Command
 
 from ksadk.conversations.attachments import classify_attachment_kind, read_attachment_uri_bytes
-from ksadk.conversations.reasoning_markup import ReasoningMarkupParser, strip_reasoning_markup
+from ksadk.runners._langgraph_runner_streams import _LangGraphStreamMixin
 from ksadk.runners.base_runner import BaseRunner
-from ksadk.runners.usage_accumulator import accumulate_usage
 from ksadk.runners.utils import load_agent_module
 from ksadk.sessions.continuity import LangGraphSessionAdapter
 
 
-class LangGraphRunner(BaseRunner):
+class LangGraphRunner(_LangGraphStreamMixin, BaseRunner):
     """LangGraph 框架运行时
 
     透传原生 LangGraph 功能，支持任意 State 格式
@@ -30,6 +31,14 @@ class LangGraphRunner(BaseRunner):
     # ToolGateway approvals can arise after an otherwise terminal tool call;
     # this runner opts into the runtime's semantic follow-up continuation.
     supports_gateway_approval_semantic_resume = True
+
+    def __init__(self, detection_result: Any, project_dir: str):
+        super().__init__(detection_result, project_dir)
+        self._managed_checkpoint_lock = asyncio.Lock()
+        self._managed_checkpoint_prepared = False
+        self._managed_checkpoint_error: tuple[str, str] | None = None
+        self._managed_checkpoint_pool: Any = None
+        self._managed_checkpoint_namespace = ""
 
     def load_agent(self) -> None:
         self._load_agent(force_reload=False)
@@ -53,7 +62,13 @@ class LangGraphRunner(BaseRunner):
         normalized = self.sync_process_model_env(model)
         if normalized is None or self._agent is None:
             return
-        if normalized == getattr(self, "_loaded_model_name", None):
+        # Studio's generated graph reads the model environment while building
+        # each model turn.  Reloading it here would discard the managed
+        # PostgreSQL checkpointer that was installed asynchronously below.
+        if (
+            normalized == getattr(self, "_loaded_model_name", None)
+            or self._managed_checkpoint_pool is not None
+        ):
             return
         self._load_agent(force_reload=True)
 
@@ -66,24 +81,23 @@ class LangGraphRunner(BaseRunner):
         if checkpointer is None:
             checkpointer = getattr(agent, "_checkpointer", None)
         if checkpointer is None:
+            error_code, error_reason = self._managed_checkpoint_error or ("", "")
             return {
                 "Supported": False,
                 "Backend": "none",
                 "Scope": "unknown",
                 "Durable": False,
                 "SharedAcrossPods": False,
-                "Reason": "LangGraph graph has no configured checkpointer",
+                "ResumeMode": "none",
+                **({"ReasonCode": error_code} if error_code else {}),
+                "Reason": error_reason or "LangGraph graph has no configured checkpointer",
             }
 
-        checkpointer_type = type(checkpointer)
-        type_name = f"{checkpointer_type.__module__}.{checkpointer_type.__name__}".lower()
-        if "memory" in type_name or "inmemory" in type_name:
-            backend = "memory"
-        elif "sqlite" in type_name:
-            backend = "sqlite"
-        elif "postgres" in type_name:
-            backend = "postgres"
-        else:
+        backend = self._checkpoint_backend_from_saver(checkpointer)
+        if backend == "unknown":
+            # Some third-party savers hide their concrete type.  Preserve the
+            # explicit legacy declaration for those cases, but never let it
+            # override a detectable in-memory saver.
             backend = str(os.getenv("KSADK_CHECKPOINT_BACKEND") or "").strip().lower()
         if backend == "local":
             backend = "sqlite"
@@ -112,17 +126,28 @@ class LangGraphRunner(BaseRunner):
             reason = "In-memory checkpoint cannot be recovered after process restart or across pods"
 
         return {
-            "Supported": True,
+            # A local saver may be useful for interactive development, but it
+            # is not a native durable-resume capability in a hosted runtime.
+            "Supported": backend not in {"memory", "inmemory", "unknown", ""},
             "Backend": backend,
             "Scope": scope,
             "Durable": durable,
             "SharedAcrossPods": shared,
-            "ResumeMode": "time_travel",
+            "ResumeMode": "time_travel" if durable else "none",
+            **(
+                {"ReasonCode": "CHECKPOINTER_NOT_DURABLE"}
+                if backend in {"memory", "inmemory", "unknown", ""}
+                else {}
+            ),
             "Reason": reason,
         }
 
     def get_runtime_capabilities(self) -> dict[str, Any]:
         capabilities = super().get_runtime_capabilities()
+        capabilities["model_call_boundaries"] = True
+        reason_code = str(capabilities["Checkpoint"].get("ReasonCode") or "")
+        if reason_code:
+            capabilities["ResumeRun"]["ReasonCode"] = reason_code
         capabilities["SessionContinuity"] = {
             "Supported": True,
             "Type": (
@@ -133,9 +158,150 @@ class LangGraphRunner(BaseRunner):
         }
         return capabilities
 
+    @staticmethod
+    def _checkpoint_backend_from_saver(checkpointer: Any) -> str:
+        if checkpointer is None:
+            return "unknown"
+        for saver_type in type(checkpointer).__mro__:
+            qualified_name = f"{saver_type.__module__}.{saver_type.__name__}".lower()
+            if "checkpoint.postgres" in qualified_name or "postgressaver" in qualified_name:
+                return "postgres"
+            if "checkpoint.sqlite" in qualified_name or "sqlitesaver" in qualified_name:
+                return "sqlite"
+            if "checkpoint.memory" in qualified_name or saver_type.__name__.lower() in {
+                "memorysaver",
+                "inmemorysaver",
+            }:
+                return "memory"
+        return "unknown"
+
+    @staticmethod
+    def _env_flag(name: str) -> bool:
+        return str(os.getenv(name) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _resolve_checkpoint_namespace() -> str:
+        session_namespace = str(os.getenv("KSADK_SESSION_NAMESPACE") or "").strip()
+        if session_namespace:
+            return session_namespace
+        agent_id = str(
+            os.getenv("AGENTENGINE_AGENT_ID") or os.getenv("KSADK_AGENT_ID") or "default"
+        ).strip()
+        return f"agent:{agent_id}"
+
+    async def _create_managed_postgres_saver(self, dsn: str) -> tuple[Any, Any]:
+        from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+        from psycopg.rows import dict_row
+        from psycopg_pool import AsyncConnectionPool
+
+        timeout = max(0.1, float(os.getenv("KSADK_SESSION_CONNECT_TIMEOUT") or "5"))
+        pool = AsyncConnectionPool(
+            conninfo=dsn,
+            min_size=1,
+            max_size=10,
+            open=False,
+            timeout=timeout,
+            kwargs={
+                "autocommit": True,
+                "prepare_threshold": 0,
+                "row_factory": dict_row,
+            },
+        )
+        try:
+            await pool.open(wait=True, timeout=timeout)
+            saver = AsyncPostgresSaver(pool)
+            await saver.setup()
+            return saver, pool
+        except Exception:
+            await pool.close()
+            raise
+
+    async def prepare_runtime_capabilities(self) -> None:
+        """Install the managed saver before a graph can begin an interaction.
+
+        The graph module must opt into this seam by exporting
+        ``ksadk_graph_factory(*, checkpointer)``.  We never mutate a compiled
+        graph's private attributes: failed configuration remains fail-closed
+        and capability discovery honestly reports why native resume is absent.
+        """
+        if self._managed_checkpoint_prepared:
+            return
+        async with self._managed_checkpoint_lock:
+            if self._managed_checkpoint_prepared:
+                return
+
+            checkpointer = getattr(self._agent, "checkpointer", None)
+            if checkpointer is None:
+                checkpointer = getattr(self._agent, "_checkpointer", None)
+            if self._checkpoint_backend_from_saver(checkpointer) == "postgres":
+                self._managed_checkpoint_namespace = self._resolve_checkpoint_namespace()
+                self._managed_checkpoint_prepared = True
+                return
+
+            dsn = str(
+                os.getenv("KSADK_LANGGRAPH_CHECKPOINT_DSN")
+                or os.getenv("KSADK_SESSION_DSN")
+                or ""
+            ).strip()
+            if not self._env_flag("KSADK_LANGGRAPH_AUTO_CHECKPOINT") or not dsn:
+                self._managed_checkpoint_prepared = True
+                return
+
+            factory = getattr(self._module, "ksadk_graph_factory", None)
+            if not callable(factory):
+                self._managed_checkpoint_error = (
+                    "LANGGRAPH_FACTORY_REQUIRED",
+                    "LangGraph graph has no durable checkpointer; export "
+                    "ksadk_graph_factory(*, checkpointer) for managed PostgreSQL checkpoints",
+                )
+                self._managed_checkpoint_prepared = True
+                return
+
+            pool = None
+            try:
+                saver, pool = await self._create_managed_postgres_saver(dsn)
+                managed_graph = factory(checkpointer=saver)
+                if not callable(getattr(managed_graph, "invoke", None)):
+                    raise TypeError("ksadk_graph_factory must return a compiled LangGraph graph")
+                self._agent = managed_graph
+                self._managed_checkpoint_pool = pool
+                self._managed_checkpoint_namespace = self._resolve_checkpoint_namespace()
+                self._managed_checkpoint_error = None
+            except (ModuleNotFoundError, ImportError):
+                self._managed_checkpoint_error = (
+                    "DEPENDENCY_MISSING",
+                    "langgraph-checkpoint-postgres and psycopg are required "
+                    "for managed checkpoints",
+                )
+            except Exception as exc:  # noqa: BLE001
+                error_name = type(exc).__name__.lower()
+                self._managed_checkpoint_error = (
+                    "SCHEMA_PERMISSION_DENIED"
+                    if "privilege" in error_name or "permission" in error_name
+                    else "DB_UNREACHABLE",
+                    "Managed LangGraph PostgreSQL checkpointer initialization failed",
+                )
+            finally:
+                if pool is not None and self._managed_checkpoint_pool is None:
+                    try:
+                        await pool.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+                self._managed_checkpoint_prepared = True
+
+    async def close(self) -> None:
+        pool = self._managed_checkpoint_pool
+        self._managed_checkpoint_pool = None
+        if pool is not None:
+            await pool.close()
+        await super().close()
+
     def _get_config(self, session_id: str) -> dict:
         """获取运行配置"""
-        return {"configurable": {"thread_id": session_id}}
+        config = {"configurable": {"thread_id": session_id}}
+        if self._managed_checkpoint_namespace:
+            config["configurable"]["checkpoint_ns"] = self._managed_checkpoint_namespace
+        return config
 
     @staticmethod
     def _extract_langgraph_checkpoint_ref(payload: Dict[str, Any]) -> dict[str, Any]:
@@ -407,8 +573,11 @@ class LangGraphRunner(BaseRunner):
             for msg in history:
                 role = msg.get("role")
                 content = msg.get("content", "")
-                # 跳过纯文本格式的 tool_call/tool_result，避免模型学到错误格式
-                if isinstance(content, str) and content.startswith(("[tool_call]", "[tool_result]", "[approval_request]", "[approval_response]")):
+                # Runtime-owned tool/approval records are preserved in the durable
+                # transcript, but must not be taught back to LangGraph as plain text.
+                if isinstance(content, str) and content.startswith(
+                    ("[tool_call]", "[tool_result]", "[approval_request]", "[approval_response]")
+                ):
                     continue
                 if role == "user":
                     messages.append(HumanMessage(content=content))
@@ -607,6 +776,7 @@ class LangGraphRunner(BaseRunner):
         1. 简化格式: {"input": "hello"} - 自动转换为 messages
         2. 原生格式: {"messages": [...]} 或自定义 State - 直接透传
         """
+        await self.prepare_runtime_capabilities()
         payload = dict(input_data)
         force_graph_invoke = bool(payload.pop("_ksadk_force_graph_invoke", False))
         if not force_graph_invoke and hasattr(self._agent, "astream_events"):
@@ -881,432 +1051,16 @@ class LangGraphRunner(BaseRunner):
                 )
         return events
 
-    async def stream(self, input_data: Dict[str, Any]) -> AsyncIterator[Dict[str, Any]]:
-        """流式调用 LangGraph 图"""
-        payload = dict(input_data)
-        payload.pop("_ksadk_force_graph_invoke", None)
-        session_id = payload.pop("session_id", None) or str(uuid.uuid4())[:8]
-        history = payload.pop("history", [])
-        is_resume = payload.pop("resume", False)
-        is_checkpoint_resume = bool(payload.pop("checkpoint_resume", False))
-        resume_payload_provided = bool(payload.pop("resume_payload_provided", False))
-        resume_interrupt_id = str(payload.pop("resume_interrupt_id", "") or "")
-        resume_value = payload.get("input")
-        is_gateway_approval_resume = bool(
-            is_resume and self._is_gateway_approval_semantic_resume(resume_value)
-        )
-        if is_gateway_approval_resume:
-            # See ``invoke``: the graph did not suspend at a native interrupt,
-            # so use the durable transcript to run the post-tool answer turn.
-            payload["input"] = self._gateway_approval_follow_up_input()
-            resume_value = payload["input"]
-        checkpoint_ref = self._extract_langgraph_checkpoint_ref(payload)
-        native_context = self.build_native_context(payload.get("platform_context"))
-        invoke_payload = dict(payload)
-        invoke_payload["session_id"] = session_id
-        if history:
-            invoke_payload["history"] = history
-        if is_resume and not is_gateway_approval_resume:
-            invoke_payload["resume"] = True
-        if is_checkpoint_resume:
-            invoke_payload["checkpoint_resume"] = True
-            invoke_payload["resume_payload_provided"] = resume_payload_provided
-            invoke_payload["resume_interrupt_id"] = resume_interrupt_id
-
-        config = self._get_config(session_id)
-        if is_checkpoint_resume:
-            config = self._apply_checkpoint_resume_config(
-                config,
-                session_id=session_id,
-                checkpoint_ref=checkpoint_ref,
-            )
-
-        if is_checkpoint_resume:
-            state = resume_value
-        elif is_resume and not is_gateway_approval_resume:
-            # Keep the interrupt value intact for ``Command(resume=...)``;
-            # prepare-state hooks only shape fresh user turns.
-            state = resume_value
-        elif self._has_prepare_state_hook():
-            state = self._prepare_state_with_hook(
-                payload,
-                session_id,
-                history,
-                is_resume=is_gateway_approval_resume,
-            )
-        else:
-            state = self._to_state(payload, history)
-
-        accumulated_text = ""
-        accumulated_reasoning = ""
-        inline_reasoning_parser = ReasoningMarkupParser()
-        emitted_non_text_event = False
-        final_output_text = ""
-        final_output_usage: dict[str, Any] = {}
-        final_output_last_usage: dict[str, Any] = {}
-        model_run_usages: dict[str, dict[str, Any]] = {}
-        model_run_order: list[str] = []
-        stream_usage_run_keys: set[str] = set()
-        latest_stream_usage: dict[str, Any] = {}
-
-        def model_run_key(
-            event: Mapping[str, Any],
-            *,
-            fallback_key: str | None = None,
-        ) -> str:
-            raw_run_id = event.get("run_id")
-            return (
-                str(raw_run_id)
-                if raw_run_id
-                else fallback_key or f"model-event-{len(model_run_order)}"
-            )
-
-        def record_model_usage(
-            event: Mapping[str, Any],
-            usage: dict[str, Any],
-            *,
-            fallback_key: str | None = None,
-        ) -> None:
-            if not usage:
-                return
-            run_key = model_run_key(event, fallback_key=fallback_key)
-            if run_key not in model_run_usages:
-                model_run_order.append(run_key)
-            model_run_usages[run_key] = dict(usage)
-
-        def accumulated_model_usage() -> dict[str, Any]:
-            if len(model_run_order) == 1:
-                return dict(model_run_usages.get(model_run_order[0]) or {})
-            usage: dict[str, Any] = {}
-            for run_key in model_run_order:
-                usage = accumulate_usage(usage, model_run_usages.get(run_key) or {})
-            return usage
-
-        def latest_model_usage() -> dict[str, Any]:
-            for run_key in reversed(model_run_order):
-                usage = model_run_usages.get(run_key)
-                if usage:
-                    return dict(usage)
-            return {}
-
-        if is_checkpoint_resume and callable(getattr(self._agent, "astream", None)):
-            try:
-                async for chunk in self._stream_checkpoint_resume_updates(
-                    stream_input=self._checkpoint_resume_input(
-                        state,
-                        payload_provided=resume_payload_provided,
-                        interrupt_id=resume_interrupt_id,
-                    ),
-                    config=config,
-                    context=native_context,
-                ):
-                    yield chunk
-                return
-            except Exception as e:
-                yield {
-                    "type": "error",
-                    "message": str(e) or "LangGraph checkpoint resume failed",
-                    "checkpoint_id": str(checkpoint_ref.get("checkpoint_id") or ""),
-                    "exception_type": type(e).__name__,
-                }
-                return
-
-        if not hasattr(self._agent, "astream_events"):
-            result = await self.invoke(invoke_payload)
-            final_chunk = {"output": result.get("output", ""), "type": "final"}
-            usage = self._extract_usage(result)
-            if usage:
-                final_chunk["usage"] = usage
-            last_usage = self._extract_last_usage(result)
-            if last_usage:
-                final_chunk.setdefault("metadata", {})["last_usage"] = last_usage
-            yield final_chunk
-            return
-
-        try:
-            stream_input = (
-                self._checkpoint_resume_input(
-                    state,
-                    payload_provided=resume_payload_provided,
-                    interrupt_id=resume_interrupt_id,
-                )
-                if is_checkpoint_resume
-                else (
-                    Command(resume=state) if is_resume and not is_gateway_approval_resume else state
-                )
-            )
-            # stream_mode 含 "custom" 才会产生 on_custom_stream 事件(custom writer);
-            # 保留默认 "values" 以兼容既有 on_chain_end/graph_update 消费。
-            stream_kwargs = {"version": "v2", "config": config}
-            if self._callable_accepts_keyword(self._agent.astream_events, "stream_mode"):
-                stream_kwargs["stream_mode"] = ["values", "custom"]
-            if native_context and self._callable_accepts_keyword(
-                self._agent.astream_events, "context"
-            ):
-                stream_kwargs["context"] = native_context
-            async for event in self._agent.astream_events(stream_input, **stream_kwargs):
-                event_kind = event.get("event", "")
-
-                if event_kind == "on_chat_model_stream":
-                    chunk = event.get("data", {}).get("chunk")
-                    if not chunk:
-                        continue
-                    chunk_usage = self._extract_usage(chunk)
-                    if chunk_usage:
-                        # Some LangChain providers attach cumulative usage to
-                        # every stream chunk, and LangChain may then sum those
-                        # cumulative snapshots into an inflated
-                        # on_chat_model_end usage. For a concrete model run,
-                        # keep the latest stream snapshot and ignore the later
-                        # end usage for that same run_id.
-                        latest_stream_usage = dict(chunk_usage)
-                        if event.get("run_id"):
-                            run_key = model_run_key(event)
-                            stream_usage_run_keys.add(run_key)
-                            record_model_usage(event, latest_stream_usage)
-
-                    # 推理内容
-                    reasoning = getattr(chunk, "reasoning_content", None)
-                    if not reasoning and hasattr(chunk, "additional_kwargs"):
-                        reasoning = chunk.additional_kwargs.get("reasoning_content")
-
-                    if reasoning:
-                        accumulated_reasoning += reasoning
-                        yield {"delta": reasoning, "type": "thinking"}
-
-                    # 常规内容
-                    if hasattr(chunk, "content") and chunk.content:
-                        content = self._filter_tool_tags(chunk.content)
-                        if isinstance(content, str):
-                            if accumulated_reasoning and content.startswith(accumulated_reasoning):
-                                content = content[len(accumulated_reasoning) :]
-                            elif reasoning and content.startswith(reasoning):
-                                content = content[len(reasoning) :]
-                        if content:
-                            for part in inline_reasoning_parser.feed(content):
-                                if not part.text or not part.text.strip():
-                                    continue
-                                if part.kind == "thinking":
-                                    accumulated_reasoning += part.text
-                                    yield {"delta": part.text, "type": "thinking"}
-                                else:
-                                    accumulated_text += part.text
-                                    yield {"delta": part.text, "type": "text"}
-
-                elif event_kind == "on_chat_model_end":
-                    data = event.get("data") or {}
-                    output = data.get("output") if isinstance(data, Mapping) else None
-                    usage = self._extract_usage(output) or self._extract_usage(data)
-                    last_usage = self._extract_last_usage(output) or self._extract_last_usage(data)
-                    run_key = model_run_key(event)
-                    if run_key not in stream_usage_run_keys:
-                        record_model_usage(event, last_usage or usage)
-
-                elif event_kind == "on_chain_stream":
-                    # node 内 get_stream_writer() 写入的自定义数据,经 stream_mode 含
-                    # "custom" 时,astream_events 包成 on_chain_stream,chunk 为
-                    # (mode, value) tuple:("custom", value) 是 writer 透传内容,
-                    # ("values", state) 是 state 快照(忽略,终态走 on_chain_end)。
-                    # 编排方常用 custom writer 把"调远端 agent/子图"的流式增量透传出来。
-                    chunk = event.get("data", {}).get("chunk")
-                    if not (isinstance(chunk, tuple) and len(chunk) == 2 and chunk[0] == "custom"):
-                        continue
-                    data = chunk[1]
-                    if isinstance(data, str):
-                        accumulated_text += data
-                        yield {"delta": data, "type": "text"}
-                        continue
-                    if isinstance(data, Mapping):
-                        custom_type = str(data.get("type") or "text")
-                        if custom_type in ("tool_call", "tool_result"):
-                            # 结构化工具事件:透传完整 payload(tool_name/tool_args/
-                            # tool_output 等),不计入正文,供 UI 渲染工具卡片。
-                            out = {"type": custom_type}
-                            out.update({k: v for k, v in data.items() if k != "type"})
-                            yield out
-                            continue
-                        custom_delta = ""
-                        for key in ("delta", "text", "content", "output", "data"):
-                            value = data.get(key)
-                            if isinstance(value, str) and value:
-                                custom_delta = value
-                                break
-                        if not custom_delta:
-                            continue
-                        replace = bool(data.get("replace"))
-                        if custom_type == "thinking":
-                            accumulated_reasoning = (
-                                custom_delta if replace else accumulated_reasoning + custom_delta
-                            )
-                        else:
-                            accumulated_text = (
-                                custom_delta if replace else accumulated_text + custom_delta
-                            )
-                        custom_event: dict[str, Any] = {
-                            "delta": custom_delta,
-                            "type": custom_type,
-                        }
-                        if replace:
-                            custom_event["replace"] = True
-                        yield custom_event
-                        continue
-                    if data is not None:
-                        accumulated_text += str(data)
-                        yield {"delta": str(data), "type": "text"}
-
-                elif event_kind == "on_tool_start":
-                    emitted_non_text_event = True
-                    yield {
-                        "type": "tool_call",
-                        "tool_name": event.get("name", "unknown"),
-                        "tool_args": event.get("data", {}).get("input", {}),
-                        "run_id": event.get("run_id"),
-                    }
-
-                elif event_kind == "on_tool_end":
-                    emitted_non_text_event = True
-                    tool_output = event.get("data", {}).get("output", "")
-                    # LangGraph returns a ToolMessage here for normal tools.
-                    # Preserve its content instead of serializing the repr,
-                    # otherwise structured output such as A2UI envelopes becomes
-                    # unparsable. Keep the callback run_id below: it is paired
-                    # with the preceding ``on_tool_start`` event on this stream.
-                    normalized_output = getattr(tool_output, "content", tool_output)
-                    if isinstance(tool_output, Mapping) and "content" in tool_output:
-                        normalized_output = tool_output["content"]
-                    yield {
-                        "type": "tool_result",
-                        "tool_name": event.get("name", "unknown"),
-                        "tool_args": event.get("data", {}).get("input", {}),
-                        "tool_output": normalized_output,
-                        "run_id": event.get("run_id"),
-                    }
-
-                elif event_kind == "on_chain_end":
-                    output = event.get("data", {}).get("output", {})
-                    if isinstance(output, dict) and "__interrupt__" in output:
-                        emitted_non_text_event = True
-                        yield {
-                            "type": "interrupt",
-                            "interrupt_info": output["__interrupt__"],
-                            "session_id": session_id,
-                        }
-                        return
-                    extracted_output = self._extract_output(output)
-                    if extracted_output:
-                        final_output_text = strip_reasoning_markup(str(extracted_output))
-                    final_output_usage = self._extract_usage(output)
-                    final_output_last_usage = self._extract_last_usage(output)
-
-        except Exception as e:
-            if "Interrupt" in type(e).__name__:
-                yield {
-                    "type": "interrupt",
-                    "interrupt_info": self._get_interrupt_info(self._agent.get_state(config)),
-                    "session_id": session_id,
-                }
-                return
-            raise
-
-        # goal-18(ksadk-web 人机交互):图因审批门(HITL)在流式中静默暂停时,
-        # 这里把审批详情(action_requests)作为 approval 事件冒出,供 UI 渲染审批卡。
-        # 此前流式路径只在 checkpoint 标 resumable,UI 拿不到"该批哪个工具/什么参数/允许哪些决定"。
-        # 注:get_state 在部分 agent 上是 async,统一按 awaitable 处理;取不到则跳过,不破坏事件流。
-        pending_approval = None
-        try:
-            _get_state = getattr(self._agent, "aget_state", None) or getattr(
-                self._agent, "get_state", None
-            )
-            if _get_state is not None:
-                _maybe_state = _get_state(config)
-                if inspect.isawaitable(_maybe_state):
-                    _maybe_state = await _maybe_state
-                pending_approval = self._get_interrupt_info(_maybe_state)
-        except Exception:
-            pending_approval = None
-        if pending_approval:
-            yield {
-                "type": "approval",
-                "interrupt_info": pending_approval,
-                "session_id": session_id,
-            }
-            metadata = await self._latest_checkpoint_metadata(config)
-            if metadata:
-                yield {"type": "checkpoint", "metadata": metadata}
-            return
-
-        for part in inline_reasoning_parser.flush():
-            if not part.text or not part.text.strip():
-                continue
-            if part.kind == "thinking":
-                accumulated_reasoning += part.text
-                yield {"delta": part.text, "type": "thinking"}
-            else:
-                accumulated_text += part.text
-                yield {"delta": part.text, "type": "text"}
-
-        if not accumulated_text:
-            if final_output_text:
-                final_chunk = {"output": final_output_text, "type": "final"}
-                usage = accumulated_model_usage() or final_output_usage or latest_stream_usage
-                last_usage = (
-                    latest_model_usage() or final_output_last_usage or latest_stream_usage or usage
-                )
-                if usage:
-                    final_chunk["usage"] = usage
-                if last_usage:
-                    final_chunk.setdefault("metadata", {})["last_usage"] = last_usage
-                yield final_chunk
-            elif not emitted_non_text_event:
-                result = await self.invoke({**invoke_payload, "_ksadk_force_graph_invoke": True})
-                fallback_chunk: dict[str, Any] = {
-                    "output": result.get("output", ""),
-                    "type": "final",
-                }
-                usage = self._extract_usage(result)
-                if usage:
-                    fallback_chunk["usage"] = usage
-                last_usage = self._extract_last_usage(result)
-                if last_usage:
-                    fallback_chunk.setdefault("metadata", {})["last_usage"] = last_usage
-                yield fallback_chunk
-                checkpoint_metadata = result.get("metadata") if isinstance(result, dict) else None
-                if isinstance(checkpoint_metadata, dict) and checkpoint_metadata.get("agentengine"):
-                    yield {"type": "checkpoint", "metadata": checkpoint_metadata}
-                    return
-        else:
-            final_chunk = {"output": accumulated_text, "type": "final"}
-            state_usage = await self._latest_state_usage(config)
-            usage = (
-                accumulated_model_usage()
-                or state_usage
-                or final_output_usage
-                or latest_stream_usage
-            )
-            if usage:
-                final_chunk["usage"] = usage
-                last_usage = (
-                    latest_model_usage()
-                    or state_usage
-                    or final_output_last_usage
-                    or latest_stream_usage
-                    or usage
-                )
-                final_chunk.setdefault("metadata", {})["last_usage"] = last_usage
-            yield final_chunk
-
-        metadata = await self._latest_checkpoint_metadata(config)
-        if metadata:
-            yield {"type": "checkpoint", "metadata": metadata}
-
     def _filter_tool_tags(self, content: str) -> str:
-        """过滤 tool_call 标签（支持尖括号和方括号格式）"""
+        """过滤完整的 XML tool_call 标签。"""
         if not isinstance(content, str):
             return content
-        # 过滤 <tool_call>...</tool_call>
         content = re.sub(r"<tool_call>.*?</tool_call>", "", content, flags=re.DOTALL)
         content = re.sub(r"</?(?:tool_call|arg_key|arg_value)>", "", content)
-        # 过滤 [tool_call]... 和 [tool_result]... 格式（整行或到下一个标记前）
-        content = re.sub(r"\[tool_call\]\[?.*?($|\[tool_result\]|\[approval)", "", content, flags=re.DOTALL)
-        content = re.sub(r"\[tool_result\]\[?.*?($|\[tool_call\]|\[approval)", "", content, flags=re.DOTALL)
         return content
+
+    async def stream(self, input_data: Dict[str, Any]) -> AsyncIterator[Dict[str, Any]]:
+        """Prepare the managed checkpoint before yielding the first event."""
+        await self.prepare_runtime_capabilities()
+        async for event in super().stream(input_data):
+            yield event

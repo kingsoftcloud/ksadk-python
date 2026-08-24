@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Awaitable, Callable, cast
@@ -20,6 +21,8 @@ from ksadk.studio.contracts import (
 from ksadk.studio.errors import StudioError, not_found
 from ksadk.studio.workspace import Workspace
 
+logger = logging.getLogger(__name__)
+
 
 class OperationManager:
     def __init__(self, workspace: Workspace) -> None:
@@ -33,7 +36,8 @@ class OperationManager:
         kind: OperationKind,
         resource_id: str,
         idempotency_key: str,
-        runner: Callable[[], Awaitable[object]],
+        metadata: dict | None = None,
+        runner: Callable[[str], Awaitable[object]],
     ) -> Operation:
         existing = self._find_by_idempotency_key(idempotency_key)
         if existing is not None:
@@ -42,6 +46,7 @@ class OperationManager:
             id=f"op_{uuid4().hex}",
             kind=kind,
             resource_id=resource_id,
+            metadata=metadata or {},
         )
         self._write(operation, [], idempotency_key)
         self.append(operation.id, "operation.queued", {"kind": kind})
@@ -57,14 +62,14 @@ class OperationManager:
     async def _run(
         self,
         operation_id: str,
-        runner: Callable[[], Awaitable[object]],
+        runner: Callable[[str], Awaitable[object]],
     ) -> None:
         operation = self.get(operation_id)
         operation.status = OperationStatus.RUNNING
         self._save_record(operation)
         self.append(operation_id, "operation.started", {})
         try:
-            result = await runner()
+            result = await runner(operation_id)
             result_id = getattr(result, "id", None)
             if result_id:
                 operation.resource_id = str(result_id)
@@ -91,12 +96,22 @@ class OperationManager:
             operation.completed_at = datetime.now(timezone.utc)
             self._save_record(operation)
             self.append(operation_id, "operation.failed", operation.error)
-        except Exception:
+        except Exception as exc:
+            # Keep the browser response generic so an exception cannot leak a
+            # credential, but retain the traceback in the local Studio log for
+            # an operator to diagnose a failed deployment.
+            logger.exception("Studio operation failed: operation_id=%s", operation_id)
             operation.status = OperationStatus.FAILED
             operation.error = {
                 "code": "INTERNAL_ERROR",
                 "message": "本地操作执行失败",
+                "exceptionType": type(exc).__name__,
             }
+            # TypeError carries only Python call-shape information and is safe
+            # to surface to the local operator.  Do not expose arbitrary
+            # exception text: it may include provider request data.
+            if isinstance(exc, TypeError):
+                operation.error["exceptionMessage"] = str(exc)
             operation.completed_at = datetime.now(timezone.utc)
             self._save_record(operation)
             self.append(operation_id, "operation.failed", operation.error)
@@ -104,6 +119,18 @@ class OperationManager:
     def get(self, operation_id: str) -> Operation:
         operation, _, _ = self._read(operation_id)
         return operation
+
+    def list(self, *, kind: OperationKind | None = None) -> list[Operation]:
+        directory = self.workspace.resolve(".agentkit/operations")
+        operations: list[Operation] = []
+        for path in directory.glob("op_*.json"):
+            try:
+                operation = self.get(path.stem)
+            except StudioError:
+                continue
+            if kind is None or operation.kind == kind:
+                operations.append(operation)
+        return sorted(operations, key=lambda item: item.created_at, reverse=True)
 
     def events(self, operation_id: str, *, after: int = 0) -> list[OperationEvent]:
         _, events, _ = self._read(operation_id)
@@ -133,7 +160,12 @@ class OperationManager:
         task = self._tasks.get(operation_id)
         if task is not None:
             task.cancel()
-        return operation
+        if operation.status == OperationStatus.QUEUED:
+            operation.status = OperationStatus.CANCELLED
+            operation.completed_at = datetime.now(timezone.utc)
+            self._save_record(operation)
+            self.append(operation_id, "operation.cancelled", {})
+        return self.get(operation_id)
 
     async def wait(self, operation_id: str, *, timeout: float = 30) -> Operation:
         deadline = asyncio.get_running_loop().time() + timeout

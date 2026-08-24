@@ -14,7 +14,7 @@ describe("agent authoring schemas", () => {
     if (!result.success) {
       expect(result.error.flatten().fieldErrors.name).toContain("请填写 Agent 名称");
       expect(result.error.flatten().fieldErrors.slug).toContain("本地标识只能包含小写字母、数字和连字符");
-      expect(result.error.flatten().fieldErrors.prompt).toContain("系统提示词至少填写 4 个字符");
+      expect(result.error.flatten().fieldErrors.prompt).toContain("Agent 目标与要求至少填写 4 个字符");
     }
   });
 

@@ -40,8 +40,8 @@ Studio source is tracked locally and its compiled output is ignored.
 # Default: pull the verified npm version
 make sync-ksadk-web-static
 
-# Pin the concrete 0.8.1 release-candidate version
-make sync-ksadk-web-static KSADK_WEB_VERSION=0.3.1
+# Pin the concrete 0.8.2 release-candidate version
+make sync-ksadk-web-static KSADK_WEB_VERSION=0.3.2
 ```
 
 <Callout type="warning" title="Do not pull GitHub latest release at wheel build time">
@@ -72,7 +72,7 @@ already synchronized `ksadk/server/static` payload.
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `KSADK_WEB_VERSION` | `0.3.1` | published npm package version; release candidates must pin a concrete version |
+| `KSADK_WEB_VERSION` | `0.3.2` | published npm package version; release candidates must pin a concrete version |
 | `KSADK_WEB_PACKAGE` | `@kingsoftcloud/ksadk-web` | npm package name |
 | `KSADK_WEB_TARBALL_NAME` | `kingsoftcloud-ksadk-web-<version>.tgz` | Tarball filename, derived from the version |
 | `KSADK_WEB_RELEASE_URL` | empty | Explicit tarball URL fallback; takes precedence over `npm pack` |
@@ -87,14 +87,14 @@ to exist before it is copied over `ksadk/server/static`.
 
 Each `ksadk-python` release note should record:
 
-- The `ksadk-python` version (e.g. `0.8.1`).
-- The `KSADK_WEB_VERSION` / npm package version (e.g. `0.8.1` maps to `@kingsoftcloud/ksadk-web@0.3.1`).
-- The controlled build command (e.g. `make build-frontend KSADK_WEB_VERSION=0.3.1`).
+- The `ksadk-python` version (e.g. `0.8.2`).
+- The `KSADK_WEB_VERSION` / npm package version (e.g. `0.8.2` maps to `@kingsoftcloud/ksadk-web@0.3.2`).
+- The controlled build command (e.g. `make build-frontend KSADK_WEB_VERSION=0.3.2`).
 - The wheel / sdist audit result (`make public-build-check` / `twine check dist/*`).
 
-<Callout type="info" title="0.8.1 release record example">
-- `ksadk-python`: `0.8.1`
-- npm package: `@kingsoftcloud/ksadk-web@0.3.1`
-- frontend build: `make build-frontend KSADK_WEB_VERSION=0.3.1`
+<Callout type="info" title="0.8.2 release record example">
+- `ksadk-python`: `0.8.2`
+- npm package: `@kingsoftcloud/ksadk-web@0.3.2`
+- frontend build: `make build-frontend KSADK_WEB_VERSION=0.3.2`
 - audit: `make public-build-check` passed, `twine check dist/*` passed
 </Callout>

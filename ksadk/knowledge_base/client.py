@@ -82,6 +82,10 @@ class KnowledgeBaseClient(BaseModel):
     score_threshold: float = 0.0
     score_threshold_enabled: bool = False
     reranking_enable: bool = False
+    # 最近一次检索失败原因（成功调用前置空，失败时填充）。供
+    # KnowledgeBaseService.build_context 区分"后端吞错返空"与"真无结果"，
+    # 避免错误伪装成"未找到"注入模型上下文。
+    last_error: str = ""
 
     _aicp_client: Any = None
 
@@ -188,6 +192,7 @@ class KnowledgeBaseClient(BaseModel):
         try:
             data = json.loads(response) if isinstance(response, str) else response
         except (json.JSONDecodeError, TypeError):
+            self.last_error = f"Failed to parse response: {str(response)[:200]}"
             logger.error(f"Failed to parse response: {str(response)[:200]}")
             return []
 
@@ -230,6 +235,7 @@ class KnowledgeBaseClient(BaseModel):
             f"Searching knowledge base: dataset_id={self.dataset_id}, " f"query='{query[:50]}'"
         )
 
+        self.last_error = ""
         try:
             response = client.call("RetrieveKnowledge", params, options={"IsPostJson": True})
             results = self._parse_response(response)
@@ -238,6 +244,7 @@ class KnowledgeBaseClient(BaseModel):
             )
             return results
         except Exception as e:
+            self.last_error = str(e)
             logger.error(f"Knowledge base search failed: {e}")
             raise
 

@@ -2,24 +2,47 @@
 Tracing 初始化 - 标准 OTLP 双写（Langfuse 主 + CloudMonitor 次）
 
 每个 Python Agent 进程一个 TracerProvider，挂两个 OTLP/HTTP protobuf BatchSpanProcessor，
-消费同一批 ReadableSpan。不在 exporter 阶段按目的地改写 span。
+消费同一批 ReadableSpan。仅为 CloudMonitor 克隆并补充兼容属性，不修改原始 span。
 
 支持 ADK 自动插桩 via openinference-instrumentation-google-adk
 """
 
 import atexit
 import importlib
+import json
 import logging
 import os
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Optional
 from urllib.parse import unquote
 
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
 
 from ksadk.tracing.exporters.inmemory_exporter import InMemoryExporter
 
 logger = logging.getLogger(__name__)
+
+_CLOUD_MONITOR_RESOURCE_SPAN_ATTRIBUTES = (
+    "agentengine.account_id",
+    "agentengine.agent_id",
+    "agentengine.framework",
+    "agentengine.langfuse_project_id",
+    "agentengine.region",
+)
+
+_LANGFUSE_OBSERVATION_TYPES = {
+    "LLM": "generation",
+    "EMBEDDING": "embedding",
+    "CHAIN": "chain",
+    "AGENT": "agent",
+    "TOOL": "tool",
+    "RETRIEVER": "retriever",
+    "EVALUATOR": "evaluator",
+    "GUARDRAIL": "guardrail",
+}
 
 
 def _batch_span_processor_kwargs() -> dict:
@@ -66,14 +89,16 @@ class _LoggingSpanExporter(SpanExporter):
         endpoint: str,
         service_name: str,
         header_keys: list[str],
+        span_transform: Callable[[Sequence[ReadableSpan]], Sequence[ReadableSpan]] | None = None,
     ):
         self._exporter = exporter
         self._name = name
         self._endpoint = endpoint
         self._service_name = service_name
         self._header_keys = header_keys
+        self._span_transform = span_transform
 
-    def export(self, spans) -> SpanExportResult:
+    def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
         span_count = len(spans)
         logger.info(
             "%s export started: endpoint=%s service_name=%s spans=%s headers=%s",
@@ -84,7 +109,8 @@ class _LoggingSpanExporter(SpanExporter):
             ",".join(self._header_keys),
         )
         try:
-            result = self._exporter.export(spans)
+            export_spans = self._span_transform(spans) if self._span_transform else spans
+            result = self._exporter.export(export_spans)
         except Exception:
             logger.exception(
                 "%s export failed: endpoint=%s service_name=%s spans=%s",
@@ -116,6 +142,280 @@ class _LoggingSpanExporter(SpanExporter):
             timeout_millis,
         )
         return self._exporter.force_flush(timeout_millis)
+
+
+def _coerce_int(value: Any) -> int:
+    if value is None or isinstance(value, bool):
+        return 0
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return 0
+
+
+def _span_context(span: Any) -> Any:
+    context = getattr(span, "context", None)
+    if context is not None:
+        return context
+    get_context = getattr(span, "get_span_context", None)
+    return get_context() if callable(get_context) else None
+
+
+def _span_id(span: Any) -> Optional[int]:
+    return getattr(_span_context(span), "span_id", None)
+
+
+def _trace_id(span: Any) -> Optional[int]:
+    return getattr(_span_context(span), "trace_id", None)
+
+
+def _parent_span_id(span: Any) -> Optional[int]:
+    return getattr(getattr(span, "parent", None), "span_id", None)
+
+
+def _span_token_usage(span: Any) -> dict[str, int]:
+    attributes = getattr(span, "attributes", None) or {}
+    return _token_usage(attributes)
+
+
+def _token_usage(attributes: dict[str, Any]) -> dict[str, int]:
+    input_tokens = _coerce_int(
+        attributes.get("gen_ai.usage.input_tokens")
+        or attributes.get("llm.usage.prompt_tokens")
+        or attributes.get("llm.token_count.prompt")
+    )
+    output_tokens = _coerce_int(
+        attributes.get("gen_ai.usage.output_tokens")
+        or attributes.get("llm.usage.completion_tokens")
+        or attributes.get("llm.token_count.completion")
+    )
+    total_tokens = _coerce_int(
+        attributes.get("gen_ai.usage.total_tokens")
+        or attributes.get("llm.usage.total_tokens")
+        or attributes.get("llm.token_count.total")
+    )
+    return {
+        "input": input_tokens,
+        "output": output_tokens,
+        "total": total_tokens or input_tokens + output_tokens,
+        "cache_read": _coerce_int(
+            attributes.get("gen_ai.usage.cache_read.input_tokens")
+            or attributes.get("llm.usage.cache_read.input_tokens")
+        ),
+        "reasoning_output": _coerce_int(
+            attributes.get("gen_ai.usage.reasoning.output_tokens")
+            or attributes.get("llm.usage.reasoning_tokens")
+        ),
+    }
+
+
+def _first_span_attribute(attributes: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = attributes.get(key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _add_langfuse_compatibility_attributes(attributes: dict[str, Any]) -> None:
+    usage = _token_usage(attributes)
+    observation_kind = str(attributes.get("openinference.span.kind") or "").upper()
+    observation_type = _LANGFUSE_OBSERVATION_TYPES.get(observation_kind)
+    if observation_type is None:
+        observation_type = "generation" if _has_nonzero_token_usage(usage) else "span"
+    attributes.setdefault("langfuse.observation.type", observation_type)
+
+    provider = _first_span_attribute(
+        attributes,
+        "gen_ai.provider.name",
+        "gen_ai.system",
+        "llm.provider",
+    )
+    if provider is not None:
+        attributes.setdefault("langfuse.observation.metadata.ls_provider", provider)
+
+    model = _first_span_attribute(
+        attributes,
+        "gen_ai.request.model",
+        "llm.model_name",
+    )
+    if model is not None:
+        attributes.setdefault("langfuse.observation.model.name", model)
+        attributes.setdefault("langfuse.observation.metadata.ls_model_name", model)
+
+    if _has_nonzero_token_usage(usage):
+        attributes.setdefault("gen_ai.usage.total_tokens", usage["total"])
+        usage_details = {
+            "input": usage["input"],
+            "output": usage["output"],
+            "total": usage["total"],
+            "input_cache_read": usage["cache_read"],
+        }
+        attributes["langfuse.observation.usage_details"] = json.dumps(
+            usage_details, separators=(",", ":"), sort_keys=True
+        )
+
+
+def _has_nonzero_token_usage(usage: dict[str, int]) -> bool:
+    return any(value > 0 for value in usage.values())
+
+
+def _clone_cloud_monitor_resource(resource: Resource | None) -> Resource | None:
+    if resource is None:
+        return None
+    attributes = dict(resource.attributes)
+    agent_id = str(attributes.get("agentengine.agent_id") or "").strip()
+    if not agent_id or attributes.get("service.name") == agent_id:
+        return resource
+    attributes["service.name"] = agent_id
+    return Resource(attributes, schema_url=resource.schema_url)
+
+
+def _clone_span(
+    span: ReadableSpan,
+    *,
+    attributes: dict[str, Any],
+    resource: Resource | None,
+) -> ReadableSpan:
+    return ReadableSpan(
+        name=span.name,
+        context=span.context,
+        parent=span.parent,
+        resource=resource,
+        attributes=attributes,
+        events=span.events,
+        links=span.links,
+        kind=span.kind,
+        status=span.status,
+        start_time=span.start_time,
+        end_time=span.end_time,
+        instrumentation_scope=getattr(span, "instrumentation_scope", None),
+    )
+
+
+def _prepare_cloud_monitor_spans(
+    spans: Sequence[ReadableSpan],
+) -> Sequence[ReadableSpan]:
+    """Clone CloudMonitor spans with resource identity and root usage compatibility."""
+    if not spans:
+        return spans
+    span_list = list(spans)
+    session_ids_by_trace: dict[Optional[int], Any] = {}
+    for span in span_list:
+        attributes = dict(getattr(span, "attributes", None) or {})
+        session_id = _first_span_attribute(
+            attributes,
+            "session.id",
+            "langfuse.session.id",
+            "ksadk.session_id",
+        )
+        if session_id is not None:
+            session_ids_by_trace.setdefault(_trace_id(span), session_id)
+    span_keys = {
+        (_trace_id(span), _span_id(span)) for span in span_list if _span_id(span) is not None
+    }
+    children_by_parent: dict[tuple[Optional[int], int], list[ReadableSpan]] = {}
+    roots: list[ReadableSpan] = []
+    for span in span_list:
+        span_id = _span_id(span)
+        if span_id is None:
+            continue
+        trace_id = _trace_id(span)
+        parent_id = _parent_span_id(span)
+        if parent_id is None or (trace_id, parent_id) not in span_keys:
+            roots.append(span)
+        else:
+            children_by_parent.setdefault((trace_id, parent_id), []).append(span)
+
+    usage_by_span = {
+        (_trace_id(span), _span_id(span)): _span_token_usage(span)
+        for span in span_list
+        if _span_id(span) is not None
+    }
+    has_token_descendant_cache: dict[tuple[Optional[int], int], bool] = {}
+
+    def has_token_descendant(span: ReadableSpan) -> bool:
+        key = (_trace_id(span), _span_id(span))
+        if key[1] is None:
+            return False
+        if key in has_token_descendant_cache:
+            return has_token_descendant_cache[key]
+        result = any(
+            _has_nonzero_token_usage(usage_by_span.get((_trace_id(child), _span_id(child)), {}))
+            or has_token_descendant(child)
+            for child in children_by_parent.get(key, [])
+        )
+        has_token_descendant_cache[key] = result
+        return result
+
+    def collect_leaf_usage(span: ReadableSpan, aggregate: dict[str, int]) -> None:
+        key = (_trace_id(span), _span_id(span))
+        own_usage = usage_by_span.get(key, {})
+        if _has_nonzero_token_usage(own_usage) and not has_token_descendant(span):
+            for usage_key, value in own_usage.items():
+                aggregate[usage_key] += value
+            return
+        for child in children_by_parent.get(key, []):
+            collect_leaf_usage(child, aggregate)
+
+    root_usage: dict[int, dict[str, int]] = {}
+    for root in roots:
+        aggregate = {
+            "input": 0,
+            "output": 0,
+            "total": 0,
+            "cache_read": 0,
+            "reasoning_output": 0,
+        }
+        collect_leaf_usage(root, aggregate)
+        root_usage[id(root)] = aggregate
+
+    resource_cache: dict[int, Resource | None] = {}
+    transformed: list[ReadableSpan] = []
+    usage_attributes = {
+        "gen_ai.usage.input_tokens": "input",
+        "gen_ai.usage.output_tokens": "output",
+        "gen_ai.usage.total_tokens": "total",
+        "gen_ai.usage.cache_read.input_tokens": "cache_read",
+        "gen_ai.usage.reasoning.output_tokens": "reasoning_output",
+    }
+    for span in span_list:
+        original_resource = getattr(span, "resource", None)
+        original_resource_attributes = getattr(original_resource, "attributes", {}) or {}
+        resource_key = id(original_resource)
+        if resource_key not in resource_cache:
+            resource_cache[resource_key] = _clone_cloud_monitor_resource(original_resource)
+        resource = resource_cache[resource_key]
+        attributes = dict(getattr(span, "attributes", None) or {})
+        resource_attributes = getattr(resource, "attributes", {}) or {}
+        for key in _CLOUD_MONITOR_RESOURCE_SPAN_ATTRIBUTES:
+            value = resource_attributes.get(key)
+            if value not in (None, ""):
+                attributes.setdefault(f"gen_ai.{key}", value)
+        agent_name = original_resource_attributes.get(
+            "agentengine.agent_name"
+        ) or original_resource_attributes.get("service.name")
+        if agent_name not in (None, ""):
+            attributes.setdefault("gen_ai.agentengine.agent_name", agent_name)
+        aggregate = root_usage.get(id(span), {})
+        for attribute, usage_key in usage_attributes.items():
+            if _coerce_int(attributes.get(attribute)) <= 0 and aggregate.get(usage_key, 0) > 0:
+                attributes[attribute] = aggregate[usage_key]
+
+        session_id = session_ids_by_trace.get(_trace_id(span))
+        if session_id is not None:
+            attributes.setdefault("session.id", session_id)
+        _add_langfuse_compatibility_attributes(attributes)
+
+        original_attributes = dict(getattr(span, "attributes", None) or {})
+        if resource is original_resource and attributes == original_attributes:
+            transformed.append(span)
+        else:
+            transformed.append(_clone_span(span, attributes=attributes, resource=resource))
+    return transformed
 
 
 def _parse_otlp_headers(raw: str) -> dict[str, str]:
@@ -409,6 +709,7 @@ def setup_tracing(
                 endpoint=cloud_monitor_config.endpoint,
                 service_name=cloud_monitor_config.service_name,
                 header_keys=sorted(cloud_monitor_config.headers),
+                span_transform=_prepare_cloud_monitor_spans,
             )
             _register_span_processor(
                 provider,

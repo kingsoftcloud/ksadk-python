@@ -7,6 +7,7 @@ ID allocation to the server.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import io
 import json
@@ -21,14 +22,15 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 import yaml  # type: ignore[import-untyped]
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from ksadk.detection.detector import FrameworkDetector
+from ksadk.managed_runtime import installed_runtime_version
 from ksadk.studio.capabilities import canonical_json, sha256_digest
 from ksadk.studio.codex_manifest import CodexAgentManifest
 from ksadk.studio.contracts import (
     AgentDraft,
-    Instructions,
+    AgentSpec,
     NetworkPolicy,
     RuntimeRef,
 )
@@ -48,7 +50,33 @@ class ConversationProposal(BaseModel):
     slug: str = Field(min_length=1, max_length=63)
     runtimeType: Literal["codex", "adk", "langgraph"]
     description: str = Field(default="", max_length=1024)
-    instructions: Instructions
+    spec: AgentSpec
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_prompt_only_proposal(cls, value: Any) -> Any:
+        """Accept one release of old model output without persisting its data loss.
+
+        Older authoring prompts asked the model for only ``instructions``.  Turn
+        that response into a complete AgentSpec at the boundary so callers only
+        ever consume the lossless proposal shape.
+        """
+
+        if not isinstance(value, dict) or "spec" in value:
+            return value
+        payload = dict(value)
+        instructions = payload.pop("instructions", None)
+        payload["spec"] = {
+            "description": str(payload.get("description") or ""),
+            "instructions": instructions or {},
+        }
+        return payload
+
+    @model_validator(mode="after")
+    def validate_runtime_type(self) -> "ConversationProposal":
+        if self.spec.runtime is not None and self.spec.runtime.type != self.runtimeType:
+            raise ValueError("spec.runtime.type 必须与 runtimeType 一致")
+        return self
 
 
 @dataclass(frozen=True)
@@ -82,15 +110,10 @@ class AgentAuthoringService:
             normalized = f"agent-{normalized}" if normalized else "agent"
         return normalized[:48].rstrip("-")
 
-    def allocate_agent_id(self, _slug: str) -> str:
-        """Allocate a server-owned identifier without using a slug as a path segment.
-
-        Callers retain the normalized slug in Agent metadata for display and search,
-        while source directories only use this opaque identifier.
-        """
-
+    def allocate_agent_id(self, slug: str) -> str:
+        base = self.normalize_slug(slug)
         for _attempt in range(100):
-            candidate = f"agentkit-{uuid4().hex[:8]}"
+            candidate = f"{base}-{uuid4().hex[:12]}"
             if not (self.workspace.resolve("agents") / candidate).exists():
                 return candidate
         raise StudioError(
@@ -111,7 +134,13 @@ class AgentAuthoringService:
                 details={"runtimeType": normalized},
             )
         if normalized == "codex":
-            return RuntimeRef(type="codex", version="0.144.4")
+            # A new YAML Agent must lock the CLI actually installed on this
+            # Studio host. Cloud admission resolves that explicit version via
+            # the Server-owned catalog instead of accepting a client image.
+            return RuntimeRef(
+                type="codex",
+                version=installed_runtime_version("codex") or "0.144.4",
+            )
         return RuntimeRef(
             type=cast(Any, normalized),
             project_path=f"agents/{agent_id}/source",
@@ -291,17 +320,70 @@ class AgentAuthoringService:
             path.unlink()
 
     @staticmethod
-    def parse_conversation_proposal(content: str) -> ConversationProposal:
+    def _conversation_json_object(content: str) -> dict[str, Any]:
+        """Extract one JSON object without trusting surrounding model prose."""
+
         text = str(content or "").strip()
-        if text.startswith("```"):
-            lines = text.splitlines()
-            if lines and lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines and lines[-1].strip() == "```":
-                lines = lines[:-1]
-            text = "\n".join(lines).strip()
+        candidates = [text]
+        candidates.extend(
+            match.group(1).strip()
+            for match in re.finditer(r"```(?:json)?\s*([\s\S]*?)```", text, re.IGNORECASE)
+        )
+        decoder = json.JSONDecoder()
+        for candidate in candidates:
+            try:
+                payload = json.loads(candidate)
+            except ValueError:
+                payload = None
+            if isinstance(payload, dict):
+                return cast(dict[str, Any], payload)
+        for start, character in enumerate(text):
+            if character != "{":
+                continue
+            try:
+                payload, _end = decoder.raw_decode(text, start)
+            except ValueError:
+                continue
+            if isinstance(payload, dict):
+                return cast(dict[str, Any], payload)
+        raise ValueError("model output does not contain a JSON object")
+
+    @staticmethod
+    def _merge_conversation_patch(
+        base: dict[str, Any], patch: dict[str, Any]
+    ) -> dict[str, Any]:
+        merged = copy.deepcopy(base)
+        for key, value in patch.items():
+            if isinstance(value, dict) and isinstance(merged.get(key), dict):
+                merged[key] = AgentAuthoringService._merge_conversation_patch(
+                    cast(dict[str, Any], merged[key]), value
+                )
+            else:
+                merged[key] = copy.deepcopy(value)
+        return merged
+
+    @staticmethod
+    def parse_conversation_proposal(
+        content: str,
+        *,
+        base: ConversationProposal | dict[str, Any] | None = None,
+    ) -> ConversationProposal:
         try:
-            payload = json.loads(text)
+            payload = AgentAuthoringService._conversation_json_object(content)
+            for wrapper in ("proposal", "patch"):
+                wrapped = payload.get(wrapper)
+                if isinstance(wrapped, dict) and len(payload) == 1:
+                    payload = cast(dict[str, Any], wrapped)
+                    break
+            if base is not None:
+                base_payload = (
+                    base.model_dump(by_alias=True, mode="json")
+                    if isinstance(base, ConversationProposal)
+                    else base
+                )
+                payload = AgentAuthoringService._merge_conversation_patch(
+                    base_payload, payload
+                )
             proposal = ConversationProposal.model_validate(payload)
         except (ValueError, ValidationError) as exc:
             raise StudioError(
@@ -326,9 +408,13 @@ class AgentAuthoringService:
                 "role": "system",
                 "content": (
                     "你是 AgentKit Studio 的 Agent 设计助手。根据对话生成一个 JSON Draft Patch，"
-                    "不得输出 Markdown。字段必须且只能包含 name、slug、runtimeType、description、"
-                    "instructions；runtimeType 只能是 codex、adk、langgraph；instructions 必须包含"
-                    " system 和 task。只提出配置，不写文件、不宣称已经创建。"
+                    "不得输出 Markdown。首轮顶层字段必须且只能包含 name、slug、runtimeType、"
+                    "description、spec；后续轮次可以只返回需要变更的字段，由 Studio 与上一版"
+                    "Patch 合并。runtimeType 只能是 codex、adk、langgraph。spec 是完整"
+                    " AgentSpec，可包含 runtime、instructions、model、capabilities、bindings、"
+                    "execution、context、memory、security、evaluation；instructions 必须包含"
+                    " system 和 task。Tool、MCP、Skill、模型、模型参数和策略一旦在对话中明确，"
+                    "必须写入 spec，不能只返回提示词。只提出配置，不写文件、不宣称已经创建。"
                 ),
             }
         ]
@@ -469,7 +555,11 @@ class AgentAuthoringService:
 
     @staticmethod
     def _tree_digest(root: Path, *, exclude: set[str] | None = None) -> str:
-        ignored = exclude or set()
+        # 默认排除 .agentkit（Studio 自身状态）与常见忽略目录，避免 inspect 后写 token json
+        # 改变 digest 导致 commit 时 PROJECT_CHANGED_AFTER_INSPECTION 误报（方案 §6.1）。
+        ignored = set(exclude or [])
+        ignored.add(".agentkit")
+        ignored.add(".git")
         entries: list[dict[str, Any]] = []
         for path in sorted(root.rglob("*"), key=lambda item: item.as_posix()):
             if path.is_symlink():
@@ -481,7 +571,10 @@ class AgentAuthoringService:
                 )
             if not path.is_file() or path.name in ignored:
                 continue
+            # 跳过 .agentkit / .git 目录下的文件
             relative = path.relative_to(root).as_posix()
+            if any(relative.startswith(ignored_dir + "/") for ignored_dir in (".agentkit", ".git")):
+                continue
             content = path.read_bytes()
             entries.append(
                 {

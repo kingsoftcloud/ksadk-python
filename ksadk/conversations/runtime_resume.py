@@ -15,7 +15,7 @@ from ksadk.conversations.run_kinds import (
     validate_run_mode,
 )
 from ksadk.conversations.runtime_persistence import append_conversation_event
-from ksadk.events.runtime_event import EventType
+from ksadk.events.v1_compat import EventTypeV1 as EventType
 from ksadk.sessions import SessionEvent
 from ksadk.tools.gateway import (
     build_tool_receipt_idempotency_key,
@@ -81,6 +81,11 @@ def _approval_lifecycle_event_type(event: SessionEvent) -> str:
         return "approval_request"
     if event.event_type == EventType.APPROVAL_RESOLVED:
         return "approval_response"
+    # canonical schema-v2:审批请求/应答是 interaction.* 事件。
+    if event.event_type == "interaction.requested":
+        return "approval_request"
+    if event.event_type in {"interaction.resolved", "approval.resolved"}:
+        return "approval_response"
     return canonical_event_type(
         event.event_type,
         author=event.author,
@@ -102,6 +107,20 @@ def _approval_interrupt_info_from_event(event: SessionEvent) -> dict[str, Any]:
         return dict(legacy_detail)
 
     content = event.content or {}
+    # canonical schema-v2 envelope:content["runtime_event"]["request"]["detail"]
+    canonical_payload = content.get("runtime_event")
+    if isinstance(canonical_payload, Mapping):
+        request = canonical_payload.get("request")
+        if isinstance(request, Mapping):
+            raw_detail = request.get("detail")
+            detail = dict(raw_detail) if isinstance(raw_detail, Mapping) else {}
+            approval_id = request.get("call_id") or canonical_payload.get("interaction_id")
+            if approval_id:
+                detail.setdefault("approval_request_id", approval_id)
+                detail.setdefault("id", approval_id)
+            if request.get("call_id"):
+                detail.setdefault("run_id", request.get("call_id"))
+            return detail
     payload = content.get("payload")
     if not isinstance(payload, Mapping):
         return {}

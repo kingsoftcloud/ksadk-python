@@ -46,4 +46,26 @@ describe("AgentsPage appearance", () => {
       "/api/v1/assets/agent-avatars/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png",
     );
   });
+
+  it("labels Codex YAML records as declaration validation rather than code bundles", async () => {
+    render(
+      <AgentsPage
+        agents={[{
+          metadata: { id: "yaml-agent", name: "YAML Agent", revision: 1 },
+          spec: { runtime: { type: "codex" } },
+          builds: [{ id: "declaration-1", status: "SUCCEEDED" }],
+        }]}
+        runtimeReady
+        workspaceName="studio-test"
+        onCreate={vi.fn()}
+        onDetail={vi.fn()}
+        onChat={vi.fn()}
+        onBuild={vi.fn()}
+        onChanged={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("声明已校验")).toBeInTheDocument();
+    expect(screen.getByText("最近校验 / 构建")).toBeInTheDocument();
+  });
 });

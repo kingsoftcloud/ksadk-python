@@ -13,6 +13,7 @@ import yaml  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from ksadk.builders.managed_runtime_builder import serialize_managed_runtime_manifest
+from ksadk.studio.contracts import ContextSpec, MemorySpec
 from ksadk.studio.errors import StudioError, not_found
 from ksadk.studio.workspace import Workspace
 
@@ -39,28 +40,35 @@ class CodexAgentManifest(BaseModel):
     model: str = Field(min_length=1, max_length=256)
     models: list[str] | None = None
     prompt: str = Field(min_length=1, max_length=32768)
+    # Codex Runtime 最终仍消费合并后的 base_instructions；该字段用于在 AgentVersion /
+    # Build 中保留任务契约来源，避免为了运行投影而破坏 PromptSection 审计。
+    task_prompt: str | None = Field(default=None, max_length=32768)
     skills: list[str] | None = None
     mcp_servers: list[dict[str, Any]] | None = None
     sandbox: str | None = None
     approval_mode: str | None = None
+    # PCM 策略（方案 §5.1）：严格类型化，Build 不可变。
+    # None = 旧 Manifest 缺字段（兼容默认值）；
+    # 有值但格式错误 → model_validate 时立即失败，不静默降级。
+    context: ContextSpec | None = None
+    memory: MemorySpec | None = None
 
     @model_validator(mode="after")
     def validate_models(self) -> "CodexAgentManifest":
-        if self.models is None:
-            return self
-        normalized: list[str] = []
-        for value in self.models:
-            model = str(value).strip()
-            if not model or len(model) > 256:
-                raise ValueError("models 中的模型名称长度必须为 1..256")
-            if model in normalized:
-                raise ValueError("models 不能包含重复模型")
-            normalized.append(model)
-        if not normalized:
-            raise ValueError("models 至少包含一个模型")
-        if self.model not in normalized:
-            raise ValueError("默认模型 model 必须包含在 models 中")
-        self.models = normalized
+        if self.models is not None:
+            normalized: list[str] = []
+            for value in self.models:
+                model = str(value).strip()
+                if not model or len(model) > 256:
+                    raise ValueError("models 中的模型名称长度必须为 1..256")
+                if model in normalized:
+                    raise ValueError("models 不能包含重复模型")
+                normalized.append(model)
+            if not normalized:
+                raise ValueError("models 至少包含一个模型")
+            if self.model not in normalized:
+                raise ValueError("默认模型 model 必须包含在 models 中")
+            self.models = normalized
         if self.skills is not None:
             seen: set[str] = set()
             deduped: list[str] = []
@@ -101,6 +109,10 @@ def normalized_manifest_bytes(manifest: CodexAgentManifest) -> bytes:
     """生成构建、SHA 和磁盘写入共同使用的规范化 YAML。"""
 
     payload = manifest.model_dump(mode="python", exclude_none=True)
+    if manifest.context is not None:
+        payload["context"] = manifest.context.model_dump(mode="python", by_alias=True)
+    if manifest.memory is not None:
+        payload["memory"] = manifest.memory.model_dump(mode="python", by_alias=True)
     return serialize_managed_runtime_manifest(payload)
 
 
@@ -123,9 +135,22 @@ class CodexManifestRepository:
         self.path = workspace.resolve("agentengine.yaml")
         self.agents_path = workspace.resolve("agents")
 
+    def _root_is_codex(self) -> bool:
+        """根 agentengine.yaml 是否应走 Codex 解析（方案 §6.1 ManifestResolver）。
+
+        根 manifest 存在时先读 framework/runtime 字段，只有显式 codex 才走 Codex 解析；
+        否则（标准 LangGraph/ADK 项目）跳过，避免 CODEX_MANIFEST_INVALID 误判。
+        """
+        if not self.path.is_file():
+            return False
+        from ksadk.studio.manifest_resolver import root_manifest_is_codex
+
+        return root_manifest_is_codex(self.workspace.root)
+
     def exists(self, agent_id: str | None = None) -> bool:
         if agent_id is None:
-            return self.path.is_file()
+            # 方案 §6.1：根 manifest 非 codex 时不当作 codex agent 存在
+            return self._root_is_codex()
         try:
             self.load(agent_id)
         except StudioError as exc:
@@ -136,9 +161,12 @@ class CodexManifestRepository:
 
     def load(self, agent_id: str | None = None) -> CodexManifestSnapshot:
         if agent_id is None:
+            # 方案 §6.1：根 manifest 非 codex 时报 not_found，交由 framework drafts 处理
+            if not self._root_is_codex():
+                raise not_found("agent", "")
             return self._load_path(self.path)
         self._validate_agent_id(agent_id)
-        if self.path.is_file():
+        if self.path.is_file() and self._root_is_codex():
             root = self._load_path(self.path)
             if root.manifest.name == agent_id:
                 return root
@@ -156,7 +184,7 @@ class CodexManifestRepository:
     def list(self) -> list[CodexManifestSnapshot]:
         snapshots: list[CodexManifestSnapshot] = []
         seen: set[str] = set()
-        if self.path.is_file():
+        if self._root_is_codex():
             root = self._load_path(self.path)
             snapshots.append(root)
             seen.add(root.manifest.name)
@@ -245,9 +273,7 @@ class CodexManifestRepository:
             return
         if trash_directory is None:
             raise ValueError("recoverable deletion requires a trash directory")
-        destination = self.workspace.resolve(
-            trash_directory / "source/agents" / agent_id
-        )
+        destination = self.workspace.resolve(trash_directory / "source/agents" / agent_id)
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(agent_directory), str(destination))
 
@@ -255,7 +281,10 @@ class CodexManifestRepository:
         self._validate_agent_id(agent_id)
         if not self.path.is_file():
             return self.path
-        if self._load_path(self.path).manifest.name == agent_id:
+        # A workspace root manifest can belong to LangGraph/ADK.  Never parse
+        # or overwrite it as a Codex manifest; Codex agents must coexist under
+        # agents/<agent-id>/agentengine.yaml in that case.
+        if self._root_is_codex() and self._load_path(self.path).manifest.name == agent_id:
             return self.path
         return self._agent_path(agent_id)
 

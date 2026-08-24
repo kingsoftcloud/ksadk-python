@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ksadk"
-version = "0.8.1"
+version = "0.8.2"
 description = "KsADK Agent Runtime Platform - unified runtime, debugging, deployment and observability for AI agents"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -107,6 +107,11 @@ langchain = [
 langgraph = [
     "langgraph>=1.2.0,<1.3.0",
     "langgraph-checkpoint-sqlite>=2.0.0",
+    # Hosted LangGraph graphs are rebuilt with the admitted shared saver;
+    # memory/SQLite checkpoints are intentionally local-only capabilities.
+    "langgraph-checkpoint-postgres>=3.1.0",
+    "psycopg[binary]>=3.2,<4.0",
+    "psycopg-pool>=3.2,<4.0",
     "langchain>=1.3.14,<2.0.0",
     "langchain-openai>=1.4.0,<2.0.0",
     "protobuf>=6.32.1",
@@ -148,7 +153,7 @@ skills = [
 # Codex Runtime (goal-09): OpenAI 官方 openai-codex SDK,自带 pin 版 CLI 二进制。
 # 可选 extra,不进默认依赖(二进制几十 MB);缺依赖时 CodexRuntime 显式报错。
 codex = [
-    "openai-codex==0.144.4",
+    "openai-codex==0.147.0",
 ]
 # Official AG-UI transport. Optional until Hosted UI selects it from bootstrap.
 agui = [
@@ -193,7 +198,7 @@ include = ["ksadk*", "ksadk_runtime_common*"]
 exclude = ["ksadk.server.web-ui*", "ksadk.studio.react-ui*"]
 
 [tool.setuptools.package-data]
-ksadk = ["server/static/**/*", "studio/static/**/*"]
+ksadk = ["server/static/**/*", "studio/static/**/*", "kernel/sql/*.sql"]
 ksadk_runtime_common = ["schemas/*.json"]
 
 [tool.black]

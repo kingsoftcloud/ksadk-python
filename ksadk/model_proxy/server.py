@@ -146,14 +146,14 @@ def create_app(config: ProxyConfig) -> FastAPI:
         body = await req.json()
         try:
             chat_req, restore_map = responses_to_chat(body)
-        except UnsupportedToolsError:
-            logger.info("responses request uses unsupported tools")
+        except UnsupportedToolsError as e:
+            logger.info("responses request uses unsupported tools: %s", e)
             return JSONResponse(
                 status_code=400,
                 content={
                     "error": {
                         "type": "unsupported_tools",
-                        "message": "The request uses tools unsupported by the model upstream.",
+                        "message": f"The request uses tools unsupported by the model upstream: {e}",
                     }
                 },
             )

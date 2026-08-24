@@ -78,8 +78,7 @@ def create_runner(detection_result: DetectionResult, project_dir: str) -> BaseRu
 
     elif detection_result.type == FrameworkType.CODEX:
         raise ValueError(
-            "Codex 只支持 RuntimeAdapter 执行链；请使用 "
-            "ksadk.runtime.create_runtime_adapter"
+            "Codex 只支持 RuntimeAdapter 执行链；请使用 " "ksadk.runtime.create_runtime_adapter"
         )
 
     else:

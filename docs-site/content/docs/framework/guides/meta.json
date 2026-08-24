@@ -5,6 +5,7 @@
     "harness-app",
     "local-web-ui",
     "agentkit-local-studio",
+    "evaluation-observability",
     "hosted-ui-events",
     "agent-context",
     "attachments-multimodal",

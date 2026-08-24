@@ -18,6 +18,7 @@ import click
 
 from ksadk.api import AgentEngineAPIError, AgentEngineClient
 from ksadk.cli.agent_ref import merge_agent_inputs, resolve_agent_ref, resolve_openclaw_ref
+from ksadk.cli.invoke_payload import build_chat_request
 from ksadk.cli.cmd_files import (
     _build_sync_payload,
     _collect_local_files_report,
@@ -603,6 +604,9 @@ def run_invoke_command(
                 insecure,
                 model,
                 api_format_resolved,
+                default_model=(
+                    "openclaw" if _is_openclaw_target(next_state, latest_access) else None
+                ),
             )
         )
     else:
@@ -1286,6 +1290,7 @@ async def _invoke_once(
     insecure: bool = False,
     model: Optional[str] = None,
     api_format: str = "chat_completions",
+    default_model: Optional[str] = None,
 ):
     """单次调用"""
     click.echo(f"\n👤 你: {message}")
@@ -1306,7 +1311,7 @@ async def _invoke_once(
                     last_refresh_time = 0.0
                     full_reasoning = ""
                     async for chunk in _stream_chat(
-                        endpoint, message, api_key, session_id, True, insecure, model, api_format
+                        endpoint, message, api_key, session_id, True, insecure, model, api_format, default_model
                     ):
                         content, reasoning = _extract_content(chunk)
 
@@ -1336,7 +1341,7 @@ async def _invoke_once(
                     live.refresh()  # 确保最后一次刷新
             else:
                 async for chunk in _stream_chat(
-                    endpoint, message, api_key, session_id, True, insecure, model, api_format
+                    endpoint, message, api_key, session_id, True, insecure, model, api_format, default_model
                 ):
                     content, reasoning = _extract_content(chunk)
                     if reasoning:
@@ -1346,7 +1351,7 @@ async def _invoke_once(
             click.echo()  # 换行
         else:
             response = await _chat(
-                endpoint, message, api_key, session_id, insecure, model, api_format
+                endpoint, message, api_key, session_id, insecure, model, api_format, default_model
             )
             content = _extract_response_content(response)
             if console and Markdown:
@@ -1365,6 +1370,7 @@ async def _chat(
     insecure: bool = False,
     model: Optional[str] = None,
     api_format: str = "chat_completions",
+    default_model: Optional[str] = None,
 ) -> dict[str, Any]:
     """非流式调用 (OpenAI 兼容格式)"""
     try:
@@ -1373,25 +1379,15 @@ async def _chat(
         click.secho("❌ 请安装 httpx: pip install httpx", fg="red")
         raise SystemExit(1)
 
-    normalized_api_format = str(api_format or "chat_completions").strip().lower()
-    if normalized_api_format == "responses":
-        url = f"{endpoint.rstrip('/')}/v1/responses"
-        payload: dict[str, Any] = {
-            "input": [{"role": "user", "content": message}],
-            "stream": False,
-        }
-    else:
-        url = f"{endpoint.rstrip('/')}/v1/chat/completions"
-        payload = {
-            "messages": [{"role": "user", "content": message}],
-            "stream": False,
-        }
-
-    if session_id:
-        payload["session_id"] = session_id
-
-    if model:
-        payload["model"] = model
+    url, payload = build_chat_request(
+        endpoint,
+        message,
+        session_id=session_id,
+        model=model,
+        api_format=api_format,
+        default_model=default_model,
+        stream=False,
+    )
 
     # 本地请求禁用系统代理 (ClashX 等会导致本地请求 502 错误)
     # trust_env=False 会禁用: 代理设置、SSL 证书环境变量、.netrc 文件
@@ -1431,6 +1427,7 @@ async def _stream_chat(
     insecure: bool = False,
     model: Optional[str] = None,
     api_format: str = "chat_completions",
+    default_model: Optional[str] = None,
 ):
     """流式调用 (SSE)"""
     try:
@@ -1439,22 +1436,15 @@ async def _stream_chat(
         click.secho("❌ 请安装 httpx: pip install httpx", fg="red")
         raise SystemExit(1)
 
-    normalized_api_format = str(api_format or "chat_completions").strip().lower()
-    if normalized_api_format == "responses":
-        url = f"{endpoint.rstrip('/')}/v1/responses"
-        payload: dict[str, Any] = {
-            "input": [{"role": "user", "content": message}],
-            "stream": True,
-        }
-    else:
-        url = f"{endpoint.rstrip('/')}/v1/chat/completions"
-        payload = {"messages": [{"role": "user", "content": message}], "stream": True}
-
-    if session_id:
-        payload["session_id"] = session_id
-
-    if model:
-        payload["model"] = model
+    url, payload = build_chat_request(
+        endpoint,
+        message,
+        session_id=session_id,
+        model=model,
+        api_format=api_format,
+        default_model=default_model,
+        stream=True,
+    )
 
     # 本地请求禁用系统代理 (ClashX 等会导致本地请求 502 错误)
     # trust_env=False 会禁用: 代理设置、SSL 证书环境变量、.netrc 文件

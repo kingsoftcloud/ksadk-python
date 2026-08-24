@@ -25,6 +25,10 @@
   --accent-hover: #2a4a70;
   --accent-active: #325983;
   --accent-border: #4773a5;
+  --button-primary-bg: #5d9ef1;
+  --button-primary-bg-hover: #70acf5;
+  --button-primary-bg-active: #4a89df;
+  --button-primary-text: #ffffff;
   --success: #78c7a8;
   --success-soft: #203a33;
   --info: #8eb9e5;
