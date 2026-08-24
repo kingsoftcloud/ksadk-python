@@ -36,6 +36,10 @@ interface Deployment {
   updatedAt?: string;
 }
 
+interface StudioCloudAgentSummary extends AccountCloudAgentSummary {
+  region?: string;
+}
+
 interface BuildCandidate {
   id: string;
   status: string;
@@ -45,11 +49,24 @@ interface BuildCandidate {
   runtimeVersion?: string;
 }
 
+interface CloudVersion {
+  versionId: string;
+  versionName: string;
+  tag: string;
+  status: string;
+  trafficPercentage: number;
+  createdAt?: string;
+  createdBy?: string;
+  canRollback: boolean;
+  rollbackDisabledReason: string;
+}
+
 interface DeploymentDetail {
   deployment: Deployment;
   sourceAgentId: string;
   sourceAgentName: string;
   builds: BuildCandidate[];
+  versions: CloudVersion[];
   loading: boolean;
   error: string;
 }
@@ -102,7 +119,8 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [refreshing, setRefreshing] = useState<Set<string>>(new Set());
-  const [rollback, setRollback] = useState<{ deployment: Deployment; candidates: BuildCandidate[]; targetBuildId: string } | null>(null);
+  const [selectedRollbackVersionId, setSelectedRollbackVersionId] = useState("");
+  const [rollbackConfirmOpen, setRollbackConfirmOpen] = useState(false);
   const [rollbackBusy, setRollbackBusy] = useState(false);
   const [detail, setDetail] = useState<DeploymentDetail | null>(null);
   const [updating, setUpdating] = useState(false);
@@ -124,13 +142,18 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
       const receiptAgentIds = [...new Set(receipts.flatMap(item => (
         item.agentId?.trim() ? [item.agentId.trim()] : []
       )))];
-      const accountDetails = await Promise.all(receiptAgentIds.map(agentId => (
+      const accountDetails: Array<StudioCloudAgentSummary | null> = await Promise.all(receiptAgentIds.map(agentId => (
         Promise.resolve()
           .then(() => apiFetch(`/api/v1/cloud-agents/${encodeURIComponent(agentId)}`))
-          .then(response => response.ok ? response.json() : null)
+          .then(async response => response.ok ? await response.json() as StudioCloudAgentSummary : null)
           .catch(() => null)
       )));
-      const accountByAgentId = new Map((accountPayload.items || []).map((item: AccountCloudAgentSummary) => [item.agentId, item]));
+      const listedAccounts: StudioCloudAgentSummary[] = Array.isArray(accountPayload.items)
+        ? accountPayload.items as StudioCloudAgentSummary[]
+        : [];
+      const accountByAgentId = new Map<string, StudioCloudAgentSummary>(listedAccounts.flatMap(item => (
+        item.agentId ? [[item.agentId, item] as const] : []
+      )));
       for (const detail of accountDetails) {
         if (detail?.agentId) accountByAgentId.set(detail.agentId, { ...accountByAgentId.get(detail.agentId), ...detail });
       }
@@ -146,23 +169,23 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
             source: "receipt" as const,
           };
         }
-        const account = accountItems.find(item => item.agentId === target.agentId) || {};
+        const account = accountItems.find(item => item.agentId === target.agentId);
         return {
           id: target.id,
           buildId: "",
           bundleDigest: "",
-          versionId: String(target.versionId || account.versionId || ""),
-          status: String(target.status || account.status || "UNKNOWN").toUpperCase(),
-          target: { region: String(account.region || ""), environment: "cloud" },
+          versionId: String(target.versionId || account?.versionId || ""),
+          status: String(target.status || account?.status || "UNKNOWN").toUpperCase(),
+          target: { region: String(account?.region || ""), environment: "cloud" },
           agentId: target.agentId,
           agentName: target.agentName,
           endpoint: target.endpoint,
-          framework: String(target.framework || account.framework || ""),
-          runtimeType: String(target.runtimeType || account.runtimeType || ""),
-          capabilities: target.capabilities || account.capabilities,
-          chatTransport: target.chatTransport || account.chatTransport,
-          chatRoutingReason: target.chatRoutingReason || account.chatRoutingReason,
-          updatedAt: String(target.updatedAt || account.updatedAt || ""),
+          framework: String(target.framework || account?.framework || ""),
+          runtimeType: String(target.runtimeType || account?.runtimeType || ""),
+          capabilities: target.capabilities || account?.capabilities,
+          chatTransport: target.chatTransport || account?.chatTransport,
+          chatRoutingReason: target.chatRoutingReason || account?.chatRoutingReason,
+          updatedAt: String(target.updatedAt || account?.updatedAt || ""),
           source: "account" as const,
         };
       });
@@ -259,11 +282,35 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
     }
   }
 
+  async function loadCloudVersions(agentId: string): Promise<CloudVersion[]> {
+    const response = await apiFetch(
+      `/api/v1/cloud-agents/${encodeURIComponent(agentId)}/versions?page=1&size=100`,
+    );
+    if (!response.ok) throw new Error(`读取云端版本失败（${response.status}）`);
+    const payload = await response.json();
+    const rows = payload.items || payload.versions || payload.Versions || [];
+    return (Array.isArray(rows) ? rows : []).map((item: any) => ({
+      versionId: String(item.versionId || item.version_id || item.VersionId || ""),
+      versionName: String(item.versionName || item.version_name || item.VersionName || ""),
+      tag: String(item.tag || item.Tag || ""),
+      status: String(item.status || item.Status || ""),
+      trafficPercentage: Number(item.trafficPercentage ?? item.traffic_percentage ?? item.TrafficPercentage ?? 0),
+      createdAt: item.createdAt || item.created_at || item.CreatedAt,
+      createdBy: item.createdBy || item.created_by || item.CreatedBy,
+      canRollback: Boolean(item.canRollback ?? item.can_rollback ?? item.CanRollback),
+      rollbackDisabledReason: String(
+        item.rollbackDisabledReason || item.rollback_disabled_reason || item.RollbackDisabledReason || "",
+      ),
+    })).filter((item: CloudVersion) => item.versionId);
+  }
+
   async function openDetail(deployment: Deployment, navigate = true) {
     if (navigate) {
       window.history.pushState(null, "", `#/deployments/${encodeURIComponent(deployment.id)}`);
     }
-    setDetail({ deployment, sourceAgentId: "", sourceAgentName: "", builds: [], loading: true, error: "" });
+    setDetail({ deployment, sourceAgentId: "", sourceAgentName: "", builds: [], versions: [], loading: true, error: "" });
+    setSelectedRollbackVersionId("");
+    setRollbackConfirmOpen(false);
     try {
       if (deployment.source === "account") {
         const accountResponse = await apiFetch(`/api/v1/cloud-agents/${encodeURIComponent(deployment.agentId || "")}`);
@@ -282,12 +329,14 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
           versionId: account.versionId || deployment.versionId,
           updatedAt: account.updatedAt || deployment.updatedAt,
         };
+        const versions = refreshed.agentId ? await loadCloudVersions(refreshed.agentId) : [];
         setDeployments(current => current.map(item => item.id === deployment.id ? refreshed : item));
         setDetail({
           deployment: refreshed,
           sourceAgentId: "",
           sourceAgentName: refreshed.agentName || refreshed.agentId || "账号云端 Agent",
           builds: [],
+          versions,
           loading: false,
           error: "",
         });
@@ -312,11 +361,13 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
       const builds = (Array.isArray(agent.builds) ? agent.builds : [])
         .filter((item: BuildCandidate) => item.status === "SUCCEEDED")
         .sort((left: BuildCandidate, right: BuildCandidate) => String(right.createdAt || "").localeCompare(String(left.createdAt || "")));
+      const versions = refreshed.agentId ? await loadCloudVersions(refreshed.agentId) : [];
       setDetail({
         deployment: refreshed,
         sourceAgentId,
         sourceAgentName: String(agent?.draft?.metadata?.name || sourceAgentId),
         builds,
+        versions,
         loading: false,
         error: "",
       });
@@ -327,6 +378,8 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
 
   function closeDetail() {
     setDetail(null);
+    setSelectedRollbackVersionId("");
+    setRollbackConfirmOpen(false);
     window.history.pushState(null, "", "#/deployments");
   }
 
@@ -391,40 +444,22 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
     }
   }
 
-  async function openRollback(deployment: Deployment) {
-    if (deployment.source === "account" || !deployment.buildId) return;
-    setError("");
-    try {
-      const buildResponse = await apiFetch(`/api/v1/builds/${encodeURIComponent(deployment.buildId)}`);
-      if (!buildResponse.ok) throw new Error(`读取部署 Build 失败（${buildResponse.status}）`);
-      const build = await buildResponse.json();
-      const sourceAgentId = String(build.agentId || "");
-      if (!sourceAgentId) throw new Error("部署 receipt 缺少可回滚的源 Agent");
-      const agentResponse = await apiFetch(`/api/v1/agents/${encodeURIComponent(sourceAgentId)}`);
-      if (!agentResponse.ok) throw new Error(`读取源 Agent Build 历史失败（${agentResponse.status}）`);
-      const agent = await agentResponse.json();
-      const candidates = (agent.builds || []).filter((item: BuildCandidate) => (
-        item.status === "SUCCEEDED" && item.id !== deployment.buildId
-      ));
-      if (!candidates.length) throw new Error("没有可用于回滚的历史成功 Build");
-      setRollback({ deployment, candidates, targetBuildId: candidates[0].id });
-    } catch (caught: any) {
-      setError(caught?.message || "无法选择回滚 Build");
-    }
-  }
-
   async function submitRollback() {
-    if (!rollback || rollbackBusy) return;
+    if (!detail || !selectedRollbackVersionId || rollbackBusy) return;
+    const deployment = detail.deployment;
+    const agentId = String(deployment.agentId || "").trim();
+    const targetVersionId = selectedRollbackVersionId;
+    if (!agentId) return;
     setRollbackBusy(true);
-    setError("");
+    setDetail(current => current ? { ...current, error: "" } : current);
     try {
-      const response = await apiFetch(`/api/v1/deployments/${encodeURIComponent(rollback.deployment.id)}:rollback`, {
+      const response = await apiFetch(`/api/v1/cloud-agents/${encodeURIComponent(agentId)}:rollback-version`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Idempotency-Key": `rollback-${rollback.deployment.id}-${rollback.targetBuildId}`,
+          "Idempotency-Key": `rollback-${agentId}-${targetVersionId}`,
         },
-        body: JSON.stringify({ targetBuildId: rollback.targetBuildId }),
+        body: JSON.stringify({ versionId: targetVersionId }),
       });
       if (!response.ok) throw new Error(`回滚提交失败（${response.status}）`);
       const operation = await response.json();
@@ -438,11 +473,14 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
       }
       if (!result || !OPERATION_TERMINAL.has(result.status)) throw new Error("回滚操作等待超时");
       if (result.status !== "SUCCEEDED") throw new Error(result.error?.message || "回滚未完成");
-      setRollback(null);
+      setRollbackConfirmOpen(false);
+      setSelectedRollbackVersionId("");
       await load();
-      showToast("已提交历史 Bundle 回滚", rollback.targetBuildId);
+      await openDetail(deployment, false);
+      showToast("已提交版本回滚", `云端版本 ${targetVersionId}`);
     } catch (caught: any) {
-      setError(caught?.message || "回滚失败");
+      setRollbackConfirmOpen(false);
+      setDetail(current => current ? { ...current, error: caught?.message || "回滚失败" } : current);
     } finally {
       setRollbackBusy(false);
     }
@@ -450,6 +488,8 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
 
   if (detail) {
     const latestBuild = detail.builds[0];
+    const selectedRollbackVersion = detail.versions.find(version => version.versionId === selectedRollbackVersionId);
+    const currentCloudVersion = detail.versions.find(version => version.status.toLowerCase() === "current");
     const hasReceipt = detail.deployment.source === "receipt";
     const canUpdate = hasReceipt && detail.deployment.artifactId === "managed-runtime"
       && Boolean(latestBuild)
@@ -461,12 +501,15 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
           <button className="button secondary" type="button" onClick={closeDetail}>
             <ArrowLeft size={15} /><span>返回云端 Agent</span>
           </button>
-          {hasReceipt && (
-            <button className="button secondary" type="button" onClick={() => {
-              const deployment = detail.deployment;
-              closeDetail();
-              void openRollback(deployment);
-            }} disabled={updating}>选择版本回滚</button>
+          {Boolean(detail.deployment.agentId) && (
+            <button
+              className="button secondary"
+              type="button"
+              onClick={() => setRollbackConfirmOpen(true)}
+              disabled={!selectedRollbackVersion?.canRollback || updating || rollbackBusy}
+            >
+              {rollbackBusy ? "回滚中…" : selectedRollbackVersion ? "回滚到所选版本" : "选择版本回滚"}
+            </button>
           )}
           {canUpdate && (
             <button className="button secondary" type="button" onClick={() => void updateToBuild(detail.deployment, latestBuild.id)} disabled={updating}>
@@ -514,20 +557,56 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
             <div><span>更新时间</span><code>{formatUpdatedAt(detail.deployment.updatedAt)}</code></div>
             {hasReceipt && <div><span>Bundle</span><code title={detail.deployment.bundleDigest}>{detail.deployment.bundleDigest}</code></div>}
           </div>
-          {hasReceipt ? <section className="deployment-version-history" aria-label="Build 版本历史">
-            <div><h3>Build 版本历史</h3><p>{detail.sourceAgentName || "正在读取本地 Agent 关联…"}</p></div>
+          {detail.deployment.agentId ? <section className="deployment-version-history" aria-label="云端版本历史">
+            <div><h3>云端版本历史</h3><p>版本状态与可回滚性来自云端 Server</p></div>
             {detail.loading ? <p>正在读取版本…</p> : (
               <div className="deployment-version-list">
-                {detail.builds.map(build => (
-                  <div key={build.id} data-current={build.id === detail.deployment.buildId}>
-                    <div><strong>{build.id === detail.deployment.buildId ? "当前版本" : "可用版本"}</strong><code>{build.id}</code></div>
-                    <span>{build.createdAt || build.runtimeVersion || "成功 Build"}</span>
-                  </div>
-                ))}
+                {detail.versions.map(version => {
+                  const isCurrent = version.status.toLowerCase() === "current";
+                  const versionMeta = [
+                    version.tag,
+                    `${version.trafficPercentage}% 流量`,
+                    version.createdBy ? `创建者 ${version.createdBy}` : "",
+                    version.createdAt ? formatUpdatedAt(version.createdAt) : "",
+                  ].filter(Boolean).join(" · ");
+                  return (
+                  <label
+                    key={version.versionId}
+                    className="deployment-version-option"
+                    data-current={isCurrent}
+                    data-selected={version.versionId === selectedRollbackVersionId}
+                  >
+                    <input
+                      type="radio"
+                      name="rollback-version"
+                      value={version.versionId}
+                      checked={version.versionId === selectedRollbackVersionId}
+                      disabled={!version.canRollback || updating || rollbackBusy}
+                      aria-label={`${isCurrent ? "当前版本" : version.canRollback ? "可回滚版本" : "不可回滚版本"} ${version.versionName || version.versionId}`}
+                      onChange={() => version.canRollback && setSelectedRollbackVersionId(version.versionId)}
+                    />
+                    <div><strong>{isCurrent ? "当前版本" : version.versionName || version.tag || "历史版本"}</strong><code>{version.versionId}</code></div>
+                    <span>{!version.canRollback && version.rollbackDisabledReason
+                      ? `${version.rollbackDisabledReason}${versionMeta ? ` · ${versionMeta}` : ""}`
+                      : versionMeta || "云端历史版本"}</span>
+                  </label>
+                  );
+                })}
               </div>
             )}
-          </section> : <div className="callout"><div><strong>无 Studio 部署记录</strong><p>这个 Agent 来自当前云账号；没有可追溯的本地 Build，因此不开放更新和版本回滚。</p></div></div>}
+          </section> : <div className="callout"><div><strong>缺少云端 Agent ID</strong><p>当前记录无法查询 Server 版本历史，因此不开放版本回滚。</p></div></div>}
         </section>
+        {rollbackConfirmOpen && selectedRollbackVersion && (
+          <ConfirmDialog
+            title="确认回滚云端 Agent？"
+            description={`当前云端版本 ${currentCloudVersion?.versionName || detail.deployment.versionId || "未知"}（${currentCloudVersion?.versionId || detail.deployment.versionId || "未知"}）将回滚到 ${selectedRollbackVersion.versionName || selectedRollbackVersion.tag || "目标版本"}（${selectedRollbackVersion.versionId}）。系统将调用 Server RollbackVersion，并在提交后重新读取 Agent 与版本列表。`}
+            confirmText="确认回滚"
+            danger={false}
+            busy={rollbackBusy}
+            onConfirm={() => void submitRollback()}
+            onCancel={() => setRollbackConfirmOpen(false)}
+          />
+        )}
       </div>
     );
   }
@@ -615,7 +694,7 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
                           ? [{ label: "在 Hosted UI 中打开", onSelect: () => void openHostedUi(deployment) }]
                           : []),
                         ...(deployment.source === "receipt"
-                          ? [{ label: "选择回滚 Build", onSelect: () => void openRollback(deployment) }]
+                          ? [{ label: "版本管理", onSelect: () => void openDetail(deployment) }]
                           : []),
                         ...(deployment.agentId
                           ? [{ label: "删除云端 Agent", danger: true, onSelect: () => setDeleteTarget(deployment) }]
@@ -626,22 +705,6 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
                 </tr>;
               })}</tbody>
             </table>
-          </div>
-        </section>
-      )}
-
-      {rollback && (
-        <section className="delivery-block rollback-panel" aria-label="选择回滚 Build">
-          <div><h2>选择历史 Build</h2><p>将创建新的云端交付记录，现有 receipt 不会被改写。</p></div>
-          <label>
-            <span>回滚目标</span>
-            <select aria-label="选择回滚目标 Build" value={rollback.targetBuildId} onChange={event => setRollback({ ...rollback, targetBuildId: event.target.value })}>
-              {rollback.candidates.map(candidate => <option key={candidate.id} value={candidate.id}>{candidate.id}{candidate.bundleDigest ? ` · ${shortId(candidate.bundleDigest)}` : ""}</option>)}
-            </select>
-          </label>
-          <div className="rollback-actions">
-            <button className="button tertiary" type="button" onClick={() => setRollback(null)} disabled={rollbackBusy}>取消</button>
-            <button className="button accent" type="button" onClick={() => void submitRollback()} disabled={rollbackBusy}>{rollbackBusy ? "提交中" : "提交回滚"}</button>
           </div>
         </section>
       )}

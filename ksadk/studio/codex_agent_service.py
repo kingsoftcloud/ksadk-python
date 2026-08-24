@@ -32,6 +32,7 @@ from ksadk.studio.contracts import (
     AgentDraft,
     AgentMetadata,
     AgentSpec,
+    CapabilityBinding,
     Instructions,
     ModelSpec,
     Operation,
@@ -368,12 +369,16 @@ class CodexAgentService:
 
     def detail(self, agent_id: str | None = None) -> dict:
         snapshot = self.studio.codex_manifests.load(agent_id)
+        _mcp_bindings, unresolved_mcp = self._mcp_bindings(snapshot.manifest)
         return {
             "draft": self._project(snapshot),
             "builds": [self.build_view(item) for item in self._builds(snapshot.manifest.name)],
             "validation": {"valid": True, "level": "build", "diagnostics": []},
             "manifestSha256": snapshot.manifest_sha256,
             "sourcePath": self.studio.workspace.relative(snapshot.source_path),
+            "bindingProjection": {
+                "unresolvedMcpServers": unresolved_mcp,
+            },
         }
 
     @staticmethod
@@ -472,6 +477,11 @@ class CodexAgentService:
         manifest = snapshot.manifest
         saved = current or self.drafts.get(manifest.name)
         bindings = self._model_bindings(manifest)
+        mcp_bindings, _unresolved_mcp = self._mcp_bindings(manifest)
+        skill_bindings = [
+            CapabilityBinding(resource_id=resource_id)
+            for resource_id in (manifest.skills or [])
+        ]
         # 从 Manifest 恢复 PCM context/memory（方案 §5.1：Build 不可变）
         # Manifest 已在 model_validate 时严格校验；这里直接恢复
         from ksadk.studio.contracts import ContextSpec, MemorySpec
@@ -490,6 +500,8 @@ class CodexAgentService:
             )
             draft.spec.bindings.model_profile_id = bindings[0]
             draft.spec.bindings.model_profile_ids = bindings[1]
+            draft.spec.bindings.skills = skill_bindings
+            draft.spec.bindings.mcp_servers = mcp_bindings
             draft.spec.context = context_spec
             draft.spec.memory = memory_spec
             draft.metadata.labels.update(self._labels(manifest))
@@ -511,6 +523,8 @@ class CodexAgentService:
                 bindings=AgentBindings(
                     model_profile_id=default_profile,
                     model_profile_ids=profiles,
+                    skills=skill_bindings,
+                    mcp_servers=mcp_bindings,
                 ),
                 context=context_spec,
                 memory=memory_spec,
@@ -530,6 +544,16 @@ class CodexAgentService:
         task_prompt = spec.instructions.task.strip() or None
         skill_ids = self._skill_resource_ids(spec)
         mcp_servers = self._mcp_server_configs(spec)
+        if current is not None:
+            _current_bindings, unresolved_current = self._mcp_bindings(current)
+            unresolved_names = {item["name"] for item in unresolved_current}
+            mcp_servers.extend(
+                dict(item)
+                for item in (current.mcp_servers or [])
+                if str(item.get("name") or "").strip() in unresolved_names
+                and str(item.get("name") or "").strip()
+                not in {str(server.get("name") or "").strip() for server in mcp_servers}
+            )
         # PCM 策略写入 Manifest（随 Build 锁定，不可变）
         context_payload = (
             spec.context.model_dump(by_alias=True, exclude_none=True, mode="json") or None
@@ -609,6 +633,40 @@ class CodexAgentService:
         default = resources.get(manifest.model)
         profiles = [resources[model] for model in manifest.allowed_models if model in resources]
         return default, profiles if default in profiles else []
+
+    def _mcp_bindings(
+        self,
+        manifest: CodexAgentManifest,
+    ) -> tuple[builtins.list[CapabilityBinding], builtins.list[dict[str, str]]]:
+        """Project YAML MCP configs to real catalog bindings without inventing ids."""
+
+        resources: dict[tuple[str, str], str] = {}
+        for descriptor in self.studio.catalog.list(kind="mcp", limit=500):
+            contract = descriptor.contract or {}
+            name = str(contract.get("name") or descriptor.name or "").strip()
+            url = str(
+                contract.get("endpointUrl")
+                or contract.get("endpoint_url")
+                or contract.get("url")
+                or ""
+            ).strip()
+            if name and url:
+                resources.setdefault((name, url), descriptor.resource_id)
+
+        bindings: builtins.list[CapabilityBinding] = []
+        unresolved: builtins.list[dict[str, str]] = []
+        for entry in manifest.mcp_servers or []:
+            name = str(entry.get("name") or "").strip()
+            url = str(entry.get("url") or "").strip()
+            resource_id = resources.get((name, url))
+            if resource_id:
+                bindings.append(CapabilityBinding(resource_id=resource_id))
+            else:
+                unresolved.append({
+                    "name": name or "未命名 MCP",
+                    "reason": "not-in-resource-catalog",
+                })
+        return bindings, unresolved
 
     @staticmethod
     def _labels(manifest: CodexAgentManifest) -> dict[str, str]:

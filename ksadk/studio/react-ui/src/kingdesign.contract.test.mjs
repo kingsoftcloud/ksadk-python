@@ -55,3 +55,10 @@ test("resets browser button chrome and gives shared selection controls soft bord
   assert.match(finalLayer, /\.choice-card,[\s\S]*?\.suggestion-list button\s*\{[\s\S]*?border:\s*1px solid var\(--border\)/);
   assert.match(finalLayer, /\.chat-session-main\s*\{[\s\S]*?border:\s*1px solid transparent;/);
 });
+
+test("keeps Agent editor icons and shared form grids geometrically aligned", () => {
+  assert.match(finalLayer, /\.studio-field-label-row\s*\{[\s\S]*?min-height:\s*24px;[\s\S]*?align-items:\s*center;/);
+  assert.match(finalLayer, /\.quick-runtime-strip \.runtime-logo,[\s\S]*?display:\s*inline-grid;[\s\S]*?line-height:\s*0;/);
+  assert.match(finalLayer, /\.runtime-logo > svg,[\s\S]*?display:\s*block;[\s\S]*?margin:\s*auto;/);
+  assert.match(finalLayer, /\.agent-edit-nav button\.active\s*\{[\s\S]*?border-color:\s*var\(--kc-accent-border\)/);
+});

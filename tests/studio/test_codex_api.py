@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import time
+import zipfile
 from pathlib import Path
 
 import pytest
+import yaml
 from fastapi.testclient import TestClient
 
 from ksadk.events.canonical import (
@@ -20,7 +23,7 @@ from ksadk.runtime import RunHandle, StartRequest
 from ksadk.studio.api import RunRequest, create_studio_app
 from ksadk.studio.cloud import InMemoryCloudGateway
 from ksadk.studio.codex_manifest import CodexAgentManifest
-from ksadk.studio.contracts import RunStatus
+from ksadk.studio.contracts import MCPServerRef, ModelSpec, RunStatus
 from ksadk.studio.service import StudioService
 from tests.studio.runtime_adapter_fixtures import (
     RuntimeFixture,
@@ -42,6 +45,21 @@ def _manifest(prompt: str = "检查 src/demo.py，只报告确定的问题。\n"
 
 def _inspector(_runtime) -> tuple[str, str, str]:
     return "0.8.0", "0.144.4", "codex-cli 0.144.4"
+
+
+def _skill_archive() -> bytes:
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w") as archive:
+        archive.writestr(
+            "review/SKILL.md",
+            "---\n"
+            "name: Review Skill\n"
+            "description: Review carefully\n"
+            "version: 1.0.0\n"
+            "---\n"
+            "Review.\n",
+        )
+    return stream.getvalue()
 
 
 async def _slow_codex_events(
@@ -1081,3 +1099,97 @@ def test_codex_rejects_ksadk_tool_binding_instead_of_pretending_to_execute(
         )
         assert rejected.status_code == 422
         assert rejected.json()["error"]["code"] == "TOOL_RUNTIME_INCOMPATIBLE"
+
+
+def test_codex_yaml_first_agent_projects_and_losslessly_updates_model_skill_and_mcp(
+    tmp_path: Path,
+) -> None:
+    service = StudioService(
+        tmp_path,
+        codex_runtime_inspector=_inspector,
+        runtime_executor=RuntimeFixture(standard_codex_events).executor,
+    )
+    model_primary = service.catalog.create_model_profile(
+        name="codex-primary",
+        display_name="Codex Primary",
+        version="1.0.0",
+        description="",
+        spec=ModelSpec(
+            model="codex-primary",
+            endpoint_url="https://models.example.test/v1/chat/completions",
+            credential_ref="env://MODEL_KEY",
+        ),
+    )
+    model_fallback = service.catalog.create_model_profile(
+        name="codex-fallback",
+        display_name="Codex Fallback",
+        version="1.0.0",
+        description="",
+        spec=ModelSpec(
+            model="codex-fallback",
+            endpoint_url="https://models.example.test/v1/chat/completions",
+            credential_ref="env://MODEL_KEY",
+        ),
+    )
+    skill = service.catalog.import_skill_zip(_skill_archive(), filename="review.zip")
+    mcp = service.catalog.create_mcp_server(
+        display_name="Review MCP",
+        description="",
+        server=MCPServerRef(
+            name="review-mcp",
+            version="1.0.0",
+            transport="http",
+            endpoint_url="https://mcp.example.test/rpc",
+        ),
+    )
+    service.codex_manifests.save(CodexAgentManifest.model_validate({
+        **_manifest("Review the workspace carefully.\n"),
+        "model": "codex-primary",
+        "models": ["codex-primary", "codex-fallback"],
+        "skills": [skill.resource_id],
+        "mcp_servers": [
+            {"name": "review-mcp", "url": "https://mcp.example.test/rpc"},
+            {
+                "name": "legacy-private",
+                "url": "https://legacy.example.test/rpc",
+                "custom": {"keep": True},
+            },
+        ],
+    }))
+    app = create_studio_app(tmp_path, service=service, security_enabled=False)
+
+    with TestClient(app) as client:
+        detail = client.get("/api/v1/agents/review-helper").json()
+        bindings = detail["draft"]["spec"]["bindings"]
+        assert bindings["modelProfileId"] == model_primary.resource_id
+        assert bindings["modelProfileIds"] == [
+            model_primary.resource_id,
+            model_fallback.resource_id,
+        ]
+        assert [item["resourceId"] for item in bindings["skills"]] == [skill.resource_id]
+        assert [item["resourceId"] for item in bindings["mcpServers"]] == [mcp.resource_id]
+        assert detail["bindingProjection"]["unresolvedMcpServers"] == [
+            {"name": "legacy-private", "reason": "not-in-resource-catalog"},
+        ]
+
+        updated_spec = detail["draft"]["spec"]
+        updated_spec["instructions"]["system"] = "Review and summarize the workspace."
+        updated = client.put(
+            "/api/v1/agents/review-helper?name=Review+Helper",
+            headers={"If-Match": str(detail["draft"]["metadata"]["revision"])},
+            json=updated_spec,
+        )
+        assert updated.status_code == 200, updated.text
+
+    saved = yaml.safe_load((tmp_path / "agentengine.yaml").read_text(encoding="utf-8"))
+    assert saved["model"] == "codex-primary"
+    assert saved["models"] == ["codex-primary", "codex-fallback"]
+    assert saved["skills"] == [skill.resource_id]
+    assert saved["mcp_servers"] == [
+        {"name": "review-mcp", "url": "https://mcp.example.test/rpc"},
+        {
+            "name": "legacy-private",
+            "url": "https://legacy.example.test/rpc",
+            "custom": {"keep": True},
+        },
+    ]

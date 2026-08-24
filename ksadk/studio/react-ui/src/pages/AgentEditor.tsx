@@ -49,10 +49,14 @@ interface AgentDetail {
         modelProfileIds?: string[];
         skills?: Array<{ resourceId: string; enabled?: boolean }>;
         mcpServers?: Array<{ resourceId: string; enabled?: boolean }>;
+        tools?: Array<{ resourceId: string; enabled?: boolean }>;
         [key: string]: unknown;
       };
       [key: string]: unknown;
     };
+  };
+  bindingProjection?: {
+    unresolvedMcpServers?: Array<{ name: string; reason: string }>;
   };
 }
 
@@ -124,6 +128,8 @@ export function AgentEditor({
   const [selectedModels, setSelectedModels] = useState<string[]>([]);
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
   const [selectedMcp, setSelectedMcp] = useState<string[]>([]);
+  const [selectedTools, setSelectedTools] = useState<string[]>([]);
+  const [visibleSection, setVisibleSection] = useState(activeSection);
   const [contextOwnership, setContextOwnership] = useState("auto");
   const [contextEngineRollout, setContextEngineRollout] = useState("shadow");
   const [memoryEnabled, setMemoryEnabled] = useState(false);
@@ -135,6 +141,21 @@ export function AgentEditor({
   const models = useMemo(() => catalog.filter(item => item.kind === "model" && ["ready", "missing-secret"].includes(item.status)), [catalog]);
   const skills = useMemo(() => catalog.filter(item => item.kind === "skill" && item.status === "ready"), [catalog]);
   const mcps = useMemo(() => catalog.filter(item => item.kind === "mcp"), [catalog]);
+  const tools = useMemo(() => catalog.filter(item => item.kind === "tool" && item.status === "ready"), [catalog]);
+  const visibleSkills = useMemo(() => {
+    const known = new Set(skills.map(item => item.resourceId));
+    return [
+      ...skills,
+      ...selectedSkills.filter(id => !known.has(id)).map(id => ({
+        resourceId: id,
+        kind: "skill",
+        name: id,
+        displayName: id,
+        version: "YAML 声明",
+        status: "unresolved",
+      })),
+    ];
+  }, [selectedSkills, skills]);
   const selectedModelItems = selectedModels.map(id => models.find(item => item.resourceId === id)).filter(Boolean) as EditorCatalogItem[];
 
   useEffect(() => {
@@ -163,6 +184,7 @@ export function AgentEditor({
         setDefaultModel(bindings.modelProfileId || ids[0] || "");
         setSelectedSkills((bindings.skills || []).map((item: { resourceId: string }) => item.resourceId));
         setSelectedMcp((bindings.mcpServers || []).map((item: { resourceId: string }) => item.resourceId));
+        setSelectedTools((bindings.tools || []).map((item: { resourceId: string }) => item.resourceId));
         setContextOwnership(String(draft.spec?.context?.ownership || "auto"));
         setContextEngineRollout(String(draft.spec?.context?.rollout?.contextEngine || "shadow"));
         setMemoryEnabled(Boolean(draft.spec?.memory?.enabled && draft.spec?.memory?.recall?.enabled));
@@ -171,6 +193,8 @@ export function AgentEditor({
       .catch(error => { if (active) setLoadError(error.message || "Agent 加载失败"); });
     return () => { active = false; };
   }, [agentId, resetAgentForm]);
+
+  useEffect(() => setVisibleSection(activeSection), [activeSection]);
 
   useEffect(() => {
     if (!detail || selectedModels.length || !models.length) return;
@@ -205,6 +229,8 @@ export function AgentEditor({
         { value: "framework", label: "框架管理", description: "保留 ADK 原有上下文行为" },
       ];
   const fallbackModel = detail?.draft.metadata.labels?.["agentkit.ksyun.com/model"] || "glm-5.1";
+  const isManagedDeclaration = detail?.draft.metadata.labels?.["agentkit.ksyun.com/artifact-type"] === "ManagedRuntime"
+    || runtime === "codex";
   const manifestModels = selectedModelItems.map(modelName).filter(Boolean);
   const manifest = runtime === "codex" ? [
     `name: ${slug}`,
@@ -263,6 +289,9 @@ export function AgentEditor({
         modelProfileIds: selectedModels,
         skills: selectedSkills.map(resourceId => ({ resourceId, enabled: true })),
         mcpServers: selectedMcp.map(resourceId => ({ resourceId, enabled: true })),
+        tools: runtime === "codex"
+          ? []
+          : selectedTools.map(resourceId => ({ resourceId, enabled: true })),
       };
       spec.context = {
         ...(original.context || {}),
@@ -301,7 +330,12 @@ export function AgentEditor({
         throw new Error(saved?.error?.message || `保存失败（${response.status}）`);
       }
       const savedId = saved?.metadata?.id || agentId;
-      showToast("Agent 已更新", "agentengine.yaml 已回写，旧构建不会继续用于新会话。");
+      showToast(
+        "Agent 已更新",
+        isManagedDeclaration
+          ? "本地配置已保存；更新云端后生效。"
+          : "本地声明已保存；已部署版本不会静默改变。",
+      );
 
       if (buildAfterSave) {
         const revision = saved?.metadata?.revision || detail.draft.metadata.revision + 1;
@@ -376,7 +410,30 @@ export function AgentEditor({
           <h2 title={slug}>编辑 {name || detail.draft.metadata.name}</h2>
           <p>保存会直接回写该 Agent 的 agentengine.yaml；旧构建会标记为过期。</p>
         </div>
-        <section className="agent-edit-section" hidden={activeSection !== 1} aria-label="基础与 Prompt">
+        <nav className="agent-edit-nav" aria-label="Agent 编辑分区">
+          {[
+            { id: 1, label: "基础与 Prompt" },
+            { id: 2, label: "能力绑定" },
+            { id: 3, label: "运行策略" },
+          ].map(section => (
+            <button
+              key={section.id}
+              type="button"
+              className={visibleSection === section.id ? "active" : ""}
+              aria-current={visibleSection === section.id ? "page" : undefined}
+              onClick={() => setVisibleSection(section.id)}
+            >{section.label}</button>
+          ))}
+        </nav>
+        <div className="callout compact agent-version-boundary">
+          <div>
+            <strong>{isManagedDeclaration ? "配置修订边界" : "部署版本边界"}</strong>
+            <p>{isManagedDeclaration
+              ? "本页保存本地 YAML 配置；已部署版本不会自动改变，执行云端更新后才会生效。"
+              : "本页保存 Prompt、模型与能力绑定。Runtime 和代码入口属于不可变版本，变更后需按运行时能力生成新 Bundle。"}</p>
+          </div>
+        </div>
+        <section className="agent-edit-section" hidden={visibleSection !== 1} aria-label="基础与 Prompt">
         <div className="agent-edit-section-heading">
           <span className="eyebrow">01</span>
           <div><h3>基础与 Prompt</h3><p>维护 Agent 身份、Runtime 与系统提示词。</p></div>
@@ -426,13 +483,19 @@ export function AgentEditor({
         </FormField>
         </section>
 
-        <section className="agent-edit-section" hidden={activeSection !== 2} aria-label="能力绑定">
+        <section className="agent-edit-section" hidden={visibleSection !== 2} aria-label="能力绑定">
         <div className="agent-edit-section-heading">
           <span className="eyebrow">02</span>
           <div><h3>能力绑定</h3><p>配置模型、Skill 与 MCP；切换分区不会丢失未保存修改。</p></div>
         </div>
         <div className="form-grid two-columns">
-          <FormField label="默认模型" requirement="required" htmlFor="editDefaultModel" hint="每轮未指定模型时使用">
+          <FormField
+            label="默认模型"
+            requirement="required"
+            htmlFor="editDefaultModel"
+            hint="每轮未指定模型时使用"
+            footer={!selectedModelItems.length ? <span className="studio-field-hint">请先从模型 allowlist 中至少选择一个模型。</span> : null}
+          >
             <StudioSelect
               id="editDefaultModel"
               ariaLabel="默认模型"
@@ -467,7 +530,7 @@ export function AgentEditor({
           <div className="quick-capability-bindings">
             <StudioMultiSelect
               ariaLabel="选择绑定 Skill"
-              items={skills}
+              items={visibleSkills}
               selectedIds={selectedSkills}
               getId={item => item.resourceId}
               getLabel={item => item.displayName}
@@ -489,9 +552,36 @@ export function AgentEditor({
             />
           </div>
         </div>
+        {detail.bindingProjection?.unresolvedMcpServers?.length ? (
+          <div className="inline-alert warning" role="status">
+            <CircleAlert size={16} />
+            <div>
+              <strong>部分 YAML MCP 尚未进入资源目录</strong>
+              <p>{detail.bindingProjection.unresolvedMcpServers.map(item => item.name).join("、")} 未映射到资源目录；保存时会原样保留，请在资源页接入后再可视化编辑。</p>
+            </div>
+          </div>
+        ) : null}
+        {runtime !== "codex" ? (
+          <div className="field quick-model-binding-field">
+            <div className="field-heading"><label>绑定 Tool</label><span className="helper">仅展示当前 Runtime 合同允许的 ksadk Tool。</span></div>
+            <StudioMultiSelect
+              ariaLabel="选择绑定 Tool"
+              items={tools}
+              selectedIds={selectedTools}
+              getId={item => item.resourceId}
+              getLabel={item => item.displayName}
+              getDescription={item => item.version}
+              onChange={setSelectedTools}
+              searchPlaceholder="搜索 Tool"
+              emptyMessage="没有可绑定的 Tool"
+            />
+          </div>
+        ) : (
+          <div className="callout compact"><div><strong>Codex 使用原生工具</strong><p>当前 Runtime 合同不接受 ksadk Tool 绑定；Skill 与 streamable-http MCP 仍可配置。</p></div></div>
+        )}
         </section>
 
-        <section className="agent-edit-section" hidden={activeSection !== 3} aria-label="运行策略">
+        <section className="agent-edit-section" hidden={visibleSection !== 3} aria-label="运行策略">
         <div className="agent-edit-section-heading">
           <span className="eyebrow">03</span>
           <div><h3>运行策略</h3><p>配置跨会话记忆；Context 高级选项通常保持默认即可。</p></div>
@@ -552,7 +642,7 @@ export function AgentEditor({
         <div className="quick-create-actions">
           <label className="checkbox-row">
             <input type="checkbox" checked={buildAfterSave} onChange={event => setBuildAfterSave(event.target.checked)} />
-            <span><strong>保存后立即重新构建</strong><small>新构建完成后直接进入会话工作台</small></span>
+            <span><strong>{isManagedDeclaration ? "保存后生成配置快照" : "保存后构建新 Bundle"}</strong><small>{isManagedDeclaration ? "校验 YAML 并生成可追溯的部署输入" : "新 Bundle 完成后进入会话工作台"}</small></span>
           </label>
           <button className="button accent" type="submit" disabled={saving}><Package size={15} /><span>{saving ? "正在保存" : "保存修改"}</span></button>
         </div>

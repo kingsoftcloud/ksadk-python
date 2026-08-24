@@ -541,10 +541,14 @@ button:disabled {
 }
 
 .studio-field-label-row {
+  min-height: 24px;
+  align-items: center;
   gap: 5px;
 }
 
 .studio-field-label {
+  min-height: 24px;
+  align-items: center;
   color: var(--text-label);
   font-size: 14px;
   font-weight: 500;
@@ -565,6 +569,77 @@ button:disabled {
 
 .field-help-trigger:hover {
   color: var(--accent);
+}
+
+/* Agent declaration editing uses the same compact field rhythm as creation,
+   build and deployment forms. Fixed label rows keep required markers, help
+   affordances and control top edges aligned across two-column grids. */
+.form-grid.two-columns > .studio-form-field > .studio-field-control {
+  align-self: start;
+}
+
+.form-grid.two-columns > .studio-form-field,
+.form-grid.two-columns > .studio-form-field + .studio-form-field {
+  align-self: start;
+  margin-top: 0;
+}
+
+.form-grid.two-columns > .studio-form-field > .studio-field-control > :is(
+  input:not([type="checkbox"]):not([type="radio"]),
+  .studio-select-trigger,
+  .studio-multi-select-trigger
+) {
+  min-height: 40px;
+}
+
+.quick-runtime-strip .runtime-logo,
+.agent-appearance-preview .agent-avatar,
+.appearance-choice-group button {
+  display: inline-grid;
+  place-items: center;
+  line-height: 0;
+}
+
+.runtime-logo > svg,
+.agent-avatar > svg,
+.appearance-choice-group button > svg {
+  display: block;
+  margin: auto;
+}
+
+.agent-edit-nav {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 14px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-subtle);
+}
+
+.agent-edit-nav button {
+  min-height: 32px;
+  flex: 1;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--text-secondary);
+  font-size: var(--font-size-meta);
+}
+
+.agent-edit-nav button:hover:not(.active) {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.agent-edit-nav button.active {
+  border-color: var(--kc-accent-border);
+  background: var(--surface);
+  color: var(--accent-strong);
+}
+
+.agent-version-boundary {
+  margin-bottom: 18px;
 }
 
 .studio-tooltip {

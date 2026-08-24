@@ -2259,17 +2259,6 @@ details.build-log > pre {
 .delivery-agent-identity strong { color: var(--text); }
 .deployment-detail-heading { display: flex; align-items: center; gap: 10px; }
 
-.rollback-panel {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(220px, .62fr) auto;
-  align-items: end;
-  gap: 20px;
-}
-
-.rollback-panel label { display: grid; gap: 6px; color: var(--text-secondary); font-size: var(--font-size-meta); }
-.rollback-panel select { min-height: 36px; padding: 0 10px; border: 0; border-radius: var(--radius-chip); background: var(--surface-subtle); color: var(--text); outline: 1px solid var(--studio-outline-inset); outline-offset: -1px; }
-.rollback-actions { display: flex; justify-content: flex-end; gap: 8px; }
-
 .deployment-version-history {
   display: grid;
   gap: 12px;
@@ -2280,7 +2269,7 @@ details.build-log > pre {
 .deployment-version-history p { margin: 0; }
 .deployment-version-history p { color: var(--text-tertiary); font-size: var(--font-size-meta); }
 .deployment-version-list { display: grid; gap: 8px; }
-.deployment-version-list > div {
+.deployment-version-option {
   display: flex;
   min-width: 0;
   align-items: center;
@@ -2291,9 +2280,20 @@ details.build-log > pre {
   background: var(--surface-subtle);
   outline: 1px solid var(--studio-outline-inset);
   outline-offset: -1px;
+  cursor: pointer;
 }
-.deployment-version-list > div[data-current="true"] { outline-color: var(--accent); }
-.deployment-version-list > div > div { display: grid; min-width: 0; gap: 3px; }
+.deployment-version-option:hover { background: var(--surface-hover); }
+.deployment-version-option[data-selected="true"] {
+  background: var(--accent-soft);
+  outline-color: var(--accent);
+}
+.deployment-version-option[data-current="true"] {
+  cursor: default;
+  background: var(--surface);
+  outline-style: dashed;
+}
+.deployment-version-option > input { flex: 0 0 auto; margin: 0; accent-color: var(--accent); }
+.deployment-version-option > div { display: grid; min-width: 0; gap: 3px; }
 .deployment-version-list strong { color: var(--text); font-size: var(--font-size-meta); }
 .deployment-version-list code {
   overflow: hidden;
@@ -2334,8 +2334,6 @@ details.build-log > pre {
   .delivery-page { padding: 20px; }
   .delivery-stat-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .delivery-fact-chain { grid-template-columns: 1fr; }
-  .rollback-panel { grid-template-columns: 1fr; align-items: stretch; }
-  .rollback-actions { justify-content: flex-start; }
 }
 
 @media (max-width: 620px) {

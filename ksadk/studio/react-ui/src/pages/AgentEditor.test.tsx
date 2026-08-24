@@ -139,7 +139,7 @@ describe("AgentEditor form", () => {
     );
 
     await screen.findByText("已选 1 个");
-    const rebuild = await screen.findByRole("checkbox", { name: /保存后立即重新构建/ });
+    const rebuild = await screen.findByRole("checkbox", { name: /保存后/ });
     fireEvent.click(rebuild);
     fireEvent.click(screen.getByRole("button", { name: "保存修改" }));
 
@@ -211,7 +211,7 @@ describe("AgentEditor form", () => {
 
     expect(await screen.findByText("当前旧配置仅召回或观察；保存修改后将正式启用记忆写入。")).toBeVisible();
     expect(screen.getByText("运行上下文（高级）")).toBeVisible();
-    fireEvent.click(screen.getByRole("checkbox", { name: /保存后立即重新构建/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /保存后/ }));
     fireEvent.click(screen.getByRole("button", { name: "保存修改" }));
 
     await waitFor(() => {
@@ -223,6 +223,66 @@ describe("AgentEditor form", () => {
       expect(spec.memory.enabled).toBe(true);
       expect(spec.memory.recall.enabled).toBe(true);
       expect(spec.memory.write.mode).toBe("candidate");
+    });
+  });
+
+  it("exposes the shared editor sections and preserves model, Skill, MCP and Tool bindings", async () => {
+    mockedFetch.mockImplementation(async (input, init) => {
+      if (init?.method === "PUT") {
+        return {
+          ok: true,
+          json: async () => ({ metadata: { id: "agentkit-a1b2c3d4", name: "Research", revision: 2 } }),
+        } as Response;
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          draft: {
+            metadata: { id: "agentkit-a1b2c3d4", name: "Research", revision: 1 },
+            spec: {
+              runtime: { type: "langgraph", projectPath: ".", entryPoint: "graph.py", agentVariable: "app" },
+              instructions: { system: "你是一个研究助手。" },
+              bindings: {
+                modelProfileId: "model-a",
+                modelProfileIds: ["model-a", "model-b"],
+                skills: [{ resourceId: "skill-a" }],
+                mcpServers: [{ resourceId: "mcp-a" }],
+                tools: [{ resourceId: "tool-a" }],
+              },
+            },
+          },
+          bindingProjection: {
+            unresolvedMcpServers: [{ name: "legacy-private", reason: "not-in-resource-catalog" }],
+          },
+        }),
+      } as Response;
+    });
+    const catalog = [
+      { resourceId: "model-a", kind: "model", name: "model-a", displayName: "Model A", version: "1", status: "ready", contract: { model: "model-a" } },
+      { resourceId: "model-b", kind: "model", name: "model-b", displayName: "Model B", version: "1", status: "ready", contract: { model: "model-b" } },
+      { resourceId: "skill-a", kind: "skill", name: "skill-a", displayName: "Review Skill", version: "1", status: "ready" },
+      { resourceId: "mcp-a", kind: "mcp", name: "mcp-a", displayName: "Review MCP", version: "1", status: "ready" },
+      { resourceId: "tool-a", kind: "tool", name: "tool-a", displayName: "Review Tool", version: "1", status: "ready" },
+    ];
+
+    render(<AgentEditor agentId="agentkit-a1b2c3d4" catalog={catalog} onSaved={vi.fn()} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "能力绑定" }));
+    expect(screen.getAllByText("Model A").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText("Model B")).toBeVisible();
+    expect(screen.getByText("Review Skill")).toBeVisible();
+    expect(screen.getByText("Review MCP")).toBeVisible();
+    expect(screen.getByText("Review Tool")).toBeVisible();
+    expect(screen.getByText(/legacy-private.*资源目录/)).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "保存修改" }));
+    await waitFor(() => {
+      const updateCall = mockedFetch.mock.calls.find(([, init]) => init?.method === "PUT");
+      const spec = JSON.parse(String(updateCall?.[1]?.body));
+      expect(spec.bindings.modelProfileIds).toEqual(["model-a", "model-b"]);
+      expect(spec.bindings.skills).toEqual([{ resourceId: "skill-a", enabled: true }]);
+      expect(spec.bindings.mcpServers).toEqual([{ resourceId: "mcp-a", enabled: true }]);
+      expect(spec.bindings.tools).toEqual([{ resourceId: "tool-a", enabled: true }]);
     });
   });
 });

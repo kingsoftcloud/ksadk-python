@@ -103,6 +103,21 @@ def test_manifest_rejects_default_model_outside_allowed_models() -> None:
         _manifest(models=["kimi-k2-code"])
 
 
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"skills": [""]},
+        {"skills": ["skill-a", "skill-a"]},
+        {"mcp_servers": [{"name": "missing-url"}]},
+    ],
+)
+def test_manifest_validates_skill_and_mcp_bindings_without_a_model_allowlist(
+    override: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError):
+        _manifest(**override)
+
+
 def test_repository_keeps_one_yaml_manifest_per_local_agent(tmp_path: Path) -> None:
     """Break caught: saving a second Agent overwrites the root Agent YAML."""
 

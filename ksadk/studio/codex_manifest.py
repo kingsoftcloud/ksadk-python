@@ -55,21 +55,20 @@ class CodexAgentManifest(BaseModel):
 
     @model_validator(mode="after")
     def validate_models(self) -> "CodexAgentManifest":
-        if self.models is None:
-            return self
-        normalized: list[str] = []
-        for value in self.models:
-            model = str(value).strip()
-            if not model or len(model) > 256:
-                raise ValueError("models 中的模型名称长度必须为 1..256")
-            if model in normalized:
-                raise ValueError("models 不能包含重复模型")
-            normalized.append(model)
-        if not normalized:
-            raise ValueError("models 至少包含一个模型")
-        if self.model not in normalized:
-            raise ValueError("默认模型 model 必须包含在 models 中")
-        self.models = normalized
+        if self.models is not None:
+            normalized: list[str] = []
+            for value in self.models:
+                model = str(value).strip()
+                if not model or len(model) > 256:
+                    raise ValueError("models 中的模型名称长度必须为 1..256")
+                if model in normalized:
+                    raise ValueError("models 不能包含重复模型")
+                normalized.append(model)
+            if not normalized:
+                raise ValueError("models 至少包含一个模型")
+            if self.model not in normalized:
+                raise ValueError("默认模型 model 必须包含在 models 中")
+            self.models = normalized
         if self.skills is not None:
             seen: set[str] = set()
             deduped: list[str] = []
