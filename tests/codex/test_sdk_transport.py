@@ -248,6 +248,34 @@ async def test_runtime_real_transport_same_thread_resume_uses_payload(tmp_path: 
 
 
 @pytest.mark.asyncio
+async def test_runtime_close_after_terminal_does_not_interrupt_finished_turn(tmp_path: Path):
+    client = AsyncCodexClient(config=_config(tmp_path))
+    runtime = CodexRuntimeAdapter(client)
+    handle = await runtime.start(StartRequest(input="complete", user_id="u", session_id="s"))
+    stream = runtime.stream(handle)
+    events = []
+    try:
+        while True:
+            event = await anext(stream)
+            events.append(event)
+            if event.event_type == "run.completed":
+                break
+        pid = int((tmp_path / "pid").read_text(encoding="utf-8"))
+        await runtime.close(handle)
+        await runtime.close(handle)
+    finally:
+        await stream.aclose()
+
+    await _wait_for_process_exit(pid)
+    requests = [
+        json.loads(line)
+        for line in (tmp_path / "requests.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert any(event.event_type == "run.completed" for event in events)
+    assert "turn/interrupt" not in {row["method"] for row in requests}
+
+
+@pytest.mark.asyncio
 async def test_runtime_events_preserve_the_caller_scope(tmp_path: Path):
     client = AsyncCodexClient(config=_config(tmp_path))
     runtime = CodexRuntimeAdapter(client)

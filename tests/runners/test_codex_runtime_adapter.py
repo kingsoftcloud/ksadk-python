@@ -127,6 +127,7 @@ class _ControllableCodex(CodexClient):
         self._seq = 0
         self.resolved_approvals: list[tuple[str, str]] = []
         self.resolved_interactions: list[tuple[str, dict]] = []
+        self.close_calls = 0
 
     async def start_thread(self, config=None) -> str:
         self._seq += 1
@@ -172,7 +173,7 @@ class _ControllableCodex(CodexClient):
         return True
 
     async def close(self) -> None:
-        return None
+        self.close_calls += 1
 
     async def resolve_approval(self, approval_id: str, decision: str) -> bool:
         self.resolved_approvals.append((approval_id, decision))
@@ -492,6 +493,51 @@ async def test_sdk_plan_bridge_injects_app_server_collaboration_mode_payload() -
 
 
 # ---- 契约 1:cancel 中断活跃 turn(真实 SDK handle.interrupt)+ 不持久化被中断 session ----
+
+
+@pytest.mark.asyncio
+async def test_close_after_terminal_event_is_idempotent_without_interrupt():
+    client = _ControllableCodex(block=False)
+    adapter = CodexRuntimeAdapter(client)
+    handle = await adapter.start(StartRequest(input="go", user_id="u", session_id="s"))
+    stream = adapter.stream(handle)
+    try:
+        while True:
+            event = await anext(stream)
+            if isinstance(event, RunCompleted):
+                break
+
+        # Model the Kernel worker: it stops consuming immediately after the
+        # canonical terminal fact, before the provider iterator reaches EOF.
+        assert adapter._threads[handle.run_id].streaming is True
+        await adapter.close(handle)
+        await adapter.close(handle)
+    finally:
+        await stream.aclose()
+
+    assert client.interrupted == []
+    assert client.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_close_interrupts_an_active_turn_once():
+    client = _ControllableCodex()
+    adapter = CodexRuntimeAdapter(client)
+    handle = await adapter.start(StartRequest(input="go", user_id="u", session_id="s"))
+    events: list = []
+    consume = asyncio.create_task(_run_stream(adapter, handle, events))
+    for _ in range(100):
+        thread = adapter._threads.get(handle.run_id)
+        if thread is not None and thread.streaming:
+            break
+        await asyncio.sleep(0.01)
+
+    await adapter.close(handle)
+    await adapter.close(handle)
+    await asyncio.wait_for(consume, timeout=2)
+
+    assert client.interrupted == [handle.run_id]
+    assert client.close_calls == 1
 
 
 @pytest.mark.asyncio

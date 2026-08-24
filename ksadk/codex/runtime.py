@@ -38,6 +38,7 @@ from ksadk.events.canonical import (
     InteractionRequested,
     InteractionResolved,
     RunCanceled,
+    RunCompleted,
     RunFailed,
     RunInterrupted,
     RuntimeEvent,
@@ -120,6 +121,7 @@ class CodexRuntimeAdapter(RuntimeAdapter):
         # 可观测:最近一次 cancel 级联丢弃的审批集(contract test 断言用)。
         self.last_cancel_dropped_approvals: set[str] = set()
         self._seq = 0
+        self._closed = False
 
     # ---- capability matrix(v1,诚实声明) ----
 
@@ -351,12 +353,16 @@ class CodexRuntimeAdapter(RuntimeAdapter):
         )
 
     async def close(self, handle: RunHandle) -> None:
+        if self._closed:
+            return
+        self._closed = True
         thread = self._threads.pop(handle.run_id, None)
         self._requests.pop(handle.run_id, None)
-        if thread is not None:
+        active = thread is not None and thread.streaming and not thread.done
+        if active:
             thread.interrupt_event.set()
         try:
-            if thread is not None and thread.streaming:
+            if active:
                 await self._client.interrupt_active_turn(thread.thread_id)
         finally:
             # AsyncCodex.close owns terminate/wait/kill for the app-server child.
@@ -589,6 +595,14 @@ class CodexRuntimeAdapter(RuntimeAdapter):
                         call_id = getattr(event.response, "call_id", None)
                         if call_id:
                             thread.pending_approvals.discard(str(call_id))
+                    if isinstance(event, (RunCompleted, RunFailed, RunCanceled)):
+                        # The Kernel stops consuming as soon as it persists a
+                        # canonical terminal fact, so generator ``finally`` may
+                        # not run before worker cleanup calls ``close``. Mark the
+                        # native turn terminal before yielding that fact; close
+                        # must terminate the transport without sending a stale
+                        # turn/interrupt RPC to an already-completed app-server.
+                        thread.done = True
                     yield event
         finally:
             waiter_tasks = [task for task in (chunk_task, interrupt_task) if task is not None]
