@@ -204,7 +204,14 @@ class CodexAgentService:
             )
         resolved = spec.model_copy(deep=True)
         resolved.runtime = current.spec.runtime
-        self.ensure_bindings_supported(resolved)
+        # 早期 Studio 曾把 ksadk Tool 写进 Codex 草稿，尽管 Codex Runtime
+        # 从未执行这些绑定。允许原样保存这类 dormant 历史数据，避免用户只改
+        # Prompt/Model 时被迫丢绑定；新增、删除或修改仍按当前能力矩阵拒绝。
+        if (
+            resolved.bindings.tools != current.spec.bindings.tools
+            or resolved.capabilities.tools != current.spec.capabilities.tools
+        ):
+            self.ensure_bindings_supported(resolved)
         manifest = self._manifest(agent_id, resolved, current=snapshot.manifest)
         updated_snapshot = self.studio.codex_manifests.save(manifest)
         updated = AgentDraft(

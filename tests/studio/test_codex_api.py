@@ -23,7 +23,7 @@ from ksadk.runtime import RunHandle, StartRequest
 from ksadk.studio.api import RunRequest, create_studio_app
 from ksadk.studio.cloud import InMemoryCloudGateway
 from ksadk.studio.codex_manifest import CodexAgentManifest
-from ksadk.studio.contracts import MCPServerRef, ModelSpec, RunStatus
+from ksadk.studio.contracts import CapabilityBinding, MCPServerRef, ModelSpec, RunStatus
 from ksadk.studio.service import StudioService
 from tests.studio.runtime_adapter_fixtures import (
     RuntimeFixture,
@@ -1096,6 +1096,69 @@ def test_codex_rejects_ksadk_tool_binding_instead_of_pretending_to_execute(
             "/api/v1/agents/review-helper/bindings",
             headers={"If-Match": str(created["metadata"]["revision"])},
             json={"tools": [{"resourceId": tool["resourceId"]}]},
+        )
+        assert rejected.status_code == 422
+        assert rejected.json()["error"]["code"] == "TOOL_RUNTIME_INCOMPATIBLE"
+
+
+def test_codex_update_preserves_dormant_historical_tool_but_rejects_changes(
+    tmp_path: Path,
+) -> None:
+    service = StudioService(
+        tmp_path,
+        codex_runtime_inspector=_inspector,
+        runtime_executor=RuntimeFixture(standard_codex_events).executor,
+    )
+    app = create_studio_app(tmp_path, service=service, security_enabled=False)
+
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/v1/agents",
+            json={
+                "id": "legacy-tool-codex",
+                "name": "Legacy Tool Codex",
+                "spec": {
+                    "runtime": {"type": "codex", "version": "0.144.4"},
+                    "instructions": {"system": "Old prompt.", "task": ""},
+                    "bindings": {},
+                },
+            },
+        ).json()
+        historical = service.codex_drafts.get("legacy-tool-codex")
+        assert historical is not None
+        historical.spec.bindings.tools = [
+            CapabilityBinding(
+                resource_id="tool-legacy",
+                approval="policy",
+                config={"mode": "safe"},
+            )
+        ]
+        service.codex_drafts.save(historical)
+
+        detail = client.get("/api/v1/agents/legacy-tool-codex").json()["draft"]
+        detail["spec"]["instructions"]["system"] = "Updated prompt."
+        updated = client.put(
+            "/api/v1/agents/legacy-tool-codex",
+            headers={"If-Match": str(created["metadata"]["revision"])},
+            json=detail["spec"],
+        )
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["metadata"]["revision"] == created["metadata"]["revision"] + 1
+        assert updated.json()["spec"]["bindings"]["tools"] == [
+            {
+                "resourceId": "tool-legacy",
+                "enabled": True,
+                "approval": "policy",
+                "config": {"mode": "safe"},
+            }
+        ]
+
+        changed_spec = updated.json()["spec"]
+        changed_spec["bindings"]["tools"][0]["resourceId"] = "tool-changed"
+        rejected = client.put(
+            "/api/v1/agents/legacy-tool-codex",
+            headers={"If-Match": str(updated.json()["metadata"]["revision"])},
+            json=changed_spec,
         )
         assert rejected.status_code == 422
         assert rejected.json()["error"]["code"] == "TOOL_RUNTIME_INCOMPATIBLE"
