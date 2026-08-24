@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
@@ -57,6 +58,8 @@ ENV_KERNEL_ENABLED = "KSADK_AGENT_KERNEL"
 ENV_KERNEL_ENABLED_PLATFORM = "AGENT_KERNEL_ENABLED"
 
 _TRUTHY = {"1", "true", "yes", "on"}
+
+logger = logging.getLogger(__name__)
 
 _kernel: Any | None = None
 
@@ -806,10 +809,11 @@ def _build_kernel_router() -> Any:
             )
         try:
             return AgentControlPermit.model_validate(raw)
-        except Exception as exc:
+        except Exception:
+            logger.info("rejected malformed hosted permit", exc_info=True)
             return JSONResponse(
                 status_code=403,
-                content={"error": {"Code": "invalid_permit", "Message": str(exc)}},
+                content={"error": {"Code": "invalid_permit", "Message": "permit 格式无效"}},
             )
 
     @router.post(KERNEL_INGRESS_SUBMIT_PATH)
@@ -823,10 +827,11 @@ def _build_kernel_router() -> Any:
         permit_data = body.get("permit")
         try:
             command = AgentControlCommand.model_validate(body.get("command") or body)
-        except Exception as exc:
+        except Exception:
+            logger.info("rejected malformed agent control command", exc_info=True)
             return JSONResponse(
                 status_code=400,
-                content={"error": {"Code": "invalid_command", "Message": str(exc)}},
+                content={"error": {"Code": "invalid_command", "Message": "command 格式无效"}},
             )
         if _is_hosted():
             permit = _hosted_permit(request, permit_data)
@@ -835,10 +840,11 @@ def _build_kernel_router() -> Any:
         elif permit_data:
             try:
                 permit = AgentControlPermit.model_validate(permit_data)
-            except Exception as exc:
+            except Exception:
+                logger.info("rejected malformed local permit", exc_info=True)
                 return JSONResponse(
                     status_code=403,
-                    content={"error": {"Code": "invalid_permit", "Message": str(exc)}},
+                    content={"error": {"Code": "invalid_permit", "Message": "permit 格式无效"}},
                 )
         else:
             # 无 permit（gateway 内网转发 / 本地灰度）：trusted context 进程内签发。
@@ -881,10 +887,11 @@ def _build_kernel_router() -> Any:
         body = await request.json()
         try:
             query = AgentStatusQuery.model_validate(body.get("query") or body)
-        except Exception as exc:
+        except Exception:
+            logger.info("rejected malformed agent status query", exc_info=True)
             return JSONResponse(
                 status_code=400,
-                content={"error": {"Code": "invalid_query", "Message": str(exc)}},
+                content={"error": {"Code": "invalid_query", "Message": "query 格式无效"}},
             )
         if _is_hosted():
             permit = _hosted_permit(request, body.get("permit"))
