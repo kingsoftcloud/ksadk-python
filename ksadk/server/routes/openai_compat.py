@@ -6,6 +6,7 @@ import uuid
 from collections.abc import Mapping
 from typing import Any, Dict, List, Optional
 
+from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -20,6 +21,7 @@ from ksadk.conversations.runtime_streaming import (
     stream_runtime_conversation_turn,
     stream_runtime_responses_conversation_turn,
 )
+from ksadk.kernel.ingress import kernel_route_active
 from ksadk.runtime.conversation_execution import invoke_runtime_conversation_once
 from ksadk.server.factory import get_runtime_execution
 
@@ -31,7 +33,6 @@ from .kernel_ingress import (
     kernel_conversation_turn,
     kernel_stream_response,
 )
-from ksadk.kernel.ingress import kernel_route_active
 from .models import (
     ResponsesRequest,
     _clean_optional_string,
@@ -67,6 +68,24 @@ async def list_openai_models():
     """Expose the current model catalog through the OpenAI-compatible path."""
 
     payload = await _build_models_payload()
+    try:
+        _executor, launch_context = get_runtime_execution()
+    except HTTPException:
+        launch_context = None
+    if launch_context is not None:
+        config = dict(launch_context.config)
+        raw_allowed = config.get("allowed_models") or config.get("allowedModels")
+        if isinstance(raw_allowed, (list, tuple, set)):
+            allowed = {str(item).strip() for item in raw_allowed if str(item).strip()}
+            default_model = str(config.get("model") or "").strip()
+            if default_model:
+                allowed.add(default_model)
+            payload = dict(payload)
+            payload["data"] = [
+                item
+                for item in payload.get("data", [])
+                if str(item.get("id") or "").strip() in allowed
+            ]
     return {
         "object": "list",
         "data": payload.get("data", []),
@@ -91,11 +110,7 @@ async def responses(request: ResponsesRequest):
         session_id=resolved_session_id,
         resume_input=resume_input,
     )
-    messages = (
-        []
-        if resume_input is not None
-        else normalize_responses_input(request.input)
-    )
+    messages = [] if resume_input is not None else normalize_responses_input(request.input)
     custom_metadata, request_metadata = _split_custom_metadata(request.metadata)
     if request.previous_response_id:
         request_metadata["previous_response_id"] = request.previous_response_id
@@ -114,9 +129,7 @@ async def responses(request: ResponsesRequest):
 
     if request.stream:
         runtime_preparation = (
-            None
-            if resume_input is not None
-            else await executor.prepare_start(launch_context)
+            None if resume_input is not None else await executor.prepare_start(launch_context)
         )
         resume_key = _detached_resume_key_from_input(resolved_session_id, resume_input)
         _reject_if_detached_resume_active(resume_key)

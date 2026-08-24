@@ -568,7 +568,7 @@ export function CloudChatWorkspace({
           <div><strong>{agentName}</strong><span>云端 Agent · {agentId}</span></div>
         </header>
         <div ref={messageListRef} className="chat-message-list" aria-live="polite">
-          {!currentSessionId && !loading && <div className="chat-empty"><span className="chat-empty-icon"><Bot /></span><h2>开始一段云端会话</h2><p>消息会由本地 Studio 通过受权的云端控制面发送。</p></div>}
+          {!currentSessionId && !loading && <div className="chat-empty"><span className="chat-empty-icon"><Bot /></span><h2>开始一段云端会话</h2></div>}
           {sessions.find(session => session.id === currentSessionId)?.state === "failed" && <div className="cloud-chat-run-warning"><ShieldAlert size={15} />这次云端运行未完成；可新建会话后重试。若持续失败，请到可观测页面按会话查看记录。</div>}
           {messages.map(message => (
             <article key={message.id} className={`message ${message.role}${message.pending ? " pending" : ""}`}>

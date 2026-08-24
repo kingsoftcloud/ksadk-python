@@ -19,6 +19,7 @@ execution（同一 client 实例）；control lookup 永远按 durable run id。
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
@@ -78,9 +79,7 @@ from ksadk.runtime.adapter import (
 logger = logging.getLogger(__name__)
 
 
-WorkOutcome = Literal[
-    "idle", "claimed", "completed", "retryable_failure", "terminal_failure"
-]
+WorkOutcome = Literal["idle", "claimed", "completed", "retryable_failure", "terminal_failure"]
 
 
 @dataclass
@@ -185,9 +184,7 @@ class AgentKernelWorker:
         成功后由 RecoveryCoordinator 调用；provider 按 runtime_type 解析）。"""
 
         if provider is None:
-            provider = self._providers.get(
-                handle.runtime_type, UnavailableInteractionProvider()
-            )
+            provider = self._providers.get(handle.runtime_type, UnavailableInteractionProvider())
         execution = ActiveExecution(
             durable_run_id=durable_run_id,
             runtime_run_id=runtime_run_id,
@@ -212,10 +209,7 @@ class AgentKernelWorker:
         accepted/claimed Inbox messages opens a stale-fence window mid-stream.
         """
 
-        return {
-            execution.handle.session_id
-            for execution in self._executions.values()
-        }
+        return {execution.handle.session_id for execution in self._executions.values()}
 
     async def run_once(
         self,
@@ -228,9 +222,7 @@ class AgentKernelWorker:
             key = (agent_instance_id, session_id)
             lock = self._session_locks.setdefault(key, asyncio.Lock())
             async with lock:
-                return await self._run_once(
-                    agent_instance_id, activation, session_id=session_id
-                )
+                return await self._run_once(agent_instance_id, activation, session_id=session_id)
         # Compatibility for direct/test callers written before the internal
         # scheduler API became session-scoped.  Production callers below all
         # provide ``session_id``; the frozen ActivationLease JSON is unchanged.
@@ -258,17 +250,13 @@ class AgentKernelWorker:
         for message in sorted(pending, key=lambda m: m.accepted_seq):
             if session_id is not None and message.session_id != session_id:
                 continue
-            lease = await self._store.current_lease(
-                agent_instance_id, message.session_id
-            )
+            lease = await self._store.current_lease(agent_instance_id, message.session_id)
             if lease is None or lease.activation_id != activation.activation_id:
                 continue  # 该 session 归其它 activation（或无人）持有
             if message.command is None:  # pragma: no cover - defensive
                 continue
             if message.command.command_type == "enqueue":
-                active = await self._store.find_active_run(
-                    agent_instance_id, message.session_id
-                )
+                active = await self._store.find_active_run(agent_instance_id, message.session_id)
                 if active is not None:
                     continue  # enqueue 保持排队
             eligible = message
@@ -328,9 +316,7 @@ class AgentKernelWorker:
                 await self._store.discard_claim(message_id, expected_fence=fence)
                 return WorkResult(outcome="completed", message_id=message_id)
             if error.retryable:
-                return WorkResult(
-                    outcome="retryable_failure", message_id=message_id
-                )
+                return WorkResult(outcome="retryable_failure", message_id=message_id)
             return WorkResult(outcome="terminal_failure", message_id=message_id)
         except Exception:
             # 未知异常绝不 ack 为成功：消息保持 claimed。
@@ -343,9 +329,7 @@ class AgentKernelWorker:
         return WorkResult(outcome="completed", message_id=message_id, run_id=run_id)
 
     async def _message_id_for(self, command: AgentControlCommand) -> str:
-        message = await self._store.load_by_idempotency(
-            command.session_id, command.idempotency_key
-        )
+        message = await self._store.load_by_idempotency(command.session_id, command.idempotency_key)
         assert message is not None  # claim 刚发生
         return message.message_id
 
@@ -360,15 +344,11 @@ class AgentKernelWorker:
         return await self._control_active_run(command, activation)
 
     # enqueue -> adapter.start，仅在没有 active Run 时到达这里。
-    async def _start_run(
-        self, command: AgentControlCommand, activation: ActivationLease
-    ) -> str:
+    async def _start_run(self, command: AgentControlCommand, activation: ActivationLease) -> str:
         from ksadk.runtime.executor import handle_digest
 
         fence = activation.fencing_token
-        guard = ActivationWriteGuard(
-            activation_id=activation.activation_id, fencing_token=fence
-        )
+        guard = ActivationWriteGuard(activation_id=activation.activation_id, fencing_token=fence)
         run_id = new_message_id()
         adapter = self._adapter_factory()
         pending = RunRecord(
@@ -377,21 +357,13 @@ class AgentKernelWorker:
             session_id=command.session_id,
             state=RunState.PENDING,
         )
-        created = await self._store.save_run_transition(
-            pending, expected_fence=fence
-        )
-        continuation_metadata = await self._session_continuation_metadata(
-            command.session_id
-        )
+        created = await self._store.save_run_transition(pending, expected_fence=fence)
+        continuation_metadata = await self._session_continuation_metadata(command.session_id)
         defaults = self._start_request_defaults
         runtime_options = command.payload.get("runtime_options")
         if not isinstance(runtime_options, Mapping):
             runtime_options = {}
-        default_model = (
-            str(defaults["model"])
-            if defaults.get("model") is not None
-            else None
-        )
+        default_model = str(defaults["model"]) if defaults.get("model") is not None else None
         requested_model = str(runtime_options.get("model") or "").strip()
         allowed_models = {
             str(item).strip()
@@ -416,9 +388,7 @@ class AgentKernelWorker:
                 input=command.payload.get("content"),
                 user_id=str(command.tenant_id or "agent-kernel"),
                 session_id=command.session_id,
-                agent_id=str(
-                    defaults.get("agent_id") or command.agent_instance_id
-                ),
+                agent_id=str(defaults.get("agent_id") or command.agent_instance_id),
                 model=selected_model,
                 config=request_config,
                 # durable run_id 优先传给 adapter；adapter 不认时以
@@ -473,20 +443,14 @@ class AgentKernelWorker:
         from ksadk.events.canonical import ContinuationCreated, ContinuationResumed
         from ksadk.events.canonical_store import RuntimeEventStore
 
-        events = await RuntimeEventStore(self._session_events).list(
-            session_id, limit=256
-        )
+        events = await RuntimeEventStore(self._session_events).list(session_id, limit=256)
         for event in reversed(events):
             if not isinstance(event, (ContinuationCreated, ContinuationResumed)):
                 continue
             if event.continuation_kind != "thread_resume":
                 continue
             ref = getattr(event, "ref", None)
-            thread_id = (
-                str(ref.get("thread_id") or "").strip()
-                if isinstance(ref, dict)
-                else ""
-            )
+            thread_id = str(ref.get("thread_id") or "").strip() if isinstance(ref, dict) else ""
             if not thread_id:
                 thread_id = str(event.source.metadata.get("thread_id") or "").strip()
             if thread_id:
@@ -510,15 +474,11 @@ class AgentKernelWorker:
         updated = replace(execution, stream_task=task, stream_guard=guard)
         self._executions[updated.durable_run_id] = updated
         task.add_done_callback(
-            lambda done, run_id=updated.durable_run_id: self._observe_stream_task(
-                run_id, done
-            )
+            lambda done, run_id=updated.durable_run_id: self._observe_stream_task(run_id, done)
         )
         return updated
 
-    def _observe_stream_task(
-        self, run_id: str, task: asyncio.Task[None]
-    ) -> None:
+    def _observe_stream_task(self, run_id: str, task: asyncio.Task[None]) -> None:
         if task.cancelled():
             return
         try:
@@ -603,9 +563,7 @@ class AgentKernelWorker:
             # 延迟导入：ksadk.events 反向依赖 kernel.contracts，避免模块环。
             from ksadk.events.canonical_store import RuntimeEventStore
 
-            runtime_store = RuntimeEventStore(
-                self._session_events, session_id=run.session_id
-            )
+            runtime_store = RuntimeEventStore(self._session_events, session_id=run.session_id)
         current_run = run
         terminal_state: RunState | None = None
         last_source: SourceRef | None = None
@@ -667,9 +625,7 @@ class AgentKernelWorker:
         # otherwise a Codex approval continuation finishes successfully but
         # remains permanently WAITING because this task still sees its stale
         # pre-response snapshot.
-        latest_run = await self._store.find_active_run(
-            run.agent_instance_id, run.session_id
-        )
+        latest_run = await self._store.find_active_run(run.agent_instance_id, run.session_id)
         if latest_run is not None and latest_run.run_id == current_run.run_id:
             current_run = latest_run
 
@@ -740,9 +696,10 @@ class AgentKernelWorker:
         """Persist one framework interaction as the durable ledger authority."""
 
         from ksadk.events.canonical import ApprovalRequest, InteractionRequested
-        from ksadk.interaction.contracts import InteractionRecord
+        from ksadk.interaction.contracts import InteractionPresentation, InteractionRecord
 
         assert isinstance(event, InteractionRequested)
+        presentation = None
         if isinstance(event.request, ApprovalRequest):
             request_schema = {
                 "type": "object",
@@ -755,6 +712,25 @@ class AgentKernelWorker:
                 "required": ["decision"],
             }
             native_target = {"call_id": event.request.call_id or event.interaction_id}
+            detail = event.request.detail if isinstance(event.request.detail, Mapping) else {}
+            visible_arguments = {
+                key: detail[key]
+                for key in ("command", "cwd", "reason", "grantRoot", "proposedExecpolicyAmendment")
+                if key in detail and detail[key] is not None
+            }
+            presentation = InteractionPresentation(
+                title={
+                    "command_execution": "run_command",
+                    "file_change": "apply_patch",
+                    "permissions": "request_permission",
+                    "dynamic_tool_call": "tool_call",
+                }.get(event.request.kind, event.request.kind),
+                description=json.dumps(
+                    {"arguments": visible_arguments},
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+            )
         else:
             request_schema = dict(event.request.schema_)
             native_target = {"call_id": event.interaction_id}
@@ -762,9 +738,7 @@ class AgentKernelWorker:
             value = execution.handle.native_ref.get(key)
             if value is not None:
                 native_target[key] = str(value)
-        provider_id = (
-            execution.interaction_provider.provider_id or execution.handle.runtime_type
-        )
+        provider_id = execution.interaction_provider.provider_id or execution.handle.runtime_type
         record = InteractionRecord(
             interaction_id=event.interaction_id,
             tenant_id=str(run.metadata.get("tenant_id") or ""),
@@ -774,6 +748,7 @@ class AgentKernelWorker:
             kind=event.interaction_kind,
             request_schema=request_schema,
             created_at=datetime.fromtimestamp(event.timestamp, UTC).isoformat(),
+            presentation=presentation,
             provider_id=provider_id,
             native_target=native_target,
             continuation_metadata={"runtime_run_id": execution.runtime_run_id},
@@ -791,9 +766,7 @@ class AgentKernelWorker:
         self, command: AgentControlCommand, activation: ActivationLease
     ) -> str | None:
         fence = activation.fencing_token
-        active = await self._store.find_active_run(
-            command.agent_instance_id, command.session_id
-        )
+        active = await self._store.find_active_run(command.agent_instance_id, command.session_id)
         if active is None:
             raise UnsupportedControlError(
                 "runtime_no_active_run",
@@ -826,9 +799,7 @@ class AgentKernelWorker:
                 kind=RESUME_TARGET_KINDS[target_dict["kind"]],
                 id=str(target_dict["id"]),
             )
-            resumed = await adapter.resume(
-                handle, target, AdapterResumePayload(kind="free_text")
-            )
+            resumed = await adapter.resume(handle, target, AdapterResumePayload(kind="free_text"))
             execution = self._replace_handle(execution, resumed)
             self._start_stream(
                 execution,
@@ -841,9 +812,7 @@ class AgentKernelWorker:
         elif verb == "submit_interaction":
             await self._submit_interaction(command, activation, active, execution)
         elif verb == "steer":
-            await adapter.steer(
-                handle, ContractSteerPayload.model_validate(dict(command.payload))
-            )
+            await adapter.steer(handle, ContractSteerPayload.model_validate(dict(command.payload)))
         elif verb == "inject":
             await adapter.inject(
                 handle, ContractInjectPayload.model_validate(dict(command.payload))
@@ -927,9 +896,7 @@ class AgentKernelWorker:
         # provider 已接受，才在 ledger 收口 InteractionResolved（同一 fence）。
         await self._store.resolve(  # type: ignore[attr-defined]
             submission,
-            guard=ActivationWriteGuard(
-                activation_id=activation.activation_id, fencing_token=fence
-            ),
+            guard=ActivationWriteGuard(activation_id=activation.activation_id, fencing_token=fence),
         )
         # A durable response returns a waiting run to execution.  The old live
         # stream usually remains open (Codex); checkpoint providers normally
@@ -950,9 +917,7 @@ class AgentKernelWorker:
                 ),
             )
 
-    def _replace_handle(
-        self, execution: ActiveExecution, handle: RunHandle
-    ) -> ActiveExecution:
+    def _replace_handle(self, execution: ActiveExecution, handle: RunHandle) -> ActiveExecution:
         if handle is execution.handle or handle == execution.handle:
             return execution
         if execution.stream_task is not None and not execution.stream_task.done():
@@ -967,9 +932,7 @@ class AgentKernelWorker:
         self._executions[execution.durable_run_id] = updated
         return updated
 
-    async def _transition_run(
-        self, run: RunRecord, state: RunState, fence: int
-    ) -> RunRecord:
+    async def _transition_run(self, run: RunRecord, state: RunState, fence: int) -> RunRecord:
         return await self._store.save_run_transition(
             run.model_copy(update={"state": state}), expected_fence=fence
         )

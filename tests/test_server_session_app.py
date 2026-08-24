@@ -297,8 +297,7 @@ class _ExplicitRuntimeAppFixture:
     @staticmethod
     def _execution(runner: BaseRunner):
         detected_runtime_type = str(
-            getattr(getattr(runner.detection_result, "type", None), "value", None)
-            or "fixture"
+            getattr(getattr(runner.detection_result, "type", None), "value", None) or "fixture"
         ).lower()
         context = RuntimeLaunchContext(
             runtime_type=detected_runtime_type,
@@ -1611,7 +1610,10 @@ async def test_run_sse_stream_emits_authoritative_final_event_when_output_overri
     # canonical switch: commentary-phase text deltas project as reasoning deltas
     # (response.reasoning.delta with "delta" key), final output projects as a
     # message with content.parts[0].text.
-    assert [payload.get("delta") or payload.get("content", {}).get("parts", [{}])[0].get("text", "") for payload in payloads] == [
+    assert [
+        payload.get("delta") or payload.get("content", {}).get("parts", [{}])[0].get("text", "")
+        for payload in payloads
+    ] == [
         "hel",
         "lo",
         "goodbye",
@@ -1626,7 +1628,17 @@ async def test_run_sse_stream_emits_authoritative_final_event_when_output_overri
     # agent_id for projected run_status. Text deltas create item.started +
     # item.updated; final creates item.started + item.completed.
     assert [event.author for event in events] == [
-        "user", "ksadk", "demo-agent", "ksadk", "ksadk", "ksadk", "ksadk", "ksadk", "ksadk", "ksadk", "demo-agent"
+        "user",
+        "ksadk",
+        "demo-agent",
+        "ksadk",
+        "ksadk",
+        "ksadk",
+        "ksadk",
+        "ksadk",
+        "ksadk",
+        "ksadk",
+        "demo-agent",
     ]
     assert [event.event_type for event in events] == [
         "user_message",
@@ -1710,7 +1722,9 @@ async def test_run_sse_stream_emits_compaction_status_events(monkeypatch):
         "response.compaction.start",
         "response.compaction.done",
     ]
-    assert event_names.count("message") >= 1  # canonical switch: text deltas project as reasoning, only final answer yields message
+    assert (
+        event_names.count("message") >= 1
+    )  # canonical switch: text deltas project as reasoning, only final answer yields message
 
     persisted_events = await service.get_events(session.id)
     # canonical switch: text.delta → item.started+item.updated, text.completed
@@ -2312,6 +2326,49 @@ async def test_openai_models_route_exposes_current_catalog(monkeypatch):
     assert payload["object"] == "list"
     assert payload["current"] == "glm-5.1"
     assert [item["id"] for item in payload["data"]] == ["glm-5.1"]
+
+
+@pytest.mark.asyncio
+async def test_openai_models_route_hides_models_not_admitted_by_manifest(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    monkeypatch.setenv("OPENAI_MODEL_NAME", "glm-5.1")
+    monkeypatch.setattr(
+        "ksadk.server.routes.openai_compat._build_models_payload",
+        lambda: asyncio.sleep(
+            0,
+            result={
+                "current": "glm-5.1",
+                "source": "test",
+                "data": [
+                    {"id": "glm-5.1"},
+                    {"id": "qwen3.7-flash"},
+                    {"id": "unbound-model"},
+                ],
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        "ksadk.server.routes.openai_compat.get_runtime_execution",
+        lambda: (
+            object(),
+            SimpleNamespace(
+                config={
+                    "model": "qwen3.7-flash",
+                    "allowed_models": ["qwen3.7-flash", "glm-5.1"],
+                }
+            ),
+        ),
+    )
+    transport = httpx.ASGITransport(app=server_app_module.app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.get("/v1/models")
+
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()["data"]] == [
+        "glm-5.1",
+        "qwen3.7-flash",
+    ]
 
 
 @pytest.mark.asyncio
@@ -3167,7 +3224,10 @@ async def test_responses_events_are_visible_through_runtime_local_list_session_e
     ]
     assert [event["Author"] for event in message_events] == ["user", "ksadk"]
     assert message_events[0]["Content"]["parts"][0]["text"] == "hello"
-    assert message_events[1]["Content"]["runtime_event"]["snapshot"]["parts"][0]["text"] == "assistant says hi"
+    assert (
+        message_events[1]["Content"]["runtime_event"]["snapshot"]["parts"][0]["text"]
+        == "assistant says hi"
+    )
 
 
 @pytest.mark.asyncio
@@ -5643,11 +5703,10 @@ async def test_background_run_exposes_partial_assistant_text_to_session_history(
         events = await service.get_events("sess-partial-history")
         # The canonical streaming path persists partial assistant text as
         # item.updated (message delta) events.
-        deltas = [
-            event for event in events
-            if event.event_type == "item.updated"
-        ]
-        assert len(deltas) >= 1, f"expected >=1 item.updated, got {len(deltas)}; event types: {[e.event_type for e in events]}"
+        deltas = [event for event in events if event.event_type == "item.updated"]
+        assert len(deltas) >= 1, (
+            f"expected >=1 item.updated, got {len(deltas)}; event types: {[e.event_type for e in events]}"
+        )
         # The partial text "第一段正在生成。" should be in the item.updated event.
         delta_event = deltas[0]
         runtime_event = delta_event.content.get("runtime_event", {})

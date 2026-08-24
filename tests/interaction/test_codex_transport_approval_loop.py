@@ -44,9 +44,7 @@ async def _wait_until(predicate, timeout: float = 20.0) -> None:
 
 @pytest.mark.asyncio
 async def test_real_codex_transport_live_approval_closes_run():
-    config = openai_codex.CodexConfig(
-        launch_args_override=(sys.executable, str(FAKE_SERVER))
-    )
+    config = openai_codex.CodexConfig(launch_args_override=(sys.executable, str(FAKE_SERVER)))
     client = AsyncCodexClient(config=config)
     adapter = CodexRuntimeAdapter(client)
     # kernel admission 以真实 codex capability matrix 判定 submit_interaction。
@@ -65,15 +63,13 @@ async def test_real_codex_transport_live_approval_closes_run():
 
         # 1) requestApproval → interaction.requested（真实 call_id）落库。
         await _wait_until(
-            lambda: any(
-                record.kind == "approval"
-                for record in _interaction_records_sync(stack)
-            )
+            lambda: any(record.kind == "approval" for record in _interaction_records_sync(stack))
         )
-        record = next(
-            r for r in _interaction_records_sync(stack) if r.kind == "approval"
-        )
+        record = next(r for r in _interaction_records_sync(stack) if r.kind == "approval")
         assert record.provider_id == "codex"
+        assert record.presentation is not None
+        assert record.presentation.title == "run_command"
+        assert '"command":"uname -a"' in (record.presentation.description or "")
         call_id = record.native_target["call_id"]
         assert call_id
 
@@ -102,8 +98,10 @@ async def test_real_codex_transport_live_approval_closes_run():
 
         # 3) 回包送达后 continuation 恢复，run 以 completed 收口。
         await _wait_until(
-            lambda: stack.store._runs.get(run_id) is not None
-            and stack.store._runs[run_id].state == RunState.COMPLETED
+            lambda: (
+                stack.store._runs.get(run_id) is not None
+                and stack.store._runs[run_id].state == RunState.COMPLETED
+            )
         )
         events = await stack.events.read("s1", 0, 400)
         resolved = [e for e in events if e.event_type == "interaction.resolved"]

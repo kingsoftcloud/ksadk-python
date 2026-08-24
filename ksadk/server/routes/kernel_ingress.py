@@ -7,6 +7,7 @@
 - 旧响应 shape 不变；非流式在 receipt accepted 后才开始消费 stream。
 - SSE 的 reconnect cursor 源自同一 Session seq（SessionEventSubscription）。
 """
+
 from __future__ import annotations
 
 import json
@@ -97,6 +98,15 @@ def kernel_stream_response(
                 continue
             kind, payload = projected
             yield _sse_chunk(payload, event=kind, seq=seq)
+            if kind == "response.output_item.done" and (
+                (payload.get("item") or {}).get("type") == "mcp_approval_request"
+            ):
+                yield _sse_chunk(
+                    {"type": "response.incomplete"},
+                    event="response.incomplete",
+                    seq=seq,
+                )
+                return
             # A foreground response stream is scoped to one admitted run.
             # SessionEventStore subscriptions are deliberately long-lived for
             # replay/SSE clients, so do not leave this HTTP response open after
@@ -112,6 +122,24 @@ def _responses_projector(envelope: Any) -> tuple[str, dict[str, Any]] | None:
 
     payload = envelope.payload or {}
     event_type = envelope.event_type
+    if event_type == "interaction.requested":
+        request = payload.get("request") or {}
+        presentation = request.get("presentation") or {}
+        description = presentation.get("description") or ""
+        try:
+            visible = json.loads(description) if description else {}
+        except (TypeError, json.JSONDecodeError):
+            visible = {}
+        arguments = visible.get("arguments") if isinstance(visible, dict) else {}
+        return "response.output_item.done", {
+            "type": "response.output_item.done",
+            "item": {
+                "id": str(payload.get("interaction_id") or ""),
+                "type": "mcp_approval_request",
+                "name": str(presentation.get("title") or payload.get("kind") or "approval"),
+                "arguments": json.dumps(arguments or {}, ensure_ascii=False),
+            },
+        }
     if event_type == "run.completed":
         text = str(payload.get("output_text") or "")
         return "response.completed", {
@@ -158,19 +186,15 @@ def _new_responses_projector():
             text = str(update.get("text") or "")
             if item_id and text:
                 item_text[item_id] = (
-                    text
-                    if payload.get("op") == "replace"
-                    else item_text.get(item_id, "") + text
+                    text if payload.get("op") == "replace" else item_text.get(item_id, "") + text
                 )
             return None
         if event_type == "item.completed":
             item_id = str(payload.get("item_id") or "")
-            parts = ((payload.get("snapshot") or {}).get("parts") or [])
+            parts = (payload.get("snapshot") or {}).get("parts") or []
             if item_id and isinstance(parts, list):
                 item_text[item_id] = "".join(
-                    str(part.get("text") or "")
-                    for part in parts
-                    if isinstance(part, dict)
+                    str(part.get("text") or "") for part in parts if isinstance(part, dict)
                 )
             return None
         if event_type == "run.completed":
@@ -181,9 +205,7 @@ def _new_responses_projector():
                 if isinstance(ref, dict)
             )
             projected_payload = dict(payload)
-            projected_payload["output_text"] = output or str(
-                payload.get("output_text") or ""
-            )
+            projected_payload["output_text"] = output or str(payload.get("output_text") or "")
             return _responses_projector(
                 type("Envelope", (), {"event_type": event_type, "payload": projected_payload})()
             )

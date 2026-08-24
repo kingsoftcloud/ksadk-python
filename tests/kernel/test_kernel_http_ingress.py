@@ -4,6 +4,7 @@
 锁定三边一致路径（agentengine-gateway 转发、agentengine-server runtime
 client、KsADK runtime）与 receipt 映射、health shape、env bootstrap。
 """
+
 from __future__ import annotations
 
 import uuid
@@ -71,24 +72,30 @@ def test_response_projector_resolves_completed_output_refs():
     from ksadk.server.routes.kernel_ingress import _new_responses_projector
 
     projector = _new_responses_projector()
-    assert projector(
-        SimpleNamespace(
-            event_type="item.updated",
-            payload={
-                "item_id": "draft",
-                "update": {"text": "discarded commentary", "op": "append"},
-            },
+    assert (
+        projector(
+            SimpleNamespace(
+                event_type="item.updated",
+                payload={
+                    "item_id": "draft",
+                    "update": {"text": "discarded commentary", "op": "append"},
+                },
+            )
         )
-    ) is None
-    assert projector(
-        SimpleNamespace(
-            event_type="item.completed",
-            payload={
-                "item_id": "final",
-                "snapshot": {"parts": [{"text": "durable answer"}]},
-            },
+        is None
+    )
+    assert (
+        projector(
+            SimpleNamespace(
+                event_type="item.completed",
+                payload={
+                    "item_id": "final",
+                    "snapshot": {"parts": [{"text": "durable answer"}]},
+                },
+            )
         )
-    ) is None
+        is None
+    )
     projected = projector(
         SimpleNamespace(
             event_type="run.completed",
@@ -97,6 +104,39 @@ def test_response_projector_resolves_completed_output_refs():
     )
     assert projected is not None
     assert projected[1]["output_text"] == "durable answer"
+
+
+def test_response_projector_surfaces_durable_approval_as_responses_item():
+    from ksadk.server.routes.kernel_ingress import _new_responses_projector
+
+    projected = _new_responses_projector()(
+        SimpleNamespace(
+            event_type="interaction.requested",
+            payload={
+                "interaction_id": "approval-1",
+                "kind": "approval",
+                "request": {
+                    "presentation": {
+                        "title": "run_command",
+                        "description": '{"arguments":{"command":"touch marker"}}',
+                    }
+                },
+            },
+        )
+    )
+
+    assert projected == (
+        "response.output_item.done",
+        {
+            "type": "response.output_item.done",
+            "item": {
+                "id": "approval-1",
+                "type": "mcp_approval_request",
+                "name": "run_command",
+                "arguments": '{"command": "touch marker"}',
+            },
+        },
+    )
 
 
 @pytest.mark.asyncio
@@ -161,10 +201,7 @@ def test_kernel_ingress_path_constants():
     assert ingress.KERNEL_INGRESS_BASE_PATH == "/agent-kernel/v1"
     assert ingress.KERNEL_INGRESS_SUBMIT_PATH == "/agent-kernel/v1/SubmitAgentControl"
     assert ingress.KERNEL_INGRESS_STATUS_PATH == "/agent-kernel/v1/GetAgentStatus"
-    assert (
-        ingress.KERNEL_INGRESS_SESSION_EVENTS_PATH
-        == "/agent-kernel/v1/SubscribeSessionEvents"
-    )
+    assert ingress.KERNEL_INGRESS_SESSION_EVENTS_PATH == "/agent-kernel/v1/SubscribeSessionEvents"
     assert ingress.KERNEL_INGRESS_HEALTH_PATH == "/agent-kernel/v1/health"
 
 
@@ -201,17 +238,13 @@ def test_submit_agent_control_bare_command_body(app_with_kernel):
 
 def test_submit_agent_control_invalid_command_is_400(app_with_kernel):
     client, _ = app_with_kernel
-    response = client.post(
-        ingress.KERNEL_INGRESS_SUBMIT_PATH, json={"command": {"nope": 1}}
-    )
+    response = client.post(ingress.KERNEL_INGRESS_SUBMIT_PATH, json={"command": {"nope": 1}})
     assert response.status_code == 400
 
 
 def test_kernel_routes_503_when_not_registered(app_without_kernel):
     client = app_without_kernel
-    response = client.post(
-        ingress.KERNEL_INGRESS_SUBMIT_PATH, json={"command": _command_payload()}
-    )
+    response = client.post(ingress.KERNEL_INGRESS_SUBMIT_PATH, json={"command": _command_payload()})
     assert response.status_code == 503
     assert response.json()["error"]["Code"] == "kernel_not_enabled"
 
@@ -382,9 +415,7 @@ async def test_get_agent_status_returns_real_state_not_fail_closed(app_with_real
     client, kernel = app_with_real_kernel
 
     # 真实路径提交一个 enqueue -> inbox_depth = 1
-    submit = await client.post(
-        ingress.KERNEL_INGRESS_SUBMIT_PATH, json=_command_payload()
-    )
+    submit = await client.post(ingress.KERNEL_INGRESS_SUBMIT_PATH, json=_command_payload())
     assert submit.status_code == 202, submit.text
 
     # worker 持有 lease -> instance_state = ready（模拟 worker activation）
@@ -416,9 +447,7 @@ async def test_get_agent_status_without_lease_reports_degraded_not_unavailable(
 ):
     """无 lease 时是 degraded（真实状态），不得 fail-closed 成 unavailable。"""
     client, _ = app_with_real_kernel
-    response = await client.post(
-        ingress.KERNEL_INGRESS_STATUS_PATH, json=_status_query_payload()
-    )
+    response = await client.post(ingress.KERNEL_INGRESS_STATUS_PATH, json=_status_query_payload())
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["instance_state"] == "degraded", body
@@ -472,9 +501,7 @@ def _hosted_command_payload(*, session_id: str = "s1", command_type: str = "enqu
 
 async def test_hosted_missing_permit_is_401(hosted_kernel_app):
     client, _ = hosted_kernel_app
-    response = await client.post(
-        ingress.KERNEL_INGRESS_SUBMIT_PATH, json=_hosted_command_payload()
-    )
+    response = await client.post(ingress.KERNEL_INGRESS_SUBMIT_PATH, json=_hosted_command_payload())
     assert response.status_code == 401, response.text
 
 
@@ -837,9 +864,7 @@ async def test_subscribe_session_events_stops_when_client_disconnects(app_with_r
 
     async def consume_store() -> int:
         count = 0
-        async for _ in kernel._events.subscribe(
-            "sess-1", 0, should_stop=should_stop
-        ):
+        async for _ in kernel._events.subscribe("sess-1", 0, should_stop=should_stop):
             count += 1
             stop[0] = True
         return count
@@ -853,9 +878,7 @@ async def test_subscribe_session_events_stops_when_client_disconnects(app_with_r
 async def test_subscribe_session_events_streams_with_local_permit(app_with_real_kernel):
     """subscribe 的本地 permit 绑定自洽：SSE 正常产出事件而非 fail-closed。"""
     client, _ = app_with_real_kernel
-    submit = await client.post(
-        ingress.KERNEL_INGRESS_SUBMIT_PATH, json=_command_payload()
-    )
+    submit = await client.post(ingress.KERNEL_INGRESS_SUBMIT_PATH, json=_command_payload())
     assert submit.status_code == 202, submit.text
 
     collected: list[str] = []
