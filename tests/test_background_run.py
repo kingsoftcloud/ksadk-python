@@ -385,6 +385,15 @@ async def test_detached_stream_writes_failed_fallback_only_when_source_raises(
     assert _terminal_statuses(statuses) == ["failed"], (
         f"期望 detached 异常兜底只写一个 failed，实际 statuses: {statuses}"
     )
+    events = await service.get_events(session_id)
+    failed = next(
+        event
+        for event in events
+        if event.event_type == "run_status"
+        and event.invocation_id == invocation_id
+        and (event.content or {}).get("status") == "failed"
+    )
+    assert (failed.content or {}).get("detail") == "RuntimeError: raw stream failed"
 
 
 @pytest.mark.asyncio
