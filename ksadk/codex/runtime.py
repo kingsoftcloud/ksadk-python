@@ -26,6 +26,7 @@ import json
 import logging
 import re
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator, Optional
@@ -920,6 +921,15 @@ def _build_run_input(request: Optional[StartRequest], prompt: Any) -> Any:
                     str(item.get("filename") or "attachment"),
                 )
                 if file_path is not None:
+                    # App Server's ``mention`` input is presentation metadata:
+                    # current Codex versions do not include it in the model's
+                    # user message.  Always add an explicit model-visible
+                    # attachment context as well.  Small textual files are
+                    # inlined deterministically; binary/large files expose a
+                    # sandbox-readable path that Codex can inspect with tools.
+                    native_items.append(
+                        TextInput(text=_attachment_context_text(file_path, item))
+                    )
                     native_items.append(
                         MentionInput(name=file_path.name, path=str(file_path))
                     )
@@ -961,6 +971,55 @@ def _materialize_inline_file(data_url: str, filename: str) -> Path | None:
     if not path.exists():
         path.write_bytes(payload)
     return path
+
+
+_MAX_INLINE_ATTACHMENT_TEXT_BYTES = 64 * 1024
+_TEXT_ATTACHMENT_SUFFIXES = {
+    ".csv",
+    ".html",
+    ".htm",
+    ".ini",
+    ".json",
+    ".jsonl",
+    ".log",
+    ".md",
+    ".py",
+    ".rst",
+    ".toml",
+    ".tsv",
+    ".txt",
+    ".xml",
+    ".yaml",
+    ".yml",
+}
+
+
+def _attachment_context_text(path: Path, item: Mapping[str, Any]) -> str:
+    """Build model-visible context for a materialized Responses input file."""
+
+    name = str(item.get("filename") or path.name).replace('"', "'")
+    inline_data = item.get("inlineData")
+    inline_mime = inline_data.get("mimeType") if isinstance(inline_data, Mapping) else None
+    mime_type = str(item.get("mime_type") or inline_mime or "").strip().lower()
+    source = str(item.get("file_data") or item.get("file_url") or "")
+    data_url_match = re.match(r"data:([^;,]+)", source)
+    if not mime_type and data_url_match is not None:
+        mime_type = data_url_match.group(1).strip().lower()
+    is_text = mime_type.startswith("text/") or path.suffix.lower() in _TEXT_ATTACHMENT_SUFFIXES
+    header = f'<uploaded_attachment name="{name}" path="{path}">'
+    if not is_text:
+        return (
+            f"{header}\n"
+            "The uploaded file is available at the path above. Read it with an appropriate "
+            "tool before answering questions about its contents.\n"
+            "</uploaded_attachment>"
+        )
+
+    raw = path.read_bytes()
+    truncated = len(raw) > _MAX_INLINE_ATTACHMENT_TEXT_BYTES
+    text = raw[:_MAX_INLINE_ATTACHMENT_TEXT_BYTES].decode("utf-8", errors="replace")
+    suffix = "\n[attachment content truncated]" if truncated else ""
+    return f"{header}\n{text}{suffix}\n</uploaded_attachment>"
 
 
 __all__ = ["CodexRuntimeAdapter"]

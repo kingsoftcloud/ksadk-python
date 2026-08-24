@@ -29,9 +29,16 @@ def test_codex_turn_preserves_text_image_and_inline_file_parts():
     assert result[0].text == "summarize the attachments"
     assert isinstance(result[1], ImageInput)
     assert result[1].url == "data:image/png;base64,eA=="
-    assert isinstance(result[2], MentionInput)
-    assert result[2].name == "notes.txt"
-    assert result[2].path.endswith("/notes.txt")
+    attachment_context = next(
+        item
+        for item in result
+        if isinstance(item, TextInput) and "<uploaded_attachment" in item.text
+    )
+    assert 'name="notes.txt"' in attachment_context.text
+    assert "hello" in attachment_context.text
+    mention = next(item for item in result if isinstance(item, MentionInput))
+    assert mention.name == "notes.txt"
+    assert mention.path.endswith("/notes.txt")
 
 
 def test_inline_file_materialization_is_bounded_and_sanitizes_filename():
