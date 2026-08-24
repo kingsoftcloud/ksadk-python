@@ -21,7 +21,29 @@ def test_persisted_sandbox_is_applied_to_env_on_service_start(tmp_path: Path, mo
     StudioService(workspace)
 
     assert os.environ["KSADK_CODEX_SANDBOX"] == "workspace-write-auto"
-    assert os.environ["KSADK_CODEX_USE_PROXY"] == "auto"
+    assert "KSADK_CODEX_USE_PROXY" not in os.environ
+
+
+def test_codex_proxy_settings_normalize_to_runtime_environment(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("KSADK_CODEX_USE_PROXY", raising=False)
+    studio = StudioService(tmp_path / "ws")
+
+    assert studio.update_settings({"codexProxy": "forced"})["codexProxy"] == "forced"
+    assert os.environ["KSADK_CODEX_USE_PROXY"] == "1"
+
+    assert studio.update_settings({"codexProxy": "direct"})["codexProxy"] == "direct"
+    assert os.environ["KSADK_CODEX_USE_PROXY"] == "0"
+
+    assert studio.update_settings({"codexProxy": "auto"})["codexProxy"] == "auto"
+    assert "KSADK_CODEX_USE_PROXY" not in os.environ
+
+
+def test_codex_proxy_environment_normalizes_for_settings_api(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("KSADK_CODEX_USE_PROXY", "1")
+    assert StudioService(tmp_path / "forced").get_settings()["codexProxy"] == "forced"
+
+    monkeypatch.setenv("KSADK_CODEX_USE_PROXY", "0")
+    assert StudioService(tmp_path / "direct").get_settings()["codexProxy"] == "direct"
 
 
 def test_update_settings_writes_yaml_and_env(tmp_path: Path, monkeypatch) -> None:

@@ -82,10 +82,11 @@ def _upgrade_http_to_https(upstream: str) -> str:
 
 
 def _probe_requires_proxy(model: str, base: str, key: str) -> bool:
-    """探测上游:只有**确凿不支持 responses** 才返回 True(走代理)。
+    """探测上游:缺少 Codex namespace 方言能力即返回 True(走代理)。
 
-    supported/unknown 都返回 False(直连)。unknown(故障)保守直连——故障 ≠ 模型
-    不支持 responses,不 silent 改变接入方式。结果经 CapabilityCache 缓存(singleflight)。
+    纯文本 Responses 成功不代表能接收 Codex 0.147 的
+    ``additional_tools -> namespace -> function``。只有明确探测到 namespace 才直连；
+    缺失或未知均使用既有兼容代理。结果经 CapabilityCache 缓存(singleflight)。
     """
 
     def probe(m: str, b: str):
@@ -95,7 +96,7 @@ def _probe_requires_proxy(model: str, base: str, key: str) -> bool:
             return probe_responses_capability(client, b, key, m, timeout=15.0)
 
     caps = _CAPABILITY_CACHE.get_or_probe(model, base, credential_scope(key), probe)
-    return caps.verdict == "unsupported"
+    return "namespace" not in caps.tool_types
 
 
 class CodexClient(ABC):
@@ -460,12 +461,11 @@ class AsyncCodexClient(CodexClient):
         - ``KSADK_CODEX_USE_PROXY=1`` → 强制开代理;``=0`` → 强制直连(可人工覆盖误判)。
         - **未设 env 时智能探测**:OpenAI 官方 base_url 直连(不探测);自定义上游
           (星流等)探测 responses 能力(detect.py + CapabilityCache 缓存,一次探测长缓存):
-          - ``supported`` → 直连(原生 responses 可用)
-          - ``unsupported`` → 自动启用代理(chat 模型,经转换层)
-          - ``unknown``(故障/超时)→ **保守直连**,不 silent 改变接入方式
+          - 支持 Codex ``namespace`` 工具方言 → 直连
+          - 缺少或无法确认 ``namespace`` 工具方言 → 自动启用代理
         - 凭证闭合:codex 子进程只拿随机 KSADK_PROXY_TOKEN;上游 key 留父进程。
         - 互斥:launch_args_override 已设时 raise(override 整体覆盖命令行)。
-        - P1:直连分支(探测 supported/unknown、env=0)遇到自定义 base 也注入
+        - P1:直连分支(namespace 能力确认、env=0)遇到自定义 base 也注入
           ``ksadk_direct`` provider——否则 codex 子进程回落默认 OpenAI 官方
           端点,自定义上游(OPENAI_API_BASE)静默失效。已显式设
           ``model_provider=`` 的 config 不覆盖;官方 base 不注入。
@@ -474,9 +474,9 @@ class AsyncCodexClient(CodexClient):
         """
         runtime_env = {**os.environ, **(getattr(config, "env", None) or {})}
         env_val = runtime_env.get("KSADK_CODEX_USE_PROXY")
-        if env_val == "0":
+        if env_val in {"0", "direct"}:
             return AsyncCodexClient._inject_direct_provider(config), None
-        if env_val == "1":
+        if env_val in {"1", "forced"}:
             return AsyncCodexClient._start_proxy_and_inject(
                 config,
                 proxy_observer=proxy_observer,

@@ -56,6 +56,9 @@ from ksadk.studio.codex_builder import (
     CodexBuildRepository,
     CodexStudioBuilder,
     RuntimeInspector,
+    current_proxy_mode,
+    normalize_proxy_mode,
+    proxy_mode_env_value,
 )
 from ksadk.studio.codex_manifest import (
     CodexAgentManifest,
@@ -1807,7 +1810,7 @@ class StudioService:
         defaults = {
             "sandbox": os.environ.get("KSADK_CODEX_SANDBOX", "read_only"),
             "buildAfterCreate": True,
-            "codexProxy": os.environ.get("KSADK_CODEX_USE_PROXY", "auto"),
+            "codexProxy": current_proxy_mode(),
             "cloudRegion": os.environ.get(
                 "AGENTENGINE_REGION", os.environ.get("KSYUN_REGION", "cn-beijing-6")
             ),
@@ -1825,6 +1828,7 @@ class StudioService:
             "traceContent": os.environ.get("KSADK_STUDIO_TRACE_CONTENT", "1") != "0",
         }
         defaults.update({k: v for k, v in data.items() if k in defaults and v is not None})
+        defaults["codexProxy"] = normalize_proxy_mode(defaults.get("codexProxy"))
         return defaults
 
     def update_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -1848,6 +1852,8 @@ class StudioService:
             "full_access",
         }:
             raise StudioError("SETTINGS_INVALID", "sandbox 取值非法", status_code=422)
+        if "codexProxy" in data and data["codexProxy"] not in {"auto", "forced", "direct"}:
+            raise StudioError("SETTINGS_INVALID", "codexProxy 取值非法", status_code=422)
         path = self.workspace.resolve(".agentkit/settings.yaml")
         self.workspace.atomic_write_yaml(path, data)
         self._apply_settings_to_env(data)
@@ -1876,8 +1882,12 @@ class StudioService:
     def _apply_settings_to_env(data: dict[str, Any]) -> None:
         if data.get("sandbox"):
             os.environ["KSADK_CODEX_SANDBOX"] = data["sandbox"]
-        if data.get("codexProxy"):
-            os.environ["KSADK_CODEX_USE_PROXY"] = data["codexProxy"]
+        if "codexProxy" in data:
+            proxy_env = proxy_mode_env_value(data["codexProxy"])
+            if proxy_env is None:
+                os.environ.pop("KSADK_CODEX_USE_PROXY", None)
+            else:
+                os.environ["KSADK_CODEX_USE_PROXY"] = proxy_env
         if data.get("cloudRegion"):
             os.environ["AGENTENGINE_REGION"] = data["cloudRegion"]
         if data.get("cloudBucket"):

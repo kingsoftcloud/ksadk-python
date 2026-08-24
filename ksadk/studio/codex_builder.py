@@ -214,13 +214,26 @@ class CodexBuildRepository:
         return (artifact, managed_runtime_lock_path(artifact))
 
 
-def current_proxy_mode() -> Literal["forced", "auto", "direct"]:
-    override = os.environ.get("KSADK_CODEX_USE_PROXY")
-    if override == "1":
+def normalize_proxy_mode(value: Any) -> Literal["forced", "auto", "direct"]:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"1", "forced"}:
         return "forced"
-    if override == "0":
+    if normalized in {"0", "direct"}:
         return "direct"
     return "auto"
+
+
+def proxy_mode_env_value(value: Any) -> str | None:
+    mode = normalize_proxy_mode(value)
+    if mode == "forced":
+        return "1"
+    if mode == "direct":
+        return "0"
+    return None
+
+
+def current_proxy_mode() -> Literal["forced", "auto", "direct"]:
+    return normalize_proxy_mode(os.environ.get("KSADK_CODEX_USE_PROXY"))
 
 
 def _inspect_runtime(runtime: ResolvedRuntime) -> tuple[str, str, str]:

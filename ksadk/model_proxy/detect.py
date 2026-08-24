@@ -12,6 +12,9 @@
   超时/5xx/429/401/403 一律 "unknown",不改变判定(故障 ≠ 能力缺失)。
 - ``stream_delta_ok`` 需真发流式请求才能判定,成本高,本模块默认 None(不探),
   由调用方按需触发或默认走转换层(转换层自己生成完整 delta)。
+- Codex 直连还需第二个功能性 probe:真实发送
+  ``additional_tools -> namespace -> function``;纯文本 Responses 成功但 namespace
+  被拒时保留 ``responses_supported=True``,同时推荐经 Chat 转换层执行。
 """
 
 from __future__ import annotations
@@ -65,7 +68,9 @@ def probe_responses_capability(
 ):
     """功能性 probe /v1/responses,返回能力矩阵(sync) 或 coroutine(async)。
 
-    - 200 且结构合法(output+status)→ supported,preferred_protocol=responses
+    - 纯文本 200 且结构合法后，再探测真实 Codex namespace 工具方言
+    - 两次均成功→ supported,tool_types 含 namespace,preferred_protocol=responses
+    - Responses 成功但 namespace 被明确拒绝→ supported,preferred_protocol=chat
     - 200 但非 responses 结构(网关伪 200)→ unsupported,preferred_protocol=chat
     - 404/405/400 unknown → unsupported,preferred_protocol=chat
     - 超时/5xx/429/401/403 → unknown,preferred_protocol 保持默认 chat(保守走转换层)
@@ -86,16 +91,42 @@ def _probe_sync(
     caps = ModelCapabilities(checked_at=time.time(), verdict="unknown")
     url = f"{base.rstrip('/')}/responses"
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-    payload = {"model": model, "input": "hi", "max_output_tokens": 1, "stream": False}
     try:
-        r = client.post(url, json=payload, headers=headers, timeout=timeout)
+        r = client.post(
+            url,
+            json=_base_probe_payload(model),
+            headers=headers,
+            timeout=timeout,
+        )
     except (httpx.TimeoutException, httpx.ConnectError, httpx.HTTPError):
         return _finalize(caps)
     try:
         data = r.json()
     except ValueError:
         data = None
-    return _apply_response(caps, r.status_code, r.text, data)
+    caps = _apply_response(caps, r.status_code, r.text, data)
+    if not caps.responses_supported:
+        return caps
+    try:
+        namespace_response = client.post(
+            url,
+            json=_namespace_probe_payload(model),
+            headers=headers,
+            timeout=timeout,
+        )
+    except (httpx.TimeoutException, httpx.ConnectError, httpx.HTTPError):
+        caps.verdict = "unknown"
+        return _finalize(caps)
+    try:
+        namespace_data = namespace_response.json()
+    except ValueError:
+        namespace_data = None
+    return _apply_namespace_response(
+        caps,
+        namespace_response.status_code,
+        namespace_response.text,
+        namespace_data,
+    )
 
 
 async def _probe_async(
@@ -104,16 +135,121 @@ async def _probe_async(
     caps = ModelCapabilities(checked_at=time.time(), verdict="unknown")
     url = f"{base.rstrip('/')}/responses"
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-    payload = {"model": model, "input": "hi", "max_output_tokens": 1, "stream": False}
     try:
-        r = await client.post(url, json=payload, headers=headers, timeout=timeout)
+        r = await client.post(
+            url,
+            json=_base_probe_payload(model),
+            headers=headers,
+            timeout=timeout,
+        )
     except (httpx.TimeoutException, httpx.ConnectError, httpx.HTTPError):
         return _finalize(caps)
     try:
         data = r.json()
     except ValueError:
         data = None
-    return _apply_response(caps, r.status_code, r.text, data)
+    caps = _apply_response(caps, r.status_code, r.text, data)
+    if not caps.responses_supported:
+        return caps
+    try:
+        namespace_response = await client.post(
+            url,
+            json=_namespace_probe_payload(model),
+            headers=headers,
+            timeout=timeout,
+        )
+    except (httpx.TimeoutException, httpx.ConnectError, httpx.HTTPError):
+        caps.verdict = "unknown"
+        return _finalize(caps)
+    try:
+        namespace_data = namespace_response.json()
+    except ValueError:
+        namespace_data = None
+    return _apply_namespace_response(
+        caps,
+        namespace_response.status_code,
+        namespace_response.text,
+        namespace_data,
+    )
+
+
+def _base_probe_payload(model: str) -> dict[str, Any]:
+    return {"model": model, "input": "hi", "max_output_tokens": 1, "stream": False}
+
+
+def _namespace_probe_payload(model: str) -> dict[str, Any]:
+    """Return the smallest real Codex 0.147 dynamic-tool declaration."""
+
+    return {
+        "model": model,
+        "input": [
+            {
+                "type": "additional_tools",
+                "role": "developer",
+                "tools": [
+                    {
+                        "type": "namespace",
+                        "name": "functions",
+                        "description": "KsADK Codex capability probe",
+                        "tools": [
+                            {
+                                "type": "function",
+                                "name": "probe",
+                                "description": "Probe Codex namespace tool support",
+                                "parameters": {
+                                    "type": "object",
+                                    "properties": {},
+                                    "additionalProperties": False,
+                                },
+                            }
+                        ],
+                    }
+                ],
+            },
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "Reply with OK."}],
+            },
+        ],
+        "max_output_tokens": 1,
+        "stream": False,
+    }
+
+
+def _apply_namespace_response(
+    caps: ModelCapabilities, status: int, text: str, data: Any
+) -> ModelCapabilities:
+    valid_envelope = isinstance(data, dict) and "output" in data and "status" in data
+    envelope_failed = valid_envelope and (
+        str(data.get("status") or "").lower() == "failed" or bool(data.get("error"))
+    )
+    if status == 200 and valid_envelope and not envelope_failed:
+        caps.tool_types.add("namespace")
+        caps.verdict = "supported"
+        return _finalize(caps)
+
+    low = (text or "").lower()
+    dialect_marker = any(
+        marker in low
+        for marker in (
+            "namespace",
+            "additional_tools",
+            "invalid value",
+            "supported values",
+            "not supported",
+            "unrecognized",
+        )
+    )
+    dialect_rejected = (
+        status in (400, 404, 405, 422)
+        and (status in (404, 405) or dialect_marker)
+    ) or (status == 200 and envelope_failed and dialect_marker)
+    if not dialect_rejected:
+        # Transient failures do not establish direct compatibility and should
+        # not be cached as a native Codex tool-capable endpoint.
+        caps.verdict = "unknown"
+    return _finalize(caps)
 
 
 def _apply_response(
@@ -136,7 +272,7 @@ def _apply_response(
 
 def _finalize(caps: ModelCapabilities) -> ModelCapabilities:
     """根据 verdict 定 preferred_protocol(保守:不确定也走转换层 chat)。"""
-    if caps.verdict == "supported" and caps.responses_supported:
+    if caps.verdict == "supported" and caps.responses_supported and "namespace" in caps.tool_types:
         caps.preferred_protocol = "responses"
     else:
         # unsupported 或 unknown 都默认 chat(走转换层):unknown 时走转换层更安全,

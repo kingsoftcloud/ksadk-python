@@ -11,6 +11,7 @@ import pytest
 codex_sdk = pytest.importorskip("openai_codex")  # 缺 ksadk[codex] 时跳过整个文件
 
 from ksadk.codex.client import AsyncCodexClient  # noqa: E402  (importorskip 守卫后)
+from ksadk.model_proxy.detect import ModelCapabilities  # noqa: E402
 
 
 def test_proxy_default_off(monkeypatch):
@@ -77,6 +78,67 @@ def test_proxy_launch_args_override_mutex(monkeypatch):
 
 
 # ---- 智能探测 fallback(未设 env 时) ----
+
+
+def test_capability_probe_requires_proxy_without_namespace(monkeypatch):
+    from ksadk.codex import client as client_module
+
+    client_module._CAPABILITY_CACHE.clear()
+    monkeypatch.setattr(
+        client_module,
+        "probe_responses_capability",
+        lambda *_args, **_kwargs: ModelCapabilities(
+            responses_supported=True,
+            tool_types=set(),
+            preferred_protocol="chat",
+            verdict="supported",
+        ),
+    )
+
+    assert client_module._probe_requires_proxy(
+        "responses-without-namespace",
+        "https://models.example/v1",
+        "key-a",
+    )
+
+
+def test_capability_probe_allows_direct_with_namespace(monkeypatch):
+    from ksadk.codex import client as client_module
+
+    client_module._CAPABILITY_CACHE.clear()
+    monkeypatch.setattr(
+        client_module,
+        "probe_responses_capability",
+        lambda *_args, **_kwargs: ModelCapabilities(
+            responses_supported=True,
+            tool_types={"namespace"},
+            preferred_protocol="responses",
+            verdict="supported",
+        ),
+    )
+
+    assert not client_module._probe_requires_proxy(
+        "responses-with-namespace",
+        "https://models.example/v1",
+        "key-b",
+    )
+
+
+def test_capability_probe_requires_proxy_when_namespace_is_unknown(monkeypatch):
+    from ksadk.codex import client as client_module
+
+    client_module._CAPABILITY_CACHE.clear()
+    monkeypatch.setattr(
+        client_module,
+        "probe_responses_capability",
+        lambda *_args, **_kwargs: ModelCapabilities(verdict="unknown"),
+    )
+
+    assert client_module._probe_requires_proxy(
+        "responses-namespace-unknown",
+        "https://models.example/v1",
+        "key-c",
+    )
 
 
 def test_probe_openai_official_direct_no_probe(monkeypatch):
@@ -181,18 +243,6 @@ def test_probe_supported_direct(monkeypatch):
 
     monkeypatch.delenv("KSADK_CODEX_USE_PROXY", raising=False)
     monkeypatch.setenv("OPENAI_API_BASE", "https://kspmas.ksyun.com/v1")
-    monkeypatch.setattr("ksadk.codex.client._probe_requires_proxy", lambda *a, **k: False)
-    out, proxy = AsyncCodexClient._maybe_apply_proxy(CodexConfig())
-    assert proxy is None
-
-
-def test_probe_unknown_conservative_direct(monkeypatch):
-    """探测 unknown(故障):保守直连,不 silent 走代理。"""
-    from openai_codex import CodexConfig
-
-    monkeypatch.delenv("KSADK_CODEX_USE_PROXY", raising=False)
-    monkeypatch.setenv("OPENAI_API_BASE", "https://kspmas.ksyun.com/v1")
-    # unknown 时 _probe_requires_proxy 返回 False(只在 unsupported 才 True)
     monkeypatch.setattr("ksadk.codex.client._probe_requires_proxy", lambda *a, **k: False)
     out, proxy = AsyncCodexClient._maybe_apply_proxy(CodexConfig())
     assert proxy is None

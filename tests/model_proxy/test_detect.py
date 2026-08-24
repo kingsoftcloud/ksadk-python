@@ -1,5 +1,7 @@
 """能力矩阵探测单测(httpx MockTransport 假上游,不打网络)。"""
 
+import json
+
 import httpx
 
 from ksadk.model_proxy.detect import (
@@ -13,13 +15,89 @@ def _client(handler):
 
 
 def test_probe_supported_valid_structure():
+    requests = []
+
     def h(req):
+        requests.append(req.read())
         return httpx.Response(200, json={"id": "r", "output": [], "status": "completed"})
 
     c = probe_responses_capability(_client(h), "https://x/v1", "k", "m")
     assert c.verdict == "supported"
     assert c.responses_supported is True
+    assert c.tool_types == {"namespace"}
     assert c.preferred_protocol == "responses"
+    assert len(requests) == 2
+
+
+def test_probe_responses_without_codex_namespace_prefers_chat_proxy():
+    requests = []
+
+    def h(req):
+        payload = json.loads(req.read())
+        requests.append(payload)
+        if len(requests) == 1:
+            return httpx.Response(200, json={"id": "r", "output": [], "status": "completed"})
+        return httpx.Response(
+            400,
+            text=(
+                "Invalid value: namespace, Supported values are: function, mcp, knowledge_search"
+            ),
+        )
+
+    c = probe_responses_capability(_client(h), "https://x/v1", "k", "m")
+
+    assert c.verdict == "supported"
+    assert c.responses_supported is True
+    assert c.tool_types == set()
+    assert c.preferred_protocol == "chat"
+    assert requests[1]["input"][0] == {
+        "type": "additional_tools",
+        "role": "developer",
+        "tools": [
+            {
+                "type": "namespace",
+                "name": "functions",
+                "description": "KsADK Codex capability probe",
+                "tools": [
+                    {
+                        "type": "function",
+                        "name": "probe",
+                        "description": "Probe Codex namespace tool support",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {},
+                            "additionalProperties": False,
+                        },
+                    }
+                ],
+            }
+        ],
+    }
+
+
+def test_probe_namespace_failure_in_responses_envelope_prefers_chat_proxy():
+    requests = 0
+
+    def h(req):
+        nonlocal requests
+        requests += 1
+        if requests == 1:
+            return httpx.Response(200, json={"output": [], "status": "completed"})
+        return httpx.Response(
+            200,
+            json={
+                "output": [],
+                "status": "failed",
+                "error": {"message": "Invalid value: namespace"},
+            },
+        )
+
+    c = probe_responses_capability(_client(h), "https://x/v1", "k", "m")
+
+    assert c.verdict == "supported"
+    assert c.responses_supported is True
+    assert c.tool_types == set()
+    assert c.preferred_protocol == "chat"
 
 
 def test_probe_200_but_not_responses_structure_gateway_fake_ok():
@@ -113,3 +191,27 @@ def test_probe_async_supported():
     c = asyncio.run(run())
     assert c.verdict == "supported"
     assert c.preferred_protocol == "responses"
+
+
+def test_probe_async_responses_without_namespace_prefers_chat():
+    requests = 0
+
+    async def h(req):
+        nonlocal requests
+        requests += 1
+        if requests == 1:
+            return httpx.Response(200, json={"output": [], "status": "completed"})
+        return httpx.Response(400, text="Invalid value: namespace")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(h))
+
+    async def run():
+        return await probe_responses_capability(client, "https://x/v1", "k", "m")
+
+    import asyncio
+
+    c = asyncio.run(run())
+    assert c.verdict == "supported"
+    assert c.responses_supported is True
+    assert c.tool_types == set()
+    assert c.preferred_protocol == "chat"
