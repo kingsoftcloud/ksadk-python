@@ -946,10 +946,9 @@ def _materialize_inline_file(data_url: str, filename: str) -> Path | None:
     """Materialize a bounded Studio inline attachment for native Codex."""
 
     match = re.fullmatch(r"data:([^;,]+)?;base64,([A-Za-z0-9+/=\s]+)", data_url)
-    if match is None:
-        return None
+    encoded = match.group(2) if match is not None else data_url.strip()
     try:
-        payload = base64.b64decode(match.group(2), validate=True)
+        payload = base64.b64decode(encoded, validate=True)
     except (ValueError, binascii.Error):
         return None
     if not payload or len(payload) > 10 * 1024 * 1024:

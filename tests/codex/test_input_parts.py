@@ -42,5 +42,8 @@ def test_inline_file_materialization_is_bounded_and_sanitizes_filename():
     assert path is not None
     assert path.name == "customer-notes.txt"
     assert path.read_bytes() == b"hello"
+    raw_base64_path = _materialize_inline_file("aGVsbG8=", "raw.txt")
+    assert raw_base64_path is not None
+    assert raw_base64_path.read_bytes() == b"hello"
     assert _materialize_inline_file("not-a-data-url", "bad.txt") is None
     assert _materialize_inline_file("data:text/plain;base64,%%%", "bad.txt") is None
