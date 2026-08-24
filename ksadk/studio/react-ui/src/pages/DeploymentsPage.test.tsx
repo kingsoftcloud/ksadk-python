@@ -10,6 +10,8 @@ const defaultBuilds = [
 let agentBuilds: Array<{ id: string; status: string; createdAt?: string }> = defaultBuilds;
 let currentCloudVersionId = "cloud-agent-1";
 let deploymentRefreshFails = false;
+let newDeploymentReady = false;
+let listIncludesNewAgent = true;
 let accountAgentItems: Array<Record<string, unknown>> = [{
   agentId: "ar-cloud-ui",
   name: "Managed YAML Agent",
@@ -20,7 +22,7 @@ let accountAgentItems: Array<Record<string, unknown>> = [{
 
 apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
   if (path === "/api/v1/deployments") {
-    return new Response(JSON.stringify({ items: [{
+    const items = [{
       id: "dep-instance-1",
       buildId: "build-current",
       bundleDigest: "sha256:bundle-current",
@@ -31,7 +33,20 @@ apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
       instanceId: "instance-1",
       endpoint: "http://ar-cloud-ui.example.test",
       artifactId: "managed-runtime",
-    }] }));
+    }];
+    if (newDeploymentReady) items.push({
+      id: "dep-instance-new",
+      buildId: "build-new",
+      bundleDigest: "sha256:bundle-new",
+      versionId: "cloud-agent-new-v1",
+      status: "READY",
+      target: { region: "cn-beijing-6", environment: "cloud" },
+      agentId: "ar-cloud-new",
+      instanceId: "instance-new",
+      endpoint: "http://ar-cloud-new.example.test",
+      artifactId: "managed-runtime",
+    });
+    return new Response(JSON.stringify({ items }));
   }
   if (path === "/api/v1/cloud-agents?size=100") {
     return new Response(JSON.stringify({ items: accountAgentItems, total: accountAgentItems.length }));
@@ -48,7 +63,7 @@ apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
   }
   if (path === "/api/v1/cloud-agents/ar-cloud-ui/versions?page=1&size=100") {
     const firstIsCurrent = currentCloudVersionId === "cloud-agent-1";
-    return new Response(JSON.stringify({ items: [
+    return new Response(JSON.stringify({ currentVersionId: currentCloudVersionId, items: [
       {
         versionId: "cloud-agent-1", versionName: "v3", tag: "release-v3",
         status: firstIsCurrent ? "current" : "historical", trafficPercentage: firstIsCurrent ? 100 : 0,
@@ -104,9 +119,41 @@ apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
   if (["/api/v1/builds/build-current", "/api/v1/builds/build-previous"].includes(path)) {
     return new Response(JSON.stringify({ agentId: "demo-agent" }));
   }
+  if (path === "/api/v1/system/settings") {
+    return new Response(JSON.stringify({ cloudRegion: "cn-beijing-6" }));
+  }
+  if (path === "/api/v1/agents?limit=100") {
+    return new Response(JSON.stringify({ items: [
+      { metadata: { id: "demo-agent", name: "Demo Agent" } },
+      ...(listIncludesNewAgent ? [{ metadata: { id: "new-agent", name: "New Agent" } }] : []),
+    ] }));
+  }
+  if (path === "/api/v1/builds/build-new") {
+    return new Response(JSON.stringify({
+      id: "build-new", agentId: "new-agent", status: "SUCCEEDED",
+      bundleDigest: "sha256:bundle-new", createdAt: "2026-08-24T12:00:00Z",
+      runtimeName: "codex", runtimeVersion: "0.144.4",
+    }));
+  }
   if (path === "/api/v1/agents/demo-agent") return new Response(JSON.stringify({
+    draft: { metadata: { id: "demo-agent", name: "Demo Agent" }, spec: { runtime: { type: "langgraph" } } },
     builds: agentBuilds,
   }));
+  if (path === "/api/v1/agents/new-agent") return new Response(JSON.stringify({
+    draft: { metadata: { id: "new-agent", name: "New Agent", labels: { "agentkit.ksyun.com/artifact-type": "ManagedRuntime" } }, spec: { runtime: { type: "codex" } } },
+    builds: [{
+      id: "build-new", status: "SUCCEEDED", bundleDigest: "sha256:bundle-new",
+      createdAt: "2026-08-24T12:00:00Z", runtimeName: "codex", runtimeVersion: "0.144.4",
+    }],
+  }));
+  if (path === "/api/v1/builds/build-new/deployments") {
+    expect(init?.method).toBe("POST");
+    expect(JSON.parse(String(init?.body))).toEqual({
+      target: { region: "cn-beijing-6", environment: "cloud" },
+      releasePolicy: { strategy: "rolling", approval: "none" },
+    });
+    return new Response(JSON.stringify({ id: "operation-create" }));
+  }
   if (path === "/api/v1/builds/build-latest/deployments") {
     expect(init?.method).toBe("POST");
     return new Response(JSON.stringify({ id: "operation-update" }));
@@ -130,6 +177,10 @@ apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
   if (path === "/api/v1/operations/operation-update") {
     return new Response(JSON.stringify({ status: "SUCCEEDED", resourceId: "dep-instance-2" }));
   }
+  if (path === "/api/v1/operations/operation-create") {
+    newDeploymentReady = true;
+    return new Response(JSON.stringify({ status: "SUCCEEDED", resourceId: "dep-instance-new" }));
+  }
   throw new Error(path);
 });
 
@@ -143,6 +194,8 @@ describe("DeploymentsPage", () => {
     agentBuilds = defaultBuilds;
     currentCloudVersionId = "cloud-agent-1";
     deploymentRefreshFails = false;
+    newDeploymentReady = false;
+    listIncludesNewAgent = true;
     accountAgentItems = [{
       agentId: "ar-cloud-ui",
       name: "Managed YAML Agent",
@@ -400,11 +453,28 @@ describe("DeploymentsPage", () => {
     vi.unstubAllGlobals();
   });
 
-  it("exposes the Build deployment entry in the page header", async () => {
-    const onSelectBuild = vi.fn();
-    renderPage(vi.fn(), onSelectBuild);
+  it("selects a successful Build and submits a cloud deployment from the deployment page", async () => {
+    const user = userEvent.setup();
+    window.history.replaceState(null, "", "#/deployments/new");
+    renderPage();
 
-    fireEvent.click(await screen.findByRole("button", { name: "选择 Build 部署" }));
-    expect(onSelectBuild).toHaveBeenCalledOnce();
+    await user.click(await screen.findByRole("radio", { name: /New Agent.*build-new/ }));
+    await user.click(screen.getByRole("button", { name: "部署到云端" }));
+
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith(
+      "/api/v1/builds/build-new/deployments",
+      expect.objectContaining({ method: "POST" }),
+    ));
+    await waitFor(() => expect(window.location.hash).toBe("#/deployments/dep-instance-new"));
+  });
+
+  it("restores the precise successful Build selected by the Build page", async () => {
+    listIncludesNewAgent = false;
+    window.history.replaceState(null, "", "#/deployments/new?buildId=build-new&agentId=new-agent");
+    renderPage();
+
+    expect(await screen.findByRole("radio", { name: /New Agent.*build-new/ })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("button", { name: "部署到云端" })).toBeEnabled();
+    expect(screen.queryByRole("heading", { name: "云端 Agent" })).not.toBeInTheDocument();
   });
 });

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ArrowLeft, CloudUpload, ExternalLink, MessagesSquare, RefreshCw } from "lucide-react";
+import { ArrowLeft, CloudUpload, ExternalLink, MessagesSquare, Package, RefreshCw } from "lucide-react";
 import { apiFetch } from "../api";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { MoreActionsMenu } from "../components/MoreActionsMenu";
@@ -11,6 +11,7 @@ import {
   type AccountCloudAgentSummary,
   type CloudDeploymentSummary,
 } from "../cloudDeployments";
+import { deploymentDetailRoute, navigateToStudioHash } from "../studioRoutes";
 
 interface Deployment {
   id: string;
@@ -42,11 +43,14 @@ interface StudioCloudAgentSummary extends AccountCloudAgentSummary {
 
 interface BuildCandidate {
   id: string;
+  agentId?: string;
+  agentName?: string;
   status: string;
   bundleDigest?: string;
   createdAt?: string;
   runtimeName?: string;
   runtimeVersion?: string;
+  artifactType?: string;
 }
 
 interface CloudVersion {
@@ -67,8 +71,19 @@ interface DeploymentDetail {
   sourceAgentName: string;
   builds: BuildCandidate[];
   versions: CloudVersion[];
+  currentVersionId: string;
   loading: boolean;
   error: string;
+}
+
+interface DeploymentCreateSelection {
+  buildId: string;
+  agentId: string;
+}
+
+interface CloudVersionCatalog {
+  items: CloudVersion[];
+  currentVersionId: string;
 }
 
 const OPERATION_TERMINAL = new Set(["SUCCEEDED", "FAILED", "CANCELLED", "TIMED_OUT", "INTERRUPTED"]);
@@ -100,8 +115,19 @@ function shortId(value: string, max = 28): string {
 }
 
 function deploymentRouteId(): string {
-  const match = window.location.hash.match(/^#\/deployments\/([^/]+)$/);
-  return match ? decodeURIComponent(match[1]) : "";
+  const match = window.location.hash.match(/^#\/deployments\/([^/?]+)(?:\?.*)?$/);
+  const routeId = match ? decodeURIComponent(match[1]) : "";
+  return routeId === "new" ? "" : routeId;
+}
+
+function deploymentCreateSelection(): DeploymentCreateSelection | null {
+  const match = window.location.hash.match(/^#\/deployments\/new(?:\?(.*))?$/);
+  if (!match) return null;
+  const params = new URLSearchParams(match[1] || "");
+  return {
+    buildId: params.get("buildId")?.trim() || "",
+    agentId: params.get("agentId")?.trim() || "",
+  };
 }
 
 function formatUpdatedAt(value?: string): string {
@@ -126,6 +152,13 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
   const [updating, setUpdating] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Deployment | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [createSelection, setCreateSelection] = useState<DeploymentCreateSelection | null>(() => deploymentCreateSelection());
+  const [deployableBuilds, setDeployableBuilds] = useState<BuildCandidate[]>([]);
+  const [selectedBuildId, setSelectedBuildId] = useState(() => deploymentCreateSelection()?.buildId || "");
+  const [cloudRegion, setCloudRegion] = useState("");
+  const [createLoading, setCreateLoading] = useState(false);
+  const [createBusy, setCreateBusy] = useState(false);
+  const [createError, setCreateError] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -201,6 +234,13 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
 
   useEffect(() => {
     const syncDetailRoute = () => {
+      const create = deploymentCreateSelection();
+      setCreateSelection(create);
+      if (create) {
+        setSelectedBuildId(create.buildId);
+        setDetail(null);
+        return;
+      }
       const routeId = deploymentRouteId();
       if (!routeId) {
         setDetail(null);
@@ -217,6 +257,94 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
       window.removeEventListener("hashchange", syncDetailRoute);
     };
   }, [deployments, detail?.deployment.id]);
+
+  useEffect(() => {
+    if (!createSelection) return;
+    let cancelled = false;
+    setCreateLoading(true);
+    setCreateError("");
+
+    void (async () => {
+      try {
+        const [agentsResponse, settingsResponse] = await Promise.all([
+          apiFetch("/api/v1/agents?limit=100"),
+          apiFetch("/api/v1/system/settings"),
+        ]);
+        if (!agentsResponse.ok) throw new Error(`读取可部署 Build 失败（${agentsResponse.status}）`);
+        const agentPayload = await agentsResponse.json();
+        const settings = settingsResponse.ok ? await settingsResponse.json() : {};
+        const agents = Array.isArray(agentPayload.items) ? agentPayload.items : [];
+        const details = await Promise.all(agents.map(async (summary: any) => {
+          const agentId = String(summary?.metadata?.id || "").trim();
+          if (!agentId) return null;
+          const response = await apiFetch(`/api/v1/agents/${encodeURIComponent(agentId)}`);
+          if (!response.ok) return null;
+          return response.json();
+        }));
+        let candidates = details.flatMap((agent: any) => {
+          if (!agent) return [];
+          const agentId = String(agent?.draft?.metadata?.id || "").trim();
+          const agentName = String(agent?.draft?.metadata?.name || agentId || "未命名 Agent");
+          const runtimeType = String(agent?.draft?.spec?.runtime?.type || "");
+          const artifactType = String(
+            agent?.draft?.metadata?.labels?.["agentkit.ksyun.com/artifact-type"]
+              || (runtimeType === "codex" ? "ManagedRuntime" : "Code"),
+          );
+          return (Array.isArray(agent.builds) ? agent.builds : [])
+            .filter((build: BuildCandidate) => build.status === "SUCCEEDED")
+            .map((build: BuildCandidate) => ({
+              ...build,
+              agentId,
+              agentName,
+              runtimeName: build.runtimeName || runtimeType,
+              artifactType,
+            }));
+        }).sort((left: BuildCandidate, right: BuildCandidate) => (
+          String(right.createdAt || "").localeCompare(String(left.createdAt || ""))
+        ));
+        if (createSelection.buildId && !candidates.some(build => build.id === createSelection.buildId)) {
+          const buildResponse = await apiFetch(`/api/v1/builds/${encodeURIComponent(createSelection.buildId)}`);
+          if (buildResponse.ok) {
+            const build = await buildResponse.json();
+            const agentId = String(build.agentId || createSelection.agentId || "").trim();
+            const agentResponse = agentId
+              ? await apiFetch(`/api/v1/agents/${encodeURIComponent(agentId)}`)
+              : null;
+            const agent = agentResponse?.ok ? await agentResponse.json() : null;
+            if (String(build.status || "") === "SUCCEEDED" && agentId) {
+              const runtimeType = String(agent?.draft?.spec?.runtime?.type || build.runtimeName || "");
+              candidates = [{
+                ...build,
+                agentId,
+                agentName: String(agent?.draft?.metadata?.name || agentId),
+                runtimeName: build.runtimeName || runtimeType,
+                artifactType: String(
+                  agent?.draft?.metadata?.labels?.["agentkit.ksyun.com/artifact-type"]
+                    || (runtimeType === "codex" ? "ManagedRuntime" : "Code"),
+                ),
+              }, ...candidates];
+            }
+          }
+        }
+        if (cancelled) return;
+        setCloudRegion(String(settings.cloudRegion || "").trim());
+        setDeployableBuilds(candidates);
+        if (createSelection.buildId) {
+          if (!candidates.some((build: BuildCandidate) => build.id === createSelection.buildId)) {
+            throw new Error(`Build ${createSelection.buildId} 不存在或尚未成功`);
+          }
+          setSelectedBuildId(createSelection.buildId);
+        } else {
+          setSelectedBuildId(current => candidates.some((build: BuildCandidate) => build.id === current) ? current : "");
+        }
+      } catch (caught: any) {
+        if (!cancelled) setCreateError(caught?.message || "可部署 Build 不可用");
+      } finally {
+        if (!cancelled) setCreateLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [createSelection?.agentId, createSelection?.buildId]);
 
   const summary = useMemo(() => ({
     ready: deployments.filter(item => deploymentState(item.status) === "ready").length,
@@ -282,14 +410,14 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
     }
   }
 
-  async function loadCloudVersions(agentId: string): Promise<CloudVersion[]> {
+  async function loadCloudVersions(agentId: string): Promise<CloudVersionCatalog> {
     const response = await apiFetch(
       `/api/v1/cloud-agents/${encodeURIComponent(agentId)}/versions?page=1&size=100`,
     );
     if (!response.ok) throw new Error(`读取云端版本失败（${response.status}）`);
     const payload = await response.json();
     const rows = payload.items || payload.versions || payload.Versions || [];
-    return (Array.isArray(rows) ? rows : []).map((item: any) => ({
+    const items = (Array.isArray(rows) ? rows : []).map((item: any) => ({
       versionId: String(item.versionId || item.version_id || item.VersionId || ""),
       versionName: String(item.versionName || item.version_name || item.VersionName || ""),
       tag: String(item.tag || item.Tag || ""),
@@ -302,18 +430,24 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
         item.rollbackDisabledReason || item.rollback_disabled_reason || item.RollbackDisabledReason || "",
       ),
     })).filter((item: CloudVersion) => item.versionId);
+    return {
+      items,
+      currentVersionId: String(
+        payload.currentVersionId || payload.current_version_id || payload.CurrentVersionId || "",
+      ),
+    };
   }
 
   async function openDetail(deployment: Deployment, navigate = true) {
     if (navigate) {
       window.history.pushState(null, "", `#/deployments/${encodeURIComponent(deployment.id)}`);
     }
-    setDetail({ deployment, sourceAgentId: "", sourceAgentName: "", builds: [], versions: [], loading: true, error: "" });
+    setDetail({ deployment, sourceAgentId: "", sourceAgentName: "", builds: [], versions: [], currentVersionId: "", loading: true, error: "" });
     setSelectedRollbackVersionId("");
     setRollbackConfirmOpen(false);
     const versionsPromise = deployment.agentId
       ? loadCloudVersions(deployment.agentId)
-      : Promise.resolve([] as CloudVersion[]);
+      : Promise.resolve({ items: [], currentVersionId: "" } as CloudVersionCatalog);
     try {
       if (deployment.source === "account") {
         const accountResponse = await apiFetch(`/api/v1/cloud-agents/${encodeURIComponent(deployment.agentId || "")}`);
@@ -339,7 +473,8 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
           sourceAgentId: "",
           sourceAgentName: refreshed.agentName || refreshed.agentId || "账号云端 Agent",
           builds: [],
-          versions,
+          versions: versions.items,
+          currentVersionId: versions.currentVersionId,
           loading: false,
           error: "",
         });
@@ -370,18 +505,68 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
         sourceAgentId,
         sourceAgentName: String(agent?.draft?.metadata?.name || sourceAgentId),
         builds,
-        versions,
+        versions: versions.items,
+        currentVersionId: versions.currentVersionId,
         loading: false,
         error: "",
       });
     } catch (caught: any) {
-      const versions = await versionsPromise.catch(() => []);
+      const versions = await versionsPromise.catch(() => ({ items: [], currentVersionId: "" }));
       setDetail(current => current ? {
         ...current,
-        versions,
+        versions: versions.items,
+        currentVersionId: versions.currentVersionId,
         loading: false,
         error: caught?.message || "云端 Agent 详情不可用",
       } : null);
+    }
+  }
+
+  async function submitDeployment() {
+    if (!selectedBuildId || createBusy) return;
+    const selectedBuild = deployableBuilds.find(build => build.id === selectedBuildId);
+    if (!selectedBuild) {
+      setCreateError("请选择一个已成功的 Build");
+      return;
+    }
+    if (!cloudRegion) {
+      setCreateError("请先在 Studio 设置中配置云端 Region");
+      return;
+    }
+    setCreateBusy(true);
+    setCreateError("");
+    try {
+      const response = await apiFetch(`/api/v1/builds/${encodeURIComponent(selectedBuildId)}/deployments`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": `studio-deploy-${selectedBuildId}-${Date.now()}`,
+        },
+        body: JSON.stringify({
+          target: { region: cloudRegion, environment: "cloud" },
+          releasePolicy: { strategy: "rolling", approval: "none" },
+        }),
+      });
+      if (!response.ok) throw new Error(`部署提交失败（${response.status}）`);
+      const operation = await response.json();
+      let result: any;
+      for (let attempt = 0; attempt < 150; attempt += 1) {
+        await new Promise(resolve => setTimeout(resolve, 200));
+        const status = await apiFetch(`/api/v1/operations/${encodeURIComponent(operation.id)}`);
+        if (!status.ok) throw new Error(`部署状态读取失败（${status.status}）`);
+        result = await status.json();
+        if (OPERATION_TERMINAL.has(result.status)) break;
+      }
+      if (!result || !OPERATION_TERMINAL.has(result.status)) throw new Error("部署操作等待超时");
+      if (result.status !== "SUCCEEDED") throw new Error(result.error?.message || "部署未完成");
+      await load();
+      const deploymentId = String(result.resourceId || "").trim();
+      navigateToStudioHash(deploymentId ? deploymentDetailRoute(deploymentId) : "#/deployments");
+      showToast("已提交云端部署", `${selectedBuild.agentName || selectedBuild.agentId} · ${selectedBuild.id}`);
+    } catch (caught: any) {
+      setCreateError(caught?.message || "部署失败");
+    } finally {
+      setCreateBusy(false);
     }
   }
 
@@ -458,7 +643,10 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
     const deployment = detail.deployment;
     const agentId = String(deployment.agentId || "").trim();
     const targetVersionId = selectedRollbackVersionId;
-    if (!agentId) return;
+    const targetVersion = detail.versions.find(version => version.versionId === targetVersionId);
+    const isCurrent = targetVersionId === detail.currentVersionId
+      || targetVersion?.status.toLowerCase() === "current";
+    if (!agentId || !targetVersion?.canRollback || isCurrent) return;
     setRollbackBusy(true);
     setDetail(current => current ? { ...current, error: "" } : current);
     try {
@@ -495,10 +683,75 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
     }
   }
 
+  if (createSelection) {
+    const selectedBuild = deployableBuilds.find(build => build.id === selectedBuildId);
+    return (
+      <div className="delivery-page deployment-create-page" data-layout="document">
+        <PageHeaderActions>
+          <button className="button secondary" type="button" onClick={() => navigateToStudioHash("#/deployments")}>
+            <ArrowLeft size={15} /><span>返回云端 Agent</span>
+          </button>
+          <button className="button accent" type="button" onClick={() => void submitDeployment()} disabled={!selectedBuild || createBusy || createLoading}>
+            <CloudUpload size={15} /><span>{createBusy ? "部署中…" : "部署到云端"}</span>
+          </button>
+        </PageHeaderActions>
+        <div className="delivery-intro">
+          <div><h2>部署到云端</h2><p>选择一个已成功的 Build，由 Studio 提交统一云端部署操作。</p></div>
+        </div>
+        {createError && <div className="form-error" role="alert">{createError}</div>}
+        <section className="delivery-block" aria-label="选择部署 Build">
+          <h2>选择 Build</h2><p>ManagedRuntime 使用已校验声明；ADK、LangGraph 等代码 Agent 使用不可变 Code Bundle。</p>
+          {createLoading ? <p>正在读取可部署 Build…</p> : deployableBuilds.length ? (
+            <div className="deployment-version-list" role="radiogroup" aria-label="可部署 Build">
+              {deployableBuilds.map(build => (
+                <button
+                  key={build.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={build.id === selectedBuildId}
+                  aria-label={`${build.agentName || build.agentId || "Agent"} ${build.id}`}
+                  className="deployment-version-option"
+                  data-selected={build.id === selectedBuildId}
+                  onClick={() => setSelectedBuildId(build.id)}
+                >
+                  <strong className="deployment-version-name">{build.agentName || build.agentId || "未命名 Agent"}</strong>
+                  <span className="deployment-version-state" data-state="available">{build.artifactType === "ManagedRuntime" ? "托管声明" : "代码 Bundle"}</span>
+                  <code title={build.id}>{shortId(build.id, 24)}</code>
+                  <time className="deployment-version-time" dateTime={build.createdAt || undefined}>{formatUpdatedAt(build.createdAt)}</time>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div className="delivery-empty-state">
+              <Package size={24} /><h2>没有可部署的 Build</h2>
+              <p>请先完成 Agent 构建或 ManagedRuntime 声明校验。</p>
+              <button className="button secondary" type="button" onClick={onSelectBuild}>前往构建</button>
+            </div>
+          )}
+          {selectedBuild && (
+            <div className="api-contract" aria-label="部署提交摘要">
+              <div><span>Agent</span><strong>{selectedBuild.agentName || selectedBuild.agentId}</strong></div>
+              <div><span>Build</span><code>{selectedBuild.id}</code></div>
+              <div><span>制品</span><strong>{selectedBuild.artifactType === "ManagedRuntime" ? "ManagedRuntime 声明" : "Code Bundle"}</strong></div>
+              <div><span>目标</span><strong>云端</strong></div>
+            </div>
+          )}
+        </section>
+      </div>
+    );
+  }
+
   if (detail) {
     const latestBuild = detail.builds[0];
-    const selectedRollbackVersion = detail.versions.find(version => version.versionId === selectedRollbackVersionId);
-    const currentCloudVersion = detail.versions.find(version => version.status.toLowerCase() === "current");
+    const selectedRollbackVersion = detail.versions.find(version => (
+      version.versionId === selectedRollbackVersionId
+      && version.canRollback
+      && version.versionId !== detail.currentVersionId
+      && version.status.toLowerCase() !== "current"
+    ));
+    const currentCloudVersion = detail.versions.find(version => (
+      version.versionId === detail.currentVersionId || version.status.toLowerCase() === "current"
+    ));
     const hasReceipt = detail.deployment.source === "receipt";
     const canUpdate = hasReceipt && detail.deployment.artifactId === "managed-runtime"
       && Boolean(latestBuild)
@@ -574,7 +827,7 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
                   <span>版本</span><span>状态</span><span>流量</span><span>创建时间</span>
                 </div>
                 {detail.versions.length ? detail.versions.map(version => {
-                  const isCurrent = version.status.toLowerCase() === "current";
+                  const isCurrent = version.versionId === detail.currentVersionId || version.status.toLowerCase() === "current";
                   const versionState = isCurrent ? "当前" : version.canRollback ? "可回滚" : "不可回滚";
                   return (
                   <button
@@ -586,7 +839,7 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
                     className="deployment-version-option"
                     data-current={isCurrent}
                     data-selected={version.versionId === selectedRollbackVersionId}
-                    disabled={!version.canRollback || updating || rollbackBusy}
+                    disabled={isCurrent || !version.canRollback || updating || rollbackBusy}
                     onClick={() => setSelectedRollbackVersionId(version.versionId)}
                   >
                     <strong className="deployment-version-name">{version.versionName || version.tag || "未命名版本"}</strong>
@@ -618,7 +871,7 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
   return (
     <div className="delivery-page" data-layout="document">
       <PageHeaderActions>
-        <button className="button accent" type="button" onClick={onSelectBuild}>
+        <button className="button accent" type="button" onClick={() => navigateToStudioHash("#/deployments/new")}>
           <CloudUpload size={15} /><span>选择 Build 部署</span>
         </button>
         <button className="button secondary" type="button" onClick={() => void refreshAll()} disabled={!deployments.length || refreshing.size > 0}>
@@ -644,7 +897,7 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
           <CloudUpload size={24} /><h2>还没有云端 Agent</h2>
           <p>可以从 Agent 详情构建并部署到云端。</p>
           <div className="delivery-empty-actions">
-            <button className="button accent" type="button" onClick={onSelectBuild}>选择 Build 部署</button>
+            <button className="button accent" type="button" onClick={() => navigateToStudioHash("#/deployments/new")}>选择 Build 部署</button>
             <button className="button secondary" type="button" onClick={onCreate}>创建 Agent</button>
           </div>
         </div>
