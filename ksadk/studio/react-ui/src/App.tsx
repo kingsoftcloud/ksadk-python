@@ -197,23 +197,29 @@ export default function App() {
         apiFetch("/api/v1/cloud-agents?size=100"),
       ]);
       if (!receiptResponse.ok) return;
-      const receiptPayload = await receiptResponse.json();
-      const accountPayload = accountResponse.ok ? await accountResponse.json() : { items: [] };
-      const receiptAgentIds = [...new Set((receiptPayload.items || []).flatMap((item: CloudDeploymentSummary) => (
+      const receiptPayload = await receiptResponse.json() as { items?: CloudDeploymentSummary[] };
+      const accountPayload = accountResponse.ok
+        ? await accountResponse.json() as { items?: AccountCloudAgentSummary[] }
+        : { items: [] };
+      const receiptItems = receiptPayload.items || [];
+      const accountItems = accountPayload.items || [];
+      const receiptAgentIds = [...new Set(receiptItems.flatMap((item: CloudDeploymentSummary) => (
         item.agentId?.trim() ? [item.agentId.trim()] : []
       )))];
-      const accountDetails = await Promise.all(receiptAgentIds.map(agentId => (
+      const accountDetails = await Promise.all<AccountCloudAgentSummary | null>(receiptAgentIds.map(agentId => (
         Promise.resolve()
           .then(() => apiFetch(`/api/v1/cloud-agents/${encodeURIComponent(agentId)}`))
-          .then(response => response.ok ? response.json() : null)
+          .then(async response => response.ok
+            ? await response.json() as AccountCloudAgentSummary
+            : null)
           .catch(() => null)
       )));
-      const accountByAgentId = new Map((accountPayload.items || []).map((item: AccountCloudAgentSummary) => [item.agentId, item]));
+      const accountByAgentId = new Map(accountItems.map(item => [item.agentId, item]));
       for (const detail of accountDetails) {
         if (detail?.agentId) accountByAgentId.set(detail.agentId, { ...accountByAgentId.get(detail.agentId), ...detail });
       }
       const items = mergeCloudChatTargets(
-        receiptPayload.items || [],
+        receiptItems,
         [...accountByAgentId.values()],
       );
       setCloudDeployments(items);

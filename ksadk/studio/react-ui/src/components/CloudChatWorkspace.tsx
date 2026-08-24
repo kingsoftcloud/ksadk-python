@@ -613,7 +613,7 @@ export function CloudChatWorkspace({
       );
       if (!cursorResponse.ok) throw new Error(await responseError(cursorResponse));
       const cursorPayload = await cursorResponse.json() as { events?: unknown[] };
-      awaitingAcceptedSeqRef.current = (cursorPayload.events || []).reduce((latest, event) => {
+      awaitingAcceptedSeqRef.current = (cursorPayload.events || []).reduce<number>((latest, event) => {
         if (!event || typeof event !== "object") return latest;
         const record = event as Record<string, unknown>;
         const payload = record.payload && typeof record.payload === "object"
