@@ -31,10 +31,33 @@ from uuid import uuid4
 
 from ksadk.model_proxy import ProxyConfig, ProxyServer
 from ksadk.model_proxy.cache import CapabilityCache, credential_scope
-from ksadk.model_proxy.detect import probe_responses_capability
+from ksadk.model_proxy.detect import (
+    CODEX_DIRECT_REQUIRED_TOOL_TYPES,
+    CODEX_OPTIONAL_TOOL_TYPES,
+    ModelCapabilities,
+    probe_responses_capability,
+)
 
 # 探测缓存单例:能力判定跨 client 共享,按 (model, base, credential_scope) 长缓存
 _CAPABILITY_CACHE = CapabilityCache(ttl=3600)
+
+
+class CodexCapabilityUnavailableError(RuntimeError):
+    """A caller-required Codex capability cannot be preserved by this route."""
+
+
+@dataclass(frozen=True)
+class _CapabilityRoute:
+    use_proxy: bool
+    disabled_tool_types: frozenset[str] = frozenset()
+    unavailable_required_tool_types: frozenset[str] = frozenset()
+
+    def require_available(self) -> None:
+        if self.unavailable_required_tool_types:
+            names = ", ".join(sorted(self.unavailable_required_tool_types))
+            raise CodexCapabilityUnavailableError(
+                f"required Codex capabilities unavailable on selected route: {names}"
+            )
 
 
 @dataclass
@@ -81,12 +104,48 @@ def _upgrade_http_to_https(upstream: str) -> str:
     return upstream
 
 
-def _probe_requires_proxy(model: str, base: str, key: str) -> bool:
-    """探测上游:缺少 Codex namespace 方言能力即返回 True(走代理)。
+def _route_for_capabilities(
+    caps: ModelCapabilities,
+    *,
+    required_tool_types: set[str] | frozenset[str] = frozenset(),
+) -> _CapabilityRoute:
+    """Split protocol requirements from optional tool degradation.
 
-    纯文本 Responses 成功不代表能接收 Codex 0.147 的
-    ``additional_tools -> namespace -> function``。只有明确探测到 namespace 才直连；
-    缺失或未知均使用既有兼容代理。结果经 CapabilityCache 缓存(singleflight)。
+    The current Studio/Codex launch contract has no user-facing required-tool
+    declaration, so callers pass the default empty set.  This explicit input is
+    the fail-closed seam for a future ``web_search=required`` contract.
+    """
+
+    native_ready = caps.responses_supported is True and CODEX_DIRECT_REQUIRED_TOOL_TYPES.issubset(
+        caps.tool_types
+    )
+    use_proxy = not native_ready
+    disabled = (
+        CODEX_OPTIONAL_TOOL_TYPES
+        if use_proxy
+        else CODEX_OPTIONAL_TOOL_TYPES.difference(caps.tool_types)
+    )
+    required = frozenset(required_tool_types)
+    unavailable = (required.difference(caps.tool_types)) | required.intersection(disabled)
+    return _CapabilityRoute(
+        use_proxy=use_proxy,
+        disabled_tool_types=frozenset(disabled),
+        unavailable_required_tool_types=frozenset(unavailable),
+    )
+
+
+def _probe_capability_route(
+    model: str,
+    base: str,
+    key: str,
+    *,
+    required_tool_types: set[str] | frozenset[str] = frozenset(),
+) -> _CapabilityRoute:
+    """Probe once and return protocol plus optional-tool routing decisions.
+
+    纯文本 Responses 成功不代表能接收 Codex 0.147 的完整
+    ``additional_tools`` 方言。namespace/custom 缺失或未知走兼容代理；仅缺
+    web_search 时保留原生 Responses，并在 Codex 生成请求前禁用该可选工具。
     """
 
     def probe(m: str, b: str):
@@ -96,7 +155,13 @@ def _probe_requires_proxy(model: str, base: str, key: str) -> bool:
             return probe_responses_capability(client, b, key, m, timeout=15.0)
 
     caps = _CAPABILITY_CACHE.get_or_probe(model, base, credential_scope(key), probe)
-    return "namespace" not in caps.tool_types
+    return _route_for_capabilities(caps, required_tool_types=required_tool_types)
+
+
+def _probe_requires_proxy(model: str, base: str, key: str) -> bool:
+    """Compatibility predicate for callers/tests that only need protocol choice."""
+
+    return _probe_capability_route(model, base, key).use_proxy
 
 
 class CodexClient(ABC):
@@ -461,11 +526,12 @@ class AsyncCodexClient(CodexClient):
         - ``KSADK_CODEX_USE_PROXY=1`` → 强制开代理;``=0`` → 强制直连(可人工覆盖误判)。
         - **未设 env 时智能探测**:OpenAI 官方 base_url 直连(不探测);自定义上游
           (星流等)探测 responses 能力(detect.py + CapabilityCache 缓存,一次探测长缓存):
-          - 支持 Codex ``namespace`` 工具方言 → 直连
-          - 缺少或无法确认 ``namespace`` 工具方言 → 自动启用代理
+          - namespace/custom 支持 → 原生 Responses 直连
+          - 仅 web_search 缺失 → 仍直连，并关闭该可选能力
+          - namespace/custom 缺失或无法确认 → 自动启用代理
         - 凭证闭合:codex 子进程只拿随机 KSADK_PROXY_TOKEN;上游 key 留父进程。
         - 互斥:launch_args_override 已设时 raise(override 整体覆盖命令行)。
-        - P1:直连分支(namespace 能力确认、env=0)遇到自定义 base 也注入
+        - P1:直连分支(协议必需工具面确认、env=0)遇到自定义 base 也注入
           ``ksadk_direct`` provider——否则 codex 子进程回落默认 OpenAI 官方
           端点,自定义上游(OPENAI_API_BASE)静默失效。已显式设
           ``model_provider=`` 的 config 不覆盖;官方 base 不注入。
@@ -498,21 +564,38 @@ class AsyncCodexClient(CodexClient):
         # probe against HTTP can see only a redirect and incorrectly classify
         # an HTTPS ``/responses`` 404 as unknown, causing a broken direct path.
         probe_base = _upgrade_http_to_https(base)
-        if _probe_requires_proxy(model, probe_base, key):
+        route = _probe_capability_route(model, probe_base, key)
+        # Future required-tool declarations must be checked here before either
+        # proxying or suppressing optional tools.
+        if isinstance(route, bool):  # compatibility for injected test doubles
+            route = _CapabilityRoute(use_proxy=route)
+        route.require_available()
+        if route.use_proxy:
             return AsyncCodexClient._start_proxy_and_inject(
                 config,
                 proxy_observer=proxy_observer,
             )
-        # 探测 supported/unknown:直连,但必须把自定义 base 配成 provider。
-        return AsyncCodexClient._inject_direct_provider(config), None
+        # 探测确认协议必需工具面:直连,但必须把自定义 base 配成 provider。
+        return (
+            AsyncCodexClient._inject_direct_provider(
+                config,
+                disabled_tool_types=route.disabled_tool_types,
+            ),
+            None,
+        )
 
     @staticmethod
-    def _inject_direct_provider(config: Any) -> Any:
+    def _inject_direct_provider(
+        config: Any,
+        *,
+        disabled_tool_types: frozenset[str] = frozenset(),
+    ) -> Any:
         """直连模式注入 ``ksadk_direct`` provider(P1:非 proxy 不丢自定义 base)。
 
-        - 无自定义 base / 官方 OpenAI base / 已设 ``model_provider=`` → 原样返回。
+        - 无自定义 base / 官方 OpenAI base → 原样返回。
+        - 已设 ``model_provider=`` → 保留 provider，仅追加必要的可选工具关闭项。
         - 否则追加 ``model_provider=ksadk_direct`` + base_url/env_key/wire_api
-          (responses;该分支只在探测确认或保守直连时到达,chat 模型走 proxy)。
+          (responses;该分支只在探测确认或显式强制直连时到达,其余走 proxy)。
         """
         import dataclasses
 
@@ -521,6 +604,11 @@ class AsyncCodexClient(CodexClient):
         cfg = config if isinstance(config, CodexConfig) else CodexConfig()
         overrides = list(cfg.config_overrides or ())
         if any(str(o).startswith("model_provider=") for o in overrides):
+            if "web_search" in disabled_tool_types and "web_search=disabled" not in overrides:
+                return dataclasses.replace(
+                    cfg,
+                    config_overrides=tuple([*overrides, "web_search=disabled"]),
+                )
             return config
         runtime_env = {**os.environ, **(cfg.env or {})}
         base = (
@@ -540,6 +628,8 @@ class AsyncCodexClient(CodexClient):
             "model_providers.ksadk_direct.wire_api=responses",
             "model_providers.ksadk_direct.supports_websockets=false",
         ]
+        if "web_search" in disabled_tool_types and "web_search=disabled" not in overrides:
+            overrides.append("web_search=disabled")
         return dataclasses.replace(cfg, config_overrides=tuple(overrides))
 
     @staticmethod

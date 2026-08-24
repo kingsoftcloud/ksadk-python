@@ -102,7 +102,7 @@ def test_capability_probe_requires_proxy_without_namespace(monkeypatch):
     )
 
 
-def test_capability_probe_allows_direct_with_namespace(monkeypatch):
+def test_capability_probe_allows_direct_with_complete_codex_tool_surface(monkeypatch):
     from ksadk.codex import client as client_module
 
     client_module._CAPABILITY_CACHE.clear()
@@ -111,17 +111,59 @@ def test_capability_probe_allows_direct_with_namespace(monkeypatch):
         "probe_responses_capability",
         lambda *_args, **_kwargs: ModelCapabilities(
             responses_supported=True,
-            tool_types={"namespace"},
+            tool_types={"namespace", "custom", "web_search"},
             preferred_protocol="responses",
             verdict="supported",
         ),
     )
 
     assert not client_module._probe_requires_proxy(
-        "responses-with-namespace",
+        "responses-with-complete-codex-tools",
         "https://models.example/v1",
         "key-b",
     )
+
+
+def test_capability_probe_keeps_native_responses_without_optional_web_search(monkeypatch):
+    """Missing optional web search disables it without downgrading Responses."""
+    from ksadk.codex import client as client_module
+
+    client_module._CAPABILITY_CACHE.clear()
+    monkeypatch.setattr(
+        client_module,
+        "probe_responses_capability",
+        lambda *_args, **_kwargs: ModelCapabilities(
+            responses_supported=True,
+            tool_types={"namespace", "custom"},
+            preferred_protocol="responses",
+            verdict="supported",
+        ),
+    )
+
+    assert not client_module._probe_requires_proxy(
+        "any-responses-endpoint-without-web-search",
+        "https://models.example/v1",
+        "key-web",
+    )
+
+
+def test_required_web_search_is_capability_unavailable_not_silently_disabled():
+    """Future required-tool callers must fail closed instead of accepting suppression."""
+    from ksadk.codex import client as client_module
+
+    route = client_module._route_for_capabilities(
+        ModelCapabilities(
+            responses_supported=True,
+            tool_types={"namespace", "custom"},
+            preferred_protocol="responses",
+            verdict="supported",
+        ),
+        required_tool_types={"web_search"},
+    )
+
+    assert route.unavailable_required_tool_types == frozenset({"web_search"})
+    with pytest.raises(client_module.CodexCapabilityUnavailableError, match="web_search"):
+        route.require_available()
 
 
 def test_capability_probe_requires_proxy_when_namespace_is_unknown(monkeypatch):
@@ -152,7 +194,7 @@ def test_probe_openai_official_direct_no_probe(monkeypatch):
     def _forbid(*a, **k):
         raise AssertionError("OpenAI 官方不应探测")
 
-    monkeypatch.setattr("ksadk.codex.client._probe_requires_proxy", _forbid)
+    monkeypatch.setattr("ksadk.codex.client._probe_capability_route", _forbid)
     out, proxy = AsyncCodexClient._maybe_apply_proxy(CodexConfig())
     assert proxy is None and out is not None
 
@@ -164,7 +206,7 @@ def test_probe_unsupported_enables_proxy(monkeypatch):
     monkeypatch.delenv("KSADK_CODEX_USE_PROXY", raising=False)
     monkeypatch.setenv("OPENAI_API_BASE", "https://kspmas.ksyun.com/v1")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-t")
-    monkeypatch.setattr("ksadk.codex.client._probe_requires_proxy", lambda *a, **k: True)
+    monkeypatch.setattr("ksadk.codex.client._probe_capability_route", lambda *a, **k: True)
     out, proxy = AsyncCodexClient._maybe_apply_proxy(CodexConfig())
     try:
         assert proxy is not None
@@ -186,7 +228,7 @@ def test_probe_uses_launch_config_environment(monkeypatch):
         observed.update(model=model, base=base, key=key)
         return False
 
-    monkeypatch.setattr("ksadk.codex.client._probe_requires_proxy", probe)
+    monkeypatch.setattr("ksadk.codex.client._probe_capability_route", probe)
     out, proxy = AsyncCodexClient._maybe_apply_proxy(
         CodexConfig(
             env={
@@ -217,7 +259,7 @@ def test_probe_uses_the_same_https_url_as_managed_runtime_execution(monkeypatch)
         observed.update(model=model, base=base, key=key)
         return False
 
-    monkeypatch.setattr("ksadk.codex.client._probe_requires_proxy", probe)
+    monkeypatch.setattr("ksadk.codex.client._probe_capability_route", probe)
     out, proxy = AsyncCodexClient._maybe_apply_proxy(
         CodexConfig(
             env={
@@ -243,7 +285,7 @@ def test_probe_supported_direct(monkeypatch):
 
     monkeypatch.delenv("KSADK_CODEX_USE_PROXY", raising=False)
     monkeypatch.setenv("OPENAI_API_BASE", "https://kspmas.ksyun.com/v1")
-    monkeypatch.setattr("ksadk.codex.client._probe_requires_proxy", lambda *a, **k: False)
+    monkeypatch.setattr("ksadk.codex.client._probe_capability_route", lambda *a, **k: False)
     out, proxy = AsyncCodexClient._maybe_apply_proxy(CodexConfig())
     assert proxy is None
 
@@ -255,7 +297,7 @@ def test_env_zero_forces_direct(monkeypatch):
     monkeypatch.setenv("KSADK_CODEX_USE_PROXY", "0")
     monkeypatch.setenv("OPENAI_API_BASE", "https://kspmas.ksyun.com/v1")
     monkeypatch.setattr(
-        "ksadk.codex.client._probe_requires_proxy",
+        "ksadk.codex.client._probe_capability_route",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("env=0 不应探测")),
     )
     out, proxy = AsyncCodexClient._maybe_apply_proxy(CodexConfig())
@@ -322,16 +364,14 @@ def test_probe_supported_custom_base_injects_direct_provider(monkeypatch):
     monkeypatch.setenv("OPENAI_API_BASE", "http://kspmas.ksyun.com/v1")
     monkeypatch.setenv("OPENAI_MODEL_NAME", "glm-5.3")
     monkeypatch.setattr(
-        "ksadk.codex.client._probe_requires_proxy",
+        "ksadk.codex.client._probe_capability_route",
         lambda *a, **k: False,  # supported → 直连
     )
     out, proxy = AsyncCodexClient._maybe_apply_proxy(CodexConfig(codex_bin="/x"))
     assert proxy is None
     ov = list(out.config_overrides)
     assert "model_provider=ksadk_direct" in ov
-    assert (
-        "model_providers.ksadk_direct.base_url=https://kspmas.ksyun.com/v1" in ov
-    )
+    assert "model_providers.ksadk_direct.base_url=https://kspmas.ksyun.com/v1" in ov
     assert "model_providers.ksadk_direct.env_key=OPENAI_API_KEY" in ov
     assert "model_providers.ksadk_direct.wire_api=responses" in ov
     assert "model_providers.ksadk_direct.supports_websockets=false" in ov
@@ -344,7 +384,7 @@ def test_probe_unknown_custom_base_also_injects_direct_provider(monkeypatch):
     monkeypatch.delenv("KSADK_CODEX_USE_PROXY", raising=False)
     monkeypatch.setenv("OPENAI_BASE_URL", "https://x.example.com/v1")
     monkeypatch.setattr(
-        "ksadk.codex.client._probe_requires_proxy",
+        "ksadk.codex.client._probe_capability_route",
         lambda *a, **k: False,
     )
     out, proxy = AsyncCodexClient._maybe_apply_proxy(CodexConfig(codex_bin="/x"))
@@ -363,15 +403,26 @@ def test_direct_provider_injection_respects_existing_model_provider(monkeypatch)
     monkeypatch.delenv("KSADK_CODEX_USE_PROXY", raising=False)
     monkeypatch.setenv("OPENAI_API_BASE", "https://x.example.com/v1")
     monkeypatch.setattr(
-        "ksadk.codex.client._probe_requires_proxy",
+        "ksadk.codex.client._probe_capability_route",
         lambda *a, **k: False,
     )
-    cfg = CodexConfig(
-        codex_bin="/x", config_overrides=("model_provider=my_own",)
-    )
+    cfg = CodexConfig(codex_bin="/x", config_overrides=("model_provider=my_own",))
     out, proxy = AsyncCodexClient._maybe_apply_proxy(cfg)
     assert proxy is None
     assert list(out.config_overrides) == ["model_provider=my_own"]
+
+
+def test_direct_provider_disables_unsupported_web_search_with_existing_provider():
+    """Optional-tool suppression still applies when caller owns provider config."""
+    from openai_codex import CodexConfig
+
+    cfg = CodexConfig(codex_bin="/x", config_overrides=("model_provider=my_own",))
+    out = AsyncCodexClient._inject_direct_provider(
+        cfg,
+        disabled_tool_types=frozenset({"web_search"}),
+    )
+
+    assert list(out.config_overrides) == ["model_provider=my_own", "web_search=disabled"]
 
 
 def test_direct_provider_skipped_for_official_openai_base(monkeypatch):
@@ -381,7 +432,7 @@ def test_direct_provider_skipped_for_official_openai_base(monkeypatch):
     monkeypatch.delenv("KSADK_CODEX_USE_PROXY", raising=False)
     monkeypatch.setenv("OPENAI_API_BASE", "https://api.openai.com/v1")
     monkeypatch.setattr(
-        "ksadk.codex.client._probe_requires_proxy",
+        "ksadk.codex.client._probe_capability_route",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("官方 base 不应探测")),
     )
     cfg = CodexConfig(codex_bin="/x")

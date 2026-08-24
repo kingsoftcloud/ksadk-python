@@ -24,9 +24,9 @@ def test_probe_supported_valid_structure():
     c = probe_responses_capability(_client(h), "https://x/v1", "k", "m")
     assert c.verdict == "supported"
     assert c.responses_supported is True
-    assert c.tool_types == {"namespace"}
+    assert c.tool_types == {"namespace", "custom", "web_search"}
     assert c.preferred_protocol == "responses"
-    assert len(requests) == 2
+    assert len(requests) == 4
 
 
 def test_probe_responses_without_codex_namespace_prefers_chat_proxy():
@@ -98,6 +98,36 @@ def test_probe_namespace_failure_in_responses_envelope_prefers_chat_proxy():
     assert c.responses_supported is True
     assert c.tool_types == set()
     assert c.preferred_protocol == "chat"
+
+
+def test_probe_glm_envelope_without_web_search_keeps_native_responses():
+    """真实 GLM 形态:namespace/custom 可用,但 Codex web_search 枚举被拒。"""
+
+    requests = []
+
+    def h(req):
+        payload = json.loads(req.read())
+        requests.append(payload)
+        if len(requests) < 4:
+            return httpx.Response(200, json={"output": [], "status": "completed"})
+        return httpx.Response(
+            400,
+            text=(
+                "Invalid value: web_search, Supported values are: function, mcp, knowledge_search"
+            ),
+        )
+
+    c = probe_responses_capability(_client(h), "https://x/v1", "k", "glm-5.1")
+
+    assert c.verdict == "supported"
+    assert c.responses_supported is True
+    assert c.tool_types == {"namespace", "custom"}
+    assert c.preferred_protocol == "responses"
+    assert requests[3]["input"][0] == {
+        "type": "additional_tools",
+        "role": "developer",
+        "tools": [{"type": "web_search"}],
+    }
 
 
 def test_probe_200_but_not_responses_structure_gateway_fake_ok():

@@ -12,11 +12,13 @@ import pytest
 openai_codex = pytest.importorskip("openai_codex")
 
 from ksadk.codex.client import AsyncCodexClient  # noqa: E402
+from ksadk.model_proxy.transform import Streamer  # noqa: E402
 
 
 class _ChatUpstream(BaseHTTPRequestHandler):
     requests: list[dict] = []
     responses_requests: list[dict] = []
+    rejected_tool_type = "namespace"
 
     def log_message(self, _format: str, *_args: object) -> None:
         return
@@ -27,22 +29,48 @@ class _ChatUpstream(BaseHTTPRequestHandler):
         if self.path.endswith("/responses"):
             type(self).responses_requests.append(body)
             items = body.get("input") if isinstance(body, dict) else None
-            has_namespace = any(
-                isinstance(item, dict)
-                and item.get("type") == "additional_tools"
-                and any(
-                    isinstance(tool, dict) and tool.get("type") == "namespace"
-                    for tool in item.get("tools") or []
-                )
-                for item in items or []
-            )
-            if has_namespace:
+            declared_types: set[str] = set()
+
+            def collect_types(value: object) -> None:
+                if isinstance(value, dict):
+                    tool_type = value.get("type")
+                    if isinstance(tool_type, str):
+                        declared_types.add(tool_type)
+                    for child in value.values():
+                        collect_types(child)
+                elif isinstance(value, list):
+                    for child in value:
+                        collect_types(child)
+
+            collect_types(items or [])
+            rejected = type(self).rejected_tool_type
+            if rejected in declared_types:
                 encoded = (
-                    b"Invalid value: namespace, Supported values are: "
-                    b"function, mcp, knowledge_search"
-                )
+                    f"Invalid value: {rejected}, Supported values are: "
+                    "function, mcp, knowledge_search"
+                ).encode()
                 self.send_response(400)
                 self.send_header("Content-Type", "text/plain")
+            elif body.get("stream") is True:
+                streamer = Streamer("resp-native", str(body.get("model") or "model"))
+                encoded = "".join(
+                    [
+                        *streamer.start(),
+                        *streamer.handle(
+                            {
+                                "choices": [
+                                    {
+                                        "delta": {"content": "done"},
+                                        "finish_reason": "stop",
+                                    }
+                                ]
+                            }
+                        ),
+                        *streamer.finalize(),
+                    ]
+                ).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
             else:
                 encoded = json.dumps(
                     {"id": "resp-probe", "output": [], "status": "completed"}
@@ -216,5 +244,63 @@ async def test_auto_mode_proxies_when_responses_rejects_codex_namespace(
     assert "functions__exec" in names
     assert not any(
         event.get("method") == "error" and "Invalid value: namespace" in str(event.get("params"))
+        for event in events
+    )
+
+
+@pytest.mark.asyncio
+async def test_auto_mode_keeps_native_responses_and_disables_rejected_web_search(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A GLM-shaped web_search rejection stays native but omits web_search."""
+
+    from ksadk.model_proxy import server as proxy_server
+
+    class GlmWebSearchUpstream(_ChatUpstream):
+        requests: list[dict] = []
+        responses_requests: list[dict] = []
+        rejected_tool_type = "web_search"
+
+    raw_responses_requests: list[dict] = []
+    original_transform = proxy_server.responses_to_chat
+
+    def capture_transform(body: dict):
+        raw_responses_requests.append(copy.deepcopy(body))
+        return original_transform(body)
+
+    monkeypatch.setattr(proxy_server, "responses_to_chat", capture_transform)
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), GlmWebSearchUpstream)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    host, port = upstream.server_address
+    config = openai_codex.CodexConfig(
+        cwd=str(tmp_path),
+        env={
+            "OPENAI_API_BASE": f"http://{host}:{port}/v1",
+            "OPENAI_API_KEY": "test-glm-key",
+            "OPENAI_MODEL_NAME": "glm-5.1",
+        },
+    )
+    client = AsyncCodexClient(config=config)
+    try:
+        thread_id = await client.start_thread({})
+        events = await asyncio.wait_for(_collect_turn(client, thread_id), timeout=20)
+    finally:
+        await client.close()
+        upstream.shutdown()
+        upstream.server_close()
+        thread.join(timeout=2)
+
+    assert len(GlmWebSearchUpstream.responses_requests) == 5
+    assert GlmWebSearchUpstream.responses_requests[3]["input"][0]["tools"] == [
+        {"type": "web_search"}
+    ]
+    actual_request = GlmWebSearchUpstream.responses_requests[4]
+    assert actual_request["stream"] is True
+    assert "web_search" not in json.dumps(actual_request)
+    assert not raw_responses_requests, "native Responses request unexpectedly used proxy"
+    assert not GlmWebSearchUpstream.requests, "native Responses request reached Chat Completions"
+    assert not any(
+        event.get("method") == "error" and "Invalid value: web_search" in str(event.get("params"))
         for event in events
     )
