@@ -21,7 +21,7 @@ import type { TrajectoryRecord } from "./trajectory";
 interface TraceSummary {
   traceId: string; runId: string; agentId: string; sessionId: string;
   runtimeType: string; model: string; status: string; startedAt: string;
-  durationMs: number | null; totalTokens: number | null; usageReported: boolean;
+  durationMs: number | null; totalTokens: number | null; usageReported?: boolean;
   inputTokens?: number | null; outputTokens?: number | null;
   spanCount: number;
 }
@@ -84,6 +84,28 @@ function formatDuration(value: any): string {
 function formatTokenCount(value: any): string {
   if (value === null || value === undefined) return "未上报";
   return new Intl.NumberFormat("zh-CN").format(Number(value));
+}
+type TokenUsage = {
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+  totalTokens?: number | null;
+  usageReported?: boolean;
+};
+function tokenCounter(value: unknown): number | null {
+  if (value === null || value === undefined || typeof value === "boolean") return null;
+  const counter = Number(value);
+  return Number.isFinite(counter) && counter >= 0 ? counter : null;
+}
+function normalizedTokenTotal(usage: TokenUsage): number | null {
+  const total = tokenCounter(usage.totalTokens);
+  if (total !== null) return total;
+  const input = tokenCounter(usage.inputTokens);
+  const output = tokenCounter(usage.outputTokens);
+  return input !== null && output !== null ? input + output : null;
+}
+function hasTokenUsage(usage: TokenUsage): boolean {
+  return usage.usageReported === true
+    || [usage.inputTokens, usage.outputTokens, usage.totalTokens].some(value => tokenCounter(value) !== null);
 }
 function formatNanoseconds(value: any): string {
   try {
@@ -453,7 +475,13 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
 
   /* ---------- 渲染 ---------- */
 
-  const metrics = activeTrace?.metrics || {};
+  const metrics: NonNullable<TraceDetail["metrics"]> = activeTrace?.metrics || {
+    durationMs: activeTrace?.durationMs,
+    inputTokens: activeTrace?.inputTokens,
+    outputTokens: activeTrace?.outputTokens,
+    totalTokens: activeTrace?.totalTokens,
+    usageReported: activeTrace?.usageReported,
+  };
   const activeTraceAgent = agents.find(agent => agent.id === activeTrace?.agentId);
   const traceColumns = useMemo<StudioDataColumn<TraceSummary>[]>(() => [
     {
@@ -480,7 +508,7 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
     { id: "startedAt", header: "开始时间", minWidth: 140, cell: trace => formatDate(trace.startedAt) },
     { id: "duration", header: "耗时", width: 110, cell: trace => formatDuration(trace.durationMs) },
     { id: "model", header: "模型", minWidth: 140, cell: trace => trace.model || "-" },
-    { id: "tokens", header: "Token", width: 110, cell: trace => trace.usageReported ? formatTokenCount(trace.totalTokens) : "未上报" },
+    { id: "tokens", header: "Token", width: 110, cell: trace => hasTokenUsage(trace) ? formatTokenCount(normalizedTokenTotal(trace)) : "未上报" },
     { id: "spans", header: "Span", width: 80, cell: trace => trace.spanCount || 0 },
     {
       id: "actions",
@@ -659,8 +687,8 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
         </div>
         <div>
           <span>Token</span>
-          <strong>{activeTrace && metrics.usageReported ? formatTokenCount(metrics.totalTokens) : "未上报"}</strong>
-          <small>{activeTrace && metrics.usageReported ? `${formatTokenCount(metrics.inputTokens)} 输入 · ${formatTokenCount(metrics.outputTokens)} 输出` : "输入 / 输出"}</small>
+          <strong>{activeTrace && hasTokenUsage(metrics) ? formatTokenCount(normalizedTokenTotal(metrics)) : "未上报"}</strong>
+          <small>{activeTrace && hasTokenUsage(metrics) ? `${formatTokenCount(metrics.inputTokens)} 输入 · ${formatTokenCount(metrics.outputTokens)} 输出` : "输入 / 输出"}</small>
         </div>
         <div>
           <span>模型</span>

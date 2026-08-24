@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { apiFetch } from "../api";
@@ -59,9 +59,16 @@ describe("ObservabilityPage trajectory integration", () => {
           startedAt: "2026-08-17T00:00:00Z",
           durationMs: 25,
           totalTokens: 5,
-          usageReported: true,
+          usageReported: false,
           spanCount: 1,
           rootSpanId: "span-1",
+          metrics: {
+            inputTokens: 2,
+            outputTokens: 3,
+            totalTokens: 5,
+            usageReported: false,
+            usageSource: "gen_ai.usage",
+          },
           spans: [{
             spanId: "span-1",
             name: "run",
@@ -86,7 +93,7 @@ describe("ObservabilityPage trajectory integration", () => {
             startedAt: "2026-08-17T00:00:00Z",
             durationMs: 25,
             totalTokens: 5,
-            usageReported: true,
+            usageReported: false,
             spanCount: 1,
           }],
           total: 1,
@@ -130,6 +137,20 @@ describe("ObservabilityPage trajectory integration", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+  });
+
+  it("shows actual token counters even when a legacy usage flag is absent", async () => {
+    const user = userEvent.setup();
+    render(<ObservabilityPage refreshTick={0} />);
+
+    const table = await screen.findByRole("table", { name: "Trace 列表" });
+    expect(within(table).getByText("5")).toBeInTheDocument();
+    expect(within(table).queryByText("未上报")).not.toBeInTheDocument();
+
+    await user.click(within(table).getByRole("button", { name: "查看详情" }));
+    const metrics = await screen.findByRole("region", { name: "Trace 指标" });
+    expect(within(metrics).getByText("5")).toBeInTheDocument();
+    expect(within(metrics).getByText("2 输入 · 3 输出")).toBeInTheDocument();
   });
 
   it("switches an active trace between spans and its canonical trajectory", async () => {

@@ -149,6 +149,104 @@ def _enum_string(value: Any) -> str:
     return str(getattr(value, "value", value))
 
 
+def _token_value(attributes: dict[str, Any], *keys: str) -> int | None:
+    """Read one non-negative token counter from known OTLP attribute names."""
+
+    for key in keys:
+        value = attributes.get(key)
+        if value is None or isinstance(value, bool):
+            continue
+        try:
+            normalized = int(value)
+        except (TypeError, ValueError):
+            continue
+        if normalized >= 0:
+            return normalized
+    return None
+
+
+def _usage_from_attributes(attributes: dict[str, Any]) -> dict[str, Any]:
+    """Normalize AgentKit and standard GenAI usage without trusting a side flag."""
+
+    input_tokens = _token_value(
+        attributes,
+        "gen_ai.usage.input_tokens",
+        "agentkit.usage.input_tokens",
+    )
+    output_tokens = _token_value(
+        attributes,
+        "gen_ai.usage.output_tokens",
+        "agentkit.usage.output_tokens",
+    )
+    total_tokens = _token_value(
+        attributes,
+        "agentkit.usage.total_tokens",
+        "gen_ai.usage.total_tokens",
+    )
+    cached_input_tokens = _token_value(
+        attributes,
+        "gen_ai.usage.cached_input_tokens",
+        "agentkit.usage.cached_input_tokens",
+    )
+    reasoning_output_tokens = _token_value(
+        attributes,
+        "gen_ai.usage.reasoning_tokens",
+        "gen_ai.usage.reasoning_output_tokens",
+        "agentkit.usage.reasoning_output_tokens",
+    )
+    if total_tokens is None and input_tokens is not None and output_tokens is not None:
+        total_tokens = input_tokens + output_tokens
+    reported = any(
+        value is not None
+        for value in (
+            input_tokens,
+            output_tokens,
+            total_tokens,
+            cached_input_tokens,
+            reasoning_output_tokens,
+        )
+    )
+    source = attributes.get("agentkit.usage.source")
+    if not source and reported:
+        source = "gen_ai.usage"
+    return {
+        "inputTokens": input_tokens,
+        "outputTokens": output_tokens,
+        "totalTokens": total_tokens,
+        "cachedInputTokens": cached_input_tokens,
+        "reasoningOutputTokens": reasoning_output_tokens,
+        "usageReported": reported,
+        "usageSource": source,
+    }
+
+
+def _aggregate_span_usage(spans: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    """Aggregate standard usage from model spans when the root has no counters."""
+
+    usages: list[dict[str, Any]] = []
+    for span in spans:
+        attributes = _decoded_attributes(span.get("attributes", []))
+        usage = _usage_from_attributes(attributes)
+        if usage["usageReported"]:
+            usages.append(usage)
+    if not usages:
+        return _usage_from_attributes({})
+
+    def sum_if_complete(key: str) -> int | None:
+        values = [usage[key] for usage in usages]
+        return sum(values) if all(value is not None for value in values) else None
+
+    return {
+        "inputTokens": sum_if_complete("inputTokens"),
+        "outputTokens": sum_if_complete("outputTokens"),
+        "totalTokens": sum_if_complete("totalTokens"),
+        "cachedInputTokens": sum_if_complete("cachedInputTokens"),
+        "reasoningOutputTokens": sum_if_complete("reasoningOutputTokens"),
+        "usageReported": True,
+        "usageSource": "gen_ai.usage",
+    }
+
+
 class OtlpTraceStore:
     """Persist one canonical OTLP JSON document per local Trace."""
 
@@ -188,37 +286,15 @@ class OtlpTraceStore:
         root_attributes = _decoded_attributes(root.get("attributes", []))
         canonical = root["traceId"]
         duration = root_attributes.get("agentkit.duration.ms")
-        usage_reported = bool(root_attributes.get("agentkit.usage.reported", False))
+        usage = _usage_from_attributes(root_attributes)
+        if not usage["usageReported"]:
+            usage = _aggregate_span_usage(
+                span for span in spans if span.get("spanId") != root.get("spanId")
+            )
         metrics = {
             "durationMs": int(duration) if duration is not None else None,
             "durationSource": root_attributes.get("agentkit.duration.source"),
-            "inputTokens": (
-                int(root_attributes["gen_ai.usage.input_tokens"])
-                if usage_reported and "gen_ai.usage.input_tokens" in root_attributes
-                else None
-            ),
-            "outputTokens": (
-                int(root_attributes["gen_ai.usage.output_tokens"])
-                if usage_reported and "gen_ai.usage.output_tokens" in root_attributes
-                else None
-            ),
-            "totalTokens": (
-                int(root_attributes["agentkit.usage.total_tokens"])
-                if usage_reported and "agentkit.usage.total_tokens" in root_attributes
-                else None
-            ),
-            "cachedInputTokens": (
-                int(root_attributes.get("gen_ai.usage.cached_input_tokens", 0))
-                if usage_reported
-                else None
-            ),
-            "reasoningOutputTokens": (
-                int(root_attributes.get("gen_ai.usage.reasoning_tokens", 0))
-                if usage_reported
-                else None
-            ),
-            "usageReported": usage_reported,
-            "usageSource": root_attributes.get("agentkit.usage.source"),
+            **usage,
         }
         first_resource = (raw.get("resourceSpans") or [{}])[0]
         first_scope = (first_resource.get("scopeSpans") or [{}])[0]

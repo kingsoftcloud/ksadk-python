@@ -332,6 +332,26 @@ def test_trace_view_is_lossless_for_span_inspection_and_reports_missing_values(
     assert missing["durationMs"] is None
 
 
+def test_trace_view_recovers_standard_usage_from_model_spans(
+    tmp_path: Path,
+) -> None:
+    """Standard OTLP usage must not depend on the AgentKit reported flag."""
+
+    store, record, events = _fixture(tmp_path)
+    record.usage = Usage()
+    store.sync(record, events)
+
+    metrics = store.get_trace_view(TRACE_ID)["metrics"]
+
+    assert metrics["usageReported"] is True
+    assert metrics["usageSource"] == "gen_ai.usage"
+    assert metrics["inputTokens"] == 128
+    assert metrics["outputTokens"] == 32
+    assert metrics["totalTokens"] == 160
+    assert metrics["cachedInputTokens"] == 16
+    assert metrics["reasoningOutputTokens"] == 8
+
+
 def test_trace_list_is_filterable_without_loading_chat_sessions(tmp_path: Path) -> None:
     """Break caught: Observability can only find a Trace by navigating through Chat."""
 

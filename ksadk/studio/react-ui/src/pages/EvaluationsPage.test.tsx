@@ -41,6 +41,22 @@ describe("EvaluationsPage", () => {
     expect(await screen.findByText("还没有评测任务")).toBeInTheDocument();
     expect(mockedFetch).toHaveBeenCalledWith("/api/v1/evaluation-runs", expect.anything());
     expect(mockedFetch).toHaveBeenCalledWith("/api/v1/evaluation-targets");
+    expect(screen.getByRole("region", { name: "评测运行" }).querySelectorAll(".evaluation-page__panel-header")).toHaveLength(1);
+  });
+
+  it("uses the shared aligned form grid and business target labels", async () => {
+    const user = userEvent.setup();
+    render(<EvaluationsPage refreshTick={0} />);
+
+    await user.click(screen.getByRole("button", { name: "新建评测" }));
+
+    const form = document.getElementById("evaluation-create-form");
+    expect(form).toHaveClass("form-grid", "two-columns");
+    expect(screen.getByLabelText(/Agent 地址/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("combobox", { name: "Target 类型" }));
+    await user.click(await screen.findByRole("option", { name: "本地源码" }));
+    expect(screen.getByLabelText(/Agent 源码目录/)).toBeInTheDocument();
   });
 
   it("uploads a selected EvalSet and keeps its workspace path", async () => {
@@ -145,7 +161,7 @@ describe("EvaluationsPage", () => {
     await user.click(screen.getByRole("checkbox", { name: "工具轨迹" }));
     await user.click(screen.getByRole("checkbox", { name: "参考答案匹配" }));
     await uploadEvalset(user);
-    await user.type(screen.getByLabelText(/Target locator/), "https://agent.example.test/a2a");
+    await user.type(screen.getByLabelText(/Agent 地址/), "https://agent.example.test/a2a");
     await user.click(screen.getByRole("button", { name: "开始评测" }));
 
     expect(await screen.findByText("评测任务已创建")).toBeInTheDocument();

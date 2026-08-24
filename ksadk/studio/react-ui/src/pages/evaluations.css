@@ -1,29 +1,13 @@
 .evaluation-page__create {
-  display: grid;
-  gap: 16px;
-}
-
-.evaluation-page__form-grid {
-  display: grid;
-  grid-template-columns: repeat(12, minmax(0, 1fr));
   align-items: start;
-  gap: 16px;
 }
 
-.evaluation-page__form-grid > .studio-form-field {
-  grid-column: span 6;
-  align-self: start;
-  /* The legacy stacked-form selector gives adjacent fields a top margin.
-   * In this two-column grid that would push the right column down. */
-  margin-top: 0;
+.evaluation-page__create > .studio-form-field {
   min-width: 0;
 }
 
-/* `soft-block.css` is intentionally loaded after this page stylesheet and
- * applies `.studio-form-field + .studio-form-field { margin-top: 22px; }`.
- * Keep this override more specific so adjacent columns share the same row. */
-.evaluation-page__form-grid > .studio-form-field + .studio-form-field {
-  margin-top: 0;
+.evaluation-page__field--wide {
+  grid-column: 1 / -1;
 }
 
 .evaluation-page__fail-fast {
@@ -545,7 +529,6 @@
     overflow-wrap: anywhere;
   }
 
-  .evaluation-page__form-grid,
   .evaluation-page__metrics,
   .evaluation-detail-page__overview,
   .evaluation-page__snapshot,

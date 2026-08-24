@@ -252,6 +252,11 @@ export function EvaluationsPage({
   const completedRuns = runs.filter(run => run.hasReport);
   const passedCount = completedRuns.filter(run => run.status === "PASSED").length;
   const abnormalCount = runs.filter(run => ["FAILED", "ERROR", "INTERRUPTED"].includes(run.status)).length;
+  const targetLocatorLabel = targetKind === "a2a"
+    ? "Agent 地址"
+    : targetKind === "local_source"
+      ? "Agent 源码目录"
+      : "Build";
 
   return (
     <div className="page-container evaluation-page" data-layout="data" data-scroll-mode="data">
@@ -310,8 +315,8 @@ export function EvaluationsPage({
             </>
           )}
         >
-          <form id="evaluation-create-form" className="evaluation-page__create" onSubmit={submitEvaluation}>
-            <FormField label="EvalSet 文件" htmlFor="evaluation-evalset" requirement="required">
+          <form id="evaluation-create-form" className="evaluation-page__create form-grid two-columns" onSubmit={submitEvaluation}>
+            <FormField className="evaluation-page__field--wide" label="EvalSet 文件" htmlFor="evaluation-evalset" requirement="required">
               <div className="evaluation-page__evalset-picker">
                 <input
                   id="evaluation-evalset"
@@ -334,66 +339,64 @@ export function EvaluationsPage({
               {evalsetError && <p className="studio-field-error" role="alert">{evalsetError}</p>}
             </FormField>
 
-            <div className="evaluation-page__form-grid">
-              <FormField label="Target 类型" requirement="required">
+            <FormField label="Target 类型" requirement="required">
+              <StudioSelect
+                ariaLabel="Target 类型"
+                value={targetKind}
+                options={[
+                  { value: "a2a", label: "A2A Agent" },
+                  { value: "local_source", label: "本地源码" },
+                  { value: "studio_build", label: "Studio Build" },
+                ]}
+                onValueChange={value => changeTargetKind(value as TargetKind)}
+              />
+            </FormField>
+            {targetKind === "studio_build" && (
+              <FormField label="Agent" htmlFor="evaluation-agent" requirement="required">
                 <StudioSelect
-                  ariaLabel="Target 类型"
-                  value={targetKind}
-                  options={[
-                    { value: "a2a", label: "A2A Agent" },
-                    { value: "local_source", label: "本地源码" },
-                    { value: "studio_build", label: "Studio Build" },
-                  ]}
-                  onValueChange={value => changeTargetKind(value as TargetKind)}
+                  id="evaluation-agent"
+                  ariaLabel="Studio Agent"
+                  value={selectedAgentId}
+                  placeholder="请选择 Agent"
+                  options={agents.map(agent => ({
+                    value: agent.metadata.id,
+                    label: agent.metadata.name,
+                    description: catalog.builds.some(build => build.agentId === agent.metadata.id)
+                      ? agent.metadata.id
+                      : `${agent.metadata.id} · 需先构建`,
+                    disabled: !catalog.builds.some(build => build.agentId === agent.metadata.id),
+                  }))}
+                  disabled={!agents.some(agent => catalog.builds.some(build => build.agentId === agent.metadata.id))}
+                  onValueChange={setSelectedAgentId}
                 />
               </FormField>
-              {targetKind === "studio_build" && (
-                <FormField label="Agent" htmlFor="evaluation-agent" requirement="required">
-                  <StudioSelect
-                    id="evaluation-agent"
-                    ariaLabel="Studio Agent"
-                    value={selectedAgentId}
-                    placeholder="请选择 Agent"
-                    options={agents.map(agent => ({
-                      value: agent.metadata.id,
-                      label: agent.metadata.name,
-                      description: catalog.builds.some(build => build.agentId === agent.metadata.id)
-                        ? agent.metadata.id
-                        : `${agent.metadata.id} · 需先构建`,
-                      disabled: !catalog.builds.some(build => build.agentId === agent.metadata.id),
-                    }))}
-                    disabled={!agents.some(agent => catalog.builds.some(build => build.agentId === agent.metadata.id))}
-                    onValueChange={setSelectedAgentId}
-                  />
-                </FormField>
+            )}
+            <FormField label={targetLocatorLabel} htmlFor="evaluation-locator" requirement="required">
+              {targetKind === "studio_build" ? (
+                <StudioSelect
+                  id="evaluation-locator"
+                  ariaLabel="Studio Build"
+                  value={targetLocator}
+                  placeholder="暂无成功 Build"
+                  options={selectedAgentBuilds.map(build => ({ value: build.id, label: build.id, description: build.runtime }))}
+                  disabled={!selectedAgentBuilds.length}
+                  onValueChange={setTargetLocator}
+                />
+              ) : (
+                <input id="evaluation-locator" value={targetLocator} onChange={event => setTargetLocator(event.target.value)} required placeholder={targetKind === "a2a" ? "https://agent.example.test/a2a" : "."} />
               )}
-              <FormField label={targetKind === "studio_build" ? "Build" : "Target locator"} htmlFor="evaluation-locator" requirement="required">
-                {targetKind === "studio_build" ? (
-                  <StudioSelect
-                    id="evaluation-locator"
-                    ariaLabel="Studio Build"
-                    value={targetLocator}
-                    placeholder="暂无成功 Build"
-                    options={selectedAgentBuilds.map(build => ({ value: build.id, label: build.id, description: build.runtime }))}
-                    disabled={!selectedAgentBuilds.length}
-                    onValueChange={setTargetLocator}
-                  />
-                ) : (
-                  <input id="evaluation-locator" value={targetLocator} onChange={event => setTargetLocator(event.target.value)} required placeholder={targetKind === "a2a" ? "https://agent.example.test/a2a" : "."} />
-                )}
-              </FormField>
-              <FormField label="超时（秒）" htmlFor="evaluation-timeout" requirement="required">
-                <input id="evaluation-timeout" type="number" min={1} max={3600} value={timeoutSeconds} onChange={event => setTimeoutSeconds(Number(event.target.value))} required />
-              </FormField>
-              <FormField label="运行策略">
-                <label className="checkbox-row evaluation-page__fail-fast">
-                  <input type="checkbox" checked={failFast} onChange={event => setFailFast(event.target.checked)} />
-                  <span><strong>Fail fast</strong><small>首个失败 Case 后停止</small></span>
-                </label>
-              </FormField>
-            </div>
+            </FormField>
+            <FormField label="超时（秒）" htmlFor="evaluation-timeout" requirement="required">
+              <input id="evaluation-timeout" type="number" min={1} max={3600} value={timeoutSeconds} onChange={event => setTimeoutSeconds(Number(event.target.value))} required />
+            </FormField>
+            <FormField label="运行策略">
+              <label className="checkbox-row evaluation-page__fail-fast">
+                <input type="checkbox" checked={failFast} onChange={event => setFailFast(event.target.checked)} />
+                <span><strong>Fail fast</strong><small>首个失败 Case 后停止</small></span>
+              </label>
+            </FormField>
 
-            <FormField label="评估器" requirement="required">
+            <FormField className="evaluation-page__field--wide" label="评估器" requirement="required">
               <div className="evaluation-page__evaluator-options" role="group" aria-label="评估器">
                 {EVALUATOR_OPTIONS.map(option => (
                   <label className="checkbox-row" key={option.id}>
