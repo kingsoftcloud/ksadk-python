@@ -9,8 +9,8 @@ from ksadk.server import RuntimeAppConfig, configure_runtime_app, create_runtime
 
 app = create_runtime_app(RuntimeAppConfig(), configure_runtime_app)
 
-_ROUTE_MANIFEST_SHA256 = "51a60325487a422f10a5d82ad51d5d233e8d314956a7fd84cc91dcf7bc27019a"
-_OPENAPI_OPERATIONS_SHA256 = "ac9086d1592d69d7eecd4260c2ca4bfa06b0daaed5cdf0653c4eb409204ed84d"
+_ROUTE_MANIFEST_SHA256 = "96dee853641258bdd4aacf17ba634f499f6341975f1662ad170678835bec6a74"
+_OPENAPI_OPERATIONS_SHA256 = "bcd977f5e2550871e6b603007aa7df085e930048be1c680fafea52c3012319a0"
 _HTTP_METHODS = {"get", "post", "put", "patch", "delete", "head", "options", "trace"}
 _AGUI_PATHS = {"/agentengine/agui", "/agentengine/agui/health"}
 
@@ -65,7 +65,7 @@ def test_runtime_route_manifest_preserves_legacy_contract() -> None:
     legacy_manifest = _without_agui(manifest)
     agui_manifest = [route for route in manifest if route[1] in _AGUI_PATHS]
 
-    assert len(legacy_manifest) == 72, json.dumps(manifest, indent=2, ensure_ascii=False)
+    assert len(legacy_manifest) == 76, json.dumps(manifest, indent=2, ensure_ascii=False)
     assert _sha256(legacy_manifest) == _ROUTE_MANIFEST_SHA256, json.dumps(
         legacy_manifest, indent=2, ensure_ascii=False
     )
@@ -79,6 +79,12 @@ def test_runtime_route_manifest_preserves_legacy_contract() -> None:
         ["GET", "/health", "health_check"],
         ["GET", "/list-apps", "list_apps"],
         ["GET", "/{requested_path}", "serve_agent_ui_static"],
+    ]
+    assert [route for route in legacy_manifest if route[1].startswith("/agent-kernel/v1/")] == [
+        ["POST", "/agent-kernel/v1/SubmitAgentControl", "submit_agent_control"],
+        ["POST", "/agent-kernel/v1/GetAgentStatus", "get_agent_status"],
+        ["GET", "/agent-kernel/v1/SubscribeSessionEvents", "subscribe_session_events"],
+        ["GET", "/agent-kernel/v1/health", "kernel_health"],
     ]
     assert agui_manifest in (
         [],
@@ -99,8 +105,8 @@ def test_runtime_openapi_operations_preserve_legacy_contract() -> None:
         if path not in _AGUI_PATHS
     }
 
-    assert len(legacy_paths) == 45
-    assert len(legacy_operations) == 51
+    assert len(legacy_paths) == 49
+    assert len(legacy_operations) == 55
     assert _sha256(legacy_operations) == _OPENAPI_OPERATIONS_SHA256, json.dumps(
         legacy_operations, indent=2, ensure_ascii=False
     )

@@ -6,8 +6,8 @@ LangGraphRunner - LangGraph 框架运行时
 
 from __future__ import annotations
 
-import base64
 import asyncio
+import base64
 import os
 import re
 import uuid
@@ -144,6 +144,7 @@ class LangGraphRunner(_LangGraphStreamMixin, BaseRunner):
 
     def get_runtime_capabilities(self) -> dict[str, Any]:
         capabilities = super().get_runtime_capabilities()
+        capabilities["model_call_boundaries"] = True
         reason_code = str(capabilities["Checkpoint"].get("ReasonCode") or "")
         if reason_code:
             capabilities["ResumeRun"]["ReasonCode"] = reason_code
@@ -269,7 +270,8 @@ class LangGraphRunner(_LangGraphStreamMixin, BaseRunner):
             except (ModuleNotFoundError, ImportError):
                 self._managed_checkpoint_error = (
                     "DEPENDENCY_MISSING",
-                    "langgraph-checkpoint-postgres and psycopg are required for managed checkpoints",
+                    "langgraph-checkpoint-postgres and psycopg are required "
+                    "for managed checkpoints",
                 )
             except Exception as exc:  # noqa: BLE001
                 error_name = type(exc).__name__.lower()

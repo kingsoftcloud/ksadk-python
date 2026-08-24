@@ -20,7 +20,7 @@ def test_pinned_openai_codex_thread_turn_surface() -> None:
     """KSADK only relies on methods provided by the exact pinned SDK."""
     from openai_codex import AsyncCodex, AsyncThread, AsyncTurnHandle
 
-    assert version("openai-codex") == "0.144.4"
+    assert version("openai-codex") == "0.147.0"
 
     for owner, method_name in (
         (AsyncCodex, "thread_start"),

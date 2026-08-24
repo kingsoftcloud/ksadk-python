@@ -64,6 +64,16 @@ class _StreamingAgent(_DummyAgent):
         }
 
 
+class _WhitespaceStreamingAgent(_DummyAgent):
+    async def astream_events(self, state, version="v2", config=None):
+        self.last_astream_state = state
+        for content in ("第一行", "\n", "第二行"):
+            yield {
+                "event": "on_chat_model_stream",
+                "data": {"chunk": _Chunk(content=content)},
+            }
+
+
 class _DuplicatedReasoningStreamingAgent(_DummyAgent):
     async def astream_events(self, state, version="v2", config=None):
         self.last_astream_state = state
@@ -444,6 +454,12 @@ def _make_runner(module=None) -> LangGraphRunner:
 def _make_streaming_runner() -> LangGraphRunner:
     runner = _make_runner()
     runner._agent = _StreamingAgent()
+    return runner
+
+
+def _make_whitespace_streaming_runner() -> LangGraphRunner:
+    runner = _make_runner()
+    runner._agent = _WhitespaceStreamingAgent()
     return runner
 
 
@@ -1150,6 +1166,28 @@ async def test_stream_does_not_mix_reasoning_into_final_text():
     assert all(
         "先分析需求。" not in chunk.get("delta", "") for chunk in chunks if chunk["type"] == "text"
     )
+
+
+@pytest.mark.asyncio
+async def test_stream_preserves_whitespace_only_text_chunks():
+    runner = _make_whitespace_streaming_runner()
+
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {
+                "session_id": "s1",
+                "input": "每行输出一个词",
+            }
+        )
+    ]
+
+    assert chunks[:-1] == [
+        {"delta": "第一行", "type": "text"},
+        {"delta": "\n", "type": "text"},
+        {"delta": "第二行", "type": "text"},
+    ]
+    assert chunks[-1] == {"output": "第一行\n第二行", "type": "final"}
 
 
 @pytest.mark.asyncio
