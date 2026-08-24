@@ -286,7 +286,8 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
           ].join("\n\n")
           : [
             "event: response.reasoning_summary_text.delta\ndata: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"再分析\"}",
-            "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"第二轮回答\"}",
+            "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"item_id\":\"answer-1\",\"delta\":\"旧答案\"}",
+            "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"item_id\":\"answer-1\",\"delta\":\"第二轮回答\",\"replace\":true}",
             "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}",
             "",
           ].join("\n\n");
@@ -309,6 +310,7 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
     await userEvent.click(screen.getByRole("button", { name: "发送消息" }));
 
     expect(await screen.findByText("第二轮回答")).toBeInTheDocument();
+    expect(screen.queryByText(/旧答案/)).not.toBeInTheDocument();
     expect(screen.getByText("再分析")).toBeInTheDocument();
     expect(directCalls).toBe(2);
     expect(directBodies).toEqual([

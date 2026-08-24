@@ -185,14 +185,16 @@ function runtimeItemPatch(value: unknown): CloudRuntimeItem | null {
     const update = recordValue(event.update);
     const text = valueText(update.delta ?? update.text ?? event.delta ?? content.delta ?? event.text);
     if (!text) return null;
+    const itemId = scalarText(event.item_id ?? event.itemId ?? event.output_index) || "legacy";
     return {
-      id: `${envelope.invocationId || envelope.runId}//message:legacy`,
+      id: `${envelope.invocationId || envelope.runId}//message:${itemId}`,
       kind: "message",
       title: "回复",
       text,
       detail: text,
       status: "running",
-      operation: "append",
+      operation: event.replace === true || scalarText(event.op).toLowerCase() === "replace"
+        ? "replace" : "append",
     };
   }
   if (!["item.started", "item.updated", "item.completed", "item.failed"].includes(envelope.eventType)) {
@@ -297,7 +299,8 @@ function directStreamItemPatches(value: unknown): CloudRuntimeItem[] {
         text,
         detail: text,
         status: "running",
-        operation: "append",
+        operation: event.replace === true || scalarText(event.op).toLowerCase() === "replace"
+          ? "replace" : "append",
       });
     }
   }
