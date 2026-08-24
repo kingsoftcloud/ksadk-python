@@ -133,6 +133,36 @@ def _attrs(items: list[dict]) -> dict[str, object]:
     return result
 
 
+def _replace_usage_attributes(
+    span: dict,
+    *,
+    input_tokens: int | None = None,
+    output_tokens: int | None = None,
+    cache_read_input_tokens: int | None = None,
+    reasoning_output_tokens: int | None = None,
+) -> None:
+    usage_prefixes = ("gen_ai.usage.", "llm.usage.", "agentkit.usage.")
+    span["attributes"] = [
+        item
+        for item in span.get("attributes", [])
+        if not str(item.get("key") or "").startswith(usage_prefixes)
+    ]
+    counters = {
+        "gen_ai.usage.input_tokens": input_tokens,
+        "gen_ai.usage.output_tokens": output_tokens,
+        "gen_ai.usage.cache_read.input_tokens": cache_read_input_tokens,
+        "gen_ai.usage.reasoning.output_tokens": reasoning_output_tokens,
+    }
+    span["attributes"].extend(
+        {
+            "key": key,
+            "value": {"intValue": str(value)},
+        }
+        for key, value in counters.items()
+        if value is not None
+    )
+
+
 def test_otlp_store_persists_standard_spans_and_exact_metrics(tmp_path: Path, monkeypatch) -> None:
     """Break caught: Trace remains a custom run/events object with guessed metrics."""
 
@@ -315,6 +345,13 @@ def test_trace_view_is_lossless_for_span_inspection_and_reports_missing_values(
         "totalTokens": 160,
         "cachedInputTokens": 16,
         "reasoningOutputTokens": 8,
+        "usageCompleteness": {
+            "inputTokens": True,
+            "outputTokens": True,
+            "totalTokens": True,
+            "cachedInputTokens": True,
+            "reasoningOutputTokens": True,
+        },
         "usageReported": True,
         "usageSource": "codex",
     }
@@ -353,8 +390,8 @@ def test_trace_view_recovers_standard_usage_from_model_spans(
     assert metrics["reasoningOutputTokens"] == 8
 
 
-def test_trace_view_aggregates_only_token_bearing_leaf_spans(tmp_path: Path) -> None:
-    """Parent compatibility counters must not double-count their model child."""
+def test_trace_view_collapses_exact_compatibility_wrapper_usage(tmp_path: Path) -> None:
+    """Exact wrapper counters count once while wrapper-only details remain visible."""
 
     store, record, events = _fixture(tmp_path)
     record.usage = Usage()
@@ -371,18 +408,15 @@ def test_trace_view_aggregates_only_token_bearing_leaf_spans(tmp_path: Path) -> 
         }
     )
     model["parentSpanId"] = compatibility_parent["spanId"]
-    model["attributes"].extend(
-        [
-            {
-                "key": "gen_ai.usage.cache_read.input_tokens",
-                "value": {"intValue": "16"},
-            },
-            {
-                "key": "gen_ai.usage.reasoning.output_tokens",
-                "value": {"intValue": "8"},
-            },
-        ]
-    )
+    model["attributes"] = [
+        item
+        for item in model["attributes"]
+        if item["key"]
+        not in {
+            "gen_ai.usage.cached_input_tokens",
+            "gen_ai.usage.reasoning_tokens",
+        }
+    ]
     spans.append(compatibility_parent)
     store.workspace.atomic_write_text(
         store._path(TRACE_ID),
@@ -396,6 +430,93 @@ def test_trace_view_aggregates_only_token_bearing_leaf_spans(tmp_path: Path) -> 
     assert metrics["totalTokens"] == 160
     assert metrics["cachedInputTokens"] == 16
     assert metrics["reasoningOutputTokens"] == 8
+    assert all(metrics["usageCompleteness"].values())
+
+
+def test_trace_view_keeps_real_nested_model_usage_and_parent_only_details(
+    tmp_path: Path,
+) -> None:
+    """A real billed parent is not a compatibility wrapper just because it has a child."""
+
+    store, record, events = _fixture(tmp_path)
+    record.usage = Usage()
+    raw = store.sync(record, events)
+    spans = raw["resourceSpans"][0]["scopeSpans"][0]["spans"]
+    parent = next(span for span in spans if span["name"] == "chat glm-5.2")
+    _replace_usage_attributes(
+        parent,
+        input_tokens=100,
+        output_tokens=10,
+        cache_read_input_tokens=7,
+        reasoning_output_tokens=3,
+    )
+    child = deepcopy(parent)
+    child.update(
+        {
+            "spanId": "e" * 16,
+            "parentSpanId": parent["spanId"],
+            "name": "nested chat",
+        }
+    )
+    _replace_usage_attributes(child, input_tokens=20, output_tokens=2)
+    spans.append(child)
+    store.workspace.atomic_write_text(
+        store._path(TRACE_ID),
+        json.dumps(raw, ensure_ascii=False),
+    )
+
+    metrics = store.get_trace_view(TRACE_ID)["metrics"]
+
+    assert metrics["inputTokens"] == 120
+    assert metrics["outputTokens"] == 12
+    assert metrics["totalTokens"] == 132
+    assert metrics["cachedInputTokens"] == 7
+    assert metrics["reasoningOutputTokens"] == 3
+    assert metrics["usageCompleteness"] == {
+        "inputTokens": True,
+        "outputTokens": True,
+        "totalTokens": True,
+        "cachedInputTokens": False,
+        "reasoningOutputTokens": False,
+    }
+
+
+def test_trace_view_marks_incomplete_billing_span_fields_as_partial(tmp_path: Path) -> None:
+    """Known counters remain visible, but missing billing-span fields cannot form a total."""
+
+    store, record, events = _fixture(tmp_path)
+    record.usage = Usage()
+    raw = store.sync(record, events)
+    spans = raw["resourceSpans"][0]["scopeSpans"][0]["spans"]
+    complete = next(span for span in spans if span["name"] == "chat glm-5.2")
+    _replace_usage_attributes(complete, input_tokens=100, output_tokens=10)
+    input_only = deepcopy(complete)
+    input_only.update(
+        {
+            "spanId": "d" * 16,
+            "parentSpanId": complete["parentSpanId"],
+            "name": "input-only chat",
+        }
+    )
+    _replace_usage_attributes(input_only, input_tokens=20)
+    spans.append(input_only)
+    store.workspace.atomic_write_text(
+        store._path(TRACE_ID),
+        json.dumps(raw, ensure_ascii=False),
+    )
+
+    metrics = store.get_trace_view(TRACE_ID)["metrics"]
+
+    assert metrics["inputTokens"] == 120
+    assert metrics["outputTokens"] == 10
+    assert metrics["totalTokens"] is None
+    assert metrics["usageCompleteness"] == {
+        "inputTokens": True,
+        "outputTokens": False,
+        "totalTokens": False,
+        "cachedInputTokens": False,
+        "reasoningOutputTokens": False,
+    }
 
 
 def test_trace_view_fills_missing_root_usage_fields_from_leaf_spans(tmp_path: Path) -> None:
@@ -459,6 +580,13 @@ def test_trace_list_is_filterable_without_loading_chat_sessions(tmp_path: Path) 
             "outputTokens": 32,
             "totalTokens": 160,
             "usageReported": True,
+            "usageCompleteness": {
+                "inputTokens": True,
+                "outputTokens": True,
+                "totalTokens": True,
+                "cachedInputTokens": True,
+                "reasoningOutputTokens": True,
+            },
             "spanCount": 3,
             "target": {"type": "local", "name": "本地工作区"},
         }

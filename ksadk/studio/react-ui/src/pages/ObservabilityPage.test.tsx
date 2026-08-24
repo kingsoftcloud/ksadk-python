@@ -262,6 +262,105 @@ describe("ObservabilityPage trajectory integration", () => {
     expect(within(metrics).getByText(detailText)).toBeInTheDocument();
   });
 
+  it("does not present incomplete billing-span counters as a complete total", async () => {
+    vi.mocked(apiFetch).mockImplementation(input => {
+      const url = String(input);
+      if (url.startsWith("/api/v1/agents")) return response({ items: [] });
+      if (url.startsWith("/api/v1/traces/overview")) {
+        return response({
+          range: "24h",
+          total: 1,
+          completed: 1,
+          successRate: 1,
+          averageDurationMs: 25,
+          inputTokens: 120,
+          outputTokens: 10,
+          totalTokens: 0,
+          buckets: [],
+        });
+      }
+      const usageCompleteness = {
+        inputTokens: true,
+        outputTokens: false,
+        totalTokens: false,
+        cachedInputTokens: false,
+        reasoningOutputTokens: false,
+      };
+      if (url === "/api/v1/traces/trace-incomplete") {
+        return response({
+          traceId: "trace-incomplete",
+          runId: "run-incomplete",
+          agentId: "agent-1",
+          sessionId: "session-incomplete",
+          runtimeType: "codex",
+          model: "demo-model",
+          status: "completed",
+          startedAt: "2026-08-17T00:00:00Z",
+          durationMs: 25,
+          inputTokens: 120,
+          outputTokens: 10,
+          totalTokens: null,
+          usageReported: true,
+          usageCompleteness,
+          spanCount: 2,
+          rootSpanId: "span-1",
+          metrics: {
+            inputTokens: 120,
+            outputTokens: 10,
+            totalTokens: null,
+            usageReported: true,
+            usageSource: "gen_ai.usage",
+            usageCompleteness,
+          },
+          spans: [{
+            spanId: "span-1",
+            name: "run",
+            kind: "INTERNAL",
+            status: "OK",
+            startTimeUnixNano: "1",
+            endTimeUnixNano: "2",
+            durationMs: 25,
+          }],
+        });
+      }
+      if (url.startsWith("/api/v1/traces?")) {
+        return response({
+          items: [{
+            traceId: "trace-incomplete",
+            runId: "run-incomplete",
+            agentId: "agent-1",
+            sessionId: "session-incomplete",
+            runtimeType: "codex",
+            model: "demo-model",
+            status: "completed",
+            startedAt: "2026-08-17T00:00:00Z",
+            durationMs: 25,
+            inputTokens: 120,
+            outputTokens: 10,
+            totalTokens: null,
+            usageReported: true,
+            usageCompleteness,
+            spanCount: 2,
+          }],
+          total: 1,
+          nextCursor: null,
+        });
+      }
+      return response({});
+    });
+    const user = userEvent.setup();
+    render(<ObservabilityPage refreshTick={0} />);
+
+    const table = await screen.findByRole("table", { name: "Trace 列表" });
+    expect(within(table).getByText("部分上报")).toBeInTheDocument();
+    expect(within(table).queryByText("130")).not.toBeInTheDocument();
+
+    await user.click(within(table).getByRole("button", { name: "查看详情" }));
+    const metrics = await screen.findByRole("region", { name: "Trace 指标" });
+    expect(within(metrics).getByText("部分上报")).toBeInTheDocument();
+    expect(within(metrics).getByText("120 输入 · ≥10 输出")).toBeInTheDocument();
+  });
+
   it("switches an active trace between spans and its canonical trajectory", async () => {
     const user = userEvent.setup();
     render(<ObservabilityPage refreshTick={0} />);

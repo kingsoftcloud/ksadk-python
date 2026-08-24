@@ -23,6 +23,7 @@ interface TraceSummary {
   runtimeType: string; model: string; status: string; startedAt: string;
   durationMs: number | null; totalTokens: number | null; usageReported?: boolean;
   inputTokens?: number | null; outputTokens?: number | null;
+  usageCompleteness?: TokenUsageCompleteness;
   spanCount: number;
 }
 interface SpanEvent { name: string; timeUnixNano: string; attributes?: Record<string, any> }
@@ -37,6 +38,7 @@ interface TraceDetail extends TraceSummary {
     durationMs?: number | null; durationSource?: string | null;
     inputTokens?: number | null; outputTokens?: number | null; totalTokens?: number | null;
     usageReported?: boolean; usageSource?: string | null;
+    usageCompleteness?: TokenUsageCompleteness;
   };
   target?: { name?: string };
   resource?: Record<string, any>;
@@ -90,6 +92,14 @@ type TokenUsage = {
   outputTokens?: number | null;
   totalTokens?: number | null;
   usageReported?: boolean;
+  usageCompleteness?: TokenUsageCompleteness;
+};
+type TokenUsageCompleteness = {
+  inputTokens?: boolean;
+  outputTokens?: boolean;
+  totalTokens?: boolean;
+  cachedInputTokens?: boolean;
+  reasoningOutputTokens?: boolean;
 };
 function tokenCounter(value: unknown): number | null {
   if (value === null || value === undefined || typeof value === "boolean") return null;
@@ -98,14 +108,19 @@ function tokenCounter(value: unknown): number | null {
 }
 function normalizedTokenTotal(usage: TokenUsage): number | null {
   const total = tokenCounter(usage.totalTokens);
-  if (total !== null) return total;
+  if (total !== null && usage.usageCompleteness?.totalTokens !== false) return total;
   const input = tokenCounter(usage.inputTokens);
   const output = tokenCounter(usage.outputTokens);
-  return input !== null && output !== null ? input + output : null;
+  return input !== null
+    && output !== null
+    && usage.usageCompleteness?.inputTokens !== false
+    && usage.usageCompleteness?.outputTokens !== false
+    ? input + output
+    : null;
 }
 function hasTokenUsage(usage: TokenUsage): boolean {
-  return usage.usageReported === true
-    || [usage.inputTokens, usage.outputTokens, usage.totalTokens].some(value => tokenCounter(value) !== null);
+  return [usage.inputTokens, usage.outputTokens, usage.totalTokens]
+    .some(value => tokenCounter(value) !== null);
 }
 function tokenUsageHeadline(usage: TokenUsage): string {
   const total = normalizedTokenTotal(usage);
@@ -115,16 +130,24 @@ function tokenUsageHeadline(usage: TokenUsage): string {
 function tokenUsageBreakdown(usage: TokenUsage): string {
   const input = tokenCounter(usage.inputTokens);
   const output = tokenCounter(usage.outputTokens);
-  const inputLabel = input === null ? "—" : formatTokenCount(input);
-  const outputLabel = output === null ? "—" : formatTokenCount(output);
+  const inputLabel = input === null
+    ? "—"
+    : `${usage.usageCompleteness?.inputTokens === false ? "≥" : ""}${formatTokenCount(input)}`;
+  const outputLabel = output === null
+    ? "—"
+    : `${usage.usageCompleteness?.outputTokens === false ? "≥" : ""}${formatTokenCount(output)}`;
   return `${inputLabel} 输入 · ${outputLabel} 输出`;
 }
 function tokenUsageListLabel(usage: TokenUsage): string {
   const total = normalizedTokenTotal(usage);
   if (total !== null) return formatTokenCount(total);
+  if (tokenCounter(usage.totalTokens) !== null) return "部分上报";
   const input = tokenCounter(usage.inputTokens);
-  if (input !== null) return `${formatTokenCount(input)} 输入`;
   const output = tokenCounter(usage.outputTokens);
+  if (input !== null && output !== null) return "部分上报";
+  if (input !== null && usage.usageCompleteness?.inputTokens === false) return "部分上报";
+  if (output !== null && usage.usageCompleteness?.outputTokens === false) return "部分上报";
+  if (input !== null) return `${formatTokenCount(input)} 输入`;
   if (output !== null) return `${formatTokenCount(output)} 输出`;
   return "未上报";
 }

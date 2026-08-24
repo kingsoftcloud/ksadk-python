@@ -219,17 +219,25 @@ def _usage_from_attributes(attributes: dict[str, Any]) -> dict[str, Any]:
         "totalTokens": total_tokens,
         "cachedInputTokens": cached_input_tokens,
         "reasoningOutputTokens": reasoning_output_tokens,
+        "usageCompleteness": {
+            "inputTokens": input_tokens is not None,
+            "outputTokens": output_tokens is not None,
+            "totalTokens": total_tokens is not None,
+            "cachedInputTokens": cached_input_tokens is not None,
+            "reasoningOutputTokens": reasoning_output_tokens is not None,
+        },
         "usageReported": reported,
         "usageSource": source,
     }
 
 
 def _aggregate_span_usage(spans: Iterable[dict[str, Any]]) -> dict[str, Any]:
-    """Aggregate token-bearing leaves without counting compatibility parents twice."""
+    """Aggregate billing spans and collapse only exact compatibility wrappers."""
 
     span_list = list(spans)
     usage_by_id: dict[str, dict[str, Any]] = {}
     children_by_parent: dict[str, list[str]] = {}
+    parent_by_id: dict[str, str] = {}
     anonymous_usages: list[dict[str, Any]] = []
     for span in span_list:
         span_id = str(span.get("spanId") or "")
@@ -237,57 +245,119 @@ def _aggregate_span_usage(spans: Iterable[dict[str, Any]]) -> dict[str, Any]:
         usage = _usage_from_attributes(_decoded_attributes(span.get("attributes", [])))
         if span_id:
             usage_by_id[span_id] = usage
+            parent_by_id[span_id] = parent_id
             if parent_id:
                 children_by_parent.setdefault(parent_id, []).append(span_id)
         elif usage["usageReported"]:
             anonymous_usages.append(usage)
 
-    descendant_cache: dict[str, bool] = {}
+    usage_fields = (
+        "inputTokens",
+        "outputTokens",
+        "totalTokens",
+        "cachedInputTokens",
+        "reasoningOutputTokens",
+    )
 
-    def has_token_descendant(span_id: str, visiting: set[str] | None = None) -> bool:
-        if span_id in descendant_cache:
-            return descendant_cache[span_id]
+    def empty_aggregate() -> dict[str, Any]:
+        return {
+            **{key: None for key in usage_fields},
+            "usageCompleteness": {key: False for key in usage_fields},
+            "billingSpanCount": 0,
+            "usageReported": False,
+            "usageSource": None,
+        }
+
+    def billed_usage(usage: dict[str, Any]) -> dict[str, Any]:
+        return {
+            **{key: usage[key] for key in usage_fields},
+            "usageCompleteness": dict(usage["usageCompleteness"]),
+            "billingSpanCount": 1,
+            "usageReported": True,
+            "usageSource": usage["usageSource"],
+        }
+
+    def combine(parts: Iterable[dict[str, Any]]) -> dict[str, Any]:
+        billed_parts = [part for part in parts if part["billingSpanCount"] > 0]
+        if not billed_parts:
+            return empty_aggregate()
+        aggregate = empty_aggregate()
+        aggregate["billingSpanCount"] = sum(part["billingSpanCount"] for part in billed_parts)
+        aggregate["usageReported"] = True
+        aggregate["usageSource"] = next(
+            (part["usageSource"] for part in billed_parts if part["usageSource"]),
+            "gen_ai.usage",
+        )
+        for key in usage_fields:
+            values = [part[key] for part in billed_parts if part[key] is not None]
+            aggregate[key] = sum(values) if values else None
+            aggregate["usageCompleteness"][key] = all(
+                part["usageCompleteness"][key] for part in billed_parts
+            )
+        return aggregate
+
+    def is_compatibility_wrapper(
+        own_usage: dict[str, Any], descendant_usage: dict[str, Any]
+    ) -> bool:
+        if descendant_usage["billingSpanCount"] == 0:
+            return False
+        if own_usage["inputTokens"] is None or own_usage["outputTokens"] is None:
+            return False
+        return all(
+            descendant_usage["usageCompleteness"][key] and descendant_usage[key] == own_usage[key]
+            for key in ("inputTokens", "outputTokens")
+        ) and all(
+            own_usage[key] is None
+            or (
+                descendant_usage["usageCompleteness"][key]
+                and descendant_usage[key] == own_usage[key]
+            )
+            for key in ("inputTokens", "outputTokens", "totalTokens")
+        )
+
+    memo: dict[str, dict[str, Any]] = {}
+
+    def aggregate_subtree(span_id: str, visiting: set[str] | None = None) -> dict[str, Any]:
+        if span_id in memo:
+            return memo[span_id]
         active = set() if visiting is None else visiting
         if span_id in active:
-            return False
+            return empty_aggregate()
         active.add(span_id)
-        result = any(
-            usage_by_id.get(child_id, {}).get("usageReported") is True
-            or has_token_descendant(child_id, active)
-            for child_id in children_by_parent.get(span_id, [])
+        descendants = combine(
+            aggregate_subtree(child_id, active) for child_id in children_by_parent.get(span_id, [])
         )
         active.remove(span_id)
-        descendant_cache[span_id] = result
+        own_usage = usage_by_id[span_id]
+        if not own_usage["usageReported"]:
+            result = descendants
+        elif is_compatibility_wrapper(own_usage, descendants):
+            result = descendants
+            for key in usage_fields:
+                if own_usage[key] is not None:
+                    result[key] = own_usage[key]
+                    result["usageCompleteness"][key] = True
+        else:
+            result = combine((billed_usage(own_usage), descendants))
+        memo[span_id] = result
         return result
 
-    usages = [
-        usage
-        for span_id, usage in usage_by_id.items()
-        if usage["usageReported"] and not has_token_descendant(span_id)
+    roots = [
+        span_id
+        for span_id in usage_by_id
+        if not parent_by_id[span_id] or parent_by_id[span_id] not in usage_by_id
     ]
-    usages.extend(anonymous_usages)
-    if not usages:
+    aggregate = combine(aggregate_subtree(span_id) for span_id in roots)
+    for span_id in usage_by_id:
+        if span_id not in memo:
+            aggregate = combine((aggregate, aggregate_subtree(span_id)))
+    aggregate = combine((aggregate, *(billed_usage(usage) for usage in anonymous_usages)))
+    if aggregate["billingSpanCount"] == 0:
         return _usage_from_attributes({})
-
-    def sum_reported(key: str) -> int | None:
-        values = [usage[key] for usage in usages if usage[key] is not None]
-        return sum(values) if values else None
-
-    input_tokens = sum_reported("inputTokens")
-    output_tokens = sum_reported("outputTokens")
-    total_tokens = sum_reported("totalTokens")
-    if total_tokens is None and input_tokens is not None and output_tokens is not None:
-        total_tokens = input_tokens + output_tokens
-
-    return {
-        "inputTokens": input_tokens,
-        "outputTokens": output_tokens,
-        "totalTokens": total_tokens,
-        "cachedInputTokens": sum_reported("cachedInputTokens"),
-        "reasoningOutputTokens": sum_reported("reasoningOutputTokens"),
-        "usageReported": True,
-        "usageSource": "gen_ai.usage",
-    }
+    if not aggregate["usageCompleteness"]["totalTokens"]:
+        aggregate["totalTokens"] = None
+    aggregate.pop("billingSpanCount", None)
+    return aggregate
 
 
 def _merge_usage(primary: dict[str, Any], fallback: dict[str, Any]) -> dict[str, Any]:
@@ -302,17 +372,42 @@ def _merge_usage(primary: dict[str, Any], fallback: dict[str, Any]) -> dict[str,
             "reasoningOutputTokens",
         )
     }
+    completeness = {
+        key: (
+            primary["usageCompleteness"][key]
+            if primary[key] is not None
+            else fallback["usageCompleteness"][key]
+        )
+        for key in (
+            "inputTokens",
+            "outputTokens",
+            "cachedInputTokens",
+            "reasoningOutputTokens",
+        )
+    }
     if primary["totalTokens"] is not None:
         merged["totalTokens"] = primary["totalTokens"]
-    elif merged["inputTokens"] is not None and merged["outputTokens"] is not None:
+        completeness["totalTokens"] = primary["usageCompleteness"]["totalTokens"]
+    elif (
+        merged["inputTokens"] is not None
+        and merged["outputTokens"] is not None
+        and completeness["inputTokens"]
+        and completeness["outputTokens"]
+    ):
         merged["totalTokens"] = merged["inputTokens"] + merged["outputTokens"]
+        completeness["totalTokens"] = True
     elif primary["inputTokens"] is None and primary["outputTokens"] is None:
-        merged["totalTokens"] = fallback["totalTokens"]
+        merged["totalTokens"] = (
+            fallback["totalTokens"] if fallback["usageCompleteness"]["totalTokens"] else None
+        )
+        completeness["totalTokens"] = fallback["usageCompleteness"]["totalTokens"]
     else:
         merged["totalTokens"] = None
+        completeness["totalTokens"] = False
     reported = primary["usageReported"] or fallback["usageReported"]
     return {
         **merged,
+        "usageCompleteness": completeness,
         "usageReported": reported,
         "usageSource": primary["usageSource"] or fallback["usageSource"],
     }
@@ -490,6 +585,7 @@ class OtlpTraceStore:
                     "outputTokens": metrics["outputTokens"],
                     "totalTokens": metrics["totalTokens"],
                     "usageReported": metrics["usageReported"],
+                    "usageCompleteness": metrics["usageCompleteness"],
                     "spanCount": len(view["spans"]),
                     "target": view["target"],
                 }
