@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, CloudUpload, ExternalLink, MessagesSquare, Package, RefreshCw } from "lucide-react";
 import { apiFetch } from "../api";
 import { ConfirmDialog } from "../components/ConfirmDialog";
@@ -87,9 +87,11 @@ interface CloudVersionCatalog {
 }
 
 const OPERATION_TERMINAL = new Set(["SUCCEEDED", "FAILED", "CANCELLED", "TIMED_OUT", "INTERRUPTED"]);
-const OPERATION_ATTEMPTS_STORAGE_KEY = "agentkit-studio:deployment-operation-attempts:v1";
+const OPERATION_ATTEMPTS_STORAGE_PREFIX = "agentkit-studio:deployment-operation-attempts:v2";
 const OPERATION_POLL_INTERVAL_MS = 500;
-let volatileOperationAttempts: Record<string, OperationAttempt> = {};
+const STALE_OPERATION_STATUSES = new Set([403, 404, 410]);
+const localOperationLocks = new Map<string, Promise<void>>();
+let volatileOperationAttempts: Record<string, Record<string, OperationAttempt>> = {};
 
 interface OperationResult {
   status: string;
@@ -103,6 +105,18 @@ interface OperationAttempt {
   operationId: string;
 }
 
+interface DeploymentOperationScope {
+  workspace: string;
+  cloudCredential: string;
+}
+
+class OperationStatusError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = "OperationStatusError";
+  }
+}
+
 function operationStorage(): Storage | undefined {
   try {
     return typeof document === "undefined" ? undefined : document.defaultView?.localStorage;
@@ -111,21 +125,28 @@ function operationStorage(): Storage | undefined {
   }
 }
 
-function readOperationAttempts(): Record<string, OperationAttempt> {
+function apiFetchWithSignal(path: string, signal?: AbortSignal): Promise<Response> {
+  return signal ? apiFetch(path, { signal }) : apiFetch(path);
+}
+
+function readOperationAttempts(storageKey: string): Record<string, OperationAttempt> {
   try {
     const storage = operationStorage();
-    if (!storage) return { ...volatileOperationAttempts };
-    const parsed = JSON.parse(storage.getItem(OPERATION_ATTEMPTS_STORAGE_KEY) || "{}");
+    if (!storage) return { ...(volatileOperationAttempts[storageKey] || {}) };
+    const parsed = JSON.parse(storage.getItem(storageKey) || "{}");
     return parsed && typeof parsed === "object" ? parsed : {};
   } catch {
-    return { ...volatileOperationAttempts };
+    return { ...(volatileOperationAttempts[storageKey] || {}) };
   }
 }
 
-function writeOperationAttempts(attempts: Record<string, OperationAttempt>) {
-  volatileOperationAttempts = { ...attempts };
+function writeOperationAttempts(storageKey: string, attempts: Record<string, OperationAttempt>) {
+  volatileOperationAttempts = {
+    ...volatileOperationAttempts,
+    [storageKey]: { ...attempts },
+  };
   try {
-    operationStorage()?.setItem(OPERATION_ATTEMPTS_STORAGE_KEY, JSON.stringify(attempts));
+    operationStorage()?.setItem(storageKey, JSON.stringify(attempts));
   } catch {
     // A disabled storage backend must not prevent lifecycle operations.
   }
@@ -137,67 +158,160 @@ function newIdempotencyKey(kind: string): string {
   return `studio-${kind}-${randomId}`;
 }
 
-function acquireOperationAttempt(actionKey: string, kind: string): OperationAttempt {
-  const attempts = readOperationAttempts();
+function acquireOperationAttempt(storageKey: string, actionKey: string, kind: string): OperationAttempt {
+  const attempts = readOperationAttempts(storageKey);
   const existing = attempts[actionKey];
   if (existing?.idempotencyKey) return existing;
   const attempt = { actionKey, idempotencyKey: newIdempotencyKey(kind), operationId: "" };
   attempts[actionKey] = attempt;
-  writeOperationAttempts(attempts);
+  writeOperationAttempts(storageKey, attempts);
   return attempt;
 }
 
-function persistOperationId(attempt: OperationAttempt, operationId: string): OperationAttempt {
+function persistOperationId(storageKey: string, attempt: OperationAttempt, operationId: string): OperationAttempt {
   const updated = { ...attempt, operationId };
-  const attempts = readOperationAttempts();
+  const attempts = readOperationAttempts(storageKey);
   attempts[attempt.actionKey] = updated;
-  writeOperationAttempts(attempts);
+  writeOperationAttempts(storageKey, attempts);
   return updated;
 }
 
-function clearOperationAttempt(actionKey: string) {
-  const attempts = readOperationAttempts();
-  if (!(actionKey in attempts)) return;
-  delete attempts[actionKey];
-  writeOperationAttempts(attempts);
+function clearOperationAttempt(storageKey: string, attempt: OperationAttempt) {
+  const attempts = readOperationAttempts(storageKey);
+  const current = attempts[attempt.actionKey];
+  if (!current || current.idempotencyKey !== attempt.idempotencyKey) return;
+  delete attempts[attempt.actionKey];
+  writeOperationAttempts(storageKey, attempts);
 }
 
-async function waitForOperation(operationId: string, operationLabel: string): Promise<OperationResult> {
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError";
+}
+
+function throwIfAborted(signal: AbortSignal) {
+  if (signal.aborted) throw new DOMException("Operation aborted", "AbortError");
+}
+
+async function abortableDelay(milliseconds: number, signal: AbortSignal): Promise<void> {
+  throwIfAborted(signal);
+  await new Promise<void>((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      signal.removeEventListener("abort", abort);
+      resolve();
+    }, milliseconds);
+    const abort = () => {
+      window.clearTimeout(timer);
+      reject(new DOMException("Operation aborted", "AbortError"));
+    };
+    signal.addEventListener("abort", abort, { once: true });
+  });
+}
+
+async function withLocalOperationLock<T>(name: string, callback: () => Promise<T>): Promise<T> {
+  const previous = localOperationLocks.get(name) || Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>(resolve => { release = resolve; });
+  const queued = previous.then(() => current);
+  localOperationLocks.set(name, queued);
+  await previous;
+  try {
+    return await callback();
+  } finally {
+    release();
+    if (localOperationLocks.get(name) === queued) localOperationLocks.delete(name);
+  }
+}
+
+async function withOperationLock<T>(
+  name: string,
+  signal: AbortSignal,
+  callback: () => Promise<T>,
+): Promise<T> {
+  throwIfAborted(signal);
+  const manager = navigator.locks;
+  if (manager) {
+    return manager.request(name, { mode: "exclusive", signal }, async () => callback());
+  }
+  return withLocalOperationLock(name, async () => {
+    throwIfAborted(signal);
+    return callback();
+  });
+}
+
+async function operationStorageKey(signal: AbortSignal): Promise<string> {
+  const response = await apiFetch("/api/v1/system/bootstrap", { signal });
+  if (!response.ok) throw new Error(`读取部署操作作用域失败（${response.status}）`);
+  const payload = await response.json();
+  const scope = payload?.operationScope as DeploymentOperationScope | undefined;
+  const workspace = String(scope?.workspace || "").trim();
+  const cloudCredential = String(scope?.cloudCredential || "").trim();
+  if (!workspace || !cloudCredential) throw new Error("部署操作作用域不可用，请刷新 Studio");
+  return `${OPERATION_ATTEMPTS_STORAGE_PREFIX}:${encodeURIComponent(workspace)}:${encodeURIComponent(cloudCredential)}`;
+}
+
+async function waitForOperation(
+  operationId: string,
+  operationLabel: string,
+  signal: AbortSignal,
+): Promise<OperationResult> {
   while (true) {
-    await new Promise(resolve => setTimeout(resolve, OPERATION_POLL_INTERVAL_MS));
-    const response = await apiFetch(`/api/v1/operations/${encodeURIComponent(operationId)}`);
-    if (!response.ok) throw new Error(`${operationLabel}状态读取失败（${response.status}）`);
+    await abortableDelay(OPERATION_POLL_INTERVAL_MS, signal);
+    const response = await apiFetch(
+      `/api/v1/operations/${encodeURIComponent(operationId)}`,
+      { signal },
+    );
+    if (!response.ok) {
+      throw new OperationStatusError(`${operationLabel}状态读取失败（${response.status}）`, response.status);
+    }
     const result = await response.json() as OperationResult;
     if (OPERATION_TERMINAL.has(result.status)) return result;
   }
 }
 
 async function submitOrResumeOperation(
+  storageKey: string,
   actionKey: string,
   kind: string,
   operationLabel: string,
-  submit: (idempotencyKey: string) => Promise<Response>,
+  signal: AbortSignal,
+  submit: (idempotencyKey: string, signal: AbortSignal) => Promise<Response>,
 ): Promise<OperationResult> {
-  let attempt = acquireOperationAttempt(actionKey, kind);
-  if (!attempt.operationId) {
-    const response = await submit(attempt.idempotencyKey);
-    if (!response.ok) {
-      // 5xx may be an ambiguous response after the Server accepted the write.
-      // Keep its key so the next retry asks the Server for the same operation.
-      if (response.status < 500) clearOperationAttempt(actionKey);
-      throw new Error(`${operationLabel}提交失败（${response.status}）`);
+  const lockName = `${storageKey}:${actionKey}`;
+  const attempt = await withOperationLock(lockName, signal, async () => {
+    let current = acquireOperationAttempt(storageKey, actionKey, kind);
+    if (!current.operationId) {
+      const response = await submit(current.idempotencyKey, signal);
+      if (!response.ok) {
+        // 5xx may be an ambiguous response after the Server accepted the write.
+        // Keep its key so the next retry asks the Server for the same operation.
+        if (response.status < 500) clearOperationAttempt(storageKey, current);
+        throw new Error(`${operationLabel}提交失败（${response.status}）`);
+      }
+      const operation = await response.json();
+      const operationId = String(operation?.id || "").trim();
+      if (!operationId) {
+        clearOperationAttempt(storageKey, current);
+        throw new Error(`${operationLabel}提交结果缺少 operation_id`);
+      }
+      current = persistOperationId(storageKey, current, operationId);
     }
-    const operation = await response.json();
-    const operationId = String(operation?.id || "").trim();
-    if (!operationId) {
-      clearOperationAttempt(actionKey);
-      throw new Error(`${operationLabel}提交结果缺少 operation_id`);
-    }
-    attempt = persistOperationId(attempt, operationId);
-  }
+    return current;
+  });
 
-  const result = await waitForOperation(attempt.operationId, operationLabel);
-  clearOperationAttempt(actionKey);
+  let result: OperationResult;
+  try {
+    result = await waitForOperation(attempt.operationId, operationLabel, signal);
+  } catch (error) {
+    if (error instanceof OperationStatusError && STALE_OPERATION_STATUSES.has(error.status)) {
+      await withOperationLock(lockName, signal, async () => {
+        clearOperationAttempt(storageKey, attempt);
+      });
+    }
+    throw error;
+  }
+  await withOperationLock(lockName, signal, async () => {
+    clearOperationAttempt(storageKey, attempt);
+  });
   return result;
 }
 
@@ -272,14 +386,30 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
   const [createLoading, setCreateLoading] = useState(false);
   const [createBusy, setCreateBusy] = useState(false);
   const [createError, setCreateError] = useState("");
+  const operationControllers = useRef(new Set<AbortController>());
 
-  const load = useCallback(async () => {
+  useEffect(() => () => {
+    for (const controller of operationControllers.current) controller.abort();
+    operationControllers.current.clear();
+  }, []);
+
+  function beginOperation(): AbortController {
+    const controller = new AbortController();
+    operationControllers.current.add(controller);
+    return controller;
+  }
+
+  function finishOperation(controller: AbortController) {
+    operationControllers.current.delete(controller);
+  }
+
+  const load = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
     setError("");
     try {
       const [receiptResponse, accountResponse] = await Promise.all([
-        apiFetch("/api/v1/deployments"),
-        apiFetch("/api/v1/cloud-agents?size=100"),
+        apiFetchWithSignal("/api/v1/deployments", signal),
+        apiFetchWithSignal("/api/v1/cloud-agents?size=100", signal),
       ]);
       if (!receiptResponse.ok) throw new Error(`读取部署记录失败（${receiptResponse.status}）`);
       const receiptPayload = await receiptResponse.json();
@@ -290,9 +420,15 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
       )))];
       const accountDetails: Array<StudioCloudAgentSummary | null> = await Promise.all(receiptAgentIds.map(agentId => (
         Promise.resolve()
-          .then(() => apiFetch(`/api/v1/cloud-agents/${encodeURIComponent(agentId)}`))
+          .then(() => apiFetchWithSignal(
+            `/api/v1/cloud-agents/${encodeURIComponent(agentId)}`,
+            signal,
+          ))
           .then(async response => response.ok ? await response.json() as StudioCloudAgentSummary : null)
-          .catch(() => null)
+          .catch(error => {
+            if (isAbortError(error)) throw error;
+            return null;
+          })
       )));
       const listedAccounts: StudioCloudAgentSummary[] = Array.isArray(accountPayload.items)
         ? accountPayload.items as StudioCloudAgentSummary[]
@@ -335,15 +471,19 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
           source: "account" as const,
         };
       });
-      setDeployments(rows);
+      if (!signal?.aborted) setDeployments(rows);
     } catch (caught: any) {
-      setError(caught?.message || "部署记录不可用");
+      if (!isAbortError(caught) && !signal?.aborted) setError(caught?.message || "部署记录不可用");
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) setLoading(false);
     }
   }, []);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    const controller = new AbortController();
+    void load(controller.signal);
+    return () => controller.abort();
+  }, [load]);
 
   useEffect(() => {
     const syncDetailRoute = () => {
@@ -523,9 +663,10 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
     }
   }
 
-  async function loadCloudVersions(agentId: string): Promise<CloudVersionCatalog> {
-    const response = await apiFetch(
+  async function loadCloudVersions(agentId: string, signal?: AbortSignal): Promise<CloudVersionCatalog> {
+    const response = await apiFetchWithSignal(
       `/api/v1/cloud-agents/${encodeURIComponent(agentId)}/versions?page=1&size=100`,
+      signal,
     );
     if (!response.ok) throw new Error(`读取云端版本失败（${response.status}）`);
     const payload = await response.json();
@@ -551,7 +692,8 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
     };
   }
 
-  async function openDetail(deployment: Deployment, navigate = true) {
+  async function openDetail(deployment: Deployment, navigate = true, signal?: AbortSignal) {
+    if (signal?.aborted) return;
     if (navigate) {
       window.history.pushState(null, "", `#/deployments/${encodeURIComponent(deployment.id)}`);
     }
@@ -559,11 +701,14 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
     setSelectedRollbackVersionId("");
     setRollbackConfirmOpen(false);
     const versionsPromise = deployment.agentId
-      ? loadCloudVersions(deployment.agentId)
+      ? loadCloudVersions(deployment.agentId, signal)
       : Promise.resolve({ items: [], currentVersionId: "" } as CloudVersionCatalog);
     try {
       if (deployment.source === "account") {
-        const accountResponse = await apiFetch(`/api/v1/cloud-agents/${encodeURIComponent(deployment.agentId || "")}`);
+        const accountResponse = await apiFetchWithSignal(
+          `/api/v1/cloud-agents/${encodeURIComponent(deployment.agentId || "")}`,
+          signal,
+        );
         if (!accountResponse.ok) throw new Error(`刷新云端 Agent 状态失败（${accountResponse.status}）`);
         const account = await accountResponse.json();
         const refreshed = {
@@ -580,6 +725,7 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
           updatedAt: account.updatedAt || deployment.updatedAt,
         };
         const versions = await versionsPromise;
+        if (signal?.aborted) return;
         setDeployments(current => current.map(item => item.id === deployment.id ? refreshed : item));
         setDetail({
           deployment: refreshed,
@@ -593,26 +739,37 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
         });
         return;
       }
-      const deploymentResponse = await apiFetch(`/api/v1/deployments/${encodeURIComponent(deployment.id)}`);
+      const deploymentResponse = await apiFetchWithSignal(
+        `/api/v1/deployments/${encodeURIComponent(deployment.id)}`,
+        signal,
+      );
       if (!deploymentResponse.ok) throw new Error(`刷新云端 Agent 状态失败（${deploymentResponse.status}）`);
       const refreshed = {
         ...deployment,
         ...(await deploymentResponse.json() as Deployment),
         source: "receipt" as const,
       };
+      if (signal?.aborted) return;
       setDeployments(current => current.map(item => item.id === deployment.id ? refreshed : item));
-      const buildResponse = await apiFetch(`/api/v1/builds/${encodeURIComponent(refreshed.buildId)}`);
+      const buildResponse = await apiFetchWithSignal(
+        `/api/v1/builds/${encodeURIComponent(refreshed.buildId)}`,
+        signal,
+      );
       if (!buildResponse.ok) throw new Error(`读取当前 Build 失败（${buildResponse.status}）`);
       const build = await buildResponse.json();
       const sourceAgentId = String(build.agentId || "").trim();
       if (!sourceAgentId) throw new Error("当前部署缺少本地 Agent 关联");
-      const agentResponse = await apiFetch(`/api/v1/agents/${encodeURIComponent(sourceAgentId)}`);
+      const agentResponse = await apiFetchWithSignal(
+        `/api/v1/agents/${encodeURIComponent(sourceAgentId)}`,
+        signal,
+      );
       if (!agentResponse.ok) throw new Error(`读取本地 Build 历史失败（${agentResponse.status}）`);
       const agent = await agentResponse.json();
       const builds = (Array.isArray(agent.builds) ? agent.builds : [])
         .filter((item: BuildCandidate) => item.status === "SUCCEEDED")
         .sort((left: BuildCandidate, right: BuildCandidate) => String(right.createdAt || "").localeCompare(String(left.createdAt || "")));
       const versions = await versionsPromise;
+      if (signal?.aborted) return;
       setDetail({
         deployment: refreshed,
         sourceAgentId,
@@ -624,6 +781,7 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
         error: "",
       });
     } catch (caught: any) {
+      if (isAbortError(caught) || signal?.aborted) return;
       const versions = await versionsPromise.catch(() => ({ items: [], currentVersionId: "" }));
       setDetail(current => current ? {
         ...current,
@@ -649,8 +807,10 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
     setCreateBusy(true);
     setCreateError("");
     const actionKey = `deploy:${selectedBuildId}:${cloudRegion}`;
+    const controller = beginOperation();
     try {
-      const result = await submitOrResumeOperation(actionKey, "deploy", "部署", idempotencyKey => (
+      const storageKey = await operationStorageKey(controller.signal);
+      const result = await submitOrResumeOperation(storageKey, actionKey, "deploy", "部署", controller.signal, (idempotencyKey, signal) => (
         apiFetch(`/api/v1/builds/${encodeURIComponent(selectedBuildId)}/deployments`, {
           method: "POST",
           headers: {
@@ -661,17 +821,23 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
             target: { region: cloudRegion, environment: "cloud" },
             releasePolicy: { strategy: "rolling", approval: "none" },
           }),
+          signal,
         })
       ));
       if (result.status !== "SUCCEEDED") throw new Error(result.error?.message || "部署未完成");
-      await load();
+      throwIfAborted(controller.signal);
+      await load(controller.signal);
+      throwIfAborted(controller.signal);
       const deploymentId = String(result.resourceId || "").trim();
       navigateToStudioHash(deploymentId ? deploymentDetailRoute(deploymentId) : "#/deployments");
       showToast("已提交云端部署", `${selectedBuild.agentName || selectedBuild.agentId} · ${selectedBuild.id}`);
     } catch (caught: any) {
-      setCreateError(caught?.message || "部署失败");
+      if (!isAbortError(caught) && !controller.signal.aborted) {
+        setCreateError(caught?.message || "部署失败");
+      }
     } finally {
-      setCreateBusy(false);
+      finishOperation(controller);
+      if (!controller.signal.aborted) setCreateBusy(false);
     }
   }
 
@@ -687,8 +853,10 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
     setUpdating(true);
     setError("");
     const actionKey = `update:${deployment.agentId || deployment.id}:${buildId}`;
+    const controller = beginOperation();
     try {
-      const result = await submitOrResumeOperation(actionKey, "update", "更新", idempotencyKey => (
+      const storageKey = await operationStorageKey(controller.signal);
+      const result = await submitOrResumeOperation(storageKey, actionKey, "update", "更新", controller.signal, (idempotencyKey, signal) => (
         apiFetch(`/api/v1/builds/${encodeURIComponent(buildId)}/deployments`, {
           method: "POST",
           headers: {
@@ -699,16 +867,20 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
             target: deployment.target,
             releasePolicy: { strategy: "rolling", approval: "none" },
           }),
+          signal,
         })
       ));
       if (result.status !== "SUCCEEDED") throw new Error(result.error?.message || "更新未完成");
+      throwIfAborted(controller.signal);
       setDetail(null);
-      await load();
+      await load(controller.signal);
+      throwIfAborted(controller.signal);
       showToast("已提交云端更新", `Build ${buildId}`);
     } catch (caught: any) {
-      setError(caught?.message || "更新失败");
+      if (!isAbortError(caught) && !controller.signal.aborted) setError(caught?.message || "更新失败");
     } finally {
-      setUpdating(false);
+      finishOperation(controller);
+      if (!controller.signal.aborted) setUpdating(false);
     }
   }
 
@@ -747,8 +919,10 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
     setRollbackBusy(true);
     setDetail(current => current ? { ...current, error: "" } : current);
     const actionKey = `rollback:${agentId}:${targetVersionId}`;
+    const controller = beginOperation();
     try {
-      const result = await submitOrResumeOperation(actionKey, "rollback", "回滚", idempotencyKey => (
+      const storageKey = await operationStorageKey(controller.signal);
+      const result = await submitOrResumeOperation(storageKey, actionKey, "rollback", "回滚", controller.signal, (idempotencyKey, signal) => (
         apiFetch(`/api/v1/cloud-agents/${encodeURIComponent(agentId)}:rollback-version`, {
           method: "POST",
           headers: {
@@ -756,19 +930,25 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
             "Idempotency-Key": idempotencyKey,
           },
           body: JSON.stringify({ versionId: targetVersionId }),
+          signal,
         })
       ));
       if (result.status !== "SUCCEEDED") throw new Error(result.error?.message || "回滚未完成");
+      throwIfAborted(controller.signal);
       setRollbackConfirmOpen(false);
       setSelectedRollbackVersionId("");
-      await load();
-      await openDetail(deployment, false);
+      await load(controller.signal);
+      await openDetail(deployment, false, controller.signal);
+      throwIfAborted(controller.signal);
       showToast("已提交版本回滚", `云端版本 ${targetVersionId}`);
     } catch (caught: any) {
-      setRollbackConfirmOpen(false);
-      setDetail(current => current ? { ...current, error: caught?.message || "回滚失败" } : current);
+      if (!isAbortError(caught) && !controller.signal.aborted) {
+        setRollbackConfirmOpen(false);
+        setDetail(current => current ? { ...current, error: caught?.message || "回滚失败" } : current);
+      }
     } finally {
-      setRollbackBusy(false);
+      finishOperation(controller);
+      if (!controller.signal.aborted) setRollbackBusy(false);
     }
   }
 

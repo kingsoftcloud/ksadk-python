@@ -511,7 +511,11 @@ def test_root_navigation_establishes_current_browser_session(tmp_path: Path):
 
         bootstrap = client.get("/api/v1/system/bootstrap")
         assert bootstrap.status_code == 200
-        assert bootstrap.json()["workspace"]["path"] == str(tmp_path.resolve())
+        payload = bootstrap.json()
+        assert payload["workspace"]["path"] == str(tmp_path.resolve())
+        assert len(payload["operationScope"]["workspace"]) == 64
+        assert len(payload["operationScope"]["cloudCredential"]) == 64
+        assert str(tmp_path.resolve()) not in str(payload["operationScope"])
 
 
 def test_static_studio_shell_is_served(tmp_path: Path):

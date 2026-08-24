@@ -481,6 +481,7 @@ def create_studio_app(
                 "name": studio.workspace.root.name,
                 "path": str(studio.workspace.root),
             },
+            "operationScope": studio.deployment_operation_scope(),
             "features": {
                 "build": True,
                 "run": True,

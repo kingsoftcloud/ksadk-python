@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -1993,6 +1994,29 @@ class StudioService:
         """Return a receipt-bound private Hosted UI link on explicit user request."""
 
         return await self.cloud.dashboard_access(deployment_id)
+
+    def deployment_operation_scope(self) -> dict[str, str]:
+        """Return opaque browser storage scopes without exposing cloud credentials."""
+
+        workspace_identity = str(self.workspace.root.resolve())
+        region = (
+            os.environ.get("AGENTENGINE_REGION")
+            or os.environ.get("KSYUN_REGION")
+            or "cn-beijing-6"
+        ).strip()
+        access_key = (
+            os.environ.get("KSYUN_ACCESS_KEY")
+            or os.environ.get("KS3_ACCESS_KEY")
+            or "unsigned"
+        ).strip()
+
+        def opaque(value: str) -> str:
+            return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+        return {
+            "workspace": opaque(workspace_identity),
+            "cloudCredential": opaque(f"{region}\0{access_key}"),
+        }
 
     def get_settings(self) -> dict[str, Any]:
         path = self.workspace.resolve(".agentkit/settings.yaml")

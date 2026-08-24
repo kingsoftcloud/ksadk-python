@@ -92,3 +92,24 @@ def test_cloud_settings_use_existing_signed_account_without_persisting_credentia
     persisted = (tmp_path / "ws" / ".agentkit" / "settings.yaml").read_text(encoding="utf-8")
     assert "test-access-key" not in persisted
     assert "test-secret-key" not in persisted
+
+
+def test_deployment_operation_scope_separates_workspace_and_cloud_account(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("KSYUN_ACCESS_KEY", "account-one")
+    monkeypatch.setenv("KSYUN_SECRET_KEY", "secret-one")
+    monkeypatch.setenv("AGENTENGINE_REGION", "pre-online")
+    first = StudioService(tmp_path / "one").deployment_operation_scope()
+
+    monkeypatch.setenv("KSYUN_ACCESS_KEY", "account-two")
+    monkeypatch.setenv("KSYUN_SECRET_KEY", "secret-two")
+    changed_account = StudioService(tmp_path / "one").deployment_operation_scope()
+    changed_workspace = StudioService(tmp_path / "two").deployment_operation_scope()
+
+    assert first["workspace"] == changed_account["workspace"]
+    assert first["cloudCredential"] != changed_account["cloudCredential"]
+    assert changed_account["workspace"] != changed_workspace["workspace"]
+    assert changed_account["cloudCredential"] == changed_workspace["cloudCredential"]
+    assert "account-one" not in str(first)
+    assert "account-two" not in str(changed_account)

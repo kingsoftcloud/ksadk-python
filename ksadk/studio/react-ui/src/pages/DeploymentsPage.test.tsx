@@ -3,6 +3,17 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { apiFetch } = vi.hoisted(() => ({ apiFetch: vi.fn() }));
+function memoryStorage(): Storage {
+  const values = new Map<string, string>();
+  return {
+    get length() { return values.size; },
+    clear: () => values.clear(),
+    getItem: key => values.get(key) ?? null,
+    key: index => [...values.keys()][index] ?? null,
+    removeItem: key => { values.delete(key); },
+    setItem: (key, value) => { values.set(key, String(value)); },
+  };
+}
 const defaultBuilds = [
   { id: "build-current", status: "SUCCEEDED" },
   { id: "build-previous", status: "SUCCEEDED" },
@@ -18,6 +29,10 @@ let createTerminalFailures = 0;
 let createStatusReadFailures = 0;
 let createOperationPolls = 0;
 let createIdempotencyKeys: string[] = [];
+let createPollSignals: AbortSignal[] = [];
+let staleOperationStatus = 404;
+let bootstrapWorkspaceScope = "workspace-test";
+let bootstrapCredentialScope = "credential-test";
 let rollbackTerminalFailures = 0;
 let rollbackIdempotencyKeys: string[] = [];
 let accountAgentItems: Array<Record<string, unknown>> = [{
@@ -29,6 +44,14 @@ let accountAgentItems: Array<Record<string, unknown>> = [{
 }];
 
 apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
+  if (path === "/api/v1/system/bootstrap") {
+    return new Response(JSON.stringify({
+      operationScope: {
+        workspace: bootstrapWorkspaceScope,
+        cloudCredential: bootstrapCredentialScope,
+      },
+    }));
+  }
   if (path === "/api/v1/deployments") {
     const items = [{
       id: "dep-instance-1",
@@ -196,6 +219,7 @@ apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
     return new Response(JSON.stringify({ status: "SUCCEEDED", resourceId: "dep-instance-2" }));
   }
   if (path === "/api/v1/operations/operation-create") {
+    if (init?.signal) createPollSignals.push(init.signal);
     createOperationPolls += 1;
     if (createStatusReadFailures > 0) {
       createStatusReadFailures -= 1;
@@ -211,6 +235,9 @@ apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
     newDeploymentReady = true;
     return new Response(JSON.stringify({ status: "SUCCEEDED", resourceId: "dep-instance-new" }));
   }
+  if (path === "/api/v1/operations/operation-gone") {
+    return new Response("operation no longer exists", { status: staleOperationStatus });
+  }
   throw new Error(path);
 });
 
@@ -220,6 +247,10 @@ import { DeploymentsPage } from "./DeploymentsPage";
 
 describe("DeploymentsPage", () => {
   beforeEach(() => {
+    Object.defineProperty(window, "localStorage", {
+      configurable: true,
+      value: memoryStorage(),
+    });
     window.history.replaceState(null, "", "#/deployments");
     agentBuilds = defaultBuilds;
     currentCloudVersionId = "cloud-agent-1";
@@ -232,6 +263,10 @@ describe("DeploymentsPage", () => {
     createStatusReadFailures = 0;
     createOperationPolls = 0;
     createIdempotencyKeys = [];
+    createPollSignals = [];
+    staleOperationStatus = 404;
+    bootstrapWorkspaceScope = "workspace-test";
+    bootstrapCredentialScope = "credential-test";
     rollbackTerminalFailures = 0;
     rollbackIdempotencyKeys = [];
     accountAgentItems = [{
@@ -241,6 +276,7 @@ describe("DeploymentsPage", () => {
       endpoint: "http://ar-cloud-ui.example.test",
       framework: "codex",
     }];
+    window.localStorage.clear();
     vi.clearAllMocks();
   });
 
@@ -576,6 +612,116 @@ describe("DeploymentsPage", () => {
 
     await waitFor(() => expect(window.location.hash).toBe("#/deployments/dep-instance-new"));
     expect(createIdempotencyKeys).toHaveLength(1);
+  });
+
+  it.each([403, 404, 410])("clears a %i persisted operation before allowing an explicit retry", async status => {
+    const user = userEvent.setup();
+    staleOperationStatus = status;
+    window.history.replaceState(null, "", "#/deployments/new");
+    const storageKey = "agentkit-studio:deployment-operation-attempts:v2:workspace-test:credential-test";
+    window.localStorage.setItem(storageKey, JSON.stringify({
+      "deploy:build-new:cn-beijing-6": {
+        actionKey: "deploy:build-new:cn-beijing-6",
+        idempotencyKey: "stale-key",
+        operationId: "operation-gone",
+      },
+    }));
+    renderPage();
+
+    await user.click(await screen.findByRole("radio", { name: /New Agent.*build-new/ }));
+    await user.click(screen.getByRole("button", { name: "部署到云端" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(`部署状态读取失败（${status}）`);
+    expect(window.localStorage.getItem(storageKey)).toBe("{}");
+
+    await user.click(screen.getByRole("button", { name: "部署到云端" }));
+    await waitFor(() => expect(createIdempotencyKeys).toHaveLength(1));
+    expect(createIdempotencyKeys[0]).not.toBe("stale-key");
+  });
+
+  it.each([
+    ["another workspace", "workspace-other", "credential-test"],
+    ["another cloud account", "workspace-test", "credential-other"],
+  ])("isolates resumable attempts from %s", async (_label, workspaceScope, credentialScope) => {
+    const user = userEvent.setup();
+    window.history.replaceState(null, "", "#/deployments/new");
+    createNetworkFailures = 1;
+    window.localStorage.setItem(
+      "agentkit-studio:deployment-operation-attempts:v2:workspace-test:credential-test",
+      JSON.stringify({
+        "deploy:build-new:cn-beijing-6": {
+          actionKey: "deploy:build-new:cn-beijing-6",
+          idempotencyKey: "foreign-key",
+          operationId: "operation-gone",
+        },
+      }),
+    );
+    bootstrapWorkspaceScope = workspaceScope;
+    bootstrapCredentialScope = credentialScope;
+    renderPage();
+
+    await user.click(await screen.findByRole("radio", { name: /New Agent.*build-new/ }));
+    await user.click(screen.getByRole("button", { name: "部署到云端" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("network disconnected");
+
+    const scopedKey = `agentkit-studio:deployment-operation-attempts:v2:${workspaceScope}:${credentialScope}`;
+    expect(JSON.parse(window.localStorage.getItem(scopedKey) || "{}")).toMatchObject({
+      "deploy:build-new:cn-beijing-6": { operationId: "" },
+    });
+    expect(window.localStorage.getItem("agentkit-studio:deployment-operation-attempts:v1")).toBeNull();
+  });
+
+  it("aborts durable polling when the deployment page unmounts", async () => {
+    window.history.replaceState(null, "", "#/deployments/new");
+    createNonTerminalPolls = Number.MAX_SAFE_INTEGER;
+    const page = renderPage();
+    fireEvent.click(await screen.findByRole("radio", { name: /New Agent.*build-new/ }));
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByRole("button", { name: "部署到云端" }));
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(createOperationPolls).toBeGreaterThan(0);
+    const pollsAtUnmount = createOperationPolls;
+
+    page.unmount();
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(createOperationPolls).toBe(pollsAtUnmount);
+    expect(createPollSignals.at(-1)?.aborted).toBe(true);
+    expect(window.location.hash).toBe("#/deployments/new");
+  });
+
+  it("serializes first submission across tabs so only one POST creates the operation", async () => {
+    const queues = new Map<string, Promise<unknown>>();
+    const request = vi.fn(async <T,>(
+      name: string,
+      _options: LockOptions,
+      callback: () => Promise<T>,
+    ): Promise<T> => {
+      const previous = queues.get(name) || Promise.resolve();
+      let release!: () => void;
+      const current = new Promise<void>(resolve => { release = resolve; });
+      queues.set(name, previous.then(() => current));
+      await previous;
+      try {
+        return await callback();
+      } finally {
+        release();
+      }
+    });
+    Object.defineProperty(navigator, "locks", { configurable: true, value: { request } });
+    window.history.replaceState(null, "", "#/deployments/new");
+    const first = renderPage();
+    const second = renderPage();
+
+    const builds = await screen.findAllByRole("radio", { name: /New Agent.*build-new/ });
+    builds.forEach(build => fireEvent.click(build));
+    screen.getAllByRole("button", { name: "部署到云端" }).forEach(button => fireEvent.click(button));
+
+    await waitFor(() => expect(window.location.hash).toBe("#/deployments/dep-instance-new"));
+    expect(request).toHaveBeenCalled();
+    expect(createIdempotencyKeys).toHaveLength(1);
+    first.unmount();
+    second.unmount();
+    Reflect.deleteProperty(navigator, "locks");
   });
 
   it("uses a fresh rollback key when the user explicitly retries a FAILED operation", async () => {
