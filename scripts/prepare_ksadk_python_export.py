@@ -98,6 +98,7 @@ SCRIPT_EXPORT_FILES = {
 
 PUBLIC_TEST_FILES = {
     "tests/conftest.py",
+    "tests/events/fixtures/runtime_projection_golden.json",
     "tests/test_check_approval_record.py",
     "tests/test_check_publication_state.py",
     "tests/test_config_env_registry.py",

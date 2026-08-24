@@ -1,9 +1,9 @@
 {
-  "generatedAt": "2026-08-24T18:30:52.104418+00:00",
+  "generatedAt": "2026-08-24T18:39:34.319354+00:00",
   "targetRepository": "https://github.com/kingsoftcloud/ksadk-python",
   "documentation": "https://kingsoftcloud.github.io/ksadk-python/",
-  "exportPathCount": 984,
-  "excludedPathCount": 609,
+  "exportPathCount": 985,
+  "excludedPathCount": 608,
   "excludedPaths": [
     "contracts/agent-kernel/v1/activation-lease.schema.json",
     "contracts/agent-kernel/v1/agent-control.schema.json",
@@ -281,7 +281,6 @@
     "tests/events/adapters/test_langgraph.py",
     "tests/events/fixtures/runtime_event_v1.json",
     "tests/events/fixtures/runtime_event_v2.json",
-    "tests/events/fixtures/runtime_projection_golden.json",
     "tests/events/test_canonical_runtime_event.py",
     "tests/events/test_cold_recovery.py",
     "tests/events/test_lenient_parsing.py",
@@ -674,6 +673,7 @@
     "tests": [
       "tests/cli/test_cmd_create_codex.py",
       "tests/conftest.py",
+      "tests/events/fixtures/runtime_projection_golden.json",
       "tests/runners/test_adapter_contract.py",
       "tests/runners/test_codex_runner.py",
       "tests/test_check_approval_record.py",
