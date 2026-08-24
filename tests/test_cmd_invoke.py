@@ -216,6 +216,7 @@ def test_run_invoke_command_refreshes_stale_state_from_remote(monkeypatch, tmp_p
         insecure,
         model,
         api_format="chat_completions",
+        default_model=None,
     ):
         captured["endpoint"] = endpoint
         captured["api_key"] = api_key
@@ -266,6 +267,7 @@ def test_run_invoke_command_single_shot_uses_fresh_session_each_call(monkeypatch
         insecure,
         model,
         api_format="chat_completions",
+        default_model=None,
     ):
         captured_sessions.append(session_id)
 
@@ -327,6 +329,7 @@ def test_run_invoke_command_single_shot_respects_explicit_session(monkeypatch, t
         insecure,
         model,
         api_format="chat_completions",
+        default_model=None,
     ):
         captured.append(session_id)
 
@@ -1025,6 +1028,7 @@ def test_run_invoke_command_resolves_openclaw_state_without_explicit_agent(
         insecure,
         model,
         api_format="chat_completions",
+        default_model=None,
     ):
         captured["endpoint"] = endpoint
         captured["api_key"] = api_key
@@ -1138,6 +1142,7 @@ def test_run_invoke_command_message_mode_keeps_http_chat_path(monkeypatch, tmp_p
         insecure,
         model,
         api_format="chat_completions",
+        default_model=None,
     ):
         captured["once"] += 1
         captured["endpoint"] = endpoint
@@ -1941,6 +1946,7 @@ def test_run_invoke_command_passes_explicit_api_format_to_resolver(monkeypatch, 
         insecure,
         model,
         api_format="chat_completions",
+        default_model=None,
     ):
         return None
 
