@@ -1271,14 +1271,60 @@ async def test_codex_runtime_projects_exact_usage_and_turn_duration():
     handle = await runtime.start(StartRequest(input="review", user_id="u", session_id="s"))
     events = [event async for event in runtime.stream(handle)]
 
-    # NOTE: Canonical CodexEventAdapter maps thread/tokenUsage/updated as a
-    # known notification (ItemStarted/ItemCompleted with item_kind="data"),
-    # not as UsageReported. UsageReported is only produced by the
-    # runner_adapter's dict-chunk path, not the canonical codex adapter.
-    # This test will not find a UsageReported event.
     usage_events = [event for event in events if isinstance(event, UsageReported)]
     completed = next(event for event in events if isinstance(event, RunCompleted))
+    assert len(usage_events) == 1
+    assert usage_events[0].input_tokens == 128
+    assert usage_events[0].cached_tokens == 16
+    assert usage_events[0].output_tokens == 32
+    assert usage_events[0].reasoning_tokens == 8
+    assert usage_events[0].total_tokens == 160
     assert completed.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_codex_runtime_projects_camel_case_app_server_usage():
+    """The real App Server JSONL transport emits camelCase token usage fields."""
+
+    class _CamelCaseMetricsCodex(_ControllableCodex):
+        def __init__(self) -> None:
+            super().__init__(block=False)
+
+        def run_turn(self, thread_id, prompt, *, config=None):
+            async def gen():
+                yield _turn_started(thread_id)
+                yield {
+                    "method": "thread/tokenUsage/updated",
+                    "params": {
+                        "threadId": thread_id,
+                        "turnId": "turn-1",
+                        "tokenUsage": {
+                            "last": {
+                                "inputTokens": 4311,
+                                "cachedInputTokens": 4096,
+                                "outputTokens": 39,
+                                "reasoningOutputTokens": 32,
+                                "totalTokens": 4350,
+                            }
+                        },
+                    },
+                }
+                yield _turn_completed(thread_id)
+
+            return gen()
+
+    runtime = CodexRuntimeAdapter(_CamelCaseMetricsCodex())
+    handle = await runtime.start(StartRequest(input="review", user_id="u", session_id="s"))
+    events = [event async for event in runtime.stream(handle)]
+
+    usage = next(event for event in events if isinstance(event, UsageReported))
+    assert (
+        usage.input_tokens,
+        usage.cached_tokens,
+        usage.output_tokens,
+        usage.reasoning_tokens,
+        usage.total_tokens,
+    ) == (4311, 4096, 39, 32, 4350)
 
 
 @pytest.mark.asyncio

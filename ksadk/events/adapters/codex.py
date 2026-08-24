@@ -38,6 +38,7 @@ from ksadk.events.adapters._codex_validators import (
 from ksadk.events.adapters._codex_validators import (
     _json_value,
     _mapping,
+    _nonnegative_int,
     _request_id,
     _required_string,
     _required_text,
@@ -59,6 +60,7 @@ from ksadk.events.canonical import (
     RunStarted,
     RuntimeEvent,
     SourceRef,
+    UsageReported,
 )
 from ksadk.events.content import (
     ContentSnapshot,
@@ -178,6 +180,13 @@ class CodexEventAdapter(_CodexInteractionMixin):
                 cursor=cursor,
                 timestamp=timestamp,
             )
+        if method == "thread/tokenUsage/updated":
+            return self._map_token_usage(
+                params=params,
+                context=context,
+                cursor=cursor,
+                timestamp=timestamp,
+            )
         if method == "serverRequest/resolved":
             return self._map_server_request_resolved(
                 params=params, context=context, cursor=cursor, timestamp=timestamp
@@ -245,6 +254,51 @@ class CodexEventAdapter(_CodexInteractionMixin):
                 method=method, params=params, context=context, cursor=cursor, timestamp=timestamp
             )
         _fail("unsupported_method", "method", f"Unsupported Codex app-server method: {method}")
+
+    def _map_token_usage(
+        self,
+        *,
+        params: Mapping[str, Any],
+        context: CodexAdapterContext,
+        cursor: str,
+        timestamp: float,
+    ) -> tuple[RuntimeEvent, ...]:
+        """Project the current turn's exact App Server usage into the canonical event."""
+
+        thread_id = _required_string(params.get("threadId"), "params.threadId")
+        turn_id = _required_string(params.get("turnId"), "params.turnId")
+        usage_value = params.get("tokenUsage", params.get("token_usage"))
+        usage = _mapping(usage_value, "params.tokenUsage")
+        last = _mapping(usage.get("last"), "params.tokenUsage.last")
+
+        def metric(camel_name: str, snake_name: str) -> int:
+            value = last.get(camel_name, last.get(snake_name))
+            return _nonnegative_int(value, f"params.tokenUsage.last.{camel_name}")
+
+        input_tokens = metric("inputTokens", "input_tokens")
+        output_tokens = metric("outputTokens", "output_tokens")
+        total_tokens = metric("totalTokens", "total_tokens")
+        cached_tokens = metric("cachedInputTokens", "cached_input_tokens")
+        reasoning_tokens = metric("reasoningOutputTokens", "reasoning_output_tokens")
+        scope_id = stable_scope_id("codex", thread_id, turn_id)
+        source = _protocol_source(
+            method="thread/tokenUsage/updated",
+            cursor=cursor,
+            thread_id=thread_id,
+            turn_id=turn_id,
+            native_item_id=None,
+        )
+        env = _envelope(context, cursor, timestamp)
+        return (
+            UsageReported(
+                **env(scope_id, turn_id, "usage.reported", "usage", source),
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                total_tokens=total_tokens,
+                cached_tokens=cached_tokens,
+                reasoning_tokens=reasoning_tokens,
+            ),
+        )
 
     def finish_stream(self) -> None:
         """Fail closed if JSONL EOF leaves source-owned lifecycle state open."""
