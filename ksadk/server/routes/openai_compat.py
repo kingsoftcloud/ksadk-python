@@ -74,7 +74,9 @@ async def list_openai_models():
         launch_context = None
     if launch_context is not None:
         config = dict(launch_context.config)
-        raw_allowed = config.get("allowed_models") or config.get("allowedModels")
+        raw_allowed = (
+            config.get("models") or config.get("allowed_models") or config.get("allowedModels")
+        )
         if isinstance(raw_allowed, (list, tuple, set)):
             allowed = {str(item).strip() for item in raw_allowed if str(item).strip()}
             default_model = str(config.get("model") or "").strip()

@@ -33,7 +33,9 @@ def kernel_start_request_defaults(context: RuntimeLaunchContext) -> dict[str, An
     model = str(config.get("model") or "").strip()
     if model:
         defaults["model"] = model
-    raw_allowed_models = config.get("allowed_models") or config.get("allowedModels") or []
+    raw_allowed_models = (
+        config.get("models") or config.get("allowed_models") or config.get("allowedModels") or []
+    )
     allowed_models = (
         {str(item).strip() for item in raw_allowed_models if str(item).strip()}
         if isinstance(raw_allowed_models, (list, tuple, set))
@@ -72,9 +74,7 @@ def kernel_start_request_defaults(context: RuntimeLaunchContext) -> dict[str, An
     if raw_approval in approval_profiles:
         sandbox, approval = approval_profiles[raw_approval]
     else:
-        sandbox, default_approval = sandbox_profiles.get(
-            raw_sandbox, ("read-only", "deny_all")
-        )
+        sandbox, default_approval = sandbox_profiles.get(raw_sandbox, ("read-only", "deny_all"))
         approval = raw_approval or default_approval
 
     request_config: dict[str, Any] = {

@@ -63,6 +63,21 @@ def test_manifest_projects_an_additive_model_allow_list():
     assert defaults["allowed_models"] == ["default-model", "qwen3-coder-plus"]
 
 
+def test_manifest_models_are_the_canonical_model_allow_list():
+    context = RuntimeLaunchContext(
+        runtime_type="codex",
+        project_dir=Path("/tmp/managed-agent"),
+        config={
+            "model": "qwen3.7-flash",
+            "models": ["qwen3.7-flash", "glm-5.1"],
+        },
+    )
+
+    defaults = kernel_start_request_defaults(context)
+
+    assert defaults["allowed_models"] == ["glm-5.1", "qwen3.7-flash"]
+
+
 def test_codex_adapter_uses_the_same_manifest_sandbox_projection():
     class FakeClient:
         def __init__(self, **_kwargs):

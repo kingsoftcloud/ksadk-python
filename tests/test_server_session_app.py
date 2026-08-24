@@ -2354,7 +2354,7 @@ async def test_openai_models_route_hides_models_not_admitted_by_manifest(monkeyp
             SimpleNamespace(
                 config={
                     "model": "qwen3.7-flash",
-                    "allowed_models": ["qwen3.7-flash", "glm-5.1"],
+                    "models": ["qwen3.7-flash", "glm-5.1"],
                 }
             ),
         ),
