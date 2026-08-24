@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -350,6 +351,90 @@ def test_trace_view_recovers_standard_usage_from_model_spans(
     assert metrics["totalTokens"] == 160
     assert metrics["cachedInputTokens"] == 16
     assert metrics["reasoningOutputTokens"] == 8
+
+
+def test_trace_view_aggregates_only_token_bearing_leaf_spans(tmp_path: Path) -> None:
+    """Parent compatibility counters must not double-count their model child."""
+
+    store, record, events = _fixture(tmp_path)
+    record.usage = Usage()
+    raw = store.sync(record, events)
+    spans = raw["resourceSpans"][0]["scopeSpans"][0]["spans"]
+    root = next(span for span in spans if not span.get("parentSpanId"))
+    model = next(span for span in spans if span["name"] == "chat glm-5.2")
+    compatibility_parent = deepcopy(model)
+    compatibility_parent.update(
+        {
+            "spanId": "f" * 16,
+            "parentSpanId": root["spanId"],
+            "name": "agent compatibility wrapper",
+        }
+    )
+    model["parentSpanId"] = compatibility_parent["spanId"]
+    model["attributes"].extend(
+        [
+            {
+                "key": "gen_ai.usage.cache_read.input_tokens",
+                "value": {"intValue": "16"},
+            },
+            {
+                "key": "gen_ai.usage.reasoning.output_tokens",
+                "value": {"intValue": "8"},
+            },
+        ]
+    )
+    spans.append(compatibility_parent)
+    store.workspace.atomic_write_text(
+        store._path(TRACE_ID),
+        json.dumps(raw, ensure_ascii=False),
+    )
+
+    metrics = store.get_trace_view(TRACE_ID)["metrics"]
+
+    assert metrics["inputTokens"] == 128
+    assert metrics["outputTokens"] == 32
+    assert metrics["totalTokens"] == 160
+    assert metrics["cachedInputTokens"] == 16
+    assert metrics["reasoningOutputTokens"] == 8
+
+
+def test_trace_view_fills_missing_root_usage_fields_from_leaf_spans(tmp_path: Path) -> None:
+    """A partial legacy root is authoritative, while leaves fill only absent fields."""
+
+    store, record, events = _fixture(tmp_path)
+    record.usage = Usage(
+        input_tokens=129,
+        reported=True,
+        source="legacy-root",
+    )
+    raw = store.sync(record, events)
+    spans = raw["resourceSpans"][0]["scopeSpans"][0]["spans"]
+    root = next(span for span in spans if not span.get("parentSpanId"))
+    root["attributes"] = [
+        item
+        for item in root["attributes"]
+        if item["key"]
+        not in {
+            "gen_ai.usage.output_tokens",
+            "gen_ai.usage.cached_input_tokens",
+            "gen_ai.usage.reasoning_tokens",
+            "agentkit.usage.total_tokens",
+        }
+    ]
+    store.workspace.atomic_write_text(
+        store._path(TRACE_ID),
+        json.dumps(raw, ensure_ascii=False),
+    )
+
+    metrics = store.get_trace_view(TRACE_ID)["metrics"]
+
+    assert metrics["inputTokens"] == 129
+    assert metrics["outputTokens"] == 32
+    assert metrics["totalTokens"] == 161
+    assert metrics["cachedInputTokens"] == 16
+    assert metrics["reasoningOutputTokens"] == 8
+    assert metrics["usageReported"] is True
+    assert metrics["usageSource"] == "legacy-root"
 
 
 def test_trace_list_is_filterable_without_loading_chat_sessions(tmp_path: Path) -> None:

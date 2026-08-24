@@ -153,6 +153,115 @@ describe("ObservabilityPage trajectory integration", () => {
     expect(within(metrics).getByText("2 输入 · 3 输出")).toBeInTheDocument();
   });
 
+  it.each([
+    {
+      label: "input only",
+      inputTokens: 2,
+      outputTokens: null,
+      listText: "2 输入",
+      detailText: "2 输入 · — 输出",
+    },
+    {
+      label: "output only",
+      inputTokens: null,
+      outputTokens: 3,
+      listText: "3 输出",
+      detailText: "— 输入 · 3 输出",
+    },
+  ])("shows partial token usage when $label is reported", async ({
+    inputTokens,
+    outputTokens,
+    listText,
+    detailText,
+  }) => {
+    vi.mocked(apiFetch).mockImplementation(input => {
+      const url = String(input);
+      if (url.startsWith("/api/v1/agents")) return response({ items: [] });
+      if (url.startsWith("/api/v1/traces/overview")) {
+        return response({
+          range: "24h",
+          total: 1,
+          completed: 1,
+          successRate: 1,
+          averageDurationMs: 25,
+          inputTokens: inputTokens || 0,
+          outputTokens: outputTokens || 0,
+          totalTokens: 0,
+          buckets: [],
+        });
+      }
+      if (url === "/api/v1/traces/trace-partial") {
+        return response({
+          traceId: "trace-partial",
+          runId: "run-partial",
+          agentId: "agent-1",
+          sessionId: "session-partial",
+          runtimeType: "codex",
+          model: "demo-model",
+          status: "completed",
+          startedAt: "2026-08-17T00:00:00Z",
+          durationMs: 25,
+          inputTokens,
+          outputTokens,
+          totalTokens: null,
+          usageReported: true,
+          spanCount: 1,
+          rootSpanId: "span-1",
+          metrics: {
+            inputTokens,
+            outputTokens,
+            totalTokens: null,
+            usageReported: true,
+            usageSource: "gen_ai.usage",
+          },
+          spans: [{
+            spanId: "span-1",
+            name: "run",
+            kind: "INTERNAL",
+            status: "OK",
+            startTimeUnixNano: "1",
+            endTimeUnixNano: "2",
+            durationMs: 25,
+          }],
+        });
+      }
+      if (url.startsWith("/api/v1/traces?")) {
+        return response({
+          items: [{
+            traceId: "trace-partial",
+            runId: "run-partial",
+            agentId: "agent-1",
+            sessionId: "session-partial",
+            runtimeType: "codex",
+            model: "demo-model",
+            status: "completed",
+            startedAt: "2026-08-17T00:00:00Z",
+            durationMs: 25,
+            inputTokens,
+            outputTokens,
+            totalTokens: null,
+            usageReported: true,
+            spanCount: 1,
+          }],
+          total: 1,
+          nextCursor: null,
+        });
+      }
+      return response({});
+    });
+    const user = userEvent.setup();
+    render(<ObservabilityPage refreshTick={0} />);
+
+    const table = await screen.findByRole("table", { name: "Trace 列表" });
+    expect(within(table).getByText(listText)).toBeInTheDocument();
+    expect(within(table).queryByText("未上报")).not.toBeInTheDocument();
+
+    await user.click(within(table).getByRole("button", { name: "查看详情" }));
+    const metrics = await screen.findByRole("region", { name: "Trace 指标" });
+    expect(within(metrics).getByText("部分上报")).toBeInTheDocument();
+    expect(within(metrics).getByText(detailText)).toBeInTheDocument();
+  });
+
   it("switches an active trace between spans and its canonical trajectory", async () => {
     const user = userEvent.setup();
     render(<ObservabilityPage refreshTick={0} />);

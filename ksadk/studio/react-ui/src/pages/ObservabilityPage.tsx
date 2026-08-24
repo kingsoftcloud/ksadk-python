@@ -107,6 +107,27 @@ function hasTokenUsage(usage: TokenUsage): boolean {
   return usage.usageReported === true
     || [usage.inputTokens, usage.outputTokens, usage.totalTokens].some(value => tokenCounter(value) !== null);
 }
+function tokenUsageHeadline(usage: TokenUsage): string {
+  const total = normalizedTokenTotal(usage);
+  if (total !== null) return formatTokenCount(total);
+  return hasTokenUsage(usage) ? "部分上报" : "未上报";
+}
+function tokenUsageBreakdown(usage: TokenUsage): string {
+  const input = tokenCounter(usage.inputTokens);
+  const output = tokenCounter(usage.outputTokens);
+  const inputLabel = input === null ? "—" : formatTokenCount(input);
+  const outputLabel = output === null ? "—" : formatTokenCount(output);
+  return `${inputLabel} 输入 · ${outputLabel} 输出`;
+}
+function tokenUsageListLabel(usage: TokenUsage): string {
+  const total = normalizedTokenTotal(usage);
+  if (total !== null) return formatTokenCount(total);
+  const input = tokenCounter(usage.inputTokens);
+  if (input !== null) return `${formatTokenCount(input)} 输入`;
+  const output = tokenCounter(usage.outputTokens);
+  if (output !== null) return `${formatTokenCount(output)} 输出`;
+  return "未上报";
+}
 function formatNanoseconds(value: any): string {
   try {
     const ms = Number(BigInt(String(value || "0")) / 1000000n);
@@ -508,7 +529,7 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
     { id: "startedAt", header: "开始时间", minWidth: 140, cell: trace => formatDate(trace.startedAt) },
     { id: "duration", header: "耗时", width: 110, cell: trace => formatDuration(trace.durationMs) },
     { id: "model", header: "模型", minWidth: 140, cell: trace => trace.model || "-" },
-    { id: "tokens", header: "Token", width: 110, cell: trace => hasTokenUsage(trace) ? formatTokenCount(normalizedTokenTotal(trace)) : "未上报" },
+    { id: "tokens", header: "Token", width: 110, cell: trace => tokenUsageListLabel(trace) },
     { id: "spans", header: "Span", width: 80, cell: trace => trace.spanCount || 0 },
     {
       id: "actions",
@@ -687,8 +708,8 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
         </div>
         <div>
           <span>Token</span>
-          <strong>{activeTrace && hasTokenUsage(metrics) ? formatTokenCount(normalizedTokenTotal(metrics)) : "未上报"}</strong>
-          <small>{activeTrace && hasTokenUsage(metrics) ? `${formatTokenCount(metrics.inputTokens)} 输入 · ${formatTokenCount(metrics.outputTokens)} 输出` : "输入 / 输出"}</small>
+          <strong>{activeTrace ? tokenUsageHeadline(metrics) : "未上报"}</strong>
+          <small>{activeTrace && hasTokenUsage(metrics) ? tokenUsageBreakdown(metrics) : "输入 / 输出"}</small>
         </div>
         <div>
           <span>模型</span>

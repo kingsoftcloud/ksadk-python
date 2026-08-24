@@ -185,13 +185,17 @@ def _usage_from_attributes(attributes: dict[str, Any]) -> dict[str, Any]:
     )
     cached_input_tokens = _token_value(
         attributes,
+        "gen_ai.usage.cache_read.input_tokens",
         "gen_ai.usage.cached_input_tokens",
+        "llm.usage.cache_read.input_tokens",
         "agentkit.usage.cached_input_tokens",
     )
     reasoning_output_tokens = _token_value(
         attributes,
+        "gen_ai.usage.reasoning.output_tokens",
         "gen_ai.usage.reasoning_tokens",
         "gen_ai.usage.reasoning_output_tokens",
+        "llm.usage.reasoning_tokens",
         "agentkit.usage.reasoning_output_tokens",
     )
     if total_tokens is None and input_tokens is not None and output_tokens is not None:
@@ -221,29 +225,96 @@ def _usage_from_attributes(attributes: dict[str, Any]) -> dict[str, Any]:
 
 
 def _aggregate_span_usage(spans: Iterable[dict[str, Any]]) -> dict[str, Any]:
-    """Aggregate standard usage from model spans when the root has no counters."""
+    """Aggregate token-bearing leaves without counting compatibility parents twice."""
 
-    usages: list[dict[str, Any]] = []
-    for span in spans:
-        attributes = _decoded_attributes(span.get("attributes", []))
-        usage = _usage_from_attributes(attributes)
-        if usage["usageReported"]:
-            usages.append(usage)
+    span_list = list(spans)
+    usage_by_id: dict[str, dict[str, Any]] = {}
+    children_by_parent: dict[str, list[str]] = {}
+    anonymous_usages: list[dict[str, Any]] = []
+    for span in span_list:
+        span_id = str(span.get("spanId") or "")
+        parent_id = str(span.get("parentSpanId") or "")
+        usage = _usage_from_attributes(_decoded_attributes(span.get("attributes", [])))
+        if span_id:
+            usage_by_id[span_id] = usage
+            if parent_id:
+                children_by_parent.setdefault(parent_id, []).append(span_id)
+        elif usage["usageReported"]:
+            anonymous_usages.append(usage)
+
+    descendant_cache: dict[str, bool] = {}
+
+    def has_token_descendant(span_id: str, visiting: set[str] | None = None) -> bool:
+        if span_id in descendant_cache:
+            return descendant_cache[span_id]
+        active = set() if visiting is None else visiting
+        if span_id in active:
+            return False
+        active.add(span_id)
+        result = any(
+            usage_by_id.get(child_id, {}).get("usageReported") is True
+            or has_token_descendant(child_id, active)
+            for child_id in children_by_parent.get(span_id, [])
+        )
+        active.remove(span_id)
+        descendant_cache[span_id] = result
+        return result
+
+    usages = [
+        usage
+        for span_id, usage in usage_by_id.items()
+        if usage["usageReported"] and not has_token_descendant(span_id)
+    ]
+    usages.extend(anonymous_usages)
     if not usages:
         return _usage_from_attributes({})
 
-    def sum_if_complete(key: str) -> int | None:
-        values = [usage[key] for usage in usages]
-        return sum(values) if all(value is not None for value in values) else None
+    def sum_reported(key: str) -> int | None:
+        values = [usage[key] for usage in usages if usage[key] is not None]
+        return sum(values) if values else None
+
+    input_tokens = sum_reported("inputTokens")
+    output_tokens = sum_reported("outputTokens")
+    total_tokens = sum_reported("totalTokens")
+    if total_tokens is None and input_tokens is not None and output_tokens is not None:
+        total_tokens = input_tokens + output_tokens
 
     return {
-        "inputTokens": sum_if_complete("inputTokens"),
-        "outputTokens": sum_if_complete("outputTokens"),
-        "totalTokens": sum_if_complete("totalTokens"),
-        "cachedInputTokens": sum_if_complete("cachedInputTokens"),
-        "reasoningOutputTokens": sum_if_complete("reasoningOutputTokens"),
+        "inputTokens": input_tokens,
+        "outputTokens": output_tokens,
+        "totalTokens": total_tokens,
+        "cachedInputTokens": sum_reported("cachedInputTokens"),
+        "reasoningOutputTokens": sum_reported("reasoningOutputTokens"),
         "usageReported": True,
         "usageSource": "gen_ai.usage",
+    }
+
+
+def _merge_usage(primary: dict[str, Any], fallback: dict[str, Any]) -> dict[str, Any]:
+    """Keep explicit root counters and fill only absent fields from leaf usage."""
+
+    merged: dict[str, Any] = {
+        key: primary[key] if primary[key] is not None else fallback[key]
+        for key in (
+            "inputTokens",
+            "outputTokens",
+            "cachedInputTokens",
+            "reasoningOutputTokens",
+        )
+    }
+    if primary["totalTokens"] is not None:
+        merged["totalTokens"] = primary["totalTokens"]
+    elif merged["inputTokens"] is not None and merged["outputTokens"] is not None:
+        merged["totalTokens"] = merged["inputTokens"] + merged["outputTokens"]
+    elif primary["inputTokens"] is None and primary["outputTokens"] is None:
+        merged["totalTokens"] = fallback["totalTokens"]
+    else:
+        merged["totalTokens"] = None
+    reported = primary["usageReported"] or fallback["usageReported"]
+    return {
+        **merged,
+        "usageReported": reported,
+        "usageSource": primary["usageSource"] or fallback["usageSource"],
     }
 
 
@@ -286,11 +357,11 @@ class OtlpTraceStore:
         root_attributes = _decoded_attributes(root.get("attributes", []))
         canonical = root["traceId"]
         duration = root_attributes.get("agentkit.duration.ms")
-        usage = _usage_from_attributes(root_attributes)
-        if not usage["usageReported"]:
-            usage = _aggregate_span_usage(
-                span for span in spans if span.get("spanId") != root.get("spanId")
-            )
+        root_usage = _usage_from_attributes(root_attributes)
+        leaf_usage = _aggregate_span_usage(
+            span for span in spans if span.get("spanId") != root.get("spanId")
+        )
+        usage = _merge_usage(root_usage, leaf_usage)
         metrics = {
             "durationMs": int(duration) if duration is not None else None,
             "durationSource": root_attributes.get("agentkit.duration.source"),
@@ -530,7 +601,9 @@ class OtlpTraceStore:
             else (
                 _unix_nano(record.completed_at)
                 if record.completed_at is not None
-                else _unix_nano(events[-1].created_at) if events else root_start
+                else _unix_nano(events[-1].created_at)
+                if events
+                else root_start
             )
         )
         run_status = _enum_string(record.status)
@@ -574,7 +647,9 @@ class OtlpTraceStore:
                 "code": (
                     1
                     if run_status == "COMPLETED"
-                    else 2 if run_status in {"FAILED", "TIMED_OUT", "CANCELLED"} else 0
+                    else 2
+                    if run_status in {"FAILED", "TIMED_OUT", "CANCELLED"}
+                    else 0
                 )
             },
         }
@@ -734,7 +809,9 @@ class OtlpTraceStore:
         end_ns = (
             start_ns + duration * 1_000_000
             if duration is not None
-            else _unix_nano(end.created_at) if end is not None else root_end
+            else _unix_nano(end.created_at)
+            if end is not None
+            else root_end
         )
         attrs: dict[str, Any] = {
             "gen_ai.operation.name": "chat",
@@ -805,7 +882,9 @@ class OtlpTraceStore:
         end_ns = (
             start_ns + duration * 1_000_000
             if duration is not None
-            else _unix_nano(end.created_at) if end is not None else root_end
+            else _unix_nano(end.created_at)
+            if end is not None
+            else root_end
         )
         exit_code = end.data.get("exitCode") if end is not None else None
         status = str(end.data.get("status") or "") if end is not None else ""
