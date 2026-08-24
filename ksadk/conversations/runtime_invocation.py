@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence
 
 from ksadk.conversations.reasoning_markup import strip_reasoning_markup
@@ -32,10 +33,13 @@ from ksadk.conversations.runtime_metadata import _update_session_metadata_after_
 from ksadk.conversations.runtime_observability import (
     _conversation_span_scope,
     _normalize_usage_payload,
+    _set_context_plan_attributes,
     _set_conversation_input_attributes,
     _set_conversation_output_attributes,
     _set_conversation_span_attributes,
     _set_conversation_usage_attributes,
+    _set_prompt_cache_attributes,
+    _set_prompt_source_attributes,
     _span_feedback_metadata,
 )
 from ksadk.conversations.runtime_persistence import (
@@ -59,6 +63,42 @@ from ksadk.runtime_context import (
 from ksadk.sessions import resolve_session_service
 
 
+def _perf_monotonic() -> float:
+    return time.monotonic()
+
+
+def _record_baseline_turn(
+    *,
+    prepared: Any,
+    model: str | None,
+    usage: Mapping[str, Any] | None,
+    ptl: bool,
+    attempts: int,
+    turn_start_monotonic: float | None,
+) -> None:
+    """env-gated 旁路采集：未启用时 no-op，启用时记录一条 turn 基线。
+
+    只读 prepared.shadow_context_plan + usage + PTL/latency 信号，不进决策路径、不抛异常。
+    """
+    from ksadk.context_engine.baseline import record_baseline_turn
+
+    latency_ms = None
+    if turn_start_monotonic is not None:
+        latency_ms = int((time.monotonic() - turn_start_monotonic) * 1000)
+    record_baseline_turn(
+        getattr(prepared, "shadow_context_plan", None),
+        session_id=getattr(prepared, "session_id", ""),
+        invocation_id=getattr(prepared, "invocation_id", ""),
+        model=str(model or ""),
+        usage=usage,
+        compaction_triggered=bool(getattr(prepared, "compaction_triggered", False)),
+        compaction_trigger=str(getattr(prepared, "compaction_trigger", "") or ""),
+        prompt_too_long=ptl,
+        retry_attempts=attempts,
+        turn_latency_ms=latency_ms,
+    )
+
+
 async def invoke_conversation_once(
     *,
     runner: Any,
@@ -80,6 +120,9 @@ async def invoke_conversation_once(
     invocation_id: Optional[str] = None,
     session_service_provider: Callable[[], Any] | None = None,
     run_mode: str = RUN_MODE_FOREGROUND,
+    agent_system: str = "",
+    agent_task: str = "",
+    prompt_integration_mode: str = "",
 ) -> tuple[str, dict[str, Any]]:
     """非流式 turn 编排入口。
 
@@ -111,6 +154,11 @@ async def invoke_conversation_once(
             governance_state=governance,
             session_service_provider=provider,
             run_mode=entry_run_mode,
+            runner=runner,
+            runtime_type=_runner_type_name(runner),
+            agent_system=agent_system,
+            agent_task=agent_task,
+            prompt_integration_mode=prompt_integration_mode,
         )
         # prepared 之后的 run_status 写入复用 prepared 的 mode/trigger
         run_mode = prepared.run_mode
@@ -135,6 +183,7 @@ async def invoke_conversation_once(
         user_id=user_id,
         user_input=prepared.user_input,
     )
+    prepared.memory_recall_events = ambient_contexts.get("memory_recall_events", [])
     runtime_context = PlatformInvocationContext(
         agent_id=agent_id,
         user_id=user_id,
@@ -155,9 +204,7 @@ async def invoke_conversation_once(
         model_options=prepared.model_options,
         kb_context=ambient_contexts.get("kb_context"),
         memory_context=ambient_contexts.get("memory_context"),
-        tool_approval_mode=str(
-            prepared.request_metadata.get("tool_approval_mode") or ""
-        ),
+        tool_approval_mode=str(prepared.request_metadata.get("tool_approval_mode") or ""),
     )
     runner_name = _runner_name(runner)
     async with _conversation_span_scope(runner_name) as span:
@@ -172,7 +219,11 @@ async def invoke_conversation_once(
             response_id=response_id,
         )
         _set_conversation_input_attributes(span, prepared.user_input or prepared.user_display_input)
+        _set_context_plan_attributes(span, prepared.shadow_context_plan)
         trace_metadata = _span_feedback_metadata(span)
+        _baseline_turn_start = _perf_monotonic()
+        _baseline_ptl = False
+        _baseline_attempts = 0
         await append_run_status_event(
             session_id=prepared.session_id,
             author=runner_name,
@@ -218,6 +269,8 @@ async def invoke_conversation_once(
                 raise
             except Exception as exc:
                 if attempt == 0 and _is_prompt_too_long_error(exc):
+                    _baseline_ptl = True
+                    _baseline_attempts = attempt + 1
                     try:
                         checkpoint = await _compact_conversation_history_with_governance(
                             governance,
@@ -230,6 +283,16 @@ async def invoke_conversation_once(
                             trigger="prompt_too_long",
                             keep_tail_groups=PTL_RETRY_KEEP_TAIL_GROUPS,
                             session_service_provider=provider,
+                            # PR D1：PTL 路径仍 force=True（trigger_band=emergency），
+                            # 透传 ownership 便于未来按门控调 PTL 策略；当前行为等价。
+                            prompt_integration_mode=getattr(
+                                prepared, "prompt_integration_mode", ""
+                            ),
+                            compaction_owner=str(
+                                (getattr(prepared, "shadow_context_plan", None) or {}).get(
+                                    "compaction_owner", ""
+                                )
+                            ),
                         )
                     except RuntimeCircuitOpen as circuit_exc:
                         await append_run_status_event(
@@ -293,6 +356,21 @@ async def invoke_conversation_once(
         ) or (result_usage if result_usage else {})
         _set_conversation_output_attributes(span, output_text)
         _set_conversation_usage_attributes(span, result_usage)
+        _set_prompt_cache_attributes(
+            span,
+            session_id=prepared.session_id,
+            plan=prepared.shadow_context_plan,
+            usage=result_usage,
+        )
+        _set_prompt_source_attributes(span, getattr(prepared, "compiled_prompt", None))
+        _record_baseline_turn(
+            prepared=prepared,
+            model=model,
+            usage=result_usage,
+            ptl=_baseline_ptl,
+            attempts=_baseline_attempts,
+            turn_start_monotonic=_baseline_turn_start,
+        )
         result_agentengine_metadata = _extract_agentengine_metadata(result)
         assistant_metadata: dict[str, Any] = {
             **trace_metadata,

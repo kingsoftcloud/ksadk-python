@@ -198,6 +198,7 @@ def convert_tools(tools):
         else:
             t = t or {}
             import json as _json
+
             try:
                 unsupported.append(_json.dumps(t, ensure_ascii=False)[:300])
             except Exception:
@@ -243,6 +244,35 @@ def _convert_text_format(fmt):
     return None
 
 
+def _promote_additional_tools(body):
+    """Promote Codex Harness dynamic tool input items to Responses tools.
+
+    Codex 0.147 no longer always sends tool declarations in the top-level
+    ``tools`` field.  It can prepend one or more developer input items shaped
+    as ``{"type": "additional_tools", "tools": [...]}``.  Chat Completions
+    has no equivalent input item, so the proxy must merge those declarations
+    into the canonical Responses tool list before namespace flattening.
+    """
+
+    inp = body.get("input")
+    if not isinstance(inp, list):
+        return
+    promoted = []
+    retained = []
+    for item in inp:
+        if isinstance(item, dict) and item.get("type") == "additional_tools":
+            tools = item.get("tools")
+            if isinstance(tools, list):
+                promoted.extend(tool for tool in tools if isinstance(tool, dict))
+            continue
+        retained.append(item)
+    if not promoted:
+        return
+    existing = body.get("tools")
+    body["tools"] = (list(existing) if isinstance(existing, list) else []) + promoted
+    body["input"] = retained
+
+
 def responses_to_chat(body):
     """responses 请求 -> chat 请求;返回 (chat_req, restore_map)。
 
@@ -251,6 +281,7 @@ def responses_to_chat(body):
     """
     from .namespace import flatten_request_namespaces
 
+    _promote_additional_tools(body)
     restore_map = flatten_request_namespaces(body)
     out = {"model": body.get("model")}
     msgs = []

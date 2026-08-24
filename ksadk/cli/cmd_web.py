@@ -227,9 +227,14 @@ def configure_local_runtime_persistence(
 @click.command(context_settings=dict(help_option_names=["-h", "--help"]))
 @click.argument("agent_dir", default=".", type=click.Path(exists=True))
 @click.option("--port", "-p", default=8080, help="Web UI 端口")
+@click.option(
+    "--host",
+    default="127.0.0.1",
+    help="Web UI 绑定地址(容器部署用 0.0.0.0)",
+)
 @click.option("--model", help="指定模型名称 (覆盖 .env 配置)")
 @click.option("--no-open", is_flag=True, help="仅打印 URL，不自动打开浏览器")
-def web(agent_dir: str, port: int, model: str, no_open: bool):
+def web(agent_dir: str, port: int, host: str, model: str, no_open: bool):
     """启动本地统一 Web UI（Invoke UI）
 
     \b
@@ -249,6 +254,9 @@ def web(agent_dir: str, port: int, model: str, no_open: bool):
 
     agent_path = Path(agent_dir).resolve()
     command_args = ["web", str(agent_path), "--port", str(port)]
+    if host != "127.0.0.1":
+        # re-exec 进项目 venv 时透传非默认 host(容器/远端托管场景绑 0.0.0.0)
+        command_args.extend(["--host", host])
     if model:
         command_args.extend(["--model", model])
     if no_open:
@@ -357,7 +365,7 @@ def web(agent_dir: str, port: int, model: str, no_open: bool):
         webbrowser.open(launch_url)
 
     try:
-        uvicorn.run(runtime_app, host="127.0.0.1", port=port)
+        uvicorn.run(runtime_app, host=host, port=port)
     except KeyboardInterrupt:
         raise SystemExit(0)
     except Exception as e:

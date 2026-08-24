@@ -1,12 +1,15 @@
 import base64
 import importlib
+import json
 import logging
 import sys
 import types
 
 import pytest
+from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
+from opentelemetry.trace import SpanContext, TraceFlags
 
 
 @pytest.fixture(autouse=True)
@@ -547,6 +550,180 @@ def test_cloud_monitor_exporter_logs_export_result(monkeypatch, caplog):
     assert "CloudMonitor OTLP export started" in caplog.text
     assert "CloudMonitor OTLP export result" in caplog.text
     assert "spans=2" in caplog.text
+
+
+def test_cloud_monitor_transform_adds_compat_fields_without_mutating_source(monkeypatch):
+    _install_fake_otel(monkeypatch)
+    setup = _reload_setup(monkeypatch)
+    resource = Resource(
+        {
+            "service.name": "runtime-display-name",
+            "agentengine.account_id": "73398439",
+            "agentengine.agent_id": "ar-20260818101245-a45271df",
+            "agentengine.framework": "langgraph",
+            "agentengine.langfuse_project_id": "ar20260818101245a45271df",
+            "agentengine.region": "cn-beijing-6",
+        }
+    )
+    root_context = SpanContext(1, 1, False, TraceFlags(1))
+    child_context = SpanContext(1, 2, False, TraceFlags(1))
+    root = ReadableSpan(
+        "root",
+        context=root_context,
+        resource=resource,
+        attributes={
+            "gen_ai.agentengine.account_id": "span-value-must-win",
+            "langfuse.trace.name": "demo-agent",
+            "langfuse.trace.input": "hello",
+            "langfuse.trace.output": "world",
+            "langfuse.observation.input": "hello",
+            "langfuse.observation.output": "world",
+            "langfuse.session.id": "session-1",
+            "session.id": "session-1",
+            "langfuse.user.id": "user-1",
+            "langfuse.observation.type": "agent",
+            "gen_ai.system": "openai",
+            "gen_ai.request.model": "root-model",
+        },
+    )
+    child = ReadableSpan(
+        "llm",
+        context=child_context,
+        parent=root_context,
+        resource=resource,
+        attributes={
+            "openinference.span.kind": "LLM",
+            "gen_ai.system": "openai",
+            "gen_ai.request.model": "gpt-4o",
+            "llm.token_count.prompt": 100,
+            "llm.token_count.completion": 50,
+            "llm.usage.total_tokens": 150,
+            "llm.usage.cache_read.input_tokens": 20,
+            "llm.usage.reasoning_tokens": 25,
+        },
+    )
+
+    transformed = setup._prepare_cloud_monitor_spans([root, child])
+
+    transformed_root, transformed_child = transformed
+    assert transformed_root.context is root.context
+    assert transformed_child.context is child.context
+    assert transformed_child.parent is root.context
+    assert (
+        transformed_root.resource.attributes["service.name"]
+        == resource.attributes["agentengine.agent_id"]
+    )
+    assert transformed_root.resource.attributes["agentengine.account_id"] == "73398439"
+    for key in (
+        "agentengine.account_id",
+        "agentengine.agent_id",
+        "agentengine.framework",
+        "agentengine.langfuse_project_id",
+        "agentengine.region",
+    ):
+        span_key = f"gen_ai.{key}"
+        assert transformed_root.attributes[span_key] == (
+            "span-value-must-win" if key == "agentengine.account_id" else resource.attributes[key]
+        )
+        assert transformed_child.attributes[span_key] == resource.attributes[key]
+        assert key not in transformed_root.attributes
+        assert key not in transformed_child.attributes
+    assert (
+        transformed_root.attributes["gen_ai.agentengine.agent_name"]
+        == resource.attributes["service.name"]
+    )
+    assert (
+        transformed_child.attributes["gen_ai.agentengine.agent_name"]
+        == resource.attributes["service.name"]
+    )
+    for key in (
+        "langfuse.trace.name",
+        "langfuse.trace.input",
+        "langfuse.trace.output",
+        "langfuse.observation.input",
+        "langfuse.observation.output",
+        "langfuse.session.id",
+        "langfuse.user.id",
+    ):
+        assert transformed_root.attributes[key] == root.attributes[key]
+    assert transformed_root.attributes["gen_ai.usage.input_tokens"] == 100
+    assert transformed_root.attributes["gen_ai.usage.output_tokens"] == 50
+    assert transformed_root.attributes["gen_ai.usage.total_tokens"] == 150
+    assert transformed_child.attributes["gen_ai.usage.total_tokens"] == 150
+    assert transformed_root.attributes["gen_ai.usage.cache_read.input_tokens"] == 20
+    assert transformed_root.attributes["gen_ai.usage.reasoning.output_tokens"] == 25
+    assert transformed_root.attributes["langfuse.observation.type"] == "agent"
+    assert transformed_child.attributes["langfuse.observation.type"] == "generation"
+    assert transformed_child.attributes["session.id"] == "session-1"
+    for transformed_span, expected_model in (
+        (transformed_root, "root-model"),
+        (transformed_child, "gpt-4o"),
+    ):
+        assert transformed_span.attributes["langfuse.observation.metadata.ls_provider"] == "openai"
+        assert transformed_span.attributes["langfuse.observation.model.name"] == expected_model
+        assert (
+            transformed_span.attributes["langfuse.observation.metadata.ls_model_name"]
+            == expected_model
+        )
+        usage_details = json.loads(
+            transformed_span.attributes["langfuse.observation.usage_details"]
+        )
+        assert usage_details == {
+            "input": 100,
+            "output": 50,
+            "total": 150,
+            "input_cache_read": 20,
+        }
+    assert root.resource.attributes["service.name"] == "runtime-display-name"
+    assert root.attributes["gen_ai.agentengine.account_id"] == "span-value-must-win"
+    assert "gen_ai.agentengine.agent_id" not in root.attributes
+    assert "gen_ai.agentengine.agent_name" not in root.attributes
+    assert "langfuse.observation.model.name" not in root.attributes
+    assert "gen_ai.usage.input_tokens" not in root.attributes
+
+
+def test_dual_exporters_transform_only_cloud_monitor(monkeypatch):
+    trace_api = _install_fake_otel(monkeypatch)
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "https://primary.example.com")
+    monkeypatch.setenv("CLOUD_MONITOR_OTLP_ENDPOINT", "https://secondary.example.com")
+    monkeypatch.setenv("CLOUD_MONITOR_OTLP_HEADERS", "Ksc-Appkey=platform")
+    setup = _reload_setup(monkeypatch)
+    setup.setup_tracing(enable_inmemory=False, enable_adk_instrumentation=False)
+    resource = Resource(
+        {
+            "service.name": "runtime-display-name",
+            "agentengine.agent_id": "ar-dual-export",
+            "agentengine.region": "cn-beijing-6",
+        }
+    )
+    context = SpanContext(123, 456, False, TraceFlags(1))
+    source = ReadableSpan(
+        "known-span",
+        context=context,
+        resource=resource,
+        attributes={"langfuse.trace.input": "hello"},
+    )
+
+    generic_exporter, cloud_monitor_exporter = [
+        processor.exporter for processor in trace_api.provider.processors
+    ]
+    generic_exporter.export([source])
+    cloud_monitor_exporter.export([source])
+
+    generic_span = _FakeHttpOTLPSpanExporter.instances[0].exported_spans[0]
+    cloud_monitor_span = _FakeHttpOTLPSpanExporter.instances[1].exported_spans[0]
+    assert generic_span is source
+    assert generic_span.resource.attributes["service.name"] == "runtime-display-name"
+    assert "agentengine.agent_id" not in generic_span.attributes
+    assert cloud_monitor_span is not source
+    assert cloud_monitor_span.context is generic_span.context
+    assert cloud_monitor_span.context.trace_id == generic_span.context.trace_id == 123
+    assert cloud_monitor_span.context.span_id == generic_span.context.span_id == 456
+    assert cloud_monitor_span.resource.attributes["service.name"] == "ar-dual-export"
+    assert cloud_monitor_span.attributes["gen_ai.agentengine.agent_id"] == "ar-dual-export"
+    assert cloud_monitor_span.attributes["gen_ai.agentengine.region"] == "cn-beijing-6"
+    assert cloud_monitor_span.attributes["langfuse.observation.type"] == "span"
+    assert cloud_monitor_span.attributes["langfuse.trace.input"] == "hello"
 
 
 def test_shutdown_flushes_and_stops_every_managed_processor(monkeypatch):

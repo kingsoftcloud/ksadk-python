@@ -93,7 +93,15 @@ class _ResponseCollector:
             self.context_id = update.context_id or self.context_id
             text = _parts_text(update.artifact.parts)
             if text:
-                self.artifact_chunks.append(text)
+                # canonical executor 的 replace 快照带 ksadk_output_snapshot 标记,
+                # 是权威全文;命中时重置而非继续拼接,避免 delta+快照翻倍。
+                if any(
+                    dict(part.metadata or {}).get("ksadk_output_snapshot")
+                    for part in update.artifact.parts
+                ):
+                    self.artifact_chunks = [text]
+                else:
+                    self.artifact_chunks.append(text)
 
         if response.message:
             self.task_id = response.message.task_id or self.task_id

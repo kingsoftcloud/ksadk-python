@@ -64,6 +64,10 @@ _PATH_EMBEDDED_OPTION_HINTS = (
 DEFAULT_PRIVATE_LINK_EXPIRES_SECONDS = 24 * 60 * 60
 MAX_PRIVATE_LINK_EXPIRES_SECONDS = 365 * 24 * 60 * 60
 DEFAULT_REGION = "cn-beijing-6"
+# Hosted UI is the shared interaction surface for platform-managed Agents.
+# The access link keeps the user/session/Agent binding while this path keeps
+# the Web release independent from the Agent runtime image.
+HOSTED_INTERACTION_UI_PATH = "/hosted-ui/chat"
 
 DASHBOARD_RESOURCE = ResourceDescriptor(
     name="Dashboard",
@@ -528,7 +532,17 @@ def _open_dashboard(
     )
     normalized_path = _normalize_ui_path(resolved_ui.path or "/")
     custom_ui_enabled = str(resolved_ui.profile or "").strip().lower() == "custom"
-    link_path = normalized_path if ui_path is not None or custom_ui_enabled else None
+    # Hermes owns its own dashboard surface and OpenClaw takes its gateway
+    # branch below.  The shared Hosted UI is the default only for the generic
+    # ADK/LangChain-compatible profiles; an explicit/custom path always wins.
+    use_hosted_interaction_ui = resolved_ui.profile in {"adk", "langchain"}
+    link_path = (
+        normalized_path
+        if ui_path is not None or custom_ui_enabled
+        else HOSTED_INTERACTION_UI_PATH
+        if use_hosted_interaction_ui
+        else None
+    )
     base_url = _build_base_ui_url(endpoint, normalized_path)
 
     if direct:

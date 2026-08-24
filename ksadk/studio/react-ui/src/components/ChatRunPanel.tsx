@@ -4,6 +4,7 @@ import {
   ArrowRight,
   BrainCircuit,
   CheckCircle2,
+  ChevronDown,
   Clock3,
   Coins,
   Cpu,
@@ -63,6 +64,85 @@ interface WaterfallSpan extends Span {
   depth: number;
 }
 
+interface ContextEvidence {
+  plannedInputTokens?: number | null;
+  projectedInputTokens?: number | null;
+  tokensByKind?: Record<string, number>;
+  decisions?: Array<{ decision?: string; kind?: string; reason?: string }>;
+}
+
+interface PromptEvidence {
+  sectionCount?: number | null;
+  tokensBySection?: Record<string, number>;
+}
+
+interface PromptReveal {
+  available: boolean;
+  reason?: string;
+  sections?: Array<{ id: string; source?: string; content: string }>;
+}
+
+export interface MemoryRecallPresentation {
+  status: "used" | "recalled" | "empty" | "failed" | "unused";
+  title: string;
+  description: string;
+}
+
+/**
+ * 长期记忆的用户可见状态以 Runtime 真实事件为准。
+ * Native Runner 的 ContextPlan 只代表平台投影，可能不会精确回填 recalled_memory token。
+ */
+export function resolveMemoryRecallPresentation(
+  events: RunEvent[],
+  recalledMemoryTokens?: number | null,
+): MemoryRecallPresentation {
+  const recallEvents = events.filter(event => event.type.startsWith("memory.recall."));
+  const projected = [...recallEvents].reverse().find(event => event.type === "memory.recall.projected");
+  if (projected) {
+    const count = Number(projected.data?.candidate_count ?? projected.data?.count ?? 0);
+    return {
+      status: "used",
+      title: "已提供长期记忆",
+      description: count > 0 ? `${count} 条相关记忆已交付本次运行` : "相关记忆已交付本次运行",
+    };
+  }
+  const completed = [...recallEvents].reverse().find(event => event.type === "memory.recall.completed");
+  if (completed) {
+    const count = Number(completed.data?.candidate_count ?? completed.data?.count ?? 0);
+    return {
+      status: "recalled",
+      title: "已召回长期记忆",
+      description: count > 0 ? `已找到 ${count} 条，但未确认交付 Runner` : "已找到相关记忆，但未确认交付 Runner",
+    };
+  }
+  if (recallEvents.some(event => event.type === "memory.recall.failed")) {
+    return {
+      status: "failed",
+      title: "长期记忆召回失败",
+      description: "本次未能读取长期记忆，可在 Trace 中查看原因",
+    };
+  }
+  if (recallEvents.some(event => event.type === "memory.recall.empty")) {
+    return {
+      status: "empty",
+      title: "未使用长期记忆",
+      description: "未找到与当前问题相关的记忆",
+    };
+  }
+  if (Number(recalledMemoryTokens || 0) > 0) {
+    return {
+      status: "used",
+      title: "已纳入长期记忆",
+      description: "相关记忆已纳入本次上下文",
+    };
+  }
+  return {
+    status: "unused",
+    title: "未使用长期记忆",
+    description: "本次回答未选入长期记忆",
+  };
+}
+
 function fmtDuration(ms?: number | null): string {
   if (!Number.isFinite(ms) || Number(ms) < 0) return "未上报";
   if (Number(ms) < 1000) return `${Math.round(Number(ms))}ms`;
@@ -71,6 +151,30 @@ function fmtDuration(ms?: number | null): string {
 
 function fmtTokens(value?: number): string {
   return Number.isFinite(value) ? Number(value).toLocaleString() : "未上报";
+}
+
+function promptSectionLabel(section: string): string {
+  const labels: Record<string, string> = {
+    platform_safety: "平台安全规则",
+    agent_identity: "角色定义",
+    agent_policy: "任务规则",
+    runtime_capabilities: "运行时能力说明",
+    resource_manifest: "工具与 Skill 说明",
+    request_instructions: "本次请求指令",
+  };
+  return labels[section] || section;
+}
+
+function promptSectionSourceLabel(section: string): string {
+  const labels: Record<string, string> = {
+    platform_safety: "平台策略",
+    agent_identity: "Agent Revision",
+    agent_policy: "Agent Revision",
+    runtime_capabilities: "Runtime Adapter",
+    resource_manifest: "构建资源清单",
+    request_instructions: "本次请求",
+  };
+  return labels[section] || "Prompt Compiler";
 }
 
 function shortId(id: string): string {
@@ -147,6 +251,10 @@ export function ChatRunPanel({ agentId, onOpenTrace, onClose }: { agentId: strin
   const [latest, setLatest] = useState<RunRecord | null>(null);
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [spans, setSpans] = useState<Span[]>([]);
+  const [contextEvidence, setContextEvidence] = useState<ContextEvidence | null>(null);
+  const [promptEvidence, setPromptEvidence] = useState<PromptEvidence | null>(null);
+  const [promptReveal, setPromptReveal] = useState<PromptReveal | null>(null);
+  const [promptRevealLoading, setPromptRevealLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [refreshKey, setRefreshKey] = useState(0);
 
@@ -165,15 +273,21 @@ export function ChatRunPanel({ agentId, onOpenTrace, onClose }: { agentId: strin
         if (!current) {
           setEvents([]);
           setSpans([]);
+          setContextEvidence(null);
+          setPromptEvidence(null);
           return;
         }
-        const [nextEvents, trace] = await Promise.all([
+        const [nextEvents, trace, context, prompt] = await Promise.all([
           loadEvents(current.id),
           apiFetch(`/api/v1/traces/${encodeURIComponent(current.traceId)}`).then(response => response.ok ? response.json() : null).catch(() => null),
+          apiFetch(`/api/v1/runs/${encodeURIComponent(current.id)}/context`).then(response => response.ok ? response.json() : null).catch(() => null),
+          apiFetch(`/api/v1/runs/${encodeURIComponent(current.id)}/prompt`).then(response => response.ok ? response.json() : null).catch(() => null),
         ]);
         if (!cancelled && currentRequest === requestId) {
           setEvents(nextEvents);
           setSpans(trace?.spans || []);
+          setContextEvidence(context);
+          setPromptEvidence(prompt);
         }
       } catch {
         // Inspector 是增强视图，保留上次可用数据，避免遮断会话。
@@ -191,11 +305,50 @@ export function ChatRunPanel({ agentId, onOpenTrace, onClose }: { agentId: strin
     };
   }, [agentId, refreshKey]);
 
+  useEffect(() => {
+    setPromptReveal(null);
+    setPromptRevealLoading(false);
+  }, [latest?.id]);
+
+  async function revealPrompt(runId: string) {
+    if (promptReveal || promptRevealLoading) return;
+    setPromptRevealLoading(true);
+    try {
+      const response = await apiFetch(`/api/v1/runs/${encodeURIComponent(runId)}/prompt?include_content=true`);
+      const payload = response.ok ? await response.json() : null;
+      setPromptReveal(payload?.reveal || { available: false, reason: "Prompt 详情读取失败。" });
+    } catch {
+      setPromptReveal({ available: false, reason: "Prompt 详情读取失败。" });
+    } finally {
+      setPromptRevealLoading(false);
+    }
+  }
+
   const running = latest?.status === "RUNNING" || latest?.status === "CREATED";
   const failed = latest ? /fail|error|interrupt|timed/i.test(latest.status) : false;
   const timeline = useMemo(() => projectRunInspectorTimeline(events), [events]);
   const waterfall = useMemo(() => waterfallLayout(spans), [spans]);
   const usageReported = latest?.usage?.reported === true;
+  const decisions = contextEvidence?.decisions || [];
+  const hasRunEvidence = Boolean(contextEvidence || promptEvidence || usageReported);
+  const contextStatus = decisions.some(item => item.decision === "dropped")
+    ? "部分内容已舍弃"
+    : decisions.some(item => item.decision === "compressed")
+      ? "已自动压缩"
+      : decisions.some(item => item.decision === "replaced")
+        ? "部分内容已替换"
+      : hasRunEvidence
+        ? "正常"
+        : "等待证据";
+  const promptSectionNames = Object.keys(promptEvidence?.tokensBySection || {}).map(promptSectionLabel);
+  const recalledMemoryTokens = contextEvidence?.tokensByKind?.recalled_memory;
+  const memoryRecall = useMemo(
+    () => resolveMemoryRecallPresentation(events, recalledMemoryTokens),
+    [events, recalledMemoryTokens],
+  );
+  const contextAdjusted = Number.isFinite(contextEvidence?.plannedInputTokens)
+    && Number.isFinite(contextEvidence?.projectedInputTokens)
+    && Number(contextEvidence?.plannedInputTokens) !== Number(contextEvidence?.projectedInputTokens);
 
   return (
     <aside className="chat-run-panel" aria-label="运行检查器">
@@ -246,6 +399,54 @@ export function ChatRunPanel({ agentId, onOpenTrace, onClose }: { agentId: strin
                 <div><MessageSquare size={13} /><span>输入 / 输出</span><strong>{usageReported ? `${fmtTokens(latest.usage?.inputTokens)} / ${fmtTokens(latest.usage?.outputTokens)}` : "未上报"}</strong></div>
                 <div><GitBranch size={13} /><span>Span</span><strong>{spans.length || "—"}</strong></div>
               </div>
+            </section>
+
+            <section className="chat-run-section pcm-run-summary">
+              <div className="chat-run-section-title"><span>运行解释</span><small>{contextStatus}</small></div>
+              <div className={`pcm-run-health ${contextStatus === "正常" ? "healthy" : contextStatus === "等待证据" ? "pending" : "adjusted"}`}>
+                {contextStatus === "正常" ? <CheckCircle2 size={16} /> : <Gauge size={16} />}
+                <div>
+                  <strong>{contextStatus === "正常" ? "本次运行依据已正常准备" : contextStatus}</strong>
+                  <span>{contextEvidence
+                    ? "规则、相关记忆和当前问题已按策略处理"
+                    : promptEvidence && usageReported
+                      ? "规则证据与模型用量已记录；Runner 内部上下文由框架管理"
+                      : "正在收集本次运行依据"}</span>
+                </div>
+              </div>
+
+              <div className="pcm-run-signal-list">
+                <details className="pcm-run-signal" onToggle={event => {
+                  if (event.currentTarget.open) void revealPrompt(latest.id);
+                }}>
+                  <summary>
+                    <CheckCircle2 size={14} />
+                    <div><strong>规则已应用</strong><span>{promptSectionNames.length ? promptSectionNames.join(" · ") : promptEvidence?.sectionCount ? `${promptEvidence.sectionCount} 个规则来源` : "本次未提供规则来源证据"}</span></div>
+                    <ChevronDown className="pcm-run-signal-chevron" size={14} />
+                  </summary>
+                  <div className="pcm-run-signal-details">
+                    {promptRevealLoading ? <p>正在按本次不可变 Build 校验并读取 Prompt…</p>
+                      : promptReveal?.available && promptReveal.sections?.length ? promptReveal.sections.map(section => (
+                        <div className="pcm-run-prompt-section" key={section.id}>
+                          <span><strong>{promptSectionLabel(section.id)}</strong><small>来源：{promptSectionSourceLabel(section.id)}</small></span>
+                          <pre>{section.content}</pre>
+                        </div>
+                      )) : <p>{promptReveal?.reason || "展开后按需读取 Prompt 正文；正文不会写入 Trace。"}</p>}
+                  </div>
+                </details>
+                <div className={`pcm-run-signal-static ${memoryRecall.status === "failed" ? "attention" : ""}`}>
+                  <BrainCircuit size={14} />
+                  <div><strong>{memoryRecall.title}</strong><span>{memoryRecall.description}</span></div>
+                </div>
+                <div className={`pcm-run-signal-static ${contextStatus !== "正常" && contextStatus !== "等待证据" ? "attention" : ""}`}>
+                  <Gauge size={14} />
+                  <div>
+                    <strong>{contextAdjusted ? "上下文已按预算调整" : decisions.some(item => item.decision === "compressed" || item.decision === "dropped" || item.decision === "replaced") ? contextStatus : "上下文无需压缩"}</strong>
+                    <span>{contextAdjusted ? "关键规则与当前问题已优先保留" : "未检测到压缩、替换或舍弃"}</span>
+                  </div>
+                </div>
+              </div>
+
             </section>
 
             <section className="chat-run-section">

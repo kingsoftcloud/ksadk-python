@@ -7,18 +7,12 @@ describe("RuntimeModeBar", () => {
   test("shows a running goal with its start time and controls", async () => {
     const pause = vi.fn();
     const stop = vi.fn();
-    const startedAt = "2026-08-11T00:20:00+08:00";
-    const expectedStart = new Intl.DateTimeFormat("zh-CN", {
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: false,
-    }).format(new Date(startedAt));
     render(
       <RuntimeModeBar
         mode="goal"
         status="running"
         objective="完成 Studio 交互重构"
-        startedAt={startedAt}
+        startedAt="2026-08-11T00:20:00+08:00"
         now={new Date("2026-08-11T00:22:03+08:00").getTime()}
         onPause={pause}
         onStop={stop}
@@ -27,7 +21,7 @@ describe("RuntimeModeBar", () => {
 
     expect(screen.getByTestId("runtime-mode-bar")).toHaveTextContent("目标执行中");
     expect(screen.getByTestId("runtime-mode-bar")).toHaveTextContent("完成 Studio 交互重构");
-    expect(screen.getByTestId("runtime-mode-bar")).toHaveTextContent(`${expectedStart} 启动`);
+    expect(screen.getByTestId("runtime-mode-bar")).toHaveTextContent("00:20 启动");
     expect(screen.getByTestId("runtime-mode-bar")).toHaveTextContent("2分 3秒");
     await userEvent.click(screen.getByRole("button", { name: "暂停目标" }));
     await userEvent.click(screen.getByRole("button", { name: "结束目标" }));

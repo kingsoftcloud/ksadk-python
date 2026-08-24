@@ -1,31 +1,22 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   Bot,
   BrainCircuit,
-  Check,
   ChevronDown,
-  FileText,
-  Hand,
-  ListTodo,
   Loader2,
   MessageSquarePlus,
   Pause,
   Play,
   Send,
   ShieldAlert,
-  ShieldCheck,
   Terminal,
   Trash2,
   Wrench,
-  X,
 } from "lucide-react";
 import { apiFetch } from "../api";
 import {
-  APPROVAL_MODES,
-  approvalModeOption,
   approvalModeStorageKey,
   normalizeApprovalMode,
   type ApprovalMode,
@@ -44,6 +35,7 @@ import {
   latestReportedInputTokens,
   type ChatRun,
   type ChatStreamState,
+  type A2UISurface,
   type RunActivity,
   type RunEvent,
 } from "../chatProtocol";
@@ -55,17 +47,20 @@ import {
   buildResponsesInput,
   encodedComposerAttachmentsBytes,
   fileToComposerAttachment,
-  formatAttachmentSize,
   MAX_COMPOSER_ATTACHMENT_BYTES,
   MAX_COMPOSER_ATTACHMENTS,
   parseComposerSubmission,
-  visibleComposerCommands,
   type CollaborationMode,
   type ComposerAttachment,
   type ComposerCommand,
 } from "../composerActions";
-import { ComposerActionMenu, ComposerCommandMenu } from "./ComposerActionMenu";
+import {
+  ChatComposer,
+  type ComposerModelOption,
+  type ReasoningEffort,
+} from "./ChatComposer";
 import { RuntimeModeBar, type RuntimeMode, type RuntimeModeStatus } from "./RuntimeModeBar";
+import { redactTechnicalError, runErrorCopy } from "../utils/chatErrors";
 
 interface ChatModel {
   id: string;
@@ -73,83 +68,26 @@ interface ChatModel {
   displayName?: string;
   context_window_tokens?: number;
   contextWindowTokens?: number;
+  capabilities?: Record<string, unknown>;
 }
 
 interface ChatWorkspaceProps {
   agentId: string;
   agentName: string;
   agentAppearance?: AgentAppearance;
+  active?: boolean;
+  refreshTick?: number;
   onRunChanged?: () => void;
+  onConfigureAgent?: () => void;
+  onOpenSettings?: () => void;
 }
 
-function ApprovalModeMenu({
-  value,
-  onChange,
-}: {
-  value: ApprovalMode;
-  onChange: (value: ApprovalMode) => void;
-}) {
-  const selected = approvalModeOption(value);
-  const icon = value === "ask"
-    ? <Hand size={15} />
-    : value === "full"
-      ? <ShieldAlert size={15} />
-      : <ShieldCheck size={15} />;
-  return (
-    <DropdownMenu.Root>
-      <DropdownMenu.Trigger asChild>
-        <button
-          className={`chat-approval-trigger ${value}`}
-          type="button"
-          aria-label={`批准模式：${selected.label}`}
-          title={`${selected.label}；下一轮生效`}
-        >
-          {icon}
-          <span>{selected.compactLabel}</span>
-          <ChevronDown size={13} />
-        </button>
-      </DropdownMenu.Trigger>
-      <DropdownMenu.Portal>
-        <DropdownMenu.Content
-          className="chat-approval-menu"
-          side="top"
-          sideOffset={9}
-          align="start"
-          collisionPadding={12}
-        >
-          <div className="chat-approval-menu-heading">
-            <strong>如何批准 Agent 操作？</strong>
-            <span>下一轮生效</span>
-          </div>
-          <DropdownMenu.RadioGroup
-            value={value}
-            onValueChange={next => onChange(normalizeApprovalMode(next))}
-          >
-            {APPROVAL_MODES.map(option => (
-              <DropdownMenu.RadioItem
-                key={option.value}
-                value={option.value}
-                className={`chat-approval-option ${option.value}`}
-              >
-                <span className="chat-approval-option-icon">
-                  {option.value === "ask" ? <Hand size={17} />
-                    : option.value === "full" ? <ShieldAlert size={17} />
-                      : <ShieldCheck size={17} />}
-                </span>
-                <span className="chat-approval-option-copy">
-                  <strong>{option.label}</strong>
-                  <small>{option.description}</small>
-                </span>
-                <DropdownMenu.ItemIndicator className="chat-approval-indicator">
-                  <Check size={16} />
-                </DropdownMenu.ItemIndicator>
-              </DropdownMenu.RadioItem>
-            ))}
-          </DropdownMenu.RadioGroup>
-        </DropdownMenu.Content>
-      </DropdownMenu.Portal>
-    </DropdownMenu.Root>
-  );
+function explicitReasoningEfforts(model?: ChatModel): ReasoningEffort[] {
+  const raw = model?.capabilities?.reasoning_efforts;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((value): value is ReasoningEffort => (
+    value === "low" || value === "medium" || value === "high"
+  ));
 }
 
 function ContextRing({
@@ -186,59 +124,6 @@ function ContextRing({
         <small>{tooltip.detail}</small>
       </span>
     </span>
-  );
-}
-
-function ModelMenu({
-  models,
-  value,
-  disabled,
-  onChange,
-}: {
-  models: ChatModel[];
-  value: string;
-  disabled: boolean;
-  onChange: (value: string) => void;
-}) {
-  const selected = models.find(item => item.id === value);
-  const label = selected?.display_name || selected?.displayName || selected?.id || "默认模型";
-  return (
-    <DropdownMenu.Root>
-      <DropdownMenu.Trigger asChild>
-        <button
-          className="chat-model-trigger"
-          type="button"
-          disabled={disabled}
-          aria-label={`选择模型，当前 ${label}`}
-          title="切换模型；下一轮生效"
-        >
-          <span>{label}</span>
-          <ChevronDown size={13} />
-        </button>
-      </DropdownMenu.Trigger>
-      <DropdownMenu.Portal>
-        <DropdownMenu.Content
-          className="chat-model-menu"
-          side="top"
-          sideOffset={9}
-          align="end"
-          collisionPadding={12}
-        >
-          <div className="chat-model-menu-heading">选择下一轮使用的模型</div>
-          <DropdownMenu.RadioGroup value={value} onValueChange={onChange}>
-            {models.map(item => {
-              const itemLabel = item.display_name || item.displayName || item.id;
-              return (
-                <DropdownMenu.RadioItem key={item.id} value={item.id} className="chat-model-option">
-                  <span>{itemLabel}</span>
-                  <DropdownMenu.ItemIndicator><Check size={15} /></DropdownMenu.ItemIndicator>
-                </DropdownMenu.RadioItem>
-              );
-            })}
-          </DropdownMenu.RadioGroup>
-        </DropdownMenu.Content>
-      </DropdownMenu.Portal>
-    </DropdownMenu.Root>
   );
 }
 
@@ -285,6 +170,42 @@ async function responseError(response: Response): Promise<string> {
     || `请求失败（HTTP ${response.status}）`;
 }
 
+function RunErrorCard({
+  error,
+  onConfigure,
+  onOpenSettings,
+  onRetry,
+}: {
+  error: string;
+  onConfigure?: () => void;
+  onOpenSettings?: () => void;
+  onRetry?: () => void;
+}) {
+  const copy = runErrorCopy(error);
+  const configure = copy.recoverable === "credential" ? onOpenSettings : onConfigure;
+  return (
+    <div className="chat-run-error" role="alert">
+      <span className="chat-run-error-icon"><ShieldAlert size={17} /></span>
+      <div className="chat-run-error-copy">
+        <strong>{copy.title}</strong>
+        <p>{copy.message}</p>
+        <div className="chat-run-error-actions">
+          {copy.recoverable !== "retry" && configure && (
+            <button className="button secondary small" type="button" onClick={configure}>
+              {copy.recoverable === "credential" ? "配置凭证" : "配置 Agent"}
+            </button>
+          )}
+          {onRetry && <button className="button secondary small" type="button" onClick={onRetry}>重新运行</button>}
+        </div>
+        <details className="chat-run-error-detail">
+          <summary>技术详情</summary>
+          <pre>{redactTechnicalError(error)}</pre>
+        </details>
+      </div>
+    </div>
+  );
+}
+
 function activityIcon(kind: RunActivity["kind"]) {
   if (kind === "command") return <Terminal size={14} />;
   if (kind === "approval") return <ShieldAlert size={14} />;
@@ -322,7 +243,7 @@ function ProcessingGroup({
     : activities.length > 0 ? `已处理 ${activities.length} 次工具调用`
       : "查看思考过程";
   return (
-    <details className="chat-processing-group">
+    <details className="chat-processing-group" open={streaming} data-ui="think">
       <summary>
         <BrainCircuit size={15} className="chat-processing-icon" />
         <span>{title}</span>
@@ -365,6 +286,75 @@ function ActivityCard({ activity }: { activity: RunActivity }) {
       </summary>
       <pre>{activity.detail || JSON.stringify(activity.data, null, 2)}</pre>
     </details>
+  );
+}
+
+/** Pending interactions belong immediately above the blocked composer. */
+function ComposerInteractionTray({
+  surfaces,
+  onInteraction,
+}: {
+  surfaces: A2UISurface[];
+  onInteraction: (interactionId: string, name: string, data: Record<string, unknown>) => Promise<void>;
+}) {
+  const pending = surfaces.filter(surface => surface.interaction?.status === "pending");
+  if (!pending.length) return null;
+  return (
+    <div className="chat-pending-interactions" aria-label="待处理确认" data-ui="interaction-tray">
+      <div className="chat-pending-interactions-heading">
+        <ShieldAlert size={16} />
+        <strong>等待你的确认</strong>
+        <span>处理后将继续当前对话</span>
+      </div>
+      {pending.map(surface => (
+        <A2UIRenderer key={surface.id} surface={surface} onSubmit={onInteraction} />
+      ))}
+    </div>
+  );
+}
+
+function PersistedInteractionTray({
+  runId,
+  status,
+  onInteraction,
+}: {
+  runId: string;
+  status?: string;
+  onInteraction: (runId: string, interactionId: string, name: string, data: Record<string, unknown>) => Promise<void>;
+}) {
+  const [events, setEvents] = useState<RunEvent[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      try {
+        const response = await apiFetch(`/api/v1/runs/${encodeURIComponent(runId)}/events`);
+        if (!response.ok) return;
+        const parsed: RunEvent[] = [];
+        const parser = createResponseSseParser(event => {
+          const { type, ...data } = event;
+          parsed.push({ id: parsed.length + 1, type, data });
+        });
+        parser.push(await response.text());
+        parser.finish();
+        if (!cancelled) setEvents(parsed);
+      } catch {
+        // Never invent an action if the enhanced event feed is unavailable.
+      }
+    }
+    void load();
+    const timer = status === "WAITING_INPUT" ? window.setInterval(load, 500) : null;
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearInterval(timer);
+    };
+  }, [runId, status]);
+
+  return (
+    <ComposerInteractionTray
+      surfaces={projectA2UISurfaces(events)}
+      onInteraction={(interactionId, name, data) => onInteraction(runId, interactionId, name, data)}
+    />
   );
 }
 
@@ -412,6 +402,7 @@ function RunActivityCards({
 
   const projection = useMemo(() => projectRunActivities(events), [events]);
   const surfaces = useMemo(() => projectA2UISurfaces(events), [events]);
+  const inlineSurfaces = surfaces.filter(surface => surface.interaction?.status !== "pending");
   if (!loaded && ["RUNNING", "PAUSED", "WAITING_INPUT"].includes(String(status))) {
     return <div className="chat-activity-loading"><Loader2 size={13} className="animate-spin" /> 正在读取运行事件</div>;
   }
@@ -423,7 +414,7 @@ function RunActivityCards({
   return (
     <>
       <ProcessingGroup reasoning={projection.reasoning} activities={projection.activities} streaming={status === "RUNNING"} />
-      {surfaces.map(surface => (
+      {inlineSurfaces.map(surface => (
         <A2UIRenderer
           key={surface.id}
           surface={surface}
@@ -456,11 +447,17 @@ function PersistedTurn({
   agentName,
   agentAppearance,
   onInteraction,
+  onConfigure,
+  onOpenSettings,
+  onRetry,
 }: {
   run: ChatRun;
   agentName: string;
   agentAppearance?: AgentAppearance;
   onInteraction: (runId: string, interactionId: string, name: string, data: Record<string, unknown>) => Promise<void>;
+  onConfigure?: () => void;
+  onOpenSettings?: () => void;
+  onRetry: (prompt: string) => void;
 }) {
   const failed = run.status && !["COMPLETED", "RUNNING", "PAUSED", "WAITING_INPUT"].includes(run.status);
   const assistantText = run.output
@@ -468,11 +465,11 @@ function PersistedTurn({
     || (failed ? `运行状态：${run.status}` : "");
   return (
     <>
-      <article className="message user">
+      <article className="message user" data-ui="bubble" data-role="user">
         <div className="message-meta"><strong>你</strong><span>{formatMessageTime(run.startedAt)}</span></div>
         <div className="message-content"><span className="plain-message">{run.input}</span></div>
       </article>
-      <article className={`message assistant${failed ? " error" : ""}`}>
+      <article className={`message assistant${failed ? " error" : ""}`} data-ui="bubble" data-role="assistant">
         <div className="message-meta">
           <AgentAvatar name={agentName} appearance={agentAppearance} size="xs" />
           <strong>{agentName}</strong>
@@ -487,7 +484,12 @@ function PersistedTurn({
             onInteraction={onInteraction}
           />
           {["RUNNING", "PAUSED", "WAITING_INPUT"].includes(String(run.status)) ? null : failed ? (
-            <span className="plain-message">{assistantText}</span>
+            <RunErrorCard
+              error={assistantText}
+              onConfigure={onConfigure}
+              onOpenSettings={onOpenSettings}
+              onRetry={() => onRetry(run.input)}
+            />
           ) : assistantText ? (
             <MarkdownMessage>{assistantText}</MarkdownMessage>
           ) : null}
@@ -503,20 +505,26 @@ function StreamingTurn({
   agentName,
   agentAppearance,
   onInteraction,
+  onConfigure,
+  onOpenSettings,
+  onRetry,
 }: {
   prompt: string;
   stream: ChatStreamState;
   agentName: string;
   agentAppearance?: AgentAppearance;
   onInteraction: (runId: string, interactionId: string, name: string, data: Record<string, unknown>) => Promise<void>;
+  onConfigure?: () => void;
+  onOpenSettings?: () => void;
+  onRetry: (prompt: string) => void;
 }) {
   return (
     <>
-      <article className="message user">
+      <article className="message user" data-ui="bubble" data-role="user">
         <div className="message-meta"><strong>你</strong><span>刚刚</span></div>
         <div className="message-content"><span className="plain-message">{prompt}</span></div>
       </article>
-      <article className={`message assistant streaming-turn${stream.status === "failed" ? " error" : ""}`}>
+      <article className={`message assistant streaming-turn${stream.status === "failed" ? " error" : ""}`} data-ui="bubble" data-role="assistant">
         <div className="message-meta">
           <AgentAvatar name={agentName} appearance={agentAppearance} size="xs" />
           <strong>{agentName}</strong>
@@ -524,7 +532,7 @@ function StreamingTurn({
         </div>
         <div className="message-content">
           <ProcessingGroup reasoning={stream.reasoning} activities={stream.activities} streaming={stream.status === "streaming"} />
-          {stream.surfaces.map(surface => (
+          {stream.surfaces.filter(surface => surface.interaction?.status !== "pending").map(surface => (
             <A2UIRenderer
               key={surface.id}
               surface={surface}
@@ -532,7 +540,12 @@ function StreamingTurn({
             />
           ))}
           {stream.output ? <MarkdownMessage streaming={stream.status === "streaming"}>{stream.output}</MarkdownMessage> : stream.error ? (
-            <span className="plain-message">{stream.error}</span>
+            <RunErrorCard
+              error={stream.error}
+              onConfigure={onConfigure}
+              onOpenSettings={onOpenSettings}
+              onRetry={() => onRetry(prompt)}
+            />
           ) : stream.status === "cancelled" ? (
             <span className="plain-message">运行已停止</span>
           ) : (
@@ -544,7 +557,16 @@ function StreamingTurn({
   );
 }
 
-export function ChatWorkspace({ agentId, agentName, agentAppearance, onRunChanged }: ChatWorkspaceProps) {
+export function ChatWorkspace({
+  agentId,
+  agentName,
+  agentAppearance,
+  active = true,
+  refreshTick = 0,
+  onRunChanged,
+  onConfigureAgent,
+  onOpenSettings,
+}: ChatWorkspaceProps) {
   const [runs, setRuns] = useState<ChatRun[]>([]);
   const [models, setModels] = useState<ChatModel[]>([]);
   const [model, setModel] = useState("");
@@ -553,6 +575,7 @@ export function ChatWorkspace({ agentId, agentName, agentAppearance, onRunChange
   const [input, setInput] = useState("");
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>("risk");
   const [collaborationMode, setCollaborationMode] = useState<CollaborationMode>("default");
+  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("");
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [commandIndex, setCommandIndex] = useState(0);
   const [stream, setStream] = useState<ChatStreamState | null>(null);
@@ -606,6 +629,9 @@ export function ChatWorkspace({ agentId, agentName, agentAppearance, onRunChange
     || "";
   const activeModeStartedAt = stream?.startedAt || persistedActiveRun?.startedAt;
   const activeModeElapsedMs = activeStatus === "paused" ? persistedActiveRun?.durationMs : undefined;
+  const waitingPersistedRuns = !stream
+    ? displayRuns.filter(run => String(run.status) === "WAITING_INPUT")
+    : [];
   const selectedModel = models.find(item => item.id === model);
   const streamUsage = stream?.usage as Record<string, number> | undefined;
   const contextUsage = contextUsageState(
@@ -614,7 +640,20 @@ export function ChatWorkspace({ agentId, agentName, agentAppearance, onRunChange
       ?? latestReportedInputTokens(visibleRuns),
     selectedModel?.context_window_tokens ?? selectedModel?.contextWindowTokens,
   );
-  const slashCommands = visibleComposerCommands(input);
+  const composerModels: ComposerModelOption[] = models.map(item => ({
+    id: item.id,
+    label: item.display_name || item.displayName || item.id,
+    reasoningEfforts: explicitReasoningEfforts(item),
+  }));
+  const effectiveReasoningEffort = explicitReasoningEfforts(selectedModel).includes(reasoningEffort)
+    ? reasoningEffort
+    : "";
+
+  useEffect(() => {
+    if (reasoningEffort && !explicitReasoningEfforts(selectedModel).includes(reasoningEffort)) {
+      setReasoningEffort("");
+    }
+  }, [reasoningEffort, selectedModel]);
 
   const refreshRuns = useCallback(async () => {
     const runResponse = await apiFetch("/api/v1/runs");
@@ -657,12 +696,13 @@ export function ChatWorkspace({ agentId, agentName, agentAppearance, onRunChange
       cancelled = true;
       abortRef.current?.abort();
     };
-  }, [agentId, loadWorkspace]); // 只在切换 Agent 时重置；运行中的刷新由下方轮询负责。
+  }, [agentId, loadWorkspace, refreshTick]); // Agent/Build 变更后同步最新模型锁定；运行中的刷新由下方轮询负责。
 
   useEffect(() => {
     setApprovalMode(normalizeApprovalMode(localStorage.getItem(approvalModeStorageKey(agentId))));
     const storedMode = localStorage.getItem(`agentkit:chat:collaboration:${agentId}`);
     setCollaborationMode(storedMode === "plan" ? "plan" : "default");
+    setReasoningEffort("");
     setAttachments([]);
   }, [agentId]);
 
@@ -775,9 +815,17 @@ export function ChatWorkspace({ agentId, agentName, agentAppearance, onRunChange
     setAttachments(combined);
   }
 
-  async function sendMessage() {
-    const submission = parseComposerSubmission(input);
+  async function sendMessage(inputOverride?: string) {
+    const retrying = typeof inputOverride === "string";
+    const sourceInput = retrying ? inputOverride : input;
+    const turnSourceAttachments = retrying ? [] : attachments;
+    const submission = parseComposerSubmission(sourceInput);
     if (isGenerating) return;
+    if (!model) {
+      showToast("当前 Agent 尚未绑定模型", "请先完成模型绑定和凭证配置。", "error");
+      onConfigureAgent?.();
+      return;
+    }
     if (submission.kind === "toggle-plan") {
       togglePlanMode();
       return;
@@ -795,9 +843,9 @@ export function ChatWorkspace({ agentId, agentName, agentAppearance, onRunChange
     }
     const goalObjective = submission.kind === "goal" ? submission.objective : "";
     const content = submission.kind === "message"
-      ? submission.text || (attachments.length ? "请分析这些附件。" : "")
+      ? submission.text || (turnSourceAttachments.length ? "请分析这些附件。" : "")
       : goalObjective;
-    if (!content && !attachments.length) return;
+    if (!content && !turnSourceAttachments.length) return;
     const sessionId = currentSessionId || uniqueId("ses");
     const invocationId = uniqueId("resp");
     const approvalModeForTurn = approvalMode;
@@ -812,9 +860,9 @@ export function ChatWorkspace({ agentId, agentName, agentAppearance, onRunChange
     setCurrentSessionId(sessionId);
     setOptimisticPrompt(content);
     setStream(aggregate);
-    setInput("");
-    const turnAttachments = attachments;
-    setAttachments([]);
+    if (!retrying) setInput("");
+    const turnAttachments = turnSourceAttachments;
+    if (!retrying) setAttachments([]);
 
     try {
       const response = await apiFetch("/v1/responses", {
@@ -824,6 +872,7 @@ export function ChatWorkspace({ agentId, agentName, agentAppearance, onRunChange
         signal: controller.signal,
         body: JSON.stringify({
           model,
+          ...(effectiveReasoningEffort ? { reasoning: { effort: effectiveReasoningEffort } } : {}),
           input: buildResponsesInput(content, turnAttachments),
           stream: true,
           metadata: {
@@ -993,7 +1042,7 @@ export function ChatWorkspace({ agentId, agentName, agentAppearance, onRunChange
           ) : filteredSessions.length === 0 ? (
             <div className="session-empty">{query ? "没有匹配的会话" : "还没有会话"}</div>
           ) : filteredSessions.map(session => (
-            <div key={session.id} className={`chat-session-item${currentSessionId === session.id ? " active" : ""}`}>
+            <div key={session.id} className={`chat-session-item${currentSessionId === session.id ? " active" : ""}${session.running ? " running" : ""}`}>
               <button
                 className="chat-session-main"
                 type="button"
@@ -1032,7 +1081,7 @@ export function ChatWorkspace({ agentId, agentName, agentAppearance, onRunChange
         <header className="chat-conversation-header">
           <AgentAvatar name={agentName} appearance={agentAppearance} size="sm" />
           <div><strong>{agentName}</strong></div>
-          {isGenerating && <span className={`status-badge ${activeStatusLabel}`}>{activeStatusLabel}</span>}
+          {isGenerating && <span className="badge" data-state={activeStatus === "streaming" ? "running" : "pending"}>{activeStatusLabel}</span>}
         </header>
 
         <div
@@ -1060,15 +1109,48 @@ export function ChatWorkspace({ agentId, agentName, agentAppearance, onRunChange
             </div>
           ) : (
             <>
-              {displayRuns.map(run => <PersistedTurn key={run.id} run={run} agentName={agentName} agentAppearance={agentAppearance} onInteraction={submitInteraction} />)}
+              {displayRuns.map(run => (
+                <PersistedTurn
+                  key={run.id}
+                  run={run}
+                  agentName={agentName}
+                  agentAppearance={agentAppearance}
+                  onInteraction={submitInteraction}
+                  onConfigure={onConfigureAgent}
+                  onOpenSettings={onOpenSettings}
+                  onRetry={prompt => { void sendMessage(prompt); }}
+                />
+              ))}
               {stream && stream.sessionId === currentSessionId && optimisticPrompt && (
-                <StreamingTurn prompt={optimisticPrompt} stream={stream} agentName={agentName} agentAppearance={agentAppearance} onInteraction={submitInteraction} />
+                <StreamingTurn
+                  prompt={optimisticPrompt}
+                  stream={stream}
+                  agentName={agentName}
+                  agentAppearance={agentAppearance}
+                  onInteraction={submitInteraction}
+                  onConfigure={onConfigureAgent}
+                  onOpenSettings={onOpenSettings}
+                  onRetry={prompt => { void sendMessage(prompt); }}
+                />
               )}
             </>
           )}
         </div>
 
         <footer className="chat-composer-wrap">
+          {stream && stream.sessionId === currentSessionId ? (
+            <ComposerInteractionTray
+              surfaces={stream.surfaces}
+              onInteraction={(interactionId, name, data) => submitInteraction(stream.runId, interactionId, name, data)}
+            />
+          ) : waitingPersistedRuns.map(run => (
+            <PersistedInteractionTray
+              key={run.id}
+              runId={run.id}
+              status={run.status}
+              onInteraction={submitInteraction}
+            />
+          ))}
           {isGenerating && activeMode && (
             <RuntimeModeBar
               mode={activeMode}
@@ -1081,98 +1163,51 @@ export function ChatWorkspace({ agentId, agentName, agentAppearance, onRunChange
               onStop={cancelResponse}
             />
           )}
-          <div className="chat-composer">
-            <ComposerCommandMenu
-              input={input}
-              activeIndex={commandIndex}
-              onSelect={selectComposerCommand}
-            />
-            {attachments.length > 0 && (
-              <div className="chat-attachment-list" aria-label="本轮附件">
-                {attachments.map(attachment => (
-                  <div key={attachment.id} className={`chat-attachment-chip ${attachment.kind}`}>
-                    {attachment.kind === "image" && attachment.dataUrl
-                      ? <img src={attachment.dataUrl} alt="" />
-                      : <span className="chat-attachment-icon"><FileText size={15} /></span>}
-                    <span className="chat-attachment-copy">
-                      <strong>{attachment.name}</strong>
-                      <small>{attachment.kind === "image" ? "图片" : "文本"} · {formatAttachmentSize(attachment.size)}</small>
-                    </span>
-                    <button
-                      type="button"
-                      aria-label={`移除附件 ${attachment.name}`}
-                      onClick={() => setAttachments(current => current.filter(item => item.id !== attachment.id))}
-                    >
-                      <X size={13} />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-            <textarea
-              ref={textareaRef}
-              rows={1}
-              value={input}
-              onChange={event => setInput(event.target.value)}
-              onKeyDown={event => {
-                if (slashCommands.length && ["ArrowDown", "ArrowUp"].includes(event.key)) {
-                  event.preventDefault();
-                  const direction = event.key === "ArrowDown" ? 1 : -1;
-                  setCommandIndex(current => (current + direction + slashCommands.length) % slashCommands.length);
-                  return;
-                }
-                if (slashCommands.length && event.key === "Escape") {
-                  event.preventDefault();
-                  setInput("");
-                  return;
-                }
-                if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-                  event.preventDefault();
-                  if (slashCommands.length) {
-                    selectComposerCommand(slashCommands[Math.min(commandIndex, slashCommands.length - 1)].id);
-                    return;
-                  }
-                  sendMessage();
-                }
-              }}
-              placeholder={collaborationMode === "plan" ? "描述需要规划的任务…" : "输入消息，或输入 / 使用命令…"}
-              aria-label="消息"
-              disabled={isGenerating}
-            />
-            <div className="chat-composer-footer">
-              <ComposerActionMenu
-                mode={collaborationMode}
-                disabled={isGenerating}
-                onTogglePlan={togglePlanMode}
-                onStartGoal={() => selectComposerCommand("goal")}
-                onFiles={addAttachments}
-              />
-              {collaborationMode === "plan" && (
-                <button className="chat-mode-chip" type="button" title="点击返回默认模式" onClick={togglePlanMode}>
-                  <ListTodo size={14} />
-                  <span>计划</span>
-                </button>
-              )}
-              <ApprovalModeMenu value={approvalMode} onChange={changeApprovalMode} />
-              <span className="chat-composer-spacer" />
-              <ContextRing {...contextUsage} />
-              <ModelMenu
-                models={models}
-                value={model}
-                disabled={models.length <= 1 || isGenerating}
-                onChange={setModel}
-              />
-              {activeStatus === "paused" ? (
+          <ChatComposer
+            input={input}
+            placeholder={collaborationMode === "plan" ? "描述需要规划的任务…" : "输入消息，或输入 / 使用命令…"}
+            disabled={isGenerating}
+            active={active}
+            attachments={attachments.map(attachment => ({
+              id: attachment.id,
+              name: attachment.name,
+              kind: attachment.kind,
+              size: attachment.size,
+              previewUrl: attachment.dataUrl,
+            }))}
+            mode={collaborationMode}
+            approvalMode={approvalMode}
+            models={composerModels}
+            model={model}
+            reasoningEffort={reasoningEffort}
+            commandIndex={commandIndex}
+            contextControl={<ContextRing {...contextUsage} />}
+            sendControl={activeStatus === "paused" ? (
                 <button className="chat-send-button resume" type="button" aria-label="继续生成" title="继续生成" onClick={resumeResponse}><Play size={15} fill="currentColor" /></button>
               ) : activeStatus === "waiting_input" ? (
                 <button className="chat-send-button pause" type="button" aria-label="等待交互输入" title="请先处理上方交互卡片" disabled><Loader2 size={15} className="animate-spin" /></button>
               ) : isGenerating ? (
                 <button className="chat-send-button pause" type="button" aria-label="暂停生成" title="暂停生成" onClick={pauseResponse}><Pause size={15} fill="currentColor" /></button>
               ) : (
-                <button className="chat-send-button" type="button" aria-label="发送消息" title="发送消息" onClick={sendMessage} disabled={!input.trim() && !attachments.length}><Send size={15} /></button>
+                <button className="chat-send-button" type="button" aria-label="发送消息" title="发送消息" onClick={() => { void sendMessage(); }} disabled={!input.trim() && !attachments.length}><Send size={15} /></button>
               )}
-            </div>
-          </div>
+            canSend={Boolean(input.trim() || attachments.length)}
+            textareaRef={textareaRef}
+            onInputChange={setInput}
+            onFiles={addAttachments}
+            onRemoveAttachment={id => setAttachments(current => current.filter(item => item.id !== id))}
+            onSetMode={next => {
+              if (next !== collaborationMode) togglePlanMode();
+            }}
+            onStartGoal={() => selectComposerCommand("goal")}
+            onApprovalModeChange={changeApprovalMode}
+            onModelChange={setModel}
+            onReasoningEffortChange={setReasoningEffort}
+            onConfigureModel={onConfigureAgent}
+            onCommandSelect={selectComposerCommand}
+            onCommandIndexChange={setCommandIndex}
+            onSend={() => { void sendMessage(); }}
+          />
         </footer>
       </section>
 

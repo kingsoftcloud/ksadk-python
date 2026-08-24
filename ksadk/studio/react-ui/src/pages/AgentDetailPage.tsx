@@ -1,10 +1,17 @@
 import { useEffect, useState } from "react";
-import { ArrowLeft, SquarePen, Code, Package, MessagesSquare, Trash2, Check, ShieldCheck } from "lucide-react";
-import { AgentAvatar, type AgentAppearance } from "../components/AgentAvatar";
+import { SquarePen, Package, MessagesSquare, Check, ShieldCheck, CloudUpload } from "lucide-react";
+import { type AgentAppearance } from "../components/AgentAvatar";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { Drawer } from "../components/Drawer";
+import { MoreActionsMenu } from "../components/MoreActionsMenu";
+import { PageHeaderActions } from "../components/PageHeaderPortal";
 import { apiFetch } from "../api";
 import { CodeViewer } from "../components/ui/CodeViewer";
+import {
+  deploymentCreateRoute,
+  deploymentDetailRoute,
+  navigateToStudioHash,
+} from "../studioRoutes";
 
 interface AgentDetail {
   draft: {
@@ -21,6 +28,15 @@ interface AgentDetail {
     };
   };
   builds?: Array<{ id: string; status: string; bundleDigest?: string }>;
+}
+
+interface DeploymentReceipt {
+  id: string;
+  buildId: string;
+  agentId?: string;
+  instanceId?: string;
+  status: "ADMITTING" | "DEPLOYING" | "READY" | "FAILED" | "ROLLED_BACK";
+  target?: { region?: string };
 }
 
 function shortId(id: string, max = 28) {
@@ -114,6 +130,7 @@ export function AgentDetailPage({ agentId, onBack, onChat, onBuild, onEdit, onCh
 }) {
   const [detail, setDetail] = useState<AgentDetail | null>(null);
   const [catalog, setCatalog] = useState<CatalogItem[]>([]);
+  const [deployments, setDeployments] = useState<DeploymentReceipt[]>([]);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [invocationOpen, setInvocationOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -122,6 +139,7 @@ export function AgentDetailPage({ agentId, onBack, onChat, onBuild, onEdit, onCh
   useEffect(() => {
     apiFetch(`/api/v1/agents/${encodeURIComponent(agentId)}`).then(r => r.json()).then(setDetail).catch(() => setDetail(null));
     apiFetch("/api/v1/catalog/resources?limit=200").then(r => r.json()).then(d => setCatalog(d.items || [])).catch(() => {});
+    apiFetch("/api/v1/deployments").then(r => r.json()).then(d => setDeployments(d.items || [])).catch(() => {});
   }, [agentId]);
 
   async function doDelete() {
@@ -155,7 +173,10 @@ export function AgentDetailPage({ agentId, onBack, onChat, onBuild, onEdit, onCh
     ? bindings.modelProfileIds
     : bindings.modelProfileId ? [bindings.modelProfileId] : manifestModels.length ? manifestModels : labels["agentkit.ksyun.com/model"] ? [labels["agentkit.ksyun.com/model"]] : [];
   const latestBuild = (detail.builds || []).find(b => b.status === "SUCCEEDED");
-  const template = labels["agentkit.ksyun.com/template"] || "blank";
+  const latestDeployment = latestBuild
+    ? deployments.find(deployment => deployment.buildId === latestBuild.id)
+    : undefined;
+  const deploymentIsReady = latestDeployment?.status === "READY";
   const nameOf = (id: string) => catalog.find(c => c.resourceId === id)?.displayName || shortId(id);
   const toolIds = (bindings.tools || []).map(t => typeof t === "string" ? t : t.resourceId);
 
@@ -165,67 +186,70 @@ export function AgentDetailPage({ agentId, onBack, onChat, onBuild, onEdit, onCh
     ["MCP", (bindings.mcpServers || []).map(i => i.resourceId)],
     ["Tool", toolIds],
   ];
+  const boundGroups = groups.filter(([, ids]) => ids.length > 0);
 
   return (
     <div className="page-container" data-layout="document">
-      <header className="page-header detail-header">
-        <div>
-          <button className="button tertiary compact" type="button" onClick={onBack}>
-            <ArrowLeft size={15} /><span>Agent</span>
-          </button>
-          <div className="detail-title-row">
-            <AgentAvatar name={draft.metadata.name} appearance={draft.metadata.appearance} template={template} size="lg" />
-            <div>
-              <h1>{draft.metadata.name}</h1>
-              <p>{draft.metadata.id} · revision {draft.metadata.revision}</p>
-            </div>
-          </div>
-        </div>
-        <div className="header-actions">
-          <button className="button secondary" type="button" onClick={() => onEdit(agentId)}>
-            <SquarePen size={15} /><span>编辑</span>
-          </button>
-          <button className="button secondary" type="button" onClick={() => setInvocationOpen(true)}>
-            <Code size={15} /><span>调用方式</span>
-          </button>
-          <button className="button secondary" type="button" onClick={onBuild}>
-            <Package size={15} /><span>构建</span>
-          </button>
+      <PageHeaderActions>
           <button className="button accent" type="button" onClick={() => onChat(agentId)}>
             <MessagesSquare size={15} /><span>打开会话</span>
           </button>
-          <button className="button danger" type="button" onClick={() => setConfirmDelete(true)}>
-            <Trash2 size={15} /><span>删除</span>
+          <button className="button secondary" type="button" onClick={() => onEdit(agentId)}>
+            <SquarePen size={15} /><span>编辑</span>
           </button>
-        </div>
-      </header>
+          <button className="button secondary" type="button" onClick={onBuild}>
+            <Package size={15} /><span>校验并构建</span>
+          </button>
+          <button
+            className="button secondary"
+            type="button"
+            onClick={() => {
+              if (!latestBuild) return;
+              navigateToStudioHash(latestDeployment
+                ? deploymentDetailRoute(latestDeployment.id)
+                : deploymentCreateRoute(latestBuild.id, draft.metadata.id));
+            }}
+            disabled={!latestBuild}
+          >
+            <CloudUpload size={15} /><span>{latestDeployment ? "查看云端部署" : "部署到云端"}</span>
+          </button>
+          <MoreActionsMenu
+            label={`${draft.metadata.name} 的更多操作`}
+            items={[
+              { label: "调用方式", onSelect: () => setInvocationOpen(true) },
+              { label: "删除 Agent", danger: true, onSelect: () => setConfirmDelete(true) },
+            ]}
+          />
+      </PageHeaderActions>
 
       {error && <div className="form-error" style={{ marginBottom: 16 }}>{error}</div>}
-
       <div className="detail-layout">
         <div className="detail-main">
-          <section className="detail-section">
+          <section className="detail-section block">
             <div className="section-heading"><div><h2>角色与任务</h2><p>运行时注入的系统提示词和任务契约</p></div></div>
             <div className="readonly-field"><span>系统提示词</span><pre>{draft.spec.instructions?.system || ""}</pre></div>
             <div className="readonly-field"><span>任务契约</span><pre>{draft.spec.instructions?.task || "未配置任务契约"}</pre></div>
           </section>
-          <section className="detail-section">
-            <div className="section-heading"><div><h2>能力绑定</h2><p>构建时锁定版本和内容摘要</p></div></div>
-            <div className="binding-groups">
-              {groups.map(([gname, ids]) => (
+          <section className="detail-section block">
+            <div className="section-heading"><div><h2>能力绑定</h2><p>构建时锁定 YAML 声明、版本和内容摘要</p></div></div>
+            {boundGroups.length ? <div className="binding-groups">
+              {boundGroups.map(([gname, ids]) => (
                 <div className="binding-group" key={gname}>
                   <span>{gname}</span>
                   <div className="binding-items">
-                    {ids.length
-                      ? ids.map(id => <span className="compact-resource" key={id}><Check size={13} />{nameOf(id)}</span>)
-                      : <span className="compact-resource">未绑定</span>}
+                    {ids.map(id => <span className="compact-resource" key={id}><Check size={13} />{nameOf(id)}</span>)}
                   </div>
                 </div>
               ))}
-            </div>
+            </div> : (
+              <div className="capability-empty-state">
+                <span>当前 Agent 尚未绑定模型、Tool、MCP 或 Skill。</span>
+                <button className="button secondary small" type="button" onClick={() => onEdit(agentId)}>绑定能力</button>
+              </div>
+            )}
           </section>
         </div>
-        <aside className="detail-aside">
+        <aside className="detail-aside block">
           <div className="aside-title">运行摘要</div>
           <dl>
             <div><dt>Revision</dt><dd>r{draft.metadata.revision}</dd></div>
@@ -235,19 +259,28 @@ export function AgentDetailPage({ agentId, onBack, onChat, onBuild, onEdit, onCh
             <div><dt>超时</dt><dd>{draft.spec.execution?.timeoutSeconds ? `${draft.spec.execution.timeoutSeconds}s` : "-"}</dd></div>
           </dl>
           <div className="aside-divider" />
-          <div className="build-state">
+          <div className="build-state notice" data-state={latestBuild ? "ready" : "idle"}>
             {latestBuild ? (
               <>
                 <span className="status-dot success" />
-                <div><strong>Bundle 已就绪</strong><span>{shortId(latestBuild.bundleDigest || latestBuild.id)}</span></div>
+                <div><strong>部署声明已就绪</strong><span>{shortId(latestBuild.bundleDigest || latestBuild.id)}</span></div>
               </>
             ) : (
               <>
                 <span className="status-dot neutral" />
-                <div><strong>尚未构建</strong><span>创建 Bundle 后即可对话</span></div>
+                <div><strong>尚未构建</strong><span>校验 YAML 声明后即可部署或本地对话</span></div>
               </>
             )}
           </div>
+          {latestDeployment && (
+            <div className="build-state notice" data-state={deploymentIsReady ? "ready" : "idle"}>
+              <span className={`status-dot ${deploymentIsReady ? "success" : "neutral"}`} />
+              <div>
+                <strong>{deploymentIsReady ? "云端实例运行中" : `云端部署：${latestDeployment.status}`}</strong>
+                <span>{latestDeployment.agentId || latestDeployment.instanceId || latestDeployment.id}</span>
+              </div>
+            </div>
+          )}
         </aside>
       </div>
 

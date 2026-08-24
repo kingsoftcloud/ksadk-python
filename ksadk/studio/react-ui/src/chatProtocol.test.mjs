@@ -15,6 +15,47 @@ async function loadChatProtocol() {
   return import(moduleUrl);
 }
 
+test("decodes optional Runtime v2 goal loop and plan capabilities", async () => {
+  const chat = await loadChatProtocol();
+  const native = { supported: true, mode: "native" };
+  const matrix = chat.decodeCapabilityMatrix({
+    schema_version: 1,
+    cancel: native,
+    pause: native,
+    resume: native,
+    submit_interaction: native,
+    attach: native,
+    steer: native,
+    inject: native,
+    checkpoint: native,
+    durable_restore: native,
+    goal: native,
+    loop: native,
+    plan: native,
+  });
+
+  assert.equal(matrix.goal.supported, true);
+  assert.equal(matrix.loop.mode, "native");
+  assert.equal(matrix.plan.mode, "native");
+
+  const legacyWireMatrix = {
+    schema_version: 1,
+    cancel: native,
+    pause: native,
+    resume: native,
+    submit_interaction: native,
+    attach: native,
+    steer: native,
+    inject: native,
+    checkpoint: native,
+    durable_restore: native,
+  };
+  const legacyMatrix = chat.decodeCapabilityMatrix(legacyWireMatrix);
+  assert.equal(legacyMatrix.goal, undefined);
+  assert.equal(legacyMatrix.loop, undefined);
+  assert.equal(legacyMatrix.plan, undefined);
+});
+
 test("parses fragmented Responses SSE and accumulates reasoning plus output", async () => {
   const chat = await loadChatProtocol();
   const events = [];
@@ -238,4 +279,94 @@ test("compacts persisted run events into a restrained inspector timeline", async
   assert.equal(timeline[3].detail, "连接成功");
   assert.equal(timeline[4].summary, "4,487 tokens");
   assert.equal(timeline.some(item => item.title === "Run 创建"), false);
+});
+
+test("projects two completed message items without replacing the first item", async () => {
+  const chat = await loadChatProtocol();
+  const twoMessageItemsFixture = [
+    { id: 1, type: "message.delta", data: { runId: "r1", scopeId: "s1", itemId: "msg-1", partId: "text-0", operation: "append", text: "fir" } },
+    { id: 2, type: "message.delta", data: { runId: "r1", scopeId: "s1", itemId: "msg-1", partId: "text-0", operation: "append", text: "st" } },
+    { id: 3, type: "message.completed", data: { runId: "r1", scopeId: "s1", itemId: "msg-1", partId: "text-0", text: "first" } },
+    { id: 4, type: "message.delta", data: { runId: "r1", scopeId: "s1", itemId: "msg-2", partId: "text-0", operation: "append", text: "second" } },
+    { id: 5, type: "message.completed", data: { runId: "r1", scopeId: "s1", itemId: "msg-2", partId: "text-0", text: "second" } },
+  ];
+  const projection = chat.projectRunActivities(twoMessageItemsFixture);
+  assert.deepEqual(projection.textItems.map(item => item.text), ["first", "second"]);
+  assert.deepEqual(projection.textItems.map(item => item.itemId), ["msg-1", "msg-2"]);
+  assert.deepEqual(projection.textItems.map(item => item.completed), [true, true]);
+});
+
+test("keeps identical-text message items as distinct indexed entries", async () => {
+  const chat = await loadChatProtocol();
+  const projection = chat.projectRunActivities([
+    { id: 1, type: "message.completed", data: { runId: "r1", scopeId: "s1", itemId: "msg-a", partId: "text-0", text: "same" } },
+    { id: 2, type: "message.completed", data: { runId: "r1", scopeId: "s1", itemId: "msg-b", partId: "text-0", text: "same" } },
+  ]);
+  assert.equal(projection.textItems.length, 2);
+  assert.deepEqual(projection.textItems.map(item => item.itemId), ["msg-a", "msg-b"]);
+  assert.deepEqual(projection.textItems.map(item => item.text), ["same", "same"]);
+});
+
+test("applies append and replace operations explicitly per item identity", async () => {
+  const chat = await loadChatProtocol();
+  const projection = chat.projectRunActivities([
+    { id: 1, type: "message.delta", data: { runId: "r1", scopeId: "s1", itemId: "m1", partId: "text-0", operation: "append", text: "hello " } },
+    { id: 2, type: "message.delta", data: { runId: "r1", scopeId: "s1", itemId: "m1", partId: "text-0", operation: "append", text: "world" } },
+    { id: 3, type: "message.delta", data: { runId: "r1", scopeId: "s1", itemId: "m1", partId: "text-0", operation: "replace", text: "rewritten" } },
+  ]);
+  assert.equal(projection.textItems.length, 1);
+  assert.equal(projection.textItems[0].text, "rewritten");
+  assert.equal(projection.textItems[0].completed, false);
+});
+
+test("derives aggregate output from terminal output refs, not per-run accumulation", async () => {
+  const chat = await loadChatProtocol();
+  const projection = chat.projectRunActivities([
+    { id: 1, type: "message.completed", data: { runId: "r1", scopeId: "s1", itemId: "msg-1", partId: "text-0", text: "alpha" } },
+    { id: 2, type: "message.completed", data: { runId: "r1", scopeId: "s1", itemId: "msg-2", partId: "text-0", text: "beta" } },
+    { id: 3, type: "run.completed", data: { runtimeEvent: { output_refs: [
+      { scope_id: "s1", item_id: "msg-2", part_id: null },
+      { scope_id: "s1", item_id: "msg-1", part_id: null },
+    ] } } },
+  ]);
+  assert.equal(projection.output, "beta\n\nalpha");
+});
+
+test("replays the cross-language golden projection fixture into item-aware text items", async () => {
+  const chat = await loadChatProtocol();
+  const fixtureUrl = new URL("../../../../tests/events/fixtures/runtime_projection_golden.json", import.meta.url);
+  const golden = JSON.parse(await readFile(fixtureUrl, "utf8"));
+
+  // Map the canonical golden events into Studio's persisted event view (text + terminal refs only).
+  const studioEvents = [];
+  for (const event of golden.events) {
+    const identity = { runId: event.run_id, scopeId: event.scope_id, itemId: event.item_id };
+    if (event.event_type === "item.updated" && (event.item_kind === "message" || event.item_kind === "reasoning")) {
+      studioEvents.push({
+        id: event.seq,
+        type: event.item_kind === "reasoning" ? "thinking.delta" : "message.delta",
+        data: { ...identity, partId: event.update?.part_id, operation: event.op, text: event.update?.text || "" },
+      });
+    } else if (event.event_type === "item.completed" && (event.item_kind === "message" || event.item_kind === "reasoning")) {
+      const part = (event.snapshot?.parts || []).find(p => p.content_type === "text") || {};
+      studioEvents.push({
+        id: event.seq,
+        type: event.item_kind === "reasoning" ? "thinking.completed" : "message.completed",
+        data: { ...identity, partId: part.part_id, text: part.text || "" },
+      });
+    } else if (event.event_type === "run.completed") {
+      studioEvents.push({ id: event.seq, type: "run.completed", data: { runtimeEvent: event } });
+    }
+  }
+
+  const projection = chat.projectRunActivities(studioEvents);
+  const messages = projection.textItems.filter(item => item.kind === "message");
+  // Two distinct message items carry identical text and must not collapse into one.
+  assert.deepEqual(messages.map(item => item.itemId), ["msg-legal-1", "msg-legal-2"]);
+  assert.deepEqual(messages.map(item => item.text), ["The answer is 42.", "The answer is 42."]);
+  assert.deepEqual(messages.map(item => item.completed), [true, true]);
+  const reasoning = projection.textItems.find(item => item.kind === "thinking");
+  assert.equal(reasoning.text, "Analyzing the question...");
+  // Aggregate output comes from the terminal output_refs order.
+  assert.equal(projection.output, "The answer is 42.\n\nThe answer is 42.");
 });

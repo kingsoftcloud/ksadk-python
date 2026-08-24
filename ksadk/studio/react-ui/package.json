@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node --test src/*.test.mjs",
+    "test": "node --test --test-concurrency=1 src/*.test.mjs",
     "test:api": "node --test src/api.test.mjs",
     "test:ui": "vitest run"
   },
@@ -37,6 +37,7 @@
     "react-hook-form": "^7.85.0",
     "react-json-view-lite": "^2.5.0",
     "react-markdown": "^10.1.0",
+    "remark-breaks": "^4.0.0",
     "remark-gfm": "^4.0.1",
     "tailwind-merge": "^3.6.0",
     "zod": "^4.4.3",

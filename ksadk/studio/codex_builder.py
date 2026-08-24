@@ -2,17 +2,24 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Literal, cast
 
+import yaml  # type: ignore[import-untyped]
 from pydantic import ValidationError
 
-from ksadk.builders.managed_runtime_builder import ManagedRuntimeBuilder
+from ksadk.builders.managed_runtime_builder import (
+    ManagedRuntimeBuilder,
+    managed_runtime_lock_path,
+)
 from ksadk.managed_runtime import (
+    ManagedRuntimeError,
     ResolvedRuntime,
     validate_installed_runtime,
     validate_runtime_binary,
@@ -83,6 +90,58 @@ class CodexBuildRepository:
                 details={"id": build_id},
             ) from exc
 
+    def manifest_text(self, record: CodexBuildRecord) -> str:
+        """Read the exact declaration retained by a successful local build.
+
+        A ManagedRuntime rollback must use the target build's immutable
+        declaration, rather than today's editable Agent YAML.  New builds
+        retain canonical YAML plus a sibling lock, never a code ZIP or a KS3
+        artifact.  Pre-existing two-file ZIP receipts remain readable so an
+        upgrade does not make historical declaration rollbacks impossible.
+        """
+
+        artifact = self.workspace.resolve(record.artifact_path, must_exist=True)
+        try:
+            if artifact.suffix == ".zip":
+                with zipfile.ZipFile(artifact) as archive:
+                    if set(archive.namelist()) != {"agentengine.yaml", "runtime-lock.json"}:
+                        raise ValueError("unexpected managed runtime bundle entries")
+                    manifest = archive.read("agentengine.yaml")
+                    lock = json.loads(archive.read("runtime-lock.json"))
+            else:
+                manifest = artifact.read_bytes()
+                lock = json.loads(managed_runtime_lock_path(artifact).read_bytes())
+        except (OSError, ValueError, zipfile.BadZipFile, KeyError, json.JSONDecodeError) as exc:
+            raise StudioError(
+                "CODEX_BUILD_ARTIFACT_INVALID",
+                "Codex Build 的声明式运行时审计产物不可用",
+                status_code=409,
+                details={"id": record.id},
+            ) from exc
+
+        digest = hashlib.sha256(manifest).hexdigest()
+        if digest != record.manifest_sha256 or str(lock.get("manifest_sha256") or "") != digest:
+            raise StudioError(
+                "CODEX_BUILD_DIGEST_MISMATCH",
+                "Codex Build 审计产物与记录摘要不一致",
+                status_code=409,
+                details={
+                    "id": record.id,
+                    "expected": record.manifest_sha256,
+                    "actual": digest,
+                    "lock": str(lock.get("manifest_sha256") or ""),
+                },
+            )
+        try:
+            return manifest.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise StudioError(
+                "CODEX_BUILD_ARTIFACT_INVALID",
+                "Codex Build 的声明不是 UTF-8 文本",
+                status_code=409,
+                details={"id": record.id},
+            ) from exc
+
     def list(self) -> list[CodexBuildRecord]:
         directory = self.workspace.resolve(".agentkit/codex-builds")
         records: list[CodexBuildRecord] = []
@@ -107,15 +166,16 @@ class CodexBuildRepository:
             self.workspace.resolve(item.artifact_path) for item in records if item.artifact_path
         }
         for artifact in artifacts:
-            self._remove_file(
-                artifact,
-                purge=purge,
-                destination=(
-                    None
-                    if trash_directory is None
-                    else trash_directory / "artifacts" / artifact.name
-                ),
-            )
+            for receipt_file in self._receipt_files(artifact):
+                self._remove_file(
+                    receipt_file,
+                    purge=purge,
+                    destination=(
+                        None
+                        if trash_directory is None
+                        else trash_directory / "artifacts" / receipt_file.name
+                    ),
+                )
         for record in records:
             path = self._path(record.id)
             self._remove_file(
@@ -145,14 +205,35 @@ class CodexBuildRepository:
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(source), str(target))
 
+    @staticmethod
+    def _receipt_files(artifact: Path) -> tuple[Path, ...]:
+        """Return declaration files for a new receipt or one legacy ZIP."""
 
-def current_proxy_mode() -> Literal["forced", "auto", "direct"]:
-    override = os.environ.get("KSADK_CODEX_USE_PROXY")
-    if override == "1":
+        if artifact.suffix == ".zip":
+            return (artifact,)
+        return (artifact, managed_runtime_lock_path(artifact))
+
+
+def normalize_proxy_mode(value: Any) -> Literal["forced", "auto", "direct"]:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"1", "forced"}:
         return "forced"
-    if override == "0":
+    if normalized in {"0", "direct"}:
         return "direct"
     return "auto"
+
+
+def proxy_mode_env_value(value: Any) -> str | None:
+    mode = normalize_proxy_mode(value)
+    if mode == "forced":
+        return "1"
+    if mode == "direct":
+        return "0"
+    return None
+
+
+def current_proxy_mode() -> Literal["forced", "auto", "direct"]:
+    return normalize_proxy_mode(os.environ.get("KSADK_CODEX_USE_PROXY"))
 
 
 def _inspect_runtime(runtime: ResolvedRuntime) -> tuple[str, str, str]:
@@ -189,6 +270,7 @@ class CodexStudioBuilder:
         model_profiles = self._model_profile_snapshot(
             snapshot.manifest.name,
             allowed_models=snapshot.manifest.allowed_models,
+            ignore_missing=True,
         )
         build_id = self._build_id(snapshot.manifest_sha256, model_profiles)
         try:
@@ -204,7 +286,15 @@ class CodexStudioBuilder:
             version=snapshot.manifest.runtime.version,
             source="manifest",
         )
-        sdk_version, installed_runtime, cli_version = self.runtime_inspector(runtime)
+        try:
+            sdk_version, installed_runtime, cli_version = self.runtime_inspector(runtime)
+        except ManagedRuntimeError as exc:
+            raise StudioError(
+                "CODEX_RUNTIME_UNAVAILABLE",
+                str(exc),
+                status_code=422,
+                details={"runtime": runtime.name, "expected": runtime.version},
+            ) from exc
         if installed_runtime != runtime.version:
             raise StudioError(
                 "CODEX_RUNTIME_VERSION_MISMATCH",
@@ -215,7 +305,9 @@ class CodexStudioBuilder:
 
         result = ManagedRuntimeBuilder(
             self.workspace.root,
-            config=snapshot.manifest.model_dump(mode="python", exclude_none=True),
+            # 使用仓储已经规范化并计算摘要的同一份 wire payload；不能再次从
+            # Pydantic model_dump 生成，否则嵌套 ContractModel 的 alias 会改变字节。
+            config=yaml.safe_load(snapshot.source_bytes),
             runtime_version=runtime.version,
         ).build()
         if not result.success or result.artifact_path is None:
@@ -255,10 +347,19 @@ class CodexStudioBuilder:
             return False
         if record.model_profiles is None:
             return True
-        return record.model_profiles == self._model_profile_snapshot(
-            snapshot.manifest.name,
-            allowed_models=snapshot.manifest.allowed_models,
-        )
+        try:
+            current_profiles = self._model_profile_snapshot(
+                snapshot.manifest.name,
+                allowed_models=snapshot.manifest.allowed_models,
+            )
+        except StudioError as exc:
+            if exc.code == "RESOURCE_NOT_FOUND":
+                # A completed Build owns its connection snapshot.  A later
+                # Catalog cleanup must not make that immutable Build
+                # undeployable; launch resolution reads the snapshot instead.
+                return True
+            raise
+        return record.model_profiles == current_profiles
 
     @staticmethod
     def _build_id(
@@ -283,6 +384,7 @@ class CodexStudioBuilder:
         agent_id: str,
         *,
         allowed_models: tuple[str, ...],
+        ignore_missing: bool = False,
     ) -> dict[str, dict[str, Any]]:
         if self.catalog is None or self.drafts is None:
             return {}
@@ -296,7 +398,18 @@ class CodexStudioBuilder:
             resource_ids = [default_id]
         profiles: dict[str, dict[str, Any]] = {}
         for resource_id in resource_ids:
-            descriptor = self.catalog.get(resource_id)
+            try:
+                descriptor = self.catalog.get(resource_id)
+            except StudioError as exc:
+                if exc.code == "RESOURCE_NOT_FOUND" and ignore_missing:
+                    # Provider-discovered model profiles are process-local. A
+                    # YAML-managed Agent may therefore retain a stale draft
+                    # binding after Studio restarts even though its manifest
+                    # still has a complete model declaration. In that case the
+                    # runtime falls back to the configured model environment;
+                    # the missing snapshot must not make a new Build impossible.
+                    continue
+                raise
             profile = ModelSpec.model_validate(descriptor.contract)
             if profile.model not in allowed_models or profile.model in profiles:
                 continue
@@ -310,10 +423,10 @@ class CodexStudioBuilder:
 
     @staticmethod
     def _runtime_lock(artifact_path: Path) -> dict:
-        import zipfile
-
-        with zipfile.ZipFile(artifact_path) as archive:
-            return cast(dict, json.loads(archive.read("runtime-lock.json")))
+        if artifact_path.suffix == ".zip":
+            with zipfile.ZipFile(artifact_path) as archive:
+                return cast(dict, json.loads(archive.read("runtime-lock.json")))
+        return cast(dict, json.loads(managed_runtime_lock_path(artifact_path).read_bytes()))
 
 
 __all__ = [

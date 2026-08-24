@@ -4,6 +4,7 @@ import asyncio
 import time
 from typing import Any, AsyncIterator, Callable, Dict, Mapping, Optional, Sequence
 
+from ksadk.conversations.context import budget_tool_result_for_event
 from ksadk.conversations.run_kinds import (
     RUN_MODE_FOREGROUND,
     trigger_from_resume_input,
@@ -38,10 +39,13 @@ from ksadk.conversations.runtime_observability import (
     _extract_deferred_tool_names,
     _get_conversation_tracer,
     _normalize_usage_payload,
+    _set_context_plan_attributes,
     _set_conversation_input_attributes,
     _set_conversation_output_attributes,
     _set_conversation_span_attributes,
     _set_conversation_usage_attributes,
+    _set_prompt_cache_attributes,
+    _set_prompt_source_attributes,
     _set_span_attribute,
     _span_current_context,
     _span_feedback_metadata,
@@ -79,6 +83,35 @@ from ksadk.tools.gateway import (
 )
 
 
+def _record_baseline_turn(
+    *,
+    prepared: Any,
+    model: str | None,
+    usage: Any,
+    ptl: bool,
+    attempts: int,
+    turn_start_monotonic: float | None,
+) -> None:
+    """env-gated 旁路采集：未启用时 no-op，启用时记录一条 turn 基线。不进决策路径。"""
+    from ksadk.context_engine.baseline import record_baseline_turn
+
+    latency_ms = None
+    if turn_start_monotonic is not None:
+        latency_ms = int((time.monotonic() - turn_start_monotonic) * 1000)
+    record_baseline_turn(
+        getattr(prepared, "shadow_context_plan", None),
+        session_id=getattr(prepared, "session_id", ""),
+        invocation_id=getattr(prepared, "invocation_id", ""),
+        model=str(model or ""),
+        usage=usage if isinstance(usage, Mapping) else None,
+        compaction_triggered=bool(getattr(prepared, "compaction_triggered", False)),
+        compaction_trigger=str(getattr(prepared, "compaction_trigger", "") or ""),
+        prompt_too_long=ptl,
+        retry_attempts=attempts,
+        turn_latency_ms=latency_ms,
+    )
+
+
 async def _iter_conversation_turn_events(
     *,
     runner: Any,
@@ -100,6 +133,9 @@ async def _iter_conversation_turn_events(
     invocation_id: Optional[str] = None,
     session_service_provider: Callable[[], Any] | None = None,
     run_mode: str = RUN_MODE_FOREGROUND,
+    agent_system: str = "",
+    agent_task: str = "",
+    prompt_integration_mode: str = "",
 ) -> AsyncIterator[dict[str, Any]]:
     """Internal semantic event stream shared by protocol serializers."""
     provider = session_service_provider or resolve_session_service
@@ -117,6 +153,8 @@ async def _iter_conversation_turn_events(
             model=model,
             model_metadata=model_metadata,
             session_service_provider=provider,
+            # PR D1：双阈值门控透传（仅 preview 用，不改会话）。
+            prompt_integration_mode=prompt_integration_mode,
         )
     else:
         compaction_preview = CompactionPlan(
@@ -155,6 +193,11 @@ async def _iter_conversation_turn_events(
             governance_state=governance,
             session_service_provider=provider,
             run_mode=entry_run_mode,
+            runner=runner,
+            runtime_type=_runner_type_name(runner),
+            agent_system=agent_system,
+            agent_task=agent_task,
+            prompt_integration_mode=prompt_integration_mode,
         )
         # prepared 之后的 run_status 写入复用 prepared 的 mode/trigger
         run_mode = prepared.run_mode
@@ -180,6 +223,7 @@ async def _iter_conversation_turn_events(
         user_id=user_id,
         user_input=prepared.user_input,
     )
+    prepared.memory_recall_events = ambient_contexts.get("memory_recall_events", [])
     runtime_context = PlatformInvocationContext(
         agent_id=agent_id,
         user_id=user_id,
@@ -200,9 +244,7 @@ async def _iter_conversation_turn_events(
         model_options=prepared.model_options,
         kb_context=ambient_contexts.get("kb_context"),
         memory_context=ambient_contexts.get("memory_context"),
-        tool_approval_mode=str(
-            prepared.request_metadata.get("tool_approval_mode") or ""
-        ),
+        tool_approval_mode=str(prepared.request_metadata.get("tool_approval_mode") or ""),
     )
     if prepared.compaction_triggered:
         yield {
@@ -254,7 +296,11 @@ async def _iter_conversation_turn_events(
             response_id=response_id,
         )
         _set_conversation_input_attributes(span, prepared.user_input or prepared.user_display_input)
+        _set_context_plan_attributes(span, prepared.shadow_context_plan)
         trace_metadata = _span_feedback_metadata(span)
+        _baseline_turn_start = time.monotonic()
+        _baseline_ptl = False
+        _baseline_attempts = 0
         yield {
             "type": "started",
             "session_id": prepared.session_id,
@@ -558,12 +604,24 @@ async def _iter_conversation_turn_events(
                                 tool_call_id = str(
                                     chunk.get("call_id") or chunk.get("run_id") or tool_run_id
                                 ).strip()
+                                # PR C：tool_result 单项预算（仅 ksadk_hosted 门控）。
+                                # bound 进 content.parts[0].text（下一轮 history → 模型输入的那条），  # noqa: E501
+                                # metadata.tool_output 保留原值（UI/Responses 读取方不受影响）。
+                                # enabled=False → (str(output), {}) 与旧逻辑字节级一致。
+                                _tool_output_raw = chunk.get("tool_output", "")
+                                _budget_enabled = prepared.prompt_integration_mode == "ksadk_hosted"
+                                _budgeted_text, _budget_extras = budget_tool_result_for_event(
+                                    tool_name=tool_name,
+                                    tool_output=_tool_output_raw,
+                                    tool_call_id=tool_call_id,
+                                    enabled=_budget_enabled,
+                                )
                                 checkpoint_metadata = _latest_checkpoint_metadata_for_run(
                                     await provider().get_events(prepared.session_id),
                                     tool_run_id,
                                 )
                                 approval_interrupt_info = approval_interrupt_info_from_result(
-                                    chunk.get("tool_output", ""),
+                                    _tool_output_raw,
                                     fallback_tool_name=tool_name,
                                     tool_args=tool_args,
                                     run_id=tool_run_id,
@@ -602,17 +660,18 @@ async def _iter_conversation_turn_events(
                                     session_id=prepared.session_id,
                                     author=runner_name,
                                     role="user",
-                                    text=str(chunk.get("tool_output", "")),
+                                    text=_budgeted_text,
                                     invocation_id=prepared.invocation_id,
                                     event_type="tool_result",
                                     metadata={
                                         "tool_name": tool_name,
-                                        "tool_output": chunk.get("tool_output", ""),
+                                        "tool_output": _tool_output_raw,
                                         "run_id": tool_run_id,
                                         "tool_call_id": tool_call_id,
                                         "observability": _tool_observability_metadata(
-                                            tool_name, chunk.get("tool_output", "")
+                                            tool_name, _tool_output_raw
                                         ),
+                                        **_budget_extras,
                                         "tool_receipt": _tool_receipt_metadata(
                                             session_id=prepared.session_id,
                                             run_id=tool_run_id,
@@ -624,8 +683,8 @@ async def _iter_conversation_turn_events(
                                             framework_ref=checkpoint_metadata.get("framework_ref"),
                                             status=(
                                                 "failed"
-                                                if isinstance(chunk.get("tool_output"), Mapping)
-                                                and chunk.get("tool_output", {}).get("ok") is False
+                                                if isinstance(_tool_output_raw, Mapping)
+                                                and _tool_output_raw.get("ok") is False
                                                 else "completed"
                                             ),
                                         ),
@@ -723,6 +782,8 @@ async def _iter_conversation_turn_events(
                 return
             except Exception as exc:
                 if attempt == 0 and not emitted_anything and _is_prompt_too_long_error(exc):
+                    _baseline_ptl = True
+                    _baseline_attempts = attempt + 1
                     yield {"type": "compaction", "phase": "start", "trigger": "prompt_too_long"}
                     try:
                         checkpoint = await _compact_conversation_history_with_governance(
@@ -736,6 +797,15 @@ async def _iter_conversation_turn_events(
                             trigger="prompt_too_long",
                             keep_tail_groups=PTL_RETRY_KEEP_TAIL_GROUPS,
                             session_service_provider=provider,
+                            # PR D1：PTL 路径仍 force=True；透传 ownership 便于未来按门控调策略。
+                            prompt_integration_mode=getattr(
+                                prepared, "prompt_integration_mode", ""
+                            ),
+                            compaction_owner=str(
+                                (getattr(prepared, "shadow_context_plan", None) or {}).get(
+                                    "compaction_owner", ""
+                                )
+                            ),
                         )
                     except RuntimeCircuitOpen as circuit_exc:
                         await append_run_status_event(
@@ -887,6 +957,21 @@ async def _iter_conversation_turn_events(
             run_trigger=run_trigger,
         )
         _set_conversation_usage_attributes(span, assistant_metadata.get("usage"))
+        _set_prompt_cache_attributes(
+            span,
+            session_id=prepared.session_id,
+            plan=prepared.shadow_context_plan,
+            usage=assistant_metadata.get("usage"),
+        )
+        _set_prompt_source_attributes(span, getattr(prepared, "compiled_prompt", None))
+        _record_baseline_turn(
+            prepared=prepared,
+            model=model,
+            usage=assistant_metadata.get("usage"),
+            ptl=_baseline_ptl,
+            attempts=_baseline_attempts,
+            turn_start_monotonic=_baseline_turn_start,
+        )
         _finish_span()
         yield {
             "type": "completed",

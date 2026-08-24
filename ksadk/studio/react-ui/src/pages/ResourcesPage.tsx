@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import {
   Check, CircleAlert, Cpu, Database, Eye, Network, Plus, Search, Sparkles, Wrench, Zap,
 } from "lucide-react";
@@ -7,6 +7,8 @@ import { FormProvider, useForm, type Resolver } from "react-hook-form";
 import { Drawer, InlineAlert } from "../components/Drawer";
 import { SkillFileBrowser } from "../components/SkillFileBrowser";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { MoreActionsMenu } from "../components/MoreActionsMenu";
+import { PageHeaderActions } from "../components/PageHeaderPortal";
 import { showToast } from "../components/Toast";
 import { apiFetch } from "../api";
 import { FileDropzone } from "../components/ui/FileDropzone";
@@ -66,7 +68,7 @@ const SOURCE_LABELS: Record<string, string> = {
   local: "工作区自定义",
   market: "市场",
 };
-const RESOURCE_PAGE_SIZE = 40;
+const DEFAULT_RESOURCE_PAGE_SIZE = 20;
 
 async function errorMessage(res: Response, fallback: string): Promise<string> {
   const text = await res.text().catch(() => "");
@@ -87,10 +89,13 @@ function formatByteCount(value: number): string {
 }
 
 export function ResourcesPage({ kind, onKindChange, refreshTick }: { kind: ResourceKind; onKindChange: (k: ResourceKind) => void; refreshTick: number }) {
-  void onKindChange;
   const [catalog, setCatalog] = useState<ResItem[]>([]);
   const [search, setSearch] = useState("");
+  const deferredSearch = useDeferredValue(search);
   const [statusFilter, setStatusFilter] = useState("");
+  const [sourceFilter, setSourceFilter] = useState("");
+  const [sort, setSort] = useState("default");
+  const [pageSize, setPageSize] = useState(DEFAULT_RESOURCE_PAGE_SIZE);
   const [pageIndex, setPageIndex] = useState(0);
   const [cursorStack, setCursorStack] = useState<Array<string | null>>([null]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
@@ -112,11 +117,12 @@ export function ResourcesPage({ kind, onKindChange, refreshTick }: { kind: Resou
     const seq = ++requestSeq.current;
     const params = new URLSearchParams({
       kind,
-      limit: String(RESOURCE_PAGE_SIZE),
-      sort: "default",
+      limit: String(pageSize),
+      sort,
     });
-    if (search.trim()) params.set("query", search.trim());
+    if (deferredSearch.trim()) params.set("query", deferredSearch.trim());
     if (statusFilter) params.set("status", statusFilter);
+    if (sourceFilter) params.set("source", sourceFilter);
     if (cursor) params.set("cursor", cursor);
     setLoading(true);
     setLoadError("");
@@ -137,7 +143,7 @@ export function ResourcesPage({ kind, onKindChange, refreshTick }: { kind: Resou
     } finally {
       if (requestSeq.current === seq) setLoading(false);
     }
-  }, [kind, search, statusFilter]);
+  }, [deferredSearch, kind, pageSize, sort, sourceFilter, statusFilter]);
 
   const resetAndLoad = useCallback(() => {
     setCursorStack([null]);
@@ -205,7 +211,7 @@ export function ResourcesPage({ kind, onKindChange, refreshTick }: { kind: Resou
     {
       id: "actions",
       header: "操作",
-      minWidth: 290,
+      minWidth: 160,
       className: "actions-column",
       headerClassName: "actions-column",
       cell: item => (
@@ -240,14 +246,27 @@ export function ResourcesPage({ kind, onKindChange, refreshTick }: { kind: Resou
   }, [loadPage, nextCursor, pageIndex]);
 
   return (
-    <div className="page-container" data-layout="data" data-scroll-mode="data">
-      <header className="page-header">
-        <div><h1>{meta.title}</h1><p>{meta.description}</p></div>
+    <div className="page-container" data-layout="document">
+      <PageHeaderActions>
         <button className="button accent" type="button" onClick={handleAdd}>
           <Plus size={15} /><span>{meta.addLabel}</span>
         </button>
-      </header>
+      </PageHeaderActions>
       <div className="data-page-body table-data-body">
+        <div className="page-tabs" role="tablist" aria-label="资源类型">
+          {(Object.keys(KIND_META) as ResourceKind[]).map(tabKind => (
+            <button
+              key={tabKind}
+              type="button"
+              role="tab"
+              aria-selected={kind === tabKind}
+              onClick={() => onKindChange(tabKind)}
+            >
+              {KIND_META[tabKind].title}
+              {kind === tabKind && <span className="n">{total}</span>}
+            </button>
+          ))}
+        </div>
         <div className="section-toolbar">
           <div className="search-field">
             <Search size={14} />
@@ -266,6 +285,41 @@ export function ResourcesPage({ kind, onKindChange, refreshTick }: { kind: Resou
             ]}
             onValueChange={value => setStatusFilter(value === "__all__" ? "" : value)}
           />
+          <StudioSelect
+            className="compact-select"
+            ariaLabel="筛选资源来源"
+            value={sourceFilter || "__all__"}
+            options={[
+              { value: "__all__", label: "全部来源" },
+              { value: "provider", label: "模型服务" },
+              { value: "builtin", label: "ksadk 内置" },
+              { value: "local", label: "工作区自定义" },
+              { value: "market", label: "市场" },
+            ]}
+            onValueChange={value => setSourceFilter(value === "__all__" ? "" : value)}
+          />
+          <StudioSelect
+            className="compact-select"
+            ariaLabel="资源排序"
+            value={sort}
+            options={[
+              { value: "default", label: "默认排序" },
+              { value: "displayName:asc", label: "名称升序" },
+              { value: "displayName:desc", label: "名称降序" },
+            ]}
+            onValueChange={setSort}
+          />
+          <StudioSelect
+            className="compact-select"
+            ariaLabel="每页显示数量"
+            value={String(pageSize)}
+            options={[
+              { value: "20", label: "每页 20 条" },
+              { value: "50", label: "每页 50 条" },
+              { value: "100", label: "每页 100 条" },
+            ]}
+            onValueChange={value => setPageSize(Number(value))}
+          />
         </div>
         <StudioDataTable
           columns={columns}
@@ -283,7 +337,7 @@ export function ResourcesPage({ kind, onKindChange, refreshTick }: { kind: Resou
           }}
           pagination={{
             pageIndex,
-            pageSize: RESOURCE_PAGE_SIZE,
+            pageSize,
             total,
             hasNextPage: Boolean(nextCursor),
             onPreviousPage: previousPage,
@@ -342,7 +396,7 @@ function ResourceDetailCell({ item }: { item: ResItem }) {
     return <><strong>{value}</strong><span className="resource-origin">{origin}</span></>;
   }
   if (item.kind === "tool") {
-    return <span className="status-badge neutral">{item.contract?.group || item.category || "general"}</span>;
+    return <span className="tag">{item.contract?.group || item.category || "general"}</span>;
   }
   return <span className="mono">{item.version}</span>;
 }
@@ -369,9 +423,14 @@ function ResourceCapabilityCell({ item }: { item: ResItem }) {
 function ResourceStatusCell({ item }: { item: ResItem }) {
   if (item.kind === "model") {
     const configured = item.status === "ready";
-    return <span className={`status-badge ${configured ? "success" : "warning"}`}>{configured ? "凭证已配置" : "凭证未配置"}</span>;
+    return <span className="badge" data-state={configured ? "ready" : "pending"}>{configured ? "凭证已配置" : "凭证未配置"}</span>;
   }
-  return <span className={`status-badge ${item.status === "ready" ? "success" : "warning"}`}>{item.status}</span>;
+  const label = item.status === "ready" ? "可用"
+    : item.status === "failed" || item.status === "unhealthy" ? "异常"
+      : item.status === "unresolved" ? "未解析"
+        : item.status === "missing-secret" ? "缺少凭证"
+          : item.status;
+  return <span className="badge" data-state={item.status === "ready" ? "ready" : item.status === "failed" || item.status === "unhealthy" ? "failed" : "pending"}>{label}</span>;
 }
 
 function ResourceActionsCell({ item, onConfigure, onView, onProbe, onDelete }: {
@@ -381,31 +440,23 @@ function ResourceActionsCell({ item, onConfigure, onView, onProbe, onDelete }: {
   onProbe: () => void;
   onDelete: () => void;
 }) {
+  const menuItems = item.kind === "mcp"
+    ? [
+      { label: "重新探测", onSelect: onProbe, disabled: item.source !== "local" },
+      ...(item.source === "local" ? [{ label: "删除", danger: true, onSelect: onDelete }] : []),
+    ]
+    : [
+      { label: "查看详情", onSelect: onView },
+      ...(item.source === "local" ? [{ label: "删除", danger: true, onSelect: onDelete }] : []),
+    ];
+
   return (
-    <>
-        {item.kind === "model" && (
-          <>
-            <button className="button secondary small" type="button" onClick={onConfigure}>配置凭证</button>
-            {item.source === "local" && <button className="button tertiary small" type="button" onClick={onDelete}>删除</button>}
-          </>
-        )}
-        {item.kind === "mcp" && item.source === "local" && (
-          <>
-            <button className="button tertiary small" type="button" onClick={onView}>查看</button>
-            <button className="button secondary small" type="button" onClick={onProbe}>重新探测</button>
-            <button className="button tertiary small" type="button" onClick={onDelete}>删除</button>
-          </>
-        )}
-        {item.kind === "mcp" && item.source !== "local" && (
-          <button className="button tertiary small" type="button" onClick={onView}>查看</button>
-        )}
-        {(item.kind === "tool" || item.kind === "skill") && (
-          <>
-            <button className="button tertiary small" type="button" onClick={onView}>查看</button>
-            {item.source === "local" && <button className="button tertiary small" type="button" onClick={onDelete}>删除</button>}
-          </>
-        )}
-    </>
+    <div className="row-actions">
+      <button className="button secondary small" type="button" onClick={item.kind === "model" ? onConfigure : onView}>
+        {item.kind === "model" ? "配置凭证" : "查看"}
+      </button>
+      <MoreActionsMenu label={`${item.displayName} 的更多操作`} items={menuItems} />
+    </div>
   );
 }
 
@@ -674,8 +725,8 @@ function AddModelDrawer({ onClose, onAdded }: { onClose: () => void; onAdded: ()
       : a.status === "recognized" ? "可识别"
       : a.status === "unavailable" ? "不存在"
       : a.status === "unreachable" ? "不可达" : "错误"}`;
-  const attemptClass = (a: any) =>
-    a.status === "ok" ? "success" : a.status === "unavailable" || a.status === "unreachable" ? "neutral" : "warning";
+  const attemptState = (a: any) =>
+    a.status === "ok" ? "ready" : a.status === "unavailable" || a.status === "unreachable" ? "failed" : "pending";
 
   return (
     <FormProvider {...modelForm}>
@@ -711,7 +762,7 @@ function AddModelDrawer({ onClose, onAdded }: { onClose: () => void; onAdded: ()
 
       <FormField label="接口地址" requirement="required" htmlFor="amEndpoint" hint="支持主机、/v1、Chat Completions 或 Responses 地址；智能探测会自动归一化。" error={modelForm.formState.errors.endpointUrl?.message}>
         <div>
-        {wireApi && <span className="status-badge info">{wireApi === "responses" ? "Responses 协议" : "Chat 协议"}</span>}
+        {wireApi && <span className="tag">{wireApi === "responses" ? "Responses 协议" : "Chat 协议"}</span>}
         <div style={{ display: "flex", gap: 8, marginBottom: 10, alignItems: "center" }}>
           <div className="segmented-control">
             <button type="button" className={addressMode === "endpoint" ? "selected" : ""} onClick={() => modelForm.setValue("addressMode", "endpoint")}>完整 endpointUrl</button>
@@ -725,7 +776,7 @@ function AddModelDrawer({ onClose, onAdded }: { onClose: () => void; onAdded: ()
         {probeAttempts.length > 0 && (
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 10 }}>
             {probeAttempts.map((a, i) => (
-              <span key={i} className={`status-badge ${attemptClass(a)}`} title={a.endpointUrl}>{attemptLabel(a)}</span>
+              <span key={i} className="badge" data-state={attemptState(a)} title={a.endpointUrl}>{attemptLabel(a)}</span>
             ))}
           </div>
         )}
@@ -1229,7 +1280,7 @@ function SkillDiscoveryDrawer({
                 <small>{details}</small>
                 {importState && <small className={`skill-import-state ${result?.status || "pending"}`}>{importState}</small>}
               </span>
-              <span className={`status-badge ${candidate.status === "ready" ? "success" : "warning"}`}>
+              <span className="badge" data-state={candidate.status === "ready" ? "ready" : "pending"}>
                 {statusLabel}{risk.requiresReview ? " · 需复核" : ""}
               </span>
               {valid && (

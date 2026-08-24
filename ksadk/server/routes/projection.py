@@ -15,7 +15,8 @@ from ksadk.conversations.session_title import (
     build_fallback_title,
     build_heuristic_title,
 )
-from ksadk.events.runtime_event import EventType
+from ksadk.events.canonical import ContinuationCreated
+from ksadk.events.canonical_store import session_event_to_runtime_event
 from ksadk.server.factory import get_runtime_execution, get_state
 from ksadk.sessions import Session, SessionEvent
 
@@ -149,6 +150,13 @@ def _runtime_continuity_payload() -> dict[str, Any]:
 
 
 def _event_to_action_payload(event: SessionEvent) -> dict[str, Any]:
+    """Serialize a stored SessionEvent for the REST action wire.
+
+    公开承诺字段（契约声明见 ``ksadk/events/projections.py``）：
+    ``EventId``/``SessionId``/``Author``/``EventType``/``Content``/``Timestamp``/
+    ``SeqId``（有值时附 ``InvocationId``）。这是存储事件形态本身的透传，
+    ``Content``/``Metadata`` 的内部结构不在承诺范围。
+    """
     payload = {
         "EventId": event.id,
         "SessionId": event.session_id,
@@ -231,34 +239,41 @@ async def _iter_with_idle_heartbeat(source: AsyncIterator[Any]):
 
 
 def _checkpoint_event_to_action_payload(event: SessionEvent) -> dict[str, Any] | None:
+    """Project a checkpoint-bearing event into the REST checkpoint action payload.
+
+    公开承诺字段（契约声明见 ``ksadk/events/projections.py``）：``EventId``/
+    ``SessionId``/``InvocationId``/``SeqId``/``Timestamp``/``RunId``/
+    ``CheckpointId``/``Framework``/``FrameworkRef``/``IsResumable``/
+    ``ResumeStatus``/``IsTerminal``/``NextNode``。来源为显式 ``run_checkpoint``
+    事件元数据，或 ``continuation.created`` canonical 事件的投影。
+    非 checkpoint 事件（或不可识别的 continuation_kind）返回 ``None``。
+    内部不保证字段：其余元数据透传键（``Metadata`` 内容随存储演进可变）。
+    """
     if event.event_type == "run_checkpoint":
         metadata = event.metadata or {}
-    elif event.event_type == EventType.CHECKPOINT_CREATED:
-        content = event.content or {}
-        payload = content.get("payload") if isinstance(content, Mapping) else {}
-        if not isinstance(payload, Mapping):
+    else:
+        canonical = session_event_to_runtime_event(event)
+        if not isinstance(canonical, ContinuationCreated):
             return None
-        framework_ref = payload.get("framework_ref") or payload.get("resume_target") or {}
-        if not isinstance(framework_ref, Mapping):
-            framework_ref = {}
-        framework = str(payload.get("framework") or "").strip()
-        if not framework and len(framework_ref) == 1:
-            framework = str(next(iter(framework_ref)))
-        capability = payload.get("capability")
+        if canonical.continuation_kind != "graph_checkpoint":
+            return None
+        framework = canonical.source.framework
+        framework_ref = {framework: dict(canonical.ref)}
+        capability = canonical.source.metadata.get("capability")
         capability = capability if isinstance(capability, Mapping) else {}
         metadata = {
             **dict(event.metadata or {}),
-            "run_id": str(payload.get("run_id") or event.invocation_id or ""),
-            "checkpoint_id": str(payload.get("checkpoint_id") or ""),
+            **dict(canonical.source.metadata),
+            "continuation_kind": canonical.continuation_kind,
+            "run_id": canonical.run_id,
+            "checkpoint_id": canonical.continuation_id,
             "framework": framework,
             "framework_ref": dict(framework_ref),
-            "backend": str(payload.get("backend") or capability.get("backend") or "unknown"),
-            "scope": str(payload.get("scope") or capability.get("scope") or "unknown"),
-            "durable": bool(payload.get("durable", capability.get("durable", False))),
-            "is_resumable": bool(payload.get("is_resumable", True)),
+            "backend": str(capability.get("backend") or "unknown"),
+            "scope": str(capability.get("scope") or "unknown"),
+            "durable": bool(capability.get("durable", False)),
+            "is_resumable": canonical.resumable,
         }
-    else:
-        return None
     run_id = str(metadata.get("run_id") or "").strip()
     checkpoint_id = str(metadata.get("checkpoint_id") or "").strip()
     framework = str(metadata.get("framework") or "").strip()

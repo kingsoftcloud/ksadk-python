@@ -158,7 +158,7 @@ def test_built_wheel_includes_react_studio_static_entrypoint():
         studio_index = archive.read("ksadk/studio/static/index.html").decode("utf-8")
 
     assert '<div id="root"></div>' in studio_index
-    assert '/static/assets/' in studio_index
+    assert "/static/assets/" in studio_index
     assert "ksadk/studio/static/shared-chat.css" not in names
     assert any(name.startswith("ksadk/studio/static/assets/") for name in names)
 
@@ -323,7 +323,7 @@ def test_built_wheel_makes_langchain_openai_framework_optional(tmp_path: Path):
         )
         metadata = BytesParser().parsebytes(archive.read(metadata_path))
 
-    assert metadata["Version"] == "0.8.1"
+    assert metadata["Version"] == "0.8.2"
     requirements = [Requirement(raw) for raw in metadata.get_all("Requires-Dist", [])]
     assert all(
         requirement.name != "langchain-openai" or requirement.marker is not None

@@ -11,7 +11,7 @@
 - 测试实现:用 fake(见 tests/runners/test_codex_runtime.py / test_adapter_contract.py),
   不需要真 CLI 二进制。
 
-诚实边界:本模块的 SDK **方法面**已对安装的 ``openai-codex==0.144.4`` 实证(方法存在性 +
+诚实边界:本模块的 SDK **方法面**已对安装的 ``openai-codex==0.147.0`` 实证(方法存在性 +
 协程/asyncgen 形态);Notification → RuntimeEvent 的**字段级** phase 映射需在接真实 codex
 后端时按实况对齐(结构已按生成的 payload 类型映射,见 ``_notification_to_event_dict``)。
 """
@@ -31,10 +31,33 @@ from uuid import uuid4
 
 from ksadk.model_proxy import ProxyConfig, ProxyServer
 from ksadk.model_proxy.cache import CapabilityCache, credential_scope
-from ksadk.model_proxy.detect import probe_responses_capability
+from ksadk.model_proxy.detect import (
+    CODEX_DIRECT_REQUIRED_TOOL_TYPES,
+    CODEX_OPTIONAL_TOOL_TYPES,
+    ModelCapabilities,
+    probe_responses_capability,
+)
 
 # 探测缓存单例:能力判定跨 client 共享,按 (model, base, credential_scope) 长缓存
 _CAPABILITY_CACHE = CapabilityCache(ttl=3600)
+
+
+class CodexCapabilityUnavailableError(RuntimeError):
+    """A caller-required Codex capability cannot be preserved by this route."""
+
+
+@dataclass(frozen=True)
+class _CapabilityRoute:
+    use_proxy: bool
+    disabled_tool_types: frozenset[str] = frozenset()
+    unavailable_required_tool_types: frozenset[str] = frozenset()
+
+    def require_available(self) -> None:
+        if self.unavailable_required_tool_types:
+            names = ", ".join(sorted(self.unavailable_required_tool_types))
+            raise CodexCapabilityUnavailableError(
+                f"required Codex capabilities unavailable on selected route: {names}"
+            )
 
 
 @dataclass
@@ -81,11 +104,48 @@ def _upgrade_http_to_https(upstream: str) -> str:
     return upstream
 
 
-def _probe_requires_proxy(model: str, base: str, key: str) -> bool:
-    """探测上游:只有**确凿不支持 responses** 才返回 True(走代理)。
+def _route_for_capabilities(
+    caps: ModelCapabilities,
+    *,
+    required_tool_types: set[str] | frozenset[str] = frozenset(),
+) -> _CapabilityRoute:
+    """Split protocol requirements from optional tool degradation.
 
-    supported/unknown 都返回 False(直连)。unknown(故障)保守直连——故障 ≠ 模型
-    不支持 responses,不 silent 改变接入方式。结果经 CapabilityCache 缓存(singleflight)。
+    The current Studio/Codex launch contract has no user-facing required-tool
+    declaration, so callers pass the default empty set.  This explicit input is
+    the fail-closed seam for a future ``web_search=required`` contract.
+    """
+
+    native_ready = caps.responses_supported is True and CODEX_DIRECT_REQUIRED_TOOL_TYPES.issubset(
+        caps.tool_types
+    )
+    use_proxy = not native_ready
+    disabled = (
+        CODEX_OPTIONAL_TOOL_TYPES
+        if use_proxy
+        else CODEX_OPTIONAL_TOOL_TYPES.difference(caps.tool_types)
+    )
+    required = frozenset(required_tool_types)
+    unavailable = (required.difference(caps.tool_types)) | required.intersection(disabled)
+    return _CapabilityRoute(
+        use_proxy=use_proxy,
+        disabled_tool_types=frozenset(disabled),
+        unavailable_required_tool_types=frozenset(unavailable),
+    )
+
+
+def _probe_capability_route(
+    model: str,
+    base: str,
+    key: str,
+    *,
+    required_tool_types: set[str] | frozenset[str] = frozenset(),
+) -> _CapabilityRoute:
+    """Probe once and return protocol plus optional-tool routing decisions.
+
+    纯文本 Responses 成功不代表能接收 Codex 0.147 的完整
+    ``additional_tools`` 方言。namespace/custom 缺失或未知走兼容代理；仅缺
+    web_search 时保留原生 Responses，并在 Codex 生成请求前禁用该可选工具。
     """
 
     def probe(m: str, b: str):
@@ -95,7 +155,13 @@ def _probe_requires_proxy(model: str, base: str, key: str) -> bool:
             return probe_responses_capability(client, b, key, m, timeout=15.0)
 
     caps = _CAPABILITY_CACHE.get_or_probe(model, base, credential_scope(key), probe)
-    return caps.verdict == "unsupported"
+    return _route_for_capabilities(caps, required_tool_types=required_tool_types)
+
+
+def _probe_requires_proxy(model: str, base: str, key: str) -> bool:
+    """Compatibility predicate for callers/tests that only need protocol choice."""
+
+    return _probe_capability_route(model, base, key).use_proxy
 
 
 class CodexClient(ABC):
@@ -220,7 +286,7 @@ class AsyncCodexClient(CodexClient):
                     f"{owner.__name__}.{method_name}(版本不兼容)"
                 )
 
-        # AsyncCodex 0.144.4 only accepts one CodexConfig positional/keyword.
+        # AsyncCodex 0.147.0 only accepts one CodexConfig positional/keyword.
         config, self._proxy = self._maybe_apply_proxy(
             config,
             proxy_observer=proxy_observer,
@@ -239,7 +305,7 @@ class AsyncCodexClient(CodexClient):
     def _install_approval_bridge(self) -> None:
         """Replace the SDK's unconditional accept handler with a HITL bridge.
 
-        ``openai-codex==0.144.4`` exposes approval callbacks only on its sync
+        ``openai-codex==0.147.0`` exposes approval callbacks only on its sync
         JSON-RPC client.  The public ``AsyncCodex`` wrapper owns that client, so
         this pinned compatibility seam is validated eagerly instead of silently
         auto-accepting tool and file changes.
@@ -304,24 +370,29 @@ class AsyncCodexClient(CodexClient):
                 # active run; never fall back to the SDK's auto-accept default.
                 return {"decision": "decline"}
             self._pending_approvals[approval_id] = pending
+            # 下发原生 JSON-RPC requestApproval 消息（synthetic id=approval_id）：
+            # canonical mapper 只认原生方法（unsupported_method fail-closed），
+            # 旧合成 ``item/approval/requested`` 事件会让整个 run 失败。
             approval_queue.put(
                 {
-                    "method": "item/approval/requested",
-                    "params": {
-                        "id": approval_id,
-                        "threadId": thread_id,
-                        "kind": (
-                            "command"
-                            if method == "item/commandExecution/requestApproval"
-                            else "file_change"
-                        ),
-                        "detail": raw,
-                    },
+                    "id": approval_id,
+                    "method": method,
+                    "params": raw,
                 }
             )
         pending.resolved.wait()
         with self._approval_lock:
             self._pending_approvals.pop(approval_id, None)
+        # 回包也以 JSON-RPC response 形态下发，mapper 才会产出
+        # InteractionResolved（原 call_id 闭环）并释放 continuation。
+        response = pending.response or {"decision": "decline"}
+        if approval_queue is not None:
+            approval_queue.put(
+                {
+                    "id": approval_id,
+                    "result": dict(response),
+                }
+            )
         return pending.response or {"decision": "decline"}
 
     def _handle_user_input_request(
@@ -455,19 +526,23 @@ class AsyncCodexClient(CodexClient):
         - ``KSADK_CODEX_USE_PROXY=1`` → 强制开代理;``=0`` → 强制直连(可人工覆盖误判)。
         - **未设 env 时智能探测**:OpenAI 官方 base_url 直连(不探测);自定义上游
           (星流等)探测 responses 能力(detect.py + CapabilityCache 缓存,一次探测长缓存):
-          - ``supported`` → 直连(原生 responses 可用)
-          - ``unsupported`` → 自动启用代理(chat 模型,经转换层)
-          - ``unknown``(故障/超时)→ **保守直连**,不 silent 改变接入方式
+          - namespace/custom 支持 → 原生 Responses 直连
+          - 仅 web_search 缺失 → 仍直连，并关闭该可选能力
+          - namespace/custom 缺失或无法确认 → 自动启用代理
         - 凭证闭合:codex 子进程只拿随机 KSADK_PROXY_TOKEN;上游 key 留父进程。
         - 互斥:launch_args_override 已设时 raise(override 整体覆盖命令行)。
+        - P1:直连分支(协议必需工具面确认、env=0)遇到自定义 base 也注入
+          ``ksadk_direct`` provider——否则 codex 子进程回落默认 OpenAI 官方
+          端点,自定义上游(OPENAI_API_BASE)静默失效。已显式设
+          ``model_provider=`` 的 config 不覆盖;官方 base 不注入。
 
         返回 (新 config, ProxyServer | None)。staticmethod 便于单测。
         """
         runtime_env = {**os.environ, **(getattr(config, "env", None) or {})}
         env_val = runtime_env.get("KSADK_CODEX_USE_PROXY")
-        if env_val == "0":
-            return config, None
-        if env_val == "1":
+        if env_val in {"0", "direct"}:
+            return AsyncCodexClient._inject_direct_provider(config), None
+        if env_val in {"1", "forced"}:
             return AsyncCodexClient._start_proxy_and_inject(
                 config,
                 proxy_observer=proxy_observer,
@@ -483,12 +558,79 @@ class AsyncCodexClient(CodexClient):
             return config, None  # OpenAI 官方:直连,不探测
         model = runtime_env.get("OPENAI_MODEL_NAME") or runtime_env.get("MODEL_NAME") or ""
         key = runtime_env.get("KSADK_PROXY_UPSTREAM_KEY") or runtime_env.get("OPENAI_API_KEY") or ""
-        if _probe_requires_proxy(model, base, key):
+        # Probe the exact URL scheme that Codex/proxy will use.  Managed
+        # runtimes discover KSPMAS through its historical ``http://`` internal
+        # URL, while the provider is upgraded to HTTPS before execution.  A
+        # probe against HTTP can see only a redirect and incorrectly classify
+        # an HTTPS ``/responses`` 404 as unknown, causing a broken direct path.
+        probe_base = _upgrade_http_to_https(base)
+        route = _probe_capability_route(model, probe_base, key)
+        # Future required-tool declarations must be checked here before either
+        # proxying or suppressing optional tools.
+        if isinstance(route, bool):  # compatibility for injected test doubles
+            route = _CapabilityRoute(use_proxy=route)
+        route.require_available()
+        if route.use_proxy:
             return AsyncCodexClient._start_proxy_and_inject(
                 config,
                 proxy_observer=proxy_observer,
             )
-        return config, None
+        # 探测确认协议必需工具面:直连,但必须把自定义 base 配成 provider。
+        return (
+            AsyncCodexClient._inject_direct_provider(
+                config,
+                disabled_tool_types=route.disabled_tool_types,
+            ),
+            None,
+        )
+
+    @staticmethod
+    def _inject_direct_provider(
+        config: Any,
+        *,
+        disabled_tool_types: frozenset[str] = frozenset(),
+    ) -> Any:
+        """直连模式注入 ``ksadk_direct`` provider(P1:非 proxy 不丢自定义 base)。
+
+        - 无自定义 base / 官方 OpenAI base → 原样返回。
+        - 已设 ``model_provider=`` → 保留 provider，仅追加必要的可选工具关闭项。
+        - 否则追加 ``model_provider=ksadk_direct`` + base_url/env_key/wire_api
+          (responses;该分支只在探测确认或显式强制直连时到达,其余走 proxy)。
+        """
+        import dataclasses
+
+        from openai_codex import CodexConfig  # type: ignore[import-not-found]
+
+        cfg = config if isinstance(config, CodexConfig) else CodexConfig()
+        overrides = list(cfg.config_overrides or ())
+        if any(str(o).startswith("model_provider=") for o in overrides):
+            if "web_search" in disabled_tool_types and "web_search=disabled" not in overrides:
+                return dataclasses.replace(
+                    cfg,
+                    config_overrides=tuple([*overrides, "web_search=disabled"]),
+                )
+            return config
+        runtime_env = {**os.environ, **(cfg.env or {})}
+        base = (
+            runtime_env.get("KSADK_PROXY_UPSTREAM_BASE")
+            or runtime_env.get("OPENAI_BASE_URL")
+            or runtime_env.get("OPENAI_API_BASE")
+            or ""
+        )
+        if not base or _is_openai_official(base):
+            return config
+        base = _upgrade_http_to_https(base)
+        overrides += [
+            "model_provider=ksadk_direct",
+            "model_providers.ksadk_direct.name=ksadk_direct",
+            f"model_providers.ksadk_direct.base_url={base}",
+            "model_providers.ksadk_direct.env_key=OPENAI_API_KEY",
+            "model_providers.ksadk_direct.wire_api=responses",
+            "model_providers.ksadk_direct.supports_websockets=false",
+        ]
+        if "web_search" in disabled_tool_types and "web_search=disabled" not in overrides:
+            overrides.append("web_search=disabled")
+        return dataclasses.replace(cfg, config_overrides=tuple(overrides))
 
     @staticmethod
     def _start_proxy_and_inject(
@@ -587,7 +729,7 @@ class AsyncCodexClient(CodexClient):
     async def _start_manual_thread(self, config: Optional[dict[str, Any]]) -> Any:
         """Start a thread whose native approvals are reviewed by Studio users.
 
-        ``openai-codex==0.144.4`` exposes ``ApprovalsReviewer.user`` on the
+        ``openai-codex==0.147.0`` exposes ``ApprovalsReviewer.user`` on the
         generated app-server contract but omits it from the public
         ``ApprovalMode`` enum. Use that pinned wire contract explicitly rather
         than falling back to ``auto_review``.
@@ -999,7 +1141,7 @@ class AsyncCodexClient(CodexClient):
         """
         payload = notification.payload
         if hasattr(payload, "model_dump"):
-            params = payload.model_dump(mode="json")
+            params = payload.model_dump(mode="json", by_alias=True)
         else:
             params = getattr(payload, "params", None)
             if not isinstance(params, dict):

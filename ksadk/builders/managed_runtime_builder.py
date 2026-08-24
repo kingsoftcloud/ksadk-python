@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -22,35 +21,47 @@ _MANIFEST_KEYS = (
     "model",
     "models",
     "prompt",
+    "task_prompt",
     "skills",
     "mcp_servers",
     "sandbox",
     "approval_mode",
+    "context",
+    "memory",
 )
 
 
-class _RuntimeManifestDumper(yaml.SafeDumper):
-    """Keep multi-line prompts readable while preserving deterministic bytes."""
+def managed_runtime_lock_path(manifest_path: Path) -> Path:
+    """Return the immutable lock that accompanies a YAML-only declaration.
 
+    ``ManagedRuntime`` is not a user-code artifact.  Keeping its two small
+    declaration files next to one another makes that visible in both the
+    workspace and the build receipt, while still preserving a historical
+    manifest for rollback.
+    """
 
-def _represent_manifest_string(dumper: yaml.SafeDumper, value: str):
-    style = "|" if "\n" in value else None
-    return dumper.represent_scalar("tag:yaml.org,2002:str", value, style=style)
-
-
-_RuntimeManifestDumper.add_representer(str, _represent_manifest_string)
+    return manifest_path.with_suffix(".lock.json")
 
 
 def serialize_managed_runtime_manifest(manifest: dict[str, Any]) -> bytes:
-    """Serialize the canonical ManagedRuntime manifest used by every client."""
+    """Serialize the Server-canonical ManagedRuntime declaration.
 
-    return yaml.dump(
+    The Server validates ``ManifestSHA256`` after parsing and re-dumping YAML
+    with sorted keys.  Clients must hash those exact canonical bytes instead
+    of the editable source formatting, otherwise a valid Studio/CLI build is
+    rejected during ``CreateAgent``/``UpdateAgent`` admission.
+    """
+
+    canonical = yaml.safe_dump(
         manifest,
-        Dumper=_RuntimeManifestDumper,
         allow_unicode=True,
-        sort_keys=False,
+        sort_keys=True,
         default_flow_style=False,
-    ).encode("utf-8")
+        width=10_000,
+    )
+    if not canonical.endswith("\n"):
+        canonical += "\n"
+    return canonical.encode("utf-8")
 
 
 class ManagedRuntimeBuilder(BaseBuilder):
@@ -102,25 +113,28 @@ class ManagedRuntimeBuilder(BaseBuilder):
             "runtime": runtime,
             "manifest_sha256": manifest_sha256,
         }
-        lock_bytes = (
-            json.dumps(lock, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-        ).encode("utf-8")
+        lock_bytes = (json.dumps(lock, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode(
+            "utf-8"
+        )
 
         self.build_dir.mkdir(parents=True, exist_ok=True)
         name = str(config.get("name") or self.project_dir.name).strip() or self.project_dir.name
         project_version = str(config.get("version") or "1.0.0").strip() or "1.0.0"
-        artifact_path = self.build_dir / f"{name}-{project_version}-runtime.zip"
-        self._write_bundle(
-            artifact_path,
-            {
-                "agentengine.yaml": manifest_bytes,
-                "runtime-lock.json": lock_bytes,
-            },
+        # This local declaration receipt is retained for Studio rollback.
+        # It is deliberately *not* a ZIP: YAML agents have no user code, no
+        # KS3 artifact and no code-downloader path.  Version alone is mutable
+        # in an editable Agent, so retain the exact canonical YAML plus its
+        # lock under the content digest.
+        artifact_path = self.build_dir / (
+            f"{name}-{project_version}-{manifest_sha256[:16]}-runtime.yaml"
         )
+        lock_path = managed_runtime_lock_path(artifact_path)
+        artifact_path.write_bytes(manifest_bytes)
+        lock_path.write_bytes(lock_bytes)
         return BuildResult(
             success=True,
             artifact_path=artifact_path,
-            artifact_size=artifact_path.stat().st_size,
+            artifact_size=artifact_path.stat().st_size + lock_path.stat().st_size,
             metadata={
                 "agent_name": name,
                 "framework": str(config.get("framework") or ""),
@@ -161,13 +175,3 @@ class ManagedRuntimeBuilder(BaseBuilder):
             elif key in config:
                 normalized[key] = config[key]
         return normalized
-
-    @staticmethod
-    def _write_bundle(path: Path, files: dict[str, bytes]) -> None:
-        with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-            for name in sorted(files):
-                info = zipfile.ZipInfo(name)
-                info.date_time = (1980, 1, 1, 0, 0, 0)
-                info.compress_type = zipfile.ZIP_DEFLATED
-                info.external_attr = 0o100644 << 16
-                archive.writestr(info, files[name])

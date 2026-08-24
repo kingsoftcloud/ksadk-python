@@ -283,9 +283,7 @@ def test_discover_files_falls_back_to_filesystem_for_non_git_directory(tmp_path)
     (tmp_path / ".venv" / "bin").mkdir(parents=True)
     (tmp_path / ".venv" / "bin" / "python").write_text("generated\n", encoding="utf-8")
     (tmp_path / ".cache" / "ksadk-web").mkdir(parents=True)
-    (tmp_path / ".cache" / "ksadk-web" / "bundle.tgz").write_text(
-        "generated\n", encoding="utf-8"
-    )
+    (tmp_path / ".cache" / "ksadk-web" / "bundle.tgz").write_text("generated\n", encoding="utf-8")
 
     assert audit.discover_files(tmp_path) == ["README.md", "src/App.tsx"]
 

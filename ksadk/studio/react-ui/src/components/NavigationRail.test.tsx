@@ -76,4 +76,24 @@ describe("NavigationRail", () => {
     await user.click(screen.getByRole("button", { name: "设置" }));
     expect(onOpenSettings).toHaveBeenCalledOnce();
   });
+
+  it("adds evaluation as an isolated governance destination", async () => {
+    const user = userEvent.setup();
+    const onNavigate = vi.fn();
+    render(
+      <NavigationRail
+        view="agents"
+        resourceKind="model"
+        expanded
+        workspaceName="studio-test"
+        workspacePath="/workspace/studio-test"
+        runtimeReady
+        onNavigate={onNavigate}
+        onOpenSettings={() => undefined}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "评测" }));
+    expect(onNavigate).toHaveBeenCalledWith("evaluations", undefined);
+  });
 });

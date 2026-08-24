@@ -15,16 +15,6 @@ class Workspace:
     def __init__(self, root: Path | str) -> None:
         self.root = Path(root).expanduser().resolve()
 
-    def matches_configured_root_path(self, path: str) -> bool:
-        """Return whether a no-op workspace-open request names this exact root.
-
-        The local Studio daemon is intentionally bound to one workspace for its
-        lifetime.  Comparing the advertised canonical string avoids resolving
-        a client-supplied pathname in the workspace-open endpoint.
-        """
-
-        return path == os.fspath(self.root)
-
     def initialize(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
         for relative in (
@@ -67,28 +57,20 @@ class Workspace:
             )
 
     def resolve(self, relative: Path | str, *, must_exist: bool = False) -> Path:
-        root_path = os.path.realpath(os.fspath(self.root))
-        raw_path = os.fspath(relative)
-        requested_path = (
-            raw_path if os.path.isabs(raw_path) else os.path.join(root_path, raw_path)
-        )
-        candidate_path = os.path.realpath(requested_path)
-        if candidate_path == root_path:
-            candidate = self.root
+        raw = Path(relative)
+        if raw.is_absolute():
+            candidate = raw.resolve(strict=must_exist)
         else:
-            root_prefix = root_path if root_path.endswith(os.sep) else f"{root_path}{os.sep}"
-            # `realpath` resolves traversal and symlinks before this segment-boundary check.
-            if candidate_path.startswith(root_prefix):
-                candidate = Path(candidate_path)
-            else:
-                raise StudioError(
-                    "WORKSPACE_PATH_FORBIDDEN",
-                    "路径不在当前工作区内",
-                    status_code=403,
-                    details={"path": str(relative)},
-                )
-        if must_exist:
-            candidate.stat()
+            candidate = (self.root / raw).resolve(strict=must_exist)
+        try:
+            candidate.relative_to(self.root)
+        except ValueError as exc:
+            raise StudioError(
+                "WORKSPACE_PATH_FORBIDDEN",
+                "路径不在当前工作区内",
+                status_code=403,
+                details={"path": str(relative)},
+            ) from exc
         return candidate
 
     def relative(self, path: Path | str) -> str:

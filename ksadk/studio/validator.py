@@ -213,6 +213,25 @@ class AgentValidator:
                     )
                 )
 
+        # 方案 §5.2 / §6.1：ownership 必须与 runtime capability 兼容，不支持组合时报错不静默降级。
+        runtime_type = (
+            draft.spec.runtime.type if draft.spec.runtime
+            else draft.metadata.labels.get("agentkit.ksyun.com/framework", "")
+        )
+        ownership = draft.spec.context.ownership
+        try:
+            from ksadk.context_engine.capabilities import validate_ownership_for_runtime
+            validate_ownership_for_runtime(ownership, runtime_type=runtime_type)
+        except ValueError as exc:
+            diagnostics.append(
+                self._error(
+                    "OWNERSHIP_CAPABILITY_MISMATCH",
+                    str(exc),
+                    "spec.context.ownership",
+                    hint="按 Runtime capability 选择 ownership，不支持组合时 Build 会拒绝",
+                )
+            )
+
     @staticmethod
     def _error(
         code: str,

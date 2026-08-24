@@ -16,16 +16,22 @@ from fastapi import FastAPI, File, Header, Query, Request, Response, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.background import BackgroundTask
 
 from ksadk.studio.api_catalog_routes import register_catalog_routes
 from ksadk.studio.api_contracts import (
     AuthoringCommitRequest,
     BuildRequest,
+    CloudAgentVersionRollbackRequest,
+    CloudChatInteractionSubmitRequest,
+    CloudChatMessageRequest,
+    ContextPreviewRequest,
     ConversationAuthoringRequest,
     CreateAgentRequest,
-    EvaluationRequest,
+    ImportRootRequest,
     InteractionSubmitRequest,
     ProjectInspectRequest,
+    PromptCompileRequest,
     QuickAuthoringRequest,
     RollbackRequest,
     RunRequest,
@@ -58,6 +64,7 @@ from ksadk.studio.api_helpers import (
 from ksadk.studio.api_helpers import (
     sse as _sse,
 )
+from ksadk.studio.api_memory_routes import register_memory_routes
 from ksadk.studio.codex_manifest import CodexAgentManifest
 from ksadk.studio.contracts import (
     AgentAppearance,
@@ -94,6 +101,7 @@ def create_studio_app(
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         try:
+            await studio.run_service.recover_interrupted()
             yield
         finally:
             studio.credentials.clear_session()
@@ -143,6 +151,7 @@ def create_studio_app(
         large_upload_paths = {
             "/api/v1/catalog/skills:import": 52 * 1024 * 1024,
             "/api/v1/authoring/imports:inspect": 102 * 1024 * 1024,
+            "/api/v1/evaluation-files": 2 * 1024 * 1024 + 64 * 1024,
         }
         request_limit = large_upload_paths.get(request.url.path, 2 * 1024 * 1024)
         if content_length and int(content_length) > request_limit:
@@ -289,6 +298,16 @@ def create_studio_app(
         goal_objective = str(
             metadata.get("goal_objective") or metadata.get("goalObjective") or ""
         ).strip()
+        reasoning = payload.get("reasoning")
+        reasoning = reasoning if isinstance(reasoning, dict) else {}
+        reasoning_effort = str(reasoning.get("effort") or "").strip().lower()
+        if reasoning_effort and reasoning_effort not in {"low", "medium", "high"}:
+            raise StudioError(
+                "REASONING_EFFORT_INVALID",
+                "推理强度必须是 low、medium 或 high",
+                status_code=422,
+                field="reasoning.effort",
+            )
         session_id = _responses_session_id(payload, bridge=shared_web)
         response_id = str(
             metadata.get("invocation_id")
@@ -304,6 +323,7 @@ def create_studio_app(
             "ApprovalMode": requested_approval_mode,
             "CollaborationMode": collaboration_mode,
             "GoalObjective": goal_objective,
+            "ReasoningEffort": reasoning_effort,
         }
         bridge_payload["Model"] = shared_web.select_model(
             bridge_payload["AgentId"],
@@ -364,14 +384,14 @@ def create_studio_app(
             elif action == "DeleteSession":
                 data = shared_web.delete_session(str(payload.get("SessionId") or ""))
             elif action == "ListSessionMessages":
-                data = shared_web.list_messages(
+                data = await shared_web.list_messages(
                     str(payload.get("SessionId") or ""),
                     after_seq_id=_optional_int(payload.get("AfterSeqId")),
                     before_seq_id=_optional_int(payload.get("BeforeSeqId")),
                     limit=int(payload.get("Limit") or 50),
                 )
             elif action == "ListSessionEvents":
-                data = shared_web.list_session_events(str(payload.get("SessionId") or ""))
+                data = await shared_web.list_session_events(str(payload.get("SessionId") or ""))
             elif action == "RunAgent":
                 return StreamingResponse(
                     shared_web.stream_run(payload),
@@ -461,6 +481,7 @@ def create_studio_app(
                 "name": studio.workspace.root.name,
                 "path": str(studio.workspace.root),
             },
+            "operationScope": studio.deployment_operation_scope(),
             "features": {
                 "build": True,
                 "run": True,
@@ -472,6 +493,7 @@ def create_studio_app(
                 "reactChat": True,
             },
             "runtimes": studio.runtime_catalog(),
+            "importableProject": studio.detect_importable_project(),
         }
 
     @app.get("/api/v1/system/settings")
@@ -484,7 +506,8 @@ def create_studio_app(
 
     @app.post("/api/v1/workspaces:open")
     async def open_workspace(payload: WorkspaceOpenRequest):
-        if not studio.workspace.matches_configured_root_path(payload.path):
+        requested = Path(payload.path).expanduser().resolve()
+        if requested != studio.workspace.root:
             raise StudioError(
                 "WORKSPACE_PATH_FORBIDDEN",
                 "当前 Daemon 不允许切换到启动 root 之外的工作区",
@@ -740,6 +763,7 @@ def create_studio_app(
         agent_id: str,
         spec: AgentSpec,
         if_match: str | None = Header(default=None, alias="If-Match"),
+        name: str | None = Query(default=None, min_length=1, max_length=128),
     ):
         if not if_match:
             raise StudioError(
@@ -759,6 +783,7 @@ def create_studio_app(
             agent_id,
             spec,
             expected_revision=revision,
+            name=name,
         )
 
     @app.put("/api/v1/agents/{agent_id}/bindings")
@@ -797,6 +822,33 @@ def create_studio_app(
             agent_id,
             revision=payload.revision,
             level=payload.level,
+        )
+
+    @app.post("/api/v1/workspace:import-root", status_code=201)
+    async def import_root_project(payload: ImportRootRequest):
+        """PR-S6：一键导入根 Framework 项目（方案 §6.1）。"""
+        return studio.import_root_project(name=payload.name, slug=payload.slug)
+
+    @app.post("/api/v1/agents/{agent_id}/prompt:compile")
+    async def compile_prompt(agent_id: str, payload: PromptCompileRequest):
+        """PR-S2：Prompt 编译预览（方案 §6.2）。只读，不写 Session/Trace/Build。"""
+        return studio.compile_prompt_preview(
+            agent_id,
+            request_instructions=payload.request_instructions,
+            include_content=payload.include_content,
+        )
+
+    @app.post("/api/v1/agents/{agent_id}/context:preview")
+    async def preview_context(agent_id: str, payload: ContextPreviewRequest):
+        """PR-S2：Context 预览（方案 §6.2）。复用真实 Planner，不调模型。"""
+        return await studio.preview_context(
+            agent_id,
+            user_input=payload.user_input,
+            request_instructions=payload.request_instructions,
+            simulated_history=[
+                {"role": m.role, "content": m.content} for m in payload.simulated_history
+            ],
+            include_content=payload.include_content,
         )
 
     @app.post("/api/v1/agents/{agent_id}/builds", status_code=202)
@@ -884,10 +936,156 @@ def create_studio_app(
             data=payload.data,
         )
 
+    @app.get("/api/v1/runs/{run_id}/context")
+    async def get_run_context(run_id: str):
+        """Runtime Context Evidence：planned/projected/actual + 精度 + ownership。"""
+        record = studio.event_store.get(run_id)
+        plan = record.context_plan or {}
+        evidence = record.prompt_evidence or {}
+        return {
+            "planId": plan.get("plan_id"),
+            "accuracy": evidence.get("accountingAccuracy")
+            or plan.get("accounting_accuracy", "opaque"),
+            "policyVersion": plan.get("policy_version"),
+            "tokensByKind": plan.get("tokens_by_kind", {}),
+            "plannedInputTokens": plan.get("planned_input_tokens"),
+            "projectedInputTokens": plan.get("projected_input_tokens"),
+            "runtimeReportedInputTokens": plan.get("runtime_reported_input_tokens"),
+            "selected": plan.get("selected", []),
+            "decisions": plan.get("decisions", []),
+            "ownership": {
+                "promptOwner": evidence.get("promptOwner"),
+                "historyOwner": (plan.get("history_owner") if isinstance(plan, dict) else None),
+                "integrationMode": evidence.get("integrationMode"),
+                "runtimeType": evidence.get("runtimeType"),
+                "deploymentMode": evidence.get("deploymentMode"),
+                "capabilityHash": evidence.get("capabilityHash"),
+            },
+            "warnings": [],
+        }
+
+    @app.get("/api/v1/runs/{run_id}/prompt")
+    async def get_run_prompt(run_id: str, include_content: bool = Query(default=False)):
+        """PR-S4：Prompt evidence（方案 §6.3 / §7.3）。section hash/版本，默认不返回正文。"""
+        record = studio.event_store.get(run_id)
+        evidence = record.prompt_evidence or {}
+        result = {
+            "contentHash": evidence.get("contentHash"),
+            "stablePrefixHash": evidence.get("stablePrefixHash"),
+            "sectionHashes": evidence.get("sectionHashes", {}),
+            "tokensBySection": evidence.get("tokensBySection", {}),
+            "estimatedTokens": evidence.get("estimatedTokens"),
+            "sectionCount": evidence.get("sectionCount"),
+            "plannedInputTokens": evidence.get("plannedInputTokens"),
+            "accountingAccuracy": evidence.get("accountingAccuracy"),
+            "runtimeType": evidence.get("runtimeType"),
+            "integrationMode": evidence.get("integrationMode"),
+        }
+        if include_content:
+            result["reveal"] = studio.reveal_run_prompt(run_id)
+        return result
+
+    @app.get("/api/v1/runs/{run_id}/working-state")
+    async def get_run_working_state(run_id: str):
+        """PR-S4：Working State evidence（方案 §6.5）。从 checkpoint/read record 读取。"""
+        record = studio.event_store.get(run_id)
+        return {"workingState": record.working_state}
+
     @app.delete("/api/v1/sessions/{session_id}", status_code=204)
     async def delete_studio_session(session_id: str):
-        studio.delete_session(session_id)
+        await studio.delete_session(session_id)
         return Response(status_code=204)
+
+    @app.get("/api/v1/sessions/{session_id}/events")
+    async def session_events(
+        session_id: str,
+        before_seq_id: int | None = Query(default=None, ge=1, alias="beforeSeqId"),
+        invocation_id: str | None = Query(default=None, alias="invocationId"),
+        limit: int = Query(default=100, ge=1, le=500),
+    ):
+        return await studio.trajectory_page(
+            session_id,
+            before_seq_id=before_seq_id,
+            invocation_id=invocation_id,
+            limit=limit,
+        )
+
+    @app.get("/api/v1/sessions/{session_id}/events/stream")
+    async def session_event_stream(
+        session_id: str,
+        request: Request,
+        after_seq_id: int = Query(default=0, ge=0, alias="afterSeqId"),
+        invocation_id: str | None = Query(default=None, alias="invocationId"),
+    ):
+        await studio._require_runtime_session(session_id)
+        last = request.headers.get("Last-Event-ID")
+        cursor = int(last) if last and last.isdigit() else after_seq_id
+        stream = studio.stream_trajectory(
+            session_id,
+            cursor,
+            invocation_id=invocation_id,
+        )
+
+        async def frames():
+            try:
+                async for frame in stream:
+                    if await request.is_disconnected():
+                        return
+                    yield frame
+            finally:
+                await stream.aclose()
+
+        return StreamingResponse(
+            frames(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-store",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    @app.post("/api/v1/sessions/{session_id}:export")
+    async def export_session(session_id: str, payload: dict[str, Any]):
+        filename = payload.get("filename")
+        invocation_id = payload.get("invocationId")
+        download = payload.get("download", False)
+        if not isinstance(filename, str):
+            raise StudioError(
+                "SESSION_EXPORT_FILENAME_INVALID",
+                "filename 必须是字符串",
+                status_code=422,
+                field="filename",
+            )
+        if invocation_id is not None and not isinstance(invocation_id, str):
+            raise StudioError(
+                "SESSION_EXPORT_INVOCATION_INVALID",
+                "invocationId 必须是字符串",
+                status_code=422,
+                field="invocationId",
+            )
+        if not isinstance(download, bool):
+            raise StudioError(
+                "SESSION_EXPORT_DOWNLOAD_INVALID",
+                "download 必须是布尔值",
+                status_code=422,
+                field="download",
+            )
+        result = await studio.export_runtime_session(
+            session_id,
+            filename=filename,
+            invocation_id=invocation_id,
+        )
+        if not download:
+            return result
+
+        path = studio.workspace.resolve(result["path"])
+        return FileResponse(
+            path,
+            filename=filename,
+            media_type="application/x-ndjson",
+            headers={"X-Session-Event-Count": str(result["eventCount"])},
+            background=BackgroundTask(path.unlink, missing_ok=True),
+        )
 
     @app.get("/api/v1/runs")
     async def list_runs(session_id: str | None = Query(default=None, alias="sessionId")):
@@ -901,7 +1099,7 @@ def create_studio_app(
     ):
         last = request.headers.get("Last-Event-ID")
         cursor = int(last) if last and last.isdigit() else after
-        events = studio.event_store.events(run_id, after=cursor)
+        events = await studio.run_service.events(run_id, after=cursor)
         return _sse(events)
 
     @app.get("/api/v1/traces/overview")
@@ -942,19 +1140,6 @@ def create_studio_app(
     async def get_trace_otlp(trace_id: str):
         return studio.event_store.trace_otlp(trace_id)
 
-    @app.post("/api/v1/builds/{build_id}/evaluations", status_code=202)
-    async def create_evaluation(
-        build_id: str,
-        payload: EvaluationRequest,
-        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-    ):
-        return studio.submit_evaluation(
-            build_id,
-            payload.suite_refs,
-            fail_fast=payload.fail_fast,
-            idempotency_key=_require_idempotency_key(idempotency_key),
-        )
-
     @app.post("/api/v1/evaluations", status_code=202)
     async def create_public_evaluation(
         payload: StudioEvaluationCreate,
@@ -967,16 +1152,39 @@ def create_studio_app(
             idempotency_key=_require_idempotency_key(idempotency_key),
         )
 
+    @app.post("/api/v1/evaluation-files", status_code=201)
+    async def import_evaluation_file(file: UploadFile = File(...)):
+        return studio.import_evaluation_file(
+            await file.read(2 * 1024 * 1024 + 1),
+            filename=file.filename or "evalset.yaml",
+        )
+
     @app.get("/api/v1/evaluations")
     async def list_public_evaluations():
         return {"items": studio.list_public_evaluations()}
 
+    @app.get("/api/v1/evaluation-runs")
+    async def list_public_evaluation_runs():
+        return {"items": studio.list_public_evaluation_runs()}
+
+    @app.get("/api/v1/evaluation-runs/{evaluation_id}")
+    async def get_public_evaluation_run(evaluation_id: str):
+        return studio.get_public_evaluation_run(evaluation_id)
+
+    @app.get("/api/v1/evaluation-targets")
+    async def list_evaluation_targets():
+        return studio.evaluation_catalog()
+
+    @app.get("/api/v1/evaluation-cloud/catalog")
+    async def list_evaluation_cloud_catalog(
+        project_id: str | None = Query(default=None, alias="projectId"),
+    ):
+        items = await studio.evaluation_cloud_catalog(project_id=project_id)
+        return {"items": items}
+
     @app.get("/api/v1/evaluations/{evaluation_id}")
     async def get_evaluation(evaluation_id: str):
-        report_path = studio.evaluation_storage.report_path(evaluation_id)
-        if report_path.is_file():
-            return studio.get_public_evaluation(evaluation_id)
-        return studio.evaluations.get(evaluation_id)
+        return studio.get_public_evaluation(evaluation_id)
 
     @app.get("/api/v1/evaluations/{evaluation_id}/cases/{case_id}")
     async def get_public_evaluation_case(evaluation_id: str, case_id: str):
@@ -1003,9 +1211,328 @@ def create_studio_app(
             idempotency_key=_require_idempotency_key(idempotency_key),
         )
 
+    @app.get("/api/v1/deployments")
+    async def list_deployments():
+        """Read local deployment receipts without implicit cloud refreshes."""
+
+        return {"items": studio.cloud.list()}
+
+    @app.get("/api/v1/cloud-agents")
+    async def list_account_cloud_agents(
+        page: int = Query(default=1, ge=1),
+        size: int = Query(default=100, ge=1, le=100),
+    ):
+        """List Agents visible to Studio's configured signed cloud account."""
+
+        return await studio.cloud.list_account_agents(page=page, size=size)
+
+    @app.get("/api/v1/cloud-agents/{agent_id}")
+    async def get_account_cloud_agent(agent_id: str):
+        return await studio.cloud.get_account_agent(agent_id)
+
+    @app.get("/api/v1/cloud-agents/{agent_id}/versions")
+    async def list_account_cloud_agent_versions(
+        agent_id: str,
+        page: int = Query(default=1, ge=1),
+        size: int = Query(default=100, ge=1, le=100),
+    ):
+        """List the Server-owned version history and rollback eligibility."""
+
+        return await studio.cloud.list_account_agent_versions(
+            agent_id,
+            page=page,
+            size=size,
+        )
+
+    @app.post(
+        "/api/v1/cloud-agents/{agent_id}:rollback-version",
+        status_code=202,
+    )
+    async def rollback_account_cloud_agent_version(
+        agent_id: str,
+        payload: CloudAgentVersionRollbackRequest,
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    ):
+        """Submit Server RollbackVersion through Studio's process-only AK/SK."""
+
+        return studio.submit_account_agent_version_rollback(
+            agent_id,
+            version_id=payload.version_id,
+            idempotency_key=_require_idempotency_key(idempotency_key),
+        )
+
+    @app.post("/api/v1/cloud-agents/{agent_id}:dashboard")
+    async def open_account_cloud_agent_dashboard(agent_id: str):
+        return await studio.cloud.account_agent_dashboard_access(agent_id)
+
+    @app.delete("/api/v1/cloud-agents/{agent_id}")
+    async def delete_account_cloud_agent(agent_id: str):
+        return await studio.cloud.delete_account_agent(agent_id)
+
     @app.get("/api/v1/deployments/{deployment_id}")
     async def get_deployment(deployment_id: str):
-        return studio.cloud.get(deployment_id)
+        return await studio.cloud.refresh(deployment_id)
+
+    @app.post("/api/v1/deployments/{deployment_id}:dashboard")
+    async def open_deployment_dashboard(deployment_id: str):
+        return await studio.deployment_dashboard_access(deployment_id)
+
+    @app.delete("/api/v1/deployments/{deployment_id}")
+    async def delete_deployment(deployment_id: str):
+        """Delete the receipt-bound cloud Agent and its superseded local receipts."""
+
+        return await studio.cloud.delete(deployment_id)
+
+    @app.get("/api/v1/deployments/{deployment_id}/cloud-chat/sessions")
+    async def list_cloud_chat_sessions(
+        deployment_id: str,
+        page: int = Query(default=1, ge=1),
+        size: int = Query(default=50, ge=1, le=100),
+    ):
+        """List Server-owned sessions for this local deployment receipt only."""
+
+        return await studio.cloud.list_cloud_chat_sessions(
+            deployment_id, page=page, size=size
+        )
+
+    @app.get("/api/v1/deployments/{deployment_id}/cloud-chat/models")
+    async def list_cloud_chat_models(deployment_id: str):
+        """List models through Studio's signed Server client."""
+
+        return await studio.cloud.list_cloud_chat_models(deployment_id)
+
+    @app.post(
+        "/api/v1/deployments/{deployment_id}/cloud-chat/sessions",
+        status_code=201,
+    )
+    async def create_cloud_chat_session(deployment_id: str):
+        """Create a cloud session via loopback-held AK/SK; no secret reaches JS."""
+
+        return await studio.cloud.create_cloud_chat_session(deployment_id)
+
+    @app.get(
+        "/api/v1/deployments/{deployment_id}/cloud-chat/sessions/{session_id}/messages"
+    )
+    async def list_cloud_chat_messages(
+        deployment_id: str,
+        session_id: str,
+        after_seq_id: int | None = Query(default=None, alias="afterSeqId", ge=0),
+        limit: int = Query(default=100, ge=1, le=200),
+    ):
+        return await studio.cloud.list_cloud_chat_messages(
+            deployment_id,
+            session_id=session_id,
+            after_seq_id=after_seq_id,
+            limit=limit,
+        )
+
+    @app.get(
+        "/api/v1/deployments/{deployment_id}/cloud-chat/sessions/{session_id}/events"
+    )
+    async def list_cloud_chat_events(
+        deployment_id: str,
+        session_id: str,
+        after_seq_id: int | None = Query(default=None, alias="afterSeqId", ge=0),
+        limit: int = Query(default=200, ge=1, le=1000),
+    ):
+        return await studio.cloud.list_cloud_chat_events(
+            deployment_id,
+            session_id=session_id,
+            after_seq_id=after_seq_id,
+            limit=limit,
+        )
+
+    @app.get(
+        "/api/v1/deployments/{deployment_id}/cloud-chat/sessions/{session_id}/events/stream"
+    )
+    async def stream_cloud_chat_events(
+        request: Request,
+        deployment_id: str,
+        session_id: str,
+        after_seq_id: int = Query(default=0, alias="afterSeqId", ge=0),
+    ):
+        """Stream canonical cloud events to the loopback browser.
+
+        The public cloud control plane currently exposes cursor reads for this
+        surface.  Keep that cursor in the Studio backend and present one SSE
+        response to the browser, so assistant deltas arrive before the durable
+        terminal message projection without exposing cloud credentials to JS.
+        """
+
+        async def event_stream() -> AsyncIterator[str]:
+            cursor = after_seq_id
+            idle_polls = 0
+            while not await request.is_disconnected():
+                payload = await studio.cloud.list_cloud_chat_events(
+                    deployment_id,
+                    session_id=session_id,
+                    after_seq_id=cursor,
+                    limit=200,
+                )
+                events = payload.get("events") or []
+                if not isinstance(events, list):
+                    events = []
+                terminal = False
+                emitted = False
+                for event in events:
+                    if not isinstance(event, dict):
+                        continue
+                    event_payload = (
+                        event.get("payload")
+                        if isinstance(event.get("payload"), dict)
+                        else event
+                    )
+                    seq = int(
+                        event_payload.get("seq")
+                        or event_payload.get("seq_id")
+                        or event_payload.get("source_session_seq")
+                        or event.get("seq")
+                        or event.get("seq_id")
+                        or 0
+                    )
+                    if seq and seq <= cursor:
+                        continue
+                    if seq:
+                        cursor = max(cursor, seq)
+                    event_type = str(
+                        event.get("event_type")
+                        or event.get("eventType")
+                        or event_payload.get("event_type")
+                        or event_payload.get("eventType")
+                        or ""
+                    ).lower()
+                    content = (
+                        event_payload.get("content")
+                        if isinstance(event_payload.get("content"), dict)
+                        else {}
+                    )
+                    status = str(
+                        event_payload.get("status") or content.get("status") or ""
+                    ).lower()
+                    event_is_terminal = event_type in {
+                        "run.completed", "run.complete", "run.succeeded",
+                        "run.failed", "run.cancelled", "run.expired", "run.error",
+                    } or (
+                        event_type in {"run_status", "run.status"}
+                        and status in {
+                            "completed", "complete", "succeeded", "success",
+                            "failed", "cancelled", "canceled", "expired", "error", "aborted",
+                        }
+                    )
+                    terminal = terminal or event_is_terminal
+                    emitted = True
+                    yield (
+                        (f"id: {seq}\n" if seq else "")
+                        + "event: session.event\n"
+                        + f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                    )
+                if terminal or payload.get("session_deleted"):
+                    break
+                idle_polls = 0 if emitted else idle_polls + 1
+                if idle_polls and idle_polls % 20 == 0:
+                    yield ": keepalive\n\n"
+                await asyncio.sleep(0.25)
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    @app.delete(
+        "/api/v1/deployments/{deployment_id}/cloud-chat/sessions/{session_id}",
+        status_code=204,
+    )
+    async def delete_cloud_chat_session(deployment_id: str, session_id: str):
+        await studio.cloud.delete_cloud_chat_session(
+            deployment_id, session_id=session_id
+        )
+        return Response(status_code=204)
+
+    @app.post(
+        "/api/v1/deployments/{deployment_id}/cloud-chat/sessions/{session_id}/messages",
+        status_code=202,
+    )
+    async def send_cloud_chat_message(
+        deployment_id: str,
+        session_id: str,
+        payload: CloudChatMessageRequest,
+    ):
+        """Admit one cloud message through Server; response is a durable receipt."""
+
+        return await studio.cloud.send_cloud_chat_message(
+            deployment_id,
+            session_id=session_id,
+            content=payload.content,
+            model=payload.model,
+            model_options=payload.model_options,
+            tool_approval_mode=payload.tool_approval_mode,
+            collaboration_mode=payload.collaboration_mode,
+            goal_objective=payload.goal_objective,
+        )
+
+    @app.post(
+        "/api/v1/deployments/{deployment_id}/cloud-chat/sessions/{session_id}/messages/stream"
+    )
+    async def stream_cloud_chat_message(
+        request: Request,
+        deployment_id: str,
+        session_id: str,
+        payload: CloudChatMessageRequest,
+    ):
+        """Proxy one signed foreground RunAgent SSE response to loopback UI."""
+
+        upstream = await studio.cloud.stream_cloud_chat_message(
+            deployment_id,
+            session_id=session_id,
+            content=payload.content,
+            model=payload.model,
+            model_options=payload.model_options,
+            tool_approval_mode=payload.tool_approval_mode,
+            collaboration_mode=payload.collaboration_mode,
+            goal_objective=payload.goal_objective,
+        )
+
+        async def proxy_stream() -> AsyncIterator[bytes]:
+            try:
+                while not await request.is_disconnected():
+                    try:
+                        chunk = await anext(upstream)
+                    except StopAsyncIteration:
+                        break
+                    if await request.is_disconnected():
+                        break
+                    yield chunk
+            finally:
+                close = getattr(upstream, "aclose", None)
+                if close is not None:
+                    await close()
+
+        return StreamingResponse(
+            proxy_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+        )
+
+    @app.post(
+        "/api/v1/deployments/{deployment_id}/cloud-chat/sessions/{session_id}/interactions",
+        status_code=202,
+    )
+    async def submit_cloud_chat_interaction(
+        deployment_id: str,
+        session_id: str,
+        payload: CloudChatInteractionSubmitRequest,
+    ):
+        return await studio.cloud.submit_cloud_chat_interaction(
+            deployment_id,
+            session_id=session_id,
+            run_id=payload.run_id,
+            interaction_id=payload.interaction_id,
+            expected_revision=payload.expected_revision,
+            action=payload.action,
+            response=payload.response,
+            idempotency_key=payload.idempotency_key,
+        )
 
     @app.post("/api/v1/deployments/{deployment_id}:rollback", status_code=202)
     async def rollback_deployment(
@@ -1035,12 +1562,16 @@ def create_studio_app(
     ):
         last = request.headers.get("Last-Event-ID")
         cursor = int(last) if last and last.isdigit() else after
-        return _sse(studio.operations.events(operation_id, after=cursor))
+        events = studio.operations.events(operation_id, after=cursor)
+        if "application/json" in request.headers.get("Accept", ""):
+            return {"items": events}
+        return _sse(events)
 
     register_catalog_routes(
         app,
         studio,
         runtime_model_catalog=runtime_model_catalog,
     )
+    register_memory_routes(app, studio)
 
     return app
