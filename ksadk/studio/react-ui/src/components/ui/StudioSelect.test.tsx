@@ -40,4 +40,24 @@ describe("StudioSelect", () => {
     expect(trigger).toBeDisabled();
     expect(trigger).toHaveTextContent("全部状态");
   });
+
+  it("keeps the complete selected target discoverable when the trigger is compact", () => {
+    render(
+      <StudioSelect
+        className="header-agent-selector"
+        ariaLabel="切换会话目标"
+        value="cloud:dep-long"
+        onValueChange={() => undefined}
+        options={[{
+          value: "cloud:dep-long",
+          label: "云端 · very-long-agent-name-that-cannot-fit-in-the-header",
+        }]}
+      />,
+    );
+
+    expect(screen.getByRole("combobox", { name: "切换会话目标" })).toHaveAttribute(
+      "title",
+      "云端 · very-long-agent-name-that-cannot-fit-in-the-header",
+    );
+  });
 });

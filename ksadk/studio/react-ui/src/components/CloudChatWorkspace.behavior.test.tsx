@@ -103,6 +103,9 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
     await user.type(screen.getByRole("textbox", { name: "消息" }), "开始流式回答");
     await user.click(screen.getByRole("button", { name: "发送消息" }));
 
+    expect(screen.getByRole("textbox", { name: "消息" })).toHaveValue("");
+    expect(screen.getByText("开始流式回答", { selector: ".message-content p" })).toBeInTheDocument();
+
     await waitFor(() => expect(apiFetch).toHaveBeenCalledWith(
       `${base}/sessions/sess-1/events/stream?afterSeqId=5`,
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
@@ -125,6 +128,71 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
       { receipt_status: "accepted", run_id: "run-1", accepted_seq: 5 },
       { status: 202 },
     ));
+  });
+
+  it("projects canonical nested RuntimeEvent items before RunAgent returns", async () => {
+    let streamController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    let resolvePost: ((response: Response) => void) | undefined;
+    const postResponse = new Promise<Response>(resolve => { resolvePost = resolve; });
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) { streamController = controller; },
+    });
+    apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
+      if (path === `${base}/sessions` && !init?.method) {
+        return jsonResponse({ sessions: [{ session_id: "sess-canonical", title: "Canonical 会话" }] });
+      }
+      if (path === `${base}/models`) return jsonResponse({ models: [] });
+      if (path.endsWith("/messages") && !init?.method) return jsonResponse({ messages: [] });
+      if (path.endsWith("/events") && !init?.method) {
+        return jsonResponse({ events: [{ event_type: "user_message", seq_id: 10 }] });
+      }
+      if (path.endsWith("/events/stream?afterSeqId=10")) {
+        return new Response(stream, { headers: { "Content-Type": "text/event-stream" } });
+      }
+      if (path.endsWith("/messages") && init?.method === "POST") return postResponse;
+      throw new Error(`unexpected request: ${path}`);
+    });
+    render(<CloudChatWorkspace deploymentId="dep-cloud" agentId="ar-cloud" agentName="Cloud Agent" />);
+
+    await screen.findByText("Canonical 会话");
+    await userEvent.type(screen.getByRole("textbox", { name: "消息" }), "展示实时过程");
+    await userEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith(
+      `${base}/sessions/sess-canonical/events/stream?afterSeqId=10`,
+      expect.anything(),
+    ));
+
+    const frames = [
+      { event_type: "item.started", item_id: "reason-1", item_kind: "reasoning", initial: null },
+      { event_type: "item.updated", item_id: "reason-1", item_kind: "reasoning", op: "append", update: { text: "正在分析问题" } },
+      { event_type: "item.started", item_id: "tool-1", item_kind: "tool_call", initial: { parts: [{ content_type: "tool_call", name: "web_search", arguments: { query: "weather" } }] } },
+      { event_type: "item.completed", item_id: "tool-1", item_kind: "tool_call", snapshot: { parts: [{ content_type: "tool_call", name: "web_search", arguments: { query: "weather" } }] } },
+      { event_type: "item.started", item_id: "msg-1", item_kind: "message", initial: null },
+      { event_type: "item.updated", item_id: "msg-1", item_kind: "message", op: "append", update: { text: "实时回答第一段" } },
+      { event_type: "interaction.requested", interaction_id: "approval-1", interaction_kind: "approval", request: { kind: "tool", title: "允许查询天气" } },
+    ];
+    const encoded = frames.map((runtimeEvent, index) => (
+      "event: session.event\n"
+      + `data: ${JSON.stringify({
+        event_type: "runtime_event",
+        seq_id: 11 + index,
+        invocation_id: "inv-qwen",
+        content: { runtime_event: { ...runtimeEvent, run_id: "run-qwen", scope_id: "scope-qwen" } },
+      })}\n\n`
+    )).join("");
+    streamController?.enqueue(new TextEncoder().encode(encoded));
+
+    expect(await screen.findByText("实时回答第一段")).toBeInTheDocument();
+    expect(screen.getByText(/正在分析问题/)).toBeInTheDocument();
+    expect(screen.getByText("web_search")).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "待处理确认" })).toHaveTextContent("允许查询天气");
+    expect(screen.getByText(/正在等待云端响应/)).toBeInTheDocument();
+    resolvePost?.(jsonResponse({
+      receipt_status: "accepted",
+      run_id: "run-qwen",
+      invocation_id: "inv-qwen",
+      accepted_seq: 10,
+    }, { status: 202 }));
   });
 
   it("preserves soft line breaks, paragraphs, lists and fenced code in cloud Markdown", async () => {
@@ -237,7 +305,9 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
 
     await waitFor(() => expect(screen.queryByText(/正在等待云端响应/)).not.toBeInTheDocument());
     expect(screen.getByText("保留这条用户消息", { selector: ".message-content p" })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "消息" })).toHaveValue("");
     expect(screen.getByText(/runtime admission rejected: provider unavailable/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "重试这条消息" })).toBeInTheDocument();
     expect(showToast).toHaveBeenCalledWith(
       "云端消息发送失败",
       "runtime admission rejected: provider unavailable",

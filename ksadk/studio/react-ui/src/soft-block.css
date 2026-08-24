@@ -201,9 +201,16 @@
 }
 
 .header-agent-selector {
-  width: 200px;
-  min-width: 150px;
-  flex: 0 1 200px;
+  width: 240px;
+  min-width: 180px;
+  flex: 0 1 240px;
+}
+
+.header-agent-selector > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .header-actions > .tag,

@@ -34,6 +34,7 @@ export function StudioSelect({
         id={id}
         className={`studio-select-trigger${className ? ` ${className}` : ""}`}
         aria-label={ariaLabel}
+        title={selected?.label || placeholder}
       >
         <Select.Value placeholder={placeholder}>{selected?.label}</Select.Value>
         <Select.Icon className="studio-select-chevron"><ChevronDown size={15} /></Select.Icon>

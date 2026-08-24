@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
-import { Bot, Loader2, MessageSquarePlus, ShieldAlert, ShieldCheck, Trash2, X } from "lucide-react";
+import { Bot, BrainCircuit, Loader2, MessageSquarePlus, ShieldAlert, ShieldCheck, Trash2, Wrench, X } from "lucide-react";
 import { apiFetch } from "../api";
 import {
   approvalModeStorageKey,
@@ -60,6 +60,24 @@ interface CloudModel {
   capabilities?: Record<string, unknown>;
 }
 
+interface RuntimeEnvelope {
+  event: Record<string, unknown>;
+  eventType: string;
+  runId: string;
+  invocationId: string;
+  seq: number;
+}
+
+interface CloudRuntimeItem {
+  id: string;
+  kind: "message" | "reasoning" | "tool" | "approval";
+  title: string;
+  text: string;
+  detail: string;
+  status: "running" | "waiting" | "completed" | "failed";
+  operation: "append" | "replace";
+}
+
 function explicitReasoningEfforts(model?: CloudModel): ReasoningEffort[] {
   const raw = model?.capabilities?.reasoning_efforts;
   if (!Array.isArray(raw)) return [];
@@ -108,6 +126,128 @@ function errorText(...values: unknown[]): string {
   return "";
 }
 
+function recordValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" ? value as Record<string, unknown> : {};
+}
+
+function runtimeEnvelope(value: unknown): RuntimeEnvelope | null {
+  if (!value || typeof value !== "object") return null;
+  const frame = value as Record<string, unknown>;
+  const payload = Object.keys(recordValue(frame.payload)).length ? recordValue(frame.payload) : frame;
+  const content = recordValue(payload.content);
+  const nested = Object.keys(recordValue(content.runtime_event)).length
+    ? recordValue(content.runtime_event)
+    : recordValue(payload.runtime_event);
+  const event = Object.keys(nested).length ? nested : payload;
+  const outerType = scalarText(frame.event_type ?? frame.eventType ?? payload.event_type ?? payload.eventType).toLowerCase();
+  const nestedType = scalarText(event.event_type ?? event.eventType ?? event.type).toLowerCase();
+  return {
+    event,
+    eventType: nestedType || outerType,
+    runId: scalarText(
+      event.run_id ?? event.runId ?? payload.run_id ?? payload.runId ?? frame.run_id ?? frame.runId,
+    ),
+    invocationId: scalarText(
+      event.invocation_id ?? event.invocationId
+      ?? payload.invocation_id ?? payload.invocationId
+      ?? frame.invocation_id ?? frame.invocationId,
+    ),
+    seq: Number(
+      event.seq ?? event.seq_id ?? event.source_session_seq
+      ?? payload.seq ?? payload.seq_id ?? payload.source_session_seq
+      ?? frame.seq ?? frame.seq_id ?? frame.source_session_seq ?? 0,
+    ) || 0,
+  };
+}
+
+function itemPart(container: unknown): Record<string, unknown> {
+  const record = recordValue(container);
+  const parts = Array.isArray(record.parts) ? record.parts.map(recordValue) : [];
+  return parts[0] || record;
+}
+
+function jsonDetail(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value === undefined || value === null) return "";
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function runtimeItemPatch(value: unknown): CloudRuntimeItem | null {
+  const envelope = runtimeEnvelope(value);
+  if (!envelope) return null;
+  const event = envelope.event;
+  if (["message.delta", "response.output_text.delta", "output_text.delta"].includes(envelope.eventType)) {
+    const content = recordValue(event.content);
+    const update = recordValue(event.update);
+    const text = valueText(update.delta ?? update.text ?? event.delta ?? content.delta ?? event.text);
+    if (!text) return null;
+    return {
+      id: `${envelope.invocationId || envelope.runId}//message:legacy`,
+      kind: "message",
+      title: "回复",
+      text,
+      detail: text,
+      status: "running",
+      operation: "append",
+    };
+  }
+  if (!["item.started", "item.updated", "item.completed", "item.failed"].includes(envelope.eventType)) {
+    return null;
+  }
+  const rawKind = scalarText(event.item_kind ?? event.itemKind).toLowerCase();
+  const kind: CloudRuntimeItem["kind"] | null = ["message", "assistant", "assistant_message"].includes(rawKind)
+    ? "message"
+    : rawKind === "reasoning" ? "reasoning"
+      : rawKind === "approval" ? "approval"
+        : ["tool", "tool_call", "tool_result", "command", "command_execution"].includes(rawKind) ? "tool"
+          : null;
+  if (!kind) return null;
+  const source = envelope.eventType === "item.started"
+    ? event.initial
+    : envelope.eventType === "item.completed" || envelope.eventType === "item.failed"
+      ? event.snapshot
+      : event.update;
+  const sourceRecord = recordValue(source);
+  const part = itemPart(source);
+  const text = valueText(part.text ?? part.delta ?? part.content ?? sourceRecord.parts ?? event.text);
+  const title = valueText(part.name ?? event.name ?? event.tool_name ?? event.title)
+    || (kind === "reasoning" ? "思考过程" : kind === "approval" ? "等待确认" : kind === "tool" ? "工具调用" : "回复");
+  const detail = text || jsonDetail(part.result ?? part.output ?? part.arguments ?? part.error ?? "");
+  const itemId = scalarText(event.item_id ?? event.itemId ?? part.call_id ?? part.callId)
+    || `${kind}:${title}`;
+  return {
+    id: [envelope.invocationId || envelope.runId, scalarText(event.scope_id ?? event.scopeId), itemId].join("/"),
+    kind,
+    title,
+    text,
+    detail,
+    status: envelope.eventType === "item.failed" ? "failed"
+      : kind === "approval" && envelope.eventType !== "item.completed" ? "waiting"
+        : envelope.eventType === "item.completed" ? "completed" : "running",
+    operation: scalarText(event.op).toLowerCase() === "append" ? "append" : "replace",
+  };
+}
+
+function mergeRuntimeItem(items: CloudRuntimeItem[], patch: CloudRuntimeItem): CloudRuntimeItem[] {
+  const index = items.findIndex(item => item.id === patch.id);
+  if (index < 0) return [...items, patch];
+  const previous = items[index];
+  const next = [...items];
+  next[index] = {
+    ...previous,
+    ...patch,
+    title: patch.title === "回复" || patch.title === "思考过程" || patch.title === "工具调用"
+      ? previous.title : patch.title,
+    text: patch.operation === "append" ? `${previous.text}${patch.text}` : patch.text || previous.text,
+    detail: patch.detail || previous.detail,
+  };
+  return next;
+}
+
 function normalizeSession(value: unknown): CloudSession | null {
   if (!value || typeof value !== "object") return null;
   const item = value as Record<string, unknown>;
@@ -152,16 +292,19 @@ function normalizeMessage(value: unknown): CloudMessage | null {
 function pendingInteractions(events: unknown[]): CloudInteraction[] {
   const requested = new Map<string, CloudInteraction>();
   for (const event of events) {
-    if (!event || typeof event !== "object") continue;
+    const envelope = runtimeEnvelope(event);
+    if (!envelope) continue;
+    const payload = envelope.event;
     const frame = event as Record<string, unknown>;
-    const payload = frame.payload && typeof frame.payload === "object"
-      ? frame.payload as Record<string, unknown>
-      : frame;
-    const eventType = String(frame.event_type ?? frame.eventType ?? payload.event_type ?? payload.eventType ?? "");
-    const metadata = frame.Metadata && typeof frame.Metadata === "object"
-      ? frame.Metadata as Record<string, unknown>
-      : frame.metadata && typeof frame.metadata === "object"
-        ? frame.metadata as Record<string, unknown>
+    const eventType = envelope.eventType;
+    const metadata = payload.Metadata && typeof payload.Metadata === "object"
+      ? payload.Metadata as Record<string, unknown>
+      : payload.metadata && typeof payload.metadata === "object"
+        ? payload.metadata as Record<string, unknown>
+        : frame.Metadata && typeof frame.Metadata === "object"
+          ? frame.Metadata as Record<string, unknown>
+          : frame.metadata && typeof frame.metadata === "object"
+            ? frame.metadata as Record<string, unknown>
         : {};
     const interruptInfo = metadata.interrupt_info && typeof metadata.interrupt_info === "object"
       ? metadata.interrupt_info as Record<string, unknown>
@@ -186,6 +329,8 @@ function pendingInteractions(events: unknown[]): CloudInteraction[] {
         runId: String(
           payload.run_id
           ?? payload.runId
+          ?? envelope.invocationId
+          ?? envelope.runId
           ?? frame.run_id
           ?? frame.runId
           ?? frame.InvocationId
@@ -193,10 +338,11 @@ function pendingInteractions(events: unknown[]): CloudInteraction[] {
           ?? "",
         ),
         revision: Number(payload.revision ?? 1) || 1,
-        kind: String(payload.kind ?? request.kind ?? (eventType === "approval_request" ? "approval" : "input")),
+        kind: String(payload.interaction_kind ?? payload.interactionKind ?? payload.kind ?? request.kind ?? (eventType === "approval_request" ? "approval" : "input")),
         title: valueText(
           request.title
           ?? request.message
+          ?? request.prompt
           ?? interruptInfo.approval_message
           ?? interruptInfo.tool_name
           ?? request.kind
@@ -223,22 +369,11 @@ function terminalRunEvent(
 ): TerminalRunResult | null {
   if (!runId && !invocationId && afterSeq <= 0) return null;
   for (const event of events) {
-    if (!event || typeof event !== "object") continue;
-    const frame = event as Record<string, unknown>;
-    const payload = frame.payload && typeof frame.payload === "object"
-      ? frame.payload as Record<string, unknown>
-      : frame;
-    // RuntimeEvent v2 uses run_id. Older Server event history uses
-    // invocation_id together with a run_status envelope; accept both while
-    // the Server history endpoint is being migrated.
-    const eventRunId = String(
-      payload.run_id ?? payload.runId ?? payload.invocation_id ?? payload.invocationId
-      ?? frame.run_id ?? frame.runId ?? frame.invocation_id ?? frame.invocationId ?? "",
-    );
-    const eventSeq = Number(
-      payload.seq ?? payload.seq_id ?? payload.source_session_seq
-      ?? frame.seq ?? frame.seq_id ?? frame.source_session_seq ?? 0,
-    ) || 0;
+    const envelope = runtimeEnvelope(event);
+    if (!envelope) continue;
+    const payload = envelope.event;
+    const eventRunId = envelope.runId || envelope.invocationId;
+    const eventSeq = envelope.seq;
     // The current pre-production Server projection exposes the admitted
     // Runtime run id in the receipt but still labels historical events with
     // the outer invocation id.  Prefer an exact id match, then fall back to
@@ -247,7 +382,7 @@ function terminalRunEvent(
     const matchesRun = Boolean(eventRunId) && [runId, invocationId].filter(Boolean).includes(eventRunId);
     const matchesAcceptedWindow = afterSeq > 0 && eventSeq > afterSeq;
     if (!matchesRun && !matchesAcceptedWindow) continue;
-    const eventType = String(frame.event_type ?? frame.eventType ?? payload.event_type ?? payload.eventType ?? "").toLowerCase();
+    const eventType = envelope.eventType;
     const content = payload.content && typeof payload.content === "object"
       ? payload.content as Record<string, unknown>
       : {};
@@ -282,45 +417,6 @@ function terminalRunEvent(
         };
       }
     }
-  }
-  return null;
-}
-
-function streamedAssistantText(value: unknown): { text: string; cumulative: boolean } | null {
-  if (!value || typeof value !== "object") return null;
-  const frame = value as Record<string, unknown>;
-  const payload = frame.payload && typeof frame.payload === "object"
-    ? frame.payload as Record<string, unknown>
-    : frame;
-  const content = payload.content && typeof payload.content === "object"
-    ? payload.content as Record<string, unknown>
-    : {};
-  const runtimeEvent = (content.runtime_event && typeof content.runtime_event === "object"
-    ? content.runtime_event
-    : payload.runtime_event && typeof payload.runtime_event === "object"
-      ? payload.runtime_event
-      : {}) as Record<string, unknown>;
-  const update = (runtimeEvent.update && typeof runtimeEvent.update === "object"
-    ? runtimeEvent.update
-    : payload.update && typeof payload.update === "object"
-      ? payload.update
-      : {}) as Record<string, unknown>;
-  const eventType = String(
-    frame.event_type ?? frame.eventType ?? payload.event_type ?? payload.eventType
-    ?? runtimeEvent.type ?? "",
-  ).toLowerCase();
-  if (["item.updated", "message.updated", "assistant_message.updated"].includes(eventType)) {
-    const itemKind = String(runtimeEvent.item_kind ?? payload.item_kind ?? "").toLowerCase();
-    if (itemKind && !["message", "assistant_message", "assistant"].includes(itemKind)) {
-      return null;
-    }
-    const text = valueText(update.text ?? update.content ?? content.text ?? payload.text);
-    const operation = String(runtimeEvent.op ?? payload.op ?? "").toLowerCase();
-    return text ? { text, cumulative: operation !== "append" } : null;
-  }
-  if (["message.delta", "response.output_text.delta", "output_text.delta"].includes(eventType)) {
-    const text = valueText(update.delta ?? update.text ?? payload.delta ?? content.delta ?? payload.text);
-    return text ? { text, cumulative: false } : null;
   }
   return null;
 }
@@ -384,6 +480,40 @@ async function fileDataUrl(file: File): Promise<string> {
   });
 }
 
+function CloudRuntimeProgress({ items, streaming }: { items: CloudRuntimeItem[]; streaming: boolean }) {
+  const reasoning = items.filter(item => item.kind === "reasoning").map(item => item.text).join("");
+  const activities = items.filter(item => item.kind === "tool" || item.kind === "approval");
+  if (!reasoning && !activities.length) return null;
+  const running = activities.find(item => item.status === "running" || item.status === "waiting");
+  const title = running
+    ? `${running.status === "waiting" ? "等待确认" : "正在处理"} · ${running.title}`
+    : reasoning ? "正在思考" : `已处理 ${activities.length} 次工具调用`;
+  return (
+    <details className="chat-processing-group" open={streaming} data-ui="think">
+      <summary>
+        <BrainCircuit size={15} className="chat-processing-icon" />
+        <span>{title}</span>
+        {streaming && <Loader2 size={13} className="animate-spin" />}
+      </summary>
+      <div className="chat-processing-content">
+        {reasoning && <div className="chat-reasoning-content">{reasoning}</div>}
+        {activities.map(item => (
+          <div className={`chat-activity-card ${item.kind}`} key={item.id}>
+            <div className="chat-activity-row">
+              <span className="chat-activity-icon">{item.kind === "approval" ? <ShieldAlert size={15} /> : <Wrench size={15} />}</span>
+              <span className="chat-activity-copy"><small>{item.kind === "approval" ? "批准" : "工具"}</small><strong>{item.title}</strong></span>
+              <span className={`chat-activity-status ${item.status}`}>
+                {item.status === "completed" ? "已完成" : item.status === "failed" ? "失败" : item.status === "waiting" ? "等待确认" : "运行中"}
+              </span>
+            </div>
+            {item.detail && <pre>{item.detail}</pre>}
+          </div>
+        ))}
+      </div>
+    </details>
+  );
+}
+
 export function CloudChatWorkspace({
   deploymentId,
   agentId,
@@ -394,7 +524,7 @@ export function CloudChatWorkspace({
   const [sessions, setSessions] = useState<CloudSession[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState("");
   const [messages, setMessages] = useState<CloudMessage[]>([]);
-  const [streamingAssistant, setStreamingAssistant] = useState<CloudMessage | null>(null);
+  const [streamingRuntimeItems, setStreamingRuntimeItems] = useState<CloudRuntimeItem[]>([]);
   const [interactions, setInteractions] = useState<CloudInteraction[]>([]);
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<File[]>([]);
@@ -419,6 +549,7 @@ export function CloudChatWorkspace({
   const awaitingAcceptedSeqRef = useRef(0);
   const sendInFlightRef = useRef(false);
   const streamAbortRef = useRef<AbortController | null>(null);
+  const streamedFramesRef = useRef<unknown[]>([]);
 
   const base = useMemo(
     () => `/api/v1/deployments/${encodeURIComponent(deploymentId)}/cloud-chat`,
@@ -480,9 +611,11 @@ export function CloudChatWorkspace({
     const hasNewAssistant = rows.some(
       message => message.role === "assistant" && !assistantIdsBeforeSendRef.current.has(message.id),
     );
-    if (hasNewAssistant) setStreamingAssistant(null);
+    if (hasNewAssistant) {
+      setStreamingRuntimeItems([]);
+      streamedFramesRef.current = [];
+    }
     if (waitingForResponseRef.current && hasNewAssistant) {
-      setStreamingAssistant(null);
       setRunError("");
       settleCloudRun();
     }
@@ -518,7 +651,8 @@ export function CloudChatWorkspace({
     setCurrentSessionId("");
     currentSessionIdRef.current = "";
     setMessages([]);
-    setStreamingAssistant(null);
+    setStreamingRuntimeItems([]);
+    streamedFramesRef.current = [];
     setInteractions([]);
     setRunError("");
     waitingForResponseRef.current = false;
@@ -613,7 +747,7 @@ export function CloudChatWorkspace({
   useEffect(() => {
     const list = messageListRef.current;
     if (list) list.scrollTop = list.scrollHeight;
-  }, [messages, sending, waitingForResponse]);
+  }, [messages, sending, streamingRuntimeItems, waitingForResponse]);
 
   async function createSession(): Promise<string> {
     const response = await apiFetch(`${base}/sessions`, { method: "POST" });
@@ -626,7 +760,8 @@ export function CloudChatWorkspace({
     currentSessionIdRef.current = session.id;
     setCurrentSessionId(session.id);
     setMessages([]);
-    setStreamingAssistant(null);
+    setStreamingRuntimeItems([]);
+    streamedFramesRef.current = [];
     setInteractions([]);
     setRunError("");
     assistantIdsBeforeSendRef.current = new Set();
@@ -662,11 +797,16 @@ export function CloudChatWorkspace({
     // small gap in which Enter and a click could both create an initial cloud
     // session before `sending` has rendered as true.
     if ((!content && attachments.length === 0) || sending || waitingForResponse || sendInFlightRef.current) return;
+    // The optimistic message is the durable visual record of what was sent.
+    // Clear the draft immediately and keep failures in the timeline instead
+    // of silently putting stale input back into the composer.
+    setInput("");
     sendInFlightRef.current = true;
     setSending(true);
     waitingForResponseRef.current = true;
     setWaitingForResponse(true);
-    setStreamingAssistant(null);
+    setStreamingRuntimeItems([]);
+    streamedFramesRef.current = [];
     setRunError("");
     try {
       const contentParts: Array<Record<string, unknown>> = [];
@@ -718,30 +858,20 @@ export function CloudChatWorkspace({
         headers: { Accept: "text/event-stream" },
         signal: streamController.signal,
       }).then(response => consumeSseResponse(response, frame => {
-        if (!frame || typeof frame !== "object") return;
-        const record = frame as Record<string, unknown>;
-        const payload = record.payload && typeof record.payload === "object"
-          ? record.payload as Record<string, unknown>
-          : record;
-        const eventRunId = String(
-          payload.run_id ?? payload.runId ?? payload.invocation_id ?? payload.invocationId
-          ?? record.run_id ?? record.runId ?? record.invocation_id ?? record.invocationId ?? "",
-        );
-        const eventSeq = Number(payload.seq ?? payload.seq_id ?? record.seq ?? record.seq_id ?? 0) || 0;
+        const envelope = runtimeEnvelope(frame);
+        if (!envelope) return;
+        const eventIds = [envelope.runId, envelope.invocationId].filter(Boolean);
         const expectedRunIds = [awaitingRunIdRef.current, awaitingInvocationIdRef.current].filter(Boolean);
-        if (expectedRunIds.length && eventRunId && !expectedRunIds.includes(eventRunId)) return;
-        if (awaitingAcceptedSeqRef.current && eventSeq && eventSeq <= awaitingAcceptedSeqRef.current) return;
-        if (!expectedRunIds.length && eventRunId) awaitingInvocationIdRef.current = eventRunId;
-        const delta = streamedAssistantText(frame);
-        if (delta) {
-          setStreamingAssistant(previous => ({
-            id: `stream-${awaitingRunIdRef.current || sessionId}`,
-            role: "assistant",
-            content: delta.cumulative ? delta.text : `${previous?.content || ""}${delta.text}`,
-            timestamp: new Date().toISOString(),
-            streaming: true,
-          }));
+        if (expectedRunIds.length && eventIds.length && !eventIds.some(id => expectedRunIds.includes(id))) return;
+        if (awaitingAcceptedSeqRef.current && envelope.seq && envelope.seq <= awaitingAcceptedSeqRef.current) return;
+        if (!expectedRunIds.length) {
+          if (envelope.runId) awaitingRunIdRef.current = envelope.runId;
+          if (envelope.invocationId) awaitingInvocationIdRef.current = envelope.invocationId;
         }
+        streamedFramesRef.current = [...streamedFramesRef.current, frame].slice(-500);
+        setInteractions(pendingInteractions(streamedFramesRef.current));
+        const item = runtimeItemPatch(frame);
+        if (item) setStreamingRuntimeItems(previous => mergeRuntimeItem(previous, item));
         const terminal = terminalRunEvent(
           [frame],
           awaitingRunIdRef.current,
@@ -774,7 +904,6 @@ export function CloudChatWorkspace({
         }),
       });
       if (!response.ok) throw new Error(await responseError(response));
-      setInput("");
       setAttachments([]);
       const receipt = await response.json() as Record<string, unknown>;
       if (waitingForResponseRef.current) {
@@ -819,6 +948,13 @@ export function CloudChatWorkspace({
     setCloudCollaborationMode(id === "plan" ? (collaborationMode === "plan" ? "default" : "plan") : "default");
   }
 
+  function retryLastMessage() {
+    const latestUserMessage = [...messages].reverse().find(message => message.role === "user");
+    if (!latestUserMessage) return;
+    setInput(latestUserMessage.content);
+    setRunError("");
+  }
+
   async function deleteSession(sessionId: string) {
     if (deleting || !window.confirm("确定删除这个云端会话吗？")) return;
     setDeleting(sessionId);
@@ -833,7 +969,8 @@ export function CloudChatWorkspace({
         currentSessionIdRef.current = "";
         setCurrentSessionId("");
         setMessages([]);
-        setStreamingAssistant(null);
+        setStreamingRuntimeItems([]);
+        streamedFramesRef.current = [];
         setInteractions([]);
         setRunError("");
       }
@@ -874,6 +1011,11 @@ export function CloudChatWorkspace({
       setResolvingInteractionId("");
     }
   }
+
+  const streamingAssistantText = streamingRuntimeItems
+    .filter(item => item.kind === "message")
+    .map(item => item.text)
+    .join("");
 
   return (
     <section className="studio-chat-shell cloud-chat-shell" aria-label="云端会话">
@@ -916,7 +1058,12 @@ export function CloudChatWorkspace({
           {(runError || cloudSessionActivity(sessions.find(session => session.id === currentSessionId)?.state || "") === "failed") && (
             <div className="cloud-chat-run-warning">
               <ShieldAlert size={15} />
-              {runError || sessions.find(session => session.id === currentSessionId)?.error || "这次云端运行未完成；可新建会话后重试。若持续失败，请到可观测页面按会话查看记录。"}
+              <span>{runError || sessions.find(session => session.id === currentSessionId)?.error || "这次云端运行未完成；可新建会话后重试。若持续失败，请到可观测页面按会话查看记录。"}</span>
+              {runError && (
+                <button className="text-button" type="button" aria-label="重试这条消息" onClick={retryLastMessage}>
+                  重试
+                </button>
+              )}
             </div>
           )}
           {messages.map(message => (
@@ -925,17 +1072,18 @@ export function CloudChatWorkspace({
               <div className="message-content"><ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{message.content || "…"}</ReactMarkdown></div>
             </article>
           ))}
-          {streamingAssistant && !messages.some(message => message.id === streamingAssistant.id) && (
-            <article key={streamingAssistant.id} className="message assistant streaming" aria-label="云端流式回复">
+          <CloudRuntimeProgress items={streamingRuntimeItems} streaming={waitingForResponse} />
+          {streamingAssistantText && (
+            <article className="message assistant streaming" aria-label="云端流式回复">
               <div className="message-meta">{agentName}</div>
-              <div className="message-content"><ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{streamingAssistant.content}</ReactMarkdown></div>
+              <div className="message-content"><ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{streamingAssistantText}</ReactMarkdown></div>
             </article>
           )}
           {(sending || waitingForResponse) && <div className="cloud-chat-pending"><Loader2 size={15} /> 正在等待云端响应…</div>}
         </div>
         <div className="chat-composer-wrap">
           {interactions.length > 0 && (
-            <div className="chat-pending-interactions" aria-label="待处理确认" data-ui="interaction-tray">
+            <div className="chat-pending-interactions" role="region" aria-label="待处理确认" data-ui="interaction-tray">
               <div className="chat-pending-interactions-heading"><ShieldAlert size={16} /><strong>等待你的确认</strong><span>处理后将继续当前云端对话</span></div>
               {interactions.map(interaction => (
                 <div className="cloud-interaction-card" key={interaction.id}>
