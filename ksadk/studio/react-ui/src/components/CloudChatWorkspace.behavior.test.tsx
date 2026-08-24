@@ -2,9 +2,13 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { apiFetch } = vi.hoisted(() => ({ apiFetch: vi.fn() }));
+const { apiFetch, showToast } = vi.hoisted(() => ({
+  apiFetch: vi.fn(),
+  showToast: vi.fn(),
+}));
 
 vi.mock("../api", () => ({ apiFetch }));
+vi.mock("./Toast", () => ({ showToast }));
 
 import { CloudChatWorkspace } from "./CloudChatWorkspace";
 
@@ -203,5 +207,125 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
     expect(screen.getByText("保留会话")).toBeInTheDocument();
     expect(container.querySelector(".chat-session-item.active")).toBeNull();
     expect(screen.getByRole("heading", { name: "开始一段云端会话" })).toBeInTheDocument();
+  });
+
+  it("stops immediately on RunAgent 500 while preserving the user message and real error", async () => {
+    const stream = new ReadableStream<Uint8Array>({ start() {} });
+    apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
+      if (path === `${base}/sessions` && !init?.method) {
+        return jsonResponse({ sessions: [{ session_id: "sess-failed-post", title: "失败会话" }] });
+      }
+      if (path === `${base}/models`) return jsonResponse({ models: [] });
+      if (path.endsWith("/messages") && !init?.method) return jsonResponse({ messages: [] });
+      if (path.endsWith("/events") && !init?.method) return jsonResponse({ events: [] });
+      if (path.endsWith("/events/stream?afterSeqId=0")) {
+        return new Response(stream, { headers: { "Content-Type": "text/event-stream" } });
+      }
+      if (path.endsWith("/messages") && init?.method === "POST") {
+        return jsonResponse(
+          { error: { message: "runtime admission rejected: provider unavailable" } },
+          { status: 500 },
+        );
+      }
+      throw new Error(`unexpected request: ${path}`);
+    });
+    render(<CloudChatWorkspace deploymentId="dep-cloud" agentId="ar-cloud" agentName="Cloud Agent" />);
+
+    await screen.findByText("失败会话");
+    await userEvent.type(screen.getByRole("textbox", { name: "消息" }), "保留这条用户消息");
+    await userEvent.click(screen.getByRole("button", { name: "发送消息" }));
+
+    await waitFor(() => expect(screen.queryByText(/正在等待云端响应/)).not.toBeInTheDocument());
+    expect(screen.getByText("保留这条用户消息", { selector: ".message-content p" })).toBeInTheDocument();
+    expect(screen.getByText(/runtime admission rejected: provider unavailable/)).toBeInTheDocument();
+    expect(showToast).toHaveBeenCalledWith(
+      "云端消息发送失败",
+      "runtime admission rejected: provider unavailable",
+      "error",
+    );
+  });
+
+  it("stops polling when the selected session projects active_run_status failed", async () => {
+    let listCalls = 0;
+    const stream = new ReadableStream<Uint8Array>({ start() {} });
+    apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
+      if (path === `${base}/sessions` && !init?.method) {
+        listCalls += 1;
+        return jsonResponse({ sessions: [{
+          session_id: "sess-session-failed",
+          title: "状态失败会话",
+          active_run_status: listCalls === 1 ? "running" : "failed",
+          active_run_error: "worker exited before producing a reply",
+        }] });
+      }
+      if (path === `${base}/models`) return jsonResponse({ models: [] });
+      if (path.endsWith("/messages") && !init?.method) return jsonResponse({ messages: [] });
+      if (path.endsWith("/events") && !init?.method) return jsonResponse({ events: [] });
+      if (path.endsWith("/events/stream?afterSeqId=0")) {
+        return new Response(stream, { headers: { "Content-Type": "text/event-stream" } });
+      }
+      if (path.endsWith("/messages") && init?.method === "POST") {
+        return jsonResponse({ receipt_status: "accepted", invocation_id: "inv-failed" }, { status: 202 });
+      }
+      throw new Error(`unexpected request: ${path}`);
+    });
+    render(<CloudChatWorkspace deploymentId="dep-cloud" agentId="ar-cloud" agentName="Cloud Agent" />);
+
+    await screen.findByText("状态失败会话");
+    await userEvent.type(screen.getByRole("textbox", { name: "消息" }), "触发失败状态");
+    await userEvent.click(screen.getByRole("button", { name: "发送消息" }));
+
+    expect(await screen.findByText(/worker exited before producing a reply/)).toBeInTheDocument();
+    expect(screen.queryByText(/正在等待云端响应/)).not.toBeInTheDocument();
+    expect(showToast).toHaveBeenCalledWith(
+      "云端运行未完成",
+      "worker exited before producing a reply",
+      "error",
+    );
+  });
+
+  it("correlates an invocation_id receipt with an invocation_id terminal SSE frame", async () => {
+    let streamController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) { streamController = controller; },
+    });
+    apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
+      if (path === `${base}/sessions` && !init?.method) {
+        return jsonResponse({ sessions: [{ session_id: "sess-invocation", title: "Invocation 会话" }] });
+      }
+      if (path === `${base}/models`) return jsonResponse({ models: [] });
+      if (path.endsWith("/messages") && !init?.method) return jsonResponse({ messages: [] });
+      if (path.endsWith("/events") && !init?.method) {
+        return jsonResponse({ events: [{ event_type: "user_message", seq_id: 5 }] });
+      }
+      if (path.endsWith("/events/stream?afterSeqId=5")) {
+        return new Response(stream, { headers: { "Content-Type": "text/event-stream" } });
+      }
+      if (path.endsWith("/messages") && init?.method === "POST") {
+        return jsonResponse({
+          receipt_status: "accepted",
+          run_id: "run-500",
+          invocation_id: "inv-500",
+        }, { status: 202 });
+      }
+      throw new Error(`unexpected request: ${path}`);
+    });
+    render(<CloudChatWorkspace deploymentId="dep-cloud" agentId="ar-cloud" agentName="Cloud Agent" />);
+
+    await screen.findByText("Invocation 会话");
+    await userEvent.type(screen.getByRole("textbox", { name: "消息" }), "按 invocation 关联");
+    await userEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith(
+      `${base}/sessions/sess-invocation/messages`,
+      expect.objectContaining({ method: "POST" }),
+    ));
+    streamController?.enqueue(new TextEncoder().encode(
+      "event: session.event\n"
+      + "data: {\"event_type\":\"run_status\",\"invocation_id\":\"inv-500\","
+      + "\"content\":{\"status\":\"failed\",\"error\":\"runtime process crashed\"}}\n\n",
+    ));
+
+    expect(await screen.findByText(/runtime process crashed/)).toBeInTheDocument();
+    expect(screen.queryByText(/正在等待云端响应/)).not.toBeInTheDocument();
   });
 });

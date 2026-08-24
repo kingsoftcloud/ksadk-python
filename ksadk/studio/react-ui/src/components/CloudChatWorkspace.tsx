@@ -34,6 +34,7 @@ interface CloudSession {
   title: string;
   updatedAt: string;
   state: string;
+  error: string;
 }
 
 interface CloudMessage {
@@ -90,6 +91,23 @@ function scalarText(value: unknown): string {
   return typeof value === "string" || typeof value === "number" ? String(value) : "";
 }
 
+function errorText(...values: unknown[]): string {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+    if (!value || typeof value !== "object") continue;
+    const candidate = value as Record<string, unknown>;
+    const nested = errorText(
+      candidate.message,
+      candidate.detail,
+      candidate.reason,
+      candidate.error,
+      candidate.text,
+    );
+    if (nested) return nested;
+  }
+  return "";
+}
+
 function normalizeSession(value: unknown): CloudSession | null {
   if (!value || typeof value !== "object") return null;
   const item = value as Record<string, unknown>;
@@ -100,6 +118,13 @@ function normalizeSession(value: unknown): CloudSession | null {
     title: valueText(item.title ?? item.summary ?? item.first_prompt ?? "") || "新会话",
     updatedAt: scalarText(item.updated_at ?? item.updatedAt ?? item.created_at),
     state: scalarText(item.active_run_status ?? item.state),
+    error: errorText(
+      item.active_run_error,
+      item.activeRunError,
+      item.last_error,
+      item.lastError,
+      item.error,
+    ),
   };
 }
 
@@ -185,8 +210,18 @@ function pendingInteractions(events: unknown[]): CloudInteraction[] {
   return [...requested.values()];
 }
 
-function terminalRunEvent(events: unknown[], runId: string, afterSeq: number): "completed" | "failed" | null {
-  if (!runId && afterSeq <= 0) return null;
+interface TerminalRunResult {
+  status: "completed" | "failed";
+  error: string;
+}
+
+function terminalRunEvent(
+  events: unknown[],
+  runId: string,
+  invocationId: string,
+  afterSeq: number,
+): TerminalRunResult | null {
+  if (!runId && !invocationId && afterSeq <= 0) return null;
   for (const event of events) {
     if (!event || typeof event !== "object") continue;
     const frame = event as Record<string, unknown>;
@@ -209,16 +244,27 @@ function terminalRunEvent(events: unknown[], runId: string, afterSeq: number): "
     // the outer invocation id.  Prefer an exact id match, then fall back to
     // the receipt's accepted Session sequence.  The composer admits one run
     // at a time, so the sequence window remains unambiguous for this client.
-    const matchesRun = Boolean(runId) && eventRunId === runId;
+    const matchesRun = Boolean(eventRunId) && [runId, invocationId].filter(Boolean).includes(eventRunId);
     const matchesAcceptedWindow = afterSeq > 0 && eventSeq > afterSeq;
     if (!matchesRun && !matchesAcceptedWindow) continue;
     const eventType = String(frame.event_type ?? frame.eventType ?? payload.event_type ?? payload.eventType ?? "").toLowerCase();
-    if (["run.completed", "run.complete", "run.succeeded"].includes(eventType)) return "completed";
-    if (["run.failed", "run.cancelled", "run.expired", "run.error"].includes(eventType)) return "failed";
+    const content = payload.content && typeof payload.content === "object"
+      ? payload.content as Record<string, unknown>
+      : {};
+    const failure = errorText(
+      payload.error,
+      payload.message,
+      content.error,
+      content.message,
+      content.detail,
+    );
+    if (["run.completed", "run.complete", "run.succeeded"].includes(eventType)) {
+      return { status: "completed", error: "" };
+    }
+    if (["run.failed", "run.cancelled", "run.expired", "run.error"].includes(eventType)) {
+      return { status: "failed", error: failure };
+    }
     if (["run_status", "run.status"].includes(eventType)) {
-      const content = payload.content && typeof payload.content === "object"
-        ? payload.content as Record<string, unknown>
-        : {};
       const stateDelta = payload.state_delta && typeof payload.state_delta === "object"
         ? payload.state_delta as Record<string, unknown>
         : {};
@@ -226,8 +272,15 @@ function terminalRunEvent(events: unknown[], runId: string, afterSeq: number): "
         ? stateDelta.active_run as Record<string, unknown>
         : {};
       const status = String(payload.status ?? content.status ?? activeRun.status ?? "").toLowerCase();
-      if (["completed", "complete", "succeeded", "success"].includes(status)) return "completed";
-      if (["failed", "cancelled", "canceled", "expired", "error", "aborted"].includes(status)) return "failed";
+      if (["completed", "complete", "succeeded", "success"].includes(status)) {
+        return { status: "completed", error: "" };
+      }
+      if (["failed", "cancelled", "canceled", "expired", "error", "aborted"].includes(status)) {
+        return {
+          status: "failed",
+          error: failure || errorText(activeRun.error, activeRun.message, activeRun.reason),
+        };
+      }
     }
   }
   return null;
@@ -354,6 +407,7 @@ export function CloudChatWorkspace({
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [waitingForResponse, setWaitingForResponse] = useState(false);
+  const [runError, setRunError] = useState("");
   const [deleting, setDeleting] = useState("");
   const [resolvingInteractionId, setResolvingInteractionId] = useState("");
   const messageListRef = useRef<HTMLDivElement>(null);
@@ -361,6 +415,7 @@ export function CloudChatWorkspace({
   const waitingForResponseRef = useRef(false);
   const assistantIdsBeforeSendRef = useRef<Set<string>>(new Set());
   const awaitingRunIdRef = useRef("");
+  const awaitingInvocationIdRef = useRef("");
   const awaitingAcceptedSeqRef = useRef(0);
   const sendInFlightRef = useRef(false);
   const streamAbortRef = useRef<AbortController | null>(null);
@@ -370,6 +425,23 @@ export function CloudChatWorkspace({
     [deploymentId],
   );
 
+  const settleCloudRun = useCallback((error = "", title = "云端运行未完成") => {
+    const wasWaiting = waitingForResponseRef.current;
+    waitingForResponseRef.current = false;
+    setWaitingForResponse(false);
+    awaitingRunIdRef.current = "";
+    awaitingInvocationIdRef.current = "";
+    awaitingAcceptedSeqRef.current = 0;
+    assistantIdsBeforeSendRef.current = new Set();
+    setMessages(previous => previous.map(item => item.pending ? { ...item, pending: false } : item));
+    streamAbortRef.current?.abort();
+    streamAbortRef.current = null;
+    if (error) {
+      setRunError(error);
+      if (wasWaiting) showToast(title, error, "error");
+    }
+  }, []);
+
   const refreshSessions = useCallback(async (selectFallback = true) => {
     const response = await apiFetch(`${base}/sessions`);
     if (!response.ok) throw new Error(await responseError(response));
@@ -378,6 +450,12 @@ export function CloudChatWorkspace({
       .map(normalizeSession)
       .filter((item: CloudSession | null): item is CloudSession => Boolean(item));
     setSessions(rows);
+    const selected = rows.find(item => item.id === currentSessionIdRef.current);
+    if (selected && cloudSessionActivity(selected.state) === "failed") {
+      settleCloudRun(
+        selected.error || "这次云端运行未完成；可新建会话后重试。若持续失败，请到可观测页面按会话查看记录。",
+      );
+    }
     setCurrentSessionId(previous => {
       const next = rows.some(item => item.id === previous)
         ? previous
@@ -385,7 +463,7 @@ export function CloudChatWorkspace({
       currentSessionIdRef.current = next;
       return next;
     });
-  }, [base]);
+  }, [base, settleCloudRun]);
 
   const refreshMessages = useCallback(async (sessionId: string) => {
     if (!sessionId) {
@@ -404,14 +482,11 @@ export function CloudChatWorkspace({
     );
     if (hasNewAssistant) setStreamingAssistant(null);
     if (waitingForResponseRef.current && hasNewAssistant) {
-      waitingForResponseRef.current = false;
-      setWaitingForResponse(false);
-      awaitingRunIdRef.current = "";
-      awaitingAcceptedSeqRef.current = 0;
-      assistantIdsBeforeSendRef.current = new Set();
       setStreamingAssistant(null);
+      setRunError("");
+      settleCloudRun();
     }
-  }, [base]);
+  }, [base, settleCloudRun]);
 
   const refreshInteractions = useCallback(async (sessionId: string) => {
     if (!sessionId) {
@@ -425,19 +500,16 @@ export function CloudChatWorkspace({
     const terminal = terminalRunEvent(
       events,
       awaitingRunIdRef.current,
+      awaitingInvocationIdRef.current,
       awaitingAcceptedSeqRef.current,
     );
     if (terminal) {
-      waitingForResponseRef.current = false;
-      setWaitingForResponse(false);
-      awaitingRunIdRef.current = "";
-      awaitingAcceptedSeqRef.current = 0;
-      if (terminal === "failed") {
-        showToast("云端运行未完成", "本次请求已结束，未得到回复。可新建会话后重试；若持续失败，请到可观测页面按会话查看记录。", "error");
-      }
+      settleCloudRun(terminal.status === "failed"
+        ? terminal.error || "本次请求已结束，未得到回复。可新建会话后重试；若持续失败，请到可观测页面按会话查看记录。"
+        : "");
     }
     setInteractions(pendingInteractions(events));
-  }, [base]);
+  }, [base, settleCloudRun]);
 
   useEffect(() => {
     let cancelled = false;
@@ -448,9 +520,11 @@ export function CloudChatWorkspace({
     setMessages([]);
     setStreamingAssistant(null);
     setInteractions([]);
+    setRunError("");
     waitingForResponseRef.current = false;
     setWaitingForResponse(false);
     awaitingRunIdRef.current = "";
+    awaitingInvocationIdRef.current = "";
     awaitingAcceptedSeqRef.current = 0;
     refreshSessions()
       .catch(error => { if (!cancelled) showToast("云端会话加载失败", error.message, "error"); })
@@ -554,6 +628,7 @@ export function CloudChatWorkspace({
     setMessages([]);
     setStreamingAssistant(null);
     setInteractions([]);
+    setRunError("");
     assistantIdsBeforeSendRef.current = new Set();
     return session.id;
   }
@@ -592,6 +667,7 @@ export function CloudChatWorkspace({
     waitingForResponseRef.current = true;
     setWaitingForResponse(true);
     setStreamingAssistant(null);
+    setRunError("");
     try {
       const contentParts: Array<Record<string, unknown>> = [];
       if (content) contentParts.push({ type: "input_text", text: content });
@@ -608,6 +684,7 @@ export function CloudChatWorkspace({
           .map(message => message.id),
       );
       awaitingRunIdRef.current = "";
+      awaitingInvocationIdRef.current = "";
       const cursorResponse = await apiFetch(
         `${base}/sessions/${encodeURIComponent(sessionId)}/events`,
       );
@@ -647,11 +724,14 @@ export function CloudChatWorkspace({
           ? record.payload as Record<string, unknown>
           : record;
         const eventRunId = String(
-          payload.run_id ?? payload.runId ?? record.run_id ?? record.runId ?? "",
+          payload.run_id ?? payload.runId ?? payload.invocation_id ?? payload.invocationId
+          ?? record.run_id ?? record.runId ?? record.invocation_id ?? record.invocationId ?? "",
         );
         const eventSeq = Number(payload.seq ?? payload.seq_id ?? record.seq ?? record.seq_id ?? 0) || 0;
-        if (awaitingRunIdRef.current && eventRunId && eventRunId !== awaitingRunIdRef.current) return;
+        const expectedRunIds = [awaitingRunIdRef.current, awaitingInvocationIdRef.current].filter(Boolean);
+        if (expectedRunIds.length && eventRunId && !expectedRunIds.includes(eventRunId)) return;
         if (awaitingAcceptedSeqRef.current && eventSeq && eventSeq <= awaitingAcceptedSeqRef.current) return;
+        if (!expectedRunIds.length && eventRunId) awaitingInvocationIdRef.current = eventRunId;
         const delta = streamedAssistantText(frame);
         if (delta) {
           setStreamingAssistant(previous => ({
@@ -665,11 +745,13 @@ export function CloudChatWorkspace({
         const terminal = terminalRunEvent(
           [frame],
           awaitingRunIdRef.current,
+          awaitingInvocationIdRef.current,
           awaitingAcceptedSeqRef.current,
         );
         if (terminal) {
-          waitingForResponseRef.current = false;
-          setWaitingForResponse(false);
+          settleCloudRun(terminal.status === "failed"
+            ? terminal.error || "本次请求已结束，未得到回复。"
+            : "");
           refreshMessages(sessionId).catch(() => {});
           refreshInteractions(sessionId).catch(() => {});
           refreshSessions().catch(() => {});
@@ -695,11 +777,16 @@ export function CloudChatWorkspace({
       setInput("");
       setAttachments([]);
       const receipt = await response.json() as Record<string, unknown>;
-      awaitingRunIdRef.current = String(receipt.run_id ?? receipt.runId ?? receipt.RunId ?? "");
-      awaitingAcceptedSeqRef.current = Math.max(
-        awaitingAcceptedSeqRef.current,
-        Number(receipt.accepted_seq ?? receipt.acceptedSeq ?? receipt.AcceptedSeq ?? 0) || 0,
-      );
+      if (waitingForResponseRef.current) {
+        awaitingRunIdRef.current = String(receipt.run_id ?? receipt.runId ?? receipt.RunId ?? "");
+        awaitingInvocationIdRef.current = String(
+          receipt.invocation_id ?? receipt.invocationId ?? receipt.InvocationId ?? "",
+        );
+        awaitingAcceptedSeqRef.current = Math.max(
+          awaitingAcceptedSeqRef.current,
+          Number(receipt.accepted_seq ?? receipt.acceptedSeq ?? receipt.AcceptedSeq ?? 0) || 0,
+        );
+      }
       // Admission is complete once the receipt arrives. Session-list refresh
       // is metadata work and must not keep the composer in `sending` while
       // the runtime response is already available.
@@ -710,15 +797,7 @@ export function CloudChatWorkspace({
       }, 250);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      setMessages(previous => previous.map(item => item.pending ? { ...item, pending: false } : item));
-      waitingForResponseRef.current = false;
-      setWaitingForResponse(false);
-      awaitingRunIdRef.current = "";
-      awaitingAcceptedSeqRef.current = 0;
-      assistantIdsBeforeSendRef.current = new Set();
-      streamAbortRef.current?.abort();
-      streamAbortRef.current = null;
-      showToast("云端消息发送失败", message, "error");
+      settleCloudRun(message, "云端消息发送失败");
     } finally {
       setSending(false);
       sendInFlightRef.current = false;
@@ -756,6 +835,7 @@ export function CloudChatWorkspace({
         setMessages([]);
         setStreamingAssistant(null);
         setInteractions([]);
+        setRunError("");
       }
       await refreshSessions(!deletedCurrent);
     } catch (error) {
@@ -812,6 +892,7 @@ export function CloudChatWorkspace({
               <button className="chat-session-main" type="button" onClick={() => {
                 currentSessionIdRef.current = session.id;
                 setCurrentSessionId(session.id);
+                setRunError(session.error);
               }}>
                 <strong>{session.title}</strong>
                 {activity && (
@@ -832,7 +913,12 @@ export function CloudChatWorkspace({
         </header>
         <div ref={messageListRef} className="chat-message-list" aria-live="polite">
           {!currentSessionId && !loading && <div className="chat-empty"><span className="chat-empty-icon"><Bot /></span><h2>开始一段云端会话</h2></div>}
-          {sessions.find(session => session.id === currentSessionId)?.state === "failed" && <div className="cloud-chat-run-warning"><ShieldAlert size={15} />这次云端运行未完成；可新建会话后重试。若持续失败，请到可观测页面按会话查看记录。</div>}
+          {(runError || cloudSessionActivity(sessions.find(session => session.id === currentSessionId)?.state || "") === "failed") && (
+            <div className="cloud-chat-run-warning">
+              <ShieldAlert size={15} />
+              {runError || sessions.find(session => session.id === currentSessionId)?.error || "这次云端运行未完成；可新建会话后重试。若持续失败，请到可观测页面按会话查看记录。"}
+            </div>
+          )}
           {messages.map(message => (
             <article key={message.id} className={`message ${message.role}${message.pending ? " pending" : ""}${message.streaming ? " streaming" : ""}`}>
               <div className="message-meta">{message.role === "user" ? "你" : agentName}</div>

@@ -12,7 +12,7 @@ test("cloud chat keeps polling until an admitted run reaches a terminal response
   assert.match(source, /if \(!active \|\| !currentSessionId\) return/);
   assert.match(source, /sending \|\| waitingForResponse \? 1200 : 4000/);
   assert.match(source, /awaitingAcceptedSeqRef\.current/);
-  assert.match(source, /const matchesRun = Boolean\(runId\) && eventRunId === runId/);
+  assert.match(source, /\[runId, invocationId\]\.filter\(Boolean\)\.includes\(eventRunId\)/);
   assert.match(source, /const matchesAcceptedWindow = afterSeq > 0 && eventSeq > afterSeq/);
   assert.match(source, /if \(!matchesRun && !matchesAcceptedWindow\) continue/);
   assert.match(source, /receipt\.accepted_seq/);
@@ -24,6 +24,8 @@ test("cloud chat keeps polling until an admitted run reaches a terminal response
   assert.match(source, /sendInFlightRef\.current = false/);
   assert.match(source, /payload\.invocation_id/);
   assert.match(source, /frame\.invocation_id/);
+  assert.match(source, /const awaitingInvocationIdRef = useRef\(""\)/);
+  assert.match(source, /receipt\.invocation_id/);
   assert.match(source, /\["run_status", "run\.status"\]/);
   assert.match(source, /content\.status/);
   assert.match(source, /const assistantIdsBeforeSendRef = useRef<Set<string>>\(new Set\(\)\)/);
