@@ -1,19 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { Command } from "cmdk";
-import { Check, Infinity, ListTodo, Paperclip, Plus, Target, Undo2 } from "lucide-react";
+import { ListTodo, Paperclip, Plus, Target, Undo2 } from "lucide-react";
 import {
   COMPOSER_ATTACHMENT_ACCEPT,
   visibleComposerCommands,
-  type CollaborationMode,
   type ComposerCommand,
 } from "../composerActions";
 
 interface ComposerActionMenuProps {
-  mode: CollaborationMode;
   disabled: boolean;
   onTogglePlan: () => void;
-  onSetDefault: () => void;
   onStartGoal: () => void;
   onFiles: (files: File[]) => void;
   active?: boolean;
@@ -27,10 +24,8 @@ function CommandIcon({ id }: { id: ComposerCommand["id"] }) {
 }
 
 export function ComposerActionMenu({
-  mode,
   disabled,
   onTogglePlan,
-  onSetDefault,
   onStartGoal,
   onFiles,
   active = true,
@@ -77,19 +72,13 @@ export function ComposerActionMenu({
             </DropdownMenu.Item>
             <DropdownMenu.Separator className="composer-action-separator" />
             <DropdownMenu.Label className="composer-action-heading">运行方式</DropdownMenu.Label>
-            <DropdownMenu.Item className="composer-action-item" onSelect={onSetDefault}>
-              <Infinity size={16} />
-              <span><strong>Agent Loop</strong><small>直接执行并持续处理工具调用</small></span>
-              {mode === "default" && <Check className="composer-action-check" size={15} />}
-            </DropdownMenu.Item>
             <DropdownMenu.Item className="composer-action-item" onSelect={onTogglePlan}>
               <ListTodo size={16} />
               <span><strong>计划模式</strong><small>下一轮使用 Codex Plan</small></span>
-              {mode === "plan" && <Check className="composer-action-check" size={15} />}
             </DropdownMenu.Item>
             <DropdownMenu.Item className="composer-action-item" onSelect={onStartGoal}>
               <Target size={16} />
-              <span><strong>设定长期目标</strong><small>启动持久 Goal</small></span>
+              <span><strong>设定长期目标</strong><small>朝可验证的停止条件持续推进</small></span>
             </DropdownMenu.Item>
           </DropdownMenu.Content>
         </DropdownMenu.Portal>

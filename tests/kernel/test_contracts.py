@@ -254,7 +254,8 @@ def test_legacy_runtime_parser_preserves_additive_execution_modes():
     round_trip = matrix.model_dump(mode="json")
 
     assert round_trip["goal"]["mode"] == "native"
-    assert round_trip["loop"]["mode"] == "native"
+    assert round_trip["loop"]["mode"] == "unavailable"
+    assert round_trip["loop"]["reason"] == "codex_loop_requires_run_control_spec"
     assert round_trip["plan"]["mode"] == "native"
 
 

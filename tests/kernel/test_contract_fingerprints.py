@@ -43,7 +43,11 @@ def test_execution_modes_are_bound_into_runtime_capability_digest() -> None:
     codex_modes = legacy.model_copy(
         update={
             "goal": RuntimeCapability(supported=True, mode="native"),
-            "loop": RuntimeCapability(supported=True, mode="native"),
+            "loop": RuntimeCapability(
+                supported=False,
+                mode="unavailable",
+                reason="codex_loop_requires_run_control_spec",
+            ),
             "plan": RuntimeCapability(supported=True, mode="native"),
         }
     )

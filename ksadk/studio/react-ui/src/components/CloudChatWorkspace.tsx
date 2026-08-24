@@ -729,7 +729,7 @@ export function CloudChatWorkspace({
     setCollaborationMode(next);
     localStorage.setItem(`agentkit:chat:collaboration:${agentId}`, next);
     setInput("");
-    showToast(next === "plan" ? "计划模式已开启" : "已切换到 Agent Loop", "下一轮云端对话生效", "success");
+    showToast(next === "plan" ? "计划模式已开启" : "已返回默认模式", "下一轮云端对话生效", "success");
   }
 
   function selectComposerCommand(id: ComposerCommand["id"]) {

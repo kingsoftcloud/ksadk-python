@@ -309,8 +309,11 @@ class RuntimeCapabilityMatrix(WireModel):
     inject: RuntimeCapability
     checkpoint: RuntimeCapability
     durable_restore: RuntimeCapability
-    # Runtime v2 execution modes are additive optional capabilities. Older
+    # Runtime v2 execution controls are additive optional capabilities. Older
     # runtimes omit them; a runtime must never infer support from UI presence.
+    # ``loop`` specifically means an externally bounded, eval-driven
+    # improvement loop. It is not the runtime's ordinary agent loop and it is
+    # not an alias for collaboration_mode=default.
     goal: RuntimeCapability | None = None
     loop: RuntimeCapability | None = None
     plan: RuntimeCapability | None = None

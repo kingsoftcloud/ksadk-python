@@ -32,13 +32,13 @@ function renderComposer(reasoningEfforts: Array<"low" | "medium" | "high"> = [])
 }
 
 describe("ChatComposer", () => {
-  it("keeps Loop, Plan, Goal and attachments behind one plus menu", async () => {
+  it("keeps Plan, Goal and attachments behind one plus menu without exposing the internal loop", async () => {
     const user = userEvent.setup();
     renderComposer();
 
     await user.click(screen.getByRole("button", { name: "添加附件或运行控制" }));
     expect(screen.getByText("添加图片或文本")).toBeInTheDocument();
-    expect(screen.getByText("Agent Loop")).toBeInTheDocument();
+    expect(screen.queryByText("Agent Loop")).not.toBeInTheDocument();
     expect(screen.getByText("计划模式")).toBeInTheDocument();
     expect(screen.getByText("设定长期目标")).toBeInTheDocument();
   });

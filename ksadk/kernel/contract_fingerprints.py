@@ -15,7 +15,7 @@ from typing import Any
 
 AGENT_KERNEL_V1_CONTRACT_SET = "agent-kernel/v1"
 AGENT_KERNEL_V1_AGGREGATE_DIGEST = (
-    "9651cdae4d7e251637d20831fed50dff60456c4dc37d3c4aafe9c0503791c7c8"
+    "47e1003e03d97abeba232cc3e03a14b9cbcf78b1109870ccd2ce371f073b6211"
 )
 
 

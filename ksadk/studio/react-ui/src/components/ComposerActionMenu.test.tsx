@@ -10,9 +10,7 @@ describe("ComposerActionMenu", () => {
     const startGoal = vi.fn();
     render(
       <ComposerActionMenu
-        mode="default"
         disabled={false}
-        onSetDefault={vi.fn()}
         onTogglePlan={togglePlan}
         onStartGoal={startGoal}
         onFiles={() => {}}
@@ -39,9 +37,7 @@ describe("ComposerActionMenu", () => {
   it("closes its portal when the conversation route becomes inactive", async () => {
     const user = userEvent.setup();
     const props = {
-      mode: "default" as const,
       disabled: false,
-      onSetDefault: vi.fn(),
       onTogglePlan: vi.fn(),
       onStartGoal: vi.fn(),
       onFiles: vi.fn(),

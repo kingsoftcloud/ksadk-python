@@ -375,17 +375,15 @@ export function ChatComposer({
       />
       <div className="chat-composer-footer">
         <ComposerActionMenu
-          mode={mode}
           disabled={disabled}
           active={active}
-          onSetDefault={() => onSetMode("default")}
           onTogglePlan={() => onSetMode(mode === "plan" ? "default" : "plan")}
           onStartGoal={onStartGoal}
           onFiles={onFiles}
           attachmentAccept={attachmentAccept}
         />
         {mode === "plan" && (
-          <button className="chat-mode-chip" type="button" title="点击返回 Agent Loop" onClick={() => onSetMode("default")}>
+          <button className="chat-mode-chip" type="button" title="点击返回默认模式" onClick={() => onSetMode("default")}>
             <ListTodo size={14} />
             <span>计划</span>
           </button>

@@ -42,8 +42,9 @@
       "mode": "native"
     },
     "loop": {
-      "supported": true,
-      "mode": "native"
+      "supported": false,
+      "mode": "unavailable",
+      "reason": "codex_loop_requires_run_control_spec"
     },
     "plan": {
       "supported": true,

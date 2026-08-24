@@ -172,15 +172,19 @@ def _all_adapters() -> list[tuple[str, RuntimeAdapter]]:
     ]
 
 
-def test_codex_capability_matrix_declares_native_goal_loop_and_plan() -> None:
-    """Codex 的基础执行模式必须可被 Server/Studio 直接发现，不能靠 UI 猜测。"""
+def test_codex_capability_matrix_distinguishes_controls_from_internal_loop() -> None:
+    """Goal/Plan 是原生控制；普通 agent loop 不能冒充可选的改进循环。"""
 
     matrix = _codex_adapter().capabilities()
-    for mode_name in ("goal", "loop", "plan"):
+    for mode_name in ("goal", "plan"):
         capability = getattr(matrix, mode_name)
         assert capability is not None, mode_name
         assert capability.supported is True, mode_name
         assert capability.mode == "native", mode_name
+    assert matrix.loop is not None
+    assert matrix.loop.supported is False
+    assert matrix.loop.mode == "unavailable"
+    assert matrix.loop.reason == "codex_loop_requires_run_control_spec"
 
 
 _CAPABILITY_METHODS = {

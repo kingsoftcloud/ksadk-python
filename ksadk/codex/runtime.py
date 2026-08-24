@@ -143,7 +143,7 @@ class CodexRuntimeAdapter(RuntimeAdapter):
             checkpoint=RuntimeCapability(supported=True, mode="native"),
             durable_restore=_unavailable("codex_durable_restore_requires_attach_seam"),
             goal=RuntimeCapability(supported=True, mode="native"),
-            loop=RuntimeCapability(supported=True, mode="native"),
+            loop=_unavailable("codex_loop_requires_run_control_spec"),
             plan=RuntimeCapability(supported=True, mode="native"),
         )
 

@@ -256,7 +256,7 @@ class RuntimeCapabilityMatrix(BaseModel):
 
 `supported=False` 必须配 `mode="unavailable"` 和稳定 reason code；`emulated` 只能用于语义完全等价且通过 conformance 的实现。Phase 1 禁止用 `emulated` 掩盖 enqueue 与 steer、cancel 与 pause 的语义差异。
 
-`goal`、`loop`、`plan` 是 v1 的 additive optional 扩展，逐项使用 `RuntimeCapability` 表达：旧 runtime 可全部省略；Codex Runtime v2 三项均为原生能力；其他 runtime 不得仅因 UI 提供入口就推断支持。三项保持为顶层 capability，兼容既有 Server/Operator 对 matrix 的通用 key-value 投影。
+`goal`、`loop`、`plan` 是 v1 的 additive optional 扩展，逐项使用 `RuntimeCapability` 表达：旧 runtime 可全部省略；Codex Runtime v2 的 `goal` 与 `plan` 是原生能力。`loop` 专指带外部验收、预算、停滞检测和停止条件的 eval-driven improvement loop，不是普通多轮对话、默认 turn，也不是 RuntimeAdapter 内部 agent loop 的同义词；在 `RunControlSpec` 和 verifier 闭环前必须声明 `unavailable`。其他 runtime 不得仅因 UI 提供入口就推断支持。三项保持为顶层 capability，兼容既有 Server/Operator 对 matrix 的通用 key-value 投影。
 
 ## 3. 责任边界与数据流
 
