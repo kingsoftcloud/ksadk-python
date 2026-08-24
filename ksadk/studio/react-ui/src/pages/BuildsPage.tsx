@@ -3,6 +3,7 @@ import { CloudUpload, Package, Plus } from "lucide-react";
 import { apiFetch } from "../api";
 import { PageHeaderActions } from "../components/PageHeaderPortal";
 import { showToast } from "../components/Toast";
+import { deploymentCreateRoute, navigateToStudioHash } from "../studioRoutes";
 
 interface AgentSummary {
   metadata: { id: string; name: string; revision?: number };
@@ -89,7 +90,9 @@ export function BuildsPage({ currentAgentId, agents, onSelectAgent, onCreate }: 
   const latestBuild = builds.find(build => build.status === "SUCCEEDED") || builds[0];
   const deployable = latestBuild?.status === "SUCCEEDED" && !building;
   const selectedAgent = agents.find(agent => agent.metadata.id === currentAgentId);
-  const isManagedRuntime = draft?.spec?.runtime?.type === "codex";
+  const artifactType = draft?.metadata?.labels?.["agentkit.ksyun.com/artifact-type"];
+  const isManagedRuntime = artifactType === "ManagedRuntime"
+    || (!artifactType && draft?.spec?.runtime?.type === "codex");
   const deliveryLabel = (value: string) => isManagedRuntime
     ? ({
       IDLE: "尚未校验",
@@ -127,7 +130,7 @@ export function BuildsPage({ currentAgentId, agents, onSelectAgent, onCreate }: 
   function openDeploymentFlow() {
     if (!currentAgentId || !deployable) return;
     onSelectAgent(currentAgentId);
-    window.location.hash = `#/agents/${encodeURIComponent(currentAgentId)}`;
+    navigateToStudioHash(deploymentCreateRoute(latestBuild.id, currentAgentId));
   }
 
   async function build() {
@@ -192,7 +195,12 @@ export function BuildsPage({ currentAgentId, agents, onSelectAgent, onCreate }: 
       </PageHeaderActions>
 
       <div className="delivery-intro">
-        <div><h2>{isManagedRuntime ? "YAML 声明校验" : "不可变 Bundle"}</h2><p>{isManagedRuntime ? "冻结 YAML 字节与 runtime 摘要；云端部署不上传代码包。" : "解析当前 Revision，锁定依赖并生成可追溯交付物。"}</p></div>
+        <div>
+          <h2>{isManagedRuntime ? "ManagedRuntime 声明" : "Code Bundle"}</h2>
+          <p>{isManagedRuntime
+            ? "校验 YAML 声明并锁定 Runtime、模型与能力摘要，生成可追溯的托管运行时制品。"
+            : "打包 ADK、LangGraph 等代码 Agent，锁定代码、依赖与能力摘要。"}</p>
+        </div>
         <span className="delivery-status-badge" data-state={state}>{deliveryLabel(status)}</span>
       </div>
 
@@ -212,15 +220,15 @@ export function BuildsPage({ currentAgentId, agents, onSelectAgent, onCreate }: 
             <div><span className="stat-label">Runtime</span><strong>{runtime}</strong><small>锁定 Profile</small></div>
           </section>
 
-          <section className="delivery-block" aria-label={isManagedRuntime ? "声明事实链" : "Bundle 事实链"}>
-            <h2>{isManagedRuntime ? "声明事实链" : "构建事实链"}</h2><p>每一步都来自本地交付记录；云端状态不在这里推断。</p>
+          <section className="delivery-block" aria-label={isManagedRuntime ? "ManagedRuntime 事实链" : "Code Bundle 事实链"}>
+            <h2>{isManagedRuntime ? "声明事实链" : "构建事实链"}</h2><p>每一步都来自本地交付记录；部署页负责选择目标并提交云端操作。</p>
             <div className="delivery-fact-chain">
               <div className="delivery-fact-step" data-state={draft ? "ready" : "idle"}><span>{isManagedRuntime ? "输入 YAML Revision" : "输入 Revision"}</span><strong>{draft ? `r${draft.metadata.revision}` : "未选择"}</strong><code>{draft?.metadata?.id || "-"}</code></div>
               <div className="delivery-fact-step" data-state={state}><span>{isManagedRuntime ? "声明摘要" : "不可变 Bundle"}</span><strong>{latestBuild?.status === "SUCCEEDED" ? (isManagedRuntime ? "已校验" : "已生成") : deliveryLabel(status)}</strong><code>{latestBuild?.bundleDigest || "尚无 digest"}</code></div>
               <div className="delivery-fact-step" data-state={deployable ? "ready" : "idle"}>
                 <span>下一步</span>
                 <strong>{deployable ? "构建完成，下一步可部署到云端" : "等待构建完成"}</strong>
-                <code>{deployable ? "前往 Agent 详情确认并提交部署" : "成功 Build 生成后开放部署入口"}</code>
+                <code>{deployable ? `使用 ${latestBuild.id} 进入统一部署流程` : "成功 Build 生成后开放部署入口"}</code>
                 {deployable && (
                   <div className="delivery-empty-actions">
                     <button className="button secondary compact" type="button" onClick={openDeploymentFlow}>

@@ -15,5 +15,8 @@ describe("Studio route parsing", () => {
       view: "resources",
       resourceKind: "skill",
     });
+    expect(parseStudioLocationHash("#/deployments/new?buildId=build-1&agentId=demo-agent")).toMatchObject({
+      view: "deployments",
+    });
   });
 });

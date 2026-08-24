@@ -516,7 +516,6 @@ export default function App() {
                 onChat={enterChat}
                 onBuild={() => setView("builds")}
                 onEdit={openEdit}
-                onOpenDeployments={() => setView("deployments")}
                 onChanged={loadAgents}
               />
             )}
