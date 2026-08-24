@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from ksadk.api import AgentEngineAPIError
 from ksadk.studio.api import create_studio_app
 from ksadk.studio.cloud import DirectAgentEngineCloudDeploymentGateway
 from ksadk.studio.contracts import DeploymentRecord, DeploymentRequest, DeploymentTarget
@@ -136,6 +138,64 @@ class _CloudClient:
         self.calls.append(("DeleteAgent", {"AgentId": agent_id}))
         return True
 
+    async def list_versions(self, agent_id: str, page: int = 1, size: int = 10) -> dict:
+        self.calls.append(
+            ("ListVersions", {"AgentId": agent_id, "Page": page, "PageSize": size})
+        )
+        return {
+            "versions": [
+                {
+                    "version_id": "version-current",
+                    "version_name": "v3",
+                    "tag": "prod-current",
+                    "status": "current",
+                    "traffic_percentage": 100,
+                    "can_rollback": False,
+                    "rollback_disabled_reason": "当前版本不可回滚至自身",
+                    "created_at": "2026-08-24T10:00:00+08:00",
+                    "created_by": "user-current",
+                },
+                {
+                    "version_id": "version-old",
+                    "version_name": "v2",
+                    "tag": "prod-old",
+                    "status": "historical",
+                    "traffic_percentage": 0,
+                    "can_rollback": True,
+                    "rollback_disabled_reason": "",
+                    "created_at": "2026-08-23T10:00:00+08:00",
+                    "created_by": "user-old",
+                },
+            ],
+            "total_count": 2,
+            "page": page,
+            "page_size": size,
+        }
+
+    async def rollback_version(
+        self,
+        agent_id: str,
+        target_version_id: str | None = None,
+        target_tag: str | None = None,
+        **_kwargs,
+    ) -> dict:
+        self.calls.append(
+            (
+                "RollbackVersion",
+                {
+                    "AgentId": agent_id,
+                    "TargetVersionId": target_version_id,
+                    "TargetTag": target_tag,
+                },
+            )
+        )
+        return {
+            "agent_id": agent_id,
+            "target_version_id": target_version_id,
+            "status": "UPDATING",
+            "noop": False,
+        }
+
     async def submit_interaction(self, **kwargs) -> dict:
         self.calls.append(("SubmitInteraction", kwargs))
         return {"receipt_status": "accepted"}
@@ -146,8 +206,11 @@ class _Uploader:
         pass
 
 
-def _client_with_receipt(tmp_path: Path) -> tuple[TestClient, _CloudClient]:
-    cloud_client = _CloudClient()
+def _client_with_receipt(
+    tmp_path: Path,
+    cloud_client: _CloudClient | None = None,
+) -> tuple[TestClient, _CloudClient]:
+    cloud_client = cloud_client or _CloudClient()
     gateway = DirectAgentEngineCloudDeploymentGateway(
         region="pre-online",
         client=cloud_client,
@@ -173,6 +236,15 @@ def _client_with_receipt(tmp_path: Path) -> tuple[TestClient, _CloudClient]:
     return TestClient(
         create_studio_app(tmp_path, service=studio, security_enabled=False)
     ), cloud_client
+
+
+def _wait_for_operation(client: TestClient, operation_id: str) -> dict:
+    for _ in range(100):
+        operation = client.get(f"/api/v1/operations/{operation_id}").json()
+        if operation["status"] in {"SUCCEEDED", "FAILED", "CANCELLED", "INTERRUPTED"}:
+            return operation
+        time.sleep(0.01)
+    raise AssertionError(f"operation {operation_id} did not complete")
 
 
 def test_cloud_chat_routes_keep_agent_scope_in_the_local_receipt(tmp_path: Path) -> None:
@@ -417,6 +489,106 @@ def test_account_cloud_agent_without_receipt_supports_directory_chat_dashboard_a
         {"AgentId": "ar-existing-code", "Page": 1, "PageSize": 50},
     ) in cloud.calls
     assert cloud.calls[-1] == ("DeleteAgent", {"AgentId": "ar-existing-code"})
+
+
+def test_account_cloud_agent_versions_proxy_server_rollback_contract(
+    tmp_path: Path,
+) -> None:
+    client, cloud = _client_with_receipt(tmp_path)
+
+    with client:
+        versions = client.get(
+            "/api/v1/cloud-agents/ar-existing-code/versions",
+            params={"page": 1, "size": 100},
+        )
+        submitted = client.post(
+            "/api/v1/cloud-agents/ar-existing-code:rollback-version",
+            headers={"Idempotency-Key": "rollback-version-old"},
+            json={"versionId": "version-old"},
+        )
+        completed = _wait_for_operation(client, submitted.json()["id"])
+
+    assert versions.status_code == 200
+    assert versions.json() == {
+        "items": [
+            {
+                "versionId": "version-current",
+                "versionName": "v3",
+                "tag": "prod-current",
+                "status": "current",
+                "trafficPercentage": 100,
+                "canRollback": False,
+                "rollbackDisabledReason": "当前版本不可回滚至自身",
+                "createdAt": "2026-08-24T10:00:00+08:00",
+                "createdBy": "user-current",
+            },
+            {
+                "versionId": "version-old",
+                "versionName": "v2",
+                "tag": "prod-old",
+                "status": "historical",
+                "trafficPercentage": 0,
+                "canRollback": True,
+                "rollbackDisabledReason": "",
+                "createdAt": "2026-08-23T10:00:00+08:00",
+                "createdBy": "user-old",
+            },
+        ],
+        "total": 2,
+        "currentVersionId": "version-current",
+    }
+    assert submitted.status_code == 202
+    assert submitted.json()["metadata"] == {
+        "agentId": "ar-existing-code",
+        "targetVersionId": "version-old",
+        "source": "server-version",
+    }
+    assert completed["status"] == "SUCCEEDED"
+    assert completed["resourceId"] == "ar-existing-code:version-old"
+    assert cloud.calls == [
+        (
+            "ListVersions",
+            {"AgentId": "ar-existing-code", "Page": 1, "PageSize": 100},
+        ),
+        (
+            "RollbackVersion",
+            {
+                "AgentId": "ar-existing-code",
+                "TargetVersionId": "version-old",
+                "TargetTag": None,
+            },
+        ),
+    ]
+
+
+def test_account_cloud_agent_rollback_operation_preserves_server_failure(
+    tmp_path: Path,
+) -> None:
+    class _FailingRollbackClient(_CloudClient):
+        async def rollback_version(self, *_args, **_kwargs) -> dict:
+            raise AgentEngineAPIError(
+                4104,
+                "目标版本不可回滚",
+                details={"request_id": "req-version", "action": "RollbackVersion"},
+            )
+
+    client, _cloud = _client_with_receipt(tmp_path, _FailingRollbackClient())
+
+    with client:
+        submitted = client.post(
+            "/api/v1/cloud-agents/ar-existing-code:rollback-version",
+            headers={"Idempotency-Key": "rollback-version-disabled"},
+            json={"versionId": "version-disabled"},
+        )
+        completed = _wait_for_operation(client, submitted.json()["id"])
+
+    assert submitted.status_code == 202
+    assert completed["status"] == "FAILED"
+    assert completed["error"] == {
+        "code": "CLOUD_AGENT_VERSION_ROLLBACK_FAILED",
+        "message": "目标版本不可回滚",
+        "field": None,
+    }
 
 
 def test_native_runtime_without_session_event_capability_cannot_enter_studio_cloud_chat(

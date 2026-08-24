@@ -22,6 +22,7 @@ from ksadk.studio.api_catalog_routes import register_catalog_routes
 from ksadk.studio.api_contracts import (
     AuthoringCommitRequest,
     BuildRequest,
+    CloudAgentVersionRollbackRequest,
     CloudChatInteractionSubmitRequest,
     CloudChatMessageRequest,
     ContextPreviewRequest,
@@ -1227,6 +1228,37 @@ def create_studio_app(
     @app.get("/api/v1/cloud-agents/{agent_id}")
     async def get_account_cloud_agent(agent_id: str):
         return await studio.cloud.get_account_agent(agent_id)
+
+    @app.get("/api/v1/cloud-agents/{agent_id}/versions")
+    async def list_account_cloud_agent_versions(
+        agent_id: str,
+        page: int = Query(default=1, ge=1),
+        size: int = Query(default=100, ge=1, le=100),
+    ):
+        """List the Server-owned version history and rollback eligibility."""
+
+        return await studio.cloud.list_account_agent_versions(
+            agent_id,
+            page=page,
+            size=size,
+        )
+
+    @app.post(
+        "/api/v1/cloud-agents/{agent_id}:rollback-version",
+        status_code=202,
+    )
+    async def rollback_account_cloud_agent_version(
+        agent_id: str,
+        payload: CloudAgentVersionRollbackRequest,
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    ):
+        """Submit Server RollbackVersion through Studio's process-only AK/SK."""
+
+        return studio.submit_account_agent_version_rollback(
+            agent_id,
+            version_id=payload.version_id,
+            idempotency_key=_require_idempotency_key(idempotency_key),
+        )
 
     @app.post("/api/v1/cloud-agents/{agent_id}:dashboard")
     async def open_account_cloud_agent_dashboard(agent_id: str):

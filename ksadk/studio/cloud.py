@@ -101,6 +101,14 @@ class CloudDeploymentGateway(Protocol):
 
     async def get_account_agent(self, agent_id: str) -> dict[str, Any]: ...
 
+    async def list_account_agent_versions(
+        self, agent_id: str, *, page: int, size: int
+    ) -> dict[str, Any]: ...
+
+    async def rollback_account_agent_version(
+        self, agent_id: str, *, version_id: str
+    ) -> dict[str, Any]: ...
+
     async def get_account_agent_dashboard_access(
         self, agent_id: str
     ) -> dict[str, str | None]: ...
@@ -196,6 +204,24 @@ class UnavailableCloudGateway:
         raise StudioError(
             "CLOUD_AGENT_DIRECTORY_UNAVAILABLE",
             "当前未配置可用的云端签名账号，不能读取云端 Agent",
+            status_code=501,
+        )
+
+    async def list_account_agent_versions(
+        self, _agent_id: str, *, page: int, size: int
+    ) -> dict[str, Any]:
+        raise StudioError(
+            "CLOUD_AGENT_VERSION_DIRECTORY_UNAVAILABLE",
+            "当前未配置可用的云端签名账号，不能读取云端版本",
+            status_code=501,
+        )
+
+    async def rollback_account_agent_version(
+        self, _agent_id: str, *, version_id: str
+    ) -> dict[str, Any]:
+        raise StudioError(
+            "CLOUD_AGENT_VERSION_ROLLBACK_UNAVAILABLE",
+            "当前未配置可用的云端签名账号，不能回滚云端版本",
             status_code=501,
         )
 
@@ -318,6 +344,43 @@ class InMemoryCloudGateway:
                     "versionId": item.version_id,
                 }
         raise StudioError("CLOUD_AGENT_NOT_FOUND", "云端 Agent 不存在", status_code=404)
+
+    async def list_account_agent_versions(
+        self, agent_id: str, *, page: int, size: int
+    ) -> dict[str, Any]:
+        detail = await self.get_account_agent(agent_id)
+        version_id = str(detail.get("versionId") or "").strip()
+        items = []
+        if version_id:
+            items.append(
+                {
+                    "versionId": version_id,
+                    "versionName": version_id,
+                    "tag": "",
+                    "status": "current",
+                    "trafficPercentage": 100,
+                    "canRollback": False,
+                    "rollbackDisabledReason": "当前版本不可回滚至自身",
+                    "createdAt": None,
+                    "createdBy": "",
+                }
+            )
+        return {
+            "items": items,
+            "total": len(items),
+            "currentVersionId": version_id or None,
+        }
+
+    async def rollback_account_agent_version(
+        self, agent_id: str, *, version_id: str
+    ) -> dict[str, Any]:
+        await self.get_account_agent(agent_id)
+        return {
+            "agentId": agent_id,
+            "targetVersionId": version_id,
+            "status": "UPDATING",
+            "noop": False,
+        }
 
     async def get_account_agent_dashboard_access(
         self, agent_id: str
@@ -800,6 +863,127 @@ class DirectAgentEngineCloudDeploymentGateway:
             raise StudioError("CLOUD_AGENT_NOT_FOUND", "云端 Agent 标识不能为空", status_code=404)
         payload = await self.client.get_agent(agent_id=normalized_id)
         return self._account_agent_view(payload, fallback_id=normalized_id)
+
+    @staticmethod
+    def _account_agent_version_view(payload: dict[str, Any]) -> dict[str, Any]:
+        def first(*names: str, default: Any = None) -> Any:
+            for name in names:
+                if name in payload and payload[name] is not None:
+                    return payload[name]
+            return default
+
+        return {
+            "versionId": str(first("version_id", "VersionId", default="") or "").strip(),
+            "versionName": str(
+                first("version_name", "VersionName", default="") or ""
+            ).strip(),
+            "tag": str(first("tag", "Tag", default="") or "").strip(),
+            "status": str(first("status", "Status", default="") or "").strip(),
+            "trafficPercentage": int(
+                first("traffic_percentage", "TrafficPercentage", default=0) or 0
+            ),
+            "canRollback": first("can_rollback", "CanRollback", default=False) is True,
+            "rollbackDisabledReason": str(
+                first(
+                    "rollback_disabled_reason",
+                    "RollbackDisabledReason",
+                    default="",
+                )
+                or ""
+            ).strip(),
+            "createdAt": str(first("created_at", "CreatedAt", default="") or "").strip()
+            or None,
+            "createdBy": str(first("created_by", "CreatedBy", default="") or "").strip(),
+        }
+
+    async def list_account_agent_versions(
+        self, agent_id: str, *, page: int, size: int
+    ) -> dict[str, Any]:
+        normalized_id = str(agent_id or "").strip()
+        if not normalized_id:
+            raise StudioError("CLOUD_AGENT_NOT_FOUND", "云端 Agent 标识不能为空", status_code=404)
+        try:
+            payload = await self.client.list_versions(normalized_id, page=page, size=size)
+        except AgentEngineAPIError as exc:
+            raise StudioError(
+                "CLOUD_AGENT_VERSION_DIRECTORY_FAILED",
+                exc.message,
+                status_code=502,
+                details={
+                    "serverCode": exc.raw_code,
+                    **{
+                        key: value
+                        for key, value in exc.details.items()
+                        if key in {"request_id", "action"}
+                    },
+                },
+            ) from exc
+        raw_items = payload.get("versions") or payload.get("Versions") or []
+        items = [
+            self._account_agent_version_view(item)
+            for item in raw_items
+            if isinstance(item, dict)
+        ]
+        items = [item for item in items if item["versionId"]]
+        current = next(
+            (
+                item["versionId"]
+                for item in items
+                if str(item["status"]).strip().lower() == "current"
+            ),
+            None,
+        )
+        return {
+            "items": items,
+            "total": int(
+                payload.get("total_count")
+                or payload.get("TotalCount")
+                or len(items)
+            ),
+            "currentVersionId": current,
+        }
+
+    async def rollback_account_agent_version(
+        self, agent_id: str, *, version_id: str
+    ) -> dict[str, Any]:
+        normalized_id = str(agent_id or "").strip()
+        normalized_version_id = str(version_id or "").strip()
+        if not normalized_id:
+            raise StudioError("CLOUD_AGENT_NOT_FOUND", "云端 Agent 标识不能为空", status_code=404)
+        if not normalized_version_id:
+            raise StudioError(
+                "CLOUD_AGENT_VERSION_REQUIRED",
+                "请选择要回滚的云端版本",
+                status_code=422,
+                field="versionId",
+            )
+        try:
+            payload = await self.client.rollback_version(
+                normalized_id,
+                target_version_id=normalized_version_id,
+            )
+        except AgentEngineAPIError as exc:
+            raise StudioError(
+                "CLOUD_AGENT_VERSION_ROLLBACK_FAILED",
+                exc.message,
+                status_code=502,
+                details={
+                    "serverCode": exc.raw_code,
+                    **{
+                        key: value
+                        for key, value in exc.details.items()
+                        if key in {"request_id", "action"}
+                    },
+                },
+            ) from exc
+        return {
+            "agentId": str(payload.get("agent_id") or normalized_id),
+            "targetVersionId": str(
+                payload.get("target_version_id") or normalized_version_id
+            ),
+            "status": str(payload.get("status") or "UPDATING"),
+            "noop": bool(payload.get("noop")),
+        }
 
     async def get_account_agent_dashboard_access(
         self, agent_id: str
@@ -1518,6 +1702,30 @@ class CloudDeploymentService:
                 status_code=501,
             )
         return await reader(agent_id)
+
+    async def list_account_agent_versions(
+        self, agent_id: str, *, page: int = 1, size: int = 100
+    ) -> dict[str, Any]:
+        reader = getattr(self.gateway, "list_account_agent_versions", None)
+        if reader is None:
+            raise StudioError(
+                "CLOUD_AGENT_VERSION_DIRECTORY_UNAVAILABLE",
+                "当前云端网关不支持读取 Agent 版本",
+                status_code=501,
+            )
+        return await reader(agent_id, page=page, size=size)
+
+    async def rollback_account_agent_version(
+        self, agent_id: str, *, version_id: str
+    ) -> dict[str, Any]:
+        rollback = getattr(self.gateway, "rollback_account_agent_version", None)
+        if rollback is None:
+            raise StudioError(
+                "CLOUD_AGENT_VERSION_ROLLBACK_UNAVAILABLE",
+                "当前云端网关不支持回滚 Agent 版本",
+                status_code=501,
+            )
+        return await rollback(agent_id, version_id=version_id)
 
     async def account_agent_dashboard_access(
         self, agent_id: str

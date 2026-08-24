@@ -206,6 +206,10 @@ class RollbackRequest(ContractModel):
     target_build_id: str
 
 
+class CloudAgentVersionRollbackRequest(ContractModel):
+    version_id: str = Field(min_length=1, max_length=256)
+
+
 class ModelProfileCreateRequest(ContractModel):
     name: str = Field(pattern=r"^[a-z][a-z0-9._-]{1,127}$")
     display_name: str = Field(min_length=1, max_length=128)

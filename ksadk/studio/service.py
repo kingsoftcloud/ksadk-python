@@ -1794,6 +1794,49 @@ class StudioService:
             runner=runner,
         )
 
+    def submit_account_agent_version_rollback(
+        self,
+        agent_id: str,
+        *,
+        version_id: str,
+        idempotency_key: str,
+    ) -> Operation:
+        normalized_agent_id = str(agent_id or "").strip()
+        normalized_version_id = str(version_id or "").strip()
+        if not normalized_agent_id:
+            raise StudioError(
+                "CLOUD_AGENT_NOT_FOUND",
+                "云端 Agent 标识不能为空",
+                status_code=404,
+            )
+        if not normalized_version_id:
+            raise StudioError(
+                "CLOUD_AGENT_VERSION_REQUIRED",
+                "请选择要回滚的云端版本",
+                status_code=422,
+                field="versionId",
+            )
+        resource_id = f"{normalized_agent_id}:{normalized_version_id}"
+
+        async def runner(_operation_id: str):
+            await self.cloud.rollback_account_agent_version(
+                normalized_agent_id,
+                version_id=normalized_version_id,
+            )
+            return _OperationResource(id=resource_id)
+
+        return self.operations.submit(
+            kind=OperationKind.DEPLOYMENT,
+            resource_id=resource_id,
+            idempotency_key=idempotency_key,
+            metadata={
+                "agentId": normalized_agent_id,
+                "targetVersionId": normalized_version_id,
+                "source": "server-version",
+            },
+            runner=runner,
+        )
+
     async def deployment_dashboard_access(self, deployment_id: str) -> dict[str, str | None]:
         """Return a receipt-bound private Hosted UI link on explicit user request."""
 
