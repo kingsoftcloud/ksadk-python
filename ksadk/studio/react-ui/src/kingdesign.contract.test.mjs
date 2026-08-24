@@ -62,3 +62,10 @@ test("keeps Agent editor icons and shared form grids geometrically aligned", () 
   assert.match(finalLayer, /\.runtime-logo > svg,[\s\S]*?display:\s*block;[\s\S]*?margin:\s*auto;/);
   assert.match(finalLayer, /\.agent-edit-nav button\.active\s*\{[\s\S]*?border-color:\s*var\(--kc-accent-border\)/);
 });
+
+test("keeps cloud versions in a bounded compact grid instead of native radio geometry", () => {
+  assert.match(foundation, /\.deployment-version-list\s*\{[\s\S]*?max-height:\s*430px;[\s\S]*?overflow-x:\s*hidden;[\s\S]*?overflow-y:\s*auto;/);
+  assert.match(foundation, /\.deployment-version-option\s*\{[\s\S]*?display:\s*grid;[\s\S]*?width:\s*100%;[\s\S]*?min-width:\s*0;[\s\S]*?grid-template-columns:/);
+  assert.match(foundation, /\.deployment-version-name\s*\{[\s\S]*?overflow:\s*hidden;[\s\S]*?text-overflow:\s*ellipsis;/);
+  assert.doesNotMatch(foundation, /\.deployment-version-option\s*>\s*input/);
+});

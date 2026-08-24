@@ -311,6 +311,9 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
     setDetail({ deployment, sourceAgentId: "", sourceAgentName: "", builds: [], versions: [], loading: true, error: "" });
     setSelectedRollbackVersionId("");
     setRollbackConfirmOpen(false);
+    const versionsPromise = deployment.agentId
+      ? loadCloudVersions(deployment.agentId)
+      : Promise.resolve([] as CloudVersion[]);
     try {
       if (deployment.source === "account") {
         const accountResponse = await apiFetch(`/api/v1/cloud-agents/${encodeURIComponent(deployment.agentId || "")}`);
@@ -329,7 +332,7 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
           versionId: account.versionId || deployment.versionId,
           updatedAt: account.updatedAt || deployment.updatedAt,
         };
-        const versions = refreshed.agentId ? await loadCloudVersions(refreshed.agentId) : [];
+        const versions = await versionsPromise;
         setDeployments(current => current.map(item => item.id === deployment.id ? refreshed : item));
         setDetail({
           deployment: refreshed,
@@ -361,7 +364,7 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
       const builds = (Array.isArray(agent.builds) ? agent.builds : [])
         .filter((item: BuildCandidate) => item.status === "SUCCEEDED")
         .sort((left: BuildCandidate, right: BuildCandidate) => String(right.createdAt || "").localeCompare(String(left.createdAt || "")));
-      const versions = refreshed.agentId ? await loadCloudVersions(refreshed.agentId) : [];
+      const versions = await versionsPromise;
       setDetail({
         deployment: refreshed,
         sourceAgentId,
@@ -372,7 +375,13 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
         error: "",
       });
     } catch (caught: any) {
-      setDetail(current => current ? { ...current, loading: false, error: caught?.message || "云端 Agent 详情不可用" } : null);
+      const versions = await versionsPromise.catch(() => []);
+      setDetail(current => current ? {
+        ...current,
+        versions,
+        loading: false,
+        error: caught?.message || "云端 Agent 详情不可用",
+      } : null);
     }
   }
 
@@ -560,38 +569,33 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
           {detail.deployment.agentId ? <section className="deployment-version-history" aria-label="云端版本历史">
             <div><h3>云端版本历史</h3><p>版本状态与可回滚性来自云端 Server</p></div>
             {detail.loading ? <p>正在读取版本…</p> : (
-              <div className="deployment-version-list">
-                {detail.versions.map(version => {
+              <div className="deployment-version-list" role="radiogroup" aria-label="选择回滚版本">
+                <div className="deployment-version-header" aria-hidden="true">
+                  <span>版本</span><span>状态</span><span>流量</span><span>创建时间</span>
+                </div>
+                {detail.versions.length ? detail.versions.map(version => {
                   const isCurrent = version.status.toLowerCase() === "current";
-                  const versionMeta = [
-                    version.tag,
-                    `${version.trafficPercentage}% 流量`,
-                    version.createdBy ? `创建者 ${version.createdBy}` : "",
-                    version.createdAt ? formatUpdatedAt(version.createdAt) : "",
-                  ].filter(Boolean).join(" · ");
+                  const versionState = isCurrent ? "当前" : version.canRollback ? "可回滚" : "不可回滚";
                   return (
-                  <label
+                  <button
                     key={version.versionId}
+                    type="button"
+                    role="radio"
+                    aria-checked={version.versionId === selectedRollbackVersionId}
+                    aria-label={`${isCurrent ? "当前版本" : version.canRollback ? "可回滚版本" : "不可回滚版本"} ${version.versionName || version.tag || "未命名"}`}
                     className="deployment-version-option"
                     data-current={isCurrent}
                     data-selected={version.versionId === selectedRollbackVersionId}
+                    disabled={!version.canRollback || updating || rollbackBusy}
+                    onClick={() => setSelectedRollbackVersionId(version.versionId)}
                   >
-                    <input
-                      type="radio"
-                      name="rollback-version"
-                      value={version.versionId}
-                      checked={version.versionId === selectedRollbackVersionId}
-                      disabled={!version.canRollback || updating || rollbackBusy}
-                      aria-label={`${isCurrent ? "当前版本" : version.canRollback ? "可回滚版本" : "不可回滚版本"} ${version.versionName || version.versionId}`}
-                      onChange={() => version.canRollback && setSelectedRollbackVersionId(version.versionId)}
-                    />
-                    <div><strong>{isCurrent ? "当前版本" : version.versionName || version.tag || "历史版本"}</strong><code>{version.versionId}</code></div>
-                    <span>{!version.canRollback && version.rollbackDisabledReason
-                      ? `${version.rollbackDisabledReason}${versionMeta ? ` · ${versionMeta}` : ""}`
-                      : versionMeta || "云端历史版本"}</span>
-                  </label>
+                    <strong className="deployment-version-name">{version.versionName || version.tag || "未命名版本"}</strong>
+                    <span className="deployment-version-state" data-state={isCurrent ? "current" : version.canRollback ? "available" : "disabled"}>{versionState}</span>
+                    <span className="deployment-version-traffic">{version.trafficPercentage}%</span>
+                    <time className="deployment-version-time" dateTime={version.createdAt || undefined}>{formatUpdatedAt(version.createdAt)}</time>
+                  </button>
                   );
-                })}
+                }) : <p className="deployment-version-empty">云端暂未返回版本记录。</p>}
               </div>
             )}
           </section> : <div className="callout"><div><strong>缺少云端 Agent ID</strong><p>当前记录无法查询 Server 版本历史，因此不开放版本回滚。</p></div></div>}

@@ -9,6 +9,7 @@ const defaultBuilds = [
 ];
 let agentBuilds: Array<{ id: string; status: string; createdAt?: string }> = defaultBuilds;
 let currentCloudVersionId = "cloud-agent-1";
+let deploymentRefreshFails = false;
 let accountAgentItems: Array<Record<string, unknown>> = [{
   agentId: "ar-cloud-ui",
   name: "Managed YAML Agent",
@@ -82,6 +83,7 @@ apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
     return new Response(JSON.stringify({ accessUrl: `https://dashboard.example.test/${agentId}` }));
   }
   if (path === "/api/v1/deployments/dep-instance-1" && !init?.method) {
+    if (deploymentRefreshFails) return new Response("refresh failed", { status: 500 });
     return new Response(JSON.stringify({
       id: "dep-instance-1", buildId: "build-current", bundleDigest: "sha256:bundle-current",
       versionId: currentCloudVersionId, status: "DEPLOYING",
@@ -140,6 +142,7 @@ describe("DeploymentsPage", () => {
     window.history.replaceState(null, "", "#/deployments");
     agentBuilds = defaultBuilds;
     currentCloudVersionId = "cloud-agent-1";
+    deploymentRefreshFails = false;
     accountAgentItems = [{
       agentId: "ar-cloud-ui",
       name: "Managed YAML Agent",
@@ -236,12 +239,47 @@ describe("DeploymentsPage", () => {
     expect(await screen.findByRole("heading", { name: "Managed YAML Agent" })).toBeInTheDocument();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "详情" })).not.toBeInTheDocument();
-    expect(screen.getAllByText("cloud-agent-1").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText("cloud-agent-1")).toBeInTheDocument();
     expect(screen.getAllByText("ar-cloud-ui").length).toBeGreaterThanOrEqual(2);
     expect(screen.getByText("http://ar-cloud-ui.example.test")).toBeInTheDocument();
     expect(await screen.findByRole("region", { name: "云端版本历史" })).toBeInTheDocument();
-    expect(screen.getByText("cloud-agent-0")).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: /当前版本.*v3/ })).toHaveTextContent("当前");
+    expect(screen.getByText("流量")).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: /当前版本.*v3/ })).toHaveTextContent("100%");
+    expect(screen.getByRole("radio", { name: /可回滚版本.*v2/ })).toHaveTextContent("2026/8/23 10:00:00");
+    expect(screen.queryByText("cloud-agent-0")).not.toBeInTheDocument();
     expect(apiFetch).toHaveBeenCalledWith("/api/v1/cloud-agents/ar-cloud-ui/versions?page=1&size=100");
+  });
+
+  it("renders each cloud version as one compact selectable row without native radio sizing", async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole("button", { name: "查看 Managed YAML Agent 详情" }));
+
+    const current = await screen.findByRole("radio", { name: /当前版本.*v3/ });
+    const historical = screen.getByRole("radio", { name: /可回滚版本.*v2/ });
+    expect(current.tagName).toBe("BUTTON");
+    expect(current).toBeDisabled();
+    expect(historical.tagName).toBe("BUTTON");
+    expect(historical).toHaveAttribute("aria-checked", "false");
+    await user.click(historical);
+    expect(historical).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("button", { name: "回滚到所选版本" })).toBeEnabled();
+  });
+
+  it("keeps Server version history usable when a stale local receipt cannot refresh", async () => {
+    const user = userEvent.setup();
+    deploymentRefreshFails = true;
+    renderPage();
+
+    await user.click(await screen.findByRole("button", { name: "查看 Managed YAML Agent 详情" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("刷新云端 Agent 状态失败（500）");
+    expect(screen.getByRole("radio", { name: /当前版本.*v3/ })).toBeDisabled();
+    const historical = screen.getByRole("radio", { name: /可回滚版本.*v2/ });
+    await user.click(historical);
+    expect(screen.getByRole("button", { name: "回滚到所选版本" })).toBeEnabled();
   });
 
   it("obeys Server CanRollback and refreshes Agent plus ListVersions after rollback", async () => {
