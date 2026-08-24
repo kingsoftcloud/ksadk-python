@@ -27,6 +27,15 @@ describe("selectCloudChatDeployments", () => {
       { id: "dep-first", agentId: "agent-1", status: "READY" },
     ]);
   });
+
+  it("prefers the receipt matching the live managed version before stale status", () => {
+    expect(selectCloudChatDeployments([
+      { id: "dep-old", agentId: "agent-1", status: "READY", versionId: "managed-old" },
+      { id: "dep-current", agentId: "agent-1", status: "FAILED", versionId: "managed-current" },
+    ], new Map([["agent-1", "managed-current"]]))).toEqual([
+      { id: "dep-current", agentId: "agent-1", status: "FAILED", versionId: "managed-current" },
+    ]);
+  });
 });
 
 describe("mergeCloudChatTargets", () => {
@@ -60,6 +69,21 @@ describe("mergeCloudChatTargets", () => {
         source: "account",
       },
     ]);
+  });
+
+  it("binds chat to the receipt whose version matches the live Agent", () => {
+    expect(mergeCloudChatTargets(
+      [
+        { id: "dep-old", agentId: "agent-1", status: "READY", versionId: "managed-old" },
+        { id: "dep-current", agentId: "agent-1", status: "FAILED", versionId: "managed-current" },
+      ],
+      [{ agentId: "agent-1", name: "Managed Agent", status: "RUNNING", versionId: "managed-current" }],
+    )[0]).toMatchObject({
+      id: "dep-current",
+      status: "RUNNING",
+      versionId: "managed-current",
+      source: "receipt",
+    });
   });
 });
 

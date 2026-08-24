@@ -23,6 +23,7 @@ import { useStudioTheme } from "./useStudioTheme";
 import {
   mergeCloudChatTargets,
   resolveCloudChatRoute,
+  type AccountCloudAgentSummary,
   type CloudDeploymentSummary,
 } from "./cloudDeployments";
 import {
@@ -198,9 +199,22 @@ export default function App() {
       if (!receiptResponse.ok) return;
       const receiptPayload = await receiptResponse.json();
       const accountPayload = accountResponse.ok ? await accountResponse.json() : { items: [] };
+      const receiptAgentIds = [...new Set((receiptPayload.items || []).flatMap((item: CloudDeploymentSummary) => (
+        item.agentId?.trim() ? [item.agentId.trim()] : []
+      )))];
+      const accountDetails = await Promise.all(receiptAgentIds.map(agentId => (
+        Promise.resolve()
+          .then(() => apiFetch(`/api/v1/cloud-agents/${encodeURIComponent(agentId)}`))
+          .then(response => response.ok ? response.json() : null)
+          .catch(() => null)
+      )));
+      const accountByAgentId = new Map((accountPayload.items || []).map((item: AccountCloudAgentSummary) => [item.agentId, item]));
+      for (const detail of accountDetails) {
+        if (detail?.agentId) accountByAgentId.set(detail.agentId, { ...accountByAgentId.get(detail.agentId), ...detail });
+      }
       const items = mergeCloudChatTargets(
         receiptPayload.items || [],
-        accountPayload.items || [],
+        [...accountByAgentId.values()],
       );
       setCloudDeployments(items);
       setCloudDeploymentId(previous => items.some((item: CloudDeploymentSummary) => (

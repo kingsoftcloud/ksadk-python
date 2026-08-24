@@ -502,6 +502,20 @@ def test_account_agent_view_honours_declared_session_event_chat_capability() -> 
     assert view["chatRoutingReason"] == "declared-session-event-chat-capability"
 
 
+def test_account_agent_view_derives_managed_version_from_runtime_manifest() -> None:
+    view = DirectAgentEngineCloudDeploymentGateway._account_agent_view(
+        {
+            "basic": {"agent_id": "ar-managed", "status": "RUNNING"},
+            "deployment": {
+                "framework": "codex",
+                "runtime_config": {"manifest_sha256": "a" * 64},
+            },
+        }
+    )
+
+    assert view["versionId"] == "managed-aaaaaaaaaaaaaaaa"
+
+
 @pytest.mark.asyncio
 async def test_account_native_runtime_dashboard_link_uses_official_root_path() -> None:
     class _NativeClient(_Client):

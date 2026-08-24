@@ -694,6 +694,13 @@ class DirectAgentEngineCloudDeploymentGateway:
             if isinstance(payload.get("deployment"), dict)
             else {}
         )
+        runtime_config = (
+            deployment.get("runtime_config")
+            if isinstance(deployment.get("runtime_config"), dict)
+            else deployment.get("runtimeConfig")
+            if isinstance(deployment.get("runtimeConfig"), dict)
+            else {}
+        )
 
         def first(*names: str) -> Any:
             for source in (payload, basic, deployment):
@@ -726,6 +733,19 @@ class DirectAgentEngineCloudDeploymentGateway:
                 capabilities=capabilities,
             )
         )
+        version_id = str(first("version_id", "versionId", "revision") or "").strip()
+        manifest_sha256 = str(
+            runtime_config.get("manifest_sha256")
+            or runtime_config.get("manifestSha256")
+            or ""
+        ).strip().lower()
+        if not version_id and len(manifest_sha256) == 64:
+            try:
+                bytes.fromhex(manifest_sha256)
+            except ValueError:
+                pass
+            else:
+                version_id = f"managed-{manifest_sha256[:16]}"
         return {
             "agentId": agent_id,
             "name": str(
@@ -747,7 +767,7 @@ class DirectAgentEngineCloudDeploymentGateway:
             "chatRoutingReason": chat_routing_reason,
             "region": str(first("region") or "").strip() or None,
             "instanceId": str(first("instance_id", "instanceId") or "").strip() or None,
-            "versionId": str(first("version_id", "versionId", "revision") or "").strip() or None,
+            "versionId": version_id or None,
             "updatedAt": str(
                 first("updated_at", "updatedAt", "update_time", "updateTime") or ""
             ).strip()

@@ -5,7 +5,12 @@ import { ConfirmDialog } from "../components/ConfirmDialog";
 import { MoreActionsMenu } from "../components/MoreActionsMenu";
 import { PageHeaderActions } from "../components/PageHeaderPortal";
 import { showToast } from "../components/Toast";
-import { mergeCloudChatTargets, resolveCloudChatRoute } from "../cloudDeployments";
+import {
+  mergeCloudChatTargets,
+  resolveCloudChatRoute,
+  type AccountCloudAgentSummary,
+  type CloudDeploymentSummary,
+} from "../cloudDeployments";
 
 interface Deployment {
   id: string;
@@ -116,8 +121,22 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
       const receiptPayload = await receiptResponse.json();
       const accountPayload = accountResponse.ok ? await accountResponse.json() : { items: [] };
       const receipts: Deployment[] = Array.isArray(receiptPayload.items) ? receiptPayload.items : [];
+      const receiptAgentIds = [...new Set(receipts.flatMap(item => (
+        item.agentId?.trim() ? [item.agentId.trim()] : []
+      )))];
+      const accountDetails = await Promise.all(receiptAgentIds.map(agentId => (
+        Promise.resolve()
+          .then(() => apiFetch(`/api/v1/cloud-agents/${encodeURIComponent(agentId)}`))
+          .then(response => response.ok ? response.json() : null)
+          .catch(() => null)
+      )));
+      const accountByAgentId = new Map((accountPayload.items || []).map((item: AccountCloudAgentSummary) => [item.agentId, item]));
+      for (const detail of accountDetails) {
+        if (detail?.agentId) accountByAgentId.set(detail.agentId, { ...accountByAgentId.get(detail.agentId), ...detail });
+      }
+      const accountItems = [...accountByAgentId.values()];
       const receiptById = new Map(receipts.map(item => [item.id, item]));
-      const targets = mergeCloudChatTargets(receipts, accountPayload.items || []);
+      const targets = mergeCloudChatTargets(receipts as CloudDeploymentSummary[], accountItems);
       const rows = targets.map(target => {
         if (target.source === "receipt") {
           return {
@@ -127,7 +146,7 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
             source: "receipt" as const,
           };
         }
-        const account = (accountPayload.items || []).find((item: any) => item.agentId === target.agentId) || {};
+        const account = accountItems.find(item => item.agentId === target.agentId) || {};
         return {
           id: target.id,
           buildId: "",

@@ -98,20 +98,29 @@ const STATUS_PRIORITY: Record<string, number> = {
 
 /**
  * 会话目标按云端 Agent 去重，而不是按本地 deployment receipt 展开。
- * 同一 Agent 的重试、更新和回滚可以留下多张 receipt；对话只依赖 AgentId，
- * 因此保留状态最可用的一张。相同状态时保留 API 的第一张，刷新选择稳定。
+ * 同一 Agent 的重试、更新和回滚可以留下多张 receipt；优先选择与云端
+ * 当前版本匹配的 receipt，再按状态可用性兜底。相同条件下保留 API 的
+ * 第一张，避免刷新时无意义地抖动选择。
  */
 export function selectCloudChatDeployments(
   items: CloudDeploymentSummary[],
+  preferredVersionsByAgent: ReadonlyMap<string, string> = new Map(),
 ): CloudDeploymentSummary[] {
   const selected = new Map<string, CloudDeploymentSummary>();
   for (const item of items) {
     const agentId = item.agentId?.trim();
     if (!agentId) continue;
     const current = selected.get(agentId);
+    const preferredVersion = preferredVersionsByAgent.get(agentId)?.trim();
+    const nextMatchesLiveVersion = Boolean(preferredVersion && item.versionId === preferredVersion);
+    const currentMatchesLiveVersion = Boolean(preferredVersion && current?.versionId === preferredVersion);
     const nextPriority = STATUS_PRIORITY[item.status || ""] || 0;
     const currentPriority = STATUS_PRIORITY[current?.status || ""] || 0;
-    if (!current || nextPriority > currentPriority) selected.set(agentId, item);
+    if (
+      !current
+      || (nextMatchesLiveVersion && !currentMatchesLiveVersion)
+      || (nextMatchesLiveVersion === currentMatchesLiveVersion && nextPriority > currentPriority)
+    ) selected.set(agentId, item);
   }
   return [...selected.values()];
 }
@@ -125,7 +134,12 @@ export function mergeCloudChatTargets(
     const agentId = item.agentId?.trim();
     if (agentId && !accountByAgentId.has(agentId)) accountByAgentId.set(agentId, item);
   }
-  const selectedReceipts = selectCloudChatDeployments(receipts).map(item => {
+  const preferredVersionsByAgent = new Map(
+    [...accountByAgentId.entries()].flatMap(([agentId, item]) => (
+      item.versionId?.trim() ? [[agentId, item.versionId.trim()] as const] : []
+    )),
+  );
+  const selectedReceipts = selectCloudChatDeployments(receipts, preferredVersionsByAgent).map(item => {
     const account = accountByAgentId.get(item.agentId?.trim() || "");
     return {
       ...item,
