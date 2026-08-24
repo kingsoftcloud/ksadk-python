@@ -75,6 +75,19 @@ const WIZARD_STEP_META = [
 
 const TERMINAL_BUILD_OPERATION_STATES = new Set(["SUCCEEDED", "FAILED", "CANCELLED", "TIMED_OUT"]);
 
+function mergeAgentSpec(base: any, patch: any): any {
+  if (!base || typeof base !== "object" || Array.isArray(base)) return patch;
+  if (!patch || typeof patch !== "object" || Array.isArray(patch)) return patch;
+  const merged = { ...base };
+  for (const [key, value] of Object.entries(patch)) {
+    merged[key] = (
+      value && typeof value === "object" && !Array.isArray(value)
+      && merged[key] && typeof merged[key] === "object" && !Array.isArray(merged[key])
+    ) ? mergeAgentSpec(merged[key], value) : value;
+  }
+  return merged;
+}
+
 async function waitForCreatedBuild(operationId: string) {
   for (let attempt = 0; attempt < 1200; attempt += 1) {
     const response = await apiFetch(`/api/v1/operations/${encodeURIComponent(operationId)}`);
@@ -480,13 +493,17 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
       const d = await res.json();
       if (!res.ok) throw new Error(d?.error?.message || `生成失败（${res.status}）`);
       setProposal(d.proposal);
+      const proposalSpec = d.proposal.spec || {
+        description: d.proposal.description || "",
+        instructions: d.proposal.instructions || {},
+      };
       conversationForm.reset({
         name: d.proposal.name || "",
         slug: generateAgentSlug(),
         runtimeType: d.proposal.runtimeType || "codex",
-        prompt: d.proposal.instructions?.system || "",
-        description: d.proposal.description || "",
-        modelProfileId: convModels[0],
+        prompt: proposalSpec.instructions?.system || "",
+        description: proposalSpec.description || d.proposal.description || "",
+        modelProfileId: proposalSpec.bindings?.modelProfileId || convModels[0],
       });
       setConvMessages([...next, { role: "assistant", content: JSON.stringify(d.proposal) }]);
     } catch (e: any) {
@@ -501,16 +518,33 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
     setConvBusy(true);
     setConvError("");
     try {
+      const proposalSpec = proposal.spec || {
+        description: proposal.description || "",
+        instructions: proposal.instructions || {},
+      };
+      const proposedBindings = proposalSpec.bindings || {};
+      const defaultModel = proposedBindings.modelProfileId || values.modelProfileId || convModels[0] || null;
+      const allowedModels = proposedBindings.modelProfileIds?.length
+        ? proposedBindings.modelProfileIds
+        : defaultModel ? [defaultModel] : [];
+      const spec = mergeAgentSpec(proposalSpec, {
+        description: values.description?.trim() || proposalSpec.description || proposal.description || "",
+        instructions: {
+          system: values.prompt.trim(),
+          task: proposalSpec.instructions?.task || "",
+        },
+        bindings: {
+          modelProfileId: defaultModel,
+          modelProfileIds: allowedModels,
+        },
+      });
       const res = await apiFetch("/api/v1/authoring/quick", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name: values.name.trim(), slug: values.slug.trim(), runtimeType: values.runtimeType,
-          description: values.description?.trim() || proposal.description || "",
-          spec: {
-            instructions: { system: values.prompt.trim(), task: proposal.instructions?.task || "" },
-            bindings: { modelProfileId: convModels[0] || null, modelProfileIds: convModels.slice() },
-          },
+          description: spec.description,
+          spec,
         }),
       });
       const d = await res.json().catch(() => null);

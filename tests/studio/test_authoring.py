@@ -11,7 +11,14 @@ import yaml
 from fastapi.testclient import TestClient
 
 from ksadk.studio.api import create_studio_app
-from ksadk.studio.contracts import AgentSpec, Instructions, ModelSpec, RuntimeRef, Usage
+from ksadk.studio.contracts import (
+    AgentSpec,
+    Instructions,
+    MCPServerRef,
+    ModelSpec,
+    RuntimeRef,
+    Usage,
+)
 from ksadk.studio.errors import StudioError
 from ksadk.studio.model_client import ModelResponse
 from ksadk.studio.service import StudioService
@@ -230,9 +237,43 @@ async def test_conversation_authoring_uses_bound_real_model_and_returns_patch_on
             "slug": "release-reviewer",
             "runtimeType": "adk",
             "description": "Checks release readiness.",
-            "instructions": {
-                "system": "You review release evidence.",
-                "task": "Return blockers and proof.",
+            "spec": {
+                "runtime": {
+                    "type": "adk",
+                    "projectPath": "generated/source",
+                    "entryPoint": "main.py",
+                    "agentVariable": "root_agent",
+                },
+                "instructions": {
+                    "system": "You review release evidence.",
+                    "task": "Return blockers and proof.",
+                },
+                "model": {
+                    "model": "glm-5.1",
+                    "baseUrl": "https://models.example.test/v1",
+                    "credentialRef": "env://AGENTKIT_MODEL_API_KEY",
+                    "parameters": {"temperature": 0.1, "maxTokens": 8192},
+                },
+                "bindings": {
+                    "modelParameters": {"temperature": 0.3, "maxTokens": 4096},
+                    "policyTemplate": "custom",
+                    "tools": [{"resourceId": "tool-release-check", "approval": "policy"}],
+                    "mcpServers": [{"resourceId": "mcp-release"}],
+                    "skills": [{"resourceId": "skill-release"}],
+                },
+                "execution": {
+                    "strategy": "plan-act-observe",
+                    "maxSteps": 24,
+                    "timeoutSeconds": 300,
+                },
+                "context": {
+                    "ownership": "framework",
+                    "maxInputTokens": 64000,
+                    "reserveOutputTokens": 4096,
+                },
+                "memory": {"enabled": True, "providerRef": "memory-release"},
+                "security": {"toolPolicy": "allow-listed", "allowedPermissions": ["repo:read"]},
+                "evaluation": {"suiteRefs": ["release-gate"], "minimumPassRate": 0.9},
             },
         }
     )
@@ -251,11 +292,217 @@ async def test_conversation_authoring_uses_bound_real_model_and_returns_patch_on
     )
 
     assert proposal["proposal"]["runtimeType"] == "adk"
-    assert proposal["proposal"]["instructions"]["system"] == "You review release evidence."
+    spec = proposal["proposal"]["spec"]
+    assert spec["instructions"]["system"] == "You review release evidence."
+    assert spec["runtime"]["entryPoint"] == "main.py"
+    assert spec["model"]["parameters"]["maxTokens"] == 8192
+    assert spec["bindings"]["tools"] == [
+        {"resourceId": "tool-release-check", "enabled": True, "approval": "policy", "config": {}}
+    ]
+    assert spec["execution"]["strategy"] == "plan-act-observe"
+    assert spec["context"]["maxInputTokens"] == 64000
+    assert spec["memory"]["providerRef"] == "memory-release"
+    assert spec["security"]["allowedPermissions"] == ["repo:read"]
+    assert spec["evaluation"]["suiteRefs"] == ["release-gate"]
     assert proposal["requiresConfirmation"] is True
     assert proposal["usage"]["reported"] is False
     assert studio.list_agents() == []
     assert model_client.messages[0][-1]["content"].endswith("ADK，输出阻断项和证据")
+
+
+def test_conversation_prompt_only_response_is_migrated_to_complete_spec(tmp_path: Path) -> None:
+    from ksadk.studio.authoring import AgentAuthoringService
+
+    proposal = AgentAuthoringService.parse_conversation_proposal(json.dumps({
+        "name": "Legacy Helper",
+        "slug": "legacy-helper",
+        "runtimeType": "codex",
+        "description": "Legacy response",
+        "instructions": {"system": "Keep this prompt.", "task": "Keep this task."},
+    }))
+
+    assert proposal.spec.description == "Legacy response"
+    assert proposal.spec.instructions == Instructions(
+        system="Keep this prompt.",
+        task="Keep this task.",
+    )
+
+
+def test_codex_manifest_import_uses_canonical_lossless_projection(tmp_path: Path) -> None:
+    studio = StudioService(tmp_path)
+    _register_model(studio)
+    mcp = studio.catalog.create_mcp_server(
+        display_name="Release MCP",
+        description="",
+        server=MCPServerRef(
+            name="release-mcp",
+            version="1.0.0",
+            transport="http",
+            endpoint_url="https://mcp.example.test/rpc",
+        ),
+    )
+    payload = {
+        "name": "codex-import",
+        "version": "2.1.0",
+        "framework": "codex",
+        "artifact_type": "ManagedRuntime",
+        "runtime": {"name": "codex", "version": "0.147.0"},
+        "model": "glm-5.1",
+        "models": ["glm-5.1"],
+        "prompt": "Review safely.",
+        "task_prompt": "Return evidence.",
+        "skills": ["skill-release-review"],
+        "mcp_servers": [{"name": "release-mcp", "url": "https://mcp.example.test/rpc"}],
+        "context": {"ownership": "native", "maxInputTokens": 64000, "reserveOutputTokens": 4096},
+        "memory": {"enabled": True, "providerRef": "memory-release"},
+    }
+    inspection = studio.inspect_agent_import(
+        yaml.safe_dump(payload, allow_unicode=True).encode(),
+        filename="agentengine.yaml",
+    )
+
+    draft = studio.commit_agent_import(
+        inspection["inspectionToken"],
+        name="Imported Codex",
+        slug="imported-codex",
+    )
+
+    saved = studio.codex_manifests.load(draft.metadata.id).manifest
+    assert saved.task_prompt == "Return evidence."
+    assert saved.skills == ["skill-release-review"]
+    assert saved.mcp_servers == [{"name": "release-mcp", "url": "https://mcp.example.test/rpc"}]
+    assert saved.context and saved.context.ownership == "native"
+    assert saved.memory and saved.memory.provider_ref == "memory-release"
+    assert draft.spec.instructions.task == "Return evidence."
+    assert [item.resource_id for item in draft.spec.bindings.skills] == ["skill-release-review"]
+    assert [item.resource_id for item in draft.spec.bindings.mcp_servers] == [mcp.resource_id]
+    assert draft.spec.context.ownership == "native"
+    assert draft.spec.memory.provider_ref == "memory-release"
+
+
+@pytest.mark.parametrize(
+    ("runtime_type", "agent_variable"),
+    [("adk", "root_agent"), ("langgraph", "graph")],
+)
+def test_project_import_round_trips_complete_agent_spec(
+    tmp_path: Path,
+    runtime_type: str,
+    agent_variable: str,
+) -> None:
+    studio = StudioService(tmp_path)
+    _register_model(studio)
+    model_profile = studio.catalog.list(kind="model")[0]
+    project = tmp_path / f"projects/{runtime_type}-complete"
+    project.mkdir(parents=True)
+    (project / "agent.py").write_text(f"{agent_variable} = object()\n")
+    config = {
+        "name": f"{runtime_type}-complete",
+        "framework": runtime_type,
+        "entry_point": "agent.py",
+        "agent_variable": agent_variable,
+        "spec": {
+            "description": "Complete imported project",
+            "instructions": {"system": "Keep system.", "task": "Keep task."},
+            "model": {
+                "model": "glm-5.1",
+                "baseUrl": "https://models.example.test/v1",
+                "credentialRef": "env://MODEL_KEY",
+                "parameters": {"temperature": 0.4, "maxTokens": 6000},
+            },
+            "bindings": {
+                "modelProfileId": model_profile.resource_id,
+                "modelProfileIds": [model_profile.resource_id],
+                "modelParameters": {"temperature": 0.5, "maxTokens": 5000},
+                "policyTemplate": "custom",
+            },
+            "capabilities": {
+                "skills": [{"name": "review", "version": "1.2.0"}],
+                "mcpServers": [
+                    {
+                        "name": "docs",
+                        "version": "1.0.0",
+                        "transport": "http",
+                        "endpointUrl": "https://mcp.example.test",
+                    }
+                ],
+                "tools": [{"name": "inspect", "version": "1.0.0", "executor": "builtin"}],
+            },
+            "execution": {"strategy": "plan-act-observe", "maxSteps": 22, "timeoutSeconds": 240},
+            "context": {
+                "ownership": "framework",
+                "maxInputTokens": 48000,
+                "reserveOutputTokens": 4096,
+            },
+            "memory": {"enabled": True, "providerRef": "memory-project"},
+            "security": {"toolPolicy": "allow-listed", "allowedPermissions": ["project:read"]},
+            "evaluation": {"suiteRefs": ["project-suite"], "minimumPassRate": 0.85},
+        },
+    }
+    (project / "ksadk.yaml").write_text(yaml.safe_dump(config, allow_unicode=True))
+
+    inspection = studio.inspect_agent_project(f"projects/{runtime_type}-complete")
+    assert inspection["bindingProjection"]["unresolved"] == []
+    draft = studio.commit_agent_project(
+        inspection["inspectionToken"],
+        name="Complete Project",
+        slug=f"{runtime_type}-complete",
+        model_profile_id=model_profile.resource_id,
+    )
+
+    assert draft.spec.runtime and draft.spec.runtime.type == runtime_type
+    assert draft.spec.runtime.project_path == f"projects/{runtime_type}-complete"
+    assert draft.spec.instructions.task == "Keep task."
+    assert draft.spec.model and draft.spec.model.parameters.max_tokens == 6000
+    assert draft.spec.bindings.model_parameters
+    assert draft.spec.bindings.model_parameters.max_tokens == 5000
+    assert draft.spec.bindings.policy_template == "custom"
+    assert draft.spec.capabilities.skills[0].name == "review"
+    assert draft.spec.capabilities.mcp_servers[0].name == "docs"
+    assert draft.spec.capabilities.tools[0].name == "inspect"
+    assert draft.spec.execution.max_steps == 22
+    assert draft.spec.context.max_input_tokens == 48000
+    assert draft.spec.memory.provider_ref == "memory-project"
+    assert draft.spec.security.allowed_permissions == ["project:read"]
+    assert draft.spec.evaluation.suite_refs == ["project-suite"]
+
+
+def test_project_import_reports_unresolved_bindings_instead_of_dropping_them(
+    tmp_path: Path,
+) -> None:
+    studio = StudioService(tmp_path)
+    project = tmp_path / "projects/unresolved-adk"
+    project.mkdir(parents=True)
+    (project / "agent.py").write_text("root_agent = object()\n")
+    (project / "ksadk.yaml").write_text(yaml.safe_dump({
+        "name": "unresolved-adk",
+        "framework": "adk",
+        "entry_point": "agent.py",
+        "agent_variable": "root_agent",
+        "tools": [{"legacy": "opaque-tool-config"}],
+        "skills": ["skill-not-installed"],
+    }))
+
+    inspection = studio.inspect_agent_project("projects/unresolved-adk")
+
+    assert inspection["bindingProjection"]["unresolved"] == [
+        {
+            "kind": "tools",
+            "value": {"legacy": "opaque-tool-config"},
+            "reason": "unsupported-binding-shape",
+        },
+        {
+            "kind": "skill",
+            "value": {"resourceId": "skill-not-installed", "enabled": True, "config": {}},
+            "reason": "not-in-resource-catalog",
+        },
+    ]
+    with pytest.raises(StudioError) as raised:
+        studio.commit_agent_project(
+            inspection["inspectionToken"],
+            name="Unresolved",
+            slug="unresolved-adk",
+        )
+    assert raised.value.code == "PROJECT_BINDINGS_UNRESOLVED"
 
 
 def test_authoring_api_exposes_four_real_modes(tmp_path: Path) -> None:

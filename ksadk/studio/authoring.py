@@ -21,7 +21,7 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 import yaml  # type: ignore[import-untyped]
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from ksadk.detection.detector import FrameworkDetector
 from ksadk.managed_runtime import installed_runtime_version
@@ -29,7 +29,7 @@ from ksadk.studio.capabilities import canonical_json, sha256_digest
 from ksadk.studio.codex_manifest import CodexAgentManifest
 from ksadk.studio.contracts import (
     AgentDraft,
-    Instructions,
+    AgentSpec,
     NetworkPolicy,
     RuntimeRef,
 )
@@ -49,7 +49,33 @@ class ConversationProposal(BaseModel):
     slug: str = Field(min_length=1, max_length=63)
     runtimeType: Literal["codex", "adk", "langgraph"]
     description: str = Field(default="", max_length=1024)
-    instructions: Instructions
+    spec: AgentSpec
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_prompt_only_proposal(cls, value: Any) -> Any:
+        """Accept one release of old model output without persisting its data loss.
+
+        Older authoring prompts asked the model for only ``instructions``.  Turn
+        that response into a complete AgentSpec at the boundary so callers only
+        ever consume the lossless proposal shape.
+        """
+
+        if not isinstance(value, dict) or "spec" in value:
+            return value
+        payload = dict(value)
+        instructions = payload.pop("instructions", None)
+        payload["spec"] = {
+            "description": str(payload.get("description") or ""),
+            "instructions": instructions or {},
+        }
+        return payload
+
+    @model_validator(mode="after")
+    def validate_runtime_type(self) -> "ConversationProposal":
+        if self.spec.runtime is not None and self.spec.runtime.type != self.runtimeType:
+            raise ValueError("spec.runtime.type 必须与 runtimeType 一致")
+        return self
 
 
 @dataclass(frozen=True)
@@ -328,9 +354,12 @@ class AgentAuthoringService:
                 "role": "system",
                 "content": (
                     "你是 AgentKit Studio 的 Agent 设计助手。根据对话生成一个 JSON Draft Patch，"
-                    "不得输出 Markdown。字段必须且只能包含 name、slug、runtimeType、description、"
-                    "instructions；runtimeType 只能是 codex、adk、langgraph；instructions 必须包含"
-                    " system 和 task。只提出配置，不写文件、不宣称已经创建。"
+                    "不得输出 Markdown。顶层字段必须且只能包含 name、slug、runtimeType、"
+                    "description、spec；runtimeType 只能是 codex、adk、langgraph。spec 是完整"
+                    " AgentSpec，可包含 runtime、instructions、model、capabilities、bindings、"
+                    "execution、context、memory、security、evaluation；instructions 必须包含"
+                    " system 和 task。Tool、MCP、Skill、模型、模型参数和策略一旦在对话中明确，"
+                    "必须写入 spec，不能只返回提示词。只提出配置，不写文件、不宣称已经创建。"
                 ),
             }
         ]
