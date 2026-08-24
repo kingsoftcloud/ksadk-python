@@ -67,6 +67,23 @@ class _AuthoringModelClient:
         )
 
 
+class _SequencedAuthoringModelClient(_AuthoringModelClient):
+    def __init__(self, contents: list[str]) -> None:
+        super().__init__(contents[0])
+        self.contents = list(contents)
+
+    async def complete(self, _model, *, messages, **_kwargs):
+        self.messages.append(messages)
+        content = self.contents.pop(0)
+        return ModelResponse(
+            content=content,
+            finish_reason="stop",
+            usage=Usage(input_tokens=10, output_tokens=10, total_tokens=20),
+            tool_calls=[],
+            raw_message={"role": "assistant", "content": content},
+        )
+
+
 def _framework_spec(runtime_type: str, project_path: str) -> AgentSpec:
     return AgentSpec(
         runtime=RuntimeRef(
@@ -308,6 +325,109 @@ async def test_conversation_authoring_uses_bound_real_model_and_returns_patch_on
     assert proposal["usage"]["reported"] is False
     assert studio.list_agents() == []
     assert model_client.messages[0][-1]["content"].endswith("ADK，输出阻断项和证据")
+
+
+@pytest.mark.asyncio
+async def test_conversation_authoring_merges_a_partial_follow_up_patch(
+    tmp_path: Path,
+) -> None:
+    previous = {
+        "name": "Release Reviewer",
+        "slug": "release-reviewer",
+        "runtimeType": "adk",
+        "description": "Checks release readiness.",
+        "spec": {
+            "runtime": {
+                "type": "adk",
+                "projectPath": "generated/source",
+                "entryPoint": "main.py",
+                "agentVariable": "root_agent",
+            },
+            "instructions": {
+                "system": "You review release evidence.",
+                "task": "Return blockers and proof.",
+            },
+            "bindings": {
+                "modelProfileId": "model/glm-5.1",
+                "skills": [{"resourceId": "skill-release"}],
+            },
+        },
+    }
+    model_client = _AuthoringModelClient(
+        "我只修改任务要求：\n```json\n"
+        + json.dumps(
+            {
+                "description": "Checks release readiness and rollback safety.",
+                "spec": {
+                    "instructions": {"task": "Return blockers, proof, and rollback steps."}
+                },
+            }
+        )
+        + "\n```"
+    )
+    studio = StudioService(tmp_path, model_client=model_client)
+    _register_model(studio)
+    model_profile = studio.catalog.list(kind="model")[0]
+
+    proposal = await studio.compose_agent_conversation(
+        messages=[
+            {"role": "user", "content": "做一个发布评审 Agent"},
+            {"role": "assistant", "content": json.dumps(previous)},
+            {"role": "user", "content": "再补充回滚安全检查"},
+        ],
+        model_profile_id=model_profile.resource_id,
+    )
+
+    result = proposal["proposal"]
+    assert result["name"] == "Release Reviewer"
+    assert result["runtimeType"] == "adk"
+    assert result["description"] == "Checks release readiness and rollback safety."
+    assert result["spec"]["runtime"]["entryPoint"] == "main.py"
+    assert result["spec"]["bindings"]["skills"] == [
+        {
+            "resourceId": "skill-release",
+            "enabled": True,
+            "approval": None,
+            "config": {},
+        }
+    ]
+    assert result["spec"]["instructions"] == {
+        "system": "You review release evidence.",
+        "task": "Return blockers, proof, and rollback steps.",
+    }
+
+
+@pytest.mark.asyncio
+async def test_conversation_authoring_retries_one_invalid_model_patch(
+    tmp_path: Path,
+) -> None:
+    valid = json.dumps(
+        {
+            "name": "Release Reviewer",
+            "slug": "release-reviewer",
+            "runtimeType": "codex",
+            "description": "Checks releases.",
+            "spec": {
+                "instructions": {
+                    "system": "Review releases.",
+                    "task": "Return evidence.",
+                }
+            },
+        }
+    )
+    model_client = _SequencedAuthoringModelClient(["not-json", valid])
+    studio = StudioService(tmp_path, model_client=model_client)
+    _register_model(studio)
+    model_profile = studio.catalog.list(kind="model")[0]
+
+    proposal = await studio.compose_agent_conversation(
+        messages=[{"role": "user", "content": "做一个发布评审 Agent"}],
+        model_profile_id=model_profile.resource_id,
+    )
+
+    assert proposal["proposal"]["name"] == "Release Reviewer"
+    assert len(model_client.messages) == 2
+    assert "上一次输出未通过 Agent Draft Patch 校验" in model_client.messages[1][-1]["content"]
 
 
 def test_conversation_prompt_only_response_is_migrated_to_complete_spec(tmp_path: Path) -> None:

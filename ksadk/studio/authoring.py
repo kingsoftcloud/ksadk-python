@@ -7,6 +7,7 @@ ID allocation to the server.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import io
 import json
@@ -319,17 +320,70 @@ class AgentAuthoringService:
             path.unlink()
 
     @staticmethod
-    def parse_conversation_proposal(content: str) -> ConversationProposal:
+    def _conversation_json_object(content: str) -> dict[str, Any]:
+        """Extract one JSON object without trusting surrounding model prose."""
+
         text = str(content or "").strip()
-        if text.startswith("```"):
-            lines = text.splitlines()
-            if lines and lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines and lines[-1].strip() == "```":
-                lines = lines[:-1]
-            text = "\n".join(lines).strip()
+        candidates = [text]
+        candidates.extend(
+            match.group(1).strip()
+            for match in re.finditer(r"```(?:json)?\s*([\s\S]*?)```", text, re.IGNORECASE)
+        )
+        decoder = json.JSONDecoder()
+        for candidate in candidates:
+            try:
+                payload = json.loads(candidate)
+            except ValueError:
+                payload = None
+            if isinstance(payload, dict):
+                return cast(dict[str, Any], payload)
+        for start, character in enumerate(text):
+            if character != "{":
+                continue
+            try:
+                payload, _end = decoder.raw_decode(text, start)
+            except ValueError:
+                continue
+            if isinstance(payload, dict):
+                return cast(dict[str, Any], payload)
+        raise ValueError("model output does not contain a JSON object")
+
+    @staticmethod
+    def _merge_conversation_patch(
+        base: dict[str, Any], patch: dict[str, Any]
+    ) -> dict[str, Any]:
+        merged = copy.deepcopy(base)
+        for key, value in patch.items():
+            if isinstance(value, dict) and isinstance(merged.get(key), dict):
+                merged[key] = AgentAuthoringService._merge_conversation_patch(
+                    cast(dict[str, Any], merged[key]), value
+                )
+            else:
+                merged[key] = copy.deepcopy(value)
+        return merged
+
+    @staticmethod
+    def parse_conversation_proposal(
+        content: str,
+        *,
+        base: ConversationProposal | dict[str, Any] | None = None,
+    ) -> ConversationProposal:
         try:
-            payload = json.loads(text)
+            payload = AgentAuthoringService._conversation_json_object(content)
+            for wrapper in ("proposal", "patch"):
+                wrapped = payload.get(wrapper)
+                if isinstance(wrapped, dict) and len(payload) == 1:
+                    payload = cast(dict[str, Any], wrapped)
+                    break
+            if base is not None:
+                base_payload = (
+                    base.model_dump(by_alias=True, mode="json")
+                    if isinstance(base, ConversationProposal)
+                    else base
+                )
+                payload = AgentAuthoringService._merge_conversation_patch(
+                    base_payload, payload
+                )
             proposal = ConversationProposal.model_validate(payload)
         except (ValueError, ValidationError) as exc:
             raise StudioError(
@@ -354,8 +408,9 @@ class AgentAuthoringService:
                 "role": "system",
                 "content": (
                     "你是 AgentKit Studio 的 Agent 设计助手。根据对话生成一个 JSON Draft Patch，"
-                    "不得输出 Markdown。顶层字段必须且只能包含 name、slug、runtimeType、"
-                    "description、spec；runtimeType 只能是 codex、adk、langgraph。spec 是完整"
+                    "不得输出 Markdown。首轮顶层字段必须且只能包含 name、slug、runtimeType、"
+                    "description、spec；后续轮次可以只返回需要变更的字段，由 Studio 与上一版"
+                    "Patch 合并。runtimeType 只能是 codex、adk、langgraph。spec 是完整"
                     " AgentSpec，可包含 runtime、instructions、model、capabilities、bindings、"
                     "execution、context、memory、security、evaluation；instructions 必须包含"
                     " system 和 task。Tool、MCP、Skill、模型、模型参数和策略一旦在对话中明确，"

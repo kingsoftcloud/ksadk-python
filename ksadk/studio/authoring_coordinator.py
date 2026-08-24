@@ -243,15 +243,59 @@ class StudioAuthoringCoordinator:
                 status_code=422,
             )
         model = self.studio.catalog.resolver.resolve_model(model_spec)
+        normalized_messages = self.backend.conversation_messages(messages)
+        previous_proposal = None
+        for item in reversed(messages):
+            if str(item.get("role") or "").strip() != "assistant":
+                continue
+            try:
+                previous_proposal = self.backend.parse_conversation_proposal(
+                    str(item.get("content") or "")
+                )
+            except StudioError:
+                continue
+            break
+
+        request_options = {
+            "network_policy": self.backend.authoring_network_policy(model.endpoint_url),
+            "timeout_seconds": 60,
+            "max_attempts": 2,
+            "backoff_seconds": 1,
+        }
         response = await self.studio.model_client.complete(
             model,
-            messages=self.backend.conversation_messages(messages),
-            network_policy=self.backend.authoring_network_policy(model.endpoint_url),
-            timeout_seconds=60,
-            max_attempts=2,
-            backoff_seconds=1,
+            messages=normalized_messages,
+            **request_options,
         )
-        proposal = self.backend.parse_conversation_proposal(response.content)
+        try:
+            proposal = self.backend.parse_conversation_proposal(
+                response.content,
+                base=previous_proposal,
+            )
+        except StudioError as exc:
+            if exc.code != "AUTHORING_MODEL_OUTPUT_INVALID":
+                raise
+            retry_messages = [
+                *normalized_messages,
+                {"role": "assistant", "content": response.content},
+                {
+                    "role": "user",
+                    "content": (
+                        "上一次输出未通过 Agent Draft Patch 校验。请只返回一个 JSON 对象，"
+                        "不要解释或使用 Markdown。首轮必须包含 name、slug、runtimeType、"
+                        "description、spec；后续轮次可以只返回需要变更的字段。"
+                    ),
+                },
+            ]
+            response = await self.studio.model_client.complete(
+                model,
+                messages=retry_messages,
+                **request_options,
+            )
+            proposal = self.backend.parse_conversation_proposal(
+                response.content,
+                base=previous_proposal,
+            )
         return {
             "proposal": proposal.model_dump(by_alias=True, mode="json"),
             "requiresConfirmation": True,
