@@ -1471,6 +1471,49 @@ def create_studio_app(
         )
 
     @app.post(
+        "/api/v1/deployments/{deployment_id}/cloud-chat/sessions/{session_id}/messages/stream"
+    )
+    async def stream_cloud_chat_message(
+        request: Request,
+        deployment_id: str,
+        session_id: str,
+        payload: CloudChatMessageRequest,
+    ):
+        """Proxy one signed foreground RunAgent SSE response to loopback UI."""
+
+        upstream = await studio.cloud.stream_cloud_chat_message(
+            deployment_id,
+            session_id=session_id,
+            content=payload.content,
+            model=payload.model,
+            model_options=payload.model_options,
+            tool_approval_mode=payload.tool_approval_mode,
+            collaboration_mode=payload.collaboration_mode,
+            goal_objective=payload.goal_objective,
+        )
+
+        async def proxy_stream() -> AsyncIterator[bytes]:
+            try:
+                while not await request.is_disconnected():
+                    try:
+                        chunk = await anext(upstream)
+                    except StopAsyncIteration:
+                        break
+                    if await request.is_disconnected():
+                        break
+                    yield chunk
+            finally:
+                close = getattr(upstream, "aclose", None)
+                if close is not None:
+                    await close()
+
+        return StreamingResponse(
+            proxy_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+        )
+
+    @app.post(
         "/api/v1/deployments/{deployment_id}/cloud-chat/sessions/{session_id}/interactions",
         status_code=202,
     )

@@ -15,7 +15,7 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, Optional, Sequence
+from typing import Any, AsyncIterator, Callable, Dict, Iterator, Optional, Sequence
 from urllib.parse import quote, unquote, urlparse, urlsplit
 
 import requests
@@ -35,6 +35,62 @@ class AttachmentContent:
     data: bytes
     content_type: str
     display_name: str
+
+
+def _next_stream_chunk(iterator: Iterator[bytes]) -> bytes | None:
+    """Read one non-empty requests chunk without leaking StopIteration to asyncio."""
+
+    while True:
+        try:
+            chunk = next(iterator)
+        except StopIteration:
+            return None
+        if chunk:
+            return chunk
+
+
+class AgentEngineSSEStream(AsyncIterator[bytes]):
+    """Async owner for one dedicated blocking requests SSE connection."""
+
+    def __init__(self, response: requests.Response, session: requests.Session) -> None:
+        self._response: requests.Response | None = response
+        self._session: requests.Session | None = session
+        self._chunks = response.iter_content(chunk_size=8192)
+        self._closed = False
+
+    def __aiter__(self) -> "AgentEngineSSEStream":
+        return self
+
+    async def __anext__(self) -> bytes:
+        if self._closed:
+            raise StopAsyncIteration
+        try:
+            chunk = await asyncio.to_thread(_next_stream_chunk, self._chunks)
+        except BaseException:
+            await self.aclose()
+            raise
+        if chunk is None:
+            await self.aclose()
+            raise StopAsyncIteration
+        return chunk
+
+    async def aclose(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        response, session = self._response, self._session
+        self._response = None
+        self._session = None
+
+        def close_transport() -> None:
+            try:
+                if response is not None:
+                    response.close()
+            finally:
+                if session is not None:
+                    session.close()
+
+        await asyncio.to_thread(close_transport)
 
 
 class DryRunExit(Exception):
@@ -2502,6 +2558,150 @@ class AgentEngineClient:
         if execution_metadata:
             params["Metadata"] = {"agentengine": execution_metadata}
         return await self._action_async("RunAgent", params)
+
+    def _open_chat_stream(self, params: Dict[str, Any]) -> AgentEngineSSEStream:
+        """Open RunAgent SSE synchronously in a worker-owned requests session."""
+
+        path = "/agentengine/api/v1/RunAgent"
+        _kop_mode, headers, full_url = self._build_action_request_target(path, "RunAgent")
+        body_str = json.dumps(params, ensure_ascii=False)
+        if self.dry_run:
+            # Reuse the established dry-run contract, which raises DryRunExit
+            # with the signed request rather than opening a socket.
+            self._request("POST", path, params)
+            raise AssertionError("dry-run request unexpectedly returned")
+
+        session = requests.Session()
+        response: requests.Response | None = None
+        retried_inner_endpoint = False
+        try:
+            while True:
+                response = session.request(
+                    method="POST",
+                    url=full_url,
+                    data=body_str.encode("utf-8"),
+                    headers=headers,
+                    auth=self._auth.get_auth(),
+                    # A foreground Agent turn can legitimately spend minutes
+                    # reasoning before its next SSE chunk.  Bound connection
+                    # establishment, not the lifetime of an admitted stream.
+                    timeout=(self.timeout, None),
+                    verify=self._ssl_verify_enabled(),
+                    stream=True,
+                )
+                content_type = str(response.headers.get("content-type") or "").lower()
+                if response.status_code < 400 and "text/event-stream" in content_type:
+                    return AgentEngineSSEStream(response, session)
+
+                resp_text = response.text or ""
+                details = self._extract_http_error_details(resp_text)
+                details.setdefault("http_status", response.status_code)
+                if response.status_code < 400:
+                    details["content_type"] = content_type or "<missing>"
+                    try:
+                        envelope = json.loads(resp_text)
+                    except (TypeError, ValueError):
+                        envelope = {}
+                    if not isinstance(envelope, dict):
+                        envelope = {}
+                    envelope_code = envelope.get("Code")
+                    error_code = (
+                        envelope_code
+                        if envelope_code not in {None, 0, "0"}
+                        else details.get("remote_error_code") or 502
+                    )
+                    message = (
+                        str(
+                            details.get("remote_error_message")
+                            or details.get("message")
+                            or ""
+                        ).strip()
+                        or "RunAgent stream did not return text/event-stream"
+                    )
+                    raise AgentEngineAPIError(
+                        error_code,
+                        message,
+                        details=details,
+                    )
+                if not retried_inner_endpoint and self._can_retry_with_inner_aicp_endpoint(details):
+                    retried_inner_endpoint = True
+                    response.close()
+                    response = None
+                    self._switch_to_inner_aicp_endpoint()
+                    _kop_mode, headers, full_url = self._build_action_request_target(
+                        path, "RunAgent"
+                    )
+                    continue
+
+                self._log_http_error(
+                    method="POST",
+                    full_url=full_url,
+                    status_code=response.status_code,
+                    details=details,
+                )
+                message = (
+                    str(
+                        details.get("remote_error_message")
+                        or details.get("message")
+                        or ""
+                    ).strip()
+                    or resp_text
+                )
+                raise AgentEngineAPIError(
+                    response.status_code,
+                    message,
+                    details=details or None,
+                )
+        except BaseException:
+            try:
+                if response is not None:
+                    response.close()
+            finally:
+                session.close()
+            raise
+
+    async def chat_stream(
+        self,
+        agent_id: str,
+        message: Any,
+        session_id: Optional[str] = None,
+        *,
+        model: Optional[str] = None,
+        model_options: Optional[Dict[str, Any]] = None,
+        tool_approval_mode: Optional[str] = None,
+        collaboration_mode: Optional[str] = None,
+        goal_objective: Optional[str] = None,
+    ) -> AgentEngineSSEStream:
+        """Open a signed foreground RunAgent SSE stream.
+
+        The upstream response is established before this method returns so an
+        HTTP error remains a structured ``AgentEngineAPIError`` instead of a
+        late exception after a downstream proxy has already emitted 200.
+        """
+
+        params: Dict[str, Any] = {
+            "AgentId": agent_id,
+            "ApiFormat": "chat_completions",
+            "Messages": [{"role": "user", "content": message}],
+            "Stream": True,
+            "Background": False,
+        }
+        if session_id:
+            params["SessionId"] = session_id
+        if model:
+            params["Model"] = model
+        if model_options:
+            params["ModelOptions"] = dict(model_options)
+        execution_metadata: Dict[str, Any] = {}
+        if tool_approval_mode:
+            execution_metadata["tool_approval_mode"] = tool_approval_mode
+        if collaboration_mode:
+            execution_metadata["collaboration_mode"] = collaboration_mode
+        if goal_objective:
+            execution_metadata["goal_objective"] = goal_objective
+        if execution_metadata:
+            params["Metadata"] = {"agentengine": execution_metadata}
+        return await asyncio.to_thread(self._open_chat_stream, params)
 
     # ===== Version Actions =====
 

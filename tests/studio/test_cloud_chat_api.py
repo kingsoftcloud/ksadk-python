@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -14,10 +15,29 @@ from ksadk.studio.contracts import DeploymentRecord, DeploymentRequest, Deployme
 from ksadk.studio.service import StudioService
 
 
+class _TrackedSSEStream(AsyncIterator[bytes]):
+    def __init__(self, chunks: list[bytes]) -> None:
+        self._chunks = iter(chunks)
+        self.closed = False
+
+    def __aiter__(self) -> "_TrackedSSEStream":
+        return self
+
+    async def __anext__(self) -> bytes:
+        try:
+            return next(self._chunks)
+        except StopIteration:
+            raise StopAsyncIteration from None
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
 class _CloudClient:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict]] = []
         self.stream_event_batches: list[list[dict]] | None = None
+        self.last_chat_stream: _TrackedSSEStream | None = None
         self.sessions = [{"session_id": "sess-existing", "title": "已有会话"}]
 
     async def list_sessions(self, agent_id: str, *, page: int, size: int) -> dict:
@@ -117,6 +137,44 @@ class _CloudClient:
             )
         )
         return {"receipt_status": "accepted", "run_id": "run-1"}
+
+    async def chat_stream(
+        self,
+        agent_id: str,
+        message,
+        *,
+        session_id: str | None = None,
+        model: str | None = None,
+        model_options: dict | None = None,
+        tool_approval_mode: str | None = None,
+        collaboration_mode: str | None = None,
+        goal_objective: str | None = None,
+    ) -> AsyncIterator[bytes]:
+        self.calls.append(
+            (
+                "RunAgentStream",
+                {
+                    "AgentId": agent_id,
+                    "SessionId": session_id,
+                    "Message": message,
+                    "Model": model,
+                    "ModelOptions": model_options,
+                    "ToolApprovalMode": tool_approval_mode,
+                    "CollaborationMode": collaboration_mode,
+                    "GoalObjective": goal_objective,
+                },
+            )
+        )
+
+        self.last_chat_stream = _TrackedSSEStream(
+            [
+                b"event: response.output_text.delta\n",
+                b'data: {"delta":"hello"}\n\n',
+                b"event: response.completed\n",
+                b'data: {"status":"completed"}\n\n',
+            ]
+        )
+        return self.last_chat_stream
 
     async def list_agent_models(self, *, agent_id: str) -> dict:
         self.calls.append(("ListAgentModels", {"AgentId": agent_id}))
@@ -682,6 +740,77 @@ def test_cloud_chat_forwards_full_approval_plan_and_goal(tmp_path: Path) -> None
             "GoalObjective": "完成云端端到端验证",
         },
     )
+
+
+def test_cloud_chat_stream_proxies_signed_runagent_sse_without_background(tmp_path: Path) -> None:
+    client, cloud = _client_with_receipt(tmp_path)
+    with client:
+        response = client.post(
+            "/api/v1/deployments/dep-cloud-chat/cloud-chat/sessions/sess-existing/messages/stream",
+            json={
+                "content": "hello",
+                "model": "qwen-test",
+                "toolApprovalMode": "ask",
+                "collaborationMode": "plan",
+                "goalObjective": "finish the task",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["x-accel-buffering"] == "no"
+    assert response.content == (
+        b"event: response.output_text.delta\n"
+        b'data: {"delta":"hello"}\n\n'
+        b"event: response.completed\n"
+        b'data: {"status":"completed"}\n\n'
+    )
+    assert cloud.calls[-1] == (
+        "RunAgentStream",
+        {
+            "AgentId": "ar-receipt-bound",
+            "SessionId": "sess-existing",
+            "Message": "hello",
+            "Model": "qwen-test",
+            "ModelOptions": {},
+            "ToolApprovalMode": "ask",
+            "CollaborationMode": "plan",
+            "GoalObjective": "finish the task",
+        },
+    )
+    assert cloud.last_chat_stream is not None
+    assert cloud.last_chat_stream.closed is True
+
+
+def test_cloud_chat_stream_preserves_structured_upstream_admission_error(tmp_path: Path) -> None:
+    class _RejectedStreamClient(_CloudClient):
+        async def chat_stream(self, *_args, **_kwargs) -> AsyncIterator[bytes]:
+            raise AgentEngineAPIError(
+                409,
+                "runtime is starting",
+                details={"request_id": "req-upstream", "http_status": 409},
+            )
+
+    client, _cloud = _client_with_receipt(tmp_path, _RejectedStreamClient())
+    with client:
+        response = client.post(
+            "/api/v1/deployments/dep-cloud-chat/cloud-chat/sessions/sess-existing/messages/stream",
+            json={"content": "hello"},
+        )
+
+    assert response.status_code == 502
+    error = response.json()["error"]
+    assert str(error.pop("requestId")).startswith("req_")
+    assert error == {
+        "code": "CLOUD_CHAT_STREAM_FAILED",
+        "message": "runtime is starting",
+        "details": {
+            "serverCode": 409,
+            "request_id": "req-upstream",
+            "http_status": 409,
+        },
+    }
 
 
 def test_cloud_chat_route_rejects_unbounded_or_unknown_attachment_parts(tmp_path: Path) -> None:

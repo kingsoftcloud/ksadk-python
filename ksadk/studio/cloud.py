@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import tempfile
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Protocol, cast
@@ -1159,6 +1160,46 @@ class DirectAgentEngineCloudDeploymentGateway:
             goal_objective=goal_objective,
         )
 
+    async def stream_deployment_chat_message(
+        self,
+        deployment: DeploymentRecord | AccountCloudAgentReference,
+        *,
+        session_id: str,
+        content: Any,
+        model: str | None = None,
+        model_options: dict[str, Any] | None = None,
+        tool_approval_mode: str | None = None,
+        collaboration_mode: str | None = None,
+        goal_objective: str | None = None,
+    ) -> AsyncIterator[bytes]:
+        """Open the Server-admitted foreground RunAgent SSE connection."""
+
+        try:
+            return await self.client.chat_stream(
+                self._chat_agent_id(deployment),
+                content,
+                session_id=session_id,
+                model=model,
+                model_options=model_options,
+                tool_approval_mode=tool_approval_mode,
+                collaboration_mode=collaboration_mode,
+                goal_objective=goal_objective,
+            )
+        except AgentEngineAPIError as exc:
+            raise StudioError(
+                "CLOUD_CHAT_STREAM_FAILED",
+                exc.message,
+                status_code=502,
+                details={
+                    "serverCode": exc.raw_code,
+                    **{
+                        key: value
+                        for key, value in exc.details.items()
+                        if key in {"request_id", "action", "http_status"}
+                    },
+                },
+            ) from exc
+
     async def list_deployment_chat_models(
         self, deployment: DeploymentRecord
     ) -> dict[str, Any]:
@@ -1885,6 +1926,37 @@ class CloudDeploymentService:
         if goal_objective is not None:
             kwargs["goal_objective"] = goal_objective
         return await sender(deployment, **kwargs)
+
+    async def stream_cloud_chat_message(
+        self,
+        deployment_id: str,
+        *,
+        session_id: str,
+        content: Any,
+        model: str | None = None,
+        model_options: dict[str, Any] | None = None,
+        tool_approval_mode: str | None = None,
+        collaboration_mode: str | None = None,
+        goal_objective: str | None = None,
+    ) -> AsyncIterator[bytes]:
+        deployment = await self._chat_target(deployment_id)
+        sender = getattr(self.gateway, "stream_deployment_chat_message", None)
+        if sender is None:
+            raise StudioError(
+                "CLOUD_CHAT_STREAM_UNAVAILABLE",
+                "当前云端网关不支持实时会话代理",
+                status_code=501,
+            )
+        return await sender(
+            deployment,
+            session_id=session_id,
+            content=content,
+            model=model,
+            model_options=model_options,
+            tool_approval_mode=tool_approval_mode,
+            collaboration_mode=collaboration_mode,
+            goal_objective=goal_objective,
+        )
 
     async def list_cloud_chat_models(self, deployment_id: str) -> dict[str, Any]:
         deployment = await self._chat_target(deployment_id)
