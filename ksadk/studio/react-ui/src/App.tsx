@@ -85,6 +85,17 @@ export function parseStudioLocationHash(hash: string): {
   return { view, resourceKind, editingAgentId, detailAgentId, evaluationRunId };
 }
 
+export function parseChatTargetValue(value: string): {
+  kind: "cloud" | "local" | "";
+  id: string;
+} {
+  const separator = value.indexOf(":");
+  if (separator <= 0) return { kind: "", id: "" };
+  const kind = value.slice(0, separator);
+  if (kind !== "cloud" && kind !== "local") return { kind: "", id: "" };
+  return { kind, id: value.slice(separator + 1) };
+}
+
 interface AgentSummary {
   metadata: { id: string; name: string; revision?: number; labels?: Record<string, string>; appearance?: AgentAppearance };
   spec?: { runtime?: { type?: string } };
@@ -269,7 +280,7 @@ export default function App() {
       : "";
 
   function switchChatTarget(value: string) {
-    const [kind, id] = value.split(":", 2);
+    const { kind, id } = parseChatTargetValue(value);
     if (kind === "cloud" && id) {
       if (!studioCloudDeployments.some(item => item.id === id)) return;
       setCloudDeploymentId(id);
