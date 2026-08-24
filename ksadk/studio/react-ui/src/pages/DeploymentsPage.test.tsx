@@ -111,6 +111,13 @@ apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
       },
     ], total: 2 }));
   }
+  if (path === "/api/v1/cloud-agents/ar-cloud-ui" && !init?.method) {
+    return new Response(JSON.stringify({
+      agentId: "ar-cloud-ui", name: "Managed YAML Agent", status: "RUNNING",
+      endpoint: "http://ar-cloud-ui.example.test", framework: "codex",
+      versionId: currentCloudVersionId, updatedAt: "2026-08-24T11:00:00+08:00",
+    }));
+  }
   if (path === "/api/v1/cloud-agents/ar-existing-code/versions?page=1&size=100") {
     return new Response(JSON.stringify({ items: [{
       versionId: "version-existing", versionName: "v1", tag: "release-v1",
@@ -289,7 +296,7 @@ describe("DeploymentsPage", () => {
     <DeploymentsPage onCreate={vi.fn()} onOpenChat={onOpenChat} onSelectBuild={onSelectBuild} />,
   );
 
-  it("refreshes a Server-projected status from the deployment list", async () => {
+  it("keeps the Server cloud projection authoritative after refreshing a local receipt", async () => {
     const user = userEvent.setup();
     renderPage();
 
@@ -299,7 +306,9 @@ describe("DeploymentsPage", () => {
     await user.click(screen.getByRole("button", { name: "Managed YAML Agent 的更多操作" }));
     await user.click(await screen.findByRole("menuitem", { name: "刷新状态" }));
     await waitFor(() => expect(apiFetch).toHaveBeenCalledWith("/api/v1/deployments/dep-instance-1"));
-    expect(await screen.findByText("部署中")).toBeInTheDocument();
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith("/api/v1/cloud-agents/ar-cloud-ui"));
+    expect(await screen.findAllByText("运行中")).not.toHaveLength(0);
+    expect(screen.queryByText("部署中")).not.toBeInTheDocument();
 
     expect(screen.queryByRole("region", { name: "选择回滚 Build" })).not.toBeInTheDocument();
   });
@@ -371,9 +380,11 @@ describe("DeploymentsPage", () => {
     expect(await screen.findByRole("heading", { name: "Managed YAML Agent" })).toBeInTheDocument();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "详情" })).not.toBeInTheDocument();
-    expect(screen.getByText("cloud-agent-1")).toBeInTheDocument();
+    expect(screen.getByTitle("cloud-agent-1")).toHaveTextContent("v3");
     expect(screen.getAllByText("ar-cloud-ui").length).toBeGreaterThanOrEqual(2);
     expect(screen.getByText("http://ar-cloud-ui.example.test")).toBeInTheDocument();
+    expect(screen.getByText("运行中")).toBeInTheDocument();
+    expect(screen.queryByText("部署中")).not.toBeInTheDocument();
     expect(await screen.findByRole("region", { name: "云端版本历史" })).toBeInTheDocument();
     expect(screen.getByRole("radio", { name: /当前版本.*v3/ })).toHaveTextContent("当前");
     expect(screen.getByText("流量")).toBeInTheDocument();
@@ -381,6 +392,7 @@ describe("DeploymentsPage", () => {
     expect(screen.getByRole("radio", { name: /可回滚版本.*v2/ })).toHaveTextContent("2026/8/23 10:00:00");
     expect(screen.queryByText("cloud-agent-0")).not.toBeInTheDocument();
     expect(apiFetch).toHaveBeenCalledWith("/api/v1/cloud-agents/ar-cloud-ui/versions?page=1&size=100");
+    expect(apiFetch).toHaveBeenCalledWith("/api/v1/cloud-agents/ar-cloud-ui");
   });
 
   it("renders each cloud version as one compact selectable row without native radio sizing", async () => {

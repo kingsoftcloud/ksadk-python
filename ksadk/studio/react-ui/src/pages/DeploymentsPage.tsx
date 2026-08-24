@@ -129,6 +129,26 @@ function apiFetchWithSignal(path: string, signal?: AbortSignal): Promise<Respons
   return signal ? apiFetch(path, { signal }) : apiFetch(path);
 }
 
+function mergeCloudProjection(
+  deployment: Deployment,
+  account?: Partial<StudioCloudAgentSummary> | null,
+): Deployment {
+  if (!account) return deployment;
+  return {
+    ...deployment,
+    status: String(account.status || deployment.status).toUpperCase(),
+    agentName: account.name || deployment.agentName,
+    endpoint: account.endpoint || deployment.endpoint,
+    framework: account.framework || deployment.framework,
+    runtimeType: account.runtimeType || deployment.runtimeType,
+    capabilities: account.capabilities || deployment.capabilities,
+    chatTransport: account.chatTransport || deployment.chatTransport,
+    chatRoutingReason: account.chatRoutingReason || deployment.chatRoutingReason,
+    versionId: account.versionId || deployment.versionId,
+    updatedAt: account.updatedAt || deployment.updatedAt,
+  };
+}
+
 function readOperationAttempts(storageKey: string): Record<string, OperationAttempt> {
   try {
     const storage = operationStorage();
@@ -613,19 +633,17 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
         : await apiFetch(`/api/v1/deployments/${encodeURIComponent(deployment.id)}`);
       if (!response.ok) throw new Error(`状态刷新失败（${response.status}）`);
       const updated = await response.json();
-      const next = deployment.source === "account" ? {
-        ...deployment,
-        status: String(updated.status || deployment.status).toUpperCase(),
-        agentName: updated.name || deployment.agentName,
-        endpoint: updated.endpoint || deployment.endpoint,
-        framework: updated.framework || deployment.framework,
-        runtimeType: updated.runtimeType || deployment.runtimeType,
-        capabilities: updated.capabilities || deployment.capabilities,
-        chatTransport: updated.chatTransport || deployment.chatTransport,
-        chatRoutingReason: updated.chatRoutingReason || deployment.chatRoutingReason,
-        versionId: updated.versionId || deployment.versionId,
-        updatedAt: updated.updatedAt || deployment.updatedAt,
-      } : { ...deployment, ...updated, source: "receipt" as const };
+      let next = deployment.source === "account"
+        ? mergeCloudProjection(deployment, updated)
+        : { ...deployment, ...updated, source: "receipt" as const };
+      if (deployment.source === "receipt" && next.agentId) {
+        const accountResponse = await apiFetch(
+          `/api/v1/cloud-agents/${encodeURIComponent(next.agentId)}`,
+        ).catch(() => null);
+        if (accountResponse?.ok) {
+          next = mergeCloudProjection(next, await accountResponse.json());
+        }
+      }
       setDeployments(current => current.map(item => item.id === deployment.id ? next : item));
     } catch (caught: any) {
       setError(`${deployment.instanceId || deployment.id}：${caught?.message || "状态未知"}`);
@@ -749,10 +767,23 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
         ...(await deploymentResponse.json() as Deployment),
         source: "receipt" as const,
       };
+      let projected = refreshed;
+      if (refreshed.agentId) {
+        const accountResponse = await apiFetchWithSignal(
+          `/api/v1/cloud-agents/${encodeURIComponent(refreshed.agentId)}`,
+          signal,
+        ).catch(error => {
+          if (isAbortError(error)) throw error;
+          return null;
+        });
+        if (accountResponse?.ok) {
+          projected = mergeCloudProjection(refreshed, await accountResponse.json());
+        }
+      }
       if (signal?.aborted) return;
-      setDeployments(current => current.map(item => item.id === deployment.id ? refreshed : item));
+      setDeployments(current => current.map(item => item.id === deployment.id ? projected : item));
       const buildResponse = await apiFetchWithSignal(
-        `/api/v1/builds/${encodeURIComponent(refreshed.buildId)}`,
+        `/api/v1/builds/${encodeURIComponent(projected.buildId)}`,
         signal,
       );
       if (!buildResponse.ok) throw new Error(`读取当前 Build 失败（${buildResponse.status}）`);
@@ -771,7 +802,7 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
       const versions = await versionsPromise;
       if (signal?.aborted) return;
       setDetail({
-        deployment: refreshed,
+        deployment: projected,
         sourceAgentId,
         sourceAgentName: String(agent?.draft?.metadata?.name || sourceAgentId),
         builds,
@@ -1084,7 +1115,12 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
             <div><span>Endpoint</span><code>{detail.deployment.endpoint || "尚未返回"}</code></div>
             {detail.deployment.instanceId && <div><span>实例</span><code>{detail.deployment.instanceId}</code></div>}
             {hasReceipt && <div><span>当前 Build</span><code>{detail.deployment.buildId}</code></div>}
-            <div><span>当前版本</span><code>{detail.deployment.versionId || "尚未返回"}</code></div>
+            <div>
+              <span>当前版本</span>
+              <code title={currentCloudVersion?.versionId || detail.deployment.versionId || undefined}>
+                {currentCloudVersion?.versionName || currentCloudVersion?.tag || detail.deployment.versionId || "尚未返回"}
+              </code>
+            </div>
             <div><span>更新时间</span><code>{formatUpdatedAt(detail.deployment.updatedAt)}</code></div>
             {hasReceipt && <div><span>Bundle</span><code title={detail.deployment.bundleDigest}>{detail.deployment.bundleDigest}</code></div>}
           </div>
