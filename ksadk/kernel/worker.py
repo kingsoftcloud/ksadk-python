@@ -23,7 +23,7 @@ import json
 import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Literal
 
 from ksadk.interaction.contracts import (
@@ -647,7 +647,7 @@ class AgentKernelWorker:
                         schema_version=2,
                         event_id=f"{current_run.run_id}:kernel-completed",
                         seq=0,
-                        timestamp=datetime.now(UTC).timestamp(),
+                        timestamp=datetime.now(timezone.utc).timestamp(),
                         run_id=current_run.run_id,
                         scope_id=f"run:{current_run.run_id}",
                         source=source,
@@ -747,7 +747,7 @@ class AgentKernelWorker:
             run_id=run.run_id,
             kind=event.interaction_kind,
             request_schema=request_schema,
-            created_at=datetime.fromtimestamp(event.timestamp, UTC).isoformat(),
+            created_at=datetime.fromtimestamp(event.timestamp, timezone.utc).isoformat(),
             presentation=presentation,
             provider_id=provider_id,
             native_target=native_target,

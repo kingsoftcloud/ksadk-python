@@ -18,6 +18,7 @@ ZH_DOC_URLS = {
     f"{DOCS_ROOT_URL}cn/docs/framework/guides/observability-tracing/",
     f"{DOCS_ROOT_URL}cn/docs/framework/guides/cloud-deployment/",
     f"{DOCS_ROOT_URL}cn/docs/framework/guides/hosted-ui-events/",
+    f"{DOCS_ROOT_URL}cn/docs/framework/guides/agentkit-local-studio/",
     f"{DOCS_ROOT_URL}cn/docs/references/environment-variables/",
 }
 EN_DOC_URLS = {
@@ -28,6 +29,7 @@ EN_DOC_URLS = {
     f"{DOCS_ROOT_URL}en/docs/framework/guides/observability-tracing/",
     f"{DOCS_ROOT_URL}en/docs/framework/guides/cloud-deployment/",
     f"{DOCS_ROOT_URL}en/docs/framework/guides/hosted-ui-events/",
+    f"{DOCS_ROOT_URL}en/docs/framework/guides/agentkit-local-studio/",
     f"{DOCS_ROOT_URL}en/docs/references/environment-variables/",
 }
 
@@ -223,8 +225,9 @@ def test_public_metadata_uses_runtime_platform_positioning():
     version_text = _read("ksadk/version.py")
     changelog = _read("CHANGELOG.md")
 
-    assert pyproject["project"]["version"] == "0.8.1"
-    assert 'VERSION = "0.8.1"' in version_text
+    assert pyproject["project"]["version"] == "0.8.2"
+    assert 'VERSION = "0.8.2"' in version_text
+    assert "## [0.8.2] - 2026-08-25" in changelog
     assert "## [0.8.1] - 2026-08-10" in changelog
     assert "`langchain-openai` 仅随" in changelog
     assert "Agent Runtime Platform" in pyproject["project"]["description"]
@@ -295,10 +298,10 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     assert "workflow_dispatch:" in workflow
     assert "publish_target:" in workflow
     assert "alias-only" in workflow
-    assert 'default: "0.3.1"' in workflow
+    assert 'default: "0.3.2"' in workflow
     assert "approved_source_commit:" in workflow
     assert "Reviewed source commit SHA recorded in docs/maintainer-approval-record.md" in workflow
-    assert "KSADK_WEB_VERSION: ${{ github.event.inputs.ksadk_web_version || '0.3.1' }}" in workflow
+    assert "KSADK_WEB_VERSION: ${{ github.event.inputs.ksadk_web_version || '0.3.2' }}" in workflow
     assert (
         "KSADK_APPROVED_SOURCE_COMMIT: "
         "${{ github.event.inputs.approved_source_commit || "
@@ -316,9 +319,9 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     assert "make public-test" in ci_workflow
     assert "tests/test_conversation_runtime.py" not in ci_workflow
     assert "tests/test_server_session_app.py" not in ci_workflow
-    assert 'KSADK_WEB_VERSION: "0.3.1"' in ci_workflow
+    assert 'KSADK_WEB_VERSION: "0.3.2"' in ci_workflow
     assert "PUBLIC_KSADK_WEB_VERSION" not in ci_workflow
-    assert "KSADK_WEB_VERSION ?= 0.3.1" in makefile
+    assert "KSADK_WEB_VERSION ?= 0.3.2" in makefile
     assert (
         "PUBLIC_TEST_TARGETS ?= tests/test_public_release_positioning.py "
         "tests/test_config_env_registry.py tests/test_managed_runtime_builder.py "

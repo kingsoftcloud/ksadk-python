@@ -37,6 +37,16 @@ Start the local debugging Web UI:
 agentengine web . --no-open
 ```
 
+## 0.8.2 Agent Runtime V2 Phase 1
+
+- Studio now covers local authoring, builds and debugging plus cloud deployment, status, details, conversations, updates, deletion and version rollback. Existing high-code Agents deployed with the CLI are selectable as well.
+- Studio's local service signs cloud requests with AK/SK and routes them through Server admission; credentials never enter the browser and Gateway no longer bypasses Server to reach Runtime.
+- Foreground conversations use real SSE for incremental text, reasoning, tools and approvals. Goal and Plan are explicit execution controls; Background is reserved for work that must outlive the foreground connection.
+- AgentKernelStore may use InMemory or SQLite by default. PostgreSQL is optional and is enabled for cross-Pod takeover, recovery and high availability.
+- The bundled Web UI is pinned to `@kingsoftcloud/ksadk-web@0.3.2`.
+
+See [AgentKit Local Studio](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/agentkit-local-studio/) and the [changelog](CHANGELOG.md) for details.
+
 ## 0.8.1 Observability Contract
 
 - Remote traces use standard OTLP/HTTP only: Langfuse consumes `OTEL_EXPORTER_OTLP_*`, while CloudMonitor consumes `CLOUD_MONITOR_OTLP_*`. Both backends receive the same span with identical `trace_id` and `span_id` values.

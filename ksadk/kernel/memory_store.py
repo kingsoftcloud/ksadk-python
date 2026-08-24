@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
@@ -925,7 +925,7 @@ class InMemoryAgentKernelStore:
                 "fencing_token": token,
                 "lease_expires_at": expires_at,
                 "lease_expires_at_iso": datetime.fromtimestamp(
-                    expires_at, tz=UTC
+                    expires_at, tz=timezone.utc
                 ).isoformat(),
                 "released": False,
                 "runtime_type": request.runtime_type,

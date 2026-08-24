@@ -37,6 +37,16 @@ agentengine run -i
 agentengine web . --no-open
 ```
 
+## 0.8.2 Agent Runtime V2 Phase 1
+
+- Studio 现已覆盖本地创建、构建、调试以及云端部署、状态、详情、会话、更新、删除和版本回滚；也可以选择账号中由 CLI 部署的高代码 Agent。
+- 云端请求由 Studio 本地服务使用 AK/SK 签名并经过 Server 准入，浏览器不持有云凭证；Gateway 不再绕过 Server 直连 Runtime。
+- 普通前台对话使用真实 SSE 流；正文、思考、工具与审批可增量渲染。Goal 与 Plan 作为明确的执行控制，Background 只用于需要脱离前台连接的长任务。
+- AgentKernelStore 默认允许 InMemory 或 SQLite；PostgreSQL 仅在需要跨 Pod 接管、恢复和高可用时启用。
+- 配套 Web UI 固定为 `@kingsoftcloud/ksadk-web@0.3.2`。
+
+完整操作见 [AgentKit Local Studio](https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/agentkit-local-studio/)，详细变更见 [CHANGELOG](CHANGELOG.md)。
+
 ## 0.8.1 可观测性契约
 
 - 远端 trace 统一使用标准 OTLP/HTTP：Langfuse 读取 `OTEL_EXPORTER_OTLP_*`，CloudMonitor 读取 `CLOUD_MONITOR_OTLP_*`；同一 span 在两端保持相同的 `trace_id` / `span_id`。

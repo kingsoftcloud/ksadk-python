@@ -18,9 +18,10 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
 from uuid import uuid4
 
 import aiosqlite
@@ -1151,7 +1152,7 @@ class SQLiteAgentKernelStore:
                             "lease_expires_at": row["lease_expires_at_iso"],
                         },
                     )
-                expires_iso = datetime.fromtimestamp(expires_at, tz=UTC).isoformat()
+                expires_iso = datetime.fromtimestamp(expires_at, tz=timezone.utc).isoformat()
                 await connection.execute(
                     "INSERT INTO kernel_activations (agent_instance_id, session_id,"
                     " activation_id, fencing_token, lease_expires_at, lease_expires_at_iso,"
@@ -1213,7 +1214,7 @@ class SQLiteAgentKernelStore:
                         f"cannot renew activation {activation_id!r} at fence {expected_fence}"
                     )
                 expires_at = time.time() + lease_ttl_seconds
-                expires_iso = datetime.fromtimestamp(expires_at, tz=UTC).isoformat()
+                expires_iso = datetime.fromtimestamp(expires_at, tz=timezone.utc).isoformat()
                 await connection.execute(
                     "UPDATE kernel_activations SET lease_expires_at=?, lease_expires_at_iso=?"
                     " WHERE activation_id=?",

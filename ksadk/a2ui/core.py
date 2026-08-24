@@ -183,7 +183,7 @@ class A2UICore:
         if self._ledger is not None and self._guard is not None:
             # Phase 1 Task 5 Step 6:durable ledger 是 pending interaction 的
             # 唯一权威;持久化身份与 interaction.requested 事实由 ledger 落盘。
-            from datetime import UTC, datetime
+            from datetime import datetime, timezone
 
             from ksadk.interaction.contracts import InteractionRecord
 
@@ -195,7 +195,7 @@ class A2UICore:
                 run_id=invocation_id,
                 kind="structured_input",
                 request_schema=dict(schema),
-                created_at=datetime.now(UTC).isoformat(),
+                created_at=datetime.now(timezone.utc).isoformat(),
             )
             stored = await self._ledger.request(record, guard=self._guard)
             interaction = PendingInteraction(

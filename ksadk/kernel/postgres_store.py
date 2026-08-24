@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import json
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -91,7 +91,7 @@ ACTIVATION_FOR_SHARE_SQL = (
 
 
 def _now() -> datetime:
-    return datetime.now(UTC)
+    return datetime.now(timezone.utc)
 
 
 def _parse_ts(value: str | None):
@@ -99,7 +99,7 @@ def _parse_ts(value: str | None):
         return None
     parsed = datetime.fromisoformat(value)
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
+        parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed
 
 

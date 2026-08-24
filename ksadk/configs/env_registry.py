@@ -471,10 +471,28 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "Header name for remote Responses session propagation.",
     ),
     EnvVarSpec(
+        "KSADK_RUNTIME_IMAGE_SOURCE_COMMIT",
+        "runtime",
+        "Build-injected source commit for Runtime image provenance.",
+        documented=False,
+    ),
+    EnvVarSpec(
+        "KSADK_RUNTIME_IMAGE_WHEEL_SHA256",
+        "runtime",
+        "Build-injected wheel digest for Runtime image provenance.",
+        documented=False,
+    ),
+    EnvVarSpec(
         "KSADK_RUNTIME_PORT", "cli", "Runtime HTTP port exported to template runtimes.", "8080"
     ),
     EnvVarSpec(
         "KSADK_RUNTIME_REQUIREMENTS", "builders", "Internal bundled runtime requirements constant."
+    ),
+    EnvVarSpec(
+        "KSADK_RUNTIME_STATE_DIR",
+        "runtime",
+        "Internal Runtime state directory override.",
+        documented=False,
     ),
     EnvVarSpec(
         "KSADK_ALLOW_POD_PROCESS_TOOLS",
@@ -784,7 +802,7 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "KSADK_WEB_VERSION",
         "web",
         "Published KsADK Web npm version used for a reproducible wheel build.",
-        "0.3.1",
+        "0.3.2",
     ),
     EnvVarSpec(
         "KSADK_WORKING_SET_MAX_FILES",

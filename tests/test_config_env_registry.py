@@ -46,12 +46,15 @@ def test_internal_env_registry_items_do_not_expand_the_public_reference():
     assert specs["KSADK_PROMPT_COMPILER_ENABLED"].documented is False
     assert specs["KSADK_CONTEXT_ENGINE_V2_ENABLED"].documented is False
     assert specs["KSADK_MEMORY_ENABLED"].documented is False
+    assert specs["KSADK_RUNTIME_IMAGE_SOURCE_COMMIT"].documented is False
+    assert specs["KSADK_RUNTIME_IMAGE_WHEEL_SHA256"].documented is False
+    assert specs["KSADK_RUNTIME_STATE_DIR"].documented is False
 
 
 def test_env_registry_pins_ksadk_web_static_sync_to_a_published_npm_release():
     specs = {item.name: item for item in ENV_VAR_REGISTRY}
 
-    assert specs["KSADK_WEB_VERSION"].default == "0.3.1"
+    assert specs["KSADK_WEB_VERSION"].default == "0.3.2"
     assert specs["KSADK_WEB_PACKAGE"].default == "@kingsoftcloud/ksadk-web"
     assert specs["KSADK_WEB_RELEASE_URL"].default == ""
 

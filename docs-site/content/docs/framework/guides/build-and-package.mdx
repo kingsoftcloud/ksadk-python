@@ -80,7 +80,7 @@ Python 包可包含 `agentengine web` 和 Studio 需要的静态 UI 产物；Hos
 `ksadk-web`，Studio 源码仍受 `ksadk/studio/react-ui` 跟踪。
 </Callout>
 
-正式 PyPI 发布走 `.github/workflows/publish-pypi.yml`，由 GitHub Release `published` 事件或 `workflow_dispatch` 触发；workflow 执行 `make public-preflight`，其中会同步固定的已发布 `@kingsoftcloud/ksadk-web@0.3.1`（可通过 `ksadk_web_version` input 指定一个已发布版本）并构建 Studio 静态产物，最后通过 OIDC Trusted Publishing 上传，不依赖长期 PyPI token。同步与构建会比较 npm tarball 中 `dist-ksadk`、`ksadk/server/static` 和 wheel 内静态文件的完整路径与内容哈希；任一不一致都会拒绝构建。
+正式 PyPI 发布走 `.github/workflows/publish-pypi.yml`，由 GitHub Release `published` 事件或 `workflow_dispatch` 触发；workflow 执行 `make public-preflight`，其中会同步固定的已发布 `@kingsoftcloud/ksadk-web@0.3.2`（可通过 `ksadk_web_version` input 指定一个已发布版本）并构建 Studio 静态产物，最后通过 OIDC Trusted Publishing 上传，不依赖长期 PyPI token。同步与构建会比较 npm tarball 中 `dist-ksadk`、`ksadk/server/static` 和 wheel 内静态文件的完整路径与内容哈希；任一不一致都会拒绝构建。
 
 <Callout type="info" title="0.6.7 新增">
 Serverless 部署会在运行时 Pod 注入 UI 配置环境变量：`KSADK_UI_PROFILE`、`KSADK_UI_PATH`、`KSADK_UI_URL`、`KSADK_UI_BUNDLE_PATH`。Pod 内 `ksadk.server.app` 读取这些变量还原 UI 运行时配置，无需把本地 `.agentengine/` 状态打包进镜像。

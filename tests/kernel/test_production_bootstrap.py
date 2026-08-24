@@ -209,7 +209,7 @@ async def test_bootstrap_readiness_reports_real_health():
         assert health["capabilities"]["schema_version"] == 1
         assert health["capabilities"]["cancel"]["supported"] is False
         assert health["bundle_digest"] == BUNDLE_DIGEST
-        assert health["runtime_identity"]["ksadk_version"] == "0.8.1"
+        assert health["runtime_identity"]["ksadk_version"] == "0.8.2"
     finally:
         await runtime.close()
 

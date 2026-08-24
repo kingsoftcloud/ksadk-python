@@ -28,7 +28,7 @@ import os
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -153,7 +153,7 @@ class InProcessPermitIssuer:
         subject_ref: str = "ksadk-local-runtime",
         now: datetime | None = None,
     ) -> AgentControlPermit:
-        issued = now or datetime.now(UTC)
+        issued = now or datetime.now(timezone.utc)
         expires = issued + timedelta(seconds=self._ttl)
         claims = {
             "tenant_id": tenant_id,
@@ -181,7 +181,7 @@ class InProcessPermitIssuer:
 
 
 def _rfc3339(value: datetime) -> str:
-    return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def trusted_context(
@@ -225,7 +225,7 @@ def trusted_context(
         agent_instance_id=agent_instance_id,
         source=ControlSource(kind=source_kind, ref=source_ref),
         permit=permit,
-        received_at=_rfc3339(datetime.now(UTC)),
+        received_at=_rfc3339(datetime.now(timezone.utc)),
     )
 
 
@@ -962,7 +962,7 @@ def _build_kernel_router() -> Any:
                 agent_instance_id=instance_id,
                 source=ControlSource(kind="system", ref="server-subscribe"),
                 permit=permit,
-                received_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                received_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             )
         else:
             trusted = trusted_context(

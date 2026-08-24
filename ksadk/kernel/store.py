@@ -12,7 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Protocol, runtime_checkable
 from uuid import uuid4
 
@@ -26,7 +26,7 @@ from ksadk.kernel.state import InboxState, RunState
 
 
 def now_utc() -> datetime:
-    return datetime.now(UTC)
+    return datetime.now(timezone.utc)
 
 
 def now_iso() -> str:
