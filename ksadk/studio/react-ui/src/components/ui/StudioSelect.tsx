@@ -1,5 +1,6 @@
 import * as Select from "@radix-ui/react-select";
 import { Check, ChevronDown, ChevronUp } from "lucide-react";
+import { useState } from "react";
 
 export interface StudioSelectOption {
   value: string;
@@ -27,9 +28,19 @@ export function StudioSelect({
   className?: string;
   onValueChange: (value: string) => void;
 }) {
+  const [open, setOpen] = useState(false);
   const selected = options.find(option => option.value === value);
   return (
-    <Select.Root value={value || undefined} disabled={disabled} onValueChange={onValueChange}>
+    <Select.Root
+      value={value || undefined}
+      open={open}
+      disabled={disabled}
+      onOpenChange={setOpen}
+      onValueChange={next => {
+        setOpen(false);
+        onValueChange(next);
+      }}
+    >
       <Select.Trigger
         id={id}
         className={`studio-select-trigger${className ? ` ${className}` : ""}`}

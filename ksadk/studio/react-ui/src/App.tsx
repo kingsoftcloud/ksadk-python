@@ -412,7 +412,7 @@ export default function App() {
             <div id="pageHeaderTools" className="page-header-tools" data-testid="page-header-tools" />
             {view === "conversations" ? (
               <StudioSelect
-                className="header-agent-selector"
+                className="header-agent-selector conversation-target-selector"
                 ariaLabel="切换会话目标"
                 value={chatTargetValue}
                 placeholder="选择会话目标"
@@ -429,7 +429,7 @@ export default function App() {
                 onValueChange={switchAgent}
               />
             )}
-            <span className="tag">{isCloudChat ? "云端部署" : "本地"}</span>
+            {view !== "conversations" && <span className="tag">{isCloudChat ? "云端部署" : "本地"}</span>}
             <span className="badge" data-state={runtimeState}>{runtimeStateLabel}</span>
             <button className="icon-button tertiary global-refresh-button" type="button" aria-label="刷新" title="刷新" onClick={() => setRefreshTick(t => t + 1)}>
               <RefreshCw size={16} />

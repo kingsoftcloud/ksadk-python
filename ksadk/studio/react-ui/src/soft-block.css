@@ -206,6 +206,16 @@
   flex: 0 1 240px;
 }
 
+.header-agent-selector.conversation-target-selector {
+  width: 248px;
+  min-width: 220px;
+  max-width: 260px;
+  min-height: 36px;
+  flex: 0 1 248px;
+  padding-inline: 14px 11px;
+  border-radius: var(--radius-pill);
+}
+
 .header-agent-selector > span:first-child {
   min-width: 0;
   overflow: hidden;

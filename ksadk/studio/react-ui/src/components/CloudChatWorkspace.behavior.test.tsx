@@ -66,15 +66,11 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
   });
 
   it("renders an assistant delta before the admitted run reaches a terminal state", async () => {
-    let streamController: ReadableStreamDefaultController<Uint8Array> | undefined;
-    let resolvePost: ((response: Response) => void) | undefined;
-    const postResponse = new Promise<Response>(resolve => { resolvePost = resolve; });
+    let eventStreamController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    let directStreamController: ReadableStreamDefaultController<Uint8Array> | undefined;
     const encoder = new TextEncoder();
-    const stream = new ReadableStream<Uint8Array>({
-      start(controller) {
-        streamController = controller;
-      },
-    });
+    const eventStream = new ReadableStream<Uint8Array>({ start(controller) { eventStreamController = controller; } });
+    const directStream = new ReadableStream<Uint8Array>({ start(controller) { directStreamController = controller; } });
 
     apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
       if (path === `${base}/sessions` && !init?.method) {
@@ -88,10 +84,10 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
         return jsonResponse({ events: [{ event_type: "run.completed", seq_id: 5 }] });
       }
       if (path === `${base}/sessions/sess-1/events/stream?afterSeqId=5`) {
-        return new Response(stream, { headers: { "Content-Type": "text/event-stream" } });
+        return new Response(eventStream, { headers: { "Content-Type": "text/event-stream" } });
       }
-      if (path === `${base}/sessions/sess-1/messages` && init?.method === "POST") {
-        return postResponse;
+      if (path === `${base}/sessions/sess-1/messages/stream` && init?.method === "POST") {
+        return new Response(directStream, { headers: { "Content-Type": "text/event-stream" } });
       }
       throw new Error(`unexpected request: ${path}`);
     });
@@ -111,32 +107,29 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     ));
 
-    streamController?.enqueue(encoder.encode(
+    // SessionEvent can project the same assistant text, but the foreground
+    // stream is authoritative and must keep the body single-rendered.
+    eventStreamController?.enqueue(encoder.encode(
       "event: session.event\n"
       + "data: {\"event_type\":\"item.updated\",\"seq_id\":6,\"run_id\":\"run-1\","
       + "\"content\":{\"runtime_event\":{\"item_kind\":\"message\",\"op\":\"append\","
-      + "\"update\":{\"text\":\"第一段\"}}}}\n\n"
-      + "event: session.event\n"
-      + "data: {\"event_type\":\"item.updated\",\"seq_id\":7,\"run_id\":\"run-1\","
-      + "\"content\":{\"runtime_event\":{\"item_kind\":\"message\",\"op\":\"append\","
-      + "\"update\":{\"text\":\"\\n第二段\"}}}}\n\n",
+      + "\"update\":{\"text\":\"第一段\"}}}}\n\n",
+    ));
+    directStreamController?.enqueue(encoder.encode(
+      "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"第一段\"}}]}\n\n"
+      + "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\\n第二段\"}}]}\n\n",
     ));
 
     expect(await screen.findByText(/第一段\s+第二段/)).toBeInTheDocument();
+    expect(screen.getAllByText(/第一段/)).toHaveLength(1);
     expect(screen.getByText(/正在等待云端响应/)).toBeInTheDocument();
-    resolvePost?.(jsonResponse(
-      { receipt_status: "accepted", run_id: "run-1", accepted_seq: 5 },
-      { status: 202 },
-    ));
+    directStreamController?.enqueue(encoder.encode("data: [DONE]\n\n"));
+    await waitFor(() => expect(screen.queryByText(/正在等待云端响应/)).not.toBeInTheDocument());
   });
 
   it("projects canonical nested RuntimeEvent items before RunAgent returns", async () => {
-    let streamController: ReadableStreamDefaultController<Uint8Array> | undefined;
-    let resolvePost: ((response: Response) => void) | undefined;
-    const postResponse = new Promise<Response>(resolve => { resolvePost = resolve; });
-    const stream = new ReadableStream<Uint8Array>({
-      start(controller) { streamController = controller; },
-    });
+    let directStreamController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const directStream = new ReadableStream<Uint8Array>({ start(controller) { directStreamController = controller; } });
     apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
       if (path === `${base}/sessions` && !init?.method) {
         return jsonResponse({ sessions: [{ session_id: "sess-canonical", title: "Canonical 会话" }] });
@@ -147,9 +140,11 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
         return jsonResponse({ events: [{ event_type: "user_message", seq_id: 10 }] });
       }
       if (path.endsWith("/events/stream?afterSeqId=10")) {
-        return new Response(stream, { headers: { "Content-Type": "text/event-stream" } });
+        return new Response("", { headers: { "Content-Type": "text/event-stream" } });
       }
-      if (path.endsWith("/messages") && init?.method === "POST") return postResponse;
+      if (path.endsWith("/messages/stream") && init?.method === "POST") {
+        return new Response(directStream, { headers: { "Content-Type": "text/event-stream" } });
+      }
       throw new Error(`unexpected request: ${path}`);
     });
     render(<CloudChatWorkspace deploymentId="dep-cloud" agentId="ar-cloud" agentName="Cloud Agent" />);
@@ -180,19 +175,150 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
         content: { runtime_event: { ...runtimeEvent, run_id: "run-qwen", scope_id: "scope-qwen" } },
       })}\n\n`
     )).join("");
-    streamController?.enqueue(new TextEncoder().encode(encoded));
+    directStreamController?.enqueue(new TextEncoder().encode(encoded));
 
     expect(await screen.findByText("实时回答第一段")).toBeInTheDocument();
     expect(screen.getByText(/正在分析问题/)).toBeInTheDocument();
     expect(screen.getByText("web_search")).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "待处理确认" })).toHaveTextContent("允许查询天气");
     expect(screen.getByText(/正在等待云端响应/)).toBeInTheDocument();
-    resolvePost?.(jsonResponse({
-      receipt_status: "accepted",
-      run_id: "run-qwen",
-      invocation_id: "inv-qwen",
-      accepted_seq: 10,
-    }, { status: 202 }));
+    directStreamController?.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
+  });
+
+  it("ends foreground waiting when SessionEvent reports an approval interrupt", async () => {
+    let eventStreamController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const eventStream = new ReadableStream<Uint8Array>({ start(controller) { eventStreamController = controller; } });
+    const directStream = new ReadableStream<Uint8Array>({ start() {} });
+    apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
+      if (path === `${base}/sessions` && !init?.method) {
+        return jsonResponse({ sessions: [{ session_id: "sess-approval", title: "审批会话" }] });
+      }
+      if (path === `${base}/models`) return jsonResponse({ models: [] });
+      if (path.endsWith("/messages") && !init?.method) return jsonResponse({ messages: [] });
+      if (path.endsWith("/events") && !init?.method) return jsonResponse({ events: [] });
+      if (path.endsWith("/events/stream?afterSeqId=0")) {
+        return new Response(eventStream, { headers: { "Content-Type": "text/event-stream" } });
+      }
+      if (path.endsWith("/messages/stream") && init?.method === "POST") {
+        return new Response(directStream, { headers: { "Content-Type": "text/event-stream" } });
+      }
+      throw new Error(`unexpected request: ${path}`);
+    });
+    render(<CloudChatWorkspace deploymentId="dep-cloud" agentId="ar-cloud" agentName="Cloud Agent" />);
+
+    await screen.findByText("审批会话");
+    await userEvent.type(screen.getByRole("textbox", { name: "消息" }), "执行需要批准的工具");
+    await userEvent.click(screen.getByRole("button", { name: "发送消息" }));
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith(
+      `${base}/sessions/sess-approval/messages/stream`,
+      expect.objectContaining({ method: "POST" }),
+    ));
+
+    eventStreamController?.enqueue(new TextEncoder().encode(
+      "event: session.event\n"
+      + "data: {\"event_type\":\"interaction.requested\",\"seq_id\":1,\"invocation_id\":\"inv-approval\","
+      + "\"interaction_id\":\"approval-1\",\"interaction_kind\":\"approval\","
+      + "\"request\":{\"kind\":\"tool\",\"title\":\"允许执行命令\"}}\n\n"
+      + "event: session.event\n"
+      + "data: {\"event_type\":\"run.interrupted\",\"seq_id\":2,\"invocation_id\":\"inv-approval\"}\n\n",
+    ));
+
+    expect(await screen.findByRole("region", { name: "待处理确认" })).toHaveTextContent("允许执行命令");
+    await waitFor(() => expect(screen.queryByText(/正在等待云端响应/)).not.toBeInTheDocument());
+    expect(screen.getByRole("textbox", { name: "消息" })).not.toBeDisabled();
+    expect(showToast).not.toHaveBeenCalledWith("云端运行未完成", expect.anything(), "error");
+  });
+
+  it("treats Kernel and custom Runtime approval SSE as waiting instead of failure", async () => {
+    apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
+      if (path === `${base}/sessions` && !init?.method) {
+        return jsonResponse({ sessions: [{ session_id: "sess-direct-approval", title: "直流审批" }] });
+      }
+      if (path === `${base}/models`) return jsonResponse({ models: [] });
+      if (path.endsWith("/messages") && !init?.method) return jsonResponse({ messages: [] });
+      if (path.endsWith("/events") && !init?.method) return jsonResponse({ events: [] });
+      if (path.endsWith("/events/stream?afterSeqId=0")) {
+        return new Response("", { headers: { "Content-Type": "text/event-stream" } });
+      }
+      if (path.endsWith("/messages/stream") && init?.method === "POST") {
+        return new Response([
+          "event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"response_id\":\"resp-approval\",\"item\":{\"id\":\"approval-kernel\",\"type\":\"mcp_approval_request\",\"name\":\"Filesystem\",\"arguments\":{\"path\":\"/tmp\"}}}",
+          "event: response.incomplete\ndata: {\"type\":\"response.incomplete\",\"response\":{\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"tool_approval\"}}}",
+          "event: response.approval_request\ndata: {\"type\":\"response.approval_request\",\"run_id\":\"run-custom\",\"interaction_id\":\"approval-custom\",\"interaction_kind\":\"approval\",\"request\":{\"title\":\"允许自定义工具\"}}",
+        ].join("\n\n"), { headers: { "Content-Type": "text/event-stream" } });
+      }
+      throw new Error(`unexpected request: ${path}`);
+    });
+    render(<CloudChatWorkspace deploymentId="dep-cloud" agentId="ar-cloud" agentName="Cloud Agent" />);
+
+    await screen.findByText("直流审批");
+    await userEvent.type(screen.getByRole("textbox", { name: "消息" }), "触发两种审批");
+    await userEvent.click(screen.getByRole("button", { name: "发送消息" }));
+
+    expect(await screen.findByText("Filesystem")).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "待处理确认" })).toHaveTextContent("允许自定义工具");
+    await waitFor(() => expect(screen.queryByText(/正在等待云端响应/)).not.toBeInTheDocument());
+    expect(screen.queryByText(/云端流式响应失败/)).not.toBeInTheDocument();
+    expect(showToast).not.toHaveBeenCalledWith(expect.anything(), expect.anything(), "error");
+  });
+
+  it("streams chat and Responses chunks directly and reuses the same session on the second turn", async () => {
+    let directCalls = 0;
+    const directBodies: unknown[] = [];
+    apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
+      if (path === `${base}/sessions` && !init?.method) {
+        return jsonResponse({ sessions: [{ session_id: "sess-direct", title: "直流会话" }] });
+      }
+      if (path === `${base}/models`) return jsonResponse({ models: [] });
+      if (path.endsWith("/messages") && !init?.method) return jsonResponse({ messages: [] });
+      if (path.endsWith("/events") && !init?.method) return jsonResponse({ events: [] });
+      if (path.endsWith("/events/stream?afterSeqId=0")) {
+        return new Response("", { headers: { "Content-Type": "text/event-stream" } });
+      }
+      if (path.endsWith("/messages/stream") && init?.method === "POST") {
+        directCalls += 1;
+        directBodies.push(JSON.parse(String(init.body)));
+        const body = directCalls === 1
+          ? [
+            'data: {"id":"chatcmpl-1","choices":[{"index":0,"delta":{"reasoning_content":"先分析","content":"第一轮回答","tool_calls":[{"index":0,"id":"call-1","function":{"name":"lookup","arguments":"{\\"q\\":\\"one\\"}"}}]},"finish_reason":null}]}',
+            "data: [DONE]",
+            "",
+          ].join("\n\n")
+          : [
+            "event: response.reasoning_summary_text.delta\ndata: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"再分析\"}",
+            "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"第二轮回答\"}",
+            "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}",
+            "",
+          ].join("\n\n");
+        return new Response(body, { headers: { "Content-Type": "text/event-stream" } });
+      }
+      throw new Error(`unexpected request: ${path}`);
+    });
+    render(<CloudChatWorkspace deploymentId="dep-cloud" agentId="ar-cloud" agentName="Cloud Agent" />);
+
+    await screen.findByText("直流会话");
+    await userEvent.type(screen.getByRole("textbox", { name: "消息" }), "第一轮");
+    await userEvent.click(screen.getByRole("button", { name: "发送消息" }));
+
+    expect(await screen.findByText("第一轮回答")).toBeInTheDocument();
+    expect(screen.getByText("先分析")).toBeInTheDocument();
+    expect(screen.getByText("lookup")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "消息" })).not.toBeDisabled());
+
+    await userEvent.type(screen.getByRole("textbox", { name: "消息" }), "第二轮");
+    await userEvent.click(screen.getByRole("button", { name: "发送消息" }));
+
+    expect(await screen.findByText("第二轮回答")).toBeInTheDocument();
+    expect(screen.getByText("再分析")).toBeInTheDocument();
+    expect(directCalls).toBe(2);
+    expect(directBodies).toEqual([
+      expect.objectContaining({ content: [{ type: "input_text", text: "第一轮" }] }),
+      expect.objectContaining({ content: [{ type: "input_text", text: "第二轮" }] }),
+    ]);
+    expect(apiFetch).toHaveBeenCalledWith(
+      `${base}/sessions/sess-direct/messages/stream`,
+      expect.objectContaining({ method: "POST" }),
+    );
   });
 
   it("preserves soft line breaks, paragraphs, lists and fenced code in cloud Markdown", async () => {
@@ -289,7 +415,7 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
       if (path.endsWith("/events/stream?afterSeqId=0")) {
         return new Response(stream, { headers: { "Content-Type": "text/event-stream" } });
       }
-      if (path.endsWith("/messages") && init?.method === "POST") {
+      if (path.endsWith("/messages/stream") && init?.method === "POST") {
         return jsonResponse(
           { error: { message: "runtime admission rejected: provider unavailable" } },
           { status: 500 },
@@ -317,7 +443,8 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
 
   it("stops polling when the selected session projects active_run_status failed", async () => {
     let listCalls = 0;
-    const stream = new ReadableStream<Uint8Array>({ start() {} });
+    const eventStream = new ReadableStream<Uint8Array>({ start() {} });
+    const directStream = new ReadableStream<Uint8Array>({ start() {} });
     apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
       if (path === `${base}/sessions` && !init?.method) {
         listCalls += 1;
@@ -332,10 +459,10 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
       if (path.endsWith("/messages") && !init?.method) return jsonResponse({ messages: [] });
       if (path.endsWith("/events") && !init?.method) return jsonResponse({ events: [] });
       if (path.endsWith("/events/stream?afterSeqId=0")) {
-        return new Response(stream, { headers: { "Content-Type": "text/event-stream" } });
+        return new Response(eventStream, { headers: { "Content-Type": "text/event-stream" } });
       }
-      if (path.endsWith("/messages") && init?.method === "POST") {
-        return jsonResponse({ receipt_status: "accepted", invocation_id: "inv-failed" }, { status: 202 });
+      if (path.endsWith("/messages/stream") && init?.method === "POST") {
+        return new Response(directStream, { headers: { "Content-Type": "text/event-stream" } });
       }
       throw new Error(`unexpected request: ${path}`);
     });
@@ -345,7 +472,7 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
     await userEvent.type(screen.getByRole("textbox", { name: "消息" }), "触发失败状态");
     await userEvent.click(screen.getByRole("button", { name: "发送消息" }));
 
-    expect(await screen.findByText(/worker exited before producing a reply/)).toBeInTheDocument();
+    expect(await screen.findByText(/worker exited before producing a reply/, {}, { timeout: 2500 })).toBeInTheDocument();
     expect(screen.queryByText(/正在等待云端响应/)).not.toBeInTheDocument();
     expect(showToast).toHaveBeenCalledWith(
       "云端运行未完成",
@@ -354,11 +481,12 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
     );
   });
 
-  it("correlates an invocation_id receipt with an invocation_id terminal SSE frame", async () => {
+  it("correlates an invocation_id terminal SessionEvent while the direct stream is active", async () => {
     let streamController: ReadableStreamDefaultController<Uint8Array> | undefined;
     const stream = new ReadableStream<Uint8Array>({
       start(controller) { streamController = controller; },
     });
+    const directStream = new ReadableStream<Uint8Array>({ start() {} });
     apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
       if (path === `${base}/sessions` && !init?.method) {
         return jsonResponse({ sessions: [{ session_id: "sess-invocation", title: "Invocation 会话" }] });
@@ -371,12 +499,8 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
       if (path.endsWith("/events/stream?afterSeqId=5")) {
         return new Response(stream, { headers: { "Content-Type": "text/event-stream" } });
       }
-      if (path.endsWith("/messages") && init?.method === "POST") {
-        return jsonResponse({
-          receipt_status: "accepted",
-          run_id: "run-500",
-          invocation_id: "inv-500",
-        }, { status: 202 });
+      if (path.endsWith("/messages/stream") && init?.method === "POST") {
+        return new Response(directStream, { headers: { "Content-Type": "text/event-stream" } });
       }
       throw new Error(`unexpected request: ${path}`);
     });
@@ -386,7 +510,7 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
     await userEvent.type(screen.getByRole("textbox", { name: "消息" }), "按 invocation 关联");
     await userEvent.click(screen.getByRole("button", { name: "发送消息" }));
     await waitFor(() => expect(apiFetch).toHaveBeenCalledWith(
-      `${base}/sessions/sess-invocation/messages`,
+      `${base}/sessions/sess-invocation/messages/stream`,
       expect.objectContaining({ method: "POST" }),
     ));
     streamController?.enqueue(new TextEncoder().encode(

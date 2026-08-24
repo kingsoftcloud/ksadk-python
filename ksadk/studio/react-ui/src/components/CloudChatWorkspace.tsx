@@ -232,6 +232,147 @@ function runtimeItemPatch(value: unknown): CloudRuntimeItem | null {
   };
 }
 
+function directStreamItemPatches(value: unknown): CloudRuntimeItem[] {
+  const canonical = runtimeItemPatch(value);
+  if (canonical) return [canonical];
+  const envelope = runtimeEnvelope(value);
+  if (!envelope) return [];
+  const event = envelope.event;
+  const eventType = envelope.eventType;
+  const streamId = scalarText(event.id ?? event.response_id ?? event.responseId)
+    || envelope.invocationId || envelope.runId || "direct";
+  const patches: CloudRuntimeItem[] = [];
+
+  const choices = Array.isArray(event.choices) ? event.choices.map(recordValue) : [];
+  choices.forEach((choice, choiceIndex) => {
+    const delta = recordValue(choice.delta);
+    const reasoning = valueText(delta.reasoning_content ?? delta.reasoning ?? delta.thinking);
+    if (reasoning) {
+      patches.push({
+        id: `${streamId}//reasoning:${scalarText(choice.index) || choiceIndex}`,
+        kind: "reasoning",
+        title: "思考过程",
+        text: reasoning,
+        detail: reasoning,
+        status: "running",
+        operation: "append",
+      });
+    }
+    const content = valueText(delta.content);
+    if (content) {
+      patches.push({
+        id: `${streamId}//message:${scalarText(choice.index) || choiceIndex}`,
+        kind: "message",
+        title: "回复",
+        text: content,
+        detail: content,
+        status: "running",
+        operation: "append",
+      });
+    }
+    const toolCalls = Array.isArray(delta.tool_calls) ? delta.tool_calls.map(recordValue) : [];
+    toolCalls.forEach((call, callIndex) => {
+      const callable = recordValue(call.function);
+      const title = valueText(callable.name ?? call.name) || "工具调用";
+      const detail = valueText(callable.arguments ?? call.arguments);
+      patches.push({
+        id: `${streamId}//tool:${scalarText(choice.index) || choiceIndex}:${scalarText(call.index) || callIndex}`,
+        kind: "tool",
+        title,
+        text: "",
+        detail,
+        status: "running",
+        operation: "append",
+      });
+    });
+  });
+
+  if (eventType.includes("reasoning") && eventType.endsWith(".delta")) {
+    const text = valueText(event.delta ?? event.text ?? recordValue(event.part).text);
+    if (text) {
+      patches.push({
+        id: `${streamId}//reasoning:${scalarText(event.item_id ?? event.itemId) || "summary"}`,
+        kind: "reasoning",
+        title: "思考过程",
+        text,
+        detail: text,
+        status: "running",
+        operation: "append",
+      });
+    }
+  }
+
+  if (["response.output_item.added", "response.output_item.done"].includes(eventType)) {
+    const item = recordValue(event.item);
+    const itemType = scalarText(item.type).toLowerCase();
+    if (["mcp_approval_request", "approval_request"].includes(itemType)) {
+      patches.push({
+        id: `${streamId}//approval:${scalarText(item.id ?? item.approval_request_id ?? item.call_id) || "request"}`,
+        kind: "approval",
+        title: valueText(item.title ?? item.name ?? item.server_label) || "等待确认",
+        text: "",
+        detail: valueText(item.message) || jsonDetail(item.arguments ?? item.request ?? ""),
+        status: "waiting",
+        operation: "replace",
+      });
+    }
+    if (["function_call", "tool_call", "computer_call", "mcp_call"].includes(itemType)) {
+      patches.push({
+        id: `${streamId}//tool:${scalarText(item.id ?? item.call_id ?? event.output_index) || "output"}`,
+        kind: "tool",
+        title: valueText(item.name) || "工具调用",
+        text: "",
+        detail: valueText(item.arguments ?? item.output) || jsonDetail(item.arguments ?? item.output ?? ""),
+        status: eventType.endsWith(".done") ? "completed" : "running",
+        operation: "replace",
+      });
+    }
+  }
+
+  if (["response.function_call_arguments.delta", "response.mcp_call_arguments.delta"].includes(eventType)) {
+    const detail = valueText(event.delta);
+    patches.push({
+      id: `${streamId}//tool:${scalarText(event.item_id ?? event.itemId ?? event.call_id) || "output"}`,
+      kind: "tool",
+      title: valueText(event.name) || "工具调用",
+      text: "",
+      detail,
+      status: "running",
+      operation: "append",
+    });
+  }
+  if (eventType === "response.approval_request") {
+    patches.push({
+      id: `${streamId}//approval:${scalarText(event.interaction_id ?? event.approval_request_id ?? event.item_id) || "request"}`,
+      kind: "approval",
+      title: valueText(event.title ?? event.message ?? recordValue(event.request).title) || "等待确认",
+      text: "",
+      detail: valueText(event.message) || jsonDetail(event.request ?? ""),
+      status: "waiting",
+      operation: "replace",
+    });
+  }
+  return patches;
+}
+
+function directStreamTerminal(value: unknown): TerminalRunResult | null {
+  const envelope = runtimeEnvelope(value);
+  if (!envelope) return null;
+  const event = envelope.event;
+  const eventType = envelope.eventType;
+  if (["stream.done", "response.completed", "response.done", "done"].includes(eventType)) {
+    return { status: "completed", error: "" };
+  }
+  if (event.error || ["error", "stream.error", "response.failed", "response.error"].includes(eventType)) {
+    return {
+      status: "failed",
+      error: errorText(event.error, event.response, event.message, event.detail)
+        || "云端流式响应失败",
+    };
+  }
+  return null;
+}
+
 function mergeRuntimeItem(items: CloudRuntimeItem[], patch: CloudRuntimeItem): CloudRuntimeItem[] {
   const index = items.findIndex(item => item.id === patch.id);
   if (index < 0) return [...items, patch];
@@ -243,7 +384,9 @@ function mergeRuntimeItem(items: CloudRuntimeItem[], patch: CloudRuntimeItem): C
     title: patch.title === "回复" || patch.title === "思考过程" || patch.title === "工具调用"
       ? previous.title : patch.title,
     text: patch.operation === "append" ? `${previous.text}${patch.text}` : patch.text || previous.text,
-    detail: patch.detail || previous.detail,
+    detail: patch.kind === "tool" && patch.operation === "append"
+      ? `${previous.detail}${patch.detail}`
+      : patch.detail || previous.detail,
   };
   return next;
 }
@@ -320,7 +463,7 @@ function pendingInteractions(events: unknown[]): CloudInteraction[] {
       ?? "",
     ).trim();
     if (!interactionId) continue;
-    if (["interaction.requested", "approval_request"].includes(eventType)) {
+    if (["interaction.requested", "approval_request", "response.approval_request"].includes(eventType)) {
       const request = payload.request && typeof payload.request === "object"
         ? payload.request as Record<string, unknown>
         : {};
@@ -338,7 +481,8 @@ function pendingInteractions(events: unknown[]): CloudInteraction[] {
           ?? "",
         ),
         revision: Number(payload.revision ?? 1) || 1,
-        kind: String(payload.interaction_kind ?? payload.interactionKind ?? payload.kind ?? request.kind ?? (eventType === "approval_request" ? "approval" : "input")),
+        kind: String(payload.interaction_kind ?? payload.interactionKind ?? payload.kind ?? request.kind
+          ?? (["approval_request", "response.approval_request"].includes(eventType) ? "approval" : "input")),
         title: valueText(
           request.title
           ?? request.message
@@ -357,7 +501,7 @@ function pendingInteractions(events: unknown[]): CloudInteraction[] {
 }
 
 interface TerminalRunResult {
-  status: "completed" | "failed";
+  status: "completed" | "failed" | "interrupted";
   error: string;
 }
 
@@ -396,6 +540,9 @@ function terminalRunEvent(
     if (["run.completed", "run.complete", "run.succeeded"].includes(eventType)) {
       return { status: "completed", error: "" };
     }
+    if (["run.interrupted", "run.paused", "run.waiting_input", "run.requires_action"].includes(eventType)) {
+      return { status: "interrupted", error: "" };
+    }
     if (["run.failed", "run.cancelled", "run.expired", "run.error"].includes(eventType)) {
       return { status: "failed", error: failure };
     }
@@ -409,6 +556,9 @@ function terminalRunEvent(
       const status = String(payload.status ?? content.status ?? activeRun.status ?? "").toLowerCase();
       if (["completed", "complete", "succeeded", "success"].includes(status)) {
         return { status: "completed", error: "" };
+      }
+      if (["interrupted", "paused", "waiting", "waiting_input", "requires_action"].includes(status)) {
+        return { status: "interrupted", error: "" };
       }
       if (["failed", "cancelled", "canceled", "expired", "error", "aborted"].includes(status)) {
         return {
@@ -432,6 +582,33 @@ async function consumeSseResponse(
   const decoder = new TextDecoder();
   let buffer = "";
   const cancel = () => { reader.cancel().catch(() => {}); };
+  const consumeFrame = (rawFrame: string) => {
+    const lines = rawFrame.split(/\r?\n/);
+    const eventName = lines.find(line => line.startsWith("event:"))?.slice(6).trim() || "";
+    const data = lines
+      .filter(line => line.startsWith("data:"))
+      .map(line => line.slice(5).trimStart())
+      .join("\n");
+    if (!data) return;
+    if (data === "[DONE]") {
+      onFrame({ event_type: "stream.done" });
+      return;
+    }
+    try {
+      const parsed = JSON.parse(data);
+      if (eventName && parsed && typeof parsed === "object") {
+        const record = parsed as Record<string, unknown>;
+        onFrame(record.event_type || record.eventType || record.type
+          ? record
+          : { ...record, event_type: eventName });
+      } else {
+        onFrame(parsed);
+      }
+    } catch {
+      // Ignore a malformed frame and let the authoritative message poll
+      // reconcile the conversation instead of terminating the stream.
+    }
+  };
   signal.addEventListener("abort", cancel, { once: true });
   try {
     while (!signal.aborted) {
@@ -439,21 +616,11 @@ async function consumeSseResponse(
       buffer += decoder.decode(value, { stream: !done });
       const frames = buffer.split(/\r?\n\r?\n/);
       buffer = frames.pop() || "";
-      for (const rawFrame of frames) {
-        const data = rawFrame
-          .split(/\r?\n/)
-          .filter(line => line.startsWith("data:"))
-          .map(line => line.slice(5).trimStart())
-          .join("\n");
-        if (!data || data === "[DONE]") continue;
-        try {
-          onFrame(JSON.parse(data));
-        } catch {
-          // Ignore a malformed frame and let the authoritative message poll
-          // reconcile the conversation instead of terminating the stream.
-        }
+      frames.forEach(consumeFrame);
+      if (done) {
+        if (buffer.trim()) consumeFrame(buffer);
+        break;
       }
-      if (done) break;
     }
   } finally {
     signal.removeEventListener("abort", cancel);
@@ -550,6 +717,8 @@ export function CloudChatWorkspace({
   const sendInFlightRef = useRef(false);
   const streamAbortRef = useRef<AbortController | null>(null);
   const streamedFramesRef = useRef<unknown[]>([]);
+  const directStreamActiveRef = useRef(false);
+  const directKindsSeenRef = useRef<Set<CloudRuntimeItem["kind"]>>(new Set());
 
   const base = useMemo(
     () => `/api/v1/deployments/${encodeURIComponent(deploymentId)}/cloud-chat`,
@@ -559,6 +728,7 @@ export function CloudChatWorkspace({
   const settleCloudRun = useCallback((error = "", title = "云端运行未完成") => {
     const wasWaiting = waitingForResponseRef.current;
     waitingForResponseRef.current = false;
+    directStreamActiveRef.current = false;
     setWaitingForResponse(false);
     awaitingRunIdRef.current = "";
     awaitingInvocationIdRef.current = "";
@@ -611,11 +781,11 @@ export function CloudChatWorkspace({
     const hasNewAssistant = rows.some(
       message => message.role === "assistant" && !assistantIdsBeforeSendRef.current.has(message.id),
     );
-    if (hasNewAssistant) {
+    if (hasNewAssistant && !directStreamActiveRef.current) {
       setStreamingRuntimeItems([]);
       streamedFramesRef.current = [];
     }
-    if (waitingForResponseRef.current && hasNewAssistant) {
+    if (waitingForResponseRef.current && hasNewAssistant && !directStreamActiveRef.current) {
       setRunError("");
       settleCloudRun();
     }
@@ -636,12 +806,17 @@ export function CloudChatWorkspace({
       awaitingInvocationIdRef.current,
       awaitingAcceptedSeqRef.current,
     );
-    if (terminal) {
+    if (terminal && (!directStreamActiveRef.current || terminal.status !== "completed")) {
       settleCloudRun(terminal.status === "failed"
         ? terminal.error || "本次请求已结束，未得到回复。可新建会话后重试；若持续失败，请到可观测页面按会话查看记录。"
         : "");
     }
-    setInteractions(pendingInteractions(events));
+    // The foreground stream can surface an approval before the durable
+    // SessionEvent projection catches up. Preserve those frames during that
+    // window; later resolved/cancelled history is appended and removes it.
+    const interactionFrames = [...streamedFramesRef.current, ...events].slice(-500);
+    streamedFramesRef.current = interactionFrames;
+    setInteractions(pendingInteractions(interactionFrames));
   }, [base, settleCloudRun]);
 
   useEffect(() => {
@@ -656,6 +831,8 @@ export function CloudChatWorkspace({
     setInteractions([]);
     setRunError("");
     waitingForResponseRef.current = false;
+    directStreamActiveRef.current = false;
+    directKindsSeenRef.current = new Set();
     setWaitingForResponse(false);
     awaitingRunIdRef.current = "";
     awaitingInvocationIdRef.current = "";
@@ -853,6 +1030,24 @@ export function CloudChatWorkspace({
       streamAbortRef.current?.abort();
       const streamController = new AbortController();
       streamAbortRef.current = streamController;
+      directStreamActiveRef.current = true;
+      directKindsSeenRef.current = new Set();
+      const projectStreamItem = (item: CloudRuntimeItem, source: "direct" | "session") => {
+        if (source === "session") {
+          // The foreground RunAgent stream owns assistant text. SessionEvent
+          // remains the reconnect/history channel and a fallback for runtime
+          // activity that the direct provider stream does not expose.
+          if (item.kind === "message" || directKindsSeenRef.current.has(item.kind)) return;
+          setStreamingRuntimeItems(previous => mergeRuntimeItem(previous, item));
+          return;
+        }
+        const firstDirectItemOfKind = !directKindsSeenRef.current.has(item.kind);
+        directKindsSeenRef.current.add(item.kind);
+        setStreamingRuntimeItems(previous => mergeRuntimeItem(
+          firstDirectItemOfKind ? previous.filter(existing => existing.kind !== item.kind) : previous,
+          item,
+        ));
+      };
       const streamUrl = `${base}/sessions/${encodeURIComponent(sessionId)}/events/stream?afterSeqId=${awaitingAcceptedSeqRef.current}`;
       apiFetch(streamUrl, {
         headers: { Accept: "text/event-stream" },
@@ -871,14 +1066,14 @@ export function CloudChatWorkspace({
         streamedFramesRef.current = [...streamedFramesRef.current, frame].slice(-500);
         setInteractions(pendingInteractions(streamedFramesRef.current));
         const item = runtimeItemPatch(frame);
-        if (item) setStreamingRuntimeItems(previous => mergeRuntimeItem(previous, item));
+        if (item) projectStreamItem(item, "session");
         const terminal = terminalRunEvent(
           [frame],
           awaitingRunIdRef.current,
           awaitingInvocationIdRef.current,
           awaitingAcceptedSeqRef.current,
         );
-        if (terminal) {
+        if (terminal && terminal.status !== "completed") {
           settleCloudRun(terminal.status === "failed"
             ? terminal.error || "本次请求已结束，未得到回复。"
             : "");
@@ -891,9 +1086,10 @@ export function CloudChatWorkspace({
         // event stream is unavailable, but the stream is opened before the
         // blocking RunAgent response so real deltas can render immediately.
       });
-      const response = await apiFetch(`${base}/sessions/${encodeURIComponent(sessionId)}/messages`, {
+      const response = await apiFetch(`${base}/sessions/${encodeURIComponent(sessionId)}/messages/stream`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+        signal: streamController.signal,
         body: JSON.stringify({
           content: contentParts,
           model: selectedModel || undefined,
@@ -903,30 +1099,27 @@ export function CloudChatWorkspace({
           goalObjective: goalObjective || undefined,
         }),
       });
-      if (!response.ok) throw new Error(await responseError(response));
+      await consumeSseResponse(response, frame => {
+        streamedFramesRef.current = [...streamedFramesRef.current, frame].slice(-500);
+        setInteractions(pendingInteractions(streamedFramesRef.current));
+        directStreamItemPatches(frame).forEach(item => projectStreamItem(item, "direct"));
+        const terminal = directStreamTerminal(frame);
+        if (terminal) {
+          settleCloudRun(
+            terminal.status === "failed" ? terminal.error : "",
+            "云端流式响应失败",
+          );
+        }
+      }, streamController.signal);
+      // A clean EOF is terminal even for providers that omit [DONE].
+      if (waitingForResponseRef.current) settleCloudRun();
       setAttachments([]);
-      const receipt = await response.json() as Record<string, unknown>;
-      if (waitingForResponseRef.current) {
-        awaitingRunIdRef.current = String(receipt.run_id ?? receipt.runId ?? receipt.RunId ?? "");
-        awaitingInvocationIdRef.current = String(
-          receipt.invocation_id ?? receipt.invocationId ?? receipt.InvocationId ?? "",
-        );
-        awaitingAcceptedSeqRef.current = Math.max(
-          awaitingAcceptedSeqRef.current,
-          Number(receipt.accepted_seq ?? receipt.acceptedSeq ?? receipt.AcceptedSeq ?? 0) || 0,
-        );
-      }
-      // Admission is complete once the receipt arrives. Session-list refresh
-      // is metadata work and must not keep the composer in `sending` while
-      // the runtime response is already available.
       refreshSessions().catch(() => {});
-      window.setTimeout(() => {
-        refreshMessages(sessionId).catch(() => {});
-        refreshInteractions(sessionId).catch(() => {});
-      }, 250);
+      refreshMessages(sessionId).catch(() => {});
+      refreshInteractions(sessionId).catch(() => {});
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      settleCloudRun(message, "云端消息发送失败");
+      if (waitingForResponseRef.current) settleCloudRun(message, "云端消息发送失败");
     } finally {
       setSending(false);
       sendInFlightRef.current = false;

@@ -7,7 +7,7 @@ const source = readFileSync(resolve(import.meta.dirname, "components/CloudChatWo
 const composerSource = readFileSync(resolve(import.meta.dirname, "components/ChatComposer.tsx"), "utf8");
 const settingsSource = readFileSync(resolve(import.meta.dirname, "components/SettingsOverlay.tsx"), "utf8");
 
-test("cloud chat keeps polling until an admitted run reaches a terminal response", () => {
+test("cloud chat renders the foreground RunAgent stream and keeps SessionEvent as recovery", () => {
   assert.match(source, /const \[waitingForResponse, setWaitingForResponse\] = useState\(false\)/);
   assert.match(source, /if \(!active \|\| !currentSessionId\) return/);
   assert.match(source, /sending \|\| waitingForResponse \? 1200 : 4000/);
@@ -15,17 +15,13 @@ test("cloud chat keeps polling until an admitted run reaches a terminal response
   assert.match(source, /\[runId, invocationId\]\.filter\(Boolean\)\.includes\(eventRunId\)/);
   assert.match(source, /const matchesAcceptedWindow = afterSeq > 0 && eventSeq > afterSeq/);
   assert.match(source, /if \(!matchesRun && !matchesAcceptedWindow\) continue/);
-  assert.match(source, /receipt\.accepted_seq/);
   assert.match(source, /const sendInFlightRef = useRef\(false\)/);
   assert.match(source, /const currentSessionIdRef = useRef\(""\)/);
   assert.match(source, /const waitingForResponseRef = useRef\(false\)/);
   assert.match(source, /waitingForResponse \|\| sendInFlightRef\.current/);
   assert.match(source, /sendInFlightRef\.current = true/);
   assert.match(source, /sendInFlightRef\.current = false/);
-  assert.match(source, /payload\.invocation_id/);
-  assert.match(source, /frame\.invocation_id/);
   assert.match(source, /const awaitingInvocationIdRef = useRef\(""\)/);
-  assert.match(source, /receipt\.invocation_id/);
   assert.match(source, /\["run_status", "run\.status"\]/);
   assert.match(source, /content\.status/);
   assert.match(source, /const assistantIdsBeforeSendRef = useRef<Set<string>>\(new Set\(\)\)/);
@@ -36,6 +32,14 @@ test("cloud chat keeps polling until an admitted run reaches a terminal response
   assert.match(source, /currentSessionIdRef\.current = session\.id/);
   assert.match(source, /waitingForResponseRef\.current = true/);
   assert.match(source, /waitingForResponseRef\.current = false/);
+  assert.match(source, /messages\/stream/);
+  assert.match(source, /Accept: "text\/event-stream"/);
+  assert.match(source, /directStreamItemPatches/);
+  assert.match(source, /delta\.reasoning_content/);
+  assert.match(source, /delta\.tool_calls/);
+  assert.match(source, /response\.output_text\.delta/);
+  assert.match(source, /directStreamActiveRef/);
+  assert.match(source, /item\.kind === "message" \|\| directKindsSeenRef/);
 });
 
 test("cloud chat exposes a failed run without implementation or credential copy", () => {
@@ -64,7 +68,7 @@ test("cloud composer reuses the shared controls and sends turn policy explicitly
 test("cloud chat normalizes projected approval lifecycle events", () => {
   assert.match(source, /interruptInfo\.approval_request_id/);
   assert.match(source, /resumeInput\.approval_request_id/);
-  assert.match(source, /\["interaction\.requested", "approval_request"\]/);
+  assert.match(source, /\["interaction\.requested", "approval_request", "response\.approval_request"\]/);
   assert.match(source, /frame\.InvocationId/);
   assert.match(source, /"approval_response"/);
 });
