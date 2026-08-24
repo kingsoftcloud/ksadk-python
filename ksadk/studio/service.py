@@ -2134,9 +2134,26 @@ class StudioService:
             access_key=access_key,
             secret_key=secret_key,
         )
+        stream_base_url = os.environ.get("AGENTENGINE_STREAM_SERVER_URL", "").strip()
+        if not stream_base_url and region.lower() == "pre-online":
+            # The pre-online KOP response path currently buffers SSE until
+            # EOF.  Its internal Server ingress validates the same V4
+            # signature and preserves the RunAgent streaming response.
+            stream_base_url = "http://agent-api-pre.kspmas-internal.ksyun.com"
+        stream_client = (
+            AgentEngineClient(
+                base_url=stream_base_url,
+                region=region,
+                access_key=access_key,
+                secret_key=secret_key,
+            )
+            if stream_base_url
+            else control_client
+        )
         return DirectAgentEngineCloudDeploymentGateway(
             region=region,
             client=control_client,
+            stream_client=stream_client,
             bucket=os.environ.get("KS3_BUCKET", "").strip() or None,
             ks3_credentials={
                 "access_key": access_key,

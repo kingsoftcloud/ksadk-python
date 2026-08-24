@@ -55,7 +55,14 @@ class AgentEngineSSEStream(AsyncIterator[bytes]):
     def __init__(self, response: requests.Response, session: requests.Session) -> None:
         self._response: requests.Response | None = response
         self._session: requests.Session | None = session
-        self._chunks = response.iter_content(chunk_size=8192)
+        # Read SSE as logical lines with the smallest requests read size.  A
+        # fixed 8 KiB ``iter_content`` block makes short runs appear
+        # non-streaming, while ``chunk_size=None`` waits for EOF on urllib3.
+        # ``iter_lines`` performs the byte-at-a-time buffering inside the
+        # blocking worker and yields complete lines, avoiding one thread hop
+        # per byte.  Re-add the delimiter so downstream SSE parsers keep their
+        # normal framing, including the blank line between events.
+        self._chunks = (line + b"\n" for line in response.iter_lines(chunk_size=1))
         self._closed = False
 
     def __aiter__(self) -> "AgentEngineSSEStream":

@@ -449,6 +449,7 @@ class DirectAgentEngineCloudDeploymentGateway:
         *,
         region: str,
         client: Any | None = None,
+        stream_client: Any | None = None,
         uploader_factory: Callable[..., Any] = KS3Uploader,
         bucket: str | None = None,
         ks3_credentials: dict[str, str] | None = None,
@@ -482,6 +483,11 @@ class DirectAgentEngineCloudDeploymentGateway:
             access_key=self._ks3_credentials["access_key"],
             secret_key=self._ks3_credentials["secret_key"],
         )
+        # Streaming can use a dedicated Server ingress while ordinary control
+        # actions continue through KOP.  Some KOP deployments buffer the
+        # complete response body even when RunAgent returns SSE; both clients
+        # still use the same process-only V4 credentials and Server admission.
+        self.stream_client = stream_client or self.client
         self._bundles: dict[str, dict[str, str]] = {}
 
     async def upload_bundle(self, **kwargs) -> str:
@@ -1175,7 +1181,7 @@ class DirectAgentEngineCloudDeploymentGateway:
         """Open the Server-admitted foreground RunAgent SSE connection."""
 
         try:
-            return await self.client.chat_stream(
+            return await self.stream_client.chat_stream(
                 self._chat_agent_id(deployment),
                 content,
                 session_id=session_id,

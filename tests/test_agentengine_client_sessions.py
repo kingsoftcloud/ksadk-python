@@ -21,10 +21,18 @@ class _StreamingResponse:
         self.text = text
         self.headers = {"content-type": content_type}
         self.closed = False
+        self.iter_lines_chunk_sizes: list[int] = []
 
-    def iter_content(self, *, chunk_size: int):
-        assert chunk_size == 8192
-        yield from self._chunks
+    def iter_lines(self, *, chunk_size: int):
+        self.iter_lines_chunk_sizes.append(chunk_size)
+        pending = b""
+        for chunk in self._chunks:
+            pending += chunk
+            while b"\n" in pending:
+                line, pending = pending.split(b"\n", 1)
+                yield line
+        if pending:
+            yield pending
 
     def close(self) -> None:
         self.closed = True
@@ -157,10 +165,12 @@ async def test_chat_stream_opens_signed_foreground_runagent_sse_for_direct_and_k
     )
     chunks = [chunk async for chunk in stream]
 
-    assert chunks == [
-        b"event: response.output_text.delta\n",
-        b'data: {"delta":"hello"}\n\n',
-    ]
+    assert b"".join(chunks) == (
+        b"event: response.output_text.delta\n"
+        b'data: {"delta":"hello"}\n\n'
+    )
+    # The transport reads SSE by line without waiting for an 8 KiB body block.
+    assert response.iter_lines_chunk_sizes == [1]
     assert len(session.calls) == 1
     request = session.calls[0]
     assert request["method"] == "POST"
@@ -190,7 +200,7 @@ async def test_chat_stream_closes_upstream_when_consumer_disconnects(monkeypatch
     client = AgentEngineClient(base_url="http://server.example.test")
 
     stream = await client.chat_stream("ar-test", "hello")
-    assert await anext(stream) == b"data: first\n\n"
+    assert await anext(stream) == b"data: first\n"
     await stream.aclose()
 
     assert response.closed is True

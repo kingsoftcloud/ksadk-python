@@ -50,11 +50,11 @@ def test_direct_gateway_signs_control_actions_with_process_credentials(monkeypat
 def test_studio_composition_explicitly_builds_a_signed_control_client(monkeypatch) -> None:
     from ksadk.studio.service import StudioService
 
-    captured: dict[str, str] = {}
+    captured: list[dict[str, str]] = []
 
     class _CapturedClient:
         def __init__(self, **kwargs) -> None:
-            captured.update(kwargs)
+            captured.append(kwargs)
 
     monkeypatch.setenv("KSYUN_ACCESS_KEY", "studio-access")
     monkeypatch.setenv("KSYUN_SECRET_KEY", "studio-secret")
@@ -64,11 +64,20 @@ def test_studio_composition_explicitly_builds_a_signed_control_client(monkeypatc
     gateway = StudioService._configured_cloud_gateway()
 
     assert isinstance(gateway, DirectAgentEngineCloudDeploymentGateway)
-    assert captured == {
-        "region": "pre-online",
-        "access_key": "studio-access",
-        "secret_key": "studio-secret",
-    }
+    assert captured == [
+        {
+            "region": "pre-online",
+            "access_key": "studio-access",
+            "secret_key": "studio-secret",
+        },
+        {
+            "base_url": "http://agent-api-pre.kspmas-internal.ksyun.com",
+            "region": "pre-online",
+            "access_key": "studio-access",
+            "secret_key": "studio-secret",
+        },
+    ]
+    assert gateway.client is not gateway.stream_client
 
 
 class _Uploader:
