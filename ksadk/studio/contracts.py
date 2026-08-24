@@ -740,6 +740,7 @@ class DeploymentRecord(ContractModel):
     # Studio-generated deployment identities.
     agent_id: str | None = None
     instance_id: str | None = None
+    endpoint: str | None = None
     # Immutable KS3 object selected by this receipt. It is a deployment fact,
     # not a browser-supplied credential or a mutable "latest" alias.
     bundle_uri: str | None = None

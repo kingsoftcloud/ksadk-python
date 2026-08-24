@@ -130,7 +130,9 @@ class CloudChatMessageRequest(ContractModel):
     content: str | list[dict[str, Any]]
     model: str | None = Field(default=None, min_length=1, max_length=256)
     model_options: dict[str, Any] = Field(default_factory=dict)
-    tool_approval_mode: Literal["ask", "risk"] = "risk"
+    tool_approval_mode: Literal["ask", "risk", "full"] = "risk"
+    collaboration_mode: Literal["default", "plan"] | None = None
+    goal_objective: str | None = Field(default=None, min_length=1, max_length=4096)
 
     @field_validator("content")
     @classmethod

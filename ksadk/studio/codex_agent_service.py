@@ -435,6 +435,7 @@ class CodexAgentService:
         approval_mode: str | None = None,
         collaboration_mode: str | None = None,
         goal_objective: str | None = None,
+        reasoning_effort: str | None = None,
         runtime_input: Any = None,
     ) -> Operation:
         async def runner(_operation_id: str):
@@ -447,6 +448,7 @@ class CodexAgentService:
                 approval_mode=approval_mode,
                 collaboration_mode=collaboration_mode,
                 goal_objective=goal_objective,
+                reasoning_effort=reasoning_effort,
                 runtime_input=runtime_input,
                 on_event=on_event,
             )

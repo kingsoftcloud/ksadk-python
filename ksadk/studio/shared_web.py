@@ -250,6 +250,7 @@ class StudioSharedWebBridge:
         approval_mode = str(payload.get("ApprovalMode") or "")
         collaboration_mode = str(payload.get("CollaborationMode") or "")
         goal_objective = str(payload.get("GoalObjective") or "")
+        reasoning_effort = str(payload.get("ReasoningEffort") or "")
         execution = asyncio.create_task(
             self._execute_run(
                 agent_id=agent_id,
@@ -261,6 +262,7 @@ class StudioSharedWebBridge:
                 approval_mode=approval_mode,
                 collaboration_mode=collaboration_mode,
                 goal_objective=goal_objective,
+                reasoning_effort=reasoning_effort,
             )
         )
 
@@ -356,6 +358,7 @@ class StudioSharedWebBridge:
         approval_mode = str(payload.get("ApprovalMode") or "")
         collaboration_mode = str(payload.get("CollaborationMode") or "")
         goal_objective = str(payload.get("GoalObjective") or "")
+        reasoning_effort = str(payload.get("ReasoningEffort") or "")
         try:
             run = await self._execute_run(
                 agent_id=agent_id,
@@ -367,6 +370,7 @@ class StudioSharedWebBridge:
                 approval_mode=approval_mode,
                 collaboration_mode=collaboration_mode,
                 goal_objective=goal_objective,
+                reasoning_effort=reasoning_effort,
             )
             return self._response_payload(
                 run,
@@ -388,6 +392,7 @@ class StudioSharedWebBridge:
         approval_mode: str = "",
         collaboration_mode: str = "",
         goal_objective: str = "",
+        reasoning_effort: str = "",
     ) -> RunRecord:
         build = await self._ensure_build(agent_id)
 
@@ -405,6 +410,7 @@ class StudioSharedWebBridge:
             approval_mode=approval_mode or None,
             collaboration_mode=collaboration_mode or None,
             goal_objective=goal_objective or None,
+            reasoning_effort=reasoning_effort or None,
             runtime_input=runtime_input or None,
             idempotency_key=f"responses:{invocation_id}",
             on_event=observe,

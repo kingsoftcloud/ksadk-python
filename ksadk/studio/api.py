@@ -297,6 +297,16 @@ def create_studio_app(
         goal_objective = str(
             metadata.get("goal_objective") or metadata.get("goalObjective") or ""
         ).strip()
+        reasoning = payload.get("reasoning")
+        reasoning = reasoning if isinstance(reasoning, dict) else {}
+        reasoning_effort = str(reasoning.get("effort") or "").strip().lower()
+        if reasoning_effort and reasoning_effort not in {"low", "medium", "high"}:
+            raise StudioError(
+                "REASONING_EFFORT_INVALID",
+                "推理强度必须是 low、medium 或 high",
+                status_code=422,
+                field="reasoning.effort",
+            )
         session_id = _responses_session_id(payload, bridge=shared_web)
         response_id = str(
             metadata.get("invocation_id")
@@ -312,6 +322,7 @@ def create_studio_app(
             "ApprovalMode": requested_approval_mode,
             "CollaborationMode": collaboration_mode,
             "GoalObjective": goal_objective,
+            "ReasoningEffort": reasoning_effort,
         }
         bridge_payload["Model"] = shared_web.select_model(
             bridge_payload["AgentId"],
@@ -1204,6 +1215,27 @@ def create_studio_app(
 
         return {"items": studio.cloud.list()}
 
+    @app.get("/api/v1/cloud-agents")
+    async def list_account_cloud_agents(
+        page: int = Query(default=1, ge=1),
+        size: int = Query(default=100, ge=1, le=100),
+    ):
+        """List Agents visible to Studio's configured signed cloud account."""
+
+        return await studio.cloud.list_account_agents(page=page, size=size)
+
+    @app.get("/api/v1/cloud-agents/{agent_id}")
+    async def get_account_cloud_agent(agent_id: str):
+        return await studio.cloud.get_account_agent(agent_id)
+
+    @app.post("/api/v1/cloud-agents/{agent_id}:dashboard")
+    async def open_account_cloud_agent_dashboard(agent_id: str):
+        return await studio.cloud.account_agent_dashboard_access(agent_id)
+
+    @app.delete("/api/v1/cloud-agents/{agent_id}")
+    async def delete_account_cloud_agent(agent_id: str):
+        return await studio.cloud.delete_account_agent(agent_id)
+
     @app.get("/api/v1/deployments/{deployment_id}")
     async def get_deployment(deployment_id: str):
         return await studio.cloud.refresh(deployment_id)
@@ -1211,6 +1243,12 @@ def create_studio_app(
     @app.post("/api/v1/deployments/{deployment_id}:dashboard")
     async def open_deployment_dashboard(deployment_id: str):
         return await studio.deployment_dashboard_access(deployment_id)
+
+    @app.delete("/api/v1/deployments/{deployment_id}")
+    async def delete_deployment(deployment_id: str):
+        """Delete the receipt-bound cloud Agent and its superseded local receipts."""
+
+        return await studio.cloud.delete(deployment_id)
 
     @app.get("/api/v1/deployments/{deployment_id}/cloud-chat/sessions")
     async def list_cloud_chat_sessions(
@@ -1271,6 +1309,103 @@ def create_studio_app(
             limit=limit,
         )
 
+    @app.get(
+        "/api/v1/deployments/{deployment_id}/cloud-chat/sessions/{session_id}/events/stream"
+    )
+    async def stream_cloud_chat_events(
+        request: Request,
+        deployment_id: str,
+        session_id: str,
+        after_seq_id: int = Query(default=0, alias="afterSeqId", ge=0),
+    ):
+        """Stream canonical cloud events to the loopback browser.
+
+        The public cloud control plane currently exposes cursor reads for this
+        surface.  Keep that cursor in the Studio backend and present one SSE
+        response to the browser, so assistant deltas arrive before the durable
+        terminal message projection without exposing cloud credentials to JS.
+        """
+
+        async def event_stream() -> AsyncIterator[str]:
+            cursor = after_seq_id
+            idle_polls = 0
+            while not await request.is_disconnected():
+                payload = await studio.cloud.list_cloud_chat_events(
+                    deployment_id,
+                    session_id=session_id,
+                    after_seq_id=cursor,
+                    limit=200,
+                )
+                events = payload.get("events") or []
+                if not isinstance(events, list):
+                    events = []
+                terminal = False
+                emitted = False
+                for event in events:
+                    if not isinstance(event, dict):
+                        continue
+                    event_payload = (
+                        event.get("payload")
+                        if isinstance(event.get("payload"), dict)
+                        else event
+                    )
+                    seq = int(
+                        event_payload.get("seq")
+                        or event_payload.get("seq_id")
+                        or event_payload.get("source_session_seq")
+                        or event.get("seq")
+                        or event.get("seq_id")
+                        or 0
+                    )
+                    if seq and seq <= cursor:
+                        continue
+                    if seq:
+                        cursor = max(cursor, seq)
+                    event_type = str(
+                        event.get("event_type")
+                        or event.get("eventType")
+                        or event_payload.get("event_type")
+                        or event_payload.get("eventType")
+                        or ""
+                    ).lower()
+                    content = (
+                        event_payload.get("content")
+                        if isinstance(event_payload.get("content"), dict)
+                        else {}
+                    )
+                    status = str(
+                        event_payload.get("status") or content.get("status") or ""
+                    ).lower()
+                    event_is_terminal = event_type in {
+                        "run.completed", "run.complete", "run.succeeded",
+                        "run.failed", "run.cancelled", "run.expired", "run.error",
+                    } or (
+                        event_type in {"run_status", "run.status"}
+                        and status in {
+                            "completed", "complete", "succeeded", "success",
+                            "failed", "cancelled", "canceled", "expired", "error", "aborted",
+                        }
+                    )
+                    terminal = terminal or event_is_terminal
+                    emitted = True
+                    yield (
+                        (f"id: {seq}\n" if seq else "")
+                        + "event: session.event\n"
+                        + f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                    )
+                if terminal or payload.get("session_deleted"):
+                    break
+                idle_polls = 0 if emitted else idle_polls + 1
+                if idle_polls and idle_polls % 20 == 0:
+                    yield ": keepalive\n\n"
+                await asyncio.sleep(0.25)
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
     @app.delete(
         "/api/v1/deployments/{deployment_id}/cloud-chat/sessions/{session_id}",
         status_code=204,
@@ -1299,6 +1434,8 @@ def create_studio_app(
             model=payload.model,
             model_options=payload.model_options,
             tool_approval_mode=payload.tool_approval_mode,
+            collaboration_mode=payload.collaboration_mode,
+            goal_objective=payload.goal_objective,
         )
 
     @app.post(

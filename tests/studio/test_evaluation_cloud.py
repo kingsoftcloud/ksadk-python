@@ -3,7 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
+from ksadk.studio.api import create_studio_app
 from ksadk.studio.builder import AgentBundleBuilder
 from ksadk.studio.cloud import (
     CloudDeploymentService,
@@ -22,6 +24,7 @@ from ksadk.studio.contracts import (
     SecuritySpec,
 )
 from ksadk.studio.errors import StudioError
+from ksadk.studio.service import StudioService
 from ksadk.studio.workspace import Workspace
 
 
@@ -125,3 +128,52 @@ async def test_cloud_rollback_redeploys_historical_immutable_build(tmp_path: Pat
     assert rolled_back.build_id == first.id
     assert rolled_back.bundle_digest == first.bundle_digest
     assert rolled_back.bundle_digest != second.bundle_digest
+
+
+@pytest.mark.asyncio
+async def test_studio_service_rejects_cross_agent_high_code_rollback(tmp_path: Path):
+    """The API service must not trust a browser-supplied target Build id."""
+
+    workspace, deployed_build = _workspace_and_build(tmp_path)
+    other_build = AgentBundleBuilder(workspace).build(
+        AgentDraft(
+            metadata=AgentMetadata(id="other-agent", name="Other Agent"),
+            spec=AgentSpec(
+                instructions=Instructions(system="Only say OTHER"),
+                model=ModelSpec(
+                    model="glm-5.1",
+                    endpoint_url="https://model.example.com/v1/chat/completions",
+                    credential_ref="env://MODEL_API_KEY",
+                ),
+                security=SecuritySpec(network=NetworkPolicy(allowed_hosts=["model.example.com"])),
+            ),
+        )
+    )
+    gateway = InMemoryCloudGateway()
+    studio = StudioService(tmp_path, cloud_gateway=gateway)
+    request = DeploymentRequest(
+        target=DeploymentTarget(
+            region="cn-beijing-6",
+            environment="development",
+        )
+    )
+    deployment = await studio.cloud.deploy(deployed_build.id, request)
+
+    app = create_studio_app(tmp_path, service=studio, security_enabled=False)
+    with TestClient(app) as client:
+        response = client.post(
+            f"/api/v1/deployments/{deployment.id}:rollback",
+            headers={"Idempotency-Key": "cross-agent-rollback"},
+            json={"targetBuildId": other_build.id},
+        )
+
+    assert response.status_code == 409
+    error = response.json()["error"]
+    assert error["code"] == "DEPLOYMENT_ROLLBACK_AGENT_MISMATCH"
+    assert error["message"] == "高代码 Agent 只能回滚到同一 Agent 的 Build"
+    assert error["details"] == {
+        "deploymentId": deployment.id,
+        "targetBuildId": other_build.id,
+    }
+    assert error["requestId"].startswith("req_")
+    assert len(gateway.deployments) == 1

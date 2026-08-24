@@ -2472,6 +2472,8 @@ class AgentEngineClient:
         model: Optional[str] = None,
         model_options: Optional[Dict[str, Any]] = None,
         tool_approval_mode: Optional[str] = None,
+        collaboration_mode: Optional[str] = None,
+        goal_objective: Optional[str] = None,
     ) -> Dict[str, Any]:
         """调用 Agent"""
         params = {
@@ -2490,10 +2492,15 @@ class AgentEngineClient:
             params["Model"] = model
         if model_options:
             params["ModelOptions"] = dict(model_options)
+        execution_metadata: Dict[str, Any] = {}
         if tool_approval_mode:
-            params["Metadata"] = {
-                "agentengine": {"tool_approval_mode": tool_approval_mode}
-            }
+            execution_metadata["tool_approval_mode"] = tool_approval_mode
+        if collaboration_mode:
+            execution_metadata["collaboration_mode"] = collaboration_mode
+        if goal_objective:
+            execution_metadata["goal_objective"] = goal_objective
+        if execution_metadata:
+            params["Metadata"] = {"agentengine": execution_metadata}
         return await self._action_async("RunAgent", params)
 
     # ===== Version Actions =====

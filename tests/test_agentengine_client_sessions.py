@@ -50,6 +50,41 @@ async def test_chat_declares_chat_completions_format_for_kop(monkeypatch) -> Non
 
 
 @pytest.mark.asyncio
+async def test_chat_forwards_bounded_execution_controls_in_metadata(monkeypatch) -> None:
+    client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
+    recorded: dict[str, object] = {}
+
+    def fake_action(action: str, params: dict[str, object]) -> dict[str, object]:
+        recorded["action"] = action
+        recorded["params"] = params
+        return {"receipt_status": "accepted"}
+
+    monkeypatch.setattr(client, "_action", fake_action)
+
+    await client.chat(
+        "ar-test",
+        "finish",
+        tool_approval_mode="full",
+        collaboration_mode="plan",
+        goal_objective="complete the release",
+    )
+
+    assert recorded["params"] == {
+        "AgentId": "ar-test",
+        "ApiFormat": "chat_completions",
+        "Messages": [{"role": "user", "content": "finish"}],
+        "Stream": False,
+        "Metadata": {
+            "agentengine": {
+                "tool_approval_mode": "full",
+                "collaboration_mode": "plan",
+                "goal_objective": "complete the release",
+            }
+        },
+    }
+
+
+@pytest.mark.asyncio
 async def test_session_actions_do_not_block_the_calling_event_loop(monkeypatch) -> None:
     client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
     release = threading.Event()

@@ -103,6 +103,7 @@ class _Client:
         assert agent_id == "ar-studio-1"
         return {
             "status": "Running",
+            "endpoint": "http://ar-studio-1.example.test",
             "deployment": {"agent_kernel_ready": self.kernel_ready},
         }
 
@@ -147,18 +148,25 @@ class _Client:
         model: str | None = None,
         model_options: dict | None = None,
         tool_approval_mode: str | None = None,
+        collaboration_mode: str | None = None,
+        goal_objective: str | None = None,
     ) -> dict:
+        call = {
+            "AgentId": agent_id,
+            "SessionId": session_id,
+            "Message": message,
+            "Model": model,
+            "ModelOptions": model_options,
+            "ToolApprovalMode": tool_approval_mode,
+        }
+        if collaboration_mode is not None:
+            call["CollaborationMode"] = collaboration_mode
+        if goal_objective is not None:
+            call["GoalObjective"] = goal_objective
         self.session_calls.append(
             (
                 "RunAgent",
-                {
-                    "AgentId": agent_id,
-                    "SessionId": session_id,
-                    "Message": message,
-                    "Model": model,
-                    "ModelOptions": model_options,
-                    "ToolApprovalMode": tool_approval_mode,
-                },
+                call,
             )
         )
         return {"receipt_status": "accepted", "run_id": "run-cloud"}
@@ -252,7 +260,9 @@ async def test_direct_gateway_uses_ks3_and_existing_agent_actions_only() -> None
     assert deployment.bundle_uri == bundle_uri
     assert deployment.requires_kernel is True
 
-    assert (await gateway.get_deployment_status(deployment)).status == "READY"
+    refreshed = await gateway.get_deployment_status(deployment)
+    assert refreshed.status == "READY"
+    assert refreshed.endpoint == "http://ar-studio-1.example.test"
     client.kernel_ready = False
     assert (await gateway.get_deployment_status(deployment)).status == "DEPLOYING"
 
@@ -459,6 +469,69 @@ async def test_direct_gateway_creates_private_receipt_bound_dashboard_link() -> 
         "instance_id": "instance-dashboard",
         "expires_at": "2026-08-22T00:00:00Z",
     }
+
+
+def test_account_agent_view_marks_native_runtime_dashboard_fallback_without_chat_capability(
+) -> None:
+    view = DirectAgentEngineCloudDeploymentGateway._account_agent_view(
+        {
+            "agent_id": "ar-native-runtime",
+            "name": "A name that must not drive routing",
+            "status": "running",
+            "runtime_kind": "hermes",
+        }
+    )
+
+    assert view["runtimeType"] == "hermes"
+    assert view["chatTransport"] == "official-dashboard"
+    assert view["chatRoutingReason"] == (
+        "native-runtime-without-session-event-chat-capability"
+    )
+
+
+def test_account_agent_view_honours_declared_session_event_chat_capability() -> None:
+    view = DirectAgentEngineCloudDeploymentGateway._account_agent_view(
+        {
+            "agent_id": "ar-capable-hermes",
+            "framework": "hermes",
+            "capabilities": {"session_event_chat": {"enabled": True}},
+        }
+    )
+
+    assert view["chatTransport"] == "studio-session-events"
+    assert view["chatRoutingReason"] == "declared-session-event-chat-capability"
+
+
+@pytest.mark.asyncio
+async def test_account_native_runtime_dashboard_link_uses_official_root_path() -> None:
+    class _NativeClient(_Client):
+        async def get_agent(self, *, agent_id: str) -> dict:
+            return {
+                "basic": {
+                    "agent_id": agent_id,
+                    "name": "Native Agent",
+                    "status": "RUNNING",
+                    "framework": "openclaw",
+                }
+            }
+
+    client = _NativeClient()
+    gateway = DirectAgentEngineCloudDeploymentGateway(
+        region="pre-online",
+        client=client,
+        uploader_factory=_Uploader,
+        ks3_credentials={"access_key": "test-access", "secret_key": "test-secret"},
+    )
+
+    await gateway.get_account_agent_dashboard_access("ar-native-runtime")
+
+    assert client.dashboard_links == [
+        {
+            "agent_id": "ar-native-runtime",
+            "link_type": "private",
+            "path": "/",
+        }
+    ]
 
 
 @pytest.mark.asyncio

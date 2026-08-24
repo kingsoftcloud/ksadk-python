@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Protocol, cast
 from uuid import uuid4
@@ -42,6 +43,13 @@ _STUDIO_CODE_COMMAND = (
 # binding.  Keep the hosted surface in that same link instead of opening the
 # Agent image's legacy `/chat` static bundle after authentication.
 _HOSTED_AGENT_UI_PATH = "/hosted-ui/chat"
+_NATIVE_DASHBOARD_UI_PATH = "/"
+_NATIVE_DASHBOARD_FRAMEWORKS = frozenset({"hermes", "openclaw"})
+
+
+@dataclass(frozen=True)
+class AccountCloudAgentReference:
+    agent_id: str
 
 
 class CloudDeploymentGateway(Protocol):
@@ -86,6 +94,18 @@ class CloudDeploymentGateway(Protocol):
     async def get_deployment_dashboard_access(
         self, deployment: DeploymentRecord
     ) -> dict[str, str | None]: ...
+
+    async def delete_deployment(self, deployment: DeploymentRecord) -> bool: ...
+
+    async def list_account_agents(self, *, page: int, size: int) -> dict[str, Any]: ...
+
+    async def get_account_agent(self, agent_id: str) -> dict[str, Any]: ...
+
+    async def get_account_agent_dashboard_access(
+        self, agent_id: str
+    ) -> dict[str, str | None]: ...
+
+    async def delete_account_agent(self, agent_id: str) -> bool: ...
 
     async def create_managed_runtime_deployment(
         self,
@@ -154,6 +174,47 @@ class UnavailableCloudGateway:
             status_code=501,
         )
 
+    async def delete_deployment(self, _deployment: DeploymentRecord) -> bool:
+        raise StudioError(
+            "CLOUD_AGENT_DELETE_UNAVAILABLE",
+            "当前未配置可用的云端签名账号，不能删除云端 Agent",
+            status_code=501,
+        )
+
+    async def list_account_agents(self, *, page: int, size: int) -> dict[str, Any]:
+        # Local-only Studio remains usable without cloud credentials. Detail,
+        # chat and mutation still fail closed when explicitly requested.
+        return {
+            "items": [],
+            "total": 0,
+            "page": page,
+            "size": size,
+            "available": False,
+        }
+
+    async def get_account_agent(self, _agent_id: str) -> dict[str, Any]:
+        raise StudioError(
+            "CLOUD_AGENT_DIRECTORY_UNAVAILABLE",
+            "当前未配置可用的云端签名账号，不能读取云端 Agent",
+            status_code=501,
+        )
+
+    async def get_account_agent_dashboard_access(
+        self, _agent_id: str
+    ) -> dict[str, str | None]:
+        raise StudioError(
+            "CLOUD_DASHBOARD_UNAVAILABLE",
+            "当前未配置可用的云端签名账号，不能打开云端 Agent UI",
+            status_code=501,
+        )
+
+    async def delete_account_agent(self, _agent_id: str) -> bool:
+        raise StudioError(
+            "CLOUD_AGENT_DELETE_UNAVAILABLE",
+            "当前未配置可用的云端签名账号，不能删除云端 Agent",
+            status_code=501,
+        )
+
 
 class InMemoryCloudGateway:
     """Contract-test gateway; it records exactly what would cross the cloud boundary."""
@@ -162,6 +223,7 @@ class InMemoryCloudGateway:
         self.uploads: list[dict[str, Any]] = []
         self.versions: list[dict[str, Any]] = []
         self.deployments: list[DeploymentRecord] = []
+        self.deleted_agent_ids: list[str] = []
 
     async def upload_bundle(self, **kwargs) -> str:
         self.uploads.append(kwargs)
@@ -197,6 +259,7 @@ class InMemoryCloudGateway:
             target=kwargs["request"].target,
             agent_id=deployment.agent_id,
             instance_id=deployment.instance_id,
+            endpoint=deployment.endpoint,
         )
         self.deployments.append(record)
         return record
@@ -219,6 +282,56 @@ class InMemoryCloudGateway:
             "instance_id": deployment.instance_id,
             "expires_at": None,
         }
+
+    async def delete_deployment(self, deployment: DeploymentRecord) -> bool:
+        if not deployment.agent_id:
+            raise StudioError(
+                "CLOUD_AGENT_DELETE_UNAVAILABLE",
+                "Deployment receipt 缺少云端 Agent 标识",
+                status_code=409,
+            )
+        self.deleted_agent_ids.append(deployment.agent_id)
+        return True
+
+    async def list_account_agents(self, *, page: int, size: int) -> dict[str, Any]:
+        rows = [
+            {
+                "agentId": item.agent_id,
+                "name": item.agent_id,
+                "status": item.status,
+                "endpoint": item.endpoint,
+            }
+            for item in self.deployments
+            if item.agent_id
+        ]
+        start = (page - 1) * size
+        return {"items": rows[start : start + size], "total": len(rows), "page": page, "size": size}
+
+    async def get_account_agent(self, agent_id: str) -> dict[str, Any]:
+        for item in reversed(self.deployments):
+            if item.agent_id == agent_id:
+                return {
+                    "agentId": agent_id,
+                    "name": agent_id,
+                    "status": item.status,
+                    "endpoint": item.endpoint,
+                    "versionId": item.version_id,
+                }
+        raise StudioError("CLOUD_AGENT_NOT_FOUND", "云端 Agent 不存在", status_code=404)
+
+    async def get_account_agent_dashboard_access(
+        self, agent_id: str
+    ) -> dict[str, str | None]:
+        return {
+            "access_url": f"memory://dashboard/{agent_id}",
+            "agent_id": agent_id,
+            "instance_id": None,
+            "expires_at": None,
+        }
+
+    async def delete_account_agent(self, agent_id: str) -> bool:
+        self.deleted_agent_ids.append(agent_id)
+        return True
 
     async def create_managed_runtime_deployment(self, **kwargs) -> DeploymentRecord:
         digest = str(kwargs["manifest_digest"])
@@ -247,6 +360,7 @@ class InMemoryCloudGateway:
             target=kwargs["request"].target,
             agent_id=deployment.agent_id,
             instance_id=deployment.instance_id,
+            endpoint=deployment.endpoint,
             artifact_id="managed-runtime",
         )
         self.deployments.append(record)
@@ -398,6 +512,7 @@ class DirectAgentEngineCloudDeploymentGateway:
             bundle_uri=bundle_uri,
             agent_id=agent_id,
             instance_id=instance_id,
+            endpoint=str(result.get("endpoint") or "").strip() or None,
             target=request.target,
             status="DEPLOYING",
         )
@@ -432,6 +547,7 @@ class DirectAgentEngineCloudDeploymentGateway:
             bundle_uri=bundle_uri,
             agent_id=deployment.agent_id,
             instance_id=deployment.instance_id,
+            endpoint=deployment.endpoint,
             target=request.target,
             status="DEPLOYING",
         )
@@ -474,7 +590,17 @@ class DirectAgentEngineCloudDeploymentGateway:
             )
             else "DEPLOYING"
         )
-        return deployment.model_copy(update={"status": projected})
+        endpoint = (
+            str(
+                payload.get("endpoint")
+                or (payload.get("basic") or {}).get("endpoint")
+                or deployment_detail.get("endpoint")
+                or deployment.endpoint
+                or ""
+            ).strip()
+            or None
+        )
+        return deployment.model_copy(update={"status": projected, "endpoint": endpoint})
 
     async def get_deployment_dashboard_access(
         self, deployment: DeploymentRecord
@@ -504,7 +630,204 @@ class DirectAgentEngineCloudDeploymentGateway:
             "expires_at": str(link.get("expires_at") or "").strip() or None,
         }
 
-    def _chat_agent_id(self, deployment: DeploymentRecord) -> str:
+    async def delete_deployment(self, deployment: DeploymentRecord) -> bool:
+        agent_id = str(deployment.agent_id or "").strip()
+        if not agent_id:
+            raise StudioError(
+                "CLOUD_AGENT_DELETE_UNAVAILABLE",
+                "Deployment receipt 缺少云端 Agent 标识",
+                status_code=409,
+            )
+        try:
+            deleted = await self.client.delete_agent(agent_id)
+        except AgentEngineAPIError as exc:
+            if exc.code == 404 or exc.details.get("http_status") == 404:
+                return True
+            raise
+        if not deleted:
+            raise StudioError(
+                "CLOUD_AGENT_DELETE_FAILED",
+                "云端未确认 Agent 删除结果",
+                status_code=502,
+            )
+        return True
+
+    @staticmethod
+    def _session_event_chat_declared(capabilities: Any) -> bool:
+        if not isinstance(capabilities, dict):
+            return False
+        declaration = None
+        for name in ("session_event_chat", "sessionEventChat", "SessionEventChat"):
+            if name in capabilities:
+                declaration = capabilities[name]
+                break
+        if isinstance(declaration, bool):
+            return declaration
+        if not isinstance(declaration, dict):
+            return False
+        for name in ("enabled", "Enabled", "supported", "Supported"):
+            if name in declaration:
+                return declaration[name] is True
+        return False
+
+    @classmethod
+    def _cloud_chat_route(
+        cls, *, runtime_type: str, capabilities: Any
+    ) -> tuple[str, str]:
+        if cls._session_event_chat_declared(capabilities):
+            return (
+                "studio-session-events",
+                "declared-session-event-chat-capability",
+            )
+        if runtime_type in _NATIVE_DASHBOARD_FRAMEWORKS:
+            return (
+                "official-dashboard",
+                "native-runtime-without-session-event-chat-capability",
+            )
+        return "studio-session-events", "studio-compatible-framework"
+
+    @staticmethod
+    def _account_agent_view(payload: dict[str, Any], *, fallback_id: str = "") -> dict[str, Any]:
+        basic = payload.get("basic") if isinstance(payload.get("basic"), dict) else {}
+        deployment = (
+            payload.get("deployment")
+            if isinstance(payload.get("deployment"), dict)
+            else {}
+        )
+
+        def first(*names: str) -> Any:
+            for source in (payload, basic, deployment):
+                for name in names:
+                    value = source.get(name)
+                    if value is not None and str(value).strip():
+                        return value
+            return None
+
+        agent_id = str(
+            first("agent_id", "agentId", "agent_runtime_id", "agentRuntimeId", "id")
+            or fallback_id
+        ).strip()
+        runtime_type = str(
+            first(
+                "framework",
+                "runtime_kind",
+                "runtimeKind",
+                "runtime_type",
+                "runtimeType",
+                "runtime_name",
+                "runtimeName",
+            )
+            or ""
+        ).strip().lower()
+        capabilities = first("capabilities", "Capabilities")
+        chat_transport, chat_routing_reason = (
+            DirectAgentEngineCloudDeploymentGateway._cloud_chat_route(
+                runtime_type=runtime_type,
+                capabilities=capabilities,
+            )
+        )
+        return {
+            "agentId": agent_id,
+            "name": str(
+                first(
+                    "name",
+                    "agent_name",
+                    "agentName",
+                    "agent_runtime_name",
+                    "agentRuntimeName",
+                )
+                or agent_id
+            ),
+            "status": str(first("status", "phase") or "UNKNOWN").upper(),
+            "endpoint": str(first("endpoint") or "").strip() or None,
+            "framework": runtime_type or None,
+            "runtimeType": runtime_type or None,
+            "capabilities": capabilities if isinstance(capabilities, dict) else None,
+            "chatTransport": chat_transport,
+            "chatRoutingReason": chat_routing_reason,
+            "region": str(first("region") or "").strip() or None,
+            "instanceId": str(first("instance_id", "instanceId") or "").strip() or None,
+            "versionId": str(first("version_id", "versionId", "revision") or "").strip() or None,
+            "updatedAt": str(
+                first("updated_at", "updatedAt", "update_time", "updateTime") or ""
+            ).strip()
+            or None,
+        }
+
+    async def list_account_agents(self, *, page: int, size: int) -> dict[str, Any]:
+        payload = await self.client.list_agents(page=page, page_size=size)
+        raw_items = payload.get("agents") or payload.get("Agents") or []
+        items = [
+            self._account_agent_view(item)
+            for item in raw_items
+            if isinstance(item, dict)
+        ]
+        items = [
+            item
+            for item in items
+            if item["agentId"] and item["status"] != "DELETED"
+        ]
+        return {
+            "items": items,
+            "total": len(items),
+            "page": page,
+            "size": size,
+        }
+
+    async def get_account_agent(self, agent_id: str) -> dict[str, Any]:
+        normalized_id = str(agent_id or "").strip()
+        if not normalized_id:
+            raise StudioError("CLOUD_AGENT_NOT_FOUND", "云端 Agent 标识不能为空", status_code=404)
+        payload = await self.client.get_agent(agent_id=normalized_id)
+        return self._account_agent_view(payload, fallback_id=normalized_id)
+
+    async def get_account_agent_dashboard_access(
+        self, agent_id: str
+    ) -> dict[str, str | None]:
+        detail = await self.get_account_agent(agent_id)
+        path = (
+            _NATIVE_DASHBOARD_UI_PATH
+            if detail.get("chatTransport") == "official-dashboard"
+            else _HOSTED_AGENT_UI_PATH
+        )
+        link = await self.client.create_dashboard_access_link(
+            agent_id=agent_id,
+            link_type="private",
+            path=path,
+        )
+        access_url = str(link.get("access_url") or "").strip()
+        if not access_url:
+            raise StudioError(
+                "DEPLOYMENT_DASHBOARD_UNAVAILABLE",
+                "云端未返回可用的 Agent UI 地址",
+                status_code=502,
+            )
+        return {
+            "access_url": access_url,
+            "agent_id": agent_id,
+            "instance_id": None,
+            "expires_at": str(link.get("expires_at") or "").strip() or None,
+        }
+
+    async def delete_account_agent(self, agent_id: str) -> bool:
+        await self.get_account_agent(agent_id)
+        try:
+            deleted = await self.client.delete_agent(agent_id)
+        except AgentEngineAPIError as exc:
+            if exc.code == 404 or exc.details.get("http_status") == 404:
+                return True
+            raise
+        if not deleted:
+            raise StudioError(
+                "CLOUD_AGENT_DELETE_FAILED",
+                "云端未确认 Agent 删除结果",
+                status_code=502,
+            )
+        return True
+
+    def _chat_agent_id(
+        self, deployment: DeploymentRecord | AccountCloudAgentReference
+    ) -> str:
         """Bind local cloud chat to an immutable Studio deployment receipt.
 
         In particular, the browser cannot provide an arbitrary AgentId and
@@ -611,6 +934,8 @@ class DirectAgentEngineCloudDeploymentGateway:
         model: str | None = None,
         model_options: dict[str, Any] | None = None,
         tool_approval_mode: str | None = None,
+        collaboration_mode: str | None = None,
+        goal_objective: str | None = None,
     ) -> dict[str, Any]:
         """Submit a foreground message via RunAgent and Server admission.
 
@@ -626,6 +951,8 @@ class DirectAgentEngineCloudDeploymentGateway:
             model=model,
             model_options=model_options,
             tool_approval_mode=tool_approval_mode,
+            collaboration_mode=collaboration_mode,
+            goal_objective=goal_objective,
         )
 
     async def list_deployment_chat_models(
@@ -692,6 +1019,7 @@ class DirectAgentEngineCloudDeploymentGateway:
             target=request.target,
             agent_id=agent_id,
             instance_id=str(result.get("instance_id") or "").strip() or None,
+            endpoint=str(result.get("endpoint") or "").strip() or None,
             artifact_id="managed-runtime",
             requires_kernel=True,
         )
@@ -730,6 +1058,7 @@ class DirectAgentEngineCloudDeploymentGateway:
             target=request.target,
             agent_id=deployment.agent_id,
             instance_id=deployment.instance_id,
+            endpoint=deployment.endpoint,
             artifact_id="managed-runtime",
             requires_kernel=True,
         )
@@ -819,6 +1148,7 @@ class DirectAgentEngineCloudDeploymentGateway:
         bundle_uri: str,
         agent_id: str,
         instance_id: str | None,
+        endpoint: str | None,
         target,
         status: str,
     ) -> DeploymentRecord:
@@ -831,6 +1161,7 @@ class DirectAgentEngineCloudDeploymentGateway:
             target=target,
             agent_id=agent_id,
             instance_id=instance_id,
+            endpoint=endpoint,
             bundle_uri=bundle_uri,
             requires_kernel=True,
         )
@@ -1105,10 +1436,126 @@ class CloudDeploymentService:
             )
         return await dashboard_reader(deployment)
 
+    async def delete(self, deployment_id: str) -> dict[str, Any]:
+        """Delete the receipt-bound cloud Agent, then remove its local receipts."""
+
+        deployment = self.get(deployment_id)
+        agent_id = str(deployment.agent_id or "").strip()
+        if not agent_id:
+            raise StudioError(
+                "CLOUD_AGENT_DELETE_UNAVAILABLE",
+                "Deployment receipt 缺少云端 Agent 标识",
+                status_code=409,
+            )
+        deleter = getattr(self.gateway, "delete_deployment", None)
+        if deleter is None:
+            raise StudioError(
+                "CLOUD_AGENT_DELETE_UNAVAILABLE",
+                "当前云端网关不支持删除 Agent",
+                status_code=501,
+            )
+        await deleter(deployment)
+
+        deleted_receipts = self._delete_receipts_for_agent(
+            agent_id, required=deployment
+        )
+        return {"agentId": agent_id, "deletedReceiptIds": deleted_receipts}
+
+    def _delete_receipts_for_agent(
+        self, agent_id: str, *, required: DeploymentRecord | None = None
+    ) -> list[str]:
+        related_receipts = {required.id: required} if required is not None else {}
+        for record in self.list():
+            if str(record.agent_id or "").strip() != agent_id:
+                continue
+            related_receipts[record.id] = record
+
+        deleted_receipts: list[str] = []
+        for record in related_receipts.values():
+            receipt_path = self.workspace.resolve(
+                Path(".agentkit/deployments") / f"{record.id}.json"
+            )
+            receipt_path.unlink(missing_ok=True)
+            deleted_receipts.append(record.id)
+        return deleted_receipts
+
+    async def list_account_agents(self, *, page: int = 1, size: int = 100) -> dict[str, Any]:
+        reader = getattr(self.gateway, "list_account_agents", None)
+        if reader is None:
+            raise StudioError(
+                "CLOUD_AGENT_DIRECTORY_UNAVAILABLE",
+                "当前云端网关不支持读取账号 Agent",
+                status_code=501,
+            )
+        return await reader(page=page, size=size)
+
+    async def get_account_agent(self, agent_id: str) -> dict[str, Any]:
+        reader = getattr(self.gateway, "get_account_agent", None)
+        if reader is None:
+            raise StudioError(
+                "CLOUD_AGENT_DIRECTORY_UNAVAILABLE",
+                "当前云端网关不支持读取账号 Agent",
+                status_code=501,
+            )
+        return await reader(agent_id)
+
+    async def account_agent_dashboard_access(
+        self, agent_id: str
+    ) -> dict[str, str | None]:
+        reader = getattr(self.gateway, "get_account_agent_dashboard_access", None)
+        if reader is None:
+            raise StudioError(
+                "DEPLOYMENT_DASHBOARD_UNAVAILABLE",
+                "当前云端网关不支持打开 Agent UI",
+                status_code=501,
+            )
+        return await reader(agent_id)
+
+    async def delete_account_agent(self, agent_id: str) -> dict[str, Any]:
+        deleter = getattr(self.gateway, "delete_account_agent", None)
+        if deleter is None:
+            raise StudioError(
+                "CLOUD_AGENT_DELETE_UNAVAILABLE",
+                "当前云端网关不支持删除 Agent",
+                status_code=501,
+            )
+        await deleter(agent_id)
+        return {
+            "agentId": agent_id,
+            "deletedReceiptIds": self._delete_receipts_for_agent(agent_id),
+        }
+
+    async def _chat_target(
+        self, target_id: str
+    ) -> DeploymentRecord | AccountCloudAgentReference:
+        if not target_id.startswith("account:"):
+            return self.get(target_id)
+        agent_id = target_id.removeprefix("account:").strip()
+        detail = await self.get_account_agent(agent_id)
+        resolved_id = str(detail.get("agentId") or "").strip()
+        if not agent_id or resolved_id != agent_id:
+            raise StudioError(
+                "CLOUD_AGENT_REFERENCE_INVALID",
+                "账号 Agent 引用与 Server 返回不一致",
+                status_code=409,
+            )
+        if detail.get("chatTransport") != "studio-session-events":
+            raise StudioError(
+                "CLOUD_CHAT_TRANSPORT_UNSUPPORTED",
+                "该类型 Agent 未声明统一 SessionEvent 会话能力，请使用官方 Dashboard",
+                status_code=409,
+                details={
+                    "agentId": agent_id,
+                    "chatTransport": detail.get("chatTransport"),
+                    "reason": detail.get("chatRoutingReason"),
+                },
+            )
+        return AccountCloudAgentReference(agent_id=agent_id)
+
     async def list_cloud_chat_sessions(
         self, deployment_id: str, *, page: int = 1, size: int = 50
     ) -> dict[str, Any]:
-        deployment = self.get(deployment_id)
+        deployment = await self._chat_target(deployment_id)
         reader = getattr(self.gateway, "list_deployment_chat_sessions", None)
         if reader is None:
             raise StudioError(
@@ -1119,7 +1566,7 @@ class CloudDeploymentService:
         return await reader(deployment, page=page, size=size)
 
     async def create_cloud_chat_session(self, deployment_id: str) -> dict[str, Any]:
-        deployment = self.get(deployment_id)
+        deployment = await self._chat_target(deployment_id)
         creator = getattr(self.gateway, "create_deployment_chat_session", None)
         if creator is None:
             raise StudioError(
@@ -1137,7 +1584,7 @@ class CloudDeploymentService:
         after_seq_id: int | None = None,
         limit: int = 100,
     ) -> dict[str, Any]:
-        deployment = self.get(deployment_id)
+        deployment = await self._chat_target(deployment_id)
         reader = getattr(self.gateway, "list_deployment_chat_messages", None)
         if reader is None:
             raise StudioError(
@@ -1160,7 +1607,7 @@ class CloudDeploymentService:
         after_seq_id: int | None = None,
         limit: int = 200,
     ) -> dict[str, Any]:
-        deployment = self.get(deployment_id)
+        deployment = await self._chat_target(deployment_id)
         reader = getattr(self.gateway, "list_deployment_chat_events", None)
         if reader is None:
             raise StudioError(
@@ -1184,8 +1631,10 @@ class CloudDeploymentService:
         model: str | None = None,
         model_options: dict[str, Any] | None = None,
         tool_approval_mode: str | None = None,
+        collaboration_mode: str | None = None,
+        goal_objective: str | None = None,
     ) -> dict[str, Any]:
-        deployment = self.get(deployment_id)
+        deployment = await self._chat_target(deployment_id)
         sender = getattr(self.gateway, "send_deployment_chat_message", None)
         if sender is None:
             raise StudioError(
@@ -1203,10 +1652,14 @@ class CloudDeploymentService:
             kwargs["model_options"] = model_options
         if tool_approval_mode is not None:
             kwargs["tool_approval_mode"] = tool_approval_mode
+        if collaboration_mode is not None:
+            kwargs["collaboration_mode"] = collaboration_mode
+        if goal_objective is not None:
+            kwargs["goal_objective"] = goal_objective
         return await sender(deployment, **kwargs)
 
     async def list_cloud_chat_models(self, deployment_id: str) -> dict[str, Any]:
-        deployment = self.get(deployment_id)
+        deployment = await self._chat_target(deployment_id)
         reader = getattr(self.gateway, "list_deployment_chat_models", None)
         if reader is None:
             raise StudioError(
@@ -1228,7 +1681,7 @@ class CloudDeploymentService:
         response: dict[str, Any],
         idempotency_key: str,
     ) -> dict[str, Any]:
-        deployment = self.get(deployment_id)
+        deployment = await self._chat_target(deployment_id)
         submitter = getattr(self.gateway, "submit_deployment_chat_interaction", None)
         if submitter is None:
             raise StudioError(
@@ -1248,7 +1701,7 @@ class CloudDeploymentService:
         )
 
     async def delete_cloud_chat_session(self, deployment_id: str, *, session_id: str) -> bool:
-        deployment = self.get(deployment_id)
+        deployment = await self._chat_target(deployment_id)
         deleter = getattr(self.gateway, "delete_deployment_chat_session", None)
         if deleter is None:
             raise StudioError(

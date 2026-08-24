@@ -138,9 +138,14 @@ def _create_codex(context: RuntimeLaunchContext) -> RuntimeAdapter:
     timeout = context.config.get("turn_timeout_seconds")
     request_defaults = kernel_start_request_defaults(context)
     request_config = request_defaults.get("config") or {}
+    sandbox_read_only = (
+        bool(context.config["sandbox_read_only"])
+        if "sandbox_read_only" in context.config
+        else bool(request_config.get("sandbox_read_only", True))
+    )
     return CodexRuntimeAdapter(
         client,
-        sandbox_read_only=bool(request_config.get("sandbox_read_only", True)),
+        sandbox_read_only=sandbox_read_only,
         turn_timeout_seconds=float(timeout) if timeout is not None else None,
     )
 

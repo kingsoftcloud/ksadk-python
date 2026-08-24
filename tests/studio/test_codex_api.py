@@ -715,6 +715,7 @@ def test_openai_responses_forwards_plan_goal_and_structured_attachments(
             "/v1/responses",
             json={
                 "model": "glm-5.2",
+                "reasoning": {"effort": "high"},
                 "input": [
                     {
                         "role": "user",
@@ -737,6 +738,7 @@ def test_openai_responses_forwards_plan_goal_and_structured_attachments(
     request = runtime_fixture.start_requests[0]
     assert request.config["collaboration_mode"] == "plan"
     assert request.config["goal_objective"] == "完成视觉回归"
+    assert request.config["effort"] == "high"
     assert request.input == [
         {"type": "text", "text": "分析这张图"},
         {"type": "image", "url": "data:image/png;base64,AAAA"},

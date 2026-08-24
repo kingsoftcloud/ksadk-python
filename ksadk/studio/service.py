@@ -276,6 +276,7 @@ class StudioService:
         approval_mode: str | None = None,
         collaboration_mode: str | None = None,
         goal_objective: str | None = None,
+        reasoning_effort: str | None = None,
         runtime_input: Any = None,
         idempotency_key: str,
         on_event: Callable[[RunEvent], None] | None = None,
@@ -289,6 +290,7 @@ class StudioService:
             approval_mode=approval_mode,
             collaboration_mode=collaboration_mode,
             goal_objective=goal_objective,
+            reasoning_effort=reasoning_effort,
             runtime_input=runtime_input,
             idempotency_key=idempotency_key,
             on_event=on_event,
@@ -1031,6 +1033,7 @@ class StudioService:
         approval_mode: str | None = None,
         collaboration_mode: str | None = None,
         goal_objective: str | None = None,
+        reasoning_effort: str | None = None,
         runtime_input: Any = None,
         on_event: Callable[[RunEvent], None] | None = None,
     ) -> Operation:
@@ -1049,6 +1052,7 @@ class StudioService:
                 approval_mode=approval_mode,
                 collaboration_mode=collaboration_mode,
                 goal_objective=goal_objective,
+                reasoning_effort=reasoning_effort,
                 runtime_input=runtime_input,
                 idempotency_key=idempotency_key,
                 on_event=on_event,
@@ -1062,6 +1066,7 @@ class StudioService:
             approval_mode=approval_mode,
             collaboration_mode=collaboration_mode,
             goal_objective=goal_objective,
+            reasoning_effort=reasoning_effort,
             runtime_input=runtime_input,
             idempotency_key=idempotency_key,
             on_event=on_event,
@@ -1195,6 +1200,7 @@ class StudioService:
         approval_mode: str | None = None,
         collaboration_mode: str | None = None,
         goal_objective: str | None = None,
+        reasoning_effort: str | None = None,
         runtime_input: Any = None,
         idempotency_key: str,
         on_event: Callable[[RunEvent], None] | None = None,
@@ -1209,6 +1215,7 @@ class StudioService:
                 approval_mode=approval_mode,
                 collaboration_mode=collaboration_mode,
                 goal_objective=goal_objective,
+                reasoning_effort=reasoning_effort,
                 runtime_input=runtime_input,
                 on_event=on_event,
             )
@@ -1231,6 +1238,7 @@ class StudioService:
         approval_mode: str | None = None,
         collaboration_mode: str | None = None,
         goal_objective: str | None = None,
+        reasoning_effort: str | None = None,
         runtime_input: Any = None,
         on_event: Callable[[RunEvent], None] | None = None,
     ):
@@ -1251,7 +1259,7 @@ class StudioService:
                 model=model,
                 approval_mode=approval_mode,
             )
-        if collaboration_mode or goal_objective:
+        if collaboration_mode or goal_objective or reasoning_effort:
             from dataclasses import replace
 
             request_config = dict(spec.request_config)
@@ -1260,6 +1268,8 @@ class StudioService:
             if goal_objective:
                 request_config["goal_objective"] = goal_objective
                 request_config["ephemeral"] = False
+            if reasoning_effort:
+                request_config["effort"] = reasoning_effort
             spec = replace(spec, request_config=request_config)
         return await self.run_service.run(
             spec,
@@ -1753,6 +1763,19 @@ class StudioService:
                 resource_id=deployment_id,
                 idempotency_key=idempotency_key,
                 runner=managed_runtime_runner,
+            )
+
+        deployed_build = self.builds.get(deployment.build_id)
+        target_build = self.builds.get(target_build_id)
+        if target_build.agent_id != deployed_build.agent_id:
+            raise StudioError(
+                "DEPLOYMENT_ROLLBACK_AGENT_MISMATCH",
+                "高代码 Agent 只能回滚到同一 Agent 的 Build",
+                status_code=409,
+                details={
+                    "deploymentId": deployment_id,
+                    "targetBuildId": target_build_id,
+                },
             )
 
         async def runner(_operation_id: str):
