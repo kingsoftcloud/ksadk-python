@@ -142,6 +142,9 @@ class CodexRuntimeAdapter(RuntimeAdapter):
             inject=_unavailable("runtime_no_native_inject"),
             checkpoint=RuntimeCapability(supported=True, mode="native"),
             durable_restore=_unavailable("codex_durable_restore_requires_attach_seam"),
+            goal=RuntimeCapability(supported=True, mode="native"),
+            loop=RuntimeCapability(supported=True, mode="native"),
+            plan=RuntimeCapability(supported=True, mode="native"),
         )
 
     # ---- 六动词 ----

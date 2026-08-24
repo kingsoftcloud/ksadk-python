@@ -3,21 +3,30 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Literal
 
 import pytest
 from pydantic import ValidationError
 
 from ksadk.kernel.contracts import (
+    ActivationLease,
     AgentControlCommand,
     AgentControlPermit,
     AgentControlReceipt,
     AgentStatusSnapshot,
-    SessionEventEnvelope,
-    ActivationLease,
+    RuntimeCapability,
     RuntimeCapabilityMatrix,
+    SessionEventEnvelope,
+    WireModel,
 )
 
-FIXTURES_DIR = Path(__file__).resolve().parents[2] / "contracts" / "agent-kernel" / "v1" / "fixtures"
+FIXTURES_DIR = (
+    Path(__file__).resolve().parents[2]
+    / "contracts"
+    / "agent-kernel"
+    / "v1"
+    / "fixtures"
+)
 
 
 def load_fixture(name: str) -> dict:
@@ -132,7 +141,11 @@ def test_accepted_receipt_requires_message_id():
 
 
 def test_rejected_receipt_requires_error():
-    raw = next(r for r in load_fixture_list("agent-control-receipts.json") if r["status"] == "rejected")
+    raw = next(
+        record
+        for record in load_fixture_list("agent-control-receipts.json")
+        if record["status"] == "rejected"
+    )
     raw["error"] = None
     with pytest.raises(ValidationError):
         AgentControlReceipt.model_validate(raw)
@@ -170,9 +183,16 @@ def test_permit_fixtures_cover_valid_expired_tampered():
 
 
 def test_tampered_permit_signature_does_not_match_claims():
-    tampered = next(p for p in load_fixture_list("agent-control-permit.json") if p["permit_id"].endswith("tampered"))
+    tampered = next(
+        permit
+        for permit in load_fixture_list("agent-control-permit.json")
+        if permit["permit_id"].endswith("tampered")
+    )
     valid = load_fixture_list("agent-control-permit.json")[0]
-    assert tampered["claims_digest"] != valid["claims_digest"] or tampered["signature"] != valid["signature"]
+    assert (
+        tampered["claims_digest"] != valid["claims_digest"]
+        or tampered["signature"] != valid["signature"]
+    )
 
 
 # ------------------------------------------------------------ lease / capability
@@ -181,9 +201,11 @@ def test_tampered_permit_signature_does_not_match_claims():
 def test_lease_fixtures_cover_acquire_renew_takeover():
     leases = load_fixture_list("activation-lease.json")
     assert len(leases) == 3
-    takeovers = [l for l in leases if l["activation_id"] != leases[0]["activation_id"]]
+    takeovers = [
+        lease for lease in leases if lease["activation_id"] != leases[0]["activation_id"]
+    ]
     assert takeovers, "takeover 必须换 activation_id"
-    fences = [l["fencing_token"] for l in leases]
+    fences = [lease["fencing_token"] for lease in leases]
     assert fences == sorted(fences)
     for raw in leases:
         ActivationLease.model_validate(raw)
@@ -195,8 +217,45 @@ def test_capability_fixtures_cover_native_and_unavailable():
     modes = set()
     for raw in matrices:
         matrix = RuntimeCapabilityMatrix.model_validate(raw)
-        modes.update(c["mode"] for c in matrix.model_dump().values() if isinstance(c, dict) and "mode" in c)
+        modes.update(
+            capability["mode"]
+            for capability in matrix.model_dump().values()
+            if isinstance(capability, dict) and "mode" in capability
+        )
     assert {"native", "unavailable"} <= modes
+
+
+def test_legacy_capability_fixture_may_omit_execution_modes():
+    matrix = RuntimeCapabilityMatrix.model_validate(
+        load_fixture_list("runtime-capability.json")[1]
+    )
+
+    assert matrix.goal is None
+    assert matrix.loop is None
+    assert matrix.plan is None
+
+
+def test_legacy_runtime_parser_preserves_additive_execution_modes():
+    class LegacyRuntimeCapabilityMatrix(WireModel):
+        schema_version: Literal[1] = 1
+        cancel: RuntimeCapability
+        pause: RuntimeCapability
+        resume: RuntimeCapability
+        submit_interaction: RuntimeCapability
+        attach: RuntimeCapability
+        steer: RuntimeCapability
+        inject: RuntimeCapability
+        checkpoint: RuntimeCapability
+        durable_restore: RuntimeCapability
+
+    matrix = LegacyRuntimeCapabilityMatrix.model_validate(
+        load_fixture_list("runtime-capability.json")[0]
+    )
+    round_trip = matrix.model_dump(mode="json")
+
+    assert round_trip["goal"]["mode"] == "native"
+    assert round_trip["loop"]["mode"] == "native"
+    assert round_trip["plan"]["mode"] == "native"
 
 
 def test_unsupported_capability_requires_unavailable_mode():

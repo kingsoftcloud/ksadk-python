@@ -2,7 +2,7 @@
   "contract_set": "agent-kernel/v1",
   "digest_algorithm": "sha256",
   "canonicalization": "utf-8; json key sort; no whitespace; lf; path-sorted",
-  "aggregate_digest": "d4a66a7249e10375d32d6a83434fde1d16ee6721e3a09ea03ed71217ee742d62",
+  "aggregate_digest": "9651cdae4d7e251637d20831fed50dff60456c4dc37d3c4aafe9c0503791c7c8",
   "files": [
     {
       "path": "activation-lease.schema.json",
@@ -91,8 +91,8 @@
     },
     {
       "path": "fixtures/runtime-capability.json",
-      "sha256": "de7011be8932ec765043ce0afd4196a478dfb064f8b8bd068e06d107f6ff2828",
-      "bytes": 976
+      "sha256": "76bcd458bb563544797d029b68973d1b759e21039343c910dc696f3788016ee5",
+      "bytes": 1102
     },
     {
       "path": "fixtures/session-event-control.json",
@@ -111,8 +111,8 @@
     },
     {
       "path": "runtime-capability.schema.json",
-      "sha256": "ed61e7d59ebdea264534f8f667a03f61a8ab83e5a25a958cddcd93d3f74e2f12",
-      "bytes": 1246
+      "sha256": "14e5ac36a6f6bc8d50df3ea4629b9c0184877268075f763cf21a72b1e1d1715d",
+      "bytes": 1462
     },
     {
       "path": "session-event.schema.json",

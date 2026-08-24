@@ -9,7 +9,9 @@ from ksadk.kernel.contract_fingerprints import (
     AGENT_KERNEL_V1_AGGREGATE_DIGEST,
     AGENT_KERNEL_V1_CONTRACT_SET,
     runtime_capability_matrix_digest,
+    runtime_capability_matrix_wire_value,
 )
+from ksadk.kernel.contracts import RuntimeCapability
 from tests.kernel.control_harness import default_matrix
 
 
@@ -34,3 +36,24 @@ def test_runtime_capability_digest_is_stable_for_the_wire_matrix() -> None:
     rebuilt = type(matrix).model_validate(matrix.model_dump(mode="json"))
     assert first == runtime_capability_matrix_digest(rebuilt)
     assert len(first) == 64
+
+
+def test_execution_modes_are_bound_into_runtime_capability_digest() -> None:
+    legacy = default_matrix()
+    codex_modes = legacy.model_copy(
+        update={
+            "goal": RuntimeCapability(supported=True, mode="native"),
+            "loop": RuntimeCapability(supported=True, mode="native"),
+            "plan": RuntimeCapability(supported=True, mode="native"),
+        }
+    )
+
+    legacy_digest = runtime_capability_matrix_digest(legacy)
+    assert legacy_digest == "f06f693d4e9faf4aa2f01e8c45f1407d365b8dd57406709b5c70b7dd00a01e3e"
+    assert runtime_capability_matrix_digest(codex_modes) != legacy_digest
+    assert {"goal", "loop", "plan"}.isdisjoint(
+        runtime_capability_matrix_wire_value(legacy)
+    )
+    assert {"goal", "loop", "plan"} <= set(
+        runtime_capability_matrix_wire_value(codex_modes)
+    )

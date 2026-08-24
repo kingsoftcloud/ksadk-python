@@ -20,6 +20,7 @@ from ksadk.kernel.contracts import (
     RuntimeCapabilityMatrix,
 )
 from ksadk.kernel.errors import UnsupportedControlError
+from ksadk.runners.base_runner import BaseRunner
 from ksadk.runtime.adapter import (
     BaseRuntime,
     CancelResult,
@@ -36,8 +37,6 @@ from ksadk.runtime.framework_adapters import (
     LangGraphRuntimeAdapter,
 )
 from ksadk.runtime.runner_adapter import RunnerRuntimeAdapter
-from ksadk.runners.base_runner import BaseRunner
-
 
 # --------------------------------------------------------------- fixtures
 
@@ -171,6 +170,17 @@ def _all_adapters() -> list[tuple[str, RuntimeAdapter]]:
         ("langgraph", LangGraphRuntimeAdapter(_FakeRunner())),
         ("codex", _codex_adapter()),
     ]
+
+
+def test_codex_capability_matrix_declares_native_goal_loop_and_plan() -> None:
+    """Codex 的基础执行模式必须可被 Server/Studio 直接发现，不能靠 UI 猜测。"""
+
+    matrix = _codex_adapter().capabilities()
+    for mode_name in ("goal", "loop", "plan"):
+        capability = getattr(matrix, mode_name)
+        assert capability is not None, mode_name
+        assert capability.supported is True, mode_name
+        assert capability.mode == "native", mode_name
 
 
 _CAPABILITY_METHODS = {
@@ -360,7 +370,10 @@ async def test_codex_unsupported_verbs_fail_closed() -> None:
 
 
 @pytest.mark.parametrize("runtime_name,adapter", _all_adapters())
-def test_native_capabilities_is_one_way_projection(runtime_name: str, adapter: RuntimeAdapter) -> None:
+def test_native_capabilities_is_one_way_projection(
+    runtime_name: str,
+    adapter: RuntimeAdapter,
+) -> None:
     matrix = adapter.capabilities()
     legacy = adapter.native_capabilities()
     assert set(legacy) == set(_CAPABILITY_METHODS), runtime_name

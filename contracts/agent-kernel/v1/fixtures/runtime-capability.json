@@ -36,6 +36,18 @@
     "durable_restore": {
       "supported": true,
       "mode": "native"
+    },
+    "goal": {
+      "supported": true,
+      "mode": "native"
+    },
+    "loop": {
+      "supported": true,
+      "mode": "native"
+    },
+    "plan": {
+      "supported": true,
+      "mode": "native"
     }
   },
   {

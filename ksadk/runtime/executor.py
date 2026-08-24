@@ -298,6 +298,17 @@ class RuntimeExecutor:
         adapter = self._registry.create(context)
         return dict(adapter.runtime.native_capabilities())
 
+    def capability_matrix(self, context: RuntimeLaunchContext) -> dict[str, object]:
+        """Return the canonical typed RuntimeCapabilityMatrix/v1 projection.
+
+        ``native_capabilities`` is a compatibility view whose shape varies by
+        framework. UI clients need the versioned matrix so optional execution
+        modes can be exposed only when the selected runtime declares support.
+        """
+
+        adapter = self._registry.create(context)
+        return adapter.capabilities().model_dump(mode="json")
+
     def registered_runtime_types(self) -> list[str]:
         """Expose Registry membership without leaking or duplicating the Registry."""
 

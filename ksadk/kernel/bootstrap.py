@@ -35,6 +35,7 @@ from ksadk.kernel.authorization import AgentControlPermitVerifier, InMemoryNonce
 from ksadk.kernel.contract_fingerprints import (
     AGENT_KERNEL_V1_AGGREGATE_DIGEST,
     runtime_capability_matrix_digest,
+    runtime_capability_matrix_wire_value,
 )
 from ksadk.kernel.contracts import RuntimeCapabilityMatrix
 from ksadk.kernel.control import AgentKernel, default_capability_matrix
@@ -230,7 +231,7 @@ class AgentKernelReadiness:
         degraded = self.runtime.degraded
         quarantined = self.runtime.quarantined_sessions()
         capability = self.runtime.kernel.capabilities()
-        capability_matrix = capability.model_dump(mode="json")
+        capability_matrix = runtime_capability_matrix_wire_value(capability)
         computed_capability_digest = runtime_capability_matrix_digest(capability)
         # The control plane compares all three digests before declaring an
         # AgentInstance ready.  Reporting ready with only a contract digest

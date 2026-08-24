@@ -243,7 +243,8 @@ class SessionEventEnvelope(WireModel):
         expected = {"control": 1, "runtime": 2, "interaction": 1}.get(self.family)
         if expected is not None and self.family_version != expected:
             raise ValueError(
-                f"family {self.family} requires family_version {expected}, got {self.family_version}"
+                f"family {self.family} requires family_version {expected}, "
+                f"got {self.family_version}"
             )
         return self
 
@@ -308,6 +309,11 @@ class RuntimeCapabilityMatrix(WireModel):
     inject: RuntimeCapability
     checkpoint: RuntimeCapability
     durable_restore: RuntimeCapability
+    # Runtime v2 execution modes are additive optional capabilities. Older
+    # runtimes omit them; a runtime must never infer support from UI presence.
+    goal: RuntimeCapability | None = None
+    loop: RuntimeCapability | None = None
+    plan: RuntimeCapability | None = None
 
 
 class AgentStatusSnapshot(WireModel):

@@ -249,6 +249,57 @@ def test_ui_bootstrap_uses_launch_context_and_runtime_capabilities() -> None:
     }
     assert data["Capabilities"]["StopRun"] is True
     assert data["Capabilities"]["ResumeRun"] is True
+    assert data["Capabilities"]["RuntimeCapabilityMatrix"] == {
+        "schema_version": 1,
+        "cancel": {
+            "supported": False,
+            "mode": "unavailable",
+            "reason": "not_implemented",
+        },
+        "pause": {
+            "supported": False,
+            "mode": "unavailable",
+            "reason": "not_implemented",
+        },
+        "resume": {
+            "supported": False,
+            "mode": "unavailable",
+            "reason": "not_implemented",
+        },
+        "submit_interaction": {
+            "supported": False,
+            "mode": "unavailable",
+            "reason": "not_implemented",
+        },
+        "attach": {
+            "supported": False,
+            "mode": "unavailable",
+            "reason": "not_implemented",
+        },
+        "steer": {
+            "supported": False,
+            "mode": "unavailable",
+            "reason": "runtime_no_native_steer",
+        },
+        "inject": {
+            "supported": False,
+            "mode": "unavailable",
+            "reason": "runtime_no_native_inject",
+        },
+        "checkpoint": {
+            "supported": False,
+            "mode": "unavailable",
+            "reason": "not_implemented",
+        },
+        "durable_restore": {
+            "supported": False,
+            "mode": "unavailable",
+            "reason": "not_implemented",
+        },
+        "goal": None,
+        "loop": None,
+        "plan": None,
+    }
 
 
 def test_openai_responses_stream_stays_attached_to_app_owned_runtime() -> None:

@@ -9,6 +9,7 @@ from ksadk.kernel.contract_fingerprints import (
     AGENT_KERNEL_V1_AGGREGATE_DIGEST,
     AGENT_KERNEL_V1_CONTRACT_SET,
     runtime_capability_matrix_digest,
+    runtime_capability_matrix_wire_value,
 )
 from ksadk.kernel.contracts import (
     ActivationLease,
@@ -77,6 +78,7 @@ __all__ = [
     "AGENT_KERNEL_V1_AGGREGATE_DIGEST",
     "AGENT_KERNEL_V1_CONTRACT_SET",
     "runtime_capability_matrix_digest",
+    "runtime_capability_matrix_wire_value",
     "ERROR_CODES",
     "AgentKernelError",
     "ContractMismatchError",

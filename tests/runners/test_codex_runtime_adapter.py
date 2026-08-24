@@ -28,11 +28,9 @@ from ksadk.events.canonical import (
     ItemCompleted,
     ItemFailed,
     ItemStarted,
-    RunCanceled,
     RunCompleted,
     RunFailed,
     RunInterrupted,
-    RunStarted,
     UsageReported,
 )
 from ksadk.runtime.adapter import (
@@ -43,7 +41,6 @@ from ksadk.runtime.adapter import (
     ResumeTarget,
     StartRequest,
 )
-
 
 # ---- helpers for valid codex notification messages ----
 
@@ -80,7 +77,13 @@ def _item_started(thread_id: str, item_id: str, *, turn_id: str = "turn-1", **it
     }
 
 
-def _item_completed(thread_id: str, item_id: str, *, turn_id: str = "turn-1", **item_fields) -> dict:
+def _item_completed(
+    thread_id: str,
+    item_id: str,
+    *,
+    turn_id: str = "turn-1",
+    **item_fields,
+) -> dict:
     item = {"id": item_id, "type": "agentMessage", "text": "done", "phase": "final_answer"}
     item.update(item_fields)
     return {
@@ -107,7 +110,7 @@ def _approval_request(thread_id: str, item_id: str, *, turn_id: str = "turn-1") 
 
 
 async def _simple_turn_lifecycle(thread_id: str, *, text: str = "done"):
-    """Yield a minimal valid codex turn: turn/started → item/started → item/completed → turn/completed."""
+    """Yield a minimal valid turn with item and turn lifecycle boundaries."""
     yield _turn_started(thread_id)
     yield _item_started(thread_id, "m1")
     yield _item_completed(thread_id, "m1", text=text)
@@ -316,6 +319,31 @@ async def test_plan_mode_is_forwarded_as_native_collaboration_mode() -> None:
 
 
 @pytest.mark.asyncio
+async def test_default_request_uses_native_codex_agent_loop() -> None:
+    class _LoopCodex(_ControllableCodex):
+        def __init__(self) -> None:
+            super().__init__(block=False)
+            self.turn_calls: list[tuple[str, str, dict]] = []
+
+        def run_turn(self, thread_id, prompt, *, config=None):
+            self.turn_calls.append((thread_id, prompt, dict(config or {})))
+            return _simple_turn_lifecycle(thread_id, text="loop done")
+
+    client = _LoopCodex()
+    adapter = CodexRuntimeAdapter(client)
+    handle = await adapter.start(
+        StartRequest(input="执行任务", user_id="u", session_id="s")
+    )
+
+    events = [event async for event in adapter.stream(handle)]
+
+    assert client.turn_calls == [
+        (handle.run_id, "执行任务", {"sandbox_read_only": True})
+    ]
+    assert isinstance(events[-1], RunCompleted)
+
+
+@pytest.mark.asyncio
 async def test_goal_objective_uses_native_goal_operation() -> None:
     class _GoalCodex(_ControllableCodex):
         def __init__(self) -> None:
@@ -502,7 +530,9 @@ async def test_cancel_cascades_pending_approvals():
         if adapter._threads[handle.run_id].pending_approvals:
             break
         await asyncio.sleep(0.01)
-    assert adapter._threads[handle.run_id].pending_approvals, "pending_approvals should be non-empty"
+    assert adapter._threads[handle.run_id].pending_approvals, (
+        "pending_approvals should be non-empty"
+    )
     await adapter.cancel(handle)
     # 级联丢弃来自 runtime 自跟踪的 pending 审批集(真实 SDK 无独立 drain API)。
     # The canonical interaction_id is a stable hash of the codex scope/method/interaction id.
@@ -510,7 +540,12 @@ async def test_cancel_cascades_pending_approvals():
     # 与 request.call_id(用于按 call_id 的 resolve 匹配/级联)。
     dropped = adapter.last_cancel_dropped_approvals
     # Verify the dropped ids match the InteractionRequested event's ids.
-    requested_events = [e for e in events if hasattr(e, "event_type") and e.event_type == "interaction.requested"]
+    requested_events = [
+        event
+        for event in events
+        if hasattr(event, "event_type")
+        and event.event_type == "interaction.requested"
+    ]
     assert len(requested_events) >= 1
     expected_id = requested_events[0].interaction_id
     assert dropped == {expected_id, "call-1"}
@@ -1146,10 +1181,8 @@ async def test_mcp_tool_call_error_is_surfaced_in_tool_end_event():
     handle = await runtime.start(StartRequest(input="x", user_id="u", session_id="s"))
     events = [event async for event in runtime.stream(handle)]
 
-    from ksadk.events.content import ToolResultContent
 
     # Canonical: failed MCP tool is projected as ItemFailed + ItemUpdated(replace).
-    from ksadk.events.canonical import ItemFailed
 
     failed = next(
         event for event in events if isinstance(event, ItemFailed)
