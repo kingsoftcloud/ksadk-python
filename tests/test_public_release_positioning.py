@@ -368,8 +368,8 @@ def test_public_ci_runs_gitleaks_and_documents_branch_protection():
 def test_public_release_candidate_tracks_current_version():
     approval_record = _read("docs/maintainer-approval-record.md")
 
-    assert "| Python package version | 0.8.0 |" in approval_record
-    assert "make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=0.8.0" in approval_record
+    assert "| Python package version | 0.8.2 |" in approval_record
+    assert "make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=0.8.2" in approval_record
 
 
 def test_0_8_changelog_is_ready_for_authorized_release():
