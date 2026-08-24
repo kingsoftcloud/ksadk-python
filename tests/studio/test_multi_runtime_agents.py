@@ -18,6 +18,7 @@ from ksadk.studio.contracts import (
     SecuritySpec,
     ToolContract,
 )
+from ksadk.studio.errors import StudioError
 from ksadk.studio.framework_run import FrameworkRunSpecResolver
 from ksadk.studio.service import StudioService
 
@@ -125,6 +126,236 @@ def test_quick_authoring_generates_detectable_framework_source(tmp_path: Path) -
             generated = (source / "agent.py").read_text(encoding="utf-8")
             assert "stream_usage=True" in generated
             assert "if not any(isinstance(message, SystemMessage)" in generated
+
+
+@pytest.mark.parametrize("runtime_type", ["adk", "langgraph"])
+def test_updating_bound_model_refreshes_generated_runtime_source(
+    tmp_path: Path,
+    runtime_type: str,
+) -> None:
+    studio = StudioService(tmp_path)
+    model_a = studio.catalog.create_model_profile(
+        name="model-a",
+        display_name="Model A",
+        version="1.0.0",
+        description="",
+        spec=ModelSpec(
+            model="model-a",
+            endpoint_url="https://models.example.test/v1",
+            credential_ref="env://MODEL_A_KEY",
+        ),
+    )
+    model_b = studio.catalog.create_model_profile(
+        name="model-b",
+        display_name="Model B",
+        version="1.0.0",
+        description="",
+        spec=ModelSpec(
+            model="model-b",
+            endpoint_url="https://models.example.test/v1",
+            credential_ref="env://MODEL_B_KEY",
+        ),
+    )
+    draft = studio.create_studio_agent(
+        agent_id=f"{runtime_type}-model-edit",
+        name="Model Edit",
+        spec=AgentSpec(
+            runtime=RuntimeRef(
+                type=runtime_type,
+                project_path=f"agents/{runtime_type}-model-edit/source",
+                entry_point="agent.py",
+                agent_variable="root_agent" if runtime_type == "adk" else "graph",
+            ),
+            instructions=Instructions(system="Use the configured model."),
+            bindings=AgentBindings(
+                model_profile_id=model_a.resource_id,
+                model_profile_ids=[model_a.resource_id],
+            ),
+        ),
+    )
+    source_path = tmp_path / draft.spec.runtime.project_path / "agent.py"
+    assert 'or "model-a"' in source_path.read_text(encoding="utf-8")
+
+    updated_spec = draft.spec.model_copy(deep=True)
+    updated_spec.bindings.model_profile_id = model_b.resource_id
+    updated_spec.bindings.model_profile_ids = [model_b.resource_id]
+    updated = studio.update_studio_agent(
+        draft.metadata.id,
+        updated_spec,
+        expected_revision=draft.metadata.revision,
+    )
+
+    assert updated.metadata.revision == draft.metadata.revision + 1
+    refreshed = source_path.read_text(encoding="utf-8")
+    assert 'or "model-b"' in refreshed
+    assert 'or "model-a"' not in refreshed
+
+
+def test_update_round_trips_unchanged_unresolved_historical_bindings(
+    tmp_path: Path,
+) -> None:
+    studio = StudioService(tmp_path)
+    draft = studio.create_studio_agent(
+        agent_id="historical-bindings",
+        name="Historical Bindings",
+        spec=AgentSpec(
+            runtime=RuntimeRef(
+                type="langgraph",
+                project_path="agents/historical-bindings/source",
+                entry_point="agent.py",
+                agent_variable="graph",
+            ),
+            model=ModelSpec(
+                model="legacy-model",
+                endpoint_url="https://models.example.test/v1",
+                credential_ref="env://MODEL_KEY",
+            ),
+            instructions=Instructions(system="Original prompt."),
+        ),
+    )
+    historical = studio.drafts.get(draft.metadata.id)
+    historical.spec.bindings = AgentBindings(
+        model_profile_id="model:legacy:missing:1",
+        model_profile_ids=["model:legacy:missing:1"],
+        skills=[CapabilityBinding(resource_id="skill:legacy:missing:1")],
+        mcp_servers=[CapabilityBinding(resource_id="mcp:legacy:missing:1")],
+        tools=[CapabilityBinding(resource_id="tool:legacy:missing:1")],
+    )
+    studio.drafts.replace(historical)
+
+    candidate = historical.spec.model_copy(deep=True)
+    candidate.instructions.system = "Updated prompt."
+    updated = studio.update_studio_agent(
+        historical.metadata.id,
+        candidate,
+        expected_revision=historical.metadata.revision,
+    )
+
+    assert updated.metadata.revision == historical.metadata.revision + 1
+    assert updated.spec.bindings == historical.spec.bindings
+    assert "Updated prompt." in (
+        tmp_path / "agents/historical-bindings/source/agent.py"
+    ).read_text(encoding="utf-8")
+
+
+def test_failed_runtime_materialization_does_not_commit_agent_revision(
+    tmp_path: Path,
+) -> None:
+    tool_source = tmp_path / "tools/audit.py"
+    tool_source.parent.mkdir(parents=True)
+    tool_source.write_text("def audit() -> str:\n    return 'ok'\n", encoding="utf-8")
+    studio = StudioService(tmp_path)
+    tool = studio.catalog.create_tool(
+        display_name="Audit",
+        category="custom",
+        contract=ToolContract(
+            name="audit",
+            version="1.0.0",
+            executor="python",
+            source_path="tools/audit.py",
+            callable_name="audit",
+        ),
+    )
+    draft = studio.create_studio_agent(
+        agent_id="atomic-update",
+        name="Atomic Update",
+        spec=AgentSpec(
+            runtime=RuntimeRef(
+                type="langgraph",
+                project_path="agents/atomic-update/source",
+                entry_point="agent.py",
+                agent_variable="graph",
+            ),
+            model=ModelSpec(
+                model="model-a",
+                endpoint_url="https://models.example.test/v1",
+                credential_ref="env://MODEL_KEY",
+            ),
+            instructions=Instructions(system="Original prompt."),
+        ),
+    )
+    source_path = (
+        tmp_path / "agents/atomic-update/source/agent.py"
+    )
+    original_source = source_path.read_text(encoding="utf-8")
+    candidate = draft.spec.model_copy(deep=True)
+    candidate.instructions.system = "Must not commit."
+    candidate.bindings.tools = [CapabilityBinding(resource_id=tool.resource_id)]
+    locked_source = tmp_path / str(tool.contract["sourcePath"])
+    locked_source.write_text(
+        "def audit() -> str:\n    return 'tampered snapshot'\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(StudioError, match="源码与 Catalog 锁定摘要不一致"):
+        studio.update_studio_agent(
+            draft.metadata.id,
+            candidate,
+            expected_revision=draft.metadata.revision,
+        )
+
+    persisted = studio.drafts.get(draft.metadata.id)
+    assert persisted.metadata.revision == draft.metadata.revision
+    assert persisted.spec.instructions.system == "Original prompt."
+    assert persisted.spec.bindings.tools == []
+    assert source_path.read_text(encoding="utf-8") == original_source
+
+
+def test_framework_update_rejects_capabilities_runtime_source_cannot_inject(
+    tmp_path: Path,
+) -> None:
+    studio = StudioService(tmp_path)
+    deferred = studio.catalog.create_tool(
+        display_name="Deferred Tool",
+        category="custom",
+        contract=ToolContract(
+            name="deferred_tool",
+            version="1.0.0",
+            executor="deferred",
+        ),
+    )
+    draft = studio.create_studio_agent(
+        agent_id="honest-capabilities",
+        name="Honest Capabilities",
+        spec=AgentSpec(
+            runtime=RuntimeRef(
+                type="adk",
+                project_path="agents/honest-capabilities/source",
+                entry_point="agent.py",
+                agent_variable="root_agent",
+            ),
+            model=ModelSpec(
+                model="model-a",
+                endpoint_url="https://models.example.test/v1",
+                credential_ref="env://MODEL_KEY",
+            ),
+            instructions=Instructions(system="Use supported capabilities only."),
+        ),
+    )
+
+    with_mcp = draft.spec.model_copy(deep=True)
+    with_mcp.bindings.mcp_servers = [
+        CapabilityBinding(resource_id="mcp:new:unsupported:1")
+    ]
+    with pytest.raises(StudioError) as mcp_error:
+        studio.update_studio_agent(
+            draft.metadata.id,
+            with_mcp,
+            expected_revision=draft.metadata.revision,
+        )
+    assert mcp_error.value.code == "MCP_RUNTIME_INCOMPATIBLE"
+    assert studio.drafts.get(draft.metadata.id).metadata.revision == draft.metadata.revision
+
+    with_deferred = draft.spec.model_copy(deep=True)
+    with_deferred.bindings.tools = [CapabilityBinding(resource_id=deferred.resource_id)]
+    with pytest.raises(StudioError) as tool_error:
+        studio.update_studio_agent(
+            draft.metadata.id,
+            with_deferred,
+            expected_revision=draft.metadata.revision,
+        )
+    assert tool_error.value.code == "TOOL_RUNTIME_INCOMPATIBLE"
+    assert studio.drafts.get(draft.metadata.id).metadata.revision == draft.metadata.revision
 
 
 def test_framework_build_runs_from_immutable_source_snapshot(tmp_path: Path) -> None:

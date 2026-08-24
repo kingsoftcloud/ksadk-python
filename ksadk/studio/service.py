@@ -80,6 +80,7 @@ from ksadk.studio.contracts import (
     RunEvent,
     RunStatus,
     RuntimeRef,
+    ToolContract,
 )
 from ksadk.studio.errors import StudioError
 from ksadk.studio.event_store import RunEventStore
@@ -461,6 +462,10 @@ class StudioService:
             description=description,
         )
         self._validate_bindings(resolved_spec.bindings)
+        self._validate_framework_binding_support(
+            resolved_spec.runtime,
+            resolved_spec.bindings,
+        )
         draft = self.drafts.create(
             agent_id=agent_id,
             name=name,
@@ -469,7 +474,11 @@ class StudioService:
             spec=resolved_spec,
             labels=labels,
         )
-        materialize_generated_runtime_source(self.workspace, draft)
+        materialize_generated_runtime_source(
+            self.workspace,
+            draft,
+            catalog=self.catalog,
+        )
         return draft
 
     def create_authored_agent(
@@ -1120,15 +1129,48 @@ class StudioService:
         expected_revision: int,
         name: str | None = None,
     ):
-        self._validate_bindings(spec.bindings)
-        updated = self.drafts.update(
+        current = self.drafts.get(agent_id)
+        if current.metadata.revision != expected_revision:
+            raise StudioError(
+                "AGENT_REVISION_CONFLICT",
+                "Agent 已被其他操作更新",
+                status_code=409,
+                field="metadata.revision",
+                details={
+                    "expected": expected_revision,
+                    "actual": current.metadata.revision,
+                },
+            )
+        materializable_bindings = self._materializable_update_bindings(
+            current.spec.bindings,
+            spec.bindings,
+            runtime=spec.runtime or current.spec.runtime,
+        )
+        self._validate_bindings(materializable_bindings)
+        self._validate_framework_binding_support(
+            spec.runtime or current.spec.runtime,
+            materializable_bindings,
+        )
+        preview = current.model_copy(deep=True)
+        preview.metadata.revision += 1
+        if name is not None:
+            preview.metadata.name = name
+        preview.spec = spec.model_copy(deep=True)
+        preview.spec.bindings = materializable_bindings
+        # Generated source is a materialized view of the candidate Revision.
+        # Complete it before the authoritative draft write so any resolver,
+        # digest or runtime-capability failure leaves Revision/content intact.
+        materialize_generated_runtime_source(
+            self.workspace,
+            preview,
+            catalog=self.catalog,
+        )
+        return self.drafts.update(
             agent_id,
             spec,
             expected_revision=expected_revision,
             name=name,
         )
-        materialize_generated_runtime_source(self.workspace, updated)
-        return updated
 
     def update_agent_bindings(
         self,
@@ -1137,11 +1179,10 @@ class StudioService:
         *,
         expected_revision: int,
     ):
-        self._validate_bindings(bindings)
         draft = self.drafts.get(agent_id)
         spec = draft.spec.model_copy(deep=True)
         spec.bindings = bindings
-        return self.drafts.update(
+        return self.update_agent(
             agent_id,
             spec,
             expected_revision=expected_revision,
@@ -1154,6 +1195,117 @@ class StudioService:
         self.catalog.resolve_mcp_servers(bindings)
         self.catalog.resolve_mcp_tools(bindings)
         self.catalog.resolve_skills(bindings)
+
+    def _materializable_update_bindings(
+        self,
+        current: AgentBindings,
+        candidate: AgentBindings,
+        *,
+        runtime: RuntimeRef | None,
+    ) -> AgentBindings:
+        """Return bindings that can be safely resolved into this Revision.
+
+        Unknown bindings written by older Studio versions remain authoritative
+        draft data, but are dormant until they re-enter the resource catalog.
+        A new or modified unknown binding is still rejected by the normal
+        resolver. Framework MCP bindings are likewise read-only until generated
+        runtime source has a real injection path.
+        """
+
+        if (
+            runtime is not None
+            and runtime.type in {"adk", "langgraph"}
+            and candidate.mcp_servers != current.mcp_servers
+        ):
+            raise StudioError(
+                "MCP_RUNTIME_INCOMPATIBLE",
+                "当前 Runtime 尚未支持把 MCP 绑定注入生成源码；历史绑定仅可保留",
+                status_code=422,
+                field="spec.bindings.mcpServers",
+                details={"runtimeType": runtime.type},
+            )
+
+        known = {item.resource_id for item in self.catalog.list(limit=10_000)}
+
+        def selected_for_materialization(
+            selected: list,
+            historical: list,
+        ) -> list:
+            return [
+                binding
+                for binding in selected
+                if binding.resource_id in known or binding not in historical
+            ]
+
+        resolved = candidate.model_copy(deep=True)
+        if candidate.model_profile_id not in known:
+            unchanged_model = (
+                candidate.model_profile_id == current.model_profile_id
+                and candidate.model_profile_ids == current.model_profile_ids
+            )
+            if unchanged_model:
+                resolved.model_profile_id = None
+                resolved.model_profile_ids = []
+        if resolved.model_profile_id is not None:
+            resolved.model_profile_ids = [
+                resource_id
+                for resource_id in resolved.model_profile_ids
+                if resource_id in known
+                or resource_id not in current.model_profile_ids
+            ]
+        resolved.skills = selected_for_materialization(
+            candidate.skills,
+            current.skills,
+        )
+        resolved.tools = selected_for_materialization(
+            candidate.tools,
+            current.tools,
+        )
+        # No framework generated source consumes MCP today. Exact historical
+        # values remain in `candidate`, while this preview omits them honestly.
+        if runtime is not None and runtime.type in {"adk", "langgraph"}:
+            resolved.mcp_servers = []
+        else:
+            resolved.mcp_servers = selected_for_materialization(
+                candidate.mcp_servers,
+                current.mcp_servers,
+            )
+        return resolved
+
+    def _validate_framework_binding_support(
+        self,
+        runtime: RuntimeRef | None,
+        bindings: AgentBindings,
+    ) -> None:
+        if runtime is None or runtime.type not in {"adk", "langgraph"}:
+            return
+        if bindings.mcp_servers:
+            raise StudioError(
+                "MCP_RUNTIME_INCOMPATIBLE",
+                "当前 Runtime 尚未支持把 MCP 绑定注入生成源码",
+                status_code=422,
+                field="spec.bindings.mcpServers",
+                details={"runtimeType": runtime.type},
+            )
+        unsupported: list[str] = []
+        for binding in bindings.tools:
+            if not binding.enabled:
+                continue
+            descriptor = self.catalog.get(binding.resource_id)
+            contract = ToolContract.model_validate(descriptor.contract)
+            if contract.executor not in {"builtin", "python"}:
+                unsupported.append(binding.resource_id)
+        if unsupported:
+            raise StudioError(
+                "TOOL_RUNTIME_INCOMPATIBLE",
+                "当前 Runtime 仅支持 builtin/python Tool",
+                status_code=422,
+                field="spec.bindings.tools",
+                details={
+                    "runtimeType": runtime.type,
+                    "resourceIds": unsupported,
+                },
+            )
 
     def validate_agent(
         self,

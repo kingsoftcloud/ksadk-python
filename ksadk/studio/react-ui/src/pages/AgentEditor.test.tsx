@@ -262,7 +262,11 @@ describe("AgentEditor form", () => {
       { resourceId: "model-b", kind: "model", name: "model-b", displayName: "Model B", version: "1", status: "ready", contract: { model: "model-b" } },
       { resourceId: "skill-a", kind: "skill", name: "skill-a", displayName: "Review Skill", version: "1", status: "ready" },
       { resourceId: "mcp-a", kind: "mcp", name: "mcp-a", displayName: "Review MCP", version: "1", status: "ready" },
+      { resourceId: "mcp-new", kind: "mcp", name: "mcp-new", displayName: "New MCP", version: "1", status: "ready" },
       { resourceId: "tool-a", kind: "tool", name: "tool-a", displayName: "Review Tool", version: "1", status: "ready" },
+      { resourceId: "tool-python", kind: "tool", name: "tool-python", displayName: "Python Tool", version: "1", status: "ready", contract: { executor: "python" } },
+      { resourceId: "tool-mcp", kind: "tool", name: "tool-mcp", displayName: "MCP Tool", version: "1", status: "ready", contract: { executor: "mcp" } },
+      { resourceId: "tool-deferred", kind: "tool", name: "tool-deferred", displayName: "Deferred Tool", version: "1", status: "ready", contract: { executor: "deferred" } },
     ];
 
     render(<AgentEditor agentId="agentkit-a1b2c3d4" catalog={catalog} onSaved={vi.fn()} />);
@@ -272,7 +276,13 @@ describe("AgentEditor form", () => {
     expect(screen.getByText("Model B")).toBeVisible();
     expect(screen.getByText("Review Skill")).toBeVisible();
     expect(screen.getByText("Review MCP")).toBeVisible();
+    expect(screen.queryByText("New MCP")).not.toBeInTheDocument();
+    expect(screen.getByText(/当前 Runtime 尚未实现 MCP 源码注入/)).toBeVisible();
     expect(screen.getByText("Review Tool")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "选择绑定 Tool" }));
+    expect(screen.getByText("Python Tool")).toBeVisible();
+    expect(screen.queryByText("MCP Tool")).not.toBeInTheDocument();
+    expect(screen.queryByText("Deferred Tool")).not.toBeInTheDocument();
     expect(screen.getByText(/legacy-private.*资源目录/)).toBeVisible();
 
     fireEvent.click(screen.getByRole("button", { name: "保存修改" }));

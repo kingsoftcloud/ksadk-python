@@ -20,7 +20,7 @@ export interface EditorCatalogItem {
   displayName: string;
   version: string;
   status: string;
-  contract?: { model?: string };
+  contract?: { model?: string; executor?: string };
   health?: { toolCount?: number };
 }
 
@@ -196,7 +196,11 @@ export function AgentEditor({
   const models = useMemo(() => catalog.filter(item => item.kind === "model" && ["ready", "missing-secret"].includes(item.status)), [catalog]);
   const skills = useMemo(() => catalog.filter(item => item.kind === "skill" && item.status === "ready"), [catalog]);
   const mcps = useMemo(() => catalog.filter(item => item.kind === "mcp"), [catalog]);
-  const tools = useMemo(() => catalog.filter(item => item.kind === "tool" && item.status === "ready"), [catalog]);
+  const tools = useMemo(() => catalog.filter(item => (
+    item.kind === "tool"
+    && item.status === "ready"
+    && ["builtin", "python"].includes(item.contract?.executor || "builtin")
+  )), [catalog]);
   const visibleModels = useMemo(() => withHistoricalSelections(models, selectedModels, "model"), [models, selectedModels]);
   const visibleSkills = useMemo(() => withHistoricalSelections(skills, selectedSkills, "skill"), [skills, selectedSkills]);
   const visibleMcps = useMemo(() => withHistoricalSelections(mcps, selectedMcp, "mcp"), [mcps, selectedMcp]);
@@ -598,7 +602,7 @@ export function AgentEditor({
           />
         </div>
         <div className="field quick-model-binding-field">
-          <div className="field-heading"><label>绑定 Skill / MCP</label><span className="helper">Skill 与 MCP 由 Runtime Adapter 按能力投影。</span></div>
+          <div className="field-heading"><label>绑定 Skill / MCP</label><span className="helper">{runtime === "codex" ? "Skill 与 MCP 由 Codex Runtime 按能力投影。" : "Skill 可编辑；当前 Runtime 尚未实现 MCP 源码注入，历史 MCP 仅保留。"}</span></div>
           <div className="quick-capability-bindings">
             <StudioMultiSelect
               ariaLabel="选择绑定 Skill"
@@ -613,14 +617,15 @@ export function AgentEditor({
             />
             <StudioMultiSelect
               ariaLabel="选择绑定 MCP"
-              items={visibleMcps}
+              items={runtime === "codex" ? visibleMcps : visibleMcps.filter(item => selectedMcp.includes(item.resourceId))}
               selectedIds={selectedMcp}
               getId={item => item.resourceId}
               getLabel={item => item.displayName}
               getDescription={item => `${item.version} · ${item.health?.toolCount || 0} Tool`}
-              onChange={setSelectedMcp}
+              onChange={runtime === "codex" ? setSelectedMcp : () => undefined}
+              disabledIds={runtime === "codex" ? [] : selectedMcp}
               searchPlaceholder="搜索 MCP"
-              emptyMessage="没有已连接的 MCP"
+              emptyMessage={runtime === "codex" ? "没有已连接的 MCP" : "当前 Runtime 不支持新增 MCP"}
             />
           </div>
         </div>
