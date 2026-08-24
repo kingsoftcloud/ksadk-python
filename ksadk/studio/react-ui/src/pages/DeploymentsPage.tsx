@@ -87,6 +87,119 @@ interface CloudVersionCatalog {
 }
 
 const OPERATION_TERMINAL = new Set(["SUCCEEDED", "FAILED", "CANCELLED", "TIMED_OUT", "INTERRUPTED"]);
+const OPERATION_ATTEMPTS_STORAGE_KEY = "agentkit-studio:deployment-operation-attempts:v1";
+const OPERATION_POLL_INTERVAL_MS = 500;
+let volatileOperationAttempts: Record<string, OperationAttempt> = {};
+
+interface OperationResult {
+  status: string;
+  resourceId?: string;
+  error?: { message?: string };
+}
+
+interface OperationAttempt {
+  actionKey: string;
+  idempotencyKey: string;
+  operationId: string;
+}
+
+function operationStorage(): Storage | undefined {
+  try {
+    return typeof document === "undefined" ? undefined : document.defaultView?.localStorage;
+  } catch {
+    return undefined;
+  }
+}
+
+function readOperationAttempts(): Record<string, OperationAttempt> {
+  try {
+    const storage = operationStorage();
+    if (!storage) return { ...volatileOperationAttempts };
+    const parsed = JSON.parse(storage.getItem(OPERATION_ATTEMPTS_STORAGE_KEY) || "{}");
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return { ...volatileOperationAttempts };
+  }
+}
+
+function writeOperationAttempts(attempts: Record<string, OperationAttempt>) {
+  volatileOperationAttempts = { ...attempts };
+  try {
+    operationStorage()?.setItem(OPERATION_ATTEMPTS_STORAGE_KEY, JSON.stringify(attempts));
+  } catch {
+    // A disabled storage backend must not prevent lifecycle operations.
+  }
+}
+
+function newIdempotencyKey(kind: string): string {
+  const randomId = globalThis.crypto?.randomUUID?.()
+    || `${Math.random().toString(36).slice(2)}-${Date.now().toString(36)}`;
+  return `studio-${kind}-${randomId}`;
+}
+
+function acquireOperationAttempt(actionKey: string, kind: string): OperationAttempt {
+  const attempts = readOperationAttempts();
+  const existing = attempts[actionKey];
+  if (existing?.idempotencyKey) return existing;
+  const attempt = { actionKey, idempotencyKey: newIdempotencyKey(kind), operationId: "" };
+  attempts[actionKey] = attempt;
+  writeOperationAttempts(attempts);
+  return attempt;
+}
+
+function persistOperationId(attempt: OperationAttempt, operationId: string): OperationAttempt {
+  const updated = { ...attempt, operationId };
+  const attempts = readOperationAttempts();
+  attempts[attempt.actionKey] = updated;
+  writeOperationAttempts(attempts);
+  return updated;
+}
+
+function clearOperationAttempt(actionKey: string) {
+  const attempts = readOperationAttempts();
+  if (!(actionKey in attempts)) return;
+  delete attempts[actionKey];
+  writeOperationAttempts(attempts);
+}
+
+async function waitForOperation(operationId: string, operationLabel: string): Promise<OperationResult> {
+  while (true) {
+    await new Promise(resolve => setTimeout(resolve, OPERATION_POLL_INTERVAL_MS));
+    const response = await apiFetch(`/api/v1/operations/${encodeURIComponent(operationId)}`);
+    if (!response.ok) throw new Error(`${operationLabel}状态读取失败（${response.status}）`);
+    const result = await response.json() as OperationResult;
+    if (OPERATION_TERMINAL.has(result.status)) return result;
+  }
+}
+
+async function submitOrResumeOperation(
+  actionKey: string,
+  kind: string,
+  operationLabel: string,
+  submit: (idempotencyKey: string) => Promise<Response>,
+): Promise<OperationResult> {
+  let attempt = acquireOperationAttempt(actionKey, kind);
+  if (!attempt.operationId) {
+    const response = await submit(attempt.idempotencyKey);
+    if (!response.ok) {
+      // 5xx may be an ambiguous response after the Server accepted the write.
+      // Keep its key so the next retry asks the Server for the same operation.
+      if (response.status < 500) clearOperationAttempt(actionKey);
+      throw new Error(`${operationLabel}提交失败（${response.status}）`);
+    }
+    const operation = await response.json();
+    const operationId = String(operation?.id || "").trim();
+    if (!operationId) {
+      clearOperationAttempt(actionKey);
+      throw new Error(`${operationLabel}提交结果缺少 operation_id`);
+    }
+    attempt = persistOperationId(attempt, operationId);
+  }
+
+  const result = await waitForOperation(attempt.operationId, operationLabel);
+  clearOperationAttempt(actionKey);
+  return result;
+}
 
 function deploymentState(status: string): "ready" | "failed" | "pending" | "idle" {
   if (["READY", "RUNNING"].includes(status)) return "ready";
@@ -535,29 +648,21 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
     }
     setCreateBusy(true);
     setCreateError("");
+    const actionKey = `deploy:${selectedBuildId}:${cloudRegion}`;
     try {
-      const response = await apiFetch(`/api/v1/builds/${encodeURIComponent(selectedBuildId)}/deployments`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Idempotency-Key": `studio-deploy-${selectedBuildId}-${Date.now()}`,
-        },
-        body: JSON.stringify({
-          target: { region: cloudRegion, environment: "cloud" },
-          releasePolicy: { strategy: "rolling", approval: "none" },
-        }),
-      });
-      if (!response.ok) throw new Error(`部署提交失败（${response.status}）`);
-      const operation = await response.json();
-      let result: any;
-      for (let attempt = 0; attempt < 150; attempt += 1) {
-        await new Promise(resolve => setTimeout(resolve, 200));
-        const status = await apiFetch(`/api/v1/operations/${encodeURIComponent(operation.id)}`);
-        if (!status.ok) throw new Error(`部署状态读取失败（${status.status}）`);
-        result = await status.json();
-        if (OPERATION_TERMINAL.has(result.status)) break;
-      }
-      if (!result || !OPERATION_TERMINAL.has(result.status)) throw new Error("部署操作等待超时");
+      const result = await submitOrResumeOperation(actionKey, "deploy", "部署", idempotencyKey => (
+        apiFetch(`/api/v1/builds/${encodeURIComponent(selectedBuildId)}/deployments`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Idempotency-Key": idempotencyKey,
+          },
+          body: JSON.stringify({
+            target: { region: cloudRegion, environment: "cloud" },
+            releasePolicy: { strategy: "rolling", approval: "none" },
+          }),
+        })
+      ));
       if (result.status !== "SUCCEEDED") throw new Error(result.error?.message || "部署未完成");
       await load();
       const deploymentId = String(result.resourceId || "").trim();
@@ -581,29 +686,21 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
     if (!buildId || updating) return;
     setUpdating(true);
     setError("");
+    const actionKey = `update:${deployment.agentId || deployment.id}:${buildId}`;
     try {
-      const response = await apiFetch(`/api/v1/builds/${encodeURIComponent(buildId)}/deployments`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Idempotency-Key": `studio-update-${deployment.id}-${buildId}-${Date.now()}`,
-        },
-        body: JSON.stringify({
-          target: deployment.target,
-          releasePolicy: { strategy: "rolling", approval: "none" },
-        }),
-      });
-      if (!response.ok) throw new Error(`更新提交失败（${response.status}）`);
-      const operation = await response.json();
-      let result: any;
-      for (let attempt = 0; attempt < 150; attempt += 1) {
-        await new Promise(resolve => setTimeout(resolve, 200));
-        const status = await apiFetch(`/api/v1/operations/${encodeURIComponent(operation.id)}`);
-        if (!status.ok) throw new Error(`更新状态读取失败（${status.status}）`);
-        result = await status.json();
-        if (OPERATION_TERMINAL.has(result.status)) break;
-      }
-      if (!result || !OPERATION_TERMINAL.has(result.status)) throw new Error("更新操作等待超时");
+      const result = await submitOrResumeOperation(actionKey, "update", "更新", idempotencyKey => (
+        apiFetch(`/api/v1/builds/${encodeURIComponent(buildId)}/deployments`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Idempotency-Key": idempotencyKey,
+          },
+          body: JSON.stringify({
+            target: deployment.target,
+            releasePolicy: { strategy: "rolling", approval: "none" },
+          }),
+        })
+      ));
       if (result.status !== "SUCCEEDED") throw new Error(result.error?.message || "更新未完成");
       setDetail(null);
       await load();
@@ -649,26 +746,18 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
     if (!agentId || !targetVersion?.canRollback || isCurrent) return;
     setRollbackBusy(true);
     setDetail(current => current ? { ...current, error: "" } : current);
+    const actionKey = `rollback:${agentId}:${targetVersionId}`;
     try {
-      const response = await apiFetch(`/api/v1/cloud-agents/${encodeURIComponent(agentId)}:rollback-version`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Idempotency-Key": `rollback-${agentId}-${targetVersionId}`,
-        },
-        body: JSON.stringify({ versionId: targetVersionId }),
-      });
-      if (!response.ok) throw new Error(`回滚提交失败（${response.status}）`);
-      const operation = await response.json();
-      let result: any;
-      for (let attempt = 0; attempt < 150; attempt += 1) {
-        await new Promise(resolve => setTimeout(resolve, 200));
-        const status = await apiFetch(`/api/v1/operations/${encodeURIComponent(operation.id)}`);
-        if (!status.ok) throw new Error(`回滚状态读取失败（${status.status}）`);
-        result = await status.json();
-        if (OPERATION_TERMINAL.has(result.status)) break;
-      }
-      if (!result || !OPERATION_TERMINAL.has(result.status)) throw new Error("回滚操作等待超时");
+      const result = await submitOrResumeOperation(actionKey, "rollback", "回滚", idempotencyKey => (
+        apiFetch(`/api/v1/cloud-agents/${encodeURIComponent(agentId)}:rollback-version`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Idempotency-Key": idempotencyKey,
+          },
+          body: JSON.stringify({ versionId: targetVersionId }),
+        })
+      ));
       if (result.status !== "SUCCEEDED") throw new Error(result.error?.message || "回滚未完成");
       setRollbackConfirmOpen(false);
       setSelectedRollbackVersionId("");

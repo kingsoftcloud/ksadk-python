@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { apiFetch } = vi.hoisted(() => ({ apiFetch: vi.fn() }));
 const defaultBuilds = [
@@ -12,6 +12,14 @@ let currentCloudVersionId = "cloud-agent-1";
 let deploymentRefreshFails = false;
 let newDeploymentReady = false;
 let listIncludesNewAgent = true;
+let createNetworkFailures = 0;
+let createNonTerminalPolls = 0;
+let createTerminalFailures = 0;
+let createStatusReadFailures = 0;
+let createOperationPolls = 0;
+let createIdempotencyKeys: string[] = [];
+let rollbackTerminalFailures = 0;
+let rollbackIdempotencyKeys: string[] = [];
 let accountAgentItems: Array<Record<string, unknown>> = [{
   agentId: "ar-cloud-ui",
   name: "Managed YAML Agent",
@@ -148,6 +156,11 @@ apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
   }));
   if (path === "/api/v1/builds/build-new/deployments") {
     expect(init?.method).toBe("POST");
+    createIdempotencyKeys.push(new Headers(init?.headers).get("Idempotency-Key") || "");
+    if (createNetworkFailures > 0) {
+      createNetworkFailures -= 1;
+      throw new TypeError("network disconnected after request write");
+    }
     expect(JSON.parse(String(init?.body))).toEqual({
       target: { region: "cn-beijing-6", environment: "cloud" },
       releasePolicy: { strategy: "rolling", approval: "none" },
@@ -160,6 +173,7 @@ apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
   }
   if (path === "/api/v1/cloud-agents/ar-cloud-ui:rollback-version") {
     expect(init?.method).toBe("POST");
+    rollbackIdempotencyKeys.push(new Headers(init?.headers).get("Idempotency-Key") || "");
     expect(JSON.parse(String(init?.body))).toEqual({ versionId: "cloud-agent-0" });
     return new Response(JSON.stringify({ id: "operation-rollback" }));
   }
@@ -171,6 +185,10 @@ apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
     return new Response(JSON.stringify({ agentId: "ar-cloud-ui", deletedReceiptIds: ["dep-instance-1"] }));
   }
   if (path === "/api/v1/operations/operation-rollback") {
+    if (rollbackTerminalFailures > 0) {
+      rollbackTerminalFailures -= 1;
+      return new Response(JSON.stringify({ status: "FAILED", error: { message: "rollout failed" } }));
+    }
     currentCloudVersionId = "cloud-agent-0";
     return new Response(JSON.stringify({ status: "SUCCEEDED", resourceId: "ar-cloud-ui" }));
   }
@@ -178,6 +196,18 @@ apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
     return new Response(JSON.stringify({ status: "SUCCEEDED", resourceId: "dep-instance-2" }));
   }
   if (path === "/api/v1/operations/operation-create") {
+    createOperationPolls += 1;
+    if (createStatusReadFailures > 0) {
+      createStatusReadFailures -= 1;
+      throw new TypeError("operation status network error");
+    }
+    if (createOperationPolls <= createNonTerminalPolls) {
+      return new Response(JSON.stringify({ status: "RUNNING", resourceId: "" }));
+    }
+    if (createTerminalFailures > 0) {
+      createTerminalFailures -= 1;
+      return new Response(JSON.stringify({ status: "FAILED", error: { message: "admission failed" } }));
+    }
     newDeploymentReady = true;
     return new Response(JSON.stringify({ status: "SUCCEEDED", resourceId: "dep-instance-new" }));
   }
@@ -196,6 +226,14 @@ describe("DeploymentsPage", () => {
     deploymentRefreshFails = false;
     newDeploymentReady = false;
     listIncludesNewAgent = true;
+    createNetworkFailures = 0;
+    createNonTerminalPolls = 0;
+    createTerminalFailures = 0;
+    createStatusReadFailures = 0;
+    createOperationPolls = 0;
+    createIdempotencyKeys = [];
+    rollbackTerminalFailures = 0;
+    rollbackIdempotencyKeys = [];
     accountAgentItems = [{
       agentId: "ar-cloud-ui",
       name: "Managed YAML Agent",
@@ -204,6 +242,11 @@ describe("DeploymentsPage", () => {
       framework: "codex",
     }];
     vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
   const renderPage = (onOpenChat = vi.fn(), onSelectBuild = vi.fn()) => render(
@@ -466,6 +509,91 @@ describe("DeploymentsPage", () => {
       expect.objectContaining({ method: "POST" }),
     ));
     await waitFor(() => expect(window.location.hash).toBe("#/deployments/dep-instance-new"));
+  });
+
+  it("keeps following a durable operation beyond the former 30 second polling window", async () => {
+    window.history.replaceState(null, "", "#/deployments/new");
+    createNonTerminalPolls = 151;
+    renderPage();
+    const build = await screen.findByRole("radio", { name: /New Agent.*build-new/ });
+    fireEvent.click(build);
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByRole("button", { name: "部署到云端" }));
+    await vi.advanceTimersByTimeAsync(152_000);
+
+    expect(window.location.hash).toBe("#/deployments/dep-instance-new");
+    expect(createOperationPolls).toBeGreaterThan(150);
+    expect(screen.queryByText("部署操作等待超时")).not.toBeInTheDocument();
+  });
+
+  it("reuses one idempotency key when an ambiguous network submission is retried", async () => {
+    const user = userEvent.setup();
+    window.history.replaceState(null, "", "#/deployments/new");
+    createNetworkFailures = 1;
+    renderPage();
+
+    await user.click(await screen.findByRole("radio", { name: /New Agent.*build-new/ }));
+    await user.click(screen.getByRole("button", { name: "部署到云端" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("network disconnected");
+    await user.click(screen.getByRole("button", { name: "部署到云端" }));
+
+    await waitFor(() => expect(createIdempotencyKeys).toHaveLength(2));
+    expect(createIdempotencyKeys[1]).toBe(createIdempotencyKeys[0]);
+    await waitFor(() => expect(window.location.hash).toBe("#/deployments/dep-instance-new"));
+  });
+
+  it("uses a fresh idempotency key for an explicit new attempt after terminal failure", async () => {
+    const user = userEvent.setup();
+    window.history.replaceState(null, "", "#/deployments/new");
+    createTerminalFailures = 1;
+    renderPage();
+
+    await user.click(await screen.findByRole("radio", { name: /New Agent.*build-new/ }));
+    await user.click(screen.getByRole("button", { name: "部署到云端" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("admission failed");
+    await user.click(screen.getByRole("button", { name: "部署到云端" }));
+
+    await waitFor(() => expect(createIdempotencyKeys).toHaveLength(2));
+    expect(createIdempotencyKeys[1]).not.toBe(createIdempotencyKeys[0]);
+    await waitFor(() => expect(window.location.hash).toBe("#/deployments/dep-instance-new"));
+  });
+
+  it("resumes a persisted Server operation instead of submitting a duplicate after status recovery", async () => {
+    const user = userEvent.setup();
+    window.history.replaceState(null, "", "#/deployments/new");
+    createStatusReadFailures = 1;
+    const firstRender = renderPage();
+
+    await user.click(await screen.findByRole("radio", { name: /New Agent.*build-new/ }));
+    await user.click(screen.getByRole("button", { name: "部署到云端" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("operation status network error");
+    expect(createIdempotencyKeys).toHaveLength(1);
+
+    firstRender.unmount();
+    renderPage();
+    await user.click(await screen.findByRole("radio", { name: /New Agent.*build-new/ }));
+    await user.click(screen.getByRole("button", { name: "部署到云端" }));
+
+    await waitFor(() => expect(window.location.hash).toBe("#/deployments/dep-instance-new"));
+    expect(createIdempotencyKeys).toHaveLength(1);
+  });
+
+  it("uses a fresh rollback key when the user explicitly retries a FAILED operation", async () => {
+    const user = userEvent.setup();
+    rollbackTerminalFailures = 1;
+    renderPage();
+
+    await user.click(await screen.findByRole("button", { name: "查看 Managed YAML Agent 详情" }));
+    await user.click(screen.getByRole("radio", { name: /可回滚版本.*v2/ }));
+    await user.click(screen.getByRole("button", { name: "回滚到所选版本" }));
+    await user.click(screen.getByRole("button", { name: "确认回滚" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("rollout failed");
+
+    await user.click(screen.getByRole("button", { name: "回滚到所选版本" }));
+    await user.click(screen.getByRole("button", { name: "确认回滚" }));
+
+    await waitFor(() => expect(rollbackIdempotencyKeys).toHaveLength(2));
+    expect(rollbackIdempotencyKeys[1]).not.toBe(rollbackIdempotencyKeys[0]);
   });
 
   it("restores the precise successful Build selected by the Build page", async () => {
