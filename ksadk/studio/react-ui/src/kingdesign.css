@@ -790,6 +790,11 @@ button:disabled {
   background: var(--accent-soft);
 }
 
+.chat-session-item.running:not(.active) {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--accent) 4%, var(--surface));
+}
+
 .chat-message-list {
   padding: 28px max(32px, calc((100% - 820px) / 2)) 20px;
   background: var(--surface);
@@ -1011,6 +1016,182 @@ button:disabled {
   border: 0;
   color: var(--text-tertiary);
   background: transparent;
+}
+
+/* 本地与云端共享同一套紧凑 Composer；控件使用浮层，不回退到原生 select。 */
+.chat-composer {
+  max-width: 900px;
+  border-radius: 20px;
+  box-shadow: 0 6px 24px rgb(32 45 56 / 8%) !important;
+}
+
+.chat-composer:focus-within {
+  box-shadow: 0 0 0 3px rgb(0 145 234 / 11%), 0 8px 28px rgb(32 45 56 / 9%) !important;
+}
+
+.chat-composer textarea,
+.chat-composer textarea:hover,
+.chat-composer textarea:focus {
+  min-height: 70px;
+  padding: 15px 18px 5px;
+  border-radius: 20px 20px 0 0;
+  font-size: var(--font-size-body);
+  line-height: 1.6;
+}
+
+.chat-composer-footer,
+.cloud-chat-composer-footer {
+  min-width: 0;
+  min-height: 42px;
+  justify-content: flex-start;
+  gap: 5px;
+  padding: 2px 9px 9px 11px;
+  border-top: 0;
+}
+
+.chat-composer .chat-plus-trigger {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+}
+
+.chat-composer .chat-mode-chip,
+.chat-composer .chat-approval-trigger,
+.chat-composer .chat-model-trigger {
+  height: 32px;
+  border-radius: 10px;
+}
+
+.chat-approval-trigger {
+  max-width: 164px;
+  padding-inline: 9px;
+}
+
+.chat-model-summary-trigger {
+  max-width: min(300px, 42vw);
+  gap: 7px;
+  padding-inline: 10px;
+  background: var(--surface-subtle);
+}
+
+.chat-model-summary-trigger b {
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
+}
+
+.chat-model-reasoning-menu {
+  width: min(270px, calc(100vw - 24px));
+  padding: 6px;
+}
+
+.chat-model-settings-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, auto) 18px;
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+  padding: 7px 9px;
+  border-radius: 10px;
+  outline: 0;
+  cursor: pointer;
+}
+
+.chat-model-settings-row[data-highlighted],
+.chat-model-settings-row[data-state="open"] {
+  background: var(--surface-subtle);
+}
+
+.chat-model-settings-row strong {
+  font-weight: var(--font-weight-semibold);
+}
+
+.chat-model-settings-row > span {
+  overflow: hidden;
+  color: var(--text-tertiary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-model-settings-row > svg {
+  color: var(--text-tertiary);
+}
+
+.chat-model-submenu {
+  width: min(280px, calc(100vw - 24px));
+  max-height: min(520px, calc(100vh - 40px));
+  overflow-y: auto;
+}
+
+.chat-reasoning-submenu {
+  width: min(320px, calc(100vw - 24px));
+}
+
+.chat-reasoning-option {
+  min-height: 48px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 18px;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  outline: 0;
+  cursor: pointer;
+}
+
+.chat-reasoning-option[data-highlighted] {
+  background: var(--surface-subtle);
+}
+
+.chat-reasoning-option > span:first-child,
+.chat-reasoning-option strong,
+.chat-reasoning-option small {
+  min-width: 0;
+  display: block;
+}
+
+.chat-reasoning-option strong {
+  font-size: var(--font-size-control);
+  font-weight: var(--font-weight-medium);
+}
+
+.chat-reasoning-option small {
+  margin-top: 2px;
+  color: var(--text-tertiary);
+  font-size: var(--font-size-caption);
+}
+
+.chat-composer .chat-send-button {
+  width: 34px;
+  height: 34px;
+  margin-left: 1px;
+  border: 0;
+  border-radius: 50%;
+  color: var(--surface);
+  background: var(--text);
+}
+
+.chat-composer .chat-send-button:hover:not(:disabled) {
+  color: var(--surface);
+  background: var(--text-secondary);
+}
+
+@media (max-width: 720px) {
+  .chat-composer-wrap {
+    padding-inline: 10px;
+  }
+
+  .chat-approval-trigger span {
+    max-width: 80px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .chat-model-summary-trigger {
+    max-width: 38vw;
+  }
 }
 
 .chat-send-button {

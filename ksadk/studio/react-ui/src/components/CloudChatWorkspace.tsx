@@ -1,8 +1,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
+import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
-import { Bot, Loader2, MessageSquarePlus, Paperclip, Send, ShieldAlert, ShieldCheck, Trash2, X } from "lucide-react";
+import { Bot, Loader2, MessageSquarePlus, ShieldAlert, ShieldCheck, Trash2, X } from "lucide-react";
 import { apiFetch } from "../api";
+import {
+  approvalModeStorageKey,
+  normalizeApprovalMode,
+  type ApprovalMode,
+} from "../approvalModes";
+import {
+  parseComposerSubmission,
+  type CollaborationMode,
+  type ComposerCommand,
+} from "../composerActions";
+import {
+  ChatComposer,
+  type ComposerModelOption,
+  type ReasoningEffort,
+} from "./ChatComposer";
 import { showToast } from "./Toast";
 
 interface CloudChatWorkspaceProps {
@@ -26,6 +42,7 @@ interface CloudMessage {
   content: string;
   timestamp: string;
   pending?: boolean;
+  streaming?: boolean;
 }
 
 interface CloudInteraction {
@@ -39,9 +56,16 @@ interface CloudInteraction {
 interface CloudModel {
   id: string;
   label: string;
+  capabilities?: Record<string, unknown>;
 }
 
-type ApprovalMode = "ask" | "risk";
+function explicitReasoningEfforts(model?: CloudModel): ReasoningEffort[] {
+  const raw = model?.capabilities?.reasoning_efforts;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((value): value is ReasoningEffort => (
+    value === "low" || value === "medium" || value === "high"
+  ));
+}
 
 function valueText(value: unknown): string {
   if (typeof value === "string") return value;
@@ -77,6 +101,14 @@ function normalizeSession(value: unknown): CloudSession | null {
     updatedAt: scalarText(item.updated_at ?? item.updatedAt ?? item.created_at),
     state: scalarText(item.active_run_status ?? item.state),
   };
+}
+
+function cloudSessionActivity(state: string): "running" | "waiting_input" | "failed" | null {
+  const normalized = state.trim().toLowerCase();
+  if (["running", "streaming", "queued", "pending", "accepted"].includes(normalized)) return "running";
+  if (["paused", "waiting", "waiting_input", "requires_action"].includes(normalized)) return "waiting_input";
+  if (["failed", "error", "cancelled", "canceled", "expired", "aborted"].includes(normalized)) return "failed";
+  return null;
 }
 
 function normalizeMessage(value: unknown): CloudMessage | null {
@@ -201,6 +233,85 @@ function terminalRunEvent(events: unknown[], runId: string, afterSeq: number): "
   return null;
 }
 
+function streamedAssistantText(value: unknown): { text: string; cumulative: boolean } | null {
+  if (!value || typeof value !== "object") return null;
+  const frame = value as Record<string, unknown>;
+  const payload = frame.payload && typeof frame.payload === "object"
+    ? frame.payload as Record<string, unknown>
+    : frame;
+  const content = payload.content && typeof payload.content === "object"
+    ? payload.content as Record<string, unknown>
+    : {};
+  const runtimeEvent = (content.runtime_event && typeof content.runtime_event === "object"
+    ? content.runtime_event
+    : payload.runtime_event && typeof payload.runtime_event === "object"
+      ? payload.runtime_event
+      : {}) as Record<string, unknown>;
+  const update = (runtimeEvent.update && typeof runtimeEvent.update === "object"
+    ? runtimeEvent.update
+    : payload.update && typeof payload.update === "object"
+      ? payload.update
+      : {}) as Record<string, unknown>;
+  const eventType = String(
+    frame.event_type ?? frame.eventType ?? payload.event_type ?? payload.eventType
+    ?? runtimeEvent.type ?? "",
+  ).toLowerCase();
+  if (["item.updated", "message.updated", "assistant_message.updated"].includes(eventType)) {
+    const itemKind = String(runtimeEvent.item_kind ?? payload.item_kind ?? "").toLowerCase();
+    if (itemKind && !["message", "assistant_message", "assistant"].includes(itemKind)) {
+      return null;
+    }
+    const text = valueText(update.text ?? update.content ?? content.text ?? payload.text);
+    const operation = String(runtimeEvent.op ?? payload.op ?? "").toLowerCase();
+    return text ? { text, cumulative: operation !== "append" } : null;
+  }
+  if (["message.delta", "response.output_text.delta", "output_text.delta"].includes(eventType)) {
+    const text = valueText(update.delta ?? update.text ?? payload.delta ?? content.delta ?? payload.text);
+    return text ? { text, cumulative: false } : null;
+  }
+  return null;
+}
+
+async function consumeSseResponse(
+  response: Response,
+  onFrame: (frame: unknown) => void,
+  signal: AbortSignal,
+): Promise<void> {
+  if (!response.ok) throw new Error(await responseError(response));
+  if (!response.body) throw new Error("云端事件流为空");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  const cancel = () => { reader.cancel().catch(() => {}); };
+  signal.addEventListener("abort", cancel, { once: true });
+  try {
+    while (!signal.aborted) {
+      const { done, value } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+      const frames = buffer.split(/\r?\n\r?\n/);
+      buffer = frames.pop() || "";
+      for (const rawFrame of frames) {
+        const data = rawFrame
+          .split(/\r?\n/)
+          .filter(line => line.startsWith("data:"))
+          .map(line => line.slice(5).trimStart())
+          .join("\n");
+        if (!data || data === "[DONE]") continue;
+        try {
+          onFrame(JSON.parse(data));
+        } catch {
+          // Ignore a malformed frame and let the authoritative message poll
+          // reconcile the conversation instead of terminating the stream.
+        }
+      }
+      if (done) break;
+    }
+  } finally {
+    signal.removeEventListener("abort", cancel);
+    reader.releaseLock();
+  }
+}
+
 async function responseError(response: Response): Promise<string> {
   try {
     const body = await response.json();
@@ -230,12 +341,16 @@ export function CloudChatWorkspace({
   const [sessions, setSessions] = useState<CloudSession[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState("");
   const [messages, setMessages] = useState<CloudMessage[]>([]);
+  const [streamingAssistant, setStreamingAssistant] = useState<CloudMessage | null>(null);
   const [interactions, setInteractions] = useState<CloudInteraction[]>([]);
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<File[]>([]);
   const [models, setModels] = useState<CloudModel[]>([]);
   const [selectedModel, setSelectedModel] = useState("");
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>("risk");
+  const [collaborationMode, setCollaborationMode] = useState<CollaborationMode>("default");
+  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("");
+  const [commandIndex, setCommandIndex] = useState(0);
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [waitingForResponse, setWaitingForResponse] = useState(false);
@@ -248,13 +363,14 @@ export function CloudChatWorkspace({
   const awaitingRunIdRef = useRef("");
   const awaitingAcceptedSeqRef = useRef(0);
   const sendInFlightRef = useRef(false);
+  const streamAbortRef = useRef<AbortController | null>(null);
 
   const base = useMemo(
     () => `/api/v1/deployments/${encodeURIComponent(deploymentId)}/cloud-chat`,
     [deploymentId],
   );
 
-  const refreshSessions = useCallback(async () => {
+  const refreshSessions = useCallback(async (selectFallback = true) => {
     const response = await apiFetch(`${base}/sessions`);
     if (!response.ok) throw new Error(await responseError(response));
     const payload = await response.json() as { sessions?: unknown[]; items?: unknown[] };
@@ -263,7 +379,9 @@ export function CloudChatWorkspace({
       .filter((item: CloudSession | null): item is CloudSession => Boolean(item));
     setSessions(rows);
     setCurrentSessionId(previous => {
-      const next = rows.some(item => item.id === previous) ? previous : rows[0]?.id || "";
+      const next = rows.some(item => item.id === previous)
+        ? previous
+        : selectFallback ? rows[0]?.id || "" : "";
       currentSessionIdRef.current = next;
       return next;
     });
@@ -281,17 +399,17 @@ export function CloudChatWorkspace({
       .map(normalizeMessage)
       .filter((item: CloudMessage | null): item is CloudMessage => Boolean(item));
     setMessages(rows);
-    if (
-      waitingForResponseRef.current
-      && rows.some(
-        message => message.role === "assistant" && !assistantIdsBeforeSendRef.current.has(message.id),
-      )
-    ) {
+    const hasNewAssistant = rows.some(
+      message => message.role === "assistant" && !assistantIdsBeforeSendRef.current.has(message.id),
+    );
+    if (hasNewAssistant) setStreamingAssistant(null);
+    if (waitingForResponseRef.current && hasNewAssistant) {
       waitingForResponseRef.current = false;
       setWaitingForResponse(false);
       awaitingRunIdRef.current = "";
       awaitingAcceptedSeqRef.current = 0;
       assistantIdsBeforeSendRef.current = new Set();
+      setStreamingAssistant(null);
     }
   }, [base]);
 
@@ -328,6 +446,7 @@ export function CloudChatWorkspace({
     setCurrentSessionId("");
     currentSessionIdRef.current = "";
     setMessages([]);
+    setStreamingAssistant(null);
     setInteractions([]);
     waitingForResponseRef.current = false;
     setWaitingForResponse(false);
@@ -338,6 +457,11 @@ export function CloudChatWorkspace({
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [refreshSessions, refreshTick]);
+
+  useEffect(() => () => {
+    streamAbortRef.current?.abort();
+    streamAbortRef.current = null;
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -354,7 +478,14 @@ export function CloudChatWorkspace({
           if (!item || typeof item !== "object") return null;
           const model = item as Record<string, unknown>;
           const id = String(model.id ?? model.model ?? model.name ?? "").trim();
-          return id ? { id, label: String(model.display_name ?? model.displayName ?? model.label ?? id) } : null;
+          const capabilities = model.capabilities && typeof model.capabilities === "object"
+            ? model.capabilities as Record<string, unknown>
+            : undefined;
+          return id ? {
+            id,
+            label: String(model.display_name ?? model.displayName ?? model.label ?? id),
+            capabilities,
+          } : null;
         }).filter((item): item is CloudModel => Boolean(item));
         const current = String(payload.current ?? payload.configured_model ?? payload.configuredModel ?? "").trim();
         setModels(normalized);
@@ -365,6 +496,26 @@ export function CloudChatWorkspace({
       });
     return () => { cancelled = true; };
   }, [base]);
+
+  useEffect(() => {
+    setApprovalMode(normalizeApprovalMode(localStorage.getItem(approvalModeStorageKey(agentId))));
+    setCollaborationMode(localStorage.getItem(`agentkit:chat:collaboration:${agentId}`) === "plan" ? "plan" : "default");
+    setReasoningEffort("");
+  }, [agentId]);
+
+  useEffect(() => {
+    setCommandIndex(0);
+  }, [input]);
+
+  const selectedCloudModel = models.find(item => item.id === selectedModel);
+  const effectiveReasoningEffort = explicitReasoningEfforts(selectedCloudModel).includes(reasoningEffort)
+    ? reasoningEffort
+    : "";
+  useEffect(() => {
+    if (reasoningEffort && !explicitReasoningEfforts(selectedCloudModel).includes(reasoningEffort)) {
+      setReasoningEffort("");
+    }
+  }, [reasoningEffort, selectedCloudModel]);
 
   useEffect(() => {
     refreshMessages(currentSessionId).catch(error => {
@@ -401,6 +552,7 @@ export function CloudChatWorkspace({
     currentSessionIdRef.current = session.id;
     setCurrentSessionId(session.id);
     setMessages([]);
+    setStreamingAssistant(null);
     setInteractions([]);
     assistantIdsBeforeSendRef.current = new Set();
     return session.id;
@@ -416,7 +568,21 @@ export function CloudChatWorkspace({
   }
 
   async function sendMessage() {
-    const content = input.trim();
+    const submission = parseComposerSubmission(input);
+    if (submission.kind === "toggle-plan") {
+      selectComposerCommand("plan");
+      return;
+    }
+    if (submission.kind === "set-default") {
+      selectComposerCommand("default");
+      return;
+    }
+    if (submission.kind === "goal" && !submission.objective) {
+      showToast("请补充目标", "在 /goal 后输入需要持续完成的目标", "error");
+      return;
+    }
+    const goalObjective = submission.kind === "goal" ? submission.objective : "";
+    const content = submission.kind === "message" ? submission.text : goalObjective;
     // React state is committed after the handler returns.  The ref closes the
     // small gap in which Enter and a click could both create an initial cloud
     // session before `sending` has rendered as true.
@@ -425,6 +591,7 @@ export function CloudChatWorkspace({
     setSending(true);
     waitingForResponseRef.current = true;
     setWaitingForResponse(true);
+    setStreamingAssistant(null);
     try {
       const contentParts: Array<Record<string, unknown>> = [];
       if (content) contentParts.push({ type: "input_text", text: content });
@@ -441,7 +608,23 @@ export function CloudChatWorkspace({
           .map(message => message.id),
       );
       awaitingRunIdRef.current = "";
-      awaitingAcceptedSeqRef.current = 0;
+      const cursorResponse = await apiFetch(
+        `${base}/sessions/${encodeURIComponent(sessionId)}/events`,
+      );
+      if (!cursorResponse.ok) throw new Error(await responseError(cursorResponse));
+      const cursorPayload = await cursorResponse.json() as { events?: unknown[] };
+      awaitingAcceptedSeqRef.current = (cursorPayload.events || []).reduce((latest, event) => {
+        if (!event || typeof event !== "object") return latest;
+        const record = event as Record<string, unknown>;
+        const payload = record.payload && typeof record.payload === "object"
+          ? record.payload as Record<string, unknown>
+          : record;
+        const seq = Number(
+          payload.seq ?? payload.seq_id ?? payload.source_session_seq
+          ?? record.seq ?? record.seq_id ?? 0,
+        ) || 0;
+        return Math.max(latest, seq);
+      }, 0);
       const optimistic: CloudMessage = {
         id: `local-${crypto.randomUUID()}`,
         role: "user",
@@ -450,13 +633,62 @@ export function CloudChatWorkspace({
         pending: true,
       };
       setMessages(previous => [...previous, optimistic]);
+      streamAbortRef.current?.abort();
+      const streamController = new AbortController();
+      streamAbortRef.current = streamController;
+      const streamUrl = `${base}/sessions/${encodeURIComponent(sessionId)}/events/stream?afterSeqId=${awaitingAcceptedSeqRef.current}`;
+      apiFetch(streamUrl, {
+        headers: { Accept: "text/event-stream" },
+        signal: streamController.signal,
+      }).then(response => consumeSseResponse(response, frame => {
+        if (!frame || typeof frame !== "object") return;
+        const record = frame as Record<string, unknown>;
+        const payload = record.payload && typeof record.payload === "object"
+          ? record.payload as Record<string, unknown>
+          : record;
+        const eventRunId = String(
+          payload.run_id ?? payload.runId ?? record.run_id ?? record.runId ?? "",
+        );
+        const eventSeq = Number(payload.seq ?? payload.seq_id ?? record.seq ?? record.seq_id ?? 0) || 0;
+        if (awaitingRunIdRef.current && eventRunId && eventRunId !== awaitingRunIdRef.current) return;
+        if (awaitingAcceptedSeqRef.current && eventSeq && eventSeq <= awaitingAcceptedSeqRef.current) return;
+        const delta = streamedAssistantText(frame);
+        if (delta) {
+          setStreamingAssistant(previous => ({
+            id: `stream-${awaitingRunIdRef.current || sessionId}`,
+            role: "assistant",
+            content: delta.cumulative ? delta.text : `${previous?.content || ""}${delta.text}`,
+            timestamp: new Date().toISOString(),
+            streaming: true,
+          }));
+        }
+        const terminal = terminalRunEvent(
+          [frame],
+          awaitingRunIdRef.current,
+          awaitingAcceptedSeqRef.current,
+        );
+        if (terminal) {
+          waitingForResponseRef.current = false;
+          setWaitingForResponse(false);
+          refreshMessages(sessionId).catch(() => {});
+          refreshInteractions(sessionId).catch(() => {});
+          refreshSessions().catch(() => {});
+        }
+      }, streamController.signal)).catch(() => {
+        // Timed polling remains the compatibility fallback if the canonical
+        // event stream is unavailable, but the stream is opened before the
+        // blocking RunAgent response so real deltas can render immediately.
+      });
       const response = await apiFetch(`${base}/sessions/${encodeURIComponent(sessionId)}/messages`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           content: contentParts,
           model: selectedModel || undefined,
+          modelOptions: effectiveReasoningEffort ? { reasoning: { effort: effectiveReasoningEffort } } : {},
           toolApprovalMode: approvalMode,
+          collaborationMode,
+          goalObjective: goalObjective || undefined,
         }),
       });
       if (!response.ok) throw new Error(await responseError(response));
@@ -464,9 +696,10 @@ export function CloudChatWorkspace({
       setAttachments([]);
       const receipt = await response.json() as Record<string, unknown>;
       awaitingRunIdRef.current = String(receipt.run_id ?? receipt.runId ?? receipt.RunId ?? "");
-      awaitingAcceptedSeqRef.current = Number(
-        receipt.accepted_seq ?? receipt.acceptedSeq ?? receipt.AcceptedSeq ?? 0,
-      ) || 0;
+      awaitingAcceptedSeqRef.current = Math.max(
+        awaitingAcceptedSeqRef.current,
+        Number(receipt.accepted_seq ?? receipt.acceptedSeq ?? receipt.AcceptedSeq ?? 0) || 0,
+      );
       // Admission is complete once the receipt arrives. Session-list refresh
       // is metadata work and must not keep the composer in `sending` while
       // the runtime response is already available.
@@ -483,11 +716,28 @@ export function CloudChatWorkspace({
       awaitingRunIdRef.current = "";
       awaitingAcceptedSeqRef.current = 0;
       assistantIdsBeforeSendRef.current = new Set();
+      streamAbortRef.current?.abort();
+      streamAbortRef.current = null;
       showToast("云端消息发送失败", message, "error");
     } finally {
       setSending(false);
       sendInFlightRef.current = false;
     }
+  }
+
+  function setCloudCollaborationMode(next: CollaborationMode) {
+    setCollaborationMode(next);
+    localStorage.setItem(`agentkit:chat:collaboration:${agentId}`, next);
+    setInput("");
+    showToast(next === "plan" ? "计划模式已开启" : "已切换到 Agent Loop", "下一轮云端对话生效", "success");
+  }
+
+  function selectComposerCommand(id: ComposerCommand["id"]) {
+    if (id === "goal") {
+      setInput("/goal ");
+      return;
+    }
+    setCloudCollaborationMode(id === "plan" ? (collaborationMode === "plan" ? "default" : "plan") : "default");
   }
 
   async function deleteSession(sessionId: string) {
@@ -497,11 +747,17 @@ export function CloudChatWorkspace({
       const response = await apiFetch(`${base}/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
       if (!response.ok) throw new Error(await responseError(response));
       setSessions(previous => previous.filter(item => item.id !== sessionId));
-      if (currentSessionId === sessionId) {
+      const deletedCurrent = currentSessionIdRef.current === sessionId;
+      if (deletedCurrent) {
+        streamAbortRef.current?.abort();
+        streamAbortRef.current = null;
         currentSessionIdRef.current = "";
         setCurrentSessionId("");
         setMessages([]);
+        setStreamingAssistant(null);
+        setInteractions([]);
       }
+      await refreshSessions(!deletedCurrent);
     } catch (error) {
       showToast("删除云端会话失败", error instanceof Error ? error.message : String(error), "error");
     } finally {
@@ -549,18 +805,25 @@ export function CloudChatWorkspace({
         <div className="chat-session-list" role="list">
           {loading && <div className="chat-list-loading"><Loader2 size={16} /> 正在同步…</div>}
           {!loading && !sessions.length && <p className="chat-sidebar-empty">还没有云端会话</p>}
-          {sessions.map(session => (
-            <div className={`chat-session-item${session.id === currentSessionId ? " active" : ""}`} key={session.id} role="listitem">
+          {sessions.map(session => {
+            const activity = cloudSessionActivity(session.state);
+            return (
+            <div className={`chat-session-item${session.id === currentSessionId ? " active" : ""}${activity === "running" ? " running" : ""}`} key={session.id} role="listitem">
               <button className="chat-session-main" type="button" onClick={() => {
                 currentSessionIdRef.current = session.id;
                 setCurrentSessionId(session.id);
               }}>
                 <strong>{session.title}</strong>
-                <span>{session.state || session.updatedAt || "云端"}</span>
+                {activity && (
+                  <span
+                    className={`session-status ${activity}`}
+                    aria-label={activity === "running" ? "运行中" : activity === "waiting_input" ? "等待输入" : "运行失败"}
+                  />
+                )}
               </button>
               <button className="chat-session-delete" type="button" aria-label={`删除会话 ${session.title}`} title="删除会话" disabled={deleting === session.id} onClick={() => deleteSession(session.id)}><Trash2 size={15} /></button>
             </div>
-          ))}
+          )})}
         </div>
       </aside>
       <div className="chat-conversation">
@@ -571,11 +834,17 @@ export function CloudChatWorkspace({
           {!currentSessionId && !loading && <div className="chat-empty"><span className="chat-empty-icon"><Bot /></span><h2>开始一段云端会话</h2></div>}
           {sessions.find(session => session.id === currentSessionId)?.state === "failed" && <div className="cloud-chat-run-warning"><ShieldAlert size={15} />这次云端运行未完成；可新建会话后重试。若持续失败，请到可观测页面按会话查看记录。</div>}
           {messages.map(message => (
-            <article key={message.id} className={`message ${message.role}${message.pending ? " pending" : ""}`}>
+            <article key={message.id} className={`message ${message.role}${message.pending ? " pending" : ""}${message.streaming ? " streaming" : ""}`}>
               <div className="message-meta">{message.role === "user" ? "你" : agentName}</div>
-              <div className="message-content"><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content || "…"}</ReactMarkdown></div>
+              <div className="message-content"><ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{message.content || "…"}</ReactMarkdown></div>
             </article>
           ))}
+          {streamingAssistant && !messages.some(message => message.id === streamingAssistant.id) && (
+            <article key={streamingAssistant.id} className="message assistant streaming" aria-label="云端流式回复">
+              <div className="message-meta">{agentName}</div>
+              <div className="message-content"><ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{streamingAssistant.content}</ReactMarkdown></div>
+            </article>
+          )}
           {(sending || waitingForResponse) && <div className="cloud-chat-pending"><Loader2 size={15} /> 正在等待云端响应…</div>}
         </div>
         <div className="chat-composer-wrap">
@@ -593,31 +862,55 @@ export function CloudChatWorkspace({
               ))}
             </div>
           )}
-          <div className="chat-composer">
-            <textarea value={input} onChange={event => setInput(event.target.value)} placeholder="发送到云端 Agent" disabled={!active || sending || waitingForResponse} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); sendMessage(); } }} />
-            {attachments.length > 0 && <div className="cloud-chat-attachments">{attachments.map((file, index) => <span key={`${file.name}-${file.size}-${index}`}><Paperclip size={13} />{file.name}<button type="button" aria-label={`移除附件 ${file.name}`} onClick={() => setAttachments(previous => previous.filter((_, itemIndex) => itemIndex !== index))}><X size={12} /></button></span>)}</div>}
-            <div className="chat-composer-footer cloud-chat-composer-footer">
-              <div className="cloud-chat-composer-tools">
-                <label className="icon-button tertiary" title="上传附件" aria-label="上传附件"><input type="file" multiple hidden onChange={event => {
-                  const files = Array.from(event.target.files || []);
-                  const oversized = files.find(file => file.size > 10 * 1024 * 1024);
-                  if (oversized) showToast("附件过大", `${oversized.name} 超过 10 MB 限制`, "error");
-                  setAttachments(previous => {
-                    const accepted = files.filter(file => file.size <= 10 * 1024 * 1024);
-                    if (previous.length + accepted.length > 8) showToast("附件过多", "每轮最多上传 8 个附件", "error");
-                    return [...previous, ...accepted].slice(0, 8);
-                  });
-                  event.target.value = "";
-                }} /><Paperclip size={17} /></label>
-                {models.length > 0 && <select aria-label="选择模型" value={selectedModel} onChange={event => setSelectedModel(event.target.value)}>{models.map(model => <option key={model.id} value={model.id}>{model.label}</option>)}</select>}
-                <select aria-label="审批级别" value={approvalMode} onChange={event => setApprovalMode(event.target.value as ApprovalMode)}>
-                  <option value="ask">请求批准</option>
-                  <option value="risk">风险操作需确认</option>
-                </select>
-              </div>
-              <button className="icon-button primary" type="button" disabled={(!input.trim() && attachments.length === 0) || sending || waitingForResponse || !active} onClick={sendMessage} aria-label="发送"><Send size={17} /></button>
-            </div>
-          </div>
+          <ChatComposer
+            input={input}
+            placeholder={collaborationMode === "plan" ? "描述需要云端 Agent 规划的任务…" : "发送到云端 Agent"}
+            disabled={!active || sending || waitingForResponse}
+            active={active}
+            attachments={attachments.map((file, index) => ({
+              id: `${index}:${file.name}:${file.size}`,
+              name: file.name,
+              kind: file.type.startsWith("image/") ? "image" : file.type.startsWith("text/") ? "text" : "file",
+              size: file.size,
+            }))}
+            mode={collaborationMode}
+            approvalMode={approvalMode}
+            models={models.map((item): ComposerModelOption => ({
+              id: item.id,
+              label: item.label,
+              reasoningEfforts: explicitReasoningEfforts(item),
+            }))}
+            model={selectedModel}
+            reasoningEffort={reasoningEffort}
+            commandIndex={commandIndex}
+            canSend={Boolean(input.trim() || attachments.length)}
+            attachmentAccept=""
+            onInputChange={setInput}
+            onFiles={files => {
+              const oversized = files.find(file => file.size > 10 * 1024 * 1024);
+              if (oversized) showToast("附件过大", `${oversized.name} 超过 10 MB 限制`, "error");
+              setAttachments(previous => {
+                const accepted = files.filter(file => file.size <= 10 * 1024 * 1024);
+                if (previous.length + accepted.length > 8) showToast("附件过多", "每轮最多上传 8 个附件", "error");
+                return [...previous, ...accepted].slice(0, 8);
+              });
+            }}
+            onRemoveAttachment={id => {
+              const targetIndex = Number(id.split(":", 1)[0]);
+              setAttachments(previous => previous.filter((_, index) => index !== targetIndex));
+            }}
+            onSetMode={setCloudCollaborationMode}
+            onStartGoal={() => selectComposerCommand("goal")}
+            onApprovalModeChange={next => {
+              setApprovalMode(next);
+              localStorage.setItem(approvalModeStorageKey(agentId), next);
+            }}
+            onModelChange={setSelectedModel}
+            onReasoningEffortChange={setReasoningEffort}
+            onCommandSelect={selectComposerCommand}
+            onCommandIndexChange={setCommandIndex}
+            onSend={() => { void sendMessage(); }}
+          />
         </div>
       </div>
     </section>

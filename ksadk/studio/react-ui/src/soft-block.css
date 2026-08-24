@@ -2081,7 +2081,7 @@ details.build-log > pre {
 
 .delivery-stat-strip {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   overflow: hidden;
   border-radius: var(--radius-card);
   background: var(--surface);
@@ -2178,6 +2178,7 @@ details.build-log > pre {
 
 .delivery-empty-state h2 { margin: 0; color: var(--text); font-size: var(--font-size-card-metric); }
 .delivery-empty-state p { margin: 0; color: var(--text-tertiary); }
+.delivery-empty-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
 
 .delivery-table-scroll {
   overflow-x: auto;
@@ -2189,7 +2190,8 @@ details.build-log > pre {
 
 .delivery-table {
   width: 100%;
-  min-width: 880px;
+  min-width: 820px;
+  table-layout: fixed;
   border-collapse: collapse;
   background: var(--surface);
   font-size: var(--font-size-meta);
@@ -2215,6 +2217,47 @@ details.build-log > pre {
 .delivery-table td code { color: var(--text); font-size: var(--font-size-caption); }
 .delivery-table td small { display: block; margin-top: 3px; color: var(--text-tertiary); font-size: var(--font-size-caption); }
 .delivery-row-actions { display: flex; justify-content: flex-end; gap: 6px; white-space: nowrap; }
+.delivery-table th:first-child { width: 25%; }
+.delivery-table th:nth-child(2) { width: 11%; }
+.delivery-table th:nth-child(3) { width: 16%; }
+.delivery-table th:nth-child(4) { width: 15%; }
+.delivery-table th:nth-child(5) { width: 19%; }
+.delivery-table th:last-child { width: 14%; }
+.delivery-updated-at {
+  overflow: hidden;
+  display: block;
+  color: var(--text-tertiary);
+  font-size: var(--font-size-caption);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.delivery-agent-identity {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.delivery-agent-identity:hover strong { color: var(--accent); }
+.delivery-agent-identity:focus-visible {
+  border-radius: var(--radius-control);
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.delivery-agent-identity strong,
+.delivery-agent-identity code {
+  overflow: hidden;
+  max-width: 280px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.delivery-agent-identity strong { color: var(--text); }
+.deployment-detail-heading { display: flex; align-items: center; gap: 10px; }
 
 .rollback-panel {
   display: grid;
@@ -2226,6 +2269,40 @@ details.build-log > pre {
 .rollback-panel label { display: grid; gap: 6px; color: var(--text-secondary); font-size: var(--font-size-meta); }
 .rollback-panel select { min-height: 36px; padding: 0 10px; border: 0; border-radius: var(--radius-chip); background: var(--surface-subtle); color: var(--text); outline: 1px solid var(--studio-outline-inset); outline-offset: -1px; }
 .rollback-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+.deployment-version-history {
+  display: grid;
+  gap: 12px;
+  margin-top: 22px;
+}
+
+.deployment-version-history h3,
+.deployment-version-history p { margin: 0; }
+.deployment-version-history p { color: var(--text-tertiary); font-size: var(--font-size-meta); }
+.deployment-version-list { display: grid; gap: 8px; }
+.deployment-version-list > div {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 12px;
+  border-radius: var(--radius-inset);
+  background: var(--surface-subtle);
+  outline: 1px solid var(--studio-outline-inset);
+  outline-offset: -1px;
+}
+.deployment-version-list > div[data-current="true"] { outline-color: var(--accent); }
+.deployment-version-list > div > div { display: grid; min-width: 0; gap: 3px; }
+.deployment-version-list strong { color: var(--text); font-size: var(--font-size-meta); }
+.deployment-version-list code {
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: var(--font-size-caption);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.deployment-version-list span { flex: 0 0 auto; color: var(--text-tertiary); font-size: var(--font-size-caption); }
 
 .more-actions-menu {
   min-width: 176px;

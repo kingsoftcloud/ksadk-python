@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { Command } from "cmdk";
-import { Check, ListTodo, Paperclip, Plus, Target, Undo2 } from "lucide-react";
+import { Check, Infinity, ListTodo, Paperclip, Plus, Target, Undo2 } from "lucide-react";
 import {
   COMPOSER_ATTACHMENT_ACCEPT,
   visibleComposerCommands,
@@ -13,9 +13,11 @@ interface ComposerActionMenuProps {
   mode: CollaborationMode;
   disabled: boolean;
   onTogglePlan: () => void;
+  onSetDefault: () => void;
   onStartGoal: () => void;
   onFiles: (files: File[]) => void;
   active?: boolean;
+  attachmentAccept?: string;
 }
 
 function CommandIcon({ id }: { id: ComposerCommand["id"] }) {
@@ -28,9 +30,11 @@ export function ComposerActionMenu({
   mode,
   disabled,
   onTogglePlan,
+  onSetDefault,
   onStartGoal,
   onFiles,
   active = true,
+  attachmentAccept = COMPOSER_ATTACHMENT_ACCEPT,
 }: ComposerActionMenuProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [open, setOpen] = useState(false);
@@ -45,7 +49,7 @@ export function ComposerActionMenu({
         type="file"
         tabIndex={-1}
         multiple
-        accept={COMPOSER_ATTACHMENT_ACCEPT}
+        accept={attachmentAccept || undefined}
         onChange={event => {
           const files = [...(event.target.files || [])];
           event.target.value = "";
@@ -72,7 +76,12 @@ export function ComposerActionMenu({
               <span><strong>添加图片或文本</strong><small>最多 4 个附件</small></span>
             </DropdownMenu.Item>
             <DropdownMenu.Separator className="composer-action-separator" />
-            <DropdownMenu.Label className="composer-action-heading">运行控制</DropdownMenu.Label>
+            <DropdownMenu.Label className="composer-action-heading">运行方式</DropdownMenu.Label>
+            <DropdownMenu.Item className="composer-action-item" onSelect={onSetDefault}>
+              <Infinity size={16} />
+              <span><strong>Agent Loop</strong><small>直接执行并持续处理工具调用</small></span>
+              {mode === "default" && <Check className="composer-action-check" size={15} />}
+            </DropdownMenu.Item>
             <DropdownMenu.Item className="composer-action-item" onSelect={onTogglePlan}>
               <ListTodo size={16} />
               <span><strong>计划模式</strong><small>下一轮使用 Codex Plan</small></span>

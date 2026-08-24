@@ -21,7 +21,8 @@ import { StudioSelect } from "./components/ui/StudioSelect";
 import { useStudioViewportMode } from "./useStudioViewportMode";
 import { useStudioTheme } from "./useStudioTheme";
 import {
-  selectCloudChatDeployments,
+  mergeCloudChatTargets,
+  resolveCloudChatRoute,
   type CloudDeploymentSummary,
 } from "./cloudDeployments";
 import {
@@ -190,12 +191,21 @@ export default function App() {
 
   const loadCloudDeployments = useCallback(async () => {
     try {
-      const response = await apiFetch("/api/v1/deployments");
-      if (!response.ok) return;
-      const payload = await response.json();
-      const items = selectCloudChatDeployments(payload.items || []);
+      const [receiptResponse, accountResponse] = await Promise.all([
+        apiFetch("/api/v1/deployments"),
+        apiFetch("/api/v1/cloud-agents?size=100"),
+      ]);
+      if (!receiptResponse.ok) return;
+      const receiptPayload = await receiptResponse.json();
+      const accountPayload = accountResponse.ok ? await accountResponse.json() : { items: [] };
+      const items = mergeCloudChatTargets(
+        receiptPayload.items || [],
+        accountPayload.items || [],
+      );
       setCloudDeployments(items);
-      setCloudDeploymentId(previous => items.some((item: CloudDeploymentSummary) => item.id === previous) ? previous : "");
+      setCloudDeploymentId(previous => items.some((item: CloudDeploymentSummary) => (
+        item.id === previous && resolveCloudChatRoute(item).kind === "studio-session-events"
+      )) ? previous : "");
     } catch {
       // Deployment receipts are optional for a local-only workspace.
     }
@@ -220,13 +230,16 @@ export default function App() {
     if (view === "conversations") setChatMounted(true);
   }
 
-  const selectedCloudDeployment = cloudDeployments.find(item => item.id === cloudDeploymentId);
+  const studioCloudDeployments = cloudDeployments.filter(
+    item => resolveCloudChatRoute(item).kind === "studio-session-events",
+  );
+  const selectedCloudDeployment = studioCloudDeployments.find(item => item.id === cloudDeploymentId);
   const isCloudChat = view === "conversations" && Boolean(selectedCloudDeployment);
   const chatTargetOptions = [
     ...agents.map(agent => ({ value: `local:${agent.metadata.id}`, label: `本地 · ${agent.metadata.name}` })),
-    ...cloudDeployments.map(deployment => ({
+    ...studioCloudDeployments.map(deployment => ({
       value: `cloud:${deployment.id}`,
-      label: `云端 · ${deployment.agentId}`,
+      label: `云端 · ${deployment.agentName || deployment.agentId}`,
     })),
   ];
   const chatTargetValue = selectedCloudDeployment
@@ -238,6 +251,7 @@ export default function App() {
   function switchChatTarget(value: string) {
     const [kind, id] = value.split(":", 2);
     if (kind === "cloud" && id) {
+      if (!studioCloudDeployments.some(item => item.id === id)) return;
       setCloudDeploymentId(id);
       setRunPanelOpen(false);
       setChatMounted(true);
@@ -252,7 +266,16 @@ export default function App() {
   function enterChat(agentId?: string) {
     const id = agentId || currentAgentId || agents[0]?.metadata.id || "";
     if (!id) { openCreate(); return; }
+    setCloudDeploymentId("");
     setCurrentAgentId(id);
+    setChatMounted(true);
+    setView("conversations");
+  }
+
+  function enterCloudChat(deploymentId: string) {
+    if (!studioCloudDeployments.some(item => item.id === deploymentId)) return;
+    setCloudDeploymentId(deploymentId);
+    setRunPanelOpen(false);
     setChatMounted(true);
     setView("conversations");
   }
@@ -409,7 +432,7 @@ export default function App() {
                   key={selectedCloudDeployment.id}
                   deploymentId={selectedCloudDeployment.id}
                   agentId={selectedCloudDeployment.agentId || "Agent"}
-                  agentName={selectedCloudDeployment.agentId || "云端 Agent"}
+                  agentName={selectedCloudDeployment.agentName || selectedCloudDeployment.agentId || "云端 Agent"}
                   active={view === "conversations"}
                   refreshTick={refreshTick}
                 />
@@ -485,7 +508,13 @@ export default function App() {
             )}
             {view === "resources" && <ResourcesPage kind={resourceKind} onKindChange={openResources} refreshTick={refreshTick} />}
             {view === "builds" && <BuildsPage currentAgentId={currentAgentId} agents={agents} onSelectAgent={setCurrentAgentId} onCreate={openCreate} />}
-            {view === "deployments" && <DeploymentsPage onCreate={openCreate} />}
+            {view === "deployments" && (
+              <DeploymentsPage
+                onCreate={openCreate}
+                onOpenChat={enterCloudChat}
+                onSelectBuild={() => setView("builds")}
+              />
+            )}
             {view === "observability" && (
               <ObservabilityPage refreshTick={refreshTick} />
             )}

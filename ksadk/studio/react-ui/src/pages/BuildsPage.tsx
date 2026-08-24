@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Package, Plus } from "lucide-react";
+import { CloudUpload, Package, Plus } from "lucide-react";
 import { apiFetch } from "../api";
 import { PageHeaderActions } from "../components/PageHeaderPortal";
 import { showToast } from "../components/Toast";
@@ -63,7 +63,6 @@ export function BuildsPage({ currentAgentId, agents, onSelectAgent, onCreate }: 
   onSelectAgent: (id: string) => void;
   onCreate: () => void;
 }) {
-  void onSelectAgent;
   const [detail, setDetail] = useState<any>(null);
   const [status, setStatus] = useState("IDLE");
   const [log, setLog] = useState("选择 Agent 后开始本地构建。\n");
@@ -88,6 +87,7 @@ export function BuildsPage({ currentAgentId, agents, onSelectAgent, onCreate }: 
   const draft = detail?.draft;
   const builds: BuildRecord[] = detail?.builds || [];
   const latestBuild = builds.find(build => build.status === "SUCCEEDED") || builds[0];
+  const deployable = latestBuild?.status === "SUCCEEDED" && !building;
   const selectedAgent = agents.find(agent => agent.metadata.id === currentAgentId);
   const isManagedRuntime = draft?.spec?.runtime?.type === "codex";
   const deliveryLabel = (value: string) => isManagedRuntime
@@ -122,6 +122,12 @@ export function BuildsPage({ currentAgentId, agents, onSelectAgent, onCreate }: 
     requestAnimationFrame(() => {
       if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
     });
+  }
+
+  function openDeploymentFlow() {
+    if (!currentAgentId || !deployable) return;
+    onSelectAgent(currentAgentId);
+    window.location.hash = `#/agents/${encodeURIComponent(currentAgentId)}`;
   }
 
   async function build() {
@@ -211,7 +217,18 @@ export function BuildsPage({ currentAgentId, agents, onSelectAgent, onCreate }: 
             <div className="delivery-fact-chain">
               <div className="delivery-fact-step" data-state={draft ? "ready" : "idle"}><span>{isManagedRuntime ? "输入 YAML Revision" : "输入 Revision"}</span><strong>{draft ? `r${draft.metadata.revision}` : "未选择"}</strong><code>{draft?.metadata?.id || "-"}</code></div>
               <div className="delivery-fact-step" data-state={state}><span>{isManagedRuntime ? "声明摘要" : "不可变 Bundle"}</span><strong>{latestBuild?.status === "SUCCEEDED" ? (isManagedRuntime ? "已校验" : "已生成") : deliveryLabel(status)}</strong><code>{latestBuild?.bundleDigest || "尚无 digest"}</code></div>
-              <div className="delivery-fact-step" data-state="idle"><span>云端部署</span><strong>尚未部署</strong><code>请从部署页提交准入</code></div>
+              <div className="delivery-fact-step" data-state={deployable ? "ready" : "idle"}>
+                <span>下一步</span>
+                <strong>{deployable ? "构建完成，下一步可部署到云端" : "等待构建完成"}</strong>
+                <code>{deployable ? "前往 Agent 详情确认并提交部署" : "成功 Build 生成后开放部署入口"}</code>
+                {deployable && (
+                  <div className="delivery-empty-actions">
+                    <button className="button secondary compact" type="button" onClick={openDeploymentFlow}>
+                      <CloudUpload size={15} />部署到云端
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
           </section>
 

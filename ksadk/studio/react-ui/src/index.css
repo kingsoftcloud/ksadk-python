@@ -151,6 +151,10 @@
   background: color-mix(in srgb, var(--text) 6%, var(--surface));
 }
 
+.chat-session-item.running:not(.active) {
+  background: color-mix(in srgb, var(--accent) 4%, var(--surface));
+}
+
 .chat-session-main {
   width: 100%;
   min-width: 0;
@@ -192,8 +196,14 @@
 
 .chat-session-main .session-status.running {
   border-color: var(--accent);
-  background: var(--accent);
-  animation: chat-running-pulse 1.5s ease-in-out infinite;
+  border-top-color: transparent;
+  background: transparent;
+  animation: chat-running-ring 0.8s linear infinite;
+}
+
+.chat-session-main .session-status.failed {
+  border-color: var(--danger);
+  background: var(--danger);
 }
 
 .chat-session-main .session-status.paused {
@@ -1186,9 +1196,8 @@ details[open] > summary .details-chevron { transform: rotate(180deg); }
   43%, 100% { opacity: 0.2; }
 }
 
-@keyframes chat-running-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 22%, transparent); }
-  50% { box-shadow: 0 0 0 4px transparent; }
+@keyframes chat-running-ring {
+  to { transform: rotate(360deg); }
 }
 
 @keyframes chat-approval-menu-enter {

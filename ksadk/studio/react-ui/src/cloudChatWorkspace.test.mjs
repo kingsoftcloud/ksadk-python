@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const source = readFileSync(resolve(import.meta.dirname, "components/CloudChatWorkspace.tsx"), "utf8");
+const composerSource = readFileSync(resolve(import.meta.dirname, "components/ChatComposer.tsx"), "utf8");
 const settingsSource = readFileSync(resolve(import.meta.dirname, "components/SettingsOverlay.tsx"), "utf8");
 
 test("cloud chat keeps polling until an admitted run reaches a terminal response", () => {
@@ -44,14 +45,18 @@ test("cloud chat exposes a failed run without implementation or credential copy"
   assert.doesNotMatch(settingsSource, /不可变 Bundle|deployment receipt|伪造身份/);
 });
 
-test("cloud composer stays limited to attachments, model and approval controls", () => {
-  assert.match(source, /aria-label="上传附件"/);
-  assert.match(source, /aria-label="选择模型"/);
-  assert.match(source, /aria-label="审批级别"/);
+test("cloud composer reuses the shared controls and sends turn policy explicitly", () => {
+  assert.match(source, /<ChatComposer/);
+  assert.match(composerSource, /ComposerActionMenu/);
+  assert.match(composerSource, /ApprovalModeMenu/);
+  assert.match(composerSource, /ModelReasoningMenu/);
   assert.match(source, /toolApprovalMode: approvalMode/);
+  assert.match(source, /collaborationMode/);
+  assert.match(source, /goalObjective/);
+  assert.match(source, /modelOptions: effectiveReasoningEffort/);
   assert.match(source, /type: "input_image"/);
   assert.match(source, /type: "input_file"/);
-  assert.doesNotMatch(source, /option value="full"/);
+  assert.doesNotMatch(source, /<select/);
 });
 
 test("cloud chat normalizes projected approval lifecycle events", () => {

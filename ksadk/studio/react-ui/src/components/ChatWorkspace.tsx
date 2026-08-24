@@ -1,31 +1,22 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   Bot,
   BrainCircuit,
-  Check,
   ChevronDown,
-  FileText,
-  Hand,
-  ListTodo,
   Loader2,
   MessageSquarePlus,
   Pause,
   Play,
   Send,
   ShieldAlert,
-  ShieldCheck,
   Terminal,
   Trash2,
   Wrench,
-  X,
 } from "lucide-react";
 import { apiFetch } from "../api";
 import {
-  APPROVAL_MODES,
-  approvalModeOption,
   approvalModeStorageKey,
   normalizeApprovalMode,
   type ApprovalMode,
@@ -56,16 +47,18 @@ import {
   buildResponsesInput,
   encodedComposerAttachmentsBytes,
   fileToComposerAttachment,
-  formatAttachmentSize,
   MAX_COMPOSER_ATTACHMENT_BYTES,
   MAX_COMPOSER_ATTACHMENTS,
   parseComposerSubmission,
-  visibleComposerCommands,
   type CollaborationMode,
   type ComposerAttachment,
   type ComposerCommand,
 } from "../composerActions";
-import { ComposerActionMenu, ComposerCommandMenu } from "./ComposerActionMenu";
+import {
+  ChatComposer,
+  type ComposerModelOption,
+  type ReasoningEffort,
+} from "./ChatComposer";
 import { RuntimeModeBar, type RuntimeMode, type RuntimeModeStatus } from "./RuntimeModeBar";
 import { redactTechnicalError, runErrorCopy } from "../utils/chatErrors";
 
@@ -75,6 +68,7 @@ interface ChatModel {
   displayName?: string;
   context_window_tokens?: number;
   contextWindowTokens?: number;
+  capabilities?: Record<string, unknown>;
 }
 
 interface ChatWorkspaceProps {
@@ -88,80 +82,12 @@ interface ChatWorkspaceProps {
   onOpenSettings?: () => void;
 }
 
-function ApprovalModeMenu({
-  value,
-  onChange,
-  active,
-}: {
-  value: ApprovalMode;
-  onChange: (value: ApprovalMode) => void;
-  active: boolean;
-}) {
-  const [open, setOpen] = useState(false);
-  useEffect(() => {
-    if (!active) setOpen(false);
-  }, [active]);
-  const selected = approvalModeOption(value);
-  const icon = value === "ask"
-    ? <Hand size={15} />
-    : value === "full"
-      ? <ShieldAlert size={15} />
-      : <ShieldCheck size={15} />;
-  return (
-    <DropdownMenu.Root open={open} onOpenChange={setOpen}>
-      <DropdownMenu.Trigger asChild>
-        <button
-          className={`chat-approval-trigger ${value}`}
-          type="button"
-          aria-label={`批准模式：${selected.label}`}
-          title={`${selected.label}；下一轮生效`}
-        >
-          {icon}
-          <span>{selected.compactLabel}</span>
-          <ChevronDown size={13} />
-        </button>
-      </DropdownMenu.Trigger>
-      <DropdownMenu.Portal>
-        <DropdownMenu.Content
-          className="chat-approval-menu"
-          side="top"
-          sideOffset={9}
-          align="start"
-          collisionPadding={12}
-        >
-          <div className="chat-approval-menu-heading">
-            <strong>如何批准 Agent 操作？</strong>
-            <span>下一轮生效</span>
-          </div>
-          <DropdownMenu.RadioGroup
-            value={value}
-            onValueChange={next => onChange(normalizeApprovalMode(next))}
-          >
-            {APPROVAL_MODES.map(option => (
-              <DropdownMenu.RadioItem
-                key={option.value}
-                value={option.value}
-                className={`chat-approval-option ${option.value}`}
-              >
-                <span className="chat-approval-option-icon">
-                  {option.value === "ask" ? <Hand size={17} />
-                    : option.value === "full" ? <ShieldAlert size={17} />
-                      : <ShieldCheck size={17} />}
-                </span>
-                <span className="chat-approval-option-copy">
-                  <strong>{option.label}</strong>
-                  <small>{option.description}</small>
-                </span>
-                <DropdownMenu.ItemIndicator className="chat-approval-indicator">
-                  <Check size={16} />
-                </DropdownMenu.ItemIndicator>
-              </DropdownMenu.RadioItem>
-            ))}
-          </DropdownMenu.RadioGroup>
-        </DropdownMenu.Content>
-      </DropdownMenu.Portal>
-    </DropdownMenu.Root>
-  );
+function explicitReasoningEfforts(model?: ChatModel): ReasoningEffort[] {
+  const raw = model?.capabilities?.reasoning_efforts;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((value): value is ReasoningEffort => (
+    value === "low" || value === "medium" || value === "high"
+  ));
 }
 
 function ContextRing({
@@ -198,84 +124,6 @@ function ContextRing({
         <small>{tooltip.detail}</small>
       </span>
     </span>
-  );
-}
-
-function ModelMenu({
-  models,
-  value,
-  disabled,
-  onChange,
-  active,
-  onConfigure,
-}: {
-  models: ChatModel[];
-  value: string;
-  disabled: boolean;
-  onChange: (value: string) => void;
-  active: boolean;
-  onConfigure?: () => void;
-}) {
-  const [open, setOpen] = useState(false);
-  useEffect(() => {
-    if (!active) setOpen(false);
-  }, [active]);
-  const selected = models.find(item => item.id === value);
-  const label = selected?.display_name || selected?.displayName || selected?.id || "未绑定模型";
-  if (models.length === 0) {
-    return (
-      <button
-        className="chat-model-trigger missing"
-        type="button"
-        aria-label="当前 Agent 未绑定模型，前往配置"
-        title="当前 Agent 未绑定模型"
-        onClick={onConfigure}
-      >
-        <Wrench size={13} />
-        <span>未绑定模型</span>
-      </button>
-    );
-  }
-  const title = models.length === 1
-    ? "当前 Agent 仅绑定一个模型；可前往 Agent 配置调整"
-    : "切换模型；下一轮生效";
-  return (
-    <DropdownMenu.Root open={open} onOpenChange={setOpen}>
-      <DropdownMenu.Trigger asChild>
-        <button
-          className="chat-model-trigger"
-          type="button"
-          disabled={disabled}
-          aria-label={`选择模型，当前 ${label}`}
-          title={title}
-        >
-          <span>{label}</span>
-          <ChevronDown size={13} />
-        </button>
-      </DropdownMenu.Trigger>
-      <DropdownMenu.Portal>
-        <DropdownMenu.Content
-          className="chat-model-menu"
-          side="top"
-          sideOffset={9}
-          align="end"
-          collisionPadding={12}
-        >
-          <div className="chat-model-menu-heading">选择下一轮使用的模型</div>
-          <DropdownMenu.RadioGroup value={value} onValueChange={onChange}>
-            {models.map(item => {
-              const itemLabel = item.display_name || item.displayName || item.id;
-              return (
-                <DropdownMenu.RadioItem key={item.id} value={item.id} className="chat-model-option">
-                  <span>{itemLabel}</span>
-                  <DropdownMenu.ItemIndicator><Check size={15} /></DropdownMenu.ItemIndicator>
-                </DropdownMenu.RadioItem>
-              );
-            })}
-          </DropdownMenu.RadioGroup>
-        </DropdownMenu.Content>
-      </DropdownMenu.Portal>
-    </DropdownMenu.Root>
   );
 }
 
@@ -727,6 +575,7 @@ export function ChatWorkspace({
   const [input, setInput] = useState("");
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>("risk");
   const [collaborationMode, setCollaborationMode] = useState<CollaborationMode>("default");
+  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("");
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [commandIndex, setCommandIndex] = useState(0);
   const [stream, setStream] = useState<ChatStreamState | null>(null);
@@ -791,7 +640,20 @@ export function ChatWorkspace({
       ?? latestReportedInputTokens(visibleRuns),
     selectedModel?.context_window_tokens ?? selectedModel?.contextWindowTokens,
   );
-  const slashCommands = visibleComposerCommands(input);
+  const composerModels: ComposerModelOption[] = models.map(item => ({
+    id: item.id,
+    label: item.display_name || item.displayName || item.id,
+    reasoningEfforts: explicitReasoningEfforts(item),
+  }));
+  const effectiveReasoningEffort = explicitReasoningEfforts(selectedModel).includes(reasoningEffort)
+    ? reasoningEffort
+    : "";
+
+  useEffect(() => {
+    if (reasoningEffort && !explicitReasoningEfforts(selectedModel).includes(reasoningEffort)) {
+      setReasoningEffort("");
+    }
+  }, [reasoningEffort, selectedModel]);
 
   const refreshRuns = useCallback(async () => {
     const runResponse = await apiFetch("/api/v1/runs");
@@ -840,6 +702,7 @@ export function ChatWorkspace({
     setApprovalMode(normalizeApprovalMode(localStorage.getItem(approvalModeStorageKey(agentId))));
     const storedMode = localStorage.getItem(`agentkit:chat:collaboration:${agentId}`);
     setCollaborationMode(storedMode === "plan" ? "plan" : "default");
+    setReasoningEffort("");
     setAttachments([]);
   }, [agentId]);
 
@@ -1009,6 +872,7 @@ export function ChatWorkspace({
         signal: controller.signal,
         body: JSON.stringify({
           model,
+          ...(effectiveReasoningEffort ? { reasoning: { effort: effectiveReasoningEffort } } : {}),
           input: buildResponsesInput(content, turnAttachments),
           stream: true,
           metadata: {
@@ -1178,7 +1042,7 @@ export function ChatWorkspace({
           ) : filteredSessions.length === 0 ? (
             <div className="session-empty">{query ? "没有匹配的会话" : "还没有会话"}</div>
           ) : filteredSessions.map(session => (
-            <div key={session.id} className={`chat-session-item${currentSessionId === session.id ? " active" : ""}`}>
+            <div key={session.id} className={`chat-session-item${currentSessionId === session.id ? " active" : ""}${session.running ? " running" : ""}`}>
               <button
                 className="chat-session-main"
                 type="button"
@@ -1299,91 +1163,26 @@ export function ChatWorkspace({
               onStop={cancelResponse}
             />
           )}
-          <div className="chat-composer" data-ui="sender">
-            <ComposerCommandMenu
-              input={input}
-              activeIndex={commandIndex}
-              onSelect={selectComposerCommand}
-            />
-            {attachments.length > 0 && (
-              <div className="chat-attachment-list" aria-label="本轮附件">
-                {attachments.map(attachment => (
-                  <div key={attachment.id} className={`chat-attachment-chip ${attachment.kind}`}>
-                    {attachment.kind === "image" && attachment.dataUrl
-                      ? <img src={attachment.dataUrl} alt="" />
-                      : <span className="chat-attachment-icon"><FileText size={15} /></span>}
-                    <span className="chat-attachment-copy">
-                      <strong>{attachment.name}</strong>
-                      <small>{attachment.kind === "image" ? "图片" : "文本"} · {formatAttachmentSize(attachment.size)}</small>
-                    </span>
-                    <button
-                      type="button"
-                      aria-label={`移除附件 ${attachment.name}`}
-                      onClick={() => setAttachments(current => current.filter(item => item.id !== attachment.id))}
-                    >
-                      <X size={13} />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-            <textarea
-              ref={textareaRef}
-              rows={1}
-              value={input}
-              onChange={event => setInput(event.target.value)}
-              onKeyDown={event => {
-                if (slashCommands.length && ["ArrowDown", "ArrowUp"].includes(event.key)) {
-                  event.preventDefault();
-                  const direction = event.key === "ArrowDown" ? 1 : -1;
-                  setCommandIndex(current => (current + direction + slashCommands.length) % slashCommands.length);
-                  return;
-                }
-                if (slashCommands.length && event.key === "Escape") {
-                  event.preventDefault();
-                  setInput("");
-                  return;
-                }
-                if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-                  event.preventDefault();
-                  if (slashCommands.length) {
-                    selectComposerCommand(slashCommands[Math.min(commandIndex, slashCommands.length - 1)].id);
-                    return;
-                  }
-                  sendMessage();
-                }
-              }}
-              placeholder={collaborationMode === "plan" ? "描述需要规划的任务…" : "输入消息，或输入 / 使用命令…"}
-              aria-label="消息"
-              disabled={isGenerating}
-            />
-            <div className="chat-composer-footer">
-              <ComposerActionMenu
-                mode={collaborationMode}
-                disabled={isGenerating}
-                active={active}
-                onTogglePlan={togglePlanMode}
-                onStartGoal={() => selectComposerCommand("goal")}
-                onFiles={addAttachments}
-              />
-              {collaborationMode === "plan" && (
-                <button className="chat-mode-chip" type="button" title="点击返回默认模式" onClick={togglePlanMode}>
-                  <ListTodo size={14} />
-                  <span>计划</span>
-                </button>
-              )}
-              <ApprovalModeMenu value={approvalMode} onChange={changeApprovalMode} active={active} />
-              <span className="chat-composer-spacer" />
-              <ContextRing {...contextUsage} />
-              <ModelMenu
-                models={models}
-                value={model}
-                disabled={models.length <= 1 || isGenerating}
-                onChange={setModel}
-                active={active}
-                onConfigure={onConfigureAgent}
-              />
-              {activeStatus === "paused" ? (
+          <ChatComposer
+            input={input}
+            placeholder={collaborationMode === "plan" ? "描述需要规划的任务…" : "输入消息，或输入 / 使用命令…"}
+            disabled={isGenerating}
+            active={active}
+            attachments={attachments.map(attachment => ({
+              id: attachment.id,
+              name: attachment.name,
+              kind: attachment.kind,
+              size: attachment.size,
+              previewUrl: attachment.dataUrl,
+            }))}
+            mode={collaborationMode}
+            approvalMode={approvalMode}
+            models={composerModels}
+            model={model}
+            reasoningEffort={reasoningEffort}
+            commandIndex={commandIndex}
+            contextControl={<ContextRing {...contextUsage} />}
+            sendControl={activeStatus === "paused" ? (
                 <button className="chat-send-button resume" type="button" aria-label="继续生成" title="继续生成" onClick={resumeResponse}><Play size={15} fill="currentColor" /></button>
               ) : activeStatus === "waiting_input" ? (
                 <button className="chat-send-button pause" type="button" aria-label="等待交互输入" title="请先处理上方交互卡片" disabled><Loader2 size={15} className="animate-spin" /></button>
@@ -1392,8 +1191,23 @@ export function ChatWorkspace({
               ) : (
                 <button className="chat-send-button" type="button" aria-label="发送消息" title="发送消息" onClick={() => { void sendMessage(); }} disabled={!input.trim() && !attachments.length}><Send size={15} /></button>
               )}
-            </div>
-          </div>
+            canSend={Boolean(input.trim() || attachments.length)}
+            textareaRef={textareaRef}
+            onInputChange={setInput}
+            onFiles={addAttachments}
+            onRemoveAttachment={id => setAttachments(current => current.filter(item => item.id !== id))}
+            onSetMode={next => {
+              if (next !== collaborationMode) togglePlanMode();
+            }}
+            onStartGoal={() => selectComposerCommand("goal")}
+            onApprovalModeChange={changeApprovalMode}
+            onModelChange={setModel}
+            onReasoningEffortChange={setReasoningEffort}
+            onConfigureModel={onConfigureAgent}
+            onCommandSelect={selectComposerCommand}
+            onCommandIndexChange={setCommandIndex}
+            onSend={() => { void sendMessage(); }}
+          />
         </footer>
       </section>
 

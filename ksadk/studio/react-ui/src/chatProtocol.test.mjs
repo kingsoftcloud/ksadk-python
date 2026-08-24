@@ -15,6 +15,47 @@ async function loadChatProtocol() {
   return import(moduleUrl);
 }
 
+test("decodes optional Runtime v2 goal loop and plan capabilities", async () => {
+  const chat = await loadChatProtocol();
+  const native = { supported: true, mode: "native" };
+  const matrix = chat.decodeCapabilityMatrix({
+    schema_version: 1,
+    cancel: native,
+    pause: native,
+    resume: native,
+    submit_interaction: native,
+    attach: native,
+    steer: native,
+    inject: native,
+    checkpoint: native,
+    durable_restore: native,
+    goal: native,
+    loop: native,
+    plan: native,
+  });
+
+  assert.equal(matrix.goal.supported, true);
+  assert.equal(matrix.loop.mode, "native");
+  assert.equal(matrix.plan.mode, "native");
+
+  const legacyWireMatrix = {
+    schema_version: 1,
+    cancel: native,
+    pause: native,
+    resume: native,
+    submit_interaction: native,
+    attach: native,
+    steer: native,
+    inject: native,
+    checkpoint: native,
+    durable_restore: native,
+  };
+  const legacyMatrix = chat.decodeCapabilityMatrix(legacyWireMatrix);
+  assert.equal(legacyMatrix.goal, undefined);
+  assert.equal(legacyMatrix.loop, undefined);
+  assert.equal(legacyMatrix.plan, undefined);
+});
+
 test("parses fragmented Responses SSE and accumulates reasoning plus output", async () => {
   const chat = await loadChatProtocol();
   const events = [];

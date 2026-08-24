@@ -12,6 +12,7 @@ describe("ComposerActionMenu", () => {
       <ComposerActionMenu
         mode="default"
         disabled={false}
+        onSetDefault={vi.fn()}
         onTogglePlan={togglePlan}
         onStartGoal={startGoal}
         onFiles={() => {}}
@@ -40,6 +41,7 @@ describe("ComposerActionMenu", () => {
     const props = {
       mode: "default" as const,
       disabled: false,
+      onSetDefault: vi.fn(),
       onTogglePlan: vi.fn(),
       onStartGoal: vi.fn(),
       onFiles: vi.fn(),

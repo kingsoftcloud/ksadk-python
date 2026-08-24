@@ -959,12 +959,38 @@ export interface RuntimeCapabilityMatrix {
   inject: RuntimeCapability;
   checkpoint: RuntimeCapability;
   durable_restore: RuntimeCapability;
+  goal?: RuntimeCapability | null;
+  loop?: RuntimeCapability | null;
+  plan?: RuntimeCapability | null;
 }
 
 const CAPABILITY_KEYS = [
   "cancel", "pause", "resume", "submit_interaction", "attach",
   "steer", "inject", "checkpoint", "durable_restore",
 ] as const;
+
+const EXECUTION_MODE_KEYS = ["goal", "loop", "plan"] as const;
+
+function decodeRuntimeCapability(raw: unknown, path: string): RuntimeCapability {
+  const capability = asRecord(raw);
+  if (
+    !capability
+    || typeof capability.supported !== "boolean"
+    || (capability.mode !== "native" && capability.mode !== "emulated" && capability.mode !== "unavailable")
+  ) {
+    throw new ContractMismatchError(`RuntimeCapabilityMatrix/v1 mismatch at ${path}`);
+  }
+  if (!capability.supported && (capability.mode !== "unavailable" || typeof capability.reason !== "string" || !capability.reason)) {
+    throw new ContractMismatchError(
+      `RuntimeCapabilityMatrix/v1 mismatch at ${path}: unsupported capability requires mode=unavailable and reason`,
+    );
+  }
+  return {
+    supported: capability.supported,
+    mode: capability.mode,
+    reason: (capability.reason as string | null) ?? null,
+  };
+}
 
 /** Strict decoder for RuntimeCapabilityMatrix/v1. */
 export function decodeCapabilityMatrix(raw: unknown): RuntimeCapabilityMatrix {
@@ -974,24 +1000,12 @@ export function decodeCapabilityMatrix(raw: unknown): RuntimeCapabilityMatrix {
   }
   const matrix = { schema_version: 1 as const } as RuntimeCapabilityMatrix;
   for (const key of CAPABILITY_KEYS) {
-    const capability = asRecord(value[key]);
-    if (
-      !capability
-      || typeof capability.supported !== "boolean"
-      || (capability.mode !== "native" && capability.mode !== "emulated" && capability.mode !== "unavailable")
-    ) {
-      throw new ContractMismatchError(`RuntimeCapabilityMatrix/v1 mismatch at ${key}`);
+    matrix[key] = decodeRuntimeCapability(value[key], key);
+  }
+  for (const key of EXECUTION_MODE_KEYS) {
+    if (value[key] !== undefined && value[key] !== null) {
+      matrix[key] = decodeRuntimeCapability(value[key], key);
     }
-    if (!capability.supported && (capability.mode !== "unavailable" || typeof capability.reason !== "string" || !capability.reason)) {
-      throw new ContractMismatchError(
-        `RuntimeCapabilityMatrix/v1 mismatch at ${key}: unsupported capability requires mode=unavailable and reason`,
-      );
-    }
-    matrix[key] = {
-      supported: capability.supported,
-      mode: capability.mode,
-      reason: (capability.reason as string | null) ?? null,
-    };
   }
   return matrix;
 }

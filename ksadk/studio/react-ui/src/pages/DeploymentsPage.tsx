@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { CloudUpload, ExternalLink, RefreshCw, RotateCcw } from "lucide-react";
+import { ArrowLeft, CloudUpload, ExternalLink, MessagesSquare, RefreshCw } from "lucide-react";
 import { apiFetch } from "../api";
+import { ConfirmDialog } from "../components/ConfirmDialog";
+import { MoreActionsMenu } from "../components/MoreActionsMenu";
 import { PageHeaderActions } from "../components/PageHeaderPortal";
 import { showToast } from "../components/Toast";
+import { mergeCloudChatTargets, resolveCloudChatRoute } from "../cloudDeployments";
 
 interface Deployment {
   id: string;
@@ -13,21 +16,45 @@ interface Deployment {
   target: { region: string; environment: string };
   agentId?: string;
   instanceId?: string;
+  endpoint?: string;
   artifactId?: string;
+  source?: "receipt" | "account";
+  agentName?: string;
+  framework?: string;
+  runtimeType?: string;
+  capabilities?: Record<string, unknown>;
+  chatTransport?: "studio-session-events" | "official-dashboard";
+  chatRoutingReason?:
+    | "declared-session-event-chat-capability"
+    | "native-runtime-without-session-event-chat-capability"
+    | "studio-compatible-framework";
+  updatedAt?: string;
 }
 
 interface BuildCandidate {
   id: string;
   status: string;
   bundleDigest?: string;
+  createdAt?: string;
+  runtimeName?: string;
+  runtimeVersion?: string;
+}
+
+interface DeploymentDetail {
+  deployment: Deployment;
+  sourceAgentId: string;
+  sourceAgentName: string;
+  builds: BuildCandidate[];
+  loading: boolean;
+  error: string;
 }
 
 const OPERATION_TERMINAL = new Set(["SUCCEEDED", "FAILED", "CANCELLED", "TIMED_OUT", "INTERRUPTED"]);
 
 function deploymentState(status: string): "ready" | "failed" | "pending" | "idle" {
-  if (status === "READY") return "ready";
-  if (["FAILED", "ROLLED_BACK"].includes(status)) return "failed";
-  if (["ADMITTING", "DEPLOYING"].includes(status)) return "pending";
+  if (["READY", "RUNNING"].includes(status)) return "ready";
+  if (["FAILED", "ROLLED_BACK", "ERROR", "TERMINATED"].includes(status)) return "failed";
+  if (["ADMITTING", "DEPLOYING", "CREATING", "UPDATING"].includes(status)) return "pending";
   return "idle";
 }
 
@@ -38,6 +65,11 @@ function deploymentLabel(status: string): string {
     READY: "已就绪",
     FAILED: "部署失败",
     ROLLED_BACK: "已回滚",
+    RUNNING: "运行中",
+    CREATING: "创建中",
+    UPDATING: "更新中",
+    ERROR: "异常",
+    TERMINATED: "已终止",
   } as Record<string, string>)[status] || "状态未知";
 }
 
@@ -45,22 +77,77 @@ function shortId(value: string, max = 28): string {
   return value.length > max ? `${value.slice(0, max)}…` : value;
 }
 
-export function DeploymentsPage({ onCreate }: { onCreate: () => void }) {
+function deploymentRouteId(): string {
+  const match = window.location.hash.match(/^#\/deployments\/([^/]+)$/);
+  return match ? decodeURIComponent(match[1]) : "";
+}
+
+function formatUpdatedAt(value?: string): string {
+  if (!value) return "—";
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString("zh-CN", { hour12: false });
+}
+
+export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
+  onCreate: () => void;
+  onOpenChat: (deploymentId: string) => void;
+  onSelectBuild: () => void;
+}) {
   const [deployments, setDeployments] = useState<Deployment[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [refreshing, setRefreshing] = useState<Set<string>>(new Set());
   const [rollback, setRollback] = useState<{ deployment: Deployment; candidates: BuildCandidate[]; targetBuildId: string } | null>(null);
   const [rollbackBusy, setRollbackBusy] = useState(false);
+  const [detail, setDetail] = useState<DeploymentDetail | null>(null);
+  const [updating, setUpdating] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<Deployment | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
-      const response = await apiFetch("/api/v1/deployments");
-      if (!response.ok) throw new Error(`读取部署记录失败（${response.status}）`);
-      const payload = await response.json();
-      setDeployments(Array.isArray(payload.items) ? payload.items : []);
+      const [receiptResponse, accountResponse] = await Promise.all([
+        apiFetch("/api/v1/deployments"),
+        apiFetch("/api/v1/cloud-agents?size=100"),
+      ]);
+      if (!receiptResponse.ok) throw new Error(`读取部署记录失败（${receiptResponse.status}）`);
+      const receiptPayload = await receiptResponse.json();
+      const accountPayload = accountResponse.ok ? await accountResponse.json() : { items: [] };
+      const receipts: Deployment[] = Array.isArray(receiptPayload.items) ? receiptPayload.items : [];
+      const receiptById = new Map(receipts.map(item => [item.id, item]));
+      const targets = mergeCloudChatTargets(receipts, accountPayload.items || []);
+      const rows = targets.map(target => {
+        if (target.source === "receipt") {
+          return {
+            ...receiptById.get(target.id)!,
+            ...target,
+            id: target.id,
+            source: "receipt" as const,
+          };
+        }
+        const account = (accountPayload.items || []).find((item: any) => item.agentId === target.agentId) || {};
+        return {
+          id: target.id,
+          buildId: "",
+          bundleDigest: "",
+          versionId: String(target.versionId || account.versionId || ""),
+          status: String(target.status || account.status || "UNKNOWN").toUpperCase(),
+          target: { region: String(account.region || ""), environment: "cloud" },
+          agentId: target.agentId,
+          agentName: target.agentName,
+          endpoint: target.endpoint,
+          framework: String(target.framework || account.framework || ""),
+          runtimeType: String(target.runtimeType || account.runtimeType || ""),
+          capabilities: target.capabilities || account.capabilities,
+          chatTransport: target.chatTransport || account.chatTransport,
+          chatRoutingReason: target.chatRoutingReason || account.chatRoutingReason,
+          updatedAt: String(target.updatedAt || account.updatedAt || ""),
+          source: "account" as const,
+        };
+      });
+      setDeployments(rows);
     } catch (caught: any) {
       setError(caught?.message || "部署记录不可用");
     } finally {
@@ -70,19 +157,53 @@ export function DeploymentsPage({ onCreate }: { onCreate: () => void }) {
 
   useEffect(() => { void load(); }, [load]);
 
+  useEffect(() => {
+    const syncDetailRoute = () => {
+      const routeId = deploymentRouteId();
+      if (!routeId) {
+        setDetail(null);
+        return;
+      }
+      const deployment = deployments.find(item => item.id === routeId);
+      if (deployment && detail?.deployment.id !== routeId) void openDetail(deployment, false);
+    };
+    syncDetailRoute();
+    window.addEventListener("popstate", syncDetailRoute);
+    window.addEventListener("hashchange", syncDetailRoute);
+    return () => {
+      window.removeEventListener("popstate", syncDetailRoute);
+      window.removeEventListener("hashchange", syncDetailRoute);
+    };
+  }, [deployments, detail?.deployment.id]);
+
   const summary = useMemo(() => ({
-    ready: deployments.filter(item => item.status === "READY").length,
-    pending: deployments.filter(item => ["ADMITTING", "DEPLOYING"].includes(item.status)).length,
-    failed: deployments.filter(item => ["FAILED", "ROLLED_BACK"].includes(item.status)).length,
+    ready: deployments.filter(item => deploymentState(item.status) === "ready").length,
+    pending: deployments.filter(item => deploymentState(item.status) === "pending").length,
+    failed: deployments.filter(item => deploymentState(item.status) === "failed").length,
   }), [deployments]);
 
   async function refresh(deployment: Deployment) {
     setRefreshing(current => new Set(current).add(deployment.id));
     try {
-      const response = await apiFetch(`/api/v1/deployments/${encodeURIComponent(deployment.id)}`);
+      const response = deployment.source === "account"
+        ? await apiFetch(`/api/v1/cloud-agents/${encodeURIComponent(deployment.agentId || "")}`)
+        : await apiFetch(`/api/v1/deployments/${encodeURIComponent(deployment.id)}`);
       if (!response.ok) throw new Error(`状态刷新失败（${response.status}）`);
       const updated = await response.json();
-      setDeployments(current => current.map(item => item.id === deployment.id ? updated : item));
+      const next = deployment.source === "account" ? {
+        ...deployment,
+        status: String(updated.status || deployment.status).toUpperCase(),
+        agentName: updated.name || deployment.agentName,
+        endpoint: updated.endpoint || deployment.endpoint,
+        framework: updated.framework || deployment.framework,
+        runtimeType: updated.runtimeType || deployment.runtimeType,
+        capabilities: updated.capabilities || deployment.capabilities,
+        chatTransport: updated.chatTransport || deployment.chatTransport,
+        chatRoutingReason: updated.chatRoutingReason || deployment.chatRoutingReason,
+        versionId: updated.versionId || deployment.versionId,
+        updatedAt: updated.updatedAt || deployment.updatedAt,
+      } : { ...deployment, ...updated, source: "receipt" as const };
+      setDeployments(current => current.map(item => item.id === deployment.id ? next : item));
     } catch (caught: any) {
       setError(`${deployment.instanceId || deployment.id}：${caught?.message || "状态未知"}`);
     } finally {
@@ -101,8 +222,12 @@ export function DeploymentsPage({ onCreate }: { onCreate: () => void }) {
   async function openHostedUi(deployment: Deployment) {
     setError("");
     try {
+      const chatRoute = resolveCloudChatRoute(deployment);
+      const dashboardPath = chatRoute.kind === "official-dashboard" || deployment.source === "account"
+        ? `/api/v1/cloud-agents/${encodeURIComponent(deployment.agentId || "")}:dashboard`
+        : `/api/v1/deployments/${encodeURIComponent(deployment.id)}:dashboard`;
       const response = await apiFetch(
-        `/api/v1/deployments/${encodeURIComponent(deployment.id)}:dashboard`,
+        dashboardPath,
         { method: "POST" },
       );
       if (!response.ok) throw new Error(`创建云端 UI 访问链接失败（${response.status}）`);
@@ -115,7 +240,140 @@ export function DeploymentsPage({ onCreate }: { onCreate: () => void }) {
     }
   }
 
+  async function openDetail(deployment: Deployment, navigate = true) {
+    if (navigate) {
+      window.history.pushState(null, "", `#/deployments/${encodeURIComponent(deployment.id)}`);
+    }
+    setDetail({ deployment, sourceAgentId: "", sourceAgentName: "", builds: [], loading: true, error: "" });
+    try {
+      if (deployment.source === "account") {
+        const accountResponse = await apiFetch(`/api/v1/cloud-agents/${encodeURIComponent(deployment.agentId || "")}`);
+        if (!accountResponse.ok) throw new Error(`刷新云端 Agent 状态失败（${accountResponse.status}）`);
+        const account = await accountResponse.json();
+        const refreshed = {
+          ...deployment,
+          agentName: String(account.name || deployment.agentName || deployment.agentId || "云端 Agent"),
+          status: String(account.status || deployment.status).toUpperCase(),
+          endpoint: account.endpoint || deployment.endpoint,
+          framework: account.framework || deployment.framework,
+          runtimeType: account.runtimeType || deployment.runtimeType,
+          capabilities: account.capabilities || deployment.capabilities,
+          chatTransport: account.chatTransport || deployment.chatTransport,
+          chatRoutingReason: account.chatRoutingReason || deployment.chatRoutingReason,
+          versionId: account.versionId || deployment.versionId,
+          updatedAt: account.updatedAt || deployment.updatedAt,
+        };
+        setDeployments(current => current.map(item => item.id === deployment.id ? refreshed : item));
+        setDetail({
+          deployment: refreshed,
+          sourceAgentId: "",
+          sourceAgentName: refreshed.agentName || refreshed.agentId || "账号云端 Agent",
+          builds: [],
+          loading: false,
+          error: "",
+        });
+        return;
+      }
+      const deploymentResponse = await apiFetch(`/api/v1/deployments/${encodeURIComponent(deployment.id)}`);
+      if (!deploymentResponse.ok) throw new Error(`刷新云端 Agent 状态失败（${deploymentResponse.status}）`);
+      const refreshed = {
+        ...deployment,
+        ...(await deploymentResponse.json() as Deployment),
+        source: "receipt" as const,
+      };
+      setDeployments(current => current.map(item => item.id === deployment.id ? refreshed : item));
+      const buildResponse = await apiFetch(`/api/v1/builds/${encodeURIComponent(refreshed.buildId)}`);
+      if (!buildResponse.ok) throw new Error(`读取当前 Build 失败（${buildResponse.status}）`);
+      const build = await buildResponse.json();
+      const sourceAgentId = String(build.agentId || "").trim();
+      if (!sourceAgentId) throw new Error("当前部署缺少本地 Agent 关联");
+      const agentResponse = await apiFetch(`/api/v1/agents/${encodeURIComponent(sourceAgentId)}`);
+      if (!agentResponse.ok) throw new Error(`读取本地 Build 历史失败（${agentResponse.status}）`);
+      const agent = await agentResponse.json();
+      const builds = (Array.isArray(agent.builds) ? agent.builds : [])
+        .filter((item: BuildCandidate) => item.status === "SUCCEEDED")
+        .sort((left: BuildCandidate, right: BuildCandidate) => String(right.createdAt || "").localeCompare(String(left.createdAt || "")));
+      setDetail({
+        deployment: refreshed,
+        sourceAgentId,
+        sourceAgentName: String(agent?.draft?.metadata?.name || sourceAgentId),
+        builds,
+        loading: false,
+        error: "",
+      });
+    } catch (caught: any) {
+      setDetail(current => current ? { ...current, loading: false, error: caught?.message || "云端 Agent 详情不可用" } : null);
+    }
+  }
+
+  function closeDetail() {
+    setDetail(null);
+    window.history.pushState(null, "", "#/deployments");
+  }
+
+  async function updateToBuild(deployment: Deployment, buildId: string) {
+    if (!buildId || updating) return;
+    setUpdating(true);
+    setError("");
+    try {
+      const response = await apiFetch(`/api/v1/builds/${encodeURIComponent(buildId)}/deployments`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": `studio-update-${deployment.id}-${buildId}-${Date.now()}`,
+        },
+        body: JSON.stringify({
+          target: deployment.target,
+          releasePolicy: { strategy: "rolling", approval: "none" },
+        }),
+      });
+      if (!response.ok) throw new Error(`更新提交失败（${response.status}）`);
+      const operation = await response.json();
+      let result: any;
+      for (let attempt = 0; attempt < 150; attempt += 1) {
+        await new Promise(resolve => setTimeout(resolve, 200));
+        const status = await apiFetch(`/api/v1/operations/${encodeURIComponent(operation.id)}`);
+        if (!status.ok) throw new Error(`更新状态读取失败（${status.status}）`);
+        result = await status.json();
+        if (OPERATION_TERMINAL.has(result.status)) break;
+      }
+      if (!result || !OPERATION_TERMINAL.has(result.status)) throw new Error("更新操作等待超时");
+      if (result.status !== "SUCCEEDED") throw new Error(result.error?.message || "更新未完成");
+      setDetail(null);
+      await load();
+      showToast("已提交云端更新", `Build ${buildId}`);
+    } catch (caught: any) {
+      setError(caught?.message || "更新失败");
+    } finally {
+      setUpdating(false);
+    }
+  }
+
+  async function deleteCloudAgent() {
+    if (!deleteTarget || deleting) return;
+    const target = deleteTarget;
+    setDeleting(true);
+    setError("");
+    try {
+      const deletePath = target.source === "account"
+        ? `/api/v1/cloud-agents/${encodeURIComponent(target.agentId || "")}`
+        : `/api/v1/deployments/${encodeURIComponent(target.id)}`;
+      const response = await apiFetch(deletePath, { method: "DELETE" });
+      if (!response.ok) throw new Error(`删除云端 Agent 失败（${response.status}）`);
+      const result = await response.json();
+      setDeleteTarget(null);
+      setDetail(null);
+      await load();
+      showToast("云端 Agent 已删除", String(result.agentId || target.agentId || ""));
+    } catch (caught: any) {
+      setError(caught?.message || "删除云端 Agent 失败");
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   async function openRollback(deployment: Deployment) {
+    if (deployment.source === "account" || !deployment.buildId) return;
     setError("");
     try {
       const buildResponse = await apiFetch(`/api/v1/builds/${encodeURIComponent(deployment.buildId)}`);
@@ -171,52 +429,180 @@ export function DeploymentsPage({ onCreate }: { onCreate: () => void }) {
     }
   }
 
+  if (detail) {
+    const latestBuild = detail.builds[0];
+    const hasReceipt = detail.deployment.source === "receipt";
+    const canUpdate = hasReceipt && detail.deployment.artifactId === "managed-runtime"
+      && Boolean(latestBuild)
+      && latestBuild.id !== detail.deployment.buildId;
+    const chatRoute = resolveCloudChatRoute(detail.deployment);
+    return (
+      <div className="delivery-page deployment-detail-page" data-layout="document">
+        <PageHeaderActions>
+          <button className="button secondary" type="button" onClick={closeDetail}>
+            <ArrowLeft size={15} /><span>返回云端 Agent</span>
+          </button>
+          {hasReceipt && (
+            <button className="button secondary" type="button" onClick={() => {
+              const deployment = detail.deployment;
+              closeDetail();
+              void openRollback(deployment);
+            }} disabled={updating}>选择版本回滚</button>
+          )}
+          {canUpdate && (
+            <button className="button secondary" type="button" onClick={() => void updateToBuild(detail.deployment, latestBuild.id)} disabled={updating}>
+              {updating ? "更新中…" : "部署最新 Build"}
+            </button>
+          )}
+          {deploymentState(detail.deployment.status) === "ready" && (
+            <button
+              className="button accent"
+              type="button"
+              onClick={() => chatRoute.kind === "official-dashboard"
+                ? void openHostedUi(detail.deployment)
+                : onOpenChat(detail.deployment.id)}
+              disabled={updating}
+            >
+              {chatRoute.kind === "official-dashboard"
+                ? <><ExternalLink size={15} />打开官方 Dashboard</>
+                : <><MessagesSquare size={15} />进入会话</>}
+            </button>
+          )}
+        </PageHeaderActions>
+
+        <div className="delivery-intro deployment-detail-heading">
+          <button className="button tertiary compact" type="button" onClick={closeDetail} aria-label="返回云端 Agent">
+            <ArrowLeft size={16} />
+          </button>
+          <div>
+            <h2>{detail.deployment.agentName || detail.sourceAgentName || "云端 Agent"}</h2>
+            <p>{detail.deployment.agentId || detail.deployment.id}</p>
+          </div>
+        </div>
+
+        {detail.error && <div className="form-error" role="alert">{detail.error}</div>}
+        <section className="delivery-block" aria-label="云端 Agent 详情">
+          <div className="api-contract" aria-label="云端部署事实">
+            <div><span>名称</span><strong>{detail.deployment.agentName || detail.sourceAgentName}</strong></div>
+            <div><span>来源</span><strong>{hasReceipt ? "Studio 部署记录" : "账号云端 Agent"}</strong></div>
+            <div><span>状态</span><strong>{deploymentLabel(detail.deployment.status)}</strong></div>
+            <div><span>云端 Agent</span><code>{detail.deployment.agentId || "尚未返回"}</code></div>
+            <div><span>类型</span><code>{detail.deployment.framework || detail.deployment.artifactId || "尚未返回"}</code></div>
+            <div><span>Endpoint</span><code>{detail.deployment.endpoint || "尚未返回"}</code></div>
+            {detail.deployment.instanceId && <div><span>实例</span><code>{detail.deployment.instanceId}</code></div>}
+            {hasReceipt && <div><span>当前 Build</span><code>{detail.deployment.buildId}</code></div>}
+            <div><span>当前版本</span><code>{detail.deployment.versionId || "尚未返回"}</code></div>
+            <div><span>更新时间</span><code>{formatUpdatedAt(detail.deployment.updatedAt)}</code></div>
+            {hasReceipt && <div><span>Bundle</span><code title={detail.deployment.bundleDigest}>{detail.deployment.bundleDigest}</code></div>}
+          </div>
+          {hasReceipt ? <section className="deployment-version-history" aria-label="Build 版本历史">
+            <div><h3>Build 版本历史</h3><p>{detail.sourceAgentName || "正在读取本地 Agent 关联…"}</p></div>
+            {detail.loading ? <p>正在读取版本…</p> : (
+              <div className="deployment-version-list">
+                {detail.builds.map(build => (
+                  <div key={build.id} data-current={build.id === detail.deployment.buildId}>
+                    <div><strong>{build.id === detail.deployment.buildId ? "当前版本" : "可用版本"}</strong><code>{build.id}</code></div>
+                    <span>{build.createdAt || build.runtimeVersion || "成功 Build"}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section> : <div className="callout"><div><strong>无 Studio 部署记录</strong><p>这个 Agent 来自当前云账号；没有可追溯的本地 Build，因此不开放更新和版本回滚。</p></div></div>}
+        </section>
+      </div>
+    );
+  }
+
   return (
     <div className="delivery-page" data-layout="document">
       <PageHeaderActions>
+        <button className="button accent" type="button" onClick={onSelectBuild}>
+          <CloudUpload size={15} /><span>选择 Build 部署</span>
+        </button>
         <button className="button secondary" type="button" onClick={() => void refreshAll()} disabled={!deployments.length || refreshing.size > 0}>
           <RefreshCw size={15} /><span>刷新全部状态</span>
         </button>
       </PageHeaderActions>
 
       <div className="delivery-intro">
-        <div><h2>云端部署</h2><p>显示 Studio receipt 与 Server 投影的实例状态；刷新才会读取云端状态。</p></div>
+        <div><h2>云端 Agent</h2><p>统一管理 Studio 部署和账号下已有的云端 Agent。</p></div>
       </div>
 
       {error && <div className="form-error" role="alert">{error}</div>}
 
       <section className="delivery-stat-strip" aria-label="部署事实摘要">
-        <div><span className="stat-label">部署记录</span><strong>{deployments.length}</strong><small>本地 receipt</small></div>
-        <div><span className="stat-label">云端已就绪</span><strong>{summary.ready}</strong><small>Server 状态投影</small></div>
-        <div><span className="stat-label">进行中</span><strong>{summary.pending}</strong><small>准入或实例启动</small></div>
-        <div><span className="stat-label">失败或已回滚</span><strong>{summary.failed}</strong><small>需要查看操作结果</small></div>
-        <div><span className="stat-label">目标</span><strong>云端</strong><small>云端环境</small></div>
+        <div><span className="stat-label">云端 Agent</span><strong>{deployments.length}</strong><small>按 Agent 去重</small></div>
+        <div><span className="stat-label">运行中</span><strong>{summary.ready}</strong><small>可访问</small></div>
+        <div><span className="stat-label">进行中</span><strong>{summary.pending}</strong><small>创建或更新中</small></div>
+        <div><span className="stat-label">异常</span><strong>{summary.failed}</strong><small>需要查看详情</small></div>
       </section>
 
-      {loading ? <div className="delivery-empty-state"><p>正在读取部署 receipt…</p></div> : !deployments.length ? (
+      {loading ? <div className="delivery-empty-state"><p>正在读取云端 Agent…</p></div> : !deployments.length ? (
         <div className="delivery-empty-state">
-          <CloudUpload size={24} /><h2>还没有云端部署</h2>
-          <p>先构建 AgentBundle，再从 Agent 详情上传不可变 Bundle 并创建云端 Agent。</p>
-          <button className="button accent" type="button" onClick={onCreate}>创建 Agent</button>
+          <CloudUpload size={24} /><h2>还没有云端 Agent</h2>
+          <p>可以从 Agent 详情构建并部署到云端。</p>
+          <div className="delivery-empty-actions">
+            <button className="button accent" type="button" onClick={onSelectBuild}>选择 Build 部署</button>
+            <button className="button secondary" type="button" onClick={onCreate}>创建 Agent</button>
+          </div>
         </div>
       ) : (
-        <section className="delivery-block" aria-label="部署生命周期">
-          <h2>部署生命周期</h2><p>YAML 部署声明、既有 Agent 生命周期与云端实例的每一行都有独立 receipt。</p>
+        <section className="delivery-block" aria-label="云端 Agent 列表">
+          <h2>Agent 列表</h2><p>同一 Agent 的多次部署聚合为一行；工程事实可在详情中查看。</p>
           <div className="delivery-table-scroll">
             <table className="delivery-table">
-              <thead><tr><th>状态</th><th>云端实例</th><th>Build</th><th>声明摘要</th><th>目标</th><th><span className="sr-only">操作</span></th></tr></thead>
+              <thead><tr><th>Agent</th><th>状态</th><th>类型</th><th>版本</th><th>更新时间</th><th><span className="sr-only">操作</span></th></tr></thead>
               <tbody>{deployments.map(deployment => {
                 const refreshingThis = refreshing.has(deployment.id);
+                const chatRoute = resolveCloudChatRoute(deployment);
                 return <tr key={deployment.id}>
+                  <td>
+                    <button
+                      className="delivery-agent-identity"
+                      type="button"
+                      aria-label={`查看 ${deployment.agentName || deployment.agentId || "云端 Agent"} 详情`}
+                      onClick={() => void openDetail(deployment)}
+                    >
+                      <strong>{deployment.agentName || deployment.agentId || "云端 Agent"}</strong>
+                      <code title={deployment.agentId || deployment.id}>{shortId(deployment.agentId || deployment.id, 24)}</code>
+                    </button>
+                  </td>
                   <td><span className="delivery-status-badge" data-state={deploymentState(deployment.status)}>{deploymentLabel(deployment.status)}</span></td>
-                  <td><code title={deployment.instanceId || deployment.id}>{deployment.instanceId || deployment.id}</code></td>
-                  <td><code title={deployment.buildId}>{shortId(deployment.buildId)}</code></td>
-                  <td><code title={deployment.bundleDigest}>{shortId(deployment.bundleDigest)}</code></td>
-                  <td><strong>云端</strong><small>由当前部署配置决定</small></td>
+                  <td><strong>{deployment.framework || (deployment.artifactId === "managed-runtime" ? "YAML Agent" : "高代码 Agent")}</strong><small>{deployment.source === "receipt" ? "Studio 部署记录" : "账号云端 Agent"}</small></td>
+                  <td><code title={deployment.versionId || ""}>{shortId(deployment.versionId || "—", 20)}</code></td>
+                  <td><span className="delivery-updated-at">{formatUpdatedAt(deployment.updatedAt)}</span></td>
                   <td className="delivery-row-actions">
-                    <button className="button tertiary compact" type="button" aria-label="刷新部署状态" title="刷新部署状态" disabled={refreshingThis} onClick={() => void refresh(deployment)}><RefreshCw size={15} /></button>
-                    {deployment.status === "READY" && deployment.agentId && <button className="button tertiary compact" type="button" aria-label="打开该 Agent 的云端 UI" title={`打开云端 UI：${deployment.agentId}`} onClick={() => void openHostedUi(deployment)}><ExternalLink size={15} /><span>云端 UI</span></button>}
-                    <button className="button tertiary compact" type="button" aria-label="选择回滚 Build" onClick={() => void openRollback(deployment)}><RotateCcw size={15} /><span>回滚</span></button>
+                    {deploymentState(deployment.status) === "ready" && deployment.agentId && (
+                      <button
+                        className="button secondary compact"
+                        type="button"
+                        aria-label={chatRoute.kind === "official-dashboard"
+                          ? "打开官方 Dashboard"
+                          : "打开云端 Agent 会话"}
+                        onClick={() => chatRoute.kind === "official-dashboard"
+                          ? void openHostedUi(deployment)
+                          : onOpenChat(deployment.id)}
+                      >
+                        {chatRoute.kind === "official-dashboard"
+                          ? <><ExternalLink size={15} /><span>Dashboard</span></>
+                          : <><MessagesSquare size={15} /><span>会话</span></>}
+                      </button>
+                    )}
+                    <MoreActionsMenu
+                      label={`${deployment.agentName || deployment.agentId || deployment.id} 的更多操作`}
+                      items={[
+                        { label: refreshingThis ? "正在刷新状态" : "刷新状态", disabled: refreshingThis, onSelect: () => void refresh(deployment) },
+                        ...(deploymentState(deployment.status) === "ready" && deployment.agentId
+                          ? [{ label: "在 Hosted UI 中打开", onSelect: () => void openHostedUi(deployment) }]
+                          : []),
+                        ...(deployment.source === "receipt"
+                          ? [{ label: "选择回滚 Build", onSelect: () => void openRollback(deployment) }]
+                          : []),
+                        ...(deployment.agentId
+                          ? [{ label: "删除云端 Agent", danger: true, onSelect: () => setDeleteTarget(deployment) }]
+                          : []),
+                      ]}
+                    />
                   </td>
                 </tr>;
               })}</tbody>
@@ -239,6 +625,17 @@ export function DeploymentsPage({ onCreate }: { onCreate: () => void }) {
             <button className="button accent" type="button" onClick={() => void submitRollback()} disabled={rollbackBusy}>{rollbackBusy ? "提交中" : "提交回滚"}</button>
           </div>
         </section>
+      )}
+
+      {deleteTarget && (
+        <ConfirmDialog
+          title="删除云端 Agent？"
+          description={`将删除 ${deleteTarget.agentId || deleteTarget.id} 的云端实例和本地部署记录。此操作不会删除本地 Agent 与 Build。`}
+          confirmText="删除云端 Agent"
+          busy={deleting}
+          onConfirm={() => void deleteCloudAgent()}
+          onCancel={() => setDeleteTarget(null)}
+        />
       )}
     </div>
   );
