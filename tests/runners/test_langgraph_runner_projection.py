@@ -46,3 +46,27 @@ def test_empty_instructions_no_system_message(monkeypatch) -> None:
     state = runner._to_state({"input": "hi", "history": []}, [])
     system_messages = [m for m in state["messages"] if m.__class__.__name__ == "SystemMessage"]
     assert system_messages == []
+
+
+def test_runtime_placeholders_do_not_enter_langgraph_model_history() -> None:
+    runner = _make_runner()
+    history = [
+        {"role": "model", "content": "before"},
+        {"role": "model", "content": "[tool_call] dangerous()"},
+        {"role": "user", "content": "[tool_result] result"},
+        {"role": "model", "content": "[approval_request] approve?"},
+        {"role": "user", "content": "[approval_response] approved"},
+        {"role": "model", "content": "after"},
+    ]
+
+    state = runner._to_state({"input": "continue"}, history)
+
+    contents = [message.content for message in state["messages"]]
+    assert contents == ["before", "after", "continue"]
+
+
+def test_square_bracket_text_is_not_corrupted_by_output_filter() -> None:
+    runner = _make_runner()
+    content = "normal [tool_call] documentation [approval_request] example"
+
+    assert runner._filter_tool_tags(content) == content

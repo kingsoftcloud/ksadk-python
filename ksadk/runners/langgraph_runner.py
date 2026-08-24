@@ -571,8 +571,11 @@ class LangGraphRunner(_LangGraphStreamMixin, BaseRunner):
             for msg in history:
                 role = msg.get("role")
                 content = msg.get("content", "")
-                # 跳过纯文本格式的 tool_call/tool_result，避免模型学到错误格式
-                if isinstance(content, str) and content.startswith(("[tool_call]", "[tool_result]", "[approval_request]", "[approval_response]")):
+                # Runtime-owned tool/approval records are preserved in the durable
+                # transcript, but must not be taught back to LangGraph as plain text.
+                if isinstance(content, str) and content.startswith(
+                    ("[tool_call]", "[tool_result]", "[approval_request]", "[approval_response]")
+                ):
                     continue
                 if role == "user":
                     messages.append(HumanMessage(content=content))
@@ -1047,15 +1050,11 @@ class LangGraphRunner(_LangGraphStreamMixin, BaseRunner):
         return events
 
     def _filter_tool_tags(self, content: str) -> str:
-        """过滤 tool_call 标签（支持尖括号和方括号格式）"""
+        """过滤完整的 XML tool_call 标签。"""
         if not isinstance(content, str):
             return content
-        # 过滤 <tool_call>...</tool_call>
         content = re.sub(r"<tool_call>.*?</tool_call>", "", content, flags=re.DOTALL)
         content = re.sub(r"</?(?:tool_call|arg_key|arg_value)>", "", content)
-        # 过滤 [tool_call]... 和 [tool_result]... 格式（整行或到下一个标记前）
-        content = re.sub(r"\[tool_call\]\[?.*?($|\[tool_result\]|\[approval)", "", content, flags=re.DOTALL)
-        content = re.sub(r"\[tool_result\]\[?.*?($|\[tool_call\]|\[approval)", "", content, flags=re.DOTALL)
         return content
 
     async def stream(self, input_data: Dict[str, Any]) -> AsyncIterator[Dict[str, Any]]:

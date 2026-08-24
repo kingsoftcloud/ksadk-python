@@ -39,6 +39,13 @@ TRANSCRIPT_EVENT_TYPES = {
     "context_checkpoint",
 }
 
+_RUNTIME_PLACEHOLDER_EVENT_TYPES = {
+    "tool_call",
+    "tool_result",
+    "approval_request",
+    "approval_response",
+}
+
 DATA_URL_RE = re.compile(r"data:(?P<mime>[A-Za-z0-9.+-]+/[A-Za-z0-9.+-]+);base64,[A-Za-z0-9+/=_-]+")
 BASE64_FIELD_RE = re.compile(
     r"(?P<prefix>['\"](?P<field>file_data|data|bytes|base64)['\"]\s*:\s*['\"])(?P<value>[A-Za-z0-9+/=_-]{512,})(?P<suffix>['\"])",
@@ -335,6 +342,7 @@ def project_model_messages(
     3. tool/approval/attachment 仍保留成可解释的文本占位，避免状态丢失。
     """
     projected: List[Dict[str, str]] = []
+    placeholder_flags: list[bool] = []
     compacted_until = compacted_until_seq_id(events)
     checkpoint = next(
         (
@@ -353,6 +361,7 @@ def project_model_messages(
                     "content": summary_text,
                 }
             )
+            placeholder_flags.append(False)
 
     for event in events:
         event_type = canonical_event_type(
@@ -391,10 +400,17 @@ def project_model_messages(
         else:
             role = "user"
 
-        if projected and projected[-1]["role"] == role:
+        is_placeholder = event_type in _RUNTIME_PLACEHOLDER_EVENT_TYPES
+        if (
+            projected
+            and projected[-1]["role"] == role
+            and not placeholder_flags[-1]
+            and not is_placeholder
+        ):
             projected[-1]["content"] = f"{projected[-1]['content']}\n{text}".strip()
         else:
             projected.append({"role": role, "content": text})
+            placeholder_flags.append(is_placeholder)
 
     return projected
 
