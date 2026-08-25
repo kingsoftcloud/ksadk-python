@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, TypedDict
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.errors import GraphInterrupt
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 
@@ -69,6 +70,7 @@ class _EngineRun:
     seq: int = 0
     cancel_requested: bool = False
     done: bool = False
+    started_emitted: bool = False
 
 
 class ManagedLangGraphEngine:
@@ -81,11 +83,13 @@ class ManagedLangGraphEngine:
         checkpointer: BaseCheckpointSaver | None = None,
         tenant_id: str = "default",
         tools: dict[str, Any] | None = None,
+        approval_required: set[str] | None = None,
     ) -> None:
         self._reasoner = reasoner or LiteLLMHarnessReasoner()
         self._checkpointer = checkpointer
         self._tenant_id = tenant_id
         self._tools = tools or {}
+        self._approval_required = approval_required or set()
         self._runs: dict[str, _EngineRun] = {}
 
     # ------------------------------------------------------------- compile
@@ -138,11 +142,20 @@ class ManagedLangGraphEngine:
 
     async def _stream(self, handle: RunHandle) -> AsyncIterator[RuntimeEvent]:
         run = self._require_run(handle)
-        run.task = asyncio.create_task(self._execute(run))
+        task_finished = run.task is None or run.task.done()
+        if run.state.status is RunStatus.AWAITING_APPROVAL and task_finished:
+            # 挂起中：只回放未消费事件，不重启图（恢复必须走 resume）。
+            while run.events:
+                yield run.events.pop(0)
+            return
+        if run.done and task_finished:
+            while run.events:
+                yield run.events.pop(0)
+            return
+        if run.task is None or task_finished:
+            run.task = asyncio.create_task(self._execute(run))
         try:
             while True:
-                # 事件由任务推入 run.events；轮询转交（流式语义足够，避免
-                # 复杂的 queue 桥接）。
                 while run.events:
                     yield run.events.pop(0)
                 if run.task.done():
@@ -155,24 +168,55 @@ class ManagedLangGraphEngine:
             run.done = True
             yield self._event(run, EventType.RUN_CANCELED, {"status": "cancelled"})
 
-    async def _execute(self, run: _EngineRun) -> list[RuntimeEvent]:
+    async def _execute(self, run: _EngineRun, resume_command: Command | None = None) -> list[RuntimeEvent]:
         spec = run.compiled.spec
         run.state.status = RunStatus.RUNNING
-        run.events.append(self._event(run, EventType.RUN_STARTED, {"status": "in_progress"}))
+        if not run.started_emitted:
+            run.started_emitted = True
+            run.events.append(self._event(run, EventType.RUN_STARTED, {"status": "in_progress"}))
         try:
             graph = self._build_graph(run)
             instructions = spec.prompt.instructions or ""
             config = {"configurable": {"thread_id": run.thread_id}}
-            initial: _GraphState = {
-                "messages": [
-                    {"role": "system", "content": instructions},
-                    {"role": "user", "content": str(run.request.input or "")},
-                ],
-                "pending_tool_calls": [],
-                "turn_count": 0,
-                "route": "reason",
-            }
-            final_state = await graph.ainvoke(initial, config=config)
+            invoke_input: _GraphState | Command
+            if resume_command is not None:
+                invoke_input = resume_command
+            else:
+                invoke_input = {
+                    "messages": [
+                        {"role": "system", "content": instructions},
+                        {"role": "user", "content": str(run.request.input or "")},
+                    ],
+                    "pending_tool_calls": [],
+                    "turn_count": 0,
+                    "route": "reason",
+                }
+            final_state = await graph.ainvoke(invoke_input, config=config)
+            interrupts = final_state.get("__interrupt__") if isinstance(final_state, dict) else None
+            if interrupts:
+                # Approval 挂起：图状态已由 Checkpointer 持久化，等待 resume。
+                run.state.status = RunStatus.AWAITING_APPROVAL
+                run.done = False
+                info = getattr(interrupts[0], "value", {}) or {}
+                run.events.append(
+                    self._event(
+                        run,
+                        EventType.APPROVAL_REQUESTED,
+                        {
+                            "approval_id": f"ap-{run.handle.run_id}",
+                            "call_id": str(info.get("call_id", "")),
+                            "kind": "tool",
+                            "detail": info,
+                        },
+                    )
+                )
+                run.events.append(
+                    self._event(
+                        run, EventType.RUN_INTERRUPTED,
+                        {"status": "awaiting_approval", "reason": "tool_approval"},
+                    )
+                )
+                return []
             run.state.messages = [
                 Message(role=MessageRole.USER, content=str(run.request.input or ""))
             ]
@@ -189,14 +233,14 @@ class ManagedLangGraphEngine:
             run.state.status = RunStatus.CANCELED
             run.done = True
             return [self._event(run, EventType.RUN_CANCELED, {"status": "cancelled"})]
-        except _EngineInterrupt as exc:
+        except GraphInterrupt as exc:
+            # checkpoint=False 路径（无 Checkpointer 时 interrupt 直接抛出）。
             run.state.status = RunStatus.AWAITING_APPROVAL
             run.done = False
             run.events.append(
                 self._event(
-                    run,
-                    EventType.RUN_INTERRUPTED,
-                    {"status": "awaiting_approval", "reason": str(exc)},
+                    run, EventType.RUN_INTERRUPTED,
+                    {"status": "awaiting_approval", "reason": f"graph_interrupt: {exc}"},
                 )
             )
             return []
@@ -258,6 +302,37 @@ class ManagedLangGraphEngine:
         async def tool_calls(state: _GraphState) -> _GraphState:
             for pending in state["pending_tool_calls"]:
                 call_id, name = pending["call_id"], pending["name"]
+                decision = "approved"
+                if name in self._approval_required:
+                    # Approval interrupt（plan §11.2）：interrupt() 首次抛
+                    # GraphInterrupt 暂停；resume 后此处返回审批决定。
+                    decision = interrupt(
+                        {
+                            "call_id": call_id,
+                            "name": name,
+                            "args": pending["arguments"],
+                            "risk": "high",
+                        }
+                    )
+                if decision != "approved":
+                    run.events.append(
+                        self._event(
+                            run, EventType.TOOL_CALL_BEGIN,
+                            {"call_id": call_id, "name": name, "args": pending["arguments"]},
+                        )
+                    )
+                    run.events.append(
+                        self._event(
+                            run, EventType.TOOL_CALL_END,
+                            {"call_id": call_id, "name": name,
+                             "error": f"approval {decision}"},
+                        )
+                    )
+                    state["messages"].append(
+                        {"role": "tool", "tool_call_id": call_id, "name": name,
+                         "content": f"[denied] approval decision: {decision}"}
+                    )
+                    continue
                 run.events.append(
                     self._event(
                         run, EventType.TOOL_CALL_BEGIN,
@@ -330,9 +405,32 @@ class ManagedLangGraphEngine:
             raise ExecutionEngineError(
                 f"resume 仅支持 awaiting_approval 状态，当前 {run.state.status.value}"
             )
-        # Phase 1：approval resume 由上层重放语义处理（engine loop 不持久 pending
-        # interrupt 状态到本实现），完整 interrupt/resume 落在 Phase 3。
+        if self._checkpointer is None:
+            raise ExecutionEngineError(
+                "resume 需要 Checkpointer：interrupt 状态由 Checkpoint 持久化"
+            )
+        decision = "approved"
+        if payload is not None:
+            decision = str(payload.data) if payload.data is not None else "approved"
+            run.events.append(
+                self._event(
+                    run,
+                    EventType.APPROVAL_RESOLVED,
+                    {
+                        "approval_id": f"ap-{run.handle.run_id}",
+                        "call_id": payload.call_id or "",
+                        "decision": decision,
+                    },
+                )
+            )
         run.state.status = RunStatus.RUNNING
+        run.events.append(
+            self._event(
+                run, EventType.RUN_RESUMED,
+                {"target": target.id, "resume_kind": "approval_decision"},
+            )
+        )
+        run.task = asyncio.create_task(self._execute(run, resume_command=Command(resume=decision)))
         return handle
 
     # ------------------------------------------------------------- snapshot
@@ -382,10 +480,6 @@ class ManagedLangGraphEngine:
             seq_id=run.seq,
             payload=payload,
         )
-
-
-class _EngineInterrupt(RuntimeError):
-    """Approval interrupt（Phase 1 预留，Phase 3 接 LangGraph interrupt()）。"""
 
 
 def _is_durable(checkpointer: BaseCheckpointSaver) -> bool:

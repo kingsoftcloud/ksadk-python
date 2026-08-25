@@ -9,7 +9,7 @@ from ksadk.harness.conformance import run_conformance_suite
 from ksadk.harness.engine.langgraph import ManagedLangGraphEngine
 from ksadk.harness.reasoner import HarnessReasoner, HarnessReasoningTurn, HarnessToolCall
 from ksadk.harness.spec import HarnessSpec, ModelBinding, PromptSpec
-from ksadk.runtime import StartRequest
+from ksadk.runtime import ResumePayload, ResumeTarget, StartRequest
 
 
 def _spec() -> HarnessSpec:
@@ -189,3 +189,174 @@ def test_resume_rejects_non_approval_state():
         assert "awaiting_approval" in str(exc)
     else:
         raise AssertionError("resume 必须拒绝非 awaiting_approval 状态")
+
+
+# ---------------------------------------------- approval interrupt / resume
+
+
+class _ApprovalTools:
+    def __init__(self) -> None:
+        self.executed: list[str] = []
+
+    async def high_risk(self, arguments):
+        self.executed.append("high_risk")
+        return "已执行高风险操作"
+
+    async def normal(self, arguments):
+        self.executed.append("normal")
+        return "普通结果"
+
+
+def _approval_engine(checkpointer, *, reasoner=None):
+    tools = _ApprovalTools()
+    engine = ManagedLangGraphEngine(
+        reasoner=reasoner or _ScriptedReasoner([
+            HarnessReasoningTurn(tool_calls=(
+                HarnessToolCall(call_id="tc-1", name="high_risk", arguments={"x": 1}),
+                HarnessToolCall(call_id="tc-2", name="normal", arguments={}),
+            )),
+            HarnessReasoningTurn(final_text="完成"),
+        ]),
+        checkpointer=checkpointer,
+        tools={"high_risk": tools.high_risk, "normal": tools.normal},
+        approval_required={"high_risk"},
+    )
+    return engine, tools
+
+
+def test_approval_interrupt_and_approve_resume():
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    engine, tools = _approval_engine(InMemorySaver())
+    request = _start_request()
+
+    async def drive():
+        compiled = await engine.compile(_spec())
+        handle = await engine.start(request, compiled)
+        first = [e async for e in engine.stream(handle)]
+        # resume 并继续消费事件
+        await engine.resume(
+            handle,
+            ResumeTarget(kind="thread_id", id=handle.native_ref["thread_id"]),
+            ResumePayload(kind="approval_decision", call_id="tc-1", data="approved"),
+        )
+        second = [e async for e in engine.stream(handle)]
+        return first, second
+
+    first, second = asyncio.run(drive())
+    kinds1 = [e.event_type for e in first]
+    kinds2 = [e.event_type for e in second]
+    assert EventType.APPROVAL_REQUESTED in kinds1
+    assert EventType.RUN_INTERRUPTED in kinds1
+    assert EventType.RUN_RESUMED in kinds2
+    assert EventType.APPROVAL_RESOLVED in kinds2
+    assert kinds2[-1] == EventType.RUN_COMPLETED
+    assert tools.executed == ["high_risk", "normal"]  # 高风险工具审批后确实执行且仅一次
+
+
+def test_approval_deny_resume_skips_tool_but_completes():
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    engine, tools = _approval_engine(InMemorySaver())
+    request = _start_request()
+
+    async def drive():
+        compiled = await engine.compile(_spec())
+        handle = await engine.start(request, compiled)
+        [e async for e in engine.stream(handle)]
+        await engine.resume(
+            handle,
+            ResumeTarget(kind="thread_id", id=handle.native_ref["thread_id"]),
+            ResumePayload(kind="approval_decision", call_id="tc-1", data="denied"),
+        )
+        return [e async for e in engine.stream(handle)]
+
+    second = asyncio.run(drive())
+    assert second[-1].event_type == EventType.RUN_COMPLETED
+    assert "high_risk" not in tools.executed  # 拒绝后高风险工具不执行
+    assert tools.executed == ["normal"]
+
+
+def test_resume_requires_checkpointer():
+    engine = ManagedLangGraphEngine(
+        reasoner=_ScriptedReasoner([HarnessReasoningTurn(final_text="ok")]),
+    )
+    request = _start_request()
+
+    async def drive():
+        compiled = await engine.compile(_spec())
+        handle = await engine.start(request, compiled)
+        engine._runs[handle.run_id].state.status = __import__(
+            "ksadk.harness.state", fromlist=["RunStatus"]
+        ).RunStatus.AWAITING_APPROVAL
+        await engine.resume(
+            handle, ResumeTarget(kind="thread_id", id="t"),
+            ResumePayload(kind="approval_decision", data="approved"),
+        )
+
+    try:
+        asyncio.run(drive())
+    except Exception as exc:
+        assert "Checkpointer" in str(exc)
+    else:
+        raise AssertionError("无 Checkpointer 时 resume 必须诚实报错")
+
+
+# --------------------------------------------------- process restart restore
+
+
+def test_process_restart_recovers_from_sqlite_checkpoint(tmp_path):
+    """中断后进程重启（新引擎实例 + 同一 SQLite 文件）可恢复 approval 并完成。"""
+    import contextlib
+
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+    from ksadk.runtime import ResumePayload as _RP, ResumeTarget as _RT
+
+    db_path = str(tmp_path / "harness.db")
+
+    async def phase_one():
+        cm = AsyncSqliteSaver.from_conn_string(db_path)
+        saver = await cm.__aenter__()
+        try:
+            engine, tools = _approval_engine(saver)
+            compiled = await engine.compile(_spec())
+            handle = await engine.start(_start_request(), compiled)
+            events = [e async for e in engine.stream(handle)]
+            return handle, events, tools.executed
+        finally:
+            with contextlib.suppress(Exception):
+                await cm.__aexit__(None, None, None)
+
+    async def phase_two(handle):
+        cm = AsyncSqliteSaver.from_conn_string(db_path)
+        saver = await cm.__aenter__()
+        try:
+            engine, tools = _approval_engine(
+                saver,
+                # 恢复后 reason 重跑一次：真实 LLM 会看到工具结果并给出最终文本，
+                # scripted reasoner 对应「首轮即最终文本」。
+                reasoner=_ScriptedReasoner([HarnessReasoningTurn(final_text="完成")]),
+            )
+            compiled = await engine.compile(_spec())
+            new_handle = await engine.start(_start_request(), compiled)
+            engine._runs[new_handle.run_id].thread_id = handle.native_ref["thread_id"]
+            engine._runs[new_handle.run_id].state.status = __import__(
+                "ksadk.harness.state", fromlist=["RunStatus"]
+            ).RunStatus.AWAITING_APPROVAL
+            await engine.resume(
+                new_handle,
+                _RT(kind="thread_id", id=handle.native_ref["thread_id"]),
+                _RP(kind="approval_decision", call_id="tc-1", data="approved"),
+            )
+            events = [e async for e in engine.stream(new_handle)]
+            return events, tools.executed
+        finally:
+            with contextlib.suppress(Exception):
+                await cm.__aexit__(None, None, None)
+
+    handle, first, _ = asyncio.run(phase_one())
+    assert any(e.event_type == EventType.RUN_INTERRUPTED for e in first)
+
+    second, executed = asyncio.run(phase_two(handle))
+    assert second[-1].event_type == EventType.RUN_COMPLETED
+    assert executed == ["high_risk", "normal"]
