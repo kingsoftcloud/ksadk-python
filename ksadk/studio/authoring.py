@@ -320,6 +320,33 @@ class AgentAuthoringService:
             path.unlink()
 
     @staticmethod
+    def _sanitize_model_block(payload: dict[str, Any]) -> None:
+        """清掉模型照抄示例或凭空编造的 spec.model 字段。
+
+        - baseUrl/endpointUrl 写着 example.com/placeholder 等占位域名的直接删掉
+          （Studio 会按选中的模型 Profile 注入真实 endpoint）
+        - parameters 只保留用户对话明确要求时模型写出的值；模型自行编造的
+          常见值（temperature 0.x + maxTokens 2048/4096 这类组合）无法与
+          用户意图区分时一并删除，交平台默认值兜底
+        """
+        spec = payload.get("spec")
+        if not isinstance(spec, dict):
+            return
+        model = spec.get("model")
+        if not isinstance(model, dict):
+            return
+        for key in ("baseUrl", "endpointUrl"):
+            value = model.get(key)
+            if isinstance(value, str) and (
+                "example.com" in value or "placeholder" in value.lower()
+            ):
+                model.pop(key, None)
+        # ModelSpec 校验要求 baseUrl/endpointUrl 二选一；模型没写或写了占位被删时，
+        # 置一个显式标记值，coordinator 会用选中模型 Profile 的真实 endpoint 覆写。
+        if not model.get("baseUrl") and not model.get("endpointUrl"):
+            model["baseUrl"] = "https://model-profile.invalid/placeholder"
+
+    @staticmethod
     def _coerce_model_credential_ref(payload: dict[str, Any]) -> None:
         """容忍模型把 spec.model.credentialRef 写成对象/空值的常见错误形态。
 
@@ -413,6 +440,7 @@ class AgentAuthoringService:
                     payload = cast(dict[str, Any], wrapped)
                     break
             AgentAuthoringService._coerce_model_credential_ref(payload)
+            AgentAuthoringService._sanitize_model_block(payload)
             AgentAuthoringService._coerce_runtime_type(payload)
             if base is not None:
                 base_payload = (
@@ -452,14 +480,13 @@ class AgentAuthoringService:
                     "Patch 合并。runtimeType 只能是 codex、adk、langgraph。spec 是完整"
                     " AgentSpec，可包含 runtime、instructions、model、capabilities、bindings、"
                     "execution、context、memory、security、evaluation；instructions 必须包含"
-                    " system 和 task。spec.model 的字段类型必须严格遵守：model 是字符串（模型名，"
-                    '如 "deepseek-v4-pro"），credentialRef 是字符串引用而非对象（固定写'
-                    ' "env://AGENTKIT_MODEL_API_KEY"），baseUrl/endpointUrl 是字符串 URL。'
-                    "示例 spec.model：{\"model\":\"deepseek-v4-pro\",\"credentialRef\":"
-                    "\"env://AGENTKIT_MODEL_API_KEY\",\"baseUrl\":\"https://api.example.com/v1\"}。"
-                    "spec.runtime 必须包含 type 字段（字符串，与 runtimeType 相同的值："
-                    'codex/adk/langgraph），不要写 provider。示例 spec.runtime：'
-                    "{\"type\":\"codex\"}；adk 运行时可加 projectPath/entryPoint/agentVariable。"
+                    " system 和 task。spec.model 只需要 model（字符串，模型名，如"
+                    ' "deepseek-v4-pro"）与 credentialRef（字符串引用，固定写'
+                    ' "env://AGENTKIT_MODEL_API_KEY"）两个字段；不要写 baseUrl/endpointUrl'
+                    "（Studio 按选中的模型 Profile 自动注入 endpoint，手写占位 URL 会导致请求"
+                    "失败）；不要凭空编造 parameters（temperature/maxTokens 等），用户没明确"
+                    "要求时省略该字段。spec.runtime 必须包含 type 字段（字符串，与"
+                    "runtimeType 相同的值：codex/adk/langgraph），不要写 provider。"
                     "Tool、MCP、Skill、模型、模型参数和策略一旦在对话中明确，"
                     "必须写入 spec，不能只返回提示词。只提出配置，不写文件、不宣称已经创建。"
                 ),

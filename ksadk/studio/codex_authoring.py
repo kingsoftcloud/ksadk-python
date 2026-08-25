@@ -76,10 +76,14 @@ spec:
   model:
     model: deepseek-v4-pro
     credentialRef: env://AGENTKIT_MODEL_API_KEY
-    baseUrl: https://api.example.com/v1
 
-注意：示例中的 name/slug/description/instructions/model 值必须替换为符合用户
-对话的内容，不要照抄示例文字。
+注意：
+- 示例中的 name/slug/description/instructions/model 值必须替换为符合用户
+  对话的内容，不要照抄示例文字。
+- spec.model 不要写 baseUrl/endpointUrl（Studio 会按选中的模型 Profile 自动
+  注入正确的 endpoint，手写的占位 URL 会被当作真实配置导致请求失败）。
+- 不要凭空编造 parameters（temperature/maxTokens 等）；用户没有明确要求时
+  直接省略 parameters 字段，使用平台默认值。
 
 规则：
 1. 必须用写文件工具把完整 patch 写入指定路径；不要只在回复中输出内容。

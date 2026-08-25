@@ -40,6 +40,35 @@ CONVERSATION_STAGES = (
 _CONVERSATION_STATUS_LIMIT = 64
 
 
+
+def _apply_profile_model_endpoint(proposal: Any, model: Any) -> Any:
+    """用选中模型 Profile 的真实 endpoint 覆写 spec.model 中的占位 URL。
+
+    ``parse_conversation_proposal`` 的 sanitize 层会把模型照抄的 example.com
+    占位 URL 替换为 ``https://model-profile.invalid/placeholder`` 标记；此处
+    在返回给前端前替换为 Profile 的真实 baseUrl/endpointUrl，保证 spec 自洽。
+    """
+    marker = "model-profile.invalid"
+    spec = getattr(proposal, "spec", None)
+    model_spec = getattr(spec, "model", None) if spec is not None else None
+    if model_spec is None:
+        return proposal
+    if marker not in str(getattr(model_spec, "base_url", "") or ""):
+        return proposal
+    base = str(getattr(model, "endpoint_url", "") or "").rstrip("/")
+    for suffix in ("/chat/completions", "/responses"):
+        if base.endswith(suffix):
+            base = base[: -len(suffix)]
+    if not base:
+        return proposal
+    return proposal.model_copy(
+        update={
+            "spec": spec.model_copy(
+                update={"model": model_spec.model_copy(update={"base_url": base})}
+            )
+        }
+    )
+
 class StudioAuthoringCoordinator:
     """Coordinates repositories without expanding the StudioService façade."""
 
@@ -461,7 +490,9 @@ class StudioAuthoringCoordinator:
             getattr(proposal, "slug", "-"),
         )
         return {
-            "proposal": proposal.model_dump(by_alias=True, mode="json"),
+            "proposal": _apply_profile_model_endpoint(proposal, model).model_dump(
+                by_alias=True, mode="json"
+            ),
             "requiresConfirmation": True,
             "authoringMode": "chat",
             "usage": response.usage.model_dump(by_alias=True, mode="json"),
@@ -515,7 +546,9 @@ class StudioAuthoringCoordinator:
             result.attempts,
         )
         return {
-            "proposal": result.proposal.model_dump(by_alias=True, mode="json"),
+            "proposal": _apply_profile_model_endpoint(result.proposal, model).model_dump(
+                by_alias=True, mode="json"
+            ),
             "requiresConfirmation": True,
             "authoringMode": "codex",
             "usage": result.usage.model_dump(by_alias=True, mode="json"),

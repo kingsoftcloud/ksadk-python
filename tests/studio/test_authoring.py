@@ -980,3 +980,29 @@ def test_parse_conversation_proposal_coerces_runtime_provider_field():
     )
     proposal = AgentAuthoringService.parse_conversation_proposal(content)
     assert proposal.spec.runtime.type == "codex"
+
+
+def test_parse_conversation_proposal_strips_placeholder_model_url():
+    """模型照抄示例里的 example.com URL 时删除，交 Profile 注入真实 endpoint。"""
+    from ksadk.studio.authoring import AgentAuthoringService
+
+    content = json.dumps(
+        {
+            "name": "日报助手",
+            "slug": "daily-report-agent",
+            "runtimeType": "codex",
+            "description": "日报",
+            "spec": {
+                "instructions": {"system": "s", "task": "t"},
+                "runtime": {"type": "codex"},
+                "model": {
+                    "model": "deepseek-v4-pro",
+                    "credentialRef": "env://AGENTKIT_MODEL_API_KEY",
+                    "baseUrl": "https://api.example.com/v1",
+                },
+            },
+        }
+    )
+    proposal = AgentAuthoringService.parse_conversation_proposal(content)
+    # 占位 URL 被 sanitize 层替换为 marker，coordinator 会用 Profile 真实 endpoint 覆写
+    assert proposal.spec.model.base_url == "https://model-profile.invalid/placeholder"
