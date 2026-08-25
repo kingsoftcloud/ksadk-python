@@ -912,3 +912,71 @@ def test_conversation_authoring_status_endpoint(tmp_path: Path) -> None:
         assert payload["requestId"] == "req-endpoint"
         assert payload["stage"] == "done"
         assert payload["updatedAt"] > 0
+
+
+def test_parse_conversation_proposal_coerces_invalid_credential_ref():
+    """模型把 credentialRef 写成对象时自动收敛，不浪费纠错重试。"""
+    from ksadk.studio.authoring import AgentAuthoringService
+
+    content = json.dumps(
+        {
+            "name": "新闻摘要",
+            "slug": "news-digest",
+            "runtimeType": "codex",
+            "description": "摘要",
+            "spec": {
+                "instructions": {"system": "s", "task": "t"},
+                "model": {"model": "deepseek-v4-pro", "credentialRef": {}, "baseUrl": "https://api.example.com/v1"},
+            },
+        }
+    )
+    proposal = AgentAuthoringService.parse_conversation_proposal(content)
+    assert proposal.spec.model.credential_ref == "env://AGENTKIT_MODEL_API_KEY"
+
+
+def test_parse_conversation_proposal_coerces_nested_credential_ref():
+    from ksadk.studio.authoring import AgentAuthoringService
+
+    content = json.dumps(
+        {
+            "name": "新闻摘要",
+            "slug": "news-digest",
+            "runtimeType": "codex",
+            "description": "摘要",
+            "spec": {
+                "instructions": {"system": "s", "task": "t"},
+                "model": {
+                    "model": "deepseek-v4-pro",
+                    "credentialRef": {"ref": "keychain://ksadk-model"},
+                    "baseUrl": "https://api.example.com/v1",
+                },
+            },
+        }
+    )
+    proposal = AgentAuthoringService.parse_conversation_proposal(content)
+    assert proposal.spec.model.credential_ref == "keychain://ksadk-model"
+
+
+def test_parse_conversation_proposal_coerces_runtime_provider_field():
+    """模型把 spec.runtime.type 写成 provider 时自动迁移。"""
+    from ksadk.studio.authoring import AgentAuthoringService
+
+    content = json.dumps(
+        {
+            "name": "新闻摘要",
+            "slug": "news-digest",
+            "runtimeType": "codex",
+            "description": "摘要",
+            "spec": {
+                "runtime": {"provider": "codex"},
+                "instructions": {"system": "s", "task": "t"},
+                "model": {
+                    "model": "deepseek-v4-pro",
+                    "credentialRef": "env://AGENTKIT_MODEL_API_KEY",
+                    "baseUrl": "https://api.example.com/v1",
+                },
+            },
+        }
+    )
+    proposal = AgentAuthoringService.parse_conversation_proposal(content)
+    assert proposal.spec.runtime.type == "codex"

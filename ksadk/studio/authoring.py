@@ -320,6 +320,43 @@ class AgentAuthoringService:
             path.unlink()
 
     @staticmethod
+    def _coerce_model_credential_ref(payload: dict[str, Any]) -> None:
+        """容忍模型把 spec.model.credentialRef 写成对象/空值的常见错误形态。
+
+        模型偶尔会把字符串引用字段写成 {} 或 {"ref": ...}；在进入 Pydantic 校验前
+        收敛为默认 env 引用，避免浪费唯一一次纠错重试。
+        """
+        spec = payload.get("spec")
+        if not isinstance(spec, dict):
+            return
+        model = spec.get("model")
+        if not isinstance(model, dict):
+            return
+        ref = model.get("credentialRef")
+        if isinstance(ref, str) and ref.strip().startswith(("env://", "keychain://", "secret-manager://")):
+            return
+        if isinstance(ref, dict):
+            nested = ref.get("ref") or ref.get("credentialRef") or ref.get("value")
+            if isinstance(nested, str) and nested.strip().startswith(("env://", "keychain://", "secret-manager://")):
+                model["credentialRef"] = nested.strip()
+                return
+        model["credentialRef"] = "env://AGENTKIT_MODEL_API_KEY"
+
+    @staticmethod
+    def _coerce_runtime_type(payload: dict[str, Any]) -> None:
+        """容忍模型把 spec.runtime.type 写成 provider 的常见错误形态。"""
+        spec = payload.get("spec")
+        if not isinstance(spec, dict):
+            return
+        runtime = spec.get("runtime")
+        if not isinstance(runtime, dict):
+            return
+        if not runtime.get("type") and runtime.get("provider"):
+            runtime["type"] = runtime.pop("provider")
+        elif runtime.get("provider") and runtime.get("type"):
+            runtime.pop("provider")
+
+    @staticmethod
     def _conversation_json_object(content: str) -> dict[str, Any]:
         """Extract one JSON object without trusting surrounding model prose."""
 
@@ -375,6 +412,8 @@ class AgentAuthoringService:
                 if isinstance(wrapped, dict) and len(payload) == 1:
                     payload = cast(dict[str, Any], wrapped)
                     break
+            AgentAuthoringService._coerce_model_credential_ref(payload)
+            AgentAuthoringService._coerce_runtime_type(payload)
             if base is not None:
                 base_payload = (
                     base.model_dump(by_alias=True, mode="json")
@@ -413,7 +452,15 @@ class AgentAuthoringService:
                     "Patch 合并。runtimeType 只能是 codex、adk、langgraph。spec 是完整"
                     " AgentSpec，可包含 runtime、instructions、model、capabilities、bindings、"
                     "execution、context、memory、security、evaluation；instructions 必须包含"
-                    " system 和 task。Tool、MCP、Skill、模型、模型参数和策略一旦在对话中明确，"
+                    " system 和 task。spec.model 的字段类型必须严格遵守：model 是字符串（模型名，"
+                    '如 "deepseek-v4-pro"），credentialRef 是字符串引用而非对象（固定写'
+                    ' "env://AGENTKIT_MODEL_API_KEY"），baseUrl/endpointUrl 是字符串 URL。'
+                    "示例 spec.model：{\"model\":\"deepseek-v4-pro\",\"credentialRef\":"
+                    "\"env://AGENTKIT_MODEL_API_KEY\",\"baseUrl\":\"https://api.example.com/v1\"}。"
+                    "spec.runtime 必须包含 type 字段（字符串，与 runtimeType 相同的值："
+                    'codex/adk/langgraph），不要写 provider。示例 spec.runtime：'
+                    "{\"type\":\"codex\"}；adk 运行时可加 projectPath/entryPoint/agentVariable。"
+                    "Tool、MCP、Skill、模型、模型参数和策略一旦在对话中明确，"
                     "必须写入 spec，不能只返回提示词。只提出配置，不写文件、不宣称已经创建。"
                 ),
             }
