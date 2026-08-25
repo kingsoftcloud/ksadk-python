@@ -19,7 +19,6 @@ from ksadk.harness.engine import (
     validate_tenant,
 )
 from ksadk.harness.spec import (
-    BudgetSource,
     CapabilityBinding,
     CapabilityBindings,
     ContextPolicy,
@@ -95,7 +94,9 @@ class TestHarnessSpec:
         spec = _spec(
             capabilities=CapabilityBindings(
                 mcp_bindings=(CapabilityBinding(capability_ref="mcp-binding://budget@1.2.0"),),
-                skill_bindings=(CapabilityBinding(capability_ref="skill://analysis@0.3.1", required=False),),
+                skill_bindings=(
+                    CapabilityBinding(capability_ref="skill://analysis@0.3.1", required=False),
+                ),
             )
         )
         manifest = build_manifest(spec)

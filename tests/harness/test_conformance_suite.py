@@ -49,7 +49,9 @@ def test_canceled_stream_passes_with_cancel_requested():
     make = make_event_factory()
     events = canceled_events(make)
     assert run_conformance_suite(events, cancel_requested=True).ok
-    assert any(v.rule == "cancel-honesty" for v in run_conformance_suite(events).violations) is False
+    assert not any(
+        v.rule == "cancel-honesty" for v in run_conformance_suite(events).violations
+    )
 
 
 def test_cancel_requested_but_completed_fails():
@@ -71,8 +73,8 @@ def test_existing_native_harness_adapter_stream_is_conformant():
     """现有 HarnessRuntimeAdapter（五条路径之一）的流通过最小套件。"""
     import asyncio
 
-    from ksadk.harness.conformance.contract import verify_secret_redaction
     from ksadk.harness.config import HarnessConfig
+    from ksadk.harness.conformance.contract import verify_secret_redaction
     from ksadk.harness.reasoner import HarnessReasoner, HarnessReasoningTurn
     from ksadk.harness.runtime import HarnessRuntimeAdapter
     from ksadk.runtime import StartRequest

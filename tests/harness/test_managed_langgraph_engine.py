@@ -46,6 +46,12 @@ def _start_request() -> StartRequest:
     )
 
 
+def _simple_engine() -> ManagedLangGraphEngine:
+    return ManagedLangGraphEngine(
+        reasoner=_ScriptedReasoner([HarnessReasoningTurn(final_text="ok")])
+    )
+
+
 def _run(engine: ManagedLangGraphEngine, request: StartRequest):
     async def drive():
         compiled = await engine.compile(_spec())
@@ -127,7 +133,7 @@ def test_cancel_during_run_yields_run_canceled():
 
 
 def test_thread_id_uses_tenant_encoding():
-    engine = ManagedLangGraphEngine(reasoner=_ScriptedReasoner([HarnessReasoningTurn(final_text="ok")]))
+    engine = _simple_engine()
     request = _start_request()
 
     async def drive():
@@ -141,7 +147,7 @@ def test_thread_id_uses_tenant_encoding():
 
 
 def test_capabilities_honesty_without_checkpointer():
-    engine = ManagedLangGraphEngine(reasoner=_ScriptedReasoner([HarnessReasoningTurn(final_text="ok")]))
+    engine = _simple_engine()
     matrix = engine.capabilities()
     assert matrix.cancel.supported
     assert matrix.checkpoint.supported is False
@@ -173,8 +179,8 @@ def test_capabilities_durable_with_sqlite_checkpointer():
 
 
 def test_resume_rejects_non_approval_state():
-    engine = ManagedLangGraphEngine(reasoner=_ScriptedReasoner([HarnessReasoningTurn(final_text="ok")]))
-    events = _run(engine, _start_request())
+    engine = _simple_engine()
+    _run(engine, _start_request())
 
     from ksadk.runtime import ResumeTarget
 
@@ -310,7 +316,9 @@ def test_process_restart_recovers_from_sqlite_checkpoint(tmp_path):
     import contextlib
 
     from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
-    from ksadk.runtime import ResumePayload as _RP, ResumeTarget as _RT
+
+    from ksadk.runtime import ResumePayload as _RP
+    from ksadk.runtime import ResumeTarget as _RT
 
     db_path = str(tmp_path / "harness.db")
 

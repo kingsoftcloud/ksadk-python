@@ -31,13 +31,12 @@ from ksadk.harness.engine.base import (
     EngineCapability,
     EngineCapabilityMatrix,
     ExecutionEngineError,
-    ExecutionPlan,
     single_agent_plan,
 )
 from ksadk.harness.engine.thread_ids import encode_thread_id
 from ksadk.harness.reasoner import HarnessReasoner, HarnessReasoningTurn, LiteLLMHarnessReasoner
 from ksadk.harness.spec import HarnessSpec
-from ksadk.harness.state import HarnessState, Message, MessageRole, RunStatus, ToolCall
+from ksadk.harness.state import HarnessState, Message, MessageRole, RunStatus
 from ksadk.runtime import (
     CancelResult,
     ResumePayload,
@@ -84,12 +83,14 @@ class ManagedLangGraphEngine:
         tenant_id: str = "default",
         tools: dict[str, Any] | None = None,
         approval_required: set[str] | None = None,
+        context_engine: Any | None = None,
     ) -> None:
         self._reasoner = reasoner or LiteLLMHarnessReasoner()
         self._checkpointer = checkpointer
         self._tenant_id = tenant_id
         self._tools = tools or {}
         self._approval_required = approval_required or set()
+        self._context_engine = context_engine
         self._runs: dict[str, _EngineRun] = {}
 
     # ------------------------------------------------------------- compile
@@ -168,13 +169,16 @@ class ManagedLangGraphEngine:
             run.done = True
             yield self._event(run, EventType.RUN_CANCELED, {"status": "cancelled"})
 
-    async def _execute(self, run: _EngineRun, resume_command: Command | None = None) -> list[RuntimeEvent]:
+    async def _execute(
+        self, run: _EngineRun, resume_command: Command | None = None
+    ) -> list[RuntimeEvent]:
         spec = run.compiled.spec
         run.state.status = RunStatus.RUNNING
         if not run.started_emitted:
             run.started_emitted = True
             run.events.append(self._event(run, EventType.RUN_STARTED, {"status": "in_progress"}))
         try:
+            self._emit_context_plan(run)
             graph = self._build_graph(run)
             instructions = spec.prompt.instructions or ""
             config = {"configurable": {"thread_id": run.thread_id}}
@@ -247,7 +251,9 @@ class ManagedLangGraphEngine:
         except Exception as exc:  # noqa: BLE001
             run.state.status = RunStatus.FAILED
             run.done = True
-            run.events.append(self._event(run, EventType.RUN_FAILED, {"status": "failed", "error": str(exc)}))
+            run.events.append(
+    self._event(run, EventType.RUN_FAILED, {"status": "failed", "error": str(exc)})
+)
             return []
 
     # ---------------------------------------------------------------- graph
@@ -351,7 +357,9 @@ class ManagedLangGraphEngine:
                         "role": "tool",
                         "tool_call_id": call_id,
                         "name": name,
-                        "content": result if isinstance(result, str) else json.dumps(result, ensure_ascii=False),
+                        "content": (
+    result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
+),
                     }
                 )
             state["pending_tool_calls"] = []
@@ -463,6 +471,38 @@ class ManagedLangGraphEngine:
 
     # ------------------------------------------------------------- helpers
 
+    def _emit_context_plan(self, run: _EngineRun) -> None:
+        """Phase 2：注入 ContextEngine 时发出 CONTEXT_PLANNED（预算随窗口动态计算）。"""
+        if self._context_engine is None:
+            return
+        from ksadk.harness.context_engine import ContextRequest, resolve_context_window
+
+        raw_window = run.request.metadata.get("context_window_tokens")
+        window, source = resolve_context_window(
+            model_profile_window=int(raw_window) if isinstance(raw_window, (int, float)) else None
+        )
+        plan = self._context_engine.plan(
+            ContextRequest(
+                spec=run.compiled.spec,
+                state=run.state,
+                user_input=str(run.request.input or ""),
+                context_window_tokens=window,
+            )
+        )
+        run.events.append(
+            self._event(
+                run,
+                EventType.CONTEXT_PLANNED,
+                {
+                    "budget_tokens": plan.budget.max_input_tokens,
+                    "sections": dict(plan.tokens_by_kind),
+                    "window_source": source,
+                    "context_window_tokens": window,
+                    "planned_input_tokens": plan.planned_input_tokens,
+                },
+            )
+        )
+
     def _require_run(self, handle: RunHandle) -> _EngineRun:
         try:
             return self._runs[handle.run_id]
@@ -484,7 +524,7 @@ class ManagedLangGraphEngine:
 
 def _is_durable(checkpointer: BaseCheckpointSaver) -> bool:
     """SQLite/Postgres Checkpointer 视为跨进程持久；MemorySaver 不是。"""
-    from langgraph.checkpoint.memory import MemorySaver, InMemorySaver
+    from langgraph.checkpoint.memory import InMemorySaver, MemorySaver
 
     return not isinstance(checkpointer, (MemorySaver, InMemorySaver))
 

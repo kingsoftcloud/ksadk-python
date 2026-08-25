@@ -1,0 +1,241 @@
+"""Phase 2 ContextEngine 测试（plan §17 验收项）。"""
+
+from __future__ import annotations
+
+import pytest
+
+from ksadk.harness.context_engine import (
+    CompactionRequest,
+    ContextEngineError,
+    ContextOverflow,
+    ContextRequest,
+    HarnessContextEngine,
+    extract_critical_facts,
+    resolve_context_window,
+)
+from ksadk.harness.spec import HarnessSpec, ModelBinding, PromptSpec
+from ksadk.harness.state import HarnessState, Message, MessageRole
+
+
+def _spec(**overrides) -> HarnessSpec:
+    base = dict(
+        agent_revision_ref="agent-revision://proj-1@2",
+        model=ModelBinding(profile_ref="model-profile://kimi-k3@1.0.0"),
+        prompt=PromptSpec(instructions="你是财务分析助手。"),
+    )
+    base.update(overrides)
+    return HarnessSpec(**base)
+
+
+def _state(messages: list[Message] | None = None) -> HarnessState:
+    return HarnessState(
+        tenant_id="t1", user_id="u1", agent_id="a1", session_id="s1", messages=messages or []
+    )
+
+
+class TestTokenBudget:
+    def test_budget_scales_with_window_not_constant(self):
+        """长会话不会因固定阈值错误压缩：预算随窗口线性扩展。"""
+        engine = HarnessContextEngine()
+        small = engine.build_budget(_spec(), context_window_tokens=8192)
+        large = engine.build_budget(_spec(), context_window_tokens=131072)
+        assert large.max_input_tokens > small.max_input_tokens * 4
+        assert small.max_input_tokens < 8192  # 扣除保留输出与安全缓冲
+
+    def test_budget_rejects_nonpositive_window(self):
+        with pytest.raises(ContextEngineError):
+            HarnessContextEngine().build_budget(_spec(), context_window_tokens=0)
+
+    def test_window_source_priority_chain(self):
+        assert resolve_context_window(model_profile_window=65536) == (65536, "model_profile")
+        assert resolve_context_window(
+            model_profile_window=None, provider_catalog_window=32768
+        ) == (32768, "provider_catalog")
+        assert resolve_context_window(
+            provider_catalog_window=None, static_metadata_window=16384
+        ) == (16384, "static_metadata")
+        window, source = resolve_context_window()
+        assert source == "fallback_default" and window > 0
+
+
+class TestPlanning:
+    def test_stable_prompt_separate_from_dynamic(self):
+        """Stable/Dynamic 分层：required 的 stable prompt 与 current input 总在。"""
+        engine = HarnessContextEngine()
+        plan = engine.plan(
+            ContextRequest(
+                spec=_spec(), state=_state(), user_input="查预算", context_window_tokens=32768
+            )
+        )
+        ids = [item.item_id for item in plan.selected]
+        assert "stable_prompt" in ids and "current_input" in ids
+        assert plan.stable_prefix_hash.startswith("sha256:")
+
+    def test_tool_pair_not_split(self):
+        """Tool Call/Result 不被拆分：assistant(tool_call_id) 与相邻 tool 消息同组。"""
+        engine = HarnessContextEngine()
+        state = _state([
+            Message(role=MessageRole.USER, content="查预算"),
+            Message(role=MessageRole.ASSISTANT, content="", tool_call_id="tc-1"),
+            Message(role=MessageRole.TOOL, content="42000", tool_call_id="tc-1"),
+            Message(role=MessageRole.USER, content="谢谢"),
+        ])
+        plan = engine.plan(
+            ContextRequest(
+                spec=_spec(), state=state, user_input="再查一次", context_window_tokens=32768
+            )
+        )
+        grouped = [i for i in plan.selected if i.group_id]
+        assert grouped, "Tool 消息必须带 group_id（原子性）"
+
+    def test_history_dropped_under_tight_budget(self):
+        engine = HarnessContextEngine()
+        long_history = [
+            Message(role=MessageRole.USER, content=f"历史问题 {i} " + "细节" * 200)
+            for i in range(40)
+        ]
+        plan = engine.plan(
+            ContextRequest(
+                spec=_spec(),
+                state=_state(long_history),
+                user_input="当前问题",
+                context_window_tokens=2048,
+            )
+        )
+        assert any(d.action in {"dropped", "truncated"} for d in plan.decisions)
+        ids = [i.item_id for i in plan.selected]
+        assert "current_input" in ids, "当前输入 required，绝不被裁掉"
+
+
+class TestCompaction:
+    def test_critical_facts_extraction(self):
+        text = "审批号 AP-1024，金额 ¥42,000.50，日期 2026-08-01，版本 1.2.3"
+        facts = extract_critical_facts(text)
+        joined = " | ".join(facts)
+        assert "AP-1024" in joined
+        assert "¥42,000.50" in facts
+        assert "2026-08-01" in facts
+        assert "1.2.3" in facts
+
+    def test_compact_retains_recent_tail_and_emits_checkpoint(self):
+        engine = HarnessContextEngine()
+        messages = tuple(
+            Message(
+                role=MessageRole.USER if i % 2 == 0 else MessageRole.ASSISTANT,
+                content=f"轮次 {i}",
+            )
+            for i in range(20)
+        )
+        checkpoint = engine.compact(
+            CompactionRequest(
+                messages=messages, trigger="proactive", summary="前 14 轮的摘要", compacted_count=14
+            )
+        )
+        assert checkpoint.trigger == "proactive"
+        assert checkpoint.compacted_until_seq_id == 14
+        assert checkpoint.summary
+
+    def test_dropped_critical_facts_get_reinjected(self):
+        """压缩后关键金额/日期/ID 保留：丢失的关键事实强制重注入。"""
+        engine = HarnessContextEngine()
+        head = [
+            Message(role=MessageRole.USER, content="审批号 AP-1024，金额 ¥42,000"),
+            Message(role=MessageRole.ASSISTANT, content="已记录"),
+        ]
+        tail = [Message(role=MessageRole.USER, content="继续") for _ in range(6)]
+        checkpoint = engine.compact(
+            CompactionRequest(
+                messages=tuple(head + tail),
+                trigger="proactive",
+                summary="之前讨论过一些事项",  # 摘要故意丢失关键事实
+                compacted_count=2,
+            )
+        )
+        assert any("AP-1024" in fact for fact in checkpoint.dropped_critical_facts)
+        assert "¥42,000" in checkpoint.dropped_critical_facts
+        assert "AP-1024" in checkpoint.reinjection
+
+    def test_summary_covering_facts_no_reinjection_needed(self):
+        engine = HarnessContextEngine()
+        head = [Message(role=MessageRole.USER, content="审批号 AP-1024")]
+        tail = [Message(role=MessageRole.USER, content="继续") for _ in range(6)]
+        checkpoint = engine.compact(
+            CompactionRequest(
+                messages=tuple(head + tail),
+                trigger="proactive",
+                summary="审批号 AP-1024 已提交",
+                compacted_count=1,
+            )
+        )
+        assert checkpoint.dropped_critical_facts == ()
+        assert checkpoint.reinjection == ""
+
+    def test_emergency_compact_requires_summary(self):
+        engine = HarnessContextEngine()
+        with pytest.raises(ContextEngineError, match="紧急压缩"):
+            engine.compact(
+                CompactionRequest(messages=tuple(), trigger="emergency", summary=None)
+            )
+
+    def test_short_history_skips_compaction(self):
+        engine = HarnessContextEngine()
+        messages = tuple(Message(role=MessageRole.USER, content="短") for _ in range(3))
+        checkpoint = engine.compact(
+            CompactionRequest(messages=messages, trigger="proactive", summary="x")
+        )
+        assert checkpoint.compacted_until_seq_id == 0
+
+
+class TestRecover:
+    def test_recover_first_retry_succeeds(self):
+        engine = HarnessContextEngine()
+        plan = engine.recover(ContextOverflow(error_message="context length exceeded"))
+        assert plan.budget.max_input_tokens > 0
+
+    def test_recover_second_retry_rejected(self):
+        """紧急压缩只允许重试一次，防止无限循环。"""
+        engine = HarnessContextEngine()
+        with pytest.raises(ContextEngineError, match="重试一次"):
+            engine.recover(ContextOverflow(error_message="overflow", retry_count=1))
+
+
+class TestEngineIntegration:
+    def test_engine_emits_context_planned_event(self):
+        """引擎注入 ContextEngine 后发出 context.planned（预算随窗口来源记录）。"""
+        import asyncio
+
+        from ksadk.harness.engine.langgraph import ManagedLangGraphEngine
+        from ksadk.harness.reasoner import HarnessReasoningTurn
+        from ksadk.runtime import StartRequest
+
+        class _R:
+            async def complete(self, **kwargs):
+                return HarnessReasoningTurn(final_text="ok")
+
+        engine = ManagedLangGraphEngine(
+            reasoner=_R(),
+            context_engine=HarnessContextEngine(),
+        )
+
+        async def drive():
+            compiled = await engine.compile(_spec())
+            handle = await engine.start(
+                StartRequest(
+                    input="你好",
+                    user_id="u1",
+                    session_id="s1",
+                    agent_id="a1",
+                    runtime_type="managed-langgraph",
+                    metadata={"invocation_id": "run-ctx", "context_window_tokens": 65536},
+                ),
+                compiled,
+            )
+            return [e async for e in engine.stream(handle)]
+
+        events = asyncio.run(drive())
+        planned = [e for e in events if e.event_type == "context.planned"]
+        assert len(planned) == 1
+        assert planned[0].payload["budget_tokens"] > 0
+        assert planned[0].payload["window_source"] == "model_profile"
+        assert planned[0].payload["context_window_tokens"] == 65536
+        assert events[-1].event_type == "run.completed"
