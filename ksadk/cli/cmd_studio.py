@@ -153,7 +153,9 @@ def studio(
             host="127.0.0.1",
             port=port,
             log_level="info",
-            access_log=False,
+            # 访问日志默认开启：本地排障需要看到每个 API 调用（对齐 veadk Studio 的
+            # 可观测体验）；高频轮询路径若产生噪音再按路由精细降噪。
+            access_log=True,
         )
     finally:
         for key in managed_keys:
