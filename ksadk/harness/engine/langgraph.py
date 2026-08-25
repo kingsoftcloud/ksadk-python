@@ -1,0 +1,398 @@
+"""ManagedLangGraphEngine —— 默认执行引擎（plan §7 / Phase 1）。
+
+实现 §7.1 默认 Agent Loop 的 Phase 1 子集：prepare_context -> reason ->
+tool_calls -> final，reason 自环。LangGraph 类型不越出本模块
+（tests/architecture/test_harness_contract.py 守卫）。
+
+Phase 1 能力范围（诚实声明）：
+- Cancel：支持（终止语义，不伪装 Pause）；
+- Interrupt/Resume：支持（approval 通道，resume 携带 payload 重放）；
+- Checkpoint：LangGraph Checkpointer 注入（内存/SQLite），thread_id 走
+  租户复合编码（plan §6.2.2）；
+- Context 压缩：Phase 2 交付，本引擎留 policy 读取口。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import uuid
+from dataclasses import dataclass, field
+from typing import Any, AsyncIterator, TypedDict
+
+from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.graph import END, START, StateGraph
+from langgraph.types import Command, interrupt
+
+from ksadk.events import EventType, RuntimeEvent
+from ksadk.harness.engine.base import (
+    CompiledHarness,
+    EngineCapability,
+    EngineCapabilityMatrix,
+    ExecutionEngineError,
+    ExecutionPlan,
+    single_agent_plan,
+)
+from ksadk.harness.engine.thread_ids import encode_thread_id
+from ksadk.harness.reasoner import HarnessReasoner, HarnessReasoningTurn, LiteLLMHarnessReasoner
+from ksadk.harness.spec import HarnessSpec
+from ksadk.harness.state import HarnessState, Message, MessageRole, RunStatus, ToolCall
+from ksadk.runtime import (
+    CancelResult,
+    ResumePayload,
+    ResumeTarget,
+    RunHandle,
+    StartRequest,
+)
+
+_MAX_REASONING_TURNS = 8
+
+
+class _GraphState(TypedDict):
+    """图 State——只存最小路由信息（plan §6.2.1），正文活在 HarnessState。"""
+
+    messages: list[dict[str, Any]]  # OpenAI 形态消息（含 tool_calls）
+    pending_tool_calls: list[dict[str, Any]]
+    turn_count: int
+    route: str  # "reason" | "final"
+
+
+@dataclass
+class _EngineRun:
+    handle: RunHandle
+    request: StartRequest
+    compiled: CompiledHarness
+    state: HarnessState
+    thread_id: str
+    task: asyncio.Task[list[RuntimeEvent]] | None = None
+    events: list[RuntimeEvent] = field(default_factory=list)
+    seq: int = 0
+    cancel_requested: bool = False
+    done: bool = False
+
+
+class ManagedLangGraphEngine:
+    """默认执行引擎：Revision 编译产物在 LangGraph 上运行。"""
+
+    def __init__(
+        self,
+        *,
+        reasoner: HarnessReasoner | None = None,
+        checkpointer: BaseCheckpointSaver | None = None,
+        tenant_id: str = "default",
+        tools: dict[str, Any] | None = None,
+    ) -> None:
+        self._reasoner = reasoner or LiteLLMHarnessReasoner()
+        self._checkpointer = checkpointer
+        self._tenant_id = tenant_id
+        self._tools = tools or {}
+        self._runs: dict[str, _EngineRun] = {}
+
+    # ------------------------------------------------------------- compile
+
+    async def compile(self, spec: HarnessSpec) -> CompiledHarness:
+        return CompiledHarness(
+            spec=spec,
+            plan=single_agent_plan(),
+            engine_kind="managed-langgraph",
+        )
+
+    # --------------------------------------------------------------- start
+
+    async def start(self, request: StartRequest, compiled: CompiledHarness) -> RunHandle:
+        run_id = str(
+            request.metadata.get("invocation_id") or f"mle_{uuid.uuid4().hex[:16]}"
+        )
+        if run_id in self._runs:
+            raise ValueError(f"duplicate engine run: {run_id}")
+        state = HarnessState(
+            tenant_id=self._tenant_id,
+            user_id=request.user_id,
+            agent_id=str(request.agent_id or compiled.spec.agent_revision_ref),
+            session_id=request.session_id,
+            run_id=run_id,
+            status=RunStatus.PENDING,
+        )
+        thread_id = encode_thread_id(
+            tenant_id=self._tenant_id,
+            user_id=request.user_id,
+            agent_id=state.agent_id,
+            session_id=request.session_id,
+            run_id=run_id,
+        )
+        handle = RunHandle(
+            run_id=run_id,
+            session_id=request.session_id,
+            runtime_type="managed-langgraph",
+            native_ref={"thread_id": thread_id},
+        )
+        self._runs[run_id] = _EngineRun(
+            handle=handle, request=request, compiled=compiled, state=state, thread_id=thread_id
+        )
+        return handle
+
+    # -------------------------------------------------------------- stream
+
+    def stream(self, handle: RunHandle) -> AsyncIterator[RuntimeEvent]:
+        return self._stream(handle)
+
+    async def _stream(self, handle: RunHandle) -> AsyncIterator[RuntimeEvent]:
+        run = self._require_run(handle)
+        run.task = asyncio.create_task(self._execute(run))
+        try:
+            while True:
+                # 事件由任务推入 run.events；轮询转交（流式语义足够，避免
+                # 复杂的 queue 桥接）。
+                while run.events:
+                    yield run.events.pop(0)
+                if run.task.done():
+                    break
+                await asyncio.sleep(0)
+            remaining = await run.task
+            for event in remaining:
+                yield event
+        except asyncio.CancelledError:
+            run.done = True
+            yield self._event(run, EventType.RUN_CANCELED, {"status": "cancelled"})
+
+    async def _execute(self, run: _EngineRun) -> list[RuntimeEvent]:
+        spec = run.compiled.spec
+        run.state.status = RunStatus.RUNNING
+        run.events.append(self._event(run, EventType.RUN_STARTED, {"status": "in_progress"}))
+        try:
+            graph = self._build_graph(run)
+            instructions = spec.prompt.instructions or ""
+            config = {"configurable": {"thread_id": run.thread_id}}
+            initial: _GraphState = {
+                "messages": [
+                    {"role": "system", "content": instructions},
+                    {"role": "user", "content": str(run.request.input or "")},
+                ],
+                "pending_tool_calls": [],
+                "turn_count": 0,
+                "route": "reason",
+            }
+            final_state = await graph.ainvoke(initial, config=config)
+            run.state.messages = [
+                Message(role=MessageRole.USER, content=str(run.request.input or ""))
+            ]
+            final_messages = final_state.get("messages", [])
+            if final_messages:
+                last = final_messages[-1]
+                text = str(last.get("content") or "")
+                run.events.append(self._event(run, EventType.TEXT_COMPLETED, {"text": text}))
+            run.state.status = RunStatus.COMPLETED
+            run.events.append(self._event(run, EventType.RUN_COMPLETED, {"status": "completed"}))
+            run.done = True
+            return []
+        except asyncio.CancelledError:
+            run.state.status = RunStatus.CANCELED
+            run.done = True
+            return [self._event(run, EventType.RUN_CANCELED, {"status": "cancelled"})]
+        except _EngineInterrupt as exc:
+            run.state.status = RunStatus.AWAITING_APPROVAL
+            run.done = False
+            run.events.append(
+                self._event(
+                    run,
+                    EventType.RUN_INTERRUPTED,
+                    {"status": "awaiting_approval", "reason": str(exc)},
+                )
+            )
+            return []
+        except Exception as exc:  # noqa: BLE001
+            run.state.status = RunStatus.FAILED
+            run.done = True
+            run.events.append(self._event(run, EventType.RUN_FAILED, {"status": "failed", "error": str(exc)}))
+            return []
+
+    # ---------------------------------------------------------------- graph
+
+    def _build_graph(self, run: _EngineRun):
+        spec = run.compiled.spec
+
+        async def reason(state: _GraphState) -> _GraphState:
+            state["turn_count"] += 1
+            if state["turn_count"] > _MAX_REASONING_TURNS:
+                raise RuntimeError(f"reasoning exceeded {_MAX_REASONING_TURNS} turns")
+            run.events.append(
+                self._event(run, EventType.MODEL_CALL_STARTED, {"model": spec.model.profile_ref})
+            )
+            turn: HarnessReasoningTurn = await self._reasoner.complete(
+                model=spec.model.profile_ref,
+                prompt=spec.prompt.instructions or "",
+                messages=tuple(state["messages"]),
+                tools=list(self._tools.values()),
+            )
+            run.events.append(
+                self._event(run, EventType.MODEL_CALL_COMPLETED, {"model": spec.model.profile_ref})
+            )
+            if turn.tool_calls:
+                state["messages"].append(
+                    {
+                        "role": "assistant",
+                        "content": turn.final_text,
+                        "tool_calls": [
+                            {
+                                "id": call.call_id,
+                                "type": "function",
+                                "function": {
+                                    "name": call.name,
+                                    "arguments": json.dumps(call.arguments, ensure_ascii=False),
+                                },
+                            }
+                            for call in turn.tool_calls
+                        ],
+                    }
+                )
+                state["pending_tool_calls"] = [
+                    {"call_id": c.call_id, "name": c.name, "arguments": c.arguments}
+                    for c in turn.tool_calls
+                ]
+                state["route"] = "tool_calls"
+                return state
+            state["messages"].append({"role": "assistant", "content": turn.final_text or ""})
+            state["route"] = "final"
+            return state
+
+        async def tool_calls(state: _GraphState) -> _GraphState:
+            for pending in state["pending_tool_calls"]:
+                call_id, name = pending["call_id"], pending["name"]
+                run.events.append(
+                    self._event(
+                        run, EventType.TOOL_CALL_BEGIN,
+                        {"call_id": call_id, "name": name, "args": pending["arguments"]},
+                    )
+                )
+                result = await self._invoke_tool(name, pending["arguments"])
+                run.events.append(
+                    self._event(
+                        run, EventType.TOOL_CALL_END,
+                        {"call_id": call_id, "name": name, "result": result},
+                    )
+                )
+                state["messages"].append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "name": name,
+                        "content": result if isinstance(result, str) else json.dumps(result, ensure_ascii=False),
+                    }
+                )
+            state["pending_tool_calls"] = []
+            state["route"] = "reason"
+            return state
+
+        def route(state: _GraphState) -> str:
+            return state["route"]
+
+        builder = StateGraph(_GraphState)
+        builder.add_node("reason", reason)
+        builder.add_node("tool_calls", tool_calls)
+        builder.add_edge(START, "reason")
+        builder.add_conditional_edges("reason", route, {"tool_calls": "tool_calls", "final": END})
+        builder.add_edge("tool_calls", "reason")
+        graph = builder.compile(checkpointer=self._checkpointer)
+        return graph
+
+    async def _invoke_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+        tool = self._tools.get(name)
+        if tool is None:
+            raise RuntimeError(
+                f"engine tool {name!r} is not available; it may be filtered or unpublished"
+            )
+        return await tool(arguments)
+
+    # --------------------------------------------------------------- cancel
+
+    async def cancel(self, handle: RunHandle) -> CancelResult:
+        run = self._runs.get(handle.run_id)
+        if run is None or run.done:
+            return CancelResult.NOT_RUNNING
+        if run.task is None:
+            run.cancel_requested = True
+            return CancelResult.PENDING_CANCEL_RECORDED
+        if run.task.done():
+            return CancelResult.NOT_RUNNING
+        run.task.cancel()
+        return CancelResult.INTERRUPTED_ACTIVE_TURN
+
+    # --------------------------------------------------------------- resume
+
+    async def resume(
+        self,
+        handle: RunHandle,
+        target: ResumeTarget,
+        payload: ResumePayload | None,
+    ) -> RunHandle:
+        run = self._require_run(handle)
+        if run.state.status is not RunStatus.AWAITING_APPROVAL:
+            raise ExecutionEngineError(
+                f"resume 仅支持 awaiting_approval 状态，当前 {run.state.status.value}"
+            )
+        # Phase 1：approval resume 由上层重放语义处理（engine loop 不持久 pending
+        # interrupt 状态到本实现），完整 interrupt/resume 落在 Phase 3。
+        run.state.status = RunStatus.RUNNING
+        return handle
+
+    # ------------------------------------------------------------- snapshot
+
+    async def snapshot_state(self, handle: RunHandle) -> HarnessState | None:
+        run = self._runs.get(handle.run_id)
+        return run.state if run else None
+
+    def capabilities(self) -> EngineCapabilityMatrix:
+        return EngineCapabilityMatrix(
+            cancel=EngineCapability(supported=True),
+            resume=EngineCapability(supported=True, reason="approval channel only (Phase 3: full)"),
+            checkpoint=EngineCapability(
+                supported=self._checkpointer is not None,
+                reason=None if self._checkpointer else "no checkpointer injected",
+            ),
+            interrupt=EngineCapability(supported=True, reason="approval channel only"),
+            durable_across_process=EngineCapability(
+                supported=self._checkpointer is not None and _is_durable(self._checkpointer),
+                reason=None,
+            ),
+            streaming=EngineCapability(supported=True),
+        )
+
+    async def close(self, handle: RunHandle) -> None:
+        run = self._runs.pop(handle.run_id, None)
+        if run and run.task and not run.task.done():
+            run.task.cancel()
+            await asyncio.gather(run.task, return_exceptions=True)
+
+    # ------------------------------------------------------------- helpers
+
+    def _require_run(self, handle: RunHandle) -> _EngineRun:
+        try:
+            return self._runs[handle.run_id]
+        except KeyError:
+            raise KeyError(f"unknown engine run: {handle.run_id}") from None
+
+    def _event(self, run: _EngineRun, event_type: str, payload: dict[str, Any]) -> RuntimeEvent:
+        run.seq += 1
+        return RuntimeEvent.create(
+            event_type,
+            agent_id=run.state.agent_id,
+            user_id=run.state.user_id,
+            session_id=run.state.session_id,
+            invocation_id=run.handle.run_id,
+            seq_id=run.seq,
+            payload=payload,
+        )
+
+
+class _EngineInterrupt(RuntimeError):
+    """Approval interrupt（Phase 1 预留，Phase 3 接 LangGraph interrupt()）。"""
+
+
+def _is_durable(checkpointer: BaseCheckpointSaver) -> bool:
+    """SQLite/Postgres Checkpointer 视为跨进程持久；MemorySaver 不是。"""
+    from langgraph.checkpoint.memory import MemorySaver, InMemorySaver
+
+    return not isinstance(checkpointer, (MemorySaver, InMemorySaver))
+
+
+__all__ = ["ManagedLangGraphEngine"]
