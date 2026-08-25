@@ -34,8 +34,8 @@ from ksadk.harness.state import HarnessState, Message, MessageRole
 #: 关键保留字段模式（§8.4：opaque ID、金额、日期、版本、审批编号）。
 _CRITICAL_PATTERN = re.compile(
     r"""
-    (?P<id>[A-Z]{1,6}-?\d{2,10})            |  # 形如 AP-1024 / INV20260101 的 opaque ID
-    (?P<amount>¥?\d{1,3}(?:,\d{3})+(?:\.\d+)?) |  # 金额（千分位）
+    (?P<id>[A-Z]{1,6}-?\d{2,10}(?:-\d{1,6})?) |  # 形如 AP-1024 / INV-2026-0001 的 opaque ID
+    (?P<amount>¥\d{1,3}(?:,\d{3})*(?:\.\d+)?|\d{1,3}(?:,\d{3})+(?:\.\d+)?) |  # 金额
     (?P<date>20\d{2}[-/年.]\d{1,2}[-/月.]\d{1,2}) |  # 日期
     (?P<version>v?\d+\.\d+\.\d+)             |  # 版本号
     (?P<approval>审批号[:：]?\s*[A-Za-z0-9-]+)     # 审批编号

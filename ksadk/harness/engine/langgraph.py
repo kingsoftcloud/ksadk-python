@@ -37,6 +37,7 @@ from ksadk.harness.engine.thread_ids import encode_thread_id
 from ksadk.harness.reasoner import HarnessReasoner, HarnessReasoningTurn, LiteLLMHarnessReasoner
 from ksadk.harness.spec import HarnessSpec
 from ksadk.harness.state import HarnessState, Message, MessageRole, RunStatus
+from ksadk.harness.working_context import record_tool_failure, record_tool_result
 from ksadk.runtime import (
     CancelResult,
     ResumePayload,
@@ -338,6 +339,12 @@ class ManagedLangGraphEngine:
                         {"role": "tool", "tool_call_id": call_id, "name": name,
                          "content": f"[denied] approval decision: {decision}"}
                     )
+                    # Working Context（plan §8.5）：审批拒绝计入最近工具失败。
+                    run.state.working_context = record_tool_failure(
+                        run.state.working_context,
+                        name=name,
+                        error=f"approval {decision}",
+                    )
                     continue
                 run.events.append(
                     self._event(
@@ -346,6 +353,13 @@ class ManagedLangGraphEngine:
                     )
                 )
                 result = await self._invoke_tool(name, pending["arguments"])
+                result_text = result if isinstance(result, str) else json.dumps(
+                    result, ensure_ascii=False
+                )
+                # Working Context（plan §8.5）：工具结果关键事实记入已验证事实。
+                run.state.working_context = record_tool_result(
+                    run.state.working_context, name=name, result_text=result_text
+                )
                 run.events.append(
                     self._event(
                         run, EventType.TOOL_CALL_END,

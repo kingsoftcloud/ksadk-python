@@ -34,7 +34,7 @@ class _ScriptedReasoner(HarnessReasoner):
 
 def _tools() -> dict:
     async def budget_lookup(arguments):
-        return "预算 42000"
+        return "预算 ¥42,000"
 
     return {"budget_lookup": budget_lookup}
 
@@ -368,3 +368,31 @@ def test_process_restart_recovers_from_sqlite_checkpoint(tmp_path):
     second, executed = asyncio.run(phase_two(handle))
     assert second[-1].event_type == EventType.RUN_COMPLETED
     assert executed == ["high_risk", "normal"]
+
+
+def test_tool_result_updates_working_context():
+    """Tool 结果关键事实记入 Working Context verified_facts（plan §8.5）。"""
+    import asyncio
+
+    engine = ManagedLangGraphEngine(
+        reasoner=_ScriptedReasoner([
+            HarnessReasoningTurn(tool_calls=(
+                HarnessToolCall(call_id="tc-1", name="budget_lookup", arguments={"q": "x"}),
+            )),
+            HarnessReasoningTurn(final_text="完成"),
+        ]),
+        tools=_tools(),
+    )
+
+    async def drive():
+        compiled = await engine.compile(_spec())
+        handle = await engine.start(_start_request(), compiled)
+        events = [event async for event in engine.stream(handle)]
+        return handle, events
+
+    handle, events = asyncio.run(drive())
+    assert events[-1].event_type == EventType.RUN_COMPLETED
+    state = asyncio.run(engine.snapshot_state(handle))
+    assert state is not None
+    joined = " ".join(state.working_context.verified_facts)
+    assert "¥42,000" in joined, "工具结果中的关键金额须进入 verified_facts"
