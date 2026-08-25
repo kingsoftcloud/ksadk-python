@@ -229,6 +229,7 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
   const [convBusy, setConvBusy] = useState(false);
   const [convError, setConvError] = useState("");
   const [convStage, setConvStage] = useState<string | null>(null);
+  const [convStartedAt, setConvStartedAt] = useState<number | null>(null);
   const convPollAbort = useRef<AbortController | null>(null);
   useEffect(() => () => convPollAbort.current?.abort(), []);
 
@@ -489,6 +490,7 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
     setConvMessages(next);
     setConvInput("");
     setConvBusy(true);
+    setConvStartedAt(Date.now());
     const requestId = `conv-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     setConvStage("resolving_model");
     const poller = pollConversationStages(requestId);
@@ -879,7 +881,7 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
                   </div>
                   {convBusy && (
                     <p className="authoring-stage-hint" aria-live="polite">
-                      <TextShimmer stage={convStage} />
+                      <TextShimmer stage={convStage} startedAt={convStartedAt} />
                     </p>
                   )}
                   {convError && <div className="inline-alert error"><CircleAlert size={16} /><div><strong>对话构建失败</strong><p>{convError}</p></div></div>}

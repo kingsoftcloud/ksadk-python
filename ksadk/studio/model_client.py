@@ -399,11 +399,19 @@ class OpenAICompatibleModelClient:
                     payload.pop("response_format")
                     continue
                 if response.status_code >= 400:
+                    upstream_detail = ""
+                    try:
+                        upstream_detail = response.text[:200]
+                    except Exception:  # noqa: BLE001 - 诊断信息尽力而为
+                        upstream_detail = ""
                     raise StudioError(
                         "MODEL_REQUEST_FAILED",
                         "模型服务返回错误",
                         status_code=502,
-                        details={"upstreamStatus": response.status_code},
+                        details={
+                            "upstreamStatus": response.status_code,
+                            "upstreamError": upstream_detail,
+                        },
                     )
                 if wire_api == "responses":
                     return self._parse_responses_response(response, allow_empty=allow_empty)

@@ -34,7 +34,7 @@ from ksadk.studio.workspace import Workspace
 LOGGER = logging.getLogger(__name__)
 
 #: 单个 Codex turn 的执行超时；超时视为 codex 不可用并降级 chat 链。
-DEFAULT_TURN_TIMEOUT_SECONDS = 90.0
+DEFAULT_TURN_TIMEOUT_SECONDS = 240.0
 #: 校验失败后的最大改写轮数（首轮之外）。
 DEFAULT_MAX_RETRIES = 2
 #: 失败产物目录保留数量，供诊断；成功目录立即清理。
@@ -60,6 +60,26 @@ _BUILDER_SCHEMA = """\
     字符串引用而非对象，固定写 "env://AGENTKIT_MODEL_API_KEY"；baseUrl/endpointUrl
     是字符串 URL
   - capabilities、bindings、execution、context、memory、security、evaluation：按需
+
+完整示例（输出必须严格遵循此结构，字段名一字不差）：
+
+name: 每日科技新闻摘要
+slug: daily-tech-news-summary
+runtimeType: codex
+description: 每天早晨抓取科技新闻源并生成中文简报
+spec:
+  instructions:
+    system: 你是一名资深科技编辑，擅长从多条新闻中提炼要点。
+    task: 汇总当日科技新闻，按重要性排序输出中文简报，每条含标题与一句话摘要。
+  runtime:
+    type: codex
+  model:
+    model: deepseek-v4-pro
+    credentialRef: env://AGENTKIT_MODEL_API_KEY
+    baseUrl: https://api.example.com/v1
+
+注意：示例中的 name/slug/description/instructions/model 值必须替换为符合用户
+对话的内容，不要照抄示例文字。
 
 规则：
 1. 必须用写文件工具把完整 patch 写入指定路径；不要只在回复中输出内容。
@@ -321,6 +341,12 @@ class CodexAuthoringExecutor:
         )
         parts.append(f"用户对话（最后一条 user 消息是最新要求，必须优先满足）：\n{transcript}\n")
         parts.append("现在把完整的 Agent Draft Patch 写入目标文件。")
+        parts.append(
+            "写入方式要求：沙箱外命令已被审批策略拒绝，不要尝试 shell 重定向"
+            "（如 cat > file 或 echo > file）——它们会被静默拒绝导致文件不存在。"
+            "必须使用 apply_patch 工具（*** Begin Patch … Add File: <绝对路径> … "
+            "*** End Patch）把完整 YAML 内容写为目标文件。"
+        )
         return "\n".join(parts)
 
     @staticmethod

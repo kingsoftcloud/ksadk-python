@@ -7350,3 +7350,24 @@ body.create-mode .global-context {
   font-size: var(--font-size-caption);
   line-height: var(--line-height-caption);
 }
+
+/* 对话创建阶段反馈容器：主文案 + 已等待时长 + 阶段小贴士。 */
+.authoring-stage {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--spacing-2, 8px);
+}
+
+.authoring-stage-elapsed {
+  color: var(--text-tertiary);
+  font-size: var(--font-size-caption, 12px);
+  font-variant-numeric: tabular-nums;
+}
+
+.authoring-stage-tip {
+  flex-basis: 100%;
+  color: var(--text-tertiary);
+  font-size: var(--font-size-caption, 12px);
+  line-height: var(--line-height-caption, 1.5);
+}
