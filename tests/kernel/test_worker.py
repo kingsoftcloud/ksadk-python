@@ -644,3 +644,39 @@ async def test_stream_typed_rejection_is_discarded():
     assert message.status == InboxState.DISCARDED
     events = await stack.events.read("s1", 0, 20)
     assert any(e.event_type == "control.command_rejected" for e in events)
+
+
+async def test_turn_model_override_applies_without_allowlist():
+    """未配置 allowed_models(未声明限制)时,run 请求的 model 覆盖必须生效。
+
+    只配默认 model 不等于白名单;显式 allowed_models 存在时才收紧
+    (见 test_turn_model_and_approval_are_bounded_by_deployment_defaults)。
+    """
+    stack = await kernel_stack()
+    lease = await stack.lease()
+    await stack.kernel.submit(
+        command(
+            idempotency_key="model-override-no-allowlist",
+            payload={
+                "content": [{"type": "input_text", "text": "hello"}],
+                "runtime_options": {"model": "glm-5.3"},
+            },
+        ),
+        permit=stack.permit("enqueue"),
+    )
+    from ksadk.kernel.worker import AgentKernelWorker
+
+    worker = AgentKernelWorker(
+        stack.store,
+        adapter_factory=lambda: stack.adapter,
+        start_request_defaults={
+            "model": "gpt-5.6-sol",
+            "config": {"sandbox_read_only": True},
+        },
+    )
+
+    result = await worker.run_once(AGENT, lease)
+
+    assert result.outcome == "completed"
+    request = stack.adapter.start_requests[-1]
+    assert request.model == "glm-5.3"

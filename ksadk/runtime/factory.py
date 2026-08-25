@@ -41,8 +41,8 @@ def kernel_start_request_defaults(context: RuntimeLaunchContext) -> dict[str, An
         if isinstance(raw_allowed_models, (list, tuple, set))
         else set()
     )
-    if model:
-        allowed_models.add(model)
+    # 不把默认 model 自动加进白名单:白名单只在显式声明 models/allowedModels
+    # 时才存在(显式声明 = 收紧;只配默认 = 不限制 run 级覆盖)。
     if allowed_models:
         defaults["allowed_models"] = sorted(allowed_models)
     if context.runtime_type != "codex":

@@ -762,7 +762,7 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
         signal,
       );
       if (!deploymentResponse.ok) throw new Error(`刷新云端 Agent 状态失败（${deploymentResponse.status}）`);
-      const refreshed = {
+      const refreshed: Deployment = {
         ...deployment,
         ...(await deploymentResponse.json() as Deployment),
         source: "receipt" as const,

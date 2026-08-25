@@ -22,7 +22,9 @@ def test_codex_manifest_ask_profile_becomes_native_manual_approval():
 
     assert defaults["agent_id"] == "managed-agent"
     assert defaults["model"] == "qwen-test"
-    assert defaults["allowed_models"] == ["qwen-test"]
+    # 只配默认 model 不产生 allowed_models:显式 models/allowedModels 才是白名单。
+    # 否则单模型部署会把 run 级 model 覆盖锁死在默认模型上(RunAgent Model 透传 bug)。
+    assert "allowed_models" not in defaults
     assert defaults["config"] == {
         "sandbox_read_only": False,
         "sandbox": "workspace-write",

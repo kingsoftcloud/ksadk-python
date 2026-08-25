@@ -47,7 +47,10 @@ def test_unsupported_tools_fail_fast_400():
         "/v1/responses", json=body, headers={"Authorization": "Bearer tok123"}
     )
     assert r.status_code == 400
-    assert r.json()["error"]["type"] == "unsupported_tools"
+    assert r.json()["error"] == {
+        "type": "unsupported_tools",
+        "message": "The request uses tools unsupported by the model upstream.",
+    }
 
 
 def test_config_rejects_plaintext_http_upstream():
@@ -336,3 +339,207 @@ def test_stop_with_active_sse_reclaims_thread():
     rt.join(timeout=3)
     up.shutdown()
     up.server_close()
+
+
+# ---- E2E: codex 动态工具(additional_tools/namespace)全链路工具调用往返 ----
+
+
+class _ToolCallStreamingUpstream(BaseHTTPRequestHandler):
+    """录制 chat 请求体并回放一条 tool_calls 流式响应(模拟 glm/kspmas 行为)。"""
+
+    received: list[dict] = []
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length") or "0")
+        body = json.loads(self.rfile.read(length) or b"{}")
+        type(self).received.append(body)
+        chunks = [
+            {
+                "id": "chatcmpl-tools",
+                "object": "chat.completion.chunk",
+                "created": 1,
+                "model": body.get("model"),
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"role": "assistant", "reasoning_content": "call exec"},
+                        "finish_reason": None,
+                    }
+                ],
+            },
+            {
+                "id": "chatcmpl-tools",
+                "object": "chat.completion.chunk",
+                "created": 1,
+                "model": body.get("model"),
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "id": "call_live_1",
+                                    "index": 0,
+                                    "type": "function",
+                                    "function": {
+                                        "name": "functions__exec_command",
+                                        "arguments": '{"cmd": "echo phase1-ok"}',
+                                    },
+                                }
+                            ]
+                        },
+                        "finish_reason": None,
+                    }
+                ],
+            },
+            {
+                "id": "chatcmpl-tools",
+                "object": "chat.completion.chunk",
+                "created": 1,
+                "model": body.get("model"),
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}],
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 5,
+                    "total_tokens": 15,
+                },
+            },
+        ]
+        payload = "".join(f"data: {json.dumps(c)}\n\n" for c in chunks) + "data: [DONE]\n\n"
+        encoded = payload.encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
+
+    def log_message(self, *_args):
+        pass
+
+
+def test_tool_round_trip_through_streaming_proxy():
+    """glm-5.3 经 model_proxy 无 tool_calls 的回归:工具声明与 tool_calls 双向不丢。
+
+    codex 0.147 把动态工具放 input 的 additional_tools(namespace 包裹),
+    转换层必须提升进 chat tools;上游回的 tool_calls 流必须还原成
+    responses function_call 事件(namespace 名字还原),codex 才能执行工具。
+    """
+    _ToolCallStreamingUpstream.received = []
+    upstream = HTTPServer(("127.0.0.1", 0), _ToolCallStreamingUpstream)
+    threading.Thread(target=upstream.serve_forever, daemon=True).start()
+    config = ProxyConfig(
+        upstream_base=f"http://127.0.0.1:{upstream.server_address[1]}/v1",
+        api_key="secret-upstream-key",
+        local_token="local-token",
+        upstream_model="glm-5.3",
+    )
+    responses_body = {
+        # 真实链路:codex 已配置 model=(或 thread 级覆盖),发真实模型名
+        "model": "glm-5.3",
+        "instructions": "You are a coding agent.",
+        "input": [
+            {
+                "type": "additional_tools",
+                "role": "developer",
+                "tools": [
+                    {
+                        "type": "namespace",
+                        "name": "functions",
+                        "tools": [
+                            {
+                                "type": "function",
+                                "name": "exec_command",
+                                "description": "Run a command",
+                                "parameters": {
+                                    "type": "object",
+                                    "properties": {"cmd": {"type": "string"}},
+                                    "required": ["cmd"],
+                                },
+                            }
+                        ],
+                    }
+                ],
+            },
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "run echo phase1-ok"}],
+            },
+        ],
+        "tool_choice": "auto",
+        "parallel_tool_calls": False,
+        "reasoning": {"effort": "xhigh"},
+        "stream": True,
+    }
+    try:
+        with TestClient(create_app(config)) as client:
+            response = client.post(
+                "/v1/responses",
+                json=responses_body,
+                headers={"Authorization": "Bearer local-token"},
+            )
+            sse = response.text
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+    # 请求方向:chat 上游收到提升后的 tools / tool_choice / parallel_tool_calls
+    chat_req = _ToolCallStreamingUpstream.received[0]
+    tool_names = [
+        (t.get("function") or {}).get("name") for t in chat_req.get("tools") or []
+    ]
+    assert tool_names == ["functions__exec_command"], "工具声明在转换中丢失(根因)"
+    assert chat_req["tool_choice"] == "auto"
+    assert chat_req["parallel_tool_calls"] is False
+    assert chat_req["model"] == "glm-5.3"
+    assert chat_req["stream"] is True
+    # 响应方向:responses SSE 里有 function_call 事件且 namespace 名字还原
+    assert "response.function_call_arguments.delta" in sse
+    assert "response.function_call_arguments.done" in sse
+    assert '"call_id": "call_live_1"' in sse
+    # output_item.added 阶段用 flat 名字(与上游 chat 流一致);
+    # output_item.done 是 namespace 还原后的终态,以它为准。
+    done_items = []
+    for line in sse.splitlines():
+        if not line.startswith("data: "):
+            continue
+        data = json.loads(line[6:])
+        if data.get("type") == "response.output_item.done" and (
+            data.get("item") or {}
+        ).get("type") == "function_call":
+            done_items.append(data["item"])
+    assert len(done_items) == 1
+    item = done_items[0]
+    assert item["name"] == "exec_command"
+    assert item["namespace"] == "functions"
+    assert item["call_id"] == "call_live_1"
+    assert "response.completed" in sse
+
+
+def test_responses_real_model_not_clobbered_by_upstream_default():
+    """RunAgent 的 Model 覆盖必须透传:proxy 只对 codex 内部伪模型名(如
+    codex-auto-review)落回 upstream_model,真实模型名原样发给上游。
+
+    否则请求带 model=glm-5.3 会被改写成部署默认模型(终验 403 的根因之一)。
+    """
+    _RecordingUpstream.received = []
+    upstream = HTTPServer(("127.0.0.1", 0), _RecordingUpstream)
+    threading.Thread(target=upstream.serve_forever, daemon=True).start()
+    config = ProxyConfig(
+        upstream_base=f"http://127.0.0.1:{upstream.server_address[1]}/v1",
+        api_key="secret-upstream-key",
+        local_token="local-token",
+        upstream_model="gpt-5.6-sol",
+    )
+    try:
+        response = TestClient(create_app(config)).post(
+            "/v1/responses",
+            json={"model": "glm-5.3", "input": "hello"},
+            headers={"Authorization": "Bearer local-token"},
+        )
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+    assert response.status_code == 200
+    assert _RecordingUpstream.received[0]["model"] == "glm-5.3"

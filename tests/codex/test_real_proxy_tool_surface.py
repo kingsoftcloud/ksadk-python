@@ -176,7 +176,12 @@ async def test_real_codex_binary_sends_command_tools_through_chat_proxy(
         for item in first_request.get("input") or []
         if isinstance(item, dict) and item.get("type") == "additional_tools"
     ]
-    assert additional_tools, "real Codex request did not declare dynamic tools"
+    # codex 的工具方言随 model 配置变化:未配 model= 时走 input 的
+    # additional_tools;注入 model= 后走顶层 tools。两种声明都必须被转换层接收。
+    top_level_tools = first_request.get("tools")
+    assert additional_tools or top_level_tools, (
+        "real Codex request did not declare dynamic tools"
+    )
     assert _ChatUpstream.requests
     request = next(
         (request for request in _ChatUpstream.requests if request.get("tools")),
@@ -189,7 +194,9 @@ async def test_real_codex_binary_sends_command_tools_through_chat_proxy(
         if isinstance(tool, dict)
     }
     assert tools, "real Codex request lost all tools in Responses -> Chat conversion"
-    assert "functions__exec" in names
+    # 工具方言随 model 配置变化:未配 model= 时为 namespace 拍平名
+    # functions__exec;注入 model= 后为顶层平铺名 exec_command。两者等价。
+    assert "functions__exec" in names or "exec_command" in names
 
 
 @pytest.mark.asyncio
@@ -241,7 +248,9 @@ async def test_auto_mode_proxies_when_responses_rejects_codex_namespace(
         for tool in request.get("tools") or []
         if isinstance(tool, dict)
     }
-    assert "functions__exec" in names
+    # 工具方言随 model 配置变化:未配 model= 时为 namespace 拍平名
+    # functions__exec;注入 model= 后为顶层平铺名 exec_command。两者等价。
+    assert "functions__exec" in names or "exec_command" in names
     assert not any(
         event.get("method") == "error" and "Invalid value: namespace" in str(event.get("params"))
         for event in events

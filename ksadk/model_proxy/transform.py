@@ -225,6 +225,32 @@ def convert_tool_choice(tc):
     return tc
 
 
+# 各上游模型族的 reasoning_effort 上限(qwen3.7 系实测 xhigh 400;报错文案会列出
+# xhigh 但 DashScope 后端实际只认到 high,故不能用报错文案反推)。未列出的族原样透传。
+_EFFORT_RANK = {"none": 0, "minimal": 1, "low": 2, "medium": 3, "high": 4, "xhigh": 5}
+_EFFORT_CAP_PREFIXES = (
+    ("qwen3.7", "high"),
+    ("qwen3.6", "high"),
+    ("qwen3.5", "high"),
+)
+
+
+def clamp_reasoning_effort(model, effort):
+    """把超出上游模型族支持上限的 reasoning_effort 钳到最高合法档。
+
+    codex 对自家模型默认发 xhigh;qwen3.7 系上游 400,需钳到 high。
+    未知档位/未知模型族原样返回(不做发明式映射)。
+    """
+    if not isinstance(effort, str) or effort not in _EFFORT_RANK:
+        return effort
+    for prefix, cap in _EFFORT_CAP_PREFIXES:
+        if isinstance(model, str) and model.startswith(prefix):
+            if _EFFORT_RANK[effort] > _EFFORT_RANK[cap]:
+                return cap
+            return effort
+    return effort
+
+
 def _convert_text_format(fmt):
     """responses text.format -> chat response_format(structured output 结构重组)。
 
@@ -304,8 +330,9 @@ def responses_to_chat(body):
         rf = _convert_text_format(text.get("format"))
         if rf is not None:
             out["response_format"] = rf
-        if text.get("verbosity"):
-            out["verbosity"] = text["verbosity"]
+        # text.verbosity("low"/"high")不转发:chat completions 无标准字段,
+        # kspmas 把顶层 verbosity 反序列化为 i32,字符串值直接 400(glm-5.2 实测;
+        # cc-switch 也不透传该字段)。
     if body.get("prompt_cache_key"):
         out["prompt_cache_key"] = body["prompt_cache_key"]
     tools = convert_tools(body.get("tools"))
