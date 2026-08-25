@@ -24,13 +24,13 @@ from ksadk.studio.errors import StudioError
 from ksadk.studio.identifiers import generate_agent_slug, is_generated_agent_slug
 from ksadk.studio.templates import default_agent_spec
 
-
 LOGGER = logging.getLogger(__name__)
 
 # 对话创建阶段推进序列。前端只消费阶段名展示两段式文案，不解析内容。
 CONVERSATION_STAGES = (
     "resolving_model",
     "generating",
+    "codex_writing",
     "validating",
     "correcting",
     "done",
@@ -46,9 +46,38 @@ class StudioAuthoringCoordinator:
     def __init__(self, studio: Any) -> None:
         self.studio = studio
         self.backend = AgentAuthoringService(studio.workspace)
+        # Codex authoring 执行器可注入替换（测试）；默认惰性探测可用性。
+        self.codex_authoring: Any = getattr(studio, "codex_authoring_executor", None)
         self._id_lock = threading.Lock()
         self._status_lock = threading.Lock()
         self._conversation_status: OrderedDict[str, dict[str, Any]] = OrderedDict()
+
+    def _codex_authoring_executor(self) -> Any:
+        if self.codex_authoring is not None:
+            return self.codex_authoring
+        from ksadk.studio.codex_authoring import CodexAuthoringExecutor
+
+        self.codex_authoring = CodexAuthoringExecutor(
+            self.studio.workspace,
+            credential_resolver=self.studio.credentials,
+        )
+        return self.codex_authoring
+
+    def _use_codex_authoring(self) -> bool:
+        """选择 codex / chat authoring 链路（chat 永远保留为 fallback）。"""
+
+        mode = str(os.environ.get("KSADK_STUDIO_AUTHORIZER") or "").strip().lower()
+        if mode in {"codex", "codex-writing", "1", "true"}:
+            return True
+        if mode in {"chat", "off", "0", "false", "none"}:
+            return False
+        # 未显式指定：探测 codex 可用性，失败自动降级 chat 链。
+        try:
+            self._codex_authoring_executor().probe()
+        except Exception as exc:
+            LOGGER.warning("codex authoring unavailable, using chat chain: %s", exc)
+            return False
+        return True
 
     # ------------------------------------------------------------------
     # Conversation authoring stage tracking
@@ -346,6 +375,18 @@ class StudioAuthoringCoordinator:
                 continue
             break
 
+        if self._use_codex_authoring():
+            codex_result = await self._compose_conversation_codex(
+                messages=messages,
+                model=model,
+                previous_proposal=previous_proposal,
+                request_id=request_id,
+                started=started,
+                model_profile_id=model_profile_id,
+            )
+            if codex_result is not None:
+                return codex_result
+
         request_options = {
             "network_policy": self.backend.authoring_network_policy(model.endpoint_url),
             "timeout_seconds": 30,
@@ -422,7 +463,62 @@ class StudioAuthoringCoordinator:
         return {
             "proposal": proposal.model_dump(by_alias=True, mode="json"),
             "requiresConfirmation": True,
+            "authoringMode": "chat",
             "usage": response.usage.model_dump(by_alias=True, mode="json"),
+        }
+
+    async def _compose_conversation_codex(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        model: Any,
+        previous_proposal: Any,
+        request_id: str | None,
+        started: float,
+        model_profile_id: str,
+    ) -> dict | None:
+        """让真实 Codex 会话在工作区写 agentkit.yaml；任何失败降级 chat 链。
+
+        返回 ``None`` 表示应降级（探测失败/超时/重试后仍不合法），调用方继续走
+        既有 chat 链路，保证零回归。
+        """
+
+        self._record_conversation_stage(request_id, "codex_writing")
+        executor = self._codex_authoring_executor()
+        try:
+            result = await executor.compose(
+                messages=messages,
+                model=model,
+                base=previous_proposal,
+                request_id=request_id,
+            )
+        except Exception as exc:
+            LOGGER.warning(
+                "codex authoring failed after %.2fs, falling back to chat chain: "
+                "modelProfileId=%s requestId=%s reason=%s",
+                time.monotonic() - started,
+                model_profile_id,
+                request_id or "-",
+                exc,
+            )
+            self._record_conversation_stage(
+                request_id, "generating", detail=f"codex authoring 降级: {exc}"
+            )
+            return None
+        self._record_conversation_stage(request_id, "done")
+        LOGGER.info(
+            "conversation authoring finished in %.2fs via codex: modelProfileId=%s "
+            "slug=%s attempts=%d",
+            time.monotonic() - started,
+            model_profile_id,
+            getattr(result.proposal, "slug", "-"),
+            result.attempts,
+        )
+        return {
+            "proposal": result.proposal.model_dump(by_alias=True, mode="json"),
+            "requiresConfirmation": True,
+            "authoringMode": "codex",
+            "usage": result.usage.model_dump(by_alias=True, mode="json"),
         }
 
     def _project_agent_spec(
@@ -518,9 +614,7 @@ class StudioAuthoringCoordinator:
             for item in raw:
                 if isinstance(item, str) and item.strip():
                     projected_bindings.append({"resourceId": item.strip()})
-                elif isinstance(item, dict) and (
-                    item.get("resourceId") or item.get("resource_id")
-                ):
+                elif isinstance(item, dict) and (item.get("resourceId") or item.get("resource_id")):
                     projected_bindings.append(copy.deepcopy(item))
                 elif isinstance(item, dict) and item.get("name") and item.get("version"):
                     projected_capabilities.append(copy.deepcopy(item))
@@ -539,9 +633,7 @@ class StudioAuthoringCoordinator:
 
         if model_profile_id:
             existing_profiles = list(
-                bindings.get("modelProfileIds")
-                or bindings.get("model_profile_ids")
-                or []
+                bindings.get("modelProfileIds") or bindings.get("model_profile_ids") or []
             )
             bindings["modelProfileId"] = model_profile_id
             bindings["modelProfileIds"] = list(
@@ -604,10 +696,7 @@ class StudioAuthoringCoordinator:
         spec.runtime = detected_runtime
 
         catalog_ids = {
-            kind: {
-                item.resource_id
-                for item in self.studio.catalog.list(kind=kind, limit=500)
-            }
+            kind: {item.resource_id for item in self.studio.catalog.list(kind=kind, limit=500)}
             for kind in ("tool", "mcp", "skill")
         }
         for kind, values in (
