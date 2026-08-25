@@ -799,3 +799,116 @@ async def test_conversation_authoring_surfaces_validation_error_details(
 
     assert captured.value.code == "AUTHORING_MODEL_OUTPUT_INVALID"
     assert captured.value.details.get("validationError")
+
+
+def _valid_conversation_proposal() -> str:
+    return json.dumps(
+        {
+            "name": "Stage Agent",
+            "slug": "stage-agent",
+            "runtimeType": "codex",
+            "description": "Tracks authoring stages.",
+            "instructions": {"system": "Help reliably.", "task": "Answer."},
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_conversation_authoring_records_stage_progress(tmp_path: Path) -> None:
+    model_client = _SequencedAuthoringModelClient(["not-json", _valid_conversation_proposal()])
+    studio = StudioService(tmp_path, model_client=model_client)
+    _register_model(studio)
+    model_profile = studio.catalog.list(kind="model")[0]
+
+    assert studio.conversation_authoring_status("req-stages") is None
+
+    await studio.compose_agent_conversation(
+        messages=[{"role": "user", "content": "做一个阶段跟踪 Agent"}],
+        model_profile_id=model_profile.resource_id,
+        request_id="req-stages",
+    )
+
+    status = studio.conversation_authoring_status("req-stages")
+    assert status is not None
+    assert status["requestId"] == "req-stages"
+    assert status["stage"] == "done"
+    assert status["updatedAt"] > 0
+
+
+@pytest.mark.asyncio
+async def test_conversation_authoring_records_failed_stage(tmp_path: Path) -> None:
+    model_client = _SequencedAuthoringModelClient(["not-json", "still-not-json"])
+    studio = StudioService(tmp_path, model_client=model_client)
+    _register_model(studio)
+    model_profile = studio.catalog.list(kind="model")[0]
+
+    with pytest.raises(StudioError):
+        await studio.compose_agent_conversation(
+            messages=[{"role": "user", "content": "做一个 Agent"}],
+            model_profile_id=model_profile.resource_id,
+            request_id="req-failed",
+        )
+
+    status = studio.conversation_authoring_status("req-failed")
+    assert status is not None
+    assert status["stage"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_conversation_authoring_emits_start_and_finish_logs(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    model_client = _AuthoringModelClient(_valid_conversation_proposal())
+    studio = StudioService(tmp_path, model_client=model_client)
+    _register_model(studio)
+    model_profile = studio.catalog.list(kind="model")[0]
+
+    with caplog.at_level(logging.INFO, logger="ksadk.studio.authoring_coordinator"):
+        await studio.compose_agent_conversation(
+            messages=[{"role": "user", "content": "做一个日志 Agent"}],
+            model_profile_id=model_profile.resource_id,
+            request_id="req-logs",
+        )
+
+    messages = [record.message for record in caplog.records]
+    assert any(
+        message.startswith("conversation authoring started") for message in messages
+    )
+    assert any(
+        message.startswith("conversation authoring finished") for message in messages
+    )
+    assert any(
+        message.startswith("conversation authoring model resolved") for message in messages
+    )
+
+
+def test_conversation_authoring_status_endpoint(tmp_path: Path) -> None:
+    model_client = _AuthoringModelClient(_valid_conversation_proposal())
+    service = StudioService(tmp_path, model_client=model_client)
+    _register_model(service)
+    model_profile = service.catalog.list(kind="model")[0]
+    app = create_studio_app(tmp_path, service=service, security_enabled=False)
+    with TestClient(app) as client:
+        unknown = client.get("/api/v1/authoring/conversations:status/req-missing")
+        assert unknown.status_code == 404
+        assert unknown.json()["error"]["code"] == "AUTHORING_STATUS_NOT_FOUND"
+
+        composed = client.post(
+            "/api/v1/authoring/conversations:compose",
+            json={
+                "modelProfileId": model_profile.resource_id,
+                "requestId": "req-endpoint",
+                "messages": [{"role": "user", "content": "做一个问答 Agent"}],
+            },
+        )
+        assert composed.status_code == 200
+
+        status = client.get("/api/v1/authoring/conversations:status/req-endpoint")
+        assert status.status_code == 200
+        payload = status.json()
+        assert payload["requestId"] == "req-endpoint"
+        assert payload["stage"] == "done"
+        assert payload["updatedAt"] > 0

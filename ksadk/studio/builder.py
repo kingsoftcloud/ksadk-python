@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import shutil
 import zipfile
 from datetime import datetime, timezone
@@ -27,6 +28,8 @@ from ksadk.studio.workspace import Workspace
 
 _ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 
+LOGGER = logging.getLogger(__name__)
+
 
 class AgentBundleBuilder:
     def __init__(
@@ -41,6 +44,11 @@ class AgentBundleBuilder:
         self.repository = repository or BuildRepository(workspace)
 
     def build(self, draft: AgentDraft) -> BuildRecord:
+        LOGGER.info(
+            "bundle build started: agent=%s revision=%s",
+            draft.metadata.id,
+            draft.metadata.revision,
+        )
         compiled = self.compiler.compile(draft)
         # Bundle v2 always carries a lock. Phase 1 deliberately supports no
         # user-selectable plugin factories yet, so the only valid lock is the
@@ -140,7 +148,14 @@ class AgentBundleBuilder:
             created_at=now,
             completed_at=now,
         )
-        return self.repository.save(record)
+        saved = self.repository.save(record)
+        LOGGER.info(
+            "bundle build finished: agent=%s build=%s artifact=%s",
+            draft.metadata.id,
+            saved.id,
+            saved.artifact_path,
+        )
+        return saved
 
     def _write_payload(
         self,

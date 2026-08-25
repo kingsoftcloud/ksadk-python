@@ -230,3 +230,68 @@ describe("CreatePage quick authoring", () => {
     });
   });
 });
+
+describe("CreatePage conversation authoring stages", () => {
+  const proposal = {
+    name: "Stage Agent",
+    slug: "stage-agent",
+    runtimeType: "codex",
+    description: "Staged",
+    spec: {
+      description: "Staged",
+      instructions: { system: "Help.", task: "" },
+      bindings: { modelProfileId: model.resourceId, modelProfileIds: [model.resourceId] },
+    },
+  };
+
+  it("shows staged shimmer text while composing and blocks duplicate submits", async () => {
+    const user = userEvent.setup();
+    let releaseCompose: ((value: Response) => void) | undefined;
+    const stages = new Map<string, string>();
+    mockedFetch.mockReset();
+    mockedFetch.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/v1/catalog/resources?limit=200") return response({ items: [model] });
+      if (path === "/api/v1/catalog/models") return response({ items: [] });
+      if (path === "/api/v1/credentials/OPENAI_API_KEY") return response({ configured: true });
+      if (path.startsWith("/api/v1/authoring/conversations:status/")) {
+        const requestId = path.split(":status/")[1];
+        const stage = stages.get(requestId);
+        if (!stage) throw new Error("unexpected status request before compose");
+        return response({ requestId, stage, updatedAt: 1 });
+      }
+      if (path === "/api/v1/authoring/conversations:compose") {
+        const body = JSON.parse(String(init?.body));
+        expect(body.requestId).toEqual(expect.stringMatching(/^conv-/));
+        stages.set(body.requestId, "validating");
+        return new Promise<Response>(resolve => {
+          releaseCompose = resolve;
+        });
+      }
+      throw new Error(`unexpected request: ${path}`);
+    });
+
+    render(
+      <CreatePage viewportMode="desktop" onBack={vi.fn()} onCreated={vi.fn()} />,
+    );
+
+    await user.click(screen.getByRole("tab", { name: /对话构建/ }));
+    await user.type(
+      screen.getByPlaceholderText(/做一个 ADK 发布评审 Agent/),
+      "做一个阶段反馈 Agent",
+    );
+    await user.click(screen.getByRole("button", { name: "生成方案" }));
+
+    // 阶段轮询已把等待文案推进到第二段。
+    expect(screen.getByTestId("authoring-stage-shimmer").textContent).toBe("正在理解你的需求…");
+    // 阶段轮询已把等待文案推进到第二段。
+    const shimmer = await screen.findByText("正在生成 Agent 配置…", undefined, { timeout: 4000 });
+    expect(shimmer).toHaveAttribute("data-stage", "validating");
+
+    // 创建中禁止重复提交。
+    expect(screen.getByRole("button", { name: "正在生成" })).toBeDisabled();
+
+    releaseCompose?.(response({ proposal, requiresConfirmation: true }));
+    await screen.findByDisplayValue("Help.", undefined, { timeout: 4000 });
+  }, 15000);
+});

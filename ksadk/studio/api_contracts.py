@@ -92,6 +92,9 @@ class AuthoringConversationMessage(ContractModel):
 class ConversationAuthoringRequest(ContractModel):
     messages: list[AuthoringConversationMessage] = Field(min_length=1, max_length=100)
     model_profile_id: str = Field(min_length=3, max_length=256)
+    # 可选的进度关联标识：前端生成后随请求带上，可通过
+    # GET /api/v1/authoring/conversations:status/{request_id} 轮询构建阶段。
+    request_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class AuthoringCommitRequest(ContractModel):

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -540,11 +541,18 @@ class StudioService:
         *,
         messages: list[dict[str, str]],
         model_profile_id: str,
+        request_id: str | None = None,
     ) -> dict:
         return await self.authoring.compose_conversation(
             messages=messages,
             model_profile_id=model_profile_id,
+            request_id=request_id,
         )
+
+    def conversation_authoring_status(self, request_id: str) -> dict | None:
+        """Return the in-memory stage snapshot for one authoring request."""
+
+        return self.authoring.conversation_status(request_id)
 
     def is_codex_agent(self, agent_id: str) -> bool:
         """Return whether one Agent is backed by the Codex YAML contract."""
@@ -1795,6 +1803,12 @@ class StudioService:
         *,
         idempotency_key: str,
     ) -> Operation:
+        logging.getLogger(__name__).info(
+            "deployment submitted: build=%s idempotencyKey=%s environment=%s",
+            build_id,
+            idempotency_key,
+            getattr(request, "environment", "-"),
+        )
         try:
             codex_build = self.codex_builds.get(build_id)
         except StudioError as exc:

@@ -15,6 +15,7 @@ import { GeneratedIdField } from "../components/ui/GeneratedIdField";
 import { StudioMultiSelect } from "../components/ui/StudioMultiSelect";
 import { StudioSelect } from "../components/ui/StudioSelect";
 import { FileDropzone } from "../components/ui/FileDropzone";
+import { TextShimmer } from "../components/ui/TextShimmer";
 import { FormField } from "../components/ui/FormField";
 import { StudioDrawer } from "../components/ui/StudioDialog";
 import { CodeViewer } from "../components/ui/CodeViewer";
@@ -227,6 +228,9 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
   });
   const [convBusy, setConvBusy] = useState(false);
   const [convError, setConvError] = useState("");
+  const [convStage, setConvStage] = useState<string | null>(null);
+  const convPollAbort = useRef<AbortController | null>(null);
+  useEffect(() => () => convPollAbort.current?.abort(), []);
 
   /* import / project 模式 */
   const [importFile, setImportFile] = useState<File | null>(null);
@@ -479,19 +483,24 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
       setConvError("请输入需求并选择用于构建的模型。");
       return;
     }
+    if (convBusy) return; // 创建中禁止重复提交
     setConvError("");
     const next = [...convMessages, { role: "user", content: input }];
     setConvMessages(next);
     setConvInput("");
     setConvBusy(true);
+    const requestId = `conv-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    setConvStage("resolving_model");
+    const poller = pollConversationStages(requestId);
     try {
       const res = await apiFetch("/api/v1/authoring/conversations:compose", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: next, modelProfileId: convModels[0] }),
+        body: JSON.stringify({ messages: next, modelProfileId: convModels[0], requestId }),
       });
       const d = await res.json();
       if (!res.ok) throw new Error(d?.error?.message || `生成失败（${res.status}）`);
+      setConvStage("done");
       setProposal(d.proposal);
       const proposalSpec = d.proposal.spec || {
         description: d.proposal.description || "",
@@ -507,10 +516,41 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
       });
       setConvMessages([...next, { role: "assistant", content: JSON.stringify(d.proposal) }]);
     } catch (e: any) {
+      setConvStage("failed");
       setConvError(e.message || "对话构建失败");
     } finally {
+      convPollAbort.current?.abort();
+      convPollAbort.current = null;
+      void poller;
       setConvBusy(false);
     }
+  }
+
+  /* 轮询后端构建阶段（resolving_model → generating → validating → correcting → done/failed），
+   * 只驱动等待文案，不解析内容；失败时静默停止。 */
+  function pollConversationStages(requestId: string) {
+    const controller = new AbortController();
+    convPollAbort.current?.abort();
+    convPollAbort.current = controller;
+    const poll = async () => {
+      while (!controller.signal.aborted) {
+        await new Promise(resolve => window.setTimeout(resolve, 800));
+        if (controller.signal.aborted) return;
+        try {
+          const response = await apiFetch(
+            `/api/v1/authoring/conversations:status/${encodeURIComponent(requestId)}`,
+            { signal: controller.signal },
+          );
+          if (!response.ok) continue;
+          const status = await response.json();
+          if (status?.stage) setConvStage(String(status.stage));
+        } catch {
+          return; // 轮询失败不打断主请求，静默停止
+        }
+      }
+    };
+    void poll();
+    return controller;
   }
 
   async function confirmConversation(values: ConversationCommitFormValues) {
@@ -837,6 +877,11 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
                       <Send size={16} /><span>{convBusy ? "正在生成" : "生成方案"}</span>
                     </button>
                   </div>
+                  {convBusy && (
+                    <p className="authoring-stage-hint" aria-live="polite">
+                      <TextShimmer stage={convStage} />
+                    </p>
+                  )}
                   {convError && <div className="inline-alert error"><CircleAlert size={16} /><div><strong>对话构建失败</strong><p>{convError}</p></div></div>}
                   <div className="field authoring-model-field">
                     <label>用于构建的模型（可多选）</label>

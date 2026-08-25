@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import copy
+import logging
 import os
 import shutil
 import threading
+import time
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, cast
 
@@ -22,6 +25,21 @@ from ksadk.studio.identifiers import generate_agent_slug, is_generated_agent_slu
 from ksadk.studio.templates import default_agent_spec
 
 
+LOGGER = logging.getLogger(__name__)
+
+# 对话创建阶段推进序列。前端只消费阶段名展示两段式文案，不解析内容。
+CONVERSATION_STAGES = (
+    "resolving_model",
+    "generating",
+    "validating",
+    "correcting",
+    "done",
+    "failed",
+)
+# 进度记录只保留最近的少量请求，避免长驻进程无限增长。
+_CONVERSATION_STATUS_LIMIT = 64
+
+
 class StudioAuthoringCoordinator:
     """Coordinates repositories without expanding the StudioService façade."""
 
@@ -29,6 +47,38 @@ class StudioAuthoringCoordinator:
         self.studio = studio
         self.backend = AgentAuthoringService(studio.workspace)
         self._id_lock = threading.Lock()
+        self._status_lock = threading.Lock()
+        self._conversation_status: OrderedDict[str, dict[str, Any]] = OrderedDict()
+
+    # ------------------------------------------------------------------
+    # Conversation authoring stage tracking
+    # ------------------------------------------------------------------
+
+    def _record_conversation_stage(
+        self,
+        request_id: str | None,
+        stage: str,
+        *,
+        detail: str | None = None,
+    ) -> None:
+        if not request_id:
+            return
+        entry = {
+            "requestId": request_id,
+            "stage": stage,
+            "updatedAt": time.time(),
+            **({"detail": detail} if detail else {}),
+        }
+        with self._status_lock:
+            self._conversation_status[request_id] = entry
+            self._conversation_status.move_to_end(request_id)
+            while len(self._conversation_status) > _CONVERSATION_STATUS_LIMIT:
+                self._conversation_status.popitem(last=False)
+
+    def conversation_status(self, request_id: str) -> dict[str, Any] | None:
+        with self._status_lock:
+            entry = self._conversation_status.get(request_id)
+            return dict(entry) if entry else None
 
     def create(
         self,
@@ -232,6 +282,41 @@ class StudioAuthoringCoordinator:
         *,
         messages: list[dict[str, str]],
         model_profile_id: str,
+        request_id: str | None = None,
+    ) -> dict:
+        started = time.monotonic()
+        self._record_conversation_stage(request_id, "resolving_model")
+        LOGGER.info(
+            "conversation authoring started: modelProfileId=%s messages=%d requestId=%s",
+            model_profile_id,
+            len(messages),
+            request_id or "-",
+        )
+        try:
+            result = await self._compose_conversation_inner(
+                messages=messages,
+                model_profile_id=model_profile_id,
+                request_id=request_id,
+                started=started,
+            )
+        except Exception as exc:
+            self._record_conversation_stage(request_id, "failed", detail=str(exc))
+            LOGGER.warning(
+                "conversation authoring failed after %.2fs: modelProfileId=%s reason=%s",
+                time.monotonic() - started,
+                model_profile_id,
+                exc,
+            )
+            raise
+        return result
+
+    async def _compose_conversation_inner(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        model_profile_id: str,
+        request_id: str | None,
+        started: float,
     ) -> dict:
         model_spec = self.studio.catalog.resolve_model(
             AgentBindings(model_profile_id=model_profile_id)
@@ -243,6 +328,11 @@ class StudioAuthoringCoordinator:
                 status_code=422,
             )
         model = self.studio.catalog.resolver.resolve_model(model_spec)
+        LOGGER.info(
+            "conversation authoring model resolved: model=%s endpoint=%s",
+            getattr(model, "model", "-"),
+            getattr(model, "endpoint_url", "-"),
+        )
         normalized_messages = self.backend.conversation_messages(messages)
         previous_proposal = None
         for item in reversed(messages):
@@ -262,12 +352,14 @@ class StudioAuthoringCoordinator:
             "backoff_seconds": 1,
             "response_format": {"type": "json_object"},
         }
+        self._record_conversation_stage(request_id, "generating")
         response = await self.studio.model_client.complete(
             model,
             messages=normalized_messages,
             max_attempts=2,
             **request_options,
         )
+        self._record_conversation_stage(request_id, "validating")
         try:
             proposal = self.backend.parse_conversation_proposal(
                 response.content,
@@ -277,6 +369,11 @@ class StudioAuthoringCoordinator:
             if exc.code != "AUTHORING_MODEL_OUTPUT_INVALID":
                 raise
             validation_error = str(exc.details.get("reason") or exc.message)
+            self._record_conversation_stage(request_id, "correcting")
+            LOGGER.warning(
+                "conversation authoring patch invalid, retrying once: reason=%s",
+                validation_error,
+            )
             retry_messages = [
                 *normalized_messages,
                 {"role": "assistant", "content": response.content},
@@ -315,6 +412,13 @@ class StudioAuthoringCoordinator:
                         "attemptedCorrections": 1,
                     },
                 ) from retry_exc
+        self._record_conversation_stage(request_id, "done")
+        LOGGER.info(
+            "conversation authoring finished in %.2fs: modelProfileId=%s slug=%s",
+            time.monotonic() - started,
+            model_profile_id,
+            getattr(proposal, "slug", "-"),
+        )
         return {
             "proposal": proposal.model_dump(by_alias=True, mode="json"),
             "requiresConfirmation": True,

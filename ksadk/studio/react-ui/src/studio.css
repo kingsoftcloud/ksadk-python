@@ -7311,3 +7311,42 @@ body.create-mode .global-context {
 }
 
 .pcm-review-summary strong { display: block; margin-top: 4px; color: var(--text-primary); }
+
+/* 对话创建阶段化反馈：文字微光动画（TextShimmer）。 */
+@keyframes text-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.text-shimmer {
+  display: inline-block;
+  background: linear-gradient(
+    90deg,
+    var(--text-tertiary) 0%,
+    var(--text-tertiary) 35%,
+    var(--text-primary) 50%,
+    var(--text-tertiary) 65%,
+    var(--text-tertiary) 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: text-shimmer 2.4s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .text-shimmer {
+    animation: none;
+    background: none;
+    color: var(--text-tertiary);
+    -webkit-background-clip: unset;
+    background-clip: unset;
+  }
+}
+
+.authoring-stage-hint {
+  margin: 4px 0 0;
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-caption);
+}
