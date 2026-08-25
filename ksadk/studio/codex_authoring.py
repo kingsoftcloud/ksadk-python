@@ -36,7 +36,7 @@ LOGGER = logging.getLogger(__name__)
 #: 单个 Codex turn 的执行超时；超时视为 codex 不可用并降级 chat 链。
 DEFAULT_TURN_TIMEOUT_SECONDS = 240.0
 #: 校验失败后的最大改写轮数（首轮之外）。
-DEFAULT_MAX_RETRIES = 2
+DEFAULT_MAX_RETRIES = 3
 #: 失败产物目录保留数量，供诊断；成功目录立即清理。
 _MAX_FAILED_DIRECTORIES = 5
 _REQUEST_DIR_PREFIX = "codex-req-"
@@ -86,6 +86,9 @@ spec:
   直接省略 parameters 字段，使用平台默认值。
 
 规则：
+0. 硬性要求：你必须在本轮实际调用 apply_patch 工具把完整 patch 写入目标文件，
+   然后才能结束回复。只在回复文本里描述计划、或只在回复中给出 YAML/JSON 内容
+   （包括 Markdown 代码块）而没有实际写文件，都视为本轮失败。
 1. 必须用写文件工具把完整 patch 写入指定路径；不要只在回复中输出内容。
 2. 不要输出 Markdown 代码块包裹的 YAML 作为最终答案，文件本身就是产物。
 3. 首轮必须包含全部顶层字段；后续轮次（已有草稿时）输出完整合并后的新版本。
@@ -235,6 +238,26 @@ class CodexAuthoringExecutor:
                         continue
                     usage_total[key] = usage_total.get(key, 0) + int(value or 0)
                 content = self._read_manifest(manifest_path)
+                if content is None:
+                    # 兜底：部分模型不调用写文件工具，把 YAML/JSON 直接输出在
+                    # agentMessage 里；从 ```yaml/```json 代码块恢复并落盘，
+                    # 再走正常校验链，避免整轮作废。
+                    recovered = self._recover_manifest_from_message(last_message)
+                    if recovered is not None:
+                        LOGGER.warning(
+                            "codex authoring attempt %d wrote no manifest; recovered "
+                            "fenced block from agent message: requestId=%s",
+                            attempts,
+                            normalized_request_id,
+                        )
+                        try:
+                            manifest_path.write_text(recovered, encoding="utf-8")
+                            content = recovered
+                        except OSError:
+                            LOGGER.warning(
+                                "codex authoring fallback write failed: requestId=%s",
+                                normalized_request_id,
+                            )
                 if content is not None:
                     # Codex 习惯写 YAML；parse_conversation_proposal 的 JSON 提取器
                     # 遇到 YAML 里游离的 `{}` 会误解析成空 patch，这里先归一成 JSON。
@@ -246,8 +269,10 @@ class CodexAuthoringExecutor:
                         content = json.dumps(yaml_payload, ensure_ascii=False)
                 if content is None:
                     validation_error = (
-                        f"{_MANIFEST_FILENAME} 文件不存在或为空；"
-                        f"必须用写文件工具把完整 patch 写入 {manifest_path}"
+                        f"{_MANIFEST_FILENAME} 文件不存在或为空；你上一轮没有写文件，"
+                        f"必须调用 apply_patch 工具（*** Begin Patch … Add File … "
+                        f"*** End Patch）把完整 patch 写入 {manifest_path}，"
+                        "禁止只在回复文本中输出内容或 Markdown 代码块"
                     )
                     LOGGER.warning(
                         "codex authoring attempt %d produced no manifest: requestId=%s",
@@ -365,6 +390,7 @@ class CodexAuthoringExecutor:
     async def _run_turn(self, client: Any, thread_id: str, prompt: str) -> _TurnOutcome:
         message_parts: list[str] = []
         usage = Usage()
+        event_counts: dict[str, int] = {}
         started = time.monotonic()
         try:
             # asyncio.timeout 是 3.11+；项目基线 3.10，用 wait_for 包装整轮消费。
@@ -374,6 +400,7 @@ class CodexAuthoringExecutor:
                     if not isinstance(event, dict):
                         continue
                     method = str(event.get("method") or "")
+                    event_counts[method] = event_counts.get(method, 0) + 1
                     params = event.get("params") or {}
                     if not isinstance(params, dict):
                         continue
@@ -393,7 +420,27 @@ class CodexAuthoringExecutor:
                 f"Codex authoring turn 超时（{self._turn_timeout_seconds:.0f}s）"
             ) from exc
         LOGGER.info("codex authoring turn finished in %.2fs", time.monotonic() - started)
+        # 事件 method 分布：诊断"模型只回话不调工具"（无 item/*command* 事件）等
+        # 失败模式的关键证据，debug 级别避免常态噪音。
+        LOGGER.debug("codex authoring turn events: %s", dict(sorted(event_counts.items())))
         return _TurnOutcome(final_message="".join(message_parts), usage=usage)
+
+    _FENCED_BLOCK_RE = re.compile(r"```[A-Za-z0-9_-]*[ \t]*\r?\n(.*?)```", re.DOTALL)
+
+    @classmethod
+    def _recover_manifest_from_message(cls, message: str) -> str | None:
+        """从 agentMessage 文本里恢复 patch：优先围栏代码块，其次裸 JSON 对象。"""
+
+        text = str(message or "").strip()
+        if not text:
+            return None
+        for match in cls._FENCED_BLOCK_RE.finditer(text):
+            block = match.group(1).strip()
+            if block:
+                return block
+        if text.startswith("{") and text.endswith("}"):
+            return text
+        return None
 
     @staticmethod
     def _read_manifest(manifest_path: Path) -> str | None:

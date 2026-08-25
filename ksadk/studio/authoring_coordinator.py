@@ -40,7 +40,6 @@ CONVERSATION_STAGES = (
 _CONVERSATION_STATUS_LIMIT = 64
 
 
-
 def _apply_profile_model_endpoint(proposal: Any, model: Any) -> Any:
     """用选中模型 Profile 的真实 endpoint 覆写 spec.model 中的占位 URL。
 
@@ -68,6 +67,7 @@ def _apply_profile_model_endpoint(proposal: Any, model: Any) -> Any:
             )
         }
     )
+
 
 class StudioAuthoringCoordinator:
     """Coordinates repositories without expanding the StudioService façade."""
@@ -386,6 +386,8 @@ class StudioAuthoringCoordinator:
                 status_code=422,
             )
         model = self.studio.catalog.resolver.resolve_model(model_spec)
+        # authoring 自身的 max_tokens 跟随 profile：未配置则 payload 不带该字段
+        # （服务端默认）；finishReason=length 截断由 model_client 一次性扩容重试兜底。
         LOGGER.info(
             "conversation authoring model resolved: model=%s endpoint=%s",
             getattr(model, "model", "-"),
@@ -421,6 +423,9 @@ class StudioAuthoringCoordinator:
             "timeout_seconds": 30,
             "backoff_seconds": 1,
             "response_format": {"type": "json_object"},
+            # finishReason=length 截断时在 model_client 内自动扩容 max_tokens
+            # 重发一次（一次性），避免大 JSON 被截断成空响应。
+            "retry_on_length": True,
         }
         self._record_conversation_stage(request_id, "generating")
         response = await self.studio.model_client.complete(

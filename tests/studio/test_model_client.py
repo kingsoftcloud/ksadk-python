@@ -364,9 +364,7 @@ async def test_model_client_omits_response_format_when_disabled(monkeypatch):
         )
 
     model = _model()
-    model.parameters = model.parameters.model_copy(
-        update={"allow_json_response_format": False}
-    )
+    model.parameters = model.parameters.model_copy(update={"allow_json_response_format": False})
     client = OpenAICompatibleModelClient(
         network_guard=AllowNetwork(),
         transport=httpx.MockTransport(handler),
@@ -420,3 +418,214 @@ async def test_model_client_retries_400_without_response_format(monkeypatch):
     assert len(captured) == 2
     assert "response_format" in captured[0]
     assert "response_format" not in captured[1]
+
+
+@pytest.mark.asyncio
+async def test_model_client_retries_length_truncation_with_larger_budget(monkeypatch):
+    monkeypatch.setenv("MODEL_API_KEY", "secret-value")
+    requests: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = __import__("json").loads(request.content)
+        requests.append(body)
+        if len(requests) == 1:
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "message": {"role": "assistant", "content": ""},
+                            "finish_reason": "length",
+                        }
+                    ],
+                    "usage": {"total_tokens": 64},
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {"role": "assistant", "content": '{"ok": true}'},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"total_tokens": 128},
+            },
+        )
+
+    client = OpenAICompatibleModelClient(
+        network_guard=AllowNetwork(),
+        transport=httpx.MockTransport(handler),
+    )
+    result = await client.complete(
+        _model(),
+        messages=[],
+        network_policy=NetworkPolicy(allowed_hosts=["model.example.com"]),
+        timeout_seconds=10,
+        max_attempts=1,
+        backoff_seconds=0,
+        retry_on_length=True,
+    )
+
+    assert result.content == '{"ok": true}'
+    assert len(requests) == 2
+    assert requests[0]["max_tokens"] == 64
+    assert requests[1]["max_tokens"] == 16384
+
+
+@pytest.mark.asyncio
+async def test_model_client_length_retry_exhausted_raises_empty_response(monkeypatch):
+    monkeypatch.setenv("MODEL_API_KEY", "secret-value")
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {"role": "assistant", "content": ""},
+                        "finish_reason": "length",
+                    }
+                ],
+                "usage": {"total_tokens": 64},
+            },
+        )
+
+    client = OpenAICompatibleModelClient(
+        network_guard=AllowNetwork(),
+        transport=httpx.MockTransport(handler),
+    )
+    with pytest.raises(StudioError) as captured:
+        await client.complete(
+            _model(),
+            messages=[],
+            network_policy=NetworkPolicy(allowed_hosts=["model.example.com"]),
+            timeout_seconds=10,
+            max_attempts=1,
+            backoff_seconds=0,
+            retry_on_length=True,
+        )
+    assert captured.value.code == "MODEL_EMPTY_RESPONSE"
+    assert captured.value.details == {"finishReason": "length"}
+
+
+@pytest.mark.asyncio
+async def test_model_client_no_length_retry_by_default(monkeypatch):
+    monkeypatch.setenv("MODEL_API_KEY", "secret-value")
+    calls = []
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {"role": "assistant", "content": ""},
+                        "finish_reason": "length",
+                    }
+                ],
+                "usage": {"total_tokens": 64},
+            },
+        )
+
+    client = OpenAICompatibleModelClient(
+        network_guard=AllowNetwork(),
+        transport=httpx.MockTransport(handler),
+    )
+    with pytest.raises(StudioError) as captured:
+        await client.complete(
+            _model(),
+            messages=[],
+            network_policy=NetworkPolicy(allowed_hosts=["model.example.com"]),
+            timeout_seconds=10,
+            max_attempts=2,
+            backoff_seconds=0,
+        )
+    assert captured.value.code == "MODEL_EMPTY_RESPONSE"
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_model_client_omits_unset_sampling_parameters(monkeypatch):
+    """未显式配置的 temperature/max_tokens/top_p 一律不出现在 payload。"""
+
+    monkeypatch.setenv("MODEL_API_KEY", "secret-value")
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["json"] = __import__("json").loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"role": "assistant", "content": "OK"}, "finish_reason": "stop"}
+                ]
+            },
+        )
+
+    client = OpenAICompatibleModelClient(
+        network_guard=AllowNetwork(),
+        transport=httpx.MockTransport(handler),
+    )
+    await client.complete(
+        ResolvedModel(
+            provider="openai-compatible",
+            model="kimi-k2",
+            endpoint_url="https://model.example.com/v1/chat/completions",
+            credential_ref="env://MODEL_API_KEY",
+            parameters=ModelParameters(),
+        ),
+        messages=[],
+        network_policy=NetworkPolicy(allowed_hosts=["model.example.com"]),
+        timeout_seconds=10,
+        max_attempts=1,
+        backoff_seconds=0,
+    )
+
+    body = captured["json"]
+    assert "temperature" not in body
+    assert "max_tokens" not in body
+    assert "top_p" not in body
+
+
+@pytest.mark.asyncio
+async def test_model_client_sends_explicitly_configured_sampling_parameters(monkeypatch):
+    monkeypatch.setenv("MODEL_API_KEY", "secret-value")
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["json"] = __import__("json").loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"role": "assistant", "content": "OK"}, "finish_reason": "stop"}
+                ]
+            },
+        )
+
+    client = OpenAICompatibleModelClient(
+        network_guard=AllowNetwork(),
+        transport=httpx.MockTransport(handler),
+    )
+    await client.complete(
+        ResolvedModel(
+            provider="openai-compatible",
+            model="glm-5-3",
+            endpoint_url="https://model.example.com/v1/chat/completions",
+            credential_ref="env://MODEL_API_KEY",
+            parameters=ModelParameters(temperature=0.7, max_tokens=8192, top_p=0.9),
+        ),
+        messages=[],
+        network_policy=NetworkPolicy(allowed_hosts=["model.example.com"]),
+        timeout_seconds=10,
+        max_attempts=1,
+        backoff_seconds=0,
+    )
+
+    body = captured["json"]
+    assert body["temperature"] == 0.7
+    assert body["max_tokens"] == 8192
+    assert body["top_p"] == 0.9

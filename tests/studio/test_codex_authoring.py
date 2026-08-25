@@ -451,3 +451,103 @@ def create_test_client(app):
     from fastapi.testclient import TestClient
 
     return TestClient(app)
+
+
+class _NoFileClient(_FakeCodexClient):
+    """模拟"模型只回话不写文件"：只发 agentMessage，不落盘 manifest。"""
+
+    async def run_turn(self, _thread_id: str, prompt: str, *, config=None):
+        self.prompts.append(prompt)
+        content = self.script.pop(0) if self.script else None
+        if content is not None:
+            yield {"method": "item/agentMessage/delta", "params": {"delta": content}}
+        else:
+            yield {"method": "item/agentMessage/delta", "params": {"delta": "抱歉，我无法完成。"}}
+        yield {
+            "method": "thread/tokenUsage/updated",
+            "params": {
+                "threadId": "thread-1",
+                "tokenUsage": {"last": {"inputTokens": 50, "outputTokens": 10, "totalTokens": 60}},
+            },
+        }
+
+
+async def test_codex_authoring_recovers_fenced_yaml_from_message(tmp_path: Path) -> None:
+    """模型不写文件、只在回复里给 ```yaml 代码块时，兜底解析并落盘。"""
+
+    message = (
+        "我先给出配置草案：\n```yaml\n"
+        + json.dumps(_VALID_PATCH, ensure_ascii=False, indent=2)
+        + "\n```\n如需调整请告诉我。"
+    )
+    studio = StudioService(tmp_path)
+    client = _NoFileClient([message])
+    executor = CodexAuthoringExecutor(
+        studio.workspace,
+        _StaticCredentials(),
+        client_factory=lambda env: client,
+    )
+    result = await executor.compose(
+        messages=_messages(),
+        model=_fake_model(),
+        request_id="req-recover",
+    )
+    assert result.attempts == 1
+    assert result.proposal.slug == "code-review-helper"
+
+
+async def test_codex_authoring_missing_file_correction_mentions_apply_patch(
+    tmp_path: Path,
+) -> None:
+    executor, client = _executor(tmp_path, [None, json.dumps(_VALID_PATCH, ensure_ascii=False)])
+    result = await executor.compose(
+        messages=_messages(),
+        model=_fake_model(),
+        request_id="req-nofile",
+    )
+    assert result.attempts == 2
+    # 缺文件时的纠正提示必须点名 apply_patch 工具调用
+    assert "apply_patch" in client.prompts[1]
+    # 首轮 builder prompt 也必须包含硬性工具调用要求
+    assert "apply_patch" in client.prompts[0]
+
+
+def test_codex_authoring_default_max_retries_is_three() -> None:
+    from ksadk.studio.codex_authoring import DEFAULT_MAX_RETRIES
+
+    assert DEFAULT_MAX_RETRIES == 3
+
+
+async def test_coordinator_passes_length_retry_without_forcing_tokens(tmp_path: Path) -> None:
+    valid = json.dumps(_VALID_PATCH, ensure_ascii=False)
+    captured: dict = {}
+
+    class _CapturingClient(_AuthoringModelClient):
+        async def complete(self, model, *, messages, **kwargs):
+            captured["kwargs"] = kwargs
+            captured["model"] = model
+            return await super().complete(model, messages=messages, **kwargs)
+
+    studio = StudioService(tmp_path, model_client=_CapturingClient(valid))
+    _register_model(studio)
+    _install(studio, _FakeExecutor(unavailable=RuntimeError("probe")))
+    import os
+
+    old = os.environ.get("KSADK_STUDIO_AUTHORIZER")
+    os.environ["KSADK_STUDIO_AUTHORIZER"] = "codex"
+    try:
+        result = await studio.compose_agent_conversation(
+            messages=_messages(),
+            model_profile_id=_model_profile_id(),
+            request_id="coord-length",
+        )
+    finally:
+        if old is None:
+            os.environ.pop("KSADK_STUDIO_AUTHORIZER", None)
+        else:
+            os.environ["KSADK_STUDIO_AUTHORIZER"] = old
+    assert result["authoringMode"] == "chat"
+    assert captured["kwargs"].get("retry_on_length") is True
+    # 未配置的采样参数不强制注入（None=不发送，服务端默认）
+    assert captured["model"].parameters.max_tokens is None
+    assert captured["model"].parameters.temperature is None
