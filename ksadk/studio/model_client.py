@@ -325,10 +325,12 @@ class OpenAICompatibleModelClient:
         backoff_seconds: float,
         tools: list[dict[str, Any]] | None = None,
         allow_empty: bool = False,
+        response_format: dict[str, Any] | None = None,
     ) -> ModelResponse:
         await self.network_guard.check(model.endpoint_url, network_policy)
         credential = self.credential_resolver.resolve(model.credential_ref)
         wire_api = (model.wire_api or "chat").strip().lower()
+        payload: dict[str, Any]
         if wire_api == "responses":
             payload = self._responses_payload(model, messages, tools)
         else:
@@ -344,17 +346,22 @@ class OpenAICompatibleModelClient:
             if tools:
                 payload["tools"] = tools
                 payload["tool_choice"] = "auto"
+            if response_format and model.parameters.allow_json_response_format:
+                payload["response_format"] = response_format
         headers = {
             "Authorization": f"Bearer {credential}",
             "Content-Type": "application/json",
         }
         timeout = httpx.Timeout(timeout_seconds, connect=min(10, timeout_seconds))
+        dropped_response_format = False
         async with httpx.AsyncClient(
             transport=self.transport,
             timeout=timeout,
             follow_redirects=False,
         ) as client:
-            for attempt in range(1, max_attempts + 1):
+            # 额外 1 次迭代仅用于 response_format 400 降级重发，
+            # 其余失败路径仍受 max_attempts 约束（会在原上限处 raise）。
+            for attempt in range(1, max_attempts + 2):
                 try:
                     response = await client.post(
                         model.endpoint_url,
@@ -382,6 +389,15 @@ class OpenAICompatibleModelClient:
                     if attempt < max_attempts:
                         await self.sleep(backoff_seconds * attempt)
                         continue
+                if (
+                    response.status_code == 400
+                    and "response_format" in payload
+                    and not dropped_response_format
+                ):
+                    # 网关不支持 response_format：去掉该字段重发一次。
+                    dropped_response_format = True
+                    payload.pop("response_format")
+                    continue
                 if response.status_code >= 400:
                     raise StudioError(
                         "MODEL_REQUEST_FAILED",

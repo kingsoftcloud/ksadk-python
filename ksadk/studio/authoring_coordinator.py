@@ -258,13 +258,14 @@ class StudioAuthoringCoordinator:
 
         request_options = {
             "network_policy": self.backend.authoring_network_policy(model.endpoint_url),
-            "timeout_seconds": 60,
-            "max_attempts": 2,
+            "timeout_seconds": 30,
             "backoff_seconds": 1,
+            "response_format": {"type": "json_object"},
         }
         response = await self.studio.model_client.complete(
             model,
             messages=normalized_messages,
+            max_attempts=2,
             **request_options,
         )
         try:
@@ -275,6 +276,7 @@ class StudioAuthoringCoordinator:
         except StudioError as exc:
             if exc.code != "AUTHORING_MODEL_OUTPUT_INVALID":
                 raise
+            validation_error = str(exc.details.get("reason") or exc.message)
             retry_messages = [
                 *normalized_messages,
                 {"role": "assistant", "content": response.content},
@@ -284,18 +286,35 @@ class StudioAuthoringCoordinator:
                         "上一次输出未通过 Agent Draft Patch 校验。请只返回一个 JSON 对象，"
                         "不要解释或使用 Markdown。首轮必须包含 name、slug、runtimeType、"
                         "description、spec；后续轮次可以只返回需要变更的字段。"
+                        f"校验错误细节如下，请逐条修正：\n{validation_error}"
                     ),
                 },
             ]
             response = await self.studio.model_client.complete(
                 model,
                 messages=retry_messages,
+                max_attempts=1,
                 **request_options,
             )
-            proposal = self.backend.parse_conversation_proposal(
-                response.content,
-                base=previous_proposal,
-            )
+            try:
+                proposal = self.backend.parse_conversation_proposal(
+                    response.content,
+                    base=previous_proposal,
+                )
+            except StudioError as retry_exc:
+                if retry_exc.code != "AUTHORING_MODEL_OUTPUT_INVALID":
+                    raise
+                raise StudioError(
+                    "AUTHORING_MODEL_OUTPUT_INVALID",
+                    "对话构建模型没有返回合法的 Agent Draft Patch",
+                    status_code=502,
+                    details={
+                        "validationError": str(
+                            retry_exc.details.get("reason") or retry_exc.message
+                        ),
+                        "attemptedCorrections": 1,
+                    },
+                ) from retry_exc
         return {
             "proposal": proposal.model_dump(by_alias=True, mode="json"),
             "requiresConfirmation": True,

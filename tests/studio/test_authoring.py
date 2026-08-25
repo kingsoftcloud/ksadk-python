@@ -55,9 +55,11 @@ class _AuthoringModelClient:
     def __init__(self, content: str) -> None:
         self.content = content
         self.messages: list[list[dict]] = []
+        self.calls: list[dict] = []
 
-    async def complete(self, _model, *, messages, **_kwargs):
+    async def complete(self, _model, *, messages, **kwargs):
         self.messages.append(messages)
+        self.calls.append(kwargs)
         return ModelResponse(
             content=self.content,
             finish_reason="stop",
@@ -72,8 +74,9 @@ class _SequencedAuthoringModelClient(_AuthoringModelClient):
         super().__init__(contents[0])
         self.contents = list(contents)
 
-    async def complete(self, _model, *, messages, **_kwargs):
+    async def complete(self, _model, *, messages, **kwargs):
         self.messages.append(messages)
+        self.calls.append(kwargs)
         content = self.contents.pop(0)
         return ModelResponse(
             content=content,
@@ -718,3 +721,81 @@ def test_authoring_api_exposes_four_real_modes(tmp_path: Path) -> None:
             json={"name": "API Import", "slug": "api-import"},
         )
         assert imported.status_code == 201
+
+
+@pytest.mark.asyncio
+async def test_conversation_authoring_requests_json_object_response(
+    tmp_path: Path,
+) -> None:
+    valid = json.dumps(
+        {
+            "name": "Release Reviewer",
+            "slug": "release-reviewer",
+            "runtimeType": "codex",
+            "description": "Checks releases.",
+            "spec": {
+                "instructions": {"system": "Review releases.", "task": "Return evidence."}
+            },
+        }
+    )
+    model_client = _AuthoringModelClient(valid)
+    studio = StudioService(tmp_path, model_client=model_client)
+    _register_model(studio)
+    model_profile = studio.catalog.list(kind="model")[0]
+
+    await studio.compose_agent_conversation(
+        messages=[{"role": "user", "content": "做一个发布评审 Agent"}],
+        model_profile_id=model_profile.resource_id,
+    )
+
+    assert model_client.calls[0]["response_format"] == {"type": "json_object"}
+    assert model_client.calls[0]["timeout_seconds"] <= 30
+
+
+@pytest.mark.asyncio
+async def test_conversation_authoring_corrective_retry_is_single_attempt(
+    tmp_path: Path,
+) -> None:
+    valid = json.dumps(
+        {
+            "name": "Release Reviewer",
+            "slug": "release-reviewer",
+            "runtimeType": "codex",
+            "description": "Checks releases.",
+            "spec": {
+                "instructions": {"system": "Review releases.", "task": "Return evidence."}
+            },
+        }
+    )
+    model_client = _SequencedAuthoringModelClient(["not-json", valid])
+    studio = StudioService(tmp_path, model_client=model_client)
+    _register_model(studio)
+    model_profile = studio.catalog.list(kind="model")[0]
+
+    await studio.compose_agent_conversation(
+        messages=[{"role": "user", "content": "做一个发布评审 Agent"}],
+        model_profile_id=model_profile.resource_id,
+    )
+
+    assert len(model_client.calls) == 2
+    assert model_client.calls[0]["max_attempts"] == 2
+    assert model_client.calls[1]["max_attempts"] == 1
+
+
+@pytest.mark.asyncio
+async def test_conversation_authoring_surfaces_validation_error_details(
+    tmp_path: Path,
+) -> None:
+    model_client = _SequencedAuthoringModelClient(["not-json", "still-not-json"])
+    studio = StudioService(tmp_path, model_client=model_client)
+    _register_model(studio)
+    model_profile = studio.catalog.list(kind="model")[0]
+
+    with pytest.raises(StudioError) as captured:
+        await studio.compose_agent_conversation(
+            messages=[{"role": "user", "content": "做一个发布评审 Agent"}],
+            model_profile_id=model_profile.resource_id,
+        )
+
+    assert captured.value.code == "AUTHORING_MODEL_OUTPUT_INVALID"
+    assert captured.value.details.get("validationError")

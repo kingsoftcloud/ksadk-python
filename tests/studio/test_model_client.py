@@ -320,3 +320,103 @@ async def test_network_guard_allows_explicit_private_target(monkeypatch):
             allow_private_network=True,
         ),
     )
+
+
+@pytest.mark.asyncio
+async def test_model_client_sends_response_format_when_allowed(monkeypatch):
+    monkeypatch.setenv("MODEL_API_KEY", "secret-value")
+    captured = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(__import__("json").loads(request.content))
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "{}"}, "finish_reason": "stop"}]},
+        )
+
+    client = OpenAICompatibleModelClient(
+        network_guard=AllowNetwork(),
+        transport=httpx.MockTransport(handler),
+    )
+    await client.complete(
+        _model(),
+        messages=[{"role": "user", "content": "compose"}],
+        network_policy=NetworkPolicy(allowed_hosts=["model.example.com"]),
+        timeout_seconds=10,
+        max_attempts=1,
+        backoff_seconds=0,
+        response_format={"type": "json_object"},
+    )
+
+    assert captured[0]["response_format"] == {"type": "json_object"}
+
+
+@pytest.mark.asyncio
+async def test_model_client_omits_response_format_when_disabled(monkeypatch):
+    monkeypatch.setenv("MODEL_API_KEY", "secret-value")
+    captured = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(__import__("json").loads(request.content))
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "{}"}, "finish_reason": "stop"}]},
+        )
+
+    model = _model()
+    model.parameters = model.parameters.model_copy(
+        update={"allow_json_response_format": False}
+    )
+    client = OpenAICompatibleModelClient(
+        network_guard=AllowNetwork(),
+        transport=httpx.MockTransport(handler),
+    )
+    await client.complete(
+        model,
+        messages=[],
+        network_policy=NetworkPolicy(allowed_hosts=["model.example.com"]),
+        timeout_seconds=10,
+        max_attempts=1,
+        backoff_seconds=0,
+        response_format={"type": "json_object"},
+    )
+
+    assert "response_format" not in captured[0]
+
+
+@pytest.mark.asyncio
+async def test_model_client_retries_400_without_response_format(monkeypatch):
+    monkeypatch.setenv("MODEL_API_KEY", "secret-value")
+    captured = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = __import__("json").loads(request.content)
+        captured.append(payload)
+        if "response_format" in payload:
+            return httpx.Response(
+                400,
+                json={"error": {"message": "response_format is not supported"}},
+            )
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "{}"}, "finish_reason": "stop"}]},
+        )
+
+    client = OpenAICompatibleModelClient(
+        network_guard=AllowNetwork(),
+        transport=httpx.MockTransport(handler),
+    )
+    result = await client.complete(
+        _model(),
+        messages=[],
+        network_policy=NetworkPolicy(allowed_hosts=["model.example.com"]),
+        timeout_seconds=10,
+        max_attempts=1,
+        backoff_seconds=0,
+        response_format={"type": "json_object"},
+    )
+
+    assert result.content == "{}"
+    assert len(captured) == 2
+    assert "response_format" in captured[0]
+    assert "response_format" not in captured[1]
