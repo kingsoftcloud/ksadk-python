@@ -462,3 +462,29 @@ def test_custom_imported_strategy_rejected_at_compile():
         pass
     else:
         raise AssertionError("custom-imported 应在 compile 阶段被拒绝")
+
+
+def test_tool_failure_is_resilient_run_completes():
+    """工具抛异常：tool.call.end 带 error，模型看到失败消息后收尾，Run 完成。"""
+    reasoner = _ScriptedReasoner([
+        HarnessReasoningTurn(tool_calls=(
+            HarnessToolCall(call_id="tc-1", name="boom_tool", arguments={}),
+        )),
+        HarnessReasoningTurn(final_text="工具失败了，我说明原因"),
+    ])
+
+    async def boom(arguments):
+        raise RuntimeError("upstream 503")
+
+    engine = ManagedLangGraphEngine(reasoner=reasoner, tools={"boom_tool": boom})
+    events = _run(engine, _start_request())
+    tool_ends = [e for e in events if e.event_type == EventType.TOOL_CALL_END]
+    assert len(tool_ends) == 1
+    assert "upstream 503" in tool_ends[0].payload["error"]
+    assert "result" not in tool_ends[0].payload
+    assert events[-1].event_type == EventType.RUN_COMPLETED
+    # 失败流也必须过 conformance（含新的 tool-failure / model-pair 规则）。
+    report = run_conformance_suite(events)
+    assert report.ok, [f"{v.rule}: {v.detail}" for v in report.violations]
+    # 失败消息流到了下一轮模型调用。
+    assert reasoner.calls == 2

@@ -372,7 +372,29 @@ class ManagedLangGraphEngine:
                         {"call_id": call_id, "name": name, "args": pending["arguments"]},
                     )
                 )
-                result = await self._invoke_tool(name, pending["arguments"])
+                try:
+                    result = await self._invoke_tool(name, pending["arguments"])
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - 单工具失败不终止 Run
+                    # 工具失败韧性：记 error 的 tool.call.end + 失败消息，
+                    # 让模型看到失败原因后自行决定重试/换路/收尾。
+                    run.events.append(
+                        self._event(
+                            run, EventType.TOOL_CALL_END,
+                            {"call_id": call_id, "name": name,
+                             "error": f"{type(exc).__name__}: {exc}"},
+                        )
+                    )
+                    state["messages"].append(
+                        {"role": "tool", "tool_call_id": call_id, "name": name,
+                         "content": f"[error] {type(exc).__name__}: {exc}"}
+                    )
+                    run.state.working_context = record_tool_failure(
+                        run.state.working_context, name=name,
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
+                    continue
                 result_text = result if isinstance(result, str) else json.dumps(
                     result, ensure_ascii=False
                 )
