@@ -134,18 +134,155 @@ def verify_cancel_honesty(
         report.fail("cancel-honesty", f"Cancel 后终止事件必须是 run.canceled，实际 {terminal}")
 
 
+_MODEL_CALL_CLOSERS = (EventType.MODEL_CALL_COMPLETED, EventType.MODEL_CALL_FAILED)
+
+
+def verify_model_call_pairing(events: list[RuntimeEvent], report: ConformanceReport) -> None:
+    """model.call.started 必须被 completed/failed 之一闭合；不允许交叉嵌套。"""
+    open_calls = 0
+    for event in events:
+        if event.event_type == EventType.MODEL_CALL_STARTED:
+            open_calls += 1
+            if open_calls > 1:
+                report.fail("model-pair", "model.call.started 嵌套：上一个调用尚未闭合")
+        elif event.event_type in _MODEL_CALL_CLOSERS:
+            if open_calls == 0:
+                report.fail("model-pair", f"{event.event_type} 无对应 started")
+            else:
+                open_calls -= 1
+    if open_calls:
+        report.fail("model-pair", f"{open_calls} 个 model.call.started 未闭合")
+
+
+def verify_tool_failure_honesty(events: list[RuntimeEvent], report: ConformanceReport) -> None:
+    """tool.call.end 带 error 时不允许同时携带 result（失败不得伪装成功）。"""
+    for event in events:
+        if event.event_type != EventType.TOOL_CALL_END:
+            continue
+        has_error = bool(event.payload.get("error"))
+        has_result = "result" in event.payload and event.payload.get("result") is not None
+        if has_error and has_result:
+            report.fail(
+                "tool-failure",
+                f"tool.call.end {event.payload.get('call_id')} 同时携带 error 与 result",
+            )
+
+
+def verify_approval_flow(events: list[RuntimeEvent], report: ConformanceReport) -> None:
+    """approval.requested → run.interrupted(审批) → approval.resolved → run.resumed 顺序守恒。"""
+    requested: set[str] = set()
+    resolved: set[str] = set()
+    seen_interrupt = False
+    for event in events:
+        if event.event_type == EventType.APPROVAL_REQUESTED:
+            approval_id = str(event.payload.get("approval_id", ""))
+            if approval_id and approval_id in requested:
+                report.fail("approval-idempotency", f"approval_id 重复 requested: {approval_id}")
+            requested.add(approval_id)
+        elif event.event_type == EventType.RUN_INTERRUPTED:
+            if str(event.payload.get("reason", "")) == "tool_approval":
+                seen_interrupt = True
+        elif event.event_type == EventType.APPROVAL_RESOLVED:
+            approval_id = str(event.payload.get("approval_id", ""))
+            if approval_id and approval_id not in requested:
+                report.fail("approval-flow", f"approval.resolved 无对应 requested: {approval_id}")
+            if approval_id in resolved:
+                report.fail("approval-idempotency", f"approval_id 重复 resolved: {approval_id}")
+            resolved.add(approval_id)
+            if not seen_interrupt:
+                report.fail("approval-flow", "approval.resolved 出现在 run.interrupted 之前")
+        elif event.event_type == EventType.RUN_RESUMED:
+            if not seen_interrupt:
+                report.fail("recovery", "run.resumed 必须出现在 run.interrupted 之后")
+            seen_interrupt = False
+
+
+def verify_checkpoint_honesty(events: list[RuntimeEvent], report: ConformanceReport) -> None:
+    """checkpoint.created 携带 checkpoint_id 且归属本 invocation；resumed 有对应 created。"""
+    created: set[str] = set()
+    for event in events:
+        if event.event_type == EventType.CHECKPOINT_CREATED:
+            checkpoint_id = str(event.payload.get("checkpoint_id", ""))
+            if not checkpoint_id:
+                report.fail("checkpoint", "checkpoint.created 缺少 checkpoint_id")
+            else:
+                created.add(checkpoint_id)
+            invocation_id = str(event.payload.get("invocation_id", ""))
+            if invocation_id and invocation_id != event.invocation_id:
+                report.fail(
+                    "checkpoint",
+                    f"checkpoint.created invocation_id 与信封不一致: {invocation_id}",
+                )
+        elif event.event_type == EventType.CHECKPOINT_RESUMED:
+            checkpoint_id = str(event.payload.get("checkpoint_id", ""))
+            if checkpoint_id not in created:
+                report.fail("recovery", f"checkpoint.resumed 无对应 created: {checkpoint_id}")
+
+
+def verify_compaction_honesty(events: list[RuntimeEvent], report: ConformanceReport) -> None:
+    """context.compaction.started/completed 成对；completed 携带合法预算。"""
+    open_compactions = 0
+    for event in events:
+        if event.event_type == EventType.CONTEXT_COMPACTION_STARTED:
+            open_compactions += 1
+            if open_compactions > 1:
+                report.fail("compaction", "context.compaction.started 嵌套未闭合")
+        elif event.event_type == EventType.CONTEXT_COMPACTION_COMPLETED:
+            if open_compactions == 0:
+                report.fail("compaction", "context.compaction.completed 无对应 started")
+            else:
+                open_compactions -= 1
+            budget = event.payload.get("budget_tokens")
+            if not isinstance(budget, int) or budget <= 0:
+                report.fail(
+                    "compaction",
+                    f"context.compaction.completed 预算非法: {budget!r}（须为正整数）",
+                )
+    if open_compactions and events and events[-1].event_type != EventType.RUN_FAILED:
+        report.fail("compaction", "context.compaction.started 未被 completed 闭合")
+
+
+def verify_usage_accounting(events: list[RuntimeEvent], report: ConformanceReport) -> None:
+    """usage.reported 字段为非负整数且 total = input + output。"""
+    for event in events:
+        if event.event_type != EventType.USAGE_REPORTED:
+            continue
+        payload = event.payload
+        try:
+            input_tokens = int(payload.get("input_tokens") or 0)
+            output_tokens = int(payload.get("output_tokens") or 0)
+            total = int(payload.get("total_tokens") or 0)
+        except (TypeError, ValueError):
+            report.fail("usage", f"usage.reported 字段非整数: {payload}")
+            continue
+        if input_tokens < 0 or output_tokens < 0 or total < 0:
+            report.fail("usage", f"usage.reported 出现负数: {payload}")
+        elif total and total != input_tokens + output_tokens:
+            report.fail(
+                "usage",
+                f"usage.reported total 不等于 input+output: {payload}",
+            )
+
+
 def run_conformance_suite(
     events: list[RuntimeEvent],
     *,
     cancel_requested: bool = False,
 ) -> ConformanceReport:
-    """Phase 0 最小套件入口：5 项校验一次跑完。"""
+    """Phase 0 最小套件 + 加固五类：模型配对/工具失败/审批幂等/检查点/压缩/用量。"""
     report = ConformanceReport()
     verify_start_and_terminal_event(events, report)
     verify_event_ordering(events, report)
     verify_tool_call_pairing(events, report)
     verify_secret_redaction(events, report)
     verify_cancel_honesty(events, report, cancel_requested=cancel_requested)
+    # 加固（plan §15 conformance 补齐：恢复/检查点/幂等/工具失败/压缩）。
+    verify_model_call_pairing(events, report)
+    verify_tool_failure_honesty(events, report)
+    verify_approval_flow(events, report)
+    verify_checkpoint_honesty(events, report)
+    verify_compaction_honesty(events, report)
+    verify_usage_accounting(events, report)
     return report
 
 
@@ -153,9 +290,14 @@ __all__ = [
     "ConformanceReport",
     "ConformanceViolation",
     "run_conformance_suite",
+    "verify_approval_flow",
     "verify_cancel_honesty",
+    "verify_checkpoint_honesty",
+    "verify_compaction_honesty",
     "verify_event_ordering",
+    "verify_model_call_pairing",
     "verify_secret_redaction",
     "verify_start_and_terminal_event",
-    "verify_tool_call_pairing",
+    "verify_tool_failure_honesty",
+    "verify_usage_accounting",
 ]

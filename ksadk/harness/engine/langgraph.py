@@ -279,12 +279,22 @@ class ManagedLangGraphEngine:
             run.events.append(
                 self._event(run, EventType.MODEL_CALL_STARTED, {"model": spec.model.profile_ref})
             )
-            turn: HarnessReasoningTurn = await self._reasoner.complete(
-                model=spec.model.profile_ref,
-                prompt=spec.prompt.instructions or "",
-                messages=tuple(state["messages"]),
-                tools=list(self._tools.values()),
-            )
+            try:
+                turn: HarnessReasoningTurn = await self._reasoner.complete(
+                    model=spec.model.profile_ref,
+                    prompt=spec.prompt.instructions or "",
+                    messages=tuple(state["messages"]),
+                    tools=list(self._tools.values()),
+                )
+            except Exception as exc:  # noqa: BLE001 - 契约要求 started 必被闭合
+                run.events.append(
+                    self._event(
+                        run,
+                        EventType.MODEL_CALL_FAILED,
+                        {"model": spec.model.profile_ref, "error": str(exc)},
+                    )
+                )
+                raise
             run.events.append(
                 self._event(run, EventType.MODEL_CALL_COMPLETED, {"model": spec.model.profile_ref})
             )
