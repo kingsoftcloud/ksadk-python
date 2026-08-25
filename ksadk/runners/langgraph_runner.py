@@ -573,7 +573,6 @@ class LangGraphRunner(_LangGraphStreamMixin, BaseRunner):
             for msg in history:
                 role = msg.get("role")
                 content = msg.get("content", "")
-<<<<<<< HEAD
                 # Runtime-owned tool/approval markers should not be fed back to
                 # the model as plain text; they can trigger protocol leakage.
                 if isinstance(content, str) and content.startswith(
