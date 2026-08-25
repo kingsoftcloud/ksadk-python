@@ -81,9 +81,7 @@ class Workspace:
                 ) from exc
             candidate = raw.resolve(strict=must_exist)  # lgtm[py/path-injection]
         else:
-            candidate = (self.root / raw).resolve(  # lgtm[py/path-injection]
-                strict=must_exist
-            )
+            candidate = (self.root / raw).resolve(strict=must_exist)  # lgtm[py/path-injection]
         try:
             candidate.relative_to(self.root)
         except ValueError as exc:
