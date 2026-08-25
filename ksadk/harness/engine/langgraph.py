@@ -31,12 +31,12 @@ from ksadk.harness.engine.base import (
     EngineCapability,
     EngineCapabilityMatrix,
     ExecutionEngineError,
-    single_agent_plan,
 )
 from ksadk.harness.engine.thread_ids import encode_thread_id
 from ksadk.harness.reasoner import HarnessReasoner, HarnessReasoningTurn, LiteLLMHarnessReasoner
 from ksadk.harness.spec import HarnessSpec
 from ksadk.harness.state import HarnessState, Message, MessageRole, RunStatus
+from ksadk.harness.strategies import ExecutionStrategyRegistry
 from ksadk.harness.working_context import record_tool_failure, record_tool_result
 from ksadk.runtime import (
     CancelResult,
@@ -85,9 +85,12 @@ class ManagedLangGraphEngine:
         tools: dict[str, Any] | None = None,
         approval_required: set[str] | None = None,
         context_engine: Any | None = None,
+        strategy_registry: ExecutionStrategyRegistry | None = None,
     ) -> None:
         self._reasoner = reasoner or LiteLLMHarnessReasoner()
         self._checkpointer = checkpointer
+        # 集成项 4：Strategy Registry 真正参与 compile()——拓扑来自注册表。
+        self._strategy_registry = strategy_registry or ExecutionStrategyRegistry()
         self._tenant_id = tenant_id
         self._tools = tools or {}
         self._approval_required = approval_required or set()
@@ -97,9 +100,16 @@ class ManagedLangGraphEngine:
     # ------------------------------------------------------------- compile
 
     async def compile(self, spec: HarnessSpec) -> CompiledHarness:
+        # 集成项 4：拓扑由 Strategy Registry 按 spec.execution_strategy 编译，
+        # 引擎不再硬编码 single_agent_plan。
+        plan = self._strategy_registry.compile(
+            spec, strategy=spec.execution_strategy.kind.value
+        )
+        if spec.execution_strategy.kind.value == self._strategy_registry.default():
+            ExecutionStrategyRegistry.assert_single_agent_purity(plan)
         return CompiledHarness(
             spec=spec,
-            plan=single_agent_plan(),
+            plan=plan,
             engine_kind="managed-langgraph",
         )
 
@@ -383,12 +393,85 @@ class ManagedLangGraphEngine:
         def route(state: _GraphState) -> str:
             return state["route"]
 
+        async def plan_node(state: _GraphState) -> _GraphState:
+            """plan-execute 拓扑的规划节点：一次无工具模型调用产出执行计划。"""
+            turn: HarnessReasoningTurn = await self._reasoner.complete(
+                model=spec.model.profile_ref,
+                prompt=(spec.prompt.instructions or "") + "\n请先给出分步执行计划，再开始执行。",
+                messages=tuple(state["messages"]),
+                tools=[],
+            )
+            state["messages"].append(
+                {"role": "assistant", "content": "【执行计划】\n" + (turn.final_text or "")}
+            )
+            return state
+
+        async def review_node(state: _GraphState) -> _GraphState:
+            """plan-execute-review 拓扑的独立审查节点：对最终回答做一次批判。"""
+            messages = list(state["messages"]) + [
+                {"role": "user", "content": "请审查以上回答的准确性与遗漏，指出问题（如有）。"}
+            ]
+            turn: HarnessReasoningTurn = await self._reasoner.complete(
+                model=spec.model.profile_ref,
+                prompt=spec.prompt.instructions or "",
+                messages=tuple(messages),
+                tools=[],
+            )
+            state["messages"].append(
+                {"role": "assistant", "content": "【审查】\n" + (turn.final_text or "")}
+            )
+            return state
+
+        def passthrough(state: _GraphState) -> _GraphState:
+            # prepare_context / execute：上下文规划已在 _emit_context_plan 完成，
+            # execute 由 reason 循环承担——节点存在是为了拓扑可观测。
+            return state
+
+        # 集成项 4：按 ExecutionPlan 组图（不再硬编码 single-agent 拓扑）。
+        node_impls = {
+            "reason": reason,
+            "tool_calls": tool_calls,
+            "plan": plan_node,
+            "review": review_node,
+            "prepare_context": passthrough,
+            "execute": passthrough,
+        }
+        plan = run.compiled.plan
         builder = StateGraph(_GraphState)
-        builder.add_node("reason", reason)
-        builder.add_node("tool_calls", tool_calls)
-        builder.add_edge(START, "reason")
-        builder.add_conditional_edges("reason", route, {"tool_calls": "tool_calls", "final": END})
-        builder.add_edge("tool_calls", "reason")
+        for node in plan.nodes:
+            if node == "final":
+                continue  # final 是出口，不是图节点。
+            impl = node_impls.get(node)
+            if impl is None:
+                raise ExecutionEngineError(f"引擎不支持拓扑节点: {node!r}")
+            builder.add_node(node, impl)
+        edges = plan.edges or ()
+        successors_of = {
+            src: [dst for s, dst in edges if s == src] for src, _ in edges
+        }
+        # 入口：无入边的节点接 START（保持 plan.nodes 顺序稳定）。
+        incoming = {dst for _, dst in edges}
+        for node in plan.nodes:
+            if node != "final" and node not in incoming:
+                builder.add_edge(START, node)
+        # reason 的出边是条件路由：有工具调用走 tool_calls，否则走出口/审查。
+        reason_successors = successors_of.get("reason", [])
+        exit_targets = [dst for dst in reason_successors if dst != "tool_calls"]
+        exit_target = exit_targets[0] if exit_targets else "final"
+        reason_mapping = {}
+        if "tool_calls" in reason_successors:
+            reason_mapping["tool_calls"] = "tool_calls"
+        reason_mapping["final"] = END if exit_target == "final" else exit_target
+        if "reason" in node_impls and "reason" in plan.nodes and "reason" != exit_target:
+            builder.add_conditional_edges("reason", route, reason_mapping)
+        for src, dst in edges:
+            if src == "reason":
+                continue  # 已由条件边覆盖。
+            if dst == "final":
+                if src in node_impls and src != "reason":
+                    builder.add_edge(src, END)
+                continue
+            builder.add_edge(src, dst)
         graph = builder.compile(checkpointer=self._checkpointer)
         return graph
 

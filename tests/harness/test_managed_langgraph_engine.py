@@ -396,3 +396,69 @@ def test_tool_result_updates_working_context():
     assert state is not None
     joined = " ".join(state.working_context.verified_facts)
     assert "¥42,000" in joined, "工具结果中的关键金额须进入 verified_facts"
+
+
+# -- 集成项 4：Strategy Registry 参与 compile() -------------------------
+
+
+def _strategy_spec(kind: str) -> HarnessSpec:
+    from ksadk.harness.spec import ExecutionStrategySpec
+
+    return HarnessSpec(
+        agent_revision_ref="agent-revision://proj-1@2",
+        model=ModelBinding(profile_ref="model-profile://kimi-k3@1.0.0"),
+        prompt=PromptSpec(instructions="你是财务分析助手。"),
+        execution_strategy=ExecutionStrategySpec.model_validate({"kind": kind}),
+    )
+
+
+def test_compile_uses_registry_plan_for_strategy():
+    engine = _simple_engine()
+    compiled = asyncio.run(engine.compile(_strategy_spec("plan-execute")))
+    assert compiled.plan.strategy_kind == "plan-execute"
+    assert "plan" in compiled.plan.nodes
+    # 默认策略仍走 single-agent 拓扑（无多 Agent 节点）。
+    default_compiled = asyncio.run(engine.compile(_spec()))
+    assert default_compiled.plan.strategy_kind == "single-agent"
+
+
+def test_plan_execute_strategy_runs_plan_node():
+    reasoner = _ScriptedReasoner([
+        HarnessReasoningTurn(final_text="第一步查预算，第二步对比。"),
+        HarnessReasoningTurn(final_text="执行完成"),
+    ])
+    engine = ManagedLangGraphEngine(reasoner=reasoner, tools={})
+    events = _run_engine_with(engine, _strategy_spec("plan-execute"))
+    assert events[-1].event_type == EventType.RUN_COMPLETED
+
+
+def test_plan_execute_review_strategy_runs_review_node():
+    reasoner = _ScriptedReasoner([
+        HarnessReasoningTurn(final_text="计划如下。"),
+        HarnessReasoningTurn(final_text="答案：42"),
+        HarnessReasoningTurn(final_text="审查通过"),
+    ])
+    engine = ManagedLangGraphEngine(reasoner=reasoner, tools={})
+    events = _run_engine_with(engine, _strategy_spec("plan-execute-review"))
+    assert events[-1].event_type == EventType.RUN_COMPLETED
+
+
+def _run_engine_with(engine: ManagedLangGraphEngine, spec: HarnessSpec):
+    async def drive():
+        compiled = await engine.compile(spec)
+        handle = await engine.start(_start_request(), compiled)
+        return [event async for event in engine.stream(handle)]
+
+    return asyncio.run(drive())
+
+
+def test_custom_imported_strategy_rejected_at_compile():
+    engine = _simple_engine()
+    from ksadk.harness.strategies import StrategyRegistryError
+
+    try:
+        asyncio.run(engine.compile(_strategy_spec("custom-imported")))
+    except StrategyRegistryError:
+        pass
+    else:
+        raise AssertionError("custom-imported 应在 compile 阶段被拒绝")
