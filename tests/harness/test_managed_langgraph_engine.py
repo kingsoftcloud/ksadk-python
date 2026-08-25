@@ -488,3 +488,86 @@ def test_tool_failure_is_resilient_run_completes():
     assert report.ok, [f"{v.rule}: {v.detail}" for v in report.violations]
     # 失败消息流到了下一轮模型调用。
     assert reasoner.calls == 2
+
+
+# ------------------------------------------------------- generic pause/resume
+
+def test_generic_pause_then_resume_from_checkpoint_completes():
+    """通用 pause：运行中挂起（非审批），resume 从 Checkpoint 续跑到完成。"""
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    started = asyncio.Event()
+
+    class _SlowThenDone(HarnessReasoner):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def complete(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                started.set()
+                await asyncio.sleep(60)  # 挂起期间被 pause 取消
+            return HarnessReasoningTurn(final_text="paused-then-done")
+
+    reasoner = _SlowThenDone()
+    engine = ManagedLangGraphEngine(reasoner=reasoner, checkpointer=InMemorySaver())
+
+    async def drive():
+        from ksadk.runtime.adapter import PauseResult
+
+        compiled = await engine.compile(_spec())
+        handle = await engine.start(_start_request(), compiled)
+        stream = engine.stream(handle)
+        consumer = asyncio.create_task(_collect(stream))
+        await started.wait()
+        await asyncio.sleep(0.05)  # 让 RUN_STARTED 入队
+        result = await engine.pause(handle)
+        assert result == PauseResult.PAUSED_ACTIVE_TURN
+        first = await consumer
+        # resume：从 Checkpoint 续跑
+        await engine.resume(handle, ResumeTarget(kind="thread_id", id="t"), None)
+        second = [e async for e in engine.stream(handle)]
+        return first, second
+
+    async def _collect(stream):
+        return [event async for event in stream]
+
+    first, second = asyncio.run(drive())
+    kinds1 = [e.event_type for e in first]
+    kinds2 = [e.event_type for e in second]
+    assert EventType.RUN_INTERRUPTED in kinds1
+    assert EventType.RUN_CANCELED not in kinds1
+    assert EventType.RUN_RESUMED in kinds2
+    assert kinds2[-1] == EventType.RUN_COMPLETED
+    # Checkpoint 在节点边界：resume 重跑被中断的 reason 节点（首轮取消不计结果）。
+    assert reasoner.calls == 2
+
+
+def test_pause_without_checkpointer_is_not_supported():
+    started = asyncio.Event()
+
+    class _Slow(HarnessReasoner):
+        async def complete(self, **kwargs):
+            started.set()
+            await asyncio.sleep(30)
+            return HarnessReasoningTurn(final_text="late")
+
+    engine = ManagedLangGraphEngine(reasoner=_Slow())
+
+    async def drive():
+
+        compiled = await engine.compile(_spec())
+        handle = await engine.start(_start_request(), compiled)
+        stream = engine.stream(handle)
+        consumer = asyncio.create_task(_collect(stream))
+        await started.wait()
+        await asyncio.sleep(0.05)
+        result = await engine.pause(handle)
+        await engine.cancel(handle)
+        await consumer
+        return result
+
+    async def _collect(stream):
+        return [event async for event in stream]
+
+    assert asyncio.run(drive()).value == "not_supported"

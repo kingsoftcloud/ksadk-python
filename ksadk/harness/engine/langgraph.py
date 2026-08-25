@@ -40,6 +40,7 @@ from ksadk.harness.strategies import ExecutionStrategyRegistry
 from ksadk.harness.working_context import record_tool_failure, record_tool_result
 from ksadk.runtime import (
     CancelResult,
+    PauseResult,
     ResumePayload,
     ResumeTarget,
     RunHandle,
@@ -69,6 +70,7 @@ class _EngineRun:
     events: list[RuntimeEvent] = field(default_factory=list)
     seq: int = 0
     cancel_requested: bool = False
+    pause_requested: bool = False
     done: bool = False
     started_emitted: bool = False
 
@@ -155,7 +157,10 @@ class ManagedLangGraphEngine:
     async def _stream(self, handle: RunHandle) -> AsyncIterator[RuntimeEvent]:
         run = self._require_run(handle)
         task_finished = run.task is None or run.task.done()
-        if run.state.status is RunStatus.AWAITING_APPROVAL and task_finished:
+        if (
+            run.state.status in (RunStatus.AWAITING_APPROVAL, RunStatus.PAUSED)
+            and task_finished
+        ):
             # 挂起中：只回放未消费事件，不重启图（恢复必须走 resume）。
             while run.events:
                 yield run.events.pop(0)
@@ -181,7 +186,11 @@ class ManagedLangGraphEngine:
             yield self._event(run, EventType.RUN_CANCELED, {"status": "cancelled"})
 
     async def _execute(
-        self, run: _EngineRun, resume_command: Command | None = None
+        self,
+        run: _EngineRun,
+        resume_command: Command | None = None,
+        *,
+        resume_from_checkpoint: bool = False,
     ) -> list[RuntimeEvent]:
         spec = run.compiled.spec
         run.state.status = RunStatus.RUNNING
@@ -193,9 +202,12 @@ class ManagedLangGraphEngine:
             graph = self._build_graph(run)
             instructions = spec.prompt.instructions or ""
             config = {"configurable": {"thread_id": run.thread_id}}
-            invoke_input: _GraphState | Command
+            invoke_input: _GraphState | Command | None
             if resume_command is not None:
                 invoke_input = resume_command
+            elif resume_from_checkpoint:
+                # 通用 pause 恢复：None → LangGraph 从最近 Checkpoint 续跑。
+                invoke_input = None
             else:
                 invoke_input = {
                     "messages": [
@@ -245,6 +257,18 @@ class ManagedLangGraphEngine:
             run.done = True
             return []
         except asyncio.CancelledError:
+            if run.pause_requested:
+                # 通用 pause：非终止性挂起，Checkpoint 持久化后可 resume。
+                run.pause_requested = False
+                run.state.status = RunStatus.PAUSED
+                run.done = False
+                run.events.append(
+                    self._event(
+                        run, EventType.RUN_INTERRUPTED,
+                        {"status": "paused", "reason": "pause_requested"},
+                    )
+                )
+                return []
             run.state.status = RunStatus.CANCELED
             run.done = True
             return [self._event(run, EventType.RUN_CANCELED, {"status": "cancelled"})]
@@ -529,6 +553,31 @@ class ManagedLangGraphEngine:
         run.task.cancel()
         return CancelResult.INTERRUPTED_ACTIVE_TURN
 
+    # --------------------------------------------------------------- pause
+
+    async def pause(self, handle: RunHandle) -> PauseResult:
+        """通用 pause：取消当前回合但保留状态，Checkpointer 持久化后可 resume。"""
+        run = self._runs.get(handle.run_id)
+        if run is None or run.done:
+            return PauseResult.NOT_RUNNING
+        if run.state.status not in (RunStatus.RUNNING, RunStatus.PENDING):
+            return PauseResult.NOT_RUNNING
+        if self._checkpointer is None:
+            return PauseResult.NOT_SUPPORTED
+        if run.task is None or run.task.done():
+            # 尚未启动流式执行：直接置 PAUSED，start 后由 stream/resume 驱动。
+            run.state.status = RunStatus.PAUSED
+            run.events.append(
+                self._event(
+                    run, EventType.RUN_INTERRUPTED,
+                    {"status": "paused", "reason": "pause_requested"},
+                )
+            )
+            return PauseResult.PAUSED_ACTIVE_TURN
+        run.pause_requested = True
+        run.task.cancel()
+        return PauseResult.PAUSED_ACTIVE_TURN
+
     # --------------------------------------------------------------- resume
 
     async def resume(
@@ -538,6 +587,23 @@ class ManagedLangGraphEngine:
         payload: ResumePayload | None,
     ) -> RunHandle:
         run = self._require_run(handle)
+        if run.state.status is RunStatus.PAUSED:
+            if self._checkpointer is None:
+                raise ExecutionEngineError(
+                    "resume 需要 Checkpointer：pause 状态由 Checkpoint 持久化"
+                )
+            # 通用恢复：从最近 Checkpoint 续跑（非审批通道）。
+            run.state.status = RunStatus.RUNNING
+            run.events.append(
+                self._event(
+                    run, EventType.RUN_RESUMED,
+                    {"target": target.id, "resume_kind": "checkpoint"},
+                )
+            )
+            run.task = asyncio.create_task(
+                self._execute(run, resume_from_checkpoint=True)
+            )
+            return handle
         if run.state.status is not RunStatus.AWAITING_APPROVAL:
             raise ExecutionEngineError(
                 f"resume 仅支持 awaiting_approval 状态，当前 {run.state.status.value}"
@@ -579,7 +645,9 @@ class ManagedLangGraphEngine:
     def capabilities(self) -> EngineCapabilityMatrix:
         return EngineCapabilityMatrix(
             cancel=EngineCapability(supported=True),
-            resume=EngineCapability(supported=True, reason="approval channel only (Phase 3: full)"),
+            resume=EngineCapability(
+                supported=True, reason="approval + checkpoint (paused) channels"
+            ),
             checkpoint=EngineCapability(
                 supported=self._checkpointer is not None,
                 reason=None if self._checkpointer else "no checkpointer injected",
