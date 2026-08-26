@@ -14,7 +14,7 @@
 - **Agent Runtime V2 Phase 1 基座完成**：冻结 `AgentControlChannel/v1`、`SessionEventEnvelope/v1`、`ActivationLease/v1`、`RuntimeCapabilityMatrix/v1` 与 `Interaction/v1`，通过 schema digest 和 additive-only gate 防止下游再随意改协议。
 - **可靠执行不再强制 PostgreSQL**：AgentKernelStore 支持 InMemory、SQLite 与 PostgreSQL。普通单副本 Agent 可不配置 PG；需要跨 Pod 恢复、接管和高可用时再启用 PostgreSQL，并使用 lease、fencing 与事务 CAS 保证唯一 owner。
 - **Studio 打通本地创作到云端生命周期**：沿用平台既有 `CreateAgent` / `UpdateAgent` 等接口，支持构建、部署、状态、详情、会话、删除、版本选择与二次确认回滚；账号中由 CLI 部署的高代码 Agent 也可直接选择和管理。
-- **前后端会话统一到真实事件流**：Studio 与 Hosted UI 使用 `@kingsoftcloud/ksadk-web@0.3.2`，支持签名 SSE、流式正文、思考、工具、审批、附件、模型、三档审批以及 Goal / Plan 控制；普通前台聊天不依赖 Background 长任务模式。
+- **前后端会话统一到真实事件流**：本地 Web UI 与 Hosted UI 固定使用 `@kingsoftcloud/ksadk-web@0.3.2`，Studio 对齐同一 Interaction / RuntimeEvent 合同，支持签名 SSE、流式正文、思考、工具、审批、附件、模型、三档审批以及 Goal / Plan 控制；普通前台聊天不依赖 Background 长任务模式。
 
 ### 新增与变更
 
@@ -24,6 +24,7 @@
 - Studio 云端目标采用 AK/SK 在本地服务端完成签名，凭证不进入浏览器；Hermes / OpenClaw 在能力不兼容时提供简洁的官方链接入口。
 - 构建输出记录 KsADK 版本、来源和 commit id；Operator 对旧制品缺少三元组时保持兼容并标记未知，不阻止旧 Runtime 启动。
 - 评测完成上传、执行、结果与删除闭环；Trace token 区分完整上报、部分上报和未上报，不再把缺失值当作零。
+- PyPI wheel 与 sdist 同时携带本地 Web UI 和 Studio 的已审计生产静态产物，不携带 Studio 的 React / TypeScript 可编辑源码；公开 clean export 在无前端源码时复用并校验固定静态产物。
 
 ### 修复
 
@@ -769,7 +770,7 @@
 
 - **Web UI 工作区文件管理重构**：右侧文件区改为可调整宽度、可全屏的工作区面板，上传入口和路径展示收敛为更轻量的布局，并保持打开文件区时左侧对话区可继续正常使用。
 - **工作区文件预览能力增强**：支持在 Web UI 内预览文本、Markdown、代码、CSV/TSV、图片与 PDF 文件，便于直接查看上传文件或大模型生成的文件产物。
-- **hosted UI 同步链路可移植**：`agentengine-server` 可从完整 `ksadk-python` 源码构建并同步最新 hosted UI；本地缺少 ksadk 源码时会尝试从 ezone 拉取，避免硬编码个人路径。
+- **hosted UI 同步链路可移植**：`agentengine-server` 可从完整 `ksadk-python` 源码构建并同步最新 hosted UI；本地缺少 SDK 源码时会尝试从配置的源码远端拉取，避免硬编码个人路径。
 
 ### 变更
 

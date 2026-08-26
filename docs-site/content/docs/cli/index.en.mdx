@@ -152,10 +152,10 @@ no separately maintained `/chat` frontend. Model settings can come from the
 current process, global configuration, or an explicit `--env-file`. Browser
 writes are protected by the local session and CSRF tokens.
 
-`studio/static` contains the packaged React production build but is not tracked
-by Git. Frontend sources and tests live in `ksadk/studio/react-ui`; run
-`make studio-react-test` after changing them, then use `make build-wheel` or
-`make public-build-check` to regenerate and package the assets.
+`studio/static` contains the packaged React production build. The public
+repository, sdist, and wheel do not include editable Studio React / TypeScript
+source. `make build-wheel` and `make public-build-check` validate and package
+the reviewed static payload.
 
 For the full workflow from starting a workspace through creating, building, and
 testing an Agent, see [AgentKit Local Studio (New in 0.8.1)](/en/docs/framework/guides/agentkit-local-studio).

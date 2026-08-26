@@ -5,15 +5,17 @@ title: "Web UI Repository"
 The KsADK Web UI source lives in the independent `kingsoftcloud/ksadk-web`
 repository and is published as the npm package `@kingsoftcloud/ksadk-web`.
 `ksadk-python` synchronizes the `dist-ksadk` output from the npm package into
-`ksadk/server/static` for the local `agentengine web` server. Its own Studio
-source is built from the tracked `ksadk/studio/react-ui` project into the
-ignored `ksadk/studio/static` payload during a controlled package build.
+`ksadk/server/static` for the local `agentengine web` server. The Studio
+production payload lives in `ksadk/studio/static`. Public clean exports, sdists,
+and wheels contain only the reviewed static payload, not editable Studio React /
+TypeScript source.
 
 <Callout type="info" title="0.6.7 policy">
 Since 0.6.5 `ksadk-python` removed the local `npm ci` / `npm run build:ksadk`
 build chain and no longer pulls GitHub latest release at wheel build time.
 The hosted UI payload comes from the `@kingsoftcloud/ksadk-web` npm package;
-the separately tracked Studio source is built from its checked-in lockfile.
+the Studio static payload is built and reviewed before the public clean export
+is created.
 </Callout>
 
 
@@ -23,13 +25,15 @@ the separately tracked Studio source is built from its checked-in lockfile.
 | --- | --- |
 | `kingsoftcloud/ksadk-web` | Editable React/Vite source, tests, Pages demo, npm publishing |
 | `@kingsoftcloud/ksadk-web` (npm) | Distribution channel for `dist-ksadk` / `dist-hosted` build outputs |
-| `ksadk-python` | Python SDK, CLI, runner, local server, Studio source, embedded `server/static` and `studio/static` |
+| public `ksadk-python` repository and Python artifacts | Python SDK, CLI, runner, local server, embedded `server/static` and `studio/static`; no editable Studio source |
 | hosted UI | Production deployment shell, gateway, image and environment injection; also consumes the npm package |
 
 The `ksadk-python` public clean export does not contain `ksadk/server/web-ui`
 source, nor `node_modules`, `dist/`, or `dist-hosted/` intermediate UI artifacts.
-The hosted editable UI source is maintained in `kingsoftcloud/ksadk-web`; the
-Studio source is tracked locally and its compiled output is ignored.
+The hosted editable UI source is maintained in `kingsoftcloud/ksadk-web`.
+Editable Studio source is also excluded from the public export; only the
+reviewed `ksadk/studio/static` payload enters the public repository and Python
+artifacts.
 
 ## Sync Rules
 
@@ -55,18 +59,20 @@ audited tarball.
 
 ### Controlled package build
 
-`make build` and `make build-wheel` synchronize `ksadk-web` and build the
-locked React Studio source before building the wheel, so the embedded static
-assets always come from controlled inputs:
+`make build` and `make build-wheel` synchronize `ksadk-web`. In a complete
+source candidate they build the locked React Studio source; in a public clean
+export they validate and reuse the reviewed Studio static payload before
+building the wheel:
 
 ```bash
 # 1. sync-ksadk-web-static -> ksadk/server/static
-# 2. npm ci && npm run build -> ksadk/studio/static
+# 2. build Studio from reviewed source, or validate exported ksadk/studio/static
 # 3. python -m build / uv build
 ```
 
-`make build-only` still requires a current Studio build, while reusing an
-already synchronized `ksadk/server/static` payload.
+`make build-only` reuses an already synchronized `ksadk/server/static` payload.
+It rebuilds Studio when source is present; a source-free public candidate must
+instead provide a complete, validated `ksadk/studio/static` payload.
 
 ### Sync Variables
 

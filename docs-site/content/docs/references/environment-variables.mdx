@@ -117,13 +117,13 @@ OPENAI_MODEL_NAME=my-model
 | 变量 | 用途 |
 | --- | --- |
 | `KSYUN_IAM_ENDPOINT` | 可选：覆盖 IAM 公网 endpoint；未配置时使用 `iam.api.ksyun.com` |
-| `KSYUN_IAM_INTRANET_URL` | 可选：覆盖 IAM 内网 endpoint fallback；未配置时使用默认 `iam.inner.api.ksyun.com` |
+| `KSYUN_IAM_INTRANET_URL` | 可选：覆盖由平台提供的 IAM 内网 endpoint；公开环境通常留空 |
 | `IAM_INTRANET_URL` | `KSYUN_IAM_INTRANET_URL` 的兼容别名 |
 
 <Callout type="info">
-  当公网 IAM 返回“inner account can only access through intranet”这类错误时，
-  运行时会尝试内网 endpoint。外部环境通常不会命中该分支；内部环境如需覆盖地址，
-  可设置 `KSYUN_IAM_INTRANET_URL` 或 `IAM_INTRANET_URL`。
+  仅当平台运维方提供了已批准的内网 endpoint 时，才设置
+  `KSYUN_IAM_INTRANET_URL` 或 `IAM_INTRANET_URL`。不要把该地址写入项目文件、
+  文档示例或 Agent manifest。
 </Callout>
 
 ## 会话存储

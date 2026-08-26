@@ -373,6 +373,51 @@ def test_content_audit_allows_aicp_internal_endpoints_but_blocks_other_internal_
     ]
 
 
+def test_content_audit_blocks_private_platform_details_in_public_docs(tmp_path):
+    audit = _load_audit_module()
+    (tmp_path / "docs-site" / "content").mkdir(parents=True)
+    (tmp_path / "docs-site" / "content" / "guide.mdx").write_text(
+        "\n".join(
+            [
+                "endpoint: http://aicp.inner.api.ksyun.com",
+                "demo: 0611agent-xiayu",
+                "source: ezone",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    # The runtime may implement a platform-provided endpoint, but curated public
+    # documentation must not publish its private hostname.
+    (tmp_path / "ksadk" / "client.py").parent.mkdir(parents=True)
+    (tmp_path / "ksadk" / "client.py").write_text(
+        'DEFAULT = "aicp.inner.api.ksyun.com"\n', encoding="utf-8"
+    )
+
+    result = audit.audit_file_contents(
+        tmp_path,
+        ["docs-site/content/guide.mdx", "ksadk/client.py"],
+    )
+
+    assert [(violation.path, violation.rule) for violation in result.violations] == [
+        ("docs-site/content/guide.mdx", "public-doc-internal-endpoint"),
+        ("docs-site/content/guide.mdx", "public-doc-personal-agent-name"),
+        ("docs-site/content/guide.mdx", "public-doc-internal-scm"),
+    ]
+
+
+def test_content_audit_applies_public_doc_rules_inside_sdist_root(tmp_path):
+    audit = _load_audit_module()
+    path = tmp_path / "ksadk-0.8.2" / "CHANGELOG.md"
+    path.parent.mkdir(parents=True)
+    path.write_text("synced from ezone\n", encoding="utf-8")
+
+    result = audit.audit_file_contents(tmp_path, ["ksadk-0.8.2/CHANGELOG.md"])
+
+    assert [(violation.path, violation.rule) for violation in result.violations] == [
+        ("ksadk-0.8.2/CHANGELOG.md", "public-doc-internal-scm")
+    ]
+
+
 def test_content_audit_allows_supported_internal_and_registry_paths(tmp_path):
     audit = _load_audit_module()
     (tmp_path / "settings.py").write_text(

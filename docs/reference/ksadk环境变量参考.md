@@ -37,7 +37,7 @@
 | `KSYUN_SECRET_KEY` | 是 | `KS3_SECRET_KEY` | 是 | 开发者 / CI Secret | 金山云 API / KS3 / KOP 签名 SK。 |
 | `KSYUN_ACCOUNT_ID` | 条件必传 | 无 | 否 | 开发者 / 平台账号 | 创建/查询/删除资源、权限预检查、个人版 KCR 用户名兜底等场景需要。 |
 | `KSYUN_REGION` | 否 | 无 | 否 | 开发者 / 平台 | 默认 `cn-beijing-6`。 |
-| `AGENTENGINE_SERVER_URL` | 否 | 无 | 否 | 平台 / 开发者 | 覆盖 AgentEngine Server 地址。内部账号/内网环境建议 `http://aicp.inner.api.ksyun.com`；公网账号通常不设置或使用 `https://aicp.api.ksyun.com`。 |
+| `AGENTENGINE_SERVER_URL` | 否 | 无 | 否 | 平台 / 开发者 | 覆盖 AgentEngine Server 地址。公网账号通常留空使用产品默认地址；专用地址必须由平台运维方提供，不要写入项目文件。 |
 | `AGENTENGINE_API_VERSION` | 否 | 无 | 否 | 平台 / 开发者 | 覆盖 KOP API version。 |
 | `AGENTENGINE_SIGN_SERVICE` | 否 | 无 | 否 | 平台 / 开发者 | 覆盖 KOP signing service。 |
 | `KSADK_AICP_ENDPOINT_MODE` | 否 | 无 | 否 | 平台 / 开发者 | AICP endpoint 选择策略，支持 `auto/detect/internal/inner/public`。内网环境可显式设为 `inner`，跳过自动探测。 |
@@ -77,7 +77,7 @@
 
 | 变量 | 是否必传 | 别名/兼容 | 敏感 | 配置方/来源 | 说明 |
 | --- | --- | --- | --- | --- | --- |
-| `KSADK_SKILL_SERVICE_URL` | 条件必传 | 无 | 否 | 平台 / Skill Service | 配置后 Runtime agent 才会从 Skill Center 拉取 skill。直连 REST 可用 `/agentengine/skill/api/v1`，AICP KOP 可用 `http://aicp.inner.api.ksyun.com`。 |
+| `KSADK_SKILL_SERVICE_URL` | 条件必传 | 无 | 否 | 平台 / Skill Service | 配置后 Runtime agent 才会从 Skill Center 拉取 skill。直连 REST 使用 `/agentengine/skill/api/v1`；AICP KOP endpoint 由平台环境解析或显式注入。 |
 | `KSADK_SKILL_SERVICE_ENDPOINT` | 否 | 无 | 否 | 平台 / Skill Service | 未设置 `KSADK_SKILL_SERVICE_URL` 时的 AICP endpoint 覆盖，只写 host/path，不含 scheme。 |
 | `KSADK_SKILL_SERVICE_SCHEME` | 否 | 无 | 否 | 平台 / Skill Service | 未设置 `KSADK_SKILL_SERVICE_URL` 时的 AICP URL scheme 覆盖；内网 endpoint 默认会使用 `http`。 |
 | `KSADK_SKILL_SPACE_IDS` | 条件必传 | `SKILL_SPACE_ID` | 否 | Agent 创建/更新时注入 / Runner 环境 | 逗号分隔 space id；单 space 兼容变量为 `SKILL_SPACE_ID`。 |
@@ -335,10 +335,8 @@
 
 | 变量 | 作用层级 | 是否必传 | 默认值 | 别名/兼容 | 敏感 | 配置方/来源 | 是否业务自定义 | 说明 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `AGENTENGINE_SERVER_URL` | CLI / API client | 否 | 自动探测：优先 `http://aicp.inner.api.ksyun.com`，不可达时回落 `https://aicp.api.ksyun.com` | 无 | 否 | 平台 / 开发者 | 否 | 覆盖 AgentEngine Server 地址。内部账号/内网环境建议显式设为 `http://aicp.inner.api.ksyun.com`；公网账号通常不设置或使用 `https://aicp.api.ksyun.com`。如果公网 AICP 返回 `InnerAccountCanOnlyAccessThroughIntranet`，客户端会自动切内网重试一次。 |
+| `AGENTENGINE_SERVER_URL` | CLI / API client | 否 | 产品默认地址 | 无 | 否 | 平台 / 开发者 | 否 | 覆盖 AgentEngine Server 地址。公网账号通常留空；如需专用 endpoint，使用平台运维方显式提供的值，不要写入项目文件或公开文档。 |
 | `AGENTENGINE_API_VERSION` | CLI / API client | 否 | 内置版本 | 无 | 否 | 平台 / 开发者 | 否 | 覆盖 AgentEngine API version。 |
-| `AGENTENGINE_PRE_CONTROL_REGION` | CLI / API client | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 预发控制面 region 覆盖。 |
-| `AGENTENGINE_PRE_CUSTOM_SOURCE` | CLI / API client | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 预发 custom source 覆盖。 |
 | `KSADK_A2A_ACCOUNT_ID` | A2A Runtime | 条件必传 | 未设置 | 无 | 否 | 部署层 / 平台 | 否 | Runtime 归属账号 id（ar-* agent 的 account），v2 inbound 身份校验需要。 |
 | `KSADK_A2A_AGENT_ID` | A2A Runtime | 条件必传 | 未设置 | 无 | 否 | 部署层 / 平台 | 否 | 已注册 A2A Agent 的 id，注册后由 reconciler 注入；当前平台生成 `a2a-agent-*`，调用方应按不透明字符串传递。v2 完整 inbound JSON-RPC 装配需要此值，v1 discovery-only card 不依赖它。 |
 | `KSADK_A2A_AGENT_NAME` | A2A Runtime | 否 | fallback `AGENTENGINE_MANAGED_RUNTIME_NAME` → `KSADK_A2A_RUNTIME_ID` | 无 | 否 | 部署层 / 平台 | 否 | AgentCard 展示名称；普通 Code runtime 无 `AGENTENGINE_MANAGED_RUNTIME_NAME` 时由部署层用 `agents.name` 注入。 |
@@ -396,7 +394,7 @@
 | `KSADK_MODEL_PROXY_DENY` | Model proxy | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | 逗号分隔的 denylist；用于紧急关闭代理。 |
 | `KSADK_GLOBAL_CONFIG_ENV_KEYS` | CLI | 否 | 未设置 | 无 | 否 | CLI 内部 | 否 | CLI 启动时记录哪些环境变量由 `~/.agentengine/settings.json` 补入，用于区分用户显式环境变量和全局配置默认值。 |
 | `KSADK_HOSTED_UI_GUIDELINES` | Hosted A2UI（内部常量） | 否 | 代码常量 | 无 | 否 | SDK 内部 | 否 | Hosted A2UI 的内置生成与设计指引；它不是受支持的环境变量，不应通过部署配置覆盖。 |
-| `KSYUN_IAM_URL` | 身份反查 | 否 | `https://iam.api.ksyun.com` | 无 | 否 | CLI | 否 | 覆盖 IAM endpoint，用于 AK/SK 反查子账号 user uuid。内部账号 AK 公网访问被拒时，CLI 自动 fallback 到 `http://iam.inner.api.ksyun.com`。 |
+| `KSYUN_IAM_URL` | 身份反查 | 否 | `https://iam.api.ksyun.com` | 无 | 否 | CLI | 否 | 覆盖 IAM endpoint，用于 AK/SK 反查子账号 user uuid。专用 endpoint 仅在平台运维方明确提供时配置，不要写入项目文件。 |
 | `AGENTENGINE_LOCAL_RUNTIME_VENV_REEXEC` | 本地 runtime CLI | 否 | 自动判断 | 无 | 否 | 本地开发者 / 测试 | 否 | 控制本地 runtime 是否在虚拟环境中 re-exec。普通用户通常无需设置。 |
 | `AGENTENGINE_WEB_VENV_REEXEC` | 本地 Web CLI | 否 | 自动判断 | 无 | 否 | 本地开发者 / 测试 | 否 | 控制本地 Web 命令是否在虚拟环境中 re-exec。普通用户通常无需设置。 |
 | `AGENTENGINE_DEBUG` | CLI | 否 | 未设置 | 无 | 否 | 开发者 | 否 | 开启更详细错误输出。 |

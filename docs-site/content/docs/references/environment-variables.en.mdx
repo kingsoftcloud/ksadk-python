@@ -119,14 +119,13 @@ Hosted deployments can inject a shared policy through `AGENTENGINE_MODEL_POLICY_
 | Variable | Purpose |
 | --- | --- |
 | `KSYUN_IAM_ENDPOINT` | Optional public IAM endpoint override; defaults to `iam.api.ksyun.com` when unset |
-| `KSYUN_IAM_INTRANET_URL` | Optional IAM intranet endpoint fallback override; defaults to `iam.inner.api.ksyun.com` when unset |
+| `KSYUN_IAM_INTRANET_URL` | Optional platform-provided IAM intranet endpoint override; normally unset in public environments |
 | `IAM_INTRANET_URL` | Compatibility alias for `KSYUN_IAM_INTRANET_URL` |
 
 <Callout type="info">
-  When public IAM returns an error such as “inner account can only access through
-  intranet”, the runtime retries the intranet endpoint. Public environments
-  normally do not hit this branch; internal environments can override the address
-  with `KSYUN_IAM_INTRANET_URL` or `IAM_INTRANET_URL`.
+  Set `KSYUN_IAM_INTRANET_URL` or `IAM_INTRANET_URL` only when a platform
+  operator supplies an approved intranet endpoint. Do not put that address in
+  project files, documentation examples, or Agent manifests.
 </Callout>
 
 ## Session Storage
