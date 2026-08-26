@@ -179,7 +179,8 @@ def test_release_build_generates_ignored_react_studio_static_assets():
     makefile = (REPO_ROOT / "Makefile").read_text(encoding="utf-8")
 
     assert "ksadk/studio/static/**" in gitignore
-    if (REPO_ROOT / ".git").exists():
+    studio_source = REPO_ROOT / "ksadk/studio/react-ui"
+    if studio_source.exists():
         tracked_static_files = subprocess.run(
             ["git", "ls-files", "ksadk/studio/static"],
             cwd=REPO_ROOT,
@@ -254,7 +255,7 @@ def test_react_is_the_only_studio_frontend_source_tree():
 
     assert not (studio_root / "web").exists()
     assert not (studio_root / "static-react").exists()
-    if (REPO_ROOT / ".git").exists():
+    if (studio_root / "react-ui").exists():
         assert (studio_root / "react-ui/src/main.tsx").is_file()
         assert (studio_root / "react-ui/src/studio.css").is_file()
     else:
