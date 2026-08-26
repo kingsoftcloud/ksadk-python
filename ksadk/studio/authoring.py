@@ -114,7 +114,7 @@ class AgentAuthoringService:
         base = self.normalize_slug(slug)
         for _attempt in range(100):
             candidate = f"{base}-{uuid4().hex[:12]}"
-            if not (self.workspace.resolve("agents") / candidate).exists():
+            if not self.workspace.resolve(Path("agents") / candidate).exists():
                 return candidate
         raise StudioError(
             "AGENT_ID_ALLOCATION_FAILED",
