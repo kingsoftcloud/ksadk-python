@@ -20,3 +20,13 @@ test("the shared composer owns the approval control without native selects", () 
   assert.match(composerSource, /ApprovalModeMenu/);
   assert.doesNotMatch(composerSource, /<select/);
 });
+
+test("the local conversation exposes mobile history, semantic headings, and output guidance", () => {
+  assert.match(source, /chat-session-mobile-trigger/);
+  assert.match(source, /chat-session-mobile-close/);
+  assert.match(source, /aria-expanded=\{sessionPanelOpen\}/);
+  assert.match(source, /<h1>\{agentName\}<\/h1>/);
+  assert.match(source, /aria-busy=\{isGenerating\}/);
+  assert.match(source, /AI 生成内容可能不准确，请核对关键结论与工具操作/);
+  assert.match(source, /chat-code-header/);
+});

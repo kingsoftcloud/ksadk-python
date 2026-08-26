@@ -2,15 +2,24 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const [entry, foundation, tokens, finalLayer] = await Promise.all([
+const [entry, foundation, tokens, responsive, finalLayer] = await Promise.all([
   readFile(new URL("./main.tsx", import.meta.url), "utf8"),
   readFile(new URL("./soft-block.css", import.meta.url), "utf8"),
   readFile(new URL("./studio.css", import.meta.url), "utf8"),
+  readFile(new URL("./responsive.css", import.meta.url), "utf8"),
   readFile(new URL("./kingdesign.css", import.meta.url), "utf8"),
 ]);
 
 test("loads the company design layer after the legacy Studio styles", () => {
   assert.match(entry, /import "\.\/index\.css";\s*import "\.\/kingdesign\.css";/);
+});
+
+test("uses one wide content grid for document, workbench, and data pages", () => {
+  assert.match(responsive, /--studio-page-max:\s*1760px;/);
+  assert.match(responsive, /\.app-shell \.page-container\[data-layout="document"\]\s*\{\s*max-width:\s*var\(--studio-page-max\);/s);
+  assert.match(responsive, /\.app-shell \.page-container\[data-layout="workbench"\]\s*\{\s*max-width:\s*var\(--studio-page-max\);/s);
+  assert.match(responsive, /\.app-shell \.page-container\[data-layout="data"\]\s*\{\s*max-width:\s*var\(--studio-page-max\);/s);
+  assert.match(foundation, /\.delivery-page\s*\{[\s\S]*?max-width:\s*var\(--studio-page-max, 1760px\);/);
 });
 
 test("does not globally erase component borders or overlay elevation", () => {
@@ -63,9 +72,46 @@ test("keeps Agent editor icons and shared form grids geometrically aligned", () 
   assert.match(finalLayer, /\.agent-edit-nav button\.active\s*\{[\s\S]*?border-color:\s*var\(--kc-accent-border\)/);
 });
 
+test("keeps Lucide geometry square instead of overriding component dimensions globally", () => {
+  assert.doesNotMatch(tokens, /svg\s*\{[^}]*width:\s*1em;[^}]*height:\s*1em;/);
+  assert.match(finalLayer, /\.navigation-rail \.nav-item svg\s*\{\s*width:\s*18px;\s*height:\s*18px;\s*flex-basis:\s*18px;/);
+  assert.match(tokens, /\.agent-avatar-xs svg\s*\{\s*width:\s*12px;\s*height:\s*12px;/);
+  assert.match(tokens, /\.agent-avatar-sm svg,[\s\S]*?\.agent-avatar-md svg\s*\{\s*width:\s*16px;\s*height:\s*16px;/);
+  assert.match(foundation, /\.chat-run-error-icon svg\s*\{\s*width:\s*17px;\s*height:\s*17px;/);
+});
+
 test("keeps cloud versions in a bounded compact grid instead of native radio geometry", () => {
   assert.match(foundation, /\.deployment-version-list\s*\{[\s\S]*?max-height:\s*430px;[\s\S]*?overflow-x:\s*hidden;[\s\S]*?overflow-y:\s*auto;/);
   assert.match(foundation, /\.deployment-version-option\s*\{[\s\S]*?display:\s*grid;[\s\S]*?width:\s*100%;[\s\S]*?min-width:\s*0;[\s\S]*?grid-template-columns:/);
   assert.match(foundation, /\.deployment-version-name\s*\{[\s\S]*?overflow:\s*hidden;[\s\S]*?text-overflow:\s*ellipsis;/);
   assert.doesNotMatch(foundation, /\.deployment-version-option\s*>\s*input/);
+});
+
+test("keeps the AI conversation primitives compact and free of duplicate composer overrides", () => {
+  assert.equal((finalLayer.match(/\.chat-composer\s*\{/g) || []).length, 1);
+  assert.match(finalLayer, /\.chat-composer\s*\{[\s\S]*?border-radius:\s*12px;/);
+  assert.match(finalLayer, /\.chat-processing-group\s*\{[\s\S]*?border:\s*0;[\s\S]*?background:\s*transparent;/);
+  assert.match(finalLayer, /\.chat-code-header\s*\{[\s\S]*?justify-content:\s*space-between;/);
+  assert.match(finalLayer, /\.chat-composer-disclaimer\s*\{[\s\S]*?font-size:\s*12px;/);
+});
+
+test("uses a single-surface mobile conversation with an off-canvas session drawer", () => {
+  assert.match(finalLayer, /@media \(max-width:\s*720px\)\s*\{[\s\S]*?--studio-app-rail:\s*56px;/);
+  assert.match(finalLayer, /\.studio-chat-shell \.chat-session-sidebar\s*\{[\s\S]*?transform:\s*translateX\(-104%\);/);
+  assert.match(finalLayer, /\.studio-chat-shell\.sessions-open \.chat-session-sidebar\s*\{\s*transform:\s*translateX\(0\);/);
+  assert.match(finalLayer, /\.chat-session-backdrop\s*\{[\s\S]*?pointer-events:\s*none;/);
+  assert.match(finalLayer, /\.studio-chat-shell\.sessions-open \.chat-session-backdrop\s*\{[\s\S]*?pointer-events:\s*auto;/);
+  assert.match(finalLayer, /\.chat-session-mobile-close\s*\{[\s\S]*?display:\s*inline-grid;/);
+});
+
+test("keeps mobile Agent creation on one readable column with bounded header actions", () => {
+  assert.match(finalLayer, /html,[\s\S]*?body,[\s\S]*?\.app-shell\s*\{\s*overflow-x:\s*clip;/);
+  assert.match(finalLayer, /\.app-shell\[data-view="create"\] #pageHeaderActions > \.tag,[\s\S]*?display:\s*none;/);
+  assert.match(finalLayer, /\.create-shell \.wizard-panel\s*\{\s*padding:\s*24px 16px 80px;/);
+  assert.match(finalLayer, /\.create-shell \.template-grid,[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\);/);
+  assert.match(finalLayer, /\.create-shell \.wizard-actions \.summary-chips\s*\{\s*display:\s*none;/);
+  assert.match(finalLayer, /#pageHeaderActions \.button\s*\{[\s\S]*?width:\s*40px;/);
+  assert.match(finalLayer, /\.app-shell\[data-view="deployments"\] #pageHeaderActions > \.button\.secondary\s*\{\s*display:\s*none;/);
+  assert.match(finalLayer, /\.app-shell\[data-view="agent-detail"\] #pageHeaderActions > \.button\.secondary\s*\{\s*display:\s*none;/);
+  assert.match(finalLayer, /\.delivery-table-scroll\s*\{[\s\S]*?contain:\s*inline-size paint;/);
 });

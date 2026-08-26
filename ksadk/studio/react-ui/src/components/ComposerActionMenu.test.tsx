@@ -18,7 +18,8 @@ describe("ComposerActionMenu", () => {
     );
 
     await user.click(screen.getByRole("button", { name: "添加附件或运行控制" }));
-    expect(screen.getByText("添加图片或文本")).toBeInTheDocument();
+    expect(screen.getByText("添加附件")).toBeInTheDocument();
+    expect(screen.getByText("本轮最多 4 个")).toBeInTheDocument();
     await user.click(screen.getByText("计划模式"));
     expect(togglePlan).toHaveBeenCalledTimes(1);
   });
@@ -44,9 +45,9 @@ describe("ComposerActionMenu", () => {
     };
     const { rerender } = render(<ComposerActionMenu {...props} active />);
     await user.click(screen.getByRole("button", { name: "添加附件或运行控制" }));
-    expect(screen.getByText("添加图片或文本")).toBeInTheDocument();
+    expect(screen.getByText("添加附件")).toBeInTheDocument();
 
     rerender(<ComposerActionMenu {...props} active={false} />);
-    expect(screen.queryByText("添加图片或文本")).not.toBeInTheDocument();
+    expect(screen.queryByText("添加附件")).not.toBeInTheDocument();
   });
 });

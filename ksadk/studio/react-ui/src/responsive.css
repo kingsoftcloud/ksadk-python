@@ -41,15 +41,15 @@ body {
 }
 
 .app-shell .page-container[data-layout="document"] {
-  max-width: 1200px;
+  max-width: var(--studio-page-max);
 }
 
 .app-shell .page-container[data-layout="workbench"] {
-  max-width: var(--studio-workbench-max);
+  max-width: var(--studio-page-max);
 }
 
 .app-shell .page-container[data-layout="data"] {
-  max-width: 1760px;
+  max-width: var(--studio-page-max);
 }
 
 .app-shell .data-scroll-region {

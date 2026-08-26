@@ -138,6 +138,13 @@ def test_e2b_sandbox_backend_create_write_run_and_kill(tmp_path: Path):
         def run(self, command: str, **kwargs):
             calls.append(("run", command))
             calls.append(("run_kwargs", kwargs))
+            if command.startswith("printenv "):
+                class EnvResult:
+                    stdout = "1\n"
+                    stderr = ""
+                    exit_code = 0
+
+                return EnvResult()
             return FakeResult()
 
     class FakeSandbox:

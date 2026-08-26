@@ -188,6 +188,13 @@ export function AgentDetailPage({ agentId, onBack, onChat, onBuild, onEdit, onCh
   ];
   const boundGroups = groups.filter(([, ids]) => ids.length > 0);
 
+  function openCloudDeployment() {
+    if (!latestBuild) return;
+    navigateToStudioHash(latestDeployment
+      ? deploymentDetailRoute(latestDeployment.id)
+      : deploymentCreateRoute(latestBuild.id, draft.metadata.id));
+  }
+
   return (
     <div className="page-container" data-layout="document">
       <PageHeaderActions>
@@ -203,12 +210,7 @@ export function AgentDetailPage({ agentId, onBack, onChat, onBuild, onEdit, onCh
           <button
             className="button secondary"
             type="button"
-            onClick={() => {
-              if (!latestBuild) return;
-              navigateToStudioHash(latestDeployment
-                ? deploymentDetailRoute(latestDeployment.id)
-                : deploymentCreateRoute(latestBuild.id, draft.metadata.id));
-            }}
+            onClick={openCloudDeployment}
             disabled={!latestBuild}
           >
             <CloudUpload size={15} /><span>{latestDeployment ? "查看云端部署" : "部署到云端"}</span>
@@ -216,6 +218,9 @@ export function AgentDetailPage({ agentId, onBack, onChat, onBuild, onEdit, onCh
           <MoreActionsMenu
             label={`${draft.metadata.name} 的更多操作`}
             items={[
+              { label: "编辑", onSelect: () => onEdit(agentId) },
+              { label: "校验并构建", onSelect: onBuild },
+              { label: latestDeployment ? "查看云端部署" : "部署到云端", onSelect: openCloudDeployment, disabled: !latestBuild },
               { label: "调用方式", onSelect: () => setInvocationOpen(true) },
               { label: "删除 Agent", danger: true, onSelect: () => setConfirmDelete(true) },
             ]}
@@ -226,12 +231,12 @@ export function AgentDetailPage({ agentId, onBack, onChat, onBuild, onEdit, onCh
       <div className="detail-layout">
         <div className="detail-main">
           <section className="detail-section block">
-            <div className="section-heading"><div><h2>角色与任务</h2><p>运行时注入的系统提示词和任务契约</p></div></div>
+            <div className="section-heading"><h2>角色与任务</h2></div>
             <div className="readonly-field"><span>系统提示词</span><pre>{draft.spec.instructions?.system || ""}</pre></div>
             <div className="readonly-field"><span>任务契约</span><pre>{draft.spec.instructions?.task || "未配置任务契约"}</pre></div>
           </section>
           <section className="detail-section block">
-            <div className="section-heading"><div><h2>能力绑定</h2><p>构建时锁定 YAML 声明、版本和内容摘要</p></div></div>
+            <div className="section-heading"><h2>能力绑定</h2></div>
             {boundGroups.length ? <div className="binding-groups">
               {boundGroups.map(([gname, ids]) => (
                 <div className="binding-group" key={gname}>

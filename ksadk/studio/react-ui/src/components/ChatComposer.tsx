@@ -286,6 +286,7 @@ export function ChatComposer({
   onCommandIndexChange,
   onSend,
   attachmentAccept,
+  attachmentLimit = 4,
 }: {
   input: string;
   placeholder: string;
@@ -315,6 +316,7 @@ export function ChatComposer({
   onCommandIndexChange?: (index: number) => void;
   onSend: () => void;
   attachmentAccept?: string;
+  attachmentLimit?: number;
 }) {
   const internalRef = useRef<HTMLTextAreaElement>(null);
   const resolvedRef = textareaRef || internalRef;
@@ -346,20 +348,20 @@ export function ChatComposer({
     <div className="chat-composer" data-ui="sender">
       <ComposerCommandMenu input={input} activeIndex={commandIndex} onSelect={onCommandSelect} />
       {attachments.length > 0 && (
-        <div className="chat-attachment-list" aria-label="本轮附件">
+        <div className="chat-attachment-list" aria-label="本轮附件" role="list">
           {attachments.map(attachment => (
-            <div key={attachment.id} className={`chat-attachment-chip ${attachment.kind}`}>
+            <article key={attachment.id} className={`chat-attachment-chip ${attachment.kind}`} role="listitem">
               {attachment.kind === "image" && attachment.previewUrl
-                ? <img src={attachment.previewUrl} alt="" />
+                ? <img src={attachment.previewUrl} alt={`${attachment.name} 预览`} />
                 : <span className="chat-attachment-icon"><FileText size={15} /></span>}
               <span className="chat-attachment-copy">
                 <strong>{attachment.name}</strong>
-                <small>{attachment.kind === "image" ? "图片" : attachment.kind === "text" ? "文本" : "文件"} · {formatAttachmentSize(attachment.size)}</small>
+                <small>{attachment.kind === "image" ? "图片" : attachment.kind === "text" ? "文本" : "文件"} · {formatAttachmentSize(attachment.size)} · 已就绪</small>
               </span>
               <button type="button" aria-label={`移除附件 ${attachment.name}`} onClick={() => onRemoveAttachment(attachment.id)}>
                 <X size={13} />
               </button>
-            </div>
+            </article>
           ))}
         </div>
       )}
@@ -381,6 +383,7 @@ export function ChatComposer({
           onStartGoal={onStartGoal}
           onFiles={onFiles}
           attachmentAccept={attachmentAccept}
+          attachmentLimit={attachmentLimit}
         />
         {mode === "plan" && (
           <button className="chat-mode-chip" type="button" title="点击返回默认模式" onClick={() => onSetMode("default")}>

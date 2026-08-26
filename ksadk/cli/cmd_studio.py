@@ -187,6 +187,10 @@ def studio(
             host="127.0.0.1",
             port=port,
             log_level="info",
+            # Access logging stays enabled through the Studio log config while
+            # retaining filename/line-number context for both API and business
+            # logs.  This preserves master's observability intent and the
+            # branch's richer diagnostic format.
             log_config=_STUDIO_LOG_CONFIG,
         )
     finally:

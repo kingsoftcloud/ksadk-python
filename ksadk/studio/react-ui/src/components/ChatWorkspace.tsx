@@ -1,12 +1,25 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import {
+  Children,
+  isValidElement,
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   Bot,
   BrainCircuit,
+  Check,
   ChevronDown,
+  Copy,
   Loader2,
   MessageSquarePlus,
+  PanelLeftOpen,
   Pause,
   Play,
   Send,
@@ -14,6 +27,7 @@ import {
   Terminal,
   Trash2,
   Wrench,
+  X,
 } from "lucide-react";
 import { apiFetch } from "../api";
 import {
@@ -162,6 +176,12 @@ function shortText(value: string, limit = 34): string {
   return normalized.length > limit ? `${normalized.slice(0, limit)}…` : normalized;
 }
 
+function formatRunDuration(durationMs?: number | null): string {
+  if (!Number.isFinite(durationMs) || Number(durationMs) < 0) return "";
+  const seconds = Number(durationMs) / 1000;
+  return seconds < 10 ? `${seconds.toFixed(1)} 秒` : `${Math.round(seconds)} 秒`;
+}
+
 async function responseError(response: Response): Promise<string> {
   const payload = await response.clone().json().catch(() => null);
   return payload?.error?.message
@@ -229,19 +249,23 @@ function ProcessingGroup({
   reasoning,
   activities,
   streaming = false,
+  durationMs,
 }: {
   reasoning: string;
   activities: RunActivity[];
   streaming?: boolean;
+  durationMs?: number | null;
 }) {
   if (!reasoning && activities.length === 0) return null;
   const running = activities.find(activity => activity.status === "running" || activity.status === "waiting");
+  const duration = formatRunDuration(durationMs);
   const title = streaming
     ? running ? `${running.status === "waiting" ? "等待确认" : "正在处理"} · ${running.title}`
       : reasoningPreview(reasoning) ? `正在思考 · ${reasoningPreview(reasoning)}`
         : "正在思考"
-    : activities.length > 0 ? `已处理 ${activities.length} 次工具调用`
-      : "查看思考过程";
+    : duration ? `已思考（用时 ${duration}）`
+      : activities.length > 0 ? `已完成思考 · ${activities.length} 项操作`
+        : "查看思考过程";
   return (
     <details className="chat-processing-group" open={streaming} data-ui="think">
       <summary>
@@ -361,11 +385,13 @@ function PersistedInteractionTray({
 function RunActivityCards({
   runId,
   status,
+  durationMs,
   showOutput = false,
   onInteraction,
 }: {
   runId: string;
   status?: string;
+  durationMs?: number | null;
   showOutput?: boolean;
   onInteraction: (runId: string, interactionId: string, name: string, data: Record<string, unknown>) => Promise<void>;
 }) {
@@ -413,7 +439,12 @@ function RunActivityCards({
   }
   return (
     <>
-      <ProcessingGroup reasoning={projection.reasoning} activities={projection.activities} streaming={status === "RUNNING"} />
+      <ProcessingGroup
+        reasoning={projection.reasoning}
+        activities={projection.activities}
+        streaming={status === "RUNNING"}
+        durationMs={durationMs}
+      />
       {inlineSurfaces.map(surface => (
         <A2UIRenderer
           key={surface.id}
@@ -426,6 +457,40 @@ function RunActivityCards({
   );
 }
 
+function MarkdownCodeBlock({ children }: { children?: ReactNode }) {
+  const [copied, setCopied] = useState(false);
+  const child = Children.toArray(children)[0] ?? null;
+  const codeProps = isValidElement<{ className?: string; children?: ReactNode }>(child)
+    ? child.props
+    : {};
+  const language = codeProps.className?.replace(/^language-/, "") || "代码";
+  const raw = String(codeProps.children ?? "").replace(/\n$/, "");
+
+  async function copyCode() {
+    if (!navigator.clipboard || !raw) return;
+    try {
+      await navigator.clipboard.writeText(raw);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    } catch {
+      setCopied(false);
+    }
+  }
+
+  return (
+    <div className="chat-code-block">
+      <div className="chat-code-header">
+        <span>{language}</span>
+        <button type="button" onClick={() => { void copyCode(); }} aria-label={copied ? "已复制代码" : "复制代码"}>
+          {copied ? <Check size={13} /> : <Copy size={13} />}
+          <span>{copied ? "已复制" : "复制"}</span>
+        </button>
+      </div>
+      <pre>{children}</pre>
+    </div>
+  );
+}
+
 function MarkdownMessage({ children, streaming = false }: { children: string; streaming?: boolean }) {
   return (
     <div className={`chat-markdown${streaming ? " streaming" : ""}`}>
@@ -434,6 +499,7 @@ function MarkdownMessage({ children, streaming = false }: { children: string; st
         components={{
           a: ({ href, children: label }) => <a href={href} target="_blank" rel="noreferrer">{label}</a>,
           code: ({ className, children: code }) => <code className={className}>{code}</code>,
+          pre: ({ children: code }) => <MarkdownCodeBlock>{code}</MarkdownCodeBlock>,
         }}
       >
         {children}
@@ -480,6 +546,7 @@ function PersistedTurn({
           <RunActivityCards
             runId={run.id}
             status={run.status}
+            durationMs={run.durationMs}
             showOutput={["RUNNING", "PAUSED", "WAITING_INPUT"].includes(String(run.status))}
             onInteraction={onInteraction}
           />
@@ -583,6 +650,7 @@ export function ChatWorkspace({
   const [loading, setLoading] = useState(true);
   const [deleteSessionId, setDeleteSessionId] = useState("");
   const [deleting, setDeleting] = useState(false);
+  const [sessionPanelOpen, setSessionPanelOpen] = useState(false);
   const messageListRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -669,6 +737,10 @@ export function ChatWorkspace({
     ));
   }, [agentId]);
 
+  useEffect(() => {
+    setSessionPanelOpen(false);
+  }, [agentId]);
+
   const loadWorkspace = useCallback(async () => {
     const [, modelResponse] = await Promise.all([
       refreshRuns(),
@@ -746,6 +818,7 @@ export function ChatWorkspace({
     setStream(null);
     setInput("");
     setAttachments([]);
+    setSessionPanelOpen(false);
     followBottomRef.current = true;
     requestAnimationFrame(() => textareaRef.current?.focus());
   }
@@ -754,6 +827,7 @@ export function ChatWorkspace({
     const list = messageListRef.current;
     if (list && currentSessionId) scrollBySessionRef.current.set(currentSessionId, list.scrollTop);
     setCurrentSessionId(sessionId);
+    setSessionPanelOpen(false);
     followBottomRef.current = !scrollBySessionRef.current.has(sessionId);
   }
 
@@ -1024,13 +1098,18 @@ export function ChatWorkspace({
   }
 
   return (
-    <div className="studio-chat-shell" data-testid="studio-chat-workbench">
+    <div className={`studio-chat-shell${sessionPanelOpen ? " sessions-open" : ""}`} data-testid="studio-chat-workbench">
       <aside className="chat-session-sidebar" aria-label="会话历史">
         <header className="chat-session-header">
-          <div><strong>会话</strong></div>
-          <button className="icon-button tertiary" type="button" aria-label="新对话" title="新对话" onClick={startNewSession} disabled={isGenerating}>
-            <MessageSquarePlus size={16} />
-          </button>
+          <h2>会话</h2>
+          <div className="chat-session-header-actions">
+            <button className="icon-button tertiary" type="button" aria-label="新对话" title="新对话" onClick={startNewSession} disabled={isGenerating}>
+              <MessageSquarePlus size={16} />
+            </button>
+            <button className="icon-button tertiary chat-session-mobile-close" type="button" aria-label="关闭会话历史" title="关闭会话历史" onClick={() => setSessionPanelOpen(false)}>
+              <X size={17} />
+            </button>
+          </div>
         </header>
         <label className="chat-session-search">
           <span className="sr-only">搜索会话</span>
@@ -1038,7 +1117,9 @@ export function ChatWorkspace({
         </label>
         <div className="chat-session-list">
           {loading ? (
-            <div className="session-empty"><Loader2 size={15} className="animate-spin" /> 加载中</div>
+            <div className="chat-session-skeleton" aria-label="正在加载会话" role="status">
+              <i /><i /><i />
+            </div>
           ) : filteredSessions.length === 0 ? (
             <div className="session-empty">{query ? "没有匹配的会话" : "还没有会话"}</div>
           ) : filteredSessions.map(session => (
@@ -1077,10 +1158,27 @@ export function ChatWorkspace({
         </div>
       </aside>
 
+      <button
+        className="chat-session-backdrop"
+        type="button"
+        aria-label="关闭会话历史"
+        onClick={() => setSessionPanelOpen(false)}
+      />
+
       <section className="chat-conversation" aria-label={`与 ${agentName} 对话`}>
         <header className="chat-conversation-header">
+          <button
+            className="icon-button tertiary chat-session-mobile-trigger"
+            type="button"
+            aria-label="打开会话历史"
+            title="会话历史"
+            aria-expanded={sessionPanelOpen}
+            onClick={() => setSessionPanelOpen(true)}
+          >
+            <PanelLeftOpen size={17} />
+          </button>
           <AgentAvatar name={agentName} appearance={agentAppearance} size="sm" />
-          <div><strong>{agentName}</strong></div>
+          <h1>{agentName}</h1>
           {isGenerating && <span className="badge" data-state={activeStatus === "streaming" ? "running" : "pending"}>{activeStatusLabel}</span>}
         </header>
 
@@ -1090,6 +1188,7 @@ export function ChatWorkspace({
           role="log"
           aria-live="polite"
           aria-relevant="additions text"
+          aria-busy={isGenerating}
           onScroll={event => {
             const element = event.currentTarget;
             followBottomRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 48;
@@ -1208,6 +1307,7 @@ export function ChatWorkspace({
             onCommandIndexChange={setCommandIndex}
             onSend={() => { void sendMessage(); }}
           />
+          <p className="chat-composer-disclaimer">AI 生成内容可能不准确，请核对关键结论与工具操作。</p>
         </footer>
       </section>
 

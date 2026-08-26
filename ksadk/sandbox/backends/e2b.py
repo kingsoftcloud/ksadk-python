@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import time
 from typing import Any
@@ -12,10 +13,15 @@ from ksadk.sandbox.base import (
     SandboxSpec,
 )
 
+logger = logging.getLogger(__name__)
+
 _TRANSIENT_STARTUP_ERROR_NAMES = {
     "NotFoundException",
     "FileNotFoundException",
     "SandboxNotFoundException",
+    # create 快速返回后 envd RPC 通道可能尚未就绪 (connection refused / unavailable),
+    # SDK 将其包装为 TimeoutException 抛出, 需按瞬时启动错误重试。
+    "TimeoutException",
 }
 
 
@@ -148,7 +154,7 @@ class E2BSandboxBackend:
             allow_internet_access=self.spec.allow_internet_access,
         )
         session = self._wrap_sandbox(sandbox)
-        self._wait_until_ready(session)
+        self._wait_until_ready(session, runtime_env)
         session.write_files(
             [(item.target_path, item.source.read_bytes()) for item in input_files or []]
         )
@@ -157,6 +163,33 @@ class E2BSandboxBackend:
     def _wrap_sandbox(self, sandbox: Any) -> E2BSandboxSession:
         return E2BSandboxSession(sandbox)
 
-    def _wait_until_ready(self, session: E2BSandboxSession) -> None:
+    def _wait_until_ready(
+        self, session: E2BSandboxSession, env: dict[str, str] | None = None
+    ) -> None:
         _with_startup_retry(lambda: session.run_command("true"))
         _with_startup_retry(lambda: session.write_file("/tmp/.ksadk-sandbox-ready", ""))
+        self._wait_env_applied(session, env or {})
+
+    def _wait_env_applied(self, session: E2BSandboxSession, env: dict[str, str]) -> None:
+        # create 返回后 envd 异步应用 envVars, 实测存在秒级延迟;
+        # 轮询一个非空变量直到值就位, 避免紧随其后的 agent 进程读到缺失的环境。
+        probe = next(((k, v) for k, v in env.items() if v), None)
+        if probe is None:
+            return
+        key, expected = probe
+        attempts = _startup_retry_attempts()
+        delay = _startup_retry_delay()
+        for attempt in range(attempts):
+            result = session.run_command(f"printenv {key} || true")
+            if result.stdout.strip() == expected:
+                return
+            time.sleep(min(delay * (2**attempt), 1.0))
+        # 不 raise: 模板可能预置同名空值覆盖 create 注入 (envd 合并优先级问题),
+        # 此时调用方仍可通过 run_command(env=...) 的 per-command 注入拿到正确值。
+        logger.warning(
+            "E2B sandbox env %s not applied after %d attempts (expected %r); "
+            "template may predefine an empty override",
+            key,
+            attempts,
+            expected,
+        )

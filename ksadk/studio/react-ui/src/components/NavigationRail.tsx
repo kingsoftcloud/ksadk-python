@@ -1,18 +1,17 @@
 import * as Tooltip from "@radix-ui/react-tooltip";
 import type { ReactNode } from "react";
 import {
-  Activity,
-  BadgeCheck,
   Bot,
+  Boxes,
+  ChartSpline,
+  ClipboardCheck,
   CloudUpload,
-  Cpu,
   Folder,
   MessagesSquare,
-  Network,
-  Package,
+  PackageCheck,
+  ServerCog,
   Settings,
-  Sparkles,
-  Wrench,
+  Workflow,
   type LucideIcon,
 } from "lucide-react";
 import type { ResourceKind } from "../pages/ResourcesPage";
@@ -50,21 +49,18 @@ const NAVIGATION_GROUPS: Array<{ group: string; items: NavigationItem[] }> = [
   {
     group: "资源",
     items: [
-      { id: "resources", label: "模型", icon: Cpu, kind: "model" },
-      { id: "resources", label: "Tool", icon: Wrench, kind: "tool" },
-      { id: "resources", label: "MCP", icon: Network, kind: "mcp" },
-      { id: "resources", label: "Skill", icon: Sparkles, kind: "skill" },
-      { id: "runtime-resources", label: "运行资源", icon: Cpu },
+      { id: "resources", label: "工程资源", icon: Boxes },
+      { id: "runtime-resources", label: "运行资源", icon: ServerCog },
     ],
   },
   {
     group: "交付与运行",
     items: [
-      { id: "builds", label: "构建", icon: Package },
+      { id: "builds", label: "构建", icon: PackageCheck },
       { id: "deployments", label: "部署", icon: CloudUpload },
-      { id: "orchestration", label: "任务编排", icon: Network },
-      { id: "observability", label: "可观测", icon: Activity },
-      { id: "evaluations", label: "评测", icon: BadgeCheck },
+      { id: "orchestration", label: "任务编排", icon: Workflow },
+      { id: "observability", label: "可观测", icon: ChartSpline },
+      { id: "evaluations", label: "评测", icon: ClipboardCheck },
     ],
   },
 ];
@@ -92,7 +88,10 @@ function isItemActive(
   resourceKind: ResourceKind,
 ): boolean {
   return (
-    (view === item.id && (item.id !== "resources" || item.kind === resourceKind))
+    (
+      view === item.id
+      && (item.id !== "resources" || item.kind == null || item.kind === resourceKind)
+    )
     || ((view === "agent-detail" || view === "create") && item.id === "agents")
   );
 }
@@ -166,7 +165,10 @@ export function NavigationRail({
                     type="button"
                     aria-label={item.label}
                     aria-current={active ? "page" : undefined}
-                    onClick={() => onNavigate(item.id, item.kind)}
+                    onClick={() => onNavigate(
+                      item.id,
+                      item.id === "resources" ? (item.kind || resourceKind) : item.kind,
+                    )}
                   >
                     <Icon size={18} />
                     <span>{item.label}</span>

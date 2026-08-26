@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Cpu, Wrench, Network, Sparkles, Search, ArrowRight } from "lucide-react";
+import { Cpu, Wrench, Network, Sparkles, Search, ArrowRight, RefreshCw } from "lucide-react";
 import { apiFetch } from "../api";
 import { PageHeaderTools } from "../components/PageHeaderPortal";
 
@@ -100,8 +100,9 @@ export function RuntimeResourcesPage({ refreshTick, onOpenResources }: {
   const runtimeState = ready == null ? "pending" : ready ? "ready" : "failed";
   const runtimeLabel = ready == null ? "检查中" : ready ? "运行正常" : "连接失败";
   const buckets = overview?.buckets || [];
+  const hasTrend = buckets.length > 1 && buckets.some(bucket => bucket.runs > 0);
   const peak = Math.max(1, ...buckets.map(bucket => bucket.runs));
-  const peakBucket = buckets.find(bucket => bucket.runs === peak);
+  const peakBucket = hasTrend ? buckets.find(bucket => bucket.runs === peak) : undefined;
   const normalizedSearch = search.trim().toLocaleLowerCase();
   const problemCount = useMemo(() => items.filter(item => effectiveStatus(item) !== "ready").length, [credStatus, items]);
   const readyDeployments = deploymentReceipts.filter(item => item.status === "READY").length;
@@ -118,40 +119,34 @@ export function RuntimeResourcesPage({ refreshTick, onOpenResources }: {
         </div>
       </PageHeaderTools>
       <div className="data-page-body">
-        <div className="stat-strip">
-        <div>
-          <span className="stat-label">端侧 Runtime</span>
-          <strong className="stat-value" data-state={runtimeState}>{runtimeLabel}</strong>
-          <small className="stat-foot">{workspacePath || "本地工作区"}</small>
-        </div>
-        <div>
-          <span className="stat-label">云端实例</span>
-          <strong className="stat-value" data-state={deploymentState}>{deploymentLabel}</strong>
-          <small className="stat-foot">Studio deployment receipt</small>
-        </div>
-        <div>
-          <span className="stat-label">可用模型</span>
-          <strong className="stat-value">{readyModels.length}</strong>
-          <small className="stat-foot">Model Profile</small>
-        </div>
-        <div>
-          <span className="stat-label">能力资源</span>
-          <strong className="stat-value">{readyCapabilities.length}</strong>
-          <small className="stat-foot">Tool · MCP · Skill</small>
-        </div>
-        <div className="emphasis">
-          <span className="stat-label">运行记录</span>
-          <strong className="stat-value">{overview?.total ?? runs}</strong>
-          <small className="stat-foot">{range === "24h" ? "近 24 小时" : "近 7 天"}</small>
-        </div>
+        <section className="runtime-status-summary" aria-label="运行状态">
+          <div title={workspacePath || "本地工作区"} data-state={runtimeState}>
+            <span className="stat-label">本地 Runtime</span>
+            <strong className="stat-value"><span className="summary-status-dot" />{runtimeLabel}</strong>
+            {runtimeState === "failed" && (
+              <button className="text-button" type="button" onClick={() => void load()}>
+                <RefreshCw size={13} />重新检查
+              </button>
+            )}
+          </div>
+          <div data-state={deploymentState}>
+            <span className="stat-label">云端部署</span>
+            <strong className="stat-value">{deploymentLabel}</strong>
+          </div>
+        </section>
+
+        <div className="stat-strip compact-summary runtime-metric-summary">
+          <div><span className="stat-label">可用模型</span><strong className="stat-value">{readyModels.length}</strong></div>
+          <div><span className="stat-label">能力资源</span><strong className="stat-value">{readyCapabilities.length}</strong></div>
+          <div><span className="stat-label">{range === "24h" ? "近 24 小时运行" : "近 7 天运行"}</span><strong className="stat-value">{overview?.total ?? runs}</strong></div>
         </div>
 
-        <section className="runtime-trend block">
+        <section className={`runtime-trend block${hasTrend ? "" : " is-empty"}`}>
           <div className="block-head">
-            <strong>运行量趋势</strong><span>{range === "24h" ? "按小时聚合" : "按天聚合"}</span>
+            <strong>运行量趋势</strong>
             {peakBucket && <span className="head-actions"><span className="tag">峰值 {peak}</span></span>}
           </div>
-          {buckets.length > 1 ? (
+          {hasTrend ? (
             <>
               <div className="runtime-trend-bars" aria-label="运行量趋势">
                 {buckets.map((bucket, index) => (
@@ -166,12 +161,12 @@ export function RuntimeResourcesPage({ refreshTick, onOpenResources }: {
               </div>
               <div className="chart-axis"><span>开始</span><span>{range === "24h" ? "12:00" : "中段"}</span><span>现在</span></div>
             </>
-          ) : <div className="runtime-trend-empty"><strong>趋势数据不足</strong><span>{buckets.length === 1 ? "已有 1 个数据点，继续运行后会形成趋势。" : "运行一次 Agent 后，这里会显示真实聚合结果。"}</span></div>}
+          ) : <div className="runtime-trend-empty"><strong>{buckets.length === 1 ? "继续运行后即可形成趋势" : "运行 Agent 后即可查看趋势"}</strong></div>}
         </section>
 
         <section className="runtime-resource-section block">
         <div className="section-heading">
-          <div><h2>本地能力概览</h2><p>优先展示异常资源，每类最多展示 5 项。</p></div>
+          <h2 title="优先展示异常资源，每类最多展示 5 项">本地能力概览</h2>
           <span className="badge" data-state={problemCount ? "warning" : "ready"}>{problemCount ? `${problemCount} 项需处理` : "全部可用"}</span>
         </div>
         <div className="section-toolbar runtime-resource-toolbar">
@@ -192,14 +187,16 @@ export function RuntimeResourcesPage({ refreshTick, onOpenResources }: {
               <article key={g.kind} className="runtime-resource-group block">
                 <header>
                   <span className="runtime-group-icon"><Icon size={15} /></span>
-                  <div><strong>{g.label}</strong><small>{allList.length} 个已发现</small></div>
-                  <button className="text-button" type="button" onClick={() => onOpenResources(g.kind)}>
-                    查看全部 <ArrowRight size={13} />
-                  </button>
+                  <div><strong>{g.label}</strong><small>{allList.length}</small></div>
+                  {allList.length > 0 && (
+                    <button className="text-button" type="button" onClick={() => onOpenResources(g.kind)}>
+                      查看全部 <ArrowRight size={13} />
+                    </button>
+                  )}
                 </header>
                 <div className="runtime-resource-list">
                   {list.length === 0 ? (
-                    <div className="runtime-resource-empty">当前工作区未发现此类资源</div>
+                    <div className="runtime-resource-empty">暂无资源</div>
                   ) : list.map(item => {
                     const status = effectiveStatus(item);
                     return (

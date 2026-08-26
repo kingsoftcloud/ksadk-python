@@ -72,6 +72,20 @@ describe("CreatePage quick authoring", () => {
     });
   });
 
+  it("uses the global Agent breadcrumb instead of duplicating a back action in the header", () => {
+    render(
+      <CreatePage
+        viewportMode="desktop"
+        onBack={vi.fn()}
+        onCreated={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "返回 Agent" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "保存草稿" }).closest(".wizard-actions")).not.toBeNull();
+    expect(screen.getByRole("button", { name: "继续" }).closest(".wizard-actions")).not.toBeNull();
+  });
+
   it("validates a YAML declaration before opening its local chat without claiming a code bundle", async () => {
     const user = userEvent.setup();
     const onCreated = vi.fn();
