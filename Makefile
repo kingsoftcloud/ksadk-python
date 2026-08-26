@@ -189,11 +189,11 @@ studio-react-test:
 		npm --prefix ksadk/studio/react-ui run test:ui; \
 		(cd ksadk/studio/react-ui && npx tsc --noEmit); \
 		npm --prefix ksadk/studio/react-ui run build; \
+		uv run pytest tests/studio/test_style_system.py -q; \
 	else \
 		echo "React Studio source is not part of this public candidate; testing reviewed compiled assets"; \
 		test -f "ksadk/studio/static/index.html"; \
 	fi
-	uv run pytest tests/studio/test_style_system.py -q
 	PYTHONPATH=. uv run python tests/studio/e2e/studio_browser_smoke.py
 	PYTHONPATH=. uv run python tests/studio/e2e/studio_responsive_smoke.py
 

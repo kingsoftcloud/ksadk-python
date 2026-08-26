@@ -272,19 +272,21 @@ def route_recoverable_chat_fixture(route) -> None:
 def assert_page_matrix(page: Page, width: int) -> None:
     navigation = page.locator(".primary-nav")
     pages = (
-        ("Agent", "Agent", "document"),
-        ("构建", "构建", "document"),
-        ("部署", "部署", "document"),
-        ("模型", "工程资源", "document"),
-        ("Tool", "工程资源", "document"),
-        ("MCP", "工程资源", "document"),
-        ("Skill", "工程资源", "document"),
-        ("可观测", "可观测", "workbench"),
-        ("运行资源", "运行资源", "document"),
-        ("任务编排", "任务编排", "document"),
+        ("Agent", "Agent", "data", None),
+        ("构建", "构建", "document", None),
+        ("部署", "部署", "document", None),
+        ("工程资源", "工程资源", "data", "模型"),
+        ("工程资源", "工程资源", "data", "Tool"),
+        ("工程资源", "工程资源", "data", "MCP"),
+        ("工程资源", "工程资源", "data", "Skill"),
+        ("可观测", "可观测", "workbench", None),
+        ("运行资源", "运行资源", "document", None),
+        ("任务编排", "任务编排", "document", None),
     )
-    for nav_label, page_title, layout in pages:
+    for nav_label, page_title, layout, tab_label in pages:
         navigation.get_by_role("button", name=nav_label, exact=True).click()
+        if tab_label is not None:
+            page.get_by_role("tab").filter(has_text=tab_label).click()
         expect(page.get_by_role("banner", name="当前页面").get_by_text(page_title, exact=True)).to_be_visible()
         page_root = page.locator("#mainContent > div:not(.chat-wrap) > [data-layout]").first
         expect(page_root).to_have_attribute("data-layout", layout)
@@ -311,7 +313,7 @@ def assert_page_matrix(page: Page, width: int) -> None:
         assert page_rect["left"] >= 0, (nav_label, page_rect)
         assert page_rect["right"] <= width + 1, (nav_label, page_rect)
         if width == 3840:
-            expected_max = 1600 if layout == "document" else 1760
+            expected_max = 1760
             assert page_rect["width"] <= expected_max + 1, (nav_label, page_rect)
 
 def main() -> None:
@@ -383,10 +385,8 @@ def main() -> None:
                 ).click()
                 expect(compact_create_drawer).to_be_hidden()
                 expect(compact_trigger).to_be_focused()
-                expect(page.get_by_role("heading", name="通过多轮对话设计 Agent")).to_be_visible()
-                conversation_input = page.get_by_placeholder(
-                    "例如：做一个 ADK 发布评审 Agent，只输出阻断项和证据"
-                )
+                expect(page.get_by_role("heading", name="对话创建 Agent")).to_be_visible()
+                conversation_input = page.get_by_placeholder("描述你想创建或调整的 Agent…")
                 conversation_input.fill("保留这段构建说明")
 
                 page.set_viewport_size({"width": 1024, "height": 768})
@@ -430,22 +430,22 @@ def main() -> None:
                           viewportHeight: innerHeight,
                           rootScrollHeight: document.documentElement.scrollHeight,
                           chatOverflow: getComputedStyle(
-                            document.querySelector('.authoring-chat-column')
+                            document.querySelector('.conversation-chat')
                           ).overflowY,
                           transcriptOverflow: getComputedStyle(
-                            document.querySelector('.authoring-transcript')
+                            document.querySelector('.conversation-transcript')
                           ).overflowY,
                           inspectOverflow: getComputedStyle(
-                            document.querySelector('.authoring-inspection-card')
+                            document.querySelector('.conversation-draft-rail')
                           ).overflowY,
                         })"""
                     )
                     assert (
                         height_metrics["rootScrollHeight"] <= height_metrics["viewportHeight"] + 1
                     ), height_metrics
-                    assert height_metrics["chatOverflow"] == "hidden", height_metrics
+                    assert height_metrics["chatOverflow"] == "visible", height_metrics
                     assert height_metrics["transcriptOverflow"] == "auto", height_metrics
-                    assert height_metrics["inspectOverflow"] == "auto", height_metrics
+                    assert height_metrics["inspectOverflow"] == "hidden", height_metrics
 
                 page.set_viewport_size({"width": 1024, "height": 682})
                 page.locator(".authoring-mode-tabs button").filter(has_text="快速创建").click()
@@ -458,17 +458,18 @@ def main() -> None:
                 continue_rect = continue_button.evaluate(
                     "element => element.getBoundingClientRect().toJSON()"
                 )
-                # The step action is now deliberately fixed in the global
-                # header, so it remains available while the document scrolls.
+                # The document flow keeps the step action visible after
+                # scrolling to the end of the current quick-create step.
                 assert continue_rect["top"] >= 0, continue_rect
-                assert continue_rect["bottom"] <= 64, continue_rect
+                assert continue_rect["bottom"] <= page.viewport_size["height"], continue_rect
                 assert_no_root_overflow(page)
 
                 page.set_viewport_size({"width": 768, "height": 768})
-                skill_trigger = page.locator(".primary-nav").get_by_role(
-                    "button", name="Skill", exact=True
+                resource_trigger = page.locator(".primary-nav").get_by_role(
+                    "button", name="工程资源", exact=True
                 )
-                skill_trigger.click()
+                resource_trigger.click()
+                page.get_by_role("tab").filter(has_text="Skill").click()
                 expect(page.get_by_role("tab").filter(has_text="Skill")).to_have_attribute(
                     "aria-selected", "true"
                 )
@@ -537,6 +538,9 @@ def main() -> None:
                     reduced_motion="reduce",
                     color_scheme="dark",
                 )
+                workbench_context.add_init_script(
+                    "localStorage.setItem('agentkit-studio-theme', 'system')"
+                )
                 workbench_page = workbench_context.new_page()
                 workbench_page.route("**/api/v1/runs**", route_recoverable_chat_fixture)
                 workbench_page.goto(base_url, wait_until="networkidle")
@@ -586,7 +590,7 @@ def main() -> None:
                       const header = document.querySelector('.chat-conversation-header');
                       const composer = document.querySelector('.chat-composer');
                       const sidebar = document.querySelector('.chat-session-sidebar');
-                      const text = header.querySelector('strong');
+                      const text = header.querySelector('h1');
 
                       const context = document.createElement('canvas').getContext('2d');
                       const rgb = value => {
