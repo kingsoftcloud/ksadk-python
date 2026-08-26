@@ -3,7 +3,13 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+pytestmark = pytest.mark.skipif(
+    not (REPOSITORY_ROOT / "ksadk/studio/react-ui/src").is_dir(),
+    reason="editable Studio source is intentionally absent from the public candidate",
+)
 STYLESHEET = REPOSITORY_ROOT / "ksadk" / "studio" / "react-ui" / "src" / "studio.css"
 REACT_STYLESHEET = REPOSITORY_ROOT / "ksadk" / "studio" / "react-ui" / "src" / "index.css"
 APP_SOURCE = REPOSITORY_ROOT / "ksadk" / "studio" / "react-ui" / "src" / "App.tsx"
