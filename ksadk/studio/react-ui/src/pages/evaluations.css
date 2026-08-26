@@ -70,13 +70,13 @@
 .evaluation-page__metrics {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  margin-bottom: 24px;
+  margin-bottom: 16px;
   border-block: 1px solid var(--border);
 }
 
 .evaluation-page__metrics > div {
-  min-height: 88px;
-  padding: 16px 20px;
+  min-height: 72px;
+  padding: 12px 18px;
   border-right: 1px solid var(--border);
 }
 
@@ -93,7 +93,7 @@
 
 .evaluation-page__metrics strong {
   display: block;
-  margin: 4px 0;
+  margin-top: 3px;
   font-size: var(--font-size-subtitle);
   font-weight: var(--font-weight-semibold);
 }
@@ -536,6 +536,10 @@
     grid-template-columns: 1fr;
   }
 
+  .evaluation-page__metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .evaluation-page__dataset-summary,
   .evaluation-page__assertions > div {
     grid-template-columns: 1fr;
@@ -550,12 +554,24 @@
     border-bottom: 0;
   }
 
-  .evaluation-page__metrics > div,
   .evaluation-detail-page__overview > div,
   .evaluation-page__snapshot > div,
   .evaluation-page__case-list {
     border-right: 0;
     border-bottom: 1px solid var(--border);
+  }
+
+  .evaluation-page__metrics > div {
+    border-right: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .evaluation-page__metrics > div:nth-child(even) {
+    border-right: 0;
+  }
+
+  .evaluation-page__metrics > div:nth-child(n + 3) {
+    border-bottom: 0;
   }
 
   .evaluation-page__evaluator-options {

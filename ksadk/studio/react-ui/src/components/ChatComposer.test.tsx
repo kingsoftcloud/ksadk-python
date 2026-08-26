@@ -37,7 +37,9 @@ describe("ChatComposer", () => {
     renderComposer();
 
     await user.click(screen.getByRole("button", { name: "添加附件或运行控制" }));
-    expect(screen.getByText("添加图片或文本")).toBeInTheDocument();
+    expect(screen.getByText("添加附件")).toBeInTheDocument();
+    expect(screen.getByText("本轮最多 4 个")).toBeInTheDocument();
+    expect(screen.getByLabelText("选择本轮附件")).toHaveAttribute("tabindex", "-1");
     expect(screen.queryByText("Agent Loop")).not.toBeInTheDocument();
     expect(screen.getByText("计划模式")).toBeInTheDocument();
     expect(screen.getByText("设定长期目标")).toBeInTheDocument();

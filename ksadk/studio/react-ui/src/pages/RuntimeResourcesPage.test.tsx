@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { apiFetch } from "../api";
@@ -49,13 +49,14 @@ describe("RuntimeResourcesPage", () => {
 
     expect(await screen.findByText("Tool 8")).toBeVisible();
     expect(screen.getByText("异常")).toBeVisible();
-    expect(screen.getByText("8 个已发现")).toBeVisible();
+    expect(screen.getByText("8")).toBeVisible();
     expect(screen.getAllByText(/^Tool \d+$/)).toHaveLength(5);
     expect(screen.queryByText("Tool 5")).not.toBeInTheDocument();
-    expect(screen.getByText("趋势数据不足")).toBeVisible();
+    expect(screen.getByText("运行 Agent 后即可查看趋势")).toBeVisible();
 
-    const buttons = screen.getAllByRole("button", { name: /查看全部/ });
-    await user.click(buttons[1]);
+    const toolGroup = screen.getByText("Tool", { selector: "strong" }).closest("article");
+    expect(toolGroup).not.toBeNull();
+    await user.click(within(toolGroup as HTMLElement).getByRole("button", { name: /查看全部/ }));
     expect(onOpenResources).toHaveBeenCalledWith("tool");
     await waitFor(() => expect(mockedFetch).toHaveBeenCalledWith("/api/v1/catalog/resources?limit=200"));
   });

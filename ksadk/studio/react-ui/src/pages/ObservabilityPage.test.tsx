@@ -400,7 +400,10 @@ describe("ObservabilityPage trajectory integration", () => {
     expect(showSaveFilePicker).toHaveBeenCalledWith(expect.objectContaining({
       suggestedName: expect.stringMatching(/^session-1-run-1-.*\.jsonl$/),
     }));
-    expect(write).toHaveBeenCalledWith(expect.any(Blob));
+    expect(write).toHaveBeenCalledWith(expect.objectContaining({
+      size: expect.any(Number),
+      type: "application/x-ndjson",
+    }));
     expect(close).toHaveBeenCalledOnce();
     expect(showToast).toHaveBeenCalledWith(
       "Session Log 已导出",

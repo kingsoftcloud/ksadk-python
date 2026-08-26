@@ -329,19 +329,18 @@ export function OrchestrationPage({ currentAgentId, agents, onSelectAgent, onCre
         </div>
       ) : (
         <>
-        <section className="stat-strip" aria-label="编排概览">
-          <div><span>Revision</span><strong>r{draft.metadata?.revision || 1}</strong><small>{draft.metadata?.id}</small></div>
-          <div><span>Runtime</span><strong>{runtimeType}</strong><small>{strategy} · Edge</small></div>
-          <div><span>能力绑定</span><strong>{capCount}</strong><small>{bindings.tools?.length || 0} Tool · {bindings.mcpServers?.length || 0} MCP · {bindings.skills?.length || 0} Skill</small></div>
-          <div className="emphasis"><span>最近调度</span><strong>{runs.length}</strong><small>{recentRuns[0] ? runStatusLabel(recentRuns[0].status) : "暂无运行"}</small></div>
+        <section className="stat-strip compact-summary" aria-label="编排概览">
+          <div title={draft.metadata?.id}><span>Revision</span><strong>r{draft.metadata?.revision || 1}</strong></div>
+          <div title={`${strategy} · Edge`}><span>Runtime</span><strong>{runtimeType}</strong></div>
+          <div title={`${bindings.tools?.length || 0} Tool · ${bindings.mcpServers?.length || 0} MCP · ${bindings.skills?.length || 0} Skill`}><span>能力绑定</span><strong>{capCount}</strong></div>
+          <div className="emphasis"><span>最近调度</span><strong>{recentRuns[0] ? runStatusLabel(recentRuns[0].status) : "暂无"}</strong></div>
         </section>
         <div className="orchestration-workbench">
           <section className="orchestration-canvas block">
             <div className="section-heading">
               <AgentAvatar name={draft.metadata?.name || "Agent"} appearance={draft.metadata?.appearance} size="md" />
               <div className="section-heading-copy">
-                <h2>{draft.metadata?.name}</h2>
-                <p>{draft.metadata?.id} · revision {draft.metadata?.revision} · {runtimeType} · 本地执行</p>
+                <h2 title={draft.metadata?.id}>{draft.metadata?.name}</h2>
               </div>
             </div>
             <PipelineCanvas steps={pipelineSteps} />

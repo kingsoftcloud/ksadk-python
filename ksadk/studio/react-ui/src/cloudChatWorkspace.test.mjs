@@ -65,6 +65,16 @@ test("cloud composer reuses the shared controls and sends turn policy explicitly
   assert.doesNotMatch(source, /<select/);
 });
 
+test("cloud chat shares the responsive conversation and attachment-limit contract", () => {
+  assert.match(source, /chat-session-mobile-trigger/);
+  assert.match(source, /chat-session-mobile-close/);
+  assert.match(source, /aria-expanded=\{sessionPanelOpen\}/);
+  assert.match(source, /<h1>\{agentName\}<\/h1>/);
+  assert.match(source, /aria-busy=\{sending \|\| waitingForResponse\}/);
+  assert.match(source, /attachmentLimit=\{8\}/);
+  assert.match(source, /AI 生成内容可能不准确，请核对关键结论与工具操作/);
+});
+
 test("cloud chat normalizes projected approval lifecycle events", () => {
   assert.match(source, /interruptInfo\.approval_request_id/);
   assert.match(source, /resumeInput\.approval_request_id/);

@@ -106,7 +106,7 @@ async function waitForCreatedBuild(operationId: string) {
   throw new Error("构建等待超时");
 }
 
-export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, onAgentsChanged }: {
+export function CreatePage({ editingAgentId, viewportMode, onCreated, onAgentsChanged }: {
   editingAgentId?: string;
   viewportMode: StudioViewportMode;
   onBack: () => void;
@@ -741,9 +741,6 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
   return (
     <div className="create-shell page-container" data-layout={layout} data-authoring-mode={mode} data-editing={editingAgentId ? "true" : "false"}>
       <PageHeaderActions>
-        <button className="button tertiary" type="button" onClick={onBack}>
-          <ArrowLeft size={16} /><span>返回 Agent</span>
-        </button>
         {!editingAgentId && viewportMode === "compact" && (
           <button
             ref={createRailTriggerRef}
@@ -758,21 +755,7 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
             <PanelRight size={16} />
           </button>
         )}
-        {!editingAgentId && mode === "quick" && (
-          <>
-            <span className="tag">{draftState}</span>
-            <button className="button secondary" type="button" onClick={saveDraft}>保存草稿</button>
-            {step < 4 ? (
-              <button className="button accent" type="button" onClick={() => gotoStep(step + 1)}>
-                <span>继续</span><ArrowRight size={16} />
-              </button>
-            ) : (
-              <button className="button accent" type="submit" form="quickAgentForm" disabled={submitting}>
-                <Plus size={16} /><span>{submitting ? "正在创建" : "创建 Agent"}</span>
-              </button>
-            )}
-          </>
-        )}
+        {!editingAgentId && mode === "quick" && <span className="tag">{draftState}</span>}
       </PageHeaderActions>
 
       <div className="create-workbench">
@@ -1171,8 +1154,8 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
                     <div className="capability-heading">
                       <span className="capability-icon"><Cpu size={15} /></span>
                       <div>
-                        <h3>Model Profile <span className="studio-field-requirement required" aria-hidden="true">*</span><span className="sr-only">必填</span></h3>
-                        <p>负责理解请求、规划执行和生成回答；可多选</p>
+                        <h3>模型 <span className="studio-field-requirement required" aria-hidden="true">*</span><span className="sr-only">必填</span></h3>
+                        <p>至少选择一个；支持多选</p>
                       </div>
                     </div>
                     <div className="model-profile-control">
@@ -1354,7 +1337,7 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
                   <div className="review-block">
                     <div className="review-title"><span>能力绑定</span><button className="text-button" type="button" onClick={() => gotoStep(2)}>编辑</button></div>
                     <div className="review-capabilities">
-                      <div className="review-capability"><Cpu size={16} /><div><strong>{selectedModelItems[0]?.displayName || "Model"}</strong><span>Model Profile</span></div></div>
+                      <div className="review-capability"><Cpu size={16} /><div><strong>{selectedModelItems[0]?.displayName || "模型"}</strong></div></div>
                       <div className="review-capability"><Wrench size={16} /><div><strong>{selectedTools.length} 个 Tool</strong><span>{policyMeta.title}</span></div></div>
                       <div className="review-capability"><Network size={16} /><div><strong>{selectedMcp.length} 个 MCP</strong><span>{selectedMcp.length ? "已连接外部服务" : "未绑定"}</span></div></div>
                       <div className="review-capability"><Sparkles size={16} /><div><strong>{selectedSkills.length} 个 Skill</strong><span>{selectedSkills.length ? "已注入版本化能力" : "未绑定"}</span></div></div>
@@ -1393,6 +1376,18 @@ export function CreatePage({ editingAgentId, viewportMode, onBack, onCreated, on
                   <button className="button tertiary summary-toggle" type="button" aria-expanded={summaryOpen} onClick={() => setSummaryOpen(v => !v)}>
                     <PanelRight size={16} /><span>完整摘要</span>
                   </button>
+                  <div className="wizard-flow-actions">
+                    <button className="button secondary" type="button" onClick={saveDraft}>保存草稿</button>
+                    {step < 4 ? (
+                      <button className="button accent" type="button" onClick={() => gotoStep(step + 1)}>
+                        <span>继续</span><ArrowRight size={16} />
+                      </button>
+                    ) : (
+                      <button className="button accent" type="submit" disabled={submitting}>
+                        <Plus size={16} /><span>{submitting ? "正在创建" : "创建 Agent"}</span>
+                      </button>
+                    )}
+                  </div>
                 </footer>
               </form>
               </FormProvider>

@@ -308,7 +308,7 @@ describe("DeploymentsPage", () => {
     await waitFor(() => expect(apiFetch).toHaveBeenCalledWith("/api/v1/deployments/dep-instance-1"));
     await waitFor(() => expect(apiFetch).toHaveBeenCalledWith("/api/v1/cloud-agents/ar-cloud-ui"));
     expect(await screen.findAllByText("运行中")).not.toHaveLength(0);
-    expect(screen.queryByText("部署中")).not.toBeInTheDocument();
+    expect(screen.queryByText("部署中", { selector: ".delivery-status-badge" })).not.toBeInTheDocument();
 
     expect(screen.queryByRole("region", { name: "选择回滚 Build" })).not.toBeInTheDocument();
   });
@@ -514,7 +514,7 @@ describe("DeploymentsPage", () => {
 
     expect(await screen.findByText("Existing Code Agent")).toBeInTheDocument();
     expect(screen.getAllByText("ar-cloud-ui")).toHaveLength(1);
-    expect(screen.getByText("账号云端 Agent")).toBeInTheDocument();
+    expect(screen.queryByText("账号云端 Agent")).not.toBeInTheDocument();
     expect(screen.queryByText("sha256:bundle-current")).not.toBeInTheDocument();
     expect(screen.queryByText("build-current")).not.toBeInTheDocument();
 

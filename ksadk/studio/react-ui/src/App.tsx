@@ -407,7 +407,7 @@ export default function App() {
                   size="sm"
                 />
               )}
-              <strong>{view === "agent-detail" && currentAgent ? currentAgent.metadata.name : breadcrumbTitle}</strong>
+              <h1>{view === "agent-detail" && currentAgent ? currentAgent.metadata.name : breadcrumbTitle}</h1>
               {view === "agent-detail" && currentAgent && (
                 <span className="mono">{currentAgent.metadata.id} · r{currentAgent.metadata.revision || 1}</span>
               )}
@@ -416,7 +416,9 @@ export default function App() {
           {!breadcrumbParent && (
             <div className="header-identity">
               <span>工作区 · {workspaceName}</span>
-              <strong>{breadcrumbTitle}</strong>
+              {view === "conversations"
+                ? <strong>{breadcrumbTitle}</strong>
+                : <h1>{breadcrumbTitle}</h1>}
             </div>
           )}
           <div className="header-actions">
@@ -446,7 +448,7 @@ export default function App() {
               <RefreshCw size={16} />
             </button>
             {view === "conversations" && chatMounted && currentAgentId && !isCloudChat && (
-              <button className="icon-button tertiary" type="button" aria-label="运行详情" title="运行详情" onClick={() => setRunPanelOpen(v => !v)}>
+              <button className="icon-button tertiary conversation-run-detail" type="button" aria-label="运行详情" title="运行详情" onClick={() => setRunPanelOpen(v => !v)}>
                 <PanelRight size={16} />
               </button>
             )}

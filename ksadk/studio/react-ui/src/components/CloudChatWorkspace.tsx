@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
-import { Bot, BrainCircuit, Loader2, MessageSquarePlus, ShieldAlert, ShieldCheck, Trash2, Wrench, X } from "lucide-react";
+import { Bot, BrainCircuit, Loader2, MessageSquarePlus, PanelLeftOpen, ShieldAlert, ShieldCheck, Trash2, Wrench, X } from "lucide-react";
 import { apiFetch } from "../api";
 import {
   approvalModeStorageKey,
@@ -710,6 +710,7 @@ export function CloudChatWorkspace({
   const [runError, setRunError] = useState("");
   const [deleting, setDeleting] = useState("");
   const [resolvingInteractionId, setResolvingInteractionId] = useState("");
+  const [sessionPanelOpen, setSessionPanelOpen] = useState(false);
   const messageListRef = useRef<HTMLDivElement>(null);
   const currentSessionIdRef = useRef("");
   const waitingForResponseRef = useRef(false);
@@ -952,6 +953,7 @@ export function CloudChatWorkspace({
     if (sending || waitingForResponse) return;
     try {
       await createSession();
+      setSessionPanelOpen(false);
     } catch (error) {
       showToast("新建云端会话失败", error instanceof Error ? error.message : String(error), "error");
     }
@@ -1214,14 +1216,21 @@ export function CloudChatWorkspace({
     .join("");
 
   return (
-    <section className="studio-chat-shell cloud-chat-shell" aria-label="云端会话">
-      <aside className="chat-session-sidebar">
-        <div className="chat-session-header">
-          <div><strong>云端会话</strong><span>{agentName}</span></div>
-          <button className="icon-button tertiary" type="button" onClick={startNewSession} disabled={sending || waitingForResponse} aria-label="新建云端会话" title="新建云端会话"><MessageSquarePlus size={17} /></button>
-        </div>
+    <section className={`studio-chat-shell cloud-chat-shell${sessionPanelOpen ? " sessions-open" : ""}`} aria-label="云端会话">
+      <aside className="chat-session-sidebar" aria-label="云端会话历史">
+        <header className="chat-session-header">
+          <div><h2>云端会话</h2><span>{agentName}</span></div>
+          <div className="chat-session-header-actions">
+            <button className="icon-button tertiary" type="button" onClick={startNewSession} disabled={sending || waitingForResponse} aria-label="新建云端会话" title="新建云端会话"><MessageSquarePlus size={17} /></button>
+            <button className="icon-button tertiary chat-session-mobile-close" type="button" aria-label="关闭云端会话历史" title="关闭云端会话历史" onClick={() => setSessionPanelOpen(false)}><X size={17} /></button>
+          </div>
+        </header>
         <div className="chat-session-list" role="list">
-          {loading && <div className="chat-list-loading"><Loader2 size={16} /> 正在同步…</div>}
+          {loading && (
+            <div className="chat-session-skeleton" role="status" aria-label="正在同步云端会话">
+              <i /><i /><i />
+            </div>
+          )}
           {!loading && !sessions.length && <p className="chat-sidebar-empty">还没有云端会话</p>}
           {sessions.map(session => {
             const activity = cloudSessionActivity(session.state);
@@ -1231,6 +1240,7 @@ export function CloudChatWorkspace({
                 currentSessionIdRef.current = session.id;
                 setCurrentSessionId(session.id);
                 setRunError(session.error);
+                setSessionPanelOpen(false);
               }}>
                 <strong>{session.title}</strong>
                 {activity && (
@@ -1245,11 +1255,22 @@ export function CloudChatWorkspace({
           )})}
         </div>
       </aside>
+      <button className="chat-session-backdrop" type="button" aria-label="关闭云端会话历史" onClick={() => setSessionPanelOpen(false)} />
       <div className="chat-conversation">
         <header className="chat-conversation-header">
-          <div><strong>{agentName}</strong><span>云端 Agent · {agentId}</span></div>
+          <button
+            className="icon-button tertiary chat-session-mobile-trigger"
+            type="button"
+            aria-label="打开云端会话历史"
+            title="云端会话历史"
+            aria-expanded={sessionPanelOpen}
+            onClick={() => setSessionPanelOpen(true)}
+          >
+            <PanelLeftOpen size={17} />
+          </button>
+          <div><h1>{agentName}</h1><span>云端 Agent · {agentId}</span></div>
         </header>
-        <div ref={messageListRef} className="chat-message-list" aria-live="polite">
+        <div ref={messageListRef} className="chat-message-list" role="log" aria-live="polite" aria-busy={sending || waitingForResponse}>
           {!currentSessionId && !loading && <div className="chat-empty"><span className="chat-empty-icon"><Bot /></span><h2>开始一段云端会话</h2></div>}
           {(runError || cloudSessionActivity(sessions.find(session => session.id === currentSessionId)?.state || "") === "failed") && (
             <div className="cloud-chat-run-warning">
@@ -1315,6 +1336,7 @@ export function CloudChatWorkspace({
             commandIndex={commandIndex}
             canSend={Boolean(input.trim() || attachments.length)}
             attachmentAccept=""
+            attachmentLimit={8}
             onInputChange={setInput}
             onFiles={files => {
               const oversized = files.find(file => file.size > 10 * 1024 * 1024);
@@ -1341,6 +1363,7 @@ export function CloudChatWorkspace({
             onCommandIndexChange={setCommandIndex}
             onSend={() => { void sendMessage(); }}
           />
+          <p className="chat-composer-disclaimer">AI 生成内容可能不准确，请核对关键结论与工具操作。</p>
         </div>
       </div>
     </section>

@@ -690,7 +690,7 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
       </PageHeaderActions>}
 
       <div className="data-page-body observability-body">
-        <OverviewSection overview={overview} range={range} onRangeChange={setRange} />
+        <OverviewSection overview={overview} range={range} />
 
         {!activeTrace && <div className="trace-toolbar" aria-label="Trace 筛选">
         <StudioSelect
@@ -715,7 +715,6 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
           ]}
           onValueChange={value => setStatusFilter(value === "__all__" ? "" : value)}
         />
-        <span className="trace-standard-label">OTLP · W3C Trace Context</span>
         </div>}
 
         {activeTrace && <section className="stat-strip" aria-label="Trace 指标">
@@ -744,8 +743,7 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
         {!activeTrace && (
           <section className="trace-list-page" aria-label="Trace 列表">
             <header className="trace-list-page-header">
-              <div><strong>Traces</strong><span>服务端游标分页 · 每页 {TRACE_PAGE_SIZE} 条</span></div>
-              <span>{traceTotal} 条结果</span>
+              <div><strong>Trace</strong><span>{traceTotal} 条</span></div>
             </header>
             <StudioDataTable
               columns={traceColumns}
@@ -984,42 +982,41 @@ export function ObservabilityPage({ refreshTick }: { refreshTick: number }) {
 
 /* ================= 概览区 ================= */
 
-function OverviewSection({ overview, range, onRangeChange }: {
+function OverviewSection({ overview, range }: {
   overview: TraceOverview | null;
   range: "24h" | "7d";
-  onRangeChange: (range: "24h" | "7d") => void;
 }) {
   const total = overview?.total || 0;
   const completed = overview?.completed || 0;
   const successRate = overview?.successRate == null
-    ? "-"
+    ? "—"
     : `${Math.round(overview.successRate * 100)}%`;
   const avgDuration = overview?.averageDurationMs == null
-    ? "-"
+    ? "—"
     : formatDuration(overview.averageDurationMs);
   const totalTokens = overview?.totalTokens || 0;
   const inputTokens = overview?.inputTokens || 0;
   const outputTokens = overview?.outputTokens || 0;
+  const buckets = overview?.buckets || [];
+  const hasTrend = buckets.some(bucket => bucket.runs > 0);
 
   return (
-    <section className="observability-overview" aria-label="运行概览">
+    <section className={`observability-overview${hasTrend ? " has-trend" : ""}`} aria-label="运行概览">
       <div className="overview-metric-grid">
-        <OverviewMetric icon={<Activity size={15} />} label="总运行" value={String(total)} note={range === "7d" ? "近 7 天" : "近 24 小时"} />
-        <OverviewMetric icon={<CircleCheckBig size={15} />} label="成功率" value={successRate} note={total ? `${completed} / ${total}` : "暂无运行"} tone="success" />
-        <OverviewMetric icon={<Clock3 size={15} />} label="平均耗时" value={avgDuration} note={completed ? `${completed} 个完成运行` : "无完成运行"} />
-        <OverviewMetric icon={<Coins size={15} />} label="Token 总量" value={formatTokenCount(totalTokens)} note={totalTokens ? `${formatTokenCount(inputTokens)} 输入 · ${formatTokenCount(outputTokens)} 输出` : "未上报"} />
+        <OverviewMetric icon={<Activity size={15} />} label={range === "7d" ? "近 7 天运行" : "近 24 小时运行"} value={String(total)} />
+        <OverviewMetric icon={<CircleCheckBig size={15} />} label="成功率" value={successRate} note={total ? `${completed} / ${total}` : undefined} tone="success" />
+        <OverviewMetric icon={<Clock3 size={15} />} label="平均耗时" value={avgDuration} note={completed ? `${completed} 个完成运行` : undefined} />
+        <OverviewMetric icon={<Coins size={15} />} label="Token" value={total ? (totalTokens ? formatTokenCount(totalTokens) : "未上报") : "—"} note={totalTokens ? `${formatTokenCount(inputTokens)} 输入 · ${formatTokenCount(outputTokens)} 输出` : undefined} />
       </div>
-      <div className="overview-chart-card">
-        <div className="overview-chart-header">
-          <strong>运行趋势</strong>
-          <div className="overview-range-tabs">
-            <button type="button" className={range === "24h" ? "active" : ""} onClick={() => onRangeChange("24h")}>24 小时</button>
-            <button type="button" className={range === "7d" ? "active" : ""} onClick={() => onRangeChange("7d")}>7 天</button>
+      {hasTrend && (
+        <div className="overview-chart-card">
+          <div className="overview-chart-header">
+            <strong>运行趋势</strong>
           </div>
+          <OverviewChart buckets={buckets} range={range} />
+          <div className="overview-chart-legend"><span className="legend-runs" />运行数<span className="legend-success" />成功数</div>
         </div>
-        <OverviewChart buckets={overview?.buckets || []} range={range} />
-        <div className="overview-chart-legend"><span className="legend-runs" />运行数<span className="legend-success" />成功数</div>
-      </div>
+      )}
     </section>
   );
 }
@@ -1028,14 +1025,14 @@ function OverviewMetric({ icon, label, value, note, tone = "neutral" }: {
   icon: ReactNode;
   label: string;
   value: string;
-  note: string;
+  note?: string;
   tone?: "neutral" | "success";
 }) {
   return (
     <article className={`overview-metric-card ${tone}`}>
       <div className="overview-metric-label"><span>{icon}</span><small>{label}</small></div>
       <strong>{value}</strong>
-      <p>{note}</p>
+      {note && <p>{note}</p>}
     </article>
   );
 }
@@ -1051,7 +1048,9 @@ function OverviewChart({ buckets: rawBuckets, range }: {
       : `${String(date.getHours()).padStart(2, "0")}:00`;
     return { ...bucket, label, success: bucket.completed };
   });
-  if (!buckets.length) return <div className="trace-stage-empty compact"><p>正在读取运行趋势…</p></div>;
+  if (!buckets.length || !buckets.some(bucket => bucket.runs > 0)) {
+    return <div className="trace-stage-empty compact"><p>暂无运行数据</p></div>;
+  }
 
   const maxRuns = Math.max(1, ...buckets.map(bucket => bucket.runs));
   const W = 800, H = 118, pad = { l: 30, r: 10, t: 10, b: 22 };
