@@ -65,6 +65,9 @@ export function SettingsOverlay({ themePreference, onThemePreferenceChange, init
       codexProxy: "auto",
       cloudRegion: "",
       cloudBucket: "",
+      cloudAccessKey: "",
+      cloudSecretKey: "",
+      cloudAccountId: "",
     },
   });
   const [credRows, setCredRows] = useState<Array<{ ref: string; name: string; configured: boolean; source: string; model: ResItem }>>([]);
@@ -143,6 +146,10 @@ export function SettingsOverlay({ themePreference, onThemePreferenceChange, init
       };
       if (values.cloudRegion.trim()) payload.cloudRegion = values.cloudRegion.trim();
       if (values.cloudBucket.trim()) payload.cloudBucket = values.cloudBucket.trim();
+      // 云账号:留空 = 不修改;AccountID 空串不提交(避免清掉已存值)
+      if (values.cloudAccessKey.trim()) payload.cloudAccessKey = values.cloudAccessKey.trim();
+      if (values.cloudSecretKey.trim()) payload.cloudSecretKey = values.cloudSecretKey.trim();
+      if (values.cloudAccountId.trim()) payload.cloudAccountId = values.cloudAccountId.trim();
       const res = await apiFetch("/api/v1/system/settings", {
         method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
       });
@@ -282,7 +289,18 @@ export function SettingsOverlay({ themePreference, onThemePreferenceChange, init
             <input id="settingCloudBucket" placeholder="agentengine-<account>-cn-beijing-6" {...settingsForm.register("cloudBucket")} />
           </FormField>
         </div>
-        <p className="helper">云端部署：{settings?.cloudSignedAccountConfigured ? "已就绪" : "尚未配置"}</p>
+        <div className="form-grid two-columns">
+          <FormField label="Access Key" requirement="optional" htmlFor="settingCloudAccessKey" hint="金山云账号 AK，用于云端请求签名；留空保留已保存值。" error={settingsForm.formState.errors.cloudAccessKey?.message}>
+            <input id="settingCloudAccessKey" type="password" autoComplete="off" placeholder={settings?.cloudAccountConfigured ? "已配置（留空保持不变）" : "AKLT..."} {...settingsForm.register("cloudAccessKey")} />
+          </FormField>
+          <FormField label="Secret Key" requirement="optional" htmlFor="settingCloudSecretKey" hint="金山云账号 SK；留空保留已保存值。" error={settingsForm.formState.errors.cloudSecretKey?.message}>
+            <input id="settingCloudSecretKey" type="password" autoComplete="off" placeholder={settings?.cloudAccountConfigured ? "已配置（留空保持不变）" : ""} {...settingsForm.register("cloudSecretKey")} />
+          </FormField>
+        </div>
+        <FormField label="Account ID" requirement="optional" htmlFor="settingCloudAccountId" hint="主账号 ID（X-Ksc-Account-Id）；可从金山云控制台获取。" error={settingsForm.formState.errors.cloudAccountId?.message}>
+          <input id="settingCloudAccountId" placeholder="10203040..." {...settingsForm.register("cloudAccountId")} />
+        </FormField>
+        <p className="helper">云端账号：{settings?.cloudAccountConfigured ? "已就绪" : "尚未配置"}；云端部署：{settings?.cloudSignedAccountConfigured ? "已就绪" : "尚未配置"}</p>
       </section>
 
       <section id="settings-about" className="settings-group" tabIndex={-1}>

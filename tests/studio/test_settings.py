@@ -113,3 +113,56 @@ def test_deployment_operation_scope_separates_workspace_and_cloud_account(
     assert changed_account["cloudCredential"] == changed_workspace["cloudCredential"]
     assert "account-one" not in str(first)
     assert "account-two" not in str(changed_account)
+
+
+def test_cloud_account_credentials_persist_and_bridge_to_env(tmp_path, monkeypatch) -> None:
+    """云账号 AK/SK/AccountID 配置入口:写 yaml + 桥接 env + 反映 configured 状态。
+
+    用于 Studio -> agentengine-server 的 V4 签名请求(X-Ksc-Account-Id /
+    X-Ksc-User-uuid 由 AgentEngineClient 从 AK/SK 反查或 env 注入)。
+    """
+    for key in ("KSYUN_ACCESS_KEY", "KSYUN_SECRET_KEY", "KSYUN_ACCOUNT_ID"):
+        monkeypatch.delenv(key, raising=False)
+    studio = StudioService(tmp_path / "ws")
+
+    assert studio.get_settings()["cloudAccountConfigured"] is False
+
+    settings = studio.update_settings(
+        {
+            "cloudAccessKey": "AKTEST123",
+            "cloudSecretKey": "SKTEST456",
+            "cloudAccountId": "10203040",
+        }
+    )
+
+    assert settings["cloudAccountConfigured"] is True
+    assert settings["cloudAccountId"] == "10203040"
+    # 密钥不回显(本地 UI 不应回传 secret)
+    assert not settings.get("cloudAccessKey")
+    assert not settings.get("cloudSecretKey")
+    assert os.environ["KSYUN_ACCESS_KEY"] == "AKTEST123"
+    assert os.environ["KSYUN_SECRET_KEY"] == "SKTEST456"
+    assert os.environ["KSYUN_ACCOUNT_ID"] == "10203040"
+    # 重启(新实例)后从 yaml 回填
+    for key in ("KSYUN_ACCESS_KEY", "KSYUN_SECRET_KEY", "KSYUN_ACCOUNT_ID"):
+        monkeypatch.delenv(key, raising=False)
+    reloaded = StudioService(tmp_path / "ws")
+    assert reloaded.get_settings()["cloudAccountConfigured"] is True
+    assert reloaded.get_settings()["cloudAccountId"] == "10203040"
+    assert os.environ["KSYUN_ACCESS_KEY"] == "AKTEST123"
+
+
+def test_cloud_account_partial_update_keeps_existing_secret(tmp_path, monkeypatch) -> None:
+    """只改 AccountID 不动 AK/SK 时,已有密钥保持不变(表单留空 = 不修改)。"""
+    for key in ("KSYUN_ACCESS_KEY", "KSYUN_SECRET_KEY", "KSYUN_ACCOUNT_ID"):
+        monkeypatch.delenv(key, raising=False)
+    studio = StudioService(tmp_path / "ws")
+    studio.update_settings(
+        {"cloudAccessKey": "AKTEST", "cloudSecretKey": "SKTEST", "cloudAccountId": "100"}
+    )
+    settings = studio.update_settings({"cloudAccountId": "200"})
+    assert settings["cloudAccountConfigured"] is True
+    assert settings["cloudAccountId"] == "200"
+    assert os.environ["KSYUN_ACCESS_KEY"] == "AKTEST"
+    assert os.environ["KSYUN_SECRET_KEY"] == "SKTEST"
+    assert os.environ["KSYUN_ACCOUNT_ID"] == "200"

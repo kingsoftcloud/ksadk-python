@@ -22,7 +22,6 @@ from ksadk.kernel.contracts import (
 from ksadk.runtime.launch import RuntimeLaunchContext
 from ksadk.sessions.in_memory import InMemorySessionService
 
-
 TENANT = "tenant-1"
 AGENT_INSTANCE = "agent-1"
 
@@ -205,7 +204,6 @@ class Harness:
     async def _invoke_studio(self, session_id: str, idempotency_key: str) -> Any:
         from ksadk.studio.contracts import RunStatus
         from ksadk.studio.run_service import StudioRunService, StudioRunSpec
-
         from ksadk.studio.workspace import Workspace
 
         service = StudioRunService(Workspace(self.tmp_path / "studio-ws"), self.executor)
@@ -300,3 +298,31 @@ async def test_kernel_disabled_by_default(monkeypatch):
     monkeypatch.delenv("KSADK_AGENT_KERNEL", raising=False)
     assert not ingress.kernel_ingress_enabled()
     assert not ingress.kernel_route_active()
+
+
+def test_map_run_request_carries_runtime_options_model():
+    """RunAgent 的 Model 覆盖必须进入 command payload(透传链第一跳)。"""
+    from ksadk.kernel import ingress
+
+    trusted = ingress.trusted_context(
+        source_kind="system",
+        source_ref="idem-model",
+        session_id="s-model",
+        operations=("enqueue",),
+    )
+    command = ingress.map_run_request(
+        trusted=trusted,
+        session_id="s-model",
+        idempotency_key="idem-model",
+        content=[{"type": "input_text", "text": "hi"}],
+        runtime_options={"model": "glm-5.3"},
+    )
+    assert command.payload["runtime_options"] == {"model": "glm-5.3"}
+
+    plain = ingress.map_run_request(
+        trusted=trusted,
+        session_id="s-model",
+        idempotency_key="idem-model-2",
+        content=[{"type": "input_text", "text": "hi"}],
+    )
+    assert "runtime_options" not in plain.payload

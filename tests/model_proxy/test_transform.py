@@ -217,7 +217,7 @@ def test_content_filter_is_incomplete_not_completed():
     assert resp["incomplete_details"]["reason"] == "content_filter"
 
 
-def test_text_format_json_schema_restructured_and_verbosity():
+def test_text_format_json_schema_restructured_and_no_verbosity():
     body = {
         "model": "m",
         "input": "hi",
@@ -237,4 +237,23 @@ def test_text_format_json_schema_restructured_and_verbosity():
         "type": "json_schema",
         "json_schema": {"name": "S", "schema": {"type": "object"}, "strict": True},
     }
-    assert out["verbosity"] == "high"
+    # responses text.verbosity("low"/"high" 字符串)在 chat completions 无标准字段;
+    # kspmas 把顶层 verbosity 当 i32 反序列化,转发字符串会 400(glm-5.2 实测),
+    # cc-switch 也不透传 —— 转换层必须丢弃。
+    assert "verbosity" not in out
+
+
+def test_clamp_reasoning_effort_qwen_caps_xhigh():
+    """qwen3.7 系上游对 reasoning_effort=xhigh 400(报错文案反而列出 xhigh,
+    实际 DashScope 后端只认到 high);qwen3.8 已放开。未知模型原样透传。"""
+    from ksadk.model_proxy.transform import clamp_reasoning_effort
+
+    assert clamp_reasoning_effort("qwen3.7-max", "xhigh") == "high"
+    assert clamp_reasoning_effort("qwen3.7-flash", "xhigh") == "high"
+    assert clamp_reasoning_effort("qwen3.7-plus", "xhigh") == "high"
+    assert clamp_reasoning_effort("qwen3.8-max", "xhigh") == "xhigh"
+    assert clamp_reasoning_effort("glm-5.3", "xhigh") == "xhigh"
+    assert clamp_reasoning_effort("deepseek-v4-pro", "xhigh") == "xhigh"
+    assert clamp_reasoning_effort("qwen3.7-max", "high") == "high"
+    assert clamp_reasoning_effort("qwen3.7-max", "medium") == "medium"
+    assert clamp_reasoning_effort("qwen3.7-max", "weird") == "weird"

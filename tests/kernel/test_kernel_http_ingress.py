@@ -240,6 +240,10 @@ def test_submit_agent_control_invalid_command_is_400(app_with_kernel):
     client, _ = app_with_kernel
     response = client.post(ingress.KERNEL_INGRESS_SUBMIT_PATH, json={"command": {"nope": 1}})
     assert response.status_code == 400
+    assert response.json()["error"] == {
+        "Code": "invalid_command",
+        "Message": "command 格式无效",
+    }
 
 
 def test_kernel_routes_503_when_not_registered(app_without_kernel):

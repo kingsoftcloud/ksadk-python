@@ -372,6 +372,8 @@ describe("DeploymentsPage", () => {
 
   it("shows receipt-bound cloud details and Server-projected cloud version history", async () => {
     const user = userEvent.setup();
+    const expectedVersionTime = new Date("2026-08-23T10:00:00+08:00")
+      .toLocaleString("zh-CN", { hour12: false });
     renderPage();
 
     await user.click(await screen.findByRole("button", { name: "查看 Managed YAML Agent 详情" }));
@@ -389,7 +391,7 @@ describe("DeploymentsPage", () => {
     expect(screen.getByRole("radio", { name: /当前版本.*v3/ })).toHaveTextContent("当前");
     expect(screen.getByText("流量")).toBeInTheDocument();
     expect(screen.getByRole("radio", { name: /当前版本.*v3/ })).toHaveTextContent("100%");
-    expect(screen.getByRole("radio", { name: /可回滚版本.*v2/ })).toHaveTextContent("2026/8/23 10:00:00");
+    expect(screen.getByRole("radio", { name: /可回滚版本.*v2/ })).toHaveTextContent(expectedVersionTime);
     expect(screen.queryByText("cloud-agent-0")).not.toBeInTheDocument();
     expect(apiFetch).toHaveBeenCalledWith("/api/v1/cloud-agents/ar-cloud-ui/versions?page=1&size=100");
     expect(apiFetch).toHaveBeenCalledWith("/api/v1/cloud-agents/ar-cloud-ui");

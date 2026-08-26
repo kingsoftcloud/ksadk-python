@@ -34,6 +34,7 @@ async def _kernel_submit(
     content: Any,
     correlation_ref: str | None,
     source_kind: str,
+    runtime_options: dict[str, Any] | None = None,
 ) -> tuple[AgentControlReceipt, ingress.TrustedRuntimeContext]:
     trusted = ingress.trusted_context(
         source_kind=source_kind,
@@ -57,6 +58,7 @@ async def _kernel_submit(
         idempotency_key=idempotency_key,
         content=content,
         **({correlation_kwarg: correlation_ref} if correlation_ref else {}),
+        **({"runtime_options": runtime_options} if runtime_options else {}),
     )
     receipt = await ingress.submit_command(command, permit=trusted.permit)
     return receipt, trusted

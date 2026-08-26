@@ -98,6 +98,7 @@ SCRIPT_EXPORT_FILES = {
 
 PUBLIC_TEST_FILES = {
     "tests/conftest.py",
+    "tests/events/fixtures/runtime_projection_golden.json",
     "tests/test_check_approval_record.py",
     "tests/test_check_publication_state.py",
     "tests/test_config_env_registry.py",
@@ -105,6 +106,10 @@ PUBLIC_TEST_FILES = {
     "tests/test_open_source_audit.py",
     "tests/test_public_release_positioning.py",
     "tests/test_runtime_common_packaging.py",
+    "tests/studio/test_style_system.py",
+    "tests/studio/e2e/studio_browser_smoke.py",
+    "tests/studio/e2e/studio_e2e_support.py",
+    "tests/studio/e2e/studio_responsive_smoke.py",
     "tests/test_managed_runtime_builder.py",
     "tests/test_managed_runtime_native_smoke.py",
     "tests/test_managed_runtime_resolution.py",

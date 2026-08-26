@@ -674,6 +674,14 @@ class AsyncCodexClient(CodexClient):
         )
         proxy.start()
         overrides = list(cfg.config_overrides or ())
+        # 默认模型必须注入:codex 未配置 model= 时会发自家默认名(如 gpt-5.6-terra),
+        # 上游(kspmas)按未知模型 403。注入后 thread 级 model 覆盖仍优先生效
+        # (实测 codex thread model > config model=),RunAgent 的 Model 透传靠它。
+        default_model = (
+            runtime_env.get("OPENAI_MODEL_NAME") or runtime_env.get("MODEL_NAME") or ""
+        ).strip()
+        if default_model and not any(str(o).startswith("model=") for o in overrides):
+            overrides.append(f"model={default_model}")
         overrides += [
             "model_provider=ksadk_proxy",
             "model_providers.ksadk_proxy.name=ksadk_proxy",
