@@ -11,6 +11,7 @@ from typing import Any
 from ksadk.codex.client import AsyncCodexClient
 from ksadk.codex.runtime import CodexRuntimeAdapter
 from ksadk.runners.base_runner import BaseRunner
+from ksadk.runtime.adapter import StartRequest
 from ksadk.runtime.adapter import RuntimeAdapter, RuntimeRegistry
 from ksadk.runtime.framework_adapters import ADKRuntimeAdapter, LangGraphRuntimeAdapter
 from ksadk.runtime.launch import RuntimeLaunchContext
@@ -41,8 +42,8 @@ def kernel_start_request_defaults(context: RuntimeLaunchContext) -> dict[str, An
         if isinstance(raw_allowed_models, (list, tuple, set))
         else set()
     )
-    if model:
-        allowed_models.add(model)
+    # 不把默认 model 自动加进白名单:白名单只在显式声明 models/allowedModels
+    # 时才存在(显式声明 = 收紧;只配默认 = 不限制 run 级覆盖)。
     if allowed_models:
         defaults["allowed_models"] = sorted(allowed_models)
     if context.runtime_type != "codex":
@@ -91,9 +92,80 @@ def kernel_start_request_defaults(context: RuntimeLaunchContext) -> dict[str, An
     return defaults
 
 
+def apply_runtime_start_request_defaults(
+    context: RuntimeLaunchContext,
+    request: StartRequest,
+) -> StartRequest:
+    """Apply deployment-owned launch policy to a direct runtime start.
+
+    AgentKernelWorker already projects these defaults before ``adapter.start``.
+    Foreground RunAgent, ``/run_sse`` and OpenAI-compatible routes also create
+    ``StartRequest`` objects directly, so they must use the same projection or
+    a deployed Codex agent silently falls back to the generic Codex role.
+
+    Request-local config is internal runtime state, not caller-owned policy;
+    retain it for local Studio builds while using the manifest model as the
+    fallback (and as the fail-closed fallback for an explicit allow-list).
+    """
+
+    defaults = kernel_start_request_defaults(context)
+    default_model = str(defaults.get("model") or "").strip() or None
+    requested_model = str(request.model or "").strip()
+    allowed_models = {
+        str(item).strip()
+        for item in (defaults.get("allowed_models") or [])
+        if str(item).strip()
+    }
+    selected_model = (
+        requested_model
+        if requested_model and (not allowed_models or requested_model in allowed_models)
+        else default_model
+    )
+    config = {
+        **dict(defaults.get("config") or {}),
+        **dict(request.config or {}),
+    }
+    return request.model_copy(
+        update={
+            "agent_id": request.agent_id or defaults.get("agent_id"),
+            "model": selected_model,
+            "config": config,
+        }
+    )
+
+
+def _manifest_mcp_overrides(config: dict[str, Any]) -> list[str]:
+    """Translate declarative MCP bindings into native Codex config keys."""
+
+    overrides: list[str] = []
+    servers = config.get("mcp_servers") or []
+    if not isinstance(servers, (list, tuple)):
+        return overrides
+    for server in servers:
+        if not isinstance(server, dict):
+            continue
+        name = str(server.get("name") or "").strip()
+        url = str(server.get("url") or "").strip()
+        if not name or not url:
+            continue
+        overrides.append(f"mcp_servers.{name}.url={url}")
+        env_key = str(server.get("env_key") or "").strip()
+        if env_key:
+            overrides.append(f"mcp_servers.{name}.bearer_token_env_var={env_key}")
+    return overrides
+
+
 def _create_codex(context: RuntimeLaunchContext) -> RuntimeAdapter:
     client_factory = context.services.codex_client_factory or AsyncCodexClient
-    overrides = list(context.config.get("codex_overrides") or [])
+    config = dict(context.config)
+    overrides = list(config.get("codex_overrides") or [])
+    manifest_mcp_overrides = _manifest_mcp_overrides(config)
+    overrides.extend(item for item in manifest_mcp_overrides if item not in overrides)
+    projected_config = kernel_start_request_defaults(context).get("config") or {}
+    if manifest_mcp_overrides and projected_config.get("sandbox") == "workspace-write":
+        network_override = "sandbox_workspace_write.network_access=true"
+        if network_override not in overrides:
+            overrides.append(network_override)
     # Studio's default collaboration mode must expose Codex's structured
     # request_user_input tool; the upstream feature is intentionally off by
     # default outside Plan mode.  This stays process-local to the isolated
@@ -262,4 +334,9 @@ def create_runtime_adapter(context: RuntimeLaunchContext) -> RuntimeAdapter:
     return build_default_runtime_registry().create(context)
 
 
-__all__ = ["build_default_runtime_registry", "create_runtime_adapter"]
+__all__ = [
+    "apply_runtime_start_request_defaults",
+    "build_default_runtime_registry",
+    "create_runtime_adapter",
+    "kernel_start_request_defaults",
+]

@@ -94,6 +94,6 @@ Do not remove Agent source files or `agentengine.yaml` to reset conversations. T
 
 ## UI package and source
 
-Wheel users do not need to build the Studio frontend: the wheel includes the production static assets. Studio contributors work in the tracked `ksadk/studio/react-ui` source directory. The generated `ksadk/studio/static` directory is not committed, but is generated and packaged automatically when a wheel is built.
+Wheel users do not need to build the Studio frontend: the wheel includes the reviewed production static assets. The public repository, sdist, and wheel do not include editable Studio React / TypeScript source; the public release gate validates and packages only `ksadk/studio/static`.
 
 See [build and package](build-and-package) and the [Web UI source and release contract](web-ui-source) for details.

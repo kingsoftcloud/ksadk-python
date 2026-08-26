@@ -117,13 +117,13 @@ OPENAI_MODEL_NAME=my-model
 | 变量 | 用途 |
 | --- | --- |
 | `KSYUN_IAM_ENDPOINT` | 可选：覆盖 IAM 公网 endpoint；未配置时使用 `iam.api.ksyun.com` |
-| `KSYUN_IAM_INTRANET_URL` | 可选：覆盖 IAM 内网 endpoint fallback；未配置时使用默认 `iam.inner.api.ksyun.com` |
+| `KSYUN_IAM_INTRANET_URL` | 可选：覆盖由平台提供的 IAM 内网 endpoint；公开环境通常留空 |
 | `IAM_INTRANET_URL` | `KSYUN_IAM_INTRANET_URL` 的兼容别名 |
 
 <Callout type="info">
-  当公网 IAM 返回“inner account can only access through intranet”这类错误时，
-  运行时会尝试内网 endpoint。外部环境通常不会命中该分支；内部环境如需覆盖地址，
-  可设置 `KSYUN_IAM_INTRANET_URL` 或 `IAM_INTRANET_URL`。
+  仅当平台运维方提供了已批准的内网 endpoint 时，才设置
+  `KSYUN_IAM_INTRANET_URL` 或 `IAM_INTRANET_URL`。不要把该地址写入项目文件、
+  文档示例或 Agent manifest。
 </Callout>
 
 ## 会话存储
@@ -155,6 +155,28 @@ OPENAI_MODEL_NAME=my-model
 KSADK_STM_BACKEND=sqlite
 KSADK_STM_PATH=.agentengine/ui/sessions.sqlite
 ```
+
+## Agent Kernel（0.8.2，可选）
+
+| 变量 | 用途 |
+| --- | --- |
+| `KSADK_AGENT_KERNEL` | 本地显式启用 Kernel ingress；默认关闭 |
+| `AGENT_KERNEL_ENABLED` | 托管部署由平台投射的启用开关；旧 Agent 未投射时继续走历史路径 |
+| `AGENT_KERNEL_STORE_DRIVER` | `memory`、本地 `sqlite` 或 `postgres`；托管生产组合支持 ephemeral memory 或 durable PostgreSQL |
+| `AGENT_KERNEL_STORE_DSN` | `postgres` 时必填；本地 `sqlite` 时可填写数据库文件路径；memory 不需要 |
+| `AGENT_KERNEL_DURABILITY_TIER` | `ephemeral` 或 `durable`；托管 memory 必须显式选择 `ephemeral` |
+| `AGENT_KERNEL_AUTHORITY_MODE` | `local` 或 `hosted`；托管模式只信任 Server permit |
+| `AGENT_CONTROL_JWKS_URL` | 托管 Runtime 验证 Server 签名 permit 的 JWKS 地址，由平台注入 |
+| `AGENT_CONTROL_PERMIT_ISSUER` | 受信 permit issuer，由平台注入 |
+| `AGENT_KERNEL_CONTRACT_DIGEST` | 控制面与 Runtime 的冻结合同 digest；托管不匹配时拒绝启动 |
+| `AGENT_KERNEL_CAPABILITY_DIGEST` | 实际 Runtime capability matrix digest；与适配器声明不匹配时拒绝准入 |
+| `AGENT_BUNDLE_DIGEST` | 当前不可变 Agent Bundle 标识，用于 owner 与恢复证据 |
+
+<Callout type="warning" title="PostgreSQL 不是默认依赖">
+  单副本、无需跨 Pod 恢复的托管 Agent 可使用 `memory` 并显式声明
+  `AGENT_KERNEL_DURABILITY_TIER=ephemeral`。需要 durable Inbox、跨 Pod takeover
+  或高可用时再选择 `postgres`；此时缺少 `AGENT_KERNEL_STORE_DSN` 会启动失败。
+</Callout>
 
 ## Checkpoint 存储
 

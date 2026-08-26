@@ -75,6 +75,7 @@ jobs:
           python-version: "3.11"
 
       - name: Set up Node
+        if: ${{ hashFiles('ksadk/studio/react-ui/package-lock.json') != '' }}
         uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -117,8 +118,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: npm
-          cache-dependency-path: ksadk/studio/react-ui/package-lock.json
 
       - name: Install dependencies
         run: uv sync --extra all
@@ -129,8 +128,8 @@ jobs:
       - name: Verify google-adk version
         run: uv run --no-sync python -c "from importlib.metadata import version; print('google-adk', version('google-adk'))"
 
-      # Static frontend assets are deliberately not tracked in the Python
-      # source tree; generate both payloads before wheel build.
+      # Internal branches compile Studio from source. Public candidates omit
+      # editable Studio source and carry only reviewed compiled assets.
       - name: Build frontend static assets
         run: make build-frontend
 

@@ -700,7 +700,25 @@ def create_studio_app(
         return await studio.compose_agent_conversation(
             messages=[item.model_dump(mode="json") for item in payload.messages],
             model_profile_id=payload.model_profile_id,
+            runtime_type=payload.runtime_type,
+            agent_model_profile_ids=payload.agent_model_profile_ids,
+            agent_default_model_profile_id=payload.agent_default_model_profile_id,
+            tool_resource_ids=payload.tool_resource_ids,
+            mcp_resource_ids=payload.mcp_resource_ids,
+            skill_resource_ids=payload.skill_resource_ids,
+            request_id=payload.request_id,
         )
+
+    @app.get("/api/v1/authoring/conversations:status/{request_id}")
+    async def get_authoring_conversation_status(request_id: str):
+        status = studio.conversation_authoring_status(request_id)
+        if status is None:
+            raise StudioError(
+                "AUTHORING_STATUS_NOT_FOUND",
+                "未找到该构建请求的阶段记录",
+                status_code=404,
+            )
+        return status
 
     @app.post("/api/v1/authoring/imports:inspect")
     async def inspect_agent_import(file: UploadFile = File(...)):

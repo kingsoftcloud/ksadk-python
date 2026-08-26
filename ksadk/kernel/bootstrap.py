@@ -905,6 +905,7 @@ async def bootstrap_agent_kernel_runtime_from_env(
     runtime_executor: Any | None = None,
     launch_context: Any | None = None,
     start_request_defaults: dict[str, Any] | None = None,
+    session_service: Any | None = None,
 ) -> AgentKernelRuntime | None:
     """Operator env 投影 -> 生产 runtime（AGENT_KERNEL_ENABLED=1 时）。
 
@@ -1000,7 +1001,13 @@ async def bootstrap_agent_kernel_runtime_from_env(
         from ksadk.kernel.memory_store import InMemoryAgentKernelStore
         from ksadk.sessions.in_memory import InMemorySessionService
 
-        session_service = InMemorySessionService()
+        # The HTTP Session routes and the Kernel worker must project through
+        # one physical Session log.  The Runtime App passes its owned service
+        # here so a foreground kernel stream remains replayable through
+        # ListSessionEvents/ListSessionMessages after refresh.  Standalone
+        # bootstrap callers retain the historical in-memory default.
+        if session_service is None:
+            session_service = InMemorySessionService()
         session_events = SessionServiceEventStore(session_service)
         store = InMemoryAgentKernelStore(session_events)
         # Explicit ephemeral hosted mode still needs replay protection while

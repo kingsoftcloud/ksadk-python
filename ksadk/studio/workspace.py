@@ -58,8 +58,10 @@ class Workspace:
 
     def resolve(self, relative: Path | str, *, must_exist: bool = False) -> Path:
         raw = Path(relative)
-        # Reject lexical traversal before any path normalization and require
-        # resulting absolute path to remain under workspace root.
+        # Reject lexical traversal before asking the filesystem to resolve any
+        # symlink.  The post-resolution relative_to check below is still needed
+        # because a path that is lexically inside the workspace may contain a
+        # symlink that escapes it.
         if ".." in raw.parts:
             raise StudioError(
                 "WORKSPACE_PATH_FORBIDDEN",
@@ -77,12 +79,10 @@ class Workspace:
                     status_code=403,
                     details={"path": str(relative)},
                 ) from exc
-            candidate = Path(os.path.abspath(os.path.expanduser(str(raw))))
+            candidate = raw.resolve(strict=must_exist)  # lgtm[py/path-injection]
         else:
-            candidate = Path(os.path.abspath(os.path.expanduser(str(self.root / raw))))
+            candidate = (self.root / raw).resolve(strict=must_exist)  # lgtm[py/path-injection]
         try:
-            if os.path.commonpath([str(candidate), str(self.root)]) != str(self.root):
-                raise ValueError("outside_workspace")
             candidate.relative_to(self.root)
         except ValueError as exc:
             raise StudioError(
@@ -91,8 +91,6 @@ class Workspace:
                 status_code=403,
                 details={"path": str(relative)},
             ) from exc
-        if must_exist and not candidate.exists():
-            raise FileNotFoundError(str(candidate))
         return candidate
 
     def relative(self, path: Path | str) -> str:

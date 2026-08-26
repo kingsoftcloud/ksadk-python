@@ -320,15 +320,23 @@ def map_run_request(
     content: Any,
     invocation_id: str | None = None,
     trusted: TrustedRuntimeContext,
+    runtime_options: Mapping[str, Any] | None = None,
 ) -> AgentControlCommand:
-    """RunAgent（agentengine API）-> enqueue。InvocationId 是 source/correlation ref。"""
+    """RunAgent（agentengine API）-> enqueue。InvocationId 是 source/correlation ref。
 
+    runtime_options 携带有界的 run 级选择(model 等);worker 侧按部署
+    defaults/白名单校验,不受调用方信任。
+    """
+
+    payload: dict[str, Any] = {"content": content}
+    if runtime_options:
+        payload["runtime_options"] = dict(runtime_options)
     return _command(
         trusted=trusted,
         command_type="enqueue",
         session_id=session_id,
         idempotency_key=idempotency_key,
-        payload={"content": content},
+        payload=payload,
         correlation_id=invocation_id,
     )
 

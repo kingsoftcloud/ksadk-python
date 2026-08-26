@@ -18,7 +18,13 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from .config import _LOOPBACK_HOSTS, ProxyConfig
-from .transform import Streamer, UnsupportedToolsError, chat_to_response, responses_to_chat
+from .transform import (
+    Streamer,
+    UnsupportedToolsError,
+    chat_to_response,
+    clamp_reasoning_effort,
+    responses_to_chat,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -159,13 +165,26 @@ def create_app(config: ProxyConfig) -> FastAPI:
             )
         # codex 会对内建能力发内部伪模型名(如 auto_review guardian 用 codex-auto-review),
         # 单上游代理必须落回配置的真实模型,否则上游按未知模型 403。
-        if config.upstream_model and chat_req.get("model") != config.upstream_model:
+        # 真实模型名(codex 端已配置 model= 或 thread 级 model 覆盖)必须原样透传:
+        # RunAgent 的 Model 覆盖靠它生效,整体改写会把覆盖吞掉(终验 403 根因)。
+        requested_model = str(chat_req.get("model") or "")
+        if (
+            config.upstream_model
+            and requested_model.startswith("codex-")
+            and requested_model != config.upstream_model
+        ):
             logger.debug(
-                "responses model rewrite: %s -> %s",
-                chat_req.get("model"),
+                "responses pseudo model rewrite: %s -> %s",
+                requested_model,
                 config.upstream_model,
             )
             chat_req["model"] = config.upstream_model
+        # 上游模型族的 reasoning_effort 上限不同(qwen3.7 对 xhigh 400),
+        # 按改写后的真实上游模型钳位(codex 对自家模型默认发 xhigh)。
+        if chat_req.get("reasoning_effort"):
+            chat_req["reasoning_effort"] = clamp_reasoning_effort(
+                chat_req["model"], chat_req["reasoning_effort"]
+            )
         rid = "resp_" + uuid.uuid4().hex[:24]
         model = body.get("model")
         started = time.monotonic()

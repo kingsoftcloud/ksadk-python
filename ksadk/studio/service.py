@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -540,11 +541,30 @@ class StudioService:
         *,
         messages: list[dict[str, str]],
         model_profile_id: str,
+        runtime_type: str = "codex",
+        agent_model_profile_ids: list[str] | None = None,
+        agent_default_model_profile_id: str | None = None,
+        tool_resource_ids: list[str] | None = None,
+        mcp_resource_ids: list[str] | None = None,
+        skill_resource_ids: list[str] | None = None,
+        request_id: str | None = None,
     ) -> dict:
         return await self.authoring.compose_conversation(
             messages=messages,
             model_profile_id=model_profile_id,
+            runtime_type=runtime_type,
+            agent_model_profile_ids=agent_model_profile_ids,
+            agent_default_model_profile_id=agent_default_model_profile_id,
+            tool_resource_ids=tool_resource_ids,
+            mcp_resource_ids=mcp_resource_ids,
+            skill_resource_ids=skill_resource_ids,
+            request_id=request_id,
         )
+
+    def conversation_authoring_status(self, request_id: str) -> dict | None:
+        """Return the in-memory stage snapshot for one authoring request."""
+
+        return self.authoring.conversation_status(request_id)
 
     def is_codex_agent(self, agent_id: str) -> bool:
         """Return whether one Agent is backed by the Codex YAML contract."""
@@ -1795,6 +1815,12 @@ class StudioService:
         *,
         idempotency_key: str,
     ) -> Operation:
+        logging.getLogger(__name__).info(
+            "deployment submitted: build=%s idempotencyKey=%s environment=%s",
+            build_id,
+            idempotency_key,
+            getattr(request, "environment", "-"),
+        )
         try:
             codex_build = self.codex_builds.get(build_id)
         except StudioError as exc:
@@ -2034,6 +2060,21 @@ class StudioService:
                 "AGENTENGINE_REGION", os.environ.get("KSYUN_REGION", "cn-beijing-6")
             ),
             "cloudBucket": os.environ.get("KS3_BUCKET", ""),
+            "cloudAccountId": (
+                os.environ.get("KSYUN_ACCOUNT_ID", "").strip()
+            ),
+            # AK/SK 不回显(避免本地 UI 回传 secret);只暴露配置状态。
+            # 已配置 = 启动环境或已持久化 settings 里 AK+SK 齐全。
+            "cloudAccountConfigured": bool(
+                (
+                    os.environ.get("KSYUN_ACCESS_KEY")
+                    or os.environ.get("KS3_ACCESS_KEY", "")
+                ).strip()
+                and (
+                    os.environ.get("KSYUN_SECRET_KEY")
+                    or os.environ.get("KS3_SECRET_KEY", "")
+                ).strip()
+            ),
             "cloudSignedAccountConfigured": bool(
                 (
                     os.environ.get("KSYUN_ACCESS_KEY")
@@ -2058,8 +2099,20 @@ class StudioService:
             "cloudRegion",
             "cloudBucket",
             "traceContent",
+            # 云账号:AK/SK 留空 = 不修改(保留已存值);AccountID 可单独更新。
+            "cloudAccessKey",
+            "cloudSecretKey",
+            "cloudAccountId",
         }
         data = {k: payload[k] for k in allowed if k in payload}
+        if "cloudAccessKey" in data and not str(data["cloudAccessKey"]).strip():
+            data.pop("cloudAccessKey")
+        if "cloudSecretKey" in data and not str(data["cloudSecretKey"]).strip():
+            data.pop("cloudSecretKey")
+        if "cloudAccountId" in data:
+            data["cloudAccountId"] = str(data["cloudAccountId"]).strip()
+            if not data["cloudAccountId"]:
+                data.pop("cloudAccountId")
         if data.get("sandbox") and data["sandbox"] not in {
             "read-only",
             "workspace-write",
@@ -2075,7 +2128,13 @@ class StudioService:
             raise StudioError("SETTINGS_INVALID", "codexProxy 取值非法", status_code=422)
         path = self.workspace.resolve(".agentkit/settings.yaml")
         self.workspace.atomic_write_yaml(path, data)
-        self._apply_settings_to_env(data)
+        # env 桥接用落盘后的全量数据:局部更新(只改 AccountID)时,
+        # 已持久化的 AK/SK 也要继续桥接,否则签名凭证丢失。
+        try:
+            persisted = load_yaml_file(path) or {}
+        except Exception:
+            persisted = data
+        self._apply_settings_to_env(persisted if isinstance(persisted, dict) else data)
         if self._cloud_gateway_override is None:
             self.cloud.gateway = self._configured_cloud_gateway()
         return self.get_settings()
@@ -2113,6 +2172,14 @@ class StudioService:
             os.environ["KS3_BUCKET"] = data["cloudBucket"]
         if "traceContent" in data:
             os.environ["KSADK_STUDIO_TRACE_CONTENT"] = "1" if data["traceContent"] else "0"
+        # 云账号凭证:桥接到 KSYUN_* env(AgentEngineClient 的 V4 签名与
+        # X-Ksc-Account-Id 注入都从这里取值)。
+        if data.get("cloudAccessKey"):
+            os.environ["KSYUN_ACCESS_KEY"] = str(data["cloudAccessKey"])
+        if data.get("cloudSecretKey"):
+            os.environ["KSYUN_SECRET_KEY"] = str(data["cloudSecretKey"])
+        if data.get("cloudAccountId"):
+            os.environ["KSYUN_ACCOUNT_ID"] = str(data["cloudAccountId"])
 
     @staticmethod
     def _configured_cloud_gateway() -> CloudDeploymentGateway:

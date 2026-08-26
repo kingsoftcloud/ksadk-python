@@ -818,7 +818,7 @@ class StudioSharedWebBridge:
         model_id = spec.model
         metadata = dict(spec.metadata or {})
         resolved_display_name = display_name or spec.model
-        max_output_tokens = spec.parameters.max_tokens
+        max_output_tokens = spec.parameters.max_tokens or 4096
         return {
             **metadata,
             "id": model_id,

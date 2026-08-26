@@ -377,8 +377,20 @@ def create_runtime_app(
             runtime_executor=config.runtime_executor,
             launch_context=config.launch_context,
             start_request_defaults=request_defaults,
+            session_service=state.resolve_session_service(),
         )
         app.state.agent_kernel_runtime = kernel_runtime
+        if kernel_runtime is not None:
+            # Kernel canonical events are the replay authority for the normal
+            # Session APIs as well.  In memory/ephemeral mode bootstrap reuses
+            # the app-owned service above; in PostgreSQL mode it owns the
+            # durable service and the HTTP routes must adopt that exact one.
+            # Keeping two services made foreground SSE look correct while a
+            # later ListSessionEvents call returned an empty history forever.
+            kernel_session_service = kernel_runtime.config.session_service
+            if kernel_session_service is None:  # pragma: no cover - defensive
+                raise RuntimeError("agent kernel runtime has no Session service")
+            state.session_service = kernel_session_service
         try:
             if state.a2a_bootstrap is not None:
                 await state.a2a_bootstrap.start()

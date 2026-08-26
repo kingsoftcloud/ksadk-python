@@ -305,9 +305,10 @@ def resolve_identity(
             access_keys = _call_list_all_user_access_keys(client, sdk_parts)
             user_name = _find_username_by_ak(access_keys, access_key)
             if not user_name:
-                # AK 不在子用户列表（可能是主账号 AK），无法反查 user uuid
-                logger.warning(
-                    "AK 指纹 %s 未在 ListAllUserAccessKeys 找到匹配（可能是主账号 AK）",
+                # 主账号 AK 不会出现在子用户列表，属预期路径：无子账号 uuid 可反查，
+                # 调用方将只注入主账号维度 header（account_id）。
+                logger.info(
+                    "AK 为主账号密钥（指纹 %s），按主账号身份使用，不注入子账号 uuid",
                     fingerprint,
                 )
                 return None

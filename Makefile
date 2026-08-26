@@ -183,11 +183,16 @@ studio-react-install-browser:
 	uv run playwright install chromium
 
 studio-react-test:
-	npm --prefix ksadk/studio/react-ui ci
-	npm --prefix ksadk/studio/react-ui test
-	npm --prefix ksadk/studio/react-ui run test:ui
-	cd ksadk/studio/react-ui && npx tsc --noEmit
-	npm --prefix ksadk/studio/react-ui run build
+	@if [ -f "ksadk/studio/react-ui/package.json" ]; then \
+		npm --prefix ksadk/studio/react-ui ci; \
+		npm --prefix ksadk/studio/react-ui test; \
+		npm --prefix ksadk/studio/react-ui run test:ui; \
+		(cd ksadk/studio/react-ui && npx tsc --noEmit); \
+		npm --prefix ksadk/studio/react-ui run build; \
+	else \
+		echo "React Studio source is not part of this public candidate; testing reviewed compiled assets"; \
+		test -f "ksadk/studio/static/index.html"; \
+	fi
 	uv run pytest tests/studio/test_style_system.py -q
 	PYTHONPATH=. uv run python tests/studio/e2e/studio_browser_smoke.py
 	PYTHONPATH=. uv run python tests/studio/e2e/studio_responsive_smoke.py
@@ -729,10 +734,15 @@ verify-ksadk-web-wheel-static:
 		--expected-version "$(patsubst v%,%,$(KSADK_WEB_VERSION))"
 
 build-studio-static:
-	@echo "Build React Studio static assets from $(STUDIO_REACT_DIR)"
-	npm --prefix "$(STUDIO_REACT_DIR)" ci
-	npm --prefix "$(STUDIO_REACT_DIR)" run build
+	@if [ -f "$(STUDIO_REACT_DIR)/package.json" ]; then \
+		echo "Build React Studio static assets from $(STUDIO_REACT_DIR)"; \
+		npm --prefix "$(STUDIO_REACT_DIR)" ci; \
+		npm --prefix "$(STUDIO_REACT_DIR)" run build; \
+	else \
+		echo "React Studio source is intentionally absent; using reviewed compiled assets from $(STUDIO_STATIC_DIR)"; \
+	fi
 	@test -f "$(STUDIO_STATIC_DIR)/index.html" || (echo "ERROR: Studio static index.html missing after build" && exit 1)
+	@test -n "$$(find "$(STUDIO_STATIC_DIR)/assets" -type f -print -quit 2>/dev/null)" || (echo "ERROR: Studio compiled assets are missing" && exit 1)
 
 sync-hosted-ui: sync-ksadk-web-static
 	@echo "sync-hosted-ui is deprecated; static assets now come from $(KSADK_WEB_PACKAGE)."
