@@ -66,6 +66,8 @@ git diff --check
 
 如果本次需要绑定新的 UI 版本，确认 `KSADK_WEB_VERSION` 默认值、README、docs-site、approval record 都引用同一个 npm 版本。
 
+RuntimeEvent schema v2 发布的额外约束：当 Python 发布把运行事件主路径切到 canonical `schema_version=2`（能力描述 `RuntimeEventVersions=[1,2]`、`RuntimeEventDefault=2`、`RuntimeEventV1ProjectionModes=["snapshot_only","identity_replace"]`、`RuntimeEventV1ProjectionDefault="snapshot_only"`）时，配套的 `ksadk-web`、Studio react-ui 与 `agentengine-hosted-ui` 必须是与本次发布一致的 identity-aware 版本，才能按 run/scope/item/part identity 正确归并流式与回放输出。候选报告必须记录 Python 与三个 UI 仓库各自的 commit 和包版本，作为同一发布单元评审。
+
 更新审批记录：
 
 ```bash

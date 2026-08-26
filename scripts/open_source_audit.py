@@ -49,8 +49,17 @@ class ContentRule:
     name: str
     pattern: re.Pattern[str]
     description: str
+    path_prefixes: tuple[str, ...] = ()
 
-    def matches(self, text: str) -> bool:
+    def matches(self, path: str, text: str) -> bool:
+        normalized = normalize_path(path)
+        if self.path_prefixes and not any(
+            normalized == prefix
+            or normalized.startswith(prefix)
+            or f"/{prefix}" in normalized
+            for prefix in self.path_prefixes
+        ):
+            return False
         return self.pattern.search(text) is not None
 
 
@@ -71,6 +80,14 @@ class AuditResult:
 
 
 COMMON_RULES = (
+    DenyRule(
+        name="studio-frontend-source",
+        prefixes=("ksadk/studio/react-ui/",),
+        description=(
+            "editable Studio React/TypeScript source stays internal; public source and "
+            "Python artifacts carry reviewed compiled static assets only"
+        ),
+    ),
     DenyRule(
         name="zread-output",
         prefixes=(".zread/",),
@@ -226,6 +243,29 @@ CONTENT_AUDIT_TARGETS = {"public-repo", "ksadk-web-candidate", "sdist", "wheel"}
 
 CONTENT_RULES = (
     ContentRule(
+        name="public-doc-internal-endpoint",
+        pattern=re.compile(
+            r"\b(?:aicp\.(?:inner|internal)\.api|iam\.inner\.api)\.ksyun\.com\b"
+        ),
+        description=(
+            "curated public documentation must not publish private control-plane "
+            "or identity endpoints"
+        ),
+        path_prefixes=("README", "CHANGELOG.md", "docs/", "docs-site/"),
+    ),
+    ContentRule(
+        name="public-doc-personal-agent-name",
+        pattern=re.compile(r"\b0611agent-xiayu\b", re.IGNORECASE),
+        description="public examples must use neutral Agent names, not personal test resources",
+        path_prefixes=("README", "CHANGELOG.md", "docs/", "docs-site/"),
+    ),
+    ContentRule(
+        name="public-doc-internal-scm",
+        pattern=re.compile(r"\bezone\b", re.IGNORECASE),
+        description="public documentation must not expose internal source-control systems",
+        path_prefixes=("README", "CHANGELOG.md", "docs/", "docs-site/"),
+    ),
+    ContentRule(
         name="private-doc-domain",
         pattern=re.compile(
             r"https?://(?:ksadk\.kingsoft\.com/docs|private-docs\.example\.invalid)"
@@ -349,6 +389,7 @@ TEXT_SUFFIXES = {
     ".json",
     ".lock",
     ".md",
+    ".mdx",
     ".py",
     ".sh",
     ".svg",
@@ -429,7 +470,7 @@ def audit_file_contents(root: Path, paths: Iterable[str]) -> AuditResult:
 
         checked += 1
         for rule in CONTENT_RULES:
-            if rule.matches(text):
+            if rule.matches(normalized, text):
                 violations.append(
                     Violation(path=normalized, rule=rule.name, description=rule.description)
                 )

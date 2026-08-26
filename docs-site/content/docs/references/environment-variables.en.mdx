@@ -119,14 +119,13 @@ Hosted deployments can inject a shared policy through `AGENTENGINE_MODEL_POLICY_
 | Variable | Purpose |
 | --- | --- |
 | `KSYUN_IAM_ENDPOINT` | Optional public IAM endpoint override; defaults to `iam.api.ksyun.com` when unset |
-| `KSYUN_IAM_INTRANET_URL` | Optional IAM intranet endpoint fallback override; defaults to `iam.inner.api.ksyun.com` when unset |
+| `KSYUN_IAM_INTRANET_URL` | Optional platform-provided IAM intranet endpoint override; normally unset in public environments |
 | `IAM_INTRANET_URL` | Compatibility alias for `KSYUN_IAM_INTRANET_URL` |
 
 <Callout type="info">
-  When public IAM returns an error such as “inner account can only access through
-  intranet”, the runtime retries the intranet endpoint. Public environments
-  normally do not hit this branch; internal environments can override the address
-  with `KSYUN_IAM_INTRANET_URL` or `IAM_INTRANET_URL`.
+  Set `KSYUN_IAM_INTRANET_URL` or `IAM_INTRANET_URL` only when a platform
+  operator supplies an approved intranet endpoint. Do not put that address in
+  project files, documentation examples, or Agent manifests.
 </Callout>
 
 ## Session Storage
@@ -158,6 +157,29 @@ Local UI usually sets:
 KSADK_STM_BACKEND=sqlite
 KSADK_STM_PATH=.agentengine/ui/sessions.sqlite
 ```
+
+## Agent Kernel (0.8.2, Optional)
+
+| Variable | Purpose |
+| --- | --- |
+| `KSADK_AGENT_KERNEL` | explicitly enable Kernel ingress for local development; disabled by default |
+| `AGENT_KERNEL_ENABLED` | platform-projected hosted enable flag; older Agents without it remain on the historical path |
+| `AGENT_KERNEL_STORE_DRIVER` | `memory`, local `sqlite`, or `postgres`; the hosted production composition supports ephemeral memory or durable PostgreSQL |
+| `AGENT_KERNEL_STORE_DSN` | required for `postgres`; may be a database file path for local `sqlite`; not used by memory |
+| `AGENT_KERNEL_DURABILITY_TIER` | `ephemeral` or `durable`; hosted memory must explicitly select `ephemeral` |
+| `AGENT_KERNEL_AUTHORITY_MODE` | `local` or `hosted`; hosted mode trusts Server permits only |
+| `AGENT_CONTROL_JWKS_URL` | platform-projected JWKS URL used to verify Server-signed permits |
+| `AGENT_CONTROL_PERMIT_ISSUER` | trusted permit issuer projected by the platform |
+| `AGENT_KERNEL_CONTRACT_DIGEST` | frozen control-plane / Runtime contract digest; hosted startup rejects a mismatch |
+| `AGENT_KERNEL_CAPABILITY_DIGEST` | digest of the actual Runtime capability matrix; admission rejects an adapter mismatch |
+| `AGENT_BUNDLE_DIGEST` | immutable Agent Bundle identity used by owner and recovery evidence |
+
+<Callout type="warning" title="PostgreSQL is not the default dependency">
+  A single-replica hosted Agent that does not need cross-Pod recovery can use
+  `memory` with `AGENT_KERNEL_DURABILITY_TIER=ephemeral`. Choose `postgres` only
+  for a durable Inbox, cross-Pod takeover, or high availability; a missing
+  `AGENT_KERNEL_STORE_DSN` then fails startup.
+</Callout>
 
 ## Checkpoint Storage
 
@@ -319,7 +341,7 @@ KSADK_MCP_SERVERS='[{"name":"docs","url":"http://127.0.0.1:9000/mcp"}]'
 
 | Variable | Purpose |
 | --- | --- |
-| `KSADK_WEB_VERSION` | published `@kingsoftcloud/ksadk-web` npm version used by `make sync-ksadk-web-static`; the 0.8.x default is `0.3.1`. Publish and verify a new version before using it in a wheel build. |
+| `KSADK_WEB_VERSION` | published `@kingsoftcloud/ksadk-web` npm version used by `make sync-ksadk-web-static`; the 0.8.2 default is `0.3.2`. Publish and verify a new version before using it in a wheel build. |
 | `KSADK_WEB_PACKAGE` | npm package name used for local UI static sync; default `@kingsoftcloud/ksadk-web` |
 | `KSADK_WEB_TARBALL_NAME` | saved filename when `KSADK_WEB_RELEASE_URL` is set; npm pack mode uses the real tarball filename returned by npm |
 | `KSADK_WEB_RELEASE_URL` | optional fallback; when set, skips npm pack and downloads from this tarball URL |

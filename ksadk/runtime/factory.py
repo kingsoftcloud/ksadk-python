@@ -4,20 +4,168 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
 from ksadk.codex.client import AsyncCodexClient
 from ksadk.codex.runtime import CodexRuntimeAdapter
 from ksadk.runners.base_runner import BaseRunner
+from ksadk.runtime.adapter import StartRequest
 from ksadk.runtime.adapter import RuntimeAdapter, RuntimeRegistry
 from ksadk.runtime.framework_adapters import ADKRuntimeAdapter, LangGraphRuntimeAdapter
 from ksadk.runtime.launch import RuntimeLaunchContext
 
 
+def kernel_start_request_defaults(context: RuntimeLaunchContext) -> dict[str, Any]:
+    """Project an admitted launch manifest into immutable Kernel turn defaults.
+
+    The durable Kernel owns enqueue ordering, while the deployment manifest
+    owns model, instructions, sandbox and approval policy.  Keeping this
+    projection beside the RuntimeAdapter factory prevents the Kernel ingress
+    from trusting caller-supplied execution policy.
+    """
+
+    config = dict(context.config)
+    defaults: dict[str, Any] = {}
+    detection_name = str(getattr(context.detection, "name", "") or "").strip()
+    if detection_name:
+        defaults["agent_id"] = detection_name
+    model = str(config.get("model") or "").strip()
+    if model:
+        defaults["model"] = model
+    raw_allowed_models = (
+        config.get("models") or config.get("allowed_models") or config.get("allowedModels") or []
+    )
+    allowed_models = (
+        {str(item).strip() for item in raw_allowed_models if str(item).strip()}
+        if isinstance(raw_allowed_models, (list, tuple, set))
+        else set()
+    )
+    # 不把默认 model 自动加进白名单:白名单只在显式声明 models/allowedModels
+    # 时才存在(显式声明 = 收紧;只配默认 = 不限制 run 级覆盖)。
+    if allowed_models:
+        defaults["allowed_models"] = sorted(allowed_models)
+    if context.runtime_type != "codex":
+        return defaults
+
+    prompt = str(config.get("prompt") or "").strip()
+    task_prompt = str(config.get("task_prompt") or "").strip()
+    base_instructions = prompt
+    if task_prompt:
+        base_instructions = f"{prompt}\n\n{task_prompt}" if prompt else task_prompt
+
+    raw_sandbox = str(config.get("sandbox") or "read_only").strip().lower()
+    raw_approval = str(config.get("approval_mode") or "").strip().lower()
+    approval_profiles = {
+        "ask": ("workspace-write", "manual"),
+        "risk": ("workspace-write", "auto_review"),
+        "full": ("full-access", "deny_all"),
+    }
+    sandbox_profiles = {
+        "read_only": ("read-only", "deny_all"),
+        "read-only": ("read-only", "deny_all"),
+        "workspace_write": ("workspace-write", "deny_all"),
+        "workspace-write": ("workspace-write", "deny_all"),
+        "workspace_write_auto": ("workspace-write", "auto_review"),
+        "workspace-write-auto": ("workspace-write", "auto_review"),
+        "full_access": ("full-access", "deny_all"),
+        "full-access": ("full-access", "deny_all"),
+    }
+    if raw_approval in approval_profiles:
+        sandbox, approval = approval_profiles[raw_approval]
+    else:
+        sandbox, default_approval = sandbox_profiles.get(raw_sandbox, ("read-only", "deny_all"))
+        approval = raw_approval or default_approval
+
+    request_config: dict[str, Any] = {
+        "sandbox_read_only": sandbox == "read-only",
+        "sandbox": sandbox,
+        "approval_mode": approval,
+        "cwd": str(context.project_dir),
+        "summary": "auto",
+        "ephemeral": False,
+    }
+    if base_instructions:
+        request_config["base_instructions"] = base_instructions
+    defaults["config"] = request_config
+    return defaults
+
+
+def apply_runtime_start_request_defaults(
+    context: RuntimeLaunchContext,
+    request: StartRequest,
+) -> StartRequest:
+    """Apply deployment-owned launch policy to a direct runtime start.
+
+    AgentKernelWorker already projects these defaults before ``adapter.start``.
+    Foreground RunAgent, ``/run_sse`` and OpenAI-compatible routes also create
+    ``StartRequest`` objects directly, so they must use the same projection or
+    a deployed Codex agent silently falls back to the generic Codex role.
+
+    Request-local config is internal runtime state, not caller-owned policy;
+    retain it for local Studio builds while using the manifest model as the
+    fallback (and as the fail-closed fallback for an explicit allow-list).
+    """
+
+    defaults = kernel_start_request_defaults(context)
+    default_model = str(defaults.get("model") or "").strip() or None
+    requested_model = str(request.model or "").strip()
+    allowed_models = {
+        str(item).strip()
+        for item in (defaults.get("allowed_models") or [])
+        if str(item).strip()
+    }
+    selected_model = (
+        requested_model
+        if requested_model and (not allowed_models or requested_model in allowed_models)
+        else default_model
+    )
+    config = {
+        **dict(defaults.get("config") or {}),
+        **dict(request.config or {}),
+    }
+    return request.model_copy(
+        update={
+            "agent_id": request.agent_id or defaults.get("agent_id"),
+            "model": selected_model,
+            "config": config,
+        }
+    )
+
+
+def _manifest_mcp_overrides(config: dict[str, Any]) -> list[str]:
+    """Translate declarative MCP bindings into native Codex config keys."""
+
+    overrides: list[str] = []
+    servers = config.get("mcp_servers") or []
+    if not isinstance(servers, (list, tuple)):
+        return overrides
+    for server in servers:
+        if not isinstance(server, dict):
+            continue
+        name = str(server.get("name") or "").strip()
+        url = str(server.get("url") or "").strip()
+        if not name or not url:
+            continue
+        overrides.append(f"mcp_servers.{name}.url={url}")
+        env_key = str(server.get("env_key") or "").strip()
+        if env_key:
+            overrides.append(f"mcp_servers.{name}.bearer_token_env_var={env_key}")
+    return overrides
+
+
 def _create_codex(context: RuntimeLaunchContext) -> RuntimeAdapter:
     client_factory = context.services.codex_client_factory or AsyncCodexClient
-    overrides = list(context.config.get("codex_overrides") or [])
+    config = dict(context.config)
+    overrides = list(config.get("codex_overrides") or [])
+    manifest_mcp_overrides = _manifest_mcp_overrides(config)
+    overrides.extend(item for item in manifest_mcp_overrides if item not in overrides)
+    projected_config = kernel_start_request_defaults(context).get("config") or {}
+    if manifest_mcp_overrides and projected_config.get("sandbox") == "workspace-write":
+        network_override = "sandbox_workspace_write.network_access=true"
+        if network_override not in overrides:
+            overrides.append(network_override)
     # Studio's default collaboration mode must expose Codex's structured
     # request_user_input tool; the upstream feature is intentionally off by
     # default outside Plan mode.  This stays process-local to the isolated
@@ -60,9 +208,16 @@ def _create_codex(context: RuntimeLaunchContext) -> RuntimeAdapter:
         if overrides:
             _apply_codex_overrides(client, overrides)
     timeout = context.config.get("turn_timeout_seconds")
+    request_defaults = kernel_start_request_defaults(context)
+    request_config = request_defaults.get("config") or {}
+    sandbox_read_only = (
+        bool(context.config["sandbox_read_only"])
+        if "sandbox_read_only" in context.config
+        else bool(request_config.get("sandbox_read_only", True))
+    )
     return CodexRuntimeAdapter(
         client,
-        sandbox_read_only=bool(context.config.get("sandbox_read_only", True)),
+        sandbox_read_only=sandbox_read_only,
         turn_timeout_seconds=float(timeout) if timeout is not None else None,
     )
 
@@ -76,10 +231,36 @@ def _isolated_codex_home(project_dir: Any) -> Path:
     """
     override = os.environ.get("KSADK_CODEX_HOME")
     if override:
-        return Path(override).expanduser()
-    home = Path(str(project_dir)) / ".agentkit" / "codex-home"
-    home.mkdir(parents=True, exist_ok=True)
-    return home
+        home = Path(override).expanduser()
+        home.mkdir(parents=True, exist_ok=True)
+        return home
+
+    # Source bundles are deliberately mounted read-only in managed runtimes.
+    # Keep the preferred workspace-local isolation for local development, but
+    # never make a Codex turn depend on being able to mutate that bundle.
+    workspace_home = Path(str(project_dir)) / ".agentkit" / "codex-home"
+    try:
+        workspace_home.mkdir(parents=True, exist_ok=True)
+        return workspace_home
+    except OSError:
+        pass
+
+    # The managed runtime already provides a per-workload writable state
+    # volume.  Derive from its explicit directory first, then from the
+    # session-store path for backward-compatible images.  /tmp is a final
+    # process-local fallback for custom read-only launchers.
+    state_dir = os.environ.get("KSADK_RUNTIME_STATE_DIR")
+    session_path = os.environ.get("KSADK_SESSION_PATH")
+    fallback_root = (
+        Path(state_dir)
+        if state_dir
+        else Path(session_path).expanduser().parent
+        if session_path
+        else Path(tempfile.gettempdir()) / "ksadk-runtime-state"
+    )
+    fallback_home = fallback_root / "codex-home"
+    fallback_home.mkdir(parents=True, exist_ok=True)
+    return fallback_home
 
 
 def _apply_codex_overrides(client: Any, overrides: Any) -> None:
@@ -153,4 +334,9 @@ def create_runtime_adapter(context: RuntimeLaunchContext) -> RuntimeAdapter:
     return build_default_runtime_registry().create(context)
 
 
-__all__ = ["build_default_runtime_registry", "create_runtime_adapter"]
+__all__ = [
+    "apply_runtime_start_request_defaults",
+    "build_default_runtime_registry",
+    "create_runtime_adapter",
+    "kernel_start_request_defaults",
+]

@@ -130,7 +130,7 @@ If you see an error like `Invalid API key format: expected "e2b_"`, your local i
 1. **Install dependencies**
 
 ```bash
-cd 0611agent-xiayu
+cd langgraph-toolsets-demo
 uv venv
 uv pip install -r requirements.txt
 ```
@@ -175,11 +175,11 @@ Save a long-term memory: I prefer root cause before fix.
 ## Project structure
 
 <Files>
-  <Folder name="0611agent-xiayu/" defaultOpen>
+  <Folder name="langgraph-toolsets-demo/" defaultOpen>
     <File name="agentengine.yaml" />
     <File name="requirements.txt" />
     <File name=".env.example" />
-    <Folder name="0611agent/">
+    <Folder name="toolsets_agent/">
       <File name="agent.py" />
       <File name="__init__.py" />
     </Folder>
@@ -195,10 +195,10 @@ Save a long-term memory: I prefer root cause before fix.
 `agentengine.yaml` declares the framework and entry point so AgentEngine can load `root_agent`:
 
 ```yaml title="agentengine.yaml"
-name: 0611agent-xiayu
+name: langgraph-toolsets-demo
 version: "1.0.0"
 framework: langgraph
-entry_point: 0611agent-xiayu/agent.py
+entry_point: toolsets_agent/agent.py
 agent_variable: root_agent
 ```
 

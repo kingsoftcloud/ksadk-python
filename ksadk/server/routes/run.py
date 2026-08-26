@@ -39,6 +39,7 @@ from ksadk.conversations.runtime_streaming import (
 if TYPE_CHECKING:
     pass
 from ksadk.ids import new_run_id
+from ksadk.kernel.ingress import kernel_route_active
 from ksadk.runtime.conversation_execution import (
     invoke_runtime_conversation_once,
     iter_runtime_conversation_semantic_events,
@@ -50,6 +51,11 @@ from . import dependencies as deps
 from .checkpoint_resolution import _resolve_checkpoint_resume_input_from_session
 from .common import (
     _action_response,
+)
+from .kernel_ingress import (
+    _kernel_error_response,
+    kernel_conversation_turn,
+    kernel_stream_response,
 )
 from .models import (
     RunAgentActionRequest,
@@ -72,6 +78,8 @@ logger = logging.getLogger(__name__)
 @run_router.post("/agentengine/api/v1/RunAgent")
 async def run_agent_action(request: RunAgentActionRequest):
     executor, launch_context = get_runtime_execution()
+    if kernel_route_active():
+        return await _kernel_run_agent_action(request, launch_context)
     api_format = (request.ApiFormat or "responses").strip().lower()
     run_user_id = _clean_optional_string(request.UserId) or "user"
     account_id = _clean_optional_string(request.AccountId)
@@ -281,6 +289,92 @@ async def run_agent_action(request: RunAgentActionRequest):
             usage=result.get("usage") if isinstance(result.get("usage"), Mapping) else None,
         )
     return _action_response("RunAgent", payload)
+
+
+async def _kernel_run_agent_action(request: RunAgentActionRequest, launch_context):
+    """kernel 路径（灰度 opt-in）：RunAgent -> AgentControlCommand -> receipt。
+
+    旧响应 shape 不变；receipt 状态走 RECEIPT_HTTP_STATUS 映射；
+    stream 从 SessionEventSubscription 统一 cursor 读取。
+    """
+    from .kernel_ingress import _kernel_submit
+
+    run_user_id = _clean_optional_string(request.UserId) or "user"
+    session = await ensure_conversation_session(
+        agent_id=request.AgentId,
+        user_id=run_user_id,
+        session_id=request.SessionId,
+        session_service_provider=deps.resolve_session_service,
+    )
+    session_id = session.id
+    idempotency_key = (
+        _clean_optional_string(request.InvocationId)
+        or _clean_optional_string(
+            (request.Metadata or {}).get("IdempotencyKey")
+            if isinstance(request.Metadata, dict)
+            else None
+        )
+        or new_run_id(session_id)
+    )
+    messages = (
+        normalize_responses_input(request.ResponsesInput)
+        if request.ResponsesInput is not None
+        and (request.ApiFormat or "responses").strip().lower() == "responses"
+        else normalize_kop_messages(request.Messages)
+    )
+    # RunAgent 的 Model 覆盖走 runtime_options.model:与 agentengine-server 的
+    # _kernel_runtime_options 投影同构;worker 侧按部署 defaults/白名单校验。
+    runtime_options: dict[str, Any] = {}
+    requested_model = _clean_optional_string(request.Model)
+    if requested_model:
+        runtime_options["model"] = requested_model
+    receipt, trusted = await _kernel_submit(
+        mapper="map_run_request",
+        session_id=session_id,
+        idempotency_key=idempotency_key,
+        content=messages,
+        correlation_ref=request.InvocationId,
+        source_kind="system",
+        runtime_options=runtime_options or None,
+    )
+    if receipt.status not in ("accepted", "duplicate"):
+        return _kernel_error_response(receipt)
+
+    def build_payload(output_text: str):
+        if (request.ApiFormat or "responses").strip().lower() == "chat_completions":
+            return _action_response(
+                "RunAgent",
+                build_chat_completions_payload(
+                    output_text=output_text,
+                    model=request.Model,
+                    session_id=session_id,
+                    metadata=None,
+                ),
+            )
+        return _action_response(
+            "RunAgent",
+            build_responses_payload(
+                output_text=output_text,
+                model=request.Model,
+                session_id=session_id,
+                response_id=f"resp_{uuid.uuid4().hex}",
+                metadata=None,
+                usage=None,
+            ),
+        )
+
+    if request.Stream or request.Background:
+        return kernel_stream_response(
+            receipt=receipt,
+            trusted=trusted,
+            session_id=session_id,
+        )
+    return await kernel_conversation_turn(
+        receipt=receipt,
+        trusted=trusted,
+        session_id=session_id,
+        build_payload=build_payload,
+    )
 
 
 # ============================================================

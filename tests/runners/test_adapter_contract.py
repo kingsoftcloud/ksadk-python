@@ -20,7 +20,7 @@ import pytest
 
 from ksadk.codex.client import CodexClient
 from ksadk.codex.runtime import CodexRuntimeAdapter
-from ksadk.events.runtime_event import RuntimeEvent
+from ksadk.events.canonical import EventEnvelope
 from ksadk.runners.base_runner import BaseRunner
 from ksadk.runtime.adapter import (
     CancelResult,
@@ -43,7 +43,7 @@ from ksadk.runtime.runner_adapter import RunnerRuntimeAdapter
 # ---------------------------------------------------------------------------
 
 #: MiniFlow 框架标识(注册进 RuntimeRegistry 的 runtime_type)。
-MINIFLOW_RUNTIME_TYPE = "miniflow"
+MINIFLOW_RUNTIME_TYPE = "ksadk"
 
 
 class MiniFlowRuntimeAdapter(RunnerRuntimeAdapter):
@@ -150,17 +150,42 @@ class _FakeCodexClient(CodexClient):
 
     def run_turn(self, thread_id, prompt, *, config=None):
         async def gen():
+            turn_id = f"turn_{thread_id}"
+            # turn/started → RunStarted + ContinuationCreated
+            yield {
+                "id": f"evt_turn_start_{self._seq}",
+                "method": "turn/started",
+                "params": {
+                    "threadId": thread_id,
+                    "turn": {"id": turn_id, "status": "inProgress"},
+                },
+            }
             if self._with_approval:
-                yield {"method": "execCommand/approvalRequest", "params": {"id": "call-1"}}
+                # item/permissions/requestApproval → InteractionRequested + RunInterrupted
+                yield {
+                    "id": f"evt_approval_{self._seq}",
+                    "method": "item/permissions/requestApproval",
+                    "params": {
+                        "threadId": thread_id,
+                        "turnId": turn_id,
+                        "itemId": "item-approval-1",
+                        "approvalId": "call-1",
+                    },
+                }
             if self._block:
                 try:
                     await self._release.wait()
                 except (asyncio.CancelledError, GeneratorExit):
                     self.stream_interrupted = True
                     raise
+            # turn/completed → RunCompleted
             yield {
-                "method": "item/completed",
-                "params": {"item": {"id": "m1", "phase": "final_answer", "text": "done"}},
+                "id": f"evt_turn_end_{self._seq}",
+                "method": "turn/completed",
+                "params": {
+                    "threadId": thread_id,
+                    "turn": {"id": turn_id, "status": "completed", "items": []},
+                },
             }
 
         return gen()
@@ -224,7 +249,7 @@ class TestAdapterContract:
         adapter, _ = factory(block=False)
         handle = await adapter.start(StartRequest(input="go", user_id="u", session_id="s"))
         events = [e async for e in adapter.stream(handle)]
-        assert all(isinstance(e, RuntimeEvent) for e in events)
+        assert all(isinstance(e, EventEnvelope) for e in events)
         assert any(e.event_type == "run.started" for e in events)
 
     # ---- cancel:活跃 turn 中断 ----
@@ -250,10 +275,24 @@ class TestAdapterContract:
         handle = await adapter.start(StartRequest(input="go", user_id="u", session_id="s"))
         events: list = []
         consume = asyncio.create_task(_drain(adapter, handle, events))
-        await asyncio.sleep(0.1)  # approval(call-1)已记录
+        # Wait for pending approvals to be populated (event-driven, not time-based).
+        for _ in range(100):
+            if (
+                hasattr(adapter, "_threads")
+                and handle.run_id in adapter._threads
+                and adapter._threads[handle.run_id].pending_approvals
+            ):
+                break
+            await asyncio.sleep(0.01)
         result = await adapter.cancel(handle)
         assert result is CancelResult.INTERRUPTED_ACTIVE_TURN
-        assert adapter.last_cancel_dropped_approvals == {"call-1"}
+        if framework == "codex":
+            # 旧 PRODUCTION BUG 已修复:canonical 路径在 stream 中跟踪
+            # InteractionRequested/pending review, cancel 时级联丢弃。
+            assert adapter.last_cancel_dropped_approvals
+            assert "item-approval-1" in adapter.last_cancel_dropped_approvals
+        else:
+            assert adapter.last_cancel_dropped_approvals == {"call-1"}
         await asyncio.wait_for(consume, timeout=2)
 
     # ---- cancel:无活跃 turn 记 pending ----

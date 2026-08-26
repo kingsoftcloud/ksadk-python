@@ -6,12 +6,23 @@ import time
 from typing import Optional
 
 from ksadk.ids import new_session_id
-from ksadk.sessions.base import BaseSessionService, Session, SessionEvent, SessionState, generate_id
+from ksadk.sessions.base import (
+    CANONICAL_EVENT_STORAGE_CAPABILITIES,
+    BaseSessionService,
+    Session,
+    SessionEvent,
+    SessionState,
+    generate_id,
+)
 
 
 class InMemorySessionService(BaseSessionService):
+    storage_capabilities = CANONICAL_EVENT_STORAGE_CAPABILITIES
+
     def __init__(self):
         self._sessions: dict[str, Session] = {}
+        self._events_by_id: dict[str, SessionEvent] = {}
+        self._events_by_invocation: dict[tuple[str, str], list[SessionEvent]] = {}
         self._states: dict[tuple[str, str, str, str], SessionState] = {}
         self._lock = asyncio.Lock()
 
@@ -91,6 +102,10 @@ class InMemorySessionService(BaseSessionService):
             session = self._sessions.pop(session_id, None)
             if not session:
                 return False
+            for event in session.events:
+                self._events_by_id.pop(event.id, None)
+                if event.invocation_id is not None:
+                    self._events_by_invocation.pop((session_id, event.invocation_id), None)
             self._states.pop(
                 self._state_key(
                     "session",
@@ -135,12 +150,25 @@ class InMemorySessionService(BaseSessionService):
             if not session:
                 raise ValueError(f"Session {session_id} not found")
 
+            # Match the durable Local/Postgres physical primary-key contract.
+            # Canonical RuntimeEvent storage relies on a deterministic
+            # session+event storage id so concurrent insert losers cannot
+            # allocate another seq.  Auto-generated ids retain their existing
+            # behavior because SessionEvent always supplies a fresh id.
+            if event.id in self._events_by_id:
+                raise ValueError(f"SessionEvent id {event.id!r} already exists")
+
             stored = copy.deepcopy(event)
             stored.session_id = session_id
-            stored.seq_id = len(session.events) + 1
+            stored.bind_seq_id(len(session.events) + 1)
             if not stored.id:
                 stored.id = generate_id()
             session.events.append(stored)
+            self._events_by_id[stored.id] = stored
+            if stored.invocation_id is not None:
+                self._events_by_invocation.setdefault(
+                    (session_id, stored.invocation_id), []
+                ).append(stored)
             session.updated_at = time.time()
 
             if stored.state_delta:
@@ -164,6 +192,29 @@ class InMemorySessionService(BaseSessionService):
                 )
 
             return copy.deepcopy(stored)
+
+    async def get_event_by_id(self, session_id: str, event_id: str) -> Optional[SessionEvent]:
+        async with self._lock:
+            event = self._events_by_id.get(event_id)
+            if event is None or event.session_id != session_id:
+                return None
+            return copy.deepcopy(event)
+
+    async def get_events_by_invocation_id(
+        self,
+        session_id: str,
+        invocation_id: str,
+        *,
+        after_seq_id: Optional[int] = None,
+        before_seq_id: Optional[int] = None,
+    ) -> list[SessionEvent]:
+        async with self._lock:
+            events = list(self._events_by_invocation.get((session_id, invocation_id), ()))
+            if after_seq_id is not None:
+                events = [event for event in events if event.seq_id > after_seq_id]
+            if before_seq_id is not None:
+                events = [event for event in events if event.seq_id < before_seq_id]
+            return copy.deepcopy(events)
 
     async def get_events(
         self,

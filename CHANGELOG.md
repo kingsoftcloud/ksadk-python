@@ -7,6 +7,41 @@
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-08-26
+
+### 亮点
+
+- **Agent Runtime V2 Phase 1 基座完成**：冻结 `AgentControlChannel/v1`、`SessionEventEnvelope/v1`、`ActivationLease/v1`、`RuntimeCapabilityMatrix/v1` 与 `Interaction/v1`，通过 schema digest 和 additive-only gate 防止下游再随意改协议。
+- **可靠执行不再强制 PostgreSQL**：AgentKernelStore 支持 InMemory、SQLite 与 PostgreSQL。普通单副本 Agent 可不配置 PG；需要跨 Pod 恢复、接管和高可用时再启用 PostgreSQL，并使用 lease、fencing 与事务 CAS 保证唯一 owner。
+- **Studio 打通本地创作到云端生命周期**：沿用平台既有 `CreateAgent` / `UpdateAgent` 等接口，支持构建、部署、状态、详情、会话、删除、版本选择与二次确认回滚；账号中由 CLI 部署的高代码 Agent 也可直接选择和管理。
+- **前后端会话统一到真实事件流**：本地 Web UI 与 Hosted UI 固定使用 `@kingsoftcloud/ksadk-web@0.3.2`，Studio 对齐同一 Interaction / RuntimeEvent 合同，支持签名 SSE、流式正文、思考、工具、审批、附件、模型、三档审批以及 Goal / Plan 控制；普通前台聊天不依赖 Background 长任务模式。
+
+### 新增与变更
+
+- Gateway 的 Agent Runtime 路由统一经过 Server admission；Runtime 缺少 Server 签发 permit 时 fail closed。permit 绑定 Agent、session、action、TTL 与 durable nonce，避免伪造引用、会话放大和重放。
+- worker 消费真实 RuntimeEvent 流，统一 run identity、handle digest、lease fencing、冷恢复和 resume；事件日志成为 session 状态的单一事实来源。
+- Studio Agent 编辑支持 prompt、模型、Tool、MCP 与 Skill，并以原子方式回写 manifest；ADK、LangGraph、Codex 等 runtime 共用能力矩阵，不把不支持项伪装成可用。
+- Studio 云端目标采用 AK/SK 在本地服务端完成签名，凭证不进入浏览器；Hermes / OpenClaw 在能力不兼容时提供简洁的官方链接入口。
+- 构建输出记录 KsADK 版本、来源和 commit id；Operator 对旧制品缺少三元组时保持兼容并标记未知，不阻止旧 Runtime 启动。
+- 评测完成上传、执行、结果与删除闭环；Trace token 区分完整上报、部分上报和未上报，不再把缺失值当作零。
+- PyPI wheel 与 sdist 同时携带本地 Web UI 和 Studio 的已审计生产静态产物，不携带 Studio 的 React / TypeScript 可编辑源码；公开 clean export 在无前端源码时复用并校验固定静态产物。
+
+### 修复
+
+- 修复账号云端目标 `cloud:account:<agent_id>` 被错误截断，导致旧 CLI 高代码 Agent 在下拉列表可见却无法切换的问题。
+- 修复 Studio 云端会话未保留签名流、只在结束时一次性渲染、第二轮复用错误状态、输入框残留以及会话删除不生效的问题。
+- 修复长回答超过默认 200 条事件后刷新会丢失前置思考和 MCP 工具卡的问题；当前云端 Agent 目标也会跨页面刷新保留。
+- 修复 deployment receipt 覆盖云端权威状态、版本回滚操作互相串扰、详情与版本列表溢出/乱码，以及表单和图标对齐问题。
+- 修复对话创建模型偶发返回非严格 JSON 时无法生成 Agent Draft Patch，并对 provider 原生支持 Responses 但不支持 `web_search` 的场景按工具能力单独协商。
+- 加固 Studio 模型 URL 占位符识别和工作区路径边界，阻断相似域名误判、父目录/同名前缀目录和符号链接逃逸。
+- 合入社区贡献 PR #53（[@pengliang100](https://github.com/pengliang100)，commit author `pengliang3`）：过滤 LangGraph tool message 中的纯文本工具标记，保留原提交作者信息。
+
+### 验证与发布记录
+
+- 当前候选已在真实隔离云环境完成同一 Agent 原地更新，以及系统提示词、MCP 调用、前台 SSE、最终消息去重、刷新后思考/工具回放验证；旧制品兼容、评测、Trace、版本回滚、删除和资源清理由发布门禁分别留证，不以单一 canary 报告代替。
+- Web UI：`@kingsoftcloud/ksadk-web@0.3.2`，source `2136448e038b4d8c475fa20e4722252b1ddb2ebc`，GitHub merge `4854be4fcb5584a799538536372d38b80447f81e`，npm integrity `sha512-Ytjd3pIgy6LfHCmguXUDQr/wy9ClqKjbv+J+NAzH/+UIJjhVl3y1SA2eR7WwsWSn42zxBFme/xniUZMNBV53Aw==`。
+- Python：`ksadk==0.8.2` 与兼容别名 `agentengine-sdk-python==0.8.2`；最终 tag、GitHub Release、PyPI 与公开文档由受信发布 workflow 在全门禁通过后生成。
+
 ## [0.8.1] - 2026-08-10
 
 ### 亮点
@@ -62,7 +97,9 @@
 ### 兼容性、迁移与评审边界
 
 - `0.8.1` 是 AgentKit Studio 的首次交付，不存在从 `0.8.0` Studio 或 vanilla Studio 迁移的问题。Studio 只有一个 React 前端入口；自研 UI 仍可直接消费 Responses/SSE、RuntimeEvent、AG-UI/A2UI 和运行控制 API，不要求使用 React。
-- RuntimeEvent schema 继续保持 v1 additive 兼容；新增交互和运行控制通过追加事件类型与控制 API 表达，不修改既有事件字段语义。
+- RuntimeEvent 主路径升级为 canonical `schema_version=2`：runtime、协议投影、事件存储、回放与最终输出选择统一以 v2 为唯一事实来源，不再沿用 v1 additive 演进。v1 事件转为只读兼容投影，不接受新的 v1 写入；未声明的下游消费者收到终端快照，已升级的消费者显式选择 identity-aware 的 replace 语义。
+- RuntimeEvent 能力描述：`RuntimeEventVersions=[1,2]`、`RuntimeEventDefault=2`、`RuntimeEventV1ProjectionModes=["snapshot_only","identity_replace"]`、`RuntimeEventV1ProjectionDefault="snapshot_only"`。
+- 本地 Web UI、Studio react-ui 与 Hosted UI 必须配套与本次 Python 发布一致的 identity-aware 版本，才能按 run/scope/item/part identity 正确归并流式与回放输出。
 - 旧 `LANGFUSE_*` 凭证不再创建 SDK callback/exporter。迁移时把 Langfuse OTLP endpoint 与 Authorization header 配置到标准 `OTEL_EXPORTER_OTLP_*`。
 - 新部署使用 `CLOUD_MONITOR_OTLP_TRACES_HEADERS` 或 `CLOUD_MONITOR_OTLP_HEADERS` 提供 `Ksc-Appkey`；`CLOUD_MONITOR_APP_KEY` 仅用于旧控制面的短期兼容。
 - A2A 环境变量明确区分部署期 `KSADK_A2A_RUNTIME_ID` 与注册后 `KSADK_A2A_AGENT_ID`；v1 discovery card 只依赖前者。
@@ -734,7 +771,7 @@
 
 - **Web UI 工作区文件管理重构**：右侧文件区改为可调整宽度、可全屏的工作区面板，上传入口和路径展示收敛为更轻量的布局，并保持打开文件区时左侧对话区可继续正常使用。
 - **工作区文件预览能力增强**：支持在 Web UI 内预览文本、Markdown、代码、CSV/TSV、图片与 PDF 文件，便于直接查看上传文件或大模型生成的文件产物。
-- **hosted UI 同步链路可移植**：`agentengine-server` 可从完整 `ksadk-python` 源码构建并同步最新 hosted UI；本地缺少 ksadk 源码时会尝试从 ezone 拉取，避免硬编码个人路径。
+- **hosted UI 同步链路可移植**：`agentengine-server` 可从完整 `ksadk-python` 源码构建并同步最新 hosted UI；本地缺少 SDK 源码时会尝试从配置的源码远端拉取，避免硬编码个人路径。
 
 ### 变更
 

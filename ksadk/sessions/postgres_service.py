@@ -10,7 +10,14 @@ from typing import Any, Optional
 from urllib.parse import urlsplit, urlunsplit
 
 from ksadk.ids import new_session_id
+from ksadk.sessions._postgres_schema import _PostgresSchemaMixin
+from ksadk.sessions._postgres_tables import (
+    KSADK_PG_EVENTS_TABLE,
+    KSADK_PG_SESSIONS_TABLE,
+    KSADK_PG_STATES_TABLE,
+)
 from ksadk.sessions.base import (
+    CANONICAL_EVENT_STORAGE_CAPABILITIES,
     BaseSessionService,
     Session,
     SessionEvent,
@@ -19,15 +26,12 @@ from ksadk.sessions.base import (
 )
 from ksadk.sessions.errors import SessionBackendUnavailable
 
-KSADK_PG_SESSIONS_TABLE = "ksadk_sessions"
-KSADK_PG_EVENTS_TABLE = "ksadk_events"
-KSADK_PG_STATES_TABLE = "ksadk_states"
-PG_READABLE_EVENTS_VIEW = "ksadk_session_events_readable"
-
 logger = logging.getLogger(__name__)
 
 
-class PostgresSessionService(BaseSessionService):
+class PostgresSessionService(_PostgresSchemaMixin, BaseSessionService):
+    storage_capabilities = CANONICAL_EVENT_STORAGE_CAPABILITIES
+
     def __init__(
         self,
         *,
@@ -304,7 +308,9 @@ class PostgresSessionService(BaseSessionService):
                     seq_id=int(next_seq or 1),
                     invocation_id=event.invocation_id,
                     metadata=dict(event.metadata),
+                    seq_binding=event.seq_binding,
                 )
+                stored.bind_seq_id(int(next_seq or 1))
                 await connection.execute(
                     f"""
                     INSERT INTO {KSADK_PG_EVENTS_TABLE} (
@@ -348,6 +354,52 @@ class PostgresSessionService(BaseSessionService):
                     updated_at=updated_at,
                 )
                 return stored
+
+    async def get_event_by_id(self, session_id: str, event_id: str) -> Optional[SessionEvent]:
+        await self._ensure_schema()
+        async with self._pool.acquire() as connection:
+            row = await connection.fetchrow(
+                f"""
+                SELECT id, session_id, author, event_type, content_json, timestamp,
+                       state_delta_json, seq_id, invocation_id, metadata_json
+                FROM {KSADK_PG_EVENTS_TABLE}
+                WHERE namespace = $1 AND session_id = $2 AND id = $3
+                """,
+                self.namespace,
+                session_id,
+                event_id,
+            )
+            return self._event_from_row(row) if row is not None else None
+
+    async def get_events_by_invocation_id(
+        self,
+        session_id: str,
+        invocation_id: str,
+        *,
+        after_seq_id: Optional[int] = None,
+        before_seq_id: Optional[int] = None,
+    ) -> list[SessionEvent]:
+        await self._ensure_schema()
+        conditions = ["namespace = $1", "session_id = $2", "invocation_id = $3"]
+        params: list[Any] = [self.namespace, session_id, invocation_id]
+        if after_seq_id is not None:
+            params.append(after_seq_id)
+            conditions.append(f"seq_id > ${len(params)}")
+        if before_seq_id is not None:
+            params.append(before_seq_id)
+            conditions.append(f"seq_id < ${len(params)}")
+        async with self._pool.acquire() as connection:
+            rows = await connection.fetch(
+                f"""
+                SELECT id, session_id, author, event_type, content_json, timestamp,
+                       state_delta_json, seq_id, invocation_id, metadata_json
+                FROM {KSADK_PG_EVENTS_TABLE}
+                WHERE {" AND ".join(conditions)}
+                ORDER BY seq_id ASC
+                """,
+                *params,
+            )
+            return [self._event_from_row(row) for row in rows]
 
     async def get_events(
         self,
@@ -686,148 +738,6 @@ class PostgresSessionService(BaseSessionService):
                     "Postgres session backend unavailable: "
                     f"could not connect to {mask_postgres_session_dsn(self.dsn)}"
                 ) from exc
-
-    async def _ensure_schema(self) -> None:
-        if self._schema_ready:
-            return
-        async with self._schema_lock:
-            if self._schema_ready:
-                return
-            await self._ensure_pool()
-            async with self._pool.acquire() as connection:
-                await connection.execute(f"""
-                    CREATE TABLE IF NOT EXISTS {KSADK_PG_SESSIONS_TABLE} (
-                        namespace TEXT NOT NULL,
-                        tenant_id TEXT NOT NULL DEFAULT 'default',
-                        workspace_id TEXT NOT NULL DEFAULT 'default',
-                        id TEXT NOT NULL,
-                        agent_id TEXT NOT NULL,
-                        user_id TEXT NOT NULL,
-                        title TEXT NOT NULL DEFAULT '',
-                        title_source TEXT NOT NULL DEFAULT '',
-                        summary TEXT NOT NULL DEFAULT '',
-                        first_prompt TEXT NOT NULL DEFAULT '',
-                        last_prompt TEXT NOT NULL DEFAULT '',
-                        state_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
-                        created_at DOUBLE PRECISION NOT NULL,
-                        updated_at DOUBLE PRECISION NOT NULL,
-                        version INTEGER NOT NULL DEFAULT 0,
-                        PRIMARY KEY (namespace, id)
-                    );
-
-                    CREATE TABLE IF NOT EXISTS {KSADK_PG_EVENTS_TABLE} (
-                        namespace TEXT NOT NULL,
-                        tenant_id TEXT NOT NULL DEFAULT 'default',
-                        workspace_id TEXT NOT NULL DEFAULT 'default',
-                        id TEXT NOT NULL,
-                        session_id TEXT NOT NULL,
-                        author TEXT NOT NULL,
-                        event_type TEXT NOT NULL,
-                        content_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
-                        timestamp DOUBLE PRECISION NOT NULL,
-                        state_delta_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
-                        seq_id INTEGER NOT NULL,
-                        invocation_id TEXT,
-                        metadata_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
-                        PRIMARY KEY (namespace, id),
-                        UNIQUE (namespace, session_id, seq_id),
-                        FOREIGN KEY (namespace, session_id)
-                            REFERENCES {KSADK_PG_SESSIONS_TABLE}(namespace, id)
-                            ON DELETE CASCADE
-                    );
-
-                    CREATE INDEX IF NOT EXISTS idx_ksadk_pg_events_session_seq
-                    ON {KSADK_PG_EVENTS_TABLE} (namespace, session_id, seq_id);
-
-                    -- 跨会话事件查询（get_events_for_agent）需 JOIN sessions 按
-                    -- s.agent_id 过滤并按 e.timestamp 排序；events 表无 agent_id 列，
-                    -- 覆盖索引 (namespace, session_id, timestamp, id) 服务 JOIN 键
-                    -- s.id=e.session_id + ORDER BY e.timestamp DESC。
-                    CREATE INDEX IF NOT EXISTS idx_ksadk_pg_events_session_ts
-                    ON {KSADK_PG_EVENTS_TABLE} (namespace, session_id, timestamp, id);
-
-                    -- ListSessions 归并按 agent_id 过滤 + updated_at DESC 排序；
-                    -- sessions 表 PK 是 (namespace, id)，缺 agent_id 前缀索引。
-                    CREATE INDEX IF NOT EXISTS idx_ksadk_pg_sessions_agent_updated
-                    ON {KSADK_PG_SESSIONS_TABLE} (namespace, agent_id, updated_at DESC, id);
-
-                    CREATE TABLE IF NOT EXISTS {KSADK_PG_STATES_TABLE} (
-                        namespace TEXT NOT NULL,
-                        tenant_id TEXT NOT NULL DEFAULT 'default',
-                        workspace_id TEXT NOT NULL DEFAULT 'default',
-                        scope TEXT NOT NULL,
-                        agent_id TEXT NOT NULL,
-                        user_id TEXT NOT NULL DEFAULT '',
-                        session_id TEXT NOT NULL DEFAULT '',
-                        state_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
-                        version INTEGER NOT NULL DEFAULT 0,
-                        updated_at DOUBLE PRECISION NOT NULL,
-                        PRIMARY KEY (namespace, scope, agent_id, user_id, session_id)
-                    );
-
-                    ALTER TABLE {KSADK_PG_SESSIONS_TABLE}
-                    ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default';
-                    ALTER TABLE {KSADK_PG_SESSIONS_TABLE}
-                    ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT 'default';
-                    ALTER TABLE {KSADK_PG_EVENTS_TABLE}
-                    ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default';
-                    ALTER TABLE {KSADK_PG_EVENTS_TABLE}
-                    ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT 'default';
-                    ALTER TABLE {KSADK_PG_STATES_TABLE}
-                    ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default';
-                    ALTER TABLE {KSADK_PG_STATES_TABLE}
-                    ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT 'default';
-                    """)
-                try:
-                    await connection.execute(f"""
-                    CREATE OR REPLACE VIEW {PG_READABLE_EVENTS_VIEW} AS
-                    SELECT
-                        event_row.namespace,
-                        event_row.tenant_id,
-                        event_row.workspace_id,
-                        session_row.agent_id,
-                        session_row.user_id,
-                        session_row.title AS session_title,
-                        event_row.session_id,
-                        event_row.seq_id,
-                        event_row.id AS event_id,
-                        event_row.invocation_id,
-                        event_row.author,
-                        event_row.event_type,
-                        CASE
-                            WHEN event_row.event_type = 'user_message' THEN 'user'
-                            WHEN event_row.event_type IN (
-                                'assistant_message', 'reasoning', 'tool_call'
-                            ) THEN 'assistant'
-                            WHEN event_row.event_type = 'tool_result' THEN 'tool'
-                            ELSE NULL
-                        END AS message_role,
-                        COALESCE(
-                            NULLIF(event_row.content_json #>> '{{parts,0,text}}', ''),
-                            NULLIF(event_row.content_json ->> 'text', ''),
-                            NULLIF(event_row.metadata_json ->> 'reasoning', ''),
-                            NULLIF(event_row.metadata_json ->> 'tool_output', '')
-                        ) AS message_text,
-                        event_row.metadata_json ->> 'tool_name' AS tool_name,
-                        CASE
-                            WHEN event_row.event_type = 'run_status' THEN COALESCE(
-                                event_row.content_json ->> 'status',
-                                event_row.metadata_json ->> 'status'
-                            )
-                            ELSE NULL
-                        END AS lifecycle_status,
-                        to_timestamp(event_row.timestamp) AS created_at,
-                        event_row.content_json,
-                        event_row.state_delta_json,
-                        event_row.metadata_json
-                    FROM {KSADK_PG_EVENTS_TABLE} AS event_row
-                    JOIN {KSADK_PG_SESSIONS_TABLE} AS session_row
-                      ON session_row.namespace = event_row.namespace
-                     AND session_row.id = event_row.session_id;
-                        """)
-                except Exception as exc:
-                    logger.warning("Postgres readable session view unavailable: %s", exc)
-            self._schema_ready = True
 
     async def _get_session_with_connection(
         self,

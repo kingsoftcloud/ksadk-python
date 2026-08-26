@@ -1,25 +1,25 @@
-"""RuntimeEvent schema (goal-02)。见 :mod:`ksadk.events.runtime_event`。"""
+"""Canonical RuntimeEvent public API."""
 
-from ksadk.events.parser import RuntimeEventParser
-from ksadk.events.replay import replay_transcript
-from ksadk.events.runtime_event import (
+from ksadk.events.canonical import (
     ALL_EVENT_TYPES,
-    EVENT_PAYLOAD_REQUIRED_KEYS,
-    SCHEMA_VERSION,
     EventPhase,
-    EventType,
     RuntimeEvent,
+    dump_runtime_event,
+    parse_runtime_event,
 )
-from ksadk.events.store import RuntimeEventStore
+from ksadk.events.canonical_replay import replay_projection
+from ksadk.events.canonical_store import RuntimeEventStore
+from ksadk.events.reducer import ProjectionPatch, RunProjection, StreamReducer
 
 __all__ = [
     "ALL_EVENT_TYPES",
-    "EVENT_PAYLOAD_REQUIRED_KEYS",
     "EventPhase",
-    "EventType",
+    "ProjectionPatch",
+    "RunProjection",
     "RuntimeEvent",
-    "RuntimeEventParser",
     "RuntimeEventStore",
-    "replay_transcript",
-    "SCHEMA_VERSION",
+    "StreamReducer",
+    "dump_runtime_event",
+    "parse_runtime_event",
+    "replay_projection",
 ]

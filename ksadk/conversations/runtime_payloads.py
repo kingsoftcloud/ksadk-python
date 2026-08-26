@@ -55,6 +55,42 @@ class PreparedConversationTurn:
     request_history: list[dict[str, str]] = field(default_factory=list)
     request_responses_history: list[dict[str, Any]] = field(default_factory=list)
     responses_history: list[dict[str, Any]] = field(default_factory=list)
+    # shadow ContextPlan 的 plain dict 投影（P0 可观测基线）。
+    # 仅用启发式 tokenizer 按 kind 累加 tokens_by_kind + 标注 ownership/精度，
+    # 不进任何决策路径、不进 runner payload。None 表示尚未生成（resume 旁路也会填最小值）。
+    shadow_context_plan: dict[str, Any] | None = None
+    # PR A：真实 CompiledPrompt 的 plain dict 投影（agent_system/agent_task 非空时由
+    # ResolvedPromptSources 编译）。仅用于 hash/trace/future projection，不进 Runner payload。
+    # None=instructions-only 回退（canonical 路径无 agent_system/agent_task，或 resume 旁路）。
+    compiled_prompt: dict[str, Any] | None = None
+    # PR B：per-Build 接管标记。非空（"ksadk_hosted"）表示本 turn 由 ksadk 编译并接管
+    # Runner 的 instructions（仅 prompt_owner=ksadk + ksadk_hosted LangGraph 满足）。
+    # 默认空=framework 拥有，Runner 输入与旧逻辑一致。
+    prompt_integration_mode: str = ""
+    # PR D2：最新 checkpoint 的 WorkingState 审计 dict（仅 ksadk_hosted 路径填充）。
+    # 含 current_goal/active_files/pending_tools/pending_approvals/source_seq_range/content_hash。
+    # 用于门控重注入 Runner payload（非门控为 None，零注入）。
+    working_state: dict[str, Any] | None = None
+    # PR E：真实 ContextPlan 与组装输入（仅 ksadk_hosted + KSADK_CONTEXT_ENGINE_V2_ENABLED 时
+    # 由 hosted_pipeline 生成）。``context_plan`` 是 ``ContextPlan`` 的 plain dict 投影（含
+    # selected/decisions/budget），``assembled_input`` 是 AssembledInput 的 plain dict
+    memory_recall_events: list[dict[str, Any]] = field(default_factory=list)
+    # 平台 Memory Provider 的本轮召回结果。native runtime 由 Adapter 投影，
+    # framework/hosted 路径可继续通过 canonical payload 消费。
+    memory_context: dict[str, Any] | None = None
+    # （system + messages）。二者都进 trace 与 runner payload 接管；非门控为 None，零影响。
+    context_plan: dict[str, Any] | None = None
+    assembled_input: dict[str, Any] | None = None
+    # 可信 Principal，供平台 Memory 写入与召回使用。不能用 session_id 代替 user scope。
+    user_id: str = ""
+    agent_id: str = ""
+    # AgentVersion 级 Memory 写入灰度。None=旧环境策略；off/shadow=不写；enabled=写入。
+    memory_write_rollout: str | None = None
+    memory_enabled: bool | None = None
+    memory_recall_enabled: bool | None = None
+    memory_write_mode: str = "candidate"
+    flush_before_compaction: bool = True
+    provider_ref: str = "local-default"
 
 
 @dataclass
@@ -76,6 +112,12 @@ class CompactionPlan:
     compacted_until_seq_id: int | None = None
     pinned_group_indexes: list[int] = field(default_factory=list)
     pinned_state: dict[str, Any] = field(default_factory=dict)
+    # PR D1：双阈值（仅 ksadk_hosted 路径填充）。非门控路径为 None。
+    # trigger_band："" / "none" / "soft" / "hard" / "emergency"。empty=非门控走旧单阈值；
+    # "emergency"=PTL force。soft/hard 用于 proactive 整理 vs 强制压缩区分。
+    soft_limit_tokens: int | None = None
+    hard_limit_tokens: int | None = None
+    trigger_band: str = ""
 
 
 def build_responses_payload(

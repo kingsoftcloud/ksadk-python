@@ -37,7 +37,7 @@ jobs:
 
       - name: Build pinned frontend static assets
         env:
-          KSADK_WEB_VERSION: "0.3.1"
+          KSADK_WEB_VERSION: "0.3.2"
         run: make build-frontend
 
       - name: Build artifacts

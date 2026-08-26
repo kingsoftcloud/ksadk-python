@@ -9,6 +9,7 @@ Code Builder - zip 打包模式构建
 
 import ast
 import hashlib
+import importlib.metadata as importlib_metadata
 import json
 import os
 import re
@@ -19,8 +20,9 @@ import threading
 import time
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional, Set
+from typing import Any, List, Optional, Set
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
@@ -38,6 +40,154 @@ from ksadk.builders.requirements_utils import (
     merge_requirement_lists,
     parse_requirements_text,
 )
+
+BUILD_INFO_SCHEMA = "ksadk-build-info/v1"
+BUILD_INFO_ARCNAME = "ksadk/BUILD-INFO.json"
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _bundled_content_fingerprint(files: List[Any]) -> str:
+    """对 (relative, file_path) 列表计算确定性内容指纹。
+
+    指纹只依赖相对路径与逐文件 sha256，同一来源目录重复打包结果一致，
+    可用于在线上快速判断 zip 里的源码快照是否与某次构建/提交一致。
+    """
+
+    digest = hashlib.sha256()
+    digest.update(f"fingerprint:{BUILD_INFO_SCHEMA}\n".encode("utf-8"))
+    for relative, file_path in sorted(files, key=lambda item: item[0]):
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(_sha256_file(file_path).encode("ascii"))
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def _git_provenance(start: Path) -> Optional[dict]:
+    """返回 start 所在 git 仓库的提交信息;非 git 目录返回 None。"""
+
+    def _git(*args: str) -> Optional[str]:
+        try:
+            proc = subprocess.run(
+                ["git", "-C", str(start), *args],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except Exception:
+            return None
+        if proc.returncode != 0:
+            return None
+        return proc.stdout.strip()
+
+    toplevel = _git("rev-parse", "--show-toplevel")
+    if not toplevel:
+        return None
+    commit = _git("rev-parse", "HEAD")
+    branch = _git("rev-parse", "--abbrev-ref", "HEAD")
+    status = _git("status", "--porcelain")
+    return {
+        "repo_root": toplevel,
+        "commit": commit,
+        "branch": branch or None,
+        "dirty": bool(status),
+    }
+
+
+def _package_provenance(package_name: str, package_root: Path) -> dict:
+    """采集被 vendored 包的安装来源:dist 元信息 / 本地路径 / git 提交。"""
+
+    info: dict[str, Any] = {
+        "source_dir": str(package_root),
+        "dist_version": None,
+        "installer": None,
+        "direct_url": None,
+        "source_type": "unknown",
+        "git": None,
+    }
+    try:
+        dist = importlib_metadata.distribution(package_name)
+    except Exception:
+        dist = None
+    if dist is not None:
+        info["dist_version"] = dist.version
+        installer = (dist.read_text("INSTALLER") or "").strip()
+        info["installer"] = installer or None
+        raw_direct_url = dist.read_text("direct_url.json")
+        if raw_direct_url:
+            try:
+                direct_url = json.loads(raw_direct_url)
+            except ValueError:
+                direct_url = None
+            if isinstance(direct_url, dict):
+                info["direct_url"] = direct_url.get("url")
+                url = str(direct_url.get("url") or "")
+                dir_info = direct_url.get("dir_info") or {}
+                archive_info = direct_url.get("archive_info") or {}
+                if url.startswith("file://"):
+                    if dir_info.get("editable"):
+                        info["source_type"] = "editable-install"
+                    elif url.endswith(".whl"):
+                        info["source_type"] = "local-wheel"
+                    else:
+                        info["source_type"] = "local-path"
+                elif archive_info:
+                    info["source_type"] = "remote-dist"
+    if info["direct_url"] is None and info["dist_version"] is not None:
+        # pip 从 index 安装的常规 dist 通常不写 direct_url.json
+        info["source_type"] = "installed-dist"
+    if info["source_type"] in {"editable-install", "local-path", "unknown"}:
+        info["git"] = _git_provenance(package_root)
+    return info
+
+
+def build_bundled_source_manifest(
+    package_roots: dict,
+    bundled_files: List[Any],
+) -> dict:
+    """生成随 zip 下发的 BUILD-INFO 内容。
+
+    - ``package_roots``: {package_name: 源码目录}
+    - ``bundled_files``: _iter_bundled_source_files() 的 (name, relative, path) 三元组
+    """
+
+    grouped: dict[str, List[Any]] = {}
+    for package_name, relative, file_path in bundled_files:
+        grouped.setdefault(package_name, []).append((relative, file_path))
+
+    packages: dict[str, Any] = {}
+    for package_name, files in sorted(grouped.items()):
+        package_root = package_roots.get(package_name)
+        provenance = (
+            _package_provenance(package_name, package_root)
+            if package_root is not None
+            else {"source_dir": None, "source_type": "unknown"}
+        )
+        packages[package_name] = {
+            **provenance,
+            "file_count": len(files),
+            "content_fingerprint_sha256": _bundled_content_fingerprint(files),
+        }
+
+    return {
+        "schema": BUILD_INFO_SCHEMA,
+        "built_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "packages": packages,
+    }
+
+
+_NONRELEASE_SOURCE_TYPES = {"editable-install", "local-path", "local-wheel", "unknown"}
+
+
+def _is_release_like_source(provenance: dict) -> bool:
+    return provenance.get("source_type") in {"installed-dist", "remote-dist"}
 
 
 class CodeBuilder(BaseBuilder):
@@ -229,6 +379,7 @@ class CodeBuilder(BaseBuilder):
                 self._save_input_fingerprint(zip_path, detection_result)
                 zip_size = zip_path.stat().st_size / (1024 * 1024)
                 click.secho(f"\n✅ 使用已有构建: {zip_path.name} ({zip_size:.2f} MB)", fg="green")
+                self._emit_bundled_ksadk_identity(zip_path)
                 click.echo(
                     "   (如需只重新打包当前代码/runtime，请使用 --repackage；"
                     "如需重装依赖，请使用 --no-cache)"
@@ -275,6 +426,7 @@ class CodeBuilder(BaseBuilder):
         package_started_at = time.monotonic()
         self._package_zip(zip_path, detection_result)
         click.echo(f"   ✓ 打包耗时: {self._format_elapsed(package_started_at)}")
+        self._emit_bundled_ksadk_identity(zip_path)
         self._save_input_fingerprint(zip_path, detection_result)
 
         zip_size = zip_path.stat().st_size
@@ -657,15 +809,18 @@ class CodeBuilder(BaseBuilder):
             "file_digests": file_digests,
         }
 
-    def _iter_bundled_source_files(self):
+    def _bundled_source_package_roots(self) -> dict:
         import ksadk
         import ksadk_runtime_common
 
-        yield from self._iter_bundled_source_package("ksadk", Path(ksadk.__file__).resolve().parent)
-        yield from self._iter_bundled_source_package(
-            "ksadk_runtime_common",
-            Path(ksadk_runtime_common.__file__).resolve().parent,
-        )
+        return {
+            "ksadk": Path(ksadk.__file__).resolve().parent,
+            "ksadk_runtime_common": Path(ksadk_runtime_common.__file__).resolve().parent,
+        }
+
+    def _iter_bundled_source_files(self):
+        for package_name, package_root in self._bundled_source_package_roots().items():
+            yield from self._iter_bundled_source_package(package_name, package_root)
 
     def _iter_bundled_source_package(self, package_name: str, package_root: Path):
         for file_path in sorted(package_root.rglob("*")):
@@ -684,6 +839,32 @@ class CodeBuilder(BaseBuilder):
     def _should_skip_ksadk_relative_path(self, relative_path: Path) -> bool:
         parts = relative_path.parts
         return len(parts) >= 2 and parts[0] == "server" and parts[1] == "web-ui"
+
+    def _warn_on_nonrelease_bundled_source(self, build_info: dict) -> None:
+        """vendored ksadk 源码来自本地路径/editable/来源不明时给出醒目提示。
+
+        历史事故:打包机 environment 里的 ksadk 是正式 release 之前的 dev 快照,
+        vendored 进 zip 上线后 runtime 行为与正式版不一致且无从追溯。
+        """
+
+        for package_name, package_info in (build_info.get("packages") or {}).items():
+            if _is_release_like_source(package_info):
+                continue
+            source_desc = (
+                f"type={package_info.get('source_type')} " f"dir={package_info.get('source_dir')}"
+            )
+            git_info = package_info.get("git") or {}
+            if git_info.get("commit"):
+                dirty = " (有未提交改动)" if git_info.get("dirty") else ""
+                source_desc += (
+                    f" git={git_info.get('branch') or '?'}@{str(git_info['commit'])[:12]}{dirty}"
+                )
+            click.secho(
+                f"   ⚠ 打包进 zip 的 {package_name} 不是正式发行版来源 ({source_desc})。"
+                "若这不是有意为之,请先用官方渠道的正式版本重装后再打包; "
+                f"解压 zip 后查看 {BUILD_INFO_ARCNAME} 可核对来源与内容指纹。",
+                fg="yellow",
+            )
 
     def _iter_project_files(self):
         for item in sorted(self.project_dir.iterdir(), key=lambda p: p.name):
@@ -1617,6 +1798,26 @@ class CodeBuilder(BaseBuilder):
                 )
             self._finish_package_progress()
 
+            # This provenance module is written after the bundled source so a
+            # Code archive can attest to the KsADK source it actually imports.
+            # It deliberately comes from local package bytes / Git only; no
+            # environment value is copied into the archive.
+            zf.writestr(
+                "ksadk/_bundle_identity.py",
+                self._bundle_runtime_identity_source(bundled_source_files),
+            )
+            # 写入 runtime 来源清单:排查"zip 里 vendored 的 ksadk 到底是什么快照"时,
+            # 解压 ksadk/BUILD-INFO.json 即可看到来源/版本/commit/内容指纹,不用进 pod 翻文件。
+            build_info = build_bundled_source_manifest(
+                self._bundled_source_package_roots(),
+                bundled_source_files,
+            )
+            zf.writestr(
+                BUILD_INFO_ARCNAME,
+                json.dumps(build_info, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            )
+            self._warn_on_nonrelease_bundled_source(build_info)
+
             click.echo(f"   ✓ 打包运行时源码: {bundled_source_count} 个文件")
 
             # 添加 entrypoint
@@ -1625,6 +1826,75 @@ class CodeBuilder(BaseBuilder):
 
         click.echo(f"   ✓ 打包完成: {len(project_files)} 个项目文件 + {deps_count} 个依赖文件")
         self._emit_package_size_report(zip_path)
+
+    def _bundle_runtime_identity_source(self, bundled_source_files) -> str:
+        """Generate package-local provenance for a Code archive."""
+
+        digest = hashlib.sha256()
+        for package_name, relative, file_path in bundled_source_files:
+            if package_name != "ksadk":
+                continue
+            digest.update(relative.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(file_path.read_bytes())
+            digest.update(b"\0")
+
+        import ksadk
+        from ksadk.version import VERSION
+
+        source_root = Path(ksadk.__file__).resolve().parent
+        commit = ""
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(source_root.parent), "rev-parse", "HEAD"],
+                capture_output=True,
+                check=True,
+                text=True,
+                timeout=3,
+            )
+            candidate = result.stdout.strip().lower()
+            if re.fullmatch(r"[0-9a-f]{40,64}", candidate):
+                commit = candidate
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+        payload = {
+            "ksadk_version": VERSION,
+            "ksadk_commit": commit,
+            "ksadk_source_digest": digest.hexdigest(),
+        }
+        return (
+            "# Generated by KsADK CodeBuilder; do not edit.\n"
+            f"BUNDLE_IDENTITY = {payload!r}\n"
+        )
+
+    def _emit_bundled_ksadk_identity(self, zip_path: Path) -> None:
+        """Print the KsADK provenance embedded in *this exact* Code archive.
+
+        The code archive shadows packages from the base image.  Reading the
+        generated archive back here prevents a build log from accidentally
+        describing the local CLI environment instead of what will run in the
+        workload.
+        """
+
+        try:
+            with zipfile.ZipFile(zip_path) as zf:
+                source = zf.read("ksadk/_bundle_identity.py").decode("utf-8")
+            _prefix, raw_payload = source.split("=", 1)
+            identity = ast.literal_eval(raw_payload.strip())
+        except (OSError, KeyError, UnicodeDecodeError, ValueError, SyntaxError):
+            click.secho("   ⚠ 未能读取 ZIP 内的 KsADK 来源信息", fg="yellow")
+            return
+
+        if not isinstance(identity, dict):
+            click.secho("   ⚠ ZIP 内的 KsADK 来源信息格式无效", fg="yellow")
+            return
+        version = str(identity.get("ksadk_version") or "unknown")
+        commit = str(identity.get("ksadk_commit") or "unavailable")
+        source_digest = str(identity.get("ksadk_source_digest") or "unavailable")
+        click.echo(f"   KsADK: version={version}")
+        click.echo(f"   KsADK source: commit={commit}")
+        click.echo(f"   KsADK source digest: sha256={source_digest}")
 
     def _emit_package_size_report(self, zip_path: Path, *, limit: int = 8) -> None:
         try:
@@ -1741,6 +2011,9 @@ class CodeBuilder(BaseBuilder):
     def _generate_entrypoint(self, detection_result) -> str:
         """生成 entrypoint.py"""
         package_name = Path(detection_result.package_path).name
+        runtime_config_json = json.dumps(
+            self._load_config(), ensure_ascii=False, separators=(",", ":"), default=str
+        )
         return f'''"""
 AgentEngine Code 模式入口
 
@@ -1754,6 +2027,7 @@ zip 包结构:
 import sys
 import os
 import logging
+import json
 from pathlib import Path
 
 # ========== 日志配置 ==========
@@ -1878,13 +2152,15 @@ if has_otlp or has_cloud_monitor_otlp:
         logger.warning(f"Tracing 初始化失败: {{e}}")
 
 # 只装配统一 RuntimeAdapter 执行链；具体 Adapter 在请求开始时由 Registry 创建。
+runtime_build_config = json.loads({runtime_config_json!r})
 runtime_context = RuntimeLaunchContext(
     runtime_type=detection_result.type.value,
     project_dir=Path(CODE_ROOT),
     detection=detection_result,
-    config=dict(getattr(detection_result, "raw_config", None) or {{}}),
+    config=dict(runtime_build_config),
 )
 # managed A2A:KSADK_A2A_RUNTIME_ID 非空时挂 discovery card + 完整数据面 route。
+_managed_a2a_card = None
 _a2a_config = None
 _a2a_adapter = None
 if os.environ.get("KSADK_A2A_RUNTIME_ID", "").strip():

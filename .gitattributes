@@ -18,3 +18,5 @@ deploy/openclaw/preset-skills/*.bat text eol=crlf
 deploy/openclaw/preset-skills/**/*.bat text eol=crlf
 deploy/openclaw/preset-skills/*.cmd text eol=crlf
 deploy/openclaw/preset-skills/**/*.cmd text eol=crlf
+ksadk/studio/react-ui/index.html text eol=lf
+ksadk/studio/static/index.html text eol=lf

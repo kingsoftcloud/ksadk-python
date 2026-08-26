@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence
 
+from ksadk.context_engine.shadow_plan import (
+    build_shadow_context_plan_dict,
+    minimal_shadow_context_plan_dict,
+)
 from ksadk.conversations.attachments import compact_attachment_result_for_session
 from ksadk.conversations.context import (
     build_history_from_events,
     build_request_history,
     build_responses_history_from_messages,
+    canonical_event_type,
     project_responses_history,
 )
 from ksadk.conversations.model_options import normalize_model_options
@@ -66,7 +72,9 @@ from ksadk.conversations.runtime_resume import (
 )
 from ksadk.ids import new_run_id
 from ksadk.model_policy import model_policy_options_for_model
-from ksadk.sessions import resolve_session_service
+from ksadk.sessions import SessionEvent, resolve_session_service
+
+logger = logging.getLogger(__name__)
 
 
 async def build_run_input(
@@ -87,6 +95,21 @@ async def build_run_input(
     governance_state: RuntimeGovernanceState | None = None,
     session_service_provider: Callable[[], Any] | None = None,
     run_mode: str = RUN_MODE_FOREGROUND,
+    runner: Any | None = None,
+    runtime_type: str | None = None,
+    agent_system: str = "",
+    agent_task: str = "",
+    prompt_integration_mode: str = "",
+    context_engine_rollout: str | None = None,
+    memory_recall_enabled: bool | None = None,
+    memory_write_rollout: str | None = None,
+    memory_enabled: bool | None = None,
+    memory_write_mode: str = "candidate",
+    flush_before_compaction: bool = True,
+    provider_ref: str = "local-default",
+    deployment_mode: str = "local",
+    agent_max_input_tokens: int | None = None,
+    agent_reserve_output_tokens: int | None = None,
 ) -> PreparedConversationTurn:
     """构建一次 turn 的标准运行输入，并在进入模型前做上下文投影/压缩。
 
@@ -123,6 +146,26 @@ async def build_run_input(
         **model_policy_options_for_model(policy_model or ""),
     }
     normalized_instructions = str(instructions or "").strip()
+
+    # PR A：当 agent_system/agent_task 非空时，编译真实 CompiledPrompt（含 stable section）。
+    # 仅用于 hash/trace/future projection，不改 Runner 输入（payload["instructions"] 不变）。
+    # platform_policy_source 默认 EnvPlatformPolicySource（env 未设→不产 platform_safety）。
+    compiled_prompt: dict[str, Any] | None = None
+    if (agent_system or "").strip() or (agent_task or "").strip():
+        from ksadk.prompts.resolved import (
+            ResolvedPromptSources,
+            compile_resolved_prompt_dict,
+            get_default_platform_policy_source,
+        )
+
+        compiled_prompt = compile_resolved_prompt_dict(
+            ResolvedPromptSources(
+                agent_system=agent_system,
+                agent_task=agent_task,
+                request_instructions=normalized_instructions,
+                platform_policy_source=get_default_platform_policy_source(),
+            )
+        )
 
     if resume_input is not None:
         if not session_id:
@@ -184,6 +227,16 @@ async def build_run_input(
                 resume_input=normalized_resume_input,
                 run_mode=caller_run_mode,
                 run_trigger=RUN_TRIGGER_CHECKPOINT_RESUME,
+                shadow_context_plan=minimal_shadow_context_plan_dict(
+                    runner=runner, runtime_type=runtime_type, deployment_mode=deployment_mode
+                ),
+                compiled_prompt=None,
+                memory_write_rollout=memory_write_rollout,
+                memory_enabled=memory_enabled,
+                memory_recall_enabled=memory_recall_enabled,
+                memory_write_mode=memory_write_mode,
+                flush_before_compaction=flush_before_compaction,
+                provider_ref=provider_ref,
             )
 
         is_approval_resume = _is_approval_resume_input(normalized_resume_input)
@@ -287,6 +340,23 @@ async def build_run_input(
             resume_input=effective_resume_input,
             run_mode=caller_run_mode,
             run_trigger=RUN_TRIGGER_APPROVAL_RESUME,
+            shadow_context_plan=build_shadow_context_plan_dict(
+                instructions=normalized_instructions,
+                history=history,
+                user_input=resume_text,
+                request_metadata=normalized_request_metadata,
+                runner=runner,
+                runtime_type=runtime_type,
+                model_metadata=resolved_model_metadata,
+                deployment_mode=deployment_mode,
+            ),
+            compiled_prompt=None,
+            memory_write_rollout=memory_write_rollout,
+            memory_enabled=memory_enabled,
+            memory_recall_enabled=memory_recall_enabled,
+            memory_write_mode=memory_write_mode,
+            flush_before_compaction=flush_before_compaction,
+            provider_ref=provider_ref,
         )
 
     normalized_messages = _normalized_conversation_messages(messages)
@@ -349,6 +419,17 @@ async def build_run_input(
         user_input=user_input or user_display_input,
     )
 
+    # compaction_owner 硬门控（方案 §6.2）：从 capability 取 owner，非 ksadk 时不走双阈值
+    from ksadk.context_engine.capabilities import (
+        capabilities_for_runner,
+        capabilities_for_runtime_type,
+    )
+
+    _caps = (
+        capabilities_for_runner(runner)
+        if runner is not None
+        else capabilities_for_runtime_type(runtime_type)
+    )
     checkpoint = await _compact_conversation_history_with_governance(
         governance_state,
         session_id=resolved_session_id,
@@ -357,6 +438,9 @@ async def build_run_input(
         model=model,
         model_metadata=resolved_model_metadata,
         session_service_provider=provider,
+        # PR D1：双阈值门控透传。ksadk_hosted → soft/hard proactive compact；否则旧单阈值。
+        prompt_integration_mode=prompt_integration_mode,
+        compaction_owner=_caps.compaction_owner,
     )
     event_history = await service.get_events(resolved_session_id)
     history = build_history_from_events(event_history)
@@ -372,10 +456,32 @@ async def build_run_input(
         request_responses_history,
         responses_history,
     )
+    # The current user event is persisted before context construction so an
+    # interrupted turn remains auditable.  That event belongs to
+    # ``current_input`` though, not to prior history.  Keep the legacy
+    # ``prepared.history`` contract unchanged for non-hosted paths, while the
+    # KsADK-owned planner receives only events from earlier invocations.  Using
+    # invocation_id (instead of text equality) also handles users deliberately
+    # repeating the same message across turns.
+    hosted_history = _merge_request_history_with_session_history(
+        request_history,
+        build_history_from_events(
+            [event for event in event_history if event.invocation_id != resolved_invocation_id]
+        ),
+    )
+    # PR D2：取最新 checkpoint 的 WorkingState（仅 ksadk_hosted 路径重注入）。
+    # 非 ksadk_hosted → working_state=None（零注入，Runner 输入与旧逻辑一致）。
+    # PTL retry 后 _refresh_history 也会重读 events，但此处 build_run_input 首次构建时取一次即可；
+    # PTL 路径若产生新 checkpoint，retry 用 prepared 已有 working_state（保守：不中途换）。
+    working_state: dict[str, Any] | None = None
+    if prompt_integration_mode == "ksadk_hosted":
+        working_state = _latest_checkpoint_working_state(event_history)
 
-    return PreparedConversationTurn(
+    prepared = PreparedConversationTurn(
         session_id=resolved_session_id,
         invocation_id=resolved_invocation_id,
+        user_id=resolved_user_id,
+        agent_id=agent_id,
         user_input=user_input,
         user_display_input=user_display_input or user_input,
         history=history,
@@ -405,7 +511,171 @@ async def build_run_input(
         ),
         run_mode=caller_run_mode,
         run_trigger=caller_run_trigger,
+        shadow_context_plan=build_shadow_context_plan_dict(
+            instructions=normalized_instructions,
+            history=hosted_history if prompt_integration_mode == "ksadk_hosted" else history,
+            user_input=user_input,
+            request_metadata=normalized_request_metadata,
+            runner=runner,
+            runtime_type=runtime_type,
+            model_metadata=resolved_model_metadata,
+            prompt_shadow=compiled_prompt,
+            prompt_integration_mode=prompt_integration_mode,
+            deployment_mode=deployment_mode,
+        ),
+        compiled_prompt=compiled_prompt,
+        prompt_integration_mode=prompt_integration_mode,
+        working_state=working_state,
+        memory_write_rollout=memory_write_rollout,
+        memory_enabled=memory_enabled,
+        memory_recall_enabled=memory_recall_enabled,
+        memory_write_mode=memory_write_mode,
+        flush_before_compaction=flush_before_compaction,
+        provider_ref=provider_ref,
     )
+    # PR E：ksadk_hosted + V2 开关时运行真实 hosted 链路，回填 context_plan/assembled_input。
+    # 失败回退空字段（prepared 字段语义完整），不阻断主链路。
+    await _maybe_fill_hosted_pipeline(
+        prepared,
+        compiled_prompt=compiled_prompt,
+        user_input=user_input,
+        history=hosted_history,
+        working_state=working_state,
+        model_metadata=resolved_model_metadata,
+        prompt_integration_mode=prompt_integration_mode,
+        context_engine_rollout=context_engine_rollout,
+        memory_recall_enabled=memory_recall_enabled,
+        runtime_type=runtime_type,
+        session_id=resolved_session_id,
+        invocation_id=resolved_invocation_id,
+        user_id=resolved_user_id,
+        agent_id=agent_id,
+        agent_max_input_tokens=agent_max_input_tokens,
+        agent_reserve_output_tokens=agent_reserve_output_tokens,
+    )
+    return prepared
+
+
+async def _maybe_fill_hosted_pipeline(
+    prepared: PreparedConversationTurn,
+    *,
+    compiled_prompt: dict[str, Any] | None,
+    user_input: str,
+    history: list[dict[str, str]],
+    working_state: dict[str, Any] | None,
+    model_metadata: dict[str, Any],
+    prompt_integration_mode: str,
+    context_engine_rollout: str | None,
+    memory_recall_enabled: bool | None,
+    agent_max_input_tokens: int | None = None,
+    agent_reserve_output_tokens: int | None = None,
+    runtime_type: str | None,
+    session_id: str,
+    invocation_id: str,
+    user_id: str,
+    agent_id: str,
+) -> None:
+    """PR E：在 ksadk_hosted + V2 时运行 hosted 链路并回填 plan/assembly。
+
+    门控三重：``KSADK_CONTEXT_ENGINE_V2_ENABLED`` × ``prompt_integration_mode=="ksadk_hosted"``
+    × 已编译出含 prompt_content 的 CompiledPrompt（agent_system/agent_task 非空）。任一不满足
+    → 不回填（走旧 PR B 分支，字节级一致）。
+
+    仅对 ``prompt_owner=ksadk`` 的 runtime（langgraph 系）启用；native_runtime（codex）不进入，
+    保证 Managed Codex 不被接管（方案 §6.2 / PCM-RUNNER-003）。
+    """
+    from ksadk.context_engine.capabilities import (
+        assert_capability_not_circuit_open,
+        capabilities_for_runtime_type,
+    )
+    from ksadk.context_engine.hosted_pipeline import (
+        default_hosted_contributors,
+        hosted_pipeline_enabled,
+        run_hosted_pipeline,
+    )
+
+    if (
+        not hosted_pipeline_enabled(rollout=context_engine_rollout)
+        or prompt_integration_mode != "ksadk_hosted"
+    ):
+        return
+    if (
+        not isinstance(compiled_prompt, dict)
+        or not str(compiled_prompt.get("prompt_content") or "").strip()
+    ):
+        return
+    caps = capabilities_for_runtime_type(runtime_type)
+    if caps.prompt_owner != "ksadk":
+        return
+    # 门禁：该 Runner 若已因 capability mismatch 熔断，回退旧路径（方案 §6.1）。不抛给主链路。
+    try:
+        assert_capability_not_circuit_open(runtime_type=runtime_type, label="hosted_pipeline")
+    except Exception:  # noqa: BLE001
+        logger.info("hosted pipeline skipped for session=%s: capability circuit open", session_id)
+        return
+    # PR E：注入默认 Contributors（MemoryRecall 等）进真实链路（方案 §8.7）。
+    contributors = default_hosted_contributors(
+        user_id=user_id,
+        agent_id=agent_id,
+        memory_recall_enabled=memory_recall_enabled,
+    )
+    try:
+        result = await run_hosted_pipeline(
+            compiled_prompt=compiled_prompt,
+            user_input=user_input,
+            history=history,
+            working_state=working_state,
+            model_metadata=model_metadata,
+            contributors=contributors,
+            # 与 shadow_plan 口径一致：ksadk_hosted + prompt_owner=ksadk + langgraph → ksadk_hosted
+            integration_mode=(
+                "ksadk_hosted"
+                if prompt_integration_mode == "ksadk_hosted"
+                and caps.prompt_owner == "ksadk"
+                and runtime_type == "langgraph"
+                else caps.integration_mode
+            ),
+            accounting_accuracy=caps.token_accounting,
+            session_id=session_id,
+            invocation_id=invocation_id,
+            user_id=user_id,
+            agent_id=agent_id,
+            agent_max_input_tokens=agent_max_input_tokens,
+            agent_reserve_output_tokens=agent_reserve_output_tokens,
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "hosted pipeline failed for session=%s; falling back to PR B path",
+            session_id,
+        )
+        return
+    if result is None:
+        return
+    prepared.context_plan = result.plan
+    prepared.assembled_input = {
+        "format": result.assembled.format,
+        "system": result.assembled.system,
+        "messages": list(result.assembled.messages),
+        "estimated_tokens": result.assembled.estimated_tokens,
+        "warnings": list(result.assembled.warnings),
+    }
+
+
+def _latest_checkpoint_working_state(events: Sequence[SessionEvent]) -> dict[str, Any] | None:
+    """取最新 context_checkpoint 事件的 working_state（PR D2）。
+
+    checkpoint metadata 由 compact_conversation_history 写入（仅 ksadk_hosted）。
+    无 checkpoint 或无 working_state 键时返回 None。
+    """
+    for event in reversed(list(events)):
+        if canonical_event_type(event.event_type) != "context_checkpoint":
+            continue
+        meta = event.metadata or {}
+        ws = meta.get("working_state")
+        if isinstance(ws, dict):
+            return ws
+        return None
+    return None
 
 
 async def _refresh_history(

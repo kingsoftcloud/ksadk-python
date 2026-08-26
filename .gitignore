@@ -22,8 +22,13 @@ dist/
 downloads/
 eggs/
 lib/
+# Studio React uses `src/lib` for checked-in browser helpers; keep the
+# packaging ignore above without hiding these source files.
 !ksadk/studio/react-ui/src/lib/
+!ksadk/studio/react-ui/src/lib/*.ts
 lib64/
+!ksadk/studio/react-ui/src/lib/
+!ksadk/studio/react-ui/src/lib/**
 parts/
 sdist/
 var/

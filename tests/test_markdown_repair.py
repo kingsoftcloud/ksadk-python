@@ -58,13 +58,7 @@ def test_repair_markdown_can_be_enabled_with_one_switch():
     repaired = repair_markdown(raw, enabled=True)
 
     assert repaired == (
-        "结果如下：\n\n"
-        "| 名称 | 值 |\n"
-        "| --- | --- |\n"
-        "| A | 1 |\n\n"
-        "结论：\n\n"
-        "- 第一项\n\n"
-        "下一段\n"
+        "结果如下：\n\n| 名称 | 值 |\n| --- | --- |\n| A | 1 |\n\n结论：\n\n- 第一项\n\n下一段\n"
     )
 
 

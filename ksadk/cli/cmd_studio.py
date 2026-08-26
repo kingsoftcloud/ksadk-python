@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import secrets
 import webbrowser
@@ -12,14 +13,67 @@ import uvicorn
 
 from ksadk.cli.env_options import load_env_file
 from ksadk.cli.ui import print_info, print_kv, print_success, print_title
+
+# veadk 风格：日志行带模块名与行号（filename:lineno），本地排障时能直接定位代码。
+_LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s %(filename)s:%(lineno)d %(message)s"
+
+_STUDIO_LOG_CONFIG = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "default": {"format": _LOG_FORMAT},
+        "access": {"format": _LOG_FORMAT},
+    },
+    "handlers": {
+        "default": {
+            "class": "logging.StreamHandler",
+            "formatter": "default",
+            "stream": "ext://sys.stderr",
+        },
+        "access": {
+            "class": "logging.StreamHandler",
+            "formatter": "access",
+            "stream": "ext://sys.stdout",
+        },
+    },
+    "loggers": {
+        "uvicorn": {"handlers": ["default"], "level": "INFO", "propagate": False},
+        "uvicorn.error": {"level": "INFO"},
+        "uvicorn.access": {"handlers": ["access"], "level": "INFO", "propagate": False},
+    },
+    "root": {"handlers": ["default"], "level": "INFO"},
+}
+
 from ksadk.studio.api import create_studio_app
 from ksadk.studio.service import StudioService
 
+# 模型环境变量白名单。OPENAI_BASE_URL 与 OPENAI_API_BASE 互为别名，两者都接受；
+# 加载时做别名归一（见 studio()），运行时统一 OPENAI_BASE_URL 优先（与 cmd_config/cmd_model
+# /api.py 一致，方案 §2.4 第 5 点）。
 _MODEL_ENV_KEYS = (
+    "OPENAI_BASE_URL",
     "OPENAI_API_BASE",
     "OPENAI_API_KEY",
     "OPENAI_MODEL_NAME",
 )
+# Cloud-control credentials are intentionally process-only as well.  Studio
+# needs them to use the Server Action API for a deployed Agent, but they must
+# never become browser settings, workspace files, or runtime environment.
+_CLOUD_CONTROL_ENV_KEYS = (
+    "KSYUN_ACCESS_KEY",
+    "KSYUN_SECRET_KEY",
+    "KSYUN_REGION",
+    "AGENTENGINE_REGION",
+    "AGENTENGINE_SERVER_URL",
+    "AGENTENGINE_STREAM_SERVER_URL",
+    "AGENTENGINE_SIGN_SERVICE",
+    "KS3_BUCKET",
+    "KS3_ACCESS_KEY",
+    "KS3_SECRET_KEY",
+)
+_STUDIO_ENV_FILE_KEYS = (*_MODEL_ENV_KEYS, *_CLOUD_CONTROL_ENV_KEYS)
+# 别名归一：两者任一有值时，把另一个也设上，保证下游无论读哪个都命中。
+_MODEL_BASE_URL_ALIASES = ("OPENAI_BASE_URL", "OPENAI_API_BASE")
 
 
 @click.command(context_settings=dict(help_option_names=["-h", "--help"]))
@@ -29,7 +83,10 @@ _MODEL_ENV_KEYS = (
 @click.option(
     "--env-file",
     type=click.Path(exists=True, dir_okay=False),
-    help="模型环境文件；只读取 OPENAI_API_BASE/API_KEY/MODEL_NAME",
+    help=(
+        "本地模型与云端控制环境文件；只读取允许的 OPENAI/KSYUN/KS3 "
+        "字段，且仅保留在 Studio 进程"
+    ),
 )
 @click.option(
     "--codex-proxy",
@@ -52,7 +109,7 @@ def studio(
     """
 
     root = Path(workspace).expanduser().resolve()
-    managed_keys = (*_MODEL_ENV_KEYS, "KSADK_CODEX_USE_PROXY")
+    managed_keys = (*_STUDIO_ENV_FILE_KEYS, "KSADK_CODEX_USE_PROXY")
     previous = {key: os.environ.get(key) for key in managed_keys}
     previously_present = {key for key in managed_keys if key in os.environ}
     try:
@@ -61,14 +118,42 @@ def studio(
                 values = load_env_file(env_file)
             except ValueError as exc:
                 raise click.ClickException(str(exc)) from exc
-            loaded = 0
+            loaded_models = 0
+            loaded_cloud_control = 0
             for key, value in values.items():
-                if key not in _MODEL_ENV_KEYS or not value:
+                if key not in _STUDIO_ENV_FILE_KEYS or not value:
                     continue
-                loaded += 1
-                if key not in os.environ:
+                if key in _MODEL_ENV_KEYS:
+                    loaded_models += 1
+                else:
+                    loaded_cloud_control += 1
+                # An explicit --env-file is the operator's selected cloud
+                # identity.  Do not silently reuse inherited AK/SK from the
+                # shell, which can point Studio at another tenant.  Model
+                # values keep their historical shell-first precedence.
+                if key in _CLOUD_CONTROL_ENV_KEYS or key not in os.environ:
                     os.environ[key] = value
-            print_kv("模型环境", f"已安全加载 {loaded}/{len(_MODEL_ENV_KEYS)} 个字段")
+            # 别名归一（方案 §2.4 第 5 点）：OPENAI_BASE_URL 与 OPENAI_API_BASE 互为别名。
+            # 加载后任一有值则把另一个也设上，保证下游无论读哪个都命中；OPENAI_BASE_URL 优先。
+            resolved_base_url = os.environ.get("OPENAI_BASE_URL") or os.environ.get(
+                "OPENAI_API_BASE"
+            )
+            if resolved_base_url:
+                os.environ["OPENAI_BASE_URL"] = resolved_base_url
+                os.environ["OPENAI_API_BASE"] = resolved_base_url
+                # base_url 至少算一次，避免显示 0/4 误导。
+                loaded_models = max(loaded_models, 2)
+            print_kv(
+                "模型环境",
+                f"已安全加载 {loaded_models}/{len(_MODEL_ENV_KEYS)} 个字段",
+            )
+            if loaded_cloud_control:
+                print_kv(
+                    "云端控制",
+                    "已安全加载 "
+                    f"{loaded_cloud_control}/{len(_CLOUD_CONTROL_ENV_KEYS)} 个字段"
+                    "（仅本地进程）",
+                )
         if codex_proxy == "forced":
             os.environ["KSADK_CODEX_USE_PROXY"] = "1"
         elif codex_proxy == "direct":
@@ -95,12 +180,18 @@ def studio(
         print_info("按 Ctrl+C 停止")
         if not no_open:
             webbrowser.open(launch_url)
+        # 业务日志（ksadk.*）走 root handler，同样带 filename:lineno。
+        logging.basicConfig(level=logging.INFO, format=_LOG_FORMAT)
         uvicorn.run(
             app,
             host="127.0.0.1",
             port=port,
             log_level="info",
-            access_log=False,
+            # Access logging stays enabled through the Studio log config while
+            # retaining filename/line-number context for both API and business
+            # logs.  This preserves master's observability intent and the
+            # branch's richer diagnostic format.
+            log_config=_STUDIO_LOG_CONFIG,
         )
     finally:
         for key in managed_keys:

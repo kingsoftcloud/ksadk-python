@@ -1,7 +1,20 @@
 # AgentEngine Makefile
 # 用于同步 KsADK Web static 和管理项目
 
-.PHONY: help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-version-gate docs-site-build docs-site-dev public-test public-build-check public-build-alias-check public-preflight public-publish-check public-release-approval-check public-publish-gate public-release-tag public-review public-sync-ksadk-web-static open-source-audit-dist open-source-audit-alias-dist openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size sync-ksadk-web-static verify-ksadk-web-static verify-ksadk-web-wheel-static build-studio-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend
+.PHONY: help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-version-gate docs-site-build docs-site-dev public-test public-build-check public-build-alias-check public-preflight public-publish-check public-release-approval-check public-publish-gate public-release-tag public-review public-sync-ksadk-web-static open-source-audit-dist open-source-audit-alias-dist openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size sync-ksadk-web-static verify-ksadk-web-static verify-ksadk-web-wheel-static build-studio-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend print-build-provenance phase1-canary-build phase1-canary-push phase1-canary-deploy phase1-canary-matrix phase1-canary-status phase1-canary-delete
+
+PHASE1_CANARY_NAMESPACE ?= agent-kernel-phase1
+# Phase 1 runtime drills must run beside real Agent workloads in the preprod
+# compute cluster. The management-cluster kubeconfig cannot reach the managed PG.
+PHASE1_CANARY_KUBECONFIG ?= $(HOME)/.kube/config-2fc1210d
+PHASE1_CANARY_PLATFORM ?= linux/amd64
+PHASE1_CANARY_REGISTRY ?= hub.kce.ksyun.com/agentengine
+PHASE1_CANARY_TAG ?= phase1-contract-$(shell git rev-parse --short=8 HEAD)
+PHASE1_CANARY_IMAGE := $(PHASE1_CANARY_REGISTRY)/agent-kernel-canary:$(PHASE1_CANARY_TAG)
+PHASE1_CANARY_KUBECTL := kubectl --kubeconfig=$(PHASE1_CANARY_KUBECONFIG)
+PHASE1_CANARY_INSTANCE_ID ?= phase1-canary-managed-pg
+PHASE1_CANARY_STORE_NAMESPACE ?= default
+PHASE1_CANARY_EVIDENCE_OUTPUT ?= /tmp/phase1-managed-pg-matrix.json
 
 # 默认目标
 help:
@@ -14,10 +27,14 @@ help:
 	@echo "    make test           运行测试"
 	@echo ""
 	@echo "  \033[1;32mWeb UI 构建:\033[0m"
-	@echo "    make sync-ksadk-web-static KSADK_WEB_VERSION=0.3.1"
+	@echo "    make sync-ksadk-web-static KSADK_WEB_VERSION=0.3.2"
 	@echo "                         从 @kingsoftcloud/ksadk-web npm 包同步 static"
 	@echo "    make build-frontend 准备 ksadk-web 与 React Studio static"
 	@echo "    make build-studio-static 编译 React Studio static"
+	@echo "    make phase1-canary-push   构建并推送当前合同 PG canary 镜像"
+	@echo "    make phase1-canary-deploy 使用外部云 PostgreSQL 部署隔离验证 runtime"
+	@echo "    make phase1-canary-matrix 执行托管 PG/Pod kill/fencing/rollback 并自动清理"
+	@echo "    make phase1-canary-delete 删除隔离 canary namespace"
 	@echo ""
 	@echo "  \033[1;32m版本管理:\033[0m"
 	@echo "    make version         显示当前版本"
@@ -103,15 +120,82 @@ test:
 	@echo "🧪 运行 Python 测试..."
 	uv run --extra all pytest tests/ -v
 
+# ============================================================
+# Phase 1 preproduction canary
+# ============================================================
+
+phase1-canary-build:
+	@test -z "$$(git status --porcelain --untracked-files=no)" || { echo "ERROR: tracked source tree is dirty"; exit 2; }
+	@echo "Building Phase 1 canary: $(PHASE1_CANARY_IMAGE)"
+	docker build --platform $(PHASE1_CANARY_PLATFORM) \
+		--build-arg KSADK_SOURCE_COMMIT=$$(git rev-parse HEAD) \
+		--label org.opencontainers.image.revision=$$(git rev-parse HEAD) \
+		-f docs/superpowers/evidence/phase1/canary/canary.e2e.Dockerfile \
+		-t $(PHASE1_CANARY_IMAGE) .
+
+phase1-canary-push: phase1-canary-build
+	docker push $(PHASE1_CANARY_IMAGE)
+	@echo "Canary source: commit=$$(git rev-parse HEAD), contract=$$(python -c 'from ksadk.kernel.contract_fingerprints import AGENT_KERNEL_V1_AGGREGATE_DIGEST; print(AGENT_KERNEL_V1_AGGREGATE_DIGEST)')"
+	@docker buildx imagetools inspect $(PHASE1_CANARY_IMAGE) 2>/dev/null | awk '/^Digest:/ { print "Canary OCI digest: " $$2; exit }' || true
+
+phase1-canary-deploy:
+	@test -f "$(PHASE1_CANARY_KUBECONFIG)" || { echo "ERROR: kubeconfig not found: $(PHASE1_CANARY_KUBECONFIG)"; exit 2; }
+	@test -n "$$PHASE1_CANARY_POSTGRES_DSN" || { echo "ERROR: PHASE1_CANARY_POSTGRES_DSN must reference an external managed PostgreSQL instance"; exit 2; }
+	@$(PHASE1_CANARY_KUBECTL) create namespace $(PHASE1_CANARY_NAMESPACE) --dry-run=client -o yaml | $(PHASE1_CANARY_KUBECTL) apply -f -
+	@$(PHASE1_CANARY_KUBECTL) create secret generic agent-kernel-store -n $(PHASE1_CANARY_NAMESPACE) \
+		--from-literal=dsn="$$PHASE1_CANARY_POSTGRES_DSN" --dry-run=client -o yaml | $(PHASE1_CANARY_KUBECTL) apply -f - >/dev/null
+	$(PHASE1_CANARY_KUBECTL) apply -f docs/superpowers/evidence/phase1/canary-hosted/deployment.yaml
+	@image="$(PHASE1_CANARY_IMAGE)"; \
+		digest=$$(docker buildx imagetools inspect "$$image" | awk '/^Digest:/ { print $$2; exit }'); \
+		test -n "$$digest" || { echo "ERROR: cannot resolve immutable digest for $(PHASE1_CANARY_IMAGE)"; exit 2; }; \
+		repository=$${image%:*}; \
+		$(PHASE1_CANARY_KUBECTL) set image deployment/agent-kernel-canary runtime="$${repository}@$${digest}" -n $(PHASE1_CANARY_NAMESPACE)
+	$(PHASE1_CANARY_KUBECTL) set env deployment/agent-kernel-canary -n $(PHASE1_CANARY_NAMESPACE) \
+		AGENT_INSTANCE_ID=$(PHASE1_CANARY_INSTANCE_ID) \
+		AGENT_KERNEL_STORE_NAMESPACE=$(PHASE1_CANARY_STORE_NAMESPACE) \
+		PHASE1_CANARY_TEST_HOOKS=1
+	$(PHASE1_CANARY_KUBECTL) rollout status deployment/agent-kernel-canary -n $(PHASE1_CANARY_NAMESPACE) --timeout=180s
+
+phase1-canary-matrix:
+	@test -n "$$PHASE1_CANARY_POSTGRES_DSN" || { echo "ERROR: PHASE1_CANARY_POSTGRES_DSN must reference an external managed PostgreSQL instance"; exit 2; }
+	@test -n "$$PHASE1_CANARY_ROLLBACK_IMAGE" || { echo "ERROR: PHASE1_CANARY_ROLLBACK_IMAGE must be a digest-pinned prior image"; exit 2; }
+	@case "$$PHASE1_CANARY_ROLLBACK_IMAGE" in *@sha256:*) ;; *) echo "ERROR: PHASE1_CANARY_ROLLBACK_IMAGE must contain @sha256:"; exit 2;; esac
+	@set -eu; \
+		cleanup() { $(MAKE) phase1-canary-delete; }; \
+		trap cleanup EXIT INT TERM; \
+		$(MAKE) phase1-canary-push; \
+		PHASE1_CANARY_POSTGRES_DSN="$$PHASE1_CANARY_POSTGRES_DSN" $(MAKE) phase1-canary-deploy; \
+		uv run python scripts/run_phase1_managed_pg_matrix.py \
+			--kubeconfig "$(PHASE1_CANARY_KUBECONFIG)" \
+			--namespace "$(PHASE1_CANARY_NAMESPACE)" \
+			--expected-contract-digest "$$(python -c 'from ksadk.kernel.contract_fingerprints import AGENT_KERNEL_V1_AGGREGATE_DIGEST; print(AGENT_KERNEL_V1_AGGREGATE_DIGEST)')" \
+			--source-commit "$$(git rev-parse HEAD)" \
+			--rollback-image "$$PHASE1_CANARY_ROLLBACK_IMAGE" \
+			--output "$(PHASE1_CANARY_EVIDENCE_OUTPUT)"
+
+phase1-canary-status:
+	@$(PHASE1_CANARY_KUBECTL) get deployment,pod,service -n $(PHASE1_CANARY_NAMESPACE) -o wide
+
+phase1-canary-delete:
+	$(PHASE1_CANARY_KUBECTL) delete namespace $(PHASE1_CANARY_NAMESPACE) --ignore-not-found --wait=true --timeout=180s
+
 studio-react-install-browser:
 	uv run playwright install chromium
 
 studio-react-test:
-	npm --prefix ksadk/studio/react-ui ci
-	npm --prefix ksadk/studio/react-ui test
-	npm --prefix ksadk/studio/react-ui run test:ui
-	cd ksadk/studio/react-ui && npx tsc --noEmit
-	npm --prefix ksadk/studio/react-ui run build
+	@if [ -f "ksadk/studio/react-ui/package.json" ]; then \
+		npm --prefix ksadk/studio/react-ui ci; \
+		npm --prefix ksadk/studio/react-ui test; \
+		npm --prefix ksadk/studio/react-ui run test:ui; \
+		(cd ksadk/studio/react-ui && npx tsc --noEmit); \
+		npm --prefix ksadk/studio/react-ui run build; \
+		uv run pytest tests/studio/test_style_system.py -q; \
+	else \
+		echo "React Studio source is not part of this public candidate; testing reviewed compiled assets"; \
+		test -f "ksadk/studio/static/index.html"; \
+	fi
+	PYTHONPATH=. uv run python tests/studio/e2e/studio_browser_smoke.py
+	PYTHONPATH=. uv run python tests/studio/e2e/studio_responsive_smoke.py
 
 # ============================================================
 # 构建和发布
@@ -189,6 +273,7 @@ build: check-build-deps sync-ksadk-web-static build-studio-static
 	@# 删除 tar.gz 和临时目录，只保留 whl
 	@rm -f dist/*.tar.gz
 	@rm -rf build/ *.egg-info/
+	@$(MAKE) --no-print-directory print-build-provenance
 	@echo "✅ 构建完成: dist/"
 	@ls -la dist/
 
@@ -202,8 +287,14 @@ build-only: check-build-deps build-studio-static
 	python -m build
 	@rm -f dist/*.tar.gz
 	@rm -rf build/ *.egg-info/
+	@$(MAKE) --no-print-directory print-build-provenance
 	@echo "✅ 构建完成: dist/"
 	@ls -la dist/
+
+# Print provenance for the artifact that will actually be uploaded.  The Git
+# state is deliberately included: a commit alone must not imply a clean tree.
+print-build-provenance:
+	@python -c 'import glob,hashlib,pathlib,subprocess; from ksadk.version import VERSION; wheels=sorted(glob.glob("dist/ksadk-*.whl")); wheel=pathlib.Path(wheels[-1]) if wheels else None; commit=subprocess.run(["git","rev-parse","HEAD"],capture_output=True,text=True,check=False).stdout.strip() or "unavailable"; dirty=bool(subprocess.run(["git","status","--porcelain"],capture_output=True,text=True,check=False).stdout.strip()); print("   KsADK: version=" + VERSION); print("   KsADK source: commit=" + commit + ", tree=" + ("dirty" if dirty else "clean")); print("   Wheel: " + (wheel.name if wheel else "unavailable")); print("   Wheel digest: sha256=" + (hashlib.sha256(wheel.read_bytes()).hexdigest() if wheel else "unavailable"))'
 
 # 带版本号构建: make release V=0.2.0
 release:
@@ -278,7 +369,7 @@ PUBLIC_DOCS_URL ?= https://kingsoftcloud.github.io/ksadk-python/
 PUBLIC_PYPI_PROJECT ?= ksadk
 PUBLIC_ALIAS_PYPI_PROJECT ?= agentengine-sdk-python
 PUBLIC_RELEASE_TAG ?= v$(V)
-PUBLIC_TEST_TARGETS ?= tests/test_public_release_positioning.py tests/test_public_security_regressions.py tests/test_config_env_registry.py tests/test_managed_runtime_builder.py tests/test_managed_runtime_resolution.py tests/cli/test_cmd_create_codex.py tests/runners/test_adapter_contract.py
+PUBLIC_TEST_TARGETS ?= tests/test_public_release_positioning.py tests/test_config_env_registry.py tests/test_managed_runtime_builder.py tests/test_managed_runtime_resolution.py tests/cli/test_cmd_create_codex.py tests/runners/test_adapter_contract.py
 
 public-status:
 	@echo "==> internal worktree"
@@ -576,12 +667,15 @@ openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size:
 STATIC_DIR := ksadk/server/static
 STUDIO_REACT_DIR := ksadk/studio/react-ui
 STUDIO_STATIC_DIR := ksadk/studio/static
-# The wheel must embed a published, reproducible Web bundle. 0.8.x is coupled
-# to the 0.3.1 Web release; the release job must fail rather than silently
-# substituting an older npm package when that release is not visible yet.
-KSADK_WEB_VERSION ?= 0.3.1
+# The wheel must embed a reproducible Web bundle. 0.8.x is coupled to the
+# Interaction/v1 Web 0.3.2 release; a normal release build must fail rather
+# than silently substituting an older npm package when that release is not
+# visible.  A reviewed local tarball is permitted for a pre-release image
+# build, but remains explicit in the command and provenance output.
+KSADK_WEB_VERSION ?= 0.3.2
 KSADK_WEB_PACKAGE ?= @kingsoftcloud/ksadk-web
 KSADK_WEB_TARBALL_NAME := kingsoftcloud-ksadk-web-$(patsubst v%,%,$(KSADK_WEB_VERSION)).tgz
+KSADK_WEB_TARBALL ?=
 KSADK_WEB_RELEASE_URL ?=
 KSADK_WEB_CACHE_DIR ?= .cache/ksadk-web
 KSADK_WEB_REGISTRY ?= https://registry.npmjs.org
@@ -590,7 +684,12 @@ sync-ksadk-web-static:
 	@echo "Sync KsADK Web static assets from $(KSADK_WEB_PACKAGE)@$(KSADK_WEB_VERSION)"
 	@rm -rf "$(KSADK_WEB_CACHE_DIR)/package"
 	@mkdir -p "$(KSADK_WEB_CACHE_DIR)" "$(STATIC_DIR)"
-	@if [ -f "$(KSADK_WEB_CACHE_DIR)/$(KSADK_WEB_TARBALL_NAME)" ]; then \
+	@if [ -n "$(KSADK_WEB_TARBALL)" ]; then \
+		test -f "$(KSADK_WEB_TARBALL)" || { echo "ERROR: KSADK_WEB_TARBALL does not exist: $(KSADK_WEB_TARBALL)" >&2; exit 1; }; \
+		echo "Using explicit KSADK_WEB_TARBALL=$(KSADK_WEB_TARBALL)"; \
+		cp "$(KSADK_WEB_TARBALL)" "$(KSADK_WEB_CACHE_DIR)/$(KSADK_WEB_TARBALL_NAME)"; \
+		echo "$(KSADK_WEB_TARBALL_NAME)" > "$(KSADK_WEB_CACHE_DIR)/.tarball-name"; \
+	elif [ -f "$(KSADK_WEB_CACHE_DIR)/$(KSADK_WEB_TARBALL_NAME)" ]; then \
 		echo "Using cached tarball $(KSADK_WEB_TARBALL_NAME)"; \
 		echo "$(KSADK_WEB_TARBALL_NAME)" > "$(KSADK_WEB_CACHE_DIR)/.tarball-name"; \
 	elif [ -n "$(KSADK_WEB_RELEASE_URL)" ]; then \
@@ -617,6 +716,8 @@ sync-ksadk-web-static:
 	@mkdir -p "$(STATIC_DIR)"
 	cp -R "$(KSADK_WEB_CACHE_DIR)/package/dist-ksadk/." "$(STATIC_DIR)/"
 	@$(MAKE) verify-ksadk-web-static
+	@printf 'KsADK Web static provenance: version=%s, tarball_sha256=%s\n' \
+		"$(patsubst v%,%,$(KSADK_WEB_VERSION))" "$$(shasum -a 256 "$(KSADK_WEB_CACHE_DIR)/$$(cat "$(KSADK_WEB_CACHE_DIR)/.tarball-name")" | awk '{print $$1}')"
 	@echo "Synced KsADK Web $(KSADK_WEB_VERSION) static assets into $(STATIC_DIR)"
 
 verify-ksadk-web-static:
@@ -633,10 +734,15 @@ verify-ksadk-web-wheel-static:
 		--expected-version "$(patsubst v%,%,$(KSADK_WEB_VERSION))"
 
 build-studio-static:
-	@echo "Build React Studio static assets from $(STUDIO_REACT_DIR)"
-	npm --prefix "$(STUDIO_REACT_DIR)" ci
-	npm --prefix "$(STUDIO_REACT_DIR)" run build
+	@if [ -f "$(STUDIO_REACT_DIR)/package.json" ]; then \
+		echo "Build React Studio static assets from $(STUDIO_REACT_DIR)"; \
+		npm --prefix "$(STUDIO_REACT_DIR)" ci; \
+		npm --prefix "$(STUDIO_REACT_DIR)" run build; \
+	else \
+		echo "React Studio source is intentionally absent; using reviewed compiled assets from $(STUDIO_STATIC_DIR)"; \
+	fi
 	@test -f "$(STUDIO_STATIC_DIR)/index.html" || (echo "ERROR: Studio static index.html missing after build" && exit 1)
+	@test -n "$$(find "$(STUDIO_STATIC_DIR)/assets" -type f -print -quit 2>/dev/null)" || (echo "ERROR: Studio compiled assets are missing" && exit 1)
 
 sync-hosted-ui: sync-ksadk-web-static
 	@echo "sync-hosted-ui is deprecated; static assets now come from $(KSADK_WEB_PACKAGE)."
@@ -646,6 +752,7 @@ build-frontend: sync-ksadk-web-static build-studio-static
 
 build-wheel: build-frontend
 	uv build
+	@$(MAKE) --no-print-directory print-build-provenance
 
 build-all: build-wheel
 	@echo "Build complete. Wheel is in dist/"

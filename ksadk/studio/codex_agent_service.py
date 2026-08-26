@@ -19,6 +19,7 @@ from typing import Any, Callable, cast
 
 from pydantic import ValidationError
 
+from ksadk.managed_runtime import installed_runtime_version
 from ksadk.studio.codex_builder import CodexBuildRecord
 from ksadk.studio.codex_manifest import (
     CodexAgentManifest,
@@ -31,6 +32,7 @@ from ksadk.studio.contracts import (
     AgentDraft,
     AgentMetadata,
     AgentSpec,
+    CapabilityBinding,
     Instructions,
     ModelSpec,
     Operation,
@@ -186,6 +188,7 @@ class CodexAgentService:
         spec: AgentSpec,
         *,
         expected_revision: int,
+        name: str | None = None,
     ) -> AgentDraft:
         snapshot = self.studio.codex_manifests.load(agent_id)
         current = self._project(snapshot)
@@ -201,13 +204,23 @@ class CodexAgentService:
             )
         resolved = spec.model_copy(deep=True)
         resolved.runtime = current.spec.runtime
-        self.ensure_bindings_supported(resolved)
+        # 早期 Studio 曾把 ksadk Tool 写进 Codex 草稿，尽管 Codex Runtime
+        # 从未执行这些绑定。允许原样保存这类 dormant 历史数据，避免用户只改
+        # Prompt/Model 时被迫丢绑定；新增、删除或修改仍按当前能力矩阵拒绝。
+        if (
+            resolved.bindings.tools != current.spec.bindings.tools
+            or resolved.capabilities.tools != current.spec.capabilities.tools
+        ):
+            self.ensure_bindings_supported(resolved)
         manifest = self._manifest(agent_id, resolved, current=snapshot.manifest)
         updated_snapshot = self.studio.codex_manifests.save(manifest)
         updated = AgentDraft(
             metadata=current.metadata.model_copy(
                 deep=True,
-                update={"revision": current.metadata.revision + 1},
+                update={
+                    "revision": current.metadata.revision + 1,
+                    **({"name": name} if name is not None else {}),
+                },
             ),
             spec=resolved,
         )
@@ -345,20 +358,34 @@ class CodexAgentService:
             purge=purge,
             trash_directory=trash_directory,
         )
-        self.studio.codex_manifests.delete(
-            agent_id,
-            purge=purge,
-            trash_directory=trash_directory,
-        )
+        # 早期 Studio 会把首个 Codex Agent 同时保存在根 agentengine.yaml 与
+        # agents/<id>/agentengine.yaml。Repository.load() 会优先返回根文件；只删
+        # 一次会让同一个 Agent 在刷新列表后从副本“复活”。最多消费这两个兼容
+        # 位置，且始终使用同一 recoverable trash 目录。
+        for _ in range(2):
+            try:
+                self.studio.codex_manifests.delete(
+                    agent_id,
+                    purge=purge,
+                    trash_directory=trash_directory,
+                )
+            except StudioError as exc:
+                if exc.status_code == 404:
+                    break
+                raise
 
     def detail(self, agent_id: str | None = None) -> dict:
         snapshot = self.studio.codex_manifests.load(agent_id)
+        _mcp_bindings, unresolved_mcp = self._mcp_bindings(snapshot.manifest)
         return {
             "draft": self._project(snapshot),
             "builds": [self.build_view(item) for item in self._builds(snapshot.manifest.name)],
             "validation": {"valid": True, "level": "build", "diagnostics": []},
             "manifestSha256": snapshot.manifest_sha256,
             "sourcePath": self.studio.workspace.relative(snapshot.source_path),
+            "bindingProjection": {
+                "unresolvedMcpServers": unresolved_mcp,
+            },
         }
 
     @staticmethod
@@ -390,7 +417,7 @@ class CodexAgentService:
         resolved_id = self.studio.codex_manifests.load(agent_id).manifest.name
         revision = self._project(self.studio.codex_manifests.load(resolved_id)).metadata.revision
 
-        async def runner():
+        async def runner(_operation_id: str):
             return await asyncio.to_thread(
                 self.studio.codex_builder.build,
                 resolved_id,
@@ -420,9 +447,10 @@ class CodexAgentService:
         approval_mode: str | None = None,
         collaboration_mode: str | None = None,
         goal_objective: str | None = None,
+        reasoning_effort: str | None = None,
         runtime_input: Any = None,
     ) -> Operation:
-        async def runner():
+        async def runner(_operation_id: str):
             return await self.studio.run_build(
                 build_id,
                 user_input,
@@ -432,6 +460,7 @@ class CodexAgentService:
                 approval_mode=approval_mode,
                 collaboration_mode=collaboration_mode,
                 goal_objective=goal_objective,
+                reasoning_effort=reasoning_effort,
                 runtime_input=runtime_input,
                 on_event=on_event,
             )
@@ -455,15 +484,33 @@ class CodexAgentService:
         manifest = snapshot.manifest
         saved = current or self.drafts.get(manifest.name)
         bindings = self._model_bindings(manifest)
+        mcp_bindings, _unresolved_mcp = self._mcp_bindings(manifest)
+        skill_bindings = [
+            CapabilityBinding(resource_id=resource_id)
+            for resource_id in (manifest.skills or [])
+        ]
+        # 从 Manifest 恢复 PCM context/memory（方案 §5.1：Build 不可变）
+        # Manifest 已在 model_validate 时严格校验；这里直接恢复
+        from ksadk.studio.contracts import ContextSpec, MemorySpec
+
+        context_spec = manifest.context or ContextSpec()
+        memory_spec = manifest.memory or MemorySpec()
         if saved is not None:
             draft = saved.model_copy(deep=True)
             draft.spec.runtime = RuntimeRef(
                 type="codex",
                 version=manifest.runtime.version,
             )
-            draft.spec.instructions = Instructions(system=manifest.prompt, task="")
+            draft.spec.instructions = Instructions(
+                system=manifest.prompt,
+                task=manifest.task_prompt or "",
+            )
             draft.spec.bindings.model_profile_id = bindings[0]
             draft.spec.bindings.model_profile_ids = bindings[1]
+            draft.spec.bindings.skills = skill_bindings
+            draft.spec.bindings.mcp_servers = mcp_bindings
+            draft.spec.context = context_spec
+            draft.spec.memory = memory_spec
             draft.metadata.labels.update(self._labels(manifest))
             return draft
         default_profile, profiles = bindings
@@ -476,11 +523,18 @@ class CodexAgentService:
             spec=AgentSpec(
                 description="由 agentengine.yaml 管理的 Codex Agent",
                 runtime=RuntimeRef(type="codex", version=manifest.runtime.version),
-                instructions=Instructions(system=manifest.prompt),
+                instructions=Instructions(
+                    system=manifest.prompt,
+                    task=manifest.task_prompt or "",
+                ),
                 bindings=AgentBindings(
                     model_profile_id=default_profile,
                     model_profile_ids=profiles,
+                    skills=skill_bindings,
+                    mcp_servers=mcp_bindings,
                 ),
+                context=context_spec,
+                memory=memory_spec,
             ),
         )
 
@@ -494,10 +548,26 @@ class CodexAgentService:
         model = self._model_name(spec, agent_id=agent_id)
         models = self._model_names(spec, default_model=model, agent_id=agent_id)
         prompt = spec.instructions.system.strip()
-        if spec.instructions.task.strip():
-            prompt = f"{prompt}\n\n任务约束：\n{spec.instructions.task.strip()}"
+        task_prompt = spec.instructions.task.strip() or None
         skill_ids = self._skill_resource_ids(spec)
         mcp_servers = self._mcp_server_configs(spec)
+        if current is not None:
+            _current_bindings, unresolved_current = self._mcp_bindings(current)
+            unresolved_names = {item["name"] for item in unresolved_current}
+            mcp_servers.extend(
+                dict(item)
+                for item in (current.mcp_servers or [])
+                if str(item.get("name") or "").strip() in unresolved_names
+                and str(item.get("name") or "").strip()
+                not in {str(server.get("name") or "").strip() for server in mcp_servers}
+            )
+        # PCM 策略写入 Manifest（随 Build 锁定，不可变）
+        context_payload = (
+            spec.context.model_dump(by_alias=True, exclude_none=True, mode="json") or None
+        )
+        memory_payload = (
+            spec.memory.model_dump(by_alias=True, exclude_none=True, mode="json") or None
+        )
         return CodexAgentManifest(
             name=agent_id,
             version=current.version if current is not None else "1.0.0",
@@ -505,10 +575,13 @@ class CodexAgentService:
             model=model,
             models=models if len(models) > 1 else None,
             prompt=prompt,
+            task_prompt=task_prompt,
             skills=skill_ids or None,
             mcp_servers=mcp_servers or None,
             sandbox=spec.execution.sandbox,
             approval_mode=spec.execution.approval_mode,
+            context=context_payload,
+            memory=memory_payload,
         )
 
     @staticmethod
@@ -519,7 +592,11 @@ class CodexAgentService:
     ) -> str:
         if spec.runtime is not None and spec.runtime.version:
             return spec.runtime.version
-        return current.runtime.version if current is not None else "0.144.4"
+        return (
+            current.runtime.version
+            if current is not None
+            else (installed_runtime_version("codex") or "0.144.4")
+        )
 
     def _model_name(self, spec: AgentSpec, *, agent_id: str | None = None) -> str:
         resolved = self.studio.catalog.resolve_model(spec.bindings)
@@ -563,6 +640,40 @@ class CodexAgentService:
         default = resources.get(manifest.model)
         profiles = [resources[model] for model in manifest.allowed_models if model in resources]
         return default, profiles if default in profiles else []
+
+    def _mcp_bindings(
+        self,
+        manifest: CodexAgentManifest,
+    ) -> tuple[builtins.list[CapabilityBinding], builtins.list[dict[str, str]]]:
+        """Project YAML MCP configs to real catalog bindings without inventing ids."""
+
+        resources: dict[tuple[str, str], str] = {}
+        for descriptor in self.studio.catalog.list(kind="mcp", limit=500):
+            contract = descriptor.contract or {}
+            name = str(contract.get("name") or descriptor.name or "").strip()
+            url = str(
+                contract.get("endpointUrl")
+                or contract.get("endpoint_url")
+                or contract.get("url")
+                or ""
+            ).strip()
+            if name and url:
+                resources.setdefault((name, url), descriptor.resource_id)
+
+        bindings: builtins.list[CapabilityBinding] = []
+        unresolved: builtins.list[dict[str, str]] = []
+        for entry in manifest.mcp_servers or []:
+            name = str(entry.get("name") or "").strip()
+            url = str(entry.get("url") or "").strip()
+            resource_id = resources.get((name, url))
+            if resource_id:
+                bindings.append(CapabilityBinding(resource_id=resource_id))
+            else:
+                unresolved.append({
+                    "name": name or "未命名 MCP",
+                    "reason": "not-in-resource-catalog",
+                })
+        return bindings, unresolved
 
     @staticmethod
     def _labels(manifest: CodexAgentManifest) -> dict[str, str]:

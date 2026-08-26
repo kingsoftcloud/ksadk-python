@@ -67,6 +67,7 @@ async def get_agent_ui_bootstrap(request: UiBootstrapRequest):
     workspace_enabled = workspace_files_enabled(default=True)
     ui_spec = _resolve_agent_ui_spec()
     runtime_capabilities = executor.native_capabilities(launch_context)
+    runtime_capability_matrix = executor.capability_matrix(launch_context)
     resume_capability = (
         runtime_capabilities.get("ResumeRun")
         if isinstance(runtime_capabilities, Mapping)
@@ -148,6 +149,7 @@ async def get_agent_ui_bootstrap(request: UiBootstrapRequest):
                 "StopRun": cancel_run_supported,
                 "ResumeRun": checkpoint_resume_supported,
                 "RuntimeCapabilities": runtime_capabilities,
+                "RuntimeCapabilityMatrix": runtime_capability_matrix,
                 "CheckpointResumeCapability": checkpoint_resume_capability,
                 "RunLifecycle": {
                     "Enabled": True,

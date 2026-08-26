@@ -5,13 +5,14 @@ title: "Web UI 仓库"
 KsADK Web UI 源码属于独立仓库 `kingsoftcloud/ksadk-web`，并以 npm 包
 `@kingsoftcloud/ksadk-web` 发布。`ksadk-python` 通过 `make sync-ksadk-web-static`
 从 npm 包的 `dist-ksadk` 目录同步静态产物到 `ksadk/server/static`，供本地
-`agentengine web` 使用；本仓库自己的 Studio 源码则从受跟踪的
-`ksadk/studio/react-ui` 构建到被 Git 忽略的 `ksadk/studio/static`。
+`agentengine web` 使用。Studio 生产静态产物位于 `ksadk/studio/static`；公开
+clean export、sdist 与 wheel 只携带经过审计的静态产物，不携带 Studio 的 React /
+TypeScript 可编辑源码。
 
 <Callout type="info" title="0.6.7 口径">
 自 0.6.5 起 `ksadk-python` 移除了本地 `npm ci` / `npm run build:ksadk` 构建链路，
 不再在 wheel 构建时实时拉取 GitHub latest release。Hosted UI 产物来自 npm 包
-`@kingsoftcloud/ksadk-web`；受跟踪的 Studio 源码则依据自身 lockfile 构建。
+`@kingsoftcloud/ksadk-web`；Studio 静态产物在进入公开 clean export 前完成构建与审计。
 </Callout>
 
 
@@ -21,12 +22,13 @@ KsADK Web UI 源码属于独立仓库 `kingsoftcloud/ksadk-web`，并以 npm 包
 | --- | --- |
 | `kingsoftcloud/ksadk-web` | 可编辑 React/Vite 源码、测试、Pages demo、npm 发布 |
 | `@kingsoftcloud/ksadk-web` (npm) | 构建产物 `dist-ksadk` / `dist-hosted` 的分发渠道 |
-| `ksadk-python` | Python SDK、CLI、runner、本地 server、Studio 源码、嵌入式 `server/static` 与 `studio/static` |
+| `ksadk-python` 公开仓与 Python 制品 | Python SDK、CLI、runner、本地 server、嵌入式 `server/static` 与 `studio/static`；不含 Studio 可编辑源码 |
 | hosted UI | 生产部署壳、网关、镜像和环境注入，同样从 npm 包消费 |
 
 `ksadk-python` 的公开 clean export 不包含 `ksadk/server/web-ui` 源码，也不包含
 `node_modules`、`dist/`、`dist-hosted/` 等 UI 仓库中间产物。Hosted Web UI 源码在
-`kingsoftcloud/ksadk-web` 仓库维护；Studio 源码则在本仓库受跟踪，其编译产物被忽略。
+`kingsoftcloud/ksadk-web` 仓库维护；Studio 的可编辑源码同样不进入公开 export，只有
+经过审计的 `ksadk/studio/static` 进入公开仓和 Python 制品。
 
 ## 同步规则
 
@@ -37,8 +39,8 @@ KsADK Web UI 源码属于独立仓库 `kingsoftcloud/ksadk-web`，并以 npm 包
 # 默认拉已验证的 npm 版本
 make sync-ksadk-web-static
 
-# 0.8.1 发布候选固定具体版本
-make sync-ksadk-web-static KSADK_WEB_VERSION=0.3.1
+# 0.8.2 发布候选固定具体版本
+make sync-ksadk-web-static KSADK_WEB_VERSION=0.3.2
 ```
 
 <Callout type="warning" title="不要在 wheel 构建时实时拉 GitHub latest release">
@@ -50,23 +52,24 @@ make sync-ksadk-web-static KSADK_WEB_VERSION=0.3.1
 
 ### 受控包构建
 
-`make build` 与 `make build-wheel` 会先同步 `ksadk-web` 并构建锁定的 React Studio
-源码，再构建 wheel，保证 wheel 中的静态产物来自受控输入：
+`make build` 与 `make build-wheel` 会先同步 `ksadk-web`。在完整源码候选中，它们构建
+锁定的 React Studio；在公开 clean export 中，它们校验并复用已经审计的 Studio 静态
+产物，再构建 wheel：
 
 ```bash
 # 1. sync-ksadk-web-static → ksadk/server/static
-# 2. npm ci && npm run build → ksadk/studio/static
+# 2. build Studio from reviewed source, or validate exported ksadk/studio/static
 # 3. python -m build / uv build
 ```
 
-`make build-only` 可复用已同步的 `ksadk/server/static`，但仍会构建当前 Studio
-静态产物。
+`make build-only` 可复用已同步的 `ksadk/server/static`；有 Studio 源码时重新构建，
+无源码的公开候选则要求既有 `ksadk/studio/static` 完整且通过校验。
 
 ### 同步变量
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `KSADK_WEB_VERSION` | `0.3.1` | 已发布的 npm 包版本；发布候选必须固定为具体版本 |
+| `KSADK_WEB_VERSION` | `0.3.2` | 已发布的 npm 包版本；发布候选必须固定为具体版本 |
 | `KSADK_WEB_PACKAGE` | `@kingsoftcloud/ksadk-web` | npm 包名 |
 | `KSADK_WEB_TARBALL_NAME` | `kingsoftcloud-ksadk-web-<version>.tgz` | tarball 文件名，由版本推导 |
 | `KSADK_WEB_RELEASE_URL` | 空 | 显式指定 tarball URL 兜底，优先级高于 npm pack |
@@ -80,14 +83,14 @@ sync 优先级：`KSADK_WEB_RELEASE_URL` 显式 tarball > `npm pack` > registry 
 
 每次 `ksadk-python` release note 应记录：
 
-- `ksadk-python` 版本（如 `0.8.1`）。
-- `KSADK_WEB_VERSION` / npm 包版本（如 `0.8.1` 对应 `@kingsoftcloud/ksadk-web@0.3.1`）。
-- 受控构建命令（如 `make build-frontend KSADK_WEB_VERSION=0.3.1`）。
+- `ksadk-python` 版本（如 `0.8.2`）。
+- `KSADK_WEB_VERSION` / npm 包版本（如 `0.8.2` 对应 `@kingsoftcloud/ksadk-web@0.3.2`）。
+- 受控构建命令（如 `make build-frontend KSADK_WEB_VERSION=0.3.2`）。
 - wheel / sdist 审计结果（`make public-build-check` / `twine check dist/*`）。
 
-<Callout type="info" title="0.8.1 发布记录示例">
-- `ksadk-python`: `0.8.1`
-- npm 包: `@kingsoftcloud/ksadk-web@0.3.1`
-- 前端构建: `make build-frontend KSADK_WEB_VERSION=0.3.1`
+<Callout type="info" title="0.8.2 发布记录示例">
+- `ksadk-python`: `0.8.2`
+- npm 包: `@kingsoftcloud/ksadk-web@0.3.2`
+- 前端构建: `make build-frontend KSADK_WEB_VERSION=0.3.2`
 - 审计: `make public-build-check` 通过，`twine check dist/*` 通过
 </Callout>

@@ -27,6 +27,11 @@ def build_managed_runtime_package(
         target.extra["manifest_sha256"] = manifest_sha256
     if result.artifact_path is not None:
         package_info.metadata["managed_manifest_path"] = str(result.artifact_path)
+        # ManagedRuntime deployment submits this exact YAML declaration to
+        # Server; it has no code ZIP, KS3 upload or CodeConfig.
+        package_info.metadata["managed_runtime_manifest"] = result.artifact_path.read_text(
+            encoding="utf-8"
+        )
     return package_info
 
 

@@ -1,11 +1,15 @@
 ---
 title: AgentKit Local Studio
-description: The local Agent authoring, build, and conversation workspace added in 0.8.1.
+description: A local workspace for authoring, builds, conversations, and cloud lifecycle operations.
 status: new
 ---
 
 <Callout type="info" title="New in 0.8.1">
   AgentKit Local Studio is a local-first workspace for authoring, building, and testing Agents in the browser. End users do not need a separate Node.js installation.
+</Callout>
+
+<Callout type="info" title="Cloud loop in 0.8.2">
+  Studio still runs on the developer machine, but it can now deploy and manage cloud Agents through the existing platform APIs and chat with high-code Agents created by the CLI.
 </Callout>
 
 `agentengine studio` is KsADK's local-first workspace. It brings Agent definitions, build history, conversations, resources, traces, and orchestration into one browser surface, while model calls and builds still run through the local KsADK runtime.
@@ -34,8 +38,8 @@ agentengine studio ./my-agent-workspace --env-file ./model.env
 
 `--env-file` reads only `OPENAI_API_BASE`, `OPENAI_API_KEY`, and `OPENAI_MODEL_NAME`. Existing process environment values take precedence and are not overwritten. When a Codex project needs Responses-to-Chat compatibility conversion, use `--codex-proxy auto`; see the full options in the [CLI reference](/en/docs/cli#agentengine-studio).
 
-<Callout type="warning" title="Local workspace only">
-  0.8.1 does not include cloud deployment or multi-user collaboration through Studio. To deploy an existing project, use `agentengine deploy` in that project directory and follow the [cloud deployment](cloud-deployment) guide.
+<Callout type="warning" title="Local control client, not a multi-user SaaS">
+  The Studio UI and credential proxy still run locally. Cloud lifecycle management is supported, but shared multi-user workspaces are not. The browser never receives AK/SK; the local service signs cloud requests and sends them to AgentEngine Server.
 </Callout>
 
 ## Create, build, and chat
@@ -58,6 +62,20 @@ agentengine web .
 
 For generated files, runtime entry-point conventions, and deployment paths, see [Create a project](../getting-started/quickstart), [Codex Managed Runtime](managed-runtime), and [cloud deployment](cloud-deployment).
 
+## Cloud deployment and lifecycle
+
+After a successful build, Studio can start deployment directly. It reuses AgentEngine's existing `CreateAgent`, `UpdateAgent`, status, and delete APIs instead of introducing a parallel deployment API:
+
+1. Choose a successful build on the **Builds** page and deploy it, or start a deployment on the **Deployments** page.
+2. Follow progress, then inspect the Endpoint, runtime status, current build, and version history on the detail page.
+3. **Chat** opens the cloud Agent inside Studio by default. Hosted UI and third-party Runtime dashboards remain secondary actions.
+4. Rebuild after editing the Agent and publish with `UpdateAgent`; select an older version and confirm to roll back.
+5. Deleting an Agent calls the cloud lifecycle API and removes the corresponding local receipt.
+
+Cloud targets combine Studio deployment receipts with Agents already present in the account, including high-code Agents deployed by the CLI. Identity always uses the complete `agent_id`, so changing the source does not create duplicate conversations. If Hermes or OpenClaw does not advertise the capabilities required by Studio chat, Studio says so and links to the official dashboard instead of pretending full compatibility.
+
+Ordinary chat is a foreground streaming request and does not require Background mode. Background sessions are reserved for tasks that must continue after the foreground connection closes. Conversations support incremental text, reasoning, tools, approvals, attachments, model selection, three approval levels, and Goal / Plan controls. There is no separate “Loop” mode in the composer.
+
 ## Studio and the local Web UI
 
 | Scenario | Command | Best for |
@@ -76,6 +94,6 @@ Do not remove Agent source files or `agentengine.yaml` to reset conversations. T
 
 ## UI package and source
 
-Wheel users do not need to build the Studio frontend: the wheel includes the production static assets. Studio contributors work in the tracked `ksadk/studio/react-ui` source directory. The generated `ksadk/studio/static` directory is not committed, but is generated and packaged automatically when a wheel is built.
+Wheel users do not need to build the Studio frontend: the wheel includes the reviewed production static assets. The public repository, sdist, and wheel do not include editable Studio React / TypeScript source; the public release gate validates and packages only `ksadk/studio/static`.
 
 See [build and package](build-and-package) and the [Web UI source and release contract](web-ui-source) for details.

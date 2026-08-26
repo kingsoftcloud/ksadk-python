@@ -69,6 +69,21 @@ EXPORT_PREFIXES = (
     "ksadk_runtime_common/",
 )
 
+# The public candidate carries reviewed compiled UI assets, not the editable
+# Studio React/TypeScript source tree. These directories are generated and
+# ignored in the internal repository, so export discovery must add them
+# explicitly after the internal build has completed.
+GENERATED_PUBLIC_STATIC_PREFIXES = (
+    "ksadk/server/static/",
+    "ksadk/studio/static/",
+)
+
+GENERATED_STATIC_SOURCE_SUFFIXES = (
+    ".map",
+    ".ts",
+    ".tsx",
+)
+
 REQUIRED_PUBLIC_FILES = {
     "AGENTS.md",
     "CLAUDE.md",
@@ -79,6 +94,8 @@ REQUIRED_PUBLIC_FILES = {
     ".gitleaks.toml",
     "docs-site/package.json",
     "docs-site/pnpm-lock.yaml",
+    "ksadk/server/static/index.html",
+    "ksadk/studio/static/index.html",
     "pyproject.toml",
 }
 
@@ -98,6 +115,7 @@ SCRIPT_EXPORT_FILES = {
 
 PUBLIC_TEST_FILES = {
     "tests/conftest.py",
+    "tests/events/fixtures/runtime_projection_golden.json",
     "tests/test_check_approval_record.py",
     "tests/test_check_publication_state.py",
     "tests/test_config_env_registry.py",
@@ -105,6 +123,10 @@ PUBLIC_TEST_FILES = {
     "tests/test_open_source_audit.py",
     "tests/test_public_release_positioning.py",
     "tests/test_runtime_common_packaging.py",
+    "tests/studio/test_style_system.py",
+    "tests/studio/e2e/studio_browser_smoke.py",
+    "tests/studio/e2e/studio_e2e_support.py",
+    "tests/studio/e2e/studio_responsive_smoke.py",
     "tests/test_managed_runtime_builder.py",
     "tests/test_managed_runtime_native_smoke.py",
     "tests/test_managed_runtime_resolution.py",
@@ -131,6 +153,7 @@ EXCLUDED_PREFIXES = (
     "htmlcov/",
     "ksadk.egg-info/",
     "ksadk/server/web-ui/",
+    "ksadk/studio/react-ui/",
     "site/",
 )
 
@@ -215,6 +238,26 @@ def discover_files(root: Path) -> list[str]:
     return filesystem_files(root)
 
 
+def generated_static_files(root: Path, violations: list[str]) -> list[str]:
+    paths: list[str] = []
+    for prefix in GENERATED_PUBLIC_STATIC_PREFIXES:
+        static_root = root / prefix.rstrip("/")
+        if not static_root.is_dir():
+            violations.append(f"missing compiled public static directory: {prefix}")
+            continue
+        for path in sorted(static_root.rglob("*")):
+            if not path.is_file():
+                continue
+            rel_path = normalize(path.relative_to(root))
+            if rel_path.endswith(GENERATED_STATIC_SOURCE_SUFFIXES):
+                violations.append(
+                    f"compiled public static directory contains source artifact: {rel_path}"
+                )
+                continue
+            paths.append(rel_path)
+    return paths
+
+
 def is_excluded(path: str) -> bool:
     normalized = normalize(path)
     if not is_included_by_policy(normalized):
@@ -262,7 +305,10 @@ def build_export_plan(repo_root: Path) -> ExportPlan:
             violations.append(f"failed to discover git files: {exc}")
             discovered = []
 
-    export_paths = sorted(path for path in discovered if not is_excluded(path))
+    generated_paths = generated_static_files(repo_root, violations)
+    export_paths = sorted(
+        set(path for path in discovered if not is_excluded(path)) | set(generated_paths)
+    )
     excluded_paths = sorted(path for path in discovered if is_excluded(path))
 
     for required_path in sorted(REQUIRED_PUBLIC_FILES):

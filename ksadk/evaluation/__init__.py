@@ -7,10 +7,27 @@ from .adapters import (
     TargetAdapterError,
     create_target_adapter,
 )
+from .cloud_binding import CloudBinding, CloudBindingError, CloudBindingStore
+from .cloud_converter import (
+    CloudDatasetColumn,
+    CloudDatasetRow,
+    CloudDatasetSnapshot,
+    EvalSetCloudConversionError,
+    evalset_from_dataset_snapshot,
+    evalset_to_dataset_snapshot,
+)
+from .cloud_service import (
+    CloudEvalSetPreviewError,
+    CloudEvalSetCatalogItem,
+    CloudEvalSetPublishResult,
+    CloudEvalSetPullResult,
+    CloudEvalSetService,
+)
 from .contracts import (
     AssertionSpec,
     AssertionType,
     CaseRun,
+    CloudDatasetRef,
     DataPolicy,
     EvalCase,
     EvalRunReport,
@@ -47,6 +64,18 @@ __all__ = [
     "AssertionType",
     "A2ATargetAdapter",
     "A2ATargetError",
+    "CloudBinding",
+    "CloudBindingError",
+    "CloudBindingStore",
+    "CloudDatasetRef",
+    "CloudDatasetColumn",
+    "CloudDatasetRow",
+    "CloudDatasetSnapshot",
+    "CloudEvalSetPreviewError",
+    "CloudEvalSetCatalogItem",
+    "CloudEvalSetPublishResult",
+    "CloudEvalSetPullResult",
+    "CloudEvalSetService",
     "CaseRun",
     "DataPolicy",
     "EvalCase",
@@ -60,6 +89,7 @@ __all__ = [
     "EvalTurn",
     "EvaluationConfig",
     "EvaluationExecutionError",
+    "EvalSetCloudConversionError",
     "EvaluationNotImplementedError",
     "EvaluationRequest",
     "EvaluationStorage",
@@ -80,5 +110,7 @@ __all__ = [
     "load_evalset",
     "parse_evalset",
     "execute_evaluation",
+    "evalset_from_dataset_snapshot",
+    "evalset_to_dataset_snapshot",
     "create_target_adapter",
 ]
