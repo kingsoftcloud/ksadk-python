@@ -152,6 +152,23 @@ def test_wheel_audit_blocks_hosted_ui_bundle_and_zread_snapshot():
     ]
 
 
+def test_public_and_package_audits_block_editable_studio_source():
+    audit = _load_audit_module()
+    paths = [
+        "ksadk/studio/react-ui/src/App.tsx",
+        "ksadk/studio/react-ui/package.json",
+        "ksadk/studio/static/index.html",
+        "ksadk/studio/static/assets/app.js",
+    ]
+
+    for target in ("public-repo", "sdist", "wheel"):
+        result = audit.audit_paths(target, paths)
+        assert [violation.rule for violation in result.violations] == [
+            "studio-frontend-source",
+            "studio-frontend-source",
+        ]
+
+
 def test_github_pages_audit_allows_public_docs_but_blocks_zread_site():
     audit = _load_audit_module()
 
@@ -294,14 +311,13 @@ def test_content_audit_blocks_private_doc_domains_and_secret_shapes(tmp_path):
     aws_access_key_id = "AKIA" + "1234567890ABCDEF"
     openai_key = "sk-" + "A" * 48
     github_token = "ghp_" + "B" * 40
+    long_lived_secret = "SECRET" + "_KEY=" + "prod_live_value_1234567890abcdef\n"
 
     (tmp_path / "README.md").write_text(f"Docs: {private_docs_url}\n", encoding="utf-8")
     (tmp_path / "config.yml").write_text(f"AWS key {aws_access_key_id}\n", encoding="utf-8")
     (tmp_path / "llm.env").write_text(f"OPENAI_API_KEY={openai_key}\n", encoding="utf-8")
     (tmp_path / "repo.env").write_text(f"GITHUB_TOKEN={github_token}\n", encoding="utf-8")
-    (tmp_path / "prod.env").write_text(
-        "SECRET_KEY=prod_live_value_1234567890abcdef\n", encoding="utf-8"
-    )
+    (tmp_path / "prod.env").write_text(long_lived_secret, encoding="utf-8")
     (tmp_path / "tests.py").write_text(
         "SECRET_KEY=dummy-secret-value\nTOKEN=secret-token\n", encoding="utf-8"
     )

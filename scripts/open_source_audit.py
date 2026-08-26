@@ -72,6 +72,14 @@ class AuditResult:
 
 COMMON_RULES = (
     DenyRule(
+        name="studio-frontend-source",
+        prefixes=("ksadk/studio/react-ui/",),
+        description=(
+            "editable Studio React/TypeScript source stays internal; public source and "
+            "Python artifacts carry reviewed compiled static assets only"
+        ),
+    ),
+    DenyRule(
         name="zread-output",
         prefixes=(".zread/",),
         description=(
