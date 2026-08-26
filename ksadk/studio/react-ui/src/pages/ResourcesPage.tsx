@@ -56,14 +56,14 @@ export interface ResItem {
 }
 
 const KIND_META: Record<ResourceKind, { title: string; description: string; addLabel: string; headings: [string, string, string]; icon: any }> = {
-  model: { title: "模型", description: "管理 Model Profile、Endpoint 和凭据引用。", addLabel: "配置模型", headings: ["发现来源", "上下文窗口", "输入模态"], icon: Cpu },
+  model: { title: "模型", description: "管理模型端点和凭据引用。", addLabel: "配置模型", headings: ["发现来源", "上下文窗口", "输入模态"], icon: Cpu },
   tool: { title: "Tool", description: "管理结构化 Tool Contract、权限和审批策略。", addLabel: "添加 Python Tool", headings: ["来源", "Tool 分组", "权限 / 边界"], icon: Wrench },
   mcp: { title: "MCP", description: "连接、探测并复用 MCP Server。", addLabel: "添加资源", headings: ["来源", "版本", "说明"], icon: Network },
   skill: { title: "Skill", description: "安装版本化 Skill，并在构建时锁定内容摘要。", addLabel: "发现 Skill", headings: ["来源", "版本", "说明"], icon: Sparkles },
 };
 
 const SOURCE_LABELS: Record<string, string> = {
-  provider: "模型服务 /v1/models",
+  provider: "模型服务",
   builtin: "ksadk 内置",
   local: "工作区自定义",
   market: "市场",
@@ -377,10 +377,11 @@ export function ResourcesPage({ kind, onKindChange, refreshTick }: { kind: Resou
 
 function ResourceNameCell({ item }: { item: ResItem }) {
   const Icon = KIND_META[item.kind]?.icon || Database;
+  const showName = item.name && item.name !== item.displayName;
   return (
     <div className="agent-cell">
       <span className="capability-icon"><Icon size={15} /></span>
-      <div className="agent-cell-copy"><strong>{item.displayName}</strong><span>{item.name}</span></div>
+      <div className="agent-cell-copy"><strong>{item.displayName}</strong>{showName && <span>{item.name}</span>}</div>
     </div>
   );
 }
@@ -393,7 +394,7 @@ function ResourceDetailCell({ item }: { item: ResItem }) {
     const value = tokens >= 1000000
       ? `${(tokens / 1000000).toFixed(tokens % 1000000 ? 1 : 0)}M`
       : tokens >= 1000 ? `${Math.round(tokens / 1000)}K` : `${tokens || "-"}`;
-    return <><strong>{value}</strong><span className="resource-origin">{origin}</span></>;
+    return <strong title={`上下文窗口来源：${origin}`}>{value}</strong>;
   }
   if (item.kind === "tool") {
     return <span className="tag">{item.contract?.group || item.category || "general"}</span>;
@@ -409,7 +410,7 @@ function ResourceCapabilityCell({ item }: { item: ResItem }) {
     if (capabilities.multimodal_input_video) modalities.push("视频");
     if (capabilities.multimodal_input_file) modalities.push("文件");
     const origin = item.contract?.discovery?.inputModalities === "provider" ? "服务返回" : "ksadk 默认";
-    return <>{modalities.join(" + ")}<span className="resource-origin">{origin}</span></>;
+    return <span title={`输入模态来源：${origin}`}>{modalities.join(" + ")}</span>;
   }
   if (item.kind === "tool") {
     const approval = item.contract?.approval === "always" ? "需审批" : "无需审批";
@@ -732,7 +733,7 @@ function AddModelDrawer({ onClose, onAdded }: { onClose: () => void; onAdded: ()
     <FormProvider {...modelForm}>
     <Drawer
       title="添加模型"
-      subtitle="接入 OpenAI 兼容端点的自定义 Model Profile。"
+      subtitle="接入 OpenAI 兼容模型端点。"
       wide
       onClose={onClose}
       footer={

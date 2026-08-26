@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Activity, FileUp, Play, RefreshCw } from "lucide-react";
+import { Activity, FileUp, Play } from "lucide-react";
 import { apiFetch } from "../api";
 import { Drawer } from "../components/Drawer";
+import { PageHeaderActions } from "../components/PageHeaderPortal";
 import { showToast } from "../components/Toast";
 import { FormField } from "../components/ui/FormField";
 import { StudioDataTable, type StudioDataColumn } from "../components/ui/StudioDataTable";
@@ -260,25 +261,19 @@ export function EvaluationsPage({
 
   return (
     <div className="page-container evaluation-page" data-layout="data" data-scroll-mode="data">
-      <header className="page-header">
-        <div><h1>评测</h1><p>创建、监控并检查 Agent 的评测运行。</p></div>
-        <div className="header-actions">
-          <button className="button tertiary" type="button" onClick={() => void loadRuns()} aria-label="刷新评测任务">
-            <RefreshCw size={15} /><span>刷新</span>
-          </button>
-          <button className="button accent" type="button" onClick={() => setFormOpen(true)}>
-            <Play size={15} /><span>新建评测</span>
-          </button>
-        </div>
-      </header>
+      <PageHeaderActions>
+        <button className="button accent" type="button" onClick={() => setFormOpen(true)}>
+          <Play size={15} /><span>新建评测</span>
+        </button>
+      </PageHeaderActions>
 
       {completionMessage && <p className="sr-only" role="status">{completionMessage}</p>}
 
       <section className="evaluation-page__metrics" aria-label="评测汇总">
-        <div><span>评测运行</span><strong>{runs.length}</strong><small>全部任务</small></div>
-        <div><span>运行中</span><strong>{activeCount}</strong><small>排队或执行</small></div>
-        <div><span>已通过</span><strong>{passedCount}</strong><small>{completedRuns.length} 个已有报告</small></div>
-        <div><span>异常</span><strong>{abnormalCount}</strong><small>失败、错误或中断</small></div>
+        <div><span>全部</span><strong>{runs.length}</strong></div>
+        <div><span>运行中</span><strong>{activeCount}</strong></div>
+        <div><span>已通过</span><strong>{passedCount}</strong></div>
+        <div><span>异常</span><strong>{abnormalCount}</strong></div>
       </section>
 
       <section className="evaluation-page__run-list" aria-label="评测运行">
@@ -294,7 +289,7 @@ export function EvaluationsPage({
           onRetry={() => void loadRuns()}
           onRowActivate={run => onOpenRun(run.id)}
           rowAriaLabel={run => `打开评测 ${run.evalset.name || run.id}`}
-          empty={{ icon: <Activity size={22} />, title: "还没有评测任务", description: "新建评测后，任务会立即显示在这里。" }}
+          empty={{ icon: <Activity size={22} />, title: "还没有评测任务", description: "创建评测后即可在这里查看结果。" }}
         />
       </section>
 

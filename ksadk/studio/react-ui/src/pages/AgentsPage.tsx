@@ -175,31 +175,28 @@ export function AgentsPage({ agents, runtimeReady, runtimeChecked = true, worksp
       <div className="data-page-body table-data-body">
         {actionError && <div className="form-error" style={{ marginBottom: 16 }}>{actionError}</div>}
 
-        <section className="agents-overview-section" aria-labelledby="agents-overview-title">
-          <header className="agents-section-heading">
-            <div>
-              <h2 id="agents-overview-title">工作区概览</h2>
-              <p>{workspaceName || "本地工作区"}</p>
-            </div>
-          </header>
-          <div className="stat-strip">
-            <div><span className="stat-label">Agent</span><strong className="stat-value">{agents.length}</strong><small className="stat-foot">当前工作区</small></div>
-            <div><span className="stat-label">可用模型</span><strong className="stat-value">{models}</strong><small className="stat-foot">Model Profile</small></div>
-            <div><span className="stat-label">能力资源</span><strong className="stat-value">{capabilities}</strong><small className="stat-foot">Tool · MCP · Skill</small></div>
-            <div className="emphasis" data-state={!runtimeChecked ? "pending" : runtimeReady ? "ready" : "failed"}>
-              <span className="stat-label">运行环境</span>
-              <strong className="stat-value">{!runtimeChecked ? "正在连接" : runtimeReady ? "运行正常" : "连接失败"}</strong>
-              <small className="stat-foot">{!runtimeChecked ? "正在检查本地工作区" : runtimeReady ? workspaceName || "本地构建与运行" : "本地 Runtime 不可用"}</small>
+        <section className="agents-overview-section" aria-labelledby="agents-overview-title" title={workspaceName || "本地工作区"}>
+          <h2 id="agents-overview-title" className="sr-only">工作区概览</h2>
+          <div className="stat-strip compact-summary">
+            <div><span className="stat-label">Agent</span><strong className="stat-value">{agents.length}</strong></div>
+            <div><span className="stat-label">可用模型</span><strong className="stat-value">{models}</strong></div>
+            <div><span className="stat-label">能力资源</span><strong className="stat-value">{capabilities}</strong></div>
+            <div className="runtime-summary" data-state={!runtimeChecked ? "pending" : runtimeReady ? "ready" : "failed"}>
+              <span className="stat-label">本地 Runtime</span>
+              <strong className="stat-value"><span className="summary-status-dot" />{!runtimeChecked ? "检查中" : runtimeReady ? "正常" : "连接失败"}</strong>
             </div>
           </div>
+          {runtimeChecked && !runtimeReady && (
+            <div className="compact-status-alert" role="alert">
+              <strong>本地 Runtime 连接失败</strong>
+              <span>请确认本地服务正在运行，然后刷新页面。</span>
+            </div>
+          )}
         </section>
 
         <section className="agents-catalog-section block" aria-labelledby="agents-catalog-title">
           <header className="agents-catalog-header">
-            <div>
-              <h2 id="agents-catalog-title">Agent 列表</h2>
-              <p>Revision、能力绑定与交付状态；YAML Agent 只校验声明，不产生代码包。</p>
-            </div>
+            <h2 id="agents-catalog-title">Agent 列表</h2>
             <div className="agents-catalog-meta">
               <span>{filtered.length === agents.length ? `${agents.length} 个 Agent` : `${filtered.length} / ${agents.length} 个 Agent`}</span>
               <span className="sync-state">已同步</span>
@@ -234,8 +231,8 @@ export function AgentsPage({ agents, runtimeReady, runtimeChecked = true, worksp
               icon: <Bot size={24} />,
               title: query || statusFilter ? "没有匹配的 Agent" : "还没有 Agent",
               description: query || statusFilter
-                ? "调整搜索词或状态筛选后重试。"
-                : "输入系统提示词并选择所需能力，创建第一个可在本地运行和构建的 Agent。",
+                ? "调整搜索词或状态筛选。"
+                : "创建第一个可运行的 Agent。",
               action: !query && !statusFilter ? (
                 <button className="button accent" type="button" onClick={onCreate}>
                   <Plus size={16} /><span>创建 Agent</span>

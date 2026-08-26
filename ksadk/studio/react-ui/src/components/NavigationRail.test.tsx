@@ -53,14 +53,14 @@ describe("NavigationRail", () => {
     );
   });
 
-  it("routes every resource target without page-local navigation logic", async () => {
+  it("merges resource destinations and returns to the active resource kind", async () => {
     const user = userEvent.setup();
     const onNavigate = vi.fn();
     const onOpenSettings = vi.fn();
     render(
       <NavigationRail
         view="resources"
-        resourceKind="model"
+        resourceKind="mcp"
         expanded={false}
         workspaceName="studio-test"
         workspacePath="/workspace/studio-test"
@@ -71,8 +71,15 @@ describe("NavigationRail", () => {
     );
 
     expect(screen.getByRole("complementary")).toHaveAttribute("data-state", "compact");
-    await user.click(screen.getByRole("button", { name: "Skill" }));
-    expect(onNavigate).toHaveBeenCalledWith("resources", "skill");
+    expect(screen.queryByRole("button", { name: "模型" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Tool" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "MCP" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Skill" })).not.toBeInTheDocument();
+
+    const resourcesButton = screen.getByRole("button", { name: "工程资源" });
+    expect(resourcesButton).toHaveAttribute("aria-current", "page");
+    await user.click(resourcesButton);
+    expect(onNavigate).toHaveBeenCalledWith("resources", "mcp");
     await user.click(screen.getByRole("button", { name: "设置" }));
     expect(onOpenSettings).toHaveBeenCalledOnce();
   });
@@ -95,5 +102,26 @@ describe("NavigationRail", () => {
 
     await user.click(screen.getByRole("button", { name: "评测" }));
     expect(onNavigate).toHaveBeenCalledWith("evaluations", undefined);
+  });
+
+  it("uses distinct semantic icons for consolidated resources and delivery stages", () => {
+    render(
+      <NavigationRail
+        view="agents"
+        resourceKind="model"
+        expanded
+        workspaceName="studio-test"
+        workspacePath="/workspace/studio-test"
+        runtimeReady
+        onNavigate={() => undefined}
+        onOpenSettings={() => undefined}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "工程资源" }).querySelector("svg")).toHaveClass("lucide-boxes");
+    expect(screen.getByRole("button", { name: "运行资源" }).querySelector("svg")).toHaveClass("lucide-server-cog");
+    expect(screen.getByRole("button", { name: "任务编排" }).querySelector("svg")).toHaveClass("lucide-workflow");
+    expect(screen.getByRole("button", { name: "可观测" }).querySelector("svg")).toHaveClass("lucide-chart-spline");
+    expect(screen.getByRole("button", { name: "评测" }).querySelector("svg")).toHaveClass("lucide-clipboard-check");
   });
 });

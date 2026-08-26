@@ -195,12 +195,7 @@ export function BuildsPage({ currentAgentId, agents, onSelectAgent, onCreate }: 
       </PageHeaderActions>
 
       <div className="delivery-intro">
-        <div>
-          <h2>{isManagedRuntime ? "ManagedRuntime 声明" : "Code Bundle"}</h2>
-          <p>{isManagedRuntime
-            ? "校验 YAML 声明并锁定 Runtime、模型与能力摘要，生成可追溯的托管运行时制品。"
-            : "打包 ADK、LangGraph 等代码 Agent，锁定代码、依赖与能力摘要。"}</p>
-        </div>
+        <h2>{isManagedRuntime ? "ManagedRuntime 声明" : "Code Bundle"}</h2>
         <span className="delivery-status-badge" data-state={state}>{deliveryLabel(status)}</span>
       </div>
 
@@ -212,33 +207,35 @@ export function BuildsPage({ currentAgentId, agents, onSelectAgent, onCreate }: 
         </div>
       ) : (
         <>
-          <section className="delivery-stat-strip" aria-label="构建事实摘要">
-            <div><span className="stat-label">当前 Agent</span><strong>{selectedAgent?.metadata.name || draft?.metadata?.name || "未选择"}</strong><small>{currentAgentId || "选择 Agent"}</small></div>
-            <div><span className="stat-label">Revision</span><strong>{draft ? `r${draft.metadata.revision}` : "-"}</strong><small>构建输入</small></div>
-            <div><span className="stat-label">{isManagedRuntime ? "校验状态" : "构建状态"}</span><strong>{deliveryLabel(status)}</strong><small>{operationId || "最近记录"}</small></div>
-            <div><span className="stat-label">{isManagedRuntime ? "YAML 摘要" : "Bundle digest"}</span><strong className="mono">{shortId(latestBuild?.bundleDigest || "-")}</strong><small>{isManagedRuntime ? "声明内容摘要" : "内容摘要"}</small></div>
-            <div><span className="stat-label">Runtime</span><strong>{runtime}</strong><small>锁定 Profile</small></div>
+          <section className="delivery-stat-strip compact-delivery-summary" aria-label="构建摘要">
+            <div><span className="stat-label">Agent</span><strong title={currentAgentId || ""}>{selectedAgent?.metadata.name || draft?.metadata?.name || "未选择"}</strong></div>
+            <div><span className="stat-label">Revision</span><strong>{draft ? `r${draft.metadata.revision}` : "-"}</strong></div>
+            <div><span className="stat-label">Runtime</span><strong>{runtime}</strong></div>
+            <div><span className="stat-label">{isManagedRuntime ? "YAML 摘要" : "Bundle"}</span><strong className="mono">{shortId(latestBuild?.bundleDigest || "-")}</strong></div>
           </section>
 
-          <section className="delivery-block" aria-label={isManagedRuntime ? "ManagedRuntime 事实链" : "Code Bundle 事实链"}>
-            <h2>{isManagedRuntime ? "声明事实链" : "构建事实链"}</h2><p>每一步都来自本地交付记录；部署页负责选择目标并提交云端操作。</p>
+          <section className="delivery-next-step" data-state={deployable ? "ready" : state} aria-label="构建下一步">
+            <div>
+              <span>下一步</span>
+              <strong>{deployable ? "构建完成，下一步可部署到云端" : "等待构建完成"}</strong>
+            </div>
+            {deployable && (
+              <button className="button secondary compact" type="button" onClick={openDeploymentFlow}>
+                <CloudUpload size={15} />部署到云端
+              </button>
+            )}
+          </section>
+
+          <details className="delivery-block delivery-detail-disclosure">
+            <summary>{isManagedRuntime ? "声明详情" : "构建详情"}</summary>
+            <p>{isManagedRuntime
+              ? "校验 YAML 声明并锁定 Runtime、模型与能力摘要，生成可追溯的托管运行时制品。"
+              : "查看不可变 Bundle、输入 Revision 与交付记录。"}</p>
             <div className="delivery-fact-chain">
               <div className="delivery-fact-step" data-state={draft ? "ready" : "idle"}><span>{isManagedRuntime ? "输入 YAML Revision" : "输入 Revision"}</span><strong>{draft ? `r${draft.metadata.revision}` : "未选择"}</strong><code>{draft?.metadata?.id || "-"}</code></div>
               <div className="delivery-fact-step" data-state={state}><span>{isManagedRuntime ? "声明摘要" : "不可变 Bundle"}</span><strong>{latestBuild?.status === "SUCCEEDED" ? (isManagedRuntime ? "已校验" : "已生成") : deliveryLabel(status)}</strong><code>{latestBuild?.bundleDigest || "尚无 digest"}</code></div>
-              <div className="delivery-fact-step" data-state={deployable ? "ready" : "idle"}>
-                <span>下一步</span>
-                <strong>{deployable ? "构建完成，下一步可部署到云端" : "等待构建完成"}</strong>
-                <code>{deployable ? `使用 ${latestBuild.id} 进入统一部署流程` : "成功 Build 生成后开放部署入口"}</code>
-                {deployable && (
-                  <div className="delivery-empty-actions">
-                    <button className="button secondary compact" type="button" onClick={openDeploymentFlow}>
-                      <CloudUpload size={15} />部署到云端
-                    </button>
-                  </div>
-                )}
-              </div>
             </div>
-          </section>
+          </details>
 
           <details className="delivery-block" open={building}>
             <summary>{isManagedRuntime ? "声明校验日志" : "构建技术日志"} {operationId ? `· ${shortId(operationId, 28)}` : ""}</summary>

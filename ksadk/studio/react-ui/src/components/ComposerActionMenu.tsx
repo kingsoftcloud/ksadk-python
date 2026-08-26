@@ -15,6 +15,7 @@ interface ComposerActionMenuProps {
   onFiles: (files: File[]) => void;
   active?: boolean;
   attachmentAccept?: string;
+  attachmentLimit?: number;
 }
 
 function CommandIcon({ id }: { id: ComposerCommand["id"] }) {
@@ -30,6 +31,7 @@ export function ComposerActionMenu({
   onFiles,
   active = true,
   attachmentAccept = COMPOSER_ATTACHMENT_ACCEPT,
+  attachmentLimit = 4,
 }: ComposerActionMenuProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [open, setOpen] = useState(false);
@@ -43,6 +45,7 @@ export function ComposerActionMenu({
         className="composer-file-input"
         type="file"
         tabIndex={-1}
+        aria-label="选择本轮附件"
         multiple
         accept={attachmentAccept || undefined}
         onChange={event => {
@@ -68,7 +71,7 @@ export function ComposerActionMenu({
             <DropdownMenu.Label className="composer-action-heading">添加到本轮</DropdownMenu.Label>
             <DropdownMenu.Item className="composer-action-item" onSelect={() => fileInputRef.current?.click()}>
               <Paperclip size={16} />
-              <span><strong>添加图片或文本</strong><small>最多 4 个附件</small></span>
+              <span><strong>添加附件</strong><small>本轮最多 {attachmentLimit} 个</small></span>
             </DropdownMenu.Item>
             <DropdownMenu.Separator className="composer-action-separator" />
             <DropdownMenu.Label className="composer-action-heading">运行方式</DropdownMenu.Label>

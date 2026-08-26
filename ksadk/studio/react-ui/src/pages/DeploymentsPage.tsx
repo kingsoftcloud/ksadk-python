@@ -1177,24 +1177,20 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
     <div className="delivery-page" data-layout="document">
       <PageHeaderActions>
         <button className="button accent" type="button" onClick={() => navigateToStudioHash("#/deployments/new")}>
-          <CloudUpload size={15} /><span>选择 Build 部署</span>
+          <CloudUpload size={15} /><span>部署 Agent</span>
         </button>
         <button className="button secondary" type="button" onClick={() => void refreshAll()} disabled={!deployments.length || refreshing.size > 0}>
           <RefreshCw size={15} /><span>刷新全部状态</span>
         </button>
       </PageHeaderActions>
 
-      <div className="delivery-intro">
-        <div><h2>云端 Agent</h2><p>统一管理 Studio 部署和账号下已有的云端 Agent。</p></div>
-      </div>
-
       {error && <div className="form-error" role="alert">{error}</div>}
 
-      <section className="delivery-stat-strip" aria-label="部署事实摘要">
-        <div><span className="stat-label">云端 Agent</span><strong>{deployments.length}</strong><small>按 Agent 去重</small></div>
-        <div><span className="stat-label">运行中</span><strong>{summary.ready}</strong><small>可访问</small></div>
-        <div><span className="stat-label">进行中</span><strong>{summary.pending}</strong><small>创建或更新中</small></div>
-        <div><span className="stat-label">异常</span><strong>{summary.failed}</strong><small>需要查看详情</small></div>
+      <section className="delivery-stat-strip compact-delivery-summary" aria-label="部署摘要">
+        <div><span className="stat-label" title="同一 Agent 的多次部署按 Agent 聚合">云端 Agent</span><strong>{deployments.length}</strong></div>
+        <div><span className="stat-label">运行中</span><strong>{summary.ready}</strong></div>
+        <div><span className="stat-label">部署中</span><strong>{summary.pending}</strong></div>
+        <div><span className="stat-label">异常</span><strong>{summary.failed}</strong></div>
       </section>
 
       {loading ? <div className="delivery-empty-state"><p>正在读取云端 Agent…</p></div> : !deployments.length ? (
@@ -1202,13 +1198,13 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
           <CloudUpload size={24} /><h2>还没有云端 Agent</h2>
           <p>可以从 Agent 详情构建并部署到云端。</p>
           <div className="delivery-empty-actions">
-            <button className="button accent" type="button" onClick={() => navigateToStudioHash("#/deployments/new")}>选择 Build 部署</button>
+            <button className="button accent" type="button" onClick={() => navigateToStudioHash("#/deployments/new")}>部署 Agent</button>
             <button className="button secondary" type="button" onClick={onCreate}>创建 Agent</button>
           </div>
         </div>
       ) : (
         <section className="delivery-block" aria-label="云端 Agent 列表">
-          <h2>Agent 列表</h2><p>同一 Agent 的多次部署聚合为一行；工程事实可在详情中查看。</p>
+          <div className="delivery-section-heading"><h2>Agent 列表</h2><span>{deployments.length} 个</span></div>
           <div className="delivery-table-scroll">
             <table className="delivery-table">
               <thead><tr><th>Agent</th><th>状态</th><th>类型</th><th>版本</th><th>更新时间</th><th><span className="sr-only">操作</span></th></tr></thead>
@@ -1228,7 +1224,7 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
                     </button>
                   </td>
                   <td><span className="delivery-status-badge" data-state={deploymentState(deployment.status)}>{deploymentLabel(deployment.status)}</span></td>
-                  <td><strong>{deployment.framework || (deployment.artifactId === "managed-runtime" ? "YAML Agent" : "高代码 Agent")}</strong><small>{deployment.source === "receipt" ? "Studio 部署记录" : "账号云端 Agent"}</small></td>
+                  <td><strong>{deployment.framework || (deployment.artifactId === "managed-runtime" ? "YAML Agent" : "高代码 Agent")}</strong>{deployment.source === "receipt" && <small>Studio 部署记录</small>}</td>
                   <td><code title={deployment.versionId || ""}>{shortId(deployment.versionId || "—", 20)}</code></td>
                   <td><span className="delivery-updated-at">{formatUpdatedAt(deployment.updatedAt)}</span></td>
                   <td className="delivery-row-actions">

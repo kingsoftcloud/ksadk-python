@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 const { apiFetch } = vi.hoisted(() => ({ apiFetch: vi.fn() }));
@@ -68,5 +69,25 @@ describe("AgentDetailPage cloud deployment", () => {
     expect(screen.getByRole("button", { name: "查看云端部署" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "查看云端部署" }));
     await waitFor(() => expect(window.location.hash).toBe("#/deployments/dep-1"));
+  });
+
+  it("keeps edit, build, and deployment actions available from the compact overflow menu", async () => {
+    deploymentItems = [];
+    const user = userEvent.setup();
+    render(
+      <AgentDetailPage
+        agentId="demo-agent"
+        onBack={vi.fn()}
+        onChat={vi.fn()}
+        onBuild={vi.fn()}
+        onEdit={vi.fn()}
+        onChanged={vi.fn()}
+      />,
+    );
+
+    await user.click(await screen.findByRole("button", { name: "Demo Agent 的更多操作" }));
+    expect(await screen.findByRole("menuitem", { name: "编辑" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "校验并构建" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "部署到云端" })).toBeInTheDocument();
   });
 });
