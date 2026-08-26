@@ -1028,3 +1028,17 @@ def test_parse_conversation_proposal_strips_placeholder_model_url():
     proposal = AgentAuthoringService.parse_conversation_proposal(content)
     # 占位 URL 被 sanitize 层替换为 marker，coordinator 会用 Profile 真实 endpoint 覆写
     assert proposal.spec.model.base_url == "https://model-profile.invalid/placeholder"
+
+
+def test_model_url_sanitizer_does_not_match_placeholder_substrings_outside_hostname():
+    """Only placeholder hostnames are removed; URL text is not a trust boundary."""
+    from ksadk.studio.authoring import AgentAuthoringService
+
+    for value in (
+        "https://example.com.attacker.test/v1",
+        "https://example.com@models.vendor.test/v1",
+        "https://models.vendor.test/v1/placeholder",
+    ):
+        payload = {"spec": {"model": {"baseUrl": value}}}
+        AgentAuthoringService._sanitize_model_block(payload)
+        assert payload["spec"]["model"]["baseUrl"] == value

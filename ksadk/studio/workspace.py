@@ -58,39 +58,45 @@ class Workspace:
 
     def resolve(self, relative: Path | str, *, must_exist: bool = False) -> Path:
         raw = Path(relative)
-        # Reject lexical traversal before asking the filesystem to resolve any
-        # symlink.  The post-resolution relative_to check below is still needed
-        # because a path that is lexically inside the workspace may contain a
-        # symlink that escapes it.
-        if ".." in raw.parts:
+        root_path = os.fspath(self.root)
+
+        def reject_outside(requested: Path | str) -> None:
             raise StudioError(
                 "WORKSPACE_PATH_FORBIDDEN",
                 "路径不在当前工作区内",
                 status_code=403,
-                details={"path": str(relative)},
+                details={"path": str(requested)},
             )
-        if raw.is_absolute():
+
+        def is_contained(candidate_path: str) -> bool:
             try:
-                raw.relative_to(self.root)
-            except ValueError as exc:
-                raise StudioError(
-                    "WORKSPACE_PATH_FORBIDDEN",
-                    "路径不在当前工作区内",
-                    status_code=403,
-                    details={"path": str(relative)},
-                ) from exc
-            candidate = raw.resolve(strict=must_exist)  # lgtm[py/path-injection]
-        else:
-            candidate = (self.root / raw).resolve(strict=must_exist)  # lgtm[py/path-injection]
-        try:
-            candidate.relative_to(self.root)
-        except ValueError as exc:
-            raise StudioError(
-                "WORKSPACE_PATH_FORBIDDEN",
-                "路径不在当前工作区内",
-                status_code=403,
-                details={"path": str(relative)},
-            ) from exc
+                return os.path.commonpath((root_path, candidate_path)) == root_path
+            except ValueError:
+                # Different drives on Windows cannot share a workspace root.
+                return False
+
+        # Normalize and validate the lexical path before resolving filesystem
+        # links.  Keeping untrusted input out of Path.resolve makes this data
+        # flow auditable while the second containment check below still blocks
+        # symlinks that leave the workspace.
+        if ".." in raw.parts:
+            reject_outside(relative)
+
+        raw_path = os.fspath(raw)
+        requested_path = (
+            raw_path if raw.is_absolute() else os.path.join(root_path, raw_path)
+        )
+        lexical_path = os.path.abspath(requested_path)
+        if not is_contained(lexical_path):
+            reject_outside(relative)
+
+        candidate_path = os.path.realpath(lexical_path)
+        if not is_contained(candidate_path):
+            reject_outside(relative)
+
+        candidate = Path(candidate_path)
+        if must_exist:
+            candidate.stat()
         return candidate
 
     def relative(self, path: Path | str) -> str:
