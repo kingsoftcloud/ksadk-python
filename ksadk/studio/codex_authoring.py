@@ -178,7 +178,9 @@ class CodexAuthoringExecutor:
                 "openai-codex SDK 未安装 (pip install 'ksadk[codex]')"
             ) from exc
         try:
-            from codex_cli_bin import bundled_codex_path  # type: ignore[import-not-found, import-untyped]
+            from codex_cli_bin import (
+                bundled_codex_path,  # type: ignore[import-not-found, import-untyped]
+            )
 
             binary = Path(str(bundled_codex_path()))
         except (ImportError, OSError) as exc:
@@ -199,7 +201,10 @@ class CodexAuthoringExecutor:
         request_id: str | None = None,
     ) -> CodexAuthoringResult:
         normalized_request_id = _sanitize_request_id(request_id)
-        request_dir = self.root / f"{_REQUEST_DIR_PREFIX}{normalized_request_id}"
+        request_dir = self.workspace.resolve(
+            Path(".agentkit/authoring")
+            / f"{_REQUEST_DIR_PREFIX}{normalized_request_id}"
+        )
         shutil.rmtree(request_dir, ignore_errors=True)
         request_dir.mkdir(parents=True, exist_ok=True)
         manifest_path = request_dir / _MANIFEST_FILENAME
