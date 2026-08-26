@@ -337,9 +337,16 @@ class AgentAuthoringService:
             return
         for key in ("baseUrl", "endpointUrl"):
             value = model.get(key)
-            if isinstance(value, str) and (
-                "example.com" in value or "placeholder" in value.lower()
-            ):
+            if not isinstance(value, str):
+                continue
+            try:
+                hostname = (urlparse(value).hostname or "").lower().rstrip(".")
+            except ValueError:
+                hostname = ""
+            labels = hostname.split(".")
+            is_example_host = hostname == "example.com" or hostname.endswith(".example.com")
+            is_placeholder_host = any(label == "placeholder" for label in labels)
+            if is_example_host or is_placeholder_host:
                 model.pop(key, None)
         # ModelSpec 校验要求 baseUrl/endpointUrl 二选一；模型没写或写了占位被删时，
         # 置一个显式标记值，coordinator 会用选中模型 Profile 的真实 endpoint 覆写。
