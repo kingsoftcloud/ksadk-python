@@ -521,6 +521,7 @@ def test_account_cloud_agent_without_receipt_supports_directory_chat_dashboard_a
     assert detail.json() == {
         "agentId": "ar-existing-code",
         "name": "Existing Code Agent",
+        "creatorName": None,
         "status": "RUNNING",
         "endpoint": "http://existing-code.example.test",
         "framework": "langgraph",

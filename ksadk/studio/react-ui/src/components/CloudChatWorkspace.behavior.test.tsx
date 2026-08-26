@@ -122,9 +122,46 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
 
     expect(await screen.findByText(/第一段\s+第二段/)).toBeInTheDocument();
     expect(screen.getAllByText(/第一段/)).toHaveLength(1);
-    expect(screen.getByText(/正在等待云端响应/)).toBeInTheDocument();
+    const pending = screen.getByText(/正在等待云端响应/);
+    expect(pending).toBeInTheDocument();
+    expect(pending.querySelector("svg")).toHaveClass("animate-spin");
     directStreamController?.enqueue(encoder.encode("data: [DONE]\n\n"));
     await waitFor(() => expect(screen.queryByText(/正在等待云端响应/)).not.toBeInTheDocument());
+  });
+
+  it("does not block the foreground stream on a second historical event read", async () => {
+    let eventReads = 0;
+    let streamPosted = false;
+    apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
+      if (path === `${base}/sessions` && !init?.method) {
+        return jsonResponse({ sessions: [{ session_id: "sess-fast", title: "立即流式" }] });
+      }
+      if (path === `${base}/models`) return jsonResponse({ models: [] });
+      if (path.endsWith("/messages") && !init?.method) return jsonResponse({ messages: [] });
+      if (path.endsWith("/events") && !init?.method) {
+        eventReads += 1;
+        if (eventReads === 1) return jsonResponse({ events: [{ event_type: "run.completed", seq_id: 7 }] });
+        return await new Promise<Response>(() => {});
+      }
+      if (path.endsWith("/events/stream?afterSeqId=7")) {
+        return new Response("", { headers: { "Content-Type": "text/event-stream" } });
+      }
+      if (path.endsWith("/messages/stream") && init?.method === "POST") {
+        streamPosted = true;
+        const body = JSON.parse(String(init.body));
+        expect(body).not.toHaveProperty("invocationId");
+        return new Response("data: [DONE]\n\n", { headers: { "Content-Type": "text/event-stream" } });
+      }
+      throw new Error(`unexpected request: ${path}`);
+    });
+    render(<CloudChatWorkspace deploymentId="dep-cloud" agentId="ar-cloud" agentName="Cloud Agent" />);
+
+    await screen.findByText("立即流式");
+    await waitFor(() => expect(eventReads).toBe(1));
+    await userEvent.type(screen.getByRole("textbox", { name: "消息" }), "不要等历史读取");
+    await userEvent.click(screen.getByRole("button", { name: "发送消息" }));
+
+    await waitFor(() => expect(streamPosted).toBe(true));
   });
 
   it("projects canonical nested RuntimeEvent items before RunAgent returns", async () => {
@@ -216,11 +253,11 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
 
     eventStreamController?.enqueue(new TextEncoder().encode(
       "event: session.event\n"
-      + "data: {\"event_type\":\"interaction.requested\",\"seq_id\":1,\"invocation_id\":\"inv-approval\","
+      + "data: {\"event_type\":\"interaction.requested\",\"seq_id\":1,\"invocation_id\":\"run-approval\","
       + "\"interaction_id\":\"approval-1\",\"interaction_kind\":\"approval\","
       + "\"request\":{\"kind\":\"tool\",\"title\":\"允许执行命令\"}}\n\n"
       + "event: session.event\n"
-      + "data: {\"event_type\":\"run.interrupted\",\"seq_id\":2,\"invocation_id\":\"inv-approval\"}\n\n",
+      + "data: {\"event_type\":\"run.interrupted\",\"seq_id\":2,\"invocation_id\":\"run-approval\"}\n\n",
     ));
 
     expect(await screen.findByRole("region", { name: "待处理确认" })).toHaveTextContent("允许执行命令");
@@ -312,6 +349,7 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
     expect(await screen.findByText("第二轮回答")).toBeInTheDocument();
     expect(screen.queryByText(/旧答案/)).not.toBeInTheDocument();
     expect(screen.getByText("再分析")).toBeInTheDocument();
+    expect(screen.getByText("已思考")).toBeInTheDocument();
     expect(directCalls).toBe(2);
     expect(directBodies).toEqual([
       expect.objectContaining({ content: [{ type: "input_text", text: "第一轮" }] }),
@@ -483,7 +521,7 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
     );
   });
 
-  it("correlates an invocation_id terminal SessionEvent while the direct stream is active", async () => {
+  it("correlates the first server-owned invocation terminal while the direct stream is active", async () => {
     let streamController: ReadableStreamDefaultController<Uint8Array> | undefined;
     const stream = new ReadableStream<Uint8Array>({
       start(controller) { streamController = controller; },
@@ -517,7 +555,7 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
     ));
     streamController?.enqueue(new TextEncoder().encode(
       "event: session.event\n"
-      + "data: {\"event_type\":\"run_status\",\"invocation_id\":\"inv-500\","
+      + "data: {\"event_type\":\"run_status\",\"invocation_id\":\"run-server-owned\","
       + "\"content\":{\"status\":\"failed\",\"error\":\"runtime process crashed\"}}\n\n",
     ));
 

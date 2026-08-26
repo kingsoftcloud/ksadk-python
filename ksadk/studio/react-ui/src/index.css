@@ -275,8 +275,18 @@
   font-size: var(--font-size-meta);
 }
 
-.cloud-chat-pending svg,
 .chat-list-loading svg { animation: chat-running-pulse 1.2s ease-in-out infinite; }
+
+@keyframes agentkit-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* This project does not ship Tailwind's utility runtime. Components use the
+   familiar class name, so define the actual motion once in the shared CSS. */
+.animate-spin {
+  animation: agentkit-spin .8s linear infinite !important;
+  transform-origin: center;
+}
 
 .cloud-chat-run-warning {
   display: flex;

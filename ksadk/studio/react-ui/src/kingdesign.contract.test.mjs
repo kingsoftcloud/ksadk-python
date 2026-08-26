@@ -72,6 +72,12 @@ test("keeps Agent editor icons and shared form grids geometrically aligned", () 
   assert.match(finalLayer, /\.agent-edit-nav button\.active\s*\{[\s\S]*?border-color:\s*var\(--kc-accent-border\)/);
 });
 
+test("keeps conversation configuration aligned and avoids an empty full-height Draft column", () => {
+  assert.match(finalLayer, /\.conversation-settings-body\s*>\s*\.studio-form-field\s*\{[\s\S]*?min-width:\s*0;/);
+  assert.match(finalLayer, /\.conversation-authoring-layout\[data-draft-state="empty"\][\s\S]*?grid-template-columns:/);
+  assert.match(finalLayer, /\.conversation-draft-rail\.is-empty\s*\{[\s\S]*?height:\s*fit-content(?:\s*!important)?;/);
+});
+
 test("keeps Lucide geometry square instead of overriding component dimensions globally", () => {
   assert.doesNotMatch(tokens, /svg\s*\{[^}]*width:\s*1em;[^}]*height:\s*1em;/);
   assert.match(finalLayer, /\.navigation-rail \.nav-item svg\s*\{\s*width:\s*18px;\s*height:\s*18px;\s*flex-basis:\s*18px;/);

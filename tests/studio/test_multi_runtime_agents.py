@@ -413,7 +413,7 @@ async def test_framework_build_reuses_studio_provider_model_catalog(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def _provider_catalog(**_kwargs):
-        return [{"id": "live-model", "display_name": "Live Model"}]
+        return [{"id": "deepseek-v4-flash", "display_name": "DeepSeek V4 Flash"}]
 
     monkeypatch.setattr(
         "ksadk.studio.resource_catalog.fetch_provider_model_catalog",
@@ -423,7 +423,7 @@ async def test_framework_build_reuses_studio_provider_model_catalog(
     models, source = await studio.catalog.discover_provider_models(
         api_base="https://models.example.test/v1",
         api_key="secret",
-        current_model="live-model",
+        current_model="deepseek-v4-flash",
     )
     draft = studio.create_studio_agent(
         agent_id="live-graph-helper",

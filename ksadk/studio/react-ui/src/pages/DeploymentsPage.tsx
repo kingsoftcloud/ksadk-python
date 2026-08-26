@@ -35,6 +35,7 @@ interface Deployment {
     | "native-runtime-without-session-event-chat-capability"
     | "studio-compatible-framework";
   updatedAt?: string;
+  creatorName?: string;
 }
 
 interface StudioCloudAgentSummary extends AccountCloudAgentSummary {
@@ -146,6 +147,7 @@ function mergeCloudProjection(
     chatRoutingReason: account.chatRoutingReason || deployment.chatRoutingReason,
     versionId: account.versionId || deployment.versionId,
     updatedAt: account.updatedAt || deployment.updatedAt,
+    creatorName: account.creatorName || deployment.creatorName,
   };
 }
 
@@ -385,7 +387,7 @@ function formatUpdatedAt(value?: string): string {
 
 export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
   onCreate: () => void;
-  onOpenChat: (deploymentId: string) => void;
+  onOpenChat: (deployment: CloudDeploymentSummary) => void;
   onSelectBuild: () => void;
 }) {
   const [deployments, setDeployments] = useState<Deployment[]>([]);
@@ -488,6 +490,7 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
           chatTransport: target.chatTransport || account?.chatTransport,
           chatRoutingReason: target.chatRoutingReason || account?.chatRoutingReason,
           updatedAt: String(target.updatedAt || account?.updatedAt || ""),
+          creatorName: target.creatorName || account?.creatorName,
           source: "account" as const,
         };
       });
@@ -741,6 +744,7 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
           chatRoutingReason: account.chatRoutingReason || deployment.chatRoutingReason,
           versionId: account.versionId || deployment.versionId,
           updatedAt: account.updatedAt || deployment.updatedAt,
+          creatorName: account.creatorName || deployment.creatorName,
         };
         const versions = await versionsPromise;
         if (signal?.aborted) return;
@@ -1084,7 +1088,7 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
               type="button"
               onClick={() => chatRoute.kind === "official-dashboard"
                 ? void openHostedUi(detail.deployment)
-                : onOpenChat(detail.deployment.id)}
+                : onOpenChat(detail.deployment)}
               disabled={updating}
             >
               {chatRoute.kind === "official-dashboard"
@@ -1109,6 +1113,7 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
           <div className="api-contract" aria-label="云端部署事实">
             <div><span>名称</span><strong>{detail.deployment.agentName || detail.sourceAgentName}</strong></div>
             <div><span>来源</span><strong>{hasReceipt ? "Studio 部署记录" : "账号云端 Agent"}</strong></div>
+            <div><span>创建子账号</span><strong>{detail.deployment.creatorName || "-"}</strong></div>
             <div><span>状态</span><strong>{deploymentLabel(detail.deployment.status)}</strong></div>
             <div><span>云端 Agent</span><code>{detail.deployment.agentId || "尚未返回"}</code></div>
             <div><span>类型</span><code>{detail.deployment.framework || detail.deployment.artifactId || "尚未返回"}</code></div>
@@ -1207,7 +1212,7 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
           <div className="delivery-section-heading"><h2>Agent 列表</h2><span>{deployments.length} 个</span></div>
           <div className="delivery-table-scroll">
             <table className="delivery-table">
-              <thead><tr><th>Agent</th><th>状态</th><th>类型</th><th>版本</th><th>更新时间</th><th><span className="sr-only">操作</span></th></tr></thead>
+              <thead><tr><th>Agent</th><th>状态</th><th>类型</th><th>创建子账号</th><th>版本</th><th>更新时间</th><th><span className="sr-only">操作</span></th></tr></thead>
               <tbody>{deployments.map(deployment => {
                 const refreshingThis = refreshing.has(deployment.id);
                 const chatRoute = resolveCloudChatRoute(deployment);
@@ -1225,6 +1230,7 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
                   </td>
                   <td><span className="delivery-status-badge" data-state={deploymentState(deployment.status)}>{deploymentLabel(deployment.status)}</span></td>
                   <td><strong>{deployment.framework || (deployment.artifactId === "managed-runtime" ? "YAML Agent" : "高代码 Agent")}</strong>{deployment.source === "receipt" && <small>Studio 部署记录</small>}</td>
+                  <td>{deployment.creatorName || "-"}</td>
                   <td><code title={deployment.versionId || ""}>{shortId(deployment.versionId || "—", 20)}</code></td>
                   <td><span className="delivery-updated-at">{formatUpdatedAt(deployment.updatedAt)}</span></td>
                   <td className="delivery-row-actions">
@@ -1237,7 +1243,7 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
                           : "打开云端 Agent 会话"}
                         onClick={() => chatRoute.kind === "official-dashboard"
                           ? void openHostedUi(deployment)
-                          : onOpenChat(deployment.id)}
+                          : onOpenChat(deployment)}
                       >
                         {chatRoute.kind === "official-dashboard"
                           ? <><ExternalLink size={15} /><span>Dashboard</span></>

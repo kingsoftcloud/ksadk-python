@@ -609,6 +609,76 @@ button:disabled {
   min-height: 40px;
 }
 
+/* Conversation authoring shares the same label/control rhythm as the rest of
+   Studio.  The former mixture of legacy `.field` nodes and FormField nodes
+   produced different label heights and visibly staggered controls. */
+.conversation-settings-body > .studio-form-field {
+  min-width: 0;
+  align-self: start;
+  display: grid;
+  grid-template-rows: 24px minmax(40px, auto) auto;
+  align-content: start;
+  gap: 6px;
+}
+
+.conversation-settings-body > .studio-form-field > .studio-field-label-row,
+.conversation-review-form .studio-field-label-row {
+  min-height: 24px;
+}
+
+.conversation-settings-body > .studio-form-field > .studio-field-control,
+.conversation-settings-body > .studio-form-field > .studio-field-control > :is(
+  .studio-select-trigger,
+  .studio-multi-select,
+  .studio-multi-select-trigger
+) {
+  width: 100%;
+  min-width: 0;
+}
+
+.conversation-settings-body > .studio-form-field > .studio-field-footer {
+  min-height: 18px;
+  align-items: flex-start;
+}
+
+.conversation-settings-body .conversation-runtime-note {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 4px;
+  background: var(--surface-subtle);
+}
+
+.conversation-chat:has(.conversation-settings[open]) {
+  grid-template-rows: auto minmax(96px, 220px) auto auto;
+  overflow-y: auto;
+}
+
+.conversation-draft-rail.is-empty {
+  height: fit-content !important;
+  align-self: start;
+  overflow: hidden;
+}
+
+.conversation-draft-rail.is-empty .conversation-draft-empty {
+  min-height: 136px;
+  padding: 20px;
+}
+
+.conversation-review-form .form-grid.two-columns {
+  align-items: start;
+}
+
+@media (min-width: 1181px) {
+  .conversation-authoring-layout[data-draft-state="empty"] {
+    grid-template-columns: minmax(0, 1fr) minmax(248px, .42fr);
+  }
+
+  .conversation-authoring-layout[data-draft-state="review"] {
+    grid-template-columns: minmax(480px, 1fr) minmax(480px, .92fr);
+  }
+}
+
 .quick-runtime-strip .runtime-logo,
 .agent-appearance-preview .agent-avatar,
 .appearance-choice-group button {

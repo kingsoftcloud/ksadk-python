@@ -56,10 +56,7 @@ _BUILDER_SCHEMA = """\
   - instructions（必须）：包含 system（系统提示词）与 task（任务提示词）两个字符串
   - runtime：对象，必须包含 type 字段（与 runtimeType 相同的值：codex/adk/langgraph），
     不要写 provider；adk/langgraph 可加 projectPath/entryPoint/agentVariable
-  - model：对象。model 是字符串（模型名，如 "deepseek-v4-pro"）；credentialRef 是
-    字符串引用而非对象，固定写 "env://AGENTKIT_MODEL_API_KEY"；baseUrl/endpointUrl
-    是字符串 URL
-  - capabilities、bindings、execution、context、memory、security、evaluation：按需
+  - execution、context、memory、security、evaluation：按需
 
 完整示例（输出必须严格遵循此结构，字段名一字不差）：
 
@@ -73,17 +70,13 @@ spec:
     task: 汇总当日科技新闻，按重要性排序输出中文简报，每条含标题与一句话摘要。
   runtime:
     type: codex
-  model:
-    model: deepseek-v4-pro
-    credentialRef: env://AGENTKIT_MODEL_API_KEY
 
 注意：
-- 示例中的 name/slug/description/instructions/model 值必须替换为符合用户
+- 示例中的 name/slug/description/instructions 值必须替换为符合用户
   对话的内容，不要照抄示例文字。
-- spec.model 不要写 baseUrl/endpointUrl（Studio 会按选中的模型 Profile 自动
-  注入正确的 endpoint，手写的占位 URL 会被当作真实配置导致请求失败）。
-- 不要凭空编造 parameters（temperature/maxTokens 等）；用户没有明确要求时
-  直接省略 parameters 字段，使用平台默认值。
+- 模型 Profile、模型参数、Tool、MCP、Skill、凭证、端点和资源 ID 是 Studio 的
+  受控输入，严禁写入 model、bindings 或 capabilities。需要它们时只在
+  instructions/task 中描述语义用途，Studio 会在确认前注入已选资源。
 
 规则：
 0. 硬性要求：你必须在本轮实际调用 apply_patch 工具把完整 patch 写入目标文件，
@@ -92,8 +85,8 @@ spec:
 1. 必须用写文件工具把完整 patch 写入指定路径；不要只在回复中输出内容。
 2. 不要输出 Markdown 代码块包裹的 YAML 作为最终答案，文件本身就是产物。
 3. 首轮必须包含全部顶层字段；后续轮次（已有草稿时）输出完整合并后的新版本。
-4. 对话中明确提到的 Tool、MCP、Skill、模型、模型参数和策略必须写入 spec，
-   不能只写提示词。
+4. 不得编造 Tool、MCP、Skill、模型、模型参数、资源 ID、凭证或端点；这些由
+   Studio 的资源选择器和策略层注入。
 5. 只做配置编写，不要创建其他文件、不要执行无关命令。
 """
 

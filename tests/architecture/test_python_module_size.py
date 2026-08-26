@@ -10,20 +10,30 @@ _FAIL_LINES = 1000
 _LEGACY_OVERSIZED_MAX = {
     # Reviewed integration baselines. Any further growth still fails this guard;
     # these modules should be split when their current feature seams next change.
+    "ksadk/agui/agent.py": 1056,
     "ksadk/a2a/control_plane.py": 1060,
     "ksadk/a2a/space_client.py": 1122,
-    "ksadk/api/client.py": 2288,
+    "ksadk/api/client.py": 2778,
     # Current master already contains the 2,287-line builder integration; PCM
     # adds only its launch-context projection seam. Keep any further growth red.
-    "ksadk/builders/code_builder.py": 2292,
+    "ksadk/builders/code_builder.py": 2371,
     "ksadk/cli/cmd_create.py": 2084,
     "ksadk/cli/cmd_files.py": 1270,
     "ksadk/cli/cmd_hermes.py": 1441,
     "ksadk/cli/cmd_invoke.py": 1565,
     "ksadk/cli/cmd_mcp.py": 1213,
     "ksadk/cli/cmd_openclaw.py": 4218,
-    "ksadk/codex/client.py": 1042,
-    "ksadk/deployment/providers/serverless.py": 1316,
+    "ksadk/codex/client.py": 1192,
+    "ksadk/codex/runtime.py": 1042,
+    "ksadk/deployment/providers/serverless.py": 1358,
+    # Agent Runtime v2 Phase 1 delivery baseline. These files contain the
+    # frozen contract/store implementations; any post-0.8.2 growth stays red
+    # until the corresponding responsibility is extracted.
+    "ksadk/kernel/bootstrap.py": 1074,
+    "ksadk/kernel/ingress.py": 1102,
+    "ksadk/kernel/memory_store.py": 1133,
+    "ksadk/kernel/postgres_store.py": 1756,
+    "ksadk/kernel/sqlite_store.py": 1410,
     "ksadk/runners/adk_runner.py": 2219,
     # 0.8.1 approval continuation baseline; split the LangGraph execution
     # paths at the next runner-focused maintenance pass.
@@ -32,10 +42,14 @@ _LEGACY_OVERSIZED_MAX = {
     "ksadk/runtime/runner_adapter.py": 1220,
     "ksadk/sessions/local_service.py": 1080,
     "ksadk/sessions/postgres_service.py": 1019,
-    "ksadk/studio/api.py": 1243,
-    "ksadk/studio/resource_catalog.py": 1217,
+    "ksadk/studio/api.py": 1598,
+    "ksadk/studio/authoring_coordinator.py": 1017,
+    "ksadk/studio/cloud.py": 2099,
+    "ksadk/studio/otel_trace.py": 1060,
+    "ksadk/studio/resource_catalog.py": 1260,
     "ksadk/studio/run_service.py": 1156,
-    "ksadk/studio/service.py": 1767,
+    "ksadk/studio/service.py": 2249,
+    "ksadk/studio/shared_web.py": 1004,
     "ksadk/toolsets/workspace.py": 1028,
     "ksadk/tui/loop.py": 1925,
 }

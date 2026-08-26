@@ -486,7 +486,7 @@ async def test_hosted_memory_runtime_requires_explicit_ephemeral_tier():
 
 
 def test_runtime_app_lifespan_starts_and_stops_full_kernel_runtime(monkeypatch):
-    """生产 FastAPI lifespan 必须启动 worker/lease，不是只注册 ingress。"""
+    """生产 lifespan 启动完整 Kernel，且 HTTP 与 worker 共享事件日志。"""
 
     from ksadk.kernel import ingress
 
@@ -499,6 +499,7 @@ def test_runtime_app_lifespan_starts_and_stops_full_kernel_runtime(monkeypatch):
     monkeypatch.setenv("AGENT_KERNEL_CONTRACT_DIGEST", CONTRACT_DIGEST)
     monkeypatch.setenv("AGENT_KERNEL_CAPABILITY_DIGEST", CAPABILITY_DIGEST)
     monkeypatch.setenv("AGENT_BUNDLE_DIGEST", BUNDLE_DIGEST)
+    monkeypatch.setenv("KSADK_SESSION_BACKEND", "memory")
 
     adapter = FakeAdapter()
     app = create_runtime_app(
@@ -512,6 +513,10 @@ def test_runtime_app_lifespan_starts_and_stops_full_kernel_runtime(monkeypatch):
             assert runtime.worker_running is True
             assert ingress.get_agent_kernel() is runtime.kernel
             assert get_agent_kernel_runtime() is runtime
+            assert (
+                app.state.runtime.resolve_session_service()
+                is runtime.config.session_service
+            )
     finally:
         # TestClient 会执行 lifespan teardown；即便 startup 失败也清除进程级
         # global，避免污染随后 ingress/worker 测试。

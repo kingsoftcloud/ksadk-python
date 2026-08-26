@@ -203,17 +203,17 @@ export function ResourcesPage({ kind, onKindChange, refreshTick }: { kind: Resou
 
   const meta = KIND_META[kind];
   const columns = useMemo<StudioDataColumn<ResItem>[]>(() => [
-    { id: "name", header: "名称", minWidth: 250, cell: item => <ResourceNameCell item={item} /> },
-    { id: "source", header: meta.headings[0], minWidth: 170, cell: item => SOURCE_LABELS[item.source] || item.source },
-    { id: "detail", header: meta.headings[1], minWidth: 150, cell: item => <ResourceDetailCell item={item} /> },
-    { id: "capability", header: meta.headings[2], minWidth: 240, className: "capability-cell", cell: item => <ResourceCapabilityCell item={item} /> },
-    { id: "status", header: "状态", minWidth: 135, cell: item => <ResourceStatusCell item={item} /> },
+    { id: "name", header: "名称", minWidth: 190, className: "resource-name-column", headerClassName: "resource-name-column", cell: item => <ResourceNameCell item={item} /> },
+    { id: "source", header: meta.headings[0], minWidth: 120, className: "resource-source-column", headerClassName: "resource-source-column", cell: item => SOURCE_LABELS[item.source] || item.source },
+    { id: "detail", header: meta.headings[1], minWidth: 110, className: "resource-detail-column", headerClassName: "resource-detail-column", cell: item => <ResourceDetailCell item={item} /> },
+    { id: "capability", header: meta.headings[2], minWidth: 180, className: "capability-cell resource-capability-column", headerClassName: "resource-capability-column", cell: item => <ResourceCapabilityCell item={item} /> },
+    { id: "status", header: "状态", minWidth: 92, className: "resource-status-column", headerClassName: "resource-status-column", cell: item => <ResourceStatusCell item={item} /> },
     {
       id: "actions",
       header: "操作",
-      minWidth: 160,
-      className: "actions-column",
-      headerClassName: "actions-column",
+      minWidth: 108,
+      className: "actions-column resource-actions-column",
+      headerClassName: "actions-column resource-actions-column",
       cell: item => (
         <ResourceActionsCell
           item={item}
@@ -246,7 +246,7 @@ export function ResourcesPage({ kind, onKindChange, refreshTick }: { kind: Resou
   }, [loadPage, nextCursor, pageIndex]);
 
   return (
-    <div className="page-container" data-layout="document">
+    <div className="page-container resources-page" data-layout="data">
       <PageHeaderActions>
         <button className="button accent" type="button" onClick={handleAdd}>
           <Plus size={15} /><span>{meta.addLabel}</span>
@@ -326,7 +326,7 @@ export function ResourcesPage({ kind, onKindChange, refreshTick }: { kind: Resou
           data={catalog}
           getRowId={item => item.resourceId}
           caption={`${meta.title}资源列表`}
-          minWidth={1180}
+          minWidth={0}
           loading={loading}
           error={loadError}
           onRetry={reloadCurrent}

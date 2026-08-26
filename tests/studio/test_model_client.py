@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import socket
 from pathlib import Path
 
@@ -111,6 +112,33 @@ async def test_model_client_retries_5xx_without_leaking_secret(monkeypatch):
     assert result.content == "OK"
     assert attempts == 2
     assert sleeps == [0.5]
+
+
+@pytest.mark.asyncio
+async def test_model_client_surfaces_rate_limit_without_relabeling_it_as_gateway_failure(
+    monkeypatch,
+):
+    monkeypatch.setenv("MODEL_API_KEY", "secret-value")
+    client = OpenAICompatibleModelClient(
+        network_guard=AllowNetwork(),
+        transport=httpx.MockTransport(lambda _request: httpx.Response(429, text="busy")),
+        sleep=lambda _seconds: asyncio.sleep(0),
+    )
+
+    with pytest.raises(StudioError) as captured:
+        await client.complete(
+            _model(),
+            messages=[],
+            network_policy=NetworkPolicy(allowed_hosts=["model.example.com"]),
+            timeout_seconds=10,
+            max_attempts=1,
+            backoff_seconds=0,
+        )
+
+    assert captured.value.code == "MODEL_RATE_LIMITED"
+    assert captured.value.status_code == 429
+    assert captured.value.message == "所选生成模型当前限流，请稍后重试或切换模型 Profile"
+    assert captured.value.details == {"upstreamStatus": 429}
 
 
 @pytest.mark.asyncio

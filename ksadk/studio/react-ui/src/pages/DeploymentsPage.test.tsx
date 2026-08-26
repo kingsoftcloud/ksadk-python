@@ -38,6 +38,7 @@ let rollbackIdempotencyKeys: string[] = [];
 let accountAgentItems: Array<Record<string, unknown>> = [{
   agentId: "ar-cloud-ui",
   name: "Managed YAML Agent",
+  creatorName: "研发子账号",
   status: "RUNNING",
   endpoint: "http://ar-cloud-ui.example.test",
   framework: "codex",
@@ -321,7 +322,7 @@ describe("DeploymentsPage", () => {
     renderPage(onOpenChat);
 
     fireEvent.click(await screen.findByRole("button", { name: "打开云端 Agent 会话" }));
-    expect(onOpenChat).toHaveBeenCalledWith("dep-instance-1");
+    expect(onOpenChat).toHaveBeenCalledWith(expect.objectContaining({ id: "dep-instance-1" }));
     expect(screen.queryByRole("menuitem", { name: "在 Hosted UI 中打开" })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Managed YAML Agent 的更多操作" }));
@@ -522,7 +523,7 @@ describe("DeploymentsPage", () => {
 
     const chatButtons = screen.getAllByRole("button", { name: "打开云端 Agent 会话" });
     fireEvent.click(chatButtons[1]);
-    expect(onOpenChat).toHaveBeenCalledWith("account:ar-existing-code");
+    expect(onOpenChat).toHaveBeenCalledWith(expect.objectContaining({ id: "account:ar-existing-code" }));
 
     await user.click(screen.getByRole("button", { name: "查看 Existing Code Agent 详情" }));
     expect(await screen.findByRole("region", { name: "云端版本历史" })).toBeInTheDocument();

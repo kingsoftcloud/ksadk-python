@@ -257,7 +257,7 @@ async def test_provider_models_reuse_ksadk_metadata_normalization(
     async def _provider_catalog(**_kwargs):
         return [
             {
-                "id": "vision-model",
+                "id": "deepseek-v4-vision",
                 "display_name": "Vision Model",
                 "context_window_tokens": 131072,
                 "max_output_tokens": 8192,
@@ -275,7 +275,7 @@ async def test_provider_models_reuse_ksadk_metadata_normalization(
                     "max_output_tokens": 8192,
                 },
                 "_provider_raw_model": {
-                    "id": "vision-model",
+                    "id": "deepseek-v4-vision",
                     "display_name": "Vision Model",
                     "context_length": 131072,
                     "architecture": {"input_modalities": ["文字", "图片"]},
@@ -291,17 +291,57 @@ async def test_provider_models_reuse_ksadk_metadata_normalization(
     actual, actual_source = await catalog.discover_provider_models(
         api_base="https://models.example.test/v1",
         api_key="secret",
-        current_model="vision-model",
+        current_model="deepseek-v4-vision",
     )
 
     assert actual_source == "provider"
-    assert [item.name for item in actual] == ["vision-model"]
+    assert [item.name for item in actual] == ["deepseek-v4-vision"]
     descriptor = actual[0]
     assert descriptor.source == "provider"
     assert descriptor.contract["metadata"]["context_window_tokens"] == 131072
     assert descriptor.contract["metadata"]["capabilities"]["multimodal_input_image"] is True
     assert descriptor.contract["discovery"]["contextWindow"] == "provider"
     assert descriptor.contract["discovery"]["inputModalities"] == "provider"
+
+
+@pytest.mark.asyncio
+async def test_provider_models_only_expose_proxy_validated_families_and_sort_newest_first(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    async def _provider_catalog(**_kwargs):
+        return [
+            {"id": "legacy-vision-1"},
+            {"id": "glm-5.2"},
+            {"id": "glm-5.3"},
+            {"id": "qwen3-max"},
+            {"id": "kimi-k2.7"},
+            {"id": "minimax-m2"},
+            {"id": "deepseek-v4-flash"},
+        ]
+
+    monkeypatch.setattr(
+        "ksadk.studio.resource_catalog.fetch_provider_model_catalog",
+        _provider_catalog,
+    )
+    catalog = _catalog(tmp_path)
+    actual, _ = await catalog.discover_provider_models(
+        api_base="https://models.example.test/v1",
+        api_key="secret",
+        current_model="deepseek-v4-flash",
+    )
+
+    # IDs are exactly what the upstream provider returned; only eligibility
+    # matching treats punctuation as equivalent.
+    assert [item.name for item in actual] == [
+        "deepseek-v4-flash",
+        "glm-5.3",
+        "glm-5.2",
+        "kimi-k2.7",
+        "minimax-m2",
+        "qwen3-max",
+    ]
+    assert all(item.name != "legacy-vision-1" for item in actual)
 
 
 def test_catalog_persists_model_mcp_and_custom_tool_resources(tmp_path: Path):

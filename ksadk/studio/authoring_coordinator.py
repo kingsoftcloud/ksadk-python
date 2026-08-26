@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import logging
 import os
 import shutil
@@ -12,13 +13,17 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any, cast
 
-from ksadk.studio.authoring import AgentAuthoringService
+from ksadk.studio.authoring import AgentAuthoringService, ConversationProposal
 from ksadk.studio.codex_manifest import CodexAgentManifest
 from ksadk.studio.contracts import (
     AgentBindings,
     AgentDraft,
     AgentSpec,
+    CapabilitiesSpec,
+    CapabilityBinding,
+    ModelSpec,
     RuntimeRef,
+    Usage,
 )
 from ksadk.studio.errors import StudioError
 from ksadk.studio.identifiers import generate_agent_slug, is_generated_agent_slug
@@ -38,32 +43,79 @@ CONVERSATION_STAGES = (
 )
 # 进度记录只保留最近的少量请求，避免长驻进程无限增长。
 _CONVERSATION_STATUS_LIMIT = 64
+_LOCAL_FALLBACK_MODEL_ERRORS = frozenset(
+    {
+        "AUTHORING_MODEL_OUTPUT_INVALID",
+        "MODEL_EMPTY_RESPONSE",
+        "MODEL_RATE_LIMITED",
+        "MODEL_REQUEST_FAILED",
+        "MODEL_RESPONSE_INVALID",
+        "MODEL_RESPONSE_TOO_LARGE",
+    }
+)
+_LOCAL_FALLBACK_REASON = {
+    "AUTHORING_MODEL_OUTPUT_INVALID": "invalid-model-output",
+    "MODEL_EMPTY_RESPONSE": "empty-model-output",
+    "MODEL_RATE_LIMITED": "model-rate-limited",
+    "MODEL_REQUEST_FAILED": "model-request-failed",
+    "MODEL_RESPONSE_INVALID": "invalid-model-response",
+    "MODEL_RESPONSE_TOO_LARGE": "model-response-too-large",
+}
 
 
-def _apply_profile_model_endpoint(proposal: Any, model: Any) -> Any:
-    """用选中模型 Profile 的真实 endpoint 覆写 spec.model 中的占位 URL。
+def _deduplicated_bindings(resource_ids: list[str]) -> list[CapabilityBinding]:
+    """Build a deterministic binding list from Studio-selected resource ids."""
 
-    ``parse_conversation_proposal`` 的 sanitize 层会把模型照抄的 example.com
-    占位 URL 替换为 ``https://model-profile.invalid/placeholder`` 标记；此处
-    在返回给前端前替换为 Profile 的真实 baseUrl/endpointUrl，保证 spec 自洽。
+    seen: set[str] = set()
+    result: list[CapabilityBinding] = []
+    for resource_id in resource_ids:
+        normalized = str(resource_id or "").strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(CapabilityBinding(resource_id=normalized))
+    return result
+
+
+def _inject_managed_bindings(
+    proposal: Any,
+    *,
+    model_spec: ModelSpec,
+    bindings: AgentBindings,
+) -> Any:
+    """Replace all model/resource fields invented by the authoring model.
+
+    The LLM may propose product semantics (name, runtime, instructions and
+    execution strategy), but it is never a source of connection information or
+    capability identities.  Those are selected in Studio and validated before
+    this point.  The Profile id remains the sole persisted model reference;
+    compiler/run materialisation resolves the current endpoint, credential and
+    parameters from the catalog.  This also prevents provider discovery data,
+    limits and pricing from leaking into every Agent Revision.  Resetting
+    capabilities is intentional: a model-generated inline Tool/MCP/Skill
+    contract must not become a deployable capability.
     """
-    marker = "model-profile.invalid"
-    spec = getattr(proposal, "spec", None)
-    model_spec = getattr(spec, "model", None) if spec is not None else None
-    if model_spec is None:
-        return proposal
-    if marker not in str(getattr(model_spec, "base_url", "") or ""):
-        return proposal
-    base = str(getattr(model, "endpoint_url", "") or "").rstrip("/")
-    for suffix in ("/chat/completions", "/responses"):
-        if base.endswith(suffix):
-            base = base[: -len(suffix)]
-    if not base:
-        return proposal
+
+    spec = proposal.spec
+    managed_bindings = bindings
+    # Codex Runtime owns its native tool surface.  Studio-selected KsADK
+    # Tool contracts are meaningful for generic ADK/LangGraph Agents, but
+    # serialising them into a Codex Draft Patch advertises a binding the
+    # runtime cannot execute.  Enforce the same boundary as the UI here so a
+    # direct API caller cannot bypass it.
+    if proposal.runtimeType == "codex" and bindings.tools:
+        managed_bindings = bindings.model_copy(update={"tools": []})
+    # Resolution above is still intentional: it validates the selected Profile
+    # before a proposal is returned.  Do not serialize its catalog contract.
+    _ = model_spec
     return proposal.model_copy(
         update={
             "spec": spec.model_copy(
-                update={"model": model_spec.model_copy(update={"base_url": base})}
+                update={
+                    "model": None,
+                    "bindings": managed_bindings.model_copy(deep=True),
+                    "capabilities": CapabilitiesSpec(),
+                }
             )
         }
     )
@@ -93,20 +145,21 @@ class StudioAuthoringCoordinator:
         return self.codex_authoring
 
     def _use_codex_authoring(self) -> bool:
-        """选择 codex / chat authoring 链路（chat 永远保留为 fallback）。"""
+        """Use heavy Codex filesystem authoring only by explicit opt-in.
+
+        Conversational Draft Patch authoring is a bounded structured-chat
+        request.  Probing a local Codex installation and silently switching to
+        its full filesystem/tool harness made a small form action huge and
+        unreliable (and changed the selected model's request shape).  Keep the
+        optional expert authoring path, but never choose it implicitly.
+        """
 
         mode = str(os.environ.get("KSADK_STUDIO_AUTHORIZER") or "").strip().lower()
         if mode in {"codex", "codex-writing", "1", "true"}:
             return True
         if mode in {"chat", "off", "0", "false", "none"}:
             return False
-        # 未显式指定：探测 codex 可用性，失败自动降级 chat 链。
-        try:
-            self._codex_authoring_executor().probe()
-        except Exception as exc:
-            LOGGER.warning("codex authoring unavailable, using chat chain: %s", exc)
-            return False
-        return True
+        return False
 
     # ------------------------------------------------------------------
     # Conversation authoring stage tracking
@@ -137,6 +190,77 @@ class StudioAuthoringCoordinator:
         with self._status_lock:
             entry = self._conversation_status.get(request_id)
             return dict(entry) if entry else None
+
+    def _local_conversation_fallback(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        previous_proposal: ConversationProposal | None,
+        runtime_type: str,
+        model_spec: ModelSpec,
+        bindings: AgentBindings,
+        reason_code: str,
+    ) -> dict[str, Any]:
+        """Return a reviewable draft when the selected authoring model is unavailable.
+
+        This is intentionally not a hidden second model or an auto-deploy
+        mechanism.  Studio keeps the user's selected runtime and resource
+        bindings, produces only deterministic editable semantic fields, and
+        tells the caller that a manual review is required.
+        """
+
+        latest_user_message = next(
+            (
+                str(item.get("content") or "").strip()
+                for item in reversed(messages)
+                if str(item.get("role") or "").strip() == "user"
+                and str(item.get("content") or "").strip()
+            ),
+            "请根据已确认的需求完成 Agent，并在部署前检查配置和权限。",
+        )
+        previous_instructions = (
+            previous_proposal.spec.instructions if previous_proposal else None
+        )
+        fallback_payload = {
+            "name": previous_proposal.name if previous_proposal else "待确认 Agent",
+            "slug": previous_proposal.slug if previous_proposal else "conversation-agent",
+            "description": (
+                previous_proposal.description
+                if previous_proposal and previous_proposal.description
+                else latest_user_message[:1024]
+            ),
+            "spec": {
+                "instructions": {
+                    "system": (
+                        previous_instructions.system
+                        if previous_instructions and previous_instructions.system
+                        else "根据用户需求完成任务；不确定时先澄清，并遵守已绑定能力的权限边界。"
+                    ),
+                    "task": latest_user_message,
+                }
+            },
+        }
+        proposal = self.backend.parse_conversation_proposal(
+            json.dumps(fallback_payload, ensure_ascii=False),
+            base=previous_proposal,
+            runtime_type=runtime_type,
+        )
+        return {
+            "proposal": _inject_managed_bindings(
+                proposal,
+                model_spec=model_spec,
+                bindings=bindings,
+            ).model_dump(by_alias=True, mode="json"),
+            "requiresConfirmation": True,
+            "authoringMode": "local-fallback",
+            "fallback": {
+                "active": True,
+                "reason": _LOCAL_FALLBACK_REASON.get(reason_code, "model-unavailable"),
+            },
+            "usage": Usage(source="local-fallback").model_dump(
+                by_alias=True, mode="json"
+            ),
+        }
 
     def create(
         self,
@@ -340,6 +464,12 @@ class StudioAuthoringCoordinator:
         *,
         messages: list[dict[str, str]],
         model_profile_id: str,
+        runtime_type: str = "codex",
+        agent_model_profile_ids: list[str] | None = None,
+        agent_default_model_profile_id: str | None = None,
+        tool_resource_ids: list[str] | None = None,
+        mcp_resource_ids: list[str] | None = None,
+        skill_resource_ids: list[str] | None = None,
         request_id: str | None = None,
     ) -> dict:
         started = time.monotonic()
@@ -354,6 +484,12 @@ class StudioAuthoringCoordinator:
             result = await self._compose_conversation_inner(
                 messages=messages,
                 model_profile_id=model_profile_id,
+                runtime_type=runtime_type,
+                agent_model_profile_ids=agent_model_profile_ids or [],
+                agent_default_model_profile_id=agent_default_model_profile_id,
+                tool_resource_ids=tool_resource_ids or [],
+                mcp_resource_ids=mcp_resource_ids or [],
+                skill_resource_ids=skill_resource_ids or [],
                 request_id=request_id,
                 started=started,
             )
@@ -373,19 +509,78 @@ class StudioAuthoringCoordinator:
         *,
         messages: list[dict[str, str]],
         model_profile_id: str,
+        runtime_type: str,
+        agent_model_profile_ids: list[str],
+        agent_default_model_profile_id: str | None,
+        tool_resource_ids: list[str],
+        mcp_resource_ids: list[str],
+        skill_resource_ids: list[str],
         request_id: str | None,
         started: float,
     ) -> dict:
-        model_spec = self.studio.catalog.resolve_model(
-            AgentBindings(model_profile_id=model_profile_id)
+        # The authoring model is a one-off control-plane choice.  The Agent's
+        # model allow-list is a separate deploy-time contract and can contain
+        # multiple profiles.  Keep backwards compatibility for API callers
+        # that only send ``modelProfileId`` by using it as the one Agent model.
+        selected_agent_model_ids = [
+            binding.resource_id
+            for binding in _deduplicated_bindings(agent_model_profile_ids or [model_profile_id])
+        ]
+        if not selected_agent_model_ids:
+            raise StudioError(
+                "AGENT_MODEL_REQUIRED",
+                "Agent 至少需要选择一个可用 Model Profile",
+                status_code=422,
+            )
+        default_agent_model_id = str(
+            agent_default_model_profile_id or selected_agent_model_ids[0]
+        ).strip()
+        if default_agent_model_id not in selected_agent_model_ids:
+            raise StudioError(
+                "AGENT_DEFAULT_MODEL_NOT_SELECTED",
+                "Agent 默认模型必须包含在可用模型列表中",
+                status_code=422,
+                details={
+                    "defaultModelProfileId": default_agent_model_id,
+                    "modelProfileIds": selected_agent_model_ids,
+                },
+            )
+        authoring_bindings = AgentBindings(
+            model_profile_id=model_profile_id,
+            model_profile_ids=[model_profile_id],
         )
-        if model_spec is None:
+        bindings = AgentBindings(
+            model_profile_id=default_agent_model_id,
+            model_profile_ids=selected_agent_model_ids,
+            tools=_deduplicated_bindings(tool_resource_ids),
+            mcp_servers=_deduplicated_bindings(mcp_resource_ids),
+            skills=_deduplicated_bindings(skill_resource_ids),
+        )
+        # Resolve every selected resource now.  This validates kind, readiness
+        # and capability contracts before an LLM response can be displayed as a
+        # deployable Draft Patch.
+        authoring_model_spec = self.studio.catalog.resolve_model(authoring_bindings)
+        if authoring_model_spec is None:
             raise StudioError(
                 "AGENT_MODEL_REQUIRED",
                 "对话构建需要选择一个 Model Profile",
                 status_code=422,
             )
-        model = self.studio.catalog.resolver.resolve_model(model_spec)
+        # Resolve every Agent model before returning a Draft Patch.  This
+        # catches a deleted, wrong-kind or malformed secondary profile rather
+        # than accepting a non-deployable multi-model Agent in the browser.
+        self.studio.catalog.resolve_models(bindings)
+        model_spec = self.studio.catalog.resolve_model(bindings)
+        if model_spec is None:  # defensive: bindings above requires a default
+            raise StudioError(
+                "AGENT_MODEL_REQUIRED",
+                "Agent 需要选择一个默认 Model Profile",
+                status_code=422,
+            )
+        self.studio.catalog.policy_preview(bindings)
+        self.studio.catalog.resolve_mcp_servers(bindings)
+        self.studio.catalog.resolve_skills(bindings)
+        model = self.studio.catalog.resolver.resolve_model(authoring_model_spec)
         # authoring 自身的 max_tokens 跟随 profile：未配置则 payload 不带该字段
         # （服务端默认）；finishReason=length 截断由 model_client 一次性扩容重试兜底。
         LOGGER.info(
@@ -393,14 +588,26 @@ class StudioAuthoringCoordinator:
             getattr(model, "model", "-"),
             getattr(model, "endpoint_url", "-"),
         )
-        normalized_messages = self.backend.conversation_messages(messages)
+        normalized_runtime_type = str(runtime_type or "").strip().lower()
+        if normalized_runtime_type not in {"codex", "adk", "langgraph"}:
+            raise StudioError(
+                "AGENT_RUNTIME_INVALID",
+                "对话构建 Runtime 仅支持 Codex、ADK 或 LangGraph",
+                status_code=422,
+                field="runtimeType",
+            )
+        normalized_messages = self.backend.conversation_messages(
+            messages,
+            runtime_type=normalized_runtime_type,
+        )
         previous_proposal = None
         for item in reversed(messages):
             if str(item.get("role") or "").strip() != "assistant":
                 continue
             try:
                 previous_proposal = self.backend.parse_conversation_proposal(
-                    str(item.get("content") or "")
+                    str(item.get("content") or ""),
+                    runtime_type=normalized_runtime_type,
                 )
             except StudioError:
                 continue
@@ -414,13 +621,18 @@ class StudioAuthoringCoordinator:
                 request_id=request_id,
                 started=started,
                 model_profile_id=model_profile_id,
+                model_spec=model_spec,
+                bindings=bindings,
             )
             if codex_result is not None:
                 return codex_result
 
         request_options = {
             "network_policy": self.backend.authoring_network_policy(model.endpoint_url),
-            "timeout_seconds": 30,
+            # The authoring output is deliberately small.  Keep a bounded
+            # request budget so an unavailable upstream cannot make a simple
+            # create flow appear to hang for minutes.
+            "timeout_seconds": 20,
             "backoff_seconds": 1,
             "response_format": {"type": "json_object"},
             # finishReason=length 截断时在 model_client 内自动扩容 max_tokens
@@ -428,65 +640,55 @@ class StudioAuthoringCoordinator:
             "retry_on_length": True,
         }
         self._record_conversation_stage(request_id, "generating")
-        response = await self.studio.model_client.complete(
-            model,
-            messages=normalized_messages,
-            max_attempts=2,
-            **request_options,
-        )
+        try:
+            response = await self.studio.model_client.complete(
+                model,
+                messages=normalized_messages,
+                max_attempts=2,
+                **request_options,
+            )
+        except StudioError as exc:
+            if exc.code not in _LOCAL_FALLBACK_MODEL_ERRORS:
+                raise
+            LOGGER.warning(
+                "conversation authoring model unavailable; returning local fallback: "
+                "modelProfileId=%s reason=%s",
+                model_profile_id,
+                exc.code,
+            )
+            self._record_conversation_stage(request_id, "done")
+            return self._local_conversation_fallback(
+                messages=messages,
+                previous_proposal=previous_proposal,
+                runtime_type=normalized_runtime_type,
+                model_spec=model_spec,
+                bindings=bindings,
+                reason_code=exc.code,
+            )
         self._record_conversation_stage(request_id, "validating")
         try:
             proposal = self.backend.parse_conversation_proposal(
                 response.content,
                 base=previous_proposal,
+                runtime_type=normalized_runtime_type,
             )
         except StudioError as exc:
             if exc.code != "AUTHORING_MODEL_OUTPUT_INVALID":
                 raise
-            validation_error = str(exc.details.get("reason") or exc.message)
-            self._record_conversation_stage(request_id, "correcting")
             LOGGER.warning(
-                "conversation authoring patch invalid, retrying once: reason=%s",
-                validation_error,
+                "conversation authoring patch invalid; returning local fallback: "
+                "modelProfileId=%s",
+                model_profile_id,
             )
-            retry_messages = [
-                *normalized_messages,
-                {"role": "assistant", "content": response.content},
-                {
-                    "role": "user",
-                    "content": (
-                        "上一次输出未通过 Agent Draft Patch 校验。请只返回一个 JSON 对象，"
-                        "不要解释或使用 Markdown。首轮必须包含 name、slug、runtimeType、"
-                        "description、spec；后续轮次可以只返回需要变更的字段。"
-                        f"校验错误细节如下，请逐条修正：\n{validation_error}"
-                    ),
-                },
-            ]
-            response = await self.studio.model_client.complete(
-                model,
-                messages=retry_messages,
-                max_attempts=1,
-                **request_options,
+            self._record_conversation_stage(request_id, "done")
+            return self._local_conversation_fallback(
+                messages=messages,
+                previous_proposal=previous_proposal,
+                runtime_type=normalized_runtime_type,
+                model_spec=model_spec,
+                bindings=bindings,
+                reason_code=exc.code,
             )
-            try:
-                proposal = self.backend.parse_conversation_proposal(
-                    response.content,
-                    base=previous_proposal,
-                )
-            except StudioError as retry_exc:
-                if retry_exc.code != "AUTHORING_MODEL_OUTPUT_INVALID":
-                    raise
-                raise StudioError(
-                    "AUTHORING_MODEL_OUTPUT_INVALID",
-                    "对话构建模型没有返回合法的 Agent Draft Patch",
-                    status_code=502,
-                    details={
-                        "validationError": str(
-                            retry_exc.details.get("reason") or retry_exc.message
-                        ),
-                        "attemptedCorrections": 1,
-                    },
-                ) from retry_exc
         self._record_conversation_stage(request_id, "done")
         LOGGER.info(
             "conversation authoring finished in %.2fs: modelProfileId=%s slug=%s",
@@ -495,7 +697,11 @@ class StudioAuthoringCoordinator:
             getattr(proposal, "slug", "-"),
         )
         return {
-            "proposal": _apply_profile_model_endpoint(proposal, model).model_dump(
+            "proposal": _inject_managed_bindings(
+                proposal,
+                model_spec=model_spec,
+                bindings=bindings,
+            ).model_dump(
                 by_alias=True, mode="json"
             ),
             "requiresConfirmation": True,
@@ -512,6 +718,8 @@ class StudioAuthoringCoordinator:
         request_id: str | None,
         started: float,
         model_profile_id: str,
+        model_spec: ModelSpec,
+        bindings: AgentBindings,
     ) -> dict | None:
         """让真实 Codex 会话在工作区写 agentkit.yaml；任何失败降级 chat 链。
 
@@ -551,7 +759,11 @@ class StudioAuthoringCoordinator:
             result.attempts,
         )
         return {
-            "proposal": _apply_profile_model_endpoint(result.proposal, model).model_dump(
+            "proposal": _inject_managed_bindings(
+                result.proposal,
+                model_spec=model_spec,
+                bindings=bindings,
+            ).model_dump(
                 by_alias=True, mode="json"
             ),
             "requiresConfirmation": True,

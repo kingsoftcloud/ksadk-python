@@ -19,6 +19,12 @@ interface BuildRecord {
   sourceRevision?: number;
 }
 
+interface OperationEvent {
+  id: number;
+  type: string;
+  data: Record<string, unknown>;
+}
+
 const TERMINAL = new Set(["SUCCEEDED", "FAILED", "CANCELLED", "TIMED_OUT"]);
 
 function statusState(status: string): "ready" | "failed" | "pending" | "idle" {
@@ -44,18 +50,33 @@ function shortId(value: string, max = 42): string {
   return value.length > max ? `${value.slice(0, max)}…` : value;
 }
 
-async function fetchOperationEvents(path: string): Promise<any[]> {
-  const response = await apiFetch(`/api/v1${path}`);
-  if (!response.ok) return [];
-  return (await response.text())
-    .split("\n\n")
+export function parseOperationEvents(payload: string): OperationEvent[] {
+  return payload
+    .split(/\r?\n\r?\n/)
     .filter(Boolean)
     .map(block => {
-      const data = block.split("\n").find(line => line.startsWith("data:"));
-      if (!data) return null;
-      try { return JSON.parse(data.slice(5).trim()); } catch { return null; }
+      const lines = block.split(/\r?\n/);
+      const id = Number(lines.find(line => line.startsWith("id:"))?.slice(3).trim());
+      const type = lines.find(line => line.startsWith("event:"))?.slice(6).trim() || "";
+      const encoded = lines
+        .filter(line => line.startsWith("data:"))
+        .map(line => line.slice(5).trimStart())
+        .join("\n");
+      if (!Number.isFinite(id) || id <= 0 || !type || !encoded) return null;
+      try {
+        const data = JSON.parse(encoded);
+        return { id, type, data: data && typeof data === "object" ? data : {} };
+      } catch {
+        return null;
+      }
     })
-    .filter(Boolean);
+    .filter((event): event is OperationEvent => event !== null);
+}
+
+async function fetchOperationEvents(path: string): Promise<OperationEvent[]> {
+  const response = await apiFetch(`/api/v1${path}`);
+  if (!response.ok) return [];
+  return parseOperationEvents(await response.text());
 }
 
 export function BuildsPage({ currentAgentId, agents, onSelectAgent, onCreate }: {

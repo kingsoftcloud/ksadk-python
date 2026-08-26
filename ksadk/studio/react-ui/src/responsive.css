@@ -52,6 +52,59 @@ body {
   max-width: var(--studio-page-max);
 }
 
+/* Resource and Agent catalogues are actionable first.  On a compact desktop
+ * keep name, current state and actions in view; secondary metadata remains in
+ * the detail drawer/page instead of forcing a horizontal scroll before the
+ * primary action can be reached. */
+.app-shell .resources-page .actions-column,
+.app-shell .agents-page .actions-column {
+  width: 108px;
+}
+
+@media (max-width: 1180px) {
+  .app-shell .resources-page .resource-source-column,
+  .app-shell .resources-page .resource-detail-column,
+  .app-shell .agents-page .agent-capabilities-column,
+  .app-shell .agents-page .agent-revision-column {
+    display: none;
+  }
+
+  .app-shell .resources-page .studio-data-table table,
+  .app-shell .agents-page .studio-data-table table {
+    width: 100%;
+    min-width: 0 !important;
+    table-layout: fixed;
+  }
+
+  .app-shell .resources-page .resource-name-column {
+    width: 31%;
+  }
+
+  .app-shell .resources-page .resource-capability-column {
+    width: 43%;
+  }
+
+  .app-shell .resources-page .resource-status-column {
+    width: 15%;
+  }
+
+  .app-shell .agents-page .agent-name-column {
+    width: 46%;
+  }
+
+  .app-shell .agents-page .agent-runtime-column,
+  .app-shell .agents-page .agent-build-column {
+    width: 20%;
+  }
+
+  .app-shell .resources-page .studio-data-table td,
+  .app-shell .resources-page .studio-data-table th,
+  .app-shell .agents-page .studio-data-table td,
+  .app-shell .agents-page .studio-data-table th {
+    padding-inline: 10px;
+  }
+}
+
 .app-shell .data-scroll-region {
   min-width: 0;
   max-width: 100%;

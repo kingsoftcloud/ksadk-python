@@ -193,6 +193,11 @@ class ColoredHelpGroup(click.Group):
         _write_colored_help_row(formatter, "agentengine build", "构建部署制品")
         _write_colored_help_row(formatter, "agentengine deploy", "部署到云端")
         _write_colored_help_row(formatter, "agentengine launch", "一键构建+部署")
+        _write_colored_help_row(
+            formatter,
+            "agentengine managed-runtime",
+            "启动平台托管的 YAML Agent",
+        )
         _write_colored_help_row(formatter, "agentengine agent", "Agent 资源管理")
         _write_colored_help_row(formatter, "agentengine version", "Agent 版本管理")
         _write_colored_help_row(formatter, "agentengine mcp", "MCP 资源管理")

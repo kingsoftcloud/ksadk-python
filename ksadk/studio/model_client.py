@@ -412,6 +412,18 @@ class OpenAICompatibleModelClient:
                     payload.pop("response_format")
                     continue
                 if response.status_code >= 400:
+                    if response.status_code == 429:
+                        # A selected authoring profile must not silently fall
+                        # back to a different model.  Preserve the actual
+                        # upstream condition so Studio can offer the user a
+                        # useful retry/switch decision instead of reporting a
+                        # misleading generic 502.
+                        raise StudioError(
+                            "MODEL_RATE_LIMITED",
+                            "所选生成模型当前限流，请稍后重试或切换模型 Profile",
+                            status_code=429,
+                            details={"upstreamStatus": response.status_code},
+                        )
                     upstream_detail = ""
                     try:
                         upstream_detail = response.text[:200]

@@ -160,6 +160,13 @@ function runtimeEnvelope(value: unknown): RuntimeEnvelope | null {
   };
 }
 
+function latestEventSeq(events: unknown[]): number {
+  return events.reduce<number>((latest, event) => {
+    const envelope = runtimeEnvelope(event);
+    return Math.max(latest, envelope?.seq || 0);
+  }, 0);
+}
+
 function itemPart(container: unknown): Record<string, unknown> {
   const record = recordValue(container);
   const parts = Array.isArray(record.parts) ? record.parts.map(recordValue) : [];
@@ -657,7 +664,7 @@ function CloudRuntimeProgress({ items, streaming }: { items: CloudRuntimeItem[];
   const running = activities.find(item => item.status === "running" || item.status === "waiting");
   const title = running
     ? `${running.status === "waiting" ? "等待确认" : "正在处理"} · ${running.title}`
-    : reasoning ? "正在思考" : `已处理 ${activities.length} 次工具调用`;
+    : reasoning ? (streaming ? "正在思考" : "已思考") : `已处理 ${activities.length} 次工具调用`;
   return (
     <details className="chat-processing-group" open={streaming} data-ui="think">
       <summary>
@@ -718,6 +725,7 @@ export function CloudChatWorkspace({
   const awaitingRunIdRef = useRef("");
   const awaitingInvocationIdRef = useRef("");
   const awaitingAcceptedSeqRef = useRef(0);
+  const sessionCursorRef = useRef<Map<string, number>>(new Map());
   const sendInFlightRef = useRef(false);
   const streamAbortRef = useRef<AbortController | null>(null);
   const streamedFramesRef = useRef<unknown[]>([]);
@@ -785,9 +793,15 @@ export function CloudChatWorkspace({
     const hasNewAssistant = rows.some(
       message => message.role === "assistant" && !assistantIdsBeforeSendRef.current.has(message.id),
     );
-    if (hasNewAssistant && !directStreamActiveRef.current) {
-      setStreamingRuntimeItems([]);
-      streamedFramesRef.current = [];
+    if (hasNewAssistant) {
+      // The durable message projection can land before the foreground SSE
+      // closes. Remove only the transient assistant body at that point so the
+      // same answer is never rendered twice. Reasoning/tool items remain as
+      // expandable run history after completion.
+      setStreamingRuntimeItems(previous => previous.filter(item => item.kind !== "message"));
+      if (!directStreamActiveRef.current) {
+        streamedFramesRef.current = [];
+      }
     }
     if (waitingForResponseRef.current && hasNewAssistant && !directStreamActiveRef.current) {
       setRunError("");
@@ -804,6 +818,10 @@ export function CloudChatWorkspace({
     if (!response.ok) throw new Error(await responseError(response));
     const payload = await response.json();
     const events = payload.events || [];
+    sessionCursorRef.current.set(
+      sessionId,
+      Math.max(sessionCursorRef.current.get(sessionId) || 0, latestEventSeq(events)),
+    );
     const terminal = terminalRunEvent(
       events,
       awaitingRunIdRef.current,
@@ -821,6 +839,26 @@ export function CloudChatWorkspace({
     const interactionFrames = [...streamedFramesRef.current, ...events].slice(-500);
     streamedFramesRef.current = interactionFrames;
     setInteractions(pendingInteractions(interactionFrames));
+    if (!directStreamActiveRef.current) {
+      const durableRuntimeItems = events.reduce<CloudRuntimeItem[]>((items, event) => {
+        const patch = runtimeItemPatch(event);
+        return patch && patch.kind !== "message" ? mergeRuntimeItem(items, patch) : items;
+      }, []);
+      // The durable projection can lag a foreground EOF. Preserve the
+      // just-rendered run history until Server returns its canonical items;
+      // otherwise reasoning/tool cards flash away on completion.
+      setStreamingRuntimeItems(previous => {
+        // Message ownership is reconciled only by refreshMessages after an
+        // actual durable assistant row exists.  The event projection may lag
+        // a clean foreground EOF, so it must never delete the sole streamed
+        // assistant body.  It only replaces the expandable run-history items.
+        if (!durableRuntimeItems.length) return previous;
+        return [
+          ...previous.filter(item => item.kind === "message"),
+          ...durableRuntimeItems,
+        ];
+      });
+    }
   }, [base, settleCloudRun]);
 
   useEffect(() => {
@@ -841,6 +879,7 @@ export function CloudChatWorkspace({
     awaitingRunIdRef.current = "";
     awaitingInvocationIdRef.current = "";
     awaitingAcceptedSeqRef.current = 0;
+    sessionCursorRef.current.clear();
     refreshSessions()
       .catch(error => { if (!cancelled) showToast("云端会话加载失败", error.message, "error"); })
       .finally(() => { if (!cancelled) setLoading(false); });
@@ -946,6 +985,7 @@ export function CloudChatWorkspace({
     setInteractions([]);
     setRunError("");
     assistantIdsBeforeSendRef.current = new Set();
+    sessionCursorRef.current.set(session.id, 0);
     return session.id;
   }
 
@@ -1006,24 +1046,11 @@ export function CloudChatWorkspace({
           .map(message => message.id),
       );
       awaitingRunIdRef.current = "";
+      // Do not invent a RunAgent field for client-side correlation.  The
+      // deployed Server contract owns run/invocation ids; correlate this turn
+      // by the durable SessionEvent cursor, then pin to the first new cloud id.
       awaitingInvocationIdRef.current = "";
-      const cursorResponse = await apiFetch(
-        `${base}/sessions/${encodeURIComponent(sessionId)}/events`,
-      );
-      if (!cursorResponse.ok) throw new Error(await responseError(cursorResponse));
-      const cursorPayload = await cursorResponse.json() as { events?: unknown[] };
-      awaitingAcceptedSeqRef.current = (cursorPayload.events || []).reduce<number>((latest, event) => {
-        if (!event || typeof event !== "object") return latest;
-        const record = event as Record<string, unknown>;
-        const payload = record.payload && typeof record.payload === "object"
-          ? record.payload as Record<string, unknown>
-          : record;
-        const seq = Number(
-          payload.seq ?? payload.seq_id ?? payload.source_session_seq
-          ?? record.seq ?? record.seq_id ?? 0,
-        ) || 0;
-        return Math.max(latest, seq);
-      }, 0);
+      awaitingAcceptedSeqRef.current = sessionCursorRef.current.get(sessionId) || 0;
       const optimistic: CloudMessage = {
         id: `local-${crypto.randomUUID()}`,
         role: "user",
@@ -1060,9 +1087,15 @@ export function CloudChatWorkspace({
       }).then(response => consumeSseResponse(response, frame => {
         const envelope = runtimeEnvelope(frame);
         if (!envelope) return;
+        if (envelope.seq) {
+          sessionCursorRef.current.set(
+            sessionId,
+            Math.max(sessionCursorRef.current.get(sessionId) || 0, envelope.seq),
+          );
+        }
         const eventIds = [envelope.runId, envelope.invocationId].filter(Boolean);
         const expectedRunIds = [awaitingRunIdRef.current, awaitingInvocationIdRef.current].filter(Boolean);
-        if (expectedRunIds.length && eventIds.length && !eventIds.some(id => expectedRunIds.includes(id))) return;
+        if (expectedRunIds.length && (!eventIds.length || !eventIds.some(id => expectedRunIds.includes(id)))) return;
         if (awaitingAcceptedSeqRef.current && envelope.seq && envelope.seq <= awaitingAcceptedSeqRef.current) return;
         if (!expectedRunIds.length) {
           if (envelope.runId) awaitingRunIdRef.current = envelope.runId;
@@ -1172,6 +1205,7 @@ export function CloudChatWorkspace({
         setInteractions([]);
         setRunError("");
       }
+      sessionCursorRef.current.delete(sessionId);
       await refreshSessions(!deletedCurrent);
     } catch (error) {
       showToast("删除云端会话失败", error instanceof Error ? error.message : String(error), "error");
@@ -1296,7 +1330,7 @@ export function CloudChatWorkspace({
               <div className="message-content"><ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{streamingAssistantText}</ReactMarkdown></div>
             </article>
           )}
-          {(sending || waitingForResponse) && <div className="cloud-chat-pending"><Loader2 size={15} /> 正在等待云端响应…</div>}
+          {(sending || waitingForResponse) && <div className="cloud-chat-pending"><Loader2 size={15} className="animate-spin" /> 正在等待云端响应…</div>}
         </div>
         <div className="chat-composer-wrap">
           {interactions.length > 0 && (

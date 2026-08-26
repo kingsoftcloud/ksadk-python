@@ -1,7 +1,12 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-from ksadk.runtime.factory import _create_codex, kernel_start_request_defaults
+from ksadk.runtime.adapter import StartRequest
+from ksadk.runtime.factory import (
+    _create_codex,
+    apply_runtime_start_request_defaults,
+    kernel_start_request_defaults,
+)
 from ksadk.runtime.launch import RuntimeLaunchContext, RuntimeServices
 
 
@@ -95,3 +100,67 @@ def test_codex_adapter_uses_the_same_manifest_sandbox_projection():
     adapter = _create_codex(context)
 
     assert adapter._sandbox_read_only is False
+
+
+def test_direct_runtime_start_inherits_manifest_owned_instructions_and_model():
+    context = RuntimeLaunchContext(
+        runtime_type="codex",
+        project_dir=Path("/tmp/managed-agent"),
+        detection=SimpleNamespace(name="managed-agent"),
+        config={
+            "model": "deepseek-v4-flash",
+            "models": ["deepseek-v4-flash", "glm-5.1"],
+            "prompt": "你是销售日报助手。",
+            "task_prompt": "数据不足时必须先追问。",
+            "approval_mode": "risk",
+        },
+    )
+    request = StartRequest(
+        input="你好",
+        user_id="user-1",
+        session_id="session-1",
+        agent_id="managed-agent",
+        model="not-in-allow-list",
+    )
+
+    projected = apply_runtime_start_request_defaults(context, request)
+
+    assert projected.model == "deepseek-v4-flash"
+    assert projected.config["base_instructions"] == (
+        "你是销售日报助手。\n\n数据不足时必须先追问。"
+    )
+    assert projected.config["sandbox"] == "workspace-write"
+    assert projected.config["approval_mode"] == "auto_review"
+
+
+def test_codex_adapter_projects_manifest_mcp_servers_into_native_config():
+    captured = {}
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    context = RuntimeLaunchContext(
+        runtime_type="codex",
+        project_dir=Path("/tmp/managed-agent"),
+        config={
+            "approval_mode": "risk",
+            "mcp_servers": [
+                {
+                    "name": "metaso-inner",
+                    "url": "https://mcp.example.test/mcp",
+                    "env_key": "METASO_API_KEY",
+                }
+            ],
+        },
+        services=RuntimeServices(codex_client_factory=FakeClient),
+    )
+
+    _create_codex(context)
+
+    overrides = tuple(captured["config"].config_overrides)
+    assert "mcp_servers.metaso-inner.url=https://mcp.example.test/mcp" in overrides
+    assert (
+        "mcp_servers.metaso-inner.bearer_token_env_var=METASO_API_KEY" in overrides
+    )
+    assert "sandbox_workspace_write.network_access=true" in overrides

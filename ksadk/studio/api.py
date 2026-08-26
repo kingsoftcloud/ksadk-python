@@ -700,6 +700,12 @@ def create_studio_app(
         return await studio.compose_agent_conversation(
             messages=[item.model_dump(mode="json") for item in payload.messages],
             model_profile_id=payload.model_profile_id,
+            runtime_type=payload.runtime_type,
+            agent_model_profile_ids=payload.agent_model_profile_ids,
+            agent_default_model_profile_id=payload.agent_default_model_profile_id,
+            tool_resource_ids=payload.tool_resource_ids,
+            mcp_resource_ids=payload.mcp_resource_ids,
+            skill_resource_ids=payload.skill_resource_ids,
             request_id=payload.request_id,
         )
 

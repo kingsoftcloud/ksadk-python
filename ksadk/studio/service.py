@@ -541,11 +541,23 @@ class StudioService:
         *,
         messages: list[dict[str, str]],
         model_profile_id: str,
+        runtime_type: str = "codex",
+        agent_model_profile_ids: list[str] | None = None,
+        agent_default_model_profile_id: str | None = None,
+        tool_resource_ids: list[str] | None = None,
+        mcp_resource_ids: list[str] | None = None,
+        skill_resource_ids: list[str] | None = None,
         request_id: str | None = None,
     ) -> dict:
         return await self.authoring.compose_conversation(
             messages=messages,
             model_profile_id=model_profile_id,
+            runtime_type=runtime_type,
+            agent_model_profile_ids=agent_model_profile_ids,
+            agent_default_model_profile_id=agent_default_model_profile_id,
+            tool_resource_ids=tool_resource_ids,
+            mcp_resource_ids=mcp_resource_ids,
+            skill_resource_ids=skill_resource_ids,
             request_id=request_id,
         )
 

@@ -75,7 +75,9 @@ export function AgentsPage({ agents, runtimeReady, runtimeChecked = true, worksp
     {
       id: "agent",
       header: "Agent",
-      minWidth: 260,
+      minWidth: 220,
+      className: "agent-name-column",
+      headerClassName: "agent-name-column",
       cell: agent => {
         const template = agent.metadata.labels?.["agentkit.ksyun.com/template"] || "blank";
         return (
@@ -92,7 +94,9 @@ export function AgentsPage({ agents, runtimeReady, runtimeChecked = true, worksp
     {
       id: "template",
       header: "运行时",
-      minWidth: 120,
+      minWidth: 100,
+      className: "agent-runtime-column",
+      headerClassName: "agent-runtime-column",
       cell: agent => {
         const runtimeType = agent.spec?.runtime?.type
           || agent.metadata.labels?.["agentkit.ksyun.com/framework"]
@@ -103,7 +107,9 @@ export function AgentsPage({ agents, runtimeReady, runtimeChecked = true, worksp
     {
       id: "capabilities",
       header: "能力",
-      minWidth: 210,
+      minWidth: 170,
+      className: "agent-capabilities-column",
+      headerClassName: "agent-capabilities-column",
       cell: agent => {
         const bindings = agent.spec?.bindings || {};
         return (
@@ -115,11 +121,13 @@ export function AgentsPage({ agents, runtimeReady, runtimeChecked = true, worksp
         );
       },
     },
-    { id: "revision", header: "Revision", width: 100, cell: agent => <span className="mono">r{agent.metadata.revision}</span> },
+    { id: "revision", header: "Revision", width: 84, className: "agent-revision-column", headerClassName: "agent-revision-column", cell: agent => <span className="mono">r{agent.metadata.revision}</span> },
     {
       id: "build",
       header: "最近校验 / 构建",
-      width: 120,
+      width: 108,
+      className: "agent-build-column",
+      headerClassName: "agent-build-column",
       cell: agent => agent.builds?.some(build => build.status === "SUCCEEDED")
         ? <span className="badge" data-state="ready">{isDeclarativeAgent(agent) ? "声明已校验" : "已构建"}</span>
         : <span className="badge" data-state="idle">草稿</span>,
@@ -127,9 +135,9 @@ export function AgentsPage({ agents, runtimeReady, runtimeChecked = true, worksp
     {
       id: "actions",
       header: "操作",
-      minWidth: 124,
-      className: "actions-column",
-      headerClassName: "actions-column",
+      minWidth: 108,
+      className: "actions-column agent-actions-column",
+      headerClassName: "actions-column agent-actions-column",
       cell: agent => (
         <div className="row-actions">
           <button className="button secondary small" type="button" onClick={() => onChat(agent.metadata.id)}>会话</button>
@@ -165,7 +173,7 @@ export function AgentsPage({ agents, runtimeReady, runtimeChecked = true, worksp
   }
 
   return (
-    <div className="page-container agents-page" data-layout="document">
+    <div className="page-container agents-page" data-layout="data">
       <PageHeaderActions>
         <button className="button accent" type="button" disabled={!runtimeReady} onClick={onCreate}>
           <Plus size={16} /><span>创建 Agent</span>
@@ -224,7 +232,7 @@ export function AgentsPage({ agents, runtimeReady, runtimeChecked = true, worksp
             data={filtered}
             getRowId={agent => agent.metadata.id}
             caption="Agent 列表"
-            minWidth={1120}
+            minWidth={0}
             onRowActivate={agent => onDetail(agent.metadata.id)}
             rowAriaLabel={agent => `${agent.metadata.name} ${agent.metadata.id}`}
             empty={{

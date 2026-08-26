@@ -11,6 +11,7 @@ export interface CloudDeploymentSummary {
   chatRoutingReason?: CloudChatRoutingReason;
   versionId?: string;
   updatedAt?: string;
+  creatorName?: string;
   source?: "receipt" | "account";
 }
 
@@ -26,6 +27,7 @@ export interface AccountCloudAgentSummary {
   chatRoutingReason?: CloudChatRoutingReason;
   versionId?: string;
   updatedAt?: string;
+  creatorName?: string;
 }
 
 export type CloudChatRouteKind = "studio-session-events" | "official-dashboard";
@@ -155,6 +157,7 @@ export function mergeCloudChatTargets(
       chatRoutingReason: account?.chatRoutingReason || item.chatRoutingReason,
       versionId: account?.versionId || item.versionId,
       updatedAt: account?.updatedAt || item.updatedAt,
+      creatorName: account?.creatorName || item.creatorName,
       source: "receipt" as const,
     };
   });
@@ -175,6 +178,7 @@ export function mergeCloudChatTargets(
       chatRoutingReason: item.chatRoutingReason,
       versionId: item.versionId,
       updatedAt: item.updatedAt,
+      creatorName: item.creatorName,
       source: "account" as const,
     }];
   });

@@ -11,6 +11,7 @@ import yaml
 from fastapi.testclient import TestClient
 
 from ksadk.studio.api import create_studio_app
+from ksadk.studio.authoring import AgentAuthoringService
 from ksadk.studio.contracts import (
     AgentSpec,
     Instructions,
@@ -47,6 +48,14 @@ def _register_model(studio: StudioService) -> None:
             model="glm-5.1",
             endpoint_url="https://api.openai.com/v1/chat/completions",
             credential_ref="env://AGENTKIT_MODEL_API_KEY",
+            metadata={
+                "pricing": {"prompt": "1.0元", "completion": "2.0元"},
+                "limits": {"rpm": 500},
+            },
+            discovery={
+                "source": "provider",
+                "endpoint": "https://api.openai.com/v1/models",
+            },
         ),
     )
 
@@ -309,21 +318,32 @@ async def test_conversation_authoring_uses_bound_real_model_and_returns_patch_on
             {"role": "user", "content": "ADK，输出阻断项和证据"},
         ],
         model_profile_id=model_profile.resource_id,
+        runtime_type="adk",
     )
 
     assert proposal["proposal"]["runtimeType"] == "adk"
     spec = proposal["proposal"]["spec"]
     assert spec["instructions"]["system"] == "You review release evidence."
-    assert spec["runtime"]["entryPoint"] == "main.py"
-    assert spec["model"]["parameters"]["maxTokens"] == 8192
-    assert spec["bindings"]["tools"] == [
-        {"resourceId": "tool-release-check", "enabled": True, "approval": "policy", "config": {}}
-    ]
-    assert spec["execution"]["strategy"] == "plan-act-observe"
-    assert spec["context"]["maxInputTokens"] == 64000
-    assert spec["memory"]["providerRef"] == "memory-release"
-    assert spec["security"]["allowedPermissions"] == ["repo:read"]
-    assert spec["evaluation"]["suiteRefs"] == ["release-gate"]
+    assert spec.get("runtime") is None
+    # Model connection and resource bindings are not LLM output.  The request
+    # selected this single Profile and no capability resources.
+    # The Profile binding is authoritative.  A Draft Patch must not copy the
+    # provider catalogue contract (pricing, discovery endpoints or limits)
+    # into persistent Agent content; build/run materialise it from the binding.
+    assert spec.get("model") is None
+    assert spec["bindings"]["modelProfileId"] == model_profile.resource_id
+    assert spec["bindings"]["modelProfileIds"] == [model_profile.resource_id]
+    assert spec["bindings"]["tools"] == []
+    assert spec["bindings"]["mcpServers"] == []
+    assert spec["bindings"]["skills"] == []
+    # Runtime infrastructure and execution policy remain Studio defaults;
+    # the model response cannot smuggle an incompatible framework source or
+    # mutable platform policy into the Draft Patch.
+    assert spec["execution"]["strategy"] == "direct"
+    assert spec["context"]["maxInputTokens"] == 32000
+    assert spec["memory"]["providerRef"] == "local-default"
+    assert spec["security"]["allowedPermissions"] == []
+    assert spec["evaluation"]["suiteRefs"] == []
     assert proposal["requiresConfirmation"] is True
     assert proposal["usage"]["reported"] is False
     assert studio.list_agents() == []
@@ -379,46 +399,52 @@ async def test_conversation_authoring_merges_a_partial_follow_up_patch(
             {"role": "user", "content": "再补充回滚安全检查"},
         ],
         model_profile_id=model_profile.resource_id,
+        runtime_type="adk",
     )
 
     result = proposal["proposal"]
     assert result["name"] == "Release Reviewer"
     assert result["runtimeType"] == "adk"
     assert result["description"] == "Checks release readiness and rollback safety."
-    assert result["spec"]["runtime"]["entryPoint"] == "main.py"
-    assert result["spec"]["bindings"]["skills"] == [
-        {
-            "resourceId": "skill-release",
-            "enabled": True,
-            "approval": None,
-            "config": {},
-        }
-    ]
+    assert result["spec"].get("runtime") is None
+    # A previous assistant patch cannot smuggle a binding into a later turn.
+    assert result["spec"]["bindings"]["skills"] == []
     assert result["spec"]["instructions"] == {
         "system": "You review release evidence.",
         "task": "Return blockers, proof, and rollback steps.",
     }
 
 
+def test_conversation_parser_keeps_only_semantic_fields_when_runtime_is_studio_owned() -> None:
+    proposal = AgentAuthoringService.parse_conversation_proposal(
+        json.dumps(
+            {
+                "name": "销售日报",
+                "slug": "sales-daily-report",
+                "runtimeType": "langgraph",
+                "spec": {
+                    "runtime": {"type": "langgraph"},
+                    "instructions": {"system": "生成日报", "task": "按天汇总"},
+                    "execution": {"mode": "workflow"},
+                    "security": {"level": "standard"},
+                },
+            }
+        ),
+        runtime_type="codex",
+    )
+
+    assert proposal.runtimeType == "codex"
+    assert proposal.spec.runtime is None
+    assert proposal.spec.instructions.system == "生成日报"
+    assert proposal.spec.instructions.task == "按天汇总"
+    assert proposal.spec.execution.strategy == "direct"
+
+
 @pytest.mark.asyncio
-async def test_conversation_authoring_retries_one_invalid_model_patch(
+async def test_conversation_authoring_returns_local_fallback_for_invalid_model_patch(
     tmp_path: Path,
 ) -> None:
-    valid = json.dumps(
-        {
-            "name": "Release Reviewer",
-            "slug": "release-reviewer",
-            "runtimeType": "codex",
-            "description": "Checks releases.",
-            "spec": {
-                "instructions": {
-                    "system": "Review releases.",
-                    "task": "Return evidence.",
-                }
-            },
-        }
-    )
-    model_client = _SequencedAuthoringModelClient(["not-json", valid])
+    model_client = _SequencedAuthoringModelClient(["not-json"])
     studio = StudioService(tmp_path, model_client=model_client)
     _register_model(studio)
     model_profile = studio.catalog.list(kind="model")[0]
@@ -428,9 +454,13 @@ async def test_conversation_authoring_retries_one_invalid_model_patch(
         model_profile_id=model_profile.resource_id,
     )
 
-    assert proposal["proposal"]["name"] == "Release Reviewer"
-    assert len(model_client.messages) == 2
-    assert "上一次输出未通过 Agent Draft Patch 校验" in model_client.messages[1][-1]["content"]
+    assert proposal["authoringMode"] == "local-fallback"
+    assert proposal["fallback"]["active"] is True
+    assert proposal["proposal"]["runtimeType"] == "codex"
+    assert proposal["proposal"]["spec"]["instructions"]["task"] == "做一个发布评审 Agent"
+    # An invalid draft is not worth another slow, probabilistic correction
+    # request.  The user receives a transparent, editable local fallback.
+    assert len(model_client.messages) == 1
 
 
 def test_conversation_prompt_only_response_is_migrated_to_complete_spec(tmp_path: Path) -> None:
@@ -753,52 +783,44 @@ async def test_conversation_authoring_requests_json_object_response(
 
 
 @pytest.mark.asyncio
-async def test_conversation_authoring_corrective_retry_is_single_attempt(
+async def test_conversation_authoring_falls_back_when_model_request_fails(
     tmp_path: Path,
 ) -> None:
-    valid = json.dumps(
-        {
-            "name": "Release Reviewer",
-            "slug": "release-reviewer",
-            "runtimeType": "codex",
-            "description": "Checks releases.",
-            "spec": {
-                "instructions": {"system": "Review releases.", "task": "Return evidence."}
-            },
-        }
-    )
-    model_client = _SequencedAuthoringModelClient(["not-json", valid])
+    class FailingClient:
+        async def complete(self, *_args, **_kwargs):
+            raise StudioError("MODEL_REQUEST_FAILED", "模型请求网络失败", status_code=502)
+
+    model_client = FailingClient()
     studio = StudioService(tmp_path, model_client=model_client)
     _register_model(studio)
     model_profile = studio.catalog.list(kind="model")[0]
 
-    await studio.compose_agent_conversation(
+    proposal = await studio.compose_agent_conversation(
         messages=[{"role": "user", "content": "做一个发布评审 Agent"}],
         model_profile_id=model_profile.resource_id,
     )
 
-    assert len(model_client.calls) == 2
-    assert model_client.calls[0]["max_attempts"] == 2
-    assert model_client.calls[1]["max_attempts"] == 1
+    assert proposal["authoringMode"] == "local-fallback"
+    assert proposal["fallback"]["reason"] == "model-request-failed"
+    assert proposal["usage"]["source"] == "local-fallback"
 
 
 @pytest.mark.asyncio
-async def test_conversation_authoring_surfaces_validation_error_details(
+async def test_conversation_authoring_invalid_output_is_not_a_terminal_error(
     tmp_path: Path,
 ) -> None:
-    model_client = _SequencedAuthoringModelClient(["not-json", "still-not-json"])
+    model_client = _SequencedAuthoringModelClient(["not-json"])
     studio = StudioService(tmp_path, model_client=model_client)
     _register_model(studio)
     model_profile = studio.catalog.list(kind="model")[0]
 
-    with pytest.raises(StudioError) as captured:
-        await studio.compose_agent_conversation(
-            messages=[{"role": "user", "content": "做一个发布评审 Agent"}],
-            model_profile_id=model_profile.resource_id,
-        )
+    proposal = await studio.compose_agent_conversation(
+        messages=[{"role": "user", "content": "做一个发布评审 Agent"}],
+        model_profile_id=model_profile.resource_id,
+    )
 
-    assert captured.value.code == "AUTHORING_MODEL_OUTPUT_INVALID"
-    assert captured.value.details.get("validationError")
+    assert proposal["authoringMode"] == "local-fallback"
+    assert proposal["fallback"]["reason"] == "invalid-model-output"
 
 
 def _valid_conversation_proposal() -> str:
@@ -815,7 +837,7 @@ def _valid_conversation_proposal() -> str:
 
 @pytest.mark.asyncio
 async def test_conversation_authoring_records_stage_progress(tmp_path: Path) -> None:
-    model_client = _SequencedAuthoringModelClient(["not-json", _valid_conversation_proposal()])
+    model_client = _SequencedAuthoringModelClient([_valid_conversation_proposal()])
     studio = StudioService(tmp_path, model_client=model_client)
     _register_model(studio)
     model_profile = studio.catalog.list(kind="model")[0]
@@ -837,21 +859,21 @@ async def test_conversation_authoring_records_stage_progress(tmp_path: Path) -> 
 
 @pytest.mark.asyncio
 async def test_conversation_authoring_records_failed_stage(tmp_path: Path) -> None:
-    model_client = _SequencedAuthoringModelClient(["not-json", "still-not-json"])
+    model_client = _SequencedAuthoringModelClient(["not-json"])
     studio = StudioService(tmp_path, model_client=model_client)
     _register_model(studio)
     model_profile = studio.catalog.list(kind="model")[0]
 
-    with pytest.raises(StudioError):
-        await studio.compose_agent_conversation(
-            messages=[{"role": "user", "content": "做一个 Agent"}],
-            model_profile_id=model_profile.resource_id,
-            request_id="req-failed",
-        )
+    result = await studio.compose_agent_conversation(
+        messages=[{"role": "user", "content": "做一个 Agent"}],
+        model_profile_id=model_profile.resource_id,
+        request_id="req-failed",
+    )
 
     status = studio.conversation_authoring_status("req-failed")
     assert status is not None
-    assert status["stage"] == "failed"
+    assert status["stage"] == "done"
+    assert result["authoringMode"] == "local-fallback"
 
 
 @pytest.mark.asyncio

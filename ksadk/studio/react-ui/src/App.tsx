@@ -121,6 +121,7 @@ export default function App() {
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
   const [chatMounted, setChatMounted] = useState(view === "conversations");
   const [cloudDeployments, setCloudDeployments] = useState<CloudDeploymentSummary[]>([]);
+  const [cloudDeploymentsLoaded, setCloudDeploymentsLoaded] = useState(false);
   const [cloudDeploymentId, setCloudDeploymentId] = useState("");
   const [runPanelOpen, setRunPanelOpen] = useState(false);
   const [refreshTick, setRefreshTick] = useState(0);
@@ -239,6 +240,8 @@ export default function App() {
       )) ? previous : "");
     } catch {
       // Deployment receipts are optional for a local-only workspace.
+    } finally {
+      setCloudDeploymentsLoaded(true);
     }
   }, []);
 
@@ -266,6 +269,30 @@ export default function App() {
   );
   const selectedCloudDeployment = studioCloudDeployments.find(item => item.id === cloudDeploymentId);
   const isCloudChat = view === "conversations" && Boolean(selectedCloudDeployment);
+
+  useEffect(() => {
+    if (
+      view !== "conversations"
+      || !chatMounted
+      || !agentsLoaded
+      || !cloudDeploymentsLoaded
+      || currentAgent
+      || selectedCloudDeployment
+    ) return;
+    const fallback = studioCloudDeployments[0];
+    if (!fallback) return;
+    setCloudDeploymentId(fallback.id);
+    setRunPanelOpen(false);
+  }, [
+    agentsLoaded,
+    chatMounted,
+    cloudDeploymentsLoaded,
+    currentAgent,
+    selectedCloudDeployment,
+    studioCloudDeployments,
+    view,
+  ]);
+
   const chatTargetOptions = [
     ...agents.map(agent => ({ value: `local:${agent.metadata.id}`, label: `本地 · ${agent.metadata.name}` })),
     ...studioCloudDeployments.map(deployment => ({
@@ -295,17 +322,40 @@ export default function App() {
   }
 
   function enterChat(agentId?: string) {
-    const id = agentId || currentAgentId || agents[0]?.metadata.id || "";
-    if (!id) { openCreate(); return; }
-    setCloudDeploymentId("");
-    setCurrentAgentId(id);
+    const localTarget = currentAgent || agents[0];
+    const cloudTarget = selectedCloudDeployment || studioCloudDeployments[0];
+    if (agentId) {
+      setCloudDeploymentId("");
+      setCurrentAgentId(agentId);
+    } else if (!agentId && selectedCloudDeployment) {
+      setCurrentAgentId("");
+    } else if (localTarget) {
+      setCloudDeploymentId("");
+      setCurrentAgentId(localTarget.metadata.id);
+    } else if (cloudTarget) {
+      setCurrentAgentId("");
+      setCloudDeploymentId(cloudTarget.id);
+      setRunPanelOpen(false);
+    } else {
+      setCurrentAgentId("");
+      setCloudDeploymentId("");
+    }
     setChatMounted(true);
     setView("conversations");
   }
 
-  function enterCloudChat(deploymentId: string) {
-    if (!studioCloudDeployments.some(item => item.id === deploymentId)) return;
-    setCloudDeploymentId(deploymentId);
+  function enterCloudChat(target: CloudDeploymentSummary) {
+    if (resolveCloudChatRoute(target).kind !== "studio-session-events") return;
+    // DeploymentsPage already owns a live target projection.  Do not discard a
+    // click merely because this App-level directory is still in flight: with a
+    // large cloud directory that race used to leave the user in the local
+    // empty-state, which looks like being redirected to Create Agent.
+    setCloudDeployments(current => (
+      current.some(item => item.id === target.id)
+        ? current
+        : [...current, target]
+    ));
+    setCloudDeploymentId(target.id);
     setRunPanelOpen(false);
     setChatMounted(true);
     setView("conversations");
@@ -488,9 +538,14 @@ export default function App() {
               {chatMounted && !isCloudChat && !currentAgentId && (
                 <div className="empty-state chat-agent-empty" role="status">
                   <span className="empty-icon"><Bot /></span>
-                  <h2>{agentsLoaded ? "先创建 Agent 才能开始会话" : "正在载入 Agent"}</h2>
-                  <p>{agentsLoaded ? "会话会使用当前 Agent 的模型、工具与运行时配置。" : "正在同步本地工作区…"}</p>
-                  {agentsLoaded && <button className="primary-button" type="button" onClick={openCreate}>创建 Agent</button>}
+                  <h2>{agentsLoaded && cloudDeploymentsLoaded ? "还没有可用的会话目标" : "正在载入会话目标"}</h2>
+                  <p>{agentsLoaded && cloudDeploymentsLoaded ? "可以创建本地 Agent，或在云端 Agent 页面选择受支持的 Agent。" : "正在同步本地工作区与账号云端 Agent…"}</p>
+                  {agentsLoaded && cloudDeploymentsLoaded && (
+                    <div className="empty-actions">
+                      <button className="primary-button" type="button" onClick={openCreate}>创建本地 Agent</button>
+                      <button className="button secondary" type="button" onClick={() => setView("deployments")}>查看云端 Agent</button>
+                    </div>
+                  )}
                 </div>
               )}
             </div>

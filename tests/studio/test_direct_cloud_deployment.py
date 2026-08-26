@@ -511,6 +511,17 @@ def test_account_agent_view_honours_declared_session_event_chat_capability() -> 
     assert view["chatRoutingReason"] == "declared-session-event-chat-capability"
 
 
+def test_account_agent_view_preserves_server_resolved_sub_account_name() -> None:
+    view = DirectAgentEngineCloudDeploymentGateway._account_agent_view(
+        {
+            "agent_id": "ar-created-by-sub-account",
+            "Creator": "研发子账号",
+        }
+    )
+
+    assert view["creatorName"] == "研发子账号"
+
+
 def test_account_agent_view_derives_managed_version_from_runtime_manifest() -> None:
     view = DirectAgentEngineCloudDeploymentGateway._account_agent_view(
         {
@@ -523,6 +534,24 @@ def test_account_agent_view_derives_managed_version_from_runtime_manifest() -> N
     )
 
     assert view["versionId"] == "managed-aaaaaaaaaaaaaaaa"
+
+
+def test_account_agent_view_prefers_server_basic_lifecycle_and_public_endpoint() -> None:
+    view = DirectAgentEngineCloudDeploymentGateway._account_agent_view(
+        {
+            # Compatibility fields can briefly lag behind the authoritative
+            # Server basic block immediately after Runtime-Service is ready.
+            "status": "CREATING",
+            "endpoint": "http://stale.internal.example.test",
+            "basic": {"agent_id": "ar-running", "status": "RUNNING"},
+            "quick_access": {
+                "public_endpoint": "http://ar-running.agent-pre.example.test"
+            },
+        }
+    )
+
+    assert view["status"] == "RUNNING"
+    assert view["endpoint"] == "http://ar-running.agent-pre.example.test"
 
 
 @pytest.mark.asyncio
@@ -751,6 +780,7 @@ async def test_replacing_managed_runtime_uses_complete_declaration() -> None:
         runtime_name="codex",
         runtime_version="0.147.0",
         request=request,
+        runtime_environment={"KSC_AIPRO_API_KEY": "resolved-only-for-request"},
     )
 
     assert client.updated == [
@@ -762,6 +792,9 @@ async def test_replacing_managed_runtime_uses_complete_declaration() -> None:
                     "runtime_name": "codex",
                     "runtime_version": "0.147.0",
                     "manifest": "name: yaml-agent\nframework: codex\n",
+                },
+                "environment_variables": {
+                    "KSC_AIPRO_API_KEY": "resolved-only-for-request",
                 },
             },
         )

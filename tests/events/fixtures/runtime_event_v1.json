@@ -11,7 +11,6 @@
     "seq_id": 1
   },
   "events": [
-    {"event_type": "user.message", "turn_id": "turn_1", "payload": {"text": "请检查项目", "message_id": "msg_user_1"}},
     {"event_type": "text.delta", "phase": "commentary", "payload": {"text": "正在", "message_id": "msg_1"}},
     {"event_type": "text.completed", "phase": "final_answer", "payload": {"text": "答案", "message_id": "msg_1"}},
     {"event_type": "reasoning.delta", "phase": "commentary", "payload": {"text": "思考", "summary": "s"}},
@@ -28,13 +27,6 @@
     {"event_type": "run.completed", "payload": {"status": "completed"}},
     {"event_type": "run.failed", "payload": {"status": "failed", "error": "boom"}},
     {"event_type": "run.canceled", "payload": {"status": "cancelled", "cancel_result": "interrupted_active_turn"}},
-    {"event_type": "turn.started", "turn_id": "turn_1", "trace_id": "00000000000000000000000000000001", "payload": {"turn_index": 1}},
-    {"event_type": "turn.completed", "turn_id": "turn_1", "trace_id": "00000000000000000000000000000001", "payload": {"turn_index": 1, "status": "completed", "duration_ms": 120}},
-    {"event_type": "step.started", "turn_id": "turn_1", "step_id": "step_1", "trace_id": "00000000000000000000000000000001", "payload": {"step_index": 1}},
-    {"event_type": "step.completed", "turn_id": "turn_1", "step_id": "step_1", "trace_id": "00000000000000000000000000000001", "payload": {"step_index": 1, "status": "completed", "duration_ms": 100}},
-    {"event_type": "model.call.begin", "turn_id": "turn_1", "step_id": "step_1", "trace_id": "00000000000000000000000000000001", "span_id": "0000000000000001", "payload": {"model_call_id": "model_1", "model": "demo-model"}},
-    {"event_type": "model.call.first_token", "turn_id": "turn_1", "step_id": "step_1", "parent_event_id": "evt_model_begin", "trace_id": "00000000000000000000000000000001", "payload": {"model_call_id": "model_1", "ttft_ms": 20}},
-    {"event_type": "model.call.end", "turn_id": "turn_1", "step_id": "step_1", "parent_event_id": "evt_model_begin", "trace_id": "00000000000000000000000000000001", "payload": {"model_call_id": "model_1", "status": "completed", "duration_ms": 100}},
     {"event_type": "context.compaction.started", "payload": {"phase": "before_model", "trigger": "token_budget"}},
     {"event_type": "context.compaction.completed", "payload": {"phase": "before_model", "trigger": "token_budget", "compacted_until_seq_id": 12}},
     {"event_type": "checkpoint.created", "payload": {"checkpoint_id": "ck_1", "granularity": "snapshot"}},

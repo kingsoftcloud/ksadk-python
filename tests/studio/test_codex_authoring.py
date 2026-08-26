@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import io
 import json
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -10,7 +12,7 @@ from ksadk.studio.codex_authoring import (
     CodexAuthoringExecutor,
     CodexAuthoringUnavailableError,
 )
-from ksadk.studio.contracts import ModelSpec, Usage
+from ksadk.studio.contracts import MCPServerRef, ModelSpec, Usage
 from ksadk.studio.errors import StudioError
 from ksadk.studio.service import StudioService
 
@@ -252,8 +254,10 @@ class _FakeExecutor:
         self.unavailable = unavailable
         self.probe_error = probe_error
         self.calls: list[dict] = []
+        self.probes = 0
 
     def probe(self) -> None:
+        self.probes += 1
         if self.probe_error is not None:
             raise self.probe_error
 
@@ -284,9 +288,11 @@ class _AuthoringModelClient:
     def __init__(self, content: str) -> None:
         self.content = content
         self.calls = 0
+        self.models: list[str] = []
 
-    async def complete(self, _model, *, messages, **kwargs):
+    async def complete(self, model, *, messages, **kwargs):
         self.calls += 1
+        self.models.append(str(getattr(model, "model", "")))
         from ksadk.studio.model_client import ModelResponse
 
         return ModelResponse(
@@ -410,6 +416,173 @@ async def test_coordinator_explicit_chat_mode_skips_codex(tmp_path: Path) -> Non
             os.environ["KSADK_STUDIO_AUTHORIZER"] = old
     assert result["authoringMode"] == "chat"
     assert executor.calls == []
+
+
+async def test_coordinator_defaults_to_lightweight_chat_and_injects_selected_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """普通对话创建不启动 Codex，并且模型只能来自所选 Profile。"""
+
+    model_patch = {
+        **_VALID_PATCH,
+        "spec": {
+            **_VALID_PATCH["spec"],
+            "model": {
+                "model": "hallucinated-model",
+                "baseUrl": "https://invalid.example/v1",
+                "credentialRef": "env://NOT_A_REAL_PROFILE",
+            },
+            "bindings": {
+                "modelProfileId": "model:provider:hallucinated:live",
+                "modelProfileIds": ["model:provider:hallucinated:live"],
+            },
+        },
+    }
+    model_client = _AuthoringModelClient(json.dumps(model_patch, ensure_ascii=False))
+    studio = StudioService(tmp_path, model_client=model_client)
+    _register_model(studio)
+    executor = _FakeExecutor(script=[json.dumps(_VALID_PATCH, ensure_ascii=False)])
+    _install(studio, executor)
+    monkeypatch.delenv("KSADK_STUDIO_AUTHORIZER", raising=False)
+
+    result = await studio.compose_agent_conversation(
+        messages=_messages(),
+        model_profile_id=_model_profile_id(),
+        request_id="coord-default-chat",
+    )
+
+    assert result["authoringMode"] == "chat"
+    assert model_client.calls == 1
+    assert executor.probes == 0
+    assert executor.calls == []
+    spec = result["proposal"]["spec"]
+    assert spec["bindings"]["modelProfileId"] == _model_profile_id()
+    assert spec["bindings"]["modelProfileIds"] == [_model_profile_id()]
+    assert spec["model"] is None
+
+
+async def test_coordinator_separates_single_authoring_model_from_agent_model_allowlist(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The model that writes a Draft Patch is never the Agent model policy."""
+
+    model_client = _AuthoringModelClient(json.dumps(_VALID_PATCH, ensure_ascii=False))
+    studio = StudioService(tmp_path, model_client=model_client)
+    _register_model(studio)
+    agent_fallback = studio.catalog.create_model_profile(
+        name="glm-5.3",
+        display_name="GLM 5.3",
+        version="1.0.0",
+        description="",
+        spec=ModelSpec(
+            provider="openai-compatible",
+            model="glm-5.3",
+            endpoint_url="https://models.example.test/v1/chat/completions",
+            credential_ref="env://AGENTKIT_MODEL_API_KEY",
+        ),
+    )
+    monkeypatch.delenv("KSADK_STUDIO_AUTHORIZER", raising=False)
+
+    result = await studio.compose_agent_conversation(
+        messages=_messages(),
+        # The selected profile is used only for authoring this request.
+        model_profile_id=_model_profile_id(),
+        # The resulting Agent can use two models and picks the first supplied
+        # (the UI sends its newest-first selection) as the runtime default.
+        agent_model_profile_ids=[agent_fallback.resource_id, _model_profile_id()],
+        agent_default_model_profile_id=agent_fallback.resource_id,
+    )
+
+    spec = result["proposal"]["spec"]
+    assert model_client.models == ["deepseek-v4-pro"]
+    assert spec["model"] is None
+    assert spec["bindings"]["modelProfileId"] == agent_fallback.resource_id
+    assert spec["bindings"]["modelProfileIds"] == [
+        agent_fallback.resource_id,
+        _model_profile_id(),
+    ]
+
+
+async def test_coordinator_injects_only_selected_capability_resources(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MCP/Skill/Tool ids are selected and verified by Studio, never the LLM."""
+
+    generic_patch = {**_VALID_PATCH, "runtimeType": "langgraph"}
+    model_client = _AuthoringModelClient(
+        json.dumps(
+            {
+                **generic_patch,
+                "spec": {
+                    **generic_patch["spec"],
+                    "bindings": {
+                        "tools": [{"resourceId": "tool:fake:invented:1.0.0"}],
+                        "mcpServers": [{"resourceId": "mcp:fake:invented:1.0.0"}],
+                        "skills": [{"resourceId": "skill:fake:invented:1.0.0"}],
+                    },
+                },
+            },
+            ensure_ascii=False,
+        )
+    )
+    studio = StudioService(tmp_path, model_client=model_client)
+    _register_model(studio)
+    mcp = studio.catalog.create_mcp_server(
+        display_name="Review MCP",
+        description="",
+        server=MCPServerRef(
+            name="review-mcp",
+            version="1.0.0",
+            transport="http",
+            endpoint_url="https://mcp.example.test/rpc",
+        ),
+    )
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as package:
+        package.writestr(
+            "review/SKILL.md",
+            "---\nname: Review Skill\ndescription: Review carefully\n"
+            "version: 1.0.0\n---\nReview.\n",
+        )
+    skill = studio.catalog.import_skill_zip(archive.getvalue(), filename="review.zip")
+    tool = studio.catalog.list(kind="tool", limit=1)[0]
+    monkeypatch.delenv("KSADK_STUDIO_AUTHORIZER", raising=False)
+
+    result = await studio.compose_agent_conversation(
+        messages=_messages(),
+        model_profile_id=_model_profile_id(),
+        runtime_type="langgraph",
+        tool_resource_ids=[tool.resource_id],
+        mcp_resource_ids=[mcp.resource_id],
+        skill_resource_ids=[skill.resource_id],
+    )
+
+    bindings = result["proposal"]["spec"]["bindings"]
+    assert [item["resourceId"] for item in bindings["tools"]] == [tool.resource_id]
+    assert [item["resourceId"] for item in bindings["mcpServers"]] == [mcp.resource_id]
+    assert [item["resourceId"] for item in bindings["skills"]] == [skill.resource_id]
+
+
+async def test_coordinator_never_injects_ksadk_tools_into_codex_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model_client = _AuthoringModelClient(json.dumps(_VALID_PATCH, ensure_ascii=False))
+    studio = StudioService(tmp_path, model_client=model_client)
+    _register_model(studio)
+    tool = studio.catalog.list(kind="tool", limit=1)[0]
+    monkeypatch.delenv("KSADK_STUDIO_AUTHORIZER", raising=False)
+
+    result = await studio.compose_agent_conversation(
+        messages=_messages(),
+        model_profile_id=_model_profile_id(),
+        tool_resource_ids=[tool.resource_id],
+    )
+
+    assert result["proposal"]["spec"]["bindings"]["tools"] == []
 
 
 def test_conversation_stages_include_codex_writing() -> None:

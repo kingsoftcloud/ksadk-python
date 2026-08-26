@@ -188,8 +188,8 @@ def test_pcm_react_workspace_contains_policy_and_evidence_surfaces():
     assert "开发与排障信息" not in run_panel
     assert "打开完整 Trace" in run_panel
     assert "模型实际输入" not in run_panel
-    assert "OTLP · W3C Trace Context" in observability_page
-    assert "Runtime 上报" in observability_page
+    assert "Raw OTLP" in observability_page
+    assert "复制 Raw OTLP" in observability_page
 
 
 # ---- 浏览器级 E2E（需 playwright + 运行中的 studio server，独立运行）----
