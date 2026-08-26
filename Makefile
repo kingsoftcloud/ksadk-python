@@ -187,7 +187,7 @@ studio-react-test:
 		npm --prefix ksadk/studio/react-ui ci; \
 		npm --prefix ksadk/studio/react-ui test; \
 		npm --prefix ksadk/studio/react-ui run test:ui; \
-		cd ksadk/studio/react-ui && npx tsc --noEmit; \
+		(cd ksadk/studio/react-ui && npx tsc --noEmit); \
 		npm --prefix ksadk/studio/react-ui run build; \
 	else \
 		echo "React Studio source is not part of this public candidate; testing reviewed compiled assets"; \

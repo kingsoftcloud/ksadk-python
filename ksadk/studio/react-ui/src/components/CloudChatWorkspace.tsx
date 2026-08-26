@@ -823,7 +823,7 @@ export function CloudChatWorkspace({
     );
     if (!response.ok) throw new Error(await responseError(response));
     const payload = await response.json();
-    const events = payload.events || [];
+    const events: unknown[] = Array.isArray(payload.events) ? payload.events : [];
     sessionCursorRef.current.set(
       sessionId,
       Math.max(sessionCursorRef.current.get(sessionId) || 0, latestEventSeq(events)),

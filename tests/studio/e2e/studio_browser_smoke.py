@@ -16,12 +16,13 @@ def _candidate(page: Page, name: str):
 
 
 def _open_skill_discovery(page: Page) -> None:
-    page.get_by_role("button", name="Skill", exact=True).click()
-    # The current workspace groups resources under tabs; Skill is a selected
-    # resource-type tab rather than a duplicate page heading.
-    expect(page.get_by_role("tab").filter(has_text="Skill")).to_have_attribute(
-        "aria-selected", "true"
-    )
+    page.get_by_role("button", name="工程资源", exact=True).click()
+    # Resource kinds now live behind one navigation entry. Select the Skill
+    # tab using its accessible role instead of relying on the former sidebar.
+    # The selected tab appends its resource count to the accessible name.
+    skill_tab = page.get_by_role("tab").filter(has_text="Skill")
+    skill_tab.click()
+    expect(skill_tab).to_have_attribute("aria-selected", "true")
     page.get_by_role("button", name="发现 Skill", exact=True).click()
     expect(page.get_by_role("dialog", name="发现本地 Skill")).to_be_visible()
     page.get_by_label("扫描目录（逗号分隔；留空扫描安全默认目录）").fill("skills")
