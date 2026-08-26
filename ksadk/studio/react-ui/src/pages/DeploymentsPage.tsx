@@ -1092,7 +1092,7 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
               disabled={updating}
             >
               {chatRoute.kind === "official-dashboard"
-                ? <><ExternalLink size={15} />打开官方 Dashboard</>
+                ? <><ExternalLink size={15} />链接</>
                 : <><MessagesSquare size={15} />进入会话</>}
             </button>
           )}
@@ -1246,7 +1246,7 @@ export function DeploymentsPage({ onCreate, onOpenChat, onSelectBuild }: {
                           : onOpenChat(deployment)}
                       >
                         {chatRoute.kind === "official-dashboard"
-                          ? <><ExternalLink size={15} /><span>Dashboard</span></>
+                          ? <><ExternalLink size={15} /><span>链接</span></>
                           : <><MessagesSquare size={15} /><span>会话</span></>}
                       </button>
                     )}

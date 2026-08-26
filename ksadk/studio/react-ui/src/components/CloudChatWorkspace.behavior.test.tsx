@@ -47,7 +47,7 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
       }
       if (path === `${base}/models`) return jsonResponse({ models: [] });
       if (path.endsWith("/messages")) return jsonResponse({ messages: [] });
-      if (path.endsWith("/events")) return jsonResponse({ events: [] });
+      if (path.endsWith("/events?limit=1000")) return jsonResponse({ events: [] });
       throw new Error(`unexpected request: ${path}`);
     });
 
@@ -80,7 +80,7 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
       if (path === `${base}/sessions/sess-1/messages` && !init?.method) {
         return jsonResponse({ messages: [] });
       }
-      if (path === `${base}/sessions/sess-1/events` && !init?.method) {
+      if (path === `${base}/sessions/sess-1/events?limit=1000` && !init?.method) {
         return jsonResponse({ events: [{ event_type: "run.completed", seq_id: 5 }] });
       }
       if (path === `${base}/sessions/sess-1/events/stream?afterSeqId=5`) {
@@ -138,7 +138,7 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
       }
       if (path === `${base}/models`) return jsonResponse({ models: [] });
       if (path.endsWith("/messages") && !init?.method) return jsonResponse({ messages: [] });
-      if (path.endsWith("/events") && !init?.method) {
+      if (path.endsWith("/events?limit=1000") && !init?.method) {
         eventReads += 1;
         if (eventReads === 1) return jsonResponse({ events: [{ event_type: "run.completed", seq_id: 7 }] });
         return await new Promise<Response>(() => {});
@@ -173,7 +173,7 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
       }
       if (path === `${base}/models`) return jsonResponse({ models: [] });
       if (path.endsWith("/messages") && !init?.method) return jsonResponse({ messages: [] });
-      if (path.endsWith("/events") && !init?.method) {
+      if (path.endsWith("/events?limit=1000") && !init?.method) {
         return jsonResponse({ events: [{ event_type: "user_message", seq_id: 10 }] });
       }
       if (path.endsWith("/events/stream?afterSeqId=10")) {
@@ -222,6 +222,78 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
     directStreamController?.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
   });
 
+  it("replays reasoning and tools that precede more than 200 message events", async () => {
+    const nestedEvent = (
+      seq: number,
+      eventType: string,
+      runtimeEvent: Record<string, unknown>,
+    ) => ({
+      seq_id: seq,
+      event_type: eventType,
+      invocation_id: "inv-long",
+      content: {
+        runtime_event: {
+          event_type: eventType,
+          run_id: "run-long",
+          scope_id: "scope-long",
+          seq,
+          ...runtimeEvent,
+        },
+      },
+    });
+    const longMessageTail = Array.from({ length: 205 }, (_, index) => nestedEvent(
+      index + 5,
+      "item.updated",
+      {
+        item_id: "message-long",
+        item_kind: "message",
+        op: "append",
+        update: { text: `片段-${index}` },
+      },
+    ));
+    const history = [
+      nestedEvent(1, "item.started", {
+        item_id: "reason-long",
+        item_kind: "reasoning",
+      }),
+      nestedEvent(2, "item.updated", {
+        item_id: "reason-long",
+        item_kind: "reasoning",
+        op: "append",
+        update: { text: "刷新后仍保留的思考" },
+      }),
+      nestedEvent(3, "item.started", {
+        item_id: "tool-long",
+        item_kind: "tool_call",
+        initial: { parts: [{ name: "metaso_web_search", arguments: { q: "金山云" } }] },
+      }),
+      nestedEvent(4, "item.completed", {
+        item_id: "tool-long",
+        item_kind: "tool_call",
+        snapshot: { parts: [{ name: "metaso_web_search", arguments: { q: "金山云" } }] },
+      }),
+      ...longMessageTail,
+    ];
+    apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
+      if (path === `${base}/sessions` && !init?.method) {
+        return jsonResponse({ sessions: [{ session_id: "sess-long", title: "长事件会话" }] });
+      }
+      if (path === `${base}/models`) return jsonResponse({ models: [] });
+      if (path.endsWith("/messages") && !init?.method) return jsonResponse({ messages: [] });
+      if (path.endsWith("/events?limit=1000") && !init?.method) {
+        return jsonResponse({ events: history, total: history.length });
+      }
+      throw new Error(`unexpected request: ${path}`);
+    });
+
+    render(<CloudChatWorkspace deploymentId="dep-cloud" agentId="ar-cloud" agentName="Cloud Agent" />);
+
+    await screen.findByText("长事件会话");
+    expect(await screen.findByText(/刷新后仍保留的思考/)).toBeInTheDocument();
+    expect(screen.getByText("metaso_web_search")).toBeInTheDocument();
+    expect(apiFetch).toHaveBeenCalledWith(`${base}/sessions/sess-long/events?limit=1000`);
+  });
+
   it("ends foreground waiting when SessionEvent reports an approval interrupt", async () => {
     let eventStreamController: ReadableStreamDefaultController<Uint8Array> | undefined;
     const eventStream = new ReadableStream<Uint8Array>({ start(controller) { eventStreamController = controller; } });
@@ -232,7 +304,7 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
       }
       if (path === `${base}/models`) return jsonResponse({ models: [] });
       if (path.endsWith("/messages") && !init?.method) return jsonResponse({ messages: [] });
-      if (path.endsWith("/events") && !init?.method) return jsonResponse({ events: [] });
+      if (path.endsWith("/events?limit=1000") && !init?.method) return jsonResponse({ events: [] });
       if (path.endsWith("/events/stream?afterSeqId=0")) {
         return new Response(eventStream, { headers: { "Content-Type": "text/event-stream" } });
       }
@@ -273,7 +345,7 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
       }
       if (path === `${base}/models`) return jsonResponse({ models: [] });
       if (path.endsWith("/messages") && !init?.method) return jsonResponse({ messages: [] });
-      if (path.endsWith("/events") && !init?.method) return jsonResponse({ events: [] });
+      if (path.endsWith("/events?limit=1000") && !init?.method) return jsonResponse({ events: [] });
       if (path.endsWith("/events/stream?afterSeqId=0")) {
         return new Response("", { headers: { "Content-Type": "text/event-stream" } });
       }
@@ -308,7 +380,7 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
       }
       if (path === `${base}/models`) return jsonResponse({ models: [] });
       if (path.endsWith("/messages") && !init?.method) return jsonResponse({ messages: [] });
-      if (path.endsWith("/events") && !init?.method) return jsonResponse({ events: [] });
+      if (path.endsWith("/events?limit=1000") && !init?.method) return jsonResponse({ events: [] });
       if (path.endsWith("/events/stream?afterSeqId=0")) {
         return new Response("", { headers: { "Content-Type": "text/event-stream" } });
       }
@@ -384,7 +456,7 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
       if (path === `${base}/sessions/sess-md/messages`) {
         return jsonResponse({ messages: [{ message_id: "msg-md", role: "assistant", content: markdown }] });
       }
-      if (path === `${base}/sessions/sess-md/events`) return jsonResponse({ events: [] });
+      if (path === `${base}/sessions/sess-md/events?limit=1000`) return jsonResponse({ events: [] });
       throw new Error(`unexpected request: ${path}`);
     });
 
@@ -417,7 +489,7 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
       }
       if (path === `${base}/models`) return jsonResponse({ models: [] });
       if (path.endsWith("/messages") && !init?.method) return jsonResponse({ messages: [] });
-      if (path.endsWith("/events") && !init?.method) return jsonResponse({ events: [] });
+      if (path.endsWith("/events?limit=1000") && !init?.method) return jsonResponse({ events: [] });
       if (path === `${base}/sessions/sess-delete` && init?.method === "DELETE") {
         sessions = sessions.filter(session => session.session_id !== "sess-delete");
         return new Response(null, { status: 204 });
@@ -451,7 +523,7 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
       }
       if (path === `${base}/models`) return jsonResponse({ models: [] });
       if (path.endsWith("/messages") && !init?.method) return jsonResponse({ messages: [] });
-      if (path.endsWith("/events") && !init?.method) return jsonResponse({ events: [] });
+      if (path.endsWith("/events?limit=1000") && !init?.method) return jsonResponse({ events: [] });
       if (path.endsWith("/events/stream?afterSeqId=0")) {
         return new Response(stream, { headers: { "Content-Type": "text/event-stream" } });
       }
@@ -497,7 +569,7 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
       }
       if (path === `${base}/models`) return jsonResponse({ models: [] });
       if (path.endsWith("/messages") && !init?.method) return jsonResponse({ messages: [] });
-      if (path.endsWith("/events") && !init?.method) return jsonResponse({ events: [] });
+      if (path.endsWith("/events?limit=1000") && !init?.method) return jsonResponse({ events: [] });
       if (path.endsWith("/events/stream?afterSeqId=0")) {
         return new Response(eventStream, { headers: { "Content-Type": "text/event-stream" } });
       }
@@ -533,7 +605,7 @@ describe("CloudChatWorkspace cloud-session behavior", () => {
       }
       if (path === `${base}/models`) return jsonResponse({ models: [] });
       if (path.endsWith("/messages") && !init?.method) return jsonResponse({ messages: [] });
-      if (path.endsWith("/events") && !init?.method) {
+      if (path.endsWith("/events?limit=1000") && !init?.method) {
         return jsonResponse({ events: [{ event_type: "user_message", seq_id: 5 }] });
       }
       if (path.endsWith("/events/stream?afterSeqId=5")) {

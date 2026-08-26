@@ -53,6 +53,23 @@ const VIEW_TITLE: Record<View, string> = {
 const VALID_VIEWS = Object.keys(VIEW_TITLE) as View[];
 const RESOURCE_KINDS: ResourceKind[] = ["model", "tool", "mcp", "skill"];
 const AGENT_SCOPED_VIEWS = new Set<View>(["conversations", "builds", "observability", "orchestration"]);
+const CHAT_TARGET_STORAGE_KEY = "agentkit-studio:chat-target:v1";
+
+function storedChatTarget(): ReturnType<typeof parseChatTargetValue> {
+  try {
+    return parseChatTargetValue(window.localStorage.getItem(CHAT_TARGET_STORAGE_KEY) || "");
+  } catch {
+    return { kind: "", id: "" };
+  }
+}
+
+function rememberChatTarget(value: string): void {
+  try {
+    window.localStorage.setItem(CHAT_TARGET_STORAGE_KEY, value);
+  } catch {
+    // Studio remains usable when storage is disabled by the embedding shell.
+  }
+}
 
 export function parseStudioLocationHash(hash: string): {
   view: View;
@@ -122,7 +139,10 @@ export default function App() {
   const [chatMounted, setChatMounted] = useState(view === "conversations");
   const [cloudDeployments, setCloudDeployments] = useState<CloudDeploymentSummary[]>([]);
   const [cloudDeploymentsLoaded, setCloudDeploymentsLoaded] = useState(false);
-  const [cloudDeploymentId, setCloudDeploymentId] = useState("");
+  const [cloudDeploymentId, setCloudDeploymentId] = useState(() => {
+    const saved = storedChatTarget();
+    return saved.kind === "cloud" ? saved.id : "";
+  });
   const [runPanelOpen, setRunPanelOpen] = useState(false);
   const [refreshTick, setRefreshTick] = useState(0);
   const [railExpandedPreference, setRailExpandedPreference] = useState<boolean | null>(readNavigationRailPreference);
@@ -269,6 +289,21 @@ export default function App() {
   );
   const selectedCloudDeployment = studioCloudDeployments.find(item => item.id === cloudDeploymentId);
   const isCloudChat = view === "conversations" && Boolean(selectedCloudDeployment);
+
+  useEffect(() => {
+    if (view !== "conversations" || !agentsLoaded || !cloudDeploymentsLoaded) return;
+    if (selectedCloudDeployment) {
+      rememberChatTarget(`cloud:${selectedCloudDeployment.id}`);
+    } else if (currentAgent) {
+      rememberChatTarget(`local:${currentAgent.metadata.id}`);
+    }
+  }, [
+    agentsLoaded,
+    cloudDeploymentsLoaded,
+    currentAgent,
+    selectedCloudDeployment,
+    view,
+  ]);
 
   useEffect(() => {
     if (

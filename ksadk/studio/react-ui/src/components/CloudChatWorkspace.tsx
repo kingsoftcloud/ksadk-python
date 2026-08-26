@@ -814,7 +814,13 @@ export function CloudChatWorkspace({
       setInteractions([]);
       return;
     }
-    const response = await apiFetch(`${base}/sessions/${encodeURIComponent(sessionId)}/events`);
+    // A single Codex turn can easily exceed the Server's default 200-event
+    // window because text and reasoning deltas are canonical RuntimeEvents.
+    // Read the complete supported history window so a reload cannot discard
+    // the reasoning/tool items that precede a long assistant response.
+    const response = await apiFetch(
+      `${base}/sessions/${encodeURIComponent(sessionId)}/events?limit=1000`,
+    );
     if (!response.ok) throw new Error(await responseError(response));
     const payload = await response.json();
     const events = payload.events || [];
