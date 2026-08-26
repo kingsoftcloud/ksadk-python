@@ -239,3 +239,164 @@ class TestEngineIntegration:
         assert planned[0].payload["window_source"] == "model_profile"
         assert planned[0].payload["context_window_tokens"] == 65536
         assert events[-1].event_type == "run.completed"
+
+
+class TestContextEngineControlsModelInput:
+    """收口 1：ContextEngine 规划结果真正成为模型请求输入。"""
+
+    @staticmethod
+    def _recording_reasoner(script: list[str]):
+        from ksadk.harness.reasoner import HarnessReasoningTurn
+
+        class _Recording:
+            def __init__(self) -> None:
+                self.turns: list[list[dict]] = []
+
+            async def complete(self, *, model, prompt, messages, tools):
+                self.turns.append([dict(m) for m in messages])
+                return HarnessReasoningTurn(final_text=script.pop(0))
+
+        return _Recording()
+
+    def _engine_with(self, reasoner, **kwargs):
+        from ksadk.harness.engine.langgraph import ManagedLangGraphEngine
+
+        return ManagedLangGraphEngine(
+            reasoner=reasoner,
+            context_engine=HarnessContextEngine(),
+            **kwargs,
+        )
+
+    def test_planned_messages_reach_model_with_roles_preserved(self):
+        import asyncio
+
+        from ksadk.runtime import StartRequest
+
+        reasoner = self._recording_reasoner(["好的"])
+        engine = self._engine_with(reasoner)
+
+        async def drive():
+            compiled = await engine.compile(_spec())
+            handle = await engine.start(
+                StartRequest(
+                    input="当前问题",
+                    user_id="u1",
+                    session_id="s1",
+                    agent_id="a1",
+                    runtime_type="managed-langgraph",
+                    metadata={
+                        "invocation_id": "run-plan-1",
+                        "context_window_tokens": 65536,
+                        "conversation_history": [
+                            {"role": "user", "content": "第一问"},
+                            {"role": "assistant", "content": "第一答"},
+                        ],
+                    },
+                ),
+                compiled,
+            )
+            return [e async for e in engine.stream(handle)]
+
+        events = asyncio.run(drive())
+        assert events[-1].event_type == "run.completed"
+        messages = reasoner.turns[0]
+        roles = [m["role"] for m in messages]
+        # Stable Prompt → system；历史按原角色进入；当前输入在末尾（组装器保证）。
+        assert roles[0] == "system"
+        assert "user" in roles and "assistant" in roles
+        assert messages[-1]["role"] == "user"
+        assert messages[-1]["content"] == "当前问题"
+        # 组装输入完全来自 plan（不再走旧的 conversation_history 直拼）。
+        contents = [m["content"] for m in messages]
+        assert all("第一问" == c or "第一答" == c or "当前问题" == c or c for c in contents)
+
+    def test_proactive_compaction_summarizes_long_history(self):
+        import asyncio
+
+        from ksadk.events import EventType
+        from ksadk.runtime import StartRequest
+
+        # 摘要轮返回关键事实摘要，主调用返回最终答复。
+        reasoner = self._recording_reasoner(
+            ["摘要：预算审批 AP-1024 已通过。", "最终答复"]
+        )
+        engine = self._engine_with(reasoner)
+
+        # 用极小窗口逼出主动压缩（阈值 0.72）。
+        history = [
+            {"role": "user", "content": f"第{i}个很长的问题 " + "细节" * 200}
+            for i in range(12)
+        ] + [{"role": "assistant", "content": "审批号：AP-1024 已通过，金额 ¥42,000"}]
+
+        async def drive():
+            compiled = await engine.compile(_spec())
+            handle = await engine.start(
+                StartRequest(
+                    input="现在结论是什么",
+                    user_id="u1",
+                    session_id="s1",
+                    agent_id="a1",
+                    runtime_type="managed-langgraph",
+                    metadata={
+                        "invocation_id": "run-compact-1",
+                        "context_window_tokens": 2048,
+                        "conversation_history": history,
+                    },
+                ),
+                compiled,
+            )
+            return [e async for e in engine.stream(handle)]
+
+        events = asyncio.run(drive())
+        kinds = [e.event_type for e in events]
+        # 长历史 + 小窗口必然触发主动压缩（否则历史被 planner 静默丢弃）。
+        assert EventType.CONTEXT_COMPACTION_COMPLETED in kinds, kinds
+        started = [e for e in events if e.event_type == "context.compaction.started"]
+        completed = [e for e in events if e.event_type == "context.compaction.completed"]
+        assert len(started) == len(completed) >= 1
+        assert completed[0].payload["trigger"] == "proactive"
+        assert completed[0].payload["budget_tokens"] > 0
+        assert completed[0].payload["compacted_until_seq_id"] > 0
+        # 压缩前后各有一次 context.planned；主调用输入含历史摘要 system 段。
+        assert kinds.count(EventType.CONTEXT_PLANNED) >= 2
+        main_messages = reasoner.turns[-1]
+        joined = "\n".join(str(m.get("content")) for m in main_messages)
+        assert "AP-1024" in joined, "关键事实经重注入/尾部保留"
+        assert any("历史摘要" in str(m.get("content")) for m in main_messages)
+        assert kinds[-1] == "run.completed"
+
+    def test_no_context_engine_falls_back_to_legacy_history(self):
+        import asyncio
+
+        from ksadk.harness.engine.langgraph import ManagedLangGraphEngine
+        from ksadk.runtime import StartRequest
+
+        reasoner = self._recording_reasoner(["ok"])
+        engine = ManagedLangGraphEngine(reasoner=reasoner)
+
+        async def drive():
+            compiled = await engine.compile(_spec())
+            handle = await engine.start(
+                StartRequest(
+                    input="你好",
+                    user_id="u1",
+                    session_id="s1",
+                    agent_id="a1",
+                    runtime_type="managed-langgraph",
+                    metadata={
+                        "invocation_id": "run-legacy-1",
+                        "conversation_history": [
+                            {"role": "user", "content": "旧问题"},
+                            {"role": "user", "content": "你好"},
+                        ],
+                    },
+                ),
+                compiled,
+            )
+            return [e async for e in engine.stream(handle)]
+
+        events = asyncio.run(drive())
+        assert events[-1].event_type == "run.completed"
+        # 无 ContextEngine：沿用 conversation_history 直拼（回滚路径不变）。
+        assert reasoner.turns[0][0]["role"] == "system"
+        assert reasoner.turns[0][-1]["content"] == "你好"

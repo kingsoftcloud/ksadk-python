@@ -292,9 +292,26 @@ class HarnessContextEngine:
                     estimated_tokens=self._counter.count_text(ref.memory_ref),
                 )
             )
-        roles = (MessageRole.USER, MessageRole.ASSISTANT)
-        messages = [m for m in state.messages if m.role in roles]
-        for index, message in enumerate(messages):
+        for index, message in enumerate(state.messages):
+            if message.role is MessageRole.SYSTEM:
+                # 宿主注入的 system 段（如 Memory recall）——高优先级保留。
+                if not message.content.strip():
+                    continue
+                items.append(
+                    ContextItem(
+                        item_id=f"history_system:{index}",
+                        kind="history_round",
+                        content=message.content,
+                        source="harness:history",
+                        trust_level="trusted",
+                        priority=3,
+                        estimated_tokens=self._counter.count_text(message.content),
+                        metadata={"role": "system"},
+                    )
+                )
+                continue
+            if message.role not in (MessageRole.USER, MessageRole.ASSISTANT):
+                continue
             group = None
             if message.role is MessageRole.ASSISTANT and message.tool_call_id:
                 # Tool Call/Result 原子组（§8.4：不拆分）。
@@ -309,6 +326,8 @@ class HarnessContextEngine:
                     priority=8,
                     estimated_tokens=self._counter.count_text(message.content),
                     group_id=group,
+                    # 组装层按原角色投影（否则 user 历史会被当成 assistant）。
+                    metadata={"role": message.role.value},
                 )
             )
         if request.user_input:

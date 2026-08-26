@@ -15,8 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any, Sequence
 
 from ksadk.events import EventType, RuntimeEvent
-from ksadk.harness.reasoner import HarnessReasoner, HarnessReasoningTurn, HarnessToolCall
-from ksadk.harness.working_context import WorkingContext
+from ksadk.harness.reasoner import HarnessReasoner, HarnessReasoningTurn
 
 #: reason 节点的路由结果。引擎据此走 tool_calls 或 final 出口。
 ROUTE_TOOL_CALLS = "tool_calls"
@@ -129,7 +128,10 @@ async def reason_turn_async(turn_count: int, inp: ReasonInput) -> ReasonOutput:
                     "output_tokens": int(usage.get("output_tokens") or 0),
                     "total_tokens": int(
                         usage.get("total_tokens")
-                        or (int(usage.get("input_tokens") or 0) + int(usage.get("output_tokens") or 0))
+                        or (
+                            int(usage.get("input_tokens") or 0)
+                            + int(usage.get("output_tokens") or 0)
+                        )
                     ),
                 },
             )

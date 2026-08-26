@@ -33,7 +33,9 @@ class ApprovalResolver(Protocol):
 
         class _GraphApprovalResolver:
             def request(self, call_id, name, arguments) -> str:
-                return interrupt({"call_id": call_id, "name": name, "args": arguments, "risk": "high"})
+                return interrupt(
+            {"call_id": call_id, "name": name, "args": arguments, "risk": "high"}
+        )
 
     单测实现：直接返回 ``"approved"`` 或模拟拒绝。
     """
@@ -112,14 +114,23 @@ async def execute_tool_calls(inp: ToolCallInput) -> ToolCallOutput:
         if decision != APPROVED:
             seq += 1
             out.events.append(
-                _event(EventType.TOOL_CALL_BEGIN, inp, seq, {"call_id": call_id, "name": name, "args": arguments})
+                _event(
+                    EventType.TOOL_CALL_BEGIN, inp, seq,
+                    {"call_id": call_id, "name": name, "args": arguments},
+                )
             )
             seq += 1
             out.events.append(
-                _event(EventType.TOOL_CALL_END, inp, seq, {"call_id": call_id, "name": name, "error": f"approval {decision}"})
+                _event(
+                    EventType.TOOL_CALL_END, inp, seq,
+                    {"call_id": call_id, "name": name, "error": f"approval {decision}"},
+                )
             )
             out.new_messages.append(
-                {"role": "tool", "tool_call_id": call_id, "name": name, "content": f"[denied] approval decision: {decision}"}
+                {
+                "role": "tool", "tool_call_id": call_id, "name": name,
+                "content": f"[denied] approval decision: {decision}",
+            }
             )
             if out.working_context is not None:
                 out.working_context = record_tool_failure(
@@ -129,7 +140,10 @@ async def execute_tool_calls(inp: ToolCallInput) -> ToolCallOutput:
 
         seq += 1
         out.events.append(
-            _event(EventType.TOOL_CALL_BEGIN, inp, seq, {"call_id": call_id, "name": name, "args": arguments})
+            _event(
+                EventType.TOOL_CALL_BEGIN, inp, seq,
+                {"call_id": call_id, "name": name, "args": arguments},
+            )
         )
         try:
             result = await _invoke(inp.tool_executor, name, arguments)
@@ -138,10 +152,17 @@ async def execute_tool_calls(inp: ToolCallInput) -> ToolCallOutput:
         except Exception as exc:  # noqa: BLE001 - 单工具失败不终止 Run
             seq += 1
             out.events.append(
-                _event(EventType.TOOL_CALL_END, inp, seq, {"call_id": call_id, "name": name, "error": f"{type(exc).__name__}: {exc}"})
+                _event(
+                    EventType.TOOL_CALL_END, inp, seq,
+                    {"call_id": call_id, "name": name,
+                     "error": f"{type(exc).__name__}: {exc}"},
+                )
             )
             out.new_messages.append(
-                {"role": "tool", "tool_call_id": call_id, "name": name, "content": f"[error] {type(exc).__name__}: {exc}"}
+                {
+                "role": "tool", "tool_call_id": call_id, "name": name,
+                "content": f"[error] {type(exc).__name__}: {exc}",
+            }
             )
             if out.working_context is not None:
                 out.working_context = record_tool_failure(
@@ -156,7 +177,10 @@ async def execute_tool_calls(inp: ToolCallInput) -> ToolCallOutput:
             )
         seq += 1
         out.events.append(
-            _event(EventType.TOOL_CALL_END, inp, seq, {"call_id": call_id, "name": name, "result": result})
+            _event(
+                EventType.TOOL_CALL_END, inp, seq,
+                {"call_id": call_id, "name": name, "result": result},
+            )
         )
         out.new_messages.append(
             {
@@ -177,7 +201,9 @@ async def _invoke(
     arguments: dict[str, Any],
 ) -> Any:
     if executor is None:
-        raise RuntimeError(f"engine tool {name!r} is not available; it may be filtered or unpublished")
+        raise RuntimeError(
+            f"engine tool {name!r} is not available; it may be filtered or unpublished"
+        )
     if hasattr(executor, "execute"):
         return await executor.execute(name, arguments)  # type: ignore[union-attr]
     return await executor(name, arguments)  # ToolExecuteFn
