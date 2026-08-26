@@ -31,8 +31,8 @@ Record exactly one approved source publication strategy.
 The approved strategy must name the reviewed commit, tag, pull request, or
 export archive used for:
 
-- `ksadk-python`: clean public export from reviewed internal candidate `1d23f8191432822b35e490e2ec95ebb22349a3b6`.
-- `ksadk-web`: trusted npm package `@kingsoftcloud/ksadk-web@0.3.2`, source commit `2136448e038b4d8c475fa20e4722252b1ddb2ebc`, GitHub merge `4854be4fcb5584a799538536372d38b80447f81e`, integrity `sha512-Ytjd3pIgy6LfHCmguXUDQr/wy9ClqKjbv+J+NAzH/+UIJjhVl3y1SA2eR7WwsWSn42zxBFme/xniUZMNBV53Aw==`; approval is bound to Python source commit `1d23f8191432822b35e490e2ec95ebb22349a3b6`.
+- `ksadk-python`: clean public export from reviewed internal candidate `872be1a02e4feac1e68ff5840f26db8904ceb00e`.
+- `ksadk-web`: trusted npm package `@kingsoftcloud/ksadk-web@0.3.2`, source commit `2136448e038b4d8c475fa20e4722252b1ddb2ebc`, GitHub merge `4854be4fcb5584a799538536372d38b80447f81e`, integrity `sha512-Ytjd3pIgy6LfHCmguXUDQr/wy9ClqKjbv+J+NAzH/+UIJjhVl3y1SA2eR7WwsWSn42zxBFme/xniUZMNBV53Aw==`; approval is bound to Python source commit `872be1a02e4feac1e68ff5840f26db8904ceb00e`.
 
 Both approved source references include the reviewed Python source commit SHA.
 This prevents a stale approval record from passing after candidate changes.
