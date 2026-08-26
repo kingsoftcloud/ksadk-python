@@ -424,23 +424,29 @@ def test_source_repository_does_not_track_generated_ksadk_web_static():
     assert web_ui_files == ""
 
 
-def test_internal_source_keeps_compiled_studio_assets_untracked():
+def test_compiled_studio_asset_tracking_matches_release_boundary():
     gitignore = _read(".gitignore")
     pyproject = _read("pyproject.toml")
+    editable_source = (ROOT / "ksadk/studio/react-ui/package.json").is_file()
     if (ROOT / ".git").exists():
-        studio_static_files = subprocess.run(
+        tracked_static_files = subprocess.run(
             ["git", "ls-files", "ksadk/studio/static/**"],
             cwd=ROOT,
             check=True,
             text=True,
             stdout=subprocess.PIPE,
-        ).stdout
+        ).stdout.splitlines()
     else:
-        studio_static_files = ""
+        tracked_static_files = []
 
     assert "ksadk/studio/static/**" in gitignore
     assert '"studio/static/**/*"' in pyproject
-    assert studio_static_files == ""
+    if editable_source:
+        assert tracked_static_files == []
+    else:
+        assert (ROOT / "ksadk/studio/static/index.html").is_file()
+        if (ROOT / ".git").exists():
+            assert tracked_static_files
 
 
 def test_public_release_materials_do_not_include_internal_environment_details():
