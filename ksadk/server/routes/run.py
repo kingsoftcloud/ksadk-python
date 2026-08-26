@@ -39,6 +39,7 @@ from ksadk.conversations.runtime_streaming import (
 if TYPE_CHECKING:
     pass
 from ksadk.ids import new_run_id
+from ksadk.kernel.ingress import kernel_route_active
 from ksadk.runtime.conversation_execution import (
     invoke_runtime_conversation_once,
     iter_runtime_conversation_semantic_events,
@@ -56,7 +57,6 @@ from .kernel_ingress import (
     kernel_conversation_turn,
     kernel_stream_response,
 )
-from ksadk.kernel.ingress import kernel_route_active
 from .models import (
     RunAgentActionRequest,
     _clean_optional_string,
@@ -322,6 +322,12 @@ async def _kernel_run_agent_action(request: RunAgentActionRequest, launch_contex
         and (request.ApiFormat or "responses").strip().lower() == "responses"
         else normalize_kop_messages(request.Messages)
     )
+    # RunAgent 的 Model 覆盖走 runtime_options.model:与 agentengine-server 的
+    # _kernel_runtime_options 投影同构;worker 侧按部署 defaults/白名单校验。
+    runtime_options: dict[str, Any] = {}
+    requested_model = _clean_optional_string(request.Model)
+    if requested_model:
+        runtime_options["model"] = requested_model
     receipt, trusted = await _kernel_submit(
         mapper="map_run_request",
         session_id=session_id,
@@ -329,6 +335,7 @@ async def _kernel_run_agent_action(request: RunAgentActionRequest, launch_contex
         content=messages,
         correlation_ref=request.InvocationId,
         source_kind="system",
+        runtime_options=runtime_options or None,
     )
     if receipt.status not in ("accepted", "duplicate"):
         return _kernel_error_response(receipt)

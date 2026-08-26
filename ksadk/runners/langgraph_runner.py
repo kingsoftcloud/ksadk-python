@@ -573,8 +573,8 @@ class LangGraphRunner(_LangGraphStreamMixin, BaseRunner):
             for msg in history:
                 role = msg.get("role")
                 content = msg.get("content", "")
-                # Runtime-owned tool/approval markers should not be fed back to
-                # the model as plain text; they can trigger protocol leakage.
+                # Runtime-owned tool/approval records are preserved in the durable
+                # transcript, but must not be taught back to LangGraph as plain text.
                 if isinstance(content, str) and content.startswith(
                     ("[tool_call]", "[tool_result]", "[approval_request]", "[approval_response]")
                 ):
@@ -1052,15 +1052,11 @@ class LangGraphRunner(_LangGraphStreamMixin, BaseRunner):
         return events
 
     def _filter_tool_tags(self, content: str) -> str:
-        """过滤 tool_call/approval 相关标签，支持 XML 与方括号两种格式。"""
+        """过滤完整的 XML tool_call 标签。"""
         if not isinstance(content, str):
             return content
-        # 过滤 <tool_call>...</tool_call>
         content = re.sub(r"<tool_call>.*?</tool_call>", "", content, flags=re.DOTALL)
         content = re.sub(r"</?(?:tool_call|arg_key|arg_value)>", "", content)
-        # 过滤 [tool_call]... 和 [tool_result]... 格式（整行或到下一个标记前）
-        content = re.sub(r"\[tool_call\]\[?.*?($|\[tool_result\]|\[approval)", "", content, flags=re.DOTALL)
-        content = re.sub(r"\[tool_result\]\[?.*?($|\[tool_call\]|\[approval)", "", content, flags=re.DOTALL)
         return content
 
     async def stream(self, input_data: Dict[str, Any]) -> AsyncIterator[Dict[str, Any]]:

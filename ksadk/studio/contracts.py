@@ -44,9 +44,14 @@ class Instructions(ContractModel):
 
 
 class ModelParameters(ContractModel):
-    temperature: float = Field(default=0.2, ge=0, le=2)
-    max_tokens: int = Field(default=2048, ge=1, le=131072)
+    # 三者 None=未配置：请求 payload 一律不携带该字段，使用服务端默认，
+    # 规避各模型族对 temperature/max_tokens 的硬约束（如 kimi 只接受默认温度）。
+    temperature: float | None = Field(default=None, ge=0, le=2)
+    max_tokens: int | None = Field(default=None, ge=1, le=131072)
     top_p: float | None = Field(default=None, gt=0, le=1)
+    # 是否允许在 chat 请求中携带 response_format（json_object 结构化输出）。
+    # 关闭后 compose 等结构化调用退回纯文本输出，兼容不支持该字段的网关。
+    allow_json_response_format: bool = Field(default=True)
 
 
 class ModelSpec(ContractModel):

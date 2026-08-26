@@ -759,6 +759,13 @@ class DirectAgentEngineCloudDeploymentGateway:
     @staticmethod
     def _account_agent_view(payload: dict[str, Any], *, fallback_id: str = "") -> dict[str, Any]:
         basic = payload.get("basic") if isinstance(payload.get("basic"), dict) else {}
+        quick_access = (
+            payload.get("quick_access")
+            if isinstance(payload.get("quick_access"), dict)
+            else payload.get("quickAccess")
+            if isinstance(payload.get("quickAccess"), dict)
+            else {}
+        )
         deployment = (
             payload.get("deployment")
             if isinstance(payload.get("deployment"), dict)
@@ -774,6 +781,19 @@ class DirectAgentEngineCloudDeploymentGateway:
 
         def first(*names: str) -> Any:
             for source in (payload, basic, deployment):
+                for name in names:
+                    value = source.get(name)
+                    if value is not None and str(value).strip():
+                        return value
+            return None
+
+        # GetAgent retains a few compatibility fields at the response root.
+        # They can lag behind ``basic`` while Runtime-Service is reconciling;
+        # presenting that stale root ``CREATING`` value in Studio hid a
+        # genuinely RUNNING Agent.  Basic is the Server's lifecycle read model
+        # (and is also what the CLI renders), so it is authoritative here.
+        def lifecycle_first(*names: str) -> Any:
+            for source in (basic, deployment, payload):
                 for name in names:
                     value = source.get(name)
                     if value is not None and str(value).strip():
@@ -828,8 +848,19 @@ class DirectAgentEngineCloudDeploymentGateway:
                 )
                 or agent_id
             ),
-            "status": str(first("status", "phase") or "UNKNOWN").upper(),
-            "endpoint": str(first("endpoint") or "").strip() or None,
+            # Server resolves Creator through IAM when an Agent is created.
+            # It is the human-readable sub-account name; preserve it for the
+            # Studio directory rather than trying to derive a name client-side.
+            "creatorName": str(first("creator", "Creator") or "").strip() or None,
+            "status": str(lifecycle_first("status", "phase") or "UNKNOWN").upper(),
+            "endpoint": str(
+                quick_access.get("public_endpoint")
+                or quick_access.get("publicEndpoint")
+                or quick_access.get("private_endpoint")
+                or quick_access.get("privateEndpoint")
+                or lifecycle_first("endpoint")
+                or ""
+            ).strip() or None,
             "framework": runtime_type or None,
             "runtimeType": runtime_type or None,
             "capabilities": capabilities if isinstance(capabilities, dict) else None,
@@ -839,7 +870,7 @@ class DirectAgentEngineCloudDeploymentGateway:
             "instanceId": str(first("instance_id", "instanceId") or "").strip() or None,
             "versionId": version_id or None,
             "updatedAt": str(
-                first("updated_at", "updatedAt", "update_time", "updateTime") or ""
+                lifecycle_first("updated_at", "updatedAt", "update_time", "updateTime") or ""
             ).strip()
             or None,
         }
@@ -1155,15 +1186,18 @@ class DirectAgentEngineCloudDeploymentGateway:
         treating a synchronous proxy body as the source of truth.
         """
 
+        kwargs: dict[str, Any] = {
+            "session_id": session_id,
+            "model": model,
+            "model_options": model_options,
+            "tool_approval_mode": tool_approval_mode,
+            "collaboration_mode": collaboration_mode,
+            "goal_objective": goal_objective,
+        }
         return await self.client.chat(
             self._chat_agent_id(deployment),
             content,
-            session_id=session_id,
-            model=model,
-            model_options=model_options,
-            tool_approval_mode=tool_approval_mode,
-            collaboration_mode=collaboration_mode,
-            goal_objective=goal_objective,
+            **kwargs,
         )
 
     async def stream_deployment_chat_message(
@@ -1286,19 +1320,26 @@ class DirectAgentEngineCloudDeploymentGateway:
             )
         request: DeploymentRequest = kwargs["request"]
         digest = str(kwargs["manifest_digest"])
+        runtime_environment = dict(kwargs.get("runtime_environment") or {})
+        update_payload: dict[str, Any] = {
+            "artifact_type": "ManagedRuntime",
+            # UpdateAgent resolves a fresh immutable runtime image from the
+            # complete YAML declaration.  RuntimeConfig is the resolved
+            # read-model and cannot be used as an input for a retry.
+            "managed_runtime_config": {
+                "runtime_name": str(kwargs["runtime_name"]),
+                "runtime_version": str(kwargs["runtime_version"]),
+                "manifest": str(kwargs["manifest"]),
+            },
+        }
+        if runtime_environment:
+            # A changed MCP/model binding can introduce a new credential ref.
+            # Re-resolve it for every immutable revision instead of relying on
+            # the environment captured by the first CreateAgent call.
+            update_payload["environment_variables"] = runtime_environment
         await self.client.update_agent(
             deployment.agent_id,
-            {
-                "artifact_type": "ManagedRuntime",
-                # UpdateAgent resolves a fresh immutable runtime image from the
-                # complete YAML declaration.  RuntimeConfig is the resolved
-                # read-model and cannot be used as an input for a retry.
-                "managed_runtime_config": {
-                    "runtime_name": str(kwargs["runtime_name"]),
-                    "runtime_version": str(kwargs["runtime_version"]),
-                    "manifest": str(kwargs["manifest"]),
-                },
-            },
+            update_payload,
         )
         return DeploymentRecord(
             id=f"dep_{uuid4().hex}",
@@ -1504,6 +1545,7 @@ class CloudDeploymentService:
                 runtime_version=runtime_version,
                 manifest_digest=manifest_digest,
                 request=request,
+                runtime_environment=runtime_environment,
             )
         self._save(record, request)
         return record

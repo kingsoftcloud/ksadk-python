@@ -227,7 +227,7 @@ def test_public_metadata_uses_runtime_platform_positioning():
 
     assert pyproject["project"]["version"] == "0.8.2"
     assert 'VERSION = "0.8.2"' in version_text
-    assert "## [0.8.2] - 2026-08-25" in changelog
+    assert "## [0.8.2] - 2026-08-26" in changelog
     assert "## [0.8.1] - 2026-08-10" in changelog
     assert "`langchain-openai` 仅随" in changelog
     assert "Agent Runtime Platform" in pyproject["project"]["description"]
@@ -422,6 +422,31 @@ def test_source_repository_does_not_track_generated_ksadk_web_static():
     assert '"server/static/**/*"' in pyproject
     assert "server/web-ui" not in pyproject
     assert web_ui_files == ""
+
+
+def test_compiled_studio_asset_tracking_matches_release_boundary():
+    gitignore = _read(".gitignore")
+    pyproject = _read("pyproject.toml")
+    editable_source = (ROOT / "ksadk/studio/react-ui/package.json").is_file()
+    if (ROOT / ".git").exists():
+        tracked_static_files = subprocess.run(
+            ["git", "ls-files", "ksadk/studio/static/**"],
+            cwd=ROOT,
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+        ).stdout.splitlines()
+    else:
+        tracked_static_files = []
+
+    assert "ksadk/studio/static/**" in gitignore
+    assert '"studio/static/**/*"' in pyproject
+    if editable_source:
+        assert tracked_static_files == []
+    else:
+        assert (ROOT / "ksadk/studio/static/index.html").is_file()
+        if (ROOT / ".git").exists():
+            assert tracked_static_files
 
 
 def test_public_release_materials_do_not_include_internal_environment_details():

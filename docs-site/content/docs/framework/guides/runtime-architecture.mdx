@@ -144,6 +144,29 @@ Runtime 已在当前进程恢复。
 新 Runtime 应先用 `RunnerRuntimeAdapter` 覆盖标准 `BaseRunner` 路径，再逐项声明 cancel、
 resume 和 checkpoint 能力；不要用伪造的“全支持” capability 掩盖框架差异。
 
+## Agent Runtime V2 Phase 1 控制基座
+
+0.8.2 增加的是可选的 Agent Kernel 控制基座，不会把所有历史 Agent 自动迁移到新路径。
+`AgentControlChannel/v1`、`SessionEventEnvelope/v1`、`ActivationLease/v1`、
+`RuntimeCapabilityMatrix/v1` 和 `Interaction/v1` 由 JSON Schema、golden fixture、聚合
+digest 与 additive-only gate 锁定。Gateway 只负责身份与可信路由，Server 负责准入并签发
+permit，Runtime 缺少有效 permit 时拒绝控制命令。
+
+| 存储模式 | 适用范围 | 重启/跨 Pod 语义 |
+| --- | --- | --- |
+| InMemory | 本地开发或显式单 Pod ephemeral 托管 | 不承诺重启恢复或跨 Pod 接管 |
+| SQLite | 本地单进程持久化 | 进程重启可恢复本地状态，不提供多 Pod owner 语义 |
+| PostgreSQL | 需要高可用的托管 Runtime | durable Inbox、nonce、lease、事务 fencing 与 takeover |
+
+PostgreSQL 不是启用 Agent Kernel 的通用前置条件。单副本托管 Agent 可显式使用
+`memory + AGENT_KERNEL_DURABILITY_TIER=ephemeral`；只有声明 durable、高可用或跨 Pod
+恢复时才需要 PostgreSQL。选择 `postgres` 却未提供 DSN 会直接启动失败，因为这属于错误配置，
+而不是可静默降级的故障。
+
+旧 Runtime 制品如果没有版本、来源、commit id 或 Agent Kernel 合同 digest，仍走历史路径并把
+缺失字段标记为未知，不会仅因 Operator 升级就自动加入新控制协议。只有显式投射启用开关和匹配
+digest 的新部署才进入 Kernel；这使平台可以先升级控制面，再逐个更新 Runtime。
+
 ## 请求生命周期
 
 普通非流式 `/v1/responses` 请求路径：

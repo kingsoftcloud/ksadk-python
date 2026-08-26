@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import secrets
 import webbrowser
@@ -12,6 +13,37 @@ import uvicorn
 
 from ksadk.cli.env_options import load_env_file
 from ksadk.cli.ui import print_info, print_kv, print_success, print_title
+
+# veadk 风格：日志行带模块名与行号（filename:lineno），本地排障时能直接定位代码。
+_LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s %(filename)s:%(lineno)d %(message)s"
+
+_STUDIO_LOG_CONFIG = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "default": {"format": _LOG_FORMAT},
+        "access": {"format": _LOG_FORMAT},
+    },
+    "handlers": {
+        "default": {
+            "class": "logging.StreamHandler",
+            "formatter": "default",
+            "stream": "ext://sys.stderr",
+        },
+        "access": {
+            "class": "logging.StreamHandler",
+            "formatter": "access",
+            "stream": "ext://sys.stdout",
+        },
+    },
+    "loggers": {
+        "uvicorn": {"handlers": ["default"], "level": "INFO", "propagate": False},
+        "uvicorn.error": {"level": "INFO"},
+        "uvicorn.access": {"handlers": ["access"], "level": "INFO", "propagate": False},
+    },
+    "root": {"handlers": ["default"], "level": "INFO"},
+}
+
 from ksadk.studio.api import create_studio_app
 from ksadk.studio.service import StudioService
 
@@ -148,12 +180,18 @@ def studio(
         print_info("按 Ctrl+C 停止")
         if not no_open:
             webbrowser.open(launch_url)
+        # 业务日志（ksadk.*）走 root handler，同样带 filename:lineno。
+        logging.basicConfig(level=logging.INFO, format=_LOG_FORMAT)
         uvicorn.run(
             app,
             host="127.0.0.1",
             port=port,
             log_level="info",
-            access_log=False,
+            # Access logging stays enabled through the Studio log config while
+            # retaining filename/line-number context for both API and business
+            # logs.  This preserves master's observability intent and the
+            # branch's richer diagnostic format.
+            log_config=_STUDIO_LOG_CONFIG,
         )
     finally:
         for key in managed_keys:

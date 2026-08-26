@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import shutil
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from ksadk.studio.capabilities import canonical_json, sha256_digest
+from ksadk.studio.capabilities import canonical_json, compute_bundle_digest, sha256_digest
 from ksadk.studio.compiler import AgentCompiler
 from ksadk.studio.contracts import (
     AgentDraft,
@@ -27,6 +28,8 @@ from ksadk.studio.workspace import Workspace
 
 _ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 
+LOGGER = logging.getLogger(__name__)
+
 
 class AgentBundleBuilder:
     def __init__(
@@ -41,6 +44,11 @@ class AgentBundleBuilder:
         self.repository = repository or BuildRepository(workspace)
 
     def build(self, draft: AgentDraft) -> BuildRecord:
+        LOGGER.info(
+            "bundle build started: agent=%s revision=%s",
+            draft.metadata.id,
+            draft.metadata.revision,
+        )
         compiled = self.compiler.compile(draft)
         # Bundle v2 always carries a lock. Phase 1 deliberately supports no
         # user-selectable plugin factories yet, so the only valid lock is the
@@ -114,13 +122,7 @@ class AgentBundleBuilder:
                 hosted_kernel_requirement_digest=hosted_kernel_requirement_digest_value,
                 files=files,
             )
-            digest_payload = manifest.model_dump(
-                by_alias=True,
-                exclude={"bundle_digest"},
-                exclude_none=True,
-                mode="json",
-            )
-            manifest.bundle_digest = sha256_digest(canonical_json(digest_payload))
+            manifest.bundle_digest = compute_bundle_digest(manifest)
             self._write_json(bundle_root / "manifest.json", manifest.model_dump(by_alias=True))
             archive = staging / "agent-bundle.zip"
             self._write_zip(bundle_root, archive)
@@ -146,7 +148,14 @@ class AgentBundleBuilder:
             created_at=now,
             completed_at=now,
         )
-        return self.repository.save(record)
+        saved = self.repository.save(record)
+        LOGGER.info(
+            "bundle build finished: agent=%s build=%s artifact=%s",
+            draft.metadata.id,
+            saved.id,
+            saved.artifact_path,
+        )
+        return saved
 
     def _write_payload(
         self,

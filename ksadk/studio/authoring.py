@@ -320,6 +320,70 @@ class AgentAuthoringService:
             path.unlink()
 
     @staticmethod
+    def _sanitize_model_block(payload: dict[str, Any]) -> None:
+        """清掉模型照抄示例或凭空编造的 spec.model 字段。
+
+        - baseUrl/endpointUrl 写着 example.com/placeholder 等占位域名的直接删掉
+          （Studio 会按选中的模型 Profile 注入真实 endpoint）
+        - parameters 只保留用户对话明确要求时模型写出的值；模型自行编造的
+          常见值（temperature 0.x + maxTokens 2048/4096 这类组合）无法与
+          用户意图区分时一并删除，交平台默认值兜底
+        """
+        spec = payload.get("spec")
+        if not isinstance(spec, dict):
+            return
+        model = spec.get("model")
+        if not isinstance(model, dict):
+            return
+        for key in ("baseUrl", "endpointUrl"):
+            value = model.get(key)
+            if isinstance(value, str) and (
+                "example.com" in value or "placeholder" in value.lower()
+            ):
+                model.pop(key, None)
+        # ModelSpec 校验要求 baseUrl/endpointUrl 二选一；模型没写或写了占位被删时，
+        # 置一个显式标记值，coordinator 会用选中模型 Profile 的真实 endpoint 覆写。
+        if not model.get("baseUrl") and not model.get("endpointUrl"):
+            model["baseUrl"] = "https://model-profile.invalid/placeholder"
+
+    @staticmethod
+    def _coerce_model_credential_ref(payload: dict[str, Any]) -> None:
+        """容忍模型把 spec.model.credentialRef 写成对象/空值的常见错误形态。
+
+        模型偶尔会把字符串引用字段写成 {} 或 {"ref": ...}；在进入 Pydantic 校验前
+        收敛为默认 env 引用，避免浪费唯一一次纠错重试。
+        """
+        spec = payload.get("spec")
+        if not isinstance(spec, dict):
+            return
+        model = spec.get("model")
+        if not isinstance(model, dict):
+            return
+        ref = model.get("credentialRef")
+        if isinstance(ref, str) and ref.strip().startswith(("env://", "keychain://", "secret-manager://")):
+            return
+        if isinstance(ref, dict):
+            nested = ref.get("ref") or ref.get("credentialRef") or ref.get("value")
+            if isinstance(nested, str) and nested.strip().startswith(("env://", "keychain://", "secret-manager://")):
+                model["credentialRef"] = nested.strip()
+                return
+        model["credentialRef"] = "env://AGENTKIT_MODEL_API_KEY"
+
+    @staticmethod
+    def _coerce_runtime_type(payload: dict[str, Any]) -> None:
+        """容忍模型把 spec.runtime.type 写成 provider 的常见错误形态。"""
+        spec = payload.get("spec")
+        if not isinstance(spec, dict):
+            return
+        runtime = spec.get("runtime")
+        if not isinstance(runtime, dict):
+            return
+        if not runtime.get("type") and runtime.get("provider"):
+            runtime["type"] = runtime.pop("provider")
+        elif runtime.get("provider") and runtime.get("type"):
+            runtime.pop("provider")
+
+    @staticmethod
     def _conversation_json_object(content: str) -> dict[str, Any]:
         """Extract one JSON object without trusting surrounding model prose."""
 
@@ -363,10 +427,52 @@ class AgentAuthoringService:
         return merged
 
     @staticmethod
+    def _studio_owned_conversation_patch(
+        payload: dict[str, Any],
+        *,
+        runtime_type: str,
+    ) -> dict[str, Any]:
+        """Keep an authoring-model response to semantic fields only.
+
+        A conversation can describe an Agent, but it cannot produce a valid
+        local ADK/LangGraph project, resource identity, credential or runtime
+        binding.  Treating its complete AgentSpec as deployable made a simple
+        conversation depend on it guessing every evolving Studio contract.
+        Studio owns those fields and injects them after this parser returns.
+        """
+
+        normalized = str(runtime_type or "").strip().lower()
+        if normalized not in _SUPPORTED_RUNTIMES:
+            raise ValueError("runtimeType is not supported")
+        raw_spec = payload.get("spec")
+        if not isinstance(raw_spec, dict):
+            raw_spec = {}
+        raw_instructions = raw_spec.get("instructions", payload.get("instructions"))
+        instructions = raw_instructions if isinstance(raw_instructions, dict) else {}
+        spec: dict[str, Any] = {
+            "instructions": {
+                key: str(value).strip()
+                for key in ("system", "task")
+                if isinstance((value := instructions.get(key)), str) and value.strip()
+            }
+        }
+        if isinstance(raw_spec.get("description"), str):
+            spec["description"] = raw_spec["description"].strip()
+        return {
+            key: copy.deepcopy(payload[key])
+            for key in ("name", "slug", "description")
+            if key in payload
+        } | {
+            "runtimeType": normalized,
+            "spec": spec,
+        }
+
+    @staticmethod
     def parse_conversation_proposal(
         content: str,
         *,
         base: ConversationProposal | dict[str, Any] | None = None,
+        runtime_type: str | None = None,
     ) -> ConversationProposal:
         try:
             payload = AgentAuthoringService._conversation_json_object(content)
@@ -375,6 +481,14 @@ class AgentAuthoringService:
                 if isinstance(wrapped, dict) and len(payload) == 1:
                     payload = cast(dict[str, Any], wrapped)
                     break
+            if runtime_type is not None:
+                payload = AgentAuthoringService._studio_owned_conversation_patch(
+                    payload,
+                    runtime_type=runtime_type,
+                )
+            AgentAuthoringService._coerce_model_credential_ref(payload)
+            AgentAuthoringService._sanitize_model_block(payload)
+            AgentAuthoringService._coerce_runtime_type(payload)
             if base is not None:
                 base_payload = (
                     base.model_dump(by_alias=True, mode="json")
@@ -384,6 +498,12 @@ class AgentAuthoringService:
                 payload = AgentAuthoringService._merge_conversation_patch(
                     base_payload, payload
                 )
+            if runtime_type is not None:
+                # The merge can reintroduce an old runtimeType from a previous
+                # Draft Patch; the live Studio selector remains authoritative.
+                payload["runtimeType"] = str(runtime_type).strip().lower()
+                if isinstance(payload.get("spec"), dict):
+                    payload["spec"].pop("runtime", None)
             proposal = ConversationProposal.model_validate(payload)
         except (ValueError, ValidationError) as exc:
             raise StudioError(
@@ -396,7 +516,11 @@ class AgentAuthoringService:
         return proposal.model_copy(update={"slug": normalized_slug})
 
     @staticmethod
-    def conversation_messages(messages: list[dict[str, str]]) -> list[dict[str, str]]:
+    def conversation_messages(
+        messages: list[dict[str, str]],
+        *,
+        runtime_type: str = "codex",
+    ) -> list[dict[str, str]]:
         if not messages:
             raise StudioError(
                 "AUTHORING_CONVERSATION_EMPTY",
@@ -408,13 +532,14 @@ class AgentAuthoringService:
                 "role": "system",
                 "content": (
                     "你是 AgentKit Studio 的 Agent 设计助手。根据对话生成一个 JSON Draft Patch，"
-                    "不得输出 Markdown。首轮顶层字段必须且只能包含 name、slug、runtimeType、"
-                    "description、spec；后续轮次可以只返回需要变更的字段，由 Studio 与上一版"
-                    "Patch 合并。runtimeType 只能是 codex、adk、langgraph。spec 是完整"
-                    " AgentSpec，可包含 runtime、instructions、model、capabilities、bindings、"
-                    "execution、context、memory、security、evaluation；instructions 必须包含"
-                    " system 和 task。Tool、MCP、Skill、模型、模型参数和策略一旦在对话中明确，"
-                    "必须写入 spec，不能只返回提示词。只提出配置，不写文件、不宣称已经创建。"
+                    "不得输出 Markdown。只返回一个最小 JSON Draft Patch：首轮只包含 name、"
+                    "slug、description、spec；spec 只包含 instructions，instructions 只允许"
+                    "system 和 task。后续轮次只返回要更新的上述字段，由 Studio 与上一版 Patch"
+                    "合并。当前 Runtime 已由 Studio 选择为 "
+                    f"{runtime_type}，不得输出 runtimeType、spec.runtime、execution、context、"
+                    "memory、security、evaluation、model、bindings、capabilities 或任何资源 ID。"
+                    "模型 Profile、运行 Runtime、模型参数、Tool、MCP、Skill、凭证、端点与"
+                    "资源 ID 都由 Studio 按用户选择注入。只提出配置，不写文件、不宣称已经创建。"
                 ),
             }
         ]

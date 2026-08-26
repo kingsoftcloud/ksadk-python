@@ -239,6 +239,14 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
         "0",
     ),
     EnvVarSpec(
+        "KSADK_STUDIO_AUTHORIZER",
+        "studio",
+        "Internal authoring backend selector; bounded chat is the default and the "
+        "filesystem-capable Codex authorizer requires an explicit opt-in.",
+        "chat",
+        documented=False,
+    ),
+    EnvVarSpec(
         "KSADK_STUDIO_SESSION_TOKEN",
         "studio",
         "Explicit local Studio browser session token; generated randomly when unset.",

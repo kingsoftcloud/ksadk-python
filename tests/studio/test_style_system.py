@@ -236,7 +236,9 @@ def test_react_chat_is_owned_by_studio_and_uses_asymmetric_messages() -> None:
     assert 'apiFetch("/v1/responses"' in source
     assert "@kingsoftcloud/ksadk-web" not in package
     assert "@kingsoftcloud/ksadk-web" not in vite_config
-    assert "先创建 Agent 才能开始会话" in APP_SOURCE.read_text(encoding="utf-8")
+    # 没有本地 Agent 时仍可从账号目录选择云端 Agent，不再把会话入口
+    # 强制重定向到创建页。
+    assert "先创建 Agent 才能开始会话" not in APP_SOURCE.read_text(encoding="utf-8")
 
 
 def test_react_chat_keeps_compact_sessions_and_streaming_controls() -> None:

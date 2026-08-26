@@ -370,9 +370,11 @@ class AgentKernelWorker:
             for item in (defaults.get("allowed_models") or [])
             if str(item).strip()
         }
+        # 显式 allowed_models 是收紧边界(不在名单的请求回落默认);
+        # 未声明名单 = 未设限制,run 级 model 覆盖直接生效(RunAgent Model 透传)。
         selected_model = (
             requested_model
-            if requested_model and requested_model in allowed_models
+            if requested_model and (not allowed_models or requested_model in allowed_models)
             else default_model
         )
         request_config = dict(defaults.get("config") or {})

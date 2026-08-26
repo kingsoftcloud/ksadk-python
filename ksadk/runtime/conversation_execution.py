@@ -46,6 +46,7 @@ from ksadk.runtime.adapter import (
     StartRequest,
 )
 from ksadk.runtime.executor import RuntimeExecutor, RuntimeStartPreparation
+from ksadk.runtime.factory import apply_runtime_start_request_defaults
 from ksadk.runtime.launch import RuntimeLaunchContext
 from ksadk.sessions import resolve_session_service
 
@@ -141,17 +142,20 @@ async def iter_runtime_conversation_events(
         session_id=prepared.session_id,
         session_service_provider=provider,
     )
-    request = StartRequest(
-        input=prepared.user_input,
-        user_id=user_id,
-        session_id=prepared.session_id,
-        agent_id=agent_id,
-        model=model,
-        metadata={
-            "invocation_id": prepared.invocation_id,
-            CONVERSATION_PREPROCESSING_METADATA_KEY: conversation_request,
-            **native_session_metadata,
-        },
+    request = apply_runtime_start_request_defaults(
+        launch_context,
+        StartRequest(
+            input=prepared.user_input,
+            user_id=user_id,
+            session_id=prepared.session_id,
+            agent_id=agent_id,
+            model=model,
+            metadata={
+                "invocation_id": prepared.invocation_id,
+                CONVERSATION_PREPROCESSING_METADATA_KEY: conversation_request,
+                **native_session_metadata,
+            },
+        ),
     )
     checkpoint_resume = _checkpoint_resume_input(prepared.resume_input)
     if checkpoint_resume is None:
