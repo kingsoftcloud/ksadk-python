@@ -1,11 +1,15 @@
 ---
 title: AgentKit Local Studio
-description: 0.8.1 新增的本地 Agent 创作、构建与对话工作区。
+description: 本地创作、构建、对话与云端生命周期工作区。
 status: new
 ---
 
 <Callout type="info" title="0.8.1 新增">
   AgentKit Local Studio 是面向本地开发的 Agent 创作工作区：在浏览器中创建、构建并测试 Agent，不需要另行安装 Node.js。
+</Callout>
+
+<Callout type="info" title="0.8.2 云端闭环">
+  Studio 仍运行在开发者本机，但已经可以通过平台既有接口部署和管理云端 Agent，并与账号中由 CLI 创建的高代码 Agent 会话。
 </Callout>
 
 `agentengine studio` 是 KsADK 的本地优先工作区。它把 Agent 定义、构建记录、会话、资源、Trace 与任务编排放在同一个浏览器界面中；模型调用和构建仍由本机 KsADK 运行时执行。
@@ -34,8 +38,8 @@ agentengine studio ./my-agent-workspace --env-file ./model.env
 
 `--env-file` 只读取 `OPENAI_API_BASE`、`OPENAI_API_KEY` 和 `OPENAI_MODEL_NAME`。已有的进程环境变量优先，不会被该文件覆盖。Codex 项目需要 Responses-to-Chat 兼容转换时，可使用 `--codex-proxy auto`；完整选项见[命令行参考](/cn/docs/cli#agentengine-studio)。
 
-<Callout type="warning" title="仅本地工作区">
-  0.8.1 不包含 Studio 的云端部署或多人协作能力。需要部署已有项目时，请使用项目目录中的 `agentengine deploy`，并遵循[云端部署](cloud-deployment)文档。
+<Callout type="warning" title="本地控制端，不是多人 SaaS">
+  Studio 的界面和凭证代理仍运行在本机。它支持云端生命周期管理，但不提供多人共享工作区；浏览器不会接触 AK/SK，所有云端请求由本地服务签名后发送给 AgentEngine Server。
 </Callout>
 
 ## 创建、构建并对话
@@ -58,6 +62,20 @@ agentengine web .
 
 有关模板生成的文件、各运行时的入口约定和部署方式，请分别参阅[创建项目](../getting-started/quickstart)、[Codex Managed Runtime](managed-runtime)和[云端部署](cloud-deployment)。
 
+## 云端部署与生命周期
+
+构建成功后可直接进入部署流程。Studio 复用 AgentEngine 已有的 `CreateAgent`、`UpdateAgent`、状态查询和删除接口，不额外发明一套部署 API：
+
+1. 在 **构建** 页选择成功的 build，点击部署；或在 **部署** 页发起新部署。
+2. 等待进度完成后，在详情页查看 Endpoint、运行状态、当前 build 与版本历史。
+3. 默认点击 **会话** 会在 Studio 内连接云端 Agent；Hosted UI 或第三方 Runtime Dashboard 是附加入口。
+4. 更新 Agent 定义并重新构建后，可用 `UpdateAgent` 发布新版本；选择旧版本并二次确认即可回滚。
+5. 删除操作调用云端生命周期接口，并同步清理 Studio 的本地 receipt。
+
+云端目标列表同时包含 Studio 部署记录和账号已有 Agent。后者包括通过 CLI 部署的高代码 Agent；目标身份使用完整 `agent_id`，不会因来源不同创建重复会话。Hermes 或 OpenClaw 若不声明 Studio 会话所需能力，Studio 会明确提示并提供其官方 Dashboard，而不是伪装为兼容。
+
+普通聊天使用前台流式请求，不要求 Background 模式。断开页面后仍需继续的长任务才使用 Background session。当前会话支持增量正文、思考、工具、审批、附件、模型选择、三档审批以及 Goal / Plan；不单独展示一个“Loop”模式。
+
 ## Studio 与本地 Web UI 的分工
 
 | 场景 | 使用的命令 | 适合做什么 |
@@ -76,6 +94,6 @@ Studio 的工作区数据和会话是本地开发状态，不是需要提交的�
 
 ## UI 包与源码
 
-安装 wheel 的用户不需要构建 Studio 前端：wheel 已包含生产静态资源。贡献 Studio UI 时，受跟踪的源码位于 `ksadk/studio/react-ui`；生成到 `ksadk/studio/static` 的文件不会进入 Git，但会在 wheel 构建时自动生成并打包。
+安装 wheel 的用户不需要构建 Studio 前端：wheel 已包含经过审计的生产静态资源。公开仓、sdist 与 wheel 都不包含 Studio 的 React / TypeScript 可编辑源码；公开发布门禁只校验并打包 `ksadk/studio/static`。
 
 详见[构建与打包](build-and-package)和[Web UI 源码与发布契约](web-ui-source)。

@@ -21,17 +21,40 @@
 
 import json
 import logging
+import re
 import time
 import uuid
-from typing import Any
+from typing import Any, List, Set
 
 from pydantic import ConfigDict, Field
 
-from ksadk.memory.adk.backends.base_ltm_backend import BaseLongTermMemoryBackend
+from ksadk.memory.adk.backends.base_ltm_backend import (
+    CAP_ADD,
+    CAP_DELETE,
+    CAP_FLUSH,
+    CAP_SEARCH,
+    CAP_SESSION_STATUS,
+    CAP_STRUCTURED_SEARCH,
+    CAP_UPDATE,
+    BaseLongTermMemoryBackend,
+)
+from ksadk.memory.models import (
+    LongTermMemoryRecord,
+    MemoryExtractionStatus,
+    MemoryMutationResult,
+    map_session_state,
+)
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_SCENE_ID = "_sys_general"
+
+# "记忆不存在"识别模式（方案 §17.4：准确错误码待真实 fixture 固化，
+# 首版按保守中英文模式匹配，fixture 到位后收敛为精确匹配）。
+_NOT_EXIST_RE = re.compile(
+    r"not[ _]?exist|does not exist|memory.*不存在|记忆不存在|记忆已被删除|resourcenotfound|notfound",
+    re.IGNORECASE,
+)
 
 
 class SdkLTMBackend(BaseLongTermMemoryBackend):
@@ -328,6 +351,365 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
             self.last_error = str(e)
             logger.error(f"QueryMemorySdk failed: {e}")
             return []
+
+    # ------------------------------------------------------------------
+    # 结构化扩展协议（方案 §7.3/§7.4）：走通用 client.call 通道。
+    # kingsoftcloud-sdk-python 1.5.8.101 的 AICP client 未提供
+    # ListMemories/UpdateMemory/DeleteMemory 类型化方法（§7.4.2）。
+    # 所有解析对已确认 schema 严格校验；未知结构 fail closed，不伪造结果。
+    # ------------------------------------------------------------------
+
+    def search_records(
+        self, user_id: str, query: str, top_k: int = 5, **kwargs
+    ) -> List[LongTermMemoryRecord]:
+        """QueryMemorySdk 结构化检索：返回带服务端 MemoryId 的记录。
+
+        按已确认 schema（§7.4.1）从 ``Data[].Memories[]`` 解析
+        MemoryId / Memory / Score / OccurredStart / OccurredEnd。
+        缺少 MemoryId 的条目跳过（无法支撑后续 mutation）。
+        未知响应结构返回空列表（fail closed）。
+        """
+        client = self._get_client()
+        memory_collection_id = self._effective_memory_collection_id()
+        params = {
+            "MemoryCollectionId": memory_collection_id,
+            "AgentUserId": user_id,
+            "Query": query,
+            "Limit": top_k,
+            "SceneId": self._effective_scene_id(),
+        }
+        response = client.call("QueryMemorySdk", params, options={"IsPostJson": True})
+        records = self._parse_query_records_response(response, user_id=user_id)
+        logger.info(
+            f"QueryMemorySdk structured: user={user_id}, records={len(records)}"
+        )
+        return records
+
+    def list_memory_records(
+        self,
+        *,
+        user_id: str,
+        query: str = "",
+        page: int = 1,
+        page_size: int = 20,
+    ) -> List[LongTermMemoryRecord]:
+        """ListMemories：精确确认提取完成后的可见性 / 取得当前 MemoryId。
+
+        按已确认 schema（§7.4.1）从顶层 ``MemoryList[]`` 解析。
+        未知响应结构返回空列表（fail closed，不宣称可见）。
+        """
+        client = self._get_client()
+        params: dict[str, Any] = {
+            "MemoryCollectionId": self._effective_memory_collection_id(),
+            "AgentUserId": user_id,
+            "Page": page,
+            "PageSize": page_size,
+        }
+        if query:
+            params["Query"] = query
+        response = client.call("ListMemories", params, options={"IsPostJson": True})
+        records = self._parse_list_memories_response(response, user_id=user_id)
+        logger.info(f"ListMemories: user={user_id}, records={len(records)}")
+        return records
+
+    def update_memory(
+        self,
+        *,
+        user_id: str,
+        memory_id: str,
+        content: str,
+        **kwargs,
+    ) -> MemoryMutationResult:
+        """UpdateMemory：按 ID 原地更新正文，解析 new_memory_id。
+
+        Update 不幂等：重复调用会重复触发（§17.7），由上层控制重试。
+        "记忆不存在"按 not_found 归一（§7.4.1，错误码待 fixture 收敛）。
+        """
+        client = self._get_client()
+        params = {
+            "MemoryCollectionId": self._effective_memory_collection_id(),
+            "MemoryId": memory_id,
+            "Content": content,
+            "AgentUserId": user_id,
+        }
+        try:
+            response = client.call("UpdateMemory", params, options={"IsPostJson": True})
+        except Exception as exc:
+            if self._is_not_exist_error(exc):
+                return MemoryMutationResult(
+                    ok=False,
+                    memory_id=memory_id,
+                    status="not_found",
+                    message="目标记忆不存在",
+                )
+            self.last_error = str(exc)
+            logger.error("UpdateMemory failed: %s", type(exc).__name__)
+            return MemoryMutationResult(
+                ok=False,
+                memory_id=memory_id,
+                status="failed",
+                message="记忆更新失败",
+            )
+
+        data = self._parse_json_response(response)
+        response_memory_id = self._parse_new_memory_id(data)
+        new_memory_id = response_memory_id
+        if not response_memory_id or response_memory_id == memory_id:
+            # The service can merge an edited memory into another record while
+            # returning no new ID (or echoing the old one).  Do not expose that
+            # stale handle to callers: confirm the current handle by listing
+            # records whose final content exactly matches the update.
+            try:
+                matches = [
+                    record
+                    for record in self.list_memory_records(
+                        user_id=user_id,
+                        query=content,
+                        page=1,
+                        page_size=100,
+                    )
+                    if record.content.strip() == content.strip()
+                ]
+            except Exception as exc:
+                logger.warning(
+                    "ListMemories failed while reconciling updated memory ID: %s",
+                    type(exc).__name__,
+                )
+                matches = []
+            unique_ids = {record.memory_id for record in matches}
+            new_memory_id = unique_ids.pop() if len(unique_ids) == 1 else ""
+
+        if new_memory_id and new_memory_id != memory_id:
+            message = f"更新成功，新记忆 ID: {new_memory_id}"
+        elif new_memory_id == memory_id:
+            message = "更新成功，记忆 ID 未变化"
+        else:
+            message = "更新成功，但未能唯一确认更新后的记忆 ID，请重新搜索后再操作"
+        return MemoryMutationResult(
+            ok=True,
+            memory_id=memory_id,
+            new_memory_id=new_memory_id,
+            status="updated",
+            message=message,
+        )
+
+    def delete_memory(
+        self,
+        *,
+        user_id: str,
+        memory_id: str,
+        **kwargs,
+    ) -> MemoryMutationResult:
+        """DeleteMemory：按 ID 软删除。
+
+        重复删除返回"记忆不存在"，归一为 already_absent，
+        与首次成功 deleted 分开审计（§7.4）。
+        """
+        client = self._get_client()
+        params = {
+            "MemoryCollectionId": self._effective_memory_collection_id(),
+            "MemoryId": memory_id,
+            "AgentUserId": user_id,
+        }
+        try:
+            client.call("DeleteMemory", params, options={"IsPostJson": True})
+        except Exception as exc:
+            if self._is_not_exist_error(exc):
+                return MemoryMutationResult(
+                    ok=True,
+                    memory_id=memory_id,
+                    status="already_absent",
+                    message="目标记忆已不存在（可能已删除）",
+                )
+            self.last_error = str(exc)
+            logger.error("DeleteMemory failed: %s", type(exc).__name__)
+            return MemoryMutationResult(
+                ok=False,
+                memory_id=memory_id,
+                status="failed",
+                message="记忆删除失败",
+            )
+        return MemoryMutationResult(
+            ok=True,
+            memory_id=memory_id,
+            status="deleted",
+            message="已删除",
+        )
+
+    def get_extraction_status(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+    ) -> MemoryExtractionStatus:
+        """ListSessions 查询 Session 后台提取状态（§7.7）。
+
+        State 映射 0/50/100/-50/-100；未找到 Session 返回 unknown。
+        searchable 需 Service 层结合 ListMemories 确认后置位。
+        """
+        item = self.get_session_status(user_id=user_id, session_id=session_id)
+        if not isinstance(item, dict):
+            return MemoryExtractionStatus(
+                session_id=session_id,
+                state=None,
+                status="unknown",
+                message="Session 状态未知",
+            )
+        state = item.get("State")
+        state_int = int(state) if isinstance(state, (int, float, str)) and str(state).lstrip("-").isdigit() else None
+        status = map_session_state(state_int)
+        message = {
+            "queued": "排队中",
+            "extracting": "提取中",
+            "extracted": "提取完成",
+            "duplicate_skipped": "内容重复，已跳过提取",
+            "failed": "提取失败，可稍后重新明确保存",
+        }.get(status, "状态未知")
+        return MemoryExtractionStatus(
+            session_id=session_id,
+            state=state_int,
+            status=status,
+            message=message,
+        )
+
+    def capabilities(self) -> Set[str]:
+        return {
+            CAP_SEARCH,
+            CAP_ADD,
+            CAP_FLUSH,
+            CAP_STRUCTURED_SEARCH,
+            CAP_UPDATE,
+            CAP_DELETE,
+            CAP_SESSION_STATUS,
+        }
+
+    @staticmethod
+    def _is_not_exist_error(exc: Exception) -> bool:
+        """识别"记忆不存在"类错误。
+
+        §17.4：准确错误码/结构待真实 fixture 固化；首版按保守模式匹配
+        code/message，fixture 到位后收敛为精确匹配。
+        """
+        text = " ".join(
+            str(part) for part in (getattr(exc, "code", ""), str(exc)) if part
+        )
+        return bool(_NOT_EXIST_RE.search(text))
+
+    @staticmethod
+    def _parse_new_memory_id(data: Any) -> str:
+        """从 UpdateMemory 响应解析 new_memory_id（§7.4.1）。
+
+        兼容 snake/camel 两种命名；都不存在时返回空串，由调用方通过
+        ListMemories 核验当前句柄，不能据此推断 ID 未变化。
+        """
+        if not isinstance(data, dict):
+            return ""
+        for key in ("new_memory_id", "NewMemoryId", "NewMemoryID"):
+            value = data.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        nested = data.get("Data")
+        if isinstance(nested, dict):
+            for key in ("new_memory_id", "NewMemoryId", "NewMemoryID"):
+                value = nested.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        return ""
+
+    def _parse_query_records_response(
+        self, response: Any, *, user_id: str
+    ) -> List[LongTermMemoryRecord]:
+        """严格解析 QueryMemorySdk 结构化响应：Data[].Memories[]。"""
+        try:
+            data = self._parse_json_response(response)
+        except (json.JSONDecodeError, TypeError):
+            logger.error("QueryMemorySdk records: invalid JSON response")
+            return []
+        if not isinstance(data, dict):
+            logger.error("QueryMemorySdk records: unexpected payload type")
+            return []
+        items = data.get("Data")
+        if not isinstance(items, list):
+            logger.warning(
+                "QueryMemorySdk records: unknown schema, keys=%s; fail closed",
+                list(data.keys()),
+            )
+            return []
+        records: List[LongTermMemoryRecord] = []
+        for item in items:
+            memories = item.get("Memories") if isinstance(item, dict) else None
+            if not isinstance(memories, list):
+                continue
+            for memory in memories:
+                record = self._record_from_item(memory, user_id=user_id)
+                if record is not None:
+                    records.append(record)
+        return records
+
+    def _parse_list_memories_response(
+        self, response: Any, *, user_id: str
+    ) -> List[LongTermMemoryRecord]:
+        """严格解析 ListMemories 响应：顶层 MemoryList[]（§7.4.1）。"""
+        try:
+            data = self._parse_json_response(response)
+        except (json.JSONDecodeError, TypeError):
+            logger.error("ListMemories: invalid JSON response")
+            return []
+        if not isinstance(data, dict):
+            logger.error("ListMemories: unexpected payload type")
+            return []
+        items = data.get("MemoryList")
+        if not isinstance(items, list):
+            logger.warning(
+                "ListMemories: unknown schema, keys=%s; fail closed",
+                list(data.keys()),
+            )
+            return []
+        records: List[LongTermMemoryRecord] = []
+        for item in items:
+            record = self._record_from_item(item, user_id=user_id)
+            if record is not None:
+                records.append(record)
+        return records
+
+    def _record_from_item(
+        self, item: Any, *, user_id: str
+    ) -> LongTermMemoryRecord | None:
+        """将单个记忆条目解析为 LongTermMemoryRecord。
+
+        缺少 MemoryId 或正文的条目返回 None（无法支撑 mutation，fail closed）。
+        """
+        if not isinstance(item, dict):
+            return None
+        memory_id = item.get("MemoryId")
+        content = item.get("Memory")
+        if not isinstance(memory_id, str) or not memory_id.strip():
+            logger.warning("memory item without MemoryId skipped")
+            return None
+        if not isinstance(content, str) or not content.strip():
+            logger.warning("memory item without content skipped")
+            return None
+        score = item.get("Score")
+        parsed_score: float | None = None
+        if isinstance(score, (int, float)):
+            parsed_score = float(score)
+        metadata: dict[str, Any] = {}
+        for key in ("OccurredStart", "OccurredEnd"):
+            value = item.get(key)
+            if value is not None:
+                metadata[key] = value
+        agent_user_id = item.get("AgentUserId")
+        if isinstance(agent_user_id, str) and agent_user_id:
+            metadata["AgentUserId"] = agent_user_id
+        return LongTermMemoryRecord(
+            memory_id=memory_id.strip(),
+            content=content.strip(),
+            score=parsed_score,
+            user_id=user_id,
+            created_at=item.get("CreatedAt") if isinstance(item.get("CreatedAt"), str) else None,
+            updated_at=item.get("UpdatedAt") if isinstance(item.get("UpdatedAt"), str) else None,
+            metadata=metadata,
+        )
 
     def get_session_status(
         self,

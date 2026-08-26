@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import zipfile
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -13,7 +12,11 @@ from ksadk.builders.framework_requirements import (
     code_requirements_for_framework,
     requirements_for_framework,
 )
-from ksadk.builders.managed_runtime_builder import ManagedRuntimeBuilder
+from ksadk.builders.managed_runtime_builder import (
+    ManagedRuntimeBuilder,
+    managed_runtime_lock_path,
+    serialize_managed_runtime_manifest,
+)
 from ksadk.cli.cmd_build import build as build_command
 from ksadk.cli.cmd_deploy import _resolve_artifact_type_input
 from ksadk.cli.workflow_common import plan_artifact_build, resolve_artifact_build_plan
@@ -45,19 +48,20 @@ def _write_codex_project(tmp_path, *, runtime_version: str | None = "0.144.4"):
     return config
 
 
-def test_managed_runtime_builder_emits_manifest_only_bundle(tmp_path):
+def test_managed_runtime_builder_emits_yaml_declaration_and_lock_without_code_zip(tmp_path):
     _write_codex_project(tmp_path)
 
     result = ManagedRuntimeBuilder(tmp_path).build()
 
     assert result.success is True
     assert result.artifact_path is not None
-    assert result.artifact_path.name == "managed-codex-1.2.3-runtime.zip"
-    with zipfile.ZipFile(result.artifact_path) as archive:
-        assert archive.namelist() == ["agentengine.yaml", "runtime-lock.json"]
-        manifest_bytes = archive.read("agentengine.yaml")
-        manifest = yaml.safe_load(manifest_bytes)
-        lock = json.loads(archive.read("runtime-lock.json"))
+    assert result.artifact_path.name.startswith("managed-codex-1.2.3-")
+    assert result.artifact_path.name.endswith("-runtime.yaml")
+    assert result.artifact_path.read_bytes()
+    assert not list((tmp_path / ".agentengine" / "managed_runtime").glob("*.zip"))
+    manifest_bytes = result.artifact_path.read_bytes()
+    manifest = yaml.safe_load(manifest_bytes)
+    lock = json.loads(managed_runtime_lock_path(result.artifact_path).read_bytes())
 
     assert set(manifest) == {
         "name",
@@ -75,6 +79,33 @@ def test_managed_runtime_builder_emits_manifest_only_bundle(tmp_path):
         "runtime": {"name": "codex", "version": "0.144.4"},
         "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
     }
+
+
+def test_managed_runtime_manifest_digest_matches_server_canonical_yaml():
+    """Formatting and input key order must not change the admission digest."""
+
+    first = {
+        "name": "managed-codex",
+        "prompt": "回答用户问题。\n",
+        "runtime": {"version": "0.147.0", "name": "codex"},
+    }
+    second = {
+        "runtime": {"name": "codex", "version": "0.147.0"},
+        "prompt": "回答用户问题。\n",
+        "name": "managed-codex",
+    }
+
+    first_bytes = serialize_managed_runtime_manifest(first)
+    second_bytes = serialize_managed_runtime_manifest(second)
+
+    assert first_bytes == second_bytes
+    assert first_bytes == yaml.safe_dump(
+        first,
+        sort_keys=True,
+        allow_unicode=True,
+        default_flow_style=False,
+        width=10_000,
+    ).encode("utf-8")
 
 
 def test_managed_runtime_builder_requires_resolved_version(tmp_path):
@@ -189,6 +220,8 @@ async def test_serverless_managed_runtime_deploy_forwards_the_built_manifest_sha
 
     runtime_config = client.create_agent.await_args.args[0]["runtime_config"]
     assert runtime_config["manifest_sha256"] == package.metadata["manifest_sha256"]
+    assert "artifact_type: ManagedRuntime" in runtime_config["manifest"]
+    assert "ks3" not in client.create_agent.await_args.args[0]
 
 
 def test_build_command_auto_selects_managed_runtime(tmp_path):
@@ -197,9 +230,12 @@ def test_build_command_auto_selects_managed_runtime(tmp_path):
     result = CliRunner().invoke(build_command, [str(tmp_path)])
 
     assert result.exit_code == 0, result.output
-    assert (
-        tmp_path / ".agentengine" / "managed_runtime" / "managed-codex-1.2.3-runtime.zip"
-    ).exists()
+    artifacts = list(
+        (tmp_path / ".agentengine" / "managed_runtime").glob(
+            "managed-codex-1.2.3-*-runtime.yaml"
+        )
+    )
+    assert len(artifacts) == 1
 
 
 def test_build_command_rejects_forced_code_mode_for_codex(tmp_path):

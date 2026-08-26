@@ -23,7 +23,18 @@ from a2a.types import Part, Task, TaskState, TaskStatus
 from a2a.utils.errors import TaskNotCancelableError
 
 from ksadk.a2a.resume_store import A2AResumePayloadKind
-from ksadk.events import EventType, RuntimeEvent
+from ksadk.events.canonical import (
+    ContinuationCreated,
+    EventEnvelope,
+    InteractionRequested,
+    ItemCompleted,
+    ItemUpdated,
+    RunCanceled,
+    RunFailed,
+    RunInterrupted,
+    RuntimeEvent,
+)
+from ksadk.events.content import TextContent
 from ksadk.runtime import CancelResult, RunHandle
 
 logger = logging.getLogger(__name__)
@@ -143,6 +154,30 @@ class _RunCanceled(Exception):
     """Runtime 已取消本次执行,executor 不得再发 completed。"""
 
 
+def _require_resume_capability(task_adapter: Any) -> None:
+    """当 runtime adapter 显式声明 typed capability matrix 时,校验 resume 是否 supported。
+
+    只有 adapter **覆写**了 ``capabilities()`` 才执行强校验(声明 unsupported 必须
+    fail-closed);沿用基类默认矩阵的旧版/第三方 adapter 不受影响,避免把
+    "未迁移到 v1 matrix" 误判为 "声明不支持"。
+    """
+
+    from ksadk.runtime.adapter import RuntimeAdapter
+
+    runtime_adapter = getattr(task_adapter, "runtime_adapter", None)
+    declared = getattr(type(runtime_adapter), "capabilities", None)
+    if declared is None or declared is RuntimeAdapter.capabilities:
+        return
+    matrix = declared(runtime_adapter)
+    if not matrix.resume.supported:
+        from ksadk.kernel.errors import UnsupportedControlError
+
+        raise UnsupportedControlError(
+            "runtime capability matrix declares resume unsupported: "
+            f"{matrix.resume.reason}"
+        )
+
+
 class A2ARuntimeExecutor(AgentExecutor):
     """在 A2A 请求生命周期内执行 RuntimeAdapter。
 
@@ -175,6 +210,12 @@ class A2ARuntimeExecutor(AgentExecutor):
             and getattr(getattr(current_task, "status", None), "state", None)
             == TaskState.TASK_STATE_INPUT_REQUIRED
         )
+        from ksadk.kernel.ingress import kernel_route_active
+
+        if kernel_route_active() and not is_resume:
+            await self._kernel_execute(context, updater)
+            return
+
         interaction_response: Any = None
         # Third-party/local adapters written before durable context mapping do not
         # necessarily provide this optional lifecycle hook.
@@ -190,6 +231,9 @@ class A2ARuntimeExecutor(AgentExecutor):
                 context,
                 answer=interaction_response,
             )
+            # 诚实 capability:runtime 声明 resume unsupported 时 fail-closed,
+            # 不允许协议层吞掉 matrix 并假装续跑成功。
+            _require_resume_capability(self.task_adapter)
 
         handle: RunHandle | None = None
         try:
@@ -237,6 +281,70 @@ class A2ARuntimeExecutor(AgentExecutor):
             )
             await self._forget_task(context, handle)
 
+    async def _kernel_execute(self, context: RequestContext, updater: TaskUpdater) -> None:
+        """kernel 路径（灰度 opt-in）：A2A task -> AgentControlCommand -> receipt。
+
+        mutation 只走 kernel.submit；A2A task 事件 shape 保留，cursor 源自同一
+        Session seq（SessionEventSubscription.after_seq）。
+        """
+        from ksadk.kernel import ingress as _kernel_ingress
+
+        task_id = str(context.task_id or "")
+        session_id = str(context.context_id or task_id)
+        try:
+            trusted = _kernel_ingress.trusted_context(
+                source_kind="a2a",
+                source_ref=task_id,
+                session_id=session_id,
+                operations=("enqueue",),
+            )
+            command = _kernel_ingress.map_a2a_task(
+                session_id=session_id,
+                idempotency_key=task_id,
+                content={"input": context.get_user_input()},
+                task_id=task_id,
+                trusted=trusted,
+            )
+            receipt = await _kernel_ingress.submit_command(command, permit=trusted.permit)
+            if receipt.status not in ("accepted", "duplicate"):
+                await updater.failed(
+                    message=updater.new_agent_message(
+                        parts=[Part(text=f"agent kernel rejected command: {receipt.status}")]
+                    )
+                )
+                return
+            await updater.update_status(
+                TaskState.TASK_STATE_WORKING,
+                metadata=dict(ADK_V2_INTEGRATION_METADATA),
+            )
+            output_text = ""
+            async for _seq, projected in _kernel_ingress.subscribe_projected(
+                session_id,
+                trusted=trusted,
+                after_seq=int(receipt.accepted_seq or 0),
+                projector=_a2a_envelope_projection,
+            ):
+                if projected is None:
+                    continue
+                kind, value = projected
+                if kind == "delta":
+                    output_text += value
+                elif kind == "completed":
+                    output_text = value or output_text
+            completion = (
+                updater.new_agent_message(parts=[Part(text=output_text)])
+                if output_text
+                else None
+            )
+            await updater.complete(message=completion)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("A2A kernel ingress failed (%s)", type(exc).__name__)
+            await updater.failed(
+                message=updater.new_agent_message(
+                    parts=[Part(text="A2A task execution failed")]
+                )
+            )
+
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         # §7.4:cancel 统一由 adapter 提供。有 RuntimeAdapter → 尊重其 CancelResult,
         # 只有底层真取消(CANCELLED)才把协议 Task 置 canceled;其余状态如实抛
@@ -278,7 +386,6 @@ class A2ARuntimeExecutor(AgentExecutor):
     ) -> str:
         output_text = ""
         artifacts = _ArtifactStreamEmitter(updater, str(context.task_id))
-        reasoning_text = ""
         input_required = False
         input_prompt = "Input required"
         checkpoint_id: str | None = None
@@ -286,92 +393,81 @@ class A2ARuntimeExecutor(AgentExecutor):
         payload_kind: A2AResumePayloadKind = "hitl_answer"
 
         async for event in self.task_adapter.stream_task(handle):
-            if not isinstance(event, RuntimeEvent):
+            if not isinstance(event, EventEnvelope):
                 raise TypeError("RuntimeAdapter.stream must yield RuntimeEvent")
-            if event.event_type == EventType.RUN_FAILED:
-                raise RuntimeError(self._coerce_text(event.payload.get("error")))
-            if event.event_type == EventType.RUN_CANCELED:
+            if isinstance(event, RunFailed):
+                raise RuntimeError(self._coerce_text(event.error.message))
+            if isinstance(event, RunCanceled):
                 await artifacts.close()
                 if not self._cancel_was_accepted(context, handle):
                     await updater.cancel(
                         message=updater.new_agent_message(parts=[Part(text="Request canceled")])
                     )
                 raise _RunCanceled()
-            if event.event_type == EventType.APPROVAL_REQUESTED:
+            if isinstance(event, InteractionRequested):
                 input_required = True
                 payload_kind = "approval_decision"
                 call_id = (
-                    str(event.payload.get("call_id") or event.payload.get("approval_id") or "")
+                    str(event.request.call_id or event.interaction_id or "")
                     or None
                 )
-                detail = event.payload.get("detail")
+                detail = event.request.detail
                 if isinstance(detail, dict):
                     input_prompt = self._coerce_text(
                         detail.get("prompt") or detail.get("message") or input_prompt
                     )
                 continue
-            if event.event_type == EventType.CHECKPOINT_CREATED:
-                checkpoint_id = str(event.payload.get("checkpoint_id") or "") or None
+            if isinstance(event, ContinuationCreated):
+                checkpoint_id = event.continuation_id
                 continue
-            if event.event_type == EventType.RUN_INTERRUPTED:
+            if isinstance(event, RunInterrupted):
                 input_required = True
-                input_prompt = self._coerce_text(
-                    event.payload.get("prompt") or event.payload.get("message") or input_prompt
-                )
+                input_prompt = self._coerce_text(event.reason or input_prompt)
                 continue
-            if event.event_type not in {
-                EventType.TEXT_DELTA,
-                EventType.TEXT_COMPLETED,
-                EventType.REASONING_DELTA,
-                EventType.REASONING_COMPLETED,
-            }:
-                continue
-            text = self._coerce_text(event.payload.get("text"))
-            if not text:
-                continue
-            if event.event_type == EventType.REASONING_COMPLETED:
-                if not self.include_reasoning:
+            if isinstance(event, ItemUpdated):
+                if event.item_kind == "reasoning":
+                    if not self.include_reasoning:
+                        continue
+                    if not isinstance(event.update, TextContent):
+                        continue
+                    text = event.update.text
+                    if not text:
+                        continue
+                    await artifacts.push(
+                        "thinking", text, replace_snapshot=(event.op == "replace")
+                    )
                     continue
-                if not reasoning_text:
-                    delta = text
-                    reasoning_text = text
-                elif text.startswith(reasoning_text):
-                    delta = text[len(reasoning_text) :]
-                    reasoning_text = text
-                else:
-                    delta = text
-                    reasoning_text += text
-                if delta:
-                    await artifacts.push("thinking", delta)
-                continue
-            if event.event_type == EventType.REASONING_DELTA:
-                if not self.include_reasoning:
+                if event.item_kind == "message":
+                    if not isinstance(event.update, TextContent):
+                        continue
+                    text = event.update.text
+                    if not text:
+                        continue
+                    replace_snapshot = event.op == "replace"
+                    if replace_snapshot:
+                        output_text = text
+                    else:
+                        output_text += text
+                    await artifacts.push("text", text, replace_snapshot=replace_snapshot)
                     continue
-                reasoning_text += text
-                await artifacts.push("thinking", text)
                 continue
-            # TEXT_COMPLETED 是累计全文,去重只发新增 suffix;TEXT_DELTA 默认是增量,
-            # 但 runner 显式标记 replace 时是权威快照。
-            if event.event_type == EventType.TEXT_COMPLETED:
-                if not output_text:
-                    delta = text
+            if isinstance(event, ItemCompleted):
+                if event.item_kind == "reasoning":
+                    if not self.include_reasoning:
+                        continue
+                    text = self._snapshot_text(event)
+                    if not text:
+                        continue
+                    await artifacts.push("thinking", text, replace_snapshot=True)
+                    continue
+                if event.item_kind == "message":
+                    text = self._snapshot_text(event)
+                    if not text:
+                        continue
                     output_text = text
-                    replace_snapshot = False
-                elif text.startswith(output_text):
-                    delta = text[len(output_text) :]
-                    output_text = text
-                    replace_snapshot = False
-                else:
-                    delta = text
-                    output_text = text
-                    replace_snapshot = True
-            else:
-                delta = text
-                replace_snapshot = bool(event.payload.get("replace"))
-                output_text = text if replace_snapshot else output_text + text
-            if not delta:
+                    await artifacts.push("text", text, replace_snapshot=True)
+                    continue
                 continue
-            await artifacts.push("text", delta, replace_snapshot=replace_snapshot)
         if self._cancel_was_accepted(context, handle):
             await artifacts.close()
             raise _RunCanceled()
@@ -407,6 +503,14 @@ class A2ARuntimeExecutor(AgentExecutor):
             if inspect.isawaitable(result):
                 await result
 
+    @staticmethod
+    def _snapshot_text(event: ItemCompleted) -> str:
+        """Extract text from the first TextContent part of an ItemCompleted snapshot."""
+        if not event.snapshot.parts:
+            return ""
+        part = event.snapshot.parts[0]
+        return part.text if isinstance(part, TextContent) else ""
+
     @classmethod
     def _coerce_text(cls, payload: Any) -> str:
         if payload is None:
@@ -423,3 +527,15 @@ class A2ARuntimeExecutor(AgentExecutor):
 
 
 __all__ = ["A2ARuntimeExecutor"]
+
+
+def _a2a_envelope_projection(envelope) -> tuple[str, str] | None:
+    """Session envelope -> A2A 文本投影；cursor 仍用 envelope.seq。"""
+
+    payload = envelope.payload or {}
+    if envelope.event_type == "run.completed":
+        return "completed", str(payload.get("output_text") or "")
+    text = str(payload.get("delta") or payload.get("text") or "")
+    if text:
+        return "delta", text
+    return None

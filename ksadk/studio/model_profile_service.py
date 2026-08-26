@@ -32,7 +32,7 @@ async def test_model_profile_connection(
     resolved.parameters = resolved.parameters.model_copy(
         update={
             "temperature": 0,
-            "max_tokens": min(resolved.parameters.max_tokens, 64),
+            "max_tokens": min(resolved.parameters.max_tokens or 2048, 64),
         }
     )
     host = (urlparse(resolved.endpoint_url).hostname or "").lower().rstrip(".")

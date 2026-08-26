@@ -92,6 +92,7 @@ class _DetachedSSEStream:
 
     async def _consume(self) -> None:
         terminal_fallback_status: str | None = None
+        terminal_fallback_detail: str | None = None
         try:
             async for chunk in self._source:
                 self._backlog.append(chunk)
@@ -107,8 +108,9 @@ class _DetachedSSEStream:
         except asyncio.CancelledError:
             terminal_fallback_status = "cancelled"
             raise
-        except Exception:
+        except Exception as exc:
             terminal_fallback_status = "failed"
+            terminal_fallback_detail = f"{type(exc).__name__}: {exc}"[:2048]
             logger.exception("Detached SSE stream failed")
             raise
         finally:
@@ -128,7 +130,8 @@ class _DetachedSSEStream:
                             status=terminal_fallback_status,
                             invocation_id=self.invocation_id or "",
                             detail=(
-                                f"background_{terminal_fallback_status}:{self.invocation_id or ''}"
+                                terminal_fallback_detail
+                                or f"background_{terminal_fallback_status}:{self.invocation_id or ''}"
                             ),
                             session_service_provider=get_state().resolve_session_service,
                             run_mode=self._run_mode,

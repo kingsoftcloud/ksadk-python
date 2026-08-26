@@ -79,6 +79,21 @@ class BaseRunner(ABC):
         """
         return "unsupported"
 
+    def describe_context_capabilities(self) -> Any:
+        """声明该 Runner 的 Prompt/Context/Memory ownership 合同。
+
+        默认按 ``detection_result.type.value`` 显式分派已知 Runner 的 capability，
+        未知自定义 Runner 落到最保守的 ``framework_assisted + opaque``。子类一般无需
+        override——registry 已是已知 Runner 的显式默认值（方案 6.1）；仅非 BaseRunner
+        体系的 Runner（如 CodexRuntimeAdapter）需自带同名方法。第一个 PR 中该声明仅供
+        shadow ContextPlan / conformance 测试消费，不改变真实输入。
+        """
+        from ksadk.context_engine.capabilities import _capabilities_for_detection_type
+
+        detection_type = getattr(getattr(self, "detection_result", None), "type", None)
+        value = getattr(detection_type, "value", detection_type)
+        return _capabilities_for_detection_type(str(value or "").strip().lower())
+
     def describe_checkpoint_capability(self) -> dict[str, Any]:
         """描述框架级 checkpoint 能力。
 
@@ -103,6 +118,7 @@ class BaseRunner(ABC):
         cancel_supported = type(self).request_cancel is not BaseRunner.request_cancel
         return {
             "Framework": framework or self.__class__.__name__,
+            "model_call_boundaries": False,
             "CancelRun": {
                 "Supported": cancel_supported,
                 "RequestResults": (

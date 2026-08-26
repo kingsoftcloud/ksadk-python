@@ -4,6 +4,7 @@ AgentEngine Server API 客户端
 支持 AWS V4 签名认证，用于通过 KOP 网关访问 AgentEngine Server。
 """
 
+import asyncio
 import json
 import logging
 import mimetypes
@@ -14,7 +15,7 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, Optional, Sequence
+from typing import Any, AsyncIterator, Callable, Dict, Iterator, Optional, Sequence
 from urllib.parse import quote, unquote, urlparse, urlsplit
 
 import requests
@@ -34,6 +35,69 @@ class AttachmentContent:
     data: bytes
     content_type: str
     display_name: str
+
+
+def _next_stream_chunk(iterator: Iterator[bytes]) -> bytes | None:
+    """Read one non-empty requests chunk without leaking StopIteration to asyncio."""
+
+    while True:
+        try:
+            chunk = next(iterator)
+        except StopIteration:
+            return None
+        if chunk:
+            return chunk
+
+
+class AgentEngineSSEStream(AsyncIterator[bytes]):
+    """Async owner for one dedicated blocking requests SSE connection."""
+
+    def __init__(self, response: requests.Response, session: requests.Session) -> None:
+        self._response: requests.Response | None = response
+        self._session: requests.Session | None = session
+        # Read SSE as logical lines with the smallest requests read size.  A
+        # fixed 8 KiB ``iter_content`` block makes short runs appear
+        # non-streaming, while ``chunk_size=None`` waits for EOF on urllib3.
+        # ``iter_lines`` performs the byte-at-a-time buffering inside the
+        # blocking worker and yields complete lines, avoiding one thread hop
+        # per byte.  Re-add the delimiter so downstream SSE parsers keep their
+        # normal framing, including the blank line between events.
+        self._chunks = (line + b"\n" for line in response.iter_lines(chunk_size=1))
+        self._closed = False
+
+    def __aiter__(self) -> "AgentEngineSSEStream":
+        return self
+
+    async def __anext__(self) -> bytes:
+        if self._closed:
+            raise StopAsyncIteration
+        try:
+            chunk = await asyncio.to_thread(_next_stream_chunk, self._chunks)
+        except BaseException:
+            await self.aclose()
+            raise
+        if chunk is None:
+            await self.aclose()
+            raise StopAsyncIteration
+        return chunk
+
+    async def aclose(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        response, session = self._response, self._session
+        self._response = None
+        self._session = None
+
+        def close_transport() -> None:
+            try:
+                if response is not None:
+                    response.close()
+            finally:
+                if session is not None:
+                    session.close()
+
+        await asyncio.to_thread(close_transport)
 
 
 class DryRunExit(Exception):
@@ -127,7 +191,16 @@ class AgentEngineClient:
             logger.debug("AgentEngineClient: No credentials, signing disabled")
 
         self._session: Optional[requests.Session] = None
+        # The public client keeps synchronous ``requests`` transport for CLI
+        # compatibility.  Async callers (notably Studio's FastAPI process)
+        # must not run that transport on the event-loop thread, and the shared
+        # requests.Session must not be used by several worker threads at once.
+        self._async_action_lock = asyncio.Lock()
         self._http_error_log_suppressors: list[HttpErrorLogSuppressor] = []
+        # A Server Action can be deployed before the external KOP publication
+        # finishes.  Remember that result per client so an approval retry does
+        # not repeatedly hit the known-unpublished control-plane route.
+        self._unpublished_kop_actions: set[str] = set()
         # 反查身份的实例缓存（避免同会话重复调 IAM）；None=未尝试，ResolvedIdentity|None=已反查
         self._resolved_identity: Any = None
         self._identity_resolve_attempted: bool = False
@@ -708,6 +781,17 @@ class AgentEngineClient:
             self._session.close()
             self._session = None
 
+    async def _action_async(
+        self,
+        action: str,
+        params: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Run the legacy blocking Action transport without freezing an event loop."""
+
+        async with self._async_action_lock:
+            return await asyncio.to_thread(self._action, action, params, **kwargs)
+
     async def __aenter__(self):
         return self
 
@@ -911,6 +995,83 @@ class AgentEngineClient:
                 str(payload.get("detail") or payload.get("Message") or message).strip() or message
             )
         return AgentEngineAPIError(response.status_code, message)
+
+    @staticmethod
+    def _is_unregistered_kop_action(error: AgentEngineAPIError, action: str) -> bool:
+        """Return whether KOP rejected an otherwise valid Server Action.
+
+        Public Action publication is an infrastructure step independent of a
+        Server rollout.  During that window the per-Agent Gateway route is
+        already authenticated and still forwards the exact same Action to
+        Server admission, so callers can safely use it as the data-plane
+        fallback instead of losing an approval response.
+        """
+
+        message = str(error.message or "").strip().lower()
+        return (
+            error.code == 400
+            and f"action {action.lower()}" in message
+            and "not valid for this web service" in message
+        )
+
+    def _runtime_action(
+        self,
+        *,
+        access: Dict[str, Any],
+        action: str,
+        params: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        endpoint = str(access.get("endpoint") or "").strip().rstrip("/")
+        api_key = str(access.get("api_key") or "").strip()
+        if not endpoint or not api_key:
+            raise AgentEngineAPIError(404, "Agent runtime access is not ready")
+        response = self._get_session().request(
+            method="POST",
+            url=f"{endpoint}/agentengine/api/v1/{action}",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json=params,
+            timeout=self.timeout,
+            verify=self._ssl_verify_enabled(),
+        )
+        if response.status_code >= 400:
+            raise self._workspace_runtime_error(response)
+        try:
+            result = response.json()
+        except Exception as exc:
+            raise AgentEngineAPIError(502, "Runtime Action returned invalid JSON") from exc
+        if not isinstance(result, dict):
+            raise AgentEngineAPIError(502, "Runtime Action returned a non-object payload")
+        code = result.get("Code", 0)
+        if code != 0:
+            raise AgentEngineAPIError(
+                code,
+                str(result.get("Message") or "Unknown API error"),
+                details={
+                    "request_id": result.get("RequestId"),
+                    "action": result.get("Action") or action,
+                },
+            )
+        data = result.get("Data") if result.get("Data") is not None else result
+        normalized = self._to_snake_case(data)
+        if not isinstance(normalized, dict):
+            raise AgentEngineAPIError(502, "Runtime Action returned non-object Data")
+        return normalized
+
+    async def _runtime_action_for_agent(
+        self,
+        *,
+        agent_id: str,
+        action: str,
+        params: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        detail = await self.get_agent(agent_id, include_api_key=True)
+        access = self._extract_runtime_access(detail)
+        return await asyncio.to_thread(
+            self._runtime_action,
+            access=access,
+            action=action,
+            params=params,
+        )
 
     @staticmethod
     def _compact_params(params: Dict[str, Any] | None) -> Dict[str, Any]:
@@ -1310,8 +1471,45 @@ class AgentEngineClient:
                 payload[key] = text
         return payload
 
+    @staticmethod
+    def _managed_runtime_config_payload(data: Dict[str, Any]) -> Dict[str, Any]:
+        """Build the public declaration accepted by Server Create/UpdateAgent.
+
+        ``runtime_config`` remains readable for older SDK callers, but it is a
+        resolved read-model.  New callers must send ``managed_runtime_config``
+        so retries carry the complete YAML declaration Server needs to resolve
+        a compatible immutable runtime image.
+        """
+        declaration = data.get("managed_runtime_config")
+        if isinstance(declaration, dict):
+            manifest = str(declaration.get("manifest") or "").strip()
+            runtime_name = declaration.get("runtime_name")
+            runtime_version = declaration.get("runtime_version")
+            manifest_sha256 = declaration.get("manifest_sha256")
+        else:
+            legacy = data.get("runtime_config") or {}
+            manifest = str(legacy.get("manifest") or "").strip()
+            runtime_name = legacy.get("name")
+            runtime_version = legacy.get("version")
+            manifest_sha256 = legacy.get("manifest_sha256")
+        if not manifest:
+            raise ValueError("ManagedRuntime requires managed_runtime_config.manifest")
+        payload: Dict[str, Any] = {
+            "Manifest": manifest,
+            "RuntimeName": runtime_name,
+            "RuntimeVersion": runtime_version,
+        }
+        if manifest_sha256:
+            payload["ManifestSHA256"] = manifest_sha256
+        return payload
+
     async def create_agent(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """创建 Agent (通过 CreateAgentProduct 走订单流程)"""
+        """Create an Agent through the established order workflow.
+
+        The control plane invokes the existing ``CreateAgent`` callback after
+        ``CreateAgentProduct``.  Calling it a second time from Studio races
+        that callback and can create an inconsistent lifecycle result.
+        """
         framework = self._normalize_framework_name(data.get("framework"))
         params = {
             "Name": data.get("name"),
@@ -1357,7 +1555,7 @@ class AgentEngineClient:
                 "IamRole": data.get("iam_role", "KsyunAgentEngineDefaultRole"),
             }
 
-        if params["DeploymentType"] in {"Code", "ManagedRuntime"}:
+        if params["DeploymentType"] == "Code":
             ks3 = data.get("ks3", {})
             params["CodeConfig"] = {
                 "Path": data.get("artifact_path", ""),
@@ -1365,14 +1563,11 @@ class AgentEngineClient:
                 "SecretKey": ks3.get("secret_key"),
                 "Region": self._normalize_payload_region(ks3.get("region", "cn-beijing-6")),
                 "Bucket": ks3.get("bucket"),
+                "Command": data.get("code_command"),
+                "Checksum": data.get("code_checksum"),
             }
-            if params["DeploymentType"] == "ManagedRuntime":
-                runtime_config = data.get("runtime_config") or {}
-                params["RuntimeConfig"] = {
-                    "Name": runtime_config.get("name"),
-                    "Version": runtime_config.get("version"),
-                    "ManifestSha256": runtime_config.get("manifest_sha256"),
-                }
+        elif params["DeploymentType"] == "ManagedRuntime":
+            params["ManagedRuntimeConfig"] = self._managed_runtime_config_payload(data)
         else:
             ic = data.get("image_credential", {}) or {}
             artifact = (data.get("artifact_path", "") or "").strip()
@@ -1387,8 +1582,18 @@ class AgentEngineClient:
         else:
             env_vars = []
 
+        # Keep create and update semantics aligned.  In particular, an
+        # explicit ``--no-observability`` must not be silently rewritten to
+        # true while the order is being created.
+        observability = data.get("observability")
+        if isinstance(observability, dict) and "langfuse_enabled" in observability:
+            enable_observability = bool(observability.get("langfuse_enabled"))
+        elif "enable_observability" in data:
+            enable_observability = bool(data.get("enable_observability"))
+        else:
+            enable_observability = True
         advanced = {
-            "EnableObservability": True,
+            "EnableObservability": enable_observability,
             "EnvironmentVariables": env_vars,
         }
         inbound_identity_auth = data.get("inbound_identity_auth")
@@ -1399,7 +1604,21 @@ class AgentEngineClient:
             advanced["ProjectId"] = project_id
         params["Advanced"] = advanced
 
-        return self._action("CreateAgentProduct", params)
+        # ManagedRuntime is an already-paid, platform-owned YAML runtime.  It
+        # has no Code/Container order callback to materialize later, so use
+        # the existing CreateAgent action to create its Agent/Runtime now.
+        # Code and Container keep the established CreateAgentProduct flow.
+        action = (
+            "CreateAgent"
+            if params["DeploymentType"] == "ManagedRuntime"
+            else "CreateAgentProduct"
+        )
+        if action == "CreateAgent":
+            # CreateAgent is also used as an order callback and therefore
+            # requires an InstanceId.  A declarative runtime has no order to
+            # allocate one for us, so the SDK supplies a stable request UUID.
+            params["InstanceId"] = str(data.get("instance_id") or uuid.uuid4())
+        return self._action(action, params)
 
     async def get_agent(
         self,
@@ -1639,7 +1858,9 @@ class AgentEngineClient:
         if data.get("description"):
             params["Description"] = data["description"]
 
-        if data.get("artifact_path"):
+        if artifact_type == "ManagedRuntime":
+            params["ManagedRuntimeConfig"] = self._managed_runtime_config_payload(data)
+        elif data.get("artifact_path"):
             artifact = (data.get("artifact_path", "") or "").strip()
             if (artifact_type or "").lower() == "container":
                 ic = data.get("image_credential", {}) or {}
@@ -1655,14 +1876,9 @@ class AgentEngineClient:
                     "SecretKey": ks3.get("secret_key"),
                     "Region": self._normalize_payload_region(ks3.get("region", "cn-beijing-6")),
                     "Bucket": ks3.get("bucket"),
+                    "Command": data.get("code_command"),
+                    "Checksum": data.get("code_checksum"),
                 }
-                if artifact_type == "ManagedRuntime":
-                    runtime_config = data.get("runtime_config") or {}
-                    params["RuntimeConfig"] = {
-                        "Name": runtime_config.get("name"),
-                        "Version": runtime_config.get("version"),
-                        "ManifestSha256": runtime_config.get("manifest_sha256"),
-                    }
 
         if data.get("resources"):
             params["Resource"] = {
@@ -1729,25 +1945,136 @@ class AgentEngineClient:
         self, agent_id: str, user_id: Optional[str] = None, expires_hours: int = 24
     ) -> Dict[str, Any]:
         """创建会话"""
-        return self._action(
+        return await self._action_async(
             "CreateSession", {"AgentId": agent_id, "UserId": user_id, "ExpiresHours": expires_hours}
         )
 
     async def get_session(self, session_id: str) -> Dict[str, Any]:
         """获取会话详情"""
-        return self._action("GetSession", {"Id": session_id})
+        return await self._action_async("GetSession", {"Id": session_id})
 
     async def list_sessions(self, agent_id: str, page: int = 1, size: int = 20) -> Dict[str, Any]:
         """列出会话"""
-        return self._action("ListSessions", {"AgentId": agent_id, "Page": page, "PageSize": size})
+        return await self._action_async(
+            "ListSessions", {"AgentId": agent_id, "Page": page, "PageSize": size}
+        )
 
     async def delete_session(self, session_id: str) -> bool:
         """删除会话"""
         try:
-            self._action("DeleteSession", {"Id": session_id})
-            return True
+            result = await self._action_async("DeleteSession", {"Id": session_id})
+            # Server may accept the request but retain the control-plane
+            # record when runtime-side deletion is still pending.  Do not
+            # present that state as a completed delete to Studio callers.
+            return bool(result.get("deleted"))
         except Exception:
             return False
+
+    async def list_session_messages(
+        self,
+        *,
+        agent_id: str,
+        session_id: str,
+        after_seq_id: int | None = None,
+        before_seq_id: int | None = None,
+        cursor_source: str | None = None,
+        limit: int = 50,
+        include_reasoning: bool = False,
+        include_tool_events: bool = False,
+        include_attachments: bool = True,
+    ) -> Dict[str, Any]:
+        """Read the Server-owned message projection for one cloud session.
+
+        This is intentionally an AgentEngine Action client method rather than
+        a Hosted UI shortcut.  Local Studio can retain AK/SK in its backend,
+        call the same authenticated Server read path as the cloud console, and
+        keep cursor ownership on the Server/Runtime boundary.
+        """
+
+        params: Dict[str, Any] = {
+            "AgentId": agent_id,
+            "SessionId": session_id,
+            "Limit": limit,
+            "IncludeReasoning": include_reasoning,
+            "IncludeToolEvents": include_tool_events,
+            "IncludeAttachments": include_attachments,
+        }
+        if after_seq_id is not None:
+            params["AfterSeqId"] = after_seq_id
+        if before_seq_id is not None:
+            params["BeforeSeqId"] = before_seq_id
+        if cursor_source is not None:
+            params["CursorSource"] = cursor_source
+        return await self._action_async("ListSessionMessages", params)
+
+    async def list_session_events(
+        self,
+        *,
+        agent_id: str,
+        session_id: str,
+        after_seq_id: int | None = None,
+        limit: int = 100,
+    ) -> Dict[str, Any]:
+        """Read canonical cloud session events through the Server Action API."""
+
+        params: Dict[str, Any] = {
+            "AgentId": agent_id,
+            "SessionId": session_id,
+            "Limit": limit,
+        }
+        if after_seq_id is not None:
+            params["AfterSeqId"] = after_seq_id
+        return await self._action_async("ListSessionEvents", params)
+
+    async def submit_interaction(
+        self,
+        *,
+        agent_id: str,
+        session_id: str,
+        run_id: str,
+        interaction_id: str,
+        expected_revision: int,
+        action: str,
+        response: Dict[str, Any] | None = None,
+        idempotency_key: str,
+    ) -> Dict[str, Any]:
+        """Submit one Interaction/v1 response via Server admission.
+
+        The caller supplies only public interaction fields.  Tenant,
+        principal, AgentInstance and permit remain Server-derived.
+        """
+
+        params = {
+            "AgentId": agent_id,
+            "SessionId": session_id,
+            "RunId": run_id,
+            "InteractionId": interaction_id,
+            "ExpectedRevision": expected_revision,
+            # ``Action`` is reserved by the KOP envelope for the API operation
+            # name.  Keep the SDK argument ergonomic while using an
+            # unambiguous public wire field.
+            "InteractionAction": action,
+            "Response": response or {},
+            "IdempotencyKey": idempotency_key,
+        }
+        if "SubmitInteraction" not in self._unpublished_kop_actions:
+            try:
+                return await self._action_async("SubmitInteraction", params)
+            except AgentEngineAPIError as exc:
+                if not self._is_unregistered_kop_action(exc, "SubmitInteraction"):
+                    raise
+                self._unpublished_kop_actions.add("SubmitInteraction")
+        if "SubmitInteraction" in self._unpublished_kop_actions:
+            # KOP publication can lag the Server/Gateway rollout.  The
+            # per-Agent endpoint is authenticated with the API key returned by
+            # signed GetAgent and still traverses Gateway -> Server admission;
+            # it never submits directly to Runtime.
+            return await self._runtime_action_for_agent(
+                agent_id=agent_id,
+                action="SubmitInteraction",
+                params=params,
+            )
+        raise AssertionError("unreachable SubmitInteraction transport state")
 
     async def list_workspace_files(
         self,
@@ -2200,17 +2527,188 @@ class AgentEngineClient:
     # ===== Chat Actions =====
 
     async def chat(
-        self, agent_id: str, message: str, session_id: Optional[str] = None
+        self,
+        agent_id: str,
+        message: Any,
+        session_id: Optional[str] = None,
+        *,
+        model: Optional[str] = None,
+        model_options: Optional[Dict[str, Any]] = None,
+        tool_approval_mode: Optional[str] = None,
+        collaboration_mode: Optional[str] = None,
+        goal_objective: Optional[str] = None,
     ) -> Dict[str, Any]:
         """调用 Agent"""
         params = {
             "AgentId": agent_id,
+            # The public KOP contract validates ApiFormat before forwarding the
+            # request to Server.  Keep this legacy string helper on the chat
+            # completions shape instead of relying on Server's newer Responses
+            # default, otherwise KOP rejects an otherwise valid request.
+            "ApiFormat": "chat_completions",
             "Messages": [{"role": "user", "content": message}],
             "Stream": False,
         }
         if session_id:
             params["SessionId"] = session_id
-        return self._action("RunAgent", params)
+        if model:
+            params["Model"] = model
+        if model_options:
+            params["ModelOptions"] = dict(model_options)
+        execution_metadata: Dict[str, Any] = {}
+        if tool_approval_mode:
+            execution_metadata["tool_approval_mode"] = tool_approval_mode
+        if collaboration_mode:
+            execution_metadata["collaboration_mode"] = collaboration_mode
+        if goal_objective:
+            execution_metadata["goal_objective"] = goal_objective
+        if execution_metadata:
+            params["Metadata"] = {"agentengine": execution_metadata}
+        return await self._action_async("RunAgent", params)
+
+    def _open_chat_stream(self, params: Dict[str, Any]) -> AgentEngineSSEStream:
+        """Open RunAgent SSE synchronously in a worker-owned requests session."""
+
+        path = "/agentengine/api/v1/RunAgent"
+        _kop_mode, headers, full_url = self._build_action_request_target(path, "RunAgent")
+        body_str = json.dumps(params, ensure_ascii=False)
+        if self.dry_run:
+            # Reuse the established dry-run contract, which raises DryRunExit
+            # with the signed request rather than opening a socket.
+            self._request("POST", path, params)
+            raise AssertionError("dry-run request unexpectedly returned")
+
+        session = requests.Session()
+        response: requests.Response | None = None
+        retried_inner_endpoint = False
+        try:
+            while True:
+                response = session.request(
+                    method="POST",
+                    url=full_url,
+                    data=body_str.encode("utf-8"),
+                    headers=headers,
+                    auth=self._auth.get_auth(),
+                    # A foreground Agent turn can legitimately spend minutes
+                    # reasoning before its next SSE chunk.  Bound connection
+                    # establishment, not the lifetime of an admitted stream.
+                    timeout=(self.timeout, None),
+                    verify=self._ssl_verify_enabled(),
+                    stream=True,
+                )
+                content_type = str(response.headers.get("content-type") or "").lower()
+                if response.status_code < 400 and "text/event-stream" in content_type:
+                    return AgentEngineSSEStream(response, session)
+
+                resp_text = response.text or ""
+                details = self._extract_http_error_details(resp_text)
+                details.setdefault("http_status", response.status_code)
+                if response.status_code < 400:
+                    details["content_type"] = content_type or "<missing>"
+                    try:
+                        envelope = json.loads(resp_text)
+                    except (TypeError, ValueError):
+                        envelope = {}
+                    if not isinstance(envelope, dict):
+                        envelope = {}
+                    envelope_code = envelope.get("Code")
+                    error_code = (
+                        envelope_code
+                        if envelope_code not in {None, 0, "0"}
+                        else details.get("remote_error_code") or 502
+                    )
+                    message = (
+                        str(
+                            details.get("remote_error_message")
+                            or details.get("message")
+                            or ""
+                        ).strip()
+                        or "RunAgent stream did not return text/event-stream"
+                    )
+                    raise AgentEngineAPIError(
+                        error_code,
+                        message,
+                        details=details,
+                    )
+                if not retried_inner_endpoint and self._can_retry_with_inner_aicp_endpoint(details):
+                    retried_inner_endpoint = True
+                    response.close()
+                    response = None
+                    self._switch_to_inner_aicp_endpoint()
+                    _kop_mode, headers, full_url = self._build_action_request_target(
+                        path, "RunAgent"
+                    )
+                    continue
+
+                self._log_http_error(
+                    method="POST",
+                    full_url=full_url,
+                    status_code=response.status_code,
+                    details=details,
+                )
+                message = (
+                    str(
+                        details.get("remote_error_message")
+                        or details.get("message")
+                        or ""
+                    ).strip()
+                    or resp_text
+                )
+                raise AgentEngineAPIError(
+                    response.status_code,
+                    message,
+                    details=details or None,
+                )
+        except BaseException:
+            try:
+                if response is not None:
+                    response.close()
+            finally:
+                session.close()
+            raise
+
+    async def chat_stream(
+        self,
+        agent_id: str,
+        message: Any,
+        session_id: Optional[str] = None,
+        *,
+        model: Optional[str] = None,
+        model_options: Optional[Dict[str, Any]] = None,
+        tool_approval_mode: Optional[str] = None,
+        collaboration_mode: Optional[str] = None,
+        goal_objective: Optional[str] = None,
+    ) -> AgentEngineSSEStream:
+        """Open a signed foreground RunAgent SSE stream.
+
+        The upstream response is established before this method returns so an
+        HTTP error remains a structured ``AgentEngineAPIError`` instead of a
+        late exception after a downstream proxy has already emitted 200.
+        """
+
+        params: Dict[str, Any] = {
+            "AgentId": agent_id,
+            "ApiFormat": "chat_completions",
+            "Messages": [{"role": "user", "content": message}],
+            "Stream": True,
+            "Background": False,
+        }
+        if session_id:
+            params["SessionId"] = session_id
+        if model:
+            params["Model"] = model
+        if model_options:
+            params["ModelOptions"] = dict(model_options)
+        execution_metadata: Dict[str, Any] = {}
+        if tool_approval_mode:
+            execution_metadata["tool_approval_mode"] = tool_approval_mode
+        if collaboration_mode:
+            execution_metadata["collaboration_mode"] = collaboration_mode
+        if goal_objective:
+            execution_metadata["goal_objective"] = goal_objective
+        if execution_metadata:
+            params["Metadata"] = {"agentengine": execution_metadata}
+        return await asyncio.to_thread(self._open_chat_stream, params)
 
     # ===== Version Actions =====
 

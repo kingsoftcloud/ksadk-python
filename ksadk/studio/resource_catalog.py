@@ -47,6 +47,43 @@ _SLUG = re.compile(r"[^a-z0-9]+")
 _MAX_SKILL_ARCHIVE_BYTES = 50 * 1024 * 1024
 _MAX_SKILL_EXPANDED_BYTES = 100 * 1024 * 1024
 _MAX_SKILL_FILES = 1000
+_PROXY_MODEL_FAMILIES = ("deepseek", "glm", "kimi", "minimax", "qwen")
+
+
+def _proxy_model_family(model_id: str) -> str | None:
+    """Return the supported proxy family without changing the provider id.
+
+    The comparison deliberately treats ``.`` and ``-`` as equivalent only for
+    classification (for example ``glm-5.3`` and ``glm-5-3``).  The returned
+    catalog descriptor keeps the exact identifier supplied by the provider,
+    which is the value used for deployment and model requests.
+    """
+
+    normalized = str(model_id or "").strip().lower()
+    if "/" in normalized:
+        normalized = normalized.split("/", 1)[1]
+    normalized = normalized.replace(".", "-")
+    for family in _PROXY_MODEL_FAMILIES:
+        # Qwen IDs are commonly emitted as ``qwen3-*`` rather than
+        # ``qwen-3-*``; the other approved families retain a word boundary.
+        boundary = family if family == "qwen" else f"{family}-"
+        if normalized == family or normalized.startswith(boundary):
+            return family
+    return None
+
+
+def _proxy_model_sort_key(model_id: str) -> tuple[str, tuple[int, ...], str]:
+    """Group proxy models by vendor and put newer numbered releases first."""
+
+    raw = str(model_id or "").strip()
+    normalized = raw.lower().split("/", 1)[-1].replace(".", "-")
+    family = _proxy_model_family(raw) or "zz-unknown"
+    numbers = [int(value) for value in re.findall(r"\d+", normalized)]
+    # A fixed-width negative tuple makes 5.3.1 sort before 5.3 and 5.2,
+    # while keeping equal-version variants deterministic without inventing an
+    # ordering for provider suffixes such as ``-pro`` and ``-flash``.
+    version = tuple([-value for value in numbers[:8]] + [0] * (8 - len(numbers)))
+    return family, version, normalized
 
 
 def _models_endpoint(api_base: str | None) -> str:
@@ -310,6 +347,11 @@ class LocalResourceCatalog:
             raw_mapping = raw if isinstance(raw, dict) else {}
             normalized = normalize_model_metadata(normalized)
             model_id = str(normalized.get("id") or current_model or "unknown-model")
+            # The proxy has only been compatibility-validated for these five
+            # provider families.  This is a presentation/selection policy, not
+            # a rewrite of the provider's model identifier.
+            if _proxy_model_family(model_id) is None:
+                continue
             display_name = str(normalized.get("display_name") or model_id)
             context_source = (
                 "provider" if _provider_reports_context(raw_mapping) else "ksadk-default"
@@ -354,6 +396,7 @@ class LocalResourceCatalog:
             )
             descriptors.append(descriptor)
 
+        descriptors.sort(key=lambda item: _proxy_model_sort_key(item.name))
         self._provider_models = {item.resource_id: item for item in descriptors}
         self._provider_catalog_cache[cache_key] = (now, descriptors, source)
         return descriptors, source

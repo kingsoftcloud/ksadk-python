@@ -20,6 +20,8 @@ _GENERATED_MARKER = ".agentkit-generated"
 def materialize_generated_runtime_source(
     workspace: Workspace,
     draft: AgentDraft,
+    *,
+    catalog: LocalResourceCatalog | None = None,
 ) -> None:
     """Create or refresh the source owned by a generated ADK/LangGraph draft.
 
@@ -37,9 +39,14 @@ def materialize_generated_runtime_source(
     root.mkdir(parents=True, exist_ok=True)
     entry = workspace.resolve(Path(runtime.project_path) / (runtime.entry_point or "agent.py"))
     entry.parent.mkdir(parents=True, exist_ok=True)
-    prompt, tool_names, python_tools = _runtime_inputs(workspace, draft)
+    resolved_catalog = catalog or LocalResourceCatalog(workspace)
+    prompt, tool_names, python_tools = _runtime_inputs(
+        workspace,
+        draft,
+        catalog=resolved_catalog,
+    )
     _snapshot_python_tools(workspace, root, python_tools)
-    model = _configured_model(draft)
+    model = _configured_model(resolved_catalog, draft)
     if runtime.type == "adk":
         source = _adk_source(
             draft.metadata.id,
@@ -73,7 +80,10 @@ def materialize_generated_runtime_source(
     )
 
 
-def _configured_model(draft: AgentDraft) -> str:
+def _configured_model(catalog: LocalResourceCatalog, draft: AgentDraft) -> str:
+    resolved = catalog.resolve_model(draft.spec.bindings)
+    if resolved is not None:
+        return resolved.model
     if draft.spec.model is not None:
         return draft.spec.model.model
     return str(draft.metadata.labels.get("agentkit.ksyun.com/model") or "glm-5.1")
@@ -82,8 +92,9 @@ def _configured_model(draft: AgentDraft) -> str:
 def _runtime_inputs(
     workspace: Workspace,
     draft: AgentDraft,
+    *,
+    catalog: LocalResourceCatalog,
 ) -> tuple[str, list[str], list[dict[str, str]]]:
-    catalog = LocalResourceCatalog(workspace)
     tools, _permissions = catalog.policy_preview(draft.spec.bindings)
     builtin_names = [tool.name for tool in tools if tool.enabled and tool.executor == "builtin"]
     python_tools = [
@@ -316,23 +327,38 @@ def _call_model(state: AgentState):
     client = ChatOpenAI(
         model=selected,
         api_key=os.environ["OPENAI_API_KEY"],
-        base_url=os.getenv("OPENAI_API_BASE") or os.getenv("OPENAI_BASE_URL"),
+        base_url=os.getenv("OPENAI_BASE_URL") or os.getenv("OPENAI_API_BASE"),
+        stream_usage=True,
     )
     runnable = client.bind_tools(_tools) if _tools else client
-    messages = [SystemMessage(content={json.dumps(prompt)}), *state["messages"]]
+    messages = list(state["messages"])
+    # KsADK Runtime 已投影 CompiledPrompt/ContextPlan 时，state 中存在 SystemMessage，
+    # 不再重复注入模板 Prompt；直接调用 graph 时仍保留独立运行能力。
+    if not any(isinstance(message, SystemMessage) for message in messages):
+        messages.insert(0, SystemMessage(content={json.dumps(prompt)}))
     return {{"messages": [runnable.invoke(messages)]}}
 
 
-_builder = StateGraph(AgentState)
-_builder.add_node("model", _call_model)
-_builder.add_edge(START, "model")
-if _tools:
-    _builder.add_node("tools", ToolNode(_tools))
-    _builder.add_conditional_edges("model", tools_condition)
-    _builder.add_edge("tools", "model")
-else:
-    _builder.add_edge("model", END)
-{variable} = _builder.compile(checkpointer=MemorySaver())
+def ksadk_graph_factory(*, checkpointer):
+    """Compile the graph with a caller-owned checkpoint backend.
+
+    Studio uses ``MemorySaver`` for local authoring.  The hosted KsADK runner
+    rebuilds this graph through the same factory with its admitted PostgreSQL
+    saver before the first turn, so an interrupt can resume after a Pod move.
+    """
+    builder = StateGraph(AgentState)
+    builder.add_node("model", _call_model)
+    builder.add_edge(START, "model")
+    if _tools:
+        builder.add_node("tools", ToolNode(_tools))
+        builder.add_conditional_edges("model", tools_condition)
+        builder.add_edge("tools", "model")
+    else:
+        builder.add_edge("model", END)
+    return builder.compile(checkpointer=checkpointer)
+
+
+{variable} = ksadk_graph_factory(checkpointer=MemorySaver())
 '''
 
 

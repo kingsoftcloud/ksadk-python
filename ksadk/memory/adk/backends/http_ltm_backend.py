@@ -52,10 +52,10 @@ class HttpLTMBackend(BaseLongTermMemoryBackend):
     def model_post_init(self, __context) -> None:
         if not self.base_url:
             logger.warning(
-                "HttpLTMBackend: base_url is empty. " "Set KSADK_LTM_HTTP_URL environment variable."
+                "HttpLTMBackend: base_url is empty. Set KSADK_LTM_HTTP_URL environment variable."
             )
         logger.info(
-            f"HttpLTMBackend initialized: base_url={self.base_url[:50]}... " f"index={self.index}"
+            f"HttpLTMBackend initialized: base_url={self.base_url[:50]}... index={self.index}"
         )
 
     @property
@@ -101,13 +101,13 @@ class HttpLTMBackend(BaseLongTermMemoryBackend):
             response.raise_for_status()
 
             logger.info(
-                f"Saved {len(event_strings)} events to remote memory service " f"for user={user_id}"
+                f"Saved {len(event_strings)} events to remote memory service for user={user_id}"
             )
             return True
 
         except httpx.HTTPStatusError as e:
             logger.error(
-                f"HTTP error saving memory: {e.response.status_code} " f"{e.response.text[:200]}"
+                f"HTTP error saving memory: {e.response.status_code} {e.response.text[:200]}"
             )
             return False
         except Exception as e:
@@ -133,6 +133,7 @@ class HttpLTMBackend(BaseLongTermMemoryBackend):
         """
         if not self.base_url:
             logger.warning("HttpLTMBackend: base_url not configured, return empty results.")
+            self.last_error = "base_url not configured"
             return []
 
         try:
@@ -161,7 +162,7 @@ class HttpLTMBackend(BaseLongTermMemoryBackend):
 
         except httpx.HTTPStatusError as e:
             logger.error(
-                f"HTTP error searching memory: {e.response.status_code} " f"{e.response.text[:200]}"
+                f"HTTP error searching memory: {e.response.status_code} {e.response.text[:200]}"
             )
             return []
         except Exception as e:
@@ -173,3 +174,11 @@ class HttpLTMBackend(BaseLongTermMemoryBackend):
         if self._client:
             self._client.close()
             self._client = None
+
+    # ------------------------------------------------------------------
+    # 扩展协议（方案 §7.3）：HTTP backend 为框架预留，结构化能力未定。
+    # 远程 API 对接细节待提供（见 save_memory TODO），因此不声明
+    # structured/update/delete/session_status 能力；search_records 也不降级
+    # 伪造 ID，保持 base 的 UnsupportedMemoryOperation 默认行为。
+    # 远端 schema 确认后，在此接入对应端点并覆写 capabilities()。
+    # ------------------------------------------------------------------

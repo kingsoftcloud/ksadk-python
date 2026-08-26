@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import shutil
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from ksadk.studio.capabilities import canonical_json, sha256_digest
+from ksadk.studio.capabilities import canonical_json, compute_bundle_digest, sha256_digest
 from ksadk.studio.compiler import AgentCompiler
 from ksadk.studio.contracts import (
     AgentDraft,
@@ -18,10 +19,16 @@ from ksadk.studio.contracts import (
     BundleManifest,
     FileEntry,
 )
+from ksadk.studio.hosted_kernel import (
+    build_hosted_kernel_requirement,
+    hosted_kernel_requirement_digest,
+)
 from ksadk.studio.repository import BuildRepository
 from ksadk.studio.workspace import Workspace
 
 _ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
+
+LOGGER = logging.getLogger(__name__)
 
 
 class AgentBundleBuilder:
@@ -37,7 +44,18 @@ class AgentBundleBuilder:
         self.repository = repository or BuildRepository(workspace)
 
     def build(self, draft: AgentDraft) -> BuildRecord:
+        LOGGER.info(
+            "bundle build started: agent=%s revision=%s",
+            draft.metadata.id,
+            draft.metadata.revision,
+        )
         compiled = self.compiler.compile(draft)
+        # Bundle v2 always carries a lock. Phase 1 deliberately supports no
+        # user-selectable plugin factories yet, so the only valid lock is the
+        # explicit empty set. This makes admission deterministic without
+        # pulling the Phase 2 PluginHost into a deployed runtime.
+        plugin_lock = {"lockFormat": "agentkit.plugin-lock/v1", "plugins": []}
+        plugin_lock_digest = sha256_digest(canonical_json(plugin_lock))
         runtime_type, source_digest, runtime_lock = self._runtime_snapshot(draft, compiled)
         resolved_digest = sha256_digest(
             canonical_json(
@@ -61,32 +79,51 @@ class AgentBundleBuilder:
         bundle_root = staging / "agent-bundle"
         bundle_root.mkdir(parents=True, exist_ok=False)
         try:
+            self._copy_runtime_source(bundle_root, draft)
+            self._write_runtime_launch_config(bundle_root, draft)
+            launch_config = bundle_root / "runtime" / "agentengine.yaml"
+            hosted_kernel_requirement = build_hosted_kernel_requirement(
+                runtime_type=runtime_type,
+                entry_point=runtime_lock.get("entryPoint"),
+                agent_variable=runtime_lock.get("agentVariable"),
+                launch_config=launch_config.read_bytes() if launch_config.is_file() else None,
+            )
+            hosted_kernel_requirement_digest_value = hosted_kernel_requirement_digest(
+                hosted_kernel_requirement
+            )
             self._write_payload(
                 bundle_root,
                 draft,
                 compiled,
                 runtime_lock=runtime_lock,
                 resolved_digest=resolved_digest,
+                plugin_lock=plugin_lock,
+                hosted_kernel_requirement=hosted_kernel_requirement,
+                hosted_kernel_requirement_digest_value=hosted_kernel_requirement_digest_value,
             )
-            self._copy_runtime_source(bundle_root, draft)
+            self._write_json(
+                bundle_root / "hosted-kernel-requirements.json",
+                hosted_kernel_requirement,
+            )
+            # The manifest is a complete content declaration. Write this
+            # auxiliary checksum file first, then include it in the manifest
+            # entries; otherwise a Server-side full-membership check correctly
+            # rejects the archive as self-inconsistent.
+            self._write_checksums(bundle_root)
             files = self._file_entries(bundle_root)
             manifest = BundleManifest(
+                bundle_format="agentkit.bundle/v2",
                 agent_id=draft.metadata.id,
                 source_revision=draft.metadata.revision,
                 resolved_digest=resolved_digest,
                 runtime_type=runtime_type,
                 source_digest=source_digest,
+                plugin_lock_digest=plugin_lock_digest,
+                hosted_kernel_requirement_digest=hosted_kernel_requirement_digest_value,
                 files=files,
             )
-            digest_payload = manifest.model_dump(
-                by_alias=True,
-                exclude={"bundle_digest"},
-                exclude_none=True,
-                mode="json",
-            )
-            manifest.bundle_digest = sha256_digest(canonical_json(digest_payload))
+            manifest.bundle_digest = compute_bundle_digest(manifest)
             self._write_json(bundle_root / "manifest.json", manifest.model_dump(by_alias=True))
-            self._write_checksums(bundle_root)
             archive = staging / "agent-bundle.zip"
             self._write_zip(bundle_root, archive)
             final_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -111,7 +148,14 @@ class AgentBundleBuilder:
             created_at=now,
             completed_at=now,
         )
-        return self.repository.save(record)
+        saved = self.repository.save(record)
+        LOGGER.info(
+            "bundle build finished: agent=%s build=%s artifact=%s",
+            draft.metadata.id,
+            saved.id,
+            saved.artifact_path,
+        )
+        return saved
 
     def _write_payload(
         self,
@@ -121,6 +165,9 @@ class AgentBundleBuilder:
         *,
         runtime_lock: dict,
         resolved_digest: str,
+        plugin_lock: dict,
+        hosted_kernel_requirement: dict,
+        hosted_kernel_requirement_digest_value: str,
     ) -> None:
         definition_digest = compiled.resolved.resolved_digest
         resolved_payload = compiled.resolved.model_dump(
@@ -138,6 +185,7 @@ class AgentBundleBuilder:
         )
         self._write_json(root / "agentkit.lock", dependency_lock)
         self._write_json(root / "runtime-lock.json", runtime_lock)
+        self._write_json(root / "plugin-lock.json", plugin_lock)
         instructions = root / "instructions"
         instructions.mkdir()
         (instructions / "system.md").write_text(
@@ -201,6 +249,12 @@ class AgentBundleBuilder:
                 "resolvedDigest": resolved_digest,
                 "compilerVersion": compiled.resolved.compiler_version,
                 "runtimeContract": "agentkit.runtime/v1",
+                "hostedKernel": {
+                    "requirementsPath": "hosted-kernel-requirements.json",
+                    "requirementDigest": hosted_kernel_requirement_digest_value,
+                    "contractSet": hosted_kernel_requirement["kernelContract"]["set"],
+                    "contractDigest": hosted_kernel_requirement["kernelContract"]["digest"],
+                },
             },
         )
 
@@ -251,6 +305,29 @@ class AgentBundleBuilder:
             target = target_root / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(source.read_bytes())
+
+    def _write_runtime_launch_config(self, bundle_root: Path, draft: AgentDraft) -> None:
+        """Make the copied runtime source directly launchable by the profile image.
+
+        Production Code deployments execute the runtime directory through the
+        KsADK web command. The source snapshot therefore needs an explicit,
+        immutable framework declaration rather than relying on heuristics or a
+        user-supplied YAML that could disagree with the admitted runtime lock.
+        """
+
+        runtime = draft.spec.runtime
+        if runtime is None or not runtime.project_path:
+            return
+        self._write_json(
+            bundle_root / "runtime" / "agentengine.yaml",
+            {
+                "name": draft.metadata.id,
+                "framework": runtime.type,
+                "entry_point": runtime.entry_point or "agent.py",
+                "agent_variable": runtime.agent_variable or "root_agent",
+                "package": ".",
+            },
+        )
 
     @staticmethod
     def _source_files(root: Path) -> list[Path]:

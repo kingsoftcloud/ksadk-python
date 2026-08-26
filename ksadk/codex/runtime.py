@@ -19,14 +19,33 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
+import hashlib
 import json
 import logging
+import re
+import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, AsyncIterator, Optional
 
 from ksadk.codex.client import CodexClient
-from ksadk.codex.phase import CodexPhaseTracker
-from ksadk.events.runtime_event import EventType, RuntimeEvent
+from ksadk.events.adapters.codex import CodexAdapterContext, CodexEventAdapter
+from ksadk.events.canonical import (
+    ErrorInfo,
+    InteractionRequested,
+    InteractionResolved,
+    RunCanceled,
+    RunCompleted,
+    RunFailed,
+    RunInterrupted,
+    RuntimeEvent,
+    SourceRef,
+)
+from ksadk.events.identity import stable_event_id, stable_item_id, stable_scope_id
+from ksadk.kernel.contracts import RuntimeCapability, RuntimeCapabilityMatrix
 from ksadk.runtime.adapter import (
     BaseRuntime,
     CancelResult,
@@ -76,6 +95,7 @@ class _CodexThread:
     completed_at: int | None = None
     duration_ms: int | None = None
     goal_mode: bool = False
+    continuation_preexisting: bool = False
 
 
 class CodexRuntimeAdapter(RuntimeAdapter):
@@ -101,6 +121,33 @@ class CodexRuntimeAdapter(RuntimeAdapter):
         # 可观测:最近一次 cancel 级联丢弃的审批集(contract test 断言用)。
         self.last_cancel_dropped_approvals: set[str] = set()
         self._seq = 0
+        self._closed = False
+
+    # ---- capability matrix(v1,诚实声明) ----
+
+    def capabilities(self) -> RuntimeCapabilityMatrix:
+        """Codex 真实矩阵:thread 级 cancel/pause/resume + 审批 submit + snapshot
+        checkpoint 均为后端原生能力;attach/durable_restore 未实现(线程表在本进程,
+        attach seam 缺失),steer/inject 无原生通道。
+        """
+
+        def _unavailable(reason: str) -> RuntimeCapability:
+            return RuntimeCapability(supported=False, mode="unavailable", reason=reason)
+
+        return RuntimeCapabilityMatrix(
+            cancel=RuntimeCapability(supported=True, mode="native"),
+            pause=RuntimeCapability(supported=True, mode="native"),
+            resume=RuntimeCapability(supported=True, mode="native"),
+            submit_interaction=RuntimeCapability(supported=True, mode="native"),
+            attach=_unavailable("codex_process_local_thread_table"),
+            steer=_unavailable("runtime_no_native_steer"),
+            inject=_unavailable("runtime_no_native_inject"),
+            checkpoint=RuntimeCapability(supported=True, mode="native"),
+            durable_restore=_unavailable("codex_durable_restore_requires_attach_seam"),
+            goal=RuntimeCapability(supported=True, mode="native"),
+            loop=_unavailable("codex_loop_requires_run_control_spec"),
+            plan=RuntimeCapability(supported=True, mode="native"),
+        )
 
     # ---- 六动词 ----
 
@@ -128,9 +175,18 @@ class CodexRuntimeAdapter(RuntimeAdapter):
             cwd = request.config.get("cwd")
             if cwd:
                 thread_config["cwd"] = str(cwd)
+            # AgentKernel creates one adapter/transport per durable turn and
+            # closes it after the canonical terminal event.  The next turn
+            # therefore resumes the native thread from a new app-server
+            # process; an ephemeral Codex thread has no rollout and cannot be
+            # resumed across that transport boundary.
+            thread_config.setdefault("ephemeral", False)
             thread_id = await self._client.start_thread(thread_config)
         self._known_threads.add(thread_id)
-        thread = _CodexThread(thread_id=thread_id)
+        thread = _CodexThread(
+            thread_id=thread_id,
+            continuation_preexisting=bool(provided),
+        )
         thread.__dict__["_start_request"] = request
         self._threads[thread_id] = thread
         self._requests[thread_id] = request
@@ -245,7 +301,10 @@ class CodexRuntimeAdapter(RuntimeAdapter):
             raise ValueError(f"thread {handle.run_id} 已被中断/杀进程,不持久化,不可 resume")
         self._pending_cancels.discard(handle.run_id)
         self._known_threads.add(target.id)
-        thread = _CodexThread(thread_id=target.id)
+        thread = _CodexThread(
+            thread_id=target.id,
+            continuation_preexisting=True,
+        )
         thread.__dict__["_resume"] = {"target": target, "payload": payload}
         request = self._requests.get(handle.run_id)
         if request is not None:
@@ -294,13 +353,17 @@ class CodexRuntimeAdapter(RuntimeAdapter):
         )
 
     async def close(self, handle: RunHandle) -> None:
+        if self._closed:
+            return
+        self._closed = True
         thread = self._threads.pop(handle.run_id, None)
         self._requests.pop(handle.run_id, None)
-        if thread is not None:
+        active = thread is not None and thread.streaming and not thread.done
+        if active:
             thread.interrupt_event.set()
         try:
-            active_thread_id = thread.thread_id if thread is not None else handle.run_id
-            await self._client.interrupt_active_turn(active_thread_id)
+            if active:
+                await self._client.interrupt_active_turn(thread.thread_id)
         finally:
             # AsyncCodex.close owns terminate/wait/kill for the app-server child.
             await self._client.close()
@@ -326,18 +389,12 @@ class CodexRuntimeAdapter(RuntimeAdapter):
 
         if handle.run_id in self._pending_cancels:
             self._pending_cancels.discard(handle.run_id)
-            yield self._event(
+            yield self._make_run_canceled(
                 handle,
-                EventType.RUN_CANCELED,
-                {
-                    "status": "cancelled",
-                    "cancel_result": CancelResult.PENDING_CANCEL_RECORDED.value,
-                },
+                reason=f"pending_cancel:{CancelResult.PENDING_CANCEL_RECORDED.value}",
             )
             return
 
-        yield self._event(handle, EventType.RUN_STARTED, {"status": "in_progress"})
-        tracker = CodexPhaseTracker()
         request = thread.__dict__.get("_start_request")
         resume_state = thread.__dict__.get("_resume")
         if request is not None:
@@ -350,21 +407,8 @@ class CodexRuntimeAdapter(RuntimeAdapter):
         thread.streaming = True
         thread.turn_id = thread.turn_id or f"turn_{thread.thread_id}"
         try:
-            async for event in self._map_codex_stream(handle, thread, tracker, run_input):
+            async for event in self._map_codex_stream(handle, thread, run_input):
                 yield event
-            # 正常结束(非 interrupt):补 RUN_COMPLETED(AGUI 投射器据此发 RunFinished success)
-            if not thread.interrupted:
-                completed_payload: dict[str, Any] = {
-                    "status": "completed",
-                    "source": "codex",
-                }
-                if thread.started_at is not None:
-                    completed_payload["started_at"] = thread.started_at
-                if thread.completed_at is not None:
-                    completed_payload["completed_at"] = thread.completed_at
-                if thread.duration_ms is not None:
-                    completed_payload["duration_ms"] = thread.duration_ms
-                yield self._event(handle, EventType.RUN_COMPLETED, completed_payload)
         except asyncio.CancelledError:
             thread.interrupted = True
             self._do_not_persist.add(handle.run_id)
@@ -377,18 +421,10 @@ class CodexRuntimeAdapter(RuntimeAdapter):
             # Closing the SDK transport terminates and waits for the app-server
             # child even when the stream is stuck between notifications.
             await self._client.close()
-            yield self._event(
-                handle,
-                EventType.RUN_FAILED,
-                {"status": "failed", "error": "codex turn timed out"},
-            )
-        except Exception as exc:  # noqa: BLE001  通用兜底:任何异常都发 RUN_FAILED
+            yield self._make_run_failed(handle, "codex turn timed out")
+        except Exception as exc:  # noqa: BLE001  通用兜底:任何异常都发 RunFailed
             self._do_not_persist.add(handle.run_id)
-            yield self._event(
-                handle,
-                EventType.RUN_FAILED,
-                {"status": "failed", "error": str(exc)},
-            )
+            yield self._make_run_failed(handle, str(exc))
         finally:
             thread.streaming = False
             thread.done = True
@@ -398,10 +434,15 @@ class CodexRuntimeAdapter(RuntimeAdapter):
         self,
         handle: RunHandle,
         thread: _CodexThread,
-        tracker: CodexPhaseTracker,
         prompt: Any,
     ) -> AsyncIterator[RuntimeEvent]:
         request = thread.__dict__.get("_start_request") or thread.__dict__.get("_request_config")
+        adapter = CodexEventAdapter(
+            known_thread_ids=(thread.thread_id,)
+            if thread.continuation_preexisting
+            else (),
+        )
+        context = CodexAdapterContext(run_id=self._event_run_id(handle))
         run_config: dict[str, Any] = {"sandbox_read_only": self._sandbox_read_only}
         if request is not None and request.config:
             for key in ("sandbox", "approval_mode", "summary", "collaboration_mode"):
@@ -496,14 +537,11 @@ class CodexRuntimeAdapter(RuntimeAdapter):
                         chunk_task = asyncio.ensure_future(_anext_or_stop(codex_gen))
                     chunk_task = None
                     thread.interrupted = True
-                    # AGUI 投射器对 RUN_INTERRUPTED 无兜底,必须显式发,否则 raise
-                    yield self._event(
+                    # Runtime interrupt (user pause) — adapter doesn't know;
+                    # emit canonical RunInterrupted explicitly.
+                    yield self._make_run_interrupted(
                         handle,
-                        EventType.RUN_INTERRUPTED,
-                        {
-                            "status": "paused" if thread.paused else "interrupted",
-                            "reason": "user_pause" if thread.paused else "runtime_interrupt",
-                        },
+                        reason="user_pause" if thread.paused else "runtime_interrupt",
                     )
                     return
                 for task in pending:
@@ -513,8 +551,58 @@ class CodexRuntimeAdapter(RuntimeAdapter):
                 chunk = chunk_task.result()
                 if chunk is _STREAM_STOP:
                     return
-                event = self._codex_chunk_to_event(handle, thread, tracker, chunk)
-                if event is not None:
+                # TODO(runtime-event-v2): use real native cursor from chunk if
+                # available; fallback to thread:seq for now.
+                native_cursor = f"{thread.thread_id}:{self._next_seq()}"
+                # autoApprovalReview 不产生 canonical 事件(adapter 静默),但
+                # cancel 级联丢弃审批的契约依赖 runtime 的 pending 跟踪。
+                chunk_method = (
+                    str((chunk or {}).get("method") or "")
+                    if isinstance(chunk, dict)
+                    else ""
+                )
+                if chunk_method in {
+                    "item/autoApprovalReview/started",
+                    "item/autoApprovalReview/completed",
+                }:
+                    review_params = chunk.get("params") or {}
+                    review_id = str(
+                        review_params.get("reviewId")
+                        or review_params.get("review_id")
+                        or ""
+                    )
+                    if review_id:
+                        if chunk_method.endswith("started"):
+                            thread.pending_approvals.add(review_id)
+                        else:
+                            thread.pending_approvals.discard(review_id)
+                for event in adapter.map_protocol_message(
+                    chunk,
+                    context,
+                    native_cursor=native_cursor,
+                    timestamp=time.time(),
+                ):
+                    event = self._with_caller_scope(event, request)
+                    # 跟踪 pending 审批(cancel 级联丢弃契约依赖该集合)。
+                    if isinstance(event, InteractionRequested):
+                        if event.interaction_id:
+                            thread.pending_approvals.add(event.interaction_id)
+                        call_id = getattr(event.request, "call_id", None)
+                        if call_id:
+                            thread.pending_approvals.add(str(call_id))
+                    elif isinstance(event, InteractionResolved):
+                        thread.pending_approvals.discard(event.interaction_id)
+                        call_id = getattr(event.response, "call_id", None)
+                        if call_id:
+                            thread.pending_approvals.discard(str(call_id))
+                    if isinstance(event, (RunCompleted, RunFailed, RunCanceled)):
+                        # The Kernel stops consuming as soon as it persists a
+                        # canonical terminal fact, so generator ``finally`` may
+                        # not run before worker cleanup calls ``close``. Mark the
+                        # native turn terminal before yielding that fact; close
+                        # must terminate the transport without sending a stale
+                        # turn/interrupt RPC to an already-completed app-server.
+                        thread.done = True
                     yield event
         finally:
             waiter_tasks = [task for task in (chunk_task, interrupt_task) if task is not None]
@@ -530,285 +618,155 @@ class CodexRuntimeAdapter(RuntimeAdapter):
                 except Exception:  # noqa: BLE001
                     pass
 
-    def _codex_chunk_to_event(
-        self,
-        handle: RunHandle,
-        thread: _CodexThread,
-        tracker: CodexPhaseTracker,
-        chunk: dict[str, Any],
-    ) -> Optional[RuntimeEvent]:
-        if not isinstance(chunk, dict):
-            return None
-        method = str(chunk.get("method") or chunk.get("type") or "")
-        params = chunk.get("params") or chunk
+    # ---- canonical run.* helpers (for runtime-owned lifecycle) ----
 
-        if method == "error":
-            raw_error = params.get("error") if isinstance(params, dict) else None
-            error = raw_error if isinstance(raw_error, dict) else {}
-            message = str(
-                error.get("message")
-                or (params.get("message") if isinstance(params, dict) else "")
-                or raw_error
-                or "Codex runtime transport failed"
-            )
-            if not bool(params.get("will_retry") or params.get("willRetry")) or "401" in message:
-                raise RuntimeError(message)
-            return None
+    def _event_run_id(self, handle: RunHandle) -> str:
+        """事件的 canonical run_id:调用方 invocation_id 优先,退回 thread id。
 
-        if method == "thread/tokenUsage/updated":
-            token_usage = params.get("token_usage") or params.get("tokenUsage") or {}
-            last = token_usage.get("last") if isinstance(token_usage, dict) else {}
-            if not isinstance(last, dict):
-                last = {}
-            return self._event(
-                handle,
-                EventType.USAGE_REPORTED,
-                {
-                    "input_tokens": int(last.get("input_tokens", last.get("inputTokens", 0)) or 0),
-                    "cached_tokens": int(
-                        last.get("cached_input_tokens", last.get("cachedInputTokens", 0)) or 0
-                    ),
-                    "output_tokens": int(
-                        last.get("output_tokens", last.get("outputTokens", 0)) or 0
-                    ),
-                    "reasoning_tokens": int(
-                        last.get(
-                            "reasoning_output_tokens",
-                            last.get("reasoningOutputTokens", 0),
-                        )
-                        or 0
-                    ),
-                    "total_tokens": int(last.get("total_tokens", last.get("totalTokens", 0)) or 0),
-                    "source": "codex",
-                },
-            )
-        if method == "thread/goal/updated":
-            goal = params.get("goal") if isinstance(params, dict) else {}
-            goal = goal if isinstance(goal, dict) else {}
-            status = str(goal.get("status") or "").lower()
-            if status in {"paused", "blocked", "usage_limited", "budget_limited"}:
-                thread.paused = status == "paused"
-                thread.interrupted = True
-                return self._event(
-                    handle,
-                    EventType.RUN_INTERRUPTED,
-                    {"status": status, "reason": "goal_status", "goal": goal},
-                )
-            return self._event(
-                handle,
-                EventType.RUN_PROGRESS,
-                {"native_event": "goal.updated", "native_data": goal},
-            )
-        if method in {"turn/started", "turn/completed"}:
-            raw_turn = params.get("turn")
-            turn: dict[str, Any] = raw_turn if isinstance(raw_turn, dict) else {}
-            started_at = turn.get("started_at", turn.get("startedAt"))
-            completed_at = turn.get("completed_at", turn.get("completedAt"))
-            duration_ms = turn.get("duration_ms", turn.get("durationMs"))
-            if started_at is not None:
-                thread.started_at = int(started_at)
-            if completed_at is not None:
-                thread.completed_at = int(completed_at)
-            if duration_ms is not None:
-                thread.duration_ms = max(0, int(duration_ms))
-            return None
-
-        if method == "a2ui/surface":
-            surface_id = str(params.get("surface_id") or params.get("surfaceId") or "")
-            return self._event(
-                handle,
-                EventType.A2UI_SURFACE_BEGIN,
-                {
-                    "surface_id": surface_id,
-                    "surface": params.get("surface")
-                    if isinstance(params.get("surface"), dict)
-                    else {},
-                },
-            )
-        if method == "a2ui/interaction":
-            interaction_id = str(params.get("interaction_id") or params.get("interactionId") or "")
-            if interaction_id:
-                thread.pending_approvals.add(interaction_id)
-            return self._event(
-                handle,
-                EventType.A2UI_INTERACTION,
-                {
-                    "surface_id": str(params.get("surface_id") or params.get("surfaceId") or ""),
-                    "interaction_id": interaction_id,
-                    "kind": str(params.get("kind") or "form"),
-                    "input_schema": params.get("input_schema")
-                    if isinstance(params.get("input_schema"), dict)
-                    else {},
-                    "is_blocking": bool(params.get("is_blocking", True)),
-                },
-            )
-
-        if method == "item/started":
-            tracker.observe_item(params)
-            item = params.get("item") or params
-            if item.get("type") == "commandExecution":
-                call_id = str(item.get("id") or "")
-                return self._event(
-                    handle,
-                    EventType.TOOL_CALL_BEGIN,
-                    {
-                        "call_id": call_id,
-                        "name": "codex.command",
-                        "args": {
-                            "command": str(item.get("command") or ""),
-                            "cwd": str(item.get("cwd") or ""),
-                            "command_actions": item.get("commandActions")
-                            or item.get("command_actions")
-                            or [],
-                        },
-                    },
-                )
-            if item.get("type") == "mcpToolCall":
-                call_id = str(item.get("id") or "")
-                server = str(item.get("server") or "")
-                tool = str(item.get("tool") or "")
-                return self._event(
-                    handle,
-                    EventType.TOOL_CALL_BEGIN,
-                    {
-                        "call_id": call_id,
-                        "name": f"mcp.{server}.{tool}" if server else f"mcp.{tool}",
-                        "args": {
-                            "server": server,
-                            "tool": tool,
-                            "arguments": item.get("arguments"),
-                        },
-                    },
-                )
-            return None
-        if method == "item/completed":
-            item = params.get("item") or params
-            item_type = item.get("type")
-            if item_type == "commandExecution":
-                tracker.forget_item(params)
-                call_id = str(item.get("id") or "")
-                return self._event(
-                    handle,
-                    EventType.TOOL_CALL_END,
-                    {
-                        "call_id": call_id,
-                        "name": "codex.command",
-                        "result": {
-                            "status": str(item.get("status") or "completed"),
-                            "exit_code": item.get("exitCode", item.get("exit_code")),
-                            "duration_ms": item.get("durationMs", item.get("duration_ms")),
-                            "output": str(
-                                item.get("aggregatedOutput") or item.get("aggregated_output") or ""
-                            ),
-                        },
-                    },
-                )
-            if item_type == "mcpToolCall":
-                tracker.forget_item(params)
-                call_id = str(item.get("id") or "")
-                server = str(item.get("server") or "")
-                tool = str(item.get("tool") or "")
-                raw_result = item.get("result")
-                result_obj: dict[str, Any] = raw_result if isinstance(raw_result, dict) else {}
-                raw_error = item.get("error")
-                error_obj: dict[str, Any] = raw_error if isinstance(raw_error, dict) else {}
-                output = self._mcp_result_text(result_obj)
-                error_message = str(error_obj.get("message") or "")
-                if not output and error_message:
-                    output = error_message
-                return self._event(
-                    handle,
-                    EventType.TOOL_CALL_END,
-                    {
-                        "call_id": call_id,
-                        "name": f"mcp.{server}.{tool}" if server else f"mcp.{tool}",
-                        "result": {
-                            "status": str(item.get("status") or "completed"),
-                            "duration_ms": item.get("durationMs", item.get("duration_ms")),
-                            "output": output,
-                            **({"error": error_message} if error_message else {}),
-                        },
-                    },
-                )
-            if item_type != "agentMessage":
-                tracker.forget_item(params)
-                return None
-            phase = tracker.runtime_phase_for_item(params)
-            tracker.forget_item(params)
-            text = str(item.get("text") or "")
-            return self._event(
-                handle,
-                EventType.TEXT_COMPLETED,
-                {"text": text},
-                phase=phase or "final_answer",
-            )
-        if "delta" in method or "Delta" in method or method == "item/agentMessage/delta":
-            phase = tracker.runtime_phase_for_delta(params)
-            delta = str(params.get("delta") or "")
-            if not delta:
-                return None
-            return self._event(
-                handle, EventType.TEXT_DELTA, {"text": delta}, phase=phase or "commentary"
-            )
-        if method == "item/autoApprovalReview/started":
-            review_id = str(params.get("review_id") or params.get("reviewId") or "")
-            if review_id:
-                thread.pending_approvals.add(review_id)
-            return None
-        if method == "item/autoApprovalReview/completed":
-            review_id = str(params.get("review_id") or params.get("reviewId") or "")
-            thread.pending_approvals.discard(review_id)
-            return None
-        if (
-            "approval" in method.lower()
-            or "requestPermission" in method
-            or "approval" in str(chunk.get("type") or "").lower()
-        ):
-            call_id = str(
-                params.get("id") or params.get("call_id") or params.get("requestId") or ""
-            )
-            if call_id:
-                thread.pending_approvals.add(call_id)
-            return self._event(
-                handle,
-                EventType.APPROVAL_REQUESTED,
-                {
-                    "approval_id": call_id,
-                    "call_id": call_id,
-                    "kind": str(params.get("kind") or "tool"),
-                    "detail": params.get("detail")
-                    if isinstance(params.get("detail"), dict)
-                    else params,
-                },
-            )
-        return None
-
-    def _event(
-        self,
-        handle: RunHandle,
-        event_type: str,
-        payload: dict,
-        *,
-        phase: Optional[str] = None,
-    ) -> RuntimeEvent:
+        ``handle.run_id`` 是 codex 原生 thread id(resume/cancel 按 thread 寻址);
+        但 canonical RuntimeEvent 的 run_id 必须与调用方
+        ``StartRequest.metadata['invocation_id']`` 一致(conversation kernel 的
+        event scope 校验),否则 hosted/web 执行路径会在首个事件上 fail。
+        """
         request = self._requests.get(handle.run_id)
-        return RuntimeEvent.create(
-            event_type,
-            agent_id=str(request.agent_id or "codex") if request is not None else "codex",
-            user_id=(
-                request.user_id
-                if request is not None
-                else str(handle.native_ref.get("user_id") or "user")
+        if request is not None:
+            invocation_id = str(
+                (getattr(request, "metadata", None) or {}).get("invocation_id") or ""
+            ).strip()
+            if invocation_id:
+                return invocation_id
+        return handle.run_id
+
+    def _make_source(self, handle: RunHandle) -> SourceRef:
+        request = self._requests.get(handle.run_id)
+        return SourceRef(
+            framework="codex",
+            native_run_id=handle.run_id,
+            metadata={
+                "agent_id": (
+                    str(request.agent_id or "codex") if request is not None else "codex"
+                ),
+                "user_id": (
+                    request.user_id
+                    if request is not None
+                    else str(handle.native_ref.get("user_id") or "user")
+                ),
+                "session_id": handle.session_id,
+                "invocation_id": (
+                    str(request.metadata.get("invocation_id") or handle.run_id)
+                    if request is not None
+                    else handle.run_id
+                ),
+            },
+        )
+
+    def _with_caller_scope(self, event: RuntimeEvent, request: Any) -> RuntimeEvent:
+        """把调用方 scope(request 的 agent/user/session/invocation)并入事件 source。"""
+
+        if request is None:
+            return event
+        caller_scope = {
+            "agent_id": str(getattr(request, "agent_id", "") or "codex"),
+            "user_id": str(getattr(request, "user_id", "") or "user"),
+            "session_id": str(getattr(request, "session_id", "") or ""),
+            "invocation_id": str(
+                (getattr(request, "metadata", None) or {}).get("invocation_id")
+                or ""
             ),
-            session_id=handle.session_id,
-            invocation_id=(
-                str(request.metadata.get("invocation_id") or handle.run_id)
-                if request is not None
-                else handle.run_id
+        }
+        merged = {**caller_scope, **dict(event.source.metadata or {})}
+        # adapter 自身字段优先;仅补齐缺失的调用方 scope 键。
+        for key, value in caller_scope.items():
+            if not merged.get(key):
+                merged[key] = value
+        source = event.source.model_copy(update={"metadata": merged})
+        return event.model_copy(update={"source": source})
+
+    def _canonical_kwargs(
+        self,
+        handle: RunHandle,
+        *,
+        scope_id: str,
+        item_id: str,
+        event_type: str,
+        part_id: str,
+    ) -> dict[str, Any]:
+        framework = "codex"
+        run_id = self._event_run_id(handle)
+        n = self._next_seq()
+        return {
+            "schema_version": 2,
+            "event_id": stable_event_id(
+                framework, scope_id, item_id, event_type, part_id, run_id, n
             ),
-            seq_id=self._next_seq(),
-            phase=phase,
-            payload=payload,
+            "seq": n,
+            "timestamp": time.time(),
+            "run_id": run_id,
+            "scope_id": scope_id,
+            "source": self._make_source(handle),
+        }
+
+    def _make_run_canceled(
+        self, handle: RunHandle, *, reason: str | None = None
+    ) -> RunCanceled:
+        framework = "codex"
+        run_id = self._event_run_id(handle)
+        scope_id = stable_scope_id(framework, run_id)
+        item_id = stable_item_id(framework, run_id, "$run")
+        return RunCanceled(
+            **self._canonical_kwargs(
+                handle,
+                scope_id=scope_id,
+                item_id=item_id,
+                event_type="run.canceled",
+                part_id="run",
+            ),
+            status="canceled",
+            reason=reason,
+        )
+
+    def _make_run_interrupted(
+        self, handle: RunHandle, *, reason: str | None = None
+    ) -> RunInterrupted:
+        framework = "codex"
+        run_id = self._event_run_id(handle)
+        scope_id = stable_scope_id(framework, run_id)
+        item_id = stable_item_id(framework, run_id, "$run")
+        return RunInterrupted(
+            **self._canonical_kwargs(
+                handle,
+                scope_id=scope_id,
+                item_id=item_id,
+                event_type="run.interrupted",
+                part_id="run",
+            ),
+            status="interrupted",
+            reason=reason,
+        )
+
+    def _make_run_failed(
+        self, handle: RunHandle, error_message: str
+    ) -> RunFailed:
+        framework = "codex"
+        run_id = self._event_run_id(handle)
+        scope_id = stable_scope_id(framework, run_id)
+        item_id = stable_item_id(framework, run_id, "$run")
+        return RunFailed(
+            **self._canonical_kwargs(
+                handle,
+                scope_id=scope_id,
+                item_id=item_id,
+                event_type="run.failed",
+                part_id="run",
+            ),
+            status="failed",
+            error=ErrorInfo(
+                code="codex_runtime_failed",
+                message=error_message,
+                source="codex",
+                scope_id=scope_id,
+                source_ref=self._make_source(handle),
+            ),
         )
 
     @staticmethod
@@ -850,6 +808,34 @@ def _resume_prompt(payload: Optional[ResumePayload]) -> Any:
     return json.dumps(payload.data, ensure_ascii=False, sort_keys=True)
 
 
+def _coerce_prompt_text(value: Any) -> Any:
+    """把 canonical message 形态的 input 压成 SDK 可接受的文本。
+
+    ``openai-codex`` 0.147 的 run input 只接受 TextInput/str;请求侧没有
+    conversation preprocessing 时 ``request.input`` 可能是
+    ``[{role, content}]`` 历史列表,直接透传会 ``unsupported input item``。
+    """
+    if isinstance(value, str) or value is None:
+        return value
+    if isinstance(value, dict):
+        content = value.get("content") if "role" in value else value.get("text")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, dict):
+            text = content.get("text") or content.get("content")
+            if isinstance(text, str):
+                return text
+        return str(value)
+    if isinstance(value, list):
+        texts = [
+            text
+            for text in (_coerce_prompt_text(item) for item in value)
+            if isinstance(text, str) and text
+        ]
+        return "\n".join(texts) if texts else str(value)
+    return str(value)
+
+
 def _request_prompt(request: StartRequest) -> Any:
     """Render canonical conversation history for a native Codex turn.
 
@@ -859,11 +845,21 @@ def _request_prompt(request: StartRequest) -> Any:
     # A resumed Codex thread already owns its transcript. Re-sending Studio's
     # transport-neutral history would duplicate every prior turn after refresh.
     if str(request.metadata.get("thread_id") or "").strip():
-        return request.input
+        return (
+            request.input
+            if _is_structured_turn_input(request.input)
+            else _coerce_prompt_text(request.input)
+        )
 
     conversation = request.conversation_preprocessing()
     if conversation is None or not conversation.messages:
-        return request.input
+        # Keep native text/image/mention parts intact for _build_run_input().
+        # Flattening this list turns an image dict into user-visible text.
+        return (
+            request.input
+            if _is_structured_turn_input(request.input)
+            else _coerce_prompt_text(request.input)
+        )
 
     lines: list[str] = []
     for message in conversation.messages:
@@ -878,6 +874,13 @@ def _request_prompt(request: StartRequest) -> Any:
         elif role == "user":
             lines.append(f"User: {content}")
     return "\n".join(lines) or request.input
+
+
+def _is_structured_turn_input(value: Any) -> bool:
+    return isinstance(value, list) and any(
+        isinstance(item, dict) and isinstance(item.get("type"), str)
+        for item in value
+    )
 
 
 def _build_run_input(request: Optional[StartRequest], prompt: Any) -> Any:
@@ -905,7 +908,11 @@ def _build_run_input(request: Optional[StartRequest], prompt: Any) -> Any:
             if not isinstance(item, dict):
                 continue
             kind = str(item.get("type") or "")
-            if kind == "text":
+            if not kind and "role" in item:
+                # canonical conversation message({role, content});当前 input
+                # 已由 prompt(或 conversation preprocessing)承载,跳过历史项。
+                continue
+            if kind in {"text", "input_text"}:
                 text = str(
                     prompt
                     if not text_replaced and isinstance(prompt, str)
@@ -914,10 +921,35 @@ def _build_run_input(request: Optional[StartRequest], prompt: Any) -> Any:
                 text_replaced = True
                 if text:
                     native_items.append(TextInput(text=text))
-            elif kind == "image" and item.get("url"):
-                native_items.append(ImageInput(url=str(item["url"])))
+            elif kind in {"image", "input_image"} and (
+                item.get("url") or item.get("image_url")
+            ):
+                native_items.append(
+                    ImageInput(url=str(item.get("url") or item.get("image_url")))
+                )
             elif kind == "localImage" and item.get("path"):
                 native_items.append(LocalImageInput(path=str(item["path"])))
+            elif kind == "input_file" and (
+                item.get("file_data")
+                or str(item.get("file_url") or "").startswith("data:")
+            ):
+                file_path = _materialize_inline_file(
+                    str(item.get("file_data") or item.get("file_url")),
+                    str(item.get("filename") or "attachment"),
+                )
+                if file_path is not None:
+                    # App Server's ``mention`` input is presentation metadata:
+                    # current Codex versions do not include it in the model's
+                    # user message.  Always add an explicit model-visible
+                    # attachment context as well.  Small textual files are
+                    # inlined deterministically; binary/large files expose a
+                    # sandbox-readable path that Codex can inspect with tools.
+                    native_items.append(
+                        TextInput(text=_attachment_context_text(file_path, item))
+                    )
+                    native_items.append(
+                        MentionInput(name=file_path.name, path=str(file_path))
+                    )
             elif kind == "mention" and item.get("path"):
                 native_items.append(
                     MentionInput(
@@ -935,6 +967,76 @@ def _build_run_input(request: Optional[StartRequest], prompt: Any) -> Any:
     if len(combined) == 1 and isinstance(combined[0], TextInput) and not skills:
         return combined[0].text
     return combined
+
+
+def _materialize_inline_file(data_url: str, filename: str) -> Path | None:
+    """Materialize a bounded Studio inline attachment for native Codex."""
+
+    match = re.fullmatch(r"data:([^;,]+)?;base64,([A-Za-z0-9+/=\s]+)", data_url)
+    encoded = match.group(2) if match is not None else data_url.strip()
+    try:
+        payload = base64.b64decode(encoded, validate=True)
+    except (ValueError, binascii.Error):
+        return None
+    if not payload or len(payload) > 10 * 1024 * 1024:
+        return None
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "-", Path(filename).name).strip(".-")
+    safe_name = safe_name[:120] or "attachment"
+    digest = hashlib.sha256(payload).hexdigest()
+    path = Path("/tmp/ksadk-codex-attachments") / digest / safe_name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        path.write_bytes(payload)
+    return path
+
+
+_MAX_INLINE_ATTACHMENT_TEXT_BYTES = 64 * 1024
+_TEXT_ATTACHMENT_SUFFIXES = {
+    ".csv",
+    ".html",
+    ".htm",
+    ".ini",
+    ".json",
+    ".jsonl",
+    ".log",
+    ".md",
+    ".py",
+    ".rst",
+    ".toml",
+    ".tsv",
+    ".txt",
+    ".xml",
+    ".yaml",
+    ".yml",
+}
+
+
+def _attachment_context_text(path: Path, item: Mapping[str, Any]) -> str:
+    """Build model-visible context for a materialized Responses input file."""
+
+    name = str(item.get("filename") or path.name).replace('"', "'")
+    inline_data = item.get("inlineData")
+    inline_mime = inline_data.get("mimeType") if isinstance(inline_data, Mapping) else None
+    mime_type = str(item.get("mime_type") or inline_mime or "").strip().lower()
+    source = str(item.get("file_data") or item.get("file_url") or "")
+    data_url_match = re.match(r"data:([^;,]+)", source)
+    if not mime_type and data_url_match is not None:
+        mime_type = data_url_match.group(1).strip().lower()
+    is_text = mime_type.startswith("text/") or path.suffix.lower() in _TEXT_ATTACHMENT_SUFFIXES
+    header = f'<uploaded_attachment name="{name}" path="{path}">'
+    if not is_text:
+        return (
+            f"{header}\n"
+            "The uploaded file is available at the path above. Read it with an appropriate "
+            "tool before answering questions about its contents.\n"
+            "</uploaded_attachment>"
+        )
+
+    raw = path.read_bytes()
+    truncated = len(raw) > _MAX_INLINE_ATTACHMENT_TEXT_BYTES
+    text = raw[:_MAX_INLINE_ATTACHMENT_TEXT_BYTES].decode("utf-8", errors="replace")
+    suffix = "\n[attachment content truncated]" if truncated else ""
+    return f"{header}\n{text}{suffix}\n</uploaded_attachment>"
 
 
 __all__ = ["CodexRuntimeAdapter"]

@@ -19,9 +19,10 @@ The `ksadk-python` wheel ships `ksadk/server/static` and
 toolchain.
 
 <Callout type="info">
-The hosted web UI source lives in the `ksadk-web` repo. The Studio source is
-the tracked `ksadk/studio/react-ui` project in this repository; only its
-compiled payload is ignored.
+The hosted web UI source lives in the `ksadk-web` repo. The public
+`ksadk-python` clean export and Python artifacts contain only the two reviewed
+production static payloads; editable Studio React / TypeScript source is not
+published.
 </Callout>
 
 ## Local Project Build
@@ -36,6 +37,12 @@ agentengine web . --no-open
 Cloud packaging can require credentials, registry access, object storage, or
 approved deployment targets. Public examples should keep those paths optional
 and provide a local fallback.
+
+`make build-wheel` and release builds print the KsADK version, source commit,
+working-tree state, wheel filename, and SHA-256 for the artifact that was
+actually produced. Code builds likewise print the version, source type, and
+commit id embedded in the zip. Use that artifact provenance for diagnosis
+instead of inferring the cloud version from the developer machine.
 
 ### Dry Run
 
@@ -56,7 +63,7 @@ frontend payloads, then runs `uv build`, wheel/sdist content assertions, and
 <Steps>
   1. **clean-dist** clears the previous `dist/`
   2. **sync-ksadk-web-static** fetches the pinned, published UI static assets
-  3. **build-studio-static** installs the locked Studio dependencies and builds its ignored static payload
+  3. **build-studio-static** builds Studio in a complete source workspace, or validates and reuses the reviewed static payload in a public clean export
   4. **uv build** builds the sdist/wheel
   5. **tests/test_runtime_common_packaging.py** inspects wheel and sdist contents
   6. **twine check dist/*** final check
@@ -66,6 +73,8 @@ The assertions guarantee:
 
 - the wheel does not contain legacy `ksadk/server/web-ui/` sources, build
   outputs, or `node_modules/`.
+- neither the wheel nor the sdist contains editable `ksadk/studio/react-ui/`
+  source.
 - the wheel does not contain historical build residue (stale `dist/` fragments,
   `.zread/`, `.pypirc`).
 - the wheel includes the synced `ksadk/server/static/index.html` and generated
@@ -92,17 +101,17 @@ Release artifacts must not contain:
 
 <Callout type="info">
 The Python package may include static UI assets needed by `agentengine web` and
-Studio. The hosted web UI source belongs to `ksadk-web`; Studio source remains
-tracked in `ksadk/studio/react-ui`.
+Studio. The hosted web UI source belongs to `ksadk-web`; editable Studio source
+does not enter the public repository, sdist, or wheel.
 </Callout>
 
 Official PyPI releases run through `.github/workflows/publish-pypi.yml`,
 triggered by a GitHub Release `published` event or `workflow_dispatch`. The
 workflow runs `make public-preflight`, which synchronizes the pinned
-`ksadk-web` static payload and generates the Studio payload (by default from
-the published `@kingsoftcloud/ksadk-web` version; select another published
-version via the `ksadk_web_version` input), then uploads through OIDC Trusted
-Publishing without relying on a long-lived PyPI token.
+`ksadk-web` static payload (select another published version via the
+`ksadk_web_version` input) and validates the reviewed Studio static payload,
+then uploads through OIDC Trusted Publishing without relying on a long-lived
+PyPI token. The gate rejects any editable Studio React / TypeScript source.
 
 <Callout type="info" title="New in 0.6.7">
 Serverless deployment injects the resolved UI runtime configuration into the

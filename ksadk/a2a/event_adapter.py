@@ -5,31 +5,37 @@
 
 方向:
 - ``task_status_to_event``:A2A TaskStatus/TaskState → RuntimeEvent(run.*)。
-- ``artifact_to_event``:A2A Artifact → RuntimeEvent(artifact.*)。
-- ``message_to_event``:A2A Message → RuntimeEvent(text.*)。
-- ``event_to_text_part``:RuntimeEvent(text.*)→ A2A ``Part``(用于出站)。
+- ``artifact_to_event``:A2A Artifact → RuntimeEvent(item.*,item_kind="artifact")。
+- ``message_to_event``:A2A Message → RuntimeEvent(item.*,item_kind="message")。
+- ``event_to_text_part``:RuntimeEvent(item.*,item_kind="message")→ A2A ``Part``(用于出站)。
 
 wire 对象是 protobuf(``a2a_pb2``);文本用 ``Part(text=...)``。
 """
 
 from __future__ import annotations
 
+import time
 from typing import Any, Optional
 
 from a2a.types import Part, TaskState, TaskStatus
 
-from ksadk.events.runtime_event import EventType, RuntimeEvent
-
-#: A2A TaskState → RuntimeEvent run.* 事件类型映射。
-_TASK_STATE_TO_RUN_EVENT = {
-    TaskState.TASK_STATE_SUBMITTED: EventType.RUN_STARTED,
-    TaskState.TASK_STATE_WORKING: EventType.RUN_PROGRESS,
-    TaskState.TASK_STATE_COMPLETED: EventType.RUN_COMPLETED,
-    TaskState.TASK_STATE_FAILED: EventType.RUN_FAILED,
-    TaskState.TASK_STATE_CANCELED: EventType.RUN_CANCELED,
-    TaskState.TASK_STATE_INPUT_REQUIRED: EventType.RUN_INTERRUPTED,
-    TaskState.TASK_STATE_REJECTED: EventType.RUN_FAILED,
-}
+from ksadk.events.canonical import (
+    ContentSnapshot,
+    ErrorInfo,
+    ItemCompleted,
+    ItemStarted,
+    ItemUpdated,
+    RunCanceled,
+    RunCompleted,
+    RunFailed,
+    RunInterrupted,
+    RunProgress,
+    RunStarted,
+    RuntimeEvent,
+    SourceRef,
+)
+from ksadk.events.content import TextContent
+from ksadk.events.identity import stable_event_id, stable_item_id, stable_scope_id
 
 
 class A2AEventAdapter:
@@ -48,25 +54,57 @@ class A2AEventAdapter:
         seq_id: int,
         event_id: Optional[str] = None,
     ) -> RuntimeEvent:
-        """A2A TaskStatus → RuntimeEvent(run.*)。"""
-        event_type = _TASK_STATE_TO_RUN_EVENT.get(status.state, EventType.RUN_PROGRESS)
-        state_name = TaskState.Name(status.state) if status.state is not None else "unknown"
-        payload: dict[str, Any] = {"status": state_name}
-        if event_type == EventType.RUN_CANCELED:
-            payload["cancel_result"] = "interrupted_active_turn"
-        elif event_type == EventType.RUN_FAILED:
-            message = getattr(status, "message", None)
-            payload["error"] = self._parts_text(getattr(message, "parts", None)) or state_name
-        return RuntimeEvent.create(
-            event_type,
-            agent_id=agent_id,
-            user_id=user_id,
-            session_id=session_id,
-            invocation_id=invocation_id,
-            seq_id=seq_id,
-            payload=payload,
-            event_id=event_id,
+        """A2A TaskStatus → canonical RuntimeEvent(run.*)。"""
+        state = status.state
+        state_name = TaskState.Name(state) if state is not None else "unknown"
+        scope_id = stable_scope_id("a2a", session_id, invocation_id)
+        run_id = invocation_id
+        source = SourceRef(
+            framework="a2a",
+            native_run_id=invocation_id,
+            metadata={"agent_id": agent_id, "user_id": user_id, "status": state_name},
         )
+        timestamp = time.time()
+        eid = event_id or stable_event_id(
+            "a2a", scope_id, run_id, "run", "run", invocation_id, seq_id
+        )
+        common: dict[str, Any] = {
+            "schema_version": 2,
+            "event_id": eid,
+            "seq": seq_id,
+            "timestamp": timestamp,
+            "run_id": run_id,
+            "scope_id": scope_id,
+            "source": source,
+        }
+        if state == TaskState.TASK_STATE_SUBMITTED:
+            return RunStarted(**common, status="running")
+        if state == TaskState.TASK_STATE_WORKING:
+            return RunProgress(**common, status="running", message=state_name)
+        if state == TaskState.TASK_STATE_COMPLETED:
+            return RunCompleted(**common, status="completed", output_refs=())
+        if state in {TaskState.TASK_STATE_FAILED, TaskState.TASK_STATE_REJECTED}:
+            message = getattr(status, "message", None)
+            error_text = self._parts_text(getattr(message, "parts", None)) or state_name
+            return RunFailed(
+                **common,
+                status="failed",
+                error=ErrorInfo(
+                    code=(
+                        "a2a_task_rejected"
+                        if state == TaskState.TASK_STATE_REJECTED
+                        else "a2a_task_failed"
+                    ),
+                    message=error_text,
+                    source="a2a",
+                    scope_id=scope_id,
+                ),
+            )
+        if state == TaskState.TASK_STATE_CANCELED:
+            return RunCanceled(**common, status="canceled", reason="interrupted_active_turn")
+        if state == TaskState.TASK_STATE_INPUT_REQUIRED:
+            return RunInterrupted(**common, status="interrupted", reason=state_name)
+        return RunProgress(**common, status="running", message=state_name)
 
     def artifact_to_event(
         self,
@@ -79,23 +117,40 @@ class A2AEventAdapter:
         seq_id: int,
         event_id: Optional[str] = None,
     ) -> RuntimeEvent:
-        """A2A Artifact → RuntimeEvent(artifact.*)。"""
+        """A2A Artifact → canonical RuntimeEvent(item.started,item_kind="artifact")。"""
+        artifact_id = str(getattr(artifact, "artifact_id", None) or "")
         name = getattr(artifact, "name", None) or "artifact"
         text = self._parts_text(getattr(artifact, "parts", None))
-        return RuntimeEvent.create(
-            EventType.ARTIFACT_CREATED,
-            agent_id=agent_id,
-            user_id=user_id,
-            session_id=session_id,
-            invocation_id=invocation_id,
-            seq_id=seq_id,
-            payload={
-                "artifact_id": str(getattr(artifact, "artifact_id", None) or ""),
-                "name": name,
-                "version": 1,
-                "text": text,
-            },
-            event_id=event_id,
+        scope_id = stable_scope_id("a2a", session_id, invocation_id)
+        item_id = stable_item_id(
+            "a2a", session_id, invocation_id, "artifact", artifact_id or name
+        )
+        source = SourceRef(
+            framework="a2a",
+            native_run_id=invocation_id,
+            native_item_id=artifact_id or None,
+            metadata={"agent_id": agent_id, "user_id": user_id, "artifact_name": name},
+        )
+        eid = event_id or stable_event_id(
+            "a2a", scope_id, item_id, "item.started", "artifact", invocation_id, seq_id
+        )
+        initial = (
+            ContentSnapshot(parts=(TextContent(part_id="text", text=text),))
+            if text
+            else None
+        )
+        return ItemStarted(
+            schema_version=2,
+            event_id=eid,
+            seq=seq_id,
+            timestamp=time.time(),
+            run_id=invocation_id,
+            scope_id=scope_id,
+            source=source,
+            item_id=item_id,
+            item_kind="artifact",
+            phase="final_answer",
+            initial=initial,
         )
 
     def message_to_event(
@@ -110,29 +165,66 @@ class A2AEventAdapter:
         seq_id: int,
         event_id: Optional[str] = None,
     ) -> RuntimeEvent:
-        """A2A Message 文本 → RuntimeEvent(text.*,带相位)。"""
-        return RuntimeEvent.create(
-            EventType.TEXT_COMPLETED if final else EventType.TEXT_DELTA,
-            agent_id=agent_id,
-            user_id=user_id,
-            session_id=session_id,
-            invocation_id=invocation_id,
-            seq_id=seq_id,
-            phase="final_answer" if final else "commentary",
-            payload={"text": text},
-            event_id=event_id,
+        """A2A Message 文本 → canonical RuntimeEvent(item.*,item_kind="message")。"""
+        scope_id = stable_scope_id("a2a", session_id, invocation_id)
+        item_id = stable_item_id("a2a", session_id, invocation_id, "message", "response")
+        source = SourceRef(
+            framework="a2a",
+            native_run_id=invocation_id,
+            metadata={"agent_id": agent_id, "user_id": user_id},
+        )
+        timestamp = time.time()
+        if final:
+            eid = event_id or stable_event_id(
+                "a2a", scope_id, item_id, "item.completed", "snapshot", invocation_id, seq_id
+            )
+            return ItemCompleted(
+                schema_version=2,
+                event_id=eid,
+                seq=seq_id,
+                timestamp=timestamp,
+                run_id=invocation_id,
+                scope_id=scope_id,
+                source=source,
+                item_id=item_id,
+                item_kind="message",
+                snapshot=ContentSnapshot(
+                    parts=(TextContent(part_id="text-0", text=text),)
+                ),
+            )
+        eid = event_id or stable_event_id(
+            "a2a", scope_id, item_id, "item.updated", "text-0", invocation_id, seq_id
+        )
+        return ItemUpdated(
+            schema_version=2,
+            event_id=eid,
+            seq=seq_id,
+            timestamp=timestamp,
+            run_id=invocation_id,
+            scope_id=scope_id,
+            source=source,
+            item_id=item_id,
+            item_kind="message",
+            op="append",
+            update=TextContent(part_id="text-0", text=text),
         )
 
     # ---- RuntimeEvent → A2A ----
 
     @staticmethod
     def event_to_text_part(event: RuntimeEvent) -> Optional[Part]:
-        """RuntimeEvent(text.*)→ A2A ``Part``(用于出站 message/artifact)。"""
-        event.validate_conformance()
-        if event.event_type not in (EventType.TEXT_DELTA, EventType.TEXT_COMPLETED):
+        """RuntimeEvent(item.*,item_kind="message")→ A2A ``Part``(用于出站 message/artifact)。"""
+        if isinstance(event, ItemUpdated) and event.item_kind == "message":
+            if isinstance(event.update, TextContent):
+                text = event.update.text
+                return Part(text=text) if text else None
             return None
-        text = str(event.payload.get("text") or "")
-        return Part(text=text) if text else None
+        if isinstance(event, ItemCompleted) and event.item_kind == "message":
+            if event.snapshot.parts and isinstance(event.snapshot.parts[0], TextContent):
+                text = event.snapshot.parts[0].text
+                return Part(text=text) if text else None
+            return None
+        return None
 
     @staticmethod
     def _parts_text(parts: Any) -> str:

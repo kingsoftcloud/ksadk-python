@@ -13,22 +13,32 @@ from __future__ import annotations
 import asyncio
 import copy
 import inspect
-import json
 import logging
+import time
 from collections.abc import Mapping
-from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Dict, Optional, cast
 
-from ksadk.conversations.runtime_input import _runner_name
-from ksadk.conversations.runtime_observability import (
-    _conversation_span_scope,
-    _set_conversation_input_attributes,
-    _set_conversation_output_attributes,
-    _set_conversation_span_attributes,
-    _set_conversation_usage_attributes,
+from pydantic import JsonValue
+
+from ksadk.events.canonical import (
+    ApprovalRequest,
+    InteractionRequested,
+    OutputRef,
+    RunCanceled,
+    RunCompleted,
+    RunInterrupted,
+    RunStarted,
+    RuntimeEvent,
+    SourceRef,
 )
-from ksadk.events.runtime_event import EventType, RuntimeEvent
+from ksadk.events.identity import (
+    stable_event_id,
+    stable_item_id,
+    stable_scope_id,
+)
+from ksadk.kernel.contracts import RuntimeCapability, RuntimeCapabilityMatrix
+from ksadk.kernel.errors import UnsupportedControlError
 from ksadk.runners.base_runner import BaseRunner
 from ksadk.runtime.adapter import (
     RESUME_START_REQUEST_NATIVE_KEY,
@@ -44,79 +54,21 @@ from ksadk.runtime.adapter import (
 )
 from ksadk.runtime.preprocessing import PreparedRuntimeStart, prepare_runtime_start
 from ksadk.runtime.runner_loading import ensure_runner_loaded
-from ksadk.runtime_context import platform_invocation_scope
-from ksadk.tools.gateway import approval_interrupt_info_from_result
 
 logger = logging.getLogger(__name__)
 
-_STREAM_STOP = object()
+# 保留既有 monkeypatch patch 点:stream_mapping 在调用时经本模块属性解析。
+from ksadk.conversations.runtime_observability import (  # noqa: E402,F401
+    _conversation_span_scope,
+)
+
+# dict-chunk 退化路径的流竞速/事件映射实现拆至 _runner_adapter 子包(纯移动,行为不变)。
+from ksadk.runtime._runner_adapter.stream_mapping import (  # noqa: E402
+    _STREAM_STOP,
+    _RunnerStreamMappingMixin,
+)
+
 _ResumeKey = tuple[str, str, str, str, str]
-
-
-async def _anext_or_stop(gen: AsyncIterator[Any]) -> Any:
-    """取下一个 chunk;流结束返回 _STREAM_STOP sentinel(便于竞速)。"""
-    try:
-        return await gen.__anext__()
-    except StopAsyncIteration:
-        return _STREAM_STOP
-
-
-def _a2ui_surface_event(chunk: Any) -> tuple[str, dict[str, Any]] | None:
-    """Recognize a validated A2UI tool envelope and make it a first-class event.
-
-    The dynamic ``generate_a2ui`` tool returns official v0.9 operations as a
-    JSON tool result. Tool results are otherwise opaque to the runtime, which
-    would leave AG-UI with nothing to project until a page reload reconstructs
-    history. Convert exactly that envelope at the runtime boundary so it is
-    streamed, persisted, and replayed like every other A2UI surface.
-    """
-
-    if not isinstance(chunk, dict):
-        return None
-    value = chunk.get("tool_output", chunk.get("output"))
-    if value is not None and hasattr(value, "content"):
-        value = value.content
-    if isinstance(value, str):
-        try:
-            value = json.loads(value)
-        except (TypeError, ValueError):
-            return None
-    if not isinstance(value, Mapping):
-        return None
-    operations_raw = value.get("a2ui_operations")
-    if not isinstance(operations_raw, list) or not operations_raw:
-        return None
-    operations = [dict(operation) for operation in operations_raw if isinstance(operation, Mapping)]
-    if not operations:
-        return None
-
-    known: list[tuple[str, str]] = []
-    for operation in operations:
-        for key, event_type in (
-            ("createSurface", EventType.A2UI_SURFACE_BEGIN),
-            ("updateComponents", EventType.A2UI_SURFACE_UPDATE),
-            ("updateDataModel", EventType.A2UI_SURFACE_UPDATE),
-            ("deleteSurface", EventType.A2UI_SURFACE_END),
-        ):
-            detail = operation.get(key)
-            if isinstance(detail, Mapping) and isinstance(detail.get("surfaceId"), str):
-                surface_id = detail["surfaceId"].strip()
-                if surface_id:
-                    known.append((surface_id, event_type))
-                    break
-    if not known:
-        return None
-    surface_ids = {surface_id for surface_id, _event_type in known}
-    if len(surface_ids) != 1:
-        logger.warning("ignoring A2UI tool result with multiple surfaces")
-        return None
-    surface_id = known[0][0]
-    event_type = (
-        EventType.A2UI_SURFACE_BEGIN
-        if any(kind == EventType.A2UI_SURFACE_BEGIN for _surface_id, kind in known)
-        else known[0][1]
-    )
-    return event_type, {"surface_id": surface_id, "operations": operations}
 
 
 def _coerce_literal(value: Any, allowed: tuple[str, ...], default: str) -> Any:
@@ -161,9 +113,13 @@ class _ActiveRun:
     skip_runner: bool = False
     done: bool = False
     completion_metrics: dict[str, Any] = field(default_factory=dict)
+    # dict-chunk 退化路径:追踪已 ItemStarted 的 item key,避免重复发 Started。
+    started_items: set[tuple[str, str]] = field(default_factory=set)
+    # dict-chunk 退化路径:final_answer message 的 item_id,供 RunCompleted.output_refs 引用。
+    final_answer_item_id: Optional[str] = None
 
 
-class RunnerRuntimeAdapter(RuntimeAdapter):
+class RunnerRuntimeAdapter(_RunnerStreamMappingMixin, RuntimeAdapter):
     """把 ``BaseRunner`` 映射为平台六动词的通用 adapter。"""
 
     def __init__(self, runner: BaseRunner, *, runtime_type: str) -> None:
@@ -181,6 +137,63 @@ class RunnerRuntimeAdapter(RuntimeAdapter):
         self.last_cancel_dropped_approvals: set[str] = set()
 
     # ---- 框架钩子(子类按需 override) ----
+
+    def capabilities(self) -> RuntimeCapabilityMatrix:
+        """诚实矩阵:cancel 经 asyncio 任务打断(emulated,过 conformance);
+        resume/checkpoint 依赖 runner 声明的原生 checkpoint;attach/durable_restore
+        依赖 ``attach_runtime_handle`` seam 与跨进程持久化,内存表不算数。
+        """
+
+        def _unavailable(reason: str) -> RuntimeCapability:
+            return RuntimeCapability(supported=False, mode="unavailable", reason=reason)
+
+        checkpoint_capability = self._checkpoint_capability()
+        attach_seam = callable(getattr(self._runner, "attach_runtime_handle", None))
+        checkpoint_supported = bool(checkpoint_capability.supported)
+        durable_supported = bool(
+            checkpoint_capability.durable
+            and checkpoint_capability.shared_across_pods
+            and attach_seam
+        )
+        return RuntimeCapabilityMatrix(
+            cancel=RuntimeCapability(
+                supported=True,
+                mode="emulated",
+                reason="runner_stream_task_interrupt",
+            ),
+            pause=_unavailable("runtime_no_native_pause"),
+            resume=(
+                RuntimeCapability(supported=True, mode="native")
+                if checkpoint_supported
+                else _unavailable("runtime_no_native_checkpoint")
+            ),
+            submit_interaction=_unavailable("runtime_no_live_interaction_channel"),
+            attach=(
+                RuntimeCapability(supported=True, mode="native")
+                if attach_seam
+                else _unavailable("runner_no_durable_attach_seam")
+            ),
+            steer=_unavailable("runtime_no_native_steer"),
+            inject=_unavailable("runtime_no_native_inject"),
+            checkpoint=(
+                RuntimeCapability(supported=True, mode="native")
+                if checkpoint_supported
+                else _unavailable("runtime_no_native_checkpoint")
+            ),
+            durable_restore=(
+                RuntimeCapability(supported=True, mode="native")
+                if durable_supported
+                else _unavailable("durable_restore_requires_cross_process_checkpoint")
+            ),
+        )
+
+    async def durable_restore(self, handle: RunHandle) -> RunHandle:
+        if not self.capabilities().durable_restore.supported:
+            raise UnsupportedControlError(
+                f"{self._runtime_type} has no cross-process checkpoint backend for run "
+                f"{handle.run_id!r}"
+            )
+        return await self.attach(handle)
 
     def _checkpoint_capability(self) -> CheckpointCapability:
         """诚实暴露 checkpoint 粒度。默认读 runner.describe_checkpoint_capability。"""
@@ -285,7 +298,7 @@ class RunnerRuntimeAdapter(RuntimeAdapter):
             )
         attach = getattr(self._runner, "attach_runtime_handle", None)
         if not callable(attach):
-            raise RuntimeError(
+            raise UnsupportedControlError(
                 f"runner for {self._runtime_type!r} has no durable "
                 "attach_runtime_handle capability"
             )
@@ -408,7 +421,7 @@ class RunnerRuntimeAdapter(RuntimeAdapter):
         capability = self._require_native_checkpoint_capability()
         checkpoint_id = str(handle.native_ref.get("checkpoint_id") or "").strip()
         if not checkpoint_id:
-            raise RuntimeError(
+            raise UnsupportedControlError(
                 f"{self._runtime_type} runner has no native checkpoint for run "
                 f"{handle.run_id!r}"
             )
@@ -425,7 +438,7 @@ class RunnerRuntimeAdapter(RuntimeAdapter):
         if capability.supported:
             return capability
         detail = capability.reason or "runner does not expose framework checkpoints"
-        raise RuntimeError(
+        raise UnsupportedControlError(
             f"{self._runtime_type} native checkpoint capability is unavailable: {detail}"
         )
 
@@ -495,30 +508,19 @@ class RunnerRuntimeAdapter(RuntimeAdapter):
         # 消费 pending cancel:start 时若已记 pending,立即中断该 turn。
         if handle.run_id in self._pending_cancels:
             self._pending_cancels.discard(handle.run_id)
-            yield self._event(
-                handle,
-                EventType.RUN_CANCELED,
-                {
-                    "status": "cancelled",
-                    "cancel_result": CancelResult.PENDING_CANCEL_RECORDED.value,
-                },
-            )
+            yield self._make_run_canceled(handle, reason=CancelResult.PENDING_CANCEL_RECORDED.value)
             return
 
         if run.skip_runner:
             run.done = True
             self._active_runs.pop(handle.run_id, None)
-            yield self._event(
-                handle,
-                EventType.RUN_COMPLETED,
-                self._completion_payload(handle, status="already_resumed"),
-            )
+            yield self._make_run_completed(handle)
             return
 
         if run.resume_key is not None:
             self._consumed_resumes.add(run.resume_key)
 
-        yield self._event(handle, EventType.RUN_STARTED, {"status": "in_progress"})
+        yield self._make_run_started(handle)
 
         request = run.__dict__.get("_start_request")
         runner_input = self._build_runner_input(handle, request)
@@ -530,43 +532,35 @@ class RunnerRuntimeAdapter(RuntimeAdapter):
             run.stream = gen
             async for event in gen:
                 yield event
-                if event.event_type == EventType.APPROVAL_REQUESTED:
+                if event.event_type == "interaction.requested":
                     approval_interrupted = True
+                    # Track pending approval for canonical streams that bypass
+                    # _chunk_to_event (e.g. stream_canonical_events).
+                    if isinstance(event, InteractionRequested):
+                        call_id = str(event.interaction_id or "")
+                        if call_id:
+                            run.pending_approvals.add(call_id)
+                            pending_ids = handle.native_ref.setdefault("pending_approval_ids", [])
+                            if call_id not in pending_ids:
+                                pending_ids.append(call_id)
                 if event.event_type in {
-                    EventType.RUN_COMPLETED,
-                    EventType.RUN_FAILED,
-                    EventType.RUN_CANCELED,
-                    EventType.RUN_INTERRUPTED,
+                    "run.completed",
+                    "run.failed",
+                    "run.canceled",
+                    "run.interrupted",
                 }:
                     terminal_event_seen = True
-                if event.event_type in {EventType.RUN_FAILED, EventType.RUN_CANCELED}:
+                if event.event_type in {"run.failed", "run.canceled"}:
                     return
 
             if run.interrupt_event.is_set() and not terminal_event_seen:
-                yield self._event(
-                    handle,
-                    EventType.RUN_CANCELED,
-                    {
-                        "status": "cancelled",
-                        "cancel_result": CancelResult.INTERRUPTED_ACTIVE_TURN.value,
-                    },
+                yield self._make_run_canceled(
+                    handle, reason=CancelResult.INTERRUPTED_ACTIVE_TURN.value
                 )
             elif approval_interrupted and not terminal_event_seen:
-                yield self._event(
-                    handle,
-                    EventType.RUN_INTERRUPTED,
-                    {"status": "input_required"},
-                )
+                yield self._make_run_interrupted(handle, reason="input_required")
             elif not terminal_event_seen:
-                yield self._event(
-                    handle,
-                    EventType.RUN_COMPLETED,
-                    self._completion_payload(
-                        handle,
-                        status="completed",
-                        metrics=run.completion_metrics,
-                    ),
-                )
+                yield self._make_run_completed(handle, run=run, metrics=run.completion_metrics)
         finally:
             run.stream = None
             run.done = True
@@ -585,15 +579,17 @@ class RunnerRuntimeAdapter(RuntimeAdapter):
                 else {}
             )
             base_metadata = merged.get("metadata")
-            merged.update({
-                "input": override.get("input"),
-                "session_id": handle.session_id,
-                "invocation_id": handle.run_id,
-                "metadata": {
-                    **(dict(base_metadata) if isinstance(base_metadata, Mapping) else {}),
-                    **dict(override.get("metadata") or {}),
-                },
-            })
+            merged.update(
+                {
+                    "input": override.get("input"),
+                    "session_id": handle.session_id,
+                    "invocation_id": handle.run_id,
+                    "metadata": {
+                        **(dict(base_metadata) if isinstance(base_metadata, Mapping) else {}),
+                        **dict(override.get("metadata") or {}),
+                    },
+                }
+            )
             for key, value in override.items():
                 if key not in ("input", "metadata"):
                     merged[key] = value
@@ -617,355 +613,19 @@ class RunnerRuntimeAdapter(RuntimeAdapter):
             "metadata": metadata,
         }
 
-    async def _map_runner_stream(
-        self, handle: RunHandle, runner_input: dict
-    ) -> AsyncIterator[RuntimeEvent]:
-        run = self._active_runs.get(handle.run_id)
-        interrupt = run.interrupt_event if run is not None else None
-        prepared_start = run.__dict__.get("_prepared_start") if run is not None else None
-        invocation_context = (
-            prepared_start.context if isinstance(prepared_start, PreparedRuntimeStart) else None
-        )
-        scope = (
-            platform_invocation_scope(invocation_context)
-            if invocation_context is not None
-            else nullcontext()
-        )
-        runner_name = _runner_name(self._runner)
-        accumulated_output = ""
-        usage: dict[str, Any] = {}
-        runner_gen: Optional[AsyncIterator[Any]] = None
-        async with _conversation_span_scope(runner_name) as span:
-            if isinstance(prepared_start, PreparedRuntimeStart):
-                _set_conversation_span_attributes(
-                    span,
-                    agent_id=str(handle.native_ref.get("agent_id") or "agent"),
-                    user_id=str(handle.native_ref.get("user_id") or "user"),
-                    session_id=handle.session_id,
-                    invocation_id=handle.run_id,
-                    runner_name=runner_name,
-                    model=prepared_start.context.model,
-                    response_id=prepared_start.response_id,
-                )
-                _set_conversation_input_attributes(span, prepared_start.input_text)
-            try:
-                with scope:
-                    canonical_stream = getattr(self._runner, "stream_runtime_events", None)
-                    stream_result = (
-                        canonical_stream(runner_input)
-                        if callable(canonical_stream)
-                        else self._runner.stream(runner_input)
-                    )
-                    if inspect.iscoroutine(stream_result):
-                        # runner.stream 若声明为 async def -> AsyncIterator(非 async generator),
-                        # 调用返回 coroutine,需 await 得到迭代器。
-                        stream_result = await stream_result
-                    runner_gen = cast(AsyncIterator[Any], stream_result)
-                    while True:
-                        # 竞速:下一个 runner chunk vs cancel 中断事件。
-                        chunk_task = asyncio.ensure_future(_anext_or_stop(runner_gen))
-                        if run is not None:
-                            run.chunk_task = chunk_task
-                        wait_set = {chunk_task}
-                        interrupt_task = (
-                            asyncio.ensure_future(interrupt.wait())
-                            if interrupt is not None
-                            else None
-                        )
-                        if interrupt_task is not None:
-                            wait_set.add(interrupt_task)
-                        done, pending = await asyncio.wait(
-                            wait_set, return_when=asyncio.FIRST_COMPLETED
-                        )
-                        for task in pending:
-                            task.cancel()
-                        if pending:
-                            await asyncio.gather(*pending, return_exceptions=True)
-                        if interrupt_task is not None and interrupt_task in done:
-                            # cancel 中断:安全关闭 runner 流(同一 task)并停止。
-                            chunk_task.cancel()
-                            await asyncio.gather(chunk_task, return_exceptions=True)
-                            return
-                        try:
-                            chunk = chunk_task.result()
-                        except asyncio.CancelledError:
-                            if interrupt is not None and interrupt.is_set():
-                                return
-                            raise
-                        finally:
-                            if run is not None:
-                                run.chunk_task = None
-                        if chunk is _STREAM_STOP:
-                            return
-                        if isinstance(chunk, RuntimeEvent):
-                            if chunk.event_type in {
-                                EventType.TEXT_DELTA,
-                                EventType.TEXT_COMPLETED,
-                            } and chunk.phase == "final_answer":
-                                text = self._coerce(chunk.payload.get("text"))
-                                if chunk.event_type == EventType.TEXT_COMPLETED:
-                                    accumulated_output = text
-                                else:
-                                    accumulated_output += text
-                            elif chunk.event_type == EventType.USAGE_REPORTED:
-                                usage.update(chunk.payload)
-                        if isinstance(chunk, dict):
-                            chunk_type = str(chunk.get("type") or "")
-                            if chunk_type == "final" and run is not None:
-                                for source_key, target_key in (
-                                    ("duration_ms", "duration_ms"),
-                                    ("started_at", "started_at"),
-                                    ("completed_at", "completed_at"),
-                                    ("metrics_source", "source"),
-                                ):
-                                    if chunk.get(source_key) is not None:
-                                        run.completion_metrics[target_key] = chunk[source_key]
-                            if chunk_type in {"final", "text", "text_delta"}:
-                                text = self._coerce(
-                                    chunk.get("delta") or chunk.get("output") or chunk.get("data")
-                                )
-                                if text:
-                                    if chunk_type == "final" or chunk.get("replace"):
-                                        accumulated_output = text
-                                    else:
-                                        accumulated_output += text
-                            raw_usage = chunk.get("usage")
-                            if isinstance(raw_usage, dict):
-                                usage.update(raw_usage)
-                        event = self._chunk_to_event(handle, run, chunk)
-                        if event is not None:
-                            yield event
-                        a2ui_surface = _a2ui_surface_event(chunk)
-                        if a2ui_surface is not None:
-                            event_type, payload = a2ui_surface
-                            yield self._event(handle, event_type, payload)
-            finally:
-                if accumulated_output:
-                    _set_conversation_output_attributes(span, accumulated_output)
-                _set_conversation_usage_attributes(span, usage)
-                if runner_gen is not None:
-                    aclose = getattr(runner_gen, "aclose", None)
-                    if callable(aclose):
-                        try:
-                            await aclose()
-                        except Exception:  # noqa: BLE001
-                            pass
-                if run is not None:
-                    run.cancellation_ack.set()
+    # ---- canonical event construction helpers ----
 
-    def _chunk_to_event(
-        self, handle: RunHandle, run: Optional[_ActiveRun], chunk: Any
-    ) -> Optional[RuntimeEvent]:
-        if isinstance(chunk, RuntimeEvent):
-            # Outer adapter owns the public lifecycle envelope.  A native
-            # Runtime may emit its own RUN_STARTED with private identifiers;
-            # suppress that duplicate and rebind all other canonical events
-            # to the public handle without flattening their payloads.
-            if chunk.event_type == EventType.RUN_STARTED:
-                return None
-            return RuntimeEvent.create(
-                chunk.event_type,
-                agent_id=str(handle.native_ref.get("agent_id") or "agent"),
-                user_id=str(handle.native_ref.get("user_id") or "user"),
-                session_id=handle.session_id,
-                invocation_id=handle.run_id,
-                seq_id=self._next_seq(),
-                phase=chunk.phase,
-                payload=dict(chunk.payload),
-                event_id=chunk.event_id,
-                timestamp=chunk.timestamp,
-            )
-        if not isinstance(chunk, dict):
-            return self._event(
-                handle, EventType.TEXT_DELTA, {"text": str(chunk)}, phase="commentary"
-            )
-        chunk_type = chunk.get("type")
-        if chunk_type in ("reasoning", "reasoning_delta", "thinking"):
-            text = self._coerce(
-                chunk.get("delta")
-                or chunk.get("content")
-                or chunk.get("output")
-                or chunk.get("data")
-            )
-            if not text:
-                return None
-            event_type = (
-                EventType.REASONING_COMPLETED
-                if chunk.get("status") in ("completed", "done")
-                else EventType.REASONING_DELTA
-            )
-            return self._event(
-                handle,
-                event_type,
-                {"text": text},
-                phase="commentary",
-            )
-        if chunk_type in ("tool_call", "tool_start"):
-            call_id = str(
-                chunk.get("tool_call_id")
-                or chunk.get("call_id")
-                or chunk.get("run_id")
-                or chunk.get("id")
-                or ""
-            )
-            name = str(chunk.get("tool_name") or chunk.get("name") or "tool")
-            return self._event(
-                handle,
-                EventType.TOOL_CALL_BEGIN,
-                {
-                    "call_id": call_id or name,
-                    "name": name,
-                    "args": chunk.get("tool_args", chunk.get("args")),
-                },
-            )
-        if chunk_type in ("tool_result", "tool_end"):
-            call_id = str(
-                chunk.get("tool_call_id")
-                or chunk.get("call_id")
-                or chunk.get("run_id")
-                or chunk.get("id")
-                or ""
-            )
-            name = str(chunk.get("tool_name") or chunk.get("name") or "tool")
-            tool_args = chunk.get("tool_args", chunk.get("args"))
-            result = chunk.get("tool_output", chunk.get("output"))
-            approval_detail = approval_interrupt_info_from_result(
-                result,
-                fallback_tool_name=name,
-                tool_args=tool_args,
-                run_id=call_id or None,
-            )
-            if approval_detail is not None:
-                return self._approval_requested_event(
-                    handle,
-                    run,
-                    detail=approval_detail,
-                    call_id=call_id,
-                )
-            return self._event(
-                handle,
-                EventType.TOOL_CALL_END,
-                {
-                    "call_id": call_id or name,
-                    "name": name,
-                    "result": result,
-                    "error": chunk.get("error"),
-                },
-            )
-        if chunk_type in ("interrupt", "approval", "approval_required"):
-            raw_detail = chunk.get("interrupt_info") or chunk.get("detail") or {}
-            detail = dict(raw_detail) if isinstance(raw_detail, Mapping) else {}
-            call_id = str(
-                chunk.get("call_id")
-                or chunk.get("approval_id")
-                or chunk.get("id")
-                or ""
-            )
-            return self._approval_requested_event(
-                handle,
-                run,
-                detail=detail,
-                call_id=call_id,
-            )
-        if chunk_type == "checkpoint":
-            raw_metadata = chunk.get("metadata")
-            metadata: dict[str, Any] = raw_metadata if isinstance(raw_metadata, dict) else {}
-            raw_agentengine = metadata.get("agentengine")
-            agentengine: dict[str, Any] = (
-                raw_agentengine if isinstance(raw_agentengine, dict) else {}
-            )
-            framework = str(agentengine.get("framework") or self._runtime_type)
-            framework_ref = agentengine.get("framework_ref") or {}
-            runtime_ref = (
-                framework_ref.get(framework) if isinstance(framework_ref, dict) else {}
-            ) or {}
-            checkpoint_id = str(
-                runtime_ref.get("checkpoint_id") if isinstance(runtime_ref, dict) else ""
-            )
-            if not checkpoint_id:
-                return None
-            handle.native_ref["checkpoint_id"] = checkpoint_id
-            known_checkpoint_ids = handle.native_ref.setdefault("known_checkpoint_ids", [])
-            if checkpoint_id not in known_checkpoint_ids:
-                known_checkpoint_ids.append(checkpoint_id)
-            handle.native_ref["framework_ref"] = framework_ref
-            if isinstance(runtime_ref, dict):
-                handle.native_ref.update(runtime_ref)
-            return self._event(
-                handle,
-                EventType.CHECKPOINT_CREATED,
-                {
-                    "checkpoint_id": checkpoint_id,
-                    "granularity": self._checkpoint_capability().granularity,
-                    "run_id": str(agentengine.get("run_id") or handle.run_id),
-                    "framework": framework,
-                    "framework_ref": framework_ref,
-                    "resume_target": framework_ref,
-                },
-            )
-        if chunk_type == "graph_update":
-            return self._event(
-                handle,
-                EventType.RUN_PROGRESS,
-                {
-                    "status": "in_progress",
-                    "node": str(chunk.get("node") or ""),
-                    "state_update": self._coerce(chunk.get("output")),
-                },
-            )
-        if chunk_type == "usage":
-            raw_usage = chunk.get("usage")
-            usage: dict[str, Any] = raw_usage if isinstance(raw_usage, dict) else {}
-            return self._event(
-                handle,
-                EventType.USAGE_REPORTED,
-                {
-                    "input_tokens": int(usage.get("input_tokens") or 0),
-                    "output_tokens": int(usage.get("output_tokens") or 0),
-                    "total_tokens": int(usage.get("total_tokens") or 0),
-                    "cached_tokens": int(usage.get("cached_tokens") or 0),
-                    "reasoning_tokens": int(usage.get("reasoning_tokens") or 0),
-                    "source": str(usage.get("source") or self._runtime_type),
-                },
-            )
-        if chunk_type == "error":
-            error = self._coerce(chunk.get("message") or chunk.get("error"))
-            return self._event(
-                handle,
-                EventType.RUN_FAILED,
-                {
-                    "status": "failed",
-                    "error": error or "runner failed",
-                },
-            )
-        if chunk_type == "final":
-            return self._event(
-                handle,
-                EventType.TEXT_COMPLETED,
-                {"text": self._coerce(chunk.get("output"))},
-                phase="final_answer",
-            )
-        text = self._coerce(chunk.get("delta") or chunk.get("output") or chunk.get("data"))
-        if not text:
-            return None
-        payload: dict[str, Any] = {"text": text}
-        if chunk.get("replace"):
-            payload["replace"] = True
-        return self._event(handle, EventType.TEXT_DELTA, payload, phase="commentary")
-
-    def _approval_requested_event(
+    def _interaction_requested_from_approval(
         self,
         handle: RunHandle,
         run: Optional[_ActiveRun],
         *,
         detail: Mapping[str, Any],
         call_id: str,
-    ) -> RuntimeEvent:
-        """Convert one framework/tool approval to the canonical runtime event."""
+    ) -> list[RuntimeEvent]:
+        """把 ToolGateway 结果中携带的审批请求转为 canonical InteractionRequested。"""
 
-        approval_id = str(
-            detail.get("approval_request_id") or detail.get("id") or call_id or ""
-        )
+        approval_id = str(detail.get("approval_request_id") or detail.get("id") or call_id or "")
         resolved_call_id = str(call_id or approval_id)
         if run is not None and approval_id:
             run.pending_approvals.add(approval_id)
@@ -973,52 +633,172 @@ class RunnerRuntimeAdapter(RuntimeAdapter):
             pending_approval_ids = handle.native_ref.setdefault("pending_approval_ids", [])
             if approval_id not in pending_approval_ids:
                 pending_approval_ids.append(approval_id)
-        return self._event(
-            handle,
-            EventType.APPROVAL_REQUESTED,
-            {
-                "approval_id": approval_id,
-                "call_id": resolved_call_id,
-                "kind": "tool",
-                "detail": dict(detail),
+        framework = self._runtime_type
+        run_id = handle.run_id
+        scope_id = stable_scope_id(framework, run_id)
+        interaction_id = resolved_call_id or stable_item_id(framework, run_id, "interaction")
+        item_id = stable_item_id(framework, run_id, "interaction")
+        detail_value: JsonValue = (
+            cast(JsonValue, dict(detail)) if isinstance(detail, Mapping) else None
+        )
+        return [
+            InteractionRequested(
+                **self._canonical_kwargs(
+                    handle,
+                    scope_id=scope_id,
+                    item_id=item_id,
+                    event_type="interaction.requested",
+                    part_id="interaction",
+                ),
+                interaction_id=interaction_id,
+                interaction_kind="approval",
+                request=ApprovalRequest(
+                    call_id=resolved_call_id or None,
+                    kind="tool",
+                    detail=detail_value,
+                ),
+            )
+        ]
+
+    def _make_source(self, handle: RunHandle, *, protocol: str | None = None) -> SourceRef:
+        # SourceRef.framework 是封闭枚举;测试 fixture 或自定义 runtime_type 落到
+        # 通用 "ksadk",原生框架名原样保留。
+        framework = self._runtime_type
+        if framework not in {"adk", "langgraph", "codex", "a2a", "ksadk"}:
+            framework = "ksadk"
+        return SourceRef(
+            framework=framework,
+            protocol=protocol,
+            native_run_id=handle.run_id,
+            metadata={
+                "agent_id": str(handle.native_ref.get("agent_id") or "agent"),
+                "user_id": str(handle.native_ref.get("user_id") or "user"),
+                "session_id": handle.session_id,
+                "invocation_id": handle.run_id,
             },
         )
 
-    def _event(
+    def _canonical_kwargs(
         self,
         handle: RunHandle,
-        event_type: str,
-        payload: dict,
         *,
-        phase: Optional[str] = None,
-    ) -> RuntimeEvent:
-        return RuntimeEvent.create(
-            event_type,
-            agent_id=str(handle.native_ref.get("agent_id") or "agent"),
-            user_id=str(handle.native_ref.get("user_id") or "user"),
-            session_id=handle.session_id,
-            invocation_id=handle.run_id,
-            seq_id=self._next_seq(),
-            phase=phase,
-            payload=payload,
+        scope_id: str,
+        item_id: str,
+        event_type: str,
+        part_id: str,
+    ) -> dict[str, Any]:
+        """Build common EventEnvelope kwargs for the dict-chunk degraded path."""
+        framework = self._runtime_type
+        run_id = handle.run_id
+        # TODO(runtime-event-v2): dict chunk 退化路径,chunk_ordinal 用 seq counter;
+        # LangGraph/Codex 切 stream_canonical_events 后清理
+        n = self._next_seq()
+        return {
+            "schema_version": 2,
+            "event_id": stable_event_id(
+                framework, scope_id, item_id, event_type, part_id, run_id, n
+            ),
+            "seq": n,
+            "timestamp": time.time(),
+            "run_id": run_id,
+            "scope_id": scope_id,
+            "source": self._make_source(handle),
+        }
+
+    def _make_run_started(self, handle: RunHandle) -> RunStarted:
+        framework = self._runtime_type
+        run_id = handle.run_id
+        scope_id = stable_scope_id(framework, run_id)
+        item_id = stable_item_id(framework, run_id, "$run")
+        return RunStarted(
+            schema_version=2,
+            event_id=stable_event_id(framework, scope_id, item_id, "run.started", "run", run_id, 0),
+            seq=self._next_seq(),
+            timestamp=time.time(),
+            run_id=run_id,
+            scope_id=scope_id,
+            source=self._make_source(handle),
+            status="running",
         )
 
-    def _completion_payload(
+    def _make_run_completed(
         self,
         handle: RunHandle,
         *,
-        status: str,
+        run: Optional[_ActiveRun] = None,
         metrics: Mapping[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        payload: dict[str, Any] = {"status": status, **dict(metrics or {})}
-        framework_ref = handle.native_ref.get("framework_ref")
-        if isinstance(framework_ref, Mapping) and framework_ref:
-            payload["agentengine"] = {
-                "run_id": handle.run_id,
-                "framework": self._runtime_type,
-                "framework_ref": dict(framework_ref),
-            }
-        return payload
+    ) -> RunCompleted:
+        framework = self._runtime_type
+        run_id = handle.run_id
+        scope_id = stable_scope_id(framework, run_id)
+        item_id = stable_item_id(framework, run_id, "$run")
+        output_refs: tuple[OutputRef, ...] = ()
+        if run is not None and run.final_answer_item_id:
+            output_refs = (
+                OutputRef(
+                    scope_id=scope_id,
+                    item_id=run.final_answer_item_id,
+                    part_id="text-0",
+                ),
+            )
+        source = self._make_source(handle)
+        if metrics:
+            source = source.model_copy(
+                update={"metadata": {**source.metadata, "metrics": dict(metrics)}}
+            )
+        return RunCompleted(
+            schema_version=2,
+            event_id=stable_event_id(
+                framework, scope_id, item_id, "run.completed", "run", run_id, 0
+            ),
+            seq=self._next_seq(),
+            timestamp=time.time(),
+            run_id=run_id,
+            scope_id=scope_id,
+            source=source,
+            status="completed",
+            output_refs=output_refs,
+        )
+
+    def _make_run_canceled(self, handle: RunHandle, *, reason: str | None = None) -> RunCanceled:
+        framework = self._runtime_type
+        run_id = handle.run_id
+        scope_id = stable_scope_id(framework, run_id)
+        item_id = stable_item_id(framework, run_id, "$run")
+        return RunCanceled(
+            schema_version=2,
+            event_id=stable_event_id(
+                framework, scope_id, item_id, "run.canceled", "run", run_id, 0
+            ),
+            seq=self._next_seq(),
+            timestamp=time.time(),
+            run_id=run_id,
+            scope_id=scope_id,
+            source=self._make_source(handle),
+            status="canceled",
+            reason=reason,
+        )
+
+    def _make_run_interrupted(
+        self, handle: RunHandle, *, reason: str | None = None
+    ) -> RunInterrupted:
+        framework = self._runtime_type
+        run_id = handle.run_id
+        scope_id = stable_scope_id(framework, run_id)
+        item_id = stable_item_id(framework, run_id, "$run")
+        return RunInterrupted(
+            schema_version=2,
+            event_id=stable_event_id(
+                framework, scope_id, item_id, "run.interrupted", "run", run_id, 0
+            ),
+            seq=self._next_seq(),
+            timestamp=time.time(),
+            run_id=run_id,
+            scope_id=scope_id,
+            source=self._make_source(handle),
+            status="interrupted",
+            reason=reason,
+        )
 
     @staticmethod
     def _coerce(value: Any) -> str:

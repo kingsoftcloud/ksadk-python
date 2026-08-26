@@ -198,6 +198,7 @@ def convert_tools(tools):
         else:
             t = t or {}
             import json as _json
+
             try:
                 unsupported.append(_json.dumps(t, ensure_ascii=False)[:300])
             except Exception:
@@ -224,6 +225,32 @@ def convert_tool_choice(tc):
     return tc
 
 
+# 各上游模型族的 reasoning_effort 上限(qwen3.7 系实测 xhigh 400;报错文案会列出
+# xhigh 但 DashScope 后端实际只认到 high,故不能用报错文案反推)。未列出的族原样透传。
+_EFFORT_RANK = {"none": 0, "minimal": 1, "low": 2, "medium": 3, "high": 4, "xhigh": 5}
+_EFFORT_CAP_PREFIXES = (
+    ("qwen3.7", "high"),
+    ("qwen3.6", "high"),
+    ("qwen3.5", "high"),
+)
+
+
+def clamp_reasoning_effort(model, effort):
+    """把超出上游模型族支持上限的 reasoning_effort 钳到最高合法档。
+
+    codex 对自家模型默认发 xhigh;qwen3.7 系上游 400,需钳到 high。
+    未知档位/未知模型族原样返回(不做发明式映射)。
+    """
+    if not isinstance(effort, str) or effort not in _EFFORT_RANK:
+        return effort
+    for prefix, cap in _EFFORT_CAP_PREFIXES:
+        if isinstance(model, str) and model.startswith(prefix):
+            if _EFFORT_RANK[effort] > _EFFORT_RANK[cap]:
+                return cap
+            return effort
+    return effort
+
+
 def _convert_text_format(fmt):
     """responses text.format -> chat response_format(structured output 结构重组)。
 
@@ -243,6 +270,35 @@ def _convert_text_format(fmt):
     return None
 
 
+def _promote_additional_tools(body):
+    """Promote Codex Harness dynamic tool input items to Responses tools.
+
+    Codex 0.147 no longer always sends tool declarations in the top-level
+    ``tools`` field.  It can prepend one or more developer input items shaped
+    as ``{"type": "additional_tools", "tools": [...]}``.  Chat Completions
+    has no equivalent input item, so the proxy must merge those declarations
+    into the canonical Responses tool list before namespace flattening.
+    """
+
+    inp = body.get("input")
+    if not isinstance(inp, list):
+        return
+    promoted = []
+    retained = []
+    for item in inp:
+        if isinstance(item, dict) and item.get("type") == "additional_tools":
+            tools = item.get("tools")
+            if isinstance(tools, list):
+                promoted.extend(tool for tool in tools if isinstance(tool, dict))
+            continue
+        retained.append(item)
+    if not promoted:
+        return
+    existing = body.get("tools")
+    body["tools"] = (list(existing) if isinstance(existing, list) else []) + promoted
+    body["input"] = retained
+
+
 def responses_to_chat(body):
     """responses 请求 -> chat 请求;返回 (chat_req, restore_map)。
 
@@ -251,6 +307,7 @@ def responses_to_chat(body):
     """
     from .namespace import flatten_request_namespaces
 
+    _promote_additional_tools(body)
     restore_map = flatten_request_namespaces(body)
     out = {"model": body.get("model")}
     msgs = []
@@ -273,8 +330,9 @@ def responses_to_chat(body):
         rf = _convert_text_format(text.get("format"))
         if rf is not None:
             out["response_format"] = rf
-        if text.get("verbosity"):
-            out["verbosity"] = text["verbosity"]
+        # text.verbosity("low"/"high")不转发:chat completions 无标准字段,
+        # kspmas 把顶层 verbosity 反序列化为 i32,字符串值直接 400(glm-5.2 实测;
+        # cc-switch 也不透传该字段)。
     if body.get("prompt_cache_key"):
         out["prompt_cache_key"] = body["prompt_cache_key"]
     tools = convert_tools(body.get("tools"))

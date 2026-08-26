@@ -194,6 +194,7 @@ class RuntimeAppConfig:
         agui: Optional[Any] = None,
         runtime_executor: RuntimeExecutor | None = None,
         launch_context: RuntimeLaunchContext | None = None,
+        kernel_adapter_provider: Callable[[], RuntimeAdapter] | None = None,
         session_service_provider: Callable[[], Any] | None = None,
         session_backend_provider: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
@@ -208,6 +209,9 @@ class RuntimeAppConfig:
         self.agui = agui
         self.runtime_executor = runtime_executor
         self.launch_context = launch_context
+        # 特殊 runtime 可显式提供 worker/recovery 的 adapter；常规部署从
+        # runtime_executor 的同一 registry 派生，见 _kernel_adapter_provider。
+        self.kernel_adapter_provider = kernel_adapter_provider
         self.session_service_provider = session_service_provider
         self.session_backend_provider = session_backend_provider
 
@@ -353,6 +357,40 @@ def create_runtime_app(
 
     @asynccontextmanager
     async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+        # 生产 kernel 的 composition root 必须启动 worker/lease/recovery，
+        # 不能只注册一个可接收命令、却永远不会消费的 ingress kernel。
+        from ksadk.kernel import ingress as _kernel_ingress
+        from ksadk.kernel.bootstrap import (
+            bootstrap_agent_kernel_runtime_from_env,
+            clear_agent_kernel_runtime,
+        )
+        from ksadk.runtime.factory import kernel_start_request_defaults
+
+        adapter_provider = _kernel_adapter_provider(config)
+        request_defaults = (
+            kernel_start_request_defaults(config.launch_context)
+            if config.launch_context is not None
+            else {}
+        )
+        kernel_runtime = await bootstrap_agent_kernel_runtime_from_env(
+            adapter_provider=adapter_provider,
+            runtime_executor=config.runtime_executor,
+            launch_context=config.launch_context,
+            start_request_defaults=request_defaults,
+            session_service=state.resolve_session_service(),
+        )
+        app.state.agent_kernel_runtime = kernel_runtime
+        if kernel_runtime is not None:
+            # Kernel canonical events are the replay authority for the normal
+            # Session APIs as well.  In memory/ephemeral mode bootstrap reuses
+            # the app-owned service above; in PostgreSQL mode it owns the
+            # durable service and the HTTP routes must adopt that exact one.
+            # Keeping two services made foreground SSE look correct while a
+            # later ListSessionEvents call returned an empty history forever.
+            kernel_session_service = kernel_runtime.config.session_service
+            if kernel_session_service is None:  # pragma: no cover - defensive
+                raise RuntimeError("agent kernel runtime has no Session service")
+            state.session_service = kernel_session_service
         try:
             if state.a2a_bootstrap is not None:
                 await state.a2a_bootstrap.start()
@@ -360,6 +398,10 @@ def create_runtime_app(
         finally:
             if state.a2a_bootstrap is not None:
                 await state.a2a_bootstrap.stop()
+            if kernel_runtime is not None:
+                await kernel_runtime.close()
+            clear_agent_kernel_runtime()
+            _kernel_ingress.clear_agent_kernel()
             await shutdown_runtime_resources(state)
 
     app = FastAPI(
@@ -488,6 +530,25 @@ def create_runtime_app(
     return app
 
 
+def _kernel_adapter_provider(
+    config: RuntimeAppConfig,
+) -> Callable[[], RuntimeAdapter] | None:
+    """Return the adapter source used by the durable kernel runtime.
+
+    Hosted startup deliberately fails when neither a provider nor a Runtime
+    launch context is available. It must never construct an unrelated local
+    adapter merely to make the ingress look healthy.
+    """
+
+    if config.kernel_adapter_provider is not None:
+        return config.kernel_adapter_provider
+    if config.a2a_runtime_adapter is not None:
+        return lambda: config.a2a_runtime_adapter
+    if config.runtime_executor is not None and config.launch_context is not None:
+        return lambda: config.runtime_executor.create_adapter(config.launch_context)
+    return None
+
+
 def _wire_a2a_if_enabled(app: FastAPI, state: RuntimeAppState, config: RuntimeAppConfig) -> None:
     """Mount A2A with an explicitly injected RuntimeAdapter.
 
@@ -569,15 +630,17 @@ def _wire_agui_if_enabled(app: FastAPI, state: RuntimeAppState, config: RuntimeA
             self._service = service
             self._store = RuntimeEventStore(service)
 
-        async def append_one(self, event: Any) -> Any:
-            existing = await self._service.get_session(event.session_id)
+        async def append_one(self, session_id: str, event: Any) -> Any:
+            existing = await self._service.get_session(session_id)
             if existing is None:
+                metadata = getattr(event, "source", None)
+                meta = metadata.metadata if metadata is not None else {}
                 await self._service.create_session(
-                    event.agent_id,
-                    event.user_id,
-                    event.session_id,
+                    str(meta.get("agent_id") or "agent"),
+                    str(meta.get("user_id") or "user"),
+                    session_id,
                 )
-            return await self._store.append_one(event)
+            return await self._store.append_one(session_id, event)
 
         async def reserve_once(self, event: Any) -> Any:
             existing = await self._service.get_session(event.session_id)

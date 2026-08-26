@@ -160,6 +160,35 @@ For a new Runtime, first cover the normal `BaseRunner` path with
 one by one. Do not hide framework differences behind a fabricated “fully
 supported” capability.
 
+## Agent Runtime V2 Phase 1 Control Foundation
+
+Version 0.8.2 adds an optional Agent Kernel control foundation. It does not
+silently migrate every historical Agent to the new path. The
+`AgentControlChannel/v1`, `SessionEventEnvelope/v1`, `ActivationLease/v1`,
+`RuntimeCapabilityMatrix/v1`, and `Interaction/v1` contracts are locked by JSON
+Schema, golden fixtures, an aggregate digest, and an additive-only gate. Gateway
+owns trusted routing, Server owns admission and permit issuance, and Runtime
+rejects control commands without a valid permit.
+
+| Store mode | Intended scope | Restart / multi-Pod semantics |
+| --- | --- | --- |
+| InMemory | local development or an explicitly ephemeral single-Pod hosted Runtime | no restart recovery or cross-Pod takeover promise |
+| SQLite | local single-process persistence | local restart persistence without multi-Pod owner semantics |
+| PostgreSQL | highly available hosted Runtime | durable Inbox, nonce, lease, transactional fencing, and takeover |
+
+PostgreSQL is not a universal prerequisite for Agent Kernel. A single-replica
+hosted Agent can explicitly use `memory` with
+`AGENT_KERNEL_DURABILITY_TIER=ephemeral`; PostgreSQL is required only when the
+deployment declares durable, highly available, or cross-Pod recovery semantics.
+Selecting `postgres` without a DSN fails startup because that is a configuration
+error, not a failure that can be silently downgraded.
+
+An older Runtime artifact without version, source, commit id, or an Agent Kernel
+contract digest stays on the historical path and reports the missing fields as
+unknown. An Operator upgrade alone does not auto-enroll it. Only a new deployment
+with an explicit enable flag and a matching digest enters the Kernel path, so the
+control plane can be upgraded before Runtimes are migrated one by one.
+
 ## Request Lifecycle
 
 A normal non-streaming `/v1/responses` request follows this path:
