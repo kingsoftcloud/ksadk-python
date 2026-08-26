@@ -34,6 +34,13 @@ from ksadk.harness.engine.base import (
 )
 from ksadk.harness.engine.thread_ids import encode_thread_id
 from ksadk.harness.reasoner import HarnessReasoner, HarnessReasoningTurn, LiteLLMHarnessReasoner
+from ksadk.harness.loop import (
+    ReasonInput,
+    ToolCallInput,
+    execute_tool_calls,
+    reason_turn_async,
+)
+from ksadk.harness.loop.reason import ReasoningLimitError
 from ksadk.harness.spec import HarnessSpec
 from ksadk.harness.state import HarnessState, Message, MessageRole, RunStatus
 from ksadk.harness.strategies import ExecutionStrategyRegistry
@@ -209,11 +216,17 @@ class ManagedLangGraphEngine:
                 # 通用 pause 恢复：None → LangGraph 从最近 Checkpoint 续跑。
                 invoke_input = None
             else:
+                history = run.request.metadata.get("conversation_history") or []
+                conversation: list[dict[str, Any]] = [{"role": "system", "content": instructions}]
+                if isinstance(history, list) and history:
+                    # 宿主（如 Studio Playground）注入的会话历史已含当前输入。
+                    conversation.extend(dict(m) for m in history if isinstance(m, dict))
+                else:
+                    conversation.append(
+                        {"role": "user", "content": str(run.request.input or "")}
+                    )
                 invoke_input = {
-                    "messages": [
-                        {"role": "system", "content": instructions},
-                        {"role": "user", "content": str(run.request.input or "")},
-                    ],
+                    "messages": conversation,
                     "pending_tool_calls": [],
                     "turn_count": 0,
                     "route": "reason",
@@ -244,14 +257,28 @@ class ManagedLangGraphEngine:
                     )
                 )
                 return []
-            run.state.messages = [
-                Message(role=MessageRole.USER, content=str(run.request.input or ""))
-            ]
+            # 影子状态消息（§6.2.1）：完整对话消息投影，供 Transcript 持久化。
             final_messages = final_state.get("messages", [])
+            run.state.messages = [
+                Message(
+                    role=MessageRole(m.get("role", "user")),
+                    content=str(m.get("content") or ""),
+                    tool_call_id=(
+                        str(m.get("tool_call_id")) if m.get("tool_call_id") else None
+                    ),
+                    name=str(m["name"]) if m.get("name") else None,
+                )
+                for m in final_messages
+                if isinstance(m, dict)
+            ]
             if final_messages:
                 last = final_messages[-1]
                 text = str(last.get("content") or "")
-                run.events.append(self._event(run, EventType.TEXT_COMPLETED, {"text": text}))
+                run.events.append(
+                    self._event(
+                        run, EventType.TEXT_COMPLETED, {"text": text}, phase="final_answer"
+                    )
+                )
             run.state.status = RunStatus.COMPLETED
             run.events.append(self._event(run, EventType.RUN_COMPLETED, {"status": "completed"}))
             run.done = True
@@ -298,152 +325,69 @@ class ManagedLangGraphEngine:
 
         async def reason(state: _GraphState) -> _GraphState:
             state["turn_count"] += 1
-            if state["turn_count"] > _MAX_REASONING_TURNS:
-                raise RuntimeError(f"reasoning exceeded {_MAX_REASONING_TURNS} turns")
-            run.events.append(
-                self._event(run, EventType.MODEL_CALL_STARTED, {"model": spec.model.profile_ref})
-            )
             try:
-                turn: HarnessReasoningTurn = await self._reasoner.complete(
-                    model=spec.model.profile_ref,
-                    prompt=spec.prompt.instructions or "",
-                    messages=tuple(state["messages"]),
-                    tools=list(self._tools.values()),
+                out = await reason_turn_async(
+                    state["turn_count"],
+                    ReasonInput(
+                        model_ref=spec.model.profile_ref,
+                        instructions=spec.prompt.instructions or "",
+                        messages=state["messages"],
+                        tools=list(self._tools.values()),
+                        reasoner=self._reasoner,
+                        agent_id=run.state.agent_id,
+                        user_id=run.state.user_id,
+                        session_id=run.state.session_id,
+                        run_id=run.handle.run_id,
+                        seq_start=run.seq,
+                        max_turns=_MAX_REASONING_TURNS,
+                    ),
                 )
-            except Exception as exc:  # noqa: BLE001 - 契约要求 started 必被闭合
-                run.events.append(
-                    self._event(
-                        run,
-                        EventType.MODEL_CALL_FAILED,
-                        {"model": spec.model.profile_ref, "error": str(exc)},
-                    )
-                )
-                raise
-            run.events.append(
-                self._event(run, EventType.MODEL_CALL_COMPLETED, {"model": spec.model.profile_ref})
-            )
-            if turn.tool_calls:
-                state["messages"].append(
-                    {
-                        "role": "assistant",
-                        "content": turn.final_text,
-                        "tool_calls": [
-                            {
-                                "id": call.call_id,
-                                "type": "function",
-                                "function": {
-                                    "name": call.name,
-                                    "arguments": json.dumps(call.arguments, ensure_ascii=False),
-                                },
-                            }
-                            for call in turn.tool_calls
-                        ],
-                    }
-                )
-                state["pending_tool_calls"] = [
-                    {"call_id": c.call_id, "name": c.name, "arguments": c.arguments}
-                    for c in turn.tool_calls
-                ]
-                state["route"] = "tool_calls"
-                return state
-            state["messages"].append({"role": "assistant", "content": turn.final_text or ""})
-            state["route"] = "final"
+            except ReasoningLimitError as exc:
+                raise RuntimeError(str(exc)) from exc
+            for ev in out.events:
+                run.events.append(ev)
+                run.seq = max(run.seq, ev.seq_id)
+            state["messages"].extend(out.new_messages)
+            state["pending_tool_calls"] = out.pending_tool_calls
+            state["route"] = out.route
             return state
 
         async def tool_calls(state: _GraphState) -> _GraphState:
-            for pending in state["pending_tool_calls"]:
-                call_id, name = pending["call_id"], pending["name"]
-                decision = "approved"
-                if name in self._approval_required:
-                    # Approval interrupt（plan §11.2）：interrupt() 首次抛
-                    # GraphInterrupt 暂停；resume 后此处返回审批决定。
-                    decision = interrupt(
-                        {
-                            "call_id": call_id,
-                            "name": name,
-                            "args": pending["arguments"],
-                            "risk": "high",
-                        }
+            class _GraphApprovalResolver:
+                # LangGraph interrupt 同步语义：首次抛 GraphInterrupt，resume 后返回审批决定。
+                def request(self, *, call_id, name, arguments):  # type: ignore[no-untyped-def]
+                    return interrupt(
+                        {"call_id": call_id, "name": name, "args": arguments, "risk": "high"}
                     )
-                if decision != "approved":
-                    run.events.append(
-                        self._event(
-                            run, EventType.TOOL_CALL_BEGIN,
-                            {"call_id": call_id, "name": name, "args": pending["arguments"]},
-                        )
-                    )
-                    run.events.append(
-                        self._event(
-                            run, EventType.TOOL_CALL_END,
-                            {"call_id": call_id, "name": name,
-                             "error": f"approval {decision}"},
-                        )
-                    )
-                    state["messages"].append(
-                        {"role": "tool", "tool_call_id": call_id, "name": name,
-                         "content": f"[denied] approval decision: {decision}"}
-                    )
-                    # Working Context（plan §8.5）：审批拒绝计入最近工具失败。
-                    run.state.working_context = record_tool_failure(
-                        run.state.working_context,
-                        name=name,
-                        error=f"approval {decision}",
-                    )
-                    continue
-                run.events.append(
-                    self._event(
-                        run, EventType.TOOL_CALL_BEGIN,
-                        {"call_id": call_id, "name": name, "args": pending["arguments"]},
-                    )
+
+            engine = self
+
+            class _EngineToolExecutor:
+                async def execute(self, name, arguments):  # type: ignore[no-untyped-def]
+                    return await engine._invoke_tool(name, arguments)
+
+            out = await execute_tool_calls(
+                ToolCallInput(
+                    pending_tool_calls=state["pending_tool_calls"],
+                    approval_required=frozenset(engine._approval_required),
+                    approval_resolver=_GraphApprovalResolver(),
+                    tool_executor=_EngineToolExecutor(),
+                    agent_id=run.state.agent_id,
+                    user_id=run.state.user_id,
+                    session_id=run.state.session_id,
+                    run_id=run.handle.run_id,
+                    seq_start=run.seq,
+                    working_context=run.state.working_context,
                 )
-                try:
-                    result = await self._invoke_tool(name, pending["arguments"])
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:  # noqa: BLE001 - 单工具失败不终止 Run
-                    # 工具失败韧性：记 error 的 tool.call.end + 失败消息，
-                    # 让模型看到失败原因后自行决定重试/换路/收尾。
-                    run.events.append(
-                        self._event(
-                            run, EventType.TOOL_CALL_END,
-                            {"call_id": call_id, "name": name,
-                             "error": f"{type(exc).__name__}: {exc}"},
-                        )
-                    )
-                    state["messages"].append(
-                        {"role": "tool", "tool_call_id": call_id, "name": name,
-                         "content": f"[error] {type(exc).__name__}: {exc}"}
-                    )
-                    run.state.working_context = record_tool_failure(
-                        run.state.working_context, name=name,
-                        error=f"{type(exc).__name__}: {exc}",
-                    )
-                    continue
-                result_text = result if isinstance(result, str) else json.dumps(
-                    result, ensure_ascii=False
-                )
-                # Working Context（plan §8.5）：工具结果关键事实记入已验证事实。
-                run.state.working_context = record_tool_result(
-                    run.state.working_context, name=name, result_text=result_text
-                )
-                run.events.append(
-                    self._event(
-                        run, EventType.TOOL_CALL_END,
-                        {"call_id": call_id, "name": name, "result": result},
-                    )
-                )
-                state["messages"].append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": call_id,
-                        "name": name,
-                        "content": (
-    result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
-),
-                    }
-                )
-            state["pending_tool_calls"] = []
-            state["route"] = "reason"
+            )
+            for ev in out.events:
+                run.events.append(ev)
+                run.seq = max(run.seq, ev.seq_id)
+            state["messages"].extend(out.new_messages)
+            if out.working_context is not None:
+                run.state.working_context = out.working_context
+            state["pending_tool_calls"] = out.pending_tool_calls
+            state["route"] = out.route
             return state
 
         def route(state: _GraphState) -> str:
@@ -706,7 +650,9 @@ class ManagedLangGraphEngine:
         except KeyError:
             raise KeyError(f"unknown engine run: {handle.run_id}") from None
 
-    def _event(self, run: _EngineRun, event_type: str, payload: dict[str, Any]) -> RuntimeEvent:
+    def _event(
+        self, run: _EngineRun, event_type: str, payload: dict[str, Any], *, phase: str | None = None
+    ) -> RuntimeEvent:
         run.seq += 1
         return RuntimeEvent.create(
             event_type,
@@ -716,6 +662,7 @@ class ManagedLangGraphEngine:
             invocation_id=run.handle.run_id,
             seq_id=run.seq,
             payload=payload,
+            phase=phase,
         )
 
 
