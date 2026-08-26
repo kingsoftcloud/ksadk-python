@@ -33,7 +33,8 @@
 - 修复长回答超过默认 200 条事件后刷新会丢失前置思考和 MCP 工具卡的问题；当前云端 Agent 目标也会跨页面刷新保留。
 - 修复 deployment receipt 覆盖云端权威状态、版本回滚操作互相串扰、详情与版本列表溢出/乱码，以及表单和图标对齐问题。
 - 修复对话创建模型偶发返回非严格 JSON 时无法生成 Agent Draft Patch，并对 provider 原生支持 Responses 但不支持 `web_search` 的场景按工具能力单独协商。
-- 合入社区贡献 PR #53（`pengliang3`）：过滤 LangGraph tool message 中的纯文本工具标记，保留原提交作者信息。
+- 加固 Studio 模型 URL 占位符识别和工作区路径边界，阻断相似域名误判、父目录/同名前缀目录和符号链接逃逸。
+- 合入社区贡献 PR #53（[@pengliang100](https://github.com/pengliang100)，commit author `pengliang3`）：过滤 LangGraph tool message 中的纯文本工具标记，保留原提交作者信息。
 
 ### 验证与发布记录
 
