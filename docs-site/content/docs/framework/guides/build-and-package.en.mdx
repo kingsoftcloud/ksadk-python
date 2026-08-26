@@ -37,6 +37,12 @@ Cloud packaging can require credentials, registry access, object storage, or
 approved deployment targets. Public examples should keep those paths optional
 and provide a local fallback.
 
+`make build-wheel` and release builds print the KsADK version, source commit,
+working-tree state, wheel filename, and SHA-256 for the artifact that was
+actually produced. Code builds likewise print the version, source type, and
+commit id embedded in the zip. Use that artifact provenance for diagnosis
+instead of inferring the cloud version from the developer machine.
+
 ### Dry Run
 
 Use dry-run where supported to validate intent without creating remote

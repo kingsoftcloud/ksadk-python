@@ -31,6 +31,10 @@ agentengine web . --no-open
 
 云打包可能需要凭据、registry 访问、对象存储或审批后的部署目标。公开示例应把这些路径设为可选并提供本地回退。
 
+`make build-wheel` 与发布构建会在结束时打印实际制品的 KsADK 版本、源码 commit、
+工作树状态、wheel 文件名和 SHA-256。Code 构建也会打印打入该 zip 的版本、来源类型与
+commit id；后续排障应以这段制品 provenance 为准，而不是以开发机当前安装版本推测。
+
 ### Dry Run
 
 支持处先用 dry-run 验证意图，不创建远端资源：

@@ -7,7 +7,7 @@
 
 ## [Unreleased]
 
-## [0.8.2] - 2026-08-25
+## [0.8.2] - 2026-08-26
 
 ### 亮点
 
@@ -21,7 +21,7 @@
 - Gateway 的 Agent Runtime 路由统一经过 Server admission；Runtime 缺少 Server 签发 permit 时 fail closed。permit 绑定 Agent、session、action、TTL 与 durable nonce，避免伪造引用、会话放大和重放。
 - worker 消费真实 RuntimeEvent 流，统一 run identity、handle digest、lease fencing、冷恢复和 resume；事件日志成为 session 状态的单一事实来源。
 - Studio Agent 编辑支持 prompt、模型、Tool、MCP 与 Skill，并以原子方式回写 manifest；ADK、LangGraph、Codex 等 runtime 共用能力矩阵，不把不支持项伪装成可用。
-- Studio 云端目标采用 AK/SK 在本地服务端完成签名，凭证不进入浏览器；Hermes / OpenClaw 在能力不兼容时提供官方 Dashboard 入口。
+- Studio 云端目标采用 AK/SK 在本地服务端完成签名，凭证不进入浏览器；Hermes / OpenClaw 在能力不兼容时提供简洁的官方链接入口。
 - 构建输出记录 KsADK 版本、来源和 commit id；Operator 对旧制品缺少三元组时保持兼容并标记未知，不阻止旧 Runtime 启动。
 - 评测完成上传、执行、结果与删除闭环；Trace token 区分完整上报、部分上报和未上报，不再把缺失值当作零。
 
@@ -29,13 +29,14 @@
 
 - 修复账号云端目标 `cloud:account:<agent_id>` 被错误截断，导致旧 CLI 高代码 Agent 在下拉列表可见却无法切换的问题。
 - 修复 Studio 云端会话未保留签名流、只在结束时一次性渲染、第二轮复用错误状态、输入框残留以及会话删除不生效的问题。
+- 修复长回答超过默认 200 条事件后刷新会丢失前置思考和 MCP 工具卡的问题；当前云端 Agent 目标也会跨页面刷新保留。
 - 修复 deployment receipt 覆盖云端权威状态、版本回滚操作互相串扰、详情与版本列表溢出/乱码，以及表单和图标对齐问题。
 - 修复对话创建模型偶发返回非严格 JSON 时无法生成 Agent Draft Patch，并对 provider 原生支持 Responses 但不支持 `web_search` 的场景按工具能力单独协商。
 - 合入社区贡献 PR #53（`pengliang3`）：过滤 LangGraph tool message 中的纯文本工具标记，保留原提交作者信息。
 
 ### 验证与发布记录
 
-- 真实隔离云环境链路覆盖 Studio 构建/部署、旧 CLI Agent 选择、前台多轮流式会话、审批、评测、Trace、版本回滚与删除；测试会话、评测制品、测试 Agent 和 canary namespace 已清理。
+- 当前候选已在真实隔离云环境完成同一 Agent 原地更新，以及系统提示词、MCP 调用、前台 SSE、最终消息去重、刷新后思考/工具回放验证；旧制品兼容、评测、Trace、版本回滚、删除和资源清理由发布门禁分别留证，不以单一 canary 报告代替。
 - Web UI：`@kingsoftcloud/ksadk-web@0.3.2`，source `2136448e038b4d8c475fa20e4722252b1ddb2ebc`，GitHub merge `4854be4fcb5584a799538536372d38b80447f81e`，npm integrity `sha512-Ytjd3pIgy6LfHCmguXUDQr/wy9ClqKjbv+J+NAzH/+UIJjhVl3y1SA2eR7WwsWSn42zxBFme/xniUZMNBV53Aw==`。
 - Python：`ksadk==0.8.2` 与兼容别名 `agentengine-sdk-python==0.8.2`；最终 tag、GitHub Release、PyPI 与公开文档由受信发布 workflow 在全门禁通过后生成。
 
