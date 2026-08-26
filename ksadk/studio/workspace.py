@@ -69,11 +69,15 @@ class Workspace:
                 details={"path": str(relative)},
             )
 
-        root_text = os.path.normcase(os.path.realpath(os.fspath(self.root)))
+        root_text = os.path.realpath(os.fspath(self.root))
         candidate_input = raw if raw.is_absolute() else self.root / raw
-        candidate_text = os.path.normcase(os.path.realpath(os.fspath(candidate_input)))
+        candidate_text = os.path.realpath(os.fspath(candidate_input))
+        if candidate_text == root_text:
+            if must_exist and not self.root.exists():
+                raise FileNotFoundError(self.root)
+            return self.root
         root_prefix = root_text.rstrip(os.sep) + os.sep
-        if candidate_text != root_text and not candidate_text.startswith(root_prefix):
+        if not candidate_text.startswith(root_prefix):
             raise StudioError(
                 "WORKSPACE_PATH_FORBIDDEN",
                 "路径不在当前工作区内",
