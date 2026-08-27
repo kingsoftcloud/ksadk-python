@@ -93,6 +93,8 @@ class WorkingContext(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    #: 结构化 Patch 版本（长任务方案 §6.1）：每次成功 Patch +1，乐观并发控制。
+    version: int = Field(default=0, ge=0)
     goal: str = Field(default="", max_length=8192)
     confirmed_constraints: tuple[str, ...] = Field(default=(), max_length=64)
     open_questions: tuple[str, ...] = Field(default=(), max_length=64)
