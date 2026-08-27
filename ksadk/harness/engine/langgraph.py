@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, TypedDict
+from typing import Any, AsyncIterator, Callable, TypedDict
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.errors import GraphInterrupt
@@ -102,6 +102,7 @@ class ManagedLangGraphEngine:
         capability_runtime: Any | None = None,
         sub_agents: dict[str, Any] | None = None,
         memory_runtime: Any | None = None,
+        event_sink: Callable[[str, str, RuntimeEvent], None] | None = None,
     ) -> None:
         self._reasoner = reasoner or LiteLLMHarnessReasoner()
         self._checkpointer = checkpointer
@@ -118,6 +119,9 @@ class ManagedLangGraphEngine:
         self._sub_agents = sub_agents or {}
         # 长任务方案 §6.4：压缩前受控 Memory Flush 用的 Memory Runtime（可选）。
         self._memory_runtime = memory_runtime
+        # P3 补强：事件出口回调（session_id, run_id, event）——洞察登记处
+        # （ksadk.harness.insights）由此拿到完整事件流，供 Studio API 消费。
+        self._event_sink = event_sink
         # Context 构建管线（规划/压缩/组装/Manifest 投影，见 context_pipeline）。
         self._context_pipeline = (
             EngineContextPipeline(
@@ -267,16 +271,28 @@ class ManagedLangGraphEngine:
         try:
             while True:
                 while run.events:
-                    yield run.events.pop(0)
+                    event = run.events.pop(0)
+                    self._emit_insight(run, event)
+                    yield event
                 if run.task.done():
                     break
                 await asyncio.sleep(0)
             remaining = await run.task
             for event in remaining:
+                self._emit_insight(run, event)
                 yield event
         except asyncio.CancelledError:
             run.done = True
             yield self._event(run, EventType.RUN_CANCELED, {"status": "cancelled"})
+
+    def _emit_insight(self, run: _EngineRun, event: RuntimeEvent) -> None:
+        """事件出口统一回调（洞察登记处 / 审计侧消费；异常不阻断主流程）。"""
+        if self._event_sink is None:
+            return
+        try:
+            self._event_sink(run.state.session_id, run.handle.run_id, event)
+        except Exception:  # noqa: BLE001 - 登记失败不阻断对话主流程
+            pass
 
     async def _execute(
         self,
