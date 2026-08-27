@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+from ksadk.skills.events import SkillEvent
 from ksadk.skills.runtime import (
     SkillRuntimeError,
     SkillRuntimeResult,
@@ -31,6 +33,18 @@ def test_skill_workflow_request_is_public_runtime_protocol():
 
     assert request.workflow_prompt == "build"
     assert request.skill_names == ["demo-skill"]
+
+
+def test_runtime_result_only_serializes_skill_events_when_present() -> None:
+    empty = SkillRuntimeResult(exit_code=0)
+    event = SkillEvent.create(
+        "skill.load.completed", status="completed", skill_invocation_id="inv-1"
+    )
+
+    assert "skill_events" not in empty.to_dict()
+    assert SkillRuntimeResult(exit_code=0, skill_events=[event]).to_dict()["skill_events"] == [
+        event.to_dict()
+    ]
 
 
 def test_runtime_factory_creates_local_process_backend(monkeypatch, tmp_path: Path):
@@ -118,16 +132,20 @@ def test_e2b_backend_uses_native_env_and_always_kills(monkeypatch):
         skill_space_ids=["ss-1"],
         skill_names=["demo-skill"],
         session_id="sess-1",
+        env={"TRACEPARENT": "attempted-override"},
     )
 
-    assert result == SkillRuntimeResult(
-        runtime_id="sbx-123",
-        exit_code=0,
-        stdout='ok\nworkflow_result={"output_files":["/tmp/bundle.html"],"status":"ok"}\n',
-        stderr="",
-        duration_ms=result.duration_ms,
-        output_files=["/tmp/bundle.html"],
+    assert result.runtime_id == "sbx-123"
+    assert result.exit_code == 0
+    assert (
+        result.stdout == 'ok\nworkflow_result={"output_files":["/tmp/bundle.html"],"status":"ok"}\n'
     )
+    assert result.stderr == ""
+    assert result.output_files == ["/tmp/bundle.html"]
+    assert [event.event_type for event in result.skill_events] == [
+        "sandbox.session.created",
+        "sandbox.session.cleaned_up",
+    ]
     assert calls[0] == (
         "create",
         {
@@ -147,17 +165,13 @@ def test_e2b_backend_uses_native_env_and_always_kills(monkeypatch):
             "allow_internet_access": True,
         },
     )
-    assert (
-        "run_kwargs",
-        {
-            "timeout": 900,
-            "envs": {
-                "KSADK_SKILL_SPACE_IDS": "ss-1",
-                "SKILL_SPACE_ID": "ss-1",
-                "KSADK_SELECTED_SKILL_NAMES": "demo-skill",
-            },
-        },
-    ) in calls
+    run_kwargs = next(value for name, value in calls if name == "run_kwargs" and "timeout" in value)
+    assert run_kwargs["timeout"] == 900
+    assert run_kwargs["envs"]["KSADK_SKILL_SPACE_IDS"] == "ss-1"
+    assert run_kwargs["envs"]["SKILL_SPACE_ID"] == "ss-1"
+    assert run_kwargs["envs"]["KSADK_SELECTED_SKILL_NAMES"] == "demo-skill"
+    assert "TRACEPARENT" not in run_kwargs["envs"]
+    assert run_kwargs["envs"]["KSADK_SKILL_EVENT_FILE"].startswith("/tmp/ksadk-skill-events-")
     request_write = next(
         value
         for name, value in calls
@@ -211,6 +225,103 @@ def test_e2b_backend_preserves_public_skill_space_env(monkeypatch):
     assert envs["KSADK_SKILL_SPACE_IDS"] == "ss-user"
     assert envs["SKILL_SPACE_ID"] == "ss-user"
     assert envs["KSADK_PUBLIC_SKILL_SPACE_IDS"] == "ss-public"
+
+
+def test_e2b_backend_recovers_skill_event_sidecar():
+    event = SkillEvent.create(
+        "skill.execution.completed",
+        status="completed",
+        skill_invocation_id="inv-1",
+        runtime_id="sbx-123",
+    )
+
+    class FakeResult:
+        stdout = "ok\n"
+        stderr = ""
+        exit_code = 0
+
+    class FakeFiles:
+        def write(self, path, data):
+            pass
+
+        def read(self, path):
+            assert path.startswith("/tmp/ksadk-skill-events-")
+            assert path.endswith(".jsonl")
+            return json.dumps(event.to_dict()) + "\n"
+
+    class FakeCommands:
+        def run(self, command: str, **kwargs):
+            if "/home/ksadk/agent.py" in command:
+                assert kwargs["envs"]["KSADK_SKILL_EVENT_FILE"].startswith(
+                    "/tmp/ksadk-skill-events-"
+                )
+            return FakeResult()
+
+    class FakeSandbox:
+        sandbox_id = "sbx-123"
+
+        def __init__(self):
+            self.files = FakeFiles()
+            self.commands = FakeCommands()
+
+        @classmethod
+        def create(cls, **kwargs):
+            return cls()
+
+        def kill(self):
+            pass
+
+    result = E2BSkillRuntimeBackend(sandbox_cls=FakeSandbox, template_id="tpl-1").run_workflow(
+        "build", skill_space_ids=["ss-1"], session_id="sess-1"
+    )
+
+    assert [item.event_type for item in result.skill_events] == [
+        "sandbox.session.created",
+        "skill.execution.completed",
+        "sandbox.session.cleaned_up",
+    ]
+    assert result.skill_events[1] == event
+    assert result.skill_events[1].runtime_id == "sbx-123"
+
+
+def test_e2b_backend_reports_cleanup_failure_without_changing_result():
+    class FakeResult:
+        stdout = "ok\n"
+        stderr = ""
+        exit_code = 0
+
+    class FakeFiles:
+        def write(self, path, data):
+            pass
+
+    class FakeCommands:
+        def run(self, command: str, **kwargs):
+            return FakeResult()
+
+    class FakeSandbox:
+        sandbox_id = "sbx-123"
+
+        def __init__(self):
+            self.files = FakeFiles()
+            self.commands = FakeCommands()
+
+        @classmethod
+        def create(cls, **kwargs):
+            return cls()
+
+        def kill(self):
+            raise RuntimeError("cleanup unavailable")
+
+    result = E2BSkillRuntimeBackend(sandbox_cls=FakeSandbox, template_id="tpl-1").run_workflow(
+        "build", skill_space_ids=["ss-1"], session_id="sess-1"
+    )
+
+    assert result.ok
+    assert [item.event_type for item in result.skill_events] == [
+        "sandbox.session.created",
+        "sandbox.session.cleanup_failed",
+    ]
+    assert result.skill_events[-1].error_category == "cleanup_failed"
 
 
 def test_e2b_backend_redacts_secret_from_errors(monkeypatch):
@@ -314,6 +425,9 @@ def test_local_process_backend_writes_request_file_envelope(monkeypatch, tmp_pat
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="ok\n", stderr="")
 
     monkeypatch.setattr("ksadk.skills.runtime.backends.local.subprocess.run", fake_run)
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "https://collector.example")
+    monkeypatch.setenv("TRACEPARENT", "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "not-for-sandbox")
     backend = LocalProcessSkillRuntimeBackend(agent_path=agent)
 
     backend.run_workflow(
@@ -321,6 +435,7 @@ def test_local_process_backend_writes_request_file_envelope(monkeypatch, tmp_pat
         skill_space_ids=["ss-1"],
         skill_names=["demo-skill"],
         session_id="sess-1",
+        env={"OTEL_EXPORTER_OTLP_HEADERS": "attempted-override"},
     )
 
     assert calls[0]["args"][:3] == [sys.executable, "-u", str(agent)]
@@ -330,3 +445,34 @@ def test_local_process_backend_writes_request_file_envelope(monkeypatch, tmp_pat
         "skill_names": ["demo-skill"],
     }
     assert calls[0]["env"]["KSADK_SELECTED_SKILL_NAMES"] == "demo-skill"
+    assert "OTEL_EXPORTER_OTLP_ENDPOINT" not in calls[0]["env"]
+    assert "TRACEPARENT" not in calls[0]["env"]
+    assert "LANGFUSE_SECRET_KEY" not in calls[0]["env"]
+    assert "OTEL_EXPORTER_OTLP_HEADERS" not in calls[0]["env"]
+
+
+def test_local_process_backend_recovers_skill_event_sidecar(monkeypatch, tmp_path: Path):
+    agent = tmp_path / "agent.py"
+    agent.write_text("print('agent')", encoding="utf-8")
+    event = SkillEvent.create(
+        "skill.load.completed", status="completed", skill_invocation_id="inv-1"
+    )
+
+    def fake_run(args, **kwargs):
+        event_path = Path(kwargs["env"]["KSADK_SKILL_EVENT_FILE"])
+        event_path.write_text(json.dumps(event.to_dict()) + "\n", encoding="utf-8")
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="ok\n", stderr="")
+
+    monkeypatch.setattr("ksadk.skills.runtime.backends.local.subprocess.run", fake_run)
+
+    result = LocalProcessSkillRuntimeBackend(agent_path=agent).run_workflow(
+        "build artifact", skill_space_ids=["ss-1"], session_id="sess-1"
+    )
+
+    assert [item.event_type for item in result.skill_events] == [
+        "sandbox.session.created",
+        "skill.load.completed",
+        "sandbox.session.cleaned_up",
+    ]
+    assert result.skill_events[1] == replace(event, runtime_id="local:sess-1")
+    assert result.skill_events[1].runtime_id == "local:sess-1"

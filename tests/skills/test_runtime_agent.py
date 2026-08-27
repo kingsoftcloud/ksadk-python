@@ -9,6 +9,7 @@ from pathlib import Path
 
 import httpx
 
+from ksadk.skills.events import SKILL_EVENT_FILE_ENV, SkillEventSink
 from ksadk.skills.loader import load_local_skill
 from ksadk.skills.models import SkillRef
 from ksadk.skills.runtime import agent as runtime_agent
@@ -61,6 +62,8 @@ def test_runtime_agent_loads_active_skills_from_service(monkeypatch, tmp_path: P
     monkeypatch.setenv("KSADK_SKILL_SPACE_IDS", "ss-1")
     monkeypatch.setenv("KSADK_SKILL_SERVICE_URL", "https://skill.example/api/v1")
     monkeypatch.setenv("KSADK_SKILL_CACHE_DIR", str(tmp_path / "cache"))
+    event_path = tmp_path / "skill-events.jsonl"
+    monkeypatch.setenv("KSADK_SKILL_EVENT_FILE", str(event_path))
 
     code = run_agent(
         ["使用 demo-skill build something"],
@@ -74,6 +77,38 @@ def test_runtime_agent_loads_active_skills_from_service(monkeypatch, tmp_path: P
     assert (
         tmp_path / "cache" / "sk-demo__sv-demo-v1" / "extracted" / "demo-skill" / "SKILL.md"
     ).exists()
+    event_types = {
+        json.loads(line)["event_type"]
+        for line in event_path.read_text(encoding="utf-8").splitlines()
+    }
+    assert {
+        "skill.package.downloaded",
+        "skill.package.hash_verified",
+        "skill.package.extracted",
+        "skill.manifest.parsed",
+        "skill.load.started",
+        "skill.load.completed",
+        "skill.execution.completed",
+    } <= event_types
+    events_by_type = {
+        json.loads(line)["event_type"]: json.loads(line)
+        for line in event_path.read_text(encoding="utf-8").splitlines()
+    }
+    load_invocation_id = events_by_type["skill.load.completed"]["skill_invocation_id"]
+    assert events_by_type["skill.package.downloaded"]["skill_invocation_id"] == load_invocation_id
+    assert (
+        events_by_type["skill.package.hash_verified"]["skill_invocation_id"] == load_invocation_id
+    )
+    assert events_by_type["skill.package.extracted"]["skill_invocation_id"] == load_invocation_id
+    assert events_by_type["skill.manifest.parsed"]["skill_invocation_id"] == load_invocation_id
+    for event_type in (
+        "skill.package.downloaded",
+        "skill.package.hash_verified",
+        "skill.package.extracted",
+    ):
+        event = events_by_type[event_type]
+        assert event["ended_at"] is not None
+        assert event["ended_at"] >= event["started_at"]
 
 
 def test_runtime_selects_remote_skill_by_alias_tag_and_description():
@@ -739,16 +774,36 @@ def test_runtime_agent_warns_when_loaded_skill_has_no_workflow_entrypoint(tmp_pa
         encoding="utf-8",
     )
 
+    event_sink = SkillEventSink()
     result = runtime_agent._execute_workflow(
         "run instruction-only",
         [load_local_skill(skill_root)],
         selected_skill_names=["instruction-only"],
+        event_sink=event_sink,
     )
 
     assert result.status == "skipped"
     assert result.selected_skills == ["instruction-only"]
     assert result.loaded_skills == ["instruction-only"]
     assert result.warnings == ["No loaded skill exposes an executable workflow entrypoint."]
+    assert event_sink.events[0].skill_ref is None
+
+
+def test_runtime_executor_does_not_expose_event_envelope_to_skill_command(
+    monkeypatch, tmp_path: Path
+):
+    captured_env: dict[str, str] = {}
+
+    def fake_run(args, **kwargs):
+        captured_env.update(kwargs["env"])
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setenv(SKILL_EVENT_FILE_ENV, "/private/event-envelope.jsonl")
+    monkeypatch.setattr(runtime_executor.subprocess, "run", fake_run)
+
+    runtime_executor._run_command(["true"], cwd=tmp_path, timeout=1)
+
+    assert SKILL_EVENT_FILE_ENV not in captured_env
 
 
 def test_runtime_agent_executes_web_artifacts_builder_without_real_npm(monkeypatch, tmp_path: Path):

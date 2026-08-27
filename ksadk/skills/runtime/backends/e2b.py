@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import os
 import time
+from dataclasses import replace
 from typing import Any
+from uuid import uuid4
 
 from ksadk.sandbox import (
     E2BSandboxBackend,
@@ -12,6 +14,12 @@ from ksadk.sandbox import (
 from ksadk.sandbox import (
     SandboxInputFile as RuntimeSandboxInputFile,
 )
+from ksadk.skills.events import (
+    SKILL_EVENT_FILE_ENV,
+    SkillEvent,
+    SkillInvocationPlan,
+    parse_sandbox_skill_event_lines,
+)
 from ksadk.skills.runtime.base import (
     SandboxInputFile,
     SkillRuntimeError,
@@ -19,6 +27,7 @@ from ksadk.skills.runtime.base import (
     format_skill_names_env,
     normalize_skill_names,
     parse_output_files,
+    sandbox_runtime_env,
 )
 
 
@@ -109,11 +118,14 @@ class E2BSkillRuntimeBackend:
         skill_names: list[str] | None = None,
         env: dict[str, str] | None = None,
         input_files: list[SandboxInputFile] | None = None,
+        invocation_plan: SkillInvocationPlan | None = None,
         timeout: int = 900,
     ) -> SkillRuntimeResult:
         session = None
         started = time.monotonic()
         effective_timeout = timeout or self.timeout
+        skill_events: list[SkillEvent] = []
+        runtime_result: SkillRuntimeResult | None = None
         try:
             sandbox_env = {
                 "KSADK_SKILL_SPACE_IDS": ",".join(skill_space_ids),
@@ -125,6 +137,7 @@ class E2BSkillRuntimeBackend:
             if selected_skill_names:
                 sandbox_env["KSADK_SELECTED_SKILL_NAMES"] = selected_skill_names
             sandbox_env.update(env or {})
+            sandbox_env = sandbox_runtime_env(sandbox_env)
             session = self.sandbox_backend.create_session(
                 session_id=session_id,
                 env=sandbox_env,
@@ -133,32 +146,66 @@ class E2BSkillRuntimeBackend:
                     for item in input_files or []
                 ],
             )
+            skill_events.append(
+                SkillEvent.create(
+                    "sandbox.session.created",
+                    status="completed",
+                    runtime_id=session.sandbox_id,
+                )
+            )
 
             request_path = "/tmp/ksadk-workflow-request.json"
+            request_payload = {
+                "workflow_prompt": workflow_prompt,
+                "skill_names": normalize_skill_names(skill_names),
+            }
+            if invocation_plan is not None:
+                request_payload["invocation_plan"] = [
+                    {
+                        "skill_id": entry.skill_ref.skill_id,
+                        "skill_invocation_id": entry.skill_invocation_id,
+                    }
+                    for entry in invocation_plan.entries
+                ]
             session.write_file(
                 request_path,
-                json.dumps(
-                    {
-                        "workflow_prompt": workflow_prompt,
-                        "skill_names": normalize_skill_names(skill_names),
-                    },
-                    ensure_ascii=False,
-                ).encode("utf-8"),
+                json.dumps(request_payload, ensure_ascii=False).encode("utf-8"),
             )
+            event_path = f"/tmp/ksadk-skill-events-{uuid4().hex}.jsonl"
+            command_env = {**sandbox_env, SKILL_EVENT_FILE_ENV: event_path}
             command = f"python -u /home/ksadk/agent.py --request-file {request_path}"
-            result = session.run_command(command, timeout=effective_timeout, env=sandbox_env)
+            result = session.run_command(command, timeout=effective_timeout, env=command_env)
             stdout = result.stdout
-            return SkillRuntimeResult(
+            try:
+                expected_invocations = (
+                    {
+                        entry.skill_invocation_id: entry.skill_ref
+                        for entry in invocation_plan.entries
+                    }
+                    if invocation_plan
+                    else None
+                )
+                skill_events.extend(
+                    replace(event, runtime_id=event.runtime_id or session.sandbox_id)
+                    for event in parse_sandbox_skill_event_lines(
+                        session.read_file(event_path),
+                        expected_invocations=expected_invocations,
+                    )
+                )
+            except Exception:
+                pass
+            runtime_result = SkillRuntimeResult(
                 runtime_id=session.sandbox_id,
                 exit_code=result.exit_code,
                 stdout=stdout,
                 stderr=result.stderr,
                 duration_ms=int((time.monotonic() - started) * 1000),
                 output_files=parse_output_files(stdout),
+                skill_events=skill_events,
             )
         except Exception as exc:
             error_type = type(exc).__name__
-            return SkillRuntimeResult(
+            runtime_result = SkillRuntimeResult(
                 runtime_id=session.sandbox_id if session is not None else "",
                 exit_code=None,
                 duration_ms=int((time.monotonic() - started) * 1000),
@@ -170,5 +217,21 @@ class E2BSkillRuntimeBackend:
             if session is not None:
                 try:
                     session.kill()
+                    skill_events.append(
+                        SkillEvent.create(
+                            "sandbox.session.cleaned_up",
+                            status="completed",
+                            runtime_id=session.sandbox_id,
+                        )
+                    )
                 except Exception:
-                    pass
+                    skill_events.append(
+                        SkillEvent.create(
+                            "sandbox.session.cleanup_failed",
+                            status="failed",
+                            runtime_id=session.sandbox_id,
+                            error_category="cleanup_failed",
+                        )
+                    )
+        assert runtime_result is not None
+        return replace(runtime_result, skill_events=skill_events)

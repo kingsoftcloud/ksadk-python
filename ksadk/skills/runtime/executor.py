@@ -4,10 +4,13 @@ import os
 import shutil
 import subprocess
 import tempfile
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ksadk.skills.events import SKILL_EVENT_FILE_ENV, SkillEvent, SkillEventSink
 from ksadk.skills.loader import LocalSkill
+from ksadk.skills.models import SkillRef
 from ksadk.skills.runtime.artifacts import (
     collect_output_dir_artifacts,
     merge_artifacts,
@@ -34,6 +37,9 @@ def execute_workflow(
     skills: list[LocalSkill],
     *,
     selected_skill_names: list[str] | None = None,
+    event_sink: SkillEventSink | None = None,
+    skill_refs: dict[str, SkillRef] | None = None,
+    skill_invocation_ids: dict[str, str] | None = None,
 ) -> WorkflowExecution:
     selected = normalize_skill_names(selected_skill_names)
     loaded = [skill.name for skill in skills]
@@ -42,16 +48,31 @@ def execute_workflow(
 
     for skill in _candidate_skills(skills, selected):
         if _can_run_web_artifacts_builder(skill, prompt):
+            invocation_id, skill_ref = _execution_identity(skill, skill_refs, skill_invocation_ids)
+            _emit_execution(
+                event_sink, "skill.execution.started", "running", skill_ref, invocation_id
+            )
             result = _run_web_artifacts_builder(skill)
             _attach_context(result, selected=selected, loaded=loaded)
+            _emit_execution_result(event_sink, result, skill_ref, invocation_id)
             return result
 
     for skill in _candidate_skills(skills, selected):
         if _can_run_generic_workflow(skill):
+            invocation_id, skill_ref = _execution_identity(skill, skill_refs, skill_invocation_ids)
+            _emit_execution(
+                event_sink, "skill.execution.started", "running", skill_ref, invocation_id
+            )
             result = _run_generic_workflow(skill, prompt)
             _attach_context(result, selected=selected, loaded=loaded)
+            _emit_execution_result(event_sink, result, skill_ref, invocation_id)
             return result
 
+    for skill in _candidate_skills(skills, selected):
+        invocation_id, skill_ref = _execution_identity(skill, skill_refs, skill_invocation_ids)
+        _emit_execution(
+            event_sink, "skill.execution.completed", "skipped", skill_ref, invocation_id
+        )
     return WorkflowExecution(
         status="skipped",
         selected_skills=selected,
@@ -72,6 +93,74 @@ def _attach_context(result: WorkflowExecution, *, selected: list[str], loaded: l
     result.loaded_skills = loaded
     if not result.artifacts:
         result.artifacts = list(result.output_files)
+
+
+def _execution_identity(
+    skill: LocalSkill,
+    skill_refs: dict[str, SkillRef] | None,
+    skill_invocation_ids: dict[str, str] | None,
+) -> tuple[str, SkillRef | None]:
+    skill_ref = (skill_refs or {}).get(skill.name)
+    invocation_id = (skill_invocation_ids or {}).get(skill.name) or f"skill_inv_{uuid.uuid4().hex}"
+    return invocation_id, skill_ref
+
+
+def _emit_execution(
+    event_sink: SkillEventSink | None,
+    event_type: str,
+    status: str,
+    skill_ref: SkillRef | None,
+    invocation_id: str,
+    *,
+    error_category: str = "",
+) -> None:
+    if event_sink is not None:
+        event_sink.emit(
+            SkillEvent.create(
+                event_type,
+                status=status,
+                skill_ref=skill_ref,
+                skill_invocation_id=invocation_id,
+                error_category=error_category,
+            )
+        )
+
+
+def _emit_execution_result(
+    event_sink: SkillEventSink | None,
+    result: WorkflowExecution,
+    skill_ref: SkillRef | None,
+    invocation_id: str,
+) -> None:
+    status = "completed" if result.status == "ok" else "failed"
+    error_category = (
+        "timeout" if any(command.get("timed_out") for command in result.commands) else ""
+    )
+    _emit_execution(
+        event_sink,
+        f"skill.execution.{status}",
+        status,
+        skill_ref,
+        invocation_id,
+        error_category=error_category,
+    )
+    if event_sink is None:
+        return
+    for index, artifact in enumerate(result.artifacts):
+        artifact_path = Path(artifact)
+        event_sink.emit(
+            SkillEvent.create(
+                "skill.artifact.created",
+                status="completed",
+                skill_ref=skill_ref,
+                skill_invocation_id=invocation_id,
+                attributes={
+                    "artifact_ref": f"{invocation_id}:{index}",
+                    "artifact_name": artifact_path.name,
+                    "size_bytes": artifact_path.stat().st_size if artifact_path.exists() else 0,
+                },
+            )
+        )
 
 
 def _can_run_web_artifacts_builder(skill: LocalSkill, prompt: str) -> bool:
@@ -177,6 +266,7 @@ def _run_command(
     extra_env: dict[str, str] | None = None,
 ) -> dict[str, object]:
     env = os.environ.copy()
+    env.pop(SKILL_EVENT_FILE_ENV, None)
     env.setdefault("CI", "1")
     env.update(extra_env or {})
     try:

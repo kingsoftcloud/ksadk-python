@@ -8,6 +8,7 @@ from pathlib import Path
 
 import httpx
 
+from ksadk.skills.events import SKILL_EVENT_FILE_ENV, SkillEventSink
 from ksadk.skills.loader import LocalSkill
 from ksadk.skills.models import SkillRef
 from ksadk.skills.package_store import PackageStore
@@ -67,14 +68,18 @@ def _load_skills(
     prompt: str = "",
     skill_names: list[str] | None = None,
     service_transport: httpx.BaseTransport | None = None,
-) -> list[LocalSkill]:
+    event_sink: SkillEventSink | None = None,
+    planned_invocations: dict[str, str] | None = None,
+) -> runtime_loader.SkillLoadResult:
     result = runtime_loader.load_skills(
         prompt=prompt,
         skill_names=skill_names,
         service_transport=service_transport,
+        event_sink=event_sink,
+        planned_invocations=planned_invocations,
     )
     _SKILL_LOAD_WARNINGS.extend(result.warnings)
-    return result.skills
+    return result
 
 
 def _dedupe_skill_refs(skill_refs: list[SkillRef], *, seen_names: set[str]) -> list[SkillRef]:
@@ -127,12 +132,26 @@ def run_agent(
 
     prompt = request.workflow_prompt
     selected_skill_names = request.skill_names or _selected_skill_names()
-    loaded_skills = _load_skills(
+    event_sink = SkillEventSink(os.environ.get(SKILL_EVENT_FILE_ENV))
+    planned_invocations = {
+        entry["skill_id"]: entry["skill_invocation_id"] for entry in request.invocation_plan
+    }
+    load_result = _load_skills(
         prompt=prompt,
         skill_names=selected_skill_names,
         service_transport=service_transport,
+        event_sink=event_sink,
+        planned_invocations=planned_invocations or None,
     )
-    execution = _execute_workflow(prompt, loaded_skills, selected_skill_names=selected_skill_names)
+    loaded_skills = load_result.skills
+    execution = _execute_workflow(
+        prompt,
+        loaded_skills,
+        selected_skill_names=selected_skill_names,
+        event_sink=event_sink,
+        skill_refs=load_result.skill_refs,
+        skill_invocation_ids=load_result.skill_invocation_ids,
+    )
     print(f"workflow={prompt}")
     print(f"skill_spaces={','.join(_skill_space_ids())}")
     print(f"loaded_skills={','.join(skill.name for skill in loaded_skills)}")
@@ -158,8 +177,18 @@ def _execute_workflow(
     skills: list[LocalSkill],
     *,
     selected_skill_names: list[str] | None = None,
+    event_sink: SkillEventSink | None = None,
+    skill_refs: dict[str, SkillRef] | None = None,
+    skill_invocation_ids: dict[str, str] | None = None,
 ) -> WorkflowExecution:
-    return execute_workflow(prompt, skills, selected_skill_names=selected_skill_names)
+    return execute_workflow(
+        prompt,
+        skills,
+        selected_skill_names=selected_skill_names,
+        event_sink=event_sink,
+        skill_refs=skill_refs,
+        skill_invocation_ids=skill_invocation_ids,
+    )
 
 
 def _can_run_web_artifacts_builder(skill: LocalSkill, prompt: str) -> bool:

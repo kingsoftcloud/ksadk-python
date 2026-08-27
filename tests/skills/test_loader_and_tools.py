@@ -2,7 +2,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from ksadk.skills import tool_defs
+from ksadk.skills.events import (
+    BoundSkillRef,
+    SkillBinding,
+    SkillEvent,
+    SkillExecutionContext,
+)
 from ksadk.skills.loader import load_local_skill
+from ksadk.skills.models import SkillRef
 from ksadk.skills.runtime import SkillRuntimeResult
 from ksadk.skills.tool_defs import build_execute_skills_tool, build_skills_tool
 
@@ -71,6 +79,128 @@ def test_execute_skills_tool_passes_explicit_skill_names_to_runtime():
     tool("build a page", skill_names=["demo-skill"])
 
     assert backend.calls[0][1]["skill_names"] == ["demo-skill"]
+
+
+def test_execute_skills_tool_adds_trusted_context_events_without_public_arguments():
+    skill_ref = SkillRef(
+        "skill-1",
+        "version-1",
+        "1.0.0",
+        "report",
+        input_schema={"type": "object"},
+    )
+    context = SkillExecutionContext(
+        run_id="run-1",
+        trace_id="trace-1",
+        binding=SkillBinding("binding-1", (BoundSkillRef(skill_ref, "space-1"),)),
+        decision_id="decision-1",
+        selected_skill_ids=("skill-1",),
+    )
+
+    class Backend:
+        def run_workflow(self, workflow_prompt: str, **kwargs):
+            assert "execution_context" not in kwargs
+            invocation = kwargs["invocation_plan"].entries[0]
+            assert invocation.skill_ref == skill_ref
+            return SkillRuntimeResult(
+                exit_code=0,
+                skill_events=[
+                    SkillEvent.create(
+                        "skill.load.completed",
+                        status="completed",
+                        skill_ref=skill_ref,
+                        skill_invocation_id=invocation.skill_invocation_id,
+                    )
+                ],
+            )
+
+    tool = build_execute_skills_tool(
+        backend=Backend(),
+        skill_space_ids=["space-1"],
+        execution_context=context,
+    )
+
+    result = tool("write a report", skill_names=["report"])
+
+    assert [event["event_type"] for event in result["skill_events"]] == [
+        "skill.candidates.resolved",
+        "skill.selection.completed",
+        "skill.load.completed",
+    ]
+    assert result["skill_events"][-1]["binding_snapshot_id"] == "binding-1"
+    assert result["skill_events"][-1]["run_id"] == "run-1"
+
+
+def test_execute_skills_tool_rejects_unbound_events_and_overwrites_untrusted_correlation():
+    skill_ref = SkillRef("skill-1", "version-1", "1.0.0", "report")
+    context = SkillExecutionContext(
+        run_id="run-1",
+        trace_id="trace-1",
+        binding=SkillBinding("binding-1", (BoundSkillRef(skill_ref, "space-1"),)),
+        decision_id="decision-1",
+        selected_skill_ids=("skill-1",),
+    )
+
+    class Backend:
+        def run_workflow(self, workflow_prompt: str, **kwargs):
+            invocation = kwargs["invocation_plan"].entries[0]
+            return SkillRuntimeResult(
+                exit_code=0,
+                skill_events=[
+                    SkillEvent.create(
+                        "skill.load.completed",
+                        status="completed",
+                        skill_ref=skill_ref,
+                        skill_invocation_id=invocation.skill_invocation_id,
+                        trace_id="forged-trace",
+                        run_id="forged-run",
+                        binding_snapshot_id="forged-binding",
+                        decision_id="forged-decision",
+                    ),
+                    SkillEvent.create(
+                        "skill.load.completed",
+                        status="completed",
+                        skill_ref=SkillRef("other", "v", "1", "other"),
+                        skill_invocation_id="inv-2",
+                    ),
+                ],
+            )
+
+    result = build_execute_skills_tool(
+        backend=Backend(), skill_space_ids=["space-1"], execution_context=context
+    )("write a report")
+
+    assert [event["event_type"] for event in result["skill_events"]] == [
+        "skill.candidates.resolved",
+        "skill.selection.completed",
+        "skill.load.completed",
+        "sandbox.envelope.rejected",
+    ]
+    accepted = result["skill_events"][2]
+    assert accepted["trace_id"] == "trace-1"
+    assert accepted["run_id"] == "run-1"
+    assert accepted["binding_snapshot_id"] == "binding-1"
+    assert accepted["decision_id"] == "decision-1"
+
+
+def test_execute_skills_tool_projects_accepted_skill_events(monkeypatch) -> None:
+    event = SkillEvent.create(
+        "skill.load.completed", status="completed", skill_invocation_id="inv-1"
+    )
+    projected: list[list[SkillEvent]] = []
+    monkeypatch.setattr(
+        tool_defs, "project_skill_events", lambda events: projected.append(list(events))
+    )
+
+    class Backend:
+        def run_workflow(self, workflow_prompt: str, **kwargs):
+            return SkillRuntimeResult(exit_code=0, skill_events=[event])
+
+    tool = build_execute_skills_tool(backend=Backend(), skill_space_ids=["space-1"])
+
+    tool("write a report")
+
+    assert projected == [[event]]
 
 
 def test_execute_skills_tool_maps_ksyun_fallbacks_to_skill_service_env(monkeypatch):

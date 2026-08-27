@@ -10,10 +10,14 @@ Sandbox 是通用隔离运行底座，Skill Runtime 只是它的一个上层使�
 ADK Runner
   └─ execute_skills(workflow_prompt)
       └─ ksadk.skills.runtime
-          └─ ksadk.sandbox E2B backend
-              └─ 沙箱控制台模板
-                  └─ /home/ksadk/agent.py
+      └─ ksadk.sandbox E2B backend
+          └─ 沙箱控制台模板
+              └─ /home/ksadk/agent.py
 ```
+
+运行时事件通过受控 JSONL sidecar 返回给外层 KsADK。Sandbox 不接收 OTLP
+凭证或 trace context；外层根据 Agent Runtime 提供的 invocation plan 校验
+`SkillRef` 和 `skill_invocation_id` 后，才投影到现有 OTEL/Langfuse 链路。
 
 沙箱产品控制台底层基于 E2B，目前支持 AIO、Code、Browser 三类模板。因此 KsADK 执行链路优先使用 E2B SDK。Sandbox Open API / KOP 继续作为模板与实例管理接口，后续在确认 commands/files 能力后再作为独立 backend 或控制面集成。
 
@@ -79,13 +83,7 @@ KOP 模式下，Skill Center 已注册 `ListSkillsBySpaceId` action。KsADK 直�
 ksadk/skills/runtime/agent.py
 ```
 
-面向沙箱团队的镜像入口：
-
-```text
-deploy/skill-runtime/agent.py
-```
-
-构建镜像时把它复制为 `/home/ksadk/agent.py`。该文件只是 `ksadk.skills.runtime.agent` 的薄 wrapper，方便 SDK 内部实现演进时保持镜像契约稳定。
+镜像需要把该入口交付为 `/home/ksadk/agent.py`，保持镜像契约稳定。
 
 首个 `web-artifacts-builder` 验证需要镜像具备：
 
@@ -97,43 +95,15 @@ deploy/skill-runtime/agent.py
 
 ## 4. Fixture Skill
 
-本地 Skill Service fixture：
+使用一个非生产、可执行的 fixture Skill；运行前确认 `ListSkillsBySpaceId` 返回
+`SkillId`、`VersionId`、`Version`、`ContentHash`、`ArchiveUri`。由服务端返回的
+内容摘要必须与实际下载 archive 一致，测试记录不得包含下载 URL 或 archive 内容。
 
-```text
-/Users/xiayu/Downloads/web-artifacts-builder.zip
-```
+## 5. 预发验证前置条件
 
-期望 SHA256：
-
-```text
-b95f0735357fcf879bd53ed85cb242679ec74438e3bc8e85b1f27193169b6ecf
-```
-
-它用于预发 Skill Service 首个种子数据和 E2E 验证。运行 `execute_skills` 前，需要确认 `ListSkillsBySpaceId` 返回 `SkillId`、`VersionId`、`Version`、`ContentHash`、`ArchiveUri`。
-
-## 5. 已验证的预发 Skill Center 信息
-
-2026-05-12 已在预发管理集群验证：
-
-- Namespace：`agent-manager`
-- Service：`skill-service-skill-service`
-- Cluster service port：`8000`
-- Ingress host/path：`<skill-service-host>/agentengine/skill`
-- Image：`hub.kce.ksyun.com/cbd-serverless/skill-service:0.0.1-pre`
-
-直连 REST 服务端需要 `X-Ksc-Account-Id` 做租户隔离。不带该 header 时，`ListSkillSpaces` 和 `ListSkills` 可能返回空租户视图。
-
-已验证的直连 REST 流程：
-
-1. `GET GetSkillUploadUrl` 返回 `web-artifacts-builder.zip` 上传 URL。
-2. 使用 `Content-Type: application/octet-stream` PUT 上传成功。
-3. `POST CreateSkillSpace` 创建临时 `ksadk_e2e_*` space。
-4. `POST CreateSkillVersion` 创建 `web-artifacts-builder` 的 `v5` 版本。
-5. `GET ListSkillsBySpaceId` 返回 `SkillId`、`VersionId`、`Version`、`ContentHash`、`ArchiveUri`。
-6. `GET GetSkillDownloadUrl` 返回 1 小时下载 URL，下载 bytes 的 sha256 等于本地 fixture：`b95f0735357fcf879bd53ed85cb242679ec74438e3bc8e85b1f27193169b6ecf`。
-7. 临时 space/version 已通过 `RemoveSkillFromSpace`、`DeleteSkillVersion`、`DeleteSkillSpace` 清理。
-
-已修复的上游数据问题：预发 Skill Service 曾出现 `ContentHash` 与实际下载 zip sha256 不一致。`web-artifacts-builder v5` 示例中，`ListSkillsBySpaceId` 曾返回 `4e5062c146a021b1a5de6a9844b8f5c8165d95fd479604bacf96a080cf0a6218`，实际下载 zip sha256 是 `b95f0735357fcf879bd53ed85cb242679ec74438e3bc8e85b1f27193169b6ecf`。该问题已由上游修复；KsADK 仍必须继续 fail closed，不能绕过 hash 校验。
+真实 E2E 只在以下条件齐备后执行：非生产 Sandbox template、授权且不可变的
+Skill binding、可访问的预发 Skill Service，以及不含敏感凭证的 OTLP 配置。
+KsADK 必须继续对 ContentHash fail closed，不能绕过摘要校验。
 
 ## 6. 预发 E2E 流程
 
@@ -143,5 +113,7 @@ b95f0735357fcf879bd53ed85cb242679ec74438e3bc8e85b1f27193169b6ecf
 4. 运行 ADK 测试 Agent，设置 `KSADK_SKILLS_MODE=sandbox` 和 `KSADK_SKILL_RUNTIME_BACKEND=e2b`。
 5. 调用 `execute_skills("使用 web-artifacts-builder 初始化并打包一个最小 artifact")`。
 6. 验收 stdout/stderr、exit code、runtime id、超时行为、`bundle.html` 产物和 sandbox cleanup。
+7. 检查 JSONL envelope 是否全部关联到外层 invocation plan；非法或不匹配记录必须只产生 `sandbox.envelope.rejected`。
+8. 检查 `execute_skills` 下的 child span、instant span event 和 Sandbox 环境变量剥离结果。
 
 不要在日志、提交文件、测试 fixture 或 snapshot 中记录 `E2B_API_KEY`。

@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "binding": {
+    "binding_snapshot_id": "binding-example-1",
+    "candidates": [
+      {
+        "space_id": "space-example-1",
+        "skill_ref": {
+          "skill_id": "skill-example-1",
+          "version_id": "version-example-1",
+          "version": "1.0.0",
+          "name": "example-command-skill",
+          "content_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      }
+    ]
+  },
+  "selection_receipt": {
+    "selection_receipt_id": "selection-example-1",
+    "decision_id": "decision-example-1",
+    "selected_skill_ids": ["skill-example-1"]
+  },
+  "invocation_plan": [
+    {
+      "skill_id": "skill-example-1",
+      "skill_invocation_id": "skill_inv_example_1"
+    }
+  ],
+  "result_consumption_receipt": {
+    "agent_step_id": "step-example-1",
+    "skill_invocation_ids": ["skill_inv_example_1"]
+  }
+}

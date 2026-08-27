@@ -16,6 +16,7 @@ class SkillWorkflowRequestError(ValueError):
 class SkillWorkflowRequest:
     workflow_prompt: str = ""
     skill_names: list[str] = field(default_factory=list)
+    invocation_plan: list[dict[str, str]] = field(default_factory=list)
 
 
 def parse_workflow_request(argv: list[str]) -> SkillWorkflowRequest:
@@ -59,6 +60,7 @@ def _request_from_json_file(path: str) -> SkillWorkflowRequest:
     return SkillWorkflowRequest(
         workflow_prompt=str(prompt or ""),
         skill_names=skill_names,
+        invocation_plan=_invocation_plan_from_payload(payload),
     )
 
 
@@ -67,3 +69,19 @@ def _skill_names_from_payload(payload: dict[str, Any]) -> list[str]:
         if key in payload:
             return normalize_skill_names(payload.get(key))
     return []
+
+
+def _invocation_plan_from_payload(payload: dict[str, Any]) -> list[dict[str, str]]:
+    raw_entries = payload.get("invocation_plan") or []
+    if not isinstance(raw_entries, list):
+        raise SkillWorkflowRequestError("invocation_plan must be a list")
+    entries: list[dict[str, str]] = []
+    for raw in raw_entries:
+        if not isinstance(raw, dict):
+            raise SkillWorkflowRequestError("invocation_plan entries must be objects")
+        skill_id = str(raw.get("skill_id") or "")
+        invocation_id = str(raw.get("skill_invocation_id") or "")
+        if not skill_id or not invocation_id:
+            raise SkillWorkflowRequestError("invocation_plan entry is incomplete")
+        entries.append({"skill_id": skill_id, "skill_invocation_id": invocation_id})
+    return entries

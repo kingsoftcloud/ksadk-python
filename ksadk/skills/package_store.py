@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import shutil
+import time
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from ksadk.skills.events import SkillEvent, SkillEventSink
 from ksadk.skills.models import SkillRef
 
 
@@ -27,8 +29,36 @@ class PackageStore:
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
-    def store_archive(self, ref: SkillRef, content: bytes) -> SkillPackage:
-        self._verify_hash(ref, content)
+    def store_archive(
+        self,
+        ref: SkillRef,
+        content: bytes,
+        *,
+        event_sink: SkillEventSink | None = None,
+        skill_invocation_id: str = "",
+    ) -> SkillPackage:
+        hash_started_at = time.time()
+        try:
+            self._verify_hash(ref, content)
+        except SkillPackageError:
+            self._emit_lifecycle(
+                event_sink,
+                "skill.package.hash_verified",
+                status="failed",
+                ref=ref,
+                skill_invocation_id=skill_invocation_id,
+                started_at=hash_started_at,
+                error_category="hash_verification_failed",
+            )
+            raise
+        self._emit_lifecycle(
+            event_sink,
+            "skill.package.hash_verified",
+            status="completed",
+            ref=ref,
+            skill_invocation_id=skill_invocation_id,
+            started_at=hash_started_at,
+        )
         skill_dir = self._skill_dir(ref)
         archive_path = skill_dir / "archive.zip"
         extract_dir = skill_dir / "extracted"
@@ -43,7 +73,28 @@ class PackageStore:
         skill_dir.mkdir(parents=True, exist_ok=True)
         archive_path.write_bytes(content)
         extract_dir.mkdir(parents=True, exist_ok=True)
-        self._safe_extract(archive_path, extract_dir)
+        extract_started_at = time.time()
+        try:
+            self._safe_extract(archive_path, extract_dir)
+        except SkillPackageError:
+            self._emit_lifecycle(
+                event_sink,
+                "skill.package.extracted",
+                status="failed",
+                ref=ref,
+                skill_invocation_id=skill_invocation_id,
+                started_at=extract_started_at,
+                error_category="extract_failed",
+            )
+            raise
+        self._emit_lifecycle(
+            event_sink,
+            "skill.package.extracted",
+            status="completed",
+            ref=ref,
+            skill_invocation_id=skill_invocation_id,
+            started_at=extract_started_at,
+        )
 
         return SkillPackage(
             ref=ref,
@@ -105,3 +156,28 @@ class PackageStore:
         if not candidates:
             raise SkillPackageError(f"SKILL.md not found under {extract_dir}")
         return candidates[0]
+
+    @staticmethod
+    def _emit_lifecycle(
+        event_sink: SkillEventSink | None,
+        event_type: str,
+        *,
+        status: str,
+        ref: SkillRef,
+        skill_invocation_id: str,
+        started_at: float,
+        error_category: str = "",
+    ) -> None:
+        if event_sink is None or not skill_invocation_id:
+            return
+        event_sink.emit(
+            SkillEvent.create(
+                event_type,
+                status=status,
+                skill_ref=ref,
+                skill_invocation_id=skill_invocation_id,
+                started_at=started_at,
+                ended_at=time.time(),
+                error_category=error_category,
+            )
+        )

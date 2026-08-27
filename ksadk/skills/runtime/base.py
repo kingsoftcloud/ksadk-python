@@ -5,9 +5,23 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, Sequence
 
+from ksadk.skills.events import SkillEvent, SkillInvocationPlan
+
+_SANDBOX_OBSERVABILITY_ENV_PREFIXES = ("OTEL_", "LANGFUSE_")
+_SANDBOX_TRACE_ENV_NAMES = {"BAGGAGE", "TRACEPARENT", "TRACESTATE"}
+
 
 class SkillRuntimeError(RuntimeError):
     pass
+
+
+def sandbox_runtime_env(env: dict[str, str]) -> dict[str, str]:
+    return {
+        name: value
+        for name, value in env.items()
+        if not name.startswith(_SANDBOX_OBSERVABILITY_ENV_PREFIXES)
+        and name not in _SANDBOX_TRACE_ENV_NAMES
+    }
 
 
 @dataclass(frozen=True)
@@ -27,13 +41,14 @@ class SkillRuntimeResult:
     error_type: str | None = None
     error_message: str | None = None
     output_files: list[str] = field(default_factory=list)
+    skill_events: list[SkillEvent] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
         return self.exit_code == 0 and not self.error_type and not self.timed_out
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        result: dict[str, object] = {
             "runtime_id": self.runtime_id,
             "exit_code": self.exit_code,
             "stdout": self.stdout,
@@ -44,6 +59,9 @@ class SkillRuntimeResult:
             "error_message": self.error_message,
             "output_files": list(self.output_files),
         }
+        if self.skill_events:
+            result["skill_events"] = [event.to_dict() for event in self.skill_events]
+        return result
 
 
 class SkillRuntimeBackend(Protocol):
@@ -56,6 +74,7 @@ class SkillRuntimeBackend(Protocol):
         skill_names: list[str] | None = None,
         env: dict[str, str] | None = None,
         input_files: list[SandboxInputFile] | None = None,
+        invocation_plan: SkillInvocationPlan | None = None,
         timeout: int = 900,
     ) -> SkillRuntimeResult: ...
 
