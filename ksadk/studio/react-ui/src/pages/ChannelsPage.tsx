@@ -135,11 +135,23 @@ interface ChannelMessage {
   PlatformEventId: string;
   Direction: MessageDirection;
   DedupeKey: string;
-  Payload: Record<string, unknown>;
+  Payload: Record<string, unknown> | string;
   Error: string;
   RetryCount: number;
   NextRetryAt: string | null;
   CreatedAt: string;
+}
+
+interface ConversationGroup {
+  id: string;
+  channel: ChannelType;
+  channelAccountId: string;
+  chatId: string;
+  senderId: string;
+  title: string;
+  messages: ChannelMessage[];
+  messageCount: number;
+  lastMessage: ChannelMessage;
 }
 
 interface StudioAgent {
@@ -430,9 +442,37 @@ function formatChannelDate(iso: string): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
+function formatChatTime(iso: string): string {
+  if (!iso) return "";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function parsePayload(payload: Record<string, unknown> | string): Record<string, unknown> {
+  if (typeof payload === "string") {
+    try {
+      return JSON.parse(payload) as Record<string, unknown>;
+    } catch {
+      return {};
+    }
+  }
+  return payload ?? {};
+}
+
 function messagePreview(msg: ChannelMessage): string {
-  const payload = msg.Payload;
+  const payload = parsePayload(msg.Payload);
   if (typeof payload.text === "string") return payload.text;
+  const message = payload.message as Record<string, unknown> | undefined;
+  if (message && typeof message === "object") {
+    const content = message.content as Record<string, unknown> | undefined;
+    if (content) {
+      const text = content.text as Record<string, unknown> | undefined;
+      if (text && typeof text.content === "string") return text.content;
+    }
+    if (typeof message.content === "string") return message.content;
+  }
   if (typeof payload.content === "string") return payload.content;
   if (typeof payload.message === "string") return payload.message;
   const json = JSON.stringify(payload);
@@ -440,12 +480,16 @@ function messagePreview(msg: ChannelMessage): string {
 }
 
 function messageSender(msg: ChannelMessage): string {
-  const p = msg.Payload as Record<string, unknown>;
-  const candidates = ["sender_name", "senderName", "from_name", "fromName", "user_name", "userName", "sender", "from", "user"];
+  const p = parsePayload(msg.Payload);
+  const candidates = ["sender_name", "senderName", "from_name", "fromName", "user_name", "userName"];
   for (const key of candidates) {
     const val = p[key];
     if (typeof val === "string" && val.trim()) return val.trim();
   }
+  const sender = p.sender as Record<string, unknown> | undefined;
+  if (sender && typeof sender.id === "string") return sender.id;
+  const from = p.from as Record<string, unknown> | undefined;
+  if (from && typeof from.id === "string") return from.id;
   return "";
 }
 
@@ -491,6 +535,7 @@ export function ChannelsPage({ refreshTick }: { refreshTick: number }) {
   const [actionTarget, setActionTarget] = useState<PairingRequest | null>(null);
   const [actionKind, setActionKind] = useState<"approve" | "reject" | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
+  const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
 
   const loadAll = useCallback(async () => {
     const [chRes, pairRes, bindRes, msgRes, agentRes, cloudAgentRes] = await Promise.allSettled([
@@ -923,7 +968,77 @@ export function ChannelsPage({ refreshTick }: { refreshTick: number }) {
     },
   ], []);
 
-  // ── Metrics ────────────────────────────────────────────────────────────────
+  // ── Conversations ──
+
+  const conversations = useMemo<ConversationGroup[]>(() => {
+    const groups = new Map<string, ConversationGroup>();
+    for (const msg of messages) {
+      const p = parsePayload(msg.Payload);
+      let chatId = "";
+      let senderId = "";
+      if (msg.Direction === "inbound") {
+        const chat = p.chat as Record<string, unknown> | undefined;
+        if (chat && typeof chat.id === "string") chatId = chat.id;
+        const sender = p.sender as Record<string, unknown> | undefined;
+        if (sender && typeof sender.id === "string") senderId = sender.id;
+      } else {
+        const replyTo = p.reply_to as string | undefined;
+        if (replyTo) {
+          const matched = messages.find(m => m.PlatformEventId === replyTo);
+          if (matched) {
+            const mp = parsePayload(matched.Payload);
+            const mchat = mp.chat as Record<string, unknown> | undefined;
+            if (mchat && typeof mchat.id === "string") chatId = mchat.id;
+            const msender = mp.sender as Record<string, unknown> | undefined;
+            if (msender && typeof msender.id === "string") senderId = msender.id;
+          }
+        }
+      }
+      if (!chatId) {
+        const sender = p.sender as Record<string, unknown> | undefined;
+        if (sender && typeof sender.id === "string") {
+          chatId = sender.id;
+          senderId = sender.id;
+        }
+      }
+      if (!chatId) chatId = "default";
+      const groupKey = `${msg.Channel}|${msg.ChannelAccountId}|${chatId}`;
+      const existing = groups.get(groupKey);
+      if (existing) {
+        existing.messages.push(msg);
+        existing.messageCount++;
+        if (msg.CreatedAt > existing.lastMessage.CreatedAt) {
+          existing.lastMessage = msg;
+        }
+      } else {
+        const title = senderId || chatId !== "default" ? (senderId || chatId) : `${CHANNEL_LABELS[msg.Channel]} · ${msg.ChannelAccountId}`;
+        groups.set(groupKey, {
+          id: groupKey,
+          channel: msg.Channel,
+          channelAccountId: msg.ChannelAccountId,
+          chatId,
+          senderId,
+          title,
+          messages: [msg],
+          messageCount: 1,
+          lastMessage: msg,
+        });
+      }
+    }
+    for (const g of groups.values()) {
+      g.messages.sort((a, b) => a.CreatedAt.localeCompare(b.CreatedAt));
+    }
+    return Array.from(groups.values()).sort((a, b) =>
+      b.lastMessage.CreatedAt.localeCompare(a.lastMessage.CreatedAt)
+    );
+  }, [messages]);
+
+  const selectedConversation = useMemo(
+    () => conversations.find(c => c.id === selectedConversationId) ?? null,
+    [conversations, selectedConversationId],
+  );
+
+  // // ── Metrics ────────────────────────────────────────────────────────────────
 
   const enabledCount = channels.filter(c => c.Enabled).length;
   const pendingPairings = pairings.filter(p => p.Status === "pending").length;
@@ -1046,37 +1161,83 @@ export function ChannelsPage({ refreshTick }: { refreshTick: number }) {
       )}
 
       {tab === "messages" && (
-        <section className="channels-page__panel" aria-label="消息记录">
-          <div className="channels-page__panel-header">
-            <div><strong>消息记录</strong><span>{messages.length} 条消息</span></div>
-          </div>
-          <StudioDataTable
-            columns={messageColumns}
-            data={messages}
-            getRowId={msg => msg.Id}
-            caption="消息记录列表"
-            minWidth={900}
-            empty={{ icon: <Send size={22} />, title: "没有消息记录", description: "渠道接入并产生对话后，消息将出现在这里。" }}
-            expandRowContent={msg => (
-              <div className="channels-page__message-detail">
-                <pre className="channels-page__message-payload">
-                  {JSON.stringify(msg.Payload, null, 2)}
-                </pre>
-                <div className="channels-page__message-meta-row">
-                  <span><small>平台事件 ID</small><code className="mono">{msg.PlatformEventId || "-"}</code></span>
-                  <span><small>去重 Key</small><code className="mono">{msg.DedupeKey || "-"}</code></span>
-                  <span><small>重试次数</small><code className="mono">{msg.RetryCount}</code></span>
-                  {msg.NextRetryAt && <span><small>下次重试</small>{formatChannelDate(msg.NextRetryAt)}</span>}
+        <section className="channels-page__chat-view" aria-label="消息记录">
+          <aside className="channels-page__chat-sidebar">
+            <div className="channels-page__chat-sidebar-header">
+              <span>会话列表</span>
+              <span className="channels-page__chat-sidebar-count">{conversations.length}</span>
+            </div>
+            <div className="channels-page__chat-sidebar-list">
+              {conversations.length === 0 ? (
+                <div className="channels-page__chat-empty">
+                  <Send size={22} />
+                  <p>没有消息记录</p>
+                  <span>渠道接入并产生对话后，消息将出现在这里。</span>
                 </div>
-                {msg.Error && (
-                  <div className="channels-page__message-error">
-                    <span className="badge" data-state="failed">错误</span>
-                    <span>{msg.Error}</span>
+              ) : (
+                conversations.map(conv => (
+                  <button
+                    key={conv.id}
+                    className={`channels-page__chat-item${selectedConversationId === conv.id ? " active" : ""}`}
+                    type="button"
+                    onClick={() => setSelectedConversationId(conv.id)}
+                  >
+                    <div className="channels-page__chat-item-avatar">
+                      <span className="channel-platform-tag">{PLATFORM_BADGE[conv.channel]}</span>
+                    </div>
+                    <div className="channels-page__chat-item-body">
+                      <div className="channels-page__chat-item-top">
+                        <span className="channels-page__chat-item-name">{conv.title}</span>
+                        <span className="channels-page__chat-item-time">{formatChatTime(conv.lastMessage.CreatedAt)}</span>
+                      </div>
+                      <div className="channels-page__chat-item-bottom">
+                        <span className="channels-page__chat-item-preview">
+                          {conv.lastMessage.Direction === "outbound" ? "↗ " : ""}
+                          {messagePreview(conv.lastMessage)}
+                        </span>
+                        <span className="channels-page__chat-item-badge">{conv.messageCount}</span>
+                      </div>
+                    </div>
+                  </button>
+                ))
+              )}
+            </div>
+          </aside>
+          <div className="channels-page__chat-main">
+            {selectedConversation ? (
+              <>
+                <div className="channels-page__chat-header">
+                  <div className="channels-page__chat-header-info">
+                    <span className="channel-platform-tag">{PLATFORM_BADGE[selectedConversation.channel]}</span>
+                    <span className="channels-page__chat-header-name">{selectedConversation.title}</span>
+                    <span className="channels-page__chat-header-meta">
+                      {CHANNEL_LABELS[selectedConversation.channel]} · {selectedConversation.channelAccountId}
+                      {selectedConversation.senderId && ` · ${selectedConversation.senderId}`}
+                    </span>
                   </div>
-                )}
+                  <span className="channels-page__chat-header-count">{selectedConversation.messageCount} 条消息</span>
+                </div>
+                <div className="channels-page__chat-body">
+                  {selectedConversation.messages.map(msg => (
+                    <div key={msg.Id} className={`channels-page__chat-bubble ${msg.Direction}`}>
+                      <div className="channels-page__chat-bubble-content">{messagePreview(msg)}</div>
+                      <div className="channels-page__chat-bubble-time">{formatChatTime(msg.CreatedAt)}</div>
+                      {msg.Error && (
+                        <div className="channels-page__chat-bubble-error">
+                          <span className="badge" data-state="failed">{msg.Error}</span>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <div className="channels-page__chat-empty channels-page__chat-empty--center">
+                <MessageSquare size={32} />
+                <p>选择左侧会话查看聊天记录</p>
               </div>
             )}
-          />
+          </div>
         </section>
       )}
 
