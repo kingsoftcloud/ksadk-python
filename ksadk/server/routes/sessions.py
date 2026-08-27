@@ -706,6 +706,8 @@ async def _list_checkpoints_payload_legacy_filtered(
         checkpoints = [item for item in checkpoints if _is_checkpoint_resumable(item)]
     offset = int(request.Offset or 0)
     total = len(checkpoints)
+    # 存储层按时间正序返回；ListSessionCheckpoints 接口对外按时间倒序返回，同 timestamp 时 seq_id 降序。
+    checkpoints.sort(key=lambda c: (c["Timestamp"], c["SeqId"]), reverse=True)
     return {
         "Checkpoints": checkpoints[offset : offset + request.Limit],
         "Total": total,
@@ -813,6 +815,8 @@ async def _list_checkpoints_payload_with_filters(
                 await close_batches()
         break
 
+    # 存储层按时间正序返回；ListSessionCheckpoints 接口对外按时间倒序返回，同 timestamp 时 seq_id 降序。
+    checkpoints.sort(key=lambda c: (c["Timestamp"], c["SeqId"]), reverse=True)
     return {
         "Checkpoints": checkpoints,
         "Total": total,
