@@ -1015,16 +1015,16 @@ async def test_session_kop_actions_crud_and_event_listing(monkeypatch):
     assert fetched_session["LastPrompt"] == "hello"
     assert fetched_session["Summary"] == "assistant says hi"
     assert [item["Author"] for item in events.json()["Data"]["Events"]] == [
+        "demo-agent",
+        "demo-agent",
+        "demo-agent",
         "user",
-        "demo-agent",
-        "demo-agent",
-        "demo-agent",
     ]
     assert [item["EventType"] for item in events.json()["Data"]["Events"]] == [
-        "user_message",
         "run_status",
         "assistant_message",
         "run_status",
+        "user_message",
     ]
     assert deleted.json()["Data"]["Deleted"] is True
 

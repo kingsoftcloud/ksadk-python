@@ -315,6 +315,8 @@ async def list_session_events_action(request: ListSessionEventsActionRequest):
                     checkpoint_ids=checkpoint_ids,
                 )
             )
+        # 存储层返回页内时间正序；ListSessionEvents 接口对外按时间倒序返回，同 timestamp 时 seq_id 降序。
+        events.sort(key=lambda e: (e.timestamp, e.seq_id), reverse=True)
         return _action_response(
             "ListSessionEvents",
             {
@@ -357,6 +359,8 @@ async def list_session_events_action(request: ListSessionEventsActionRequest):
             checkpoint_ids=checkpoint_ids,
         )
     )
+    # 存储层返回页内时间正序；ListSessionEvents 接口对外按时间倒序返回，同 timestamp 时 seq_id 降序。
+    events.sort(key=lambda e: (e.timestamp, e.seq_id), reverse=True)
     return _action_response(
         "ListSessionEvents",
         {

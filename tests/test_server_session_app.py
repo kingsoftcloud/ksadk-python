@@ -2989,9 +2989,9 @@ async def test_responses_events_are_visible_through_runtime_local_list_session_e
     message_events = [
         event for event in events if event["EventType"] in {"user_message", "assistant_message"}
     ]
-    assert [event["Author"] for event in message_events] == ["user", "demo-agent"]
-    assert message_events[0]["Content"]["parts"][0]["text"] == "hello"
-    assert message_events[1]["Content"]["parts"][0]["text"] == "assistant says hi"
+    assert [event["Author"] for event in message_events] == ["demo-agent", "user"]
+    assert message_events[0]["Content"]["parts"][0]["text"] == "assistant says hi"
+    assert message_events[1]["Content"]["parts"][0]["text"] == "hello"
 
 
 @pytest.mark.asyncio
@@ -3031,7 +3031,7 @@ async def test_runtime_local_list_session_events_returns_total_and_page(monkeypa
     assert data["Offset"] == 0
     assert data["Limit"] == 2
     assert data["Total"] == 4
-    assert [event["SeqId"] for event in data["Events"]] == [3, 4]
+    assert [event["SeqId"] for event in data["Events"]] == [4, 3]
 
 
 @pytest.mark.asyncio
@@ -3067,7 +3067,7 @@ async def test_runtime_local_list_session_events_filters_by_after_seq_id(monkeyp
 
     assert response.status_code == 200
     data = response.json()["Data"]
-    assert [event["SeqId"] for event in data["Events"]] == [3, 4]
+    assert [event["SeqId"] for event in data["Events"]] == [4, 3]
     assert data["Total"] == 2
     assert data["AfterSeqId"] == 2
 
@@ -3106,7 +3106,7 @@ async def test_runtime_local_list_session_events_filters_by_before_seq_id(monkey
 
     assert response.status_code == 200
     data = response.json()["Data"]
-    assert [event["SeqId"] for event in data["Events"]] == [2, 3]
+    assert [event["SeqId"] for event in data["Events"]] == [3, 2]
     assert data["Total"] == 3
     assert data["BeforeSeqId"] == 4
 
@@ -3146,7 +3146,7 @@ async def test_runtime_list_session_events_is_bounded_by_default_and_schema_limi
     data = bounded.json()["Data"]
     assert data["Limit"] == 200
     assert data["Total"] == 205
-    assert [item["SeqId"] for item in data["Events"]] == list(range(6, 206))
+    assert [item["SeqId"] for item in data["Events"]] == list(range(205, 5, -1))
     assert too_large.status_code == 422
 
 
