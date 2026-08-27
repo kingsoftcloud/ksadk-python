@@ -85,14 +85,31 @@ class RealModelReasoner(HarnessReasoner):
     async def complete(self, *, model, prompt, messages, tools):
         from litellm import acompletion
 
-        response = await acompletion(
-            model=self._model,
-            messages=list(messages),
-            tools=[tool.openai_schema for tool in tools],
-            tool_choice="auto" if tools else None,
-            base_url=self._base_url or None,
-            api_key=self._api_key or None,
-        )
+        # 评测代理（Anthropic 兼容）存在瞬态故障与 TPM 限流（APIConnectionError
+        # 'id' / 偶发 BadRequestError / 429）；指数退避重试，覆盖一个限流窗口。
+        last_error: Exception | None = None
+        response = None
+        delays = (2.0, 5.0, 10.0, 20.0, 30.0)
+        for attempt in range(len(delays) + 1):
+            try:
+                response = await acompletion(
+                    model=self._model,
+                    messages=list(messages),
+                    tools=[tool.openai_schema for tool in tools],
+                    tool_choice="auto" if tools else None,
+                    base_url=self._base_url or None,
+                    api_key=self._api_key or None,
+                )
+                break
+            except Exception as exc:  # noqa: BLE001 - 代理瞬态故障/限流重试
+                last_error = exc
+                if attempt >= len(delays):
+                    break
+                await asyncio.sleep(delays[attempt])
+        if response is None:
+            raise RuntimeError(
+                f"eval model {self._model!r} 重试后仍失败: {last_error}"
+            ) from last_error
         choice = (response.choices or [None])[0]
         if choice is None:
             raise RuntimeError(f"eval model {self._model!r} returned no choices")
