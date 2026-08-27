@@ -91,6 +91,9 @@ class EventType:
     # context 计划。payload: budget_tokens, sections
     CONTEXT_PLANNED = "context.planned"
     CONTEXT_RECOVERED = "context.recovered"
+    # context 构建完成（长任务方案 §8）：manifest 引用 + Section Token 构成。
+    # payload: manifest_id, planned_tokens, projected_tokens, sections
+    CONTEXT_BUILT = "context.built"
     # model 调用。payload: model, attempt; completed 增补 usage
     MODEL_CALL_STARTED = "model.call.started"
     MODEL_CALL_COMPLETED = "model.call.completed"
@@ -101,6 +104,9 @@ class EventType:
     MEMORY_READ = "memory.read"
     MEMORY_WRITE = "memory.write"
     MEMORY_CONFLICT = "memory.conflict"
+    # 召回注入（长任务方案 §8）：Memory ID、分数、是否进入模型输入。
+    # payload: scope, query; items 增补 memory_id/score/injected
+    MEMORY_RECALLED = "memory.recalled"
     # capability 降级/恢复。payload: capability_ref, state
     CAPABILITY_DEGRADED = "capability.degraded"
     CAPABILITY_RECOVERED = "capability.recovered"
@@ -150,6 +156,7 @@ ALL_EVENT_TYPES: frozenset[str] = frozenset(
         EventType.TURN_COMPLETED,
         EventType.CONTEXT_PLANNED,
         EventType.CONTEXT_RECOVERED,
+        EventType.CONTEXT_BUILT,
         EventType.MODEL_CALL_STARTED,
         EventType.MODEL_CALL_COMPLETED,
         EventType.MODEL_CALL_FAILED,
@@ -157,6 +164,7 @@ ALL_EVENT_TYPES: frozenset[str] = frozenset(
         EventType.MEMORY_READ,
         EventType.MEMORY_WRITE,
         EventType.MEMORY_CONFLICT,
+        EventType.MEMORY_RECALLED,
         EventType.CAPABILITY_DEGRADED,
         EventType.CAPABILITY_RECOVERED,
         EventType.AGENT_STARTED,
@@ -206,6 +214,9 @@ EVENT_PAYLOAD_REQUIRED_KEYS: dict[str, frozenset[str]] = {
     EventType.TURN_COMPLETED: frozenset({"turn_id", "turn_number"}),
     EventType.CONTEXT_PLANNED: frozenset({"budget_tokens"}),
     EventType.CONTEXT_RECOVERED: frozenset({"reason"}),
+    EventType.CONTEXT_BUILT: frozenset(
+        {"manifest_id", "planned_tokens", "projected_tokens", "sections"}
+    ),
     EventType.MODEL_CALL_STARTED: frozenset({"model"}),
     EventType.MODEL_CALL_COMPLETED: frozenset({"model"}),
     EventType.MODEL_CALL_FAILED: frozenset({"model", "error"}),
@@ -213,6 +224,7 @@ EVENT_PAYLOAD_REQUIRED_KEYS: dict[str, frozenset[str]] = {
     EventType.MEMORY_READ: frozenset({"scope"}),
     EventType.MEMORY_WRITE: frozenset({"scope"}),
     EventType.MEMORY_CONFLICT: frozenset({"scope", "conflicting_ref"}),
+    EventType.MEMORY_RECALLED: frozenset({"scope", "query"}),
     EventType.CAPABILITY_DEGRADED: frozenset({"capability_ref"}),
     EventType.CAPABILITY_RECOVERED: frozenset({"capability_ref"}),
     # --- 事件树（收口 5）---

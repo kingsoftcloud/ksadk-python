@@ -30,6 +30,7 @@ from ksadk.harness.engine.base import (
     EngineCapabilityMatrix,
     ExecutionEngineError,
 )
+from ksadk.harness.engine.context_pipeline import EngineContextPipeline
 from ksadk.harness.engine.spans import wrap_node_span
 from ksadk.harness.engine.thread_ids import encode_thread_id
 from ksadk.harness.events import EventType, RuntimeEvent
@@ -79,6 +80,10 @@ class _EngineRun:
     pause_requested: bool = False
     done: bool = False
     started_emitted: bool = False
+    #: 最近一次 ContextManifest（Actual Token 由 usage 回填，长任务方案 §6.2）。
+    context_manifest: Any | None = None
+    #: 本 Run 的 CompactionRecord 列表（长任务方案 §6.4）。
+    compaction_records: list[Any] = field(default_factory=list)
 
 
 class ManagedLangGraphEngine:
@@ -96,6 +101,7 @@ class ManagedLangGraphEngine:
         strategy_registry: ExecutionStrategyRegistry | None = None,
         capability_runtime: Any | None = None,
         sub_agents: dict[str, Any] | None = None,
+        memory_runtime: Any | None = None,
     ) -> None:
         self._reasoner = reasoner or LiteLLMHarnessReasoner()
         self._checkpointer = checkpointer
@@ -110,6 +116,19 @@ class ManagedLangGraphEngine:
         self._capability_runtime = capability_runtime
         # 收口 6：子 Agent（名称 → SubAgentSpec）；多 Agent 作为可选能力。
         self._sub_agents = sub_agents or {}
+        # 长任务方案 §6.4：压缩前受控 Memory Flush 用的 Memory Runtime（可选）。
+        self._memory_runtime = memory_runtime
+        # Context 构建管线（规划/压缩/组装/Manifest 投影，见 context_pipeline）。
+        self._context_pipeline = (
+            EngineContextPipeline(
+                context_engine=self._context_engine,
+                reasoner=self._reasoner,
+                event_fn=self._event,
+                memory_runtime=self._memory_runtime,
+            )
+            if self._context_engine is not None
+            else None
+        )
         # 最近 compile 的 Spec（子 Agent 派生 child spec 用）。
         self._current_spec: HarnessSpec | None = None
         # 收口 6：子 Agent 事件缓冲（run_id → 待并入父流的子事件）。
@@ -445,6 +464,14 @@ class ManagedLangGraphEngine:
             for ev in out.events:
                 run.events.append(ev)
                 run.seq = max(run.seq, ev.seq_id)
+                # 长任务方案 §6.3：Actual Token 回填到最近一次 ContextManifest
+                # （actual_usage_ref 指向 usage.reported 事件）。
+                if ev.event_type == EventType.USAGE_REPORTED and run.context_manifest:
+                    run.context_manifest = run.context_manifest.with_actual(
+                        input_tokens=int(ev.payload.get("input_tokens") or 0),
+                        output_tokens=int(ev.payload.get("output_tokens") or 0),
+                        usage_ref=ev.event_id,
+                    )
             state["messages"].extend(out.new_messages)
             state["pending_tool_calls"] = out.pending_tool_calls
             state["route"] = out.route
@@ -761,197 +788,13 @@ class ManagedLangGraphEngine:
 
     # ------------------------------------------------------------- helpers
 
-    def _resolve_window(self, run: _EngineRun) -> tuple[int, str]:
-        from ksadk.harness.context_engine import resolve_context_window
-
-        raw_window = run.request.metadata.get("context_window_tokens")
-        return resolve_context_window(
-            model_profile_window=int(raw_window) if isinstance(raw_window, (int, float)) else None
-        )
-
-    def _plan_context(self, run: _EngineRun, messages: list[Message]) -> Any:
-        """对给定历史做一次上下文规划（ContextRequest 以快照构建）。"""
-        from ksadk.harness.context_engine import ContextRequest
-
-        window, _source = self._resolve_window(run)
-        snapshot = run.state.model_copy(update={"messages": messages})
-        return self._context_engine.plan(
-            ContextRequest(
-                spec=run.compiled.spec,
-                state=snapshot,
-                user_input=str(run.request.input or ""),
-                context_window_tokens=window,
-            )
-        )
-
-    def _emit_planned(self, run: _EngineRun, plan: Any, window: int, source: str) -> None:
-        run.events.append(
-            self._event(
-                run,
-                EventType.CONTEXT_PLANNED,
-                {
-                    "budget_tokens": plan.budget.max_input_tokens,
-                    "sections": dict(plan.tokens_by_kind),
-                    "window_source": source,
-                    "context_window_tokens": window,
-                    "planned_input_tokens": plan.planned_input_tokens,
-                },
-            )
-        )
-
-    async def _summarize(self, run: _EngineRun, head: list[Message]) -> str:
-        """受控摘要调用：走统一 reason 通道（事件成对、usage 可审计）。失败降级拼接。"""
-        spec = run.compiled.spec
-        try:
-            out = await reason_turn_async(
-                0,
-                ReasonInput(
-                    model_ref=spec.model.profile_ref,
-                    instructions=(
-                        "你是上下文压缩器。请把以下对话历史压缩为要点摘要，"
-                        "必须保留所有 ID、金额、日期、审批号等关键事实。"
-                    ),
-                    messages=[{"role": "user", "content": "\n".join(m.content for m in head)}],
-                    tools=[],
-                    reasoner=self._reasoner,
-                    agent_id=run.state.agent_id,
-                    user_id=run.state.user_id,
-                    session_id=run.state.session_id,
-                    run_id=run.handle.run_id,
-                    seq_start=run.seq,
-                    max_turns=1,
-                ),
-            )
-        except Exception:  # noqa: BLE001 - 摘要失败降级为截断拼接，不阻断 Run
-            text = "\n".join(m.content for m in head)
-            return text[:2000] + ("\n…[截断]" if len(text) > 2000 else "")
-        for ev in out.events:
-            run.events.append(ev)
-            run.seq = max(run.seq, ev.seq_id)
-        return str(out.new_messages[0].get("content") or "") if out.new_messages else ""
-
-    async def _compact_history(
-        self,
-        run: _EngineRun,
-        messages: list[Message],
-        *,
-        trigger: str,
-        keep_recent: int,
-        budget_tokens: int,
-    ) -> list[Message] | None:
-        """主动/紧急压缩：摘要 head + 保留 tail + 关键事实重注入，返回新历史。"""
-        from ksadk.harness.context_engine import CompactionRequest
-
-        if len(messages) <= keep_recent:
-            return None
-        run.events.append(
-            self._event(
-                run,
-                EventType.CONTEXT_COMPACTION_STARTED,
-                {"phase": "before", "trigger": trigger},
-            )
-        )
-        summary = await self._summarize(run, messages[:-keep_recent])
-        checkpoint = self._context_engine.compact(
-            CompactionRequest(
-                messages=messages,
-                keep_recent=keep_recent,
-                trigger=trigger,
-                summary=summary,
-                compacted_count=len(messages) - keep_recent,
-            )
-        )
-        compacted_text = (checkpoint.summary or "").strip()
-        if checkpoint.reinjection:
-            compacted_text = (compacted_text + "\n\n" + checkpoint.reinjection).strip()
-        new_messages: list[Message] = [
-            Message(role=MessageRole.SYSTEM, content=f"【历史摘要】\n{compacted_text}")
-        ]
-        new_messages.extend(messages[-keep_recent:])
-        run.events.append(
-            self._event(
-                run,
-                EventType.CONTEXT_COMPACTION_COMPLETED,
-                {
-                    "phase": "after",
-                    "trigger": trigger,
-                    "compacted_until_seq_id": checkpoint.compacted_until_seq_id,
-                    "budget_tokens": budget_tokens,
-                    "dropped_critical_facts": list(checkpoint.dropped_critical_facts),
-                },
-            )
-        )
-        return new_messages
-
     async def _prepare_context(
         self, run: _EngineRun, instructions: str
     ) -> list[dict[str, Any]] | None:
-        """ContextEngine 真正控制首次模型输入（收口 1）。
-
-        规划 → 超过主动阈值（Spec context_policy）先主动压缩 → 仍超预算做一次
-        紧急压缩（只允许一次，§8.4）→ 组装为 Chat 输入。未注入 ContextEngine 时
-        返回 None（回退旧拼接路径）。
-        """
+        """Context 构建管线委托（长任务方案 §6/§8，实现见 context_pipeline）。"""
         if self._context_engine is None:
             return None
-        from ksadk.harness.context_engine import ContextEngineError
-
-        history = run.request.metadata.get("conversation_history") or []
-        messages = [
-            Message(
-                role=MessageRole(m.get("role", "user")),
-                content=str(m.get("content") or ""),
-                tool_call_id=str(m["tool_call_id"]) if m.get("tool_call_id") else None,
-                name=str(m["name"]) if m.get("name") else None,
-            )
-            for m in history
-            if isinstance(m, dict) and m.get("role") in {"user", "assistant", "system"}
-        ]
-        window, source = self._resolve_window(run)
-        plan = self._plan_context(run, messages)
-        self._emit_planned(run, plan, window, source)
-        policy = run.compiled.spec.context_policy
-        max_input = plan.budget.max_input_tokens
-
-        if plan.planned_input_tokens > int(policy.proactive_compaction_threshold * max_input) or (
-            # Planner 丢弃了历史轮次（静默丢上下文）→ 主动压缩以摘要保住事实。
-            any(d.action == "dropped" and d.item_id.startswith("history") for d in plan.decisions)
-        ):
-            compacted = await self._compact_history(
-                run, messages, trigger="proactive", keep_recent=6, budget_tokens=max_input
-            )
-            if compacted is not None:
-                messages = compacted
-                plan = self._plan_context(run, messages)
-                self._emit_planned(run, plan, window, source)
-                max_input = plan.budget.max_input_tokens
-
-        if plan.planned_input_tokens > max_input:
-            # 紧急压缩（§8.4）：更强压缩，只允许一次。
-            compacted = await self._compact_history(
-                run, messages, trigger="emergency", keep_recent=2, budget_tokens=max_input
-            )
-            if compacted is not None:
-                messages = compacted
-                plan = self._plan_context(run, messages)
-                self._emit_planned(run, plan, window, source)
-                run.events.append(
-                    self._event(
-                        run,
-                        EventType.CONTEXT_RECOVERED,
-                        {"reason": "context_overflow", "trigger": "emergency"},
-                    )
-                )
-            if plan.planned_input_tokens > plan.budget.max_input_tokens:
-                raise ContextEngineError(
-                    "紧急压缩后仍超出输入预算: "
-                    f"{plan.planned_input_tokens} > {plan.budget.max_input_tokens}"
-                )
-
-        assembled = self._context_engine.assemble_chat(plan)
-        if not assembled.messages or assembled.messages[0].get("role") != "system":
-            assembled.messages.insert(0, {"role": "system", "content": instructions})
-        return assembled.messages
+        return await self._context_pipeline.prepare_context(run, instructions)
 
     def _require_run(self, handle: RunHandle) -> _EngineRun:
         try:
