@@ -82,6 +82,11 @@ def _row_to_record(row: sqlite3.Row) -> MemoryRecord:
         metadata=json.loads(row["metadata"] or "{}"),
         created_at=row["created_at"] or "",
         updated_at=row["updated_at"] or "",
+        # 长任务方案 §7.2 扩展列（additive migration）。
+        source_artifact_refs=tuple(json.loads(row["source_artifact_refs"] or "[]")),
+        sensitivity=row["sensitivity"] or "none",
+        write_policy=row["write_policy"] or "auto",
+        supersedes=tuple(json.loads(row["supersedes"] or "[]")),
     )
 
 
@@ -115,6 +120,22 @@ CREATE INDEX IF NOT EXISTS idx_scope ON memory_records(tenant_id, workspace_id,
 CREATE INDEX IF NOT EXISTS idx_content_hash ON memory_records(content_hash);
 """
 
+#: 长任务方案 §7.2 扩展列（additive；老库经 ALTER TABLE 补列）。
+_EXTENSION_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("source_artifact_refs", "TEXT NOT NULL DEFAULT '[]'"),
+    ("sensitivity", "TEXT NOT NULL DEFAULT 'none'"),
+    ("write_policy", "TEXT NOT NULL DEFAULT 'auto'"),
+    ("supersedes", "TEXT NOT NULL DEFAULT '[]'"),
+)
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """给老库补扩展列（SQLite 无 IF NOT EXISTS for ADD COLUMN，逐列试加）。"""
+    existing = {r["name"] for r in conn.execute("PRAGMA table_info(memory_records)")}
+    for column, decl in _EXTENSION_COLUMNS:
+        if column not in existing:
+            conn.execute(f"ALTER TABLE memory_records ADD COLUMN {column} {decl}")
+
 
 class SqliteMemoryProvider:
     """本地 SQLite 长期记忆 Provider。
@@ -147,6 +168,7 @@ class SqliteMemoryProvider:
         self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA)
+        _migrate(self._conn)
         self._conn.commit()
         self.last_error: str = ""
         # 每次 Provider 启动执行一次有界清理；不在每次 recall/upsert 热路径扫描全表。
@@ -223,8 +245,9 @@ class SqliteMemoryProvider:
                     memory_id, tenant_id, workspace_id, scope, scope_id, memory_type,
                     content, summary, status, confidence, importance, valid_from, valid_to,
                     expires_at, source_session_id, source_event_ids, source_seq_range,
-                    content_hash, version, metadata, created_at, updated_at
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    content_hash, version, metadata, created_at, updated_at,
+                    source_artifact_refs, sensitivity, write_policy, supersedes
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(memory_id) DO UPDATE SET
                     content=excluded.content, summary=excluded.summary, status=excluded.status,
                     confidence=excluded.confidence, importance=excluded.importance,
@@ -232,7 +255,10 @@ class SqliteMemoryProvider:
                     expires_at=excluded.expires_at, source_event_ids=excluded.source_event_ids,
                     source_seq_range=excluded.source_seq_range, content_hash=excluded.content_hash,
                     version=excluded.version, metadata=excluded.metadata,
-                        updated_at=excluded.updated_at
+                        updated_at=excluded.updated_at,
+                        source_artifact_refs=excluded.source_artifact_refs,
+                        sensitivity=excluded.sensitivity, write_policy=excluded.write_policy,
+                        supersedes=excluded.supersedes
                 """,
                 (
                     record.memory_id,
@@ -257,6 +283,10 @@ class SqliteMemoryProvider:
                     json.dumps(record.metadata, ensure_ascii=False),
                     created,
                     now,
+                    json.dumps(list(record.source_artifact_refs)),
+                    record.sensitivity,
+                    record.write_policy,
+                    json.dumps(list(record.supersedes)),
                 ),
             )
             self._conn.commit()

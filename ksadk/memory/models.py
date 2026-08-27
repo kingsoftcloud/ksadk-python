@@ -193,6 +193,10 @@ SensitiveLabel = Literal[
     "binary",
     "none",
 ]
+#: 敏感级别（长任务方案 §7.2）：none=可跨作用域；low=限同作用域；high=禁止入长期 Memory。
+SensitivityLevel = Literal["none", "low", "high"]
+#: 写策略（长任务方案 §7.2）：auto=管线自动提交；user_confirm=需用户确认；locked=只读。
+WritePolicy = Literal["auto", "user_confirm", "locked"]
 
 
 @dataclass(frozen=True)
@@ -219,6 +223,15 @@ class MemoryRecord:
     metadata: dict[str, Any] = field(default_factory=dict)
     created_at: str = ""
     updated_at: str = ""
+    # ---- 长任务方案 §7.2 兼容扩展（全部带默认值，additive） ----
+    #: 来源 Artifact 引用（大 Tool Result / 摘要正文不进正文，只留引用）。
+    source_artifact_refs: tuple[str, ...] = field(default=())
+    #: 敏感级别：high 禁止入长期 Memory（须先脱敏）；low 限同作用域。
+    sensitivity: SensitivityLevel = "none"
+    #: 写策略：locked 记录只能显式解锁后更新；user_confirm 需用户确认。
+    write_policy: WritePolicy = "auto"
+    #: 本记录 supersede 的旧记录（审计链）。
+    supersedes: tuple[str, ...] = field(default=())
 
     def is_active_now(self, *, now_iso: str = "") -> bool:
         if self.status != "active":
@@ -245,6 +258,12 @@ class MemoryCandidate:
     sensitive_labels: list[SensitiveLabel] = field(default_factory=list)
     reason: str = ""
     slot_key: str = ""
+    # ---- 长任务方案 §7.2 兼容扩展（additive） ----
+    source_artifact_refs: tuple[str, ...] = field(default=())
+    sensitivity: SensitivityLevel = "none"
+    write_policy: WritePolicy = "auto"
+    #: TTL（ISO 日期字符串；空 = 不过期）。时效数据必须有来源和 TTL（§7.3）。
+    expires_at: str = ""
 
     def is_hard_rejected(self) -> bool:
         return any(label != "none" for label in self.sensitive_labels)

@@ -64,6 +64,12 @@ class MemoryWriteRequest:
     slot_key: str = ""
     sensitive_labels: tuple[str, ...] = ()
     reason: str = ""
+    # ---- 长任务方案 §7.2 兼容扩展 ----
+    source_artifact_refs: tuple[str, ...] = ()
+    sensitivity: str = "none"
+    write_policy: str = "auto"
+    #: TTL（ISO 日期；空 = 不过期）。时效数据必须有来源和 TTL。
+    expires_at: str = ""
 
 
 class HarnessMemoryRuntime:
@@ -147,6 +153,10 @@ class HarnessMemoryRuntime:
             sensitive_labels=list(request.sensitive_labels),  # type: ignore[arg-type]
             reason=request.reason or f"source={request.source}",
             slot_key=request.slot_key,
+            source_artifact_refs=request.source_artifact_refs,
+            sensitivity=request.sensitivity,  # type: ignore[arg-type]
+            write_policy=request.write_policy,  # type: ignore[arg-type]
+            expires_at=request.expires_at,
         )
         evaluation = self._commit_controlled(candidate)
         event = self._audit_event(run_id, request, evaluation)
@@ -165,6 +175,14 @@ class HarnessMemoryRuntime:
         existing = self._coordinator.find_existing_for_candidate(candidate)
         if existing is None:
             return self._coordinator.propose_and_commit(candidate)
+        if existing.write_policy == "locked":
+            # 长任务方案 §7.2：locked 记录禁止管线自动更新（须显式解锁）。
+            return MemoryEvaluation(
+                decision="reject",
+                operation="ignore",
+                reason="locked_record",
+                conflicts_with=[existing.memory_id],
+            )
         if existing.content_hash == content_hash(candidate.content):
             return MemoryEvaluation(
                 decision="reject",
