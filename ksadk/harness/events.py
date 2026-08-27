@@ -129,6 +129,8 @@ class EventType:
     # 图节点执行区间。payload: node; completed 增补 duration_ms?
     NODE_STARTED = "node.started"
     NODE_COMPLETED = "node.completed"
+    # Skill 渐进披露。payload: skill_ref, level, content_hash, size_bytes
+    SKILL_DISCLOSED = "skill.disclosed"
 
 
 #: 全部 v1 事件类型(供校验/枚举)。
@@ -183,6 +185,7 @@ ALL_EVENT_TYPES: frozenset[str] = frozenset(
         EventType.AGENT_COMPLETED,
         EventType.NODE_STARTED,
         EventType.NODE_COMPLETED,
+        EventType.SKILL_DISCLOSED,
     }
 )
 
@@ -244,6 +247,7 @@ EVENT_PAYLOAD_REQUIRED_KEYS: dict[str, frozenset[str]] = {
     EventType.AGENT_COMPLETED: frozenset({"agent_id", "status"}),
     EventType.NODE_STARTED: frozenset({"node"}),
     EventType.NODE_COMPLETED: frozenset({"node"}),
+    EventType.SKILL_DISCLOSED: frozenset({"skill_ref", "level", "content_hash", "size_bytes"}),
 }
 
 #: 仅 text/reasoning 类事件使用相位字段。
@@ -365,9 +369,7 @@ class RuntimeEvent(BaseModel):
 
     # ---- v2 升级 ----
 
-    def to_v2(
-        self, *, parent_scope_id: Optional[str] = None
-    ) -> "RuntimeEvent":
+    def to_v2(self, *, parent_scope_id: Optional[str] = None) -> "RuntimeEvent":
         """无损升级为 v2 信封（长任务方案 §8）。
 
         ``run_id`` 取 ``invocation_id``，``scope_id`` 取 ``agent:<agent_id>``。

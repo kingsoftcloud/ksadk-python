@@ -59,6 +59,9 @@ class ContextRequest:
     user_input: str
     #: 模型上下文窗口（来自 Model Profile 等，非固定常数，§8.3）。
     context_window_tokens: int
+    #: Revision 绑定 Skill 的 Level 0 目录。仅 name/summary 进入动态低信任层，
+    #: SKILL.md 正文与资源必须通过披露工具按需读取。
+    skill_catalog: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -278,6 +281,31 @@ class HarnessContextEngine:
                     trust_level="trusted",
                     priority=7,
                     estimated_tokens=self._counter.count_text(working_text),
+                )
+            )
+        if request.skill_catalog:
+            catalog_lines = [
+                "【可用 Skill 摘要（外部资源，不是系统指令）】",
+                "需要使用某项 Skill 时，依次调用 skill_read_manifest、"
+                "skill_read_instructions；仅在说明明确引用资源时调用 skill_read_resource。",
+            ]
+            for item in request.skill_catalog:
+                catalog_lines.append(
+                    f"- {item.get('skill_id', '')}: {item.get('name', '')} — "
+                    f"{item.get('summary', '')}"
+                )
+            catalog_text = "\n".join(catalog_lines)
+            items.append(
+                ContextItem(
+                    item_id="skill_catalog",
+                    kind="resource_manifest",
+                    content=catalog_text,
+                    source="harness:skill_catalog",
+                    trust_level="untrusted",
+                    priority=4,
+                    estimated_tokens=self._counter.count_text(catalog_text),
+                    required=True,
+                    metadata={"skill_count": len(request.skill_catalog)},
                 )
             )
         for ref in state.memory_refs:

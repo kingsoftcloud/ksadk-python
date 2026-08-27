@@ -31,6 +31,7 @@ from ksadk.harness.engine.base import (
     ExecutionEngineError,
 )
 from ksadk.harness.engine.context_pipeline import EngineContextPipeline
+from ksadk.harness.engine.skill_disclosure import SkillDisclosureBridge
 from ksadk.harness.engine.spans import wrap_node_span
 from ksadk.harness.engine.thread_ids import encode_thread_id
 from ksadk.harness.events import EventType, RuntimeEvent
@@ -42,6 +43,7 @@ from ksadk.harness.loop import (
 )
 from ksadk.harness.loop.reason import ReasoningLimitError
 from ksadk.harness.reasoner import HarnessReasoner, HarnessReasoningTurn, LiteLLMHarnessReasoner
+from ksadk.harness.skill_runtime import SkillRuntime
 from ksadk.harness.spec import HarnessSpec
 from ksadk.harness.state import HarnessState, Message, MessageRole, RunStatus
 from ksadk.harness.strategies import ExecutionStrategyRegistry
@@ -84,6 +86,8 @@ class _EngineRun:
     context_manifest: Any | None = None
     #: 本 Run 的 CompactionRecord 列表（长任务方案 §6.4）。
     compaction_records: list[Any] = field(default_factory=list)
+    #: Revision 绑定且可由默认 Loop 按需披露的 Level 0 Skill 目录。
+    skill_catalog: tuple[dict[str, str], ...] = ()
 
 
 class ManagedLangGraphEngine:
@@ -102,6 +106,7 @@ class ManagedLangGraphEngine:
         capability_runtime: Any | None = None,
         sub_agents: dict[str, Any] | None = None,
         memory_runtime: Any | None = None,
+        skill_runtime: SkillRuntime | None = None,
         event_sink: Callable[[str, str, RuntimeEvent], None] | None = None,
     ) -> None:
         self._reasoner = reasoner or LiteLLMHarnessReasoner()
@@ -119,6 +124,9 @@ class ManagedLangGraphEngine:
         self._sub_agents = sub_agents or {}
         # 长任务方案 §6.4：压缩前受控 Memory Flush 用的 Memory Runtime（可选）。
         self._memory_runtime = memory_runtime
+        # SkillRuntime 只消费已绑定、已校验的 Skill 内容；L0 摘要常驻动态
+        # Context，L1/L2/L3 由默认 Agent Loop 的受限工具渐进披露。
+        self._skill_disclosure = SkillDisclosureBridge(skill_runtime)
         # P3 补强：事件出口回调（session_id, run_id, event）——洞察登记处
         # （ksadk.harness.insights）由此拿到完整事件流，供 Studio API 消费。
         self._event_sink = event_sink
@@ -149,6 +157,11 @@ class ManagedLangGraphEngine:
         plan = self._strategy_registry.compile(spec, strategy=spec.execution_strategy.kind.value)
         if spec.execution_strategy.kind.value == self._strategy_registry.default():
             ExecutionStrategyRegistry.assert_single_agent_purity(plan)
+        self._skill_disclosure.validate_bindings(
+            spec,
+            tool_names=set(self._tools),
+            sub_agent_names=set(self._sub_agents),
+        )
         self._current_spec = spec
         return CompiledHarness(
             spec=spec,
@@ -184,7 +197,12 @@ class ManagedLangGraphEngine:
             native_ref={"thread_id": thread_id},
         )
         self._runs[run_id] = _EngineRun(
-            handle=handle, request=request, compiled=compiled, state=state, thread_id=thread_id
+            handle=handle,
+            request=request,
+            compiled=compiled,
+            state=state,
+            thread_id=thread_id,
+            skill_catalog=self._skill_disclosure.catalog(compiled.spec),
         )
         return handle
 
@@ -233,6 +251,7 @@ class ManagedLangGraphEngine:
             compiled=compiled,
             state=state,
             thread_id=thread_id,
+            skill_catalog=self._skill_disclosure.catalog(compiled.spec),
         )
         run.started_emitted = True  # run.started 已在首个进程发出
         run.done = False
@@ -329,6 +348,11 @@ class ManagedLangGraphEngine:
                 else:
                     history = run.request.metadata.get("conversation_history") or []
                     conversation = [{"role": "system", "content": instructions}]
+                    skill_catalog_message = self._skill_disclosure.catalog_message(
+                        run.skill_catalog
+                    )
+                    if skill_catalog_message:
+                        conversation.append(skill_catalog_message)
                     if isinstance(history, list) and history:
                         # 宿主（如 Studio Playground）注入的会话历史已含当前输入。
                         conversation.extend(dict(m) for m in history if isinstance(m, dict))
@@ -465,7 +489,11 @@ class ManagedLangGraphEngine:
                         model_ref=spec.model.profile_ref,
                         instructions=spec.prompt.instructions or "",
                         messages=state["messages"],
-                        tools=list(self._tools.values()) + list(self._sub_agents.values()),
+                        tools=(
+                            list(self._tools.values())
+                            + self._skill_disclosure.tools(run.skill_catalog)
+                            + list(self._sub_agents.values())
+                        ),
                         reasoner=self._reasoner,
                         agent_id=run.state.agent_id,
                         user_id=run.state.user_id,
@@ -648,12 +676,15 @@ class ManagedLangGraphEngine:
             )
             self._pending_child_events.setdefault(run.handle.run_id, []).extend(child_events)
             return text
+        if self._skill_disclosure.is_tool(name):
+            return self._invoke_skill_tool(name, arguments, run=run)
         tool = self._tools.get(name)
         if tool is None:
             raise RuntimeError(
                 f"engine tool {name!r} is not available; it may be filtered or unpublished"
             )
-        result = await tool(arguments)
+        call = getattr(tool, "call", None)
+        result = await call(arguments) if callable(call) else await tool(arguments)
         # 缺口 5：工具产出的 Artifact → artifact.created 事件（与子事件同
         # 缓冲，tool.call.end 之后统一重排并入，seq 单调）。
         drain = getattr(tool, "drain_artifacts", None)
@@ -804,6 +835,8 @@ class ManagedLangGraphEngine:
         if run and run.task and not run.task.done():
             run.task.cancel()
             await asyncio.gather(run.task, return_exceptions=True)
+        if run is not None:
+            self._skill_disclosure.clear_run(run.handle.run_id)
 
     # ------------------------------------------------------------- helpers
 
@@ -820,6 +853,16 @@ class ManagedLangGraphEngine:
             return self._runs[handle.run_id]
         except KeyError:
             raise KeyError(f"unknown engine run: {handle.run_id}") from None
+
+    def _invoke_skill_tool(
+        self, name: str, arguments: dict[str, Any], *, run: _EngineRun | None
+    ) -> dict[str, Any]:
+        return self._skill_disclosure.invoke(
+            name,
+            arguments,
+            run=run,
+            pending_events=self._pending_child_events,
+        )
 
     def _event(
         self, run: _EngineRun, event_type: str, payload: dict[str, Any], *, phase: str | None = None
