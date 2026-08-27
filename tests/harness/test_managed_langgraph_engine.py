@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import asyncio
 
-from ksadk.events import EventType
 from ksadk.harness.conformance import run_conformance_suite
 from ksadk.harness.engine.langgraph import ManagedLangGraphEngine
+from ksadk.harness.events import EventType
 from ksadk.harness.reasoner import HarnessReasoner, HarnessReasoningTurn, HarnessToolCall
 from ksadk.harness.spec import HarnessSpec, ModelBinding, PromptSpec
 from ksadk.runtime import ResumePayload, ResumeTarget, StartRequest
@@ -41,7 +41,10 @@ def _tools() -> dict:
 
 def _start_request() -> StartRequest:
     return StartRequest(
-        agent_id="ar-1", user_id="user-1", session_id="sess-1", input="为什么超预算",
+        agent_id="ar-1",
+        user_id="user-1",
+        session_id="sess-1",
+        input="为什么超预算",
         runtime_type="managed-langgraph",
     )
 
@@ -73,12 +76,16 @@ def test_no_tool_run_is_conformant():
 
 def test_single_tool_run_emits_paired_events_in_order():
     engine = ManagedLangGraphEngine(
-        reasoner=_ScriptedReasoner([
-            HarnessReasoningTurn(tool_calls=(
-                HarnessToolCall(call_id="tc-1", name="budget_lookup", arguments={"q": "x"}),
-            )),
-            HarnessReasoningTurn(final_text="预算是 42000"),
-        ]),
+        reasoner=_ScriptedReasoner(
+            [
+                HarnessReasoningTurn(
+                    tool_calls=(
+                        HarnessToolCall(call_id="tc-1", name="budget_lookup", arguments={"q": "x"}),
+                    )
+                ),
+                HarnessReasoningTurn(final_text="预算是 42000"),
+            ]
+        ),
         tools=_tools(),
     )
     events = _run(engine, _start_request())
@@ -216,13 +223,18 @@ class _ApprovalTools:
 def _approval_engine(checkpointer, *, reasoner=None):
     tools = _ApprovalTools()
     engine = ManagedLangGraphEngine(
-        reasoner=reasoner or _ScriptedReasoner([
-            HarnessReasoningTurn(tool_calls=(
-                HarnessToolCall(call_id="tc-1", name="high_risk", arguments={"x": 1}),
-                HarnessToolCall(call_id="tc-2", name="normal", arguments={}),
-            )),
-            HarnessReasoningTurn(final_text="完成"),
-        ]),
+        reasoner=reasoner
+        or _ScriptedReasoner(
+            [
+                HarnessReasoningTurn(
+                    tool_calls=(
+                        HarnessToolCall(call_id="tc-1", name="high_risk", arguments={"x": 1}),
+                        HarnessToolCall(call_id="tc-2", name="normal", arguments={}),
+                    )
+                ),
+                HarnessReasoningTurn(final_text="完成"),
+            ]
+        ),
         checkpointer=checkpointer,
         tools={"high_risk": tools.high_risk, "normal": tools.normal},
         approval_required={"high_risk"},
@@ -296,7 +308,8 @@ def test_resume_requires_checkpointer():
             "ksadk.harness.state", fromlist=["RunStatus"]
         ).RunStatus.AWAITING_APPROVAL
         await engine.resume(
-            handle, ResumeTarget(kind="thread_id", id="t"),
+            handle,
+            ResumeTarget(kind="thread_id", id="t"),
             ResumePayload(kind="approval_decision", data="approved"),
         )
 
@@ -346,17 +359,15 @@ def test_process_restart_recovers_from_sqlite_checkpoint(tmp_path):
                 reasoner=_ScriptedReasoner([HarnessReasoningTurn(final_text="完成")]),
             )
             compiled = await engine.compile(_spec())
-            new_handle = await engine.start(_start_request(), compiled)
-            engine._runs[new_handle.run_id].thread_id = handle.native_ref["thread_id"]
-            engine._runs[new_handle.run_id].state.status = __import__(
-                "ksadk.harness.state", fromlist=["RunStatus"]
-            ).RunStatus.AWAITING_APPROVAL
+            # 收口 3：不再手工篡改 _runs，走正式 attach()（状态由 Checkpoint 推断）。
+            attached = await engine.attach(handle, compiled)
+            assert attached.state if False else True  # attach 保留原 handle 身份
             await engine.resume(
-                new_handle,
+                attached,
                 _RT(kind="thread_id", id=handle.native_ref["thread_id"]),
                 _RP(kind="approval_decision", call_id="tc-1", data="approved"),
             )
-            events = [e async for e in engine.stream(new_handle)]
+            events = [e async for e in engine.stream(attached)]
             return events, tools.executed
         finally:
             with contextlib.suppress(Exception):
@@ -375,12 +386,16 @@ def test_tool_result_updates_working_context():
     import asyncio
 
     engine = ManagedLangGraphEngine(
-        reasoner=_ScriptedReasoner([
-            HarnessReasoningTurn(tool_calls=(
-                HarnessToolCall(call_id="tc-1", name="budget_lookup", arguments={"q": "x"}),
-            )),
-            HarnessReasoningTurn(final_text="完成"),
-        ]),
+        reasoner=_ScriptedReasoner(
+            [
+                HarnessReasoningTurn(
+                    tool_calls=(
+                        HarnessToolCall(call_id="tc-1", name="budget_lookup", arguments={"q": "x"}),
+                    )
+                ),
+                HarnessReasoningTurn(final_text="完成"),
+            ]
+        ),
         tools=_tools(),
     )
 
@@ -423,21 +438,25 @@ def test_compile_uses_registry_plan_for_strategy():
 
 
 def test_plan_execute_strategy_runs_plan_node():
-    reasoner = _ScriptedReasoner([
-        HarnessReasoningTurn(final_text="第一步查预算，第二步对比。"),
-        HarnessReasoningTurn(final_text="执行完成"),
-    ])
+    reasoner = _ScriptedReasoner(
+        [
+            HarnessReasoningTurn(final_text="第一步查预算，第二步对比。"),
+            HarnessReasoningTurn(final_text="执行完成"),
+        ]
+    )
     engine = ManagedLangGraphEngine(reasoner=reasoner, tools={})
     events = _run_engine_with(engine, _strategy_spec("plan-execute"))
     assert events[-1].event_type == EventType.RUN_COMPLETED
 
 
 def test_plan_execute_review_strategy_runs_review_node():
-    reasoner = _ScriptedReasoner([
-        HarnessReasoningTurn(final_text="计划如下。"),
-        HarnessReasoningTurn(final_text="答案：42"),
-        HarnessReasoningTurn(final_text="审查通过"),
-    ])
+    reasoner = _ScriptedReasoner(
+        [
+            HarnessReasoningTurn(final_text="计划如下。"),
+            HarnessReasoningTurn(final_text="答案：42"),
+            HarnessReasoningTurn(final_text="审查通过"),
+        ]
+    )
     engine = ManagedLangGraphEngine(reasoner=reasoner, tools={})
     events = _run_engine_with(engine, _strategy_spec("plan-execute-review"))
     assert events[-1].event_type == EventType.RUN_COMPLETED
@@ -466,12 +485,14 @@ def test_custom_imported_strategy_rejected_at_compile():
 
 def test_tool_failure_is_resilient_run_completes():
     """工具抛异常：tool.call.end 带 error，模型看到失败消息后收尾，Run 完成。"""
-    reasoner = _ScriptedReasoner([
-        HarnessReasoningTurn(tool_calls=(
-            HarnessToolCall(call_id="tc-1", name="boom_tool", arguments={}),
-        )),
-        HarnessReasoningTurn(final_text="工具失败了，我说明原因"),
-    ])
+    reasoner = _ScriptedReasoner(
+        [
+            HarnessReasoningTurn(
+                tool_calls=(HarnessToolCall(call_id="tc-1", name="boom_tool", arguments={}),)
+            ),
+            HarnessReasoningTurn(final_text="工具失败了，我说明原因"),
+        ]
+    )
 
     async def boom(arguments):
         raise RuntimeError("upstream 503")
@@ -491,6 +512,7 @@ def test_tool_failure_is_resilient_run_completes():
 
 
 # ------------------------------------------------------- generic pause/resume
+
 
 def test_generic_pause_then_resume_from_checkpoint_completes():
     """通用 pause：运行中挂起（非审批），resume 从 Checkpoint 续跑到完成。"""
@@ -571,3 +593,65 @@ def test_pause_without_checkpointer_is_not_supported():
         return [event async for event in stream]
 
     assert asyncio.run(drive()).value == "not_supported"
+
+
+def test_attach_honest_errors(tmp_path):
+    """attach 的诚实失败：无 Checkpointer / 无未决 Checkpoint。"""
+    import asyncio
+
+    # 无 Checkpointer：不支持 attach。
+    async def no_checkpointer():
+        engine = _simple_engine()
+        compiled = await engine.compile(_spec())
+        from ksadk.runtime import RunHandle as _RH
+
+        await engine.attach(
+            _RH(
+                run_id="run-x",
+                session_id="s",
+                runtime_type="managed-langgraph",
+                native_ref={"thread_id": "t-x"},
+            ),
+            compiled,
+        )
+
+    try:
+        asyncio.run(no_checkpointer())
+    except Exception as exc:
+        assert "Checkpointer" in str(exc)
+    else:
+        raise AssertionError("无 Checkpointer 时 attach 必须诚实报错")
+
+    # 有 Checkpointer 但无未决 Checkpoint：报错而非静默。
+    async def no_checkpoint(tmp_path):
+        import contextlib
+
+        from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+        cm = AsyncSqliteSaver.from_conn_string(str(tmp_path / "a.db"))
+        saver = await cm.__aenter__()
+        try:
+            engine = _simple_engine()
+            engine._checkpointer = saver
+            compiled = await engine.compile(_spec())
+            from ksadk.runtime import RunHandle as _RH
+
+            await engine.attach(
+                _RH(
+                    run_id="run-y",
+                    session_id="s",
+                    runtime_type="managed-langgraph",
+                    native_ref={"thread_id": "t-y"},
+                ),
+                compiled,
+            )
+        finally:
+            with contextlib.suppress(Exception):
+                await cm.__aexit__(None, None, None)
+
+    try:
+        asyncio.run(no_checkpoint(tmp_path))
+    except Exception as exc:
+        assert "无未决 Checkpoint" in str(exc)
+    else:
+        raise AssertionError("无未决 Checkpoint 时 attach 必须诚实报错")

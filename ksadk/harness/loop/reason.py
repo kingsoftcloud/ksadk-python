@@ -14,7 +14,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Sequence
 
-from ksadk.events import EventType, RuntimeEvent
+from ksadk.harness.events import EventType, RuntimeEvent
 from ksadk.harness.reasoner import HarnessReasoner, HarnessReasoningTurn
 
 #: reason 节点的路由结果。引擎据此走 tool_calls 或 final 出口。
@@ -88,9 +88,7 @@ async def reason_turn_async(turn_count: int, inp: ReasonInput) -> ReasonOutput:
     out = ReasonOutput()
 
     seq += 1
-    out.events.append(
-        _event(EventType.MODEL_CALL_STARTED, inp, seq, {"model": inp.model_ref})
-    )
+    out.events.append(_event(EventType.MODEL_CALL_STARTED, inp, seq, {"model": inp.model_ref}))
     try:
         turn: HarnessReasoningTurn = await inp.reasoner.complete(
             model=inp.model_ref,
@@ -111,9 +109,7 @@ async def reason_turn_async(turn_count: int, inp: ReasonInput) -> ReasonOutput:
         raise
 
     seq += 1
-    out.events.append(
-        _event(EventType.MODEL_CALL_COMPLETED, inp, seq, {"model": inp.model_ref})
-    )
+    out.events.append(_event(EventType.MODEL_CALL_COMPLETED, inp, seq, {"model": inp.model_ref}))
 
     if turn.usage:
         usage = dict(turn.usage)

@@ -59,9 +59,10 @@ class TestHarnessSpec:
         assert h1 == h2 and h1.startswith("sha256:")
 
     def test_hash_changes_with_prompt(self):
-        assert _spec().content_hash() != _spec(
-            prompt=PromptSpec(instructions="别的指令。")
-        ).content_hash()
+        assert (
+            _spec().content_hash()
+            != _spec(prompt=PromptSpec(instructions="别的指令。")).content_hash()
+        )
 
     def test_frozen(self):
         spec = _spec()
@@ -116,9 +117,7 @@ class TestHarnessSpec:
 
 class TestHarnessState:
     def test_defaults(self):
-        state = HarnessState(
-            tenant_id="t1", user_id="u1", agent_id="a1", session_id="s1"
-        )
+        state = HarnessState(tenant_id="t1", user_id="u1", agent_id="a1", session_id="s1")
         assert state.status == RunStatus.PENDING
         assert state.run_id.startswith("hr-")
         assert state.checkpoint_key() == f"t1/a1/s1/{state.run_id}"
@@ -135,7 +134,10 @@ class TestHarnessState:
 
     def test_message_roles(self):
         state = HarnessState(
-            tenant_id="t1", user_id="u1", agent_id="a1", session_id="s1",
+            tenant_id="t1",
+            user_id="u1",
+            agent_id="a1",
+            session_id="s1",
             messages=[Message(role=MessageRole.USER, content="为什么超预算？")],
         )
         assert state.messages[0].role is MessageRole.USER

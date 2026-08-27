@@ -15,7 +15,7 @@ import sqlite3
 import threading
 from typing import Any
 
-from ksadk.events import EventType, RuntimeEvent
+from ksadk.harness.events import EventType, RuntimeEvent
 from ksadk.harness.state import HarnessState, Message, MessageRole
 
 _SCHEMA = """
@@ -73,9 +73,7 @@ class SqliteSessionStore:
             )
             self._conn.commit()
 
-    def append_event(
-        self, *, tenant_id: str, session_id: str, event: RuntimeEvent
-    ) -> None:
+    def append_event(self, *, tenant_id: str, session_id: str, event: RuntimeEvent) -> None:
         with self._lock:
             self._conn.execute(
                 "INSERT OR REPLACE INTO harness_transcript VALUES (?,?,?,?,?)",
@@ -97,18 +95,13 @@ class SqliteSessionStore:
     def _rows(
         self, *, tenant_id: str, session_id: str, kind: str | None = None
     ) -> list[tuple[int, str]]:
-        query = (
-            "SELECT seq, payload FROM harness_transcript "
-            "WHERE tenant_id = ? AND session_id = ?"
-        )
+        query = "SELECT seq, payload FROM harness_transcript WHERE tenant_id = ? AND session_id = ?"
         params: list[Any] = [tenant_id, session_id]
         if kind:
             query += " AND kind = ?"
             params.append(kind)
         with self._lock:
-            return list(
-                self._conn.execute(query + " ORDER BY seq", params).fetchall()
-            )
+            return list(self._conn.execute(query + " ORDER BY seq", params).fetchall())
 
     def messages(self, *, tenant_id: str, session_id: str) -> list[Message]:
         messages = []
@@ -176,9 +169,7 @@ class SqliteSessionStore:
         )
         # 保留 Checkpoint 侧的运行时字段（approval/working context 等），
         # 消息以 Transcript 为准。
-        recovered = checkpoint_state.model_copy(
-            update={"messages": transcript.messages}
-        )
+        recovered = checkpoint_state.model_copy(update={"messages": transcript.messages})
         event = RuntimeEvent.create(
             EventType.CONTEXT_RECOVERED,
             agent_id=checkpoint_state.agent_id,

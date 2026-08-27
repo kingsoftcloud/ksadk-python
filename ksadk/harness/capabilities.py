@@ -10,7 +10,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from ksadk.studio.domain.resource_ref import validate_resource_ref
+from ksadk.harness.resource_ref import validate_resource_ref
 
 
 class CapabilityKind(str, Enum):

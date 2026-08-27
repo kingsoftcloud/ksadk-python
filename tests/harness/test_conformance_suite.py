@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from ksadk.events import EventType
 from ksadk.harness.conformance import run_conformance_suite
 from ksadk.harness.conformance.fixtures import (
     broken_missing_start_events,
@@ -13,6 +12,7 @@ from ksadk.harness.conformance.fixtures import (
     compliant_single_tool_events,
     make_event_factory,
 )
+from ksadk.harness.events import EventType
 
 
 def test_compliant_no_tool_stream_passes():
@@ -50,9 +50,7 @@ def test_canceled_stream_passes_with_cancel_requested():
     make = make_event_factory()
     events = canceled_events(make)
     assert run_conformance_suite(events, cancel_requested=True).ok
-    assert not any(
-        v.rule == "cancel-honesty" for v in run_conformance_suite(events).violations
-    )
+    assert not any(v.rule == "cancel-honesty" for v in run_conformance_suite(events).violations)
 
 
 def test_cancel_requested_but_completed_fails():
@@ -90,7 +88,10 @@ def test_existing_native_harness_adapter_stream_is_conformant():
         workspace_root="/tmp",
     )
     request = StartRequest(
-        agent_id="a", user_id="u", session_id="s", input="hi",
+        agent_id="a",
+        user_id="u",
+        session_id="s",
+        input="hi",
         runtime_type="harness",
     )
 
@@ -254,8 +255,12 @@ def test_compaction_pairing_and_budget():
         make(EventType.CONTEXT_COMPACTION_STARTED, {"phase": "input", "trigger": "soft_limit"}),
         make(
             EventType.CONTEXT_COMPACTION_COMPLETED,
-            {"phase": "input", "trigger": "soft_limit", "compacted_until_seq_id": 5,
-             "budget_tokens": 8000},
+            {
+                "phase": "input",
+                "trigger": "soft_limit",
+                "compacted_until_seq_id": 5,
+                "budget_tokens": 8000,
+            },
         ),
         make(EventType.RUN_COMPLETED, {"status": "succeeded"}),
     ]
@@ -266,8 +271,12 @@ def test_compaction_pairing_and_budget():
         make(EventType.CONTEXT_COMPACTION_STARTED, {"phase": "input", "trigger": "soft_limit"}),
         make(
             EventType.CONTEXT_COMPACTION_COMPLETED,
-            {"phase": "input", "trigger": "soft_limit", "compacted_until_seq_id": 5,
-             "budget_tokens": 0},
+            {
+                "phase": "input",
+                "trigger": "soft_limit",
+                "compacted_until_seq_id": 5,
+                "budget_tokens": 0,
+            },
         ),
         make(EventType.RUN_COMPLETED, {"status": "succeeded"}),
     ]

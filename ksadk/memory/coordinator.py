@@ -270,6 +270,11 @@ class MemoryCoordinator:
                 by_id[record.memory_id] = record
         return list(by_id.values())
 
+    def find_existing_for_candidate(self, candidate: MemoryCandidate) -> MemoryRecord | None:
+        """Return the active fact occupying the candidate's logical slot."""
+        records = self._find_active_slot_records(candidate)
+        return records[0] if records else None
+
     def propose_and_commit(
         self,
         candidate: MemoryCandidate,
@@ -359,11 +364,7 @@ class MemoryCoordinator:
                 "operation": evaluation.operation,
                 **({"slot_key": candidate.slot_key} if candidate.slot_key else {}),
                 **(
-                    {
-                        "supersedes": [
-                            item.memory_id for item in conflicting_records or [existing]
-                        ]
-                    }
+                    {"supersedes": [item.memory_id for item in conflicting_records or [existing]]}
                     if evaluation.operation == "update" and existing is not None
                     else {}
                 ),

@@ -32,6 +32,8 @@ FORBIDDEN_IMPORT_PREFIXES = (
     "google.adk",
 )
 
+FORBIDDEN_REVERSE_DEPENDENCY_PREFIXES = ("ksadk.studio",)
+
 
 def _imported_modules(path: Path) -> set[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -66,6 +68,17 @@ def test_engine_langgraph_is_the_only_langgraph_entrypoint() -> None:
             if module.startswith("langgraph"):
                 offenders.append(str(path.relative_to(ROOT)))
     assert not offenders, f"非 engine/langgraph.py 的 harness 模块 import 了 langgraph: {offenders}"
+
+
+def test_harness_never_depends_on_studio() -> None:
+    """Harness is an SDK/runtime layer; Studio may depend on it, never vice versa."""
+    harness_root = ROOT / "ksadk" / "harness"
+    offenders: list[tuple[str, str]] = []
+    for path in harness_root.rglob("*.py"):
+        for module in _imported_modules(path):
+            if module.startswith(FORBIDDEN_REVERSE_DEPENDENCY_PREFIXES):
+                offenders.append((str(path.relative_to(ROOT)), module))
+    assert not offenders, f"Harness 反向依赖 Studio: {offenders}"
 
 
 def test_harness_spec_rejects_floating_refs_by_contract() -> None:

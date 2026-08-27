@@ -19,6 +19,8 @@ class HarnessToolCall:
 class HarnessReasoningTurn:
     final_text: str | None = None
     tool_calls: tuple[HarnessToolCall, ...] = ()
+    #: 本次模型调用的 usage（input_tokens/output_tokens）——引擎据此发 usage.reported。
+    usage: dict[str, int] | None = None
 
 
 class HarnessReasoner(Protocol):

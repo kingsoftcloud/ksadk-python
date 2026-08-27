@@ -106,9 +106,7 @@ class ToolPolicy:
             _RISK_ORDER[context.risk_level] >= _APPROVAL_RISK
             or context.has_external_side_effects
             or context.data_sensitivity in {"confidential", "restricted"}
-            or any(
-                context.tool_name.startswith(p) for p in self.approval_required_prefixes
-            )
+            or any(context.tool_name.startswith(p) for p in self.approval_required_prefixes)
         )
         if needs_approval and not context.prior_receipt_id:
             return ToolDecision(

@@ -91,18 +91,14 @@ class TestLifecycleClosedLoop:
             revision_payload=_revision_payload(),
             revision_ref="agent-revision://proj-1@3",
         )
-        manager.deploy(
-            manifest=first, revision_payload=_revision_payload(), route="local/finance"
-        )
+        manager.deploy(manifest=first, revision_payload=_revision_payload(), route="local/finance")
         first_deployment = manager.activate("local/finance")
 
         second = manager.build(
             revision_payload=_revision_payload(),
             revision_ref="agent-revision://proj-1@4",
         )
-        manager.deploy(
-            manifest=second, revision_payload=_revision_payload(), route="local/finance"
-        )
+        manager.deploy(manifest=second, revision_payload=_revision_payload(), route="local/finance")
         second_deployment = manager.activate("local/finance")
         assert first_deployment.status == LifecycleStatus.SUPERSEDED
         assert second_deployment.status == LifecycleStatus.ACTIVE

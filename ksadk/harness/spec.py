@@ -14,7 +14,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from ksadk.studio.domain.resource_ref import validate_resource_ref
+from ksadk.harness.resource_ref import validate_resource_ref
 
 SCHEMA_VERSION = "harness.ksadk.io/v1"
 HARNESS_VERSION = "0.1.0"
@@ -113,6 +113,16 @@ class CapabilityBindings(_SpecModel):
     skill_bindings: tuple[CapabilityBinding, ...] = Field(default=(), max_length=64)
 
 
+class SubAgentBinding(_SpecModel):
+    """子 Agent 声明（plan §14：多 Agent 是可选能力，经 Revision 编译）。"""
+
+    name: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9][a-z0-9_-]*$")
+    instructions: str = Field(min_length=1, max_length=32_768)
+    description: str = Field(default="", max_length=1024)
+    #: 允许使用的工具名（空 = 纯文本推理）。
+    tools: tuple[str, ...] = Field(default=(), max_length=64)
+
+
 class ExecutionStrategyKind(str, Enum):
     SINGLE_AGENT = "single-agent"
     PLAN_EXECUTE = "plan-execute"
@@ -158,6 +168,7 @@ class HarnessSpec(_SpecModel):
     context_policy: ContextPolicy = Field(default_factory=ContextPolicy)
     memory_policy: MemoryPolicy = Field(default_factory=MemoryPolicy)
     capabilities: CapabilityBindings = Field(default_factory=CapabilityBindings)
+    sub_agents: tuple[SubAgentBinding, ...] = Field(default=(), max_length=32)
     execution_strategy: ExecutionStrategySpec = Field(default_factory=ExecutionStrategySpec)
     approval_policy: ApprovalPolicy = Field(default_factory=ApprovalPolicy)
     sandbox_policy: SandboxPolicy = Field(default_factory=SandboxPolicy)
@@ -211,5 +222,6 @@ __all__ = [
     "ObservabilityPolicy",
     "PromptSpec",
     "SandboxPolicy",
+    "SubAgentBinding",
     "build_manifest",
 ]

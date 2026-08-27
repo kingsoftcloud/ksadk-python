@@ -48,9 +48,10 @@ class TestTokenBudget:
 
     def test_window_source_priority_chain(self):
         assert resolve_context_window(model_profile_window=65536) == (65536, "model_profile")
-        assert resolve_context_window(
-            model_profile_window=None, provider_catalog_window=32768
-        ) == (32768, "provider_catalog")
+        assert resolve_context_window(model_profile_window=None, provider_catalog_window=32768) == (
+            32768,
+            "provider_catalog",
+        )
         assert resolve_context_window(
             provider_catalog_window=None, static_metadata_window=16384
         ) == (16384, "static_metadata")
@@ -74,12 +75,14 @@ class TestPlanning:
     def test_tool_pair_not_split(self):
         """Tool Call/Result 不被拆分：assistant(tool_call_id) 与相邻 tool 消息同组。"""
         engine = HarnessContextEngine()
-        state = _state([
-            Message(role=MessageRole.USER, content="查预算"),
-            Message(role=MessageRole.ASSISTANT, content="", tool_call_id="tc-1"),
-            Message(role=MessageRole.TOOL, content="42000", tool_call_id="tc-1"),
-            Message(role=MessageRole.USER, content="谢谢"),
-        ])
+        state = _state(
+            [
+                Message(role=MessageRole.USER, content="查预算"),
+                Message(role=MessageRole.ASSISTANT, content="", tool_call_id="tc-1"),
+                Message(role=MessageRole.TOOL, content="42000", tool_call_id="tc-1"),
+                Message(role=MessageRole.USER, content="谢谢"),
+            ]
+        )
         plan = engine.plan(
             ContextRequest(
                 spec=_spec(), state=state, user_input="再查一次", context_window_tokens=32768
@@ -173,9 +176,7 @@ class TestCompaction:
     def test_emergency_compact_requires_summary(self):
         engine = HarnessContextEngine()
         with pytest.raises(ContextEngineError, match="紧急压缩"):
-            engine.compact(
-                CompactionRequest(messages=tuple(), trigger="emergency", summary=None)
-            )
+            engine.compact(CompactionRequest(messages=tuple(), trigger="emergency", summary=None))
 
     def test_short_history_skips_compaction(self):
         engine = HarnessContextEngine()
@@ -313,19 +314,16 @@ class TestContextEngineControlsModelInput:
     def test_proactive_compaction_summarizes_long_history(self):
         import asyncio
 
-        from ksadk.events import EventType
+        from ksadk.harness.events import EventType
         from ksadk.runtime import StartRequest
 
         # 摘要轮返回关键事实摘要，主调用返回最终答复。
-        reasoner = self._recording_reasoner(
-            ["摘要：预算审批 AP-1024 已通过。", "最终答复"]
-        )
+        reasoner = self._recording_reasoner(["摘要：预算审批 AP-1024 已通过。", "最终答复"])
         engine = self._engine_with(reasoner)
 
         # 用极小窗口逼出主动压缩（阈值 0.72）。
         history = [
-            {"role": "user", "content": f"第{i}个很长的问题 " + "细节" * 200}
-            for i in range(12)
+            {"role": "user", "content": f"第{i}个很长的问题 " + "细节" * 200} for i in range(12)
         ] + [{"role": "assistant", "content": "审批号：AP-1024 已通过，金额 ¥42,000"}]
 
         async def drive():

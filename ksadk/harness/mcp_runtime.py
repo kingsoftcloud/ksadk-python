@@ -92,9 +92,7 @@ class McpCapabilityRuntime:
 
     # ------------------------------------------------------------- 健康
 
-    async def health(
-        self, server_id: str, *, now: float | None = None
-    ) -> McpHealthReport:
+    async def health(self, server_id: str, *, now: float | None = None) -> McpHealthReport:
         """探测（或复用 TTL 缓存）并应用熔断状态机。"""
         binding = self.binding(server_id)
         state = self._health[server_id]
@@ -111,14 +109,9 @@ class McpCapabilityRuntime:
                 )
             # 半开：冷却期到，试探一次。
             state.opened_at = None
-            state.consecutive_failures = max(
-                0, self._options.failure_threshold - 1
-            )
+            state.consecutive_failures = max(0, self._options.failure_threshold - 1)
 
-        if (
-            state.healthy is True
-            and clock - state.last_probe_at < self._options.health_ttl_seconds
-        ):
+        if state.healthy is True and clock - state.last_probe_at < self._options.health_ttl_seconds:
             return McpHealthReport(
                 server_id=server_id,
                 healthy=state.healthy,
@@ -170,9 +163,7 @@ class McpCapabilityRuntime:
 
     # ------------------------------------------------------------- 调用
 
-    async def call(
-        self, server_id: str, tool_name: str, arguments: dict[str, Any]
-    ) -> Any:
+    async def call(self, server_id: str, tool_name: str, arguments: dict[str, Any]) -> Any:
         """调用（熔断打开时抛结构化错误）。"""
         binding = self.binding(server_id)
         state = self._health[server_id]
@@ -190,9 +181,7 @@ class McpCapabilityRuntime:
 
     # ------------------------------------------------------------- 降级
 
-    def degradation_decision(
-        self, report: McpHealthReport, *, environment: str
-    ) -> str:
+    def degradation_decision(self, report: McpHealthReport, *, environment: str) -> str:
         """§10.3 降级策略：draft/revision 两列决策表。"""
         if report.healthy:
             return "available"

@@ -14,8 +14,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Any
 
 from ksadk.harness.compiler import compile_revision_payload
@@ -85,9 +93,7 @@ class BuildPipeline:
     def __init__(self, *, harness_version: str = "1.0.0") -> None:
         self._harness_version = harness_version
 
-    def build(
-        self, *, revision_payload: dict[str, Any], revision_ref: str
-    ) -> BuildManifest:
+    def build(self, *, revision_payload: dict[str, Any], revision_ref: str) -> BuildManifest:
         # validate refs + compile HarnessSpec（compile 内含 ref 校验）。
         spec = compile_revision_payload(revision_payload, revision_ref=revision_ref)
         content_hash = _digest(json.dumps(spec.model_dump(), sort_keys=True))
@@ -97,9 +103,7 @@ class BuildPipeline:
             engine="managed-langgraph",
             model_profile_ref=spec.model.profile_ref,
             mcp_refs=tuple(b.capability_ref for b in spec.capabilities.mcp_bindings),
-            skill_refs=tuple(
-                b.capability_ref for b in spec.capabilities.skill_bindings
-            ),
+            skill_refs=tuple(b.capability_ref for b in spec.capabilities.skill_bindings),
             content_hash=content_hash,
             artifact_digest=_digest(content_hash + revision_ref),
             build_id=f"bld_{content_hash[7:19]}",
@@ -108,20 +112,51 @@ class BuildPipeline:
 
 
 class LocalDeployment:
-    """一个本地 Runtime 实例（§12.4）：真实启动 + 健康检查 + 路由。"""
+    """一个本地 Runtime 实例（§12.4）：真实启动 + 健康检查 + 路由。
 
-    def __init__(
-        self, *, deployment_id: str, manifest: BuildManifest, spec: HarnessSpec
-    ) -> None:
+    进程形态（收口 4）：``launch_process=True`` 时 Deploy 真实 spawn
+    ``ksadk.harness.runtime_server`` 子进程（uvicorn HTTP 服务），Health
+    Check 是对 ``/health`` 的真实 HTTP 请求；进程退出即 Runtime 不健康。
+    进程内形态保留用于单测/调试（无 IO 副作用）。
+    """
+
+    def __init__(self, *, deployment_id: str, manifest: BuildManifest, spec: HarnessSpec) -> None:
         self.deployment_id = deployment_id
         self.manifest = manifest
         self.spec = spec
         self.status: LifecycleStatus = LifecycleStatus.DRAFT
         self.health_checked: bool = False
         self.invocations: list[str] = []
+        # 进程形态字段。
+        self.port: int | None = None
+        self.base_url: str = ""
+        self.process: subprocess.Popen[bytes] | None = None
+        self._workspace: tempfile.TemporaryDirectory[str] | None = None
+
+    @property
+    def process_mode(self) -> bool:
+        return self.process is not None
+
+    def http_health_check(self, *, timeout: float = 3.0) -> bool:
+        """真实 HTTP Health Check（进程形态）：GET {base_url}/health。"""
+        if not self.base_url:
+            return False
+        try:
+            with urllib.request.urlopen(f"{self.base_url}/health", timeout=timeout) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except (OSError, urllib.error.URLError, json.JSONDecodeError):
+            self.status = LifecycleStatus.RUNTIME_UNHEALTHY
+            return False
+        ok = payload.get("status") == "ok" and (payload.get("deploymentId") == self.deployment_id)
+        if not ok:
+            self.status = LifecycleStatus.RUNTIME_UNHEALTHY
+        return ok
 
     def check_health(self) -> bool:
-        """本地 Health Check：Spec 可编译、模型绑定存在、状态机可达。"""
+        """Health Check：进程形态走真实 HTTP；进程内形态做配置级检查。"""
+        if self.process_mode:
+            self.health_checked = True
+            return self.http_health_check()
         ok = bool(self.spec.model.profile_ref) and self.status in {
             LifecycleStatus.DRAFT,
             LifecycleStatus.BUILT,
@@ -133,6 +168,79 @@ class LocalDeployment:
         if not ok:
             self.status = LifecycleStatus.RUNTIME_UNHEALTHY
         return ok
+
+    def start_process(
+        self,
+        *,
+        route: str,
+        health_timeout: float,
+        server_command: list[str] | None = None,
+    ) -> None:
+        """真实启动 Runtime 子进程并等待 HTTP Health Check 通过。"""
+        self._workspace = tempfile.TemporaryDirectory(prefix=f"ksadk-deploy-{self.deployment_id}-")
+        spec_file = Path(self._workspace.name) / "spec.json"
+        spec_file.write_text(
+            json.dumps(self.spec.model_dump(by_alias=True, mode="json"), ensure_ascii=False),
+            encoding="utf-8",
+        )
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            self.port = probe.getsockname()[1]
+        self.base_url = f"http://127.0.0.1:{self.port}"
+        command = server_command or [
+            sys.executable,
+            "-m",
+            "ksadk.harness.runtime_server",
+            "--spec-file",
+            str(spec_file),
+            "--route",
+            route,
+            "--deployment-id",
+            self.deployment_id,
+            "--port",
+            str(self.port),
+            "--build-id",
+            self.manifest.build_id,
+            "--content-hash",
+            self.manifest.content_hash,
+        ]
+        self.process = subprocess.Popen(  # noqa: S603 - 命令由本模块构造
+            command,
+            cwd=str(Path(__file__).resolve().parents[2]),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        deadline = time.monotonic() + health_timeout
+        last_error = "health check never succeeded"
+        while time.monotonic() < deadline:
+            if self.process.poll() is not None:
+                last_error = f"runtime process exited with code {self.process.returncode}"
+                break
+            try:
+                with urllib.request.urlopen(f"{self.base_url}/health", timeout=1.0) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+                if payload.get("status") == "ok":
+                    self.health_checked = True
+                    return
+                last_error = f"unexpected health payload: {payload}"
+            except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
+            time.sleep(0.2)
+        self.terminate()
+        raise LifecycleError(f"deploy failed: runtime process health check 未通过 ({last_error})")
+
+    def terminate(self) -> None:
+        """终止 Runtime 子进程并清理临时目录。"""
+        if self.process is not None and self.process.poll() is None:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=5)
+            except subprocess.TimeoutExpired:  # pragma: no cover - 兜底强杀
+                self.process.kill()
+        self.process = None
+        if self._workspace is not None:
+            self._workspace.cleanup()
+            self._workspace = None
 
 
 @dataclass
@@ -171,9 +279,7 @@ class LocalLifecycleManager:
 
     # ------------------------------------------------------------- build
 
-    def build(
-        self, *, revision_payload: dict[str, Any], revision_ref: str
-    ) -> BuildManifest:
+    def build(self, *, revision_payload: dict[str, Any], revision_ref: str) -> BuildManifest:
         try:
             manifest = BuildPipeline().build(
                 revision_payload=revision_payload, revision_ref=revision_ref
@@ -186,23 +292,35 @@ class LocalLifecycleManager:
     # ------------------------------------------------------------ deploy
 
     def deploy(
-        self, *, manifest: BuildManifest, revision_payload: dict[str, Any], route: str
+        self,
+        *,
+        manifest: BuildManifest,
+        revision_payload: dict[str, Any],
+        route: str,
+        launch_process: bool = False,
+        health_timeout: float = 20.0,
+        server_command: list[str] | None = None,
     ) -> LocalDeployment:
         if manifest.build_id not in self._manifests:
             raise LifecycleError("unknown manifest: build first")
         deployment = LocalDeployment(
             deployment_id=f"dep_{manifest.build_id}",
             manifest=manifest,
-            spec=compile_revision_payload(
-                revision_payload, revision_ref=manifest.revision_ref
-            ),
+            spec=compile_revision_payload(revision_payload, revision_ref=manifest.revision_ref),
         )
         # 创建本地 Runtime 实例 + Health Check（§12.4：真实完成，不能只改状态）。
         deployment.status = LifecycleStatus.BUILT
-        if not deployment.check_health():
-            raise LifecycleError(
-                f"deploy failed: runtime unhealthy for {deployment.deployment_id}"
+        if launch_process:
+            # 收口 4：真实启动 Runtime 子进程并做 HTTP Health Check。
+            deployment.start_process(
+                route=route,
+                health_timeout=health_timeout,
+                server_command=server_command,
             )
+        if not deployment.check_health():
+            deployment.status = LifecycleStatus.DEPLOY_FAILED
+            deployment.terminate()
+            raise LifecycleError(f"deploy failed: runtime unhealthy for {deployment.deployment_id}")
         self.registry.register_route(route, deployment)
         deployment.status = LifecycleStatus.DEPLOYED
         self._deployments[deployment.deployment_id] = deployment
@@ -213,16 +331,15 @@ class LocalLifecycleManager:
     def activate(self, route: str) -> LocalDeployment:
         deployment = self.registry._routes.get(route)
         if deployment is None or deployment.status != LifecycleStatus.DEPLOYED:
-            raise LifecycleError(
-                f"activation failed: route {route!r} has no deployed revision"
-            )
-        # 重新 Health Check 后激活。
+            raise LifecycleError(f"activation failed: route {route!r} has no deployed revision")
+        # 重新 Health Check（进程形态为真实 HTTP）后激活。
         if not deployment.check_health():
             raise LifecycleError("activation failed: runtime unhealthy")
-        # 旧 Active（同 route 其他 deployment）被取代。
+        # 旧 Active（同 route 其他 deployment）被取代；进程形态同时下线。
         for other in self._deployments.values():
             if other.status == LifecycleStatus.ACTIVE and other is not deployment:
                 other.status = LifecycleStatus.SUPERSEDED
+                other.terminate()
         deployment.status = LifecycleStatus.ACTIVE
         return deployment
 
@@ -245,7 +362,15 @@ class LocalLifecycleManager:
         if deployment is None:
             raise LifecycleError(f"rollback failed: unknown route {route!r}")
         deployment.status = LifecycleStatus.ROLLED_BACK
+        deployment.terminate()
         return deployment
+
+    # ------------------------------------------------------------- close
+
+    def close(self) -> None:
+        """下线全部 Runtime 子进程（宿主关闭时调用）。"""
+        for deployment in self._deployments.values():
+            deployment.terminate()
 
 
 __all__ = [

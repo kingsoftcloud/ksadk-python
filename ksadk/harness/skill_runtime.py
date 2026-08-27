@@ -59,18 +59,14 @@ class SkillRuntime:
     def level2(self, run_id: str, skill_id: str) -> str:
         """完整 SKILL.md：必须先读过 Level 1（Manifest）。"""
         if self.level(run_id, skill_id) < 1:
-            raise SkillDisclosureError(
-                f"skill {skill_id} 须先披露 Level 1 (Manifest) 再读正文"
-            )
+            raise SkillDisclosureError(f"skill {skill_id} 须先披露 Level 1 (Manifest) 再读正文")
         self._levels[(run_id, skill_id)] = 2
         return self._source.full_text(skill_id)
 
     def level3(self, run_id: str, skill_id: str, resource_ref: str) -> bytes:
         """引用资源：仅执行时加载，必须已披露 Level 2。"""
         if self.level(run_id, skill_id) < 2:
-            raise SkillDisclosureError(
-                f"skill {skill_id} 须先披露 Level 2 (SKILL.md) 再加载资源"
-            )
+            raise SkillDisclosureError(f"skill {skill_id} 须先披露 Level 2 (SKILL.md) 再加载资源")
         return self._source.resource(skill_id, resource_ref)
 
 

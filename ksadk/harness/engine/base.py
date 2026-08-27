@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import AsyncIterator, Protocol, runtime_checkable
 
-from ksadk.events import RuntimeEvent
+from ksadk.harness.events import RuntimeEvent
 from ksadk.harness.spec import HarnessSpec
 from ksadk.harness.state import HarnessState
 from ksadk.runtime import CancelResult, ResumePayload, ResumeTarget, RunHandle, StartRequest

@@ -1,292 +1,271 @@
-"""Phase 3 Capability Runtime 测试（plan §17 验收项）。"""
+"""统一 CapabilityRuntime（收口 2）测试：Policy 决策 + Receipt 幂等 + 引擎闭环。"""
 
 from __future__ import annotations
 
 import asyncio
+import json
 
-import pytest
-
-from ksadk.harness.capabilities import CapabilityDescriptor, RiskLevel
-from ksadk.harness.mcp_runtime import (
-    McpCapabilityRuntime,
-    McpRuntimeOptions,
-    McpServerBinding,
+from ksadk.harness.capabilities import RiskLevel
+from ksadk.harness.capability_runtime import (
+    CapabilityRuntime,
+    ToolProfile,
+    arguments_digest,
 )
-from ksadk.harness.skill_runtime import (
-    SkillDisclosureError,
-    SkillManifest,
-    SkillRuntime,
-)
-from ksadk.harness.tool_policy import ToolCallContext, ToolPolicy
-from ksadk.harness.tool_receipts import ToolReceipt, ToolReceiptStore
+from ksadk.harness.loop import ToolCallInput, execute_tool_calls
+from ksadk.harness.tool_policy import ToolPolicy
+from ksadk.harness.tool_receipts import ToolReceiptStore
 
 
-def _descriptor(cap_id: str = "mcp://budget@1.0.0", **kwargs) -> CapabilityDescriptor:
-    return CapabilityDescriptor(
-        id=cap_id,
-        kind="mcp",
-        name="budget",
-        description="预算查询 MCP",
-        version="1.0.0",
-        **kwargs,
-    )
+def _runtime(**kwargs) -> CapabilityRuntime:
+    return CapabilityRuntime(**kwargs)
 
 
-class _FakeTransport:
-    def __init__(self, *, fail: bool = False, tools: list | None = None) -> None:
-        self.fail = fail
-        self.tools = tools if tools is not None else [
-            {"name": "query_budget", "inputSchema": {"type": "object"}},
-            {"name": "broken_tool"},  # 缺 inputSchema → 隔离
-        ]
+class _Resolver:
+    """同步审批解析器（单测语义）。"""
 
-    async def list_tools(self) -> list[dict]:
-        if self.fail:
-            raise ConnectionError("server down")
-        return self.tools
+    def __init__(self, decision: str = "approved") -> None:
+        self.decision = decision
+        self.requests: list[dict] = []
 
-    async def call_tool(self, name: str, arguments: dict) -> str:
-        if self.fail:
-            raise ConnectionError("server down")
+    def request(self, *, call_id, name, arguments):  # type: ignore[no-untyped-def]
+        self.requests.append({"call_id": call_id, "name": name, "args": arguments})
+        return self.decision
+
+
+class _Executor:
+    def __init__(self) -> None:
+        self.executed: list[str] = []
+
+    async def execute(self, name: str, arguments: dict) -> str:
+        self.executed.append(name)
         return f"result:{name}"
 
 
-def _runtime(**options) -> McpCapabilityRuntime:
-    return McpCapabilityRuntime(
-        options=McpRuntimeOptions(
-            health_ttl_seconds=30.0, failure_threshold=3, cooldown_seconds=60.0, **options
+def _pending(call_id: str = "tc-1", name: str = "budget_lookup") -> list[dict]:
+    return [{"call_id": call_id, "name": name, "arguments": {"q": "x"}}]
+
+
+def test_policy_deny_blocks_execution_without_approval():
+    executor = _Executor()
+    runtime = _runtime(
+        policy=ToolPolicy(denied_prefixes=("forbidden_",)),
+        profiles={"forbidden_pay": ToolProfile(name="forbidden_pay")},
+    )
+    out = asyncio.run(
+        execute_tool_calls(
+            ToolCallInput(
+                pending_tool_calls=_pending(name="forbidden_pay"),
+                approval_required=frozenset(),
+                approval_resolver=_Resolver(),
+                tool_executor=executor,
+                run_id="run-1",
+                capability_runtime=runtime,
+            )
         )
     )
+    assert executor.executed == []
+    assert any("denied" in str(m["content"]) for m in out.new_messages)
 
 
-class TestMcpHealthCache:
-    def test_health_cached_within_ttl(self):
-        runtime = _runtime()
-        transport = _FakeTransport()
-        runtime.bind(McpServerBinding(descriptor=_descriptor(), transport=transport))
-        first = asyncio.run(runtime.health("mcp://budget@1.0.0", now=100.0))
-        second = asyncio.run(runtime.health("mcp://budget@1.0.0", now=110.0))
-        assert first.healthy and second.healthy
-        assert not first.cached and second.cached
-
-    def test_probe_failure_degrades_optional_in_draft(self):
-        runtime = _runtime()
-        runtime.bind(McpServerBinding(
-            descriptor=_descriptor(), transport=_FakeTransport(fail=True), required=False
-        ))
-        report = asyncio.run(runtime.health("mcp://budget@1.0.0", now=100.0))
-        assert not report.healthy and report.degraded
-        assert runtime.degradation_decision(report, environment="draft") == "warn_and_continue"
-        assert runtime.degradation_decision(report, environment="revision") == "degrade"
-
-    def test_required_unavailable_blocks_revision(self):
-        """必需 MCP 不可用：Revision 环境阻止（§10.3）。"""
-        runtime = _runtime()
-        runtime.bind(McpServerBinding(
-            descriptor=_descriptor(), transport=_FakeTransport(fail=True), required=True
-        ))
-        report = asyncio.run(runtime.health("mcp://budget@1.0.0", now=100.0))
-        assert not report.degraded  # 必需能力不"降级"
-        assert runtime.degradation_decision(report, environment="revision") == "block"
-
-
-class TestMcpCircuitBreaker:
-    def test_opens_after_threshold_and_cools_down(self):
-        runtime = _runtime()
-        runtime.bind(McpServerBinding(
-            descriptor=_descriptor(), transport=_FakeTransport(fail=True)
-        ))
-        # 3 次失败触发熔断。
-        for now in (100.0, 101.0, 102.0):
-            asyncio.run(runtime.health("mcp://budget@1.0.0", now=now))
-        report = asyncio.run(runtime.health("mcp://budget@1.0.0", now=103.0))
-        assert report.circuit_open
-        # 冷却期内继续 open。
-        report = asyncio.run(runtime.health("mcp://budget@1.0.0", now=150.0))
-        assert report.circuit_open
-        # 冷却期后（>60s）允许试探。
-
-    def test_call_opens_circuit_after_failures(self):
-        runtime = _runtime()
-        runtime.bind(McpServerBinding(
-            descriptor=_descriptor(), transport=_FakeTransport(fail=True)
-        ))
-        for _ in range(3):
-            with pytest.raises(Exception, match="mcp call failed"):
-                asyncio.run(runtime.call("mcp://budget@1.0.0", "query_budget", {}))
-        with pytest.raises(Exception, match="circuit open"):
-            asyncio.run(runtime.call("mcp://budget@1.0.0", "query_budget", {}))
-
-
-class TestMcpToolSchemaValidation:
-    def test_invalid_tool_isolated(self):
-        """单个 Tool Schema 无效 → 隔离该 Tool，不拖垮整站（§10.3）。"""
-        runtime = _runtime()
-        runtime.bind(McpServerBinding(descriptor=_descriptor(), transport=_FakeTransport()))
-        tools = asyncio.run(runtime.tools("mcp://budget@1.0.0"))
-        assert [t["name"] for t in tools] == ["query_budget"]
-
-
-class TestToolPolicy:
-    def _ctx(self, **kwargs) -> ToolCallContext:
-        base = dict(
-            tenant_id="t1", user_id="u1", agent_id="a1", tool_name="transfer_money"
+def test_high_risk_profile_requires_approval():
+    executor = _Executor()
+    resolver = _Resolver("approved")
+    runtime = _runtime(
+        profiles={
+            "high_risk": ToolProfile(
+                name="high_risk", risk_level=RiskLevel.HIGH, side_effect="write"
+            )
+        }
+    )
+    asyncio.run(
+        execute_tool_calls(
+            ToolCallInput(
+                pending_tool_calls=_pending(name="high_risk"),
+                approval_required=frozenset(),
+                approval_resolver=resolver,
+                tool_executor=executor,
+                run_id="run-2",
+                capability_runtime=runtime,
+            )
         )
-        base.update(kwargs)
-        return ToolCallContext(**base)
+    )
+    assert resolver.requests, "高风险工具必须经审批通道"
+    assert executor.executed == ["high_risk"]
 
-    def test_low_risk_readonly_allowed(self):
-        decision = ToolPolicy().decide(self._ctx(risk_level=RiskLevel.LOW))
-        assert decision.action == "allow"
 
-    def test_high_risk_requires_approval(self):
-        decision = ToolPolicy().decide(self._ctx(risk_level=RiskLevel.HIGH))
-        assert decision.action == "require_approval"
+def test_receipt_makes_replay_idempotent():
+    executor = _Executor()
+    receipts = ToolReceiptStore(":memory:")
+    runtime = _runtime(receipts=receipts)
+    inp = ToolCallInput(
+        pending_tool_calls=_pending(),
+        approval_required=frozenset(),
+        approval_resolver=None,
+        tool_executor=executor,
+        run_id="run-3",
+        capability_runtime=runtime,
+    )
+    first = asyncio.run(execute_tool_calls(inp))
+    # 审批恢复等场景重放同一节点：Receipt 命中，不再执行副作用。
+    second = asyncio.run(execute_tool_calls(inp))
+    assert executor.executed == ["budget_lookup"]  # 仅执行一次
+    assert second.new_messages[0]["content"] == first.new_messages[0]["content"]
+    replayed = [e for e in second.events if e.event_type == "tool.call.end"]
+    assert replayed and replayed[0].payload.get("replayed") is True
 
-    def test_external_side_effects_require_approval(self):
-        decision = ToolPolicy().decide(
-            self._ctx(risk_level=RiskLevel.LOW, has_external_side_effects=True)
+
+def test_from_tool_contracts_maps_side_effect_and_approval():
+    runtime = CapabilityRuntime.from_tool_contracts(
+        [
+            {
+                "name": "pay_invoice",
+                "version": "2.0.0",
+                "sideEffect": "external",
+            },
+            {"name": "read_report", "sideEffect": "read"},
+            {"name": "always_ask", "approval": "always"},
+        ],
+        approval_mode="policy",
+    )
+    pay = runtime.decide(tenant_id="t", user_id="u", agent_id="a", tool_name="pay_invoice")
+    assert pay.action == "require_approval"  # external → HIGH → 审批
+    read = runtime.decide(tenant_id="t", user_id="u", agent_id="a", tool_name="read_report")
+    assert read.action == "allow"
+    ask = runtime.decide(tenant_id="t", user_id="u", agent_id="a", tool_name="always_ask")
+    assert ask.action == "require_approval"
+
+
+def test_approval_mode_never_disables_all_approval():
+    runtime = CapabilityRuntime.from_tool_contracts(
+        [{"name": "pay_invoice", "sideEffect": "external"}],
+        approval_mode="never",
+    )
+    decision = runtime.decide(tenant_id="t", user_id="u", agent_id="a", tool_name="pay_invoice")
+    assert decision.action == "allow"
+
+
+def test_arguments_digest_is_stable():
+    assert arguments_digest({"a": 1, "b": 2}) == arguments_digest({"b": 2, "a": 1})
+    assert arguments_digest({"a": 1}) != arguments_digest({"a": 2})
+
+
+def test_receipt_store_roundtrip(tmp_path):
+    store = ToolReceiptStore(str(tmp_path / "receipts.sqlite3"))
+    receipt = store.record(
+        __import__("ksadk.harness.tool_receipts", fromlist=["ToolReceipt"]).ToolReceipt(
+            invocation_id="run-9",
+            call_id="tc-9",
+            tool_name="t",
+            arguments_digest=arguments_digest({}),
+            decision="approved",
+            status="executed",
+            result_digest=json.dumps({"ok": True}),
         )
-        assert decision.action == "require_approval"
-
-    def test_sensitive_data_requires_approval(self):
-        decision = ToolPolicy().decide(
-            self._ctx(risk_level=RiskLevel.LOW, data_sensitivity="restricted")
+    )
+    assert receipt is None  # 首次写入
+    existing = store.get("run-9", "tc-9")
+    assert existing is not None and existing.status == "executed"
+    dup = store.record(
+        __import__("ksadk.harness.tool_receipts", fromlist=["ToolReceipt"]).ToolReceipt(
+            invocation_id="run-9",
+            call_id="tc-9",
+            tool_name="t",
+            arguments_digest=arguments_digest({}),
+            decision="approved",
+            status="executed",
+            result_digest="other",
         )
-        assert decision.action == "require_approval"
+    )
+    assert dup is not None and dup.result_digest == existing.result_digest
+    store.close()
 
-    def test_denied_prefix_denies(self):
-        policy = ToolPolicy(denied_prefixes=("drop_",))
-        decision = policy.decide(self._ctx(tool_name="drop_database"))
-        assert decision.action == "deny"
 
-    def test_network_destination_outside_allowlist_denies(self):
-        policy = ToolPolicy(allowed_destinations=("api.internal",))
-        decision = policy.decide(
-            self._ctx(tool_name="http_get", network_destination="evil.example.com")
+def test_engine_capability_runtime_closes_policy_approval_receipt_loop():
+    """引擎闭环：ToolProfile(HIGH) → 策略审批 → interrupt 挂起 → resume 执行 →
+    Receipt 幂等（重复执行同 call 不再触发副作用）。"""
+    import asyncio
+
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    from ksadk.harness.engine.langgraph import ManagedLangGraphEngine
+    from ksadk.harness.reasoner import (
+        HarnessReasoningTurn,
+        HarnessToolCall,
+    )
+    from ksadk.harness.spec import HarnessSpec, ModelBinding, PromptSpec
+    from ksadk.runtime import ResumePayload, ResumeTarget, StartRequest
+
+    executed: list[str] = []
+
+    async def pay(arguments):
+        executed.append("pay")
+        return "付款已执行"
+
+    async def read(arguments):
+        executed.append("read")
+        return "报表数据"
+
+    class _Reasoner:
+        def __init__(self) -> None:
+            self.turns = 0
+
+        async def complete(self, **kwargs):
+            self.turns += 1
+            if self.turns == 1:
+                return HarnessReasoningTurn(
+                    tool_calls=(
+                        HarnessToolCall(call_id="tc-pay", name="pay", arguments={}),
+                        HarnessToolCall(call_id="tc-read", name="read", arguments={}),
+                    )
+                )
+            return HarnessReasoningTurn(final_text="完成")
+
+    spec = HarnessSpec(
+        agent_revision_ref="agent-revision://proj-1@1",
+        model=ModelBinding(profile_ref="model-profile://m@1.0.0"),
+        prompt=PromptSpec(instructions="财务助手"),
+    )
+    runtime = CapabilityRuntime(
+        receipts=ToolReceiptStore(":memory:"),
+        profiles={
+            "pay": ToolProfile(name="pay", risk_level=RiskLevel.HIGH, side_effect="external"),
+            "read": ToolProfile(name="read"),
+        },
+    )
+    engine = ManagedLangGraphEngine(
+        reasoner=_Reasoner(),
+        checkpointer=InMemorySaver(),
+        tools={"pay": pay, "read": read},
+        capability_runtime=runtime,
+    )
+
+    async def drive():
+        compiled = await engine.compile(spec)
+        handle = await engine.start(
+            StartRequest(
+                input="付款并读报表",
+                user_id="u",
+                session_id="s",
+                agent_id="a",
+                runtime_type="managed-langgraph",
+                metadata={"invocation_id": "run-cap"},
+            ),
+            compiled,
         )
-        assert decision.action == "deny"
-
-    def test_prior_receipt_skips_reapproval(self):
-        """有历史 Receipt 的调用不再重复审批（幂等）。"""
-        decision = ToolPolicy().decide(
-            self._ctx(risk_level=RiskLevel.HIGH, prior_receipt_id="tr-1")
+        first = [e async for e in engine.stream(handle)]
+        assert first[-1].event_type == "run.interrupted"
+        await engine.resume(
+            handle,
+            ResumeTarget(kind="thread_id", id="t"),
+            ResumePayload(kind="approval_decision", call_id="tc-pay", data="approved"),
         )
-        assert decision.action == "allow"
+        second = [e async for e in engine.stream(handle)]
+        return first, second
 
-
-class TestToolReceipts:
-    def test_execute_once_idempotency(self):
-        """审批后仅执行一次：重复 record 返回既有 Receipt。"""
-        store = ToolReceiptStore()
-        receipt = ToolReceipt(
-            invocation_id="r1", call_id="tc-1", tool_name="transfer_money",
-            arguments_digest="sha256:abc", decision="approved", status="executed",
-            result_digest="sha256:def",
-        )
-        assert store.record(receipt) is None
-        duplicate = ToolReceipt(
-            invocation_id="r1", call_id="tc-1", tool_name="transfer_money",
-            arguments_digest="sha256:abc", decision="approved", status="skipped",
-        )
-        existing = store.record(duplicate)
-        assert existing is not None and existing.status == "executed"
-
-    def test_get_missing_returns_none(self):
-        assert ToolReceiptStore().get("r1", "tc-1") is None
-
-
-class _SkillSource:
-    def manifest(self, skill_id: str) -> SkillManifest:
-        return SkillManifest(name="analysis", summary="财务分析技能")
-
-    def full_text(self, skill_id: str) -> str:
-        return "# SKILL.md\n完整正文"
-
-    def resource(self, skill_id: str, resource_ref: str) -> bytes:
-        return b"resource-bytes"
-
-
-class TestSkillProgressiveDisclosure:
-    def test_levels_disclosed_in_order(self):
-        runtime = SkillRuntime(_SkillSource())
-        assert runtime.level0("skill://analysis@1") == "财务分析技能"
-        manifest = runtime.level1("run-1", "skill://analysis@1")
-        assert manifest.name == "analysis"
-        assert "SKILL.md" in runtime.level2("run-1", "skill://analysis@1")
-        assert runtime.level3("run-1", "skill://analysis@1", "scripts/x.py") == b"resource-bytes"
-        assert runtime.level("run-1", "skill://analysis@1") == 2
-
-    def test_level3_without_level2_rejected(self):
-        runtime = SkillRuntime(_SkillSource())
-        with pytest.raises(SkillDisclosureError, match="Level 2"):
-            runtime.level3("run-1", "skill://analysis@1", "scripts/x.py")
-
-    def test_level2_without_level1_rejected(self):
-        runtime = SkillRuntime(_SkillSource())
-        with pytest.raises(SkillDisclosureError, match="Level 1"):
-            runtime.level2("run-1", "skill://analysis@1")
-
-    def test_disclosure_isolated_per_run(self):
-        runtime = SkillRuntime(_SkillSource())
-        runtime.level1("run-1", "skill://analysis@1")
-        with pytest.raises(SkillDisclosureError):
-            runtime.level2("run-2", "skill://analysis@1")
-
-
-class TestSandboxBackend:
-    def test_readonly_backend_executes_whitelisted_command(self, tmp_path):
-        from ksadk.harness.sandbox_backend import (
-            ExecuteRequest,
-            LocalReadOnlySandboxBackend,
-            SandboxSpec,
-        )
-
-        (tmp_path / "data.txt").write_text("hello", encoding="utf-8")
-        backend = LocalReadOnlySandboxBackend()
-        handle = asyncio.run(backend.create(SandboxSpec(workspace_root=str(tmp_path))))
-        result = asyncio.run(
-            backend.execute(handle, ExecuteRequest(command=f"cat {tmp_path}/data.txt"))
-        )
-        assert result.ok and "hello" in result.output
-
-    def test_readonly_backend_rejects_write_and_network(self, tmp_path):
-        from ksadk.harness.sandbox_backend import (
-            LocalReadOnlySandboxBackend,
-            SandboxPolicyViolation,
-            SandboxSpec,
-        )
-
-        backend = LocalReadOnlySandboxBackend()
-        with pytest.raises(SandboxPolicyViolation, match="只允许只读"):
-            asyncio.run(backend.create(SandboxSpec(workspace_root=str(tmp_path), read_only=False)))
-        with pytest.raises(SandboxPolicyViolation, match="网络"):
-            asyncio.run(backend.create(
-                SandboxSpec(workspace_root=str(tmp_path), network_egress=("api.x",))
-            ))
-
-    def test_readonly_backend_denies_write_command(self, tmp_path):
-        """写入策略可验证：非白名单命令被拒。"""
-        from ksadk.harness.sandbox_backend import (
-            ExecuteRequest,
-            LocalReadOnlySandboxBackend,
-            SandboxSpec,
-        )
-
-        backend = LocalReadOnlySandboxBackend()
-        handle = asyncio.run(backend.create(SandboxSpec(workspace_root=str(tmp_path))))
-        result = asyncio.run(
-            backend.execute(handle, ExecuteRequest(command="rm -rf /"))
-        )
-        assert not result.ok and result.error
-
-    def test_collect_artifacts_and_close(self, tmp_path):
-        from ksadk.harness.sandbox_backend import (
-            LocalReadOnlySandboxBackend,
-            SandboxSpec,
-        )
-
-        backend = LocalReadOnlySandboxBackend()
-        handle = asyncio.run(backend.create(SandboxSpec(workspace_root=str(tmp_path))))
-        assert asyncio.run(backend.collect_artifacts(handle)) == []
-        asyncio.run(backend.close(handle))
+    first, second = asyncio.run(drive())
+    kinds1 = [e.event_type for e in first]
+    assert "approval.requested" in kinds1, "HIGH 风险工具应经策略进入审批挂起"
+    kinds2 = [e.event_type for e in second]
+    assert "run.resumed" in kinds2 and kinds2[-1] == "run.completed"
+    assert executed == ["pay", "read"], executed
+    assert not any(e.payload.get("replayed") for e in second if e.event_type == "tool.call.end")

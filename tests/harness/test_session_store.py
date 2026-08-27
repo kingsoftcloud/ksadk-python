@@ -31,9 +31,7 @@ class TestTranscriptPersistence:
     def test_messages_roundtrip_isolated_by_tenant_and_session(self):
         store = SqliteSessionStore()
         for seq, message in enumerate(_messages(3)):
-            store.append_message(
-                tenant_id="t1", session_id="s1", message=message, seq=seq
-            )
+            store.append_message(tenant_id="t1", session_id="s1", message=message, seq=seq)
         assert len(store.messages(tenant_id="t1", session_id="s1")) == 3
         # 租户 / 会话隔离。
         assert store.messages(tenant_id="t2", session_id="s1") == []
@@ -42,17 +40,13 @@ class TestTranscriptPersistence:
     def test_rebuild_state_from_transcript(self):
         store = SqliteSessionStore()
         for seq, message in enumerate(_messages(5)):
-            store.append_message(
-                tenant_id="t1", session_id="s1", message=message, seq=seq
-            )
-        state = store.rebuild_state(
-            tenant_id="t1", user_id="u1", agent_id="a1", session_id="s1"
-        )
+            store.append_message(tenant_id="t1", session_id="s1", message=message, seq=seq)
+        state = store.rebuild_state(tenant_id="t1", user_id="u1", agent_id="a1", session_id="s1")
         assert [m.content for m in state.messages] == [m.content for m in _messages(5)]
 
     def test_events_persisted_and_ordered(self):
         store = SqliteSessionStore()
-        from ksadk.events import EventType, RuntimeEvent
+        from ksadk.harness.events import EventType, RuntimeEvent
 
         for seq in (1, 2):
             store.append_event(
@@ -76,9 +70,7 @@ class TestRecoveryTranscriptWins:
     def test_consistent_state_no_recovery_event(self):
         store = SqliteSessionStore()
         for seq, message in enumerate(_messages(4)):
-            store.append_message(
-                tenant_id="t1", session_id="s1", message=message, seq=seq
-            )
+            store.append_message(tenant_id="t1", session_id="s1", message=message, seq=seq)
         state, event = store.recover(_state(4), invocation_id="r1")
         assert event is None
         assert len(state.messages) == 4
@@ -87,9 +79,7 @@ class TestRecoveryTranscriptWins:
         """Checkpoint 与 Transcript 不一致：以 Transcript 为准并记录 context.recovered。"""
         store = SqliteSessionStore()
         for seq, message in enumerate(_messages(6)):
-            store.append_message(
-                tenant_id="t1", session_id="s1", message=message, seq=seq
-            )
+            store.append_message(tenant_id="t1", session_id="s1", message=message, seq=seq)
         stale = _state(3)  # Checkpoint 落后（如 Crash 前未刷写）
         recovered, event = store.recover(stale, invocation_id="r1")
         assert len(recovered.messages) == 6, "以 Transcript 为准"
@@ -100,9 +90,7 @@ class TestRecoveryTranscriptWins:
     def test_recovery_keeps_runtime_fields_from_checkpoint(self):
         store = SqliteSessionStore()
         for seq, message in enumerate(_messages(2)):
-            store.append_message(
-                tenant_id="t1", session_id="s1", message=message, seq=seq
-            )
+            store.append_message(tenant_id="t1", session_id="s1", message=message, seq=seq)
         stale = _state(0)
         stale.working_context = WorkingContext(goal="分析预算差异")
         recovered, _ = store.recover(stale, invocation_id="r1")

@@ -90,9 +90,7 @@ def validate_tenant(thread_id: str, *, tenant_id: str) -> None:
     """写入/读取侧强制校验：thread_id 必须落在声明租户下。"""
     decoded = decode_thread_id(thread_id)
     if decoded.tenant_id != tenant_id:
-        raise ThreadIdError(
-            f"thread_id 租户不匹配: {decoded.tenant_id!r} != {tenant_id!r}"
-        )
+        raise ThreadIdError(f"thread_id 租户不匹配: {decoded.tenant_id!r} != {tenant_id!r}")
 
 
 def matches_tenant(thread_id: str, *, tenant_id: str) -> bool:

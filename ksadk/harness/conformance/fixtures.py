@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ksadk.events import EventPhase, EventType, RuntimeEvent
+from ksadk.harness.events import EventPhase, EventType, RuntimeEvent
 
 
 def make_event_factory(*, agent_id: str = "agent-1", session_id: str = "sess-1"):
@@ -71,9 +71,14 @@ def broken_secret_leak_events(make) -> list[RuntimeEvent]:
     """非法流：payload 泄漏 api_key。"""
     return [
         make(EventType.RUN_STARTED, {"status": "in_progress"}),
-        make(EventType.TOOL_CALL_END, {
-            "call_id": "tc-1", "name": "x", "result": {"api_key": "sk-live-123"},
-        }),
+        make(
+            EventType.TOOL_CALL_END,
+            {
+                "call_id": "tc-1",
+                "name": "x",
+                "result": {"api_key": "sk-live-123"},
+            },
+        ),
         make(EventType.RUN_COMPLETED, {"status": "completed"}),
     ]
 

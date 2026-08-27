@@ -20,7 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from ksadk.events import EventType, RuntimeEvent
+from ksadk.harness.events import EventType, RuntimeEvent
 from ksadk.harness.spec import HarnessSpec
 from ksadk.memory.coordinator import MemoryCoordinator
 from ksadk.memory.models import (
@@ -60,6 +60,8 @@ class MemoryWriteRequest:
     source_event_id: str = ""
     confidence: float = 0.8
     importance: float = 0.6
+    memory_type: str = "fact"
+    slot_key: str = ""
     sensitive_labels: tuple[str, ...] = ()
     reason: str = ""
 
@@ -91,9 +93,7 @@ class HarnessMemoryRuntime:
         provider = SqliteMemoryProvider(
             db_path=db_path, tenant_id=tenant_id, workspace_id=workspace_id
         )
-        coordinator = MemoryCoordinator(
-            provider, tenant_id=tenant_id, workspace_id=workspace_id
-        )
+        coordinator = MemoryCoordinator(provider, tenant_id=tenant_id, workspace_id=workspace_id)
         return cls(coordinator, **kwargs)
 
     @property
@@ -137,7 +137,7 @@ class HarnessMemoryRuntime:
         candidate = MemoryCandidate(
             candidate_id=f"memc_{run_id}",
             operation=request.operation,
-            memory_type="fact",
+            memory_type=request.memory_type,
             scope=request.scope,
             scope_id=request.scope_id,
             content=request.content,
@@ -146,10 +146,35 @@ class HarnessMemoryRuntime:
             source_event_ids=[request.source_event_id] if request.source_event_id else [],
             sensitive_labels=list(request.sensitive_labels),  # type: ignore[arg-type]
             reason=request.reason or f"source={request.source}",
+            slot_key=request.slot_key,
         )
-        evaluation = self._coordinator.propose_and_commit(candidate)
+        evaluation = self._commit_controlled(candidate)
         event = self._audit_event(run_id, request, evaluation)
         return evaluation, event
+
+    def _commit_controlled(self, candidate: MemoryCandidate) -> MemoryEvaluation:
+        """去重与纠错（缺口 3）：同槽位已有 active 事实时——
+
+        - 内容一致 → ``duplicate_content`` 拒绝（不重复写入）；
+        - 内容不一致 → add 升级为 update（supersede，保留旧事实审计链）。
+        """
+        from dataclasses import replace
+
+        from ksadk.memory.policy import content_hash
+
+        existing = self._coordinator.find_existing_for_candidate(candidate)
+        if existing is None:
+            return self._coordinator.propose_and_commit(candidate)
+        if existing.content_hash == content_hash(candidate.content):
+            return MemoryEvaluation(
+                decision="reject",
+                operation="ignore",
+                reason="duplicate_content",
+                conflicts_with=[existing.memory_id],
+            )
+        if candidate.operation == "add":
+            candidate = replace(candidate, operation="update")
+        return self._coordinator.propose_and_commit(candidate, existing=existing)
 
     # ------------------------------------------------------------- 校验
 
@@ -190,21 +215,22 @@ class HarnessMemoryRuntime:
         run_id: str, request: MemoryWriteRequest, evaluation: MemoryEvaluation
     ) -> RuntimeEvent | None:
         """审计事件（§9.3：写入必留痕）。拒绝也是审计（MEMORY_WRITE 带决策）。"""
-        if evaluation.decision == "commit":
-            payload = {
-                "scope": request.scope,
-                "memory_ref": request.scope_id,
-                "decision": evaluation.decision,
-                "operation": evaluation.operation,
-                "source": request.source,
-                "reason": evaluation.reason,
-            }
-        elif evaluation.conflicts_with:
+        if evaluation.conflicts_with:
             payload = {
                 "scope": request.scope,
                 "memory_ref": request.scope_id,
                 "conflicting_ref": evaluation.conflicts_with[0],
                 "decision": evaluation.decision,
+                "operation": evaluation.operation,
+                "source": request.source,
+                "reason": evaluation.reason,
+            }
+        elif evaluation.decision == "commit":
+            payload = {
+                "scope": request.scope,
+                "memory_ref": request.scope_id,
+                "decision": evaluation.decision,
+                "operation": evaluation.operation,
                 "source": request.source,
                 "reason": evaluation.reason,
             }

@@ -10,7 +10,34 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from ksadk.events import EventType, RuntimeEvent
+from ksadk.harness.events import EventType
+
+RuntimeEvent = Any
+
+
+def _payload(event: RuntimeEvent) -> dict[str, Any]:
+    payload = getattr(event, "payload", None)
+    if isinstance(payload, dict):
+        return payload
+    dumped = event.model_dump(mode="json", exclude_none=True)
+    return {
+        key: value
+        for key, value in dumped.items()
+        if key
+        not in {
+            "schema_version",
+            "event_id",
+            "event_type",
+            "seq",
+            "timestamp",
+            "run_id",
+            "run_seq",
+            "scope_id",
+            "parent_scope_id",
+            "source",
+        }
+    }
+
 
 _TERMINAL_EVENTS = frozenset(
     {EventType.RUN_COMPLETED, EventType.RUN_FAILED, EventType.RUN_CANCELED}
@@ -36,7 +63,11 @@ class ConformanceReport:
 
 
 def verify_start_and_terminal_event(events: list[RuntimeEvent], report: ConformanceReport) -> None:
-    """run.started 必须是首事件；必须以恰好一个终止事件收尾。"""
+    """run.started 必须是首事件；必须以恰好一个终止事件收尾。
+
+    例外：审批挂起（run.interrupted + awaiting_approval）是合法的运行中
+    挂起而非终止——流停在挂起处不算违规。
+    """
     if not events:
         report.fail("lifecycle", "事件流为空")
         return
@@ -45,7 +76,12 @@ def verify_start_and_terminal_event(events: list[RuntimeEvent], report: Conforma
     terminal = [e for e in events if e.event_type in _TERMINAL_EVENTS]
     if len(terminal) != 1:
         kinds = [e.event_type for e in terminal]
-        report.fail("lifecycle", f"终止事件必须恰好一个，实际 {len(terminal)}: {kinds}")
+        suspended = (
+            events[-1].event_type == EventType.RUN_INTERRUPTED
+            and str(_payload(events[-1]).get("status") or "") == "awaiting_approval"
+        )
+        if not (suspended and not terminal):
+            report.fail("lifecycle", f"终止事件必须恰好一个，实际 {len(terminal)}: {kinds}")
     elif events[-1].event_type not in _TERMINAL_EVENTS:
         report.fail("lifecycle", "终止事件之后不允许再出现事件")
 
@@ -53,15 +89,22 @@ def verify_start_and_terminal_event(events: list[RuntimeEvent], report: Conforma
 def verify_event_ordering(events: list[RuntimeEvent], report: ConformanceReport) -> None:
     """seq_id 严格递增；同一 invocation 内信封字段一致。"""
     for prev, cur in zip(events, events[1:]):
-        if cur.seq_id <= prev.seq_id:
+        prev_seq = getattr(prev, "seq_id", getattr(prev, "seq", -1))
+        cur_seq = getattr(cur, "seq_id", getattr(cur, "seq", -1))
+        if cur_seq <= prev_seq:
             report.fail(
                 "ordering",
-                f"seq_id 必须严格递增: {prev.seq_id} -> {cur.seq_id} ({cur.event_type})",
+                f"seq 必须严格递增: {prev_seq} -> {cur_seq} ({cur.event_type})",
             )
-    for field_name in ("agent_id", "user_id", "session_id", "invocation_id"):
-        values = {getattr(e, field_name) for e in events}
+    for field_name in ("user_id", "session_id", "invocation_id"):
+        values = {
+            getattr(e, field_name, None)
+            or getattr(getattr(e, "source", None), "metadata", {}).get(field_name)
+            for e in events
+        }
         if len(values) > 1:
             report.fail("ordering", f"信封字段 {field_name} 在流内不一致: {values}")
+    # agent_id 允许不同（收口 6：子 Agent 事件以子 agent_id 并入同一审计流）。
     if events and events[-1].event_type == EventType.RUN_COMPLETED:
         last_text_idx = max(
             (i for i, e in enumerate(events) if e.event_type == EventType.TEXT_COMPLETED),
@@ -79,7 +122,7 @@ def verify_tool_call_pairing(events: list[RuntimeEvent], report: ConformanceRepo
     closed: set[str] = set()
     for event in events:
         if event.event_type == EventType.TOOL_CALL_BEGIN:
-            call_id = str(event.payload.get("call_id", ""))
+            call_id = str(_payload(event).get("call_id", ""))
             if not call_id:
                 report.fail("tool-pair", "tool.call.begin 缺少 call_id")
             elif call_id in seen_begin:
@@ -87,7 +130,7 @@ def verify_tool_call_pairing(events: list[RuntimeEvent], report: ConformanceRepo
             else:
                 seen_begin.add(call_id)
         elif event.event_type == EventType.TOOL_CALL_END:
-            call_id = str(event.payload.get("call_id", ""))
+            call_id = str(_payload(event).get("call_id", ""))
             if not call_id:
                 report.fail("tool-pair", "tool.call.end 缺少 call_id")
             elif call_id not in seen_begin:
@@ -117,7 +160,7 @@ def verify_secret_redaction(events: list[RuntimeEvent], report: ConformanceRepor
                 scan(item, f"{path}[{index}]")
 
     for event in events:
-        scan(event.payload, event.event_type)
+        scan(_payload(event), event.event_type)
 
 
 def verify_cancel_honesty(
@@ -159,12 +202,13 @@ def verify_tool_failure_honesty(events: list[RuntimeEvent], report: ConformanceR
     for event in events:
         if event.event_type != EventType.TOOL_CALL_END:
             continue
-        has_error = bool(event.payload.get("error"))
-        has_result = "result" in event.payload and event.payload.get("result") is not None
+        payload = _payload(event)
+        has_error = bool(payload.get("error"))
+        has_result = "result" in payload and payload.get("result") is not None
         if has_error and has_result:
             report.fail(
                 "tool-failure",
-                f"tool.call.end {event.payload.get('call_id')} 同时携带 error 与 result",
+                f"tool.call.end {payload.get('call_id')} 同时携带 error 与 result",
             )
 
 
@@ -175,15 +219,15 @@ def verify_approval_flow(events: list[RuntimeEvent], report: ConformanceReport) 
     seen_interrupt = False
     for event in events:
         if event.event_type == EventType.APPROVAL_REQUESTED:
-            approval_id = str(event.payload.get("approval_id", ""))
+            approval_id = str(_payload(event).get("approval_id", ""))
             if approval_id and approval_id in requested:
                 report.fail("approval-idempotency", f"approval_id 重复 requested: {approval_id}")
             requested.add(approval_id)
         elif event.event_type == EventType.RUN_INTERRUPTED:
-            if str(event.payload.get("reason", "")) == "tool_approval":
+            if str(_payload(event).get("reason", "")) == "tool_approval":
                 seen_interrupt = True
         elif event.event_type == EventType.APPROVAL_RESOLVED:
-            approval_id = str(event.payload.get("approval_id", ""))
+            approval_id = str(_payload(event).get("approval_id", ""))
             if approval_id and approval_id not in requested:
                 report.fail("approval-flow", f"approval.resolved 无对应 requested: {approval_id}")
             if approval_id in resolved:
@@ -202,19 +246,21 @@ def verify_checkpoint_honesty(events: list[RuntimeEvent], report: ConformanceRep
     created: set[str] = set()
     for event in events:
         if event.event_type == EventType.CHECKPOINT_CREATED:
-            checkpoint_id = str(event.payload.get("checkpoint_id", ""))
+            payload = _payload(event)
+            checkpoint_id = str(payload.get("checkpoint_id", ""))
             if not checkpoint_id:
                 report.fail("checkpoint", "checkpoint.created 缺少 checkpoint_id")
             else:
                 created.add(checkpoint_id)
-            invocation_id = str(event.payload.get("invocation_id", ""))
-            if invocation_id and invocation_id != event.invocation_id:
+            invocation_id = str(payload.get("invocation_id", ""))
+            envelope_invocation_id = getattr(event, "invocation_id", getattr(event, "run_id", ""))
+            if invocation_id and invocation_id != envelope_invocation_id:
                 report.fail(
                     "checkpoint",
                     f"checkpoint.created invocation_id 与信封不一致: {invocation_id}",
                 )
         elif event.event_type == EventType.CHECKPOINT_RESUMED:
-            checkpoint_id = str(event.payload.get("checkpoint_id", ""))
+            checkpoint_id = str(_payload(event).get("checkpoint_id", ""))
             if checkpoint_id not in created:
                 report.fail("recovery", f"checkpoint.resumed 无对应 created: {checkpoint_id}")
 
@@ -232,7 +278,7 @@ def verify_compaction_honesty(events: list[RuntimeEvent], report: ConformanceRep
                 report.fail("compaction", "context.compaction.completed 无对应 started")
             else:
                 open_compactions -= 1
-            budget = event.payload.get("budget_tokens")
+            budget = _payload(event).get("budget_tokens")
             if not isinstance(budget, int) or budget <= 0:
                 report.fail(
                     "compaction",
@@ -247,7 +293,7 @@ def verify_usage_accounting(events: list[RuntimeEvent], report: ConformanceRepor
     for event in events:
         if event.event_type != EventType.USAGE_REPORTED:
             continue
-        payload = event.payload
+        payload = _payload(event)
         try:
             input_tokens = int(payload.get("input_tokens") or 0)
             output_tokens = int(payload.get("output_tokens") or 0)

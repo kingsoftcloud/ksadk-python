@@ -51,8 +51,13 @@ def plan_execute_review_plan() -> ExecutionPlan:
     return ExecutionPlan(
         strategy_kind="plan-execute-review",
         nodes=(
-            "prepare_context", "plan", "execute", "reason",
-            "tool_calls", "review", "final",
+            "prepare_context",
+            "plan",
+            "execute",
+            "reason",
+            "tool_calls",
+            "review",
+            "final",
         ),
         edges=(
             ("prepare_context", "plan"),
@@ -99,13 +104,9 @@ class ExecutionStrategyRegistry:
             "plan-execute-review": plan_execute_review_plan,
         }
 
-    def register(
-        self, descriptor: StrategyDescriptor, compiler=None
-    ) -> None:
+    def register(self, descriptor: StrategyDescriptor, compiler=None) -> None:
         if descriptor.strategy_kind in self._strategies:
-            raise StrategyRegistryError(
-                f"strategy 重复注册: {descriptor.strategy_kind}"
-            )
+            raise StrategyRegistryError(f"strategy 重复注册: {descriptor.strategy_kind}")
         self._strategies[descriptor.strategy_kind] = descriptor
         if compiler is not None:
             self._compilers[descriptor.strategy_kind] = compiler
@@ -123,9 +124,7 @@ class ExecutionStrategyRegistry:
         """按策略编译拓扑；未指定时使用注册表默认。"""
         kind = strategy or self.default()
         if kind == "custom-imported":
-            raise StrategyRegistryError(
-                "custom-imported 策略无通用拓扑：由导入的 Graph 自行提供"
-            )
+            raise StrategyRegistryError("custom-imported 策略无通用拓扑：由导入的 Graph 自行提供")
         compiler = self._compilers.get(kind)
         if compiler is None:
             raise StrategyRegistryError(f"unknown strategy: {kind}")
@@ -138,9 +137,7 @@ class ExecutionStrategyRegistry:
         """验收守卫：single-agent 拓扑不包含多 Agent 专属节点。"""
         polluted = _MULTI_AGENT_NODES & set(plan.nodes)
         if polluted:
-            raise StrategyRegistryError(
-                f"single-agent 拓扑混入多 Agent 节点: {sorted(polluted)}"
-            )
+            raise StrategyRegistryError(f"single-agent 拓扑混入多 Agent 节点: {sorted(polluted)}")
 
 
 __all__ = [

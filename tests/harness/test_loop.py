@@ -10,19 +10,19 @@ import asyncio
 
 import pytest
 
-from ksadk.events import EventType
+from ksadk.harness.events import EventType
 from ksadk.harness.loop.reason import (
-    ReasonInput,
-    ReasoningLimitError,
     ROUTE_FINAL,
     ROUTE_TOOL_CALLS,
+    ReasoningLimitError,
+    ReasonInput,
     reason_turn_async,
 )
 from ksadk.harness.loop.tools import (
     ToolCallInput,
     execute_tool_calls,
 )
-from ksadk.harness.reasoner import HarnessReasoner, HarnessReasoningTurn, HarnessToolCall
+from ksadk.harness.reasoner import HarnessReasoningTurn, HarnessToolCall
 from ksadk.harness.state import WorkingContext
 
 
@@ -99,7 +99,9 @@ def test_reason_routes_to_tool_calls_when_tools():
                 reasoner=_ScriptedReasoner(
                     [
                         HarnessReasoningTurn(
-                            tool_calls=(HarnessToolCall(call_id="c1", name="lookup", arguments={"q": "x"}),),
+                            tool_calls=(
+                                HarnessToolCall(call_id="c1", name="lookup", arguments={"q": "x"}),
+                            ),
                         )
                     ]
                 ),
@@ -122,7 +124,11 @@ def test_reason_emits_usage_when_present():
                 messages=[{"role": "user", "content": "x"}],
                 tools=[],
                 reasoner=_ScriptedReasoner(
-                    [HarnessReasoningTurn(final_text="ok", usage={"input_tokens": 10, "output_tokens": 5})]
+                    [
+                        HarnessReasoningTurn(
+                            final_text="ok", usage={"input_tokens": 10, "output_tokens": 5}
+                        )
+                    ]
                 ),
             ),
         )
@@ -142,8 +148,11 @@ def test_reason_model_failure_emits_failed_then_raises():
             reason_turn_async(
                 1,
                 ReasonInput(
-                    model_ref="m", instructions="", messages=[{"role": "user", "content": "x"}],
-                    tools=[], reasoner=_Boom(),
+                    model_ref="m",
+                    instructions="",
+                    messages=[{"role": "user", "content": "x"}],
+                    tools=[],
+                    reasoner=_Boom(),
                 ),
             )
         )
@@ -157,8 +166,11 @@ def test_reason_turn_limit_raises():
             reason_turn_async(
                 9,  # 超过 max_turns=8
                 ReasonInput(
-                    model_ref="m", instructions="", messages=[{"role": "user", "content": "x"}],
-                    tools=[], reasoner=_ScriptedReasoner([HarnessReasoningTurn(final_text="x")]),
+                    model_ref="m",
+                    instructions="",
+                    messages=[{"role": "user", "content": "x"}],
+                    tools=[],
+                    reasoner=_ScriptedReasoner([HarnessReasoningTurn(final_text="x")]),
                     max_turns=8,
                 ),
             )
@@ -173,7 +185,9 @@ def test_tool_success_records_verified_facts():
     out = _run(
         execute_tool_calls(
             ToolCallInput(
-                pending_tool_calls=[{"call_id": "tc-1", "name": "budget_lookup", "arguments": {"q": "x"}}],
+                pending_tool_calls=[
+                    {"call_id": "tc-1", "name": "budget_lookup", "arguments": {"q": "x"}}
+                ],
                 approval_required=frozenset(),
                 approval_resolver=None,
                 tool_executor=exec_,
