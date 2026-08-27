@@ -131,6 +131,9 @@ class EventType:
     NODE_COMPLETED = "node.completed"
     # Skill 渐进披露。payload: skill_ref, level, content_hash, size_bytes
     SKILL_DISCLOSED = "skill.disclosed"
+    # MCP 渐进披露。payload: server_id, level, content_hash, size_bytes,
+    # tool_name（L2/L3）；L1 = tools/list，L2 = 读 Schema，L3 = 调用。
+    MCP_DISCLOSED = "mcp.disclosed"
 
 
 #: 全部 v1 事件类型(供校验/枚举)。
@@ -186,6 +189,7 @@ ALL_EVENT_TYPES: frozenset[str] = frozenset(
         EventType.NODE_STARTED,
         EventType.NODE_COMPLETED,
         EventType.SKILL_DISCLOSED,
+        EventType.MCP_DISCLOSED,
     }
 )
 
@@ -248,6 +252,7 @@ EVENT_PAYLOAD_REQUIRED_KEYS: dict[str, frozenset[str]] = {
     EventType.NODE_STARTED: frozenset({"node"}),
     EventType.NODE_COMPLETED: frozenset({"node"}),
     EventType.SKILL_DISCLOSED: frozenset({"skill_ref", "level", "content_hash", "size_bytes"}),
+    EventType.MCP_DISCLOSED: frozenset({"server_id", "level", "content_hash", "size_bytes"}),
 }
 
 #: 仅 text/reasoning 类事件使用相位字段。

@@ -31,6 +31,7 @@ from ksadk.harness.engine.base import (
     ExecutionEngineError,
 )
 from ksadk.harness.engine.context_pipeline import EngineContextPipeline
+from ksadk.harness.engine.mcp_disclosure import MCP_CALL_TOOL_TOOL, McpDisclosureBridge
 from ksadk.harness.engine.skill_disclosure import SkillDisclosureBridge
 from ksadk.harness.engine.spans import wrap_node_span
 from ksadk.harness.engine.thread_ids import encode_thread_id
@@ -42,6 +43,7 @@ from ksadk.harness.loop import (
     reason_turn_async,
 )
 from ksadk.harness.loop.reason import ReasoningLimitError
+from ksadk.harness.mcp_runtime import McpCapabilityRuntime
 from ksadk.harness.reasoner import HarnessReasoner, HarnessReasoningTurn, LiteLLMHarnessReasoner
 from ksadk.harness.skill_runtime import SkillRuntime
 from ksadk.harness.spec import HarnessSpec
@@ -88,6 +90,8 @@ class _EngineRun:
     compaction_records: list[Any] = field(default_factory=list)
     #: Revision 绑定且可由默认 Loop 按需披露的 Level 0 Skill 目录。
     skill_catalog: tuple[dict[str, str], ...] = ()
+    #: Revision 绑定的 Level 0 MCP Server 目录（名称/描述/风险等级）。
+    mcp_catalog: tuple[dict[str, str], ...] = ()
 
 
 class ManagedLangGraphEngine:
@@ -107,6 +111,7 @@ class ManagedLangGraphEngine:
         sub_agents: dict[str, Any] | None = None,
         memory_runtime: Any | None = None,
         skill_runtime: SkillRuntime | None = None,
+        mcp_runtime: McpCapabilityRuntime | None = None,
         event_sink: Callable[[str, str, RuntimeEvent], None] | None = None,
     ) -> None:
         self._reasoner = reasoner or LiteLLMHarnessReasoner()
@@ -128,6 +133,11 @@ class ManagedLangGraphEngine:
         # Context，L1/L2/L3 由默认 Agent Loop 的受限工具渐进披露。
         self._skill_runtime = skill_runtime
         self._skill_disclosure = SkillDisclosureBridge(skill_runtime)
+        # P0 MCP Deferred Tool Loading：McpCapabilityRuntime 复用健康缓存/
+        # 熔断/tools 缓存，披露层级（L0 目录/L1 列表/L2 Schema/L3 调用）
+        # 由 McpDisclosureBridge 接入默认 Loop。
+        self._mcp_runtime = mcp_runtime
+        self._mcp_disclosure = McpDisclosureBridge(mcp_runtime)
         # P3 补强：事件出口回调（session_id, run_id, event）——洞察登记处
         # （ksadk.harness.insights）由此拿到完整事件流，供 Studio API 消费。
         self._event_sink = event_sink
@@ -159,6 +169,11 @@ class ManagedLangGraphEngine:
         if spec.execution_strategy.kind.value == self._strategy_registry.default():
             ExecutionStrategyRegistry.assert_single_agent_purity(plan)
         self._skill_disclosure.validate_bindings(
+            spec,
+            tool_names=set(self._tools),
+            sub_agent_names=set(self._sub_agents),
+        )
+        self._mcp_disclosure.validate_bindings(
             spec,
             tool_names=set(self._tools),
             sub_agent_names=set(self._sub_agents),
@@ -204,6 +219,7 @@ class ManagedLangGraphEngine:
             state=state,
             thread_id=thread_id,
             skill_catalog=self._skill_disclosure.catalog(compiled.spec),
+            mcp_catalog=self._mcp_disclosure.catalog(compiled.spec),
         )
         return handle
 
@@ -253,6 +269,7 @@ class ManagedLangGraphEngine:
             state=state,
             thread_id=thread_id,
             skill_catalog=self._skill_disclosure.catalog(compiled.spec),
+            mcp_catalog=self._mcp_disclosure.catalog(compiled.spec),
         )
         run.started_emitted = True  # run.started 已在首个进程发出
         run.done = False
@@ -354,6 +371,11 @@ class ManagedLangGraphEngine:
                     )
                     if skill_catalog_message:
                         conversation.append(skill_catalog_message)
+                    mcp_catalog_message = self._mcp_disclosure.catalog_message(
+                        run.mcp_catalog
+                    )
+                    if mcp_catalog_message:
+                        conversation.append(mcp_catalog_message)
                     if isinstance(history, list) and history:
                         # 宿主（如 Studio Playground）注入的会话历史已含当前输入。
                         conversation.extend(dict(m) for m in history if isinstance(m, dict))
@@ -493,6 +515,7 @@ class ManagedLangGraphEngine:
                         tools=(
                             list(self._tools.values())
                             + self._skill_disclosure.tools(run.skill_catalog)
+                            + self._mcp_disclosure.tools(run.mcp_catalog)
                             + list(self._sub_agents.values())
                         ),
                         reasoner=self._reasoner,
@@ -549,7 +572,11 @@ class ManagedLangGraphEngine:
             out = await execute_tool_calls(
                 ToolCallInput(
                     pending_tool_calls=state["pending_tool_calls"],
-                    approval_required=frozenset(engine._approval_required),
+                    approval_required=frozenset(engine._approval_required) | (
+                        {MCP_CALL_TOOL_TOOL}
+                        if engine._mcp_disclosure.requires_approval(run.compiled.spec)
+                        else set()
+                    ),
                     capability_runtime=engine._capability_runtime,
                     tenant_id=engine._tenant_id,
                     approval_resolver=_GraphApprovalResolver(),
@@ -679,6 +706,8 @@ class ManagedLangGraphEngine:
             return text
         if self._skill_disclosure.is_tool(name):
             return self._invoke_skill_tool(name, arguments, run=run)
+        if self._mcp_disclosure.is_tool(name):
+            return await self._invoke_mcp_tool(name, arguments, run=run)
         tool = self._tools.get(name)
         if tool is None:
             raise RuntimeError(
@@ -838,6 +867,7 @@ class ManagedLangGraphEngine:
             await asyncio.gather(run.task, return_exceptions=True)
         if run is not None:
             self._skill_disclosure.clear_run(run.handle.run_id)
+            self._mcp_disclosure.clear_run(run.handle.run_id)
 
     # ------------------------------------------------------------- helpers
 
@@ -854,6 +884,16 @@ class ManagedLangGraphEngine:
             return self._runs[handle.run_id]
         except KeyError:
             raise KeyError(f"unknown engine run: {handle.run_id}") from None
+
+    async def _invoke_mcp_tool(
+        self, name: str, arguments: dict[str, Any], *, run: _EngineRun | None
+    ) -> dict[str, Any]:
+        return await self._mcp_disclosure.invoke(
+            name,
+            arguments,
+            run=run,
+            pending_events=self._pending_child_events,
+        )
 
     def _invoke_skill_tool(
         self, name: str, arguments: dict[str, Any], *, run: _EngineRun | None
