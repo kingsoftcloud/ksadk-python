@@ -254,6 +254,70 @@
   justify-content: flex-end;
 }
 
+.studio-data-table-expand-chevron {
+  display: inline-flex;
+  vertical-align: middle;
+  margin-right: 6px;
+  color: var(--text-tertiary);
+  transition: transform 0.18s ease;
+  flex-shrink: 0;
+}
+
+.studio-data-table-expand-chevron.is-expanded {
+  transform: rotate(90deg);
+}
+
+.studio-data-table-expanded-row > td {
+  padding: 0;
+  background: var(--surface-subtle, var(--surface-2, #f7f8fa));
+  border-bottom: 1px solid var(--border);
+}
+
+.channels-page__message-detail {
+  padding: 14px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.channels-page__message-payload {
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-meta);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.channels-page__message-meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.channels-page__message-meta-row > span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.channels-page__message-meta-row small {
+  color: var(--text-tertiary);
+  font-size: var(--font-size-caption);
+}
+
+.channels-page__message-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 @media (max-width: 760px) {
   .channels-page__metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));

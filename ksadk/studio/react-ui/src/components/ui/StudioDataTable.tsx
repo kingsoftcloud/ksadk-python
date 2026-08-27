@@ -1,4 +1,4 @@
-import { useMemo, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
+import { Fragment, useMemo, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
 import {
   createColumnHelper,
   tableFeatures,
@@ -48,6 +48,7 @@ export interface StudioDataTableProps<TData extends RowData> {
   pagination?: StudioDataTablePagination;
   onRowActivate?: (row: TData) => void;
   rowAriaLabel?: (row: TData) => string;
+  expandRowContent?: (row: TData) => ReactNode;
 }
 
 function cssSize(value: number | string | undefined): string | undefined {
@@ -71,6 +72,7 @@ export function StudioDataTable<TData extends RowData>({
   pagination,
   onRowActivate,
   rowAriaLabel,
+  expandRowContent,
 }: StudioDataTableProps<TData>) {
   const helper = useMemo(
     () => createColumnHelper<typeof studioTableFeatures, TData>(),
@@ -91,11 +93,16 @@ export function StudioDataTable<TData extends RowData>({
     getRowId,
   });
 
-  const activateFromKeyboard = (event: KeyboardEvent<HTMLTableRowElement>, row: TData) => {
-    if (!onRowActivate || (event.key !== "Enter" && event.key !== " ")) return;
-    event.preventDefault();
-    onRowActivate(row);
-  };
+  const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
+
+  function toggleRowExpanded(rowId: string) {
+    setExpandedRows(prev => {
+      const next = new Set(prev);
+      if (next.has(rowId)) next.delete(rowId);
+      else next.add(rowId);
+      return next;
+    });
+  }
 
   const pageStart = pagination && data.length
     ? pagination.pageIndex * pagination.pageSize + 1
@@ -129,24 +136,52 @@ export function StudioDataTable<TData extends RowData>({
               ))}
             </thead>
             <tbody>
-              {table.getRowModel().rows.map(row => (
-                <tr
-                  key={row.id}
-                  className={onRowActivate ? "is-interactive" : undefined}
-                  tabIndex={onRowActivate ? 0 : undefined}
-                  aria-label={rowAriaLabel?.(row.original)}
-                  onKeyDown={event => activateFromKeyboard(event, row.original)}
-                  onClick={event => {
-                    if (onRowActivate && !isInteractiveTarget(event.target)) onRowActivate(row.original);
-                  }}
-                >
-                  {row.getAllCells().map((cell, index) => (
-                    <td key={cell.id} className={columns[index]?.className}>
-                      <table.FlexRender cell={cell} />
-                    </td>
-                  ))}
-                </tr>
-              ))}
+              {table.getRowModel().rows.map(row => {
+                const isExpanded = expandedRows.has(row.id);
+                const expandable = Boolean(expandRowContent);
+                return (
+                  <Fragment key={row.id}>
+                    <tr
+                      className={expandable ? "is-expandable" : onRowActivate ? "is-interactive" : undefined}
+                      tabIndex={expandable || onRowActivate ? 0 : undefined}
+                      aria-label={rowAriaLabel?.(row.original)}
+                      aria-expanded={expandable ? isExpanded : undefined}
+                      onKeyDown={event => {
+                        if (event.key !== "Enter" && event.key !== " ") return;
+                        if (isInteractiveTarget(event.target)) return;
+                        event.preventDefault();
+                        if (expandable) toggleRowExpanded(row.id);
+                        else onRowActivate?.(row.original);
+                      }}
+                      onClick={event => {
+                        if (isInteractiveTarget(event.target)) return;
+                        if (expandable) toggleRowExpanded(row.id);
+                        else onRowActivate?.(row.original);
+                      }}
+                    >
+                      {row.getAllCells().map((cell, index) => (
+                        <td key={cell.id} className={columns[index]?.className}>
+                          {index === 0 && expandable && (
+                            <ChevronRight
+                              size={14}
+                              className={`studio-data-table-expand-chevron${isExpanded ? " is-expanded" : ""}`}
+                              aria-hidden="true"
+                            />
+                          )}
+                          <table.FlexRender cell={cell} />
+                        </td>
+                      ))}
+                    </tr>
+                    {expandable && isExpanded && expandRowContent && (
+                      <tr className="studio-data-table-expanded-row">
+                        <td colSpan={columns.length}>
+                          {expandRowContent(row.original)}
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                );
+              })}
             </tbody>
           </table>
         )}

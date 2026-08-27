@@ -144,6 +144,12 @@ interface StudioAgent {
   metadata: { id: string; name: string };
 }
 
+interface CloudAgentSummary {
+  agentId?: string;
+  name?: string;
+  status?: string;
+}
+
 // ── Labels & options ────────────────────────────────────────────────────────
 
 const CHANNEL_LABELS: Record<ChannelType, string> = {
@@ -464,6 +470,7 @@ export function ChannelsPage({ refreshTick }: { refreshTick: number }) {
   const [bindings, setBindings] = useState<ChannelBinding[]>(SEED_BINDINGS);
   const [messages, setMessages] = useState<ChannelMessage[]>(SEED_MESSAGES);
   const [agents, setAgents] = useState<StudioAgent[]>([]);
+  const [cloudAgents, setCloudAgents] = useState<CloudAgentSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [formOpen, setFormOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -477,18 +484,20 @@ export function ChannelsPage({ refreshTick }: { refreshTick: number }) {
   const [actionBusy, setActionBusy] = useState(false);
 
   const loadAll = useCallback(async () => {
-    const [chRes, pairRes, bindRes, msgRes, agentRes] = await Promise.allSettled([
+    const [chRes, pairRes, bindRes, msgRes, agentRes, cloudAgentRes] = await Promise.allSettled([
       channelApi<ListResult<Channel>>("ListChannels", { Offset: 0, Limit: 100 }),
       channelApi<ListResult<PairingRequest>>("ListPairingRequests", { Offset: 0, Limit: 100 }),
       channelApi<ListResult<ChannelBinding>>("ListBindings", { Offset: 0, Limit: 100 }),
       channelApi<ListResult<ChannelMessage>>("ListMessages", { Offset: 0, Limit: 100 }),
       apiFetch("/api/v1/agents?limit=100").then(r => r.ok ? r.json() : Promise.reject(new Error("agents"))),
+      apiFetch("/api/v1/cloud-agents?size=100").then(r => r.ok ? r.json() : Promise.reject(new Error("cloud-agents"))),
     ]);
     if (chRes.status === "fulfilled") setChannels(chRes.value.Items || []);
     if (pairRes.status === "fulfilled") setPairings(pairRes.value.Items || []);
     if (bindRes.status === "fulfilled") setBindings(bindRes.value.Items || []);
     if (msgRes.status === "fulfilled") setMessages(msgRes.value.Items || []);
     if (agentRes.status === "fulfilled") setAgents(agentRes.value.items || []);
+    if (cloudAgentRes.status === "fulfilled") setCloudAgents(cloudAgentRes.value.items || []);
     setLoading(false);
   }, []);
 
@@ -498,9 +507,29 @@ export function ChannelsPage({ refreshTick }: { refreshTick: number }) {
   }, [loadAll, refreshTick]);
 
   const agentName = useCallback(
-    (id: string) => agents.find(a => a.metadata.id === id)?.metadata.name || (id || "未绑定"),
-    [agents],
+    (id: string) => {
+      const local = agents.find(a => a.metadata.id === id)?.metadata.name;
+      if (local) return local;
+      const cloud = cloudAgents.find(a => a.agentId === id)?.name;
+      if (cloud) return cloud;
+      return id || "未绑定";
+    },
+    [agents, cloudAgents],
   );
+
+  const agentOptions = useMemo(() => {
+    const local = agents.map(a => ({
+      value: a.metadata.id,
+      label: `本地 · ${a.metadata.name}`,
+    }));
+    const cloud = cloudAgents
+      .filter(a => a.agentId && a.agentId.trim())
+      .map(a => ({
+        value: a.agentId!.trim(),
+        label: `云端 · ${a.name || a.agentId}`,
+      }));
+    return [...local, ...cloud];
+  }, [agents, cloudAgents]);
 
   const isEdit = Boolean(editingId);
 
@@ -945,6 +974,25 @@ export function ChannelsPage({ refreshTick }: { refreshTick: number }) {
             caption="消息记录列表"
             minWidth={900}
             empty={{ icon: <Send size={22} />, title: "没有消息记录", description: "渠道接入并产生对话后，消息将出现在这里。" }}
+            expandRowContent={msg => (
+              <div className="channels-page__message-detail">
+                <pre className="channels-page__message-payload">
+                  {JSON.stringify(msg.Payload, null, 2)}
+                </pre>
+                <div className="channels-page__message-meta-row">
+                  <span><small>平台事件 ID</small><code className="mono">{msg.PlatformEventId || "-"}</code></span>
+                  <span><small>去重 Key</small><code className="mono">{msg.DedupeKey || "-"}</code></span>
+                  <span><small>重试次数</small><code className="mono">{msg.RetryCount}</code></span>
+                  {msg.NextRetryAt && <span><small>下次重试</small>{formatChannelDate(msg.NextRetryAt)}</span>}
+                </div>
+                {msg.Error && (
+                  <div className="channels-page__message-error">
+                    <span className="badge" data-state="failed">错误</span>
+                    <span>{msg.Error}</span>
+                  </div>
+                )}
+              </div>
+            )}
           />
         </section>
       )}
@@ -988,9 +1036,9 @@ export function ChannelsPage({ refreshTick }: { refreshTick: number }) {
               <StudioSelect
                 id="channel-agent"
                 ariaLabel="绑定 Agent"
+                options={agentOptions}
                 value={form.AgentId}
                 placeholder="选择要绑定的 Agent"
-                options={agents.map(a => ({ value: a.metadata.id, label: a.metadata.name }))}
                 onValueChange={value => setForm(prev => ({ ...prev, AgentId: value }))}
               />
             </FormField>
