@@ -8,6 +8,7 @@ import {
   CloudUpload,
   Folder,
   MessagesSquare,
+  MessageSquare,
   PackageCheck,
   ServerCog,
   Settings,
@@ -28,6 +29,7 @@ export type NavigationView =
   | "deployments"
   | "observability"
   | "evaluations"
+  | "channels"
   | "runtime-resources"
   | "orchestration";
 
@@ -61,6 +63,7 @@ const NAVIGATION_GROUPS: Array<{ group: string; items: NavigationItem[] }> = [
       { id: "orchestration", label: "任务编排", icon: Workflow },
       { id: "observability", label: "可观测", icon: ChartSpline },
       { id: "evaluations", label: "评测", icon: ClipboardCheck },
+      { id: "channels", label: "消息渠道", icon: MessageSquare },
     ],
   },
 ];
