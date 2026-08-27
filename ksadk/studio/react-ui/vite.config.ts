@@ -24,7 +24,7 @@ export default defineConfig(({ command }) => ({
     fs: { allow: [".."] },
     proxy: {
       "/api": "http://127.0.0.1:8080",
-      "/agentengine": "http://127.0.0.1:8080",
+      "/agentengine": "http://127.0.0.1:8082",
     },
   },
   build: {
