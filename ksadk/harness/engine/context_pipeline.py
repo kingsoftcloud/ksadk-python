@@ -36,9 +36,7 @@ class EngineContextPipeline:
 
     # ------------------------------------------------------------ 主入口
 
-    async def prepare_context(
-        self, run: Any, instructions: str
-    ) -> list[dict[str, Any]] | None:
+    async def prepare_context(self, run: Any, instructions: str) -> list[dict[str, Any]] | None:
         """ContextEngine 真正控制首次模型输入（收口 1）。
 
         规划 → 超过主动阈值（Spec context_policy）先主动压缩 → 仍超预算做一次
@@ -107,9 +105,7 @@ class EngineContextPipeline:
             assembled.messages.insert(0, {"role": "system", "content": instructions})
         # 长任务方案 §6.2：Manifest 可观测快照 + context.built（Planned/Projected；
         # Actual 由 usage 回填）。正文不入 Manifest，只记 Hash/引用/Token。
-        projected = sum(
-            count_tokens(str(m.get("content") or "")) for m in assembled.messages
-        )
+        projected = sum(count_tokens(str(m.get("content") or "")) for m in assembled.messages)
         self._emit_context_built(run, plan, projected, window)
         return assembled.messages
 
@@ -129,6 +125,7 @@ class EngineContextPipeline:
         query = str(run.request.input or "").strip()
         if not query:
             return []
+
         def _scope_id(scope: str) -> str:
             if scope == "agent":
                 return f"agent:{run.state.agent_id}"
@@ -167,9 +164,7 @@ class EngineContextPipeline:
                 },
             )
         )
-        return [
-            Message(role=MessageRole.SYSTEM, content="【相关长期记忆】\n" + "\n".join(lines))
-        ]
+        return [Message(role=MessageRole.SYSTEM, content="【相关长期记忆】\n" + "\n".join(lines))]
 
     # ------------------------------------------------------------ 规划
 
@@ -193,6 +188,7 @@ class EngineContextPipeline:
                 state=snapshot,
                 user_input=str(run.request.input or ""),
                 context_window_tokens=window,
+                skill_catalog=tuple(run.skill_catalog),
             )
         )
 
@@ -211,9 +207,7 @@ class EngineContextPipeline:
             )
         )
 
-    def _emit_context_built(
-        self, run: Any, plan: Any, projected: int, window: int
-    ) -> None:
+    def _emit_context_built(self, run: Any, plan: Any, projected: int, window: int) -> None:
         from ksadk.harness.context_manifest import build_manifest
 
         previous = run.context_manifest
@@ -276,6 +270,11 @@ class EngineContextPipeline:
             text = "\n".join(m.content for m in head)
             return text[:2000] + ("\n…[截断]" if len(text) > 2000 else "")
         for ev in out.events:
+            # 压缩摘要是管线内部模型调用，不对应任何 ContextManifest；
+            # usage 事件标记 purpose=compaction（真实模型评测暴露：否则
+            # Actual↔Manifest 配对率虚低，且压缩花费不可归因）。
+            if ev.event_type == EventType.USAGE_REPORTED:
+                ev.payload.setdefault("purpose", "compaction")
             run.events.append(ev)
             run.seq = max(run.seq, ev.seq_id)
         return str(out.new_messages[0].get("content") or "") if out.new_messages else ""

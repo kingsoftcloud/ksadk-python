@@ -221,12 +221,36 @@ def fact_retention(case: LongTaskCase, events: Sequence[RuntimeEvent]) -> float:
 
 
 def usage_manifest_paired_ratio(events: Sequence[RuntimeEvent]) -> float:
-    """Actual↔Manifest 配对率：携带 manifest_id 的 usage 事件占比（闭环完整性）。"""
-    usages = [e for e in events if e.event_type == EventType.USAGE_REPORTED]
+    """Actual↔Manifest 配对率（闭环完整性）。
+
+    只统计 **Manifest 驱动的模型调用** 的 usage 事件；压缩摘要调用
+    （``purpose=compaction``）不对应任何 Manifest，其 Token 单独经
+    :func:`compaction_usage_tokens` 归因，不掺入本指标。
+    """
+    usages = [
+        e
+        for e in events
+        if e.event_type == EventType.USAGE_REPORTED
+        and not e.payload.get("purpose")
+    ]
     if not usages:
         return 1.0
     paired = [e for e in usages if e.payload.get("manifest_id")]
     return len(paired) / len(usages)
+
+
+def compaction_usage_tokens(events: Sequence[RuntimeEvent]) -> dict[str, int]:
+    """压缩摘要调用的 Token 开销（真实模型评测暴露的隐藏花费，单列归因）。"""
+    compaction_usages = [
+        e
+        for e in events
+        if e.event_type == EventType.USAGE_REPORTED and e.payload.get("purpose") == "compaction"
+    ]
+    return {
+        "calls": len(compaction_usages),
+        "input_tokens": sum(int(e.payload.get("input_tokens") or 0) for e in compaction_usages),
+        "output_tokens": sum(int(e.payload.get("output_tokens") or 0) for e in compaction_usages),
+    }
 
 
 def evaluate_long_task(
@@ -244,6 +268,7 @@ def evaluate_long_task(
             result.events,
             fact_retention=fact_retention(case, result.events),
             usage_manifest_paired_ratio=usage_manifest_paired_ratio(result.events),
+            compaction_usage=compaction_usage_tokens(result.events),
             actual_total_input_tokens=report["actual_total_input_tokens"],
             actual_total_output_tokens=report["actual_total_output_tokens"],
         )
@@ -305,6 +330,7 @@ __all__ = [
     "FactPreservingReasoner",
     "FIXED_DATASET",
     "LongTaskCase",
+    "compaction_usage_tokens",
     "default_engine_factory",
     "evaluate_long_task",
     "fact_retention",

@@ -66,6 +66,7 @@ def token_report(events: Sequence[RuntimeEvent]) -> dict[str, Any]:
     usages = [
         {
             "manifest_id": str(e.payload.get("manifest_id") or ""),
+            "purpose": str(e.payload.get("purpose") or ""),
             "input_tokens": int(e.payload.get("input_tokens") or 0),
             "output_tokens": int(e.payload.get("output_tokens") or 0),
             "total_tokens": int(e.payload.get("total_tokens") or 0),
