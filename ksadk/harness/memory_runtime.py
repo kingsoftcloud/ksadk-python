@@ -18,7 +18,7 @@ Harness 侧新增：
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from ksadk.harness.events import EventType, RuntimeEvent
@@ -259,11 +259,24 @@ class HarnessMemoryRuntime:
     def recall(
         self, *, query: str, scopes: list[tuple[MemoryScope, str]], top_k: int = 8
     ) -> MemorySearchResult:
-        """检索长期 Memory（§9.1）。Provider 故障返回空结果，不抛错污染模型输入。"""
+        """检索长期 Memory（§9.1）。Provider 故障返回空结果，不抛错污染模型输入。
+
+        长任务方案 §7.5：Provider 召回后走 Rerank/多样性/Token 截断默认管线。
+        """
         request = MemorySearchRequest(
             query=query, scopes=scopes, memory_types=["fact", "profile"], top_k=top_k
         )
-        return self._coordinator.recall(request)
+        result = self._coordinator.recall(request)
+        if result.status == "ok" and result.records:
+            from ksadk.memory.retrieval import RetrievalConfig, rerank_records
+
+            reranked = rerank_records(
+                result.records,
+                query=query,
+                config=RetrievalConfig(top_k=top_k, max_tokens=request.max_tokens),
+            )
+            result = replace(result, records=reranked)
+        return result
 
     def list_core(self, *, scopes: list[tuple[MemoryScope, str]]) -> list[MemoryRecord]:
         """Core Memory Block（§9.2）：常驻块数量与预算有限，超出部分交由按需检索。"""
