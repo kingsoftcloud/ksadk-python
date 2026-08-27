@@ -208,12 +208,19 @@ def run_case(
 
 
 def fact_retention(case: LongTaskCase, events: Sequence[RuntimeEvent]) -> float:
-    """跨压缩关键事实保留率：期望事实未被任何一次压缩丢弃的比例。"""
+    """跨压缩关键事实保留率：期望事实未被**最终**丢弃的比例。
+
+    摘要缺失但经重注入（§8.4.1）保留的事实不算丢弃——
+    与 CompactionRecord ``critical_facts_preserved`` 同一判定口径。
+    """
     dropped: set[str] = set()
     for event in events:
         if event.event_type != EventType.CONTEXT_COMPACTION_COMPLETED:
             continue
         dropped.update(str(f) for f in event.payload.get("dropped_critical_facts") or [])
+        dropped.difference_update(
+            str(f) for f in event.payload.get("reinjected_critical_facts") or []
+        )
     expected = set(case.expected_facts)
     if not expected:
         return 1.0

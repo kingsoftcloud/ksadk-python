@@ -266,8 +266,20 @@ class EngineContextPipeline:
                     max_turns=1,
                 ),
             )
-        except Exception:  # noqa: BLE001 - 摘要失败降级为截断拼接，不阻断 Run
+        except Exception as exc:  # noqa: BLE001 - 摘要失败降级为截断拼接，不阻断 Run
             text = "\n".join(m.content for m in head)
+            # 降级不静默（§6.4 "不静默丢弃"）：真实模型评测曾把摘要失败
+            # 吞成 0-token Run；发 context.recovered 让降级可观测可告警。
+            run.events.append(
+                self._event(
+                    run,
+                    EventType.CONTEXT_RECOVERED,
+                    {
+                        "reason": "compaction_summary_failed:degraded_truncation",
+                        "error": str(exc)[:256],
+                    },
+                )
+            )
             return text[:2000] + ("\n…[截断]" if len(text) > 2000 else "")
         for ev in out.events:
             # 压缩摘要是管线内部模型调用，不对应任何 ContextManifest；
@@ -323,6 +335,10 @@ class EngineContextPipeline:
         new_messages.extend(messages[-keep_recent:])
         after_tokens = sum(count_tokens(m.content) for m in new_messages)
         # 长任务方案 §6.4：CompactionRecord（投影变化记录，非新事实源）。
+        # 摘要缺失但经重注入保留的事实不算最终丢弃（§8.4.1 "不静默丢弃"）。
+        reinjected = (
+            tuple(checkpoint.dropped_critical_facts) if checkpoint.reinjection else ()
+        )
         record = build_compaction_record(
             run_id=run.handle.run_id,
             trigger=trigger,
@@ -332,6 +348,7 @@ class EngineContextPipeline:
             summary=compacted_text,
             retained_critical_facts=tuple(checkpoint.retained_critical_facts),
             dropped_critical_facts=tuple(checkpoint.dropped_critical_facts),
+            reinjected_critical_facts=reinjected,
             summary_model_ref=run.compiled.spec.model.profile_ref,
             memory_candidate_refs=tuple(memory_candidate_refs),
         )
@@ -346,6 +363,7 @@ class EngineContextPipeline:
                     "compacted_until_seq_id": checkpoint.compacted_until_seq_id,
                     "budget_tokens": budget_tokens,
                     "dropped_critical_facts": list(checkpoint.dropped_critical_facts),
+                    "reinjected_critical_facts": list(reinjected),
                     # 长任务方案 §8：Compaction 投影（引用 + 前后 Token + 质量校验）。
                     "compaction_id": record.compaction_id,
                     "before_tokens": record.before_tokens,

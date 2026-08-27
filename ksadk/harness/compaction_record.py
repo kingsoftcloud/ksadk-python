@@ -37,6 +37,8 @@ class CompactionRecord:
     summary_model_ref: str = ""
     retained_critical_facts: tuple[str, ...] = field(default=())
     dropped_critical_facts: tuple[str, ...] = field(default=())
+    #: 摘要缺失但经重注入保留在模型输入中的关键事实（§8.4.1）。
+    reinjected_critical_facts: tuple[str, ...] = field(default=())
 
     # ---- 质量校验（§6.4 quality_checks） ----
     tool_pairs_complete: bool = True
@@ -66,6 +68,7 @@ class CompactionRecord:
             "summary_model_ref": self.summary_model_ref,
             "retained_critical_facts": list(self.retained_critical_facts),
             "dropped_critical_facts": list(self.dropped_critical_facts),
+            "reinjected_critical_facts": list(self.reinjected_critical_facts),
             "quality_checks": self.quality_checks(),
         }
 
@@ -80,6 +83,7 @@ def build_compaction_record(
     summary: str,
     retained_critical_facts: tuple[str, ...],
     dropped_critical_facts: tuple[str, ...],
+    reinjected_critical_facts: tuple[str, ...] = (),
     summary_model_ref: str = "",
     memory_candidate_refs: tuple[str, ...] = (),
     tool_pairs_complete: bool = True,
@@ -88,11 +92,12 @@ def build_compaction_record(
 ) -> CompactionRecord:
     """从压缩结果构建完整记录。
 
-    质量校验由调用方判定后传入；``critical_facts_preserved`` 由
-    dropped_critical_facts 推导（有丢弃即 False，方案 §6.4 "不静默丢弃"——
-    丢弃的事实经重注入保留时不计为 dropped）。
+    ``critical_facts_preserved`` 按「重注入后仍丢弃」判定（方案 §6.4
+    "不静默丢弃"）：摘要缺失的事实经重注入（§8.4.1）保留在模型输入中，
+    不算最终丢弃——真实模型评测曾因此误报 constraint_retention<1.0。
     """
-    critical_ok = not dropped_critical_facts
+    still_dropped = set(dropped_critical_facts) - set(reinjected_critical_facts)
+    critical_ok = not still_dropped
     material = f"{run_id}:{trigger}:{before_tokens}:{compacted_event_range}:{summary[:64]}"
     return CompactionRecord(
         compaction_id=_compaction_id(material),
@@ -106,6 +111,7 @@ def build_compaction_record(
         memory_candidate_refs=memory_candidate_refs,
         retained_critical_facts=retained_critical_facts,
         dropped_critical_facts=dropped_critical_facts,
+        reinjected_critical_facts=reinjected_critical_facts,
         tool_pairs_complete=tool_pairs_complete,
         approvals_preserved=approvals_preserved,
         goal_preserved=goal_preserved,
