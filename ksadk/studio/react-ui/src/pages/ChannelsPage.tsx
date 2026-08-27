@@ -2,10 +2,14 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ArrowDownLeft,
   ArrowUpRight,
+  Check,
   ChevronDown,
   Link2,
   MessageSquare,
   Plus,
+  Send,
+  UserPlus,
+  X,
 } from "lucide-react";
 import { apiFetch } from "../api";
 import { ConfirmDialog } from "../components/ConfirmDialog";
@@ -346,7 +350,7 @@ const SEED_MESSAGES: ChannelMessage[] = [
     PlatformEventId: "evt-20260827-001",
     Direction: "inbound",
     DedupeKey: "wps-xiezuo:wps-default:evt-20260827-001",
-    Payload: { text: "帮我查一下本周的销售数据汇总" },
+    Payload: { text: "帮我查一下本周的销售数据汇总", sender_name: "张三" },
     Error: "",
     RetryCount: 0,
     NextRetryAt: null,
@@ -359,7 +363,7 @@ const SEED_MESSAGES: ChannelMessage[] = [
     PlatformEventId: "evt-20260827-002",
     Direction: "outbound",
     DedupeKey: "wps-xiezuo:wps-default:evt-20260827-002",
-    Payload: { text: "已为您查询到本周销售数据，华东区同比增长 12.3%。" },
+    Payload: { text: "已为您查询到本周销售数据，华东区同比增长 12.3%。", sender_name: "Agent" },
     Error: "",
     RetryCount: 0,
     NextRetryAt: null,
@@ -372,7 +376,7 @@ const SEED_MESSAGES: ChannelMessage[] = [
     PlatformEventId: "evt-20260827-003",
     Direction: "inbound",
     DedupeKey: "feishu:feishu-cs:evt-20260827-003",
-    Payload: { text: "产品 A 的库存还有多少？" },
+    Payload: { text: "产品 A 的库存还有多少？", sender_name: "李四" },
     Error: "",
     RetryCount: 0,
     NextRetryAt: null,
@@ -385,7 +389,7 @@ const SEED_MESSAGES: ChannelMessage[] = [
     PlatformEventId: "evt-20260827-004",
     Direction: "outbound",
     DedupeKey: "feishu:feishu-cs:evt-20260827-004",
-    Payload: { text: "产品 A 当前库存 1,280 件，安全库存 500 件，库存充足。" },
+    Payload: { text: "产品 A 当前库存 1,280 件，安全库存 500 件，库存充足。", sender_name: "Agent" },
     Error: "",
     RetryCount: 0,
     NextRetryAt: null,
@@ -398,7 +402,7 @@ const SEED_MESSAGES: ChannelMessage[] = [
     PlatformEventId: "evt-20260827-005",
     Direction: "outbound",
     DedupeKey: "wecom:wecom-internal:evt-20260827-005",
-    Payload: { text: "群聊消息推送异常，正在重试…" },
+    Payload: { text: "群聊消息推送异常，正在重试…", sender_name: "Agent" },
     Error: "gateway timeout",
     RetryCount: 2,
     NextRetryAt: "2026-08-27T09:00:00",
@@ -423,6 +427,16 @@ function messagePreview(msg: ChannelMessage): string {
   if (typeof payload.message === "string") return payload.message;
   const json = JSON.stringify(payload);
   return json.length > 120 ? `${json.slice(0, 120)}…` : json;
+}
+
+function messageSender(msg: ChannelMessage): string {
+  const p = msg.Payload as Record<string, unknown>;
+  const candidates = ["sender_name", "senderName", "from_name", "fromName", "user_name", "userName", "sender", "from", "user"];
+  for (const key of candidates) {
+    const val = p[key];
+    if (typeof val === "string" && val.trim()) return val.trim();
+  }
+  return "";
 }
 
 const EMPTY_FORM = {
@@ -706,10 +720,12 @@ export function ChannelsPage({ refreshTick }: { refreshTick: number }) {
       className: "channels-page__row-actions",
       cell: pr => pr.Status === "pending" ? (
         <div style={{ display: "flex", gap: 6 }}>
-          <button className="button accent compact" type="button" onClick={() => { setActionTarget(pr); setActionKind("approve"); }}>
+          <button className="button accent compact" type="button" onClick={() => { setActionTarget(pr); setActionKind("approve"); }} title="通过配对">
+            <Check size={14} />
             通过
           </button>
-          <button className="button tertiary compact" type="button" onClick={() => { setActionTarget(pr); setActionKind("reject"); }}>
+          <button className="button tertiary compact" type="button" onClick={() => { setActionTarget(pr); setActionKind("reject"); }} title="拒绝配对">
+            <X size={14} />
             拒绝
           </button>
         </div>
@@ -783,6 +799,15 @@ export function ChannelsPage({ refreshTick }: { refreshTick: number }) {
           <span>{CHANNEL_LABELS[msg.Channel]} · {msg.ChannelAccountId}</span>
         </>
       ),
+    },
+    {
+      id: "sender",
+      header: "发送者",
+      minWidth: 110,
+      cell: msg => {
+        const sender = messageSender(msg);
+        return sender ? <span className="mono">{sender}</span> : <span className="text-muted">-</span>;
+      },
     },
     {
       id: "payload",
@@ -887,7 +912,7 @@ export function ChannelsPage({ refreshTick }: { refreshTick: number }) {
             getRowId={pr => pr.Id}
             caption="配对请求列表"
             minWidth={960}
-            empty={{ icon: <MessageSquare size={22} />, title: "没有配对请求", description: "开启配对后，用户可通过配对码绑定渠道。" }}
+            empty={{ icon: <UserPlus size={22} />, title: "没有配对请求", description: "开启配对后，用户可通过配对码绑定渠道。" }}
           />
         </section>
       )}
@@ -919,7 +944,7 @@ export function ChannelsPage({ refreshTick }: { refreshTick: number }) {
             getRowId={msg => msg.Id}
             caption="消息记录列表"
             minWidth={900}
-            empty={{ icon: <MessageSquare size={22} />, title: "没有消息记录", description: "渠道接入并产生对话后，消息将出现在这里。" }}
+            empty={{ icon: <Send size={22} />, title: "没有消息记录", description: "渠道接入并产生对话后，消息将出现在这里。" }}
           />
         </section>
       )}
