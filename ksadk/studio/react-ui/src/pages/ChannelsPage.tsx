@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ArrowDownLeft,
   ArrowUpRight,
+  ChevronDown,
   Link2,
   MessageSquare,
   Plus,
@@ -454,6 +455,7 @@ export function ChannelsPage({ refreshTick }: { refreshTick: number }) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [form, setForm] = useState({ ...EMPTY_FORM });
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Channel | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [actionTarget, setActionTarget] = useState<PairingRequest | null>(null);
@@ -491,6 +493,7 @@ export function ChannelsPage({ refreshTick }: { refreshTick: number }) {
   function openCreate() {
     setEditingId(null);
     setForm({ ...EMPTY_FORM });
+    setAdvancedOpen(false);
     setFormOpen(true);
   }
 
@@ -509,6 +512,7 @@ export function ChannelsPage({ refreshTick }: { refreshTick: number }) {
       Enabled: channel.Enabled,
       ConfigJson: channel.ConfigJson || "{}",
     });
+    setAdvancedOpen(true);
     setFormOpen(true);
   }
 
@@ -982,43 +986,6 @@ export function ChannelsPage({ refreshTick }: { refreshTick: number }) {
                 placeholder={isEdit ? "留空则不修改" : "平台分配的应用密钥"}
               />
             </FormField>
-            <FormField label="私聊策略">
-              <StudioSelect
-                ariaLabel="私聊策略"
-                value={form.DmPolicy}
-                options={DM_POLICY_OPTIONS}
-                onValueChange={value => setForm(prev => ({ ...prev, DmPolicy: value as DmPolicy }))}
-              />
-            </FormField>
-            <FormField label="群聊策略">
-              <StudioSelect
-                ariaLabel="群聊策略"
-                value={form.GroupPolicy}
-                options={GROUP_POLICY_OPTIONS}
-                onValueChange={value => setForm(prev => ({ ...prev, GroupPolicy: value as GroupPolicy }))}
-              />
-            </FormField>
-            <FormField label="会话隔离">
-              <StudioSelect
-                ariaLabel="会话隔离"
-                value={form.SessionScope}
-                options={SESSION_SCOPE_OPTIONS}
-                onValueChange={value => setForm(prev => ({ ...prev, SessionScope: value as SessionScope }))}
-              />
-            </FormField>
-            <FormField className="channels-page__field--wide" label="群聊 @机器人">
-              <label className="channel-toggle-row">
-                <input
-                  type="checkbox"
-                  checked={form.RequireMention}
-                  onChange={event => setForm(prev => ({ ...prev, RequireMention: event.target.checked }))}
-                />
-                <span>
-                  <strong>要求 @机器人</strong>
-                  <small>群聊中用户必须 @机器人才会触发响应</small>
-                </span>
-              </label>
-            </FormField>
             <FormField className="channels-page__field--wide" label="启用状态">
               <label className="channel-toggle-row">
                 <input
@@ -1032,16 +999,72 @@ export function ChannelsPage({ refreshTick }: { refreshTick: number }) {
                 </span>
               </label>
             </FormField>
-            <FormField className="channels-page__field--wide" label="扩展配置" htmlFor="channel-config-json" hint="JSON 格式的扩展配置，默认为空对象 {}">
-              <textarea
-                id="channel-config-json"
-                value={form.ConfigJson}
-                onChange={event => setForm(prev => ({ ...prev, ConfigJson: event.target.value }))}
-                placeholder="{}"
-                rows={3}
-                className="channels-page__config-textarea"
-              />
-            </FormField>
+            <div className="channels-page__advanced-toggle">
+              <button
+                type="button"
+                className="channels-page__advanced-header"
+                onClick={() => setAdvancedOpen(prev => !prev)}
+                aria-expanded={advancedOpen}
+              >
+                <ChevronDown
+                  size={16}
+                  className={`channels-page__chevron${advancedOpen ? "" : " channels-page__chevron--closed"}`}
+                />
+                <span>高级设置</span>
+                <small>私聊策略、群聊策略、会话隔离等</small>
+              </button>
+            </div>
+            {advancedOpen && (
+              <div className="channels-page__advanced-body form-grid two-columns">
+                <FormField label="私聊策略">
+                  <StudioSelect
+                    ariaLabel="私聊策略"
+                    value={form.DmPolicy}
+                    options={DM_POLICY_OPTIONS}
+                    onValueChange={value => setForm(prev => ({ ...prev, DmPolicy: value as DmPolicy }))}
+                  />
+                </FormField>
+                <FormField label="群聊策略">
+                  <StudioSelect
+                    ariaLabel="群聊策略"
+                    value={form.GroupPolicy}
+                    options={GROUP_POLICY_OPTIONS}
+                    onValueChange={value => setForm(prev => ({ ...prev, GroupPolicy: value as GroupPolicy }))}
+                  />
+                </FormField>
+                <FormField label="会话隔离">
+                  <StudioSelect
+                    ariaLabel="会话隔离"
+                    value={form.SessionScope}
+                    options={SESSION_SCOPE_OPTIONS}
+                    onValueChange={value => setForm(prev => ({ ...prev, SessionScope: value as SessionScope }))}
+                  />
+                </FormField>
+                <FormField className="channels-page__field--wide" label="群聊 @机器人">
+                  <label className="channel-toggle-row">
+                    <input
+                      type="checkbox"
+                      checked={form.RequireMention}
+                      onChange={event => setForm(prev => ({ ...prev, RequireMention: event.target.checked }))}
+                    />
+                    <span>
+                      <strong>要求 @机器人</strong>
+                      <small>群聊中用户必须 @机器人才会触发响应</small>
+                    </span>
+                  </label>
+                </FormField>
+                <FormField className="channels-page__field--wide" label="扩展配置" htmlFor="channel-config-json" hint="JSON 格式的扩展配置，默认为空对象 {}">
+                  <textarea
+                    id="channel-config-json"
+                    value={form.ConfigJson}
+                    onChange={event => setForm(prev => ({ ...prev, ConfigJson: event.target.value }))}
+                    placeholder="{}"
+                    rows={3}
+                    className="channels-page__config-textarea"
+                  />
+                </FormField>
+              </div>
+            )}
           </form>
         </Drawer>
       )}

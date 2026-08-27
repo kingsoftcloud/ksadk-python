@@ -205,6 +205,50 @@
   border-color: var(--accent-strong);
 }
 
+.channels-page__advanced-toggle {
+  grid-column: 1 / -1;
+  margin-top: 4px;
+}
+
+.channels-page__advanced-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 10px 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: var(--font-size-control);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+}
+
+.channels-page__advanced-header:hover {
+  color: var(--text-primary);
+}
+
+.channels-page__advanced-header small {
+  margin-left: auto;
+  color: var(--text-tertiary);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-regular);
+}
+
+.channels-page__chevron {
+  transition: transform 0.18s ease;
+  color: var(--text-tertiary);
+}
+
+.channels-page__chevron--closed {
+  transform: rotate(-90deg);
+}
+
+.channels-page__advanced-body {
+  grid-column: 1 / -1;
+}
+
 .channels-page__row-actions {
   display: flex;
   justify-content: flex-end;
