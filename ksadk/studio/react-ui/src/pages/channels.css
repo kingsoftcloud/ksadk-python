@@ -325,6 +325,38 @@
   gap: 8px;
 }
 
+/* QR Connect Dialog */
+.channels-page__qr-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0 4px;
+}
+
+.channels-page__qr-image {
+  width: 200px;
+  height: 200px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+}
+
+.channels-page__qr-label {
+  margin: 0;
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: var(--font-size-control);
+  line-height: 1.5;
+}
+
+.channels-page__qr-loading,
+.channels-page__qr-empty {
+  padding: 48px 20px;
+  text-align: center;
+  color: var(--text-tertiary);
+  font-size: var(--font-size-control);
+}
+
 @media (max-width: 760px) {
   .channels-page__metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));

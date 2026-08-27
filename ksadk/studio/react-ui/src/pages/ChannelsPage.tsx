@@ -5,12 +5,14 @@ import {
   Check,
   ChevronDown,
   Link2,
-  MessageSquare,
-  Plus,
-  Send,
-  UserPlus,
-  X,
+ MessageSquare,
+ Plus,
+ Send,
+  QrCode,
+ UserPlus,
+ X,
 } from "lucide-react";
+import QRCode from "qrcode";
 import { apiFetch } from "../api";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { Drawer } from "../components/Drawer";
@@ -162,6 +164,12 @@ interface CloudAgentSummary {
   agentId?: string;
   name?: string;
   status?: string;
+}
+
+interface ConnectQrData {
+  QrUrl: string;
+  Label: string;
+  Platform: string;
 }
 
 // ── Labels & options ────────────────────────────────────────────────────────
@@ -535,9 +543,14 @@ export function ChannelsPage({ refreshTick }: { refreshTick: number }) {
   const [actionTarget, setActionTarget] = useState<PairingRequest | null>(null);
   const [actionKind, setActionKind] = useState<"approve" | "reject" | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
-  const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
+const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
 
-  const loadAll = useCallback(async () => {
+  const [qrTarget, setQrTarget] = useState<Channel | null>(null);
+  const [qrLoading, setQrLoading] = useState(false);
+  const [qrData, setQrData] = useState<ConnectQrData | null>(null);
+  const [qrImageData, setQrImageData] = useState("");
+
+const loadAll = useCallback(async () => {
     const [chRes, pairRes, bindRes, msgRes, agentRes, cloudAgentRes] = await Promise.allSettled([
       channelApi<ListResult<Channel>>("ListChannels", { Offset: 0, Limit: 100 }),
       channelApi<ListResult<PairingRequest>>("ListPairingRequests", { Offset: 0, Limit: 100 }),
@@ -609,11 +622,39 @@ export function ChannelsPage({ refreshTick }: { refreshTick: number }) {
       Enabled: channel.Enabled,
       ConfigJson: channel.ConfigJson || "{}",
     });
-    setAdvancedOpen(true);
-    setFormOpen(true);
+   setAdvancedOpen(true);
+   setFormOpen(true);
+ }
+
+  function openQr(channel: Channel) {
+    setQrTarget(channel);
+    setQrLoading(true);
+    setQrData(null);
+    setQrImageData("");
+    void (async () => {
+      try {
+        const data = await channelApi<ConnectQrData>("GetConnectQr", { Id: channel.Id });
+        setQrData(data);
+        if (data.QrUrl) {
+          const dataUrl = await QRCode.toDataURL(data.QrUrl, { width: 200, margin: 1 });
+          setQrImageData(dataUrl);
+        }
+      } catch (error) {
+        showToast("获取二维码失败", error instanceof Error ? error.message : "请稍后重试", "error");
+        setQrTarget(null);
+      } finally {
+        setQrLoading(false);
+      }
+    })();
   }
 
-  async function submitChannel(event: React.FormEvent) {
+  function closeQr() {
+    setQrTarget(null);
+    setQrData(null);
+    setQrImageData("");
+  }
+
+async function submitChannel(event: React.FormEvent) {
     event.preventDefault();
     setSubmitting(true);
     try {
@@ -769,12 +810,15 @@ export function ChannelsPage({ refreshTick }: { refreshTick: number }) {
       width: 56,
       className: "channels-page__row-actions",
       cell: ch => (
-        <MoreActionsMenu
-          label={`${ch.ChannelAccountId} 操作`}
-          items={[
-            { label: "编辑", onSelect: () => openEdit(ch) },
-            { label: "删除", danger: true, onSelect: () => setDeleteTarget(ch) },
-          ]}
+       <MoreActionsMenu
+         label={`${ch.ChannelAccountId} 操作`}
+         items={[
+            ...(ch.Channel === "feishu" || ch.Channel === "wecom"
+              ? [{ label: "扫码连接", onSelect: () => openQr(ch) }]
+              : []),
+           { label: "编辑", onSelect: () => openEdit(ch) },
+           { label: "删除", danger: true, onSelect: () => setDeleteTarget(ch) },
+         ]}
         />
       ),
     },
@@ -1434,11 +1478,43 @@ export function ChannelsPage({ refreshTick }: { refreshTick: number }) {
               required
             />
           </FormField>
-          <p className="channels-page__form-hint">将此绑定关联到 Studio 中的会话，用户在 IM 发送的消息将使用此 SessionId 调用 Agent Runtime，实现 Studio 会话和 IM 会话的互通。</p>
+         <p className="channels-page__form-hint">将此绑定关联到 Studio 中的会话，用户在 IM 发送的消息将使用此 SessionId 调用 Agent Runtime，实现 Studio 会话和 IM 会话的互通。</p>
+       </StudioDialog>
+     )}
+
+      {qrTarget && (
+        <StudioDialog
+          open
+          onOpenChange={open => { if (!open && !qrLoading) closeQr(); }}
+          title="扫码连接"
+          icon={<QrCode size={18} />}
+          closeDisabled={qrLoading}
+          footer={(
+            <button className="button tertiary" type="button" onClick={closeQr} disabled={qrLoading}>关闭</button>
+          )}
+        >
+          {qrLoading ? (
+            <div className="channels-page__qr-loading">正在获取二维码…</div>
+          ) : qrData && !qrData.QrUrl ? (
+            <div className="channels-page__qr-empty">该平台不支持扫码连接</div>
+          ) : (
+            <div className="channels-page__qr-content">
+              {qrImageData && (
+                <img
+                  src={qrImageData}
+                  alt="扫码连接二维码"
+                  className="channels-page__qr-image"
+                  width={200}
+                  height={200}
+                />
+              )}
+              {qrData?.Label && <p className="channels-page__qr-label">{qrData.Label}</p>}
+            </div>
+          )}
         </StudioDialog>
       )}
 
-      {actionTarget && actionKind && (
+{actionTarget && actionKind && (
         <ConfirmDialog
           title={actionKind === "approve" ? "通过配对请求" : "拒绝配对请求"}
           description={actionKind === "approve"
