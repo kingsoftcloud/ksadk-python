@@ -17,6 +17,7 @@ Harness 侧新增：
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
 from typing import Any
 
@@ -107,6 +108,153 @@ class HarnessMemoryRuntime:
         return self._coordinator
 
     # ------------------------------------------------------------- 读取
+
+    def get(self, memory_id: str) -> MemoryRecord | None:
+        return self._coordinator.provider.get(memory_id)
+
+    # ------------------------------------------------- 用户纠错 Runtime API
+    # 长任务方案 §10 P1：「用户纠错、删除和锁定所需 Runtime API 合同」。
+    # 三个动作全部带 reason（审计）、走乐观版本（expected_version）、
+    # 返回审计事件；失败不静默。
+
+    def correct(
+        self,
+        *,
+        memory_id: str,
+        new_content: str,
+        reason: str,
+        actor: str,
+        expected_version: int | None = None,
+    ) -> tuple[MemoryRecord, RuntimeEvent | None]:
+        """用户纠错：同槽位更新（旧记录 superseded，审计链保留）。"""
+        from dataclasses import replace
+
+        from ksadk.memory.policy import content_hash as _hash
+
+        record = self._require_record(memory_id)
+        if expected_version is not None and int(expected_version) != record.version:
+            raise HarnessMemoryError(
+                f"version_conflict:expected={expected_version},actual={record.version}"
+            )
+        existing_hash = record.content_hash or _hash(record.content)
+        # 与 Coordinator update 语义一致：新事实用新 memory_id，旧记录 superseded
+        # 移出 active 召回集合但保留审计行。
+        new_id = f"mem_{uuid.uuid4().hex[:24]}"
+        updated = replace(
+            record,
+            memory_id=new_id,
+            content=new_content,
+            summary=new_content[:200],
+            content_hash=_hash(new_content),
+            version=record.version + 1,
+            status="active",
+            supersedes=(record.memory_id,),
+            metadata={
+                **record.metadata,
+                "corrected_by": actor,
+                "correction_reason": reason,
+            },
+        )
+        if existing_hash == updated.content_hash:
+            raise HarnessMemoryError("纠错内容与现有记录相同（no-op 拒绝）")
+        self._coordinator.provider.upsert(updated, expected_version=expected_version)
+        # 旧记录标记 superseded（移出 active 召回集合，保留审计）。
+        self._mark_superseded(record, superseded_by=updated.memory_id, reason=reason)
+        return updated, self._correction_event("update", updated, actor, reason)
+
+    def forget(
+        self,
+        *,
+        memory_id: str,
+        reason: str,
+        actor: str,
+        hard: bool = False,
+    ) -> tuple[bool, RuntimeEvent | None]:
+        """用户遗忘：默认逻辑删除（tombstone，§12 可审计）。"""
+        record = self._require_record(memory_id)
+        if record.write_policy == "locked":
+            raise HarnessMemoryError("locked 记录禁止删除（先解锁）")
+        deleted = self._coordinator.delete(
+            memory_id, scope=record.scope, scope_id=record.scope_id, hard=hard
+        )
+        event = self._correction_event("delete", record, actor, reason)
+        return deleted, event
+
+    def set_lock(
+        self,
+        *,
+        memory_id: str,
+        locked: bool,
+        reason: str,
+        actor: str,
+        expected_version: int | None = None,
+    ) -> tuple[MemoryRecord, RuntimeEvent | None]:
+        """锁定/解锁（write_policy locked ↔ auto）。locked 记录对写入管线只读。"""
+        from dataclasses import replace
+
+        record = self._require_record(memory_id)
+        if expected_version is not None and int(expected_version) != record.version:
+            raise HarnessMemoryError(
+                f"version_conflict:expected={expected_version},actual={record.version}"
+            )
+        updated = replace(
+            record,
+            write_policy="locked" if locked else "auto",
+            version=record.version + 1,
+            metadata={
+                **record.metadata,
+                "lock_changed_by": actor,
+                "lock_reason": reason,
+            },
+        )
+        self._coordinator.provider.upsert(updated, expected_version=expected_version)
+        operation = "lock" if locked else "unlock"
+        return updated, self._correction_event(operation, updated, actor, reason)
+
+    # ------------------------------------------------------------- 校验辅助
+
+    def _require_record(self, memory_id: str) -> MemoryRecord:
+        record = self._coordinator.provider.get(memory_id)
+        if record is None:
+            raise HarnessMemoryError(f"memory not found: {memory_id}")
+        return record
+
+    def _mark_superseded(self, record: MemoryRecord, *, superseded_by: str, reason: str) -> None:
+        """旧记录落 superseded（移出 active 召回集合，保留审计；provider 直写）。"""
+        from dataclasses import replace
+
+        superseded = replace(
+            record,
+            status="superseded",
+            metadata={
+                **record.metadata,
+                "superseded_by": superseded_by,
+                "supersede_reason": reason,
+            },
+        )
+        self._coordinator.provider.upsert(superseded, expected_version=None)
+
+    @staticmethod
+    def _correction_event(
+        operation: str, record: MemoryRecord, actor: str, reason: str
+    ) -> RuntimeEvent | None:
+        payload = {
+            "scope": str(record.scope),
+            "memory_ref": record.memory_id,
+            "decision": "commit",
+            "operation": operation,
+            "source": f"user_correction:{actor}",
+            "reason": reason,
+        }
+        return RuntimeEvent.create(
+            EventType.MEMORY_WRITE,
+            agent_id="",
+            user_id="",
+            session_id="",
+            invocation_id=record.memory_id,
+            seq_id=1,
+            payload=payload,
+        )
 
     def recall(
         self, *, query: str, scopes: list[tuple[MemoryScope, str]], top_k: int = 8

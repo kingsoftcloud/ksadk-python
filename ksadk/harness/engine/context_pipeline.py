@@ -58,6 +58,9 @@ class EngineContextPipeline:
             for m in history
             if isinstance(m, dict) and m.get("role") in {"user", "assistant", "system"}
         ]
+        # 长任务方案 §9：recall_memory_and_knowledge——规划前检索长期 Memory，
+        # 命中以 system 段注入（planner 按 history_system 高优先级保留）。
+        messages = self._recall_memory(run, messages) + messages
         window, source = self._resolve_window(run)
         plan = self._plan_context(run, messages)
         self._emit_planned(run, plan, window, source)
@@ -109,6 +112,64 @@ class EngineContextPipeline:
         )
         self._emit_context_built(run, plan, projected, window)
         return assembled.messages
+
+    # ------------------------------------------------------------ Memory 召回
+
+    def _recall_memory(self, run: Any, messages: list[Message]) -> list[Message]:
+        """检索长期 Memory 并以 system 段注入（长任务方案 §7.5 / §9）。
+
+        - 检索前先做 scope 允许列表过滤（policy 未启用 → 不检索）；
+        - 每条命中在 ``memory.recalled`` 事件中给出 memory_id/score/injected
+          （injected = 最终被 planner 选入；由 context.built 的 sections
+          佐证，这里记召回集合本身）；
+        - Provider 故障返回空结果（HarnessMemoryRuntime 语义），不污染输入。
+        """
+        if self._memory_runtime is None or not run.compiled.spec.memory_policy.enabled:
+            return []
+        query = str(run.request.input or "").strip()
+        if not query:
+            return []
+        def _scope_id(scope: str) -> str:
+            if scope == "agent":
+                return f"agent:{run.state.agent_id}"
+            return f"user:{run.state.user_id or 'anonymous'}"
+
+        scopes = [
+            (scope, _scope_id(scope))
+            for scope in ("agent", "user")
+            if scope in set(run.compiled.spec.memory_policy.scopes)
+        ]
+        if not scopes:
+            return []
+        result = self._memory_runtime.recall(query=query, scopes=scopes)
+        if result.status != "ok" or not result.records:
+            return []
+        items = []
+        lines: list[str] = []
+        for record in result.records:
+            items.append(
+                {
+                    "memory_id": record.memory_id,
+                    "scope": record.scope,
+                    "score": _keyword_score(query, record.content),
+                    "injected": True,
+                }
+            )
+            lines.append(f"- （长期记忆 {record.memory_id}）{record.summary or record.content}")
+        run.events.append(
+            self._event(
+                run,
+                EventType.MEMORY_RECALLED,
+                {
+                    "scope": ",".join(s for s, _ in scopes),
+                    "query": query[:256],
+                    "items": items,
+                },
+            )
+        )
+        return [
+            Message(role=MessageRole.SYSTEM, content="【相关长期记忆】\n" + "\n".join(lines))
+        ]
 
     # ------------------------------------------------------------ 规划
 
@@ -339,6 +400,15 @@ def count_tokens(text: str) -> int:
     from ksadk.context_engine.tokenizer import get_default_token_counter
 
     return get_default_token_counter().count_text(text)
+
+
+def _keyword_score(query: str, content: str) -> float:
+    """廉价关键词命中率（0~1）：供 memory.recalled 的 items.score 观测。"""
+    terms = [t for t in query.split() if len(t) >= 2]
+    if not terms:
+        return 0.0
+    hits = sum(1 for t in terms if t in content)
+    return round(hits / len(terms), 4)
 
 
 __all__ = ["EngineContextPipeline", "count_tokens"]
