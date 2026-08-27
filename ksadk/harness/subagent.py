@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ksadk.harness.events import RuntimeEvent
-from ksadk.harness.spec import HarnessSpec, ModelBinding, PromptSpec
+from ksadk.harness.spec import CapabilityBindings, HarnessSpec, ModelBinding, PromptSpec
 from ksadk.runtime import StartRequest
 
 
@@ -52,10 +52,15 @@ class SubAgentSpec:
 
 def child_spec(parent_spec: HarnessSpec, sub: SubAgentSpec) -> HarnessSpec:
     """由父 Spec 派生子 Spec（同模型绑定，独立指令）。"""
+    # Skill 是知识型能力，随父 Spec 的 skill_bindings 一起继承给子 Agent；
+    # SkillRuntime 由父引擎透传（skill_composition 装配一次，全家共用）。
     return HarnessSpec(
         agent_revision_ref=parent_spec.agent_revision_ref,
         model=ModelBinding(profile_ref=parent_spec.model.profile_ref),
         prompt=PromptSpec(instructions=sub.instructions),
+        capabilities=CapabilityBindings(
+            skill_bindings=parent_spec.capabilities.skill_bindings
+        ),
     )
 
 
@@ -80,6 +85,7 @@ async def run_subagent(
         reasoner=engine._reasoner,
         checkpointer=None,
         tools={name: engine._tools[name] for name in sub.tools if name in engine._tools},
+        skill_runtime=getattr(engine, "_skill_runtime", None),
     )
     compiled = await child_engine.compile(child_spec(parent_spec, sub))
     child_agent_id = f"{parent_run.state.agent_id}:{sub.name}"

@@ -126,6 +126,7 @@ class ManagedLangGraphEngine:
         self._memory_runtime = memory_runtime
         # SkillRuntime 只消费已绑定、已校验的 Skill 内容；L0 摘要常驻动态
         # Context，L1/L2/L3 由默认 Agent Loop 的受限工具渐进披露。
+        self._skill_runtime = skill_runtime
         self._skill_disclosure = SkillDisclosureBridge(skill_runtime)
         # P3 补强：事件出口回调（session_id, run_id, event）——洞察登记处
         # （ksadk.harness.insights）由此拿到完整事件流，供 Studio API 消费。
