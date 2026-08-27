@@ -18,6 +18,7 @@ import { MoreActionsMenu } from "../components/MoreActionsMenu";
 import { PageHeaderActions } from "../components/PageHeaderPortal";
 import { showToast } from "../components/Toast";
 import { FormField } from "../components/ui/FormField";
+import { StudioDialog } from "../components/ui/StudioDialog";
 import { StudioDataTable, type StudioDataColumn } from "../components/ui/StudioDataTable";
 import { StudioSelect } from "../components/ui/StudioSelect";
 import "./channels.css";
@@ -484,6 +485,9 @@ export function ChannelsPage({ refreshTick }: { refreshTick: number }) {
   const [deleting, setDeleting] = useState(false);
   const [unbindTarget, setUnbindTarget] = useState<ChannelBinding | null>(null);
   const [unbinding, setUnbinding] = useState(false);
+  const [editBindingTarget, setEditBindingTarget] = useState<ChannelBinding | null>(null);
+  const [editSessionId, setEditSessionId] = useState("");
+  const [editSubmitting, setEditSubmitting] = useState(false);
   const [actionTarget, setActionTarget] = useState<PairingRequest | null>(null);
   const [actionKind, setActionKind] = useState<"approve" | "reject" | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
@@ -625,6 +629,23 @@ export function ChannelsPage({ refreshTick }: { refreshTick: number }) {
       showToast("解绑失败", error instanceof Error ? error.message : "请稍后重试", "error");
     } finally {
       setUnbinding(false);
+    }
+  }
+
+  async function submitEditBinding() {
+    if (!editBindingTarget) return;
+    const sessionId = editSessionId.trim();
+    if (!sessionId) return;
+    setEditSubmitting(true);
+    try {
+      await channelApi("UpdateBinding", { Id: editBindingTarget.Id, SessionId: sessionId });
+      setBindings(prev => prev.map(b => b.Id === editBindingTarget.Id ? { ...b, SessionId: sessionId } : b));
+      showToast("会话关联成功", `会话已关联到 ${sessionId}`);
+      setEditBindingTarget(null);
+    } catch (error) {
+      showToast("关联失败", error instanceof Error ? error.message : "请稍后重试", "error");
+    } finally {
+      setEditSubmitting(false);
     }
   }
 
@@ -832,6 +853,7 @@ export function ChannelsPage({ refreshTick }: { refreshTick: number }) {
         <MoreActionsMenu
           label={`会话绑定 ${bd.SessionId} 操作`}
           items={[
+            { label: "编辑会话", onSelect: () => { setEditBindingTarget(bd); setEditSessionId(bd.SessionId); } },
             { label: "解绑", danger: true, onSelect: () => setUnbindTarget(bd) },
           ]}
         />
@@ -1225,6 +1247,34 @@ export function ChannelsPage({ refreshTick }: { refreshTick: number }) {
           onConfirm={confirmUnbind}
           onCancel={() => setUnbindTarget(null)}
         />
+      )}
+
+      {editBindingTarget && (
+        <StudioDialog
+          open
+          onOpenChange={open => { if (!open && !editSubmitting) setEditBindingTarget(null); }}
+          title="编辑会话绑定"
+          closeDisabled={editSubmitting}
+          footer={(
+            <>
+              <button className="button tertiary" type="button" onClick={() => setEditBindingTarget(null)} disabled={editSubmitting}>取消</button>
+              <button className="button accent" type="button" onClick={submitEditBinding} disabled={editSubmitting || !editSessionId.trim()}>
+                {editSubmitting ? "处理中…" : "关联"}
+              </button>
+            </>
+          )}
+        >
+          <FormField label="Session ID" htmlFor="edit-binding-session-id" requirement="required">
+            <input
+              id="edit-binding-session-id"
+              value={editSessionId}
+              onChange={event => setEditSessionId(event.target.value)}
+              placeholder="输入要关联的 Studio 会话 ID"
+              required
+            />
+          </FormField>
+          <p className="channels-page__form-hint">将此绑定关联到 Studio 中的会话，用户在 IM 发送的消息将使用此 SessionId 调用 Agent Runtime，实现 Studio 会话和 IM 会话的互通。</p>
+        </StudioDialog>
       )}
 
       {actionTarget && actionKind && (

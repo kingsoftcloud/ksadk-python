@@ -123,6 +123,13 @@
   min-width: 0;
 }
 
+.channels-page__form-hint {
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: var(--font-size-caption);
+  line-height: 1.6;
+}
+
 .channels-page__field--wide {
   grid-column: 1 / -1;
 }
