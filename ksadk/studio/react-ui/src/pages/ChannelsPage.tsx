@@ -124,6 +124,7 @@ interface ChannelBinding {
   SessionId: string;
   UserId: string;
   CreatedAt: string;
+  UpdatedAt?: string;
 }
 
 interface ChannelMessage {
@@ -332,6 +333,7 @@ const SEED_BINDINGS: ChannelBinding[] = [
     SessionId: "sess-20260826-001",
     UserId: "u-wang5",
     CreatedAt: "2026-08-26T16:20:00",
+    UpdatedAt: "2026-08-27T09:15:00",
   },
   {
     Id: "bind-002",
@@ -345,6 +347,7 @@ const SEED_BINDINGS: ChannelBinding[] = [
     SessionId: "sess-20260825-002",
     UserId: "u-zhao6",
     CreatedAt: "2026-08-25T11:00:00",
+    UpdatedAt: "2026-08-26T14:30:00",
   },
 ];
 
@@ -479,6 +482,8 @@ export function ChannelsPage({ refreshTick }: { refreshTick: number }) {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Channel | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [unbindTarget, setUnbindTarget] = useState<ChannelBinding | null>(null);
+  const [unbinding, setUnbinding] = useState(false);
   const [actionTarget, setActionTarget] = useState<PairingRequest | null>(null);
   const [actionKind, setActionKind] = useState<"approve" | "reject" | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
@@ -605,6 +610,21 @@ export function ChannelsPage({ refreshTick }: { refreshTick: number }) {
       showToast("渠道删除失败", error instanceof Error ? error.message : "请稍后重试", "error");
     } finally {
       setDeleting(false);
+    }
+  }
+
+  async function confirmUnbind() {
+    if (!unbindTarget) return;
+    setUnbinding(true);
+    try {
+      await channelApi("DeleteBinding", { Id: unbindTarget.Id });
+      setBindings(prev => prev.filter(b => b.Id !== unbindTarget.Id));
+      showToast("解绑成功", `会话 ${unbindTarget.SessionId} 已解绑`);
+      setUnbindTarget(null);
+    } catch (error) {
+      showToast("解绑失败", error instanceof Error ? error.message : "请稍后重试", "error");
+    } finally {
+      setUnbinding(false);
     }
   }
 
@@ -804,6 +824,19 @@ export function ChannelsPage({ refreshTick }: { refreshTick: number }) {
       minWidth: 140,
       cell: bd => formatChannelDate(bd.CreatedAt),
     },
+    {
+      id: "actions",
+      header: "",
+      width: 48,
+      cell: bd => (
+        <MoreActionsMenu
+          label={`会话绑定 ${bd.SessionId} 操作`}
+          items={[
+            { label: "解绑", danger: true, onSelect: () => setUnbindTarget(bd) },
+          ]}
+        />
+      ),
+    },
   ], []);
 
   const messageColumns = useMemo<StudioDataColumn<ChannelMessage>[]>(() => [
@@ -958,6 +991,34 @@ export function ChannelsPage({ refreshTick }: { refreshTick: number }) {
             caption="会话绑定列表"
             minWidth={900}
             empty={{ icon: <Link2 size={22} />, title: "没有会话绑定", description: "用户通过配对后，会话绑定将出现在这里。" }}
+            expandRowContent={bd => (
+              <div className="channels-page__message-detail">
+                <pre className="channels-page__message-payload">
+                  {JSON.stringify({
+                    PeerId: bd.PeerId,
+                    GroupId: bd.GroupId,
+                    SenderId: bd.SenderId,
+                    AgentId: bd.AgentId,
+                    SessionId: bd.SessionId,
+                    UserId: bd.UserId,
+                    Channel: bd.Channel,
+                    ChannelAccountId: bd.ChannelAccountId,
+                    ChatType: bd.ChatType,
+                    CreatedAt: bd.CreatedAt,
+                    UpdatedAt: bd.UpdatedAt,
+                  }, null, 2)}
+                </pre>
+                <div className="channels-page__message-meta-row">
+                  <span><small>Agent</small><code className="mono">{bd.AgentId || "-"}</code></span>
+                  <span><small>Session</small><code className="mono">{bd.SessionId || "-"}</code></span>
+                  <span><small>对端 ID</small><code className="mono">{bd.PeerId || "-"}</code></span>
+                  <span><small>群 ID</small><code className="mono">{bd.GroupId || "-"}</code></span>
+                  <span><small>发送者 ID</small><code className="mono">{bd.SenderId || "-"}</code></span>
+                  <span><small>用户 ID</small><code className="mono">{bd.UserId || "-"}</code></span>
+                  {bd.UpdatedAt && <span><small>更新时间</small>{formatChannelDate(bd.UpdatedAt)}</span>}
+                </div>
+              </div>
+            )}
           />
         </section>
       )}
@@ -1151,6 +1212,18 @@ export function ChannelsPage({ refreshTick }: { refreshTick: number }) {
           busy={deleting}
           onConfirm={confirmDelete}
           onCancel={() => setDeleteTarget(null)}
+        />
+      )}
+
+      {unbindTarget && (
+        <ConfirmDialog
+          title="解绑会话"
+          description="解绑后该用户下次发消息将重新走配对流程，确认解绑？"
+          confirmText="解绑"
+          danger
+          busy={unbinding}
+          onConfirm={confirmUnbind}
+          onCancel={() => setUnbindTarget(null)}
         />
       )}
 
