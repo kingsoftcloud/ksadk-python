@@ -126,3 +126,84 @@ class TestWorkingContextUpdates:
         working = record_tool_result(working, name="q", result_text="审批号 AP-1024")
         working = record_tool_result(working, name="q", result_text="审批号 AP-1024")
         assert len(working.verified_facts) == 1
+
+
+class TestWorkingContextRebuildFromTranscript:
+    """长任务方案 MVP 第 6 条：Working Context 可从 Transcript 重建。"""
+
+    def _append_tool_end(self, store, *, seq, name, result=None, error=None):
+        from ksadk.harness.events import EventType, RuntimeEvent
+
+        payload = {"call_id": f"call-{seq}", "name": name}
+        if error is not None:
+            payload["error"] = error
+        else:
+            payload["result"] = result
+        store.append_event(
+            tenant_id="t1",
+            session_id="s1",
+            event=RuntimeEvent.create(
+                EventType.TOOL_CALL_END,
+                agent_id="a1",
+                user_id="u1",
+                session_id="s1",
+                invocation_id="r1",
+                seq_id=seq,
+                payload=payload,
+            ),
+        )
+
+    def test_rebuild_replays_tool_events_deterministically(self):
+        """重放 Transcript 工具事件 == 引擎内原始 Working Context 演进。"""
+        store = SqliteSessionStore()
+        self._append_tool_end(
+            store, seq=10, name="query_invoice", result="发票 INV-2026-0001 金额 ¥12,300"
+        )
+        self._append_tool_end(store, seq=11, name="query_budget", error="timeout")
+        self._append_tool_end(store, seq=12, name="query_report", result="审批号 AP-1024")
+
+        # 引擎内相同的确定性规则演进。
+        expected = WorkingContext()
+        expected = record_tool_result(
+            expected, name="query_invoice", result_text="发票 INV-2026-0001 金额 ¥12,300"
+        )
+        expected = record_tool_failure(expected, name="query_budget", error="timeout")
+        expected = record_tool_result(expected, name="query_report", result_text="审批号 AP-1024")
+
+        rebuilt = store.rebuild_working_context(tenant_id="t1", session_id="s1")
+        assert rebuilt == expected, "重放结果必须与原始演进一致（含 version）"
+
+    def test_rebuild_state_includes_working_context(self):
+        store = SqliteSessionStore()
+        self._append_tool_end(store, seq=1, name="q", result="审批号 AP-1024")
+        state = store.rebuild_state(tenant_id="t1", user_id="u1", agent_id="a1", session_id="s1")
+        assert "AP-1024" in " ".join(state.working_context.verified_facts)
+
+    def test_recover_adopts_tool_derived_fields_keeps_goal(self):
+        """Transcript 重放的工具派生字段覆盖 Checkpoint；goal 等语义字段保留。"""
+        store = SqliteSessionStore()
+        for seq, message in enumerate(_messages(2)):
+            store.append_message(tenant_id="t1", session_id="s1", message=message, seq=seq)
+        self._append_tool_end(store, seq=5, name="q", result="审批号 AP-1024")
+
+        stale = _state(2)
+        stale.working_context = WorkingContext(goal="分析预算差异")
+
+        recovered, event = store.recover(stale, invocation_id="r1")
+        # 消息一致但 Working Context 工具派生字段落后 → 仍触发恢复。
+        assert event is not None
+        assert recovered.working_context.goal == "分析预算差异"
+        assert "AP-1024" in " ".join(recovered.working_context.verified_facts)
+
+    def test_recover_no_event_when_tool_fields_match(self):
+        store = SqliteSessionStore()
+        for seq, message in enumerate(_messages(2)):
+            store.append_message(tenant_id="t1", session_id="s1", message=message, seq=seq)
+        state = _state(2)
+        state.working_context = record_tool_result(
+            state.working_context, name="q", result_text="审批号 AP-1024"
+        )
+        self._append_tool_end(store, seq=5, name="q", result="审批号 AP-1024")
+        recovered, event = store.recover(state, invocation_id="r1")
+        assert event is None
+        assert recovered.working_context == state.working_context

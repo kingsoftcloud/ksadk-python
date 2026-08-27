@@ -462,16 +462,19 @@ class ManagedLangGraphEngine:
             except ReasoningLimitError as exc:
                 raise RuntimeError(str(exc)) from exc
             for ev in out.events:
-                run.events.append(ev)
-                run.seq = max(run.seq, ev.seq_id)
                 # 长任务方案 §6.3：Actual Token 回填到最近一次 ContextManifest
-                # （actual_usage_ref 指向 usage.reported 事件）。
+                # （actual_usage_ref 指向 usage.reported 事件）。同时在 usage
+                # 事件 payload 落 manifest_id —— 事件流层面可直接查询
+                # 「某次模型调用实际对应哪个 Manifest」（§6.2 闭环）。
                 if ev.event_type == EventType.USAGE_REPORTED and run.context_manifest:
+                    ev.payload["manifest_id"] = run.context_manifest.manifest_id
                     run.context_manifest = run.context_manifest.with_actual(
                         input_tokens=int(ev.payload.get("input_tokens") or 0),
                         output_tokens=int(ev.payload.get("output_tokens") or 0),
                         usage_ref=ev.event_id,
                     )
+                run.events.append(ev)
+                run.seq = max(run.seq, ev.seq_id)
             state["messages"].extend(out.new_messages)
             state["pending_tool_calls"] = out.pending_tool_calls
             state["route"] = out.route

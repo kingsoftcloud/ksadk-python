@@ -90,6 +90,16 @@ def test_compaction_trace_and_token_report():
     assert report["compactions"] >= 1
     assert report["actual_total_input_tokens"] == 640
     assert report["actual_total_output_tokens"] == 32
+    # Planned/Projected/Actual 闭环：usage 事件携带 manifest_id，
+    # 可稳定查询「某次模型调用实际对应哪个 Manifest」。
+    assert all(u["manifest_id"] for u in report["usage_events"])
+    manifests = context_trace(events)
+    last = manifests[-1]
+    assert last["actual"]["input_tokens"] == 640
+    assert last["actual"]["usage_event_id"]
+    # 有 usage 的 manifest 必须能按 manifest_id 配对回 usage 事件。
+    by_manifest = {u["manifest_id"] for u in report["usage_events"]}
+    assert last["manifest_id"] in by_manifest
 
 
 # ------------------------------------------------------------- Store 适配

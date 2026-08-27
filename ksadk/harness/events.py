@@ -24,6 +24,18 @@ from pydantic import BaseModel, Field
 
 #: additive 演进锚点。冻结为 1;只增不改。
 SCHEMA_VERSION: Literal[1] = 1
+#: v2 信封版本（长任务方案 §8）：run_id / scope_id / parent_scope_id。
+V2_SCHEMA_VERSION: Literal[2] = 2
+
+
+def project_v2(events: list["RuntimeEvent"]) -> list["RuntimeEvent"]:
+    """整流事件流为 v2（长任务方案 §8 平台输出边界）。
+
+    Harness 内部可保留 v1 兼容事件；向平台（server/gateway/Studio）输出前
+    经本函数统一升级。子 Agent 事件以 ``agent.started`` 中的父信息标记
+    parent_scope_id（事件树已有 child → parent 映射时直接透传）。
+    """
+    return [event.to_v2() for event in events]
 
 
 class EventPhase(str, Enum):
@@ -246,13 +258,21 @@ _PHASE_AWARE_TYPES: frozenset[str] = frozenset(
 
 
 class RuntimeEvent(BaseModel):
-    """RuntimeEvent v1 信封。
+    """RuntimeEvent 事件信封（v1 / v2）。
 
-    字段全部硬冻结(additive 演进只允许新增可选字段)。``payload`` 按 event_type
-    承载,最低必填键见 :data:`EVENT_PAYLOAD_REQUIRED_KEYS`。
+    - **v1**（``schema_version=1``）：字段硬冻结（additive 只允许新增可选字段）；
+    - **v2**（``schema_version=2``，长任务方案 §8）：信封新增
+      ``run_id`` / ``scope_id`` / ``parent_scope_id``，使 Studio 能展示单 Agent
+      与多 Agent 的 Context、Memory 和 Token 层级。v2 必须 ``run_id`` +
+      ``scope_id`` 齐全（conformance 强制）。
+
+    v1 事件可经 :meth:`to_v2` 无损升级（``run_id`` 取 ``invocation_id``，
+    ``scope_id`` 取 ``agent_id``）；反序列化同时接受 v1/v2。
+    ``payload`` 按 event_type 承载,最低必填键见
+    :data:`EVENT_PAYLOAD_REQUIRED_KEYS`。
     """
 
-    schema_version: Literal[1] = SCHEMA_VERSION
+    schema_version: Literal[1, 2] = SCHEMA_VERSION
     event_id: str
     event_type: str
     timestamp: float
@@ -263,6 +283,13 @@ class RuntimeEvent(BaseModel):
     seq_id: int
     phase: Optional[Literal["commentary", "final_answer"]] = None
     payload: dict[str, Any] = Field(default_factory=dict)
+    # ---- v2 信封增量（长任务方案 §8）----
+    #: 本事件所属 Run（v1 中由 invocation_id 承载；v2 显式命名）。
+    run_id: Optional[str] = None
+    #: 作用域（单 Agent：agent:<id>；子 Agent 带 parent_scope_id）。
+    scope_id: Optional[str] = None
+    #: 父作用域（子 Agent 事件的父 Agent scope；顶层为空）。
+    parent_scope_id: Optional[str] = None
 
     # ---- 构造 ----
 
@@ -280,9 +307,20 @@ class RuntimeEvent(BaseModel):
         phase: Optional[str] = None,
         event_id: Optional[str] = None,
         timestamp: Optional[float] = None,
+        # v2 信封（长任务方案 §8）：传入 run_id/scope_id 即构造 v2 事件。
+        run_id: Optional[str] = None,
+        scope_id: Optional[str] = None,
+        parent_scope_id: Optional[str] = None,
     ) -> "RuntimeEvent":
-        """便捷构造:自动补 event_id / timestamp,并按 event_type 校验相位与 payload。"""
+        """便捷构造:自动补 event_id / timestamp,并按 event_type 校验相位与 payload。
+
+        传入 ``run_id``/``scope_id`` 构造 v2 信封（schema_version=2）。
+        """
+        schema_version: int = 1
+        if run_id is not None or scope_id is not None or parent_scope_id is not None:
+            schema_version = 2
         event = cls(
+            schema_version=schema_version,  # type: ignore[arg-type]
             event_id=event_id or f"evt_{uuid.uuid4().hex}",
             event_type=event_type,
             timestamp=time.time() if timestamp is None else timestamp,
@@ -293,6 +331,9 @@ class RuntimeEvent(BaseModel):
             seq_id=seq_id,
             phase=phase,  # type: ignore[arg-type]
             payload=payload or {},
+            run_id=run_id,
+            scope_id=scope_id,
+            parent_scope_id=parent_scope_id,
         )
         event.validate_conformance()
         return event
@@ -322,12 +363,34 @@ class RuntimeEvent(BaseModel):
         event.validate_conformance()
         return event
 
+    # ---- v2 升级 ----
+
+    def to_v2(
+        self, *, parent_scope_id: Optional[str] = None
+    ) -> "RuntimeEvent":
+        """无损升级为 v2 信封（长任务方案 §8）。
+
+        ``run_id`` 取 ``invocation_id``，``scope_id`` 取 ``agent:<agent_id>``。
+        已是 v2 且未传 ``parent_scope_id`` 时原样返回。
+        """
+        if self.schema_version == 2 and parent_scope_id is None:
+            return self
+        return self.model_copy(
+            update={
+                "schema_version": 2,
+                "run_id": self.run_id or self.invocation_id,
+                "scope_id": self.scope_id or f"agent:{self.agent_id}",
+                "parent_scope_id": parent_scope_id,
+            }
+        )
+
     # ---- conformance ----
 
     def validate_conformance(self) -> None:
-        """按 v1 契约校验:事件类型已知、相位仅用于 text/reasoning、payload 必填键齐全。
+        """按契约校验:事件类型已知、相位仅用于 text/reasoning、payload 必填键齐全。
 
         additive 演进:允许 payload 含额外键(不作 strict 拒绝),只校验最低必填键。
+        v2 信封额外要求 ``run_id`` 与 ``scope_id`` 齐全（长任务方案 §8）。
         未知 event_type / 缺必填键 / 相位滥用抛 :class:`ValueError`。
         """
         if self.event_type not in ALL_EVENT_TYPES:
@@ -340,6 +403,8 @@ class RuntimeEvent(BaseModel):
         missing = required - set(self.payload.keys())
         if missing:
             raise ValueError(f"event_type {self.event_type!r} payload 缺必填键: {sorted(missing)}")
+        if self.schema_version == 2 and (not self.run_id or not self.scope_id):
+            raise ValueError("v2 信封必须携带 run_id 与 scope_id（长任务方案 §8）")
 
 
 __all__ = [
@@ -349,4 +414,6 @@ __all__ = [
     "EventType",
     "RuntimeEvent",
     "SCHEMA_VERSION",
+    "V2_SCHEMA_VERSION",
+    "project_v2",
 ]

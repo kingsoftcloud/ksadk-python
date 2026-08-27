@@ -20,21 +20,30 @@ from ksadk.harness.events import EventType, RuntimeEvent
 
 
 def context_trace(events: Sequence[RuntimeEvent]) -> list[dict[str, Any]]:
-    """context.built 序列 → manifest 快照列表（Actual 由同流 usage 配对）。"""
-    usage_by_ref: dict[str, dict[str, int]] = {}
-    manifests: list[dict[str, Any]] = []
+    """context.built 序列 → manifest 快照列表。
+
+    Actual 闭环（长任务方案 §6.2/§6.3）：usage.reported 事件 payload 带
+    ``manifest_id``（引擎回填 Actual 时落账），据此把每次模型调用的实际
+    Token 关联回对应 Manifest —— 可稳定查询「某次调用实际对应哪个 Manifest」。
+    """
+    usage_by_manifest: dict[str, dict[str, Any]] = {}
     for event in events:
-        if event.event_type == EventType.USAGE_REPORTED:
-            usage_by_ref[event.event_id] = {
+        if event.event_type == EventType.USAGE_REPORTED and event.payload.get("manifest_id"):
+            usage_by_manifest[str(event.payload["manifest_id"])] = {
+                "usage_event_id": event.event_id,
                 "input_tokens": int(event.payload.get("input_tokens") or 0),
                 "output_tokens": int(event.payload.get("output_tokens") or 0),
                 "total_tokens": int(event.payload.get("total_tokens") or 0),
             }
+    manifests: list[dict[str, Any]] = []
     for event in events:
         if event.event_type != EventType.CONTEXT_BUILT:
             continue
         payload = dict(event.payload)
         payload["seq_id"] = event.seq_id
+        usage = usage_by_manifest.get(payload.get("manifest_id", ""))
+        if usage is not None:
+            payload["actual"] = usage
         manifests.append(payload)
     return manifests
 
@@ -56,6 +65,7 @@ def token_report(events: Sequence[RuntimeEvent]) -> dict[str, Any]:
     manifests = context_trace(events)
     usages = [
         {
+            "manifest_id": str(e.payload.get("manifest_id") or ""),
             "input_tokens": int(e.payload.get("input_tokens") or 0),
             "output_tokens": int(e.payload.get("output_tokens") or 0),
             "total_tokens": int(e.payload.get("total_tokens") or 0),
@@ -67,6 +77,8 @@ def token_report(events: Sequence[RuntimeEvent]) -> dict[str, Any]:
         "manifest_count": len(manifests),
         "planned_tokens": [m.get("planned_tokens") for m in manifests],
         "projected_tokens": [m.get("projected_tokens") for m in manifests],
+        "actual": [m.get("actual") for m in manifests if m.get("actual")],
+        "usage_events": usages,
         "actual_total_input_tokens": sum(u["input_tokens"] for u in usages),
         "actual_total_output_tokens": sum(u["output_tokens"] for u in usages),
         "compactions": len(compaction_trace(events)),
