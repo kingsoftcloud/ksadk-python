@@ -34,7 +34,11 @@ from ksadk.harness.artifact_store import ArtifactStore
 from ksadk.harness.capabilities import RiskLevel
 from ksadk.harness.engine.base import ExecutionEngineError
 from ksadk.harness.events import EventType, RuntimeEvent
-from ksadk.harness.mcp_runtime import McpCapabilityRuntime, McpRuntimeError
+from ksadk.harness.mcp_runtime import (
+    McpCapabilityRuntime,
+    McpRuntimeError,
+    McpToolCallContext,
+)
 from ksadk.harness.spec import HarnessSpec
 
 MCP_LIST_TOOLS_TOOL = "mcp_list_tools"
@@ -296,6 +300,7 @@ class McpDisclosureBridge:
         run: Any,
         cursors: McpDisclosureCursors,
         pending_events: dict[str, list[RuntimeEvent]],
+        call_id: str = "",
     ) -> dict[str, Any]:
         if run is None or self._runtime is None:
             raise McpDisclosureError("MCP 披露工具只能在已装配 McpRuntime 的 Run 内调用")
@@ -308,7 +313,15 @@ class McpDisclosureBridge:
             raise McpDisclosureError(f"{name} 缺少 tool_name")
         if name == MCP_READ_SCHEMA_TOOL:
             return await self._read_schema(run, server_id, tool_name, cursors, pending_events)
-        return await self._call_tool(run, server_id, tool_name, arguments, cursors, pending_events)
+        return await self._call_tool(
+            run,
+            server_id,
+            tool_name,
+            arguments,
+            cursors,
+            pending_events,
+            call_id=call_id,
+        )
 
     # ------------------------------------------------------------ 内部
 
@@ -393,6 +406,8 @@ class McpDisclosureBridge:
         arguments: dict[str, Any],
         cursors: McpDisclosureCursors,
         pending_events: dict[str, list[RuntimeEvent]],
+        *,
+        call_id: str,
     ) -> dict[str, Any]:
         # 校验模型不能跳过 Schema 直接调用未知 Tool（P0 要求 3）。
         if (run.handle.run_id, server_id, tool_name) not in cursors.schema_read:
@@ -402,7 +417,20 @@ class McpDisclosureBridge:
         call_arguments = arguments.get("arguments")
         if not isinstance(call_arguments, dict):
             raise McpDisclosureError("mcp_call_tool 缺少 arguments 对象")
-        result = await self._runtime.call(server_id, tool_name, call_arguments)
+        context = (
+            McpToolCallContext.create(
+                invocation_id=run.handle.run_id,
+                call_id=call_id,
+            )
+            if call_id
+            else None
+        )
+        result = await self._runtime.call(
+            server_id,
+            tool_name,
+            call_arguments,
+            context=context,
+        )
         rendered = result if isinstance(result, (str, int, float, bool)) else json.dumps(
             result, ensure_ascii=False, default=str
         )

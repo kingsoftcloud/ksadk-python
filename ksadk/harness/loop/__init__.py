@@ -17,19 +17,23 @@ from ksadk.harness.loop.reason import (
 )
 from ksadk.harness.loop.tools import (
     ApprovalResolver,
+    ContextualToolExecutor,
     ToolCallInput,
     ToolCallOutput,
+    ToolExecutionContext,
     ToolExecutor,
     execute_tool_calls,
 )
 
 __all__ = [
     "ApprovalResolver",
+    "ContextualToolExecutor",
     "ReasonInput",
     "ReasonOutput",
     "ReasoningLimitError",
     "ToolCallInput",
     "ToolCallOutput",
+    "ToolExecutionContext",
     "ToolExecutor",
     "execute_tool_calls",
     "reason_turn_async",

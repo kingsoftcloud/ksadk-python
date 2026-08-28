@@ -11,9 +11,10 @@ Schema 校验（无效 Tool 隔离）→ 调用 → 降级决策。
 
 from __future__ import annotations
 
+import hashlib
 import time
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from ksadk.harness.capabilities import CapabilityDescriptor
 
@@ -28,6 +29,36 @@ class McpTransport(Protocol):
     async def list_tools(self) -> list[dict[str, Any]]: ...
 
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any: ...
+
+
+@dataclass(frozen=True)
+class McpToolCallContext:
+    """传给显式支持幂等的 MCP Transport 的低信任调用元数据。"""
+
+    invocation_id: str
+    call_id: str
+    idempotency_key: str
+
+    @classmethod
+    def create(cls, *, invocation_id: str, call_id: str) -> McpToolCallContext:
+        digest = hashlib.sha256(f"{invocation_id}\0{call_id}".encode()).hexdigest()
+        return cls(
+            invocation_id=invocation_id,
+            call_id=call_id,
+            idempotency_key=f"ksadk-{digest}",
+        )
+
+
+class IdempotentMcpTransport(McpTransport, Protocol):
+    """可把稳定幂等键传到远端 MCP/Gateway 的扩展 Transport。"""
+
+    async def call_tool_with_context(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        context: McpToolCallContext,
+    ) -> Any: ...
 
 
 @dataclass
@@ -48,6 +79,9 @@ class McpServerBinding:
     required: bool = False
     #: 工具前缀（避免跨服务器重名）。
     tool_prefix: str = ""
+    #: ``transport`` 表示 Transport 能将幂等键透传到真正执行副作用的服务。
+    #: 默认 ``none`` 保持旧 MCP Transport 行为，不虚假承诺 exactly-once。
+    idempotency_mode: Literal["none", "transport"] = "none"
 
 
 @dataclass
@@ -81,6 +115,13 @@ class McpCapabilityRuntime:
     # ------------------------------------------------------------- 注册
 
     def bind(self, binding: McpServerBinding) -> None:
+        if binding.idempotency_mode == "transport" and not callable(
+            getattr(binding.transport, "call_tool_with_context", None)
+        ):
+            raise McpRuntimeError(
+                f"mcp {binding.descriptor.id} 声明 transport 幂等，"
+                "但 Transport 未实现 call_tool_with_context"
+            )
         self._servers[binding.descriptor.id] = binding
         self._health.setdefault(binding.descriptor.id, _HealthState())
 
@@ -163,14 +204,29 @@ class McpCapabilityRuntime:
 
     # ------------------------------------------------------------- 调用
 
-    async def call(self, server_id: str, tool_name: str, arguments: dict[str, Any]) -> Any:
+    async def call(
+        self,
+        server_id: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+        *,
+        context: McpToolCallContext | None = None,
+    ) -> Any:
         """调用（熔断打开时抛结构化错误）。"""
         binding = self.binding(server_id)
         state = self._health[server_id]
         if state.opened_at is not None:
             raise McpRuntimeError(f"mcp {server_id} circuit open")
         try:
-            result = await binding.transport.call_tool(tool_name, arguments)
+            if binding.idempotency_mode == "transport":
+                if context is None:
+                    raise McpRuntimeError(
+                        f"mcp {server_id} 的 transport 幂等调用缺少稳定调用上下文"
+                    )
+                call_with_context = getattr(binding.transport, "call_tool_with_context")
+                result = await call_with_context(tool_name, arguments, context=context)
+            else:
+                result = await binding.transport.call_tool(tool_name, arguments)
         except Exception as exc:  # noqa: BLE001
             state.consecutive_failures += 1
             if state.consecutive_failures >= self._options.failure_threshold:
@@ -199,6 +255,8 @@ class McpCapabilityRuntime:
 __all__ = [
     "McpCapabilityRuntime",
     "McpHealthReport",
+    "McpToolCallContext",
+    "IdempotentMcpTransport",
     "McpRuntimeError",
     "McpRuntimeOptions",
     "McpServerBinding",

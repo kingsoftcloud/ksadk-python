@@ -63,6 +63,8 @@ class _OpenAIHandler(BaseHTTPRequestHandler):
 
 class _ToolHandler(BaseHTTPRequestHandler):
     calls: list[dict] = []
+    attempts: list[dict] = []
+    idempotent_results: dict[str, dict] = {}
 
     def do_POST(self):  # noqa: N802 - BaseHTTPRequestHandler API
         if self.path != "/tool":
@@ -70,8 +72,15 @@ class _ToolHandler(BaseHTTPRequestHandler):
             return
         length = int(self.headers.get("Content-Length", "0"))
         payload = json.loads(self.rfile.read(length))
-        type(self).calls.append(payload)
-        body = json.dumps({"status": "paid", "receipt": "receipt-e2e-1"}).encode("utf-8")
+        idempotency_key = self.headers.get("Idempotency-Key", "")
+        type(self).attempts.append({"payload": payload, "idempotency_key": idempotency_key})
+        result = type(self).idempotent_results.get(idempotency_key) if idempotency_key else None
+        if result is None:
+            type(self).calls.append(payload)
+            result = {"status": "paid", "receipt": "receipt-e2e-1"}
+            if idempotency_key:
+                type(self).idempotent_results[idempotency_key] = result
+        body = json.dumps(result).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -92,6 +101,8 @@ def _start_model_server():
 
 def _start_tool_server():
     _ToolHandler.calls = []
+    _ToolHandler.attempts = []
+    _ToolHandler.idempotent_results = {}
     server = ThreadingHTTPServer(("127.0.0.1", 0), _ToolHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -396,6 +407,94 @@ def test_tool_receipt_replays_after_crash_before_graph_checkpoint(tmp_path):
             and event["payload"].get("replayed") is True
         ]
         assert replayed
+        assert completed["events"][-1]["event_type"] == "run.completed"
+    finally:
+        manager.close()
+        tool_server.shutdown()
+        tool_server.server_close()
+        thread.join(timeout=3)
+
+
+def test_transport_idempotency_closes_crash_before_receipt_window(tmp_path):
+    """外部成功但 Receipt 前崩溃：恢复会重试请求，业务副作用仍只有一次。"""
+    tool_server, thread = _start_tool_server()
+    manager = LocalLifecycleManager()
+    payload = _revision_payload()
+    payload["capabilities"] = {
+        "mcpBindings": [{"bindingRef": "mcp://finance-tools@1.0.0"}]
+    }
+    crash_marker = tmp_path / "crash-before-receipt.marker"
+    command = [
+        sys.executable,
+        "-m",
+        "tests.harness.runtime_approval_fixture",
+        "--spec-file",
+        "{spec_file}",
+        "--route",
+        "{route}",
+        "--deployment-id",
+        "{deployment_id}",
+        "--port",
+        "{port}",
+        "--build-id",
+        "{build_id}",
+        "--content-hash",
+        "{content_hash}",
+        "--state-dir",
+        "{state_dir}",
+        "--tool-url",
+        f"http://127.0.0.1:{tool_server.server_port}/tool",
+        "--idempotent-transport",
+        "--crash-before-receipt",
+        str(crash_marker),
+    ]
+    try:
+        manifest = manager.build(
+            revision_payload=payload,
+            revision_ref="agent-revision://idempotency-crash-e2e@1",
+        )
+        deployment = manager.deploy(
+            manifest=manifest,
+            revision_payload=payload,
+            route="studio://idempotency-crash-e2e/local",
+            launch_process=True,
+            server_command=command,
+        )
+        manager.activate("studio://idempotency-crash-e2e/local")
+        interrupted = manager.invoke_run(
+            route="studio://idempotency-crash-e2e/local",
+            invocation_id="run-idempotency-crash-e2e",
+            input="支付发票 INV-E2E-1，金额 88 元",
+            user_id="user-e2e",
+            session_id="session-e2e",
+        )
+        assert interrupted["status"] == "awaiting_approval"
+
+        crashing_process = deployment.process
+        assert crashing_process is not None
+        with pytest.raises((LifecycleError, urllib.error.URLError, ConnectionError)):
+            _post_json(
+                f"{deployment.base_url}/runs/run-idempotency-crash-e2e:resume",
+                {"decision": "approved", "callId": "pay-invoice", "stream": False},
+                timeout=30,
+            )
+        assert _wait_for_process_exit(crashing_process) == 92
+        assert crash_marker.read_text(encoding="utf-8") == "external-success-before-receipt"
+        assert len(_ToolHandler.calls) == 1
+        assert len(_ToolHandler.attempts) == 1
+        first_key = _ToolHandler.attempts[0]["idempotency_key"]
+        assert first_key.startswith("ksadk-")
+
+        deployment.restart_process()
+        completed = _post_json(
+            f"{deployment.base_url}/runs/run-idempotency-crash-e2e:resume",
+            {"decision": "approved", "callId": "pay-invoice", "stream": False},
+            timeout=30,
+        )
+        assert completed["status"] == "completed"
+        assert len(_ToolHandler.attempts) == 2, "Receipt 前崩溃后 Harness 必须安全重试"
+        assert _ToolHandler.attempts[1]["idempotency_key"] == first_key
+        assert len(_ToolHandler.calls) == 1, "远端按稳定幂等键去重，业务副作用只能发生一次"
         assert completed["events"][-1]["event_type"] == "run.completed"
     finally:
         manager.close()

@@ -18,7 +18,9 @@ from ksadk.harness.engine.mcp_disclosure import (
 from ksadk.harness.events import EventType
 from ksadk.harness.mcp_runtime import (
     McpCapabilityRuntime,
+    McpRuntimeError,
     McpServerBinding,
+    McpToolCallContext,
     McpTransport,
 )
 from ksadk.harness.reasoner import HarnessReasoningTurn, HarnessToolCall
@@ -70,6 +72,22 @@ class _FakeTransport(McpTransport):
         return {"status": "ok", "tool": name, "echo": arguments}
 
 
+class _IdempotentTransport(_FakeTransport):
+    def __init__(self, tools: dict[str, dict]):
+        super().__init__(tools)
+        self.contexts: list[McpToolCallContext] = []
+
+    async def call_tool_with_context(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        context: McpToolCallContext,
+    ) -> Any:
+        self.contexts.append(context)
+        return await self.call_tool(name, arguments)
+
+
 class _ScriptedReasoner:
     def __init__(self, calls: list[tuple[str, dict]], final_text: str = "完成。"):
         self._calls = calls
@@ -112,6 +130,17 @@ def _runtime(*, risk: RiskLevel = RiskLevel.MEDIUM) -> tuple[McpCapabilityRuntim
         )
     )
     return runtime, transport
+
+
+def _descriptor(*, risk: RiskLevel = RiskLevel.MEDIUM) -> CapabilityDescriptor:
+    return CapabilityDescriptor(
+        id=_FINANCE,
+        kind="mcp",
+        name="财务工具",
+        description="发票查询与支付",
+        version="1.0.0",
+        risk_level=risk,
+    )
 
 
 def _spec(*, risk_binding: bool = True, load_policy: str = "on_demand") -> HarnessSpec:
@@ -457,3 +486,58 @@ def test_mixed_risk_servers_dynamic_approval():
         if e.event_type == EventType.RUN_INTERRUPTED
     )
     del handle
+
+
+def test_idempotent_transport_receives_stable_loop_identity_without_schema_injection():
+    transport = _IdempotentTransport(_TOOLS)
+    runtime = McpCapabilityRuntime()
+    runtime.bind(
+        McpServerBinding(
+            descriptor=_descriptor(),
+            transport=transport,
+            required=True,
+            idempotency_mode="transport",
+        )
+    )
+    reasoner = _ScriptedReasoner(
+        [
+            (MCP_LIST_TOOLS_TOOL, {"server_id": _FINANCE}),
+            (
+                MCP_READ_SCHEMA_TOOL,
+                {"server_id": _FINANCE, "tool_name": "pay_invoice"},
+            ),
+            (
+                MCP_CALL_TOOL_TOOL,
+                {
+                    "server_id": _FINANCE,
+                    "tool_name": "pay_invoice",
+                    "arguments": {"invoice_id": "INV-IDEMP", "amount": 7},
+                },
+            ),
+        ]
+    )
+
+    _, events = _drive(reasoner, runtime, _spec())
+
+    assert events[-1].event_type == EventType.RUN_COMPLETED
+    assert transport.calls == [("pay_invoice", {"invoice_id": "INV-IDEMP", "amount": 7})]
+    assert len(transport.contexts) == 1
+    context = transport.contexts[0]
+    assert context.call_id == "c3"
+    assert context.idempotency_key == McpToolCallContext.create(
+        invocation_id=context.invocation_id,
+        call_id="c3",
+    ).idempotency_key
+    assert "idempotency_key" not in transport.calls[0][1]
+
+
+def test_transport_idempotency_declaration_requires_contextual_transport():
+    runtime = McpCapabilityRuntime()
+    with pytest.raises(McpRuntimeError, match="call_tool_with_context"):
+        runtime.bind(
+            McpServerBinding(
+                descriptor=_descriptor(),
+                transport=_FakeTransport(_TOOLS),
+                idempotency_mode="transport",
+            )
+        )

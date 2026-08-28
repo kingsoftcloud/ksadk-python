@@ -57,6 +57,30 @@ class ToolExecutor(Protocol):
     async def execute(self, name: str, arguments: dict[str, Any]) -> Any: ...
 
 
+@dataclass(frozen=True)
+class ToolExecutionContext:
+    """一次工具调用的稳定运行时身份。
+
+    ``run_id + call_id`` 在审批恢复、Graph 重放和进程重启后保持不变，供
+    显式支持幂等的外部 Transport 派生去重键。该上下文不注入模型生成的
+    ``arguments``，避免破坏工具 Schema。
+    """
+
+    run_id: str
+    call_id: str
+
+
+class ContextualToolExecutor(Protocol):
+    """可接收稳定调用身份的工具执行器（旧 ToolExecutor 保持兼容）。"""
+
+    async def execute_with_context(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        context: ToolExecutionContext,
+    ) -> Any: ...
+
+
 #: 工具执行函数类型（可替代 ToolExecutor）。
 ToolExecuteFn = Callable[[str, dict[str, Any]], Awaitable[Any]]
 
@@ -239,7 +263,12 @@ async def execute_tool_calls(inp: ToolCallInput) -> ToolCallOutput:
             )
         )
         try:
-            result = await _invoke(inp.tool_executor, name, arguments)
+            result = await _invoke(
+                inp.tool_executor,
+                name,
+                arguments,
+                context=ToolExecutionContext(run_id=inp.run_id, call_id=call_id),
+            )
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - 单工具失败不终止 Run
@@ -307,11 +336,16 @@ async def _invoke(
     executor: ToolExecutor | ToolExecuteFn | None,
     name: str,
     arguments: dict[str, Any],
+    *,
+    context: ToolExecutionContext,
 ) -> Any:
     if executor is None:
         raise RuntimeError(
             f"engine tool {name!r} is not available; it may be filtered or unpublished"
         )
+    execute_with_context = getattr(executor, "execute_with_context", None)
+    if callable(execute_with_context):
+        return await execute_with_context(name, arguments, context)
     if hasattr(executor, "execute"):
         return await executor.execute(name, arguments)  # type: ignore[union-attr]
     return await executor(name, arguments)  # ToolExecuteFn
@@ -340,9 +374,11 @@ def _event(
 __all__ = [
     "APPROVED",
     "ApprovalResolver",
+    "ContextualToolExecutor",
     "ToolCallInput",
     "ToolCallOutput",
     "ToolExecuteFn",
     "ToolExecutor",
+    "ToolExecutionContext",
     "execute_tool_calls",
 ]

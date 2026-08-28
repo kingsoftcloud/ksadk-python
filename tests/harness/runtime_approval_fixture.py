@@ -17,7 +17,12 @@ from ksadk.harness.engine.mcp_disclosure import (
     MCP_LIST_TOOLS_TOOL,
     MCP_READ_SCHEMA_TOOL,
 )
-from ksadk.harness.mcp_runtime import McpCapabilityRuntime, McpServerBinding, McpTransport
+from ksadk.harness.mcp_runtime import (
+    McpCapabilityRuntime,
+    McpServerBinding,
+    McpToolCallContext,
+    McpTransport,
+)
 from ksadk.harness.reasoner import HarnessReasoningTurn, HarnessToolCall
 from ksadk.harness.runtime_server import build_deployment_app
 from ksadk.harness.tool_receipts import ToolReceiptStore
@@ -46,13 +51,34 @@ class _HttpToolTransport(McpTransport):
         ]
 
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+        return await self._invoke(name, arguments, idempotency_key="")
+
+    async def call_tool_with_context(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        context: McpToolCallContext,
+    ) -> Any:
+        return await self._invoke(name, arguments, idempotency_key=context.idempotency_key)
+
+    async def _invoke(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        idempotency_key: str,
+    ) -> Any:
         body = json.dumps({"name": name, "arguments": arguments}).encode("utf-8")
 
         def invoke() -> dict[str, Any]:
+            headers = {"Content-Type": "application/json"}
+            if idempotency_key:
+                headers["Idempotency-Key"] = idempotency_key
             request = urllib.request.Request(
                 self._tool_url,
                 data=body,
-                headers={"Content-Type": "application/json"},
+                headers=headers,
                 method="POST",
             )
             with urllib.request.urlopen(request, timeout=5) as response:
@@ -116,6 +142,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--state-dir", required=True)
     parser.add_argument("--tool-url", required=True)
     parser.add_argument("--crash-after-receipt", default="")
+    parser.add_argument("--crash-before-receipt", default="")
+    parser.add_argument("--idempotent-transport", action="store_true")
     return parser.parse_args()
 
 
@@ -138,6 +166,24 @@ class _CrashAfterReceiptRuntime(CapabilityRuntime):
         return prior
 
 
+class _CrashBeforeReceiptRuntime(CapabilityRuntime):
+    """Exit after the external call returns but before its Receipt commits."""
+
+    def __init__(self, *, receipts: ToolReceiptStore, marker: str) -> None:
+        super().__init__(receipts=receipts)
+        self._marker = Path(marker)
+
+    def record_receipt(self, **kwargs: Any):  # type: ignore[no-untyped-def]
+        if (
+            kwargs.get("status") == "executed"
+            and kwargs.get("tool_name") == MCP_CALL_TOOL_TOOL
+            and not self._marker.exists()
+        ):
+            self._marker.write_text("external-success-before-receipt", encoding="utf-8")
+            os._exit(92)
+        return super().record_receipt(**kwargs)
+
+
 def main() -> None:
     args = _parse_args()
     runtime = McpCapabilityRuntime()
@@ -153,6 +199,7 @@ def main() -> None:
             ),
             transport=_HttpToolTransport(args.tool_url),
             required=True,
+            idempotency_mode="transport" if args.idempotent_transport else "none",
         )
     )
     spec_payload = json.loads(Path(args.spec_file).read_text(encoding="utf-8"))
@@ -164,6 +211,14 @@ def main() -> None:
         engine_kwargs["capability_runtime"] = _CrashAfterReceiptRuntime(
             receipts=receipts,
             marker=args.crash_after_receipt,
+        )
+    elif args.crash_before_receipt:
+        state_dir = Path(args.state_dir)
+        state_dir.mkdir(parents=True, exist_ok=True)
+        receipts = ToolReceiptStore(str(state_dir / "tool_receipts.sqlite"))
+        engine_kwargs["capability_runtime"] = _CrashBeforeReceiptRuntime(
+            receipts=receipts,
+            marker=args.crash_before_receipt,
         )
     app = build_deployment_app(
         deployment_id=args.deployment_id,

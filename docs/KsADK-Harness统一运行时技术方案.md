@@ -724,6 +724,13 @@ Tool Call
   -> continue graph
 ```
 
+Tool Receipt 负责消除“已提交 Receipt 后的 Graph 重放”。对于“外部调用已成功、
+Receipt 尚未提交时进程崩溃”的窗口，Harness 使用稳定的 `run_id + call_id`
+派生幂等键，但只向显式声明 `idempotency_mode=transport` 的 MCP Binding 透传，
+不会把内部字段注入 Tool 参数而破坏 Schema。支持该合同的 Transport/Gateway
+必须将幂等键传到真正执行副作用的服务并持久化去重结果；旧 Transport 保持兼容，
+但在该窗口仍是 at-least-once，不能被平台包装成 exactly-once。
+
 ### 11.3 Sandbox Backend
 
 Harness 不直接绑定 E2B 对象，统一使用 Sandbox Backend：
@@ -1360,4 +1367,3 @@ P2  外部 Runner Studio 导入
 最终目标是：
 
 > Studio 默认创建的所有 Managed Agent 都运行在同一个 KsADK Harness 契约上；LangGraph 负责执行机制，KsADK 负责企业 Agent 的上下文、能力、治理和生命周期；Codex、ADK 和外部 LangGraph 作为兼容 Engine 保留，并由同一套 RuntimeAdapter 与 Conformance 约束。
-

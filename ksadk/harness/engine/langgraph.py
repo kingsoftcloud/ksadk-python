@@ -608,6 +608,17 @@ class ManagedLangGraphEngine:
                         name, arguments, run=run, mcp_cursors=cursors
                     )
 
+                async def execute_with_context(  # type: ignore[no-untyped-def]
+                    self, name, arguments, context
+                ):
+                    return await engine._invoke_tool(
+                        name,
+                        arguments,
+                        run=run,
+                        mcp_cursors=cursors,
+                        call_id=context.call_id,
+                    )
+
             out = await execute_tool_calls(
                 ToolCallInput(
                     pending_tool_calls=state["pending_tool_calls"],
@@ -735,6 +746,7 @@ class ManagedLangGraphEngine:
         *,
         run: Any = None,
         mcp_cursors: McpDisclosureCursors | None = None,
+        call_id: str = "",
     ) -> Any:
         # 收口 6：子 Agent 即工具——内联运行到完成，子事件并入父流。
         sub = self._sub_agents.get(name)
@@ -755,7 +767,11 @@ class ManagedLangGraphEngine:
             if mcp_cursors is None:
                 mcp_cursors = McpDisclosureCursors()
             return await self._invoke_mcp_tool(
-                name, arguments, run=run, cursors=mcp_cursors
+                name,
+                arguments,
+                run=run,
+                cursors=mcp_cursors,
+                call_id=call_id,
             )
         tool = self._tools.get(name)
         if tool is None:
@@ -941,6 +957,7 @@ class ManagedLangGraphEngine:
         *,
         run: _EngineRun | None,
         cursors: McpDisclosureCursors,
+        call_id: str = "",
     ) -> dict[str, Any]:
         return await self._mcp_disclosure.invoke(
             name,
@@ -948,6 +965,7 @@ class ManagedLangGraphEngine:
             run=run,
             cursors=cursors,
             pending_events=self._pending_child_events,
+            call_id=call_id,
         )
 
     def _invoke_skill_tool(
