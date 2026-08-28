@@ -806,12 +806,11 @@ async function submitChannel(event: React.FormEvent) {
   async function submitEditBinding() {
     if (!editBindingTarget) return;
     const sessionId = editSessionId.trim();
-    if (!sessionId) return;
     setEditSubmitting(true);
     try {
       await channelApi("UpdateBinding", { Id: editBindingTarget.Id, SessionId: sessionId });
       setBindings(prev => prev.map(b => b.Id === editBindingTarget.Id ? { ...b, SessionId: sessionId } : b));
-      showToast("会话关联成功", `会话已关联到 ${sessionId}`);
+      showToast(sessionId ? "会话关联成功" : "已取消关联", sessionId ? `会话已关联到 ${sessionId}` : "该绑定已取消会话关联");
       setEditBindingTarget(null);
     } catch (error) {
       showToast("关联失败", error instanceof Error ? error.message : "请稍后重试", "error");
@@ -1556,7 +1555,7 @@ async function submitChannel(event: React.FormEvent) {
           footer={(
             <>
               <button className="button tertiary" type="button" onClick={() => setEditBindingTarget(null)} disabled={editSubmitting}>取消</button>
-              <button className="button accent" type="button" onClick={submitEditBinding} disabled={editSubmitting || !editSessionId.trim()}>
+              <button className="button accent" type="button" onClick={submitEditBinding} disabled={editSubmitting}>
                 {editSubmitting ? "处理中…" : "关联"}
               </button>
             </>
@@ -1614,7 +1613,7 @@ async function submitChannel(event: React.FormEvent) {
       {releaseTarget && (
         <ConfirmDialog
           title="释放接管"
-          message="释放后该会话将恢复 Agent 自动回复，确认释放？"
+          description="释放后该会话将恢复 Agent 自动回复，确认释放？"
           busy={releaseBusy}
           onConfirm={submitRelease}
           onCancel={() => setReleaseTarget(null)}
