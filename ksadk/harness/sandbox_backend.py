@@ -89,6 +89,7 @@ class SandboxBackendCapabilities:
     execution_audit: bool
     reconnect: bool = False
     ownership_fencing: bool = False
+    command_reconnect: bool = False
 
 
 class SandboxHandle:
@@ -125,6 +126,43 @@ class SandboxResumeToken:
         )
         if not token.backend_id or not token.handle_id or not token.session_locator:
             raise ValueError("Sandbox Resume Token 缺少必填定位字段")
+        return token
+
+
+@dataclass(frozen=True)
+class SandboxCommandResumeToken:
+    """Credential-free locator for one command in a reconnectable Sandbox."""
+
+    backend_id: str
+    handle_id: str
+    session_locator: str
+    process_id: int
+
+    def to_dict(self) -> dict[str, str | int]:
+        return {
+            "backendId": self.backend_id,
+            "handleId": self.handle_id,
+            "sessionLocator": self.session_locator,
+            "processId": self.process_id,
+        }
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> SandboxCommandResumeToken:
+        raw_process_id = value.get("processId", 0)
+        try:
+            process_id = int(raw_process_id)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Sandbox Command Resume Token 的 processId 无效") from exc
+        token = cls(
+            backend_id=str(value.get("backendId", "")).strip(),
+            handle_id=str(value.get("handleId", "")).strip(),
+            session_locator=str(value.get("sessionLocator", "")).strip(),
+            process_id=process_id,
+        )
+        if not token.backend_id or not token.handle_id or not token.session_locator:
+            raise ValueError("Sandbox Command Resume Token 缺少必填定位字段")
+        if token.process_id <= 0:
+            raise ValueError("Sandbox Command Resume Token 的 processId 必须大于 0")
         return token
 
 
@@ -233,6 +271,7 @@ __all__ = [
     "SandboxBackend",
     "SandboxBackendCapabilities",
     "SandboxClosedError",
+    "SandboxCommandResumeToken",
     "SandboxHandle",
     "SandboxPolicyViolation",
     "SandboxResumeToken",

@@ -24,6 +24,7 @@ from ksadk.harness.sandbox_backend import (
     SandboxAuditLog,
     SandboxBackendCapabilities,
     SandboxClosedError,
+    SandboxCommandResumeToken,
     SandboxHandle,
     SandboxPolicyViolation,
     SandboxResumeToken,
@@ -39,6 +40,9 @@ from ksadk.sandbox.backends.local_process import LocalProcessSandboxBackend
 from ksadk.sandbox.base import (
     ArtifactListingSandboxSession,
     BackgroundCommandSandboxSession,
+    ReconnectableCommandSandboxSession,
+    ReconnectableSandboxCommandHandle,
+    SandboxCommandHandle,
     SandboxCommandResult,
     SandboxSession,
 )
@@ -63,6 +67,25 @@ class SessionSandboxHandle(SandboxHandle):
         super().__init__(spec)
         self.session = session
         self.lease = lease
+
+
+class SessionSandboxCommand:
+    """One background command owned by a ``SessionSandboxBackendAdapter``."""
+
+    def __init__(
+        self,
+        *,
+        adapter: SessionSandboxBackendAdapter,
+        sandbox: SessionSandboxHandle,
+        request: ExecuteRequest,
+        command_handle: SandboxCommandHandle,
+    ) -> None:
+        self._adapter = adapter
+        self.sandbox = sandbox
+        self.request = request
+        self.command_handle = command_handle
+        self.started_at = time.monotonic()
+        self.completed = False
 
 
 class SessionSandboxBackendAdapter:
@@ -95,6 +118,14 @@ class SessionSandboxBackendAdapter:
             raise ValueError("后端声明 reconnect 但未实现 reconnect_session")
         if capabilities.ownership_fencing != (lease_provider is not None):
             raise ValueError("ownership_fencing 能力声明必须与 lease_provider 装配一致")
+        if capabilities.command_reconnect and not (
+            capabilities.reconnect
+            and capabilities.ownership_fencing
+            and capabilities.cooperative_cancellation
+        ):
+            raise ValueError(
+                "command_reconnect 依赖 reconnect、ownership_fencing 和 cooperative_cancellation"
+            )
         if lease_provider is not None and not capabilities.reconnect:
             raise ValueError("Sandbox 租约 fencing 只适用于支持 reconnect 的后端")
         if lease_ttl_seconds <= 0:
@@ -222,30 +253,161 @@ class SessionSandboxBackendAdapter:
             )
             raise
         except Exception as exc:  # noqa: BLE001 - translate vendor SDK failures
-            if "timeout" in type(exc).__name__.lower():
-                translated = ExecuteResult(
-                    ok=False,
-                    output="",
-                    exit_code=124,
-                    error=f"sandbox 命令超时: {exc}",
-                )
-            else:
-                translated = ExecuteResult(ok=False, output="", exit_code=1, error=str(exc))
+            translated = self._translate_command_error(exc)
             self._append_audit(owned, request, translated, started)
             return translated
 
+        translated = self._translate_command_result(result)
+        self._append_audit(owned, request, translated, started)
+        return translated
+
+    async def start_execute(
+        self,
+        handle: SandboxHandle,
+        request: ExecuteRequest,
+    ) -> SessionSandboxCommand:
+        """Start a recoverable command without waiting for its result.
+
+        The caller must persist ``export_command_resume_token`` before treating
+        the command as recoverable.  KsADK deliberately leaves that durable
+        journal to the platform control plane.
+        """
+
+        if not self._capabilities.command_reconnect:
+            raise SandboxPolicyViolation("当前 Sandbox 后端未声明运行中命令重连")
+        owned = self._require_open_handle(handle)
+        timeout = max(1, math.ceil(request.timeout_seconds))
+        await self._renew_lease(owned, ttl_seconds=max(self._lease_ttl_seconds, timeout + 30.0))
+        session = owned.session
+        if not isinstance(session, ReconnectableCommandSandboxSession):
+            raise RuntimeError("后端声明 command_reconnect，但 Session 未实现命令重连协议")
+        command_handle = await asyncio.to_thread(
+            session.start_command,
+            request.command,
+            timeout=timeout,
+            env=dict(owned.spec.env),
+            cwd=owned.spec.workspace_root or None,
+        )
+        if not isinstance(command_handle, ReconnectableSandboxCommandHandle):
+            raise RuntimeError("后端声明 command_reconnect，但命令句柄未提供 process_id")
+        # Read once now so a malformed vendor handle fails before the platform
+        # records a resume token.
+        _ = command_handle.process_id
+        return SessionSandboxCommand(
+            adapter=self,
+            sandbox=owned,
+            request=request,
+            command_handle=command_handle,
+        )
+
+    def export_command_resume_token(
+        self,
+        command: SessionSandboxCommand,
+    ) -> SandboxCommandResumeToken:
+        owned = self._require_owned_command(command)
+        command_handle = command.command_handle
+        if not isinstance(command_handle, ReconnectableSandboxCommandHandle):
+            raise RuntimeError("Sandbox 命令句柄未提供 process_id")
+        locator = str(owned.session.sandbox_id or "").strip()
+        if not locator:
+            raise RuntimeError("Sandbox Session 未提供可持久化的 session locator")
+        return SandboxCommandResumeToken(
+            backend_id=self._capabilities.backend_id,
+            handle_id=owned.handle_id,
+            session_locator=locator,
+            process_id=command_handle.process_id,
+        )
+
+    async def reconnect_command(
+        self,
+        handle: SandboxHandle,
+        token: SandboxCommandResumeToken,
+        *,
+        request: ExecuteRequest,
+    ) -> SessionSandboxCommand:
+        """Reconnect a command after the Sandbox itself has been reconnected."""
+
+        if not self._capabilities.command_reconnect:
+            raise SandboxPolicyViolation("当前 Sandbox 后端未声明运行中命令重连")
+        owned = self._require_open_handle(handle)
+        locator = str(owned.session.sandbox_id or "").strip()
+        if (
+            token.backend_id != self._capabilities.backend_id
+            or token.handle_id != owned.handle_id
+            or token.session_locator != locator
+        ):
+            raise SandboxPolicyViolation("Sandbox Command Resume Token 与当前会话不匹配")
+        timeout = max(1, math.ceil(request.timeout_seconds))
+        await self._renew_lease(owned, ttl_seconds=max(self._lease_ttl_seconds, timeout + 30.0))
+        session = owned.session
+        if not isinstance(session, ReconnectableCommandSandboxSession):
+            raise RuntimeError("后端声明 command_reconnect，但 Session 未实现命令重连协议")
+        command_handle = await asyncio.to_thread(
+            session.connect_command,
+            token.process_id,
+            timeout=timeout,
+        )
+        if command_handle.process_id != token.process_id:
+            raise SandboxPolicyViolation("Sandbox 命令重连返回了不同的 process_id")
+        return SessionSandboxCommand(
+            adapter=self,
+            sandbox=owned,
+            request=request,
+            command_handle=command_handle,
+        )
+
+    async def wait_command(self, command: SessionSandboxCommand) -> ExecuteResult:
+        """Wait for a started or reconnected command with normal audit semantics."""
+
+        owned = self._require_owned_command(command)
+        if command.completed:
+            raise SandboxPolicyViolation("Sandbox 命令结果已经被消费")
+        timeout = max(1, math.ceil(command.request.timeout_seconds))
+        await self._renew_lease(owned, ttl_seconds=max(self._lease_ttl_seconds, timeout + 30.0))
+        try:
+            result = await asyncio.to_thread(command.command_handle.wait)
+        except asyncio.CancelledError:
+            await asyncio.to_thread(command.command_handle.kill)
+            translated = ExecuteResult(
+                ok=False,
+                output="",
+                exit_code=130,
+                error="sandbox 命令已取消",
+            )
+            self._append_audit(owned, command.request, translated, command.started_at)
+            command.completed = True
+            raise
+        except Exception as exc:  # noqa: BLE001 - translate vendor SDK failures
+            translated = self._translate_command_error(exc)
+        else:
+            translated = self._translate_command_result(result)
+        self._append_audit(owned, command.request, translated, command.started_at)
+        command.completed = True
+        return translated
+
+    @staticmethod
+    def _translate_command_error(exc: Exception) -> ExecuteResult:
+        if "timeout" in type(exc).__name__.lower():
+            return ExecuteResult(
+                ok=False,
+                output="",
+                exit_code=124,
+                error=f"sandbox 命令超时: {exc}",
+            )
+        return ExecuteResult(ok=False, output="", exit_code=1, error=str(exc))
+
+    @staticmethod
+    def _translate_command_result(result: SandboxCommandResult) -> ExecuteResult:
         exit_code = int(result.exit_code) if result.exit_code is not None else 1
         error = str(result.stderr or "")
         if exit_code == 124 and "超时" not in error:
             error = f"sandbox 命令超时: {error}".rstrip()
-        translated = ExecuteResult(
+        return ExecuteResult(
             ok=exit_code == 0,
             output=str(result.stdout or ""),
             exit_code=exit_code,
             error=error,
         )
-        self._append_audit(owned, request, translated, started)
-        return translated
 
     def _append_audit(
         self,
@@ -389,6 +551,14 @@ class SessionSandboxBackendAdapter:
             raise SandboxClosedError("Sandbox Handle 已关闭或不属于当前后端")
         return owned
 
+    def _require_owned_command(
+        self,
+        command: SessionSandboxCommand,
+    ) -> SessionSandboxHandle:
+        if command._adapter is not self:
+            raise SandboxClosedError("Sandbox 命令不属于当前后端 Adapter")
+        return self._require_open_handle(command.sandbox)
+
     def _validate_spec(self, spec: SandboxSpec) -> None:
         if spec.read_only:
             raise SandboxPolicyViolation("通用 SandboxSession 不提供只读挂载保证")
@@ -461,6 +631,7 @@ def adapt_e2b_backend(
             execution_audit=audit_log is not None,
             reconnect=True,
             ownership_fencing=lease_provider is not None,
+            command_reconnect=lease_provider is not None,
         ),
         audit_log=audit_log,
         lease_provider=lease_provider,
@@ -517,6 +688,7 @@ def adapt_sdk_sandbox_backend(
 __all__ = [
     "ArtifactCollector",
     "SessionSandboxBackendAdapter",
+    "SessionSandboxCommand",
     "SessionSandboxHandle",
     "adapt_e2b_backend",
     "adapt_local_process_backend",

@@ -20,6 +20,7 @@ from ksadk.harness.sandbox_backend import (
     SandboxAuditLog,
     SandboxBackendCapabilities,
     SandboxClosedError,
+    SandboxCommandResumeToken,
     SandboxPolicyViolation,
     SandboxResumeToken,
     SandboxSpec,
@@ -229,6 +230,7 @@ def test_e2b_profile_does_not_overclaim_network_allowlist():
     assert unrestricted.capabilities.network_control is NetworkControl.NONE
     assert denied.capabilities.cooperative_cancellation is True
     assert denied.capabilities.artifact_collection is True
+    assert denied.capabilities.command_reconnect is False
 
 
 @dataclass
@@ -239,8 +241,9 @@ class _VendorResult:
 
 
 class _VendorCommandHandle:
-    def __init__(self, result: _VendorResult, *, blocks: bool = False) -> None:
+    def __init__(self, result: _VendorResult, *, pid: int, blocks: bool = False) -> None:
         self._result = result
+        self.pid = pid
         self._blocks = blocks
         self._killed = threading.Event()
 
@@ -263,10 +266,14 @@ class _VendorCommands:
             return _VendorResult()
         handle = _VendorCommandHandle(
             _VendorResult(stdout=f"ran:{command}"),
+            pid=1000 + len(self.handles),
             blocks=command == "sleep forever",
         )
         self.handles.append(handle)
         return handle
+
+    def connect(self, process_id, **kwargs):
+        return next(item for item in self.handles if item.pid == process_id)
 
 
 class _EntryType:
@@ -585,6 +592,107 @@ def test_sandbox_resume_token_rejects_missing_locator():
                 "handleId": "sandbox-1",
                 "sessionLocator": "",
             }
+        )
+
+
+def test_sandbox_command_resume_token_rejects_invalid_process_id():
+    with pytest.raises(ValueError, match="processId"):
+        SandboxCommandResumeToken.from_dict(
+            {
+                "backendId": "sdk-e2b",
+                "handleId": "sandbox-1",
+                "sessionLocator": "vendor-e2b",
+                "processId": 0,
+            }
+        )
+
+
+def test_e2b_adapter_reconnects_inflight_command_with_fencing_across_instances():
+    vendor = _VendorSandbox()
+    sdk = _FakeE2BBackend(vendor)
+    leases = _FakeLeaseProvider()
+    spec = SandboxSpec(
+        workspace_root="/tmp/ksadk-command-reconnect",
+        read_only=False,
+        env={"PRIVATE_TOKEN": "must-not-enter-resume-token"},
+    )
+    first_backend = adapt_e2b_backend(
+        sdk,
+        lease_provider=leases,
+        lease_owner_id="process-a",
+        lease_ttl_seconds=5,
+    )
+
+    async def flow():
+        original = await first_backend.create(spec)
+        request = ExecuteRequest(
+            command="long-running private command",
+            timeout_seconds=30,
+            run_id="run-command-reconnect",
+        )
+        command = await first_backend.start_execute(original, request)
+        sandbox_payload = first_backend.export_resume_token(original).to_dict()
+        command_payload = first_backend.export_command_resume_token(command).to_dict()
+
+        leases.advance(61)
+        second_backend = adapt_e2b_backend(
+            sdk,
+            lease_provider=leases,
+            lease_owner_id="process-b",
+            lease_ttl_seconds=5,
+        )
+        resumed = await second_backend.reconnect(
+            SandboxResumeToken.from_dict(sandbox_payload),
+            spec=spec,
+        )
+        resumed_command = await second_backend.reconnect_command(
+            resumed,
+            SandboxCommandResumeToken.from_dict(command_payload),
+            request=request,
+        )
+
+        with pytest.raises(SandboxLeaseConflict, match="stale"):
+            await first_backend.wait_command(command)
+
+        result = await second_backend.wait_command(resumed_command)
+        await second_backend.close(resumed)
+        return original, resumed, command_payload, result, second_backend
+
+    original, resumed, command_payload, result, second_backend = _run(flow())
+    assert second_backend.capabilities.command_reconnect is True
+    assert command_payload == {
+        "backendId": "sdk-e2b",
+        "handleId": original.handle_id,
+        "sessionLocator": "vendor-e2b",
+        "processId": 1000,
+    }
+    assert "PRIVATE_TOKEN" not in str(command_payload)
+    assert "must-not-enter" not in str(command_payload)
+    assert "long-running" not in str(command_payload)
+    assert resumed.handle_id == original.handle_id
+    assert result.ok is True
+    assert result.output == "ran:long-running private command"
+    assert vendor.killed is True
+
+
+def test_command_reconnect_requires_fencing_and_related_capabilities():
+    vendor = _VendorSandbox()
+    with pytest.raises(ValueError, match="command_reconnect"):
+        SessionSandboxBackendAdapter(
+            _FakeE2BBackend(vendor),
+            capabilities=SandboxBackendCapabilities(
+                backend_id="unsafe-command-reconnect",
+                filesystem_isolation=FilesystemIsolation.REMOTE_SANDBOX,
+                network_control=NetworkControl.ENFORCED,
+                process_boundary=True,
+                request_timeout=True,
+                cooperative_cancellation=True,
+                artifact_collection=False,
+                deterministic_cleanup=True,
+                execution_audit=False,
+                reconnect=True,
+                command_reconnect=True,
+            ),
         )
 
 

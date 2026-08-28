@@ -7,7 +7,7 @@ import time
 from typing import Any
 
 from ksadk.sandbox.base import (
-    SandboxCommandHandle,
+    ReconnectableSandboxCommandHandle,
     SandboxCommandResult,
     SandboxError,
     SandboxInputFile,
@@ -69,6 +69,13 @@ class E2BCommandHandle:
 
     def __init__(self, handle: Any):
         self._handle = handle
+
+    @property
+    def process_id(self) -> int:
+        process_id = int(getattr(self._handle, "pid", 0) or 0)
+        if process_id <= 0:
+            raise SandboxError("E2B command handle did not expose a valid process ID")
+        return process_id
 
     def wait(self) -> SandboxCommandResult:
         try:
@@ -142,7 +149,7 @@ class E2BSandboxSession:
         timeout: int | None = None,
         env: dict[str, str] | None = None,
         cwd: str | None = None,
-    ) -> SandboxCommandHandle:
+    ) -> ReconnectableSandboxCommandHandle:
         kwargs: dict[str, Any] = {"background": True}
         if timeout is not None:
             kwargs["timeout"] = timeout
@@ -151,6 +158,19 @@ class E2BSandboxSession:
         if cwd is not None:
             kwargs["cwd"] = cwd
         return E2BCommandHandle(self._sandbox.commands.run(command, **kwargs))
+
+    def connect_command(
+        self,
+        process_id: int,
+        *,
+        timeout: int | None = None,
+    ) -> ReconnectableSandboxCommandHandle:
+        if process_id <= 0:
+            raise SandboxError("E2B command reconnect requires a positive process ID")
+        kwargs: dict[str, Any] = {}
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        return E2BCommandHandle(self._sandbox.commands.connect(process_id, **kwargs))
 
     def list_files(self, root: str, *, recursive: bool = True) -> list[str]:
         """List file paths below ``root`` without exposing sibling paths."""

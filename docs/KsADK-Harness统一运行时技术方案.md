@@ -785,8 +785,14 @@ Backend 必须声明真实能力，而不是只暴露一个统一类名。当前
 - E2B 适配器通过 `SandboxResumeToken` 恢复跨进程 Sandbox 会话。Token
   只保存 `backend_id`、稳定 `handle_id` 和厂商 Sandbox ID，不保存
   环境变量、凭证或 Secret；恢复方必须重新提供 `SandboxSpec`，使策略
-  与密钥继续由 Revision/Secret 事实源决定。本合同只承诺恢复 Sandbox
-  会话，不宣称可恢复崩溃时正在执行的后台进程；
+  与密钥继续由 Revision/Secret 事实源决定；
+- 装配权威 fencing 后，E2B 额外声明 `command_reconnect`。命令启动后由
+  `SandboxCommandResumeToken` 记录 `backend_id + handle_id + Sandbox ID + PID`，
+  不记录命令正文、环境变量或凭证。新进程先恢复 Sandbox 并取得新 fencing
+  所有权，再通过 E2B `commands.connect(pid)` 恢复等待中的命令；旧所有者
+  无法继续等待、执行或清理。平台必须在命令启动后立即持久化该 Token，
+  KsADK 只提供 start/export/reconnect/wait 合同，不以本地日志冒充控制面
+  恢复日志。未装配 fencing 时只承诺会话重连，不宣称运行中命令可恢复；
 - 跨进程恢复的排他所有权使用 `SandboxLeaseProvider` 合同。权威租约存储
   属于 `agentengine-server` 控制面，KsADK 只消费单调递增的 fencing token；
   恢复、执行、Artifact 收集和关闭前都必须续租并校验当前 token。
@@ -799,7 +805,8 @@ Backend 必须声明真实能力，而不是只暴露一个统一类名。当前
   `KSADK_SANDBOX_TEMPLATE_ID` 双重门控。未满足远程模板、凭证和网络条件时
   只运行适配合同单测并明确 skip，不用 Fake SDK 结果替代远程 E2E 结论；
   启用后会额外验证远端命令取消、工作目录 Artifact 枚举与
-  跨 Adapter 会话恢复。
+  跨 Adapter 会话恢复；运行中命令的真实远端恢复还要求测试环境提供
+  控制面 Lease Provider，默认离线套件只验证合同与跨 Adapter PID 重连。
 
 ---
 

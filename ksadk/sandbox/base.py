@@ -110,6 +110,26 @@ class BackgroundCommandSandboxSession(Protocol):
 
 
 @runtime_checkable
+class ReconnectableSandboxCommandHandle(SandboxCommandHandle, Protocol):
+    """Optional command handle with a credential-free vendor process ID."""
+
+    @property
+    def process_id(self) -> int: ...
+
+
+@runtime_checkable
+class ReconnectableCommandSandboxSession(BackgroundCommandSandboxSession, Protocol):
+    """Optional session extension for reconnecting an in-flight command."""
+
+    def connect_command(
+        self,
+        process_id: int,
+        *,
+        timeout: int | None = None,
+    ) -> ReconnectableSandboxCommandHandle: ...
+
+
+@runtime_checkable
 class ArtifactListingSandboxSession(Protocol):
     """Optional session extension for bounded artifact enumeration."""
 
