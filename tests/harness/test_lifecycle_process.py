@@ -7,8 +7,11 @@
 
 from __future__ import annotations
 
+import json
 import sys
+import threading
 import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
@@ -19,6 +22,49 @@ from ksadk.harness.lifecycle import (
 )
 
 from .test_lifecycle import _revision_payload
+
+
+class _OpenAIHandler(BaseHTTPRequestHandler):
+    requests: list[dict] = []
+
+    def do_POST(self):  # noqa: N802 - BaseHTTPRequestHandler API
+        if self.path != "/v1/chat/completions":
+            self.send_error(404)
+            return
+        length = int(self.headers.get("Content-Length", "0"))
+        request_payload = json.loads(self.rfile.read(length))
+        type(self).requests.append(request_payload)
+        response_payload = {
+            "id": "chatcmpl-runtime-e2e",
+            "object": "chat.completion",
+            "created": 1,
+            "model": request_payload["model"],
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "deployed-runtime-ok"},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10},
+        }
+        body = json.dumps(response_payload).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, _format, *args):
+        return
+
+
+def _start_model_server():
+    _OpenAIHandler.requests = []
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _OpenAIHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, thread
 
 
 def test_deploy_spawns_real_runtime_process_with_http_health():
@@ -51,6 +97,61 @@ def test_deploy_spawns_real_runtime_process_with_http_health():
     # 关闭后进程退出，HTTP 不再可达 → Health Check 诚实失败。
     assert deployment.http_health_check() is False
     assert deployment.status == LifecycleStatus.RUNTIME_UNHEALTHY
+
+
+def test_active_process_executes_real_runs_endpoint(monkeypatch):
+    """Revision → Build → Deploy → Activate → /runs is a real process boundary."""
+    model_server, thread = _start_model_server()
+    monkeypatch.setenv("OPENAI_BASE_URL", f"http://127.0.0.1:{model_server.server_port}/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-placeholder-key")
+    monkeypatch.setenv(
+        "KSADK_MODEL_PROFILE_MAP",
+        json.dumps({"model-profile://kimi-k3@1.0.0": "runtime-fixture-model"}),
+    )
+    manager = LocalLifecycleManager()
+    try:
+        manifest = manager.build(
+            revision_payload=_revision_payload(),
+            revision_ref="agent-revision://proj-runtime@1",
+        )
+        deployment = manager.deploy(
+            manifest=manifest,
+            revision_payload=_revision_payload(),
+            route="studio://runtime-e2e/local",
+            launch_process=True,
+        )
+        with pytest.raises(LifecycleError, match="no active deployment"):
+            manager.invoke_run(
+                route="studio://runtime-e2e/local",
+                invocation_id="run-before-active",
+                input="hello",
+                user_id="user-1",
+                session_id="session-1",
+            )
+        manager.activate("studio://runtime-e2e/local")
+        result = manager.invoke_run(
+            route="studio://runtime-e2e/local",
+            invocation_id="run-process-e2e",
+            input="hello from lifecycle",
+            user_id="user-1",
+            session_id="session-1",
+        )
+        assert result["status"] == "completed"
+        assert result["runId"] == "run-process-e2e"
+        assert result["events"][-1]["event_type"] == "run.completed"
+        usage = [event for event in result["events"] if event["event_type"] == "usage.reported"]
+        assert usage[-1]["payload"] == {
+            "input_tokens": 7,
+            "output_tokens": 3,
+            "total_tokens": 10,
+        }
+        assert deployment.invocations == ["run-process-e2e"]
+        assert _OpenAIHandler.requests[-1]["model"] == "runtime-fixture-model"
+    finally:
+        manager.close()
+        model_server.shutdown()
+        model_server.server_close()
+        thread.join(timeout=3)
 
 
 def test_activate_uses_real_http_and_supersede_terminates_old_process():

@@ -7,6 +7,7 @@ import pytest
 
 from ksadk.harness import HarnessApp, HarnessConfig
 from ksadk.harness.config import McpToolSpec
+from ksadk.harness.reasoner import resolve_model_identifier
 from ksadk.harness.runtime import HarnessRuntimeAdapter
 from ksadk.runtime import StartRequest
 
@@ -58,6 +59,23 @@ async def test_production_reasoner_uses_model_tool_loop_without_echo(monkeypatch
     assert json.loads(raw_arguments) == {"path": "facts.txt"}
     assert result["model"] == "glm-5.2"
     assert result["prompt"] == "read before answering"
+
+
+def test_model_profile_reference_resolves_without_embedding_credentials(monkeypatch):
+    ref = "model-profile://finance-model@1.2.0"
+    monkeypatch.setenv("KSADK_MODEL_PROFILE_MAP", json.dumps({ref: "provider/finance-v3"}))
+    assert resolve_model_identifier(ref) == "provider/finance-v3"
+
+
+def test_model_profile_reference_falls_back_to_openai_compatible_name(monkeypatch):
+    monkeypatch.delenv("KSADK_MODEL_PROFILE_MAP", raising=False)
+    assert resolve_model_identifier("model-profile://glm-5.3@live") == "openai/glm-5.3"
+
+
+def test_invalid_model_profile_map_fails_honestly(monkeypatch):
+    monkeypatch.setenv("KSADK_MODEL_PROFILE_MAP", "not-json")
+    with pytest.raises(RuntimeError, match="valid JSON"):
+        resolve_model_identifier("model-profile://glm-5.3@live")
 
 
 @pytest.mark.asyncio

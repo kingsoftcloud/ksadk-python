@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from typing import Any, Protocol, Sequence
 
@@ -34,6 +35,47 @@ class HarnessReasoner(Protocol):
     ) -> HarnessReasoningTurn: ...
 
 
+_MODEL_PROFILE_REF = re.compile(r"^model-profile://(?P<name>[^@/]+)(?:@(?P<version>[^/]+))?$")
+
+
+def resolve_model_identifier(model: str) -> str:
+    """Resolve a versioned Model Profile reference without putting secrets in a Bundle.
+
+    ``KSADK_MODEL_PROFILE_MAP`` is a JSON object whose keys are immutable
+    ``model-profile://...`` references and whose values are provider model identifiers.
+    When no explicit mapping is configured, the profile name is used as an
+    OpenAI-compatible model identifier. Endpoint and credential resolution remains
+    environment/service owned (``OPENAI_BASE_URL`` / ``OPENAI_API_KEY``).
+    """
+
+    candidate = model.strip()
+    if candidate.startswith("model-profile://"):
+        raw_mapping = os.getenv("KSADK_MODEL_PROFILE_MAP", "").strip()
+        if raw_mapping:
+            try:
+                mapping = json.loads(raw_mapping)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError("KSADK_MODEL_PROFILE_MAP must be valid JSON") from exc
+            if not isinstance(mapping, dict):
+                raise RuntimeError("KSADK_MODEL_PROFILE_MAP must be a JSON object")
+            mapped = mapping.get(candidate)
+            if mapped is not None:
+                if not isinstance(mapped, str) or not mapped.strip():
+                    raise RuntimeError(f"invalid model mapping for {candidate!r}")
+                candidate = mapped.strip()
+            else:
+                match = _MODEL_PROFILE_REF.fullmatch(candidate)
+                if match is None:
+                    raise RuntimeError(f"invalid Model Profile reference: {candidate!r}")
+                candidate = match.group("name")
+        else:
+            match = _MODEL_PROFILE_REF.fullmatch(candidate)
+            if match is None:
+                raise RuntimeError(f"invalid Model Profile reference: {candidate!r}")
+            candidate = match.group("name")
+    return candidate if "/" in candidate else f"openai/{candidate}"
+
+
 class LiteLLMHarnessReasoner:
     """Use the project's OpenAI-compatible LiteLLM configuration for tool reasoning."""
 
@@ -54,7 +96,7 @@ class LiteLLMHarnessReasoner:
                 "install ksadk[adk] or inject a HarnessReasoner"
             ) from exc
 
-        resolved_model = model if "/" in model else f"openai/{model}"
+        resolved_model = resolve_model_identifier(model)
         kwargs: dict[str, Any] = {
             "model": resolved_model,
             "messages": list(messages),
@@ -96,7 +138,18 @@ class LiteLLMHarnessReasoner:
             )
         content = getattr(message, "content", None)
         final_text = str(content) if content is not None else None
-        return HarnessReasoningTurn(final_text=final_text, tool_calls=tuple(calls))
+        usage = getattr(response, "usage", None)
+        usage_payload = None
+        if usage is not None:
+            usage_payload = {
+                "input_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
+                "output_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
+            }
+        return HarnessReasoningTurn(
+            final_text=final_text,
+            tool_calls=tuple(calls),
+            usage=usage_payload,
+        )
 
 
 __all__ = [
@@ -104,4 +157,5 @@ __all__ = [
     "HarnessReasoningTurn",
     "HarnessToolCall",
     "LiteLLMHarnessReasoner",
+    "resolve_model_identifier",
 ]

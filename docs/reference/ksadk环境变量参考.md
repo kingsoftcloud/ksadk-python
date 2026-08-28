@@ -150,6 +150,7 @@
 | `OPENAI_API_KEY` | 本地运行时 / Runtime 镜像 / OpenClaw / Hermes | 条件必传 | 未设置 | `LLM_API_KEY`、`MODEL_API_KEY`、部分 OpenClaw 场景使用 `OPENCLAW_MODEL_API_KEY` | 是 | 开发者 / Secret | 否 | OpenAI 兼容接口 API key。 |
 | `OPENAI_BASE_URL` | 本地运行时 / Runtime 镜像 / OpenClaw / Hermes | 条件必传 | 未设置 | `OPENAI_API_BASE`、`LLM_API_BASE`、`MODEL_API_BASE`、部分 OpenClaw 场景使用 `OPENCLAW_MODEL_BASE_URL` | 否 | 开发者 / 平台 | 否 | OpenAI 兼容接口 base url。 |
 | `OPENAI_MODEL_NAME` | 本地运行时 / Runtime 镜像 | 条件必传 | 未设置 | `LLM_MODEL`、`MODEL_NAME`、Hermes fallback 读取 `OPENAI_FALLBACK_MODEL_NAME` | 否 | 开发者 / 平台 | 否 | 默认模型名。 |
+| `KSADK_MODEL_PROFILE_MAP` | KsADK Harness 本地部署 Runtime | 否 | `{}` | 无 | 否 | 平台 / 开发者 | 否 | JSON 对象，将不可变的 `model-profile://name@version` 引用映射为供应商模型标识；仅保存标识映射，不得包含 endpoint 或凭证。未配置匹配项时回退使用 Profile 名称。 |
 | `OPENAI_CONTEXT_LENGTH` | Hermes / 模型配置 | 否 | 未设置 | `MODEL_CONTEXT_LENGTH`、`HERMES_CONTEXT_LENGTH` | 否 | 开发者 / 平台 | 否 | 模型上下文长度提示。 |
 | `OPENAI_FALLBACK_MODEL_NAME` | Hermes / 模型配置 | 否 | 未设置 | `HERMES_FALLBACK_MODEL` | 否 | 开发者 / 平台 | 否 | Hermes fallback 模型名 fallback。 |
 | `AGENTENGINE_MODEL_POLICY_JSON` | Runtime / 模型策略 | 否 | 内置 v1 默认策略 | 无 | 否 | 平台 / 开发者 | 否 | 运行时模型策略 JSON，统一声明 `primary` / `multimodal` / `fallback` 三档与每个模型的 `reasoning` / `options`，覆盖 `OPENAI_MODEL_NAME` / `OPENCLAW_*` / `HERMES_*` 默认语义。0.6.6 起 v1 默认策略为 `primary=glm-5.2` / `multimodal=kimi-k2.7-code` / `fallback=deepseek-v4-pro`；0.6.7 起每个模型 `reasoning:true`，catalog 输出含 `reasoning` 字段。 |

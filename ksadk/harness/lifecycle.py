@@ -127,11 +127,13 @@ class LocalDeployment:
         self.status: LifecycleStatus = LifecycleStatus.DRAFT
         self.health_checked: bool = False
         self.invocations: list[str] = []
+        self.run_results: list[dict[str, Any]] = []
         # 进程形态字段。
         self.port: int | None = None
         self.base_url: str = ""
         self.process: subprocess.Popen[bytes] | None = None
         self._workspace: tempfile.TemporaryDirectory[str] | None = None
+        self._runtime_log: Any | None = None
 
     @property
     def process_mode(self) -> bool:
@@ -169,6 +171,67 @@ class LocalDeployment:
             self.status = LifecycleStatus.RUNTIME_UNHEALTHY
         return ok
 
+    def activate_runtime(self, *, timeout: float = 5.0) -> None:
+        """Activate the data plane in the deployed subprocess."""
+        if not self.process_mode:
+            return
+        request = urllib.request.Request(
+            f"{self.base_url}/control/activate",
+            data=b"{}",
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+            raise LifecycleError(
+                f"activation failed: runtime control request failed ({exc})"
+            ) from exc
+        if payload.get("status") != "active":
+            raise LifecycleError(f"activation failed: unexpected runtime payload {payload}")
+
+    def invoke_run(
+        self,
+        *,
+        input: Any,
+        invocation_id: str,
+        user_id: str,
+        session_id: str,
+        agent_id: str | None = None,
+        timeout: float = 60.0,
+    ) -> dict[str, Any]:
+        """Invoke the subprocess data plane and return its RuntimeEvent v2 projection."""
+        if not self.process_mode:
+            raise LifecycleError("invoke_run requires a process deployment")
+        body = json.dumps(
+            {
+                "input": input,
+                "userId": user_id,
+                "sessionId": session_id,
+                "agentId": agent_id,
+                "invocationId": invocation_id,
+                "stream": False,
+            }
+        ).encode("utf-8")
+        request = urllib.request.Request(
+            f"{self.base_url}/runs",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                result = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise LifecycleError(f"invoke failed: HTTP {exc.code} {detail}") from exc
+        except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+            raise LifecycleError(f"invoke failed: runtime request failed ({exc})") from exc
+        self.invocations.append(invocation_id)
+        self.run_results.append(result)
+        return result
+
     def start_process(
         self,
         *,
@@ -204,11 +267,12 @@ class LocalDeployment:
             "--content-hash",
             self.manifest.content_hash,
         ]
+        self._runtime_log = (Path(self._workspace.name) / "runtime.log").open("ab")
         self.process = subprocess.Popen(  # noqa: S603 - 命令由本模块构造
             command,
             cwd=str(Path(__file__).resolve().parents[2]),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=self._runtime_log,
+            stderr=subprocess.STDOUT,
         )
         deadline = time.monotonic() + health_timeout
         last_error = "health check never succeeded"
@@ -238,6 +302,9 @@ class LocalDeployment:
             except subprocess.TimeoutExpired:  # pragma: no cover - 兜底强杀
                 self.process.kill()
         self.process = None
+        if self._runtime_log is not None:
+            self._runtime_log.close()
+            self._runtime_log = None
         if self._workspace is not None:
             self._workspace.cleanup()
             self._workspace = None
@@ -335,6 +402,7 @@ class LocalLifecycleManager:
         # 重新 Health Check（进程形态为真实 HTTP）后激活。
         if not deployment.check_health():
             raise LifecycleError("activation failed: runtime unhealthy")
+        deployment.activate_runtime()
         # 旧 Active（同 route 其他 deployment）被取代；进程形态同时下线。
         for other in self._deployments.values():
             if other.status == LifecycleStatus.ACTIVE and other is not deployment:
@@ -354,6 +422,32 @@ class LocalLifecycleManager:
         deployment.invocations.append(invocation_id)
         deployment.status = LifecycleStatus.ACTIVE
         return deployment
+
+    def invoke_run(
+        self,
+        *,
+        route: str,
+        invocation_id: str,
+        input: Any,
+        user_id: str,
+        session_id: str,
+        agent_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Invoke the active deployed process instead of only recording a status change."""
+        deployment = self.registry.active(route)
+        if deployment is None:
+            raise LifecycleError(f"invoke rejected: route {route!r} has no active deployment")
+        deployment.status = LifecycleStatus.RUNNING
+        try:
+            return deployment.invoke_run(
+                input=input,
+                invocation_id=invocation_id,
+                user_id=user_id,
+                session_id=session_id,
+                agent_id=agent_id,
+            )
+        finally:
+            deployment.status = LifecycleStatus.ACTIVE
 
     # ------------------------------------------------------------ rollback
 
