@@ -130,6 +130,7 @@ class DeploymentRuntime:
         spec_payload: dict[str, Any],
         reasoner: Any | None = None,
         engine: Any | None = None,
+        engine_kwargs: dict[str, Any] | None = None,
         activated: bool = False,
         state_dir: str | Path | None = None,
     ) -> None:
@@ -137,6 +138,7 @@ class DeploymentRuntime:
         self.spec = HarnessSpec.model_validate(spec_payload)
         self._reasoner = reasoner
         self.engine = engine
+        self._engine_kwargs = dict(engine_kwargs or {})
         self.activated = activated
         self._state_dir = Path(state_dir) if state_dir is not None else None
         self._run_store = DeploymentRunStore(self._state_dir) if self._state_dir else None
@@ -166,6 +168,7 @@ class DeploymentRuntime:
             self.spec,
             reasoner=self._reasoner,
             checkpointer=checkpointer,
+            **self._engine_kwargs,
         )
 
     async def shutdown(self) -> None:
@@ -312,6 +315,7 @@ def build_deployment_app(
     content_hash: str = "",
     reasoner: Any | None = None,
     engine: Any | None = None,
+    engine_kwargs: dict[str, Any] | None = None,
     activated: bool = False,
     state_dir: str | Path | None = None,
 ) -> FastAPI:
@@ -322,6 +326,7 @@ def build_deployment_app(
         spec_payload=spec_payload,
         reasoner=reasoner,
         engine=engine,
+        engine_kwargs=engine_kwargs,
         activated=activated,
         state_dir=state_dir,
     )

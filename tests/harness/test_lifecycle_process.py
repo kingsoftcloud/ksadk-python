@@ -59,12 +59,52 @@ class _OpenAIHandler(BaseHTTPRequestHandler):
         return
 
 
+class _ToolHandler(BaseHTTPRequestHandler):
+    calls: list[dict] = []
+
+    def do_POST(self):  # noqa: N802 - BaseHTTPRequestHandler API
+        if self.path != "/tool":
+            self.send_error(404)
+            return
+        length = int(self.headers.get("Content-Length", "0"))
+        payload = json.loads(self.rfile.read(length))
+        type(self).calls.append(payload)
+        body = json.dumps({"status": "paid", "receipt": "receipt-e2e-1"}).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, _format, *args):
+        return
+
+
 def _start_model_server():
     _OpenAIHandler.requests = []
     server = ThreadingHTTPServer(("127.0.0.1", 0), _OpenAIHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server, thread
+
+
+def _start_tool_server():
+    _ToolHandler.calls = []
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _ToolHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, thread
+
+
+def _post_json(url: str, payload: dict, *, timeout: float = 15.0) -> dict:
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
 
 
 def test_deploy_spawns_real_runtime_process_with_http_health():
@@ -166,6 +206,100 @@ def test_active_process_executes_real_runs_endpoint(monkeypatch):
         manager.close()
         model_server.shutdown()
         model_server.server_close()
+        thread.join(timeout=3)
+
+
+def test_high_risk_mcp_approval_survives_runtime_restart_and_executes_once():
+    """真实子进程：等待审批 → Runtime 重启 → 批准恢复 → 副作用仅一次。"""
+    tool_server, thread = _start_tool_server()
+    manager = LocalLifecycleManager()
+    payload = _revision_payload()
+    payload["capabilities"] = {
+        "mcpBindings": [{"bindingRef": "mcp://finance-tools@1.0.0"}]
+    }
+    command = [
+        sys.executable,
+        "-m",
+        "tests.harness.runtime_approval_fixture",
+        "--spec-file",
+        "{spec_file}",
+        "--route",
+        "{route}",
+        "--deployment-id",
+        "{deployment_id}",
+        "--port",
+        "{port}",
+        "--build-id",
+        "{build_id}",
+        "--content-hash",
+        "{content_hash}",
+        "--state-dir",
+        "{state_dir}",
+        "--tool-url",
+        f"http://127.0.0.1:{tool_server.server_port}/tool",
+    ]
+    try:
+        manifest = manager.build(
+            revision_payload=payload,
+            revision_ref="agent-revision://approval-process-e2e@1",
+        )
+        deployment = manager.deploy(
+            manifest=manifest,
+            revision_payload=payload,
+            route="studio://approval-process-e2e/local",
+            launch_process=True,
+            server_command=command,
+        )
+        manager.activate("studio://approval-process-e2e/local")
+        interrupted = manager.invoke_run(
+            route="studio://approval-process-e2e/local",
+            invocation_id="run-approval-process-e2e",
+            input="支付发票 INV-E2E-1，金额 88 元",
+            user_id="user-e2e",
+            session_id="session-e2e",
+        )
+        assert interrupted["status"] == "awaiting_approval"
+        assert _ToolHandler.calls == [], "审批前绝不能触达真实 Tool"
+        requested = [
+            event
+            for event in interrupted["events"]
+            if event["event_type"] == "approval.requested"
+        ]
+        assert requested[-1]["payload"]["detail"]["args"]["tool_name"] == "pay_invoice"
+
+        old_base_url = deployment.base_url
+        deployment.restart_process()
+        assert deployment.base_url != old_base_url
+
+        completed = _post_json(
+            f"{deployment.base_url}/runs/run-approval-process-e2e:resume",
+            {"decision": "approved", "callId": "pay-invoice", "stream": False},
+            timeout=30,
+        )
+        assert completed["status"] == "completed"
+        assert _ToolHandler.calls == [
+            {
+                "name": "pay_invoice",
+                "arguments": {"invoice_id": "INV-E2E-1", "amount": 88},
+            }
+        ]
+        event_types = [event["event_type"] for event in completed["events"]]
+        assert "approval.resolved" in event_types
+        assert "run.resumed" in event_types
+        assert event_types[-1] == "run.completed"
+
+        # Terminal Run 已移除可恢复 Handle；重复批准被拒且不会重放副作用。
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            _post_json(
+                f"{deployment.base_url}/runs/run-approval-process-e2e:resume",
+                {"decision": "approved", "callId": "pay-invoice"},
+            )
+        assert exc_info.value.code == 404
+        assert len(_ToolHandler.calls) == 1
+    finally:
+        manager.close()
+        tool_server.shutdown()
+        tool_server.server_close()
         thread.join(timeout=3)
 
 

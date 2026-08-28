@@ -242,7 +242,13 @@ class LocalDeployment:
         health_timeout: float,
         server_command: list[str] | None = None,
     ) -> None:
-        """真实启动 Runtime 子进程并等待 HTTP Health Check 通过。"""
+        """真实启动 Runtime 子进程并等待 HTTP Health Check 通过。
+
+        自定义 ``server_command`` 可使用 ``{spec_file}``、``{route}``、
+        ``{deployment_id}``、``{port}``、``{build_id}``、``{content_hash}``
+        和 ``{state_dir}`` 占位符。参数逐项替换后直接交给 ``Popen``，不经
+        shell；这让嵌入方可以复用同一生命周期管理器装配自定义 Runtime。
+        """
         if self._workspace is not None:
             raise LifecycleError("runtime workspace already exists; use restart_process")
         self._workspace = tempfile.TemporaryDirectory(prefix=f"ksadk-deploy-{self.deployment_id}-")
@@ -294,25 +300,42 @@ class LocalDeployment:
             probe.bind(("127.0.0.1", 0))
             self.port = probe.getsockname()[1]
         self.base_url = f"http://127.0.0.1:{self.port}"
-        command = server_command or [
-            sys.executable,
-            "-m",
-            "ksadk.harness.runtime_server",
-            "--spec-file",
-            str(spec_file),
-            "--route",
-            route,
-            "--deployment-id",
-            self.deployment_id,
-            "--port",
-            str(self.port),
-            "--build-id",
-            self.manifest.build_id,
-            "--content-hash",
-            self.manifest.content_hash,
-            "--state-dir",
-            str(state_dir),
-        ]
+        if server_command:
+            replacements = {
+                "{spec_file}": str(spec_file),
+                "{route}": route,
+                "{deployment_id}": self.deployment_id,
+                "{port}": str(self.port),
+                "{build_id}": self.manifest.build_id,
+                "{content_hash}": self.manifest.content_hash,
+                "{state_dir}": str(state_dir),
+            }
+            command = []
+            for argument in server_command:
+                rendered = argument
+                for placeholder, value in replacements.items():
+                    rendered = rendered.replace(placeholder, value)
+                command.append(rendered)
+        else:
+            command = [
+                sys.executable,
+                "-m",
+                "ksadk.harness.runtime_server",
+                "--spec-file",
+                str(spec_file),
+                "--route",
+                route,
+                "--deployment-id",
+                self.deployment_id,
+                "--port",
+                str(self.port),
+                "--build-id",
+                self.manifest.build_id,
+                "--content-hash",
+                self.manifest.content_hash,
+                "--state-dir",
+                str(state_dir),
+            ]
         self._runtime_log = (Path(self._workspace.name) / "runtime.log").open("ab")
         self.process = subprocess.Popen(  # noqa: S603 - 命令由本模块构造
             command,
