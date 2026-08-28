@@ -815,6 +815,11 @@ Backend 必须声明真实能力，而不是只暴露一个统一类名。当前
   失败只释放当前 Worker 的租约，不误杀仍可恢复的远端命令。
   命令已结束但终态写入失败时显式返回 Journal 错误，由控制面
   根据 PID/厂商状态做 reconciliation，不静默标记成功；
+- `Sandbox Command Journal Conformance` 作为控制面 Provider 的准入
+  套件，统一验证 create-only、tenant/workspace 查询隔离、记录往返、
+  乐观版本更新、过期写拒绝与终态不可变。`agentengine-server`
+  的 HTTP/DB Provider 必须在独立测试租户内运行该套件，不能仅以
+  SDK Fake Provider 结果代替控制面持久化验收；
 - 跨进程恢复的排他所有权使用 `SandboxLeaseProvider` 合同。权威租约存储
   属于 `agentengine-server` 控制面，KsADK 只消费单调递增的 fencing token；
   恢复、执行、Artifact 收集和关闭前都必须续租并校验当前 token。

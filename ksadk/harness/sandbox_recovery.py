@@ -162,7 +162,9 @@ class SandboxCommandJournalProvider(Protocol):
 
     ``create_running`` is create-only and may return only after the record is
     durable. ``finish`` is optimistic: implementations must reject a stale
-    ``expected_version`` with :class:`SandboxCommandJournalConflict`.
+    ``expected_version`` and any attempt to overwrite a terminal record with
+    :class:`SandboxCommandJournalConflict`. All reads and writes are scoped by
+    tenant/workspace; a cross-scope load must behave as not found.
     """
 
     async def create_running(
