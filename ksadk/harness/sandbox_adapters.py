@@ -367,20 +367,34 @@ class SessionSandboxBackendAdapter:
         try:
             result = await asyncio.to_thread(command.command_handle.wait)
         except asyncio.CancelledError:
-            await asyncio.to_thread(command.command_handle.kill)
-            translated = ExecuteResult(
-                ok=False,
-                output="",
-                exit_code=130,
-                error="sandbox 命令已取消",
-            )
-            self._append_audit(owned, command.request, translated, command.started_at)
-            command.completed = True
+            await self.cancel_command(command)
             raise
         except Exception as exc:  # noqa: BLE001 - translate vendor SDK failures
             translated = self._translate_command_error(exc)
         else:
             translated = self._translate_command_result(result)
+        self._append_audit(owned, command.request, translated, command.started_at)
+        command.completed = True
+        return translated
+
+    async def cancel_command(self, command: SessionSandboxCommand) -> ExecuteResult:
+        """Terminate one recoverable command and close its audit lifecycle.
+
+        This is also the fail-closed escape hatch used when a control-plane
+        journal cannot durably persist the resume token.  A command that has
+        no recovery record must not be allowed to continue as an orphan.
+        """
+
+        owned = self._require_owned_command(command)
+        if command.completed:
+            raise SandboxPolicyViolation("Sandbox 命令结果已经被消费")
+        await asyncio.to_thread(command.command_handle.kill)
+        translated = ExecuteResult(
+            ok=False,
+            output="",
+            exit_code=130,
+            error="sandbox 命令已取消",
+        )
         self._append_audit(owned, command.request, translated, command.started_at)
         command.completed = True
         return translated
@@ -490,6 +504,23 @@ class SessionSandboxBackendAdapter:
             await asyncio.to_thread(owned.session.kill)
         finally:
             await self._release_lease(owned.lease)
+            owned.closed = True
+
+    async def detach(self, handle: SandboxHandle) -> None:
+        """Release this process' lease without terminating the Sandbox.
+
+        This is only for recoverable remote sessions.  It lets a failed
+        recovery attempt relinquish fencing ownership so another worker can
+        retry without destroying the still-running remote command.
+        """
+
+        if not self._capabilities.reconnect or self._lease_provider is None:
+            raise SandboxPolicyViolation("detach 需要 reconnect 和 ownership_fencing")
+        owned = self._require_open_handle(handle)
+        self._handles.pop(id(owned), None)
+        try:
+            await self._release_lease(owned.lease)
+        finally:
             owned.closed = True
 
     async def _acquire_lease(self, handle_id: str) -> SandboxLeaseGrant | None:

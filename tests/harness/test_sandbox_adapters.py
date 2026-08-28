@@ -675,6 +675,41 @@ def test_e2b_adapter_reconnects_inflight_command_with_fencing_across_instances()
     assert vendor.killed is True
 
 
+def test_e2b_adapter_detach_releases_lease_without_killing_remote_sandbox():
+    vendor = _VendorSandbox()
+    sdk = _FakeE2BBackend(vendor)
+    leases = _FakeLeaseProvider()
+    spec = SandboxSpec(
+        workspace_root="/tmp/ksadk-detach",
+        read_only=False,
+    )
+    first = adapt_e2b_backend(
+        sdk,
+        lease_provider=leases,
+        lease_owner_id="process-a",
+    )
+
+    async def flow():
+        original = await first.create(spec)
+        token = first.export_resume_token(original)
+        await first.detach(original)
+        killed_after_detach = vendor.killed
+
+        second = adapt_e2b_backend(
+            sdk,
+            lease_provider=leases,
+            lease_owner_id="process-b",
+        )
+        resumed = await second.reconnect(token, spec=spec)
+        await second.close(resumed)
+        return original, killed_after_detach
+
+    original, killed_after_detach = _run(flow())
+    assert original.closed is True
+    assert killed_after_detach is False
+    assert vendor.killed is True
+
+
 def test_command_reconnect_requires_fencing_and_related_capabilities():
     vendor = _VendorSandbox()
     with pytest.raises(ValueError, match="command_reconnect"):

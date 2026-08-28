@@ -793,6 +793,28 @@ Backend 必须声明真实能力，而不是只暴露一个统一类名。当前
   无法继续等待、执行或清理。平台必须在命令启动后立即持久化该 Token，
   KsADK 只提供 start/export/reconnect/wait 合同，不以本地日志冒充控制面
   恢复日志。未装配 fencing 时只承诺会话重连，不宣称运行中命令可恢复；
+- SDK 通过 `SandboxCommandJournalProvider` 定义控制面持久化合同，
+  `RecoverableSandboxCommandCoordinator` 组合 `start -> durable journal -> wait`
+  和 `load journal -> reconnect sandbox -> reconnect command -> wait` 两条路径。
+  Journal 仅包含 tenant/workspace scope、`operation_id`、不可变
+  `execution_ref`、`run_id`、
+  Sandbox/Command Resume Token、策略指纹、超时、状态、乐观版本和
+  `exit_code`；不保存命令正文、环境变量值、Secret、stdout 或 stderr。
+  恢复时由控制面从不可变 Revision/Bundle 重建 `SandboxSpec`
+  与 `ExecuteRequest`，SDK 先校验公开策略指纹再访问远端。Secret 值可按
+  Secret 事实源轮换，不进入指纹；
+- `create_running` 是 create-only 持久化操作，只有记录已持久化
+  才能返回；`finish` 使用 `expected_version` 乐观更新，终态为
+  `succeeded / failed / cancelled`。控制面实现必须使用服务身份
+  或短期 workload 凭证鉴权，并将 workspace/tenant 作为查询和 CAS
+  条件；SDK Provider 合同不携带长期凭证，具体 API/DB 归
+  `agentengine-server` 定义；
+- Journal 首次持久化失败时，SDK 必须 fail-closed 终止已启动
+  命令，禁止留下无记录的孤儿副作用。Worker 崩溃后记录保持
+  `running`，新 Worker 必须先获取 fencing 所有权再重连；恢复尝试
+  失败只释放当前 Worker 的租约，不误杀仍可恢复的远端命令。
+  命令已结束但终态写入失败时显式返回 Journal 错误，由控制面
+  根据 PID/厂商状态做 reconciliation，不静默标记成功；
 - 跨进程恢复的排他所有权使用 `SandboxLeaseProvider` 合同。权威租约存储
   属于 `agentengine-server` 控制面，KsADK 只消费单调递增的 fencing token；
   恢复、执行、Artifact 收集和关闭前都必须续租并校验当前 token。
