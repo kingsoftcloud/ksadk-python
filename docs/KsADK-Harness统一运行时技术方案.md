@@ -105,7 +105,7 @@ Studio / CLI / RuntimeAdapter
 | Session/恢复 | Checkpoint、跨进程 attach/resume、Transcript 投影 | 云端 Session 事实源属于控制面协同范围 |
 | Context | Manifest、预算、WorkingContext Patch、压缩与关键事实重注入 | 更大规模长任务数据集仍需持续评测 |
 | 长期 Memory | Scope 检索、纠错/遗忘/锁定、审计、真实模型评测 | 生产数据治理与规模化评测仍需平台服务配合 |
-| MCP Runtime | L0-L3 渐进披露、健康/熔断、审批、幂等、结果外置 | 更多真实 MCP Transport 故障注入待覆盖 |
+| MCP Runtime | L0-L3 渐进披露、健康/熔断、超时/取消、半开恢复、审批、幂等、结果外置 | 更多真实 MCP Transport 与网关故障矩阵仍需在联调环境持续扩大 |
 | Skill Runtime | L0-L3 渐进披露、三级解析、父子 Agent 透传 | Skill 管理面仍由 Skill Service 负责 |
 | Sandbox | 异步 Backend 合同、能力声明、本地只读/进程后端、超时/取消/Artifact/清理 Conformance | E2B/平台私有后端仍需在真实模板和凭证环境跑远程矩阵 |
 | Tool Approval | Interrupt/Resume、Receipt、动态风险判定 | 外部副作用仍取决于 Transport 幂等合同 |
@@ -654,6 +654,12 @@ Revision binding
   -> Runtime invocation
   -> Receipt/Trace
 ```
+
+Harness 对 discovery 与 Tool Call 分别设置超时边界；调用方主动取消会向下传播，
+但不会被计作远端故障。`health`、`tools/list` 和 Tool Call 共用同一熔断状态，
+任一真实请求都可在冷却期结束后触发半开试探，不依赖额外健康探针才能恢复。
+超时、Transport 错误和 circuit open 均以可解释错误返回默认 Agent Loop，避免
+单个失联 MCP 无限占用 Run。
 
 ### 10.3 MCP 降级策略
 

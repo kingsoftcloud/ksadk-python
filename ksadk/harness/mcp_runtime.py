@@ -11,6 +11,7 @@ Schema 校验（无效 Tool 隔离）→ 调用 → 降级决策。
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import time
 from dataclasses import dataclass
@@ -101,6 +102,20 @@ class McpRuntimeOptions:
     health_ttl_seconds: float = 30.0
     failure_threshold: int = 3
     cooldown_seconds: float = 60.0
+    discovery_timeout_seconds: float = 10.0
+    call_timeout_seconds: float = 60.0
+
+    def __post_init__(self) -> None:
+        if self.failure_threshold < 1:
+            raise ValueError("failure_threshold must be >= 1")
+        for name in (
+            "health_ttl_seconds",
+            "cooldown_seconds",
+            "discovery_timeout_seconds",
+            "call_timeout_seconds",
+        ):
+            if getattr(self, name) < 0:
+                raise ValueError(f"{name} must be >= 0")
 
 
 class McpCapabilityRuntime:
@@ -139,18 +154,14 @@ class McpCapabilityRuntime:
         state = self._health[server_id]
         clock = time.monotonic() if now is None else now
 
-        if state.opened_at is not None:
-            if clock - state.opened_at < self._options.cooldown_seconds:
-                return McpHealthReport(
-                    server_id=server_id,
-                    healthy=False,
-                    degraded=not binding.required,
-                    reason="circuit_open",
-                    circuit_open=True,
-                )
-            # 半开：冷却期到，试探一次。
-            state.opened_at = None
-            state.consecutive_failures = max(0, self._options.failure_threshold - 1)
+        if not self._allow_operation(state, now=clock):
+            return McpHealthReport(
+                server_id=server_id,
+                healthy=False,
+                degraded=not binding.required,
+                reason="circuit_open",
+                circuit_open=True,
+            )
 
         if state.healthy is True and clock - state.last_probe_at < self._options.health_ttl_seconds:
             return McpHealthReport(
@@ -162,23 +173,33 @@ class McpCapabilityRuntime:
             )
 
         try:
-            await binding.transport.list_tools()
+            await self._with_timeout(
+                binding.transport.list_tools(),
+                timeout_seconds=self._options.discovery_timeout_seconds,
+            )
+        except asyncio.CancelledError:
+            # 调用方取消不是远端故障，不污染健康状态或熔断计数。
+            raise
+        except TimeoutError:
+            self._record_failure(state, now=clock)
+            return McpHealthReport(
+                server_id=server_id,
+                healthy=False,
+                degraded=not binding.required,
+                reason="probe_timeout",
+                circuit_open=state.opened_at is not None,
+            )
         except Exception as exc:  # noqa: BLE001 - 任何传输失败都计入熔断
-            state.healthy = False
-            state.last_probe_at = clock
-            state.consecutive_failures += 1
-            if state.consecutive_failures >= self._options.failure_threshold:
-                state.opened_at = clock
+            self._record_failure(state, now=clock)
             return McpHealthReport(
                 server_id=server_id,
                 healthy=False,
                 degraded=not binding.required,
                 reason=f"probe_failed: {exc}",
+                circuit_open=state.opened_at is not None,
             )
 
-        state.healthy = True
-        state.last_probe_at = clock
-        state.consecutive_failures = 0
+        self._record_success(state, now=clock)
         return McpHealthReport(server_id=server_id, healthy=True)
 
     # ------------------------------------------------------------- 工具
@@ -189,7 +210,24 @@ class McpCapabilityRuntime:
         cached = self._tools_cache.get(server_id)
         if cached is not None:
             return cached
-        raw = await binding.transport.list_tools()
+        state = self._health[server_id]
+        clock = time.monotonic()
+        if not self._allow_operation(state, now=clock):
+            raise McpRuntimeError(f"mcp {server_id} circuit open")
+        try:
+            raw = await self._with_timeout(
+                binding.transport.list_tools(),
+                timeout_seconds=self._options.discovery_timeout_seconds,
+            )
+        except asyncio.CancelledError:
+            raise
+        except TimeoutError as exc:
+            self._record_failure(state, now=clock)
+            raise McpRuntimeError(f"mcp {server_id} tools/list timeout") from exc
+        except Exception as exc:  # noqa: BLE001 - Transport 失败统一计入熔断
+            self._record_failure(state, now=clock)
+            raise McpRuntimeError(f"mcp {server_id} tools/list failed: {exc}") from exc
+        self._record_success(state, now=clock)
         valid: list[dict[str, Any]] = []
         for tool in raw:
             schema = tool.get("inputSchema")
@@ -215,7 +253,8 @@ class McpCapabilityRuntime:
         """调用（熔断打开时抛结构化错误）。"""
         binding = self.binding(server_id)
         state = self._health[server_id]
-        if state.opened_at is not None:
+        clock = time.monotonic()
+        if not self._allow_operation(state, now=clock):
             raise McpRuntimeError(f"mcp {server_id} circuit open")
         try:
             if binding.idempotency_mode == "transport":
@@ -224,16 +263,60 @@ class McpCapabilityRuntime:
                         f"mcp {server_id} 的 transport 幂等调用缺少稳定调用上下文"
                     )
                 call_with_context = getattr(binding.transport, "call_tool_with_context")
-                result = await call_with_context(tool_name, arguments, context=context)
+                operation = call_with_context(tool_name, arguments, context=context)
             else:
-                result = await binding.transport.call_tool(tool_name, arguments)
+                operation = binding.transport.call_tool(tool_name, arguments)
+            result = await self._with_timeout(
+                operation,
+                timeout_seconds=self._options.call_timeout_seconds,
+            )
+        except asyncio.CancelledError:
+            raise
+        except TimeoutError as exc:
+            self._record_failure(state, now=clock)
+            raise McpRuntimeError(f"mcp {server_id} tool {tool_name} call timeout") from exc
         except Exception as exc:  # noqa: BLE001
-            state.consecutive_failures += 1
-            if state.consecutive_failures >= self._options.failure_threshold:
-                state.opened_at = time.monotonic()
+            self._record_failure(state, now=clock)
             raise McpRuntimeError(f"mcp call failed: {exc}") from exc
-        state.consecutive_failures = 0
+        self._record_success(state, now=clock)
         return result
+
+    # ------------------------------------------------------------- 故障状态
+
+    def _allow_operation(self, state: _HealthState, *, now: float) -> bool:
+        """应用 open/cooldown/half-open 门禁。
+
+        不要求调用方额外执行 ``health()``：tools/list 和 Tool Call 自身在冷却
+        到期后也能进入半开试探，避免渐进披露链路永久卡在 open 状态。
+        """
+        if state.opened_at is None:
+            return True
+        if now - state.opened_at < self._options.cooldown_seconds:
+            return False
+        state.opened_at = None
+        state.consecutive_failures = max(0, self._options.failure_threshold - 1)
+        return True
+
+    def _record_failure(self, state: _HealthState, *, now: float) -> None:
+        state.healthy = False
+        state.last_probe_at = now
+        state.consecutive_failures += 1
+        if state.consecutive_failures >= self._options.failure_threshold:
+            state.opened_at = now
+
+    @staticmethod
+    def _record_success(state: _HealthState, *, now: float) -> None:
+        state.healthy = True
+        state.last_probe_at = now
+        state.consecutive_failures = 0
+        state.opened_at = None
+
+    @staticmethod
+    async def _with_timeout(operation: Any, *, timeout_seconds: float) -> Any:
+        # 0 明确表示不启用 Harness 侧超时，由调用方/Transport 自己控制。
+        if timeout_seconds == 0:
+            return await operation
+        return await asyncio.wait_for(operation, timeout=timeout_seconds)
 
     # ------------------------------------------------------------- 降级
 
