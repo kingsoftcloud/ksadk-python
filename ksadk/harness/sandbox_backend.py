@@ -88,6 +88,7 @@ class SandboxBackendCapabilities:
     deterministic_cleanup: bool
     execution_audit: bool
     reconnect: bool = False
+    ownership_fencing: bool = False
 
 
 class SandboxHandle:

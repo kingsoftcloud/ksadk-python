@@ -14,6 +14,7 @@ import shlex
 import time
 from collections.abc import Callable, Iterable
 from typing import cast
+from uuid import uuid4
 
 from ksadk.harness.sandbox_backend import (
     ExecuteRequest,
@@ -27,6 +28,11 @@ from ksadk.harness.sandbox_backend import (
     SandboxPolicyViolation,
     SandboxResumeToken,
     SandboxSpec,
+)
+from ksadk.harness.sandbox_lease import (
+    SandboxLeaseConflict,
+    SandboxLeaseGrant,
+    SandboxLeaseProvider,
 )
 from ksadk.sandbox.backends.e2b import E2BSandboxBackend
 from ksadk.sandbox.backends.local_process import LocalProcessSandboxBackend
@@ -47,9 +53,16 @@ ArtifactCollector = Callable[[SandboxSession], Iterable[str]]
 class SessionSandboxHandle(SandboxHandle):
     """Harness handle backed by one SDK ``SandboxSession``."""
 
-    def __init__(self, spec: SandboxSpec, session: SandboxSession) -> None:
+    def __init__(
+        self,
+        spec: SandboxSpec,
+        session: SandboxSession,
+        *,
+        lease: SandboxLeaseGrant | None = None,
+    ) -> None:
         super().__init__(spec)
         self.session = session
+        self.lease = lease
 
 
 class SessionSandboxBackendAdapter:
@@ -68,6 +81,9 @@ class SessionSandboxBackendAdapter:
         capabilities: SandboxBackendCapabilities,
         artifact_collector: ArtifactCollector | None = None,
         audit_log: SandboxAuditLog | None = None,
+        lease_provider: SandboxLeaseProvider | None = None,
+        lease_owner_id: str | None = None,
+        lease_ttl_seconds: float = 120.0,
         configured_workspace_root: str | None = None,
         prepare_workspace: bool = False,
     ) -> None:
@@ -77,10 +93,21 @@ class SessionSandboxBackendAdapter:
             raise ValueError("execution_audit 能力声明必须与 audit_log 装配一致")
         if capabilities.reconnect and not isinstance(backend, SdkReconnectableSandboxBackend):
             raise ValueError("后端声明 reconnect 但未实现 reconnect_session")
+        if capabilities.ownership_fencing != (lease_provider is not None):
+            raise ValueError("ownership_fencing 能力声明必须与 lease_provider 装配一致")
+        if lease_provider is not None and not capabilities.reconnect:
+            raise ValueError("Sandbox 租约 fencing 只适用于支持 reconnect 的后端")
+        if lease_ttl_seconds <= 0:
+            raise ValueError("lease_ttl_seconds 必须大于 0")
         self._backend = backend
         self._capabilities = capabilities
         self._artifact_collector = artifact_collector
         self._audit = audit_log
+        self._lease_provider = lease_provider
+        self._lease_owner_id = (lease_owner_id or f"harness-{uuid4().hex}").strip()
+        if lease_provider is not None and not self._lease_owner_id:
+            raise ValueError("lease_owner_id 不能为空")
+        self._lease_ttl_seconds = lease_ttl_seconds
         self._configured_workspace_root = configured_workspace_root
         self._prepare_workspace = prepare_workspace
         self._handles: dict[int, SessionSandboxHandle] = {}
@@ -114,6 +141,11 @@ class SessionSandboxBackendAdapter:
         # Keep the id generated before the potentially remote create call as
         # the stable correlation id passed to the SDK backend.
         handle.handle_id = provisional.handle_id
+        try:
+            handle.lease = await self._acquire_lease(handle.handle_id)
+        except Exception:
+            await asyncio.to_thread(session.kill)
+            raise
         self._handles[id(handle)] = handle
         return handle
 
@@ -145,16 +177,22 @@ class SessionSandboxBackendAdapter:
             item.handle_id == token.handle_id and not item.closed for item in self._handles.values()
         ):
             raise SandboxPolicyViolation("Sandbox Handle 已在当前进程连接")
+        lease = await self._acquire_lease(token.handle_id)
         backend = cast(SdkReconnectableSandboxBackend, self._backend)
-        session = await asyncio.to_thread(
-            backend.reconnect_session,
-            session_locator=token.session_locator,
-        )
+        try:
+            session = await asyncio.to_thread(
+                backend.reconnect_session,
+                session_locator=token.session_locator,
+            )
+        except Exception:
+            await self._release_lease(lease)
+            raise
         locator = str(session.sandbox_id or "").strip()
         if locator != token.session_locator:
             await asyncio.to_thread(session.kill)
+            await self._release_lease(lease)
             raise SandboxPolicyViolation("Sandbox 重连返回了不同的 session locator")
-        handle = SessionSandboxHandle(spec, session)
+        handle = SessionSandboxHandle(spec, session, lease=lease)
         handle.handle_id = token.handle_id
         self._handles[id(handle)] = handle
         return handle
@@ -162,6 +200,7 @@ class SessionSandboxBackendAdapter:
     async def execute(self, handle: SandboxHandle, request: ExecuteRequest) -> ExecuteResult:
         owned = self._require_open_handle(handle)
         timeout = max(1, math.ceil(request.timeout_seconds))
+        await self._renew_lease(owned, ttl_seconds=max(self._lease_ttl_seconds, timeout + 30.0))
         started = time.monotonic()
         try:
             if self._capabilities.cooperative_cancellation:
@@ -254,6 +293,7 @@ class SessionSandboxBackendAdapter:
 
     async def collect_artifacts(self, handle: SandboxHandle) -> list[str]:
         owned = self._require_open_handle(handle)
+        await self._renew_lease(owned)
         if self._artifact_collector is None:
             if not self._capabilities.artifact_collection:
                 return list(owned.artifacts)
@@ -273,14 +313,75 @@ class SessionSandboxBackendAdapter:
         return sorted(str(item) for item in artifacts)
 
     async def close(self, handle: SandboxHandle) -> None:
-        owned = self._handles.pop(id(handle), None)
+        owned = self._handles.get(id(handle))
         if owned is None:
             handle.closed = True
             return
         try:
+            await self._renew_lease(owned)
+        except SandboxLeaseConflict:
+            self._handles.pop(id(handle), None)
+            owned.closed = True
+            raise
+        self._handles.pop(id(handle), None)
+        try:
             await asyncio.to_thread(owned.session.kill)
         finally:
+            await self._release_lease(owned.lease)
             owned.closed = True
+
+    async def _acquire_lease(self, handle_id: str) -> SandboxLeaseGrant | None:
+        if self._lease_provider is None:
+            return None
+        grant = await self._lease_provider.acquire(
+            backend_id=self._capabilities.backend_id,
+            handle_id=handle_id,
+            owner_id=self._lease_owner_id,
+            ttl_seconds=self._lease_ttl_seconds,
+        )
+        self._validate_lease_grant(grant, handle_id=handle_id)
+        return grant
+
+    async def _renew_lease(
+        self,
+        handle: SessionSandboxHandle,
+        *,
+        ttl_seconds: float | None = None,
+    ) -> None:
+        if self._lease_provider is None:
+            return
+        if handle.lease is None:
+            raise SandboxLeaseConflict("Sandbox Handle 缺少所有权租约")
+        renewed = await self._lease_provider.renew(
+            handle.lease,
+            ttl_seconds=ttl_seconds or self._lease_ttl_seconds,
+        )
+        self._validate_lease_grant(
+            renewed,
+            handle_id=handle.handle_id,
+            fencing_token=handle.lease.fencing_token,
+        )
+        handle.lease = renewed
+
+    async def _release_lease(self, lease: SandboxLeaseGrant | None) -> None:
+        if self._lease_provider is not None and lease is not None:
+            await self._lease_provider.release(lease)
+
+    def _validate_lease_grant(
+        self,
+        grant: SandboxLeaseGrant,
+        *,
+        handle_id: str,
+        fencing_token: int | None = None,
+    ) -> None:
+        if (
+            grant.backend_id != self._capabilities.backend_id
+            or grant.handle_id != handle_id
+            or grant.owner_id != self._lease_owner_id
+            or grant.fencing_token <= 0
+            or (fencing_token is not None and grant.fencing_token != fencing_token)
+        ):
+            raise SandboxLeaseConflict("Sandbox Lease Provider 返回了不匹配的租约")
 
     def _require_open_handle(self, handle: SandboxHandle) -> SessionSandboxHandle:
         owned = self._handles.get(id(handle))
@@ -331,6 +432,9 @@ def adapt_e2b_backend(
     backend: E2BSandboxBackend,
     *,
     audit_log: SandboxAuditLog | None = None,
+    lease_provider: SandboxLeaseProvider | None = None,
+    lease_owner_id: str | None = None,
+    lease_ttl_seconds: float = 120.0,
 ) -> SessionSandboxBackendAdapter:
     """Adapt the current synchronous E2B backend.
 
@@ -356,8 +460,12 @@ def adapt_e2b_backend(
             deterministic_cleanup=True,
             execution_audit=audit_log is not None,
             reconnect=True,
+            ownership_fencing=lease_provider is not None,
         ),
         audit_log=audit_log,
+        lease_provider=lease_provider,
+        lease_owner_id=lease_owner_id,
+        lease_ttl_seconds=lease_ttl_seconds,
         prepare_workspace=True,
     )
 
@@ -368,17 +476,31 @@ def adapt_sdk_sandbox_backend(
     capabilities: SandboxBackendCapabilities | None = None,
     artifact_collector: ArtifactCollector | None = None,
     audit_log: SandboxAuditLog | None = None,
+    lease_provider: SandboxLeaseProvider | None = None,
+    lease_owner_id: str | None = None,
+    lease_ttl_seconds: float = 120.0,
 ) -> SessionSandboxBackendAdapter:
     """Select a truthful built-in profile or require one for custom backends."""
 
     if isinstance(backend, LocalProcessSandboxBackend):
-        if capabilities is not None or artifact_collector is not None or audit_log is not None:
+        if (
+            capabilities is not None
+            or artifact_collector is not None
+            or audit_log is not None
+            or lease_provider is not None
+        ):
             raise ValueError("内置 local_process profile 不接受能力覆盖")
         return adapt_local_process_backend(backend)
     if isinstance(backend, E2BSandboxBackend):
         if capabilities is not None or artifact_collector is not None:
             raise ValueError("内置 E2B profile 不接受能力覆盖")
-        return adapt_e2b_backend(backend, audit_log=audit_log)
+        return adapt_e2b_backend(
+            backend,
+            audit_log=audit_log,
+            lease_provider=lease_provider,
+            lease_owner_id=lease_owner_id,
+            lease_ttl_seconds=lease_ttl_seconds,
+        )
     if capabilities is None:
         raise ValueError("自定义 SDK SandboxBackend 必须显式提供 capabilities")
     return SessionSandboxBackendAdapter(
@@ -386,6 +508,9 @@ def adapt_sdk_sandbox_backend(
         capabilities=capabilities,
         artifact_collector=artifact_collector,
         audit_log=audit_log,
+        lease_provider=lease_provider,
+        lease_owner_id=lease_owner_id,
+        lease_ttl_seconds=lease_ttl_seconds,
     )
 
 

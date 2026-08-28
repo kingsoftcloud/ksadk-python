@@ -142,6 +142,14 @@ def _verify_declaration(report: SandboxConformanceReport, capabilities) -> None:
     else:
         report.pass_rule("capabilities.reconnect_lifecycle")
 
+    if capabilities.ownership_fencing and not capabilities.reconnect:
+        report.fail_rule(
+            "capabilities.ownership_fencing",
+            "ownership_fencing 依赖 reconnect 能力",
+        )
+    else:
+        report.pass_rule("capabilities.ownership_fencing")
+
 
 async def _verify_timeout(backend, handle, case, report) -> None:
     capabilities = backend.capabilities
